@@ -35,7 +35,13 @@ class Status {
         ERROR = -1,
         EPARAM = UC_MAKE_STATUS_CODE(0),
         EOOM = UC_MAKE_STATUS_CODE(1),
-        EDUPLICATE = UC_MAKE_STATUS_CODE(2),
+        EOSERROR = UC_MAKE_STATUS_CODE(2),
+        EDUPLICATE = UC_MAKE_STATUS_CODE(3),
+        ERETRY = UC_MAKE_STATUS_CODE(4),
+        ENOOBJ = UC_MAKE_STATUS_CODE(5),
+        ESERIALIZE = UC_MAKE_STATUS_CODE(6),
+        EDESERIALIZE = UC_MAKE_STATUS_CODE(7),
+        EUNSUPPORTED = UC_MAKE_STATUS_CODE(8),
 #undef UC_MAKE_STATUS_CODE
     };
 
@@ -60,9 +66,39 @@ public:
         static Status s{Code::EOOM};
         return s;
     }
+    static Status& OsApiError()
+    {
+        static Status s{Code::EOSERROR};
+        return s;
+    }
     static Status& DuplicateKey()
     {
-        static Status s{Code::EOOM};
+        static Status s{Code::EDUPLICATE};
+        return s;
+    }
+    static Status& Retry()
+    {
+        static Status s{Code::ERETRY};
+        return s;
+    }
+    static Status& NotFound()
+    {
+        static Status s{Code::ENOOBJ};
+        return s;
+    }
+    static Status& SerializeFailed()
+    {
+        static Status s{Code::ESERIALIZE};
+        return s;
+    }
+    static Status& DeserializeFailed()
+    {
+        static Status s{Code::EDESERIALIZE};
+        return s;
+    }
+    static Status& Unsupported()
+    {
+        static Status s{Code::EUNSUPPORTED};
         return s;
     }
 
