@@ -1,0 +1,64 @@
+# 默认风格
+BasedOnStyle: LLVM
+# 缩进
+IndentWidth: 4
+# 行长限制
+ColumnLimit: 120
+# 访问符位置
+AccessModifierOffset: -4
+# 模板声明换行
+AlwaysBreakTemplateDeclarations: true
+# 引用符号和指针符号靠近类型符
+PointerAlignment: Left
+# 结构体数组成员声明对齐
+AlignArrayOfStructures: Left
+# 允许短代码块在同一行写完
+AllowShortBlocksOnASingleLine: true
+# 允许短switch的case语句在一行写完
+AllowShortCaseLabelsOnASingleLine: true
+# 允许短函数在同一行写完
+AllowShortFunctionsOnASingleLine: All
+# 允许短的判断语句在同一行写完
+AllowShortIfStatementsOnASingleLine: true
+# 允许短的循环在同一行写完
+AllowShortLoopsOnASingleLine: true
+# 头文件顺序优先级：主头文件 > 系统头文件 > 其他头文件
+IncludeBlocks: Merge
+IncludeCategories:
+    - Regex: '<.*>'
+      Priority: 2
+    - Regex: '.*'
+      Priority: 3
+# 大括号换行，只有当BreakBeforeBraces设置为Custom时才有效
+BreakBeforeBraces: Custom
+BraceWrapping:
+    # class定义后面
+    AfterClass: false
+    # 控制语句后面
+    AfterControlStatement: false
+    # enum定义后面
+    AfterEnum: false
+    # 函数定义后面
+    AfterFunction: true
+    # 命名空间定义后面
+    AfterNamespace: false
+    # ObjC定义后面
+    AfterObjCDeclaration: false
+    # struct定义后面
+    AfterStruct: false
+    # union定义后面
+    AfterUnion: false
+    # extern块后面
+    AfterExternBlock: false
+    # catch之前
+    BeforeCatch: false
+    # else之前
+    BeforeElse: false
+    # 缩进大括号
+    IndentBraces: false
+    # 分割空函数
+    SplitEmptyFunction: true
+    # 分割空记录
+    SplitEmptyRecord: true
+    # 分割空命名空间
+    SplitEmptyNamespace: true
