@@ -26,8 +26,8 @@ class UcmNfsStore(UcmKVStoreBase):
         super().__init__(config)
 
         param = ucmnfsstore.SetupParam(config["storage_backends"],
-                                             config["block_size"],
-                                             config["transformer_enable"])
+                                       config["block_size"],
+                                       config["transformer_enable"])
         if param.transferEnable:
             param.transferDeviceId = config["transfer_device_id"]
             param.transferStreamNumber = config["transfer_stream_number"]
@@ -92,13 +92,14 @@ class UcmNfsStore(UcmKVStoreBase):
         Returns:
             task(Task).
         """
+        dst_tensor_ptr = [t.data_ptr() for t in dst_tensor]
         dst_tensor_size = [t.numel() * t.element_size() for t in dst_tensor]
         device_type = dst_tensor[0].device.type
 
         if device_type == "cpu":
-            task_id = ucmnfsstore.LoadToHost(block_ids, offset, dst_tensor, dst_tensor_size)
+            task_id = ucmnfsstore.LoadToHost(block_ids, offset, dst_tensor_ptr, dst_tensor_size)
         elif device_type == "cuda" or device_type == "npu":
-            task_id = ucmnfsstore.LoadToDevice(block_ids, offset, dst_tensor, dst_tensor_size)
+            task_id = ucmnfsstore.LoadToDevice(block_ids, offset, dst_tensor_ptr, dst_tensor_size)
         logger.info(f"Succeed in loading kv cache to {device_type}, task id: {task_id}.")
 
         return Task(task_id=id)
@@ -114,13 +115,14 @@ class UcmNfsStore(UcmKVStoreBase):
         Returns:
             task(Task).
         """
+        src_tensor_ptr = [t.data_ptr() for t in src_tensor]
         src_tensor_size = [t.numel() * t.element_size() for t in src_tensor]
         device_type = src_tensor[0].device.type
 
         if device_type == "cpu":
-            task_id = ucmnfsstore.DumpFromHost(block_ids, offset, src_tensor, src_tensor_size)
+            task_id = ucmnfsstore.DumpFromHost(block_ids, offset, src_tensor_ptr, src_tensor_size)
         elif device_type == "cuda" or device_type == "npu":
-            task_id = ucmnfsstore.DumpFromDevice(block_ids, offset, src_tensor, src_tensor_size)
+            task_id = ucmnfsstore.DumpFromDevice(block_ids, offset, src_tensor_ptr, src_tensor_size)
         logger.info(f"Succeed in dumping kv cache from {device_type}, task id: {task_id}.")
         
         return Task(task_id=id)
