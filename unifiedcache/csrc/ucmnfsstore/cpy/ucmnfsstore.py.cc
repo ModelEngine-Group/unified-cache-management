@@ -32,9 +32,7 @@ inline int32_t AllocBatch(const py::list& blockIds)
 {
     int32_t ret = 0;
     for (auto id : blockIds) {
-        if ((ret = Alloc(id.cast<std::string>())) != 0) {
-            break;
-        }
+        if ((ret = Alloc(id.cast<std::string>())) != 0) { break; }
     }
     return ret;
 }
@@ -42,9 +40,7 @@ inline int32_t AllocBatch(const py::list& blockIds)
 inline py::list LookupBatch(const py::list& blockIds)
 {
     py::list founds;
-    for (auto id : blockIds) {
-        founds.append(Lookup(id.cast<std::string>()));
-    }
+    for (auto id : blockIds) { founds.append(Lookup(id.cast<std::string>())); }
     return founds;
 }
 
@@ -98,9 +94,7 @@ inline size_t DumpFromHost(const py::list& blockIdList, const py::list& offsetLi
 
 inline void CommitBatch(const py::list& blockIds, const bool success)
 {
-    for (auto id : blockIds) {
-        Commit(id.cast<std::string>(), success);
-    }
+    for (auto id : blockIds) { Commit(id.cast<std::string>(), success); }
 }
 
 } // namespace UC
@@ -108,8 +102,8 @@ inline void CommitBatch(const py::list& blockIds, const bool success)
 PYBIND11_MODULE(ucmnfsstore, module)
 {
     py::class_<UC::SetupParam>(module, "SetupParam")
-        .def(py::init<const std::vector<std::string>&, const size_t>(), py::arg("storageBackends"),
-             py::arg("kvcacheBlockSize"))
+        .def(py::init<const std::vector<std::string>&, const size_t, const bool>(), py::arg("storageBackends"),
+             py::arg("kvcacheBlockSize"), py::arg("transferEnable"))
         .def_readwrite("storageBackends", &UC::SetupParam::storageBackends)
         .def_readwrite("kvcacheBlockSize", &UC::SetupParam::kvcacheBlockSize)
         .def_readwrite("transferEnable", &UC::SetupParam::transferEnable)
