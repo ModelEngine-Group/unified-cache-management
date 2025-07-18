@@ -94,9 +94,25 @@ Status SpaceManager::CommitBlock(const std::string& blockId, bool success)
     return Status::OK();
 }
 
+bool SpaceManager::LookupBlock(const std::string& blockId)
+{
+    auto path = this->BlockPath(blockId);
+    auto file = File::Make(path);
+    if (!file) {
+        UC_ERROR("Failed to make file smart pointer, path: {}.", path);
+        return false;
+    }
+    auto s = file->Access(IFile::AccessMode::EXIST);
+    if (s.Failure()) {
+        UC_ERROR("Failed to access file, path: {}, errcode: {}.", path, s.Underlying());
+        return false;
+    }
+    return true;
+}
+
 std::string SpaceManager::BlockPath(const std::string& blockId, bool actived)
 {
-    return this->StorageBackend(blockId) + this->_layout.DataFilePath(blockId);
+    return this->StorageBackend(blockId) + this->_layout.DataFilePath(blockId, actived);
 }
 
 Status SpaceManager::AddStorageBackend(const std::string& path)
