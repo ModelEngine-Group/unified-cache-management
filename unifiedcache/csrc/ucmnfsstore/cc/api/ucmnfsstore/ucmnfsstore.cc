@@ -22,22 +22,47 @@
  * SOFTWARE.
  * */
 #include "ucmnfsstore.h"
+#include "space/space_manager.h"
+#include "template/singleton.h"
+#include "logger/logger.h"
+#include "status/status.h"
 
 namespace UC {
 
 int32_t Setup(const SetupParam& param)
 {
-    return 0;
+    auto mgr = Singleton<SpaceManager>::Instance();
+    auto s = mgr.Setup(param.storageBackends, param.kvcacheBlockSize);
+    if (s.Failure()) {
+        UC_ERROR("Failed to initialize SpaceManager, error code: {}.", s.Underlying());
+    } else {
+        UC_INFO("Succeed in initializing SpaceManager.");
+    }
+    return s.Underlying();
 }
 
 int32_t Alloc(const std::string& blockId)
 {
-    return 0;
+    auto mgr = Singleton<SpaceManager>::Instance();
+    auto s = mgr.NewBlock(blockId);
+    if (s.Failure()) {
+        UC_ERROR("Failed to allocate kv cache block space, block id: {}, error code: {}.", blockId, s.Underlying());
+    } else {
+        UC_INFO("Succeed in allocating kv cache block space, block id: {}.", blockId);
+    }
+    return s.Underlying();
 }
 
 bool Lookup(const std::string& blockId)
 {
-    return false;
+    auto mgr = Singleton<SpaceManager>::Instance();
+    auto ok = mgr.LookupBlock(blockId);
+    if (!ok) {
+        UC_ERROR("Failed to lookup kv cache block space, block id: {}.", blockId);
+    } else {
+        UC_INFO("Succeed in looking up kv cache block space.");
+    }
+    return ok;
 }
 
 size_t Submit(std::list<TsfTask> tasks)
@@ -52,6 +77,13 @@ int32_t Wait(const size_t taskId)
 
 void Commit(const std::string& blockId, const bool success)
 {
+    auto mgr = Singleton<SpaceManager>::Instance();
+    auto s = mgr.CommitBlock(blockId, success);
+    if (s.Failure()) {
+        UC_ERROR("Failed to commit kv cache block space, block id: {}, error code: {}.", blockId, s.Underlying());
+    } else {
+        UC_INFO("Succeed in committing kv cache block space, block id: {}.", blockId);
+    }
 }
 
 } // namespace UC

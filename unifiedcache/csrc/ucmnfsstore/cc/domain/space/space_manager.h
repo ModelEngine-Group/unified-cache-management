@@ -34,6 +34,7 @@ public:
     Status Setup(const std::vector<std::string>& storageBackends, const size_t blockSize);
     Status NewBlock(const std::string& blockId);
     Status CommitBlock(const std::string& blockId, bool success = true);
+    bool LookupBlock(const std::string& blockId);
     std::string BlockPath(const std::string& blockId, bool actived = false);
 
 private:
