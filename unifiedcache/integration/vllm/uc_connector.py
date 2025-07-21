@@ -1,11 +1,12 @@
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Optional, Any
 
 import torch
 from vllm.config import VllmConfig
 from vllm.distributed.kv_transfer.kv_connector.v1.base import (
     KVConnectorBase_V1, KVConnectorMetadata, KVConnectorRole)
-from unifiedcache.logger import init_logger
+from vllm.logger import init_logger
 from vllm.v1.core.sched.output import SchedulerOutput
+from vllm.v1.request import RequestStatus
 
 from unifiedcache.integration.vllm.uc_connector_impl import UCConnectorImpl
 
@@ -43,7 +44,8 @@ class UnifiedCacheConnectorV1(KVConnectorBase_V1):
             the same.
 
         """
-        self._unifiedcache_engine.start_load_kv(forward_context, **kwargs)
+        metadata = self._get_connector_metadata()
+        self._unifiedcache_engine.start_load_kv(forward_context, metadata=metadata, **kwargs)
 
     def wait_for_layer_load(self, layer_name: str) -> None:
         """
@@ -59,7 +61,7 @@ class UnifiedCacheConnectorV1(KVConnectorBase_V1):
         self._unifiedcache_engine.wait_for_layer_load(layer_name)
 
     def save_kv_layer(self, layer_name: str, kv_layer: torch.Tensor,
-                        attn_metadata: "AttentionMetadata", **kwargs) -> None:
+                      attn_metadata: "AttentionMetadata", **kwargs) -> None:
         """
         Start saving the a layer of KV cache from vLLM's paged buffer
         to the connector. This is called from within attention layer to
@@ -72,7 +74,9 @@ class UnifiedCacheConnectorV1(KVConnectorBase_V1):
             attn_metadata (AttentionMetadata): the attention metadata.
             **kwargs: additional arguments for the save operation.
         """
+        metadata = self._get_connector_metadata()
         self._unifiedcache_engine.save_kv_layer(layer_name, kv_layer, attn_metadata,
+                                                metadata=metadata,
                                                 **kwargs)
 
     def wait_for_save(self) -> None:
@@ -83,7 +87,8 @@ class UnifiedCacheConnectorV1(KVConnectorBase_V1):
 
         This prevents overwrites of paged KV buffer before saving done.
         """
-        self._unifiedcache_engine.wait_for_save()
+        metadata = self._get_connector_metadata()
+        self._unifiedcache_engine.wait_for_save(metadata)
 
     # ==============================
     # Scheduler-side methods
@@ -106,9 +111,8 @@ class UnifiedCacheConnectorV1(KVConnectorBase_V1):
             the number of tokens that can be loaded from the
             external KV cache beyond what is already computed.
         """
-        self._unifiedcache_engine.get_num_new_matched_tokens(
+        return self._unifiedcache_engine.get_num_new_matched_tokens(
             request, num_computed_tokens)
-        return 0, False
 
     def update_state_after_alloc(self, request: "Request",
                                  blocks: "KVCacheBlocks",
@@ -116,18 +120,26 @@ class UnifiedCacheConnectorV1(KVConnectorBase_V1):
         """
         Update KVConnector state after block allocation.
         """
-        self._unifiedcache_engine.update_state_after_alloc(request,
-                                                        num_external_tokens)
+        self._unifiedcache_engine.update_state_after_alloc(request, blocks,
+                                                           num_external_tokens)
 
     def build_connector_meta(
             self, scheduler_output: SchedulerOutput) -> KVConnectorMetadata:
         """
         Build the connector metadata for this step.
 
-        This function shoulf NOT modify fields in the scheduler_output.
+        This function should NOT modify fields in the scheduler_output.
         Also, calling this function will reset the state of the connector.
 
         Args:
             scheduler_output (SchedulerOutput): the scheduler output object.
         """
         return self._unifiedcache_engine.build_connector_meta(scheduler_output)
+
+    def request_finished(
+            self,
+            request: "Request",
+            block_ids: list[int],
+    ) -> tuple[bool, Optional[dict[str, Any]]]:
+        assert self._unifiedcache_engine is not None
+        return self._unifiedcache_engine.request_finished(request, block_ids)
