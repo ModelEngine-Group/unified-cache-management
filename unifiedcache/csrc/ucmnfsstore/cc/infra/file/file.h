@@ -26,12 +26,13 @@
 
 #include <memory>
 #include "ifile.h"
+#include <functional>
 
 namespace UC {
 
 class File {
 public:
-    static std::unique_ptr<IFile> Make(const std::string& path);
+    static std::shared_ptr<IFile> Make(const std::string& path);
 };
 
 } // namespace UC

@@ -24,6 +24,7 @@
 #include "space_manager.h"
 #include "file/file.h"
 #include "logger/logger.h"
+#include <algorithm>
 
 namespace UC {
 

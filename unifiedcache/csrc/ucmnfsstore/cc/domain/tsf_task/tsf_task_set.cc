@@ -21,41 +21,37 @@
 /* OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 /* SOFTWARE.
  * */
-#ifndef UNIFIEDCACHE_NFS_STORE_H
-#define UNIFIEDCACHE_NFS_STORE_H
+#include "tsf_task_set.h"
+#include <mutex>
+#include <functional>
+#include <algorithm>
 
-#include <list>
-#include <string>
-#include <vector>
-#include "tsf_task/tsf_task.h"
+namespace UC{
 
-namespace UC {
-/**
- * @brief invalid task id
- * */
-#define TRANSFER_INVALID_TASK_ID (size_t(0))
+size_t TsfTaskSet::Hash(const size_t id)
+{
+    return id % nBucket;
+}
 
-struct SetupParam {
-    std::vector<std::string> storageBackends;
-    size_t kvcacheBlockSize;
-    bool transferEnable;
-    int32_t transferDeviceId;
-    size_t transferStreamNumber;
+void TsfTaskSet::Insert(const size_t id)
+{
+    size_t bucketId = Hash(id);
+    std::unique_lock<std::shared_mutex> lock(this->_mutexs[bucketId]);
+    this->_sets[bucketId].push_back(id);
+}
 
-    SetupParam(const std::vector<std::string>& storageBackends, const size_t kvcacheBlockSize)
-        : storageBackends{storageBackends}, kvcacheBlockSize{kvcacheBlockSize}, transferEnable{false},
-          transferDeviceId{-1}, transferStreamNumber{256}
-    {
-    }
-};
+bool TsfTaskSet::Exist(const size_t id)
+{
+    size_t bucketId = Hash(id);
+    std::shared_lock<std::shared_mutex> lock(this->_mutexs[bucketId]);
+    return std::find(this->_sets[bucketId].begin(), this->_sets[bucketId].end(), id) != this->_sets[bucketId].end();
+}
 
-int32_t Setup(const SetupParam& param);
-int32_t Alloc(const std::string& blockId);
-bool Lookup(const std::string& blockId);
-size_t Submit(std::list<TsfTask> tasks);
-int32_t Wait(const size_t taskId);      // todo:类似原来获取任务状态的功能,等待他直到结束,返回任务id
-void Commit(const std::string& blockId, const bool success);
+void TsfTaskSet::Remove(const size_t id)
+{
+    size_t bucketId = Hash(id);
+    std::unique_lock<std::shared_mutex> lock(this->_mutexs[bucketId]);
+    this->_sets[bucketId].remove(id);
+}
 
 } // namespace UC
-
-#endif

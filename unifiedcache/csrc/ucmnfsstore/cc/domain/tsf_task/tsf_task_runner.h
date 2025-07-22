@@ -21,40 +21,28 @@
 /* OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 /* SOFTWARE.
  * */
-#ifndef UNIFIEDCACHE_NFS_STORE_H
-#define UNIFIEDCACHE_NFS_STORE_H
+#ifndef UNIFIEDCACHE_TSF_TASK_RUNNER
+#define UNIFIEDCACHE_TSF_TASK_RUNNER
 
-#include <list>
 #include <string>
-#include <vector>
-#include "tsf_task/tsf_task.h"
+#include "idevice.h"
+#include "status/status.h"
+#include "tsf_task.h"
 
-namespace UC {
-/**
- * @brief invalid task id
- * */
-#define TRANSFER_INVALID_TASK_ID (size_t(0))
+namespace UC{
 
-struct SetupParam {
-    std::vector<std::string> storageBackends;
-    size_t kvcacheBlockSize;
-    bool transferEnable;
-    int32_t transferDeviceId;
-    size_t transferStreamNumber;
-
-    SetupParam(const std::vector<std::string>& storageBackends, const size_t kvcacheBlockSize)
-        : storageBackends{storageBackends}, kvcacheBlockSize{kvcacheBlockSize}, transferEnable{false},
-          transferDeviceId{-1}, transferStreamNumber{256}
-    {
-    }
+class TsfTaskRunner{
+public:
+    Status Run(const TsfTask& task, IDevice* device);
+     
+private:
+    Status Host2SSD(const TsfTask& task);   // todo
+    Status SSD2Host(const TsfTask& task);   // todo
+    Status Device2SSD(const TsfTask& task); // todo
+    Status SSD2Device(const TsfTask& task); // todo
+    Status ReadFile(const TsfTask& task, bool align = false);
+    Status WriteFile(const TsfTask& task, bool align = false); 
 };
-
-int32_t Setup(const SetupParam& param);
-int32_t Alloc(const std::string& blockId);
-bool Lookup(const std::string& blockId);
-size_t Submit(std::list<TsfTask> tasks);
-int32_t Wait(const size_t taskId);      // todo:类似原来获取任务状态的功能,等待他直到结束,返回任务id
-void Commit(const std::string& blockId, const bool success);
 
 } // namespace UC
 
