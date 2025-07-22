@@ -25,24 +25,56 @@
 #define UNIFIEDCACHE_TSF_TASK_H
 
 #include <cstdint>
+#include <string>
+#include "logger/logger.h"
 
 namespace UC {
 
 struct TsfTask {
-    enum class Type { DUMP, LOAD };
-    enum class Location { HOST, DEVICE };
+    enum class Type { DUMP, LOAD };         
+    enum class Location { HOST, DEVICE };   
     Type type;
-    Location location;
+    Location location;  
     std::string blockId;
-    size_t offset;
-    uintptr_t address;
-    size_t length;
+    size_t offset;      
+    uintptr_t address;  
+    size_t length;      
+    size_t owner;  // taskId
 
     TsfTask(const Type type, const Location location, const std::string& blockId, const size_t offset,
             const uintptr_t address, const size_t length)
-        : type{type}, location{location}, blockId{blockId}, offset{offset}, address{address}, length{length}
+        : type{type}, location{location}, blockId{blockId}, offset{offset}, address{address}, length{length}, owner{0}
     {
     }
+};
+
+class TsfTaskGroup{
+    using Clock = std::chrono::steady_clock;
+
+public:
+    TsfTaskGroup(const size_t taskId, const std::string& brief, const size_t number, const size_t totalSize)
+        :_taskId{taskId}, _brief{brief}, _number{number}, _totalSize{totalSize}, _tp{Clock::now()}
+    {
+    }
+    double Elapsed() const {return std::chrono::duration<double>(Clock::now() - this ->_tp).count();}
+    std::string Str() const
+    {
+        return fmt::format("{},{},{},{}", this->_taskId, this->_brief, this->_number, this->_totalSize);
+    }
+
+private:
+    size_t _taskId;
+    std::string _brief;
+    size_t _number;
+    size_t _totalSize;
+    std::chrono::time_point<Clock> _tp;
+};
+
+enum class TsfTaskStatus{
+    RUNNING = 0,
+    FAILURE = 1,
+    SUCCESS = 2,
+    CANCELLED = 3,
 };
 
 } // namespace UC

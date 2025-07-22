@@ -21,41 +21,42 @@
 /* OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 /* SOFTWARE.
  * */
-#ifndef UNIFIEDCACHE_NFS_STORE_H
-#define UNIFIEDCACHE_NFS_STORE_H
+#ifndef UNIFIEDCACHE_IDEVICE
+#define UNIFIEDCACHE_IDEVICE
 
-#include <list>
-#include <string>
-#include <vector>
-#include "tsf_task/tsf_task.h"
+#include <memory>
+#include "idevice.h"
+#include "status/status.h"
 
 namespace UC {
-/**
- * @brief invalid task id
- * */
-#define TRANSFER_INVALID_TASK_ID (size_t(0))
 
-struct SetupParam {
-    std::vector<std::string> storageBackends;
-    size_t kvcacheBlockSize;
-    bool transferEnable;
-    int32_t transferDeviceId;
-    size_t transferStreamNumber;
+class BufferDevice : public IDevice {   // todo
 
-    SetupParam(const std::vector<std::string>& storageBackends, const size_t kvcacheBlockSize)
-        : storageBackends{storageBackends}, kvcacheBlockSize{kvcacheBlockSize}, transferEnable{false},
-          transferDeviceId{-1}, transferStreamNumber{256}
+public:
+    BufferDevice(int32_t deviceId, size_t bufferSize, size_t bufferNumber)
+            : deviceId_(deviceId), bufferSize_(bufferSize), bufferNumber_(bufferNumber) {}
+    Status Setup() override
     {
+        return Status::OK();
+    }
+private:
+    int32_t deviceId_;
+    size_t bufferSize_;
+    size_t bufferNumber_;
+};
+
+class Device {
+public:
+    static std::unique_ptr<IDevice> Make(const int32_t deviceId, const size_t bufferSize, const size_t bufferNumber)
+    {
+        try{
+            return std::make_unique<BufferDevice>(deviceId, bufferSize, bufferNumber);
+        } catch (const std::exception& e) {
+            return nullptr;
+        }
     }
 };
 
-int32_t Setup(const SetupParam& param);
-int32_t Alloc(const std::string& blockId);
-bool Lookup(const std::string& blockId);
-size_t Submit(std::list<TsfTask> tasks);
-int32_t Wait(const size_t taskId);      // todo:类似原来获取任务状态的功能,等待他直到结束,返回任务id
-void Commit(const std::string& blockId, const bool success);
-
 } // namespace UC
 
-#endif
+#endif // UNIFIEDCACHE_IDEVICE

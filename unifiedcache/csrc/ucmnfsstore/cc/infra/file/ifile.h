@@ -30,6 +30,16 @@
 
 namespace UC {
 
+class OpenMode{
+public:
+    static const int32_t RD = O_RDONLY;
+    static const int32_t WR = O_WRONLY;
+    static const int32_t RDWR = O_RDWR;
+    static const int32_t APP = O_APPEND;
+    static const int32_t DIRECT = O_DIRECT;
+    static const int32_t CREATE = O_CREAT;
+};
+
 class IFile {
 public:
     class AccessMode {

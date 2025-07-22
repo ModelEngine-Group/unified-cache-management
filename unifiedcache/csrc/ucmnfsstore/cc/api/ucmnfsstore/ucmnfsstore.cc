@@ -22,6 +22,8 @@
 /* SOFTWARE.
  * */
 #include "ucmnfsstore.h"
+#include "template/singleton.h"
+#include "tsf_task/tsf_task_manager.h"
 
 namespace UC {
 
@@ -42,11 +44,26 @@ bool Lookup(const std::string& blockId)
 
 size_t Submit(std::list<TsfTask> tasks)
 {
-    return size_t();
+    auto& taskMgr = Singleton<TsfTaskManager>::Instance();
+    size_t taskId;
+    if(taskMgr.SubmitTask(tasks, taskId).Failure()){
+        return TRANSFER_INVALID_TASK_ID;
+    }
+    return taskId;
 }
 
 int32_t Wait(const size_t taskId)
 {
+    auto& taskMgr = Singleton<TsfTaskManager>::Instance();
+    auto status = taskMgr.GetStatus(taskId);
+    if (status == TsfTaskStatus::RUNNING) {
+        // wait for the task to finish
+        // todo
+        while (status == TsfTaskStatus::RUNNING) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+            status = taskMgr.GetStatus(taskId);
+        }
+    }
     return 0;
 }
 

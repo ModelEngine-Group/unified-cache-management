@@ -21,41 +21,45 @@
 /* OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 /* SOFTWARE.
  * */
-#ifndef UNIFIEDCACHE_NFS_STORE_H
-#define UNIFIEDCACHE_NFS_STORE_H
+#ifndef UNIFIEDCACHE_TSF_TASK_QUEUE
+#define UNIFIEDCACHE_TSF_TASK_QUEUE
 
+#include <condition_variable>
+#include <future>
 #include <list>
-#include <string>
-#include <vector>
-#include "tsf_task/tsf_task.h"
+#include <mutex>
+#include <thread>
+#include "tsf_task_runner.h"
+#include "tsf_task_set.h"
 
-namespace UC {
-/**
- * @brief invalid task id
- * */
-#define TRANSFER_INVALID_TASK_ID (size_t(0))
+namespace UC{
 
-struct SetupParam {
-    std::vector<std::string> storageBackends;
-    size_t kvcacheBlockSize;
-    bool transferEnable;
-    int32_t transferDeviceId;
-    size_t transferStreamNumber;
+class TsfTaskQueue{
+public:
+    ~TsfTaskQueue();
+    Status Setup(const int32_t deviceId, const size_t bufferSize, const size_t bufferNumber, TsfTaskSet* failureSet);
+    void Push(std::list<TsfTask>& tasks);
+    void Push(TsfTask&& task);
+    bool Finish(const size_t& taskId) const;
 
-    SetupParam(const std::vector<std::string>& storageBackends, const size_t kvcacheBlockSize)
-        : storageBackends{storageBackends}, kvcacheBlockSize{kvcacheBlockSize}, transferEnable{false},
-          transferDeviceId{-1}, transferStreamNumber{256}
-    {
-    }
+private:
+    void Worker();
+
+private:
+    int32_t _deviceId{-1};
+    size_t _bufferSize{0};
+    size_t _bufferNumber{0};
+    TsfTaskSet* _failureSet{nullptr};
+    bool _running{false};
+    std::list<TsfTask> _q;
+    std::thread _worker;
+    std::promise<Status> _started;
+    std::mutex _mutex;
+    std::condition_variable _cv;
+    TsfTaskRunner _runner;
+    size_t _lastId{0};
 };
 
-int32_t Setup(const SetupParam& param);
-int32_t Alloc(const std::string& blockId);
-bool Lookup(const std::string& blockId);
-size_t Submit(std::list<TsfTask> tasks);
-int32_t Wait(const size_t taskId);      // todo:类似原来获取任务状态的功能,等待他直到结束,返回任务id
-void Commit(const std::string& blockId, const bool success);
-
-} // namespace UC
+}// namespace UC
 
 #endif
