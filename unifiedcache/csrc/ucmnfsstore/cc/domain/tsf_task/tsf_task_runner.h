@@ -29,9 +29,9 @@
 #include "status/status.h"
 #include "tsf_task.h"
 
-namespace UC{
+namespace UC {
 
-class TsfTaskRunner{
+class TsfTaskRunner {
 public:
     Status Run(const TsfTask& task, IDevice* device);
      

@@ -29,7 +29,7 @@
 #include "template/singleton.h"
 #include "configurator.h"
 
-namespace UC{
+namespace UC {
 
 Status TsfTaskManager::Setup()
 {
@@ -107,4 +107,4 @@ bool TsfTaskManager::Finish(const size_t& id) const
     }
     return false;
 } 
-}// namespace UC
+} // namespace UC

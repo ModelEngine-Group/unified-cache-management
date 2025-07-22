@@ -46,6 +46,6 @@ private:
     std::list<size_t> _sets[nBucket];
 };
 
-}// namespace UC
+} // namespace UC
 
 #endif

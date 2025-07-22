@@ -40,7 +40,7 @@ public:
         size_t size = 0;
         std::string brief;
         auto qSize = tasks.size();
-        std::list<std::pair<TsfTask, size_t>> lists[qSize];
+        std::list<TsfTask> lists[qSize];
 
         status = this ->MakeTasks(tasks, lists, taskId, qSize, number, size, brief);
         if (status.Failure()) {
@@ -51,7 +51,7 @@ public:
                 continue;
             }
             auto& q = this->_queues[this->_qIdx];
-            q->Push(std::move(lists[i].front().first));
+            q->Push(std::move(lists[i].front()));
             this->_qIdx = (this->_qIdx + 1) % qSize;
         }
         this->_tasks.emplace(taskId, TsfTaskGroup(taskId, brief, number, size));
@@ -62,7 +62,7 @@ public:
     
 private:
     Status Precheck();
-    Status MakeTasks(std::list<TsfTask>tasks, std::list<std::pair<TsfTask, size_t>> lists[], 
+    Status MakeTasks(std::list<TsfTask>tasks, std::list<TsfTask> lists[], 
                      const size_t& taskId, const size_t& qSize, size_t& number, size_t& size, std::string& brief)
     {
         for (auto& task : tasks) {
@@ -78,7 +78,7 @@ private:
                 return Status::InvalidParam();
             }
             task.owner = taskId;
-            lists[number % qSize].emplace_back(std::move(task), taskId);
+            lists[number % qSize].emplace_back(std::move(task));
             size += task.length;
         }
         return Status::OK();
