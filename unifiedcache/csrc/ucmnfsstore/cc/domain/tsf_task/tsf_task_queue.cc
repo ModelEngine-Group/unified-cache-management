@@ -114,7 +114,6 @@ void TsfTaskQueue::Worker()
             continue;
         }
         const auto& task = this->_q.front();
-        // todo: 这部分需要自行调整
         if (!this->_failureSet->Exist(task.owner)){
             auto status = this->_runner.Run(task, device.get());
             if (status.Failure()){
@@ -122,7 +121,7 @@ void TsfTaskQueue::Worker()
             }
         }
         if (device && (this->_lastId != task.owner || this->_q.size()==1)){
-            auto status = Status::OK(); //device->WaitFinish(); // todo
+            auto status = Status::OK(); //device->WaitFinish(); // todo ssd2device
             if (status.Failure()){
                 this->_failureSet->Insert(task.owner);
             }
