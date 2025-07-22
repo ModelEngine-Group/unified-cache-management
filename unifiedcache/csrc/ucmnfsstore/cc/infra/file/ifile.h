@@ -51,21 +51,21 @@ public:
 
 public:
     IFile(const std::string& path) : _path{path} {}
-    virtual ~IFile() { this->Close(); }
+    virtual ~IFile() = default;
     const std::string& Path() const { return this->_path; }
     virtual Status MkDir() = 0;
-    virtual Status RmDir() = 0;
+    virtual void RmDir() = 0;
     virtual Status Rename(const std::string& newName) = 0;
     virtual Status Access(const int32_t mode) = 0;
     virtual Status Open(const uint32_t flags) = 0;
-    virtual void Close() {}
+    virtual void Close() = 0;
     virtual void Remove() = 0;
     virtual Status Seek2End() = 0;
     virtual Status Read(void* buffer, size_t size, off64_t offset = -1) = 0;
     virtual Status Write(const void* buffer, size_t size, off64_t offset = -1) = 0;
     virtual Status Lock() = 0;
     virtual Status Lock(uint32_t retryCnt, uint32_t intervalUs) = 0;
-    virtual Status Unlock() = 0;
+    virtual void Unlock() = 0;
     virtual Status MMap(off64_t offset, size_t length, void*& addr, bool wr) = 0;
     virtual Status Stat(struct stat* buffer) = 0;
     virtual Status Truncate(size_t length) = 0;
