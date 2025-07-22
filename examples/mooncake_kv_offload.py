@@ -19,20 +19,21 @@ store = UcmMooncakeStore()
 src_block_data = [torch.randint(0, 1000, (1,10), dtype=torch.int) for _ in range(5)]
 dst_block_data = [torch.empty(data.shape, dtype=data.dtype) for data in src_block_data]
 block_ids = [tensor_hash(data) for data in src_block_data]
+offset = [0]*len(block_ids)
 
 mask = store.lookup(block_ids)
 logger.info(f"First lookup: {mask=}")
 
-task: MooncakeTask = store.dump(block_ids=block_ids, offset=[], src_tensor=src_block_data)
-store.wait(task)
-logger.info(f"Dump end: {task=}")
+task: MooncakeTask = store.dump(block_ids=block_ids, offset=offset, src_tensor=src_block_data)
+ret = store.wait(task)
+logger.info(f"Dump end: {task=} with return: {ret}")
 
 mask = store.lookup(block_ids)
 logger.info(f"Second lookup: {mask=}")
 
-task: MooncakeTask = store.load(block_ids=block_ids, offset=[], dst_tensor=dst_block_data)
-store.wait(task)
-logger.info(f"Load end: {task=}")
+task: MooncakeTask = store.load(block_ids=block_ids, offset=offset, dst_tensor=dst_block_data)
+ret = store.wait(task)
+logger.info(f"Load end: {task=} with return: {ret}")
 
 logger.info("原始张量Hash:")
 logger.info(f"{block_ids=}")

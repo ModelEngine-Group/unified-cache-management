@@ -2,8 +2,6 @@ import os
 import uuid
 import hashlib
 import torch
-import time
-import pytest
 
 from unifiedcache.ucm_connector.ucm_mooncake import UcmMooncakeStore, MooncakeTask
 from unifiedcache.logger import init_logger
@@ -31,10 +29,12 @@ def test_lookup_found():
     """Test that lookup returns True for existing block IDs after dumping data."""
     src_block_data = [torch.randint(0, 1000, (1,100), dtype=torch.int) for _ in range(5)]
     block_ids = [tensor_hash(data) for data in src_block_data]
-
+    offset = [0]*len(block_ids)
+    
     store = UcmMooncakeStore()
-    task: MooncakeTask = store.dump(block_ids=block_ids, offset=[], src_tensor=src_block_data)
-    store.wait(task)
+    task: MooncakeTask = store.dump(block_ids=block_ids, offset=offset, src_tensor=src_block_data)
+    ret = store.wait(task)
+    assert ret == 0
     masks = store.lookup(block_ids)
     assert all(mask is True for mask in masks)
 
@@ -42,10 +42,12 @@ def test_dump_once():
     """Test dumping data once and verifying it exists in the store."""
     src_block_data = [torch.randint(0, 1000, (1,100), dtype=torch.int) for _ in range(5)]
     block_ids = [tensor_hash(data) for data in src_block_data]
-
+    offset = [0]*len(block_ids)
+    
     store = UcmMooncakeStore()
-    task: MooncakeTask = store.dump(block_ids=block_ids, offset=[], src_tensor=src_block_data)
-    store.wait(task)
+    task: MooncakeTask = store.dump(block_ids=block_ids, offset=offset, src_tensor=src_block_data)
+    ret = store.wait(task)
+    assert ret == 0
     masks = store.lookup(block_ids)
     assert all(mask is True for mask in masks)
 
@@ -53,32 +55,37 @@ def test_dump_repeated():
     """Test that repeated dumping of the same data doesn't cause errors."""
     src_block_data = [torch.randint(0, 1000, (1,100), dtype=torch.int) for _ in range(5)]
     block_ids = [tensor_hash(data) for data in src_block_data]
-
+    offset = [0]*len(block_ids)
+    
     store = UcmMooncakeStore()
-    task: MooncakeTask = store.dump(block_ids=block_ids, offset=[], src_tensor=src_block_data)
-    store.wait(task)
+    task: MooncakeTask = store.dump(block_ids=block_ids, offset=offset, src_tensor=src_block_data)
+    ret = store.wait(task)
+    assert ret == 0
     masks = store.lookup(block_ids)
     assert all(mask is True for mask in masks)
 
-    task: MooncakeTask = store.dump(block_ids=block_ids, offset=[], src_tensor=src_block_data)
-    store.wait(task)
+    task: MooncakeTask = store.dump(block_ids=block_ids, offset=offset, src_tensor=src_block_data)
+    ret = store.wait(task)
+    assert ret == 0
 
 def test_load_existing_data():
     """Test loading data that was previously dumped into the store."""
     src_block_data = [torch.randint(0, 1000, (1,100), dtype=torch.int) for _ in range(5)]
     dst_block_data = [torch.empty(data.shape, dtype=data.dtype) for data in src_block_data]
     block_ids = [tensor_hash(data) for data in src_block_data]
-
+    offset = [0]*len(block_ids)
+    
     store = UcmMooncakeStore()
-    task: MooncakeTask = store.dump(block_ids=block_ids, offset=[], src_tensor=src_block_data)
-    store.wait(task)
+    task: MooncakeTask = store.dump(block_ids=block_ids, offset=offset, src_tensor=src_block_data)
+    ret = store.wait(task)
+    assert ret == 0
 
     masks = store.lookup(block_ids)
     assert all(mask is True for mask in masks)
 
-    task: MooncakeTask = store.load(block_ids=block_ids, offset=[], dst_tensor=dst_block_data)
-    store.wait(task)
-
+    task: MooncakeTask = store.load(block_ids=block_ids, offset=offset, dst_tensor=dst_block_data)
+    ret = store.wait(task)
+    assert ret == 0
     assert all([torch.equal(src_block_data[i], dst_block_data[i]) is True for i in range(len(src_block_data))]) 
 
 def test_load_non_existent_data():
@@ -86,13 +93,14 @@ def test_load_non_existent_data():
     src_block_data = [torch.randint(0, 1000, (1,100), dtype=torch.int) for _ in range(5)]
     dst_block_data = [torch.empty(data.shape, dtype=data.dtype) for data in src_block_data]
     block_ids = [tensor_hash(data) for data in src_block_data]
-
+    offset = [0]*len(block_ids)
     store = UcmMooncakeStore()
     masks = store.lookup(block_ids)
     assert all(mask is False for mask in masks)
 
-    task: MooncakeTask = store.load(block_ids=block_ids, offset=[], dst_tensor=dst_block_data)
-    store.wait(task)
+    task: MooncakeTask = store.load(block_ids=block_ids, offset=offset, dst_tensor=dst_block_data)
+    ret = store.wait(task)
+    assert ret != 0
     assert all([torch.equal(src_block_data[i], dst_block_data[i]) is False for i in range(len(src_block_data))]) 
 
 
