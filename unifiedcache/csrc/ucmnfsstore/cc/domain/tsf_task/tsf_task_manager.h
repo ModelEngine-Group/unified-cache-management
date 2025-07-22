@@ -39,7 +39,6 @@ public:
         size_t number = 0;
         size_t size = 0;
         std::string brief;
-        // auto qSize = this->_queues.size();
         auto qSize = tasks.size();
         std::list<std::pair<TsfTask, size_t>> lists[qSize];
 
@@ -57,13 +56,10 @@ public:
         }
         this->_tasks.emplace(taskId, TsfTaskGroup(taskId, brief, number, size));
         return status;
-        // 这一批task任务,缺一个taskid,qsize,number
-
     };
     TsfTaskStatus GetStatus(const size_t& taskId);
     void Cancel(const size_t& taskId);
     
-
 private:
     Status Precheck();
     Status MakeTasks(std::list<TsfTask>tasks, std::list<std::pair<TsfTask, size_t>> lists[], 
@@ -74,11 +70,12 @@ private:
             number++;
             brief = this->GetTaskBrief(task);
             if (brief.empty()) {
-                UC_ERROR("Unsupported task");
+                UC_ERROR("Unsupported task ({}-{}-{}-{}-{}) with action({}-{})", task.blockId, task.offset, task.address, task.length, fmt::underlying(task.type), fmt::underlying(task.location));
                 return Status::Unsupported();
             }
             if(task.length==0){
-                UC_ERROR("Invalid task");
+                UC_ERROR("Invalid task ({}-{}-{}-{}-{}) with action({}-{})", task.blockId, task.offset, task.address, task.length, fmt::underlying(task.type), fmt::underlying(task.location));
+                return Status::InvalidParam();
             }
             task.owner = taskId;
             lists[number % qSize].emplace_back(std::move(task), taskId);
@@ -98,7 +95,6 @@ private:
     size_t _maxFinishedId{0};
     std::vector<std::unique_ptr<TsfTaskQueue>> _queues;
     size_t _qIdx{0};
-
 };
 
 } // namespace UC
