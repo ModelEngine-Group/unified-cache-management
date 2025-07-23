@@ -122,7 +122,7 @@ void TsfTaskQueue::Worker()
         }
         if (device && (this->_lastId != task.owner || this->_q.size()==1)){
             auto status = Status::OK(); //device->WaitFinish(); // todo ssd2device
-            if (status.Failure()){
+            if (!status.Failure()){
                 this->_failureSet->Insert(task.owner);
             }
         }
