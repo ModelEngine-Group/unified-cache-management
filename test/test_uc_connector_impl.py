@@ -231,7 +231,7 @@ class TestUCConnectorImpl(unittest.TestCase):
         assert mock_connector.load.call_count == 2
 
     def test_generate_layerwise_load_tasks_success(self):
-        # 初始化implement
+        # init implement
         mock_connector = Mock(spec=UcmKVStoreBase)
 
         def mock_load(block_ids: List[str], offset: List[int], dst_tensor: List[torch.Tensor]) -> Task:
@@ -242,7 +242,7 @@ class TestUCConnectorImpl(unittest.TestCase):
         mock_connector.load.side_effect = mock_load
         ucconnectorImpl = self.init_impl(mock_connector)
 
-        # 构造generate_layerwise_load_tasks所需的参数
+        # provice generate_layerwise_load_tasks params
         fetch_block_ids = list(range(self.block_number * 2))
         fetch_block_hashes = [secrets.token_hex(8) for _ in range(self.block_number * 2)]
         layer_to_tensor: dict[str, tuple[List[torch.Tensor], List[int]]] = {}
@@ -251,17 +251,16 @@ class TestUCConnectorImpl(unittest.TestCase):
             tensors, offsets = ucconnectorImpl.get_tensor_and_offset_layerwise(fetch_block_ids, kv_layer, layer_name)
             layer_to_tensor[layer_name] = (tensors, offsets)
             current_layer += 1
-        # 调用函数后应生成num_layers层任务
+        # generate layerwise tasks
         layerwise_load_task = ucconnectorImpl.generate_layerwise_load_tasks(fetch_block_hashes, layer_to_tensor)
 
-        # 按层调用
         for i in range(self.num_layers):
             task = next(layerwise_load_task)
             assert task is not None, f"layer {i} is None"
         assert mock_connector.load.call_count == self.num_layers * 2
 
     def test_generate_layerwise_load_tasks_invalid_params(self):
-        # 初始化implement
+        # init implement
         mock_connector = Mock(spec=UcmKVStoreBase)
 
         def mock_load(block_ids: List[str], offset: List[int], dst_tensor: List[torch.Tensor]) -> Task:
@@ -272,14 +271,14 @@ class TestUCConnectorImpl(unittest.TestCase):
         mock_connector.load.side_effect = mock_load
         ucconnectorImpl = self.init_impl(mock_connector)
 
-        # 构造generate_layerwise_load_tasks所需的参数
+        # provice generate_layerwise_load_tasks params
         fetch_block_ids = list(range(self.block_number * 2))
         fetch_block_hashes = [secrets.token_hex(8) for _ in range(self.block_number * 2)]
         layer_to_tensor: dict[str, tuple[List[torch.Tensor], List[int]]] = {}
         for layer_name, kv_layer in self.kv_caches.items():
             tensors, offsets = ucconnectorImpl.get_tensor_and_offset_layerwise(fetch_block_ids, kv_layer, layer_name)
             layer_to_tensor[layer_name] = (tensors, offsets)
-        # 调用函数后应生成num_layers层任务
+        # generate layerwise tasks
         layerwise_load_task = ucconnectorImpl.generate_layerwise_load_tasks([], layer_to_tensor)
         with self.assertRaises(AssertionError) as context:
             next(layerwise_load_task)

@@ -128,31 +128,30 @@ class UCConnectorImpl:
                 ]
 
     def DataOffset(self, kv_layer, rank, layer_id, is_v):
-        # 非MLA场景shape为 (2, num_blocks, block_size, num_kv_heads, head_size)
-        # MLA场景shape为 (num_blocks, block_size, num_kv_heads, head_size)
-        # TODO MLA适配
+        # Non-MLA scene: one layer shape is (2, num_blocks, block_size, num_kv_heads, head_size)
+        # MLA scene: one layer shape is (num_blocks, block_size, num_kv_heads, head_size)
+        # TODO MLA adapt
         kv_layer_shape = kv_layer.shape
-        # 数据类型占的字节数
+        # Element size
         elem_size = kv_layer.storage().element_size()
         logger.debug(
             f"total_tp_size = {self.total_tp_size},\n"
             f"shape of layer = {kv_layer_shape},\n"
             f"element size = {elem_size}."
         )
-        # 一个rank的k或v的偏移
+        # One block size
         k_min_data_block_size = (kv_layer[0][0].numel() if not self.is_mla else kv_layer[0].numel()) *elem_size
         v_min_data_block_size = (kv_layer[1][0].numel() if not self.is_mla else 0) * elem_size
-        # layer_size = 一个rank的kv * tp_size
-        # 多tp场景下 total_head_number = num_kv_heads * tp_size
+        # When tp > 1 layer_size = (k_min_data_block_size + v_min_data_block_size) * tp_size
         layer_size = (k_min_data_block_size + v_min_data_block_size) * self.total_tp_size
         if (is_v):
-            # v的偏移 = k的偏移 + 一个block内k的偏移
+            # Offset of v = Offset of k + k_min_data_block_size
             return int(
                 self.DataOffset(kv_layer, rank, layer_id, False) + k_min_data_block_size)
         if self.is_mla:
             return int(layer_size * layer_id)
         else:
-            # k的偏移 = layer_size * 层数 + layer_size / 总tp * 当前tp
+            # Offset of k = layer_size * layer_id + layer_size / tp_size * current rank
             return int(layer_size * layer_id + layer_size / self.total_tp_size * self.rank)
 
     def get_tensor_and_offset_layerwise(
@@ -235,7 +234,7 @@ class UCConnectorImpl:
                 continue
             layer_to_tensor: dict[str, tuple[List[torch.Tensor], List[int]]] = {}
             block_ids = request.vllm_block_ids
-            # 需要load的block id应从内存cached的block往后
+            # Blocks id need to save should start after last vllm cached block
             load_start_block_id = request.load_paras.vllm_cached_tokens // self.block_size
             load_end_block_id = request.load_paras.storage_cached_tokens // self.block_size
             fetch_block_ids = block_ids[load_start_block_id:load_end_block_id]
@@ -487,7 +486,7 @@ class UCConnectorImpl:
         # clear all load_paras when build meta for new reqs done
         self.load_paras.clear()
 
-        # 针对chunk prefill场景 running队列中的request可能仍然需要save
+        # When prompt tokens > max_num_batched_tokens, request of running requests may need to save
         for cached_req in scheduler_output.scheduled_cached_reqs:
             if cached_req.resumed_from_preemption:
                 continue

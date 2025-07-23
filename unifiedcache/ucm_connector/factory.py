@@ -45,11 +45,6 @@ UcmConnectorFactory.register_connector(
     "UcmOceanStore")
 
 UcmConnectorFactory.register_connector(
-    "UcmMooncakeStore",
-    "unifiedcache.ucm_connector.ucm_mooncake",
-    "UcmMooncakeStore")
-
-UcmConnectorFactory.register_connector(
     "UcmNfsStore",
     "unifiedcache.ucm_connector.ucm_nfs_store",
     "UcmNfsStore")
