@@ -180,7 +180,7 @@ class UcmMooncakeStore(UcmKVStoreBase):
             self.tasks[self.task_id] = future
             return MooncakeTask(task_id=self.task_id)
 
-    async def _load_impl(self, block_ids: List[str], offset: List[int], dst_tensor: List[torch.Tensor]) -> Task:
+    async def _load_impl(self, block_ids: List[str], offset: List[int], dst_tensor: List[torch.Tensor]) -> int:
         """Internal implementation of loading KV cache from Mooncake Store."""
         assert len(block_ids) == len(dst_tensor), "block_ids and dst_tensor have different lengths, please check!"
         for i in range(len(block_ids)):
@@ -223,7 +223,7 @@ class UcmMooncakeStore(UcmKVStoreBase):
             self.tasks[self.task_id] = future
             return MooncakeTask(task_id=self.task_id)
 
-    async def _dump_impl(self, block_ids: List[str], offset: List[int], src_tensor: List[torch.Tensor]) -> Task:
+    async def _dump_impl(self, block_ids: List[str], offset: List[int], src_tensor: List[torch.Tensor]) -> int:
         """Internal implementation of dumping KV cache to Mooncake Store."""
         assert len(block_ids) == len(src_tensor), "block_ids and src_tensor have different lengths, please check!"
         for i in range(len(block_ids)):

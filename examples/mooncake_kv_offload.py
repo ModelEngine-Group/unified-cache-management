@@ -1,8 +1,8 @@
-import os
 import hashlib
 import torch
 
-from unifiedcache.ucm_connector.ucm_mooncake import UcmMooncakeStore, MooncakeTask
+from unifiedcache.ucm_connector.base import Task
+from unifiedcache.ucm_connector.ucm_mooncake import UcmMooncakeStore
 from unifiedcache.logger import init_logger
 
 logger = init_logger(__name__)
@@ -15,23 +15,24 @@ def tensor_hash(tensor: torch.Tensor) -> str:
     hash_hex = hash_object.hexdigest()
     return str(int(hash_hex[:16], 16))
 
+
 store = UcmMooncakeStore()
-src_block_data = [torch.randint(0, 1000, (1,10), dtype=torch.int) for _ in range(5)]
+src_block_data = [torch.randint(0, 1000, (1, 10), dtype=torch.int) for _ in range(5)]
 dst_block_data = [torch.empty(data.shape, dtype=data.dtype) for data in src_block_data]
 block_ids = [tensor_hash(data) for data in src_block_data]
-offset = [0]*len(block_ids)
+offset = [0] * len(block_ids)
 
 mask = store.lookup(block_ids)
 logger.info(f"First lookup: {mask=}")
 
-task: MooncakeTask = store.dump(block_ids=block_ids, offset=offset, src_tensor=src_block_data)
+task: Task = store.dump(block_ids=block_ids, offset=offset, src_tensor=src_block_data)
 ret = store.wait(task)
 logger.info(f"Dump end: {task=} with return: {ret}")
 
 mask = store.lookup(block_ids)
 logger.info(f"Second lookup: {mask=}")
 
-task: MooncakeTask = store.load(block_ids=block_ids, offset=offset, dst_tensor=dst_block_data)
+task: Task = store.load(block_ids=block_ids, offset=offset, dst_tensor=dst_block_data)
 ret = store.wait(task)
 logger.info(f"Load end: {task=} with return: {ret}")
 
