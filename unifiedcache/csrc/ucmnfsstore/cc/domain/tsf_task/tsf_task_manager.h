@@ -55,6 +55,7 @@ public:
             this->_qIdx = (this->_qIdx + 1) % qSize;
         }
         this->_tasks.emplace(taskId, TsfTaskGroup(taskId, brief, number, size));
+        printf("", &status);
         return status;
     };
     TsfTaskStatus GetStatus(const size_t& taskId);
@@ -66,7 +67,6 @@ private:
                      const size_t& taskId, const size_t& qSize, size_t& number, size_t& size, std::string& brief)
     {
         for (auto& task : tasks) {
-            
             number++;
             brief = this->GetTaskBrief(task);
             if (brief.empty()) {
