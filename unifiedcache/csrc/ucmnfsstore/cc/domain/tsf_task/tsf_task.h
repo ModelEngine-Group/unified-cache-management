@@ -46,6 +46,11 @@ struct TsfTask {
         : type{type}, location{location}, blockId{blockId}, offset{offset}, address{address}, length{length}, owner{0}
     {
     }
+    TsfTask(const Type type, const Location location, const std::string& blockId, const size_t offset,
+            const uintptr_t address, const size_t length, const size_t owner)
+        : type{type}, location{location}, blockId{blockId}, offset{offset}, address{address}, length{length}, owner{owner}
+    {
+    }
 };
 
 class TsfTaskGroup{

@@ -21,10 +21,12 @@
 * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 * SOFTWARE.
  * */
-
- #include <gtest/gtest.h>
- #include <mockcpp/mockcpp.hpp>
- #include "tsf_task/tsf_task_queue.h"
+/**
+ * @brief tsf task queue unit test
+ */
+#include <gtest/gtest.h>
+#include <mockcpp/mockcpp.hpp>
+#include "tsf_task/tsf_task_queue.h"
 
 class TsfTaskQueueUnitTest : public ::testing::Test {};
 
@@ -32,17 +34,17 @@ TEST_F(TsfTaskQueueUnitTest, Setup)
 {
     UC::TsfTaskQueue taskQueue;
     UC::TsfTaskSet failureSet;
-    auto status = taskQueue.Setup(-1, 0, 0,  &failureSet);
+    auto status = taskQueue.Setup(-1, 0, 0, &failureSet);
     ASSERT_TRUE(status.Success());
-    constexpr size_t taskId = 1;
+    constexpr size_t taskId = 1;        // owner初始化为0， 必须等待manager给他分配，跟原来的逻辑不同
     ASSERT_FALSE(failureSet.Exist(taskId));
-    // @todo:MOCKER_CPP MISSING
-    // MOCKER(&UC::TsfTaskRunner::Run).expect(once()).will(returnValue(UC::Status::Error()));
+    MOCKER_CPP(&UC::TsfTaskRunner::Run).expects(once()).will(returnValue(UC::Status::Error()));
     constexpr size_t nTasks = 10;
     constexpr size_t dataSize = 4096;
     for (size_t i = 0; i < nTasks; i++) {
         UC::TsfTask task{UC::TsfTask::Type::DUMP, UC::TsfTask::Location::HOST, 
-        "blockId", 0, 0, dataSize};
+                            "blockId", 0, 0, dataSize, taskId
+        };
         taskQueue.Push(std::move(task));
     }
     while (!taskQueue.Finish(taskId)) {
@@ -50,4 +52,28 @@ TEST_F(TsfTaskQueueUnitTest, Setup)
     }
     GlobalMockObject::verify();
     ASSERT_TRUE(failureSet.Exist(taskId));
+}
+
+TEST_F(TsfTaskQueueUnitTest, TaskSuccess)
+{
+    UC::TsfTaskQueue taskQueue;
+    UC::TsfTaskSet failureSet;
+    auto status = taskQueue.Setup(-1, 0, 0, &failureSet);
+    ASSERT_TRUE(status.Success());
+    constexpr size_t taskId = 1;
+    constexpr size_t nTasks = 10;
+    constexpr size_t dataSize = 4096;
+    ASSERT_FALSE(failureSet.Exist(taskId));
+    MOCKER_CPP(&UC::TsfTaskRunner::Run).expects(exactly(nTasks)).will(returnValue(UC::Status::OK()));
+    for (size_t i = 0; i < nTasks; i++) {
+        UC::TsfTask task{
+            UC::TsfTask::Type::DUMP, UC::TsfTask::Location::HOST,"blockId",0, dataSize * i, dataSize, taskId
+        };
+        taskQueue.Push(std::move(task));
+    }
+    while (!taskQueue.Finish(taskId)) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    GlobalMockObject::verify();
+    ASSERT_FALSE(failureSet.Exist(taskId));
 }
