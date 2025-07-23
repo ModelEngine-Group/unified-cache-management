@@ -55,7 +55,6 @@ public:
             this->_qIdx = (this->_qIdx + 1) % qSize;
         }
         this->_tasks.emplace(taskId, TsfTaskGroup(taskId, brief, number, size));
-        printf("", &status);
         return status;
     };
     TsfTaskStatus GetStatus(const size_t& taskId);
