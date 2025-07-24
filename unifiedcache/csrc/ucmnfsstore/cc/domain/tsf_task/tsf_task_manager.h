@@ -39,9 +39,13 @@ public:
         size_t number = 0;
         size_t size = 0;
         std::string brief;
-        auto qSize = tasks.size();
+        auto qSize = _queues.size();
         std::list<TsfTask> lists[qSize];
-
+        auto [iter, success] = this->_tasks.emplace(taskId, TsfTaskGroup());
+        if (!success){
+            UC_ERROR("Failed to insert tsaks({}) into set.", taskId);
+            return Status::OutOfMemory();
+        }
         status = this ->MakeTasks(tasks, lists, taskId, qSize, number, size, brief);
         if (status.Failure()) {
             return status;
@@ -54,7 +58,7 @@ public:
             q->Push(std::move(lists[i].front()));
             this->_qIdx = (this->_qIdx + 1) % qSize;
         }
-        this->_tasks.emplace(taskId, TsfTaskGroup(taskId, brief, number, size));
+        iter->second.Set(taskId, brief, number, size);
         return status;
     };
     TsfTaskStatus GetStatus(const size_t& taskId);

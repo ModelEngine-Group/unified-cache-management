@@ -51,8 +51,35 @@ Status TsfTaskManager::Setup()
 
 TsfTaskStatus TsfTaskManager::GetStatus(const size_t& taskId) 
 {
-
-    return TsfTaskStatus::RUNNING;
+    auto configer = Singleton<Configurator>::Instance();
+    auto timeout = configer.Timeout();
+    std::unique_lock<std::mutex> lock(this->_mutex);
+    auto iter = this->_tasks.find(taskId);
+    if (iter == this->_tasks.end()) {
+        UC_DEBUG("Not found task({}).", taskId);
+        return TsfTaskStatus::CANCELLED;
+    }
+    auto elapsed = iter->second.Elapsed();
+    if (this->Finish(taskId)) {
+        auto failure = this->_failureSet.Exist(taskId);
+        this->_failureSet.Remove(taskId);
+        UC_INFO("Task({}) finish, failure={}, elapsed={:.6f}s.", iter->second.Str(), failure, elapsed);
+        this->_tasks.erase(iter);
+        if (this->_maxFinishedId < taskId) {
+            this->_maxFinishedId = taskId;
+        }
+        return failure ? TsfTaskStatus::FAILURE : TsfTaskStatus::SUCCESS;
+    } else {
+        if (timeout != 0 && elapsed > timeout) {
+            UC_ERROR("Task({}) timeout({:.6f}s > {}s).", iter->second.Str(), elapsed, timeout);
+            this->Remove(iter);
+            if (this->_maxFinishedId < taskId) {
+                this->_maxFinishedId = taskId;
+            }
+            return TsfTaskStatus::FAILURE;
+        }
+        return TsfTaskStatus::RUNNING;
+    }
 }
 
 void TsfTaskManager::Cancel(const size_t& taskId)
