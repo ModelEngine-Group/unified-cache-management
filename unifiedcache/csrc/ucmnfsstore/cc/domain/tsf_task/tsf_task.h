@@ -57,14 +57,18 @@ class TsfTaskGroup{
     using Clock = std::chrono::steady_clock;
 
 public:
-    TsfTaskGroup(const size_t taskId, const std::string& brief, const size_t number, const size_t totalSize)
-        :_taskId{taskId}, _brief{brief}, _number{number}, _totalSize{totalSize}, _tp{Clock::now()}
-    {
-    }
+    TsfTaskGroup():_taskId{0}, _brief{}, _number{0}, _totalSize{0}, _tp{Clock::now()}{}
     double Elapsed() const {return std::chrono::duration<double>(Clock::now() - this ->_tp).count();}
     std::string Str() const
     {
         return fmt::format("{},{},{},{}", this->_taskId, this->_brief, this->_number, this->_totalSize);
+    }
+    void Set(const size_t taskId, const std::string& brief, const size_t number, const size_t totalSize)
+    {
+        this->_taskId = taskId;
+        this->_brief = brief;
+        this->_number = number;
+        this->_totalSize = totalSize;
     }
 
 private:

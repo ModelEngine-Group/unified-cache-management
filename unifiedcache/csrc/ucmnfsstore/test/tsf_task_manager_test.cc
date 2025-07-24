@@ -36,14 +36,10 @@ protected:
         std::list<UC::TsfTask> tasks;
 
         for (size_t i = 0; i < number; i++) {
-            tasks.emplace_back(UC::TsfTask::Type::DUMP, UC::TsfTask::Location::HOST, "", 0, dataSize * i, dataSize);
+            tasks.emplace_back(UC::TsfTask::Type::DUMP, UC::TsfTask::Location::HOST, "1", 0, dataSize * i, dataSize);
         }
         return tasks;
     }
-    // static UC::TsfTask Convert(std::list<UC::TsfTask>::const_iterator iter)
-    // {
-    //     return *iter;
-    // };
 };
 
 TEST_F(TsfTaskManagerUnitTest, SetupWhileTaskQueueFailed)
@@ -60,7 +56,7 @@ TEST_F(TsfTaskManagerUnitTest, SetupWhileTaskQueueFailed)
 TEST_F(TsfTaskManagerUnitTest, LotsOfTasks)
 {
     constexpr size_t queueDepth = 10;
-    constexpr size_t nQueues = 2;
+    constexpr size_t nQueues = 20;
     constexpr size_t nTasks = 2000;
     constexpr uint32_t dataSize = 4096;
     auto tasks = this->MakeTasks(nTasks, dataSize);
@@ -76,16 +72,105 @@ TEST_F(TsfTaskManagerUnitTest, LotsOfTasks)
         .stubs()
         .will(returnValue(queueDepth));
     MOCKER_CPP(&UC::TsfTaskRunner::Run).stubs().will(returnValue(UC::Status::OK()));
-    size_t taskId = 1;
-    taskMgr.SubmitTask(tasks, taskId);
-    // ASSERT_TRUE(taskMgr.SubmitTask(tasks, taskId).Success());
-    // ASSERT_GT(taskId, 0);
-    // auto taskStatus = taskMgr.GetStatus(taskId);
-    // while (taskStatus == UC::TsfTaskStatus::RUNNING) {
-    //     std::this_thread::sleep_for(std::chrono::milliseconds(10));
-    //     taskStatus = taskMgr.GetStatus(taskId);
-    // }
-    // ASSERT_EQ(taskStatus, UC::TsfTaskStatus::SUCCESS);
-    // GlobalMockObject::verify();
+    size_t taskId = 0;
+
+    ASSERT_TRUE(taskMgr.SubmitTask(tasks, taskId).Success());
+    ASSERT_GT(taskId, 0);
+    auto taskStatus = taskMgr.GetStatus(taskId);
+    while (taskStatus == UC::TsfTaskStatus::RUNNING) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        taskStatus = taskMgr.GetStatus(taskId);
+    }
+    ASSERT_EQ(taskStatus, UC::TsfTaskStatus::SUCCESS);
+    GlobalMockObject::verify();
 }
 
+TEST_F(TsfTaskManagerUnitTest, FewTasks)
+{
+    constexpr size_t queueDepth = 10;
+    constexpr size_t nQueues = 512;
+    constexpr size_t nTasks = 61;
+    constexpr uint32_t dataSize = 4096;
+    auto tasks = this->MakeTasks(nTasks, dataSize);
+    ASSERT_EQ(tasks.size(), nTasks);
+
+    UC::TsfTaskManager taskMgr;
+    MOCKER_CPP(&UC::Configurator::StreamNumber, size_t (UC::Configurator::*)() const)
+        .stubs()
+        .will(returnValue(nQueues));
+    ASSERT_TRUE(taskMgr.Setup().Success());
+    GlobalMockObject::verify();
+    MOCKER_CPP(&UC::Configurator::QueueDepth, size_t (UC::Configurator::*)() const)
+        .stubs()
+        .will(returnValue(queueDepth));
+    MOCKER_CPP(&UC::TsfTaskRunner::Run).stubs().will(returnValue(UC::Status::OK()));
+    size_t taskId = 0;
+
+    ASSERT_TRUE(taskMgr.SubmitTask(tasks, taskId).Success());
+    ASSERT_GT(taskId, 0);
+    auto taskStatus = taskMgr.GetStatus(taskId);
+    while (taskStatus == UC::TsfTaskStatus::RUNNING) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        taskStatus = taskMgr.GetStatus(taskId);
+    }
+    ASSERT_EQ(taskStatus, UC::TsfTaskStatus::SUCCESS);
+    GlobalMockObject::verify();
+}
+
+TEST_F(TsfTaskManagerUnitTest, TooManyTasks)
+{
+    constexpr size_t queueDepth = 1;
+    constexpr size_t nQueues = 512;
+    constexpr size_t nTasks = 61;
+    constexpr uint32_t dataSize = 4096;
+    auto tasks = this->MakeTasks(nTasks, dataSize);
+    ASSERT_EQ(tasks.size(), nTasks);
+
+    UC::TsfTaskManager taskMgr;
+    MOCKER_CPP(&UC::Configurator::StreamNumber, size_t (UC::Configurator::*)() const)
+        .stubs()
+        .will(returnValue(nQueues));
+    ASSERT_TRUE(taskMgr.Setup().Success());
+    GlobalMockObject::verify();
+    MOCKER_CPP(&UC::Configurator::QueueDepth, size_t (UC::Configurator::*)() const)
+        .stubs()
+        .will(returnValue(queueDepth));
+    MOCKER_CPP(&UC::TsfTaskRunner::Run).stubs().will(returnValue(UC::Status::OK()));
+    size_t taskId = 0;
+
+    ASSERT_TRUE(taskMgr.SubmitTask(tasks, taskId).Success());
+    ASSERT_GT(taskId, 0);
+    auto taskStatus = taskMgr.GetStatus(taskId);
+    while (taskStatus == UC::TsfTaskStatus::RUNNING) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        taskStatus = taskMgr.GetStatus(taskId);
+    }
+    ASSERT_EQ(taskStatus, UC::TsfTaskStatus::SUCCESS);
+    GlobalMockObject::verify();
+}
+
+TEST_F(TsfTaskManagerUnitTest, InvalidTasks)
+{
+    constexpr size_t queueDepth = 10;
+    constexpr size_t nQueues = 512;
+    constexpr size_t nTasks = 61;
+    constexpr uint32_t dataSize = 4096;
+    auto tasks = this->MakeTasks(nTasks, dataSize);
+    ASSERT_EQ(tasks.size(), nTasks);
+
+    tasks.emplace_back(UC::TsfTask::Type::DUMP, UC::TsfTask::Location::HOST, "", 0, 0, 0);
+
+    UC::TsfTaskManager taskMgr;
+    MOCKER_CPP(&UC::Configurator::StreamNumber, size_t (UC::Configurator::*)() const)
+        .stubs()
+        .will(returnValue(nQueues));
+    ASSERT_TRUE(taskMgr.Setup().Success());
+    GlobalMockObject::verify();
+    MOCKER_CPP(&UC::Configurator::QueueDepth, size_t (UC::Configurator::*)() const)
+        .stubs()
+        .will(returnValue(queueDepth));
+    MOCKER_CPP(&UC::TsfTaskRunner::Run).stubs().will(returnValue(UC::Status::OK()));
+    size_t taskId = 0;
+    ASSERT_FALSE(taskMgr.SubmitTask(tasks, taskId).Success());
+    GlobalMockObject::verify();
+}
