@@ -43,3 +43,7 @@ UcmConnectorFactory.register_connector(
     "UcmOceanStore",
     "unifiedcache.ucm_connector.ucm_oceanstor",
     "UcmOceanStore")
+UcmConnectorFactory.register_connector(
+    "UcmDram",
+    "unifiedcache.ucm_connector.ucm_dram",
+    "UcmDram")
