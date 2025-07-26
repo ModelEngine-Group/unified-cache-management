@@ -167,14 +167,12 @@ class UnifiedCacheConnectorV1(KVConnectorBase_V1):
         layer_id = self._extract_layer_index(layer_name)
 
         for blk_id in vllm_block_ids:
-            k_layer_block = kv_layer[0][blk_id].contiguous()
             k_data_offset = self.DataOffset(kv_layer, self.rank, layer_id, False)
-            k_tensors.append(k_layer_block)
+            k_tensors.append(kv_layer[0][blk_id])
             k_offsets.append(k_data_offset)
             if not self.is_mla:
-                v_layer_block = kv_layer[1][blk_id].contiguous()
                 v_data_offset = self.DataOffset(kv_layer, self.rank, layer_id, True)
-                v_tensors.append(v_layer_block)
+                v_tensors.append(kv_layer[1][blk_id])
                 v_offsets.append(v_data_offset)
         return k_tensors + v_tensors, k_offsets + v_offsets
 
