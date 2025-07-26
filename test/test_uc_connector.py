@@ -5,14 +5,11 @@ from typing import List
 from unittest.mock import Mock, patch, MagicMock
 
 import torch
-from vllm.distributed.kv_transfer.kv_connector.v1.base import (
-    KVConnectorMetadata
-)
 from vllm.multimodal.inputs import MultiModalKwargs
 from vllm.sampling_params import SamplingParams
 from vllm.v1.request import Request
 
-from unifiedcache.integration.vllm.uc_connector_impl import UCConnectorImpl, LoadPara, SavePara, \
+from unifiedcache.integration.vllm.uc_connector import UnifiedCacheConnectorV1, LoadPara, SavePara, \
     UCConnectorV1Metadata, ReqMeta
 from unifiedcache.ucm_connector.base import Task, UcmKVStoreBase
 
@@ -33,6 +30,7 @@ def make_request(request_id,
         multi_modal_hashes=mm_hashes,
         multi_modal_placeholders=mm_positions,
         sampling_params=SamplingParams(max_tokens=17),
+        pooling_params=None,
         eos_token_id=100,
         arrival_time=0,
         lora_request=None,
@@ -40,7 +38,7 @@ def make_request(request_id,
     )
 
 
-class TestUCConnectorImpl(unittest.TestCase):
+class TestUCConnector(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
@@ -61,21 +59,22 @@ class TestUCConnectorImpl(unittest.TestCase):
             kv_tensor = torch.rand((2, self.total_blocks_num, self.block_size, 4, 8), dtype=torch.bfloat16)
             self.kv_caches[layer_name] = kv_tensor
 
-    def init_impl(self, mock_connector, use_layerwise=True) -> UCConnectorImpl:
-        with patch.object(UCConnectorImpl, '__init__', return_value=None):
-            ucconnectorImpl = UCConnectorImpl(None, None)
-            ucconnectorImpl.block_size = self.block_size
-            ucconnectorImpl.use_layerwise = use_layerwise
-            ucconnectorImpl.kv_caches = self.kv_caches
-            ucconnectorImpl.rank = 1
-            ucconnectorImpl.is_mla = False
-            ucconnectorImpl.connector = mock_connector
-            ucconnectorImpl.load_paras: dict[str, LoadPara] = {}
-            ucconnectorImpl.save_paras: dict[str, SavePara] = {}
-            ucconnectorImpl.dump_tasks: dict[str, List[Task]] = {}
-            ucconnectorImpl.load_tasks: dict[str, tuple[Task, Task]] = {}
-            ucconnectorImpl.total_tp_size = 2
-        return ucconnectorImpl
+    def init_uc(self, mock_connector, metadata=Mock(), use_layerwise=True) -> UnifiedCacheConnectorV1:
+        with patch.object(UnifiedCacheConnectorV1, '__init__', return_value=None):
+            ucconnector = UnifiedCacheConnectorV1(None, None)
+            ucconnector.block_size = self.block_size
+            ucconnector.use_layerwise = use_layerwise
+            ucconnector.kv_caches = self.kv_caches
+            ucconnector.rank = 1
+            ucconnector.is_mla = False
+            ucconnector.connector = mock_connector
+            ucconnector.load_paras: dict[str, LoadPara] = {}
+            ucconnector.save_paras: dict[str, SavePara] = {}
+            ucconnector.dump_tasks: dict[str, dict[str, List[Task]]] = {}
+            ucconnector.load_tasks: dict[str, tuple[Task, Task]] = {}
+            ucconnector.total_tp_size = 2
+            ucconnector._connector_metadata = metadata
+        return ucconnector
 
     def test_get_num_new_matched_tokens_hit(self):
         mock_connector = Mock(spec=UcmKVStoreBase)
@@ -84,7 +83,7 @@ class TestUCConnectorImpl(unittest.TestCase):
             return [True] * self.block_number
 
         mock_connector.lookup.side_effect = mock_lookup
-        ucconnectorImpl = self.init_impl(mock_connector)
+        ucconnector = self.init_uc(mock_connector)
 
         random.seed(20250704)
         request1 = make_request(
@@ -96,7 +95,7 @@ class TestUCConnectorImpl(unittest.TestCase):
 
         # all block dumped in ssd, external_tokens equals to full tokens num
         all_tokens_len = len(request1.all_token_ids)
-        external_tokens, _ = ucconnectorImpl.get_num_new_matched_tokens(request1, 0)
+        external_tokens, _ = ucconnector.get_num_new_matched_tokens(request1, 0)
         self.assertEqual(external_tokens, all_tokens_len)
 
     def test_get_num_new_matched_tokens_no_hit(self):
@@ -106,7 +105,7 @@ class TestUCConnectorImpl(unittest.TestCase):
             return [False] * self.block_number
 
         mock_connector.lookup.side_effect = mock_lookup
-        ucconnectorImpl = self.init_impl(mock_connector)
+        ucconnector = self.init_uc(mock_connector)
 
         random.seed(20250704)
         request1 = make_request(
@@ -117,13 +116,13 @@ class TestUCConnectorImpl(unittest.TestCase):
         )
 
         # no block dumped in ssd, external_tokens equals to 0
-        external_tokens, _ = ucconnectorImpl.get_num_new_matched_tokens(request1, 0)
+        external_tokens, _ = ucconnector.get_num_new_matched_tokens(request1, 0)
         self.assertEqual(external_tokens, 0)
 
     def test_get_num_new_matched_tokens_invalid_para(self):
-        with patch.object(UCConnectorImpl, '__init__', return_value=None):
-            ucconnectorImpl = UCConnectorImpl(None, None)
-            ucconnectorImpl.block_size = self.block_size
+        with patch.object(UnifiedCacheConnectorV1, '__init__', return_value=None):
+            ucconnector = UnifiedCacheConnectorV1(None, None)
+            ucconnector.block_size = self.block_size
 
         request1 = make_request(
             request_id=1,
@@ -134,7 +133,7 @@ class TestUCConnectorImpl(unittest.TestCase):
 
         # passing invalid params
         with self.assertRaises(AssertionError):
-            external_tokens, _ = ucconnectorImpl.get_num_new_matched_tokens(request1, self.block_size + 1)
+            external_tokens, _ = ucconnector.get_num_new_matched_tokens(request1, self.block_size + 1)
 
     def test_wait_for_save_not_layerwise_success(self):
         req_meta1 = MagicMock(spec=ReqMeta)
@@ -158,18 +157,18 @@ class TestUCConnectorImpl(unittest.TestCase):
 
         mock_connector.dump.side_effect = mock_dump
         mock_connector.wait.side_effect = mock_wait
-        ucconnectorImpl = self.init_impl(mock_connector, use_layerwise=False)
-        ucconnectorImpl.wait_for_save(metadata)
+        ucconnector = self.init_uc(mock_connector, metadata=metadata, use_layerwise=False)
+        ucconnector.wait_for_save()
 
     def test_wait_for_save_not_layerwise_invalid_para(self):
-        metadata = Mock()
-        with patch.object(UCConnectorImpl, '__init__', return_value=None):
-            ucconnectorImpl = UCConnectorImpl(None, None)
-            ucconnectorImpl.block_size = self.block_size
-            ucconnectorImpl.use_layerwise = False
+        with patch.object(UnifiedCacheConnectorV1, '__init__', return_value=None):
+            ucconnector = UnifiedCacheConnectorV1(None, None)
+            ucconnector.block_size = self.block_size
+            ucconnector.use_layerwise = False
+            ucconnector._connector_metadata = Mock()
 
         with self.assertRaises(AssertionError):
-            ucconnectorImpl.wait_for_save(metadata)
+            ucconnector.wait_for_save()
 
     def test_start_load_kv_not_layerwise_success(self):
         req_meta1 = MagicMock(spec=ReqMeta)
@@ -194,18 +193,19 @@ class TestUCConnectorImpl(unittest.TestCase):
         mock_connector.load.side_effect = mock_load
         mock_connector.wait.side_effect = mock_wait
 
-        ucconnectorImpl = self.init_impl(mock_connector, use_layerwise=False)
+        ucconnector = self.init_uc(mock_connector, metadata=metadata, use_layerwise=False)
         forward_context = Mock()
-        ucconnectorImpl.start_load_kv(forward_context, metadata=metadata)
+        ucconnector.start_load_kv(forward_context)
 
     def test_start_load_kv_invalid_para(self):
-        with patch.object(UCConnectorImpl, '__init__', return_value=None):
-            ucconnectorImpl = UCConnectorImpl(None, None)
-            ucconnectorImpl.block_size = self.block_size
+        with patch.object(UnifiedCacheConnectorV1, '__init__', return_value=None):
+            ucconnector = UnifiedCacheConnectorV1(None, None)
+            ucconnector.block_size = self.block_size
+            ucconnector._connector_metadata = Mock()
 
         forward_context = Mock()
         with self.assertRaises(AssertionError):
-            ucconnectorImpl.start_load_kv(forward_context)
+            ucconnector.start_load_kv(forward_context)
 
     def test_start_load_kv_layerwise_success(self):
         req_meta1 = MagicMock(spec=ReqMeta)
@@ -225,9 +225,9 @@ class TestUCConnectorImpl(unittest.TestCase):
             return Task()
 
         mock_connector.load.side_effect = mock_load
-        ucconnectorImpl = self.init_impl(mock_connector)
+        ucconnector = self.init_uc(mock_connector, metadata=metadata)
         forward_context = Mock()
-        ucconnectorImpl.start_load_kv(forward_context, metadata=metadata)
+        ucconnector.start_load_kv(forward_context)
         assert mock_connector.load.call_count == 2
 
     def test_generate_layerwise_load_tasks_success(self):
@@ -240,7 +240,7 @@ class TestUCConnectorImpl(unittest.TestCase):
             return Task()
 
         mock_connector.load.side_effect = mock_load
-        ucconnectorImpl = self.init_impl(mock_connector)
+        ucconnector = self.init_uc(mock_connector)
 
         # provice generate_layerwise_load_tasks params
         fetch_block_ids = list(range(self.block_number * 2))
@@ -248,11 +248,11 @@ class TestUCConnectorImpl(unittest.TestCase):
         layer_to_tensor: dict[str, tuple[List[torch.Tensor], List[int]]] = {}
         current_layer = 0
         for layer_name, kv_layer in self.kv_caches.items():
-            tensors, offsets = ucconnectorImpl.get_tensor_and_offset_layerwise(fetch_block_ids, kv_layer, layer_name)
+            tensors, offsets = ucconnector.get_tensor_and_offset_layerwise(fetch_block_ids, kv_layer, layer_name)
             layer_to_tensor[layer_name] = (tensors, offsets)
             current_layer += 1
         # generate layerwise tasks
-        layerwise_load_task = ucconnectorImpl.generate_layerwise_load_tasks(fetch_block_hashes, layer_to_tensor)
+        layerwise_load_task = ucconnector.generate_layerwise_load_tasks(fetch_block_hashes, layer_to_tensor)
 
         for i in range(self.num_layers):
             task = next(layerwise_load_task)
@@ -269,22 +269,22 @@ class TestUCConnectorImpl(unittest.TestCase):
             return Task()
 
         mock_connector.load.side_effect = mock_load
-        ucconnectorImpl = self.init_impl(mock_connector)
+        ucconnector = self.init_uc(mock_connector)
 
         # provice generate_layerwise_load_tasks params
         fetch_block_ids = list(range(self.block_number * 2))
         fetch_block_hashes = [secrets.token_hex(8) for _ in range(self.block_number * 2)]
         layer_to_tensor: dict[str, tuple[List[torch.Tensor], List[int]]] = {}
         for layer_name, kv_layer in self.kv_caches.items():
-            tensors, offsets = ucconnectorImpl.get_tensor_and_offset_layerwise(fetch_block_ids, kv_layer, layer_name)
+            tensors, offsets = ucconnector.get_tensor_and_offset_layerwise(fetch_block_ids, kv_layer, layer_name)
             layer_to_tensor[layer_name] = (tensors, offsets)
         # generate layerwise tasks
-        layerwise_load_task = ucconnectorImpl.generate_layerwise_load_tasks([], layer_to_tensor)
+        layerwise_load_task = ucconnector.generate_layerwise_load_tasks([], layer_to_tensor)
         with self.assertRaises(AssertionError) as context:
             next(layerwise_load_task)
         self.assertEqual(str(context.exception), "The block hashes need to be fetched should not be None or empty.")
 
-        layerwise_load_task = ucconnectorImpl.generate_layerwise_load_tasks(fetch_block_hashes, None)
+        layerwise_load_task = ucconnector.generate_layerwise_load_tasks(fetch_block_hashes, None)
         with self.assertRaises(AssertionError) as context:
             next(layerwise_load_task)
         self.assertEqual(str(context.exception), "The layers of tensor need to be fetched should not be None or empty.")
