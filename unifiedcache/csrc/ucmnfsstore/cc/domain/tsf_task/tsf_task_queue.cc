@@ -23,7 +23,7 @@
  * */
 
 #include <tsf_task/tsf_task_queue.h>
-#include "device.h" 
+#include "device/device.h" 
 
 namespace UC{
 
@@ -120,9 +120,9 @@ void TsfTaskQueue::Worker()
                 this->_failureSet->Insert(task.owner);
             }
         }
-        if (device && (this->_lastId != task.owner || this->_q.size()==1)){
+        if (device && (this->_lastId != task.owner || this->_q.size()==1)){ 
             auto status = Status::OK(); //device->WaitFinish(); // todo ssd2device
-            if (!status.Failure()){
+            if (status.Failure()){
                 this->_failureSet->Insert(task.owner);
             }
         }

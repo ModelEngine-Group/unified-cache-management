@@ -21,42 +21,25 @@
 * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 * SOFTWARE.
  * */
-#ifndef UNIFIEDCACHE_IDEVICE
-#define UNIFIEDCACHE_IDEVICE
+#ifndef UNIFIEDCACHE_IDEVICE_H
+#define UNIFIEDCACHE_IDEVICE_H
 
+#include <cstddef>
 #include <memory>
-#include "idevice.h"
 #include "status/status.h"
 
 namespace UC {
 
-class BufferDevice : public IDevice {   // todo
-
+class IDevice {
 public:
-    BufferDevice(int32_t deviceId, size_t bufferSize, size_t bufferNumber)
-            : deviceId_(deviceId), bufferSize_(bufferSize), bufferNumber_(bufferNumber) {}
-    Status Setup() override
-    {
-        return Status::OK();
-    }
-private:
-    int32_t deviceId_;
-    size_t bufferSize_;
-    size_t bufferNumber_;
-};
-
-class Device {
-public:
-    static std::unique_ptr<IDevice> Make(const int32_t deviceId, const size_t bufferSize, const size_t bufferNumber)
-    {
-        try{
-            return std::make_unique<BufferDevice>(deviceId, bufferSize, bufferNumber);
-        } catch (const std::exception& e) {
-            return nullptr;
-        }
-    }
+    virtual ~IDevice() = default;
+    virtual Status Setup() = 0;
+    virtual std::shared_ptr<void> GetHostBuffer(size_t size) = 0;
+    virtual Status H2DAsync(void* dst, size_t dstMax, const void* src, const size_t count)=0;      
+    virtual Status D2HAsync(void* dst, size_t dstMax, const void* src, const size_t count)=0;        
+    virtual Status WaitFinish() = 0;
 };
 
 } // namespace UC
 
-#endif // UNIFIEDCACHE_IDEVICE
+#endif // UNIFIEDCACHE_IDEVICE_H

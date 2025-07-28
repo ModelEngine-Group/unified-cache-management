@@ -1,9 +1,10 @@
 import torch
-import ucmnfsstore
+# import ucmnfsstore
 from dataclasses import dataclass
 from typing import List, Dict
 from unifiedcache.logger import init_logger
 from unifiedcache.ucm_connector import Task, UcmKVStoreBase
+import unifiedcache.ucm_connector.ucmnfsstore as ucmnfsstore
 
 
 logger = init_logger(__name__)
