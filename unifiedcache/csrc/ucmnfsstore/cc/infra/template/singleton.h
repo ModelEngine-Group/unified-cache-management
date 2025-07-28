@@ -29,10 +29,10 @@ class Singleton {
 public:
     Singleton(const Singleton&) = delete;
     Singleton& operator=(const Singleton&) = delete;
-    static T& Instance()
+    static T* Instance()
     {
         static T t;
-        return t;
+        return &t;
     }
 
 private:
