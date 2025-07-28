@@ -331,9 +331,9 @@ class UnifiedCacheConnectorV1(KVConnectorBase_V1):
                 f"length of need save vllm_block_ids = {len(vllm_block_ids)},\n"
                 f"length of storage_block_ids = {len(storage_block_ids)},\n"
             )
-            if hasattr(torch, 'npu') and torch.npu.is_available():
+            if kv_layer.device.type == "npu":
                 torch.npu.current_stream().synchronize()
-            elif torch.cuda.is_available():
+            elif kv_layer.device.type == "cuda":
                 torch.cuda.current_stream().synchronize()
 
             for block_id, offset, tensor in zip(storage_block_ids,
