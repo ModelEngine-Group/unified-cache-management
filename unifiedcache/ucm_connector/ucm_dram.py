@@ -26,7 +26,7 @@ class UcmDram(UcmKVStoreBase):
         self.dram_cache: Dict[str, any] = {}
         self.max_cache_byte = int(config["max_cache_size"])
         self.kv_block_size = config["kv_block_size"]
-        self.max_block_num = int(self.max_cache_byte/self.kv_block_size)
+        self.max_block_num = self.max_cache_byte//self.kv_block_size
         if config["role"] == "scheduler":
             self.cached_blocks = set()
     
@@ -128,11 +128,9 @@ class UcmDram(UcmKVStoreBase):
             logger.warning("Dump failure with full cache usage!")
             return FAILURE
         try:
-            stream = torch.npu.Stream()
             event = task.event
-            with torch.npu.stream(stream):
-                event.synchronize()
-                return SUCCESS
+            event.synchronize()
+            return SUCCESS
         except Exception as e:
             logger.error(f"Error waiting cache for block IDs: {e}")
             return FAILURE
