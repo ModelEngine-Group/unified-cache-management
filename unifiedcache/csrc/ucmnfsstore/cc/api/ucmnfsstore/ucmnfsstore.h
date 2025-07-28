@@ -30,10 +30,6 @@
 #include "tsf_task/tsf_task.h"
 
 namespace UC {
-/**
- * @brief invalid task id
- * */
-#define TRANSFER_INVALID_TASK_ID (size_t(0))
 
 struct SetupParam {
     std::vector<std::string> storageBackends;
@@ -42,19 +38,19 @@ struct SetupParam {
     int32_t transferDeviceId;
     size_t transferStreamNumber;
 
-    SetupParam(const std::vector<std::string>& storageBackends,
-               const size_t kvcacheBlockSize,
+    SetupParam(const std::vector<std::string>& storageBackends, const size_t kvcacheBlockSize,
                const bool transferEnable)
         : storageBackends{storageBackends}, kvcacheBlockSize{kvcacheBlockSize}, transferEnable{transferEnable},
           transferDeviceId{-1}, transferStreamNumber{256}
-    {}
+    {
+    }
 };
 
 int32_t Setup(const SetupParam& param);
 int32_t Alloc(const std::string& blockId);
 bool Lookup(const std::string& blockId);
-size_t Submit(std::list<TsfTask> tasks);
-int32_t Wait(const size_t taskId);      
+size_t Submit(std::list<TsfTask> tasks, const size_t size, const size_t number, const std::string& brief);
+int32_t Wait(const size_t taskId);
 void Commit(const std::string& blockId, const bool success);
 
 } // namespace UC
