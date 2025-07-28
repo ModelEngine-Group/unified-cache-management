@@ -9,6 +9,7 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 option(BUILD_TESTS "build all test suits." OFF)
 option(DOWNLOAD_DEPENDENCE "download dependence by cmake." ON)
+set(RUNTIME_ENVIRONMENT "ascend" CACHE STRING "runtime: ascend or cuda")
 
 include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/flags.cmake)
 
@@ -23,6 +24,5 @@ add_subdirectory(cc)
 add_subdirectory(cpy)
 if(BUILD_TESTS)
     enable_testing()
-    include(GoogleTest)
     add_subdirectory(test)
-endif(BUILD_TESTS)
+endif()
