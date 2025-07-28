@@ -105,9 +105,11 @@ class UnifiedCacheConnectorV1(KVConnectorBase_V1):
         if self._vllm_config.kv_transfer_config is not None and \
                 "ucm_connector_name" in self._vllm_config.kv_transfer_config.kv_connector_extra_config:
             name = self._vllm_config.kv_transfer_config.kv_connector_extra_config["ucm_connector_name"]
-            config = None
+            config = {}
             if "ucm_connector_config" in self._vllm_config.kv_transfer_config.kv_connector_extra_config:
                 config = self._vllm_config.kv_transfer_config.kv_connector_extra_config["ucm_connector_config"]
+            config["device"] = self.rank
+            config["role"] = "scheduler" if role == KVConnectorRole.SCHEDULER else "worker"
             logger.info("init UCConnectorImpl, connector: %s", name)
             config["role"] = "scheduler" if role == KVConnectorRole.SCHEDULER else "worker"
             head_size = vllm_config.model_config.get_head_size()
@@ -171,14 +173,12 @@ class UnifiedCacheConnectorV1(KVConnectorBase_V1):
         layer_id = self._extract_layer_index(layer_name)
 
         for blk_id in vllm_block_ids:
-            k_layer_block = kv_layer[0][blk_id].contiguous()
             k_data_offset = self.DataOffset(kv_layer, self.rank, layer_id, False)
-            k_tensors.append(k_layer_block)
+            k_tensors.append(kv_layer[0][blk_id])
             k_offsets.append(k_data_offset)
             if not self.is_mla:
-                v_layer_block = kv_layer[1][blk_id].contiguous()
                 v_data_offset = self.DataOffset(kv_layer, self.rank, layer_id, True)
-                v_tensors.append(v_layer_block)
+                v_tensors.append(kv_layer[1][blk_id])
                 v_offsets.append(v_data_offset)
         return k_tensors + v_tensors, k_offsets + v_offsets
 
@@ -336,6 +336,11 @@ class UnifiedCacheConnectorV1(KVConnectorBase_V1):
                 f"length of need save vllm_block_ids = {len(vllm_block_ids)},\n"
                 f"length of storage_block_ids = {len(storage_block_ids)},\n"
             )
+            if kv_layer.device.type == "npu":
+                torch.npu.current_stream().synchronize()
+            elif kv_layer.device.type == "cuda":
+                torch.cuda.current_stream().synchronize()
+
             for block_id, offset, tensor in zip(storage_block_ids,
                                                 offsets[:blocks_len],
                                                 tensors[:blocks_len]):
@@ -510,21 +515,22 @@ class UnifiedCacheConnectorV1(KVConnectorBase_V1):
         self.load_paras.clear()
 
         # When prompt tokens > max_num_batched_tokens, request of running requests may need to save
-        for cached_req in scheduler_output.scheduled_cached_reqs:
-            if cached_req.resumed_from_preemption:
+        cached_request_data = scheduler_output.scheduled_cached_reqs
+        for i, req_id in enumerate(cached_request_data.req_ids):
+            if cached_request_data.resumed_from_preemption[i]:
                 continue
 
-            save_paras = self.save_paras.get(cached_req.req_id, None)
+            save_paras = self.save_paras.get(req_id, None)
             if save_paras is None:
                 continue
             save_paras.num_blocks_saved += save_paras.num_blocks_to_save
             if save_paras.num_blocks_need_save > save_paras.num_blocks_saved:
-                logger.debug(f"Running request {cached_req.req_id} has blocks to save")
+                logger.debug(f"Running request {req_id} has blocks to save")
                 save_paras.start_save_position = 0
-                new_scheduled_blocks = scheduler_output.num_scheduled_tokens[cached_req.req_id] // self.block_size
+                new_scheduled_blocks = scheduler_output.num_scheduled_tokens[req_id] // self.block_size
                 save_paras.num_blocks_to_save = new_scheduled_blocks
-                meta.add_request(cached_req.req_id,
-                                 vllm_block_ids=cached_req.new_block_ids[0],
+                meta.add_request(req_id,
+                                 vllm_block_ids=cached_request_data.new_block_ids[i][0],
                                  load_paras=None,
                                  save_paras=save_paras)
         return meta
