@@ -21,25 +21,21 @@
 * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 * SOFTWARE.
  * */
-#ifndef UNIFIEDCACHE_IDEVICE_H
-#define UNIFIEDCACHE_IDEVICE_H
+#ifndef UNIFIEDCACHE_IDEVICE
+#define UNIFIEDCACHE_IDEVICE
 
-#include <cstddef>
 #include <memory>
+#include "idevice.h"
 #include "status/status.h"
 
 namespace UC {
 
-class IDevice {
+class Device {
 public:
-    virtual ~IDevice() = default;
-    virtual Status Setup() = 0;
-    // virtual std::shared_ptr<void> GetHostBuffer(size_t size, bool aligned) = 0;
-    // virtual Status H2DAsync()=0;        // todo
-    // virtual Status D2HAsync()=0;        // todo
-    // virtual Status WaitFinish() const = 0;
+    static std::unique_ptr<IDevice> Make(const int32_t deviceId, const size_t hostBufferSize = 147456,
+                                         const size_t hostBufferNumber = 512);
 };
 
 } // namespace UC
 
-#endif // UNIFIEDCACHE_IDEVICE_H
+#endif // UNIFIEDCACHE_IDEVICE

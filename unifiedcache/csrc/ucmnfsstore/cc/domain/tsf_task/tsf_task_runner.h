@@ -25,7 +25,7 @@
 #define UNIFIEDCACHE_TSF_TASK_RUNNER
 
 #include <string>
-#include "idevice.h"
+#include "device/idevice.h"
 #include "status/status.h"
 #include "tsf_task.h"
 
