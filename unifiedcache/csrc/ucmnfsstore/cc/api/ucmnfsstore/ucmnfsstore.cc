@@ -22,84 +22,71 @@
  * SOFTWARE.
  * */
 #include "ucmnfsstore.h"
+#include <spdlog/fmt/ranges.h>
+#include "logger/logger.h"
+#include "space/space_manager.h"
+#include "status/status.h"
 #include "template/singleton.h"
 #include "tsf_task/tsf_task_manager.h"
-#include "space/space_manager.h"
-#include "template/singleton.h"
-#include "logger/logger.h"
-#include "status/status.h"
 
 namespace UC {
 
+void ShowSetupParam(const SetupParam& param)
+{
+    UC_INFO("Set UC::StorageBackends to {}.", param.storageBackends);
+    UC_INFO("Set UC::BlockSize to {}.", param.kvcacheBlockSize);
+    UC_INFO("Set UC::TransferEnable to {}.", param.transferEnable);
+    UC_INFO("Set UC::DeviceId to {}.", param.transferDeviceId);
+    UC_INFO("Set UC::StreamNumber to {}.", param.transferStreamNumber);
+}
+
 int32_t Setup(const SetupParam& param)
 {
-    auto mgr = Singleton<SpaceManager>::Instance();
-    auto s = mgr.Setup(param.storageBackends, param.kvcacheBlockSize);
-    if (s.Failure()) {
-        UC_ERROR("Failed to initialize SpaceManager, error code: {}.", s.Underlying());
-    } else {
-        UC_INFO("Succeed in initializing SpaceManager.");
+    auto status = Singleton<SpaceManager>::Instance()->Setup(param.storageBackends, param.kvcacheBlockSize);
+    if (status.Failure()) {
+        UC_ERROR("Failed({}) to setup SpaceManager.", status);
+        return status.Underlying();
     }
-    return s.Underlying();
+    if (param.transferEnable) {
+        status = Singleton<TsfTaskManager>::Instance()->Setup(param.transferDeviceId, param.transferStreamNumber);
+        if (status.Failure()) {
+            UC_ERROR("Failed({}) to setup TsfTaskManager.", status);
+            return status.Underlying();
+        }
+    }
+    ShowSetupParam(param);
+    return Status::OK().Underlying();
 }
 
 int32_t Alloc(const std::string& blockId)
 {
-    auto mgr = Singleton<SpaceManager>::Instance();
-    auto s = mgr.NewBlock(blockId);
+    auto s = Singleton<SpaceManager>::Instance()->NewBlock(blockId);
     if (s.Failure()) {
         UC_ERROR("Failed to allocate kv cache block space, block id: {}, error code: {}.", blockId, s.Underlying());
-    } else {
-        UC_INFO("Succeed in allocating kv cache block space, block id: {}.", blockId);
     }
     return s.Underlying();
 }
 
-bool Lookup(const std::string& blockId)
-{
-    auto mgr = Singleton<SpaceManager>::Instance();
-    auto ok = mgr.LookupBlock(blockId);
-    if (!ok) {
-        UC_ERROR("Failed to lookup kv cache block space, block id: {}.", blockId);
-    } else {
-        UC_INFO("Succeed in looking up kv cache block space.");
-    }
-    return ok;
-}
+bool Lookup(const std::string& blockId) { return Singleton<SpaceManager>::Instance()->LookupBlock(blockId); }
 
-size_t Submit(std::list<TsfTask> tasks)
+size_t Submit(std::list<TsfTask> tasks, const size_t size, const size_t number, const std::string& brief)
 {
-    auto& taskMgr = Singleton<TsfTaskManager>::Instance();
-    size_t taskId;
-    if(taskMgr.SubmitTask(tasks, taskId).Failure()){
-        return TRANSFER_INVALID_TASK_ID;
+    size_t taskId = 0;
+    auto status = Singleton<TsfTaskManager>::Instance()->Submit(tasks, size, number, brief, taskId);
+    if (status.Failure()) {
+        UC_ERROR("Failed({}) to submit tasks.", status);
+        return 0;
     }
     return taskId;
 }
 
-int32_t Wait(const size_t taskId)
-{
-    auto& taskMgr = Singleton<TsfTaskManager>::Instance();
-    auto status = taskMgr.GetStatus(taskId);
-    if (status == TsfTaskStatus::RUNNING) {
-        // wait for the task to finish
-        // todo
-        while (status == TsfTaskStatus::RUNNING) {
-            std::this_thread::sleep_for(std::chrono::milliseconds(100));
-            status = taskMgr.GetStatus(taskId);
-        }
-    }
-    return 0;
-}
+int32_t Wait(const size_t taskId) { return Singleton<TsfTaskManager>::Instance()->Wait(taskId).Underlying(); }
 
 void Commit(const std::string& blockId, const bool success)
 {
-    auto mgr = Singleton<SpaceManager>::Instance();
-    auto s = mgr.CommitBlock(blockId, success);
+    auto s = Singleton<SpaceManager>::Instance()->CommitBlock(blockId, success);
     if (s.Failure()) {
         UC_ERROR("Failed to commit kv cache block space, block id: {}, error code: {}.", blockId, s.Underlying());
-    } else {
-        UC_INFO("Succeed in committing kv cache block space, block id: {}.", blockId);
     }
 }
 
