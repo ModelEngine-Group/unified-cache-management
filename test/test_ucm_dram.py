@@ -5,10 +5,10 @@ from unittest.mock import MagicMock
 
 import torch
 from vllm.multimodal.inputs import MultiModalKwargs
-from vllm.sampling.params import SamplingParams
+from vllm.sampling_params import SamplingParams
 from vllm.utils import sha256
 from vllm.v1.core.kv_cache_utils import hash_request_tokens
-from vllm_v1_request import Request
+from vllm.v1.request import Request
 
 from unifiedcache.ucm_connector.ucm_dram import UcmDram, DramTask
 
@@ -19,16 +19,16 @@ def make_request(request_id,
                  mm_hashes=None,
                  cache_salt=None):
     if mm_positions is None:
-        multi_model_inputs = None
+        multi_modal_inputs = None
     else:
-        multi_model_inputs = [MultiModalKwargs({})] * len(mm_positions)
+        multi_modal_inputs = [MultiModalKwargs({})] * len(mm_positions)
 
     return Request(
         request_id=request_id,
         prompt_token_ids=prompt_token_ids,
-        multi_model_inputs=multi_model_inputs,
-        multi_model_hashes=mm_hashes,
-        multi_model_placeholders=mm_positions,
+        multi_modal_inputs=multi_modal_inputs,
+        multi_modal_hashes=mm_hashes,
+        multi_modal_placeholders=mm_positions,
         sampling_params=SamplingParams(max_tokens=17),
         eos_token_id=100,
         arrival_time=0,
@@ -118,7 +118,7 @@ class TestUcmDram(unittest.TestCase):
         load_task = self.worker_dram.load(self.block_hashes, offsets, dst_tensors)
 
         self.assertIsInstance(load_task, DramTask)
-        self.assertIsNone(load_task.event)
+        self.assertIsNotNone(load_task.event)
         for i, (src_tensor, dst_tensor) in  enumerate(zip(src_tensors, dst_tensors)):
             self.assertEqual(dst_tensor.shape[0], self.block_size)
             self.assertTrue(torch.equal(src_tensor, dst_tensor),
@@ -134,7 +134,7 @@ class TestUcmDram(unittest.TestCase):
         original_data = [tensor.clone() for tensor in src_tensors]
         dump_task = self.worker_dram.dump(self.block_hashes, offsets, src_tensors)
         self.assertIsInstance(dump_task, DramTask)
-        self.assertIsNone(dump_task.event)
+        self.assertIsNotNone(dump_task.event)
         self.worker_dram.wait(dump_task)
         for i, block_id in enumerate(self.block_hashes):
             key = block_id + '_' + str(offsets[i])
