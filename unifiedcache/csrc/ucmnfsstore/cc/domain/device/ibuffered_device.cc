@@ -39,7 +39,7 @@ Status IBufferedDevice::Setup()
     auto buffer = Memory::AllocAlign(this->_bufferSize * this->_bufferNumber);
     if (!buffer) {
         UC_ERROR("Failed to make buffer({},{}).", this->_bufferSize * this->_bufferNumber);
-        return Status::OutofError();
+        return Status::OutOfMemory();
     }
     this->_buffer.Setup(buffer, this->_bufferSize, this->_bufferNumber);
     return Status::OK();

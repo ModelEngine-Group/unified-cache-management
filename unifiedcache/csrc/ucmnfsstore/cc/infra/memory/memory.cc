@@ -21,22 +21,25 @@
 * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 * SOFTWARE.
  * */
-#ifndef UNIFIEDCACHE_IMEMORY_ALLOCATOR_H
-#define UNIFIEDCACHE_IMEMORY_ALLOCATOR_H
-
-#include <memory>
+#include "memory.h"
+#include <cstdlib>
 
 namespace UC {
 
-class IMemoryAllocator {
-public:
-    virtual ~IMemoryAllocator() = default;
-    virtual std::shared_ptr<void> Alloc(const size_t size, bool initZero = false) = 0;
-    virtual bool Aligned(const size_t& size) = 0;
-    virtual size_t Align(const size_t size) = 0;
-    virtual std::shared_ptr<void> AllocAligned(const size_t size, bool initZero = false) = 0;
-};
+std::shared_ptr<void> MakePtr(void* ptr)
+{
+    if (!ptr) {return nullptr;}
+    return std::shared_ptr<void>(ptr, [](void* p) { free(p); });
+}
+
+std::shared_ptr<void> Memory::Alloc(const size_t size) {return MakePtr(malloc(size));}
+
+std::shared_ptr<void> Memory::AllocAlign(const size_t size)
+{
+    void* ptr = nullptr;
+    auto ret = posix_memalign(&ptr, _alignment, size);
+    if (ret != 0) { return nullptr; }
+    return MakePtr(ptr);
+}
 
 } // namespace UC
-
-#endif // UNIFIEDCACHE_IMEMORY_ALLOCATOR_H

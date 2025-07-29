@@ -24,7 +24,6 @@
 #ifndef UNIFIEDCACHE_TSF_TASK_RUNNER
 #define UNIFIEDCACHE_TSF_TASK_RUNNER
 
-#include <string>
 #include "device/idevice.h"
 #include "status/status.h"
 #include "tsf_task.h"
@@ -33,15 +32,17 @@ namespace UC {
 
 class TsfTaskRunner {
 public:
-    Status Run(const TsfTask& task, IDevice* device);
+    TsfTaskRunner(IDevice* device) : _device(device) {};
+    Status Run(const TsfTask& task);
      
 private:
     Status Host2SSD(const TsfTask& task);   
     Status SSD2Host(const TsfTask& task);   
-    Status Device2SSD(const TsfTask& task); // todo
-    Status SSD2Device(const TsfTask& task); // todo
-    Status ReadFile(const TsfTask& task, bool align = false);
-    Status WriteFile(const TsfTask& task, bool align = false); 
+    Status Device2SSD(const TsfTask& task); 
+    Status SSD2Device(const TsfTask& task); 
+
+private:
+    IDevice* _device;
 };
 
 } // namespace UC

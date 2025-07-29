@@ -37,27 +37,20 @@ namespace UC{
 class TsfTaskQueue{
 public:
     ~TsfTaskQueue();
-    Status Setup(const int32_t deviceId, const size_t bufferSize, const size_t bufferNumber, TsfTaskSet* failureSet);
+    Status Setup(const int32_t deviceId, TsfTaskSet* failureSet);
     void Push(std::list<TsfTask>& tasks);
-    void Push(TsfTask&& task);
-    bool Finish(const size_t& taskId) const;
 
 private:
-    void Worker();
+    void Worker(std::promise<Status>& started);
 
 private:
-    int32_t _deviceId{-1};
-    size_t _bufferSize{0};
-    size_t _bufferNumber{0};
-    TsfTaskSet* _failureSet{nullptr};
-    bool _running{false};
-    std::list<TsfTask> _q;
-    std::thread _worker;
-    std::promise<Status> _started;
+    std::list<TsfTask> _taskQ;
     std::mutex _mutex;
     std::condition_variable _cv;
-    TsfTaskRunner _runner;
-    size_t _lastId{0};
+    std::thread _worker;
+    bool _running{false};
+    int32_t _deviceId;
+    TsfTaskSet* _failureSet;
 };
 
 }// namespace UC

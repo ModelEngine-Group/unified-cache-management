@@ -25,86 +25,102 @@
 #include <tsf_task/tsf_task_runner.h>
 #include "file/file.h"
 #include "logger/logger.h"
-#include "memory/memory_allocator.h" 
-#include "space/space_layout.h"
+#include "memory/memory.h" 
 #include "template/singleton.h"
 #include <map>
+#include <functional>
+#include "space/space_manager.h"
+
 
 namespace UC{
 
-Status TsfTaskRunner::Run(const TsfTask& task, IDevice* device)
+Status TsfTaskRunner::Run(const TsfTask& task)
 {
-    switch (task.type) {
-        case TsfTask::Type::DUMP:
-            if (task.location == TsfTask::Location::DEVICE) {
-                return this->SSD2Host(task);
-            } else {
-                return this->Host2SSD(task);
-            }
-        case TsfTask::Type::LOAD:
-            if (task.location == TsfTask::Location::DEVICE) {
-                return this->Host2SSD(task);
-            } else {
-                return this->SSD2Host(task);
-            }
-        default:
-            return Status::Unsupported();
+    using Location = TsfTask::Location;
+    using Type = TsfTask::Type;
+    using Key = std::pair<Location, Type>;
+    using Value = std::function<Status(const TsfTask&)>;
+
+    std::map<Key, Value> runners = {
+        {{Location::HOST, Type::DUMP},  [this](const TsfTask& task) { return this->Host2SSD(task); }},
+        {{Location::DEVICE, Type::DUMP},  [this](const TsfTask& task) { return this->Device2SSD(task); }},
+        {{Location::HOST, Type::LOAD},  [this](const TsfTask& task) { return this->SSD2Host(task); }},
+        {{Location::DEVICE, Type::LOAD},  [this](const TsfTask& task) { return this->SSD2Device(task); }},
+    };
+    auto runner = runners.find({task.location, task.type});
+    if (runner == runners.end()) {
+        UC_ERROR("Unsupported task({},{})", fmt::underlying(task.type), fmt::underlying(task.location));
+        return Status::Unsupported();
     }
+    return runner->second(task);
 }
 
 Status TsfTaskRunner::Host2SSD(const TsfTask& task)
 {
-    auto allocator = MemoryAllocator::Make();
-    bool align = allocator->Aligned(task.length) && allocator->Aligned(task.address);
-    return this->ReadFile(task, align);
+    auto path = Singleton<SpaceManager>::Instance()->BlockPath(task.blockId);
+    auto file = File::Make(path);
+    if (!file) { return Status::OutOfMemory(); }
+    auto aligned = Memory::Aligned(task.length) && Memory::Aligned(task.address) && Memory::Aligned(task.offset);
+    auto openFlags = aligned ? IFile::OpenFlag::WRITE_ONLY | IFile::OpenFlag::DIRECT
+                    : IFile::OpenFlag::WRITE_ONLY;
+    auto status = file->Open(openFlags);
+    if (status.Failure()) { return status; }
+    return file->Write((void*)task.address, task.length, task.offset);
 }
 
 Status TsfTaskRunner::SSD2Host(const TsfTask& task)
 {
-    auto allocator = MemoryAllocator::Make();
-    bool align = allocator->Aligned(task.length) && allocator->Aligned(task.address);
-    return this->WriteFile(task, align);
+    auto path = Singleton<SpaceManager>::Instance()->BlockPath(task.blockId);
+    auto file = File::Make(path);
+    if (!file) { return Status::OutOfMemory(); }
+    auto aligned = Memory::Aligned(task.length) && Memory::Aligned(task.address) && Memory::Aligned(task.offset);
+    auto openFlags = aligned ? IFile::OpenFlag::READ_ONLY | IFile::OpenFlag::DIRECT
+                    : IFile::OpenFlag::READ_ONLY;
+    auto status = file->Open(openFlags);
+    if (status.Failure()) { return status; }
+    return file->Read((void*)task.address, task.length, task.offset);
 }
 
 Status TsfTaskRunner::Device2SSD(const TsfTask& task)
 {
-    return Status::OK();
+    auto path = Singleton<SpaceManager>::Instance()->BlockPath(task.blockId);
+    auto file = File::Make(path);
+    if (!file) { return Status::OutOfMemory(); }
+    auto buffer = this->_device->GetHostBuffer(task.length);
+    if (!buffer) { 
+        UC_ERROR("Failed to get host buffer({}) on device", task.length);    
+        return Status::OutOfMemory(); 
+    }
+    auto status = this->_device->D2HAsync(buffer.get(), task.length, (void*)task.address, task.length);
+    if (status.Failure()) { return status; }
+    status = this->_device->WaitFinish();
+    if (status.Failure()) { return status; }
+    auto alligned = Memory::Aligned(task.length) && Memory::Aligned(task.offset);
+    auto openFlags = alligned ? IFile::OpenFlag::WRITE_ONLY | IFile::OpenFlag::DIRECT
+                    : IFile::OpenFlag::WRITE_ONLY;  
+    status = file->Open(openFlags);
+    if (status.Failure()) { return status; }
+    return file->Write(buffer.get(), task.length, task.offset);
 }
 
 Status TsfTaskRunner::SSD2Device(const TsfTask& task)
 {
-    return Status::OK();
+    auto path = Singleton<SpaceManager>::Instance()->BlockPath(task.blockId);
+    auto file = File::Make(path);
+    if (!file) { return Status::OutOfMemory(); }
+    auto buffer = this->_device->GetHostBuffer(task.length);
+    if (!buffer) { 
+        UC_ERROR("Failed to get host buffer({}) on device", task.length);    
+        return Status::OutOfMemory(); 
+    }
+    auto aligned = Memory::Aligned(task.length) && Memory::Aligned(task.offset);
+    auto openFlags = aligned ? IFile::OpenFlag::READ_ONLY | IFile::OpenFlag::DIRECT
+                    : IFile::OpenFlag::READ_ONLY;
+    auto status = file->Open(openFlags);
+    if (status.Failure()) { return status; }
+    status = file->Read(buffer.get(), task.length, task.offset);
+    if (status.Failure()) { return status; }
+    return this->_device->H2DAsync((void*)task.address, task.length, buffer.get(), task.length);
 }
 
-Status TsfTaskRunner::ReadFile(const TsfTask& task, bool align)
-{
-    auto spaceLayout = Singleton<SpaceLayout>::Instance();
-    auto filePath = spaceLayout.DataFilePath(task.blockId, true);
-    auto file = File::Make(filePath);
-    if (!file) {
-        return Status::OutOfMemory();
-    }
-    auto mode = align ? OpenMode::RD | OpenMode::DIRECT : OpenMode::RD;
-    auto status = file->Open(mode);
-    if (status.Failure()) {
-        return status;
-    }
-    return file->Read(reinterpret_cast<void*>(task.address), task.length, task.offset);
-}
-
-Status TsfTaskRunner::WriteFile(const TsfTask& task, bool align)
-{
-    auto spaceLayout = Singleton<SpaceLayout>::Instance();
-    auto filePath = spaceLayout.DataFilePath(task.blockId, true);
-    auto file = File::Make(filePath);
-    if (!file) {
-        return Status::OutOfMemory();
-    }
-    auto mode = align ? OpenMode::WR | OpenMode::DIRECT : OpenMode::WR;
-    auto status = file->Open(mode);
-    if (status.Failure()) {
-        return status;
-    }
-    return file->Write(reinterpret_cast<const void*>(task.address), task.length, task.offset);
-}
 } // namespace UC

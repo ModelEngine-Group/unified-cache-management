@@ -26,7 +26,7 @@
 
 #include <cstdint>
 #include <string>
-#include "logger/logger.h"
+#include "tsf_task_waiter.h"
 
 namespace UC {
 
@@ -39,51 +39,15 @@ struct TsfTask {
     size_t offset;      
     uintptr_t address;  
     size_t length;      
-    size_t owner;  // taskId
+    size_t owner;  
+    std::shared_ptr<TsfTaskWaiter> waiter;
 
     TsfTask(const Type type, const Location location, const std::string& blockId, const size_t offset,
             const uintptr_t address, const size_t length)
-        : type{type}, location{location}, blockId{blockId}, offset{offset}, address{address}, length{length}, owner{0}
+        : type{type}, location{location}, blockId{blockId}, offset{offset}, address{address}, length{length}, owner{0}, 
+          waiter{nullptr}
     {
     }
-    TsfTask(const Type type, const Location location, const std::string& blockId, const size_t offset,
-            const uintptr_t address, const size_t length, const size_t owner)
-        : type{type}, location{location}, blockId{blockId}, offset{offset}, address{address}, length{length}, owner{owner}
-    {
-    }
-};
-
-class TsfTaskGroup{
-    using Clock = std::chrono::steady_clock;
-
-public:
-    TsfTaskGroup():_taskId{0}, _brief{}, _number{0}, _totalSize{0}, _tp{Clock::now()}{}
-    double Elapsed() const {return std::chrono::duration<double>(Clock::now() - this ->_tp).count();}
-    std::string Str() const
-    {
-        return fmt::format("{},{},{},{}", this->_taskId, this->_brief, this->_number, this->_totalSize);
-    }
-    void Set(const size_t taskId, const std::string& brief, const size_t number, const size_t totalSize)
-    {
-        this->_taskId = taskId;
-        this->_brief = brief;
-        this->_number = number;
-        this->_totalSize = totalSize;
-    }
-
-private:
-    size_t _taskId;
-    std::string _brief;
-    size_t _number;
-    size_t _totalSize;
-    std::chrono::time_point<Clock> _tp;
-};
-
-enum class TsfTaskStatus{
-    RUNNING = 0,
-    FAILURE = 1,
-    SUCCESS = 2,
-    CANCELLED = 3,
 };
 
 } // namespace UC

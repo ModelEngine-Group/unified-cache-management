@@ -31,107 +31,67 @@
 
 namespace UC {
 
-Status TsfTaskManager::Setup()
+Status TsfTaskManager::Setup(const int32_t deviceId, const size_t streamNumber)
 {
-    auto configer = Singleton<Configurator>::Instance();
-    auto deviceId = configer.DeviceId();
-    auto streamNumber = configer.StreamNumber();
-    auto bufferSize = configer.BufferSize();
-    constexpr size_t bufferNumber = 2048; 
+    this->_queues.reserve(streamNumber);
     for (size_t i = 0; i < streamNumber; ++i) {
-        auto queue = std::make_unique<TsfTaskQueue>();
-        auto status = queue->Setup(deviceId, bufferSize, bufferNumber, &this->_failureSet);
-        if (status.Failure()) {
-            return status;
-        }
-        this->_queues.emplace_back(std::move(queue));
+        auto& queue = this->_queues.emplace_back(std::make_unique<TsfTaskQueue>());
+        auto status = queue->Setup(deviceId,  &this->_failureSet);
+        if (status.Failure()) { return status; }
     }
     return Status::OK();
 }
 
-TsfTaskStatus TsfTaskManager::GetStatus(const size_t& taskId) 
+Status TsfTaskManager::Submit(std::list<TsfTask> tasks, const size_t size, const size_t number,
+                               const std::string& brief, size_t& taskId)
 {
-    auto configer = Singleton<Configurator>::Instance();
-    auto timeout = configer.Timeout();
-    std::unique_lock<std::mutex> lock(this->_mutex);
-    auto iter = this->_tasks.find(taskId);
-    if (iter == this->_tasks.end()) {
-        UC_DEBUG("Not found task({}).", taskId);
-        return TsfTaskStatus::CANCELLED;
-    }
-    auto elapsed = iter->second.Elapsed();
-    if (this->Finish(taskId)) {
-        auto failure = this->_failureSet.Exist(taskId);
-        this->_failureSet.Remove(taskId);
-        UC_INFO("Task({}) finish, failure={}, elapsed={:.6f}s.", iter->second.Str(), failure, elapsed);
-        this->_tasks.erase(iter);
-        if (this->_maxFinishedId < taskId) {
-            this->_maxFinishedId = taskId;
-        }
-        return failure ? TsfTaskStatus::FAILURE : TsfTaskStatus::SUCCESS;
-    } else {
-        if (timeout != 0 && elapsed > timeout) {
-            UC_ERROR("Task({}) timeout({:.6f}s > {}s).", iter->second.Str(), elapsed, timeout);
-            this->Remove(iter);
-            if (this->_maxFinishedId < taskId) {
-                this->_maxFinishedId = taskId;
-            }
-            return TsfTaskStatus::FAILURE;
-        }
-        return TsfTaskStatus::RUNNING;
-    }
-}
-
-void TsfTaskManager::Cancel(const size_t& taskId)
-{
-    std::unique_lock<std::mutex> lock(this->_mutex);
-    auto iter = this->_tasks.find(taskId);
-    if (iter == this->_tasks.end()){
-        return;
-    }
-    this->Remove(iter);
-}
-
-Status TsfTaskManager::Precheck()
-{
-    auto configer = Singleton<Configurator>::Instance();
-    if (this->_idSeed - this->_maxFinishedId >= configer.QueueDepth()){
-        return Status::Retry(); 
+    std::unique_lock<std::mutex> lk(this->_mutex);
+    taskId = ++this->_taskIdSeed;
+    auto [iter, success] = this->_waiters.emplace(taskId, std::make_shared<TsfTaskWaiter>(taskId, size, number, brief));
+    if (!success) { return Status::OutOfMemory(); }
+    std::vector<std::list<TsfTask>> lists;
+    this->Dispatch(tasks, lists, taskId, iter->second);
+    for (size_t i = 0; i < lists.size(); i++){
+        if (lists[i].empty()){continue;}
+        this->_queues[this->_qIdx]->Push(lists[i]);
+        this->_qIdx = (this->_qIdx + 1) % this->_queues.size();
     }
     return Status::OK();
 }
 
-std::string TsfTaskManager::GetTaskBrief(TsfTask& task)
+Status TsfTaskManager::Wait(const size_t taskId)
 {
-    static std::map<std::pair<TsfTask::Type, TsfTask::Location>, std::string> briefs = {
-        {{TsfTask::Type::DUMP, TsfTask::Location::HOST},    "Host2SSD"  },
-        {{TsfTask::Type::LOAD, TsfTask::Location::HOST},    "SSD2Host"  },
-        {{TsfTask::Type::DUMP, TsfTask::Location::DEVICE},  "Device2SSD"},
-        {{TsfTask::Type::LOAD, TsfTask::Location::DEVICE},  "SSD2Device"},
-    };
-    auto brief = briefs.find({task.type, task.location});
-    return brief == briefs.end() ? std::string() : brief->second;
+    std::shared_ptr<TsfTaskWaiter> waiter = nullptr;
+    {
+        std::unique_lock<std::mutex> lk(this->_mutex);
+        auto iter = this->_waiters.find(taskId);
+        if (iter == this->_waiters.end()) { return Status::NotFound(); }
+        waiter = iter->second;
+        this->_waiters.erase(iter);
+    }
+    waiter->Wait();
+    bool failed = this->_failureSet.Exist(taskId);
+    this->_failureSet.Remove(taskId);
+    return failed ? Status::Error() : Status::OK();
 }
 
-void TsfTaskManager::Remove(std::unordered_map<size_t, TsfTaskGroup>::iterator iter)
+void TsfTaskManager::Dispatch(std::list<TsfTask>& tasks, std::vector<std::list<TsfTask>>& targets, size_t& taskId,
+                              std::shared_ptr<TsfTaskWaiter> waiter) const
 {
-    this->_failureSet.Insert(iter->first);
-    constexpr auto interval = std::chrono::milliseconds(20);
-    while (!this->Finish(iter->first)) {
-        std::this_thread::sleep_for(interval);
+    auto qNumber = this->_queues.size();
+    auto index = size_t(0);
+    targets.resize(qNumber);
+    auto it = tasks.begin();
+    while (it != tasks.end()) {
+        auto next = std::next(it);
+        it->owner = taskId;
+        it->waiter = waiter;
+        waiter->Up();
+        auto& target = targets[index % qNumber];
+        target.splice(target.end(), tasks, it);
+        index++;
+        it = next;
     }
-    this->_failureSet.Remove(iter->first);
-    this->_tasks.erase(iter);
 }
 
-bool TsfTaskManager::Finish(const size_t& id) const
-{
-
-    for (const auto& q : this->_queues) {
-        if (q->Finish(id)) {
-            return true;
-        }
-    }
-    return false;
-} 
 } // namespace UC

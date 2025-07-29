@@ -74,7 +74,7 @@ TEST_F(TsfTaskManagerUnitTest, LotsOfTasks)
     MOCKER_CPP(&UC::TsfTaskRunner::Run).stubs().will(returnValue(UC::Status::OK()));
     size_t taskId = 0;
 
-    ASSERT_TRUE(taskMgr.SubmitTask(tasks, taskId).Success());
+    ASSERT_TRUE(taskMgr.Submit(tasks, taskId).Success());
     ASSERT_GT(taskId, 0);
     auto taskStatus = taskMgr.GetStatus(taskId);
     while (taskStatus == UC::TsfTaskStatus::RUNNING) {
@@ -106,7 +106,7 @@ TEST_F(TsfTaskManagerUnitTest, FewTasks)
     MOCKER_CPP(&UC::TsfTaskRunner::Run).stubs().will(returnValue(UC::Status::OK()));
     size_t taskId = 0;
 
-    ASSERT_TRUE(taskMgr.SubmitTask(tasks, taskId).Success());
+    ASSERT_TRUE(taskMgr.Submit(tasks, taskId).Success());
     ASSERT_GT(taskId, 0);
     auto taskStatus = taskMgr.GetStatus(taskId);
     while (taskStatus == UC::TsfTaskStatus::RUNNING) {
@@ -138,7 +138,7 @@ TEST_F(TsfTaskManagerUnitTest, TooManyTasks)
     MOCKER_CPP(&UC::TsfTaskRunner::Run).stubs().will(returnValue(UC::Status::OK()));
     size_t taskId = 0;
 
-    ASSERT_TRUE(taskMgr.SubmitTask(tasks, taskId).Success());
+    ASSERT_TRUE(taskMgr.Submit(tasks, taskId).Success());
     ASSERT_GT(taskId, 0);
     auto taskStatus = taskMgr.GetStatus(taskId);
     while (taskStatus == UC::TsfTaskStatus::RUNNING) {
@@ -171,6 +171,6 @@ TEST_F(TsfTaskManagerUnitTest, InvalidTasks)
         .will(returnValue(queueDepth));
     MOCKER_CPP(&UC::TsfTaskRunner::Run).stubs().will(returnValue(UC::Status::OK()));
     size_t taskId = 0;
-    ASSERT_FALSE(taskMgr.SubmitTask(tasks, taskId).Success());
+    ASSERT_FALSE(taskMgr.Submit(tasks, taskId).Success());
     GlobalMockObject::verify();
 }

@@ -25,79 +25,30 @@
 #define UNIFIEDCACHE_TSF_TASK_MANAGER
 
 #include "tsf_task_queue.h"
+#include "tsf_task_waiter.h"
 #include <unordered_map>
+#include <vector>
 
 namespace UC {
 
 class TsfTaskManager{
 public:
-    Status Setup();
-    Status SubmitTask(std::list<TsfTask>tasks, size_t& taskId){
-        Status status;
-        std::unique_lock<std::mutex> lock(this->_mutex);
-        taskId = ++this->_idSeed;
-        size_t number = 0;
-        size_t size = 0;
-        std::string brief;
-        auto qSize = _queues.size();
-        std::list<TsfTask> lists[qSize];
-        auto [iter, success] = this->_tasks.emplace(taskId, TsfTaskGroup());
-        if (!success){
-            UC_ERROR("Failed to insert tsaks({}) into set.", taskId);
-            return Status::OutOfMemory();
-        }
-        status = this ->MakeTasks(tasks, lists, taskId, qSize, number, size, brief);
-        if (status.Failure()) {
-            return status;
-        }
-        for (size_t i = 0; i < qSize; ++i) {
-            if (lists[i].empty()) {
-                continue;
-            }
-            auto& q = this->_queues[this->_qIdx];
-            q->Push(std::move(lists[i].front()));
-            this->_qIdx = (this->_qIdx + 1) % qSize;
-        }
-        iter->second.Set(taskId, brief, number, size);
-        return status;
-    };
-    TsfTaskStatus GetStatus(const size_t& taskId);
-    void Cancel(const size_t& taskId);
+    Status Setup(const int32_t deviceId, const size_t streamNumber);
+    Status Submit(std::list<TsfTask>tasks, const size_t size, const size_t number, const std::string& brief,
+                  size_t& taskId);
+    Status Wait(const size_t taskId);
     
 private:
-    Status Precheck();
-    Status MakeTasks(std::list<TsfTask>tasks, std::list<TsfTask> lists[], 
-                     const size_t& taskId, const size_t& qSize, size_t& number, size_t& size, std::string& brief)
-    {
-        for (auto& task : tasks) {
-            number++;
-            brief = this->GetTaskBrief(task);
-            if (brief.empty()) {
-                UC_ERROR("Unsupported task ({}-{}-{}-{}-{}) with action({}-{})", task.blockId, task.offset, task.address, task.length, fmt::underlying(task.type), fmt::underlying(task.location));
-                return Status::Unsupported();
-            }
-            if(task.length==0){
-                UC_ERROR("Invalid task ({}-{}-{}-{}-{}) with action({}-{})", task.blockId, task.offset, task.address, task.length, fmt::underlying(task.type), fmt::underlying(task.location));
-                return Status::InvalidParam();
-            }
-            task.owner = taskId;
-            lists[number % qSize].emplace_back(std::move(task));
-            size += task.length;
-        }
-        return Status::OK();
-    }
-    std::string GetTaskBrief(TsfTask& task);
-    void Remove(std::unordered_map<size_t, TsfTaskGroup>::iterator iter);
-    bool Finish(const size_t& id) const;
+    void Dispatch(std::list<TsfTask>& tasks, std::vector<std::list<TsfTask>>& targets ,size_t& taskId, 
+                  std::shared_ptr<TsfTaskWaiter> waiter) const;
 
 private:
     std::mutex _mutex;
     TsfTaskSet _failureSet;
-    std::unordered_map<size_t, TsfTaskGroup> _tasks;
-    size_t _idSeed{0};
-    size_t _maxFinishedId{0};
+    std::unordered_map<size_t, std::shared_ptr<TsfTaskWaiter>> _waiters; 
     std::vector<std::unique_ptr<TsfTaskQueue>> _queues;
     size_t _qIdx{0};
+    size_t _taskIdSeed{0};
 };
 
 } // namespace UC

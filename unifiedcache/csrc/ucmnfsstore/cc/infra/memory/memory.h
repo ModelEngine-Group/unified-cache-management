@@ -21,24 +21,25 @@
 * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 * SOFTWARE.
  * */
-#ifndef UNIFIEDCACHE_OS_MEMORY_ALLOCATOR_H
-#define UNIFIEDCACHE_OS_MEMORY_ALLOCATOR_H
+#ifndef UNIFIEDCACHE_MEMORY_H
+#define UNIFIEDCACHE_MEMORY_H
 
-#include "imemory_allocator.h"
+#include <memory>
+#include <cstddef>
 
 namespace UC {
 
-class OsMemoryAllocator : public IMemoryAllocator {
+class Memory {
 public:
-    std::shared_ptr<void> Alloc(const size_t size, bool initZero = false) override;
-    bool Aligned(const size_t& size) override;
-    size_t Align(const size_t size) override;
-    std::shared_ptr<void> AllocAligned(const size_t size, bool initZero = false) override;
+    static bool Aligned(const size_t size){ return size % _alignment == 0;}
+    static size_t Align(const size_t size){ return (size + _alignment - 1) / _alignment * _alignment; }
+    static std::shared_ptr<void> Alloc(const size_t size);
+    static std::shared_ptr<void> AllocAlign(const size_t size);
 
 private:
-    size_t _alignment{4096};
+    static constexpr size_t _alignment{4096}; 
 };
 
 } // namespace UC
 
-#endif // UNIFIEDCACHE_OS_MEMORY_ALLOCATOR_H
+#endif // UNIFIEDCACHE_MEMORY_H

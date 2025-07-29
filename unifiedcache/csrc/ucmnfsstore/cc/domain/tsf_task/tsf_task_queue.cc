@@ -31,9 +31,7 @@ TsfTaskQueue::~TsfTaskQueue()
 {
     {
         std::unique_lock<std::mutex> lock(this->_mutex);
-        if(!this->_running){
-            return;
-        }
+        if(!this->_running){ return; }
         this->_running = false;
     }
     if(this->_worker.joinable()){
@@ -42,18 +40,17 @@ TsfTaskQueue::~TsfTaskQueue()
     }
 }
 
-Status TsfTaskQueue::Setup(const int32_t deviceId, const size_t bufferSize, const size_t bufferNumber, TsfTaskSet* failureSet)
+Status TsfTaskQueue::Setup(const int32_t deviceId, TsfTaskSet* failureSet)
 {
     this->_deviceId = deviceId;
-    this->_bufferSize = bufferSize;
-    this->_bufferNumber = bufferNumber;
     this->_failureSet = failureSet;
     {
         std::unique_lock<std::mutex> lock(this->_mutex);
         this->_running = true;
     }
-    auto fut = this ->_started.get_future();
-    this->_worker = std::thread([&]{this->Worker();});
+    std::promise<Status> started;
+    auto fut = started.get_future();
+    this->_worker = std::thread([&]{this->Worker(started);});
     return fut.get();
 }
 
@@ -61,73 +58,44 @@ void TsfTaskQueue::Push(std::list<TsfTask>& tasks)
 {
     {
         std::unique_lock<std::mutex> lock(this->_mutex);
-        this->_q.splice(this->_q.end(),tasks);
+        this->_taskQ.splice(this->_taskQ.end(),tasks);
     }
-    this->_cv.notify_one();
+    this->_cv.notify_all();
 }
 
-void TsfTaskQueue::Push(TsfTask&& task)
+void TsfTaskQueue::Worker(std::promise<Status>& started)
 {
-    {
-        std::unique_lock<std::mutex> lock(this->_mutex);
-        this->_q.push_back(task);
-    }
-    this->_cv.notify_one();
-}
-
-bool TsfTaskQueue::Finish(const size_t& taskId) const
-{
-    if (this->_lastId > taskId){
-        return true;
-    }
-    if(this->_q.empty()){
-        return true;
-    }
-    return false;
-}
-
-void TsfTaskQueue::Worker()
-{
+    auto status = Status::OK();
     std::unique_ptr<IDevice> device = nullptr;
     if (this -> _deviceId >=0 ){
-        device = Device::Make(this->_deviceId, this->_bufferSize, this -> _bufferNumber);
-        if (!device){
-            this->_started.set_value(Status::OutOfMemory());
+        if (!(device = Device::Make(this->_deviceId)) ){
+            started.set_value(Status::OutOfMemory());
             return;
         }
-        auto status = device->Setup();
-        if (status.Failure()){
-            this -> _started.set_value(status);
+        if ((status = device->Setup()).Failure()){
+            started.set_value(status);
             return;
         }
     }
-    this->_started.set_value(Status::OK());
-    for (;;){
-        {
-            std::unique_lock<std::mutex> lock(this->_mutex);
-            this->_cv.wait(lock, [this] {return !this->_running || !this->_q.empty();});
-            if(!this->_running){
-                return;
-            }
+    TsfTaskRunner runner(device ? device.get() : nullptr);
+    started.set_value(status);
+    for(;;){
+        std::unique_lock<std::mutex> lk(this->_mutex);
+        this->_cv.wait(lk, [this]{ return !this->_taskQ.empty() || !this->_running; });
+        if (!this->_running) { break; }
+        if (this->_taskQ.empty()) { continue; }
+        auto task = std::move(this->_taskQ.front());
+        this->_taskQ.pop_front();
+        bool lastTask = this->_taskQ.empty() || this->_taskQ.front().owner != task.owner;
+        lk.unlock();
+        if (!this->_failureSet->Exist(task.owner)) {
+            if ((status = runner.Run(task)).Failure()) { this->_failureSet->Insert(task.owner); }
         }
-        if (this->_q.empty()){
-            continue;
+        if (device && lastTask) {
+            if ((status = device->WaitFinish()).Failure()) { this->_failureSet->Insert(task.owner); }
         }
-        const auto& task = this->_q.front();
-        if (!this->_failureSet->Exist(task.owner)){
-            auto status = this->_runner.Run(task, device.get());
-            if (status.Failure()){
-                this->_failureSet->Insert(task.owner);
-            }
-        }
-        if (device && (this->_lastId != task.owner || this->_q.size()==1)){ 
-            auto status = Status::OK(); //device->WaitFinish(); // todo ssd2device
-            if (status.Failure()){
-                this->_failureSet->Insert(task.owner);
-            }
-        }
-        this->_lastId = task.owner;
-        this->_q.pop_front();
+        task.waiter->Done();
     }
 }
-}
+
+} // namespace UC
