@@ -4,7 +4,7 @@ This document describes how to install unified-cache-management.
 ## Requirements
 - OS: Linux
 - Python: >= 3.9, < 3.12
-- GPU: compute capability 7.0 or higher (e.g., V100, T4, RTX20xx, A100, L4, H100, etc.)
+- GPU: compute capability 8.0 or higher (e.g., V100, T4, RTX20xx, A100, L4, H100, etc.)
 - CUDA 12.8+
 
 You have 2 ways to install for now:
