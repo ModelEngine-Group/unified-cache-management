@@ -45,9 +45,12 @@ inline py::list LookupBatch(const py::list& blockIds)
 }
 
 inline size_t SubmitTsfTasks(const py::list& blockIdList, const py::list& offsetList, const py::list& addressList,
-                             const py::list& lengthList, const TsfTask::Type type, const TsfTask::Location location)
+                             const py::list& lengthList, const TsfTask::Type type, const TsfTask::Location location,
+                             const std::string& brief)
 {
     std::list<TsfTask> tasks;
+    size_t size = 0;
+    size_t number = 0;
     auto blockId = blockIdList.begin();
     auto offset = offsetList.begin();
     auto address = addressList.begin();
@@ -56,40 +59,42 @@ inline size_t SubmitTsfTasks(const py::list& blockIdList, const py::list& offset
            (length != lengthList.end())) {
         tasks.emplace_back(type, location, blockId->cast<std::string>(), offset->cast<size_t>(),
                            address->cast<uintptr_t>(), length->cast<size_t>());
+        size += length->cast<size_t>();
+        number++;
         blockId++;
         offset++;
         address++;
         length++;
     }
-    return Submit(tasks);
+    return Submit(tasks, size, number, brief);
 }
 
 inline size_t LoadToDevice(const py::list& blockIdList, const py::list& offsetList, const py::list& addressList,
                            const py::list& lengthList)
 {
     return SubmitTsfTasks(blockIdList, offsetList, addressList, lengthList, TsfTask::Type::LOAD,
-                          TsfTask::Location::DEVICE);
+                          TsfTask::Location::DEVICE, "S2D");
 }
 
 inline size_t LoadToHost(const py::list& blockIdList, const py::list& offsetList, const py::list& addressList,
                          const py::list& lengthList)
 {
     return SubmitTsfTasks(blockIdList, offsetList, addressList, lengthList, TsfTask::Type::LOAD,
-                          TsfTask::Location::HOST);
+                          TsfTask::Location::HOST, "S2H");
 }
 
 inline size_t DumpFromDevice(const py::list& blockIdList, const py::list& offsetList, const py::list& addressList,
                              const py::list& lengthList)
 {
     return SubmitTsfTasks(blockIdList, offsetList, addressList, lengthList, TsfTask::Type::DUMP,
-                          TsfTask::Location::DEVICE);
+                          TsfTask::Location::DEVICE, "D2S");
 }
 
 inline size_t DumpFromHost(const py::list& blockIdList, const py::list& offsetList, const py::list& addressList,
                            const py::list& lengthList)
 {
     return SubmitTsfTasks(blockIdList, offsetList, addressList, lengthList, TsfTask::Type::DUMP,
-                          TsfTask::Location::HOST);
+                          TsfTask::Location::HOST, "H2S");
 }
 
 inline void CommitBatch(const py::list& blockIds, const bool success)
