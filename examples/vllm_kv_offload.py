@@ -50,7 +50,7 @@ def print_output(
     outputs = llm.generate(prompt, sampling_params)
     print("-" * 50)
     for output in outputs:
-        generated_text = output.outputs[0].text
+        generated_text = output.outputs[0].generated_text
         print(f"Generated text: {generated_text!r}")
     print(f"Generation took {time.time() - start:.2f} seconds, {req_str} request done.")
     print("-" * 50)

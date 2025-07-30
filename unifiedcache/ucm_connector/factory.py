@@ -41,9 +41,5 @@ class UcmConnectorFactory:
 
 UcmConnectorFactory.register_connector(
     "UcmOceanStore",
-    "unifiedcache.ucm_connector.ucm_oceanstor",
+    "unifiedcache.ucm_connector.ucm_connector",
     "UcmOceanStore")
-UcmConnectorFactory.register_connector(
-    "UcmDram",
-    "unifiedcache.ucm_connector.ucm_dram",
-    "UcmDram")
