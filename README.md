@@ -8,7 +8,7 @@
 ---
 
 *Latest News* 🔥
-- [2025/07/30] We are excited to announce the alpha release of Unified Cache Manager.
+- [2025/07/31] We are excited to announce the alpha release of Unified Cache Manager.
 
 ---
 
@@ -41,6 +41,10 @@ please refer to [installation](docs/source/getting-started/installation.md) and 
 
 ---
 
+## Support Features
+please refer to [features matrix](docs/source/feature/support.md)。
+
+
 ## Branch Policy
 Unified Cache has main branch, develop branch and release branch.
 - **main**: main is the most stable branch. Only the release branch can be integrated. The tag is attached to the main branch.
@@ -57,5 +61,4 @@ When you want to contribute some features to the Unified Cache Community, first 
 ---
 
 ## License
-
-Apache License 2.0, as found in the [LICENSE](./LICENSE) file.
+UCM is licensed under the MIT with additional conditions. Please read the [LICENSE](./LICENSE) file for details.
