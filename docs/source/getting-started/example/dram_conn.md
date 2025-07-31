@@ -2,6 +2,14 @@
 
 This document provides a usage example and configuration guide for the **DRAM Connector**. This connector enables offloading of KV cache from GPU HBM to CPU DRAM, helping reduce memory pressure and support larger models or batch sizes.
 
+## Performance
+
+Combining UCM with vLLM delivers 3–10× improvements in latency and GPU efficiency, especially for long-context LLM tasks.
+
+<p align="center">
+  <img alt="UCM" src="../../images/dram_perform.png" width="90%">
+</p>
+
 ## Features
 
 The DRAM connector supports the following functionalities:
