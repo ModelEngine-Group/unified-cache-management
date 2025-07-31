@@ -2,7 +2,6 @@ import contextlib
 import os
 import time
 from dataclasses import asdict
-
 # Third Party
 from vllm import LLM, SamplingParams
 from vllm.config import KVTransferConfig
@@ -23,7 +22,8 @@ def build_llm_with_uc(module_path: str, name: str, model: str):
         kv_connector=name,
         kv_connector_module_path=module_path,
         kv_role="kv_both",
-        kv_connector_extra_config={"ucm_connector_name": "UcmOceanStore", "ucm_connector_config": {"block_size": 128}}
+        kv_connector_extra_config={"ucm_connector_name": "UcmDram",
+                                   "ucm_connector_config": {"max_cache_size": 5368709120}}
     )
 
     llm_args = EngineArgs(
@@ -73,12 +73,13 @@ def main():
             "century, the root sauses behind it, and a set of scientifically grounded, morally sound, and globally "
             "cooperative solutions that transcend culturak and national boundaries. Include both immediate actions "
             "and long-term strategies."
-            ]
+        ]
 
         sampling_params = SamplingParams(temperature=0, top_p=0.95, max_tokens=100)
 
         print_output(llm, prompts, sampling_params, "first")
         print_output(llm, prompts, sampling_params, "second")
+
 
 if __name__ == "__main__":
     main()

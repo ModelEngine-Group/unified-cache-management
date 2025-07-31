@@ -33,10 +33,10 @@ kv_connector_extra_config={"ucm_connector_name": "UcmDram", "ucm_connector_confi
 
 ### Offline Inference
 
-To start **offline inference** with the DRAM connector，modify the script `examples/vllm_kv_offload.py` to include the `kv_connector_extra_config` for DRAM connector usage:
+To start **offline inference** with the DRAM connector，modify the script `examples/offline_inference.py` to include the `kv_connector_extra_config` for DRAM connector usage:
 
 ```python
-# In examples/vllm_kv_offload.py
+# In examples/offline_inference.py
 ktc = KVTransferConfig(
     ...
     kv_connector_extra_config={"ucm_connector_name": "UcmDram", "ucm_connector_config":{"max_cache_size": 5368709120}}
@@ -47,7 +47,7 @@ Then run the script as follows:
 
 ```bash
 cd examples/
-python vllm_kv_offload.py
+python offline_inference.py
 ```
 
 ### Online Inference
