@@ -32,13 +32,13 @@ class AclrtDevice : public IBufferedDevice {
 public:
 public:
     AclrtDevice(const int32_t deviceId, const size_t bufferSize, const size_t bufferNumber)
-            : IBufferedDevice{bufferSize, bufferNumber}, _deviceId(deviceId), _stream(nullptr) 
+        : IBufferedDevice{bufferSize, bufferNumber}, _deviceId(deviceId), _stream(nullptr) 
     {
     }
     ~AclrtDevice();
     Status Setup() override;
-    Status H2DAsync (void* dst, size_t dstMax, const void* src, const size_t count) override;
-    Status D2HAsync (void* dst, size_t dstMax, const void* src, const size_t count) override;
+    Status H2DAsync(void* dst, size_t dstMax, const void* src, const size_t count) override;
+    Status D2HAsync(void* dst, size_t dstMax, const void* src, const size_t count) override;
     Status WaitFinish() override;
 
 private:

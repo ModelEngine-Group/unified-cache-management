@@ -38,11 +38,13 @@ void ShowSetupParam(const SetupParam& param)
     UC_INFO("Set UC::TransferEnable to {}.", param.transferEnable);
     UC_INFO("Set UC::DeviceId to {}.", param.transferDeviceId);
     UC_INFO("Set UC::StreamNumber to {}.", param.transferStreamNumber);
+    UC_INFO("Set UC::IOSize to {}.", param.transferIoSize);
 }
 
 int32_t Setup(const SetupParam& param)
 {
-    auto status = Singleton<SpaceManager>::Instance()->Setup(param.storageBackends, param.kvcacheBlockSize);
+    auto status = Singleton<SpaceManager>::Instance()->Setup(param.storageBackends, param.kvcacheBlockSize,
+                                                             param.transferIoSize);
     if (status.Failure()) {
         UC_ERROR("Failed({}) to setup SpaceManager.", status);
         return status.Underlying();

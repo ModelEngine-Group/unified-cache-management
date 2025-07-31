@@ -32,18 +32,15 @@ namespace UC {
 
 class Latch {
 public:
-    explicit Latch(const size_t expected = 0) : _counter(expected) {}
-    void Up() {++this->_counter;}
-    size_t Done()
-    {
-        auto counter = -- this->_counter;
-        if (counter == 0) { this->_cv.notify_all(); }
-        return counter;
-    }
+    explicit Latch(const size_t expected = 0) : _counter{expected} {}
+    void Up() { ++this->_counter; }
+    size_t Done() { return --this->_counter; }
+    void Notify() { this->_cv.notify_all(); }
     void Wait()
     {
-        std::unique_lock<std::mutex> lock(this->_mutex);
-        this->_cv.wait(lock, [this] {return this->_counter == 0;});
+        std::unique_lock<std::mutex> lk(this->_mutex);
+        if (this->_counter == 0) { return; }
+        this->_cv.wait(lk, [this] { return this->_counter == 0; });
     }
 
 private:

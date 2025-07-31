@@ -31,27 +31,20 @@ namespace UC {
 class PosixFile : public IFile {
 public:
     PosixFile(const std::string& path) : IFile{path}, _handle{-1} {}
-    virtual ~PosixFile() override;
-    virtual Status MkDir() override;
-    virtual void RmDir() override;
-    virtual Status Rename(const std::string& newName) override;
-    virtual Status Access(const int32_t mode) override;
-    virtual Status Open(const uint32_t flags) override;
-    virtual void Close() override;
-    virtual void Remove() override;
-    virtual Status Seek2End() override;
-    virtual Status Read(void* buffer, size_t size, off64_t offset = -1) override;
-    virtual Status Write(const void* buffer, size_t size, off64_t offset = -1) override;
-    virtual Status Lock() override;
-    virtual Status Lock(uint32_t retryCnt, uint32_t intervalUs) override;
-    virtual void Unlock() override;
-    virtual Status MMap(off64_t offset, size_t length, void*& addr, bool wr) override;
-    virtual Status Stat(struct stat* buffer) override;
-    virtual Status Truncate(size_t length) override;
+    ~PosixFile() override;
+    Status MkDir() override;
+    Status RmDir() override;
+    Status Rename(const std::string& newName) override;
+    Status Access(const int32_t mode) override;
+    Status Open(const uint32_t flags) override;
+    void Close() override;
+    void Remove() override;
+    Status Read(void* buffer, size_t size, off64_t offset = -1) override;
+    Status Write(const void* buffer, size_t size, off64_t offset = -1) override;
+    Status Truncate(size_t length) override;
 
 private:
     int32_t _handle;
-    uint32_t _openMode;
 };
 
 } // namespace UC

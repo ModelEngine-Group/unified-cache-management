@@ -22,40 +22,36 @@
 * SOFTWARE.
  * */
 #include "cuda_device.h"
-#include <cuda_runtime.h>
 #include "logger/logger.h"
+
+template <>
+struct fmt::formatter<cudaError_t> : formatter<int32_t> {
+    auto format(cudaError_t err, format_context& ctx) const -> format_context::iterator
+    {
+        return formatter<int32_t>::format(err, ctx);
+    }
+};
 
 namespace UC {
 
 CudaDevice::~CudaDevice()
 {
-    if (!this->_stream) {
-        return;
-    }
-    auto ret = cudaDestroyStream(this->_stream);
-    if (ret != cudaSUCCESS) {
-        UC_WARN("Failed({}) to run cudaDestroyStream", ret);
-    }
+    if (!this->_stream) { return; }
     this->_stream = nullptr;
-    ret = cudaResetDevice(this->_deviceId);
-    if (ret != cudaSUCCESS) {
-        UC_WARN("Failed({}) to run cudaResetDevice", ret);
-    }
 }
 
 Status CudaDevice::Setup()
 {
     auto status = IBufferedDevice::Setup();
-    if (status.Failure()){return status;}
+    if (status.Failure()){ return status; }
     auto ret = cudaSetDevice(this->_deviceId);
-    if (ret != cudaSUCCESS) {
-        UC_ERROR("Failed({}) to run cudaSetDevice with device({}).", ret , this->_deviceId);
+    if (ret != cudaSuccess) {
+        UC_ERROR("Failed({}) to run cudaSetDevice with device({}).", ret, this->_deviceId);
         return Status::OsApiError();
     }
-    ret = cudaCreateStream(&this->_stream);
-    if (ret != cudaSUCCESS) {
-        (void)cudaResetDevice(this->_deviceId);
-        UC_ERROR("Failed({}) to run cudaCreateStream.", ret);
+    ret = cudaStreamCreate(&this->_stream);
+    if (ret != cudaSuccess) {
+        UC_ERROR("Failed({}) to run cudaStreamCreate.", ret);
         return Status::OsApiError();
     }
     return Status::OK();
@@ -63,8 +59,8 @@ Status CudaDevice::Setup()
 
 Status CudaDevice::H2DAsync(void* dst, size_t dstMax, const void* src, const size_t count)
 {
-    auto ret = cudaMemcpyAsync(dst, dstMax, src, count, cuda_MEMCPY_HOST_TO_DEVICE, this->_stream);
-    if (ret != cudaSUCCESS) {
+    auto ret = cudaMemcpyAsync(dst, src, count, cudaMemcpyHostToDevice, this->_stream);
+    if (ret != cudaSuccess) {
         UC_ERROR("Failed({}) to copy data from H({}) to D({}).", ret, count, dstMax);
         return Status::OsApiError();
     }
@@ -73,8 +69,8 @@ Status CudaDevice::H2DAsync(void* dst, size_t dstMax, const void* src, const siz
 
 Status CudaDevice::D2HAsync(void* dst, size_t dstMax, const void* src, const size_t count)
 {
-    auto ret = cudaMemcpyAsync(dst, dstMax, src, count, cuda_MEMCPY_DEVICE_TO_HOST, this->_stream);
-    if (ret != cudaSUCCESS) {
+    auto ret = cudaMemcpyAsync(dst, src, count, cudaMemcpyDeviceToHost, this->_stream);
+    if (ret != cudaSuccess) {
         UC_ERROR("Failed({}) to copy data from D({}) to H({}).", ret, count, dstMax);
         return Status::OsApiError();
     }
@@ -83,11 +79,12 @@ Status CudaDevice::D2HAsync(void* dst, size_t dstMax, const void* src, const siz
 
 Status CudaDevice::WaitFinish()
 {
-    auto ret = cudaSynchronizeStream(this->_stream);
-    if (ret != cudaSUCCESS) {
+    auto ret = cudaStreamSynchronize(this->_stream);
+    if (ret != cudaSuccess) {
         UC_ERROR("Failed({}) to synchronize device stream.", ret);
         return Status::OsApiError();
     }
+    this->ResetHostBufferIndex();
     return Status::OK();
 }
 

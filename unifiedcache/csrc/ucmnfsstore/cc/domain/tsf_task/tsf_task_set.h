@@ -21,29 +21,45 @@
 * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 * SOFTWARE.
  * */
-#ifndef UNIFIEDCACHE_TSF_TASK_SET
-#define UNIFIEDCACHE_TSF_TASK_SET
+#ifndef UNIFIEDCACHE_TSF_TASK_SET_H
+#define UNIFIEDCACHE_TSF_TASK_SET_H
 
-#include <cstddef>
-#include <shared_mutex>
-#include <unordered_set>
+#include <algorithm>
 #include <list>
+#include <mutex>
+#include <shared_mutex>
 
 namespace UC{
 
 class TsfTaskSet{
     static constexpr size_t nBucket = 8192;
 public:
-    void Insert(const size_t id);
-    bool Exist(const size_t id);
-    void Remove(const size_t id);
+    void Insert(const size_t id)
+    {
+        auto idx = this->Hash(id);
+        std::unique_lock<std::shared_mutex> lk(this->_mutexes[idx]);
+        this->_buckets[idx].push_back(id);
+    }
+    bool Exist(const size_t id)
+    {
+        auto idx = this->Hash(id);
+        std::shared_lock<std::shared_mutex> lk(this->_mutexes[idx]);
+        auto bucket = this->_buckets + idx;
+        return std::find(bucket->begin(), bucket->end(), id) != bucket->end();
+    }
+    void Remove(const size_t id)
+    {
+        auto idx = this->Hash(id);
+        std::unique_lock<std::shared_mutex> lk(this->_mutexes[idx]);
+        this->_buckets[idx].remove(id);
+    }
 
 private:
-    size_t Hash(const size_t id);
+    size_t Hash(const size_t id) { return id % nBucket; }
 
 private:
-    std::shared_mutex _mutexs[nBucket];
-    std::list<size_t> _sets[nBucket];
+    std::shared_mutex _mutexes[nBucket];
+    std::list<size_t> _buckets[nBucket];
 };
 
 } // namespace UC

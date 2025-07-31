@@ -29,27 +29,21 @@ namespace UC {
 
 AclrtDevice::~AclrtDevice()
 {
-    if (!this->_stream) {
-        return;
-    }
+    if (!this->_stream) { return; }
     auto ret = aclrtDestroyStream(this->_stream);
-    if (ret != ACL_SUCCESS) {
-        UC_WARN("Failed({}) to run aclrtDestroyStream", ret);
-    }
+    if (ret != ACL_SUCCESS) { UC_WARN("Failed({}) to run aclrtDestroyStream", ret); }
     this->_stream = nullptr;
     ret = aclrtResetDevice(this->_deviceId);
-    if (ret != ACL_SUCCESS) {
-        UC_WARN("Failed({}) to run aclrtResetDevice", ret);
-    }
+    if (ret != ACL_SUCCESS) { UC_WARN("Failed({}) to run aclrtResetDevice", ret); }
 }
 
 Status AclrtDevice::Setup()
 {
     auto status = IBufferedDevice::Setup();
-    if (status.Failure()){return status;}
+    if (status.Failure()){ return status; }
     auto ret = aclrtSetDevice(this->_deviceId);
     if (ret != ACL_SUCCESS) {
-        UC_ERROR("Failed({}) to run aclrtSetDevice with device({}).", ret , this->_deviceId);
+        UC_ERROR("Failed({}) to run aclrtSetDevice with device({}).", ret, this->_deviceId);
         return Status::OsApiError();
     }
     ret = aclrtCreateStream(&this->_stream);
@@ -88,6 +82,7 @@ Status AclrtDevice::WaitFinish()
         UC_ERROR("Failed({}) to synchronize device stream.", ret);
         return Status::OsApiError();
     }
+    this->ResetHostBufferIndex();
     return Status::OK();
 }
 

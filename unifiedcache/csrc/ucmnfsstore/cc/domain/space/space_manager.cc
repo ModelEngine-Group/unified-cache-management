@@ -24,7 +24,6 @@
 #include "space_manager.h"
 #include "file/file.h"
 #include "logger/logger.h"
-#include <algorithm>
 
 namespace UC {
 
@@ -34,13 +33,13 @@ Status SpaceManager::Setup(const std::vector<std::string>& storageBackends, cons
         UC_ERROR("Empty backend list.");
         return Status::InvalidParam();
     }
-    for (auto& path : storageBackends) {
-        Status status = this->AddStorageBackend(path);
-        if (status.Failure()) { return status; }
-    }
     if (blockSize == 0) {
         UC_ERROR("Invalid block size({}).", blockSize);
         return Status::InvalidParam();
+    }
+    for (auto& path : storageBackends) {
+        Status status = this->AddStorageBackend(path);
+        if (status.Failure()) { return status; }
     }
     this->_blockSize = blockSize;
     return Status::OK();
@@ -103,9 +102,9 @@ bool SpaceManager::LookupBlock(const std::string& blockId)
         UC_ERROR("Failed to make file smart pointer, path: {}.", path);
         return false;
     }
-    auto s = file->Access(IFile::AccessMode::EXIST);
+    auto s = file->Access(IFile::AccessMode::EXIST | IFile::AccessMode::READ | IFile::AccessMode::WRITE);
     if (s.Failure()) {
-        UC_ERROR("Failed to access file, path: {}, errcode: {}.", path, s.Underlying());
+        if (s != Status::NotFound()) { UC_ERROR("Failed to access file, path: {}, errcode: {}.", path, s); }
         return false;
     }
     return true;
@@ -124,13 +123,9 @@ Status SpaceManager::AddStorageBackend(const std::string& path)
     if (this->_storageBackends.empty()) {
         status = this->AddFirstStorageBackend(normalizedPath);
     } else {
-        status = this->AddSecondaryStorageBackend(path);
+        status = this->AddSecondaryStorageBackend(normalizedPath);
     }
-    if (status.Success()) {
-        UC_INFO("Add UC::StorageBackend: {}.", normalizedPath);
-    } else {
-        UC_ERROR("Failed({}) to add storage backend({}).", status, normalizedPath);
-    }
+    if (status.Failure()) { UC_ERROR("Failed({}) to add storage backend({}).", status, normalizedPath); }
     return status;
 }
 

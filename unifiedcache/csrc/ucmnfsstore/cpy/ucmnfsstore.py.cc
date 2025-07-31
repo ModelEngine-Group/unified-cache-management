@@ -23,6 +23,8 @@
  * */
 #include "ucmnfsstore/ucmnfsstore.h"
 #include <pybind11/pybind11.h>
+#include <pybind11/stl.h>
+#include "status/status.h"
 
 namespace py = pybind11;
 
@@ -59,8 +61,8 @@ inline size_t SubmitTsfTasks(const py::list& blockIdList, const py::list& offset
            (length != lengthList.end())) {
         tasks.emplace_back(type, location, blockId->cast<std::string>(), offset->cast<size_t>(),
                            address->cast<uintptr_t>(), length->cast<size_t>());
-        size += length->cast<size_t>();
         number++;
+        size += length->cast<size_t>();
         blockId++;
         offset++;
         address++;
@@ -113,7 +115,8 @@ PYBIND11_MODULE(ucmnfsstore, module)
         .def_readwrite("kvcacheBlockSize", &UC::SetupParam::kvcacheBlockSize)
         .def_readwrite("transferEnable", &UC::SetupParam::transferEnable)
         .def_readwrite("transferDeviceId", &UC::SetupParam::transferDeviceId)
-        .def_readwrite("transferStreamNumber", &UC::SetupParam::transferStreamNumber);
+        .def_readwrite("transferStreamNumber", &UC::SetupParam::transferStreamNumber)
+        .def_readwrite("transferIoSize", &UC::SetupParam::transferIoSize);
     module.def("Setup", &UC::Setup);
     module.def("Alloc", &UC::AllocBatch);
     module.def("Lookup", &UC::LookupBatch);

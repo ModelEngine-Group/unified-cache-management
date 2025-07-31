@@ -24,7 +24,6 @@
 #ifndef UNIFIEDCACHE_IDEVICE_H
 #define UNIFIEDCACHE_IDEVICE_H
 
-#include <cstddef>
 #include <memory>
 #include "status/status.h"
 
@@ -35,8 +34,9 @@ public:
     virtual ~IDevice() = default;
     virtual Status Setup() = 0;
     virtual std::shared_ptr<void> GetHostBuffer(size_t size) = 0;
-    virtual Status H2DAsync(void* dst, size_t dstMax, const void* src, const size_t count)=0;      
-    virtual Status D2HAsync(void* dst, size_t dstMax, const void* src, const size_t count)=0;        
+    virtual void ResetHostBufferIndex() = 0;
+    virtual Status H2DAsync(void* dst, size_t dstMax, const void* src, const size_t count)=0;
+    virtual Status D2HAsync(void* dst, size_t dstMax, const void* src, const size_t count)=0;
     virtual Status WaitFinish() = 0;
 };
 

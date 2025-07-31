@@ -24,6 +24,7 @@
 #ifndef UNIFIEDCACHE_CUDA_DEVICE_H
 #define UNIFIEDCACHE_CUDA_DEVICE_H
 
+#include <cuda_runtime.h>
 #include "ibuffered_device.h"
 
 namespace UC {
@@ -31,18 +32,18 @@ namespace UC {
 class CudaDevice : public IBufferedDevice {
 public:
     CudaDevice(const int32_t deviceId, const size_t bufferSize, const size_t bufferNumber)
-            : IBufferedDevice{bufferSize, bufferNumber}, _deviceId(deviceId), _stream(nullptr) 
+        : IBufferedDevice{bufferSize, bufferNumber}, _deviceId(deviceId), _stream(nullptr) 
     {
     }
     ~CudaDevice();
     Status Setup() override;
-    Status H2DAsync (void* dst, size_t dstMax, const void* src, const size_t count) override;
-    Status D2HAsync (void* dst, size_t dstMax, const void* src, const size_t count) override;
+    Status H2DAsync(void* dst, size_t dstMax, const void* src, const size_t count) override;
+    Status D2HAsync(void* dst, size_t dstMax, const void* src, const size_t count) override;
     Status WaitFinish() override;
 
 private:
     int32_t _deviceId;
-    void* _stream;
+    cudaStream_t _stream;
 };
 
 } // namespace UC

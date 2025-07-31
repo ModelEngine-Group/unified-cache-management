@@ -25,12 +25,12 @@
 #ifndef UNIFIEDCACHE_IBUFFERED_DEVICE_H
 #define UNIFIEDCACHE_IBUFFERED_DEVICE_H
 
-#include "device/idevice.h"
+#include "idevice.h"
 
 namespace UC {
 
-class IBufferedDevice : public IDevice {  
-    class Buffer{
+class IBufferedDevice : public IDevice {
+    class Buffer {
     public:
         void Setup(std::shared_ptr<void> buffer, size_t size, size_t number)
         {
@@ -39,10 +39,10 @@ class IBufferedDevice : public IDevice {
             this->_number = number;
             this->_index = 0;
         }
-        bool Empty() const {return this->_index == 0;}
-        bool Full() const {return this->_index == this->_number;}
-        bool Available(size_t size) const {return this->_index <= this->_number;}
-        void Reset() {this->_index = 0;}
+        bool Empty() const { return this->_index == 0; }
+        bool Full() const { return this->_index == this->_number; }
+        bool Available(size_t size) const { return size <= this->_size; }
+        void Reset() { this->_index = 0; }
         std::shared_ptr<void> GetBuffer()
         {
             auto ptr = static_cast<uint8_t*>(this->_buffer.get());
@@ -59,10 +59,11 @@ class IBufferedDevice : public IDevice {
     };
 
 public:
-    IBufferedDevice(size_t bufferSize, size_t bufferNumber);
+    IBufferedDevice(const size_t bufferSize, const size_t bufferNumber);
     virtual ~IBufferedDevice() = default;
     Status Setup() override;
     std::shared_ptr<void> GetHostBuffer(size_t size) override;
+    void ResetHostBufferIndex() override;
 
 private:
     size_t _bufferSize;

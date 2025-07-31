@@ -30,16 +30,6 @@
 
 namespace UC {
 
-class OpenMode{
-public:
-    static const int32_t RD = O_RDONLY;
-    static const int32_t WR = O_WRONLY;
-    static const int32_t RDWR = O_RDWR;
-    static const int32_t APP = O_APPEND;
-    static const int32_t DIRECT = O_DIRECT;
-    static const int32_t CREATE = O_CREAT;
-};
-
 class IFile {
 public:
     class AccessMode {
@@ -64,7 +54,7 @@ public:
     virtual ~IFile() = default;
     const std::string& Path() const { return this->_path; }
     virtual Status MkDir() = 0;
-    virtual void RmDir() = 0;
+    virtual Status RmDir() = 0;
     virtual Status Rename(const std::string& newName) = 0;
     virtual Status Access(const int32_t mode) = 0;
     virtual Status Open(const uint32_t flags) = 0;
@@ -73,11 +63,6 @@ public:
     virtual Status Seek2End() = 0;
     virtual Status Read(void* buffer, size_t size, off64_t offset = -1) = 0;
     virtual Status Write(const void* buffer, size_t size, off64_t offset = -1) = 0;
-    virtual Status Lock() = 0;
-    virtual Status Lock(uint32_t retryCnt, uint32_t intervalUs) = 0;
-    virtual void Unlock() = 0;
-    virtual Status MMap(off64_t offset, size_t length, void*& addr, bool wr) = 0;
-    virtual Status Stat(struct stat* buffer) = 0;
     virtual Status Truncate(size_t length) = 0;
 
 private:

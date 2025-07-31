@@ -24,28 +24,28 @@
 #ifndef UNIFIEDCACHE_TSF_TASK_MANAGER
 #define UNIFIEDCACHE_TSF_TASK_MANAGER
 
-#include "tsf_task_queue.h"
-#include "tsf_task_waiter.h"
+#include <memory>
 #include <unordered_map>
 #include <vector>
+#include "tsf_task_queue.h"
 
 namespace UC {
 
 class TsfTaskManager{
 public:
-    Status Setup(const int32_t deviceId, const size_t streamNumber);
-    Status Submit(std::list<TsfTask>tasks, const size_t size, const size_t number, const std::string& brief,
+    Status Setup(const int32_t deviceId, const size_t streamNumber, const size_t ioSize);
+    Status Submit(std::list<TsfTask>& tasks, const size_t size, const size_t number, const std::string& brief,
                   size_t& taskId);
     Status Wait(const size_t taskId);
     
 private:
-    void Dispatch(std::list<TsfTask>& tasks, std::vector<std::list<TsfTask>>& targets ,size_t& taskId, 
+    void Dispatch(std::list<TsfTask>& tasks, std::vector<std::list<TsfTask>>& targets , const size_t taskId, 
                   std::shared_ptr<TsfTaskWaiter> waiter) const;
 
 private:
     std::mutex _mutex;
     TsfTaskSet _failureSet;
-    std::unordered_map<size_t, std::shared_ptr<TsfTaskWaiter>> _waiters; 
+    std::unordered_map<size_t, std::shared_ptr<TsfTaskWaiter>> _waiters;
     std::vector<std::unique_ptr<TsfTaskQueue>> _queues;
     size_t _qIdx{0};
     size_t _taskIdSeed{0};

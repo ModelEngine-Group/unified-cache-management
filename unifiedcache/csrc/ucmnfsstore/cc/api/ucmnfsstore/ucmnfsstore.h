@@ -37,11 +37,12 @@ struct SetupParam {
     bool transferEnable;
     int32_t transferDeviceId;
     size_t transferStreamNumber;
+    size_t transferIoSize;
 
     SetupParam(const std::vector<std::string>& storageBackends, const size_t kvcacheBlockSize,
                const bool transferEnable)
         : storageBackends{storageBackends}, kvcacheBlockSize{kvcacheBlockSize}, transferEnable{transferEnable},
-          transferDeviceId{-1}, transferStreamNumber{256}
+          transferDeviceId{-1}, transferStreamNumber{256}, transferIoSize{262144}
     {
     }
 };

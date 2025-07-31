@@ -22,14 +22,18 @@
 * SOFTWARE.
  * */
 #include "device.h"
+#ifdef ASCEND_AVAILABLE
 #include "aclrt_device.h"
+#endif
+#ifdef CUDA_AVAILABLE
 #include "cuda_device.h"
+#endif
 #include "logger/logger.h"
 
 namespace UC {
 
 std::unique_ptr<IDevice> Device::Make(const int32_t deviceId, const size_t hostBufferSize,
-                                       const size_t hostBufferNumber)
+                                      const size_t hostBufferNumber)
 {
     try {
         std::unique_ptr<IDevice> device = nullptr;
@@ -41,10 +45,10 @@ std::unique_ptr<IDevice> Device::Make(const int32_t deviceId, const size_t hostB
 #endif
         return device;
     } catch (const std::exception& e) {
-        UC_ERROR("Failed({}) to instantiate the device({},{},{}) object", e.what(), deviceId, hostBufferSize,
+        UC_ERROR("Failed({}) to instantiate the device({},{},{}) object.", e.what(), deviceId, hostBufferSize,
                  hostBufferNumber);
-        return nullptr;
     }
+    return nullptr;
 }
 
 } // namespace UC

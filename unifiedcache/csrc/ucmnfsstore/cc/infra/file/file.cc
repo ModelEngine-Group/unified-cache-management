@@ -22,7 +22,6 @@
  * SOFTWARE.
  * */
 #include "file.h"
-#include <sys/mman.h>
 #include "logger/logger.h"
 #include "posix_file.h"
 
@@ -33,7 +32,7 @@ std::unique_ptr<IFile> File::Make(const std::string& path)
     try {
         return std::make_unique<PosixFile>(path);
     } catch (const std::exception& e) {
-        UC_ERROR("Failed to create file object, path: {}, error: {}.", path, e.what());
+        UC_ERROR("Failed({}) to make file({}) pointer.", e.what(), path);
         return nullptr;
     }
 }

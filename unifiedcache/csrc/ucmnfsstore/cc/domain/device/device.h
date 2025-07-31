@@ -21,12 +21,10 @@
 * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 * SOFTWARE.
  * */
-#ifndef UNIFIEDCACHE_IDEVICE
-#define UNIFIEDCACHE_IDEVICE
+#ifndef UNIFIEDCACHE_DEVICE_H
+#define UNIFIEDCACHE_DEVICE_H
 
-#include <memory>
 #include "idevice.h"
-#include "status/status.h"
 
 namespace UC {
 
@@ -38,4 +36,4 @@ public:
 
 } // namespace UC
 
-#endif // UNIFIEDCACHE_IDEVICE
+#endif // UNIFIEDCACHE_DEVICE_H

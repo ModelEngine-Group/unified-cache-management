@@ -22,28 +22,22 @@
 * SOFTWARE.
  * */
 #include "tsf_task_manager.h"
-#include <list>
-#include <map>
-#include <algorithm>
-#include <thread>
-#include "template/singleton.h"
-#include "configurator.h"
 
 namespace UC {
 
-Status TsfTaskManager::Setup(const int32_t deviceId, const size_t streamNumber)
+Status TsfTaskManager::Setup(const int32_t deviceId, const size_t streamNumber, const size_t ioSize)
 {
     this->_queues.reserve(streamNumber);
     for (size_t i = 0; i < streamNumber; ++i) {
         auto& queue = this->_queues.emplace_back(std::make_unique<TsfTaskQueue>());
-        auto status = queue->Setup(deviceId,  &this->_failureSet);
+        auto status = queue->Setup(deviceId, ioSize, &this->_failureSet);
         if (status.Failure()) { return status; }
     }
     return Status::OK();
 }
 
-Status TsfTaskManager::Submit(std::list<TsfTask> tasks, const size_t size, const size_t number,
-                               const std::string& brief, size_t& taskId)
+Status TsfTaskManager::Submit(std::list<TsfTask>& tasks, const size_t size, const size_t number,
+                              const std::string& brief, size_t& taskId)
 {
     std::unique_lock<std::mutex> lk(this->_mutex);
     taskId = ++this->_taskIdSeed;
@@ -51,8 +45,8 @@ Status TsfTaskManager::Submit(std::list<TsfTask> tasks, const size_t size, const
     if (!success) { return Status::OutOfMemory(); }
     std::vector<std::list<TsfTask>> lists;
     this->Dispatch(tasks, lists, taskId, iter->second);
-    for (size_t i = 0; i < lists.size(); i++){
-        if (lists[i].empty()){continue;}
+    for (size_t i = 0; i < lists.size(); i++) {
+        if (lists[i].empty()) { continue; }
         this->_queues[this->_qIdx]->Push(lists[i]);
         this->_qIdx = (this->_qIdx + 1) % this->_queues.size();
     }
@@ -70,12 +64,13 @@ Status TsfTaskManager::Wait(const size_t taskId)
         this->_waiters.erase(iter);
     }
     waiter->Wait();
-    bool failed = this->_failureSet.Exist(taskId);
+    bool failure = this->_failureSet.Exist(taskId);
     this->_failureSet.Remove(taskId);
-    return failed ? Status::Error() : Status::OK();
+    if (failure) { UC_ERROR("Transfer task({}) failed.", taskId); }
+    return failure ? Status::Error() : Status::OK();
 }
 
-void TsfTaskManager::Dispatch(std::list<TsfTask>& tasks, std::vector<std::list<TsfTask>>& targets, size_t& taskId,
+void TsfTaskManager::Dispatch(std::list<TsfTask>& tasks, std::vector<std::list<TsfTask>>& targets, const size_t taskId,
                               std::shared_ptr<TsfTaskWaiter> waiter) const
 {
     auto qNumber = this->_queues.size();
@@ -86,7 +81,6 @@ void TsfTaskManager::Dispatch(std::list<TsfTask>& tasks, std::vector<std::list<T
         auto next = std::next(it);
         it->owner = taskId;
         it->waiter = waiter;
-        waiter->Up();
         auto& target = targets[index % qNumber];
         target.splice(target.end(), tasks, it);
         index++;

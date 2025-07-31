@@ -21,8 +21,8 @@
 * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 * SOFTWARE.
  * */
-#ifndef UNIFIEDCACHE_TSF_TASK_RUNNER
-#define UNIFIEDCACHE_TSF_TASK_RUNNER
+#ifndef UNIFIEDCACHE_TSF_TASK_RUNNER_H
+#define UNIFIEDCACHE_TSF_TASK_RUNNER_H
 
 #include "device/idevice.h"
 #include "status/status.h"
@@ -32,14 +32,14 @@ namespace UC {
 
 class TsfTaskRunner {
 public:
-    TsfTaskRunner(IDevice* device) : _device(device) {};
+    TsfTaskRunner(IDevice* device) : _device{device} {}
     Status Run(const TsfTask& task);
      
 private:
-    Status Host2SSD(const TsfTask& task);   
-    Status SSD2Host(const TsfTask& task);   
-    Status Device2SSD(const TsfTask& task); 
-    Status SSD2Device(const TsfTask& task); 
+    Status Ssd2Host(const TsfTask& task);
+    Status Host2Ssd(const TsfTask& task);
+    Status Ssd2Device(const TsfTask& task);
+    Status Device2Ssd(const TsfTask& task);
 
 private:
     IDevice* _device;

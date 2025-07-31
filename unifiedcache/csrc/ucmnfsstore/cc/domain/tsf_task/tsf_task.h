@@ -31,20 +31,20 @@
 namespace UC {
 
 struct TsfTask {
-    enum class Type { DUMP, LOAD };         
-    enum class Location { HOST, DEVICE };   
+    enum class Type { DUMP, LOAD };
+    enum class Location { HOST, DEVICE };
     Type type;
-    Location location;  
+    Location location;
     std::string blockId;
-    size_t offset;      
-    uintptr_t address;  
-    size_t length;      
-    size_t owner;  
+    size_t offset;
+    uintptr_t address;
+    size_t length;
+    size_t owner;
     std::shared_ptr<TsfTaskWaiter> waiter;
 
     TsfTask(const Type type, const Location location, const std::string& blockId, const size_t offset,
             const uintptr_t address, const size_t length)
-        : type{type}, location{location}, blockId{blockId}, offset{offset}, address{address}, length{length}, owner{0}, 
+        : type{type}, location{location}, blockId{blockId}, offset{offset}, address{address}, length{length}, owner{0},
           waiter{nullptr}
     {
     }

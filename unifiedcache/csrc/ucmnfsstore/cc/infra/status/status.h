@@ -103,7 +103,6 @@ public:
     }
 
 public:
-    Status() : _code{Code::OK} {}
     Status(const Status& status) { this->_code = status._code; }
     Status& operator=(const Status& status)
     {

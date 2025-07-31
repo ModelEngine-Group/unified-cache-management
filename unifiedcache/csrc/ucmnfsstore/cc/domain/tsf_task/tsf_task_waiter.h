@@ -33,22 +33,27 @@ namespace UC {
 
 class TsfTaskWaiter : public Latch {
 public:
-    TsfTaskWaiter(const size_t id, const size_t size, const size_t number, const std::string& brief) : Latch{0}
+    TsfTaskWaiter(const size_t id, const size_t size, const size_t number, const std::string& brief)
+        : Latch{number}, _id{id}, _size{size}, _number{number}, _brief{brief}
     {
-        this->_ino = fmt::format("{}-{}-{}-{}", id, brief, size, number);
     }
 
     void Done()
     {
         if (Latch::Done() == 0) {
-            UC_INFO("Task({}) finished in {:.006f}s", _ino, _sw.elapsed().count());
+            UC_INFO("Task({}, {}, {}, {}) finished, elapsed {:.06f}s", this->_id, this->_brief, this->_number,
+                    this->_size, this->_sw.elapsed().count());
+            this->Notify();
         }
     }
 
 
 private:
+    size_t _id;
+    size_t _size;
+    size_t _number;
+    std::string _brief;
     spdlog::stopwatch _sw;
-    std::string _ino;
 };
 
 } // namespace UC

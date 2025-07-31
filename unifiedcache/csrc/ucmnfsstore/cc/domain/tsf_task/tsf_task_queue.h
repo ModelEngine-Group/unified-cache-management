@@ -21,15 +21,16 @@
 * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 * SOFTWARE.
  * */
-#ifndef UNIFIEDCACHE_TSF_TASK_QUEUE
-#define UNIFIEDCACHE_TSF_TASK_QUEUE
+#ifndef UNIFIEDCACHE_TSF_TASK_QUEUE_H
+#define UNIFIEDCACHE_TSF_TASK_QUEUE_H
 
 #include <condition_variable>
 #include <future>
 #include <list>
 #include <mutex>
 #include <thread>
-#include "tsf_task_runner.h"
+#include "status/status.h"
+#include "tsf_task.h"
 #include "tsf_task_set.h"
 
 namespace UC{
@@ -37,7 +38,7 @@ namespace UC{
 class TsfTaskQueue{
 public:
     ~TsfTaskQueue();
-    Status Setup(const int32_t deviceId, TsfTaskSet* failureSet);
+    Status Setup(const int32_t deviceId, const size_t size, TsfTaskSet* failureSet);
     void Push(std::list<TsfTask>& tasks);
 
 private:
@@ -50,6 +51,7 @@ private:
     std::thread _worker;
     bool _running{false};
     int32_t _deviceId;
+    size_t _ioSize;
     TsfTaskSet* _failureSet;
 };
 

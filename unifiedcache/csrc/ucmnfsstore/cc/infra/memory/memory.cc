@@ -29,7 +29,7 @@ namespace UC {
 std::shared_ptr<void> MakePtr(void* ptr)
 {
     if (!ptr) {return nullptr;}
-    return std::shared_ptr<void>(ptr, [](void* p) { free(p); });
+    return std::shared_ptr<void>(ptr, [](void* ptr) { free(ptr); });
 }
 
 std::shared_ptr<void> Memory::Alloc(const size_t size) {return MakePtr(malloc(size));}

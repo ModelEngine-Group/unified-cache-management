@@ -27,7 +27,7 @@
 
 namespace UC {
 
-IBufferedDevice::IBufferedDevice(size_t bufferSize, size_t bufferNumber)
+IBufferedDevice::IBufferedDevice(const size_t bufferSize, const size_t bufferNumber)
 {
     this->_bufferSize = Memory::Align(bufferSize);
     this->_bufferNumber = bufferNumber;
@@ -38,7 +38,7 @@ Status IBufferedDevice::Setup()
 {
     auto buffer = Memory::AllocAlign(this->_bufferSize * this->_bufferNumber);
     if (!buffer) {
-        UC_ERROR("Failed to make buffer({},{}).", this->_bufferSize * this->_bufferNumber);
+        UC_ERROR("Failed to make buffer({},{}).", this->_bufferSize, this->_bufferNumber);
         return Status::OutOfMemory();
     }
     this->_buffer.Setup(buffer, this->_bufferSize, this->_bufferNumber);
@@ -47,14 +47,16 @@ Status IBufferedDevice::Setup()
 
 std::shared_ptr<void> IBufferedDevice::GetHostBuffer(size_t size)
 {
-    if (this->_buffer.Full()){
+    if (this->_buffer.Full()) {
         auto status = this->WaitFinish();
-        if (status.Failure()) { return nullptr;}
-        this->_buffer.Reset();
+        if (status.Failure()) { return nullptr; }
+        this->ResetHostBufferIndex();
     }
     if (this->_buffer.Available(size)) { return this->_buffer.GetBuffer(); }
     this->_tmpBuffer = Memory::AllocAlign(Memory::Align(size));
     return this->_tmpBuffer;
 }
+
+void IBufferedDevice::ResetHostBufferIndex() { this->_buffer.Reset(); }
 
 }   // namespace UC
