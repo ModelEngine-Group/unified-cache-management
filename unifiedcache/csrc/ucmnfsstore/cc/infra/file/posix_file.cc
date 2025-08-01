@@ -30,12 +30,7 @@
 
 namespace UC {
 
-PosixFile::~PosixFile()
-{
-    if (this->_handle != -1) {
-        this->Close();
-    }
-}
+PosixFile::~PosixFile() { this->Close(); }
 
 Status PosixFile::MkDir()
 {
@@ -53,13 +48,17 @@ Status PosixFile::MkDir()
     return Status::OK();
 }
 
-void PosixFile::RmDir()
+Status PosixFile::RmDir()
 {
     auto ret = rmdir(this->Path().c_str());
     auto eno = errno;
     if (ret != 0) {
-        UC_ERROR("Failed to remove directory, path: {}, errcode: {}, errno: {}.", this->Path(), ret, eno);
+        if (eno != ENOTEMPTY) {
+            UC_WARN("Failed to remove directory, path: {}.", this->Path());
+        }
+        return Status::OsApiError();
     }
+    return Status::OK();
 }
 
 Status PosixFile::Rename(const std::string& newName)
@@ -96,14 +95,12 @@ Status PosixFile::Access(const int32_t mode)
 
 Status PosixFile::Open(const uint32_t flags)
 {
-    auto eno = 0;
-    this->_openMode = flags;
     constexpr auto permission = (S_IRWXU | S_IRGRP | S_IXGRP | S_IROTH | S_IXOTH);
-    this->_handle = open(this->Path().c_str(), this->_openMode, permission);
-    eno = errno;
+    this->_handle = open(this->Path().c_str(), flags, permission);
+    auto eno = errno;
     if (!this->_handle) {
         UC_ERROR("Failed to open file, path: {}, flags: {}, errno: {}.",
-                 this->Path(), this->_openMode, eno);
+                 this->Path(), flags, eno);
         return Status::OsApiError();
     }
     return Status::OK();
@@ -111,7 +108,7 @@ Status PosixFile::Open(const uint32_t flags)
 
 void PosixFile::Close()
 {
-    close(this->_handle);
+    if (this->_handle != -1) { close(this->_handle); }
     this->_handle = -1;
 }
 
@@ -124,17 +121,6 @@ void PosixFile::Remove()
             UC_WARN("Failed to remove file, path: {}, file not found.", this->Path());
         }
     }
-}
-
-Status PosixFile::Seek2End()
-{
-    auto ret = lseek64(this->_handle, 0, SEEK_END);
-    auto eno = errno;
-    if (ret < 0) {
-        UC_ERROR("Failed to seek to end of file, path: {}, errno: {}.", this->Path(), ret, eno);
-        return Status::OsApiError();
-    }
-    return Status::OK();
 }
 
 Status PosixFile::Read(void* buffer, size_t size, off64_t offset)
@@ -166,84 +152,6 @@ Status PosixFile::Write(const void* buffer, size_t size, off64_t offset)
     if (nBytes != static_cast<ssize_t>(size)) {
         UC_ERROR("Failed to write file, path: {}, size: {}, offset: {}, errno: {}.",
                  this->Path(), size, offset, eno);
-        return Status::OsApiError();
-    }
-    return Status::OK();
-}
-
-Status PosixFile::Lock()
-{
-    struct flock lock = {0};
-    lock.l_type = F_WRLCK;
-    lock.l_whence = SEEK_SET;
-    lock.l_start = 0;
-    lock.l_len = 0; // Lock the whole file
-    auto ret = fcntl(this->_handle, F_SETLK, &lock);
-    auto eno = errno;
-    if (ret != 0) {
-        if (eno == EACCES || eno == EAGAIN) {
-            return Status::Retry();
-        } else {
-            UC_ERROR("Failed to lock file, path: {}, errno: {}.", this->Path(), eno);
-            return Status::OsApiError();
-        }
-    }
-    return Status::OK();
-}
-
-Status PosixFile::Lock(uint32_t retryCnt, uint32_t interval)
-{
-    uint32_t retry = 0;
-    auto ret = this->Lock();
-    while (ret == Status::Retry() && retry < retryCnt) {
-        usleep(interval);
-        ret = this->Lock();
-        ++retry;
-    }
-    if (ret.Failure()) {
-        UC_ERROR("Failed to lock file after {} retries, path: {}, status: {}.", retry, this->Path(), ret);
-    }
-    return ret;
-}
-
-void PosixFile::Unlock()
-{
-    struct flock lock = {0};
-    lock.l_type = F_UNLCK;
-    lock.l_whence = SEEK_SET;
-    lock.l_start = 0;
-    lock.l_len = 0; // Unlock the whole file
-    auto ret = fcntl(this->_handle, F_SETLK, &lock);
-    auto eno = errno;
-    if (ret != 0) {
-        UC_ERROR("Failed to unlock file, path: {}, errno: {}.", this->Path(), eno);
-    }
-}
-
-Status PosixFile::MMap(off64_t offset, size_t length, void*& addr, bool wr)
-{
-    auto prot = PROT_READ;
-    if (wr) {
-        prot |= PROT_WRITE;
-    }
-    auto flags = MAP_SHARED | MAP_POPULATE;
-    auto ptr = mmap(nullptr, length, prot, flags, this->_handle, offset);
-    auto eno = errno;
-    if (ptr == MAP_FAILED || ptr == nullptr) {
-        UC_ERROR("Failed to mmap file, path: {}, offset: {}, length: {}, errno: {}.",
-                 this->Path(), offset, length, eno);
-        return Status::OsApiError();
-    }
-    addr = ptr;
-    return Status::OK();
-}
-
-Status PosixFile::Stat(struct stat* buffer)
-{
-    auto ret = stat(this->Path().c_str(), buffer);
-    auto eno = errno;
-    if (ret != 0) {
-        UC_ERROR("Failed to stat file, path: {}, errno: {}.", this->Path(), eno);
         return Status::OsApiError();
     }
     return Status::OK();

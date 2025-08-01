@@ -43,14 +43,14 @@ void ShowSetupParam(const SetupParam& param)
 
 int32_t Setup(const SetupParam& param)
 {
-    auto status = Singleton<SpaceManager>::Instance()->Setup(param.storageBackends, param.kvcacheBlockSize,
-                                                             param.transferIoSize);
+    auto status = Singleton<SpaceManager>::Instance()->Setup(param.storageBackends, param.kvcacheBlockSize);
     if (status.Failure()) {
         UC_ERROR("Failed({}) to setup SpaceManager.", status);
         return status.Underlying();
     }
     if (param.transferEnable) {
-        status = Singleton<TsfTaskManager>::Instance()->Setup(param.transferDeviceId, param.transferStreamNumber);
+        status = Singleton<TsfTaskManager>::Instance()->Setup(param.transferDeviceId, param.transferStreamNumber,
+                                                              param.transferIoSize);
         if (status.Failure()) {
             UC_ERROR("Failed({}) to setup TsfTaskManager.", status);
             return status.Underlying();

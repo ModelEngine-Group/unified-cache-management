@@ -27,7 +27,7 @@ class UcmNfsStore(UcmKVStoreBase):
         storage_backends_config = config["storage_backends"]
         storage_backends = [path for path in storage_backends_config.split(":") if path]
         device_id = int(config["device"])
-        block_size = int(config["block_size"])
+        block_size = int(config["kv_block_size"])
         enableTransfer = True if config["role"] == "worker" else False
         param = ucmnfsstore.SetupParam(storage_backends, block_size, enableTransfer)
         if enableTransfer:

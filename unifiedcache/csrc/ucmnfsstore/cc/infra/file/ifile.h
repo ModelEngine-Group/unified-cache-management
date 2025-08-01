@@ -60,7 +60,6 @@ public:
     virtual Status Open(const uint32_t flags) = 0;
     virtual void Close() = 0;
     virtual void Remove() = 0;
-    virtual Status Seek2End() = 0;
     virtual Status Read(void* buffer, size_t size, off64_t offset = -1) = 0;
     virtual Status Write(const void* buffer, size_t size, off64_t offset = -1) = 0;
     virtual Status Truncate(size_t length) = 0;
