@@ -100,11 +100,9 @@ cmdclass = {
 }
 
 print("FOUND PACKAGES:", find_packages())
-__version__ = Path(__file__).with_name('VERSION').read_text().strip()
-print("Current version:", __version__)
 setup(
     name="unifiedcache",
-    version=__version__,
+    version='0.0.1',
     author="Unified Cache Team",
     description="Unified Cache Management",
     packages=find_packages(),
