@@ -1,0 +1,7 @@
+# Development Enviroment
+.vscode/**
+.idea/**
+.git/**
+**/build/**
+**/output/**
+.venv/**
