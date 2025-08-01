@@ -58,13 +58,19 @@ Then run the script as follows:
 
 ```bash
 cd examples/
-export PYTHONHASHSEED=UCMHASHSEED
 python offline_inference.py
 ```
 
 ### Online Inference
 
-For **online inference** , vLLM with our connector can also be deployed as a server that implements the OpenAI API protocol. Run the following command to start the vLLM server with the Qwen/Qwen2.5-14B-Instruct model:
+For **online inference** , vLLM with our connector can also be deployed as a server that implements the OpenAI API protocol. 
+
+First, specify the python hash seed by:
+```bash
+export PYTHONHASHSEED=123456
+```
+
+Run the following command to start the vLLM server with the Qwen/Qwen2.5-14B-Instruct model:
 
 ```bash
 vllm serve /home/models/Qwen2.5-14B-Instruct \

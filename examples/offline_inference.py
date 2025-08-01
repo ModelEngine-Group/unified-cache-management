@@ -14,7 +14,7 @@ logger = init_logger(__name__)
 
 def setup_environment_variables():
     os.environ["VLLM_USE_V1"] = "1"
-    os.environ["PYTHONHASHSEED"] = "UCMHASHSEED"
+    os.environ["PYTHONHASHSEED"] = "123456"
 
 @contextlib.contextmanager
 def build_llm_with_uc(module_path: str, name: str, model: str):
