@@ -56,7 +56,7 @@ Then run the script as follows:
 
 ```bash
 cd examples/
-export PYTHONHASHSEED="UCMHASHSEED"
+export PYTHONHASHSEED=123456
 python offline_inference.py
 ```
 
@@ -65,7 +65,7 @@ python offline_inference.py
 For **online inference** , vLLM with our connector can also be deployed as a server that implements the OpenAI API protocol. Run the following command to start the vLLM server with the Qwen/Qwen2.5-14B-Instruct model:
 
 ```bash
-export PYTHONHASHSEED="UCMHASHSEED"
+export PYTHONHASHSEED=123456
 vllm serve /home/models/Qwen2.5-14B-Instruct \
 --max-model-len 20000 \
 --tensor-parallel-size 2 \
