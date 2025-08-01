@@ -60,7 +60,7 @@ class UcmDram(UcmKVStoreBase):
         super().__init__(config)
         self.dram_cache: Dict[str, any] = {}
         self.max_cache_byte = int(config.get("max_cache_size", 5368709120))
-        self.kv_block_size = config["kv_block_size"]
+        self.kv_block_size = int(config.get("kv_block_size", 262144))
         self.max_block_num = self.max_cache_byte // self.kv_block_size
         if config["role"] == "scheduler":
             self.cached_blocks = set()
