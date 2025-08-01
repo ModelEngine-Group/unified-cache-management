@@ -29,11 +29,13 @@ To use the NFS connector, you need to configure the `connector_config` dictionar
 
 - `storage_backends` *(required)*:  
   The `storage_backends` directory can either be a local folder or an NFS-mounted directory backed by an SSD driver
+- `kv_block_size` *(required)*:
+  `kv_block_size` represents `block_size * head_size * total_num_kv_heads * element_size * num_layers * 2`
 
 ### Example:
 
 ```python
-kv_connector_extra_config={"ucm_connector_name": "UcmNfsStore", "ucm_connector_config":{"storage_backends": "/mnt/test1"}}
+kv_connector_extra_config={"ucm_connector_name": "UcmNfsStore", "ucm_connector_config":{"storage_backends": "/mnt/test1", "kv_block_size": 33554432}}
 ```
 
 ## Launching Inference
@@ -46,7 +48,7 @@ To start **offline inference** with the NFS connector，modify the script `examp
 # In examples/offline_inference.py
 ktc = KVTransferConfig(
     ...
-    kv_connector_extra_config={"ucm_connector_name": "UcmNfsStore", "ucm_connector_config":{"storage_backends": "/mnt/test1"}}
+    kv_connector_extra_config={"ucm_connector_name": "UcmNfsStore", "ucm_connector_config":{"storage_backends": "/mnt/test1", "kv_block_size": 33554432}}
 )
 ```
 
@@ -54,6 +56,7 @@ Then run the script as follows:
 
 ```bash
 cd examples/
+export PYTHONHASHSEED="UCMHASHSEED"
 python offline_inference.py
 ```
 
@@ -62,6 +65,7 @@ python offline_inference.py
 For **online inference** , vLLM with our connector can also be deployed as a server that implements the OpenAI API protocol. Run the following command to start the vLLM server with the Qwen/Qwen2.5-14B-Instruct model:
 
 ```bash
+export PYTHONHASHSEED="UCMHASHSEED"
 vllm serve /home/models/Qwen2.5-14B-Instruct \
 --max-model-len 20000 \
 --tensor-parallel-size 2 \
@@ -76,7 +80,8 @@ vllm serve /home/models/Qwen2.5-14B-Instruct \
     "kv_connector_extra_config": {
         "ucm_connector_name": "UcmNfsStore",
         "ucm_connector_config": {
-            "storage_backends": "/mnt/test"
+            "storage_backends": "/mnt/test",
+            "kv_block_size": 33554432
         }
     }
 }'
