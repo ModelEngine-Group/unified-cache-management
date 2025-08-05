@@ -13,7 +13,7 @@ When the total size of `kvcache` does not exceed the `max_cache_size` configured
 
 ## Features
 
-The DRAM connector supports the following functionalities:
+The NFS connector supports the following functionalities:
 
 - `dump`: Offload KV cache blocks from HBM to SSD or Local Disk.
 - `load`: Load KV cache blocks from SSD or Local Disk back to HBM.
