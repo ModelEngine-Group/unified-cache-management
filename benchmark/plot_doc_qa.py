@@ -36,7 +36,7 @@ def run(context_lengths: list[str], result_path: str, connector: str, model: str
     ax1.set_title("TTFT_curve_doc_qa")
     ax1.set_xlabel("log_2(context_length[K tokens])")
     ax1.set_ylabel("TTFT(s)")
-    ax1.legent(["raw_reasoning", "use cache"])
+    ax1.legend(["raw_reasoning", "use cache"])
     ax1.grid(True)
 
     bars = ax2.bar(x_axis, y_axis_ratio, width=0.4, label="increase factor")

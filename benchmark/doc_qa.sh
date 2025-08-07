@@ -8,7 +8,7 @@ port=""
 connector=""
 device=""
 
-while getopts ":m:d:l:i:p:c:b" opt; do
+while getopts ":m:d:l:i:p:c:b:" opt; do
     case $opt in
         m)
             model=$OPTARG
@@ -43,6 +43,12 @@ while getopts ":m:d:l:i:p:c:b" opt; do
             ;;
     esac
 done
+
+if [ ! -d "$results_dir" ]; then
+    mkdir -p "$results_dir"
+    if [ $? -ne 0 ]; then
+        echo "mkdir $results_dir failed, error code is $?"
+fi
 
 IFS=',' read -r -a lengths <<< "$sizes"
 
