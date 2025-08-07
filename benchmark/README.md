@@ -18,6 +18,8 @@ Our dataset includes doc-qa questions with context lengths of 2k, 4k, 8k, 16k, 3
 
 + python >= 3.8 and <= 3.10, 3.10 is recommended
 
+pip install -e .
+
 ### 2. Run the test script
 
 ***
