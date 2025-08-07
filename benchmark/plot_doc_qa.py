@@ -59,7 +59,7 @@ args.add_argument(
 )
 
 args.add_argument(
-    "--result-path", type=str, required=True, help-"Result path"
+    "--result-path", type=str, required=True, help="Result path"
 )
 
 args.add_argument(
