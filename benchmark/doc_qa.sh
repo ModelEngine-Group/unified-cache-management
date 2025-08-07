@@ -47,7 +47,8 @@ done
 if [ ! -d "$results_dir" ]; then
     mkdir -p "$results_dir"
     if [ $? -ne 0 ]; then
-        echo "mkdir $results_dir failed, error code is $?"
+        echo "mkdir $results_dir failed"
+    fi
 fi
 
 IFS=',' read -r -a lengths <<< "$sizes"
