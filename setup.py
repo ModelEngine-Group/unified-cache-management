@@ -26,11 +26,13 @@ import os
 import subprocess
 from distutils.core import setup
 from pathlib import Path
+
 from setuptools import find_packages
 from setuptools.command.build_ext import build_ext
 
 ROOT_DIR = os.path.dirname(__file__)
 PLATFORM = os.getenv("PLATFORM")
+
 
 def get_path(*filepath) -> str:
     return os.path.join(ROOT_DIR, *filepath)
@@ -48,31 +50,33 @@ class BuildUCMExtension(build_ext):
     """Build UCM Extensions Using Cmake"""
 
     def run(self):
-        package_path = os.path.abspath(os.path.join(os.path.dirname(__file__), 'unifiedcache'))
-        ucm_nfs_path = os.path.join(package_path, 'csrc', 'ucmnfsstore')
+        package_path = os.path.abspath(
+            os.path.join(os.path.dirname(__file__), "unifiedcache")
+        )
+        ucm_nfs_path = os.path.join(package_path, "csrc", "ucmnfsstore")
         if not os.path.exists(ucm_nfs_path):
             raise RuntimeError(f"Expected directory {ucm_nfs_path} does not exist")
 
-        build_path = os.path.join(ucm_nfs_path, 'build')
+        build_path = os.path.join(ucm_nfs_path, "build")
         if not os.path.exists(build_path):
             os.makedirs(build_path)
 
         os.chdir(build_path)
         if _is_npu():
             cmake_command = [
-                'cmake',
-                '-DDOWNLOAD_DEPENDENCE=ON',
-                '-DRUNTIME_ENVIRONMENT=ascend',
-                '..',
-                ucm_nfs_path
+                "cmake",
+                "-DDOWNLOAD_DEPENDENCE=ON",
+                "-DRUNTIME_ENVIRONMENT=ascend",
+                "..",
+                ucm_nfs_path,
             ]
         elif _is_cuda():
             cmake_command = [
-                'cmake',
-                '-DDOWNLOAD_DEPENDENCE=ON',
-                '-DRUNTIME_ENVIRONMENT=cuda',
-                '..',
-                ucm_nfs_path
+                "cmake",
+                "-DDOWNLOAD_DEPENDENCE=ON",
+                "-DRUNTIME_ENVIRONMENT=cuda",
+                "..",
+                ucm_nfs_path,
             ]
         else:
             raise RuntimeError(
@@ -81,14 +85,14 @@ class BuildUCMExtension(build_ext):
             )
         subprocess.check_call(cmake_command)
 
-        make_command = ['make', '-j', '8']
+        make_command = ["make", "-j", "8"]
         subprocess.check_call(make_command)
 
-        output_lib_path = os.path.join(ucm_nfs_path, 'output', 'lib')
-        so_files = [f for f in os.listdir(output_lib_path) if f.endswith('.so')]
+        output_lib_path = os.path.join(ucm_nfs_path, "output", "lib")
+        so_files = [f for f in os.listdir(output_lib_path) if f.endswith(".so")]
         for so_file in so_files:
             src = os.path.join(output_lib_path, so_file)
-            dest = os.path.join(package_path, 'ucm_connector', so_file)
+            dest = os.path.join(package_path, "ucm_connector", so_file)
             os.rename(src, dest)
 
         os.chdir(os.path.dirname(__file__))
@@ -96,13 +100,13 @@ class BuildUCMExtension(build_ext):
 
 
 cmdclass = {
-    'build_ext': BuildUCMExtension,
+    "build_ext": BuildUCMExtension,
 }
 
 print("FOUND PACKAGES:", find_packages())
 setup(
     name="unifiedcache",
-    version='0.0.1',
+    version="0.0.1",
     author="Unified Cache Team",
     description="Unified Cache Management",
     packages=find_packages(),

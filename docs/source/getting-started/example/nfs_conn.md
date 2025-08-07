@@ -97,7 +97,7 @@ INFO:     Application startup complete.
 
 Congratulations, you have successfully started the vLLM server with NFS Connector!
 
-Afrer successfully started the vLLM server，You can interact with the API as following:
+After successfully started the vLLM server，You can interact with the API as following:
 
 ```bash
 curl http://localhost:7800/v1/completions \
