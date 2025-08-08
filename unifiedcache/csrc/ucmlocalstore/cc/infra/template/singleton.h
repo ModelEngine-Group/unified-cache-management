@@ -21,21 +21,26 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  * */
-#ifndef UNIFIEDCACHE_NFS_STORE_H
-#define UNIFIEDCACHE_NFS_STORE_H
+#ifndef UNIFIEDCACHE_SINGLETON_H
+#define UNIFIEDCACHE_SINGLETON_H
 
-#include <list>
-#include <string>
-#include <vector>
-#include "tsf_task/tsf_task.h"
+namespace UCM {
 
-namespace UC {
+template <typename T>
+class Singleton {
+public:
+    Singleton(const Singleton&) = delete;
+    Singleton& operator=(const Singleton&) = delete;
+    static T* Instance()
+    {
+        static T t;
+        return &t;
+    }
 
-int32_t Alloc(const std::string& blockId);
-bool Lookup(const std::string& blockId);
-size_t Submit(std::list<TsfTask> tasks, const size_t size, const size_t number, const std::string& brief);
-void Commit(const std::string& blockId, const bool success);
+private:
+    Singleton() = default;
+};
 
-} // namespace UC
+} // namespace UCM
 
 #endif

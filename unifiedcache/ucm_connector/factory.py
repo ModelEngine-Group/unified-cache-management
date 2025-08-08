@@ -72,3 +72,8 @@ UcmConnectorFactory.register_connector(
     "unifiedcache.ucm_connector.ucm_nfs_store",
     "UcmNfsStore"
 )
+UcmConnectorFactory.register_connector(
+    "UcmLocalStore",
+    "unifiedcache.ucm_connector.ucm_local_store",
+    "UcmLocalStore"
+)

@@ -256,10 +256,10 @@ LRUCache::~LRUCache()
 
 Status LRUCache::MappingCheck(uint64_t shm_size)
 {
-    auto status = Status::OK;
+    auto status = Status::OK();
 
     status = this->_f->ShmOpen(OpenFlag::RDWR);
-    if (status != Status::OK) {
+    if (status.Failure()) {
         return status;
     }
 
@@ -267,13 +267,13 @@ Status LRUCache::MappingCheck(uint64_t shm_size)
     do {
         std::this_thread::sleep_for(std::chrono::milliseconds(20));
         status = this->_f->Stat(stat);
-        if (status != Status::OK) {
+        if (status.Failure()) {
             return status;
         }
     } while(static_cast<uint64_t>(stat.st_size) != shm_size);
 
     status = this->_f->MMap(reinterpret_cast<void**>(&(this->_h)), shm_size, PROT_READ | PROT_WRITE, MAP_SHARED);
-    if (status != Status::OK) {
+    if (status.Failure()) {
         return status;
     }
 
@@ -287,7 +287,7 @@ Status LRUCache::MappingCheck(uint64_t shm_size)
 Status LRUCache::MappingSet(uint64_t shm_size, uint32_t cap, uint32_t cache_size)
 {
     auto status = this->_f->MMap(reinterpret_cast<void**>(&(this->_h)), shm_size, PROT_READ | PROT_WRITE, MAP_SHARED);
-    if (status != Status::OK) {
+    if (status.Failure()) {
         return status;
     }
     this->_h->Init(cap, cache_size);
@@ -299,8 +299,8 @@ Status LRUCache::Init(uint32_t cap, uint32_t cache_size)
     uint64_t shm_size = sizeof(CacheHeader) + cap * (sizeof(CacheInfo) + cache_size);
 
     auto status = this->_f->ShmOpen(OpenFlag::RDWR | OpenFlag::CREAT | OpenFlag::EXCL);
-    if (status != Status::OK) {
-        if (status == Status::EXIST) {
+    if (status.Failure()) {
+        if (status == Status::Exist()) {
             return this->MappingCheck(shm_size);
         } else {
             return status;
@@ -308,7 +308,7 @@ Status LRUCache::Init(uint32_t cap, uint32_t cache_size)
     }
 
     status = this->_f->Truncate(shm_size);
-    if (status != Status::OK) {
+    if (status.Failure()) {
         return status;
     }
 
@@ -357,11 +357,11 @@ void LRUCache::Evict()
 Status LRUCache::Alloc(std::string_view cache_id, void** cache_data)
 {
     *cache_data = nullptr;
-    if (cache_id.size() != 16) { return Status::INVALID_PARAM; }
+    if (cache_id.size() != 16) { return Status::InvalidParam();; }
 
     if (this->_h->len.load(std::memory_order_acquire).val == this->_h->cap) {
         ThreadPool::Instance().Submit([this] { this->Evict(); });
-        return Status::BUSY;
+        return Status::Busy();
     }
 
     for (uint32_t i = 0; i < this->_h->cap; ++i) {
@@ -378,23 +378,23 @@ Status LRUCache::Alloc(std::string_view cache_id, void** cache_data)
         this->_h->PushFront(cache);
         *cache_data = cache->data;
 
-        return Status::OK;
+        return Status::OK();
     }
 
-    return Status::BUSY;
+    return Status::Busy();;
 }
 
 Status LRUCache::Find(std::string_view cache_id, void** cache_data)
 {
     *cache_data = nullptr;
-    if (cache_id.size() != 16) { return Status::INVALID_PARAM; }
+    if (cache_id.size() != 16) { return Status::InvalidParam();; }
     uint64_t cache_id_le = INVALID_64;
     uint64_t cache_id_ri = INVALID_64;
     std::memcpy(&cache_id_le, cache_id.data(), 8);
     std::memcpy(&cache_id_ri, cache_id.data() + 8, 8);
 
     if (this->_h->len.load(std::memory_order_acquire).val == 0) {
-        return Status::EMPTY;
+        return Status::Empty();;
     }
 
     for (uint32_t i = 0; i < this->_h->cap; ++i) {
@@ -404,10 +404,10 @@ Status LRUCache::Find(std::string_view cache_id, void** cache_data)
             while (true) {
                 auto cache_status = cache->info.status.load(std::memory_order_acquire);
                 if (cache_status == CacheStatus::INACTIVE) {
-                    return Status::NOT_EXIST;
+                    return Status::NotFound();
                 }
                 if (cache_status == CacheStatus::EVICTING || cache_status == CacheStatus::WRITING) {
-                    return Status::BUSY;
+                    return Status::Busy();
                 }
 
                 if (cache_status == CacheStatus::ACTIVE) {
@@ -428,13 +428,12 @@ Status LRUCache::Find(std::string_view cache_id, void** cache_data)
                     cache->info.status.store(CacheStatus::READING, std::memory_order_release);
                 }
                 *cache_data = cache->data;
-
-                return Status::OK;
+                return Status::OK();
             }
         }
     }
 
-    return Status::NOT_EXIST;
+    return Status::NotFound();
 }
 
 void LRUCache::AllocCommit(void* cache_data)

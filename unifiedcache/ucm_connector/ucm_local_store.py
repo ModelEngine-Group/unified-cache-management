@@ -22,41 +22,61 @@
 # SOFTWARE.
 #
 
-from abc import ABC, abstractmethod
-from typing import List, Dict
-
 import torch
+from dataclasses import dataclass
+from typing import List, Dict
+from unifiedcache.logger import init_logger
+from unifiedcache.ucm_connector import Task, UcmKVStoreBase
+from unifiedcache.ucm_connector import ucmlocalstore, ucmnfsstore
+
+logger = init_logger(__name__)
 
 
-class Task:
+@dataclass
+class LocalTask(Task):
+    task_id: int
+
+    def get_id(self) -> int:
+        return self.task_id
+
+class UcmLocalStore(UcmKVStoreBase):
     """
-    Abstract Task for kv transfer
-    """
-    pass
-
-class UcmKVStoreBase(ABC):
-    """
-    Storage vendor implements this interface to support KV Cache centric inference system.
+    Local connector
     """
 
-    def __init__(self, config: Dict):
-        self.config = config
+    def __init__(self, store: UcmKVStoreBase, config: Dict):
+        super().__init__(config)
+        capacity = int(config["capacity"])
+        cacheSize = int(config["cacheSize"])
+        device_id = int(config["device"])
+        local_config = ucmlocalstore.Config(capacity, cacheSize)
+        local_config.transferDeviceId = device_id
+        self.store = store
+        self.ucmlocal = ucmlocalstore.UcmLocalStore(local_config, self.store)
+        ret = self.ucmlocal.Setup()
+        if ret != 0:
+            msg = f"Failed to initialize ucmlocalstore, errcode: {ret}."
+            logger.error(msg)
+            raise RuntimeError(msg)
+        else:
+            logger.info("Succeed in initializing ucmlocalstore.")
 
-    @abstractmethod
     def create(self, block_ids: List[str]) -> int:
         """
-        create kv cache space in storafe
+        create kv cache space in storage
 
         Args:
             block_ids (List[str]): vLLM block hash.
-        
         Returns:
-            0 - success
-            others - failed
+            success mask
         """
-        pass
+        ret = self.ucmlocal.AllocBatch(block_ids)
+        if ret != 0:
+            logger.error(f"Failed to allocate kv cache space, errcode: {ret}.")
+        else:
+            logger.info("Succeed in allocating kv cache space.")
+        return ret
 
-    @abstractmethod
     def lookup(self, block_ids: List[str]) -> List[bool]:
         """
         Get number of blocks that can be loaded from the
@@ -68,9 +88,10 @@ class UcmKVStoreBase(ABC):
         Returns:
             hit block mask, True -> hit
         """
-        pass
+        ret = self.ucmlocal.LookupBatch(block_ids)
+        logger.info("Succeed in looking up kv cache blocks.")
+        return ret
 
-    @abstractmethod
     def prefetch(self, block_ids: List[str]) -> None:
         """
         prefetch kv cache to high speed cache according to block_ids.
@@ -78,9 +99,9 @@ class UcmKVStoreBase(ABC):
         Args:
             block_ids (List[str]): vLLM block hash.
         """
-        pass
+        # TODO
+        logger.info("prefetch finished.")
 
-    @abstractmethod
     def load(self, block_ids: List[str], offset: List[int], dst_tensor: List[torch.Tensor]) -> Task:
         """
         load kv cache to device.
@@ -92,9 +113,13 @@ class UcmKVStoreBase(ABC):
         Returns:
             task(Task).
         """
-        pass
+        dst_tensor_ptr = [t.data_ptr() for t in dst_tensor]
+        dst_tensor_size = [t.numel() * t.element_size() for t in dst_tensor]
+        id = self.ucmlocal.LoadToDevice(block_ids, offset, dst_tensor_ptr, dst_tensor_size)
+        logger.debug(f"Succeed in loading kv cache , cache id: {id}, offset: {offset}.")
+        return LocalTask(task_id=id)
 
-    @abstractmethod
+
     def dump(self, block_ids: List[str], offset: List[int], src_tensor: List[torch.Tensor]) -> Task:
         """
         dump kv cache to device.
@@ -106,9 +131,12 @@ class UcmKVStoreBase(ABC):
         Returns:
             task(Task).
         """
-        pass
+        src_tensor_ptr = [t.data_ptr() for t in src_tensor]
+        src_tensor_size = [t.numel() * t.element_size() for t in src_tensor]
+        task_id = self.ucmlocal.DumpFromDevice(block_ids, offset, src_tensor_ptr, src_tensor_size)
+        logger.debug(f"Succeed in dumping kv cache, task id: {task_id}, offset {offset}.")
+        return LocalTask(task_id=task_id)
 
-    @abstractmethod
     def wait(self, task: Task) -> int:
         """
         wait kv cache kv transfer task finished.
@@ -119,9 +147,16 @@ class UcmKVStoreBase(ABC):
             0 - success
             others - failed.
         """
-        pass
+        if not isinstance(task, LocalTask):
+            logger.error("This is not LocalTask")
+            return -1
+        ret = self.ucmlocal.Wait(task.task_id)
+        if ret != 0:
+            logger.error(f"Failed to wait for kv cache transfer task, errcode: {ret}.")
+        else:
+            logger.debug("Succeed in waiting for kv cache transfer task.")
+        return ret
 
-    @abstractmethod
     def commit(self, block_ids: List[str], is_success: bool = True) -> None:
         """
         commit kv cache, now kv cache can be reused.
@@ -130,4 +165,7 @@ class UcmKVStoreBase(ABC):
             block_ids (List[str]): vLLM block hash.
             is_success(bool): if False, we need release block
         """
-        pass
+        if not is_success:
+            logger.warning(f"commit {block_ids} to {is_success}")
+        self.ucmlocal.CommitBatch(block_ids, is_success)
+        logger.debug("Succeed in committing kv cache.")

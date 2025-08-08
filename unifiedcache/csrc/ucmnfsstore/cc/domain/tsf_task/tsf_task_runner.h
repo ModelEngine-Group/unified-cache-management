@@ -34,7 +34,7 @@ class TsfTaskRunner {
 public:
     TsfTaskRunner(IDevice* device) : _device{device} {}
     Status Run(const TsfTask& task);
-     
+
 private:
     Status Ssd2Host(const TsfTask& task);
     Status Host2Ssd(const TsfTask& task);
