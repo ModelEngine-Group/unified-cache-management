@@ -21,21 +21,32 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  * */
-#ifndef UNIFIEDCACHE_NFS_STORE_H
-#define UNIFIEDCACHE_NFS_STORE_H
+#ifndef UCM_LOCAL_STORE_CUDA_DEVICE_H
+#define UCM_LOCAL_STORE_CUDA_DEVICE_H
 
-#include <list>
-#include <string>
-#include <vector>
-#include "tsf_task/tsf_task.h"
+#include "ibuffered_device.h"
 
-namespace UC {
+namespace UCM {
 
-int32_t Alloc(const std::string& blockId);
-bool Lookup(const std::string& blockId);
-size_t Submit(std::list<TsfTask>& tasks, const size_t size, const size_t number, const std::string& brief);
-void Commit(const std::string& blockId, const bool success);
+class CudaDevice : public IBufferedDevice {
+public:
+    CudaDevice(const int32_t deviceId, const size_t bufferSize, const size_t bufferNumber)
+        : IBufferedDevice{bufferSize, bufferNumber}, _deviceId{deviceId}, _stream{nullptr}
+    {
+    }
+    Status Setup() override;
+    Status H2DAsync(std::byte* dst, const std::byte* src, const size_t count) override;
+    Status D2HAsync(std::byte* dst, const std::byte* src, const size_t count) override;
+    Status AppendCallback(std::function<void(bool)> cb) override;
 
-} // namespace UC
+protected:
+    std::shared_ptr<std::byte> MakeBuffer(const size_t size) override;
+
+private:
+    int32_t _deviceId;
+    void* _stream;
+};
+
+} // namespace UCM
 
 #endif

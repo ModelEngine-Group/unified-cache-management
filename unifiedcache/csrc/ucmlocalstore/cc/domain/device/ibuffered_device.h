@@ -21,21 +21,30 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  * */
-#ifndef UNIFIEDCACHE_NFS_STORE_H
-#define UNIFIEDCACHE_NFS_STORE_H
+#ifndef UCM_LOCAL_STORE_IBUFFERED_DEVICE_H
+#define UCM_LOCAL_STORE_IBUFFERED_DEVICE_H
 
-#include <list>
-#include <string>
-#include <vector>
-#include "tsf_task/tsf_task.h"
+#include "idevice.h"
+#include "thread/index_pool.h"
 
-namespace UC {
+namespace UCM {
 
-int32_t Alloc(const std::string& blockId);
-bool Lookup(const std::string& blockId);
-size_t Submit(std::list<TsfTask>& tasks, const size_t size, const size_t number, const std::string& brief);
-void Commit(const std::string& blockId, const bool success);
+class IBufferedDevice : public IDevice {
+public:
+    IBufferedDevice(const size_t bufferSize, const size_t bufferNumber)
+        : _bufferSize{bufferSize}, _bufferNumber{bufferNumber}, _addr{nullptr}
+    {
+    }
+    Status Setup() override;
+    std::shared_ptr<std::byte> GetBuffer(const size_t size) override;
 
-} // namespace UC
+private:
+    const size_t _bufferSize;
+    const size_t _bufferNumber;
+    std::shared_ptr<std::byte> _addr;
+    IndexPool _indexPool;
+};
+
+} // namespace UCM
 
 #endif

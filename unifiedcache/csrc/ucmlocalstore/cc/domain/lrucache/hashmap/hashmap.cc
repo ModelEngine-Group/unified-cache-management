@@ -120,7 +120,7 @@ struct HashMapHeader {
 
     Status Insert(std::string_view key, uint32_t val, const uint32_t position)
     {
-        auto s = Status::OK;
+        auto s = Status::OK();
         uint32_t i = this->Hash(key);
 
         this->buckets[i].Lock();
@@ -136,7 +136,7 @@ struct HashMapHeader {
         auto current = this->buckets[i].head;
         while (true) {
             if (this->nodes[current].key == key) {
-                s = Status::EXIST;
+                s = Status::Exist();
                 break;
             }
             if (this->nodes[current].next == UCM_HASHMAP_INVALID_32) {
@@ -225,7 +225,7 @@ HashMap::~HashMap()
 Status HashMap::Initialize(const uint32_t map_size)
 {
     auto s = this->_q.Initialize(map_size);
-    if (s != Status::OK) {
+    if (s.Failure()) {
         return s;
     }
 
@@ -233,8 +233,8 @@ Status HashMap::Initialize(const uint32_t map_size)
                         static_cast<uint64_t>(map_size) * static_cast<uint64_t>(sizeof(Node));
 
     s = this->_f->ShmOpen(OpenFlag::RDWR | OpenFlag::CREAT | OpenFlag::EXCL);
-    if (s != Status::OK) {
-        if (s == Status::EXIST) {
+    if (s.Failure()) {
+        if (s == Status::EXxist()) {
             return this->MappingCheck(shm_size);
         } else {
             return s;
@@ -242,7 +242,7 @@ Status HashMap::Initialize(const uint32_t map_size)
     }
 
     s = this->_f->Truncate(shm_size);
-    if (s != Status::OK) {
+    if (s.Failure()) {
         return s;
     }
 
@@ -253,11 +253,11 @@ Status HashMap::Insert(std::string_view key, const uint32_t val)
 {
     auto position = this->_q.Pop();
     if (!position.has_value()) {
-        return Status::BUSY;
+        return Status::Busy();
     }
 
     auto s = this->_h->Insert(key, val, *position);
-    if (s == Status::EXIST) {
+    if (s == Status::Exist()) {
         this->_q.Push(*position);
     }
 
@@ -281,10 +281,10 @@ void HashMap::Remove(std::string_view key)
 
 Status HashMap::MappingCheck(const uint64_t shm_size)
 {
-    auto s = Status::OK;
+    auto s = Status::OK();
 
     s = this->_f->ShmOpen(OpenFlag::RDWR);
-    if (s != Status::OK) {
+    if (s.Failure()) {
         return s;
     }
 
@@ -292,13 +292,13 @@ Status HashMap::MappingCheck(const uint64_t shm_size)
     do {
         std::this_thread::sleep_for(std::chrono::milliseconds(2));
         s = this->_f->Stat(stat);
-        if (s != Status::OK) {
+        if (s.Failure()) {
             return s;
         }
     } while(static_cast<uint64_t>(stat.st_size) != shm_size);
 
     s = this->_f->MMap(reinterpret_cast<void**>(&(this->_h)), shm_size, PROT_READ | PROT_WRITE, MAP_SHARED);
-    if (s != Status::OK) {
+    if (s.Failure()) {
         return s;
     }
 
@@ -312,7 +312,7 @@ Status HashMap::MappingCheck(const uint64_t shm_size)
 Status HashMap::MappingInitialize(const uint64_t shm_size, const uint32_t map_size)
 {
     auto s = this->_f->MMap(reinterpret_cast<void**>(&(this->_h)), shm_size, PROT_READ | PROT_WRITE, MAP_SHARED);
-    if (s != Status::OK) {
+    if (s.Failure()) {
         return s;
     }
     this->_h->Initialize(map_size);

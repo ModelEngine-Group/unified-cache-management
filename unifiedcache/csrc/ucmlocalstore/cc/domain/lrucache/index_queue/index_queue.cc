@@ -140,8 +140,8 @@ Status IndexQueue::Initialize(const uint32_t queue_size)
                         static_cast<uint64_t>(queue_size) * static_cast<uint64_t>(sizeof(std::atomic<uint32_t>));
 
     auto s = this->_f->ShmOpen(OpenFlag::RDWR | OpenFlag::CREAT | OpenFlag::EXCL);
-    if (s != Status::OK) {
-        if (s == Status::EXIST) {
+    if (s.Failure()) {
+        if (s == Status::Exist()) {
             return this->MappingCheck(shm_size);
         } else {
             return s;
@@ -149,7 +149,7 @@ Status IndexQueue::Initialize(const uint32_t queue_size)
     }
 
     s = this->_f->Truncate(shm_size);
-    if (s != Status::OK) {
+    if (s.Failure()) {
         return s;
     }
 
@@ -168,10 +168,10 @@ std::optional<uint32_t> IndexQueue::Pop()
 
 Status IndexQueue::MappingCheck(const uint64_t shm_size)
 {
-    auto s = Status::OK;
+    auto s = Status::OK();
 
     s = this->_f->ShmOpen(OpenFlag::RDWR);
-    if (s != Status::OK) {
+    if (s.Failure()) {
         return s;
     }
 
@@ -179,13 +179,13 @@ Status IndexQueue::MappingCheck(const uint64_t shm_size)
     do {
         std::this_thread::sleep_for(std::chrono::milliseconds(2));
         s = this->_f->Stat(stat);
-        if (s != Status::OK) {
+        if (s.Failure()) {
             return s;
         }
     } while(static_cast<uint64_t>(stat.st_size) != shm_size);
 
     s = this->_f->MMap(reinterpret_cast<void**>(&(this->_h)), shm_size, PROT_READ | PROT_WRITE, MAP_SHARED);
-    if (s != Status::OK) {
+    if (s.Failure()) {
         return s;
     }
 
@@ -199,7 +199,7 @@ Status IndexQueue::MappingCheck(const uint64_t shm_size)
 Status IndexQueue::MappingInitialize(const uint64_t shm_size, const uint32_t queue_size)
 {
     auto s = this->_f->MMap(reinterpret_cast<void**>(&(this->_h)), shm_size, PROT_READ | PROT_WRITE, MAP_SHARED);
-    if (s != Status::OK) {
+    if (s.Failure()) {
         return s;
     }
     this->_h->Initialize(queue_size);

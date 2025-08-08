@@ -34,13 +34,13 @@ protected:
     {
         system("rm -f /dev/shm/*");
         std::thread t1([] {
-            EXPECT_EQ(UCM::Status::OK, lru.Initialize(cache_num, cache_size));
+            EXPECT_EQ(UCM::Status::OK(), lru.Initialize(cache_num, cache_size));
         });
         std::thread t2([] {
-            EXPECT_EQ(UCM::Status::OK, lru.Initialize(cache_num, cache_size));
+            EXPECT_EQ(UCM::Status::OK(), lru.Initialize(cache_num, cache_size));
         });
         std::thread t3([] {
-            EXPECT_EQ(UCM::Status::OK, lru.Initialize(cache_num, cache_size));
+            EXPECT_EQ(UCM::Status::OK(), lru.Initialize(cache_num, cache_size));
         });
         std::thread t4([] {
             while (cache_ids.size() != 2730) {
@@ -79,8 +79,8 @@ TEST_F(UCMLocalStoreLRUCacheTest, InsertAndDone)
         for (std::string_view cache_id : cache_ids) {
             void* cache_data = nullptr;
             auto s = lru.Insert(cache_id, cache_data);
-            ASSERT_EQ(s == UCM::Status::OK || s == UCM::Status::EXIST, true);
-            if (s == UCM::Status::OK) {
+            ASSERT_EQ(s == UCM::Status::OK() || s == UCM::Status::Exist(), true);
+            if (s == UCM::Status::OK()) {
                 lru.Done(cache_data);
             }
         }
@@ -89,8 +89,8 @@ TEST_F(UCMLocalStoreLRUCacheTest, InsertAndDone)
         for (std::string_view cache_id : cache_ids) {
             void* cache_data = nullptr;
             auto s = lru.Insert(cache_id, cache_data);
-            ASSERT_EQ(s == UCM::Status::OK || s == UCM::Status::EXIST, true);
-            if (s == UCM::Status::OK) {
+            ASSERT_EQ(s == UCM::Status::OK() || s == UCM::Status::Exist(), true);
+            if (s == UCM::Status::OK()) {
                 lru.Done(cache_data);
             }
         }
@@ -99,8 +99,8 @@ TEST_F(UCMLocalStoreLRUCacheTest, InsertAndDone)
         for (std::string_view cache_id : cache_ids) {
             void* cache_data = nullptr;
             auto s = lru.Insert(cache_id, cache_data);
-            ASSERT_EQ(s == UCM::Status::OK || s == UCM::Status::EXIST, true);
-            if (s == UCM::Status::OK) {
+            ASSERT_EQ(s == UCM::Status::OK() || s == UCM::Status::Exist(), true);
+            if (s == UCM::Status::OK()) {
                 lru.Done(cache_data);
             }
         }
@@ -115,21 +115,21 @@ TEST_F(UCMLocalStoreLRUCacheTest, FindAndDone)
     std::thread t1([]() {
         for (std::string_view cache_id : cache_ids) {
             void* cache_data = nullptr;
-            ASSERT_EQ(UCM::Status::OK, lru.Find(cache_id, cache_data));
+            ASSERT_EQ(UCM::Status::OK(), lru.Find(cache_id, cache_data));
             lru.Done(cache_data);
         }
     });
     std::thread t2([]() {
         for (std::string_view cache_id : cache_ids) {
             void* cache_data = nullptr;
-            ASSERT_EQ(UCM::Status::OK, lru.Find(cache_id, cache_data));
+            ASSERT_EQ(UCM::Status::OK(), lru.Find(cache_id, cache_data));
             lru.Done(cache_data);
         }
     });
     std::thread t3([]() {
         for (std::string_view cache_id : cache_ids) {
             void* cache_data = nullptr;
-            ASSERT_EQ(UCM::Status::OK, lru.Find(cache_id, cache_data));
+            ASSERT_EQ(UCM::Status::OK(), lru.Find(cache_id, cache_data));
             lru.Done(cache_data);
         }
     });

@@ -21,21 +21,36 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  * */
-#ifndef UNIFIEDCACHE_NFS_STORE_H
-#define UNIFIEDCACHE_NFS_STORE_H
+#ifndef UCM_LOCAL_STORE_CACHE_MANAGER_H
+#define UCM_LOCAL_STORE_CACHE_MANAGER_H
 
+#include "lrucache/lrucache.h"
 #include <list>
-#include <string>
+#include <mutex>
 #include <vector>
+#include <future>
+#include <condition_variable>
+#include <functional>
+#include <memory>
 #include "tsf_task/tsf_task.h"
+#include "status/status.h"
+#include "device/idevice.h"
 
-namespace UC {
+namespace UCM {
 
-int32_t Alloc(const std::string& blockId);
-bool Lookup(const std::string& blockId);
-size_t Submit(std::list<TsfTask>& tasks, const size_t size, const size_t number, const std::string& brief);
-void Commit(const std::string& blockId, const bool success);
+class CacheManager {
+public:
+    Status Setup(const size_t capacity, const size_t cacheSize);
+    Status AllocBuffers(const std::list<std::string>& blockIds, std::list<std::string>& uniqueBlockIds,
+                        std::list<uintptr_t>& buffers);
+    Status CommitBuffers(std::list<uintptr_t>& buffers);
+    Status ReadCache(TsfTask& task);
+    void ReadDone(void* buffer) { this->_lruCache.Done(buffer); }
 
-} // namespace UC
+private:
+    LRUCache _lruCache;
+};
+
+} // namespace UCM
 
 #endif

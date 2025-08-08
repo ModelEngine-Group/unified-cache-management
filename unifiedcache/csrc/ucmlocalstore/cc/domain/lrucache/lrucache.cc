@@ -267,12 +267,12 @@ LRUCache::~LRUCache()
 Status LRUCache::Initialize(const uint32_t cache_num, const uint32_t cache_size)
 {
     auto s = this->_q.Initialize(cache_num);
-    if (s != Status::OK) {
+    if (s.Failure()) {
         return s;
     }
 
     s = this->_m.Initialize(cache_num);
-    if (s != Status::OK) {
+    if (s.Failure()) {
         return s;
     }
 
@@ -281,8 +281,8 @@ Status LRUCache::Initialize(const uint32_t cache_num, const uint32_t cache_size)
                         static_cast<uint64_t>(sizeof(Info) + cache_size);
 
     s = this->_f->ShmOpen(OpenFlag::RDWR | OpenFlag::CREAT | OpenFlag::EXCL);
-    if (s != Status::OK) {
-        if (s == Status::EXIST) {
+    if (s.Failure()) {
+        if (s == Status::Exist()) {
             return this->MappingCheck(shm_size);
         } else {
             return s;
@@ -290,7 +290,7 @@ Status LRUCache::Initialize(const uint32_t cache_num, const uint32_t cache_size)
     }
 
     s = this->_f->Truncate(shm_size);
-    if (s != Status::OK) {
+    if (s.Failure()) {
         return s;
     }
 
@@ -300,17 +300,17 @@ Status LRUCache::Initialize(const uint32_t cache_num, const uint32_t cache_size)
 Status LRUCache::Insert(std::string_view key, void*& val)
 {
     val = nullptr;
-    if (key.size() != 16) { return Status::INVALID_PARAM; }
+    if (key.size() != 16) { return Status::InvalidParam(); }
 
     auto pinning_idx = this->_q.Pop();
     if (!pinning_idx.has_value()) {
         if (this->_h->len.load(std::memory_order_acquire) == this->_h->cap.load(std::memory_order_relaxed)) {
             std::thread([this] { this->Remove(); }).detach();
         }
-        return Status::BUSY;
+        return Status::Busy();
     }
     auto s = this->_m.Insert(key, *pinning_idx);
-    if (s != Status::OK) {
+    if (s.Failure()) {
         this->_q.Push(*pinning_idx);
         return s;
     }
@@ -330,11 +330,11 @@ Status LRUCache::Insert(std::string_view key, void*& val)
 Status LRUCache::Find(std::string_view key, void*& val)
 {
     val = nullptr;
-    if (key.size() != 16) { return Status::INVALID_PARAM; }
+    if (key.size() != 16) { return Status::InvalidParam(); }
 
     auto pinning_idx = this->_m.Find(key);
     if (!pinning_idx.has_value()) {
-        return Status::NOT_EXIST;
+        return Status::NotFound();
     }
 
     auto cache = this->_h->At(*pinning_idx);
@@ -343,11 +343,11 @@ Status LRUCache::Find(std::string_view key, void*& val)
         auto state = cache->info.state.load(std::memory_order_acquire);
 
         if (state == State::WRITING) {
-            return Status::BUSY;
+            return Status::Busy();
         }
 
         if (state == State::INACTIVE || state == State::EVICTING) {
-            return Status::NOT_EXIST;
+            return Status::NotFound();
         }
 
         if (state == State::ACTIVE) {
@@ -372,7 +372,7 @@ Status LRUCache::Find(std::string_view key, void*& val)
         break;
     }
 
-    return Status::OK;
+    return Status::OK();
 }
 
 void LRUCache::Done(void* val)
@@ -442,10 +442,10 @@ void LRUCache::Remove()
 
 Status LRUCache::MappingCheck(const uint64_t shm_size)
 {
-    auto s = Status::OK;
+    auto s = Status::OK();
 
     s = this->_f->ShmOpen(OpenFlag::RDWR);
-    if (s != Status::OK) {
+    if (s.Failure()) {
         return s;
     }
 
@@ -453,13 +453,13 @@ Status LRUCache::MappingCheck(const uint64_t shm_size)
     do {
         std::this_thread::sleep_for(std::chrono::milliseconds(10));
         s = this->_f->Stat(stat);
-        if (s != Status::OK) {
+        if (s.Failure()) {
             return s;
         }
     } while(static_cast<uint64_t>(stat.st_size) != shm_size);
 
     s = this->_f->MMap(reinterpret_cast<void**>(&(this->_h)), shm_size, PROT_READ | PROT_WRITE, MAP_SHARED);
-    if (s != Status::OK) {
+    if (s.Failure()) {
         return s;
     }
 
@@ -473,7 +473,7 @@ Status LRUCache::MappingCheck(const uint64_t shm_size)
 Status LRUCache::MappingInitialize(const uint64_t shm_size, const uint32_t cache_num, const uint32_t cache_size)
 {
     auto s = this->_f->MMap(reinterpret_cast<void**>(&(this->_h)), shm_size, PROT_READ | PROT_WRITE, MAP_SHARED);
-    if (s != Status::OK) {
+    if (s.Failure()) {
         return s;
     }
     this->_h->Initialize(cache_num, cache_size);

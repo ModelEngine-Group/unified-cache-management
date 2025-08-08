@@ -21,21 +21,27 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  * */
-#ifndef UNIFIEDCACHE_NFS_STORE_H
-#define UNIFIEDCACHE_NFS_STORE_H
+#include "device.h"
+#include "aclrt_device.h"
+#include "cuda_device.h"
+#include "logger/logger.h"
 
-#include <list>
-#include <string>
-#include <vector>
-#include "tsf_task/tsf_task.h"
+namespace UCM {
 
-namespace UC {
-
-int32_t Alloc(const std::string& blockId);
-bool Lookup(const std::string& blockId);
-size_t Submit(std::list<TsfTask>& tasks, const size_t size, const size_t number, const std::string& brief);
-void Commit(const std::string& blockId, const bool success);
-
-} // namespace UC
-
+std::unique_ptr<IDevice> Device::Make(const int32_t deviceId, const size_t bufferSize, const size_t bufferNumber)
+{
+    try {
+#ifdef ASCEND_AVAILABLE
+        return std::make_unique<AclrtDevice>(deviceId, bufferSize, bufferNumber);
 #endif
+#ifdef CUDA_AVAILABLE
+        return std::make_unique<CudaDevice>(deviceId, bufferSize, bufferNumber);
+#endif
+    } catch (const std::exception& e) {
+        UCM_ERROR("Failed({}) to instantinate the device({},{},{}) object.", e.what(), deviceId, bufferSize,
+                 bufferNumber);
+        return nullptr;
+    }
+}
+
+} // namespace UCM

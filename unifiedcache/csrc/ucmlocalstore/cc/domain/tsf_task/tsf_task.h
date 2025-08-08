@@ -21,21 +21,36 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  * */
-#ifndef UNIFIEDCACHE_NFS_STORE_H
-#define UNIFIEDCACHE_NFS_STORE_H
+#ifndef UCM_LOCAL_STORE_TSF_TASK_H
+#define UCM_LOCAL_STORE_TSF_TASK_H
 
-#include <list>
-#include <string>
-#include <vector>
-#include "tsf_task/tsf_task.h"
+#include <memory>
+#include "tsf_task_waiter.h"
 
-namespace UC {
+namespace UCM {
 
-int32_t Alloc(const std::string& blockId);
-bool Lookup(const std::string& blockId);
-size_t Submit(std::list<TsfTask>& tasks, const size_t size, const size_t number, const std::string& brief);
-void Commit(const std::string& blockId, const bool success);
+class TsfTask {
 
-} // namespace UC
+public:
+    TsfTask(const std::string& blockId, const size_t offset, const uintptr_t address, const size_t length)
+        : blockId{blockId}, offset{offset}, address{address}, length{length}, buffer{nullptr},
+          owner{0}, waiter{nullptr}, hub{nullptr}
+    {
+    }
+    TsfTask() : TsfTask{{}, 0, 0, 0} {}
+
+public:
+    std::string blockId;
+    size_t offset;
+    uintptr_t address;
+    size_t length;
+    void* buffer;
+
+    size_t owner;
+    std::shared_ptr<TsfTaskWaiter> waiter;
+    std::shared_ptr<std::byte> hub;
+};
+
+} // namespace UCM
 
 #endif

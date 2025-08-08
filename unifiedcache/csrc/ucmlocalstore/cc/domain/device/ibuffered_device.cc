@@ -21,21 +21,33 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  * */
-#ifndef UNIFIEDCACHE_NFS_STORE_H
-#define UNIFIEDCACHE_NFS_STORE_H
+#include "ibuffered_device.h"
+#include "logger/logger.h"
 
-#include <list>
-#include <string>
-#include <vector>
-#include "tsf_task/tsf_task.h"
+namespace UCM {
 
-namespace UC {
+Status IBufferedDevice::Setup()
+{
+    auto totalSize = this->_bufferSize * this->_bufferNumber;
+    this->_addr = this->MakeBuffer(totalSize);
+    if (!this->_addr) { return Status::OutOfMemory(); }
+    this->_indexPool.Setup(this->_bufferNumber);
+    return Status::OK();
+}
 
-int32_t Alloc(const std::string& blockId);
-bool Lookup(const std::string& blockId);
-size_t Submit(std::list<TsfTask>& tasks, const size_t size, const size_t number, const std::string& brief);
-void Commit(const std::string& blockId, const bool success);
+std::shared_ptr<std::byte> IBufferedDevice::GetBuffer(const size_t size)
+{
+    auto idx = IndexPool::npos;
+    if (size <= this->_bufferSize && (idx = this->_indexPool.Acquire()) != IndexPool::npos) {
+        auto ptr = this->_addr.get() + this->_bufferSize * idx;
+        return std::shared_ptr<std::byte>(ptr, [this, idx](std::byte*) { this->_indexPool.Release(idx); });
+    }
+    auto buffer = this->MakeBuffer(size);
+    if (buffer) { return buffer; }
+    UCM_WARN("Reservation exhausted, try to alloc OS memory({}).", size);
+    auto host = (std::byte*)malloc(size);
+    if (host) { return std::shared_ptr<std::byte>(host, free); }
+    return nullptr;
+}
 
-} // namespace UC
-
-#endif
+} // namespace UCM

@@ -21,21 +21,30 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  * */
-#ifndef UNIFIEDCACHE_NFS_STORE_H
-#define UNIFIEDCACHE_NFS_STORE_H
+#ifndef UCM_LOCAL_STORE_TSF_TASK_QUEUE_H
+#define UCM_LOCAL_STORE_TSF_TASK_QUEUE_H
 
-#include <list>
-#include <string>
-#include <vector>
-#include "tsf_task/tsf_task.h"
+#include "device/idevice.h"
+#include "thread/thread_pool.h"
+#include "tsf_task.h"
 
-namespace UC {
+namespace UCM {
 
-int32_t Alloc(const std::string& blockId);
-bool Lookup(const std::string& blockId);
-size_t Submit(std::list<TsfTask>& tasks, const size_t size, const size_t number, const std::string& brief);
-void Commit(const std::string& blockId, const bool success);
+class TsfTaskQueue {
+public:
+    Status Setup(const int32_t deviceId, const size_t bufferSize, const size_t bufferNumber);
+    void Push(std::list<TsfTask>& tasks);
 
-} // namespace UC
+private:
+    void Cache2Host(TsfTask& task);
+    void Host2Device(TsfTask& task);
+
+private:
+    ThreadPool<TsfTask> _streamOper;
+    ThreadPool<TsfTask> _cacheOper;
+    std::unique_ptr<IDevice> _device;
+};
+
+} // namespace UCM
 
 #endif

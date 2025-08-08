@@ -21,21 +21,28 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  * */
-#ifndef UNIFIEDCACHE_NFS_STORE_H
-#define UNIFIEDCACHE_NFS_STORE_H
+#ifndef UCM_LOCAL_STORE_IDEVICE_H
+#define UCM_LOCAL_STORE_IDEVICE_H
 
-#include <list>
-#include <string>
-#include <vector>
-#include "tsf_task/tsf_task.h"
+#include <functional>
+#include <memory>
+#include "status/status.h"
 
-namespace UC {
+namespace UCM {
 
-int32_t Alloc(const std::string& blockId);
-bool Lookup(const std::string& blockId);
-size_t Submit(std::list<TsfTask>& tasks, const size_t size, const size_t number, const std::string& brief);
-void Commit(const std::string& blockId, const bool success);
+class IDevice {
+public:
+    virtual ~IDevice() = default;
+    virtual Status Setup() = 0;
+    virtual std::shared_ptr<std::byte> GetBuffer(const size_t size) = 0;
+    virtual Status H2DAsync(std::byte* dst, const std::byte* src, const size_t count) = 0;
+    virtual Status D2HAsync(std::byte* dst, const std::byte* src, const size_t count) = 0;
+    virtual Status AppendCallback(std::function<void(bool)> cb) = 0;
 
-} // namespace UC
+protected:
+    virtual std::shared_ptr<std::byte> MakeBuffer(const size_t size) = 0;
+};
+
+} // namespace UCM
 
 #endif

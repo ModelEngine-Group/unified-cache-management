@@ -21,21 +21,34 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  * */
-#ifndef UNIFIEDCACHE_NFS_STORE_H
-#define UNIFIEDCACHE_NFS_STORE_H
+#ifndef UCM_LOCAL_STORE_LATCH_H
+#define UCM_LOCAL_STORE_LATCH_H
 
-#include <list>
-#include <string>
-#include <vector>
-#include "tsf_task/tsf_task.h"
+#include <atomic>
+#include <condition_variable>
+#include <mutex>
 
-namespace UC {
+namespace UCM {
 
-int32_t Alloc(const std::string& blockId);
-bool Lookup(const std::string& blockId);
-size_t Submit(std::list<TsfTask>& tasks, const size_t size, const size_t number, const std::string& brief);
-void Commit(const std::string& blockId, const bool success);
+class Latch {
+public:
+    explicit Latch(const size_t expected = 0) : _counter{expected} {}
+    void Up() { ++this->_counter; }
+    size_t Done() { return --this->_counter; }
+    void Notify() { this->_cv.notify_all(); }
+    void Wait()
+    {
+        std::unique_lock<std::mutex> lk(this->_mutex);
+        if (this->_counter == 0) { return; }
+        this->_cv.wait(lk, [this] { return this->_counter == 0; });
+    }
 
-} // namespace UC
+private:
+    std::mutex _mutex;
+    std::condition_variable _cv;
+    std::atomic<size_t> _counter;
+};
 
-#endif
+} // namespace UCM
+
+#endif // UCM_LOCAL_STORE_LATCH_H

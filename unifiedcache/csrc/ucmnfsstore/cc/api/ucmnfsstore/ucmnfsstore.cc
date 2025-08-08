@@ -31,39 +31,6 @@
 
 namespace UC {
 
-void ShowSetupParam(const SetupParam& param)
-{
-    UC_INFO("Set UC::StorageBackends to {}.", param.storageBackends);
-    UC_INFO("Set UC::BlockSize to {}.", param.kvcacheBlockSize);
-    UC_INFO("Set UC::TransferEnable to {}.", param.transferEnable);
-    UC_INFO("Set UC::DeviceId to {}.", param.transferDeviceId);
-    UC_INFO("Set UC::StreamNumber to {}.", param.transferStreamNumber);
-    UC_INFO("Set UC::IOSize to {}.", param.transferIoSize);
-    UC_INFO("Set UC::BufferNumber to {}.", param.transferBufferNumber);
-    UC_INFO("Set UC::TimeoutMs to {}.", param.transferTimeoutMs);
-}
-
-int32_t Setup(const SetupParam& param)
-{
-    auto spaceMgr = Singleton<SpaceManager>::Instance();
-    auto status = spaceMgr->Setup(param.storageBackends, param.kvcacheBlockSize);
-    if (status.Failure()) {
-        UC_ERROR("Failed({}) to setup SpaceManager.", status);
-        return status.Underlying();
-    }
-    if (param.transferEnable) {
-        auto taskMgr = Singleton<TsfTaskManager>::Instance();
-        status = taskMgr->Setup(param.transferDeviceId, param.transferStreamNumber, param.transferIoSize,
-                                param.transferBufferNumber, param.transferTimeoutMs, spaceMgr->GetSpaceLayout());
-        if (status.Failure()) {
-            UC_ERROR("Failed({}) to setup TsfTaskManager.", status);
-            return status.Underlying();
-        }
-    }
-    ShowSetupParam(param);
-    return Status::OK().Underlying();
-}
-
 int32_t Alloc(const std::string& blockId)
 {
     auto s = Singleton<SpaceManager>::Instance()->NewBlock(blockId);
@@ -85,8 +52,6 @@ size_t Submit(std::list<TsfTask>& tasks, const size_t size, const size_t number,
     }
     return taskId;
 }
-
-int32_t Wait(const size_t taskId) { return Singleton<TsfTaskManager>::Instance()->Wait(taskId).Underlying(); }
 
 void Commit(const std::string& blockId, const bool success)
 {
