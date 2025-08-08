@@ -42,12 +42,12 @@ Status PosixFile::ShmOpen(OpenFlag of)
     auto eno = errno;
     if (this->_fd == -1) {
         if (eno == EEXIST) {
-            return Status::EXIST;
+            return Status::Exist();
         }
         UCM_ERROR("Failed to open shared memory file, filepath={}, errno={}", this->Filepath().data(), eno);
-        return Status::OSERROR;
+        return Status::OsApiError();
     }
-    return Status::OK;
+    return Status::OK();
 }
 
 Status PosixFile::Truncate(uint64_t size)
@@ -56,9 +56,9 @@ Status PosixFile::Truncate(uint64_t size)
     auto eno = errno;
     if (ret != 0) {
         UCM_ERROR("Failed to truncate file, filepath={}, errno={}", this->Filepath().data(), eno);
-        return Status::OSERROR;
+        return Status::OsApiError();
     }
-    return Status::OK;
+    return Status::OK();
 }
 
 Status PosixFile::MMap(void** addr, uint64_t len, int32_t prot, int32_t flags, uint64_t offset)
@@ -70,9 +70,9 @@ Status PosixFile::MMap(void** addr, uint64_t len, int32_t prot, int32_t flags, u
         UCM_ERROR("Failed to mmap file, filepath={}, len={}, prot={}, flags={}, offset={}, errno={}",
                   this->Filepath().data(), len, prot, flags, offset, eno);
         *addr = nullptr;
-        return Status::OSERROR;
+        return Status::OsApiError();
     }
-    return Status::OK;
+    return Status::OK();
 }
 
 Status PosixFile::Stat(FileStat& stat) const
@@ -81,9 +81,9 @@ Status PosixFile::Stat(FileStat& stat) const
     auto eno = errno;
     if (ret == -1) {
         UCM_ERROR("Failed to stat file, filepath={}, errno={}", this->Filepath().data(), eno);
-        return Status::OSERROR;
+        return Status::OsApiError();
     }
-    return Status::OK;
+    return Status::OK();
 }
 
 } // namespace UCM

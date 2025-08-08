@@ -24,12 +24,108 @@
 #include "ucmnfsstore/ucmnfsstore.h"
 #include <pybind11/pybind11.h>
 #include <pybind11/stl.h>
+#include <spdlog/fmt/ranges.h>
+#include "status/status.h"
+#include "template/singleton.h"
+#include "space/space_manager.h"
+#include "tsf_task/tsf_task_manager.h"
 
 namespace py = pybind11;
 
 namespace UC {
 
-inline int32_t AllocBatch(const py::list& blockIds)
+class UcmKVStoreBase {
+public:
+    UcmKVStoreBase() = default;
+    virtual ~UcmKVStoreBase() = default;
+    virtual int32_t Setup() = 0;
+    virtual int32_t AllocBatch(const py::list& blockIds) = 0;
+    virtual py::list LookupBatch(const py::list& blockIds) = 0;
+    virtual size_t LoadToDevice(const std::list<std::string>& blockIdList, const std::list<size_t>& offsetList,
+                    const std::list<uintptr_t>& addressList, const std::list<size_t>& lengthList) = 0;
+    virtual size_t LoadToHost(const std::list<std::string>& blockIdList, const std::list<size_t>& offsetList,
+                    const std::list<uintptr_t>& addressList, const std::list<size_t>& lengthList) = 0;
+    virtual size_t DumpFromDevice(const std::list<std::string>& blockIdList, const std::list<size_t>& offsetList,
+                    const std::list<uintptr_t>& addressList, const std::list<size_t>& lengthList) = 0;
+    virtual size_t DumpFromHost(const std::list<std::string>& blockIdList, const std::list<size_t>& offsetList,
+                    const std::list<uintptr_t>& addressList, const std::list<size_t>& lengthList) = 0;
+    virtual int32_t Wait(const size_t id) = 0;
+    virtual void CommitBatch(const py::list& blockIds, const bool success) = 0;
+};
+
+class UcmNfsStore : public UcmKVStoreBase {
+public:
+    class Config {
+    public:
+        std::vector<std::string> storageBackends;
+        size_t kvcacheBlockSize;
+        bool transferEnable;
+        int32_t transferDeviceId;
+        size_t transferStreamNumber;
+        size_t transferIoSize;
+        size_t transferBufferNumber;
+
+        Config(const std::vector<std::string>& storageBackends, const size_t kvcacheBlockSize,
+                const bool transferEnable)
+            : storageBackends{storageBackends}, kvcacheBlockSize{kvcacheBlockSize}, transferEnable{transferEnable},
+            transferDeviceId{-1}, transferStreamNumber{32}, transferIoSize{262144}, transferBufferNumber{512}
+        {
+        }
+    };
+
+public:
+    UcmNfsStore(const Config &config) : _config{config} {}
+    int32_t Setup() override;
+    int32_t AllocBatch(const py::list& blockIds) override;
+    py::list LookupBatch(const py::list& blockIds) override;
+    size_t LoadToDevice(const std::list<std::string>& blockIdList, const std::list<size_t>& offsetList,
+                const std::list<uintptr_t>& addressList, const std::list<size_t>& lengthList) override;
+    size_t LoadToHost(const std::list<std::string>& blockIdList, const std::list<size_t>& offsetList,
+                const std::list<uintptr_t>& addressList, const std::list<size_t>& lengthList) override;
+    size_t DumpFromDevice(const std::list<std::string>& blockIdList, const std::list<size_t>& offsetList,
+                const std::list<uintptr_t>& addressList, const std::list<size_t>& lengthList) override;
+    size_t DumpFromHost(const std::list<std::string>& blockIdList, const std::list<size_t>& offsetList,
+                const std::list<uintptr_t>& addressList, const std::list<size_t>& lengthList) override;
+    int32_t Wait(const size_t id) override;
+    void CommitBatch(const py::list& blockIds, const bool success) override;
+
+private:
+    Config _config;
+};
+
+inline void ShowSetupParam(const UcmNfsStore::Config& config)
+{
+    UC_INFO("Set UC::StorageBackends to {}.", config.storageBackends);
+    UC_INFO("Set UC::BlockSize to {}.", config.kvcacheBlockSize);
+    UC_INFO("Set UC::TransferEnable to {}.", config.transferEnable);
+    UC_INFO("Set UC::DeviceId to {}.", config.transferDeviceId);
+    UC_INFO("Set UC::StreamNumber to {}.", config.transferStreamNumber);
+    UC_INFO("Set UC::IOSize to {}.", config.transferIoSize);
+    UC_INFO("Set UC::BufferNumber to {}.", config.transferBufferNumber);
+}
+
+int32_t UcmNfsStore::Setup()
+{
+    auto spaceMgr = Singleton<SpaceManager>::Instance();
+    auto status = spaceMgr->Setup(this->_config.storageBackends, this->_config.kvcacheBlockSize);
+    if (status.Failure()) {
+        UC_ERROR("Failed({}) to setup SpaceManager.", status);
+        return status.Underlying();
+    }
+    if (this->_config.transferEnable) {
+        auto taskMgr = Singleton<TsfTaskManager>::Instance();
+        status = taskMgr->Setup(this->_config.transferDeviceId, this->_config.transferStreamNumber, this->_config.transferIoSize,
+                                this->_config.transferBufferNumber, spaceMgr->GetSpaceLayout());
+        if (status.Failure()) {
+            UC_ERROR("Failed({}) to setup TsfTaskManager.", status);
+            return status.Underlying();
+        }
+    }
+    ShowSetupParam(this->_config);
+    return Status::OK().Underlying();
+}
+
+int32_t UcmNfsStore::AllocBatch(const py::list& blockIds)
 {
     int32_t ret = 0;
     for (auto id : blockIds) {
@@ -38,16 +134,16 @@ inline int32_t AllocBatch(const py::list& blockIds)
     return ret;
 }
 
-inline py::list LookupBatch(const py::list& blockIds)
+py::list UcmNfsStore::LookupBatch(const py::list& blockIds)
 {
     py::list founds;
     for (auto id : blockIds) { founds.append(Lookup(id.cast<std::string>())); }
     return founds;
 }
 
-inline size_t SubmitTsfTasks(const py::list& blockIdList, const py::list& offsetList, const py::list& addressList,
-                             const py::list& lengthList, const TsfTask::Type type, const TsfTask::Location location,
-                             const std::string& brief)
+inline size_t SubmitTsfTasks(const std::list<std::string>& blockIdList, const std::list<size_t>& offsetList,
+                             const std::list<uintptr_t>& addressList, const std::list<size_t>& lengthList,
+                             const TsfTask::Type type, const TsfTask::Location location, const std::string& brief)
 {
     std::list<TsfTask> tasks;
     size_t size = 0;
@@ -58,10 +154,9 @@ inline size_t SubmitTsfTasks(const py::list& blockIdList, const py::list& offset
     auto length = lengthList.begin();
     while ((blockId != blockIdList.end()) && (offset != offsetList.end()) && (address != addressList.end()) &&
            (length != lengthList.end())) {
-        tasks.emplace_back(type, location, blockId->cast<std::string>(), offset->cast<size_t>(),
-                           address->cast<uintptr_t>(), length->cast<size_t>());
+        tasks.emplace_back(type, location, *blockId, *offset, *address, *length);
         number++;
-        size += length->cast<size_t>();
+        size += *length;
         blockId++;
         offset++;
         address++;
@@ -70,35 +165,37 @@ inline size_t SubmitTsfTasks(const py::list& blockIdList, const py::list& offset
     return Submit(tasks, size, number, brief);
 }
 
-inline size_t LoadToDevice(const py::list& blockIdList, const py::list& offsetList, const py::list& addressList,
-                           const py::list& lengthList)
+size_t UcmNfsStore::LoadToDevice(const std::list<std::string>& blockIdList, const std::list<size_t>& offsetList,
+                             const std::list<uintptr_t>& addressList, const std::list<size_t>& lengthList)
 {
     return SubmitTsfTasks(blockIdList, offsetList, addressList, lengthList, TsfTask::Type::LOAD,
                           TsfTask::Location::DEVICE, "S2D");
 }
 
-inline size_t LoadToHost(const py::list& blockIdList, const py::list& offsetList, const py::list& addressList,
-                         const py::list& lengthList)
+size_t UcmNfsStore::LoadToHost(const std::list<std::string>& blockIdList, const std::list<size_t>& offsetList,
+                               const std::list<uintptr_t>& addressList, const std::list<size_t>& lengthList)
 {
     return SubmitTsfTasks(blockIdList, offsetList, addressList, lengthList, TsfTask::Type::LOAD,
                           TsfTask::Location::HOST, "S2H");
 }
 
-inline size_t DumpFromDevice(const py::list& blockIdList, const py::list& offsetList, const py::list& addressList,
-                             const py::list& lengthList)
+size_t UcmNfsStore::DumpFromDevice(const std::list<std::string>& blockIdList, const std::list<size_t>& offsetList,
+                                   const std::list<uintptr_t>& addressList, const std::list<size_t>& lengthList)
 {
     return SubmitTsfTasks(blockIdList, offsetList, addressList, lengthList, TsfTask::Type::DUMP,
                           TsfTask::Location::DEVICE, "D2S");
 }
 
-inline size_t DumpFromHost(const py::list& blockIdList, const py::list& offsetList, const py::list& addressList,
-                           const py::list& lengthList)
+size_t UcmNfsStore::DumpFromHost(const std::list<std::string>& blockIdList, const std::list<size_t>& offsetList,
+                                 const std::list<uintptr_t>& addressList, const std::list<size_t>& lengthList)
 {
     return SubmitTsfTasks(blockIdList, offsetList, addressList, lengthList, TsfTask::Type::DUMP,
                           TsfTask::Location::HOST, "H2S");
 }
 
-inline void CommitBatch(const py::list& blockIds, const bool success)
+int32_t UcmNfsStore::Wait(const size_t id) { return Singleton<TsfTaskManager>::Instance()->Wait(id).Underlying(); }
+
+void UcmNfsStore::CommitBatch(const py::list& blockIds, const bool success)
 {
     for (auto id : blockIds) { Commit(id.cast<std::string>(), success); }
 }
@@ -111,26 +208,37 @@ PYBIND11_MODULE(ucmnfsstore, module)
     module.attr("version") = UC_VAR_PROJECT_VERSION;
     module.attr("commit_id") = UC_VAR_GIT_COMMIT_ID;
     module.attr("build_type") = UC_VAR_BUILD_TYPE;
-    py::class_<UC::SetupParam>(module, "SetupParam")
-        .def(py::init<const std::vector<std::string>&, const size_t, const bool>(), py::arg("storageBackends"),
-             py::arg("kvcacheBlockSize"), py::arg("transferEnable"))
-        .def_readwrite("storageBackends", &UC::SetupParam::storageBackends)
-        .def_readwrite("kvcacheBlockSize", &UC::SetupParam::kvcacheBlockSize)
-        .def_readwrite("transferEnable", &UC::SetupParam::transferEnable)
-        .def_readwrite("transferDeviceId", &UC::SetupParam::transferDeviceId)
-        .def_readwrite("transferStreamNumber", &UC::SetupParam::transferStreamNumber)
-        .def_readwrite("transferIoSize", &UC::SetupParam::transferIoSize)
-        .def_readwrite("transferBufferNumber", &UC::SetupParam::transferBufferNumber);
-    module.def("Setup", &UC::Setup);
-    module.def("Alloc", &UC::Alloc);
-    module.def("AllocBatch", &UC::AllocBatch);
-    module.def("Lookup", &UC::Lookup);
-    module.def("LookupBatch", &UC::LookupBatch);
-    module.def("LoadToDevice", &UC::LoadToDevice);
-    module.def("LoadToHost", &UC::LoadToHost);
-    module.def("DumpFromDevice", &UC::DumpFromDevice);
-    module.def("DumpFromHost", &UC::DumpFromHost);
-    module.def("Wait", &UC::Wait);
-    module.def("Commit", &UC::Commit);
-    module.def("CommitBatch", &UC::CommitBatch);
+    auto ucmKVStoreBase = py::class_<UC::UcmKVStoreBase>(module, "UcmKVStoreBase");
+    ucmKVStoreBase.def("Setup", &UC::UcmKVStoreBase::Setup);
+    ucmKVStoreBase.def("Alloc", &UC::UcmKVStoreBase::AllocBatch);
+    ucmKVStoreBase.def("Lookup", &UC::UcmKVStoreBase::LookupBatch);
+    ucmKVStoreBase.def("LoadToDevice", &UC::UcmKVStoreBase::LoadToDevice);
+    ucmKVStoreBase.def("LoadToHost", &UC::UcmKVStoreBase::LoadToHost);
+    ucmKVStoreBase.def("DumpFromDevice", &UC::UcmKVStoreBase::DumpFromDevice);
+    ucmKVStoreBase.def("DumpFromHost", &UC::UcmKVStoreBase::DumpFromHost);
+    ucmKVStoreBase.def("Wait", &UC::UcmKVStoreBase::Wait);
+    ucmKVStoreBase.def("Commit", &UC::UcmKVStoreBase::CommitBatch);
+
+    auto ucmNfsStore = py::class_<UC::UcmNfsStore>(module, "UcmNfsStore");
+    ucmNfsStore.def(py::init<const UC::UcmNfsStore::Config&>());
+    ucmNfsStore.def("Setup", &UC::UcmNfsStore::Setup);
+    ucmNfsStore.def("AllocBatch", &UC::UcmNfsStore::AllocBatch);
+    ucmNfsStore.def("LookupBatch", &UC::UcmNfsStore::LookupBatch);
+    ucmNfsStore.def("LoadToDevice", &UC::UcmNfsStore::LoadToDevice);
+    ucmNfsStore.def("LoadToHost", &UC::UcmNfsStore::LoadToHost);
+    ucmNfsStore.def("DumpFromDevice", &UC::UcmNfsStore::DumpFromDevice);
+    ucmNfsStore.def("DumpFromHost", &UC::UcmNfsStore::DumpFromHost);
+    ucmNfsStore.def("Wait", &UC::UcmNfsStore::Wait);
+    ucmNfsStore.def("CommitBatch", &UC::UcmNfsStore::CommitBatch);
+
+    auto config = py::class_<UC::UcmNfsStore::Config>(module, "Config");
+    config.def(py::init<const std::vector<std::string>&, const size_t, const bool>(), py::arg("storageBackends"),
+               py::arg("kvcacheBlockSize"), py::arg("transferEnable"));
+    config.def_readwrite("storageBackends", &UC::UcmNfsStore::Config::storageBackends);
+    config.def_readwrite("kvcacheBlockSize", &UC::UcmNfsStore::Config::kvcacheBlockSize);
+    config.def_readwrite("transferEnable", &UC::UcmNfsStore::Config::transferEnable);
+    config.def_readwrite("transferDeviceId", &UC::UcmNfsStore::Config::transferDeviceId);
+    config.def_readwrite("transferStreamNumber", &UC::UcmNfsStore::Config::transferStreamNumber);
+    config.def_readwrite("transferIoSize", &UC::UcmNfsStore::Config::transferIoSize);
+    config.def_readwrite("transferBufferNumber", &UC::UcmNfsStore::Config::transferBufferNumber);
 }

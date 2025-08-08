@@ -22,48 +22,44 @@
 # SOFTWARE.
 #
 
-from dataclasses import dataclass
-from typing import Dict, List
-
 import torch
-
+from dataclasses import dataclass
+from typing import List, Dict
 from unifiedcache.logger import init_logger
-from unifiedcache.ucm_connector import Task, UcmKVStoreBase, ucmnfsstore
+from unifiedcache.ucm_connector import Task, UcmKVStoreBase
+from unifiedcache.ucm_connector import ucmlocalstore, ucmnfsstore
 
 logger = init_logger(__name__)
 
 
 @dataclass
-class NfsTask(Task):
+class LocalTask(Task):
     task_id: int
 
     def get_id(self) -> int:
         return self.task_id
 
-
-class UcmNfsStore(UcmKVStoreBase):
+class UcmLocalStore(UcmKVStoreBase):
     """
-    Nfs connector
+    Local connector
     """
 
-    def __init__(self, config: Dict):
+    def __init__(self, store: UcmKVStoreBase, config: Dict):
         super().__init__(config)
-        storage_backends_config = config["storage_backends"]
-        storage_backends = [path for path in storage_backends_config.split(":") if path]
+        capacity = int(config["capacity"])
+        cacheSize = int(config["cacheSize"])
         device_id = int(config["device"])
-        block_size = int(config["kv_block_size"])
-        enableTransfer = True if config["role"] == "worker" else False
-        param = ucmnfsstore.Config(storage_backends, block_size, enableTransfer)
-        if enableTransfer:
-            param.transferDeviceId = device_id
-        self.ucmnfs = ucmnfsstore.UcmNfsStore(param)
-        ret = self.ucmnfs.Setup()
+        local_config = ucmlocalstore.Config(capacity, cacheSize)
+        local_config.transferDeviceId = device_id
+        self.store = store
+        self.ucmlocal = ucmlocalstore.UcmLocalStore(local_config, self.store)
+        ret = self.ucmlocal.Setup()
         if ret != 0:
-            msg = f"Failed to initialize ucmnfsstore, errcode: {ret}."
+            msg = f"Failed to initialize ucmlocalstore, errcode: {ret}."
             logger.error(msg)
             raise RuntimeError(msg)
         else:
-            logger.info("Succeed in initializing ucmnfsstore.")
+            logger.info("Succeed in initializing ucmlocalstore.")
 
     def create(self, block_ids: List[str]) -> int:
         """
@@ -74,7 +70,7 @@ class UcmNfsStore(UcmKVStoreBase):
         Returns:
             success mask
         """
-        ret = self.ucmnfs.AllocBatch(block_ids)
+        ret = self.ucmlocal.AllocBatch(block_ids)
         if ret != 0:
             logger.error(f"Failed to allocate kv cache space, errcode: {ret}.")
         else:
@@ -92,7 +88,7 @@ class UcmNfsStore(UcmKVStoreBase):
         Returns:
             hit block mask, True -> hit
         """
-        ret = self.ucmnfs.LookupBatch(block_ids)
+        ret = self.ucmlocal.LookupBatch(block_ids)
         logger.info("Succeed in looking up kv cache blocks.")
         return ret
 
@@ -106,9 +102,7 @@ class UcmNfsStore(UcmKVStoreBase):
         # TODO
         logger.info("prefetch finished.")
 
-    def load(
-        self, block_ids: List[str], offset: List[int], dst_tensor: List[torch.Tensor]
-    ) -> Task:
+    def load(self, block_ids: List[str], offset: List[int], dst_tensor: List[torch.Tensor]) -> Task:
         """
         load kv cache to device.
 
@@ -121,13 +115,12 @@ class UcmNfsStore(UcmKVStoreBase):
         """
         dst_tensor_ptr = [t.data_ptr() for t in dst_tensor]
         dst_tensor_size = [t.numel() * t.element_size() for t in dst_tensor]
-        task_id = self.ucmnfs.LoadToDevice(block_ids, offset, dst_tensor_ptr, dst_tensor_size)
-        logger.debug(f"Succeed in loading kv cache , task id: {task_id}, offset: {offset}.")
-        return NfsTask(task_id=task_id)
+        id = self.ucmlocal.LoadToDevice(block_ids, offset, dst_tensor_ptr, dst_tensor_size)
+        logger.debug(f"Succeed in loading kv cache , cache id: {id}, offset: {offset}.")
+        return LocalTask(task_id=id)
 
-    def dump(
-        self, block_ids: List[str], offset: List[int], src_tensor: List[torch.Tensor]
-    ) -> Task:
+
+    def dump(self, block_ids: List[str], offset: List[int], src_tensor: List[torch.Tensor]) -> Task:
         """
         dump kv cache to device.
 
@@ -140,9 +133,9 @@ class UcmNfsStore(UcmKVStoreBase):
         """
         src_tensor_ptr = [t.data_ptr() for t in src_tensor]
         src_tensor_size = [t.numel() * t.element_size() for t in src_tensor]
-        task_id = self.ucmnfs.DumpFromDevice(block_ids, offset, src_tensor_ptr, src_tensor_size)
+        task_id = self.ucmlocal.DumpFromDevice(block_ids, offset, src_tensor_ptr, src_tensor_size)
         logger.debug(f"Succeed in dumping kv cache, task id: {task_id}, offset {offset}.")
-        return NfsTask(task_id=task_id)
+        return LocalTask(task_id=task_id)
 
     def wait(self, task: Task) -> int:
         """
@@ -154,10 +147,10 @@ class UcmNfsStore(UcmKVStoreBase):
             0 - success
             others - failed.
         """
-        if not isinstance(task, NfsTask):
-            logger.error("This is not NfsTask")
+        if not isinstance(task, LocalTask):
+            logger.error("This is not LocalTask")
             return -1
-        ret = self.ucmnfs.Wait(task.task_id)
+        ret = self.ucmlocal.Wait(task.task_id)
         if ret != 0:
             logger.error(f"Failed to wait for kv cache transfer task, errcode: {ret}.")
         else:
@@ -174,5 +167,5 @@ class UcmNfsStore(UcmKVStoreBase):
         """
         if not is_success:
             logger.warning(f"commit {block_ids} to {is_success}")
-        self.ucmnfs.CommitBatch(block_ids, is_success)
+        self.ucmlocal.CommitBatch(block_ids, is_success)
         logger.debug("Succeed in committing kv cache.")
