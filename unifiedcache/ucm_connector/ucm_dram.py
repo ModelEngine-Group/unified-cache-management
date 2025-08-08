@@ -22,9 +22,10 @@
 # SOFTWARE.
 #
 
-import torch
 from dataclasses import dataclass
-from typing import List, Dict, Optional, Any
+from typing import Any, Dict, List, Optional
+
+import torch
 
 from unifiedcache.logger import init_logger
 from unifiedcache.ucm_connector import Task, UcmKVStoreBase
@@ -36,7 +37,7 @@ FAILURE = -1
 
 if torch.cuda.is_available():
     device = torch.cuda
-elif hasattr(torch, 'npu') and torch.npu.is_available():
+elif hasattr(torch, "npu") and torch.npu.is_available():
     device = torch.npu
 else:
     raise RuntimeError(
@@ -47,7 +48,7 @@ else:
 
 @dataclass
 class DramTask(Task):
-    task_id: str = '1'
+    task_id: str = "1"
     event: Optional[Any] = None
 
 
@@ -99,7 +100,9 @@ class UcmDram(UcmKVStoreBase):
         """
         pass
 
-    def load(self, block_ids: List[str], offset: List[int], dst_tensor: List[torch.Tensor]) -> Task:
+    def load(
+        self, block_ids: List[str], offset: List[int], dst_tensor: List[torch.Tensor]
+    ) -> Task:
         """
         load kv cache to device.
 
@@ -115,13 +118,15 @@ class UcmDram(UcmKVStoreBase):
         task.event = device.Event(enable_timing=True)
         with device.stream(stream):
             for i, block_id in enumerate(block_ids):
-                key = block_id + '_' + str(offset[i])
+                key = block_id + "_" + str(offset[i])
                 dst_tensor[i].copy_(self.dram_cache[key], non_blocking=True)
             task.event.record(stream=stream)
         logger.debug(f"load block {block_ids} finished.")
         return task
 
-    def dump(self, block_ids: List[str], offset: List[int], src_tensor: List[torch.Tensor]) -> Task:
+    def dump(
+        self, block_ids: List[str], offset: List[int], src_tensor: List[torch.Tensor]
+    ) -> Task:
         """
         dump kv cache to device.
 
@@ -135,7 +140,8 @@ class UcmDram(UcmKVStoreBase):
         task = DramTask()
         if len(self.dram_cache) > self.max_block_num:
             logger.warning(
-                "Dram cache usage exceeds limit! No more kv cache offload! Try to increase your initial max_cache_size.")
+                "Dram cache usage exceeds limit! No more kv cache offload! Try to increase your initial max_cache_size."
+            )
             task.task_id = "-1"
             return task
         else:
@@ -144,8 +150,8 @@ class UcmDram(UcmKVStoreBase):
             task.event = device.Event(enable_timing=True)
             with device.stream(stream):
                 for i, block_id in enumerate(block_ids):
-                    key = block_id + '_' + str(offset[i])
-                    self.dram_cache[key] = src_tensor[i].to('cpu', non_blocking=True)
+                    key = block_id + "_" + str(offset[i])
+                    self.dram_cache[key] = src_tensor[i].to("cpu", non_blocking=True)
                 task.event.record(stream=stream)
         logger.debug(f"dump block {block_ids} finished.")
         return task

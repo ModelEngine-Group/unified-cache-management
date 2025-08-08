@@ -22,10 +22,12 @@
 # SOFTWARE.
 #
 # -*- coding: utf-8 -*-
-from unifiedcache.csrc.ucmnfsstore.output.lib import ucmnfsstore as ucmstore
 import secrets
+
 import torch
 import torch_npu
+
+from unifiedcache.csrc.ucmnfsstore.output.lib import ucmnfsstore as ucmstore
 
 workspace = [
     "/root/space/kvcache.mthreads/unifiedcache/csrc/ucmnfsstore/sample/data",
@@ -72,7 +74,9 @@ def dump_to_uc(hashes, tensors):
 
 
 def fetch_from_uc(hashes, tensors):
-    cpu_tensors = [[torch.empty_like(layer, device='cpu') for layer in block] for block in tensors]
+    cpu_tensors = [
+        [torch.empty_like(layer, device="cpu") for layer in block] for block in tensors
+    ]
     data_id = []
     data_off = []
     data_addr = []
@@ -100,7 +104,11 @@ def fetch_from_uc(hashes, tensors):
 def transfer_blocks(block_dim, block_len, block_layer, block_number, device_id):
     hashes = [secrets.token_hex(16) for _ in range(block_number)]
     tensors = [
-        [gen_tensor([block_dim, block_len], False, device_id) for _ in range(block_layer)] for _ in range(block_number)
+        [
+            gen_tensor([block_dim, block_len], False, device_id)
+            for _ in range(block_layer)
+        ]
+        for _ in range(block_number)
     ]
     founds = ucmstore.Lookup(hashes)
     for found in founds:
@@ -110,7 +118,11 @@ def transfer_blocks(block_dim, block_len, block_layer, block_number, device_id):
     for found in founds:
         assert found
     tensors2 = [
-        [gen_tensor([block_dim, block_len], True, device_id) for _ in range(block_layer)] for _ in range(block_number)
+        [
+            gen_tensor([block_dim, block_len], True, device_id)
+            for _ in range(block_layer)
+        ]
+        for _ in range(block_number)
     ]
     fetch_from_uc(hashes, tensors2)
     for i in range(block_number):

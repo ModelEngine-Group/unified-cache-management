@@ -1,3 +1,3 @@
-from unifiedcache.ucm_connector.base import UcmKVStoreBase, Task
+from unifiedcache.ucm_connector.base import Task, UcmKVStoreBase
 
 __all__ = ["UcmKVStoreBase", "Task"]

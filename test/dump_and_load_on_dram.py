@@ -22,9 +22,11 @@
 # SOFTWARE.
 #
 # -*- coding: utf-8 -*-
-from unifiedcache.csrc.ucmnfsstore.output.lib import ucmnfsstore as ucmstore
 import secrets
+
 import torch
+
+from unifiedcache.csrc.ucmnfsstore.output.lib import ucmnfsstore as ucmstore
 
 workspace = [
     "/root/space/kvcache.mthreads/unifiedcache/csrc/ucmnfsstore/sample/data",
@@ -92,7 +94,10 @@ def fetch_from_uc(hashes, tensors):
 
 def transfer_blocks(block_dim, block_len, block_layer, block_number):
     hashes = [secrets.token_hex(16) for _ in range(block_number)]
-    tensors = [[gen_tensor([block_dim, block_len], False) for _ in range(block_layer)] for _ in range(block_number)]
+    tensors = [
+        [gen_tensor([block_dim, block_len], False) for _ in range(block_layer)]
+        for _ in range(block_number)
+    ]
     founds = ucmstore.Lookup(hashes)
     for found in founds:
         assert not found
@@ -100,7 +105,10 @@ def transfer_blocks(block_dim, block_len, block_layer, block_number):
     founds = ucmstore.Lookup(hashes)
     for found in founds:
         assert found
-    tensors2 = [[gen_tensor([block_dim, block_len], True) for _ in range(block_layer)] for _ in range(block_number)]
+    tensors2 = [
+        [gen_tensor([block_dim, block_len], True) for _ in range(block_layer)]
+        for _ in range(block_number)
+    ]
     fetch_from_uc(hashes, tensors2)
     for i in range(block_number):
         for j in range(block_layer):
