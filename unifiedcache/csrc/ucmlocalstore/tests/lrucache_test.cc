@@ -34,13 +34,13 @@ protected:
     {
         system("rm -f /dev/shm/ucmlocalstore.shm");
         std::thread t1([]() {
-            EXPECT_EQ(UCM::Status::OK, lru.Init(cap, cache_size));
+            EXPECT_EQ(UCM::Status::OK(), lru.Init(cap, cache_size));
         });
         std::thread t2([]() {
-            EXPECT_EQ(UCM::Status::OK, lru.Init(cap, cache_size));
+            EXPECT_EQ(UCM::Status::OK(), lru.Init(cap, cache_size));
         });
         std::thread t3([]() {
-            EXPECT_EQ(UCM::Status::OK, lru.Init(cap, cache_size));
+            EXPECT_EQ(UCM::Status::OK(), lru.Init(cap, cache_size));
         });
         std::thread t4([]() {
             while (cache_ids.size() != cap) {
@@ -84,56 +84,56 @@ TEST_F(UCMLocalStoreLRUCacheTest, AllocAndCommit)
     std::thread t1([&cache_ids_view]() {
         for (uint32_t i = 0; i < cap / 8; ++i) {
             void* cache_data = nullptr;
-            ASSERT_EQ(UCM::Status::OK, lru.Alloc(cache_ids_view[i], reinterpret_cast<void**>(&cache_data)));
+            ASSERT_EQ(UCM::Status::OK(), lru.Alloc(cache_ids_view[i], reinterpret_cast<void**>(&cache_data)));
             lru.AllocCommit(cache_data);
         }
     });
     std::thread t2([&cache_ids_view]() {
         for (uint32_t i = cap / 8; i < cap / 8 * 2; ++i) {
             void* cache_data = nullptr;
-            ASSERT_EQ(UCM::Status::OK, lru.Alloc(cache_ids_view[i], reinterpret_cast<void**>(&cache_data)));
+            ASSERT_EQ(UCM::Status::OK(), lru.Alloc(cache_ids_view[i], reinterpret_cast<void**>(&cache_data)));
             lru.AllocCommit(cache_data);
         }
     });
     std::thread t3([&cache_ids_view]() {
         for (uint32_t i = cap / 8 * 2; i < cap / 8 * 3; ++i) {
             void* cache_data = nullptr;
-            ASSERT_EQ(UCM::Status::OK, lru.Alloc(cache_ids_view[i], reinterpret_cast<void**>(&cache_data)));
+            ASSERT_EQ(UCM::Status::OK(), lru.Alloc(cache_ids_view[i], reinterpret_cast<void**>(&cache_data)));
             lru.AllocCommit(cache_data);
         }
     });
     std::thread t4([&cache_ids_view]() {
         for (uint32_t i = cap / 8 * 3; i < cap / 8 * 4; ++i) {
             void* cache_data = nullptr;
-            ASSERT_EQ(UCM::Status::OK, lru.Alloc(cache_ids_view[i], reinterpret_cast<void**>(&cache_data)));
+            ASSERT_EQ(UCM::Status::OK(), lru.Alloc(cache_ids_view[i], reinterpret_cast<void**>(&cache_data)));
             lru.AllocCommit(cache_data);
         }
     });
     std::thread t5([&cache_ids_view]() {
         for (uint32_t i = cap / 8 * 4; i < cap / 8 * 5; ++i) {
             void* cache_data = nullptr;
-            ASSERT_EQ(UCM::Status::OK, lru.Alloc(cache_ids_view[i], reinterpret_cast<void**>(&cache_data)));
+            ASSERT_EQ(UCM::Status::OK(), lru.Alloc(cache_ids_view[i], reinterpret_cast<void**>(&cache_data)));
             lru.AllocCommit(cache_data);
         }
     });
     std::thread t6([&cache_ids_view]() {
         for (uint32_t i = cap / 8 * 5; i < cap / 8 * 6; ++i) {
             void* cache_data = nullptr;
-            ASSERT_EQ(UCM::Status::OK, lru.Alloc(cache_ids_view[i], reinterpret_cast<void**>(&cache_data)));
+            ASSERT_EQ(UCM::Status::OK(), lru.Alloc(cache_ids_view[i], reinterpret_cast<void**>(&cache_data)));
             lru.AllocCommit(cache_data);
         }
     });
     std::thread t7([&cache_ids_view]() {
         for (uint32_t i = cap / 8 * 6; i < cap / 8 * 7; ++i) {
             void* cache_data = nullptr;
-            ASSERT_EQ(UCM::Status::OK, lru.Alloc(cache_ids_view[i], reinterpret_cast<void**>(&cache_data)));
+            ASSERT_EQ(UCM::Status::OK(), lru.Alloc(cache_ids_view[i], reinterpret_cast<void**>(&cache_data)));
             lru.AllocCommit(cache_data);
         }
     });
     std::thread t8([&cache_ids_view]() {
         for (uint32_t i = cap / 8 * 7; i < cap / 8 * 8; ++i) {
             void* cache_data = nullptr;
-            ASSERT_EQ(UCM::Status::OK, lru.Alloc(cache_ids_view[i], reinterpret_cast<void**>(&cache_data)));
+            ASSERT_EQ(UCM::Status::OK(), lru.Alloc(cache_ids_view[i], reinterpret_cast<void**>(&cache_data)));
             lru.AllocCommit(cache_data);
         }
     });
@@ -152,42 +152,42 @@ TEST_F(UCMLocalStoreLRUCacheTest, FindAndCommit)
     std::thread t1([]() {
         for (std::string_view cache_id : cache_ids) {
             void* cache_data = nullptr;
-            ASSERT_EQ(UCM::Status::OK, lru.Find(cache_id, reinterpret_cast<void**>(&cache_data)));
+            ASSERT_EQ(UCM::Status::OK(), lru.Find(cache_id, reinterpret_cast<void**>(&cache_data)));
             lru.FindCommit(cache_data);
         }
     });
     std::thread t2([]() {
         for (std::string_view cache_id : cache_ids) {
             void* cache_data = nullptr;
-            ASSERT_EQ(UCM::Status::OK, lru.Find(cache_id, reinterpret_cast<void**>(&cache_data)));
+            ASSERT_EQ(UCM::Status::OK(), lru.Find(cache_id, reinterpret_cast<void**>(&cache_data)));
             lru.FindCommit(cache_data);
         }
     });
     std::thread t3([]() {
         for (std::string_view cache_id : cache_ids) {
             void* cache_data = nullptr;
-            ASSERT_EQ(UCM::Status::OK, lru.Find(cache_id, reinterpret_cast<void**>(&cache_data)));
+            ASSERT_EQ(UCM::Status::OK(), lru.Find(cache_id, reinterpret_cast<void**>(&cache_data)));
             lru.FindCommit(cache_data);
         }
     });
     std::thread t4([]() {
         for (std::string_view cache_id : cache_ids) {
             void* cache_data = nullptr;
-            ASSERT_EQ(UCM::Status::OK, lru.Find(cache_id, reinterpret_cast<void**>(&cache_data)));
+            ASSERT_EQ(UCM::Status::OK(), lru.Find(cache_id, reinterpret_cast<void**>(&cache_data)));
             lru.FindCommit(cache_data);
         }
     });
     std::thread t5([]() {
         for (std::string_view cache_id : cache_ids) {
             void* cache_data = nullptr;
-            ASSERT_EQ(UCM::Status::OK, lru.Find(cache_id, reinterpret_cast<void**>(&cache_data)));
+            ASSERT_EQ(UCM::Status::OK(), lru.Find(cache_id, reinterpret_cast<void**>(&cache_data)));
             lru.FindCommit(cache_data);
         }
     });
     std::thread t6([]() {
         for (std::string_view cache_id : cache_ids) {
             void* cache_data = nullptr;
-            ASSERT_EQ(UCM::Status::OK, lru.Find(cache_id, reinterpret_cast<void**>(&cache_data)));
+            ASSERT_EQ(UCM::Status::OK(), lru.Find(cache_id, reinterpret_cast<void**>(&cache_data)));
             lru.FindCommit(cache_data);
         }
     });
@@ -203,8 +203,8 @@ TEST_F(UCMLocalStoreLRUCacheTest, EVICT)
 {
     std::string_view cache_id = "1234567890123456";
     void* cache_data = nullptr;
-    ASSERT_EQ(UCM::Status::BUSY, lru.Alloc(cache_id, reinterpret_cast<void**>(&cache_data)));
+    ASSERT_EQ(UCM::Status::Busy(), lru.Alloc(cache_id, reinterpret_cast<void**>(&cache_data)));
     std::this_thread::sleep_for(std::chrono::milliseconds(1));
-    ASSERT_EQ(UCM::Status::OK, lru.Alloc(cache_id, reinterpret_cast<void**>(&cache_data)));
+    ASSERT_EQ(UCM::Status::OK(), lru.Alloc(cache_id, reinterpret_cast<void**>(&cache_data)));
     lru.AllocCommit(cache_data);
 }

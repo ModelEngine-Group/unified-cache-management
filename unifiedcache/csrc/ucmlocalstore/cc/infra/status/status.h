@@ -28,25 +28,122 @@
 
 namespace UCM {
 
-enum class Status : int32_t {
+class Status {
+    enum class Code {
 #define UCM_LOCAL_STORE_MAKE_STATUS_CODE(i) (-50000 - (i))
-    OK = 0,
-    ERROR = -1,
-    OSERROR = UCM_LOCAL_STORE_MAKE_STATUS_CODE(0),
-    EXIST = UCM_LOCAL_STORE_MAKE_STATUS_CODE(1),
-    NOENT = UCM_LOCAL_STORE_MAKE_STATUS_CODE(2),
-    BUSY = UCM_LOCAL_STORE_MAKE_STATUS_CODE(3),
-    RETRY = UCM_LOCAL_STORE_MAKE_STATUS_CODE(4),
-    VERSION_UNMATCH = UCM_LOCAL_STORE_MAKE_STATUS_CODE(5),
-    INVALID_PARAM = UCM_LOCAL_STORE_MAKE_STATUS_CODE(6),
-    EMPTY = UCM_LOCAL_STORE_MAKE_STATUS_CODE(7),
-    NOT_EXIST = UCM_LOCAL_STORE_MAKE_STATUS_CODE(8),
+        OK = 0,
+        ERROR = -1,
+        EPARAM = UCM_LOCAL_STORE_MAKE_STATUS_CODE(0),
+        EOOM = UCM_LOCAL_STORE_MAKE_STATUS_CODE(1),
+        EOSERROR = UCM_LOCAL_STORE_MAKE_STATUS_CODE(2),
+        EDUPLICATE = UCM_LOCAL_STORE_MAKE_STATUS_CODE(3),
+        ERETRY = UCM_LOCAL_STORE_MAKE_STATUS_CODE(4),
+        ENOOBJ = UCM_LOCAL_STORE_MAKE_STATUS_CODE(5),
+        ESERIALIZE = UCM_LOCAL_STORE_MAKE_STATUS_CODE(6),
+        EDESERIALIZE = UCM_LOCAL_STORE_MAKE_STATUS_CODE(7),
+        EUNSUPPORTED = UCM_LOCAL_STORE_MAKE_STATUS_CODE(8),
+        EXIST = UCM_LOCAL_STORE_MAKE_STATUS_CODE(9),
+        EEBUSY = UCM_LOCAL_STORE_MAKE_STATUS_CODE(10),
+        EMPTY = UCM_LOCAL_STORE_MAKE_STATUS_CODE(11),
+
 #undef UCM_LOCAL_STORE_MAKE_STATUS_CODE
+    };
+
+public:
+    static Status& OK()
+    {
+        static Status s{Code::OK};
+        return s;
+    }
+    static Status& Error()
+    {
+        static Status s{Code::ERROR};
+        return s;
+    }
+    static Status& Exist()
+    {
+        static Status s{Code::EXIST};
+        return s;
+    }
+    static Status& Busy()
+    {
+        static Status s{Code::EEBUSY};
+        return s;
+    }
+    static Status& Empty()
+    {
+        static Status s{Code::EMPTY};
+        return s;
+    }
+    static Status& InvalidParam()
+    {
+        static Status s{Code::EPARAM};
+        return s;
+    }
+    static Status& OutOfMemory()
+    {
+        static Status s{Code::EOOM};
+        return s;
+    }
+    static Status& OsApiError()
+    {
+        static Status s{Code::EOSERROR};
+        return s;
+    }
+    static Status& DuplicateKey()
+    {
+        static Status s{Code::EDUPLICATE};
+        return s;
+    }
+    static Status& Retry()
+    {
+        static Status s{Code::ERETRY};
+        return s;
+    }
+    static Status& NotFound()
+    {
+        static Status s{Code::ENOOBJ};
+        return s;
+    }
+    static Status& SerializeFailed()
+    {
+        static Status s{Code::ESERIALIZE};
+        return s;
+    }
+    static Status& DeserializeFailed()
+    {
+        static Status s{Code::EDESERIALIZE};
+        return s;
+    }
+    static Status& Unsupported()
+    {
+        static Status s{Code::EUNSUPPORTED};
+        return s;
+    }
+
+public:
+    Status(const Status& status) { this->_code = status._code; }
+    Status& operator=(const Status& status)
+    {
+        if (this != &status) { this->_code = status._code; }
+        return *this;
+    }
+    bool operator==(const Status& status) const { return this->_code == status._code; }
+    bool operator!=(const Status& status) const { return this->_code != status._code; }
+    int32_t Underlying() const { return static_cast<int32_t>(this->_code); }
+    bool Success() const { return this->_code == Code::OK; }
+    bool Failure() const { return this->_code != Code::OK; }
+
+private:
+    Status(const Code code) : _code{code} {}
+
+private:
+    Code _code;
 };
 
-inline int32_t Unwrap(Status s) { return static_cast<int32_t>(s); }
+inline int32_t format_as(const Status& status) { return status.Underlying(); }
 
 } // namespace UCM
 
-#endif // UCM_LOCAL_STORE_STATUS_H
+#endif
 

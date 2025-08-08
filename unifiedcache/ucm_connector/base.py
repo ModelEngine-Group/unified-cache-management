@@ -34,6 +34,12 @@ class Task:
     """
     pass
 
+class Cache:
+    """
+    Abstract Cache for kv transfer
+    """
+    pass
+
 
 class UcmKVStoreBase(ABC):
     """
@@ -110,7 +116,7 @@ class UcmKVStoreBase(ABC):
         pass
 
     @abstractmethod
-    def wait(self, task: Task) -> int:
+    def wait(self, task: Task, cache: Cache) -> int:
         """
         wait kv cache kv transfer task finished.
 
