@@ -1,0 +1,210 @@
+/**
+ * MIT License
+ *
+ * Copyright (c) 2025 Huawei Technologies Co., Ltd. All rights reserved.
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining a copy
+ * of this software and associated documentation files (the "Software"), to deal
+ * in the Software without restriction, including without limitation the rights
+ * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+ * copies of the Software, and to permit persons to whom the Software is
+ * furnished to do so, subject to the following conditions:
+ *
+ * The above copyright notice and this permission notice shall be included in all
+ * copies or substantial portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+ * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+ * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+ * SOFTWARE.
+ * */
+#include "lrucache/lrucache.h"
+#include <thread>
+#include <random>
+#include <vector>
+#include <unordered_set>
+#include <gtest/gtest.h>
+
+class UCMLocalStoreLRUCacheTest : public testing::Test {
+protected:
+    static void SetUpTestSuite()
+    {
+        system("rm -f /dev/shm/ucm_lru_cache");
+        std::thread t1([]() {
+            EXPECT_EQ(UCM::Status::OK, lru.Initialize(cache_num, cache_size));
+        });
+        std::thread t2([]() {
+            EXPECT_EQ(UCM::Status::OK, lru.Initialize(cache_num, cache_size));
+        });
+        std::thread t3([]() {
+            EXPECT_EQ(UCM::Status::OK, lru.Initialize(cache_num, cache_size));
+        });
+        std::thread t4([]() {
+            while (cache_ids.size() != cache_num) {
+                const std::string charset = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
+                std::random_device rd;
+                std::mt19937 gen(rd());
+                std::uniform_int_distribution<size_t> dis(0, charset.size() - 1);
+                
+                std::string cache_id;
+                for (size_t i = 0; i < 16; ++i) {
+                    cache_id += charset[dis(gen)];
+                }
+                cache_ids.insert(cache_id);
+            }
+        });
+        t1.join();
+        t2.join();
+        t3.join();
+        t4.join();
+    }
+
+    static void TearDownTestSuite()
+    {
+        system("rm -f /dev/shm/ucmlocalstore.shm");
+    }
+
+    static inline uint32_t cache_num{8192};
+    static inline uint32_t cache_size{1 << 20};
+    static inline UCM::LRUCache lru;
+    static inline std::unordered_set<std::string> cache_ids;
+};
+
+TEST_F(UCMLocalStoreLRUCacheTest, InsertAndDone)
+{
+    std::vector<std::string_view> cache_ids_view;
+    cache_ids_view.reserve(cache_num);
+    for (std::string_view cache_id_view : cache_ids) {
+        cache_ids_view.push_back(cache_id_view);
+    }
+
+    std::thread t1([&cache_ids_view]() {
+        for (uint32_t i = 0; i < cache_num / 8; ++i) {
+            void* cache_data = nullptr;
+            ASSERT_EQ(UCM::Status::OK, lru.Insert(cache_ids_view[i], reinterpret_cast<void**>(&cache_data)));
+            lru.Done(cache_data);
+        }
+    });
+    std::thread t2([&cache_ids_view]() {
+        for (uint32_t i = cache_num / 8; i < cache_num / 8 * 2; ++i) {
+            void* cache_data = nullptr;
+            ASSERT_EQ(UCM::Status::OK, lru.Insert(cache_ids_view[i], reinterpret_cast<void**>(&cache_data)));
+            lru.Done(cache_data);
+        }
+    });
+    std::thread t3([&cache_ids_view]() {
+        for (uint32_t i = cache_num / 8 * 2; i < cache_num / 8 * 3; ++i) {
+            void* cache_data = nullptr;
+            ASSERT_EQ(UCM::Status::OK, lru.Insert(cache_ids_view[i], reinterpret_cast<void**>(&cache_data)));
+            lru.Done(cache_data);
+        }
+    });
+    std::thread t4([&cache_ids_view]() {
+        for (uint32_t i = cache_num / 8 * 3; i < cache_num / 8 * 4; ++i) {
+            void* cache_data = nullptr;
+            ASSERT_EQ(UCM::Status::OK, lru.Insert(cache_ids_view[i], reinterpret_cast<void**>(&cache_data)));
+            lru.Done(cache_data);
+        }
+    });
+    std::thread t5([&cache_ids_view]() {
+        for (uint32_t i = cache_num / 8 * 4; i < cache_num / 8 * 5; ++i) {
+            void* cache_data = nullptr;
+            ASSERT_EQ(UCM::Status::OK, lru.Insert(cache_ids_view[i], reinterpret_cast<void**>(&cache_data)));
+            lru.Done(cache_data);
+        }
+    });
+    std::thread t6([&cache_ids_view]() {
+        for (uint32_t i = cache_num / 8 * 5; i < cache_num / 8 * 6; ++i) {
+            void* cache_data = nullptr;
+            ASSERT_EQ(UCM::Status::OK, lru.Insert(cache_ids_view[i], reinterpret_cast<void**>(&cache_data)));
+            lru.Done(cache_data);
+        }
+    });
+    std::thread t7([&cache_ids_view]() {
+        for (uint32_t i = cache_num / 8 * 6; i < cache_num / 8 * 7; ++i) {
+            void* cache_data = nullptr;
+            ASSERT_EQ(UCM::Status::OK, lru.Insert(cache_ids_view[i], reinterpret_cast<void**>(&cache_data)));
+            lru.Done(cache_data);
+        }
+    });
+    std::thread t8([&cache_ids_view]() {
+        for (uint32_t i = cache_num / 8 * 7; i < cache_num / 8 * 8; ++i) {
+            void* cache_data = nullptr;
+            ASSERT_EQ(UCM::Status::OK, lru.Insert(cache_ids_view[i], reinterpret_cast<void**>(&cache_data)));
+            lru.Done(cache_data);
+        }
+    });
+    t1.join();
+    t2.join();
+    t3.join();
+    t4.join();
+    t5.join();
+    t6.join();
+    t7.join();
+    t8.join();
+}
+
+TEST_F(UCMLocalStoreLRUCacheTest, FindAndDone)
+{
+    std::thread t1([]() {
+        for (std::string_view cache_id : cache_ids) {
+            void* cache_data = nullptr;
+            ASSERT_EQ(UCM::Status::OK, lru.Find(cache_id, reinterpret_cast<void**>(&cache_data)));
+            lru.Done(cache_data);
+        }
+    });
+    std::thread t2([]() {
+        for (std::string_view cache_id : cache_ids) {
+            void* cache_data = nullptr;
+            ASSERT_EQ(UCM::Status::OK, lru.Find(cache_id, reinterpret_cast<void**>(&cache_data)));
+            lru.Done(cache_data);
+        }
+    });
+    std::thread t3([]() {
+        for (std::string_view cache_id : cache_ids) {
+            void* cache_data = nullptr;
+            ASSERT_EQ(UCM::Status::OK, lru.Find(cache_id, reinterpret_cast<void**>(&cache_data)));
+            lru.Done(cache_data);
+        }
+    });
+    std::thread t4([]() {
+        for (std::string_view cache_id : cache_ids) {
+            void* cache_data = nullptr;
+            ASSERT_EQ(UCM::Status::OK, lru.Find(cache_id, reinterpret_cast<void**>(&cache_data)));
+            lru.Done(cache_data);
+        }
+    });
+    std::thread t5([]() {
+        for (std::string_view cache_id : cache_ids) {
+            void* cache_data = nullptr;
+            ASSERT_EQ(UCM::Status::OK, lru.Find(cache_id, reinterpret_cast<void**>(&cache_data)));
+            lru.Done(cache_data);
+        }
+    });
+    std::thread t6([]() {
+        for (std::string_view cache_id : cache_ids) {
+            void* cache_data = nullptr;
+            ASSERT_EQ(UCM::Status::OK, lru.Find(cache_id, reinterpret_cast<void**>(&cache_data)));
+            lru.Done(cache_data);
+        }
+    });
+    t1.join();
+    t2.join();
+    t3.join();
+    t4.join();
+    t5.join();
+    t6.join();
+}
+
+TEST_F(UCMLocalStoreLRUCacheTest, Remove)
+{
+    std::string_view cache_id = "1234567890123456";
+    void* cache_data = nullptr;
+    ASSERT_EQ(UCM::Status::BUSY, lru.Insert(cache_id, reinterpret_cast<void**>(&cache_data)));
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    ASSERT_EQ(UCM::Status::OK, lru.Insert(cache_id, reinterpret_cast<void**>(&cache_data)));
+    lru.Done(cache_data);
+}
