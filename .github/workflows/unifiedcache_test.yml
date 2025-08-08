@@ -3,8 +3,8 @@ name: 'test'
 on:
   pull_request:
     branches:
-      - main
-      - dev*
+      - "main"
+      - "dev*"
       - "*release" 
 
 jobs:
