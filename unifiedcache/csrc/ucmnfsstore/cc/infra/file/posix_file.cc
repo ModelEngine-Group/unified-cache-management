@@ -53,9 +53,7 @@ Status PosixFile::RmDir()
     auto ret = rmdir(this->Path().c_str());
     auto eno = errno;
     if (ret != 0) {
-        if (eno != ENOTEMPTY) {
-            UC_WARN("Failed to remove directory, path: {}.", this->Path());
-        }
+        if (eno != ENOTEMPTY) { UC_WARN("Failed to remove directory, path: {}.", this->Path()); }
         return Status::OsApiError();
     }
     return Status::OK();
@@ -69,8 +67,7 @@ Status PosixFile::Rename(const std::string& newName)
         if (eno == ENOENT) {
             return Status::NotFound();
         } else {
-            UC_ERROR("Failed to rename file, old path: {}, new path: {}, errno: {}.",
-                     this->Path(), newName, eno);
+            UC_ERROR("Failed to rename file, old path: {}, new path: {}, errno: {}.", this->Path(), newName, eno);
             return Status::OsApiError();
         }
     }
@@ -85,8 +82,8 @@ Status PosixFile::Access(const int32_t mode)
         if (eno == ENOENT) {
             return Status::NotFound();
         } else {
-            UC_ERROR("Failed to access file, path: {}, mode: {}, errcode: {}, errno: {}.",
-                     this->Path(), mode, ret, eno);
+            UC_ERROR("Failed to access file, path: {}, mode: {}, errcode: {}, errno: {}.", this->Path(), mode, ret,
+                     eno);
             return Status::OsApiError();
         }
     }
@@ -99,8 +96,7 @@ Status PosixFile::Open(const uint32_t flags)
     this->_handle = open(this->Path().c_str(), flags, permission);
     auto eno = errno;
     if (!this->_handle) {
-        UC_ERROR("Failed to open file, path: {}, flags: {}, errno: {}.",
-                 this->Path(), flags, eno);
+        UC_ERROR("Failed to open file, path: {}, flags: {}, errno: {}.", this->Path(), flags, eno);
         return Status::OsApiError();
     }
     return Status::OK();
@@ -117,9 +113,7 @@ void PosixFile::Remove()
     auto ret = remove(this->Path().c_str());
     auto eno = errno;
     if (ret != 0) {
-        if (eno == ENOENT) {
-            UC_WARN("Failed to remove file, path: {}, file not found.", this->Path());
-        }
+        if (eno == ENOENT) { UC_WARN("Failed to remove file, path: {}, file not found.", this->Path()); }
     }
 }
 
@@ -133,8 +127,7 @@ Status PosixFile::Read(void* buffer, size_t size, off64_t offset)
     }
     auto eno = errno;
     if (nBytes != static_cast<ssize_t>(size)) {
-        UC_ERROR("Failed to read file, path: {}, size: {}, offset: {}, errno: {}.",
-                 this->Path(), size, offset, eno);
+        UC_ERROR("Failed to read file, path: {}, size: {}, offset: {}, errno: {}.", this->Path(), size, offset, eno);
         return Status::OsApiError();
     }
     return Status::OK();
@@ -150,8 +143,7 @@ Status PosixFile::Write(const void* buffer, size_t size, off64_t offset)
     }
     auto eno = errno;
     if (nBytes != static_cast<ssize_t>(size)) {
-        UC_ERROR("Failed to write file, path: {}, size: {}, offset: {}, errno: {}.",
-                 this->Path(), size, offset, eno);
+        UC_ERROR("Failed to write file, path: {}, size: {}, offset: {}, errno: {}.", this->Path(), size, offset, eno);
         return Status::OsApiError();
     }
     return Status::OK();

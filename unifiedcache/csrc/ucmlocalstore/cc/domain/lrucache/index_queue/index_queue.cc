@@ -78,7 +78,7 @@ struct IndexQueueHeader {
         auto new_len = Length{};
         do {
             old_len = this->len.load(std::memory_order_acquire);
-            if (old_len == this->cap.load(std::memory_order_relaxed)) { return Status::BUSY; }
+            if (old_len == this->cap.load(std::memory_order_relaxed)) { return Status::Busy(); }
             new_len = Length{old_len.val + 1, old_len.version + 1};
         } while (!this->len.compare_exchange_strong(old_len, new_len, std::memory_order_acq_rel));
 
@@ -94,7 +94,7 @@ struct IndexQueueHeader {
 
         this->pinning_indexes[old_tail.idx].store(pinning_idx, std::memory_order_release);
 
-        return Status::OK;
+        return Status::OK();
     }
 
     Status Pop(uint64_t& pinning_idx)
@@ -103,7 +103,7 @@ struct IndexQueueHeader {
         auto new_len = Length{};
         do {
             old_len = this->len.load(std::memory_order_acquire);
-            if (old_len == 0) { return Status::EMPTY; }
+            if (old_len == 0) { return Status::Empty(); }
             new_len = Length{old_len.val - 1, old_len.version + 1};
         } while (!this->len.compare_exchange_strong(old_len, new_len, std::memory_order_acq_rel));
 
@@ -119,7 +119,7 @@ struct IndexQueueHeader {
 
         pinning_idx = this->pinning_indexes[old_head.idx].load(std::memory_order_acquire);
 
-        return Status::OK;
+        return Status::OK();
     }
 };
 static_assert(sizeof(IndexQueueHeader) == 40);
@@ -143,8 +143,8 @@ Status IndexQueue::Initialize(const uint64_t num)
     uint64_t shm_cap = sizeof(IndexQueueHeader) + num * sizeof(std::atomic<uint64_t>);
 
     auto status = this->_f->ShmOpen(OpenFlag::RDWR | OpenFlag::CREAT | OpenFlag::EXCL);
-    if (status != Status::OK) {
-        if (status == Status::EXIST) {
+    if (status.Failure()) {
+        if (status == Status::Exist()) {
             return this->MappingCheck(shm_cap);
         } else {
             return status;
@@ -152,7 +152,7 @@ Status IndexQueue::Initialize(const uint64_t num)
     }
 
     status = this->_f->Truncate(shm_cap);
-    if (status != Status::OK) {
+    if (status.Failure()) {
         return status;
     }
 
@@ -171,10 +171,10 @@ Status IndexQueue::Pop(uint64_t& pinning_idx)
 
 Status IndexQueue::MappingCheck(const uint64_t shm_cap)
 {
-    auto status = Status::OK;
+    auto status = Status::OK();
 
     status = this->_f->ShmOpen(OpenFlag::RDWR);
-    if (status != Status::OK) {
+    if (status.Failure()) {
         return status;
     }
 
@@ -182,13 +182,13 @@ Status IndexQueue::MappingCheck(const uint64_t shm_cap)
     do {
         std::this_thread::sleep_for(std::chrono::milliseconds(2));
         status = this->_f->Stat(stat);
-        if (status != Status::OK) {
+        if (status.Failure()) {
             return status;
         }
     } while(static_cast<uint64_t>(stat.st_size) != shm_cap);
 
     status = this->_f->MMap(reinterpret_cast<void**>(&(this->_h)), shm_cap, PROT_READ | PROT_WRITE, MAP_SHARED);
-    if (status != Status::OK) {
+    if (status.Failure()) {
         return status;
     }
 
@@ -202,7 +202,7 @@ Status IndexQueue::MappingCheck(const uint64_t shm_cap)
 Status IndexQueue::MappingInitialize(const uint64_t shm_cap, const uint64_t num)
 {
     auto status = this->_f->MMap(reinterpret_cast<void**>(&(this->_h)), shm_cap, PROT_READ | PROT_WRITE, MAP_SHARED);
-    if (status != Status::OK) {
+    if (status.Failure()) {
         return status;
     }
     this->_h->Initialize(num);

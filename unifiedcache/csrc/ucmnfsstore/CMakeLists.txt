@@ -8,14 +8,18 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 option(BUILD_TESTS "build all test suits." OFF)
+option(COVERAGE_ENABLED "coverage enabled." OFF)
 option(DOWNLOAD_DEPENDENCE "download dependence by cmake." ON)
-set(RUNTIME_ENVIRONMENT "ascend" CACHE STRING "runtime: ascend or cuda")
+set(RUNTIME_ENVIRONMENT "ascend" CACHE STRING "runtime: simu, ascend or cuda.")
 
-include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/flags.cmake)
+set(UCMNFSSTORE_ROOT ${CMAKE_CURRENT_SOURCE_DIR})
 
-set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_SOURCE_DIR}/output/bin)
-set(CMAKE_LIBRARY_OUTPUT_DIRECTORY ${CMAKE_SOURCE_DIR}/output/lib)
-set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY ${CMAKE_SOURCE_DIR}/output/lib)
+include(${UCMNFSSTORE_ROOT}/cmake/variable.cmake)
+include(${UCMNFSSTORE_ROOT}/cmake/flags.cmake)
+
+set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${UCMNFSSTORE_ROOT}/output/bin)
+set(CMAKE_LIBRARY_OUTPUT_DIRECTORY ${UCMNFSSTORE_ROOT}/output/lib)
+set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY ${UCMNFSSTORE_ROOT}/output/lib)
 
 if(DOWNLOAD_DEPENDENCE)
     add_subdirectory(vendor)

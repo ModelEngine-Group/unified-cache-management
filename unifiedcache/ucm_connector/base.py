@@ -34,7 +34,6 @@ class Task:
     """
     pass
 
-
 class UcmKVStoreBase(ABC):
     """
     Storage vendor implements this interface to support KV Cache centric inference system.

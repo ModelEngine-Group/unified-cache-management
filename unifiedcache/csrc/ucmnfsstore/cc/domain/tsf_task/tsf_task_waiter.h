@@ -24,7 +24,6 @@
 #ifndef UNIFIEDCACHE_TSF_TASK_WAITER_H
 #define UNIFIEDCACHE_TSF_TASK_WAITER_H
 
-#include <spdlog/fmt/fmt.h>
 #include <spdlog/stopwatch.h>
 #include "logger/logger.h"
 #include "thread/latch.h"
@@ -41,12 +40,12 @@ public:
     void Done()
     {
         if (Latch::Done() == 0) {
-            UC_INFO("Task({}, {}, {}, {}) finished, elapsed {:.06f}s", this->_id, this->_brief, this->_number,
-                    this->_size, this->_sw.elapsed().count());
+            auto elapsed = this->_sw.elapsed().count();
+            UC_INFO("Task({},{},{},{}) finished, elapsed={:.06f}s, bw={:.06f}GB/s.", this->_id, this->_brief,
+                    this->_number, this->_size, elapsed, this->_size / elapsed / (1ULL << 30));
             this->Notify();
         }
     }
-
 
 private:
     size_t _id;

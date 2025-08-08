@@ -221,15 +221,15 @@ HashMap::~HashMap()
 Status HashMap::Initialize(const uint64_t num)
 {
     auto status = this->_q.Initialize(num);
-    if (status != Status::OK) {
+    if (status.Failure()) {
         return status;
     }
 
     uint64_t shm_cap = static_cast<uint64_t>(sizeof(HashMapHeader)) + num * static_cast<uint64_t>(sizeof(Node));
 
     status = this->_f->ShmOpen(OpenFlag::RDWR | OpenFlag::CREAT | OpenFlag::EXCL);
-    if (status != Status::OK) {
-        if (status == Status::EXIST) {
+    if (status.Failure()) {
+        if (status == Status::Exist()) {
             return this->MappingCheck(shm_cap);
         } else {
             return status;
@@ -237,7 +237,7 @@ Status HashMap::Initialize(const uint64_t num)
     }
 
     status = this->_f->Truncate(shm_cap);
-    if (status != Status::OK) {
+    if (status.Failure()) {
         return status;
     }
 
@@ -246,63 +246,63 @@ Status HashMap::Initialize(const uint64_t num)
 
 Status HashMap::Insert(std::string_view key, uint64_t val)
 {
-    if (key.size() != 16) { return Status::INVALID_PARAM; }
+    if (key.size() != 16) { return Status::InvalidParam(); }
 
     if (this->_h->len.load(std::memory_order_acquire) == this->_h->cap.load(std::memory_order_relaxed)) {
-        return Status::BUSY;
+        return Status::Busy();
     }
 
     uint64_t pinning_idx;
     auto status = this->_q.Pop(pinning_idx);
-    if (status != Status::OK) {
+    if (status.Failure()) {
         return status;
     }
 
     this->_h->Insert(key, val, pinning_idx);
 
-    return Status::OK;
+    return Status::OK();
 }
 
 Status HashMap::Find(std::string_view key, uint64_t& val)
 {
     val = UCM_HASHMAP_INVALID_64;
-    if (key.size() != 16) { return Status::INVALID_PARAM; }
+    if (key.size() != 16) { return Status::InvalidParam(); }
 
     if (this->_h->len.load(std::memory_order_acquire) == 0) {
-        return Status::EMPTY;
+        return Status::Empty();
     }
 
     if (this->_h->Find(key, val)) {
-        return Status::OK;
+        return Status::OK();
     } else {
-        return Status::NOT_EXIST;
+        return Status::NotFound();
     }
 }
 
 Status HashMap::Remove(std::string_view key)
 {
-    if (key.size() != 16) { return Status::INVALID_PARAM; }
+    if (key.size() != 16) { return Status::InvalidParam(); }
 
     if (this->_h->len.load(std::memory_order_acquire) == 0) {
-        return Status::EMPTY;
+        return Status::Empty();
     }
 
     auto pinning_idx = this->_h->Remove(key);
 
     auto status = this->_q.Push(pinning_idx);
-    if (status != Status::OK) {
+    if (status.Failure()) {
         return status;
     }
 
-    return Status::OK;
+    return Status::OK();
 }
 
 Status HashMap::MappingCheck(const uint64_t shm_cap)
 {
-    auto status = Status::OK;
+    auto status = Status::OK();
 
     status = this->_f->ShmOpen(OpenFlag::RDWR);
-    if (status != Status::OK) {
+    if (status.Failure()) {
         return status;
     }
 
@@ -310,13 +310,13 @@ Status HashMap::MappingCheck(const uint64_t shm_cap)
     do {
         std::this_thread::sleep_for(std::chrono::milliseconds(2));
         status = this->_f->Stat(stat);
-        if (status != Status::OK) {
+        if (status.Failure()) {
             return status;
         }
     } while(static_cast<uint64_t>(stat.st_size) != shm_cap);
 
     status = this->_f->MMap(reinterpret_cast<void**>(&(this->_h)), shm_cap, PROT_READ | PROT_WRITE, MAP_SHARED);
-    if (status != Status::OK) {
+    if (status.Failure()) {
         return status;
     }
 
@@ -330,7 +330,7 @@ Status HashMap::MappingCheck(const uint64_t shm_cap)
 Status HashMap::MappingInitialize(const uint64_t shm_cap, const uint64_t num)
 {
     auto status = this->_f->MMap(reinterpret_cast<void**>(&(this->_h)), shm_cap, PROT_READ | PROT_WRITE, MAP_SHARED);
-    if (status != Status::OK) {
+    if (status.Failure()) {
         return status;
     }
     this->_h->Initialize(num);

@@ -29,26 +29,20 @@ namespace UC {
 
 Status SpaceManager::Setup(const std::vector<std::string>& storageBackends, const size_t blockSize)
 {
-    if (storageBackends.empty()) {
-        UC_ERROR("Empty backend list.");
-        return Status::InvalidParam();
-    }
     if (blockSize == 0) {
         UC_ERROR("Invalid block size({}).", blockSize);
         return Status::InvalidParam();
     }
-    for (auto& path : storageBackends) {
-        Status status = this->AddStorageBackend(path);
-        if (status.Failure()) { return status; }
-    }
+    auto status = this->_layout.Setup(storageBackends);
+    if (status.Failure()) { return status; }
     this->_blockSize = blockSize;
     return Status::OK();
 }
 
-Status SpaceManager::NewBlock(const std::string& blockId)
+Status SpaceManager::NewBlock(const std::string& blockId) const
 {
-    auto parent = File::Make(this->BlockParentPath(blockId));
-    auto file = File::Make(this->BlockPath(blockId, true));
+    auto parent = File::Make(this->_layout.DataFileParent(blockId));
+    auto file = File::Make(this->_layout.DataFilePath(blockId, true));
     if (!parent || !file) {
         UC_ERROR("Failed to new block({}).", blockId);
         return Status::OutOfMemory();
@@ -72,19 +66,19 @@ Status SpaceManager::NewBlock(const std::string& blockId)
     return Status::OK();
 }
 
-Status SpaceManager::CommitBlock(const std::string& blockId, bool success)
+Status SpaceManager::CommitBlock(const std::string& blockId, bool success) const
 {
-    auto file = File::Make(this->BlockPath(blockId, true));
+    auto file = File::Make(this->_layout.DataFilePath(blockId, true));
     if (!file) {
         UC_ERROR("Failed to {} block({}).", success ? "commit" : "cancel", blockId);
         return Status::OutOfMemory();
     }
     if (success) {
-        auto status = file->Rename(this->BlockPath(blockId, false));
+        auto status = file->Rename(this->_layout.DataFilePath(blockId, false));
         if (status.Failure()) { UC_ERROR("Failed({}) to commit block({}).", status, blockId); }
         return status;
     }
-    auto parent = File::Make(this->BlockParentPath(blockId));
+    auto parent = File::Make(this->_layout.DataFileParent(blockId));
     if (!parent) {
         UC_ERROR("Failed to cancel block({}).", blockId);
         return Status::OutOfMemory();
@@ -94,9 +88,9 @@ Status SpaceManager::CommitBlock(const std::string& blockId, bool success)
     return Status::OK();
 }
 
-bool SpaceManager::LookupBlock(const std::string& blockId)
+bool SpaceManager::LookupBlock(const std::string& blockId) const
 {
-    auto path = this->BlockPath(blockId);
+    auto path = this->_layout.DataFilePath(blockId, false);
     auto file = File::Make(path);
     if (!file) {
         UC_ERROR("Failed to make file smart pointer, path: {}.", path);
@@ -110,61 +104,6 @@ bool SpaceManager::LookupBlock(const std::string& blockId)
     return true;
 }
 
-std::string SpaceManager::BlockPath(const std::string& blockId, bool actived)
-{
-    return this->StorageBackend(blockId) + this->_layout.DataFilePath(blockId, actived);
-}
-
-Status SpaceManager::AddStorageBackend(const std::string& path)
-{
-    auto normalizedPath = path;
-    if (normalizedPath.back() != '/') { normalizedPath += '/'; }
-    auto status = Status::OK();
-    if (this->_storageBackends.empty()) {
-        status = this->AddFirstStorageBackend(normalizedPath);
-    } else {
-        status = this->AddSecondaryStorageBackend(normalizedPath);
-    }
-    if (status.Failure()) { UC_ERROR("Failed({}) to add storage backend({}).", status, normalizedPath); }
-    return status;
-}
-
-Status SpaceManager::AddFirstStorageBackend(const std::string& path)
-{
-    for (const auto& root : this->_layout.RelativeRoots()) {
-        auto dir = File::Make(path + root);
-        if (!dir) { return Status::OutOfMemory(); }
-        auto status = dir->MkDir();
-        if (status == Status::DuplicateKey()) { status = Status::OK(); }
-        if (status.Failure()) { return status; }
-    }
-    this->_storageBackends.emplace_back(path);
-    return Status::OK();
-}
-
-Status SpaceManager::AddSecondaryStorageBackend(const std::string& path)
-{
-    auto iter = std::find(this->_storageBackends.begin(), this->_storageBackends.end(), path);
-    if (iter != this->_storageBackends.end()) { return Status::OK(); }
-    constexpr auto accessMode = IFile::AccessMode::READ | IFile::AccessMode::WRITE;
-    for (const auto& root : this->_layout.RelativeRoots()) {
-        auto dir = File::Make(path + root);
-        auto status = dir->Access(accessMode);
-        if (status.Failure()) { return status; }
-    }
-    this->_storageBackends.emplace_back(path);
-    return Status::OK();
-}
-
-std::string SpaceManager::StorageBackend(const std::string& blockId)
-{
-    static std::hash<std::string> hasher;
-    return this->_storageBackends[hasher(blockId) % this->_storageBackends.size()];
-}
-
-std::string SpaceManager::BlockParentPath(const std::string& blockId)
-{
-    return this->StorageBackend(blockId) + this->_layout.DataFileParent(blockId);
-}
+const SpaceLayout* SpaceManager::GetSpaceLayout() const { return &this->_layout; }
 
 } // namespace UC

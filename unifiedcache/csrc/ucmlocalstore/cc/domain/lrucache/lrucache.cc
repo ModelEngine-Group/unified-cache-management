@@ -275,20 +275,20 @@ LRUCache::~LRUCache()
 Status LRUCache::Initialize(uint64_t cache_num, uint64_t cache_size)
 {
     auto status = this->_q.Initialize(cache_num);
-    if (status != Status::OK) {
+    if (status.Failure()) {
         return status;
     }
 
     status = this->_m.Initialize(cache_num);
-    if (status != Status::OK) {
+    if (status.Failure()) {
         return status;
     }
 
     uint64_t shm_cap = sizeof(LRUCacheHeader) + cache_num * (sizeof(Info) + cache_size);
 
     status = this->_f->ShmOpen(OpenFlag::RDWR | OpenFlag::CREAT | OpenFlag::EXCL);
-    if (status != Status::OK) {
-        if (status == Status::EXIST) {
+    if (status.Failure()) {
+        if (status == Status::Exist()) {
             return this->MappingCheck(shm_cap);
         } else {
             return status;
@@ -296,7 +296,7 @@ Status LRUCache::Initialize(uint64_t cache_num, uint64_t cache_size)
     }
 
     status = this->_f->Truncate(shm_cap);
-    if (status != Status::OK) {
+    if (status.Failure()) {
         return status;
     }
 
@@ -306,16 +306,16 @@ Status LRUCache::Initialize(uint64_t cache_num, uint64_t cache_size)
 Status LRUCache::Insert(std::string_view key, void** val)
 {
     *val = nullptr;
-    if (key.size() != 16) { return Status::INVALID_PARAM; }
+    if (key.size() != 16) { return Status::InvalidParam(); }
 
     if (this->_h->len.load(std::memory_order_acquire) == this->_h->cap.load(std::memory_order_relaxed)) {
         ThreadPool::Instance().Submit([this] { this->Remove(); });
-        return Status::BUSY;
+        return Status::Busy();
     }
 
     uint64_t pinning_idx;
     auto status = this->_q.Pop(pinning_idx);
-    if (status != Status::OK) {
+    if (status.Failure()) {
         return status;
     }
     auto cache = this->_h->At(pinning_idx);
@@ -325,21 +325,21 @@ Status LRUCache::Insert(std::string_view key, void** val)
     cache->info.key.store(Key{key}, std::memory_order_release);
     *val = cache->data;
 
-    return Status::OK;
+    return Status::OK();
 }
 
 Status LRUCache::Find(std::string_view key, void** val)
 {
     *val = nullptr;
-    if (key.size() != 16) { return Status::INVALID_PARAM; }
+    if (key.size() != 16) { return Status::InvalidParam(); }
 
     if (this->_h->len.load(std::memory_order_acquire).val == 0) {
-        return Status::EMPTY;
+        return Status::Empty();;
     }
 
     uint64_t pinning_idx;
     auto status = this->_m.Find(key, pinning_idx);
-    if (status != Status::OK) {
+    if (status.Failure()) {
         return status;
     }
 
@@ -350,7 +350,7 @@ Status LRUCache::Find(std::string_view key, void** val)
             auto state = cache->info.state.load(std::memory_order_acquire);
 
             if (state == State::WRITING || state == State::EVICTING) {
-                return Status::BUSY;
+                return Status::Busy();
             }
 
             if (state == State::ACTIVE) {
@@ -371,11 +371,11 @@ Status LRUCache::Find(std::string_view key, void** val)
 
             *val = cache->data;
 
-            return Status::OK;
+            return Status::OK();
         }
     }
 
-    return Status::NOT_EXIST;
+    return Status::NotFound();
 }
 
 void LRUCache::Done(void* val)
@@ -442,8 +442,8 @@ void LRUCache::Remove()
 
     this->_q.Push(tail_cache->info.pinning_idx.load(std::memory_order_relaxed));
     auto status = this->_m.Remove(tail_cache->info.key.load(std::memory_order_acquire).String());
-    if (status != Status::OK) {
-        UCM_ERROR("Failed to remove from hashmap, status = {}.", static_cast<uint32_t>(status));
+    if (status.Failure()) {
+        UCM_ERROR("Failed to remove from hashmap, status = {}.", status);
     }
 
     expected = true;
@@ -452,10 +452,10 @@ void LRUCache::Remove()
 
 Status LRUCache::MappingCheck(uint64_t shm_cap)
 {
-    auto status = Status::OK;
+    auto status = Status::OK();
 
     status = this->_f->ShmOpen(OpenFlag::RDWR);
-    if (status != Status::OK) {
+    if (status.Failure()) {
         return status;
     }
 
@@ -463,13 +463,13 @@ Status LRUCache::MappingCheck(uint64_t shm_cap)
     do {
         std::this_thread::sleep_for(std::chrono::milliseconds(10));
         status = this->_f->Stat(stat);
-        if (status != Status::OK) {
+        if (status.Failure()) {
             return status;
         }
     } while(static_cast<uint64_t>(stat.st_size) != shm_cap);
 
     status = this->_f->MMap(reinterpret_cast<void**>(&(this->_h)), shm_cap, PROT_READ | PROT_WRITE, MAP_SHARED);
-    if (status != Status::OK) {
+    if (status.Failure()) {
         return status;
     }
 
@@ -483,7 +483,7 @@ Status LRUCache::MappingCheck(uint64_t shm_cap)
 Status LRUCache::MappingInitialize(uint64_t shm_cap, uint64_t cache_num, uint64_t cache_size)
 {
     auto status = this->_f->MMap(reinterpret_cast<void**>(&(this->_h)), shm_cap, PROT_READ | PROT_WRITE, MAP_SHARED);
-    if (status != Status::OK) {
+    if (status.Failure()) {
         return status;
     }
     this->_h->Initialize(cache_num, cache_size);

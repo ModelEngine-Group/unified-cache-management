@@ -24,6 +24,8 @@
 #ifndef UNIFIEDCACHE_SINGLETON_H
 #define UNIFIEDCACHE_SINGLETON_H
 
+namespace UC {
+
 template <typename T>
 class Singleton {
 public:
@@ -38,5 +40,7 @@ public:
 private:
     Singleton() = default;
 };
+
+} // namespace UC
 
 #endif
