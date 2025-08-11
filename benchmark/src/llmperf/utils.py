@@ -171,7 +171,7 @@ def transfer_context_with_delimeter(context: str, delimeter: str, use_delimeter:
 
 
 def get_prompts_from_dataset_files(dataset_file_names, tokenizer, mean_output_tokens=500, stddev_output_tokens=100):
-    get_token_length = lambda text: len(tokenizer.decode(text))
+    get_token_length = lambda text: len(tokenizer.encode(text))
     dataset_file_name_list = dataset_file_names.split(',')
     prompts = []
     num_output_tokens_list = []
@@ -193,7 +193,7 @@ def get_prompts_from_dataset_files(dataset_file_names, tokenizer, mean_output_to
 
 
 def get_messages_from_dataset_files(dataset_file_names, tokenizer, mean_output_tokens=500, stddev_output_tokens=100, context_length=4, delimeter=" # # ", use_delimeter=False):
-    get_token_length = lambda text: len(tokenizer.decode(text))
+    get_token_length = lambda text: len(tokenizer.encode(text))
     dataset_file_name_list = [str(context_length) + "k.jsonl"]
     messages = []
     num_output_tokens_list = []
