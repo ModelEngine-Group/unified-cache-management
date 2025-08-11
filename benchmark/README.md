@@ -30,17 +30,18 @@ to install the llmperf library by source code on your environment.
 ***
 
 ```
-sh doc-qa.sh -m <path-to-your-model> -c <connector> -d <result-output-directory> -l <context-lengths> -i <llm-server-ip> -p <llm-server-port> -b <compute-device-backend>
+sh doc-qa.sh -m <path-to-your-model> -c <connector> -d <result-output-directory> -l <context-lengths> -i <llm-server-ip> -p <llm-server-port> -b <compute-device-backend> [-s <CacheBlend split string>]
 ```
 
 #### Arguments explanations
 
-+ **-m**: path to your model
-+ **-c**: connector that llm server uses. Can be any string, like "NFS" or "DRAM"
-+ **-d**: path to save the performance results
-+ **-l**: all context lengths to measure the performance (**Unit: k tokens**). Separate different lengths with commas. For example, you can set "**-l 2,4,8**" if you want to measure the performance on context lengths of 2k, 4k and 8k
-+ **-i**, **-p**: IP address and port of your LLM server
-+ **-b**: compute device backend. Can be any string, like "NPU" or "GPU"
++ **-m**: Path to your model.
++ **-c**: Connector that llm server uses. Can be any string, like "NFS" or "DRAM".
++ **-d**: Path to save the performance results.
++ **-l**: All context lengths to measure the performance (**Unit: k tokens**). Separate different lengths with commas. For example, you can set "**-l 2,4,8**" if you want to measure the performance on context lengths of 2k, 4k and 8k.
++ **-i**, **-p**: IP address and port of your LLM server.
++ **-b**: Compute device backend. Can be any string, like "NPU" or "GPU".
++ **-s**: Cacheblend split string. Should align with the LMCACHE_BLEND_SPECIAL_STR in the settings of CacheBlend.
 
 ### 3. Performance results
 
