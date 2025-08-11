@@ -571,7 +571,7 @@ args.add_argument(
 
 args.add_argument(
     "--use-delimeter",
-    action="store true",
+    action="store_true",
     help=(
         "Use delimeter to split input context into 'chunks'. "
     )
