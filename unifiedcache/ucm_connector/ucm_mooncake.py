@@ -33,6 +33,12 @@ class MooncakeStoreConfig:
 
     @staticmethod
     def from_file(file_path: str) -> "MooncakeStoreConfig":
+        """
+        # NOTE:
+        # This method currently loads connection information from a file.
+        # In the future, it should be updated to load configuration from a YAML file,
+        # as the UC connector plans to support YAML-based config.
+        """
         """Load the config from a JSON file."""
         with open(file_path) as fin:
             config = json.load(fin)
