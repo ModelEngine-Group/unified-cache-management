@@ -27,7 +27,7 @@ import subprocess
 from distutils.core import setup
 from pathlib import Path
 
-from setuptools import find_packages
+from setuptools import Extension, find_packages
 from setuptools.command.build_ext import build_ext
 
 ROOT_DIR = os.path.dirname(__file__)
@@ -103,6 +103,13 @@ cmdclass = {
     "build_ext": BuildUCMExtension,
 }
 
+ext_modules = [
+    Extension(
+        name="unifiedcache.ucm_connector.ucmnfsstore",
+        sources=[],
+    )
+]
+
 print("FOUND PACKAGES:", find_packages())
 setup(
     name="unifiedcache",
@@ -110,9 +117,11 @@ setup(
     author="Unified Cache Team",
     description="Unified Cache Management",
     packages=find_packages(),
-    ext_modules=[],
+    ext_modules=ext_modules,
     cmdclass=cmdclass,
-    package_data={},
+    package_data={
+        "unifiedcache.ucm_connector": ["*.so"],
+    },
     include_package_data=True,
     install_requires=[],
     extras_require={},
