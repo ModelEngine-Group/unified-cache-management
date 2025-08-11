@@ -8,7 +8,7 @@ As you can see in the README part, the KVStoreBase helps decoupling sparse algor
 The interfaces designed in KVStoreBase are similar to the KV connector API in v1, which are divided into scheduler-side methods and worker-side methods, as follows:
 - scheduler methods
   - `lookup`: Look up KV blocks stored in external storage by vLLM block hash.
-  - `create`: Initilize kv cache space in external storage.
+  - `create`: Initialize kv cache space in external storage.
   - `commit`: Mark cache operations as complete or fail and ready for reuse.
 - worker methods
   - `load`: Load KV cache blocks from external storage back to HBM.
