@@ -3,7 +3,7 @@ FROM vllm/vllm-openai:v0.9.2
 
 WORKDIR /workspace
 
-# ReInstall vLLM for editting
+# ReInstall vLLM for editing
 RUN pip uninstall -y vllm && rm -rf /vllm-workspace/*
 ARG VLLM_REPO=https://github.com/vllm-project/vllm.git
 ARG VLLM_TAG=v0.9.2

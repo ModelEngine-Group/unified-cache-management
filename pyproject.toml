@@ -1,0 +1,18 @@
+[build-system]
+requires = ["setuptools>=45","wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "unifiedcache"
+version = "0.0.1"
+description = "Unified Cache Management"
+authors = [{name = "Unified Cache Team"}]
+dependencies = []
+requires-python = ">=3.10"
+
+[tool.setuptools.packages.find]
+where = ["."]
+
+[tool.setuptools.package-data]
+"unifiedcache.ucm_connector" = ["*.so"]
+"unifiedcache.csrc" = ["**/*"]

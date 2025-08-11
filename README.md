@@ -41,7 +41,7 @@ KVStoreBase helps decoupling sparse algorithms and external storage. It defined 
 
 NFSStore is sample implementation here provide ability to store blocks in local file system or NFS mount point in multi-server case.
 
-LocalCachedStore can refence any store to provide local DRAM read cache layer.
+LocalCachedStore can reference any store to provide local DRAM read cache layer.
 
 ---
 

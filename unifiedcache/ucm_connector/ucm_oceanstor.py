@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-from typing import List, Dict
+from typing import Dict, List
 
 import torch
 
@@ -61,7 +61,9 @@ class UcmOceanStore(UcmKVStoreBase):
         # TODO
         logger.info("prefetch finished.")
 
-    def load(self, block_ids: List[str], offset: List[int], dst_tensor: List[torch.Tensor]) -> Task:
+    def load(
+        self, block_ids: List[str], offset: List[int], dst_tensor: List[torch.Tensor]
+    ) -> Task:
         """
         load kv cache to device.
 
@@ -76,7 +78,9 @@ class UcmOceanStore(UcmKVStoreBase):
         logger.info("load finished.")
         return Task()
 
-    def dump(self, block_ids: List[str], offset: List[int], src_tensor: List[torch.Tensor]) -> Task:
+    def dump(
+        self, block_ids: List[str], offset: List[int], src_tensor: List[torch.Tensor]
+    ) -> Task:
         """
         dump kv cache to device.
 

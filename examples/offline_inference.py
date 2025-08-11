@@ -2,6 +2,7 @@ import contextlib
 import os
 import time
 from dataclasses import asdict
+
 # Third Party
 from vllm import LLM, SamplingParams
 from vllm.config import KVTransferConfig
@@ -16,23 +17,27 @@ def setup_environment_variables():
     os.environ["VLLM_USE_V1"] = "1"
     os.environ["PYTHONHASHSEED"] = "123456"
 
+
 @contextlib.contextmanager
 def build_llm_with_uc(module_path: str, name: str, model: str):
     ktc = KVTransferConfig(
         kv_connector=name,
         kv_connector_module_path=module_path,
         kv_role="kv_both",
-        kv_connector_extra_config={"ucm_connector_name": "UcmDram",
-                                   "ucm_connector_config": {"max_cache_size": 5368709120,
-                                                            "kv_block_size": 262144}
-                                   }
+        kv_connector_extra_config={
+            "ucm_connector_name": "UcmDram",
+            "ucm_connector_config": {
+                "max_cache_size": 5368709120,
+                "kv_block_size": 262144,
+            },
+        },
     )
 
     llm_args = EngineArgs(
         model=model,
         kv_transfer_config=ktc,
         max_model_len=8000,
-        gpu_memory_utilization=0.8
+        gpu_memory_utilization=0.8,
     )
 
     llm = LLM(**asdict(llm_args))
@@ -43,10 +48,10 @@ def build_llm_with_uc(module_path: str, name: str, model: str):
 
 
 def print_output(
-        llm: LLM,
-        prompt: list[str],
-        sampling_params: SamplingParams,
-        req_str: str,
+    llm: LLM,
+    prompt: list[str],
+    sampling_params: SamplingParams,
+    req_str: str,
 ):
     start = time.time()
     outputs = llm.generate(prompt, sampling_params)
@@ -69,7 +74,7 @@ def main():
         prompts = [
             "Imagine you are an artificial intelligence developed in the year 2075, designed to assist humanity in "
             "navigating the complex ethical, philosophical, and technological challenges of a rapidly evolving world. "
-            "You have access to vast historical records, scientfic data, and human literature, and your core "
+            "You have access to vast historical records, scientific data, and human literature, and your core "
             "directive is to promote sustainable development, social equity, and the flourishing of conscious beings. "
             "Write a detailed letter to the leaders of Earth, explaining the most urgent global issue of the 21st "
             "century, the root sauses behind it, and a set of scientifically grounded, morally sound, and globally "

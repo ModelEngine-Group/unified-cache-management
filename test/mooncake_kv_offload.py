@@ -1,9 +1,10 @@
 import hashlib
+
 import torch
 
+from unifiedcache.logger import init_logger
 from unifiedcache.ucm_connector.base import Task
 from unifiedcache.ucm_connector.ucm_mooncake import UcmMooncakeStore
-from unifiedcache.logger import init_logger
 
 logger = init_logger(__name__)
 
@@ -43,4 +44,6 @@ logger.info(src_block_data)
 logger.info("还原后的张量:")
 logger.info(dst_block_data)
 logger.info("是否一致:")
-logger.info(f"{[torch.equal(src_block_data[i], dst_block_data[i]) for i in range(len(src_block_data))]}")
+logger.info(
+    f"{[torch.equal(src_block_data[i], dst_block_data[i]) for i in range(len(src_block_data))]}"
+)
