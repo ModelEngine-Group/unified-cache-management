@@ -24,6 +24,7 @@ from llmperf.utils import (
     get_prompts_from_dataset_files,
     get_messages_from_dataset_files,
     get_messages_from_multi_turn_dataset_files,
+    get_accuracy
 )
 from tqdm import tqdm
 
@@ -47,6 +48,8 @@ def get_token_throughput_latencies(
     dataset_file_names="",
     scenario="",
     context_length=4,
+    delimeter: str=" # # ",
+    use_delimeter: bool=False,
 ) -> Tuple[Dict[str, Any], List[Dict[str, Any]]]:
     """Get the token throughput and latencies for the given model.
 
@@ -97,7 +100,7 @@ def get_token_throughput_latencies(
     #     ))
 
     if scenario == "doc-qa":
-        messages, num_output_tokens_list = get_messages_from_dataset_files(dataset_file_names=dataset_file_names, tokenizer=tokenizer, mean_output_tokens=mean_output_tokens, stddev_output_tokens=stddev_output_tokens, context_length=context_length)
+        messages, num_output_tokens_list, ground_truths_list, questions_list = get_messages_from_dataset_files(dataset_file_names=dataset_file_names, tokenizer=tokenizer, mean_output_tokens=mean_output_tokens, stddev_output_tokens=stddev_output_tokens, context_length=context_length, delimeter=delimeter, use_delimeter=use_delimeter)
     else:
         messages, num_output_tokens_list = get_messages_from_multi_turn_dataset_files(round=round, past_llm_output=past_llm_output, past_message=past_message, dataset_file_names=dataset_file_names, tokenizer=tokenizer, mean_output_tokens=mean_output_tokens, stddev_output_tokens=stddev_output_tokens)
 
@@ -186,7 +189,8 @@ def get_token_throughput_latencies(
                 completed_requests.extend(request_metrics)
 
     print(f"\Results for token benchmark for {model} queried with the {llm_api} api.\n")
-    ret = metrics_summary(completed_requests, start_time, end_time)
+
+    ret = metrics_summary(completed_requests, start_time, end_time, llm_outputs, ground_truths_list, questions_list)
 
     metadata = {
         "model": model,
@@ -204,7 +208,7 @@ def get_token_throughput_latencies(
 
 
 def metrics_summary(
-    metrics: List[Dict[str, Any]], start_time: int, end_time: int
+    metrics: List[Dict[str, Any]], start_time: int, end_time: int, llm_outputs: list[str], ground_truths_list: list[list[str]], questions_list: list[str]
 ) -> Dict[str, Any]:
     """Generate a summary over metrics generated from potentially multiple instances of this client.
 
@@ -212,6 +216,9 @@ def metrics_summary(
         metrics: The metrics to summarize.
         start_time: The time the test started.
         end_time: The time the test ended.
+        llm_outputs: Answers that LLM gives to the questions
+        ground_truths_list: Groud-Truth answers of the questions
+        questions_list: Contents of the questions
 
     Returns:
         A summary with the following information:
@@ -226,6 +233,7 @@ def metrics_summary(
                 - Number of tokens processed per request
                 - Number of tokens generated per request
                 - User throughput (tokens / s)
+            - Precision
     """
     ret = {}
 
@@ -299,6 +307,9 @@ def metrics_summary(
 
     ret[common_metrics.NUM_COMPLETED_REQUESTS] = num_completed_requests
     ret[common_metrics.COMPLETED_REQUESTS_PER_MIN] = num_completed_requests_per_min
+
+    ret[common_metrics.ACCURACY] = get_accuracy(questions=questions_list, ground_truths=ground_truths_list, llm_outputs=llm_outputs)
+    print(f"Mean accuracy: {ret[common_metrics.ACCURACY]}")
     
     return ret
 
@@ -321,7 +332,9 @@ def run_token_benchmark(
     max_round: int,
     context_length: int,
     connector: str,
-    device: str
+    device: str,
+    delimeter: str,
+    use_delimeter: bool,
 ):
     """
     Args:
@@ -372,7 +385,9 @@ def run_token_benchmark(
             additional_sampling_params=json.loads(additional_sampling_params),
             dataset_file_names=dataset_file_names,
             scenario=scenario,
-            context_length=context_length
+            context_length=context_length,
+            delimeter=delimeter,
+            use_delimeter=use_delimeter,
         )
         rounds.append(rnd)
         ttft_means.append(summary["results"][common_metrics.TTFT]["mean"])
@@ -554,6 +569,23 @@ args.add_argument(
     )
 )
 
+args.add_argument(
+    "--use-delimeter",
+    action="store true",
+    help=(
+        "Use delimeter to split input context into 'chunks'. "
+    )
+)
+
+args.add_argument(
+    "--delimeter",
+    type=str,
+    default=" # # ",
+    help=(
+        "Delimeter to split text into 'chunks'. Should align with CacheBlend setting if --use-delimeter flag is set. "
+    )
+)
+
 if __name__ == "__main__":
     env_vars = dict(os.environ)
     ray.init(runtime_env={"env_vars": env_vars})
@@ -586,5 +618,7 @@ if __name__ == "__main__":
         max_round=args.max_round,
         context_length=args.context_length,
         connector=args.connector,
-        device=args.device
+        device=args.device,
+        delimeter=args.delimeter,
+        use_delimeter=args.use_delimeter,
     )

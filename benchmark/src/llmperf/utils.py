@@ -8,6 +8,7 @@ from typing import Any, Dict, Tuple
 
 from transformers import LlamaTokenizerFast
 from transformers import AutoTokenizer
+from datetime import datetime
 
 
 RESULTS_VERSION = "2023-08-31"
@@ -147,6 +148,28 @@ def flatten_dict(d, parent_key="", sep="_"):
             items.append((new_key, v))
     return dict(items)
 
+def random_string():
+    current_time = datetime.now()
+    formatted_time = current_time.strftime("%Y-%m-%d %H:%M:%S")
+    return "The current time is " + formatted_time + "."
+
+def transfer_context_with_delimeter(context: str, delimeter: str, use_delimeter: bool):
+    if not use_delimeter:
+        return context
+    # use delimeter
+    import re
+    passages = re.split(r"(Passage \d+:\n)", context)
+    passages = [p for p in passages if p.strip()]
+    result = []
+    for passage in passages:
+        if passage.startswith("Passage"):
+            result.append(delimeter + passage)
+        else:
+            result.append(passage)
+    result.append(delimeter)
+    return random_string() + ''.join(result)
+
+
 def get_prompts_from_dataset_files(dataset_file_names, tokenizer, mean_output_tokens=500, stddev_output_tokens=100):
     get_token_length = lambda text: len(tokenizer.decode(text))
     dataset_file_name_list = dataset_file_names.split(',')
@@ -169,11 +192,13 @@ def get_prompts_from_dataset_files(dataset_file_names, tokenizer, mean_output_to
     return prompts, num_output_tokens_list
 
 
-def get_messages_from_dataset_files(dataset_file_names, tokenizer, mean_output_tokens=500, stddev_output_tokens=100, context_length=4):
+def get_messages_from_dataset_files(dataset_file_names, tokenizer, mean_output_tokens=500, stddev_output_tokens=100, context_length=4, delimeter=" # # ", use_delimeter=False):
     get_token_length = lambda text: len(tokenizer.decode(text))
     dataset_file_name_list = [str(context_length) + "k.jsonl"]
     messages = []
     num_output_tokens_list = []
+    ground_truths_list = []
+    questions_list = []
     for dataset_file in dataset_file_name_list:
         local_prompts_file_path = pathlib.Path(__file__).parent.resolve() / dataset_file
         with open(local_prompts_file_path, "r", encoding="utf-8") as f:
@@ -182,19 +207,24 @@ def get_messages_from_dataset_files(dataset_file_names, tokenizer, mean_output_t
                 if line:
                     try:
                         data = json.loads(line)
-                        prompt = data["context"] + " Please answer the following question according to the passage above. The question is: " + data["input"]
-                        message = [
-                            {"role": "system", "content": ""},
-                            {"role": "user", "content": prompt},
-                        ]
-                        messages.append((message, get_token_length(prompt)))
-                        num_output_tokens_list.append(sample_random_positive_int(mean_output_tokens, stddev_output_tokens))
-                        if len(messages) >= MAX_NUM_OF_REQUESTS_PER_INPUT_LENGTH:
-                            break
+                        if not use_delimeter or data["context"].startswith("Passage "):
+                            prompt = transfer_context_with_delimeter(context=data["context"], delimeter=delimeter, use_delimeter=use_delimeter) + " Please answer the following question according to the passages above. The question is: " + data["input"]
+                            message = [
+                                # {"role": "system", "content": ""},
+                                {"role": "user", "content": prompt},
+                            ]
+                            messages.append((message, get_token_length(prompt)))
+                            num_output_tokens_list.append(sample_random_positive_int(mean_output_tokens, stddev_output_tokens))
+                            ground_truths_list.append(data["answers"])
+                            questions_list.append(data["input"])
+                            if len(messages) >= MAX_NUM_OF_REQUESTS_PER_INPUT_LENGTH:
+                                break
+                        else:
+                            continue
                     except json.JSONDecodeError as e:
                         print(f"Error decoding json: {e}")
                         
-    return messages, num_output_tokens_list
+    return messages, num_output_tokens_list, ground_truths_list, questions_list
 
 def read_txt_line(file_path, line_number):
     if line_number < 0:
@@ -224,3 +254,7 @@ def get_messages_from_multi_turn_dataset_files(round, past_llm_output, past_mess
         num_output_tokens_list.append(sample_random_positive_int(mean_output_tokens, stddev_output_tokens))
 
     return messages, num_output_tokens_list
+
+def get_accuracy(questions: list[str], ground_truths: list[list[str]], llm_outputs: list[str]):
+    # temporarily stubbed for further implementation, maybe call LLM
+    return 0.5
