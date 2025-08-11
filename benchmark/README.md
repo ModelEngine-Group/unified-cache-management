@@ -23,6 +23,8 @@ Run
 pip install -e .
 ```
 
+to install the llmperf library by source code on your environment.
+
 ### 2. Run the test script
 
 ***
@@ -52,4 +54,4 @@ docqa_TTFT_{path-to-your-model}_{connector}_{compute-device-backend}
 
 Below shows the results we obtained using NFS connector on Nvidia-L40-GPU (left) and Ascend-NPU (right) backends with context lengths of 2k, 4k, 8k, 16k, 32k.
 
-![](C:\Users\q00882743\Desktop\WorkSpace\post-process)
+![](C:\Users\q00882743\Desktop\WorkSpace\post-process\GPU_NPU.png)
