@@ -147,7 +147,7 @@ def flatten_dict(d, parent_key="", sep="_"):
             items.append((new_key, v))
     return dict(items)
 
-def get_prompts_from_dataset_files(datasef_file_names, tokenizer, mean_output_tokens=500, stddev_output_tokens=100):
+def get_prompts_from_dataset_files(dataset_file_names, tokenizer, mean_output_tokens=500, stddev_output_tokens=100):
     get_token_length = lambda text: len(tokenizer.decode(text))
     dataset_file_name_list = dataset_file_names.split(',')
     prompts = []
