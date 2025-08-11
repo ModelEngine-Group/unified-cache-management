@@ -29,7 +29,10 @@ jobs:
       - name: Install system deps
         run: |
           apt-get update -y
-          apt-get install -y python3-pip git build-essential
+          apt-get install -y python3-pip git build-essential cmake
+
+      - name: Install Python cmake package                      
+        run: pip install cmake
 
       - name: Clone vLLM
         run: |
