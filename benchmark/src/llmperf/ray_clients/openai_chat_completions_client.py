@@ -5,10 +5,9 @@ from typing import Any, Dict
 
 import ray
 import requests
-
-from llmperf.ray_llm_client import LLMClient
-from llmperf.models import RequestConfig
 from llmperf import common_metrics
+from llmperf.models import RequestConfig
+from llmperf.ray_llm_client import LLMClient
 
 
 @ray.remote
@@ -88,7 +87,7 @@ class OpenAIChatCompletionsClient(LLMClient):
                         error_msg = data["error"]["message"]
                         error_response_code = data["error"]["code"]
                         raise RuntimeError(data["error"]["message"])
-                        
+
                     delta = data["choices"][0]["delta"]
                     if delta.get("content", None):
                         if not ttft:
@@ -110,7 +109,9 @@ class OpenAIChatCompletionsClient(LLMClient):
             print(f"Warning Or Error: {e}")
             print(error_response_code)
 
-        metrics[common_metrics.INTER_TOKEN_LAT] = sum(time_to_next_token) #This should be same as metrics[common_metrics.E2E_LAT]. Leave it here for now
+        metrics[common_metrics.INTER_TOKEN_LAT] = sum(
+            time_to_next_token
+        )  # This should be same as metrics[common_metrics.E2E_LAT]. Leave it here for now
         metrics[common_metrics.TTFT] = ttft
         metrics[common_metrics.E2E_LAT] = total_request_time
         metrics[common_metrics.REQ_OUTPUT_THROUGHPUT] = output_throughput

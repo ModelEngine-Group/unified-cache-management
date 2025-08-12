@@ -1,35 +1,31 @@
-import threading
 import argparse
-from collections.abc import Iterable
 import json
 import os
-from pathlib import Path
-import re
-import time
 import random
+import re
+import threading
+import time
+from collections.abc import Iterable
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 import pandas as pd
 import ray
-
 from llmperf import common_metrics
 from llmperf.common import SUPPORTED_APIS, construct_clients
-
 from llmperf.models import RequestConfig
 from llmperf.requests_launcher import RequestsLauncher
-from llmperf.utils import (
-    # randomly_sample_sonnet_lines_prompt,
+from llmperf.utils import (  # randomly_sample_sonnet_lines_prompt,
     LLMPerfResults,
-    sample_random_positive_int,
-    get_prompts_from_dataset_files,
+    get_accuracy,
     get_messages_from_dataset_files,
     get_messages_from_multi_turn_dataset_files,
-    get_accuracy
+    get_prompts_from_dataset_files,
+    sample_random_positive_int,
 )
 from tqdm import tqdm
+from transformers import AutoTokenizer, LlamaTokenizerFast
 
-from transformers import LlamaTokenizerFast
-from transformers import AutoTokenizer
 
 def get_token_throughput_latencies(
     round: int,
@@ -48,8 +44,8 @@ def get_token_throughput_latencies(
     dataset_file_names="",
     scenario="",
     context_length=4,
-    delimeter: str=" # # ",
-    use_delimeter: bool=False,
+    delimiter: str = " # # ",
+    use_delimiter: bool = False,
 ) -> Tuple[Dict[str, Any], List[Dict[str, Any]]]:
     """Get the token throughput and latencies for the given model.
 
@@ -75,7 +71,7 @@ def get_token_throughput_latencies(
 
     tokenizer = AutoTokenizer.from_pretrained(model)
     get_token_length = lambda text: len(tokenizer.encode(text))
-    
+
     if not additional_sampling_params:
         additional_sampling_params = {}
 
@@ -100,9 +96,27 @@ def get_token_throughput_latencies(
     #     ))
 
     if scenario == "doc-qa":
-        messages, num_output_tokens_list, ground_truths_list, questions_list = get_messages_from_dataset_files(dataset_file_names=dataset_file_names, tokenizer=tokenizer, mean_output_tokens=mean_output_tokens, stddev_output_tokens=stddev_output_tokens, context_length=context_length, delimeter=delimeter, use_delimeter=use_delimeter)
+        messages, num_output_tokens_list, ground_truths_list, questions_list = (
+            get_messages_from_dataset_files(
+                dataset_file_names=dataset_file_names,
+                tokenizer=tokenizer,
+                mean_output_tokens=mean_output_tokens,
+                stddev_output_tokens=stddev_output_tokens,
+                context_length=context_length,
+                delimiter=delimiter,
+                use_delimiter=use_delimiter,
+            )
+        )
     else:
-        messages, num_output_tokens_list = get_messages_from_multi_turn_dataset_files(round=round, past_llm_output=past_llm_output, past_message=past_message, dataset_file_names=dataset_file_names, tokenizer=tokenizer, mean_output_tokens=mean_output_tokens, stddev_output_tokens=stddev_output_tokens)
+        messages, num_output_tokens_list = get_messages_from_multi_turn_dataset_files(
+            round=round,
+            past_llm_output=past_llm_output,
+            past_message=past_message,
+            dataset_file_names=dataset_file_names,
+            tokenizer=tokenizer,
+            mean_output_tokens=mean_output_tokens,
+            stddev_output_tokens=stddev_output_tokens,
+        )
 
     max_num_completed_requests = len(messages)
 
@@ -122,7 +136,9 @@ def get_token_throughput_latencies(
             and num_completed_requests < max_num_completed_requests
         ):
 
-            default_sampling_params = {"max_tokens": num_output_tokens_list[request_index] }
+            default_sampling_params = {
+                "max_tokens": num_output_tokens_list[request_index]
+            }
             default_sampling_params.update(additional_sampling_params)
             request_config = RequestConfig(
                 model=model,
@@ -142,17 +158,28 @@ def get_token_throughput_latencies(
                 with completed_requests_lock:
                     if num_completed_requests < max_num_completed_requests:
                         if num_output_tokens:
-                            request_metrics[common_metrics.INTER_TOKEN_LAT] /= request_metrics[common_metrics.NUM_OUTPUT_TOKENS]
+                            request_metrics[
+                                common_metrics.INTER_TOKEN_LAT
+                            ] /= request_metrics[common_metrics.NUM_OUTPUT_TOKENS]
                         else:
                             request_metrics[common_metrics.INTER_TOKEN_LAT] = 0
-                        request_metrics[common_metrics.NUM_OUTPUT_TOKENS] = num_output_tokens
-                        request_metrics[common_metrics.NUM_TOTAL_TOKENS] = request_metrics[common_metrics.NUM_INPUT_TOKENS] + num_output_tokens
-                        request_metrics[common_metrics.REQ_OUTPUT_THROUGHPUT] = num_output_tokens / request_metrics[common_metrics.E2E_LAT]
+                        request_metrics[common_metrics.NUM_OUTPUT_TOKENS] = (
+                            num_output_tokens
+                        )
+                        request_metrics[common_metrics.NUM_TOTAL_TOKENS] = (
+                            request_metrics[common_metrics.NUM_INPUT_TOKENS]
+                            + num_output_tokens
+                        )
+                        request_metrics[common_metrics.REQ_OUTPUT_THROUGHPUT] = (
+                            num_output_tokens / request_metrics[common_metrics.E2E_LAT]
+                        )
                         all_metrics.append(request_metrics)
                         completed_requests.extend(all_metrics)
                         pbar.update(len(all_metrics))
                         num_completed_requests += len(all_metrics)
-                        request_index = (request_index + num_concurrent_requests) % max_num_completed_requests
+                        request_index = (
+                            request_index + num_concurrent_requests
+                        ) % max_num_completed_requests
 
     threads = []
     for i in range(num_concurrent_requests):
@@ -184,13 +211,24 @@ def get_token_throughput_latencies(
                 else:
                     request_metrics[common_metrics.INTER_TOKEN_LAT] = 0
                 request_metrics[common_metrics.NUM_OUTPUT_TOKENS] = num_output_tokens
-                request_metrics[common_metrics.NUM_TOTAL_TOKENS] = request_metrics[common_metrics.NUM_INPUT_TOKENS] + num_output_tokens
-                request_metrics[common_metrics.REQ_OUTPUT_THROUGHPUT] = num_output_tokens / request_metrics[common_metrics.E2E_LAT]
+                request_metrics[common_metrics.NUM_TOTAL_TOKENS] = (
+                    request_metrics[common_metrics.NUM_INPUT_TOKENS] + num_output_tokens
+                )
+                request_metrics[common_metrics.REQ_OUTPUT_THROUGHPUT] = (
+                    num_output_tokens / request_metrics[common_metrics.E2E_LAT]
+                )
                 completed_requests.extend(request_metrics)
 
     print(f"\Results for token benchmark for {model} queried with the {llm_api} api.\n")
 
-    ret = metrics_summary(completed_requests, start_time, end_time, llm_outputs, ground_truths_list, questions_list)
+    ret = metrics_summary(
+        completed_requests,
+        start_time,
+        end_time,
+        llm_outputs,
+        ground_truths_list,
+        questions_list,
+    )
 
     metadata = {
         "model": model,
@@ -203,12 +241,17 @@ def get_token_throughput_latencies(
     }
 
     metadata["results"] = ret
-        
+
     return metadata, completed_requests, messages, llm_outputs
 
 
 def metrics_summary(
-    metrics: List[Dict[str, Any]], start_time: int, end_time: int, llm_outputs: list[str], ground_truths_list: list[list[str]], questions_list: list[str]
+    metrics: List[Dict[str, Any]],
+    start_time: int,
+    end_time: int,
+    llm_outputs: list[str],
+    ground_truths_list: list[list[str]],
+    questions_list: list[str],
 ) -> Dict[str, Any]:
     """Generate a summary over metrics generated from potentially multiple instances of this client.
 
@@ -246,14 +289,14 @@ def metrics_summary(
 
     df = pd.DataFrame(metrics)
     df_without_errored_req = df[df[common_metrics.ERROR_CODE].isna()]
-    
+
     for key in [
         common_metrics.INTER_TOKEN_LAT,
         common_metrics.TTFT,
         common_metrics.E2E_LAT,
         common_metrics.REQ_OUTPUT_THROUGHPUT,
         common_metrics.NUM_INPUT_TOKENS,
-        common_metrics.NUM_OUTPUT_TOKENS
+        common_metrics.NUM_OUTPUT_TOKENS,
     ]:
         print(key)
         ret[key] = {}
@@ -308,9 +351,13 @@ def metrics_summary(
     ret[common_metrics.NUM_COMPLETED_REQUESTS] = num_completed_requests
     ret[common_metrics.COMPLETED_REQUESTS_PER_MIN] = num_completed_requests_per_min
 
-    ret[common_metrics.ACCURACY] = get_accuracy(questions=questions_list, ground_truths=ground_truths_list, llm_outputs=llm_outputs)
+    ret[common_metrics.ACCURACY] = get_accuracy(
+        questions=questions_list,
+        ground_truths=ground_truths_list,
+        llm_outputs=llm_outputs,
+    )
     print(f"Mean accuracy: {ret[common_metrics.ACCURACY]}")
-    
+
     return ret
 
 
@@ -333,8 +380,8 @@ def run_token_benchmark(
     context_length: int,
     connector: str,
     device: str,
-    delimeter: str,
-    use_delimeter: bool,
+    delimiter: str,
+    use_delimiter: bool,
 ):
     """
     Args:
@@ -369,48 +416,70 @@ def run_token_benchmark(
         max_round = 1
 
     for rnd in range(max_round):
-        summary, individual_responses, messages, llm_outputs = get_token_throughput_latencies(
-            round=rnd,
-            past_llm_output=llm_outputs[0],
-            past_message=messages[0],
-            model=model,
-            llm_api=llm_api,
-            test_timeout_s=test_timeout_s,
-            max_num_completed_requests=max_num_completed_requests,
-            mean_input_tokens=mean_input_tokens,
-            stddev_input_tokens=stddev_input_tokens,
-            mean_output_tokens=mean_output_tokens,
-            stddev_output_tokens=stddev_output_tokens,
-            num_concurrent_requests=num_concurrent_requests,
-            additional_sampling_params=json.loads(additional_sampling_params),
-            dataset_file_names=dataset_file_names,
-            scenario=scenario,
-            context_length=context_length,
-            delimeter=delimeter,
-            use_delimeter=use_delimeter,
+        summary, individual_responses, messages, llm_outputs = (
+            get_token_throughput_latencies(
+                round=rnd,
+                past_llm_output=llm_outputs[0],
+                past_message=messages[0],
+                model=model,
+                llm_api=llm_api,
+                test_timeout_s=test_timeout_s,
+                max_num_completed_requests=max_num_completed_requests,
+                mean_input_tokens=mean_input_tokens,
+                stddev_input_tokens=stddev_input_tokens,
+                mean_output_tokens=mean_output_tokens,
+                stddev_output_tokens=stddev_output_tokens,
+                num_concurrent_requests=num_concurrent_requests,
+                additional_sampling_params=json.loads(additional_sampling_params),
+                dataset_file_names=dataset_file_names,
+                scenario=scenario,
+                context_length=context_length,
+                delimiter=delimiter,
+                use_delimiter=use_delimiter,
+            )
         )
         rounds.append(rnd)
         ttft_means.append(summary["results"][common_metrics.TTFT]["mean"])
 
     if scenario == "doc-qa":
-        result_to_save = [
-            {"mean ttft": ttft_means[0]}
-        ]
-        with open(results_dir + "/docqa_TTFT_" + str(context_length) + "k_" + os.path.basename(model) + "_" + connector + "_connector_" + device + ".jsonl", "a", encoding="utf-8") as file:
+        result_to_save = [{"mean ttft": ttft_means[0]}]
+        with open(
+            results_dir
+            + "/docqa_TTFT_"
+            + str(context_length)
+            + "k_"
+            + os.path.basename(model)
+            + "_"
+            + connector
+            + "_connector_"
+            + device
+            + ".jsonl",
+            "a",
+            encoding="utf-8",
+        ) as file:
             json.dump(result_to_save, file, ensure_ascii=False)
             file.write("\n")
-    
+
     if scenario == "multi-turn-dialogue":
 
         import matplotlib.pyplot as plt
 
-        plt.plot(rounds, ttft_means, marker='o')
+        plt.plot(rounds, ttft_means, marker="o")
         plt.title("TTFT_curve_multi_turn_dialogue")
         plt.xlabel("round")
         plt.ylabel("TTFT")
         plt.grid(True)
         plt.legend(["stub_12_0802"])
-        plt.savefig(results_dir + "/multi_turn_dialogue_TTFT_" + os.path.basename(model) + "_" + connector + "_connector_" + device + ".png")
+        plt.savefig(
+            results_dir
+            + "/multi_turn_dialogue_TTFT_"
+            + os.path.basename(model)
+            + "_"
+            + connector
+            + "_connector_"
+            + device
+            + ".png"
+        )
 
 
 args = argparse.ArgumentParser(
@@ -519,9 +588,7 @@ args.add_argument(
     "--dataset-file-names",
     type=str,
     default="",
-    help=(
-        "Names of the dataset files. Use commas to separate multiple names. "
-    ),
+    help=("Names of the dataset files. Use commas to separate multiple names. "),
 )
 
 args.add_argument(
@@ -530,7 +597,7 @@ args.add_argument(
     default="",
     help=(
         "Scenario for current test. Only supports 'multi-turn-dialogue' and 'doc-qa'. "
-    )
+    ),
 )
 
 args.add_argument(
@@ -539,7 +606,7 @@ args.add_argument(
     default=1,
     help=(
         "Maximum number of rounds in the scenario of multi-turnl dialogue. Can be not set if scenario==doc-qa. "
-    )
+    ),
 )
 
 args.add_argument(
@@ -548,42 +615,28 @@ args.add_argument(
     default=4,
     help=(
         "Context length to measure the performance. Unit: K tokens. Only supports 2/4/8/16/32/64 now. "
-    )
+    ),
+)
+
+args.add_argument("--connector", type=str, required=True, help=("Connector to use"))
+
+args.add_argument(
+    "--device", type=str, required=True, help=("Compute Device to use: GPU/NPU")
 )
 
 args.add_argument(
-    "--connector",
-    type=str,
-    required=True,
-    help=(
-        "Connector to use"
-    )
-)
-
-args.add_argument(
-    "--device",
-    type=str,
-    required=True,
-    help=(
-        "Compute Device to use: GPU/NPU"
-    )
-)
-
-args.add_argument(
-    "--use-delimeter",
+    "--use-delimiter",
     action="store_true",
-    help=(
-        "Use delimeter to split input context into 'chunks'. "
-    )
+    help=("Use delimiter to split input context into 'chunks'. "),
 )
 
 args.add_argument(
-    "--delimeter",
+    "--delimiter",
     type=str,
     default=" # # ",
     help=(
-        "Delimeter to split text into 'chunks'. Should align with CacheBlend setting if --use-delimeter flag is set. "
-    )
+        "Delimiter to split text into 'chunks'. Should align with CacheBlend setting if --use-delimiter flag is set. "
+    ),
 )
 
 if __name__ == "__main__":
@@ -619,6 +672,6 @@ if __name__ == "__main__":
         context_length=args.context_length,
         connector=args.connector,
         device=args.device,
-        delimeter=args.delimeter,
-        use_delimeter=args.use_delimeter,
+        delimiter=args.delimiter,
+        use_delimiter=args.use_delimiter,
     )

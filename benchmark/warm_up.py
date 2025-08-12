@@ -1,16 +1,13 @@
-import requests
 import argparse
+
+import requests
+
 
 def run(ip: str, port: str, model: str):
     url = f"http://{ip}:{port}/v1/chat/completions"
-    data = {
-        "model": model,
-        "messages": [{"role": "user", "content": "Hello"}]
-    }
+    data = {"model": model, "messages": [{"role": "user", "content": "Hello"}]}
 
-    headers = {
-        "Content-Type": "application/json"
-    }
+    headers = {"Content-Type": "application/json"}
 
     response = requests.post(url, json=data, headers=headers)
 
@@ -19,22 +16,17 @@ def run(ip: str, port: str, model: str):
     else:
         print(f"Failed to warm up LLM engine. Error code is {response.status_code}")
 
+
 args = argparse.ArgumentParser()
 
-args.add_argument(
-    "--ip", type=str, required=True
-)
+args.add_argument("--ip", type=str, required=True)
 
-args.add_argument(
-    "--port", type=str, required=True
-)
+args.add_argument("--port", type=str, required=True)
 
-args.add_argument(
-    "--model", type=str, required=True
-)
+args.add_argument("--model", type=str, required=True)
 
 if __name__ == "__main__":
-    
+
     args = args.parse_args()
 
     ip = args.ip

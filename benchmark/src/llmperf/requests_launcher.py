@@ -1,7 +1,7 @@
 from typing import Any, List
 
-from llmperf.ray_llm_client import LLMClient
 from llmperf.models import RequestConfig
+from llmperf.ray_llm_client import LLMClient
 from ray.util import ActorPool
 
 

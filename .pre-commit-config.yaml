@@ -4,7 +4,7 @@ repos:
     hooks:
       - id: codespell
         args: [
-          '--skip', 'unifiedcache/csrc/**,./unifiedcache.egg-info/**,.github/**,./benchmark/src/**',
+          '--skip', 'unifiedcache/csrc/**,./unifiedcache.egg-info/**,.github/**,benchmark/src/**/*,benchmark/analyze-token-benchmark-results.ipynb',
           '-L', 'CANN,cann,NNAL,nnal,ASCEND,ascend,EnQue,CopyIn'
         ]
   - repo: https://github.com/psf/black

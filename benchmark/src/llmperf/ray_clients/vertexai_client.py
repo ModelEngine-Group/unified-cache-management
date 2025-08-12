@@ -5,11 +5,10 @@ from typing import Any, Dict
 
 import ray
 import requests
-from transformers import LlamaTokenizerFast
-
-from llmperf.ray_llm_client import LLMClient
-from llmperf.models import RequestConfig
 from llmperf import common_metrics
+from llmperf.models import RequestConfig
+from llmperf.ray_llm_client import LLMClient
+from transformers import LlamaTokenizerFast
 
 
 @ray.remote

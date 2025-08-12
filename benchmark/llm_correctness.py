@@ -1,16 +1,14 @@
 import argparse
 import json
 import os
-from pathlib import Path
 import random
 import re
 import time
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 import num2words
 import ray
-from tqdm import tqdm
-
 from llmperf import common_metrics
 from llmperf.common import SUPPORTED_APIS, construct_clients
 from llmperf.models import RequestConfig
@@ -18,6 +16,7 @@ from llmperf.requests_launcher import RequestsLauncher
 from llmperf.utils import (
     LLMPerfResults,
 )
+from tqdm import tqdm
 
 MAX_RANDOM_NUMBER = 10000
 
