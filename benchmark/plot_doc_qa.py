@@ -14,6 +14,9 @@ def run(
     device: str,
 ):
 
+    labels = [length for length in context_lengths]
+    pos = list(range(len(labels)))
+
     x_axis = [math.log(int(context_length), 2) for context_length in context_lengths]
 
     y_axis_raw = []
@@ -39,18 +42,22 @@ def run(
 
     _, (ax1, ax2) = plt.subplots(2, 1, figsize=(8, 10))
 
-    ax1.plot(x_axis, y_axis_raw, label="raw reasoning", marker="o")
-    ax1.plot(x_axis, y_axis_cache, label="use cache", marker="o")
+    ax1.plot(pos, y_axis_raw, label="raw reasoning", marker="o")
+    ax1.plot(pos, y_axis_cache, label="use cache", marker="o")
     ax1.set_title("TTFT_curve_doc_qa")
     ax1.set_xlabel("log_2(context_length[K tokens])")
     ax1.set_ylabel("TTFT(s)")
+    ax1.set_xticks(pos)
+    ax1.set_xticklabels(labels)
     ax1.legend(["raw_reasoning", "use cache"])
     ax1.grid(True)
 
-    bars = ax2.bar(x_axis, y_axis_ratio, width=0.4, label="increase factor")
+    bars = ax2.bar(pos, y_axis_ratio, width=0.4, label="increase factor")
     ax2.set_title("TTFT increase factor of using cache w.r.t. raw reasoning")
     ax2.set_xlabel("log_2(context_length[K tokens])")
     ax2.set_ylabel("Increase factor")
+    ax2.set_xticks(pos)
+    ax2.set_xticklabels(labels)
 
     for bar in bars:
         height = bar.get_height()
