@@ -495,7 +495,7 @@ args.add_argument(
 )
 
 args.add_argument(
-    "--model-path", type=str, required=True, help="The path of the model source flie."
+    "--model-path", type=str, required=True, help="The path of the model source file."
 )
 
 args.add_argument(
