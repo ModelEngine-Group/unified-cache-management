@@ -452,7 +452,7 @@ def run_token_benchmark(
             + "/docqa_TTFT_"
             + str(context_length)
             + "k_"
-            + os.path.basename(model)
+            + os.path.basename(model_path)
             + "_"
             + connector
             + "_connector_"
@@ -477,7 +477,7 @@ def run_token_benchmark(
         plt.savefig(
             results_dir
             + "/multi_turn_dialogue_TTFT_"
-            + os.path.basename(model)
+            + os.path.basename(model_path)
             + "_"
             + connector
             + "_connector_"
