@@ -1,11 +1,10 @@
-from dataclasses import dataclass
+import asyncio
 import json
 import os
-from typing import List, Dict, Optional
-import asyncio
 import threading
-import uuid
-from concurrent.futures import TimeoutError, Future
+from concurrent.futures import Future, TimeoutError
+from dataclasses import dataclass
+from typing import Dict, List
 
 import torch
 from safetensors.torch import load as safetensors_load
@@ -33,15 +32,41 @@ class MooncakeStoreConfig:
     master_server_address: str
 
     @staticmethod
+    def load_from_dict(config: Dict = {}) -> "MooncakeStoreConfig":
+        return MooncakeStoreConfig(
+            local_hostname=config.get("local_hostname"),
+            metadata_server=config.get("metadata_server"),
+            global_segment_size=config.get(
+                "global_segment_size", DEFAULT_GLOBAL_SEGMENT_SIZE
+            ),
+            local_buffer_size=config.get(
+                "local_buffer_size", DEFAULT_LOCAL_BUFFER_SIZE
+            ),
+            protocol=config.get("protocol", "tcp"),
+            device_name=config.get("device_name", ""),
+            master_server_address=config.get("master_server_address"),
+        )
+
+    @staticmethod
     def from_file(file_path: str) -> "MooncakeStoreConfig":
+        """
+        # NOTE:
+        # This method currently loads connection information from a file.
+        # In the future, it should be updated to load configuration from a YAML file,
+        # as the UC connector plans to support YAML-based config.
+        """
         """Load the config from a JSON file."""
         with open(file_path) as fin:
             config = json.load(fin)
         return MooncakeStoreConfig(
             local_hostname=config.get("local_hostname"),
             metadata_server=config.get("metadata_server"),
-            global_segment_size=config.get("global_segment_size", DEFAULT_GLOBAL_SEGMENT_SIZE),
-            local_buffer_size=config.get("local_buffer_size", DEFAULT_LOCAL_BUFFER_SIZE),
+            global_segment_size=config.get(
+                "global_segment_size", DEFAULT_GLOBAL_SEGMENT_SIZE
+            ),
+            local_buffer_size=config.get(
+                "local_buffer_size", DEFAULT_LOCAL_BUFFER_SIZE
+            ),
             protocol=config.get("protocol", "tcp"),
             device_name=config.get("device_name", ""),
             master_server_address=config.get("master_server_address"),
@@ -52,13 +77,16 @@ class MooncakeStoreConfig:
         """Load config from a file specified in the environment variable."""
         config_file_path = os.getenv("MOONCAKE_CONFIG_PATH")
         if config_file_path is None:
-            raise ValueError("The environment variable 'MOONCAKE_CONFIG_PATH' is not set.")
+            raise ValueError(
+                "The environment variable 'MOONCAKE_CONFIG_PATH' is not set."
+            )
         return MooncakeStoreConfig.from_file(config_file_path)
 
 
 @dataclass
 class MooncakeTask(Task):
     """A task class for Mooncake operations with a task identifier."""
+
     task_id: int = -1
 
 
@@ -82,7 +110,10 @@ class UcmMooncakeStore(UcmKVStoreBase):
 
         try:
             self.store = MooncakeDistributedStore()
-            mooncake_config = MooncakeStoreConfig.load_from_env()
+            if config != {}:
+                mooncake_config = MooncakeStoreConfig.load_from_dict(config)
+            else:
+                mooncake_config = MooncakeStoreConfig.load_from_env() 
             logger.info("Mooncake Configuration loaded successfully.")
             self.store.setup(
                 mooncake_config.local_hostname,
@@ -100,7 +131,7 @@ class UcmMooncakeStore(UcmKVStoreBase):
         except Exception as exc:
             logger.error("An error occurred while loading the configuration: %s", exc)
             raise
-        
+
         # Task management variables
         self.task_id: int = 0
         self.tasks: Dict[int, Future] = {}
@@ -109,7 +140,7 @@ class UcmMooncakeStore(UcmKVStoreBase):
         self.loop = asyncio.new_event_loop()
         self.lock = threading.Lock()
         self._shutting_down = threading.Event()
-        
+
         # Start the event loop thread
         self.thread = threading.Thread(target=self._run_event_loop, daemon=True)
         self.thread.start()
@@ -135,7 +166,7 @@ class UcmMooncakeStore(UcmKVStoreBase):
         """
         Get number of blocks that can be loaded from the
         external KV cache.
-
+        Mooncake integration uses hash = block_id + offset (default offset=0 if not provided).
         Args:
             block_ids (List[str]): vLLM block hash.
 
@@ -145,7 +176,10 @@ class UcmMooncakeStore(UcmKVStoreBase):
         if self._shutting_down.is_set():
             raise RuntimeError("UcmMooncakeStore is shutting down.")
 
-        mask = [True if self.store.is_exist(block_key) == 1 else False for block_key in block_ids]
+        mask = [
+            True if self.store.is_exist(f"{block_key}_0") == 1 else False
+            for block_key in block_ids
+        ]
         return mask
 
     def prefetch(self, block_ids: List[str]) -> None:
@@ -158,9 +192,12 @@ class UcmMooncakeStore(UcmKVStoreBase):
         # Mooncake only has get and put interfaces, this operation is not supported
         pass
 
-    def load(self, block_ids: List[str], offset: List[int], dst_tensor: List[torch.Tensor]) -> Task:
+    def load(
+        self, block_ids: List[str], offset: List[int], dst_tensor: List[torch.Tensor]
+    ) -> Task:
         """
         load kv cache to device.
+        Mooncake integration uses hash = block_id + offset (default offset=0 if not provided).
 
         Args:
             block_ids (List[str]): vLLM block hash.
@@ -179,12 +216,17 @@ class UcmMooncakeStore(UcmKVStoreBase):
             self.tasks[self.task_id] = future
             return MooncakeTask(task_id=self.task_id)
 
-    async def _load_impl(self, block_ids: List[str], offset: List[int], dst_tensor: List[torch.Tensor]) -> Task:
+    async def _load_impl(
+        self, block_ids: List[str], offset: List[int], dst_tensor: List[torch.Tensor]
+    ) -> int:
         """Internal implementation of loading KV cache from Mooncake Store."""
-        assert len(block_ids) == len(dst_tensor), "block_ids and dst_tensor have different lengths, please check!"
+        assert len(block_ids) == len(
+            dst_tensor
+        ), "block_ids and dst_tensor have different lengths, please check!"
         for i in range(len(block_ids)):
             try:
-                data = self.store.get(block_ids[i])
+                block_hash = f"{block_ids[i]}_{offset[i]}"
+                data = self.store.get(block_hash)
             except TypeError as err:
                 logger.error("Failed to get value from Mooncake Store: %s", err)
                 raise TypeError("Mooncake Store Get Type Error.") from err
@@ -195,10 +237,16 @@ class UcmMooncakeStore(UcmKVStoreBase):
                 assert dst_tensor[i].shape == tensor_cpu.shape
                 assert dst_tensor[i].dtype == tensor_cpu.dtype
                 dst_tensor[i].copy_(tensor_cpu)
+            else:
+                return 1
+        return 0
 
-    def dump(self, block_ids: List[str], offset: List[int], src_tensor: List[torch.Tensor]) -> Task:
+    def dump(
+        self, block_ids: List[str], offset: List[int], src_tensor: List[torch.Tensor]
+    ) -> Task:
         """
         dump kv cache to device.
+        Mooncake integration uses hash = block_id + offset (default offset=0 if not provided).
 
         Args:
             block_ids (List[str]): vLLM block hash.
@@ -217,16 +265,24 @@ class UcmMooncakeStore(UcmKVStoreBase):
             self.tasks[self.task_id] = future
             return MooncakeTask(task_id=self.task_id)
 
-    async def _dump_impl(self, block_ids: List[str], offset: List[int], src_tensor: List[torch.Tensor]) -> Task:
+    async def _dump_impl(
+        self, block_ids: List[str], offset: List[int], src_tensor: List[torch.Tensor]
+    ) -> int:
         """Internal implementation of dumping KV cache to Mooncake Store."""
-        assert len(block_ids) == len(src_tensor), "block_ids and src_tensor have different lengths, please check!"
+        assert len(block_ids) == len(
+            src_tensor
+        ), "block_ids and src_tensor have different lengths, please check!"
         for i in range(len(block_ids)):
             value_bytes = safetensors_save({"tensor": src_tensor[i]})
             try:
-                self.store.put(block_ids[i], value_bytes)
+                block_hash = f"{block_ids[i]}_{offset[i]}"
+                ret = self.store.put(block_hash, value_bytes)
+                if ret != 0:
+                    return ret
             except TypeError as err:
                 logger.error("Failed to put value into Mooncake Store: %s", err)
                 raise TypeError("Mooncake Store Put Type Error.") from err
+        return 0
 
     def wait(self, task: Task) -> int:
         """
@@ -247,20 +303,19 @@ class UcmMooncakeStore(UcmKVStoreBase):
             return 1
 
         try:
-            future.result(TIMEOUT_S_THR)
+            ret = future.result(TIMEOUT_S_THR)
+            return ret
         except TimeoutError:
             # Cancel the task if it times out
             future.cancel()
             logger.error(f"Task {task.task_id} timed out after {TIMEOUT_S_THR}s")
             return 1
-
         except asyncio.CancelledError:
             logger.error(f"Task {task.task_id} was cancelled")
             return 1
         except Exception as e:
             logger.error(f"Task {task.task_id} failed: {str(e)}")
             return 1
-        return 0
 
     def commit(self, block_ids: List[str], is_success: bool = True) -> None:
         """
@@ -299,5 +354,5 @@ class UcmMooncakeStore(UcmKVStoreBase):
             # Force close the loop if thread didn't exit
             if not self.loop.is_closed():
                 self.loop.close()
-        
+
         self.store.close()
