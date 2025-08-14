@@ -1,6 +1,7 @@
 #!/bin/bash
 
-model=""
+model_path=""
+model_alias=""
 results_dir=""
 sizes=""
 ip=""
@@ -9,10 +10,13 @@ connector=""
 device=""
 delimiter=""
 
-while getopts ":m:d:l:i:p:c:b:s:" opt; do
+while getopts ":m:a:d:l:i:p:c:b:s:" opt; do
     case $opt in
         m)
-            model=$OPTARG
+            model_path=$OPTARG
+            ;;
+        a)
+            model_alias=$OPTARG
             ;;
         d)
             results_dir=$OPTARG
@@ -78,9 +82,9 @@ done
 export OPENAI_API_KEY="EMPTY"
 export OPENAI_API_BASE="http://${ip}:${port}/v1"
 
-python warm_up.py --model ${model} --ip ${ip} --port ${port}
+python warm_up.py --model ${model_alias} --ip ${ip} --port ${port}
 
-model_name=$(basename "$model")
+model_name=$(basename "$model_path")
 
 for length in "${lengths[@]}"; do
 
@@ -89,7 +93,7 @@ for length in "${lengths[@]}"; do
         rm "$doc_qa_result_file_path"
     fi
 
-    python_command="python token_benchmark_ray.py --model $model --mean-output-tokens 10 --stddev-output-tokens 1 --timeout 600 --num-concurrent-requests 1 --results-dir $results_dir --llm-api openai --context-length $length --scenario doc-qa --connector $connector --device $device"
+    python_command="python token_benchmark_ray.py --model $model_alias --model-path $model_path --mean-output-tokens 10 --stddev-output-tokens 1 --timeout 600 --num-concurrent-requests 1 --results-dir $results_dir --llm-api openai --context-length $length --scenario doc-qa --connector $connector --device $device"
 
     if [ "$delimiter" != "" ]; then
         python_command="$python_command --use-delimiter --delimiter \"${delimiter}\""
@@ -98,11 +102,11 @@ for length in "${lengths[@]}"; do
     eval $python_command
     eval $python_command
 
-    # python token_benchmark_ray.py --model $model --mean-output-tokens 10 --stddev-output-tokens 1 --timeout 600 --num-concurrent-requests 1 --results-dir $results_dir --llm-api openai --context-length $length --scenario doc-qa --connector $connector --device $device
-    # python token_benchmark_ray.py --model $model --mean-output-tokens 10 --stddev-output-tokens 1 --timeout 600 --num-concurrent-requests 1 --results-dir $results_dir --llm-api openai --context-length $length --scenario doc-qa --connector $connector --device $device
+    # python token_benchmark_ray.py --model $model_path --mean-output-tokens 10 --stddev-output-tokens 1 --timeout 600 --num-concurrent-requests 1 --results-dir $results_dir --llm-api openai --context-length $length --scenario doc-qa --connector $connector --device $device
+    # python token_benchmark_ray.py --model $model_path --mean-output-tokens 10 --stddev-output-tokens 1 --timeout 600 --num-concurrent-requests 1 --results-dir $results_dir --llm-api openai --context-length $length --scenario doc-qa --connector $connector --device $device
 
     echo "TTFT results with length ${length}k have been saved into file $doc_qa_result_file_path"
 
 done
 
-python plot_doc_qa.py --context-lengths $sizes --result-path $results_dir --model $model --connector $connector --device $device
+python plot_doc_qa.py --context-lengths $sizes --result-path $results_dir --model-path $model_path --connector $connector --device $device

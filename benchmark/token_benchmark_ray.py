@@ -32,6 +32,7 @@ def get_token_throughput_latencies(
     past_llm_output: str,
     past_message: Tuple[List[Dict], int],
     model: str,
+    model_path: str,
     mean_input_tokens: int,
     stddev_input_tokens: int,
     mean_output_tokens: int,
@@ -51,6 +52,7 @@ def get_token_throughput_latencies(
 
     Args:
         model: The name of the model to query.
+        model_path: Path of the model source file.
         mean_input_tokens: The mean number of tokens to send in the prompt for the request.
         stddev_input_tokens: The standard deviation of the number of tokens to send in the prompt for the request.
         mean_output_tokens: The mean number of tokens to generate per request.
@@ -69,7 +71,7 @@ def get_token_throughput_latencies(
     """
     random.seed(11111)
 
-    tokenizer = AutoTokenizer.from_pretrained(model)
+    tokenizer = AutoTokenizer.from_pretrained(model_path)
     get_token_length = lambda text: len(tokenizer.encode(text))
 
     if not additional_sampling_params:
@@ -364,6 +366,7 @@ def metrics_summary(
 def run_token_benchmark(
     llm_api: str,
     model: str,
+    model_path: str,
     test_timeout_s: int,
     max_num_completed_requests: int,
     num_concurrent_requests: int,
@@ -422,6 +425,7 @@ def run_token_benchmark(
                 past_llm_output=llm_outputs[0],
                 past_message=messages[0],
                 model=model,
+                model_path=model_path,
                 llm_api=llm_api,
                 test_timeout_s=test_timeout_s,
                 max_num_completed_requests=max_num_completed_requests,
@@ -489,6 +493,11 @@ args = argparse.ArgumentParser(
 args.add_argument(
     "--model", type=str, required=True, help="The model to use for this load test."
 )
+
+args.add_argument(
+    "--model-path", type=str, required=True, help="The path of the model source flie."
+)
+
 args.add_argument(
     "--mean-input-tokens",
     type=int,
@@ -656,6 +665,7 @@ if __name__ == "__main__":
     run_token_benchmark(
         llm_api=args.llm_api,
         model=args.model,
+        model_path=args.model_path,
         test_timeout_s=args.timeout,
         max_num_completed_requests=args.max_num_completed_requests,
         mean_input_tokens=args.mean_input_tokens,

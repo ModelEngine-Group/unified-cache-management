@@ -10,7 +10,7 @@ def run(
     context_lengths: list[str],
     result_path: str,
     connector: str,
-    model: str,
+    model_path: str,
     device: str,
 ):
 
@@ -22,7 +22,7 @@ def run(
     y_axis_raw = []
     y_axis_cache = []
 
-    model_name = os.path.basename(model)
+    model_name = os.path.basename(model_path)
 
     for context_length in context_lengths:
         filename = f"{result_path}/docqa_TTFT_{context_length}k_{model_name}_{connector}_connector_{device}.jsonl"
@@ -91,7 +91,7 @@ args.add_argument(
 
 args.add_argument("--result-path", type=str, required=True, help="Result path")
 
-args.add_argument("--model", type=str, required=True, help="Model to evaluate on")
+args.add_argument("--model-path", type=str, required=True, help="Model to evaluate on")
 
 args.add_argument("--connector", type=str, required=True, help="Connector to use")
 
@@ -104,7 +104,7 @@ if __name__ == "__main__":
     context_lengths = args.context_lengths.split(",")
     result_path = args.result_path
     connector = args.connector
-    model = args.model
+    model_path = args.model_path
     device = args.device
 
-    run(context_lengths, result_path, connector, model, device)
+    run(context_lengths, result_path, connector, model_path, device)
