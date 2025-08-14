@@ -41,12 +41,12 @@ while getopts ":m:a:d:l:i:p:c:b:s:" opt; do
             ;;
         \?)
             echo "Invalid argument: -$OPTARG" >&2
-            echo "Usage: $0 [-m <models] [-d <result_output_directory>] [-l <context_lengths>] [-i <LLM server ip>] [-p <LLM server port>] [-c <connector to use in UCM>] [-b <backend compute device>]"
+            echo "Usage: $0 -m <model_path> -a <served-model-name> -d <result_output_directory> -l <context_lengths> -i <LLM server ip> -p <LLM server port> -c <connector to use in UCM> -b <backend compute device> [-s <special delimiter in CacheBlend>]"
             exit 1
             ;;
         :)
             echo "Option -$OPTARG needs an argument" >&2
-            echo "Usage: $0 [-m <models] [-d <result_output_directory>] [-l <context_lengths>] [-i <LLM server ip>] [-p <LLM server port>] [-c <connector to use in UCM>] [-b <backend compute device>]"
+            echo "Usage: $0 -m <model_path> -a <served-model-name> -d <result_output_directory> -l <context_lengths> -i <LLM server ip> -p <LLM server port> -c <connector to use in UCM> -b <backend compute device> [-s <special delimiter in CacheBlend>]"
             exit 1
             ;;
     esac
@@ -101,9 +101,6 @@ for length in "${lengths[@]}"; do
 
     eval $python_command
     eval $python_command
-
-    # python token_benchmark_ray.py --model $model_path --mean-output-tokens 10 --stddev-output-tokens 1 --timeout 600 --num-concurrent-requests 1 --results-dir $results_dir --llm-api openai --context-length $length --scenario doc-qa --connector $connector --device $device
-    # python token_benchmark_ray.py --model $model_path --mean-output-tokens 10 --stddev-output-tokens 1 --timeout 600 --num-concurrent-requests 1 --results-dir $results_dir --llm-api openai --context-length $length --scenario doc-qa --connector $connector --device $device
 
     echo "TTFT results with length ${length}k have been saved into file $doc_qa_result_file_path"
 
