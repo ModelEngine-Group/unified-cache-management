@@ -30,7 +30,7 @@ to install the llmperf library by source code on your environment.
 ***
 
 ```
-sh doc-qa.sh -m <path-to-your-model> -c <connector> -d <result-output-directory> -l <context-lengths> -i <llm-server-ip> -p <llm-server-port> -b <compute-device-backend> [-s <CacheBlend split string>]
+bash doc-qa.sh -m <path-to-your-model> -c <connector> -d <result-output-directory> -l <context-lengths> -i <llm-server-ip> -p <llm-server-port> -b <compute-device-backend> [-s <CacheBlend split string>]
 ```
 
 #### Arguments explanations
