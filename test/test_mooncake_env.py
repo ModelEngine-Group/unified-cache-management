@@ -9,13 +9,6 @@ from unifiedcache.ucm_connector.ucm_mooncake import UcmMooncakeStore
 
 logger = init_logger(__name__)
 
-mooncake_dict_config = {
-    "local_hostname": "127.0.0.1",
-    "metadata_server": "http://127.0.0.1:33790/metadata",
-    "protocol": "tcp",
-    "device_name": "",
-    "master_server_address": "127.0.0.1:50002"
-}
 
 def tensor_hash(tensor: torch.Tensor) -> str:
     """Calculate the hash value of the tensor."""
@@ -27,7 +20,7 @@ def tensor_hash(tensor: torch.Tensor) -> str:
 
 def test_lookup_not_found():
     """Test that lookup returns False for non-existent block IDs."""
-    store = UcmMooncakeStore(mooncake_dict_config)
+    store = UcmMooncakeStore()
     block_ids = [uuid.uuid4().hex for _ in range(10)]
     masks = store.lookup(block_ids)
     assert all(mask is False for mask in masks)
@@ -41,7 +34,7 @@ def test_lookup_found():
     block_ids = [tensor_hash(data) for data in src_block_data]
     offset = [0] * len(block_ids)
 
-    store = UcmMooncakeStore(mooncake_dict_config)
+    store = UcmMooncakeStore()
     task: Task = store.dump(
         block_ids=block_ids, offset=offset, src_tensor=src_block_data
     )
@@ -59,7 +52,7 @@ def test_dump_once():
     block_ids = [tensor_hash(data) for data in src_block_data]
     offset = [0] * len(block_ids)
 
-    store = UcmMooncakeStore(mooncake_dict_config)
+    store = UcmMooncakeStore()
     task: Task = store.dump(
         block_ids=block_ids, offset=offset, src_tensor=src_block_data
     )
@@ -77,7 +70,7 @@ def test_dump_repeated():
     block_ids = [tensor_hash(data) for data in src_block_data]
     offset = [0] * len(block_ids)
 
-    store = UcmMooncakeStore(mooncake_dict_config)
+    store = UcmMooncakeStore()
     task: Task = store.dump(
         block_ids=block_ids, offset=offset, src_tensor=src_block_data
     )
@@ -104,7 +97,7 @@ def test_load_existing_data():
     block_ids = [tensor_hash(data) for data in src_block_data]
     offset = [0] * len(block_ids)
 
-    store = UcmMooncakeStore(mooncake_dict_config)
+    store = UcmMooncakeStore()
     task: Task = store.dump(
         block_ids=block_ids, offset=offset, src_tensor=src_block_data
     )
@@ -137,7 +130,7 @@ def test_load_non_existent_data():
     ]
     block_ids = [tensor_hash(data) for data in src_block_data]
     offset = [0] * len(block_ids)
-    store = UcmMooncakeStore(mooncake_dict_config)
+    store = UcmMooncakeStore()
     masks = store.lookup(block_ids)
     assert all(mask is False for mask in masks)
 
