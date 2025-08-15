@@ -181,7 +181,7 @@ class UnifiedCacheConnectorV1(KVConnectorBase_V1):
 
     def DataOffset(self, kv_layer, rank, layer_id, is_v):
         # Non-MLA scene: one layer shape is (2, num_blocks, block_size, num_kv_heads, head_size)
-        # MLA scene: one layer shape is (num_blocks, block_size, num_kv_heads, head_size)
+        # MLA scene: one layer shape is (num_blocks, block_size, head_size)
         # TODO MLA adapt
         kv_layer_shape = kv_layer.shape
         # Element size
@@ -226,7 +226,10 @@ class UnifiedCacheConnectorV1(KVConnectorBase_V1):
 
         for blk_id in vllm_block_ids:
             k_data_offset = self.DataOffset(kv_layer, self.rank, layer_id, False)
-            k_tensors.append(kv_layer[0][blk_id])
+            if self.is_mla:
+                k_tensors.append(kv_layer[blk_id])
+            else:
+                k_tensors.append(kv_layer[0][blk_id])
             k_offsets.append(k_data_offset)
             if not self.is_mla:
                 v_data_offset = self.DataOffset(kv_layer, self.rank, layer_id, True)
