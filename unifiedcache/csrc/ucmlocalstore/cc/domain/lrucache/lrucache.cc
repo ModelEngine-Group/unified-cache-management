@@ -198,7 +198,7 @@ struct alignas(1) CacheHeader {
     {
         while (this->len.load(std::memory_order_acquire).val == 0) {
             auto expected_tail = CacheIndex{};
-            auto ok = this->tail.compare_and_exchange(
+            auto ok = this->tail.compare_and_exchange_strong(
                                      expected_tail,
                                      CacheIndex{new_head_cache->info.pinning_idx, 1},
                                      std::memory_order_acq_rel
@@ -222,7 +222,7 @@ struct alignas(1) CacheHeader {
     void RemoveBack()
     {
         auto old_tail_cache = this->CachesAt(this->tail.load(std::memory_order_acquire).idx);
-        auto new_tail_cache = this->CachesAt(old_tail_cache->info.prev.load(std::std::memory_order_acquire).idx);
+        auto new_tail_cache = this->CachesAt(old_tail_cache->info.prev.load(std::memory_order_acquire).idx);
         auto old_tail = CacheIndex{};
         auto new_tail = CacheIndex{};
         do {
@@ -331,9 +331,9 @@ void LRUCache::Evict()
     }
 
     auto expected_status = CacheStatus::ACTIVE;
-    auto ok = old_tail_cache->info.status.compare_exchange_strong(expected_status,
-                                                                  CacheStatus::EVICTING,
-                                                                  std::memory_order_acq_rel);
+    ok = old_tail_cache->info.status.compare_exchange_strong(expected_status,
+                                                             CacheStatus::EVICTING,
+                                                             std::memory_order_acq_rel);
     if (!ok) {
         return;
     }
