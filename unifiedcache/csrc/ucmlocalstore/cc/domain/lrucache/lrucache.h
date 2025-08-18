@@ -53,6 +53,7 @@ private:
 
     CacheHeader* _h;
     std::unique_ptr<IFile> _f;
+    std::atomic_bool _evicting;
 };
 
 } // namespace UCM

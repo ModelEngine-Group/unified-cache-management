@@ -94,7 +94,6 @@ enum class CacheStatus : uint64_t {
     READING,
     WRITING,
     EVICTING,
-    PINNING,
 };
 static_assert(sizeof(CacheStatus) == 8);
 
@@ -156,7 +155,7 @@ struct alignas(1) CacheHeader {
         this->cap = cap;
         this->len.store(CacheNumber{}, std::memory_order_release);
         this->cache_size = cache_size;
-        this->head.store(CacheIndex{0, 0}, std::memory_order_release);
+        this->head.store(CacheIndex{}, std::memory_order_release);
         this->tail.store(CacheIndex{}, std::memory_order_release);
         for (uint32_t i = 0; i < cap; ++i) {
             Cache* cache = reinterpret_cast<Cache*>(reinterpret_cast<Byte*>(this->caches) +
@@ -172,18 +171,8 @@ struct alignas(1) CacheHeader {
                                         i * (sizeof(CacheInfo) + cache_size));
     }
 
-    void push_front(Cache* new_head_cache)
+    void InsertFront(Cache* new_head_cache)
     {
-        auto old_tail = CacheIndex{};
-        auto new_tail = CacheIndex{};
-        do {
-            old_tail = this->tail.load(std::memory_order_acquire);
-            if (!old_tail.InValid()) {
-                break;
-            }
-            new_tail = CacheIndex{new_head_cache->info.pinning_idx, old_tail.version + 1};
-        } while(this->tail.compare_exchange_strong(old_tail, new_tail, std::memory_order_acq_rel));
-
         auto old_prev = new_head_cache->info.prev.load(std::memory_order_acquire);
         auto new_prev = CacheIndex{INVALID_32, old_prev.version + 1};
         new_head_cache->info.prev.store(new_prev, std::memory_order_release);
@@ -205,16 +194,57 @@ struct alignas(1) CacheHeader {
         new_head_cache->info.next.store(new_next, std::memory_order_release);
     }
 
-    void pop_back(Cache* new_tail_cache)
+    void PushFront(Cache* new_head_cache)
     {
-        auto old_tail = this->tail.load(std::memory_order_acquire);
-        auto new_tail = CacheIndex{new_tail_cache->info.pinning_idx, old_tail.version + 1};
-        this->tail.store(new_tail, std::memory_order_release);
+        while (this->len.load(std::memory_order_acquire).val == 0) {
+            auto expected_tail = CacheIndex{};
+            auto ok = this->tail.compare_and_exchange(
+                                     expected_tail,
+                                     CacheIndex{new_head_cache->info.pinning_idx, 1},
+                                     std::memory_order_acq_rel
+                            );
+            if (!ok) {
+                continue;
+            }
+            this->head.store(CacheIndex{new_head_cache->info.pinning_idx, 1}, std::memory_order_release);
+            this->len.store(CacheNumber{1, 1}, std::memory_order_release);
+            return;
+        }
+        this->InsertFront(new_head_cache);
+        auto old_len = CacheNumber{};
+        auto new_len = CacheNumber{};
+        do {
+            old_len = this->len.load(std::memory_order_acquire);
+            new_len = CacheNumber{old_len.val + 1, old_len.version + 1};
+        } while(!this->len.compare_exchange_strong(old_len, new_len, std::memory_order_acq_rel));
+    }
+
+    void RemoveBack()
+    {
+        auto old_tail_cache = this->CachesAt(this->tail.load(std::memory_order_acquire).idx);
+        auto new_tail_cache = this->CachesAt(old_tail_cache->info.prev.load(std::std::memory_order_acquire).idx);
+        auto old_tail = CacheIndex{};
+        auto new_tail = CacheIndex{};
+        do {
+            old_tail = this->tail.load(std::memory_order_acquire);
+            new_tail = CacheIndex{new_tail_cache->info.pinning_idx, old_tail.version + 1};
+        } while(!this->tail.compare_exchange_strong(old_tail, new_tail, std::memory_order_acq_rel));
+    }
+
+    void PopBack()
+    {
+        this->RemoveBack();
+        auto old_len = CacheNumber{};
+        auto new_len = CacheNumber{};
+        do {
+            old_len = this->len.load(std::memory_order_acquire);
+            new_len = CacheNumber{old_len.val - 1, old_len.version + 1};
+        } while(!this->len.compare_exchange_strong(old_len, new_len, std::memory_order_acq_rel));
     }
 };
 static_assert(sizeof(CacheHeader) == 4096);
 
-LRUCache::LRUCache() : _h{nullptr}, _f{File::Make(UCM_SHM_FILENAME)} {}
+LRUCache::LRUCache() : _h{nullptr}, _f{File::Make(UCM_SHM_FILENAME)}, _evicting{false} {}
 
 LRUCache::~LRUCache()
 {
@@ -287,11 +317,19 @@ Status LRUCache::Init(uint32_t cap, uint32_t cache_size)
 
 void LRUCache::Evict()
 {
-    if (this->_h->len.load(std::memory_order_acquire).val != this->_h->cap) {
+    auto expected = false;
+    auto ok = this->_evicting.compare_exchange_strong(expected, true, std::memory_order_acq_rel);
+    if (!ok) {
         return;
     }
 
     auto old_tail_cache = this->_h->CachesAt(this->_h->tail.load(std::memory_order_acquire).idx);
+    while (old_tail_cache->info.status.load(std::memory_order_acquire) == CacheStatus::READING) {
+        this->_h->RemoveBack();
+        this->_h->InsertFront(old_tail_cache);
+        old_tail_cache = this->_h->CachesAt(this->_h->tail.load(std::memory_order_acquire).idx);
+    }
+
     auto expected_status = CacheStatus::ACTIVE;
     auto ok = old_tail_cache->info.status.compare_exchange_strong(expected_status,
                                                                   CacheStatus::EVICTING,
@@ -299,23 +337,11 @@ void LRUCache::Evict()
     if (!ok) {
         return;
     }
-    auto new_tail_cache = this->_h->CachesAt(old_tail_cache->info.prev.load(std::memory_order_acq_rel).idx);
-    ok = new_tail_cache->info.status.compare_exchange_strong(expected_status,
-                                                             CacheStatus::PINNING,
-                                                             std::memory_order_acq_rel);
-    if (!ok) {
-        old_tail_cache->info.status.store(CacheStatus::ACTIVE, std::memory_order_release);
-        return;
-    }
-
-    this->_h->pop_back(new_tail_cache);
-
+    this->_h->PopBack();
     old_tail_cache->info.status.store(CacheStatus::INACTIVE, std::memory_order_release);
 
-    auto old_len = this->_h->len.load(std::memory_order_acquire);
-    this->_h->len.store(CacheNumber{old_len.val - 1, old_len.version + 1}, std::memory_order_release);
-
-    new_tail_cache->info.status.store(CacheStatus::ACTIVE, std::memory_order_release);
+    expected = true;
+    while (!this->_evicting.compare_exchange_strong(expected, false, std::memory_order_acq_rel)) {}
 }
 
 Status LRUCache::Alloc(std::string_view cache_id, void** cache_data)
@@ -339,13 +365,8 @@ Status LRUCache::Alloc(std::string_view cache_id, void** cache_data)
         if (!ok) {
             continue;
         }
-        auto old_len = CacheNumber{};
-        auto new_len = CacheNumber{};
-        do {
-            old_len = this->_h->len.load(std::memory_order_acquire);
-            new_len = CacheNumber{old_len.val + 1, old_len.version + 1};
-        } while(!this->_h->len.compare_exchange_strong(old_len, new_len, std::memory_order_acq_rel));
         cache->info.id.Set(cache_id);
+        this->_h->PushFront(cache);
         *cache_data = cache->data;
 
         return Status::OK;
@@ -375,10 +396,7 @@ Status LRUCache::Find(std::string_view cache_id, void** cache_data)
                 if (cache_status == CacheStatus::INACTIVE) {
                     return Status::NOT_EXIST;
                 }
-                if (cache_status == CacheStatus::EVICTING ||
-                    cache_status == CacheStatus::WRITING  ||
-                    cache_status == CacheStatus::PINNING) {
-
+                if (cache_status == CacheStatus::EVICTING || cache_status == CacheStatus::WRITING) {
                     return Status::BUSY;
                 }
                 auto ok = true;
@@ -410,15 +428,12 @@ Status LRUCache::Find(std::string_view cache_id, void** cache_data)
 void LRUCache::AllocCommit(void* cache_data)
 {
     auto cache = reinterpret_cast<Cache*>(reinterpret_cast<Byte*>(cache_data) - sizeof(CacheInfo));
-    this->_h->push_front(cache);
     cache->info.status.store(CacheStatus::ACTIVE, std::memory_order_release);
 }
 
 void LRUCache::FindCommit(void* cache_data)
 {
     auto cache = reinterpret_cast<Cache*>(reinterpret_cast<Byte*>(cache_data) - sizeof(CacheInfo));
-
-    this->_h->push_front(cache);
 
     auto old_ref_cnt = CacheRefCnt{};
     auto new_ref_cnt = CacheRefCnt{};
