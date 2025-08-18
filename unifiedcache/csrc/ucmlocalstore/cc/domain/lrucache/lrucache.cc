@@ -198,7 +198,7 @@ struct alignas(1) CacheHeader {
     {
         while (this->len.load(std::memory_order_acquire).val == 0) {
             auto expected_tail = CacheIndex{};
-            auto ok = this->tail.compare_and_exchange_strong(
+            auto ok = this->tail.compare_exchange_strong(
                                      expected_tail,
                                      CacheIndex{new_head_cache->info.pinning_idx, 1},
                                      std::memory_order_acq_rel
