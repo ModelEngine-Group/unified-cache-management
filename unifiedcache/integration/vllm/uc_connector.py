@@ -133,6 +133,7 @@ class UnifiedCacheConnectorV1(KVConnectorBase_V1):
             vllm_config.parallel_config
         )
         self.element_size = vllm_config.model_config.dtype.itemsize
+        self.kv_role = vllm_config.kv_transfer_config.kv_role
         if (
             self._vllm_config.kv_transfer_config is not None
             and "ucm_connector_name"
@@ -397,10 +398,14 @@ class UnifiedCacheConnectorV1(KVConnectorBase_V1):
             attn_metadata (AttentionMetadata): the attention metadata.
             **kwargs: additional arguments for the save operation.
         """
-        metadata = self._get_connector_metadata()
+        self.current_layer += 1
+        if self.kv_role == "kv_consumer":
+            return
+
         if not self.use_layerwise:
             return
 
+        metadata = self._get_connector_metadata()
         assert isinstance(metadata, UCConnectorV1Metadata)
         assert attn_metadata is not None, "The attn_metadata should not be None."
 
@@ -447,7 +452,6 @@ class UnifiedCacheConnectorV1(KVConnectorBase_V1):
                     self.dump_tasks.setdefault(request.request_id, {}).setdefault(
                         block_id, []
                     ).append(task)
-        self.current_layer += 1
 
     def wait_for_save(self) -> Optional[dict[str, list[str]]]:
         """
@@ -457,6 +461,8 @@ class UnifiedCacheConnectorV1(KVConnectorBase_V1):
 
         This prevents overwrites of paged KV buffer before saving done.
         """
+        if self.kv_role == "kv_consumer":
+            return
         # request id -> succeed dumped blocks
         success_dumped_blocks: dict[str, list[str]] = {}
 
