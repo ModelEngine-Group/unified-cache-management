@@ -28,6 +28,7 @@
 #include <sys/fcntl.h>
 #include <unistd.h>
 #include "logger/logger.h"
+#include "thread_pool/thread_pool.h"
 
 #define INVALID_32 0xFFFFFFFF
 #define INVALID_64 0xFFFFFFFFFFFFFFFF
@@ -350,8 +351,7 @@ Status LRUCache::Alloc(std::string_view cache_id, void** cache_data)
     if (cache_id.size() != 16) { return Status::INVALID_PARAM; }
 
     if (this->_h->len.load(std::memory_order_acquire).val == this->_h->cap) {
-        std::thread t([this]() { this->Evict(); });
-        t.detach();
+        ThreadPool::Instance().Submit([this] { this->Evict(); });
         return Status::BUSY;
     }
 
