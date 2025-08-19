@@ -1,3 +1,27 @@
+#
+# MIT License
+#
+# Copyright (c) 2025 Huawei Technologies Co., Ltd. All rights reserved.
+#
+# Permission is hereby granted, free of charge, to any person obtaining a copy
+# of this software and associated documentation files (the "Software"), to deal
+# in the Software without restriction, including without limitation the rights
+# to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+# copies of the Software, and to permit persons to whom the Software is
+# furnished to do so, subject to the following conditions:
+#
+# The above copyright notice and this permission notice shall be included in all
+# copies or substantial portions of the Software.
+#
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+# AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+# OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+# SOFTWARE.
+#
+
 import os
 import shutil
 import subprocess
@@ -9,6 +33,15 @@ from setuptools.command.develop import develop
 ROOT_DIR = os.path.abspath(os.path.dirname(__file__))
 SRC_DIR = os.path.join(ROOT_DIR, "unifiedcache", "csrc", "ucmnfsstore")
 INSTALL_DIR = os.path.join(ROOT_DIR, "unifiedcache", "ucm_connector")
+PLATFORM = os.getenv("PLATFORM")
+
+
+def _is_cuda() -> bool:
+    return PLATFORM == "cuda"
+
+
+def _is_npu() -> bool:
+    return PLATFORM == "ascend"
 
 
 class CMakeExtension(Extension):
@@ -25,16 +58,31 @@ class CMakeBuild(build_ext):
     def build_cmake(self, ext: CMakeExtension):
         build_dir = os.path.abspath(self.build_temp)
         os.makedirs(build_dir, exist_ok=True)
-
-        subprocess.check_call(
-            [
-                "cmake",
-                "-DDOWNLOAD_DEPENDENCE=ON",
-                "-DRUNTIME_ENVIRONMENT=cuda",
-                ext.sourcedir,
-            ],
-            cwd=build_dir,
-        )
+        if _is_cuda():
+            subprocess.check_call(
+                [
+                    "cmake",
+                    "-DDOWNLOAD_DEPENDENCE=ON",
+                    "-DRUNTIME_ENVIRONMENT=cuda",
+                    ext.sourcedir,
+                ],
+                cwd=build_dir,
+            )
+        elif _is_npu():
+            subprocess.check_call(
+                [
+                    "cmake",
+                    "-DDOWNLOAD_DEPENDENCE=ON",
+                    "-DRUNTIME_ENVIRONMENT=ascend",
+                    ext.sourcedir,
+                ],
+                cwd=build_dir,
+            )
+        else:
+            raise RuntimeError(
+                "No supported accelerator found. "
+                "Please ensure either CUDA or NPU is available."
+            )
 
         subprocess.check_call(["make", "-j", "8"], cwd=build_dir)
 
@@ -69,11 +117,11 @@ class CMakeBuild(build_ext):
 
 setup(
     name="unifiedcache",
-    version="0.1.0",
-    description="Unified Cache Management with C++ extension",
-    author="Your Name",
+    version="0.0.1",
+    description="Unified Cache Management",
+    author="Unified Cache Team",
     packages=find_packages(),
-    python_requires=">=3.9",
+    python_requires=">=3.10",
     ext_modules=[CMakeExtension(name="ucmnfsstore", sourcedir=SRC_DIR)],
     cmdclass={"build_ext": CMakeBuild},
     zip_safe=False,
