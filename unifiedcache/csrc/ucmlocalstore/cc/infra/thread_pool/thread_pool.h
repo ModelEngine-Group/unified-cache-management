@@ -79,8 +79,8 @@ private:
     }
 
     void Start() {
-        uint8_t n = static_cast<uint8_t>(std::thread::hardware_concurrency());
-        for (uint8_t i = 0; i < n; ++i) {
+        uint64_t n = static_cast<uint64_t>(std::thread::hardware_concurrency());
+        for (uint64_t i = 0; i < n; ++i) {
             this->_pool.emplace_back([this]() {
                 while (!this->_stop.load(std::memory_order_acquire)) {
                     Task task;
