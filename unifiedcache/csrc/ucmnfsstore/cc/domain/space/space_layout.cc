@@ -23,28 +23,91 @@
  * */
 #include "space_layout.h"
 #include <spdlog/fmt/fmt.h>
+#include "file/file.h"
+#include "logger/logger.h"
 
 namespace UC {
 
-struct BlockId {
-    uint64_t first;
-    uint64_t last;
-};
+constexpr size_t blockIdSize = 16;
+constexpr size_t nU64PerBlock = blockIdSize / sizeof(uint64_t);
+using BlockId = std::array<uint64_t, nU64PerBlock>;
+static_assert(sizeof(BlockId) == blockIdSize);
 
-std::vector<std::string> SpaceLayout::RelativeRoots() const { return {this->DataRoot()}; }
+Status SpaceLayout::Setup(const std::vector<std::string>& storageBackends)
+{
+    if (storageBackends.empty()) {
+        UC_ERROR("Empty backend list.");
+        return Status::InvalidParam();
+    }
+    auto status = Status::OK();
+    for (auto& path : storageBackends) {
+        if ((status = this->AddStorageBackend(path)).Failure()) { return status; }
+    }
+    return status;
+}
 
 std::string SpaceLayout::DataFileParent(const std::string& blockId) const
 {
-    auto id = (const BlockId*)blockId.data();
-    return fmt::format("{}/{:016x}", this->DataRoot(), id->first);
+    auto id = static_cast<const BlockId*>(static_cast<const void*>(blockId.data()));
+    return fmt::format("{}{}/{:016x}", this->StorageBackend(blockId), this->DataFileRoot(), id->front());
 }
 
 std::string SpaceLayout::DataFilePath(const std::string& blockId, bool actived) const
 {
-    auto id = (const BlockId*)blockId.data();
-    return fmt::format("{}/{:016x}/{:016x}.{}", this->DataRoot(), id->first, id->last, actived ? "act" : "dat");
+    auto id = static_cast<const BlockId*>(static_cast<const void*>(blockId.data()));
+    return fmt::format("{}{}/{:016x}/{:016x}.{}", this->StorageBackend(blockId), this->DataFileRoot(), id->front(),
+                       id->back(), actived ? "act" : "dat");
 }
 
-std::string SpaceLayout::DataRoot() const { return "data"; }
+Status SpaceLayout::AddStorageBackend(const std::string& path)
+{
+    auto normalizedPath = path;
+    if (normalizedPath.back() != '/') { normalizedPath += '/'; }
+    auto status = Status::OK();
+    if (this->_storageBackends.empty()) {
+        status = this->AddFirstStorageBackend(normalizedPath);
+    } else {
+        status = this->AddSecondaryStorageBackend(normalizedPath);
+    }
+    if (status.Failure()) { UC_ERROR("Failed({}) to add storage backend({}).", status, normalizedPath); }
+    return status;
+}
+
+Status SpaceLayout::AddFirstStorageBackend(const std::string& path)
+{
+    for (const auto& root : this->RelativeRoots()) {
+        auto dir = File::Make(path + root);
+        if (!dir) { return Status::OutOfMemory(); }
+        auto status = dir->MkDir();
+        if (status == Status::DuplicateKey()) { status = Status::OK(); }
+        if (status.Failure()) { return status; }
+    }
+    this->_storageBackends.emplace_back(path);
+    return Status::OK();
+}
+
+Status SpaceLayout::AddSecondaryStorageBackend(const std::string& path)
+{
+    auto iter = std::find(this->_storageBackends.begin(), this->_storageBackends.end(), path);
+    if (iter != this->_storageBackends.end()) { return Status::OK(); }
+    constexpr auto accessMode = IFile::AccessMode::READ | IFile::AccessMode::WRITE;
+    for (const auto& root : this->RelativeRoots()) {
+        auto dir = File::Make(path + root);
+        if (!dir) { return Status::OutOfMemory(); }
+        if (dir->Access(accessMode).Failure()) { return Status::InvalidParam(); }
+    }
+    this->_storageBackends.emplace_back(path);
+    return Status::OK();
+}
+
+std::string SpaceLayout::StorageBackend(const std::string& blockId) const
+{
+    static std::hash<std::string> hasher;
+    return this->_storageBackends[hasher(blockId) % this->_storageBackends.size()];
+}
+
+std::vector<std::string> SpaceLayout::RelativeRoots() const { return {this->DataFileRoot()}; }
+
+std::string SpaceLayout::DataFileRoot() const { return "data"; }
 
 } // namespace UC

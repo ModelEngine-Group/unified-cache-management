@@ -73,7 +73,7 @@ class UcmNfsStore(UcmKVStoreBase):
         Returns:
             success mask
         """
-        ret = ucmnfsstore.Alloc(block_ids)
+        ret = ucmnfsstore.AllocBatch(block_ids)
         if ret != 0:
             logger.error(f"Failed to allocate kv cache space, errcode: {ret}.")
         else:
@@ -91,7 +91,7 @@ class UcmNfsStore(UcmKVStoreBase):
         Returns:
             hit block mask, True -> hit
         """
-        ret = ucmnfsstore.Lookup(block_ids)
+        ret = ucmnfsstore.LookupBatch(block_ids)
         logger.info("Succeed in looking up kv cache blocks.")
         return ret
 
@@ -169,5 +169,5 @@ class UcmNfsStore(UcmKVStoreBase):
         """
         if not is_success:
             logger.warning(f"commit {block_ids} to {is_success}")
-        ucmnfsstore.Commit(block_ids, is_success)
+        ucmnfsstore.CommitBatch(block_ids, is_success)
         logger.debug("Succeed in committing kv cache.")
