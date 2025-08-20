@@ -12,7 +12,7 @@ Follow the [official guide](https://github.com/kvcache-ai/Mooncake/blob/v0.3.4/d
 1. Start Metadata Service
 Navigate to the metadata server directory:
 
-```bash
+```bash 
 cd $MOONCAKE_ROOT_DIR/mooncake-transfer-engine/example/http-metadata-server
 ```
 

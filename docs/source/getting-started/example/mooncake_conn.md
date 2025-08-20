@@ -21,8 +21,6 @@ The Monncake connector supports the following functionalities:
 
 ### Start Mooncake Services
 
-
-
 1. Follow the [Mooncake official guide](https://github.com/kvcache-ai/Mooncake/blob/v0.3.4/doc/en/build.md) to build Mooncake.
 
 2. Start Mooncake Store Service
@@ -45,37 +43,32 @@ mooncake_master --port 50001
 
 
 
-
 ### Required Parameters
 
 To use the Mooncake connector, you need to configure the `connector_config` dictionary in your model's launch configuration.
 
-- `max_cache_size` *(optional)*:  
-  Specifies the maximum allowed Mooncake memory usage (in **byte**) for caching in `kv_connector_extra_config["ucm_connector_config"]`.  
-  If not provided, it defaults to **5 GB**.
-- `kv_block_size` *(optional)*:  
-  Specifies the memory size (in bytes) of a single key or value cache block used in vLLM’s paged attention mechanism, which is calculated as : `block_size * head_size * total_num_kv_heads * element_size`.
 - `local_hostname`:   
   The IP address of the current node used to communicate with the metadata server.
 - `metadata_server`:  
   The metadata server of the mooncake transfer engine.
+- `master_server_address`:  
+  The IP address and the port of the master daemon process of MooncakeStore.
 - `protocl`  *(optional)*:  
   If not provided, it defaults to **tcp**.
 - `device_name`  *(optional)*:  
   The device to be used for data transmission, it is required when “protocol” is set to “rdma”. If multiple NIC devices are used, they can be separated by commas such as “erdma_0,erdma_1”. Please note that there are no spaces between them.
-- `master_server_address`:  
-  The IP address and the port of the master daemon process of MooncakeStore.
+- `global_segment_size`*(optional)*:  
+  The size of each global segment in bytes. `DEFAULT_GLOBAL_SEGMENT_SIZE = 3355443200`  **3.125 GiB**
+- `local_buffer_size`*(optional)*:  
+  The size of the local buffer in bytes. `DEFAULT_LOCAL_BUFFER_SIZE = 1073741824`   **1.0 GiB**
+
 
 ### Example:
 
 ```python
-# Allocate up to 8GB Mooncake for KV cache
-# KV Block size (in byte) is 262144
 kv_connector_extra_config={
-    "ucm_connector_name": "UcmMooncake", 
+    "ucm_connector_name": "UcmMooncakeStore", 
     "ucm_connector_config":{
-        "max_cache_size": 5368709120, 
-        "kv_block_size": 262144,
         "local_hostname": "127.0.0.1",
         "metadata_server": "http://127.0.0.1:23790/metadata",
         "protocol": "tcp",
@@ -96,10 +89,8 @@ To start **offline inference** with the Mooncake connector，modify the script `
 ktc = KVTransferConfig(
     ...
     kv_connector_extra_config={
-    "ucm_connector_name": "UcmMooncake", 
-    "ucm_connector_config":{
-        "max_cache_size": 5368709120, 
-        "kv_block_size": 262144,     
+    "ucm_connector_name": "UcmMooncakeStore", 
+    "ucm_connector_config":{    
         "local_hostname": "127.0.0.1",
         "metadata_server": "http://127.0.0.1:23790/metadata",
         "protocol": "tcp",
@@ -141,10 +132,8 @@ vllm serve /home/models/Qwen2.5-14B-Instruct \
     "kv_connector_module_path": "unifiedcache.integration.vllm.uc_connector",
     "kv_role": "kv_both",
     "kv_connector_extra_config": {
-        "ucm_connector_name": "UcmMooncake", 
-        "ucm_connector_config":{
-            "max_cache_size": 5368709120, 
-            "kv_block_size": 262144,     
+        "ucm_connector_name": "UcmMooncakeStore", 
+        "ucm_connector_config":{  
             "local_hostname": "127.0.0.1",
             "metadata_server": "http://127.0.0.1:23790/metadata",
             "protocol": "tcp",
