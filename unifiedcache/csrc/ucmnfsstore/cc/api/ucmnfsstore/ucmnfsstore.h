@@ -45,7 +45,7 @@ public:
     SetupParam(const std::vector<std::string>& storageBackends, const size_t kvcacheBlockSize,
                const bool transferEnable)
         : storageBackends{storageBackends}, kvcacheBlockSize{kvcacheBlockSize}, transferEnable{transferEnable},
-          transferDeviceId{-1}, transferStreamNumber{128}, transferIoSize{262144}, transferBufferNumber{512}
+          transferDeviceId{-1}, transferStreamNumber{32}, transferIoSize{262144}, transferBufferNumber{512}
     {
     }
 };
