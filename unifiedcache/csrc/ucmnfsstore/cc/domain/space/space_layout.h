@@ -26,26 +26,17 @@
 
 #include <string>
 #include <vector>
-#include "status/status.h"
 
 namespace UC {
 
 class SpaceLayout {
 public:
-    Status Setup(const std::vector<std::string>& storageBackends);
-    std::string DataFileParent(const std::string& blockId) const;
-    std::string DataFilePath(const std::string& blockId, bool actived) const;
-
-private:
-    Status AddStorageBackend(const std::string& path);
-    Status AddFirstStorageBackend(const std::string& path);
-    Status AddSecondaryStorageBackend(const std::string& path);
-    std::string StorageBackend(const std::string& blockId) const;
     std::vector<std::string> RelativeRoots() const;
-    std::string DataFileRoot() const;
+    std::string DataFileParent(const std::string& blockId) const;
+    std::string DataFilePath(const std::string& blockId, bool actived = false) const;
 
 private:
-    std::vector<std::string> _storageBackends;
+    std::string DataRoot() const;
 };
 
 } // namespace UC

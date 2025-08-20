@@ -39,21 +39,18 @@ void ShowSetupParam(const SetupParam& param)
     UC_INFO("Set UC::DeviceId to {}.", param.transferDeviceId);
     UC_INFO("Set UC::StreamNumber to {}.", param.transferStreamNumber);
     UC_INFO("Set UC::IOSize to {}.", param.transferIoSize);
-    UC_INFO("Set UC::BufferNumber to {}.", param.transferBufferNumber);
 }
 
 int32_t Setup(const SetupParam& param)
 {
-    auto spaceMgr = Singleton<SpaceManager>::Instance();
-    auto status = spaceMgr->Setup(param.storageBackends, param.kvcacheBlockSize);
+    auto status = Singleton<SpaceManager>::Instance()->Setup(param.storageBackends, param.kvcacheBlockSize);
     if (status.Failure()) {
         UC_ERROR("Failed({}) to setup SpaceManager.", status);
         return status.Underlying();
     }
     if (param.transferEnable) {
-        auto taskMgr = Singleton<TsfTaskManager>::Instance();
-        status = taskMgr->Setup(param.transferDeviceId, param.transferStreamNumber, param.transferIoSize,
-                                param.transferBufferNumber, spaceMgr->GetSpaceLayout());
+        status = Singleton<TsfTaskManager>::Instance()->Setup(param.transferDeviceId, param.transferStreamNumber,
+                                                              param.transferIoSize);
         if (status.Failure()) {
             UC_ERROR("Failed({}) to setup TsfTaskManager.", status);
             return status.Underlying();
@@ -74,7 +71,7 @@ int32_t Alloc(const std::string& blockId)
 
 bool Lookup(const std::string& blockId) { return Singleton<SpaceManager>::Instance()->LookupBlock(blockId); }
 
-size_t Submit(std::list<TsfTask>& tasks, const size_t size, const size_t number, const std::string& brief)
+size_t Submit(std::list<TsfTask> tasks, const size_t size, const size_t number, const std::string& brief)
 {
     size_t taskId = 0;
     auto status = Singleton<TsfTaskManager>::Instance()->Submit(tasks, size, number, brief, taskId);

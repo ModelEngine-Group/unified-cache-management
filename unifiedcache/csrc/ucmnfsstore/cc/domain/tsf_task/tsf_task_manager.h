@@ -21,8 +21,8 @@
 * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 * SOFTWARE.
  * */
-#ifndef UNIFIEDCACHE_TSF_TASK_MANAGER_H
-#define UNIFIEDCACHE_TSF_TASK_MANAGER_H
+#ifndef UNIFIEDCACHE_TSF_TASK_MANAGER
+#define UNIFIEDCACHE_TSF_TASK_MANAGER
 
 #include <memory>
 #include <unordered_map>
@@ -33,14 +33,13 @@ namespace UC {
 
 class TsfTaskManager{
 public:
-    Status Setup(const int32_t deviceId, const size_t streamNumber, const size_t bufferSize, const size_t bufferNumber,
-                 const SpaceLayout* layout);
+    Status Setup(const int32_t deviceId, const size_t streamNumber, const size_t ioSize);
     Status Submit(std::list<TsfTask>& tasks, const size_t size, const size_t number, const std::string& brief,
                   size_t& taskId);
     Status Wait(const size_t taskId);
-
+    
 private:
-    void Dispatch(std::list<TsfTask>& tasks, std::vector<std::list<TsfTask>>& targets , const size_t taskId,
+    void Dispatch(std::list<TsfTask>& tasks, std::vector<std::list<TsfTask>>& targets , const size_t taskId, 
                   std::shared_ptr<TsfTaskWaiter> waiter) const;
 
 private:

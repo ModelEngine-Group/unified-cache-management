@@ -31,21 +31,18 @@
 
 namespace UC {
 
-class SetupParam {
-public:
+struct SetupParam {
     std::vector<std::string> storageBackends;
     size_t kvcacheBlockSize;
     bool transferEnable;
     int32_t transferDeviceId;
     size_t transferStreamNumber;
     size_t transferIoSize;
-    size_t transferBufferNumber;
 
-public:
     SetupParam(const std::vector<std::string>& storageBackends, const size_t kvcacheBlockSize,
                const bool transferEnable)
         : storageBackends{storageBackends}, kvcacheBlockSize{kvcacheBlockSize}, transferEnable{transferEnable},
-          transferDeviceId{-1}, transferStreamNumber{32}, transferIoSize{262144}, transferBufferNumber{512}
+          transferDeviceId{-1}, transferStreamNumber{256}, transferIoSize{262144}
     {
     }
 };
@@ -53,7 +50,7 @@ public:
 int32_t Setup(const SetupParam& param);
 int32_t Alloc(const std::string& blockId);
 bool Lookup(const std::string& blockId);
-size_t Submit(std::list<TsfTask>& tasks, const size_t size, const size_t number, const std::string& brief);
+size_t Submit(std::list<TsfTask> tasks, const size_t size, const size_t number, const std::string& brief);
 int32_t Wait(const size_t taskId);
 void Commit(const std::string& blockId, const bool success);
 

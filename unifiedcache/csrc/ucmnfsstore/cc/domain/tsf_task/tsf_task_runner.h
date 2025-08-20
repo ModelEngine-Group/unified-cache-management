@@ -21,25 +21,30 @@
 * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 * SOFTWARE.
  * */
-#ifndef UNIFIEDCACHE_IDEVICE_H
-#define UNIFIEDCACHE_IDEVICE_H
+#ifndef UNIFIEDCACHE_TSF_TASK_RUNNER_H
+#define UNIFIEDCACHE_TSF_TASK_RUNNER_H
 
-#include <memory>
+#include "device/idevice.h"
 #include "status/status.h"
+#include "tsf_task.h"
 
 namespace UC {
 
-class IDevice {
+class TsfTaskRunner {
 public:
-    virtual ~IDevice() = default;
-    virtual Status Setup() = 0;
-    virtual std::shared_ptr<void> GetHostBuffer(size_t size) = 0;
-    virtual void ResetHostBufferIndex() = 0;
-    virtual Status H2DAsync(void* dst, size_t dstMax, const void* src, const size_t count)=0;
-    virtual Status D2HAsync(void* dst, size_t dstMax, const void* src, const size_t count)=0;
-    virtual Status WaitFinish() = 0;
+    TsfTaskRunner(IDevice* device) : _device{device} {}
+    Status Run(const TsfTask& task);
+     
+private:
+    Status Ssd2Host(const TsfTask& task);
+    Status Host2Ssd(const TsfTask& task);
+    Status Ssd2Device(const TsfTask& task);
+    Status Device2Ssd(const TsfTask& task);
+
+private:
+    IDevice* _device;
 };
 
 } // namespace UC
 
-#endif // UNIFIEDCACHE_IDEVICE_H
+#endif

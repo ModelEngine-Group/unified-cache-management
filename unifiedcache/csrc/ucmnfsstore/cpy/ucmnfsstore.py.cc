@@ -24,6 +24,7 @@
 #include "ucmnfsstore/ucmnfsstore.h"
 #include <pybind11/pybind11.h>
 #include <pybind11/stl.h>
+#include "status/status.h"
 
 namespace py = pybind11;
 
@@ -107,10 +108,6 @@ inline void CommitBatch(const py::list& blockIds, const bool success)
 
 PYBIND11_MODULE(ucmnfsstore, module)
 {
-    module.attr("project") = UC_VAR_PROJECT_NAME;
-    module.attr("version") = UC_VAR_PROJECT_VERSION;
-    module.attr("commit_id") = UC_VAR_GIT_COMMIT_ID;
-    module.attr("build_type") = UC_VAR_BUILD_TYPE;
     py::class_<UC::SetupParam>(module, "SetupParam")
         .def(py::init<const std::vector<std::string>&, const size_t, const bool>(), py::arg("storageBackends"),
              py::arg("kvcacheBlockSize"), py::arg("transferEnable"))
@@ -119,18 +116,14 @@ PYBIND11_MODULE(ucmnfsstore, module)
         .def_readwrite("transferEnable", &UC::SetupParam::transferEnable)
         .def_readwrite("transferDeviceId", &UC::SetupParam::transferDeviceId)
         .def_readwrite("transferStreamNumber", &UC::SetupParam::transferStreamNumber)
-        .def_readwrite("transferIoSize", &UC::SetupParam::transferIoSize)
-        .def_readwrite("transferBufferNumber", &UC::SetupParam::transferBufferNumber);
+        .def_readwrite("transferIoSize", &UC::SetupParam::transferIoSize);
     module.def("Setup", &UC::Setup);
-    module.def("Alloc", &UC::Alloc);
-    module.def("AllocBatch", &UC::AllocBatch);
-    module.def("Lookup", &UC::Lookup);
-    module.def("LookupBatch", &UC::LookupBatch);
+    module.def("Alloc", &UC::AllocBatch);
+    module.def("Lookup", &UC::LookupBatch);
     module.def("LoadToDevice", &UC::LoadToDevice);
     module.def("LoadToHost", &UC::LoadToHost);
     module.def("DumpFromDevice", &UC::DumpFromDevice);
     module.def("DumpFromHost", &UC::DumpFromHost);
     module.def("Wait", &UC::Wait);
-    module.def("Commit", &UC::Commit);
-    module.def("CommitBatch", &UC::CommitBatch);
+    module.def("Commit", &UC::CommitBatch);
 }
