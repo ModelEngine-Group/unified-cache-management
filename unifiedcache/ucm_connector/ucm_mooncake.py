@@ -14,8 +14,8 @@ from unifiedcache.logger import init_logger
 from unifiedcache.ucm_connector import Task, UcmKVStoreBase
 
 TIMEOUT_S_THR: int = 60 * 60
-DEFAULT_GLOBAL_SEGMENT_SIZE: int = 1 * 1024 * 1024 * 1024  # 3.125 GiB
-DEFAULT_LOCAL_BUFFER_SIZE: int = 1 * 1024 * 1024 * 1024  # 1.0 GiB
+DEFAULT_GLOBAL_SEGMENT_SIZE: int = 3355443200  # 3.125 GiB
+DEFAULT_LOCAL_BUFFER_SIZE: int = 1073741824  # 1.0 GiB
 
 logger = init_logger(__name__)
 
@@ -111,11 +111,10 @@ class UcmMooncakeStore(UcmKVStoreBase):
 
         try:
             self.store = MooncakeDistributedStore()
-            if config != {}:
-                mooncake_config = MooncakeStoreConfig.load_from_dict(config)
-            else:
-                mooncake_config = MooncakeStoreConfig.load_from_env()
-            logger.info("Mooncake Configuration loaded successfully.")
+
+            mooncake_config = MooncakeStoreConfig.load_from_dict(config)
+            logger.info("Mooncake Configuration loaded from dict successfully.")
+
             self.store.setup(
                 mooncake_config.local_hostname,
                 mooncake_config.metadata_server,
@@ -129,6 +128,34 @@ class UcmMooncakeStore(UcmKVStoreBase):
         except ValueError as e:
             logger.error("Configuration loading failed: %s", e)
             raise
+        except TypeError:
+            logger.warning(
+                "Lack of configuration, loading Mooncake configuration from environment variables instead."
+            )
+            try:
+                mooncake_config = MooncakeStoreConfig.load_from_env()
+                logger.info("Mooncake Configuration loaded from env successfully.")
+                self.store.setup(
+                    mooncake_config.local_hostname,
+                    mooncake_config.metadata_server,
+                    mooncake_config.global_segment_size,
+                    mooncake_config.local_buffer_size,
+                    mooncake_config.protocol,
+                    mooncake_config.device_name,
+                    mooncake_config.master_server_address,
+                )
+            except ValueError as e:
+                logger.error(
+                    "Configuration loading failed: %s \n Please check the dict params or edit the config file and set path.",
+                    e,
+                )
+                raise
+            except Exception as exc:
+                logger.error(
+                    "An error occurred while loading the configuration: %s", exc
+                )
+                raise
+
         except Exception as exc:
             logger.error("An error occurred while loading the configuration: %s", exc)
             raise

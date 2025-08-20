@@ -53,7 +53,7 @@ To use the Mooncake connector, you need to configure the `connector_config` dict
   The metadata server of the mooncake transfer engine.
 - `master_server_address`:  
   The IP address and the port of the master daemon process of MooncakeStore.
-- `protocl`  *(optional)*:  
+- `protocol`  *(optional)*:  
   If not provided, it defaults to **tcp**.
 - `device_name`  *(optional)*:  
   The device to be used for data transmission, it is required when “protocol” is set to “rdma”. If multiple NIC devices are used, they can be separated by commas such as “erdma_0,erdma_1”. Please note that there are no spaces between them.
