@@ -63,3 +63,6 @@ UcmConnectorFactory.register_connector(
 UcmConnectorFactory.register_connector(
     "UcmNfsStore", "unifiedcache.ucm_connector.ucm_nfs_store", "UcmNfsStore"
 )
+UcmConnectorFactory.register_connector(
+    "UcmMooncakeStore", "unifiedcache.ucm_connector.ucm_mooncake", "UcmMooncakeStore"
+)
