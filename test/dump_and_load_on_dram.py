@@ -45,7 +45,7 @@ def setup_uc(block_size):
 
 
 def dump_to_uc(hashes, tensors):
-    ret = ucmstore.Alloc(hashes)
+    ret = ucmstore.AllocBatch(hashes)
     assert ret == 0
     data_id = []
     data_off = []
@@ -65,7 +65,7 @@ def dump_to_uc(hashes, tensors):
     assert task_id > 0
     ret = ucmstore.Wait(task_id)
     assert ret == 0
-    ucmstore.Commit(hashes, True)
+    ucmstore.CommitBatch(hashes, True)
 
 
 def fetch_from_uc(hashes, tensors):
@@ -93,11 +93,11 @@ def fetch_from_uc(hashes, tensors):
 def transfer_blocks(block_dim, block_len, block_layer, block_number):
     hashes = [secrets.token_hex(16) for _ in range(block_number)]
     tensors = [[gen_tensor([block_dim, block_len], False) for _ in range(block_layer)] for _ in range(block_number)]
-    founds = ucmstore.Lookup(hashes)
+    founds = ucmstore.LookupBatch(hashes)
     for found in founds:
         assert not found
     dump_to_uc(hashes, tensors)
-    founds = ucmstore.Lookup(hashes)
+    founds = ucmstore.LookupBatch(hashes)
     for found in founds:
         assert found
     tensors2 = [[gen_tensor([block_dim, block_len], True) for _ in range(block_layer)] for _ in range(block_number)]

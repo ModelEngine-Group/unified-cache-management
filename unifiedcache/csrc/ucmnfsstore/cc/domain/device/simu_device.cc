@@ -21,25 +21,47 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  * */
-#ifndef UNIFIEDCACHE_MEMORY_H
-#define UNIFIEDCACHE_MEMORY_H
-
-#include <cstddef>
-#include <memory>
+#include "simu_device.h"
+#include "logger/logger.h"
 
 namespace UC {
 
-class Memory {
-public:
-    static bool Aligned(const size_t size) { return size % _alignment == 0; }
-    static size_t Align(const size_t size) { return (size + _alignment - 1) / _alignment * _alignment; }
-    static std::shared_ptr<void> Alloc(const size_t size);
-    static std::shared_ptr<void> AllocAlign(const size_t size);
+Status SimuDevice::Setup()
+{
+    auto status = IBufferedDevice::Setup();
+    if (status.Failure()) { return status; }
+    return Status::OK();
+}
 
-private:
-    static constexpr size_t _alignment{4096};
-};
+Status SimuDevice::H2DAsync(std::byte* dst, const std::byte* src, const size_t count)
+{
+    if (dst == nullptr || src == nullptr || count == 0) {
+        UC_ERROR("Invalid params: count={}.", count);
+        return Status::InvalidParam();
+    }
+    std::copy(src, src + count, dst);
+    return Status::OK();
+}
+
+Status SimuDevice::D2HAsync(std::byte* dst, const std::byte* src, const size_t count)
+{
+    if (dst == nullptr || src == nullptr || count == 0) {
+        UC_ERROR("Invalid params: count={}.", count);
+        return Status::InvalidParam();
+    }
+    std::copy(src, src + count, dst);
+    return Status::OK();
+}
+
+Status SimuDevice::AppendCallback(std::function<void(bool)> cb)
+{
+    cb(true);
+    return Status::OK();
+}
+
+std::shared_ptr<std::byte> SimuDevice::MakeBuffer(const size_t size)
+{
+    return std::shared_ptr<std::byte>((std::byte*)malloc(size), free);
+}
 
 } // namespace UC
-
-#endif // UNIFIEDCACHE_MEMORY_H
