@@ -21,25 +21,31 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  * */
-#ifndef UNIFIEDCACHE_MEMORY_H
-#define UNIFIEDCACHE_MEMORY_H
+#ifndef UNIFIEDCACHE_SIMU_DEVICE_H
+#define UNIFIEDCACHE_SIMU_DEVICE_H
 
-#include <cstddef>
-#include <memory>
+#include "ibuffered_device.h"
 
 namespace UC {
 
-class Memory {
+class SimuDevice : public IBufferedDevice {
 public:
-    static bool Aligned(const size_t size) { return size % _alignment == 0; }
-    static size_t Align(const size_t size) { return (size + _alignment - 1) / _alignment * _alignment; }
-    static std::shared_ptr<void> Alloc(const size_t size);
-    static std::shared_ptr<void> AllocAlign(const size_t size);
+    SimuDevice(const int32_t deviceId, const size_t bufferSize, const size_t bufferNumber)
+        : IBufferedDevice{bufferSize, bufferNumber}, _deviceId{deviceId}
+    {
+    }
+    Status Setup() override;
+    Status H2DAsync(std::byte* dst, const std::byte* src, const size_t count) override;
+    Status D2HAsync(std::byte* dst, const std::byte* src, const size_t count) override;
+    Status AppendCallback(std::function<void(bool)> cb) override;
+
+protected:
+    std::shared_ptr<std::byte> MakeBuffer(const size_t size) override;
 
 private:
-    static constexpr size_t _alignment{4096};
+    int32_t _deviceId;
 };
 
 } // namespace UC
 
-#endif // UNIFIEDCACHE_MEMORY_H
+#endif

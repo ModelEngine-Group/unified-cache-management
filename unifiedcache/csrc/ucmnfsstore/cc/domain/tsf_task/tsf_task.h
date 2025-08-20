@@ -24,30 +24,36 @@
 #ifndef UNIFIEDCACHE_TSF_TASK_H
 #define UNIFIEDCACHE_TSF_TASK_H
 
-#include <cstdint>
-#include <string>
+#include <memory>
 #include "tsf_task_waiter.h"
 
 namespace UC {
 
-struct TsfTask {
+class TsfTask {
+public:
     enum class Type { DUMP, LOAD };
     enum class Location { HOST, DEVICE };
+
+public:
+    TsfTask(const Type type, const Location location, const std::string& blockId, const size_t offset,
+            const uintptr_t address, const size_t length)
+        : type{type}, location{location}, blockId{blockId}, offset{offset}, address{address}, length{length}, owner{0},
+          waiter{nullptr}, hub{nullptr}
+    {
+    }
+    TsfTask() : TsfTask{Type::DUMP, Location::HOST, {}, 0, 0, 0} {}
+
+public:
     Type type;
     Location location;
     std::string blockId;
     size_t offset;
     uintptr_t address;
     size_t length;
+
     size_t owner;
     std::shared_ptr<TsfTaskWaiter> waiter;
-
-    TsfTask(const Type type, const Location location, const std::string& blockId, const size_t offset,
-            const uintptr_t address, const size_t length)
-        : type{type}, location{location}, blockId{blockId}, offset{offset}, address{address}, length{length}, owner{0},
-          waiter{nullptr}
-    {
-    }
+    std::shared_ptr<std::byte> hub;
 };
 
 } // namespace UC
