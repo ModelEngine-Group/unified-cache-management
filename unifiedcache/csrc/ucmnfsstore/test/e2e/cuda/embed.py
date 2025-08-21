@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 import os
 import secrets
+
 import torch
 import ucmnfsstore as ucmstore
 
@@ -18,11 +19,17 @@ def setup_uc(block_size, device_id):
     assert ret == 0
 
 
-def make_buffers(block_number, device_id, batch_size, block_dim, block_len, block_layer):
+def make_buffers(
+    block_number, device_id, batch_size, block_dim, block_len, block_layer
+):
     hashes = [secrets.token_hex(16) for _ in range(block_number)]
     tensors = [
         [
-            torch.rand([block_dim, block_len], dtype=torch.bfloat16, device="cuda:{}".format(device_id))
+            torch.rand(
+                [block_dim, block_len],
+                dtype=torch.bfloat16,
+                device="cuda:{}".format(device_id),
+            )
             for _ in range(block_layer)
         ]
         for _ in range(batch_size)
@@ -71,7 +78,9 @@ def main():
     block_size = block_dim * block_len * block_elem_size * block_layer
     batch_size = 256
     setup_uc(block_size, device_id)
-    hashes, tensors = make_buffers(kvcache_block_number, device_id, batch_size, block_dim, block_len, block_layer)
+    hashes, tensors = make_buffers(
+        kvcache_block_number, device_id, batch_size, block_dim, block_len, block_layer
+    )
     total_batches = (kvcache_block_number + batch_size - 1) // batch_size
     for batch in range(total_batches):
         start = batch_size * batch

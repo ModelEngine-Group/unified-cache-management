@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 import os
 import random
+
 import torch
 import ucmnfsstore as ucmstore
 
@@ -33,7 +34,11 @@ def load_hashes(batch_size, batch_number):
 def make_buffers(device_id, batch_size, block_dim, block_len, block_layer):
     tensors = [
         [
-            torch.rand([block_dim, block_len], dtype=torch.bfloat16, device="cuda:{}".format(device_id))
+            torch.rand(
+                [block_dim, block_len],
+                dtype=torch.bfloat16,
+                device="cuda:{}".format(device_id),
+            )
             for _ in range(block_layer)
         ]
         for _ in range(batch_size)

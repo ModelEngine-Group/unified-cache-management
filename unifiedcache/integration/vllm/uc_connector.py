@@ -23,7 +23,8 @@
 #
 # Adapted from lmcache/lmcache/integration/vllm/vllm_v1_adapter.py
 #
-
+import hashlib
+import pickle
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Generator, List, Optional
 
@@ -34,7 +35,6 @@ from vllm.distributed.kv_transfer.kv_connector.v1.base import (
     KVConnectorMetadata,
     KVConnectorRole,
 )
-from vllm.utils import sha256
 from vllm.v1.core.kv_cache_utils import hash_request_tokens
 from vllm.v1.core.sched.output import SchedulerOutput
 
@@ -184,13 +184,10 @@ class UnifiedCacheConnectorV1(KVConnectorBase_V1):
         # Non-MLA scene: one layer shape is (2, num_blocks, block_size, num_kv_heads, head_size)
         # MLA scene: one layer shape is (num_blocks, block_size, head_size)
         # TODO MLA adapt
-        kv_layer_shape = kv_layer.shape
         # Element size
-        elem_size = kv_layer.storage().element_size()
+        elem_size = kv_layer[0].storage().element_size()
         logger.debug(
-            f"total_tp_size = {self.total_tp_size},\n"
-            f"shape of layer = {kv_layer_shape},\n"
-            f"element size = {elem_size}."
+            f"total_tp_size = {self.total_tp_size},\n" f"element size = {elem_size}."
         )
         # One block size
         k_min_data_block_size = (
@@ -407,7 +404,7 @@ class UnifiedCacheConnectorV1(KVConnectorBase_V1):
             **kwargs: additional arguments for the save operation.
         """
         self.current_layer += 1
-        if self.kv_role == "kv_consumer":
+        if hasattr(self, "kv_role") and self.kv_role == "kv_consumer":
             return
 
         if not self.use_layerwise:
@@ -440,9 +437,9 @@ class UnifiedCacheConnectorV1(KVConnectorBase_V1):
                 f"length of need save vllm_block_ids = {len(vllm_block_ids)},\n"
                 f"length of storage_block_ids = {len(storage_block_ids)},\n"
             )
-            if kv_layer.device.type == "npu":
+            if kv_layer[0].device.type == "npu":
                 torch.npu.current_stream().synchronize()
-            elif kv_layer.device.type == "cuda":
+            elif kv_layer[0].device.type == "cuda":
                 torch.cuda.current_stream().synchronize()
 
             for block_id, offset, tensor in zip(
@@ -469,7 +466,7 @@ class UnifiedCacheConnectorV1(KVConnectorBase_V1):
 
         This prevents overwrites of paged KV buffer before saving done.
         """
-        if self.kv_role == "kv_consumer":
+        if hasattr(self, "kv_role") and self.kv_role == "kv_consumer":
             return
         # request id -> succeed dumped blocks
         success_dumped_blocks: dict[str, list[str]] = {}
@@ -559,8 +556,14 @@ class UnifiedCacheConnectorV1(KVConnectorBase_V1):
             the number of tokens that can be loaded from the
             external KV cache beyond what is already computed.
         """
+
+        def md5(input) -> int:
+            input_bytes = pickle.dumps(input, protocol=pickle.HIGHEST_PROTOCOL)
+            md5_bytes = hashlib.md5(input_bytes).digest()
+            return int.from_bytes(md5_bytes, byteorder="big")
+
         assert num_computed_tokens % self.block_size == 0
-        block_hash_types = hash_request_tokens(sha256, self.block_size, request)
+        block_hash_types = hash_request_tokens(md5, self.block_size, request)
         block_hashes: List[str] = [str(x.hash_value) for x in block_hash_types]
         if not block_hashes:
             logger.debug("Maybe tokens too short to load.")
@@ -679,13 +682,14 @@ class UnifiedCacheConnectorV1(KVConnectorBase_V1):
         save_paras = self.save_paras.pop(request.request_id, None)
         # clear load_tasks for request
         self.load_tasks.pop(request.request_id, None)
-        if request.succeed_dumped_blocks:
+        if hasattr(request, "succeed_dumped_blocks") and request.succeed_dumped_blocks:
             self.connector.commit(request.succeed_dumped_blocks, True)
         if save_paras is not None:
             cancel_blocks = [
                 block
                 for block in save_paras.block_hashes
-                if block not in request.succeed_dumped_blocks
+                if hasattr(request, "succeed_dumped_blocks")
+                and block not in request.succeed_dumped_blocks
             ]
             if cancel_blocks:
                 self.connector.commit(cancel_blocks, False)
