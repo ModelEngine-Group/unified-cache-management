@@ -127,6 +127,7 @@ class UnifiedCacheConnectorV1(KVConnectorBase_V1):
         # dump tasks record request -> block -> list[task]
         self.dump_tasks: dict[str, dict[str, List[Task]]] = {}
         self.load_tasks: dict[str, tuple[Task, Task]] = {}
+        self.layerwise_load_tasks: dict[str, dict[str, tuple[Task, Task]]] = {}
         self.is_mla = self._vllm_config.model_config.is_deepseek_mla
         self.num_layers = vllm_config.model_config.get_num_layers(
             vllm_config.parallel_config
@@ -294,9 +295,7 @@ class UnifiedCacheConnectorV1(KVConnectorBase_V1):
         if len(self.kv_caches) == 0:
             self._init_kv_caches_from_forward_context(forward_context)
 
-        self.layerwise_load_tasks: dict[
-            str, Generator[tuple[Task, Task], None, None]
-        ] = {}
+        self.layerwise_load_tasks.clear()
         self.current_layer = 0
         for request in metadata.requests:
             if request.load_paras is None or not request.load_paras.can_load:
@@ -339,18 +338,22 @@ class UnifiedCacheConnectorV1(KVConnectorBase_V1):
                         )
                         assert self.connector.wait(task) == 0
                 else:
-                    layer_to_tensor[layer_name] = (tensors, offsets)
-
-            if layer_to_tensor:
-                layerwise_load_task = self.generate_layerwise_load_tasks(
-                    fetch_block_hashes, layer_to_tensor
-                )
-                load_task = next(layerwise_load_task)
-                assert (
-                    load_task is not None
-                ), "The first layerwise task should not be None!"
-                self.load_tasks[request.request_id] = load_task
-                self.layerwise_load_tasks[request.request_id] = layerwise_load_task
+                    k_task_id = self.connector.load(
+                        fetch_block_hashes, offsets[:blocks_len], tensors[:blocks_len]
+                    )
+                    v_task_id = None
+                    if not self.is_mla:
+                        v_task_id = self.connector.load(
+                            fetch_block_hashes,
+                            offsets[blocks_len:],
+                            tensors[blocks_len:],
+                        )
+                    if request.request_id not in self.layerwise_load_tasks:
+                        self.layerwise_load_tasks[request.request_id] = {}
+                    self.layerwise_load_tasks[request.request_id][layer_name] = (
+                        k_task_id,
+                        v_task_id,
+                    )
 
     def wait_for_layer_load(self, layer_name: str) -> None:
         """
@@ -371,18 +374,12 @@ class UnifiedCacheConnectorV1(KVConnectorBase_V1):
         assert (
             self.current_layer < self.num_layers
         ), "The current layer should be less than total layers!"
-        for request_id, gene_load_task in self.layerwise_load_tasks.items():
-            k_task, v_task = self.load_tasks[request_id]
+        for request_id, layer_to_task in self.layerwise_load_tasks.items():
+            k_task, v_task = layer_to_task[layer_name]
             assert self.connector.wait(k_task) == 0
-            if v_task:
+            if not self.is_mla:
                 assert self.connector.wait(v_task) == 0
-            if self.current_layer < self.num_layers - 1:
-                self.load_tasks[request_id] = next(gene_load_task)
-                assert (
-                    self.load_tasks[request_id] is not None
-                ), "The task for next layer should not be None!"
-            else:
-                logger.debug(f"Load tasks for {request_id} finished.")
+            logger.debug(f"Load tasks for {request_id} on layer {layer_name} finished.")
 
     def save_kv_layer(
         self,
