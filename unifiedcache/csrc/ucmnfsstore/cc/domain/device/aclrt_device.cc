@@ -28,7 +28,7 @@
 namespace UC {
 
 template <typename Api, typename... Args>
-Status AclrtApi(const char* caller, const char* file, const size_t line, const char* name, Api&& api, Args&&..args)
+Status AclrtApi(const char* caller, const char* file, const size_t line, const char* name, Api&& api, Args&&...args)
 {
     auto ret = api(args...);
     if (ret != ACL_SUCCESS) {
@@ -103,7 +103,7 @@ Status AclrtDevice::AppendCallback(std::function<void(bool)> cb)
 std::shared_ptr<std::byte> AclrtDevice::MakeBuffer(const size_t size)
 {
     std::byte* host = nullptr;
-    auto status = ACLRT_API(aclrtMallocHost, (void**)&host);
+    auto status = ACLRT_API(aclrtMallocHost, (void**)&host, size);
     if (status.Success()) { return std::shared_ptr<std::byte>(host, aclrtFreeHost); }
     return nullptr;
 }
