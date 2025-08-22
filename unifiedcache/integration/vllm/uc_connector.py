@@ -556,6 +556,12 @@ class UnifiedCacheConnectorV1(KVConnectorBase_V1):
             the number of tokens that can be loaded from the
             external KV cache beyond what is already computed.
         """
+        # When the request is preempt req, need to commit succeed dumped blocks
+        # to avoid duplicate invoking create/commit funcs. Only preempt reqs
+        # whose succeed_dumped_blocks is non-empty need this check.
+        if hasattr(request, "succeed_dumped_blocks") and request.succeed_dumped_blocks:
+            self.connector.commit(request.succeed_dumped_blocks, True)
+            request.succeed_dumped_blocks.clear()
 
         def md5(input) -> int:
             input_bytes = pickle.dumps(input, protocol=pickle.HIGHEST_PROTOCOL)
@@ -651,9 +657,6 @@ class UnifiedCacheConnectorV1(KVConnectorBase_V1):
         # When prompt tokens > max_num_batched_tokens, request of running requests may need to save
         cached_request_data = scheduler_output.scheduled_cached_reqs
         for i, req_id in enumerate(cached_request_data.req_ids):
-            if cached_request_data.resumed_from_preemption[i]:
-                continue
-
             save_paras = self.save_paras.get(req_id, None)
             if save_paras is None:
                 continue
