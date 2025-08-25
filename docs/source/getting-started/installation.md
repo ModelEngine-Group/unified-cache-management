@@ -34,7 +34,7 @@ docker run \
 Refer to [Set up using docker](https://docs.vllm.ai/en/latest/getting_started/installation/gpu.html#set-up-using-docker) for more information to run your own vLLM container. After installation, please apply patch to ensure uc_connector can be used:
 ```bash
 cd /vllm-workspace/vllm
-git apply /vllm-workspace/unified-cache-management/unifiedcache/patch/vllm-adapt.patch
+git apply /vllm-workspace/unified-cache-management/unifiedcache/patch/0.9.2/vllm-adapt.patch
 ``` 
 Refer to this [issue](https://github.com/vllm-project/vllm/issues/21702) to see details of this patch's changes.
 

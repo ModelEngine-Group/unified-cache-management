@@ -651,13 +651,37 @@ class UnifiedCacheConnectorV1(KVConnectorBase_V1):
         # clear all load_paras when build meta for new reqs done
         self.load_paras.clear()
 
-        # When prompt tokens > max_num_batched_tokens, request of running requests may need to save
         cached_request_data = scheduler_output.scheduled_cached_reqs
-        for i, req_id in enumerate(cached_request_data.req_ids):
-            save_paras = self.save_paras.get(req_id, None)
+
+        # Adapted for vllm 0.9.1, 0.9.2 and later versions
+        def get_requests():
+            # 0.9.1
+            if isinstance(cached_request_data, list):
+                return [
+                    (
+                        request_data.req_id,
+                        request_data.new_block_ids,
+                    )
+                    for request_data in cached_request_data
+                ]
+            # >= 0.9.2
+            else:
+                return [
+                    (
+                        req_id,
+                        cached_request_data.new_block_ids[i],
+                    )
+                    for i, req_id in enumerate(cached_request_data.req_ids)
+                ]
+
+        # When prompt tokens > max_num_batched_tokens, request of running requests may need to save
+        for req_id, new_block_ids in get_requests():
+            save_paras = self.save_paras.get(req_id)
             if save_paras is None:
                 continue
+
             save_paras.num_blocks_saved += save_paras.num_blocks_to_save
+
             if save_paras.num_blocks_need_save > save_paras.num_blocks_saved:
                 logger.debug(f"Running request {req_id} has blocks to save")
                 save_paras.start_save_position = 0
@@ -667,10 +691,11 @@ class UnifiedCacheConnectorV1(KVConnectorBase_V1):
                 save_paras.num_blocks_to_save = new_scheduled_blocks
                 meta.add_request(
                     req_id,
-                    vllm_block_ids=cached_request_data.new_block_ids[i][0],
+                    vllm_block_ids=new_block_ids[0],
                     load_paras=None,
                     save_paras=save_paras,
                 )
+
         return meta
 
     def request_finished(
