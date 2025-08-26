@@ -29,10 +29,11 @@
 #include "logger/logger.h"
 #include "thread_pool/thread_pool.h"
 
-#define INVALID_32 0xFFFFFFFF
-#define INVALID_64 0xFFFFFFFFFFFFFFFF
-#define UCM_SHM_FILENAME "/ucm_lru_cache"
-#define UCM_SHM_MAGIC 0x1122334455667788
+#define UCM_LRU_CACHE_INVALID_32 0xFFFFFFFF
+#define UCM_LRU_CACHE_INVALID_64 0xFFFFFFFFFFFFFFFF
+#define UCM_LRU_CACHE_SHM_FILENAME "/ucm_lru_cache"
+#define UCM_LRU_CACHE_INDEX_QUEUE_SHM_FILENAME "/ucm_lru_cache_index_queue"
+#define UCM_LRU_CACHE_SHM_MAGIC 0x1122334455667788
 
 namespace UCM {
 
@@ -40,7 +41,7 @@ struct alignas(1) Index {
     uint32_t idx;
     uint32_t version;
 
-    Index() : idx{INVALID_32}, version{0} {}
+    Index() : idx{UCM_LRU_CACHE_INVALID_32}, version{0} {}
     Index(uint32_t idx, uint32_t version) : idx{idx}, version{version} {}
 };
 static_assert(sizeof(Index) == 8);
@@ -49,7 +50,7 @@ struct alignas(1) Key {
     uint64_t l;
     uint64_t r;
 
-    Key() : l{INVALID_64}, r{INVALID_64} {}
+    Key() : l{UCM_LRU_CACHE_INVALID_64}, r{UCM_LRU_CACHE_INVALID_64} {}
     Key(std::string_view key)
     {
         std::memcpy(&(this->l), key.data(), 8);
@@ -98,7 +99,7 @@ struct alignas(1) Info {
         this->state.store(State::INACTIVE, std::memory_order_release);
         this->ref_cnt.store(RefCnt{}, std::memory_order_release);
         this->pinning_idx.store(pinning_idx, std::memory_order_release);
-        this->access_time.store(INVALID_64, std::memory_order_release);
+        this->access_time.store(UCM_LRU_CACHE_INVALID_64, std::memory_order_release);
     }
 };
 static_assert(sizeof(Info) == 64);
@@ -123,7 +124,7 @@ struct alignas(1) Length {
 };
 static_assert(sizeof(Length) == 8);
 
-struct alignas(1) Header {
+struct alignas(1) LRUCacheHeader {
     std::atomic<uint64_t> magic;
     std::atomic<uint64_t> cap;
     std::atomic<Length> len;
@@ -146,7 +147,7 @@ struct alignas(1) Header {
             Cache* cache = this->At(i);
             cache->Initialize(i);
         }
-        this->magic.store(UCM_SHM_MAGIC, std::memory_order_release);
+        this->magic.store(UCM_LRU_CACHE_SHM_MAGIC, std::memory_order_release);
     }
 
     Cache* At(uint64_t i)
@@ -241,16 +242,18 @@ struct alignas(1) Header {
         } while (!this->len.compare_exchange_strong(old_len, new_len, std::memory_order_acq_rel));
     }
 };
-static_assert(sizeof(Header) == 4096);
+static_assert(sizeof(LRUCacheHeader) == 4096);
 
-LRUCache::LRUCache() : _h{nullptr}, _f{File::Make(UCM_SHM_FILENAME)} {}
+LRUCache::LRUCache()
+    : _h{nullptr}, _f{File::Make(UCM_LRU_CACHE_SHM_FILENAME)}, _q{UCM_LRU_CACHE_INDEX_QUEUE_SHM_FILENAME}
+{}
 
 LRUCache::~LRUCache()
 {
     if (this->_h != nullptr) {
         File::MUnMap(
             reinterpret_cast<void*>(this->_h),
-            static_cast<uint64_t>(sizeof(Header)) +
+            static_cast<uint64_t>(sizeof(LRUCacheHeader)) +
             this->_h->cap.load(std::memory_order_relaxed) *
             (static_cast<uint64_t>(sizeof(Info)) + this->_h->cache_size.load(std::memory_order_relaxed))
         );
@@ -280,7 +283,7 @@ Status LRUCache::MappingCheck(uint64_t shm_cap)
         return status;
     }
 
-    while (this->_h->magic.load(std::memory_order_acquire) != UCM_SHM_MAGIC) {
+    while (this->_h->magic.load(std::memory_order_acquire) != UCM_LRU_CACHE_SHM_MAGIC) {
         std::this_thread::sleep_for(std::chrono::milliseconds(5));
     }
 
@@ -299,9 +302,14 @@ Status LRUCache::MappingInitialize(uint64_t shm_cap, uint64_t cache_num, uint64_
 
 Status LRUCache::Initialize(uint64_t cache_num, uint64_t cache_size)
 {
-    uint64_t shm_cap = sizeof(Header) + cache_num * (sizeof(Info) + cache_size);
+    auto status = this->_q.Initialize(cache_num);
+    if (status != Status::OK) {
+        return status;
+    }
 
-    auto status = this->_f->ShmOpen(OpenFlag::RDWR | OpenFlag::CREAT | OpenFlag::EXCL);
+    uint64_t shm_cap = sizeof(LRUCacheHeader) + cache_num * (sizeof(Info) + cache_size);
+
+    status = this->_f->ShmOpen(OpenFlag::RDWR | OpenFlag::CREAT | OpenFlag::EXCL);
     if (status != Status::OK) {
         if (status == Status::EXIST) {
             return this->MappingCheck(shm_cap);
@@ -328,19 +336,21 @@ Status LRUCache::Insert(std::string_view key, void** val)
         return Status::BUSY;
     }
 
-    for (uint64_t i = 0; i < this->_h->cap.load(std::memory_order_relaxed); ++i) {
-        auto cache = this->_h->At(i);
-
-        auto expected = State::INACTIVE;
-        if(!cache->info.state.compare_exchange_strong(expected, State::WRITING, std::memory_order_acq_rel)) {
-            continue;
-        }
-        this->_h->Push(cache);
-        cache->info.key.store(Key{key}, std::memory_order_release);
-        *val = cache->data;
-
-        return Status::OK;
+    uint64_t pinning_idx;
+    auto status = this->_q.Pop(pinning_idx);
+    if (status != Status::OK) {
+        return status;
     }
+
+    auto cache = this->_h->At(pinning_idx);
+
+    auto expected = State::INACTIVE;
+    if(!cache->info.state.compare_exchange_strong(expected, State::WRITING, std::memory_order_acq_rel)) {
+        return Status::BUSY;
+    }
+    this->_h->Push(cache);
+    cache->info.key.store(Key{key}, std::memory_order_release);
+    *val = cache->data;
 
     return Status::BUSY;
 }
@@ -453,6 +463,7 @@ void LRUCache::Remove()
     }
     tail_cache->info.state.store(State::INACTIVE, std::memory_order_release);
     this->_h->Pop();
+    this->_q.Push(tail_cache->info.pinning_idx.load(std::memory_order_relaxed));
 
     expected = true;
     while (!this->_h->removing.compare_exchange_strong(expected, false, std::memory_order_acq_rel)) {}

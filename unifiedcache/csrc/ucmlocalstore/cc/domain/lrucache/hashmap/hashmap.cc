@@ -21,40 +21,33 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  * */
-#ifndef UCM_LOCAL_STORE_LRU_CACHE_H
-#define UCM_LOCAL_STORE_LRU_CACHE_H
+#include "hashmap.h"
+#include <pthread.h>
 
-#include <cstdint>
-#include <memory>
-#include <string_view>
-#include "status/status.h"
-#include "file/file.h"
-#include "index_queue/index_queue.h"
+#define HASHMAP_SHM_CAPCITY  11273
+#define HASHMAP_SHM_FILENAME "/ucm_hashmap"
 
 namespace UCM {
 
-struct LRUCacheHeader;
+struct Key {
+    uint64_t l;
+    uint64_t r;
+};
 
-class LRUCache {
-public:
-    LRUCache();
-    ~LRUCache();
+struct Node {
+    Key key;
+    uint64_t val;
+    uint32_t prev;
+    uint32_t next;
+};
 
-    Status Initialize(uint64_t cache_num, uint64_t cache_size);
-    Status Insert(std::string_view key, void** val);
-    Status Find(std::string_view key, void** val);
-    void Done(void* val);
+struct Bucket {
+    pthread_rwlock_t rwlock;
+    Node n;
+};
 
-private:
-    Status MappingCheck(uint64_t shm_cap);
-    Status MappingInitialize(uint64_t shm_cap, uint64_t cache_num, uint64_t cache_size);
-    void Remove();
+struct HashMapHeader {
 
-    LRUCacheHeader* _h;
-    std::unique_ptr<IFile> _f;
-    IndexQueue _q;
 };
 
 } // namespace UCM
-
-#endif // UCM_LOCAL_STORE_LRU_CACHE_H

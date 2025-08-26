@@ -21,40 +21,36 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  * */
-#ifndef UCM_LOCAL_STORE_LRU_CACHE_H
-#define UCM_LOCAL_STORE_LRU_CACHE_H
+#ifndef UCM_LOCAL_STORE_INDEX_QUEUE_H
+#define UCM_LOCAL_STORE_INDEX_QUEUE_H
 
-#include <cstdint>
-#include <memory>
 #include <string_view>
+#include <string>
 #include "status/status.h"
 #include "file/file.h"
-#include "index_queue/index_queue.h"
 
 namespace UCM {
 
-struct LRUCacheHeader;
+struct IndexQueueHeader;
 
-class LRUCache {
+class IndexQueue {
 public:
-    LRUCache();
-    ~LRUCache();
+    IndexQueue(std::string_view filename);
+    ~IndexQueue();
 
-    Status Initialize(uint64_t cache_num, uint64_t cache_size);
-    Status Insert(std::string_view key, void** val);
-    Status Find(std::string_view key, void** val);
-    void Done(void* val);
+    Status Initialize(const uint64_t num);
+    Status Push(const uint64_t pinning_idx);
+    Status Pop(uint64_t& pinning_idx);
 
 private:
-    Status MappingCheck(uint64_t shm_cap);
-    Status MappingInitialize(uint64_t shm_cap, uint64_t cache_num, uint64_t cache_size);
-    void Remove();
+    Status MappingCheck(const uint64_t shm_cap);
+    Status MappingInitialize(const uint64_t shm_cap, const uint64_t num);
 
-    LRUCacheHeader* _h;
+private:
+    IndexQueueHeader* _h;
     std::unique_ptr<IFile> _f;
-    IndexQueue _q;
 };
 
 } // namespace UCM
 
-#endif // UCM_LOCAL_STORE_LRU_CACHE_H
+#endif // UCM_LOCAL_STORE_INDEX_QUEUE_H

@@ -21,40 +21,31 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  * */
-#ifndef UCM_LOCAL_STORE_LRU_CACHE_H
-#define UCM_LOCAL_STORE_LRU_CACHE_H
+#ifndef UCM_LOCAL_STORE_HASHMAP_H
+#define UCM_LOCAL_STORE_HASHMAP_H
 
 #include <cstdint>
 #include <memory>
 #include <string_view>
 #include "status/status.h"
 #include "file/file.h"
-#include "index_queue/index_queue.h"
 
 namespace UCM {
 
-struct LRUCacheHeader;
+struct HashMapHeader;
 
-class LRUCache {
+class HashMap {
 public:
-    LRUCache();
-    ~LRUCache();
+    HashMap();
+    ~HashMap();
 
-    Status Initialize(uint64_t cache_num, uint64_t cache_size);
-    Status Insert(std::string_view key, void** val);
-    Status Find(std::string_view key, void** val);
-    void Done(void* val);
+    Status Initialize();
 
 private:
-    Status MappingCheck(uint64_t shm_cap);
-    Status MappingInitialize(uint64_t shm_cap, uint64_t cache_num, uint64_t cache_size);
-    void Remove();
-
-    LRUCacheHeader* _h;
+    HashMapHeader* _h;
     std::unique_ptr<IFile> _f;
-    IndexQueue _q;
 };
 
 } // namespace UCM
 
-#endif // UCM_LOCAL_STORE_LRU_CACHE_H
+#endif // UCM_LOCAL_STORE_HASHMAP_H
