@@ -24,7 +24,6 @@
 #ifndef UCM_LOCAL_STORE_LRU_CACHE_H
 #define UCM_LOCAL_STORE_LRU_CACHE_H
 
-#include <cstdint>
 #include <memory>
 #include <string_view>
 #include "status/status.h"

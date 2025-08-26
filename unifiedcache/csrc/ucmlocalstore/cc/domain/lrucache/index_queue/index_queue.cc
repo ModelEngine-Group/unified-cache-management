@@ -23,8 +23,9 @@
  * */
 #include "index_queue.h"
 #include <atomic>
+#include <thread>
+#include <sys/mman.h>
 
-#define UCM_INDEX_QUEUE_INVALID_64 0xFFFFFFFFFFFFFFFF
 #define UCM_INDEX_QUEUE_SHM_MAGIC 0x1122334455667788
 
 namespace UCM {
@@ -34,7 +35,7 @@ struct Index {
     uint32_t version;
 
     Index() : idx{0}, version{0} {}
-    Index(uint32_t idx, uint32_t version) : idx{idx}, version{version} {}
+    Index(uint64_t idx, uint32_t version) : idx{static_cast<uint32_t>(idx)}, version{version} {}
 };
 static_assert(sizeof(Index) == 8);
 
@@ -43,11 +44,10 @@ struct Length {
     uint32_t version;
 
     Length() : val{0}, version{0} {}
-    Length(uint32_t val, uint32_t version) : val{val}, version{version} {}
     Length(uint64_t val, uint32_t version) : val{static_cast<uint32_t>(val)}, version{version} {}
 
     bool operator==(const uint64_t val) {
-        return static_cast<uint64_t>(this->val) == val;
+        return (static_cast<uint64_t>(this->val) == val);
     }
 };
 static_assert(sizeof(Index) == 8);
@@ -63,9 +63,9 @@ struct IndexQueueHeader {
     void Initialize(uint64_t cap)
     {
         this->cap.store(cap, std::memory_order_release);
-        this->len.store(Length{}, std::memory_order_release);
-        this->head.store(Index{}, std::memory_order_release);
-        this->tail.store(Index{}, std::memory_order_release);
+        this->len.store(Length{cap, 0}, std::memory_order_release);
+        this->head.store(Index{0, 0}, std::memory_order_release);
+        this->tail.store(Index{cap - 1, 0}, std::memory_order_release);
         for (uint64_t i = 0; i < cap; ++i) {
            pinning_indexes[i].store(i, std::memory_order_release);
         }
@@ -145,7 +145,7 @@ Status IndexQueue::Initialize(const uint64_t num)
     auto status = this->_f->ShmOpen(OpenFlag::RDWR | OpenFlag::CREAT | OpenFlag::EXCL);
     if (status != Status::OK) {
         if (status == Status::EXIST) {
-            return this->MappingCheck(shm_cap, num);
+            return this->MappingCheck(shm_cap);
         } else {
             return status;
         }
