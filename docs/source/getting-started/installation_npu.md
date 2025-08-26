@@ -42,9 +42,9 @@ docker run --rm \
 Codes of vLLM and vLLM Ascend are placed in /vllm-workspace, you can refer to [vLLM-Ascend Installation](https://vllm-ascend.readthedocs.io/en/latest/installation.html) for more information. After installation, please apply patches to ensure uc_connector can be used:
 ```bash
 cd /vllm-workspace/vllm
-git apply /vllm-workspace/unified-cache-management/unifiedcache/patch/vllm-adapt.patch
+git apply /vllm-workspace/unified-cache-management/unifiedcache/patch/0.9.2/vllm-adapt.patch
 cd /vllm-workspace/vllm-ascend
-git apply /vllm-workspace/unified-cache-management/unifiedcache/patch/vllm-ascend-adapt.patch
+git apply /vllm-workspace/unified-cache-management/unifiedcache/patch/0.9.2/vllm-ascend-adapt.patch
 ```
 Refer to these issues [vllm-issue](https://github.com/vllm-project/vllm/issues/21702) and [vllm-ascend-issue](https://github.com/vllm-project/vllm-ascend/issues/2057) to see details of patches' changes.
 
