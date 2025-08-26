@@ -106,6 +106,9 @@ class TestUCConnector(unittest.TestCase):
             ucconnector.load_tasks: dict[str, tuple[Task, Task]] = {}
             ucconnector.total_tp_size = 2
             ucconnector._connector_metadata = metadata
+            ucconnector.layerwise_load_tasks: dict[
+                str, dict[str, tuple[Task, Task]]
+            ] = {}
         return ucconnector
 
     def test_get_num_new_matched_tokens_hit(self):
@@ -293,7 +296,7 @@ class TestUCConnector(unittest.TestCase):
         ucconnector = self.init_uc(mock_connector, metadata=metadata)
         forward_context = Mock()
         ucconnector.start_load_kv(forward_context)
-        assert mock_connector.load.call_count == 2
+        assert mock_connector.load.call_count == 2 * self.num_layers
 
     def test_generate_layerwise_load_tasks_success(self):
         # init implement
