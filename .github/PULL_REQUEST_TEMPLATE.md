@@ -4,7 +4,7 @@ BEFORE SUBMITTING, PLEASE READ OUR OFFICIAL WEBSITE.
 
 -->
 
-# Prupose
+# Purpose
 
 What this PR does / why we need it?
 <!--
