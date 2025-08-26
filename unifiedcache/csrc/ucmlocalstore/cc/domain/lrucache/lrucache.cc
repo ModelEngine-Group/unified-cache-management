@@ -51,7 +51,7 @@ struct Key {
     Key() : l{UCM_LRU_CACHE_INVALID_64}, r{UCM_LRU_CACHE_INVALID_64} {}
     Key(std::string_view key)
     {
-        uint64_t* p = reinterpret_cast<uint64_t*>(key.data());
+        const uint64_t* p = reinterpret_cast<const uint64_t*>(key.data());
         this->l = p[0];
         this->r = p[1];
     }
