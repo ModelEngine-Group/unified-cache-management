@@ -420,6 +420,7 @@ void LRUCache::Remove()
     }
     tail_cache->info.state.store(State::INACTIVE, std::memory_order_release);
     this->_h->Pop();
+
     this->_q.Push(tail_cache->info.pinning_idx.load(std::memory_order_relaxed));
 
     expected = true;
