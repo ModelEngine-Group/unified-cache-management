@@ -192,7 +192,7 @@ struct HashMapHeader {
                 }
                 this->nodes[pinning_idx].Initialize();
                 pthread_mutex_unlock(&(this->buckets[i].mtx));
-                return;
+                return pinning_idx;
             }
             prev_idx = pinning_idx;
             pinning_idx = this->nodes[pinning_idx].next;
