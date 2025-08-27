@@ -24,11 +24,11 @@
 #ifndef UCM_LOCAL_STORE_HASHMAP_H
 #define UCM_LOCAL_STORE_HASHMAP_H
 
-#include <cstdint>
 #include <memory>
 #include <string_view>
 #include "status/status.h"
 #include "file/file.h"
+#include "../index_queue/index_queue.h"
 
 namespace UCM {
 
@@ -36,14 +36,22 @@ struct HashMapHeader;
 
 class HashMap {
 public:
-    HashMap();
+    HashMap(std::string_view filename);
     ~HashMap();
 
-    Status Initialize();
+    Status Initialize(const uint64_t num);
+    Status Insert(std::string_view key, uint64_t val);
+    Status Find(std::string_view key, uint64_t& val);
+    Status Remove(std::string_view key);
+
+private:
+    Status MappingCheck(const uint64_t shm_cap);
+    Status MappingInitialize(const uint64_t shm_cap, const uint64_t num);
 
 private:
     HashMapHeader* _h;
     std::unique_ptr<IFile> _f;
+    IndexQueue _q;
 };
 
 } // namespace UCM

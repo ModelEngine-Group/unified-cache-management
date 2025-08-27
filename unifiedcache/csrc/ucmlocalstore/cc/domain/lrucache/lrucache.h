@@ -28,7 +28,8 @@
 #include <string_view>
 #include "status/status.h"
 #include "file/file.h"
-#include "index_queue/index_queue.h"
+#include "./index_queue/index_queue.h"
+#include "./hashmap/hashmap.h"
 
 namespace UCM {
 
@@ -52,6 +53,7 @@ private:
     LRUCacheHeader* _h;
     std::unique_ptr<IFile> _f;
     IndexQueue _q;
+    HashMap _m;
 };
 
 } // namespace UCM

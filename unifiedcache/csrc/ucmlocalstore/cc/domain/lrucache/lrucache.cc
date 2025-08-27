@@ -56,6 +56,13 @@ struct Key {
         this->r = p[1];
     }
 
+    std::string String() const {
+        char buf[16];
+        std::memcpy(buf, &l, 8);
+        std::memcpy(buf + 8, &r, 8);
+        return std::string(buf, 16);
+    }
+
     bool operator==(const Key& other)
     {
         return (this->l == other.l && this->r == other.r);
@@ -270,6 +277,11 @@ Status LRUCache::Initialize(uint64_t cache_num, uint64_t cache_size)
         return status;
     }
 
+    status = this->_m.Initialize(cache_num);
+    if (status != Status::OK) {
+        return status;
+    }
+
     uint64_t shm_cap = sizeof(LRUCacheHeader) + cache_num * (sizeof(Info) + cache_size);
 
     status = this->_f->ShmOpen(OpenFlag::RDWR | OpenFlag::CREAT | OpenFlag::EXCL);
@@ -307,6 +319,7 @@ Status LRUCache::Insert(std::string_view key, void** val)
     auto cache = this->_h->At(pinning_idx);
     cache->info.state.store(State::WRITING, std::memory_order_release);
     this->_h->Push(cache);
+    this->_m->Insert(key, pinning_idx);
     cache->info.key.store(Key{key}, std::memory_order_release);
     *val = cache->data;
 
@@ -322,37 +335,41 @@ Status LRUCache::Find(std::string_view key, void** val)
         return Status::EMPTY;
     }
 
-    for (uint64_t i = 0; i < this->_h->cap.load(std::memory_order_relaxed); ++i) {
-        auto cache = this->_h->At(i);
+    uint64_t pinning_idx;
+    auto status = this->_m->Find(key, pinning_idx);
+    if (status != Status::OK) {
+        return status;
+    }
 
-        if (cache->info.key.load(std::memory_order_acquire) == Key{key}) {
-            while (true) {
-                auto state = cache->info.state.load(std::memory_order_acquire);
+    auto cache = this->_h->At(pinning_idx);
 
-                if (state == State::WRITING || state == State::EVICTING) {
-                    return Status::BUSY;
-                }
+    if (cache->info.key.load(std::memory_order_acquire) == Key{key}) {
+        while (true) {
+            auto state = cache->info.state.load(std::memory_order_acquire);
 
-                if (state == State::ACTIVE) {
-                    if(!cache->info.state.compare_exchange_strong(state, State::READING, std::memory_order_acq_rel)) {
-                        continue;
-                    }
-                }
-
-                auto old_ref_cnt = RefCnt{};
-                auto new_ref_cnt = RefCnt{};
-                do {
-                    old_ref_cnt = cache->info.ref_cnt.load(std::memory_order_acquire);
-                    new_ref_cnt = RefCnt{old_ref_cnt.val + 1, old_ref_cnt.version + 1};
-                } while (!cache->info.ref_cnt.compare_exchange_strong(old_ref_cnt, new_ref_cnt, std::memory_order_acq_rel));
-                if (old_ref_cnt == 0) {
-                    cache->info.state.store(State::READING, std::memory_order_release);
-                }
-
-                *val = cache->data;
-
-                return Status::OK;
+            if (state == State::WRITING || state == State::EVICTING) {
+                return Status::BUSY;
             }
+
+            if (state == State::ACTIVE) {
+                if(!cache->info.state.compare_exchange_strong(state, State::READING, std::memory_order_acq_rel)) {
+                    continue;
+                }
+            }
+
+            auto old_ref_cnt = RefCnt{};
+            auto new_ref_cnt = RefCnt{};
+            do {
+                old_ref_cnt = cache->info.ref_cnt.load(std::memory_order_acquire);
+                new_ref_cnt = RefCnt{old_ref_cnt.val + 1, old_ref_cnt.version + 1};
+            } while (!cache->info.ref_cnt.compare_exchange_strong(old_ref_cnt, new_ref_cnt, std::memory_order_acq_rel));
+            if (old_ref_cnt == 0) {
+                cache->info.state.store(State::READING, std::memory_order_release);
+            }
+
+            *val = cache->data;
+
+            return Status::OK;
         }
     }
 
@@ -422,6 +439,10 @@ void LRUCache::Remove()
     this->_h->Pop();
 
     this->_q.Push(tail_cache->info.pinning_idx.load(std::memory_order_relaxed));
+    auto status = this->_m.Remove(tail_cache->info.key.load(std::memory_order_acquire).String());
+    if (status != Status::OK) {
+        UCM_ERROR("Failed to remove from hashmap, status = {}.", static_cast<uint32_t>(status));
+    }
 
     expected = true;
     while (!this->_h->removing.compare_exchange_strong(expected, false, std::memory_order_acq_rel)) {}

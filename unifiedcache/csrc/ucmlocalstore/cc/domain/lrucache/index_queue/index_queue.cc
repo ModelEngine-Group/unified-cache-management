@@ -23,7 +23,6 @@
  * */
 #include "index_queue.h"
 #include <atomic>
-#include <thread>
 #include <sys/mman.h>
 
 #define UCM_INDEX_QUEUE_SHM_MAGIC 0x1122334455667788
