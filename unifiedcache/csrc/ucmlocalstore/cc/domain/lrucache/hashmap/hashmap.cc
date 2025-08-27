@@ -23,6 +23,7 @@
  * */
 #include "hashmap.h"
 #include <atomic>
+#include <thread>
 #include <sys/mman.h>
 #include <pthread.h>
 
@@ -69,7 +70,7 @@ struct Bucket {
     pthread_mutex_t mtx;
     uint64_t head;
 
-    Initialize()
+    void Initialize()
     {
         pthread_mutexattr_t attr;
         pthread_mutexattr_init(&attr);
@@ -105,7 +106,7 @@ struct HashMapHeader {
     {
         this->cap.store(cap, std::memory_order_release);
         this->len.store(Length{}, std::memory_order_release);
-        for (uint64_t i = 0; i < UCM_HASHMAP_SHM_CAPCITY; ++i) {
+        for (uint64_t i = 0; i < UCM_HASHMAP_SHM_PRIME; ++i) {
             this->buckets[i].Initialize();
         }
         for (uint64_t i = 0; i < cap; ++i) {
@@ -173,7 +174,7 @@ struct HashMapHeader {
         return false;
     }
 
-    void Remove(std::string_view key)
+    uint64_t Remove(std::string_view key)
     {
         uint64_t i = this->Hash(key);
         auto target = Key{key};
@@ -196,8 +197,9 @@ struct HashMapHeader {
             prev_idx = pinning_idx;
             pinning_idx = this->nodes[pinning_idx].next;
         }
-
         pthread_mutex_unlock(&(this->buckets[i].mtx));
+
+        return pinning_idx;
     }
 };
 
@@ -285,7 +287,12 @@ Status HashMap::Remove(std::string_view key)
         return Status::EMPTY;
     }
 
-    this->_h->Remove(key);
+    auto pinning_idx = this->_h->Remove(key);
+
+    auto status = this->_q.Push(pinning_idx);
+    if (status != Status::OK) {
+        return status;
+    }
 
     return Status::OK;
 }

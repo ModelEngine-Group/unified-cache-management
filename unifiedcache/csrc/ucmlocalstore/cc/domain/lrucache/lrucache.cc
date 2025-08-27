@@ -31,6 +31,7 @@
 #define UCM_LRU_CACHE_INVALID_64 0xFFFFFFFFFFFFFFFF
 #define UCM_LRU_CACHE_SHM_FILENAME "/ucm_lru_cache"
 #define UCM_LRU_CACHE_INDEX_QUEUE_SHM_FILENAME "/ucm_lru_cache_index_queue"
+#define UCM_LRU_CACHE_HASHMAP_SHM_FILENAME "/ucm_lru_cache_hashmap"
 #define UCM_LRU_CACHE_SHM_MAGIC 0x1122334455667788
 
 namespace UCM {
@@ -255,7 +256,8 @@ struct LRUCacheHeader {
 static_assert(sizeof(LRUCacheHeader) == 4096);
 
 LRUCache::LRUCache()
-    : _h{nullptr}, _f{File::Make(UCM_LRU_CACHE_SHM_FILENAME)}, _q{UCM_LRU_CACHE_INDEX_QUEUE_SHM_FILENAME}
+    : _h{nullptr}, _f{File::Make(UCM_LRU_CACHE_SHM_FILENAME)},
+      _q{UCM_LRU_CACHE_INDEX_QUEUE_SHM_FILENAME}, _m{UCM_LRU_CACHE_HASHMAP_SHM_FILENAME}
 {}
 
 LRUCache::~LRUCache()
@@ -319,7 +321,7 @@ Status LRUCache::Insert(std::string_view key, void** val)
     auto cache = this->_h->At(pinning_idx);
     cache->info.state.store(State::WRITING, std::memory_order_release);
     this->_h->Push(cache);
-    this->_m->Insert(key, pinning_idx);
+    this->_m.Insert(key, pinning_idx);
     cache->info.key.store(Key{key}, std::memory_order_release);
     *val = cache->data;
 
@@ -336,7 +338,7 @@ Status LRUCache::Find(std::string_view key, void** val)
     }
 
     uint64_t pinning_idx;
-    auto status = this->_m->Find(key, pinning_idx);
+    auto status = this->_m.Find(key, pinning_idx);
     if (status != Status::OK) {
         return status;
     }
