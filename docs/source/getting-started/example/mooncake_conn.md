@@ -4,9 +4,20 @@ This document provides a usage example and configuration guide for the **Mooncak
 
 ## Performance
 
+| tokens | mooncake-first | mooncake-second  | default                 |
+| ------ | ------------------ | ------------------ | ------------------ |
+| 2k     | 1.9231491860002279 | 0.8265988459810615 | 0.5419427898712457 |
+| 4k     | 3.9460434830747544 | 1.5273493870627135 | 0.991630249004811  |
+| 8k     | 7.577957597002387  | 2.7632693520281464 | 2.0716467570047827 |
+| 16k    | 16.823639799049126 | 5.515289016952738  | 4.742832682048902  |
+| 32k    | 81.98759594326839  | 14.217441103421152 | 12.310140203218907 |
 
-
-
+Use mooncake fig && default:
+<p align="center">
+  <img alt="UCM" src="../../images/mooncake_performance.png" width="40%">
+  <span style="display:inline-block; width:10%;"></span>
+  <img alt="UCM" src="../../images/mooncake_default_performance.png" width="40%">
+</p>
 
 ## Features
 
@@ -23,6 +34,8 @@ The Monncake connector supports the following functionalities:
 
 1. Follow the [Mooncake official guide](https://github.com/kvcache-ai/Mooncake/blob/v0.3.4/doc/en/build.md) to build Mooncake.
 
+> **[Warning]**: Currently, this connector only supports Mooncake v0.3.4, and the updated version is being adapted.
+
 2. Start Mooncake Store Service
 
     Please change the IP addresses and ports in the following guide according to your env.
@@ -30,7 +43,7 @@ The Monncake connector supports the following functionalities:
 ```bash
 # Unset HTTP proxies
 unset http_proxy https_proxy no_proxy HTTP_PROXY HTTPS_PROXY NO_PROXY
-# Navigate to the metadata server directory
+# Navigate to the metadata server directory, http server for example.
 cd $MOONCAKE_ROOT_DIR/mooncake-transfer-engine/example/http-metadata-server
 # Start Metadata Service
 go run . --addr=0.0.0.0:23790
