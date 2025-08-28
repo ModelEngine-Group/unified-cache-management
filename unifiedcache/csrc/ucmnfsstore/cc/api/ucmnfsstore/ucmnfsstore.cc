@@ -40,6 +40,7 @@ void ShowSetupParam(const SetupParam& param)
     UC_INFO("Set UC::StreamNumber to {}.", param.transferStreamNumber);
     UC_INFO("Set UC::IOSize to {}.", param.transferIoSize);
     UC_INFO("Set UC::BufferNumber to {}.", param.transferBufferNumber);
+    UC_INFO("Set UC::TimeoutMs to {}.", param.transferTimeoutMs);
 }
 
 int32_t Setup(const SetupParam& param)
@@ -53,7 +54,7 @@ int32_t Setup(const SetupParam& param)
     if (param.transferEnable) {
         auto taskMgr = Singleton<TsfTaskManager>::Instance();
         status = taskMgr->Setup(param.transferDeviceId, param.transferStreamNumber, param.transferIoSize,
-                                param.transferBufferNumber, spaceMgr->GetSpaceLayout());
+                                param.transferBufferNumber, param.transferTimeoutMs, spaceMgr->GetSpaceLayout());
         if (status.Failure()) {
             UC_ERROR("Failed({}) to setup TsfTaskManager.", status);
             return status.Underlying();

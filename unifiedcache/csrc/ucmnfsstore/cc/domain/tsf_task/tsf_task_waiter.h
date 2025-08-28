@@ -36,7 +36,6 @@ public:
         : Latch{number}, _id{id}, _size{size}, _number{number}, _brief{brief}
     {
     }
-
     void Done()
     {
         if (Latch::Done() == 0) {
@@ -45,6 +44,29 @@ public:
                     this->_number, this->_size, elapsed, this->_size / elapsed / (1ULL << 30));
             this->Notify();
         }
+    }
+    using Latch::Wait;
+    bool Wait(const size_t timeoutMs)
+    {
+        if (timeoutMs == 0) {
+            this->Wait();
+            return true;
+        }
+        auto finish = false;
+        {
+            std::unique_lock<std::mutex> lk(this->_mutex);
+            if (this->_counter == 0) { return true; }
+            auto elapsed = (size_t)this->_sw.elapsed_ms().count();
+            if (elapsed < timeoutMs) {
+                finish = this->_cv.wait_for(lk, std::chrono::milliseconds(timeoutMs - elapsed),
+                                            [this] { return this->_counter == 0; });
+            }
+        }
+        if (!finish) {
+            UC_WARN("Task({},{},{},{}) timeout, elapsed={:.06f}s.", this->_id, this->_brief, this->_number, this->_size,
+                    this->_sw.elapsed().count());
+        }
+        return finish;
     }
 
 private:

@@ -28,7 +28,7 @@
 namespace UC {
 
 template <typename Api, typename... Args>
-Status AclrtApi(const char* caller, const char* file, const size_t line, const char* name, Api&& api, Args&&...args)
+Status AclrtApi(const char* caller, const char* file, const size_t line, const char* name, Api&& api, Args&&... args)
 {
     auto ret = api(args...);
     if (ret != ACL_SUCCESS) {
@@ -43,15 +43,15 @@ AclrtDevice::~AclrtDevice()
 {
     if (this->_cbThread.joinable()) {
         auto tid = this->_cbThread.native_handle();
-        (void)ACLRT_API(aclrtUnSubscribeReport, tid, this->_stream);
+        (void)aclrtUnSubscribeReport(tid, this->_stream);
         this->_stop = true;
         this->_cbThread.join();
     }
     if (this->_stream) {
-        (void)ACLRT_API(aclrtDestroyStream, this->_stream);
+        (void)aclrtDestroyStream(this->_stream);
         this->_stream = nullptr;
     }
-    (void)ACLRT_API(aclrtResetDevice, this->_deviceId);
+    (void)aclrtResetDevice(this->_deviceId);
 }
 
 Status AclrtDevice::Setup()

@@ -26,7 +26,7 @@
 namespace UC {
 
 Status TsfTaskManager::Setup(const int32_t deviceId, const size_t streamNumber, const size_t bufferSize,
-                             const size_t bufferNumber, const SpaceLayout* layout)
+                             const size_t bufferNumber, const size_t timeoutMs, const SpaceLayout* layout)
 {
     this->_queues.reserve(streamNumber);
     for (size_t i = 0; i < streamNumber; ++i) {
@@ -34,6 +34,7 @@ Status TsfTaskManager::Setup(const int32_t deviceId, const size_t streamNumber, 
         auto status = queue->Setup(deviceId, bufferSize, bufferNumber, &this->_failureSet, layout);
         if (status.Failure()) { return status; }
     }
+    this->_timeoutMs = timeoutMs;
     return Status::OK();
 }
 
@@ -64,7 +65,10 @@ Status TsfTaskManager::Wait(const size_t taskId)
         waiter = iter->second;
         this->_waiters.erase(iter);
     }
-    waiter->Wait();
+    if (!waiter->Wait(this->_timeoutMs)) {
+        this->_failureSet.Insert(taskId);
+        waiter->Wait();
+    }
     bool failure = this->_failureSet.Exist(taskId);
     this->_failureSet.Remove(taskId);
     if (failure) { UC_ERROR("Transfer task({}) failed.", taskId); }

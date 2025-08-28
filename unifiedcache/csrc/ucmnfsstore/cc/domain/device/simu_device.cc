@@ -30,6 +30,7 @@ Status SimuDevice::Setup()
 {
     auto status = IBufferedDevice::Setup();
     if (status.Failure()) { return status; }
+    if (!this->_backend.Setup([](auto& task) { task(); })) { return Status::Error(); }
     return Status::OK();
 }
 
@@ -39,7 +40,7 @@ Status SimuDevice::H2DAsync(std::byte* dst, const std::byte* src, const size_t c
         UC_ERROR("Invalid params: count={}.", count);
         return Status::InvalidParam();
     }
-    std::copy(src, src + count, dst);
+    this->_backend.Push([=] { std::copy(src, src + count, dst); });
     return Status::OK();
 }
 
@@ -49,13 +50,13 @@ Status SimuDevice::D2HAsync(std::byte* dst, const std::byte* src, const size_t c
         UC_ERROR("Invalid params: count={}.", count);
         return Status::InvalidParam();
     }
-    std::copy(src, src + count, dst);
+    this->_backend.Push([=] { std::copy(src, src + count, dst); });
     return Status::OK();
 }
 
 Status SimuDevice::AppendCallback(std::function<void(bool)> cb)
 {
-    cb(true);
+    this->_backend.Push([=] { cb(true); });
     return Status::OK();
 }
 

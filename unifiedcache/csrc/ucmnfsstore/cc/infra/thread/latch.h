@@ -43,7 +43,7 @@ public:
         this->_cv.wait(lk, [this] { return this->_counter == 0; });
     }
 
-private:
+protected:
     std::mutex _mutex;
     std::condition_variable _cv;
     std::atomic<size_t> _counter;
