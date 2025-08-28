@@ -95,11 +95,11 @@ Status PosixFile::Open(const uint32_t flags)
     constexpr auto permission = (S_IRWXU | S_IRGRP | S_IXGRP | S_IROTH | S_IXOTH);
     this->_handle = open(this->Path().c_str(), flags, permission);
     auto eno = errno;
-    if (!this->_handle) {
-        UC_ERROR("Failed to open file, path: {}, flags: {}, errno: {}.", this->Path(), flags, eno);
-        return Status::OsApiError();
+    auto status = this->_handle >= 0 ? Status::OK() : Status::OsApiError();
+    if (status.Failure()) {
+        UC_ERROR("Failed({},{}) to open file({}) with flags({}).", eno, status, this->Path(), flags);
     }
-    return Status::OK();
+    return status;
 }
 
 void PosixFile::Close()
