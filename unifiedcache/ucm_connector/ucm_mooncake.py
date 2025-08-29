@@ -48,41 +48,6 @@ class MooncakeStoreConfig:
             master_server_address=config.get("master_server_address"),
         )
 
-    @staticmethod
-    def from_file(file_path: str) -> "MooncakeStoreConfig":
-        """
-        # NOTE:
-        # This method currently loads connection information from a file.
-        # In the future, it should be updated to load configuration from a YAML file,
-        # as the UC connector plans to support YAML-based config.
-        """
-        """Load the config from a JSON file."""
-        with open(file_path) as fin:
-            config = json.load(fin)
-        return MooncakeStoreConfig(
-            local_hostname=config.get("local_hostname"),
-            metadata_server=config.get("metadata_server"),
-            global_segment_size=config.get(
-                "global_segment_size", DEFAULT_GLOBAL_SEGMENT_SIZE
-            ),
-            local_buffer_size=config.get(
-                "local_buffer_size", DEFAULT_LOCAL_BUFFER_SIZE
-            ),
-            protocol=config.get("protocol", "tcp"),
-            device_name=config.get("device_name", ""),
-            master_server_address=config.get("master_server_address"),
-        )
-
-    @staticmethod
-    def load_from_env() -> "MooncakeStoreConfig":
-        """Load config from a file specified in the environment variable."""
-        config_file_path = os.getenv("MOONCAKE_CONFIG_PATH")
-        if config_file_path is None:
-            raise ValueError(
-                "The environment variable 'MOONCAKE_CONFIG_PATH' is not set."
-            )
-        return MooncakeStoreConfig.from_file(config_file_path)
-
 
 @dataclass
 class MooncakeTask(Task):
@@ -129,32 +94,7 @@ class UcmMooncakeStore(UcmKVStoreBase):
             logger.error("Configuration loading failed: %s", e)
             raise
         except TypeError:
-            logger.warning(
-                "Lack of configuration, loading Mooncake configuration from environment variables instead."
-            )
-            try:
-                mooncake_config = MooncakeStoreConfig.load_from_env()
-                logger.info("Mooncake Configuration loaded from env successfully.")
-                self.store.setup(
-                    mooncake_config.local_hostname,
-                    mooncake_config.metadata_server,
-                    mooncake_config.global_segment_size,
-                    mooncake_config.local_buffer_size,
-                    mooncake_config.protocol,
-                    mooncake_config.device_name,
-                    mooncake_config.master_server_address,
-                )
-            except ValueError as e:
-                logger.error(
-                    "Configuration loading failed: %s \n Please check the dict params or edit the config file and set path.",
-                    e,
-                )
-                raise
-            except Exception as exc:
-                logger.error(
-                    "An error occurred while loading the configuration: %s", exc
-                )
-                raise
+            logger.warning("Lack of configuration, please check the dict params .")
 
         except Exception as exc:
             logger.error("An error occurred while loading the configuration: %s", exc)
