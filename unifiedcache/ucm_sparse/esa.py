@@ -11,7 +11,6 @@ from vllm.sequence import SequenceStage
 from vllm.v1.core.kv_cache_utils import BlockHash
 from vllm.v1.core.sched.output import SchedulerOutput
 from vllm.v1.request import Request
-from vllm_ascend.worker.npu_input_batch import CachedRequestState, InputBatch
 
 from unifiedcache.integration.vllm.ucm_sparse.base import (
     INVALID_SLOT,
@@ -173,7 +172,7 @@ class ReqStatePerLayer:
     def retrieval(self, query: torch.Tensor, top_k: int):
         if top_k >= self.block_repre.shape[0]:
             n_blocks = self.block_repre.shape[0]
-            block_ids = int(
+            block_ids = list(
                 range(self.init_window_sz, n_blocks - self.local_window_sz + 1)
             )
             block_hashes = [
@@ -310,8 +309,12 @@ class ReqStatePerLayer:
         if self.req_meta.step % RETRIEVAL_STRIDE != 1:
             return
         index_in_batch = self.req_meta.index_in_batch
-        query_start_loc = forward_context.attn_metadata.query_start_loc[index_in_batch]
-        query_len = forward_context.attn_metadata.query_lens[index_in_batch]
+        if isinstance(forward_context.attn_metadata, dict):
+            attn_md = forward_context.attn_metadata[self.layer_name]
+        else:
+            attn_md = forward_context.attn_metadata
+        query_start_loc = attn_md.query_start_loc[index_in_batch]
+        query_len = self.req_meta.num_scheduled_tokens
         current_query = query[query_start_loc : query_start_loc + query_len]
 
         vllm_block_ids = self.req_meta.vllm_block_ids[
@@ -432,9 +435,9 @@ class ESA(UcmSparseBase):
 
     def build_sparse_meta(
         self,
-        scheduler_output: SchedulerOutput,
-        requests: Dict[str, CachedRequestState],
-        input_batch: InputBatch,
+        scheduler_output,
+        requests,
+        input_batch,
     ) -> UcmSparseMetadata:
         sparse_meta = ESASparseMetaData()
         for (

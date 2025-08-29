@@ -35,7 +35,6 @@ if TYPE_CHECKING:
 import torch
 from vllm.distributed.kv_transfer import get_kv_transfer_group, has_kv_transfer_group
 from vllm.forward_context import ForwardContext
-from vllm_ascend.worker.npu_input_batch import CachedRequestState, InputBatch
 
 INVALID_SLOT = -1
 
@@ -194,9 +193,9 @@ class UcmSparseBase(ABC):
 
     def build_sparse_meta(
         self,
-        scheduler_output: SchedulerOutput,
-        requests: dict[str, CachedRequestState],
-        input_batch: InputBatch,
+        scheduler_output,
+        requests,
+        input_batch,
     ) -> UcmSparseMetadata:
         """
         Build the sparse metadata for this step.
