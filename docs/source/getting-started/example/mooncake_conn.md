@@ -15,8 +15,6 @@ This document provides a usage example and configuration guide for the **Mooncak
 Use mooncake fig && default:
 <p align="center">
   <img alt="UCM" src="../../images/mooncake_performance.png" width="40%">
-  <span style="display:inline-block; width:10%;"></span>
-  <img alt="UCM" src="../../images/mooncake_default_performance.png" width="40%">
 </p>
 
 ## Features
