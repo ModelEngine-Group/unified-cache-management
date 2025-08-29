@@ -1,22 +1,31 @@
-From cbd934db2837131d4a74e0825585b138113e12d0 Mon Sep 17 00:00:00 2001
+From 64a94cbdbc38df6f046379c59ac893545ddbd407 Mon Sep 17 00:00:00 2001
 From: flesher0813 <1208954694@qq.com>
-Date: Mon, 28 Jul 2025 10:57:45 +0800
+Date: Sat, 16 Aug 2025 16:57:04 +0800
 Subject: [PATCH] [WIP][v1] Support for returning a value when using
  wait_for_save
 
 Signed-off-by: flesher0813 <1208954694@qq.com>
 ---
- vllm/v1/core/sched/scheduler.py    | 5 ++++-
+ vllm/v1/core/sched/scheduler.py    | 4 +++-
  vllm/v1/outputs.py                 | 1 +
  vllm/v1/request.py                 | 2 +-
  vllm/v1/worker/gpu_model_runner.py | 7 ++++---
- 4 files changed, 10 insertions(+), 5 deletions(-)
+ 4 files changed, 9 insertions(+), 5 deletions(-)
 
 diff --git a/vllm/v1/core/sched/scheduler.py b/vllm/v1/core/sched/scheduler.py
-index fe552db74..eb91598ef 100644
+index fe552db74..22c0ad8d6 100644
 --- a/vllm/v1/core/sched/scheduler.py
 +++ b/vllm/v1/core/sched/scheduler.py
-@@ -842,7 +842,6 @@ class Scheduler(SchedulerInterface):
+@@ -792,6 +792,8 @@ class Scheduler(SchedulerInterface):
+             new_token_ids = generated_token_ids
+             kv_transfer_params = None
+ 
++            if model_runner_output.finished_dumping is not None:
++                request.succeed_dumped_blocks.extend(model_runner_output.finished_dumping.get(req_id, []))
+             # Append generated tokens and check for stop. Note that if
+             # a request is still being prefilled, we expect the model runner
+             # to return empty token ids for the request.
+@@ -842,7 +844,6 @@ class Scheduler(SchedulerInterface):
                          spec_token_ids[req_index])
                  else:
                      request.spec_token_ids = spec_token_ids[req_index]
@@ -24,13 +33,10 @@ index fe552db74..eb91598ef 100644
              # Get prompt logprobs for this request.
              prompt_logprobs_tensors = prompt_logprobs_dict.get(req_id)
              if new_token_ids or pooler_output is not None \
-@@ -869,6 +868,10 @@ class Scheduler(SchedulerInterface):
+@@ -869,6 +870,7 @@ class Scheduler(SchedulerInterface):
  
              if not stopped:
                  new_running.append(request)
-+
-+            if model_runner_output.finished_dumping is not None:
-+                    request.succeed_dumped_blocks.extend(model_runner_output.finished_dumping.get(req_id, []))
 +
          self.running = new_running
  
