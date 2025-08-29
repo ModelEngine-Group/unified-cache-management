@@ -113,6 +113,13 @@ class UcmMooncakeStore(UcmKVStoreBase):
         self.thread = threading.Thread(target=self._run_event_loop, daemon=True)
         self.thread.start()
 
+    def __del__(self):
+        """Release resources on garbage collection."""
+        try:
+            self.shutdown()
+        except Exception:
+            pass
+
     def _run_event_loop(self):
         """Run the asyncio event loop in a separate thread."""
         asyncio.set_event_loop(self.loop)
