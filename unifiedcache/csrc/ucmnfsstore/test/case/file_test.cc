@@ -21,23 +21,22 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  * */
-#ifndef UNIFIEDCACHE_FILE_H
-#define UNIFIEDCACHE_FILE_H
+#include "cmn/path_base.h"
+#include "file/file.h"
 
-#include <memory>
-#include "ifile.h"
+class UCFileTest : public UC::PathBase {};
 
-namespace UC {
-
-class File {
-public:
-    static std::unique_ptr<IFile> Make(const std::string& path);
-    static Status MkDir(const std::string& path);
-    static Status RmDir(const std::string& path);
-    static Status Rename(const std::string& path, const std::string& newName);
-    static Status Access(const std::string& path, const int32_t mode);
-};
-
-} // namespace UC
-
-#endif
+TEST_F(UCFileTest, DirCreateAndRemove)
+{
+    auto path1 = this->Path() + "dir1";
+    ASSERT_EQ(UC::File::Access(path1, UC::IFile::AccessMode::EXIST), UC::Status::NotFound());
+    ASSERT_EQ(UC::File::MkDir(path1), UC::Status::OK());
+    ASSERT_EQ(UC::File::Access(path1, UC::IFile::AccessMode::EXIST), UC::Status::OK());
+    auto path2 = this->Path() + "dir2";
+    ASSERT_EQ(UC::File::Access(path2, UC::IFile::AccessMode::EXIST), UC::Status::NotFound());
+    ASSERT_EQ(UC::File::Rename(path1, path2), UC::Status::OK());
+    ASSERT_EQ(UC::File::Access(path1, UC::IFile::AccessMode::EXIST), UC::Status::NotFound());
+    ASSERT_EQ(UC::File::Access(path2, UC::IFile::AccessMode::EXIST), UC::Status::OK());
+    ASSERT_EQ(UC::File::RmDir(path2), UC::Status::OK());
+    ASSERT_EQ(UC::File::Access(path2, UC::IFile::AccessMode::EXIST), UC::Status::NotFound());
+}

@@ -27,14 +27,24 @@
 
 namespace UC {
 
+using FileImpl = PosixFile;
+
 std::unique_ptr<IFile> File::Make(const std::string& path)
 {
     try {
-        return std::make_unique<PosixFile>(path);
+        return std::make_unique<FileImpl>(path);
     } catch (const std::exception& e) {
         UC_ERROR("Failed({}) to make file({}) pointer.", e.what(), path);
         return nullptr;
     }
 }
+
+Status File::MkDir(const std::string& path) { return FileImpl{path}.MkDir(); }
+
+Status File::RmDir(const std::string& path) { return FileImpl{path}.RmDir(); }
+
+Status File::Rename(const std::string& path, const std::string& newName) { return FileImpl{path}.Rename(newName); }
+
+Status File::Access(const std::string& path, const int32_t mode) { return FileImpl{path}.Access(mode); }
 
 } // namespace UC

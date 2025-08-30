@@ -21,23 +21,21 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  * */
-#ifndef UNIFIEDCACHE_FILE_H
-#define UNIFIEDCACHE_FILE_H
+#include "cmn/path_base.h"
+#include "space/space_manager.h"
 
-#include <memory>
-#include "ifile.h"
+class UCSpaceManagerTest : public UC::PathBase {};
 
-namespace UC {
-
-class File {
-public:
-    static std::unique_ptr<IFile> Make(const std::string& path);
-    static Status MkDir(const std::string& path);
-    static Status RmDir(const std::string& path);
-    static Status Rename(const std::string& path, const std::string& newName);
-    static Status Access(const std::string& path, const int32_t mode);
-};
-
-} // namespace UC
-
-#endif
+TEST_F(UCSpaceManagerTest, NewBlockTwice)
+{
+    UC::SpaceManager spaceMgr;
+    ASSERT_EQ(spaceMgr.Setup({this->Path()}, 1024 * 1024), UC::Status::OK());
+    const std::string block1 = "block1";
+    ASSERT_FALSE(spaceMgr.LookupBlock(block1));
+    ASSERT_EQ(spaceMgr.NewBlock(block1), UC::Status::OK());
+    ASSERT_FALSE(spaceMgr.LookupBlock(block1));
+    ASSERT_EQ(spaceMgr.NewBlock(block1), UC::Status::DuplicateKey());
+    ASSERT_EQ(spaceMgr.CommitBlock(block1), UC::Status::OK());
+    ASSERT_TRUE(spaceMgr.LookupBlock(block1));
+    ASSERT_EQ(spaceMgr.NewBlock(block1), UC::Status::DuplicateKey());
+}

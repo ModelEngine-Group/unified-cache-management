@@ -53,7 +53,12 @@ Status SpaceManager::NewBlock(const std::string& blockId) const
         UC_ERROR("Failed({}) to new block({}).", status, blockId);
         return status;
     }
-    status = file->Open(IFile::OpenFlag::CREATE | IFile::OpenFlag::READ_WRITE);
+    if ((File::Access(this->_layout.DataFilePath(blockId, false), IFile::AccessMode::EXIST)).Success()) {
+        status = Status::DuplicateKey();
+        UC_ERROR("Failed({}) to new block({}).", status, blockId);
+        return status;
+    }
+    status = file->Open(IFile::OpenFlag::CREATE | IFile::OpenFlag::EXCL | IFile::OpenFlag::READ_WRITE);
     if (status.Failure()) {
         UC_ERROR("Failed({}) to new block({}).", status, blockId);
         return status;

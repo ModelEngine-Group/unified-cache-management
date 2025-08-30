@@ -90,6 +90,8 @@ TEST_F(UCPosixFileTest, FileCreateAndRemove)
     ASSERT_EQ(file.Access(UC::IFile::AccessMode::EXIST), UC::Status::NotFound());
     ASSERT_EQ(file.Open(UC::IFile::OpenFlag::WRITE_ONLY), UC::Status::OsApiError());
     ASSERT_EQ(file.Open(UC::IFile::OpenFlag::WRITE_ONLY | UC::IFile::OpenFlag::CREATE), UC::Status::OK());
+    ASSERT_EQ(file.Open(UC::IFile::OpenFlag::WRITE_ONLY | UC::IFile::OpenFlag::CREATE | UC::IFile::OpenFlag::EXCL),
+              UC::Status::DuplicateKey());
     ASSERT_EQ(file.Access(UC::IFile::AccessMode::EXIST), UC::Status::OK());
     ASSERT_EQ(file.Access(UC::IFile::AccessMode::READ), UC::Status::OK());
     ASSERT_EQ(file.Access(UC::IFile::AccessMode::WRITE), UC::Status::OK());

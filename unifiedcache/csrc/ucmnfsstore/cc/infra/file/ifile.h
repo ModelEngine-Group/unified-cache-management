@@ -47,6 +47,7 @@ public:
         static constexpr uint32_t CREATE = O_CREAT;
         static constexpr uint32_t DIRECT = O_DIRECT;
         static constexpr uint32_t APPEND = O_APPEND;
+        static constexpr uint32_t EXCL = O_EXCL;
     };
 
 public:

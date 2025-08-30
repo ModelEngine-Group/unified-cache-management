@@ -34,7 +34,7 @@ PosixFile::~PosixFile() { this->Close(); }
 
 Status PosixFile::MkDir()
 {
-    constexpr auto permission = (S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH);
+    constexpr auto permission = (S_IRUSR | S_IWUSR | S_IXUSR | S_IRGRP | S_IROTH);
     auto ret = mkdir(this->Path().c_str(), permission);
     auto eno = errno;
     if (ret != 0) {
@@ -97,6 +97,7 @@ Status PosixFile::Open(const uint32_t flags)
     auto eno = errno;
     auto status = this->_handle >= 0 ? Status::OK() : Status::OsApiError();
     if (status.Failure()) {
+        if (eno == EEXIST) { status = Status::DuplicateKey(); }
         UC_ERROR("Failed({},{}) to open file({}) with flags({}).", eno, status, this->Path(), flags);
     }
     return status;
