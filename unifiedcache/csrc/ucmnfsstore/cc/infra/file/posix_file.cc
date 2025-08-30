@@ -34,7 +34,7 @@ PosixFile::~PosixFile() { this->Close(); }
 
 Status PosixFile::MkDir()
 {
-    constexpr auto permission = (S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH);
+    constexpr auto permission = (S_IRUSR | S_IWUSR | S_IXUSR | S_IROTH);
     auto ret = mkdir(this->Path().c_str(), permission);
     auto eno = errno;
     if (ret != 0) {
@@ -156,6 +156,23 @@ Status PosixFile::Truncate(size_t length)
     if (ret != 0) {
         UC_ERROR("Failed to truncate file, path: {}, length: {}, errno: {}.", this->Path(), length, eno);
         return Status::OsApiError();
+    }
+    return Status::OK();
+}
+
+Status PosixFile::FileExist()
+{
+    struct stat st;
+    if (stat(this->Path().c_str(), &st) == 0) { 
+        return Status::DuplicateKey(); 
+    }
+    std::string path = this->Path();
+    size_t pos = path.find_last_of('.');
+    if (pos != std::string::npos && path.substr(pos) == ".act") { 
+        std::string data_path = path.substr(0, pos) + ".dat";
+        if (stat(data_path.c_str(), &st) == 0) { 
+            return Status::DuplicateKey(); 
+        } 
     }
     return Status::OK();
 }

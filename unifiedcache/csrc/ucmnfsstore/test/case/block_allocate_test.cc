@@ -21,33 +21,21 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  * */
-#ifndef UNIFIEDCACHE_POSIX_FILE_H
-#define UNIFIEDCACHE_POSIX_FILE_H
+#include "cmn/path_base.h"
+#include "space/space_manager.h"
 
-#include "ifile.h"
+class UCBlockAllocateTest : public UC::PathBase {};
 
-namespace UC {
-
-class PosixFile : public IFile {
-public:
-    PosixFile(const std::string& path) : IFile{path}, _handle{-1} {}
-    ~PosixFile() override;
-    Status MkDir() override;
-    Status RmDir() override;
-    Status Rename(const std::string& newName) override;
-    Status Access(const int32_t mode) override;
-    Status Open(const uint32_t flags) override;
-    void Close() override;
-    void Remove() override;
-    Status Read(void* buffer, size_t size, off64_t offset = -1) override;
-    Status Write(const void* buffer, size_t size, off64_t offset = -1) override;
-    Status Truncate(size_t length) override;
-    Status FileExist() override;
-
-private:
-    int32_t _handle;
-};
-
-} // namespace UC
-
-#endif // UNIFIEDCACHE_POSIX_FILE_H
+TEST_F(UCBlockAllocateTest, NewBlockTwice)
+{
+    UC::SpaceManager spaceMgr;
+    ASSERT_EQ(spaceMgr.Setup({this->Path()}, 1024 * 1024), UC::Status::OK());
+    const std::string block1 = "block1";
+    ASSERT_FALSE(spaceMgr.LookupBlock(block1));
+    ASSERT_EQ(spaceMgr.NewBlock(block1), UC::Status::OK());
+    ASSERT_FALSE(spaceMgr.LookupBlock(block1));
+    ASSERT_EQ(spaceMgr.NewBlock(block1), UC::Status::DuplicateKey());
+    ASSERT_EQ(spaceMgr.CommitBlock(block1), UC::Status::OK());
+    ASSERT_TRUE(spaceMgr.LookupBlock(block1));
+    ASSERT_EQ(spaceMgr.NewBlock(block1), UC::Status::DuplicateKey());
+}
