@@ -35,6 +35,7 @@ from vllm.distributed.kv_transfer.kv_connector.v1.base import (
     KVConnectorMetadata,
     KVConnectorRole,
 )
+from vllm.distributed.parallel_state import get_world_group
 from vllm.v1.core.kv_cache_utils import hash_request_tokens
 from vllm.v1.core.sched.output import SchedulerOutput
 
@@ -121,7 +122,9 @@ class UnifiedCacheConnectorV1(KVConnectorBase_V1):
         self.use_layerwise = True
         self.kv_caches: dict[str, torch.Tensor] = {}
         self.total_tp_size = vllm_config.parallel_config.tensor_parallel_size
-        self.rank = vllm_config.parallel_config.rank
+        self.rank = (
+            -1 if role == KVConnectorRole.SCHEDULER else get_world_group().local_rank
+        )
         self.load_paras: dict[str, LoadPara] = {}
         self.save_paras: dict[str, SavePara] = {}
         # dump tasks record request -> block -> list[task]
