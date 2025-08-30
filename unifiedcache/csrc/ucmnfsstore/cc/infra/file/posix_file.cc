@@ -160,4 +160,21 @@ Status PosixFile::Truncate(size_t length)
     return Status::OK();
 }
 
+Status PosixFile::FileExist()
+{
+    struct stat st;
+    if (stat(this->Path().c_str(), &st) == 0) { 
+        return Status::DuplicateKey(); 
+    }
+    std::string path = this->Path();
+    size_t pos = path.find_last_of('.');
+    if (pos != std::string::npos && path.substr(pos) == ".act") { 
+        std::string data_path = path.substr(0, pos) + ".dat";
+        if (stat(data_path.c_str(), &st) == 0) { 
+            return Status::DuplicateKey(); 
+        } 
+    }
+    return Status::OK();
+}
+
 } // namespace UC

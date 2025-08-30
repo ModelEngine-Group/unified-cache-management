@@ -101,6 +101,11 @@ public:
         static Status s{Code::EUNSUPPORTED};
         return s;
     }
+    static Status& FileExist()
+    {
+        static Status s{Code::EDUPLICATE};
+        return s;
+    }
 
 public:
     Status(const Status& status) { this->_code = status._code; }

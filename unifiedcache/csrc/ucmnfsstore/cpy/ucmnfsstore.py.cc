@@ -29,13 +29,13 @@ namespace py = pybind11;
 
 namespace UC {
 
-inline int32_t AllocBatch(const py::list& blockIds)
-{
-    int32_t ret = 0;
+inline py::list AllocBatch(const py::list& blockIds) {
+    py::list rets;  
     for (auto id : blockIds) {
-        if ((ret = Alloc(id.cast<std::string>())) != 0) { break; }
+        int32_t ret = Alloc(id.cast<std::string>());
+        rets.append(ret); 
     }
-    return ret;
+    return rets;
 }
 
 inline py::list LookupBatch(const py::list& blockIds)

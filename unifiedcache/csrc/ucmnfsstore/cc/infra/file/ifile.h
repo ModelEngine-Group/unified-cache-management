@@ -63,6 +63,7 @@ public:
     virtual Status Read(void* buffer, size_t size, off64_t offset = -1) = 0;
     virtual Status Write(const void* buffer, size_t size, off64_t offset = -1) = 0;
     virtual Status Truncate(size_t length) = 0;
+    virtual Status FileExist() = 0;
 
 private:
     std::string _path;

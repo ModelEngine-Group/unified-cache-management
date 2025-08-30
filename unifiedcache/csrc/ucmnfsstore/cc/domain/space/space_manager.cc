@@ -53,6 +53,11 @@ Status SpaceManager::NewBlock(const std::string& blockId) const
         UC_ERROR("Failed({}) to new block({}).", status, blockId);
         return status;
     }
+    status = file->FileExist();
+    if (status.Failure()) {
+        UC_ERROR("Failed({}) to new block({}), file already exist.", status, blockId);
+        return status;
+    }
     status = file->Open(IFile::OpenFlag::CREATE | IFile::OpenFlag::READ_WRITE);
     if (status.Failure()) {
         UC_ERROR("Failed({}) to new block({}).", status, blockId);
