@@ -398,6 +398,8 @@ class UnifiedCacheConnectorV1(KVConnectorBase_V1):
             attn_metadata (AttentionMetadata): the attention metadata.
             **kwargs: additional arguments for the save operation.
         """
+        if self.is_mla and self.rank != 0 :
+            return
         self.current_layer += 1
         if hasattr(self, "kv_role") and self.kv_role == "kv_consumer":
             return
