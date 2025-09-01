@@ -68,6 +68,7 @@ public:
         }
         return finish;
     }
+    bool Finish() { return this->_counter == 0; }
 
 private:
     size_t _id;

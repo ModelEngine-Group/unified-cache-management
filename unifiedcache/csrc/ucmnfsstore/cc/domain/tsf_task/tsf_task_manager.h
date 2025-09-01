@@ -38,6 +38,7 @@ public:
     Status Submit(std::list<TsfTask>& tasks, const size_t size, const size_t number, const std::string& brief,
                   size_t& taskId);
     Status Wait(const size_t taskId);
+    Status Check(const size_t taskId, bool& finish);
 
 private:
     void Dispatch(std::list<TsfTask>& tasks, std::vector<std::list<TsfTask>>& targets, const size_t taskId,

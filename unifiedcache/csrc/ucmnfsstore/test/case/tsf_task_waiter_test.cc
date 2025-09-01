@@ -36,6 +36,7 @@ TEST_F(UCTsfTaskWaiterTest, TaskTimeout)
     });
     ASSERT_FALSE(waiter.Wait(1));
     fut.get();
+    ASSERT_TRUE(waiter.Finish());
 }
 
 TEST_F(UCTsfTaskWaiterTest, TaskSuccess)
@@ -43,6 +44,7 @@ TEST_F(UCTsfTaskWaiterTest, TaskSuccess)
     UC::TsfTaskWaiter waiter{2, 1024, 1, "xxx"};
     auto fut = std::async([&] { waiter.Done(); });
     ASSERT_TRUE(waiter.Wait(1000));
+    ASSERT_TRUE(waiter.Finish());
     fut.get();
 }
 
@@ -54,5 +56,6 @@ TEST_F(UCTsfTaskWaiterTest, TaskTimeoutButSuccess)
         waiter.Done();
     });
     fut.get();
+    ASSERT_TRUE(waiter.Finish());
     ASSERT_TRUE(waiter.Wait(1));
 }

@@ -131,6 +131,11 @@ PYBIND11_MODULE(ucmnfsstore, module)
     module.def("DumpFromDevice", &UC::DumpFromDevice);
     module.def("DumpFromHost", &UC::DumpFromHost);
     module.def("Wait", &UC::Wait);
+    module.def("Check", [](const size_t taskId) {
+        auto finish = false;
+        auto ret = UC::Check(taskId, finish);
+        return py::make_tuple(ret, finish);
+    });
     module.def("Commit", &UC::Commit);
     module.def("CommitBatch", &UC::CommitBatch);
 }

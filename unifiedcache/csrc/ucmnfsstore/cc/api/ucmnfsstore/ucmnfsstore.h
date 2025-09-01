@@ -57,6 +57,7 @@ int32_t Alloc(const std::string& blockId);
 bool Lookup(const std::string& blockId);
 size_t Submit(std::list<TsfTask>& tasks, const size_t size, const size_t number, const std::string& brief);
 int32_t Wait(const size_t taskId);
+int32_t Check(const size_t taskId, bool& finish);
 void Commit(const std::string& blockId, const bool success);
 
 } // namespace UC

@@ -88,6 +88,11 @@ size_t Submit(std::list<TsfTask>& tasks, const size_t size, const size_t number,
 
 int32_t Wait(const size_t taskId) { return Singleton<TsfTaskManager>::Instance()->Wait(taskId).Underlying(); }
 
+int32_t Check(const size_t taskId, bool& finish)
+{
+    return Singleton<TsfTaskManager>::Instance()->Check(taskId, finish).Underlying();
+}
+
 void Commit(const std::string& blockId, const bool success)
 {
     auto s = Singleton<SpaceManager>::Instance()->CommitBlock(blockId, success);

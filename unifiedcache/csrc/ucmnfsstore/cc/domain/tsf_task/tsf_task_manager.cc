@@ -75,6 +75,15 @@ Status TsfTaskManager::Wait(const size_t taskId)
     return failure ? Status::Error() : Status::OK();
 }
 
+Status TsfTaskManager::Check(const size_t taskId, bool& finish)
+{
+    std::lock_guard<std::mutex> lk(this->_mutex);
+    auto iter = this->_waiters.find(taskId);
+    if (iter == this->_waiters.end()) { return Status::NotFound(); }
+    finish = iter->second->Finish();
+    return Status::OK();
+}
+
 void TsfTaskManager::Dispatch(std::list<TsfTask>& tasks, std::vector<std::list<TsfTask>>& targets, const size_t taskId,
                               std::shared_ptr<TsfTaskWaiter> waiter) const
 {
