@@ -595,13 +595,13 @@ class UnifiedCacheConnectorV1(KVConnectorBase_V1):
         if num_blocks_need_save > 0:
             start_save_position = num_max_cached_tokens // self.block_size
             need_allocate_block_hashes = block_hashes[start_save_position:]
-            ret = self.connector.create(need_allocate_block_hashes)
-            self.save_paras[request.request_id] = SavePara(
-                num_blocks_need_save=num_blocks_need_save,
-                start_save_position=start_save_position,
-                block_hashes=need_allocate_block_hashes,
-            )
-
+            rets = self.connector.create(need_allocate_block_hashes)
+            if rets and all(ret == 0 for ret in rets):
+                self.save_paras[request.request_id] = SavePara(
+                    num_blocks_need_save=num_blocks_need_save,
+                    start_save_position=start_save_position,
+                    block_hashes=need_allocate_block_hashes,
+                )
         logger.debug(
             f"num_blocks_need_save = {num_blocks_need_save},\n"
             f"num_external_computed_tokens = {num_external_computed_tokens},\n"

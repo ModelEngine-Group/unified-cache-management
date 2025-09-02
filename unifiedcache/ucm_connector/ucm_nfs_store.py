@@ -66,7 +66,7 @@ class UcmNfsStore(UcmKVStoreBase):
         else:
             logger.info("Succeed in initializing ucmnfsstore.")
 
-    def create(self, block_ids: List[str]) -> int:
+    def create(self, block_ids: List[str]) -> List[int]:
         """
         create kv cache space in storage
 
@@ -75,12 +75,12 @@ class UcmNfsStore(UcmKVStoreBase):
         Returns:
             success mask
         """
-        ret = ucmnfsstore.AllocBatch(block_ids)
-        if ret != 0:
-            logger.error(f"Failed to allocate kv cache space, errcode: {ret}.")
-        else:
+        rets = ucmnfsstore.AllocBatch(block_ids)
+        if rets and all(ret == 0 for ret in rets):
             logger.info("Succeed in allocating kv cache space.")
-        return ret
+        else:
+            failed_blocks = [block_ids[i] for i, ret in enumerate(rets) if ret != 0]
+        return rets
 
     def lookup(self, block_ids: List[str]) -> List[bool]:
         """
