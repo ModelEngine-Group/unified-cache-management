@@ -187,7 +187,7 @@ class UnifiedCacheConnectorV1(KVConnectorBase_V1):
         # Non-MLA scene: one layer shape is (2, num_blocks, block_size, num_kv_heads, head_size)
         # MLA scene: one layer shape is (num_blocks, block_size, head_size)
         # Element size
-        elem_size = kv_layer[0].storage().element_size()
+        elem_size = kv_layer[0].element_size()
         logger.debug(
             f"total_tp_size = {self.total_tp_size},\n" f"element size = {elem_size}."
         )
