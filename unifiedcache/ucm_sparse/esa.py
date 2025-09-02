@@ -381,6 +381,7 @@ class ESA(UcmSparseBase):
         self.block_size = vllm_config.cache_config.block_size
         config = {"max_cache_size": 5368709120, "device": self.rank, "role": "worker"}
         self.connector = UcmConnectorFactory.create_connector("UcmDram", config)
+        # TODO: consider init self.is_mla here
 
     def attention_begin(
         self,
@@ -472,7 +473,10 @@ class ESA(UcmSparseBase):
         pass
 
     def estimate_num_slots_sparsed(self, request: Request) -> int:
-        if request.num_output_tokens == 0 or request.num_prompt_tokens < self.block_size :
+        if (
+            request.num_output_tokens == 0
+            or request.num_prompt_tokens < self.block_size
+        ):
             return INVALID_SLOT
         num_blocks = math.ceil(request.num_tokens / self.block_size)
         mid_window_sz = int(
