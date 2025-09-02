@@ -125,7 +125,7 @@ class UcmMooncakeStore(UcmKVStoreBase):
         asyncio.set_event_loop(self.loop)
         self.loop.run_forever()
 
-    def create(self, block_ids: List[str]) -> int:
+    def create(self, block_ids: List[str]) -> List[int]:
         """
         create kv cache space in storafe (not implemented for Mooncake).
 
@@ -135,7 +135,7 @@ class UcmMooncakeStore(UcmKVStoreBase):
             Always returns 0 as this operation is not supported by Mooncake
         """
         # Mooncake only has get and put interfaces, this operation is not supported
-        return 0
+        return [0] * len(block_ids)
 
     def lookup(self, block_ids: List[str]) -> List[bool]:
         """

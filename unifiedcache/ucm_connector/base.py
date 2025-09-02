@@ -45,7 +45,7 @@ class UcmKVStoreBase(ABC):
         self.config = config
 
     @abstractmethod
-    def create(self, block_ids: List[str]) -> int:
+    def create(self, block_ids: List[str]) -> List[int]:
         """
         create kv cache space in storafe
 

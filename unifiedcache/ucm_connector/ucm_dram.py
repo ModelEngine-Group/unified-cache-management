@@ -66,7 +66,7 @@ class UcmDram(UcmKVStoreBase):
         if config["role"] == "scheduler":
             self.cached_blocks = set()
 
-    def create(self, block_ids: List[str]) -> int:
+    def create(self, block_ids: List[str]) -> List[int]:
         """
         create kv cache space in storafe
 
@@ -75,7 +75,7 @@ class UcmDram(UcmKVStoreBase):
         Returns:
             success mask
         """
-        return SUCCESS
+        return [0] * len(block_ids)
 
     def lookup(self, block_ids: List[str]) -> List[bool]:
         """
