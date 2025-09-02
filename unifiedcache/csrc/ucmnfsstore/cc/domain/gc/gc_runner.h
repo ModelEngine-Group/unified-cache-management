@@ -21,32 +21,40 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  * */
-#ifndef UNIFIEDCACHE_SPACE_LAYOUT_H
-#define UNIFIEDCACHE_SPACE_LAYOUT_H
+#ifndef UNIFIEDCACHE_GC_RUNNER_H
+#define UNIFIEDCACHE_GC_RUNNER_H
 
-#include <string>
-#include <vector>
-#include "status/status.h"
+#include <cstdint>
+#include <queue>
+#include <filesystem>
 
 namespace UC {
 
-class SpaceLayout {
+struct FileInfo {
+    std::filesystem::path path;
+    std::filesystem::file_time_type lastModified;
+    uint64_t fileSize;
+
+    FileInfo(const std::filesystem::path& path,
+             const std::filesystem::file_time_type& time,
+             uint64_t size)
+        : path(path), lastModified(time), fileSize(size) {}
+
+    bool operator>(const FileInfo& other) const {
+        return lastModified > other.lastModified;
+    }
+};
+
+class GCRunner {
+
 public:
-    Status Setup(const std::vector<std::string>& storageBackends);
-    std::string DataFileParent(const std::string& blockId) const;
-    std::string DataFilePath(const std::string& blockId, bool actived) const;
-    std::vector<std::string> GetStorageBackends() const { return this->_storageBackends; }
+    GCRunner(const uint64_t threshold, const float percent) : _threshold(threshold), _percent(percent) {}
+    void operator()();
 
 private:
-    Status AddStorageBackend(const std::string& path);
-    Status AddFirstStorageBackend(const std::string& path);
-    Status AddSecondaryStorageBackend(const std::string& path);
-    std::string StorageBackend(const std::string& blockId) const;
-    std::vector<std::string> RelativeRoots() const;
-    std::string DataFileRoot() const;
-
-private:
-    std::vector<std::string> _storageBackends;
+    std::priority_queue<FileInfo, std::vector<FileInfo>, std::greater<>> _minHeap;
+    uint64_t _threshold;
+    float _percent;
 };
 
 } // namespace UC

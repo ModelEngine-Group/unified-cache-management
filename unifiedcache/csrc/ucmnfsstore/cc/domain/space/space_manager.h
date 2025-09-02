@@ -32,14 +32,17 @@ namespace UC {
 class SpaceManager {
 public:
     Status Setup(const std::vector<std::string>& storageBackends, const size_t blockSize);
-    Status NewBlock(const std::string& blockId) const;
-    Status CommitBlock(const std::string& blockId, bool success = true) const;
+    Status NewBlock(const std::string& blockId);
+    Status CommitBlock(const std::string& blockId, bool success = true);
     bool LookupBlock(const std::string& blockId) const;
     const SpaceLayout* GetSpaceLayout() const;
+    uint64_t GetUsedSpace() { return this->_usedSpace; }
+    void SetUsedSpace(uint64_t usedSpace) { this->_usedSpace = usedSpace; }
 
 private:
     SpaceLayout _layout;
     size_t _blockSize;
+    uint64_t _usedSpace;
 };
 
 } // namespace UC

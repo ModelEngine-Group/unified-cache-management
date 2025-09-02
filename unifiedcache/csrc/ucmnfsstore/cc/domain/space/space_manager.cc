@@ -39,7 +39,7 @@ Status SpaceManager::Setup(const std::vector<std::string>& storageBackends, cons
     return Status::OK();
 }
 
-Status SpaceManager::NewBlock(const std::string& blockId) const
+Status SpaceManager::NewBlock(const std::string& blockId)
 {
     auto parent = File::Make(this->_layout.DataFileParent(blockId));
     auto file = File::Make(this->_layout.DataFilePath(blockId, true));
@@ -63,10 +63,11 @@ Status SpaceManager::NewBlock(const std::string& blockId) const
         UC_ERROR("Failed({}) to new block({}).", status, blockId);
         return status;
     }
+    this->_usedSpace += this->_blockSize;
     return Status::OK();
 }
 
-Status SpaceManager::CommitBlock(const std::string& blockId, bool success) const
+Status SpaceManager::CommitBlock(const std::string& blockId, bool success)
 {
     auto file = File::Make(this->_layout.DataFilePath(blockId, true));
     if (!file) {
@@ -85,6 +86,7 @@ Status SpaceManager::CommitBlock(const std::string& blockId, bool success) const
     }
     file->Remove();
     parent->RmDir();
+    this->_usedSpace -= this->_blockSize;
     return Status::OK();
 }
 

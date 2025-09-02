@@ -41,13 +41,19 @@ public:
     size_t transferIoSize;
     size_t transferBufferNumber;
     size_t transferTimeoutMs;
+    bool gcEnable;
+    size_t gcInterval;
+    uint64_t gcCapacity;
+    float gcThresholdPercent;
+    float gcCleanupPercent;
 
 public:
     SetupParam(const std::vector<std::string>& storageBackends, const size_t kvcacheBlockSize,
                const bool transferEnable)
         : storageBackends{storageBackends}, kvcacheBlockSize{kvcacheBlockSize}, transferEnable{transferEnable},
           transferDeviceId{-1}, transferStreamNumber{32}, transferIoSize{262144}, transferBufferNumber{512},
-          transferTimeoutMs{30000}
+          transferTimeoutMs{30000}, gcEnable{false}, gcInterval{900}, gcCapacity{0}, gcThresholdPercent{0.0f},
+          gcCleanupPercent{10.0f}
     {
     }
 };

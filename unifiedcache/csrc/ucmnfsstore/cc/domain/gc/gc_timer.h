@@ -21,34 +21,39 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  * */
-#ifndef UNIFIEDCACHE_SPACE_LAYOUT_H
-#define UNIFIEDCACHE_SPACE_LAYOUT_H
+#ifndef UNIFIEDCACHE_GC_TIMER_H
+#define UNIFIEDCACHE_GC_TIMER_H
 
-#include <string>
-#include <vector>
-#include "status/status.h"
+#include "gc_runner.h"
+#include "template/timer.h"
 
 namespace UC {
 
-class SpaceLayout {
+class GCTimer {
 public:
-    Status Setup(const std::vector<std::string>& storageBackends);
-    std::string DataFileParent(const std::string& blockId) const;
-    std::string DataFilePath(const std::string& blockId, bool actived) const;
-    std::vector<std::string> GetStorageBackends() const { return this->_storageBackends; }
+    void Setup(const size_t interval, const uint64_t capacity, const float thresholdPercent, const float cleanupPercent)
+    {
+        this->_interval = std::chrono::seconds(interval);
+        this->_threshold = capacity * (thresholdPercent / 100.0f);
+        this->_percent = cleanupPercent / 100.0f;
+    }
+    Status Start()
+    {
+        try {
+            this->_timer = std::make_unique<Timer<GCRunner>>(this->_interval, std::move(GCRunner(this->_threshold, this->_percent)));
+        } catch (const std::exception& e) {
+            UC_ERROR("Failed({}) to make GC Timer.", e.what());
+            return Status::OutOfMemory();
+        }
+        return this->_timer->Start();
+    }
 
 private:
-    Status AddStorageBackend(const std::string& path);
-    Status AddFirstStorageBackend(const std::string& path);
-    Status AddSecondaryStorageBackend(const std::string& path);
-    std::string StorageBackend(const std::string& blockId) const;
-    std::vector<std::string> RelativeRoots() const;
-    std::string DataFileRoot() const;
-
-private:
-    std::vector<std::string> _storageBackends;
+    std::chrono::seconds _interval;
+    uint64_t _threshold;
+    float _percent;
+    std::unique_ptr<Timer<GCRunner>> _timer;
 };
 
 } // namespace UC
-
 #endif

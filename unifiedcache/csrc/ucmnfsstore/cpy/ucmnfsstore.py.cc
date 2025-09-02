@@ -120,7 +120,13 @@ PYBIND11_MODULE(ucmnfsstore, module)
         .def_readwrite("transferDeviceId", &UC::SetupParam::transferDeviceId)
         .def_readwrite("transferStreamNumber", &UC::SetupParam::transferStreamNumber)
         .def_readwrite("transferIoSize", &UC::SetupParam::transferIoSize)
-        .def_readwrite("transferBufferNumber", &UC::SetupParam::transferBufferNumber);
+        .def_readwrite("transferBufferNumber", &UC::SetupParam::transferBufferNumber)
+        .def_readwrite("transferTimeoutMs", &UC::SetupParam::transferTimeoutMs)
+        .def_readwrite("gcEnable", &UC::SetupParam::gcEnable)
+        .def_readwrite("gcInterval", &UC::SetupParam::gcInterval)
+        .def_readwrite("gcCapacity", &UC::SetupParam::gcCapacity)
+        .def_readwrite("gcThresholdPercent", &UC::SetupParam::gcThresholdPercent)
+        .def_readwrite("gcCleanupPercent", &UC::SetupParam::gcCleanupPercent);
     module.def("Setup", &UC::Setup);
     module.def("Alloc", &UC::Alloc);
     module.def("AllocBatch", &UC::AllocBatch);

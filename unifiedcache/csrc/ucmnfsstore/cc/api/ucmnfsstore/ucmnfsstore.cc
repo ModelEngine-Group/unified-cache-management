@@ -28,6 +28,7 @@
 #include "status/status.h"
 #include "template/singleton.h"
 #include "tsf_task/tsf_task_manager.h"
+#include "gc/gc_timer.h"
 
 namespace UC {
 
@@ -41,6 +42,11 @@ void ShowSetupParam(const SetupParam& param)
     UC_INFO("Set UC::IOSize to {}.", param.transferIoSize);
     UC_INFO("Set UC::BufferNumber to {}.", param.transferBufferNumber);
     UC_INFO("Set UC::TimeoutMs to {}.", param.transferTimeoutMs);
+    UC_INFO("Set UC::GcEnable to {}.", param.gcEnable);
+    UC_INFO("Set UC::GcInterval to {}.", param.gcInterval);
+    UC_INFO("Set UC::GcCapacity to {}.", param.gcCapacity);
+    UC_INFO("Set UC::GcThresholdPercent to {}.", param.gcThresholdPercent);
+    UC_INFO("Set UC::GcCleanupPercent to {}.", param.gcCleanupPercent);
 }
 
 int32_t Setup(const SetupParam& param)
@@ -57,6 +63,15 @@ int32_t Setup(const SetupParam& param)
                                 param.transferBufferNumber, param.transferTimeoutMs, spaceMgr->GetSpaceLayout());
         if (status.Failure()) {
             UC_ERROR("Failed({}) to setup TsfTaskManager.", status);
+            return status.Underlying();
+        }
+    }
+    if (param.gcEnable) {
+        auto gcTimer = Singleton<GCTimer>::Instance();
+        gcTimer->Setup(param.gcInterval, param.gcCapacity, param.gcThresholdPercent, param.gcCleanupPercent);
+        status = gcTimer->Start();
+        if (status.Failure()) {
+            UC_ERROR("Failed({}) to start GC Timer.", status);
             return status.Underlying();
         }
     }
