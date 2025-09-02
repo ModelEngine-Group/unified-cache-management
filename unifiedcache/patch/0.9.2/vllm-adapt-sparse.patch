@@ -1,17 +1,17 @@
-From 0cd145cc3f5ad08ff1bcef1f7d95ad0a40fbaed7 Mon Sep 17 00:00:00 2001
+From 8cef77f16ca578122d6858d07019d471bf2c00c7 Mon Sep 17 00:00:00 2001
 From: harrisonyhq <harrisonyhq@gmail.com>
-Date: Mon, 1 Sep 2025 11:48:44 +0800
-Subject: [PATCH] [PATCH] vLLM adapt for UCM Sparse Framework
+Date: Tue, 2 Sep 2025 20:11:39 +0800
+Subject: [PATCH] [Patch] vLLM patch for UCM Sparse
 
 ---
  vllm/attention/layer.py            | 42 ++++++++++++++++++
- vllm/v1/core/kv_cache_manager.py   | 31 ++++++++++++-
+ vllm/v1/core/kv_cache_manager.py   | 32 +++++++++++++-
  vllm/v1/core/sched/output.py       |  3 ++
- vllm/v1/core/sched/scheduler.py    | 30 ++++++++++++-
+ vllm/v1/core/sched/scheduler.py    | 28 +++++++++++-
  vllm/v1/worker/block_table.py      | 13 ++++++
  vllm/v1/worker/gpu_model_runner.py | 70 +++++++++++++++++++++++++-----
  vllm/v1/worker/gpu_worker.py       |  2 +
- 7 files changed, 178 insertions(+), 13 deletions(-)
+ 7 files changed, 177 insertions(+), 13 deletions(-)
 
 diff --git a/vllm/attention/layer.py b/vllm/attention/layer.py
 index f0ad68b16..847c97371 100644
@@ -95,7 +95,7 @@ index f0ad68b16..847c97371 100644
 +    
 +    ucm_sparse.attention_finished(query, key, value, attn_output, layer_name, forward_context)
 diff --git a/vllm/v1/core/kv_cache_manager.py b/vllm/v1/core/kv_cache_manager.py
-index 6937455e7..81e5711b2 100644
+index 6937455e7..3a44db442 100644
 --- a/vllm/v1/core/kv_cache_manager.py
 +++ b/vllm/v1/core/kv_cache_manager.py
 @@ -1,9 +1,10 @@
@@ -127,11 +127,12 @@ index 6937455e7..81e5711b2 100644
      ) -> Optional[KVCacheBlocks]:
          """Add slots for a request with new tokens to append.
  
-@@ -232,6 +236,31 @@ class KVCacheManager:
+@@ -232,6 +236,32 @@ class KVCacheManager:
          if num_new_tokens == 0:
              raise ValueError("num_new_tokens must be greater than 0")
  
 +        if num_slots_sparsed != INVALID_SLOT:
++            self.block_size = self.kv_cache_config.kv_cache_groups[0].kv_cache_spec.block_size
 +            num_blocks_need = math.ceil(num_slots_sparsed / self.block_size)
 +            allocated_blocks = self.coordinator.get_blocks(request.request_id)[0]
 +            returned_blocks = []
@@ -171,7 +172,7 @@ index d34f39327..141d750b3 100644
 +    # modified slots by sparse algorithm
 +    req_sparsed_slots: dict[str, int] = None
 diff --git a/vllm/v1/core/sched/scheduler.py b/vllm/v1/core/sched/scheduler.py
-index 22c0ad8d6..a9a81574e 100644
+index 22c0ad8d6..c5c39a2b8 100644
 --- a/vllm/v1/core/sched/scheduler.py
 +++ b/vllm/v1/core/sched/scheduler.py
 @@ -35,6 +35,9 @@ from vllm.v1.request import Request, RequestStatus
@@ -255,16 +256,7 @@ index 22c0ad8d6..a9a81574e 100644
              # finished_req_ids is an existing state in the scheduler,
              # instead of being newly scheduled in this step.
              # It contains the request IDs that are finished in between
-@@ -871,6 +893,8 @@ class Scheduler(SchedulerInterface):
-             if not stopped:
-                 new_running.append(request)
- 
-+            if model_runner_output.finished_dumping is not None:
-+                request.succeed_dumped_blocks.extend(model_runner_output.finished_dumping.get(req_id, []))
-         self.running = new_running
- 
-         # KV Connector: update state for finished KV Transfers.
-@@ -929,6 +953,8 @@ class Scheduler(SchedulerInterface):
+@@ -929,6 +951,8 @@ class Scheduler(SchedulerInterface):
      def add_request(self, request: Request) -> None:
          self.waiting.add_request(request)
          self.requests[request.request_id] = request
@@ -273,7 +265,7 @@ index 22c0ad8d6..a9a81574e 100644
          if self.log_stats:
              request.record_event(EngineCoreEventType.QUEUED)
  
-@@ -979,6 +1005,8 @@ class Scheduler(SchedulerInterface):
+@@ -979,6 +1003,8 @@ class Scheduler(SchedulerInterface):
      def _free_request(self, request: Request) -> Optional[dict[str, Any]]:
          assert request.is_finished()
  
@@ -502,6 +494,8 @@ index 7117f60b5..c239e1f02 100644
  
  
  def _check_if_gpu_supports_dtype(torch_dtype: torch.dtype):
+
+base-commit: 0362d815b534a9e4a597f1fc5887d950896304b4
 -- 
 2.50.1.windows.1
 
