@@ -120,7 +120,8 @@ class TestUCConnector(unittest.TestCase):
         def mock_create(tokens: List[str]) -> List[int]:
             return [1] * self.block_number
 
-        mock_connector.lookup.side_effect = mock_create
+        mock_connector.lookup.side_effect = mock_lookup
+        mock_connector.create.side_effect = mock_create
         ucconnector = self.init_uc(mock_connector)
 
         random.seed(20250704)
@@ -147,7 +148,8 @@ class TestUCConnector(unittest.TestCase):
         def mock_create(tokens: List[str]) -> List[int]:
             return [1] * self.block_number
 
-        mock_connector.lookup.side_effect = mock_create
+        mock_connector.lookup.side_effect = mock_lookup
+        mock_connector.create.side_effect = mock_create
         ucconnector = self.init_uc(mock_connector)
 
         random.seed(20250704)
