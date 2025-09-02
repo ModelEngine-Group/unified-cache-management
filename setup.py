@@ -117,7 +117,7 @@ class CMakeBuild(build_ext):
 
 setup(
     name="unifiedcache",
-    version="0.0.1",
+    version="0.0.2",
     description="Unified Cache Management",
     author="Unified Cache Team",
     packages=find_packages(),
