@@ -60,7 +60,7 @@ void GCRunner::operator()()
         this->_minHeap.pop();
         std::error_code err;
         if (!std::filesystem::remove(info.path, err)) {
-            UC_ERROR("Failed({}) to gc file: {}, errno: {}", info.path.string(), err.value());
+            UC_ERROR("Failed to gc file: {}, errno: {}", info.path.string(), err.value());
             continue;
         }
         usedSpace -= info.fileSize;
