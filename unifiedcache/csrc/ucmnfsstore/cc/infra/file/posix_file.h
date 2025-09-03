@@ -42,6 +42,8 @@ public:
     Status Read(void* buffer, size_t size, off64_t offset = -1) override;
     Status Write(const void* buffer, size_t size, off64_t offset = -1) override;
     Status Truncate(size_t length) override;
+    Status ShmOpen(OpenFlag flags) override;
+    Status ShmUnlink() override;
 
 private:
     int32_t _handle;

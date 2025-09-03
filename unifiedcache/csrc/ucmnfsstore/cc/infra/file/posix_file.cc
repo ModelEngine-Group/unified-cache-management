@@ -160,4 +160,34 @@ Status PosixFile::Truncate(size_t length)
     return Status::OK();
 }
 
+Status PosixFile::ShmOpen(OpenFlag flags)
+{
+    this->_handle = shm_open(this->Path().c_str(), flags, S_IRUSR | S_IWUSR | S_IRGRP | S_IWGRP);
+    auto eno = errno;
+    if (this->_handle == -1) {
+        if (eno == EEXIST) {
+            return Status::DuplicateKey();
+        } else {
+            UC_ERROR("Failed to open shm file, path: {}, errno: {}.", this->Path(), eno);
+            return Status::OsApiError();
+        }
+    }
+    return Status::OK();
+}
+
+Status PosixFile::ShmUnlink()
+{
+    auto ret = shm_unlink(this->Path().c_str());
+    auto eno = errno;
+    if (ret != 0) {
+        if (eno == ENOENT) {
+            return Status::NotFound();
+        } else {
+            UC_ERROR("Failed to unlink shm file, path: {}, errno: {}.", this->Path(), eno);
+            return Status::OsApiError();
+        }
+    }
+    return Status::OK();
+}
+
 } // namespace UC

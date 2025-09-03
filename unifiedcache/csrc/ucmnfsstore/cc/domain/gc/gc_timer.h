@@ -26,6 +26,7 @@
 
 #include "gc_runner.h"
 #include "template/timer.h"
+#include "file/file.h"
 
 namespace UC {
 
@@ -39,6 +40,15 @@ public:
     }
     Status Start()
     {
+        auto status = this->_ifile->ShmOpen(IFile::OpenFlag::CREATE | IFile::OpenFlag::EXCLUSIVE | IFile::OpenFlag::READ_WRITE);
+        if (status.Failure()) {
+            if (status == Status::DuplicateKey()) {
+                return Status::OK();
+            } else {
+                UC_ERROR("Failed to start gc, status={}.", status);
+                return status;
+            }
+        }
         try {
             this->_timer = std::make_unique<Timer<GCRunner>>(this->_interval, std::move(GCRunner(this->_threshold, this->_percent)));
         } catch (const std::exception& e) {
@@ -53,6 +63,7 @@ private:
     uint64_t _threshold;
     float _percent;
     std::unique_ptr<Timer<GCRunner>> _timer;
+    std::unique_ptr<IFile> _ifile;
 };
 
 } // namespace UC
