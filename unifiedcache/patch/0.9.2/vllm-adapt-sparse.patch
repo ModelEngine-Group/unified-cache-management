@@ -1,5 +1,20 @@
+From 8cef77f16ca578122d6858d07019d471bf2c00c7 Mon Sep 17 00:00:00 2001
+From: harrisonyhq <harrisonyhq@gmail.com>
+Date: Tue, 2 Sep 2025 20:11:39 +0800
+Subject: [PATCH] [Patch] vLLM patch for UCM Sparse
+
+---
+ vllm/attention/layer.py            | 42 ++++++++++++++++++
+ vllm/v1/core/kv_cache_manager.py   | 32 +++++++++++++-
+ vllm/v1/core/sched/output.py       |  3 ++
+ vllm/v1/core/sched/scheduler.py    | 28 +++++++++++-
+ vllm/v1/worker/block_table.py      | 13 ++++++
+ vllm/v1/worker/gpu_model_runner.py | 70 +++++++++++++++++++++++++-----
+ vllm/v1/worker/gpu_worker.py       |  2 +
+ 7 files changed, 177 insertions(+), 13 deletions(-)
+
 diff --git a/vllm/attention/layer.py b/vllm/attention/layer.py
-index f0ad68b16..db0d8a58d 100644
+index f0ad68b16..847c97371 100644
 --- a/vllm/attention/layer.py
 +++ b/vllm/attention/layer.py
 @@ -22,6 +22,7 @@ from vllm.model_executor.layers.quantization.kv_cache import BaseKVCacheMethod
@@ -10,17 +25,18 @@ index f0ad68b16..db0d8a58d 100644
  
  
  class Attention(nn.Module):
-@@ -409,8 +410,10 @@ def unified_attention(
+@@ -409,9 +410,11 @@ def unified_attention(
          attn_metadata = attn_metadata[layer_name]
      self = forward_context.no_compile_layers[layer_name]
      kv_cache = self.kv_cache[forward_context.virtual_engine]
 +    maybe_execute_sparse_attention_begin(query, key, value, layer_name, forward_context)
      output = self.impl.forward(self, query, key, value, kv_cache,
                                 attn_metadata)
-+    maybe_execute_sparse_attention_finished(query, key, value, output, layer_name, forward_context)
  
++    maybe_execute_sparse_attention_finished(query, key, value, output, layer_name, forward_context)
      maybe_save_kv_layer_to_connector(layer_name, kv_cache)
      return output
+ 
 @@ -449,6 +452,7 @@ def unified_attention_with_output(
          attn_metadata = attn_metadata[layer_name]
      self = forward_context.no_compile_layers[layer_name]
@@ -29,16 +45,15 @@ index f0ad68b16..db0d8a58d 100644
      self.impl.forward(self,
                        query,
                        key,
-@@ -457,7 +461,7 @@ def unified_attention_with_output(
-                       attn_metadata,
+@@ -458,6 +462,7 @@ def unified_attention_with_output(
                        output=output,
                        output_scale=output_scale)
--
+ 
 +    maybe_execute_sparse_attention_finished(query, key, value, output, layer_name, forward_context)
      maybe_save_kv_layer_to_connector(layer_name, kv_cache)
  
  
-@@ -479,3 +483,40 @@ direct_register_custom_op(
+@@ -479,3 +484,40 @@ direct_register_custom_op(
      fake_impl=unified_attention_with_output_fake,
      dispatch_key=current_platform.dispatch_key,
  )
@@ -79,18 +94,19 @@ index f0ad68b16..db0d8a58d 100644
 +        return
 +    
 +    ucm_sparse.attention_finished(query, key, value, attn_output, layer_name, forward_context)
-\ No newline at end of file
 diff --git a/vllm/v1/core/kv_cache_manager.py b/vllm/v1/core/kv_cache_manager.py
-index 6937455e7..764931668 100644
+index 6937455e7..3a44db442 100644
 --- a/vllm/v1/core/kv_cache_manager.py
 +++ b/vllm/v1/core/kv_cache_manager.py
-@@ -3,7 +3,8 @@
+@@ -1,9 +1,10 @@
+ # SPDX-License-Identifier: Apache-2.0
+ # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
  
++import math
  from collections import defaultdict
  from dataclasses import dataclass
 -from typing import Optional
 +from typing import Optional, Union
-+import math
  
  from vllm.distributed.kv_events import KVCacheEvent
  from vllm.logger import init_logger
@@ -111,12 +127,12 @@ index 6937455e7..764931668 100644
      ) -> Optional[KVCacheBlocks]:
          """Add slots for a request with new tokens to append.
  
-@@ -231,6 +235,31 @@ class KVCacheManager:
-         """
+@@ -232,6 +236,32 @@ class KVCacheManager:
          if num_new_tokens == 0:
              raise ValueError("num_new_tokens must be greater than 0")
-+        
+ 
 +        if num_slots_sparsed != INVALID_SLOT:
++            self.block_size = self.kv_cache_config.kv_cache_groups[0].kv_cache_spec.block_size
 +            num_blocks_need = math.ceil(num_slots_sparsed / self.block_size)
 +            allocated_blocks = self.coordinator.get_blocks(request.request_id)[0]
 +            returned_blocks = []
@@ -140,9 +156,10 @@ index 6937455e7..764931668 100644
 +                return None
 +            new_blocks = self.coordinator.allocate_new_blocks(request.request_id, num_slots_sparsed)
 +            return KVCacheBlocks(tuple([sparsed_blocks]))
- 
++
          if new_computed_blocks is not None:
              new_computed_block_list = new_computed_blocks.blocks
+         else:
 diff --git a/vllm/v1/core/sched/output.py b/vllm/v1/core/sched/output.py
 index d34f39327..141d750b3 100644
 --- a/vllm/v1/core/sched/output.py
@@ -155,7 +172,7 @@ index d34f39327..141d750b3 100644
 +    # modified slots by sparse algorithm
 +    req_sparsed_slots: dict[str, int] = None
 diff --git a/vllm/v1/core/sched/scheduler.py b/vllm/v1/core/sched/scheduler.py
-index fe552db74..d16785ce0 100644
+index 22c0ad8d6..c5c39a2b8 100644
 --- a/vllm/v1/core/sched/scheduler.py
 +++ b/vllm/v1/core/sched/scheduler.py
 @@ -35,6 +35,9 @@ from vllm.v1.request import Request, RequestStatus
@@ -239,69 +256,32 @@ index fe552db74..d16785ce0 100644
              # finished_req_ids is an existing state in the scheduler,
              # instead of being newly scheduled in this step.
              # It contains the request IDs that are finished in between
-@@ -869,6 +891,9 @@ class Scheduler(SchedulerInterface):
- 
-             if not stopped:
-                 new_running.append(request)
-+
-+            if model_runner_output.finished_dumping is not None:
-+                request.succeed_dumped_blocks.extend(model_runner_output.finished_dumping.get(req_id, []))
-         self.running = new_running
- 
-         # KV Connector: update state for finished KV Transfers.
-@@ -927,6 +952,8 @@ class Scheduler(SchedulerInterface):
+@@ -929,6 +951,8 @@ class Scheduler(SchedulerInterface):
      def add_request(self, request: Request) -> None:
          self.waiting.add_request(request)
          self.requests[request.request_id] = request
 +        if self.ucm_sparse:
-+            self.ucm_sparse.request_begin(request.request_id, request.prompt_token_ids)
++            self.ucm_sparse.request_begin(request.request_id, request.prompt_token_ids)        
          if self.log_stats:
              request.record_event(EngineCoreEventType.QUEUED)
  
-@@ -976,7 +1003,8 @@ class Scheduler(SchedulerInterface):
- 
+@@ -979,6 +1003,8 @@ class Scheduler(SchedulerInterface):
      def _free_request(self, request: Request) -> Optional[dict[str, Any]]:
          assert request.is_finished()
--
+ 
 +        if self.ucm_sparse:
 +            self.ucm_sparse.request_finished_in_scheduler(request.request_id)
          delay_free_blocks, kv_xfer_params = self._connector_finished(request)
          self.encoder_cache_manager.free(request)
          request_id = request.request_id
-diff --git a/vllm/v1/outputs.py b/vllm/v1/outputs.py
-index f78623f57..c8388baed 100644
---- a/vllm/v1/outputs.py
-+++ b/vllm/v1/outputs.py
-@@ -107,6 +107,7 @@ class ModelRunnerOutput:
-     # [req_ids]
-     finished_sending: Optional[set[str]] = None
-     finished_recving: Optional[set[str]] = None
-+    finished_dumping: Optional[dict[str, list[str]]] = None
- 
-     # req_id -> num_nans_in_logits
-     num_nans_in_logits: Optional[dict[str, int]] = None
-diff --git a/vllm/v1/request.py b/vllm/v1/request.py
-index 9b96f4599..e70d1695b 100644
---- a/vllm/v1/request.py
-+++ b/vllm/v1/request.py
-@@ -103,6 +103,8 @@ class Request:
-         # The number of tokens with prefix cache hits.
-         self.num_cached_tokens = -1
- 
-+        self.succeed_dumped_blocks: list[str] = []
-+
-         # The number of NaNs in logits. A value greater than 0
-         # indicates that the output is corrupted
-         self.num_nans_in_logits = 0
 diff --git a/vllm/v1/worker/block_table.py b/vllm/v1/worker/block_table.py
-index 8f4e8d64c..d5be44680 100644
+index 8f4e8d64c..eda1ed2cb 100644
 --- a/vllm/v1/worker/block_table.py
 +++ b/vllm/v1/worker/block_table.py
-@@ -60,6 +60,15 @@ class BlockTable:
-         start = self.num_blocks_per_row[row_idx]
+@@ -61,6 +61,15 @@ class BlockTable:
          self.num_blocks_per_row[row_idx] += num_blocks
          self.block_table_np[row_idx, start:start + num_blocks] = block_ids
-+    
+ 
 +    def reset_row(
 +            self,
 +            row_idx: int,
@@ -310,9 +290,10 @@ index 8f4e8d64c..d5be44680 100644
 +        self.block_table[row_idx].fill_(0)
 +        self.block_table_cpu[row_idx].fill_(0)
 +        self.block_table_np[row_idx].fill(0)
- 
++
      def add_row(self, block_ids: list[int], row_idx: int) -> None:
          self.num_blocks_per_row[row_idx] = 0
+         self.append_row(block_ids, row_idx)
 @@ -117,6 +126,10 @@ class MultiGroupBlockTable:
          for i, block_table in enumerate(self.block_tables):
              block_table.append_row(block_ids[i], row_idx)
@@ -320,12 +301,12 @@ index 8f4e8d64c..d5be44680 100644
 +    def reset_row(self, row_idx: int) -> None:
 +        for i, block_table in enumerate(self.block_tables):
 +            block_table.reset_row(row_idx)
-+
++            
      def add_row(self, block_ids: tuple[list[int], ...], row_idx: int) -> None:
          for i, block_table in enumerate(self.block_tables):
              block_table.add_row(block_ids[i], row_idx)
 diff --git a/vllm/v1/worker/gpu_model_runner.py b/vllm/v1/worker/gpu_model_runner.py
-index 5a26e88db..3cbd79c00 100644
+index 14278bb6a..84a597b0e 100644
 --- a/vllm/v1/worker/gpu_model_runner.py
 +++ b/vllm/v1/worker/gpu_model_runner.py
 @@ -72,6 +72,9 @@ from ..sample.logits_processor import LogitsProcessorManager
@@ -365,32 +346,34 @@ index 5a26e88db..3cbd79c00 100644
  
              # Update the block IDs.
 -            if not resumed_from_preemption:
-+            if resumed_from_preemption or is_sparsed_request:
-+                # The request is resumed from preemption.
-+                # Replace the existing block IDs with the new ones.
-+                req_state.block_ids = new_block_ids
-+            else:
-                 # Append the new blocks to the existing block IDs.
-                 for block_ids, new_ids in zip(req_state.block_ids,
-                                               new_block_ids):
-                     block_ids.extend(new_ids)
+-                # Append the new blocks to the existing block IDs.
+-                for block_ids, new_ids in zip(req_state.block_ids,
+-                                              new_block_ids):
+-                    block_ids.extend(new_ids)
 -            else:
--                # The request is resumed from preemption.
--                # Replace the existing block IDs with the new ones.
--                req_state.block_ids = new_block_ids
++            if resumed_from_preemption or is_sparsed_request:
+                 # The request is resumed from preemption.
+                 # Replace the existing block IDs with the new ones.
+                 req_state.block_ids = new_block_ids
++            else:
++                 # Append the new blocks to the existing block IDs.
++                 for block_ids, new_ids in zip(req_state.block_ids,
++                                               new_block_ids):
++                     block_ids.extend(new_ids)
  
              req_index = self.input_batch.req_id_to_index.get(req_id)
              if req_index is None:
-@@ -515,6 +521,8 @@ class GPUModelRunner(LoRAModelRunnerMixin):
+@@ -515,6 +521,9 @@ class GPUModelRunner(LoRAModelRunnerMixin):
              # Update the persistent batch.
              self.input_batch.num_computed_tokens_cpu[req_index] = (
                  num_computed_tokens)
 +            if is_sparsed_request:
 +                self.input_batch.block_table.reset_row(req_index)
++
              self.input_batch.block_table.append_row(new_block_ids, req_index)
  
              # For the last rank, we don't need to update the token_ids_cpu
-@@ -623,6 +631,19 @@ class GPUModelRunner(LoRAModelRunnerMixin):
+@@ -623,6 +632,19 @@ class GPUModelRunner(LoRAModelRunnerMixin):
          if self.uses_mrope:
              self._calc_mrope_positions(scheduler_output)
  
@@ -410,13 +393,12 @@ index 5a26e88db..3cbd79c00 100644
          # Get token indices.
          # E.g., [0, 1, 0, 1, 2, 3, 4, 0, 1, 2]
          # -> [0, 1, M, M + 1, M + 2, M + 3, M + 4, 2 * M, 2 * M + 1, 2 * M + 2]
-@@ -652,11 +673,12 @@ class GPUModelRunner(LoRAModelRunnerMixin):
+@@ -652,11 +674,11 @@ class GPUModelRunner(LoRAModelRunnerMixin):
              # block_size.
              block_table_indices = (
                  req_indices * block_table.max_num_blocks_per_req +
 -                positions_np // block_size)
 +                sparsed_positions // block_size)
-+
              block_table_cpu = block_table.get_cpu_tensor()
              block_numbers = block_table_cpu.flatten(
              )[block_table_indices].numpy()
@@ -457,34 +439,18 @@ index 5a26e88db..3cbd79c00 100644
  
              model_output = self.model(
                  input_ids=input_ids,
-@@ -1378,7 +1405,9 @@ class GPUModelRunner(LoRAModelRunnerMixin):
-                 inputs_embeds=inputs_embeds,
+@@ -1379,6 +1406,8 @@ class GPUModelRunner(LoRAModelRunnerMixin):
              )
  
--            self.maybe_wait_for_kv_save()
-+            finished_dumping = self.maybe_wait_for_kv_save()
+             finished_dumping = self.maybe_wait_for_kv_save()
 +            self.maybe_execute_ucm_sparse_finished()
 +
              finished_sending, finished_recving = (
                  self.get_finished_kv_transfers(scheduler_output))
  
-@@ -1563,6 +1592,7 @@ class GPUModelRunner(LoRAModelRunnerMixin):
-             finished_sending=finished_sending,
-             finished_recving=finished_recving,
-             num_nans_in_logits=num_nans_in_logits,
-+            finished_dumping=finished_dumping
-         )
- 
-     def propose_draft_token_ids(
-@@ -1719,10 +1749,29 @@ class GPUModelRunner(LoRAModelRunnerMixin):
-             kv_connector.start_load_kv(get_forward_context())
- 
-     @staticmethod
--    def maybe_wait_for_kv_save() -> None:
-+    def maybe_wait_for_kv_save() -> Optional[dict[str, list[str]]]:
+@@ -1724,6 +1753,25 @@ class GPUModelRunner(LoRAModelRunnerMixin):
          if has_kv_transfer_group():
--            get_kv_transfer_group().wait_for_save()
-+            return get_kv_transfer_group().wait_for_save()
+             return get_kv_transfer_group().wait_for_save()
  
 +    def maybe_execute_ucm_sparse_begin(self, scheduler_output: "SchedulerOutput"):
 +        if not has_ucm_sparse():
@@ -509,10 +475,10 @@ index 5a26e88db..3cbd79c00 100644
      def get_finished_kv_transfers(
          scheduler_output: "SchedulerOutput",
 diff --git a/vllm/v1/worker/gpu_worker.py b/vllm/v1/worker/gpu_worker.py
-index 9e7e44d06..28df5ab46 100644
+index 7117f60b5..c239e1f02 100644
 --- a/vllm/v1/worker/gpu_worker.py
 +++ b/vllm/v1/worker/gpu_worker.py
-@@ -28,6 +28,7 @@ from vllm.v1.outputs import ModelRunnerOutput
+@@ -30,6 +30,7 @@ from vllm.v1.outputs import EMPTY_MODEL_RUNNER_OUTPUT, ModelRunnerOutput
  from vllm.v1.utils import report_usage_stats
  from vllm.v1.worker.gpu_model_runner import GPUModelRunner
  from vllm.v1.worker.worker_base import WorkerBase
@@ -520,7 +486,7 @@ index 9e7e44d06..28df5ab46 100644
  
  logger = init_logger(__name__)
  
-@@ -386,6 +387,7 @@ def init_worker_distributed_environment(
+@@ -400,6 +401,7 @@ def init_worker_distributed_environment(
                                        parallel_config.pipeline_parallel_size)
  
      ensure_kv_transfer_initialized(vllm_config)
@@ -528,3 +494,8 @@ index 9e7e44d06..28df5ab46 100644
  
  
  def _check_if_gpu_supports_dtype(torch_dtype: torch.dtype):
+
+base-commit: 0362d815b534a9e4a597f1fc5887d950896304b4
+-- 
+2.50.1.windows.1
+
