@@ -19,7 +19,8 @@ from unifiedcache.integration.vllm.ucm_sparse.base import (
 )
 from unifiedcache.ucm_sparse.prefetch_engine import GSAPrefetchBase
 from unifiedcache.ucm_sparse.utils import (MAX_TOPK_LEN, compute_topk_len,
-                                           SEG_PREFILL_THRESHOLD, LOCAL_WINDOW_SZ)
+                                           SEG_PREFILL_THRESHOLD, LOCAL_WINDOW_SZ,
+                                           PTOPK_PREFETCH_ENABLE)
 from unifiedcache.ucm_connector.base import Task, UcmKVStoreBase
 from unifiedcache.ucm_connector.factory import UcmConnectorFactory
 from vllm.utils import make_tensor_with_pad
@@ -562,12 +563,13 @@ class GSA(UcmSparseBase):
             self.gsa_offload_ops.k_cache[current_layer_id][:len(block_ids)] = temp_k_cache
             result = self.gsa_offload_ops.set_kpre_data_ready(current_layer_id)
             if not result:
-                self.is_cal_kpre[current_layer_id] = True;
+                self.is_cal_kpre[current_layer_id] = True
         elif self.is_cal_kpre[current_layer_id]:
             result = self.gsa_offload_ops.set_kpre_data_ready(current_layer_id)
             if result:
-                self.is_cal_kpre[current_layer_id] = False;
-        
+                self.is_cal_kpre[current_layer_id] = False
+        if not PTOPK_PREFETCH_ENABLE:
+            return
         block_hashes = []
         block_ids = []
         for req_id in self.prefetch_engine.req_ids_bs:
@@ -671,6 +673,8 @@ class GSA(UcmSparseBase):
         all_need_load_block, all_miss_idx = self.prefetch_engine.deal_async_prefetch(
             self.rank, self.gsa_metadata)
         self.gsa_stats = self.gsa_metadata.gsa_stats
+        if not PTOPK_PREFETCH_ENABLE:
+            return
         self.wait_all_task_done("dump")
         self._gsa_sparse_local_kv()
         if all_need_load_block != None:
@@ -759,7 +763,8 @@ class GSA(UcmSparseBase):
             )
         self._sparse_metadata = sparse_meta
         self.gsa_metadata = self.build_gsa_metadata(scheduler_output, requests, input_batch)
-        self._init_sparse_local_kv(scheduler_output, requests)
+        if PTOPK_PREFETCH_ENABLE:
+            self._init_sparse_local_kv(scheduler_output, requests)
 
     def request_begin(self, request_id: ReqType, prompt_token_ids: List[int]):
         pass
@@ -777,6 +782,8 @@ class GSA(UcmSparseBase):
         pass
 
     def estimate_num_slots_sparsed(self, request: Request) -> int:
+        if not PTOPK_PREFETCH_ENABLE:
+            return INVALID_SLOT
         if request.num_output_tokens == 0:
             return INVALID_SLOT
         if request.num_prompt_tokens <= SEG_PREFILL_THRESHOLD:
