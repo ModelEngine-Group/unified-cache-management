@@ -47,7 +47,7 @@ public:
     void SetCommonParam(std::vector<uint32_t>& calTopkIdx, std::vector<bool>& isDecode);
     void SetTopkParam(std::vector<std::vector<uint32_t>>& repreSlotMapping);
     void SetKpreParam(std::vector<uint32_t>& calcKpreBlockTable, std::vector<uint32_t>& calcRepreSlotMapping);
-    void SetKpreDataReady(uint32_t layerIdx);
+    bool SetKpreDataReady(uint32_t layerIdx);
     void SetTopkDataReady(uint32_t layerIdx);
     bool IsCalculateFinish();
 private:

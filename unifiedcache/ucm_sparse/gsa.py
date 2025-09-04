@@ -434,6 +434,7 @@ class GSA(UcmSparseBase):
             vllm_config.scheduler_config.max_num_seqs, att_num_heads, head_size)
         self.gsa_offload_ops.set_kpre_method_param(int(max_model_len / block_size), kv_num_heads, 1)
         self.gsa_offload_ops.set_kpre_cache(prefetch_engine.kpre_caches)
+        self.is_cal_kpre = [False] * self.layer_num
     
     @classmethod
     def req_state_hash(cls, req_id, layer_name):
@@ -559,8 +560,14 @@ class GSA(UcmSparseBase):
             k_needed = attn[layer_name].kv_cache[forward_context.virtual_engine][0][block_ids].cpu()
             temp_k_cache = k_needed.to(torch.float32).permute(0, 2, 1, 3)
             self.gsa_offload_ops.k_cache[current_layer_id][:len(block_ids)] = temp_k_cache
-            self.gsa_offload_ops.set_kpre_data_ready(current_layer_id)
-        
+            result = self.gsa_offload_ops.set_kpre_data_ready(current_layer_id)
+            if not result:
+                self.is_cal_kpre[current_layer_id] = True;
+        elif self.is_cal_kpre[current_layer_id]:
+            result = self.gsa_offload_ops.set_kpre_data_ready(current_layer_id)
+            if result:
+                self.is_cal_kpre[current_layer_id] = False;
+                
         block_hashes = []
         block_ids = []
         for req_id in self.prefetch_engine.req_ids_bs:
