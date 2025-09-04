@@ -137,3 +137,16 @@ class UcmKVStoreBase(ABC):
             is_success(bool): if False, we need release block
         """
         pass
+
+    @abstractmethod
+    def check(self, task: Task) -> bool:
+        """
+        check if kv transfer task finished.
+
+        Args:
+            task (Task): transfer engine task.
+        Returns:
+            0 - finished
+            others - in process.
+        """
+        pass
