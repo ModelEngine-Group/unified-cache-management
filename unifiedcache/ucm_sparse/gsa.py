@@ -201,7 +201,10 @@ class GSAReqStat:
                         self.remain_idx.append(i)
                     elif len(self.prefetch_idx) < prefetch_len:
                         self.prefetch_idx.append(i)
-                self.sparse_len = remain_len + prefetch_len
+                if PTOPK_PREFETCH_ENABLE:
+                    self.sparse_len = remain_len + prefetch_len
+                else:
+                    self.sparse_len = blocks_len
             else:
                 self.remain_idx = list(range(blocks_len))
                 self.prefetch_idx = []

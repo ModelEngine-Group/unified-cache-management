@@ -351,8 +351,8 @@ class GSAPrefetchBase:
                 for layerid in range(self.num_attention_layers):
                     one_topk_len = len(gsa_metadata.gsa_stats[req_id].topk_buf_tmp[layerid])
                     block_table_tmp[layerid][index][:one_topk_len] = one_block_table[gsa_metadata.gsa_stats[req_id].topk_buf_tmp[layerid]]
-                    block_table_tmp[layerid][index][:one_topk_len - 2] = gsa_metadata.gsa_stats[req_id].blocks[-2]
-                    block_table_tmp[layerid][index][:one_topk_len - 2] = gsa_metadata.gsa_stats[req_id].blocks[-1]
+                    block_table_tmp[layerid][index][one_topk_len - 2] = gsa_metadata.gsa_stats[req_id].blocks[-2]
+                    block_table_tmp[layerid][index][one_topk_len - 1] = gsa_metadata.gsa_stats[req_id].blocks[-1]
                     if remain_slot == 0:
                         gen_len_tmp[layerid][index].add_(one_topk_len * self.block_size)
                     else:
