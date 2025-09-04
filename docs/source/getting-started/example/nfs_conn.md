@@ -81,7 +81,9 @@ vllm serve /home/models/Qwen2.5-14B-Instruct \
         "ucm_connector_name": "UcmNfsStore",
         "ucm_connector_config": {
             "storage_backends": "/mnt/test",
-            "kv_block_size": 33554432
+            "kv_block_size": 33554432,
+            "transferStreamNumber":16,
+            "transferIoSize":131072
         }
     }
 }'
@@ -97,7 +99,7 @@ INFO:     Application startup complete.
 
 Congratulations, you have successfully started the vLLM server with NFS Connector!
 
-Afrer successfully started the vLLM server，You can interact with the API as following:
+After successfully started the vLLM server，You can interact with the API as following:
 
 ```bash
 curl http://localhost:7800/v1/completions \

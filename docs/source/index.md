@@ -26,7 +26,7 @@ Make KVCache Great Again!
 :::{toctree}
 :maxdepth: 3
 getting-started/index.md
-kvcache/index.md
+feature/index.md
 developer/index.md
 about.md
 :::

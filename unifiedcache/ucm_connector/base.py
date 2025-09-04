@@ -23,7 +23,7 @@
 #
 
 from abc import ABC, abstractmethod
-from typing import List, Dict
+from typing import Dict, List
 
 import torch
 
@@ -32,6 +32,7 @@ class Task:
     """
     Abstract Task for kv transfer
     """
+
     pass
 
 
@@ -50,7 +51,7 @@ class UcmKVStoreBase(ABC):
 
         Args:
             block_ids (List[str]): vLLM block hash.
-        
+
         Returns:
             0 - success
             others - failed
@@ -82,7 +83,9 @@ class UcmKVStoreBase(ABC):
         pass
 
     @abstractmethod
-    def load(self, block_ids: List[str], offset: List[int], dst_tensor: List[torch.Tensor]) -> Task:
+    def load(
+        self, block_ids: List[str], offset: List[int], dst_tensor: List[torch.Tensor]
+    ) -> Task:
         """
         load kv cache to device.
 
@@ -96,7 +99,9 @@ class UcmKVStoreBase(ABC):
         pass
 
     @abstractmethod
-    def dump(self, block_ids: List[str], offset: List[int], src_tensor: List[torch.Tensor]) -> Task:
+    def dump(
+        self, block_ids: List[str], offset: List[int], src_tensor: List[torch.Tensor]
+    ) -> Task:
         """
         dump kv cache to device.
 

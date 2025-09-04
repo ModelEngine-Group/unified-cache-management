@@ -1,0 +1,35 @@
+BasedOnStyle: LLVM
+IndentWidth: 4
+ColumnLimit: 120
+AccessModifierOffset: -4
+AlwaysBreakTemplateDeclarations: true
+PointerAlignment: Left
+AlignArrayOfStructures: Left
+AllowShortBlocksOnASingleLine: true
+AllowShortCaseLabelsOnASingleLine: true
+AllowShortFunctionsOnASingleLine: All
+AllowShortIfStatementsOnASingleLine: true
+AllowShortLoopsOnASingleLine: true
+IncludeBlocks: Merge
+IncludeCategories:
+    - Regex: '<.*>'
+      Priority: 2
+    - Regex: '.*'
+      Priority: 3
+BreakBeforeBraces: Custom
+BraceWrapping:
+    AfterClass: false
+    AfterControlStatement: false
+    AfterEnum: false
+    AfterFunction: true
+    AfterNamespace: false
+    AfterObjCDeclaration: false
+    AfterStruct: false
+    AfterUnion: false
+    AfterExternBlock: false
+    BeforeCatch: false
+    BeforeElse: false
+    IndentBraces: false
+    SplitEmptyFunction: true
+    SplitEmptyRecord: true
+    SplitEmptyNamespace: true

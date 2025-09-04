@@ -23,9 +23,10 @@
 #
 # Adapted from lmcache/lmcache/integration/vllm/vllm_v1_adapter.py
 #
-
+import hashlib
+import pickle
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, List, Optional, Any, Generator
+from typing import TYPE_CHECKING, Any, Generator, List, Optional
 
 import torch
 from vllm.config import VllmConfig
@@ -34,7 +35,7 @@ from vllm.distributed.kv_transfer.kv_connector.v1.base import (
     KVConnectorMetadata,
     KVConnectorRole,
 )
-from vllm.utils import sha256
+from vllm.distributed.parallel_state import get_world_group
 from vllm.v1.core.kv_cache_utils import hash_request_tokens
 from vllm.v1.core.sched.output import SchedulerOutput
 
@@ -95,18 +96,22 @@ class UCConnectorV1Metadata(KVConnectorMetadata):
 
     def __init__(self):
         self.requests = []
-    
-    def add_request(self, request_id: str,
-                    vllm_block_ids: list[int],
-                    load_paras: Optional[LoadPara] = None,
-                    save_paras: Optional[SavePara] = None
-                    ) -> None:
+
+    def add_request(
+        self,
+        request_id: str,
+        vllm_block_ids: list[int],
+        load_paras: Optional[LoadPara] = None,
+        save_paras: Optional[SavePara] = None,
+    ) -> None:
         self.requests.append(
             ReqMeta(
                 request_id=request_id,
                 vllm_block_ids=vllm_block_ids,
                 load_paras=load_paras,
-                save_paras=save_paras))
+                save_paras=save_paras,
+            )
+        )
 
 
 class UnifiedCacheConnectorV1(KVConnectorBase_V1):
@@ -117,32 +122,54 @@ class UnifiedCacheConnectorV1(KVConnectorBase_V1):
         self.use_layerwise = True
         self.kv_caches: dict[str, torch.Tensor] = {}
         self.total_tp_size = vllm_config.parallel_config.tensor_parallel_size
-        self.rank = vllm_config.parallel_config.rank
+        self.rank = (
+            -1 if role == KVConnectorRole.SCHEDULER else get_world_group().local_rank
+        )
         self.load_paras: dict[str, LoadPara] = {}
         self.save_paras: dict[str, SavePara] = {}
         # dump tasks record request -> block -> list[task]
         self.dump_tasks: dict[str, dict[str, List[Task]]] = {}
-        self.load_tasks: dict[str, tuple[Task, Task]] = {}
+        self.layerwise_load_tasks: dict[str, dict[str, tuple[Task, Task]]] = {}
         self.is_mla = self._vllm_config.model_config.is_deepseek_mla
         self.num_layers = vllm_config.model_config.get_num_layers(
             vllm_config.parallel_config
         )
         self.element_size = vllm_config.model_config.dtype.itemsize
-        if self._vllm_config.kv_transfer_config is not None and \
-                "ucm_connector_name" in self._vllm_config.kv_transfer_config.kv_connector_extra_config:
-            name = self._vllm_config.kv_transfer_config.kv_connector_extra_config["ucm_connector_name"]
+        self.kv_role = vllm_config.kv_transfer_config.kv_role
+        if (
+            self._vllm_config.kv_transfer_config is not None
+            and "ucm_connector_name"
+            in self._vllm_config.kv_transfer_config.kv_connector_extra_config
+        ):
+            name = self._vllm_config.kv_transfer_config.kv_connector_extra_config[
+                "ucm_connector_name"
+            ]
             config = {}
-            if "ucm_connector_config" in self._vllm_config.kv_transfer_config.kv_connector_extra_config:
-                config = self._vllm_config.kv_transfer_config.kv_connector_extra_config["ucm_connector_config"]
+            if (
+                "ucm_connector_config"
+                in self._vllm_config.kv_transfer_config.kv_connector_extra_config
+            ):
+                config = self._vllm_config.kv_transfer_config.kv_connector_extra_config[
+                    "ucm_connector_config"
+                ]
             config["device"] = self.rank
-            config["role"] = "scheduler" if role == KVConnectorRole.SCHEDULER else "worker"
+            config["role"] = (
+                "scheduler" if role == KVConnectorRole.SCHEDULER else "worker"
+            )
             logger.info("init UCConnectorImpl, connector: %s", name)
             self.connector = UcmConnectorFactory.create_connector(name, config)
         else:
             raise TypeError(f"no storage connector.")
-        if self._vllm_config.kv_transfer_config is not None and \
-                "use_layerwise" in self._vllm_config.kv_transfer_config.kv_connector_extra_config:
-            self.use_layerwise = self._vllm_config.kv_transfer_config.kv_connector_extra_config["use_layerwise"]
+        if (
+            self._vllm_config.kv_transfer_config is not None
+            and "use_layerwise"
+            in self._vllm_config.kv_transfer_config.kv_connector_extra_config
+        ):
+            self.use_layerwise = (
+                self._vllm_config.kv_transfer_config.kv_connector_extra_config[
+                    "use_layerwise"
+                ]
+            )
 
     def _init_kv_caches_from_forward_context(self, forward_context: "ForwardContext"):
         for layer_name in forward_context.no_compile_layers:
@@ -158,36 +185,39 @@ class UnifiedCacheConnectorV1(KVConnectorBase_V1):
 
     def DataOffset(self, kv_layer, rank, layer_id, is_v):
         # Non-MLA scene: one layer shape is (2, num_blocks, block_size, num_kv_heads, head_size)
-        # MLA scene: one layer shape is (num_blocks, block_size, num_kv_heads, head_size)
-        # TODO MLA adapt
-        kv_layer_shape = kv_layer.shape
+        # MLA scene: one layer shape is (num_blocks, block_size, head_size)
         # Element size
-        elem_size = kv_layer.storage().element_size()
+        elem_size = kv_layer[0].storage().element_size()
         logger.debug(
-            f"total_tp_size = {self.total_tp_size},\n"
-            f"shape of layer = {kv_layer_shape},\n"
-            f"element size = {elem_size}."
+            f"total_tp_size = {self.total_tp_size},\n" f"element size = {elem_size}."
         )
         # One block size
-        k_min_data_block_size = (kv_layer[0][0].numel() if not self.is_mla else kv_layer[0].numel()) *elem_size
-        v_min_data_block_size = (kv_layer[1][0].numel() if not self.is_mla else 0) * elem_size
+        k_min_data_block_size = (
+            kv_layer[0][0].numel() if not self.is_mla else kv_layer[0].numel()
+        ) * elem_size
+        v_min_data_block_size = (
+            kv_layer[1][0].numel() if not self.is_mla else 0
+        ) * elem_size
         # When tp > 1 layer_size = (k_min_data_block_size + v_min_data_block_size) * tp_size
-        layer_size = (k_min_data_block_size + v_min_data_block_size) * self.total_tp_size
-        if (is_v):
+        layer_size = (
+            k_min_data_block_size + v_min_data_block_size
+        ) * self.total_tp_size
+        if is_v:
             # Offset of v = Offset of k + k_min_data_block_size
             return int(
-                self.DataOffset(kv_layer, rank, layer_id, False) + k_min_data_block_size)
+                self.DataOffset(kv_layer, rank, layer_id, False) + k_min_data_block_size
+            )
         if self.is_mla:
             return int(layer_size * layer_id)
         else:
             # Offset of k = layer_size * layer_id + layer_size / tp_size * current rank
-            return int(layer_size * layer_id + layer_size / self.total_tp_size * self.rank)
+            return int(
+                layer_size * layer_id + layer_size / self.total_tp_size * self.rank
+            )
 
     def get_tensor_and_offset_layerwise(
-            self,
-            vllm_block_ids: List[int],
-            kv_layer: torch.Tensor,
-            layer_name: str) -> tuple[List[torch.Tensor], List[int]]:
+        self, vllm_block_ids: List[int], kv_layer: torch.Tensor, layer_name: str
+    ) -> tuple[List[torch.Tensor], List[int]]:
         k_tensors = []
         k_offsets = []
         v_tensors = []
@@ -196,7 +226,10 @@ class UnifiedCacheConnectorV1(KVConnectorBase_V1):
 
         for blk_id in vllm_block_ids:
             k_data_offset = self.DataOffset(kv_layer, self.rank, layer_id, False)
-            k_tensors.append(kv_layer[0][blk_id])
+            if self.is_mla:
+                k_tensors.append(kv_layer[blk_id])
+            else:
+                k_tensors.append(kv_layer[0][blk_id])
             k_offsets.append(k_data_offset)
             if not self.is_mla:
                 v_data_offset = self.DataOffset(kv_layer, self.rank, layer_id, True)
@@ -204,27 +237,37 @@ class UnifiedCacheConnectorV1(KVConnectorBase_V1):
                 v_offsets.append(v_data_offset)
         return k_tensors + v_tensors, k_offsets + v_offsets
 
-    def generate_layerwise_load_tasks(self, fetch_block_hashes,
-                                      layer_to_tensor: dict[
-                                          str, tuple[List[torch.Tensor], List[int]]]) -> \
-            Generator[
-                Optional[tuple[Task, Task]], None, None]:
+    def generate_layerwise_load_tasks(
+        self,
+        fetch_block_hashes,
+        layer_to_tensor: dict[str, tuple[List[torch.Tensor], List[int]]],
+    ) -> Generator[Optional[tuple[Task, Task]], None, None]:
 
         logger.debug(f"fetch_block_hashes is {fetch_block_hashes}")
-        assert fetch_block_hashes is not None and fetch_block_hashes, "The block hashes need to be fetched should not be None or empty."
-        assert layer_to_tensor is not None and layer_to_tensor, "The layers of tensor need to be fetched should not be None or empty."
+        assert (
+            fetch_block_hashes is not None and fetch_block_hashes
+        ), "The block hashes need to be fetched should not be None or empty."
+        assert (
+            layer_to_tensor is not None and layer_to_tensor
+        ), "The layers of tensor need to be fetched should not be None or empty."
 
         blocks_len = len(fetch_block_hashes)
 
         def load(tensor_list, offset_list) -> tuple[Task, Task]:
-            k_load_task = self.connector.load(fetch_block_hashes, offset_list[:blocks_len], tensor_list[:blocks_len])
+            k_load_task = self.connector.load(
+                fetch_block_hashes, offset_list[:blocks_len], tensor_list[:blocks_len]
+            )
             v_load_task = None
             if not self.is_mla:
-                v_load_task = self.connector.load(fetch_block_hashes, offset_list[blocks_len:], tensor_list[blocks_len:])
+                v_load_task = self.connector.load(
+                    fetch_block_hashes,
+                    offset_list[blocks_len:],
+                    tensor_list[blocks_len:],
+                )
             return k_load_task, v_load_task
 
         for layer_name, (tensor_list, offset_list) in layer_to_tensor.items():
-            logger.debug(f"Start excute {layer_name} load task.")
+            logger.debug(f"Start execute {layer_name} load task.")
             yield load(tensor_list, offset_list)
 
         yield None
@@ -232,8 +275,7 @@ class UnifiedCacheConnectorV1(KVConnectorBase_V1):
     # ==============================
     # Worker-side methods
     # ==============================
-    def start_load_kv(self, forward_context: "ForwardContext",
-                      **kwargs) -> None:
+    def start_load_kv(self, forward_context: "ForwardContext", **kwargs) -> None:
         """
         Start loading the KV cache from the connector to vLLM's paged
         KV buffer. This is called from the forward context before the
@@ -254,7 +296,7 @@ class UnifiedCacheConnectorV1(KVConnectorBase_V1):
         if len(self.kv_caches) == 0:
             self._init_kv_caches_from_forward_context(forward_context)
 
-        self.layerwise_load_tasks: dict[str, Generator[tuple[Task, Task], None, None]] = {}
+        self.layerwise_load_tasks.clear()
         self.current_layer = 0
         for request in metadata.requests:
             if request.load_paras is None or not request.load_paras.can_load:
@@ -262,8 +304,12 @@ class UnifiedCacheConnectorV1(KVConnectorBase_V1):
             layer_to_tensor: dict[str, tuple[List[torch.Tensor], List[int]]] = {}
             block_ids = request.vllm_block_ids
             # Blocks id need to save should start after last vllm cached block
-            load_start_block_id = request.load_paras.vllm_cached_tokens // self.block_size
-            load_end_block_id = request.load_paras.storage_cached_tokens // self.block_size
+            load_start_block_id = (
+                request.load_paras.vllm_cached_tokens // self.block_size
+            )
+            load_end_block_id = (
+                request.load_paras.storage_cached_tokens // self.block_size
+            )
             fetch_block_ids = block_ids[load_start_block_id:load_end_block_id]
             logger.debug(
                 f"fetch_block_ids = {fetch_block_ids},\n"
@@ -271,26 +317,44 @@ class UnifiedCacheConnectorV1(KVConnectorBase_V1):
                 f"load_end_block_id = {load_end_block_id},\n"
                 f"fetch_block_ids = {fetch_block_ids}"
             )
-            fetch_block_hashes = request.load_paras.block_hashes[load_start_block_id:load_end_block_id]
+            fetch_block_hashes = request.load_paras.block_hashes[
+                load_start_block_id:load_end_block_id
+            ]
             assert len(fetch_block_ids) == len(fetch_block_hashes)
             blocks_len = len(fetch_block_ids)
             for layer_name, kv_layer in self.kv_caches.items():
-                tensors, offsets = self.get_tensor_and_offset_layerwise(fetch_block_ids, kv_layer, layer_name)
+                tensors, offsets = self.get_tensor_and_offset_layerwise(
+                    fetch_block_ids, kv_layer, layer_name
+                )
                 if not self.use_layerwise:
-                    task = self.connector.load(fetch_block_hashes, offsets[:blocks_len], tensors[:blocks_len])
+                    task = self.connector.load(
+                        fetch_block_hashes, offsets[:blocks_len], tensors[:blocks_len]
+                    )
                     assert self.connector.wait(task) == 0
                     if not self.is_mla:
-                        task = self.connector.load(fetch_block_hashes, offsets[blocks_len:], tensors[blocks_len:])
+                        task = self.connector.load(
+                            fetch_block_hashes,
+                            offsets[blocks_len:],
+                            tensors[blocks_len:],
+                        )
                         assert self.connector.wait(task) == 0
                 else:
-                    layer_to_tensor[layer_name] = (tensors, offsets)
-
-            if layer_to_tensor:
-                layerwise_load_task = self.generate_layerwise_load_tasks(fetch_block_hashes, layer_to_tensor)
-                load_task = next(layerwise_load_task)
-                assert load_task is not None, "The first layerwise task should not be None!"
-                self.load_tasks[request.request_id] = load_task
-                self.layerwise_load_tasks[request.request_id] = layerwise_load_task
+                    k_task_id = self.connector.load(
+                        fetch_block_hashes, offsets[:blocks_len], tensors[:blocks_len]
+                    )
+                    v_task_id = None
+                    if not self.is_mla:
+                        v_task_id = self.connector.load(
+                            fetch_block_hashes,
+                            offsets[blocks_len:],
+                            tensors[blocks_len:],
+                        )
+                    if request.request_id not in self.layerwise_load_tasks:
+                        self.layerwise_load_tasks[request.request_id] = {}
+                    self.layerwise_load_tasks[request.request_id][layer_name] = (
+                        k_task_id,
+                        v_task_id,
+                    )
 
     def wait_for_layer_load(self, layer_name: str) -> None:
         """
@@ -308,20 +372,23 @@ class UnifiedCacheConnectorV1(KVConnectorBase_V1):
         if self.layerwise_load_tasks:
             logger.debug(f"Waiting for layer {self.current_layer} to be loaded")
 
-        assert self.current_layer < self.num_layers, "The current layer should be less than total layers!"
-        for request_id, gene_load_task in self.layerwise_load_tasks.items():
-            k_task, v_task = self.load_tasks[request_id]
+        assert (
+            self.current_layer < self.num_layers
+        ), "The current layer should be less than total layers!"
+        for request_id, layer_to_task in self.layerwise_load_tasks.items():
+            k_task, v_task = layer_to_task[layer_name]
             assert self.connector.wait(k_task) == 0
-            if v_task:
+            if not self.is_mla:
                 assert self.connector.wait(v_task) == 0
-            if self.current_layer < self.num_layers - 1:
-                self.load_tasks[request_id] = next(gene_load_task)
-                assert self.load_tasks[request_id] is not None, "The task for next layer should not be None!"
-            else:
-                logger.debug(f"Load tasks for {request_id} finished.")
+            logger.debug(f"Load tasks for {request_id} on layer {layer_name} finished.")
 
-    def save_kv_layer(self, layer_name: str, kv_layer: torch.Tensor,
-                      attn_metadata: "AttentionMetadata", **kwargs) -> None:
+    def save_kv_layer(
+        self,
+        layer_name: str,
+        kv_layer: torch.Tensor,
+        attn_metadata: "AttentionMetadata",
+        **kwargs,
+    ) -> None:
         """
         Start saving the a layer of KV cache from vLLM's paged buffer
         to the connector. This is called from within attention layer to
@@ -334,10 +401,16 @@ class UnifiedCacheConnectorV1(KVConnectorBase_V1):
             attn_metadata (AttentionMetadata): the attention metadata.
             **kwargs: additional arguments for the save operation.
         """
-        metadata = self._get_connector_metadata()
+        if self.is_mla and self.rank != 0:
+            return
+        self.current_layer += 1
+        if hasattr(self, "kv_role") and self.kv_role == "kv_consumer":
+            return
+
         if not self.use_layerwise:
             return
 
+        metadata = self._get_connector_metadata()
         assert isinstance(metadata, UCConnectorV1Metadata)
         assert attn_metadata is not None, "The attn_metadata should not be None."
 
@@ -347,34 +420,43 @@ class UnifiedCacheConnectorV1(KVConnectorBase_V1):
 
             save_param = request.save_paras
             vllm_block_ids = request.vllm_block_ids[
-                             save_param.start_save_position:save_param.start_save_position + save_param.num_blocks_to_save]
+                save_param.start_save_position : save_param.start_save_position
+                + save_param.num_blocks_to_save
+            ]
             blocks_len = len(vllm_block_ids)
-            tensors, offsets = self.get_tensor_and_offset_layerwise(vllm_block_ids, kv_layer, layer_name)
+            tensors, offsets = self.get_tensor_and_offset_layerwise(
+                vllm_block_ids, kv_layer, layer_name
+            )
             storage_block_ids = save_param.block_hashes[
-                                save_param.num_blocks_saved:save_param.num_blocks_saved + save_param.num_blocks_to_save]
+                save_param.num_blocks_saved : save_param.num_blocks_saved
+                + save_param.num_blocks_to_save
+            ]
             logger.debug(
                 f"blocks length = {blocks_len},\n"
                 f"length of offsets = {len(offsets)},\n"
                 f"length of need save vllm_block_ids = {len(vllm_block_ids)},\n"
                 f"length of storage_block_ids = {len(storage_block_ids)},\n"
             )
-            if kv_layer.device.type == "npu":
+            if kv_layer[0].device.type == "npu":
                 torch.npu.current_stream().synchronize()
-            elif kv_layer.device.type == "cuda":
+            elif kv_layer[0].device.type == "cuda":
                 torch.cuda.current_stream().synchronize()
 
-            for block_id, offset, tensor in zip(storage_block_ids,
-                                                offsets[:blocks_len],
-                                                tensors[:blocks_len]):
+            for block_id, offset, tensor in zip(
+                storage_block_ids, offsets[:blocks_len], tensors[:blocks_len]
+            ):
                 task = self.connector.dump([block_id], [offset], [tensor])
-                self.dump_tasks.setdefault(request.request_id, {}).setdefault(block_id, []).append(task)
+                self.dump_tasks.setdefault(request.request_id, {}).setdefault(
+                    block_id, []
+                ).append(task)
             if not self.is_mla:
-                for block_id, offset, tensor in zip(storage_block_ids,
-                                                offsets[blocks_len:],
-                                                tensors[blocks_len:]):
+                for block_id, offset, tensor in zip(
+                    storage_block_ids, offsets[blocks_len:], tensors[blocks_len:]
+                ):
                     task = self.connector.dump([block_id], [offset], [tensor])
-                    self.dump_tasks.setdefault(request.request_id, {}).setdefault(block_id, []).append(task)
-        self.current_layer += 1
+                    self.dump_tasks.setdefault(request.request_id, {}).setdefault(
+                        block_id, []
+                    ).append(task)
 
     def wait_for_save(self) -> Optional[dict[str, list[str]]]:
         """
@@ -384,8 +466,11 @@ class UnifiedCacheConnectorV1(KVConnectorBase_V1):
 
         This prevents overwrites of paged KV buffer before saving done.
         """
+        if hasattr(self, "kv_role") and self.kv_role == "kv_consumer":
+            return
         # request id -> succeed dumped blocks
         success_dumped_blocks: dict[str, list[str]] = {}
+
         def wait_for_tasks():
             for request_id, block_dump_tasks in self.dump_tasks.items():
                 for block_id, dump_tasks in block_dump_tasks.items():
@@ -413,8 +498,10 @@ class UnifiedCacheConnectorV1(KVConnectorBase_V1):
             num_blocks = save_paras.num_blocks_to_save
             num_blocks_saved = save_paras.num_blocks_saved
 
-            dump_block_ids = request.vllm_block_ids[start_pos:start_pos + num_blocks]
-            dump_vllm_block_hashes = save_paras.block_hashes[num_blocks_saved:num_blocks_saved + num_blocks]
+            dump_block_ids = request.vllm_block_ids[start_pos : start_pos + num_blocks]
+            dump_vllm_block_hashes = save_paras.block_hashes[
+                num_blocks_saved : num_blocks_saved + num_blocks
+            ]
 
             logger.debug(
                 f"dump block ids is {dump_block_ids},\n"
@@ -424,18 +511,26 @@ class UnifiedCacheConnectorV1(KVConnectorBase_V1):
             assert len(dump_block_ids) == len(dump_vllm_block_hashes)
             blocks_len = len(dump_block_ids)
             for layer_name, kv_layer in self.kv_caches.items():
-                tensors, offsets = self.get_tensor_and_offset_layerwise(dump_block_ids, kv_layer, layer_name)
-                for block_id, offset, tensor in zip(dump_vllm_block_hashes,
-                                                    offsets[:blocks_len],
-                                                    tensors[:blocks_len]):
+                tensors, offsets = self.get_tensor_and_offset_layerwise(
+                    dump_block_ids, kv_layer, layer_name
+                )
+                for block_id, offset, tensor in zip(
+                    dump_vllm_block_hashes, offsets[:blocks_len], tensors[:blocks_len]
+                ):
                     task = self.connector.dump([block_id], [offset], [tensor])
-                    self.dump_tasks.setdefault(request.request_id, {}).setdefault(block_id, []).append(task)
+                    self.dump_tasks.setdefault(request.request_id, {}).setdefault(
+                        block_id, []
+                    ).append(task)
                 if not self.is_mla:
-                    for block_id, offset, tensor in zip(dump_vllm_block_hashes,
-                                                        offsets[blocks_len:],
-                                                        tensors[blocks_len:]):
+                    for block_id, offset, tensor in zip(
+                        dump_vllm_block_hashes,
+                        offsets[blocks_len:],
+                        tensors[blocks_len:],
+                    ):
                         task = self.connector.dump([block_id], [offset], [tensor])
-                        self.dump_tasks.setdefault(request.request_id, {}).setdefault(block_id, []).append(task)
+                        self.dump_tasks.setdefault(request.request_id, {}).setdefault(
+                            block_id, []
+                        ).append(task)
         wait_for_tasks()
         self.dump_tasks.clear()
         return success_dumped_blocks if success_dumped_blocks else None
@@ -444,9 +539,9 @@ class UnifiedCacheConnectorV1(KVConnectorBase_V1):
     # Scheduler-side methods
     # ==============================
     def get_num_new_matched_tokens(
-            self,
-            request: "Request",
-            num_computed_tokens: int,
+        self,
+        request: "Request",
+        num_computed_tokens: int,
     ) -> tuple[int, bool]:
         """
         Get number of new tokens that can be loaded from the
@@ -461,9 +556,20 @@ class UnifiedCacheConnectorV1(KVConnectorBase_V1):
             the number of tokens that can be loaded from the
             external KV cache beyond what is already computed.
         """
+        # When the request is preempt req, need to commit succeed dumped blocks
+        # to avoid duplicate invoking create/commit funcs. Only preempt reqs
+        # whose succeed_dumped_blocks is non-empty need this check.
+        if hasattr(request, "succeed_dumped_blocks") and request.succeed_dumped_blocks:
+            self.connector.commit(request.succeed_dumped_blocks, True)
+            request.succeed_dumped_blocks.clear()
+
+        def md5(input) -> int:
+            input_bytes = pickle.dumps(input, protocol=pickle.HIGHEST_PROTOCOL)
+            md5_bytes = hashlib.md5(input_bytes).digest()
+            return int.from_bytes(md5_bytes, byteorder="big")
+
         assert num_computed_tokens % self.block_size == 0
-        block_hash_types = hash_request_tokens(sha256,
-                                               self.block_size, request)
+        block_hash_types = hash_request_tokens(md5, self.block_size, request)
         block_hashes: List[str] = [str(x.hash_value) for x in block_hash_types]
         if not block_hashes:
             logger.debug("Maybe tokens too short to load.")
@@ -479,11 +585,13 @@ class UnifiedCacheConnectorV1(KVConnectorBase_V1):
             vllm_cached_tokens=num_computed_tokens,
             storage_cached_tokens=num_external_computed_tokens,
             block_hashes=block_hashes,
-            can_load=False
+            can_load=False,
         )
 
         num_max_cached_tokens = max(num_external_computed_tokens, num_computed_tokens)
-        num_blocks_need_save = (len(request.all_token_ids) - num_max_cached_tokens) // self.block_size
+        num_blocks_need_save = (
+            len(request.all_token_ids) - num_max_cached_tokens
+        ) // self.block_size
         if num_blocks_need_save > 0:
             start_save_position = num_max_cached_tokens // self.block_size
             need_allocate_block_hashes = block_hashes[start_save_position:]
@@ -491,7 +599,7 @@ class UnifiedCacheConnectorV1(KVConnectorBase_V1):
             self.save_paras[request.request_id] = SavePara(
                 num_blocks_need_save=num_blocks_need_save,
                 start_save_position=start_save_position,
-                block_hashes=need_allocate_block_hashes
+                block_hashes=need_allocate_block_hashes,
             )
 
         logger.debug(
@@ -502,9 +610,9 @@ class UnifiedCacheConnectorV1(KVConnectorBase_V1):
 
         return max(num_external_computed_tokens - num_computed_tokens, 0), False
 
-    def update_state_after_alloc(self, request: "Request",
-                                 blocks: "KVCacheBlocks",
-                                 num_external_tokens: int):
+    def update_state_after_alloc(
+        self, request: "Request", blocks: "KVCacheBlocks", num_external_tokens: int
+    ):
         """
         Update KVConnector state after block allocation.
         """
@@ -516,7 +624,8 @@ class UnifiedCacheConnectorV1(KVConnectorBase_V1):
             self.load_paras[request.request_id].can_load = True
 
     def build_connector_meta(
-            self, scheduler_output: SchedulerOutput) -> KVConnectorMetadata:
+        self, scheduler_output: SchedulerOutput
+    ) -> KVConnectorMetadata:
         """
         Build the connector metadata for this step.
 
@@ -529,54 +638,87 @@ class UnifiedCacheConnectorV1(KVConnectorBase_V1):
         meta = UCConnectorV1Metadata()
         for new_req in scheduler_output.scheduled_new_reqs:
             # Load kv is only supported for new reqs
-            new_scheduled_blocks = scheduler_output.num_scheduled_tokens[new_req.req_id] // self.block_size
+            new_scheduled_blocks = (
+                scheduler_output.num_scheduled_tokens[new_req.req_id] // self.block_size
+            )
             load_paras = self.load_paras.pop(new_req.req_id, None)
             save_paras = self.save_paras.get(new_req.req_id, None)
             if save_paras is not None:
                 save_paras.num_blocks_to_save = new_scheduled_blocks
-            meta.add_request(new_req.req_id,
-                             vllm_block_ids=new_req.block_ids[0],
-                             load_paras=load_paras,
-                             save_paras=save_paras)
+            meta.add_request(
+                new_req.req_id,
+                vllm_block_ids=new_req.block_ids[0],
+                load_paras=load_paras,
+                save_paras=save_paras,
+            )
         # clear all load_paras when build meta for new reqs done
         self.load_paras.clear()
 
-        # When prompt tokens > max_num_batched_tokens, request of running requests may need to save
         cached_request_data = scheduler_output.scheduled_cached_reqs
-        for i, req_id in enumerate(cached_request_data.req_ids):
-            if cached_request_data.resumed_from_preemption[i]:
-                continue
 
-            save_paras = self.save_paras.get(req_id, None)
+        # Adapted for vllm 0.9.1, 0.9.2 and later versions
+        def get_requests():
+            # 0.9.1
+            if isinstance(cached_request_data, list):
+                return [
+                    (
+                        request_data.req_id,
+                        request_data.new_block_ids,
+                    )
+                    for request_data in cached_request_data
+                ]
+            # >= 0.9.2
+            else:
+                return [
+                    (
+                        req_id,
+                        cached_request_data.new_block_ids[i],
+                    )
+                    for i, req_id in enumerate(cached_request_data.req_ids)
+                ]
+
+        # When prompt tokens > max_num_batched_tokens, request of running requests may need to save
+        for req_id, new_block_ids in get_requests():
+            save_paras = self.save_paras.get(req_id)
             if save_paras is None:
                 continue
+
             save_paras.num_blocks_saved += save_paras.num_blocks_to_save
+
             if save_paras.num_blocks_need_save > save_paras.num_blocks_saved:
                 logger.debug(f"Running request {req_id} has blocks to save")
                 save_paras.start_save_position = 0
-                new_scheduled_blocks = scheduler_output.num_scheduled_tokens[req_id] // self.block_size
+                new_scheduled_blocks = (
+                    scheduler_output.num_scheduled_tokens[req_id] // self.block_size
+                )
                 save_paras.num_blocks_to_save = new_scheduled_blocks
-                meta.add_request(req_id,
-                                 vllm_block_ids=cached_request_data.new_block_ids[i][0],
-                                 load_paras=None,
-                                 save_paras=save_paras)
+                meta.add_request(
+                    req_id,
+                    vllm_block_ids=new_block_ids[0],
+                    load_paras=None,
+                    save_paras=save_paras,
+                )
+
         return meta
 
     def request_finished(
-            self,
-            request: "Request",
-            block_ids: list[int],
+        self,
+        request: "Request",
+        block_ids: list[int],
     ) -> tuple[bool, Optional[dict[str, Any]]]:
         # clear save_paras for request
         save_paras = self.save_paras.pop(request.request_id, None)
-        # clear load_tasks for request
-        self.load_tasks.pop(request.request_id, None)
-        if request.succeed_dumped_blocks:
+        if hasattr(request, "succeed_dumped_blocks") and request.succeed_dumped_blocks:
             self.connector.commit(request.succeed_dumped_blocks, True)
         if save_paras is not None:
-            cancel_blocks = [block for block in save_paras.block_hashes if block not in request.succeed_dumped_blocks]
+            cancel_blocks = [
+                block
+                for block in save_paras.block_hashes
+                if hasattr(request, "succeed_dumped_blocks")
+                and block not in request.succeed_dumped_blocks
+            ]
             if cancel_blocks:
-                self.connector.commit(cancel_blocks, False) 
+                self.connector.commit(cancel_blocks, False)
         return False, None
 
     @staticmethod

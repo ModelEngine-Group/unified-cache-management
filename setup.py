@@ -23,17 +23,17 @@
 #
 
 import os
+import shutil
 import subprocess
-from distutils.core import setup
-from pathlib import Path
-from setuptools import find_packages
+
+from setuptools import Extension, find_packages, setup
 from setuptools.command.build_ext import build_ext
+from setuptools.command.develop import develop
 
-ROOT_DIR = os.path.dirname(__file__)
+ROOT_DIR = os.path.abspath(os.path.dirname(__file__))
+SRC_DIR = os.path.join(ROOT_DIR, "unifiedcache", "csrc", "ucmnfsstore")
+INSTALL_DIR = os.path.join(ROOT_DIR, "unifiedcache", "ucm_connector")
 PLATFORM = os.getenv("PLATFORM")
-
-def get_path(*filepath) -> str:
-    return os.path.join(ROOT_DIR, *filepath)
 
 
 def _is_cuda() -> bool:
@@ -44,73 +44,85 @@ def _is_npu() -> bool:
     return PLATFORM == "ascend"
 
 
-class BuildUCMExtension(build_ext):
-    """Build UCM Extensions Using Cmake"""
+class CMakeExtension(Extension):
+    def __init__(self, name: str, sourcedir: str = ""):
+        super().__init__(name, sources=[])
+        self.sourcedir = os.path.abspath(sourcedir)
 
+
+class CMakeBuild(build_ext):
     def run(self):
-        package_path = os.path.abspath(os.path.join(os.path.dirname(__file__), 'unifiedcache'))
-        ucm_nfs_path = os.path.join(package_path, 'csrc', 'ucmnfsstore')
-        if not os.path.exists(ucm_nfs_path):
-            raise RuntimeError(f"Expected directory {ucm_nfs_path} does not exist")
+        for ext in self.extensions:
+            self.build_cmake(ext)
 
-        build_path = os.path.join(ucm_nfs_path, 'build')
-        if not os.path.exists(build_path):
-            os.makedirs(build_path)
-
-        os.chdir(build_path)
-        if _is_npu():
-            cmake_command = [
-                'cmake',
-                '-DDOWNLOAD_DEPENDENCE=ON',
-                '-DRUNTIME_ENVIRONMENT=ascend',
-                '..',
-                ucm_nfs_path
-            ]
-        elif _is_cuda():
-            cmake_command = [
-                'cmake',
-                '-DDOWNLOAD_DEPENDENCE=ON',
-                '-DRUNTIME_ENVIRONMENT=cuda',
-                '..',
-                ucm_nfs_path
-            ]
+    def build_cmake(self, ext: CMakeExtension):
+        build_dir = os.path.abspath(self.build_temp)
+        os.makedirs(build_dir, exist_ok=True)
+        if _is_cuda():
+            subprocess.check_call(
+                [
+                    "cmake",
+                    "-DDOWNLOAD_DEPENDENCE=ON",
+                    "-DRUNTIME_ENVIRONMENT=cuda",
+                    ext.sourcedir,
+                ],
+                cwd=build_dir,
+            )
+        elif _is_npu():
+            subprocess.check_call(
+                [
+                    "cmake",
+                    "-DDOWNLOAD_DEPENDENCE=ON",
+                    "-DRUNTIME_ENVIRONMENT=ascend",
+                    ext.sourcedir,
+                ],
+                cwd=build_dir,
+            )
         else:
             raise RuntimeError(
                 "No supported accelerator found. "
                 "Please ensure either CUDA or NPU is available."
             )
-        subprocess.check_call(cmake_command)
 
-        make_command = ['make', '-j', '8']
-        subprocess.check_call(make_command)
+        subprocess.check_call(["make", "-j", "8"], cwd=build_dir)
 
-        output_lib_path = os.path.join(ucm_nfs_path, 'output', 'lib')
-        so_files = [f for f in os.listdir(output_lib_path) if f.endswith('.so')]
-        for so_file in so_files:
-            src = os.path.join(output_lib_path, so_file)
-            dest = os.path.join(package_path, 'ucm_connector', so_file)
-            os.rename(src, dest)
+        so_file = None
+        so_search_dir = os.path.join(ext.sourcedir, "output", "lib")
+        if not os.path.exists(so_search_dir):
+            raise FileNotFoundError(f"{so_search_dir} does not exist!")
 
-        os.chdir(os.path.dirname(__file__))
-        super().run()
+        so_file = None
+        for file in os.listdir(so_search_dir):
+            if file.startswith("ucmnfsstore") and file.endswith(".so"):
+                so_file = file
+                break
+
+        if not so_file:
+            raise FileNotFoundError(
+                "Compiled .so file not found in output/lib directory."
+            )
+
+        src_path = os.path.join(so_search_dir, so_file)
+        dev_path = os.path.join(INSTALL_DIR, so_file)
+        dst_path = os.path.join(
+            self.build_lib, "unifiedcache", "ucm_connector", so_file
+        )
+        os.makedirs(os.path.dirname(dst_path), exist_ok=True)
+        shutil.copy(src_path, dst_path)
+        print(f"[INFO] Copied {src_path} → {dst_path}")
+        if isinstance(self.distribution.get_command_obj("develop"), develop):
+            shutil.copy(src_path, dev_path)
+            print(f"[INFO] Copied in editable mode {src_path} → {dev_path}")
 
 
-cmdclass = {
-    'build_ext': BuildUCMExtension,
-}
-
-print("FOUND PACKAGES:", find_packages())
 setup(
     name="unifiedcache",
-    version='0.0.1',
-    author="Unified Cache Team",
+    version="0.0.2",
     description="Unified Cache Management",
+    author="Unified Cache Team",
     packages=find_packages(),
-    ext_modules=[],
-    cmdclass=cmdclass,
-    package_data={},
-    include_package_data=True,
-    install_requires=[],
-    extras_require={},
     python_requires=">=3.10",
+    ext_modules=[CMakeExtension(name="ucmnfsstore", sourcedir=SRC_DIR)],
+    cmdclass={"build_ext": CMakeBuild},
+    zip_safe=False,
 )

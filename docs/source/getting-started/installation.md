@@ -27,10 +27,16 @@ docker run \
     --ipc=host \
     -v <path_to_your_models>:/app/model \
     -v <path_to_your_storage>:/app/storage \
+    --entrypoint /bin/bash \
     --name <name_of_your_container> \
-    -it vllm/vllm-openai:v0.9.2 bash
+    -it vllm/vllm-openai:v0.9.2
 ```
-Refer to [Set up using docker](https://docs.vllm.ai/en/latest/getting_started/installation/gpu.html#set-up-using-docker) for more information to run your own vLLM container. After installation, please refer to this [issue](https://github.com/vllm-project/vllm/issues/21702) in order to use the uc_connector provided by unified-cache-management.
+Refer to [Set up using docker](https://docs.vllm.ai/en/latest/getting_started/installation/gpu.html#set-up-using-docker) for more information to run your own vLLM container. After installation, please apply patch to ensure uc_connector can be used:
+```bash
+cd /vllm-workspace/vllm
+git apply /vllm-workspace/unified-cache-management/unifiedcache/patch/0.9.2/vllm-adapt.patch
+``` 
+Refer to this [issue](https://github.com/vllm-project/vllm/issues/21702) to see details of this patch's changes.
 
 ### Build from source code
 Follow commands below to install unified-cache-management:

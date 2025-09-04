@@ -41,12 +41,17 @@ KVStoreBase helps decoupling sparse algorithms and external storage. It defined 
 
 NFSStore is sample implementation here provide ability to store blocks in local file system or NFS mount point in multi-server case.
 
-LocalCachedStore can refence any store to provide local DRAM read cache layer.
+LocalCachedStore can reference any store to provide local DRAM read cache layer.
 
 ---
 
 ## Quick Start
 please refer to [installation](docs/source/getting-started/installation.md) and [example](docs/source/getting-started/example/dram_conn.md)。
+
+---
+
+## Support Features
+please refer to [features matrix](docs/source/feature/support.md).
 
 ---
 
@@ -67,4 +72,4 @@ When you want to contribute some features to the Unified Cache Community, first 
 
 ## License
 
-Apache License 2.0, as found in the [LICENSE](./LICENSE) file.
+UCM is licensed under the MIT with additional conditions. Please read the [LICENSE](./LICENSE) file for details.

@@ -36,13 +36,14 @@ def init_logger(name: str = "UNIFIED_CACHE") -> logging.Logger:
         handler = logging.StreamHandler()
         formatter = logging.Formatter(
             "[%(asctime)s] - %(name)s - %(levelname)s [%(filename)s:%(lineno)d] %(message)s",
-            datefmt="%Y-%m-%d %H:%M:%S"
+            datefmt="%Y-%m-%d %H:%M:%S",
         )
 
         handler.setFormatter(formatter)
         logger.addHandler(handler)
 
     return logger
+
 
 if __name__ == "__main__":
     os.environ["UNIFIED_CACHE_LOG_LEVEL"] = "DEBUG"
