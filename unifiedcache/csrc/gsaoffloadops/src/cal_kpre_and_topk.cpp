@@ -75,20 +75,20 @@ void CalKpreAndTopk::SetTopkParam(std::vector<std::vector<uint32_t>>& repreSlotM
 {
     m_needCalTopk = true;
     m_repreSlotMapping = repreSlotMapping;
-    for (auto& atomic_val : m_topkFlag) {
-        atomic_val.store(false, std::memory_order_relaxed);
-    }
 }
 
 void CalKpreAndTopk::SetKpreParam(std::vector<uint32_t>& calcKpreBlockTable, std::vector<uint32_t>& calcRepreSlotMapping)
 {
+    if (IsCalculateFinish()) {
+        m_needCalPre = true;
+    }
     m_calcKpreBlockTable = calcKpreBlockTable;
     m_calcRepreSlotMapping = calcRepreSlotMapping;
 }
 
 bool CalKpreAndTopk::SetKpreDataReady(uint32_t layerIdx)
 {
-    if (!IsCalculateFinish()) {
+    if (!IsCalculateFinish() && layerIdx == 0) {
         return false;
     }
     if (layerIdx == 0) {
@@ -108,6 +108,9 @@ bool CalKpreAndTopk::SetKpreDataReady(uint32_t layerIdx)
 void CalKpreAndTopk::SetTopkDataReady(uint32_t layerIdx)
 {
     if (!m_needCalPre && layerIdx == 0) {
+        for (auto& atomic_val : m_topkFlag) {
+            atomic_val.store(false, std::memory_order_relaxed);
+        }
         std::lock_guard<std::mutex> lock(m_calLock);
         m_qReady[layerIdx].store(true, std::memory_order_release);
         m_dataReady.notify_one();
