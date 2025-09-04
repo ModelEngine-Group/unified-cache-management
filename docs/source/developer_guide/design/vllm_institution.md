@@ -3,7 +3,7 @@ This doc shows how the UcmKVStoreBase work with KV connector api in v1 to suppor
 ## How it works
 As you can see in the README part, the KVStoreBase helps decoupling sparse algorithms and external storage, a class that inherits from KVConnectorBase_V1 named UnifiedCacheConnectorV1 facilitates the connection between vLLM v1 and this class, the The figure below shows how it worked:
 
-![uc_connector](../images/ucconn_ucmconn.png)(../images/ucconn_ucmconn.png)
+![uc_connector](../../images/ucconn_ucmconn.png)(../../images/ucconn_ucmconn.png)
 
 The interfaces designed in KVStoreBase are similar to the KV connector API in v1, which are divided into scheduler-side methods and worker-side methods, as follows:
 - scheduler methods

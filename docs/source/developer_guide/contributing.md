@@ -1,4 +1,4 @@
-# Contributing
+# How to contribute
 ## Building and testing
 It’s recommended to set up a local development environment to build and test before you submit a PR.
 ### Run lint locally

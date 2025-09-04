@@ -3,12 +3,12 @@
 Attention mechanisms, especially in LLMs, are often the bottleneck in terms of latency during inference due to their computational complexity. Despite their importance in capturing contextual relationships, traditional attention requires processing all token interactions, leading to significant delays.
 
 <p align="center">
-  <img alt="UCM" src="../images/attention_overhead.png" width="80%">
+  <img alt="UCM" src="../../../images/attention_overhead.png" width="80%">
 </p>
 
 Researchers have found that attention in LLM is highly dispersed:
 <p align="center">
-  <img alt="UCM" src="../images/attention_sparsity.png" width="80%">
+  <img alt="UCM" src="../../../images/attention_sparsity.png" width="80%">
 </p>
 
 This movitates them actively developing sparse attention algorithms to address the latency issue. These algorithms aim to reduce the number of token interactions by focusing only on the most relevant parts of the input, thereby lowering the computation and memory requirements.
@@ -24,7 +24,7 @@ By utilizing UCM, researchers can efficiently implement rapid prototyping and te
 ### Overview
 The core concept of our UCMSparse attention framework is to offload the complete Key-Value (KV) cache to a dedicated KV cache storage. We then identify the crucial KV pairs relevant to the current context, as determined by our sparse attention algorithms, and selectively load only the necessary portions of the KV cache from storage into High Bandwidth Memory (HBM). This design significantly reduces the HBM footprint while accelerating generation speed.
 <p align="center">
-  <img alt="UCM" src="../images/sparse_attn_arch.png" width="80%">
+  <img alt="UCM" src="../../images/sparse_attn_arch.png" width="80%">
 </p>
 
 

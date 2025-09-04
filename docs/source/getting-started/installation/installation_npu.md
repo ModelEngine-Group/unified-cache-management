@@ -1,4 +1,4 @@
-# Installation NPU
+# NPU
 This document describes how to install unified-cache-management when using Ascend NPU manually.
 
 ## Requirements

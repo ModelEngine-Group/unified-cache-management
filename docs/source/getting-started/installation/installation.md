@@ -1,4 +1,4 @@
-# Installation
+# GPU
 This document describes how to install unified-cache-management.
 
 ## Requirements
