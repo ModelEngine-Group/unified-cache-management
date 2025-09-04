@@ -153,7 +153,6 @@ namespace ucmprefetch
             std::map<int, int> &hitBlocksIdx,
             std::vector<int> &missIdxs)
     {
-        int topkLen = oneBsInfo.topkLen;
         int layerID = oneBsInfo.layerID;
         int reqID = oneBsInfo.reqID;
         int topkIndex = oneBsInfo.topkIndex;

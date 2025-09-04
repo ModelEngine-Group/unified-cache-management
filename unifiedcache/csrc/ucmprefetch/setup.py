@@ -21,7 +21,7 @@ PYTORCH_PATH = os.path.dirname(os.path.abspath(torch.__file__))
 
 INCLUDE_DIRS = []
 LIBRARIES = []
-INCLUDE_DIRS = []
+LIBRARY_DIRS = []
 CXX11_API = "1"
 
 if target_device == "npu":

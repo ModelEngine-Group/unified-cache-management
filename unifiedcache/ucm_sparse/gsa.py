@@ -567,7 +567,7 @@ class GSA(UcmSparseBase):
             result = self.gsa_offload_ops.set_kpre_data_ready(current_layer_id)
             if result:
                 self.is_cal_kpre[current_layer_id] = False;
-                
+        
         block_hashes = []
         block_ids = []
         for req_id in self.prefetch_engine.req_ids_bs:
@@ -575,6 +575,10 @@ class GSA(UcmSparseBase):
             block_hashes += [f"{self.block_hash(req_id, id_ - offset)}" 
                                 for id_ in self.gsa_metadata.gsa_stats[req_id].calc_repre_slot_mapping]
             block_ids += self.gsa_metadata.gsa_stats[req_id].calc_block_table
+        if torch.cuda.is_available():
+            torch.cuda.current_stream().synchronize()
+        else:
+            torch.npu.current_stream().synchronize()
         self.launch_transfer_task("dump", block_hashes, block_ids, current_layer_id)
     
     def wait_all_task_done(self, transfer_type):
@@ -593,7 +597,7 @@ class GSA(UcmSparseBase):
         layer_name
     ) -> None:
         current_layer_id = int(layer_name.split(".")[2])
-        attn = forward_context.no_compile_layers[self.layer_name]
+        attn = forward_context.no_compile_layers[layer_name]
         kv_cache = attn.kv_cache[forward_context.virtual_engine]
         # TODO: consider is_mla here
         self.k_cache[current_layer_id] = kv_cache[0]

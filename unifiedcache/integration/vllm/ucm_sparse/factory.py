@@ -44,3 +44,4 @@ class UcmSparseFactory:
 
 # Register available sparse methods
 UcmSparseFactory.register_sparse_method("ESA", "unifiedcache.ucm_sparse.esa", "ESA")
+UcmSparseFactory.register_sparse_method("GSA", "unifiedcache.ucm_sparse.gsa", "GSA")
