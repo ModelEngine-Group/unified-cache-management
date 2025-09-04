@@ -1,7 +1,7 @@
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="docs/source/logos/UCM.png">
-    <img alt="UCM" src="docs/source/logos/UCM.png" width=70%>
+    <img alt="UCM" src="docs/source/logos/UCM-light.png" width=50%>
   </picture>
 </p>
 

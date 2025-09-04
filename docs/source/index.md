@@ -1,10 +1,10 @@
 # Welcome to Unified Cache Manager
 
-:::{figure} ./logos/UCM.png
+:::{figure} ./logos/UCM-light.png
 :align: center
 :alt: UCM
 :class: no-scaled-link
-:width: 70%
+:width: 50%
 :::
 
 :::{raw} html
@@ -23,11 +23,34 @@
 
 Make KVCache Great Again!
 
+## Documentation
+
 :::{toctree}
-:maxdepth: 3
-getting-started/index.md
-feature/index.md
-developer/index.md
-about.md
+:caption: Getting Started
+:maxdepth: 1
+getting-started/quick_start
+getting-started/installation/index
 :::
 
+:::{toctree}
+:caption: User Guide
+:maxdepth: 1
+user_guide/support_matrix/index
+user_guide/features/index
+user_guide/connector_guide/index
+user_guide/engine_guide/index
+:::
+
+:::{toctree}
+:caption: Developer Guide
+:maxdepth: 1
+developer_guide/design/index
+developer_guide/contributing
+developer_guide/performance/index
+:::
+
+:::{toctree}
+:caption: About Us
+:maxdepth: 1
+about
+:::
