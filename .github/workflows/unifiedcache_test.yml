@@ -51,7 +51,7 @@ jobs:
       - name: Print debug info
         run: |
           echo "GITHUB_WORKSPACE is $GITHUB_WORKSPACE"
-          ls -l $GITHUB_WORKSPACE/unifiedcache/patch
+          ls -l $GITHUB_WORKSPACE/ucm/patch
 
       - name: Debug repo layout
         run: |
@@ -60,7 +60,7 @@ jobs:
           ls -l "$GITHUB_WORKSPACE"
       - name: Apply patch
         run: |
-          git -C /vllm-workspace/vllm apply $GITHUB_WORKSPACE/unifiedcache/patch/0.9.2/vllm-adapt.patch
+          git -C /vllm-workspace/vllm apply $GITHUB_WORKSPACE/ucm/patch/0.9.2/vllm-adapt.patch
       
 
       - name: Install unified-cache-management

@@ -21,7 +21,7 @@ index f0ad68b16..847c97371 100644
  from vllm.platforms import _Backend, current_platform
  from vllm.utils import direct_register_custom_op
  from vllm.v1.attention.backends.utils import validate_kv_sharing_target
-+from unifiedcache.integration.vllm.ucm_sparse.state import get_ucm_sparse, has_ucm_sparse
++from ucm.integration.vllm.ucm_sparse.state import get_ucm_sparse, has_ucm_sparse
  
  
  class Attention(nn.Module):
@@ -114,8 +114,8 @@ index 6937455e7..3a44db442 100644
  from vllm.v1.kv_cache_interface import KVCacheConfig
  from vllm.v1.metrics.stats import PrefixCacheStats
  from vllm.v1.request import Request, RequestStatus
-+from unifiedcache.integration.vllm.ucm_sparse.state import get_ucm_sparse, has_ucm_sparse
-+from unifiedcache.integration.vllm.ucm_sparse.base import INVALID_SLOT
++from ucm.integration.vllm.ucm_sparse.state import get_ucm_sparse, has_ucm_sparse
++from ucm.integration.vllm.ucm_sparse.base import INVALID_SLOT
  
  logger = init_logger(__name__)
  
@@ -179,8 +179,8 @@ index 22c0ad8d6..c5c39a2b8 100644
  from vllm.v1.spec_decode.metrics import SpecDecodingStats
  from vllm.v1.structured_output import StructuredOutputManager
  
-+from unifiedcache.integration.vllm.ucm_sparse.state import ensure_ucm_sparse_initialized, get_ucm_sparse, has_ucm_sparse
-+from unifiedcache.integration.vllm.ucm_sparse.base import UcmSparseBase, UcmSparseRole, INVALID_SLOT
++from ucm.integration.vllm.ucm_sparse.state import ensure_ucm_sparse_initialized, get_ucm_sparse, has_ucm_sparse
++from ucm.integration.vllm.ucm_sparse.base import UcmSparseBase, UcmSparseRole, INVALID_SLOT
 +
  logger = init_logger(__name__)
  
@@ -313,8 +313,8 @@ index 14278bb6a..84a597b0e 100644
  from .utils import (gather_mm_placeholders, initialize_kv_cache_for_kv_sharing,
                      sanity_check_mm_encoder_outputs, scatter_mm_placeholders)
  
-+from unifiedcache.integration.vllm.ucm_sparse.state import get_ucm_sparse, has_ucm_sparse
-+from unifiedcache.integration.vllm.ucm_sparse.base import UcmSparseMetadata, INVALID_SLOT
++from ucm.integration.vllm.ucm_sparse.state import get_ucm_sparse, has_ucm_sparse
++from ucm.integration.vllm.ucm_sparse.base import UcmSparseMetadata, INVALID_SLOT
 +
  if TYPE_CHECKING:
      import xgrammar as xgr
@@ -482,7 +482,7 @@ index 7117f60b5..c239e1f02 100644
  from vllm.v1.utils import report_usage_stats
  from vllm.v1.worker.gpu_model_runner import GPUModelRunner
  from vllm.v1.worker.worker_base import WorkerBase
-+from unifiedcache.integration.vllm.ucm_sparse.state import ensure_ucm_sparse_initialized
++from ucm.integration.vllm.ucm_sparse.state import ensure_ucm_sparse_initialized
  
  logger = init_logger(__name__)
  
