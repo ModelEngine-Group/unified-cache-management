@@ -33,14 +33,14 @@ from vllm.multimodal.inputs import MultiModalKwargs
 from vllm.sampling_params import SamplingParams
 from vllm.v1.request import Request
 
-from unifiedcache.integration.vllm.uc_connector import (
+from ucm.integration.vllm.uc_connector import (
     LoadPara,
     ReqMeta,
     SavePara,
     UCConnectorV1Metadata,
     UnifiedCacheConnectorV1,
 )
-from unifiedcache.ucm_connector.base import Task, UcmKVStoreBase
+from ucm.store.base import Task, UcmKVStoreBase
 
 
 def make_request(

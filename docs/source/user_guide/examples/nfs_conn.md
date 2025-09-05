@@ -75,7 +75,7 @@ vllm serve /home/models/Qwen2.5-14B-Instruct \
 --kv-transfer-config \
 '{
     "kv_connector": "UnifiedCacheConnectorV1",
-    "kv_connector_module_path": "unifiedcache.integration.vllm.uc_connector",
+    "kv_connector_module_path": "ucm.integration.vllm.uc_connector",
     "kv_role": "kv_both",
     "kv_connector_extra_config": {
         "ucm_connector_name": "UcmNfsStore",

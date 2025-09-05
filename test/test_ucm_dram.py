@@ -86,7 +86,7 @@ def patch_cuda_for_cpu():
 
 
 patch_cuda_for_cpu()
-from unifiedcache.ucm_connector.ucm_dram import DramTask, UcmDram  # isort: skip
+from ucm.store.ucm_dram import DramTask, UcmDram  # isort: skip
 
 
 def make_request(

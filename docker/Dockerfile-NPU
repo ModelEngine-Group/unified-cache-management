@@ -16,12 +16,12 @@ RUN export PLATFORM="ascend" && \
 
 # Apply patch for vLLM
 RUN cd /vllm-workspace/vllm \
-    && git apply /vllm-workspace/unified-cache-management/unifiedcache/patch/0.9.2/vllm-adapt.patch \
-    && git apply /vllm-workspace/unified-cache-management/unifiedcache/patch/0.9.2/vllm-adapt-sparse.patch
+    && git apply /vllm-workspace/unified-cache-management/ucm/patch/0.9.2/vllm-adapt.patch \
+    && git apply /vllm-workspace/unified-cache-management/ucm/patch/0.9.2/vllm-adapt-sparse.patch
 
 # Apply patch for vLLM-Ascend
 RUN cd /vllm-workspace/vllm-ascend \
-    && git apply /vllm-workspace/unified-cache-management/unifiedcache/patch/0.9.2/vllm-ascend-adapt.patch \
-    && git apply /vllm-workspace/unified-cache-management/unifiedcache/patch/0.9.2/vllm-ascend-adapt-sparse.patch
+    && git apply /vllm-workspace/unified-cache-management/ucm/patch/0.9.2/vllm-ascend-adapt.patch \
+    && git apply /vllm-workspace/unified-cache-management/ucm/patch/0.9.2/vllm-ascend-adapt-sparse.patch
 
 CMD ["/bin/bash"]

@@ -1,5 +1,5 @@
 name: 📚 User Story
-description: Apply for an user story to be displayed on unifiedcache official website
+description: Apply for an user story to be displayed on ucm official website
 title: "[User Story]: "
 labels: ["user-story"]
 
@@ -23,7 +23,7 @@ body:
       Tell us how what kind of challenge you faced in this user story.
 - type: textarea
   attributes:
-    label: Solving challenges with unifiedcache and benefits
+    label: Solving challenges with ucm and benefits
     description: >
       Tell us how unifiedcache helped you overcome the challenges, including details like how you use it, what version you used, hardware info, etc. And what kind of benefit do you get from using unifiedcache
 - type: textarea

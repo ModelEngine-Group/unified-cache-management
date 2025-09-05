@@ -25,7 +25,7 @@ CUDA_VISIBLE_DEVICES=0 vllm serve /home/models/Qwen2.5-7B-Instruct \
 --kv-transfer-config \
 '{
     "kv_connector": "UnifiedCacheConnectorV1",
-    "kv_connector_module_path": "unifiedcache.integration.vllm.uc_connector",
+    "kv_connector_module_path": "ucm.integration.vllm.uc_connector",
     "kv_role": "kv_producer",
     "kv_connector_extra_config": {
         "ucm_connector_name": "UcmNfsStore",
@@ -52,7 +52,7 @@ CUDA_VISIBLE_DEVICES=1 vllm serve /home/models/Qwen2.5-7B-Instruct \
 --kv-transfer-config \
 '{
     "kv_connector": "UnifiedCacheConnectorV1",
-    "kv_connector_module_path": "unifiedcache.integration.vllm.uc_connector",
+    "kv_connector_module_path": "ucm.integration.vllm.uc_connector",
     "kv_role": "kv_producer",
     "kv_connector_extra_config": {
         "ucm_connector_name": "UcmNfsStore",
@@ -80,7 +80,7 @@ CUDA_VISIBLE_DEVICES=2 vllm serve /home/models/Qwen2.5-7B-Instruct \
 --kv-transfer-config \
 '{
     "kv_connector": "UnifiedCacheConnectorV1",
-    "kv_connector_module_path": "unifiedcache.integration.vllm.uc_connector",
+    "kv_connector_module_path": "ucm.integration.vllm.uc_connector",
     "kv_role": "kv_consumer",
     "kv_connector_extra_config": {
         "ucm_connector_name": "UcmNfsStore",
@@ -106,7 +106,7 @@ CUDA_VISIBLE_DEVICES=3 vllm serve /home/models/Qwen2.5-7B-Instruct \
 --kv-transfer-config \
 '{
     "kv_connector": "UnifiedCacheConnectorV1",
-    "kv_connector_module_path": "unifiedcache.integration.vllm.uc_connector",
+    "kv_connector_module_path": "ucm.integration.vllm.uc_connector",
     "kv_role": "kv_consumer",
     "kv_connector_extra_config": {
         "ucm_connector_name": "UcmNfsStore",

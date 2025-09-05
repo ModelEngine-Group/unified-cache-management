@@ -10,7 +10,7 @@ body:
       #### Before submitting an issue, please make sure the issue hasn't been already addressed by searching through [the existing and past issues](https://github.com/ModelEngine-Group/unified-cache-management/issues?q=is%3Aissue%20sort%3Acreated-desc).
 - type: textarea
   attributes:
-    label: Anything you want to discuss about unifiedcache.
+    label: Anything you want to discuss about ucm.
     description: >
       Anything you want to discuss about unifiedcache.
   validations:

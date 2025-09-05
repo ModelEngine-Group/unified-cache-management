@@ -8,7 +8,7 @@ from vllm import LLM, SamplingParams
 from vllm.config import KVTransferConfig
 from vllm.engine.arg_utils import EngineArgs
 
-from unifiedcache.logger import init_logger
+from ucm.logger import init_logger
 
 logger = init_logger(__name__)
 
@@ -65,7 +65,7 @@ def print_output(
 
 
 def main():
-    module_path = "unifiedcache.integration.vllm.uc_connector"
+    module_path = "ucm.integration.vllm.uc_connector"
     name = "UnifiedCacheConnectorV1"
     model = os.getenv("MODEL_PATH", "/home/models/Qwen2.5-14B-Instruct")
 

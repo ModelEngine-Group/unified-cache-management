@@ -1,5 +1,5 @@
 name: 💻 Usage
-description: Raise an issue here if you don't know how to use unifiedcache.
+description: Raise an issue here if you don't know how to use ucm.
 title: "[Usage]: "
 labels: ["usage"]
 
@@ -30,7 +30,7 @@ body:
     required: true
 - type: textarea
   attributes:
-    label: How would you like to use unifiedcache.
+    label: How would you like to use ucm.
     description: |
       A detailed description of how you want to use unifiedcache.
     value: |

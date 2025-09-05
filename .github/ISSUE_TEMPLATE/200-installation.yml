@@ -30,7 +30,7 @@ body:
     required: true
 - type: textarea
   attributes:
-    label: How you are installing unifiedcache, also vllm and vllm-ascend.
+    label: How you are installing ucm, also vllm and vllm-ascend.
     description: |
       Paste the full command you are trying to execute.
     value: |

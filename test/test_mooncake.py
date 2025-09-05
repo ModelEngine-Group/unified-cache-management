@@ -3,9 +3,9 @@ import uuid
 
 import torch
 
-from unifiedcache.logger import init_logger
-from unifiedcache.ucm_connector.base import Task
-from unifiedcache.ucm_connector.ucm_mooncake import UcmMooncakeStore
+from ucm.logger import init_logger
+from ucm.store.base import Task
+from ucm.store.ucm_mooncake import UcmMooncakeStore
 
 logger = init_logger(__name__)
 

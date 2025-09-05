@@ -1,5 +1,5 @@
-name: 🤗 Support request for new model supported from huggingface/modelscope/modelers on unifiedcache
-description: Submit a proposal/request for a new model from huggingface/modelscope/modelers on unifiedcache
+name: 🤗 Support request for new model supported from huggingface/modelscope/modelers on ucm
+description: Submit a proposal/request for a new model from huggingface/modelscope/modelers on ucm
 title: "[New Model]: "
 labels: ["new model"]
 
@@ -19,7 +19,7 @@ body:
     required: true
 - type: textarea
   attributes:
-    label: The closest model unifiedcache already supports.
+    label: The closest model ucm already supports.
     description: >
       Here is the list of models already supported by unifiedcache in our official website . Which model is the most similar to the model you want to add support for?
 - type: textarea

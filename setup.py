@@ -31,8 +31,8 @@ from setuptools.command.build_ext import build_ext
 from setuptools.command.develop import develop
 
 ROOT_DIR = os.path.abspath(os.path.dirname(__file__))
-SRC_DIR = os.path.join(ROOT_DIR, "unifiedcache", "csrc", "ucmnfsstore")
-INSTALL_DIR = os.path.join(ROOT_DIR, "unifiedcache", "ucm_connector")
+SRC_DIR = os.path.join(ROOT_DIR, "ucm", "csrc", "ucmnfsstore")
+INSTALL_DIR = os.path.join(ROOT_DIR, "ucm", "store")
 PLATFORM = os.getenv("PLATFORM")
 
 
@@ -104,9 +104,7 @@ class CMakeBuild(build_ext):
 
         src_path = os.path.join(so_search_dir, so_file)
         dev_path = os.path.join(INSTALL_DIR, so_file)
-        dst_path = os.path.join(
-            self.build_lib, "unifiedcache", "ucm_connector", so_file
-        )
+        dst_path = os.path.join(self.build_lib, "ucm", "store", so_file)
         os.makedirs(os.path.dirname(dst_path), exist_ok=True)
         shutil.copy(src_path, dst_path)
         print(f"[INFO] Copied {src_path} → {dst_path}")
@@ -116,7 +114,7 @@ class CMakeBuild(build_ext):
 
 
 setup(
-    name="unifiedcache",
+    name="ucm",
     version="0.0.2",
     description="Unified Cache Management",
     author="Unified Cache Team",
