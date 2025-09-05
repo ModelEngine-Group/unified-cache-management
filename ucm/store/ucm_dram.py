@@ -187,3 +187,15 @@ class UcmDram(UcmKVStoreBase):
         """
         if is_success:
             self.cached_blocks.update(block_ids)
+
+    def check(self, task: Task) -> bool:
+        """
+        check if kv transfer task finished.
+
+        Args:
+            task (Task): transfer engine task.
+        Returns:
+            0 - finished
+            others - in process.
+        """
+        pass

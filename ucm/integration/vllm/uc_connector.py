@@ -106,7 +106,7 @@ class UCConnectorV1Metadata(KVConnectorMetadata):
         vllm_block_ids: list[int],
         load_paras: Optional[LoadPara] = None,
         save_paras: Optional[SavePara] = None,
-        load_async: bool = False
+        load_async: bool = False,
     ) -> None:
         self.requests.append(
             ReqMeta(
@@ -114,7 +114,7 @@ class UCConnectorV1Metadata(KVConnectorMetadata):
                 vllm_block_ids=vllm_block_ids,
                 load_paras=load_paras,
                 save_paras=save_paras,
-                load_async=load_async
+                load_async=load_async,
             )
         )
 
@@ -141,7 +141,7 @@ class UnifiedCacheConnectorV1(KVConnectorBase_V1):
         )
         self.element_size = vllm_config.model_config.dtype.itemsize
         self.kv_role = vllm_config.kv_transfer_config.kv_role
-        self._need_load_reqs: dict[str, Union[list[int], set[Task]]] = {}
+        self._need_load_reqs: dict[str, Union[list[int], list[Task]]] = {}
         if (
             self._vllm_config.kv_transfer_config is not None
             and "ucm_connector_name"
@@ -348,20 +348,25 @@ class UnifiedCacheConnectorV1(KVConnectorBase_V1):
                     k_task_id,
                     v_task_id,
                 )
-                
-                if request.load_async:
-                    logger.info(f"Request {request.request_id} has no save_paras, it's a load_async req!")
-                    for _, (k_task, v_task) in self.layerwise_load_tasks[request.request_id].items():
-                        self._need_load_reqs[request.request_id].add(k_task)
-                        if not self.is_mla:
-                            self._need_load_reqs[request.request_id].add(v_task)
-                    continue
-                
-                if not self.use_layerwise:
-                    for _, (k_task, v_task) in self.layerwise_load_tasks[request.request_id].items():
-                        assert self.connector.wait(k_task) == 0
-                        if not self.is_mla:
-                            assert self.connector.wait(v_task) == 0
+
+            if request.load_async:
+                for _, (k_task, v_task) in self.layerwise_load_tasks[
+                    request.request_id
+                ].items():
+                    if request.request_id not in self._need_load_reqs:
+                        self._need_load_reqs[request.request_id] = []
+                    self._need_load_reqs[request.request_id].append(k_task)
+                    if not self.is_mla:
+                        self._need_load_reqs[request.request_id].append(v_task)
+                return
+
+            if not self.use_layerwise:
+                for _, (k_task, v_task) in self.layerwise_load_tasks[
+                    request.request_id
+                ].items():
+                    assert self.connector.wait(k_task) == 0
+                    if not self.is_mla:
+                        assert self.connector.wait(v_task) == 0
 
     def wait_for_layer_load(self, layer_name: str) -> None:
         """
@@ -541,20 +546,29 @@ class UnifiedCacheConnectorV1(KVConnectorBase_V1):
         wait_for_tasks()
         self.dump_tasks.clear()
         return success_dumped_blocks if success_dumped_blocks else None
-    
-    def get_finished(self,
-                     finished_req_ids: set[str]) -> tuple[set[str], set[str]]:
+
+    def get_finished(self, finished_req_ids: set[str]) -> tuple[set[str], set[str]]:
         """Get the finished recving and sending requests."""
-        done_recving: set[str] = ()
+        done_recving: set[str] = set()
         for req_id, tasks in self._need_load_reqs.items():
-            for task in list(tasks):
+            unfinished_tasks = []
+            for task in tasks:
                 ret, finish = self.connector.check(task)
-                if ret == 0 and finish == 0:
+                if ret == 0 and finish == True:
                     # Remove this assertion after support recompute load failed reqs
                     assert self.connector.wait(task) == 0
-                    tasks.discard(task)
-            if not tasks:
+                    continue
+                if ret != 0:
+                    raise ValueError(f"Task {task.get_id()} Not Found")
+                unfinished_tasks.append(task)
+            if not unfinished_tasks:
                 done_recving.add(req_id)
+            self._need_load_reqs[req_id] = unfinished_tasks
+
+        # remove the finished requests
+        for req_id in list(done_recving):
+            self._need_load_reqs.pop(req_id, None)
+
         return None, done_recving
 
     # ==============================
@@ -609,7 +623,7 @@ class UnifiedCacheConnectorV1(KVConnectorBase_V1):
             block_hashes=block_hashes,
             can_load=False,
         )
-        
+
         need_load_tokens = max(num_external_computed_tokens - num_computed_tokens, 0)
         if hasattr(self, "kv_role") and self.kv_role == "kv_consumer":
             if need_load_tokens > 0:
@@ -650,10 +664,11 @@ class UnifiedCacheConnectorV1(KVConnectorBase_V1):
 
         if num_external_tokens > 0:
             self.load_paras[request.request_id].can_load = True
-        
+
         if request.request_id in self._need_load_reqs:
-            local_block_ids = (blocks.get_unhashed_block_ids()
-                               if num_external_tokens > 0 else [])
+            local_block_ids = (
+                blocks.get_unhashed_block_ids() if num_external_tokens > 0 else []
+            )
             self._need_load_reqs[request.request_id] = local_block_ids
 
     def build_connector_meta(
@@ -668,17 +683,18 @@ class UnifiedCacheConnectorV1(KVConnectorBase_V1):
         Args:
             scheduler_output (SchedulerOutput): the scheduler output object.
         """
-        for req_id, block_ids in self._need_load_reqs:
+        meta = UCConnectorV1Metadata()
+
+        for req_id, block_ids in self._need_load_reqs.items():
             meta.add_request(
                 req_id,
                 vllm_block_ids=block_ids,
-                load_paras=load_paras,
-                load_acync=True
+                load_paras=self.load_paras[req_id],
+                load_async=True,
             )
-        self._need_load_reqs.clear() 
+        self._need_load_reqs.clear()
 
-        meta = UCConnectorV1Metadata()
-        for new_req in scheduler_output.scheduled_new_reqs: 
+        for new_req in scheduler_output.scheduled_new_reqs:
             # Load kv is only supported for new reqs
             new_scheduled_blocks = (
                 scheduler_output.num_scheduled_tokens[new_req.req_id] // self.block_size

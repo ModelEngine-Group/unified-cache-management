@@ -185,3 +185,15 @@ class UcmNfsStore(UcmKVStoreBase):
             logger.warning(f"commit {block_ids} to {is_success}")
         ucmnfsstore.CommitBatch(block_ids, is_success)
         logger.debug("Succeed in committing kv cache.")
+
+    def check(self, task: Task) -> bool:
+        """
+        check if kv transfer task finished.
+
+        Args:
+            task (Task): transfer engine task.
+        Returns:
+            0 - finished
+            others - in process.
+        """
+        return ucmnfsstore.Check(task.get_id())

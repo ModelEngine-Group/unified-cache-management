@@ -139,7 +139,7 @@ class UcmKVStoreBase(ABC):
         pass
 
     @abstractmethod
-    def check(self, task: Task) -> bool:
+    def check(self, task: Task) -> tuple[int, bool]:
         """
         check if kv transfer task finished.
 
