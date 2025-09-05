@@ -192,7 +192,7 @@ class GSAPrefetchBase:
                     block_table_list_input = block_table_list
                 else:
                     block_table_list_input = [x for x in block_table_list]
-                    remain_all_len = len(prefetch_idx + len(remain_index))
+                    remain_all_len = len(prefetch_idx) + len(remain_index)
                     block_table_list_input[-1 * LOCAL_WINDOW_SZ:] = block_table_list[remain_all_len - LOCAL_WINDOW_SZ:remain_all_len]
                     block_table_list_input[remain_all_len - LOCAL_WINDOW_SZ:real_length - LOCAL_WINDOW_SZ] = block_table_list[remain_all_len - real_length:]
                     remain_index[-1 * LOCAL_WINDOW_SZ:] = list(range(real_length))[-1 * LOCAL_WINDOW_SZ:]
