@@ -742,9 +742,6 @@ class GSA(UcmSparseBase):
                         attn[layer_name].kv_cache[forward_context.virtual_engine][1][block].copy_(
                             self.gsa_metadata.gsa_stats[req_id].local_window_kv[1][layer_name][index]
                         )
-                for i in range(LOCAL_WINDOW_SZ):
-                    self.gsa_metadata.gsa_stats[req_id].remain_idx[i - LOCAL_WINDOW_SZ] = \
-                        len(self.gsa_metadata.gsa_stats[req_id].blocks) - LOCAL_WINDOW_SZ + i
 
     def build_sparse_meta(
         self,

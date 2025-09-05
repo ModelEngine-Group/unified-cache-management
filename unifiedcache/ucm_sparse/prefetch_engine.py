@@ -185,7 +185,7 @@ class GSAPrefetchBase:
 
                 prefetch_blocks_list = [block_table_list[x] for x in prefetch_idx]
                 self.prefetch_blocks[:, bs_index, :len(prefetch_blocks_list)] = torch.tensor(prefetch_blocks_list, dtype=torch.int32)
-                topk_block_list = [block_table_list[x] for x in range(len(remain_index))]
+                topk_block_list = [block_table_list[x] for x in remain_index]
                 topk_block_tensor = torch.tensor(topk_block_list, dtype=torch.int32, device=self.use_block_table.device)
 
                 if gsa_metadata.gsa_stats[req_id].num_prompt_tokens <= SEG_PREFILL_THRESHOLD:
