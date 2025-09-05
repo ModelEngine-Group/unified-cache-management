@@ -22,6 +22,8 @@ CalKpreAndTopk::CalKpreAndTopk(uint32_t layerNum, uint32_t blockSize, uint32_t m
     m_topkComputer = new SelectTopkBlock::TopkBlockSelector();
     m_kpreComputer = new KRepre::KRepreComputer();
     m_numKpre = 1;
+    m_needCalTopk = false;
+    m_needCalPre = false;
 }
 
 void CalKpreAndTopk::SetKpreMethodParam(uint32_t maxBlockNum, uint32_t numHeads, uint32_t numKpre)
@@ -67,8 +69,7 @@ void CalKpreAndTopk::SetCommonParam(std::vector<uint32_t>& calTopkIdx, std::vect
 {
     m_calTopkIdx = calTopkIdx;
     m_isDecode = isDecode;
-    m_needCalTopk = false;
-    m_needCalPre = false;
+
 }
 
 void CalKpreAndTopk::SetTopkParam(std::vector<std::vector<uint32_t>>& repreSlotMapping)
@@ -212,6 +213,8 @@ void CalKpreAndTopk::ResetReady()
             atomic_val.store(false, std::memory_order_relaxed);
         }
     }
+    m_needCalTopk = false;
+    m_needCalPre = false;
 }
 
 bool CalKpreAndTopk::IsCalculateFinish()
