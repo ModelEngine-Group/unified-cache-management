@@ -187,18 +187,22 @@ class GSAPrefetchBase:
                 self.prefetch_blocks[:, bs_index, :len(prefetch_blocks_list)] = torch.tensor(prefetch_blocks_list, dtype=torch.int32)
                 topk_block_list = [block_table_list[x] for x in range(len(remain_index))]
                 topk_block_tensor = torch.tensor(topk_block_list, dtype=torch.int32, device=self.use_block_table.device)
+
+                if gsa_metadata.gsa_stats[req_id].num_prompt_tokens <= SEG_PREFILL_THRESHOLD:
+                    block_table_list_input = block_table_list
+                else:
+                    block_table_list_input = [x for x in block_table_list]
+                    remain_all_len = len(prefetch_idx + len(remain_index))
+                    block_table_list_input[-1 * LOCAL_WINDOW_SZ:] = block_table_list[remain_all_len - LOCAL_WINDOW_SZ:remain_all_len]
+                    block_table_list_input[remain_all_len - LOCAL_WINDOW_SZ:real_length - LOCAL_WINDOW_SZ] = block_table_list[remain_all_len - real_length:]
+                    remain_index[-1 * LOCAL_WINDOW_SZ:] = list(range(real_length))[-1 * LOCAL_WINDOW_SZ:]
+                input_idxs = prefetch_idx + remain_index
                 self.use_block_table[:, bs_index, :len(topk_block_list)] = topk_block_tensor
                 self.m_load_success_list[:, bs_index, :len(topk_block_list)] = topk_block_tensor
                 self.use_block_table_cpu.copy_(self.use_block_table)
                 if self.is_gsa_req_id[req_id]:
-                    block_table_list_input = [x for x in block_table_list]
-                    remain_len = len(remain_index)
-                    for i in range(remain_len - LOCAL_WINDOW_SZ, remain_len, 1):
-                        block_table_list_input[i] = block_table_list[i - remain_len]
-                    for i in range(real_length - LOCAL_WINDOW_SZ, real_length, 1):
-                        block_table_list_input[i] = remain_len - real_length + i + 1
                     self.prefetch_engine_c.set_blocks_map(int(req_id), block_table_list_input,
-                                                          remain_index + prefetch_idx)
+                                                          input_idxs)
     
     def _gsa_block_len_pre(
         self,

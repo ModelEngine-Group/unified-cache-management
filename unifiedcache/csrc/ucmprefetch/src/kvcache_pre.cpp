@@ -192,7 +192,12 @@ namespace ucmprefetch
             std::unordered_set<int> hitBlocks;
             std::map<int, int> hitBlocksIdx;
             std::vector<int> missIdxs;
-            PrefetchReqInfo oneBsInfo = {topkLen, reqID, i, topkIndex, bsIndex};
+            PrefetchReqInfo oneBsInfo;
+            oneBsInfo.topkLen = topkLen;
+            oneBsInfo.reqID = reqID;
+            oneBsInfo.topkIndex = topkIndex;
+            oneBsInfo.bsIndex = bsIndex;
+            oneBsInfo.layerID = i;
             GetHitAndMissBlock(oneBsInfo, hitBlocks,hitBlocksIdx, missIdxs);
             if (missIdxs.size() != 0) {
                 RunPrefetchH2D(oneBsInfo, hitBlocks,hitBlocksIdx, missIdxs);

@@ -196,11 +196,11 @@ class GSAReqStat:
                 prefetch_len = MAX_TOPK_LEN - remain_len + 1
                 self.remain_idx = []
                 self.prefetch_idx = []
-                for i in range(blocks_len):
-                    if len(self.remain_idx) < (remain_len):
-                        self.remain_idx.append(i)
-                    elif len(self.prefetch_idx) < prefetch_len:
-                        self.prefetch_idx.append(i)
+                assert LOCAL_WINDOW_SZ < remain_len
+                remain_blocks_idx = list(range(MAX_TOPK_LEN + 1))
+                self.remain_idx = remain_blocks_idx[:remain_len - LOCAL_WINDOW_SZ] + \
+                    remain_blocks_idx[-LOCAL_WINDOW_SZ:]
+                self.prefetch_idx = remain_blocks_idx[remain_len - LOCAL_WINDOW_SZ:-LOCAL_WINDOW_SZ]
                 if PTOPK_PREFETCH_ENABLE:
                     self.sparse_len = remain_len + prefetch_len
                 else:
@@ -704,6 +704,8 @@ class GSA(UcmSparseBase):
             assert req_id in self.gsa_metadata.gsa_stats
             if self.gsa_metadata.gsa_stats[req_id].stage() == SequenceStage.PREFILL and \
                 self.gsa_metadata.gsa_stats[req_id].is_last_chunk():
+                if self.gsa_metadata.gsa_stats[req_id].num_prompt_tokens <= SEG_PREFILL_THRESHOLD:
+                    return
                 local_blocks = self.gsa_metadata.gsa_stats[req_id].blocks[LOCAL_WINDOW_SZ * -1:]
                 k_cache = {}
                 v_cache = {}
@@ -724,6 +726,8 @@ class GSA(UcmSparseBase):
         forward_context = get_forward_context()
         attn = forward_context.no_compile_layers
         for req_id, _ in scheduler_output.num_scheduled_tokens.items():
+            if self.gsa_metadata.gsa_stats[req_id].num_prompt_tokens <= SEG_PREFILL_THRESHOLD:
+                return
             if req_id in self.gsa_metadata.gsa_stats and \
                 self.gsa_metadata.gsa_stats[req_id].num_computed_tokens == self.gsa_metadata.gsa_stats[req_id].num_prompt_tokens:
                 assert self.gsa_metadata.gsa_stats[req_id].remain_idx != None

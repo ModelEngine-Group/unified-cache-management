@@ -49,6 +49,7 @@ private:
 
 public:
     Logger(const std::string &fileName, LogLevel level = LogLevel::INFO, bool enable = true)
+        :mMinLevel(level), mEnable(enable)
     {
         if (enable) {
             mLogFile.open(fileName, std::ios::app);
