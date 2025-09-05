@@ -28,16 +28,13 @@ To use the DRAM connector, you need to configure the `connector_config` dictiona
 
 - `max_cache_size` *(optional)*:  
   Specifies the maximum allowed DRAM memory usage (in **byte**) for caching in `kv_connector_extra_config["ucm_connector_config"]`.  
-  If not provided, it defaults to **5 GB**.
-- `kv_block_size` *(optional)*:  
-  Specifies the memory size (in bytes) of a single key or value cache block used in vLLM’s paged attention mechanism, which is calculated as : `block_size * head_size * total_num_kv_heads * element_size`.
+  If not provided, it defaults to **500 GB**.
 
 ### Example:
 
 ```python
-# Allocate up to 8GB DRAM for KV cache
-# KV Block size (in byte) is 262144
-kv_connector_extra_config={"ucm_connector_name": "UcmDram", "ucm_connector_config":{"max_cache_size": 5368709120, "kv_block_size": 262144}}
+# Allocate up to 500GB DRAM for KV cache
+kv_connector_extra_config={"ucm_connector_name": "UcmDram", "ucm_connector_config":{"max_cache_size": 536870912000}}
 ```
 
 ## Launching Inference
@@ -50,7 +47,7 @@ To start **offline inference** with the DRAM connector，modify the script `exam
 # In examples/offline_inference.py
 ktc = KVTransferConfig(
     ...
-    kv_connector_extra_config={"ucm_connector_name": "UcmDram", "ucm_connector_config":{"max_cache_size": 5368709120, "kv_block_size": 262144}}
+    kv_connector_extra_config={"ucm_connector_name": "UcmDram", "ucm_connector_config":{"max_cache_size": 536870912000}}
 )
 ```
 
@@ -87,8 +84,7 @@ vllm serve /home/models/Qwen2.5-14B-Instruct \
     "kv_connector_extra_config": {
         "ucm_connector_name": "UcmDram",
         "ucm_connector_config": {
-            "max_cache_size": 5368709120,
-            "kv_block_size": 262144
+            "max_cache_size": 536870912000
         }
     }
 }'

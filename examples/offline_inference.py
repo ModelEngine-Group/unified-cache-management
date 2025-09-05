@@ -27,8 +27,7 @@ def build_llm_with_uc(module_path: str, name: str, model: str):
         kv_connector_extra_config={
             "ucm_connector_name": "UcmDram",
             "ucm_connector_config": {
-                "max_cache_size": 5368709120,
-                "kv_block_size": 262144,
+                "max_cache_size": 536870912000,
             },
             "ucm_sparse_method": "ESA",
         },

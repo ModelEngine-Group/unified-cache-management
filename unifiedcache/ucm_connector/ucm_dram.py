@@ -60,9 +60,9 @@ class UcmDram(UcmKVStoreBase):
     def __init__(self, config: Dict):
         super().__init__(config)
         self.dram_cache: Dict[str, any] = {}
-        self.max_cache_byte = int(config.get("max_cache_size", 5368709120))
-        self.kv_block_size = int(config.get("kv_block_size", 262144))
-        self.max_block_num = self.max_cache_byte // self.kv_block_size
+        self.max_cache_byte = int(config.get("max_cache_size", 536870912000))
+        self.kv_block_size = None
+        self.max_block_num = None
         if config["role"] == "scheduler":
             self.cached_blocks = set()
 
@@ -138,6 +138,9 @@ class UcmDram(UcmKVStoreBase):
             task(Task).
         """
         task = DramTask()
+        if self.kv_block_size == None:
+            self.kv_block_size = src_tensor[0].element_size() * src_tensor[0].nelement()
+            self.max_block_num = self.max_cache_byte // self.kv_block_size
         if len(self.dram_cache) > self.max_block_num:
             logger.warning(
                 "Dram cache usage exceeds limit! No more kv cache offload! Try to increase your initial max_cache_size."

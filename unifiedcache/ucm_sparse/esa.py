@@ -378,7 +378,7 @@ class ESA(UcmSparseBase):
         self.req_states: dict[str, ReqStatePerLayer] = {}
         self.rank = vllm_config.parallel_config.rank
         self.tp_size = vllm_config.parallel_config.tensor_parallel_size
-        config = {"max_cache_size": 5368709120, "device": self.rank, "role": "worker"}
+        config = {"max_cache_size": 536870912000, "device": self.rank, "role": "worker"}
         self.connector = UcmConnectorFactory.create_connector("UcmDram", config)
 
     def attention_begin(
