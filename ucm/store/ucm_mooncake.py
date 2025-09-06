@@ -332,7 +332,7 @@ class UcmMooncakeStore(UcmKVStoreBase):
 
         self.store.close()
 
-    def check(self, task: Task) -> bool:
+    def check(self, task: Task) -> int:
         """
         check if kv transfer task finished.
 

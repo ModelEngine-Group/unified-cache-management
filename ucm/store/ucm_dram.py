@@ -188,7 +188,7 @@ class UcmDram(UcmKVStoreBase):
         if is_success:
             self.cached_blocks.update(block_ids)
 
-    def check(self, task: Task) -> bool:
+    def check(self, task: Task) -> int:
         """
         check if kv transfer task finished.
 

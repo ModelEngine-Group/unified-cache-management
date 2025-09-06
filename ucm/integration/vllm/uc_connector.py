@@ -552,12 +552,12 @@ class UnifiedCacheConnectorV1(KVConnectorBase_V1):
         for req_id, tasks in self._need_load_reqs.items():
             unfinished_tasks = []
             for task in tasks:
-                ret, finish = self.connector.check(task)
-                if ret == 0 and finish == True:
+                ret = self.connector.check(task)
+                if ret == 0:
                     # Remove this assertion after support recompute load failed reqs
                     assert self.connector.wait(task) == 0
                     continue
-                if ret != 0:
+                if ret != -1:
                     raise ValueError(f"Task {task.get_id()} Not Found")
                 unfinished_tasks.append(task)
             if not unfinished_tasks:
