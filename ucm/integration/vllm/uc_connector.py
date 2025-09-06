@@ -141,6 +141,8 @@ class UnifiedCacheConnectorV1(KVConnectorBase_V1):
         self.element_size = vllm_config.model_config.dtype.itemsize
         self.kv_role = vllm_config.kv_transfer_config.kv_role
         self._need_load_reqs: dict[str, Union[list[int], list[Task]]] = {}
+        self._load_failed_reqs: set[str] = set()
+        self._load_req_to_blocks: dict[str, set[int]] = {}
         if (
             self._vllm_config.kv_transfer_config is not None
             and "ucm_connector_name"
@@ -280,6 +282,16 @@ class UnifiedCacheConnectorV1(KVConnectorBase_V1):
     # ==============================
     # Worker-side methods
     # ==============================
+    def clear_connector_metadata(self) -> None:
+        """Clear the connector metadata.
+
+        This function should be called by the model runner every time
+        after the model execution.
+        """
+        self._load_failed_reqs.clear()
+        self._load_req_to_blocks.clear()
+        super().clear_connector_metadata()
+
     def start_load_kv(self, forward_context: "ForwardContext", **kwargs) -> None:
         """
         Start loading the KV cache from the connector to vLLM's paged
@@ -306,7 +318,6 @@ class UnifiedCacheConnectorV1(KVConnectorBase_V1):
         for request in metadata.requests:
             if request.load_paras is None or not request.load_paras.can_load:
                 continue
-            layer_to_tensor: dict[str, tuple[List[torch.Tensor], List[int]]] = {}
             block_ids = request.vllm_block_ids
             # Blocks id need to save should start after last vllm cached block
             load_start_block_id = (
@@ -327,6 +338,9 @@ class UnifiedCacheConnectorV1(KVConnectorBase_V1):
             ]
             assert len(fetch_block_ids) == len(fetch_block_hashes)
             blocks_len = len(fetch_block_ids)
+            self._load_req_to_blocks.setdefault(request.request_id, set()).update(
+                fetch_block_ids
+            )
             for layer_name, kv_layer in self.kv_caches.items():
                 tensors, offsets = self.get_tensor_and_offset_layerwise(
                     fetch_block_ids, kv_layer, layer_name
@@ -363,9 +377,12 @@ class UnifiedCacheConnectorV1(KVConnectorBase_V1):
                 for _, (k_task, v_task) in self.layerwise_load_tasks[
                     request.request_id
                 ].items():
-                    assert self.connector.wait(k_task) == 0
-                    if not self.is_mla:
-                        assert self.connector.wait(v_task) == 0
+                    if self.connector.wait(k_task) != 0:
+                        self._load_failed_reqs.add(request.request_id)
+                        break
+                    if v_task and self.connector.wait(v_task) != 0:
+                        self._load_failed_reqs.add(request.request_id)
+                        break
 
     def wait_for_layer_load(self, layer_name: str) -> None:
         """
@@ -387,10 +404,16 @@ class UnifiedCacheConnectorV1(KVConnectorBase_V1):
             self.current_layer < self.num_layers
         ), "The current layer should be less than total layers!"
         for request_id, layer_to_task in self.layerwise_load_tasks.items():
+            if request_id in self._load_failed_reqs:
+                continue
             k_task, v_task = layer_to_task[layer_name]
-            assert self.connector.wait(k_task) == 0
+            if self.connector.wait(k_task) != 0:
+                self._load_failed_reqs.add(request_id)
+                continue
             if not self.is_mla:
-                assert self.connector.wait(v_task) == 0
+                if self.connector.wait(v_task) != 0:
+                    self._load_failed_reqs.add(request_id)
+                    continue
             logger.debug(f"Load tasks for {request_id} on layer {layer_name} finished.")
 
     def save_kv_layer(
@@ -550,16 +573,18 @@ class UnifiedCacheConnectorV1(KVConnectorBase_V1):
         """Get the finished recving and sending requests."""
         done_recving: set[str] = set()
         for req_id, tasks in self._need_load_reqs.items():
+            if req_id in self._load_failed_reqs:
+                continue
             unfinished_tasks = []
             for task in tasks:
                 ret = self.connector.check(task)
-                if ret == 0:
-                    # Remove this assertion after support recompute load failed reqs
-                    assert self.connector.wait(task) == 0
+                if ret == -1:
+                    unfinished_tasks.append(task)
                     continue
-                if ret != -1:
-                    raise ValueError(f"Task {task.get_id()} Not Found")
-                unfinished_tasks.append(task)
+                elif ret == 0 and self.connector.wait(task) == 0:
+                    continue
+                self._load_failed_reqs.add(req_id)
+                break
             if not unfinished_tasks:
                 done_recving.add(req_id)
             self._need_load_reqs[req_id] = unfinished_tasks
@@ -624,10 +649,19 @@ class UnifiedCacheConnectorV1(KVConnectorBase_V1):
         )
 
         need_load_tokens = max(num_external_computed_tokens - num_computed_tokens, 0)
+        # Load async when Decode instance need to load.
         if hasattr(self, "kv_role") and self.kv_role == "kv_consumer":
+            # Only trigger 1 asynchronous KV transfer per request.
+            if (
+                request.kv_transfer_params
+                and request.kv_transfer_params["load_async"] == False
+            ):
+                return 0, False
+            request.kv_transfer_params = request.kv_transfer_params or {}
+            request.kv_transfer_params["load_async"] = False
             if need_load_tokens > 0:
                 self._need_load_reqs[request.request_id] = []
-                return need_load_tokens, True
+            return need_load_tokens, True
 
         num_max_cached_tokens = max(num_external_computed_tokens, num_computed_tokens)
         num_blocks_need_save = (
@@ -777,6 +811,13 @@ class UnifiedCacheConnectorV1(KVConnectorBase_V1):
             if cancel_blocks:
                 self.connector.commit(cancel_blocks, False)
         return False, None
+
+    def get_block_ids_with_load_errors(self) -> set[int]:
+        invalid_block_ids: set[int] = set()
+        for req_id in self._load_failed_reqs:
+            if req_id in self._load_req_to_blocks:
+                invalid_block_ids.update(self._load_req_to_blocks[req_id])
+        return invalid_block_ids
 
     @staticmethod
     def _extract_layer_index(layer_name: str) -> Optional[int]:

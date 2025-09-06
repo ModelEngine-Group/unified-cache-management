@@ -110,6 +110,8 @@ class TestUCConnector(unittest.TestCase):
                 str, dict[str, tuple[Task, Task]]
             ] = {}
             ucconnector._need_load_reqs: dict[str, Union[list[int], list[Task]]] = {}
+            ucconnector._load_failed_reqs: set[str] = set()
+            ucconnector._load_req_to_blocks: dict[str, set[int]] = {}
         return ucconnector
 
     def test_get_num_new_matched_tokens_hit(self):
