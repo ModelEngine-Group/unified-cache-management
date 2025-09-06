@@ -128,7 +128,7 @@ class GSAPrefetchBase:
                                          dtype=torch.int32,
                                          pin_memory=is_pin_memory_available(),
                                          device="cpu")
-        self.prefetch_topk_buf = torch.zeros((self.num_attention_layers, self.max_bs, MAX_TOPK_LEN + 1),
+        self.prefetch_topk_buf = torch.zeros((self.num_attention_layers, self.max_bs, int(self.sp_max_len)),
                                          dtype=torch.int64,
                                          pin_memory=is_pin_memory_available(),
                                          device="cpu")
@@ -342,7 +342,7 @@ class GSAPrefetchBase:
     ) -> None:
         batch_size = len(self.req_ids_bs)
         layer_num = self.num_attention_layers
-        block_table_tmp = torch.full((layer_num, batch_size, max(self.topk_len + 1, self._get_max_block_len())),
+        block_table_tmp = torch.full((layer_num, batch_size, self.max_block_len),
                                      0, dtype=torch.int32,
                                      device=self.use_block_table.device)
         gen_len_tmp = torch.zeros((layer_num, batch_size), dtype=torch.int32)
@@ -391,7 +391,7 @@ class GSAPrefetchBase:
                 self._first_topk_deal(gsa_metadata)
                 self._gsa_block_len_pre(gsa_metadata)
                 block_table_tmp = self.use_block_table[:, block_table_index, :]
-                gen_len_tmp = self.gsa_seq_len[:, self.select_bs_index]
+                gen_len_tmp = self.gsa_seq_len[:, self.select_bs_index].to(self.use_block_table.device)
             else:
                 block_table_tmp, gen_len_tmp = self._no_gsa_input_deal(gsa_metadata)
             

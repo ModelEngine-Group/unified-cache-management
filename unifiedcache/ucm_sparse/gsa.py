@@ -20,7 +20,7 @@ from unifiedcache.integration.vllm.ucm_sparse.base import (
 from unifiedcache.ucm_sparse.prefetch_engine import GSAPrefetchBase
 from unifiedcache.ucm_sparse.utils import (MAX_TOPK_LEN, compute_topk_len,
                                            SEG_PREFILL_THRESHOLD, LOCAL_WINDOW_SZ,
-                                           PTOPK_PREFETCH_ENABLE)
+                                           PTOPK_PREFETCH_ENABLE, update_min_max_topk_len)
 from unifiedcache.ucm_connector.base import Task, UcmKVStoreBase
 from unifiedcache.ucm_connector.factory import UcmConnectorFactory
 from vllm.utils import make_tensor_with_pad
@@ -193,11 +193,15 @@ class GSAReqStat:
             blocks_len = len(self.blocks)
             if self.num_prompt_tokens > SEG_PREFILL_THRESHOLD:
                 remain_len = compute_topk_len(blocks_len)
-                prefetch_len = MAX_TOPK_LEN - remain_len + 1
+                if remain_len > MAX_TOPK_LEN:
+                    prefetch_len = 0
+                    remain_blocks_idx = list(range(remain_len))
+                else:
+                    prefetch_len = MAX_TOPK_LEN - remain_len + 1
+                    remain_blocks_idx = list(range(MAX_TOPK_LEN + 1))
                 self.remain_idx = []
                 self.prefetch_idx = []
                 assert LOCAL_WINDOW_SZ < remain_len
-                remain_blocks_idx = list(range(MAX_TOPK_LEN + 1))
                 self.remain_idx = remain_blocks_idx[:remain_len - LOCAL_WINDOW_SZ] + \
                     remain_blocks_idx[-LOCAL_WINDOW_SZ:]
                 self.prefetch_idx = remain_blocks_idx[remain_len - LOCAL_WINDOW_SZ:-LOCAL_WINDOW_SZ]
@@ -421,6 +425,7 @@ class GSA(UcmSparseBase):
         self.gsa_stats = {}
         self._sparse_metadata = None
         self.init_topk_cal(vllm_config, self.prefetch_engine)
+        update_min_max_topk_len(self.block_size)
     
     def init_topk_cal(
         self,
@@ -536,16 +541,8 @@ class GSA(UcmSparseBase):
             attn_metadata = forward_context.attn_metadata
             block_tables = attn_metadata.block_tables
         if self.prefetch_engine.atb_gsa_enable:
-            for index, req_meta in enumerate(self._sparse_metadata.requests):
-                if not self.prefetch_engine.is_gsa_req_id[req_meta.request_id]:
-                    continue
-                if req_meta.stage == SequenceStage.DECODE:
-                    index_in_batch = req_meta.index_in_batch
-                    block_len = self.model_input["block_tables_mp"][current_layer_id][index].shape[0]
-                    block_tables[index_in_batch].zero_()
-                    block_tables[index_in_batch][:block_len].copy_(
-                        self.model_input["block_tables_mp"][current_layer_id][index])
-                    attn_metadata.seq_lens[index_in_batch].copy_(self.model_input["gsa_seq_len"][current_layer_id][index])
+            block_tables = self.model_input["block_tables_mp"][current_layer_id]
+            attn_metadata.seq_lens = self.model_input["gsa_seq_len"][current_layer_id]
 
     def attention_finished(
         self,
@@ -580,11 +577,12 @@ class GSA(UcmSparseBase):
             block_hashes += [f"{self.block_hash(req_id, id_ - offset)}" 
                                 for id_ in self.gsa_metadata.gsa_stats[req_id].calc_repre_slot_mapping]
             block_ids += self.gsa_metadata.gsa_stats[req_id].calc_block_table
-        if torch.cuda.is_available():
-            torch.cuda.current_stream().synchronize()
-        else:
-            torch.npu.current_stream().synchronize()
-        self.launch_transfer_task("dump", block_hashes, block_ids, current_layer_id)
+        if len(block_hashes) > 0:
+            if torch.cuda.is_available():
+                torch.cuda.current_stream().synchronize()
+            else:
+                torch.npu.current_stream().synchronize()
+            self.launch_transfer_task("dump", block_hashes, block_ids, current_layer_id)
     
     def wait_all_task_done(self, transfer_type):
         if transfer_type == "dump":
@@ -693,7 +691,8 @@ class GSA(UcmSparseBase):
                     block_hashes_load += [f"{self.block_hash(req_id, id_)}" 
                                 for id_ in all_miss_idx[index][layer_id][:load_len]]
                     block_ids_load += all_need_load_block[index][layer_id]
-                self.launch_transfer_task("load", block_hashes_load, block_ids_load, layer_id)
+                if len(block_hashes_load) > 0:
+                    self.launch_transfer_task("load", block_hashes_load, block_ids_load, layer_id)
     
     def _gsa_sparse_local_kv(
         self,
@@ -796,7 +795,10 @@ class GSA(UcmSparseBase):
         num_prompt_blocks = math.ceil(request.num_prompt_tokens / block_size)
         num_all_blocks = math.ceil(request.num_tokens / block_size)
         topk_len = compute_topk_len(num_prompt_blocks)
-        prefetch_len = MAX_TOPK_LEN - topk_len + 1
+        if topk_len > MAX_TOPK_LEN:
+            prefetch_len = 0
+        else:
+            prefetch_len = MAX_TOPK_LEN - topk_len + 1
         num_sparse_blocks = num_all_blocks - num_prompt_blocks + topk_len + prefetch_len
         flaw = request.num_tokens % block_size
         if flaw:

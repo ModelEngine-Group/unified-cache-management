@@ -1,5 +1,7 @@
 import torch
+import math
 
+DEFAULT_BLOCK_SIZE = 128
 MIN_TOPK_LEN = 32
 MAX_TOPK_LEN = 48
 MAX_BS = 30
@@ -18,6 +20,11 @@ def align_to_256bytes(extent: int, dtype:torch.dtype) -> int:
     dtype_szie = get_type_size(dtype)
     eles_per_256bytes = 256 // dtype_szie
     return round_up(extent, eles_per_256bytes)
+
+def update_min_max_topk_len(block_size):
+    MIN_TOPK_LEN = math.ceil(MIN_TOPK_LEN * DEFAULT_BLOCK_SIZE / block_size)
+    MAX_TOPK_LEN = math.ceil(MAX_TOPK_LEN * DEFAULT_BLOCK_SIZE / block_size)
+    print(f"update max and min topk lens as: MIN_TOPK_LEN {MIN_TOPK_LEN}, MAX_TOPK_LEN {MAX_TOPK_LEN}")
 
 def compute_topk_len(raw_seq_len):
     topk_len = int(raw_seq_len * 0.3)
