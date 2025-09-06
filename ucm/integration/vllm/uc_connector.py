@@ -23,7 +23,6 @@
 #
 # Adapted from lmcache/lmcache/integration/vllm/vllm_v1_adapter.py
 #
-import copy
 import hashlib
 import pickle
 from dataclasses import dataclass, field
@@ -358,7 +357,7 @@ class UnifiedCacheConnectorV1(KVConnectorBase_V1):
                     self._need_load_reqs[request.request_id].append(k_task)
                     if not self.is_mla:
                         self._need_load_reqs[request.request_id].append(v_task)
-                return
+                continue
 
             if not self.use_layerwise:
                 for _, (k_task, v_task) in self.layerwise_load_tasks[

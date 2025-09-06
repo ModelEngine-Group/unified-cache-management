@@ -109,6 +109,7 @@ class TestUCConnector(unittest.TestCase):
             ucconnector.layerwise_load_tasks: dict[
                 str, dict[str, tuple[Task, Task]]
             ] = {}
+            ucconnector._need_load_reqs: dict[str, Union[list[int], list[Task]]] = {}
         return ucconnector
 
     def test_get_num_new_matched_tokens_hit(self):
