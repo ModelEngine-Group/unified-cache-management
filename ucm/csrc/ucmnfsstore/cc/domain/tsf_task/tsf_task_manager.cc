@@ -22,36 +22,31 @@
  * SOFTWARE.
  * */
 #include "tsf_task_manager.h"
+#include "logger/logger.h"
 
 namespace UC {
 
 Status TsfTaskManager::Setup(const int32_t deviceId, const size_t streamNumber, const size_t bufferSize,
                              const size_t bufferNumber, const size_t timeoutMs, const SpaceLayout* layout)
 {
-    this->_queues.reserve(streamNumber);
-    for (size_t i = 0; i < streamNumber; ++i) {
-        auto& queue = this->_queues.emplace_back(std::make_unique<TsfTaskQueue>());
-        auto status = queue->Setup(deviceId, bufferSize, bufferNumber, &this->_failureSet, layout);
-        if (status.Failure()) { return status; }
-    }
+    auto status = this->_queue.Setup(deviceId, streamNumber, bufferSize, bufferNumber, &this->_failureSet, layout);
+    if (status.Failure()) { return status; }
     this->_timeoutMs = timeoutMs;
     return Status::OK();
 }
 
-Status TsfTaskManager::Submit(std::list<TsfTask>& tasks, const size_t size, const size_t number,
-                              const std::string& brief, size_t& taskId)
+Status TsfTaskManager::Submit(TsfTask&& task, size_t& taskId)
 {
-    std::unique_lock<std::mutex> lk(this->_mutex);
+    std::lock_guard<std::mutex> lg{this->_mutex};
     taskId = ++this->_taskIdSeed;
-    auto [iter, success] = this->_waiters.emplace(taskId, std::make_shared<TsfTaskWaiter>(taskId, size, number, brief));
-    if (!success) { return Status::OutOfMemory(); }
-    std::vector<std::list<TsfTask>> lists;
-    this->Dispatch(tasks, lists, taskId, iter->second);
-    for (size_t i = 0; i < lists.size(); i++) {
-        if (lists[i].empty()) { continue; }
-        this->_queues[this->_qIdx]->Push(lists[i]);
-        this->_qIdx = (this->_qIdx + 1) % this->_queues.size();
+    auto [iter, success] = this->_waiters.emplace(taskId, std::make_shared<TsfTaskWaiter>());
+    if (!success) {
+        UC_ERROR("Out of memory for making trans waiter.");
+        return Status::OutOfMemory();
     }
+    task.id = taskId;
+    task.waiter = iter->second.get();
+    this->_queue.Push(std::move(task));
     return Status::OK();
 }
 
@@ -59,9 +54,12 @@ Status TsfTaskManager::Wait(const size_t taskId)
 {
     std::shared_ptr<TsfTaskWaiter> waiter = nullptr;
     {
-        std::unique_lock<std::mutex> lk(this->_mutex);
+        std::lock_guard<std::mutex> lg(this->_mutex);
         auto iter = this->_waiters.find(taskId);
-        if (iter == this->_waiters.end()) { return Status::NotFound(); }
+        if (iter == this->_waiters.end()) {
+            UC_ERROR("Not found task by id({}).", taskId);
+            return Status::NotFound();
+        }
         waiter = iter->second;
         this->_waiters.erase(iter);
     }
@@ -69,7 +67,7 @@ Status TsfTaskManager::Wait(const size_t taskId)
         this->_failureSet.Insert(taskId);
         waiter->Wait();
     }
-    bool failure = this->_failureSet.Exist(taskId);
+    bool failure = this->_failureSet.Contains(taskId);
     this->_failureSet.Remove(taskId);
     if (failure) { UC_ERROR("Transfer task({}) failed.", taskId); }
     return failure ? Status::Error() : Status::OK();
@@ -77,29 +75,14 @@ Status TsfTaskManager::Wait(const size_t taskId)
 
 Status TsfTaskManager::Check(const size_t taskId, bool& finish)
 {
-    std::lock_guard<std::mutex> lk(this->_mutex);
+    std::lock_guard<std::mutex> lg(this->_mutex);
     auto iter = this->_waiters.find(taskId);
-    if (iter == this->_waiters.end()) { return Status::NotFound(); }
+    if (iter == this->_waiters.end()) {
+        UC_ERROR("Not found task by id({}).", taskId);
+        return Status::NotFound();
+    }
     finish = iter->second->Finish();
     return Status::OK();
-}
-
-void TsfTaskManager::Dispatch(std::list<TsfTask>& tasks, std::vector<std::list<TsfTask>>& targets, const size_t taskId,
-                              std::shared_ptr<TsfTaskWaiter> waiter) const
-{
-    auto qNumber = this->_queues.size();
-    auto index = size_t(0);
-    targets.resize(qNumber);
-    auto it = tasks.begin();
-    while (it != tasks.end()) {
-        auto next = std::next(it);
-        it->owner = taskId;
-        it->waiter = waiter;
-        auto& target = targets[index % qNumber];
-        target.splice(target.end(), tasks, it);
-        index++;
-        it = next;
-    }
 }
 
 } // namespace UC

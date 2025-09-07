@@ -22,177 +22,225 @@
  * SOFTWARE.
  * */
 #include "tsf_task_queue.h"
-#include "device/device.h"
+#include <map>
 #include "file/file.h"
+#include "logger/logger.h"
 
 namespace UC {
 
-#define UC_TASK_ERROR(s, t)                                                                                            \
-    do {                                                                                                               \
-        UC_ERROR("Failed({}) to run task({},{},{},{}).", (s), (t).owner, (t).blockId, (t).offset, (t).length);         \
-    } while (0)
+#define TO_GB(byte) ((byte) / (1ULL << 30))
 
-Status TsfTaskQueue::Setup(const int32_t deviceId, const size_t bufferSize, const size_t bufferNumber,
-                           TsfTaskSet* failureSet, const SpaceLayout* layout)
+Status TsfTaskQueue::Setup(const int32_t deviceId, const size_t streamNumber, const size_t bufferSize,
+                           const size_t bufferNumber, TsfTaskSet* failureSet, const SpaceLayout* layout)
 {
+    this->_deviceId = deviceId;
+    this->_bufferSize = bufferSize;
+    this->_bufferNumber = bufferNumber;
     this->_failureSet = failureSet;
     this->_layout = layout;
-    if (deviceId >= 0) {
-        this->_device = Device::Make(deviceId, bufferSize, bufferNumber);
-        if (!this->_device) { return Status::OutOfMemory(); }
-        if (!this->_streamOper.Setup([this](TsfTask& task) { this->StreamOper(task); },
-                                     [this] { return this->_device->Setup().Success(); })) {
-            return Status::Error();
-        }
-    }
-    if (!this->_fileOper.Setup([this](TsfTask& task) { this->FileOper(task); })) { return Status::Error(); }
-    return Status::OK();
+    auto success = this->_front.Setup([this](TsfTask& task) { this->Dispatch(task); },
+                                      [this] { return this->CreateDevice(); }, [this] { this->_device.reset(); });
+    if (!success) { return Status::Error(); }
+    success = this->_back.Setup([](auto& t) { t(); }, [] { return true; }, [] {}, streamNumber);
+    return success ? Status::OK() : Status::Error();
 }
 
-void TsfTaskQueue::Push(std::list<TsfTask>& tasks)
+void TsfTaskQueue::Push(TsfTask&& task) { this->_front.Push(std::move(task)); }
+
+bool TsfTaskQueue::CreateDevice()
 {
-    auto& front = tasks.front();
-    if (front.location == TsfTask::Location::HOST || front.type == TsfTask::Type::LOAD) {
-        this->_fileOper.Push(tasks);
-    } else {
-        this->_streamOper.Push(tasks);
-    }
+    if (this->_deviceId < 0) { return true; }
+    this->_device = DeviceFactory::Make(this->_deviceId, this->_bufferSize, this->_bufferNumber);
+    if (!this->_device) { return false; }
+    return this->_device->Setup().Success();
 }
 
-void TsfTaskQueue::StreamOper(TsfTask& task)
+void TsfTaskQueue::Dispatch(TsfTask& task)
 {
-    if (this->_failureSet->Exist(task.owner)) {
-        this->Done(task, false);
+    using Location = TsfTask::Location;
+    using Type = TsfTask::Type;
+    using Key = std::pair<Location, Type>;
+    using Value = std::function<void(TsfTask&)>;
+    std::map<Key, Value> runners = {
+        {{Location::HOST, Type::LOAD},   [this](TsfTask& task) { this->S2H(task); }},
+        {{Location::HOST, Type::DUMP},   [this](TsfTask& task) { this->H2S(task); }},
+        {{Location::DEVICE, Type::LOAD}, [this](TsfTask& task) { this->S2D(task); }},
+        {{Location::DEVICE, Type::DUMP}, [this](TsfTask& task) { this->D2S(task); }},
+    };
+    auto runner = runners.find({task.location, task.type});
+    if (runner == runners.end()) {
+        UC_ERROR("Unsupported task({},{})", fmt::underlying(task.location), fmt::underlying(task.type));
+        this->_failureSet->Insert(task.id);
+        task.waiter->Done();
         return;
     }
-    if (task.type == TsfTask::Type::LOAD) {
-        this->H2D(task);
-    } else {
-        this->D2H(task);
-    }
+    if (!this->_failureSet->Contains(task.id)) { runner->second(task); }
+    task.waiter->Done();
+    return;
 }
 
-void TsfTaskQueue::FileOper(TsfTask& task)
+void TsfTaskQueue::S2H(TsfTask& task)
 {
-    if (this->_failureSet->Exist(task.owner)) {
-        this->Done(task, false);
-        return;
+    auto scheTime = task.sw.elapsed().count();
+    Latch latch{task.number};
+    for (auto& shard : task.shards) {
+        this->_back.Push([&latch, shard, this, owner = task.id, length = task.size] {
+            if (!this->_failureSet->Contains(owner)) {
+                if (this->Read(shard.blockId, shard.offset, length, shard.address).Failure()) {
+                    this->_failureSet->Insert(owner);
+                }
+            }
+            latch.Done();
+        });
     }
-    if (task.type == TsfTask::Type::LOAD) {
-        this->S2H(task);
-    } else {
-        this->H2S(task);
-    }
-}
-
-void TsfTaskQueue::H2D(TsfTask& task)
-{
-    auto status = this->_device->H2DAsync((std::byte*)task.address, task.hub.get(), task.length);
-    if (status.Failure()) {
-        UC_TASK_ERROR(status, task);
-        this->Done(task, false);
-        return;
-    }
-    status = this->_device->AppendCallback([this, task](bool success) mutable {
-        if (!success) { UC_TASK_ERROR(Status::Error(), task); }
-        this->Done(task, success);
-    });
-    if (status.Failure()) {
-        UC_TASK_ERROR(status, task);
-        this->Done(task, false);
-        return;
-    }
-}
-
-void TsfTaskQueue::D2H(TsfTask& task)
-{
-    task.hub = this->_device->GetBuffer(task.length);
-    if (!task.hub) {
-        UC_TASK_ERROR(Status::OutOfMemory(), task);
-        this->Done(task, false);
-        return;
-    }
-    auto status = this->_device->D2HAsync(task.hub.get(), (std::byte*)task.address, task.length);
-    if (status.Failure()) {
-        UC_TASK_ERROR(status, task);
-        this->Done(task, false);
-        return;
-    }
-    status = this->_device->AppendCallback([this, task](bool success) mutable {
-        if (success) {
-            this->_fileOper.Push(std::move(task));
-        } else {
-            UC_TASK_ERROR(Status::Error(), task);
-            this->Done(task, false);
-            return;
-        }
-    });
-    if (status.Failure()) {
-        UC_TASK_ERROR(status, task);
-        this->Done(task, false);
-        return;
+    latch.Wait();
+    if (!this->_failureSet->Contains(task.id)) {
+        auto execTime = task.sw.elapsed().count() - scheTime;
+        UC_INFO("Task({}) finished, elapsed={:.06f}s:{:.06f}s, bw={:.06f}GB/s.", task.Str(), scheTime, execTime,
+                TO_GB(task.size * task.number / execTime));
     }
 }
 
 void TsfTaskQueue::H2S(TsfTask& task)
 {
-    const void* src = task.location == TsfTask::Location::HOST ? (void*)task.address : task.hub.get();
-    auto path = this->_layout->DataFilePath(task.blockId, true);
-    auto status = Status::OK();
-    do {
-        auto file = File::Make(path);
-        if (!file) {
-            status = Status::OutOfMemory();
-            break;
-        }
-        if ((status = file->Open(IFile::OpenFlag::WRITE_ONLY)).Failure()) { break; }
-        if ((status = file->Write(src, task.length, task.offset)).Failure()) { break; }
-    } while (0);
-    if (status.Failure()) {
-        UC_TASK_ERROR(status, task);
-        this->Done(task, false);
-        return;
-    }
-    this->Done(task, true);
-}
-
-void TsfTaskQueue::S2H(TsfTask& task)
-{
-    auto path = this->_layout->DataFilePath(task.blockId, false);
-    auto status = Status::OK();
-    do {
-        auto dst = (void*)task.address;
-        if (task.location == TsfTask::Location::DEVICE) {
-            if (!(task.hub = this->_device->GetBuffer(task.length))) {
-                status = Status::OutOfMemory();
-                break;
+    auto scheTime = task.sw.elapsed().count();
+    Latch latch{task.number};
+    for (auto& shard : task.shards) {
+        this->_back.Push([&latch, shard, this, owner = task.id, length = task.size] {
+            if (!this->_failureSet->Contains(owner)) {
+                if (this->Write(shard.blockId, shard.offset, length, shard.address).Failure()) {
+                    this->_failureSet->Insert(owner);
+                }
             }
-            dst = task.hub.get();
-        }
-        auto file = File::Make(path);
-        if (!file) {
-            status = Status::OutOfMemory();
-            break;
-        }
-        if ((status = file->Open(IFile::OpenFlag::READ_ONLY)).Failure()) { break; }
-        if ((status = file->Read(dst, task.length, task.offset)).Failure()) { break; }
-    } while (0);
-    if (status.Failure()) {
-        UC_TASK_ERROR(status, task);
-        this->Done(task, false);
-        return;
+            latch.Done();
+        });
     }
-    if (task.location == TsfTask::Location::HOST) {
-        this->Done(task, true);
-        return;
+    latch.Wait();
+    if (!this->_failureSet->Contains(task.id)) {
+        auto execTime = task.sw.elapsed().count() - scheTime;
+        UC_INFO("Task({}) finished, elapsed={:.06f}s:{:.06f}s, bw={:.06f}GB/s.", task.Str(), scheTime, execTime,
+                TO_GB(task.size * task.number / execTime));
     }
-    this->_streamOper.Push(std::move(task));
 }
 
-void TsfTaskQueue::Done(const TsfTask& task, bool success)
+void TsfTaskQueue::S2D(TsfTask& task)
 {
-    if (!success) { this->_failureSet->Insert(task.owner); }
-    task.waiter->Done();
+    auto scheTime = task.sw.elapsed().count();
+    uintptr_t host[task.number] = {0};
+    uintptr_t dev[task.number] = {0};
+    if (this->AcquireBuffer(host, task.number).Failure()) {
+        this->_failureSet->Insert(task.id);
+        UC_ERROR("Task({}) failed.", task.Str());
+        return;
+    }
+    Latch latch{task.number};
+    for (auto& shard : task.shards) {
+        dev[shard.index] = shard.address;
+        this->_back.Push([&latch, shard, this, owner = task.id, length = task.size, &host] {
+            if (!this->_failureSet->Contains(owner)) {
+                if (this->Read(shard.blockId, shard.offset, length, host[shard.index]).Failure()) {
+                    this->_failureSet->Insert(owner);
+                }
+            }
+            latch.Done();
+        });
+    }
+    latch.Wait();
+    auto s2hTime = task.sw.elapsed().count() - scheTime;
+    if (!this->_failureSet->Contains(task.id)) {
+        auto status = this->_device->H2DBatch(host, dev, task.number, task.size);
+        if (status.Failure()) {
+            this->_failureSet->Insert(task.id);
+            UC_ERROR("Task({}) failed({}).", task.Str(), status);
+        } else {
+            auto h2dTime = task.sw.elapsed().count() - s2hTime;
+            auto total = task.size * task.number;
+            UC_INFO("Task({}) finished, elapsed={:.06f}s:{:.06f}s:{:.06f}s, s2h={:.06f}GB/s, h2d={:.06f}GB/s, "
+                    "s2d={:.06f}GB/s.",
+                    task.Str(), scheTime, s2hTime, h2dTime, TO_GB(total / s2hTime), TO_GB(total / h2dTime),
+                    TO_GB(total / (s2hTime + h2dTime)));
+        }
+    }
+    this->ReleaseBuffer(host, task.number);
+}
+
+void TsfTaskQueue::D2S(TsfTask& task)
+{
+    auto scheTime = task.sw.elapsed().count();
+    uintptr_t host[task.number] = {0};
+    uintptr_t dev[task.number] = {0};
+    for (auto& shard : task.shards) {
+        auto idx = shard.index;
+        auto ptr = this->_device->GetBuffer(idx);
+        if (!ptr) {
+            this->ReleaseBuffer(host, idx);
+            this->_failureSet->Insert(task.id);
+            UC_ERROR("Task({}) failed.", task.Str());
+            return;
+        }
+        host[idx] = (uintptr_t)ptr;
+        dev[idx] = shard.address;
+    }
+    auto status = this->_device->D2HBatch(dev, host, task.number, task.size);
+    if (status.Failure()) {
+        this->_failureSet->Insert(task.id);
+        this->ReleaseBuffer(host, task.number);
+        UC_ERROR("Task({}) failed({}).", task.Str(), status);
+        return;
+    }
+    auto d2hTime = task.sw.elapsed().count() - scheTime;
+    Latch latch{task.number};
+    for (auto& shard : task.shards) {
+        this->_back.Push([&latch, shard, this, owner = task.id, length = task.size, &host] {
+            if (!this->_failureSet->Contains(owner)) {
+                if (this->Write(shard.blockId, shard.offset, length, host[shard.index]).Failure()) {
+                    this->_failureSet->Insert(owner);
+                }
+            }
+            latch.Done();
+        });
+    }
+    latch.Wait();
+    if (!this->_failureSet->Contains(task.id)) {
+        auto h2sTime = task.sw.elapsed().count() - d2hTime;
+        auto total = task.size * task.number;
+        UC_INFO(
+            "Task({}) finished, elapsed={:.06f}s:{:.06f}s:{:.06f}s, d2h={:.06f}GB/s, h2s={:.06f}GB/s, d2s={:.06f}GB/s.",
+            task.Str(), scheTime, d2hTime, h2sTime, TO_GB(total / d2hTime), TO_GB(total / h2sTime),
+            TO_GB(total / (d2hTime + h2sTime)));
+    }
+    this->ReleaseBuffer(host, task.number);
+}
+
+Status TsfTaskQueue::Read(const std::string& blockId, const size_t offset, const size_t length, uintptr_t address)
+{
+    auto path = this->_layout->DataFilePath(blockId, false);
+    return File::Read(path, offset, length, address);
+}
+
+Status TsfTaskQueue::Write(const std::string& blockId, const size_t offset, const size_t length,
+                           const uintptr_t address)
+{
+    auto path = this->_layout->DataFilePath(blockId, true);
+    return File::Write(path, offset, length, address);
+}
+
+Status TsfTaskQueue::AcquireBuffer(uintptr_t* buffer, const size_t number)
+{
+    for (size_t i = 0; i < number; i++) {
+        auto ptr = this->_device->GetBuffer(i);
+        if (!ptr) {
+            this->ReleaseBuffer(buffer, i);
+            return Status::OutOfMemory();
+        }
+        buffer[i] = (uintptr_t)ptr;
+    }
+    return Status::OK();
+}
+
+void TsfTaskQueue::ReleaseBuffer(uintptr_t* buffer, const size_t number)
+{
+    for (size_t i = 0; i < number; i++) { this->_device->PutBuffer(i, (void*)buffer[i]); }
 }
 
 } // namespace UC

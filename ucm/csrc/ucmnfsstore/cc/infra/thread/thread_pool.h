@@ -37,6 +37,7 @@ template <class Task>
 class ThreadPool {
     using WorkerInitFn = std::function<bool(void)>;
     using WorkerFn = std::function<void(Task&)>;
+    using WorkerExitFn = std::function<void(void)>;
 
 public:
     ThreadPool() = default;
@@ -53,10 +54,13 @@ public:
             if (w.joinable()) { w.join(); }
         }
     }
-    bool Setup(WorkerFn&& fn, WorkerInitFn&& initFn = [] { return true; }, const size_t nWorker = 1) noexcept
+    bool Setup(
+        WorkerFn&& fn, WorkerInitFn&& initFn = [] { return true; }, WorkerExitFn&& exitFn = [] {},
+        const size_t nWorker = 1) noexcept
     {
         this->_initFn = initFn;
         this->_fn = fn;
+        this->_exitFn = exitFn;
         std::list<std::promise<bool>> start(nWorker);
         std::list<std::future<bool>> fut;
         for (auto& s : start) {
@@ -91,13 +95,14 @@ private:
             Task task;
             std::unique_lock<std::mutex> lk(this->_mtx);
             this->_cv.wait(lk, [this] { return this->_stop || !this->_taskQ.empty(); });
-            if (this->_stop) { return; }
+            if (this->_stop) { break; }
             if (this->_taskQ.empty()) { continue; }
             task = std::move(this->_taskQ.front());
             this->_taskQ.pop_front();
             lk.unlock();
             this->_fn(task);
         }
+        this->_exitFn();
     }
 
 private:
@@ -105,6 +110,7 @@ private:
     std::list<std::thread> _workers;
     WorkerInitFn _initFn;
     WorkerFn _fn;
+    WorkerExitFn _exitFn;
     std::list<Task> _taskQ;
     std::mutex _mtx;
     std::condition_variable _cv;

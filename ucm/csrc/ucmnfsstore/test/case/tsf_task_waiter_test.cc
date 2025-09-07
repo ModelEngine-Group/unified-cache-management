@@ -23,13 +23,14 @@
  * */
 #include <future>
 #include <gtest/gtest.h>
+#include <thread>
 #include "tsf_task/tsf_task_waiter.h"
 
 class UCTsfTaskWaiterTest : public ::testing::Test {};
 
 TEST_F(UCTsfTaskWaiterTest, TaskTimeout)
 {
-    UC::TsfTaskWaiter waiter{1, 1024, 1, "xxx"};
+    UC::TsfTaskWaiter waiter{1};
     auto fut = std::async([&] {
         std::this_thread::sleep_for(std::chrono::milliseconds(10));
         waiter.Done();
@@ -41,7 +42,7 @@ TEST_F(UCTsfTaskWaiterTest, TaskTimeout)
 
 TEST_F(UCTsfTaskWaiterTest, TaskSuccess)
 {
-    UC::TsfTaskWaiter waiter{2, 1024, 1, "xxx"};
+    UC::TsfTaskWaiter waiter{1};
     auto fut = std::async([&] { waiter.Done(); });
     ASSERT_TRUE(waiter.Wait(1000));
     ASSERT_TRUE(waiter.Finish());
@@ -50,7 +51,7 @@ TEST_F(UCTsfTaskWaiterTest, TaskSuccess)
 
 TEST_F(UCTsfTaskWaiterTest, TaskTimeoutButSuccess)
 {
-    UC::TsfTaskWaiter waiter{3, 1024, 1, "xxx"};
+    UC::TsfTaskWaiter waiter{1};
     auto fut = std::async([&] {
         std::this_thread::sleep_for(std::chrono::milliseconds(10));
         waiter.Done();

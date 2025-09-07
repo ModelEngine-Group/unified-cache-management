@@ -75,10 +75,10 @@ int32_t Alloc(const std::string& blockId)
 
 bool Lookup(const std::string& blockId) { return Singleton<SpaceManager>::Instance()->LookupBlock(blockId); }
 
-size_t Submit(std::list<TsfTask>& tasks, const size_t size, const size_t number, const std::string& brief)
+size_t Submit(TsfTask&& task)
 {
     size_t taskId = 0;
-    auto status = Singleton<TsfTaskManager>::Instance()->Submit(tasks, size, number, brief, taskId);
+    auto status = Singleton<TsfTaskManager>::Instance()->Submit(std::move(task), taskId);
     if (status.Failure()) {
         UC_ERROR("Failed({}) to submit tasks.", status);
         return 0;

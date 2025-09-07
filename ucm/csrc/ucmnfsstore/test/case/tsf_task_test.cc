@@ -21,32 +21,19 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  * */
-#ifndef UNIFIEDCACHE_CUDA_DEVICE_H
-#define UNIFIEDCACHE_CUDA_DEVICE_H
+#include <gtest/gtest.h>
+#include "tsf_task/tsf_task.h"
 
-#include "ibuffered_device.h"
+class UCTaskTest : public testing::Test {};
 
-namespace UC {
-
-class CudaDevice : public IBufferedDevice {
-public:
-    CudaDevice(const int32_t deviceId, const size_t bufferSize, const size_t bufferNumber)
-        : IBufferedDevice{bufferSize, bufferNumber}, _deviceId{deviceId}, _stream{nullptr}
-    {
-    }
-    Status Setup() override;
-    Status H2DAsync(std::byte* dst, const std::byte* src, const size_t count) override;
-    Status D2HAsync(std::byte* dst, const std::byte* src, const size_t count) override;
-    Status AppendCallback(std::function<void(bool)> cb) override;
-
-protected:
-    std::shared_ptr<std::byte> MakeBuffer(const size_t size) override;
-
-private:
-    int32_t _deviceId;
-    void* _stream;
-};
-
-} // namespace UC
-
-#endif
+TEST_F(UCTaskTest, AppendTask)
+{
+    UC::TsfTask task;
+    ASSERT_EQ(task.number, 0);
+    ASSERT_EQ(task.size, 0);
+    ASSERT_TRUE(task.Append("xxx", 0, 100, 1024).Success());
+    ASSERT_TRUE(task.Append("yyy", 0, 100, 1024).Success());
+    ASSERT_FALSE(task.Append("yyy", 0, 100, 2048).Success());
+    ASSERT_EQ(task.number, 2);
+    ASSERT_EQ(task.size, 1024);
+}

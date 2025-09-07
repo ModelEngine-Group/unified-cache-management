@@ -1,22 +1,3 @@
-file(GLOB_RECURSE UCMNFSSTORE_CC_SOURCE_FILES "*.cc")
-set(UCMNFSSTORE_CUDA_CC_SOURCE_FILE ${CMAKE_CURRENT_SOURCE_DIR}/domain/device/cuda_device.cc)
-set(UCMNFSSTORE_ASCEND_CC_SOURCE_FILE ${CMAKE_CURRENT_SOURCE_DIR}/domain/device/aclrt_device.cc)
-list(REMOVE_ITEM UCMNFSSTORE_CC_SOURCE_FILES ${UCMNFSSTORE_CUDA_CC_SOURCE_FILE} ${UCMNFSSTORE_ASCEND_CC_SOURCE_FILE})
-if(RUNTIME_ENVIRONMENT STREQUAL "ascend")
-    include(${UCMNFSSTORE_ROOT}/cmake/ascend.cmake)
-    list(APPEND UCMNFSSTORE_CC_SOURCE_FILES ${UCMNFSSTORE_ASCEND_CC_SOURCE_FILE})
-    set(DEVICE_LIBRARY Ascend::ascendcl)
-endif()
-if(RUNTIME_ENVIRONMENT STREQUAL "cuda")
-    include(${UCMNFSSTORE_ROOT}/cmake/cuda.cmake)
-    list(APPEND UCMNFSSTORE_CC_SOURCE_FILES ${UCMNFSSTORE_CUDA_CC_SOURCE_FILE})
-    set(DEVICE_LIBRARY Cuda::cudart)
-endif()
-add_library(ucmnfsstore.core STATIC ${UCMNFSSTORE_CC_SOURCE_FILES})
-target_link_libraries(ucmnfsstore.core PUBLIC spdlog ${DEVICE_LIBRARY})
-target_include_directories(
-    ucmnfsstore.core PUBLIC
-    ${CMAKE_CURRENT_SOURCE_DIR}/api
-    ${CMAKE_CURRENT_SOURCE_DIR}/domain
-    ${CMAKE_CURRENT_SOURCE_DIR}/infra
-)
+add_subdirectory(infra)
+add_subdirectory(domain)
+add_subdirectory(api)

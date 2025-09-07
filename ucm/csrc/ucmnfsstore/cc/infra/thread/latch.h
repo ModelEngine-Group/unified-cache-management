@@ -33,9 +33,13 @@ namespace UC {
 class Latch {
 public:
     explicit Latch(const size_t expected = 0) : _counter{expected} {}
-    void Up() { ++this->_counter; }
-    size_t Done() { return --this->_counter; }
-    void Notify() { this->_cv.notify_all(); }
+    void Done()
+    {
+        if (--this->_counter == 0) {
+            std::lock_guard<std::mutex> lk(this->_mutex);
+            this->_cv.notify_all();
+        }
+    }
     void Wait()
     {
         std::unique_lock<std::mutex> lk(this->_mutex);

@@ -21,8 +21,8 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  * */
-#ifndef UNIFIEDCACHE_TSF_TAKS_QUEUE_H
-#define UNIFIEDCACHE_TSF_TAKS_QUEUE_H
+#ifndef UNIFIEDCACHE_TSF_TASK_QUEUE_H
+#define UNIFIEDCACHE_TSF_TASK_QUEUE_H
 
 #include "device/idevice.h"
 #include "space/space_layout.h"
@@ -33,26 +33,31 @@
 namespace UC {
 
 class TsfTaskQueue {
+    int32_t _deviceId{-1};
+    size_t _bufferSize{0};
+    size_t _bufferNumber{0};
+    TsfTaskSet* _failureSet{nullptr};
+    const SpaceLayout* _layout{nullptr};
+    std::unique_ptr<IDevice> _device{nullptr};
+    ThreadPool<TsfTask> _front;
+    ThreadPool<std::function<void(void)>> _back;
+
 public:
-    Status Setup(const int32_t deviceId, const size_t bufferSize, const size_t bufferNumber, TsfTaskSet* failureSet,
-                 const SpaceLayout* layout);
-    void Push(std::list<TsfTask>& tasks);
+    Status Setup(const int32_t deviceId, const size_t streamNumber, const size_t bufferSize, const size_t bufferNumber,
+                 TsfTaskSet* failureSet, const SpaceLayout* layout);
+    void Push(TsfTask&& task);
 
 private:
-    void StreamOper(TsfTask& task);
-    void FileOper(TsfTask& task);
-    void H2D(TsfTask& task);
-    void D2H(TsfTask& task);
-    void H2S(TsfTask& task);
+    bool CreateDevice();
+    void Dispatch(TsfTask& task);
     void S2H(TsfTask& task);
-    void Done(const TsfTask& task, bool success);
-
-private:
-    ThreadPool<TsfTask> _streamOper;
-    ThreadPool<TsfTask> _fileOper;
-    std::unique_ptr<IDevice> _device;
-    TsfTaskSet* _failureSet;
-    const SpaceLayout* _layout;
+    void H2S(TsfTask& task);
+    void S2D(TsfTask& task);
+    void D2S(TsfTask& task);
+    Status Read(const std::string& blockId, const size_t offset, const size_t length, uintptr_t address);
+    Status Write(const std::string& blockId, const size_t offset, const size_t length, const uintptr_t address);
+    Status AcquireBuffer(uintptr_t* buffer, const size_t number);
+    void ReleaseBuffer(uintptr_t* buffer, const size_t number);
 };
 
 } // namespace UC

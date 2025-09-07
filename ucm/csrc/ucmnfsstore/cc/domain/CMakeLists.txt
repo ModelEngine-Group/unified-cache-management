@@ -1,0 +1,6 @@
+add_subdirectory(device)
+file(GLOB_RECURSE UCMNFSSTORE_CC_DOMAIN_SPACE_SOURCE_FILES "space/*.cc")
+file(GLOB_RECURSE UCMNFSSTORE_CC_DOMAIN_TSF_TASK_SOURCE_FILES "tsf_task/*.cc")
+add_library(domain STATIC ${UCMNFSSTORE_CC_DOMAIN_SPACE_SOURCE_FILES} ${UCMNFSSTORE_CC_DOMAIN_TSF_TASK_SOURCE_FILES})
+target_include_directories(domain PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+target_link_libraries(domain PUBLIC device)

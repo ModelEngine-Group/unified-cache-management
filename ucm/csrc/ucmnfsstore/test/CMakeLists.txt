@@ -1,5 +1,5 @@
 include(GoogleTest)
 file(GLOB_RECURSE UCMNFSSTORE_TEST_SOURCE_FILES "*.cc")
 add_executable(ucmnfsstore.test ${UCMNFSSTORE_TEST_SOURCE_FILES})
-target_link_libraries(ucmnfsstore.test PRIVATE ucmnfsstore.core gtest_main gtest mockcpp)
+target_link_libraries(ucmnfsstore.test PRIVATE infra domain gtest_main gtest mockcpp)
 gtest_discover_tests(ucmnfsstore.test)

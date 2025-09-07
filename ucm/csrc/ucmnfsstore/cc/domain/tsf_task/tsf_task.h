@@ -24,36 +24,48 @@
 #ifndef UNIFIEDCACHE_TSF_TASK_H
 #define UNIFIEDCACHE_TSF_TASK_H
 
-#include <memory>
+#include <cstddef>
+#include <cstdint>
+#include <list>
+#include <string>
+#include "status/status.h"
 #include "tsf_task_waiter.h"
 
 namespace UC {
 
 class TsfTask {
 public:
+    struct Shard {
+        size_t index;
+        std::string blockId;
+        size_t offset;
+        uintptr_t address;
+    };
     enum class Type { DUMP, LOAD };
     enum class Location { HOST, DEVICE };
-
-public:
-    TsfTask(const Type type, const Location location, const std::string& blockId, const size_t offset,
-            const uintptr_t address, const size_t length)
-        : type{type}, location{location}, blockId{blockId}, offset{offset}, address{address}, length{length}, owner{0},
-          waiter{nullptr}, hub{nullptr}
-    {
-    }
-    TsfTask() : TsfTask{Type::DUMP, Location::HOST, {}, 0, 0, 0} {}
-
-public:
     Type type;
     Location location;
-    std::string blockId;
-    size_t offset;
-    uintptr_t address;
-    size_t length;
-
-    size_t owner;
-    std::shared_ptr<TsfTaskWaiter> waiter;
-    std::shared_ptr<std::byte> hub;
+    std::string brief;
+    size_t id;
+    size_t number;
+    size_t size;
+    std::list<Shard> shards;
+    TsfTaskWaiter* waiter;
+    spdlog::stopwatch sw;
+    TsfTask(const Type type, const Location location, const std::string& brief)
+        : type{type}, location{location}, brief{brief}, id{0}, number{0}, size{0}, waiter{nullptr}, sw{}
+    {
+    }
+    TsfTask() : TsfTask{Type::DUMP, Location::HOST, ""} {}
+    Status Append(const std::string& blockId, const size_t offset, const uintptr_t address, const size_t length)
+    {
+        if (this->number == 0) { this->size = length; }
+        if (this->size != length) { return Status::InvalidParam(); }
+        this->shards.emplace_back<Shard>({this->number, blockId, offset, address});
+        this->number++;
+        return Status::OK();
+    }
+    std::string Str() { return fmt::format("{},{},{},{}", this->id, this->brief, this->size, this->number); }
 };
 
 } // namespace UC

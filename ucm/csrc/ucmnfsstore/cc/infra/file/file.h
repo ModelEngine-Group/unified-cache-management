@@ -36,6 +36,8 @@ public:
     static Status RmDir(const std::string& path);
     static Status Rename(const std::string& path, const std::string& newName);
     static Status Access(const std::string& path, const int32_t mode);
+    static Status Read(const std::string& path, const size_t offset, const size_t length, uintptr_t address);
+    static Status Write(const std::string& path, const size_t offset, const size_t length, const uintptr_t address);
 };
 
 } // namespace UC

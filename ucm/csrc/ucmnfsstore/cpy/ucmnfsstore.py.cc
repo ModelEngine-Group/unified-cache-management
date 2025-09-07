@@ -47,25 +47,22 @@ inline size_t SubmitTsfTasks(const py::list& blockIdList, const py::list& offset
                              const py::list& lengthList, const TsfTask::Type type, const TsfTask::Location location,
                              const std::string& brief)
 {
-    std::list<TsfTask> tasks;
-    size_t size = 0;
-    size_t number = 0;
+    TsfTask task{type, location, brief};
     auto blockId = blockIdList.begin();
     auto offset = offsetList.begin();
     auto address = addressList.begin();
     auto length = lengthList.begin();
     while ((blockId != blockIdList.end()) && (offset != offsetList.end()) && (address != addressList.end()) &&
            (length != lengthList.end())) {
-        tasks.emplace_back(type, location, blockId->cast<std::string>(), offset->cast<size_t>(),
-                           address->cast<uintptr_t>(), length->cast<size_t>());
-        number++;
-        size += length->cast<size_t>();
+        auto status = task.Append(blockId->cast<std::string>(), offset->cast<size_t>(), address->cast<uintptr_t>(),
+                                  length->cast<size_t>());
+        if (status.Failure()) { return 0; }
         blockId++;
         offset++;
         address++;
         length++;
     }
-    return Submit(tasks, size, number, brief);
+    return Submit(std::move(task));
 }
 
 inline size_t LoadToDevice(const py::list& blockIdList, const py::list& offsetList, const py::list& addressList,

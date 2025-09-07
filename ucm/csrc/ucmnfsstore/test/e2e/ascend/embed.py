@@ -3,18 +3,20 @@ import os
 import secrets
 
 import torch
+import torch_npu
 import ucmnfsstore as ucmstore
 
-kvcache_block_number = 16384
+# 预埋的KVCacheBlock个数
+kvcache_block_number = 4096
+# KVCacheBlock数据的存放位置，可以是多个位置，但指向的远端目录必须是同一个
 storage_backends = [
-    "/root/space/tmp",
+    "/root/space/tmp_data",
 ]
 
 
 def setup_uc(block_size, device_id):
     param = ucmstore.SetupParam(storage_backends, block_size, True)
     param.transferDeviceId = device_id
-    param.transferStreamNumber = 32
     ret = ucmstore.Setup(param)
     assert ret == 0
 
@@ -28,7 +30,7 @@ def make_buffers(
             torch.rand(
                 [block_dim, block_len],
                 dtype=torch.bfloat16,
-                device="cuda:{}".format(device_id),
+                device="npu:{}".format(device_id),
             )
             for _ in range(block_layer)
         ]
@@ -53,24 +55,24 @@ def embed(hashes, tensors):
             data_off.append(offset)
             data_len.append(size)
             offset += size
-    task = ucmstore.DumpFromDevice(data_id, data_off, data_addr, data_len)
-    assert task > 0
-    ret = ucmstore.Wait(task)
+    task_id = ucmstore.DumpFromDevice(data_id, data_off, data_addr, data_len)
+    assert task_id > 0
+    ret = ucmstore.Wait(task_id)
     assert ret == 0
     ucmstore.CommitBatch(hashes, True)
 
 
-def store_hashes(hashes):
+def store_all_hashes(hashes):
     kvcache_block_hashes_file = "kvcache_block_hashes.txt"
     current_directory = os.path.dirname(__file__)
     file_path = os.path.join(current_directory, kvcache_block_hashes_file)
     with open(file_path, "w", encoding="utf-8") as file:
-        for h in hashes:
-            file.write(h + "\n")
+        for hs in hashes:
+            file.write(hs + "\n")
 
 
 def main():
-    device_id = 0
+    device_id = 7
     block_dim = 576
     block_len = 128
     block_elem_size = 2
@@ -86,8 +88,9 @@ def main():
         start = batch_size * batch
         end = min(start + batch_size, kvcache_block_number)
         embed(hashes[start:end], tensors)
-    store_hashes(hashes)
+    store_all_hashes(hashes)
 
 
 if __name__ == "__main__":
+    os.environ["UCMSTORE_LOGGER_LEVEL"] = "info"
     main()

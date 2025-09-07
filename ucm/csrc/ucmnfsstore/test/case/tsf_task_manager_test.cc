@@ -21,29 +21,33 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  * */
-#include "device.h"
-#include "aclrt_device.h"
-#include "cuda_device.h"
-#include "logger/logger.h"
-#include "simu_device.h"
+#include "cmn/path_base.h"
+#include "device/idevice.h"
+#include "space/space_manager.h"
+#include "tsf_task/tsf_task_manager.h"
 
-namespace UC {
+class UCTsfTaskManagerTest : public UC::PathBase {};
 
-std::unique_ptr<IDevice> Device::Make(const int32_t deviceId, const size_t bufferSize, const size_t bufferNumber)
+TEST_F(UCTsfTaskManagerTest, SameTaskWaitTwice)
 {
-    try {
-#ifdef ASCEND_AVAILABLE
-        return std::make_unique<AclrtDevice>(deviceId, bufferSize, bufferNumber);
-#endif
-#ifdef CUDA_AVAILABLE
-        return std::make_unique<CudaDevice>(deviceId, bufferSize, bufferNumber);
-#endif
-        return std::make_unique<SimuDevice>(deviceId, bufferSize, bufferNumber);
-    } catch (const std::exception& e) {
-        UC_ERROR("Failed({}) to instantinate the device({},{},{}) object.", e.what(), deviceId, bufferSize,
-                 bufferNumber);
-        return nullptr;
+    constexpr size_t blockSize = sizeof(size_t);
+    constexpr size_t number = 1;
+    size_t host[number];
+    UC::SpaceManager spaceMgr;
+    ASSERT_TRUE(spaceMgr.Setup({this->Path()}, blockSize).Success());
+    UC::TsfTaskManager transMgr;
+    ASSERT_TRUE(transMgr.Setup(-1, 128, 0, 0, 0, spaceMgr.GetSpaceLayout()).Success());
+    UC::TsfTask task(UC::TsfTask::Type::DUMP, UC::TsfTask::Location::HOST, "H2S");
+    UC::Random rd;
+    for (size_t i = 0; i < number; i++) {
+        host[i] = i;
+        auto blockId = rd.RandomString(16);
+        ASSERT_TRUE(spaceMgr.NewBlock(blockId).Success());
+        ASSERT_TRUE(task.Append(blockId, 0, (uintptr_t)(host + i), blockSize).Success());
     }
+    size_t taskId = 0;
+    ASSERT_TRUE(transMgr.Submit(std::move(task), taskId).Success());
+    ASSERT_GT(taskId, 0);
+    ASSERT_TRUE(transMgr.Wait(taskId).Success());
+    ASSERT_TRUE(transMgr.Wait(taskId).Failure());
 }
-
-} // namespace UC

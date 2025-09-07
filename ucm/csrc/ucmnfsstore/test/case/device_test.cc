@@ -21,35 +21,31 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  * */
-#ifndef UNIFIEDCACHE_SIMU_DEVICE_H
-#define UNIFIEDCACHE_SIMU_DEVICE_H
+#include <gtest/gtest.h>
+#include "device/idevice.h"
 
-#include "ibuffered_device.h"
-#include "thread/thread_pool.h"
+class UCDeviceTest : public ::testing::Test {};
 
-namespace UC {
-
-class SimuDevice : public IBufferedDevice {
-    using Task = std::function<void(void)>;
-
-public:
-    SimuDevice(const int32_t deviceId, const size_t bufferSize, const size_t bufferNumber)
-        : IBufferedDevice{bufferSize, bufferNumber}, _deviceId{deviceId}
-    {
+TEST_F(UCDeviceTest, TransData)
+{
+    using T = size_t;
+    constexpr size_t number = 2048;
+    constexpr size_t size = sizeof(T);
+    auto device = UC::DeviceFactory::Make(-1, size, number);
+    ASSERT_NE(device, nullptr);
+    ASSERT_TRUE(device->Setup().Success());
+    uintptr_t src[number] = {0};
+    uintptr_t dst[number] = {0};
+    for (size_t i = 0; i < number; i++) {
+        src[i] = (uintptr_t)device->GetBuffer(i);
+        *(T*)(src[i]) = 100;
+        dst[i] = (uintptr_t)device->GetBuffer(number + i);
+        *(T*)(dst[i]) = 200;
     }
-    Status Setup() override;
-    Status H2DAsync(std::byte* dst, const std::byte* src, const size_t count) override;
-    Status D2HAsync(std::byte* dst, const std::byte* src, const size_t count) override;
-    Status AppendCallback(std::function<void(bool)> cb) override;
-
-protected:
-    std::shared_ptr<std::byte> MakeBuffer(const size_t size) override;
-
-private:
-    int32_t _deviceId;
-    ThreadPool<Task> _backend;
-};
-
-} // namespace UC
-
-#endif
+    ASSERT_TRUE(device->H2DBatch(src, dst, number, size).Success());
+    for (size_t i = 0; i < number; i++) {
+        ASSERT_EQ(*(T*)(src[i]), *(T*)(dst[i]));
+        device->PutBuffer(i, (void*)src[i]);
+        device->PutBuffer(number + i, (void*)dst[i]);
+    }
+}

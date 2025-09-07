@@ -47,4 +47,22 @@ Status File::Rename(const std::string& path, const std::string& newName) { retur
 
 Status File::Access(const std::string& path, const int32_t mode) { return FileImpl{path}.Access(mode); }
 
+Status File::Read(const std::string& path, const size_t offset, const size_t length, uintptr_t address)
+{
+    FileImpl file{path};
+    Status status = Status::OK();
+    if ((status = file.Open(IFile::OpenFlag::READ_ONLY)).Failure()) { return status; }
+    if ((status = file.Read((void*)address, length, offset)).Failure()) { return status; }
+    return status;
+}
+
+Status File::Write(const std::string& path, const size_t offset, const size_t length, const uintptr_t address)
+{
+    FileImpl file{path};
+    Status status = Status::OK();
+    if ((status = file.Open(IFile::OpenFlag::WRITE_ONLY)).Failure()) { return status; }
+    if ((status = file.Write((const void*)address, length, offset)).Failure()) { return status; }
+    return status;
+}
+
 } // namespace UC
