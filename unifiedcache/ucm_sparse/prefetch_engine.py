@@ -391,10 +391,10 @@ class GSAPrefetchBase:
                 self._first_topk_deal(gsa_metadata)
                 self._gsa_block_len_pre(gsa_metadata)
                 block_table_tmp = self.use_block_table[:, block_table_index, :]
-                gen_len_tmp = self.gsa_seq_len[:, self.select_bs_index].to(self.use_block_table.device)
+                gen_len_tmp = self.gsa_seq_len[:, self.select_bs_index]
             else:
                 block_table_tmp, gen_len_tmp = self._no_gsa_input_deal(gsa_metadata)
-            
+            gen_len_tmp = gen_len_tmp.to(self.use_block_table.device)
             list_topk_buf = list(topk_buf_tmp.unbind(dim=0))
             list_block_table = list(block_table_tmp.unbind(dim=0))
             gsa_len_list = list(gen_len_tmp.unbind(dim=0))

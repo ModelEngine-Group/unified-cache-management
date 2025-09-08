@@ -264,32 +264,8 @@ class GSAMetaData(UcmSparseMetadata):
             exclude_mask.append(self.gsa_stats[req_id].exclude_mask)
             calc_block_table += self.gsa_stats[req_id].calc_block_table
             calc_repre_slot_mapping += self.gsa_stats[req_id].calc_repre_slot_mapping
-
-        model_input["include_mask"] = make_tensor_with_pad(
-            include_mask,
-            pad=False,
-            dtype=torch.uint8,
-            device=self.device
-        )
-        model_input["exclude_mask"] = make_tensor_with_pad(
-            exclude_mask,
-            pad=True,
-            dtype=torch.uint8,
-            device=self.device
-        )
-        model_input["repre_slot_mapping"] = make_tensor_with_pad(
-            repre_slot_mapping,
-            pad=0,
-            dtype=torch.int32,
-            device=self.device
-        )
         model_input["calc_block_table"] = torch.tensor(
             calc_block_table,
-            dtype=torch.int32,
-            device=self.device
-        )
-        model_input["calc_repre_slot_mapping"] = torch.tensor(
-            calc_repre_slot_mapping,
             dtype=torch.int32,
             device=self.device
         )
@@ -425,7 +401,6 @@ class GSA(UcmSparseBase):
         self.gsa_stats = {}
         self._sparse_metadata = None
         self.init_topk_cal(vllm_config, self.prefetch_engine)
-        update_min_max_topk_len(self.block_size)
     
     def init_topk_cal(
         self,
