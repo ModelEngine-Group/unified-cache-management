@@ -20,7 +20,7 @@ from unifiedcache.integration.vllm.ucm_sparse.base import (
 from unifiedcache.ucm_sparse.prefetch_engine import GSAPrefetchBase
 from unifiedcache.ucm_sparse.utils import (MAX_TOPK_LEN, compute_topk_len,
                                            SEG_PREFILL_THRESHOLD, LOCAL_WINDOW_SZ,
-                                           PTOPK_PREFETCH_ENABLE, update_min_max_topk_len)
+                                           PTOPK_PREFETCH_ENABLE)
 from unifiedcache.ucm_connector.base import Task, UcmKVStoreBase
 from unifiedcache.ucm_connector.factory import UcmConnectorFactory
 from vllm.utils import make_tensor_with_pad
@@ -516,8 +516,12 @@ class GSA(UcmSparseBase):
             attn_metadata = forward_context.attn_metadata
             block_tables = attn_metadata.block_tables
         if self.prefetch_engine.atb_gsa_enable:
-            block_tables = self.model_input["block_tables_mp"][current_layer_id]
-            attn_metadata.seq_lens = self.model_input["gsa_seq_len"][current_layer_id]
+            if torch.cuda.is_available():
+                block_tables = self.model_input["block_tables_mp"][current_layer_id]
+                attn_metadata.seq_lens = self.model_input["gsa_seq_len"][current_layer_id]
+            else:
+                block_tables[:len(self.prefetch_engine.req_ids_bs)].copy_(self.model_input["block_tables_mp"][current_layer_id])
+                attn_metadata.seq_lens.copy_(self.model_input["gsa_seq_len"][current_layer_id])
 
     def attention_finished(
         self,
