@@ -13,7 +13,6 @@ storage_backends = [
 def setup_uc(block_size, device_id):
     param = ucmstore.SetupParam(storage_backends, block_size, True)
     param.transferDeviceId = device_id
-    param.transferStreamNumber = 32
     ret = ucmstore.Setup(param)
     assert ret == 0
 
