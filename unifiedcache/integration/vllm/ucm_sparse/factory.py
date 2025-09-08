@@ -44,3 +44,7 @@ class UcmSparseFactory:
 
 # Register available sparse methods
 UcmSparseFactory.register_sparse_method("ESA", "unifiedcache.ucm_sparse.esa", "ESA")
+
+UcmSparseFactory.register_sparse_method(
+    "KVStarMultiStep", "unifiedcache.ucm_sparse.kvstar.multistep", "KVStarMultiStep"
+)
