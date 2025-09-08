@@ -14,7 +14,6 @@ namespace ucmprefetch
         :mLogger("./log/kvcache_pre_log.txt", LogLevel::INFO, isLog)
     {
         mLoadSuccessBlocks = loadSuccessBlocks;
-        mLoadSuccessBlocksCPU = mLoadSuccessBlocks.cpu();
         mLayerNum = mLoadSuccessBlocks.sizes()[0];
         mMaxBs = mLoadSuccessBlocks.sizes()[1];
         mMaxTopkLen = mLoadSuccessBlocks.sizes()[2];
@@ -187,7 +186,7 @@ namespace ucmprefetch
     {
 #pragma omp parallel for num_threads(16) proc_bind(master)
         for (int i = 0; i < mLayerNum; i++) {
-            mLoadSuccessBlocksCPU[i][bsIndex].fill_(-1);
+            mLoadSuccessBlocks[i][bsIndex].fill_(0);
             int *freeBlockPtr = mFreeBlock[i][bsIndex].data_ptr<int>();
             std::unordered_set<int> hitBlocks;
             std::map<int, int> hitBlocksIdx;
@@ -204,7 +203,7 @@ namespace ucmprefetch
             }
             int successIndex = 0;
             for (auto it = hitBlocksIdx.begin(); it != hitBlocksIdx.end(); it++) {
-                mLoadSuccessBlocksCPU[i][bsIndex][successIndex] = it->second;
+                mLoadSuccessBlocks[i][bsIndex][successIndex] = it->second;
                 successIndex += 1;
             }
             int oneFreeBlockIndex = 0;
@@ -218,7 +217,6 @@ namespace ucmprefetch
             }
             mFreeBlockLen[i][bsIndex] = oneFreeBlockIndex;
             mSuccessTableLen[i][bsIndex] = (int)(hitBlocks.size());
-            mLoadSuccessBlocks[i][bsIndex].copy_(mLoadSuccessBlocksCPU[i][bsIndex]);
         }
     }
 
