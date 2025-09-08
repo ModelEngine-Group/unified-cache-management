@@ -6,6 +6,7 @@
 #include <torch/torch.h>
 #include "k_repre.h"
 #include "select_topk_block.h"
+#include "thread_safe_queue.h"
 
 class __attribute__((visibility("hidden"))) CalKpreAndTopk
 {
@@ -18,7 +19,8 @@ private:
     std::vector<torch::Tensor> m_kfCache;
     std::vector<torch::Tensor> m_topkCache;
     std::vector<std::atomic<bool>> m_topkFlag;
-    std::vector<uint32_t> m_calcKpreBlockTable;
+    torch::Tensor m_calcKpreBlockTable;
+    // std::vector<uint32_t> m_calcKpreBlockTable;
     std::vector<uint32_t> m_calcRepreSlotMapping;
     std::vector<std::vector<uint32_t>> m_repreSlotMapping;
     bool m_needCalPre;
@@ -34,8 +36,11 @@ private:
     std::vector<bool> m_isDecode;
     std::mutex m_calLock;
     std::thread m_calculateThread;
+    std::thread m_copyThread;
     std::atomic<bool> m_running{false};
     std::condition_variable m_dataReady;
+    ThreadSafeQueue m_copyQueue;
+    uint32_t m_count;
     SelectTopkBlock::TopkBlockSelector* m_topkComputer = nullptr;
     KRepre::KRepreComputer* m_kpreComputer = nullptr;
 public:
@@ -46,12 +51,15 @@ public:
     void SetTopkCache(std::vector<torch::Tensor>& topkCache, std::vector<uint32_t>& topkLens);
     void SetCommonParam(std::vector<uint32_t>& calTopkIdx, std::vector<bool>& isDecode);
     void SetTopkParam(std::vector<std::vector<uint32_t>>& repreSlotMapping);
-    void SetKpreParam(std::vector<uint32_t>& calcKpreBlockTable, std::vector<uint32_t>& calcRepreSlotMapping);
+    // void SetKpreParam(std::vector<uint32_t>& calcKpreBlockTable, std::vector<uint32_t>& calcRepreSlotMapping);
+    void SetKpreParam(torch::Tensor& calcKpreBlockTable, std::vector<uint32_t>& calcRepreSlotMapping);
     bool SetKpreDataReady(uint32_t layerIdx);
     void SetTopkDataReady(uint32_t layerIdx);
+    bool AddCopyReq (uint32_t layerIdx, int32_t indexInBatch, torch::Tensor& npuTensor);
     bool IsCalculateFinish();
 private:
     void Calculate();
+    void CopyData();
     void CalForOneLayer(uint32_t curLayer);
     void CalculateKpre(uint32_t curLayer);
     void CalculateTopk(uint32_t curLayer); 

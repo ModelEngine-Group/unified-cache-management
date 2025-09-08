@@ -20,6 +20,7 @@ PYBIND11_MODULE(gsa_offload_ops, m)
     .def("set_kpre_param", &CalKpreAndTopk::SetKpreParam)
     .def("set_kpre_data_ready", &CalKpreAndTopk::SetKpreDataReady)
     .def("set_topk_data_ready", &CalKpreAndTopk::SetTopkDataReady)
+    .def("add_copy_req", &CalKpreAndTopk::AddCopyReq)
     .def("is_calculate_finish", &CalKpreAndTopk::IsCalculateFinish);
 }
 

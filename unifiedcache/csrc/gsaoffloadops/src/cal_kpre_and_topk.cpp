@@ -24,6 +24,7 @@ CalKpreAndTopk::CalKpreAndTopk(uint32_t layerNum, uint32_t blockSize, uint32_t m
     m_numKpre = 1;
     m_needCalTopk = false;
     m_needCalPre = false;
+    m_count = 0;
 }
 
 void CalKpreAndTopk::SetKpreMethodParam(uint32_t maxBlockNum, uint32_t numHeads, uint32_t numKpre)
@@ -41,6 +42,9 @@ void CalKpreAndTopk::SetKpreCache(std::vector<torch::Tensor>& kpreCache)
 {
     m_kfCache = kpreCache;
     m_running = true;
+    m_copyThread = std::thread([this]() {
+        this->CopyData();
+    });
     m_calculateThread = std::thread([this]() {
         this->Calculate();
     });
@@ -58,6 +62,10 @@ CalKpreAndTopk::~CalKpreAndTopk()
     m_dataReady.notify_all();
     if (m_calculateThread.joinable()) {
         m_calculateThread.join();
+    }
+    m_copyQueue.stop();
+    if (m_copyThread.joinable()) {
+        m_copyThread.join();
     }
     delete m_topkComputer;
     m_topkComputer = nullptr;
@@ -78,7 +86,7 @@ void CalKpreAndTopk::SetTopkParam(std::vector<std::vector<uint32_t>>& repreSlotM
     m_repreSlotMapping = repreSlotMapping;
 }
 
-void CalKpreAndTopk::SetKpreParam(std::vector<uint32_t>& calcKpreBlockTable, std::vector<uint32_t>& calcRepreSlotMapping)
+void CalKpreAndTopk::SetKpreParam(torch::Tensor& calcKpreBlockTable, std::vector<uint32_t>& calcRepreSlotMapping)
 {
     if (IsCalculateFinish()) {
         m_needCalPre = true;
@@ -89,9 +97,9 @@ void CalKpreAndTopk::SetKpreParam(std::vector<uint32_t>& calcKpreBlockTable, std
 
 bool CalKpreAndTopk::SetKpreDataReady(uint32_t layerIdx)
 {
-    if (!IsCalculateFinish() && layerIdx == 0) {
+    /*if (!IsCalculateFinish() && layerIdx == 0) {
         return false;
-    }
+    }*/
     if (layerIdx == 0) {
         m_needCalPre = true;
         for (auto& atomic_val : m_topkFlag) {
@@ -108,6 +116,10 @@ bool CalKpreAndTopk::SetKpreDataReady(uint32_t layerIdx)
 
 void CalKpreAndTopk::SetTopkDataReady(uint32_t layerIdx)
 {
+    m_count += 1;
+    if (m_count != (layerIdx+1) * m_calTopkIdx.size()) {
+        return;
+    }
     if (!m_needCalPre && layerIdx == 0) {
         for (auto& atomic_val : m_topkFlag) {
             atomic_val.store(false, std::memory_order_relaxed);
@@ -117,6 +129,38 @@ void CalKpreAndTopk::SetTopkDataReady(uint32_t layerIdx)
         m_dataReady.notify_one();
     } else {
         m_qReady[layerIdx].store(true, std::memory_order_release);
+    }
+}
+
+bool CalKpreAndTopk::AddCopyReq(uint32_t layerIdx, int32_t indexInBatch, torch::Tensor& npuTensor)
+{
+    if (!IsCalculateFinish() && layerIdx == 0) {
+        return false;
+    }
+    CopyInfo copyReq;
+    copyReq.layerId = layerIdx;
+    copyReq.indexInBatch = indexInBatch;
+    copyReq.srcTensor = npuTensor;
+    m_copyQueue.push(copyReq);
+    return true;
+}
+
+void CalKpreAndTopk::CopyData()
+{
+    while (m_running) {
+        CopyInfo curReq = m_copyQueue.pop();
+        if (curReq.indexInBatch != -1) {
+            m_qCache[curReq.layerId][curReq.indexInBatch] = curReq.srcTensor.to(torch::kFloat32).cpu();
+            SetTopkDataReady(curReq.layerId);
+        } else {
+            torch::Tensor kNeeded = curReq.srcTensor.index({m_calcKpreBlockTable}).cpu();
+            torch::Tensor kCache = kNeeded.to(torch::kFloat32).permute({0, 2, 1, 3});
+            auto targetTensor = m_kCache[curReq.layerId].slice(0, 0, m_calcKpreBlockTable.size(0));
+            SetKpreDataReady(curReq.layerId);
+        }
+        if (!m_running) {
+            break;
+        }
     }
 }
 
@@ -161,12 +205,12 @@ void CalKpreAndTopk::CalForOneLayer(uint32_t curLayer)
 
 void CalKpreAndTopk::CalculateKpre(uint32_t curLayer)
 {
-    if (m_calcKpreBlockTable.size() == 1) {
+    if (m_calcRepreSlotMapping.size() == 1) {
         m_kpreComputer -> ComputeKRepreBlock(m_kCache[curLayer][0].data_ptr<float>(),
                                              m_kNumHeads, m_blockSize, m_headSize,
                                              m_kfCache[curLayer][m_calcRepreSlotMapping[0]].data_ptr<float>());
     } else {
-        uint32_t numBlock = m_calcKpreBlockTable.size();
+        uint32_t numBlock = m_calcRepreSlotMapping.size();
         std::vector<float*> kArray;
         std::vector<float*> kRepreBlockArray;
         for (uint32_t i = 0; i < numBlock; i++) {
@@ -215,6 +259,7 @@ void CalKpreAndTopk::ResetReady()
     }
     m_needCalTopk = false;
     m_needCalPre = false;
+    m_count = 0;
 }
 
 bool CalKpreAndTopk::IsCalculateFinish()

@@ -30,6 +30,7 @@ LIBRARIES = [
 ext_module = Extension(
     'gsa_offload_ops',
     sources=[
+        'src/thread_safe_queue.cpp',
         'src/vec_product.cpp',
         'src/k_repre.cpp',
         'src/select_topk_block.cpp',
