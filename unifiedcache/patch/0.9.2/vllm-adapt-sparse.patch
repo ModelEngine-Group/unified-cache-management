@@ -1,17 +1,17 @@
-From 8cef77f16ca578122d6858d07019d471bf2c00c7 Mon Sep 17 00:00:00 2001
-From: harrisonyhq <harrisonyhq@gmail.com>
-Date: Tue, 2 Sep 2025 20:11:39 +0800
-Subject: [PATCH] [Patch] vLLM patch for UCM Sparse
+From fab6d860fab469d306406f4c58103a8b557e038b Mon Sep 17 00:00:00 2001
+From: AoooooA-C <chenaozhu@outlook.com>
+Date: Tue, 9 Sep 2025 16:09:45 +0800
+Subject: [PATCH] vLLM patch for UCM Sparse
 
 ---
  vllm/attention/layer.py            | 42 ++++++++++++++++++
- vllm/v1/core/kv_cache_manager.py   | 32 +++++++++++++-
+ vllm/v1/core/kv_cache_manager.py   | 28 +++++++++++-
  vllm/v1/core/sched/output.py       |  3 ++
  vllm/v1/core/sched/scheduler.py    | 28 +++++++++++-
  vllm/v1/worker/block_table.py      | 13 ++++++
  vllm/v1/worker/gpu_model_runner.py | 70 +++++++++++++++++++++++++-----
  vllm/v1/worker/gpu_worker.py       |  2 +
- 7 files changed, 177 insertions(+), 13 deletions(-)
+ 7 files changed, 173 insertions(+), 13 deletions(-)
 
 diff --git a/vllm/attention/layer.py b/vllm/attention/layer.py
 index f0ad68b16..847c97371 100644
@@ -95,7 +95,7 @@ index f0ad68b16..847c97371 100644
 +    
 +    ucm_sparse.attention_finished(query, key, value, attn_output, layer_name, forward_context)
 diff --git a/vllm/v1/core/kv_cache_manager.py b/vllm/v1/core/kv_cache_manager.py
-index 6937455e7..3a44db442 100644
+index 6937455e7..cb854a098 100644
 --- a/vllm/v1/core/kv_cache_manager.py
 +++ b/vllm/v1/core/kv_cache_manager.py
 @@ -1,9 +1,10 @@
@@ -127,7 +127,7 @@ index 6937455e7..3a44db442 100644
      ) -> Optional[KVCacheBlocks]:
          """Add slots for a request with new tokens to append.
  
-@@ -232,6 +236,32 @@ class KVCacheManager:
+@@ -232,6 +236,28 @@ class KVCacheManager:
          if num_new_tokens == 0:
              raise ValueError("num_new_tokens must be greater than 0")
  
@@ -135,13 +135,9 @@ index 6937455e7..3a44db442 100644
 +            self.block_size = self.kv_cache_config.kv_cache_groups[0].kv_cache_spec.block_size
 +            num_blocks_need = math.ceil(num_slots_sparsed / self.block_size)
 +            allocated_blocks = self.coordinator.get_blocks(request.request_id)[0]
-+            returned_blocks = []
-+            sparsed_blocks = []
-+            for i, block in enumerate(allocated_blocks):
-+                if i < num_blocks_need:
-+                    sparsed_blocks.append(block)
-+                else:
-+                    returned_blocks.append(block)
++            ucm_sparse = get_ucm_sparse()
++            sparsed_blocks, returned_blocks = ucm_sparse.get_sparsed_blocks(allocated_blocks, num_blocks_need)
++            for block in allocated_blocks:
 +                self.block_pool._maybe_evict_cached_block(block)
 +            self.block_pool.free_blocks(returned_blocks)
 +            self.coordinator.single_type_managers[0].req_to_blocks[request.request_id] = sparsed_blocks
@@ -494,8 +490,6 @@ index 7117f60b5..c239e1f02 100644
  
  
  def _check_if_gpu_supports_dtype(torch_dtype: torch.dtype):
-
-base-commit: 0362d815b534a9e4a597f1fc5887d950896304b4
 -- 
 2.50.1.windows.1
 

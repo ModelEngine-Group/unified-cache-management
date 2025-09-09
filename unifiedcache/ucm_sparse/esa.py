@@ -489,3 +489,13 @@ class ESA(UcmSparseBase):
             INIT_WINDOW_SZ + mid_window_sz + LOCAL_WINDOW_SZ
         ) * self.block_size - flaw
         return num_tokens_sparsed
+
+    def get_sparsed_blocks(self, allocated_blocks: List, num_blocks_need: int):
+        returned_blocks = []
+        sparsed_blocks = []
+        for i, block in enumerate(allocated_blocks):
+            if i < num_blocks_need:
+                sparsed_blocks.append(block)
+            else:
+                returned_blocks.append(block)
+        return sparsed_blocks, returned_blocks

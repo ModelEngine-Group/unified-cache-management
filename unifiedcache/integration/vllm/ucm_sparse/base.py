@@ -191,6 +191,12 @@ class UcmSparseBase(ABC):
         """
         pass
 
+    def get_sparsed_blocks(self, allocated_blocks: List, num_blocks_need: int):
+        """
+        This is called by "KVCacheManager->allocate_slots" function to determine which KVCacheBlocks are used as sparse blocks.
+        """
+        pass
+
     def build_sparse_meta(
         self,
         scheduler_output,
