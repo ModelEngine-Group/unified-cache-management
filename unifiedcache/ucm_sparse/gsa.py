@@ -252,23 +252,18 @@ class GSAMetaData(UcmSparseMetadata):
         return self.trans_input_tensor(scheduler_output)
 
     def trans_input_tensor(self, scheduler_output: SchedulerOutput):
-        repre_slot_mapping = []
         calc_block_table = []
-        calc_repre_slot_mapping = []
-        include_mask = []
-        exclude_mask = []
         model_input = {}
+        query_locals = [0]
         for req_id, _ in scheduler_output.num_scheduled_tokens.items():
-            repre_slot_mapping.append(self.gsa_stats[req_id].repre_slot_mapping)
-            include_mask.append(self.gsa_stats[req_id].include_mask)
-            exclude_mask.append(self.gsa_stats[req_id].exclude_mask)
             calc_block_table += self.gsa_stats[req_id].calc_block_table
-            calc_repre_slot_mapping += self.gsa_stats[req_id].calc_repre_slot_mapping
+            query_locals.append(query_locals + scheduler_output.num_scheduled_tokens[req_id])
         model_input["calc_block_table"] = torch.tensor(
             calc_block_table,
             dtype=torch.int32,
             device="cpu"
         )
+        model_input["query_locals"] = query_locals
         return model_input
 
 @dataclass
