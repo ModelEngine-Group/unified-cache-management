@@ -156,6 +156,7 @@ void CalKpreAndTopk::CopyData()
             torch::Tensor kNeeded = curReq.srcTensor.index({m_calcKpreBlockTable}).cpu();
             torch::Tensor kCache = kNeeded.to(torch::kFloat32).permute({0, 2, 1, 3});
             auto targetTensor = m_kCache[curReq.layerId].slice(0, 0, m_calcKpreBlockTable.size(0));
+            targetTensor.copy_(kCache);
             SetKpreDataReady(curReq.layerId);
         }
         if (!m_running) {

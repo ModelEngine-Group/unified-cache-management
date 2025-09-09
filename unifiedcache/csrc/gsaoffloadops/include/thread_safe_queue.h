@@ -12,7 +12,7 @@ struct CopyInfo {
     uint32_t layerId;
     int32_t indexInBatch;
     torch::Tensor srcTensor;
-}
+};
 
 class ThreadSafeQueue {
 public:
