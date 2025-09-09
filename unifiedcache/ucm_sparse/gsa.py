@@ -267,7 +267,7 @@ class GSAMetaData(UcmSparseMetadata):
         model_input["calc_block_table"] = torch.tensor(
             calc_block_table,
             dtype=torch.int32,
-            device=self.device
+            device="cpu"
         )
         return model_input
 
