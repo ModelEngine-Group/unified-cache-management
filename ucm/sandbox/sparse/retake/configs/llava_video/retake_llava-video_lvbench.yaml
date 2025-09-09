@@ -1,0 +1,41 @@
+### model
+model_name: llava_video
+method: retake
+scaling_factor: 4
+attn_implementation: "flash_attention_2"
+longvideo_kwargs: {
+  'frame_chunk_size': 32,
+  'chunked_prefill_frames': 32,
+  # Keyframe compression
+  'visual_compression': True,
+  'visual_compression_kwargs': {
+    'compression_ratio': 1.0,
+    'compression_method': 'Keyframe',
+    'patch_sync': False,
+    'return_keyframe_mask': True
+  },
+  # KVCache compression
+  'kvcache_compression': True,
+  'kvcache_compression_kwargs': {
+    'dynamic_compression_ratio': True,
+    'compression_method': 'pivotkv',
+    'pos_embed_reforge': True,
+    'max_input_length': 40000
+  },
+}
+
+### dataset
+dataset_name: lvbench
+anno_file: dataset/lvbench/lvbench.json
+dataloader_num_workers: 4
+
+### data
+sample_fps: 2
+max_num_frames: 1024
+longsize_resolution: 682
+
+### generate
+do_sample: false
+
+### output
+output_dir: results/llava-video_f1024_2fps_r682/retake_dp1-async_pivot-40k

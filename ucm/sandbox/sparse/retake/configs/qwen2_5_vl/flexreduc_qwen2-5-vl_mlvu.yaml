@@ -1,0 +1,40 @@
+### model
+model_name: qwen2_5_vl
+method: retake
+scaling_factor: 4
+attn_implementation: "flash_attention_2"
+longvideo_kwargs: {
+  'chunked_prefill_frames': 32,
+  'frame_chunk_size': 64,
+  # KVCache compression
+  'kvcache_compression': True,
+  'kvcache_compression_kwargs': {
+    'compression_method': 'stdvidlkv',
+    'dynamic_compression_ratio': True,
+    'prompt_guided_compression': True,
+    'pos_embed_reforge': False,
+    'max_input_length': 16000,
+    # Temporal
+    'enable_temporal_adaptation': True,
+    'temporal_adaptation_ratio': 4,
+    # Layer
+    'budget_allocation_method': 'adakv',
+  },
+}
+
+
+### dataset
+dataset_name: mlvu
+anno_file: dataset/mlvu/mlvu.json
+dataloader_num_workers: 4
+
+### data
+sample_fps: 2
+max_num_frames: 2048
+longsize_resolution: 448
+
+### generate
+do_sample: false
+
+### output
+output_dir: results/qwen25vl_7b_mlvu_f2048_2fps_r448/adaretake-16k

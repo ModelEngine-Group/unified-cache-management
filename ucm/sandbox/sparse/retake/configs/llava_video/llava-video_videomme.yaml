@@ -1,0 +1,20 @@
+### model
+model_name: llava_video
+method: retake
+attn_implementation: "flash_attention_2"
+
+### dataset
+dataset_name: videomme
+anno_file: dataset/video_mme/video_mme.json
+dataloader_num_workers: 4
+
+### data
+sample_fps: 2
+max_num_frames: 64
+longsize_resolution: 682 # short-side can be 384
+
+### generate
+do_sample: false
+
+### output
+output_dir: results/llava-video_video_mme_f64_2fps_r682/base

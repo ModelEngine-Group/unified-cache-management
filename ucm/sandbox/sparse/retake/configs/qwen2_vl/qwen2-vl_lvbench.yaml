@@ -1,0 +1,21 @@
+### model
+model_name: qwen2_vl
+method: retake
+scaling_factor: 4
+attn_implementation: "flash_attention_2"
+
+### dataset
+dataset_name: lvbench
+anno_file: dataset/lvbench/lvbench.json
+dataloader_num_workers: 2
+
+### data
+sample_fps: 2
+max_num_frames: 256
+longsize_resolution: 448
+
+### generate
+do_sample: false
+
+### output
+output_dir: results/qwen2vl_7b_lvbench_f256_2fps_r448/base
