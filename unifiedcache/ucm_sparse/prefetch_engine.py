@@ -96,35 +96,31 @@ class GSAPrefetchBase:
         self.topk_bs = []
 
     def _init_tensor(self):
-        self.prefetch_blocks = torch.ones((self.num_attention_layers, self.max_bs, int(self.sp_max_len)),
+        self.prefetch_blocks = torch.zeros((self.num_attention_layers, self.max_bs, int(self.sp_max_len)),
                                          dtype=torch.int32,
                                          pin_memory=is_pin_memory_available(),
                                          device="cpu")
-        self.m_load_success_list = torch.ones((self.num_attention_layers, self.max_bs, int(self.sp_max_len)),
+        self.m_load_success_list = torch.zeros((self.num_attention_layers, self.max_bs, int(self.sp_max_len)),
                                          dtype=torch.int32,
                                          pin_memory=False,
-                                         device=self.device_config.device_type) * -1
-        self.use_block_table = torch.ones((self.num_attention_layers, self.max_bs, int(self.sp_max_len)),
+                                         device="cpu")
+        self.use_block_table = torch.zeros((self.num_attention_layers, self.max_bs, int(self.sp_max_len)),
                                          dtype=torch.int32,
                                          pin_memory=False,
-                                         device=self.device_config.device_type) * -1
-        self.use_block_table_cpu = torch.ones((self.num_attention_layers, self.max_bs, int(self.sp_max_len)),
-                                         dtype=torch.int32,
-                                         pin_memory=is_pin_memory_available(),
-                                         device="cpu") * -1
-        self.free_block_len = torch.ones((self.num_attention_layers, self.max_bs),
+                                         device="cpu")
+        self.free_block_len = torch.zeros((self.num_attention_layers, self.max_bs),
                                          dtype=torch.int32,
                                          pin_memory=is_pin_memory_available(),
                                          device="cpu")
-        self.gsa_seq_len = torch.ones((self.num_attention_layers, self.max_bs),
+        self.gsa_seq_len = torch.zeros((self.num_attention_layers, self.max_bs),
                                          dtype=torch.int32,
                                          pin_memory=is_pin_memory_available(),
                                          device="cpu")
-        self.block_table_len = torch.ones((self.num_attention_layers, self.max_bs),
+        self.block_table_len = torch.zeros((self.num_attention_layers, self.max_bs),
                                          dtype=torch.int32,
                                          pin_memory=is_pin_memory_available(),
                                          device="cpu")
-        self.use_block_table_len = torch.ones((self.num_attention_layers, self.max_bs),
+        self.use_block_table_len = torch.zeros((self.num_attention_layers, self.max_bs),
                                          dtype=torch.int32,
                                          pin_memory=is_pin_memory_available(),
                                          device="cpu")
@@ -186,7 +182,7 @@ class GSAPrefetchBase:
                 prefetch_blocks_list = [block_table_list[x] for x in prefetch_idx]
                 self.prefetch_blocks[:, bs_index, :len(prefetch_blocks_list)] = torch.tensor(prefetch_blocks_list, dtype=torch.int32)
                 topk_block_list = [block_table_list[x] for x in remain_index]
-                topk_block_tensor = torch.tensor(topk_block_list, dtype=torch.int32, device=self.use_block_table.device)
+                topk_block_tensor = torch.tensor(topk_block_list, dtype=torch.int32, device="cpu")
 
                 if gsa_metadata.gsa_stats[req_id].num_prompt_tokens <= SEG_PREFILL_THRESHOLD:
                     block_table_list_input = block_table_list
@@ -199,7 +195,6 @@ class GSAPrefetchBase:
                 input_idxs = prefetch_idx + remain_index
                 self.use_block_table[:, bs_index, :len(topk_block_list)] = topk_block_tensor
                 self.m_load_success_list[:, bs_index, :len(topk_block_list)] = topk_block_tensor
-                self.use_block_table_cpu.copy_(self.use_block_table)
                 if self.is_gsa_req_id[req_id]:
                     self.prefetch_engine_c.set_blocks_map(int(req_id), block_table_list_input,
                                                           input_idxs)
@@ -209,7 +204,6 @@ class GSAPrefetchBase:
         gsa_metadata,
     ) -> None:
         self.gsa_seq_len.copy_(self.use_block_table_len)
-        is_use_cpu_block = False
         for index, req_id in enumerate(self.req_ids_bs):
             bs_index = self.select_bs_index[index]
             free_slot = gsa_metadata.gsa_stats[req_id].get_seq_len() % self.block_size
@@ -218,16 +212,15 @@ class GSAPrefetchBase:
                     self.gsa_seq_len[:, bs_index].mul_(self.block_size)
                 elif free_slot == 1:
                     self.gsa_seq_len[:, bs_index].mul_(self.block_size).add_(free_slot)
-                    is_use_cpu_block = True
                     last_block = gsa_metadata.gsa_stats[req_id].blocks[-1]
                     for layerid in range(self.num_attention_layers):
                         indices = self.use_block_table_len[layerid][bs_index].item()
                         if indices >= self.sp_max_len:
                             print(f"[GSA] block table len is more than sp_max_len!! req_id: {req_id}")
-                            self.use_block_table_cpu[layerid][bs_index][1:-1] = self.use_block_table_cpu[layerid][bs_index][2:].clone()
-                            self.use_block_table_cpu[layerid][bs_index][-1] = last_block
+                            self.use_block_table[layerid][bs_index][1:-1] = self.use_block_table[layerid][bs_index][2:].clone()
+                            self.use_block_table[layerid][bs_index][-1] = last_block
                         else:
-                            self.use_block_table_cpu[layerid][bs_index][indices] = last_block
+                            self.use_block_table[layerid][bs_index][indices] = last_block
                             self.use_block_table_len[layerid][bs_index].add_(1)
                     if req_id not in self.block_table_flag:
                         self.block_map_flag[req_id] = []
@@ -239,22 +232,15 @@ class GSAPrefetchBase:
             else:
                 self.block_map_flag[req_id] = []
                 self.block_table_flag[req_id] = []
-
-                is_use_cpu_block = True
                 self.gsa_seq_len[:, bs_index] = gsa_metadata.gsa_stats[req_id].get_seq_len()
                 for idx, block in enumerate(gsa_metadata.gsa_stats[req_id].blocks):
-                    self.use_block_table_cpu[:, bs_index, idx] = block
-
-        if is_use_cpu_block:
-            self.use_block_table.copy_(self.use_block_table_cpu)
-
+                    self.use_block_table[:, bs_index, idx] = block
     
     def _swap_block_table_tensor(
         self,
         bs_index_list: List[int],
         gsa_metadata,
     ) -> None:
-        is_use_cpu_block = False
         for index, bs_index in enumerate(bs_index_list):
             req_id = self.req_ids_bs[index]
             if req_id in self.block_map_flag:
@@ -269,22 +255,18 @@ class GSAPrefetchBase:
             if req_id in self.block_table_flag.keys():
                 for block_table_add in self.block_table_flag[req_id]:
                     for layerid in range(self.num_attention_layers):
-                        is_use_cpu_block = True
                         indices = self.use_block_table_len[layerid][bs_index].item()
                         if indices >= self.sp_max_len:
                             print(f"[GSA] swap block table len is more than sp_max_len!! req_id: {req_id}")
-                            self.use_block_table_cpu[layerid][bs_index][1:-1] = self.use_block_table_cpu[layerid][bs_index][2:].clone()
-                            self.use_block_table_cpu[layerid][bs_index][-1] = block_table_add
+                            self.use_block_table[layerid][bs_index][1:-1] = self.use_block_table[layerid][bs_index][2:].clone()
+                            self.use_block_table[layerid][bs_index][-1] = block_table_add
                         else:
-                            self.use_block_table_cpu[layerid][bs_index][indices] = block_table_add
+                            self.use_block_table[layerid][bs_index][indices] = block_table_add
                             self.use_block_table_len[layerid][bs_index].add_(1)
                 self.block_table_flag[req_id].clear()
             if gsa_metadata.gsa_stats[req_id].topk_buf_tmp != None:
                 self.prefetch_topk_buf[:, index, :len(gsa_metadata.gsa_stats[req_id].topk_buf_tmp[0])].copy_(
                     gsa_metadata.gsa_stats[req_id].topk_buf_tmp)
-        if is_use_cpu_block:
-            self.use_block_table.copy_(self.use_block_table_cpu)
-
 
     def _get_run_type(
         self,
@@ -344,11 +326,11 @@ class GSAPrefetchBase:
         layer_num = self.num_attention_layers
         block_table_tmp = torch.full((layer_num, batch_size, self.max_block_len),
                                      0, dtype=torch.int32,
-                                     device=self.use_block_table.device)
+                                     device="cpu")
         gen_len_tmp = torch.zeros((layer_num, batch_size), dtype=torch.int32)
         for index, req_id in enumerate(self.req_ids_bs):
             one_block_table = torch.tensor(self.block_table_list_bs[index],
-                                           dtype=torch.int32, device=self.use_block_table.device)
+                                           dtype=torch.int32, device="cpu")
             
             if self.is_gsa_req_id[req_id] and gsa_metadata.gsa_stats[req_id].topk_buf_tmp != None:
                 remain_slot = gsa_metadata.gsa_stats[req_id].get_seq_len() % self.block_size
@@ -383,7 +365,7 @@ class GSAPrefetchBase:
         self._set_req_stat(gsa_metadata)
 
         if self.atb_gsa_enable:
-            block_table_index = torch.tensor(self.select_bs_index, device=self.use_block_table.device)
+            block_table_index = torch.tensor(self.select_bs_index, device="cpu")
             self.topk_len = compute_topk_len(self._get_max_block_len())
             topk_buf_tmp = self.use_topk_caches[:, block_table_index.cpu(), :]
             topk_buf_tmp = topk_buf_tmp[:, :, :self.topk_len]
@@ -394,7 +376,8 @@ class GSAPrefetchBase:
                 gen_len_tmp = self.gsa_seq_len[:, self.select_bs_index]
             else:
                 block_table_tmp, gen_len_tmp = self._no_gsa_input_deal(gsa_metadata)
-            gen_len_tmp = gen_len_tmp.to(self.use_block_table.device)
+            gen_len_tmp = gen_len_tmp.to(self.device_config.device)
+            block_table_tmp = block_table_tmp.to(self.device_config.device)
             list_topk_buf = list(topk_buf_tmp.unbind(dim=0))
             list_block_table = list(block_table_tmp.unbind(dim=0))
             gsa_len_list = list(gen_len_tmp.unbind(dim=0))
@@ -446,7 +429,6 @@ class GSAPrefetchBase:
                     self.use_block_table_len = self.block_table_len
                     self.block_table_len = tmp
 
-                    self.use_block_table_cpu.copy_(self.use_block_table)
                     self._swap_block_table_tensor(self.select_bs_index, gsa_metadata)
                     self.prefetch_engine_c.set_blocks_table_info(
                         self.m_load_success_list,

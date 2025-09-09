@@ -48,7 +48,6 @@ namespace ucmprefetch
         torch::Tensor mUseTopkIdxs;
         int mLayerNum;
         int mRank = -1;
-        torch::Tensor mLoadSuccessBlocksCPU;
         uint32_t mMaxBs = 30;
         int *mReqIdList = NULL;
         int *mTopkLenList = NULL;
