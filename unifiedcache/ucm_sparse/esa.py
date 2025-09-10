@@ -378,8 +378,10 @@ class ESA(UcmSparseBase):
         self.req_states: dict[str, ReqStatePerLayer] = {}
         self.rank = vllm_config.parallel_config.rank
         self.tp_size = vllm_config.parallel_config.tensor_parallel_size
+        self.block_size = vllm_config.cache_config.block_size
         config = {"max_cache_size": 536870912000, "device": self.rank, "role": "worker"}
         self.connector = UcmConnectorFactory.create_connector("UcmDram", config)
+        # TODO: consider init self.is_mla here
 
     def attention_begin(
         self,
@@ -445,16 +447,17 @@ class ESA(UcmSparseBase):
             num_scheduled_tokens,
         ) in scheduler_output.num_scheduled_tokens.items():
             req_state = requests[req_id]
-            sparse_meta.add_request(
-                req_id,
-                input_batch.req_id_to_index[req_id],
-                len(req_state.prompt_token_ids),
-                len(req_state.output_token_ids),
-                num_scheduled_tokens,
-                req_state.num_computed_tokens,
-                scheduler_output.req_sparsed_slots[req_id],
-                req_state.block_ids[0],
-            )
+            if len(req_state.prompt_token_ids) > self.block_size:
+                sparse_meta.add_request(
+                    req_id,
+                    input_batch.req_id_to_index[req_id],
+                    len(req_state.prompt_token_ids),
+                    len(req_state.output_token_ids),
+                    num_scheduled_tokens,
+                    req_state.num_computed_tokens,
+                    scheduler_output.req_sparsed_slots[req_id],
+                    req_state.block_ids[0],
+                )
         self._sparse_metadata = sparse_meta
 
     def request_begin(self, request_id: ReqType, prompt_token_ids: List[int]):
@@ -470,17 +473,19 @@ class ESA(UcmSparseBase):
         pass
 
     def estimate_num_slots_sparsed(self, request: Request) -> int:
-        if request.num_output_tokens == 0:
+        if (
+            request.num_output_tokens == 0
+            or request.num_prompt_tokens < self.block_size
+        ):
             return INVALID_SLOT
-        block_size = self._vllm_config.cache_config.block_size
-        num_blocks = math.ceil(request.num_tokens / block_size)
+        num_blocks = math.ceil(request.num_tokens / self.block_size)
         mid_window_sz = int(
             (num_blocks - INIT_WINDOW_SZ - LOCAL_WINDOW_SZ) * SPARSE_RATIO
         )
-        flaw = request.num_tokens % block_size
+        flaw = request.num_tokens % self.block_size
         if flaw:
-            flaw = block_size - flaw
+            flaw = self.block_size - flaw
         num_tokens_sparsed = (
             INIT_WINDOW_SZ + mid_window_sz + LOCAL_WINDOW_SZ
-        ) * block_size - flaw
+        ) * self.block_size - flaw
         return num_tokens_sparsed
