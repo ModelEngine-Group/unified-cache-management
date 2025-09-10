@@ -8,7 +8,7 @@ MAX_BS = 30
 SEG_PREFILL_THRESHOLD = 8400
 PTOPK_PREFETCH_ENABLE = True
 VLLM_CUDA_MEM_ALIGN_KV_CACHE = False
-LOCAL_WINDOW_SZ = 30
+LOCAL_WINDOW_SZ = MIN_TOPK_LEN - 1
 
 def round_up(x: int, y: int) -> int:
     return ((x + y -1) // y) * y
