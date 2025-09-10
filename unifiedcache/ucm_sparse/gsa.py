@@ -693,17 +693,18 @@ class GSA(UcmSparseBase):
         repre_slot_mappings = []
         calc_block_tables = []
         calc_repre_slot_mappings = []
-        for req_meta in self._sparse_metadata.requests:
-            if req_meta.stage == SequenceStage.DECODE:
+        for req_id in self.prefetch_engine.req_ids_bs:
+            req_meta = self.gsa_metadata.gsa_stats[req_id]
+            if req_meta.stage() == SequenceStage.DECODE:
                 cal_topk_id.append(req_meta.index_in_batch)
                 is_decode.append(True)
-                one_topk_len = compute_topk_len(len(self.gsa_metadata.gsa_stats[req_meta.request_id].blocks))
+                one_topk_len = compute_topk_len(len(req_meta.blocks))
                 topk_len_list.append(one_topk_len)
             else:
                 is_decode.append(False)
-            repre_slot_mappings.append(self.gsa_metadata.gsa_stats[req_meta.request_id].repre_slot_mapping)
+            repre_slot_mappings.append(req_meta.repre_slot_mapping)
             calc_block_tables = self.model_input["calc_block_table"]
-            calc_repre_slot_mappings += self.gsa_metadata.gsa_stats[req_meta.request_id].calc_repre_slot_mapping
+            calc_repre_slot_mappings += req_meta.calc_repre_slot_mapping
         self.gsa_offload_ops.set_common_param(cal_topk_id, is_decode)
         if len(calc_block_tables) != 0:
             self.gsa_offload_ops.set_kpre_param(calc_block_tables, calc_repre_slot_mappings)
