@@ -26,6 +26,7 @@
 import hashlib
 import pickle
 from dataclasses import dataclass, field
+from enum import Enum
 from typing import TYPE_CHECKING, Any, Generator, List, Optional, Union
 
 import torch
@@ -52,70 +53,36 @@ if TYPE_CHECKING:
 logger = init_logger(__name__)
 
 
-@dataclass
-class LoadPara:
-    # Number of tokens cached in vLLM
-    vllm_cached_tokens: int = 0
-    # Number of tokens cached in ssd
-    storage_cached_tokens: int = 0
-    # Whether the scheduler allow us to load the blocks
-    can_load: bool = False
-    # block hashes
-    block_hashes: list[str] = field(default_factory=list)
+class BlockOperation(Enum):
+    NONE = "none"
+    LOAD = "load"
+    DUMP = "dump"
 
 
 @dataclass
-class SavePara:
-    # dump block ids
-    num_blocks_need_save: int = 0
-    # start save position
-    start_save_position: int = 0
-    # block hashes
+class RequestBlockInfo:
+    # Hash values for all blocks
     block_hashes: list[str] = field(default_factory=list)
-    # num of blocks prepare to save
-    num_blocks_to_save: int = 0
-    # num of blocks already saved
-    num_blocks_saved: int = 0
+    # Operation type for each block
+    block_operations: list[BlockOperation] = field(default_factory=list)
+    # Next block position to process
+    start_position: int = 0
 
 
 @dataclass
 class ReqMeta:
-    # Request ID, unique for each request
     request_id: str
-    # Request block id in vllm
-    vllm_block_ids: list[int]
-    # Load information
-    load_paras: Optional[LoadPara] = None
-    # Save information
-    save_paras: Optional[SavePara] = None
-    # Mark request which need load async
+    # list[(block_hash, vllm_block_id)]
+    load_blocks: list[tuple[str, int]] = field(default_factory=list)
+    # list[(block_hash, vllm_block_id)]
+    dump_blocks: list[tuple[str, int]] = field(default_factory=list)
+    # Whether use load_async
     load_async: bool = False
 
 
 @dataclass
 class UCConnectorV1Metadata(KVConnectorMetadata):
-    requests: list[ReqMeta]
-
-    def __init__(self):
-        self.requests = []
-
-    def add_request(
-        self,
-        request_id: str,
-        vllm_block_ids: list[int],
-        load_paras: Optional[LoadPara] = None,
-        save_paras: Optional[SavePara] = None,
-        load_async: bool = False,
-    ) -> None:
-        self.requests.append(
-            ReqMeta(
-                request_id=request_id,
-                vllm_block_ids=vllm_block_ids,
-                load_paras=load_paras,
-                save_paras=save_paras,
-                load_async=load_async,
-            )
-        )
+    requests: list[ReqMeta] = field(default_factory=list)
 
 
 class UnifiedCacheConnectorV1(KVConnectorBase_V1):
@@ -129,8 +96,7 @@ class UnifiedCacheConnectorV1(KVConnectorBase_V1):
         self.rank = (
             -1 if role == KVConnectorRole.SCHEDULER else get_world_group().local_rank
         )
-        self.load_paras: dict[str, LoadPara] = {}
-        self.save_paras: dict[str, SavePara] = {}
+        self.request_block_infos: dict[str, RequestBlockInfo] = {}
         # dump tasks record request -> block -> list[task]
         self.dump_tasks: dict[str, dict[str, List[Task]]] = {}
         self.layerwise_load_tasks: dict[str, dict[str, tuple[Task, Task]]] = {}
@@ -244,41 +210,6 @@ class UnifiedCacheConnectorV1(KVConnectorBase_V1):
                 v_offsets.append(v_data_offset)
         return k_tensors + v_tensors, k_offsets + v_offsets
 
-    def generate_layerwise_load_tasks(
-        self,
-        fetch_block_hashes,
-        layer_to_tensor: dict[str, tuple[List[torch.Tensor], List[int]]],
-    ) -> Generator[Optional[tuple[Task, Task]], None, None]:
-
-        logger.debug(f"fetch_block_hashes is {fetch_block_hashes}")
-        assert (
-            fetch_block_hashes is not None and fetch_block_hashes
-        ), "The block hashes need to be fetched should not be None or empty."
-        assert (
-            layer_to_tensor is not None and layer_to_tensor
-        ), "The layers of tensor need to be fetched should not be None or empty."
-
-        blocks_len = len(fetch_block_hashes)
-
-        def load(tensor_list, offset_list) -> tuple[Task, Task]:
-            k_load_task = self.connector.load(
-                fetch_block_hashes, offset_list[:blocks_len], tensor_list[:blocks_len]
-            )
-            v_load_task = None
-            if not self.is_mla:
-                v_load_task = self.connector.load(
-                    fetch_block_hashes,
-                    offset_list[blocks_len:],
-                    tensor_list[blocks_len:],
-                )
-            return k_load_task, v_load_task
-
-        for layer_name, (tensor_list, offset_list) in layer_to_tensor.items():
-            logger.debug(f"Start execute {layer_name} load task.")
-            yield load(tensor_list, offset_list)
-
-        yield None
-
     # ==============================
     # Worker-side methods
     # ==============================
@@ -316,42 +247,26 @@ class UnifiedCacheConnectorV1(KVConnectorBase_V1):
         self.layerwise_load_tasks.clear()
         self.current_layer = 0
         for request in metadata.requests:
-            if request.load_paras is None or not request.load_paras.can_load:
+            if not request.load_blocks:
                 continue
-            block_ids = request.vllm_block_ids
-            # Blocks id need to save should start after last vllm cached block
-            load_start_block_id = (
-                request.load_paras.vllm_cached_tokens // self.block_size
-            )
-            load_end_block_id = (
-                request.load_paras.storage_cached_tokens // self.block_size
-            )
-            fetch_block_ids = block_ids[load_start_block_id:load_end_block_id]
-            logger.debug(
-                f"fetch_block_ids = {fetch_block_ids},\n"
-                f"load_start_block_id = {load_start_block_id},\n"
-                f"load_end_block_id = {load_end_block_id},\n"
-                f"fetch_block_ids = {fetch_block_ids}"
-            )
-            fetch_block_hashes = request.load_paras.block_hashes[
-                load_start_block_id:load_end_block_id
-            ]
-            assert len(fetch_block_ids) == len(fetch_block_hashes)
-            blocks_len = len(fetch_block_ids)
+
+            storage_block_ids = [block[0] for block in request.load_blocks]
+            vllm_block_ids = [block[1] for block in request.load_blocks]
+            blocks_len = len(storage_block_ids)
             self._load_req_to_blocks.setdefault(request.request_id, set()).update(
-                fetch_block_ids
+                vllm_block_ids
             )
             for layer_name, kv_layer in self.kv_caches.items():
                 tensors, offsets = self.get_tensor_and_offset_layerwise(
-                    fetch_block_ids, kv_layer, layer_name
+                    vllm_block_ids, kv_layer, layer_name
                 )
                 k_task_id = self.connector.load(
-                    fetch_block_hashes, offsets[:blocks_len], tensors[:blocks_len]
+                    storage_block_ids, offsets[:blocks_len], tensors[:blocks_len]
                 )
                 v_task_id = None
                 if not self.is_mla:
                     v_task_id = self.connector.load(
-                        fetch_block_hashes,
+                        storage_block_ids,
                         offsets[blocks_len:],
                         tensors[blocks_len:],
                     )
@@ -362,7 +277,7 @@ class UnifiedCacheConnectorV1(KVConnectorBase_V1):
                     v_task_id,
                 )
 
-            if request.load_async:
+            if request.load_async and request.request_id in self.layerwise_load_tasks:
                 for _, (k_task, v_task) in self.layerwise_load_tasks[
                     request.request_id
                 ].items():
@@ -373,7 +288,10 @@ class UnifiedCacheConnectorV1(KVConnectorBase_V1):
                         self._need_load_reqs[request.request_id].append(v_task)
                 continue
 
-            if not self.use_layerwise:
+            if (
+                not self.use_layerwise
+                and request.request_id in self.layerwise_load_tasks
+            ):
                 for _, (k_task, v_task) in self.layerwise_load_tasks[
                     request.request_id
                 ].items():
@@ -409,10 +327,16 @@ class UnifiedCacheConnectorV1(KVConnectorBase_V1):
             k_task, v_task = layer_to_task[layer_name]
             if self.connector.wait(k_task) != 0:
                 self._load_failed_reqs.add(request_id)
+                logger.error(
+                    f"Failed to load block for request {request_id} on layer {layer_name}"
+                )
                 continue
             if not self.is_mla:
                 if self.connector.wait(v_task) != 0:
                     self._load_failed_reqs.add(request_id)
+                    logger.error(
+                        f"Failed to load block for request {request_id} on layer {layer_name}"
+                    )
                     continue
             logger.debug(f"Load tasks for {request_id} on layer {layer_name} finished.")
 
@@ -446,31 +370,18 @@ class UnifiedCacheConnectorV1(KVConnectorBase_V1):
 
         metadata = self._get_connector_metadata()
         assert isinstance(metadata, UCConnectorV1Metadata)
-        assert attn_metadata is not None, "The attn_metadata should not be None."
 
         for request in metadata.requests:
-            if request.save_paras is None or request.load_async:
+            if not request.dump_blocks or request.load_async:
                 continue
 
-            save_param = request.save_paras
-            vllm_block_ids = request.vllm_block_ids[
-                save_param.start_save_position : save_param.start_save_position
-                + save_param.num_blocks_to_save
-            ]
-            blocks_len = len(vllm_block_ids)
+            storage_block_ids = [block[0] for block in request.dump_blocks]
+            vllm_block_ids = [block[1] for block in request.dump_blocks]
+            blocks_len = len(storage_block_ids)
             tensors, offsets = self.get_tensor_and_offset_layerwise(
                 vllm_block_ids, kv_layer, layer_name
             )
-            storage_block_ids = save_param.block_hashes[
-                save_param.num_blocks_saved : save_param.num_blocks_saved
-                + save_param.num_blocks_to_save
-            ]
-            logger.debug(
-                f"blocks length = {blocks_len},\n"
-                f"length of offsets = {len(offsets)},\n"
-                f"length of need save vllm_block_ids = {len(vllm_block_ids)},\n"
-                f"length of storage_block_ids = {len(storage_block_ids)},\n"
-            )
+
             if kv_layer[0].device.type == "npu":
                 torch.npu.current_stream().synchronize()
             elif kv_layer[0].device.type == "cuda":
@@ -521,35 +432,18 @@ class UnifiedCacheConnectorV1(KVConnectorBase_V1):
             return success_dumped_blocks if success_dumped_blocks else None
 
         for request in metadata.requests:
-            if request.save_paras is None:
+            if not request.dump_blocks:
                 continue
-            save_paras = request.save_paras
-            logger.debug(
-                f"num_blocks_saved = {save_paras.num_blocks_saved},\n"
-                f"num_blocks_to_save = {save_paras.num_blocks_to_save}\n"
-            )
-            start_pos = save_paras.start_save_position
-            num_blocks = save_paras.num_blocks_to_save
-            num_blocks_saved = save_paras.num_blocks_saved
 
-            dump_block_ids = request.vllm_block_ids[start_pos : start_pos + num_blocks]
-            dump_vllm_block_hashes = save_paras.block_hashes[
-                num_blocks_saved : num_blocks_saved + num_blocks
-            ]
-
-            logger.debug(
-                f"dump block ids is {dump_block_ids},\n"
-                f"dump_vllm_block_hashes is {dump_vllm_block_hashes}\n"
-            )
-
-            assert len(dump_block_ids) == len(dump_vllm_block_hashes)
-            blocks_len = len(dump_block_ids)
+            storage_block_ids = [block[0] for block in request.dump_blocks]
+            vllm_block_ids = [block[1] for block in request.dump_blocks]
+            blocks_len = len(storage_block_ids)
             for layer_name, kv_layer in self.kv_caches.items():
                 tensors, offsets = self.get_tensor_and_offset_layerwise(
-                    dump_block_ids, kv_layer, layer_name
+                    vllm_block_ids, kv_layer, layer_name
                 )
                 for block_id, offset, tensor in zip(
-                    dump_vllm_block_hashes, offsets[:blocks_len], tensors[:blocks_len]
+                    storage_block_ids, offsets[:blocks_len], tensors[:blocks_len]
                 ):
                     task = self.connector.dump([block_id], [offset], [tensor])
                     self.dump_tasks.setdefault(request.request_id, {}).setdefault(
@@ -557,7 +451,7 @@ class UnifiedCacheConnectorV1(KVConnectorBase_V1):
                     ).append(task)
                 if not self.is_mla:
                     for block_id, offset, tensor in zip(
-                        dump_vllm_block_hashes,
+                        storage_block_ids,
                         offsets[blocks_len:],
                         tensors[blocks_len:],
                     ):
@@ -634,22 +528,35 @@ class UnifiedCacheConnectorV1(KVConnectorBase_V1):
         if not block_hashes:
             logger.debug("Maybe tokens too short to load.")
             return 0, False
-        hit_masks = self.connector.lookup(block_hashes)
-        num_external_computed_tokens = sum(hit_masks) * self.block_size
-        # When all the tokens are cached in ssd and can be divided by block size,
-        # we need to recompute the last token. This if condition will be removed
-        # once vLLM's scheduler provides a better solution in the future.
-        if num_external_computed_tokens == request.num_tokens:
-            num_external_computed_tokens -= self.block_size
-        self.load_paras[request.request_id] = LoadPara(
-            vllm_cached_tokens=num_computed_tokens,
-            storage_cached_tokens=num_external_computed_tokens,
-            block_hashes=block_hashes,
-            can_load=False,
+
+        # Calculate start position (exclude blocks already in HBM)
+        start_position = num_computed_tokens // self.block_size
+
+        block_operations = [BlockOperation.NONE] * len(block_hashes)
+
+        remain_hashes = block_hashes[start_position:]
+        if not remain_hashes:
+            # All blocks are in HBM
+            return 0, False
+
+        lookup_results = self.connector.lookup(remain_hashes)
+
+        # Find the longest continuous match from the beginning
+        num_lookup_hits = 0
+        for i, hit in enumerate(lookup_results):
+            if hit:
+                num_lookup_hits += 1
+                block_operations[start_position + i] = BlockOperation.LOAD
+            else:
+                # TODO we will fix hole match later
+                break
+        logger.info(
+            f"\nnum_total_blocks: {len(block_hashes)}\n"
+            f"\nnum_lookup_hits on hbm: {start_position}\n"
+            f"\nnum_lookup_hits on storage except hbm: {num_lookup_hits}\n"
         )
 
-        need_load_tokens = max(num_external_computed_tokens - num_computed_tokens, 0)
-        # Load async when Decode instance need to load.
+        # Load async when Decode instance need to load.kv_consumer"
         if hasattr(self, "kv_role") and self.kv_role == "kv_consumer":
             # Only trigger 1 asynchronous KV transfer per request.
             if (
@@ -659,31 +566,42 @@ class UnifiedCacheConnectorV1(KVConnectorBase_V1):
                 return 0, False
             request.kv_transfer_params = request.kv_transfer_params or {}
             request.kv_transfer_params["load_async"] = False
-            if need_load_tokens > 0:
-                self._need_load_reqs[request.request_id] = []
-            return need_load_tokens, True
-
-        num_max_cached_tokens = max(num_external_computed_tokens, num_computed_tokens)
-        num_blocks_need_save = (
-            len(request.all_token_ids) - num_max_cached_tokens
-        ) // self.block_size
-        if num_blocks_need_save > 0:
-            start_save_position = num_max_cached_tokens // self.block_size
-            need_allocate_block_hashes = block_hashes[start_save_position:]
-            rets = self.connector.create(need_allocate_block_hashes)
-            if rets and all(ret == 0 for ret in rets):
-                self.save_paras[request.request_id] = SavePara(
-                    num_blocks_need_save=num_blocks_need_save,
-                    start_save_position=start_save_position,
-                    block_hashes=need_allocate_block_hashes,
+            if num_lookup_hits > 0:
+                self.request_block_infos[request.request_id] = RequestBlockInfo(
+                    block_hashes=block_hashes,
+                    block_operations=block_operations,
+                    start_position=start_position,
                 )
-        logger.debug(
-            f"num_blocks_need_save = {num_blocks_need_save},\n"
-            f"num_external_computed_tokens = {num_external_computed_tokens},\n"
-            f"num_computed_tokens = {num_computed_tokens}.\n"
+                self._need_load_reqs[request.request_id] = []
+                return num_lookup_hits * self.block_size, True
+
+        # Create blocks for the remaining (unmatched) blocks
+        if num_lookup_hits < len(remain_hashes):
+            remaining_hashes = remain_hashes[num_lookup_hits:]
+            create_results = self.connector.create(remaining_hashes)
+            logger.info(f"\ncreate_results on storage: {create_results}\n")
+            for j, ret in enumerate(create_results):
+                idx = num_lookup_hits + j
+                block_operations[start_position + idx] = (
+                    BlockOperation.DUMP if ret == 0 else BlockOperation.NONE
+                )
+
+        # When all the tokens are cached in ssd or hbm,
+        # we need to recompute the last token. This if condition will be removed
+        # once vLLM's scheduler provides a better solution in the future.
+        if (num_lookup_hits + start_position) * self.block_size == len(
+            request.all_token_ids
+        ):
+            num_lookup_hits -= 1
+            block_operations[-1] = BlockOperation.NONE
+
+        self.request_block_infos[request.request_id] = RequestBlockInfo(
+            block_hashes=block_hashes,
+            block_operations=block_operations,
+            start_position=start_position,
         )
 
-        return need_load_tokens, False
+        return num_lookup_hits * self.block_size, False
 
     def update_state_after_alloc(
         self, request: "Request", blocks: "KVCacheBlocks", num_external_tokens: int
@@ -691,13 +609,6 @@ class UnifiedCacheConnectorV1(KVConnectorBase_V1):
         """
         Update KVConnector state after block allocation.
         """
-        if request.request_id not in self.load_paras:
-            # No KV tokens from external KV cache, return
-            return
-
-        if num_external_tokens > 0:
-            self.load_paras[request.request_id].can_load = True
-
         if request.request_id in self._need_load_reqs:
             local_block_ids = (
                 blocks.get_unhashed_block_ids() if num_external_tokens > 0 else []
@@ -719,32 +630,38 @@ class UnifiedCacheConnectorV1(KVConnectorBase_V1):
         meta = UCConnectorV1Metadata()
 
         for req_id, block_ids in self._need_load_reqs.items():
-            meta.add_request(
-                req_id,
-                vllm_block_ids=block_ids,
-                load_paras=self.load_paras[req_id],
-                load_async=True,
+            block_info = self.request_block_infos.get(req_id)
+            if block_info:
+                load_blocks, dump_blocks = self._extract_blocks(block_ids, block_info)
+            meta.requests.append(
+                ReqMeta(
+                    request_id=req_id,
+                    load_blocks=load_blocks,
+                    dump_blocks=dump_blocks,
+                    load_async=True,
+                )
             )
         self._need_load_reqs.clear()
 
         for new_req in scheduler_output.scheduled_new_reqs:
-            # Load kv is only supported for new reqs
-            new_scheduled_blocks = (
-                scheduler_output.num_scheduled_tokens[new_req.req_id] // self.block_size
-            )
-            load_paras = self.load_paras.pop(new_req.req_id, None)
-            save_paras = self.save_paras.get(new_req.req_id, None)
-            if save_paras is not None:
-                save_paras.num_blocks_to_save = new_scheduled_blocks
-            meta.add_request(
-                new_req.req_id,
-                vllm_block_ids=new_req.block_ids[0],
-                load_paras=load_paras,
-                save_paras=save_paras,
-            )
-        # clear all load_paras when build meta for new reqs done
-        self.load_paras.clear()
+            req_id = new_req.req_id
+            vllm_block_ids = new_req.block_ids[0]
 
+            block_info = self.request_block_infos.get(req_id)
+            if block_info:
+                load_blocks, dump_blocks = self._extract_blocks(
+                    vllm_block_ids, block_info
+                )
+                if load_blocks or dump_blocks:
+                    meta.requests.append(
+                        ReqMeta(
+                            request_id=req_id,
+                            load_blocks=load_blocks,
+                            dump_blocks=dump_blocks,
+                        )
+                    )
+
+        # Process cached requests using iterator
         cached_request_data = scheduler_output.scheduled_cached_reqs
 
         # Adapted for vllm 0.9.1, 0.9.2 and later versions
@@ -770,25 +687,19 @@ class UnifiedCacheConnectorV1(KVConnectorBase_V1):
 
         # When prompt tokens > max_num_batched_tokens, request of running requests may need to save
         for req_id, new_block_ids in get_requests():
-            save_paras = self.save_paras.get(req_id)
-            if save_paras is None:
-                continue
-
-            save_paras.num_blocks_saved += save_paras.num_blocks_to_save
-
-            if save_paras.num_blocks_need_save > save_paras.num_blocks_saved:
-                logger.debug(f"Running request {req_id} has blocks to save")
-                save_paras.start_save_position = 0
-                new_scheduled_blocks = (
-                    scheduler_output.num_scheduled_tokens[req_id] // self.block_size
+            block_info = self.request_block_infos.get(req_id)
+            if block_info:
+                load_blocks, dump_blocks = self._extract_blocks(
+                    new_block_ids[0], block_info
                 )
-                save_paras.num_blocks_to_save = new_scheduled_blocks
-                meta.add_request(
-                    req_id,
-                    vllm_block_ids=new_block_ids[0],
-                    load_paras=None,
-                    save_paras=save_paras,
-                )
+                if load_blocks or dump_blocks:
+                    meta.requests.append(
+                        ReqMeta(
+                            request_id=req_id,
+                            load_blocks=load_blocks,
+                            dump_blocks=dump_blocks,
+                        )
+                    )
 
         return meta
 
@@ -797,20 +708,53 @@ class UnifiedCacheConnectorV1(KVConnectorBase_V1):
         request: "Request",
         block_ids: list[int],
     ) -> tuple[bool, Optional[dict[str, Any]]]:
-        # clear save_paras for request
-        save_paras = self.save_paras.pop(request.request_id, None)
+        block_info = self.request_block_infos.pop(request.request_id, None)
         if hasattr(request, "succeed_dumped_blocks") and request.succeed_dumped_blocks:
+            logger.debug(f"commit {request.succeed_dumped_blocks} to True.")
             self.connector.commit(request.succeed_dumped_blocks, True)
-        if save_paras is not None:
+        if block_info is not None:
             cancel_blocks = [
-                block
-                for block in save_paras.block_hashes
-                if hasattr(request, "succeed_dumped_blocks")
-                and block not in request.succeed_dumped_blocks
+                block_info.block_hashes[i]
+                for i, op in enumerate(block_info.block_operations)
+                if op == BlockOperation.DUMP
+                and hasattr(request, "succeed_dumped_blocks")
+                and block_info.block_hashes[i] not in request.succeed_dumped_blocks
             ]
             if cancel_blocks:
+                logger.warning(f"commit {cancel_blocks} to False.")
                 self.connector.commit(cancel_blocks, False)
         return False, None
+
+    def _extract_blocks(
+        self, vllm_block_ids: list[int], block_info: RequestBlockInfo
+    ) -> tuple[list[tuple[str, int]], list[tuple[str, int]]]:
+        """
+        Extract blocks that need load and dump, block_info.start_position
+        is the next block position to process, only return blocks that need
+        processing, NONE blocks are ignored.
+        """
+        start_pos = block_info.start_position
+
+        if start_pos >= len(block_info.block_operations):
+            return [], []
+
+        process_length = min(
+            len(block_info.block_operations) - start_pos, len(vllm_block_ids)
+        )
+        ops = block_info.block_operations[start_pos : start_pos + process_length]
+        hashes = block_info.block_hashes[start_pos : start_pos + process_length]
+        vllm_ids = vllm_block_ids[:process_length]
+
+        load_blocks = []
+        dump_blocks = []
+        for op, hash, vllm_id in zip(ops, hashes, vllm_ids):
+            if op == BlockOperation.LOAD:
+                load_blocks.append((hash, vllm_id))
+            elif op == BlockOperation.DUMP:
+                dump_blocks.append((hash, vllm_id))
+
+        block_info.start_position += process_length
+        return load_blocks, dump_blocks
 
     def get_block_ids_with_load_errors(self) -> set[int]:
         invalid_block_ids: set[int] = set()

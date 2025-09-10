@@ -56,8 +56,10 @@ class UcmNfsStore(UcmKVStoreBase):
         param = ucmnfsstore.SetupParam(storage_backends, block_size, enableTransfer)
         if enableTransfer:
             param.transferDeviceId = device_id
-            param.transferStreamNumber = config["transferStreamNumber"]
-            param.transferIoSize = config["transferIoSize"]
+            if "transferStreamNumber" in config:
+                param.transferStreamNumber = config["transferStreamNumber"]
+            if "transferIoSize" in config:
+                param.transferIoSize = config["transferIoSize"]
         ret = ucmnfsstore.Setup(param)
         if ret != 0:
             msg = f"Failed to initialize ucmnfsstore, errcode: {ret}."
@@ -77,9 +79,12 @@ class UcmNfsStore(UcmKVStoreBase):
         """
         rets = ucmnfsstore.AllocBatch(block_ids)
         if rets and all(ret == 0 for ret in rets):
-            logger.info("Succeed in allocating kv cache space.")
+            logger.debug("Succeed in allocating kv cache space.")
         else:
             failed_blocks = [block_ids[i] for i, ret in enumerate(rets) if ret != 0]
+            logger.warning(
+                f"Failed to allocate kv cache space for blocks: {failed_blocks}."
+            )
         return rets
 
     def lookup(self, block_ids: List[str]) -> List[bool]:
@@ -126,7 +131,7 @@ class UcmNfsStore(UcmKVStoreBase):
             block_ids, offset, dst_tensor_ptr, dst_tensor_size
         )
         logger.debug(
-            f"Succeed in loading kv cache , task id: {task_id}, offset: {offset}."
+            f"Succeed in loading kv cache , task id: {task_id}, offset: {offset}, dst_tensor_size {dst_tensor_size}."
         )
         return NfsTask(task_id=task_id)
 
@@ -149,7 +154,7 @@ class UcmNfsStore(UcmKVStoreBase):
             block_ids, offset, src_tensor_ptr, src_tensor_size
         )
         logger.debug(
-            f"Succeed in dumping kv cache, task id: {task_id}, offset {offset}."
+            f"Succeed in dumping kv cache, task id: {task_id}, offset {offset}, src_tensor_size {src_tensor_size}."
         )
         return NfsTask(task_id=task_id)
 
@@ -169,8 +174,6 @@ class UcmNfsStore(UcmKVStoreBase):
         ret = ucmnfsstore.Wait(task.get_id())
         if ret != 0:
             logger.error(f"Failed to wait for kv cache transfer task, errcode: {ret}.")
-        else:
-            logger.debug("Succeed in waiting for kv cache transfer task.")
         return ret
 
     def commit(self, block_ids: List[str], is_success: bool = True) -> None:
@@ -181,10 +184,7 @@ class UcmNfsStore(UcmKVStoreBase):
             block_ids (List[str]): vLLM block hash.
             is_success(bool): if False, we need release block
         """
-        if not is_success:
-            logger.warning(f"commit {block_ids} to {is_success}")
         ucmnfsstore.CommitBatch(block_ids, is_success)
-        logger.debug("Succeed in committing kv cache.")
 
     def check(self, task: Task) -> int:
         """
