@@ -441,6 +441,27 @@ class GSA(UcmSparseBase):
         self.gsa_q_cache[current_layer_id][index_in_batch].copy_(query[query_locals])
         self.gsa_offload_ops.add_copy_req(current_layer_id, index_in_batch, 
                                           self.gsa_q_cache[current_layer_id][index_in_batch])
+    
+
+    def copy_k(
+        self,
+        layer_name: str,
+        forward_context: ForwardContext
+    ) -> None:
+        current_layer_id = int(layer_name.split(".")[2])
+        block_ids = self.model_input["calc_block_table"]
+        if len(block_ids) > 0:
+            attn = forward_context.no_compile_layers
+            k_needed = attn[layer_name].kv_cache[forward_context.virtual_engine][0]
+            result = self.gsa_offload_ops.add_copy_req(current_layer_id, -1, k_needed)
+            if not result:
+                self.is_cal_kpre[current_layer_id] = True
+        elif self.is_cal_kpre[current_layer_id]:
+            attn = forward_context.no_compile_layers
+            k_needed = attn[layer_name].kv_cache[forward_context.virtual_engine][0]
+            result = self.gsa_offload_ops.add_copy_req(current_layer_id, -1, k_needed)
+            if result:
+                self.is_cal_kpre[current_layer_id] = False
 
     def attention_begin(
         self,
