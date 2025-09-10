@@ -34,6 +34,8 @@ logger = init_logger(__name__)
 
 SUCCESS = 0
 FAILURE = -1
+CHECK_FAILUER = 1
+IN_PROCESS = -1
 
 if torch.cuda.is_available():
     device = torch.cuda
@@ -190,3 +192,24 @@ class UcmDram(UcmKVStoreBase):
         """
         if is_success:
             self.cached_blocks.update(block_ids)
+
+    def check(self, task: Task) -> int:
+        """
+        check if kv transfer task finished.
+        Args:
+            task (Task): transfer engine task.
+        Returns:
+            0 - finished
+            -1 - in process
+            others - errors.
+        """
+        if task.task_id == "-1":
+            # Dump was skipped due to dram_cache limit
+            return CHECK_FAILUER
+        if task.event is None:
+            # Event not recorded, assume not yet submitted
+            return CHECK_FAILUER
+        if task.event.query():
+            return SUCCESS
+        else:
+            return IN_PROCESS
