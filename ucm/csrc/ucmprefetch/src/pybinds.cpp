@@ -17,6 +17,8 @@ namespace ucmprefetch{
             .def("del_blocks_map", &ucmprefetch::GSAPrefetchEngineC::DelBlocksMap)
             .def("run_async_prefetch_bs", &ucmprefetch::GSAPrefetchEngineC::RunAsyncPrefetchBs)
             .def("set_blocks_table_info", &ucmprefetch::GSAPrefetchEngineC::SetBlockTableInfo)
+            .def("get_prefetch_status", &ucmprefetch::GSAPrefetchEngineC::GetPrefetchStatus)
+            .def("set_prefetch_status", &ucmprefetch::GSAPrefetchEngineC::SetPrefetchStatus)
             .def("obtain_load_blocks", &ucmprefetch::GSAPrefetchEngineC::ObtainLoadBlocks)
             .def("obtain_miss_idxs", &ucmprefetch::GSAPrefetchEngineC::ObtainMissIdxs)
             .def("obtain_blocks_map", &ucmprefetch::GSAPrefetchEngineC::ObtainBlocksMap);

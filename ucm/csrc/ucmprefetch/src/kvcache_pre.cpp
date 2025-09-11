@@ -5,6 +5,94 @@
 
 namespace ucmprefetch
 {
+    ThreadPool::ThreadPool(size_t threadCount)
+        :stop(false), maxThreads(threadCount)
+    {
+        for (size_t i = 0; i < maxThreads; i++) {
+            workers.emplace_back([this] {
+                while(true) {
+                    std::function<void()> task;
+                    {
+                        std::unique_lock<std::mutex> lock(this->queueMutex);
+                        this->condition.wait(lock, [this] {
+                            return this->stop || !this->tasks.empty();
+                        });
+
+                        if (this->stop && this->tasks.empty()) {
+                            return;
+                        }
+
+                        task = std::move(this->tasks.front());
+                        this->tasks.pop();
+                        ++activeThreads;
+                    }
+
+                    task();
+                    {
+                        std::unique_lock<std::mutex> lock(this->queueMutex);
+                        --activeThreads;
+                        condition.notify_all();
+                    }
+                }
+            });
+        }
+    }
+    ThreadPool::~ThreadPool()
+    {
+        {
+            std::unique_lock<std::mutex> lock(queueMutex);
+            stop = true;
+        }
+        condition.notify_all();
+        for (std::thread &worker : workers) {
+            worker.join();
+        }
+    }
+
+    template<class F, class... Args>
+    auto ThreadPool::enqueue(F&& f, Args&&... args)
+        -> std::future<typename std::result_of<F(Args...)>::type>
+    {
+        using return_type = typename std::result_of<F(Args...)>::type;
+    
+        auto task = std::make_shared<std::packaged_task<return_type()>>(
+                std::bind(std::forward<F>(f), std::forward<Args>(args)...)
+            );
+            
+        std::future<return_type> res = task->get_future();
+        {
+            std::unique_lock<std::mutex> lock(queueMutex);
+            
+            condition.wait(lock, [this] {
+                if (!(activeThreads < maxThreads || tasks.size() < maxThreads * 2)) {
+                    std::cout << "Need wait: " << activeThreads << " " << tasks.size() << std::endl;
+                }
+                return (activeThreads < maxThreads || tasks.size() < maxThreads * 2); 
+            });
+            // don't allow enqueueing after stopping the pool
+            if(stop) {
+                throw std::runtime_error("enqueue on stopped ThreadPool");
+            }
+    
+            tasks.emplace([task](){ (*task)(); });
+        }
+        condition.notify_one();
+        return res;
+    }
+    
+    size_t ThreadPool::GetActiveThreads() const
+    {
+        return activeThreads;
+    }
+
+    void MutliBSThreadFun(void *args)
+    {
+        GSAPrefetchEngineC *engine = static_cast<GSAPrefetchEngineC *>(args);
+        int ret = engine->CallPrefetchProcessFun();
+        if (ret == 0) {
+            engine->SetPrefetchStatus(true);
+        }
+    }
 
     GSAPrefetchEngineC::GSAPrefetchEngineC(torch::Tensor &freeBlock,
         torch::Tensor &loadSuccessBlocks,
@@ -24,6 +112,8 @@ namespace ucmprefetch
         mReqIdList = (int *)malloc(sizeof(int) * mMaxBs);
         mBsIndexList = (int *)malloc(sizeof(int) * mMaxBs);
         mTopkLenList = (int *)malloc(sizeof(int) * mMaxBs);
+        mIsPrefetchDone = true;
+        mThreadPool = ThreadPool::GetInst();
     }
     
     void GSAPrefetchEngineC::CheckInputIndex(uint32_t maxLen, uint32_t index)
@@ -255,7 +345,8 @@ namespace ucmprefetch
         memcpy(mReqIdList, reqIDsInput.data(), sizeof(int) * runBsLen);
         memcpy(mTopkLenList, topkLensInput.data(), sizeof(int) * runBsLen);
         memcpy(mBsIndexList, bsIndexInput.data(), sizeof(int) * runBsLen);
-        CallPrefetchProcessFun();
+        mIsPrefetchDone = false;
+        mThreadPool->enqueue(MutliBSThreadFun, this);
     }
 
     void GSAPrefetchEngineC::SetBlockTableInfo(torch::Tensor &blockTables, torch::Tensor &blockLengths,
@@ -292,6 +383,15 @@ namespace ucmprefetch
         return 0;
     }
 
+    bool GSAPrefetchEngineC::GetPrefetchStatus()
+    {
+        return mIsPrefetchDone;
+    }
+
+    void GSAPrefetchEngineC::SetPrefetchStatus(bool flag)
+    {
+        mIsPrefetchDone = flag;
+    }
     
     std::vector<std::vector<std::vector<int>>> GSAPrefetchEngineC::ObtainLoadBlocks()
     {
