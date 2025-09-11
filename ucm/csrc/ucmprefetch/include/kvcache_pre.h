@@ -36,6 +36,35 @@ namespace ucmprefetch
         int bsIndex;
     } PrefetchReqInfo;
 
+    class ThreadPool 
+    {
+    public:
+        static ThreadPool *GetInst() 
+        {
+            static ThreadPool pool(1);
+            return &pool;
+        }
+
+        ~ThreadPool();
+
+        template<class F, class ... Args>
+        auto enqueue(F&& f, Args&&... args) -> std::future<typename std::result_of<F(Args...)>::type>;
+
+        size_t GetActiveThreads() const;
+    
+    private:
+        explicit ThreadPool(size_t threadCount);
+        std::vector<std::thread> workers;
+        std::queue<std::function<void()>> tasks;
+        mutable std::mutex queueMutex;
+        bool stop;
+        std::condition_variable condition;
+        std::atomic<size_t> activeThreads{0};
+        size_t maxThreads;
+    };
+
+    void MutliBSThreadFun(void *args);
+
     class __attribute__((visibility("hidden"))) GSAPrefetchEngineC 
     {
     private:
@@ -54,7 +83,9 @@ namespace ucmprefetch
         int *mBsIndexList = NULL;
         uint32_t runBsLen = 0;
         bool mIsLog = false;
+        bool mIsPrefetchDone = true;
         Logger mLogger;
+        ThreadPool *mThreadPool;
         uint32_t mDecodeStep = 0;
         uint32_t mMaxTopkLen = 0;
         uint32_t mMaxBlocksLen = 0;
@@ -108,6 +139,10 @@ namespace ucmprefetch
         int CallPrefetchProcessFun();
 
         void PrintMap(int reqID, int i);
+
+        bool GetPrefetchStatus();
+
+        void SetPrefetchStatus(bool flag);
 
         std::vector<std::vector<std::vector<int>>> ObtainLoadBlocks();
 
