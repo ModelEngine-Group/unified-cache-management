@@ -416,6 +416,57 @@ class GSA(UcmSparseBase):
             self.tasks_load[task_k_hash] = task_k
             self.tasks_load[task_v_hash] = task_v
     
+    def launch_transfer_task_all(self, transfer_type, block_hashes, vllm_block_ids):
+        fn = getattr(self.connector, transfer_type)
+        
+        block_shape = (self.block_size, self.num_key_heads, self.head_size)
+        precision = self.k_cache[0].untyped_storage().element_size()
+        # TODO: consider is_mla here
+        is_mla = self.use_mla
+        offsets_k = []
+        offsets_v = []
+        block_hashes_all = []
+        key_src_tensors = []
+        value_src_tensors = []
+        for layer_id in range(self.layer_num):
+            length = len(block_hashes[layer_id])
+            offsets_k += [
+                get_offset(
+                    block_shape,
+                    self.rank,
+                    self.tp_size,
+                    precision,
+                    layer_id,
+                    is_v=False,
+                    is_mla=is_mla,
+                )
+            ] * length
+            offsets_v += [
+                get_offset(
+                    block_shape,
+                    self.rank,
+                    self.tp_size,
+                    precision,
+                    layer_id,
+                    is_v=True,
+                    is_mla=is_mla,
+                )
+            ] * length
+            key_src_tensors += [self.k_cache[layer_id][id_] for id_ in vllm_block_ids[layer_id]]
+            value_src_tensors += [self.v_cache[layer_id][id_] for id_ in vllm_block_ids[layer_id]]
+            block_hashes_all += block_hashes[layer_id]
+        task_k = fn(block_hashes_all, offsets_k, key_src_tensors)
+        task_v = fn(block_hashes_all, offsets_v, value_src_tensors)
+        task_k_hash = self.task_hash(block_hashes_all, transfer_type, "key")
+        task_v_hash = self.task_hash(block_hashes_all, transfer_type, "value")
+        if transfer_type == "dump":
+            self.tasks_dump[task_k_hash] = task_k
+            self.tasks_dump[task_v_hash] = task_v
+        if transfer_type == "load":
+            self.tasks_load[task_k_hash] = task_k
+            self.tasks_load[task_v_hash] = task_v
+    
+    
     def copy_q(
         self,
         req_meta: GSAReqStat,
@@ -551,7 +602,6 @@ class GSA(UcmSparseBase):
             for _, task in self.tasks_dump.items():
                 ret = self.connector.check(task)
                 if ret == -1:
-
                     return False
             self.tasks_dump.clear()
             return True
@@ -611,6 +661,7 @@ class GSA(UcmSparseBase):
         self.prefetch_engine.model_input_del(req_ids, block_table_ori, 
                                              topk_kpre_maps, self.model_input,
                                              self.gsa_metadata, is_topk_done)
+        self.wait_all_task_done("dump")
         self._start_topk_cal()
 
     def execute_finished(self):
@@ -622,9 +673,11 @@ class GSA(UcmSparseBase):
         self.gsa_stats = self.gsa_metadata.gsa_stats
         if not PTOPK_PREFETCH_ENABLE:
             return
-        self.wait_all_task_done("dump")
         self._gsa_sparse_local_kv()
         if all_need_load_block is not None:
+            block_hashes_load_all = {}
+            block_ids_load_all = {}
+            num_load_blocks = 0
             for layer_name in attn.keys():
                 layer_id = int(layer_name.split(".")[2])
                 self.k_cache[layer_id] = attn[layer_name].kv_cache[forward_context.virtual_engine][0]
@@ -636,8 +689,11 @@ class GSA(UcmSparseBase):
                     block_hashes_load += [f"{self.block_hash(req_id, id_)}" 
                                 for id_ in all_miss_idx[index][layer_id][:load_len]]
                     block_ids_load += all_need_load_block[index][layer_id]
-                if len(block_hashes_load) > 0:
-                    self.launch_transfer_task("load", block_hashes_load, block_ids_load, layer_id)
+                num_load_blocks += len(block_hashes_load)
+                block_hashes_load_all[layer_id] = block_hashes_load
+                block_ids_load_all[layer_id] = block_ids_load
+            if num_load_blocks > 0:
+                self.launch_transfer_task("load", block_hashes_load_all, block_ids_load_all, layer_id)
     
     def build_sparse_meta(
         self,
