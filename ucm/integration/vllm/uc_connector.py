@@ -375,8 +375,13 @@ class UnifiedCacheConnectorV1(KVConnectorBase_V1):
             if not request.dump_blocks or request.load_async:
                 continue
 
+            # Extract storage block IDs and vLLM block IDs from dump_blocks, same for load_blocks
+            # dump_blocks format: [(block_hash, vllm_block_id), ...]
+            # Note: block_hash is the storage_block_id
+            # Example: [("hash_123", 5), ("hash_456", 8), ("hash_789", 12)]
+            # ["hash_123", "hash_456", "hash_789"]
             storage_block_ids = [block[0] for block in request.dump_blocks]
-            vllm_block_ids = [block[1] for block in request.dump_blocks]
+            vllm_block_ids = [block[1] for block in request.dump_blocks]  # [5, 8, 12]
             blocks_len = len(storage_block_ids)
             tensors, offsets = self.get_tensor_and_offset_layerwise(
                 vllm_block_ids, kv_layer, layer_name
@@ -556,7 +561,7 @@ class UnifiedCacheConnectorV1(KVConnectorBase_V1):
             f"\nnum_lookup_hits on storage except hbm: {num_lookup_hits}\n"
         )
 
-        # Load async when Decode instance need to load.kv_consumer"
+        # Load async when Decode instance need to load
         if hasattr(self, "kv_role") and self.kv_role == "kv_consumer":
             # Only trigger 1 asynchronous KV transfer per request.
             if (
