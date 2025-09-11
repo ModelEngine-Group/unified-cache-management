@@ -9,8 +9,10 @@
 #include <torch/torch.h>
 
 struct CopyInfo {
+    bool needCalKpre;
     uint32_t layerId;
-    int32_t indexInBatch;
+    std::vector<int32_t> locations;
+    torch::Tensor ids;
     torch::Tensor srcTensor;
 };
 

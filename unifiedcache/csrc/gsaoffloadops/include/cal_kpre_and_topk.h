@@ -55,7 +55,7 @@ public:
     void SetKpreParam(torch::Tensor& calcKpreBlockTable, std::vector<uint32_t>& calcRepreSlotMapping);
     bool SetKpreDataReady(uint32_t layerIdx);
     void SetTopkDataReady(uint32_t layerIdx);
-    bool AddCopyReq (uint32_t layerIdx, int32_t indexInBatch, torch::Tensor& npuTensor);
+    void AddCopyReq(bool needCalKpre, uint32_t layerIdx, std::vector<int32_t>& locations, torch::Tensor& npuTensor);
     bool IsCalculateFinish();
 private:
     void Calculate();

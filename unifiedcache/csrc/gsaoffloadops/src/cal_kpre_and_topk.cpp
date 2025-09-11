@@ -88,9 +88,6 @@ void CalKpreAndTopk::SetTopkParam(std::vector<std::vector<uint32_t>>& repreSlotM
 
 void CalKpreAndTopk::SetKpreParam(torch::Tensor& calcKpreBlockTable, std::vector<uint32_t>& calcRepreSlotMapping)
 {
-    if (IsCalculateFinish()) {
-        m_needCalPre = true;
-    }
     m_calcKpreBlockTable = calcKpreBlockTable;
     m_calcRepreSlotMapping = calcRepreSlotMapping;
 }
@@ -101,11 +98,11 @@ bool CalKpreAndTopk::SetKpreDataReady(uint32_t layerIdx)
         return false;
     }*/
     if (layerIdx == 0) {
+        std::lock_guard<std::mutex> lock(m_calLock);
         m_needCalPre = true;
         for (auto& atomic_val : m_topkFlag) {
             atomic_val.store(false, std::memory_order_relaxed);
         }
-        std::lock_guard<std::mutex> lock(m_calLock);
         m_kReady[layerIdx].store(true, std::memory_order_release);
         m_dataReady.notify_one();
     } else {
@@ -116,15 +113,11 @@ bool CalKpreAndTopk::SetKpreDataReady(uint32_t layerIdx)
 
 void CalKpreAndTopk::SetTopkDataReady(uint32_t layerIdx)
 {
-    m_count += 1;
-    if (m_count != (layerIdx+1) * m_calTopkIdx.size()) {
-        return;
-    }
     if (!m_needCalPre && layerIdx == 0) {
+        std::lock_guard<std::mutex> lock(m_calLock);
         for (auto& atomic_val : m_topkFlag) {
             atomic_val.store(false, std::memory_order_relaxed);
         }
-        std::lock_guard<std::mutex> lock(m_calLock);
         m_qReady[layerIdx].store(true, std::memory_order_release);
         m_dataReady.notify_one();
     } else {
@@ -132,30 +125,36 @@ void CalKpreAndTopk::SetTopkDataReady(uint32_t layerIdx)
     }
 }
 
-bool CalKpreAndTopk::AddCopyReq(uint32_t layerIdx, int32_t indexInBatch, torch::Tensor& npuTensor)
+void CalKpreAndTopk::AddCopyReq(bool needCalKpre, uint32_t layerIdx, std::vector<int32_t>& locations, torch::Tensor& npuTensor)
 {
-    if (!IsCalculateFinish() && layerIdx == 0) {
-        return false;
-    }
     CopyInfo copyReq;
+    copyReq.needCalKpre = needCalKpre;
     copyReq.layerId = layerIdx;
-    copyReq.indexInBatch = indexInBatch;
+    copyReq.locations = locations;
+    copyReq.ids = m_calcKpreBlockTable;
     copyReq.srcTensor = npuTensor;
     m_copyQueue.push(copyReq);
-    return true;
 }
 
 void CalKpreAndTopk::CopyData()
 {
     while (m_running) {
         CopyInfo curReq = m_copyQueue.pop();
-        if (curReq.indexInBatch != -1) {
-            m_qCache[curReq.layerId][curReq.indexInBatch] = curReq.srcTensor.to(torch::kFloat32).cpu();
+        if (curReq.locations.size() != 0 && curReq.layerId == 0) {
+            m_needCalPre = curReq.needCalKpre;
+        }
+        if (curReq.locations.size() != 0) {
+            for (uint32_t i = 0; i < curReq.locations.size(); ++i) {
+                if (curReq.locations[i] == -1) {
+                    continue;
+                }
+                m_qCache[curReq.layerId][i] = curReq.srcTensor[curReq.locations[i]].to(torch::kFloat32).cpu();
+            }
             SetTopkDataReady(curReq.layerId);
         } else {
-            torch::Tensor kNeeded = curReq.srcTensor.index({m_calcKpreBlockTable}).cpu();
+            torch::Tensor kNeeded = curReq.srcTensor.index({curReq.ids}).cpu();
             torch::Tensor kCache = kNeeded.to(torch::kFloat32).permute({0, 2, 1, 3});
-            auto targetTensor = m_kCache[curReq.layerId].slice(0, 0, m_calcKpreBlockTable.size(0));
+            auto targetTensor = m_kCache[curReq.layerId].slice(0, 0, curReq.ids.size(0));
             targetTensor.copy_(kCache);
             SetKpreDataReady(curReq.layerId);
         }
