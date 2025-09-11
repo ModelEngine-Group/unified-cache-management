@@ -693,7 +693,7 @@ class GSA(UcmSparseBase):
                 block_hashes_load_all[layer_id] = block_hashes_load
                 block_ids_load_all[layer_id] = block_ids_load
             if num_load_blocks > 0:
-                self.launch_transfer_task("load", block_hashes_load_all, block_ids_load_all, layer_id)
+                self.launch_transfer_task_all("load", block_hashes_load_all, block_ids_load_all)
     
     def build_sparse_meta(
         self,
