@@ -89,7 +89,7 @@ else:
 
 logger = init_logger(__name__)
 
-from vllm_adapter.v1.outputs import ModelRunnerOutput
+from unifiedcache.integration.vllm.vllm_adapter.v1.outputs import ModelRunnerOutput
 
 
 @torch.inference_mode()

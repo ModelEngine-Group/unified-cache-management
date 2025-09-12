@@ -9,7 +9,7 @@ import vllm.envs as envs
 from vllm import _custom_ops as ops
 from vllm.config import VllmConfig, get_current_vllm_config
 from vllm.logger import init_logger
-from vllm_adapter.v1.outputs import ModelRunnerOutput
+from unifiedcache.integration.vllm.vllm_adapter.v1.outputs import ModelRunnerOutput
 
 logger = init_logger(__name__)
 
