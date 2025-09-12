@@ -49,6 +49,7 @@ except ImportError:
 logger = logging.getLogger(__name__)
 SUPPORTED_ENGINES = ["vllm"]
 
+# 根据trace生成prompt的Dataset
 class TraceReplayDataset(BenchmarkDataset):
     # Default values copied from benchmark_serving.py for the random dataset.
     DEFAULT_PREFIX_LEN = 0
@@ -71,9 +72,11 @@ class TraceReplayDataset(BenchmarkDataset):
         **kwargs,
     ) -> None:
         super().__init__(**kwargs)
+        # 加载trace文件
         self.load_trace(trace_path)
         trace_directory_name = os.path.dirname(trace_path)
         trace_file_name = os.path.basename(trace_path).split('.')[0]
+        # 使用trace文件生成prompts后保存到文件
         self.prompts_file_name = f"{trace_directory_name}/{trace_file_name}_dataset.jsonl"
 
     def sample(
@@ -83,6 +86,7 @@ class TraceReplayDataset(BenchmarkDataset):
         **kwargs,
     ) -> dict[float, list[SampleRequest]]:
         requests = defaultdict(list)
+        # 若存在prompt文件直接读取
         if os.path.exists(self.prompts_file_name):
             with open(self.prompts_file_name, "r", encoding="utf-8") as f:
             # Read by line
@@ -105,7 +109,8 @@ class TraceReplayDataset(BenchmarkDataset):
         num_special_tokens = tokenizer.num_special_tokens_to_add()
         
         all_token_sequences = []
-        meta_info = [] # 保存 (timestamp, input_len, output_len)
+        meta_info = [] # 保存 (timestamp, output_len)
+        # 根据trace file内容生成prompts
         for timestamp, record_list in self.REG_GROUPS.items():
             for req in record_list:
                 hash_ids = req["hash_ids"]
@@ -140,7 +145,8 @@ class TraceReplayDataset(BenchmarkDataset):
         decoded_prompts = tokenizer.batch_decode(re_encodeds)
         print(f"Done redecoded prompts, time: {time.time()}")
         
-        batch_size = 100  # 每100条批量写入一次
+        # 每100条批量写入一次prompts
+        batch_size = 100
         batch_data = []
         i = 0
         for (timestamp, output_length), token_ids, prompt in zip(meta_info, all_token_sequences, decoded_prompts):
@@ -177,6 +183,7 @@ def create_argument_trace():
     )
     return parser
     
+# 通过benchmark的Dataset生成一条请求
 def gene_one_req(req: json, args:argparse.Namespace, num_prompts = 1):
     backend = args.backend
     tokenizer = args.tokenizer
@@ -298,7 +305,8 @@ def gene_one_req(req: json, args:argparse.Namespace, num_prompts = 1):
             ),
         }
     return input_requests
-    
+
+# 根据传入的dataset名生成请求
 def gene_prompts_by_dataset_name(req_groups:dict, args:argparse.Namespace) -> dict[float, list]:
     if args.dataset_name is None:
         raise ValueError(
@@ -314,6 +322,7 @@ def gene_prompts_by_dataset_name(req_groups:dict, args:argparse.Namespace) -> di
             input_requests[sec].extend(gene_req)
     return input_requests
 
+# 通过benchmark发送请求
 async def replay_trace_by_benchmark(req_groups:dict, args:argparse.Namespace):
     backend = args.backend
     model_id = args.model
@@ -372,94 +381,11 @@ async def replay_trace_by_benchmark(req_groups:dict, args:argparse.Namespace):
             return result
         tasks.append(asyncio.create_task(send_one_request(reqs, delay)))
     await asyncio.gather(*tasks)
-    
-async def send_one_request(args:argparse.Namespace, input_requests, d, start_time):
-    await asyncio.sleep(d)  # 等到目标时间
-    print(f"Sending request at {time.time() - start_time:.3f}s")
-    request_rate = args.request_rate
-    burstiness = args.burstiness
-    ramp_up_strategy = args.ramp_up_strategy
-    ramp_up_start_rps = args.ramp_up_start_rps
-    ramp_up_end_rps = args.ramp_up_end_rps
-    try:
-        async for request, current_request_rate in get_request(
-            input_requests,
-            request_rate,
-            burstiness,
-            ramp_up_strategy,
-            ramp_up_start_rps,
-            ramp_up_end_rps,
-        ):
-            # TODO
-            return None
-        
-    except asyncio.TimeoutError:
-        print(f"请求超时: timestamp {r[0].timestamp if r else 'unknown'}")
-        return None
-    except Exception as e:
-        print(f"请求失败: {e}")
-        return None
-    return result
 
+# 通过时间戳 自己发送请求
 async def replay_trace_by_time(req_groups:dict, args:argparse.Namespace):
-    backend = args.backend
-    model_id = args.model
-    model_name = args.served_model_name
-    tokenizer = args.tokenizer
-    
-    if backend in ASYNC_REQUEST_FUNCS:
-        request_func = ASYNC_REQUEST_FUNCS[backend]
-    else:
-        raise ValueError(f"Unknown backend: {backend}")
-    if args.base_url is not None:
-        api_url = f"{args.base_url}{args.endpoint}"
-        base_url = f"{args.base_url}"
-    else:
-        api_url = f"http://{args.host}:{args.port}{args.endpoint}"
-        base_url = f"http://{args.host}:{args.port}"
-    
-    sampling_params = {}
-    sampling_params["temperature"] = 0.9
-    
-    print("Starting initial single prompt test run...")
-    # timestamp = 0, first req
-    test_prompt, test_prompt_len, test_output_len, test_mm_content = (
-        req_groups[0][0].prompt,
-        req_groups[0][0].prompt_len,
-        req_groups[0][0].expected_output_len,
-        req_groups[0][0].multi_modal_data,
-    )
-    assert test_mm_content is None or isinstance(test_mm_content, dict)
-    test_input = RequestFuncInput(
-        model=model_id,
-        model_name=model_name,
-        prompt=test_prompt,
-        api_url=api_url,
-        prompt_len=test_prompt_len,
-        output_len=test_output_len,
-        logprobs=None,
-        multi_modal_content=test_mm_content,
-        ignore_eos=True,
-        extra_body=sampling_params,
-    )
-    test_output = await request_func(request_func_input=test_input)
-    if not test_output.success:
-        raise ValueError(
-            "Initial test run failed - Please make sure tracereplay arguments "
-            f"are correctly specified. Error: {test_output.error}"
-        )
-    else:
-        print("Initial test run completed. Starting main tracereplay run...")
-    
-    start_time = time.time()
-    print(f"Start time is {start_time}")
-    tasks = []
-    for sec, reqs in sorted(req_groups.items()):
-        delay = sec - (time.time() - start_time)
-        delay = max(0, delay)
-    
-        tasks.append(asyncio.create_task(send_one_request(reqs, delay)))
-    await asyncio.gather(*tasks)
+    # TODO
+    return
     
             
 def main(args: argparse.Namespace):
@@ -474,9 +400,11 @@ def main(args: argparse.Namespace):
         trust_remote_code=args.trust_remote_code,
     )
     
+    # 生成请求
     input_requests = dataset.sample(
         tokenizer=tokenizer,
     )
+    # 发送请求
     asyncio.run(replay_trace_by_benchmark(input_requests, args))
     
         
