@@ -17,7 +17,7 @@ if benchmark_path:
 else:
     raise EnvironmentError("BENCHMARK_PATH is not set!")
 
-from benchmark_serving import benchmark, create_argument_parser, get_tokenizer, get_request
+from benchmark_serving import benchmark, create_argument_parser, get_tokenizer, get_request, calculate_metrics
 from benchmark_dataset import (
     AIMODataset,
     ASRDataset,
@@ -384,7 +384,104 @@ async def replay_trace_by_benchmark(req_groups:dict, args:argparse.Namespace):
 
 # 通过时间戳 自己发送请求
 async def replay_trace_by_time(req_groups:dict, args:argparse.Namespace):
-    # TODO
+    backend = args.backend
+    model_id = args.model
+    model_name = args.served_model_name
+    tokenizer = args.tokenizer
+    
+    if args.base_url is not None:
+        api_url = f"{args.base_url}{args.endpoint}"
+        base_url = f"{args.base_url}"
+    else:
+        api_url = f"http://{args.host}:{args.port}{args.endpoint}"
+        base_url = f"http://{args.host}:{args.port}"
+    
+    if backend not in ASYNC_REQUEST_FUNCS:
+        raise ValueError(f"Unknown backend: {backend}")
+    request_func = ASYNC_REQUEST_FUNCS[backend]
+    
+    semaphore = asyncio.Semaphore(args.max_concurrency) if getattr(args, "max_concurrency", None) else None
+    start_time = time.perf_counter()
+    print(f"Start time is {start_time}")
+    tasks = []
+    flat_requests = []
+    
+    async def _run_one_request(sample_req):
+        sampling_params = {"temperature": 0.9}
+        req_input = RequestFuncInput(
+            model=model_id,
+            model_name=model_name,
+            prompt=sample_req.prompt,
+            api_url=api_url,
+            prompt_len=sample_req.prompt_len,
+            output_len=sample_req.expected_output_len,
+            logprobs=None,
+            extra_body=sampling_params,
+            ignore_eos=True,
+        )
+        if semaphore is not None:
+            async with semaphore:
+                return await request_func(request_func_input=req_input)
+        else:
+            return await request_func(request_func_input=req_input)
+    
+    for sec, reqs in sorted(req_groups.items()):
+        delay = sec - (time.perf_counter() - start_time)
+        delay = max(0, delay)
+        
+        async def send_group(r=reqs, d=delay):
+            await asyncio.sleep(d)
+            print(f"Sending request at {time.perf_counter() - start_time:.3f}s with {len(r)} items")
+            group_tasks = [asyncio.create_task(_run_one_request(req)) for req in r]
+            try:
+                return await asyncio.gather(*group_tasks)
+            except asyncio.TimeoutError:
+                print(f"请求超时: group at delay {d:.3f}s")
+                return []
+            except Exception as e:
+                print(f"请求失败: {e}")
+                return []
+        tasks.append(asyncio.create_task(send_group(reqs, delay)))
+        flat_requests.extend(reqs)
+    
+    group_results = await asyncio.gather(*tasks)
+    outputs = []
+    for res in group_results:
+        if isinstance(res, list):
+            outputs.extend(res)
+    
+    benchmark_duration = time.perf_counter() - start_time
+    metrics, actual_output_lens = calculate_metrics(
+        input_requests=flat_requests,
+        outputs=outputs,
+        dur_s=benchmark_duration,
+        tokenizer=tokenizer,
+        selected_percentile_metrics=["ttft", "tpot", "itl"],
+        selected_percentiles=[25.0, 50.0, 75.0, 99.0],
+        goodput_config_dict={},
+    )
+    
+    print("{s:{c}^{n}}".format(s=" Serving Benchmark Result ", n=50, c="="))
+    print("{:<40} {:<10}".format("Successful requests:", metrics.completed))
+    print("{:<40} {:<10.2f}".format("Benchmark duration (s):", benchmark_duration))
+    print("{:<40} {:<10}".format("Total input tokens:", metrics.total_input))
+    print("{:<40} {:<10}".format("Total generated tokens:", metrics.total_output))
+    print(
+        "{:<40} {:<10.2f}".format(
+            "Request throughput (req/s):", metrics.request_throughput
+        )
+    )
+    print(
+        "{:<40} {:<10.2f}".format(
+            "Output token throughput (tok/s):", metrics.output_throughput
+        )
+    )
+    print(
+        "{:<40} {:<10.2f}".format(
+            "Total Token throughput (tok/s):", metrics.total_token_throughput
+        )
+    )
+    
     return
     
             
@@ -405,11 +502,10 @@ def main(args: argparse.Namespace):
         tokenizer=tokenizer,
     )
     # 发送请求
-    asyncio.run(replay_trace_by_benchmark(input_requests, args))
+    asyncio.run(replay_trace_by_time(input_requests, args))
     
         
 if __name__ == "__main__":
     parser = create_argument_trace()
     args = parser.parse_args()
     main(args)
-    
