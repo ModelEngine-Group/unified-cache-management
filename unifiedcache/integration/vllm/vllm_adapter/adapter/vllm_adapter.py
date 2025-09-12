@@ -43,3 +43,7 @@ from vllm.v1.core import kv_cache_manager
 from vllm_adapter.v1.core.kv_cache_manager import KVCacheManager
 kv_cache_manager.KVCacheManager.allocate_slots = KVCacheManager.allocate_slots
 
+from vllm.v1.worker.block_table import BlockTable, MultiGroupBlockTable
+from vllm_adapter.v1.worker.block_table import reset_row, reset_row_multi
+BlockTable.reset_row = reset_row
+MultiGroupBlockTable.reset_row = reset_row_multi
