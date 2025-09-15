@@ -29,9 +29,6 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Generator, List, Optional
 
 import torch
-from ucm.logger import init_logger
-from ucm.ucm_connector.base import Task
-from ucm.ucm_connector.factory import UcmConnectorFactory
 from vllm.config import VllmConfig
 from vllm.distributed.kv_transfer.kv_connector.v1.base import (
     KVConnectorBase_V1,
@@ -41,6 +38,10 @@ from vllm.distributed.kv_transfer.kv_connector.v1.base import (
 from vllm.distributed.parallel_state import get_world_group
 from vllm.v1.core.kv_cache_utils import hash_request_tokens
 from vllm.v1.core.sched.output import SchedulerOutput
+
+from ucm.logger import init_logger
+from ucm.ucm_connector.base import Task
+from ucm.ucm_connector.factory import UcmConnectorFactory
 
 if TYPE_CHECKING:
     from vllm.attention.backends.abstract import AttentionMetadata

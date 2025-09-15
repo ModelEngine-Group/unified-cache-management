@@ -6,11 +6,6 @@ from collections import defaultdict
 from dataclasses import dataclass
 from typing import Optional, Union
 
-from ucm.integration.vllm.ucm_sparse.base import INVALID_SLOT
-from ucm.integration.vllm.ucm_sparse.state import (
-    get_ucm_sparse,
-    has_ucm_sparse,
-)
 from vllm.logger import init_logger
 from vllm.utils import sha256
 from vllm.v1.core.kv_cache_coordinator import get_kv_cache_coordinator
@@ -18,6 +13,12 @@ from vllm.v1.core.kv_cache_utils import BlockHash, KVCacheBlock
 from vllm.v1.kv_cache_interface import KVCacheConfig
 from vllm.v1.metrics.stats import PrefixCacheStats
 from vllm.v1.request import Request
+
+from ucm.integration.vllm.ucm_sparse.base import INVALID_SLOT
+from ucm.integration.vllm.ucm_sparse.state import (
+    get_ucm_sparse,
+    has_ucm_sparse,
+)
 
 logger = init_logger(__name__)
 

@@ -1,16 +1,6 @@
 from collections import defaultdict
 from typing import Iterable, Optional
 
-from ucm.integration.vllm.ucm_sparse.base import (
-    INVALID_SLOT,
-    UcmSparseBase,
-    UcmSparseRole,
-)
-from ucm.integration.vllm.ucm_sparse.state import (
-    ensure_ucm_sparse_initialized,
-    get_ucm_sparse,
-    has_ucm_sparse,
-)
 from vllm.config import VllmConfig
 from vllm.distributed.kv_events import EventPublisherFactory
 from vllm.distributed.kv_transfer.kv_connector.factory import KVConnectorFactory
@@ -32,6 +22,17 @@ from vllm.v1.outputs import ModelRunnerOutput
 from vllm.v1.request import Request, RequestStatus
 from vllm.v1.spec_decode.metrics import SpecDecodingStats
 from vllm.v1.structured_output import StructuredOutputManager
+
+from ucm.integration.vllm.ucm_sparse.base import (
+    INVALID_SLOT,
+    UcmSparseBase,
+    UcmSparseRole,
+)
+from ucm.integration.vllm.ucm_sparse.state import (
+    ensure_ucm_sparse_initialized,
+    get_ucm_sparse,
+    has_ucm_sparse,
+)
 
 logger = init_logger(__name__)
 
