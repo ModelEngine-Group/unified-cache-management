@@ -1,12 +1,12 @@
 from collections import defaultdict
 from typing import Iterable, Optional
 
-from unifiedcache.integration.vllm.ucm_sparse.base import (
+from ucm.integration.vllm.ucm_sparse.base import (
     INVALID_SLOT,
     UcmSparseBase,
     UcmSparseRole,
 )
-from unifiedcache.integration.vllm.ucm_sparse.state import (
+from ucm.integration.vllm.ucm_sparse.state import (
     ensure_ucm_sparse_initialized,
     get_ucm_sparse,
     has_ucm_sparse,

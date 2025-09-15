@@ -14,11 +14,11 @@ import torch.distributed
 import torch.nn as nn
 import vllm.envs as envs
 from tqdm import tqdm
-from unifiedcache.integration.vllm.ucm_sparse.base import (
+from ucm.integration.vllm.ucm_sparse.base import (
     INVALID_SLOT,
     UcmSparseMetadata,
 )
-from unifiedcache.integration.vllm.ucm_sparse.state import (
+from ucm.integration.vllm.ucm_sparse.state import (
     get_ucm_sparse,
     has_ucm_sparse,
 )
@@ -116,7 +116,7 @@ else:
 
 logger = init_logger(__name__)
 
-from unifiedcache.integration.vllm.vllm_adapter.v1.outputs import ModelRunnerOutput
+from ucm.integration.vllm.vllm_adapter.v1.outputs import ModelRunnerOutput
 
 
 @torch.inference_mode()

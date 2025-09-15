@@ -29,9 +29,9 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Generator, List, Optional
 
 import torch
-from unifiedcache.logger import init_logger
-from unifiedcache.ucm_connector.base import Task
-from unifiedcache.ucm_connector.factory import UcmConnectorFactory
+from ucm.logger import init_logger
+from ucm.ucm_connector.base import Task
+from ucm.ucm_connector.factory import UcmConnectorFactory
 from vllm.config import VllmConfig
 from vllm.distributed.kv_transfer.kv_connector.v1.base import (
     KVConnectorBase_V1,

@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING, Optional
 
 import torch
 import vllm.envs as envs
-from unifiedcache.integration.vllm.ucm_sparse.state import ensure_ucm_sparse_initialized
+from ucm.integration.vllm.ucm_sparse.state import ensure_ucm_sparse_initialized
 from vllm.config import VllmConfig
 from vllm.distributed import (
     ensure_model_parallel_initialized,

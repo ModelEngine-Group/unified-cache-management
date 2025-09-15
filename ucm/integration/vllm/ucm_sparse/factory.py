@@ -1,8 +1,8 @@
 import importlib
 from typing import Callable
 
-from unifiedcache.integration.vllm.ucm_sparse.base import UcmSparseBase, UcmSparseRole
-from unifiedcache.logger import init_logger
+from ucm.integration.vllm.ucm_sparse.base import UcmSparseBase, UcmSparseRole
+from ucm.logger import init_logger
 from vllm.config import VllmConfig
 
 logger = init_logger(__name__)
@@ -42,4 +42,4 @@ class UcmSparseFactory:
 
 
 # Register available sparse methods
-UcmSparseFactory.register_sparse_method("ESA", "unifiedcache.ucm_sparse.esa", "ESA")
+UcmSparseFactory.register_sparse_method("ESA", "ucm.ucm_sparse.esa", "ESA")

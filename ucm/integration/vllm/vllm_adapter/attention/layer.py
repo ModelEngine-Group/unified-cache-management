@@ -4,7 +4,7 @@
 from typing import Any, Dict, List, Optional
 
 import torch
-from unifiedcache.integration.vllm.ucm_sparse.state import (
+from ucm.integration.vllm.ucm_sparse.state import (
     get_ucm_sparse,
     has_ucm_sparse,
 )

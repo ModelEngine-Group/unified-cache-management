@@ -6,8 +6,8 @@ from collections import defaultdict
 from dataclasses import dataclass
 from typing import Optional, Union
 
-from unifiedcache.integration.vllm.ucm_sparse.base import INVALID_SLOT
-from unifiedcache.integration.vllm.ucm_sparse.state import (
+from ucm.integration.vllm.ucm_sparse.base import INVALID_SLOT
+from ucm.integration.vllm.ucm_sparse.state import (
     get_ucm_sparse,
     has_ucm_sparse,
 )
