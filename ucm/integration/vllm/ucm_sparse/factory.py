@@ -1,10 +1,9 @@
 import importlib
 from typing import Callable
 
-from vllm.config import VllmConfig
-
 from unifiedcache.integration.vllm.ucm_sparse.base import UcmSparseBase, UcmSparseRole
 from unifiedcache.logger import init_logger
+from vllm.config import VllmConfig
 
 logger = init_logger(__name__)
 

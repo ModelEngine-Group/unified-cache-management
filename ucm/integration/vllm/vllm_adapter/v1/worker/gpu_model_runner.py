@@ -14,6 +14,14 @@ import torch.distributed
 import torch.nn as nn
 import vllm.envs as envs
 from tqdm import tqdm
+from unifiedcache.integration.vllm.ucm_sparse.base import (
+    INVALID_SLOT,
+    UcmSparseMetadata,
+)
+from unifiedcache.integration.vllm.ucm_sparse.state import (
+    get_ucm_sparse,
+    has_ucm_sparse,
+)
 from vllm.attention import AttentionType, get_attn_backend
 from vllm.attention.backends.abstract import AttentionBackend
 from vllm.attention.layer import Attention
@@ -84,15 +92,6 @@ from vllm.v1.utils import bind_kv_cache
 from vllm.v1.worker.block_table import BlockTable
 from vllm.v1.worker.gpu_input_batch import CachedRequestState, InputBatch
 from vllm.v1.worker.lora_model_runner_mixin import LoRAModelRunnerMixin
-
-from unifiedcache.integration.vllm.ucm_sparse.base import (
-    INVALID_SLOT,
-    UcmSparseMetadata,
-)
-from unifiedcache.integration.vllm.ucm_sparse.state import (
-    get_ucm_sparse,
-    has_ucm_sparse,
-)
 
 from ..sample.logits_processor import LogitsProcessorManager
 from .utils import (

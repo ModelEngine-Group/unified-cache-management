@@ -4,16 +4,15 @@
 from typing import Any, Dict, List, Optional
 
 import torch
+from unifiedcache.integration.vllm.ucm_sparse.state import (
+    get_ucm_sparse,
+    has_ucm_sparse,
+)
 from vllm.attention.layer import (
     maybe_save_kv_layer_to_connector,
     wait_for_kv_layer_from_connector,
 )
 from vllm.forward_context import ForwardContext, get_forward_context
-
-from unifiedcache.integration.vllm.ucm_sparse.state import (
-    get_ucm_sparse,
-    has_ucm_sparse,
-)
 
 
 def unified_attention(

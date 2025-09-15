@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, Optional
 
 import torch
 import vllm.envs as envs
+from unifiedcache.integration.vllm.ucm_sparse.state import ensure_ucm_sparse_initialized
 from vllm.config import VllmConfig
 from vllm.distributed import (
     ensure_model_parallel_initialized,
@@ -23,8 +24,6 @@ from vllm.logger import init_logger
 from vllm.sequence import IntermediateTensors
 from vllm.v1.outputs import EMPTY_MODEL_RUNNER_OUTPUT, ModelRunnerOutput
 from vllm.v1.worker.worker_base import WorkerBase
-
-from unifiedcache.integration.vllm.ucm_sparse.state import ensure_ucm_sparse_initialized
 
 logger = init_logger(__name__)
 
