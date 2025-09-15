@@ -29,7 +29,7 @@ if TYPE_CHECKING:
     from vllm.v1.core.sched.output import SchedulerOutput
     from vllm.v1.request import Request
     from vllm.attention.backends.abstract import AttentionMetadata
-    from ucm.ucm_connector.base import UcmKVStoreBase
+    from ucm.store.base import UcmKVStoreBase
     from vllm.config import VllmConfig
 
 import torch

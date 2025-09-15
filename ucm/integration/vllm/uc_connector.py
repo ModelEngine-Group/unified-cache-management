@@ -40,8 +40,8 @@ from vllm.v1.core.kv_cache_utils import hash_request_tokens
 from vllm.v1.core.sched.output import SchedulerOutput
 
 from ucm.logger import init_logger
-from ucm.ucm_connector.base import Task
-from ucm.ucm_connector.factory import UcmConnectorFactory
+from ucm.store.base import Task
+from ucm.store.factory import UcmConnectorFactory
 
 if TYPE_CHECKING:
     from vllm.attention.backends.abstract import AttentionMetadata
