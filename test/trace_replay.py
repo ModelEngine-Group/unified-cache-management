@@ -8,8 +8,10 @@ import os
 import sys
 import time
 from collections import defaultdict
+from datetime import datetime
 
 import numpy as np
+import pandas
 from tqdm.asyncio import tqdm
 from transformers import PreTrainedTokenizerBase
 
@@ -94,6 +96,7 @@ class TraceReplayDataset(BenchmarkDataset):
         self,
         tokenizer: PreTrainedTokenizerBase,
         prefix_len: int = 0,
+        save_prompts: bool = False,
         **kwargs,
     ) -> dict[float, list[SampleRequest]]:
         requests = defaultdict(list)
@@ -159,7 +162,6 @@ class TraceReplayDataset(BenchmarkDataset):
         decoded_prompts.clear()
         decoded_prompts = tokenizer.batch_decode(re_encodeds)
         print(f"Done redecoded prompts, time: {time.time()}")
-
         # Write every 100 prompts to file
         batch_size = 100
         batch_data = []
@@ -183,6 +185,8 @@ class TraceReplayDataset(BenchmarkDataset):
                 }
             )
             i += 1
+            if save_prompts is False:
+                continue
             if len(batch_data) >= batch_size or i == len(meta_info):
                 with open(self.prompts_file_name, "a", encoding="utf-8") as f:
                     for data in batch_data:
@@ -201,6 +205,18 @@ def create_argument_trace():
         type=str,
         default=None,
         help="Path to trace file path.",
+    )
+    trace_group.add_argument(
+        "--trace-mode",
+        type=str,
+        default="trace",
+        choices=["trace", "benchmark"],
+        help="Specify the trace mode: 'trace' to replay requests from cached trace files, or 'benchmark' to generate requests dynamically using the benchmark module.",
+    )
+    trace_group.add_argument(
+        "--save-prompts",
+        action="store_true",
+        help="Save generated prompts with timestamp for reuse.",
     )
     return parser
 
@@ -341,20 +357,13 @@ def gene_one_req(
 
 # Generates prompts by dataset name
 def gene_prompts_by_dataset_name(
-    req_groups: dict, args: argparse.Namespace
+    req_groups: dict, tokenizer: PreTrainedTokenizerBase, args: argparse.Namespace
 ) -> dict[float, list]:
     if args.dataset_name is None:
         raise ValueError(
             "Please specify '--dataset-name' and the corresponding "
             "'--dataset-path' if required."
         )
-    tokenizer_id = args.tokenizer if args.tokenizer is not None else args.model
-    tokenizer_mode = args.tokenizer_mode
-    tokenizer = get_tokenizer(
-        tokenizer_id,
-        tokenizer_mode=tokenizer_mode,
-        trust_remote_code=args.trust_remote_code,
-    )
     # {float, list[json]}
     input_requests = defaultdict(list)
     start_time = time.perf_counter()
@@ -369,7 +378,9 @@ def gene_prompts_by_dataset_name(
 
 
 # Send requests by benchmark
-async def replay_trace_by_benchmark(req_groups: dict, args: argparse.Namespace):
+async def replay_trace_by_benchmark(
+    req_groups: dict, tokenizer: PreTrainedTokenizerBase, args: argparse.Namespace
+):
     backend = args.backend
     model_id = args.model
     model_name = args.served_model_name
@@ -434,11 +445,12 @@ async def replay_trace_by_benchmark(req_groups: dict, args: argparse.Namespace):
 
 
 # Send requests by timestamp
-async def replay_trace_by_time(req_groups: dict, args: argparse.Namespace):
+async def replay_trace_by_time(
+    req_groups: dict, tokenizer: PreTrainedTokenizerBase, args: argparse.Namespace
+):
     backend = args.backend
     model_id = args.model
     model_name = args.served_model_name
-    tokenizer = args.tokenizer
     disable_tqdm = args.disable_tqdm
 
     if args.base_url is not None:
@@ -526,6 +538,9 @@ async def replay_trace_by_time(req_groups: dict, args: argparse.Namespace):
         goodput_config_dict={},
     )
 
+    if args.save_result:
+        save_metrics_to_file(metrics=metrics)
+
     print("{s:{c}^{n}}".format(s=" Serving Benchmark Result ", n=50, c="="))
     print("{:<40} {:<10}".format("Successful requests:", metrics.completed))
     print("{:<40} {:<10.2f}".format("Benchmark duration (s):", benchmark_duration))
@@ -550,6 +565,45 @@ async def replay_trace_by_time(req_groups: dict, args: argparse.Namespace):
     return
 
 
+def save_metrics_to_file(metrics, output_dir="./"):
+    output_path = output_dir
+    if not os.path.exists(output_path):
+        os.makedirs(output_path, exist_ok=True)
+    excel_file = os.path.join(output_path, "metrics.xlsx")
+
+    outputs = {}
+    outputs["time"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    outputs["completed requests"] = metrics.completed
+    outputs["mean_itl(ms)"] = round(metrics.mean_itl_ms, 2)
+    outputs["mean_tpot(ms)"] = round(metrics.mean_tpot_ms, 2)
+    outputs["mean_ttft(ms)"] = round(metrics.mean_ttft_ms, 2)
+    outputs["p99_itl(ms)"] = round(metrics.percentiles_itl_ms[3][1], 2)
+    outputs["p99_tpot(ms)"] = round(metrics.percentiles_tpot_ms[3][1], 2)
+    outputs["p99_ttft(ms)"] = round(metrics.percentiles_ttft_ms[3][1], 2)
+    outputs["total_input_tokens"] = round(metrics.total_input, 2)
+    outputs["total_output_tokens"] = round(metrics.total_output, 2)
+    outputs["request_throughput(req/s)"] = round(metrics.request_throughput, 2)
+    outputs["output_throughput(tok/s)"] = round(metrics.output_throughput, 2)
+    outputs["total_token_throughput(tok/s)"] = round(metrics.total_token_throughput, 2)
+
+    df = pandas.DataFrame([outputs])
+    if os.path.isfile(excel_file):
+        try:
+            existing_df = pandas.read_excel(excel_file)
+            updated_df = pandas.concat([existing_df, df], ignore_index=True)
+        except Exception as e:
+            print(
+                f"Warning: Failed to read {excel_file}, it will be overwritten. Error: {e}"
+            )
+            updated_df = df
+    else:
+        updated_df = df
+    # Save back to Excel (automatically create or overwrite)
+    with pandas.ExcelWriter(excel_file, engine="openpyxl", mode="w") as writer:
+        updated_df.to_excel(writer, index=False, sheet_name="Performance Metrics")
+    print(f"Successfully saved performance metrics to {excel_file}")
+
+
 def main(args: argparse.Namespace):
     print(args)
     dataset = TraceReplayDataset(args.trace_path)
@@ -563,17 +617,17 @@ def main(args: argparse.Namespace):
     )
 
     # Generate prompts
-    if args.dataset_name == "sharegpt" and args.dataset_path is None:
-        print(
-            f"Dataset is {args.dataset_name} without dataset_path, replaced by TraceReplayDataset"
-        )
+    if args.trace_mode == "trace":
         input_requests = dataset.sample(
-            tokenizer=tokenizer,
+            tokenizer=tokenizer, save_prompts=args.save_prompts
         )
     else:
-        input_requests = gene_prompts_by_dataset_name(dataset.REG_GROUPS, args)
+        input_requests = gene_prompts_by_dataset_name(
+            req_groups=dataset.REG_GROUPS, tokenizer=tokenizer, args=args
+        )
+
     # Send prompts by timestamp
-    asyncio.run(replay_trace_by_time(input_requests, args))
+    asyncio.run(replay_trace_by_time(input_requests, args, tokenizer))
 
 
 if __name__ == "__main__":
