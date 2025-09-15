@@ -341,8 +341,7 @@ def execute_model(
             # This relies on cuda-specific torch-internal impl details
             generator = self.input_batch.generators.get(i)
             if generator is not None:
-                generator.set_offset(
-                    self.input_batch.generators_last_offset.get(i))
+                generator.set_offset(self.input_batch.generators_last_offset.get(i))
             # Record the index of the request that should not be sampled,
             # so that we could clear the sampled tokens before returning.
             discard_sampled_tokens_req_indices.append(i)
@@ -433,16 +432,19 @@ def execute_model(
         finished_recving=finished_recving,
         num_nans_in_logits=num_nans_in_logits,
         finished_dumping=finished_dumping,
-        invalid_block_ids = invalid_block_ids
+        invalid_block_ids=invalid_block_ids,
     )
 
+
 def kv_connector_no_forward(
-        self, scheduler_output: "SchedulerOutput") -> ModelRunnerOutput:
+    self, scheduler_output: "SchedulerOutput"
+) -> ModelRunnerOutput:
     # KV send/recv even if no work to do.
     with set_forward_context(None, self.vllm_config):
         self.maybe_setup_kv_connector(scheduler_output)
-        finished_sending, finished_recving = (
-            self.get_finished_kv_transfers(scheduler_output))
+        finished_sending, finished_recving = self.get_finished_kv_transfers(
+            scheduler_output
+        )
         invalid_block_ids = self.get_block_ids_with_load_errors()
         get_kv_transfer_group().clear_connector_metadata()
 
@@ -455,15 +457,18 @@ def kv_connector_no_forward(
     output.invalid_block_ids = invalid_block_ids
     return output
 
+
 @staticmethod
 def maybe_wait_for_kv_save() -> Optional[dict[str, list[str]]]:
     if has_kv_transfer_group():
         return get_kv_transfer_group().wait_for_save()
 
+
 def get_block_ids_with_load_errors(self) -> Optional[set[int]]:
     if has_kv_transfer_group():
         return get_kv_transfer_group().get_block_ids_with_load_errors()
     return None
+
 
 def _update_states(self, scheduler_output: "SchedulerOutput") -> None:
     """Update the cached states and the persistent batch with the scheduler

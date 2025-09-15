@@ -1,17 +1,17 @@
 from dataclasses import dataclass
 from typing import Optional
 
-import torch
 import numpy as np
-
-from vllm.multimodal.inputs import MultiModalKwargs, PlaceholderRange
-from vllm.sampling_params import SamplingParams, SamplingType
-from vllm.pooling_params import PoolingParams
+import torch
 from vllm.lora.request import LoRARequest
-from vllm.v1.worker.block_table import MultiGroupBlockTable
+from vllm.multimodal.inputs import MultiModalKwargs, PlaceholderRange
+from vllm.pooling_params import PoolingParams
+from vllm.sampling_params import SamplingParams, SamplingType
 from vllm.v1.outputs import LogprobsTensors
 from vllm.v1.sample.logits_processor import BatchUpdateBuilder, init_builtin_logitsprocs
 from vllm.v1.spec_decode.utils import is_spec_decode_unsupported
+from vllm.v1.worker.block_table import MultiGroupBlockTable
+
 
 @dataclass
 class CachedRequestState:
@@ -50,7 +50,8 @@ class CachedRequestState:
             return self.prompt_token_ids[idx]
         else:
             return self.output_token_ids[idx - self.num_prompt_tokens]
-        
+
+
 class InputBatch:
 
     def __init__(
@@ -72,8 +73,7 @@ class InputBatch:
         self.device = device
         self.pin_memory = pin_memory
         self.vocab_size = vocab_size
-        self.logits_processing_needs_token_ids = (
-            logits_processing_needs_token_ids)
+        self.logits_processing_needs_token_ids = logits_processing_needs_token_ids
 
         self._req_ids: list[Optional[str]] = []
         self.req_id_to_index: dict[str, int] = {}
@@ -93,13 +93,12 @@ class InputBatch:
         self.num_tokens_no_spec = np.zeros(max_num_reqs, dtype=np.int32)
         self.num_prompt_tokens = np.zeros(max_num_reqs, dtype=np.int32)
         self.num_computed_tokens_cpu_tensor = torch.zeros(
-            (max_num_reqs, ),
+            (max_num_reqs,),
             device="cpu",
             dtype=torch.int32,
             pin_memory=pin_memory,
         )
-        self.num_computed_tokens_cpu = \
-            self.num_computed_tokens_cpu_tensor.numpy()
+        self.num_computed_tokens_cpu = self.num_computed_tokens_cpu_tensor.numpy()
 
         # Block table.
         self.block_table = MultiGroupBlockTable(
@@ -112,34 +111,27 @@ class InputBatch:
         )
 
         # Sampling-related.
-        self.temperature = torch.empty((max_num_reqs, ),
-                                       dtype=torch.float32,
-                                       device=device)
-        self.temperature_cpu_tensor = torch.empty((max_num_reqs, ),
-                                                  dtype=torch.float32,
-                                                  device="cpu",
-                                                  pin_memory=pin_memory)
+        self.temperature = torch.empty(
+            (max_num_reqs,), dtype=torch.float32, device=device
+        )
+        self.temperature_cpu_tensor = torch.empty(
+            (max_num_reqs,), dtype=torch.float32, device="cpu", pin_memory=pin_memory
+        )
         self.temperature_cpu = self.temperature_cpu_tensor.numpy()
         self.greedy_reqs: set[str] = set()
         self.random_reqs: set[str] = set()
 
-        self.top_p = torch.empty((max_num_reqs, ),
-                                 dtype=torch.float32,
-                                 device=device)
-        self.top_p_cpu_tensor = torch.empty((max_num_reqs, ),
-                                            dtype=torch.float32,
-                                            device="cpu",
-                                            pin_memory=pin_memory)
+        self.top_p = torch.empty((max_num_reqs,), dtype=torch.float32, device=device)
+        self.top_p_cpu_tensor = torch.empty(
+            (max_num_reqs,), dtype=torch.float32, device="cpu", pin_memory=pin_memory
+        )
         self.top_p_cpu = self.top_p_cpu_tensor.numpy()
         self.top_p_reqs: set[str] = set()
 
-        self.top_k = torch.empty((max_num_reqs, ),
-                                 dtype=torch.int32,
-                                 device=device)
-        self.top_k_cpu_tensor = torch.empty((max_num_reqs, ),
-                                            dtype=torch.int32,
-                                            device="cpu",
-                                            pin_memory=pin_memory)
+        self.top_k = torch.empty((max_num_reqs,), dtype=torch.int32, device=device)
+        self.top_k_cpu_tensor = torch.empty(
+            (max_num_reqs,), dtype=torch.int32, device="cpu", pin_memory=pin_memory
+        )
         self.top_k_cpu = self.top_k_cpu_tensor.numpy()
         self.top_k_reqs: set[str] = set()
 
@@ -147,46 +139,37 @@ class InputBatch:
         self.spec_decode_unsupported_reqs: set[str] = set()
 
         # Frequency penalty related data structures
-        self.frequency_penalties = torch.empty((max_num_reqs, ),
-                                               dtype=torch.float,
-                                               device=device)
+        self.frequency_penalties = torch.empty(
+            (max_num_reqs,), dtype=torch.float, device=device
+        )
         self.frequency_penalties_cpu_tensor = torch.empty(
-            (max_num_reqs, ),
-            dtype=torch.float,
-            device="cpu",
-            pin_memory=pin_memory)
-        self.frequency_penalties_cpu = \
-            self.frequency_penalties_cpu_tensor.numpy()
+            (max_num_reqs,), dtype=torch.float, device="cpu", pin_memory=pin_memory
+        )
+        self.frequency_penalties_cpu = self.frequency_penalties_cpu_tensor.numpy()
         self.frequency_penalties_reqs: set[str] = set()
 
         # Presence penalty related data structures
-        self.presence_penalties = torch.empty((max_num_reqs, ),
-                                              dtype=torch.float,
-                                              device=device)
-        self.presence_penalties_cpu_tensor = torch.empty((max_num_reqs, ),
-                                                         dtype=torch.float,
-                                                         device="cpu",
-                                                         pin_memory=pin_memory)
-        self.presence_penalties_cpu = self.presence_penalties_cpu_tensor.numpy(
+        self.presence_penalties = torch.empty(
+            (max_num_reqs,), dtype=torch.float, device=device
         )
+        self.presence_penalties_cpu_tensor = torch.empty(
+            (max_num_reqs,), dtype=torch.float, device="cpu", pin_memory=pin_memory
+        )
+        self.presence_penalties_cpu = self.presence_penalties_cpu_tensor.numpy()
         self.presence_penalties_reqs: set[str] = set()
 
         # Repetition penalty related data structures
-        self.repetition_penalties = torch.empty((max_num_reqs, ),
-                                                dtype=torch.float,
-                                                device=device)
+        self.repetition_penalties = torch.empty(
+            (max_num_reqs,), dtype=torch.float, device=device
+        )
         self.repetition_penalties_cpu_tensor = torch.empty(
-            (max_num_reqs, ),
-            dtype=torch.float,
-            device="cpu",
-            pin_memory=pin_memory)
-        self.repetition_penalties_cpu = \
-            self.repetition_penalties_cpu_tensor.numpy()
+            (max_num_reqs,), dtype=torch.float, device="cpu", pin_memory=pin_memory
+        )
+        self.repetition_penalties_cpu = self.repetition_penalties_cpu_tensor.numpy()
         self.repetition_penalties_reqs: set[str] = set()
 
         # lora related
-        self.request_lora_mapping = np.zeros((self.max_num_reqs, ),
-                                             dtype=np.int32)
+        self.request_lora_mapping = np.zeros((self.max_num_reqs,), dtype=np.int32)
         self.lora_id_to_request_ids: dict[int, set[str]] = {}
         self.lora_id_to_lora_request: dict[int, LoRARequest] = {}
 
@@ -215,7 +198,8 @@ class InputBatch:
         self.logitsprocs = init_builtin_logitsprocs(
             pin_memory_available=pin_memory,
             max_num_reqs=max_num_reqs + 1,
-            device=device)
+            device=device,
+        )
 
         # TODO convert this to LogitsProcessor
         self.has_allowed_token_ids: set[str] = set()
@@ -253,12 +237,10 @@ class InputBatch:
         # Copy the prompt token ids and output token ids.
         num_prompt_tokens = len(request.prompt_token_ids)
         self.num_prompt_tokens[req_index] = num_prompt_tokens
-        self.token_ids_cpu[
-            req_index, :num_prompt_tokens] = request.prompt_token_ids
+        self.token_ids_cpu[req_index, :num_prompt_tokens] = request.prompt_token_ids
         start_idx = num_prompt_tokens
         end_idx = start_idx + len(request.output_token_ids)
-        self.token_ids_cpu[req_index,
-                           start_idx:end_idx] = request.output_token_ids
+        self.token_ids_cpu[req_index, start_idx:end_idx] = request.output_token_ids
         # Number of token ids in token_ids_cpu.
         # NOTE(woosuk): This may include spec decode tokens.
         self.num_tokens[req_index] = request.num_tokens
@@ -269,8 +251,7 @@ class InputBatch:
         self.block_table.add_row(request.block_ids, req_index)
 
         if sampling_params := request.sampling_params:
-            if (self.is_spec_decode
-                    and is_spec_decode_unsupported(sampling_params)):
+            if self.is_spec_decode and is_spec_decode_unsupported(sampling_params):
                 self.spec_decode_unsupported_reqs.add(req_id)
             if sampling_params.sampling_type == SamplingType.GREEDY:
                 # Avoid later division by zero.
@@ -289,16 +270,15 @@ class InputBatch:
             else:
                 top_k = self.vocab_size
             self.top_k_cpu[req_index] = top_k
-            self.frequency_penalties_cpu[
-                req_index] = sampling_params.frequency_penalty
+            self.frequency_penalties_cpu[req_index] = sampling_params.frequency_penalty
             if sampling_params.frequency_penalty != 0.0:
                 self.frequency_penalties_reqs.add(req_id)
-            self.presence_penalties_cpu[
-                req_index] = sampling_params.presence_penalty
+            self.presence_penalties_cpu[req_index] = sampling_params.presence_penalty
             if sampling_params.presence_penalty != 0.0:
                 self.presence_penalties_reqs.add(req_id)
-            self.repetition_penalties_cpu[
-                req_index] = sampling_params.repetition_penalty
+            self.repetition_penalties_cpu[req_index] = (
+                sampling_params.repetition_penalty
+            )
             if sampling_params.repetition_penalty != 1.0:
                 self.repetition_penalties_reqs.add(req_id)
 
@@ -306,15 +286,13 @@ class InputBatch:
             # do not have their own generator.
             if request.generator is not None:
                 self.generators[req_index] = request.generator
-                assert (request.last_generator_offset is not None)
-                self.generators_last_offset[
-                    req_index] = request.last_generator_offset
+                assert request.last_generator_offset is not None
+                self.generators_last_offset[req_index] = request.last_generator_offset
 
             if sampling_params.logprobs is not None:
                 self.num_logprobs[req_id] = sampling_params.logprobs
             if sampling_params.prompt_logprobs is not None:
-                self.num_prompt_logprobs[
-                    req_id] = sampling_params.prompt_logprobs
+                self.num_prompt_logprobs[req_id] = sampling_params.prompt_logprobs
 
             if sampling_params.allowed_token_ids:
                 self.has_allowed_token_ids.add(req_id)
@@ -325,20 +303,24 @@ class InputBatch:
                         self.max_num_reqs,
                         self.vocab_size,
                         dtype=torch.bool,
-                        device=self.device)
+                        device=self.device,
+                    )
                     self.allowed_token_ids_mask_cpu_tensor = torch.zeros(
                         self.max_num_reqs,
                         self.vocab_size,
                         dtype=torch.bool,
-                        device="cpu")
+                        device="cpu",
+                    )
                 self.allowed_token_ids_mask_cpu_tensor[req_index] = True
                 # False means we don't fill with -inf.
                 self.allowed_token_ids_mask_cpu_tensor[req_index][
-                    sampling_params.allowed_token_ids] = False
+                    sampling_params.allowed_token_ids
+                ] = False
 
             if sampling_params.bad_words_token_ids:
-                self.bad_words_token_ids[
-                    req_index] = sampling_params.bad_words_token_ids
+                self.bad_words_token_ids[req_index] = (
+                    sampling_params.bad_words_token_ids
+                )
         else:
             assert request.pooling_params is not None
             self.pooling_params[req_id] = request.pooling_params

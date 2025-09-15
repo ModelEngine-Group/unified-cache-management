@@ -862,8 +862,8 @@ class Scheduler(SchedulerInterface):
         return kv_xfer_params
 
     def _update_requests_with_invalid_blocks(
-            self, requests: Iterable[Request],
-            invalid_block_ids: set[int]) -> tuple[set[Request], int, set[int]]:
+        self, requests: Iterable[Request], invalid_block_ids: set[int]
+    ) -> tuple[set[Request], int, set[int]]:
         affected_requests: set[Request] = set()
         num_tokens_to_reschedule = 0
         # If a block is invalid and shared by multiple requests in the batch,
@@ -878,14 +878,13 @@ class Scheduler(SchedulerInterface):
             # We iterate only over blocks that may contain externally computed
             # tokens
             if request.num_cached_tokens > 0:
-                req_num_computed_blocks = (request.num_cached_tokens +
-                                           self.block_size -
-                                           1) // self.block_size
+                req_num_computed_blocks = (
+                    request.num_cached_tokens + self.block_size - 1
+                ) // self.block_size
             else:
                 req_num_computed_blocks = len(req_block_ids)
 
-            for idx, block_id in zip(range(req_num_computed_blocks),
-                                     req_block_ids):
+            for idx, block_id in zip(range(req_num_computed_blocks), req_block_ids):
 
                 if block_id not in invalid_block_ids:
                     continue
@@ -916,14 +915,14 @@ class Scheduler(SchedulerInterface):
                     # All invalid blocks of this request are shared with
                     # previous requests and will be recomputed by them.
                     # Revert to considering only cached tokens as computed.
-                    num_tokens_to_reschedule += (request.num_computed_tokens -
-                                                 request.num_cached_tokens)
+                    num_tokens_to_reschedule += (
+                        request.num_computed_tokens - request.num_cached_tokens
+                    )
                     request.num_computed_tokens = request.num_cached_tokens
 
                 affected_requests.add(request)
 
-        return (affected_requests, num_tokens_to_reschedule,
-                marked_invalid_block_ids)
+        return (affected_requests, num_tokens_to_reschedule, marked_invalid_block_ids)
 
     def _handle_invalid_blocks(self, invalid_block_ids: set[int]) -> set[str]:
         total_requests_to_reschedule = 0
@@ -931,12 +930,15 @@ class Scheduler(SchedulerInterface):
 
         # --- Handle async KV loads (WAITING_FOR_REMOTE_KVS) ---
         async_load_reqs = (
-            req for req in self.waiting
-            if req.status == RequestStatus.WAITING_FOR_REMOTE_KVS)
-        (affected_requests, num_tokens_to_reschedule,
-         marked_invalid_block_ids) = (
-             self._update_requests_with_invalid_blocks(async_load_reqs,
-                                                       invalid_block_ids))
+            req
+            for req in self.waiting
+            if req.status == RequestStatus.WAITING_FOR_REMOTE_KVS
+        )
+        (affected_requests, num_tokens_to_reschedule, marked_invalid_block_ids) = (
+            self._update_requests_with_invalid_blocks(
+                async_load_reqs, invalid_block_ids
+            )
+        )
 
         total_requests_to_reschedule += len(affected_requests)
         total_tokens_to_reschedule += num_tokens_to_reschedule
@@ -944,8 +946,7 @@ class Scheduler(SchedulerInterface):
         for request in affected_requests:
             if request.num_computed_tokens:
                 # Cache any valid computed tokens.
-                self.kv_cache_manager.cache_blocks(request,
-                                                   request.num_computed_tokens)
+                self.kv_cache_manager.cache_blocks(request, request.num_computed_tokens)
             else:
                 # No valid computed tokens, release allocated blocks.
                 # There may be a local cache hit on retry.
@@ -959,8 +960,8 @@ class Scheduler(SchedulerInterface):
 
         # --- Handle sync KV loads (running requests) ---
         affected_requests, num_tokens_to_reschedule, _ = (
-            self._update_requests_with_invalid_blocks(self.running,
-                                                      invalid_block_ids))
+            self._update_requests_with_invalid_blocks(self.running, invalid_block_ids)
+        )
 
         total_requests_to_reschedule += len(affected_requests)
         total_tokens_to_reschedule += num_tokens_to_reschedule
@@ -969,7 +970,9 @@ class Scheduler(SchedulerInterface):
             logger.info(
                 "Recovered from KV load failure: "
                 "%d request(s) rescheduled (%d tokens affected).",
-                total_requests_to_reschedule, total_tokens_to_reschedule)
+                total_requests_to_reschedule,
+                total_tokens_to_reschedule,
+            )
 
         # Return the IDs of affected running requests to skip in
         # update_from_output.

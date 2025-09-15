@@ -1,20 +1,22 @@
-from vllm.v1.request import Request
 from vllm.v1.core.kv_cache_utils import BlockHash
+from vllm.v1.request import Request
 
-def cache_blocks(self, request: Request, block_hashes: list[BlockHash],
-                    num_tokens: int) -> None:
+
+def cache_blocks(
+    self, request: Request, block_hashes: list[BlockHash], num_tokens: int
+) -> None:
     """
     Cache the blocks for the request.
 
     Args:
         request: The request.
         block_hashes: The block hashes of the request.
-        num_tokens: The total number of tokens that need to be cached 
+        num_tokens: The total number of tokens that need to be cached
             (including tokens that are already cached).
     """
     num_cached_blocks = self.num_cached_block[request.request_id]
     num_full_blocks = num_tokens // self.block_size
-    
+
     if num_cached_blocks >= num_full_blocks:
         return
 

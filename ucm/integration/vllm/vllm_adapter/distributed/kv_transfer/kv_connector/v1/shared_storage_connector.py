@@ -1,6 +1,10 @@
 from dataclasses import dataclass, field
+
 from vllm.distributed.kv_transfer.kv_connector.v1.base import KVConnectorMetadata
-from vllm.distributed.kv_transfer.kv_connector.v1.shared_storage_connector import ReqMeta
+from vllm.distributed.kv_transfer.kv_connector.v1.shared_storage_connector import (
+    ReqMeta,
+)
+
 
 @dataclass
 class SharedStorageConnectorMetadata(KVConnectorMetadata):
@@ -14,4 +18,5 @@ class SharedStorageConnectorMetadata(KVConnectorMetadata):
         is_store: bool,
     ) -> None:
         self.requests.append(
-            ReqMeta.make_meta(token_ids, block_ids, block_size, is_store))
+            ReqMeta.make_meta(token_ids, block_ids, block_size, is_store)
+        )

@@ -1,9 +1,14 @@
 from typing import Callable, Optional
 
-
-from vllm.v1.request import Request
-from vllm.v1.core.kv_cache_utils import KVCacheBlock, BlockHash, generate_block_hash_extra_keys, hash_block_tokens, BlockHashWithGroupId
 from vllm.distributed.kv_events import BlockStored
+from vllm.v1.core.kv_cache_utils import (
+    BlockHash,
+    BlockHashWithGroupId,
+    KVCacheBlock,
+    generate_block_hash_extra_keys,
+    hash_block_tokens,
+)
+from vllm.v1.request import Request
 
 
 def cache_full_blocks(
@@ -52,8 +57,7 @@ def cache_full_blocks(
         prev_block_hash_value = prev_block.block_hash.get_hash_value()
 
     parent_block_hash = prev_block_hash_value
-    new_hashes: Optional[list[int]] = ([] if self.enable_kv_cache_events
-                                        else None)
+    new_hashes: Optional[list[int]] = [] if self.enable_kv_cache_events else None
     for i, blk in enumerate(new_full_blocks):
         assert blk.block_hash is None
 
@@ -71,30 +75,30 @@ def cache_full_blocks(
             blk_idx = num_cached_blocks + i
             start_token_idx = blk_idx * block_size
             end_token_idx = (blk_idx + 1) * block_size
-            block_tokens = request.all_token_ids[
-                start_token_idx:end_token_idx]
+            block_tokens = request.all_token_ids[start_token_idx:end_token_idx]
             assert len(block_tokens) == block_size, (
                 f"Expected {block_size} tokens, got "
                 f"{len(block_tokens)} at {blk_idx}th block for request "
-                f"{request.request_id}({request})")
+                f"{request.request_id}({request})"
+            )
 
             # Generate extra keys for multi-modal inputs. Note that since
             # we reach to this branch only when the block is completed with
             # generated tokens, we only need to consider the last mm input.
             extra_keys, _ = generate_block_hash_extra_keys(
-                request, start_token_idx, end_token_idx, -1)
+                request, start_token_idx, end_token_idx, -1
+            )
 
             # Compute the hash of the current block.
-            block_hash = hash_block_tokens(hash_fn, prev_block_hash_value,
-                                            block_tokens, extra_keys)
+            block_hash = hash_block_tokens(
+                hash_fn, prev_block_hash_value, block_tokens, extra_keys
+            )
             block_hashes.append(block_hash)
 
         # Update and added the full block to the cache.
-        block_hash_with_group_id = BlockHashWithGroupId(
-            block_hash, kv_cache_group_id)
+        block_hash_with_group_id = BlockHashWithGroupId(block_hash, kv_cache_group_id)
         blk.block_hash = block_hash_with_group_id
-        self.cached_block_hash_to_block[block_hash_with_group_id][
-            blk.block_id] = blk
+        self.cached_block_hash_to_block[block_hash_with_group_id][blk.block_id] = blk
         if new_hashes is not None:
             new_hashes.append(block_hash.hash_value)
         prev_block_hash_value = block_hash.hash_value
@@ -104,10 +108,10 @@ def cache_full_blocks(
             BlockStored(
                 block_hashes=new_hashes,
                 parent_block_hash=parent_block_hash,
-                token_ids=request.
-                all_token_ids[num_cached_blocks *
-                                block_size:num_full_blocks * block_size],
+                token_ids=request.all_token_ids[
+                    num_cached_blocks * block_size : num_full_blocks * block_size
+                ],
                 block_size=block_size,
-                lora_id=request.lora_request.id
-                if request.lora_request else None,
-            ))
+                lora_id=request.lora_request.id if request.lora_request else None,
+            )
+        )
