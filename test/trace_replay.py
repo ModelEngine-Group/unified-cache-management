@@ -8,10 +8,8 @@ import os
 import sys
 import time
 from collections import defaultdict
-from dataclasses import dataclass
 
 import numpy as np
-import tqdm
 from tqdm.asyncio import tqdm
 from transformers import PreTrainedTokenizerBase
 
@@ -215,7 +213,6 @@ def gene_one_req(
     num_prompts=1,
 ):
     backend = args.backend
-    tokenizer = args.tokenizer
 
     if args.dataset_name == "custom":
         dataset = CustomDataset(dataset_path=args.dataset_path)
@@ -360,11 +357,14 @@ def gene_prompts_by_dataset_name(
     )
     # {float, list[json]}
     input_requests = defaultdict(list)
+    start_time = time.perf_counter()
     for sec, reqs in sorted(req_groups.items()):
         for req in reqs:
             # Try to produce prompt by benchmark datasets
             gene_req = gene_one_req(req, tokenizer, args)
             input_requests[sec].extend(gene_req)
+    gene_prompts_duration = time.perf_counter() - start_time
+    print(f"Take {gene_prompts_duration} to produce prompts.")
     return input_requests
 
 
