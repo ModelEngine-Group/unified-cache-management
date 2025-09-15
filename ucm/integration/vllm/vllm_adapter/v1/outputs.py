@@ -39,6 +39,10 @@ class ModelRunnerOutput:
     finished_sending: Optional[set[str]] = None
     finished_recving: Optional[set[str]] = None
     finished_dumping: Optional[dict[str, list[str]]] = None
+    
+    # IDs of externally computed KV blocks that failed to load.
+    # Requests referencing these blocks should be rescheduled to recompute them.
+    invalid_block_ids: Optional[set[int]] = None
 
     # req_id -> num_nans_in_logits
     num_nans_in_logits: Optional[dict[str, int]] = None

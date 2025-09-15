@@ -61,6 +61,7 @@ class KVOutputAggregator:
 
         finished_sending = set[str]()
         finished_recving = set[str]()
+        invalid_block_ids = set[int]()
         finished_dumping: dict[str, list[str]] = {}
         for output in outputs:
             update_finished_set(
@@ -72,6 +73,8 @@ class KVOutputAggregator:
             update_finished_list(
                 output.finished_dumping, self._dump_remaining_count, finished_dumping
             )
+            if output.invalid_block_ids:
+                invalid_block_ids |= output.invalid_block_ids
 
         # select output of the worker specified by output_rank
         output = outputs[output_rank]
@@ -84,6 +87,7 @@ class KVOutputAggregator:
         output.finished_sending = finished_sending if finished_sending else None
         output.finished_recving = finished_recving if finished_recving else None
         output.finished_dumping = finished_dumping if finished_dumping else None
+        output.invalid_block_ids = invalid_block_ids or None
 
         return output
 

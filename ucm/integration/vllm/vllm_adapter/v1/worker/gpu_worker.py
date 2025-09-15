@@ -124,7 +124,6 @@ class Worker(WorkerBase):
         assert isinstance(output, ModelRunnerOutput)
         return output
 
-
 def init_worker_distributed_environment(
     vllm_config: VllmConfig,
     rank: int,
