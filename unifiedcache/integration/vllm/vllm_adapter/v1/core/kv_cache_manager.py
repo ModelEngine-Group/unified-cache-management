@@ -13,8 +13,12 @@ from vllm.v1.core.kv_cache_utils import BlockHash, KVCacheBlock
 from vllm.v1.kv_cache_interface import KVCacheConfig
 from vllm.v1.metrics.stats import PrefixCacheStats
 from vllm.v1.request import Request
-from unifiedcache.integration.vllm.ucm_sparse.state import get_ucm_sparse, has_ucm_sparse
+
 from unifiedcache.integration.vllm.ucm_sparse.base import INVALID_SLOT
+from unifiedcache.integration.vllm.ucm_sparse.state import (
+    get_ucm_sparse,
+    has_ucm_sparse,
+)
 
 logger = init_logger(__name__)
 
@@ -26,6 +30,7 @@ class KVCacheBlocks:
     Scheduler and KVCacheManager, to hide KVCacheManager's internal data
     structure from the Scheduler.
     """
+
     blocks: tuple[list[KVCacheBlock], ...]
     """
     blocks[i][j] refers to the i-th kv_cache_group and the j-th block of tokens.
@@ -38,13 +43,13 @@ class KVCacheBlocks:
     def __add__(self, other: "KVCacheBlocks") -> "KVCacheBlocks":
         """Adds two KVCacheBlocks instances."""
         return KVCacheBlocks(
-            tuple(blk1 + blk2
-                  for blk1, blk2 in zip(self.blocks, other.blocks)))
+            tuple(blk1 + blk2 for blk1, blk2 in zip(self.blocks, other.blocks))
+        )
 
     def get_block_ids(self) -> tuple[list[int], ...]:
         """
         Converts the KVCacheBlocks instance to block_ids.
-        
+
         Returns:
             tuple[list[int], ...]: A tuple of lists where
             * the outer tuple corresponds to KV cache groups
@@ -55,10 +60,7 @@ class KVCacheBlocks:
     def get_unhashed_block_ids(self) -> list[int]:
         """Get block_ids of unhashed blocks from KVCacheBlocks instance."""
         assert len(self.blocks) == 1, "Only one group is supported"
-        return [
-            block.block_id for block in self.blocks[0]
-            if block.block_hash is None
-        ]
+        return [block.block_id for block in self.blocks[0] if block.block_hash is None]
 
     def new_empty(self) -> "KVCacheBlocks":
         """Creates a new KVCacheBlocks instance with no blocks."""
@@ -88,12 +90,18 @@ class KVCacheManager:
 
         self.block_size: Optional[int] = None
         if self.enable_caching:
-            assert len(
-                set(g.kv_cache_spec.block_size
-                    for g in kv_cache_config.kv_cache_groups)
-            ) == 1, "Only one block size is supported for now"
+            assert (
+                len(
+                    set(
+                        g.kv_cache_spec.block_size
+                        for g in kv_cache_config.kv_cache_groups
+                    )
+                )
+                == 1
+            ), "Only one block size is supported for now"
             self.block_size = kv_cache_config.kv_cache_groups[
-                0].kv_cache_spec.block_size
+                0
+            ].kv_cache_spec.block_size
 
         self.coordinator = get_kv_cache_coordinator(
             kv_cache_config=kv_cache_config,
@@ -110,8 +118,7 @@ class KVCacheManager:
         # Mapping from request ID to kv block hashes.
         # This is to avoid recomputing the block hashes for each call of
         # `get_computed_blocks` or `allocate_slots`.
-        self.req_to_block_hashes: defaultdict[
-            str, list[BlockHash]] = defaultdict(list)
+        self.req_to_block_hashes: defaultdict[str, list[BlockHash]] = defaultdict(list)
 
     def allocate_slots(
         self,
@@ -122,7 +129,7 @@ class KVCacheManager:
         num_draft_tokens: int = 0,
         num_lookahead_tokens: int = 0,
         delay_cache_blocks: bool = False,
-        num_slots_sparsed: Union[None, int] = None
+        num_slots_sparsed: Union[None, int] = None,
     ) -> Optional[KVCacheBlocks]:
         """Add slots for a request with new tokens to append.
 
@@ -133,10 +140,10 @@ class KVCacheManager:
                 already been computed locally (i.e. new_computed_blocks).
             num_new_computed_tokens: The number of new computed tokens just
                 hitting the prefix caching, excluding external tokens.
-            new_computed_blocks: The cached blocks for the above new computed 
+            new_computed_blocks: The cached blocks for the above new computed
                 tokens.
             num_lookahead_tokens: The number of speculative tokens to allocate.
-                This is used by spec decode proposers with kv-cache such 
+                This is used by spec decode proposers with kv-cache such
                 as eagle.
             delay_cache_blocks: Whether to skip caching the blocks. This is
                 used by P/D when allocating blocks used in a KV transfer
@@ -163,7 +170,9 @@ class KVCacheManager:
             raise ValueError("num_new_tokens must be greater than 0")
 
         if num_slots_sparsed != INVALID_SLOT:
-            self.block_size = self.kv_cache_config.kv_cache_groups[0].kv_cache_spec.block_size
+            self.block_size = self.kv_cache_config.kv_cache_groups[
+                0
+            ].kv_cache_spec.block_size
             num_blocks_need = math.ceil(num_slots_sparsed / self.block_size)
             allocated_blocks = self.coordinator.get_blocks(request.request_id)[0]
             returned_blocks = []
@@ -175,9 +184,12 @@ class KVCacheManager:
                     returned_blocks.append(block)
                 self.block_pool._maybe_evict_cached_block(block)
             self.block_pool.free_blocks(returned_blocks)
-            self.coordinator.single_type_managers[0].req_to_blocks[request.request_id] = sparsed_blocks
+            self.coordinator.single_type_managers[0].req_to_blocks[
+                request.request_id
+            ] = sparsed_blocks
             new_computed_block_list = tuple(
-                [] for _ in range(len(self.kv_cache_config.kv_cache_groups)))
+                [] for _ in range(len(self.kv_cache_config.kv_cache_groups))
+            )
             num_blocks_to_allocate = self.coordinator.get_num_blocks_to_allocate(
                 request_id=request.request_id,
                 num_tokens=num_slots_sparsed,
@@ -185,15 +197,17 @@ class KVCacheManager:
             )
             if num_blocks_to_allocate > self.block_pool.get_num_free_blocks():
                 return None
-            new_blocks = self.coordinator.allocate_new_blocks(request.request_id, num_slots_sparsed)
+            new_blocks = self.coordinator.allocate_new_blocks(
+                request.request_id, num_slots_sparsed
+            )
             return KVCacheBlocks(tuple([sparsed_blocks]))
-
 
         if new_computed_blocks is not None:
             new_computed_block_list = new_computed_blocks.blocks
         else:
             new_computed_block_list = tuple(
-                [] for _ in range(len(self.kv_cache_config.kv_cache_groups)))
+                [] for _ in range(len(self.kv_cache_config.kv_cache_groups))
+            )
 
         # Free the blocks that are skipped during the attention computation
         # (e.g., tokens outside the sliding window).
@@ -201,16 +215,17 @@ class KVCacheManager:
         # insufficient free blocks.
         # Should call this function before allocating new blocks to reduce
         # the number of evicted blocks.
-        self.coordinator.remove_skipped_blocks(request.request_id,
-                                               request.num_computed_tokens)
+        self.coordinator.remove_skipped_blocks(
+            request.request_id, request.num_computed_tokens
+        )
 
         # The number of computed tokens is the number of computed tokens plus
         # the new prefix caching hits
-        num_computed_tokens = (request.num_computed_tokens +
-                               num_new_computed_tokens)
+        num_computed_tokens = request.num_computed_tokens + num_new_computed_tokens
         num_tokens_need_slot = min(
             num_computed_tokens + num_new_tokens + num_lookahead_tokens,
-            self.max_model_len)
+            self.max_model_len,
+        )
 
         num_blocks_to_allocate = self.coordinator.get_num_blocks_to_allocate(
             request_id=request.request_id,
@@ -227,16 +242,18 @@ class KVCacheManager:
             self.block_pool.touch(new_computed_block_list)
         else:
             assert not any(new_computed_block_list), (
-                "Computed blocks should be empty when "
-                "prefix caching is disabled")
+                "Computed blocks should be empty when " "prefix caching is disabled"
+            )
 
         # Append the new computed blocks to the request blocks until now to
         # avoid the case where the new blocks cannot be allocated.
-        self.coordinator.save_new_computed_blocks(request.request_id,
-                                                  new_computed_block_list)
+        self.coordinator.save_new_computed_blocks(
+            request.request_id, new_computed_block_list
+        )
 
         new_blocks = self.coordinator.allocate_new_blocks(
-            request.request_id, num_tokens_need_slot)
+            request.request_id, num_tokens_need_slot
+        )
 
         # P/D: delay caching blocks if we have to recv from
         # remote. Update state for locally cached blocks.
@@ -247,7 +264,9 @@ class KVCacheManager:
         # not cache any speculated tokens. We only cache blocks with
         # generated (accepted) tokens.
         self.coordinator.cache_blocks(
-            request, self.req_to_block_hashes[request.request_id],
-            num_computed_tokens + num_new_tokens - num_draft_tokens)
+            request,
+            self.req_to_block_hashes[request.request_id],
+            num_computed_tokens + num_new_tokens - num_draft_tokens,
+        )
 
         return KVCacheBlocks(new_blocks)

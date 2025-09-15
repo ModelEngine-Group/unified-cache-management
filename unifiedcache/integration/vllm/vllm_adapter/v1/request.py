@@ -4,13 +4,14 @@ from typing import TYPE_CHECKING, Any, Optional, Union
 from vllm.multimodal.inputs import MultiModalKwargs, PlaceholderRange
 from vllm.pooling_params import PoolingParams
 from vllm.sampling_params import SamplingParams
-from vllm.v1.engine import (EngineCoreEvent)
+from vllm.v1.engine import EngineCoreEvent
+from vllm.v1.request import RequestStatus
 from vllm.v1.structured_output.request import StructuredOutputRequest
 from vllm.v1.utils import ConstantList
-from vllm.v1.request import RequestStatus
 
 if TYPE_CHECKING:
     from vllm.lora.request import LoRARequest
+
 
 class Request:
 
@@ -40,8 +41,7 @@ class Request:
         self.eos_token_id = eos_token_id
         self.lora_request = lora_request
         self.structured_output_request = structured_output_request
-        self.arrival_time = arrival_time if arrival_time is not None else \
-            time.time()
+        self.arrival_time = arrival_time if arrival_time is not None else time.time()
 
         self.status = RequestStatus.WAITING
         if sampling_params and sampling_params.guided_decoding is not None:
@@ -61,11 +61,11 @@ class Request:
                 self.status = RequestStatus.WAITING_FOR_FSM
 
             if sampling_params.extra_args is not None:
-                self.kv_transfer_params = \
-                    sampling_params.extra_args.get("kv_transfer_params")
+                self.kv_transfer_params = sampling_params.extra_args.get(
+                    "kv_transfer_params"
+                )
         else:
-            raise ValueError(
-                "sampling_params and pooling_params can't both be unset")
+            raise ValueError("sampling_params and pooling_params can't both be unset")
 
         self.prompt_token_ids = prompt_token_ids
         self.num_prompt_tokens = len(self.prompt_token_ids)

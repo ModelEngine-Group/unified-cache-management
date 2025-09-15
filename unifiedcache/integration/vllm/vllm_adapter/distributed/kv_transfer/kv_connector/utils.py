@@ -4,19 +4,18 @@ from concurrent.futures import CancelledError, Future
 from typing import Optional, cast
 
 import torch
-
 import vllm.envs as envs
 from vllm import _custom_ops as ops
 from vllm.config import VllmConfig, get_current_vllm_config
 from vllm.logger import init_logger
+
 from unifiedcache.integration.vllm.vllm_adapter.v1.outputs import ModelRunnerOutput
 
 logger = init_logger(__name__)
 
 
-
 class KVOutputAggregator:
-    """Utility class to aggregate the output of all workers into a single 
+    """Utility class to aggregate the output of all workers into a single
     output corresponding to Rank 0 for scheduler."""
 
     def __init__(self, world_size: int):
@@ -26,14 +25,16 @@ class KVOutputAggregator:
         self._send_remaining_count = defaultdict[str, int](lambda: world_size)
         self._dump_remaining_count = defaultdict[str, int](lambda: world_size)
 
-    def aggregate(self,
-                  outputs: list[ModelRunnerOutput],
-                  output_rank: int = 0) -> ModelRunnerOutput:
+    def aggregate(
+        self, outputs: list[ModelRunnerOutput], output_rank: int = 0
+    ) -> ModelRunnerOutput:
         # aggregate finished_sending, finished_recving from all workers
 
-        def update_finished_set(req_ids: Optional[set[str]],
-                                remaining_count_dict: dict[str, int],
-                                finished_set: set[str]) -> None:
+        def update_finished_set(
+            req_ids: Optional[set[str]],
+            remaining_count_dict: dict[str, int],
+            finished_set: set[str],
+        ) -> None:
             for req_id in req_ids or ():
                 new_count = remaining_count_dict[req_id] - 1
                 if new_count == 0:
@@ -41,10 +42,12 @@ class KVOutputAggregator:
                     del remaining_count_dict[req_id]
                 else:
                     remaining_count_dict[req_id] = new_count
-        
-        def update_finished_list(req_ids: Optional[dict[str, list[str]]],
-                                 remaining_count_dict: dict[str, int],
-                                 finished_list: dict[str, list[str]]) -> None:
+
+        def update_finished_list(
+            req_ids: Optional[dict[str, list[str]]],
+            remaining_count_dict: dict[str, int],
+            finished_list: dict[str, list[str]],
+        ) -> None:
             for req_id, succeed_dump_blocks in (req_ids or {}).items():
                 if req_id not in finished_list:
                     finished_list[req_id] = []
@@ -60,12 +63,15 @@ class KVOutputAggregator:
         finished_recving = set[str]()
         finished_dumping: dict[str, list[str]] = {}
         for output in outputs:
-            update_finished_set(output.finished_sending,
-                                self._send_remaining_count, finished_sending)
-            update_finished_set(output.finished_recving,
-                                self._recv_remaining_count, finished_recving)
-            update_finished_list(output.finished_dumping,
-                                self._dump_remaining_count, finished_dumping)
+            update_finished_set(
+                output.finished_sending, self._send_remaining_count, finished_sending
+            )
+            update_finished_set(
+                output.finished_recving, self._recv_remaining_count, finished_recving
+            )
+            update_finished_list(
+                output.finished_dumping, self._dump_remaining_count, finished_dumping
+            )
 
         # select output of the worker specified by output_rank
         output = outputs[output_rank]
@@ -81,15 +87,14 @@ class KVOutputAggregator:
 
         return output
 
-    def async_aggregate(self,
-                        output_futures: Sequence[Future[ModelRunnerOutput]],
-                        output_rank: int = 0) -> Future[ModelRunnerOutput]:
+    def async_aggregate(
+        self, output_futures: Sequence[Future[ModelRunnerOutput]], output_rank: int = 0
+    ) -> Future[ModelRunnerOutput]:
         """Takes a list of futures and returns a single future which resolves
         to the respective list of outputs."""
         result_future: Future[ModelRunnerOutput] = Future()
 
-        outputs: list[Optional[ModelRunnerOutput]] = [None
-                                                      ] * len(output_futures)
+        outputs: list[Optional[ModelRunnerOutput]] = [None] * len(output_futures)
 
         def make_callback(idx):
 
@@ -107,8 +112,10 @@ class KVOutputAggregator:
                 # this check assumes io_thread_pool uses a single thread
                 if all(outputs):
                     result_future.set_result(
-                        self.aggregate(cast(list[ModelRunnerOutput], outputs),
-                                       output_rank))
+                        self.aggregate(
+                            cast(list[ModelRunnerOutput], outputs), output_rank
+                        )
+                    )
 
             return callback
 

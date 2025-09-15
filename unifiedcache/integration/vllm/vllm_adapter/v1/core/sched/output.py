@@ -1,14 +1,15 @@
 from __future__ import annotations
+
 from dataclasses import dataclass
-from vllm.v1.core.sched.output import NewRequestData, CachedRequestData
 from typing import TYPE_CHECKING, Optional
+
+from vllm.v1.core.sched.output import CachedRequestData, NewRequestData
 
 if TYPE_CHECKING:
     import numpy as np
     import numpy.typing as npt
+    from vllm.distributed.kv_transfer.kv_connector.v1.base import KVConnectorMetadata
 
-    from vllm.distributed.kv_transfer.kv_connector.v1.base import (
-        KVConnectorMetadata)
 
 @dataclass
 class SchedulerOutput:

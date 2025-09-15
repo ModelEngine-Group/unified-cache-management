@@ -1,4 +1,6 @@
-def patch_dataclass_fields(target_cls, src_cls, *, include_repr=True, include_eq=True, include_hash=True):
+def patch_dataclass_fields(
+    target_cls, src_cls, *, include_repr=True, include_eq=True, include_hash=True
+):
     """
     Monkey-patch dataclass field structure from src_cls to target_cls.
     """

@@ -2,8 +2,8 @@ from dataclasses import dataclass
 from typing import NamedTuple, Optional
 
 import torch
+from vllm.v1.outputs import LogprobsLists, LogprobsTensors
 
-from vllm.v1.outputs import (LogprobsLists, LogprobsTensors)
 
 class ModelRunnerOutput:
 
