@@ -23,17 +23,14 @@ from __future__ import annotations
 
 import enum
 from abc import ABC, abstractmethod
-from typing import TYPE_CHECKING, Dict, List, Optional, Union
+from typing import TYPE_CHECKING, List, Optional, Union
 
 if TYPE_CHECKING:
     from vllm.v1.core.sched.output import SchedulerOutput
     from vllm.v1.request import Request
-    from vllm.attention.backends.abstract import AttentionMetadata
-    from ucm.store.base import UcmKVStoreBase
     from vllm.config import VllmConfig
 
 import torch
-from vllm.distributed.kv_transfer import get_kv_transfer_group, has_kv_transfer_group
 from vllm.forward_context import ForwardContext
 
 INVALID_SLOT = -1
