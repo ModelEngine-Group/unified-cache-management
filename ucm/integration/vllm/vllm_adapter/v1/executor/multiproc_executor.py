@@ -7,16 +7,11 @@ from vllm.distributed.device_communicators.shm_broadcast import MessageQueue
 from vllm.executor.multiproc_worker_utils import set_multiprocessing_worker_envs
 from vllm.logger import init_logger
 from vllm.utils import get_distributed_init_method, get_open_port
-from vllm.v1.executor.abstract import Executor, FailureCallback
+from vllm.v1.executor.abstract import FailureCallback
 from vllm.v1.executor.multiproc_executor import UnreadyWorkerProcHandle, WorkerProc
 
 # import vllm.envs as envs
 import ucm.integration.vllm.vllm_adapter.envs as envs
-
-# from vllm.distributed.kv_transfer.kv_connector.utils import KVOutputAggregator
-from ucm.integration.vllm.vllm_adapter.distributed.kv_transfer.kv_connector.utils import (
-    KVOutputAggregator,
-)
 from ucm.integration.vllm.vllm_adapter.v1.outputs import ModelRunnerOutput
 
 logger = init_logger(__name__)
@@ -106,6 +101,11 @@ class MultiprocExecutor(vllm_v1_multiproc_executor.MultiprocExecutor):
 
         self.output_rank = self._get_output_rank()
         self.has_connector = self.vllm_config.kv_transfer_config is not None
+        # from vllm.distributed.kv_transfer.kv_connector.utils import KVOutputAggregator
+        from ucm.integration.vllm.vllm_adapter.distributed.kv_transfer.kv_connector.utils import (
+            KVOutputAggregator,
+        )
+
         self.kv_output_aggregator = KVOutputAggregator(self.parallel_config.world_size)
 
     def execute_model(
