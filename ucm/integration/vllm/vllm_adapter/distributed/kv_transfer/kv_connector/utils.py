@@ -3,10 +3,8 @@ from collections.abc import Sequence
 from concurrent.futures import CancelledError, Future
 from typing import Optional, cast
 
-import torch
-import vllm.envs as envs
-from vllm import _custom_ops as ops
-from vllm.config import VllmConfig, get_current_vllm_config
+# import vllm.envs as envs
+import vllm_adapter.envs as envs
 from vllm.logger import init_logger
 
 from ucm.integration.vllm.vllm_adapter.v1.outputs import ModelRunnerOutput

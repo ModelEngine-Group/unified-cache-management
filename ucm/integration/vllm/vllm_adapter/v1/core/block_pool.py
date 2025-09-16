@@ -9,7 +9,9 @@ from vllm.v1.core.kv_cache_utils import (
     generate_block_hash_extra_keys,
     hash_block_tokens,
 )
-from vllm.v1.request import Request
+
+# from vllm.v1.request import Request
+from vllm_adapter.v1.request import Request
 
 
 class BlockPool(vllm_v1_block_pool.BlockPool):

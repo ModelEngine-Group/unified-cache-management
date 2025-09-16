@@ -1,7 +1,6 @@
 from dataclasses import dataclass, field
 
 import vllm.distributed.kv_transfer.kv_connector.v1.shared_storage_connector as shared_storage_conn
-from vllm.distributed.kv_transfer.kv_connector.v1.base import KVConnectorMetadata
 from vllm.distributed.kv_transfer.kv_connector.v1.shared_storage_connector import (
     ReqMeta,
 )

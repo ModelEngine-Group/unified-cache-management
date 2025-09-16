@@ -1,13 +1,9 @@
-import time
-from typing import TYPE_CHECKING, Any, Optional, Union
+from typing import TYPE_CHECKING, Optional
 
 from vllm.multimodal.inputs import MultiModalKwargs, PlaceholderRange
 from vllm.pooling_params import PoolingParams
 from vllm.sampling_params import SamplingParams
-from vllm.v1.engine import EngineCoreEvent
-from vllm.v1.request import RequestStatus
 from vllm.v1.structured_output.request import StructuredOutputRequest
-from vllm.v1.utils import ConstantList
 
 if TYPE_CHECKING:
     from vllm.lora.request import LoRARequest

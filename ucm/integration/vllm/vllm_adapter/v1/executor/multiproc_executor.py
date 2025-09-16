@@ -1,32 +1,20 @@
-# SPDX-License-Identifier: Apache-2.0
-# SPDX-FileCopyrightText: Copyright contributors to the vLLM project
-import multiprocessing
-import os
-import pickle
-import signal
-import sys
 import threading
-import time
-import traceback
 import weakref
 from concurrent.futures import Future, ThreadPoolExecutor
-from dataclasses import dataclass
-from enum import Enum, auto
-from functools import partial
-from multiprocessing.connection import Connection
-from multiprocessing.process import BaseProcess
-from threading import Thread
 from typing import Optional, Union
 
-import vllm.envs as envs
+# import vllm.envs as envs
+import vllm_adapter.envs as envs
 from vllm.distributed.device_communicators.shm_broadcast import MessageQueue
-from vllm.distributed.kv_transfer.kv_connector.utils import KVOutputAggregator
 from vllm.executor.multiproc_worker_utils import set_multiprocessing_worker_envs
 from vllm.logger import init_logger
 from vllm.utils import get_distributed_init_method, get_open_port
 from vllm.v1.executor.abstract import Executor, FailureCallback
 from vllm.v1.executor.multiproc_executor import UnreadyWorkerProcHandle, WorkerProc
-from vllm.v1.outputs import ModelRunnerOutput
+
+# from vllm.distributed.kv_transfer.kv_connector.utils import KVOutputAggregator
+from vllm_adapter.distributed.kv_transfer.kv_connector.utils import KVOutputAggregator
+from vllm_adapter.v1.outputs import ModelRunnerOutput
 
 logger = init_logger(__name__)
 

@@ -1,9 +1,7 @@
 from dataclasses import dataclass
-from typing import NamedTuple, Optional
+from typing import Optional
 
-import torch
 import vllm.v1.outputs as vllm_v1_outputs
-from vllm.v1.outputs import LogprobsLists, LogprobsTensors
 
 
 @dataclass

@@ -12,17 +12,22 @@ from vllm.v1.core.encoder_cache_manager import (
     EncoderCacheManager,
     compute_encoder_budget,
 )
-from vllm.v1.core.kv_cache_manager import KVCacheManager
-from vllm.v1.core.sched.interface import SchedulerInterface
-from vllm.v1.core.sched.output import NewRequestData, SchedulerOutput
+from vllm.v1.core.sched.output import NewRequestData
 from vllm.v1.core.sched.request_queue import SchedulingPolicy, create_request_queue
 from vllm.v1.core.sched.utils import check_stop
 from vllm.v1.engine import EngineCoreEventType, EngineCoreOutput, EngineCoreOutputs
 from vllm.v1.kv_cache_interface import KVCacheConfig
-from vllm.v1.outputs import ModelRunnerOutput
-from vllm.v1.request import Request, RequestStatus
+from vllm.v1.request import RequestStatus
 from vllm.v1.spec_decode.metrics import SpecDecodingStats
 from vllm.v1.structured_output import StructuredOutputManager
+
+# from vllm.v1.core.kv_cache_manager import KVCacheManager
+from vllm_adapter.v1.core.kv_cache_manager import KVCacheManager
+from vllm_adapter.v1.core.sched.output import SchedulerOutput
+
+# from vllm.v1.outputs import ModelRunnerOutput
+from vllm_adapter.v1.outputs import ModelRunnerOutput
+from vllm_adapter.v1.request import Request
 
 from ucm.integration.vllm.ucm_sparse.base import (
     INVALID_SLOT,

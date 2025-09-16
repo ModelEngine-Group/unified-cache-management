@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 """Attention layer."""
-from typing import Any, Dict, List, Optional
+from typing import Optional
 
 import torch
 from vllm.attention import layer as vllm_attention_layer
