@@ -278,7 +278,7 @@ index b06b7cc80..22c22a148 100644
 -        (output, ) = self.collective_rpc(
 +        non_block = self.max_concurrent_batches > 1
 +
-+        if not self.has_connector:
++        if not self.has_connector or self.vllm_config.model_config.use_mla:
 +            # get output only from a single worker (output_rank)
 +            (output, ) = self.collective_rpc(
 +                "execute_model",
