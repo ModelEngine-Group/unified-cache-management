@@ -464,6 +464,35 @@ async def replay_trace_by_time(
         raise ValueError(f"Unknown backend: {backend}")
     request_func = ASYNC_REQUEST_FUNCS[backend]
 
+    print("Starting initial single prompt test run...")
+    test_request = None
+    for _, reqs in sorted(req_groups.items()):
+        if reqs:
+            test_request = reqs[0]
+            break
+    if test_request is None:
+        raise ValueError("No request found for initial test run.")
+    test_input = RequestFuncInput(
+        model=model_id,
+        model_name=model_name,
+        prompt=test_request.prompt,
+        api_url=api_url,
+        prompt_len=test_request.prompt_len,
+        output_len=test_request.expected_output_len,
+        logprobs=None,
+        multi_modal_content=getattr(test_request, "multi_modal_data", None),
+        ignore_eos=True,
+        extra_body={"temperature": 0.9},
+    )
+    test_output = await request_func(request_func_input=test_input)
+    if not getattr(test_output, "success", False):
+        raise ValueError(
+            "Initial test run failed - Please make sure arguments "
+            f"are correctly specified. Error: {getattr(test_output, 'error', '')}"
+        )
+    else:
+        print("Initial test run completed. Starting main run...")
+
     total = sum(len(req_list) for req_list in req_groups.values())
     pbar = None if disable_tqdm else tqdm(total=total)
     semaphore = (
@@ -533,7 +562,7 @@ async def replay_trace_by_time(
         outputs=outputs,
         dur_s=benchmark_duration,
         tokenizer=tokenizer,
-        selected_percentile_metrics=["ttft", "tpot", "itl"],
+        selected_percentile_metrics=["ttft", "tpot", "itl", "e2el"],
         selected_percentiles=[25.0, 50.0, 75.0, 99.0],
         goodput_config_dict={},
     )
@@ -561,6 +590,45 @@ async def replay_trace_by_time(
             "Total Token throughput (tok/s):", metrics.total_token_throughput
         )
     )
+
+    # 定义 process_one_metric 函数，可以访问外层的 selected_percentile_metrics
+    def process_one_metric(
+        metric_attribute_name: str,
+        metric_name: str,
+        metric_header: str,
+    ):
+        selected_percentile_metrics = ["ttft", "tpot", "itl", "e2el"]
+        if metric_attribute_name not in selected_percentile_metrics:
+            return
+        print("{s:{c}^{n}}".format(s=metric_header, n=50, c="-"))
+        print(
+            "{:<40} {:<10.2f}".format(
+                f"Mean {metric_name} (ms):",
+                getattr(metrics, f"mean_{metric_attribute_name}_ms"),
+            )
+        )
+        print(
+            "{:<40} {:<10.2f}".format(
+                f"Median {metric_name} (ms):",
+                getattr(metrics, f"median_{metric_attribute_name}_ms"),
+            )
+        )
+        # 标准差
+        print(
+            "{:<40} {:<10.2f}".format(
+                f"Std {metric_name} (ms):",
+                getattr(metrics, f"std_{metric_attribute_name}_ms"),
+            )
+        )
+        for p, value in getattr(metrics, f"percentiles_{metric_attribute_name}_ms"):
+            p_word = str(int(p)) if int(p) == p else str(p)
+            print("{:<40} {:<10.2f}".format(f"P{p_word} {metric_name} (ms):", value))
+
+    process_one_metric("ttft", "TTFT", "Time to First Token")
+    process_one_metric("tpot", "TPOT", "Time per Output Token (excl. 1st token)")
+    process_one_metric("itl", "ITL", "Inter-token Latency")
+    process_one_metric("e2el", "E2EL", "End-to-end Latency")
+    print("=" * 50)
 
     return
 
@@ -627,7 +695,7 @@ def main(args: argparse.Namespace):
         )
 
     # Send prompts by timestamp
-    asyncio.run(replay_trace_by_time(input_requests, args, tokenizer))
+    asyncio.run(replay_trace_by_time(input_requests, tokenizer, args))
 
 
 if __name__ == "__main__":
