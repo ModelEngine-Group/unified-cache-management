@@ -2,7 +2,7 @@ import vllm.v1.core.single_type_kv_cache_manager as vllm_single_type_kv_cache_ma
 from vllm.v1.core.kv_cache_utils import BlockHash
 
 # from vllm.v1.request import Request
-from vllm_adapter.v1.request import Request
+from ucm.integration.vllm.vllm_adapter.v1.request import Request
 
 
 class SingleTypeKVCacheManager(

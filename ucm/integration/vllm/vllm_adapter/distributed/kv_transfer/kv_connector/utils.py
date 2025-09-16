@@ -3,10 +3,10 @@ from collections.abc import Sequence
 from concurrent.futures import CancelledError, Future
 from typing import Optional, cast
 
-# import vllm.envs as envs
-import vllm_adapter.envs as envs
 from vllm.logger import init_logger
 
+# import vllm.envs as envs
+import ucm.integration.vllm.vllm_adapter.envs as envs
 from ucm.integration.vllm.vllm_adapter.v1.outputs import ModelRunnerOutput
 
 logger = init_logger(__name__)

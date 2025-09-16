@@ -11,7 +11,7 @@ from vllm.v1.core.kv_cache_utils import (
 )
 
 # from vllm.v1.request import Request
-from vllm_adapter.v1.request import Request
+from ucm.integration.vllm.vllm_adapter.v1.request import Request
 
 
 class BlockPool(vllm_v1_block_pool.BlockPool):

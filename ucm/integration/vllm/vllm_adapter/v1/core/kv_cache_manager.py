@@ -6,10 +6,10 @@ from typing import Optional, Union
 
 from vllm.logger import init_logger
 
-# from vllm.v1.request import Request
-from vllm_adapter.v1.request import Request
-
 from ucm.integration.vllm.ucm_sparse.base import INVALID_SLOT
+
+# from vllm.v1.request import Request
+from ucm.integration.vllm.vllm_adapter.v1.request import Request
 
 logger = init_logger(__name__)
 

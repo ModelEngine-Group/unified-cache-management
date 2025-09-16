@@ -21,14 +21,6 @@ from vllm.v1.request import RequestStatus
 from vllm.v1.spec_decode.metrics import SpecDecodingStats
 from vllm.v1.structured_output import StructuredOutputManager
 
-# from vllm.v1.core.kv_cache_manager import KVCacheManager
-from vllm_adapter.v1.core.kv_cache_manager import KVCacheManager
-from vllm_adapter.v1.core.sched.output import SchedulerOutput
-
-# from vllm.v1.outputs import ModelRunnerOutput
-from vllm_adapter.v1.outputs import ModelRunnerOutput
-from vllm_adapter.v1.request import Request
-
 from ucm.integration.vllm.ucm_sparse.base import (
     INVALID_SLOT,
     UcmSparseBase,
@@ -39,6 +31,14 @@ from ucm.integration.vllm.ucm_sparse.state import (
     get_ucm_sparse,
     has_ucm_sparse,
 )
+
+# from vllm.v1.core.kv_cache_manager import KVCacheManager
+from ucm.integration.vllm.vllm_adapter.v1.core.kv_cache_manager import KVCacheManager
+from ucm.integration.vllm.vllm_adapter.v1.core.sched.output import SchedulerOutput
+
+# from vllm.v1.outputs import ModelRunnerOutput
+from ucm.integration.vllm.vllm_adapter.v1.outputs import ModelRunnerOutput
+from ucm.integration.vllm.vllm_adapter.v1.request import Request
 
 logger = init_logger(__name__)
 
