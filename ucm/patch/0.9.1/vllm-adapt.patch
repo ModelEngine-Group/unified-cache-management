@@ -1,38 +1,476 @@
-From 2973ac33a413c00020a6f5dec01498d9fff909c3 Mon Sep 17 00:00:00 2001
-From: y00945504 <yuhui87@huawei.com>
-Date: Thu, 21 Aug 2025 10:46:38 +0800
-Subject: [PATCH] vllm v0.9.1 adapt patch
+From b837d3d46e593c946f5de70bdff178fa2bff882b Mon Sep 17 00:00:00 2001
+From: root <fenghao78@huawei.com>
+Date: Mon, 15 Sep 2025 22:07:21 -0700
+Subject: [PATCH] 0.9.1-patch
 
 ---
- vllm/v1/core/sched/scheduler.py    | 3 +++
- vllm/v1/outputs.py                 | 1 +
- vllm/v1/request.py                 | 1 +
- vllm/v1/worker/gpu_model_runner.py | 7 ++++---
- 4 files changed, 9 insertions(+), 3 deletions(-)
+ .../kv_transfer/kv_connector/utils.py         | 113 +++++++++++++++
+ .../kv_transfer/kv_connector/v1/base.py       |   8 ++
+ .../v1/shared_storage_connector.py            |   7 +-
+ vllm/v1/core/block_pool.py                    |   2 +-
+ vllm/v1/core/sched/scheduler.py               | 129 ++++++++++++++++++
+ vllm/v1/core/single_type_kv_cache_manager.py  |   2 +
+ vllm/v1/executor/multiproc_executor.py        |  37 ++++-
+ vllm/v1/outputs.py                            |   5 +
+ vllm/v1/request.py                            |   1 +
+ vllm/v1/worker/gpu_input_batch.py             |   9 ++
+ vllm/v1/worker/gpu_model_runner.py            |  52 ++++++-
+ vllm/v1/worker/gpu_worker.py                  |  23 +++-
+ 12 files changed, 366 insertions(+), 22 deletions(-)
 
+diff --git a/vllm/distributed/kv_transfer/kv_connector/utils.py b/vllm/distributed/kv_transfer/kv_connector/utils.py
+index b9bed06d7..de062cfb3 100644
+--- a/vllm/distributed/kv_transfer/kv_connector/utils.py
++++ b/vllm/distributed/kv_transfer/kv_connector/utils.py
+@@ -4,12 +4,19 @@
+ KV cache helper for store.
+ """
+ 
++from collections import defaultdict
++from collections.abc import Sequence
++from concurrent.futures import CancelledError, Future
++from typing import Optional, cast
++
++
+ import torch
+ 
+ import vllm.envs as envs
+ from vllm import _custom_ops as ops
+ from vllm.config import VllmConfig, get_current_vllm_config
+ from vllm.logger import init_logger
++from vllm.v1.outputs import ModelRunnerOutput
+ 
+ logger = init_logger(__name__)
+ 
+@@ -106,3 +113,109 @@ def get_kv_connector_cache_layout():
+             "layout to HND for better xfer performance.")
+             return "HND"
+     return "NHD"
++
++class KVOutputAggregator:
++    """Utility class to aggregate the output of all workers into a single 
++    output corresponding to Rank 0 for scheduler."""
++
++    def __init__(self, world_size: int):
++        # Complete transfer tracker. Used by to track finished requests
++        # [req_id -> n_finished_workers]
++        self._recv_remaining_count = defaultdict[str, int](lambda: world_size)
++        self._send_remaining_count = defaultdict[str, int](lambda: world_size)
++        self._dump_remaining_count = defaultdict[str, int](lambda: world_size)
++
++    def aggregate(self,
++                  outputs: list[ModelRunnerOutput],
++                  output_rank: int = 0) -> ModelRunnerOutput:
++        # aggregate finished_sending, finished_recving from all workers
++
++        def update_finished_set(req_ids: Optional[set[str]],
++                                remaining_count_dict: dict[str, int],
++                                finished_set: set[str]) -> None:
++            for req_id in req_ids or ():
++                new_count = remaining_count_dict[req_id] - 1
++                if new_count == 0:
++                    finished_set.add(req_id)
++                    del remaining_count_dict[req_id]
++                else:
++                    remaining_count_dict[req_id] = new_count
++        
++        def update_finished_list(req_ids: Optional[dict[str, list[str]]],
++                                 remaining_count_dict: dict[str, int],
++                                 finished_list: dict[str, list[str]]) -> None:
++            for req_id, succeed_dump_blocks in (req_ids or {}).items():
++                if req_id not in finished_list:
++                    finished_list[req_id] = []
++                for blk_id in succeed_dump_blocks:
++                    new_count = remaining_count_dict[blk_id] - 1
++                    if new_count == 0:
++                        finished_list[req_id].append(blk_id)
++                        del remaining_count_dict[blk_id]
++                    else:
++                        remaining_count_dict[blk_id] = new_count
++
++        finished_sending = set[str]()
++        finished_recving = set[str]()
++        invalid_block_ids = set[int]()
++        finished_dumping: dict[str, list[str]] = {}
++        for output in outputs:
++            update_finished_set(output.finished_sending,
++                                self._send_remaining_count, finished_sending)
++            update_finished_set(output.finished_recving,
++                                self._recv_remaining_count, finished_recving)
++            update_finished_list(output.finished_dumping,
++                                self._dump_remaining_count, finished_dumping)
++            if output.invalid_block_ids:
++                invalid_block_ids |= output.invalid_block_ids
++
++        # select output of the worker specified by output_rank
++        output = outputs[output_rank]
++
++        # set the aggregated finished_sending / finished_recving
++        # if output.finished_sending/recving is not empty, but the other ranks
++        # still have unfinished send/recv, we want to set the aggregated
++        # finished_sending/recving to None until all ranks have finished
++        # send/recv
++        output.finished_sending = finished_sending if finished_sending else None
++        output.finished_recving = finished_recving if finished_recving else None
++        output.finished_dumping = finished_dumping if finished_dumping else None
++        output.invalid_block_ids = invalid_block_ids or None
++
++        return output
++
++    def async_aggregate(self,
++                        output_futures: Sequence[Future[ModelRunnerOutput]],
++                        output_rank: int = 0) -> Future[ModelRunnerOutput]:
++        """Takes a list of futures and returns a single future which resolves
++        to the respective list of outputs."""
++        result_future: Future[ModelRunnerOutput] = Future()
++
++        outputs: list[Optional[ModelRunnerOutput]] = [None
++                                                      ] * len(output_futures)
++
++        def make_callback(idx):
++
++            def callback(fut):
++                if result_future.done():
++                    return
++
++                try:
++                    outputs[idx] = fut.result()
++                except CancelledError:
++                    result_future.cancel()
++                except Exception as e:
++                    result_future.set_exception(e)
++
++                # this check assumes io_thread_pool uses a single thread
++                if all(outputs):
++                    result_future.set_result(
++                        self.aggregate(cast(list[ModelRunnerOutput], outputs),
++                                       output_rank))
++
++            return callback
++
++        for i, output_future in enumerate(output_futures):
++            output_future.add_done_callback(make_callback(i))
++
++        return result_future
+\ No newline at end of file
+diff --git a/vllm/distributed/kv_transfer/kv_connector/v1/base.py b/vllm/distributed/kv_transfer/kv_connector/v1/base.py
+index f80b5eba2..160348d9d 100644
+--- a/vllm/distributed/kv_transfer/kv_connector/v1/base.py
++++ b/vllm/distributed/kv_transfer/kv_connector/v1/base.py
+@@ -200,6 +200,14 @@ class KVConnectorBase_V1(ABC):
+             call to this method (this call or a prior one).
+         """
+         return None, None
++    def get_block_ids_with_load_errors(self) -> Optional[set[int]]:
++        """
++        Get the set of block IDs that failed to load.
++        Returns:
++            Optional[set[int]]: A set of block IDs that encountered load errors.
++            Returns None if no errors occurred during load.
++        """
++        return None
+ 
+     # ==============================
+     # Scheduler-side methods
+diff --git a/vllm/distributed/kv_transfer/kv_connector/v1/shared_storage_connector.py b/vllm/distributed/kv_transfer/kv_connector/v1/shared_storage_connector.py
+index f86b92692..769a4c37a 100644
+--- a/vllm/distributed/kv_transfer/kv_connector/v1/shared_storage_connector.py
++++ b/vllm/distributed/kv_transfer/kv_connector/v1/shared_storage_connector.py
+@@ -2,7 +2,7 @@
+ # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
+ import hashlib
+ import os
+-from dataclasses import dataclass
++from dataclasses import dataclass, field
+ from typing import TYPE_CHECKING
+ 
+ import safetensors
+@@ -53,10 +53,7 @@ class ReqMeta:
+ 
+ @dataclass
+ class SharedStorageConnectorMetadata(KVConnectorMetadata):
+-    requests: list[ReqMeta]
+-
+-    def __init__(self):
+-        self.requests = []
++    requests: list[ReqMeta] = field(default_factory=list)
+ 
+     def add_request(
+         self,
+diff --git a/vllm/v1/core/block_pool.py b/vllm/v1/core/block_pool.py
+index d21f94727..1800665c7 100644
+--- a/vllm/v1/core/block_pool.py
++++ b/vllm/v1/core/block_pool.py
+@@ -124,7 +124,7 @@ class BlockPool:
+             kv_cache_group_id: The id of the KV cache group.
+             hash_fn: The hash function to use for block hashes.
+         """
+-        if num_cached_blocks == num_full_blocks:
++        if num_cached_blocks >= num_full_blocks:
+             return
+         new_full_blocks = blocks[num_cached_blocks:num_full_blocks]
+         assert len(block_hashes) >= num_cached_blocks
 diff --git a/vllm/v1/core/sched/scheduler.py b/vllm/v1/core/sched/scheduler.py
-index 3d7bbe7e0..1e382e319 100644
+index 3d7bbe7e0..1ef81e960 100644
 --- a/vllm/v1/core/sched/scheduler.py
 +++ b/vllm/v1/core/sched/scheduler.py
-@@ -761,6 +761,9 @@ class Scheduler(SchedulerInterface):
+@@ -707,16 +707,28 @@ class Scheduler(SchedulerInterface):
+         logprobs = model_runner_output.logprobs
+         prompt_logprobs_dict = model_runner_output.prompt_logprobs_dict
+         num_scheduled_tokens = scheduler_output.num_scheduled_tokens
++        invalid_block_ids = model_runner_output.invalid_block_ids
+ 
+         new_running: list[Request] = []
+         outputs: dict[int, list[EngineCoreOutput]] = defaultdict(list)
+         spec_decoding_stats: Optional[SpecDecodingStats] = None
+ 
++        recovered_req_ids = None
++        if invalid_block_ids:
++            # These blocks contain externally computed tokens that failed to
++            # load. Identify affected requests and adjust their computed token
++            # count to trigger recomputation of the invalid blocks.
++            recovered_req_ids = self._handle_invalid_blocks(invalid_block_ids)
++
+         # NOTE(woosuk): As len(self.running) can be up to 1K or more, the below
+         # loop can be a performance bottleneck. We should do our best to avoid
+         # expensive operations inside the loop.
+         for request in self.running:
+             req_id = request.request_id
++            if recovered_req_ids and req_id in recovered_req_ids:
++                # Skip requests that were recovered from KV load failure
++                new_running.append(request)
++                continue
+             num_tokens_scheduled = num_scheduled_tokens.get(req_id, 0)
+             if num_tokens_scheduled == 0:
+                 # The request was not scheduled in this step.
+@@ -761,6 +773,8 @@ class Scheduler(SchedulerInterface):
              new_logprobs = None
              new_token_ids = generated_token_ids
              kv_transfer_params = None
-+            
 +            if model_runner_output.finished_dumping is not None:
 +                request.succeed_dumped_blocks.extend(model_runner_output.finished_dumping.get(req_id, []))
  
              # Append generated tokens and check for stop. Note that if
              # a request is still being prefilled, we expect the model runner
+@@ -824,6 +838,8 @@ class Scheduler(SchedulerInterface):
+ 
+             if not stopped:
+                 new_running.append(request)
++                
++        #self.running = new_running
+ 
+         # KV Connector: update state for finished KV Transfers.
+         self._update_from_kv_xfer_finished(model_runner_output)
+@@ -1042,3 +1058,116 @@ class Scheduler(SchedulerInterface):
+         for req_id in (model_runner_output.finished_sending or ()):
+             logger.debug("Finished sending KV transfer for request %s", req_id)
+             self._free_blocks(self.requests[req_id])
++    def _update_requests_with_invalid_blocks(
++            self, requests: Iterable[Request],
++            invalid_block_ids: set[int]) -> tuple[set[Request], int, set[int]]:
++        affected_requests: set[Request] = set()
++        num_tokens_to_reschedule = 0
++        # If a block is invalid and shared by multiple requests in the batch,
++        # all requests must be rescheduled, but only the first will recompute
++        # it. This set tracks blocks already marked for recomputation.
++        marked_invalid_block_ids: set[int] = set()
++        for request in requests:
++            is_affected = False
++            marked_invalid_block = False
++            req_id = request.request_id
++            req_block_ids = self.kv_cache_manager.get_block_ids(req_id)[0]
++            # We iterate only over blocks that may contain externally computed
++            # tokens
++            if request.num_cached_tokens > 0:
++                req_num_computed_blocks = (request.num_cached_tokens +
++                                           self.block_size -
++                                           1) // self.block_size
++            else:
++                req_num_computed_blocks = len(req_block_ids)
++
++            for idx, block_id in zip(range(req_num_computed_blocks),
++                                     req_block_ids):
++
++                if block_id not in invalid_block_ids:
++                    continue
++
++                is_affected = True
++
++                if block_id in marked_invalid_block_ids:
++                    # This invalid block is shared with a previous request
++                    # and was already marked for recomputation.
++                    # This means this request can still consider this block
++                    # as computed when rescheduled.
++                    continue
++
++                marked_invalid_block_ids.add(block_id)
++
++                if marked_invalid_block:
++                    # This request has already marked an invalid block for
++                    # recomputation and updated its num_computed_tokens.
++                    continue
++
++                marked_invalid_block = True
++                num_tokens_to_reschedule += request.num_computed_tokens
++                request.num_computed_tokens = idx * self.block_size
++                num_tokens_to_reschedule -= request.num_computed_tokens
++
++            if is_affected:
++                if not marked_invalid_block:
++                    # All invalid blocks of this request are shared with
++                    # previous requests and will be recomputed by them.
++                    # Revert to considering only cached tokens as computed.
++                    num_tokens_to_reschedule += (request.num_computed_tokens -
++                                                 request.num_cached_tokens)
++                    request.num_computed_tokens = request.num_cached_tokens
++
++                affected_requests.add(request)
++
++        return (affected_requests, num_tokens_to_reschedule,
++                marked_invalid_block_ids)
++
++    def _handle_invalid_blocks(self, invalid_block_ids: set[int]) -> set[str]:
++        total_requests_to_reschedule = 0
++        total_tokens_to_reschedule = 0
++
++        # --- Handle async KV loads (WAITING_FOR_REMOTE_KVS) ---
++        async_load_reqs = (
++            req for req in self.waiting
++            if req.status == RequestStatus.WAITING_FOR_REMOTE_KVS)
++        (affected_requests, num_tokens_to_reschedule,
++         marked_invalid_block_ids) = (
++             self._update_requests_with_invalid_blocks(async_load_reqs,
++                                                       invalid_block_ids))
++
++        total_requests_to_reschedule += len(affected_requests)
++        total_tokens_to_reschedule += num_tokens_to_reschedule
++
++        for request in affected_requests:
++            if request.num_computed_tokens:
++                # Cache any valid computed tokens.
++                self.kv_cache_manager.cache_blocks(request,
++                                                   request.num_computed_tokens)
++            else:
++                # No valid computed tokens, release allocated blocks.
++                # There may be a local cache hit on retry.
++                self.kv_cache_manager.free(request)
++
++            request.status = RequestStatus.WAITING
++
++        # Remove async loaded invalid blocks already handled,
++        # as they cannot be shared with running requests.
++        invalid_block_ids.difference_update(marked_invalid_block_ids)
++
++        # --- Handle sync KV loads (running requests) ---
++        affected_requests, num_tokens_to_reschedule, _ = (
++            self._update_requests_with_invalid_blocks(self.running,
++                                                      invalid_block_ids))
++
++        total_requests_to_reschedule += len(affected_requests)
++        total_tokens_to_reschedule += num_tokens_to_reschedule
++
++        if total_requests_to_reschedule:
++            logger.info(
++                "Recovered from KV load failure: "
++                "%d request(s) rescheduled (%d tokens affected).",
++                total_requests_to_reschedule, total_tokens_to_reschedule)
++
++        # Return the IDs of affected running requests to skip in
++        # update_from_output.
++        return {r.request_id for r in affected_requests}
+\ No newline at end of file
+diff --git a/vllm/v1/core/single_type_kv_cache_manager.py b/vllm/v1/core/single_type_kv_cache_manager.py
+index 95222779c..9e76eeeca 100644
+--- a/vllm/v1/core/single_type_kv_cache_manager.py
++++ b/vllm/v1/core/single_type_kv_cache_manager.py
+@@ -140,6 +140,8 @@ class SingleTypeKVCacheManager(ABC):
+         """
+         num_cached_blocks = self.num_cached_block[request.request_id]
+         num_full_blocks = num_tokens // self.block_size
++        if num_cached_blocks >= num_full_blocks:
++            return
+ 
+         self.block_pool.cache_full_blocks(
+             request=request,
+diff --git a/vllm/v1/executor/multiproc_executor.py b/vllm/v1/executor/multiproc_executor.py
+index 2148680d5..80220b74b 100644
+--- a/vllm/v1/executor/multiproc_executor.py
++++ b/vllm/v1/executor/multiproc_executor.py
+@@ -26,6 +26,7 @@ from vllm.distributed import (destroy_distributed_environment,
+                               destroy_model_parallel)
+ from vllm.distributed.device_communicators.shm_broadcast import (Handle,
+                                                                  MessageQueue)
++from vllm.distributed.kv_transfer.kv_connector.utils import KVOutputAggregator                                                                 
+ from vllm.executor.multiproc_worker_utils import (
+     _add_prefix, set_multiprocessing_worker_envs)
+ from vllm.logger import init_logger
+@@ -116,10 +117,14 @@ class MultiprocExecutor(Executor):
+         if self.max_concurrent_batches > 1:
+             # Note: must use only 1 IO thread to keep dequeue sequence
+             # from the response queue
++            #_async_aggregate_workers_output also assumes a single IO thread
+             self.io_thread_pool = ThreadPoolExecutor(
+                 max_workers=1, thread_name_prefix="mp_exec_io")
+ 
+         self.output_rank = self._get_output_rank()
++        self.has_connector = self.vllm_config.kv_transfer_config is not None
++        self.kv_output_aggregator = KVOutputAggregator(
++            self.parallel_config.world_size)
+ 
+     def start_worker_monitor(self):
+         workers = self.workers
+@@ -160,13 +165,31 @@ class MultiprocExecutor(Executor):
+         self,
+         scheduler_output,
+     ) -> Union[ModelRunnerOutput, Future[ModelRunnerOutput]]:
+-        (output, ) = self.collective_rpc("execute_model",
+-                                         args=(scheduler_output, ),
+-                                         unique_reply_rank=self.output_rank,
+-                                         non_block=self.max_concurrent_batches
+-                                         > 1,
+-                                         timeout=EXECUTE_MODEL_TIMEOUT_S)
+-        return output
++        non_block = self.max_concurrent_batches > 1
++
++        if not self.has_connector:
++            # get output only from a single worker (output_rank)
++            (output, ) = self.collective_rpc(
++                "execute_model",
++                args=(scheduler_output, ),
++                unique_reply_rank=self.output_rank,
++                non_block=non_block,
++                timeout=EXECUTE_MODEL_TIMEOUT_S)
++            return output
++
++        # get output from all workers
++        outputs = self.collective_rpc(
++            "execute_model",
++            args=(scheduler_output, ),
++            non_block=non_block,
++            timeout=EXECUTE_MODEL_TIMEOUT_S)
++        
++        # aggregate all workers output to a single output
++        if non_block:
++            return self.kv_output_aggregator.async_aggregate(
++                outputs, self.output_rank)
++        return self.kv_output_aggregator.aggregate(outputs, self.output_rank)
++
+ 
+     def collective_rpc(self,
+                        method: Union[str, Callable],
 diff --git a/vllm/v1/outputs.py b/vllm/v1/outputs.py
-index 17a299d57..d6c767f78 100644
+index 17a299d57..7b949ce37 100644
 --- a/vllm/v1/outputs.py
 +++ b/vllm/v1/outputs.py
-@@ -104,6 +104,7 @@ class ModelRunnerOutput:
+@@ -104,6 +104,11 @@ class ModelRunnerOutput:
      # [req_ids]
      finished_sending: Optional[set[str]] = None
      finished_recving: Optional[set[str]] = None
 +    finished_dumping: Optional[dict[str, list[str]]] = None
++
++    # IDs of externally computed KV blocks that failed to load.
++    # Requests referencing these blocks should be rescheduled to recompute them.
++    invalid_block_ids: Optional[set[int]] = None
  
  
  EMPTY_MODEL_RUNNER_OUTPUT = ModelRunnerOutput(req_ids=[],
@@ -48,11 +486,98 @@ index 53fd70fab..ff22263fd 100644
  
      @classmethod
      def from_engine_core_request(cls, request: EngineCoreRequest) -> "Request":
+diff --git a/vllm/v1/worker/gpu_input_batch.py b/vllm/v1/worker/gpu_input_batch.py
+index ebb770a7d..ce989b715 100644
+--- a/vllm/v1/worker/gpu_input_batch.py
++++ b/vllm/v1/worker/gpu_input_batch.py
+@@ -41,6 +41,11 @@ class CachedRequestState:
+ 
+     def __post_init__(self):
+         self.num_prompt_tokens = len(self.prompt_token_ids)
++        # 'last_generator_offset' and 'last_gelen_last_output_token_ids' are
++        # used to allow safe rollback in case a sampled token turns out to be
++        # invalid (e.g., due to KV load errors).
++        self.last_generator_offset = 0 if self.generator else None
++        self.len_last_output_token_ids = len(self.output_token_ids)
+ 
+     @property
+     def num_tokens(self) -> int:
+@@ -201,6 +206,7 @@ class InputBatch:
+         # NOTE(woosuk): The indices of the requests that do not have their own
+         # generator should not be included in the dictionary.
+         self.generators: dict[int, torch.Generator] = {}
++        self.generators_last_offset: dict[int, int] = {}
+ 
+         self.num_logprobs: dict[str, int] = {}
+         # NOTE(rob): num_prompt_logprobs only includes reqs
+@@ -310,6 +316,9 @@ class InputBatch:
+         # do not have their own generator.
+         if request.generator is not None:
+             self.generators[req_index] = request.generator
++            assert (request.last_generator_offset is not None)
++            self.generators_last_offset[
++                req_index] = request.last_generator_offset
+ 
+         if sampling_params.logprobs is not None:
+             self.num_logprobs[req_id] = sampling_params.logprobs
 diff --git a/vllm/v1/worker/gpu_model_runner.py b/vllm/v1/worker/gpu_model_runner.py
-index b1bc727e1..5d2aebb5c 100644
+index b1bc727e1..b05e6a7c4 100644
 --- a/vllm/v1/worker/gpu_model_runner.py
 +++ b/vllm/v1/worker/gpu_model_runner.py
-@@ -1264,7 +1264,7 @@ class GPUModelRunner(LoRAModelRunnerMixin):
+@@ -444,8 +444,27 @@ class GPUModelRunner(LoRAModelRunnerMixin):
+         for req_data in scheduler_output.scheduled_cached_reqs:
+             req_id = req_data.req_id
+             req_state = self.requests[req_id]
++            num_computed_tokens = req_data.num_computed_tokens
+ 
+             # Update the cached states.
++            if (num_computed_tokens <= req_state.num_computed_tokens):
++                # The request was rescheduled after a KV load failure. Clear
++                # the last sampled tokens and rewind the generator state
++                len_output_token_ids = len(req_state.output_token_ids)
++                del req_state.output_token_ids[req_state.
++                                               len_last_output_token_ids:]
++                if req_state.generator:
++                    req_state.generator.set_offset(
++                        req_state.last_generator_offset)
++                req_index = self.input_batch.req_id_to_index.get(req_id)
++                if req_index is not None:
++                    len_last_sampled = (len_output_token_ids -
++                                        req_state.len_last_output_token_ids)
++                    end_idx = self.input_batch.num_tokens_no_spec[
++                        req_index] - len_last_sampled
++                    self.input_batch.num_tokens[req_index] = end_idx
++                    self.input_batch.num_tokens_no_spec[req_index] = end_idx
++
+             num_computed_tokens = req_data.num_computed_tokens
+             req_state.num_computed_tokens = num_computed_tokens
+             # Add the sampled token(s) from the previous step (if any).
+@@ -459,6 +478,12 @@ class GPUModelRunner(LoRAModelRunnerMixin):
+             elif num_new_tokens > 0:
+                 req_state.output_token_ids.extend(
+                     req_data.new_token_ids[-num_new_tokens:])
++            req_state.len_last_output_token_ids = len(
++                req_state.output_token_ids)
++            if req_state.generator:
++                req_state.last_generator_offset = (
++                    req_state.generator.get_offset())
++            
+             # Update the block IDs.
+             if not req_data.resumed_from_preemption:
+                 # Append the new blocks to the existing block IDs.
+@@ -480,6 +505,11 @@ class GPUModelRunner(LoRAModelRunnerMixin):
+                 req_ids_to_add.append(req_id)
+                 continue
+ 
++            if req_state.generator:
++                assert (req_state.last_generator_offset is not None)
++                self.input_batch.generators_last_offset[
++                    req_index] = req_state.last_generator_offset
++
+             # Update the persistent batch.
+             self.input_batch.num_computed_tokens_cpu[req_index] = (
+                 num_computed_tokens)
+@@ -1264,9 +1294,10 @@ class GPUModelRunner(LoRAModelRunnerMixin):
                  inputs_embeds=inputs_embeds,
              )
  
@@ -60,16 +585,48 @@ index b1bc727e1..5d2aebb5c 100644
 +            finished_dumping = self.maybe_wait_for_kv_save()
              finished_sending, finished_recving = (
                  self.get_finished_kv_transfers(scheduler_output))
++            invalid_block_ids = self.get_block_ids_with_load_errors()
  
-@@ -1505,6 +1505,7 @@ class GPUModelRunner(LoRAModelRunnerMixin):
+         if self.use_aux_hidden_state_outputs:
+             hidden_states, aux_hidden_states = model_output
+@@ -1349,7 +1380,8 @@ class GPUModelRunner(LoRAModelRunnerMixin):
+                 # This relies on cuda-specific torch-internal impl details
+                 generator = self.input_batch.generators.get(i)
+                 if generator is not None:
+-                    generator.set_offset(generator.get_offset() - 4)
++                    generator.set_offset(
++                        self.input_batch.generators_last_offset.get(i))
+                 # Record the index of the request that should not be sampled,
+                 # so that we could clear the sampled tokens before returning.
+                 discard_sampled_tokens_req_indices.append(i)
+@@ -1505,6 +1537,8 @@ class GPUModelRunner(LoRAModelRunnerMixin):
              prompt_logprobs_dict=prompt_logprobs_dict,
              finished_sending=finished_sending,
              finished_recving=finished_recving,
-+            finished_dumping=finished_dumping
++            finished_dumping=finished_dumping,
++            invalid_block_ids = invalid_block_ids
          )
  
      def kv_connector_no_forward(
-@@ -1540,9 +1541,9 @@ class GPUModelRunner(LoRAModelRunnerMixin):
+@@ -1514,13 +1548,16 @@ class GPUModelRunner(LoRAModelRunnerMixin):
+             self.maybe_setup_kv_connector(scheduler_output)
+             finished_sending, finished_recving = (
+                 self.get_finished_kv_transfers(scheduler_output))
++            invalid_block_ids = self.get_block_ids_with_load_errors()
++            get_kv_transfer_group().clear_connector_metadata()
+ 
+-        if not finished_sending and not finished_recving:
++        if not finished_sending and not finished_recving and not invalid_block_ids:
+             return EMPTY_MODEL_RUNNER_OUTPUT
+ 
+         output = copy.copy(EMPTY_MODEL_RUNNER_OUTPUT)
+         output.finished_sending = finished_sending
+         output.finished_recving = finished_recving
++        output.invalid_block_ids = invalid_block_ids
+         return output
+ 
+     @staticmethod
+@@ -1540,9 +1577,9 @@ class GPUModelRunner(LoRAModelRunnerMixin):
              kv_connector.start_load_kv(get_forward_context())
  
      @staticmethod
@@ -81,6 +638,74 @@ index b1bc727e1..5d2aebb5c 100644
  
      @staticmethod
      def get_finished_kv_transfers(
+@@ -1553,6 +1590,11 @@ class GPUModelRunner(LoRAModelRunnerMixin):
+                 scheduler_output.finished_req_ids)
+         return None, None
+ 
++    def get_block_ids_with_load_errors(self) -> Optional[set[int]]:
++        if has_kv_transfer_group():
++            return get_kv_transfer_group().get_block_ids_with_load_errors()
++        return None
++
+     def generate_draft_token_ids(
+         self,
+         sampled_token_ids: list[list[int]],
+diff --git a/vllm/v1/worker/gpu_worker.py b/vllm/v1/worker/gpu_worker.py
+index b7d244f27..263a916d2 100644
+--- a/vllm/v1/worker/gpu_worker.py
++++ b/vllm/v1/worker/gpu_worker.py
+@@ -1,6 +1,7 @@
+ # SPDX-License-Identifier: Apache-2.0
+ # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
+ """A GPU worker class."""
++import copy
+ import gc
+ import os
+ from typing import TYPE_CHECKING, Optional
+@@ -15,7 +16,8 @@ from vllm.device_allocator.cumem import CuMemAllocator
+ from vllm.distributed import (ensure_model_parallel_initialized,
+                               init_distributed_environment,
+                               set_custom_all_reduce)
+-from vllm.distributed.kv_transfer import ensure_kv_transfer_initialized
++from vllm.distributed.kv_transfer import (ensure_kv_transfer_initialized,
++                                          has_kv_transfer_group)
+ from vllm.distributed.parallel_state import get_pp_group, get_tp_group
+ from vllm.logger import init_logger
+ from vllm.lora.request import LoRARequest
+@@ -24,7 +26,7 @@ from vllm.platforms import current_platform
+ from vllm.sequence import IntermediateTensors
+ from vllm.utils import GiB_bytes, MemorySnapshot, memory_profiling
+ from vllm.v1.kv_cache_interface import KVCacheConfig, KVCacheSpec
+-from vllm.v1.outputs import ModelRunnerOutput
++from vllm.v1.outputs import EMPTY_MODEL_RUNNER_OUTPUT, ModelRunnerOutput
+ from vllm.v1.utils import report_usage_stats
+ from vllm.v1.worker.gpu_model_runner import GPUModelRunner
+ from vllm.v1.worker.worker_base import WorkerBase
+@@ -298,9 +300,22 @@ class Worker(WorkerBase):
+             assert isinstance(output, IntermediateTensors)
+             get_pp_group().send_tensor_dict(output.tensors,
+                                             all_gather_group=get_tp_group())
+-            return None
++            if not has_kv_transfer_group():
++                return None
++
++            # In case of PP with kv transfer, we need to pass through the
++            # finished_sending and finished_recving buffers.
++            new_output = EMPTY_MODEL_RUNNER_OUTPUT
++            if output.finished_sending or output.finished_recving or output.finished_dumping or output.invalid_block_ids:
++                new_output = copy.copy(new_output)
++                new_output.finished_sending = output.finished_sending
++                new_output.finished_recving = output.finished_recving
++                new_output.finished_dumping = output.finished_dumping
++                new_output.invalid_block_ids = output.invalid_block_ids
++            output = new_output
++
+         assert isinstance(output, ModelRunnerOutput)
+-        return output if self.is_driver_worker else None
++        return output
+ 
+     def profile(self, is_start: bool = True):
+         if self.profiler is None:
 -- 
-2.50.1.windows.1
+2.34.1
 
