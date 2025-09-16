@@ -127,4 +127,4 @@ from ucm.integration.vllm.vllm_adapter.v1.worker.gpu_input_batch import (
 
 gpu_input_batch.CachedRequestState = CachedRequestState
 gpu_input_batch.InputBatch.__init__ = InputBatch.__init__
-gpu_input_batch.InputBatch.__init__ = InputBatch.add_request
+gpu_input_batch.InputBatch.add_request = InputBatch.add_request
