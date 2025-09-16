@@ -1,6 +1,6 @@
 import time
 from collections import defaultdict
-from typing import Iterable, Optional
+from typing import Any, Iterable, Optional
 
 from vllm.config import VllmConfig
 from vllm.distributed.kv_events import EventPublisherFactory, KVEventBatch
