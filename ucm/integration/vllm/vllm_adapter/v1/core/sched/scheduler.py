@@ -1,8 +1,9 @@
+import time
 from collections import defaultdict
 from typing import Iterable, Optional
 
 from vllm.config import VllmConfig
-from vllm.distributed.kv_events import EventPublisherFactory
+from vllm.distributed.kv_events import EventPublisherFactory, KVEventBatch
 from vllm.distributed.kv_transfer.kv_connector.factory import KVConnectorFactory
 from vllm.distributed.kv_transfer.kv_connector.v1 import KVConnectorRole
 from vllm.logger import init_logger
@@ -13,10 +14,10 @@ from vllm.v1.core.encoder_cache_manager import (
 )
 from vllm.v1.core.kv_cache_manager import KVCacheManager
 from vllm.v1.core.sched.interface import SchedulerInterface
-from vllm.v1.core.sched.output import SchedulerOutput
+from vllm.v1.core.sched.output import NewRequestData, SchedulerOutput
 from vllm.v1.core.sched.request_queue import SchedulingPolicy, create_request_queue
 from vllm.v1.core.sched.utils import check_stop
-from vllm.v1.engine import EngineCoreOutput, EngineCoreOutputs
+from vllm.v1.engine import EngineCoreEventType, EngineCoreOutput, EngineCoreOutputs
 from vllm.v1.kv_cache_interface import KVCacheConfig
 from vllm.v1.outputs import ModelRunnerOutput
 from vllm.v1.request import Request, RequestStatus
@@ -36,8 +37,10 @@ from ucm.integration.vllm.ucm_sparse.state import (
 
 logger = init_logger(__name__)
 
+import vllm.v1.core.sched.scheduler as vllm_v1_scheduler
 
-class Scheduler(SchedulerInterface):
+
+class Scheduler(vllm_v1_scheduler.Scheduler):
 
     def __init__(
         self,
@@ -977,3 +980,6 @@ class Scheduler(SchedulerInterface):
         # Return the IDs of affected running requests to skip in
         # update_from_output.
         return {r.request_id for r in affected_requests}
+
+
+vllm_v1_scheduler.Scheduler = Scheduler

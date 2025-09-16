@@ -4,6 +4,7 @@
 from typing import Any, Dict, List, Optional
 
 import torch
+from vllm.attention import layer as vllm_attention_layer
 from vllm.attention.layer import (
     maybe_save_kv_layer_to_connector,
     wait_for_kv_layer_from_connector,
@@ -112,3 +113,7 @@ def maybe_execute_sparse_attention_finished(
     ucm_sparse.attention_finished(
         query, key, value, attn_output, layer_name, forward_context
     )
+
+
+vllm_attention_layer.unified_attention = unified_attention
+vllm_attention_layer.unified_attention_with_output = unified_attention_with_output

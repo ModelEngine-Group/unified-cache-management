@@ -22,103 +22,11 @@ from ucm.integration.vllm.ucm_sparse.state import (
 
 logger = init_logger(__name__)
 
-
-@dataclass
-class KVCacheBlocks:
-    """
-    The allocation result of KVCacheManager, work as the interface between
-    Scheduler and KVCacheManager, to hide KVCacheManager's internal data
-    structure from the Scheduler.
-    """
-
-    blocks: tuple[list[KVCacheBlock], ...]
-    """
-    blocks[i][j] refers to the i-th kv_cache_group and the j-th block of tokens.
-    We don't use block of tokens as the outer dimension because it assumes all
-    kv_cache_groups have the same number of blocks, which is true for now but 
-    will be broken if we want to give different block_size to different 
-    kv_cache_groups in the future.
-    """
-
-    def __add__(self, other: "KVCacheBlocks") -> "KVCacheBlocks":
-        """Adds two KVCacheBlocks instances."""
-        return KVCacheBlocks(
-            tuple(blk1 + blk2 for blk1, blk2 in zip(self.blocks, other.blocks))
-        )
-
-    def get_block_ids(self) -> tuple[list[int], ...]:
-        """
-        Converts the KVCacheBlocks instance to block_ids.
-
-        Returns:
-            tuple[list[int], ...]: A tuple of lists where
-            * the outer tuple corresponds to KV cache groups
-            * each inner list contains the block_ids of the blocks in that group
-        """
-        return tuple([blk.block_id for blk in group] for group in self.blocks)
-
-    def get_unhashed_block_ids(self) -> list[int]:
-        """Get block_ids of unhashed blocks from KVCacheBlocks instance."""
-        assert len(self.blocks) == 1, "Only one group is supported"
-        return [block.block_id for block in self.blocks[0] if block.block_hash is None]
-
-    def new_empty(self) -> "KVCacheBlocks":
-        """Creates a new KVCacheBlocks instance with no blocks."""
-        return KVCacheBlocks(tuple([] for _ in range(len(self.blocks))))
+import vllm.v1.core.kv_cache_manager as vllm_v1_kv_cache_manager
+from vllm_v1_kv_cache_manager import KVCacheBlocks
 
 
-class KVCacheManager:
-
-    def __init__(
-        self,
-        kv_cache_config: KVCacheConfig,
-        max_model_len: int,
-        enable_caching: bool = True,
-        caching_hash_algo: str = "builtin",
-        use_eagle: bool = False,
-        log_stats: bool = False,
-        enable_kv_cache_events: bool = False,
-    ) -> None:
-        self.max_model_len = max_model_len
-
-        self.enable_caching = enable_caching
-        self.caching_hash_fn = sha256 if caching_hash_algo == "sha256" else hash
-        self.use_eagle = use_eagle
-        self.log_stats = log_stats
-        # FIXME: make prefix cache stats conditional on log_stats
-        self.prefix_cache_stats = PrefixCacheStats() if log_stats else None
-
-        self.block_size: Optional[int] = None
-        if self.enable_caching:
-            assert (
-                len(
-                    set(
-                        g.kv_cache_spec.block_size
-                        for g in kv_cache_config.kv_cache_groups
-                    )
-                )
-                == 1
-            ), "Only one block size is supported for now"
-            self.block_size = kv_cache_config.kv_cache_groups[
-                0
-            ].kv_cache_spec.block_size
-
-        self.coordinator = get_kv_cache_coordinator(
-            kv_cache_config=kv_cache_config,
-            max_model_len=self.max_model_len,
-            use_eagle=self.use_eagle,
-            enable_caching=enable_caching,
-            caching_hash_fn=self.caching_hash_fn,
-            enable_kv_cache_events=enable_kv_cache_events,
-        )
-        self.num_kv_cache_groups = len(kv_cache_config.kv_cache_groups)
-        self.block_pool = self.coordinator.block_pool
-        self.kv_cache_config = kv_cache_config
-
-        # Mapping from request ID to kv block hashes.
-        # This is to avoid recomputing the block hashes for each call of
-        # `get_computed_blocks` or `allocate_slots`.
-        self.req_to_block_hashes: defaultdict[str, list[BlockHash]] = defaultdict(list)
+class KVCacheManager(vllm_v1_kv_cache_manager.KVCacheManager):
 
     def allocate_slots(
         self,
@@ -270,3 +178,6 @@ class KVCacheManager:
         )
 
         return KVCacheBlocks(new_blocks)
+
+
+vllm_v1_kv_cache_manager.KVCacheManager = KVCacheManager

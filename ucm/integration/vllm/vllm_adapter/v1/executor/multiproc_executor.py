@@ -30,8 +30,10 @@ from vllm.v1.outputs import ModelRunnerOutput
 
 logger = init_logger(__name__)
 
+import vllm.v1.executor as vllm_v1_executor
 
-class MultiprocExecutor(Executor):
+
+class MultiprocExecutor(vllm_v1_executor.MultiprocExecutor):
 
     def _init_executor(self) -> None:
         # Call self.shutdown at exit to clean up
@@ -144,3 +146,6 @@ class MultiprocExecutor(Executor):
         if non_block:
             return self.kv_output_aggregator.async_aggregate(outputs, self.output_rank)
         return self.kv_output_aggregator.aggregate(outputs, self.output_rank)
+
+
+vllm_v1_executor.MultiprocExecutor = MultiprocExecutor

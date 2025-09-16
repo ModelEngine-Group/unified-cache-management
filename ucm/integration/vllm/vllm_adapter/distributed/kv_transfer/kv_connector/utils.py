@@ -13,6 +13,8 @@ from ucm.integration.vllm.vllm_adapter.v1.outputs import ModelRunnerOutput
 
 logger = init_logger(__name__)
 
+import vllm.distributed.kv_transfer.kv_connector.utils as utils_mod
+
 
 class KVOutputAggregator:
     """Utility class to aggregate the output of all workers into a single
@@ -127,3 +129,6 @@ class KVOutputAggregator:
             output_future.add_done_callback(make_callback(i))
 
         return result_future
+
+
+utils_mod.KVOutputAggregator = KVOutputAggregator

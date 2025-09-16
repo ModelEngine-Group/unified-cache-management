@@ -31,8 +31,10 @@ logger = init_logger(__name__)
 if TYPE_CHECKING:
     from vllm.v1.core.sched.output import SchedulerOutput
 
+import vllm.v1.worker.gpu_worker as vllm_v1_gpu_worker
 
-class Worker(WorkerBase):
+
+class Worker(vllm_v1_gpu_worker.Worker):
 
     def __init__(
         self,
@@ -146,3 +148,9 @@ def init_worker_distributed_environment(
 
     ensure_kv_transfer_initialized(vllm_config)
     ensure_ucm_sparse_initialized(vllm_config)
+
+
+vllm_v1_gpu_worker.Worker = Worker
+vllm_v1_gpu_worker.init_worker_distributed_environment = (
+    init_worker_distributed_environment
+)
