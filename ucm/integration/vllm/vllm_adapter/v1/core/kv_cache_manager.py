@@ -23,7 +23,7 @@ from ucm.integration.vllm.ucm_sparse.state import (
 logger = init_logger(__name__)
 
 import vllm.v1.core.kv_cache_manager as vllm_v1_kv_cache_manager
-from vllm_v1_kv_cache_manager import KVCacheBlocks
+from vllm.v1.core.kv_cache_manager import KVCacheBlocks
 
 
 class KVCacheManager(vllm_v1_kv_cache_manager.KVCacheManager):
