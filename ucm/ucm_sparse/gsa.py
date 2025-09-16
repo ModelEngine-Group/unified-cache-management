@@ -326,8 +326,10 @@ class GSA(UcmSparseBase):
         self.num_key_heads = vllm_config.model_config.get_num_kv_heads(vllm_config.parallel_config)
         self.head_size = vllm_config.model_config.get_head_size()
         self.use_mla = vllm_config.model_config.use_mla
-        config = {"max_cache_size": 536870912000, "device": self.rank, "role": "worker"}
-        self.connector = UcmConnectorFactory.create_connector("UcmDram", config)
+        # config = {"max_cache_size": 536870912000, "device": self.rank, "role": "worker"}
+        # self.connector = UcmConnectorFactory.create_connector("UcmDram", config)
+        nfs_config = {"storage_backends": "/home/zambin/data", "kv_block_size": 33554432, 'device': self.rank, 'role': 'worker'}
+        self.connector = UcmConnectorFactory.create_connector("UcmNfsStore", nfs_config)
         self.prefetch_engine = GSAPrefetchBase(vllm_config, 16, True, True, False, 1)
         self.topk_kpre_manger = TopKAndKpreManger(vllm_config.scheduler_config.max_num_seqs)
         self.block_size = vllm_config.cache_config.block_size
@@ -595,6 +597,8 @@ class GSA(UcmSparseBase):
                 torch.cuda.current_stream().synchronize()
             else:
                 torch.npu.current_stream().synchronize()
+            if current_layer_id == 0:
+                self.connector.create(block_hashes)
             self.launch_transfer_task("dump", block_hashes, block_ids, current_layer_id)
     
     def wait_all_task_done(self, transfer_type):
