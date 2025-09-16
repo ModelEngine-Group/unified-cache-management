@@ -128,3 +128,5 @@
 # gpu_input_batch.CachedRequestState = CachedRequestState
 # gpu_input_batch.InputBatch.__init__ = InputBatch.__init__
 # gpu_input_batch.InputBatch.add_request = InputBatch.add_request
+
+from .. import attention, distributed, v1

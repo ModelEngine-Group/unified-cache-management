@@ -1,1 +1,1 @@
-from .vllm_adapter.adapter import vllm_adapter
+from . import vllm_adapter, vllm_ascend_adapter
