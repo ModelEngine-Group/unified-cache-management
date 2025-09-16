@@ -1,7 +1,7 @@
 import os
 from typing import Any, Callable
 
-environment_variables = dict[str, Callable[[], Any]] = {
+environment_variables: dict[str, Callable[[], Any]] = {
     # Controls whether or not refined profile run
     # are used for preventing OOM
     "VLLM_USE_REFINED_PROFILE": lambda: bool(
