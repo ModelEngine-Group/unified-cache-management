@@ -197,30 +197,6 @@ class TraceReplayDataset(BenchmarkDataset):
         return requests
 
 
-def create_argument_trace():
-    parser = create_argument_parser()
-    trace_group = parser.add_argument_group("tracing parameters")
-    trace_group.add_argument(
-        "--trace-path",
-        type=str,
-        default=None,
-        help="Path to trace file path.",
-    )
-    trace_group.add_argument(
-        "--trace-mode",
-        type=str,
-        default="trace",
-        choices=["trace", "benchmark"],
-        help="Specify the trace mode: 'trace' to replay requests from cached trace files, or 'benchmark' to generate requests dynamically using the benchmark module.",
-    )
-    trace_group.add_argument(
-        "--save-prompts",
-        action="store_true",
-        help="Save generated prompts with timestamp for reuse.",
-    )
-    return parser
-
-
 # Generate a request by benchmark dataset
 def gene_one_req(
     req: json,
@@ -403,7 +379,7 @@ async def replay_trace_by_benchmark(
         async def send_one_request(r=reqs, d=delay):
             sampling_params = {}
             sampling_params["temperature"] = 0.9
-            await asyncio.sleep(d)  # 等到目标时间
+            await asyncio.sleep(d)  # Wait until the target time
             print(f"Sending request at {time.time() - start_time:.3f}s")
             try:
                 result = await benchmark(
@@ -433,15 +409,56 @@ async def replay_trace_by_benchmark(
                     ramp_up_end_rps=None,
                 )
             except asyncio.TimeoutError:
-                print(f"请求超时: timestamp {r[0].timestamp if r else 'unknown'}")
+                print(
+                    f"Request timed out: timestamp {r[0].timestamp if r else 'unknown'}"
+                )
                 return None
             except Exception as e:
-                print(f"请求失败: {e}")
+                print(f"Request failed: {e}")
                 return None
             return result
 
         tasks.append(asyncio.create_task(send_one_request(reqs, delay)))
     await asyncio.gather(*tasks)
+
+
+def save_metrics_to_file(metrics, output_dir="./"):
+    output_path = output_dir
+    if not os.path.exists(output_path):
+        os.makedirs(output_path, exist_ok=True)
+    excel_file = os.path.join(output_path, "metrics.xlsx")
+
+    outputs = {}
+    outputs["time"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    outputs["completed requests"] = metrics.completed
+    outputs["mean_itl(ms)"] = round(metrics.mean_itl_ms, 2)
+    outputs["mean_tpot(ms)"] = round(metrics.mean_tpot_ms, 2)
+    outputs["mean_ttft(ms)"] = round(metrics.mean_ttft_ms, 2)
+    outputs["p99_itl(ms)"] = round(metrics.percentiles_itl_ms[3][1], 2)
+    outputs["p99_tpot(ms)"] = round(metrics.percentiles_tpot_ms[3][1], 2)
+    outputs["p99_ttft(ms)"] = round(metrics.percentiles_ttft_ms[3][1], 2)
+    outputs["total_input_tokens"] = round(metrics.total_input, 2)
+    outputs["total_output_tokens"] = round(metrics.total_output, 2)
+    outputs["request_throughput(req/s)"] = round(metrics.request_throughput, 2)
+    outputs["output_throughput(tok/s)"] = round(metrics.output_throughput, 2)
+    outputs["total_token_throughput(tok/s)"] = round(metrics.total_token_throughput, 2)
+
+    df = pandas.DataFrame([outputs])
+    if os.path.isfile(excel_file):
+        try:
+            existing_df = pandas.read_excel(excel_file)
+            updated_df = pandas.concat([existing_df, df], ignore_index=True)
+        except Exception as e:
+            print(
+                f"Warning: Failed to read {excel_file}, it will be overwritten. Error: {e}"
+            )
+            updated_df = df
+    else:
+        updated_df = df
+    # Save back to Excel (automatically create or overwrite)
+    with pandas.ExcelWriter(excel_file, engine="openpyxl", mode="w") as writer:
+        updated_df.to_excel(writer, index=False, sheet_name="Performance Metrics")
+    print(f"Successfully saved performance metrics to {excel_file}")
 
 
 # Send requests by timestamp
@@ -538,10 +555,10 @@ async def replay_trace_by_time(
             try:
                 return await asyncio.gather(*group_tasks)
             except asyncio.TimeoutError:
-                print(f"请求超时: group at delay {d:.3f}s")
+                print(f"Request timed out: group at delay {d:.3f}s")
                 return []
             except Exception as e:
-                print(f"请求失败: {e}")
+                print(f"Request failed: {e}")
                 return []
 
         tasks.append(asyncio.create_task(send_group(reqs, delay)))
@@ -591,7 +608,7 @@ async def replay_trace_by_time(
         )
     )
 
-    # 定义 process_one_metric 函数，可以访问外层的 selected_percentile_metrics
+    # Define the process_one_metric function, which can access the outer scope's selected_percentile_metrics
     def process_one_metric(
         metric_attribute_name: str,
         metric_name: str,
@@ -613,7 +630,7 @@ async def replay_trace_by_time(
                 getattr(metrics, f"median_{metric_attribute_name}_ms"),
             )
         )
-        # 标准差
+        # standard deviation
         print(
             "{:<40} {:<10.2f}".format(
                 f"Std {metric_name} (ms):",
@@ -633,43 +650,28 @@ async def replay_trace_by_time(
     return
 
 
-def save_metrics_to_file(metrics, output_dir="./"):
-    output_path = output_dir
-    if not os.path.exists(output_path):
-        os.makedirs(output_path, exist_ok=True)
-    excel_file = os.path.join(output_path, "metrics.xlsx")
-
-    outputs = {}
-    outputs["time"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    outputs["completed requests"] = metrics.completed
-    outputs["mean_itl(ms)"] = round(metrics.mean_itl_ms, 2)
-    outputs["mean_tpot(ms)"] = round(metrics.mean_tpot_ms, 2)
-    outputs["mean_ttft(ms)"] = round(metrics.mean_ttft_ms, 2)
-    outputs["p99_itl(ms)"] = round(metrics.percentiles_itl_ms[3][1], 2)
-    outputs["p99_tpot(ms)"] = round(metrics.percentiles_tpot_ms[3][1], 2)
-    outputs["p99_ttft(ms)"] = round(metrics.percentiles_ttft_ms[3][1], 2)
-    outputs["total_input_tokens"] = round(metrics.total_input, 2)
-    outputs["total_output_tokens"] = round(metrics.total_output, 2)
-    outputs["request_throughput(req/s)"] = round(metrics.request_throughput, 2)
-    outputs["output_throughput(tok/s)"] = round(metrics.output_throughput, 2)
-    outputs["total_token_throughput(tok/s)"] = round(metrics.total_token_throughput, 2)
-
-    df = pandas.DataFrame([outputs])
-    if os.path.isfile(excel_file):
-        try:
-            existing_df = pandas.read_excel(excel_file)
-            updated_df = pandas.concat([existing_df, df], ignore_index=True)
-        except Exception as e:
-            print(
-                f"Warning: Failed to read {excel_file}, it will be overwritten. Error: {e}"
-            )
-            updated_df = df
-    else:
-        updated_df = df
-    # Save back to Excel (automatically create or overwrite)
-    with pandas.ExcelWriter(excel_file, engine="openpyxl", mode="w") as writer:
-        updated_df.to_excel(writer, index=False, sheet_name="Performance Metrics")
-    print(f"Successfully saved performance metrics to {excel_file}")
+def create_argument_trace():
+    parser = create_argument_parser()
+    trace_group = parser.add_argument_group("tracing parameters")
+    trace_group.add_argument(
+        "--trace-path",
+        type=str,
+        default=None,
+        help="Path to trace file path.",
+    )
+    trace_group.add_argument(
+        "--trace-mode",
+        type=str,
+        default="trace",
+        choices=["trace", "benchmark"],
+        help="Specify the trace mode: 'trace' to replay requests from cached trace files, or 'benchmark' to generate requests dynamically using the benchmark module.",
+    )
+    trace_group.add_argument(
+        "--save-prompts",
+        action="store_true",
+        help="Save generated prompts with timestamp for reuse.",
+    )
+    return parser
 
 
 def main(args: argparse.Namespace):
