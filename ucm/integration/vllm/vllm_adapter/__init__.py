@@ -1,1 +1,1 @@
-from . import attention, distributed, entrypoints, v1
+from .adapter import vllm_adapter

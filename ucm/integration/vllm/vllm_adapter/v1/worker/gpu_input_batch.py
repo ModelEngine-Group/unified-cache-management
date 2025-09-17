@@ -15,7 +15,24 @@ from vllm.v1.worker.block_table import MultiGroupBlockTable
 
 
 @dataclass
-class CachedRequestState(vllm_v1_gpu_input_batch.CachedRequestState):
+class CachedRequestState:
+
+    req_id: str
+    prompt_token_ids: list[int]
+    mm_inputs: list[MultiModalKwargs]
+    mm_positions: list[PlaceholderRange]
+    sampling_params: Optional[SamplingParams]
+    pooling_params: Optional[PoolingParams]
+    generator: Optional[torch.Generator]
+
+    block_ids: tuple[list[int], ...]
+    num_computed_tokens: int
+    output_token_ids: list[int]
+
+    mrope_positions: Optional[torch.Tensor] = None
+    mrope_position_delta: Optional[int] = None
+
+    lora_request: Optional[LoRARequest] = None
 
     def __post_init__(self):
         self.num_prompt_tokens = len(self.prompt_token_ids)
@@ -24,6 +41,16 @@ class CachedRequestState(vllm_v1_gpu_input_batch.CachedRequestState):
         # invalid (e.g., due to KV load errors).
         self.last_generator_offset = 0 if self.generator else None
         self.len_last_output_token_ids = len(self.output_token_ids)
+
+    @property
+    def num_tokens(self) -> int:
+        return self.num_prompt_tokens + len(self.output_token_ids)
+
+    def get_token_id(self, idx: int) -> int:
+        if idx < self.num_prompt_tokens:
+            return self.prompt_token_ids[idx]
+        else:
+            return self.output_token_ids[idx - self.num_prompt_tokens]
 
 
 class InputBatch(vllm_v1_gpu_input_batch.InputBatch):
@@ -176,5 +203,5 @@ class InputBatch(vllm_v1_gpu_input_batch.InputBatch):
         return req_index
 
 
-vllm_v1_gpu_input_batch.CachedRequestState = CachedRequestState
-vllm_v1_gpu_input_batch.InputBatch = InputBatch
+# vllm_v1_gpu_input_batch.CachedRequestState = CachedRequestState
+# vllm_v1_gpu_input_batch.InputBatch = InputBatch

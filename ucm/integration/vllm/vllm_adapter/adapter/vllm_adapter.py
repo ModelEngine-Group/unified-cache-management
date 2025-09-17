@@ -1,13 +1,45 @@
-# import importlib
+import importlib
 
-# import vllm.v1.outputs as default_outputs
+import vllm.v1.outputs as vllm_v1_outputs
 
-# from ucm.integration.vllm.vllm_adapter.adapter.utils import (
-#     patch_dataclass_fields,
-# )
-# from ucm.integration.vllm.vllm_adapter.v1.outputs import ModelRunnerOutput
+from ucm.integration.vllm.vllm_adapter.adapter.utils import (
+    patch_dataclass_fields,
+)
+from ucm.integration.vllm.vllm_adapter.v1.outputs import ModelRunnerOutput
 
-# patch_dataclass_fields(default_outputs.ModelRunnerOutput, ModelRunnerOutput)
+patch_dataclass_fields(vllm_v1_outputs.ModelRunnerOutput, ModelRunnerOutput)
+
+import vllm.distributed.kv_transfer.kv_connector.v1.shared_storage_connector as shared_storage_conn
+
+from ucm.integration.vllm.vllm_adapter.distributed.kv_transfer.kv_connector.v1.shared_storage_connector import (
+    SharedStorageConnectorMetadata,
+)
+
+patch_dataclass_fields(
+    shared_storage_conn.SharedStorageConnectorMetadata, SharedStorageConnectorMetadata
+)
+
+import vllm.v1.core.sched.output as vllm_v1_scheduler_output
+
+from ucm.integration.vllm.vllm_adapter.v1.core.sched.output import SchedulerOutput
+
+patch_dataclass_fields(vllm_v1_scheduler_output.SchedulerOutput, SchedulerOutput)
+
+import vllm.v1.worker.gpu_input_batch as vllm_v1_gpu_input_batch
+
+from ucm.integration.vllm.vllm_adapter.v1.worker.gpu_input_batch import (
+    CachedRequestState,
+    InputBatch,
+)
+
+patch_dataclass_fields(vllm_v1_gpu_input_batch.CachedRequestState, CachedRequestState)
+vllm_v1_gpu_input_batch.InputBatch = InputBatch
+
+# 上面把dataclass类型的都patch完了
+
+from .. import attention, distributed, v1
+
+# 下面是之前的实现，先不管
 
 # from vllm.v1.core.sched import scheduler
 
@@ -128,5 +160,3 @@
 # gpu_input_batch.CachedRequestState = CachedRequestState
 # gpu_input_batch.InputBatch.__init__ = InputBatch.__init__
 # gpu_input_batch.InputBatch.add_request = InputBatch.add_request
-
-from .. import attention, distributed, v1
