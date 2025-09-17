@@ -684,13 +684,17 @@ class GSA(UcmSparseBase):
         forward_context = get_forward_context()
         attn = forward_context.no_compile_layers
         is_load_done = self.check_all_task_is_done("load")
-        all_need_load_block, all_miss_idx = self.prefetch_engine.deal_async_prefetch(
-            self.rank, self.gsa_metadata, is_load_done)
+        self.prefetch_engine.deal_async_prefetch(
+            self.rank, self.gsa_metadata)
         self.gsa_stats = self.gsa_metadata.gsa_stats
         if not PTOPK_PREFETCH_ENABLE:
             return
         self._gsa_sparse_local_kv()
-        if all_need_load_block is not None:
+        if is_load_done and self.prefetch_engine.is_prefetch_flag and \
+            self.prefetch_engine.prefetch_engine_c.get_prefetch_status():
+            self.prefetch_engine.is_prefetch_flag = False
+            all_need_load_block = self.prefetch_engine.prefetch_engine_c.obtain_load_blocks()
+            all_miss_idx = self.prefetch_engine.prefetch_engine_c.obtain_miss_idxs()
             block_hashes_load_all = {}
             block_ids_load_all = {}
             num_load_blocks = 0

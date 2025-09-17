@@ -128,9 +128,7 @@ class GSAPrefetchBase:
             list_topk_buf = list(topk_buf_tmp.unbind(dim=0))
             list_block_table = list(block_table_tmp.unbind(dim=0))
             gsa_len_list = list(gen_len_tmp.unbind(dim=0))
-            self.is_prefetch_flag = self.prefetch_space >= 5
             self.is_topk_cal = is_topk_done
-
             gsa_model_input["topk_caches"] = list_topk_buf
             gsa_model_input["kpre_caches"] = self.kpre_caches
             gsa_model_input["is_topk"] = self.is_topk_cal
@@ -157,11 +155,10 @@ class GSAPrefetchBase:
         self,
         rank,
         gsa_metadata,
-        is_load_done
     ) -> None:        
         if self.atb_gsa_enable:
             if self.ptopk_prefetch_enable:
-                if self.is_prefetch_flag  and is_load_done:
+                if self.prefetch_space >= 5:
                     tmp = self.use_block_table
                     self.use_block_table = self.m_load_success_list
                     self.m_load_success_list = tmp
@@ -191,14 +188,11 @@ class GSAPrefetchBase:
                                 topk_len_list.append(0)
                     self.prefetch_engine_c.run_async_prefetch_bs(req_id_list, topk_len_list,
                                                                  self.select_bs_index, rank)
-                    all_need_load_block = self.prefetch_engine_c.obtain_load_blocks()
-                    all_miss_idx = self.prefetch_engine_c.obtain_miss_idxs()
+                    self.is_prefetch_flag = True
                     self.prefetch_space = 0
-                    return all_need_load_block, all_miss_idx
                 else:
                     self.prefetch_space += 1
             self.num_token += 1
-        return None, None
 
     def del_finish_meta(
         self,
