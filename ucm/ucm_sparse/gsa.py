@@ -23,7 +23,7 @@ from ucm.ucm_sparse.utils import (MAX_TOPK_LEN, MAX_BS, compute_topk_len,
                                            PTOPK_PREFETCH_ENABLE)
 from ucm.store.base import Task, UcmKVStoreBase
 from ucm.store.factory import UcmConnectorFactory
-from vllm.utils import make_tensor_with_pad
+from vllm.utils import make_tensor_with_pad, sha256
 import os
 import sys
 from vllm.forward_context import set_forward_context, get_forward_context
@@ -136,17 +136,18 @@ class GSAReqStat:
         self.num_output_tokens = len(add_req_state.output_token_ids)
         self.index_in_batch = index_in_batch
         if self.stage() == SequenceStage.PREFILL:
-            add_blocks = [x for x in add_req_state.block_ids[0] if x not in self.blocks]
+            if self.is_last_chunk():
+                add_blocks = [x for x in add_req_state.block_ids[0][:-1] if x not in self.blocks]
+            else:
+                add_blocks = [x for x in add_req_state.block_ids[0] if x not in self.blocks]
             self.blocks = [x for x in add_req_state.block_ids[0]]
             self._update_slot(add_blocks)
         else:
             self._get_sparse_and_free_block()
             if len(add_req_state.block_ids[0]) != self.sparse_len:
-                add_blocks = [add_req_state.block_ids[0][-1]]
+                add_blocks = [add_req_state.block_ids[0][-2]]
                 self._update_slot(add_blocks)
-                self.blocks += add_blocks
-                self.calc_block_table.append(self.blocks[-2])
-                self.calc_repre_slot_mapping.append(self.repre_slot_mapping[-2])
+                self.blocks += [add_req_state.block_ids[0][-1]]
                 self.sparse_len = len(add_req_state.block_ids[0])
             else:
                 self.calc_block_table = []
@@ -183,10 +184,13 @@ class GSAReqStat:
             self.prefetch_idx = None
     
     def _init_slot(self, offset: int) -> None:
-        self.repre_slot_mapping = list(range(len(self.blocks)))
+        if self.is_last_chunk():
+            self.repre_slot_mapping = list(range(len(self.blocks) - 1))
+            self.calc_block_table = [x for x in self.blocks[:-1]]
+        else:
+            self.repre_slot_mapping = list(range(len(self.blocks)))
+            self.calc_block_table = [x for x in self.blocks]
         self.repre_slot_mapping = [x + offset for x in self.repre_slot_mapping]
-
-        self.calc_block_table = [x for x in self.blocks]
         self.calc_repre_slot_mapping = [x for x in self.repre_slot_mapping]
 
         value = len(self.blocks)
@@ -326,9 +330,7 @@ class GSA(UcmSparseBase):
         self.num_key_heads = vllm_config.model_config.get_num_kv_heads(vllm_config.parallel_config)
         self.head_size = vllm_config.model_config.get_head_size()
         self.use_mla = vllm_config.model_config.use_mla
-        # config = {"max_cache_size": 536870912000, "device": self.rank, "role": "worker"}
-        # self.connector = UcmConnectorFactory.create_connector("UcmDram", config)
-        nfs_config = {"storage_backends": "/home/zambin/data", "kv_block_size": 33554432, 'device': self.rank, 'role': 'worker'}
+        nfs_config = {"storage_backends": "ucm/data/" + str(self.rank), "kv_block_size": 33554432, 'device': self.rank, 'role': 'worker'}
         self.connector = UcmConnectorFactory.create_connector("UcmNfsStore", nfs_config)
         self.prefetch_engine = GSAPrefetchBase(vllm_config, 16, True, True, False, 1)
         self.topk_kpre_manger = TopKAndKpreManger(vllm_config.scheduler_config.max_num_seqs)
@@ -348,7 +350,7 @@ class GSA(UcmSparseBase):
 
     @classmethod
     def block_hash(cls, request_id, block_id):
-        return f"req_{request_id}_blk_{block_id}"
+        return sha256(f"req_{request_id}_blk_{block_id}")
 
     @classmethod
     def task_hash(cls, block_ids, store_type, tensor_type):
@@ -598,8 +600,11 @@ class GSA(UcmSparseBase):
             else:
                 torch.npu.current_stream().synchronize()
             if current_layer_id == 0:
-                self.connector.create(block_hashes)
+                ret = self.connector.create(block_hashes)
             self.launch_transfer_task("dump", block_hashes, block_ids, current_layer_id)
+            self.wait_all_task_done("dump")
+            if current_layer_id == self.layer_num - 1:
+                self.connector.commit(block_hashes, True)
     
     def wait_all_task_done(self, transfer_type):
         if transfer_type == "dump":
@@ -623,9 +628,7 @@ class GSA(UcmSparseBase):
             for _, task in self.tasks_load.items():
                 ret = self.connector.check(task)
                 if ret == -1:
-                    print("Zambin kv load task is not finish!!")
                     return False
-            print("Zambin kv load task is done!!")
             self.tasks_load.clear()
             return True
     
@@ -675,7 +678,6 @@ class GSA(UcmSparseBase):
         self.prefetch_engine.model_input_del(req_ids, block_table_ori, 
                                              topk_kpre_maps, self.model_input,
                                              self.gsa_metadata, is_topk_done)
-        self.wait_all_task_done("dump")
         self._start_topk_cal()
 
     def execute_finished(self):
