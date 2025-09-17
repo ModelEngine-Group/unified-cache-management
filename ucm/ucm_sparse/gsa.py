@@ -24,14 +24,10 @@ from ucm.ucm_sparse.utils import (MAX_TOPK_LEN, MAX_BS, compute_topk_len,
 from ucm.store.base import Task, UcmKVStoreBase
 from ucm.store.factory import UcmConnectorFactory
 from vllm.utils import make_tensor_with_pad, sha256
-import os
-import sys
 from vllm.forward_context import set_forward_context, get_forward_context
 import copy
 
-path = os.getcwd()
-sys.path.append(os.path.join(path, 'ucm/csrc/gsaoffloadops'))
-import gsa_offload_ops as GsaOffloadOps
+from ucm.ucm_sparse import gsa_offload_ops
 
 
 
@@ -369,7 +365,7 @@ class GSA(UcmSparseBase):
         head_size = vllm_config.model_config.get_head_size()
         max_model_len = vllm_config.model_config.max_model_len
         max_num_seqs = vllm_config.scheduler_config.max_num_seqs
-        self.gsa_offload_ops = GsaOffloadOps.CalKpreAndTopk(self.layer_num, block_size,
+        self.gsa_offload_ops = gsa_offload_ops.CalKpreAndTopk(self.layer_num, block_size,
                                                             MAX_BS, att_num_heads, head_size)
         self.gsa_offload_ops.set_kpre_method_param(int(max_model_len / block_size)*MAX_BS, kv_num_heads, 1)
         self.gsa_offload_ops.set_kpre_cache(prefetch_engine.kpre_caches)
