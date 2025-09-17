@@ -2,9 +2,7 @@
 
 import torch
 import math
-import os
 import numpy as np
-import sys
 from typing import List, Optional, Tuple, Dict
 
 from ucm.ucm_sparse.utils import (MAX_TOPK_LEN, compute_topk_len, 
@@ -19,9 +17,7 @@ from vllm.sequence import SequenceStage
 from vllm.utils import  is_pin_memory_available
 from vllm.config import VllmConfig
 
-path = os.getcwd()
-sys.path.append(os.path.join(path, 'ucm/csrc/ucmprefetch'))
-import gsa_prefetch as upe
+from ucm.ucm_sparse import gsa_prefetch
 
 class GSAPrefetchBase:
     def __init__(
@@ -66,7 +62,7 @@ class GSAPrefetchBase:
         else:
             self.kpre_caches, self.use_topk_caches = self._init_kpre_and_topk_cache(self.device_config.device, self.dtype, torch.int64)
         self._init_tensor()
-        self.prefetch_engine_c = upe.GSAPrefetchEngineC(self.prefetch_blocks,
+        self.prefetch_engine_c = gsa_prefetch.GSAPrefetchEngineC(self.prefetch_blocks,
                                                       self.m_load_success_list,
                                                       self.prefetch_block_len,
                                                       self.block_table_len, self.is_log)
