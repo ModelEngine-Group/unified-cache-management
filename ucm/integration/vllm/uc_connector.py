@@ -196,10 +196,11 @@ class UnifiedCacheConnectorV1(KVConnectorBase_V1):
         layer_id = self._extract_layer_index(layer_name)
 
         for blk_id in vllm_block_ids:
-            k_data_offset = self.k_data_offsets[layer_id][self.rank]
             if self.is_mla:
+                k_data_offset = self.k_data_offsets[layer_id][0]
                 k_tensors.append(kv_layer[blk_id])
             else:
+                k_data_offset = self.k_data_offsets[layer_id][self.rank]
                 k_tensors.append(kv_layer[0][blk_id])
             k_offsets.append(k_data_offset)
             if not self.is_mla:
