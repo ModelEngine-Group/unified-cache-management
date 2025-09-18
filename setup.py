@@ -88,7 +88,7 @@ class CMakeBuild(build_ext):
         
         subprocess.check_call(cmake_args, cwd=build_dir)
         
-        if ext.name in ["fsstore", "gsa_offload_ops"]:
+        if ext.name in ["nfsstore", "gsa_offload_ops"]:
             subprocess.check_call(["make", "-j", "8"], cwd=build_dir)
         else:
             # 对于gsa_prefetch使用cmake --build
@@ -105,7 +105,7 @@ class CMakeBuild(build_ext):
         so_files = []
         search_patterns = [ext.name]
         
-        if ext.name == "fsstore":
+        if ext.name == "nfsstore":
             search_patterns.extend(["ucmnfsstore"])
         elif ext.name == "gsa_offload_ops":
             search_patterns.extend(["gsa_offload_ops"])
@@ -119,7 +119,7 @@ class CMakeBuild(build_ext):
                         so_files.append(file)
                         break           
 
-        if ext.name == "fsstore":
+        if ext.name == "nfsstore":
             install_dir = FSSTORE_INSTALL_DIR
             build_install_dir = "ucm/store"
         else:
@@ -142,7 +142,7 @@ class CMakeBuild(build_ext):
 
 ext_modules = []
 
-ext_modules.append(CMakeExtension(name="fsstore", sourcedir=FSSTORE_SRC_DIR))
+ext_modules.append(CMakeExtension(name="nfsstore", sourcedir=FSSTORE_SRC_DIR))
 ext_modules.append(CMakeExtension(name="gsa_offload_ops", sourcedir=GSA_SRC_DIR))
 ext_modules.append(CMakeExtension(name="gsa_prefetch", sourcedir=PREFETCH_SRC_DIR))
 
