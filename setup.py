@@ -149,12 +149,12 @@ ext_modules.append(CMakeExtension(name="gsa_prefetch", sourcedir=PREFETCH_SRC_DI
 setup(
     name="ucm",
     version="0.0.2",
-    description="Unified Cache Management with GSA Offload Operations, File Store, and Prefetch",
+    description="Unified Cache Management",
     author="Unified Cache Team",
     packages=find_packages(),
     python_requires=">=3.10",
     ext_modules=ext_modules,
     cmdclass={"build_ext": CMakeBuild},
-    zip_safe=False
+    zip_safe=False,
 )
 

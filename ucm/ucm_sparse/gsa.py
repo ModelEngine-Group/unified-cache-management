@@ -326,8 +326,9 @@ class GSA(UcmSparseBase):
         self.num_key_heads = vllm_config.model_config.get_num_kv_heads(vllm_config.parallel_config)
         self.head_size = vllm_config.model_config.get_head_size()
         self.use_mla = vllm_config.model_config.use_mla
-        nfs_config = {"storage_backends": "ucm/data/" + str(self.rank), "kv_block_size": 33554432, 'device': self.rank, 'role': 'worker'}
-        self.connector = UcmConnectorFactory.create_connector("UcmNfsStore", nfs_config)
+        if PTOPK_PREFETCH_ENABLE:
+            nfs_config = {"storage_backends": "./ucm/data/" + str(self.rank), "kv_block_size": 33554432, 'device': self.rank, 'role': 'worker'}
+            self.connector = UcmConnectorFactory.create_connector("UcmNfsStore", nfs_config)
         self.prefetch_engine = GSAPrefetchBase(vllm_config, 16, True, True, False, 1)
         self.topk_kpre_manger = TopKAndKpreManger(vllm_config.scheduler_config.max_num_seqs)
         self.block_size = vllm_config.cache_config.block_size
@@ -677,14 +678,14 @@ class GSA(UcmSparseBase):
         self._start_topk_cal()
 
     def execute_finished(self):
+        if not PTOPK_PREFETCH_ENABLE:
+            return
         forward_context = get_forward_context()
         attn = forward_context.no_compile_layers
         is_load_done = self.check_all_task_is_done("load")
         self.prefetch_engine.deal_async_prefetch(
             self.rank, self.gsa_metadata)
         self.gsa_stats = self.gsa_metadata.gsa_stats
-        if not PTOPK_PREFETCH_ENABLE:
-            return
         self._gsa_sparse_local_kv()
         if is_load_done and self.prefetch_engine.is_prefetch_flag and \
             self.prefetch_engine.prefetch_engine_c.get_prefetch_status():
