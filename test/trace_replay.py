@@ -431,6 +431,7 @@ def save_metrics_to_file(metrics, output_dir="./"):
     outputs = {}
     outputs["time"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     outputs["completed requests"] = metrics.completed
+    outputs["request_goodput"] = metrics.request_goodput
     outputs["mean_itl(ms)"] = round(metrics.mean_itl_ms, 2)
     outputs["mean_tpot(ms)"] = round(metrics.mean_tpot_ms, 2)
     outputs["mean_ttft(ms)"] = round(metrics.mean_ttft_ms, 2)
@@ -501,7 +502,10 @@ async def replay_trace_by_time(
         ignore_eos=True,
         extra_body={"temperature": 0.9},
     )
+
     test_output = await request_func(request_func_input=test_input)
+    print("/////////////////////////////////////////////////////////////////////")
+    print(test_output)
     if not getattr(test_output, "success", False):
         raise ValueError(
             "Initial test run failed - Please make sure arguments "
@@ -581,7 +585,7 @@ async def replay_trace_by_time(
         tokenizer=tokenizer,
         selected_percentile_metrics=["ttft", "tpot", "itl", "e2el"],
         selected_percentiles=[25.0, 50.0, 75.0, 99.0],
-        goodput_config_dict={},
+        goodput_config_dict={"ttft": 2000, "tpot": 50},
     )
 
     if args.save_result:
@@ -647,7 +651,61 @@ async def replay_trace_by_time(
     process_one_metric("e2el", "E2EL", "End-to-end Latency")
     print("=" * 50)
 
+    if args.save_result:
+        for i, output in enumerate(outputs):
+            save_single_metrics_to_file(output=output, output_dir="./")
+
     return
+
+
+def save_single_metrics_to_file(output, output_dir="./"):
+    ttft = None
+    tpot = None
+    success = False
+    output_len = None
+    success = output.success
+    ttft = output.ttft * 1000 if output.ttft is not None else None
+    output_len = output.output_tokens if output.output_tokens is not None else 0
+    input_len = output.prompt_len if output.prompt_len is not None else 0
+    latency = output.latency * 1000 if output.latency is not None else None
+    if output_len > 1:
+        tpot = (output.latency - output.ttft) / (output_len - 1) * 1000
+
+    output_path = output_dir
+    if not os.path.exists(output_path):
+        os.makedirs(output_path, exist_ok=True)
+    excel_file = os.path.join(output_path, "single_metrics.xlsx")
+
+    outputs = {}
+    outputs["time"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    outputs["tpot(ms)"] = tpot
+    outputs["ttft(ms)"] = ttft
+    outputs["e2el(ms)"] = latency
+    outputs["output_tokens"] = output_len
+    outputs["input_tokens"] = input_len
+    outputs["success"] = success
+
+    df = pandas.DataFrame([outputs])
+    file_exists = os.path.isfile(excel_file)
+    if file_exists:
+        try:
+            existing_df = pandas.read_excel(excel_file)
+            updated_df = pandas.concat([existing_df, df], ignore_index=True)
+        except Exception as e:
+            print(
+                f"Warning: Failed to read {excel_file}, it will be overwritten. Error: {e}"
+            )
+            updated_df = df
+    else:
+        updated_df = df
+    # Save back to Excel (automatically create or overwrite)
+    with pandas.ExcelWriter(
+        excel_file,
+        engine="openpyxl",
+        mode="a" if file_exists else "w",
+        if_sheet_exists="replace",
+    ) as writer:
+        updated_df.to_excel(writer, index=False, sheet_name="Performance Metrics")
 
 
 def create_argument_trace():
