@@ -109,7 +109,8 @@ class UnifiedCacheConnectorV1(KVConnectorBase_V1):
         self._need_load_reqs: dict[str, Union[list[int], list[Task]]] = {}
         self._load_failed_reqs: set[str] = set()
         self._load_req_to_blocks: dict[str, set[int]] = {}
-        self._initialize_dataoffset(vllm_config)
+        if role == KVConnectorRole.WORKER:
+            self._initialize_dataoffset(vllm_config)
         if (
             self._vllm_config.kv_transfer_config is not None
             and "ucm_connector_name"
