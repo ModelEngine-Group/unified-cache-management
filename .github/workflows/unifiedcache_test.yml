@@ -64,7 +64,7 @@ jobs:
       
 
       - name: Install unified-cache-management
-        run: pip install -v -e .
+        run: pip install -v -e . --no-build-isolation
 
       - name: Run ut
         run: python3 -m unittest discover -s test

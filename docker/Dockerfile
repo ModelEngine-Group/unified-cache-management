@@ -11,7 +11,7 @@ COPY . /vllm-workspace/unified-cache-management
 RUN pip config set global.index-url ${PIP_INDEX_URL}
 
 RUN export PLATFORM="cuda" && \
-     pip install -v -e /vllm-workspace/unified-cache-management
+     pip install -v -e /vllm-workspace/unified-cache-management --no-build-isolation
 
 # Apply patch for vLLM
 RUN cd $(pip show vllm | grep Location | awk '{print $2}') \

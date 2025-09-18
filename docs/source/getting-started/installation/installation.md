@@ -45,7 +45,7 @@ Follow commands below to install unified-cache-management:
 git clone --depth 1 --branch <branch_or_tag_name> https://github.com/ModelEngine-Group/unified-cache-management.git
 cd unified-cache-management
 export PLATFORM=cuda
-pip install -v -e .
+pip install -v -e . --no-build-isolation
 cd ..
 ```
 

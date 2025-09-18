@@ -12,7 +12,7 @@ RUN pip config set global.index-url ${PIP_INDEX_URL}
 
 RUN export PLATFORM="ascend" && \
     export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:/usr/local/Ascend/ascend-toolkit/latest/`uname -i`-linux/devlib && \
-    pip install -v -e /vllm-workspace/unified-cache-management
+    pip install -v -e /vllm-workspace/unified-cache-management --no-build-isolation
 
 # Apply patch for vLLM
 RUN cd /vllm-workspace/vllm \
