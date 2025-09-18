@@ -30,7 +30,7 @@ def build_llm_with_uc(module_path: str, name: str, model: str):
                 "max_cache_size": 5368709120,
                 "kv_block_size": 262144,
             },
-            "ucm_sparse_method": "ESA",
+            "ucm_sparse_method": "GSA",
         },
     )
 
