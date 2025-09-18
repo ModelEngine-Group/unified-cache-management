@@ -10,14 +10,12 @@ from ucm.ucm_sparse.utils import (MAX_TOPK_LEN, compute_topk_len,
                                            PTOPK_PREFETCH_ENABLE, 
                                            VLLM_CUDA_MEM_ALIGN_KV_CACHE, 
                                            align_to_256bytes, LOCAL_WINDOW_SZ)
+from ucm.ucm_sparse import gsa_prefetch
 
 from vllm.sequence import SequenceStage
-
-
 from vllm.utils import  is_pin_memory_available
 from vllm.config import VllmConfig
 
-from ucm.ucm_sparse import gsa_prefetch
 
 class GSAPrefetchBase:
     def __init__(

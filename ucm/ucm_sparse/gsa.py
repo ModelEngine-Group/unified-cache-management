@@ -23,11 +23,10 @@ from ucm.ucm_sparse.utils import (MAX_TOPK_LEN, MAX_BS, compute_topk_len,
                                            PTOPK_PREFETCH_ENABLE)
 from ucm.store.base import Task, UcmKVStoreBase
 from ucm.store.factory import UcmConnectorFactory
+from ucm.ucm_sparse import gsa_offload_ops
 from vllm.utils import make_tensor_with_pad, sha256
 from vllm.forward_context import set_forward_context, get_forward_context
 import copy
-
-from ucm.ucm_sparse import gsa_offload_ops
 
 
 
