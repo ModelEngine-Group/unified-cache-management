@@ -42,16 +42,20 @@ GSA_INSTALL_DIR = os.path.join(ROOT_DIR, "ucm", "ucm_sparse")
 PLATFORM = os.getenv("PLATFORM")
 RUNTIME_ENVIRONMENT = os.getenv("RUNTIME_ENVIRONMENT")
 
+
 def _is_cuda() -> bool:
     return PLATFORM == "cuda"
 
+
 def _is_npu() -> bool:
     return PLATFORM == "ascend"
+
 
 class CMakeExtension(Extension):
     def __init__(self, name: str, sourcedir: str = ""):
         super().__init__(name, sources=[])
         self.sourcedir = os.path.abspath(sourcedir)
+
 
 class CMakeBuild(build_ext):
     def run(self):
@@ -61,14 +65,13 @@ class CMakeBuild(build_ext):
     def build_cmake(self, ext: CMakeExtension):
         build_dir = os.path.abspath(os.path.join(self.build_temp, ext.name))
         os.makedirs(build_dir, exist_ok=True)
-        
+
         cmake_args = [
             "cmake",
             f"-DCMAKE_BUILD_TYPE=Release",
             f"-DPYTHON_EXECUTABLE={sys.executable}",
         ]
-        
-        
+
         cmake_args.append("-DDOWNLOAD_DEPENDENCE=ON")
         if _is_cuda():
             cmake_args.append("-DRUNTIME_ENVIRONMENT=cuda")
@@ -79,20 +82,23 @@ class CMakeBuild(build_ext):
                 "No supported accelerator found. "
                 "Please ensure either CUDA or NPU is available."
             )
-        
+
         cmake_args.append(ext.sourcedir)
-        
+
         print(f"[INFO] Building {ext.name} module with CMake")
         print(f"[INFO] Source directory: {ext.sourcedir}")
         print(f"[INFO] Build directory: {build_dir}")
-        
+
         subprocess.check_call(cmake_args, cwd=build_dir)
-        
+
         if ext.name in ["nfsstore", "gsa_offload_ops"]:
             subprocess.check_call(["make", "-j", "8"], cwd=build_dir)
         else:
             # 对于gsa_prefetch使用cmake --build
-            subprocess.check_call(["cmake", "--build", ".", "--config", "Release", "--", "-j8"], cwd=build_dir)
+            subprocess.check_call(
+                ["cmake", "--build", ".", "--config", "Release", "--", "-j8"],
+                cwd=build_dir,
+            )
 
         self._copy_so_files(ext)
 
@@ -104,7 +110,7 @@ class CMakeBuild(build_ext):
 
         so_files = []
         search_patterns = [ext.name]
-        
+
         if ext.name == "nfsstore":
             search_patterns.extend(["ucmnfsstore"])
         elif ext.name == "gsa_offload_ops":
@@ -117,7 +123,7 @@ class CMakeBuild(build_ext):
                 for pattern in search_patterns:
                     if pattern in file:
                         so_files.append(file)
-                        break           
+                        break
 
         if ext.name == "nfsstore":
             install_dir = FSSTORE_INSTALL_DIR
@@ -130,15 +136,16 @@ class CMakeBuild(build_ext):
             src_path = os.path.join(so_search_dir, so_file)
             dev_path = os.path.join(install_dir, so_file)
             dst_path = os.path.join(self.build_lib, build_install_dir, so_file)
-            
+
             os.makedirs(os.path.dirname(dst_path), exist_ok=True)
             shutil.copy(src_path, dst_path)
             print(f"[INFO] Copied {so_file} → {dst_path}")
-            
+
             if isinstance(self.distribution.get_command_obj("develop"), develop):
                 os.makedirs(os.path.dirname(dev_path), exist_ok=True)
                 shutil.copy(src_path, dev_path)
                 print(f"[INFO] Copied in editable mode {so_file} → {dev_path}")
+
 
 ext_modules = []
 
