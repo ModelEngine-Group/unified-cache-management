@@ -678,13 +678,12 @@ class GSA(UcmSparseBase):
         self._start_topk_cal()
 
     def execute_finished(self):
+        self.prefetch_engine.deal_async_prefetch(self.rank, self.gsa_metadata)
         if not PTOPK_PREFETCH_ENABLE:
             return
         forward_context = get_forward_context()
         attn = forward_context.no_compile_layers
         is_load_done = self.check_all_task_is_done("load")
-        self.prefetch_engine.deal_async_prefetch(
-            self.rank, self.gsa_metadata)
         self.gsa_stats = self.gsa_metadata.gsa_stats
         self._gsa_sparse_local_kv()
         if is_load_done and self.prefetch_engine.is_prefetch_flag and \
