@@ -67,7 +67,7 @@ int32_t Setup(const SetupParam& param)
 int32_t Alloc(const std::string& blockId)
 {
     auto s = Singleton<SpaceManager>::Instance()->NewBlock(blockId);
-    if (s.Failure()) {
+    if (s.Failure() && s != Status::DuplicateKey()) {
         UC_ERROR("Failed to allocate kv cache block space, block id: {}, error code: {}.", blockId, s.Underlying());
     }
     return s.Underlying();

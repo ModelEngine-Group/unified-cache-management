@@ -98,7 +98,9 @@ Status PosixFile::Open(const uint32_t flags)
     auto status = this->_handle >= 0 ? Status::OK() : Status::OsApiError();
     if (status.Failure()) {
         if (eno == EEXIST) { status = Status::DuplicateKey(); }
-        UC_ERROR("Failed({},{}) to open file({}) with flags({}).", eno, status, this->Path(), flags);
+        if (status != Status::DuplicateKey()) {
+            UC_ERROR("Failed({},{}) to open file({}) with flags({}).", eno, status, this->Path(), flags);
+        }
     }
     return status;
 }

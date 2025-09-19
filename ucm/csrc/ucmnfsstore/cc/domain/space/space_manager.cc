@@ -60,7 +60,9 @@ Status SpaceManager::NewBlock(const std::string& blockId) const
     }
     status = file->Open(IFile::OpenFlag::CREATE | IFile::OpenFlag::EXCL | IFile::OpenFlag::READ_WRITE);
     if (status.Failure()) {
-        UC_ERROR("Failed({}) to new block({}).", status, blockId);
+        if (status != Status::DuplicateKey()) {
+            UC_ERROR("Failed({}) to new block({}).", status, blockId);
+        }
         return status;
     }
     status = file->Truncate(this->_blockSize);

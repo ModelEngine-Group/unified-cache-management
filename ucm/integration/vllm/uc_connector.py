@@ -174,7 +174,8 @@ class UnifiedCacheConnectorV1(KVConnectorBase_V1):
         # layer_id -> rank -> k_offset
         self.k_data_offsets: dict[int, dict[int, int]] = {}
 
-        for layer_id in range(self.num_layers):
+        pp_size = vllm_config.parallel_config.pipeline_parallel_size
+        for layer_id in range(self.num_layers * pp_size):
             self.k_data_offsets[layer_id] = {}
             for rank in range(self.total_tp_size):
                 if self.is_mla:
