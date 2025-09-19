@@ -289,6 +289,7 @@ class UnifiedCacheConnectorV1(KVConnectorBase_V1):
                     self._need_load_reqs[request.request_id].append(k_task)
                     if not self.is_mla:
                         self._need_load_reqs[request.request_id].append(v_task)
+                self.layerwise_load_tasks.pop(request.request_id)
                 continue
 
             if (
@@ -570,18 +571,17 @@ class UnifiedCacheConnectorV1(KVConnectorBase_V1):
             if (
                 request.kv_transfer_params
                 and request.kv_transfer_params["load_async"] == False
-            ):
+            ) or num_lookup_hits == 0:
                 return 0, False
             request.kv_transfer_params = request.kv_transfer_params or {}
             request.kv_transfer_params["load_async"] = False
-            if num_lookup_hits > 0:
-                self.request_block_infos[request.request_id] = RequestBlockInfo(
-                    block_hashes=block_hashes,
-                    block_operations=block_operations,
-                    start_position=start_position,
-                )
-                self._need_load_reqs[request.request_id] = []
-                return num_lookup_hits * self.block_size, True
+            self.request_block_infos[request.request_id] = RequestBlockInfo(
+                block_hashes=block_hashes,
+                block_operations=block_operations,
+                start_position=start_position,
+            )
+            self._need_load_reqs[request.request_id] = []
+            return num_lookup_hits * self.block_size, True
 
         # Create blocks for the remaining (unmatched) blocks
         if num_lookup_hits < len(remain_hashes):
