@@ -142,10 +142,10 @@ class GSAReqStat:
         else:
             self._get_sparse_and_free_block()
             if len(add_req_state.block_ids[0]) != self.sparse_len:
-                add_blocks = [add_req_state.block_ids[0][-2]]
-                self._update_slot(add_blocks)
+                add_blocks = [add_req_state.block_ids[0][-1]]
                 self.blocks += [add_req_state.block_ids[0][-1]]
                 self.sparse_len = len(add_req_state.block_ids[0])
+                self._update_slot(add_blocks)
             else:
                 self.calc_block_table = []
                 self.calc_repre_slot_mapping = []
@@ -269,6 +269,7 @@ class GSAMetaData(UcmSparseMetadata):
     def trans_input_tensor(self, scheduler_output: SchedulerOutput):
         calc_block_table = []
         model_input = {}
+        calc_repre_slot_mappings = []
         query_locals = [0]
         for req_id, _ in scheduler_output.num_scheduled_tokens.items():
             calc_block_table += self.gsa_stats[req_id].calc_block_table
@@ -565,19 +566,17 @@ class GSA(UcmSparseBase):
         current_layer_id = int(layer_name.split(".")[2])
         block_ids = self.model_input["calc_block_table"]
         calc_repre_slot_mappings = self.model_input["calc_repre_slot_mapping"]
-        if len(block_ids) > 0:
-            attn = forward_context.no_compile_layers
-            key_cache_mean_out = attn[layer_name].kv_cache[forward_context.virtual_engine][0][block_ids].mean(dim=1, keepdim=True).cpu()
-            self.prefetch_engine.kpre_caches[current_layer_id][calc_repre_slot_mappings].copy_(key_cache_mean_out)
+        # if len(block_ids) > 0:
+        #     attn = forward_context.no_compile_layers
+        #     key_cache_mean_out = attn[layer_name].kv_cache[forward_context.virtual_engine][0][block_ids].mean(dim=1, keepdim=True).cpu()
+        #     self.prefetch_engine.kpre_caches[current_layer_id][calc_repre_slot_mappings].copy_(key_cache_mean_out)
         
-        '''
         if len(block_ids) > 0:
             attn = forward_context.no_compile_layers
             k_needed = attn[layer_name].kv_cache[forward_context.virtual_engine][0]
             self.gsa_offload_ops.add_copy_req(
                 True, current_layer_id, [], k_needed
             )
-        '''
 
     def attention_begin(
         self,
