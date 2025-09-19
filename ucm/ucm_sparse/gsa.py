@@ -117,7 +117,6 @@ class GSAReqStat:
     ) -> None:
         self.blocks = [x for x in add_req_state.block_ids[0]]
         self.index_in_batch = index_in_batch
-        self._init_slot(offset)
         self.num_computed_tokens = add_req_state.num_computed_tokens
         self.num_scheduled_tokens = num_scheduled_tokens
         self.num_prompt_tokens = len(add_req_state.prompt_token_ids)
@@ -125,6 +124,7 @@ class GSAReqStat:
         self.is_use_gsa = (
             True if self.num_prompt_tokens > SEG_PREFILL_THRESHOLD else False
         )
+        self._init_slot(offset)
 
     def updata_req_state(
         self, num_scheduled_tokens, add_req_state, index_in_batch
@@ -134,14 +134,9 @@ class GSAReqStat:
         self.num_output_tokens = len(add_req_state.output_token_ids)
         self.index_in_batch = index_in_batch
         if self.stage() == SequenceStage.PREFILL:
-            if self.is_last_chunk():
-                add_blocks = [
-                    x for x in add_req_state.block_ids[0][:-1] if x not in self.blocks
-                ]
-            else:
-                add_blocks = [
-                    x for x in add_req_state.block_ids[0] if x not in self.blocks
-                ]
+            add_blocks = [
+                x for x in add_req_state.block_ids[0] if x not in self.blocks
+            ]
             self.blocks = [x for x in add_req_state.block_ids[0]]
             self._update_slot(add_blocks)
         else:
@@ -158,7 +153,7 @@ class GSAReqStat:
     def _get_sparse_and_free_block(self):
         if self.num_prompt_tokens == self.num_computed_tokens:
             blocks_len = len(self.blocks)
-            if self.num_prompt_tokens > SEG_PREFILL_THRESHOLD:
+            if self.num_prompt_tokens > SEG_PREFILL_THRESHOLD and PTOPK_PREFETCH_ENABLE:
                 remain_len = compute_topk_len(blocks_len)
                 if remain_len > MAX_TOPK_LEN:
                     prefetch_len = 0
@@ -176,10 +171,7 @@ class GSAReqStat:
                 self.prefetch_idx = remain_blocks_idx[
                     remain_len - LOCAL_WINDOW_SZ : -LOCAL_WINDOW_SZ
                 ]
-                if PTOPK_PREFETCH_ENABLE:
-                    self.sparse_len = remain_len + prefetch_len
-                else:
-                    self.sparse_len = blocks_len
+                self.sparse_len = remain_len + prefetch_len
             else:
                 self.remain_idx = list(range(blocks_len))
                 self.prefetch_idx = []
@@ -190,15 +182,15 @@ class GSAReqStat:
             self.prefetch_idx = None
 
     def _init_slot(self, offset: int) -> None:
-        if self.is_last_chunk():
-            self.repre_slot_mapping = list(range(len(self.blocks) - 1))
-            self.calc_block_table = [x for x in self.blocks[:-1]]
-        else:
-            self.repre_slot_mapping = list(range(len(self.blocks)))
-            self.calc_block_table = [x for x in self.blocks]
+        self.repre_slot_mapping = list(range(len(self.blocks)))
         self.repre_slot_mapping = [x + offset for x in self.repre_slot_mapping]
-        self.calc_repre_slot_mapping = [x for x in self.repre_slot_mapping]
-
+        if self.is_last_chunk():
+            self.calc_block_table = [x for x in self.blocks[:-1]]
+            self.calc_repre_slot_mapping = [x for x in self.repre_slot_mapping[:-1]]
+        else:
+            self.calc_block_table = [x for x in self.blocks]
+            self.calc_repre_slot_mapping = [x for x in self.repre_slot_mapping]
+        
         value = len(self.blocks)
         one_mask = [False] * value
         if value > 2:
@@ -224,8 +216,17 @@ class GSAReqStat:
                 self.include_mask.append(True)
             self.exclude_mask.append(False)
         if add_len > 0:
-            self.calc_block_table = [x for x in add_blocks]
-            self.calc_repre_slot_mapping = self.repre_slot_mapping[add_len * -1 :]
+            if self.stage() == SequenceStage.PREFILL:
+                if self.is_last_chunk():
+                    self.calc_block_table = [x for x in add_blocks[:-1]]
+                    self.calc_repre_slot_mapping = self.repre_slot_mapping[add_len * -1 :-1]
+                else:
+                    self.calc_block_table = [x for x in add_blocks]
+                    self.calc_repre_slot_mapping = self.repre_slot_mapping[add_len * -1 :]
+            else:
+                print(f" zambin add_ len{add_len}")
+                self.calc_block_table = [self.blocks[-1]]
+                self.calc_repre_slot_mapping = [self.repre_slot_mapping[-1]]
         else:
             self.calc_block_table = []
             self.calc_repre_slot_mapping = []
@@ -734,6 +735,7 @@ class GSA(UcmSparseBase):
             self.gsa_metadata,
             is_topk_done,
         )
+        self.gsa_stats = self.gsa_metadata.gsa_stats
         self._start_topk_cal()
 
     def execute_finished(self):
