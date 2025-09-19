@@ -32,10 +32,10 @@ void CalKpreAndTopk::SetKpreMethodParam(uint32_t maxBlockNum, uint32_t numHeads,
     m_kNumHeads = numHeads;
     m_numKpre = numKpre;
     auto optionsForKCache = torch::TensorOptions().device("cpu").dtype(torch::kFloat32);
-    for (uint32_t i = 0; i < m_layerNum; i++) {
-        torch::Tensor layerKCache = torch::zeros({maxBlockNum, m_kNumHeads, m_blockSize, m_headSize}, optionsForKCache);
-        m_kCache.push_back(layerKCache);
-    }
+    // for (uint32_t i = 0; i < m_layerNum; i++) {
+    //     torch::Tensor layerKCache = torch::zeros({maxBlockNum, m_kNumHeads, m_blockSize, m_headSize}, optionsForKCache);
+    //     m_kCache.push_back(layerKCache);
+    // }
 }
 
 void CalKpreAndTopk::SetKpreCache(std::vector<torch::Tensor>& kpreCache)
@@ -152,10 +152,10 @@ void CalKpreAndTopk::CopyData()
             }
             SetTopkDataReady(curReq.layerId);
         } else {
-            torch::Tensor kNeeded = curReq.srcTensor.index({curReq.ids}).cpu();
-            torch::Tensor kCache = kNeeded.to(torch::kFloat32).permute({0, 2, 1, 3});
-            auto targetTensor = m_kCache[curReq.layerId].slice(0, 0, curReq.ids.size(0));
-            targetTensor.copy_(kCache);
+            // torch::Tensor kNeeded = curReq.srcTensor.index({curReq.ids}).cpu();
+            // torch::Tensor kCache = kNeeded.to(torch::kFloat32).permute({0, 2, 1, 3});
+            // auto targetTensor = m_kCache[curReq.layerId].slice(0, 0, curReq.ids.size(0));
+            // targetTensor.copy_(kCache);
             SetKpreDataReady(curReq.layerId);
         }
         if (!m_running) {
@@ -195,7 +195,7 @@ void CalKpreAndTopk::CalForOneLayer(uint32_t curLayer)
 {
     if (m_needCalPre) {
         while(!m_kReady[curLayer].load(std::memory_order_acquire));
-        CalculateKpre(curLayer);
+        // CalculateKpre(curLayer);
     }
     if (m_needCalTopk) {
         while(!m_qReady[curLayer].load(std::memory_order_acquire));

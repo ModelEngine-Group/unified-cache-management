@@ -566,17 +566,21 @@ class GSA(UcmSparseBase):
         current_layer_id = int(layer_name.split(".")[2])
         block_ids = self.model_input["calc_block_table"]
         calc_repre_slot_mappings = self.model_input["calc_repre_slot_mapping"]
-        # if len(block_ids) > 0:
-        #     attn = forward_context.no_compile_layers
-        #     key_cache_mean_out = attn[layer_name].kv_cache[forward_context.virtual_engine][0][block_ids].mean(dim=1, keepdim=True).cpu()
-        #     self.prefetch_engine.kpre_caches[current_layer_id][calc_repre_slot_mappings].copy_(key_cache_mean_out)
-        
         if len(block_ids) > 0:
             attn = forward_context.no_compile_layers
+            key_cache_mean_out = attn[layer_name].kv_cache[forward_context.virtual_engine][0][block_ids].mean(dim=1, keepdim=True).cpu()
+            self.prefetch_engine.kpre_caches[current_layer_id][calc_repre_slot_mappings].copy_(key_cache_mean_out)
             k_needed = attn[layer_name].kv_cache[forward_context.virtual_engine][0]
             self.gsa_offload_ops.add_copy_req(
                 True, current_layer_id, [], k_needed
             )
+
+        # if len(block_ids) > 0:
+        #     attn = forward_context.no_compile_layers
+        #     k_needed = attn[layer_name].kv_cache[forward_context.virtual_engine][0]
+        #     self.gsa_offload_ops.add_copy_req(
+        #         True, current_layer_id, [], k_needed
+        #     )
 
     def attention_begin(
         self,
