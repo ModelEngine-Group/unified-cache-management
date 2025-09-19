@@ -12,6 +12,7 @@ from datetime import datetime
 
 import numpy as np
 import pandas
+from huggingface_hub import file_exists
 from tqdm.asyncio import tqdm
 from transformers import PreTrainedTokenizerBase
 
@@ -431,7 +432,7 @@ def save_metrics_to_file(metrics, output_dir="./"):
     outputs = {}
     outputs["time"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     outputs["completed requests"] = metrics.completed
-    outputs["request_goodput"] = metrics.request_goodput
+    outputs["request_goodput(req/s)"] = metrics.request_goodput
     outputs["mean_itl(ms)"] = round(metrics.mean_itl_ms, 2)
     outputs["mean_tpot(ms)"] = round(metrics.mean_tpot_ms, 2)
     outputs["mean_ttft(ms)"] = round(metrics.mean_ttft_ms, 2)
@@ -504,8 +505,7 @@ async def replay_trace_by_time(
     )
 
     test_output = await request_func(request_func_input=test_input)
-    print("/////////////////////////////////////////////////////////////////////")
-    print(test_output)
+
     if not getattr(test_output, "success", False):
         raise ValueError(
             "Initial test run failed - Please make sure arguments "
@@ -699,12 +699,12 @@ def save_single_metrics_to_file(output, output_dir="./"):
     else:
         updated_df = df
     # Save back to Excel (automatically create or overwrite)
-    with pandas.ExcelWriter(
-        excel_file,
-        engine="openpyxl",
-        mode="a" if file_exists else "w",
-        if_sheet_exists="replace",
-    ) as writer:
+
+    write_mode = "a" if file_exists else "w"
+    excel_writer_kwargs = {"path": excel_file, "engine": "openpyxl", "mode": write_mode}
+    if write_mode == "a":
+        excel_writer_kwargs["if_sheet_exists"] = "replace"
+    with pandas.ExcelWriter(**excel_writer_kwargs) as writer:
         updated_df.to_excel(writer, index=False, sheet_name="Performance Metrics")
 
 
