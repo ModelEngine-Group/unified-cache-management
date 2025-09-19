@@ -224,7 +224,6 @@ class GSAReqStat:
                     self.calc_block_table = [x for x in add_blocks]
                     self.calc_repre_slot_mapping = self.repre_slot_mapping[add_len * -1 :]
             else:
-                print(f" zambin add_ len{add_len}")
                 self.calc_block_table = [self.blocks[-1]]
                 self.calc_repre_slot_mapping = [self.repre_slot_mapping[-1]]
         else:
@@ -549,7 +548,7 @@ class GSA(UcmSparseBase):
             if req_meta.stage() == SequenceStage.DECODE:
                 index_in_batch = req_meta.index_in_batch
                 ids[index_in_batch] = (
-                    self.model_input["query_locals"][index_in_batch+1] - 1
+                    self.model_input["query_locals"][index_in_batch + 1] - 1
                 )
                 self.gsa_q_cache[current_layer_id][index_in_batch].copy_(
                     query[ids[index_in_batch]]
@@ -601,18 +600,16 @@ class GSA(UcmSparseBase):
 
         if isinstance(forward_context.attn_metadata, dict):
             attn_metadata = forward_context.attn_metadata[layer_name]
-            block_tables = attn_metadata.block_table
         else:
             attn_metadata = forward_context.attn_metadata
-            block_tables = attn_metadata.block_tables
         if self.prefetch_engine.atb_gsa_enable:
             if torch.cuda.is_available():
-                block_tables = self.model_input["block_tables_mp"][current_layer_id]
+                attn_metadata.block_table = self.model_input["block_tables_mp"][current_layer_id]
                 attn_metadata.seq_lens = self.model_input["gsa_seq_len"][
                     current_layer_id
                 ]
             else:
-                block_tables[: len(self.prefetch_engine.req_ids_bs)].copy_(
+                attn_metadata.block_tables[: len(self.prefetch_engine.req_ids_bs)].copy_(
                     self.model_input["block_tables_mp"][current_layer_id]
                 )
                 attn_metadata.seq_lens.copy_(
