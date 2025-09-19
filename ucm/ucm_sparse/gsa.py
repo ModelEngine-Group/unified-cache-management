@@ -134,9 +134,7 @@ class GSAReqStat:
         self.num_output_tokens = len(add_req_state.output_token_ids)
         self.index_in_batch = index_in_batch
         if self.stage() == SequenceStage.PREFILL:
-            add_blocks = [
-                x for x in add_req_state.block_ids[0] if x not in self.blocks
-            ]
+            add_blocks = [x for x in add_req_state.block_ids[0] if x not in self.blocks]
             self.blocks = [x for x in add_req_state.block_ids[0]]
             self._update_slot(add_blocks)
         else:
@@ -190,7 +188,7 @@ class GSAReqStat:
         else:
             self.calc_block_table = [x for x in self.blocks]
             self.calc_repre_slot_mapping = [x for x in self.repre_slot_mapping]
-        
+
         value = len(self.blocks)
         one_mask = [False] * value
         if value > 2:
@@ -219,10 +217,14 @@ class GSAReqStat:
             if self.stage() == SequenceStage.PREFILL:
                 if self.is_last_chunk():
                     self.calc_block_table = [x for x in add_blocks[:-1]]
-                    self.calc_repre_slot_mapping = self.repre_slot_mapping[add_len * -1 :-1]
+                    self.calc_repre_slot_mapping = self.repre_slot_mapping[
+                        add_len * -1 : -1
+                    ]
                 else:
                     self.calc_block_table = [x for x in add_blocks]
-                    self.calc_repre_slot_mapping = self.repre_slot_mapping[add_len * -1 :]
+                    self.calc_repre_slot_mapping = self.repre_slot_mapping[
+                        add_len * -1 :
+                    ]
             else:
                 self.calc_block_table = [self.blocks[-1]]
                 self.calc_repre_slot_mapping = [self.repre_slot_mapping[-1]]
@@ -568,12 +570,17 @@ class GSA(UcmSparseBase):
         calc_repre_slot_mappings = self.model_input["calc_repre_slot_mapping"]
         if len(block_ids) > 0:
             attn = forward_context.no_compile_layers
-            key_cache_mean_out = attn[layer_name].kv_cache[forward_context.virtual_engine][0][block_ids].mean(dim=1, keepdim=True).cpu()
-            self.prefetch_engine.kpre_caches[current_layer_id][calc_repre_slot_mappings].copy_(key_cache_mean_out)
-            k_needed = attn[layer_name].kv_cache[forward_context.virtual_engine][0]
-            self.gsa_offload_ops.add_copy_req(
-                True, current_layer_id, [], k_needed
+            key_cache_mean_out = (
+                attn[layer_name]
+                .kv_cache[forward_context.virtual_engine][0][block_ids]
+                .mean(dim=1, keepdim=True)
+                .cpu()
             )
+            self.prefetch_engine.kpre_caches[current_layer_id][
+                calc_repre_slot_mappings
+            ].copy_(key_cache_mean_out)
+            k_needed = attn[layer_name].kv_cache[forward_context.virtual_engine][0]
+            self.gsa_offload_ops.add_copy_req(True, current_layer_id, [], k_needed)
 
         # if len(block_ids) > 0:
         #     attn = forward_context.no_compile_layers
@@ -607,14 +614,16 @@ class GSA(UcmSparseBase):
             attn_metadata = forward_context.attn_metadata
         if self.prefetch_engine.atb_gsa_enable:
             if torch.cuda.is_available():
-                attn_metadata.block_table = self.model_input["block_tables_mp"][current_layer_id]
+                attn_metadata.block_table = self.model_input["block_tables_mp"][
+                    current_layer_id
+                ]
                 attn_metadata.seq_lens = self.model_input["gsa_seq_len"][
                     current_layer_id
                 ]
             else:
-                attn_metadata.block_tables[: len(self.prefetch_engine.req_ids_bs)].copy_(
-                    self.model_input["block_tables_mp"][current_layer_id]
-                )
+                attn_metadata.block_tables[
+                    : len(self.prefetch_engine.req_ids_bs)
+                ].copy_(self.model_input["block_tables_mp"][current_layer_id])
                 attn_metadata.seq_lens.copy_(
                     self.model_input["gsa_seq_len"][current_layer_id]
                 )
