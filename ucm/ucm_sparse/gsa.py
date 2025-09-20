@@ -125,6 +125,8 @@ class GSAReqStat:
             True if self.num_prompt_tokens > SEG_PREFILL_THRESHOLD else False
         )
         self._init_slot(offset)
+        if len(self.repre_slot_mapping) > len(self.blocks):
+            self.repre_slot_mapping = self.repre_slot_mapping[:len(self.blocks)]
 
     def updata_req_state(
         self, num_scheduled_tokens, add_req_state, index_in_batch
@@ -147,6 +149,8 @@ class GSAReqStat:
             else:
                 self.calc_block_table = []
                 self.calc_repre_slot_mapping = []
+        if len(self.repre_slot_mapping) > len(self.blocks):
+            self.repre_slot_mapping = self.repre_slot_mapping[:len(self.blocks)]
 
     def _get_sparse_and_free_block(self):
         if self.num_prompt_tokens == self.num_computed_tokens:
