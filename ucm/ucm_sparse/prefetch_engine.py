@@ -153,7 +153,7 @@ class GSAPrefetchBase:
             list_topk_buf = list(topk_buf_tmp.unbind(dim=0))
             list_block_table = list(block_table_tmp.unbind(dim=0))
             gsa_len_list = list(gen_len_tmp.unbind(dim=0))
-            self.is_topk_cal = is_topk_done and self.prefetch_space == 3
+            self.is_topk_cal = is_topk_done and self.num_token % 3 == 0
             gsa_model_input["topk_caches"] = list_topk_buf
             gsa_model_input["kpre_caches"] = self.kpre_caches
             gsa_model_input["is_topk"] = self.is_topk_cal

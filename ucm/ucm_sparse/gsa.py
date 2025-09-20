@@ -117,7 +117,6 @@ class GSAReqStat:
     ) -> None:
         self.blocks = [x for x in add_req_state.block_ids[0]]
         self.index_in_batch = index_in_batch
-        self._init_slot(offset)
         self.num_computed_tokens = add_req_state.num_computed_tokens
         self.num_scheduled_tokens = num_scheduled_tokens
         self.num_prompt_tokens = len(add_req_state.prompt_token_ids)
@@ -125,6 +124,7 @@ class GSAReqStat:
         self.is_use_gsa = (
             True if self.num_prompt_tokens > SEG_PREFILL_THRESHOLD else False
         )
+        self._init_slot(offset)
 
     def updata_req_state(
         self, num_scheduled_tokens, add_req_state, index_in_batch
@@ -134,23 +134,16 @@ class GSAReqStat:
         self.num_output_tokens = len(add_req_state.output_token_ids)
         self.index_in_batch = index_in_batch
         if self.stage() == SequenceStage.PREFILL:
-            if self.is_last_chunk():
-                add_blocks = [
-                    x for x in add_req_state.block_ids[0][:-1] if x not in self.blocks
-                ]
-            else:
-                add_blocks = [
-                    x for x in add_req_state.block_ids[0] if x not in self.blocks
-                ]
+            add_blocks = [x for x in add_req_state.block_ids[0] if x not in self.blocks]
             self.blocks = [x for x in add_req_state.block_ids[0]]
             self._update_slot(add_blocks)
         else:
             self._get_sparse_and_free_block()
             if len(add_req_state.block_ids[0]) != self.sparse_len:
-                add_blocks = [add_req_state.block_ids[0][-2]]
-                self._update_slot(add_blocks)
+                add_blocks = [add_req_state.block_ids[0][-1]]
                 self.blocks += [add_req_state.block_ids[0][-1]]
                 self.sparse_len = len(add_req_state.block_ids[0])
+                self._update_slot(add_blocks)
             else:
                 self.calc_block_table = []
                 self.calc_repre_slot_mapping = []
@@ -158,7 +151,7 @@ class GSAReqStat:
     def _get_sparse_and_free_block(self):
         if self.num_prompt_tokens == self.num_computed_tokens:
             blocks_len = len(self.blocks)
-            if self.num_prompt_tokens > SEG_PREFILL_THRESHOLD:
+            if self.num_prompt_tokens > SEG_PREFILL_THRESHOLD and PTOPK_PREFETCH_ENABLE:
                 remain_len = compute_topk_len(blocks_len)
                 if remain_len > MAX_TOPK_LEN:
                     prefetch_len = 0
@@ -176,10 +169,7 @@ class GSAReqStat:
                 self.prefetch_idx = remain_blocks_idx[
                     remain_len - LOCAL_WINDOW_SZ : -LOCAL_WINDOW_SZ
                 ]
-                if PTOPK_PREFETCH_ENABLE:
-                    self.sparse_len = remain_len + prefetch_len
-                else:
-                    self.sparse_len = blocks_len
+                self.sparse_len = remain_len + prefetch_len
             else:
                 self.remain_idx = list(range(blocks_len))
                 self.prefetch_idx = []
@@ -190,14 +180,14 @@ class GSAReqStat:
             self.prefetch_idx = None
 
     def _init_slot(self, offset: int) -> None:
-        if self.is_last_chunk():
-            self.repre_slot_mapping = list(range(len(self.blocks) - 1))
-            self.calc_block_table = [x for x in self.blocks[:-1]]
-        else:
-            self.repre_slot_mapping = list(range(len(self.blocks)))
-            self.calc_block_table = [x for x in self.blocks]
+        self.repre_slot_mapping = list(range(len(self.blocks)))
         self.repre_slot_mapping = [x + offset for x in self.repre_slot_mapping]
-        self.calc_repre_slot_mapping = [x for x in self.repre_slot_mapping]
+        if self.is_last_chunk():
+            self.calc_block_table = [x for x in self.blocks[:-1]]
+            self.calc_repre_slot_mapping = [x for x in self.repre_slot_mapping[:-1]]
+        else:
+            self.calc_block_table = [x for x in self.blocks]
+            self.calc_repre_slot_mapping = [x for x in self.repre_slot_mapping]
 
         value = len(self.blocks)
         one_mask = [False] * value
@@ -224,8 +214,20 @@ class GSAReqStat:
                 self.include_mask.append(True)
             self.exclude_mask.append(False)
         if add_len > 0:
-            self.calc_block_table = [x for x in add_blocks]
-            self.calc_repre_slot_mapping = self.repre_slot_mapping[add_len * -1 :]
+            if self.stage() == SequenceStage.PREFILL:
+                if self.is_last_chunk():
+                    self.calc_block_table = [x for x in add_blocks[:-1]]
+                    self.calc_repre_slot_mapping = self.repre_slot_mapping[
+                        add_len * -1 : -1
+                    ]
+                else:
+                    self.calc_block_table = [x for x in add_blocks]
+                    self.calc_repre_slot_mapping = self.repre_slot_mapping[
+                        add_len * -1 :
+                    ]
+            else:
+                self.calc_block_table = [self.blocks[-1]]
+                self.calc_repre_slot_mapping = [self.repre_slot_mapping[-1]]
         else:
             self.calc_block_table = []
             self.calc_repre_slot_mapping = []
@@ -269,14 +271,19 @@ class GSAMetaData(UcmSparseMetadata):
     def trans_input_tensor(self, scheduler_output: SchedulerOutput):
         calc_block_table = []
         model_input = {}
+        calc_repre_slot_mappings = []
         query_locals = [0]
         for req_id, _ in scheduler_output.num_scheduled_tokens.items():
             calc_block_table += self.gsa_stats[req_id].calc_block_table
+            calc_repre_slot_mappings += self.gsa_stats[req_id].calc_repre_slot_mapping
             query_locals.append(
                 query_locals[-1] + scheduler_output.num_scheduled_tokens[req_id]
             )
         model_input["calc_block_table"] = torch.tensor(
             calc_block_table, dtype=torch.int32, device="cpu"
+        )
+        model_input["calc_repre_slot_mapping"] = torch.tensor(
+            calc_repre_slot_mappings, dtype=torch.int32, device="cpu"
         )
         model_input["query_locals"] = query_locals
         return model_input
@@ -544,7 +551,7 @@ class GSA(UcmSparseBase):
             if req_meta.stage() == SequenceStage.DECODE:
                 index_in_batch = req_meta.index_in_batch
                 ids[index_in_batch] = (
-                    self.model_input["query_locals"][index_in_batch] - 1
+                    self.model_input["query_locals"][index_in_batch + 1] - 1
                 )
                 self.gsa_q_cache[current_layer_id][index_in_batch].copy_(
                     query[ids[index_in_batch]]
@@ -560,12 +567,27 @@ class GSA(UcmSparseBase):
     def copy_k(self, layer_name: str, forward_context: ForwardContext) -> None:
         current_layer_id = int(layer_name.split(".")[2])
         block_ids = self.model_input["calc_block_table"]
+        calc_repre_slot_mappings = self.model_input["calc_repre_slot_mapping"]
         if len(block_ids) > 0:
             attn = forward_context.no_compile_layers
-            k_needed = attn[layer_name].kv_cache[forward_context.virtual_engine][0]
-            result = self.gsa_offload_ops.add_copy_req(
-                True, current_layer_id, [], k_needed
+            key_cache_mean_out = (
+                attn[layer_name]
+                .kv_cache[forward_context.virtual_engine][0][block_ids]
+                .mean(dim=1, keepdim=True)
+                .cpu()
             )
+            self.prefetch_engine.kpre_caches[current_layer_id][
+                calc_repre_slot_mappings
+            ].copy_(key_cache_mean_out)
+            k_needed = attn[layer_name].kv_cache[forward_context.virtual_engine][0]
+            self.gsa_offload_ops.add_copy_req(True, current_layer_id, [], k_needed)
+
+        # if len(block_ids) > 0:
+        #     attn = forward_context.no_compile_layers
+        #     k_needed = attn[layer_name].kv_cache[forward_context.virtual_engine][0]
+        #     self.gsa_offload_ops.add_copy_req(
+        #         True, current_layer_id, [], k_needed
+        #     )
 
     def attention_begin(
         self,
@@ -588,20 +610,20 @@ class GSA(UcmSparseBase):
 
         if isinstance(forward_context.attn_metadata, dict):
             attn_metadata = forward_context.attn_metadata[layer_name]
-            block_tables = attn_metadata.block_table
         else:
             attn_metadata = forward_context.attn_metadata
-            block_tables = attn_metadata.block_tables
         if self.prefetch_engine.atb_gsa_enable:
             if torch.cuda.is_available():
-                block_tables = self.model_input["block_tables_mp"][current_layer_id]
+                attn_metadata.block_table = self.model_input["block_tables_mp"][
+                    current_layer_id
+                ]
                 attn_metadata.seq_lens = self.model_input["gsa_seq_len"][
                     current_layer_id
                 ]
             else:
-                block_tables[: len(self.prefetch_engine.req_ids_bs)].copy_(
-                    self.model_input["block_tables_mp"][current_layer_id]
-                )
+                attn_metadata.block_tables[
+                    : len(self.prefetch_engine.req_ids_bs)
+                ].copy_(self.model_input["block_tables_mp"][current_layer_id])
                 attn_metadata.seq_lens.copy_(
                     self.model_input["gsa_seq_len"][current_layer_id]
                 )
@@ -734,6 +756,7 @@ class GSA(UcmSparseBase):
             self.gsa_metadata,
             is_topk_done,
         )
+        self.gsa_stats = self.gsa_metadata.gsa_stats
         self._start_topk_cal()
 
     def execute_finished(self):
