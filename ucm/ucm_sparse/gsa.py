@@ -400,7 +400,7 @@ class GSA(UcmSparseBase):
         max_model_len = vllm_config.model_config.max_model_len
         max_num_seqs = vllm_config.scheduler_config.max_num_seqs
         self.gsa_offload_ops = gsa_offload_ops.CalKpreAndTopk(
-            self.layer_num, block_size, MAX_BS, att_num_heads, head_size
+            self.layer_num, block_size, max_num_seqs, att_num_heads, head_size
         )
         self.gsa_offload_ops.set_kpre_method_param(
             int(max_model_len / block_size) * MAX_BS, kv_num_heads, 1
