@@ -37,8 +37,8 @@ def build_llm_with_uc(module_path: str, name: str, model: str):
     llm_args = EngineArgs(
         model=model,
         kv_transfer_config=ktc,
-        max_model_len=8000,
-        gpu_memory_utilization=0.8,
+        max_model_len=40960,
+        gpu_memory_utilization=0.87,
         block_size=128,
     )
 
@@ -81,7 +81,7 @@ def main():
             "Write a detailed letter to the leaders of Earth, explaining the most urgent global issue of the 21st "
             "century, the root sauses behind it, and a set of scientifically grounded, morally sound, and globally "
             "cooperative solutions that transcend culturak and national boundaries. Include both immediate actions "
-            "and long-term strategies."
+            "and long-term strategies." * 200
         ]
 
         sampling_params = SamplingParams(temperature=0, top_p=0.95, max_tokens=100)
