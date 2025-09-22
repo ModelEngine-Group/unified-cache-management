@@ -109,6 +109,10 @@ class UnifiedCacheConnectorV1(KVConnectorBase_V1):
         self._need_load_reqs: dict[str, Union[list[int], list[Task]]] = {}
         self._load_failed_reqs: set[str] = set()
         self._load_req_to_blocks: dict[str, set[int]] = {}
+        self.num_head = vllm_config.model_config.get_num_kv_heads(
+            vllm_config.parallel_config
+        )
+        self.head_size = vllm_config.model_config.get_head_size()
         if role == KVConnectorRole.WORKER:
             self._initialize_dataoffset(vllm_config)
         if (
@@ -130,6 +134,37 @@ class UnifiedCacheConnectorV1(KVConnectorBase_V1):
             config["device"] = self.rank
             config["role"] = (
                 "scheduler" if role == KVConnectorRole.SCHEDULER else "worker"
+            )
+            config["kv_block_size"] = (
+                self.block_size * self.element_size * self.head_size * self.num_layers
+                if self.is_mla
+                else self.block_size
+                * self.element_size
+                * self.num_head
+                * self.total_tp_size
+                * self.head_size
+                * self.num_layers
+                * 2
+            )
+            config["transferIoSize"] = (
+                self.block_size * self.element_size * self.head_size
+                if self.is_mlagit
+                else self.block_size
+                * self.element_size
+                * self.num_head
+                * self.head_size
+            )
+            logger.info(
+                "block_size=%s, is_mla=%s, element_size=%s, num_layers=%s, total_tp_size=%s, num_head=%s, head_size=%s, kv_block_size = %d, transferIoSize = %d,",
+                self.block_size,
+                self.is_mla,
+                self.element_size,
+                self.num_layers,
+                self.total_tp_size,
+                self.num_head,
+                self.head_size,
+                config["kv_block_size"],
+                config["transferIoSize"],
             )
             logger.info("init UCConnectorImpl, connector: %s", name)
             self.connector = UcmConnectorFactory.create_connector(name, config)
