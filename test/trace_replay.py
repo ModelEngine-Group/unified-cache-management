@@ -652,59 +652,54 @@ async def replay_trace_by_time(
     print("=" * 50)
 
     if args.save_result:
-        for i, output in enumerate(outputs):
-            save_single_metrics_to_file(output=output, output_dir="./")
+        save_single_metrics_to_file(outputs=outputs, output_dir="./")
 
     return
 
 
-def save_single_metrics_to_file(output, output_dir="./"):
-    ttft = None
-    tpot = None
-    success = False
-    output_len = None
-    success = output.success
-    ttft = output.ttft * 1000 if output.ttft is not None else None
-    output_len = output.output_tokens if output.output_tokens is not None else 0
-    input_len = output.prompt_len if output.prompt_len is not None else 0
-    latency = output.latency * 1000 if output.latency is not None else None
-    if output_len > 1:
-        tpot = (output.latency - output.ttft) / (output_len - 1) * 1000
-
+def save_single_metrics_to_file(outputs, output_dir="./"):
     output_path = output_dir
     if not os.path.exists(output_path):
         os.makedirs(output_path, exist_ok=True)
     excel_file = os.path.join(output_path, "single_metrics.xlsx")
-
-    outputs = {}
-    outputs["time"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    outputs["tpot(ms)"] = tpot
-    outputs["ttft(ms)"] = ttft
-    outputs["e2el(ms)"] = latency
-    outputs["output_tokens"] = output_len
-    outputs["input_tokens"] = input_len
-    outputs["success"] = success
-
-    df = pandas.DataFrame([outputs])
+    rows = []
+    for output in outputs:
+        ttft = output.ttft * 1000 if output.ttft is not None else None
+        output_len = output.output_tokens if output.output_tokens is not None else 0
+        input_len = output.prompt_len if output.prompt_len is not None else 0
+        latency = output.latency * 1000 if output.latency is not None else None
+        tpot = None
+        if output_len > 1 and output.ttft is not None and output.latency is not None:
+            tpot = (output.latency - output.ttft) / (output_len - 1) * 1000
+        itl_mean = None
+        if hasattr(output, "itl") and output.itl:
+            try:
+                itl_mean = sum(output.itl) / len(output.itl) * 1000
+            except Exception:
+                itl_mean = None
+        row = {
+            "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "tpot(ms)": tpot,
+            "ttft(ms)": ttft,
+            "e2el(ms)": latency,
+            "output_tokens": output_len,
+            "input_tokens": input_len,
+            "success": output.success,
+            "itl_mean(ms)": itl_mean,
+        }
+        rows.append(row)
+    df = pandas.DataFrame(rows)
     file_exists = os.path.isfile(excel_file)
     if file_exists:
         try:
             existing_df = pandas.read_excel(excel_file)
             updated_df = pandas.concat([existing_df, df], ignore_index=True)
         except Exception as e:
-            print(
-                f"Warning: Failed to read {excel_file}, it will be overwritten. Error: {e}"
-            )
+            print(f"Warning: Failed to read {excel_file}, it will be overwritten. Error: {e}")
             updated_df = df
     else:
         updated_df = df
-    # Save back to Excel (automatically create or overwrite)
-
-    write_mode = "a" if file_exists else "w"
-    excel_writer_kwargs = {"path": excel_file, "engine": "openpyxl", "mode": write_mode}
-    if write_mode == "a":
-        excel_writer_kwargs["if_sheet_exists"] = "replace"
-    with pandas.ExcelWriter(**excel_writer_kwargs) as writer:
+    with pandas.ExcelWriter(excel_file, engine="openpyxl", mode="w") as writer:
         updated_df.to_excel(writer, index=False, sheet_name="Performance Metrics")
 
 
