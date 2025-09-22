@@ -29,24 +29,25 @@ Make KVCache Great Again!
 :caption: Getting Started
 :maxdepth: 1
 getting-started/quick_start
-getting-started/installation/index
+getting-started/installation_gpu
+getting-started/installation_npu
 :::
 
 :::{toctree}
 :caption: User Guide
 :maxdepth: 1
-user_guide/support_matrix/index
-user_guide/features/index
-user_guide/connector_guide/index
-user_guide/engine_guide/index
+user-guide/prefix-cache/index
+user-guide/sparse-attention/index
+user-guide/pd-disaggregation/index
+user-guide/engine-integration/index
 :::
 
 :::{toctree}
 :caption: Developer Guide
 :maxdepth: 1
-developer_guide/design/index
-developer_guide/contributing
-developer_guide/performance/index
+developer-guide/sparse_attention
+developer-guide/pd_disaggregation
+developer-guide/contribute
 :::
 
 :::{toctree}
