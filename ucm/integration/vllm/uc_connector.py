@@ -148,7 +148,7 @@ class UnifiedCacheConnectorV1(KVConnectorBase_V1):
             )
             config["transferIoSize"] = (
                 self.block_size * self.element_size * self.head_size
-                if self.is_mlagit
+                if self.is_mla
                 else self.block_size
                 * self.element_size
                 * self.num_head
