@@ -31,6 +31,7 @@ from ucm.ucm_sparse.utils import (
     LOCAL_WINDOW_SZ,
     MAX_BS,
     MAX_TOPK_LEN,
+    CUDA_TOPK,
     PTOPK_PREFETCH_ENABLE,
     SEG_PREFILL_THRESHOLD,
     compute_topk_len,
@@ -277,9 +278,17 @@ class GSAMetaData(UcmSparseMetadata):
         model_input = {}
         calc_repre_slot_mappings = []
         query_locals = [0]
+        if CUDA_TOPK:
+            repre_slot_mapping = []
+            include_mask = []
+            exclude_mask = []
         for req_id, _ in scheduler_output.num_scheduled_tokens.items():
             calc_block_table += self.gsa_stats[req_id].calc_block_table
             calc_repre_slot_mappings += self.gsa_stats[req_id].calc_repre_slot_mapping
+            if CUDA_TOPK:
+                repre_slot_mapping.append(self.gsa_stats[req_id].repre_slot_mapping)
+                include_mask.append(self.gsa_stats[req_id].include_mask)
+                exclude_mask.append(self.gsa_stats[req_id].exclude_mask)
             query_locals.append(
                 query_locals[-1] + scheduler_output.num_scheduled_tokens[req_id]
             )
@@ -289,6 +298,16 @@ class GSAMetaData(UcmSparseMetadata):
         model_input["calc_repre_slot_mapping"] = torch.tensor(
             calc_repre_slot_mappings, dtype=torch.int32, device="cpu"
         )
+        if CUDA_TOPK:
+            model_input["repre_slot_mapping"] = make_tensor_with_pad(
+                repre_slot_mapping, pad = 0, dtype=torch.int32, device="cpu"
+            )
+            model_input["include_mask"] = make_tensor_with_pad(
+                include_mask, pad=False, dtype=torch.uint8, device=self.device
+            )
+            model_input["exclude_mask"] = make_tensor_with_pad(
+                exclude_mask, pad=False, dtype=torch.uint8, device=self.device
+            )
         model_input["query_locals"] = query_locals
         return model_input
 
@@ -337,6 +356,44 @@ def get_offset(block_shape, rank, tp_size, precision, layer_id, is_v, is_mla) ->
     v_offset = k_offset + k_min_data_block_size
     return v_offset if is_v else k_offset
 
+class TopkCal:
+    def __init__(self, att_num_heads, kv_num_heads, head_size, kpre_caches):
+        self.att_num_heads = att_num_heads
+        self.kv_num_heads = kv_num_heads
+        self.head_size = head_size
+        self.kpre_caches = kpre_caches
+        self.topk_ratio = 0.3
+
+    def set_topk_param(self, repre_slot_mapping, include_mask, exclude_mask):
+        self.repre_slot_mapping = repre_slot_mapping
+        self.include_mask = include_mask
+        self.exclude_mask = exclude_mask
+
+    def set_topk_caches(self, cal_topk_id, topk_caches, topk_len_list):
+        self.cal_topk_id = cal_topk_id
+        self.topk_caches = topk_caches
+        self.topk_len_list = topk_len_list
+
+    def cal_topk(self, intermediate_q, current_layer_id):
+        bs = len(self.cal_topk_id)
+        scale = self.head_size**-0.5
+        head_group_num = self.att_num_heads // self.kv_num_heads
+        q_decode = intermediate_q[self.cal_topk_id]
+        kpre_index = self.repre_slot_mapping[self.cal_topk_id].flatten()
+        kpre_need = self.kpre_caches[current_layer_id][kpre_index]
+        max_norm_num = kpre_need.shape[1]
+        kpre_out = kpre_need.unsqueeze(2).expand(-1, -1, head_group_num, -1, -1)
+        kpre_out = kpre_out.reshape(bs, -1, self.att_num_heads, self.head_size)
+        blk_num = kpre_out.shape[1] // max_norm_num
+        qk = torch.einsum('bij,bmij->bim', q_decode, kpre_out)
+        attention_weights_without_norm, _ = torch.max(qk.reshape(bs, self.att_num_heads, blk_num, max_norm_num), dim=-1)
+        dot_product_weights = attention_weights_without_norm.mean(1)
+        dot_product_weights.masked_fill_(self.include_mask[self.cal_topk_id] == 1, float('inf'))
+        dot_product_weights.masked_fill_(self.exclude_mask[self.cal_topk_id] == 1, float('-inf'))
+        selected_block_nums = self.topk_len_list[0]
+        _, top_indices = torch.topk(dot_product_weights, selected_block_nums, dim=-1, sorted=False)
+        self.topk_caches[current_layer_id][self.cal_topk_id] = top_indices
+        print(f"layer: {current_layer_id}, top_indices: {top_indices}")
 
 class GSA(UcmSparseBase):
     # handle batch
@@ -360,7 +417,10 @@ class GSA(UcmSparseBase):
             self.connector = UcmConnectorFactory.create_connector(
                 "UcmNfsStore", nfs_config
             )
-        self.prefetch_engine = GSAPrefetchBase(vllm_config, 16, True, True, False, 1)
+        if CUDA_TOPK:
+            self.prefetch_engine = GSAPrefetchBase(vllm_config, 16, True, False, False, 1)
+        else:
+            self.prefetch_engine = GSAPrefetchBase(vllm_config, 16, True, True, False, 1)
         self.topk_kpre_manger = TopKAndKpreManger(
             vllm_config.scheduler_config.max_num_seqs
         )
@@ -421,6 +481,8 @@ class GSA(UcmSparseBase):
             device=vllm_config.device_config.device,
             dtype=torch.float32,
         )
+        if CUDA_TOPK:
+            self.gsa_cuda_topk = TopkCal(att_num_heads, kv_num_heads, head_size, prefetch_engine.kpre_caches)
 
     def launch_transfer_task(
         self, transfer_type, block_hashes, vllm_block_ids, layer_id
@@ -557,16 +619,17 @@ class GSA(UcmSparseBase):
                 ids[index_in_batch] = (
                     self.model_input["query_locals"][index_in_batch + 1] - 1
                 )
-                self.gsa_q_cache[current_layer_id][index_in_batch].copy_(
-                    query[ids[index_in_batch]]
-                )
-        is_cal_kpre = len(self.model_input["calc_block_table"]) > 0
-        self.gsa_offload_ops.add_copy_req(
-            is_cal_kpre,
-            current_layer_id,
-            ids,
-            self.gsa_q_cache[current_layer_id][: len(query)],
-        )
+        if CUDA_TOPK:
+            self.gsa_cuda_topk.cal_topk(query[ids], current_layer_id)
+        else:
+            self.gsa_q_cache[current_layer_id][:len(ids)].copy_(query[ids])
+            is_cal_kpre = len(self.model_input["calc_block_table"]) > 0
+            self.gsa_offload_ops.add_copy_req(
+                is_cal_kpre,
+                current_layer_id,
+                ids,
+                self.gsa_q_cache[current_layer_id]
+            )
 
     def copy_k(self, layer_name: str, forward_context: ForwardContext) -> None:
         current_layer_id = int(layer_name.split(".")[2])
@@ -578,11 +641,15 @@ class GSA(UcmSparseBase):
                 attn[layer_name]
                 .kv_cache[forward_context.virtual_engine][0][block_ids]
                 .mean(dim=1, keepdim=True)
-                .cpu()
             )
-            self.prefetch_engine.kpre_caches[current_layer_id][
+            if CUDA_TOPK:
+                self.prefetch_engine.kpre_caches[current_layer_id][
+                    calc_repre_slot_mappings
+                ] = key_cache_mean_out.clone()
+            else:
+                self.prefetch_engine.kpre_caches[current_layer_id][
                 calc_repre_slot_mappings
-            ].copy_(key_cache_mean_out)
+                ] = key_cache_mean_out.to(dtype = torch.float32, device = 'cpu')
             k_needed = attn[layer_name].kv_cache[forward_context.virtual_engine][0]
             self.gsa_offload_ops.add_copy_req(True, current_layer_id, [], k_needed)
 
@@ -878,16 +945,23 @@ class GSA(UcmSparseBase):
             repre_slot_mappings.append(req_meta.repre_slot_mapping)
             calc_block_tables = self.model_input["calc_block_table"]
             calc_repre_slot_mappings += req_meta.calc_repre_slot_mapping
+        if CUDA_TOPK and len(topk_len_list) != 0:
+            topk_len_list = [max(topk_len_list)]*len(topk_len_list)
         self.gsa_offload_ops.set_common_param(cal_topk_id, is_decode)
         if len(calc_block_tables) != 0:
             self.gsa_offload_ops.set_kpre_param(
                 calc_block_tables, calc_repre_slot_mappings
             )
         if self.prefetch_engine.atb_gsa_enable and self.prefetch_engine.is_topk_cal:
-            self.gsa_offload_ops.set_topk_param(repre_slot_mappings)
-            self.gsa_offload_ops.set_topk_cache(
-                self.model_input["topk_caches"], topk_len_list
-            )
+            if CUDA_TOPK:
+                print(f"slot_mapping; {self.model_input["repre_slot_mapping"].tolist()}")
+                self.gsa_cuda_topk.set_topk_param(self.model_input["repre_slot_mapping"], self.model_input["include_mask"], self.model_input["exclude_mask"])
+                self.gsa_cuda_topk.set_topk_caches(cal_topk_id, self.model_input["topk_caches"], topk_len_list)
+            else:
+                self.gsa_offload_ops.set_topk_param(repre_slot_mappings)
+                self.gsa_offload_ops.set_topk_cache(
+                    self.model_input["topk_caches"], topk_len_list
+                )
 
     def _init_sparse_local_kv(
         self, scheduler_output: SchedulerOutput, requests

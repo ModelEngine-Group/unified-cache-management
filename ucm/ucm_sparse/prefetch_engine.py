@@ -13,6 +13,7 @@ from ucm.ucm_sparse import gsa_prefetch
 from ucm.ucm_sparse.utils import (
     LOCAL_WINDOW_SZ,
     MAX_TOPK_LEN,
+    MAX_BS,
     PTOPK_PREFETCH_ENABLE,
     SEG_PREFILL_THRESHOLD,
     VLLM_CUDA_MEM_ALIGN_KV_CACHE,
@@ -42,7 +43,7 @@ class GSAPrefetchBase:
         self.num_attention_layers = vllm_config.model_config.get_num_layers(
             vllm_config.parallel_config
         )
-        self.max_bs = vllm_config.scheduler_config.max_num_seqs
+        self.max_bs = MAX_BS
         self.is_log = is_log
         self.max_block_len = math.ceil(
             vllm_config.model_config.max_model_len / vllm_config.cache_config.block_size
@@ -164,9 +165,11 @@ class GSAPrefetchBase:
                 for index, topk_info in enumerate(self.topk_bs):
                     if topk_info[1]:
                         if topk_info[0] in gsa_metadata.gsa_stats:
-                            gsa_metadata.gsa_stats[topk_info[0]].topk_buf_tmp = (
-                                self.topk_buf_tmp[:, index, : topk_info[2]].clone()
-                            )
+                            if not self.is_cpu_topk:
+                                gsa_metadata.gsa_stats[topk_info[0]].topk_buf_tmp = self.topk_buf_tmp[:, index, : topk_info[2]].cpu()
+                            else:
+                                gsa_metadata.gsa_stats[topk_info[0]].topk_buf_tmp = self.topk_buf_tmp[:, index, : topk_info[2]].clone()
+
                 self.topk_bs = []
                 for index, req_id in enumerate(self.req_ids_bs):
                     one_block_len = len(gsa_metadata.gsa_stats[req_id].blocks)
