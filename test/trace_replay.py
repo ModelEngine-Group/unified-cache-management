@@ -92,11 +92,50 @@ class TraceReplayDataset(BenchmarkDataset):
         self.prompts_file_name = (
             f"{trace_directory_name}/{trace_file_name}_dataset.jsonl"
         )
+        self.hash_to_tokens: dict[int, list[int]] = {}
+        
+    def generate_prompt(self, hash_ids: list[int], target_length: int, tokenizer) -> str:
+        
+        vocab_size = tokenizer.vocab_size
+        
+        # Use hash_ids to influence token generation
+        base_offset = hash_ids[0] if hash_ids else 0
+        token_ids = []
+        
+        for i, value in enumerate(hash_ids):
+            if value in self.hash_to_tokens:
+                token_ids.extend(self.hash_to_tokens[value])
+            elif (i + 1) * 512 <= target_length:
+                for j in range(512):
+                    token_idx = i * 512 + j
+                    token_id = (base_offset + token_idx + sum(hash_ids[token_idx % len(hash_ids):token_idx % len(hash_ids) + 3])) % vocab_size
+                    self.hash_to_tokens.setdefault(value, []).append(token_id)
+                token_ids.extend(self.hash_to_tokens[value])
+            else:
+                needed = target_length - i * 512
+                padding = [(base_offset + len(token_ids) + j) % vocab_size for j in range(needed)]
+                token_ids.extend(padding)
+        print(f"target_length={target_length}, tokens_id length={len(token_ids)}")
+        
+        # Decode to text and re-encode to get actual length
+        text = tokenizer.decode(token_ids, skip_special_tokens=True)
+        final_tokens = tokenizer.encode(text, add_special_tokens=False)
+        
+        # Truncate or pad to target length
+        if len(final_tokens) > target_length:
+            final_tokens = final_tokens[:target_length]
+        elif len(final_tokens) < target_length:
+            # Pad with more deterministic tokens
+            needed = target_length - len(final_tokens)
+            padding = [(base_offset + len(final_tokens) + i) % vocab_size for i in range(needed)]
+            final_tokens.extend(padding)
+        
+        # Final decode
+        return tokenizer.decode(final_tokens, skip_special_tokens=True)
 
     def sample(
         self,
         tokenizer: PreTrainedTokenizerBase,
-        prefix_len: int = 0,
         save_prompts: bool = False,
         **kwargs,
     ) -> dict[float, list[SampleRequest]]:
@@ -122,77 +161,31 @@ class TraceReplayDataset(BenchmarkDataset):
             return requests
 
         assert self.REG_GROUPS is not None, "Find no trace info!!!"
-        vocab_size = tokenizer.vocab_size
-        num_special_tokens = tokenizer.num_special_tokens_to_add()
 
-        all_token_sequences = []
-        # Save (timestamp, output_len)
-        meta_info = []
-        # Generate prompts by trace file
         for timestamp, record_list in self.REG_GROUPS.items():
             for req in record_list:
                 hash_ids = req["hash_ids"]
                 input_length = req["input_length"]
                 output_length = req["output_length"]
-                prefix_token_ids = (
-                    [hash_ids[i % len(hash_ids)] for i in range(prefix_len)]
-                    if prefix_len > 0
-                    else []
-                )
-                real_input_len = input_length - prefix_len - num_special_tokens
-                if len(hash_ids) >= real_input_len:
-                    inner_seq = hash_ids[:real_input_len]
-                else:
-                    offset = sum(hash_ids) % vocab_size
-                    inner_seq = (
-                        (offset + np.arange(real_input_len)) % vocab_size
-                    ).tolist()
-                token_sequence = prefix_token_ids + inner_seq
-
-                all_token_sequences.append(token_sequence)
-                meta_info.append((timestamp, output_length))
-
-        decoded_prompts = tokenizer.batch_decode(all_token_sequences)
-        print(f"Done decoded prompts, time: {time.time()}")
-        re_encodeds = []
-        for token_ids, prompt in zip(all_token_sequences, decoded_prompts):
-            re_encodeds.append(
-                tokenizer.encode(prompt, add_special_tokens=False)[: len(token_ids)]
-            )
-        print(f"Done reencoded prompts, time: {time.time()}")
-        decoded_prompts.clear()
-        decoded_prompts = tokenizer.batch_decode(re_encodeds)
-        print(f"Done redecoded prompts, time: {time.time()}")
-        # Write every 100 prompts to file
-        batch_size = 100
-        batch_data = []
-        i = 0
-        for (timestamp, output_length), token_ids, prompt in zip(
-            meta_info, all_token_sequences, decoded_prompts
-        ):
-            requests[timestamp].append(
-                SampleRequest(
+                
+                prompt = self.generate_prompt(hash_ids, input_length, tokenizer)
+                requests[timestamp].append(SampleRequest(
                     prompt=prompt,
-                    prompt_len=len(token_ids),
+                    prompt_len=input_length,
                     expected_output_len=output_length,
-                )
-            )
-            batch_data.append(
-                {
-                    "timestamp": timestamp,
-                    "prompt": prompt,
-                    "input_length": len(token_ids),
-                    "output_length": output_length,
-                }
-            )
-            i += 1
-            if save_prompts is False:
-                continue
-            if len(batch_data) >= batch_size or i == len(meta_info):
-                with open(self.prompts_file_name, "a", encoding="utf-8") as f:
-                    for data in batch_data:
-                        f.write(json.dumps(data, ensure_ascii=False) + "\n")
-                batch_data = []
+                ))
+        if not save_prompts:
+            return requests
+        with open(self.prompts_file_name, "a", encoding="utf-8") as f:
+            for timestamp, reqs_list in requests.items():
+                for req in reqs_list:
+                    data = {
+                        "timestamp": timestamp,
+                        "prompt": req.prompt,
+                        "input_length": req.prompt_len,
+                        "output_length": req.expected_output_len,
+                    }
+                    f.write(json.dumps(data, ensure_ascii=False) + "\n")
 
         print(f"Done sample, time: {time.time()}")
         return requests
