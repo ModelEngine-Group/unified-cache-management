@@ -407,12 +407,31 @@ class GSA(UcmSparseBase):
         )
         self.head_size = vllm_config.model_config.get_head_size()
         self.use_mla = vllm_config.model_config.use_mla
+        self.block_size = vllm_config.cache_config.block_size
+        self.element_size = vllm_config.model_config.dtype.itemsize
+        self.num_head = vllm_config.model_config.get_num_kv_heads(
+            vllm_config.parallel_config
+        )
+        self.total_tp_size = vllm_config.parallel_config.tensor_parallel_size
+        self.num_layers = vllm_config.model_config.get_num_layers(
+            vllm_config.parallel_config
+        )
         if PTOPK_PREFETCH_ENABLE:
+            config_base = self.block_size * self.element_size * self.head_size
+            kv_block_size = (
+                config_base
+                * self.num_layers
+                * (1 if self.use_mla else self.num_head * self.total_tp_size * 2)
+            )
+            transferIoSize = config_base * (
+                1 if self.use_mla else self.num_head
+            )
             nfs_config = {
                 "storage_backends": "./ucm/data/" + str(self.rank),
-                "kv_block_size": 33554432,
+                "kv_block_size": kv_block_size,
                 "device": self.rank,
                 "role": "worker",
+                "transferIoSize": transferIoSize
             }
             self.connector = UcmConnectorFactory.create_connector(
                 "UcmNfsStore", nfs_config
@@ -424,7 +443,6 @@ class GSA(UcmSparseBase):
         self.topk_kpre_manger = TopKAndKpreManger(
             vllm_config.scheduler_config.max_num_seqs
         )
-        self.block_size = vllm_config.cache_config.block_size
         self.k_cache = {}
         self.v_cache = {}
         self.tasks_dump = {}
@@ -452,9 +470,6 @@ class GSA(UcmSparseBase):
         prefetch_engine: GSAPrefetchBase,
     ) -> None:
         parallel_config = vllm_config.parallel_config
-        self.layer_num = vllm_config.model_config.get_num_layers_by_block_type(
-            parallel_config
-        )
         block_size = vllm_config.cache_config.block_size
         att_num_heads = vllm_config.model_config.get_num_attention_heads(
             parallel_config
