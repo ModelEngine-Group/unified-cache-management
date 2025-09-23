@@ -393,7 +393,6 @@ class TopkCal:
         selected_block_nums = self.topk_len_list[0]
         _, top_indices = torch.topk(dot_product_weights, selected_block_nums, dim=-1, sorted=False)
         self.topk_caches[current_layer_id][self.cal_topk_id] = top_indices
-        print(f"layer: {current_layer_id}, top_indices: {top_indices}")
 
 class GSA(UcmSparseBase):
     # handle batch
@@ -477,9 +476,8 @@ class GSA(UcmSparseBase):
         kv_num_heads = vllm_config.model_config.get_num_kv_heads(parallel_config)
         head_size = vllm_config.model_config.get_head_size()
         max_model_len = vllm_config.model_config.max_model_len
-        max_num_seqs = vllm_config.scheduler_config.max_num_seqs
         self.gsa_offload_ops = gsa_offload_ops.CalKpreAndTopk(
-            self.layer_num, block_size, max_num_seqs, att_num_heads, head_size
+            self.layer_num, block_size, MAX_BS, att_num_heads, head_size
         )
         self.gsa_offload_ops.set_kpre_method_param(
             int(max_model_len / block_size) * MAX_BS, kv_num_heads, 1
@@ -663,7 +661,7 @@ class GSA(UcmSparseBase):
                 ] = key_cache_mean_out.clone()
             else:
                 self.prefetch_engine.kpre_caches[current_layer_id][
-                calc_repre_slot_mappings
+                    calc_repre_slot_mappings
                 ] = key_cache_mean_out.to(dtype = torch.float32, device = 'cpu')
             k_needed = attn[layer_name].kv_cache[forward_context.virtual_engine][0]
             self.gsa_offload_ops.add_copy_req(True, current_layer_id, [], k_needed)
@@ -969,7 +967,6 @@ class GSA(UcmSparseBase):
             )
         if self.prefetch_engine.atb_gsa_enable and self.prefetch_engine.is_topk_cal:
             if CUDA_TOPK:
-                print(f"slot_mapping; {self.model_input["repre_slot_mapping"].tolist()}")
                 self.gsa_cuda_topk.set_topk_param(self.model_input["repre_slot_mapping"], self.model_input["include_mask"], self.model_input["exclude_mask"])
                 self.gsa_cuda_topk.set_topk_caches(cal_topk_id, self.model_input["topk_caches"], topk_len_list)
             else:
