@@ -135,34 +135,10 @@ class UnifiedCacheConnectorV1(KVConnectorBase_V1):
             config["role"] = (
                 "scheduler" if role == KVConnectorRole.SCHEDULER else "worker"
             )
-            config["kv_block_size"] = (
-                self.block_size * self.element_size * self.head_size * self.num_layers
-                if self.is_mla
-                else self.block_size
-                * self.element_size
-                * self.num_head
-                * self.total_tp_size
-                * self.head_size
-                * self.num_layers
-                * 2
-            )
-            config["transferIoSize"] = (
-                self.block_size * self.element_size * self.head_size
-                if self.is_mla
-                else self.block_size
-                * self.element_size
-                * self.num_head
-                * self.head_size
-            )
+            config["kv_block_size"] = self.block_size * self.element_size * self.head_size * self.num_layers * (1 if self.is_mla else self.num_head * self.total_tp_size * 2)
+            config["transferIoSize"] = self.block_size * self.element_size * self.head_size * (1 if self.is_mla else self.num_head)
             logger.info(
-                "block_size=%s, is_mla=%s, element_size=%s, num_layers=%s, total_tp_size=%s, num_head=%s, head_size=%s, kv_block_size = %d, transferIoSize = %d,",
-                self.block_size,
-                self.is_mla,
-                self.element_size,
-                self.num_layers,
-                self.total_tp_size,
-                self.num_head,
-                self.head_size,
+                "kv_block_size = %d, transferIoSize = %d,",
                 config["kv_block_size"],
                 config["transferIoSize"],
             )
