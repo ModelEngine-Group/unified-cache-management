@@ -179,7 +179,7 @@ class GSAPrefetchBase:
             self.topk_bs.append(
                 [
                     req_id,
-                    gsa_metadata.gsa_stats[req_id].stage() != SequenceStage.PREFILL,
+                    gsa_metadata.gsa_stats[req_id].is_gsa(),
                     one_topk_len,
                 ]
             )
