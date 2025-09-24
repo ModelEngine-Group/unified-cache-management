@@ -12,8 +12,8 @@ from vllm.utils import is_pin_memory_available
 from ucm.ucm_sparse import gsa_prefetch
 from ucm.ucm_sparse.utils import (
     LOCAL_WINDOW_SZ,
-    MAX_TOPK_LEN,
     MAX_BS,
+    MAX_TOPK_LEN,
     PTOPK_PREFETCH_ENABLE,
     SEG_PREFILL_THRESHOLD,
     VLLM_CUDA_MEM_ALIGN_KV_CACHE,
@@ -179,8 +179,7 @@ class GSAPrefetchBase:
             self.topk_bs.append(
                 [
                     req_id,
-                    gsa_metadata.gsa_stats[req_id].stage()
-                    != SequenceStage.PREFILL,
+                    gsa_metadata.gsa_stats[req_id].stage() != SequenceStage.PREFILL,
                     one_topk_len,
                 ]
             )
