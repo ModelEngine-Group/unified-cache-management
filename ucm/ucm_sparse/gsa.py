@@ -3,8 +3,8 @@ import math
 import time
 from dataclasses import dataclass
 from functools import wraps
-from typing import Dict, List, Union
 from itertools import accumulate
+from typing import Dict, List, Union
 
 import torch
 from vllm.config import VllmConfig
@@ -289,10 +289,14 @@ class GSAMetaData(UcmSparseMetadata):
             calc_block_table += self.gsa_stats[req_id].calc_block_table
             calc_repre_slot_mappings += self.gsa_stats[req_id].calc_repre_slot_mapping
             if CUDA_TOPK:
-                repre_slot_mapping[req_in_batch] = self.gsa_stats[req_id].repre_slot_mapping
+                repre_slot_mapping[req_in_batch] = self.gsa_stats[
+                    req_id
+                ].repre_slot_mapping
                 include_mask[req_in_batch] = self.gsa_stats[req_id].include_mask
                 exclude_mask[req_in_batch] = self.gsa_stats[req_id].exclude_mask
-            query_locals[req_in_batch + 1] = scheduler_output.num_scheduled_tokens[req_id]
+            query_locals[req_in_batch + 1] = scheduler_output.num_scheduled_tokens[
+                req_id
+            ]
         query_locals = list(accumulate(query_locals))
         model_input["calc_block_table"] = torch.tensor(
             calc_block_table, dtype=torch.int32, device="cpu"
