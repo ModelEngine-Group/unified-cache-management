@@ -12,6 +12,7 @@ from vllm.utils import is_pin_memory_available
 from ucm.ucm_sparse import gsa_prefetch
 from ucm.ucm_sparse.utils import (
     LOCAL_WINDOW_SZ,
+    MAX_BS,
     MAX_TOPK_LEN,
     PTOPK_PREFETCH_ENABLE,
     SEG_PREFILL_THRESHOLD,
@@ -42,7 +43,7 @@ class GSAPrefetchBase:
         self.num_attention_layers = vllm_config.model_config.get_num_layers(
             vllm_config.parallel_config
         )
-        self.max_bs = vllm_config.scheduler_config.max_num_seqs
+        self.max_bs = MAX_BS
         self.is_log = is_log
         self.max_block_len = math.ceil(
             vllm_config.model_config.max_model_len / vllm_config.cache_config.block_size
@@ -137,6 +138,10 @@ class GSAPrefetchBase:
             self.topk_len = compute_topk_len(self._get_max_block_len())
             topk_buf_tmp = self.use_topk_caches[:, block_table_index.cpu(), :]
             topk_buf_tmp = topk_buf_tmp[:, :, : self.topk_len]
+            self.is_topk_cal = is_topk_done and self.num_token % 3 == 0
+            if self.is_topk_cal:
+                self._topk_tmp_deal(gsa_metadata, topk_buf_tmp)
+
             self._topk_insert_last_idx(gsa_metadata)
             if self.ptopk_prefetch_enable:
                 self._first_topk_deal(gsa_metadata)
@@ -153,35 +158,32 @@ class GSAPrefetchBase:
             list_topk_buf = list(topk_buf_tmp.unbind(dim=0))
             list_block_table = list(block_table_tmp.unbind(dim=0))
             gsa_len_list = list(gen_len_tmp.unbind(dim=0))
-            self.is_topk_cal = is_topk_done and self.num_token % 3 == 0
             gsa_model_input["topk_caches"] = list_topk_buf
             gsa_model_input["kpre_caches"] = self.kpre_caches
             gsa_model_input["is_topk"] = self.is_topk_cal
             gsa_model_input["block_tables_mp"] = list_block_table
             gsa_model_input["gsa_seq_len"] = gsa_len_list
-
-            if self.is_topk_cal:
-                for index, topk_info in enumerate(self.topk_bs):
-                    if topk_info[1]:
-                        if topk_info[0] in gsa_metadata.gsa_stats:
-                            gsa_metadata.gsa_stats[topk_info[0]].topk_buf_tmp = (
-                                self.topk_buf_tmp[:, index, : topk_info[2]].clone()
-                            )
-                self.topk_bs = []
-                for index, req_id in enumerate(self.req_ids_bs):
-                    one_block_len = len(gsa_metadata.gsa_stats[req_id].blocks)
-                    one_topk_len = compute_topk_len(one_block_len)
-                    self.topk_bs.append(
-                        [
-                            req_id,
-                            gsa_metadata.gsa_stats[req_id].stage()
-                            != SequenceStage.PREFILL,
-                            one_topk_len,
-                        ]
-                    )
-                self.topk_buf_tmp = topk_buf_tmp
-
         gsa_model_input["atb_gsa_enable"] = self.atb_gsa_enable
+
+    def _topk_tmp_deal(self, gsa_metadata, topk_buf_tmp):
+        for index, topk_info in enumerate(self.topk_bs):
+            if topk_info[1]:
+                if topk_info[0] in gsa_metadata.gsa_stats:
+                    gsa_metadata.gsa_stats[topk_info[0]].topk_buf_tmp = (
+                        self.topk_buf_tmp[:, index, : topk_info[2]].clone()
+                    )
+        self.topk_bs = []
+        for index, req_id in enumerate(self.req_ids_bs):
+            one_block_len = len(gsa_metadata.gsa_stats[req_id].blocks)
+            one_topk_len = compute_topk_len(one_block_len)
+            self.topk_bs.append(
+                [
+                    req_id,
+                    gsa_metadata.gsa_stats[req_id].is_gsa(),
+                    one_topk_len,
+                ]
+            )
+        self.topk_buf_tmp = topk_buf_tmp
 
     def deal_async_prefetch(
         self,
@@ -466,7 +468,7 @@ class GSAPrefetchBase:
     ) -> None:
         self.open_gsa = False
         for req_id in self.req_ids_bs:
-            if gsa_metadata.gsa_stats[req_id].stage() == SequenceStage.DECODE:
+            if gsa_metadata.gsa_stats[req_id].is_gsa():
                 self.open_gsa = True
                 break
         if self.open_gsa:
