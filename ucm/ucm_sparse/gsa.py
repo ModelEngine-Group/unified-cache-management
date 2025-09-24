@@ -412,14 +412,14 @@ class GSA(UcmSparseBase):
             vllm_config.parallel_config
         )
         self.total_tp_size = vllm_config.parallel_config.tensor_parallel_size
-        self.num_layers = vllm_config.model_config.get_num_layers(
+        self.layer_num = vllm_config.model_config.get_num_layers(
             vllm_config.parallel_config
         )
         if PTOPK_PREFETCH_ENABLE:
             config_base = self.block_size * self.element_size * self.head_size
             kv_block_size = (
                 config_base
-                * self.num_layers
+                * self.layer_num
                 * (1 if self.use_mla else self.num_head * self.total_tp_size * 2)
             )
             transferIoSize = config_base * (
