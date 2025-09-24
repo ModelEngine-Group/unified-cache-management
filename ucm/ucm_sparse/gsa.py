@@ -824,13 +824,15 @@ class GSA(UcmSparseBase):
         return gsa_meta
 
     def execute_begin(self, scheduler_output: SchedulerOutput):
-        req_ids = []
-        block_table_ori = []
-        topk_kpre_maps = []
+        batch_size = len(scheduler_output.num_scheduled_tokens.items())
+        req_ids = [0] * batch_size
+        block_table_ori = [0] * batch_size
+        topk_kpre_maps = [0] * batch_size
         for req_id, _ in scheduler_output.num_scheduled_tokens.items():
-            req_ids.append(req_id)
-            block_table_ori.append(self.gsa_metadata.gsa_stats[req_id].blocks)
-            topk_kpre_maps.append(self.topk_kpre_manger.cache_map[req_id])
+            req_in_batch = self.gsa_metadata.gsa_stats[req_id].index_in_batch
+            req_ids[req_in_batch] = req_id
+            block_table_ori[req_in_batch] = self.gsa_metadata.gsa_stats[req_id].blocks
+            topk_kpre_maps[req_in_batch] = self.topk_kpre_manger.cache_map[req_id]
         is_topk_done = self.gsa_offload_ops.is_calculate_finish()
         self.prefetch_engine.model_input_del(
             req_ids,
