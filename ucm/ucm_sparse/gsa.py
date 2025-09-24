@@ -627,7 +627,7 @@ class GSA(UcmSparseBase):
         ids = [-1] * len(self.prefetch_engine.req_ids_bs)
         for req_id in self.prefetch_engine.req_ids_bs:
             req_meta = self.gsa_metadata.gsa_stats[req_id]
-            if req_meta.stage() == SequenceStage.DECODE:
+            if req_meta.is_gsa():
                 index_in_batch = req_meta.index_in_batch
                 ids[index_in_batch] = (
                     self.model_input["query_locals"][index_in_batch + 1] - 1
@@ -950,7 +950,7 @@ class GSA(UcmSparseBase):
         calc_repre_slot_mappings = []
         for req_id in self.prefetch_engine.req_ids_bs:
             req_meta = self.gsa_metadata.gsa_stats[req_id]
-            if req_meta.stage() == SequenceStage.DECODE:
+            if req_meta.is_gsa():
                 cal_topk_id.append(req_meta.index_in_batch)
                 is_decode.append(True)
                 one_topk_len = compute_topk_len(len(req_meta.blocks))
