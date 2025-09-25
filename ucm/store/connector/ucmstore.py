@@ -161,7 +161,7 @@ class UcmKVStoreBase(ABC):
 
             ret(int):
                 == 0 -> operation succeed
-                != 0 -> error (from error code of ucmoceanstore.check or invalid task) 
+                != 0 -> error (from error code of ucmoceanstore.check or invalid task)
             finished(bool):
                 valid only if ret == 0
                 True -> task has finished

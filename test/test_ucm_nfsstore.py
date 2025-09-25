@@ -36,7 +36,7 @@ from ucm.store.connector.nfsstore_connector import UcmNfsStore
 class TestUcmNfsStoreInterface(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls.temp_dir = "/root/space/tmp" 
+        cls.temp_dir = "/root/space/tmp"
         cls.block_dim = 576
         cls.block_len = 128
         cls.block_layer = 61
