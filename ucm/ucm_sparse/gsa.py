@@ -458,7 +458,7 @@ class GSA(UcmSparseBase):
                 vllm_config, 16, True, True, False, 1
             )
         self.topk_kpre_manger = TopKAndKpreManger(
-            vllm_config.scheduler_config.max_num_seqs
+            MAX_BS
         )
         self.k_cache = {}
         self.v_cache = {}
@@ -505,7 +505,7 @@ class GSA(UcmSparseBase):
         self.gsa_q_cache = torch.zeros(
             (
                 self.layer_num,
-                vllm_config.scheduler_config.max_num_seqs,
+                MAX_BS,
                 att_num_heads,
                 head_size,
             ),
