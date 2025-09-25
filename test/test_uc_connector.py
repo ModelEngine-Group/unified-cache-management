@@ -40,7 +40,7 @@ from ucm.integration.vllm.uc_connector import (
     UCConnectorV1Metadata,
     UnifiedCacheConnectorV1,
 )
-from ucm.store.base import Task, UcmKVStoreBase
+from ucm.store.connector.ucmstore import Task, UcmKVStoreBase
 
 
 def make_request(

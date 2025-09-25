@@ -32,15 +32,14 @@ from setuptools.command.build_ext import build_ext
 from setuptools.command.develop import develop
 
 ROOT_DIR = os.path.abspath(os.path.dirname(__file__))
-FSSTORE_SRC_DIR = os.path.join(ROOT_DIR, "ucm", "csrc", "ucmnfsstore")
+STORE_SRC_DIR = os.path.join(ROOT_DIR, "ucm", "store")
 GSA_SRC_DIR = os.path.join(ROOT_DIR, "ucm", "csrc", "gsaoffloadops")
 PREFETCH_SRC_DIR = os.path.join(ROOT_DIR, "ucm", "csrc", "ucmprefetch")
 
-FSSTORE_INSTALL_DIR = os.path.join(ROOT_DIR, "ucm", "store")
+STORE_INSTALL_DIR = os.path.join(ROOT_DIR, "ucm", "store", "connector")
 GSA_INSTALL_DIR = os.path.join(ROOT_DIR, "ucm", "ucm_sparse")
 
 PLATFORM = os.getenv("PLATFORM")
-RUNTIME_ENVIRONMENT = os.getenv("RUNTIME_ENVIRONMENT")
 
 
 def _is_cuda() -> bool:
@@ -68,11 +67,10 @@ class CMakeBuild(build_ext):
 
         cmake_args = [
             "cmake",
-            f"-DCMAKE_BUILD_TYPE=Release",
+            "-DCMAKE_BUILD_TYPE=Release",
             f"-DPYTHON_EXECUTABLE={sys.executable}",
         ]
 
-        cmake_args.append("-DDOWNLOAD_DEPENDENCE=ON")
         if _is_cuda():
             cmake_args.append("-DRUNTIME_ENVIRONMENT=cuda")
         elif _is_npu():
@@ -91,7 +89,7 @@ class CMakeBuild(build_ext):
 
         subprocess.check_call(cmake_args, cwd=build_dir)
 
-        if ext.name in ["nfsstore", "gsa_offload_ops"]:
+        if ext.name in ["store", "gsa_offload_ops"]:
             subprocess.check_call(["make", "-j", "8"], cwd=build_dir)
         else:
             # 对于gsa_prefetch使用cmake --build
@@ -111,8 +109,8 @@ class CMakeBuild(build_ext):
         so_files = []
         search_patterns = [ext.name]
 
-        if ext.name == "nfsstore":
-            search_patterns.extend(["ucmnfsstore"])
+        if ext.name == "store":
+            search_patterns.extend(["ucmnfsstore", "ucmlocalstore", "ucmdramstore"])
         elif ext.name == "gsa_offload_ops":
             search_patterns.extend(["gsa_offload_ops"])
         elif ext.name == "gsa_prefetch":
@@ -125,9 +123,9 @@ class CMakeBuild(build_ext):
                         so_files.append(file)
                         break
 
-        if ext.name == "nfsstore":
-            install_dir = FSSTORE_INSTALL_DIR
-            build_install_dir = "ucm/store"
+        if ext.name == "store":
+            install_dir = STORE_INSTALL_DIR
+            build_install_dir = STORE_INSTALL_DIR
         else:
             install_dir = GSA_INSTALL_DIR
             build_install_dir = "ucm_sparse"
@@ -148,8 +146,7 @@ class CMakeBuild(build_ext):
 
 
 ext_modules = []
-
-ext_modules.append(CMakeExtension(name="nfsstore", sourcedir=FSSTORE_SRC_DIR))
+ext_modules.append(CMakeExtension(name="store", sourcedir=STORE_SRC_DIR))
 ext_modules.append(CMakeExtension(name="gsa_offload_ops", sourcedir=GSA_SRC_DIR))
 ext_modules.append(CMakeExtension(name="gsa_prefetch", sourcedir=PREFETCH_SRC_DIR))
 

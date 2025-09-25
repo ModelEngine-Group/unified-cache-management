@@ -24,8 +24,7 @@ from ucm.integration.vllm.ucm_sparse.base import (
     UcmSparseMetadata,
     UcmSparseRole,
 )
-from ucm.store.base import Task, UcmKVStoreBase
-from ucm.store.factory import UcmConnectorFactory
+from ucm.store.connector.factory import UcmConnectorFactory
 from ucm.ucm_sparse import gsa_offload_ops
 from ucm.ucm_sparse.prefetch_engine import GSAPrefetchBase
 from ucm.ucm_sparse.utils import (
