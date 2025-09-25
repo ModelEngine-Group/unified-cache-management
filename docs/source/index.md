@@ -45,8 +45,6 @@ user-guide/engine-integration/index
 :::{toctree}
 :caption: Developer Guide
 :maxdepth: 1
-developer-guide/sparse_attention
-developer-guide/pd_disaggregation
 developer-guide/contribute
 :::
 

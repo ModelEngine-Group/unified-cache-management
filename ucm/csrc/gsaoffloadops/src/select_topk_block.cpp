@@ -5,7 +5,6 @@
 #include <cmath>
 #include "select_topk_block.h"
 
-
 namespace SelectTopkBlock {
 #define OMP_THREAD_NUM 16u
 
@@ -48,6 +47,7 @@ void TopkBlockSelector::TopKImpl(const float* scores, uint32_t numScores, uint32
     for (uint32_t i = 0; i < endWindow_; ++i) {
         topkIndices[idx++] = numScores - endWindow_ + i;
     }
+    std::sort(topkIndices, topkIndices + k);
 }
 
 float TopkBlockSelector::ComputeBlockScore(float* qMean, const float* blockBase,

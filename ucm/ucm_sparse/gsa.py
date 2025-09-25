@@ -3,6 +3,7 @@ import math
 import time
 from dataclasses import dataclass
 from functools import wraps
+from itertools import accumulate
 from typing import Dict, List, Union
 
 import torch
@@ -23,11 +24,11 @@ from ucm.integration.vllm.ucm_sparse.base import (
     UcmSparseMetadata,
     UcmSparseRole,
 )
-from ucm.store.base import Task, UcmKVStoreBase
-from ucm.store.factory import UcmConnectorFactory
+from ucm.store.connector.factory import UcmConnectorFactory
 from ucm.ucm_sparse import gsa_offload_ops
 from ucm.ucm_sparse.prefetch_engine import GSAPrefetchBase
 from ucm.ucm_sparse.utils import (
+    CUDA_TOPK,
     LOCAL_WINDOW_SZ,
     MAX_BS,
     MAX_TOPK_LEN,
@@ -117,7 +118,6 @@ class GSAReqStat:
     ) -> None:
         self.blocks = [x for x in add_req_state.block_ids[0]]
         self.index_in_batch = index_in_batch
-        self._init_slot(offset)
         self.num_computed_tokens = add_req_state.num_computed_tokens
         self.num_scheduled_tokens = num_scheduled_tokens
         self.num_prompt_tokens = len(add_req_state.prompt_token_ids)
@@ -125,6 +125,9 @@ class GSAReqStat:
         self.is_use_gsa = (
             True if self.num_prompt_tokens > SEG_PREFILL_THRESHOLD else False
         )
+        self._init_slot(offset)
+        if len(self.repre_slot_mapping) > len(self.blocks):
+            self.repre_slot_mapping = self.repre_slot_mapping[: len(self.blocks)]
 
     def updata_req_state(
         self, num_scheduled_tokens, add_req_state, index_in_batch
@@ -134,31 +137,26 @@ class GSAReqStat:
         self.num_output_tokens = len(add_req_state.output_token_ids)
         self.index_in_batch = index_in_batch
         if self.stage() == SequenceStage.PREFILL:
-            if self.is_last_chunk():
-                add_blocks = [
-                    x for x in add_req_state.block_ids[0][:-1] if x not in self.blocks
-                ]
-            else:
-                add_blocks = [
-                    x for x in add_req_state.block_ids[0] if x not in self.blocks
-                ]
+            add_blocks = [x for x in add_req_state.block_ids[0] if x not in self.blocks]
             self.blocks = [x for x in add_req_state.block_ids[0]]
             self._update_slot(add_blocks)
         else:
             self._get_sparse_and_free_block()
             if len(add_req_state.block_ids[0]) != self.sparse_len:
-                add_blocks = [add_req_state.block_ids[0][-2]]
-                self._update_slot(add_blocks)
+                add_blocks = [add_req_state.block_ids[0][-1]]
                 self.blocks += [add_req_state.block_ids[0][-1]]
                 self.sparse_len = len(add_req_state.block_ids[0])
+                self._update_slot(add_blocks)
             else:
                 self.calc_block_table = []
                 self.calc_repre_slot_mapping = []
+        if len(self.repre_slot_mapping) > len(self.blocks):
+            self.repre_slot_mapping = self.repre_slot_mapping[: len(self.blocks)]
 
     def _get_sparse_and_free_block(self):
         if self.num_prompt_tokens == self.num_computed_tokens:
             blocks_len = len(self.blocks)
-            if self.num_prompt_tokens > SEG_PREFILL_THRESHOLD:
+            if self.num_prompt_tokens > SEG_PREFILL_THRESHOLD and PTOPK_PREFETCH_ENABLE:
                 remain_len = compute_topk_len(blocks_len)
                 if remain_len > MAX_TOPK_LEN:
                     prefetch_len = 0
@@ -176,10 +174,7 @@ class GSAReqStat:
                 self.prefetch_idx = remain_blocks_idx[
                     remain_len - LOCAL_WINDOW_SZ : -LOCAL_WINDOW_SZ
                 ]
-                if PTOPK_PREFETCH_ENABLE:
-                    self.sparse_len = remain_len + prefetch_len
-                else:
-                    self.sparse_len = blocks_len
+                self.sparse_len = remain_len + prefetch_len
             else:
                 self.remain_idx = list(range(blocks_len))
                 self.prefetch_idx = []
@@ -190,14 +185,14 @@ class GSAReqStat:
             self.prefetch_idx = None
 
     def _init_slot(self, offset: int) -> None:
-        if self.is_last_chunk():
-            self.repre_slot_mapping = list(range(len(self.blocks) - 1))
-            self.calc_block_table = [x for x in self.blocks[:-1]]
-        else:
-            self.repre_slot_mapping = list(range(len(self.blocks)))
-            self.calc_block_table = [x for x in self.blocks]
+        self.repre_slot_mapping = list(range(len(self.blocks)))
         self.repre_slot_mapping = [x + offset for x in self.repre_slot_mapping]
-        self.calc_repre_slot_mapping = [x for x in self.repre_slot_mapping]
+        if self.is_last_chunk():
+            self.calc_block_table = [x for x in self.blocks[:-1]]
+            self.calc_repre_slot_mapping = [x for x in self.repre_slot_mapping[:-1]]
+        else:
+            self.calc_block_table = [x for x in self.blocks]
+            self.calc_repre_slot_mapping = [x for x in self.repre_slot_mapping]
 
         value = len(self.blocks)
         one_mask = [False] * value
@@ -224,8 +219,20 @@ class GSAReqStat:
                 self.include_mask.append(True)
             self.exclude_mask.append(False)
         if add_len > 0:
-            self.calc_block_table = [x for x in add_blocks]
-            self.calc_repre_slot_mapping = self.repre_slot_mapping[add_len * -1 :]
+            if self.stage() == SequenceStage.PREFILL:
+                if self.is_last_chunk():
+                    self.calc_block_table = [x for x in add_blocks[:-1]]
+                    self.calc_repre_slot_mapping = self.repre_slot_mapping[
+                        add_len * -1 : -1
+                    ]
+                else:
+                    self.calc_block_table = [x for x in add_blocks]
+                    self.calc_repre_slot_mapping = self.repre_slot_mapping[
+                        add_len * -1 :
+                    ]
+            else:
+                self.calc_block_table = [self.blocks[-1]]
+                self.calc_repre_slot_mapping = [self.repre_slot_mapping[-1]]
         else:
             self.calc_block_table = []
             self.calc_repre_slot_mapping = []
@@ -269,15 +276,43 @@ class GSAMetaData(UcmSparseMetadata):
     def trans_input_tensor(self, scheduler_output: SchedulerOutput):
         calc_block_table = []
         model_input = {}
-        query_locals = [0]
+        calc_repre_slot_mappings = []
+        batch_size = len(scheduler_output.num_scheduled_tokens.items())
+        query_locals = [0] * (batch_size + 1)
+        if CUDA_TOPK:
+            repre_slot_mapping = [0] * batch_size
+            include_mask = [0] * batch_size
+            exclude_mask = [0] * batch_size
         for req_id, _ in scheduler_output.num_scheduled_tokens.items():
+            req_in_batch = self.gsa_stats[req_id].index_in_batch
             calc_block_table += self.gsa_stats[req_id].calc_block_table
-            query_locals.append(
-                query_locals[-1] + scheduler_output.num_scheduled_tokens[req_id]
-            )
+            calc_repre_slot_mappings += self.gsa_stats[req_id].calc_repre_slot_mapping
+            if CUDA_TOPK:
+                repre_slot_mapping[req_in_batch] = self.gsa_stats[
+                    req_id
+                ].repre_slot_mapping
+                include_mask[req_in_batch] = self.gsa_stats[req_id].include_mask
+                exclude_mask[req_in_batch] = self.gsa_stats[req_id].exclude_mask
+            query_locals[req_in_batch + 1] = scheduler_output.num_scheduled_tokens[
+                req_id
+            ]
+        query_locals = list(accumulate(query_locals))
         model_input["calc_block_table"] = torch.tensor(
             calc_block_table, dtype=torch.int32, device="cpu"
         )
+        model_input["calc_repre_slot_mapping"] = torch.tensor(
+            calc_repre_slot_mappings, dtype=torch.int32, device="cpu"
+        )
+        if CUDA_TOPK:
+            model_input["repre_slot_mapping"] = make_tensor_with_pad(
+                repre_slot_mapping, pad=0, dtype=torch.int32, device="cpu"
+            )
+            model_input["include_mask"] = make_tensor_with_pad(
+                include_mask, pad=False, dtype=torch.uint8, device=self.device
+            )
+            model_input["exclude_mask"] = make_tensor_with_pad(
+                exclude_mask, pad=False, dtype=torch.uint8, device=self.device
+            )
         model_input["query_locals"] = query_locals
         return model_input
 
@@ -327,6 +362,53 @@ def get_offset(block_shape, rank, tp_size, precision, layer_id, is_v, is_mla) ->
     return v_offset if is_v else k_offset
 
 
+class TopkCal:
+    def __init__(self, att_num_heads, kv_num_heads, head_size, kpre_caches):
+        self.att_num_heads = att_num_heads
+        self.kv_num_heads = kv_num_heads
+        self.head_size = head_size
+        self.kpre_caches = kpre_caches
+        self.topk_ratio = 0.3
+
+    def set_topk_param(self, repre_slot_mapping, include_mask, exclude_mask):
+        self.repre_slot_mapping = repre_slot_mapping
+        self.include_mask = include_mask
+        self.exclude_mask = exclude_mask
+
+    def set_topk_caches(self, cal_topk_id, topk_caches, topk_len_list):
+        self.cal_topk_id = cal_topk_id
+        self.topk_caches = topk_caches
+        self.topk_len_list = topk_len_list
+
+    def cal_topk(self, intermediate_q, current_layer_id):
+        bs = len(self.cal_topk_id)
+        scale = self.head_size**-0.5
+        head_group_num = self.att_num_heads // self.kv_num_heads
+        q_decode = intermediate_q[self.cal_topk_id]
+        kpre_index = self.repre_slot_mapping[self.cal_topk_id].flatten()
+        kpre_need = self.kpre_caches[current_layer_id][kpre_index]
+        max_norm_num = kpre_need.shape[1]
+        kpre_out = kpre_need.unsqueeze(2).expand(-1, -1, head_group_num, -1, -1)
+        kpre_out = kpre_out.reshape(bs, -1, self.att_num_heads, self.head_size)
+        blk_num = kpre_out.shape[1] // max_norm_num
+        qk = torch.einsum("bij,bmij->bim", q_decode, kpre_out)
+        attention_weights_without_norm, _ = torch.max(
+            qk.reshape(bs, self.att_num_heads, blk_num, max_norm_num), dim=-1
+        )
+        dot_product_weights = attention_weights_without_norm.mean(1)
+        dot_product_weights.masked_fill_(
+            self.include_mask[self.cal_topk_id] == 1, float("inf")
+        )
+        dot_product_weights.masked_fill_(
+            self.exclude_mask[self.cal_topk_id] == 1, float("-inf")
+        )
+        selected_block_nums = self.topk_len_list[0]
+        _, top_indices = torch.topk(
+            dot_product_weights, selected_block_nums, dim=-1, sorted=False
+        )
+        self.topk_caches[current_layer_id][self.cal_topk_id] = top_indices
+
+
 class GSA(UcmSparseBase):
     # handle batch
     def __init__(self, vllm_config: VllmConfig, role: UcmSparseRole):
@@ -339,21 +421,44 @@ class GSA(UcmSparseBase):
         )
         self.head_size = vllm_config.model_config.get_head_size()
         self.use_mla = vllm_config.model_config.use_mla
+        self.block_size = vllm_config.cache_config.block_size
+        self.element_size = vllm_config.model_config.dtype.itemsize
+        self.num_head = vllm_config.model_config.get_num_kv_heads(
+            vllm_config.parallel_config
+        )
+        self.total_tp_size = vllm_config.parallel_config.tensor_parallel_size
+        self.layer_num = vllm_config.model_config.get_num_layers(
+            vllm_config.parallel_config
+        )
         if PTOPK_PREFETCH_ENABLE:
+            config_base = self.block_size * self.element_size * self.head_size
+            kv_block_size = (
+                config_base
+                * self.layer_num
+                * (1 if self.use_mla else self.num_head * self.total_tp_size * 2)
+            )
+            transferIoSize = config_base * (1 if self.use_mla else self.num_head)
             nfs_config = {
                 "storage_backends": "./ucm/data/" + str(self.rank),
-                "kv_block_size": 33554432,
+                "kv_block_size": kv_block_size,
                 "device": self.rank,
                 "role": "worker",
+                "transferIoSize": transferIoSize,
             }
             self.connector = UcmConnectorFactory.create_connector(
                 "UcmNfsStore", nfs_config
             )
-        self.prefetch_engine = GSAPrefetchBase(vllm_config, 16, True, True, False, 1)
+        if CUDA_TOPK:
+            self.prefetch_engine = GSAPrefetchBase(
+                vllm_config, 16, True, False, False, 1
+            )
+        else:
+            self.prefetch_engine = GSAPrefetchBase(
+                vllm_config, 16, True, True, False, 1
+            )
         self.topk_kpre_manger = TopKAndKpreManger(
             vllm_config.scheduler_config.max_num_seqs
         )
-        self.block_size = vllm_config.cache_config.block_size
         self.k_cache = {}
         self.v_cache = {}
         self.tasks_dump = {}
@@ -381,9 +486,6 @@ class GSA(UcmSparseBase):
         prefetch_engine: GSAPrefetchBase,
     ) -> None:
         parallel_config = vllm_config.parallel_config
-        self.layer_num = vllm_config.model_config.get_num_layers_by_block_type(
-            parallel_config
-        )
         block_size = vllm_config.cache_config.block_size
         att_num_heads = vllm_config.model_config.get_num_attention_heads(
             parallel_config
@@ -391,7 +493,6 @@ class GSA(UcmSparseBase):
         kv_num_heads = vllm_config.model_config.get_num_kv_heads(parallel_config)
         head_size = vllm_config.model_config.get_head_size()
         max_model_len = vllm_config.model_config.max_model_len
-        max_num_seqs = vllm_config.scheduler_config.max_num_seqs
         self.gsa_offload_ops = gsa_offload_ops.CalKpreAndTopk(
             self.layer_num, block_size, MAX_BS, att_num_heads, head_size
         )
@@ -410,6 +511,10 @@ class GSA(UcmSparseBase):
             device=vllm_config.device_config.device,
             dtype=torch.float32,
         )
+        if CUDA_TOPK:
+            self.gsa_cuda_topk = TopkCal(
+                att_num_heads, kv_num_heads, head_size, prefetch_engine.kpre_caches
+            )
 
     def launch_transfer_task(
         self, transfer_type, block_hashes, vllm_block_ids, layer_id
@@ -509,63 +614,45 @@ class GSA(UcmSparseBase):
             self.tasks_load[task_k_hash] = task_k
             self.tasks_load[task_v_hash] = task_v
 
-    """
-    def copy_q(
-        self,
-        req_meta: GSAReqStat,
-        query: torch.Tensor,
-        layer_name: str,
-        forward_context: ForwardContext,
-    ) -> None:
-        current_layer_id = int(layer_name.split(".")[2])
-        if isinstance(forward_context.attn_metadata, dict):
-            attn_metadata = forward_context.attn_metadata[layer_name]
-        else:
-            attn_metadata = forward_context.attn_metadata
-        index_in_batch = req_meta.index_in_batch
-        # query_start_loc = attn_metadata.query_start_loc[index_in_batch]
-        # query_len = req_meta.num_scheduled_tokens
-        # current_query = query[query_start_loc: query_start_loc + query_len]
-        
-        last_query = current_query[-1].cpu()
-        temp = last_query.to(torch.float32)
-        self.gsa_offload_ops.q_cache[current_layer_id][index_in_batch] = temp
-        
-        query_locals = self.model_input["query_locals"][index_in_batch]-1
-        self.gsa_q_cache[current_layer_id][index_in_batch].copy_(query[query_locals])
-        self.gsa_offload_ops.add_copy_req(current_layer_id, index_in_batch, 
-                                          self.gsa_q_cache[current_layer_id][index_in_batch])
-    """
-
     def copy_q(self, query: torch.Tensor, current_layer_id: int) -> None:
         ids = [-1] * len(self.prefetch_engine.req_ids_bs)
         for req_id in self.prefetch_engine.req_ids_bs:
             req_meta = self.gsa_metadata.gsa_stats[req_id]
-            if req_meta.stage() == SequenceStage.DECODE:
+            if req_meta.is_gsa():
                 index_in_batch = req_meta.index_in_batch
                 ids[index_in_batch] = (
-                    self.model_input["query_locals"][index_in_batch] - 1
+                    self.model_input["query_locals"][index_in_batch + 1] - 1
                 )
-                self.gsa_q_cache[current_layer_id][index_in_batch].copy_(
-                    query[ids[index_in_batch]]
-                )
-        is_cal_kpre = len(self.model_input["calc_block_table"]) > 0
-        self.gsa_offload_ops.add_copy_req(
-            is_cal_kpre,
-            current_layer_id,
-            ids,
-            self.gsa_q_cache[current_layer_id][: len(query)],
-        )
+        if CUDA_TOPK:
+            self.gsa_cuda_topk.cal_topk(query[ids], current_layer_id)
+        else:
+            self.gsa_q_cache[current_layer_id][: len(ids)].copy_(query[ids])
+            is_cal_kpre = len(self.model_input["calc_block_table"]) > 0
+            self.gsa_offload_ops.add_copy_req(
+                is_cal_kpre, current_layer_id, ids, self.gsa_q_cache[current_layer_id]
+            )
 
     def copy_k(self, layer_name: str, forward_context: ForwardContext) -> None:
         current_layer_id = int(layer_name.split(".")[2])
         block_ids = self.model_input["calc_block_table"]
+        calc_repre_slot_mappings = self.model_input["calc_repre_slot_mapping"]
         if len(block_ids) > 0:
             attn = forward_context.no_compile_layers
-            k_needed = attn[layer_name].kv_cache[forward_context.virtual_engine][0]
-            result = self.gsa_offload_ops.add_copy_req(
-                True, current_layer_id, [], k_needed
+            key_cache_mean_out = (
+                attn[layer_name]
+                .kv_cache[forward_context.virtual_engine][0][block_ids]
+                .mean(dim=1, keepdim=True)
             )
+            if CUDA_TOPK:
+                self.prefetch_engine.kpre_caches[current_layer_id][
+                    calc_repre_slot_mappings
+                ] = key_cache_mean_out.clone()
+            else:
+                self.prefetch_engine.kpre_caches[current_layer_id][
+                    calc_repre_slot_mappings
+                ] = key_cache_mean_out.to(dtype=torch.float32, device="cpu")
+            k_needed = attn[layer_name].kv_cache[forward_context.virtual_engine][0]
+            self.gsa_offload_ops.add_copy_req(True, current_layer_id, [], k_needed)
 
     def attention_begin(
         self,
@@ -578,30 +665,23 @@ class GSA(UcmSparseBase):
         current_layer_id = int(layer_name.split(".")[2])
         if self.prefetch_engine.atb_gsa_enable and self.prefetch_engine.is_topk_cal:
             self.copy_q(query, current_layer_id)
-            """
-            for req_id in self.prefetch_engine.req_ids_bs:
-                req_meta = self.gsa_metadata.gsa_stats[req_id]
-                if req_meta.stage() == SequenceStage.DECODE:
-                    self.copy_q(req_meta, query, layer_name, forward_context)
-            """
-            # self.gsa_offload_ops.set_topk_data_ready(current_layer_id)
 
         if isinstance(forward_context.attn_metadata, dict):
             attn_metadata = forward_context.attn_metadata[layer_name]
-            block_tables = attn_metadata.block_table
         else:
             attn_metadata = forward_context.attn_metadata
-            block_tables = attn_metadata.block_tables
         if self.prefetch_engine.atb_gsa_enable:
             if torch.cuda.is_available():
-                block_tables = self.model_input["block_tables_mp"][current_layer_id]
+                attn_metadata.block_table = self.model_input["block_tables_mp"][
+                    current_layer_id
+                ]
                 attn_metadata.seq_lens = self.model_input["gsa_seq_len"][
                     current_layer_id
                 ]
             else:
-                block_tables[: len(self.prefetch_engine.req_ids_bs)].copy_(
-                    self.model_input["block_tables_mp"][current_layer_id]
-                )
+                attn_metadata.block_tables[
+                    : len(self.prefetch_engine.req_ids_bs)
+                ].copy_(self.model_input["block_tables_mp"][current_layer_id])
                 attn_metadata.seq_lens.copy_(
                     self.model_input["gsa_seq_len"][current_layer_id]
                 )
@@ -718,13 +798,15 @@ class GSA(UcmSparseBase):
         return gsa_meta
 
     def execute_begin(self, scheduler_output: SchedulerOutput):
-        req_ids = []
-        block_table_ori = []
-        topk_kpre_maps = []
+        batch_size = len(scheduler_output.num_scheduled_tokens.items())
+        req_ids = [0] * batch_size
+        block_table_ori = [0] * batch_size
+        topk_kpre_maps = [0] * batch_size
         for req_id, _ in scheduler_output.num_scheduled_tokens.items():
-            req_ids.append(req_id)
-            block_table_ori.append(self.gsa_metadata.gsa_stats[req_id].blocks)
-            topk_kpre_maps.append(self.topk_kpre_manger.cache_map[req_id])
+            req_in_batch = self.gsa_metadata.gsa_stats[req_id].index_in_batch
+            req_ids[req_in_batch] = req_id
+            block_table_ori[req_in_batch] = self.gsa_metadata.gsa_stats[req_id].blocks
+            topk_kpre_maps[req_in_batch] = self.topk_kpre_manger.cache_map[req_id]
         is_topk_done = self.gsa_offload_ops.is_calculate_finish()
         self.prefetch_engine.model_input_del(
             req_ids,
@@ -734,6 +816,7 @@ class GSA(UcmSparseBase):
             self.gsa_metadata,
             is_topk_done,
         )
+        self.gsa_stats = self.gsa_metadata.gsa_stats
         self._start_topk_cal()
 
     def execute_finished(self):
@@ -841,7 +924,7 @@ class GSA(UcmSparseBase):
         calc_repre_slot_mappings = []
         for req_id in self.prefetch_engine.req_ids_bs:
             req_meta = self.gsa_metadata.gsa_stats[req_id]
-            if req_meta.stage() == SequenceStage.DECODE:
+            if req_meta.is_gsa():
                 cal_topk_id.append(req_meta.index_in_batch)
                 is_decode.append(True)
                 one_topk_len = compute_topk_len(len(req_meta.blocks))
@@ -851,16 +934,28 @@ class GSA(UcmSparseBase):
             repre_slot_mappings.append(req_meta.repre_slot_mapping)
             calc_block_tables = self.model_input["calc_block_table"]
             calc_repre_slot_mappings += req_meta.calc_repre_slot_mapping
+        if CUDA_TOPK and len(topk_len_list) != 0:
+            topk_len_list = [max(topk_len_list)] * len(topk_len_list)
         self.gsa_offload_ops.set_common_param(cal_topk_id, is_decode)
         if len(calc_block_tables) != 0:
             self.gsa_offload_ops.set_kpre_param(
                 calc_block_tables, calc_repre_slot_mappings
             )
         if self.prefetch_engine.atb_gsa_enable and self.prefetch_engine.is_topk_cal:
-            self.gsa_offload_ops.set_topk_param(repre_slot_mappings)
-            self.gsa_offload_ops.set_topk_cache(
-                self.model_input["topk_caches"], topk_len_list
-            )
+            if CUDA_TOPK:
+                self.gsa_cuda_topk.set_topk_param(
+                    self.model_input["repre_slot_mapping"],
+                    self.model_input["include_mask"],
+                    self.model_input["exclude_mask"],
+                )
+                self.gsa_cuda_topk.set_topk_caches(
+                    cal_topk_id, self.model_input["topk_caches"], topk_len_list
+                )
+            else:
+                self.gsa_offload_ops.set_topk_param(repre_slot_mappings)
+                self.gsa_offload_ops.set_topk_cache(
+                    self.model_input["topk_caches"], topk_len_list
+                )
 
     def _init_sparse_local_kv(
         self, scheduler_output: SchedulerOutput, requests

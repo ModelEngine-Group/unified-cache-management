@@ -18,7 +18,7 @@
 
 ### 🎯 Key Innovations
 
-- **🔍 Hash-Aware Similarity**: Uses trainable hash functions to compute attention relevance, which is significantly faster than exact attention score $QK$ computation 
+- **🔍 Hash-Aware Similarity**: Uses trainable hash functions to compute attention relevance, which is significantly faster than exact attention score $QK$ computation
 - **⚡ Hardware-Efficient**: Optimized for both CUDA and NPU architectures with specialized kernels
 - **🎛️ Adaptive Sparsity**: Layer-wise sparsity ratios that adapt to model characteristics
 - **🔄 Dynamic Retrieval**: Real-time **query-aware** block selection based on query-key similarity
@@ -36,7 +36,7 @@
 ### End-to-End Performance
 ![End-to-End Performance](figs/kvcomp_end_to_end_performance.jpg)
 
-### Single Layer Performance  
+### Single Layer Performance
 ![Single Layer Performance](figs/kvcomp_single_layer_performance.jpg)
 
 </div>
@@ -60,7 +60,7 @@
 KVComp operates through a sophisticated three-stage process:
 
 1. **🔐 Hash Encoding**: Convert attention keys and queries into compact hash codes
-2. **🎯 Similarity Computation**: Use efficient hash-based similarity to identify relevant blocks  
+2. **🎯 Similarity Computation**: Use efficient hash-based similarity to identify relevant blocks
 3. **📦 Selective Loading**: Load only the top-k most relevant KV blocks for attention
 
 ```python
@@ -69,13 +69,13 @@ def kvcomp_attention(query, key_cache, top_k_ratio):
     # 1. Hash encoding
     hash_query = hash_encoder.compute_hash(query)
     hash_keys = hash_encoder.compute_hash(key_cache)
-    
-    # 2. Similarity computation  
+
+    # 2. Similarity computation
     scores = hamming_score(hash_query, hash_keys)
-    
+
     # 3. Top-k selection
     topk_blocks = torch.topk(scores, int(len(key_cache) * top_k_ratio))
-    
+
     # 4. Selective attention
     return attention(query, key_cache[topk_blocks], value_cache[topk_blocks])
 ```
@@ -110,7 +110,7 @@ ktc = KVTransferConfig(
         kv_connector_module_path=module_path,
         kv_role="kv_both",
         kv_connector_extra_config={
-            "ucm_connector_name": "UcmDram",
+            "ucm_connector_name": "UcmDramStore",
             "ucm_connector_config": {
                 "max_cache_size": 5368709120,
                 "kv_block_size": 262144,

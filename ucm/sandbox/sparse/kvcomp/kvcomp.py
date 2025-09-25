@@ -48,8 +48,8 @@ from ucm.integration.vllm.ucm_sparse.base import (
     UcmSparseRole,
 )
 from ucm.integration.vllm.ucm_sparse.state import get_ucm_sparse
-from ucm.store.base import Task, UcmKVStoreBase
-from ucm.store.factory import UcmConnectorFactory
+from ucm.store.connector.factory import UcmConnectorFactory
+from ucm.store.connector.ucmstore import Task, UcmKVStoreBase
 
 
 def stat(func):
@@ -447,7 +447,7 @@ class KvComp(UcmSparseBase):
             "device": self.rank,
             "role": "worker",
         }
-        self.connector = UcmConnectorFactory.create_connector("UcmDram", config)
+        self.connector = UcmConnectorFactory.create_connector("UcmDramStore", config)
 
         kvcomp_config_path = vllm_config.kv_transfer_config.kv_connector_extra_config[
             "kvcomp_config_path"

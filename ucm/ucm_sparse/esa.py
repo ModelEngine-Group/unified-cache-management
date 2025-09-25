@@ -16,8 +16,8 @@ from ucm.integration.vllm.ucm_sparse.base import (
     UcmSparseMetadata,
     UcmSparseRole,
 )
-from ucm.store.base import Task, UcmKVStoreBase
-from ucm.store.factory import UcmConnectorFactory
+from ucm.store.connector.factory import UcmConnectorFactory
+from ucm.store.connector.ucmstore import Task, UcmKVStoreBase
 
 
 def stat(func):
@@ -378,7 +378,7 @@ class ESA(UcmSparseBase):
         self.tp_size = vllm_config.parallel_config.tensor_parallel_size
         self.block_size = vllm_config.cache_config.block_size
         config = {"max_cache_size": 5368709120, "device": self.rank, "role": "worker"}
-        self.connector = UcmConnectorFactory.create_connector("UcmDram", config)
+        self.connector = UcmConnectorFactory.create_connector("UcmDramStore", config)
         # TODO: consider init self.is_mla here
 
     def attention_begin(
