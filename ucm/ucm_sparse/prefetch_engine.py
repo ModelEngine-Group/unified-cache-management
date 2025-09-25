@@ -169,9 +169,14 @@ class GSAPrefetchBase:
         for index, topk_info in enumerate(self.topk_bs):
             if topk_info[1]:
                 if topk_info[0] in gsa_metadata.gsa_stats:
-                    gsa_metadata.gsa_stats[topk_info[0]].topk_buf_tmp = (
-                        self.topk_buf_tmp[:, index, : topk_info[2]].clone()
-                    )
+                    if not self.is_cpu_topk:
+                        gsa_metadata.gsa_stats[topk_info[0]].topk_buf_tmp = (
+                            self.topk_buf_tmp[:, index, : topk_info[2]].cpu()
+                        )
+                    else:
+                        gsa_metadata.gsa_stats[topk_info[0]].topk_buf_tmp = (
+                            self.topk_buf_tmp[:, index, : topk_info[2]].clone()
+                        )
         self.topk_bs = []
         for index, req_id in enumerate(self.req_ids_bs):
             one_block_len = len(gsa_metadata.gsa_stats[req_id].blocks)
