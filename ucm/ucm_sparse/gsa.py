@@ -457,9 +457,7 @@ class GSA(UcmSparseBase):
             self.prefetch_engine = GSAPrefetchBase(
                 vllm_config, 16, True, True, False, 1
             )
-        self.topk_kpre_manger = TopKAndKpreManger(
-            MAX_BS
-        )
+        self.topk_kpre_manger = TopKAndKpreManger(MAX_BS)
         self.k_cache = {}
         self.v_cache = {}
         self.tasks_dump = {}
