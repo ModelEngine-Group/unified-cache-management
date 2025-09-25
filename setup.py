@@ -128,7 +128,7 @@ class CMakeBuild(build_ext):
             build_install_dir = STORE_INSTALL_DIR
         else:
             install_dir = GSA_INSTALL_DIR
-            build_install_dir = "ucm_sparse"
+            build_install_dir = "ucm/ucm_sparse"
 
         for so_file in so_files:
             src_path = os.path.join(so_search_dir, so_file)
