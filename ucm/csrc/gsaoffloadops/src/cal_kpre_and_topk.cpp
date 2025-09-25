@@ -20,7 +20,7 @@ CalKpreAndTopk::CalKpreAndTopk(uint32_t layerNum, uint32_t blockSize, uint32_t m
         m_topkFlag[i].store(true);
     }
     m_topkComputer = new SelectTopkBlock::TopkBlockSelector();
-    m_kpreComputer = new KRepre::KRepreComputer();
+    m_kpreComputer = new Kpre::KpreComputer();
     m_numKpre = 1;
     m_needCalTopk = false;
     m_needCalPre = false;
@@ -32,10 +32,13 @@ void CalKpreAndTopk::SetKpreMethodParam(uint32_t maxBlockNum, uint32_t numHeads,
     m_kNumHeads = numHeads;
     m_numKpre = numKpre;
     auto optionsForKCache = torch::TensorOptions().device("cpu").dtype(torch::kFloat32);
-    // for (uint32_t i = 0; i < m_layerNum; i++) {
-    //     torch::Tensor layerKCache = torch::zeros({maxBlockNum, m_kNumHeads, m_blockSize, m_headSize}, optionsForKCache);
-    //     m_kCache.push_back(layerKCache);
-    // }
+    /* CPU calculate kpre: allocate k cache */
+    /*
+    for (uint32_t i = 0; i < m_layerNum; i++) {
+        torch::Tensor layerKCache = torch::zeros({maxBlockNum, m_kNumHeads, m_blockSize, m_headSize}, optionsForKCache);
+        m_kCache.push_back(layerKCache);
+    }
+    */
 }
 
 void CalKpreAndTopk::SetKpreCache(std::vector<torch::Tensor>& kpreCache)
@@ -94,9 +97,6 @@ void CalKpreAndTopk::SetKpreParam(torch::Tensor& calcKpreBlockTable, std::vector
 
 bool CalKpreAndTopk::SetKpreDataReady(uint32_t layerIdx)
 {
-    /*if (!IsCalculateFinish() && layerIdx == 0) {
-        return false;
-    }*/
     if (layerIdx == 0) {
         std::lock_guard<std::mutex> lock(m_calLock);
         m_needCalPre = true;
@@ -152,10 +152,13 @@ void CalKpreAndTopk::CopyData()
             }
             SetTopkDataReady(curReq.layerId);
         } else {
-            // torch::Tensor kNeeded = curReq.srcTensor.index({curReq.ids}).cpu();
-            // torch::Tensor kCache = kNeeded.to(torch::kFloat32).permute({0, 2, 1, 3});
-            // auto targetTensor = m_kCache[curReq.layerId].slice(0, 0, curReq.ids.size(0));
-            // targetTensor.copy_(kCache);
+            /* CPU calculate kpre: copy k d2h*/
+            /*
+            torch::Tensor kNeeded = curReq.srcTensor.index({curReq.ids}).cpu();
+            torch::Tensor kCache = kNeeded.to(torch::kFloat32).permute({0, 2, 1, 3});
+            auto targetTensor = m_kCache[curReq.layerId].slice(0, 0, curReq.ids.size(0));
+            targetTensor.copy_(kCache);
+            */
             SetKpreDataReady(curReq.layerId);
         }
         if (!m_running) {
@@ -195,7 +198,10 @@ void CalKpreAndTopk::CalForOneLayer(uint32_t curLayer)
 {
     if (m_needCalPre) {
         while(!m_kReady[curLayer].load(std::memory_order_acquire));
-        // CalculateKpre(curLayer);
+        /* CPU calculate kpre: calculate kpre */
+        /*
+        CalculateKpre(curLayer);
+        */
     }
     if (m_needCalTopk) {
         while(!m_qReady[curLayer].load(std::memory_order_acquire));
@@ -206,18 +212,18 @@ void CalKpreAndTopk::CalForOneLayer(uint32_t curLayer)
 void CalKpreAndTopk::CalculateKpre(uint32_t curLayer)
 {
     if (m_calcRepreSlotMapping.size() == 1) {
-        m_kpreComputer -> ComputeKRepreBlock(m_kCache[curLayer][0].data_ptr<float>(),
+        m_kpreComputer -> ComputeKpreBlock(m_kCache[curLayer][0].data_ptr<float>(),
                                              m_kNumHeads, m_blockSize, m_headSize,
                                              m_kfCache[curLayer][m_calcRepreSlotMapping[0]].data_ptr<float>());
     } else {
         uint32_t numBlock = m_calcRepreSlotMapping.size();
         std::vector<float*> kArray;
-        std::vector<float*> kRepreBlockArray;
+        std::vector<float*> kpreBlockArray;
         for (uint32_t i = 0; i < numBlock; i++) {
             kArray.push_back(m_kCache[curLayer][i].data_ptr<float>());
-            kRepreBlockArray.push_back(m_kfCache[curLayer][m_calcRepreSlotMapping[i]].data_ptr<float>());
+            kpreBlockArray.push_back(m_kfCache[curLayer][m_calcRepreSlotMapping[i]].data_ptr<float>());
         }
-        m_kpreComputer -> ComputeKRepre(kArray, numBlock, m_kNumHeads, m_blockSize, m_headSize, kRepreBlockArray);
+        m_kpreComputer -> ComputeKpre(kArray, numBlock, m_kNumHeads, m_blockSize, m_headSize, kpreBlockArray);
     }
 }
 

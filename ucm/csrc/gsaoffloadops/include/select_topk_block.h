@@ -38,17 +38,17 @@ public:
     /**
     * @brief 计算K-Q点积分数
     * @param qMean 查询向量 [qHead, headSize]
-    * @param kRepre 键表示向量 [numBlock, kHead, numKrepre, headSize]
+    * @param kpre 键表示向量 [numBlock, kHead, numKpre, headSize]
     * @param numBlock 块数量
     * @param kHead key注意力头数量
-    * @param numKrepre 最大归一化维度
+    * @param numKpre 最大归一化维度
     * @param headSize 单头维度
     * @return std::vector<float> 每个块分数
     */
-    std::vector<float> ComputeKQDotScores(const float* __restrict qMean, const float* __restrict kRepre, 
+    std::vector<float> ComputeKQDotScores(const float* __restrict qMean, const float* __restrict kpre, 
                                           uint32_t numBlock,
                                           uint32_t kHead,
-                                          uint32_t numKrepre,
+                                          uint32_t numKpre,
                                           uint32_t headSize);
     /**
     * @brief 计算单kHead对应q均值，计算结果用qHead尺寸的vector原址存储
@@ -66,31 +66,31 @@ public:
     * @brief 选择TopK块
     * 
     * @param q 查询向量均值
-    * @param kRepre 键表示向量
+    * @param kpre 键表示向量
     * @param numBlock 块数量
     * @param kHead key注意力头数量
     * @param qHead query注意力头数量
-    * @param numKrepre 最大归一化维度
+    * @param numKpre 最大归一化维度
     * @param headSize 单头维度
     * @param topkLength TopK中的K值
     * @param topkResult 输出Topk结果 [topkLength]
     */
-    void SelectTopK(float* q, const float* kRepre, 
+    void SelectTopK(float* q, const float* kpre, 
                     uint32_t numBlock, uint32_t kHead, uint32_t qHead,
-                    uint32_t numKrepre, uint32_t headSize,
+                    uint32_t numKpre, uint32_t headSize,
                     uint32_t topkLength, int32_t* topkResult);
 
     /**
     * @brief 批量选择TopK块
     * 
     * @param qCacheVec 查询向量缓存 std::vector<float*>，每个元素指向 [qHead, headSize]
-    * @param kfCacheVec 键表示向量缓存 std::vector<float*>，每个元素指向 [numBlock[i], kHead, numKrepre, headSize]
+    * @param kfCacheVec 键表示向量缓存 std::vector<float*>，每个元素指向 [numBlock[i], kHead, numKpre, headSize]
     * @param topkCacheVec 输出Topk结果缓存 std::vector<uint32_t*>，每个元素指向 [maxTopkLength]
     * @param numBatch 批次数量
     * @param numBlockVec 每个批次的块数量 std::vector<uint32_t
     * @param kHead key注意力头数量
     * @param qHead query注意力头数量
-    * @param numKrepre 最大归一化维度
+    * @param numKpre 最大归一化维度
     * @param headSize 单头维度
     * @param topkLengthVec 每个批次的TopK长度 std::vector<uint32_t>
     */
@@ -100,7 +100,7 @@ public:
                       uint32_t numBatch, 
                       const std::vector<uint32_t>& numBlockVec,
                       uint32_t kHead, uint32_t qHead,
-                      uint32_t numKrepre, uint32_t headSize,
+                      uint32_t numKpre, uint32_t headSize,
                       const std::vector<uint32_t>& topkLengthVec);
 
 private:
@@ -126,15 +126,15 @@ private:
     * @brief 计算单块分数
     */
    static float ComputeBlockScore(float* qMean, const float* blockBase,
-                                  uint32_t kHead, uint32_t numKrepre,
+                                  uint32_t kHead, uint32_t numKpre,
                                   uint32_t headSize, const VecProductClass& vecProduct);
     
     /** 
     * @brief 参数验证
     */
-   static bool ValidateParameters(float* qMean, const float* kRepre,
+   static bool ValidateParameters(float* qMean, const float* kpre,
                                   uint32_t numBlock, uint32_t kHead, uint32_t qHead,
-                                  uint32_t numKrepre, uint32_t headSize);
+                                  uint32_t numKpre, uint32_t headSize);
 };
 
 }

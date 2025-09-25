@@ -42,7 +42,7 @@ private:
     ThreadSafeQueue m_copyQueue;
     uint32_t m_count;
     SelectTopkBlock::TopkBlockSelector* m_topkComputer = nullptr;
-    KRepre::KRepreComputer* m_kpreComputer = nullptr;
+    Kpre::KpreComputer* m_kpreComputer = nullptr;
 public:
     CalKpreAndTopk(uint32_t layerNum, uint32_t blockSize, uint32_t maxBs, uint32_t numHeads, uint32_t headSize);
     ~CalKpreAndTopk();

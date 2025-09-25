@@ -184,7 +184,7 @@ class GSAPrefetchBase:
             self.topk_bs.append(
                 [
                     req_id,
-                    gsa_metadata.gsa_stats[req_id].is_gsa(),
+                    gsa_metadata.gsa_stats[req_id].is_gsa,
                     one_topk_len,
                 ]
             )
@@ -299,7 +299,7 @@ class GSAPrefetchBase:
         )
 
     def _init_kpre_and_topk_cache(
-        self, device, krepre_type, topk_type
+        self, device, kpre_type, topk_type
     ) -> Tuple[List[torch.tensor], torch.tensor]:
         kpre_caches = []
         pin_memory = is_pin_memory_available() if device == "cpu" else False
@@ -311,12 +311,12 @@ class GSAPrefetchBase:
             if self.align_cache:
                 entry_shape = self.kpre_shape[2:]
                 entry_size = np.prod(entry_shape)
-                alloc_entry_size = align_to_256bytes(entry_size, krepre_type)
+                alloc_entry_size = align_to_256bytes(entry_size, kpre_type)
                 alloc_shape = (*self.kpre_shape[:2], alloc_entry_size)
             else:
                 alloc_shape = self.kpre_shape
             one_kpre_value = torch.zeros(
-                alloc_shape, dtype=krepre_type, pin_memory=pin_memory, device=device
+                alloc_shape, dtype=kpre_type, pin_memory=pin_memory, device=device
             )
             if self.align_cache:
                 one_kpre_value = one_kpre_value[..., :entry_size]
@@ -385,8 +385,8 @@ class GSAPrefetchBase:
         self.gsa_seq_len.copy_(self.use_block_table_len)
         for index, req_id in enumerate(self.req_ids_bs):
             bs_index = self.select_bs_index[index]
-            remain_slot = gsa_metadata.gsa_stats[req_id].get_seq_len() % self.block_size
-            if gsa_metadata.gsa_stats[req_id].stage() == SequenceStage.DECODE:
+            remain_slot = gsa_metadata.gsa_stats[req_id].seq_len % self.block_size
+            if gsa_metadata.gsa_stats[req_id].stage == SequenceStage.DECODE:
                 if remain_slot == 0:
                     self.gsa_seq_len[:, bs_index].mul_(self.block_size)
                 elif remain_slot == 1:
@@ -415,7 +415,7 @@ class GSAPrefetchBase:
                 self.block_table_flag[req_id] = []
                 self.gsa_seq_len[:, bs_index] = gsa_metadata.gsa_stats[
                     req_id
-                ].get_seq_len()
+                ].seq_len
                 self.use_block_table[
                     :, bs_index, : len(gsa_metadata.gsa_stats[req_id].blocks)
                 ] = torch.tensor(
@@ -473,7 +473,7 @@ class GSAPrefetchBase:
     ) -> None:
         self.open_gsa = False
         for req_id in self.req_ids_bs:
-            if gsa_metadata.gsa_stats[req_id].is_gsa():
+            if gsa_metadata.gsa_stats[req_id].is_gsa:
                 self.open_gsa = True
                 break
         if self.open_gsa:
@@ -489,11 +489,11 @@ class GSAPrefetchBase:
     ) -> None:
         for req_id in self.req_ids_bs:
             if req_id in self.is_gsa_req_id.keys():
-                if gsa_metadata.gsa_stats[req_id].stage() != SequenceStage.PREFILL:
-                    if gsa_metadata.gsa_stats[req_id].is_gsa():
+                if gsa_metadata.gsa_stats[req_id].stage != SequenceStage.PREFILL:
+                    if gsa_metadata.gsa_stats[req_id].is_gsa:
                         self.is_gsa_req_id[req_id] = True
             else:
-                if gsa_metadata.gsa_stats[req_id].is_gsa():
+                if gsa_metadata.gsa_stats[req_id].is_gsa:
                     self.is_gsa_req_id[req_id] = True
                 else:
                     self.is_gsa_req_id[req_id] = False
@@ -518,7 +518,7 @@ class GSAPrefetchBase:
                 and gsa_metadata.gsa_stats[req_id].topk_buf_tmp != None
             ):
                 remain_slot = (
-                    gsa_metadata.gsa_stats[req_id].get_seq_len() % self.block_size
+                    gsa_metadata.gsa_stats[req_id].seq_len % self.block_size
                 )
                 one_topk_len = len(gsa_metadata.gsa_stats[req_id].topk_buf_tmp[0])
                 for layer_id in range(self.num_attention_layers):
@@ -537,7 +537,7 @@ class GSAPrefetchBase:
             else:
                 self.gsa_seq_len[:, bs_index] = gsa_metadata.gsa_stats[
                     req_id
-                ].get_seq_len()
+                ].seq_len
                 self.use_block_table[
                     :, bs_index, : len(gsa_metadata.gsa_stats[req_id].blocks)
                 ] = one_block_table
