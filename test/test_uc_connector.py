@@ -83,17 +83,12 @@ class TestUCConnector(unittest.TestCase):
         self.total_blocks_num = 40
         self.total_tp_size = 2
         self.kv_caches = {}
-        self.k_data_offsets = {}
         for i in range(self.num_layers):
             layer_name = f"model.layers.{i}.self_attn.attn"
             kv_tensor = torch.rand(
                 (2, self.total_blocks_num, self.block_size, 4, 8), dtype=torch.bfloat16
             )
             self.kv_caches[layer_name] = kv_tensor
-        for layer_id in range(self.num_layers):
-            self.k_data_offsets[layer_id] = {}
-            for i in range(self.total_tp_size):
-                self.k_data_offsets[layer_id][i] = 0
 
     def init_uc(
         self, mock_connector, metadata=Mock(), use_layerwise=True
@@ -116,8 +111,6 @@ class TestUCConnector(unittest.TestCase):
             ucconnector._need_load_reqs: dict[str, Union[list[int], list[Task]]] = {}
             ucconnector._load_failed_reqs: set[str] = set()
             ucconnector._load_req_to_blocks: dict[str, set[int]] = {}
-            ucconnector.k_data_offsets = self.k_data_offsets
-            ucconnector.min_block_size = 0
         return ucconnector
 
     def test_get_num_new_matched_tokens_hit_all_on_storage(self):

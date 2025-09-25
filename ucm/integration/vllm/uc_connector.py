@@ -113,8 +113,6 @@ class UnifiedCacheConnectorV1(KVConnectorBase_V1):
             vllm_config.parallel_config
         )
         self.head_size = vllm_config.model_config.get_head_size()
-        if role == KVConnectorRole.WORKER:
-            self._initialize_dataoffset(vllm_config)
         if (
             self._vllm_config.kv_transfer_config is not None
             and "ucm_connector_name"
@@ -176,35 +174,37 @@ class UnifiedCacheConnectorV1(KVConnectorBase_V1):
                     forward_context.virtual_engine
                 ]
 
-    def _initialize_dataoffset(self, vllm_config: "VllmConfig"):
-        num_kv_heads = vllm_config.model_config.get_num_kv_heads(
-            vllm_config.parallel_config
+    def DataOffset(self, kv_layer, rank, layer_id, is_v):
+        # Non-MLA scene: one layer shape is (2, num_blocks, block_size, num_kv_heads, head_size)
+        # MLA scene: one layer shape is (num_blocks, block_size, head_size)
+        # Element size
+        elem_size = kv_layer[0].element_size()
+        logger.debug(
+            f"total_tp_size = {self.total_tp_size},\n" f"element size = {elem_size}."
         )
-        head_size = vllm_config.model_config.get_head_size()
-        self.min_block_size = (
-            self.block_size * num_kv_heads * head_size * self.element_size
-        )
+        # One block size
+        k_min_data_block_size = (
+            kv_layer[0][0].numel() if not self.is_mla else kv_layer[0].numel()
+        ) * elem_size
+        v_min_data_block_size = (
+            kv_layer[1][0].numel() if not self.is_mla else 0
+        ) * elem_size
+        # When tp > 1 layer_size = (k_min_data_block_size + v_min_data_block_size) * tp_size
         layer_size = (
-            self.min_block_size * 2 * self.total_tp_size
-            if not self.is_mla
-            else self.min_block_size
-        )
-        # layer_id -> rank -> k_offset
-        self.k_data_offsets: dict[int, dict[int, int]] = {}
-
-        pp_size = vllm_config.parallel_config.pipeline_parallel_size
-        for layer_id in range(self.num_layers * pp_size):
-            self.k_data_offsets[layer_id] = {}
-            for rank in range(self.total_tp_size):
-                if self.is_mla:
-                    self.k_data_offsets[layer_id][0] = layer_size * layer_id
-                    break
-                else:
-                    offset = (
-                        layer_size * layer_id
-                        + (layer_size // self.total_tp_size) * rank
-                    )
-                    self.k_data_offsets[layer_id][rank] = offset
+            k_min_data_block_size + v_min_data_block_size
+        ) * self.total_tp_size
+        if is_v:
+            # Offset of v = Offset of k + k_min_data_block_size
+            return int(
+                self.DataOffset(kv_layer, rank, layer_id, False) + k_min_data_block_size
+            )
+        if self.is_mla:
+            return int(layer_size * layer_id)
+        else:
+            # Offset of k = layer_size * layer_id + layer_size / tp_size * current rank
+            return int(
+                layer_size * layer_id + layer_size / self.total_tp_size * self.rank
+            )
 
     def get_tensor_and_offset_layerwise(
         self, vllm_block_ids: List[int], kv_layer: torch.Tensor, layer_name: str
@@ -216,17 +216,14 @@ class UnifiedCacheConnectorV1(KVConnectorBase_V1):
         layer_id = self._extract_layer_index(layer_name)
 
         for blk_id in vllm_block_ids:
+            k_data_offset = self.DataOffset(kv_layer, self.rank, layer_id, False)
             if self.is_mla:
-                k_data_offset = self.k_data_offsets[layer_id][0]
                 k_tensors.append(kv_layer[blk_id])
             else:
-                k_data_offset = self.k_data_offsets[layer_id][self.rank]
                 k_tensors.append(kv_layer[0][blk_id])
             k_offsets.append(k_data_offset)
             if not self.is_mla:
-                v_data_offset = (
-                    self.k_data_offsets[layer_id][self.rank] + self.min_block_size
-                )
+                v_data_offset = self.DataOffset(kv_layer, self.rank, layer_id, True)
                 v_tensors.append(kv_layer[1][blk_id])
                 v_offsets.append(v_data_offset)
         return k_tensors + v_tensors, k_offsets + v_offsets
