@@ -151,12 +151,22 @@ class UcmKVStoreBase(ABC):
     @abstractmethod
     def check(self, task: Task) -> Tuple[int, bool]:
         """
-        check if kv transfer task finished.
+        check if kv transfer task finished and return status codes.
 
         Args:
             task (Task): transfer engine task.
         Returns:
-            ret: 0 means success, others means failed
-            finished: True means finished, False means in process
+
+            (ret, finished)
+
+            ret(int):
+                == 0 -> operation succeed
+                != 0 -> error (from error code of ucmoceanstore.check or invalid task) 
+            finished(bool):
+                valid only if ret == 0
+                True -> task has finished
+                False -> task id not yet completed
+        Note:
+            When ret != 0, the finished flag is not valid and should be ignored.
         """
         pass

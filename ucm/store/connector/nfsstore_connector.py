@@ -26,8 +26,8 @@ from dataclasses import dataclass
 from typing import Dict, List, Tuple
 
 import torch
-import ucmnfsstore
-from connector.ucmstore import Task, UcmKVStoreBase
+from ucm.store.connector import ucmnfsstore
+from ucm.store.connector.ucmstore import Task, UcmKVStoreBase
 
 
 @dataclass
