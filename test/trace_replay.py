@@ -424,19 +424,17 @@ def save_metrics_to_file(metrics, output_dir="./"):
 
     outputs = {}
     outputs["time"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    outputs["completed requests"] = metrics.completed
-    outputs["request_goodput(req/s)"] = metrics.request_goodput
-    outputs["mean_itl(ms)"] = round(metrics.mean_itl_ms, 2)
-    outputs["mean_tpot(ms)"] = round(metrics.mean_tpot_ms, 2)
     outputs["mean_ttft(ms)"] = round(metrics.mean_ttft_ms, 2)
-    outputs["p99_itl(ms)"] = round(metrics.percentiles_itl_ms[3][1], 2)
-    outputs["p99_tpot(ms)"] = round(metrics.percentiles_tpot_ms[3][1], 2)
     outputs["p99_ttft(ms)"] = round(metrics.percentiles_ttft_ms[3][1], 2)
+    outputs["mean_tpot(ms)"] = round(metrics.mean_tpot_ms, 2)
+    outputs["p99_tpot(ms)"] = round(metrics.percentiles_tpot_ms[3][1], 2)
     outputs["total_input_tokens"] = round(metrics.total_input, 2)
     outputs["total_output_tokens"] = round(metrics.total_output, 2)
-    outputs["request_throughput(req/s)"] = round(metrics.request_throughput, 2)
-    outputs["output_throughput(tok/s)"] = round(metrics.output_throughput, 2)
     outputs["total_token_throughput(tok/s)"] = round(metrics.total_token_throughput, 2)
+    outputs["output_throughput(tok/s)"] = round(metrics.output_throughput, 2)
+    outputs["request_throughput(req/s)"] = round(metrics.request_throughput, 2)
+    outputs["request_goodput(req/s)"] = metrics.request_goodput
+    outputs["completed requests"] = metrics.completed
 
     df = pandas.DataFrame([outputs])
     if os.path.isfile(excel_file):
@@ -645,16 +643,16 @@ async def replay_trace_by_time(
     print("=" * 50)
 
     if args.save_result:
-        save_single_metrics_to_file(outputs=outputs, output_dir="./")
+        save_req_results_to_file(outputs=outputs, output_dir="./")
 
     return
 
 
-def save_single_metrics_to_file(outputs, output_dir="./"):
+def save_req_results_to_file(outputs, output_dir="./"):
     output_path = output_dir
     if not os.path.exists(output_path):
         os.makedirs(output_path, exist_ok=True)
-    excel_file = os.path.join(output_path, "single_metrics.xlsx")
+    excel_file = os.path.join(output_path, "req_results.xlsx")
     rows = []
     for output in outputs:
         ttft = output.ttft * 1000 if output.ttft is not None else None
@@ -665,20 +663,20 @@ def save_single_metrics_to_file(outputs, output_dir="./"):
         if output_len > 1 and output.ttft is not None and output.latency is not None:
             tpot = (output.latency - output.ttft) / (output_len - 1) * 1000
         itl_mean = None
-        if hasattr(output, "itl") and output.itl:
+        finish_time = None
+        if hasattr(output, "finish_time") and output.finish_time:
             try:
-                itl_mean = sum(output.itl) / len(output.itl) * 1000
+                finish_time = time.localtime(output.finish_time)
             except Exception:
-                itl_mean = None
+                finish_time = None
         row = {
-            "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-            "tpot(ms)": tpot,
+            "finish_time": finish_time,
             "ttft(ms)": ttft,
+            "tpot(ms)": tpot,
             "e2el(ms)": latency,
-            "output_tokens": output_len,
             "input_tokens": input_len,
+            "output_tokens": output_len,
             "success": output.success,
-            "itl_mean(ms)": itl_mean,
         }
         rows.append(row)
     df = pandas.DataFrame(rows)
