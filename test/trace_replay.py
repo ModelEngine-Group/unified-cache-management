@@ -666,7 +666,7 @@ def save_req_results_to_file(outputs, output_dir="./"):
         finish_time = None
         if hasattr(output, "finish_time") and output.finish_time:
             try:
-                finish_time = time.localtime(output.finish_time)
+                finish_time = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(output.finish_time))
             except Exception:
                 finish_time = None
         row = {
