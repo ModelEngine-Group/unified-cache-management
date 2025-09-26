@@ -4,12 +4,27 @@ This document provides a usage example and configuration guide for the **DRAM Co
 
 ## Performance
 
-Combining UCM with vLLM delivers 3–10× improvements in latency and GPU efficiency, especially for long-context LLM tasks.
+### Overview
+The following are the multi-concurrency performance test results of UCM in the Prefix Cache scenario under a CUDA environment, showing the performance improvements of UCM on two different models.
+During the tests, HBM cache was disabled, and KV Cache was retrieved and matched only from DRAM.
 
-<p align="center">
-  <img alt="UCM" src="../../images/dram_perform.png" width="90%">
-</p>
+In the QwQ-32B model, the test used one H20 server with two GPUs.
 
+Here, Full Compute refers to pure VLLM inference, while DRAM80% indicates that after UCM pooling, the DRAM hit rate of the KV cache is 80%.
+
+The following table shows the results on the QwQ-32B model:
+|      **QwQ-32B** |                |                     |                |              |
+| ---------------: | -------------: | ------------------: | -------------: | :----------- |
+| **Input length** | **Concurrent** | **Full Compute(s)** | **DRAM80%(s)** | **Speedup**  |
+|            4 000 |              1 |              1.0269 |         0.3102 | **+230.9 %** |
+|            8 000 |              1 |              2.0902 |         0.5718 | **+265.5 %** |
+|           16 000 |              1 |              4.4852 |         1.1914 | **+276.4 %** |
+|            4 000 |              2 |              1.5383 |         0.4209 | **+265.4 %** |
+|            8 000 |              2 |              3.1323 |         0.8231 | **+280.5 %** |
+|           16 000 |              2 |              6.7984 |         1.7420 | **+290.2 %** |
+|            4 000 |              4 |              2.8173 |         0.9444 | **+198.2 %** |
+|            8 000 |              4 |              5.2643 |         1.8290 | **+187.8 %** |
+|           16 000 |              4 |             11.3651 |         3.6706 | **+209.6 %** |
 ## Features
 
 The DRAM connector supports the following functionalities:
