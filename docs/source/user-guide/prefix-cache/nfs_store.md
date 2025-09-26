@@ -81,13 +81,14 @@ To use the NFS connector, you need to configure the `connector_config` dictionar
 
 - `storage_backends` *(required)*:  
   The `storage_backends` directory can either be a local folder or an NFS-mounted directory backed by an SSD driver
-- `kv_block_size` *(required)*:
-  `kv_block_size` represents `block_size * head_size * total_num_kv_heads * element_size * num_layers * 2`
+- `transferStreamNumber`*(optional)*: 
+  This parameter specifies the number of worker threads. The default is 32, but it can be adjusted as needed. A value of 16 or 32 is recommended.
+
 
 ### Example:
 
 ```python
-kv_connector_extra_config={"ucm_connector_name": "UcmNfsStore", "ucm_connector_config":{"storage_backends": "/mnt/test1", "kv_block_size": 33554432}}
+kv_connector_extra_config={"ucm_connector_name": "UcmNfsStore", "ucm_connector_config":{"storage_backends": "/mnt/test1", "transferStreamNumber": 32}}
 ```
 
 ## Launching Inference
@@ -100,7 +101,7 @@ To start **offline inference** with the NFS connector，modify the script `examp
 # In examples/offline_inference.py
 ktc = KVTransferConfig(
     ...
-    kv_connector_extra_config={"ucm_connector_name": "UcmNfsStore", "ucm_connector_config":{"storage_backends": "/mnt/test1", "kv_block_size": 33554432}}
+    kv_connector_extra_config={"ucm_connector_name": "UcmNfsStore", "ucm_connector_config":{"storage_backends": "/mnt/test1", "transferStreamNumber": 32}}
 )
 ```
 
@@ -133,9 +134,7 @@ vllm serve /home/models/Qwen2.5-14B-Instruct \
         "ucm_connector_name": "UcmNfsStore",
         "ucm_connector_config": {
             "storage_backends": "/mnt/test",
-            "kv_block_size": 33554432,
-            "transferStreamNumber":16,
-            "transferIoSize":131072
+            "transferStreamNumber":32
         }
     }
 }'
