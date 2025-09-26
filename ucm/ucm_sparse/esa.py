@@ -408,7 +408,10 @@ class ESA(UcmSparseBase):
         self.req_states: dict[str, List[ReqStatePerLayer]] = {}
         self.rank = vllm_config.parallel_config.rank
         self.tp_size = vllm_config.parallel_config.tensor_parallel_size
-        self.connector = get_kv_transfer_group().connector
+        if role == UcmSparseRole.WORKER:
+            self.connector = get_kv_transfer_group().connector
+        else:
+            self.connector = None
         self.esa_cfg = vllm_config.kv_transfer_config.kv_connector_extra_config[
             "ucm_sparse_config"
         ]["ESA"]
