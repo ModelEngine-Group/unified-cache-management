@@ -35,9 +35,11 @@ ROOT_DIR = os.path.abspath(os.path.dirname(__file__))
 STORE_SRC_DIR = os.path.join(ROOT_DIR, "ucm", "store")
 GSA_SRC_DIR = os.path.join(ROOT_DIR, "ucm", "csrc", "gsaoffloadops")
 PREFETCH_SRC_DIR = os.path.join(ROOT_DIR, "ucm", "csrc", "ucmprefetch")
+RETRIEVAL_SRC_DIR = os.path.join(ROOT_DIR, "ucm", "csrc", "esaretrieval")
 
 STORE_INSTALL_DIR = os.path.join(ROOT_DIR, "ucm", "store", "connector")
 GSA_INSTALL_DIR = os.path.join(ROOT_DIR, "ucm", "ucm_sparse")
+RETRIEVAL_INSTALL_DIR = os.path.join(ROOT_DIR, "ucm", "ucm_sparse", "retrieval")
 
 PLATFORM = os.getenv("PLATFORM")
 
@@ -89,7 +91,7 @@ class CMakeBuild(build_ext):
 
         subprocess.check_call(cmake_args, cwd=build_dir)
 
-        if ext.name in ["store", "gsa_offload_ops"]:
+        if ext.name in ["store", "gsa_offload_ops", "esaretrieval"]:
             subprocess.check_call(["make", "-j", "8"], cwd=build_dir)
         else:
             # 对于gsa_prefetch使用cmake --build
@@ -115,6 +117,8 @@ class CMakeBuild(build_ext):
             search_patterns.extend(["gsa_offload_ops"])
         elif ext.name == "gsa_prefetch":
             search_patterns.extend(["prefetch"])
+        elif ext.name == "esaretrieval":
+            search_patterns.extend(["retrieval_backend"])
 
         for file in os.listdir(so_search_dir):
             if file.endswith(".so") or ".so." in file:
@@ -126,6 +130,9 @@ class CMakeBuild(build_ext):
         if ext.name == "store":
             install_dir = STORE_INSTALL_DIR
             build_install_dir = STORE_INSTALL_DIR
+        elif ext.name == "esaretrieval":
+            install_dir = RETRIEVAL_INSTALL_DIR
+            build_install_dir = "ucm/ucm_sparse/retrieval"
         else:
             install_dir = GSA_INSTALL_DIR
             build_install_dir = "ucm/ucm_sparse"
@@ -134,7 +141,6 @@ class CMakeBuild(build_ext):
             src_path = os.path.join(so_search_dir, so_file)
             dev_path = os.path.join(install_dir, so_file)
             dst_path = os.path.join(self.build_lib, build_install_dir, so_file)
-
             os.makedirs(os.path.dirname(dst_path), exist_ok=True)
             shutil.copy(src_path, dst_path)
             print(f"[INFO] Copied {so_file} → {dst_path}")
@@ -149,6 +155,7 @@ ext_modules = []
 ext_modules.append(CMakeExtension(name="store", sourcedir=STORE_SRC_DIR))
 ext_modules.append(CMakeExtension(name="gsa_offload_ops", sourcedir=GSA_SRC_DIR))
 ext_modules.append(CMakeExtension(name="gsa_prefetch", sourcedir=PREFETCH_SRC_DIR))
+ext_modules.append(CMakeExtension(name="esaretrieval", sourcedir=RETRIEVAL_SRC_DIR))
 
 setup(
     name="ucm",

@@ -45,8 +45,8 @@ jobs:
             -c "
               pip install -v -e . --no-build-isolation
               cd \$(pip show vllm | grep Location | awk '{print \$2}') &&
-              git apply /workspace/unified-cache-management/ucm/patch/0.9.2/vllm-adapt.patch &&
-              git apply /workspace/unified-cache-management/ucm/patch/0.9.2/vllm-adapt-sparse.patch
+              git apply /workspace/unified-cache-management/ucm/integration/vllm/patch/0.9.2/vllm-adapt.patch &&
+              git apply /workspace/unified-cache-management/ucm/integration/vllm/patch/0.9.2/vllm-adapt-sparse.patch
               cd /workspace/unified-cache-management
               python3 -m unittest discover -s test
             "

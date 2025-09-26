@@ -30,9 +30,10 @@ class UcmSparseFactory:
     def create_sparse_method(
         cls, config: "VllmConfig", role: UcmSparseRole
     ) -> UcmSparseBase:
-        sparse_method_name = config.kv_transfer_config.kv_connector_extra_config[
-            "ucm_sparse_method"
-        ]
+        ucm_cfg = config.kv_transfer_config.kv_connector_extra_config.get(
+            "ucm_sparse_config"
+        )
+        sparse_method_name, _ = next(iter(ucm_cfg.items()))
         if sparse_method_name in cls._registry:
             sparse_method_cls = cls._registry[sparse_method_name]()
         else:

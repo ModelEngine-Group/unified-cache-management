@@ -101,7 +101,7 @@ python ucm/sandbox/sparse/kvcomp/offline_inference_kvcomp.py
 ```
 
 ### Basic Usage
-Similr to UCM's `offline_inference_esa.py` examples. We only need to specify `ucm_sparse_method` to be `KVComp` and specify a KVComp config file in `kvcomp_config_path`, as shown below.
+Similr to UCM's `offline_inference_esa.py` examples. We only need to specify `ucm_sparse_config` to be `KVComp` and specify a KVComp config file in `kvcomp_config_path`, as shown below.
 
 ```python
 ...
@@ -115,7 +115,7 @@ ktc = KVTransferConfig(
                 "max_cache_size": 5368709120,
                 "kv_block_size": 262144,
             },
-            "ucm_sparse_method": "KvComp",
+            "ucm_sparse_config": "KvComp",
             "kvcomp_config_path": "configs/kvcomp_qwen3_4B_config.json",
         },
     )

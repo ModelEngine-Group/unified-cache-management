@@ -734,7 +734,7 @@ class UnifiedCacheConnectorV1(KVConnectorBase_V1):
         block_info = self.request_block_infos.pop(request.request_id, None)
         if hasattr(request, "succeed_dumped_blocks") and request.succeed_dumped_blocks:
             logger.debug(f"commit {request.succeed_dumped_blocks} to True.")
-            self.connector.commit(request.succeed_dumped_blocks, True)
+            # self.connector.commit(request.succeed_dumped_blocks, True)
         if block_info is not None:
             cancel_blocks = [
                 block_info.block_hashes[i]

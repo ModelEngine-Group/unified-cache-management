@@ -26,8 +26,8 @@ from dataclasses import dataclass
 from typing import Dict, List, Tuple
 
 import torch
-import ucmnfsstore
-from connector.ucmstore import Task, UcmKVStoreBase
+from ucm.store.connector import ucmnfsstore
+from ucm.store.connector.ucmstore import Task, UcmKVStoreBase
 
 
 @dataclass
@@ -48,7 +48,7 @@ class UcmNfsStore(UcmKVStoreBase):
         )
         if transfer_enable:
             param.transferDeviceId = config["device"]
-            param.transferIoSize = config["io_size"]
+            param.transferIoSize = config["transferIoSize"]
         ret = ucmnfsstore.Setup(param)
         if ret != 0:
             msg = f"Failed to initialize ucmnfsstore, errcode: {ret}."

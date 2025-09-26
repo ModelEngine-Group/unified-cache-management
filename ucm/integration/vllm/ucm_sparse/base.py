@@ -189,12 +189,14 @@ class UcmSparseBase(ABC):
         pass
 
     def build_sparse_meta(
-        self,
-        scheduler_output,
-        requests,
-        input_batch,
+        self, scheduler_output, requests, input_batch, attn_metadata
     ) -> UcmSparseMetadata:
         """
         Build the sparse metadata for this step.
         """
+        pass
+
+    def allocate_slots(
+        self, request, num_slots_sparsed, coordinator, block_pool, kv_cache_groups
+    ):
         pass

@@ -38,13 +38,13 @@ def ensure_ucm_sparse_initialized(
 
     # Check if UCM sparse is enabled
     if (
-        "ucm_sparse_method"
+        "ucm_sparse_config"
         not in vllm_config.kv_transfer_config.kv_connector_extra_config
     ):
         return
 
     sparse_method_name = vllm_config.kv_transfer_config.kv_connector_extra_config[
-        "ucm_sparse_method"
+        "ucm_sparse_config"
     ]
 
     if _UCM_SPARSE_AGENT is None:
