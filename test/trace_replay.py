@@ -580,7 +580,8 @@ async def replay_trace_by_time(
     )
 
     if args.save_result:
-        save_metrics_to_file(metrics=metrics)
+        output_dir = args.result_dir if args.result_dir is not None else "./"
+        save_metrics_to_file(metrics=metrics, output_dir=output_dir)
 
     print("{s:{c}^{n}}".format(s=" Serving Benchmark Result ", n=50, c="="))
     print("{:<40} {:<10}".format("Successful requests:", metrics.completed))
@@ -642,8 +643,9 @@ async def replay_trace_by_time(
     process_one_metric("e2el", "E2EL", "End-to-end Latency")
     print("=" * 50)
 
+    output_dir = args.result_dir if args.result_dir is not None else "./"
     if args.save_result:
-        save_req_results_to_file(outputs=outputs, output_dir="./")
+        save_req_results_to_file(outputs=outputs, output_dir=output_dir)
 
     return
 
