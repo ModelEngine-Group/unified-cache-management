@@ -22,7 +22,7 @@ from ucm.integration.vllm.ucm_sparse.base import (
     UcmSparseMetadata,
     UcmSparseRole,
 )
-from ucm.store.base import Task, UcmKVStoreBase
+from ucm.store.connector.ucmstore  import Task, UcmKVStoreBase
 from ucm.ucm_sparse.retrieval import retrieval_backend
 from ucm.ucm_sparse.retrieval.retrieval_worker import RetrievalWorker
 

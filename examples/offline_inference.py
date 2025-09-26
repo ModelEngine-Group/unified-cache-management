@@ -14,7 +14,7 @@ from vllm.engine.arg_utils import EngineArgs
 from ucm.logger import init_logger
 
 MODEL_PATH = "/home/models/Qwen2.5-14B-Instruct"
-tokenizer = AutoTokenizer.from_pretrained(MODEL_PATH)
+tokenizer = AutoTokenizer.from_pretrained(MODEL_PATH, use_chat_template=True)
 logger = init_logger(__name__)
 
 
@@ -30,10 +30,10 @@ def build_llm_with_uc(module_path: str, name: str, model: str):
         kv_connector_module_path=module_path,
         kv_role="kv_both",
         kv_connector_extra_config={
-            "ucm_connector_name": "UcmNfsStore",
+            "ucm_connector_name": "UcmDramStore",
             "ucm_connector_config": {
-                "storage_backends": "/home/data",
-                "kv_block_size": 33554432,
+                "max_cache_size": 5368709120, 
+                "kv_block_size": 262144
             },
             "ucm_sparse_config": {
                 "ESA": {
@@ -87,36 +87,21 @@ def main():
 
     setup_environment_variables()
 
-    def get_prompt(prompt):
+    with build_llm_with_uc(module_path, name, model) as llm:
         messages = [
             {
                 "role": "system",
-                "content": "先读问题，再根据下面的文章内容回答问题，不要进行分析，不要重复问题，用简短的语句给出答案。\n\n例如：“全国美国文学研究会的第十八届年会在哪所大学举办的？”\n回答应该为：“xx大学”。\n\n",
+                "content": "You are a highly specialized assistant whose mission is to faithfully reproduce English literary texts verbatim, without any deviation, paraphrasing, or omission. Your primary responsibility is accuracy: every word, every punctuation mark, and every line must appear exactly as in the original source. Core Principles: Verbatim Reproduction: If the user asks for a passage, you must output the text word-for-word. Do not alter spelling, punctuation, capitalization, or line breaks. Do not paraphrase, summarize, modernize, or “improve” the language. Consistency: The same input must always yield the same output. Do not generate alternative versions or interpretations. Clarity of Scope: Your role is not to explain, interpret, or critique. You are not a storyteller or commentator, but a faithful copyist of English literary and cultural texts. Recognizability: Because texts must be reproduced exactly, they will carry their own cultural recognition. You should not add labels, introductions, or explanations before or after the text. Coverage: You must handle passages from classic literature, poetry, speeches, or cultural texts. Regardless of tone—solemn, visionary, poetic, persuasive—you must preserve the original form, structure, and rhythm by reproducing it precisely. Success Criteria: A human reader should be able to compare your output directly with the original and find zero differences. The measure of success is absolute textual fidelity. Your function can be summarized as follows: verbatim reproduction only, no paraphrase, no commentary, no embellishment, no omission.",
             },
-            {"role": "user", "content": prompt},
+            {
+                "role": "user",
+                "content": "Please reproduce verbatim the opening sentence of the United States Declaration of Independence (1776), starting with 'When in the Course of human events' and continuing word-for-word without paraphrasing.",
+            },
         ]
-        return tokenizer.apply_chat_template(
-            messages,
-            tokenize=False,
-            add_generation_prompt=True,
-            add_special_tokens=True,
+
+        prompts = tokenizer.apply_chat_template(
+            messages, tokenize=False, add_generation_prompt=True
         )
-
-    with build_llm_with_uc(module_path, name, model) as llm:
-        prompts = []
-
-        batch_size = 1
-
-        with open("/home/datasets/Longbench/data/multifieldqa_zh.jsonl", "r") as f:
-            for _ in range(batch_size):
-                line = f.readline()
-                if not line:
-                    break
-                data = json.loads(line)
-                context = data["context"]
-                question = data["input"]
-                prompts.append(get_prompt(f"{context}\n\n{question}"))
-
         sampling_params = SamplingParams(temperature=0, top_p=0.95, max_tokens=100)
 
         print_output(llm, prompts, sampling_params, "first")
