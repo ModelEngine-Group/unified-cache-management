@@ -544,19 +544,25 @@ class UnifiedCacheConnectorV1(KVConnectorBase_V1):
             input_bytes = pickle.dumps(input, protocol=pickle.HIGHEST_PROTOCOL)
             md5_bytes = hashlib.md5(input_bytes).digest()
             return int.from_bytes(md5_bytes, byteorder="big")
-
-        assert num_computed_tokens % self.block_size == 0
-        block_hash_types = hash_request_tokens(md5, self.block_size, request)
-        block_hashes: List[str] = [str(x.hash_value) for x in block_hash_types]
-        if not block_hashes:
-            logger.debug("Maybe tokens too short to load.")
-            return 0, False
+        
+        # preempted request / load async request / request not scheduled currently
+        if request.request_id in self.request_block_infos:
+            request_block_info = self.request_block_infos.get(request.request_id)
+            block_hashes = request_block_info.block_hashes
+            block_operations = request_block_info.block_operations
+        else:
+            assert num_computed_tokens % self.block_size == 0
+            block_hash_types = hash_request_tokens(md5, self.block_size, request)
+            block_hashes: List[str] = [str(x.hash_value) for x in block_hash_types]
+            if not block_hashes:
+                logger.debug("Maybe tokens too short to load.")
+                return 0, False
+            block_operations = [BlockOperation.NONE] * len(block_hashes)
 
         # Calculate start position (exclude blocks already in HBM)
         start_position = num_computed_tokens // self.block_size
-
-        block_operations = [BlockOperation.NONE] * len(block_hashes)
-
+        for i in range(start_position):
+            block_operations[i] = BlockOperation.NONE
         remain_hashes = block_hashes[start_position:]
         if not remain_hashes:
             # All blocks are in HBM
@@ -599,10 +605,11 @@ class UnifiedCacheConnectorV1(KVConnectorBase_V1):
                 return num_lookup_hits * self.block_size, True
 
         # Create blocks for the remaining (unmatched) blocks
-        if num_lookup_hits < len(remain_hashes):
+        if num_lookup_hits < len(remain_hashes) and request.request_id not in self.request_block_infos:
             remaining_hashes = remain_hashes[num_lookup_hits:]
             create_results = self.connector.create(remaining_hashes)
-            logger.info(f"\ncreate_results on storage: {create_results}\n")
+            if any(ret != 0 for ret in create_results):
+                logger.warning(f"\ncreate_results on storage: {create_results}\n")
             for j, ret in enumerate(create_results):
                 idx = num_lookup_hits + j
                 block_operations[start_position + idx] = (
