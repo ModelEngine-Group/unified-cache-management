@@ -517,6 +517,10 @@ class GSAPrefetchBase:
                 self.is_gsa_req_id[req_id]
                 and gsa_metadata.gsa_stats[req_id].topk_buf_tmp != None
             ):
+                if (torch.max(gsa_metadata.gsa_stats[req_id].topk_buf_tmp) > 
+                    (len(self.block_table_list_bs[index]) - 1)
+                ):
+                    continue
                 remain_slot = (
                     gsa_metadata.gsa_stats[req_id].get_seq_len() % self.block_size
                 )

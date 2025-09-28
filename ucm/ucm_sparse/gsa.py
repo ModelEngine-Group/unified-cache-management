@@ -152,6 +152,7 @@ class GSAReqStat:
                 self.calc_block_table = []
                 self.calc_repre_slot_mapping = []
         if len(self.repre_slot_mapping) > len(self.blocks):
+            self.topk_buf_tmp = None
             self.repre_slot_mapping = self.repre_slot_mapping[: len(self.blocks)]
 
     def _get_sparse_and_free_block(self):
@@ -265,6 +266,8 @@ class GSAMetaData(UcmSparseMetadata):
                 input_batch.req_id_to_index[req_id],
             )
         for new_req in scheduler_output.scheduled_new_reqs:
+            if new_req.req_id in self.gsa_stats:
+                del self.gsa_stats[new_req.req_id]
             self.gsa_stats[new_req.req_id] = GSAReqStat(new_req.req_id)
             self.gsa_stats[new_req.req_id].add_req_new(
                 scheduler_output.num_scheduled_tokens[new_req.req_id],
