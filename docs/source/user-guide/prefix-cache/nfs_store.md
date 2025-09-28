@@ -169,7 +169,7 @@ To quickly experience the NFS Connector's effect:
 2. Send the same request (exceed 128 tokens) twice consecutively
 3. Remember to enable prefix caching (do not add `--no-enable-prefix-caching`) in production environments.
 ### Log Message Structure
-```plaintext
+```text
 [UCMNFSSTORE] [I] Task(<task_id>,<direction>,<task_count>,<size>) finished, elapsed <time>s
 ```
 | Component    | Description                                                                 |

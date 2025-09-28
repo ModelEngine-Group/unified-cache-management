@@ -2,12 +2,12 @@
 
 <div align="center">
 
-![KVComp Scheme](../../images/kvcomp_scheme.jpg)
+![KVComp Scheme](/_static/images/kvcomp_scheme.jpg)
 
 **🚀 Hash-Aware Sparse Attention Algorithm | 📄 ACL 2025 Paper | ⚡ NPU/GPU Hardware-Efficient**
 
-[![Paper](https://img.shields.io/badge/Paper-ACL%202025-blue)](paper/kvcomp-ACL-2025-paper.pdf)
-[![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
+[![Paper](https://img.shields.io/badge/Paper-ACL%202025-blue)](/_static/paper/kvcomp-ACL-2025-paper.pdf)
+[![License](https://img.shields.io/badge/License-MIT-green.svg)](https://github.com/ModelEngine-Group/unified-cache-management/blob/main/LICENSE)
 [![Python](https://img.shields.io/badge/Python-3.10+-blue.svg)](https://python.org)
 
 </div>
@@ -34,10 +34,10 @@
 <div align="center">
 
 ### End-to-End Performance
-![End-to-End Performance](../../images/kvcomp_end_to_end_performance.jpg)
+![End-to-End Performance](/_static/images/kvcomp_end_to_end_performance.jpg)
 
 ### Single Layer Performance  
-![Single Layer Performance](../../images/kvcomp_single_layer_performance.jpg)
+![Single Layer Performance](/_static/images/kvcomp_single_layer_performance.jpg)
 
 </div>
 
@@ -47,7 +47,7 @@
 <div align="center">
 
 ### LongBench Evaluation
-![LongBench Results](../../images/kvcomp_longbench.jpg)
+![LongBench Results](/_static/images/kvcomp_longbench.jpg)
 
 </div>
 
@@ -94,7 +94,7 @@ This design ensures both **efficiency** and **accuracy** by preserving essential
 
 ### Installation
 
-KVComp is part of the UCM Sparse Attention module. For installation instructions, please refer to the [UCM's top-level README](../../../../README.md). Once UCM is installed, KVComp is naturally supported by running the following example python scripts.
+KVComp is part of the UCM Sparse Attention module. For installation instructions, please refer to the [UCM's top-level README](https://github.com/ModelEngine-Group/unified-cache-management). Once UCM is installed, KVComp is naturally supported by running the following example python scripts.
 
 ```bash
 python ucm/sandbox/sparse/kvcomp/offline_inference_kvcomp.py
@@ -125,7 +125,7 @@ ktc = KVTransferConfig(
 ### Configuration
 KvComp need a json configuration file. We have already included several configs in `configs` folder, including Qwen3-4B, Qwen3-32B, and QwQ-32B.
 
-```json
+```text
 {
     "model_name": "Qwen/Qwen3-4B",
     "is_mla": false,

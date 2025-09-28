@@ -31,7 +31,7 @@ CUDA_VISIBLE_DEVICES=0 vllm serve /home/models/Qwen2.5-7B-Instruct \
         "ucm_connector_name": "UcmNfsStore",
         "ucm_connector_config": {
             "storage_backends": "/mnt/test1",
-            "kv_block_size": 33554432
+            "transferStreamNumber":32
         }
     }
 }'
@@ -58,7 +58,7 @@ CUDA_VISIBLE_DEVICES=1 vllm serve /home/models/Qwen2.5-7B-Instruct \
         "ucm_connector_name": "UcmNfsStore",
         "ucm_connector_config": {
             "storage_backends": "/mnt/test1",
-            "kv_block_size": 33554432
+            "transferStreamNumber":32
         }
     }
 }'
@@ -86,7 +86,7 @@ CUDA_VISIBLE_DEVICES=2 vllm serve /home/models/Qwen2.5-7B-Instruct \
         "ucm_connector_name": "UcmNfsStore",
         "ucm_connector_config": {
             "storage_backends": "/mnt/test1",
-            "kv_block_size": 33554432
+            "transferStreamNumber":32
         }
     }
 }'
@@ -112,7 +112,7 @@ CUDA_VISIBLE_DEVICES=3 vllm serve /home/models/Qwen2.5-7B-Instruct \
         "ucm_connector_name": "UcmNfsStore",
         "ucm_connector_config": {
             "storage_backends": "/mnt/test1",
-            "kv_block_size": 33554432
+            "transferStreamNumber":32
         }
     }
 }'

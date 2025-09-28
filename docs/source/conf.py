@@ -52,21 +52,5 @@ html_theme_options = {
         "alt_text": "UCM",
     },
 }
-import os
-import shutil
-
-
-def copy_images(app, exception):
-    if exception is None:
-        # After building，copy docs/source/images to _build/html/images/
-        src = os.path.abspath(os.path.join(app.srcdir, "images"))
-        dst = os.path.join(app.outdir, "images")
-        os.makedirs(dst, exist_ok=True)
-        shutil.copytree(src, dst, dirs_exist_ok=True)
-
-
-def setup(app):
-    app.connect("build-finished", copy_images)
-
 
 # language = 'zh_CN'

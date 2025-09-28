@@ -16,10 +16,10 @@ UCM supports two key features: **Prefix Cache** and **GSA Sparsity**.
 
 Each feature supports both **Offline Inference** and **Online API** modes. 
 
-For quick start, just follow the [usage](#usage) guide below to launch your own inference experience;
+For quick start, just follow the [usage](./quick_start.md) guide below to launch your own inference experience;
 
 For further research, click on the links blow to see more details of each feature:
-- [Prefix Cache](../user-guide/prefix-cache/base.md)
+- [Prefix Cache](../user-guide/prefix-cache/index.md)
 - [GSA Sparsity](../user-guide/sparse-attention/gsa.md)
 
 ## Usage
