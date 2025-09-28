@@ -13,7 +13,6 @@ from vllm.distributed.kv_transfer import get_kv_transfer_group
 from vllm.forward_context import ForwardContext
 from vllm.sequence import SequenceStage
 from vllm.v1.core.kv_cache_manager import KVCacheBlocks
-from vllm.v1.core.kv_cache_utils import NONE_HASH
 from vllm.v1.request import Request
 
 from ucm.integration.vllm.ucm_sparse.base import (
@@ -144,11 +143,11 @@ def md5(input) -> int:
 
 
 @cache
-def block_hash_func(parent_block_hash, curr_block_token_ids, extra_keys):
+def block_hash_func(parent_block_hash, curr_block_token_ids):
     if not parent_block_hash:
-        parent_block_hash = NONE_HASH
+        parent_block_hash = md5("UCMHASHSEED")
     curr_block_token_ids_tuple = tuple(curr_block_token_ids)
-    return md5((parent_block_hash, curr_block_token_ids_tuple, extra_keys))
+    return md5((parent_block_hash, curr_block_token_ids_tuple))
 
 
 def task_hash_func(block_ids, store_type, tensor_type):
@@ -205,7 +204,6 @@ class ReqStatePerLayer:
             return
         self.block_hashes = []
         parent_block_hash_value = None
-        req_extra_keys = None
         for start in range(0, len(token_ids), self.block_size):
             end = start + self.block_size
             block_token_ids = token_ids[start:end]
@@ -213,7 +211,7 @@ class ReqStatePerLayer:
                 break
             curr_block_token_ids_tuple = tuple(block_token_ids)
             block_hash = block_hash_func(
-                parent_block_hash_value, curr_block_token_ids_tuple, req_extra_keys
+                parent_block_hash_value, curr_block_token_ids_tuple
             )
             self.block_hashes.append(str(block_hash))
             parent_block_hash_value = block_hash
