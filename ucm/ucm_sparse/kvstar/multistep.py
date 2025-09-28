@@ -659,12 +659,14 @@ class KVStarMultiStep(UcmSparseBase):
         super().__init__(vllm_config=vllm_config, role=role)
 
         # TODO: req_states should be shared among all ranks: 涉及到某些稀疏化算法需要融合全部kvcache头, 则这个需要跨进程共享
-        self.req_layerwise_states: dict[HashType, ReqPerLayerState] = (
+        self.req_states: dict[str, List[ReqPerLayerState]] = (
             {}
         )  # key用于标识请求及对应层, value是该请求该层的一些稀疏化管理信息
         self.local_tp_rank = vllm_config.parallel_config.rank
         self.total_tp_size = vllm_config.parallel_config.tensor_parallel_size
-
+        self.total_num_hidden_layers = (
+            vllm_config.model_config.hf_config.num_hidden_layers
+        )
         if self.role == UcmSparseRole.WORKER:
             # TODO: 进行异步检索模块c lib库的相关init
             ratio = 0.75
@@ -707,6 +709,25 @@ class KVStarMultiStep(UcmSparseBase):
     # Scheduler/Worker-side 按Role区分的共有逻辑
     # ==============================
 
+    def create_layerwise_req_state(self, req_meta, layer_name):
+        layer_id = int(layer_name.split(".")[2])
+        if req_meta.request_id not in self.req_states:
+            if self.req_states.get(req_meta.request_id) is None:
+                self.req_states[req_meta.request_id] = [
+                                                           None
+                                                       ] * self.total_num_hidden_layers
+        if self.req_states[req_meta.request_id][layer_id] is None:
+            self.req_states[req_meta.request_id][layer_id] = ReqPerLayerState(
+                req_meta,
+                layer_name,
+                self.local_tp_rank,
+                self.total_tp_size,
+                self.connector,
+                self.connector_name,
+                self.kvstar_multistep_cfg
+            )
+        return self.req_states[req_meta.request_id][layer_id]
+
     def request_begin(self, request_id: Union[int, str], prompt_token_ids: List[int]):
         """
         This is called at the beginning of "Scheduler->add_request" function.
@@ -718,7 +739,7 @@ class KVStarMultiStep(UcmSparseBase):
     # ==============================
 
     def request_finished_in_worker(self, request_id: ReqType):
-        pass
+        del self.req_states[request_id]
 
     def attention_begin(
             self,
@@ -739,20 +760,7 @@ class KVStarMultiStep(UcmSparseBase):
 
         """
         for req_meta in self._sparse_metadata.requests:
-            req_layerwise_state_hash = ReqPerLayerState.req_state_hash(
-                req_meta.request_id, layer_name
-            )
-            if req_layerwise_state_hash not in self.req_layerwise_states.keys():
-                self.req_layerwise_states[req_layerwise_state_hash] = ReqPerLayerState(
-                    req_meta,
-                    layer_name,
-                    self.local_tp_rank,
-                    self.total_tp_size,
-                    self.connector,
-                    self.connector_name,
-                    self.kvstar_multistep_cfg
-                )
-            req_layerwise_state = self.req_layerwise_states[req_layerwise_state_hash]
+            req_layerwise_state = self.create_layerwise_req_state(req_meta, layer_name)
             req_layerwise_state.update_meta(
                 req_meta, forward_context
             )  # 重新绑定本次step该请求刷新后的meta
@@ -773,20 +781,7 @@ class KVStarMultiStep(UcmSparseBase):
         比如下一层的预取, kvcache卸载或其他逻辑
         """
         for req_meta in self._sparse_metadata.requests:
-            req_layerwise_state_hash = ReqPerLayerState.req_state_hash(
-                req_meta.request_id, layer_name
-            )
-            if req_layerwise_state_hash not in self.req_layerwise_states.keys():
-                self.req_layerwise_states[req_layerwise_state_hash] = ReqPerLayerState(
-                    req_meta,
-                    layer_name,
-                    self.local_tp_rank,
-                    self.total_tp_size,
-                    self.connector,
-                    self.connector_name,
-                    self.kvstar_multistep_cfg
-                )
-            req_layerwise_state = self.req_layerwise_states[req_layerwise_state_hash]
+            req_layerwise_state = self.create_layerwise_req_state(req_meta, layer_name)
             req_layerwise_state.update_meta(
                 req_meta, forward_context
             )  # 重新绑定本次step该请求刷新后的meta
