@@ -118,5 +118,6 @@ that it may even sacrifice a certain degree of performance to preserve these cor
 :maxdepth: 2
 1p1d.md
 xpyd.md
+npgd.md
 :::
 
