@@ -102,7 +102,7 @@ can further reduce compute idle time (e.g., idle time caused by DP) and fully ex
 
 However, it is important to recognize that large-model inference is still in its early stages, and PD Disaggregation
 represents only the starting point for the transition toward large-scale distributed inference deployment. As more
-application scenarios emerge, there will be an inevitable demand for Service-Level Agreements (SLAs) and more
+application scenarios emerge, there will be an inevitable demand for stricter and stricter Service-Level Agreements (SLAs) and more
 robust handling of extreme edge cases. Currently, simpler architectural designs (such as the third KV transmission mode
 adopted by UCM) can provide greater design redundancy for more complex and effective solutions in the future. For
 example, when implementing checkpoint-based resumption and offline inference, it has been found that these
