@@ -39,6 +39,7 @@ from vllm.distributed.kv_transfer.kv_connector.v1.base import (
 from vllm.distributed.parallel_state import get_world_group
 from vllm.v1.core.kv_cache_utils import hash_request_tokens
 from vllm.v1.core.sched.output import SchedulerOutput
+from vllm.v1.request import Request, RequestStatus
 
 from ucm.logger import init_logger
 from ucm.store.base import Task
@@ -48,7 +49,6 @@ if TYPE_CHECKING:
     from vllm.attention.backends.abstract import AttentionMetadata
     from vllm.forward_context import ForwardContext
     from vllm.v1.core.kv_cache_manager import KVCacheBlocks
-    from vllm.v1.request import Request, RequestStatus
 
 logger = init_logger(__name__)
 
@@ -633,14 +633,15 @@ class UnifiedCacheConnectorV1(KVConnectorBase_V1):
             block_hashes = request_block_info.block_hashes
             start_create_pos = start_position + num_external_tokens // self.block_size
             remaining_hashes = block_hashes[start_create_pos:]
-            create_results = self.connector.create(remaining_hashes)
-            if any(ret != 0 for ret in create_results):
-                logger.warning(f"\ncreate_results on storage: {create_results}\n")
-            for j, ret in enumerate(create_results):
-                idx = start_create_pos + j
-                block_operations[idx] = (
-                    BlockOperation.DUMP if ret == 0 else BlockOperation.NONE
-                )
+            if remaining_hashes:
+                create_results = self.connector.create(remaining_hashes)
+                if any(ret != 0 for ret in create_results):
+                    logger.warning(f"\ncreate_results on storage: {create_results}\n")
+                for j, ret in enumerate(create_results):
+                    idx = start_create_pos + j
+                    block_operations[idx] = (
+                        BlockOperation.DUMP if ret == 0 else BlockOperation.NONE
+                    )
 
     def build_connector_meta(
         self, scheduler_output: SchedulerOutput
@@ -748,6 +749,7 @@ class UnifiedCacheConnectorV1(KVConnectorBase_V1):
             ]
             if cancel_blocks:
                 self.connector.commit(cancel_blocks, False)
+        request.succeed_dumped_blocks.clear()
         return False, None
 
     def _extract_blocks(
