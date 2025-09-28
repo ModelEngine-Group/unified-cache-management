@@ -444,6 +444,26 @@ class ESA(UcmSparseBase):
             backend = retrieval_backend.RetrievalWorkerBackend(backend_src)
             self.retrieval_workers.append(RetrievalWorker(backend))
 
+    def create_layerwise_req_state(self, req_meta, layer_name):
+        layer_id = int(layer_name.split(".")[2])
+        if req_meta.request_id not in self.req_states:
+            if self.req_states.get(req_meta.request_id) is None:
+                self.req_states[req_meta.request_id] = [
+                    None
+                ] * self.total_num_hidden_layers
+        if self.req_states[req_meta.request_id][layer_id] is None:
+            self.req_states[req_meta.request_id][layer_id] = ReqStatePerLayer(
+                req_meta,
+                layer_name,
+                self.rank,
+                self.tp_size,
+                self.connector,
+                self._vllm_config,
+                self.retrieval_workers[layer_id],
+                self.layer_pools[layer_id],
+            )
+        return self.req_states[req_meta.request_id][layer_id]
+
     def attention_begin(
         self,
         query: torch.Tensor,
@@ -453,24 +473,7 @@ class ESA(UcmSparseBase):
         forward_context: ForwardContext,
     ) -> None:
         for req_meta in self._sparse_metadata.requests:
-            layer_id = int(layer_name.split(".")[2])
-            if req_meta.request_id not in self.req_states:
-                if self.req_states.get(req_meta.request_id) is None:
-                    self.req_states[req_meta.request_id] = [
-                        None
-                    ] * self.total_num_hidden_layers
-            if self.req_states[req_meta.request_id][layer_id] is None:
-                self.req_states[req_meta.request_id][layer_id] = ReqStatePerLayer(
-                    req_meta,
-                    layer_name,
-                    self.rank,
-                    self.tp_size,
-                    self.connector,
-                    self._vllm_config,
-                    self.retrieval_workers[layer_id],
-                    self.layer_pools[layer_id],
-                )
-            req_state = self.req_states[req_meta.request_id][layer_id]
+            req_state = self.create_layerwise_req_state(req_meta, layer_name)
             req_state.update_meta(req_meta)
             req_state.attention_begin(query, key, value, forward_context)
 
@@ -484,28 +487,17 @@ class ESA(UcmSparseBase):
         forward_context: ForwardContext,
     ) -> None:
         for req_meta in self._sparse_metadata.requests:
-            layer_id = int(layer_name.split(".")[2])
-            if req_meta.request_id not in self.req_states:
-                if self.req_states.get(req_meta.request_id) is None:
-                    self.req_states[req_meta.request_id] = [
-                        None
-                    ] * self.total_num_hidden_layers
-            if self.req_states[req_meta.request_id][layer_id] is None:
-                self.req_states[req_meta.request_id][layer_id] = ReqStatePerLayer(
-                    req_meta,
-                    layer_name,
-                    self.rank,
-                    self.tp_size,
-                    self.connector,
-                    self._vllm_config,
-                    self.retrieval_workers[layer_id],
-                    self.layer_pools[layer_id],
-                )
-            req_state = self.req_states[req_meta.request_id][layer_id]
+            req_state = self.create_layerwise_req_state(req_meta, layer_name)
             req_state.update_meta(req_meta)
             req_state.attention_finished(
                 query, key, value, attn_output, forward_context
             )
+
+    def is_sparsed_request(self, req):
+        return (
+            len(req.prompt_token_ids)
+            >= self._vllm_config.cache_config.block_size * self.esa_cfg["min_blocks"]
+        )
 
     def build_sparse_meta(
         self, scheduler_output, requests, input_batch, attn_metadata
@@ -515,24 +507,20 @@ class ESA(UcmSparseBase):
             req_id,
             num_scheduled_tokens,
         ) in scheduler_output.num_scheduled_tokens.items():
-            req_state = requests[req_id]
-            if (
-                len(req_state.prompt_token_ids)
-                <= self._vllm_config.cache_config.block_size
-            ):
-                return
-
+            req = requests[req_id]
+            if not self.is_sparsed_request(req):
+                continue
             if isinstance(attn_metadata, dict):
                 attn_metadata = next(iter(attn_metadata.values()))
             sparse_meta.add_request(
                 req_id,
                 input_batch.req_id_to_index[req_id],
                 num_scheduled_tokens,
-                req_state.num_computed_tokens,
-                req_state.block_ids[0],
+                req.num_computed_tokens,
+                req.block_ids[0],
                 attn_metadata.query_start_loc[input_batch.req_id_to_index[req_id]],
-                req_state.prompt_token_ids,
-                req_state.output_token_ids,
+                req.prompt_token_ids,
+                req.output_token_ids,
             )
         self._sparse_metadata = sparse_meta
 
@@ -540,16 +528,14 @@ class ESA(UcmSparseBase):
         pass
 
     def request_finished_in_worker(self, request_id: ReqType):
+        if request_id not in self.req_states:
+            return
         for layer_state in self.req_states[request_id]:
             layer_state.repre_pool.free(layer_state.slots)
         del self.req_states[request_id]
 
     def estimate_num_slots_sparsed(self, request: Request) -> int:
-        if (
-            request.num_output_tokens == 0
-            or request.num_prompt_tokens
-            < self._vllm_config.cache_config.block_size * self.esa_cfg["min_blocks"]
-        ):
+        if request.num_output_tokens == 0 or not self.is_sparsed_request(request):
             return INVALID_SLOT
         prompt_len = request.num_prompt_tokens
         output_len = request.num_output_tokens

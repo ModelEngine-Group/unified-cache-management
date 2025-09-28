@@ -1,6 +1,7 @@
 import contextlib
 import json
 import os
+import sys
 import time
 from dataclasses import asdict
 
@@ -13,14 +14,49 @@ from vllm.engine.arg_utils import EngineArgs
 
 from ucm.logger import init_logger
 
-MODEL_PATH = "/home/models/Qwen2.5-14B-Instruct"
-tokenizer = AutoTokenizer.from_pretrained(MODEL_PATH, use_chat_template=True)
 logger = init_logger(__name__)
+model = ""
+path_to_dataset = ""
+data_dir = ""
+tokenizer = None
 
 
 def setup_environment_variables():
     os.environ["VLLM_USE_V1"] = "1"
     os.environ["PYTHONHASHSEED"] = "123456"
+
+    global model, path_to_dataset, data_dir, tokenizer
+    model = os.getenv("MODEL_PATH", "/home/models/Qwen2.5-14B-Instruct")
+    if not os.path.isdir(model):
+        model = input("Enter path to model, e.g. /home/models/Qwen2.5-14B-Instruct: ")
+        if not os.path.isdir(model):
+            print("Exiting. Incorrect model_path")
+            sys.exit(1)
+
+    path_to_dataset = os.getenv(
+        "DATASET_PATH", "/home/data/Longbench/data/multifieldqa_zh.jsonl"
+    )
+    if not os.path.isfile(path_to_dataset):
+        path_to_dataset = input(
+            "Enter path to one of the longbench dataset, e.g. /home/data/Longbench/data/multifieldqa_zh.jsonl: "
+        )
+        if not os.path.isfile(path_to_dataset):
+            print("Exiting. Incorrect dataset path")
+            sys.exit(1)
+
+    data_dir = os.getenv("DATA_DIR", "/home/data/kv_cache")
+    data_dir = input(
+        "Enter the directory for UCMStore to save kv cache, e.g. /home/data/kv_cache: "
+    )
+    if not os.path.isdir(data_dir):
+        create = input(f"Directory {data_dir} dose not exist. Create it? (Y/n): ")
+        if create.lower() == "y":
+            os.makedirs(data_dir, exist_ok=True)
+        else:
+            print("Exiting. Directory not created.")
+            sys.exit(1)
+
+    tokenizer = AutoTokenizer.from_pretrained(model, use_chat_template=True)
 
 
 @contextlib.contextmanager
@@ -32,7 +68,7 @@ def build_llm_with_uc(module_path: str, name: str, model: str):
         kv_connector_extra_config={
             "ucm_connector_name": "UcmNfsStore",
             "ucm_connector_config": {
-                "storage_backends": "/home/data",
+                "storage_backends": data_dir,
                 "kv_block_size": 33554432,
             },
             "ucm_sparse_config": {
@@ -51,12 +87,12 @@ def build_llm_with_uc(module_path: str, name: str, model: str):
         model=model,
         kv_transfer_config=ktc,
         max_model_len=32768,
-        gpu_memory_utilization=0.8,
+        gpu_memory_utilization=0.6,
         max_num_batched_tokens=30000,
         block_size=128,
         enforce_eager=True,
         distributed_executor_backend="mp",
-        tensor_parallel_size=2,
+        tensor_parallel_size=1,
     )
 
     llm = LLM(**asdict(llm_args))
@@ -85,8 +121,6 @@ def print_output(
 def main():
     module_path = "ucm.integration.vllm.uc_connector"
     name = "UnifiedCacheConnectorV1"
-    model = os.getenv("MODEL_PATH", "/home/models/Qwen2.5-14B-Instruct")
-
     setup_environment_variables()
 
     def get_prompt(prompt):
@@ -106,10 +140,11 @@ def main():
 
     with build_llm_with_uc(module_path, name, model) as llm:
         prompts = []
-
-        batch_size = 1
-
-        with open("/home/Longbench/data/multifieldqa_zh.jsonl", "r") as f:
+        batch_size = 5
+        assert os.path.isfile(
+            path_to_dataset
+        ), f"Incorrect dataset path. Please specify the dataset path by `export DATASET_PATH=/path/to/longbench/multifieldqa_zh.jsonl`"
+        with open(path_to_dataset, "r") as f:
             for _ in range(batch_size):
                 line = f.readline()
                 if not line:

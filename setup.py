@@ -71,6 +71,7 @@ class CMakeBuild(build_ext):
             "cmake",
             "-DCMAKE_BUILD_TYPE=Release",
             f"-DPYTHON_EXECUTABLE={sys.executable}",
+            f"-DPYTHON3_EXECUTABLE={sys.executable}",
         ]
 
         if _is_cuda():
