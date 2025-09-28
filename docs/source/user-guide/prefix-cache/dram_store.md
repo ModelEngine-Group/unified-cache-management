@@ -1,6 +1,6 @@
 # DRAM Store
 
-This document provides a usage example and configuration guide for the **DRAM Connector**. This connector enables offloading of KV cache from GPU HBM to CPU DRAM, helping reduce memory pressure and support larger models or batch sizes.
+This document provides a usage example and configuration guide for the **DRAM Connector**. This connector enables offloading of KV cache from GPU HBM to CPU DRAM, helping reduce memory pressure and supporting larger models or batch sizes.
 
 ## Performance
 
@@ -8,7 +8,7 @@ This document provides a usage example and configuration guide for the **DRAM Co
 The following are the multi-concurrency performance test results of UCM in the Prefix Cache scenario under a CUDA environment, showing the performance improvements of UCM on two different models.
 During the tests, HBM cache was disabled, and KV Cache was retrieved and matched only from DRAM.
 
-In the QwQ-32B model, the test used one H20 server with two GPUs.
+In the QwQ-32B model, the test used one H20 server with 2 GPUs.
 
 Here, Full Compute refers to pure VLLM inference, while DRAM80% indicates that after UCM pooling, the DRAM hit rate of the KV cache is 80%.
 
@@ -42,10 +42,10 @@ To use the DRAM connector, you need to configure the `connector_config` dictiona
 ### Required Parameters
 
 - `max_cache_size` *(optional)*:
-  Specifies the maximum allowed DRAM memory usage (in **byte**) for caching in `kv_connector_extra_config["ucm_connector_config"]`.
+  Specifies the maximum allowed DRAM memory usage (in **bytes**) for caching in `kv_connector_extra_config["ucm_connector_config"]`.
   If not provided, it defaults to **5 GB**.
 - `kv_block_size` *(optional)*:
-  Specifies the memory size (in bytes) of a single key or value cache block used in vLLM’s paged attention mechanism, which is calculated as : `block_size * head_size * total_num_kv_heads * element_size`.
+  Specifies the memory size (in **bytes**) of a single key or value cache block used in vLLM’s paged attention mechanism, which is calculated as : `block_size * head_size * total_num_kv_heads * element_size`.
 
 ### Example:
 
