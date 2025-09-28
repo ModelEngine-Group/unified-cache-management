@@ -543,7 +543,7 @@ class UnifiedCacheConnectorV1(KVConnectorBase_V1):
             input_bytes = pickle.dumps(input, protocol=pickle.HIGHEST_PROTOCOL)
             md5_bytes = hashlib.md5(input_bytes).digest()
             return int.from_bytes(md5_bytes, byteorder="big")
-        
+
         assert num_computed_tokens % self.block_size == 0
         block_hash_types = hash_request_tokens(md5, self.block_size, request)
         block_hashes: List[str] = [str(x.hash_value) for x in block_hash_types]
@@ -638,7 +638,7 @@ class UnifiedCacheConnectorV1(KVConnectorBase_V1):
                 logger.warning(f"\ncreate_results on storage: {create_results}\n")
             for j, ret in enumerate(create_results):
                 idx = start_create_pos + j
-                block_operations[start_position + idx] = (
+                block_operations[idx] = (
                     BlockOperation.DUMP if ret == 0 else BlockOperation.NONE
                 )
 
