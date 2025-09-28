@@ -6,8 +6,7 @@ large-scale inference clusters, and its advantages are even more prominent, espe
 models. PD Disaggregation mainly includes three core components: independent deployment strategies for Prefill and
 Decode,
 KV cache storage and transmission strategies, and scheduling strategies. Notably, the scheduling strategy is dependent
-on the KV cache storage and transmission strategy. The PD Disaggregation design in the Unified Computing Model (UCM)
-focuses
+on the KV cache storage and transmission strategy. The PD Disaggregation design in UCM focuses
 primarily on optimizing KV cache storage and transmission, thereby enabling more rational scheduling strategies.
 
 Prefix Cache has become a standard component in inference systems. With the expanding application scope of large models,
@@ -21,7 +20,7 @@ and is inherently dependent on its functionality.
 There are roughly three transmission modes for KV cache between Prefill (P) and Decode (D) nodes, each with distinct
 characteristics and application scenarios:
 
-1. **Direct Transmission**.KV cache is transmitted directly from the High-Bandwidth Memory (HBM) of the Prefill node to
+1. **Direct Transmission**. KV cache is transmitted directly from the High-Bandwidth Memory (HBM) of the Prefill node to
    the HBM of the Decode node, typically via a high-speed inter-HBM network or a direct pass-through protocol. This
    approach is straightforward and efficient, making it highly suitable for scenarios with a 1:1 Prefill-to-Decode
    ratio (1P1D) and homogeneous P/D nodes. On the scheduling side, coordination is usually required: Prefill and Decode
@@ -33,7 +32,7 @@ characteristics and application scenarios:
    duration in the entire process, effectively reducing HBM resource consumption.
 3. **Transmission via Unified Storage Pool (Leveraging Prefix Cache Logic)**. This mode fully utilizes Prefix Cache
    logic, with a unified storage pool serving as the intermediate medium for KV cache transmission. Specifically, the
-   Prefill node offloads KV cache to the Prefix Cache, while the Decode node performs inference with high hit rates on
+   Prefill node offloads KV cache to the storage, while the Decode node performs inference with high hit rates on
    the Prefix Cache. Compared with the first two modes, this approach is the "simplest" in terms of logic and
    implementation, and achieves the highest degree of "decoupling" in the entire system—even eliminating the need for a
    strict distinction between Prefill and Decode nodes.
@@ -70,9 +69,9 @@ scenarios include the following:
 
 **1. Reducing GPU Compute Idle Time and Maximizing Compute Utilization**
 
-- Under Dynamic Batching (DP), the scheduler merges sequences of different lengths to reduce idle time caused by DP,
+- Under Dynamic Batching, the scheduler merges sequences of different lengths to reduce idle time caused by Data Parallelism (DP),
   with task migration performed midway if necessary.
-- The scheduler leverages Chunk Prefill to utilize residual compute resources on Decode instances.
+- The scheduler leverages Chunked Prefill to utilize residual compute resources on Decode instances.
 - By default, the scheduler stores KV cache generated from each inference task in a unified external memory. This not
   only avoids recomputation in case of exceptions but also maximizes system-wide compute utilization through mid-task
   migration.
