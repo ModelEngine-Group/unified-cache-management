@@ -80,11 +80,6 @@ class UcmNfsStore(UcmKVStoreBase):
         rets = ucmnfsstore.AllocBatch(block_ids)
         if rets and all(ret == 0 for ret in rets):
             logger.debug("Succeed in allocating kv cache space.")
-        else:
-            failed_blocks = [block_ids[i] for i, ret in enumerate(rets) if ret != 0]
-            logger.warning(
-                f"Failed to allocate kv cache space for blocks: {failed_blocks}."
-            )
         return rets
 
     def lookup(self, block_ids: List[str]) -> List[bool]:
@@ -184,6 +179,7 @@ class UcmNfsStore(UcmKVStoreBase):
             block_ids (List[str]): vLLM block hash.
             is_success(bool): if False, we need release block
         """
+        logger.debug(f"commit {block_ids} to {is_success}.")
         ucmnfsstore.CommitBatch(block_ids, is_success)
 
     def check(self, task: Task) -> int:
