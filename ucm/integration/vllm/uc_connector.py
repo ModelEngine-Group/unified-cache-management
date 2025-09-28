@@ -48,7 +48,7 @@ if TYPE_CHECKING:
     from vllm.attention.backends.abstract import AttentionMetadata
     from vllm.forward_context import ForwardContext
     from vllm.v1.core.kv_cache_manager import KVCacheBlocks
-    from vllm.v1.request import Request
+    from vllm.v1.request import Request, RequestStatus
 
 logger = init_logger(__name__)
 
@@ -533,36 +533,29 @@ class UnifiedCacheConnectorV1(KVConnectorBase_V1):
             the number of tokens that can be loaded from the
             external KV cache beyond what is already computed.
         """
-        # When the request is preempt req, need to commit succeed dumped blocks
-        # to avoid duplicate invoking create/commit funcs. Only preempt reqs
-        # whose succeed_dumped_blocks is non-empty need this check.
-        if hasattr(request, "succeed_dumped_blocks") and request.succeed_dumped_blocks:
-            self.connector.commit(request.succeed_dumped_blocks, True)
-            request.succeed_dumped_blocks.clear()
+        logger.info(f"get_num_new_matched_tokens request {request.request_id}.")
+
+        if request.status == RequestStatus.PREEMPTED:
+            logger.info(f"Handle preempted request {request.request_id}.")
+            self.request_finished(request, [])
 
         def md5(input) -> int:
             input_bytes = pickle.dumps(input, protocol=pickle.HIGHEST_PROTOCOL)
             md5_bytes = hashlib.md5(input_bytes).digest()
             return int.from_bytes(md5_bytes, byteorder="big")
         
-        # preempted request / load async request / request not scheduled currently
-        if request.request_id in self.request_block_infos:
-            request_block_info = self.request_block_infos.get(request.request_id)
-            block_hashes = request_block_info.block_hashes
-            block_operations = request_block_info.block_operations
-        else:
-            assert num_computed_tokens % self.block_size == 0
-            block_hash_types = hash_request_tokens(md5, self.block_size, request)
-            block_hashes: List[str] = [str(x.hash_value) for x in block_hash_types]
-            if not block_hashes:
-                logger.debug("Maybe tokens too short to load.")
-                return 0, False
-            block_operations = [BlockOperation.NONE] * len(block_hashes)
+        assert num_computed_tokens % self.block_size == 0
+        block_hash_types = hash_request_tokens(md5, self.block_size, request)
+        block_hashes: List[str] = [str(x.hash_value) for x in block_hash_types]
+        if not block_hashes:
+            logger.debug("Maybe tokens too short to load.")
+            return 0, False
 
         # Calculate start position (exclude blocks already in HBM)
         start_position = num_computed_tokens // self.block_size
-        for i in range(start_position):
-            block_operations[i] = BlockOperation.NONE
+
+        block_operations = [BlockOperation.NONE] * len(block_hashes)
+
         remain_hashes = block_hashes[start_position:]
         if not remain_hashes:
             # All blocks are in HBM
@@ -604,18 +597,6 @@ class UnifiedCacheConnectorV1(KVConnectorBase_V1):
                 self._need_load_reqs[request.request_id] = []
                 return num_lookup_hits * self.block_size, True
 
-        # Create blocks for the remaining (unmatched) blocks
-        if num_lookup_hits < len(remain_hashes) and request.request_id not in self.request_block_infos:
-            remaining_hashes = remain_hashes[num_lookup_hits:]
-            create_results = self.connector.create(remaining_hashes)
-            if any(ret != 0 for ret in create_results):
-                logger.warning(f"\ncreate_results on storage: {create_results}\n")
-            for j, ret in enumerate(create_results):
-                idx = num_lookup_hits + j
-                block_operations[start_position + idx] = (
-                    BlockOperation.DUMP if ret == 0 else BlockOperation.NONE
-                )
-
         # When all the tokens are cached in ssd or hbm,
         # we need to recompute the last token. This if condition will be removed
         # once vLLM's scheduler provides a better solution in the future.
@@ -644,6 +625,22 @@ class UnifiedCacheConnectorV1(KVConnectorBase_V1):
                 blocks.get_unhashed_block_ids() if num_external_tokens > 0 else []
             )
             self._need_load_reqs[request.request_id] = local_block_ids
+
+        request_block_info = self.request_block_infos.get(request.request_id, None)
+        if request_block_info:
+            start_position = request_block_info.start_position
+            block_operations = request_block_info.block_operations
+            block_hashes = request_block_info.block_hashes
+            start_create_pos = start_position + num_external_tokens // self.block_size
+            remaining_hashes = block_hashes[start_create_pos:]
+            create_results = self.connector.create(remaining_hashes)
+            if any(ret != 0 for ret in create_results):
+                logger.warning(f"\ncreate_results on storage: {create_results}\n")
+            for j, ret in enumerate(create_results):
+                idx = start_create_pos + j
+                block_operations[start_position + idx] = (
+                    BlockOperation.DUMP if ret == 0 else BlockOperation.NONE
+                )
 
     def build_connector_meta(
         self, scheduler_output: SchedulerOutput
@@ -740,7 +737,6 @@ class UnifiedCacheConnectorV1(KVConnectorBase_V1):
     ) -> tuple[bool, Optional[dict[str, Any]]]:
         block_info = self.request_block_infos.pop(request.request_id, None)
         if hasattr(request, "succeed_dumped_blocks") and request.succeed_dumped_blocks:
-            logger.debug(f"commit {request.succeed_dumped_blocks} to True.")
             self.connector.commit(request.succeed_dumped_blocks, True)
         if block_info is not None:
             cancel_blocks = [
@@ -751,7 +747,6 @@ class UnifiedCacheConnectorV1(KVConnectorBase_V1):
                 and block_info.block_hashes[i] not in request.succeed_dumped_blocks
             ]
             if cancel_blocks:
-                logger.warning(f"commit {cancel_blocks} to False.")
                 self.connector.commit(cancel_blocks, False)
         return False, None
 
