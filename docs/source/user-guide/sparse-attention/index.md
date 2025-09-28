@@ -27,9 +27,9 @@ The core concept of our UCMSparse attention framework is to offload the complete
 - UCMSparse in model_runner: this instance locates in the same process as the `Worker`. 
 A typical sparse attention algorithm works like this:
     1. In prefill, it dumps full KV Cache from HBM to storage.
-    2. In decode, it retrieves the most relevant blocks based on the context and loads the blocks from store to HBM.
-    3. In decoode, it also dumps new generated blocks to keep the latest context accessible.
-- By fine-grained task scheduling, retrieval and loading can be executed asynchronously and overlap with the model execution. Therefore no overhead is introduced by UCMSparse and generation speed is boosted benefitted by less computational load and fewer memory accesses.
+    2. In decode, it retrieves the most relevant blocks based on the context and loads the blocks from storage to HBM.
+    3. In decode, it also dumps new generated blocks to keep the latest context accessible.
+- By fine-grained task scheduling, retrieval and loading can be executed asynchronously and overlap with the model execution. Therefore, benefited from less computational load and fewer memory accesses, no overhead is introduced by UCMSparse and generation speed is boosted.
 
 
 See `ESA` for more details.
