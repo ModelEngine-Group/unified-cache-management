@@ -542,9 +542,10 @@ class UnifiedCacheConnectorV1(KVConnectorBase_V1):
             input_bytes = pickle.dumps(input, protocol=pickle.HIGHEST_PROTOCOL)
             md5_bytes = hashlib.md5(input_bytes).digest()
             return int.from_bytes(md5_bytes, byteorder="big")
-        
-        def hash_request_tokens(hash_function: Any, block_size: int,
-                        request: "Request") -> list[str]:
+
+        def hash_request_tokens(
+            hash_function: Any, block_size: int, request: "Request"
+        ) -> list[str]:
             token_ids = request.all_token_ids
 
             ret = []
@@ -560,7 +561,9 @@ class UnifiedCacheConnectorV1(KVConnectorBase_V1):
                     parent_block_hash_value = md5("UCMHASHSEED")
 
                 block_token_ids_tuple = tuple(block_token_ids)
-                hash_value = hash_function((parent_block_hash_value, block_token_ids_tuple))
+                hash_value = hash_function(
+                    (parent_block_hash_value, block_token_ids_tuple)
+                )
                 parent_block_hash_value = hash_value
                 ret.append(str(hash_value))
 

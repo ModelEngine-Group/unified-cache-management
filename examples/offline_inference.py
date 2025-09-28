@@ -13,8 +13,6 @@ from vllm.engine.arg_utils import EngineArgs
 
 from ucm.logger import init_logger
 
-MODEL_PATH = "/home/models/Qwen2.5-14B-Instruct"
-tokenizer = AutoTokenizer.from_pretrained(MODEL_PATH, use_chat_template=True)
 logger = init_logger(__name__)
 
 
@@ -85,6 +83,7 @@ def main():
     name = "UnifiedCacheConnectorV1"
     model = os.getenv("MODEL_PATH", "/home/models/Qwen2.5-14B-Instruct")
 
+    tokenizer = AutoTokenizer.from_pretrained(model, use_chat_template=True)
     setup_environment_variables()
 
     with build_llm_with_uc(module_path, name, model) as llm:

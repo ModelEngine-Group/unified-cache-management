@@ -13,6 +13,9 @@ on:
       - '*release'
 
 jobs:
+  gpu-test:
+    uses: ./.github/workflows/e2e_test.yml
+
   call-lint:
     uses: ./.github/workflows/pre-commit.yml
 

@@ -1,0 +1,31 @@
+name: offline_inference_test
+on: 
+    workflow_call:
+
+jobs:
+  offline-inference:
+    runs-on: [self-hosted,default]          # 与上面 LABELS 对应
+    steps:
+      - run: pip config set global.index-url https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple
+      - uses: actions/checkout@v4
+      - run: nvidia-smi
+      - name: Run offline_inference in container
+        run: |
+          docker run --rm \
+            --gpus all \
+            -v ${{ github.workspace }}:/workspace/unified-cache-management \
+            -v /home/models/Qwen2.5-1.5B-Instruct:/home/models/Qwen2.5-1.5B-Instruct \
+            -w /workspace/unified-cache-management \
+            --entrypoint /bin/bash \
+            vllm/vllm-openai:v0.9.2 \
+            -c "
+              set -euo pipefail
+              export PLATFORM=cuda
+              export MODEL_PATH=/home/models/Qwen2.5-1.5B-Instruct
+              pip config set global.index-url https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple
+              pip install -v -e . --no-build-isolation
+              cd \$(pip show vllm | grep Location | awk '{print \$2}') &&
+              git apply /workspace/unified-cache-management/ucm/integration/vllm/patch/0.9.2/vllm-adapt.patch
+              cd /workspace/unified-cache-management
+              python3 examples/offline_inference.py
+            "
