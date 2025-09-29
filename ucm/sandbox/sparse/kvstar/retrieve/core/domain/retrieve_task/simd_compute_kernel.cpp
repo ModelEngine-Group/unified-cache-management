@@ -8,13 +8,8 @@
 #include "simd_compute_kernel.h"
 #include "kvstar_retrieve/kvstar_retrieve.h"
 #include "logger/logger.h"
-// #include <chrono>
 #include <iomanip>
 
-// TODO: 适配多平台SIMD, 当前适配arm_neon
-// #if defined(__ARM_NEON)
-// #include <arm_neon.h>
-// #endif
 
 namespace KVStar
 {
@@ -22,7 +17,6 @@ namespace KVStar
 #include <arm_neon.h>
     namespace neon_impl
     {
-        // 找最大值
         __attribute__((always_inline)) inline static __fp16 hmax_f16(const __fp16 *__restrict x, int n) noexcept
         {
             int i = 0;
@@ -38,14 +32,12 @@ namespace KVStar
             float16x4_t m2 = vpmax_f16(m4, m4);
             float16x4_t m1 = vpmax_f16(m2, m2);
             __fp16 m = vget_lane_f16(m1, 0);
-            // 尾巴
             for (; i < n; ++i)
                 if (x[i] > m)
                     m = x[i];
             return m;
         }
 
-        // 找最大值
         __attribute__((always_inline)) inline static float hmax_f32(const float *__restrict x, int n) noexcept
         {
             int i = 0;
@@ -65,7 +57,6 @@ namespace KVStar
             return m;
         }
 
-        // 水平求和 float16x8_t -> float
         __attribute__((always_inline)) inline static float hsum_f16x8(float16x8_t v) noexcept
         {
             float16x4_t lo = vget_low_f16(v);
@@ -76,7 +67,6 @@ namespace KVStar
             return vget_lane_f16(s, 0);
         }
 
-        // 水平求和 float32x4_t -> float
         __attribute__((always_inline)) inline static float hsum_f32x4(float32x4_t v) noexcept
         {
             float32x2_t lo = vget_low_f32(v);   // v0 v1
@@ -147,10 +137,6 @@ namespace KVStar
             }
             return;
         }
-        // ------------------近似 exp(x)（f32，基于 2^(n+f) 分解） ------------------
-        // 公式：exp(x) = 2^(x * log2(e)) = 2^(n + r) = 2^n * 2^r
-        // 其中 n = round(x*log2(e))，r = x*log2(e) - n，r ∈ [-0.5, 0.5]
-        // 再用泰勒级数近似 2^r ≈ P(r)。最后用构造 2^n 的位技巧生成缩放因子。
         __attribute__((always_inline)) inline static float32x4_t _neon_exp_approx_f32(float32x4_t x) noexcept
         {
             const float32x4_t log2e = vdupq_n_f32(1.44269504088896341f);
@@ -178,10 +164,8 @@ namespace KVStar
             p = vmlaq_f32(c2, p, r);              // c2 + r*p
             p = vmlaq_f32(c1, p, r);              // c1 + r*p  ≈ exp(r)
 
-            // 以位构造 float：exp2(n) = reinterpret( (n+127)<<23 )
             int32x4_t n_i = vmaxq_s32(vcvtq_s32_f32(n_f), vdupq_n_s32(-127));
             // n_i = vminq_s32(n_i, vdupq_n_s32(128));
-            // 算2^n
             int32x4_t e_i = vaddq_s32(n_i, vdupq_n_s32(127));
             e_i = vshlq_n_s32(e_i, 23);
 
@@ -192,35 +176,21 @@ namespace KVStar
 
         __attribute__((always_inline)) inline static float32x4_t _avx2_exp_approx_f32(float32x4_t x) noexcept
         {
-            // 基于变换：e^x = e^(n*ln2 + r) = 2^n * e^r
-
-            // 1. 限制x的范围 [-ln(2^(-127.5)), ln(2^(127.5))] .
             const float32x4_t exp_hi = vdupq_n_f32(88.3762626647949f);
             const float32x4_t exp_lo = vdupq_n_f32(-88.3762626647949f);
 
             x = vminq_f32(x, exp_hi);
             x = vmaxq_f32(x, exp_lo);
 
-            // 2. 放缩x为log_2e, 计算 n
             const float32x4_t LOG2EF = vdupq_n_f32(1.44269504088896341f);
-            // float32x4_t fx = vmlaq_f32(vdupq_n_f32(0.5f), x, LOG2EF);
-
-            // float32x4_t tmp = _mm256_floor_ps(fx);
-            // float32x4_t mask = _mm256_cmp_ps(tmp, fx, _CMP_GT_OS);
-            // mask = _mm256_and_ps(mask, _mm256_set1_ps(1.0f));
-            // fx = _mm256_sub_ps(tmp, mask);
 
             float32x4_t fx = vrndaq_f32(vmulq_f32(x, LOG2EF));
 
-            // 3. 计算r，避免舍入误差 (r = x - n*C1 - n * C2, 其中ln2 = C1 + C2 )
             float32x4_t C1 = vdupq_n_f32(0.693359375);
             float32x4_t C2 = vdupq_n_f32(-2.12194440e-4);
             x = vsubq_f32(x, vmulq_f32(fx, C1));
             x = vsubq_f32(x, vmulq_f32(fx, C2));
 
-            // 4. 估算e^r (现在x变成r了)
-            //  Chebyshev polynomials, y = f(x) = 1 + r + r^2 * (f0 + f1*x + f2*x^2 + f3*x^3 +f4*x^4 + f5x^5)
-            //                                  = 1 + r + r^2 * (f0 + x * ( f1 + x * ( f2 + x ( f3 + x ( f4 + x f5 ))))) (Horner's method)
             float32x4_t f5 = vdupq_n_f32(1.9875691500E-4);
             float32x4_t f4 = vdupq_n_f32(1.3981999507E-3);
             float32x4_t f3 = vdupq_n_f32(8.3334519073E-3);
@@ -236,14 +206,6 @@ namespace KVStar
             y = vmlaq_f32(f0, y, x);
             y = vmlaq_f32(vaddq_f32(x, vdupq_n_f32(1.0f)), y, vmulq_f32(x, x));
 
-            // 5. 以位构造 2^n = reinterpret((n+127)<<23)， 返回 2^n * e^r
-            // float32x4_t e_i = _mm256_slli_epi32(_mm256_add_epi32(_mm256_cvttps_epi32(fx), _mm256_set1_epi32(127)), 23);
-            // return vmulq_f32(y, _mm256_castsi256_ps(e_i));
-
-            // 以位构造 float：exp2(n) = reinterpret( (n+127)<<23 )
-            // int32x4_t n_i = vmaxq_s32(vcvtq_s32_f32(fx), vdupq_n_s32(-127));
-            // n_i = vminq_s32(n_i, vdupq_n_s32(128));
-            // 算2^n
             int32x4_t e_i = vaddq_s32(vcvtq_s32_f32(fx), vdupq_n_s32(127));
             e_i = vshlq_n_s32(e_i, 23);
 
@@ -256,7 +218,6 @@ namespace KVStar
         {
             if (N <= 0)
                 return;
-            // int64_t ret = 0;
 
             const float m = hmax_f32(x, N);
 
@@ -272,18 +233,16 @@ namespace KVStar
             for (; i < N; ++i)
                 x[i] = (x[i] - m);
 
-            // 3) 近似计算 e = exp(x) 累加 s = sum(e)（向量近似，内部用 f32）
 
             float32x4_t acc = vdupq_n_f32(0.0f);
             i = 0;
             for (; i + 4 <= N; i += 4)
             {
                 float32x4_t eh = _avx2_exp_approx_f32(vld1q_f32(x + i));
-                vst1q_f32(x + i, eh); // 写回
+                vst1q_f32(x + i, eh);
                 acc = vaddq_f32(acc, eh);
             }
             float sum = hsum_f32x4(acc);
-            // 处理尾巴（标量）
             for (; i < N; ++i)
             {
                 float ef = expf(x[i]);
@@ -309,7 +268,7 @@ namespace KVStar
 
         __attribute__((always_inline)) inline static void _neon_accumulate_fp32_inplace(float *__restrict x, float32x4_t &y, float &r, int N) noexcept
         {
-            while (N >= 16) // 4路展开
+            while (N >= 16)
             {
                 float32x4_t a0 = vld1q_f32(x + 0);
                 float32x4_t a1 = vld1q_f32(x + 1 * 4);
@@ -345,11 +304,10 @@ namespace KVStar
         __attribute__((always_inline)) inline static int64_t execute_impl(const RetrieveTask &task, TaskResult &result)
         {
             int64_t ret = 0;
-            // 1. 维度解析
             using DataType = __fp16;
 
             const auto &q_shape = task.queryGroup.shape; // (x, H, d_orig)
-            const auto &k_shape = task.blkRepre.shape;   // (n, M, h, d_pruned) // <-- 多一个块内多向量表征维度
+            const auto &k_shape = task.blkRepre.shape;   // (n, M, h, d_pruned)
 
             if (q_shape.size() != 3)
                 throw std::runtime_error("Query shape must be 3D (x, H, d).");
@@ -360,22 +318,20 @@ namespace KVStar
             if (k_shape.size() != 4)
                 throw std::runtime_error("BlockRep shape must be 4D (n, M, h, d).");
             const int64_t num_blocks = k_shape[0];
-            const int64_t M = k_shape[1]; // 块内多向量表征维度
+            const int64_t M = k_shape[1];
             const int64_t num_kv_heads = k_shape[2];
             const int64_t d_pruned = k_shape[3];
 
             if (num_q_heads % num_kv_heads != 0)
                 throw std::runtime_error("Num_q_heads must be a divisible by num_kv_heads.");
-            const int64_t g = num_q_heads / num_kv_heads; // 每个k头对应几个q头
+            const int64_t g = num_q_heads / num_kv_heads;
 
-            // 2. 裁剪query通道
-
-            const DataType *q_ptr_for_computation; // 指针指向最终用于计算的Query数据
-            std::vector<DataType> pruned_q_vec;    // 需要裁剪时, 把结果填充到该vector, 在if外声明保证生命周期
+            const DataType *q_ptr_for_computation;
+            std::vector<DataType> pruned_q_vec;
 
             const DataType *q_orig_ptr = static_cast<const DataType *>(task.queryGroup.data);
 
-            if (task.dPrunedIndex.has_value()) // 如果有裁剪索引, 就裁
+            if (task.dPrunedIndex.has_value())
             {
                 const auto &pruned_spec = task.dPrunedIndex.value();
                 if (pruned_spec.shape.size() != 2 || pruned_spec.shape[0] != num_kv_heads || pruned_spec.shape[1] != d_pruned)
@@ -384,77 +340,60 @@ namespace KVStar
                 }
                 const int64_t *pruned_indices_ptr = static_cast<const int64_t *>(pruned_spec.data);
 
-                // 分配内存存放裁剪后的query
                 pruned_q_vec.resize(num_tokens * num_q_heads * d_pruned);
 
-                for (int64_t x = 0; x < num_tokens; ++x) // 对于每个token
+                for (int64_t x = 0; x < num_tokens; ++x)
                 {
-                    for (int64_t h = 0; h < num_kv_heads; ++h) // 对于每个k头，裁剪索引都相同
+                    for (int64_t h = 0; h < num_kv_heads; ++h)
                     {
-                        // 获取当前key头的对应裁剪索引
-                        const int64_t *current_pruned_indices = pruned_indices_ptr + h * d_pruned; // k头数*裁剪后的维度
-                        // 组内所有query共享相同裁剪索引
-                        for (int64_t gg = 0; gg < g; ++gg) // 当前k头所对应的每个q头
+                        const int64_t *current_pruned_indices = pruned_indices_ptr + h * d_pruned;
+                        for (int64_t gg = 0; gg < g; ++gg)
                         {
-                            int64_t H = h * g + gg; // 计算q头的index
-                            // 填充query head的d_pruned个维度
+                            int64_t H = h * g + gg;
                             for (int64_t d_p = 0; d_p < d_pruned; ++d_p)
                             {
-                                // 从原始索引列表中找到需要抓取的原始维度索引
                                 int64_t d_o = current_pruned_indices[d_p];
-                                // 源地址: q_orig_ptr[x, H, d_o]
-                                // 目标地址: pruned_q_vec[x, H, d_p]
                                 pruned_q_vec[(x * num_q_heads + H) * d_pruned + d_p] = q_orig_ptr[(x * num_q_heads + H) * d_orig + d_o];
                             }
                         }
                     }
                 }
-                // 让计算指针指向新创建的、已裁剪的Query数据
                 q_ptr_for_computation = pruned_q_vec.data();
             }
             else
             {
-                // 没有维度裁剪索引, 则Q、Key维度应该一致
                 if (d_orig != d_pruned)
                 {
                     throw std::runtime_error("Dimension mismatch: No dPrunedIndex, but Q and K head dims differ.");
                 }
-                // 计算指针直接指向原始、未改变的Query数据
                 q_ptr_for_computation = q_orig_ptr;
             }
 
             const int64_t S = num_blocks * M;
-            // Key指针始终指向传入的、已是正确维度的blkRepre数据
             const DataType *k_ptr = static_cast<const DataType *>(task.blkRepre.data);
 
-            // 3. 计算 'xhgd, shd->xhgs', 结果张量是4D (x,h,g,s)
-
-            // std::vector<__fp16> scires_xhgs(num_tokens * num_kv_heads * g * S, (__fp16)0.0f);
-            // 这里用float存储，因为后面softmax用fp32
             std::vector<float> scires_xhgs(num_tokens * num_kv_heads * g * S, 0.0f);
 
-            for (int64_t h = 0; h < num_kv_heads; ++h) // 对于每个k头
+            for (int64_t h = 0; h < num_kv_heads; ++h)
             {
                 const DataType *X = k_ptr + h * d_pruned;
-                for (int64_t x = 0; x < num_tokens; ++x) // 对于每个token
+                for (int64_t x = 0; x < num_tokens; ++x)
                 {
-                    for (int64_t gg = 0; gg < g; ++gg) // 当前k头所对应的每个q头
+                    for (int64_t gg = 0; gg < g; ++gg)
                     {
-                        int64_t H = h * g + gg;                                                           // q头总的index
-                        const DataType *q_vec = q_ptr_for_computation + (x * num_q_heads + H) * d_pruned; // 得到裁剪后的qvec
+                        int64_t H = h * g + gg;
+                        const DataType *q_vec = q_ptr_for_computation + (x * num_q_heads + H) * d_pruned;
                         auto y = scires_xhgs.data() + (x * num_kv_heads * g + H) * S;
                         _neon_gemv_fp32_fp16(X, q_vec, y, d_pruned, S, num_kv_heads * d_pruned);
                     }
                 }
             }
 
-            // 4. 在 S 维度上计算 softmax, 总共有 num_tokens * num_q_heads 个 S 维向量需要做softmax, Note: num_q_heads = num_kv_heads * g
             for (int64_t i = 0; i < num_tokens * num_q_heads; ++i)
             {
-                _neon_softmax_fp32_inplace(&scires_xhgs[i * S], S); // 每个 S 维向量的起始地址
+                _neon_softmax_fp32_inplace(&scires_xhgs[i * S], S);
             }
 
-            // 5. 聚合 'xhgs->n', 这一步等价于 python 的 reshape + einsum
             std::vector<std::pair<float, int64_t>> final_scores_n;
             final_scores_n.reserve(num_blocks);
             for (int64_t i = 0; i < num_blocks; ++i)
@@ -471,7 +410,6 @@ namespace KVStar
                 final_scores_n[n].first -= hsum_f32x4(acc) + r;
             }
 
-            // 6. TopK on 'n'
             std::nth_element(final_scores_n.begin(), final_scores_n.begin() + task.topK - 1, final_scores_n.end());
 
             std::vector<int64_t> topk_indices(task.topK);
@@ -480,7 +418,6 @@ namespace KVStar
                 topk_indices[i] = final_scores_n[i].second;
             }
 
-            // 7. 填充结果
             {
                 std::lock_guard<std::mutex> lock(result.mtx);
                 result.topkIndices = std::move(topk_indices);
@@ -501,10 +438,9 @@ namespace KVStar
             __m128 vlow = _mm256_castps256_ps128(v);
             __m128 vhigh = _mm256_extractf128_ps(v, 1);
             vlow = _mm_add_ps(vlow, vhigh);
-            // 水平求和
-            __m128 shuf = _mm_movehdup_ps(vlow);  // 复制奇数元素
-            __m128 sums = _mm_add_ps(vlow, shuf); // 低两对相加
-            shuf = _mm_movehl_ps(shuf, sums);     // 交换高位
+            __m128 shuf = _mm_movehdup_ps(vlow);
+            __m128 sums = _mm_add_ps(vlow, shuf);
+            shuf = _mm_movehl_ps(shuf, sums);
             return _mm_cvtss_f32(_mm_add_ss(sums, shuf));
         }
 
@@ -515,37 +451,13 @@ namespace KVStar
             return _mm_cvtss_f32(f);
         }
 
-        // __attribute__((always_inline)) inline static void pack_Q_8col_panels(const float *__restrict Q, int K, int N, int ldQ, float *__restrict Qpack)
-        // {
-        //     const int nPanels = N / 8;
-        //     const int panelSize = K * 8;
-        //     for (int gp = 0; gp < nPanels; ++gp)
-        //     {
-        //         const int j0 = gp * 8;
-        //         float *__restrict dst = Qpack + gp * panelSize;
-        //         for (int k = 0; k < K; ++k)
-        //         {
-        //             const float *base = Q + k + j0 * ldQ;
-        //             float *out = dst + k * 8;
-        //             out[0] = base[0 * ldQ];
-        //             out[1] = base[1 * ldQ];
-        //             out[2] = base[2 * ldQ];
-        //             out[3] = base[3 * ldQ];
-        //             out[4] = base[4 * ldQ];
-        //             out[5] = base[5 * ldQ];
-        //             out[6] = base[6 * ldQ];
-        //             out[7] = base[7 * ldQ];
-        //         }
-        //     }
-        // }
-
         __attribute__((always_inline)) inline static void _avx2_matvec_fp32_fp16(const DataType *__restrict A,
                                                                                  const DataType *__restrict x,
                                                                                  float *__restrict y,
                                                                                  int K, int N, int stride) noexcept
         {
             int j = 0;
-            for (; j + 32 <= K; j += 32) // 每次处理4列
+            for (; j + 32 <= K; j += 32)
             {
                 const __m128i x0 = _mm_loadu_si128(reinterpret_cast<const __m128i *>(x + j + 0 * 8));
                 const __m128i x1 = _mm_loadu_si128(reinterpret_cast<const __m128i *>(x + j + 1 * 8));
@@ -609,55 +521,6 @@ namespace KVStar
             return;
         }
 
-        // __attribute__((always_inline)) inline static void _avx2_matmat_kernel_2x8_f32(const float *__restrict x0,
-        //                                                                               const float *__restrict x1, int K,
-        //                                                                               const float *__restrict qp,
-        //                                                                               float *__restrict c0, float *__restrict c1, int ldC)
-        // {
-        //     __m256 c0v = _mm256_setzero_ps();
-        //     __m256 c1v = _mm256_setzero_ps();
-        //     int k = 0;
-        //     for (; k + 4 <= K; k += 4)
-        //     {
-        //         __m256 qv0 = _mm256_loadu_ps(qp + (k + 0) * 8);
-
-        //         __m256 bx0 = _mm256_set1_ps(x0[k + 0]);
-        //         __m256 bx1 = _mm256_set1_ps(x1[k + 0]);
-
-        //         c0v = _mm256_fmadd_ps(bx0, qv0, c0v);
-        //         c1v = _mm256_fmadd_ps(bx1, qv0, c1v);
-
-        //         __m256 qv1 = _mm256_loadu_ps(qp + (k + 1) * 8);
-        //         bx0 = _mm256_set1_ps(x0[k + 2]);
-        //         bx1 = _mm256_set1_ps(x1[k + 2]);
-        //         c0v = _mm256_fmadd_ps(bx0, qv1, c0v);
-        //         c1v = _mm256_fmadd_ps(bx1, qv1, c1v);
-
-        //         __m256 qv2 = _mm256_loadu_ps(qp + (k + 2) * 8);
-        //         bx0 = _mm256_set1_ps(x0[k + 2]);
-        //         bx1 = _mm256_set1_ps(x1[k + 2]);
-        //         c0v = _mm256_fmadd_ps(bx0, qv2, c0v);
-        //         c1v = _mm256_fmadd_ps(bx1, qv2, c1v);
-
-        //         __m256 qv3 = _mm256_loadu_ps(qp + (k + 3) * 8);
-        //         bx0 = _mm256_set1_ps(x0[k + 3]);
-        //         bx1 = _mm256_set1_ps(x1[k + 3]);
-        //         c0v = _mm256_fmadd_ps(bx0, qv3, c0v);
-        //         c1v = _mm256_fmadd_ps(bx1, qv3, c1v);
-        //     }
-
-        //     for (; k < K; ++K)
-        //     {
-        //         __m256 qv = _mm256_loadu_ps(qp + k * 8);
-        //         __m256 bx0 = _mm256_set1_ps(x0[k]);
-        //         __m256 bx1 = _mm256_set1_ps(x1[k]);
-        //         c0v = _mm256_fmadd_ps(bx0, qv, c0v);
-        //         c1v = _mm256_fmadd_ps(bx1, qv, c1v);
-        //         _mm256_store_ps(c0 + 0, c0v);
-        //         _mm256_storeu_ps(c1 + 0, c1v);
-        //     }
-        // }
-
         __attribute__((always_inline)) inline static float _avx2_hmax_f32(const float *__restrict x, int n) noexcept
         {
             int i = 0;
@@ -678,16 +541,12 @@ namespace KVStar
 
         __attribute__((always_inline)) inline static __m256 _avx2_exp_approx_f32(__m256 x) noexcept
         {
-            // 基于变换：e^x = e^(n*ln2 + r) = 2^n * e^r
-
-            // 1. 限制x的范围 [-ln(2^(-127.5)), ln(2^(127.5))] .
             const __m256 exp_hi = _mm256_set1_ps(88.3762626647949f);
             const __m256 exp_lo = _mm256_set1_ps(-88.3762626647949f);
 
             x = _mm256_min_ps(x, exp_hi);
             x = _mm256_max_ps(x, exp_lo);
 
-            // 2. 放缩x为log_2e, 计算 n
             const __m256 LOG2EF = _mm256_set1_ps(1.44269504088896341f);
             __m256 fx = _mm256_fmadd_ps(x, LOG2EF, _mm256_set1_ps(0.5f));
 
@@ -696,13 +555,11 @@ namespace KVStar
             mask = _mm256_and_ps(mask, _mm256_set1_ps(1.0f));
             fx = _mm256_sub_ps(tmp, mask);
 
-            // 3. 计算r，避免舍入误差 (r = x - n*C1 - n * C2, 其中ln2 = C1 + C2 )
             __m256 cephes_exp_C1 = _mm256_set1_ps(0.693359375);
             __m256 cephes_exp_C2 = _mm256_set1_ps(-2.12194440e-4);
             x = _mm256_sub_ps(x, _mm256_mul_ps(fx, cephes_exp_C1));
             x = _mm256_sub_ps(x, _mm256_mul_ps(fx, cephes_exp_C2));
 
-            // 4. 估算e^r (现在x变成r了)
             //  Chebyshev polynomials, y = f(x) = 1 + r + r^2 * (f0 + f1*x + f2*x^2 + f3*x^3 +f4*x^4 + f5x^5)
             //                                  = 1 + r + r^2 * (f0 + x * ( f1 + x * ( f2 + x ( f3 + x ( f4 + x f5 ))))) (Horner's method)
             __m256 f5 = _mm256_set1_ps(1.9875691500E-4);
@@ -720,7 +577,6 @@ namespace KVStar
             y = _mm256_fmadd_ps(y, x, f0);
             y = _mm256_fmadd_ps(y, _mm256_mul_ps(x, x), _mm256_add_ps(x, _mm256_set1_ps(1.0f)));
 
-            // 5. 以位构造 2^n = reinterpret((n+127)<<23)， 返回 2^n * e^r
             __m256i e_i = _mm256_slli_epi32(_mm256_add_epi32(_mm256_cvttps_epi32(fx), _mm256_set1_epi32(127)), 23);
             return _mm256_mul_ps(y, _mm256_castsi256_ps(e_i));
         }
@@ -745,7 +601,6 @@ namespace KVStar
             for (; i < N; ++i)
                 x[i] = (x[i] - m);
 
-            // 3) 近似计算 e = exp(x) 累加 s = sum(e)（向量近似，内部用 f32）
 
             __m256 acc = _mm256_setzero_ps();
             i = 0;
@@ -754,11 +609,10 @@ namespace KVStar
                 // __m256 eh = _avx2_exp_approx_f32(_mm256_loadu_ps(x + i));
                 __m256 eh = _avx2_exp_approx_f32(_mm256_loadu_ps(x + i));
 
-                _mm256_storeu_ps(x + i, eh); // 写回
+                _mm256_storeu_ps(x + i, eh);
                 acc = _mm256_add_ps(acc, eh);
             }
             float sum = _avx2_hsum_m256(acc);
-            // 处理尾巴（标量）
             for (; i < N; ++i)
             {
                 float ef = expf(x[i]);
@@ -785,7 +639,7 @@ namespace KVStar
         __attribute__((always_inline)) inline static void _avx2_accumulate_fp32_inplace(float *__restrict x, __m256 &y, float &r, int N) noexcept
         {
             int i = 0;
-            for (; i + 32 < N; i += 32) // 4路展开
+            for (; i + 32 < N; i += 32)
             {
                 __m256 a0 = _mm256_loadu_ps(x + i + 0 * 8);
                 __m256 a1 = _mm256_loadu_ps(x + i + 1 * 8);
@@ -816,9 +670,8 @@ namespace KVStar
 
         __attribute__((always_inline)) inline static void execute_impl(const RetrieveTask &task, TaskResult &result)
         {
-            // 1. 维度解析
             const auto &q_shape = task.queryGroup.shape; // (x, H, d_orig)
-            const auto &k_shape = task.blkRepre.shape;   // (n, M, h, d_pruned) // <-- 多一个块内多向量表征维度
+            const auto &k_shape = task.blkRepre.shape;   // (n, M, h, d_pruned)
 
             if (q_shape.size() != 3)
                 throw std::runtime_error("Query shape must be 3D (x, H, d).");
@@ -829,22 +682,21 @@ namespace KVStar
             if (k_shape.size() != 4)
                 throw std::runtime_error("BlockRep shape must be 4D (n, M, h, d).");
             const int64_t num_blocks = k_shape[0];
-            const int64_t M = k_shape[1]; // 块内多向量表征维度
+            const int64_t M = k_shape[1];
             const int64_t num_kv_heads = k_shape[2];
             const int64_t d_pruned = k_shape[3];
 
             if (num_q_heads % num_kv_heads != 0)
                 throw std::runtime_error("Num_q_heads must be a divisible by num_kv_heads.");
-            const int64_t g = num_q_heads / num_kv_heads; // 每个k头对应几个q头
+            const int64_t g = num_q_heads / num_kv_heads;
 
-            // 2. 裁剪query通道
 
-            const DataType *q_ptr_for_computation; // 指针指向最终用于计算的Query数据
-            std::vector<DataType> pruned_q_vec;    // 需要裁剪时, 把结果填充到该vector, 在if外声明保证生命周期
+            const DataType *q_ptr_for_computation;
+            std::vector<DataType> pruned_q_vec;
 
             const DataType *q_orig_ptr = static_cast<const DataType *>(task.queryGroup.data);
 
-            if (task.dPrunedIndex.has_value()) // 如果有裁剪索引, 就裁
+            if (task.dPrunedIndex.has_value())
             {
                 const auto &pruned_spec = task.dPrunedIndex.value();
                 if (pruned_spec.shape.size() != 2 || pruned_spec.shape[0] != num_kv_heads || pruned_spec.shape[1] != d_pruned)
@@ -853,67 +705,52 @@ namespace KVStar
                 }
                 const int64_t *pruned_indices_ptr = static_cast<const int64_t *>(pruned_spec.data);
 
-                // 分配内存存放裁剪后的query
                 pruned_q_vec.resize(num_tokens * num_q_heads * d_pruned);
 
-                for (int64_t x = 0; x < num_tokens; ++x) // 对于每个token
+                for (int64_t x = 0; x < num_tokens; ++x)
                 {
-                    for (int64_t h = 0; h < num_kv_heads; ++h) // 对于每个k头，裁剪索引都相同
+                    for (int64_t h = 0; h < num_kv_heads; ++h)
                     {
-                        // 获取当前key头的对应裁剪索引
-                        const int64_t *current_pruned_indices = pruned_indices_ptr + h * d_pruned; // k头数*裁剪后的维度
-                        // 组内所有query共享相同裁剪索引
-                        for (int64_t gg = 0; gg < g; ++gg) // 当前k头所对应的每个q头
+                        const int64_t *current_pruned_indices = pruned_indices_ptr + h * d_pruned;
+                        for (int64_t gg = 0; gg < g; ++gg)
                         {
-                            int64_t H = h * g + gg; // 计算q头的index
-                            // 填充query head的d_pruned个维度
+                            int64_t H = h * g + gg;
                             for (int64_t d_p = 0; d_p < d_pruned; ++d_p)
                             {
-                                // 从原始索引列表中找到需要抓取的原始维度索引
                                 int64_t d_o = current_pruned_indices[d_p];
-                                // 源地址: q_orig_ptr[x, H, d_o]
-                                // 目标地址: pruned_q_vec[x, H, d_p]
                                 pruned_q_vec[(x * num_q_heads + H) * d_pruned + d_p] = q_orig_ptr[(x * num_q_heads + H) * d_orig + d_o];
                             }
                         }
                     }
                 }
-                // 让计算指针指向新创建的、已裁剪的Query数据
                 q_ptr_for_computation = pruned_q_vec.data();
             }
             else
             {
-                // 没有维度裁剪索引, 则Q、Key维度应该一致
                 if (d_orig != d_pruned)
                 {
                     throw std::runtime_error("Dimension mismatch: No dPrunedIndex, but Q and K head dims differ.");
                 }
-                // 计算指针直接指向原始、未改变的Query数据
                 q_ptr_for_computation = q_orig_ptr;
             }
 
             const int64_t S = num_blocks * M;
-            // Key指针始终指向传入的、已是正确维度的blkRepre数据
             const DataType *k_ptr = static_cast<const DataType *>(task.blkRepre.data);
 
-            // 3. 计算 'xhgd, shd->xhgs', 结果张量是4D (x,h,g,s)
-
-            // std::vector<__fp16> scires_xhgs(num_tokens * num_kv_heads * g * S, (__fp16)0.0f);
-            // 这里用float存储，因为后面softmax用fp32
             std::vector<float> scires_xhgs(num_tokens * num_kv_heads * g * S, 0.0f);
             // std::cout << S << "," << g << std::endl;
             // auto a = std::chrono::high_resolution_clock::now();
 
-            for (int64_t h = 0; h < num_kv_heads; ++h) // 对于每个k头
+            for (int64_t h = 0; h < num_kv_heads; ++h)
             {
                 const DataType *X = k_ptr + h * d_pruned;
-                for (int64_t x = 0; x < num_tokens; ++x) // 对于每个token
+                for (int64_t x = 0; x < num_tokens; ++x)
                 {
                     // std::cout << h * g << ", " << x * num_q_heads << ", " << num_tokens << std::endl;
-                    int64_t q_pos = h * g + x * num_q_heads; // h*g:已经处理过的k头所对应的q头。 x*num_q_heads: 当前处理的k头中，已经处理过的token的q头总数
-                    for (int64_t gg = 0; gg < g; ++gg)       // 当前k头所对应的每个q头
+                    int64_t q_pos = h * g + x * num_q_heads;
+                    for (int64_t gg = 0; gg < g; ++gg)
                     {
-                        const DataType *q_vec = q_ptr_for_computation + (q_pos + gg) * d_pruned; // 得到裁剪后的qvec
+                        const DataType *q_vec = q_ptr_for_computation + (q_pos + gg) * d_pruned;
                         auto y = scires_xhgs.data() + (q_pos + gg) * S;
                         _avx2_matvec_fp32_fp16(X, q_vec, y, d_pruned, S, num_kv_heads * d_pruned);
                     }
@@ -924,13 +761,11 @@ namespace KVStar
             // float duration = std::chrono::duration_cast<std::chrono::nanoseconds>(b - a).count();
             // std::cout << duration / 1000.0f << std::endl;
 
-            // 4. 在 S 维度上计算 softmax, 总共有 num_tokens * num_q_heads 个 S 维向量需要做softmax, Note: num_q_heads = num_kv_heads * g
             for (int64_t i = 0; i < num_tokens * num_q_heads; ++i)
             {
-                _avx2_softmax_fp32_inplace(&scires_xhgs[i * S], S); // 每个 S 维向量的起始地址
+                _avx2_softmax_fp32_inplace(&scires_xhgs[i * S], S);
             }
 
-            // 5. 聚合 'xhgs->n', 这一步等价于 python 的 reshape + einsum
             std::vector<std::pair<float, int64_t>> final_scores_n;
             final_scores_n.reserve(num_blocks);
             for (int64_t i = 0; i < num_blocks; ++i)
@@ -956,7 +791,6 @@ namespace KVStar
                 topk_indices[i] = final_scores_n[i].second;
             }
 
-            // 7. 填充结果
             {
                 std::lock_guard<std::mutex> lock(result.mtx);
                 result.topkIndices = std::move(topk_indices);
@@ -988,35 +822,29 @@ namespace KVStar
                 }
                 else
                 {
-                    // 次正规数：规范化到正规数
-                    // 把最高位对齐到 bit10（0x400），同时相应下降指数
                     int shift = 0;
                     while ((m & 0x400u) == 0u)
                     {
                         m <<= 1;
                         ++shift;
-                    } // ≤10 次
+                    }
                     m &= 0x3FFu;
-                    // half 的 e = 1-15；float 偏置 127，因此起始为 113（=127-14）
                     int32_t ef = 113 - shift;
                     bits = s | (static_cast<uint32_t>(ef) << 23) | (m << 13);
                 }
             }
             else if (e == 0x1Fu)
             {
-                // Inf / NaN：按位平移到 float 区
                 bits = s | 0x7F800000u | (m ? (m << 13) : 0u);
-                // 注：保留 NaN 的 payload（若有）
             }
             else
             {
-                // 正规数：e_half ∈ [1,30] → e_float = e_half - 15 + 127 = e_half + 112
                 uint32_t ef = e + 112u;
                 bits = s | (ef << 23) | (m << 13);
             }
 
             float f;
-            std::memcpy(&f, &bits, sizeof(f)); // 避免 UB 的位解释
+            std::memcpy(&f, &bits, sizeof(f));
             return f;
         }
 
@@ -1024,10 +852,9 @@ namespace KVStar
 
         __attribute__((always_inline)) inline static void execute_impl(const RetrieveTask &task, TaskResult &result)
         {
-            // 1. 维度解析
 
             const auto &q_shape = task.queryGroup.shape; // (x, H, d_orig)
-            const auto &k_shape = task.blkRepre.shape;   // (n, M, h, d_pruned) // <-- 多一个块内多向量表征维度
+            const auto &k_shape = task.blkRepre.shape;   // (n, M, h, d_pruned)
 
             if (q_shape.size() != 3)
                 throw std::runtime_error("Query shape must be 3D (x, H, d).");
@@ -1038,7 +865,7 @@ namespace KVStar
             if (k_shape.size() != 4)
                 throw std::runtime_error("BlockRep shape must be 4D (n, M, h, d).");
             const int64_t num_blocks = k_shape[0];
-            const int64_t M = k_shape[1]; // 块内多向量表征维度
+            const int64_t M = k_shape[1];
             const int64_t num_kv_heads = k_shape[2];
             const int64_t d_pruned = k_shape[3];
 
@@ -1046,15 +873,13 @@ namespace KVStar
                 throw std::runtime_error("Num_q_heads must be a divisible by num_kv_heads.");
             const int64_t g = num_q_heads / num_kv_heads;
 
-            // 2. 裁剪query通道
-            const DataType *q_ptr_for_computation; // 指针指向最终用于计算的Query数据
-            std::vector<DataType> pruned_q_vec;    // 需要裁剪时, 把结果填充到该vector, 在if外声明保证生命周期
+            const DataType *q_ptr_for_computation;
+            std::vector<DataType> pruned_q_vec;
 
             const DataType *q_orig_ptr = static_cast<const DataType *>(task.queryGroup.data);
 
             if (task.dPrunedIndex.has_value())
             {
-                // 如果有裁剪索引, 就裁
                 const auto &pruned_spec = task.dPrunedIndex.value();
                 if (pruned_spec.shape.size() != 2 || pruned_spec.shape[0] != num_kv_heads || pruned_spec.shape[1] != d_pruned)
                 {
@@ -1062,51 +887,39 @@ namespace KVStar
                 }
                 const int64_t *pruned_indices_ptr = static_cast<const int64_t *>(pruned_spec.data);
 
-                // 分配内存存放裁剪后的query
                 pruned_q_vec.resize(num_tokens * num_q_heads * d_pruned);
 
                 for (int64_t x = 0; x < num_tokens; ++x)
                 {
                     for (int64_t h = 0; h < num_kv_heads; ++h)
                     {
-                        // 获取当前key头的对应裁剪索引
                         const int64_t *current_pruned_indices = pruned_indices_ptr + h * d_pruned;
-                        // 组内所有query共享相同裁剪索引
                         for (int64_t gg = 0; gg < g; ++gg)
                         {
-                            int64_t H = h * g + gg; // 计算query head index
-                            // 填充query head的d_pruned个维度
+                            int64_t H = h * g + gg;
                             for (int64_t d_p = 0; d_p < d_pruned; ++d_p)
                             {
-                                // 从原始索引列表中找到需要抓取的原始维度索引
                                 int64_t d_o = current_pruned_indices[d_p];
-                                // 源地址: q_orig_ptr[x, H, d_o]
-                                // 目标地址: pruned_q_vec[x, H, d_p]
                                 pruned_q_vec[(x * num_q_heads + H) * d_pruned + d_p] = q_orig_ptr[(x * num_q_heads + H) * d_orig + d_o];
                             }
                         }
                     }
                 }
 
-                // 让计算指针指向新创建的、已裁剪的Query数据
                 q_ptr_for_computation = pruned_q_vec.data();
             }
             else
             {
-                // 没有维度裁剪索引, 则Q、Key维度应该一致
                 if (d_orig != d_pruned)
                 {
                     throw std::runtime_error("Dimension mismatch: No dPrunedIndex, but Q and K head dims differ.");
                 }
-                // 计算指针直接指向原始、未改变的Query数据
                 q_ptr_for_computation = q_orig_ptr;
             }
 
             const int64_t S = num_blocks * M;
 
-            // Key指针始终指向传入的、已是正确维度的blkRepre数据
             const DataType *k_ptr = static_cast<const DataType *>(task.blkRepre.data);
-            // 3. 计算 'xhgd, shd->xhgs', 结果张量是4D (x,h,g,s)
             std::vector<float> scires_xhgs(num_tokens * num_kv_heads * g * S);
             for (int64_t x = 0; x < num_tokens; ++x)
             {
@@ -1115,14 +928,10 @@ namespace KVStar
                     for (int64_t gg = 0; gg < g; ++gg)
                     {
                         int64_t H = h * g + gg; // q_token's head index
-                        // 指向 q_token[x, H, :]
                         const DataType *q_vec = q_ptr_for_computation + (x * num_q_heads + H) * d_pruned;
 
-                        // 遍历所有 S = n * M 个 key vectors
                         for (int64_t s = 0; s < S; ++s)
                         {
-                            // 指向 k_cache_flattened[s, h, :]
-                            // k_ptr的原始布局是 (n,M,h,d)。拉平为(S,h,d)后，(s,h,d)的地址等价于原先的地址。
                             const DataType *k_vec = k_ptr + (s * num_kv_heads + h) * d_pruned;
                             float score = 0.0f;
                             for (int64_t d = 0; d < d_pruned; ++d)
@@ -1133,17 +942,14 @@ namespace KVStar
                                 score += fp16_to_float(q_vec[d]) * fp16_to_float(k_vec[d]);
 #endif
                             }
-                            // 结果写入4D的扁平化数组
                             scires_xhgs[(((x * num_kv_heads + h) * g + gg) * S + s)] = score;
                         }
                     }
                 }
             }
 
-            // 4. 在 S 维度上计算 softmax, 总共有 num_tokens * num_q_heads 个 S 维向量需要做softmax, Note: num_q_heads = num_kv_heads * g
             for (int64_t i = 0; i < num_tokens * num_q_heads; ++i)
             {
-                // 每个 S 维向量的起始地址
                 float *current_scores = &scires_xhgs[i * S];
 
                 // Softmax on S-dimension vector
@@ -1173,13 +979,11 @@ namespace KVStar
                 }
             }
 
-            // 5. 聚合 'xhgs->n', 这一步等价于 python 的 reshape + einsum
             std::vector<float> final_scores_n(num_blocks, 0.0f);
             for (int64_t xhgi = 0; xhgi < num_tokens * num_kv_heads * g; ++xhgi)
             {
                 for (int64_t s = 0; s < S; ++s)
                 {
-                    // 通过 s 计算出它属于哪个 block n
                     int64_t n = s / M;
                     final_scores_n[n] += scires_xhgs[xhgi * S + s];
                 }
@@ -1210,7 +1014,6 @@ namespace KVStar
                 top_k_heap.pop();
             }
 
-            // 7. 填充结果
             {
                 std::lock_guard<std::mutex> lock(result.mtx);
                 result.topkIndices = std::move(topk_indices);
