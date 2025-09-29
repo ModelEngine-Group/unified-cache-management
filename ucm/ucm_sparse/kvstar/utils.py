@@ -1,7 +1,8 @@
+import hashlib
+import pickle
 import subprocess
 from functools import cache
-import pickle
-import hashlib
+
 
 @cache
 def get_offset(block_shape, rank, tp_size, precision, layer_id, is_v, is_mla) -> int:
@@ -16,6 +17,7 @@ def get_offset(block_shape, rank, tp_size, precision, layer_id, is_v, is_mla) ->
     v_offset = k_offset + k_min_data_block_size
     return v_offset if is_v else k_offset
 
+
 @cache
 def md5(input) -> int:
     input_bytes = pickle.dumps(input, protocol=pickle.HIGHEST_PROTOCOL)
@@ -29,6 +31,7 @@ def block_hash_func(parent_block_hash, curr_block_token_ids):
         parent_block_hash = md5("UCMHASHSEED")
     curr_block_token_ids_tuple = tuple(curr_block_token_ids)
     return md5((parent_block_hash, curr_block_token_ids_tuple))
+
 
 def execute_command(cmd_list):
     with subprocess.Popen(
