@@ -19,7 +19,7 @@
 ## Performance
 nfs connector has reached about 4x TTFT accelerate.
 
-![perf](docs/source/images/nfs_performance.png)
+![perf](docs/source/_static/images/nfs_performance.png)
 
 ## About
 UCM is rooted in KV Cache, with the goal of reducing inference costs and building commercially viable inference solutions. It enhances throughput through methods such as Prefix Cache, sparsification, and PD Disaggregation.
