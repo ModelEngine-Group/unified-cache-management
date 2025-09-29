@@ -18,19 +18,16 @@ enum DeviceType {
 };
 
 struct RetrieveTask {
-    // 数据部分纯C++
     PlainTensor queryGroup;
     PlainTensor blkRepre;
     std::optional<PlainTensor> dPrunedIndex;
 
-    // --- 任务元数据和同步机制 ---
     int topK;
     int reqId;
     DeviceType deviceType;
     size_t allocTaskId;
-    std::shared_ptr<RetrieveTaskWaiter> waiter; //Waiter机制核心
+    std::shared_ptr<RetrieveTaskWaiter> waiter;
 
-    // 构造函数
     RetrieveTask(
             PlainTensor qGroup, PlainTensor bRepre, std::optional<PlainTensor> pIndex,
             int tK, int rId, DeviceType devType
@@ -40,9 +37,8 @@ struct RetrieveTask {
         topK(tK),
         reqId(rId),
         deviceType(devType),
-        allocTaskId(0) {} // taskId 在 Manager 中分配
+        allocTaskId(0) {}
 
-    // 默认构造、移动构造
     RetrieveTask() = default;
     RetrieveTask(RetrieveTask&& other) noexcept = default;
     RetrieveTask& operator=(RetrieveTask&& other) noexcept = default;

@@ -11,9 +11,8 @@
 
 namespace KVStar {
 
-// vLLM每个TP域(Worker进程), 各自有一个检索CLIB实例
 struct SetupParam {
-    std::vector<int> cpuNumaIds; // 该tp rank能接管的numa id, 例如NUMA_NUM = 8, TP = 2, 那一个rank能分到4个NUMA节点
+    std::vector<int> cpuNumaIds;
     int physicalCorePerNuma;
     float allocRatio;
     size_t blkRepreSize;
@@ -22,7 +21,6 @@ struct SetupParam {
     int localRankId;
     std::vector<std::vector<int>> perNumaCoreIds;
     int threadNum;
-    // TODO: 按需设置检索引擎的配置项
 
     SetupParam(const std::vector<int>& cpuNumaIds, const int physicalCorePerNuma, const float allocRatio, const size_t blkRepreSize,
                const DeviceType deviceType, const int totalTpSize, const int localRankId);

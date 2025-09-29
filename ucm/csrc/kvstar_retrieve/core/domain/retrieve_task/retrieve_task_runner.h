@@ -11,7 +11,6 @@ namespace KVStar {
 class RetrieveTaskRunner {
 public:
     RetrieveTaskRunner(){}
-    // 接收不可变的 task 指令和可变的结果容器
     Status Run(const RetrieveTask& task, TaskResult& result);
 };
 

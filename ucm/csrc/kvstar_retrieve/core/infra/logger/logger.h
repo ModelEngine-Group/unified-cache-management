@@ -7,7 +7,7 @@ namespace KVStar {
 
 class Logger {
 public:
-    static std::shared_ptr<spdlog::logger> Make(); // 静态函数, 获取日志单例实例
+    static std::shared_ptr<spdlog::logger> Make();
 };
 
 }

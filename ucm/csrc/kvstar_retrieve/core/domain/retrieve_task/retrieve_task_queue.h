@@ -13,7 +13,6 @@
 #include "task_result.h"
 
 namespace KVStar {
-// 定义一个工作项，将任务和结果容器绑定
 struct WorkItem {
     RetrieveTask task;
     std::shared_ptr<TaskResult> result;
@@ -29,7 +28,7 @@ private:
     void Worker(const int numaId, const int bindCoreId, std::promise<Status>& started);
 
 private:
-    std::list<WorkItem> _taskQ; // 任务队列
+    std::list<WorkItem> _taskQ;
     std::mutex _mutex;
     std::condition_variable _cv;
     std::thread _worker;

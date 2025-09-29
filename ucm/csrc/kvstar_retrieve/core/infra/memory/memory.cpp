@@ -3,10 +3,9 @@
 
 namespace KVStar {
 
-// 分配的内存被智能指针自动管理，当指针离开作用域时，内存会被自动释放, 避免忘记free
 std::shared_ptr<void> MakePtr(void *ptr) {
     if (!ptr) { return nullptr; }
-    return std::shared_ptr<void>(ptr, [](void *ptr) { free(ptr); }); // 设置自定义删除器
+    return std::shared_ptr<void>(ptr, [](void *ptr) { free(ptr); });
 }
 
 std::shared_ptr<void> Memory::Alloc(const size_t size) { return MakePtr(malloc(size)); }

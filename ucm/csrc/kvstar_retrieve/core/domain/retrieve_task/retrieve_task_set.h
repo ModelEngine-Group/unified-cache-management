@@ -7,7 +7,6 @@
 #include <shared_mutex>
 
 namespace KVStar {
-// 失败任务记录
 class RetrieveTaskSet {
     static constexpr size_t nBucket = 8192;
 public:
