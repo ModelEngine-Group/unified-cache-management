@@ -100,12 +100,4 @@ endif()
 add_subdirectory(core)
 add_subdirectory(py_intf)
 
-#
-set(OUTPUT_ROOT ${CMAKE_CURRENT_SOURCE_DIR}/output)
-set_target_properties(kvstar_retrieve PROPERTIES
-  PREFIX ""
-  SUFFIX ".so"
-  LIBRARY_OUTPUT_DIRECTORY  "${OUTPUT_ROOT}/lib"
-  RUNTIME_OUTPUT_DIRECTORY  "${OUTPUT_ROOT}/bin"
-  ARCHIVE_OUTPUT_DIRECTORY  "${OUTPUT_ROOT}/lib"
-)
+set_target_properties(kvstar_retrieve PROPERTIES LIBRARY_OUTPUT_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
