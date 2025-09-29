@@ -26,7 +26,11 @@ import os
 import shutil
 import subprocess
 import sys
+import sysconfig
 
+import pybind11
+import torch
+import torch.utils.cpp_extension
 from setuptools import Extension, find_packages, setup
 from setuptools.command.build_ext import build_ext
 from setuptools.command.develop import develop
@@ -36,9 +40,11 @@ STORE_SRC_DIR = ROOT_DIR
 GSA_SRC_DIR = os.path.join(ROOT_DIR, "ucm", "csrc", "gsaoffloadops")
 PREFETCH_SRC_DIR = os.path.join(ROOT_DIR, "ucm", "csrc", "ucmprefetch")
 RETRIEVAL_SRC_DIR = os.path.join(ROOT_DIR, "ucm", "csrc", "esaretrieval")
+KVSTAR_RETRIEVAL_SRC_DIR = os.path.join(ROOT_DIR, "ucm", "csrc", "kvstar_retrieve")
 
 GSA_INSTALL_DIR = os.path.join(ROOT_DIR, "ucm", "ucm_sparse")
 RETRIEVAL_INSTALL_DIR = os.path.join(ROOT_DIR, "ucm", "ucm_sparse", "retrieval")
+KVSTAR_RETRIEVAL_INSTALL_DIR = os.path.join(ROOT_DIR, "ucm", "ucm_sparse")
 
 PLATFORM = os.getenv("PLATFORM")
 
@@ -73,6 +79,20 @@ class CMakeBuild(build_ext):
             f"-DPYTHON3_EXECUTABLE={sys.executable}",
         ]
 
+        torch_cmake_prefix = torch.utils.cmake_prefix_path
+        pybind11_cmake_dir = pybind11.get_cmake_dir()
+
+        cmake_prefix_paths = [torch_cmake_prefix, pybind11_cmake_dir]
+        cmake_args.append(f"-DCMAKE_PREFIX_PATH={';'.join(cmake_prefix_paths)}")
+
+        torch_includes = torch.utils.cpp_extension.include_paths()
+        python_include = sysconfig.get_path("include")
+        pybind11_include = pybind11.get_include()
+
+        all_includes = torch_includes + [python_include, pybind11_include]
+        cmake_include_string = ";".join(all_includes)
+        cmake_args.append(f"-DEXTERNAL_INCLUDE_DIRS={cmake_include_string}")
+
         if _is_cuda():
             cmake_args.append("-DRUNTIME_ENVIRONMENT=cuda")
         elif _is_npu():
@@ -88,10 +108,11 @@ class CMakeBuild(build_ext):
         print(f"[INFO] Building {ext.name} module with CMake")
         print(f"[INFO] Source directory: {ext.sourcedir}")
         print(f"[INFO] Build directory: {build_dir}")
+        print(f"[INFO] CMake command: {' '.join(cmake_args)}")
 
         subprocess.check_call(cmake_args, cwd=build_dir)
 
-        if ext.name in ["store", "gsa_offload_ops", "esaretrieval"]:
+        if ext.name in ["store", "gsa_offload_ops", "esaretrieval", "kvstar_retrieve"]:
             subprocess.check_call(["make", "-j", "8"], cwd=build_dir)
         else:
             # 对于gsa_prefetch使用cmake --build
@@ -117,6 +138,8 @@ class CMakeBuild(build_ext):
             search_patterns.extend(["prefetch"])
         elif ext.name == "esaretrieval":
             search_patterns.extend(["retrieval_backend"])
+        elif ext.name == "kvstar_retrieve":
+            search_patterns.extend(["kvstar_retrieve"])
 
         for file in os.listdir(so_search_dir):
             if file.endswith(".so") or ".so." in file:
@@ -128,6 +151,9 @@ class CMakeBuild(build_ext):
         if ext.name == "esaretrieval":
             install_dir = RETRIEVAL_INSTALL_DIR
             build_install_dir = "ucm/ucm_sparse/retrieval"
+        elif ext.name == "kvstar_retrieve":
+            install_dir = KVSTAR_RETRIEVAL_INSTALL_DIR
+            build_install_dir = "ucm/ucm_sparse/kvstar_retrieve"
         else:
             install_dir = GSA_INSTALL_DIR
             build_install_dir = "ucm/ucm_sparse"
@@ -151,6 +177,9 @@ ext_modules.append(CMakeExtension(name="store", sourcedir=STORE_SRC_DIR))
 ext_modules.append(CMakeExtension(name="gsa_offload_ops", sourcedir=GSA_SRC_DIR))
 ext_modules.append(CMakeExtension(name="gsa_prefetch", sourcedir=PREFETCH_SRC_DIR))
 ext_modules.append(CMakeExtension(name="esaretrieval", sourcedir=RETRIEVAL_SRC_DIR))
+ext_modules.append(
+    CMakeExtension(name="kvstar_retrieve", sourcedir=KVSTAR_RETRIEVAL_SRC_DIR)
+)
 
 setup(
     name="ucm",
