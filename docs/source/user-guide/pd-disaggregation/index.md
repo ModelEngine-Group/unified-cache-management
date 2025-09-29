@@ -35,6 +35,8 @@ characteristics and application scenarios:
    implementation, and achieves the highest degree of decoupling in the entire system, even eliminating the need for a
    strict distinction between Prefill and Decode nodes.
 
+![Three transmission modes for KV cache between Prefill and Decode nodes](../../_static/images/pd_disaggregation.jpg)
+
 ### Rationale for UCM’s Adoption of the Third Transmission Mode
 
 The "simplicity" and "decoupling" of the third mode are sufficient to make it the preferred choice for UCM. In practical

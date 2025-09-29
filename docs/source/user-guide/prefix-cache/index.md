@@ -29,6 +29,8 @@ directions:
   nodes. This architecture features inherent simplicity; DeepSeek’s 3fs adopts this design paradigm, and the Prefix
   Cache module in UCM also tends to prioritize this centralized approach.
 
+![Two hierarchical structures of KVCache in Prefix Cache](../../_static/images/prefix_cache.jpg)
+
 ## Rationale for Adopting DeepSeek’s Centralized Approach Over Dynamo’s Decentralized Design
 
 The decision to adopt DeepSeek’s centralized architecture (rather than Dynamo’s decentralized scheme) is driven by the
