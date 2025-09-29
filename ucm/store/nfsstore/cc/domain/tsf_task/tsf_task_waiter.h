@@ -40,9 +40,9 @@ public:
     {
         if (Latch::Done() == 0) {
             auto elapsed = this->sw_.Elapsed().count();
-            UC_INFO("Task({},{},{},{}) finished, elapsed={:.06f}s, bw={:.06f}GB/s.", this->id_,
-                    this->brief_, this->number_, this->size_, elapsed,
-                    this->size_ / elapsed / (1ULL << 30));
+            UC_DEBUG("Task({},{},{},{}) finished, elapsed={:.06f}s, bw={:.06f}GB/s.", this->id_,
+                     this->brief_, this->number_, this->size_, elapsed,
+                     this->size_ / elapsed / (1ULL << 30));
             this->Notify();
         }
     }

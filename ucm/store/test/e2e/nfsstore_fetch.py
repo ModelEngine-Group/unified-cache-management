@@ -112,5 +112,5 @@ def main():
 
 
 if __name__ == "__main__":
-    os.environ["UCMSTORE_LOGGER_LEVEL"] = "info"
+    os.environ["UC_LOGGER_LEVEL"] = "debug"
     main()

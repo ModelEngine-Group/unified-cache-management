@@ -22,6 +22,8 @@
  * SOFTWARE.
  * */
 #include <mutex>
+#include <spdlog/cfg/helpers.h>
+#include <spdlog/details/os.h>
 #include <spdlog/sinks/stdout_color_sinks.h>
 #include <spdlog/spdlog.h>
 #include "logger/logger.h"
@@ -33,7 +35,7 @@ static spdlog::level::level_enum SpdLevels[] = {spdlog::level::debug, spdlog::le
 
 class SpdLogger : public ILogger {
     std::shared_ptr<spdlog::logger> logger_;
-    std::mutex mutux_;
+    std::mutex mutex_;
 
 public:
     SpdLogger() : logger_{nullptr} {}
@@ -50,12 +52,15 @@ private:
     std::shared_ptr<spdlog::logger> Make()
     {
         if (this->logger_) { return this->logger_; }
-        std::lock_guard<std::mutex> lg(this->mutux_);
+        std::lock_guard<std::mutex> lg(this->mutex_);
         if (this->logger_) { return this->logger_; }
+        const std::string name = "UC";
+        const std::string envLevel = name + "_LOGGER_LEVEL";
         try {
-            const std::string name = "UC";
             this->logger_ = spdlog::stdout_color_mt(name);
             this->logger_->set_pattern("[%Y-%m-%d %H:%M:%S.%f][%n][%^%L%$] %v [%P,%t][%s:%#,%!]");
+            auto level = spdlog::details::os::getenv(envLevel.c_str());
+            if (!level.empty()) { spdlog::cfg::helpers::load_levels(level); }
             return this->logger_;
         } catch (...) {
             return spdlog::default_logger();
