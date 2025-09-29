@@ -6,7 +6,7 @@
 </p>
 
 <p align="center">
-| <a href="docs/source/index.md"><b>Documentation</b></a> | <a href="https://modelengine-ai.net/#/ucm"><b>Website</b></a> | <a href="https://modelengine-ai.net/#/ucm"><b>RoadMap</b></a> |
+| <a href="docs/source/index.md"><b>Documentation</b></a> | <a href="https://modelengine-ai.net/#/ucm"><b>Website</b></a> | <a href="https://github.com/ModelEngine-Group/unified-cache-management/issues/78"><b>RoadMap</b></a> |
 </p>
 
 ---
@@ -21,20 +21,27 @@ enables more straightforward and flexible management of heterogeneous computing 
 UCM achieves a 3-10x reduction in inference latency across various scenarios, including multi-turn dialogue and
 long-context reasoning tasks.
 
+![architecture.png](./docs/source/_static/images/architecture.png)
 
+The ucm workflow is:
+
+1. accelerate prefill by prefix cache and cache blend.
+2. when prefilling, only 2 layers kvcache left in HBM, the one is in dumping and the other is calculating, others will be
+   offload in Storage.
+3. decode instance will load kvcache from storage, if we open sparse attention, only kvcache of selected tokens will be
+   load to HBM.
+4. accelerate by mtp
 
 ---
 
 ## Support Features
-
-|                     **Feature** | **Qwen** | **Deepseek** | 
-|--------------------------------:|---------:|-------------:|
-|                    Prefix Cache |        ✅ |            ✅ | 
-|                     Cache Blend |          |              | 
-|      Model Window Extrapolation |          |              | 
-|                 Prefill Offload |          |              | 
-|        Sparse Attention Offload |        ✅ |            ✅ | 
-| Heterogeneous PD Disaggregation |        ✅ |            ✅ |  
+- [Prefix Cache]()
+- [Cache Blend]()
+- [Model Window Extrapolation]()
+- [Prefill Offload]()
+- [Sparse Attention]()
+- [Sparse Attention Offload]()
+- [Heterogeneous PD Disaggregation]()
 
 ---
 
@@ -52,6 +59,9 @@ please refer to [Quick Start](./docs/source/getting-started/quick_start.md).
 |    develop | Maintained |       v0.9.2 |
 
 ---
+
+## Contact Us
+For technical questions and feature requests, please use GitHub [Issues](https://github.com/ModelEngine-Group/unified-cache-management/issues).
 
 ## License
 
