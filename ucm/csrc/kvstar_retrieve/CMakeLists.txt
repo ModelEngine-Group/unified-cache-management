@@ -37,7 +37,7 @@ endif()
 # --- 获取并编译 {fmt} 库 ---
 FetchContent_Declare(
         fmt
-        GIT_REPOSITORY git@github.com:fmtlib/fmt.git
+        GIT_REPOSITORY https://github.com/fmtlib/fmt.git
         GIT_TAG        10.2.1
 )
 # 将FMT_TEST设置为OFF
@@ -47,7 +47,7 @@ FetchContent_MakeAvailable(fmt)
 # --- 获取 spdlog 源码 ---
 FetchContent_Declare(
         spdlog
-        GIT_REPOSITORY git@github.com:gabime/spdlog.git
+        GIT_REPOSITORY https://github.com/gabime/spdlog.git
         GIT_TAG        v1.14.1
 )
 # 将SPDLOG_BUILD_TESTS设置为OFF
