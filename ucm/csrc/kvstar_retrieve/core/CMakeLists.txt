@@ -9,12 +9,13 @@ add_library(kvstar_retrieve.core STATIC ${CORE_SRC_FILES})
 target_include_directories(kvstar_retrieve.core PUBLIC
         "." "api" "domain" "infra"
         ${EXTERNAL_INCLUDE_DIRS}
+        ${NUMA_INSTALL_DIR}/include
 )
 
 # --- 链接库 ---
 target_link_libraries(kvstar_retrieve.core PUBLIC
         spdlog::spdlog
         fmt::fmt
-        numa
+        ${NUMA_INSTALL_DIR}/lib/libnuma.so
         ${Torch_LIBRARIES}
 )
