@@ -115,7 +115,7 @@ python offline_inference.py
 
 ### Online Inference
 
-For **online inference** , vLLM with our connector can also be deployed as a server that implements the OpenAI API protocol. Run the following command to start the vLLM server with the Qwen/Qwen2.5-14B-Instruct model:
+For **online inference** , vLLM with our connector can also be deployed as a server that implements the OpenAI API protocol. It is recommended that users set the block_size to 128. Run the following command to start the vLLM server with the Qwen/Qwen2.5-14B-Instruct model:
 
 ```bash
 export PYTHONHASHSEED=123456
@@ -123,6 +123,7 @@ vllm serve /home/models/Qwen2.5-14B-Instruct \
 --max-model-len 20000 \
 --tensor-parallel-size 2 \
 --gpu_memory_utilization 0.87 \
+--block_size 128 \
 --trust-remote-code \
 --port 7800 \
 --kv-transfer-config \
