@@ -18,7 +18,7 @@ public:
     void Done()
     {
         if (Latch::Done() == 0) {
-            KVSTAR_INFO("Task({}, {}) finished, elapsed {:.06f}s", this->_taskId, this->_waitCounter, this->_sw.elapsed().count());
+            KVSTAR_DEBUG("Task({}, {}) finished, elapsed {:.06f}s", this->_taskId, this->_waitCounter, this->_sw.elapsed().count());
             this->Notify();
         }
     }
