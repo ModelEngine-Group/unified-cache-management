@@ -295,12 +295,11 @@ class ReqPerLayerState:  # 命名风格和vllm保持一致
             if topk == 0:
                 self.step_group_retrieve_result[retrieve_record] = []
                 return
-
+            query_group = [
+                x for x in self.standby_query_group[retrieve_record] if x is not None
+            ]
             self.do_retrieve_query_group[retrieve_record] = (
-                torch.stack(self.standby_query_group[retrieve_record])
-                .to(torch.float16)
-                .contiguous()
-                .to("cpu")
+                torch.stack(query_group).to(torch.float16).contiguous().to("cpu")
             )
             task_id = kvstar_retrieve.AsyncRetrieveByCPU(
                 self.do_retrieve_query_group[retrieve_record],
