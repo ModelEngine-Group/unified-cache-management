@@ -18,16 +18,15 @@ from vllm.utils import make_tensor_with_pad, sha256
 from vllm.v1.core.sched.output import SchedulerOutput
 from vllm.v1.request import Request
 
-from ucm.integration.vllm.ucm_sparse.base import (
+from ucm.sparse.base import (
     INVALID_SLOT,
     UcmSparseBase,
     UcmSparseMetadata,
     UcmSparseRole,
 )
-from ucm.store.factory import UcmConnectorFactory
-from ucm.ucm_sparse import gsa_offload_ops
-from ucm.ucm_sparse.prefetch_engine import GSAPrefetchBase
-from ucm.ucm_sparse.utils import (
+from ucm.sparse.gsa.offload_ops import gsa_offload_ops
+from ucm.sparse.gsa.prefetch.prefetch_engine import GSAPrefetchBase
+from ucm.sparse.utils import (
     CUDA_TOPK,
     LOCAL_WINDOW_SZ,
     MAX_BS,
@@ -36,6 +35,7 @@ from ucm.ucm_sparse.utils import (
     SEG_PREFILL_THRESHOLD,
     compute_topk_len,
 )
+from ucm.store.factory import UcmConnectorFactory
 
 
 def stat(func):

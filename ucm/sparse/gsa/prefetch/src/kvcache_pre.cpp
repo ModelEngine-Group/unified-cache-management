@@ -54,32 +54,32 @@ namespace ucmprefetch
         -> std::future<typename std::result_of<F(Args...)>::type>
     {
         using return_type = typename std::result_of<F(Args...)>::type;
-    
+
         auto task = std::make_shared<std::packaged_task<return_type()>>(
                 std::bind(std::forward<F>(f), std::forward<Args>(args)...)
             );
-            
+
         std::future<return_type> res = task->get_future();
         {
             std::unique_lock<std::mutex> lock(queueMutex);
-            
+
             condition.wait(lock, [this] {
                 if (!(activeThreads < maxThreads || tasks.size() < maxThreads * 2)) {
                     std::cout << "Need wait: " << activeThreads << " " << tasks.size() << std::endl;
                 }
-                return (activeThreads < maxThreads || tasks.size() < maxThreads * 2); 
+                return (activeThreads < maxThreads || tasks.size() < maxThreads * 2);
             });
             // don't allow enqueueing after stopping the pool
             if(stop) {
                 throw std::runtime_error("enqueue on stopped ThreadPool");
             }
-    
+
             tasks.emplace([task](){ (*task)(); });
         }
         condition.notify_one();
         return res;
     }
-    
+
     size_t ThreadPool::GetActiveThreads() const
     {
         return activeThreads;
@@ -115,7 +115,7 @@ namespace ucmprefetch
         mIsPrefetchDone = true;
         mThreadPool = ThreadPool::GetInst();
     }
-    
+
     void GSAPrefetchEngineC::CheckInputIndex(uint32_t maxLen, uint32_t index)
     {
         if (index >= maxLen) {
@@ -230,13 +230,13 @@ namespace ucmprefetch
         }
         if ((hitBlocks.size() + missIdxs.size()) != (uint32_t)topkLen) {
             mLogger.log(LogLevel::ERROR,
-                "|KVCache Prefetch| Decode step: %u, Rank: %d, reqID: %d, layer: %d, not equel error\n",
+                "|KVCache Prefetch| Decode step: %u, Rank: %d, reqID: %d, layer: %d, not equal error\n",
                 mDecodeStep, mRank, reqID, layerID);
             PrintMap(reqID, layerID);
         }
 
     }
-    
+
     void GSAPrefetchEngineC::RunPrefetchH2D(PrefetchReqInfo oneBsInfo,
             std::unordered_set<int> &hitBlocks,
             std::map<int, int> &hitBlocksIdx,
@@ -320,7 +320,7 @@ namespace ucmprefetch
             mDocsTables[reqID][layerID][missIdxs[i]] = loadNPUBlockIDs[i];
         }
     }
-    
+
     void GSAPrefetchEngineC::RunAsyncPrefetchBs(std::vector<int> &reqIDsInput,
         std::vector<int> &topkLensInput,
         std::vector<int> &bsIndexInput, int rank)
@@ -392,7 +392,7 @@ namespace ucmprefetch
     {
         mIsPrefetchDone = flag;
     }
-    
+
     std::vector<std::vector<std::vector<int>>> GSAPrefetchEngineC::ObtainLoadBlocks()
     {
         return allNeedLoadBlock;

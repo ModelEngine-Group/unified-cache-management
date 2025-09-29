@@ -3,8 +3,8 @@ from typing import Callable
 
 from vllm.config import VllmConfig
 
-from ucm.integration.vllm.ucm_sparse.base import UcmSparseBase, UcmSparseRole
 from ucm.logger import init_logger
+from ucm.sparse.base import UcmSparseBase, UcmSparseRole
 
 logger = init_logger(__name__)
 
@@ -44,11 +44,9 @@ class UcmSparseFactory:
 
 
 # Register available sparse methods
-UcmSparseFactory.register_sparse_method("ESA", "ucm.ucm_sparse.esa", "ESA")
-UcmSparseFactory.register_sparse_method(
-    "KvComp", "ucm.sandbox.sparse.kvcomp.kvcomp", "KvComp"
-)
-UcmSparseFactory.register_sparse_method("GSA", "ucm.ucm_sparse.gsa", "GSA")
+UcmSparseFactory.register_sparse_method("ESA", "ucm.sparse.esa.esa", "ESA")
+UcmSparseFactory.register_sparse_method("KvComp", "ucm.sparse.kvcomp.kvcomp", "KvComp")
+UcmSparseFactory.register_sparse_method("GSA", "ucm.sparse.gsa.gsa", "GSA")
 UcmSparseFactory.register_sparse_method(
     "KVStarMultiStep", "ucm.ucm_sparse.kvstar.multistep", "KVStarMultiStep"
 )

@@ -10,7 +10,7 @@ from vllm.forward_context import ForwardContext
 from vllm.v1.core.kv_cache_manager import KVCacheBlocks
 from vllm.v1.request import Request
 
-from ucm.integration.vllm.ucm_sparse.base import (
+from ucm.sparse.base import (
     INVALID_SLOT,
     UcmSparseBase,
     UcmSparseMetadata,
@@ -124,7 +124,7 @@ class ReqMeta:
         step25~32: 根据step9~16的检索结果进行计算, 触发17~24卸载下来的8个query的topk检索任务, 卸载自己的8个query
         ...
 
-    计划设置两个query_group: 
+    计划设置两个query_group:
         standby_group: step1~8自己的query卸载到的位置
         do_retrieve_group: 进行step9~16时, step1~8的query换到do_retrieve_group, 用于检索, step9~16自己的query卸载到standby_group
         切换逻辑放在step % RETRIEVAL_TOKEN_GROUP_SIZE == 0 的execute_begin中

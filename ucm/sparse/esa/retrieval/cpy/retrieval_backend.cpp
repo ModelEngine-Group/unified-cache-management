@@ -113,7 +113,7 @@ public:
         results_.erase(it);
         return result;
     }
-    
+
 private:
     struct Request {
         int req_id;
@@ -131,7 +131,7 @@ private:
         std::condition_variable cv;
         bool done = false;
     };
-    
+
     void worker_loop() {
         while (true) {
             Request req;
@@ -146,13 +146,13 @@ private:
             Result res;
             res.indices.resize(req.batch);
             res.scores.resize(req.batch);
-            
+
             // for performance
             // std::mt19937 gen(42);
             // for (size_t b = 0; b < req.batch; ++b) {
             //     const float* q_ptr = req.query.data() + b * dim_;
             //     const auto& allowed = req.indexes[b];
-                
+
             //     std::vector<int> index;
             //     int i = 0;
             //     for (auto &c: allowed) {
@@ -174,7 +174,7 @@ private:
                 heap.reserve(allowed.size());
                 for (auto idx : allowed) {
                     float score = 0.0f;
-                    for (size_t d = 0; d < dim_; ++d) {
+                    for (ssize_t d = 0; d < dim_; ++d) {
                         score += q_ptr[d] * data_[idx * dim_ + d];
                     }
                     heap.emplace_back(score, idx);
@@ -182,13 +182,13 @@ private:
                 int curr_topk = std::min((int)heap.size(), req.topk);
                 std::partial_sort(heap.begin(), heap.begin() + curr_topk, heap.end(),
                     [](const auto& a, const auto& b){ return a.first > b.first; });
-                
+
                 for (int k = 0; k < curr_topk; ++k) {
                     res.scores[b].push_back(heap[k].first);
                     res.indices[b].push_back(heap[k].second);
                 }
             }
-            
+
             {
                 std::lock_guard<std::mutex> lock(mutex_);
                 results_[req.req_id] = std::move(res);
@@ -204,15 +204,15 @@ private:
 
     py::array_t<float> data_array_;
     const float* data_ = nullptr;
-    size_t n_items_, dim_;
+    ssize_t n_items_, dim_;
     std::queue<Request> requests_;
     std::unordered_map<int, Result> results_;
     std::vector<std::thread> worker_threads_;
     std::mutex mutex_;
     std::condition_variable cond_;
-    std::atomic<int> next_req_id_;
     std::unordered_map<int, std::shared_ptr<RequestStatus>> request_status_;
     bool stop_workers_;
+    std::atomic<int> next_req_id_;
 };
 
 PYBIND11_MODULE(retrieval_backend, m) {

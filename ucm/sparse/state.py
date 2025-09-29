@@ -8,9 +8,9 @@ the same UCM sparse agent across different processes.
 
 from typing import TYPE_CHECKING, Optional
 
-from ucm.integration.vllm.ucm_sparse.base import UcmSparseBase, UcmSparseRole
-from ucm.integration.vllm.ucm_sparse.factory import UcmSparseFactory
 from ucm.logger import init_logger
+from ucm.sparse.base import UcmSparseBase, UcmSparseRole
+from ucm.sparse.factory import UcmSparseFactory
 
 if TYPE_CHECKING:
     from vllm.config import VllmConfig

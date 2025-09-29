@@ -15,15 +15,15 @@ from vllm.sequence import SequenceStage
 from vllm.v1.core.kv_cache_manager import KVCacheBlocks
 from vllm.v1.request import Request
 
-from ucm.integration.vllm.ucm_sparse.base import (
+from ucm.sparse.base import (
     INVALID_SLOT,
     UcmSparseBase,
     UcmSparseMetadata,
     UcmSparseRole,
 )
+from ucm.sparse.esa.retrieval import retrieval_backend
+from ucm.sparse.esa.retrieval.retrieval_worker import RetrievalWorker
 from ucm.store.ucmstore import Task, UcmKVStoreBase
-from ucm.ucm_sparse.retrieval import retrieval_backend
-from ucm.ucm_sparse.retrieval.retrieval_worker import RetrievalWorker
 
 ReqType = Union[str, int]
 HashType = Union[str, int]

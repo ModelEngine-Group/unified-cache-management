@@ -34,20 +34,20 @@ from vllm.forward_context import ForwardContext
 from vllm.sequence import SequenceStage
 from vllm.v1.request import Request
 
-from ucm.integration.vllm.ucm_sparse.state import get_ucm_sparse
 from ucm.logger import init_logger
 from ucm.sandbox.sparse.kvcomp.hash_encoder import HashEncoder
 from ucm.sandbox.sparse.kvcomp.kvcomp_config import KvCompConfig
+from ucm.sparse.state import get_ucm_sparse
 
 logger = init_logger(__name__)
 
-from ucm.integration.vllm.ucm_sparse.base import (
+from ucm.sparse.base import (
     INVALID_SLOT,
     UcmSparseBase,
     UcmSparseMetadata,
     UcmSparseRole,
 )
-from ucm.integration.vllm.ucm_sparse.state import get_ucm_sparse
+from ucm.sparse.state import get_ucm_sparse
 from ucm.store.factory import UcmConnectorFactory
 from ucm.store.ucmstore import Task, UcmKVStoreBase
 

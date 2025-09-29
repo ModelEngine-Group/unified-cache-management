@@ -4,7 +4,7 @@ import numpy as np
 import torch
 
 # import retrieval_backend
-from ucm.ucm_sparse.retrieval import retrieval_backend
+from ucm.sparse.esa.retrieval import retrieval_backend
 
 
 class RetrievalWorker:

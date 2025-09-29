@@ -9,8 +9,8 @@ from vllm.config import VllmConfig
 from vllm.sequence import SequenceStage
 from vllm.utils import is_pin_memory_available
 
-from ucm.ucm_sparse import gsa_prefetch
-from ucm.ucm_sparse.utils import (
+from ucm.sparse.gsa.prefetch import gsa_prefetch
+from ucm.sparse.utils import (
     LOCAL_WINDOW_SZ,
     MAX_BS,
     MAX_TOPK_LEN,

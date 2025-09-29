@@ -29,9 +29,9 @@ CalKpreAndTopk::CalKpreAndTopk(uint32_t layerNum, uint32_t blockSize, uint32_t m
 
 void CalKpreAndTopk::SetKpreMethodParam(uint32_t maxBlockNum, uint32_t numHeads, uint32_t numKpre)
 {
-    m_kNumHeads = numHeads;
-    m_numKpre = numKpre;
-    auto optionsForKCache = torch::TensorOptions().device("cpu").dtype(torch::kFloat32);
+    // m_kNumHeads = numHeads;
+    // m_numKpre = numKpre;
+    // auto optionsForKCache = torch::TensorOptions().device("cpu").dtype(torch::kFloat32);
     // for (uint32_t i = 0; i < m_layerNum; i++) {
     //     torch::Tensor layerKCache = torch::zeros({maxBlockNum, m_kNumHeads, m_blockSize, m_headSize}, optionsForKCache);
     //     m_kCache.push_back(layerKCache);
@@ -177,7 +177,7 @@ void CalKpreAndTopk::Calculate()
 {
     while (m_running) {
         std::unique_lock<std::mutex> lock(m_calLock);
-        m_dataReady.wait(lock, [this]() { 
+        m_dataReady.wait(lock, [this]() {
             return this -> CheckDataStatus();
         });
         for (uint32_t i = 0; i < m_layerNum; i++) {
