@@ -3,7 +3,7 @@ import math
 from dataclasses import dataclass, field
 from typing import Dict, List, Union
 
-import kvstar_retrieve
+from ucm.ucm_sparse import kvstar_retrieve
 import torch
 from vllm.config import VllmConfig
 from vllm.distributed.kv_transfer import get_kv_transfer_group
@@ -864,7 +864,6 @@ class KVStarMultiStep(UcmSparseBase):
         当前build_sparse_meta调用点在self.model forward前, vllm_ascend.worker.npu_input_batch CachedRequestState 已组装好未调度结束的请求的信息, 由此构建sparse_meta
         """
         query_start_locs = attn_metadata.query_start_loc
-        query_lens = attn_metadata.query_lens
 
         for (
             req_id,
@@ -873,6 +872,13 @@ class KVStarMultiStep(UcmSparseBase):
             scheduler_output.num_scheduled_tokens.items()
         ):  # NOTE: num_scheduled_tokens包含投机token
             req_state = requests[req_id]
+
+            q_start_loc = query_start_locs[input_batch.req_id_to_index[req_id]].item()
+            q_len = (
+                    query_start_locs[input_batch.req_id_to_index[req_id] + 1].item()
+                    - q_start_loc
+            )
+
             if len(req_state.prompt_token_ids) > self.token_blk_size:
                 sparse_meta.add_request(
                     req_id,
@@ -888,8 +894,8 @@ class KVStarMultiStep(UcmSparseBase):
                         0
                     ],  # 当前只支持单种kvcache group, tuple [0] 元素
                     self.token_blk_size,
-                    query_start_locs[input_batch.req_id_to_index[req_id]].item(),
-                    query_lens[input_batch.req_id_to_index[req_id]].item(),
+                    q_start_loc,
+                    q_len,
                     self.kvstar_multistep_cfg["retrieval_stride"],
                     req_state.prompt_token_ids,
                 )

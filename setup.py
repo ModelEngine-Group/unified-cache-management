@@ -36,9 +36,11 @@ STORE_SRC_DIR = ROOT_DIR
 GSA_SRC_DIR = os.path.join(ROOT_DIR, "ucm", "csrc", "gsaoffloadops")
 PREFETCH_SRC_DIR = os.path.join(ROOT_DIR, "ucm", "csrc", "ucmprefetch")
 RETRIEVAL_SRC_DIR = os.path.join(ROOT_DIR, "ucm", "csrc", "esaretrieval")
+KVSTAR_RETRIEVAL_SRC_DIR = os.path.join(ROOT_DIR, "ucm", "csrc", "kvstar_retrieve")
 
 GSA_INSTALL_DIR = os.path.join(ROOT_DIR, "ucm", "ucm_sparse")
 RETRIEVAL_INSTALL_DIR = os.path.join(ROOT_DIR, "ucm", "ucm_sparse", "retrieval")
+KVSTAR_RETRIEVAL_INSTALL_DIR = os.path.join(ROOT_DIR, "ucm", "ucm_sparse")
 
 PLATFORM = os.getenv("PLATFORM")
 
@@ -91,7 +93,7 @@ class CMakeBuild(build_ext):
 
         subprocess.check_call(cmake_args, cwd=build_dir)
 
-        if ext.name in ["store", "gsa_offload_ops", "esaretrieval"]:
+        if ext.name in ["store", "gsa_offload_ops", "esaretrieval", "kvstar_retrieve"]:
             subprocess.check_call(["make", "-j", "8"], cwd=build_dir)
         else:
             # 对于gsa_prefetch使用cmake --build
@@ -117,6 +119,8 @@ class CMakeBuild(build_ext):
             search_patterns.extend(["prefetch"])
         elif ext.name == "esaretrieval":
             search_patterns.extend(["retrieval_backend"])
+        elif ext.name == "kvstar_retrieve":
+            search_patterns.extend(["kvstar_retrieve"])
 
         for file in os.listdir(so_search_dir):
             if file.endswith(".so") or ".so." in file:
@@ -128,6 +132,9 @@ class CMakeBuild(build_ext):
         if ext.name == "esaretrieval":
             install_dir = RETRIEVAL_INSTALL_DIR
             build_install_dir = "ucm/ucm_sparse/retrieval"
+        elif ext.name == "kvstar_retrieve":
+            install_dir = KVSTAR_RETRIEVAL_INSTALL_DIR
+            build_install_dir = "ucm/ucm_sparse/kvstar_retrieve"
         else:
             install_dir = GSA_INSTALL_DIR
             build_install_dir = "ucm/ucm_sparse"
@@ -151,6 +158,9 @@ ext_modules.append(CMakeExtension(name="store", sourcedir=STORE_SRC_DIR))
 ext_modules.append(CMakeExtension(name="gsa_offload_ops", sourcedir=GSA_SRC_DIR))
 ext_modules.append(CMakeExtension(name="gsa_prefetch", sourcedir=PREFETCH_SRC_DIR))
 ext_modules.append(CMakeExtension(name="esaretrieval", sourcedir=RETRIEVAL_SRC_DIR))
+ext_modules.append(
+    CMakeExtension(name="kvstar_retrieve", sourcedir=KVSTAR_RETRIEVAL_SRC_DIR)
+)
 
 setup(
     name="ucm",
