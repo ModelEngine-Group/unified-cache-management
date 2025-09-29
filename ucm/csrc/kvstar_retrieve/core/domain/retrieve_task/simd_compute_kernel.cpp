@@ -9,17 +9,29 @@
 #include "kvstar_retrieve/kvstar_retrieve.h"
 #include "logger/logger.h"
 
-// TODO: 适配多平台SIMD, 当前适配arm_neon
-#if defined(__ARM_NEON)
-#include <arm_neon.h>
+#if defined(__ARM_NEON)       // 在ARM平台上
+    #include <arm_neon.h>
+    typedef __fp16 DataType;
+
+    float fp16_to_fp32(DataType fp16) {
+        return static_cast<float>(fp16);
+    }
+#else                         // 在 x86 平台上，使用uint16_t存储半精度值，并通过F16C库进行转换
+    #include <cstdint>
+    #include <immintrin.h>
+    typedef uint16_t DataType;
+
+    float fp16_to_fp32(DataType fp16) {
+        __m128i h = _mm_cvtsi32_si128((uint16_t)fp16);  // 将 uint16_t 加载到 XMM 寄存器
+        __m128  f = _mm_cvtph_ps(h);                    // 使用 F16C 指令转换
+        return _mm_cvtss_f32(f);                        // 提取第一个 float
+    }
 #endif
 
 namespace KVStar{
 
 void Execute(const RetrieveTask &task, TaskResult &result) {
     // 1. 维度解析
-    using DataType = __fp16;
-
     const auto& q_shape = task.queryGroup.shape; // (x, H, d_orig)
     const auto& k_shape = task.blkRepre.shape; // (n, M, h, d_pruned) // <-- 多一个块内多向量表征维度
 
@@ -109,7 +121,7 @@ void Execute(const RetrieveTask &task, TaskResult &result) {
                     const DataType* k_vec = k_ptr + (s * num_kv_heads + h) * d_pruned;
                     float score = 0.0f;
                     for (int64_t d = 0; d < d_pruned; ++d) {
-                        score += static_cast<float>(q_vec[d]) * static_cast<float>(k_vec[d]);
+                        score += fp16_to_fp32(q_vec[d]) * fp16_to_fp32(k_vec[d]);
                     }
                     // 结果写入4D的扁平化数组
                     scires_xhgs[(((x * num_kv_heads + h) * g + gg) * S + s)] = score;
