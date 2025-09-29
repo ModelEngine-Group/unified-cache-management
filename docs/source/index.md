@@ -21,12 +21,20 @@
 </p>
 :::
 
-The core principle of Unified Cache Manager (UCM) is to persist the LLM KVCache and replace redundant computations through multiple retrieval mechanisms. UCM not only supports prefix caching but also offers a variety of training-free sparse attention retrieval methods, delivering higher performance when handling extremely long sequence inference tasks. Additionally, UCM provides a PD disaggregation solution based on a storage-compute separation architecture, which enables more straightforward and flexible management of heterogeneous computing resources. When integrated with vLLM, UCM achieves a 3-10x reduction in inference latency across various scenarios, including multi-turn dialogue and long-context reasoning tasks.
+The core principle of Unified Cache Manager (UCM) is to persist the LLM KVCache and replace redundant computations
+through multiple retrieval mechanisms. UCM not only supports prefix caching but also offers a variety of training-free
+sparse attention retrieval methods, delivering higher performance when handling extremely long sequence inference tasks.
+Additionally, UCM provides a PD disaggregation solution based on a storage-compute separation architecture, which
+enables more straightforward and flexible management of heterogeneous computing resources. When integrated with vLLM,
+UCM achieves a 3-10x reduction in inference latency across various scenarios, including multi-turn dialogue and
+long-context reasoning tasks.
 
 For more information, check out the following:
+
 * [UCM Section of the ModelEngine Community](https://modelengine-ai.net/#/ucm)
 
 Paper list:
+
 * [HATA: Trainable and Hardware-Efficient Hash-Aware Top-k Attention for Scalable Large Model Inference](https://arxiv.org/abs/2506.02572)
 * [ReTaKe: Reducing Temporal and Knowledge Redundancy for Long Video Understanding](https://arxiv.org/abs/2412.20504)
 * [AdaReTaKe: Adaptive Redundancy Reduction to Perceive Longer for Video-language Understanding](https://arxiv.org/abs/2503.12559)
