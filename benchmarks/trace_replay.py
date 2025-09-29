@@ -10,9 +10,7 @@ import time
 from collections import defaultdict
 from datetime import datetime
 
-import numpy as np
 import pandas
-from huggingface_hub import file_exists
 from tqdm.asyncio import tqdm
 from transformers import PreTrainedTokenizerBase
 
@@ -21,13 +19,14 @@ if benchmark_path:
     sys.path.append(benchmark_path)
     print(f"Added benchmark path: {benchmark_path}")
 else:
-    raise EnvironmentError("BENCHMARK_PATH is not set!")
+    raise EnvironmentError(
+        "Missing BENCHMARK_PATH environment variable.\n"
+        "Usage: export BENCHMARK_PATH=<your_vllm_benchmark_directory>"
+    )
 
 from backend_request_func import (
     ASYNC_REQUEST_FUNCS,
-    OPENAI_COMPATIBLE_BACKENDS,
     RequestFuncInput,
-    RequestFuncOutput,
 )
 from benchmark_dataset import (
     AIMODataset,
@@ -47,19 +46,12 @@ from benchmark_dataset import (
     VisionArenaDataset,
 )
 from benchmark_serving import (
-    benchmark,
     calculate_metrics,
     create_argument_parser,
     get_tokenizer,
 )
 
-try:
-    from vllm.utils import FlexibleArgumentParser
-except ImportError:
-    from argparse import ArgumentParser as FlexibleArgumentParser
-
 logger = logging.getLogger(__name__)
-SUPPORTED_ENGINES = ["vllm"]
 
 
 class TraceReplayDataset(BenchmarkDataset):
@@ -93,43 +85,59 @@ class TraceReplayDataset(BenchmarkDataset):
             f"{trace_directory_name}/{trace_file_name}_dataset.jsonl"
         )
         self.hash_to_tokens: dict[int, list[int]] = {}
-        
-    def generate_prompt(self, hash_ids: list[int], target_length: int, tokenizer) -> str:
-        
+
+    def generate_prompt(
+        self, hash_ids: list[int], target_length: int, tokenizer
+    ) -> str:
+
         vocab_size = tokenizer.vocab_size
-        
+
         # Use hash_ids to influence token generation
         base_offset = hash_ids[0] if hash_ids else 0
         token_ids = []
-        
+
         for i, value in enumerate(hash_ids):
             if value in self.hash_to_tokens:
                 token_ids.extend(self.hash_to_tokens[value])
             elif (i + 1) * 512 <= target_length:
                 for j in range(512):
                     token_idx = i * 512 + j
-                    token_id = (base_offset + token_idx + sum(hash_ids[token_idx % len(hash_ids):token_idx % len(hash_ids) + 3])) % vocab_size
+                    token_id = (
+                        base_offset
+                        + token_idx
+                        + sum(
+                            hash_ids[
+                                token_idx % len(hash_ids) : token_idx % len(hash_ids)
+                                + 3
+                            ]
+                        )
+                    ) % vocab_size
                     self.hash_to_tokens.setdefault(value, []).append(token_id)
                 token_ids.extend(self.hash_to_tokens[value])
             else:
                 needed = target_length - i * 512
-                padding = [(base_offset + len(token_ids) + j) % vocab_size for j in range(needed)]
+                padding = [
+                    (base_offset + len(token_ids) + j) % vocab_size
+                    for j in range(needed)
+                ]
                 token_ids.extend(padding)
-        print(f"target_length={target_length}, tokens_id length={len(token_ids)}")
-        
+
         # Decode to text and re-encode to get actual length
         text = tokenizer.decode(token_ids, skip_special_tokens=True)
         final_tokens = tokenizer.encode(text, add_special_tokens=False)
-        
+
         # Truncate or pad to target length
         if len(final_tokens) > target_length:
             final_tokens = final_tokens[:target_length]
         elif len(final_tokens) < target_length:
             # Pad with more deterministic tokens
             needed = target_length - len(final_tokens)
-            padding = [(base_offset + len(final_tokens) + i) % vocab_size for i in range(needed)]
+            padding = [
+                (base_offset + len(final_tokens) + i) % vocab_size
+                for i in range(needed)
+            ]
             final_tokens.extend(padding)
-        
+
         # Final decode
         return tokenizer.decode(final_tokens, skip_special_tokens=True)
 
@@ -167,13 +175,15 @@ class TraceReplayDataset(BenchmarkDataset):
                 hash_ids = req["hash_ids"]
                 input_length = req["input_length"]
                 output_length = req["output_length"]
-                
+
                 prompt = self.generate_prompt(hash_ids, input_length, tokenizer)
-                requests[timestamp].append(SampleRequest(
-                    prompt=prompt,
-                    prompt_len=input_length,
-                    expected_output_len=output_length,
-                ))
+                requests[timestamp].append(
+                    SampleRequest(
+                        prompt=prompt,
+                        prompt_len=input_length,
+                        expected_output_len=output_length,
+                    )
+                )
         if not save_prompts:
             return requests
         with open(self.prompts_file_name, "a", encoding="utf-8") as f:
@@ -347,75 +357,6 @@ def gene_prompts_by_dataset_name(
     return input_requests
 
 
-# Send requests by benchmark
-async def replay_trace_by_benchmark(
-    req_groups: dict, tokenizer: PreTrainedTokenizerBase, args: argparse.Namespace
-):
-    backend = args.backend
-    model_id = args.model
-    model_name = args.served_model_name
-    tokenizer = args.tokenizer
-
-    if args.base_url is not None:
-        api_url = f"{args.base_url}{args.endpoint}"
-        base_url = f"{args.base_url}"
-    else:
-        api_url = f"http://{args.host}:{args.port}{args.endpoint}"
-        base_url = f"http://{args.host}:{args.port}"
-
-    start_time = time.time()
-    print(f"Start time is {start_time}")
-    tasks = []
-    for sec, reqs in sorted(req_groups.items()):
-        delay = sec - (time.time() - start_time)
-        delay = max(0, delay)
-
-        async def send_one_request(r=reqs, d=delay):
-            sampling_params = {}
-            sampling_params["temperature"] = 0.9
-            await asyncio.sleep(d)  # Wait until the target time
-            print(f"Sending request at {time.time() - start_time:.3f}s")
-            try:
-                result = await benchmark(
-                    backend=backend,
-                    api_url=api_url,
-                    base_url=base_url,
-                    model_id=model_id,
-                    model_name=model_name,
-                    tokenizer=tokenizer,
-                    input_requests=r,
-                    logprobs=None,
-                    request_rate=float(
-                        "inf"
-                    ),  # send all requests of same timestamp at once
-                    burstiness=1,
-                    disable_tqdm=True,
-                    profile=False,
-                    selected_percentile_metrics=["ttft", "tpot", "itl"],
-                    selected_percentiles=[25.0, 50.0, 75.0, 99.0],
-                    ignore_eos=True,
-                    goodput_config_dict={},
-                    max_concurrency=args.max_concurrency,
-                    lora_modules=None,
-                    extra_body=sampling_params,
-                    ramp_up_strategy=None,
-                    ramp_up_start_rps=None,
-                    ramp_up_end_rps=None,
-                )
-            except asyncio.TimeoutError:
-                print(
-                    f"Request timed out: timestamp {r[0].timestamp if r else 'unknown'}"
-                )
-                return None
-            except Exception as e:
-                print(f"Request failed: {e}")
-                return None
-            return result
-
-        tasks.append(asyncio.create_task(send_one_request(reqs, delay)))
-    await asyncio.gather(*tasks)
-
-
 def save_metrics_to_file(metrics, output_dir="./"):
     output_path = output_dir
     if not os.path.exists(output_path):
@@ -452,6 +393,46 @@ def save_metrics_to_file(metrics, output_dir="./"):
     with pandas.ExcelWriter(excel_file, engine="openpyxl", mode="w") as writer:
         updated_df.to_excel(writer, index=False, sheet_name="Performance Metrics")
     print(f"Successfully saved performance metrics to {excel_file}")
+
+
+def save_req_results_to_file(outputs, output_dir="./"):
+    output_path = output_dir
+    if not os.path.exists(output_path):
+        os.makedirs(output_path, exist_ok=True)
+    excel_file = os.path.join(output_path, "req_results.xlsx")
+    rows = []
+    for output in outputs:
+        ttft = output.ttft * 1000 if output.ttft is not None else None
+        output_len = output.output_tokens if output.output_tokens is not None else 0
+        input_len = output.prompt_len if output.prompt_len is not None else 0
+        latency = output.latency * 1000 if output.latency is not None else None
+        tpot = None
+        if output_len > 1 and output.ttft is not None and output.latency is not None:
+            tpot = (output.latency - output.ttft) / (output_len - 1) * 1000
+        row = {
+            "ttft(ms)": ttft,
+            "tpot(ms)": tpot,
+            "e2el(ms)": latency,
+            "input_tokens": input_len,
+            "output_tokens": output_len,
+            "success": output.success,
+        }
+        rows.append(row)
+    df = pandas.DataFrame(rows)
+    file_exists = os.path.isfile(excel_file)
+    if file_exists:
+        try:
+            existing_df = pandas.read_excel(excel_file)
+            updated_df = pandas.concat([existing_df, df], ignore_index=True)
+        except Exception as e:
+            print(
+                f"Warning: Failed to read {excel_file}, it will be overwritten. Error: {e}"
+            )
+            updated_df = df
+    else:
+        updated_df = df
+    with pandas.ExcelWriter(excel_file, engine="openpyxl", mode="w") as writer:
+        updated_df.to_excel(writer, index=False, sheet_name="Performance Metrics")
 
 
 # Send requests by timestamp
@@ -539,7 +520,6 @@ async def replay_trace_by_time(
     for sec, reqs in sorted(req_groups.items()):
         delay = sec - (time.perf_counter() - start_time)
         delay = max(0, delay)
-        print(f"timestamp is {sec}, length of reqs is {len(reqs)}")
 
         async def send_group(r=reqs, d=delay):
             await asyncio.sleep(d)
@@ -578,10 +558,6 @@ async def replay_trace_by_time(
         selected_percentiles=[25.0, 50.0, 75.0, 99.0],
         goodput_config_dict={"ttft": 2000, "tpot": 50},
     )
-
-    if args.save_result:
-        output_dir = args.result_dir if args.result_dir is not None else "./"
-        save_metrics_to_file(metrics=metrics, output_dir=output_dir)
 
     print("{s:{c}^{n}}".format(s=" Serving Benchmark Result ", n=50, c="="))
     print("{:<40} {:<10}".format("Successful requests:", metrics.completed))
@@ -645,55 +621,9 @@ async def replay_trace_by_time(
 
     output_dir = args.result_dir if args.result_dir is not None else "./"
     if args.save_result:
+        save_metrics_to_file(metrics=metrics, output_dir=output_dir)
         save_req_results_to_file(outputs=outputs, output_dir=output_dir)
-
     return
-
-
-def save_req_results_to_file(outputs, output_dir="./"):
-    output_path = output_dir
-    if not os.path.exists(output_path):
-        os.makedirs(output_path, exist_ok=True)
-    excel_file = os.path.join(output_path, "req_results.xlsx")
-    rows = []
-    for output in outputs:
-        ttft = output.ttft * 1000 if output.ttft is not None else None
-        output_len = output.output_tokens if output.output_tokens is not None else 0
-        input_len = output.prompt_len if output.prompt_len is not None else 0
-        latency = output.latency * 1000 if output.latency is not None else None
-        tpot = None
-        if output_len > 1 and output.ttft is not None and output.latency is not None:
-            tpot = (output.latency - output.ttft) / (output_len - 1) * 1000
-        itl_mean = None
-        finish_time = None
-        if hasattr(output, "finish_time") and output.finish_time:
-            try:
-                finish_time = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(output.finish_time))
-            except Exception:
-                finish_time = None
-        row = {
-            "finish_time": finish_time,
-            "ttft(ms)": ttft,
-            "tpot(ms)": tpot,
-            "e2el(ms)": latency,
-            "input_tokens": input_len,
-            "output_tokens": output_len,
-            "success": output.success,
-        }
-        rows.append(row)
-    df = pandas.DataFrame(rows)
-    file_exists = os.path.isfile(excel_file)
-    if file_exists:
-        try:
-            existing_df = pandas.read_excel(excel_file)
-            updated_df = pandas.concat([existing_df, df], ignore_index=True)
-        except Exception as e:
-            print(f"Warning: Failed to read {excel_file}, it will be overwritten. Error: {e}")
-            updated_df = df
-    else:
-        updated_df = df
-    with pandas.ExcelWriter(excel_file, engine="openpyxl", mode="w") as writer:
-        updated_df.to_excel(writer, index=False, sheet_name="Performance Metrics")
 
 
 def create_argument_trace():
