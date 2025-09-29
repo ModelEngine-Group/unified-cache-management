@@ -23,6 +23,7 @@ def setup_environment_variables():
     os.environ["PYTHONHASHSEED"] = "123456"
     os.environ["VLLM_TORCH_PROFILER_DIR"] = "./vllm_profile"
 
+
 @contextlib.contextmanager
 def build_llm_with_uc(module_path: str, name: str, model: str):
     ktc = KVTransferConfig(
@@ -41,8 +42,8 @@ def build_llm_with_uc(module_path: str, name: str, model: str):
                     "local_window_sz": 2,
                     "sparse_ratio": 0.25,
                     "retrieval_stride": 8,
-                    "blk_repre_dim_prune_ratio": 0.25, # 块表征维度裁剪
-                    "blk_repre_inner_token_merge": 2 # 块内几个token融合成一个表征
+                    "blk_repre_dim_prune_ratio": 0.25,  # 块表征维度裁剪
+                    "blk_repre_inner_token_merge": 2,  # 块内几个token融合成一个表征
                 }
             },
         },
@@ -162,8 +163,13 @@ def main():
 
         sampling_params = SamplingParams(temperature=0, top_k=1, max_tokens=300)
 
-        print_output(llm, prompts_prefill_more_than_2_full_blk, sampling_params, "first")
-        print_output(llm, prompts_prefill_more_than_2_full_blk, sampling_params, "second")
+        print_output(
+            llm, prompts_prefill_more_than_2_full_blk, sampling_params, "first"
+        )
+        print_output(
+            llm, prompts_prefill_more_than_2_full_blk, sampling_params, "second"
+        )
+
 
 if __name__ == "__main__":
     main()
