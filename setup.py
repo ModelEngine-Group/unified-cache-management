@@ -28,6 +28,7 @@ import subprocess
 import sys
 import sysconfig
 
+import pybind11
 import torch
 import torch.utils.cpp_extension
 from setuptools import Extension, find_packages, setup
@@ -79,10 +80,16 @@ class CMakeBuild(build_ext):
         ]
 
         torch_cmake_prefix = torch.utils.cmake_prefix_path
-        cmake_args.append(f"-DCMAKE_PREFIX_PATH={torch_cmake_prefix}")
+        pybind11_cmake_dir = pybind11.get_cmake_dir()
+
+        cmake_prefix_paths = [torch_cmake_prefix, pybind11_cmake_dir]
+        cmake_args.append(f"-DCMAKE_PREFIX_PATH={';'.join(cmake_prefix_paths)}")
+
         torch_includes = torch.utils.cpp_extension.include_paths()
         python_include = sysconfig.get_path("include")
-        all_includes = torch_includes + [python_include]
+        pybind11_include = pybind11.get_include()
+
+        all_includes = torch_includes + [python_include, pybind11_include]
         cmake_include_string = ";".join(all_includes)
         cmake_args.append(f"-DEXTERNAL_INCLUDE_DIRS={cmake_include_string}")
 
@@ -101,6 +108,7 @@ class CMakeBuild(build_ext):
         print(f"[INFO] Building {ext.name} module with CMake")
         print(f"[INFO] Source directory: {ext.sourcedir}")
         print(f"[INFO] Build directory: {build_dir}")
+        print(f"[INFO] CMake command: {' '.join(cmake_args)}")
 
         subprocess.check_call(cmake_args, cwd=build_dir)
 
