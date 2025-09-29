@@ -1,0 +1,2 @@
+pybind11_add_module(retrieval_backend cpy/retrieval_backend.cpp)
+set_target_properties(retrieval_backend PROPERTIES LIBRARY_OUTPUT_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
