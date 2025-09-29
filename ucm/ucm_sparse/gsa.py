@@ -24,6 +24,7 @@ from ucm.integration.vllm.ucm_sparse.base import (
     UcmSparseMetadata,
     UcmSparseRole,
 )
+from ucm.logger import init_logger
 from ucm.store.factory import UcmConnectorFactory
 from ucm.ucm_sparse import gsa_offload_ops
 from ucm.ucm_sparse.prefetch_engine import GSAPrefetchBase
@@ -36,7 +37,6 @@ from ucm.ucm_sparse.utils import (
     SEG_PREFILL_THRESHOLD,
     compute_topk_len,
 )
-from ucm.logger import init_logger
 
 logger = init_logger(__name__)
 
@@ -228,7 +228,7 @@ class GSAReqStat:
         if add_len <= 0:
             self.calc_block_table = []
             self.calc_repre_slot_mapping = []
-            return 
+            return
 
         if self.stage == SequenceStage.PREFILL:
             if self.is_last_chunk:
@@ -238,9 +238,7 @@ class GSAReqStat:
                 ]
             else:
                 self.calc_block_table = [x for x in add_blocks]
-                self.calc_repre_slot_mapping = self.repre_slot_mapping[
-                    add_len * -1 :
-                ]
+                self.calc_repre_slot_mapping = self.repre_slot_mapping[add_len * -1 :]
         else:
             self.calc_block_table = [self.blocks[-1]]
             self.calc_repre_slot_mapping = [self.repre_slot_mapping[-1]]
@@ -334,7 +332,7 @@ class TopKAndKpreManger:
             self.free_cache.append(i)
 
     def free(self, req_id: ReqType):
-        if  not self.cache_map[req_id] in self.free_cache:
+        if not self.cache_map[req_id] in self.free_cache:
             self.free_cache.append(self.cache_map[req_id])
             del self.cache_map[req_id]
         else:
@@ -523,7 +521,9 @@ class GSA(UcmSparseBase):
                 torch.npu.current_stream().synchronize()
             if current_layer_id == 0:
                 ret = self.connector.create(block_hashes)
-            self._launch_transfer_task("dump", block_hashes, block_ids, current_layer_id)
+            self._launch_transfer_task(
+                "dump", block_hashes, block_ids, current_layer_id
+            )
             self._wait_all_task_done("dump")
             if current_layer_id == self.layer_num - 1:
                 self.connector.commit(block_hashes, True)
@@ -677,7 +677,10 @@ class GSA(UcmSparseBase):
             )
         else:
             self.gsa_cuda_topk = TopkCal(
-                att_num_heads, self.num_key_heads, self.head_size, prefetch_engine.kpre_caches
+                att_num_heads,
+                self.num_key_heads,
+                self.head_size,
+                prefetch_engine.kpre_caches,
             )
 
     def _launch_transfer_task(
@@ -779,7 +782,7 @@ class GSA(UcmSparseBase):
             for _, task in self.tasks_load.items():
                 ret = self.connector.wait(task)
             self.tasks_load.clear()
-    
+
     def _check_all_task_is_done(self, transfer_type):
         if transfer_type == "dump":
             for _, task in self.tasks_dump.items():
@@ -795,7 +798,7 @@ class GSA(UcmSparseBase):
                     return False
             self.tasks_load.clear()
             return True
-    
+
     def _build_gsa_metadata(
         self, scheduler_output: SchedulerOutput, requests, input_batch
     ) -> GSAMetaData:
@@ -814,7 +817,7 @@ class GSA(UcmSparseBase):
         )
         self.gsa_stats = gsa_meta.gsa_stats
         return gsa_meta
-    
+
     def _process_topk(self, query: torch.Tensor, current_layer_id: int) -> None:
         ids = [-1] * len(self.prefetch_engine.req_ids_bs)
         for req_id in self.prefetch_engine.req_ids_bs:
@@ -867,7 +870,7 @@ class GSA(UcmSparseBase):
         self.block_size = self.k_cache[current_layer_id].shape[1]
         self.num_key_heads = self.k_cache[current_layer_id].shape[2]
         self.head_size = self.k_cache[current_layer_id].shape[3]
-    
+
     def _start_topk_cal(self) -> None:
         cal_topk_id = []
         is_decode = []
@@ -986,10 +989,12 @@ class GSA(UcmSparseBase):
                         )
                 self.gsa_metadata.gsa_stats[req_id].local_window_kv.append(k_cache)
                 self.gsa_metadata.gsa_stats[req_id].local_window_kv.append(v_cache)
-    
+
     def _get_offset(self, block_shape, precision, layer_id, is_v, is_mla) -> int:
         block_size, num_key_heads_per_tp, head_size = block_shape
-        k_min_data_block_size = block_size * num_key_heads_per_tp * head_size * precision
+        k_min_data_block_size = (
+            block_size * num_key_heads_per_tp * head_size * precision
+        )
         v_min_data_block_size = k_min_data_block_size if not is_mla else 0
         layer_size = (k_min_data_block_size + v_min_data_block_size) * self.tp_size
         if is_mla:

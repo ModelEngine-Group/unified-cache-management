@@ -413,9 +413,7 @@ class GSAPrefetchBase:
             else:
                 self.block_map_flag[req_id] = []
                 self.block_table_flag[req_id] = []
-                self.gsa_seq_len[:, bs_index] = gsa_metadata.gsa_stats[
-                    req_id
-                ].seq_len
+                self.gsa_seq_len[:, bs_index] = gsa_metadata.gsa_stats[req_id].seq_len
                 self.use_block_table[
                     :, bs_index, : len(gsa_metadata.gsa_stats[req_id].blocks)
                 ] = torch.tensor(
@@ -517,9 +515,7 @@ class GSAPrefetchBase:
                 self.is_gsa_req_id[req_id]
                 and gsa_metadata.gsa_stats[req_id].topk_buf_tmp != None
             ):
-                remain_slot = (
-                    gsa_metadata.gsa_stats[req_id].seq_len % self.block_size
-                )
+                remain_slot = gsa_metadata.gsa_stats[req_id].seq_len % self.block_size
                 one_topk_len = len(gsa_metadata.gsa_stats[req_id].topk_buf_tmp[0])
                 for layer_id in range(self.num_attention_layers):
                     self.use_block_table[layer_id][bs_index][:one_topk_len] = (
@@ -535,9 +531,7 @@ class GSAPrefetchBase:
                         one_topk_len * self.block_size - self.block_size + remain_slot
                     )
             else:
-                self.gsa_seq_len[:, bs_index] = gsa_metadata.gsa_stats[
-                    req_id
-                ].seq_len
+                self.gsa_seq_len[:, bs_index] = gsa_metadata.gsa_stats[req_id].seq_len
                 self.use_block_table[
                     :, bs_index, : len(gsa_metadata.gsa_stats[req_id].blocks)
                 ] = one_block_table
