@@ -26,7 +26,10 @@ import os
 import shutil
 import subprocess
 import sys
+import sysconfig
 
+import torch
+import torch.utils.cpp_extension
 from setuptools import Extension, find_packages, setup
 from setuptools.command.build_ext import build_ext
 from setuptools.command.develop import develop
@@ -74,6 +77,14 @@ class CMakeBuild(build_ext):
             f"-DPYTHON_EXECUTABLE={sys.executable}",
             f"-DPYTHON3_EXECUTABLE={sys.executable}",
         ]
+
+        torch_cmake_prefix = torch.utils.cmake_prefix_path
+        cmake_args.append(f"-DCMAKE_PREFIX_PATH={torch_cmake_prefix}")
+        torch_includes = torch.utils.cpp_extension.include_paths()
+        python_include = sysconfig.get_path("include")
+        all_includes = torch_includes + [python_include]
+        cmake_include_string = ";".join(all_includes)
+        cmake_args.append(f"-DEXTERNAL_INCLUDE_DIRS={cmake_include_string}")
 
         if _is_cuda():
             cmake_args.append("-DRUNTIME_ENVIRONMENT=cuda")
