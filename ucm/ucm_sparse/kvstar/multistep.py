@@ -3,7 +3,6 @@ import math
 from dataclasses import dataclass, field
 from typing import Dict, List, Union
 
-from ucm.ucm_sparse import kvstar_retrieve
 import torch
 from vllm.config import VllmConfig
 from vllm.distributed.kv_transfer import get_kv_transfer_group
@@ -18,6 +17,7 @@ from ucm.integration.vllm.ucm_sparse.base import (
     UcmSparseRole,
 )
 from ucm.store.ucmstore import Task, UcmKVStoreBase
+from ucm.ucm_sparse import kvstar_retrieve
 from ucm.ucm_sparse.kvstar.utils import bind_cpus, block_hash_func, get_offset
 
 """
@@ -875,8 +875,8 @@ class KVStarMultiStep(UcmSparseBase):
 
             q_start_loc = query_start_locs[input_batch.req_id_to_index[req_id]].item()
             q_len = (
-                    query_start_locs[input_batch.req_id_to_index[req_id] + 1].item()
-                    - q_start_loc
+                query_start_locs[input_batch.req_id_to_index[req_id] + 1].item()
+                - q_start_loc
             )
 
             if len(req_state.prompt_token_ids) > self.token_blk_size:
