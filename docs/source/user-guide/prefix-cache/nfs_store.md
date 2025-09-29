@@ -8,8 +8,8 @@ This document provides a usage example and configuration guide for the **NFS Con
 The following are the multi-concurrency performance test results of UCM in the Prefix Cache scenario under a CUDA environment, showing the performance improvements of UCM on two different models.
 During the tests, HBM cache was disabled, and KV Cache was retrieved and matched only from SSD.
 
-In the QwQ-32B model, the test used one H20 server with two GPUs.
-In the DeepSeek-V3 model, the test used two H20 servers with sixteen GPUs.
+In the QwQ-32B model, the test used one H20 server with 2 GPUs.
+In the DeepSeek-V3 model, the test used two H20 servers with 16 GPUs.
 
 Here, Full Compute refers to pure VLLM inference, while Disk80% indicates that after UCM pooling, the SSD hit rate of the KV cache is 80%.
 
@@ -176,6 +176,6 @@ To quickly experience the NFS Connector's effect:
 |--------------|-----------------------------------------------------------------------------|
 | `task_id`    | Unique identifier for the task                                              |
 | `direction`  | `D2S`: Dump to Storage (Device → SSD)<br>`S2D`: Load from Storage (SSD → Device) |
-| `task_count` | Number of tasks executed in this operation                         |
-| `size`       | Total size of data transferred in bytes (across all tasks)                  |
+| `task_count` | Number of tasks executed in this operation                                  |
+| `size`       | Total size of data transferred in **bytes** (across all tasks)              |
 | `time`       | Time taken for the complete operation in seconds                            |
