@@ -6,46 +6,50 @@
 </p>
 
 <p align="center">
-| <a href="docs/source/index.md"><b>Documentation</b></a> | <a href="https://github.com/ModelEngine-Group/unified-cache-management/issues/16"><b>Roadmap</b></a> |
+| <a href="docs/source/index.md"><b>Documentation</b></a> | <a href="https://modelengine-ai.net/#/ucm"><b>Website</b></a> | <a href="https://modelengine-ai.net/#/ucm"><b>RoadMap</b></a> |
 </p>
 
 ---
 
-*Latest News* 🔥
-- [2025/08/01] We are excited to announce the alpha release of Unified Cache Manager.
+## Overview
 
----
+The core principle of Unified Cache Manager (UCM) is to persist the LLM KVCache and replace redundant computations
+through multiple retrieval mechanisms. UCM not only supports prefix caching but also offers a variety of training-free
+sparse attention retrieval methods, delivering higher performance when handling extremely long sequence inference tasks.
+Additionally, UCM provides a PD disaggregation solution based on a storage-compute separation architecture, which
+enables more straightforward and flexible management of heterogeneous computing resources. When integrated with vLLM,
+UCM achieves a 3-10x reduction in inference latency across various scenarios, including multi-turn dialogue and
+long-context reasoning tasks.
 
-## Performance
-nfs connector has reached about 4x TTFT accelerate.
 
-![perf](docs/source/images/nfs_performance.png)
-
-## About
-UCM is rooted in KV Cache, with the goal of reducing inference costs and building commercially viable inference solutions. It enhances throughput through methods such as Prefix Cache, sparsification, and PD Disaggregation.
-
----
-
-## Quick Start
-please refer to [Quick Start](/develop/docs/source/getting-started/quick_start.md).
 
 ---
 
 ## Support Features
-please refer to [features matrix](docs/source/feature/support.md).
+
+|                     **Feature** | **Qwen** | **Deepseek** | 
+|--------------------------------:|---------:|-------------:|
+|                    Prefix Cache |        ✅ |            ✅ | 
+|                     Cache Blend |          |              | 
+|      Model Window Extrapolation |          |              | 
+|                 Prefill Offload |          |              | 
+|        Sparse Attention Offload |        ✅ |            ✅ | 
+| Heterogeneous PD Disaggregation |        ✅ |            ✅ |  
 
 ---
 
-## Branch Policy
-Unified Cache has main branch, develop branch and release branch.
-- **main**: The main branch is the stable line; it receives merges from develop once basic tests pass. In principle, there should be no direct check-ins to the main branch.
-- **develop**: The develop branch is the daily development branch where new features are merged.
-- **release**: Each time a new version release process begins, release branch is merged from the main branch. This branch only accepts bug fixes, and all bug fixes will be picked back to the develop branch. After the release testing passes, a release tag (x.x.x) will be created on the release branch. The release branch will be retained for the next release.
+## Quick Start
+
+please refer to [Quick Start](./docs/source/getting-started/quick_start.md).
 
 ---
 
-## Contributing
-We welcome and value any contributions and collaborations. Please check out [Contributing](docs/source/developer-guide/contribute.md) to vLLM for how to get involved.
+## Branch
+
+| **Branch** |     Status | vLLM version | 
+|-----------:|-----------:|-------------:|
+|       main | Maintained |       v0.9.2 | 
+|    develop | Maintained |       v0.9.2 |
 
 ---
 
