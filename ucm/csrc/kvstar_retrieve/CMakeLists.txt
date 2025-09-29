@@ -62,6 +62,59 @@ find_package(Python REQUIRED COMPONENTS Interpreter Development)
 include_directories(${Python_INCLUDE_DIRS})
 find_package(pybind11 REQUIRED)
 
+# ========================临时解决CI不集成libnuma===============================
+# 定义本地安装目录
+set(NUMA_INSTALL_DIR ${CMAKE_CURRENT_BINARY_DIR}/numa_install)
+
+# 声明 numactl 项目，使用 URL 指向 .tar.gz 文件
+FetchContent_Declare(
+    numactl
+    URL https://github.com/numactl/numactl/releases/download/v2.0.16/numactl-2.0.16.tar.gz
+    TLS_VERIFY OFF
+)
+
+# CMake 下载并解压内容
+FetchContent_MakeAvailable(numactl)
+
+if(NOT EXISTS "${NUMA_INSTALL_DIR}/lib/libnuma.so")
+    # -- 运行 configure 脚本（不需要 autogen.sh）--
+    message(STATUS "Configuring numactl...")
+    execute_process(
+        COMMAND ./configure --prefix=${NUMA_INSTALL_DIR}
+        WORKING_DIRECTORY ${numactl_SOURCE_DIR}
+        RESULT_VARIABLE numa_configure_result
+        OUTPUT_VARIABLE numa_configure_output
+        ERROR_VARIABLE numa_configure_error
+    )
+    if(NOT numa_configure_result EQUAL 0)
+        message(FATAL_ERROR "Failed to configure numactl. \n"
+                            "Result: ${numa_configure_result}\n"
+                            "STDOUT: ${numa_configure_output}\n"
+                            "STDERR: ${numa_configure_error}\n")
+    endif()
+
+    # -- 编译并安装 --
+    message(STATUS "Building and installing numactl...")
+    execute_process(
+        COMMAND make install -j8
+        WORKING_DIRECTORY ${numactl_SOURCE_DIR}
+        RESULT_VARIABLE numa_install_result
+        OUTPUT_VARIABLE numa_install_output
+        ERROR_VARIABLE numa_install_error
+    )
+    if(NOT numa_install_result EQUAL 0)
+        message(FATAL_ERROR "Failed to build and install numactl. \n"
+                            "Result: ${numa_install_result}\n"
+                            "STDOUT: ${numa_install_output}\n"
+                            "STDERR: ${numa_install_error}\n")
+    endif()
+else()
+    message(STATUS "Found already built libnuma. Skipping build.")
+endif()
+
+# ==============================================================================
+
+
 # 依次加载两个子模块
 add_subdirectory(core)
 add_subdirectory(py_intf)
