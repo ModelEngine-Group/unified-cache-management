@@ -772,7 +772,7 @@ class UnifiedCacheConnectorV1(KVConnectorBase_V1):
                 and block_info.block_hashes[i] not in request.succeed_dumped_blocks
             ]
             if cancel_blocks:
-                logger.info(f"commit {cancel_blocks} to False.")
+                logger.debug(f"commit {cancel_blocks} to False.")
                 self.connector.commit(cancel_blocks, False)
         request.succeed_dumped_blocks.clear()
         return False, None
