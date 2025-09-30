@@ -34,24 +34,23 @@ connector for PC.
 
 ![architecture.png](./docs/source/_static/images/idea.png)
 
-All gray boxes are current classes in 0.9.2. Green boxes are proposed to add. Light green ones show out the future sub
-classes base on this framework.
+All gray boxes in the diagram represent existing classes in vLLM version 0.9.2, while the green boxes indicate newly added components by UCM. 
+The light green boxes demonstrate potential future subclass extensions based on this framework.
 
-SpareKVBase is the base class of different algorithms. Just like KV connector design, it will hook few places of
-scheduler and layer.py to allow sparse algorithms do additional load, dump and calculate sparse KV blocks.
+UcmSparseBase is the base class of different sparse algorithms. Just like KV connector design, it will hook few places of
+scheduler and layer.py to do additional load, dump and calculate sparse KV blocks.
 
-SparseKVManager provide different KV block allocation methods for different algorithms. To keep all implementation under
-SpareKVBase, it will call SparseKVBase and real implementation will happen in sub class of sparse algorithms.
+SparseKVManager allows users to define custom KV block allocations for different algorithms. 
+To keep all implementations unified under the SparseKVBase framework, the system calls the SparseKVBase base class, 
+while the actual implementation occurs in subclasses of sparse algorithms.
 
-KVStoreBase helps decoupling sparse algorithms and external storage. It defined the methods how to talk to external
-storage, so any sparse algorithms can work with any external storage. Concepts here is blocks identify by ID with
-offset. This is not only for sparse but also naturally for prefix cache also. KVStoreConnector connect it with current
-KVConnectorBase_V1 to provide PC function.
-
-NFSStore is sample implementation here provide ability to store blocks in local file system or NFS mount point in
-multi-server case.
-
-LocalCachedStore can reference any store to provide local DRAM read cache layer.
+KVStoreBase helps decouple sparse algorithms from external storage. It defines methods for communicating with external storage, 
+enabling any sparse algorithm to work seamlessly with any external storage system. 
+The core concept here involves identifying blocks through IDs and offsets. 
+This approach is not only suitable for sparse scenarios but also naturally accommodates prefix caching. 
+The KVStoreConnector links it with the current KVConnectorBase_V1 to provide PC (Prefix Caching) functionality. 
+For example, NFSStore serves as a reference implementation that provides the capability to store KVCache 
+in either a local filesystem for single-machine scenarios or through NFS mount points in multi-server environments.
 
 ---
 
