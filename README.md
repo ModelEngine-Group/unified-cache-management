@@ -23,15 +23,6 @@ long-context reasoning tasks.
 
 ![architecture.png](./docs/source/_static/images/architecture.png)
 
-The ucm workflow is:
-
-1. accelerate prefill by prefix cache and cache blend.
-2. when prefilling, only 2 layers kvcache left in HBM, the one is in dumping and the other is calculating, others will be
-   offload in Storage.
-3. decode instance will load kvcache from storage, if we open sparse attention, only kvcache of selected tokens will be
-   load to HBM.
-4. accelerate by mtp
-
 ---
 
 ## Support Features
