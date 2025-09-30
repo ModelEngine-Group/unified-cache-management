@@ -5,7 +5,7 @@
 
  <img src="../../_static/images/GSA_overview.png" width="700px">   <!-- 宽度 400 像素 -->
  <br>
-[![License](https://img.shields.io/badge/License-MIT-green.svg)](../../../../LICENSE)
+[![License](https://img.shields.io/badge/License-MIT-green.svg)](https://github.com/ModelEngine-Group/unified-cache-management/blob/main/LICENSE)
 [![Python](https://img.shields.io/badge/Python-3.10+-blue.svg)](https://python.org)
 </div>
 
