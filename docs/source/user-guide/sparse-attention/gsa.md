@@ -29,7 +29,7 @@ GSA (Geometric Sparse Attention) simultaneously tackles the high computational c
 
 
 ## 🔥 Key Results
-In both performance and accuracy evaluations, we employed the DeepSeek-R1-Distill-Qwen-32B model deployed on two H20 GPUs.
+In both performance and accuracy evaluations, we deployed the DeepSeek-R1-Distill-Qwen-32B model on two H20 GPUs.
 ## 🏆 Performance Highlights
 ### End-to-End Performance with 80 % Prefix-Cache Hit Ratio
 Below are the end-to-end throughput results for inference scenarios without KVCache offloading. PC Baseline refers to the full attention method with an 80% prefix cache hit rate. The GSA method sparsifies each input request to 6K tokens, and in the experiments, each request generates 4K tokens of output.
