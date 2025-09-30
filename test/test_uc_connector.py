@@ -152,11 +152,7 @@ class TestUCConnector(unittest.TestCase):
         def mock_lookup(tokens: List[int]) -> List[bool]:
             return [True, False, True, False]
 
-        def mock_create(tokens: List[str]) -> List[int]:
-            return [0, 1, 0]
-
         mock_connector.lookup.side_effect = mock_lookup
-        mock_connector.create.side_effect = mock_create
         ucconnector = self.init_uc(mock_connector)
 
         random.seed(20250704)
@@ -177,9 +173,9 @@ class TestUCConnector(unittest.TestCase):
             ucconnector.request_block_infos[request1.request_id].block_operations,
             [
                 BlockOperation.LOAD,
-                BlockOperation.DUMP,
                 BlockOperation.NONE,
-                BlockOperation.DUMP,
+                BlockOperation.NONE,
+                BlockOperation.NONE,
             ],
         )
 
@@ -189,11 +185,7 @@ class TestUCConnector(unittest.TestCase):
         def mock_lookup(tokens: List[int]) -> List[bool]:
             return [False, True, False]
 
-        def mock_create(tokens: List[str]) -> List[int]:
-            return [0, 1, 0]
-
         mock_connector.lookup.side_effect = mock_lookup
-        mock_connector.create.side_effect = mock_create
         ucconnector = self.init_uc(mock_connector)
 
         random.seed(20250704)
@@ -218,9 +210,9 @@ class TestUCConnector(unittest.TestCase):
             ucconnector.request_block_infos[request1.request_id].block_operations,
             [
                 BlockOperation.NONE,
-                BlockOperation.DUMP,
                 BlockOperation.NONE,
-                BlockOperation.DUMP,
+                BlockOperation.NONE,
+                BlockOperation.NONE,
             ],
         )
 
