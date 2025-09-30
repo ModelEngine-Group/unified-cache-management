@@ -1,6 +1,6 @@
 <p align="center">
   <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="docs/source/logos/UCM.png">
+    <source media="(prefers-color-scheme: dark)" srcset="docs/source/logos/UCM-dark.png">
     <img alt="UCM" src="docs/source/logos/UCM-light.png" width=50%>
   </picture>
 </p>
@@ -53,9 +53,9 @@ please refer to [Quick Start](./docs/source/getting-started/quick_start.md).
 
 ## Branch
 
-| **Branch** |     Status | vLLM version | 
+| **Branch** |     Status | vLLM version |
 |-----------:|-----------:|-------------:|
-|       main | Maintained |       v0.9.2 | 
+|       main | Maintained |       v0.9.2 |
 |    develop | Maintained |       v0.9.2 |
 
 ---
