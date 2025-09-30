@@ -16,9 +16,9 @@ from ucm.sparse.base import (
     UcmSparseMetadata,
     UcmSparseRole,
 )
+from ucm.sparse.kvstar.retrieve import kvstar_retrieve
+from ucm.sparse.kvstar.utils import bind_cpus, block_hash_func, get_offset
 from ucm.store.ucmstore import Task, UcmKVStoreBase
-from ucm.ucm_sparse import kvstar_retrieve
-from ucm.ucm_sparse.kvstar.utils import bind_cpus, block_hash_func, get_offset
 
 """
 --------------------------------------------------------------------------------------
