@@ -1,20 +1,12 @@
-cmake_minimum_required(VERSION 3.18)
-project(kvstar_retrieve_clib)
-
-include(FetchContent)
-
-set(CMAKE_CXX_STANDARD 17)
-set(CMAKE_CXX_STANDARD_REQUIRED ON)
-set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fPIC -D_GLIBCXX_USE_CXX11_ABI=0")
-
 if(CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|i686|i386|AMD64")
     include(CheckCXXCompilerFlag)
 
     check_cxx_compiler_flag("-mf16c" COMPILER_SUPPORTS_F16C)
     check_cxx_compiler_flag("-mavx2" COMPILER_SUPPORTS_AVX2)
+    check_cxx_compiler_flag("-mfma" COMPILER_SUPPORTS_MFMA)
 
-    if(COMPILER_SUPPORTS_F16C AND COMPILER_SUPPORTS_AVX2)
-        set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -mf16c -mavx2")
+    if(COMPILER_SUPPORTS_F16C AND COMPILER_SUPPORTS_AVX2 AND COMPILER_SUPPORTS_MFMA)
+        set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -mf16c -mavx2 -mfma")
         message(STATUS "F16C and AVX2 instruction sets enabled")
 
         add_definitions(-DUSE_F16C=1)
@@ -39,42 +31,26 @@ else()
     add_definitions(-DUSE_F16C=0)
 endif()
 
-FetchContent_Declare(
-        fmt
-        GIT_REPOSITORY https://github.com/fmtlib/fmt.git
-        GIT_TAG        10.2.1
-)
-
-set(FMT_TEST OFF CACHE BOOL "Disable testing for fmt")
-FetchContent_MakeAvailable(fmt)
-
-FetchContent_Declare(
-        spdlog
-        GIT_REPOSITORY https://github.com/gabime/spdlog.git
-        GIT_TAG        v1.14.1
-)
-
-set(SPDLOG_BUILD_TESTS OFF CACHE BOOL "Disable testing for spdlog")
-
-set(SPDLOG_USE_EXTERNAL_FMT ON CACHE BOOL "Use external fmt library")
-FetchContent_MakeAvailable(spdlog)
-
-find_package(Torch REQUIRED)
-include_directories(${TORCH_INCLUDE_DIRS})
 find_package(Python REQUIRED COMPONENTS Interpreter Development)
 include_directories(${Python_INCLUDE_DIRS})
-find_package(pybind11 REQUIRED)
+execute_process(
+    COMMAND ${Python_EXECUTABLE} -c "import torch; import os; print(os.path.dirname(os.path.abspath(torch.__file__)))"
+    OUTPUT_VARIABLE PYTORCH_PATH
+    OUTPUT_STRIP_TRAILING_WHITESPACE
+    RESULT_VARIABLE PYTORCH_RESULT
+)
+
+set(Torch_DIR ${PYTORCH_PATH}/share/cmake/Torch/)
+find_package(Torch REQUIRED)
+include_directories(${TORCH_INCLUDE_DIRS})
 
 set(NUMA_INSTALL_DIR ${CMAKE_CURRENT_BINARY_DIR}/numa_install)
-
 FetchContent_Declare(
     numactl
     URL https://github.com/numactl/numactl/releases/download/v2.0.16/numactl-2.0.16.tar.gz
     TLS_VERIFY OFF
 )
-
 FetchContent_MakeAvailable(numactl)
-
 if(NOT EXISTS "${NUMA_INSTALL_DIR}/lib/libnuma.so")
     message(STATUS "Configuring numactl...")
     execute_process(
