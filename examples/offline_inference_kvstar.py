@@ -88,7 +88,7 @@ def build_llm_with_uc(module_path: str, name: str, model: str):
     llm_args = EngineArgs(
         model=model,
         kv_transfer_config=ktc,
-        max_model_len=65535,
+        max_model_len=32768,
         gpu_memory_utilization=0.8,
         max_num_batched_tokens=30000,
         block_size=128,

@@ -1,3 +1,18 @@
+# auto detect cuda ------------------------
+if($ENV{PLATFORM} STREQUAL "cuda")
+    if(NOT DEFINED CMAKE_CUDA_COMPILER)
+        set(CUDA_HOME "$ENV{CUDA_HOME}")
+        if(NOT CUDA_HOME)
+            set(CUDA_HOME "/usr/local/cuda")
+        endif()
+        if(NOT EXISTS "${CUDA_HOME}")
+            message(FATAL_ERROR "CUDA_HOME directory does not exist: ${CUDA_HOME}")
+        endif()
+        set(CMAKE_CUDA_COMPILER "${CUDA_HOME}/bin/nvcc" CACHE FILEPATH "CUDA compiler" FORCE)
+    endif()
+    enable_language(CUDA)
+endif()
+
 if(CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|i686|i386|AMD64")
     include(CheckCXXCompilerFlag)
 
