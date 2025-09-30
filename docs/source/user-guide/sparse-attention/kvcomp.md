@@ -7,7 +7,7 @@
 **🚀 Hash-Aware Sparse Attention Algorithm | 📄 ACL 2025 Paper | ⚡ NPU/GPU Hardware-Efficient**
 
 [![Paper](https://img.shields.io/badge/Paper-ACL%202025-blue)](../../_static/paper/kvcomp-ACL-2025-paper.pdf)
-[![License](https://img.shields.io/badge/License-MIT-green.svg)](https://github.com/ModelEngine-Group/unified-cache-management/blob/main/LICENSE)
+[![License](https://img.shields.io/badge/License-MIT-green.svg)](../../../../LICENSE)
 [![Python](https://img.shields.io/badge/Python-3.10+-blue.svg)](https://python.org)
 
 </div>
