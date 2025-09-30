@@ -88,17 +88,50 @@ Similar to UCM's `offline_inference_esa.py` examples. We only need to specify `u
 ...
 ktc = KVTransferConfig(
     kv_connector=name,
-    kv_connector_module_path=module_path,
+    kv_connector_module_path="ucm.integration.vllm.uc_connector",
     kv_role="kv_both",
     kv_connector_extra_config={
         "ucm_connector_name": "UcmNfsStore",
         "ucm_connector_config": {
-            "kv_block_size": 262144,
+            "storage_backends": kv_store_path,
+            "transferStreamNumber":16
         },
-        "ucm_sparse_method": "GSA",
-    },
+        "ucm_sparse_config": {
+            "GSA": {}
+        }
+    }
 )
 ...
+```
+
+Thus, an example command for launching the online LLM service is as follows:
+
+```shell
+vllm serve /home/models/DeepSeek-R1-Distill-Qwen-32B \
+--served-model-name DeepSeek-R1-Distill-Qwen-32B \
+--max-model-len 131000 \
+--tensor-parallel-size 2 \
+--gpu_memory_utilization 0.87 \
+--trust-remote-code \
+--port 8090 \
+--block-size 128 \
+--no-enable-prefix-caching \
+--kv-transfer-config \
+'{
+    "kv_connector": name,
+    "kv_connector_module_path": "ucm.integration.vllm.uc_connector",
+    "kv_role": "kv_both",
+    "kv_connector_extra_config": {
+        "ucm_connector_name": "UcmNfsStore",
+        "ucm_connector_config": {
+            "storage_backends": kv_store_path,
+            "transferStreamNumber":16
+        },
+        "ucm_sparse_config": {
+            "GSA": {}
+        }
+    }
+}'
 ```
 
 
