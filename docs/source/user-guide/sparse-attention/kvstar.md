@@ -67,16 +67,17 @@ ktc = KVTransferConfig(
 
 　
 
-　
-
 ## 🔥 Results
 The following results were obtained using `Qwen2.5-14B-Instruct` under the hyperparameters in  `examples/offline_inference_kvstar.py`.
 
+### 📈 Accuracy
+We use [LongBench](https://huggingface.co/datasets/zai-org/LongBench) to evaluate the accuracy (F1-score) of the KVstar algorithm on H20 GPU. The model is `Qwen2.5-14B-Instruct` 
+
+|  | Dataset | full Attention | KVstar (25% KVcache on GPU) |
+|-------|-----------|-----------|-------|
+| H20 GPU | dureader | 32.20 | 29.93 |
+| Ascend 910B NPU | dureader | 32.46 | 31.08 |
+
 ### 🏆 Performance
 
-### 📈 Accuracy
-We use [LongBench](https://huggingface.co/datasets/zai-org/LongBench) to evaluate the accuracy of the ESA algorithm.
-| Dataset | F1-Score for full Attention | F1-Score for KVstar |
-|-------|-----------|-----------|
-| multifieldqa_zh |  | 62.63 |
-| dureader |  | 30.96 |
+(coming soon)
