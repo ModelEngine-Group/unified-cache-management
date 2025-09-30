@@ -645,7 +645,9 @@ class UnifiedCacheConnectorV1(KVConnectorBase_V1):
         if request.request_id in self._need_load_reqs:
             local_block_ids = (
                 # since we use unhashed blocks, so we don't need to reset start_position
-                blocks.get_unhashed_block_ids() if num_external_tokens > 0 else []
+                blocks.get_unhashed_block_ids()
+                if num_external_tokens > 0
+                else []
             )
             self._need_load_reqs[request.request_id] = local_block_ids
             return
