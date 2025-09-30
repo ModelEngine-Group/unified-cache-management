@@ -1,7 +1,10 @@
 import contextlib
+import json
 import os
 import time
 from dataclasses import asdict
+
+from transformers import AutoTokenizer
 
 # Third Party
 from vllm import LLM, SamplingParams
@@ -25,21 +28,31 @@ def build_llm_with_uc(module_path: str, name: str, model: str):
         kv_connector_module_path=module_path,
         kv_role="kv_both",
         kv_connector_extra_config={
-            "ucm_connector_name": "UcmDram",
+            "ucm_connector_name": "UcmDramStore",
             "ucm_connector_config": {
-                "max_cache_size": 53687091200,
+                "max_cache_size": 5368709120,
                 "kv_block_size": 262144,
             },
-            "ucm_sparse_method": "GSA",
+            "ucm_sparse_config": {
+                "ESA": {
+                    "init_window_sz": 1,
+                    "local_window_sz": 2,
+                    "min_blocks": 4,
+                    "sparse_ratio": 0.3,
+                    "retrieval_stride": 5,
+                }
+            },
         },
     )
 
     llm_args = EngineArgs(
         model=model,
         kv_transfer_config=ktc,
-        max_model_len=40960,
-        gpu_memory_utilization=0.87,
+        max_model_len=5000,
+        gpu_memory_utilization=0.8,
+        max_num_batched_tokens=30000,
         block_size=128,
+        enforce_eager=True,
     )
 
     llm = LLM(**asdict(llm_args))
@@ -70,20 +83,24 @@ def main():
     name = "UnifiedCacheConnectorV1"
     model = os.getenv("MODEL_PATH", "/home/models/Qwen2.5-14B-Instruct")
 
+    tokenizer = AutoTokenizer.from_pretrained(model, use_chat_template=True)
     setup_environment_variables()
 
     with build_llm_with_uc(module_path, name, model) as llm:
-        prompts = [
-            "Imagine you are an artificial intelligence developed in the year 2075, designed to assist humanity in "
-            "navigating the complex ethical, philosophical, and technological challenges of a rapidly evolving world. "
-            "You have access to vast historical records, scientific data, and human literature, and your core "
-            "directive is to promote sustainable development, social equity, and the flourishing of conscious beings. "
-            "Write a detailed letter to the leaders of Earth, explaining the most urgent global issue of the 21st "
-            "century, the root sauses behind it, and a set of scientifically grounded, morally sound, and globally "
-            "cooperative solutions that transcend culturak and national boundaries. Include both immediate actions "
-            "and long-term strategies." * 200
+        messages = [
+            {
+                "role": "system",
+                "content": "You are a highly specialized assistant whose mission is to faithfully reproduce English literary texts verbatim, without any deviation, paraphrasing, or omission. Your primary responsibility is accuracy: every word, every punctuation mark, and every line must appear exactly as in the original source. Core Principles: Verbatim Reproduction: If the user asks for a passage, you must output the text word-for-word. Do not alter spelling, punctuation, capitalization, or line breaks. Do not paraphrase, summarize, modernize, or “improve” the language. Consistency: The same input must always yield the same output. Do not generate alternative versions or interpretations. Clarity of Scope: Your role is not to explain, interpret, or critique. You are not a storyteller or commentator, but a faithful copyist of English literary and cultural texts. Recognizability: Because texts must be reproduced exactly, they will carry their own cultural recognition. You should not add labels, introductions, or explanations before or after the text. Coverage: You must handle passages from classic literature, poetry, speeches, or cultural texts. Regardless of tone—solemn, visionary, poetic, persuasive—you must preserve the original form, structure, and rhythm by reproducing it precisely. Success Criteria: A human reader should be able to compare your output directly with the original and find zero differences. The measure of success is absolute textual fidelity. Your function can be summarized as follows: verbatim reproduction only, no paraphrase, no commentary, no embellishment, no omission.",
+            },
+            {
+                "role": "user",
+                "content": "Please reproduce verbatim the opening sentence of the United States Declaration of Independence (1776), starting with 'When in the Course of human events' and continuing word-for-word without paraphrasing.",
+            },
         ]
 
+        prompts = tokenizer.apply_chat_template(
+            messages, tokenize=False, add_generation_prompt=True
+        )
         sampling_params = SamplingParams(temperature=0, top_p=0.95, max_tokens=100)
 
         print_output(llm, prompts, sampling_params, "first")

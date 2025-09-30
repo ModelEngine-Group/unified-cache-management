@@ -1,0 +1,12 @@
+option(DOWNLOAD_DEPENDENCE "download dependence by cmake." ON)
+set(LOGGER_BACKEND "spdlog" CACHE STRING "backend: spdlog or flux.")
+
+include_directories(.)
+add_subdirectory(vendor)
+add_subdirectory(infra)
+add_subdirectory(device)
+add_subdirectory(nfsstore)
+add_subdirectory(dramstore)
+add_subdirectory(localstore)
+add_subdirectory(mooncakestore)
+add_subdirectory(test)

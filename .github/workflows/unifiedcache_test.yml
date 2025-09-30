@@ -13,6 +13,9 @@ on:
       - '*release'
 
 jobs:
+  # gpu-test:
+  #   uses: ./.github/workflows/e2e_test.yml
+
   call-lint:
     uses: ./.github/workflows/pre-commit.yml
 
@@ -43,10 +46,10 @@ jobs:
             --entrypoint /bin/bash \
             vllm/vllm-openai:v0.9.2 \
             -c "
+              set -euo pipefail
               pip install -v -e . --no-build-isolation
               cd \$(pip show vllm | grep Location | awk '{print \$2}') &&
-              git apply /workspace/unified-cache-management/ucm/patch/0.9.2/vllm-adapt.patch &&
-              git apply /workspace/unified-cache-management/ucm/patch/0.9.2/vllm-adapt-sparse.patch
+              git apply /workspace/unified-cache-management/ucm/integration/vllm/patch/0.9.2/vllm-adapt.patch
               cd /workspace/unified-cache-management
               python3 -m unittest discover -s test
             "

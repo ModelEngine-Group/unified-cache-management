@@ -37,13 +37,12 @@ from vllm.distributed.kv_transfer.kv_connector.v1.base import (
     KVConnectorRole,
 )
 from vllm.distributed.parallel_state import get_world_group
-from vllm.v1.core.kv_cache_utils import hash_request_tokens
 from vllm.v1.core.sched.output import SchedulerOutput
 from vllm.v1.request import Request, RequestStatus
 
 from ucm.logger import init_logger
-from ucm.store.base import Task
 from ucm.store.factory import UcmConnectorFactory
+from ucm.store.ucmstore import Task
 
 if TYPE_CHECKING:
     from vllm.attention.backends.abstract import AttentionMetadata
@@ -139,13 +138,11 @@ class UnifiedCacheConnectorV1(KVConnectorBase_V1):
                 * self.num_layers
                 * (1 if self.is_mla else self.num_head * self.total_tp_size * 2)
             )
-            config["transferIoSize"] = config_base * (
-                1 if self.is_mla else self.num_head
-            )
+            config["io_size"] = config_base * (1 if self.is_mla else self.num_head)
             logger.info(
-                "kv_block_size = %d, transferIoSize = %d,",
+                "kv_block_size = %d, io_size = %d,",
                 config["kv_block_size"],
-                config["transferIoSize"],
+                config["io_size"],
             )
             logger.info("init UCConnectorImpl, connector: %s", name)
             self.connector = UcmConnectorFactory.create_connector(name, config)
@@ -304,6 +301,7 @@ class UnifiedCacheConnectorV1(KVConnectorBase_V1):
                     self._need_load_reqs[request.request_id].append(k_task)
                     if not self.is_mla:
                         self._need_load_reqs[request.request_id].append(v_task)
+                self.layerwise_load_tasks.pop(request.request_id)
                 continue
 
             if (
@@ -544,9 +542,34 @@ class UnifiedCacheConnectorV1(KVConnectorBase_V1):
             md5_bytes = hashlib.md5(input_bytes).digest()
             return int.from_bytes(md5_bytes, byteorder="big")
 
+        def hash_request_tokens(
+            hash_function: Any, block_size: int, request: "Request"
+        ) -> list[str]:
+            token_ids = request.all_token_ids
+
+            ret = []
+            parent_block_hash_value = None
+            for start in range(0, len(token_ids), block_size):
+                end = start + block_size
+                block_token_ids = token_ids[start:end]
+                # Do not hash the block if it is not full.
+                if len(block_token_ids) < block_size:
+                    break
+
+                if not parent_block_hash_value:
+                    parent_block_hash_value = md5("UCMHASHSEED")
+
+                block_token_ids_tuple = tuple(block_token_ids)
+                hash_value = hash_function(
+                    (parent_block_hash_value, block_token_ids_tuple)
+                )
+                parent_block_hash_value = hash_value
+                ret.append(str(hash_value))
+
+            return ret
+
         assert num_computed_tokens % self.block_size == 0
-        block_hash_types = hash_request_tokens(md5, self.block_size, request)
-        block_hashes: List[str] = [str(x.hash_value) for x in block_hash_types]
+        block_hashes = hash_request_tokens(md5, self.block_size, request)
         if not block_hashes:
             logger.debug("Maybe tokens too short to load.")
             return 0, False
@@ -584,18 +607,17 @@ class UnifiedCacheConnectorV1(KVConnectorBase_V1):
             if (
                 request.kv_transfer_params
                 and request.kv_transfer_params["load_async"] == False
-            ):
+            ) or num_lookup_hits == 0:
                 return 0, False
             request.kv_transfer_params = request.kv_transfer_params or {}
             request.kv_transfer_params["load_async"] = False
-            if num_lookup_hits > 0:
-                self.request_block_infos[request.request_id] = RequestBlockInfo(
-                    block_hashes=block_hashes,
-                    block_operations=block_operations,
-                    start_position=start_position,
-                )
-                self._need_load_reqs[request.request_id] = []
-                return num_lookup_hits * self.block_size, True
+            self.request_block_infos[request.request_id] = RequestBlockInfo(
+                block_hashes=block_hashes,
+                block_operations=block_operations,
+                start_position=start_position,
+            )
+            self._need_load_reqs[request.request_id] = []
+            return num_lookup_hits * self.block_size, True
 
         # When all the tokens are cached in ssd or hbm,
         # we need to recompute the last token. This if condition will be removed
@@ -622,9 +644,13 @@ class UnifiedCacheConnectorV1(KVConnectorBase_V1):
         """
         if request.request_id in self._need_load_reqs:
             local_block_ids = (
-                blocks.get_unhashed_block_ids() if num_external_tokens > 0 else []
+                # since we use unhashed blocks, so we don't need to reset start_position
+                blocks.get_unhashed_block_ids()
+                if num_external_tokens > 0
+                else []
             )
             self._need_load_reqs[request.request_id] = local_block_ids
+            return
 
         request_block_info = self.request_block_infos.get(request.request_id, None)
         if request_block_info:
@@ -642,6 +668,8 @@ class UnifiedCacheConnectorV1(KVConnectorBase_V1):
                     block_operations[idx] = (
                         BlockOperation.DUMP if ret == 0 else BlockOperation.NONE
                     )
+            # set start_position to 0, so that we can process from the beginning
+            request_block_info.start_position = 0
 
     def build_connector_meta(
         self, scheduler_output: SchedulerOutput
@@ -737,8 +765,6 @@ class UnifiedCacheConnectorV1(KVConnectorBase_V1):
         block_ids: list[int],
     ) -> tuple[bool, Optional[dict[str, Any]]]:
         block_info = self.request_block_infos.pop(request.request_id, None)
-        if hasattr(request, "succeed_dumped_blocks") and request.succeed_dumped_blocks:
-            self.connector.commit(request.succeed_dumped_blocks, True)
         if block_info is not None:
             cancel_blocks = [
                 block_info.block_hashes[i]
@@ -748,6 +774,7 @@ class UnifiedCacheConnectorV1(KVConnectorBase_V1):
                 and block_info.block_hashes[i] not in request.succeed_dumped_blocks
             ]
             if cancel_blocks:
+                logger.debug(f"commit {cancel_blocks} to False.")
                 self.connector.commit(cancel_blocks, False)
         request.succeed_dumped_blocks.clear()
         return False, None

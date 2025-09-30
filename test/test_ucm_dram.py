@@ -86,7 +86,10 @@ def patch_cuda_for_cpu():
 
 
 patch_cuda_for_cpu()
-from ucm.store.ucm_dram import DramTask, UcmDram  # isort: skip
+from ucm.store.dramstore.dramstore_connector import (  # isort: skip
+    DramTask,
+    UcmDramStore,
+)
 
 
 def make_request(
@@ -137,8 +140,8 @@ class TestUcmDram(unittest.TestCase):
 
         self.block_number = 4
         self.block_size = int(self.config["block_size"])
-        self.scheduler_dram = UcmDram(self.scheduler_config)
-        self.worker_dram = UcmDram(self.worker_config)
+        self.scheduler_dram = UcmDramStore(self.scheduler_config)
+        self.worker_dram = UcmDramStore(self.worker_config)
         random.seed(20250728)
         self.request = make_request(
             request_id=1,

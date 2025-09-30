@@ -23,24 +23,18 @@
 #
 
 import os
-import shutil
 import subprocess
 import sys
+import sysconfig
 
+import pybind11
+import torch
+import torch.utils.cpp_extension
 from setuptools import Extension, find_packages, setup
 from setuptools.command.build_ext import build_ext
-from setuptools.command.develop import develop
 
 ROOT_DIR = os.path.abspath(os.path.dirname(__file__))
-FSSTORE_SRC_DIR = os.path.join(ROOT_DIR, "ucm", "csrc", "ucmnfsstore")
-GSA_SRC_DIR = os.path.join(ROOT_DIR, "ucm", "csrc", "gsaoffloadops")
-PREFETCH_SRC_DIR = os.path.join(ROOT_DIR, "ucm", "csrc", "ucmprefetch")
-
-FSSTORE_INSTALL_DIR = os.path.join(ROOT_DIR, "ucm", "store")
-GSA_INSTALL_DIR = os.path.join(ROOT_DIR, "ucm", "ucm_sparse")
-
 PLATFORM = os.getenv("PLATFORM")
-RUNTIME_ENVIRONMENT = os.getenv("RUNTIME_ENVIRONMENT")
 
 
 def _is_cuda() -> bool:
@@ -63,16 +57,29 @@ class CMakeBuild(build_ext):
             self.build_cmake(ext)
 
     def build_cmake(self, ext: CMakeExtension):
-        build_dir = os.path.abspath(os.path.join(self.build_temp, ext.name))
+        build_dir = self.build_temp
         os.makedirs(build_dir, exist_ok=True)
 
         cmake_args = [
             "cmake",
-            f"-DCMAKE_BUILD_TYPE=Release",
+            "-DCMAKE_BUILD_TYPE=Release",
             f"-DPYTHON_EXECUTABLE={sys.executable}",
         ]
 
-        cmake_args.append("-DDOWNLOAD_DEPENDENCE=ON")
+        torch_cmake_prefix = torch.utils.cmake_prefix_path
+        pybind11_cmake_dir = pybind11.get_cmake_dir()
+
+        cmake_prefix_paths = [torch_cmake_prefix, pybind11_cmake_dir]
+        cmake_args.append(f"-DCMAKE_PREFIX_PATH={';'.join(cmake_prefix_paths)}")
+
+        torch_includes = torch.utils.cpp_extension.include_paths()
+        python_include = sysconfig.get_path("include")
+        pybind11_include = pybind11.get_include()
+
+        all_includes = torch_includes + [python_include, pybind11_include]
+        cmake_include_string = ";".join(all_includes)
+        cmake_args.append(f"-DEXTERNAL_INCLUDE_DIRS={cmake_include_string}")
+
         if _is_cuda():
             cmake_args.append("-DRUNTIME_ENVIRONMENT=cuda")
         elif _is_npu():
@@ -88,70 +95,17 @@ class CMakeBuild(build_ext):
         print(f"[INFO] Building {ext.name} module with CMake")
         print(f"[INFO] Source directory: {ext.sourcedir}")
         print(f"[INFO] Build directory: {build_dir}")
+        print(f"[INFO] CMake command: {' '.join(cmake_args)}")
 
         subprocess.check_call(cmake_args, cwd=build_dir)
-
-        if ext.name in ["nfsstore", "gsa_offload_ops"]:
-            subprocess.check_call(["make", "-j", "8"], cwd=build_dir)
-        else:
-            # 对于gsa_prefetch使用cmake --build
-            subprocess.check_call(
-                ["cmake", "--build", ".", "--config", "Release", "--", "-j8"],
-                cwd=build_dir,
-            )
-
-        self._copy_so_files(ext)
-
-    def _copy_so_files(self, ext: CMakeExtension):
-        """复制编译好的.so文件"""
-        so_search_dir = os.path.join(ext.sourcedir, "output", "lib")
-        if not os.path.exists(so_search_dir):
-            raise FileNotFoundError(f"{so_search_dir} does not exist!")
-
-        so_files = []
-        search_patterns = [ext.name]
-
-        if ext.name == "nfsstore":
-            search_patterns.extend(["ucmnfsstore"])
-        elif ext.name == "gsa_offload_ops":
-            search_patterns.extend(["gsa_offload_ops"])
-        elif ext.name == "gsa_prefetch":
-            search_patterns.extend(["prefetch"])
-
-        for file in os.listdir(so_search_dir):
-            if file.endswith(".so") or ".so." in file:
-                for pattern in search_patterns:
-                    if pattern in file:
-                        so_files.append(file)
-                        break
-
-        if ext.name == "nfsstore":
-            install_dir = FSSTORE_INSTALL_DIR
-            build_install_dir = "ucm/store"
-        else:
-            install_dir = GSA_INSTALL_DIR
-            build_install_dir = "ucm/ucm_sparse"
-
-        for so_file in so_files:
-            src_path = os.path.join(so_search_dir, so_file)
-            dev_path = os.path.join(install_dir, so_file)
-            dst_path = os.path.join(self.build_lib, build_install_dir, so_file)
-
-            os.makedirs(os.path.dirname(dst_path), exist_ok=True)
-            shutil.copy(src_path, dst_path)
-            print(f"[INFO] Copied {so_file} → {dst_path}")
-
-            if isinstance(self.distribution.get_command_obj("develop"), develop):
-                os.makedirs(os.path.dirname(dev_path), exist_ok=True)
-                shutil.copy(src_path, dev_path)
-                print(f"[INFO] Copied in editable mode {so_file} → {dev_path}")
+        subprocess.check_call(
+            ["cmake", "--build", ".", "--config", "Release", "--", "-j8"],
+            cwd=build_dir,
+        )
 
 
 ext_modules = []
-
-ext_modules.append(CMakeExtension(name="nfsstore", sourcedir=FSSTORE_SRC_DIR))
-ext_modules.append(CMakeExtension(name="gsa_offload_ops", sourcedir=GSA_SRC_DIR))
-ext_modules.append(CMakeExtension(name="gsa_prefetch", sourcedir=PREFETCH_SRC_DIR))
+ext_modules.append(CMakeExtension(name="ucm", sourcedir=ROOT_DIR))
 
 setup(
     name="ucm",

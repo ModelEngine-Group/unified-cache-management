@@ -1,0 +1,428 @@
+From 67b10fc431e5aac0155ca5b77cd9a99e35656521 Mon Sep 17 00:00:00 2001
+From: wenxinwang <wangwenxin21@huawei.com>
+Date: Thu, 25 Sep 2025 05:31:48 -0700
+Subject: [PATCH] UCM adaptor
+
+---
+ vllm_ascend/attention/attention_v1.py | 75 ++++++++++++++++++++
+ vllm_ascend/worker/model_runner_v1.py | 99 +++++++++++++++++++++++----
+ vllm_ascend/worker/worker_v1.py       | 25 +++++--
+ 3 files changed, 183 insertions(+), 16 deletions(-)
+
+diff --git a/vllm_ascend/attention/attention_v1.py b/vllm_ascend/attention/attention_v1.py
+index 7d7f488..09c4345 100644
+--- a/vllm_ascend/attention/attention_v1.py
++++ b/vllm_ascend/attention/attention_v1.py
+@@ -24,6 +24,9 @@ import torch_npu
+ from vllm.attention.backends.abstract import (AttentionBackend, AttentionImpl,
+                                               AttentionLayer, AttentionType)
+ from vllm.attention.backends.utils import CommonAttentionState
++from vllm.distributed.kv_transfer import (get_kv_transfer_group,
++                                          has_kv_transfer_group,
++                                          is_v1_kv_transfer_group)
+ from vllm.forward_context import ForwardContext, get_forward_context
+ from vllm.utils import direct_register_custom_op
+ from vllm.v1.core.sched.output import SchedulerOutput
+@@ -33,6 +36,8 @@ from vllm_ascend.ops.attention import vanilla_chunked_prefill
+ from vllm_ascend.utils import (ACL_FORMAT_FRACTAL_NZ, aligned_16, is_310p,
+                                nd_to_nz_2d, nd_to_nz_spec)
+
++from ucm.sparse.state import get_ucm_sparse, has_ucm_sparse
++
+
+ class AscendAttentionBackend(AttentionBackend):
+     accept_output_buffer: bool = True
+@@ -444,10 +449,14 @@ def unified_ascend_attention_with_output(
+     output: torch.Tensor,
+     layer_name: str,
+ ) -> None:
++    wait_for_kv_layer_from_connector(layer_name)
++
+     forward_context: ForwardContext = get_forward_context()
+     attn_metadata = forward_context.attn_metadata
+     self = forward_context.no_compile_layers[layer_name]
+     kv_cache = self.kv_cache[forward_context.virtual_engine]
++
++    maybe_execute_sparse_attention_begin(query, key, value, layer_name, forward_context)
+     self.impl.forward(self,
+                       query,
+                       key,
+@@ -456,8 +465,74 @@ def unified_ascend_attention_with_output(
+                       attn_metadata,
+                       output,
+                       trace_flag=False)
++    maybe_execute_sparse_attention_finished(query, key, value, output, layer_name, forward_context)
++    maybe_save_kv_layer_to_connector(layer_name, kv_cache)
+     return
+
++def wait_for_kv_layer_from_connector(layer_name: str):
++    if not has_kv_transfer_group() or not is_v1_kv_transfer_group():
++        return
++
++    connector = get_kv_transfer_group()
++
++    forward_context: ForwardContext = get_forward_context()
++    attn_metadata = forward_context.attn_metadata
++    if attn_metadata is None:
++        return
++    connector.wait_for_layer_load(layer_name)
++
++def maybe_save_kv_layer_to_connector(
++    layer_name: str,
++    kv_cache_layer: List[torch.Tensor],
++):
++    if not has_kv_transfer_group() or not is_v1_kv_transfer_group():
++        return
++
++    connector = get_kv_transfer_group()
++
++    forward_context: ForwardContext = get_forward_context()
++    attn_metadata = forward_context.attn_metadata
++    if attn_metadata is None:
++        return
++    connector.save_kv_layer(layer_name, kv_cache_layer,
++                            attn_metadata)
++
++def maybe_execute_sparse_attention_begin(
++        query: torch.Tensor,
++        key: torch.Tensor,
++        value: torch.Tensor,
++        layer_name: str,
++        forward_context: ForwardContext,
++):
++    if not has_ucm_sparse():
++        return
++
++    ucm_sparse = get_ucm_sparse()
++
++    attn_metadata = forward_context.attn_metadata
++    if attn_metadata is None:
++        return
++
++    ucm_sparse.attention_begin(query, key, value, layer_name, forward_context)
++
++def maybe_execute_sparse_attention_finished(
++        query: torch.Tensor,
++        key: torch.Tensor,
++        value: torch.Tensor,
++        attn_output: torch.Tensor,
++        layer_name: str,
++        forward_context: ForwardContext,
++):
++    if not has_ucm_sparse():
++        return
++
++    ucm_sparse = get_ucm_sparse()
++
++    attn_metadata = forward_context.attn_metadata
++    if attn_metadata is None:
++        return
++
++    ucm_sparse.attention_finished(query, key, value, attn_output, layer_name, forward_context)
+
+ def unified_attention_with_output_fake(
+     query: torch.Tensor,
+diff --git a/vllm_ascend/worker/model_runner_v1.py b/vllm_ascend/worker/model_runner_v1.py
+index eabcdbc..e51f46e 100644
+--- a/vllm_ascend/worker/model_runner_v1.py
++++ b/vllm_ascend/worker/model_runner_v1.py
+@@ -39,7 +39,10 @@ from vllm.config import CompilationLevel, VllmConfig
+ from vllm.distributed import get_tensor_model_parallel_world_size
+ from vllm.distributed.parallel_state import (get_dp_group, get_pp_group,
+                                              get_tp_group)
+-from vllm.forward_context import set_forward_context
++from vllm.distributed.kv_transfer import (get_kv_transfer_group,
++                                          has_kv_transfer_group)
++from vllm.distributed.kv_transfer.kv_connector.v1 import KVConnectorBase_V1
++from vllm.forward_context import set_forward_context, get_forward_context
+ from vllm.inputs import INPUT_REGISTRY
+ from vllm.logger import logger
+ from vllm.model_executor.layers.fused_moe import FusedMoE
+@@ -88,6 +91,9 @@ from vllm_ascend.worker.eagle_proposer_v1 import EagleProposer
+ from vllm_ascend.worker.mtp_proposer_v1 import MtpProposer
+ from vllm_ascend.worker.npu_input_batch import CachedRequestState, InputBatch
+
++from ucm.sparse.state import get_ucm_sparse, has_ucm_sparse
++from ucm.sparse.base import UcmSparseMetadata, INVALID_SLOT
++
+ if TYPE_CHECKING:
+     import xgrammar as xgr  # type: ignore[import-untyped]
+     from vllm.v1.core.sched.output import SchedulerOutput
+@@ -347,6 +353,7 @@ class NPUModelRunner(LoRAModelRunnerMixin):
+         """
+         # Remove finished requests from the cached states.
+         for req_id in scheduler_output.finished_req_ids:
++            self.ucm_sparse_request_finished_in_worker(req_id)
+             self.requests.pop(req_id, None)
+             self.encoder_cache.pop(req_id, None)
+         # Remove the finished requests from the persistent batch.
+@@ -453,12 +460,14 @@ class NPUModelRunner(LoRAModelRunnerMixin):
+
+         # Update the states of the running/resumed requests.
+         req_data = scheduler_output.scheduled_cached_reqs
++        req_sparsed_slots = scheduler_output.req_sparsed_slots
+         is_last_rank = get_pp_group().is_last_rank
+         for i, req_id in enumerate(req_data.req_ids):
+             req_state = self.requests[req_id]
+             num_computed_tokens = req_data.num_computed_tokens[i]
+             new_block_ids = req_data.new_block_ids[i]
+             resumed_from_preemption = req_data.resumed_from_preemption[i]
++            is_sparsed_request = req_sparsed_slots[req_id] != INVALID_SLOT
+
+             req_state.num_computed_tokens = num_computed_tokens
+             if not is_last_rank:
+@@ -474,15 +483,15 @@ class NPUModelRunner(LoRAModelRunnerMixin):
+                     req_state.output_token_ids.extend(
+                         new_token_ids[-num_new_tokens:])
+             # Update the block IDs.
+-            if not resumed_from_preemption:
++            if resumed_from_preemption or is_sparsed_request:
++                # The request is resumed from preemption.
++                # Replace the existing block IDs with the new ones.
++                req_state.block_ids = new_block_ids
++            else:
+                 # Append the new blocks to the existing block IDs.
+                 for block_ids, new_ids in zip(  # type: ignore[call-overload]
+                         req_state.block_ids, new_block_ids):
+                     block_ids.extend(new_ids)
+-            else:
+-                # The request is resumed from preemption.
+-                # Replace the existing block IDs with the new ones.
+-                req_state.block_ids = new_block_ids
+
+             req_index = self.input_batch.req_id_to_index.get(req_id)
+             if req_index is None:
+@@ -496,6 +505,9 @@ class NPUModelRunner(LoRAModelRunnerMixin):
+             self.input_batch.num_computed_tokens_cpu[req_index] = (
+                 num_computed_tokens)
+
++            if is_sparsed_request:
++                self.input_batch.block_table.reset_row(req_index)
++
+             self.input_batch.block_table.append_row(new_block_ids, req_index)
+
+             if not is_last_rank:
+@@ -876,7 +888,8 @@ class NPUModelRunner(LoRAModelRunnerMixin):
+         intermediate_tensors: Optional[IntermediateTensors] = None,
+     ) -> tuple[Union[AscendMetadata, AscendMLAMetadata,
+                      AscendTorchairMetadata], torch.Tensor, SpecDecodeMetadata,
+-               torch.Tensor, int, torch.Tensor, torch.Tensor, np.ndarray]:
++               torch.Tensor, int, torch.Tensor, torch.Tensor, np.ndarray,
++               Optional[dict[str, list[str]]]]:
+         # Check input valid
+         total_num_scheduled_tokens = scheduler_output.total_num_scheduled_tokens
+         assert total_num_scheduled_tokens > 0
+@@ -955,12 +968,22 @@ class NPUModelRunner(LoRAModelRunnerMixin):
+             num_scheduled_tokens)
+         seq_lens = self.seq_lens_cpu[:num_reqs]
+
++        # TODO: improve performance, no `positions_np.copy()`
++        sparsed_positions = positions_np.copy()
++        req_sparsed_slots = scheduler_output.req_sparsed_slots
++        for req_id in self.input_batch.req_id_to_index:
++            is_sparsed_request = req_sparsed_slots[req_id] != INVALID_SLOT
++            req_index = self.input_batch.req_id_to_index[req_id]
++            offset = 0 if req_index == 0 else cu_num_tokens[req_index - 1] # TODO: support MTP
++            if is_sparsed_request:
++                sparsed_positions[offset] = req_sparsed_slots[req_id] - 1
++
+         block_table_indices = (req_indices * self.max_num_blocks_per_req +
+-                               positions_np // self.block_size)
++                               sparsed_positions // self.block_size)
+
+         block_table_cpu = self.input_batch.block_table[0].get_cpu_tensor()
+         block_numbers = block_table_cpu.flatten()[block_table_indices].numpy()
+-        block_offsets = positions_np % self.block_size
++        block_offsets = sparsed_positions % self.block_size
+         np.add(block_numbers * self.block_size,
+                block_offsets,
+                out=self.slot_mapping_np[:total_num_scheduled_tokens])
+@@ -985,10 +1008,16 @@ class NPUModelRunner(LoRAModelRunnerMixin):
+         else:
+             attn_state = AscendAttentionState.PrefillCacheHit
+
++        for req_id in self.input_batch.req_id_to_index:
++            is_sparsed_request = req_sparsed_slots[req_id] != INVALID_SLOT
++            req_index = self.input_batch.req_id_to_index[req_id]
++            if is_sparsed_request:
++                seq_lens[req_index] = req_sparsed_slots[req_id]
++
+         self.attn_mask = self._make_attention_mask(
+             seq_lens=seq_lens,
+             query_lens=num_scheduled_tokens,
+-            position=positions,
++            position=torch.tensor(sparsed_positions).npu(),
+             attn_state=attn_state)
+         self.attn_state = attn_state  # type: ignore
+
+@@ -1100,6 +1129,7 @@ class NPUModelRunner(LoRAModelRunnerMixin):
+             positions = self.positions[:padded_batch_size]
+
+         # Run forward pass
++        finished_dumping = None
+         with set_forward_context(attn_metadata,
+                                  self.vllm_config,
+                                  num_tokens=num_input_tokens):
+@@ -1125,6 +1155,8 @@ class NPUModelRunner(LoRAModelRunnerMixin):
+                     assert self.model is not None
+                     maybe_converting_weight_acl_format(self.model,
+                                                        ACL_FORMAT_FRACTAL_ND)
++                    self.maybe_setup_kv_connector(scheduler_output)
++                    self.maybe_execute_ucm_sparse_begin(scheduler_output, attn_metadata)
+
+                     hidden_states = self.model(
+                         input_ids=input_ids,
+@@ -1133,6 +1165,8 @@ class NPUModelRunner(LoRAModelRunnerMixin):
+                         inputs_embeds=inputs_embeds,
+                         **model_kwargs,
+                     )
++                    finished_dumping = self.maybe_wait_for_kv_save()
++                    self.maybe_execute_ucm_sparse_finished()
+
+         use_spec_decode = len(
+             scheduler_output.scheduled_spec_decode_tokens) > 0
+@@ -1163,7 +1197,7 @@ class NPUModelRunner(LoRAModelRunnerMixin):
+
+         return (attn_metadata, hidden_states, spec_decode_metadata, positions,
+                 total_num_scheduled_tokens, logits_indices, aux_hidden_states,
+-                num_scheduled_tokens)
++                num_scheduled_tokens, finished_dumping)
+
+     def _get_cumsum_and_arange(
+         self,
+@@ -1400,7 +1434,7 @@ class NPUModelRunner(LoRAModelRunnerMixin):
+                 return EMPTY_MODEL_RUNNER_OUTPUT
+             (attn_metadata, hidden_states, spec_decode_metadata, positions,
+              num_scheduled_tokens, logits_indices, aux_hidden_states,
+-             num_scheduled_tokens_np) = (self._process_reqs(
++             num_scheduled_tokens_np, finished_dumping) = (self._process_reqs(
+                  scheduler_output, intermediate_tensors))
+
+         with ProfileExecuteDuration().capture_async("post process"):
+@@ -1561,6 +1595,7 @@ class NPUModelRunner(LoRAModelRunnerMixin):
+                 logprobs=logprobs_lists,
+                 prompt_logprobs_dict=prompt_logprobs_dict,
+                 pooler_output=[],
++                finished_dumping=finished_dumping
+             )
+
+         durations = ProfileExecuteDuration().pop_captured_sync()
+@@ -2369,3 +2404,43 @@ class NPUModelRunner(LoRAModelRunnerMixin):
+             if batch_size <= padded_batch_size < selected_batch_size:
+                 selected_batch_size = padded_batch_size
+         return selected_batch_size
++
++    @staticmethod
++    def maybe_setup_kv_connector(scheduler_output: "SchedulerOutput"):
++        # Update KVConnector with the KVConnector metadata forward().
++        if has_kv_transfer_group():
++            kv_connector = get_kv_transfer_group()
++            assert isinstance(kv_connector, KVConnectorBase_V1)
++            assert scheduler_output.kv_connector_metadata is not None
++            kv_connector.bind_connector_metadata(
++                scheduler_output.kv_connector_metadata)
++
++            # Background KV cache transfers happen here.
++            # These transfers are designed to be async and the requests
++            # involved may be disjoint from the running requests.
++            # Do this here to save a collective_rpc.
++            kv_connector.start_load_kv(get_forward_context())
++
++    @staticmethod
++    def maybe_wait_for_kv_save():
++        if has_kv_transfer_group():
++            return get_kv_transfer_group().wait_for_save()
++
++    def maybe_execute_ucm_sparse_begin(self, scheduler_output: "SchedulerOutput", attn_metadata: CommonAttentionMetadata):
++        if not has_ucm_sparse():
++            return
++        ucm_sparse = get_ucm_sparse()
++        ucm_sparse.build_sparse_meta(scheduler_output, self.requests, self.input_batch, attn_metadata)
++        ucm_sparse.execute_begin(scheduler_output)
++
++    def maybe_execute_ucm_sparse_finished(self):
++        if not has_ucm_sparse():
++            return
++        ucm_sparse = get_ucm_sparse()
++        ucm_sparse.execute_finished()
++
++    def ucm_sparse_request_finished_in_worker(self, request_id: str | int):
++        if not has_ucm_sparse():
++            return
++        ucm_sparse = get_ucm_sparse()
++        ucm_sparse.request_finished_in_worker(request_id)
+\ No newline at end of file
+diff --git a/vllm_ascend/worker/worker_v1.py b/vllm_ascend/worker/worker_v1.py
+index df03d50..a854923 100644
+--- a/vllm_ascend/worker/worker_v1.py
++++ b/vllm_ascend/worker/worker_v1.py
+@@ -17,6 +17,7 @@
+ # Adapted from vllm-project/vllm/vllm/worker/gpu_worker.py
+ #
+
++import copy
+ from typing import Optional
+
+ import torch
+@@ -27,7 +28,8 @@ from vllm import envs
+ from vllm.config import VllmConfig
+ from vllm.distributed import (ensure_model_parallel_initialized,
+                               init_distributed_environment)
+-from vllm.distributed.kv_transfer import ensure_kv_transfer_initialized
++from vllm.distributed.kv_transfer import (ensure_kv_transfer_initialized,
++                                          has_kv_transfer_group)
+ from vllm.distributed.parallel_state import get_pp_group, get_tp_group
+ from vllm.logger import logger
+ from vllm.lora.request import LoRARequest
+@@ -35,7 +37,7 @@ from vllm.sequence import IntermediateTensors
+ from vllm.utils import STR_DTYPE_TO_TORCH_DTYPE, GiB_bytes
+ from vllm.v1.core.sched.output import SchedulerOutput
+ from vllm.v1.kv_cache_interface import KVCacheConfig, KVCacheSpec
+-from vllm.v1.outputs import ModelRunnerOutput
++from vllm.v1.outputs import EMPTY_MODEL_RUNNER_OUTPUT, ModelRunnerOutput
+ from vllm.v1.worker.worker_base import WorkerBase
+
+ import vllm_ascend.envs as envs_ascend
+@@ -49,6 +51,7 @@ from vllm_ascend.utils import (check_kv_cache_bytes_cache_exist,
+                                read_kv_cache_bytes_from_file,
+                                sleep_mode_enabled, try_register_lib)
+ from vllm_ascend.worker.model_runner_v1 import NPUModelRunner
++from ucm.sparse.state import ensure_ucm_sparse_initialized
+
+
+ class NPUWorker(WorkerBase):
+@@ -222,9 +225,22 @@ class NPUWorker(WorkerBase):
+             assert isinstance(output, IntermediateTensors)
+             get_pp_group().send_tensor_dict(output.tensors,
+                                             all_gather_group=get_tp_group())
+-            return None
++            if not has_kv_transfer_group():
++                return None
++
++            kv_connector_output = output.kv_connector_output
++            finished_sending = kv_connector_output.finished_sending
++            finished_recving = kv_connector_output.finished_recving
++
++            if not finished_sending and not finished_recving:
++                return EMPTY_MODEL_RUNNER_OUTPUT
++
++            new_output = copy.copy(EMPTY_MODEL_RUNNER_OUTPUT)
++            new_output.kv_connector_output = kv_connector_output
++            return new_output
++
+         assert isinstance(output, ModelRunnerOutput)
+-        return output if self.is_driver_worker else None
++        return output
+
+     def load_model(self) -> None:
+         if self.vllm_config.model_config.enable_sleep_mode:
+@@ -321,6 +337,7 @@ class NPUWorker(WorkerBase):
+             parallel_config.world_size_across_dp,
+         )
+         ensure_kv_transfer_initialized(self.vllm_config)
++        ensure_ucm_sparse_initialized(self.vllm_config)
+
+     def _init_profiler(self):
+         # Torch profiler. Enabled and configured through env vars:
+--
+2.34.1

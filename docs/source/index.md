@@ -21,7 +21,25 @@
 </p>
 :::
 
-Make KVCache Great Again!
+The core principle of Unified Cache Manager (UCM) is to persist the LLM KVCache and replace redundant computations
+through multiple retrieval mechanisms. UCM not only supports prefix caching but also offers a variety of training-free
+sparse attention retrieval methods, delivering higher performance when handling extremely long sequence inference tasks.
+Additionally, UCM provides a PD disaggregation solution based on a storage-compute separation architecture, which
+enables more straightforward and flexible management of heterogeneous computing resources. When integrated with vLLM,
+UCM achieves a 3-10x reduction in inference latency across various scenarios, including multi-turn dialogue and
+long-context reasoning tasks.
+
+For more information, check out the following:
+
+* [UCM Section of the ModelEngine Community](https://modelengine-ai.net/#/ucm)
+
+Paper list:
+
+* [HATA: Trainable and Hardware-Efficient Hash-Aware Top-k Attention for Scalable Large Model Inference](https://arxiv.org/abs/2506.02572)
+* [ReTaKe: Reducing Temporal and Knowledge Redundancy for Long Video Understanding](https://arxiv.org/abs/2412.20504)
+* [AdaReTaKe: Adaptive Redundancy Reduction to Perceive Longer for Video-language Understanding](https://arxiv.org/abs/2503.12559)
+* [Dynamic Early Exit in Reasoning Models](https://arxiv.org/abs/2504.15895)
+* [Sparse Attention across Multiple-context KV Cache](https://arxiv.org/abs/2508.11661)
 
 ## Documentation
 
@@ -29,24 +47,22 @@ Make KVCache Great Again!
 :caption: Getting Started
 :maxdepth: 1
 getting-started/quick_start
-getting-started/installation/index
+getting-started/installation_gpu
+getting-started/installation_npu
 :::
 
 :::{toctree}
 :caption: User Guide
 :maxdepth: 1
-user_guide/support_matrix/index
-user_guide/features/index
-user_guide/connector_guide/index
-user_guide/engine_guide/index
+user-guide/prefix-cache/index
+user-guide/sparse-attention/index
+user-guide/pd-disaggregation/index
 :::
 
 :::{toctree}
 :caption: Developer Guide
 :maxdepth: 1
-developer_guide/design/index
-developer_guide/contributing
-developer_guide/performance/index
+developer-guide/contribute
 :::
 
 :::{toctree}
