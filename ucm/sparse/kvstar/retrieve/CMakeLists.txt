@@ -11,6 +11,7 @@ if($ENV{PLATFORM} STREQUAL "cuda")
         set(CMAKE_CUDA_COMPILER "${CUDA_HOME}/bin/nvcc" CACHE FILEPATH "CUDA compiler" FORCE)
     endif()
     enable_language(CUDA)
+    set(CMAKE_CUDA_ARCHITECTURES 75 80 86 89 90)
 endif()
 
 if(CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|i686|i386|AMD64")
