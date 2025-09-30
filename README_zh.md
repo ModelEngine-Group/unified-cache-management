@@ -6,7 +6,7 @@
 </p>
 
 <p align="center">
-| <a href="docs/source/index.md"><b>文档</b></a> | <a href="https://modelengine-ai.net/#/ucm"><b>网站</b></a> | <a href="https://github.com/ModelEngine-Group/unified-cache-management/issues/78"><b>发展路线图</b></a> |
+| <a href="docs/source/index.md"><b>文档</b></a> | <a href="https://modelengine-ai.net/#/ucm"><b>网站</b></a> | <a href="https://github.com/ModelEngine-Group/unified-cache-management/issues/78"><b>发展路线图</b></a> | <a href="https://github.com/ModelEngine-Group/unified-cache-management"><b>EN</b></a> |
 </p>
 
 ---
@@ -14,8 +14,6 @@
 ## 概述
 
 统一缓存管理器（Unified Cache Management, UCM）的核心原理是持久化 LLM 的 KVCache，并通过多种检索机制替代冗余计算。UCM 不仅支持前缀缓存（prefix cache, PC），还提供了多种无需训练的稀疏注意力检索方法，在处理极长序列推理任务时达到更高性能。此外，UCM 基于存算分离架构提供了 PD 分离方案，使得异构计算资源的管理更加简单灵活。与 vLLM 集成后，UCM 在多轮对话和长上下文推理等多种场景下可将推理延迟降低 3–10 倍。
-
-![architecture.png](./docs/source/_static/images/architecture.png)
 
 ---
 
@@ -27,28 +25,24 @@
 
 ![architecture.png](./docs/source/_static/images/idea.png)
 
-所有灰色方块都是当前 0.9.2 版本中的类，深绿色的方块都是将要被添加的，而浅绿色的方块则展示了未来要实现的基于当前框架的子类。
+图中所有灰色框代表vLLM 0.9.2版本中的现有类，绿色框则代表UCM新增组件。浅绿色框展示了基于此框架未来规划扩展的子类。
 
-SparseKVBase 类是不同稀疏化算法的基类。就像 KV 连接器的设计一样，它也会在调度器和模型层在几个地方进行挂钩，使得稀疏化算法可以进行对 KV 块数据额外的加载、落盘和计算操作。
+UcmSparseBase是不同稀疏算法的基类。类似于KV连接器的设计，它将在scheduler和layer.py中的关键位置植入hook点，用于执行稀疏KVCache block的加载、转储和计算操作。
 
-SparseKVManager 类向不同的稀疏化算法提供了不同的 KV 块分配的方法。为了在 SparseKVBase 下保持所有实现，SparseKVBase 中的方法会首先被调用，而方法的真正实现则是在具体稀疏化算法的子类中。
+SparseKVManager允许用户针对不同算法自定义KVCache block的分配策略。为了将所有实现统一在SparseKVBase框架下，系统会调用SparseKVBase基类，而具体实现则由稀疏算法的子类完成。
 
-KVStoreBase 类将稀疏化算法和外部存储解耦。它定义了如何与外部存储交互，使得稀疏化算法可以与外部存储协同工作。这里有个概念，是由 ID 和 offset（偏移量）决定的块的唯一标识。这不仅适用于稀疏化算法，也适用于 PC。KVStoreConnector 通过这个唯一标识与当前的 KVConnectorBase_V1 进行连接，提供 PC 功能。
-
-NFSStore 是当前的一个样例实现，在多机的场景下提供了将 KV 块数据存入本地文件系统或者 NFS 挂载点的能力。
-
-LocalCacheStore 可以使用任意一种 store，来提供对本地 DRAM 缓存的读取能力。
+KVStoreBase有助于实现稀疏算法与外部存储的解耦。它定义了与外部存储的通信方法，使得任何稀疏算法都能与任意外部存储系统无缝协作。其核心机制是通过ID和偏移量来标识数据块。这种方法不仅适用于稀疏场景，还能天然支持前缀缓存。KVStoreConnector将其与vLLM的KVConnectorBase_V1连接以提供前缀缓存功能。例如，NFSStore作为参考实现，提供了在单机本地文件系统或多服务器环境下通过NFS挂载点存储KVCache的能力。
 
 ---
 
 ## 支持特性
-- [前缀匹配]()
-- [缓存融合]()
-- [模型窗口外推]()
-- [预填充卸载]()
-- [稀疏注意力]()
-- [稀疏注意力卸载]()
-- [异构PD分离]()
+- 前缀匹配
+- 缓存融合
+- 模型窗口外推
+- 预填充卸载
+- 稀疏注意力
+- 稀疏注意力卸载
+- 异构PD分离
 
 ---
 
