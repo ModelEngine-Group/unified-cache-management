@@ -1141,3 +1141,19 @@ index 9e7e44d06..d52a49a2e 100644
  def _check_if_gpu_supports_dtype(torch_dtype: torch.dtype):
 --
 2.50.1.windows.1
+diff --git a/vllm/v1/core/sched/scheduler.py b/vllm/v1/core/sched/scheduler.py
+index 6a9d4b4b9..ae06cf9eb 100644
+--- a/vllm/v1/core/sched/scheduler.py
++++ b/vllm/v1/core/sched/scheduler.py
+@@ -830,9 +830,8 @@ class Scheduler(SchedulerInterface):
+             if model_runner_output.finished_dumping is not None:
+                 request.succeed_dumped_blocks.extend(model_runner_output.finished_dumping.get(req_id, []))
+                 is_prefill = request.num_output_tokens == 0
+-                is_last_chunk = (num_tokens_scheduled + request.num_computed_tokens >= request.num_prompt_tokens)
+-                if is_prefill and is_last_chunk:
+-                    self.connector.connector.commit(request.succeed_dumped_blocks, True)
++                if is_prefill:
++                    self.connector.connector.commit(model_runner_output.finished_dumping.get(req_id, []), True)
+ 
+             # Append generated tokens and check for stop. Note that if
+             # a request is still being prefilled, we expect the model runner

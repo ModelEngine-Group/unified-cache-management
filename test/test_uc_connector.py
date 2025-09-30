@@ -31,6 +31,7 @@ from unittest.mock import MagicMock, Mock, patch
 import torch
 from vllm.multimodal.inputs import MultiModalKwargs
 from vllm.sampling_params import SamplingParams
+from vllm.v1.core.kv_cache_manager import KVCacheBlocks
 from vllm.v1.request import Request
 
 from ucm.integration.vllm.uc_connector import (
@@ -116,7 +117,7 @@ class TestUCConnector(unittest.TestCase):
     def test_get_num_new_matched_tokens_hit_all_on_storage(self):
         mock_connector = Mock(spec=UcmKVStoreBase)
 
-        def mock_lookup(tokens: List[int]) -> List[bool]:
+        def mock_lookup(block_hashes: List[str]) -> List[bool]:
             return [True] * self.block_number
 
         mock_connector.lookup.side_effect = mock_lookup
@@ -149,14 +150,10 @@ class TestUCConnector(unittest.TestCase):
     def test_get_num_new_matched_tokens_partial_hit(self):
         mock_connector = Mock(spec=UcmKVStoreBase)
 
-        def mock_lookup(tokens: List[int]) -> List[bool]:
+        def mock_lookup(block_hashes: List[str]) -> List[bool]:
             return [True, False, True, False]
 
-        def mock_create(tokens: List[str]) -> List[int]:
-            return [0, 1, 0]
-
         mock_connector.lookup.side_effect = mock_lookup
-        mock_connector.create.side_effect = mock_create
         ucconnector = self.init_uc(mock_connector)
 
         random.seed(20250704)
@@ -177,23 +174,19 @@ class TestUCConnector(unittest.TestCase):
             ucconnector.request_block_infos[request1.request_id].block_operations,
             [
                 BlockOperation.LOAD,
-                BlockOperation.DUMP,
                 BlockOperation.NONE,
-                BlockOperation.DUMP,
+                BlockOperation.NONE,
+                BlockOperation.NONE,
             ],
         )
 
     def test_get_num_new_matched_tokens_partial_hit_with_preftxcache(self):
         mock_connector = Mock(spec=UcmKVStoreBase)
 
-        def mock_lookup(tokens: List[int]) -> List[bool]:
-            return [False, True, False]
-
-        def mock_create(tokens: List[str]) -> List[int]:
-            return [0, 1, 0]
+        def mock_lookup(block_hashes: List[str]) -> List[bool]:
+            return [True, True, False]
 
         mock_connector.lookup.side_effect = mock_lookup
-        mock_connector.create.side_effect = mock_create
         ucconnector = self.init_uc(mock_connector)
 
         random.seed(20250704)
@@ -206,11 +199,11 @@ class TestUCConnector(unittest.TestCase):
             mm_hashes=None,
         )
 
-        # no block dumped in ssd, external_tokens equals to 0
+        # 1 block hit on hbm cache, 2 block hit on ssd, 1 blocks miss
         external_tokens, _ = ucconnector.get_num_new_matched_tokens(
             request1, self.block_size
         )
-        self.assertEqual(external_tokens, 0)
+        self.assertEqual(external_tokens, 2 * self.block_size)
         self.assertEqual(
             ucconnector.request_block_infos[request1.request_id].start_position, 1
         )
@@ -218,23 +211,234 @@ class TestUCConnector(unittest.TestCase):
             ucconnector.request_block_infos[request1.request_id].block_operations,
             [
                 BlockOperation.NONE,
-                BlockOperation.DUMP,
+                BlockOperation.LOAD,
+                BlockOperation.LOAD,
                 BlockOperation.NONE,
+            ],
+        )
+
+    def test_get_num_new_matched_tokens_partial_hit_with_load_async(self):
+        mock_connector = Mock(spec=UcmKVStoreBase)
+
+        def mock_lookup(block_hashes: List[str]) -> List[bool]:
+            return [True, True, False]
+
+        mock_connector.lookup.side_effect = mock_lookup
+        ucconnector = self.init_uc(mock_connector)
+        ucconnector.kv_role = "kv_consumer"
+
+        random.seed(20250704)
+        request1 = make_request(
+            request_id=1,
+            prompt_token_ids=random.sample(
+                range(0, 10000), self.block_number * self.block_size
+            ),
+            mm_positions=None,
+            mm_hashes=None,
+        )
+        if request1.kv_transfer_params is None:
+            request1.kv_transfer_params = {}
+        request1.kv_transfer_params["load_async"] = True
+
+        # 1 block hit on hbm cache, 2 block hit on ssd, 1 blocks miss
+        external_tokens, load_async = ucconnector.get_num_new_matched_tokens(
+            request1, self.block_size
+        )
+        self.assertEqual(external_tokens, 2 * self.block_size)
+        self.assertEqual(
+            ucconnector.request_block_infos[request1.request_id].start_position, 1
+        )
+        self.assertEqual(request1.kv_transfer_params["load_async"], False)
+        self.assertEqual(
+            ucconnector.request_block_infos[request1.request_id].block_operations,
+            [
+                BlockOperation.NONE,
+                BlockOperation.LOAD,
+                BlockOperation.LOAD,
+                BlockOperation.NONE,
+            ],
+        )
+
+    def test_update_state_after_alloc_create_success(self):
+        mock_connector = Mock(spec=UcmKVStoreBase)
+
+        def mock_create(block_hashes: List[str]) -> List[int]:
+            return [0]
+
+        mock_connector.create.side_effect = mock_create
+        ucconnector = self.init_uc(mock_connector)
+        request1 = make_request(
+            request_id=1,
+            prompt_token_ids=random.sample(
+                range(0, 10000), self.block_number * self.block_size
+            ),
+            mm_positions=None,
+            mm_hashes=None,
+        )
+        ucconnector.request_block_infos[request1.request_id] = RequestBlockInfo(
+            block_hashes=[secrets.token_hex(8) for _ in range(self.block_number)],
+            block_operations=[
+                BlockOperation.NONE,
+                BlockOperation.LOAD,
+                BlockOperation.LOAD,
+                BlockOperation.NONE,
+            ],
+            start_position=1,
+        )
+
+        vllm_blocks = Mock()
+        vllm_blocks.get_unhashed_block_ids.return_value = [0, 1, 2, 3]
+        ucconnector.update_state_after_alloc(request1, vllm_blocks, 2 * self.block_size)
+        self.assertEqual(
+            ucconnector.request_block_infos[request1.request_id].block_operations,
+            [
+                BlockOperation.NONE,
+                BlockOperation.LOAD,
+                BlockOperation.LOAD,
                 BlockOperation.DUMP,
             ],
+        )
+        self.assertEqual(
+            ucconnector.request_block_infos[request1.request_id].start_position, 0
+        )
+
+    def test_update_state_after_alloc_with_load_async(self):
+        mock_connector = Mock(spec=UcmKVStoreBase)
+
+        ucconnector = self.init_uc(mock_connector)
+        request1 = make_request(
+            request_id=1,
+            prompt_token_ids=random.sample(
+                range(0, 10000), self.block_number * self.block_size
+            ),
+            mm_positions=None,
+            mm_hashes=None,
+        )
+        ucconnector.request_block_infos[request1.request_id] = RequestBlockInfo(
+            block_hashes=[secrets.token_hex(8) for _ in range(self.block_number)],
+            block_operations=[
+                BlockOperation.NONE,
+                BlockOperation.LOAD,
+                BlockOperation.LOAD,
+                BlockOperation.NONE,
+            ],
+            start_position=1,
+        )
+        ucconnector._need_load_reqs[request1.request_id] = []
+        vllm_blocks = Mock()
+        vllm_blocks.get_unhashed_block_ids.return_value = [1, 2, 3]
+        ucconnector.update_state_after_alloc(request1, vllm_blocks, 2 * self.block_size)
+        self.assertEqual(
+            ucconnector.request_block_infos[request1.request_id].block_operations,
+            [
+                BlockOperation.NONE,
+                BlockOperation.LOAD,
+                BlockOperation.LOAD,
+                BlockOperation.NONE,
+            ],
+        )
+        self.assertEqual(
+            ucconnector.request_block_infos[request1.request_id].start_position, 1
+        )
+
+    def test_build_connector_meta(self):
+        mock_connector = Mock(spec=UcmKVStoreBase)
+
+        ucconnector = self.init_uc(mock_connector)
+        request1 = make_request(
+            request_id=1,
+            prompt_token_ids=random.sample(
+                range(0, 10000), self.block_number * self.block_size
+            ),
+            mm_positions=None,
+            mm_hashes=None,
+        )
+        request2 = make_request(
+            request_id=2,
+            prompt_token_ids=random.sample(
+                range(0, 10000), self.block_number * self.block_size
+            ),
+            mm_positions=None,
+            mm_hashes=None,
+        )
+        ucconnector.request_block_infos[request1.request_id] = RequestBlockInfo(
+            block_hashes=[secrets.token_hex(8) for _ in range(self.block_number)],
+            block_operations=[
+                BlockOperation.NONE,
+                BlockOperation.LOAD,
+                BlockOperation.LOAD,
+                BlockOperation.DUMP,
+            ],
+            start_position=0,
+        )
+        ucconnector.request_block_infos[request2.request_id] = RequestBlockInfo(
+            block_hashes=[secrets.token_hex(8) for _ in range(self.block_number)],
+            block_operations=[
+                BlockOperation.NONE,
+                BlockOperation.LOAD,
+                BlockOperation.LOAD,
+                BlockOperation.DUMP,
+            ],
+            start_position=2,
+        )
+
+        from types import SimpleNamespace
+
+        scheduled_new_reqs = [
+            SimpleNamespace(req_id=request1.request_id, block_ids=[[1, 2, 3, 4]]),
+        ]
+
+        scheduled_cached_reqs = SimpleNamespace(
+            req_ids=[request2.request_id],
+            new_block_ids=[[[5, 6]]],
+        )
+
+        scheduler_output = SimpleNamespace(
+            scheduled_new_reqs=scheduled_new_reqs,
+            scheduled_cached_reqs=scheduled_cached_reqs,
+        )
+
+        meta = ucconnector.build_connector_meta(scheduler_output)
+        self.assertIsInstance(meta, UCConnectorV1Metadata)
+        new_req_meta = meta.requests[0]
+        self.assertEqual(
+            new_req_meta.load_blocks,
+            [
+                (
+                    ucconnector.request_block_infos[request1.request_id].block_hashes[
+                        1
+                    ],
+                    2,
+                ),
+                (
+                    ucconnector.request_block_infos[request1.request_id].block_hashes[
+                        2
+                    ],
+                    3,
+                ),
+            ],
+        )
+        self.assertEqual(
+            new_req_meta.dump_blocks,
+            [(ucconnector.request_block_infos[request1.request_id].block_hashes[3], 4)],
+        )
+        cache_req_meta = meta.requests[1]
+        self.assertEqual(
+            cache_req_meta.load_blocks,
+            [(ucconnector.request_block_infos[request2.request_id].block_hashes[2], 5)],
+        )
+        self.assertEqual(
+            cache_req_meta.dump_blocks,
+            [(ucconnector.request_block_infos[request2.request_id].block_hashes[3], 6)],
         )
 
     def test_get_num_new_matched_tokens_no_hit(self):
         mock_connector = Mock(spec=UcmKVStoreBase)
 
-        def mock_lookup(tokens: List[int]) -> List[bool]:
+        def mock_lookup(blocks: List[str]) -> List[bool]:
             return [False] * self.block_number
 
-        def mock_create(tokens: List[str]) -> List[int]:
-            return [0] * self.block_number
-
         mock_connector.lookup.side_effect = mock_lookup
-        mock_connector.create.side_effect = mock_create
         ucconnector = self.init_uc(mock_connector)
 
         random.seed(20250704)
@@ -247,7 +451,6 @@ class TestUCConnector(unittest.TestCase):
             mm_hashes=None,
         )
 
-        # no block dumped in ssd, external_tokens equals to 0
         external_tokens, _ = ucconnector.get_num_new_matched_tokens(request1, 0)
         self.assertEqual(external_tokens, 0)
 
