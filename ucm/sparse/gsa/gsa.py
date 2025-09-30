@@ -866,11 +866,7 @@ class GSA(UcmSparseBase):
                 )
 
     def build_sparse_meta(
-        self,
-        scheduler_output: SchedulerOutput,
-        requests,
-        input_batch,
-        attn_metadata
+        self, scheduler_output: SchedulerOutput, requests, input_batch, attn_metadata
     ) -> None:
         self.gsa_metadata = self.build_gsa_metadata(
             scheduler_output, requests, input_batch
