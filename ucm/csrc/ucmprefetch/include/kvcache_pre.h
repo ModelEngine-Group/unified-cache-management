@@ -36,6 +36,13 @@ namespace ucmprefetch
         int bsIndex;
     } PrefetchReqInfo;
 
+    enum GSA_PREFETCH_RET_CODE {
+        GSA_RET_ERROR = -1,
+        GSA_RET_OK = 0,
+        GSA_RET_INDEX_ERROR,
+        GSA_RET_MAX_BS_ERROR
+    };
+
     class ThreadPool 
     {
     public:
@@ -63,7 +70,7 @@ namespace ucmprefetch
         size_t maxThreads;
     };
 
-    void MutliBSThreadFun(void *args);
+    void MultiBSThreadFun(void *args);
 
     class __attribute__((visibility("hidden"))) GSAPrefetchEngineC 
     {
@@ -89,6 +96,7 @@ namespace ucmprefetch
         uint32_t mDecodeStep = 0;
         uint32_t mMaxTopkLen = 0;
         uint32_t mMaxBlocksLen = 0;
+        uint32_t mMaxFreeLen = 0;
         std::unordered_set<int> mDelSeqIds;
         std::vector<std::vector<std::vector<int>>> allNeedLoadBlock;
         std::vector<std::vector<std::vector<int>>> allMissIdxs;

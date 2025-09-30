@@ -8,6 +8,11 @@
 #include <sstream>
 #include <iomanip>
 #include <omp.h>
+
+#define TIME_COV_RATIO 1000
+#define TIME_BUFFER_LEN 26
+#define MESSAGE_BUFFER_LEN 4096
+
 enum class LogLevel {
     DEBUG,
     INFO,
@@ -33,18 +38,6 @@ private:
             case LogLevel::ERROR: return "ERROR";
             default: return "UNKNOWN";
         }
-    }
-
-    static std::string GetTimesTamp()
-    {
-        auto now = std::chrono::system_clock::now();
-        auto nowC = std::chrono::system_clock::to_time_t(now);
-        auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
-            now.time_since_epoch()) % 1000;
-        std::stringstream oss;
-        oss << std::put_time(std::localtime(&nowC), "%Y-%m-%d %H:%M:%S");
-        oss << '.' << std::setfill('0') << std::setw(3) << ms.count();
-        return oss.str();
     }
 
 public:
@@ -82,11 +75,11 @@ public:
         auto now = std::chrono::system_clock::now();
         auto nowC = std::chrono::system_clock::to_time_t(now);
         auto duration = now.time_since_epoch();
-        auto millis = std::chrono::duration_cast<std::chrono::milliseconds>(duration).count() % 1000;
-        auto micros = std::chrono::duration_cast<std::chrono::microseconds>(duration).count() % 1000;
+        auto millis = std::chrono::duration_cast<std::chrono::milliseconds>(duration).count() % TIME_COV_RATIO;
+        auto micros = std::chrono::duration_cast<std::chrono::microseconds>(duration).count() % TIME_COV_RATIO;
 
         std::tm localTime = *std::localtime(&nowC);
-        char timeBuffer[26];
+        char timeBuffer[TIME_BUFFER_LEN];
         std::strftime(timeBuffer, sizeof(timeBuffer), "%Y-%m-%d %H:%M:%S", &localTime);
         const char *levelStr = "";
         switch (level)
@@ -97,7 +90,7 @@ public:
             case LogLevel::ERROR: levelStr = "ERROR"; break;
             default: levelStr = "UNKNOWN"; break;
         }
-        char messageBuffer[4096];
+        char messageBuffer[MESSAGE_BUFFER_LEN];
         va_list args;
         va_start(args, format);
         vsnprintf(messageBuffer, sizeof(messageBuffer), format, args);
@@ -116,7 +109,7 @@ public:
             return;
         }
         std::lock_guard<std::mutex> lock(mMutex);
-        char messageBuffer[2048];
+        char messageBuffer[MESSAGE_BUFFER_LEN];
         va_list args;
         va_start(args, format);
         vsnprintf(messageBuffer, sizeof(messageBuffer), format, args);

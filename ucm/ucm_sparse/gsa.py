@@ -34,7 +34,7 @@ from ucm.ucm_sparse.utils import (
     MAX_BS,
     MAX_TOPK_LEN,
     PTOPK_PREFETCH_ENABLE,
-    SEG_PREFILL_THRESHOLD,
+    GSA_OPEN_THRESHOLD,
     compute_topk_len,
 )
 
@@ -59,11 +59,6 @@ def stat(func):
 
 ReqType = Union[str, int]
 HashType = Union[str, int]
-
-# TODO: add ESA specific config in kv_transfer_config -> extra_config
-INIT_WINDOW_SZ = 1
-SPARSE_RATIO = 0.3
-RETRIEVAL_STRIDE = 4
 
 
 class GSAReqStat:
@@ -105,7 +100,7 @@ class GSAReqStat:
     @property
     def is_gsa(self) -> bool:
         return (
-            self.num_prompt_tokens > SEG_PREFILL_THRESHOLD
+            self.num_prompt_tokens > GSA_OPEN_THRESHOLD
             and self.stage != SequenceStage.PREFILL
         )
 
@@ -164,7 +159,7 @@ class GSAReqStat:
             return
 
         blocks_len = len(self.blocks)
-        if self.num_prompt_tokens > SEG_PREFILL_THRESHOLD and PTOPK_PREFETCH_ENABLE:
+        if self.num_prompt_tokens > GSA_OPEN_THRESHOLD and PTOPK_PREFETCH_ENABLE:
             remain_len = compute_topk_len(blocks_len)
             if remain_len > MAX_TOPK_LEN:
                 prefetch_len = 0
@@ -264,6 +259,7 @@ class GSAMetaData(UcmSparseMetadata):
     ) -> None:
         for req_id in scheduler_output.scheduled_cached_reqs.req_ids:
             assert req_id in self.gsa_stats
+            assert req_id in requests
             self.gsa_stats[req_id].update_req_state(
                 scheduler_output.num_scheduled_tokens[req_id],
                 requests[req_id],
@@ -413,6 +409,7 @@ class GSA(UcmSparseBase):
         self.layer_num = vllm_config.model_config.get_num_layers(
             vllm_config.parallel_config
         )
+        self.max_num_seqs = vllm_config.scheduler_config.max_num_seqs
         if PTOPK_PREFETCH_ENABLE:
             config_base = self.block_size * self.element_size * self.head_size
             kv_block_size = (
@@ -539,7 +536,7 @@ class GSA(UcmSparseBase):
             block_table_ori[req_in_batch] = self.gsa_metadata.gsa_stats[req_id].blocks
             topk_kpre_maps[req_in_batch] = self.topk_kpre_manger.cache_map[req_id]
         is_topk_done = self.gsa_offload_ops.is_calculate_finish()
-        self.prefetch_engine.model_input_del(
+        self.prefetch_engine.model_input_pre(
             req_ids,
             block_table_ori,
             topk_kpre_maps,
@@ -603,6 +600,12 @@ class GSA(UcmSparseBase):
         requests,
         input_batch,
     ) -> None:
+        assert scheduler_output is not None
+        assert requests is not None
+        assert input_batch is not None
+        max_key = max(input_batch.req_id_to_index, key=input_batch.req_id_to_index.get)
+        max_value = input_batch.req_id_to_index[max_key]
+        assert max_value < self.max_num_seqs
         self.gsa_metadata = self._build_gsa_metadata(
             scheduler_output, requests, input_batch
         )
@@ -629,7 +632,7 @@ class GSA(UcmSparseBase):
             return INVALID_SLOT
         if request.num_output_tokens == 0:
             return INVALID_SLOT
-        if request.num_prompt_tokens <= SEG_PREFILL_THRESHOLD:
+        if request.num_prompt_tokens <= GSA_OPEN_THRESHOLD:
             return INVALID_SLOT
         block_size = self._vllm_config.cache_config.block_size
         num_prompt_blocks = math.ceil(request.num_prompt_tokens / block_size)
@@ -777,10 +780,12 @@ class GSA(UcmSparseBase):
         if transfer_type == "dump":
             for _, task in self.tasks_dump.items():
                 ret = self.connector.wait(task)
+                assert ret
             self.tasks_dump.clear()
         else:
             for _, task in self.tasks_load.items():
                 ret = self.connector.wait(task)
+                assert ret
             self.tasks_load.clear()
 
     def _check_all_task_is_done(self, transfer_type):
@@ -802,6 +807,7 @@ class GSA(UcmSparseBase):
     def _build_gsa_metadata(
         self, scheduler_output: SchedulerOutput, requests, input_batch
     ) -> GSAMetaData:
+        assert scheduler_output.num_scheduled_tokens is not None
         for req_id, _ in scheduler_output.num_scheduled_tokens.items():
             if not self.topk_kpre_manger.is_exist(req_id):
                 index = self.topk_kpre_manger.alloc(req_id)
@@ -921,7 +927,7 @@ class GSA(UcmSparseBase):
         for req_id, _ in scheduler_output.num_scheduled_tokens.items():
             if (
                 self.gsa_metadata.gsa_stats[req_id].num_prompt_tokens
-                <= SEG_PREFILL_THRESHOLD
+                <= GSA_OPEN_THRESHOLD
             ):
                 return
             if (
@@ -965,7 +971,7 @@ class GSA(UcmSparseBase):
             ):
                 if (
                     self.gsa_metadata.gsa_stats[req_id].num_prompt_tokens
-                    <= SEG_PREFILL_THRESHOLD
+                    <= GSA_OPEN_THRESHOLD
                 ):
                     return
                 local_blocks = self.gsa_metadata.gsa_stats[req_id].blocks[

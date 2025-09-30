@@ -13,9 +13,8 @@ from ucm.ucm_sparse import gsa_prefetch
 from ucm.ucm_sparse.utils import (
     LOCAL_WINDOW_SZ,
     MAX_BS,
-    MAX_TOPK_LEN,
     PTOPK_PREFETCH_ENABLE,
-    SEG_PREFILL_THRESHOLD,
+    GSA_OPEN_THRESHOLD,
     VLLM_CUDA_MEM_ALIGN_KV_CACHE,
     align_to_256bytes,
     compute_topk_len,
@@ -30,16 +29,11 @@ class GSAPrefetchBase:
         is_log: bool,
         is_cpu_topk: bool = False,
         is_max_norm: bool = False,
-        max_norm_num: int = 1,
-        is_prefetch: Optional[bool] = True,
-        head_num: Optional[int] = None,
-        is_mutli_head: Optional[bool] = None,
+        max_norm_num: int = 1
     ) -> None:
         self.is_cpu_topk = is_cpu_topk
         self.is_max_norm = is_max_norm
         self.async_thread = async_thread
-        self.use_mla = vllm_config.model_config.use_mla
-        self.is_prefetch = is_prefetch
         self.num_attention_layers = vllm_config.model_config.get_num_layers(
             vllm_config.parallel_config
         )
@@ -58,7 +52,6 @@ class GSAPrefetchBase:
         self.align_cache = (
             vllm_config.model_config.use_mla and VLLM_CUDA_MEM_ALIGN_KV_CACHE
         )
-        self.tp_size = vllm_config.parallel_config.tensor_parallel_size
 
         self.sp_max_len = self.max_block_len
         if self.is_max_norm:
@@ -106,18 +99,15 @@ class GSAPrefetchBase:
 
         self.block_map_flag = {}
         self.block_table_flag = {}
-
-        self.is_mutli_head = is_mutli_head
-        self.head_num = head_num
         self.atten_score = []
 
         self.is_gsa_req_id = {}
-        self.min_gsa_len = math.ceil(SEG_PREFILL_THRESHOLD / self.block_size)
 
         self.topk_buf_tmp = None
         self.topk_bs = []
+        self.block_table_list_bs = []
 
-    def model_input_del(
+    def model_input_pre(
         self,
         req_ids,
         block_table_ori,
@@ -349,7 +339,7 @@ class GSAPrefetchBase:
 
                 if (
                     gsa_metadata.gsa_stats[req_id].num_prompt_tokens
-                    <= SEG_PREFILL_THRESHOLD
+                    <= GSA_OPEN_THRESHOLD
                 ):
                     block_table_list_input = block_table_list
                 else:

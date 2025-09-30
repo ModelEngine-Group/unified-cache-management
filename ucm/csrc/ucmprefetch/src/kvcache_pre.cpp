@@ -3,6 +3,8 @@
 #include <stdint.h>
 #include <sched.h>
 
+#define TASK_EXP_NUM 2
+
 namespace ucmprefetch
 {
     ThreadPool::ThreadPool(size_t threadCount)
@@ -37,6 +39,7 @@ namespace ucmprefetch
             });
         }
     }
+
     ThreadPool::~ThreadPool()
     {
         {
@@ -64,12 +67,12 @@ namespace ucmprefetch
             std::unique_lock<std::mutex> lock(queueMutex);
             
             condition.wait(lock, [this] {
-                if (!(activeThreads < maxThreads || tasks.size() < maxThreads * 2)) {
+                if (!(activeThreads < maxThreads || tasks.size() < maxThreads * TASK_EXP_NUM)) {
                     std::cout << "Need wait: " << activeThreads << " " << tasks.size() << std::endl;
                 }
-                return (activeThreads < maxThreads || tasks.size() < maxThreads * 2); 
+                return (activeThreads < maxThreads || tasks.size() < maxThreads * TASK_EXP_NUM); 
             });
-            // don't allow enqueueing after stopping the pool
+
             if(stop) {
                 throw std::runtime_error("enqueue on stopped ThreadPool");
             }
@@ -85,27 +88,19 @@ namespace ucmprefetch
         return activeThreads;
     }
 
-    void MutliBSThreadFun(void *args)
-    {
-        GSAPrefetchEngineC *engine = static_cast<GSAPrefetchEngineC *>(args);
-        int ret = engine->CallPrefetchProcessFun();
-        if (ret == 0) {
-            engine->SetPrefetchStatus(true);
-        }
-    }
-
     GSAPrefetchEngineC::GSAPrefetchEngineC(torch::Tensor &freeBlock,
         torch::Tensor &loadSuccessBlocks,
         torch::Tensor &freeBlockLen,
         torch::Tensor &successTableLen,
         bool isLog)
-        :mLogger("./log/kvcache_pre_log.txt", LogLevel::INFO, isLog)
+        :mLogger("./log/gsa_prefetch_log.txt", LogLevel::INFO, isLog)
     {
         mLoadSuccessBlocks = loadSuccessBlocks;
         mLayerNum = mLoadSuccessBlocks.sizes()[0];
         mMaxBs = mLoadSuccessBlocks.sizes()[1];
         mMaxTopkLen = mLoadSuccessBlocks.sizes()[2];
         mFreeBlock = freeBlock;
+        mMaxFreeLen = mFreeBlock.sizes()[2];
         mFreeBlockLen = freeBlockLen;
         mSuccessTableLen = successTableLen;
         mIsLog = isLog;
@@ -301,6 +296,7 @@ namespace ucmprefetch
                 if (hitBlocks.find(it->first) != hitBlocks.end()) {
                     continue;
                 } else {
+                    CheckInputIndex(mMaxFreeLen, (uint32_t)oneFreeBlockIndex);
                     freeBlockPtr[oneFreeBlockIndex] = it->first;
                     oneFreeBlockIndex += 1;
                 }
@@ -322,15 +318,11 @@ namespace ucmprefetch
     }
     
     void GSAPrefetchEngineC::RunAsyncPrefetchBs(std::vector<int> &reqIDsInput,
-        std::vector<int> &topkLensInput,
+        std::vector<int> &topkLensInput,  
         std::vector<int> &bsIndexInput, int rank)
     {
         if (mRank == -1) {
             mRank = rank;
-        }
-        if(mRank != 0) {
-            mLogger.SetLevel(LogLevel::WARNING);
-            mIsLog = false;
         }
         mLogger.log(LogLevel::INFO,
             "Decode step: %u, |KVCache Prefetch| start async pretch batch size: %lu\n",
@@ -346,7 +338,7 @@ namespace ucmprefetch
         memcpy(mTopkLenList, topkLensInput.data(), sizeof(int) * runBsLen);
         memcpy(mBsIndexList, bsIndexInput.data(), sizeof(int) * runBsLen);
         mIsPrefetchDone = false;
-        mThreadPool->enqueue(MutliBSThreadFun, this);
+        mThreadPool->enqueue(MultiBSThreadFun, this);
     }
 
     void GSAPrefetchEngineC::SetBlockTableInfo(torch::Tensor &blockTables, torch::Tensor &blockLengths,
@@ -373,6 +365,7 @@ namespace ucmprefetch
                     mDecodeStep, mTopkLenList[i]);
                     continue;
             }
+            CheckInputIndex(mMaxTopkLen, (uint32_t)mTopkLenList[i]);
             RunOneBsPrefetch(mReqIdList[i], mTopkLenList[i], mBsIndexList[i], i);
         }
         auto end = std::chrono::high_resolution_clock::now();
@@ -406,5 +399,14 @@ namespace ucmprefetch
     std::map<int, std::vector<std::map<int, int>>> GSAPrefetchEngineC::ObtainBlocksMap()
     {
         return mBlocksMap;
+    }
+
+    void MultiBSThreadFun(void *args)
+    {
+        GSAPrefetchEngineC *engine = static_cast<GSAPrefetchEngineC *>(args);
+        int ret = engine->CallPrefetchProcessFun();
+        if (ret == 0) {
+            engine->SetPrefetchStatus(true);
+        }
     }
 } // namespace uc
