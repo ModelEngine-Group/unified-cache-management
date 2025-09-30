@@ -2,7 +2,7 @@
 
 <div align="center">
 
-![KVComp Scheme](/docs/source/_static/images/kvcomp_scheme.jpg)
+![KVComp Scheme](../../_static/images/kvcomp_scheme.jpg)
 
 **🚀 Hash-Aware Sparse Attention Algorithm | 📄 ACL 2025 Paper | ⚡ NPU/GPU Hardware-Efficient**
 
