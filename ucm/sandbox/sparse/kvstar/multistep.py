@@ -130,9 +130,7 @@ class ReqMeta:
 
 
 @dataclass
-class KVStarMultiStepSparseMetaData(
-    UcmSparseMetadata
-):
+class KVStarMultiStepSparseMetaData(UcmSparseMetadata):
     requests: List[ReqMeta]
     finished_req_ids: List[ReqType]
 
@@ -297,9 +295,7 @@ class ReqPerLayerState:
             for i_h in range(h):
                 k_cache_prune[:, :, i_h, :] = k_cache[:, :, i_h, d_pruned_index[i_h]]
             self.d_pruned_index = d_pruned_index.contiguous().to("cpu")
-        elif (
-            self.d_pruned_index is not None
-        ):
+        elif self.d_pruned_index is not None:
             h, d_pruned = self.d_pruned_index.shape
             d_pruned_index = self.d_pruned_index
             k_cache_prune = torch.zeros_like(
@@ -345,7 +341,6 @@ class ReqPerLayerState:
                 self.k_cache[vllm_block_ids[-local_window_sz:]].clone(),
                 self.v_cache[vllm_block_ids[-local_window_sz:]].clone(),
             )
-
 
     def attention_begin(
         self,
@@ -548,15 +543,11 @@ class ReqPerLayerState:
         self.head_size = self.k_cache.shape[3]
 
     @classmethod
-    def blk_trans_task_hash(
-        cls, block_ids, store_type, tensor_type
-    ):
+    def blk_trans_task_hash(cls, block_ids, store_type, tensor_type):
         return hash((tuple(block_ids), store_type, tensor_type))
 
     @classmethod
-    def req_state_hash(
-        cls, req_id, layer_name
-    ):
+    def req_state_hash(cls, req_id, layer_name):
         return hash((req_id, layer_name))
 
     def update_meta(self, req_meta: ReqMeta, forward_context: ForwardContext):
@@ -617,9 +608,7 @@ class KVStarMultiStep(UcmSparseBase):
     def __init__(self, vllm_config: VllmConfig, role: UcmSparseRole):
         super().__init__(vllm_config=vllm_config, role=role)
 
-        self.req_states: dict[str, List[ReqPerLayerState]] = (
-            {}
-        )
+        self.req_states: dict[str, List[ReqPerLayerState]] = {}
         self.local_tp_rank = vllm_config.parallel_config.rank
         self.total_tp_size = vllm_config.parallel_config.tensor_parallel_size
         self.total_num_hidden_layers = (
@@ -712,9 +701,7 @@ class KVStarMultiStep(UcmSparseBase):
         """
         for req_meta in self._sparse_metadata.requests:
             req_layerwise_state = self.create_layerwise_req_state(req_meta, layer_name)
-            req_layerwise_state.update_meta(
-                req_meta, forward_context
-            )
+            req_layerwise_state.update_meta(req_meta, forward_context)
             req_layerwise_state.attention_begin(query, key, value, forward_context)
 
     def attention_finished(
@@ -731,9 +718,7 @@ class KVStarMultiStep(UcmSparseBase):
         """
         for req_meta in self._sparse_metadata.requests:
             req_layerwise_state = self.create_layerwise_req_state(req_meta, layer_name)
-            req_layerwise_state.update_meta(
-                req_meta, forward_context
-            )
+            req_layerwise_state.update_meta(req_meta, forward_context)
             req_layerwise_state.attention_finished(
                 query, key, value, attn_output, forward_context
             )
@@ -755,9 +740,7 @@ class KVStarMultiStep(UcmSparseBase):
         for (
             req_id,
             num_scheduled_tokens,
-        ) in (
-            scheduler_output.num_scheduled_tokens.items()
-        ):
+        ) in scheduler_output.num_scheduled_tokens.items():
             req_state = requests[req_id]
 
             q_start_loc = query_start_locs[input_batch.req_id_to_index[req_id]].item()
@@ -774,12 +757,8 @@ class KVStarMultiStep(UcmSparseBase):
                     len(req_state.output_token_ids),
                     num_scheduled_tokens,
                     req_state.num_computed_tokens,
-                    scheduler_output.req_sparsed_slots[
-                        req_id
-                    ],
-                    req_state.block_ids[
-                        0
-                    ],
+                    scheduler_output.req_sparsed_slots[req_id],
+                    req_state.block_ids[0],
                     self.token_blk_size,
                     q_start_loc,
                     q_len,
@@ -831,11 +810,8 @@ class KVStarMultiStep(UcmSparseBase):
                 num_blocks_this_step_budget - 1
             ) * block_size + tail_blk_valid_token_num
         else:
-            estimate_num_slots_budget = (
-                num_blocks_this_step_budget * block_size
-            )
+            estimate_num_slots_budget = num_blocks_this_step_budget * block_size
         return estimate_num_slots_budget
-
 
     def allocate_slots(
         self, request, num_slots_sparsed, coordinator, block_pool, kv_cache_groups
