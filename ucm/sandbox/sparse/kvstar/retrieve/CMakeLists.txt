@@ -22,6 +22,18 @@ if(CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|i686|i386|AMD64")
         message(STATUS "Compiler does not support F16C/AVX2, using software implementation")
         add_definitions(-DUSE_F16C=0)
     endif()
+elseif(CMAKE_SYSTEM_PROCESSOR MATCHES "arm|aarch64|ARM64|armv7|armv8")
+    message(STATUS "Detected ARM platform - adding aggressive optimization flags")
+
+    if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+        add_compile_options(
+          -Ofast
+          -DNDEBUG
+          -march=native
+          -Wall
+          -ffast-math
+        )
+    endif()
 else()
     message(STATUS "Non-x86 architecture, F16C not applicable")
     add_definitions(-DUSE_F16C=0)
