@@ -497,9 +497,7 @@ class GSA(UcmSparseBase):
         self.gsa_offload_ops = gsa_offload_ops.CalKpreAndTopk(
             self.layer_num, block_size, MAX_BS, att_num_heads, head_size
         )
-        self.gsa_offload_ops.set_kpre_method_param(
-            int(max_model_len / block_size) * MAX_BS, kv_num_heads, 1
-        )
+        self.gsa_offload_ops.set_kpre_method_param(kv_num_heads, 1)
         self.gsa_offload_ops.set_kpre_cache(prefetch_engine.kpre_caches)
         self.is_cal_kpre = [False] * self.layer_num
         self.gsa_q_cache = torch.zeros(

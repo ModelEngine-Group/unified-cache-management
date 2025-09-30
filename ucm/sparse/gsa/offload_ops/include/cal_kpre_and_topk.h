@@ -46,7 +46,7 @@ private:
 public:
     CalKpreAndTopk(uint32_t layerNum, uint32_t blockSize, uint32_t maxBs, uint32_t numHeads, uint32_t headSize);
     ~CalKpreAndTopk();
-    void SetKpreMethodParam(uint32_t maxBlockNum, uint32_t numHeads, uint32_t numKpre);
+    void SetKpreMethodParam(uint32_t numHeads, uint32_t numKpre);
     void SetKpreCache(std::vector<torch::Tensor>& kpreCache);
     void SetTopkCache(std::vector<torch::Tensor>& topkCache, std::vector<uint32_t>& topkLens);
     void SetCommonParam(std::vector<uint32_t>& calTopkIdx, std::vector<bool>& isDecode);

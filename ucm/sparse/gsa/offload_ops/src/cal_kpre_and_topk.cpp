@@ -27,15 +27,10 @@ CalKpreAndTopk::CalKpreAndTopk(uint32_t layerNum, uint32_t blockSize, uint32_t m
     m_count = 0;
 }
 
-void CalKpreAndTopk::SetKpreMethodParam(uint32_t maxBlockNum, uint32_t numHeads, uint32_t numKpre)
+void CalKpreAndTopk::SetKpreMethodParam(uint32_t numHeads, uint32_t numKpre)
 {
-    // m_kNumHeads = numHeads;
-    // m_numKpre = numKpre;
-    // auto optionsForKCache = torch::TensorOptions().device("cpu").dtype(torch::kFloat32);
-    // for (uint32_t i = 0; i < m_layerNum; i++) {
-    //     torch::Tensor layerKCache = torch::zeros({maxBlockNum, m_kNumHeads, m_blockSize, m_headSize}, optionsForKCache);
-    //     m_kCache.push_back(layerKCache);
-    // }
+    m_kNumHeads = numHeads;
+    m_numKpre = numKpre;
 }
 
 void CalKpreAndTopk::SetKpreCache(std::vector<torch::Tensor>& kpreCache)
