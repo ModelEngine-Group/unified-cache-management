@@ -146,4 +146,4 @@ vllm serve /home/models/DeepSeek-R1-Distill-Qwen-32B \
 |DeepSeek-R1-Distill-Qwen-32B|32B|✅|
 
 ## 🤝 Contributing
-We welcome contributions! Please see our [Contributing Guide](../../connector_guide/index.md) for details.
+We welcome contributions! Please see our [Contributing Guide](../../developer-guide/contribute.md) for details.
