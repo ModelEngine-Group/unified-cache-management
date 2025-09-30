@@ -11,11 +11,11 @@ Key points included in KVstar:
 - ✅ **Low-dimensional KV Cache Representation Retrieval**: As shown in Figure 2, the KV cache is stored and transferred at the block level, but the retrieval algorithm performs retrieval at the token granularity and votes to determine the importance of each KV cache block. To reduce retrieval computational overhead (preventing CPU computation from becoming a bottleneck), the channel dimensions of each attention heads are filtered and reduced based on importance.
 - ⬜ **Incremental Transfer (coming soon)**: Leverages the redundancy between two consecutive transfers to avoid transmitting duplicate KV cache blocks, reducing bandwidth requirements.
 
-| ![kvstar_diagram](./kvstar_diagram.png) |
+| ![kvstar_diagram](../../_static/images/kvstar_diagram.png) |
 | :-------------------------------------: |
 |   Figure 1: KVstar Asynchronous Retrieval + Loading Diagram    |
 
-|     ![kvstar_retrieve](./kvstar_retrieve.png)      |
+|     ![kvstar_retrieve](../../_static/images/kvstar_retrieve.png)      |
 | :------------------------------------------------: |
 | Figure 2: KVstar Sparse Retrieval Approach (Right) |
 
