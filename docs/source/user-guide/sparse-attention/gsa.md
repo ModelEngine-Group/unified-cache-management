@@ -9,14 +9,14 @@
 [![Python](https://img.shields.io/badge/Python-3.10+-blue.svg)](https://python.org)
 </div>
 
-## 🔍 Overview  
+## 🔍 Overview
 
 GSA (Geometric Sparse Attention) simultaneously tackles the high computational complexity of long sequences and the concurrency limitations imposed by the HBM capacity wall. UCM GSA aims to develop a sparse framework compatible with mainstream inference engines, incorporating sparse representation algorithms, offloading and prefetching mechanisms, and collaborative XPU-CPU execution.
 
 
 ## 🎯 Key Innovations
 
-- Representation-based Sparse Selection✅: To reduce the complexity of sparsity selection, we introduce a lightweight Sparsity Selector that pre-computes per-block representational scores during the Prefill phase and re-uses them for zero-overhead top-k pruning in the Decode phase.
+- Representation-based Sparse Selection✅: To reduce the complexity of sparsity selection, we introduce a lightweight Sparsity Selector that pre-computes per-block representational scores during the Prefill phase and reuses them for zero-overhead top-k pruning in the Decode phase.
 
 
 - Cross-hardware Support✅: To ensure cross-platform portability of GSA across heterogeneous accelerators (e.g., NVIDIA GPUs and Huawei Ascend NPUs), we introduce a Top-K offloading engine that asynchronously offloads attention queries (Q) to CPU memory for decoupled sparse selection computations.
@@ -31,7 +31,7 @@ GSA (Geometric Sparse Attention) simultaneously tackles the high computational c
 ## 🔥 Key Results
 In both performance and accuracy evaluations, we employed the DeepSeek-R1-Distill-Qwen-32B model deployed on two H20 GPUs.
 ## 🏆 Performance Highlights
-### End-to-End Performance with 80 % Prefix-Cache Hit Ratio 
+### End-to-End Performance with 80 % Prefix-Cache Hit Ratio
 Below are the end-to-end throughput results for inference scenarios without KVCache offloading. PC Baseline refers to the full attention method with an 80% prefix cache hit rate. The GSA method sparsifies each input request to 6K tokens, and in the experiments, each request generates 4K tokens of output.
 
 <div align="center">
@@ -42,7 +42,7 @@ Below are the end-to-end throughput results for inference scenarios without KVCa
 </div>
 
 ### End-to-End Performance with 80 % Prefix-Cache Hit Ratio (HBM-bound scenario)
-Below are the end-to-end results of boosting inference concurrency through KV-Cache off-loading and prefetching under HBM-bound workloads; please note that this feature is not yet fully supported in the current open-source release, and we will make it available as soon as possible. 
+Below are the end-to-end results of boosting inference concurrency through KV-Cache off-loading and prefetching under HBM-bound workloads; please note that this feature is not yet fully supported in the current open-source release, and we will make it available as soon as possible.
 
 <div align="center">
 
@@ -78,7 +78,7 @@ As shown in the table below, we evaluated full attention and the GSA algorithm a
 </table>
 
 
-## 🚦 Quick Start  
+## 🚦 Quick Start
 
 ### Basic Usage
 Similar to UCM's `offline_inference_esa.py` examples. We only need to specify `ucm_sparse_method` to be `GSA` as shown below.
