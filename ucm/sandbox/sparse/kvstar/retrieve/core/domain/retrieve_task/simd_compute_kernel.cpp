@@ -137,44 +137,8 @@ namespace KVStar
             }
             return;
         }
+
         __attribute__((always_inline)) inline static float32x4_t _neon_exp_approx_f32(float32x4_t x) noexcept
-        {
-            const float32x4_t log2e = vdupq_n_f32(1.44269504088896341f);
-
-            float32x4_t y = vmulq_f32(x, log2e); // y = x * log2(e)
-
-            float32x4_t n_f = vrndaq_f32(y); // n = round(y)
-
-            float32x4_t r = vsubq_f32(y, n_f); // r = (y - n)
-
-            // Taylor series
-            const float32x4_t c1 = vdupq_n_f32(1.0f);
-            const float32x4_t c2 = vdupq_n_f32(1.0f);
-            const float32x4_t c3 = vdupq_n_f32(1.0f / 2.0f);
-            const float32x4_t c4 = vdupq_n_f32(1.0f / 6.0f);
-            const float32x4_t c5 = vdupq_n_f32(1.0f / 24.0f);
-            const float32x4_t c6 = vdupq_n_f32(1.0f / 120.0f);
-            const float32x4_t c7 = vdupq_n_f32(1.0f / 720.0f);
-
-            // Horner's method
-            float32x4_t p = vmlaq_f32(c6, c7, r); // c6 + c7*r
-            p = vmlaq_f32(c5, p, r);              // c5 + r*p
-            p = vmlaq_f32(c4, p, r);              // c4 + r*p
-            p = vmlaq_f32(c3, p, r);              // c3 + r*p
-            p = vmlaq_f32(c2, p, r);              // c2 + r*p
-            p = vmlaq_f32(c1, p, r);              // c1 + r*p  ≈ exp(r)
-
-            int32x4_t n_i = vmaxq_s32(vcvtq_s32_f32(n_f), vdupq_n_s32(-127));
-            // n_i = vminq_s32(n_i, vdupq_n_s32(128));
-            int32x4_t e_i = vaddq_s32(n_i, vdupq_n_s32(127));
-            e_i = vshlq_n_s32(e_i, 23);
-
-            float32x4_t s = vreinterpretq_f32_s32(e_i);
-
-            return vmulq_f32(p, s);
-        }
-
-        __attribute__((always_inline)) inline static float32x4_t _avx2_exp_approx_f32(float32x4_t x) noexcept
         {
             const float32x4_t exp_hi = vdupq_n_f32(88.3762626647949f);
             const float32x4_t exp_lo = vdupq_n_f32(-88.3762626647949f);
@@ -238,7 +202,7 @@ namespace KVStar
             i = 0;
             for (; i + 4 <= N; i += 4)
             {
-                float32x4_t eh = _avx2_exp_approx_f32(vld1q_f32(x + i));
+                float32x4_t eh = _neon_exp_approx_f32(vld1q_f32(x + i));
                 vst1q_f32(x + i, eh);
                 acc = vaddq_f32(acc, eh);
             }
