@@ -870,6 +870,7 @@ class GSA(UcmSparseBase):
         scheduler_output: SchedulerOutput,
         requests,
         input_batch,
+        attn_metadata
     ) -> None:
         self.gsa_metadata = self.build_gsa_metadata(
             scheduler_output, requests, input_batch
