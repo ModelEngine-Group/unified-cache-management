@@ -17,12 +17,6 @@
 
 ![architecture.png](./docs/source/_static/images/architecture.png)
 
-UCM 的工作流程如下：
-
-1. 通过 prefix cache 与缓存融合（cache blend）加速预填充。
-2. 在预填充阶段，HBM 中仅保留 2 层 KVCache：一层正在落盘，一层正在计算，其余全部卸载到存储。
-3. 解码实例从存储加载 KVCache；若开启稀疏注意力，仅有被选中的 token 的 KVCache 会被加载到 HBM。
-4. 通过多token预测（Multi-Token Prediction, MTP）进一步加速。
 
 ---
 
