@@ -1,4 +1,4 @@
-# 🌟 GSA: Geometric Sparse Attention for Efficient Inference of Large Models
+# 🌟 GSA: Geometric Sparse Attention for Efficient Inference of LLMs
 <div align="center">
 
 <!-- ![GSA Scheme](../../../images/GSA_overview.png) -->
