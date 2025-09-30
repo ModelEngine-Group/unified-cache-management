@@ -6,7 +6,7 @@
 
 **🚀 Hash-Aware Sparse Attention Algorithm | 📄 ACL 2025 Paper | ⚡ NPU/GPU Hardware-Efficient**
 
-[![Paper](https://img.shields.io/badge/Paper-ACL%202025-blue)](/docs/source/_static/paper/kvcomp-ACL-2025-paper.pdf)
+[![Paper](https://img.shields.io/badge/Paper-ACL%202025-blue)](../../_static/paper/kvcomp-ACL-2025-paper.pdf)
 [![License](https://img.shields.io/badge/License-MIT-green.svg)](https://github.com/ModelEngine-Group/unified-cache-management/blob/main/LICENSE)
 [![Python](https://img.shields.io/badge/Python-3.10+-blue.svg)](https://python.org)
 
@@ -34,10 +34,10 @@
 <div align="center">
 
 ### End-to-End Performance
-![End-to-End Performance](/docs/source/_static/images/kvcomp_end_to_end_performance.jpg)
+![End-to-End Performance](../../_static/images/kvcomp_end_to_end_performance.jpg)
 
 ### Single Layer Performance  
-![Single Layer Performance](/docs/source/_static/images/kvcomp_single_layer_performance.jpg)
+![Single Layer Performance](../../_static/images/kvcomp_single_layer_performance.jpg)
 
 </div>
 
@@ -47,7 +47,7 @@
 <div align="center">
 
 ### LongBench Evaluation
-![LongBench Results](/docs/source/_static/images/kvcomp_longbench.jpg)
+![LongBench Results](../../_static/images/kvcomp_longbench.jpg)
 
 </div>
 
