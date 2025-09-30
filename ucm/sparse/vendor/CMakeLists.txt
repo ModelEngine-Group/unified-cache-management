@@ -9,3 +9,5 @@ endfunction()
 
 include(FetchContent)
 EnableDept(pybind11 https://github.com/pybind/pybind11.git v2.13.6)
+EnableDept(fmt https://github.com/fmtlib/fmt.git 11.2.0)
+EnableDept(spdlog https://github.com/gabime/spdlog.git v1.15.3)

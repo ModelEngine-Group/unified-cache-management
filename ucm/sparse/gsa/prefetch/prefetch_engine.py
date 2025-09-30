@@ -517,8 +517,8 @@ class GSAPrefetchBase:
                 self.is_gsa_req_id[req_id]
                 and gsa_metadata.gsa_stats[req_id].topk_buf_tmp != None
             ):
-                if (torch.max(gsa_metadata.gsa_stats[req_id].topk_buf_tmp) > 
-                    (len(self.block_table_list_bs[index]) - 1)
+                if torch.max(gsa_metadata.gsa_stats[req_id].topk_buf_tmp) > (
+                    len(self.block_table_list_bs[index]) - 1
                 ):
                     self.gsa_seq_len[:, bs_index] = gsa_metadata.gsa_stats[
                         req_id

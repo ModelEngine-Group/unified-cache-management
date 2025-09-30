@@ -1,8 +1,8 @@
 import contextlib
-import os
-import time
-import sys
 import json
+import os
+import sys
+import time
 from dataclasses import asdict
 
 from transformers import AutoTokenizer
@@ -58,7 +58,6 @@ def setup_environment_variables():
             sys.exit(1)
 
     tokenizer = AutoTokenizer.from_pretrained(model, use_chat_template=True)
-
 
 
 @contextlib.contextmanager
