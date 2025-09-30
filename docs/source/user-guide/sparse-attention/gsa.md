@@ -16,7 +16,7 @@ GSA (Geometric Sparse Attention) simultaneously tackles the high computational c
 
 ## 🎯 Key Innovations
 
-- Representation-based Sparse Selection✅: To reduce the complexity of sparsity selection, we introduce a lightweight Sparsity Selector that pre-computes per-block representational scores during the Prefill phase and re-uses them for zero-overhead top-k pruning in the Decode phase.
+- Representation-based Sparse Selection✅: To reduce the complexity of sparsity selection, we introduce a lightweight Sparsity Selector that pre-computes per-block representational scores during the Prefill phase and reuses them for zero-overhead top-k pruning in the Decode phase.
 
 
 - Cross-hardware Support✅: To ensure cross-platform portability of GSA across heterogeneous accelerators (e.g., NVIDIA GPUs and Huawei Ascend NPUs), we introduce a Top-K offloading engine that asynchronously offloads attention queries (Q) to CPU memory for decoupled sparse selection computations.
