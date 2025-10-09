@@ -1,0 +1,38 @@
+# See https://help.github.com/articles/about-codeowners/
+# for more info about CODEOWNERS file
+
+* @mag1c-h @ygwpz @FangRun2 @Tarrei
+/.github @Wwwzff @hek14 @ygwpz @mag1c-h @FangRun2 @Tarrei
+
+/ucm/sparse @wuhuxiao @wangwenxin0312 @hek14 @ygwpz @mag1c-h
+/ucm/sparse/cache_blend @wuhuxiao @hek14 @ygwpz @mag1c-h
+/ucm/sparse/esa @wangwenxin0312 @hek14 @ygwpz @mag1c-h
+/ucm/sparse/gsa @Zbm1996 @zbb200819 @yxkyong @HaoLi980405  @wuhuxiao @hek14 @ygwpz @mag1c-h
+/ucm/sparse/kvcomp @leideng @pengwwang @wuhuxiao @hek14 @ygwpz @mag1c-h
+/ucm/sparse/kvstar @saki-daisuki @summer-ai007 @xwLearnsLLM @wuhuxiao @hek14 @ygwpz @mag1c-h
+
+/ucm/store @mag1c-h @ygwpz
+/ucm/store/dramstore @harrisonyhq @mag1c-h @ygwpz
+/ucm/store/localstore @mag1c-h @ygwpz
+/ucm/store/mooncakestore @chinesezyc @mag1c-h @ygwpz
+/ucm/store/nfsstore @mag1c-h @ygwpz
+
+/ucm/integration @qyh111 @harrisonyhq @ygwpz @mag1c-h
+
+/ucm/pd @flesher0813 @ygwpz @mag1c-h
+
+/ucm/sandbox @Wwwzff @hek14 @ygwpz @mag1c-h @FangRun2 @Tarrei
+
+/benchmarks @flesher0813 @ygwpz @mag1c-h
+
+/docker @harrisonyhq @ygwpz @mag1c-h
+
+/docs @flesher0813 @ygwpz @mag1c-h @FangRun2 @Tarrei
+/docs/source/user-guide/sparse-attention/esa.md @wangwenxin0312 @hek14 @flesher0813 @ygwpz @mag1c-h @FangRun2 @Tarrei
+/docs/source/user-guide/sparse-attention/gsa.md @Zbm1996 @zbb200819 @yxkyong @HaoLi980405 @flesher0813 @ygwpz @mag1c-h @FangRun2 @Tarrei
+/docs/source/user-guide/sparse-attention/kvcomp.md @leideng @pengwwang @flesher0813 @ygwpz @mag1c-h @FangRun2 @Tarrei
+/docs/source/user-guide/sparse-attention/kvstar.md @saki-daisuki @summer-ai007 @flesher0813 @ygwpz @mag1c-h @FangRun2 @Tarrei
+
+/examples @harrisonyhq @ygwpz @mag1c-h
+
+/test @Wwwzff @ygwpz @mag1c-h
