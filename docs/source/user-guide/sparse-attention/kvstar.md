@@ -45,7 +45,7 @@ ktc = KVTransferConfig(
     kv_connector_module_path=module_path,
     kv_role="kv_both",
     kv_connector_extra_config={
-        "ucm_connector_name": "UcmNfsStore",
+        "ucm_connector_name": "UcmFsStore",
         "ucm_connector_config": {
             "storage_backends": "/path/to/data",
             "kv_block_size": 33554432,

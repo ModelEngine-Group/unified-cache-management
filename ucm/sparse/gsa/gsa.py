@@ -441,7 +441,7 @@ class GSA(UcmSparseBase):
                 * (1 if self.use_mla else self.num_head * self.total_tp_size * 2)
             )
             io_size = config_base * (1 if self.use_mla else self.num_head)
-            nfs_config = {
+            fs_config = {
                 "storage_backends": "./ucm/data/" + str(self.rank),
                 "kv_block_size": kv_block_size,
                 "device": self.rank,
@@ -449,7 +449,7 @@ class GSA(UcmSparseBase):
                 "io_size": io_size,
             }
             self.connector = UcmConnectorFactory.create_connector(
-                "UcmNfsStore", nfs_config
+                "UcmFsStore", fs_config
             )
         if CUDA_TOPK:
             self.prefetch_engine = GSAPrefetchBase(

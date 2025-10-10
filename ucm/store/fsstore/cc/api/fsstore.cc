@@ -21,7 +21,7 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  * */
-#include "nfsstore.h"
+#include "fsstore.h"
 #include <fmt/ranges.h>
 #include "logger/logger.h"
 #include "space/space_manager.h"
@@ -29,7 +29,7 @@
 
 namespace UC {
 
-class NFSStoreImpl : public NFSStore {
+class FSStoreImpl : public FSStore {
 public:
     int32_t Setup(const Config& config)
     {
@@ -101,7 +101,7 @@ private:
     {
         std::string buildType = UCM_BUILD_TYPE;
         if (buildType.empty()) { buildType = "Release"; }
-        UC_INFO("NFSStore-{}({}).", UCM_COMMIT_ID, buildType);
+        UC_INFO("FSStore-{}({}).", UCM_COMMIT_ID, buildType);
         UC_INFO("Set UC::StorageBackends to {}.", config.storageBackends);
         UC_INFO("Set UC::BlockSize to {}.", config.kvcacheBlockSize);
         UC_INFO("Set UC::TransferEnable to {}.", config.transferEnable);
@@ -117,9 +117,9 @@ private:
     TsfTaskManager transMgr_;
 };
 
-int32_t NFSStore::Setup(const Config& config)
+int32_t FSStore::Setup(const Config& config)
 {
-    auto impl = new (std::nothrow) NFSStoreImpl();
+    auto impl = new (std::nothrow) FSStoreImpl();
     if (!impl) {
         UC_ERROR("Out of memory.");
         return Status::OutOfMemory().Underlying();

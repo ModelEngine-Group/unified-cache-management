@@ -1,7 +1,7 @@
 # XpYd
 
 ## Overview
-This example demonstrates how to run unified-cache-management with disaggregated prefill using NFS connector on with multiple prefiller + multiple decoder instances.
+This example demonstrates how to run unified-cache-management with disaggregated prefill using FS connector on with multiple prefiller + multiple decoder instances.
 
 ## Prerequisites
 - UCM: Installed with reference to the Installation documentation.
@@ -28,7 +28,7 @@ CUDA_VISIBLE_DEVICES=0 vllm serve /home/models/Qwen2.5-7B-Instruct \
     "kv_connector_module_path": "ucm.integration.vllm.uc_connector",
     "kv_role": "kv_producer",
     "kv_connector_extra_config": {
-        "ucm_connector_name": "UcmNfsStore",
+        "ucm_connector_name": "UcmFsStore",
         "ucm_connector_config": {
             "storage_backends": "/mnt/test1",
             "transferStreamNumber":32
@@ -55,7 +55,7 @@ CUDA_VISIBLE_DEVICES=1 vllm serve /home/models/Qwen2.5-7B-Instruct \
     "kv_connector_module_path": "ucm.integration.vllm.uc_connector",
     "kv_role": "kv_producer",
     "kv_connector_extra_config": {
-        "ucm_connector_name": "UcmNfsStore",
+        "ucm_connector_name": "UcmFsStore",
         "ucm_connector_config": {
             "storage_backends": "/mnt/test1",
             "transferStreamNumber":32
@@ -83,7 +83,7 @@ CUDA_VISIBLE_DEVICES=2 vllm serve /home/models/Qwen2.5-7B-Instruct \
     "kv_connector_module_path": "ucm.integration.vllm.uc_connector",
     "kv_role": "kv_consumer",
     "kv_connector_extra_config": {
-        "ucm_connector_name": "UcmNfsStore",
+        "ucm_connector_name": "UcmFsStore",
         "ucm_connector_config": {
             "storage_backends": "/mnt/test1",
             "transferStreamNumber":32
@@ -109,7 +109,7 @@ CUDA_VISIBLE_DEVICES=3 vllm serve /home/models/Qwen2.5-7B-Instruct \
     "kv_connector_module_path": "ucm.integration.vllm.uc_connector",
     "kv_role": "kv_consumer",
     "kv_connector_extra_config": {
-        "ucm_connector_name": "UcmNfsStore",
+        "ucm_connector_name": "UcmFsStore",
         "ucm_connector_config": {
             "storage_backends": "/mnt/test1",
             "transferStreamNumber":32

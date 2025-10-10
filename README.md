@@ -49,7 +49,7 @@ enabling any sparse algorithm to work seamlessly with any external storage syste
 The core concept here involves identifying blocks through IDs and offsets. 
 This approach is not only suitable for sparse scenarios but also naturally accommodates prefix caching. 
 The KVStoreConnector links it with the current KVConnectorBase_V1 to provide PC (Prefix Caching) functionality. 
-For example, NFSStore serves as a reference implementation that provides the capability to store KVCache 
+For example, FSStore serves as a reference implementation that provides the capability to store KVCache 
 in either a local filesystem for single-machine scenarios or through NFS mount points in multi-server environments.
 
 ---

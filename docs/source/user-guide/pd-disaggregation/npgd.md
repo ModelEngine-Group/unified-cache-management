@@ -1,7 +1,7 @@
 # 1p1d with different platforms
 
 ## Overview
-This document demonstrates how to run unified-cache-management with disaggregated prefill using NFS connector on different platforms, with a setup of one prefiller node and one decoder node.
+This document demonstrates how to run unified-cache-management with disaggregated prefill using FS connector on different platforms, with a setup of one prefiller node and one decoder node.
 
 If you need additional nodes to support your PD-disaggregation system, please refer to the [XpYd](./xpyd.md) documentation. 
 
@@ -37,7 +37,7 @@ vllm serve /home/models/Qwen2.5-7B-Instruct \
     "kv_connector_module_path": "ucm.integration.vllm.uc_connector",
     "kv_role": "kv_producer",
     "kv_connector_extra_config": {
-        "ucm_connector_name": "UcmNfsStore",
+        "ucm_connector_name": "UcmFsStore",
         "ucm_connector_config": {
             "storage_backends": "/mnt/test1",
             "transferStreamNumber":32
@@ -66,7 +66,7 @@ CUDA_VISIBLE_DEVICES=0 vllm serve /home/models/Qwen2.5-7B-Instruct \
     "kv_connector_module_path": "ucm.integration.vllm.uc_connector",
     "kv_role": "kv_consumer",
     "kv_connector_extra_config": {
-        "ucm_connector_name": "UcmNfsStore",
+        "ucm_connector_name": "UcmFsStore",
         "ucm_connector_config": {
             "storage_backends": "/mnt/test1",
             "transferStreamNumber":32
