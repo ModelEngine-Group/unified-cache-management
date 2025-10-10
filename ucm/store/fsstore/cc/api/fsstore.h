@@ -21,15 +21,15 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  * */
-#ifndef UNIFIEDCACHE_NFSSTORE_H
-#define UNIFIEDCACHE_NFSSTORE_H
+#ifndef UNIFIEDCACHE_FSSTORE_H
+#define UNIFIEDCACHE_FSSTORE_H
 
 #include <vector>
 #include "ucmstore.h"
 
 namespace UC {
 
-class NFSStore : public CCStore {
+class FSStore : public CCStore {
 public:
     struct Config {
         std::vector<std::string> storageBackends;
@@ -51,8 +51,8 @@ public:
     };
 
 public:
-    NFSStore() : impl_{nullptr} {}
-    ~NFSStore() override
+    FSStore() : impl_{nullptr} {}
+    ~FSStore() override
     {
         if (this->impl_) { delete this->impl_; }
     }
@@ -83,7 +83,7 @@ public:
     }
 
 private:
-    NFSStore* impl_;
+    FSStore* impl_;
 };
 
 }; // namespace UC

@@ -21,7 +21,7 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  * */
-#include "nfsstore.h"
+#include "fsstore.h"
 #include <pybind11/pybind11.h>
 #include <pybind11/stl.h>
 
@@ -29,7 +29,7 @@ namespace py = pybind11;
 
 namespace UC {
 
-class NFSStorePy : public NFSStore {
+class FSStorePy : public FSStore {
 public:
     void* CCStoreImpl() { return this; }
     py::list AllocBatch(const py::list& blocks)
@@ -58,25 +58,25 @@ public:
                         const py::list& addresses, const py::list& lengths)
     {
         return this->SubmitPy(blockIds, offsets, addresses, lengths, CCStore::Task::Type::LOAD,
-                              CCStore::Task::Location::DEVICE, "NFS::S2D");
+                              CCStore::Task::Location::DEVICE, "FS::S2D");
     }
     size_t LoadToHost(const py::list& blockIds, const py::list& offsets, const py::list& addresses,
                       const py::list& lengths)
     {
         return this->SubmitPy(blockIds, offsets, addresses, lengths, CCStore::Task::Type::LOAD,
-                              CCStore::Task::Location::HOST, "NFS::S2H");
+                              CCStore::Task::Location::HOST, "FS::S2H");
     }
     size_t DumpFromDevice(const py::list& blockIds, const py::list& offsets,
                           const py::list& addresses, const py::list& lengths)
     {
         return this->SubmitPy(blockIds, offsets, addresses, lengths, CCStore::Task::Type::DUMP,
-                              CCStore::Task::Location::DEVICE, "NFS::D2S");
+                              CCStore::Task::Location::DEVICE, "FS::D2S");
     }
     size_t DumpFromHost(const py::list& blockIds, const py::list& offsets,
                         const py::list& addresses, const py::list& lengths)
     {
         return this->SubmitPy(blockIds, offsets, addresses, lengths, CCStore::Task::Type::DUMP,
-                              CCStore::Task::Location::HOST, "NFS::H2S");
+                              CCStore::Task::Location::HOST, "FS::H2S");
     }
 
 private:
@@ -105,36 +105,36 @@ private:
 
 } // namespace UC
 
-PYBIND11_MODULE(ucmnfsstore, module)
+PYBIND11_MODULE(ucmfsstore, module)
 {
     module.attr("project") = UCM_PROJECT_NAME;
     module.attr("version") = UCM_PROJECT_VERSION;
     module.attr("commit_id") = UCM_COMMIT_ID;
     module.attr("build_type") = UCM_BUILD_TYPE;
-    auto store = py::class_<UC::NFSStorePy>(module, "NFSStore");
-    auto config = py::class_<UC::NFSStorePy::Config>(store, "Config");
+    auto store = py::class_<UC::FSStorePy>(module, "FSStore");
+    auto config = py::class_<UC::FSStorePy::Config>(store, "Config");
     config.def(py::init<const std::vector<std::string>&, const size_t, const bool>(),
                py::arg("storageBackends"), py::arg("kvcacheBlockSize"), py::arg("transferEnable"));
-    config.def_readwrite("storageBackends", &UC::NFSStorePy::Config::storageBackends);
-    config.def_readwrite("kvcacheBlockSize", &UC::NFSStorePy::Config::kvcacheBlockSize);
-    config.def_readwrite("transferEnable", &UC::NFSStorePy::Config::transferEnable);
-    config.def_readwrite("transferDeviceId", &UC::NFSStorePy::Config::transferDeviceId);
-    config.def_readwrite("transferStreamNumber", &UC::NFSStorePy::Config::transferStreamNumber);
-    config.def_readwrite("transferIoSize", &UC::NFSStorePy::Config::transferIoSize);
-    config.def_readwrite("transferBufferNumber", &UC::NFSStorePy::Config::transferBufferNumber);
+    config.def_readwrite("storageBackends", &UC::FSStorePy::Config::storageBackends);
+    config.def_readwrite("kvcacheBlockSize", &UC::FSStorePy::Config::kvcacheBlockSize);
+    config.def_readwrite("transferEnable", &UC::FSStorePy::Config::transferEnable);
+    config.def_readwrite("transferDeviceId", &UC::FSStorePy::Config::transferDeviceId);
+    config.def_readwrite("transferStreamNumber", &UC::FSStorePy::Config::transferStreamNumber);
+    config.def_readwrite("transferIoSize", &UC::FSStorePy::Config::transferIoSize);
+    config.def_readwrite("transferBufferNumber", &UC::FSStorePy::Config::transferBufferNumber);
     store.def(py::init<>());
-    store.def("CCStoreImpl", &UC::NFSStorePy::CCStoreImpl);
-    store.def("Setup", &UC::NFSStorePy::Setup);
-    store.def("Alloc", py::overload_cast<const std::string&>(&UC::NFSStorePy::Alloc));
-    store.def("AllocBatch", &UC::NFSStorePy::AllocBatch);
-    store.def("Lookup", py::overload_cast<const std::string&>(&UC::NFSStorePy::Lookup));
-    store.def("LookupBatch", &UC::NFSStorePy::LookupBatch);
-    store.def("LoadToDevice", &UC::NFSStorePy::LoadToDevice);
-    store.def("LoadToHost", &UC::NFSStorePy::LoadToHost);
-    store.def("DumpFromDevice", &UC::NFSStorePy::DumpFromDevice);
-    store.def("DumpFromHost", &UC::NFSStorePy::DumpFromHost);
-    store.def("Wait", &UC::NFSStorePy::Wait);
-    store.def("Check", &UC::NFSStorePy::CheckPy);
-    store.def("Commit", py::overload_cast<const std::string&, const bool>(&UC::NFSStorePy::Commit));
-    store.def("CommitBatch", &UC::NFSStorePy::CommitBatch);
+    store.def("CCStoreImpl", &UC::FSStorePy::CCStoreImpl);
+    store.def("Setup", &UC::FSStorePy::Setup);
+    store.def("Alloc", py::overload_cast<const std::string&>(&UC::FSStorePy::Alloc));
+    store.def("AllocBatch", &UC::FSStorePy::AllocBatch);
+    store.def("Lookup", py::overload_cast<const std::string&>(&UC::FSStorePy::Lookup));
+    store.def("LookupBatch", &UC::FSStorePy::LookupBatch);
+    store.def("LoadToDevice", &UC::FSStorePy::LoadToDevice);
+    store.def("LoadToHost", &UC::FSStorePy::LoadToHost);
+    store.def("DumpFromDevice", &UC::FSStorePy::DumpFromDevice);
+    store.def("DumpFromHost", &UC::FSStorePy::DumpFromHost);
+    store.def("Wait", &UC::FSStorePy::Wait);
+    store.def("Check", &UC::FSStorePy::CheckPy);
+    store.def("Commit", py::overload_cast<const std::string&, const bool>(&UC::FSStorePy::Commit));
+    store.def("CommitBatch", &UC::FSStorePy::CommitBatch);
 }

@@ -1,6 +1,6 @@
-# NFS Store
+# FS Store
 
-This document provides a usage example and configuration guide for the **NFS Connector**. This connector enables offloading of KV cache from GPU HBM to SSD or Local Disk, helping reduce memory pressure and support larger models or batch sizes.
+This document provides a usage example and configuration guide for the **FS Connector**. This connector enables offloading of KV cache from GPU HBM to SSD or Local Disk, helping reduce memory pressure and support larger models or batch sizes.
 
 ## Performance
 
@@ -65,7 +65,7 @@ The following table shows the results on the DeepSeek-V3 model:
 
 ## Features
 
-The NFS connector supports the following functionalities:
+The FS connector supports the following functionalities:
 
 - `dump`: Offload KV cache blocks from HBM to SSD or Local Disk.
 - `load`: Load KV cache blocks from SSD or Local Disk back to HBM.
@@ -75,7 +75,7 @@ The NFS connector supports the following functionalities:
 
 ## Configuration
 
-To use the NFS connector, you need to configure the `connector_config` dictionary in your model's launch configuration.
+To use the FS connector, you need to configure the `connector_config` dictionary in your model's launch configuration.
 
 ### Required Parameters
 
@@ -88,20 +88,20 @@ To use the NFS connector, you need to configure the `connector_config` dictionar
 ### Example:
 
 ```python
-kv_connector_extra_config={"ucm_connector_name": "UcmNfsStore", "ucm_connector_config":{"storage_backends": "/mnt/test1", "transferStreamNumber": 32}}
+kv_connector_extra_config={"ucm_connector_name": "UcmFsStore", "ucm_connector_config":{"storage_backends": "/mnt/test1", "transferStreamNumber": 32}}
 ```
 
 ## Launching Inference
 
 ### Offline Inference
 
-To start **offline inference** with the NFS connector，modify the script `examples/offline_inference.py` to include the `kv_connector_extra_config` for NFS connector usage:
+To start **offline inference** with the FS connector，modify the script `examples/offline_inference.py` to include the `kv_connector_extra_config` for FS connector usage:
 
 ```python
 # In examples/offline_inference.py
 ktc = KVTransferConfig(
     ...
-    kv_connector_extra_config={"ucm_connector_name": "UcmNfsStore", "ucm_connector_config":{"storage_backends": "/mnt/test1", "transferStreamNumber": 32}}
+    kv_connector_extra_config={"ucm_connector_name": "UcmFsStore", "ucm_connector_config":{"storage_backends": "/mnt/test1", "transferStreamNumber": 32}}
 )
 ```
 
@@ -132,7 +132,7 @@ vllm serve /home/models/Qwen2.5-14B-Instruct \
     "kv_connector_module_path": "ucm.integration.vllm.uc_connector",
     "kv_role": "kv_both",
     "kv_connector_extra_config": {
-        "ucm_connector_name": "UcmNfsStore",
+        "ucm_connector_name": "UcmFsStore",
         "ucm_connector_config": {
             "storage_backends": "/mnt/test",
             "transferStreamNumber":32
@@ -149,7 +149,7 @@ INFO:     Waiting for application startup.
 INFO:     Application startup complete.
 ```
 
-Congratulations, you have successfully started the vLLM server with NFS Connector!
+Congratulations, you have successfully started the vLLM server with FS Connector!
 
 After successfully started the vLLM server，You can interact with the API as following:
 
@@ -163,7 +163,7 @@ curl http://localhost:7800/v1/completions \
         "temperature": 0
     }'
 ```
-To quickly experience the NFS Connector's effect:
+To quickly experience the FS Connector's effect:
 
 1. Start the service with:  
    `--no-enable-prefix-caching`  
@@ -171,7 +171,7 @@ To quickly experience the NFS Connector's effect:
 3. Remember to enable prefix caching (do not add `--no-enable-prefix-caching`) in production environments.
 ### Log Message Structure
 ```text
-[UCMNFSSTORE] [I] Task(<task_id>,<direction>,<task_count>,<size>) finished, elapsed <time>s
+[UCMFSSTORE] [I] Task(<task_id>,<direction>,<task_count>,<size>) finished, elapsed <time>s
 ```
 | Component    | Description                                                                 |
 |--------------|-----------------------------------------------------------------------------|

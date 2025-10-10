@@ -27,25 +27,25 @@ from typing import Dict, List, Tuple
 
 import torch
 
-from ucm.store.nfsstore import ucmnfsstore
+from ucm.store.fsstore import ucmfsstore
 from ucm.store.ucmstore import Task, UcmKVStoreBase
 
 
 @dataclass
-class NfsTask(Task):
+class FsTask(Task):
     task_id: int
 
 
-class UcmNfsStore(UcmKVStoreBase):
+class UcmFsStore(UcmKVStoreBase):
     def __init__(self, config: Dict):
         super().__init__(config)
-        self.store = ucmnfsstore.NFSStore()
+        self.store = ucmfsstore.FSStore()
         storage_backends = [
             path for path in config["storage_backends"].split(":") if path
         ]
         block_size = int(config["kv_block_size"])
         transfer_enable = True if config["role"] == "worker" else False
-        param = ucmnfsstore.NFSStore.Config(
+        param = ucmfsstore.FSStore.Config(
             storage_backends, block_size, transfer_enable
         )
         if transfer_enable:
@@ -53,7 +53,7 @@ class UcmNfsStore(UcmKVStoreBase):
             param.transferIoSize = config["io_size"]
         ret = self.store.Setup(param)
         if ret != 0:
-            msg = f"Failed to initialize ucmnfsstore, errcode: {ret}."
+            msg = f"Failed to initialize ucmfsstore, errcode: {ret}."
             raise RuntimeError(msg)
 
     def cc_store(self) -> int:
@@ -76,7 +76,7 @@ class UcmNfsStore(UcmKVStoreBase):
         task_id = self.store.LoadToDevice(
             block_ids, offset, dst_tensor_ptr, dst_tensor_size
         )
-        return NfsTask(task_id=task_id)
+        return FsTask(task_id=task_id)
 
     def dump(
         self, block_ids: List[str], offset: List[int], src_tensor: List[torch.Tensor]
@@ -86,7 +86,7 @@ class UcmNfsStore(UcmKVStoreBase):
         task_id = self.store.DumpFromDevice(
             block_ids, offset, src_tensor_ptr, src_tensor_size
         )
-        return NfsTask(task_id=task_id)
+        return FsTask(task_id=task_id)
 
     def wait(self, task: Task) -> int:
         return self.store.Wait(task.task_id)
