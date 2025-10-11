@@ -40,6 +40,8 @@ You can use our official offline example script to run offline inference as foll
 
 ```bash
 cd examples/
+# Change the model path to your own model path
+export MODEL_PATH=/home/models/Qwen2.5-14B-Instruct
 python offline_inference.py
 ```
 
@@ -58,7 +60,10 @@ export PYTHONHASHSEED=123456
 Run the following command to start the vLLM server with the Qwen/Qwen2.5-14B-Instruct model:
 
 ```bash
-vllm serve /home/models/Qwen2.5-14B-Instruct \
+# Change the model path to your own model path
+export MODEL_PATH=/home/models/Qwen2.5-14B-Instruct
+vllm serve ${MODEL_PATH} \
+--served-model-name vllm_cpu_offload \
 --max-model-len 20000 \
 --tensor-parallel-size 2 \
 --gpu_memory_utilization 0.87 \
@@ -95,7 +100,7 @@ After successfully started the vLLM server，You can interact with the API as fo
 curl http://localhost:7800/v1/completions \
     -H "Content-Type: application/json" \
     -d '{
-        "model": "/home/models/Qwen2.5-14B-Instruct",
+        "model": "vllm_cpu_offload",
         "prompt": "Shanghai is a",
         "max_tokens": 7,
         "temperature": 0
@@ -103,3 +108,4 @@ curl http://localhost:7800/v1/completions \
 ```
 </details>
 
+Note: If you want to disable vLLM prefix cache to test the cache ability of UCM, you can add `--no-enable-prefix-caching` to the command line.
