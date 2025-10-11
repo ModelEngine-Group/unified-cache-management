@@ -492,14 +492,23 @@ class UnifiedCacheConnectorV1(KVConnectorBase_V1):
                 continue
             unfinished_tasks = []
             for task in tasks:
-                ret = self.connector.check(task)
-                if ret == -1:
+                ret, finish = self.connector.check(task)
+                if ret != 0:
+                    logger.error(
+                        f"Task {task} failed, check return {ret} for request {req_id}"
+                    )
+                    self._load_failed_reqs.add(req_id)
+                    break
+                if not finish:
                     unfinished_tasks.append(task)
                     continue
-                elif ret == 0 and self.connector.wait(task) == 0:
-                    continue
-                self._load_failed_reqs.add(req_id)
-                break
+                wret = self.connector.wait(task)
+                if wret != 0:
+                    logger.error(
+                        f"Task {task} failed, wait return {wret} for request {req_id}"
+                    )
+                    self._load_failed_reqs.add(req_id)
+                    break
             if not unfinished_tasks:
                 done_recving.add(req_id)
             self._need_load_reqs[req_id] = unfinished_tasks
