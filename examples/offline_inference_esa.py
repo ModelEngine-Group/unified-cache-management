@@ -45,10 +45,10 @@ def setup_environment_variables():
             sys.exit(1)
 
     data_dir = os.getenv("DATA_DIR", "/home/data/kv_cache")
-    data_dir = input(
-        "Enter the directory for UCMStore to save kv cache, e.g. /home/data/kv_cache: "
-    )
     if not os.path.isdir(data_dir):
+        data_dir = input(
+            "Enter the directory for UCMStore to save kv cache, e.g. /home/data/kv_cache: "
+        )
         create = input(f"Directory {data_dir} dose not exist. Create it? (Y/n): ")
         if create.lower() == "y":
             os.makedirs(data_dir, exist_ok=True)
@@ -87,7 +87,7 @@ def build_llm_with_uc(module_path: str, name: str, model: str):
         model=model,
         kv_transfer_config=ktc,
         max_model_len=32768,
-        gpu_memory_utilization=0.6,
+        gpu_memory_utilization=0.8,
         max_num_batched_tokens=30000,
         block_size=128,
         enforce_eager=True,
@@ -111,10 +111,14 @@ def print_output(
     start = time.time()
     outputs = llm.generate(prompt, sampling_params)
     print("-" * 50)
+    lines = []
     for output in outputs:
         generated_text = output.outputs[0].text
         print(f"Generated text: {generated_text!r}")
+        lines.append(generated_text + "\n")
     print(f"Generation took {time.time() - start:.2f} seconds, {req_str} request done.")
+    with open("./newest_out.txt", "w") as f:
+        f.writelines(lines)
     print("-" * 50)
 
 
@@ -140,24 +144,24 @@ def main():
 
     with build_llm_with_uc(module_path, name, model) as llm:
         prompts = []
-        batch_size = 5
+        batch_size = 20
         assert os.path.isfile(
             path_to_dataset
         ), f"Incorrect dataset path. Please specify the dataset path by `export DATASET_PATH=/path/to/longbench/multifieldqa_zh.jsonl`"
         with open(path_to_dataset, "r") as f:
-            for _ in range(batch_size):
-                line = f.readline()
-                if not line:
-                    break
-                data = json.loads(line)
-                context = data["context"]
-                question = data["input"]
-                prompts.append(get_prompt(f"{context}\n\n{question}"))
+            lines = f.readlines()
+        for i in range(batch_size):
+            line = lines[i]
+            data = json.loads(line)
+            context = data["context"]
+            question = data["input"]
+            prompts.append(get_prompt(f"{context}\n\n{question}"))
 
-        sampling_params = SamplingParams(temperature=0, top_p=0.95, max_tokens=100)
+        sampling_params = SamplingParams(
+            temperature=0, top_p=0.95, max_tokens=256, ignore_eos=False
+        )
 
         print_output(llm, prompts, sampling_params, "first")
-        print_output(llm, prompts, sampling_params, "second")
 
 
 if __name__ == "__main__":

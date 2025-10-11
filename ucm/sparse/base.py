@@ -196,7 +196,5 @@ class UcmSparseBase(ABC):
         """
         pass
 
-    def allocate_slots(
-        self, request, num_slots_sparsed, coordinator, block_pool, kv_cache_groups
-    ):
+    def allocate_slots(self, kv_cache_manager, request, num_slots_sparsed):
         pass

@@ -1,8 +1,9 @@
-From acc0c1a279e77568d92dfc7a36dc1dbd3acdf0ca Mon Sep 17 00:00:00 2001
+From efb56ce711e3a2be60981bb5fe01d14f07dcb870 Mon Sep 17 00:00:00 2001
 From: flesher0813 <1208954694@qq.com>
 Date: Fri, 17 Oct 2025 21:01:17 +0800
-Subject: [PATCH] [Feat] support aggregate and load failure
+Subject: [PATCH] support aggregate and load failure
 
+simplify sparse kv cache manager interface
 ---
  vllm/attention/layer.py                       |  45 +++-
  .../kv_transfer/kv_connector/utils.py         | 113 +++++++++
@@ -10,7 +11,7 @@ Subject: [PATCH] [Feat] support aggregate and load failure
  .../kv_connector/v1/multi_connector.py        |   6 +
  .../v1/shared_storage_connector.py            |   7 +-
  vllm/v1/core/block_pool.py                    |   2 +-
- vllm/v1/core/kv_cache_manager.py              |  11 +-
+ vllm/v1/core/kv_cache_manager.py              |   7 +-
  vllm/v1/core/sched/output.py                  |   5 +
  vllm/v1/core/sched/scheduler.py               | 217 ++++++++++++++++--
  vllm/v1/core/single_type_kv_cache_manager.py  |   3 +
@@ -21,7 +22,7 @@ Subject: [PATCH] [Feat] support aggregate and load failure
  vllm/v1/worker/gpu_input_batch.py             |  14 ++
  vllm/v1/worker/gpu_model_runner.py            | 104 +++++++--
  vllm/v1/worker/gpu_worker.py                  |  25 +-
- 17 files changed, 564 insertions(+), 49 deletions(-)
+ 17 files changed, 560 insertions(+), 49 deletions(-)
 
 diff --git a/vllm/attention/layer.py b/vllm/attention/layer.py
 index f0ad68b16..26cdf0445 100644
@@ -40,8 +41,8 @@ index f0ad68b16..26cdf0445 100644
  from vllm.utils import direct_register_custom_op
  from vllm.v1.attention.backends.utils import validate_kv_sharing_target
 +from ucm.sparse.state import get_ucm_sparse, has_ucm_sparse
-
-
+ 
+ 
  class Attention(nn.Module):
 @@ -409,9 +409,10 @@ def unified_attention(
          attn_metadata = attn_metadata[layer_name]
@@ -54,7 +55,7 @@ index f0ad68b16..26cdf0445 100644
 +    maybe_execute_sparse_attention_finished(query, key, value, output, layer_name, forward_context)
      maybe_save_kv_layer_to_connector(layer_name, kv_cache)
      return output
-
+ 
 @@ -449,6 +450,7 @@ def unified_attention_with_output(
          attn_metadata = attn_metadata[layer_name]
      self = forward_context.no_compile_layers[layer_name]
@@ -70,8 +71,8 @@ index f0ad68b16..26cdf0445 100644
 -
 +    maybe_execute_sparse_attention_finished(query, key, value, output, layer_name, forward_context)
      maybe_save_kv_layer_to_connector(layer_name, kv_cache)
-
-
+ 
+ 
 @@ -479,3 +481,40 @@ direct_register_custom_op(
      fake_impl=unified_attention_with_output_fake,
      dispatch_key=current_platform.dispatch_key,
@@ -127,15 +128,15 @@ index 5cbc8ca31..8556a979e 100644
 +from typing import Optional, cast
 +
  import torch
-
+ 
  import vllm.envs as envs
  from vllm import _custom_ops as ops
  from vllm.config import VllmConfig, get_current_vllm_config
  from vllm.logger import init_logger
 +from vllm.v1.outputs import ModelRunnerOutput
-
+ 
  logger = init_logger(__name__)
-
+ 
 @@ -107,3 +113,110 @@ def get_kv_connector_cache_layout():
              "layout to HND for better xfer performance.")
              return "HND"
@@ -254,7 +255,7 @@ index f80b5eba2..39d8fa389 100644
 @@ -201,6 +201,15 @@ class KVConnectorBase_V1(ABC):
          """
          return None, None
-
+ 
 +    def get_block_ids_with_load_errors(self) -> set[int]:
 +        """
 +        Get the set of block IDs that failed to load.
@@ -272,9 +273,9 @@ index be3c23399..c4fedb3a7 100644
 --- a/vllm/distributed/kv_transfer/kv_connector/v1/multi_connector.py
 +++ b/vllm/distributed/kv_transfer/kv_connector/v1/multi_connector.py
 @@ -129,6 +129,12 @@ class MultiConnector(KVConnectorBase_V1):
-
+ 
          return finished_sending or None, finished_recving or None
-
+ 
 +    def get_block_ids_with_load_errors(self) -> set[int]:
 +        agg_block_ids: set[int] = set()
 +        for c in self._connectors:
@@ -295,10 +296,10 @@ index 3c574d065..223106def 100644
 -from dataclasses import dataclass
 +from dataclasses import dataclass, field
  from typing import TYPE_CHECKING
-
+ 
  import safetensors
 @@ -53,10 +53,7 @@ class ReqMeta:
-
+ 
  @dataclass
  class SharedStorageConnectorMetadata(KVConnectorMetadata):
 -    requests: list[ReqMeta]
@@ -306,7 +307,7 @@ index 3c574d065..223106def 100644
 -    def __init__(self):
 -        self.requests = []
 +    requests: list[ReqMeta] = field(default_factory=list)
-
+ 
      def add_request(
          self,
 diff --git a/vllm/v1/core/block_pool.py b/vllm/v1/core/block_pool.py
@@ -323,16 +324,16 @@ index d21f94727..1800665c7 100644
          new_full_blocks = blocks[num_cached_blocks:num_full_blocks]
          assert len(block_hashes) >= num_cached_blocks
 diff --git a/vllm/v1/core/kv_cache_manager.py b/vllm/v1/core/kv_cache_manager.py
-index 6937455e7..0099f4a0f 100644
+index 6937455e7..bf9aec864 100644
 --- a/vllm/v1/core/kv_cache_manager.py
 +++ b/vllm/v1/core/kv_cache_manager.py
 @@ -3,7 +3,7 @@
-
+ 
  from collections import defaultdict
  from dataclasses import dataclass
 -from typing import Optional
 +from typing import Optional, Union
-
+ 
  from vllm.distributed.kv_events import KVCacheEvent
  from vllm.logger import init_logger
 @@ -14,6 +14,8 @@ from vllm.v1.core.kv_cache_utils import (BlockHash, KVCacheBlock,
@@ -341,9 +342,9 @@ index 6937455e7..0099f4a0f 100644
  from vllm.v1.request import Request, RequestStatus
 +from ucm.sparse.state import get_ucm_sparse, has_ucm_sparse
 +from ucm.sparse.base import INVALID_SLOT
-
+ 
  logger = init_logger(__name__)
-
+ 
 @@ -193,6 +195,7 @@ class KVCacheManager:
          num_draft_tokens: int = 0,
          num_lookahead_tokens: int = 0,
@@ -351,18 +352,14 @@ index 6937455e7..0099f4a0f 100644
 +        num_slots_sparsed: Union[None, int] = None
      ) -> Optional[KVCacheBlocks]:
          """Add slots for a request with new tokens to append.
-
-@@ -231,6 +234,12 @@ class KVCacheManager:
+ 
+@@ -231,6 +234,8 @@ class KVCacheManager:
          """
          if num_new_tokens == 0:
              raise ValueError("num_new_tokens must be greater than 0")
 +        if num_slots_sparsed != INVALID_SLOT:
-+            return get_ucm_sparse().allocate_slots(request,
-+                                                   num_slots_sparsed,
-+                                                   self.coordinator,
-+                                                   self.block_pool,
-+                                                   self.kv_cache_config.kv_cache_groups)
-
++            return get_ucm_sparse().allocate_slots(self, request, num_slots_sparsed)
+ 
          if new_computed_blocks is not None:
              new_computed_block_list = new_computed_blocks.blocks
 diff --git a/vllm/v1/core/sched/output.py b/vllm/v1/core/sched/output.py
@@ -374,7 +371,7 @@ index d34f39327..fff0eeb42 100644
      new_block_ids: list[tuple[list[int], ...]]
      num_computed_tokens: list[int]
 +    num_output_tokens: list[int]
-
+ 
      @property
      def num_reqs(self) -> int:
 @@ -106,6 +107,7 @@ class CachedRequestData:
@@ -383,10 +380,10 @@ index d34f39327..fff0eeb42 100644
              num_computed_tokens=[],
 +            num_output_tokens=[],
          )
-
-
+ 
+ 
 @@ -155,3 +157,6 @@ class SchedulerOutput:
-
+ 
      # KV Cache Connector metadata.
      kv_connector_metadata: Optional[KVConnectorMetadata] = None
 +
@@ -402,9 +399,9 @@ index fe552db74..aa172e943 100644
  from vllm.v1.structured_output import StructuredOutputManager
 +from ucm.sparse.state import ensure_ucm_sparse_initialized, get_ucm_sparse, has_ucm_sparse
 +from ucm.sparse.base import UcmSparseBase, UcmSparseRole, INVALID_SLOT
-
+ 
  logger = init_logger(__name__)
-
+ 
 @@ -79,12 +81,18 @@ class Scheduler(SchedulerInterface):
          # will have a corresponding KVConnector with Role=WORKER.
          # KV Connector pushes/pull of remote KVs for P/D and offloading.
@@ -421,19 +418,19 @@ index fe552db74..aa172e943 100644
 +                ensure_ucm_sparse_initialized(vllm_config, role=UcmSparseRole.SCHEDULER)
 +                self.ucm_sparse = get_ucm_sparse()
 +                logger.info("UCM Sparse initialized successfully: {}".format(self.ucm_sparse))
-
+ 
          self.kv_event_publisher = EventPublisherFactory.create(
              self.kv_events_config,
 @@ -118,6 +126,7 @@ class Scheduler(SchedulerInterface):
-
+ 
          # KV Connector: requests in process of async KV loading or recving
          self.finished_recving_kv_req_ids: set[str] = set()
 +        self.failed_recving_kv_req_ids: set[str] = set()
-
+ 
          # Encoder-related.
          # Calculate encoder cache size if applicable
 @@ -201,8 +210,13 @@ class Scheduler(SchedulerInterface):
-
+ 
          # First, schedule the RUNNING requests.
          req_index = 0
 +        req_sparsed_slots: dict[str, int] = {}
@@ -443,7 +440,7 @@ index fe552db74..aa172e943 100644
 +            if self.ucm_sparse:
 +                num_slots_sparsed = self.ucm_sparse.estimate_num_slots_sparsed(request)
 +            req_sparsed_slots.update({request.request_id: num_slots_sparsed})
-
+ 
              num_new_tokens = (request.num_tokens_with_spec -
                                request.num_computed_tokens)
 @@ -250,7 +264,8 @@ class Scheduler(SchedulerInterface):
@@ -458,13 +455,13 @@ index fe552db74..aa172e943 100644
                      # Preempt the lowest-priority request.
 @@ -337,6 +352,10 @@ class Scheduler(SchedulerInterface):
                      break
-
+ 
                  request = self.waiting.peek_request()
 +                num_slots_sparsed = INVALID_SLOT
 +                if self.ucm_sparse:
 +                    num_slots_sparsed = self.ucm_sparse.estimate_num_slots_sparsed(request)
 +                req_sparsed_slots.update({request.request_id: num_slots_sparsed})
-
+ 
                  # KVTransfer: skip request if still waiting for remote kvs.
                  if request.status == RequestStatus.WAITING_FOR_REMOTE_KVS:
 @@ -446,6 +465,7 @@ class Scheduler(SchedulerInterface):
@@ -488,7 +485,7 @@ index fe552db74..aa172e943 100644
          new_block_ids: list[tuple[list[int], ...]] = []
          num_computed_tokens: list[int] = []
 +        num_output_tokens: list[int] = []
-
+ 
          for req in itertools.chain(running_reqs, resumed_reqs):
              req_id = req.request_id
 @@ -637,6 +659,7 @@ class Scheduler(SchedulerInterface):
@@ -505,18 +502,18 @@ index fe552db74..aa172e943 100644
              num_computed_tokens=num_computed_tokens,
 +            num_output_tokens=num_output_tokens,
          )
-
+ 
      def _try_schedule_encoder_inputs(
 @@ -745,16 +769,29 @@ class Scheduler(SchedulerInterface):
          num_scheduled_tokens = scheduler_output.num_scheduled_tokens
          pooler_outputs = model_runner_output.pooler_output
          num_nans_in_logits = model_runner_output.num_nans_in_logits
 +        invalid_block_ids = model_runner_output.invalid_block_ids
-
+ 
          new_running: list[Request] = []
          outputs: dict[int, list[EngineCoreOutput]] = defaultdict(list)
          spec_decoding_stats: Optional[SpecDecodingStats] = None
-
+ 
 +        failed_kv_load_req_ids = None
 +        if invalid_block_ids:
 +            # These blocks contain externally computed tokens that failed to
@@ -540,7 +537,7 @@ index fe552db74..aa172e943 100644
 @@ -792,6 +829,12 @@ class Scheduler(SchedulerInterface):
              new_token_ids = generated_token_ids
              kv_transfer_params = None
-
+ 
 +            if model_runner_output.finished_dumping is not None:
 +                request.succeed_dumped_blocks.extend(model_runner_output.finished_dumping.get(req_id, []))
 +                is_prefill = request.num_output_tokens == 0
@@ -559,12 +556,12 @@ index fe552db74..aa172e943 100644
              prompt_logprobs_tensors = prompt_logprobs_dict.get(req_id)
              if new_token_ids or pooler_output is not None \
 @@ -869,6 +911,7 @@ class Scheduler(SchedulerInterface):
-
+ 
              if not stopped:
                  new_running.append(request)
 +
          self.running = new_running
-
+ 
          # KV Connector: update state for finished KV Transfers.
 @@ -927,6 +970,8 @@ class Scheduler(SchedulerInterface):
      def add_request(self, request: Request) -> None:
@@ -574,20 +571,20 @@ index fe552db74..aa172e943 100644
 +            self.ucm_sparse.request_begin(request.request_id, request.prompt_token_ids)
          if self.log_stats:
              request.record_event(EngineCoreEventType.QUEUED)
-
+ 
 @@ -976,6 +1021,8 @@ class Scheduler(SchedulerInterface):
-
+ 
      def _free_request(self, request: Request) -> Optional[dict[str, Any]]:
          assert request.is_finished()
 +        if self.ucm_sparse:
 +            self.ucm_sparse.request_finished_in_scheduler(request.request_id)
-
+ 
          delay_free_blocks, kv_xfer_params = self._connector_finished(request)
          self.encoder_cache_manager.free(request)
 @@ -1078,18 +1125,31 @@ class Scheduler(SchedulerInterface):
          if request.request_id not in self.finished_recving_kv_req_ids:
              return False
-
+ 
 -        # Now that the blocks are ready, actually cache them.
 -        (block_ids, ) = self.kv_cache_manager.get_block_ids(request.request_id)
 -        num_computed_tokens = len(block_ids) * self.block_size
@@ -625,7 +622,7 @@ index fe552db74..aa172e943 100644
 +
 +            # Update the request state for scheduling.
 +            request.num_computed_tokens = num_computed_tokens
-
+ 
          # Return that we are ready.
          self.finished_recving_kv_req_ids.remove(request.request_id)
 @@ -1113,3 +1173,132 @@ class Scheduler(SchedulerInterface):
@@ -768,7 +765,7 @@ index 5b4718038..28bd4618a 100644
 @@ -142,6 +142,9 @@ class SingleTypeKVCacheManager(ABC):
          num_cached_blocks = self.num_cached_block[request.request_id]
          num_full_blocks = num_tokens // self.block_size
-
+ 
 +        if num_cached_blocks >= num_full_blocks:
 +            return
 +
@@ -794,12 +791,12 @@ index b06b7cc80..61cd7110f 100644
 +            # _async_aggregate_workers_output also assumes a single IO thread
              self.io_thread_pool = ThreadPoolExecutor(
                  max_workers=1, thread_name_prefix="mp_exec_io")
-
+ 
          self.output_rank = self._get_output_rank()
 +        self.has_connector = self.vllm_config.kv_transfer_config is not None
 +        self.kv_output_aggregator = KVOutputAggregator(
 +            self.parallel_config.world_size)
-
+ 
      def start_worker_monitor(self):
          workers = self.workers
 @@ -155,13 +160,30 @@ class MultiprocExecutor(Executor):
@@ -834,7 +831,7 @@ index b06b7cc80..61cd7110f 100644
 +            return self.kv_output_aggregator.async_aggregate(
 +                outputs, self.output_rank)
 +        return self.kv_output_aggregator.aggregate(outputs, self.output_rank)
-
+ 
      def collective_rpc(self,
                         method: Union[str, Callable],
 diff --git a/vllm/v1/outputs.py b/vllm/v1/outputs.py
@@ -844,11 +841,11 @@ index f78623f57..16af8dbce 100644
 @@ -1,7 +1,7 @@
  # SPDX-License-Identifier: Apache-2.0
  # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
-
+ 
 -from dataclasses import dataclass
 +from dataclasses import dataclass, field
  from typing import NamedTuple, Optional
-
+ 
  import torch
 @@ -107,6 +107,11 @@ class ModelRunnerOutput:
      # [req_ids]
@@ -859,7 +856,7 @@ index f78623f57..16af8dbce 100644
 +    # IDs of externally computed KV blocks that failed to load.
 +    # Requests referencing these blocks should be rescheduled to recompute them.
 +    invalid_block_ids: set[int] = field(default_factory=set)
-
+ 
      # req_id -> num_nans_in_logits
      num_nans_in_logits: Optional[dict[str, int]] = None
 diff --git a/vllm/v1/request.py b/vllm/v1/request.py
@@ -882,7 +879,7 @@ index 8f4e8d64c..f45e39f5c 100644
 @@ -61,6 +61,15 @@ class BlockTable:
          self.num_blocks_per_row[row_idx] += num_blocks
          self.block_table_np[row_idx, start:start + num_blocks] = block_ids
-
+ 
 +    def reset_row(
 +            self,
 +            row_idx: int,
@@ -898,7 +895,7 @@ index 8f4e8d64c..f45e39f5c 100644
 @@ -117,6 +126,10 @@ class MultiGroupBlockTable:
          for i, block_table in enumerate(self.block_tables):
              block_table.append_row(block_ids[i], row_idx)
-
+ 
 +    def reset_row(self, row_idx: int) -> None:
 +        for i, block_table in enumerate(self.block_tables):
 +            block_table.reset_row(row_idx)
@@ -907,7 +904,7 @@ index 8f4e8d64c..f45e39f5c 100644
          for i, block_table in enumerate(self.block_tables):
              block_table.add_row(block_ids[i], row_idx)
 diff --git a/vllm/v1/worker/gpu_input_batch.py b/vllm/v1/worker/gpu_input_batch.py
-index 1a79d72be..eb23c261a 100644
+index 1a79d72be..8819d7629 100644
 --- a/vllm/v1/worker/gpu_input_batch.py
 +++ b/vllm/v1/worker/gpu_input_batch.py
 @@ -96,6 +96,9 @@ class InputBatch:
@@ -935,15 +932,15 @@ index 1a79d72be..eb23c261a 100644
          # Number of token ids in token_ids_cpu.
          # NOTE(woosuk): This may include spec decode tokens.
          self.num_tokens[req_index] = request.num_tokens
-@@ -472,6 +481,8 @@ class InputBatch:
-         tmp = self.token_ids_cpu[i1, ...].copy()
+@@ -473,6 +482,8 @@ class InputBatch:
          self.token_ids_cpu[i1, ...] = self.token_ids_cpu[i2, ...]
          self.token_ids_cpu[i2, ...] = tmp
-+
+ 
 +        self.is_token_ids[[i1, i2], ...] = self.is_token_ids[[i2, i1], ...]
-
++
          swap_dict_values(self.generators, i1, i2)
          swap_dict_values(self.bad_words_token_ids, i1, i2)
+ 
 @@ -542,6 +553,9 @@ class InputBatch:
              num_tokens = self.num_tokens[last_req_index]
              self.token_ids_cpu[empty_index, :num_tokens] = self.token_ids_cpu[
@@ -961,7 +958,7 @@ index 5a26e88db..e1c9252a4 100644
 @@ -72,6 +72,9 @@ from ..sample.logits_processor import LogitsProcessorManager
  from .utils import (gather_mm_placeholders, initialize_kv_cache_for_kv_sharing,
                      sanity_check_mm_encoder_outputs, scatter_mm_placeholders)
-
+ 
 +from ucm.sparse.state import get_ucm_sparse, has_ucm_sparse
 +from ucm.sparse.base import UcmSparseMetadata, INVALID_SLOT
 +
@@ -988,7 +985,7 @@ index 5a26e88db..e1c9252a4 100644
              resumed_from_preemption = req_data.resumed_from_preemption[i]
 +            num_output_tokens = req_data.num_output_tokens[i]
 +            is_sparsed_request = req_sparsed_slots[req_id] != INVALID_SLOT
-
+ 
              # Update the cached states.
              req_state.num_computed_tokens = num_computed_tokens
 @@ -492,17 +499,32 @@ class GPUModelRunner(LoRAModelRunnerMixin):
@@ -1010,7 +1007,7 @@ index 5a26e88db..e1c9252a4 100644
 +                    self.input_batch.num_tokens_no_spec[req_index] = end_idx
 +                    self.input_batch.is_token_ids[req_index,
 +                                                end_idx:old_end_idx] = False
-
+ 
              # Update the block IDs.
 -            if not resumed_from_preemption:
 -                # Append the new blocks to the existing block IDs.
@@ -1027,7 +1024,7 @@ index 5a26e88db..e1c9252a4 100644
 +                for block_ids, new_ids in zip(req_state.block_ids,
 +                                               new_block_ids):
 +                    block_ids.extend(new_ids)
-
+ 
              req_index = self.input_batch.req_id_to_index.get(req_id)
              if req_index is None:
 @@ -515,6 +537,8 @@ class GPUModelRunner(LoRAModelRunnerMixin):
@@ -1037,12 +1034,12 @@ index 5a26e88db..e1c9252a4 100644
 +            if is_sparsed_request:
 +                self.input_batch.block_table.reset_row(req_index)
              self.input_batch.block_table.append_row(new_block_ids, req_index)
-
+ 
              # For the last rank, we don't need to update the token_ids_cpu
 @@ -623,6 +647,19 @@ class GPUModelRunner(LoRAModelRunnerMixin):
          if self.uses_mrope:
              self._calc_mrope_positions(scheduler_output)
-
+ 
 +        self.seq_lens_np[:num_reqs] = (
 +            self.input_batch.num_computed_tokens_cpu[:num_reqs] +
 +            num_scheduled_tokens)
@@ -1076,7 +1073,7 @@ index 5a26e88db..e1c9252a4 100644
 @@ -666,9 +703,11 @@ class GPUModelRunner(LoRAModelRunnerMixin):
          self.query_start_loc_np[0] = 0
          self.query_start_loc_np[1:num_reqs + 1] = cu_num_tokens
-
+ 
 -        self.seq_lens_np[:num_reqs] = (
 -            self.input_batch.num_computed_tokens_cpu[:num_reqs] +
 -            num_scheduled_tokens)
@@ -1085,7 +1082,7 @@ index 5a26e88db..e1c9252a4 100644
 +            is_sparsed_request = scheduler_output.req_sparsed_slots[req_id] != INVALID_SLOT
 +            if is_sparsed_request:
 +                self.seq_lens_np[req_index] = scheduler_output.req_sparsed_slots[req_id]
-
+ 
          # Copy the tensors to the GPU.
          self.input_ids[:total_num_scheduled_tokens].copy_(
 @@ -680,6 +719,8 @@ class GPUModelRunner(LoRAModelRunnerMixin):
@@ -1102,13 +1099,13 @@ index 5a26e88db..e1c9252a4 100644
          ):
              self.maybe_setup_kv_connector(scheduler_output)
 +            self.maybe_execute_ucm_sparse_begin(scheduler_output, attn_metadata)
-
+ 
              model_output = self.model(
                  input_ids=input_ids,
 @@ -1378,9 +1420,12 @@ class GPUModelRunner(LoRAModelRunnerMixin):
                  inputs_embeds=inputs_embeds,
              )
-
+ 
 -            self.maybe_wait_for_kv_save()
 +            finished_dumping = self.maybe_wait_for_kv_save()
 +            self.maybe_execute_ucm_sparse_finished()
@@ -1116,7 +1113,7 @@ index 5a26e88db..e1c9252a4 100644
              finished_sending, finished_recving = (
                  self.get_finished_kv_transfers(scheduler_output))
 +            invalid_block_ids = self.get_block_ids_with_load_errors()
-
+ 
          if self.use_aux_hidden_state_outputs:
              hidden_states, aux_hidden_states = model_output
 @@ -1563,6 +1608,8 @@ class GPUModelRunner(LoRAModelRunnerMixin):
@@ -1126,7 +1123,7 @@ index 5a26e88db..e1c9252a4 100644
 +            finished_dumping=finished_dumping,
 +            invalid_block_ids = invalid_block_ids
          )
-
+ 
      def propose_draft_token_ids(
 @@ -1693,13 +1740,16 @@ class GPUModelRunner(LoRAModelRunnerMixin):
              self.maybe_setup_kv_connector(scheduler_output)
@@ -1134,21 +1131,21 @@ index 5a26e88db..e1c9252a4 100644
                  self.get_finished_kv_transfers(scheduler_output))
 +            invalid_block_ids = self.get_block_ids_with_load_errors()
 +            get_kv_transfer_group().clear_connector_metadata()
-
+ 
 -        if not finished_sending and not finished_recving:
 +        if not finished_sending and not finished_recving and not invalid_block_ids:
              return EMPTY_MODEL_RUNNER_OUTPUT
-
+ 
          output = copy.copy(EMPTY_MODEL_RUNNER_OUTPUT)
          output.finished_sending = finished_sending
          output.finished_recving = finished_recving
 +        output.invalid_block_ids = invalid_block_ids
          return output
-
+ 
      @staticmethod
 @@ -1719,9 +1769,28 @@ class GPUModelRunner(LoRAModelRunnerMixin):
              kv_connector.start_load_kv(get_forward_context())
-
+ 
      @staticmethod
 -    def maybe_wait_for_kv_save() -> None:
 +    def maybe_wait_for_kv_save() -> Optional[dict[str, list[str]]]:
@@ -1174,13 +1171,13 @@ index 5a26e88db..e1c9252a4 100644
 +            return
 +        ucm_sparse = get_ucm_sparse()
 +        ucm_sparse.request_finished_in_worker(request_id)
-
+ 
      @staticmethod
      def get_finished_kv_transfers(
 @@ -1732,6 +1801,11 @@ class GPUModelRunner(LoRAModelRunnerMixin):
                  scheduler_output.finished_req_ids)
          return None, None
-
+ 
 +    def get_block_ids_with_load_errors(self) -> Optional[set[int]]:
 +        if has_kv_transfer_group():
 +            return get_kv_transfer_group().get_block_ids_with_load_errors()
@@ -1221,9 +1218,9 @@ index 9e7e44d06..d9666d102 100644
  from vllm.v1.worker.gpu_model_runner import GPUModelRunner
  from vllm.v1.worker.worker_base import WorkerBase
 +from ucm.sparse.state import ensure_ucm_sparse_initialized
-
+ 
  logger = init_logger(__name__)
-
+ 
 @@ -313,9 +316,22 @@ class Worker(WorkerBase):
              assert isinstance(output, IntermediateTensors)
              get_pp_group().send_tensor_dict(output.tensors,
@@ -1246,17 +1243,17 @@ index 9e7e44d06..d9666d102 100644
          assert isinstance(output, ModelRunnerOutput)
 -        return output if self.is_driver_worker else None
 +        return output
-
+ 
      def profile(self, is_start: bool = True):
          if self.profiler is None:
 @@ -386,6 +402,7 @@ def init_worker_distributed_environment(
                                        parallel_config.pipeline_parallel_size)
-
+ 
      ensure_kv_transfer_initialized(vllm_config)
 +    ensure_ucm_sparse_initialized(vllm_config)
-
-
+ 
+ 
  def _check_if_gpu_supports_dtype(torch_dtype: torch.dtype):
---
-2.50.1.windows.1
+-- 
+2.34.1
 
