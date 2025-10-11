@@ -187,9 +187,9 @@ class UnifiedCacheConnectorV1(KVConnectorBase_V1):
             kv_layer[1][0].numel() if not self.is_mla else 0
         ) * elem_size
         # When tp > 1 layer_size = (k_min_data_block_size + v_min_data_block_size) * tp_size
-        layer_size = (
-            k_min_data_block_size + v_min_data_block_size
-        ) * self.total_tp_size
+        layer_size = (k_min_data_block_size + v_min_data_block_size) * (
+            self.total_tp_size if not self.is_mla else 1
+        )
         if is_v:
             # Offset of v = Offset of k + k_min_data_block_size
             return int(
