@@ -21,27 +21,45 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  * */
-#ifndef UNIFIEDCACHE_DRAM_SPACE_MANAGER_H
-#define UNIFIEDCACHE_DRAM_SPACE_MANAGER_H
-
-#include "dram_space_layout.h"
-#include "status/status.h"
+#include "space_manager.h"
+#include "file/file.h"
+#include "logger/logger.h"
 
 namespace UC {
 
-class DramSpaceManager {
-public:
-    Status Setup(uint32_t maxSize, uint32_t blockSize, uint32_t minLength);
-    Status NewBlock(const std::string& blockId) const; // 也许不需要实现它。无论如何先放这里
-    Status CommitBlock(const std::string& blockId, bool success = true) const; // 等一个block完全存完或者被完全删除后，调用这个方法，并更新layout_中的_storedBlocks集合
-    bool LookupBlock(const std::string& blockId) const;
-    const DramSpaceLayout* GetSpaceLayout() const;
+Status DramSpaceManager::Setup(uint32_t maxSize, uint32_t blockSize, uint32_t minLength)
+{
+    if (blockSize == 0) {
+        UC_ERROR("Invalid block size({}).", blockSize);
+        return Status::InvalidParam();
+    }
+    auto status = this->layout_.Setup(maxSize, blockSize, minLength);
+    if (status.Failure()) { return status; }
+    this->blockSize_ = blockSize;
+    return Status::OK();
+}
 
-private:
-    DramSpaceLayout layout_;
-    size_t blockSize_;
-};
+Status DramSpaceManager::NewBlock(const std::string& blockId) const
+{
+    return Status::OK();
+}
+
+Status DramSpaceManager::CommitBlock(const std::string& blockId, bool success) const
+{
+    if (success) {
+        this->_layout->StoredBlocksAppend(blockId);
+    } 
+    else {
+        this->_layout->StoredBlocksErase(blockId);
+    }
+    return Status::OK();
+}
+
+bool DramSpaceManager::LookupBlock(const std::string& blockId) const
+{
+    return this->_layout->StoredBlocksExist(blockId);
+}
+
+const SpaceLayout* DramSpaceManager::GetSpaceLayout() const { return &this->layout_; }
 
 } // namespace UC
-
-#endif

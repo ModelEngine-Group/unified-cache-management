@@ -41,7 +41,7 @@ public:
           length{length}, owner{0}, waiter{nullptr}
     {
     }
-    DramTsfTask() : DramTsfTask{Type::DUMP, {}, 0, 0, 0} {}
+    DramTsfTask() : DramTsfTask{Type::DUMP, {}, 0, 0, 0} {} // 无参构造函数
 
 public:
     Type type;

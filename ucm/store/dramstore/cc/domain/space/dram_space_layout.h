@@ -32,16 +32,23 @@ namespace UC {
 
 class DramSpaceLayout {
 public:
-    Status Setup(uint32_t maxSize); // TODO：这里面要先进行内存空间的初始化，通过调malloc这类函数，参数先只有1个，即总空间大小
+    Status Setup(uint32_t maxSize, uint32_t blockSize, uint32_t minLength); // TODO：这里面要先进行内存空间的初始化，通过调malloc这类函数
+    char* GetDataAddr(std::string blockId, std::string offset);
+    void DataStoreMapAppend(std::string key, char* address);
+    void StoredBlocksAppend(std::string blockId);
+    void StoredBlocksErase(std::string blockId);
+    bool StoredBlocksExist(std::string blockId);
 
 private:
 
 private:
-    void* _dataStorePool; // KVCache存放的内存空间，在Setup函数中进行初始化
-    std::map<std::string, void*> _dataStoreMap; // 键是 block_id+offset 的拼接，值是对应的KVCache的存放起始位置，初始化为空
+    char* _dataStorePool; // KVCache存放的内存空间，在Setup函数中进行初始化
+    std::map<std::string, char*> _dataStoreMap; // 键是 block_id+offset 的拼接，值是对应的KVCache的存放起始位置，初始化为空
     std::set<std::string> _storedBlocks; // 被存了的 blocks 的所有 blockId，初始化为空
-    size_t _curOffset; // 当前的内存池中下一个可用的Offset（相较于内存池中初始地址的偏移）
+    size_t _curOffset{0}; // 当前的内存池中下一个可用的Offset（相较于内存池中初始地址的偏移）
     size_t blockSize_;
+    size_t capacity_;
+    size_t minLength_;
     // 目前为了简单，如果全写满了的话，就从头再来吧，把最头上(即_dataStorePool的起始位置)的数据替换掉
 };
 

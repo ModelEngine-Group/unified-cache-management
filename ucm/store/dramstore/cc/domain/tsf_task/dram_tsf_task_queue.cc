@@ -1,0 +1,133 @@
+/**
+ * MIT License
+ *
+ * Copyright (c) 2025 Huawei Technologies Co., Ltd. All rights reserved.
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining a copy
+ * of this software and associated documentation files (the "Software"), to deal
+ * in the Software without restriction, including without limitation the rights
+ * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+ * copies of the Software, and to permit persons to whom the Software is
+ * furnished to do so, subject to the following conditions:
+ *
+ * The above copyright notice and this permission notice shall be included in all
+ * copies or substantial portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+ * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+ * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+ * SOFTWARE.
+ * */
+
+#include "dram_tsf_task_queue.h"
+
+namespace UC {
+
+#define UC_TASK_ERROR(s, t)                                                                        \
+    do {                                                                                           \
+        UC_ERROR("Failed({}) to run task({},{},{},{}).", (s), (t).owner, (t).blockId, (t).offset,  \
+                 (t).length);                                                                      \
+    } while (0)
+
+Status DramTsfTaskQueue::Setup(const int32_t deviceId, DramTsfTaskSet* failureSet, const DramSpaceLayout* layout);
+{
+    this->_failureSet = failureSet;
+    this->_layout = layout;
+    if (deviceId >= 0) {
+        this->_device = DeviceFactory::Make(deviceId, 0, 0); // 这里不需要buffer，暂时都先传0吧
+        if (!this->_device) { return Status::OutOfMemory(); }
+    }
+    if (!this->_streamOper.Setup([this](DramTsfTask& task) { this->StreamOper(task); })) {
+        return Status::Error();
+    }
+    return Status::OK();
+}
+
+void DramTsfTaskQueue::Push(std::list<DramTsfTask>& tasks)
+{
+    this->_streamOper.Push(tasks);
+}
+
+void DramTsfTaskQueue::StreamOper(DramTsfTask& task)
+{
+    if (this->_failureSet->Contains(task.owner)) {
+        this->Done(task, false);
+        return;
+    }
+    if (task.type == DramTsfTask::Type::LOAD) {
+        this->H2D(task);
+    } else {
+        this->D2H(task);
+    }
+}
+
+// 这个H2D和D2H函数是重点要重新实现的。这里70和71行是与nfsstore不同的。
+void DramTsfTaskQueue::H2D(DramTsfTask& task)
+{
+    auto host_src = this->_layout->GetDataAddr(task.blockId, task.offset); // 这里host_src是已知的
+    if (!host_src) {
+        UC_TASK_ERROR(Status::Error(), task);
+        this->Done(task, false);
+        return;
+    }
+    auto status = this->_device->H2DAsync((std::byte*)task.address, host_src, task.length);
+    if (status.Failure()) {
+        UC_TASK_ERROR(status, task);
+        this->Done(task, false);
+        return;
+    }
+    status = this->_device->AppendCallback([this, task](bool success) mutable {
+        if (!success) { UC_TASK_ERROR(Status::Error(), task); }
+        this->Done(task, success);
+        // 这里是否需要return？
+    });
+    if (status.Failure()) {
+        UC_TASK_ERROR(status, task);
+        this->Done(task, false);
+        return;
+    }
+}
+
+// 这个函数也是重点要重新实现的。
+void DramTsfTaskQueue::D2H(DramTsfTask& task)
+{
+    // auto host_dst = this->layout->GetDataAddr(task.blockId, task.offset); // 这里host_dst是未知的，要新分配的！不能用GetDataAddr，而要用另一个接口才是
+    auto host_dst = this->layout->AllocateDataAddr(task.blockId, task.offset);
+    if (!host_dst) {
+        UC_TASK_ERROR(Status::Error(), task);
+        this->Done(task, false);
+        return;
+    }
+    auto status = this->_device->D2HAsync(host_dst, (std::byte*)task.address, task.length);
+    if (status.Failure()) {
+        UC_TASK_ERROR(status, task);
+        this->Done(task, false);
+        return;
+    }
+    status = this->_device->AppendCallback([this, task](bool success) mutable {
+        if (!success) {
+            UC_TASK_ERROR(Status::Error(), task);
+            this->Done(task, false);
+            return; // 这里是否需要return？
+        }
+        // TODO: 更新_layout中的_dataStoreMap字典
+        this->_layout->DataStoreMapAppend(task.blockId + task.offset, host_dst)
+        this->done(task, true);
+    });
+    if (status.Failure()) {
+        UC_TASK_ERROR(status, task);
+        this->Done(task, false);
+        return;
+    }
+}
+
+void TsfTaskQueue::Done(const DramTsfTask& task, bool success)
+{
+    if (!success) { this->_failureSet->Insert(task.owner); }
+    task.waiter->Done();
+}
+
+} // namespace UC
