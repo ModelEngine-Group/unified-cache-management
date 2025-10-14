@@ -52,7 +52,6 @@ Status DramSpaceLayout::Setup(uint32_t maxSize,
     _head = 0;
     _dataStoreMap.clear();
     _storedBlocks.clear();
-    _blockWritten.clear();
     return Status::OK();
 }
 
@@ -79,14 +78,6 @@ char* DramSpaceLayout::AllocateDataAddr(const std::string& blockId,
 
     // 2.3 推进 FIFO 头
     _head = (_head + 1) % _totalSlots;
-
-    // 3. 更新 block 计数
-    size_t& cnt = _blockWritten[blockId];
-    ++cnt;
-    if (cnt == _slotsPerBlock) {
-        _storedBlocks.insert(blockId);
-    }
-    return addr;
 }
 
 char* DramSpaceLayout::GetDataAddr(const std::string& blockId,

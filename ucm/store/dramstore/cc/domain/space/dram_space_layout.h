@@ -77,9 +77,6 @@ private:
     // 两个索引
     std::unordered_map<std::string, char*> _dataStoreMap;
     std::set<std::string> _storedBlocks;
-
-    // 每个 block 已经写入了多少个 offset
-    std::unordered_map<std::string, size_t> _blockWritten;
 };
 
 } // namespace UC
