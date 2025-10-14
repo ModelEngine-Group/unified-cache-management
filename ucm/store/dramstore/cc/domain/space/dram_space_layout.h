@@ -27,7 +27,7 @@
 #include <string>
 #include <vector>
 #include "status/status.h"
-#include <map>
+#include <unordered_map>
 #include <set>
 
 namespace UC {
@@ -46,7 +46,7 @@ private:
 
 private:
     char* _dataStorePool; // KVCache存放的内存空间，在Setup函数中进行初始化
-    std::map<std::string, char*> _dataStoreMap; // 键是 block_id+offset 的拼接，值是对应的KVCache的存放起始位置，初始化为空
+    std::unordered_map<std::string, char*> _dataStoreMap; // 键是 block_id+offset 的拼接，值是对应的KVCache的存放起始位置，初始化为空
     std::set<std::string> _storedBlocks; // 被存了的 blocks 的所有 blockId，初始化为空
     size_t _curOffset{0}; // 当前的内存池中下一个可用的Offset（相较于内存池中初始地址的偏移）
     size_t blockSize_;
