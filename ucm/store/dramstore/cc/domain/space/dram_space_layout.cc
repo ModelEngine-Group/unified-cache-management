@@ -78,6 +78,8 @@ char* DramSpaceLayout::AllocateDataAddr(const std::string& blockId,
 
     // 2.3 推进 FIFO 头
     _head = (_head + 1) % _totalSlots;
+
+    return addr;
 }
 
 char* DramSpaceLayout::GetDataAddr(const std::string& blockId,
