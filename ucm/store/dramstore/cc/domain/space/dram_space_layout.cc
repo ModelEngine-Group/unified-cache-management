@@ -55,7 +55,7 @@ Status DramSpaceLayout::Setup(uint32_t maxSize,
 }
 
 char* DramSpaceLayout::AllocateDataAddr(const std::string& blockId,
-                                        const std::string& offset) {
+                                        const size_t& offset) {
     std::string key = MakeKey(blockId, offset);
 
     // 1. 曾经写过，直接返回（好像不应该出现）
@@ -82,7 +82,7 @@ char* DramSpaceLayout::AllocateDataAddr(const std::string& blockId,
 }
 
 char* DramSpaceLayout::GetDataAddr(const std::string& blockId,
-                                   const std::string& offset) {
+                                   const size_t& offset) {
     std::string key = MakeKey(blockId, offset);
     auto it = _dataStoreMap.find(key);
     return (it == _dataStoreMap.end()) ? nullptr : it->second;

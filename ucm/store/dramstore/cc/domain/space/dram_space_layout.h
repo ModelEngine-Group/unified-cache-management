@@ -44,11 +44,11 @@ public:
     // 如果曾经写过同样 (blockId,offset) 直接返回原地址；
     // 否则按 FIFO 复用或开辟新槽。
     char* AllocateDataAddr(const std::string& blockId,
-                           const std::string& offset);
+                           const size_t& offset);
 
     // 纯查询，不会分配
     char* GetDataAddr(const std::string& blockId,
-                      const std::string& offset);
+                      const size_t& offset);
 
     // 下面三个函数仅用于外部把 meta 信息同步进来
     void DataStoreMapAppend(const std::string& key, char* address);
@@ -59,8 +59,8 @@ public:
 private:
     // 生成 _dataStoreMap 的 key
     static std::string MakeKey(const std::string& blockId,
-                               const std::string& offset) {
-        return blockId + "_" + offset;
+                               const size_t& offset) {
+        return blockId + "_" + std::to_string(offset);
     }
 
     char* _dataStorePool = nullptr;          // 裸池
