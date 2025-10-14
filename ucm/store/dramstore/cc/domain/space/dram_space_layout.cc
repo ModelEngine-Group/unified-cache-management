@@ -59,7 +59,7 @@ char* DramSpaceLayout::AllocateDataAddr(const std::string& blockId,
                                         const std::string& offset) {
     std::string key = MakeKey(blockId, offset);
 
-    // 1. 曾经写过，直接返回
+    // 1. 曾经写过，直接返回（好像不应该出现）
     auto it = _dataStoreMap.find(key);
     if (it != _dataStoreMap.end()) return it->second;
 
