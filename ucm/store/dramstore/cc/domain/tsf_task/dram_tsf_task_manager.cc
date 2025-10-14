@@ -26,12 +26,12 @@
 namespace UC {
 
 Status DramTsfTaskManager::Setup(const int32_t deviceId, const size_t streamNumber,
-                             const size_t timeoutMs, const SpaceLayout* layout)
+                             const size_t timeoutMs, const MemoryPool* memPool)
 {
     this->_queues.reserve(streamNumber);
     for (size_t i = 0; i < streamNumber; ++i) {
         auto& queue = this->_queues.emplace_back(std::make_unique<DramTsfTaskQueue>());
-        auto status = queue->Setup(deviceId, &this->_failureSet, layout);
+        auto status = queue->Setup(deviceId, &this->_failureSet, memPool);
         if (status.Failure()) { return status; }
     }
     this->_timeoutMs = timeoutMs;

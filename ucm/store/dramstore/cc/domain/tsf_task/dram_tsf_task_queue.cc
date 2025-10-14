@@ -32,10 +32,10 @@ namespace UC {
                  (t).length);                                                                      \
     } while (0)
 
-Status DramTsfTaskQueue::Setup(const int32_t deviceId, DramTsfTaskSet* failureSet, const DramSpaceLayout* layout);
+Status DramTsfTaskQueue::Setup(const int32_t deviceId, DramTsfTaskSet* failureSet, const MemoryPool* memPool);
 {
     this->_failureSet = failureSet;
-    this->_layout = layout;
+    this->_memPool = memPool;
     if (deviceId >= 0) {
         this->_device = DeviceFactory::Make(deviceId, 0, 0); // 这里不需要buffer，暂时都先传0吧
         if (!this->_device) { return Status::OutOfMemory(); }
@@ -64,10 +64,12 @@ void DramTsfTaskQueue::StreamOper(DramTsfTask& task)
     }
 }
 
-// 这个H2D和D2H函数是重点要重新实现的。这里70和71行是与nfsstore不同的。
+// 这个H2D和D2H函数是重点要重新实现的。
 void DramTsfTaskQueue::H2D(DramTsfTask& task)
 {
-    auto host_src = this->_layout->GetDataAddr(task.blockId, task.offset); // 这里host_src是已知的
+    // TODO 这里地址要重新写逻辑
+    auto block_addr = this->memPool_->GetAddress(task.blockId);
+    auto host_src = block_addr + task.offset;
     if (!host_src) {
         UC_TASK_ERROR(Status::Error(), task);
         this->Done(task, false);
@@ -94,8 +96,17 @@ void DramTsfTaskQueue::H2D(DramTsfTask& task)
 // 这个函数也是重点要重新实现的。
 void DramTsfTaskQueue::D2H(DramTsfTask& task)
 {
-    // auto host_dst = this->layout->GetDataAddr(task.blockId, task.offset); // 这里host_dst是未知的，要新分配的！不能用GetDataAddr，而要用另一个接口才是
-    auto host_dst = this->layout->AllocateDataAddr(task.blockId, task.offset);
+    // TODO 这里地址要重新写逻辑
+    auto block_addr = this->memPool_->GetAddress(task.blockId);
+    if (!block_addr) {
+        block_addr = this->memPool_->NewBlock();
+        if (!block_addr) {
+            UC_TASK_ERROR(Status::Error(), task);
+            this->Done(task, false);
+            return;
+        }
+    }
+    auto host_dst = block_addr + task.offset;
     if (!host_dst) {
         UC_TASK_ERROR(Status::Error(), task);
         this->Done(task, false);
@@ -113,8 +124,6 @@ void DramTsfTaskQueue::D2H(DramTsfTask& task)
             this->Done(task, false);
             return; // 这里是否需要return？
         }
-        // TODO: 更新_layout中的_dataStoreMap字典
-        this->_layout->DataStoreMapAppend(task.blockId + task.offset, host_dst)
         this->done(task, true);
     });
     if (status.Failure()) {

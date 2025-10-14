@@ -27,21 +27,17 @@
 #include "space/dram_space_manager.h"
 #include "tsf_task/dram_tsf_task_manager.h"
 #include "tsf_task/dram_tsf_task.h"
+#include "infra/memory/memory_pool.h"
 
 namespace UC {
 
 class DRAMStoreImpl : public DRAMStore {
 public:
-    int32_t Setup(const Config& config) {
-        int32_t blockSize = 14400; // 这个参数是否需要，以及怎么传，还要讨论
-        auto status = this->spaceMgr_.Setup(config.capacity, blockSize, config.ioSize);
-        if (status.Failure()) {
-            UC_ERROR("Failed({}) to setup DramSpaceManager.", status);
-            return status.Underlying();
-        }
+    int32_t Setup(const Config& config) : this->memPool_(config.capacity, config.blockSize) {
+        // 初始化memPool的办法是否正确？如果失败的话怎么办？
         int32_t streamNumber = 60; // 这个参数是否需要，以及怎么传，还要讨论
         int32_t timeoutMs = 10000; // 这个参数是否需要，以及怎么传，还要讨论
-        status = this->transMgr_.Setup(config.deviceId, streamNumber, timeoutMs, this->spaceMgr_.GetSpaceLayout());
+        auto status = this->transMgr_.Setup(config.deviceId, streamNumber, timeoutMs, &this->memPool_);
         if (status.Failure()) {
             UC_ERROR("Failed({}) to setup DramTransferTaskManager.", status);
             return status.Underlying();
@@ -50,15 +46,15 @@ public:
     }
 
     int32_t Alloc(const std::string& block) override {
-        return this->spaceMgr_.NewBlock(block).Underlying();
+        return this->memPool_.NewBlock(block).Underlying();
     }
 
     bool Lookup(const std::string& block) override {
-        return this->spaceMgr_.LookupBlock(block);
+        return this->memPool_.LookupBlock(block);
     }
 
     void Commit(const std::string& block, const bool success) override {
-        this->spaceMgr_.CommitBlock(block, success);
+        this->memPool_.CommitBlock(block, success);
     }
 
     std::list<int32_t> Alloc(const std::list<std::string>& blocks) override
@@ -103,7 +99,8 @@ public:
     }
 
 private:
-    DramSpaceManager spaceMgr_;
+    // DramSpaceManager spaceMgr_;
+    MemoryPool memPool_;
     DramTsfTaskManager transMgr_;
 };
 
