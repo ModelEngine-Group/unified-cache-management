@@ -22,73 +22,93 @@
  * SOFTWARE.
  * */
 #include "dram_space_layout.h"
-#include <algorithm>
-#include <array>
-#include "file/file.h"
 #include "logger/logger.h"
 
 namespace UC {
 
-constexpr size_t blockIdSize = 16;
-constexpr size_t nU64PerBlock = blockIdSize / sizeof(uint64_t);
-using BlockId = std::array<uint64_t, nU64PerBlock>;
-static_assert(sizeof(BlockId) == blockIdSize);
-
-Status DramSpaceLayout::Setup(uint32_t maxSize, uint32_t blockSize, uint32_t interval)
-{
-    if (maxSize <= 0) {
-        UC_ERROR("Invalid maxSize value.");
+Status DramSpaceLayout::Setup(uint32_t maxSize,
+                              uint32_t blockSize,
+                              uint32_t interval) {
+    if (maxSize == 0 || interval == 0 || blockSize == 0 ||
+        blockSize % interval != 0) {
+        UC_ERROR("Setup: invalid param");
         return Status::InvalidParam();
     }
-    _dataStorePool = nullptr;
-    _dataStorePool = new char[maxSize]; // 这里内存分配的逻辑与方法是否正确？也要确认
-    if (!_dataStorePool) {
-        UC_ERROR("Allocate DRAM storage space failed");
+
+    _capacity    = maxSize;
+    _interval    = interval;
+    _blockSize   = blockSize;
+    _slotsPerBlock = blockSize / interval;
+    _totalSlots  = maxSize / interval;
+
+    try {
+        _dataStorePool = new char[_capacity];
+        _fifoKey.resize(_totalSlots);
+    } catch (...) {
+        UC_ERROR("Allocate DRAM failed");
         return Status::OutOfMemory();
     }
-    _dataStoreMap = {};
-    _storedBlocks = {};
-    _blockSize = blockSize;
-    _interval = interval;
-    _capacity = maxSize;
+
+    _head = 0;
+    _dataStoreMap.clear();
+    _storedBlocks.clear();
+    _blockWritten.clear();
     return Status::OK();
 }
 
-char* DramSpaceLayout::AllocateDataAddr(std::string blockId, std::string offset) {
-    auto iter = _dataStoreMap.find(blockId + offset);
-    if (iter != _dataStoreMap.end()) {
-        // 已经存在，不需要重分配
-        char* addr = _dataStoreMap[blockId + offset];
-        _dataStoreMap.erase(blockId + offset)
-        return addr;
+char* DramSpaceLayout::AllocateDataAddr(const std::string& blockId,
+                                        const std::string& offset) {
+    std::string key = MakeKey(blockId, offset);
+
+    // 1. 曾经写过，直接返回
+    auto it = _dataStoreMap.find(key);
+    if (it != _dataStoreMap.end()) return it->second;
+
+    // 2. 没写过，需要挑一个物理槽位
+    size_t slot = _head;
+    char*  addr = _dataStorePool + slot * _interval;
+
+    // 2.1 如果该槽位旧数据有效，先把它从映射里删掉
+    if (!_fifoKey[slot].empty()) {
+        _dataStoreMap.erase(_fifoKey[slot]);
     }
-    _dataStoreMap[blockId + offset] = _dataStorePool + _curOffset;
-    _curOffset = (_curOffset + _interval) % _capacity; // 这个interval的逻辑是否正确，还要再确认
-    return _dataStoreMap[blockId + offset];
+
+    // 2.2 占用槽位，记录映射
+    _fifoKey[slot] = key;
+    _dataStoreMap[key] = addr;
+
+    // 2.3 推进 FIFO 头
+    _head = (_head + 1) % _totalSlots;
+
+    // 3. 更新 block 计数
+    size_t& cnt = _blockWritten[blockId];
+    ++cnt;
+    if (cnt == _slotsPerBlock) {
+        _storedBlocks.insert(blockId);
+    }
+    return addr;
 }
 
-char* DramSpaceLayout::GetDataAddr(std::string blockId, std::string offset) {
-    auto iter = _dataStoreMap.find(blockId + offset);
-    if (iter == _dataStoreMap.end()) {
-        return nullptr;
-    }
-    return _dataStoreMap[blockId];
+char* DramSpaceLayout::GetDataAddr(const std::string& blockId,
+                                   const std::string& offset) {
+    std::string key = MakeKey(blockId, offset);
+    auto it = _dataStoreMap.find(key);
+    return (it == _dataStoreMap.end()) ? nullptr : it->second;
 }
 
-void DramSpaceLayout::DataStoreMapAppend(std::string key, char* address) {
+void DramSpaceLayout::DataStoreMapAppend(const std::string& key,
+                                         char* address) {
     _dataStoreMap[key] = address;
 }
 
-void DramSpaceLayout::StoredBlocksAppend(std::string blockId) {
+void DramSpaceLayout::StoredBlocksAppend(const std::string& blockId) {
     _storedBlocks.insert(blockId);
 }
-
-void DramSpaceLayout::StoredBlocksErase(std::string blockId) {
+void DramSpaceLayout::StoredBlocksErase(const std::string& blockId) {
     _storedBlocks.erase(blockId);
 }
-
-bool DramSpaceLayout::StoredBlocksExist(std::string blockId) {
-    return _storedBlocks.find(blockId) != _storedBlocks.end();
+bool DramSpaceLayout::StoredBlocksExist(const std::string& blockId) const {
+    return _storedBlocks.count(blockId) != 0;
 }
 
 } // namespace UC
