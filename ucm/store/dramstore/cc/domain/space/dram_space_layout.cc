@@ -61,7 +61,7 @@ char* DramSpaceLayout::AllocateDataAddr(std::string blockId, std::string offset)
         return _dataStoreMap[blockId + offset];
     }
     _dataStoreMap[blockId + offset] = _dataStorePool + _curOffset;
-    _curOffset = (_curOffset + minLength) % capacity_; // 这个minLength的逻辑是否正确，还要再确认
+    _curOffset = (_curOffset + minLength_) % capacity_; // 这个minLength的逻辑是否正确，还要再确认
     return _dataStoreMap[blockId + offset];
 }
 
