@@ -32,16 +32,16 @@ namespace UC {
 
 class DRAMStoreImpl : public DRAMStore {
 public:
-    int32_t Setup(const size_t ioSize, const size_t capacity, const int32_t deviceId) {
+    int32_t Setup(const Config& config) {
         int32_t blockSize = 14400; // 这个参数是否需要，以及怎么传，还要讨论
-        auto status = this->spaceMgr_.Setup(capacity, blockSize, ioSize);
+        auto status = this->spaceMgr_.Setup(config.capacity, blockSize, config.ioSize);
         if (status.Failure()) {
             UC_ERROR("Failed({}) to setup DramSpaceManager.", status);
             return status.Underlying();
         }
         int32_t streamNumber = 60; // 这个参数是否需要，以及怎么传，还要讨论
         int32_t timeoutMs = 10000; // 这个参数是否需要，以及怎么传，还要讨论
-        status = this->transMgr_.Setup(deviceId, streamNumber, timeoutMs, this->spaceMgr_.GetSpaceLayout());
+        status = this->transMgr_.Setup(config.deviceId, streamNumber, timeoutMs, this->spaceMgr_.GetSpaceLayout());
         if (status.Failure()) {
             UC_ERROR("Failed({}) to setup DramTransferTaskManager.", status);
             return status.Underlying();
