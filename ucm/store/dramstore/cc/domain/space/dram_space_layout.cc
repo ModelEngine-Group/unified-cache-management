@@ -41,7 +41,7 @@ Status DramSpaceLayout::Setup(uint32_t maxSize, uint32_t blockSize, uint32_t min
         return Status::InvalidParam();
     }
     _dataStorePool = nullptr;
-    _dataStorePool = new char[maxSize];
+    _dataStorePool = new char[maxSize]; // 这里内存分配的逻辑与方法是否正确？也要确认
     if (!_dataStorePool) {
         UC_ERROR("Allocate DRAM storage space failed");
         return Status::OutOfMemory();
