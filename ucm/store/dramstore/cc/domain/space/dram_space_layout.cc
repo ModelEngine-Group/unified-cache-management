@@ -49,7 +49,6 @@ Status DramSpaceLayout::Setup(uint32_t maxSize,
         return Status::OutOfMemory();
     }
 
-    _head = 0;
     _dataStoreMap.clear();
     _storedBlocks.clear();
     return Status::OK();
