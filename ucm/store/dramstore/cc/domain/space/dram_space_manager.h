@@ -31,7 +31,7 @@ namespace UC {
 
 class DramSpaceManager {
 public:
-    Status Setup(uint32_t maxSize, uint32_t blockSize, uint32_t minLength);
+    Status Setup(uint32_t maxSize, uint32_t blockSize, uint32_t interval);
     Status NewBlock(const std::string& blockId) const; // 也许不需要实现它。无论如何先放这里
     Status CommitBlock(const std::string& blockId, bool success = true) const; // 等一个block完全存完或者被完全删除后，调用这个方法，并更新layout_中的_storedBlocks集合
     bool LookupBlock(const std::string& blockId) const;
@@ -39,7 +39,7 @@ public:
 
 private:
     DramSpaceLayout layout_;
-    size_t blockSize_;
+    size_t _blockSize;
 };
 
 } // namespace UC

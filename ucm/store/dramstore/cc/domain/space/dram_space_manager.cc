@@ -27,15 +27,15 @@
 
 namespace UC {
 
-Status DramSpaceManager::Setup(uint32_t maxSize, uint32_t blockSize, uint32_t minLength)
+Status DramSpaceManager::Setup(uint32_t maxSize, uint32_t blockSize, uint32_t interval)
 {
     if (blockSize == 0) {
         UC_ERROR("Invalid block size({}).", blockSize);
         return Status::InvalidParam();
     }
-    auto status = this->layout_.Setup(maxSize, blockSize, minLength);
+    auto status = this->layout_.Setup(maxSize, blockSize, interval);
     if (status.Failure()) { return status; }
-    this->blockSize_ = blockSize;
+    this->_blockSize = blockSize;
     return Status::OK();
 }
 

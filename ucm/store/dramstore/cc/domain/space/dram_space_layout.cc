@@ -34,7 +34,7 @@ constexpr size_t nU64PerBlock = blockIdSize / sizeof(uint64_t);
 using BlockId = std::array<uint64_t, nU64PerBlock>;
 static_assert(sizeof(BlockId) == blockIdSize);
 
-Status DramSpaceLayout::Setup(uint32_t maxSize, uint32_t blockSize, uint32_t minLength)
+Status DramSpaceLayout::Setup(uint32_t maxSize, uint32_t blockSize, uint32_t interval)
 {
     if (maxSize <= 0) {
         UC_ERROR("Invalid maxSize value.");
@@ -48,9 +48,9 @@ Status DramSpaceLayout::Setup(uint32_t maxSize, uint32_t blockSize, uint32_t min
     }
     _dataStoreMap = {};
     _storedBlocks = {};
-    blockSize_ = blockSize;
-    minLength_ = minLength;
-    capacity_ = maxSize;
+    _blockSize = blockSize;
+    _interval = interval;
+    _capacity = maxSize;
     return Status::OK();
 }
 
@@ -61,7 +61,7 @@ char* DramSpaceLayout::AllocateDataAddr(std::string blockId, std::string offset)
         return _dataStoreMap[blockId + offset];
     }
     _dataStoreMap[blockId + offset] = _dataStorePool + _curOffset;
-    _curOffset = (_curOffset + minLength_) % capacity_; // 这个minLength的逻辑是否正确，还要再确认
+    _curOffset = (_curOffset + _interval) % _capacity; // 这个interval的逻辑是否正确，还要再确认
     return _dataStoreMap[blockId + offset];
 }
 
