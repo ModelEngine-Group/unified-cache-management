@@ -21,7 +21,7 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  * */
-#include "space_manager.h"
+#include "dram_space_manager.h"
 #include "file/file.h"
 #include "logger/logger.h"
 

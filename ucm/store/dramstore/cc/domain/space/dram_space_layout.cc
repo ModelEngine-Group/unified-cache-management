@@ -21,7 +21,7 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  * */
-#include "space_layout.h"
+#include "dram_space_layout.h"
 #include <algorithm>
 #include <array>
 #include "file/file.h"
@@ -85,7 +85,7 @@ void DramSpaceLayout::StoredBlocksErase(std::string blockId) {
     _storedBlocks.erase(blockId);
 }
 
-bool StoredBlocksExist(std::string blockId) {
+bool DramSpaceLayout::StoredBlocksExist(std::string blockId) {
     return _storedBlocks.find(blockId) != _storedBlocks.end();
 }
 

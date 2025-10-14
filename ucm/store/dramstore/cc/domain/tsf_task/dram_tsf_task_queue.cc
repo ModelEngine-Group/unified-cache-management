@@ -124,7 +124,7 @@ void DramTsfTaskQueue::D2H(DramTsfTask& task)
     }
 }
 
-void TsfTaskQueue::Done(const DramTsfTask& task, bool success)
+void DramTsfTaskQueue::Done(const DramTsfTask& task, bool success)
 {
     if (!success) { this->_failureSet->Insert(task.owner); }
     task.waiter->Done();

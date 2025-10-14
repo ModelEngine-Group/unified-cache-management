@@ -21,7 +21,7 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  * */
-#include "tsf_task_manager.h"
+#include "dram_tsf_task_manager.h"
 
 namespace UC {
 
