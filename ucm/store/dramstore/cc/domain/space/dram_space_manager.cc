@@ -60,6 +60,6 @@ bool DramSpaceManager::LookupBlock(const std::string& blockId) const
     return this->_layout->StoredBlocksExist(blockId);
 }
 
-const SpaceLayout* DramSpaceManager::GetSpaceLayout() const { return &this->layout_; }
+const DramSpaceLayout* DramSpaceManager::GetSpaceLayout() const { return &this->layout_; }
 
 } // namespace UC
