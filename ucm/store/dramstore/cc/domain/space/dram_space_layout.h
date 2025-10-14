@@ -27,12 +27,15 @@
 #include <string>
 #include <vector>
 #include "status/status.h"
+#include <map>
+#include <set>
 
 namespace UC {
 
 class DramSpaceLayout {
 public:
     Status Setup(uint32_t maxSize, uint32_t blockSize, uint32_t minLength); // TODO：这里面要先进行内存空间的初始化，通过调malloc这类函数
+    char* AllocateDataAddr(std::string blockId, std::string offset);
     char* GetDataAddr(std::string blockId, std::string offset);
     void DataStoreMapAppend(std::string key, char* address);
     void StoredBlocksAppend(std::string blockId);
