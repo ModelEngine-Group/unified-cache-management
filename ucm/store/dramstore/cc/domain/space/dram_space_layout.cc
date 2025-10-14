@@ -58,8 +58,9 @@ char* DramSpaceLayout::AllocateDataAddr(std::string blockId, std::string offset)
     auto iter = _dataStoreMap.find(blockId + offset);
     if (iter != _dataStoreMap.end()) {
         // 已经存在，不需要重分配
+        char* addr = _dataStoreMap[blockId + offset];
         _dataStoreMap.erase(blockId + offset)
-        return _dataStoreMap[blockId + offset];
+        return addr;
     }
     _dataStoreMap[blockId + offset] = _dataStorePool + _curOffset;
     _curOffset = (_curOffset + _interval) % _capacity; // 这个interval的逻辑是否正确，还要再确认
