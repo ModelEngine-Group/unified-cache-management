@@ -33,7 +33,7 @@
 
 namespace UC {
 
-class TsfTaskQueue {
+class TsfTaskQueue : public ITsfTaskQueue {
 public:
     Status Setup(const int32_t deviceId, const size_t bufferSize, const size_t bufferNumber,
                  TsfTaskSet* failureSet, const SpaceLayout* layout, bool transferUseDirect) override;

@@ -42,6 +42,14 @@ public:
     virtual Status H2DAsync(std::byte* dst, const std::byte* src, const size_t count) = 0;
     virtual Status D2HAsync(std::byte* dst, const std::byte* src, const size_t count) = 0;
     virtual Status AppendCallback(std::function<void(bool)> cb) = 0;
+    virtual Status S2D(const std::string& path, void* address,
+                                 const size_t length, const size_t file_offset, const size_t dev_offset) {
+                                    return Status::Unsupported(); 
+                                 }
+    virtual Status D2S(const std::string& path, void* address,
+                                 const size_t length, const size_t file_offset, const size_t dev_offset) {
+                                    return Status::Unsupported(); 
+                                 }
 
 protected:
     virtual std::shared_ptr<std::byte> MakeBuffer(const size_t size) = 0;

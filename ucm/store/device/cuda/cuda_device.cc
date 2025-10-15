@@ -66,6 +66,9 @@ class CudaDevice : public IBufferedDevice {
         delete c;
     }
 
+    static std::once_flag gdsOnce_;
+    static void InitGdsOnce();
+
 public:
     CudaDevice(const int32_t deviceId, const size_t bufferSize, const size_t bufferNumber)
         : IBufferedDevice{deviceId, bufferSize, bufferNumber}, stream_{nullptr}
