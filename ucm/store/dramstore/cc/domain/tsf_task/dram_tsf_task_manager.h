@@ -35,7 +35,7 @@ class DramTsfTaskManager {
 public:
     Status Setup(const int32_t deviceId, const size_t streamNumber, 
                 //  const size_t bufferSize, const size_t bufferNumber, // 这两个可能不需要，对于dram来说，因为这个buffer是用来数据中转的？
-                 const size_t timeoutMs, const MemoryPool* memPool);
+                 const size_t timeoutMs, MemoryPool* memPool);
     Status Submit(std::list<DramTsfTask>& tasks, const size_t size, const size_t number,
                   const std::string& brief, size_t& taskId);
     Status Wait(const size_t taskId);

@@ -26,7 +26,7 @@
 namespace UC {
 
 Status DramTsfTaskManager::Setup(const int32_t deviceId, const size_t streamNumber,
-                             const size_t timeoutMs, const MemoryPool* memPool)
+                             const size_t timeoutMs, MemoryPool* memPool)
 {
     this->_queues.reserve(streamNumber);
     for (size_t i = 0; i < streamNumber; ++i) {
