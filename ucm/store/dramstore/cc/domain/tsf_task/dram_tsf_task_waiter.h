@@ -30,9 +30,9 @@
 
 namespace UC {
 
-class DrAMTsfTaskWaiter : public Latch {
+class DramTsfTaskWaiter : public Latch {
 public:
-    DrAMTsfTaskWaiter(const size_t id, const size_t size, const size_t number, const std::string& brief)
+    DramTsfTaskWaiter(const size_t id, const size_t size, const size_t number, const std::string& brief)
         : Latch{number}, id_{id}, size_{size}, number_{number}, brief_{brief}
     {
     }
