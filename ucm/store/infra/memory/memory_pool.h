@@ -24,13 +24,12 @@
 #ifndef UNIFIEDCACHE_MEMORY_POOL_H
 #define UNIFIEDCACHE_MEMORY_POOL_H
 
-namespace UC {
-
-#pragma once
 #include <cstddef>
 #include <cstdlib>
-#include <iostream>
+#include <string>
 #include "status/status.h"
+
+namespace UC {
 
 class MemoryPool {
 public:
