@@ -33,7 +33,7 @@ namespace UC {
 class DRAMStoreImpl : public DRAMStore {
 public:
     int32_t Setup(const Config& config) {
-        this->memPool_ = std::make_unique<MemoryPool>(config.capacity, config.blockSize);
+        this->memPool_ = std::make_unique<MemoryPool>(config.capacity, config.blockSize).release();
         // 初始化memPool的办法是否正确？如果失败的话怎么办？
         int32_t streamNumber = 60; // 这个参数是否需要，以及怎么传，还要讨论
         int32_t timeoutMs = 10000; // 这个参数是否需要，以及怎么传，还要讨论
@@ -100,7 +100,7 @@ public:
 
 private:
     // DramSpaceManager spaceMgr_;
-    std::unique_ptr<MemoryPool> memPool_;
+    MemoryPool* memPool_;
     DramTsfTaskManager transMgr_;
 };
 
