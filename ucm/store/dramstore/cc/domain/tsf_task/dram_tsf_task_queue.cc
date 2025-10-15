@@ -32,7 +32,7 @@ namespace UC {
                  (t).length);                                                                      \
     } while (0)
 
-Status DramTsfTaskQueue::Setup(const int32_t deviceId, DramTsfTaskSet* failureSet, const MemoryPool* memPool);
+Status DramTsfTaskQueue::Setup(const int32_t deviceId, DramTsfTaskSet* failureSet, const MemoryPool* memPool)
 {
     this->_failureSet = failureSet;
     this->_memPool = memPool;
@@ -68,7 +68,7 @@ void DramTsfTaskQueue::StreamOper(DramTsfTask& task)
 void DramTsfTaskQueue::H2D(DramTsfTask& task)
 {
     // TODO 这里地址要重新写逻辑
-    auto block_addr = this->memPool_->GetAddress(task.blockId);
+    auto block_addr = this->_memPool->GetAddress(task.blockId);
     auto host_src = block_addr + task.offset;
     if (!host_src) {
         UC_TASK_ERROR(Status::Error(), task);
@@ -97,11 +97,11 @@ void DramTsfTaskQueue::H2D(DramTsfTask& task)
 void DramTsfTaskQueue::D2H(DramTsfTask& task)
 {
     // TODO 这里地址要重新写逻辑
-    auto block_addr = this->memPool_->GetAddress(task.blockId);
+    auto block_addr = this->_memPool->GetAddress(task.blockId);
     if (!block_addr) {
         // 如果还没有，那么临时分配
-        this->memPool_->NewBlock(task.blockId);
-        block_addr = this->memPool_->GetAddress(task.blockId);
+        this->_memPool->NewBlock(task.blockId);
+        block_addr = this->_memPool->GetAddress(task.blockId);
         if (!block_addr) {
             UC_TASK_ERROR(Status::Error(), task);
             this->Done(task, false);
