@@ -32,7 +32,7 @@ namespace UC {
                  (t).length);                                                                      \
     } while (0)
 
-Status DramTsfTaskQueue::Setup(const int32_t deviceId, DramTsfTaskSet* failureSet, const MemoryPool* memPool)
+Status DramTsfTaskQueue::Setup(const int32_t deviceId, DramTsfTaskSet* failureSet, MemoryPool* memPool)
 {
     this->_failureSet = failureSet;
     this->_memPool = memPool;
@@ -75,7 +75,7 @@ void DramTsfTaskQueue::H2D(DramTsfTask& task)
         this->Done(task, false);
         return;
     }
-    auto status = this->_device->H2DAsync((std::byte*)task.address, host_src, task.length);
+    auto status = this->_device->H2DAsync((std::byte*)task.address, (std::byte*)host_src, task.length);
     if (status.Failure()) {
         UC_TASK_ERROR(status, task);
         this->Done(task, false);
@@ -114,7 +114,7 @@ void DramTsfTaskQueue::D2H(DramTsfTask& task)
         this->Done(task, false);
         return;
     }
-    auto status = this->_device->D2HAsync(host_dst, (std::byte*)task.address, task.length);
+    auto status = this->_device->D2HAsync((std::byte*)host_dst, (std::byte*)task.address, task.length);
     if (status.Failure()) {
         UC_TASK_ERROR(status, task);
         this->Done(task, false);
