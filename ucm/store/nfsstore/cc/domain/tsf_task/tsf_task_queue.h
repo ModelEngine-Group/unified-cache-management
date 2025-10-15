@@ -29,14 +29,15 @@
 #include "thread/thread_pool.h"
 #include "tsf_task.h"
 #include "tsf_task_set.h"
+#include "itsf_task_queue.h"
 
 namespace UC {
 
 class TsfTaskQueue {
 public:
     Status Setup(const int32_t deviceId, const size_t bufferSize, const size_t bufferNumber,
-                 TsfTaskSet* failureSet, const SpaceLayout* layout);
-    void Push(std::list<TsfTask>& tasks);
+                 TsfTaskSet* failureSet, const SpaceLayout* layout, bool transferUseDirect) override;
+    void Push(std::list<TsfTask>& tasks) override;
 
 private:
     void StreamOper(TsfTask& task);

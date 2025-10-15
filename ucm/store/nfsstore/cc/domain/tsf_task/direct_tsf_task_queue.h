@@ -21,39 +21,41 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  * */
-#ifndef UNIFIEDCACHE_IDEVICE_H
-#define UNIFIEDCACHE_IDEVICE_H
+#ifndef UNIFIEDCACHE_DIRECT_TSF_TAKS_QUEUE_H
+#define UNIFIEDCACHE_DIRECT_TSF_TAKS_QUEUE_H
 
-#include <functional>
 #include <memory>
-#include "status/status.h"
+#include <unordered_map>
+#include <mutex>
+#include <string>
+#include <cufile.h>
+#include <cuda_runtime.h>
+#include "idevice.h"
+#include "space/space_layout.h"
+#include "thread/thread_pool.h"
+#include "tsf_task.h"
+#include "tsf_task_set.h"
+#include "itsf_task_queue.h"
 
 namespace UC {
-
-class IDevice {
+class DirectTsfTaskQueue : public ITsfTaskQueue {
 public:
-    IDevice(const int32_t deviceId, const size_t bufferSize, const size_t bufferNumber)
-        : deviceId{deviceId}, bufferSize{bufferSize}, bufferNumber{bufferNumber}
-    {
-    }
-    virtual ~IDevice() = default;
-    virtual Status Setup(bool transferUseDirect) = 0;
-    virtual std::shared_ptr<std::byte> GetBuffer(const size_t size) = 0;
-    virtual Status H2DAsync(std::byte* dst, const std::byte* src, const size_t count) = 0;
-    virtual Status D2HAsync(std::byte* dst, const std::byte* src, const size_t count) = 0;
-    virtual Status AppendCallback(std::function<void(bool)> cb) = 0;
+    Status Setup(const int32_t deviceId, const size_t bufferSize, const size_t bufferNumber,
+                 TsfTaskSet* failureSet, const SpaceLayout* layout, bool transferUseDirect) override;
+    void Push(std::list<TsfTask>& tasks) override;
 
-protected:
-    virtual std::shared_ptr<std::byte> MakeBuffer(const size_t size) = 0;
-    const int32_t deviceId;
-    const size_t bufferSize;
-    const size_t bufferNumber;
-};
+private:
+    Status InitializeCuFile();
+    void DirectOper(TsfTask& task);
+    void S2D(TsfTask& task);
+    void D2S(TsfTask& task);
+    void Done(const TsfTask& task, bool success);
 
-class DeviceFactory {
-public:
-    static std::unique_ptr<IDevice> Make(const int32_t deviceId, const size_t bufferSize,
-                                         const size_t bufferNumber);
+private:
+    ThreadPool<TsfTask> _directOper; 
+    std::unique_ptr<IDevice> _device;
+    TsfTaskSet* _failureSet;
+    const SpaceLayout* _layout;
 };
 
 } // namespace UC

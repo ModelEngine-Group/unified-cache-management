@@ -45,8 +45,9 @@ class UcmNfsStore(UcmKVStoreBase):
         ]
         block_size = int(config["kv_block_size"])
         transfer_enable = True if config["role"] == "worker" else False
+        transferUseDirect = config.get("transferUseDirect", False)
         param = ucmnfsstore.NFSStore.Config(
-            storage_backends, block_size, transfer_enable
+            storage_backends, block_size, transfer_enable, transferUseDirect
         )
         if transfer_enable:
             param.transferDeviceId = config["device"]

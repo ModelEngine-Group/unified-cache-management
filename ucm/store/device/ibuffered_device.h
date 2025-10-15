@@ -26,6 +26,7 @@
 
 #include "idevice.h"
 #include "thread/index_pool.h"
+#include "cuda/file_handle_cache.h"
 
 namespace UC {
 
@@ -35,7 +36,7 @@ public:
         : IDevice{deviceId, bufferSize, bufferNumber}
     {
     }
-    Status Setup() override
+    Status Setup(bool transferUseDirect) override
     {
         auto totalSize = this->bufferSize * this->bufferNumber;
         this->_addr = this->MakeBuffer(totalSize);
@@ -57,6 +58,9 @@ public:
         if (host) { return std::shared_ptr<std::byte>(host, free); }
         return nullptr;
     }
+
+protected:
+    FileHandleCache _fileHandleCache{65536}; 
 
 private:
     std::shared_ptr<std::byte> _addr;

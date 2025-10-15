@@ -24,6 +24,9 @@
 #include <cuda_runtime.h>
 #include "ibuffered_device.h"
 #include "logger/logger.h"
+#include <cufile.h>
+#include <mutex>
+#include "file_handle_cache.h"
 
 template <>
 struct fmt::formatter<cudaError_t> : formatter<int32_t> {
@@ -68,11 +71,12 @@ public:
         : IBufferedDevice{deviceId, bufferSize, bufferNumber}, stream_{nullptr}
     {
     }
-    Status Setup() override
+    Status Setup(bool transferUseDirect) override
     {
+        if(transferUseDirect) {InitGdsOnce();}
         auto status = Status::OK();
         if ((status = CUDA_API(cudaSetDevice, this->deviceId)).Failure()) { return status; }
-        if ((status = IBufferedDevice::Setup()).Failure()) { return status; }
+        if ((status = IBufferedDevice::Setup(transferUseDirect)).Failure()) { return status; }
         if ((status = CUDA_API(cudaStreamCreate, (cudaStream_t*)&this->stream_)).Failure()) {
             return status;
         }
@@ -99,6 +103,30 @@ public:
             CUDA_API(cudaStreamAddCallback, (cudaStream_t)this->stream_, Trampoline, (void*)c, 0);
         if (status.Failure()) { delete c; }
         return status;
+    }
+    Status S2D(const std::string& path, void* address, const size_t length, const size_t file_offset, const size_t dev_offset) override
+    {
+        auto* cachedHandle = _fileHandleCache.Get(path, O_RDONLY | O_DIRECT);
+        if (!cachedHandle) {
+            return Status::Error();
+        }
+        ssize_t bytesRead = cuFileRead(cachedHandle->cuHandle, address, length, file_offset, dev_offset);
+        if (bytesRead < 0 || (size_t)bytesRead != length) {
+            return Status::Error();
+        }
+        return Status::OK();
+    }
+     Status D2S(const std::string& path, void* address, const size_t length, const size_t file_offset, const size_t dev_offset) override
+    {
+        auto* cachedHandle = _fileHandleCache.Get(path, O_WRONLY | O_CREAT | O_DIRECT);
+        if (!cachedHandle) {
+            return Status::Error();
+        }
+        ssize_t bytesWrite = cuFileWrite(cachedHandle->cuHandle, address, length, file_offset, dev_offset);
+        if (bytesWrite < 0 || (size_t)bytesWrite != length) {
+            return Status::Error();
+        }
+        return Status::OK();
     }
 
 protected:
@@ -129,4 +157,16 @@ std::unique_ptr<IDevice> DeviceFactory::Make(const int32_t deviceId, const size_
     }
 }
 
+std::once_flag CudaDevice::gdsOnce_{};
+void CudaDevice::InitGdsOnce()
+{
+    std::call_once(gdsOnce_, [] (){
+        CUfileError_t ret = cuFileDriverOpen();
+        if (ret.err == CU_FILE_SUCCESS) {
+            UC_INFO("GDS driver initialized successfully");
+        } else {
+            UC_ERROR("GDS driver initialized unsuccessfully");
+        }
+    });
+}
 } // namespace UC
