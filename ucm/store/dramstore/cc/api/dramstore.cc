@@ -24,7 +24,6 @@
 #include "dramstore.h"
 #include "logger/logger.h"
 #include "status/status.h"
-#include "space/dram_space_manager.h"
 #include "tsf_task/dram_tsf_task_manager.h"
 #include "tsf_task/dram_tsf_task.h"
 #include "infra/memory/memory_pool.h"
