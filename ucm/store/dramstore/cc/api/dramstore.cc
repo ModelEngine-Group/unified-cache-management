@@ -26,7 +26,7 @@
 #include "status/status.h"
 #include "tsf_task/dram_tsf_task_manager.h"
 #include "tsf_task/dram_tsf_task.h"
-#include "infra/memory/memory_pool.h"
+#include "memory/memory_pool.h"
 
 namespace UC {
 

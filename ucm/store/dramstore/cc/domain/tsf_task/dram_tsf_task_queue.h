@@ -28,7 +28,7 @@
 #include "thread/thread_pool.h"
 #include "dram_tsf_task.h"
 #include "dram_tsf_task_set.h"
-#include "infra/memory/memory_pool.h"
+#include "memory/memory_pool.h"
 
 namespace UC {
 
