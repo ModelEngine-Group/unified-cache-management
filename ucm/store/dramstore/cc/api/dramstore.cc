@@ -112,7 +112,7 @@ int32_t DRAMStore::Setup(const Config& config)
         return Status::OutOfMemory().Underlying();
     }
     this->impl_ = impl;
-    return impl->Setup(config.ioSize, config.capacity, config.deviceId);
+    return impl->Setup(config);
 }
 
 } // namespace UC
