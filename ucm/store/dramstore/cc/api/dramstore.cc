@@ -32,7 +32,8 @@ namespace UC {
 
 class DRAMStoreImpl : public DRAMStore {
 public:
-    int32_t Setup(const Config& config) : this->memPool_(config.capacity, config.blockSize) {
+    int32_t Setup(const Config& config) {
+        this->memPool_ = std::make_unique<MemoryPool>(config.capacity, config.blockSize);
         // 初始化memPool的办法是否正确？如果失败的话怎么办？
         int32_t streamNumber = 60; // 这个参数是否需要，以及怎么传，还要讨论
         int32_t timeoutMs = 10000; // 这个参数是否需要，以及怎么传，还要讨论
@@ -45,15 +46,15 @@ public:
     }
 
     int32_t Alloc(const std::string& block) override {
-        return this->memPool_.NewBlock(block).Underlying();
+        return this->memPool_->NewBlock(block).Underlying();
     }
 
     bool Lookup(const std::string& block) override {
-        return this->memPool_.LookupBlock(block);
+        return this->memPool_->LookupBlock(block);
     }
 
     void Commit(const std::string& block, const bool success) override {
-        this->memPool_.CommitBlock(block, success).Underlying();
+        this->memPool_->CommitBlock(block, success).Underlying();
     }
 
     std::list<int32_t> Alloc(const std::list<std::string>& blocks) override
@@ -99,7 +100,7 @@ public:
 
 private:
     // DramSpaceManager spaceMgr_;
-    MemoryPool memPool_;
+    MemoryPool* memPool_;
     DramTsfTaskManager transMgr_;
 };
 
