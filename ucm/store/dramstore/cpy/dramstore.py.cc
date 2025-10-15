@@ -21,7 +21,7 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  * */
-#include "api/dramstore.h"
+#include "dramstore.h"
 #include <pybind11/pybind11.h>
 
 namespace py = pybind11;
