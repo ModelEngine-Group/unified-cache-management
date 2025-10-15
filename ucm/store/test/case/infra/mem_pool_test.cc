@@ -48,6 +48,9 @@ TEST_F(UCMemoryPoolTest, OutOfCapacity)
     const std::string block2 = "block2";
     const std::string block3 = "block3";
     ASSERT_EQ(memPool.NewBlock(block1), UC::Status::OK());
+    ASSERT_NE(memPool.GetAddress(block1), nullptr);
     ASSERT_EQ(memPool.NewBlock(block2), UC::Status::OK());
+    ASSERT_NE(memPool.GetAddress(block2), nullptr);
     ASSERT_EQ(memPool.NewBlock(block3), UC::Status::Error());
+    ASSERT_EQ(memPool.GetAddress(block3), nullptr);
 }
