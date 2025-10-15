@@ -62,7 +62,7 @@ public:
         auto it = addressMap_.find(blockId);
         if (it != addressMap_.end()) {
             // duplicate key
-            return Status::OK();
+            return Status::DuplicateKey();
         }
         // addressMap_里目前还没有这个blockId，即将进行分配
         addressMap_[blockId] = pool_ + head_;
