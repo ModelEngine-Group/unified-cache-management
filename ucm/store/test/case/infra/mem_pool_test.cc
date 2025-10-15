@@ -37,7 +37,7 @@ TEST_F(UCMemoryPoolTest, NewBlockAllocateAndCommit)
     ASSERT_FALSE(memPool.LookupBlock(block1));
     ASSERT_NE(memPool.GetAddress(block1), nullptr);
     ASSERT_EQ(memPool.NewBlock(block1), UC::Status::DuplicateKey());
-    ASSERT_EQ(memPool.CommitBlock(block1), UC::Status::OK());
+    ASSERT_EQ(memPool.CommitBlock(block1, true), UC::Status::OK());
     ASSERT_TRUE(memPool.LookupBlock(block1));
 }
 
