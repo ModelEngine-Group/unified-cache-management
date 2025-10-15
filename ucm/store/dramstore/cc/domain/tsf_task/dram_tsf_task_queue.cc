@@ -100,7 +100,8 @@ void DramTsfTaskQueue::D2H(DramTsfTask& task)
     auto block_addr = this->memPool_->GetAddress(task.blockId);
     if (!block_addr) {
         // 如果还没有，那么临时分配
-        block_addr = this->memPool_->NewBlock();
+        this->memPool_->NewBlock(task.blockId);
+        block_addr = this->memPool_->GetAddress(task.blockId);
         if (!block_addr) {
             UC_TASK_ERROR(Status::Error(), task);
             this->Done(task, false);
