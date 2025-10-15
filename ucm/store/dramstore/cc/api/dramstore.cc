@@ -50,7 +50,7 @@ public:
     }
 
     bool Lookup(const std::string& block) override {
-        return this->memPool_.LookupBlock(block);
+        return this->memPool_.LookupBlock(block).Underlying();
     }
 
     void Commit(const std::string& block, const bool success) override {
@@ -70,7 +70,7 @@ public:
     {
         std::list<bool> founds;
         for (const auto &block : blocks) {
-            founds.emplace_back(this->Lookup(block))
+            founds.emplace_back(this->Lookup(block));
         }
         return founds;
     }
