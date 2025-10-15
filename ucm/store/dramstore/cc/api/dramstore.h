@@ -33,10 +33,9 @@ public:
     struct Config {
         size_t ioSize;
         size_t capacity;
-        size_t blockSize;
         int32_t deviceId;
-        Config(const size_t ioSize, const size_t capacity, const size_t blockSize)
-            : ioSize{ioSize}, capacity{capacity}, blockSize(blockSize), deviceId{-1}
+        Config(const size_t ioSize, const size_t capacity)
+            : ioSize{ioSize}, capacity{capacity}, deviceId{-1}
         {
         }
     };
