@@ -35,7 +35,7 @@ namespace UC {
 class DramTsfTaskQueue {
 public:
     Status Setup(const int32_t deviceId, 
-                 DramTsfTaskSet* failureSet, const MemoryPool* memPool);
+                 DramTsfTaskSet* failureSet, MemoryPool* memPool);
     void Push(std::list<DramTsfTask>& tasks);
 
 private:

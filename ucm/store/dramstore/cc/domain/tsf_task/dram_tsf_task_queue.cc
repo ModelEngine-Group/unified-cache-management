@@ -126,7 +126,7 @@ void DramTsfTaskQueue::D2H(DramTsfTask& task)
             this->Done(task, false);
             return; // 这里是否需要return？
         }
-        this->done(task, true);
+        this->Done(task, true);
     });
     if (status.Failure()) {
         UC_TASK_ERROR(status, task);
