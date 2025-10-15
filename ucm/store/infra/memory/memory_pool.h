@@ -27,6 +27,8 @@
 #include <cstddef>
 #include <cstdlib>
 #include <string>
+#include <set>
+#include <unordered_map>
 #include "status/status.h"
 
 namespace UC {
