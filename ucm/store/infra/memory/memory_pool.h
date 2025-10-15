@@ -83,7 +83,7 @@ public:
 
     Status CommitBlock(std::string blockId, bool success) {
         if (success) {
-            availableBlocks_.insert(blockId)
+            availableBlocks_.insert(blockId);
         }
         else {
             availableBlocks_.erase(blockId);

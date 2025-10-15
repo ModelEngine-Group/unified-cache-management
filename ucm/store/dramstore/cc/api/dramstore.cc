@@ -49,11 +49,11 @@ public:
     }
 
     bool Lookup(const std::string& block) override {
-        return this->memPool_.LookupBlock(block).Underlying();
+        return this->memPool_.LookupBlock(block);
     }
 
     void Commit(const std::string& block, const bool success) override {
-        this->memPool_.CommitBlock(block, success);
+        this->memPool_.CommitBlock(block, success).Underlying();
     }
 
     std::list<int32_t> Alloc(const std::list<std::string>& blocks) override
@@ -76,7 +76,7 @@ public:
 
     void Commit(const std::list<std::string>& blocks, const bool success) override {
         for (const auto &block : blocks) {
-            this->commit(block, success);
+            this->Commit(block, success);
         }
     }
 
