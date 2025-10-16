@@ -101,6 +101,10 @@ public:
         return Status::OK();
     }
 
+    char* GetFirstAddr() {
+        return pool_;
+    }
+
 private:
     /* ---------------- 内部数据 ---------------- */
     char* pool_ = nullptr;
