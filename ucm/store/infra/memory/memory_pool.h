@@ -27,79 +27,120 @@
 #include <cstddef>
 #include <cstdlib>
 #include <string>
-#include <set>
+#include <list>
 #include <unordered_map>
+#include <set>
 #include "status/status.h"
 
 namespace UC {
 
 class MemoryPool {
 public:
-    MemoryPool(uint32_t capacity, uint32_t blockSize) : capacity_(capacity), head_(0), blockSize_(blockSize) {
-        pool_ = new char[capacity];
-        if (!pool_) {
-            throw std::bad_alloc();
+    MemoryPool(uint32_t capacity, uint32_t blockSize)
+        : capacity_(capacity),
+          blockSize_(blockSize),
+          slotNum_(capacity / blockSize),
+          pool_(new char[capacity]) {
+        if (!pool_) throw std::bad_alloc();
+        // 1. 预占满：dummy → 地址 同时写进 addressMap_ 和 LRU
+        for (uint32_t i = 0; i < slotNum_; ++i) {
+            std::string dummy = "__slot_" + std::to_string(i);
+            char* addr = pool_ + i * blockSize_;
+            // 填 LRU
+            lruList_.push_front(dummy);
+            lruIndex_[dummy] = lruList_.begin();
+            // 填地址映射
+            addressMap_[dummy] = addr;
         }
     }
 
-    ~MemoryPool() {
-        delete [] pool_;
-    }
+    ~MemoryPool() { delete[] pool_; }
 
-    MemoryPool(const MemoryPool&) = delete;
+    MemoryPool(const MemoryPool&)            = delete;
     MemoryPool& operator=(const MemoryPool&) = delete;
 
-    void Reset() {
-        head_ = 0;
-    }
-
-    uint32_t GetNextAvailableOffset() const { return head_; }
-
-    Status NewBlock(std::string blockId) {
-        if (head_ >= capacity_) {
-            return Status::Error(); // 下一版本再实现GC逻辑，目前先忽略吧
-        }
-        auto it = addressMap_.find(blockId);
-        if (it != addressMap_.end()) {
-            // duplicate key
-            return Status::DuplicateKey();
-        }
-        // addressMap_里目前还没有这个blockId，即将进行分配
-        addressMap_[blockId] = pool_ + head_;
-        head_ = head_ + blockSize_;
+    /* ---------------- 对外接口 ---------------- */
+    Status NewBlock(const std::string& blockId) {
+        if (addressMap_.count(blockId)) return Status::DuplicateKey();
+        if (lruList_.empty()) return Status::Error();
+        char* addr = evictLRU();
+        addressMap_[blockId] = addr;
         return Status::OK();
     }
 
-    bool LookupBlock(std::string blockId) {
-        return availableBlocks_.find(blockId) != availableBlocks_.end();
+    bool LookupBlock(const std::string& blockId) const {
+        return availableBlocks_.count(blockId);
     }
 
-    char* GetAddress(std::string blockId) {
-        if (addressMap_.find(blockId) == addressMap_.end()) {
-            return nullptr;
-        }
-        return addressMap_[blockId];
+    char* GetAddress(const std::string& blockId) const {
+        auto it = addressMap_.find(blockId);
+        return it == addressMap_.end() ? nullptr : it->second;
     }
 
-    Status CommitBlock(std::string blockId, bool success) {
+    Status CommitBlock(const std::string& blockId, bool success) {
         if (success) {
             availableBlocks_.insert(blockId);
-        }
-        else {
-            availableBlocks_.erase(blockId);
+            touchUnsafe(blockId);
+        } else {
+            // availableBlocks_.erase(blockId); // 这句大概不需要？
+            auto it = addressMap_.find(blockId);
+            char* addr = it->second;
+            int32_t offset = static_cast<uint32_t>(addr - pool_);
+            std::string dummy = "__slot_" + std::to_string(offset / blockSize_);
+            addressMap_.erase(blockId);
+
+            auto lit = lruIndex_.find(blockId);
+            if (lit != lruIndex_.end()) {
+                lruList_.erase(lit->second);
+                lruIndex_.erase(lit);
+            }
+            lruList_.push_back(dummy);
+            lruIndex_[dummy] = std::prev(lruList_.end());
+            addressMap_[dummy] = addr;
         }
         return Status::OK();
     }
 
 private:
+    /* ---------------- 内部数据 ---------------- */
     char* pool_ = nullptr;
     uint32_t capacity_;
-    uint32_t head_;
     uint32_t blockSize_;
+    uint32_t slotNum_;
+
     std::unordered_map<std::string, char*> addressMap_;
     std::set<std::string> availableBlocks_;
+
+    using ListType = std::list<std::string>;
+    ListType lruList_;
+    std::unordered_map<std::string, ListType::iterator> lruIndex_;
+
+    /* ---------------- 工具函数 ---------------- */
+    // 把 blockId 移到 LRU 头
+    void touchUnsafe(const std::string& blockId) {
+        auto it = lruIndex_.find(blockId);
+        if (it != lruIndex_.end()) {
+            lruList_.splice(lruList_.begin(), lruList_, it->second);
+        } else {
+            lruList_.push_front(blockId);
+            lruIndex_[blockId] = lruList_.begin();
+        }
+    }
+
+    // 踢最久未使用块
+    char* evictLRU() {
+        const std::string& victim = lruList_.back();
+        // 真数据块才清可用集合
+        if (victim.rfind("__slot_", 0) != 0) {
+            availableBlocks_.erase(victim);
+        }
+        char* addr = addressMap_[victim];
+        addressMap_.erase(victim);
+        lruIndex_.erase(victim);
+        lruList_.pop_back();
+        return addr;
+    }
 };
 
 } // namespace UC
-
 #endif
