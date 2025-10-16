@@ -24,27 +24,86 @@
 #include "dramstore.h"
 #include "logger/logger.h"
 #include "status/status.h"
+#include "tsf_task/dram_tsf_task_manager.h"
+#include "tsf_task/dram_tsf_task.h"
+#include "memory/memory_pool.h"
 
 namespace UC {
 
 class DRAMStoreImpl : public DRAMStore {
 public:
-    int32_t Setup(const size_t ioSize, const size_t capacity, const int32_t deviceId) { return -1; }
-    int32_t Alloc(const std::string& block) override { return -1; }
-    bool Lookup(const std::string& block) override { return false; }
-    void Commit(const std::string& block, const bool success) override {}
+    int32_t Setup(const Config& config) {
+        // config里之前没有blockSize，稳妥起见还是先打桩
+        int32_t blockSize = 128;
+        this->memPool_ = std::make_unique<MemoryPool>(config.capacity, blockSize).release();
+        // 初始化memPool的办法是否正确？如果失败的话怎么办？
+        // int32_t streamNumber = 60; // 这个参数是否需要，以及怎么传，还要讨论
+        // int32_t timeoutMs = 10000; // 这个参数是否需要，以及怎么传，还要讨论
+        auto status = this->transMgr_.Setup(config.deviceId, config.streamNumber, config.timeoutMs, this->memPool_);
+        if (status.Failure()) {
+            UC_ERROR("Failed({}) to setup DramTransferTaskManager.", status);
+            return status.Underlying();
+        }
+        return Status::OK().Underlying();
+    }
+
+    int32_t Alloc(const std::string& block) override {
+        return this->memPool_->NewBlock(block).Underlying();
+    }
+
+    bool Lookup(const std::string& block) override {
+        return this->memPool_->LookupBlock(block);
+    }
+
+    void Commit(const std::string& block, const bool success) override {
+        this->memPool_->CommitBlock(block, success).Underlying();
+    }
+
     std::list<int32_t> Alloc(const std::list<std::string>& blocks) override
     {
-        return std::list<int32_t>();
+        std::list<int32_t> results;
+        for (const auto &block : blocks) {
+            results.emplace_back(this->Alloc(block));
+        }
+        return results;
     }
+
     std::list<bool> Lookup(const std::list<std::string>& blocks) override
     {
-        return std::list<bool>();
+        std::list<bool> founds;
+        for (const auto &block : blocks) {
+            founds.emplace_back(this->Lookup(block));
+        }
+        return founds;
     }
-    void Commit(const std::list<std::string>& blocks, const bool success) override {}
-    size_t Submit(Task&& task) override { return 0; }
-    int32_t Wait(const size_t task) override { return -1; }
-    int32_t Check(const size_t task, bool& finish) override { return -1; }
+
+    void Commit(const std::list<std::string>& blocks, const bool success) override {
+        for (const auto &block : blocks) {
+            this->Commit(block, success);
+        }
+    }
+
+    size_t Submit(Task&& task) override {
+        std::list<DramTsfTask> tasks;
+        for (auto& shard : task.shards) {
+            tasks.push_back({task.type, shard.block, shard.offset, shard.address, task.size});
+        }
+        size_t taskId;
+        return this->transMgr_.Submit(tasks, task.number * task.size, task.number, task.brief, taskId).Success() ? taskId : CCStore::invalidTaskId;
+    }
+
+    int32_t Wait(const size_t task) override {
+        return this->transMgr_.Wait(task).Underlying();
+    }
+
+    int32_t Check(const size_t task, bool& finish) override {
+        return this->transMgr_.Check(task, finish).Underlying();
+    }
+
+private:
+    // DramSpaceManager spaceMgr_;
+    MemoryPool* memPool_;
+    DramTsfTaskManager transMgr_;
 };
 
 int32_t DRAMStore::Setup(const Config& config)
@@ -55,7 +114,7 @@ int32_t DRAMStore::Setup(const Config& config)
         return Status::OutOfMemory().Underlying();
     }
     this->impl_ = impl;
-    return impl->Setup(config.ioSize, config.capacity, config.deviceId);
+    return impl->Setup(config);
 }
 
 } // namespace UC
