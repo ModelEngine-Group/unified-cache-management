@@ -85,5 +85,5 @@ TEST_F(UCMemoryPoolTest, OldBlockCommitFalse)
 
     ASSERT_EQ(memPool.NewBlock(block1), UC::Status::DuplicateKey());
     ASSERT_EQ(memPool.NewBlock(block2), UC::Status::OK());
-    ASSERT_EQ(static_cast<uint32_t>(memPool.GetAddress((block4)) - memPool.GetFirstAddr()), 0);
+    ASSERT_EQ(static_cast<uint32_t>(memPool.GetAddress((block2)) - memPool.GetFirstAddr()), 0);
 }
