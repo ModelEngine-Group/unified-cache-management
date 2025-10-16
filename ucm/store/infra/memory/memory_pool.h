@@ -37,10 +37,10 @@ namespace UC {
 class MemoryPool {
 public:
     MemoryPool(uint32_t capacity, uint32_t blockSize)
-        : capacity_(capacity),
+        : pool_(new char[capacity]),
+          capacity_(capacity),
           blockSize_(blockSize),
-          slotNum_(capacity / blockSize),
-          pool_(new char[capacity]) {
+          slotNum_(capacity / blockSize) {
         if (!pool_) throw std::bad_alloc();
         // 1. 预占满：dummy → 地址 同时写进 addressMap_ 和 LRU
         for (uint32_t i = 0; i < slotNum_; ++i) {
