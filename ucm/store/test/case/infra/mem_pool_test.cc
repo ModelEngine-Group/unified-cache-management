@@ -120,12 +120,17 @@ TEST_F(UCMemoryPoolTest, NoCommittedBlock)
     memPool.CommitBlock(block1, true);
     ASSERT_TRUE(memPool.LookupBlock(block1));
     ASSERT_EQ(memPool.NewBlock(block5), UC::Status::OK());
+    ASSERT_EQ(static_cast<uint32_t>(memPool.GetAddress((block5)) - memPool.GetFirstAddr()), 0);
     ASSERT_FALSE(memPool.LookupBlock(block1));
     ASSERT_EQ(memPool.NewBlock(block6), UC::Status::Error());
+    ASSERT_EQ(static_cast<uint32_t>(memPool.GetAddress((block2)) - memPool.GetFirstAddr()), 8);
     memPool.CommitBlock(block2, false);
+    ASSERT_EQ(memPool.GetAddress((block2)), nullptr);
+    ASSERT_FALSE(memPool.LookupBlock(block1));
     ASSERT_EQ(memPool.NewBlock(block6), UC::Status::OK());
-    ASSERT_NE(memPool.GetAddress((block6)), nullptr);
+    ASSERT_EQ(static_cast<uint32_t>(memPool.GetAddress((block6)) - memPool.GetFirstAddr()), 8);
     ASSERT_FALSE(memPool.LookupBlock(block6));
     memPool.CommitBlock(block6, true);
     ASSERT_TRUE(memPool.LookupBlock(block6));
+    ASSERT_EQ(static_cast<uint32_t>(memPool.GetAddress((block6)) - memPool.GetFirstAddr()), 8);
 }
