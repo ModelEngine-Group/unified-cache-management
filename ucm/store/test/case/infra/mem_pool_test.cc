@@ -59,7 +59,7 @@ TEST_F(UCMemoryPoolTest, EvictOldBlock)
     ASSERT_NE(memPool.GetAddress(block2), nullptr);
     ASSERT_FALSE(memPool.LookupBlock(block1));
     ASSERT_TRUE(memPool.LookupBlock(block2));
-    ASSERT_TRUE(memPool.LookupBlock(block3));
+    ASSERT_FALSE(memPool.LookupBlock(block3));
 }
 
 TEST_F(UCMemoryPoolTest, OldBlockCommitFalse)
