@@ -39,10 +39,12 @@ public:
     MemoryPool(uint32_t capacity, uint32_t blockSize)
         : pool_(new char[capacity]),
           capacity_(capacity),
-          blockSize_(blockSize),
-          slotNum_(capacity / blockSize) {
-        if (!pool_) throw std::bad_alloc();
-        for (uint32_t i = 0; i < slotNum_; ++i) {
+          blockSize_(blockSize) {
+        if (!pool_) {
+            throw std::bad_alloc();
+        }
+        uint32_t slotNum = capacity / blockSize;
+        for (uint32_t i = 0; i < slotNum; ++i) {
             // 将所有槽位都预先占好，插入LRU队列中。
             std::string dummy = "__slot_" + std::to_string(i);
             char* addr = pool_ + i * blockSize_;
@@ -100,7 +102,6 @@ private:
     char* pool_ = nullptr;
     uint32_t capacity_;
     uint32_t blockSize_;
-    uint32_t slotNum_;
 
     std::unordered_map<std::string, char*> addressMap_;
     std::set<std::string> availableBlocks_;

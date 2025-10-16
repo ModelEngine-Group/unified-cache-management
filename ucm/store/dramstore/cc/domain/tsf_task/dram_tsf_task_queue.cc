@@ -40,7 +40,8 @@ Status DramTsfTaskQueue::Setup(const int32_t deviceId, DramTsfTaskSet* failureSe
         this->_device = DeviceFactory::Make(deviceId, 0, 0); // 这里不需要buffer，暂时都先传0吧
         if (!this->_device) { return Status::OutOfMemory(); }
     }
-    if (!this->_streamOper.Setup([this](DramTsfTask& task) { this->StreamOper(task); })) {
+    if (!this->_streamOper.Setup([this](DramTsfTask& task) { this->StreamOper(task); },
+            [this] { return this->_device->Setup().Success(); } )) {
         return Status::Error();
     }
     return Status::OK();
