@@ -41,7 +41,7 @@ TEST_F(UCMemoryPoolTest, NewBlockAllocateAndCommit)
     ASSERT_TRUE(memPool.LookupBlock(block1));
 }
 
-TEST_F(UCMemoryPoolTest, OutOfCapacity)
+TEST_F(UCMemoryPoolTest, EvictOldBlock)
 {
     UC::MemoryPool memPool(10, 5); // 初始化内存池
     const std::string block1 = "block1";
@@ -51,7 +51,9 @@ TEST_F(UCMemoryPoolTest, OutOfCapacity)
     ASSERT_NE(memPool.GetAddress(block1), nullptr);
     ASSERT_EQ(memPool.NewBlock(block2), UC::Status::OK());
     ASSERT_NE(memPool.GetAddress(block2), nullptr);
-    ASSERT_EQ(memPool.NewBlock(block3), UC::Status::Error());
+    memPool.CommitBlock(block1, true);
+    memPool.CommitBlock(block2, true);
+    ASSERT_EQ(memPool.NewBlock(block3), UC::Status::OK());
     ASSERT_NE(memPool.GetAddress(block3), nullptr);
     ASSERT_EQ(memPool.GetAddress(block1), nullptr);
     ASSERT_NE(memPool.GetAddress(block2), nullptr);
