@@ -87,3 +87,24 @@ TEST_F(UCMemoryPoolTest, OldBlockCommitFalse)
     ASSERT_EQ(memPool.NewBlock(block2), UC::Status::OK());
     ASSERT_EQ(static_cast<uint32_t>(memPool.GetAddress((block2)) - memPool.GetFirstAddr()), 0);
 }
+
+TEST_F(UCMemoryPoolTest, NoCommittedBlock)
+{
+    UC::MemoryPool memPool(32, 8); // 初始化内存池
+    const std::string block1 = "block1";
+    const std::string block2 = "block2";
+    const std::string block3 = "block3";
+    const std::string block4 = "block4";
+    const std::string block5 = "block5";
+    const std::string block6 = "block6";
+    ASSERT_EQ(memPool.NewBlock(block1), UC::Status::OK());
+    ASSERT_EQ(memPool.NewBlock(block2), UC::Status::OK());
+    ASSERT_EQ(memPool.NewBlock(block3), UC::Status::OK());
+    ASSERT_EQ(memPool.NewBlock(block4), UC::Status::OK());
+    ASSERT_EQ(memPool.NewBlock(block5), UC::Status::Error());
+    memPool.CommitBlock(block1, true);
+    ASSERT_EQ(memPool.NewBlock(block5), UC::Status::OK());
+    ASSERT_EQ(memPool.NewBlock(block6), UC::Status::Error());
+    memPool.CommitBlock(block2, false);
+    ASSERT_EQ(memPool.NewBlock(block6), UC::Status::OK());
+}
