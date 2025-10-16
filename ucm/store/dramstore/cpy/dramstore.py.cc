@@ -104,6 +104,8 @@ PYBIND11_MODULE(ucmdramstore, module)
     config.def_readwrite("ioSize", &UC::DRAMStorePy::Config::ioSize);
     config.def_readwrite("capacity", &UC::DRAMStorePy::Config::capacity);
     config.def_readwrite("deviceId", &UC::DRAMStorePy::Config::deviceId);
+    config.def_readwrite("streamNumber", &UC::DRAMStorePy::Config::streamNumber);
+    config.def_readwrite("timeoutMs", &UC::DRAMStorePy::Config::timeoutMs);
     store.def(py::init<>());
     store.def("CCStoreImpl", &UC::DRAMStorePy::CCStoreImpl);
     store.def("Setup", &UC::DRAMStorePy::Setup);

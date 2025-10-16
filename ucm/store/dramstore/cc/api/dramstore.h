@@ -34,8 +34,10 @@ public:
         size_t ioSize;
         size_t capacity;
         int32_t deviceId;
-        Config(const size_t ioSize, const size_t capacity)
-            : ioSize{ioSize}, capacity{capacity}, deviceId{-1}
+        size_t streamNumber;
+        size_t timeoutMs;
+        Config(const size_t ioSize, const size_t capacity, const size_t streamNumber, const size_t timeoutMs)
+            : ioSize{ioSize}, capacity{capacity}, deviceId{-1}, streamNumber(streamNumber), timeoutMs(timeoutMs)
         {
         }
     };

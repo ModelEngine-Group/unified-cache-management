@@ -37,9 +37,9 @@ public:
         int32_t blockSize = 128;
         this->memPool_ = std::make_unique<MemoryPool>(config.capacity, blockSize).release();
         // 初始化memPool的办法是否正确？如果失败的话怎么办？
-        int32_t streamNumber = 60; // 这个参数是否需要，以及怎么传，还要讨论
-        int32_t timeoutMs = 10000; // 这个参数是否需要，以及怎么传，还要讨论
-        auto status = this->transMgr_.Setup(config.deviceId, streamNumber, timeoutMs, this->memPool_);
+        // int32_t streamNumber = 60; // 这个参数是否需要，以及怎么传，还要讨论
+        // int32_t timeoutMs = 10000; // 这个参数是否需要，以及怎么传，还要讨论
+        auto status = this->transMgr_.Setup(config.deviceId, config.streamNumber, config.timeoutMs, this->memPool_);
         if (status.Failure()) {
             UC_ERROR("Failed({}) to setup DramTransferTaskManager.", status);
             return status.Underlying();
