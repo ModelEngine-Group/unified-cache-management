@@ -125,6 +125,48 @@ class UcmKVStoreBase(ABC):
         pass
 
     @abstractmethod
+    def fetch_data(
+        self,
+        block_ids: List[str],
+        offset: List[int],
+        dst_addr: List[int],
+        size: List[int],
+    ) -> Task:
+        """
+        load kv cache data to device.
+
+        Args:
+            block_ids (List[str]): vLLM block hash.
+            offset(List[int]): tp > 1 scene
+            dst_addr: List[int]: device tensor addr ptr.
+            size: List[int]: device tensor size.
+        Returns:
+            task(Task).
+        """
+        pass
+
+    @abstractmethod
+    def dump_data(
+        self,
+        block_ids: List[str],
+        offset: List[int],
+        src_addr: List[int],
+        size: List[int],
+    ) -> Task:
+        """
+        dump kv cache data to device.
+
+        Args:
+            block_ids (List[str]): vLLM block hash.
+            offset(List[int]): tp > 1 scene
+            src_addr: List[int]: device tensor addr ptr.
+            size: List[int]: device tensor size.
+        Returns:
+            task(Task).
+        """
+        pass
+
+    @abstractmethod
     def wait(self, task: Task) -> int:
         """
         wait kv cache kv transfer task finished.
