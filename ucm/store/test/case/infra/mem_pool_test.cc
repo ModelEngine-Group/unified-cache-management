@@ -79,4 +79,11 @@ TEST_F(UCMemoryPoolTest, OldBlockCommitFalse)
     ASSERT_EQ(static_cast<uint32_t>(memPool.GetAddress((block4)) - memPool.GetFirstAddr()), 8);
     ASSERT_EQ(memPool.NewBlock(block5), UC::Status::OK());
     ASSERT_EQ(static_cast<uint32_t>(memPool.GetAddress((block5)) - memPool.GetFirstAddr()), 24);
+    memPool.CommitBlock(block3, true);
+    memPool.CommitBlock(block4, true);
+    memPool.CommitBlock(block5, true);
+
+    ASSERT_EQ(memPool.NewBlock(block1), UC::Status::DuplicateKey());
+    ASSERT_EQ(memPool.NewBlock(block2), UC::Status::OK());
+    ASSERT_EQ(static_cast<uint32_t>(memPool.GetAddress((block4)) - memPool.GetFirstAddr()), 0);
 }

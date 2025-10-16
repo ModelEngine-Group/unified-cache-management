@@ -82,21 +82,7 @@ public:
             availableBlocks_.insert(blockId);
             touchUnsafe(blockId);
         } else {
-            // availableBlocks_.erase(blockId); // 这句大概不需要？
-            auto it = addressMap_.find(blockId);
-            char* addr = it->second;
-            int32_t offset = static_cast<uint32_t>(addr - pool_);
-            std::string dummy = "__slot_" + std::to_string(offset / blockSize_);
-            addressMap_.erase(blockId);
-
-            auto lit = lruIndex_.find(blockId);
-            if (lit != lruIndex_.end()) {
-                lruList_.erase(lit->second);
-                lruIndex_.erase(lit);
-            }
-            lruList_.push_back(dummy);
-            lruIndex_[dummy] = std::prev(lruList_.end());
-            addressMap_[dummy] = addr;
+            resetSpaceOfBlock(blockId);
         }
         return Status::OK();
     }
@@ -106,7 +92,6 @@ public:
     }
 
 private:
-    /* ---------------- 内部数据 ---------------- */
     char* pool_ = nullptr;
     uint32_t capacity_;
     uint32_t blockSize_;
@@ -119,8 +104,6 @@ private:
     ListType lruList_;
     std::unordered_map<std::string, ListType::iterator> lruIndex_;
 
-    /* ---------------- 工具函数 ---------------- */
-    // 把 blockId 移到 LRU 头
     void touchUnsafe(const std::string& blockId) {
         auto it = lruIndex_.find(blockId);
         if (it != lruIndex_.end()) {
@@ -143,6 +126,24 @@ private:
         lruIndex_.erase(victim);
         lruList_.pop_back();
         return addr;
+    }
+
+    void resetSpaceOfBlock(const std::string blockId) {
+        // availableBlocks_.erase(blockId); // 这句大概不需要？
+        auto it = addressMap_.find(blockId);
+        char* addr = it->second;
+        int32_t offset = static_cast<uint32_t>(addr - pool_);
+        std::string dummy = "__slot_" + std::to_string(offset / blockSize_);
+        addressMap_.erase(blockId);
+
+        auto lit = lruIndex_.find(blockId);
+        if (lit != lruIndex_.end()) {
+            lruList_.erase(lit->second);
+            lruIndex_.erase(lit);
+        }
+        lruList_.push_back(dummy);
+        lruIndex_[dummy] = std::prev(lruList_.end());
+        addressMap_[dummy] = addr;
     }
 };
 
