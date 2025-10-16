@@ -128,7 +128,7 @@ private:
         return addr;
     }
 
-    void resetSpaceOfBlock(const std::string blockId) {
+    void resetSpaceOfBlock(const std::string& blockId) {
         // availableBlocks_.erase(blockId); // 这句大概不需要？
         auto it = addressMap_.find(blockId);
         char* addr = it->second;

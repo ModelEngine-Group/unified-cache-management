@@ -57,6 +57,9 @@ TEST_F(UCMemoryPoolTest, EvictOldBlock)
     ASSERT_NE(memPool.GetAddress(block3), nullptr);
     ASSERT_EQ(memPool.GetAddress(block1), nullptr);
     ASSERT_NE(memPool.GetAddress(block2), nullptr);
+    ASSERT_FALSE(memPool.LookupBlock(block1));
+    ASSERT_TRUE(memPool.LookupBlock(block2));
+    ASSERT_TRUE(memPool.LookupBlock(block3));
 }
 
 TEST_F(UCMemoryPoolTest, OldBlockCommitFalse)
@@ -75,6 +78,9 @@ TEST_F(UCMemoryPoolTest, OldBlockCommitFalse)
     ASSERT_NE(memPool.GetAddress(block3), nullptr);
     memPool.CommitBlock(block1, true);
     memPool.CommitBlock(block2, false);
+    ASSERT_TRUE(memPool.LookupBlock(block1));
+    ASSERT_FALSE(memPool.LookupBlock(block2));
+    ASSERT_FALSE(memPool.LookupBlock(block3));
     ASSERT_EQ(memPool.NewBlock(block4), UC::Status::OK());
     ASSERT_EQ(static_cast<uint32_t>(memPool.GetAddress((block4)) - memPool.GetFirstAddr()), 8);
     ASSERT_EQ(memPool.NewBlock(block5), UC::Status::OK());
@@ -82,10 +88,19 @@ TEST_F(UCMemoryPoolTest, OldBlockCommitFalse)
     memPool.CommitBlock(block3, true);
     memPool.CommitBlock(block4, true);
     memPool.CommitBlock(block5, true);
+    ASSERT_TRUE(memPool.LookupBlock(block1));
+    ASSERT_FALSE(memPool.LookupBlock(block2));
+    ASSERT_TRUE(memPool.LookupBlock(block3));
+    ASSERT_TRUE(memPool.LookupBlock(block4));
+    ASSERT_TRUE(memPool.LookupBlock(block5));
 
     ASSERT_EQ(memPool.NewBlock(block1), UC::Status::DuplicateKey());
     ASSERT_EQ(memPool.NewBlock(block2), UC::Status::OK());
     ASSERT_EQ(static_cast<uint32_t>(memPool.GetAddress((block2)) - memPool.GetFirstAddr()), 0);
+    ASSERT_FALSE(memPool.LookupBlock(block1));
+    ASSERT_FALSE(memPool.LookupBlock(block2));
+    memPool.CommitBlock(block2, true);
+    ASSERT_TRUE(memPool.LookupBlock(block2));
 }
 
 TEST_F(UCMemoryPoolTest, NoCommittedBlock)
@@ -103,8 +118,14 @@ TEST_F(UCMemoryPoolTest, NoCommittedBlock)
     ASSERT_EQ(memPool.NewBlock(block4), UC::Status::OK());
     ASSERT_EQ(memPool.NewBlock(block5), UC::Status::Error());
     memPool.CommitBlock(block1, true);
+    ASSERT_TRUE(memPool.LookupBlock(block1));
     ASSERT_EQ(memPool.NewBlock(block5), UC::Status::OK());
+    ASSERT_FALSE(memPool.LookupBlock(block1));
     ASSERT_EQ(memPool.NewBlock(block6), UC::Status::Error());
     memPool.CommitBlock(block2, false);
     ASSERT_EQ(memPool.NewBlock(block6), UC::Status::OK());
+    ASSERT_NE(memPool.GetAddress((block6)), nullptr);
+    ASSERT_FALSE(memPool.LookupBlock(block6));
+    memPool.CommitBlock(block6, true);
+    ASSERT_TRUE(memPool.LookupBlock(block6));
 }
