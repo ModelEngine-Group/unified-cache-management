@@ -40,12 +40,13 @@ public:
         size_t transferIoSize;
         size_t transferBufferNumber;
         size_t transferTimeoutMs;
+        bool transferUseDirect;
 
         Config(const std::vector<std::string>& storageBackends, const size_t kvcacheBlockSize,
-               const bool transferEnable)
+               const bool transferEnable, bool transferUseDirect)
             : storageBackends{storageBackends}, kvcacheBlockSize{kvcacheBlockSize},
               transferEnable{transferEnable}, transferDeviceId{-1}, transferStreamNumber{32},
-              transferIoSize{262144}, transferBufferNumber{512}, transferTimeoutMs{30000}
+              transferIoSize{262144}, transferBufferNumber{512}, transferTimeoutMs{30000}, transferUseDirect{transferUseDirect}
         {
         }
     };

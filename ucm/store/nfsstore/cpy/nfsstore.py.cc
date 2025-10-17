@@ -113,8 +113,8 @@ PYBIND11_MODULE(ucmnfsstore, module)
     module.attr("build_type") = UCM_BUILD_TYPE;
     auto store = py::class_<UC::NFSStorePy>(module, "NFSStore");
     auto config = py::class_<UC::NFSStorePy::Config>(store, "Config");
-    config.def(py::init<const std::vector<std::string>&, const size_t, const bool>(),
-               py::arg("storageBackends"), py::arg("kvcacheBlockSize"), py::arg("transferEnable"));
+    config.def(py::init<const std::vector<std::string>&, const size_t, const bool, const bool>(),
+               py::arg("storageBackends"), py::arg("kvcacheBlockSize"), py::arg("transferEnable"), py::arg("transferUseDirect"));
     config.def_readwrite("storageBackends", &UC::NFSStorePy::Config::storageBackends);
     config.def_readwrite("kvcacheBlockSize", &UC::NFSStorePy::Config::kvcacheBlockSize);
     config.def_readwrite("transferEnable", &UC::NFSStorePy::Config::transferEnable);
@@ -122,6 +122,7 @@ PYBIND11_MODULE(ucmnfsstore, module)
     config.def_readwrite("transferStreamNumber", &UC::NFSStorePy::Config::transferStreamNumber);
     config.def_readwrite("transferIoSize", &UC::NFSStorePy::Config::transferIoSize);
     config.def_readwrite("transferBufferNumber", &UC::NFSStorePy::Config::transferBufferNumber);
+    config.def_readwrite("transferUseDirect", &UC::NFSStorePy::Config::transferUseDirect);
     store.def(py::init<>());
     store.def("CCStoreImpl", &UC::NFSStorePy::CCStoreImpl);
     store.def("Setup", &UC::NFSStorePy::Setup);

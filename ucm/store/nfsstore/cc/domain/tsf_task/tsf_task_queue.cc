@@ -34,7 +34,7 @@ namespace UC {
 
 Status TsfTaskQueue::Setup(const int32_t deviceId, const size_t bufferSize,
                            const size_t bufferNumber, TsfTaskSet* failureSet,
-                           const SpaceLayout* layout)
+                           const SpaceLayout* layout, bool transferUseDirect)
 {
     this->_failureSet = failureSet;
     this->_layout = layout;
@@ -42,7 +42,7 @@ Status TsfTaskQueue::Setup(const int32_t deviceId, const size_t bufferSize,
         this->_device = DeviceFactory::Make(deviceId, bufferSize, bufferNumber);
         if (!this->_device) { return Status::OutOfMemory(); }
         if (!this->_streamOper.Setup([this](TsfTask& task) { this->StreamOper(task); },
-                                     [this] { return this->_device->Setup().Success(); })) {
+                                     [this,transferUseDirect] { return this->_device->Setup(transferUseDirect).Success(); })) {
             return Status::Error();
         }
     }
