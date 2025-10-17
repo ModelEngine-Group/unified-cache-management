@@ -618,9 +618,9 @@ class UnifiedCacheConnectorV1(KVConnectorBase_V1):
                 # TODO we will fix hole match later
                 break
         logger.info(
-            f"\nnum_total_blocks: {len(block_hashes)}\n"
-            f"\nnum_lookup_hits on hbm: {start_position}\n"
-            f"\nnum_lookup_hits on storage except hbm: {num_lookup_hits}\n"
+            f"num_total_blocks: {len(block_hashes)}, "
+            f"num_lookup_hits on hbm: {start_position}, "
+            f"num_lookup_hits on storage except hbm: {num_lookup_hits}"
         )
 
         # Load async when Decode instance need to load
