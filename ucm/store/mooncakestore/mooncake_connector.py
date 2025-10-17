@@ -259,6 +259,28 @@ class UcmMooncakeStore(UcmKVStoreBase):
                 raise TypeError("Mooncake Store Put Type Error.") from err
         return 0
 
+    def fetch_data(
+        self,
+        block_ids: List[str],
+        offset: List[int],
+        dst_addr: List[int],
+        size: List[int],
+    ) -> Task:
+        raise NotImplementedError(
+            "Method(fetch_data) not yet implemented in this version"
+        )
+
+    def dump_data(
+        self,
+        block_ids: List[str],
+        offset: List[int],
+        src_addr: List[int],
+        size: List[int],
+    ) -> Task:
+        raise NotImplementedError(
+            "Method(dump_data) not yet implemented in this version"
+        )
+
     def wait(self, task: Task) -> int:
         """
         wait kv cache kv transfer task finished.

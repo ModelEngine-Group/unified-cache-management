@@ -88,6 +88,26 @@ class UcmNfsStore(UcmKVStoreBase):
         )
         return NfsTask(task_id=task_id)
 
+    def fetch_data(
+        self,
+        block_ids: List[str],
+        offset: List[int],
+        dst_addr: List[int],
+        size: List[int],
+    ) -> Task:
+        task_id = self.store.LoadToDevice(block_ids, offset, dst_addr, size)
+        return NfsTask(task_id=task_id)
+
+    def dump_data(
+        self,
+        block_ids: List[str],
+        offset: List[int],
+        src_addr: List[int],
+        size: List[int],
+    ) -> Task:
+        task_id = self.store.DumpFromDevice(block_ids, offset, src_addr, size)
+        return NfsTask(task_id=task_id)
+
     def wait(self, task: Task) -> int:
         return self.store.Wait(task.task_id)
 
