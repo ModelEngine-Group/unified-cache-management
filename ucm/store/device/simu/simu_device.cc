@@ -21,68 +21,83 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  * */
-#include "ibuffered_device.h"
+#include <thread>
+#include <vector>
+#include "idevice.h"
 #include "logger/logger.h"
-#include "thread/thread_pool.h"
 
 namespace UC {
-class SimuDevice : public IBufferedDevice {
-    using Task = std::function<void(void)>;
+
+class SimuDevice : public IDevice {
+    void* _addr;
+    void* Alloc(const size_t size) { return malloc(size); }
+    void Free(void* ptr) { free(ptr); }
 
 public:
     SimuDevice(const int32_t deviceId, const size_t bufferSize, const size_t bufferNumber)
-        : IBufferedDevice{deviceId, bufferSize, bufferNumber}
+        : IDevice{deviceId, bufferSize, bufferNumber}, _addr{nullptr}
     {
+    }
+    ~SimuDevice() override
+    {
+        if (this->_addr) {
+            this->Free(this->_addr);
+            this->_addr = nullptr;
+        }
     }
     Status Setup() override
     {
-        auto status = IBufferedDevice::Setup();
-        if (status.Failure()) { return status; }
-        if (!this->backend_.Setup([](auto& task) { task(); })) { return Status::Error(); }
-        return Status::OK();
-    }
-    Status H2DAsync(std::byte* dst, const std::byte* src, const size_t count) override
-    {
-        if (dst == nullptr || src == nullptr || count == 0) {
-            UC_ERROR("Invalid params: count={}.", count);
-            return Status::InvalidParam();
+        auto reservedMemSize = this->bufferNumber * this->bufferSize;
+        if (reservedMemSize != 0) {
+            this->_addr = this->Alloc(reservedMemSize);
+            if (!this->_addr) {
+                UC_ERROR("Out of memory({}B).", reservedMemSize);
+                return Status::OutOfMemory();
+            }
         }
-        this->backend_.Push([=] { std::copy(src, src + count, dst); });
         return Status::OK();
     }
-    Status D2HAsync(std::byte* dst, const std::byte* src, const size_t count) override
+    void* GetBuffer(const size_t idx) override
     {
-        if (dst == nullptr || src == nullptr || count == 0) {
-            UC_ERROR("Invalid params: count={}.", count);
-            return Status::InvalidParam();
+        if (idx < this->bufferNumber) { return ((uint8_t*)this->_addr) + this->bufferSize * idx; }
+        auto ptr = this->Alloc(this->bufferSize);
+        if (!ptr) { UC_ERROR("Out of memory({}B).", this->bufferSize); }
+        return ptr;
+    }
+    void PutBuffer(const size_t idx, void* ptr) override
+    {
+        if (idx < this->bufferNumber) { return; }
+        this->Free(ptr);
+    }
+    Status H2DBatch(const uintptr_t* from, uintptr_t* to, const size_t number, const size_t size) override
+    {
+        return D2HBatch(from, to, number, size);
+    }
+    Status D2HBatch(const uintptr_t* from, uintptr_t* to, const size_t number, const size_t size) override
+    {
+        constexpr size_t nPerThread = 1024;
+        std::vector<std::thread> workers;
+        for (size_t start = 0; start < number; start += nPerThread) {
+            auto end = std::min(start + nPerThread, number);
+            workers.emplace_back([=] {
+                for (auto i = start; i < end; i++) {
+                    auto src = (const std::byte*)from[i];
+                    auto dst = (std::byte*)to[i];
+                    std::copy(src, src + size, dst);
+                }
+            });
         }
-        this->backend_.Push([=] { std::copy(src, src + count, dst); });
+        for (auto& worker : workers) { worker.join(); }
         return Status::OK();
     }
-    Status AppendCallback(std::function<void(bool)> cb) override
-    {
-        this->backend_.Push([=] { cb(true); });
-        return Status::OK();
-    }
-
-protected:
-    std::shared_ptr<std::byte> MakeBuffer(const size_t size) override
-    {
-        return std::shared_ptr<std::byte>((std::byte*)malloc(size), free);
-    }
-
-private:
-    ThreadPool<Task> backend_;
 };
 
-std::unique_ptr<IDevice> DeviceFactory::Make(const int32_t deviceId, const size_t bufferSize,
-                                             const size_t bufferNumber)
+std::unique_ptr<IDevice> DeviceFactory::Make(const int32_t deviceId, const size_t bufferSize, const size_t bufferNumber)
 {
     try {
         return std::make_unique<SimuDevice>(deviceId, bufferSize, bufferNumber);
     } catch (const std::exception& e) {
-        UC_ERROR("Failed({}) to make simu device({},{},{}).", e.what(), deviceId, bufferSize,
-                 bufferNumber);
+        UC_ERROR("Failed({}) to make simu device({},{},{}).", e.what(), deviceId, bufferSize, bufferNumber);
         return nullptr;
     }
 }

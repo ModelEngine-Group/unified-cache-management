@@ -25,116 +25,157 @@
 #include <array>
 #include <atomic>
 #include <thread>
-#include "ibuffered_device.h"
+#include "idevice.h"
 #include "logger/logger.h"
 #include "thread/latch.h"
 
 namespace UC {
 
-template <typename Api, typename... Args>
-Status AscendApi(const char* caller, const char* file, const size_t line, const char* name,
-                 Api&& api, Args&&... args)
-{
-    auto ret = api(args...);
-    if (ret != ACL_SUCCESS) {
-        UC_ERROR("ACL ERROR: api={}, code={}, caller={},{}:{}.", name, ret, caller, basename(file),
-                 line);
-        return Status::OsApiError();
-    }
-    return Status::OK();
-}
-#define ASCEND_API(api, ...) AscendApi(__FUNCTION__, __FILE__, __LINE__, #api, api, __VA_ARGS__)
+#define ASCEND_STREAM_NUMBER (8)
+#define ASCEND_REPORT_PROCESS_TIMEOUT_MS (10)
 
-class AscendDevice : public IBufferedDevice {
-    struct Closure {
-        std::function<void(bool)> cb;
-        explicit Closure(std::function<void(bool)> cb) : cb{cb} {}
-    };
-    static void Trampoline(void* data)
+class AscendDevice : public IDevice {
+    void* _addr;
+    std::atomic_bool _stop;
+    std::thread _cbThread;
+    std::array<aclrtStream, ASCEND_STREAM_NUMBER> _streams;
+
+    void* AllocHost(const size_t size)
     {
-        auto c = (Closure*)data;
-        c->cb(true);
-        delete c;
+        void* ptr = nullptr;
+        auto ret = aclrtMallocHost(&ptr, size);
+        if (ret != ACL_SUCCESS) {
+            UC_ERROR("ACL ERROR: api=aclrtMallocHost, code={}.", ret);
+            return nullptr;
+        }
+        return ptr;
+    }
+    void FreeHost(void* ptr)
+    {
+        auto ret = aclrtFreeHost(ptr);
+        if (ret != ACL_SUCCESS) { UC_WARN("ACL ERROR: api=aclrtFreeHost, code={}.", ret); }
+    }
+    Status Synchornize()
+    {
+        auto status = Status::OK();
+        Latch waiter{ASCEND_STREAM_NUMBER};
+        for (auto& s : this->_streams) {
+            if (status.Failure()) {
+                waiter.Done();
+                continue;
+            }
+            auto ret = aclrtLaunchCallback([](void* ud) { ((Latch*)ud)->Done(); }, &waiter, ACL_CALLBACK_NO_BLOCK, s);
+            if (ret != ACL_SUCCESS) {
+                status = Status::Error();
+                UC_ERROR("ACL ERROR: api=aclrtLaunchCallback, code={}.", ret);
+            }
+        }
+        waiter.Wait();
+        return status;
     }
 
 public:
     AscendDevice(const int32_t deviceId, const size_t bufferSize, const size_t bufferNumber)
-        : IBufferedDevice{deviceId, bufferSize, bufferNumber}, stop_{false}, stream_{nullptr}
+        : IDevice{deviceId, bufferSize, bufferNumber}, _addr{nullptr}, _stop{false}
     {
+        this->_cbThread = std::thread([this] {
+            while (!this->_stop) { (void)aclrtProcessReport(ASCEND_REPORT_PROCESS_TIMEOUT_MS); }
+        });
     }
     ~AscendDevice() override
     {
-        if (this->cbThread_.joinable()) {
-            auto tid = this->cbThread_.native_handle();
-            (void)aclrtUnSubscribeReport(tid, this->stream_);
-            this->stop_ = true;
-            this->cbThread_.join();
+        auto tid = this->_cbThread.native_handle();
+        for (auto& s : this->_streams) {
+            if (!s) { continue; }
+            auto ret = aclrtUnSubscribeReport(tid, s);
+            if (ret != ACL_SUCCESS) { UC_WARN("ACL ERROR: api=aclrtUnSubscribeReport, code={}.", ret); }
+            ret = aclrtDestroyStream(s);
+            if (ret != ACL_SUCCESS) { UC_WARN("ACL ERROR: api=aclrtDestroyStream, code={}.", ret); }
         }
-        if (this->stream_) {
-            (void)aclrtDestroyStream(this->stream_);
-            this->stream_ = nullptr;
+        this->_stop = true;
+        this->_cbThread.join();
+        if (this->_addr) {
+            this->FreeHost(this->_addr);
+            this->_addr = nullptr;
         }
-        (void)aclrtResetDevice(this->deviceId);
+        auto ret = aclrtResetDevice(this->deviceId);
+        if (ret != ACL_SUCCESS) { UC_WARN("ACL ERROR: api=aclrtResetDevice, code={}.", ret); }
     }
     Status Setup() override
     {
-        auto status = Status::OK();
-        if ((status = ASCEND_API(aclrtSetDevice, this->deviceId)).Failure()) { return status; }
-        if ((status = IBufferedDevice::Setup()).Failure()) { return status; }
-        if ((status = ASCEND_API(aclrtCreateStream, &this->stream_)).Failure()) { return status; }
-        this->cbThread_ = std::thread([this] {
-            while (!this->stop_) { (void)aclrtProcessReport(10); }
-        });
-        auto tid = this->cbThread_.native_handle();
-        if ((status = ASCEND_API(aclrtSubscribeReport, tid, this->stream_)).Failure()) {
-            return status;
+        if (this->deviceId < 0) {
+            UC_ERROR("Invalid xpu id({}).", this->deviceId);
+            return Status::InvalidParam();
+        }
+        auto ret = aclrtSetDevice(this->deviceId);
+        if (ret != ACL_SUCCESS) {
+            UC_ERROR("ACL ERROR: api=aclrtSetDevice, code={}.", ret);
+            return Status::Error();
+        }
+        auto tid = this->_cbThread.native_handle();
+        for (auto& s : this->_streams) {
+            ret = aclrtCreateStream(&s);
+            if (ret != ACL_SUCCESS) {
+                UC_ERROR("ACL ERROR: api=aclrtCreateStream, code={}.", ret);
+                return Status::Error();
+            }
+            ret = aclrtSubscribeReport(tid, s);
+            if (ret != ACL_SUCCESS) {
+                UC_ERROR("ACL ERROR: api=aclrtSubscribeReport, code={}.", ret);
+                return Status::Error();
+            }
+        }
+        auto reservedMemSize = this->bufferNumber * this->bufferSize;
+        if (reservedMemSize != 0) {
+            this->_addr = this->AllocHost(reservedMemSize);
+            if (!this->_addr) { return Status::OutOfMemory(); }
         }
         return Status::OK();
     }
-    Status H2DAsync(std::byte* dst, const std::byte* src, const size_t count) override
+    void* GetBuffer(const size_t idx) override
     {
-        return ASCEND_API(aclrtMemcpyAsync, dst, count, src, count, ACL_MEMCPY_HOST_TO_DEVICE,
-                          this->stream_);
+        if (idx < this->bufferNumber) { return ((uint8_t*)this->_addr) + this->bufferSize * idx; }
+        return this->AllocHost(this->bufferSize);
     }
-    Status D2HAsync(std::byte* dst, const std::byte* src, const size_t count) override
+    void PutBuffer(const size_t idx, void* ptr) override
     {
-        return ASCEND_API(aclrtMemcpyAsync, dst, count, src, count, ACL_MEMCPY_DEVICE_TO_HOST,
-                          this->stream_);
+        if (idx < this->bufferNumber) { return; }
+        this->FreeHost(ptr);
     }
-    Status AppendCallback(std::function<void(bool)> cb) override
+    Status H2DBatch(const uintptr_t* from, uintptr_t* to, const size_t number, const size_t size) override
     {
-        auto* c = new (std::nothrow) Closure(cb);
-        if (!c) {
-            UC_ERROR("Failed to make closure for append cb.");
-            return Status::OutOfMemory();
+        for (size_t i = 0; i < number; i++) {
+            auto ret = aclrtMemcpyAsync((void*)to[i], size, (void*)from[i], size, ACL_MEMCPY_HOST_TO_DEVICE,
+                                        this->_streams[i % ASCEND_STREAM_NUMBER]);
+            if (ret != ACL_SUCCESS) {
+                UC_ERROR("ACL ERROR: api=aclrtMemcpyAsync, code={}.", ret);
+                (void)this->Synchornize();
+                return Status::Error();
+            }
         }
-        return ASCEND_API(aclrtLaunchCallback, Trampoline, (void*)c, ACL_CALLBACK_NO_BLOCK,
-                          this->stream_);
+        return this->Synchornize();
     }
-
-protected:
-    std::shared_ptr<std::byte> MakeBuffer(const size_t size) override
+    Status D2HBatch(const uintptr_t* from, uintptr_t* to, const size_t number, const size_t size) override
     {
-        std::byte* host = nullptr;
-        auto status = ASCEND_API(aclrtMallocHost, (void**)&host, size);
-        if (status.Success()) { return std::shared_ptr<std::byte>(host, aclrtFreeHost); }
-        return nullptr;
+        for (size_t i = 0; i < number; i++) {
+            auto ret = aclrtMemcpyAsync((void*)to[i], size, (void*)from[i], size, ACL_MEMCPY_DEVICE_TO_HOST,
+                                        this->_streams[i % ASCEND_STREAM_NUMBER]);
+            if (ret != ACL_SUCCESS) {
+                UC_ERROR("ACL ERROR: api=aclrtMemcpyAsync, code={}.", ret);
+                (void)this->Synchornize();
+                return Status::Error();
+            }
+        }
+        return this->Synchornize();
     }
-
-private:
-    std::atomic_bool stop_;
-    void* stream_;
-    std::thread cbThread_;
 };
 
-std::unique_ptr<IDevice> DeviceFactory::Make(const int32_t deviceId, const size_t bufferSize,
-                                             const size_t bufferNumber)
+std::unique_ptr<IDevice> DeviceFactory::Make(const int32_t deviceId, const size_t bufferSize, const size_t bufferNumber)
 {
     try {
         return std::make_unique<AscendDevice>(deviceId, bufferSize, bufferNumber);
     } catch (const std::exception& e) {
-        UC_ERROR("Failed({}) to make ascend device({},{},{}).", e.what(), deviceId, bufferSize,
-                 bufferNumber);
+        UC_ERROR("Failed({}) to make ascend device({},{},{}).", e.what(), deviceId, bufferSize, bufferNumber);
         return nullptr;
     }
 }
