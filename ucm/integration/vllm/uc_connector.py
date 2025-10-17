@@ -767,7 +767,9 @@ class UnifiedCacheConnectorV1(KVConnectorBase_V1):
             connector_output (KVConnectorOutput): the worker-side
                 connectors output.
         """
-        done_sending = list(connector_output.finished_sending or set())
+        if not connector_output.finished_sending:
+            return
+        done_sending = list(connector_output.finished_sending)
         self.connector.commit(done_sending, True)
         self.succeed_dumped_blocks.update(done_sending)
         connector_output.finished_sending = set()
