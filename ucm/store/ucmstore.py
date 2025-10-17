@@ -113,7 +113,7 @@ class UcmKVStoreBase(ABC):
         self, block_ids: List[str], offset: List[int], src_tensor: List[torch.Tensor]
     ) -> Task:
         """
-        dump kv cache to device.
+        dump kv cache from device.
 
         Args:
             block_ids (List[str]): vLLM block hash.
@@ -154,7 +154,7 @@ class UcmKVStoreBase(ABC):
         size: List[int],
     ) -> Task:
         """
-        dump kv cache data to device.
+        dump kv cache data from device.
 
         Args:
             block_ids (List[str]): vLLM block hash.
