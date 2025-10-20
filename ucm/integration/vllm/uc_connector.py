@@ -25,6 +25,7 @@
 #
 import hashlib
 import pickle
+import importlib.metadata
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import TYPE_CHECKING, Any, Generator, List, Optional, Union
@@ -99,10 +100,10 @@ class UnifiedCacheConnectorV1(KVConnectorBase_V1):
         # dump tasks record request -> block -> list[task]
         self.dump_tasks: dict[str, dict[str, List[Task]]] = {}
         self.layerwise_load_tasks: dict[str, dict[str, tuple[Task, Task]]] = {}
-        if vllm_config.device_config.device_type == "cuda":
-            self.is_mla = self._vllm_config.model_config.is_deepseek_mla
-        elif vllm_config.device_config.device_type == "npu":
+        if vllm_config.device_config.device_type == "npu" and '0.11.0' in importlib.metadata.version('vllm_ascend'):
             self.is_mla = False
+        else:
+            self.is_mla = self._vllm_config.model_config.is_deepseek_mla
         self.num_layers = vllm_config.model_config.get_num_layers(
             vllm_config.parallel_config
         )
@@ -176,8 +177,8 @@ class UnifiedCacheConnectorV1(KVConnectorBase_V1):
 
     def DataOffset(self, kv_layer, rank, layer_id, is_v):
         # Non-MLA scene: one layer shape is (2, num_blocks, block_size, num_kv_heads, head_size)
-        # MLA scene: vllm: one layer shape is (num_blocks, block_size, head_size)
-        #            vllm-ascend: one layer shape is (2, num_blocks, block_size, num_kv_heads, nope_dim/rope_dim)
+        # MLA scene: one layer shape is (num_blocks, block_size, head_size)
+        # but in vllm-ascend0.11.0: one layer shape is (2, num_blocks, block_size, num_kv_heads, nope_dim/rope_dim)
         # Element size
         elem_size = kv_layer[0].element_size()
         logger.debug(
