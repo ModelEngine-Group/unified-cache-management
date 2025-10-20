@@ -55,9 +55,6 @@ def make_request(
     return Request(
         request_id=request_id,
         prompt_token_ids=prompt_token_ids,
-        multi_modal_inputs=multi_model_inputs,
-        multi_modal_hashes=mm_hashes,
-        multi_modal_placeholders=mm_positions,
         sampling_params=SamplingParams(max_tokens=17),
         pooling_params=None,
         eos_token_id=100,
@@ -112,6 +109,7 @@ class TestUCConnector(unittest.TestCase):
             ucconnector._need_load_reqs: dict[str, Union[list[int], list[Task]]] = {}
             ucconnector._load_failed_reqs: set[str] = set()
             ucconnector._load_req_to_blocks: dict[str, set[int]] = {}
+            ucconnector.succeed_dumped_blocks: set[str] = set()
         return ucconnector
 
     def test_get_num_new_matched_tokens_hit_all_on_storage(self):

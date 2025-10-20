@@ -22,24 +22,56 @@
 # SOFTWARE.
 #
 
+import hashlib
+import pickle
 import random
 import unittest
 import unittest.mock as mock
 from contextlib import contextmanager
-from typing import List
+from typing import Any, List
 from unittest.mock import MagicMock
 
 import torch
 from vllm.multimodal.inputs import MultiModalKwargs
 from vllm.sampling_params import SamplingParams
 from vllm.utils import sha256
-from vllm.v1.core.kv_cache_utils import hash_request_tokens
 from vllm.v1.request import Request
 
 
 @contextmanager
 def mock_stream_context(stream=None):
     yield
+
+
+def md5(input) -> int:
+    input_bytes = pickle.dumps(input, protocol=pickle.HIGHEST_PROTOCOL)
+    md5_bytes = hashlib.md5(input_bytes).digest()
+    return int.from_bytes(md5_bytes, byteorder="big")
+
+
+def hash_request_tokens(
+    hash_function: Any, block_size: int, request: "Request"
+) -> list[str]:
+    token_ids = request.all_token_ids
+
+    ret = []
+    parent_block_hash_value = None
+    for start in range(0, len(token_ids), block_size):
+        end = start + block_size
+        block_token_ids = token_ids[start:end]
+        # Do not hash the block if it is not full.
+        if len(block_token_ids) < block_size:
+            break
+
+        if not parent_block_hash_value:
+            parent_block_hash_value = md5("UCMHASHSEED")
+
+        block_token_ids_tuple = tuple(block_token_ids)
+        hash_value = hash_function((parent_block_hash_value, block_token_ids_tuple))
+        parent_block_hash_value = hash_value
+        ret.append(str(hash_value))
+
+    return ret
 
 
 class MockStream:
@@ -103,9 +135,6 @@ def make_request(
     return Request(
         request_id=request_id,
         prompt_token_ids=prompt_token_ids,
-        multi_modal_inputs=multi_modal_inputs,
-        multi_modal_hashes=mm_hashes,
-        multi_modal_placeholders=mm_positions,
         sampling_params=SamplingParams(max_tokens=17),
         pooling_params=None,
         eos_token_id=100,
@@ -151,8 +180,7 @@ class TestUcmDram(unittest.TestCase):
             mm_positions=None,
             mm_hashes=None,
         )
-        block_hash_types = hash_request_tokens(sha256, self.block_size, self.request)
-        self.block_hashes: List[str] = [str(x.hash_value) for x in block_hash_types]
+        self.block_hashes = hash_request_tokens(sha256, self.block_size, self.request)
 
     def test_look_up_all_hit(self):
         """
