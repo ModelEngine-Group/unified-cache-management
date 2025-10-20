@@ -38,10 +38,12 @@ from vllm.distributed.kv_transfer.kv_connector.v1.base import (
 )
 from vllm.distributed.parallel_state import get_world_group
 from vllm.v1.core.sched.output import SchedulerOutput
+from vllm.v1.outputs import KVConnectorOutput
 from vllm.v1.request import Request, RequestStatus
 
 from ucm.logger import init_logger
 from ucm.store.factory import UcmConnectorFactory
+from ucm.store.nfsstore.nfsstore_connector import UcmNfsStore
 from ucm.store.ucmstore import Task
 
 if TYPE_CHECKING:
@@ -112,6 +114,9 @@ class UnifiedCacheConnectorV1(KVConnectorBase_V1):
             vllm_config.parallel_config
         )
         self.head_size = vllm_config.model_config.get_head_size()
+        self.current_layer = 0
+        # request id -> succeed dumped blocks
+        self.succeed_dumped_blocks: set[str] = set()
         if (
             self._vllm_config.kv_transfer_config is not None
             and "ucm_connector_name"
@@ -375,7 +380,7 @@ class UnifiedCacheConnectorV1(KVConnectorBase_V1):
             attn_metadata (AttentionMetadata): the attention metadata.
             **kwargs: additional arguments for the save operation.
         """
-        if self.is_mla and self.rank != 0:
+        if self.is_mla and self.rank != 0 and isinstance(self.connector, UcmNfsStore):
             return
         self.current_layer += 1
         if hasattr(self, "kv_role") and self.kv_role == "kv_consumer":
@@ -434,15 +439,13 @@ class UnifiedCacheConnectorV1(KVConnectorBase_V1):
         """
         if hasattr(self, "kv_role") and self.kv_role == "kv_consumer":
             return
-        # request id -> succeed dumped blocks
-        success_dumped_blocks: dict[str, list[str]] = {}
 
         def wait_for_tasks():
             for request_id, block_dump_tasks in self.dump_tasks.items():
                 for block_id, dump_tasks in block_dump_tasks.items():
                     if any(self.connector.wait(task) != 0 for task in dump_tasks):
                         continue
-                    success_dumped_blocks.setdefault(request_id, []).append(block_id)
+                    self.succeed_dumped_blocks.add(block_id)
 
         metadata = self._get_connector_metadata()
         assert isinstance(metadata, UCConnectorV1Metadata)
@@ -450,7 +453,6 @@ class UnifiedCacheConnectorV1(KVConnectorBase_V1):
             wait_for_tasks()
             # clear dump_tasks for all request
             self.dump_tasks.clear()
-            return success_dumped_blocks if success_dumped_blocks else None
 
         for request in metadata.requests:
             if not request.dump_blocks:
@@ -482,7 +484,6 @@ class UnifiedCacheConnectorV1(KVConnectorBase_V1):
                         ).append(task)
         wait_for_tasks()
         self.dump_tasks.clear()
-        return success_dumped_blocks if success_dumped_blocks else None
 
     def get_finished(self, finished_req_ids: set[str]) -> tuple[set[str], set[str]]:
         """Get the finished recving and sending requests."""
@@ -518,8 +519,8 @@ class UnifiedCacheConnectorV1(KVConnectorBase_V1):
         # remove the finished requests
         for req_id in list(done_recving):
             self._need_load_reqs.pop(req_id, None)
-
-        return None, done_recving
+        done_sending, self.succeed_dumped_blocks = self.succeed_dumped_blocks, set()
+        return done_sending, done_recving
 
     # ==============================
     # Scheduler-side methods
@@ -755,7 +756,7 @@ class UnifiedCacheConnectorV1(KVConnectorBase_V1):
         # When prompt tokens > max_num_batched_tokens, request of running requests may need to save
         for req_id, new_block_ids in get_requests():
             block_info = self.request_block_infos.get(req_id)
-            if block_info:
+            if block_info and new_block_ids:
                 load_blocks, dump_blocks = self._extract_blocks(
                     new_block_ids[0], block_info
                 )
@@ -770,6 +771,22 @@ class UnifiedCacheConnectorV1(KVConnectorBase_V1):
 
         return meta
 
+    def update_connector_output(self, connector_output: KVConnectorOutput):
+        """
+        Update KVConnector state from worker-side connectors output.
+
+        Args:
+            connector_output (KVConnectorOutput): the worker-side
+                connectors output.
+        """
+        if not connector_output.finished_sending:
+            return
+        done_sending = list(connector_output.finished_sending)
+        self.connector.commit(done_sending, True)
+        self.succeed_dumped_blocks.update(done_sending)
+        connector_output.finished_sending = set()
+        return
+
     def request_finished(
         self,
         request: "Request",
@@ -781,13 +798,12 @@ class UnifiedCacheConnectorV1(KVConnectorBase_V1):
                 block_info.block_hashes[i]
                 for i, op in enumerate(block_info.block_operations)
                 if op == BlockOperation.DUMP
-                and hasattr(request, "succeed_dumped_blocks")
-                and block_info.block_hashes[i] not in request.succeed_dumped_blocks
+                and block_info.block_hashes[i] not in self.succeed_dumped_blocks
             ]
             if cancel_blocks:
                 logger.debug(f"commit {cancel_blocks} to False.")
                 self.connector.commit(cancel_blocks, False)
-        request.succeed_dumped_blocks.clear()
+        self.succeed_dumped_blocks.clear()
         return False, None
 
     def _extract_blocks(
