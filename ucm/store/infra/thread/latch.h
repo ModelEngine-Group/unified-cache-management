@@ -26,6 +26,7 @@
 
 #include <atomic>
 #include <condition_variable>
+#include <functional>
 #include <mutex>
 
 namespace UC {
@@ -34,8 +35,22 @@ class Latch {
 public:
     explicit Latch(const size_t expected = 0) : counter_{expected} {}
     void Up() { ++this->counter_; }
-    size_t Done() { return --this->counter_; }
-    void Notify() { this->cv_.notify_all(); }
+    void Done(std::function<void(void)> finish) noexcept
+    {
+        auto counter = this->counter_.load(std::memory_order_acquire);
+        while (counter > 0) {
+            auto desired = counter - 1;
+            if (this->counter_.compare_exchange_weak(counter, desired, std::memory_order_acq_rel)) {
+                if (desired == 0) {
+                    if (finish) { finish(); }
+                    std::lock_guard<std::mutex> lg(this->mutex_);
+                    this->cv_.notify_all();
+                }
+                return;
+            }
+            counter = this->counter_.load(std::memory_order_acquire);
+        }
+    }
     void Wait()
     {
         std::unique_lock<std::mutex> lk(this->mutex_);

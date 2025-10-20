@@ -91,6 +91,14 @@ public:
         }
         return Status::OK();
     }
+    Status H2DSync(std::byte* dst, const std::byte* src, const size_t count) override
+    {
+        return ASCEND_API(aclrtMemcpy, dst, count, src, count, ACL_MEMCPY_HOST_TO_DEVICE);
+    }
+    Status D2HSync(std::byte* dst, const std::byte* src, const size_t count) override
+    {
+        return ASCEND_API(aclrtMemcpy, dst, count, src, count, ACL_MEMCPY_DEVICE_TO_HOST);
+    }
     Status H2DAsync(std::byte* dst, const std::byte* src, const size_t count) override
     {
         return ASCEND_API(aclrtMemcpyAsync, dst, count, src, count, ACL_MEMCPY_HOST_TO_DEVICE,
@@ -111,6 +119,7 @@ public:
         return ASCEND_API(aclrtLaunchCallback, Trampoline, (void*)c, ACL_CALLBACK_NO_BLOCK,
                           this->stream_);
     }
+    Status Synchronized() override { return ASCEND_API(aclrtSynchronizeStream, this->stream_); }
 
 protected:
     std::shared_ptr<std::byte> MakeBuffer(const size_t size) override

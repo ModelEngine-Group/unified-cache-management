@@ -24,48 +24,13 @@
 #ifndef UNIFIEDCACHE_STORE_H
 #define UNIFIEDCACHE_STORE_H
 
-#include <list>
-#include <string>
-#include <cstdint>
+#include "task_shard.h"
 
 namespace UC {
 
 class CCStore {
     using BlockId = std::string;
     using TaskId = size_t;
-
-public:
-    static constexpr TaskId invalidTaskId = 0;
-    class Task {
-    public:
-        struct Shard {
-            size_t index;
-            BlockId block;
-            size_t offset;
-            uintptr_t address;
-        };
-        enum class Type { DUMP, LOAD };
-        enum class Location { HOST, DEVICE };
-        Type type;
-        Location location;
-        std::string brief;
-        size_t number;
-        size_t size;
-        std::list<Shard> shards;
-        Task(const Type type, const Location location, const std::string& brief)
-            : type{type}, location{location}, brief{brief}, number{0}, size{0}
-        {
-        }
-        int32_t Append(const BlockId& block, const size_t offset, const uintptr_t address,
-                       const size_t length)
-        {
-            if (this->number == 0) { this->size = length; }
-            if (this->size != length) { return -1; }
-            this->shards.emplace_back<Shard>({this->number, block, offset, address});
-            this->number++;
-            return 0;
-        }
-    };
 
 public:
     virtual ~CCStore() = default;

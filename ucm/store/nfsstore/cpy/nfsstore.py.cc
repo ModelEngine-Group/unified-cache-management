@@ -57,43 +57,42 @@ public:
     size_t LoadToDevice(const py::list& blockIds, const py::list& offsets,
                         const py::list& addresses, const py::list& lengths)
     {
-        return this->SubmitPy(blockIds, offsets, addresses, lengths, CCStore::Task::Type::LOAD,
-                              CCStore::Task::Location::DEVICE, "NFS::S2D");
+        return this->SubmitPy(blockIds, offsets, addresses, lengths, Task::Type::LOAD,
+                              Task::Location::DEVICE, "NFS::S2D");
     }
     size_t LoadToHost(const py::list& blockIds, const py::list& offsets, const py::list& addresses,
                       const py::list& lengths)
     {
-        return this->SubmitPy(blockIds, offsets, addresses, lengths, CCStore::Task::Type::LOAD,
-                              CCStore::Task::Location::HOST, "NFS::S2H");
+        return this->SubmitPy(blockIds, offsets, addresses, lengths, Task::Type::LOAD,
+                              Task::Location::HOST, "NFS::S2H");
     }
     size_t DumpFromDevice(const py::list& blockIds, const py::list& offsets,
                           const py::list& addresses, const py::list& lengths)
     {
-        return this->SubmitPy(blockIds, offsets, addresses, lengths, CCStore::Task::Type::DUMP,
-                              CCStore::Task::Location::DEVICE, "NFS::D2S");
+        return this->SubmitPy(blockIds, offsets, addresses, lengths, Task::Type::DUMP,
+                              Task::Location::DEVICE, "NFS::D2S");
     }
     size_t DumpFromHost(const py::list& blockIds, const py::list& offsets,
                         const py::list& addresses, const py::list& lengths)
     {
-        return this->SubmitPy(blockIds, offsets, addresses, lengths, CCStore::Task::Type::DUMP,
-                              CCStore::Task::Location::HOST, "NFS::H2S");
+        return this->SubmitPy(blockIds, offsets, addresses, lengths, Task::Type::DUMP,
+                              Task::Location::HOST, "NFS::H2S");
     }
 
 private:
     size_t SubmitPy(const py::list& blockIds, const py::list& offsets, const py::list& addresses,
-                    const py::list& lengths, const CCStore::Task::Type type,
-                    const CCStore::Task::Location location, const std::string& brief)
+                    const py::list& lengths, Task::Type&& type, Task::Location&& location,
+                    std::string&& brief)
     {
-        CCStore::Task task{type, location, brief};
+        Task task{std::move(type), std::move(location), std::move(brief)};
         auto blockId = blockIds.begin();
         auto offset = offsets.begin();
         auto address = addresses.begin();
         auto length = lengths.begin();
         while ((blockId != blockIds.end()) && (offset != offsets.end()) &&
                (address != addresses.end()) && (length != lengths.end())) {
-            auto ret = task.Append(blockId->cast<std::string>(), offset->cast<size_t>(),
-                                   address->cast<uintptr_t>(), length->cast<size_t>());
-            if (ret != 0) { return CCStore::invalidTaskId; }
+            task.Append(blockId->cast<std::string>(), offset->cast<size_t>(),
+                        address->cast<uintptr_t>(), length->cast<size_t>());
             blockId++;
             offset++;
             address++;
