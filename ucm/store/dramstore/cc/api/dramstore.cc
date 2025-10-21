@@ -31,15 +31,15 @@ namespace UC {
 
 class DRAMStoreImpl : public DRAMStore {
 public:
-    int32_t Setup(const size_t ioSize, const size_t capacity, const int32_t deviceId) {
+    int32_t Setup(const Config& config) {
         // 这里如何传入参数，待讨论
         // int32_t capacity = 14400;
         // int32_t blockSize = 144;
-        this->memPool_ = std::make_unique<MemoryPool>(14400, 144).release();
+        this->memPool_ = std::make_unique<MemoryPool>(config.capacity, config.blockSize).release();
         // int32_t deviceId = 1;
         // int32_t streamNumber = 10;
         // int32_t timeoutMs = 10000;
-        auto status = this->transMgr_.Setup(1, 10, this->memPool_, 10000);
+        auto status = this->transMgr_.Setup(config.deviceId, config.streamNumber, this->memPool_, config.timeoutMs);
         if (status.Failure()) {
             UC_ERROR("Failed({}) to setup TsfTaskManager.", status);
             return status.Underlying();
