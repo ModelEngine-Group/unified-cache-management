@@ -37,6 +37,7 @@ public:
     }
     Status Setup(bool transferUseDirect) override
     {
+        if(transferUseDirect) {return Status::OK();}
         auto totalSize = this->bufferSize * this->bufferNumber;
         this->_addr = this->MakeBuffer(totalSize);
         if (!this->_addr) { return Status::OutOfMemory(); }
