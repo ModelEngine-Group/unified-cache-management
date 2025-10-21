@@ -21,30 +21,36 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  * */
-#ifndef UNIFIEDCACHE_FILE_H
-#define UNIFIEDCACHE_FILE_H
-
-#include <memory>
-#include "ifile.h"
+#include "space_shard_temp_layout.h"
+#include <fmt/format.h>
 
 namespace UC {
 
-class File {
-public:
-    static std::unique_ptr<IFile> Make(const std::string& path);
-    static Status MkDir(const std::string& path);
-    static Status RmDir(const std::string& path);
-    static Status Rename(const std::string& path, const std::string& newName);
-    static Status Access(const std::string& path, const int32_t mode);
-    static Status Read(const std::string& path, const size_t offset, const size_t length,
-                       uintptr_t address, const bool directIo = false);
-    static Status Write(const std::string& path, const size_t offset, const size_t length,
-                        const uintptr_t address, const bool directIo = false);
-    static void MUnmap(void* addr, size_t size);
-    static void ShmUnlink(const std::string& path);
-    static void Remove(const std::string& path);
-};
+std::string SpaceShardTempLayout::DataFileParent(const std::string& blockId, bool activated) const
+{
+    if (!activated) { return SpaceShardLayout::DataFileParent(blockId, activated); }
+    uint64_t front, back;
+    this->ShardBlockId(blockId, front, back);
+    return fmt::format("{}{}/{:016x}", this->StorageBackend(blockId), this->TempDataFileRoot(),
+                       front);
+}
+
+std::string SpaceShardTempLayout::DataFilePath(const std::string& blockId, bool activated) const
+{
+    if (!activated) { return SpaceShardLayout::DataFilePath(blockId, activated); }
+    uint64_t front, back;
+    this->ShardBlockId(blockId, front, back);
+    return fmt::format("{}{}/{:016x}/{:016x}.dat", this->StorageBackend(blockId),
+                       this->TempDataFileRoot(), front, back);
+}
+
+std::vector<std::string> SpaceShardTempLayout::RelativeRoots() const
+{
+    auto roots = SpaceShardLayout::RelativeRoots();
+    roots.push_back(this->TempDataFileRoot());
+    return roots;
+}
+
+std::string SpaceShardTempLayout::TempDataFileRoot() const { return "temp"; }
 
 } // namespace UC
-
-#endif

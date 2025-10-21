@@ -21,7 +21,7 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  * */
-#include "space_layout.h"
+#include "space_shard_layout.h"
 #include <algorithm>
 #include <array>
 #include "file/file.h"
@@ -34,7 +34,7 @@ constexpr size_t nU64PerBlock = blockIdSize / sizeof(uint64_t);
 using BlockId = std::array<uint64_t, nU64PerBlock>;
 static_assert(sizeof(BlockId) == blockIdSize);
 
-Status SpaceLayout::Setup(const std::vector<std::string>& storageBackends)
+Status SpaceShardLayout::Setup(const std::vector<std::string>& storageBackends)
 {
     if (storageBackends.empty()) {
         UC_ERROR("Empty backend list.");
@@ -47,21 +47,22 @@ Status SpaceLayout::Setup(const std::vector<std::string>& storageBackends)
     return status;
 }
 
-std::string SpaceLayout::DataFileParent(const std::string& blockId) const
+std::string SpaceShardLayout::DataFileParent(const std::string& blockId, bool activated) const
 {
-    auto id = static_cast<const BlockId*>(static_cast<const void*>(blockId.data()));
-    return fmt::format("{}{}/{:016x}", this->StorageBackend(blockId), this->DataFileRoot(),
-                       id->front());
+    uint64_t front, back;
+    this->ShardBlockId(blockId, front, back);
+    return fmt::format("{}{}/{:016x}", this->StorageBackend(blockId), this->DataFileRoot(), front);
 }
 
-std::string SpaceLayout::DataFilePath(const std::string& blockId, bool activated) const
+std::string SpaceShardLayout::DataFilePath(const std::string& blockId, bool activated) const
 {
-    auto id = static_cast<const BlockId*>(static_cast<const void*>(blockId.data()));
+    uint64_t front, back;
+    this->ShardBlockId(blockId, front, back);
     return fmt::format("{}{}/{:016x}/{:016x}.{}", this->StorageBackend(blockId),
-                       this->DataFileRoot(), id->front(), id->back(), activated ? "act" : "dat");
+                       this->DataFileRoot(), front, back, activated ? "act" : "dat");
 }
 
-Status SpaceLayout::AddStorageBackend(const std::string& path)
+Status SpaceShardLayout::AddStorageBackend(const std::string& path)
 {
     auto normalizedPath = path;
     if (normalizedPath.back() != '/') { normalizedPath += '/'; }
@@ -77,7 +78,7 @@ Status SpaceLayout::AddStorageBackend(const std::string& path)
     return status;
 }
 
-Status SpaceLayout::AddFirstStorageBackend(const std::string& path)
+Status SpaceShardLayout::AddFirstStorageBackend(const std::string& path)
 {
     for (const auto& root : this->RelativeRoots()) {
         auto dir = File::Make(path + root);
@@ -90,7 +91,7 @@ Status SpaceLayout::AddFirstStorageBackend(const std::string& path)
     return Status::OK();
 }
 
-Status SpaceLayout::AddSecondaryStorageBackend(const std::string& path)
+Status SpaceShardLayout::AddSecondaryStorageBackend(const std::string& path)
 {
     auto iter = std::find(this->storageBackends_.begin(), this->storageBackends_.end(), path);
     if (iter != this->storageBackends_.end()) { return Status::OK(); }
@@ -104,14 +105,22 @@ Status SpaceLayout::AddSecondaryStorageBackend(const std::string& path)
     return Status::OK();
 }
 
-std::string SpaceLayout::StorageBackend(const std::string& blockId) const
+std::string SpaceShardLayout::StorageBackend(const std::string& blockId) const
 {
     static std::hash<std::string> hasher;
     return this->storageBackends_[hasher(blockId) % this->storageBackends_.size()];
 }
 
-std::vector<std::string> SpaceLayout::RelativeRoots() const { return {this->DataFileRoot()}; }
+std::vector<std::string> SpaceShardLayout::RelativeRoots() const { return {this->DataFileRoot()}; }
 
-std::string SpaceLayout::DataFileRoot() const { return "data"; }
+std::string SpaceShardLayout::DataFileRoot() const { return "data"; }
+
+void SpaceShardLayout::ShardBlockId(const std::string& blockId, uint64_t& front,
+                                    uint64_t& back) const
+{
+    auto id = static_cast<const BlockId*>(static_cast<const void*>(blockId.data()));
+    front = id->front();
+    back = id->back();
+}
 
 } // namespace UC
