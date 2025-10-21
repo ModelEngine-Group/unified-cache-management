@@ -449,10 +449,17 @@ class UnifiedCacheConnectorV1(KVConnectorBase_V1):
 
         metadata = self._get_connector_metadata()
         assert isinstance(metadata, UCConnectorV1Metadata)
+        if self.is_mla and self.rank != 0 and isinstance(self.connector, UcmNfsStore):
+            for request in metadata.requests:
+                storage_block_ids = [block[0] for block in request.dump_blocks]
+                self.succeed_dumped_blocks.update(storage_block_ids)
+            return
+
         if self.use_layerwise:
             wait_for_tasks()
             # clear dump_tasks for all request
             self.dump_tasks.clear()
+            return
 
         for request in metadata.requests:
             if not request.dump_blocks:
