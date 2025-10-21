@@ -99,7 +99,8 @@ PYBIND11_MODULE(ucmdramstore, module)
     module.attr("build_type") = UCM_BUILD_TYPE;
     auto store = py::class_<UC::DRAMStorePy>(module, "DRAMStore");
     auto config = py::class_<UC::DRAMStorePy::Config>(store, "Config");
-    config.def(py::init<const size_t, const size_t>(), py::arg("ioSize"), py::arg("capacity"));
+    config.def(py::init<const size_t, const size_t, const size_t, const size_t>(), 
+               py::arg("capacity"), py::arg("blockSize"), py::arg("streamNumber"), py::arg("timeoutMs"));
     // config.def_readwrite("ioSize", &UC::DRAMStorePy::Config::ioSize);
     config.def_readwrite("capacity", &UC::DRAMStorePy::Config::capacity);
     config.def_readwrite("blockSize", &UC::DRAMStorePy::Config::blockSize);
