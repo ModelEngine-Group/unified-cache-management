@@ -44,6 +44,8 @@ public:
         }
         return status;
     }
+
+    // 之后如要搞IO聚合（即调用H2DBatch/D2HBatch这些接口），可以在这里重写Submit方法
 };
 
 } // namespace UC
