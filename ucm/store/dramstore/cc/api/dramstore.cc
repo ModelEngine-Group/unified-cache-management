@@ -33,13 +33,13 @@ class DRAMStoreImpl : public DRAMStore {
 public:
     int32_t Setup(const size_t ioSize, const size_t capacity, const int32_t deviceId) {
         // 这里如何传入参数，待讨论
-        int32_t capacity = 14400;
-        int32_t blockSize = 144;
-        this->memPool_ = std::make_unique<MemoryPool>(capacity, blockSize).release();
-        int32_t deviceId = 1;
-        int32_t streamNumber = 10;
-        int32_t timeoutMs = 10000;
-        auto status = this->transMgr_.Setup(deviceId, streamNumber, timeoutMs, this->memPool_);
+        // int32_t capacity = 14400;
+        // int32_t blockSize = 144;
+        this->memPool_ = std::make_unique<MemoryPool>(14400, 144).release();
+        // int32_t deviceId = 1;
+        // int32_t streamNumber = 10;
+        // int32_t timeoutMs = 10000;
+        auto status = this->transMgr_.Setup(1, 10, 10000, this->memPool_);
         if (status.Failure()) {
             UC_ERROR("Failed({}) to setup TsfTaskManager.", status);
             return status.Underlying();
@@ -87,7 +87,7 @@ public:
 
 private:
 
-    TransManager transMgr_;
+    DramTransManager transMgr_;
     MemoryPool* memPool_;
 
 };
