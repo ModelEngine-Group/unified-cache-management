@@ -39,7 +39,7 @@ public:
         // int32_t deviceId = 1;
         // int32_t streamNumber = 10;
         // int32_t timeoutMs = 10000;
-        auto status = this->transMgr_.Setup(1, 10, 10000, this->memPool_);
+        auto status = this->transMgr_.Setup(1, 10, this->memPool_, 10000);
         if (status.Failure()) {
             UC_ERROR("Failed({}) to setup TsfTaskManager.", status);
             return status.Underlying();

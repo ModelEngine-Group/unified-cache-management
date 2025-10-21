@@ -31,7 +31,7 @@ namespace UC {
 
 class DramTransManager : public TaskManager {
 public:
-    Status Setup(const int32_t deviceId, const size_t streamNumber, const size_t ioSize, const MemoryPool* memPool, size_t timeoutMs)
+    Status Setup(const int32_t deviceId, const size_t streamNumber, const MemoryPool* memPool, size_t timeoutMs)
     {
         this->timeoutMs_ = timeoutMs;
         auto status = Status::OK();
