@@ -21,21 +21,21 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  * */
-#ifndef UNIFIEDCACHE_SPACE_LAYOUT_H
-#define UNIFIEDCACHE_SPACE_LAYOUT_H
+#ifndef UNIFIEDCACHE_SPACE_SHARD_TEMP_LAYOUT_H
+#define UNIFIEDCACHE_SPACE_SHARD_TEMP_LAYOUT_H
 
-#include <string>
-#include <vector>
-#include "status/status.h"
+#include "space_shard_layout.h"
 
 namespace UC {
 
-class SpaceLayout {
+class SpaceShardTempLayout : public SpaceShardLayout {
 public:
-    virtual ~SpaceLayout() = default;
-    virtual Status Setup(const std::vector<std::string>& storageBackends) = 0;
-    virtual std::string DataFileParent(const std::string& blockId, bool activated) const = 0;
-    virtual std::string DataFilePath(const std::string& blockId, bool activated) const = 0;
+    std::string DataFileParent(const std::string& blockId, bool activated) const override;
+    std::string DataFilePath(const std::string& blockId, bool activated) const override;
+
+protected:
+    std::vector<std::string> RelativeRoots() const override;
+    virtual std::string TempDataFileRoot() const;
 };
 
 } // namespace UC
