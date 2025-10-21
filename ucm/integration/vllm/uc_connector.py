@@ -179,6 +179,7 @@ class UnifiedCacheConnectorV1(KVConnectorBase_V1):
     def DataOffset(self, kv_layer, rank, layer_id, is_v):
         # Non-MLA scene: one layer shape is (2, num_blocks, block_size, num_kv_heads, head_size)
         # MLA scene: one layer shape is (num_blocks, block_size, head_size)
+        # However, when vllm_ascend version ≥ 0.10.0, MLA models' shape change to: (2, num_blocks, block_size, num_kv_heads, nope_dim/rope_dim)
         # Element size
         elem_size = kv_layer[0].element_size()
         logger.debug(
@@ -263,6 +264,8 @@ class UnifiedCacheConnectorV1(KVConnectorBase_V1):
 
         if len(self.kv_caches) == 0:
             self._init_kv_caches_from_forward_context(forward_context)
+            if len(list(self.kv_caches.values())[0]) == 2:
+                self.is_mla = False
 
         self.layerwise_load_tasks.clear()
         self.current_layer = 0
