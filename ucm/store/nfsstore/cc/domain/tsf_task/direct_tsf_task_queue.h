@@ -45,7 +45,6 @@ public:
     void Push(std::list<TsfTask>& tasks) override;
 
 private:
-    Status InitializeCuFile();
     void DirectOper(TsfTask& task);
     void S2D(TsfTask& task);
     void D2S(TsfTask& task);

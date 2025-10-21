@@ -29,25 +29,18 @@ Status TsfTaskManager::Setup(const int32_t deviceId, const size_t streamNumber,
                              const size_t bufferSize, const size_t bufferNumber,
                              const size_t timeoutMs, const SpaceLayout* layout, bool transferUseDirect)
 {
-    if(transferUseDirect){
-        this->_queues.reserve(streamNumber/2);
-        for (size_t i = 0; i < streamNumber/2; ++i) {
-            std::unique_ptr<ITsfTaskQueue> queue;
-            queue = std::make_unique<DirectTsfTaskQueue>();
-            auto status = queue->Setup(deviceId, bufferSize, bufferNumber, &this->_failureSet, layout, transferUseDirect);
-            if (status.Failure()) { return status; }
-            this->_queues.emplace_back(std::move(queue));
+    this->_queues.reserve(streamNumber);
+    for (size_t i = 0; i < streamNumber; ++i) {
+        auto queue = transferUseDirect
+            ? std::unique_ptr<ITsfTaskQueue>(std::make_unique<DirectTsfTaskQueue>())
+            : std::unique_ptr<ITsfTaskQueue>(std::make_unique<TsfTaskQueue>());
+
+        if (auto status = queue->Setup(deviceId, bufferSize, bufferNumber,
+                                    &_failureSet, layout, transferUseDirect);
+            status.Failure()) {
+            return status;
         }
-    }
-    else {
-        this->_queues.reserve(streamNumber);
-        for (size_t i = 0; i < streamNumber; ++i) {
-            std::unique_ptr<ITsfTaskQueue> queue;
-            queue = std::make_unique<TsfTaskQueue>();
-            auto status = queue->Setup(deviceId, bufferSize, bufferNumber, &this->_failureSet, layout, transferUseDirect);
-            if (status.Failure()) { return status; }
-            this->_queues.emplace_back(std::move(queue));
-        }
+        _queues.emplace_back(std::move(queue));
     }
     this->_timeoutMs = timeoutMs;
     return Status::OK();

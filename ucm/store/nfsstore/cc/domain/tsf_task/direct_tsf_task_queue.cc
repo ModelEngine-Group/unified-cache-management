@@ -48,24 +48,10 @@ Status DirectTsfTaskQueue::Setup(const int32_t deviceId, const size_t bufferSize
         if (!this->_device) { return Status::OutOfMemory(); }
         if (!this->_device->Setup(transferUseDirect).Success()) { return Status::Error(); }
     }
-    const size_t nWorkers = 8; 
-    if (!this->_directOper.Setup([this](TsfTask& task) { this->DirectOper(task); },
-                            [] { return true; }, [] {}, nWorkers)) {
-        UC_ERROR("Failed to setup GDS operation thread pool");
+    if (!this->_directOper.Setup([this](TsfTask& task) { this->DirectOper(task); })) {
         return Status::Error();
     }
 
-    return Status::OK();
-}
-
-Status DirectTsfTaskQueue::InitializeCuFile() {
-    CUfileError_t cuFileErr = cuFileDriverOpen();
-    if (cuFileErr.err != CU_FILE_SUCCESS) {
-        UC_ERROR("Failed to open cuFile driver: {}", static_cast<int>(cuFileErr.err));
-        return Status::Error();
-    }
-
-    UC_INFO("cuFile driver open");
     return Status::OK();
 }
 

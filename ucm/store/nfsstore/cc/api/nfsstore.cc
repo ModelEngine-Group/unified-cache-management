@@ -106,12 +106,7 @@ private:
         UC_INFO("Set UC::BlockSize to {}.", config.kvcacheBlockSize);
         UC_INFO("Set UC::TransferEnable to {}.", config.transferEnable);
         UC_INFO("Set UC::DeviceId to {}.", config.transferDeviceId);
-        UC_INFO("Set UC::TransferUseDirect to {}.", config.transferUseDirect);
-        if(config.transferUseDirect){
-            UC_INFO("Set UC::DirectStreamNumber to {}, nWorkers to {}.", config.transferStreamNumber / 2, 128 / (config.transferStreamNumber / 2));
-        } else {
-            UC_INFO("Set UC::StreamNumber to {}, nWorkers to {}.", config.transferStreamNumber, 1);
-        }
+        UC_INFO("Set UC::StreamNumber to {}.", config.transferStreamNumber);
         UC_INFO("Set UC::IOSize to {}.", config.transferIoSize);
         UC_INFO("Set UC::BufferNumber to {}.", config.transferBufferNumber);
         UC_INFO("Set UC::TimeoutMs to {}.", config.transferTimeoutMs);

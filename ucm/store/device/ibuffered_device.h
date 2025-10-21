@@ -26,7 +26,6 @@
 
 #include "idevice.h"
 #include "thread/index_pool.h"
-#include "cuda/file_handle_cache.h"
 
 namespace UC {
 
@@ -58,9 +57,6 @@ public:
         if (host) { return std::shared_ptr<std::byte>(host, free); }
         return nullptr;
     }
-
-protected:
-    FileHandleCache _fileHandleCache{65536}; 
 
 private:
     std::shared_ptr<std::byte> _addr;

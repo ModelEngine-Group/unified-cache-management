@@ -46,12 +46,16 @@ class UcmNfsStore(UcmKVStoreBase):
         block_size = int(config["kv_block_size"])
         transfer_enable = True if config["role"] == "worker" else False
         transferUseDirect = config.get("transferUseDirect", False)
+        transferStreamNumber = config.get("transferStreamNumber")
         param = ucmnfsstore.NFSStore.Config(
-            storage_backends, block_size, transfer_enable, transferUseDirect
+            storage_backends, block_size, transfer_enable
         )
         if transfer_enable:
             param.transferDeviceId = config["device"]
             param.transferIoSize = config["io_size"]
+            param.transferUseDirect = transferUseDirect
+            param.transferStreamNumber = config["transferStreamNumber"]
+            param.transferStreamNumber = transferStreamNumber
         ret = self.store.Setup(param)
         if ret != 0:
             msg = f"Failed to initialize ucmnfsstore, errcode: {ret}."
