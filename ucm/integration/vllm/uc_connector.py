@@ -489,6 +489,7 @@ class UnifiedCacheConnectorV1(KVConnectorBase_V1):
         done_recving: set[str] = set()
         for req_id, tasks in self._need_load_reqs.items():
             if req_id in self._load_failed_reqs:
+                done_recving.add(req_id)
                 continue
             unfinished_tasks = []
             for task in tasks:
@@ -498,6 +499,7 @@ class UnifiedCacheConnectorV1(KVConnectorBase_V1):
                         f"Task {task} failed, check return {ret} for request {req_id}"
                     )
                     self._load_failed_reqs.add(req_id)
+                    done_recving.add(req_id)
                     break
                 if not finish:
                     unfinished_tasks.append(task)
@@ -508,6 +510,7 @@ class UnifiedCacheConnectorV1(KVConnectorBase_V1):
                         f"Task {task} failed, wait return {wret} for request {req_id}"
                     )
                     self._load_failed_reqs.add(req_id)
+                    done_recving.add(req_id)
                     break
             if not unfinished_tasks:
                 done_recving.add(req_id)
