@@ -33,7 +33,8 @@ class NFSStoreImpl : public NFSStore {
 public:
     int32_t Setup(const Config& config)
     {
-        auto status = this->spaceMgr_.Setup(config.storageBackends, config.kvcacheBlockSize);
+        auto status = this->spaceMgr_.Setup(config.storageBackends, config.kvcacheBlockSize,
+                                            config.tempDumpDirEnable);
         if (status.Failure()) {
             UC_ERROR("Failed({}) to setup SpaceManager.", status);
             return status.Underlying();
@@ -103,6 +104,7 @@ private:
         UC_INFO("Set UC::IOSize to {}.", config.transferIoSize);
         UC_INFO("Set UC::BufferNumber to {}.", config.transferBufferNumber);
         UC_INFO("Set UC::TimeoutMs to {}.", config.transferTimeoutMs);
+        UC_INFO("Set UC::TempDumpDirEnable to {}.", config.tempDumpDirEnable);
     }
 
 private:

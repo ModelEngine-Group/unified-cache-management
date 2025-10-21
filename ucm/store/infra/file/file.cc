@@ -81,4 +81,6 @@ void File::MUnmap(void* addr, size_t size) { FileImpl{{}}.MUnmap(addr, size); }
 
 void File::ShmUnlink(const std::string& path) { FileImpl{path}.ShmUnlink(); }
 
+void File::Remove(const std::string& path) { FileImpl{path}.Remove(); }
+
 } // namespace UC
