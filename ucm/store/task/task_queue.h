@@ -21,14 +21,18 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  * */
-#ifndef UNIFIEDCACHE_TSF_TASK_SET_H
-#define UNIFIEDCACHE_TSF_TASK_SET_H
+#ifndef UNIFIEDCACHE_TASK_QUEUE_H
+#define UNIFIEDCACHE_TASK_QUEUE_H
 
-#include "template/hashset.h"
+#include "task_shard.h"
 
 namespace UC {
 
-class TsfTaskSet : public HashSet<size_t> {};
+class TaskQueue {
+public:
+    virtual ~TaskQueue() = default;
+    virtual void Push(std::list<Task::Shard>& shards) noexcept = 0;
+};
 
 } // namespace UC
 
