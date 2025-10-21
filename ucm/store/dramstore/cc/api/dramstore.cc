@@ -24,7 +24,7 @@
 #include "dramstore.h"
 #include "logger/logger.h"
 #include "status/status.h"
-#include "trans/trans_manager.h"
+#include "trans/dram_trans_manager.h"
 #include "memory/memory_pool.h"
 
 namespace UC {
