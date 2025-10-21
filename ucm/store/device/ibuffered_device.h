@@ -35,8 +35,9 @@ public:
         : IDevice{deviceId, bufferSize, bufferNumber}
     {
     }
-    Status Setup() override
+    Status Setup(bool transferUseDirect) override
     {
+        if(transferUseDirect) {return Status::OK();}
         auto totalSize = this->bufferSize * this->bufferNumber;
         if (totalSize == 0) { return Status::OK(); }
         this->_addr = this->MakeBuffer(totalSize);

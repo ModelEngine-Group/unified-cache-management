@@ -37,7 +37,7 @@ public:
     {
     }
     virtual ~IDevice() = default;
-    virtual Status Setup() = 0;
+    virtual Status Setup(bool transferUseDirect) = 0;
     virtual std::shared_ptr<std::byte> GetBuffer(const size_t size) = 0;
     virtual Status H2DSync(std::byte* dst, const std::byte* src, const size_t count) = 0;
     virtual Status D2HSync(std::byte* dst, const std::byte* src, const size_t count) = 0;
@@ -49,6 +49,8 @@ public:
                                 const size_t count) = 0;
     virtual Status D2HBatchSync(std::byte* hArr[], const std::byte* dArr[], const size_t number,
                                 const size_t count) = 0;
+    virtual Status S2DSync(const std::string& path, void* address, const size_t length, const size_t fileOffset, const size_t devOffset) = 0;
+    virtual Status D2SSync(const std::string& path, void* address, const size_t length, const size_t fileOffset, const size_t devOffset) = 0;
 
 protected:
     virtual std::shared_ptr<std::byte> MakeBuffer(const size_t size) = 0;

@@ -21,8 +21,8 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  * */
-#ifndef UNIFIEDCACHE_POSIX_QUEUE_H
-#define UNIFIEDCACHE_POSIX_QUEUE_H
+#ifndef UNIFIEDCACHE_DIRECTSTORAGE_QUEUE_H
+#define UNIFIEDCACHE_DIRECTSTORAGE_QUEUE_H
 
 #include "device/idevice.h"
 #include "space/space_layout.h"
@@ -30,10 +30,16 @@
 #include "task_queue.h"
 #include "task_set.h"
 #include "thread/thread_pool.h"
+#include <memory>
+#include <unordered_map>
+#include <mutex>
+#include <string>
+#include <cufile.h>
+#include <cuda_runtime.h>
 
 namespace UC {
 
-class PosixQueue : public TaskQueue {
+class DirectStorageQueue : public TaskQueue {
     using Device = std::unique_ptr<IDevice>;
     int32_t deviceId_{-1};
     size_t bufferSize_{0};
@@ -55,8 +61,6 @@ private:
     void Done(Task::Shard& shard, const Device& device, const bool success);
     Status D2S(Task::Shard& shard, const Device& device);
     Status S2D(Task::Shard& shard, const Device& device);
-    Status H2S(Task::Shard& shard);
-    Status S2H(Task::Shard& shard);
 };
 
 } // namespace UC
