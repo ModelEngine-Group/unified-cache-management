@@ -21,38 +21,35 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  * */
-#ifndef UNIFIEDCACHE_TSF_TAKS_QUEUE_H
-#define UNIFIEDCACHE_TSF_TAKS_QUEUE_H
+#ifndef UNIFIEDCACHE_TASK_MANAGER_H
+#define UNIFIEDCACHE_TASK_MANAGER_H
 
-#include "idevice.h"
-#include "space/space_layout.h"
-#include "thread/thread_pool.h"
-#include "tsf_task.h"
-#include "tsf_task_set.h"
+#include <unordered_map>
+#include "status/status.h"
+#include "task_queue.h"
+#include "task_set.h"
 
 namespace UC {
 
-class TsfTaskQueue {
+class TaskManager {
+    using TaskPtr = std::shared_ptr<Task>;
+    using WaiterPtr = std::shared_ptr<TaskWaiter>;
+    using TaskPair = std::pair<TaskPtr, WaiterPtr>;
+    using QueuePtr = std::shared_ptr<TaskQueue>;
+
 public:
-    Status Setup(const int32_t deviceId, const size_t bufferSize, const size_t bufferNumber,
-                 TsfTaskSet* failureSet, const SpaceLayout* layout);
-    void Push(std::list<TsfTask>& tasks);
+    virtual ~TaskManager() = default;
+    virtual Status Submit(Task&& task, size_t& taskId) noexcept;
+    virtual Status Wait(const size_t taskId) noexcept;
+    virtual Status Check(const size_t taskId, bool& finish) noexcept;
 
-private:
-    void StreamOper(TsfTask& task);
-    void FileOper(TsfTask& task);
-    void H2D(TsfTask& task);
-    void D2H(TsfTask& task);
-    void H2S(TsfTask& task);
-    void S2H(TsfTask& task);
-    void Done(const TsfTask& task, bool success);
-
-private:
-    ThreadPool<TsfTask> _streamOper;
-    ThreadPool<TsfTask> _fileOper;
-    std::unique_ptr<IDevice> _device;
-    TsfTaskSet* _failureSet;
-    const SpaceLayout* _layout;
+protected:
+    std::mutex mutex_;
+    std::unordered_map<size_t, TaskPair> tasks_;
+    size_t qIndex_{0};
+    std::vector<QueuePtr> queues_;
+    size_t timeoutMs_{0};
+    TaskSet failureSet_;
 };
 
 } // namespace UC

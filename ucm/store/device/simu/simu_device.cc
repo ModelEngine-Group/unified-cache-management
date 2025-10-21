@@ -23,6 +23,7 @@
  * */
 #include "ibuffered_device.h"
 #include "logger/logger.h"
+#include "thread/latch.h"
 #include "thread/thread_pool.h"
 
 namespace UC {
@@ -38,7 +39,19 @@ public:
     {
         auto status = IBufferedDevice::Setup();
         if (status.Failure()) { return status; }
-        if (!this->backend_.Setup([](auto& task) { task(); })) { return Status::Error(); }
+        if (!this->backend_.SetWorkerFn([](auto& task, const auto&) { task(); }).Run()) {
+            return Status::Error();
+        }
+        return Status::OK();
+    }
+    Status H2DSync(std::byte* dst, const std::byte* src, const size_t count) override
+    {
+        std::copy(src, src + count, dst);
+        return Status::OK();
+    }
+    Status D2HSync(std::byte* dst, const std::byte* src, const size_t count) override
+    {
+        std::copy(src, src + count, dst);
         return Status::OK();
     }
     Status H2DAsync(std::byte* dst, const std::byte* src, const size_t count) override
@@ -62,6 +75,13 @@ public:
     Status AppendCallback(std::function<void(bool)> cb) override
     {
         this->backend_.Push([=] { cb(true); });
+        return Status::OK();
+    }
+    virtual Status Synchronized()
+    {
+        Latch waiter{1};
+        this->backend_.Push([&] { waiter.Done(nullptr); });
+        waiter.Wait();
         return Status::OK();
     }
 

@@ -54,21 +54,25 @@ Status File::Access(const std::string& path, const int32_t mode)
 }
 
 Status File::Read(const std::string& path, const size_t offset, const size_t length,
-                  uintptr_t address)
+                  uintptr_t address, const bool directIo)
 {
     FileImpl file{path};
     Status status = Status::OK();
-    if ((status = file.Open(IFile::OpenFlag::READ_ONLY)).Failure()) { return status; }
+    auto flags = directIo ? IFile::OpenFlag::READ_ONLY | IFile::OpenFlag::DIRECT
+                          : IFile::OpenFlag::READ_ONLY;
+    if ((status = file.Open(flags)).Failure()) { return status; }
     if ((status = file.Read((void*)address, length, offset)).Failure()) { return status; }
     return status;
 }
 
 Status File::Write(const std::string& path, const size_t offset, const size_t length,
-                   const uintptr_t address)
+                   const uintptr_t address, const bool directIo)
 {
     FileImpl file{path};
     Status status = Status::OK();
-    if ((status = file.Open(IFile::OpenFlag::WRITE_ONLY)).Failure()) { return status; }
+    auto flags = directIo ? IFile::OpenFlag::WRITE_ONLY | IFile::OpenFlag::DIRECT
+                          : IFile::OpenFlag::WRITE_ONLY;
+    if ((status = file.Open(flags)).Failure()) { return status; }
     if ((status = file.Write((const void*)address, length, offset)).Failure()) { return status; }
     return status;
 }

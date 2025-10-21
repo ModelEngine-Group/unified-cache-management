@@ -27,7 +27,6 @@ import secrets
 from typing import List
 
 import torch
-import torch_npu
 
 from ucm.store.nfsstore.nfsstore_connector import UcmNfsStore
 from ucm.store.ucmstore import UcmKVStoreBase
@@ -52,7 +51,7 @@ def make_buffers(
             torch.rand(
                 [block_dim, block_len],
                 dtype=torch.bfloat16,
-                device="npu:{}".format(device_id),
+                device="cuda:{}".format(device_id),
             )
             for _ in range(block_layer)
         ]
