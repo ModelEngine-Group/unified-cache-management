@@ -6,7 +6,7 @@
 </p>
 
 <p align="center">
-| <a href="https://ucm.readthedocs.io/en/latest"><b>Documentation</b></a> | <a href="https://modelengine-ai.net/#/ucm"><b>Website</b></a> | <a href="https://github.com/ModelEngine-Group/unified-cache-management/issues/78"><b>RoadMap</b></a> | <a href="https://github.com/ModelEngine-Group/unified-cache-management/blob/main/README_zh.md"><b>中文</b></a> |
+| <a href="https://ucm.readthedocs.io/en/latest"><b>Documentation</b></a> | <a href="https://modelengine-ai.net/#/ucm"><b>Website</b></a> | <a href="https://github.com/ModelEngine-Group/unified-cache-management/issues/78"><b>RoadMap</b></a> | <a href="README_zh.md"><b>中文</b></a> |
 </p>
 
 ---
@@ -82,9 +82,10 @@ please refer to [Quick Start](./docs/source/getting-started/quick_start.md).
 ---
 
 ## Contact Us
+1. For technical questions and feature requests, please use GitHub [Issues](https://github.com/ModelEngine-Group/unified-cache-management/issues).
+2. WeChat technical discussion group: Scan the QR code below.
 
-For technical questions and feature requests, please use
-GitHub [Issues](https://github.com/ModelEngine-Group/unified-cache-management/issues).
+<img src="docs/source/_static/images/qrcode_for_wechat.png" alt="wechat-gh" width="40%">
 
 ## License
 
