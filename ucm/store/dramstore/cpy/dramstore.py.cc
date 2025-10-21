@@ -100,9 +100,12 @@ PYBIND11_MODULE(ucmdramstore, module)
     auto store = py::class_<UC::DRAMStorePy>(module, "DRAMStore");
     auto config = py::class_<UC::DRAMStorePy::Config>(store, "Config");
     config.def(py::init<const size_t, const size_t>(), py::arg("ioSize"), py::arg("capacity"));
-    config.def_readwrite("ioSize", &UC::DRAMStorePy::Config::ioSize);
+    // config.def_readwrite("ioSize", &UC::DRAMStorePy::Config::ioSize);
     config.def_readwrite("capacity", &UC::DRAMStorePy::Config::capacity);
+    config.def_readwrite("blockSize", &UC::DRAMStorePy::Config::blockSize);
     config.def_readwrite("deviceId", &UC::DRAMStorePy::Config::deviceId);
+    config.def_readwrite("streamNumber", &UC::DRAMStorePy::Config::streamNumber);
+    config.def_readwrite("timeoutMs", &UC::DRAMStorePy::Config::timeoutMs);
     store.def(py::init<>());
     store.def("CCStoreImpl", &UC::DRAMStorePy::CCStoreImpl);
     store.def("Setup", &UC::DRAMStorePy::Setup);
