@@ -82,19 +82,27 @@ def embed(store: UcmKVStoreBase, hashes: List[str], tensors: List[List[torch.Ten
     store.commit(hashes, True)
 
 
-def store_all_hashes(hashes):
-    # pass
-    kvcache_block_hashes_file = "kvcache_block_hashes.txt"
-    current_directory = os.path.dirname(__file__)
-    file_path = os.path.join(current_directory, kvcache_block_hashes_file)
-    with open(file_path, "w", encoding="utf-8") as file:
-        for hs in hashes:
-            file.write(hs + "\n")
+def fetch(store: UcmKVStoreBase, hashes: List[str], tensors: List[List[torch.Tensor]]):
+    founds = store.lookup(hashes)
+    for found in founds:
+        assert found
+    block_ids = []
+    offsets = []
+    layers = []
+    for hash_id, block in zip(hashes, tensors):
+        offset = 0
+        for layer in block:
+            block_ids.append(hash_id)
+            offsets.append(offset)
+            layers.append(layer)
+            offset += layer.untyped_storage().size()
+    task = store.load(block_ids, offsets, layers)
+    assert task.task_id > 0
+    ret = store.wait(task)
+    assert ret == 0
 
 
 def main():
-    # storage_backends = "."
-    # capacity = 1024 * 1024 * 1024 * 1024
     block_number = 4096
     device_id = 1
     block_dim = 576
@@ -107,16 +115,26 @@ def main():
     stream_number = 10
     timeout_ms = 1000000
     capacity = block_number * block_size * 2
+    batch_number = 64
+
     store = setup_store(capacity, block_size, stream_number, device_id, timeout_ms)
     hashes, tensors = make_buffers(
         block_number, device_id, batch_size, block_dim, block_len, block_layer
     )
     total_batches = (block_number + batch_size - 1) // batch_size
+
     for batch in range(total_batches):
         start = batch_size * batch
         end = min(start + batch_size, block_number)
         embed(store, hashes[start:end], tensors)
-    store_all_hashes(hashes)
+
+    _, new_tensors = make_buffers(
+        block_number, device_id, batch_size, block_dim, block_len, block_layer
+    )
+    for batch in range(batch_number):
+        start = batch_size * batch
+        end = start + batch_size
+        fetch(store, hashes[start:end], tensors)
 
 
 if __name__ == "__main__":

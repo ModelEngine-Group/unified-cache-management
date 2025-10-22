@@ -36,15 +36,15 @@ namespace UC {
 
 class MemoryPool {
 public:
-    MemoryPool(uint32_t capacity, uint32_t blockSize)
+    MemoryPool(size_t capacity, size_t blockSize)
         : pool_(new char[capacity]),
           capacity_(capacity),
           blockSize_(blockSize) {
         if (!pool_) {
             throw std::bad_alloc();
         }
-        uint32_t slotNum = capacity / blockSize;
-        for (uint32_t i = 0; i < slotNum; ++i) {
+        size_t slotNum = capacity / blockSize;
+        for (size_t i = 0; i < slotNum; ++i) {
             // 将所有槽位都预先占好，插入LRU队列中。
             std::string dummy = "__slot_" + std::to_string(i);
             char* addr = pool_ + i * blockSize_;
@@ -100,8 +100,8 @@ public:
 
 private:
     char* pool_ = nullptr;
-    uint32_t capacity_;
-    uint32_t blockSize_;
+    size_t capacity_;
+    size_t blockSize_;
 
     std::unordered_map<std::string, char*> addressMap_;
     std::set<std::string> availableBlocks_;
@@ -138,7 +138,7 @@ private:
         // availableBlocks_.erase(blockId); // 这句大概不需要？
         auto it = addressMap_.find(blockId);
         char* addr = it->second;
-        int32_t offset = static_cast<uint32_t>(addr - pool_);
+        int32_t offset = static_cast<size_t>(addr - pool_);
         std::string dummy = "__slot_" + std::to_string(offset / blockSize_);
         addressMap_.erase(blockId);
 

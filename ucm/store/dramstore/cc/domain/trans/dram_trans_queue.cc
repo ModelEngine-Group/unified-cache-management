@@ -46,7 +46,7 @@ void DramTransQueue::Push(std::list<Task::Shard>& shards) noexcept {
 
 bool DramTransQueue::Init(Device& device) {
     if (this->deviceId_ < 0) { return true; }
-    device = DeviceFactory::Make(this->deviceId_, 0, 0);
+    device = DeviceFactory::Make(this->deviceId_, 262144, 512);
     if (!device) {
         return false;
     }
