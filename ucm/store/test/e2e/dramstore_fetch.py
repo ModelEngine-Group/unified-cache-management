@@ -32,7 +32,9 @@ from ucm.store.dramstore.dramstore_connector import UcmDramStore
 from ucm.store.ucmstore import UcmKVStoreBase
 
 
-def setup_store(capacity, block_size, stream_number, device_id, timeout_ms) -> UcmKVStoreBase:
+def setup_store(
+    capacity, block_size, stream_number, device_id, timeout_ms
+) -> UcmKVStoreBase:
     config = {}
     config["capacity"] = capacity
     config["kv_block_size"] = block_size
