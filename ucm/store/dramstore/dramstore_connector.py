@@ -28,8 +28,8 @@ from typing import Any, Dict, List, Optional
 import torch
 
 from ucm.logger import init_logger
-from ucm.store.ucmstore import Task, UcmKVStoreBase
 from ucm.store.dramstore import ucmdramstore
+from ucm.store.ucmstore import Task, UcmKVStoreBase
 
 logger = init_logger(__name__)
 
@@ -62,16 +62,16 @@ class UcmDramStore(UcmKVStoreBase):
     def __init__(self, config: Dict):
         super().__init__(config)
         self.store = ucmdramstore.DRAMStore()
-        
+
         capacity = int(config.get("capacity", 1073741824))  # Default 1GB
         block_size = int(config.get("kv_block_size", 262144))  # Default 256KB
         stream_number = int(config.get("stream_number", 32))
         timeout_ms = int(config.get("timeout_ms", 30000))
-        
+
         param = ucmdramstore.DRAMStore.Config(
             capacity, block_size, stream_number, timeout_ms
         )
-        
+
         ret = self.store.Setup(param)
         if ret != 0:
             msg = f"Failed to initialize ucmdramstore, errcode: {ret}."
@@ -94,9 +94,7 @@ class UcmDramStore(UcmKVStoreBase):
     ) -> Task:
         dst_tensor_ptr = [t.data_ptr() for t in dst_tensor]
         dst_tensor_size = [t.numel() * t.element_size() for t in dst_tensor]
-        task_id = self.store.Load(
-            block_ids, offset, dst_tensor_ptr, dst_tensor_size
-        )
+        task_id = self.store.Load(block_ids, offset, dst_tensor_ptr, dst_tensor_size)
         return DramTask(task_id=task_id)
 
     def dump(
@@ -104,9 +102,7 @@ class UcmDramStore(UcmKVStoreBase):
     ) -> Task:
         src_tensor_ptr = [t.data_ptr() for t in src_tensor]
         src_tensor_size = [t.numel() * t.element_size() for t in src_tensor]
-        task_id = self.store.Dump(
-            block_ids, offset, src_tensor_ptr, src_tensor_size
-        )
+        task_id = self.store.Dump(block_ids, offset, src_tensor_ptr, src_tensor_size)
         return DramTask(task_id=task_id)
 
     def fetch_data(
