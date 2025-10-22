@@ -1,22 +1,22 @@
-From b837d3d46e593c946f5de70bdff178fa2bff882b Mon Sep 17 00:00:00 2001
-From: root <fenghao78@huawei.com>
-Date: Mon, 15 Sep 2025 22:07:21 -0700
-Subject: [PATCH] 0.9.1-patch
+From 76751cae43498d693a7a6dd2c8ec4b2d40672385 Mon Sep 17 00:00:00 2001
+From: zhou-haitao <1300182097@qq.com>
+Date: Tue, 21 Oct 2025 03:31:16 -0700
+Subject: [PATCH] Add commit
 
 ---
  .../kv_transfer/kv_connector/utils.py         | 113 +++++++++++++++
  .../kv_transfer/kv_connector/v1/base.py       |   8 ++
  .../v1/shared_storage_connector.py            |   7 +-
  vllm/v1/core/block_pool.py                    |   2 +-
- vllm/v1/core/sched/scheduler.py               | 129 ++++++++++++++++++
+ vllm/v1/core/sched/scheduler.py               | 132 ++++++++++++++++++
  vllm/v1/core/single_type_kv_cache_manager.py  |   2 +
  vllm/v1/executor/multiproc_executor.py        |  37 ++++-
  vllm/v1/outputs.py                            |   5 +
  vllm/v1/request.py                            |   1 +
  vllm/v1/worker/gpu_input_batch.py             |   9 ++
  vllm/v1/worker/gpu_model_runner.py            |  52 ++++++-
- vllm/v1/worker/gpu_worker.py                  |  23 +++-
- 12 files changed, 366 insertions(+), 22 deletions(-)
+ vllm/v1/worker/gpu_worker.py                  |  23 ++-
+ 12 files changed, 369 insertions(+), 22 deletions(-)
 
 diff --git a/vllm/distributed/kv_transfer/kv_connector/utils.py b/vllm/distributed/kv_transfer/kv_connector/utils.py
 index b9bed06d7..de062cfb3 100644
@@ -211,7 +211,7 @@ index d21f94727..1800665c7 100644
          new_full_blocks = blocks[num_cached_blocks:num_full_blocks]
          assert len(block_hashes) >= num_cached_blocks
 diff --git a/vllm/v1/core/sched/scheduler.py b/vllm/v1/core/sched/scheduler.py
-index 3d7bbe7e0..1ef81e960 100644
+index 3d7bbe7e0..b6d4a340a 100644
 --- a/vllm/v1/core/sched/scheduler.py
 +++ b/vllm/v1/core/sched/scheduler.py
 @@ -707,16 +707,28 @@ class Scheduler(SchedulerInterface):
@@ -243,16 +243,19 @@ index 3d7bbe7e0..1ef81e960 100644
              num_tokens_scheduled = num_scheduled_tokens.get(req_id, 0)
              if num_tokens_scheduled == 0:
                  # The request was not scheduled in this step.
-@@ -761,6 +773,8 @@ class Scheduler(SchedulerInterface):
+@@ -761,6 +773,11 @@ class Scheduler(SchedulerInterface):
              new_logprobs = None
              new_token_ids = generated_token_ids
              kv_transfer_params = None
 +            if model_runner_output.finished_dumping is not None:
 +                request.succeed_dumped_blocks.extend(model_runner_output.finished_dumping.get(req_id, []))
++                is_prefill = request.num_output_tokens == 0
++                if is_prefill:
++                    self.connector.connector.commit(model_runner_output.finished_dumping.get(req_id, []), True)
  
              # Append generated tokens and check for stop. Note that if
              # a request is still being prefilled, we expect the model runner
-@@ -824,6 +838,8 @@ class Scheduler(SchedulerInterface):
+@@ -824,6 +841,8 @@ class Scheduler(SchedulerInterface):
  
              if not stopped:
                  new_running.append(request)
@@ -261,7 +264,7 @@ index 3d7bbe7e0..1ef81e960 100644
  
          # KV Connector: update state for finished KV Transfers.
          self._update_from_kv_xfer_finished(model_runner_output)
-@@ -1042,3 +1058,116 @@ class Scheduler(SchedulerInterface):
+@@ -1042,3 +1061,116 @@ class Scheduler(SchedulerInterface):
          for req_id in (model_runner_output.finished_sending or ()):
              logger.debug("Finished sending KV transfer for request %s", req_id)
              self._free_blocks(self.requests[req_id])
@@ -708,3 +711,4 @@ index b7d244f27..263a916d2 100644
          if self.profiler is None:
 -- 
 2.34.1
+
