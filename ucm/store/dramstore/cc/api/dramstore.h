@@ -39,8 +39,8 @@ public:
         int32_t deviceId;
         size_t streamNumber;
         size_t timeoutMs;
-        Config(const size_t capacity, const size_t blockSize, const size_t streamNumber, const size_t timeoutMs)
-            : capacity{capacity}, blockSize{blockSize}, deviceId{-1}, streamNumber{streamNumber}, timeoutMs{timeoutMs}
+        Config(const size_t capacity, const size_t blockSize, const int32_t deviceId, const size_t streamNumber, const size_t timeoutMs)
+            : capacity{capacity}, blockSize{blockSize}, deviceId{deviceId}, streamNumber{streamNumber}, timeoutMs{timeoutMs}
         {
         }
     };
