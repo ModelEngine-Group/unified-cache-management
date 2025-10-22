@@ -33,11 +33,11 @@
 
 namespace UC {
 
-template <class Task>
+template <class Task, class WorkerArgs = void*>
 class ThreadPool {
-    using WorkerInitFn = std::function<bool(void)>;
-    using WorkerFn = std::function<void(Task&)>;
-    using WorkerExitFn = std::function<void(void)>;
+    using WorkerInitFn = std::function<bool(WorkerArgs&)>;
+    using WorkerFn = std::function<void(Task&, const WorkerArgs&)>;
+    using WorkerExitFn = std::function<void(WorkerArgs&)>;
 
 public:
     ThreadPool() = default;
@@ -54,14 +54,31 @@ public:
             if (w.joinable()) { w.join(); }
         }
     }
-    bool Setup(
-        WorkerFn&& fn, WorkerInitFn&& initFn = [] { return true; }, WorkerExitFn&& exitFn = [] {},
-        const size_t nWorker = 1) noexcept
+    ThreadPool& SetWorkerFn(WorkerFn&& fn)
     {
-        this->initFn_ = initFn;
-        this->fn_ = fn;
-        this->exitFn_ = exitFn;
-        std::list<std::promise<bool>> start(nWorker);
+        this->fn_ = std::move(fn);
+        return *this;
+    }
+    ThreadPool& SetWorkerInitFn(WorkerInitFn&& fn)
+    {
+        this->initFn_ = std::move(fn);
+        return *this;
+    }
+    ThreadPool& SetWorkerExitFn(WorkerExitFn&& fn)
+    {
+        this->exitFn_ = std::move(fn);
+        return *this;
+    }
+    ThreadPool& SetNWorker(const size_t nWorker)
+    {
+        this->nWorker_ = nWorker;
+        return *this;
+    }
+    bool Run()
+    {
+        if (this->nWorker_ == 0) { return false; }
+        if (!this->fn_) { return false; }
+        std::list<std::promise<bool>> start(this->nWorker_);
         std::list<std::future<bool>> fut;
         for (auto& s : start) {
             fut.push_back(s.get_future());
@@ -89,24 +106,26 @@ public:
 private:
     void Worker(std::promise<bool>& started) noexcept
     {
-        auto success = this->initFn_();
+        WorkerArgs args = nullptr;
+        auto success = true;
+        if (this->initFn_) { success = this->initFn_(args); }
         started.set_value(success);
         while (success) {
-            Task task;
             std::unique_lock<std::mutex> lk(this->mtx_);
             this->cv_.wait(lk, [this] { return this->stop_ || !this->taskQ_.empty(); });
             if (this->stop_) { break; }
             if (this->taskQ_.empty()) { continue; }
-            task = std::move(this->taskQ_.front());
+            auto task = std::make_shared<Task>(std::move(this->taskQ_.front()));
             this->taskQ_.pop_front();
             lk.unlock();
-            this->fn_(task);
+            this->fn_(*task, args);
         }
-        this->exitFn_();
+        if (this->exitFn_) { this->exitFn_(args); }
     }
 
 private:
     bool stop_{false};
+    size_t nWorker_{1};
     std::list<std::thread> workers_;
     WorkerInitFn initFn_;
     WorkerFn fn_;

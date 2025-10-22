@@ -62,7 +62,10 @@ KVStoreBase有助于实现稀疏算法与外部存储的解耦。它定义了与
 ---
 
 ## 联系我们
-如需技术咨询或功能请求，请提交 GitHub [Issues](https://github.com/ModelEngine-Group/unified-cache-management/issues).
+1. 如需技术咨询或功能请求，请提交 GitHub [Issues](https://github.com/ModelEngine-Group/unified-cache-management/issues)。
+2. 微信技术交流群：扫描下方二维码。
+
+<img src="docs/source/_static/images/qrcode_for_wechat.png" alt="wechat-gh" width="40%">
 
 ## 许可协议
 
