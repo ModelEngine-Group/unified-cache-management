@@ -95,20 +95,20 @@ Status SpaceManager::CommitBlock(const std::string& blockId, bool success) const
 {
     const auto activatedParent = this->layout_->DataFileParent(blockId, true);
     const auto activatedFile = this->layout_->DataFilePath(blockId, true);
+    const auto archivedParent = this->layout_->DataFileParent(blockId, false);
     auto status = Status::OK();
     do {
         if (!success) { break; }
-        const auto archivedParent = this->layout_->DataFileParent(blockId, false);
-        const auto archivedFile = this->layout_->DataFilePath(blockId, false);
         if (archivedParent != activatedParent) {
             status = File::MkDir(archivedParent);
             if (status == Status::DuplicateKey()) { status = Status::OK(); }
             if (status.Failure()) { break; }
         }
+        const auto archivedFile = this->layout_->DataFilePath(blockId, false);
         status = File::Rename(activatedFile, archivedFile);
     } while (0);
     File::Remove(activatedFile);
-    File::RmDir(activatedParent);
+    if (!success || archivedParent != activatedParent) { File::RmDir(activatedParent); }
     if (status.Failure()) {
         UC_ERROR("Failed({}) to {} block({}).", status, success ? "commit" : "cancel", blockId);
     }
