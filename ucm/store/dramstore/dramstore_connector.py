@@ -65,7 +65,7 @@ class UcmDramStore(UcmKVStoreBase):
 
         capacity = int(config.get("capacity", 1073741824))  # Default 1GB
         block_size = int(config.get("kv_block_size", 262144))  # Default 256KB
-        device_id = int(config.get("device_id", 0))
+        device_id = int(config.get("device_id", -1))
         stream_number = int(config.get("stream_number", 32))
         timeout_ms = int(config.get("timeout_ms", 30000))
 
