@@ -68,7 +68,7 @@ public:
     }
 
     ~MemoryPool() {
-        delete[] pool_;
+        // delete[] pool_;
     }
 
     MemoryPool(const MemoryPool&) = delete;
