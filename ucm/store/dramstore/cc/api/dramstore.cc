@@ -35,7 +35,7 @@ public:
         // 这里如何传入参数，待讨论
         // int32_t capacity = 14400;
         // int32_t blockSize = 144;
-        this->memPool_ = std::make_unique<MemoryPool>(config.capacity, config.blockSize).release();
+        this->memPool_ = std::make_unique<MemoryPool>(config.deviceId, config.capacity, config.blockSize).release();
         // int32_t deviceId = 1;
         // int32_t streamNumber = 10;
         // int32_t timeoutMs = 10000;

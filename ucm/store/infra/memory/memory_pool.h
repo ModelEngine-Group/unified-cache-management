@@ -31,15 +31,20 @@
 #include <unordered_map>
 #include <set>
 #include "status/status.h"
+#include "device/idevice.h"
 
 namespace UC {
 
 class MemoryPool {
+    using Device = std::unique_ptr<IDevice>;
 public:
-    MemoryPool(size_t capacity, size_t blockSize)
-        : pool_(new char[capacity]),
-          capacity_(capacity),
-          blockSize_(blockSize) {
+    MemoryPool(int32_t deviceId, size_t capacity, size_t blockSize) {
+        capacity_ = capacity;
+        blockSize_ = blockSize;
+        // pool_ = new char[capacity];
+        device_ = DeviceFactory::Make(this->deviceId_, 262144, 512); // 后面两个应该都传0，之后再想怎么优化
+        pool_ = device_->MakeBuffer(capacity_);
+
         if (!pool_) {
             throw std::bad_alloc();
         }
@@ -100,6 +105,7 @@ public:
 
 private:
     char* pool_ = nullptr;
+    Device device_ = nullptr;
     size_t capacity_;
     size_t blockSize_;
 
