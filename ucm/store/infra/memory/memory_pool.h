@@ -50,7 +50,7 @@ public:
         if (!success.Success()) {
             throw std::runtime_error("MemoryPool::MemoryPool() failed due to failure to setup device");
         }
-        pool_ = static_cast<char*>(device_->GetBuffer(capacity_));
+        pool_ = static_cast<char*>(device_->GetBuffer(capacity_).get());
 
         if (!pool_) {
             throw std::bad_alloc();
