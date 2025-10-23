@@ -42,7 +42,7 @@ public:
         capacity_ = capacity;
         blockSize_ = blockSize;
         // pool_ = new char[capacity];
-        device_ = DeviceFactory::Make(this->deviceId_, 262144, 512); // 后面两个应该都传0，之后再想怎么优化
+        device_ = DeviceFactory::Make(deviceId, 262144, 512); // 后面两个应该都传0，之后再想怎么优化
         pool_ = device_->MakeBuffer(capacity_);
 
         if (!pool_) {

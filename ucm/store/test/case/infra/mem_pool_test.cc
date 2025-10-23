@@ -29,7 +29,7 @@ class UCMemoryPoolTest : public ::testing::Test {};
 
 TEST_F(UCMemoryPoolTest, NewBlockAllocateAndCommit)
 {
-    UC::MemoryPool memPool(10, 2); // 初始化内存池
+    UC::MemoryPool memPool(-1, 10, 2); // 初始化内存池
     const std::string block1 = "block1";
     ASSERT_FALSE(memPool.LookupBlock(block1));
     ASSERT_EQ(memPool.GetAddress(block1), nullptr);
@@ -43,7 +43,7 @@ TEST_F(UCMemoryPoolTest, NewBlockAllocateAndCommit)
 
 TEST_F(UCMemoryPoolTest, EvictOldBlock)
 {
-    UC::MemoryPool memPool(10, 5); // 初始化内存池
+    UC::MemoryPool memPool(-1, 10, 5); // 初始化内存池
     const std::string block1 = "block1";
     const std::string block2 = "block2";
     const std::string block3 = "block3";
@@ -64,7 +64,7 @@ TEST_F(UCMemoryPoolTest, EvictOldBlock)
 
 TEST_F(UCMemoryPoolTest, OldBlockCommitFalse)
 {
-    UC::MemoryPool memPool(32, 8); // 初始化内存池
+    UC::MemoryPool memPool(-1, 32, 8); // 初始化内存池
     const std::string block1 = "block1";
     const std::string block2 = "block2";
     const std::string block3 = "block3";
@@ -105,7 +105,7 @@ TEST_F(UCMemoryPoolTest, OldBlockCommitFalse)
 
 TEST_F(UCMemoryPoolTest, NoCommittedBlock)
 {
-    UC::MemoryPool memPool(32, 8); // 初始化内存池
+    UC::MemoryPool memPool(-1, 32, 8); // 初始化内存池
     const std::string block1 = "block1";
     const std::string block2 = "block2";
     const std::string block3 = "block3";
