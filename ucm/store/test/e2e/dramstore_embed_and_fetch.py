@@ -131,7 +131,7 @@ def main():
     _, new_tensors = make_buffers(
         block_number, device_id, batch_size, block_dim, block_len, block_layer
     )
-    for batch in range(batch_number):
+    for batch in range(total_batches):
         start = batch_size * batch
         end = start + batch_size
         fetch(store, hashes[start:end], new_tensors)
