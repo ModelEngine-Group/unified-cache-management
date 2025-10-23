@@ -134,7 +134,7 @@ def main():
     for batch in range(batch_number):
         start = batch_size * batch
         end = start + batch_size
-        fetch(store, hashes[start:end], tensors)
+        fetch(store, hashes[start:end], new_tensors)
 
 
 if __name__ == "__main__":
