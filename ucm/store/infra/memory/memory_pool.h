@@ -42,8 +42,15 @@ public:
         capacity_ = capacity;
         blockSize_ = blockSize;
         // pool_ = new char[capacity];
-        device_ = DeviceFactory::Make(deviceId, 262144, 512); // 后面两个应该都传0，之后再想怎么优化
-        pool_ = device_->MakeBuffer(capacity_);
+        device_ = DeviceFactory::Make(deviceId, blockSize, static_cast<int>(capacity / blockSize)); // 大小是内存池的总容量大小
+        if (!device_) {
+            throw std::runtime_error("MemoryPool::MemoryPool() failed due to failure to initialize device");
+        }
+        Status success = device_->Setup();
+        if (!success.Success()) {
+            throw std::runtime_error("MemoryPool::MemoryPool() failed due to failure to setup device");
+        }
+        pool_ = device_->GetBuffer();
 
         if (!pool_) {
             throw std::bad_alloc();
