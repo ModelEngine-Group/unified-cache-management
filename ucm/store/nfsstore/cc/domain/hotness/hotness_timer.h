@@ -21,38 +21,33 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  * */
-#ifndef UNIFIEDCACHE_POSIX_FILE_H
-#define UNIFIEDCACHE_POSIX_FILE_H
 
-#include "ifile.h"
+#ifndef UNIFIEDCACHE_HOTNESS_TIMER_H
+#define UNIFIEDCACHE_HOTNESS_TIMER_H
+#include <chrono>
+#include <functional>
+#include "template/timer.h"
 
 namespace UC {
 
-class PosixFile : public IFile {
+class HotnessTimer {
 public:
-    PosixFile(const std::string& path) : IFile{path}, handle_{-1} {}
-    ~PosixFile() override;
-    Status MkDir() override;
-    Status RmDir() override;
-    Status Rename(const std::string& newName) override;
-    Status Access(const int32_t mode) override;
-    Status Open(const uint32_t flags) override;
-    void Close() override;
-    void Remove() override;
-    Status Read(void* buffer, size_t size, off64_t offset = -1) override;
-    Status Write(const void* buffer, size_t size, off64_t offset = -1) override;
-    Status Truncate(size_t length) override;
-    Status Stat(FileStat& st) override;
-    Status ShmOpen(const uint32_t flags) override;
-    Status MMap(void*& addr, size_t size, bool write, bool read, bool shared) override;
-    void MUnmap(void* addr, size_t size) override;
-    void ShmUnlink() override;
-    Status UpdateTime() override;
-
+   void SetInterval(const size_t interval) { this->interval_ = std::chrono::seconds(interval); }
+   Status Start(std::function<void()> callable) 
+   {
+        try {
+            this->timer_ = std::make_unique<Timer<std::function<void()>>>(this->interval_, std::move(callable));  
+        } catch (const std::exception& e) {
+            UC_ERROR("Failed({}) to start hotness timer.", e.what());
+            return Status::OutOfMemory();
+        }
+        return this->timer_->Start(); 
+   }
 private:
-    int32_t handle_;
+    std::chrono::seconds interval_;
+    std::unique_ptr<Timer<std::function<void()>>> timer_;
 };
 
 } // namespace UC
 
-#endif // UNIFIEDCACHE_POSIX_FILE_H
+#endif

@@ -26,6 +26,7 @@
 #include "logger/logger.h"
 #include "space/space_manager.h"
 #include "trans/trans_manager.h"
+#include "hotness/hotness_manager.h"
 
 namespace UC {
 
@@ -49,6 +50,13 @@ public:
                 return status.Underlying();
             }
         }
+        if (config.hotnessEnable) {
+            status = this->hotnessMgr_.Setup(config.hotnessInterval, this->spaceMgr_.GetSpaceLayout());
+            if (status.Failure()) {
+                UC_ERROR("Failed({}) to setup HotnessManager.", status);
+                return status.Underlying();
+            }
+        }
         this->ShowConfig(config);
         return Status::OK().Underlying();
     }
@@ -56,7 +64,12 @@ public:
     {
         return this->spaceMgr_.NewBlock(block).Underlying();
     }
-    bool Lookup(const std::string& block) override { return this->spaceMgr_.LookupBlock(block); }
+    bool Lookup(const std::string& block) override
+    {
+        auto found = this->spaceMgr_.LookupBlock(block);
+        if (found) { this->hotnessMgr_.Visit(block); }
+        return found;
+    }
     void Commit(const std::string& block, const bool success) override
     {
         this->spaceMgr_.CommitBlock(block, success);
@@ -105,11 +118,14 @@ private:
         UC_INFO("Set UC::BufferNumber to {}.", config.transferBufferNumber);
         UC_INFO("Set UC::TimeoutMs to {}.", config.transferTimeoutMs);
         UC_INFO("Set UC::TempDumpDirEnable to {}.", config.tempDumpDirEnable);
+        UC_INFO("Set UC::HotnessInterval to {}.", config.hotnessInterval);
+        UC_INFO("Set UC::HotnessEnable to {}.", config.hotnessEnable);
     }
 
 private:
     SpaceManager spaceMgr_;
     TransManager transMgr_;
+    HotnessManager hotnessMgr_;
 };
 
 int32_t NFSStore::Setup(const Config& config)
