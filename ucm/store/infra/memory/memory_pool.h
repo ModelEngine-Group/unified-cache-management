@@ -32,6 +32,7 @@
 #include <set>
 #include "status/status.h"
 #include "device/idevice.h"
+#include <stdexcept>
 
 namespace UC {
 
