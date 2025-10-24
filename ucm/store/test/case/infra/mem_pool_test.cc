@@ -31,11 +31,14 @@ TEST_F(UCMemoryPoolTest, NewBlockAllocateAndCommit)
 {
     UC::MemoryPool memPool(-1, 10, 2); // 初始化内存池
     const std::string block1 = "block1";
+    size_t* offset = nullptr;
     ASSERT_FALSE(memPool.LookupBlock(block1));
-    ASSERT_EQ(memPool.GetOffset(block1), nullptr);
+    // ASSERT_EQ(memPool.GetOffset(block1), nullptr);
+    ASSERT_EQ(memPool.GetOffset(block1, offset), false);
     ASSERT_EQ(memPool.NewBlock(block1), UC::Status::OK());
     ASSERT_FALSE(memPool.LookupBlock(block1));
-    ASSERT_NE(memPool.GetOffset(block1), nullptr);
+    // ASSERT_NE(memPool.GetOffset(block1), nullptr);
+    ASSERT_EQ(memPool.GetOffset(block1, offset), true);
     ASSERT_EQ(memPool.NewBlock(block1), UC::Status::DuplicateKey());
     ASSERT_EQ(memPool.CommitBlock(block1, true), UC::Status::OK());
     ASSERT_TRUE(memPool.LookupBlock(block1));
