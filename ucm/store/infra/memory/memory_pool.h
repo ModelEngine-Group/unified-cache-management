@@ -94,7 +94,7 @@ public:
         return availableBlocks_.count(blockId);
     }
 
-    bool GetOffest(const std::string& blockId, size_t* offset) const {
+    bool GetOffset(const std::string& blockId, size_t* offset) const {
         auto it = offsetMap_.find(blockId);
         if (it == offsetMap_.end()) {
             return false;
