@@ -75,7 +75,7 @@ void DramTransQueue::Work(Task::Shard& shard, const Device& device) {
 Status DramTransQueue::H2D(Task::Shard& shard, const Device& device) {
     // auto block_addr = this->memPool_->GetAddress(shard.block);
     size_t* pool_offset = nullptr;
-    bool found = this->memPool_->GetOffset(shard.block, *pool_offset);
+    bool found = this->memPool_->GetOffset(shard.block, pool_offset);
     if (!found) {
         return Status::Error();
     }
@@ -86,7 +86,7 @@ Status DramTransQueue::H2D(Task::Shard& shard, const Device& device) {
 Status DramTransQueue::D2H(Task::Shard& shard, const Device& device) {
     // auto block_addr = this->memPool_->GetAddress(shard.block);
     size_t* pool_offset = nullptr;
-    bool found = this->memPool_->GetOffset(shard.block, *pool_offset);
+    bool found = this->memPool_->GetOffset(shard.block, pool_offset);
     if (!found) {
         return Status::Error();
     }
