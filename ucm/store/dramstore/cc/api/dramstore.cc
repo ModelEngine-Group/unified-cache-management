@@ -21,86 +21,152 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  * */
-#include "dramstore.h"
-#include "logger/logger.h"
+#ifndef UNIFIEDCACHE_MEMORY_POOL_H
+#define UNIFIEDCACHE_MEMORY_POOL_H
+
+#include <cstddef>
+#include <cstdlib>
+#include <string>
+#include <list>
+#include <unordered_map>
+#include <set>
 #include "status/status.h"
-#include "trans/dram_trans_manager.h"
-#include "memory/memory_pool.h"
+#include "device/idevice.h"
+#include <stdexcept>
+#include <iostream>
+#include <memory>
 
 namespace UC {
 
-class DRAMStoreImpl : public DRAMStore {
+class MemoryPool {
+    using Device = std::unique_ptr<IDevice>;
 public:
-    int32_t Setup(const Config& config) {
-        // 这里如何传入参数，待讨论
-        // int32_t capacity = 14400;
-        // int32_t blockSize = 144;
-        this->memPool_ = std::make_unique<MemoryPool>(config.deviceId, config.capacity, config.blockSize).release();
-        // int32_t deviceId = 1;
-        // int32_t streamNumber = 10;
-        // int32_t timeoutMs = 10000;
-        auto status = this->transMgr_.Setup(config.deviceId, config.streamNumber, this->memPool_, config.timeoutMs);
-        if (status.Failure()) {
-            UC_ERROR("Failed({}) to setup TsfTaskManager.", status);
-            return status.Underlying();
+    MemoryPool(int32_t deviceId, size_t capacity, size_t blockSize) {
+        capacity_ = capacity;
+        blockSize_ = blockSize;
+        device_ = DeviceFactory::Make(deviceId, blockSize, static_cast<int>(capacity / blockSize)); // 大小是内存池的总容量大小
+        if (!device_) {
+            throw std::runtime_error("MemoryPool::MemoryPool() failed due to failure to initialize device");
         }
-        return Status::OK().Underlying();
-    }
-    int32_t Alloc(const std::string& block) override { return this->memPool_->NewBlock(block).Underlying(); }
-    bool Lookup(const std::string& block) override { return this->memPool_->LookupBlock(block); }
-    void Commit(const std::string& block, const bool success) override { this->memPool_->CommitBlock(block, success).Underlying(); }
-    std::list<int32_t> Alloc(const std::list<std::string>& blocks) override
-    {
-        std::list<int32_t> results;
-        for (const auto &block : blocks) {
-            results.emplace_back(this->Alloc(block));
+        Status success = device_->Setup();
+        if (!success.Success()) {
+            throw std::runtime_error("MemoryPool::MemoryPool() failed due to failure to setup device");
         }
-        return results;
-    }
-    std::list<bool> Lookup(const std::list<std::string>& blocks) override
-    {
-        std::list<bool> founds;
-        for (const auto &block : blocks) {
-            founds.emplace_back(this->Lookup(block));
-        }
-        return founds;
-    }
-    void Commit(const std::list<std::string>& blocks, const bool success) override {
-        for (const auto &block : blocks) {
-            this->Commit(block, success);
-        }
-    }
-    size_t Submit(Task&& task) override {
-        auto taskId = Task::invalid;
-        auto status = this->transMgr_.Submit(std::move(task), taskId);
-        if (status.Failure()) { taskId = Task::invalid; }
-        return taskId;    }
+        pool_ = device_->GetBuffer(capacity_).get();
 
-    int32_t Wait(const size_t task) override {
-        return this->transMgr_.Wait(task).Underlying();
+        if (!pool_) {
+            throw std::bad_alloc();
+        }
+        size_t slotNum = capacity / blockSize;
+        for (size_t i = 0; i < slotNum; ++i) {
+            // 将所有槽位都预先占好，插入LRU队列中。
+            std::string dummy = "__slot_" + std::to_string(i);
+            std::byte* addr = pool_ + i * blockSize_;
+            lruList_.push_front(dummy);
+            lruIndex_[dummy] = lruList_.begin();
+            addressMap_[dummy] = addr;
+        }
     }
 
-    int32_t Check(const size_t task, bool& finish) override {
-        return this->transMgr_.Check(task, finish).Underlying();
+    ~MemoryPool() {
+        // delete[] pool_;
     }
 
+    MemoryPool(const MemoryPool&) = delete;
+    MemoryPool& operator=(const MemoryPool&) = delete;
+
+    Status NewBlock(const std::string& blockId) {
+        if (addressMap_.count(blockId)) {
+            return Status::DuplicateKey();
+        }
+        if (lruList_.empty()) {
+            // 所有空间里的块都正在写，那么就不能够分配
+            return Status::Error();
+        }
+        std::byte* addr = LRUEvictOne();
+        addressMap_[blockId] = addr;
+        return Status::OK();
+    }
+
+    bool LookupBlock(const std::string& blockId) const {
+        return availableBlocks_.count(blockId);
+    }
+
+    std::byte* GetAddress(const std::string& blockId) const {
+        auto it = addressMap_.find(blockId);
+        return it == addressMap_.end() ? nullptr : it->second;
+    }
+
+    Status CommitBlock(const std::string& blockId, bool success) {
+        if (success) {
+            availableBlocks_.insert(blockId);
+            touchUnsafe(blockId);
+        } else {
+            resetSpaceOfBlock(blockId);
+        }
+        return Status::OK();
+    }
+
+    // 单元测试用，外部应该用不到
+    std::byte* GetFirstAddr() {
+        return pool_;
+    }
 
 private:
+    std::byte* pool_ = nullptr;
+    Device device_ = nullptr;
+    size_t capacity_;
+    size_t blockSize_;
 
-    DramTransManager transMgr_;
-    MemoryPool* memPool_;
+    std::unordered_map<std::string, std::byte*> addressMap_;
+    std::set<std::string> availableBlocks_;
 
+    using ListType = std::list<std::string>;
+    ListType lruList_;
+    std::unordered_map<std::string, ListType::iterator> lruIndex_;
+
+    void touchUnsafe(const std::string& blockId) {
+        auto it = lruIndex_.find(blockId);
+        if (it != lruIndex_.end()) {
+            lruList_.splice(lruList_.begin(), lruList_, it->second);
+        }
+        else {
+            lruList_.push_front(blockId); // 访问一次，该块就是最近使用了的，所以放到LRU队列的头部。这就是一般LRU的逻辑
+            lruIndex_[blockId] = lruList_.begin();
+        }
+    }
+
+    std::byte* LRUEvictOne() {
+        const std::string& victim = lruList_.back();
+        // 真实数据块，才从availableBlocks_中删掉
+        if (victim.rfind("__slot_", 0) != 0) {
+            availableBlocks_.erase(victim);
+        }
+        std::byte* addr = addressMap_[victim];
+        addressMap_.erase(victim);
+        lruIndex_.erase(victim);
+        lruList_.pop_back();
+        return addr;
+    }
+
+    void resetSpaceOfBlock(const std::string& blockId) {
+        // availableBlocks_.erase(blockId); // 这句大概不需要？
+        auto it = addressMap_.find(blockId);
+        std::byte* addr = it->second;
+        int32_t offset = static_cast<size_t>(addr - pool_);
+        std::string dummy = "__slot_" + std::to_string(offset / blockSize_);
+        addressMap_.erase(blockId);
+
+        auto lit = lruIndex_.find(blockId);
+        if (lit != lruIndex_.end()) {
+            lruList_.erase(lit->second);
+            lruIndex_.erase(lit);
+        }
+        lruList_.push_back(dummy); // 将一个块commit false后，回收之前分配的内存，并且要将其放到LRU队列的尾部（下次可以写的时候，要马上就写。因为该块的优先级高于已经写了的块）
+        lruIndex_[dummy] = std::prev(lruList_.end());
+        addressMap_[dummy] = addr;
+    }
 };
 
-int32_t DRAMStore::Setup(const Config& config)
-{
-    auto impl = new (std::nothrow) DRAMStoreImpl();
-    if (!impl) {
-        UC_ERROR("Out of memory.");
-        return Status::OutOfMemory().Underlying();
-    }
-    this->impl_ = impl;
-    return impl->Setup(config);
-}
-
 } // namespace UC
+#endif
