@@ -21,6 +21,21 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  * */
+#ifndef UNIFIEDCACHE_MEMORY_POOL_H
+#define UNIFIEDCACHE_MEMORY_POOL_H
+
+#include <cstddef>
+#include <cstdlib>
+#include <string>
+#include <list>
+#include <unordered_map>
+#include <set>
+#include "status/status.h"
+#include "device/idevice.h"
+#include <stdexcept>
+#include <iostream>
+#include <memory>
+
 namespace UC {
 
 class MemoryPool {
