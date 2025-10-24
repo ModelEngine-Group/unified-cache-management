@@ -21,14 +21,38 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  * */
-#ifndef UNIFIEDCACHE_TASK_SET_H
-#define UNIFIEDCACHE_TASK_SET_H
+#ifndef UNIFIEDCACHE_TSF_TASK_MANAGER_H
+#define UNIFIEDCACHE_TSF_TASK_MANAGER_H
 
-#include "template/hashset.h"
+#include <memory>
+#include <unordered_map>
+#include <vector>
+#include "tsf_task_queue.h"
 
 namespace UC {
 
-class TaskSet : public HashSet<size_t> {};
+class TsfTaskManager {
+public:
+    Status Setup(const int32_t deviceId, const size_t streamNumber, const size_t bufferSize,
+                 const size_t bufferNumber, const size_t timeoutMs, const SpaceLayout* layout);
+    Status Submit(std::list<TsfTask>& tasks, const size_t size, const size_t number,
+                  const std::string& brief, size_t& taskId);
+    Status Wait(const size_t taskId);
+    Status Check(const size_t taskId, bool& finish);
+
+private:
+    void Dispatch(std::list<TsfTask>& tasks, std::vector<std::list<TsfTask>>& targets,
+                  const size_t taskId, std::shared_ptr<TsfTaskWaiter> waiter) const;
+
+private:
+    std::mutex _mutex;
+    TsfTaskSet _failureSet;
+    std::unordered_map<size_t, std::shared_ptr<TsfTaskWaiter>> _waiters;
+    std::vector<std::unique_ptr<TsfTaskQueue>> _queues;
+    size_t _qIdx{0};
+    size_t _taskIdSeed{0};
+    size_t _timeoutMs{0};
+};
 
 } // namespace UC
 

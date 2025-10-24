@@ -56,30 +56,31 @@ public:
     size_t Load(const py::list& blockIds, const py::list& offsets, const py::list& addresses,
                 const py::list& lengths)
     {
-        return this->SubmitPy(blockIds, offsets, addresses, lengths, Task::Type::LOAD,
-                              Task::Location::DEVICE, "DRAM::H2D");
+        return this->SubmitPy(blockIds, offsets, addresses, lengths, CCStore::Task::Type::LOAD,
+                              CCStore::Task::Location::DEVICE, "DRAM::H2D");
     }
     size_t Dump(const py::list& blockIds, const py::list& offsets, const py::list& addresses,
                 const py::list& lengths)
     {
-        return this->SubmitPy(blockIds, offsets, addresses, lengths, Task::Type::DUMP,
-                              Task::Location::DEVICE, "DRAM::D2H");
+        return this->SubmitPy(blockIds, offsets, addresses, lengths, CCStore::Task::Type::DUMP,
+                              CCStore::Task::Location::DEVICE, "DRAM::D2H");
     }
 
 private:
     size_t SubmitPy(const py::list& blockIds, const py::list& offsets, const py::list& addresses,
-                    const py::list& lengths, Task::Type&& type, Task::Location&& location,
-                    std::string&& brief)
+                    const py::list& lengths, const CCStore::Task::Type type,
+                    const CCStore::Task::Location location, const std::string& brief)
     {
-        Task task{std::move(type), std::move(location), std::move(brief)};
+        CCStore::Task task{type, location, brief};
         auto blockId = blockIds.begin();
         auto offset = offsets.begin();
         auto address = addresses.begin();
         auto length = lengths.begin();
         while ((blockId != blockIds.end()) && (offset != offsets.end()) &&
                (address != addresses.end()) && (length != lengths.end())) {
-            task.Append(blockId->cast<std::string>(), offset->cast<size_t>(),
-                        address->cast<uintptr_t>(), length->cast<size_t>());
+            auto ret = task.Append(blockId->cast<std::string>(), offset->cast<size_t>(),
+                                   address->cast<uintptr_t>(), length->cast<size_t>());
+            if (ret != 0) { return CCStore::invalidTaskId; }
             blockId++;
             offset++;
             address++;

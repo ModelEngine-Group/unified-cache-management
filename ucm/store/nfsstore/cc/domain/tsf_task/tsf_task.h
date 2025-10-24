@@ -21,41 +21,39 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  * */
-#ifndef UNIFIEDCACHE_POSIX_QUEUE_H
-#define UNIFIEDCACHE_POSIX_QUEUE_H
+#ifndef UNIFIEDCACHE_TSF_TASK_H
+#define UNIFIEDCACHE_TSF_TASK_H
 
-#include "device/idevice.h"
-#include "space/space_layout.h"
-#include "status/status.h"
-#include "task_queue.h"
-#include "task_set.h"
-#include "thread/thread_pool.h"
+#include "ucmstore.h"
+#include "tsf_task_waiter.h"
 
 namespace UC {
 
-class PosixQueue : public TaskQueue {
-    using Device = std::unique_ptr<IDevice>;
-    int32_t deviceId_{-1};
-    size_t bufferSize_{0};
-    size_t bufferNumber_{0};
-    TaskSet* failureSet_{nullptr};
-    const SpaceLayout* layout_{nullptr};
-    ThreadPool<Task::Shard, Device> backend_{};
+class TsfTask {
+public:
+    using Type = CCStore::Task::Type;
+    using Location = CCStore::Task::Location;
 
 public:
-    Status Setup(const int32_t deviceId, const size_t bufferSize, const size_t bufferNumber,
-                 TaskSet* failureSet, const SpaceLayout* layout, const size_t timeoutMs);
-    void Push(std::list<Task::Shard>& shards) noexcept override;
+    TsfTask(const Type type, const Location location, const std::string& blockId,
+            const size_t offset, const uintptr_t address, const size_t length)
+        : type{type}, location{location}, blockId{blockId}, offset{offset}, address{address},
+          length{length}, owner{0}, waiter{nullptr}, hub{nullptr}
+    {
+    }
+    TsfTask() : TsfTask{Type::DUMP, Location::HOST, {}, 0, 0, 0} {}
 
-private:
-    bool Init(Device& device);
-    void Exit(Device& device);
-    void Work(Task::Shard& shard, const Device& device);
-    void Done(Task::Shard& shard, const Device& device, const bool success);
-    Status D2S(Task::Shard& shard, const Device& device);
-    Status S2D(Task::Shard& shard, const Device& device);
-    Status H2S(Task::Shard& shard);
-    Status S2H(Task::Shard& shard);
+public:
+    Type type;
+    Location location;
+    std::string blockId;
+    size_t offset;
+    uintptr_t address;
+    size_t length;
+
+    size_t owner;
+    std::shared_ptr<TsfTaskWaiter> waiter;
+    std::shared_ptr<std::byte> hub;
 };
 
 } // namespace UC

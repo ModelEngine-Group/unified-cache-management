@@ -78,14 +78,6 @@ public:
         }
         return status;
     }
-    virtual Status H2DSync(std::byte* dst, const std::byte* src, const size_t count) override
-    {
-        return CUDA_API(cudaMemcpy, dst, src, count, cudaMemcpyHostToDevice);
-    }
-    virtual Status D2HSync(std::byte* dst, const std::byte* src, const size_t count) override
-    {
-        return CUDA_API(cudaMemcpy, dst, src, count, cudaMemcpyDeviceToHost);
-    }
     Status H2DAsync(std::byte* dst, const std::byte* src, const size_t count) override
     {
         return CUDA_API(cudaMemcpyAsync, dst, src, count, cudaMemcpyHostToDevice,
@@ -107,10 +99,6 @@ public:
             CUDA_API(cudaStreamAddCallback, (cudaStream_t)this->stream_, Trampoline, (void*)c, 0);
         if (status.Failure()) { delete c; }
         return status;
-    }
-    Status Synchronized() override
-    {
-        return CUDA_API(cudaStreamSynchronize, (cudaStream_t)this->stream_);
     }
 
 protected:

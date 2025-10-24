@@ -27,6 +27,7 @@ import random
 from typing import List
 
 import torch
+import torch_npu
 
 from ucm.store.nfsstore.nfsstore_connector import UcmNfsStore
 from ucm.store.ucmstore import UcmKVStoreBase
@@ -61,7 +62,7 @@ def make_buffers(device_id, batch_size, block_dim, block_len, block_layer):
             torch.rand(
                 [block_dim, block_len],
                 dtype=torch.bfloat16,
-                device="cuda:{}".format(device_id),
+                device="npu:{}".format(device_id),
             )
             for _ in range(block_layer)
         ]

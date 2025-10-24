@@ -21,32 +21,42 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  * */
-#ifndef UNIFIEDCACHE_TRANS_MANAGER_H
-#define UNIFIEDCACHE_TRANS_MANAGER_H
+#include <future>
+#include <gtest/gtest.h>
+#include <thread>
+#include "tsf_task/tsf_task_waiter.h"
 
-#include "posix_queue.h"
-#include "task_manager.h"
+class UCTsfTaskWaiterTest : public ::testing::Test {};
 
-namespace UC {
+TEST_F(UCTsfTaskWaiterTest, TaskTimeout)
+{
+    UC::TsfTaskWaiter waiter{1, 1024, 1, "xxx"};
+    auto fut = std::async([&] {
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        waiter.Done();
+    });
+    ASSERT_FALSE(waiter.Wait(1));
+    fut.get();
+    ASSERT_TRUE(waiter.Finish());
+}
 
-class TransManager : public TaskManager {
-public:
-    Status Setup(const int32_t deviceId, const size_t streamNumber, const size_t ioSize,
-                 const size_t bufferNumber, const SpaceLayout* layout, const size_t timeoutMs)
-    {
-        this->timeoutMs_ = timeoutMs;
-        auto status = Status::OK();
-        for (size_t i = 0; i < streamNumber; i++) {
-            auto q = std::make_shared<PosixQueue>();
-            status =
-                q->Setup(deviceId, ioSize, bufferNumber, &this->failureSet_, layout, timeoutMs);
-            if (status.Failure()) { break; }
-            this->queues_.emplace_back(std::move(q));
-        }
-        return status;
-    }
-};
+TEST_F(UCTsfTaskWaiterTest, TaskSuccess)
+{
+    UC::TsfTaskWaiter waiter{1, 1024, 1, "xxx"};
+    auto fut = std::async([&] { waiter.Done(); });
+    ASSERT_TRUE(waiter.Wait(1000));
+    ASSERT_TRUE(waiter.Finish());
+    fut.get();
+}
 
-} // namespace UC
-
-#endif
+TEST_F(UCTsfTaskWaiterTest, TaskTimeoutButSuccess)
+{
+    UC::TsfTaskWaiter waiter{1, 1024, 1, "xxx"};
+    auto fut = std::async([&] {
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        waiter.Done();
+    });
+    fut.get();
+    ASSERT_TRUE(waiter.Finish());
+    ASSERT_TRUE(waiter.Wait(1));
+}

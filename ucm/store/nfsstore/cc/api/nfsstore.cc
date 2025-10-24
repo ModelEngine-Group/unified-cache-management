@@ -25,7 +25,7 @@
 #include <fmt/ranges.h>
 #include "logger/logger.h"
 #include "space/space_manager.h"
-#include "trans/trans_manager.h"
+#include "tsf_task/tsf_task_manager.h"
 
 namespace UC {
 
@@ -42,7 +42,7 @@ public:
             status =
                 this->transMgr_.Setup(config.transferDeviceId, config.transferStreamNumber,
                                       config.transferIoSize, config.transferBufferNumber,
-                                      this->spaceMgr_.GetSpaceLayout(), config.transferTimeoutMs);
+                                      config.transferTimeoutMs, this->spaceMgr_.GetSpaceLayout());
             if (status.Failure()) {
                 UC_ERROR("Failed({}) to setup TsfTaskManager.", status);
                 return status.Underlying();
@@ -78,10 +78,17 @@ public:
     }
     size_t Submit(Task&& task) override
     {
-        auto taskId = Task::invalid;
-        auto status = this->transMgr_.Submit(std::move(task), taskId);
-        if (status.Failure()) { taskId = Task::invalid; }
-        return taskId;
+        std::list<TsfTask> tasks;
+        for (auto& shard : task.shards) {
+            tasks.push_back(
+                {task.type, task.location, shard.block, shard.offset, shard.address, task.size});
+        }
+        size_t taskId;
+        return this->transMgr_
+                       .Submit(tasks, task.number * task.size, task.number, task.brief, taskId)
+                       .Success()
+                   ? taskId
+                   : CCStore::invalidTaskId;
     }
     int32_t Wait(const size_t task) override { return this->transMgr_.Wait(task).Underlying(); }
     int32_t Check(const size_t task, bool& finish) override
@@ -107,7 +114,7 @@ private:
 
 private:
     SpaceManager spaceMgr_;
-    TransManager transMgr_;
+    TsfTaskManager transMgr_;
 };
 
 int32_t NFSStore::Setup(const Config& config)
