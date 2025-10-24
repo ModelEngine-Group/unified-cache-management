@@ -120,24 +120,6 @@ public:
                           this->stream_);
     }
     Status Synchronized() override { return ASCEND_API(aclrtSynchronizeStream, this->stream_); }
-    Status H2DBatchSync(std::byte* dArr[], const std::byte* hArr[], const size_t number,
-                        const size_t count) override
-    {
-        for (size_t i = 0; i < number; i++) {
-            auto status = this->H2DSync(dArr[i], hArr[i], count);
-            if (status.Failure()) { return status; }
-        }
-        return Status::OK();
-    }
-    Status D2HBatchSync(std::byte* hArr[], const std::byte* dArr[], const size_t number,
-                        const size_t count) override
-    {
-        for (size_t i = 0; i < number; i++) {
-            auto status = this->D2HSync(hArr[i], dArr[i], count);
-            if (status.Failure()) { return status; }
-        }
-        return Status::OK();
-    }
 
 protected:
     std::shared_ptr<std::byte> MakeBuffer(const size_t size) override

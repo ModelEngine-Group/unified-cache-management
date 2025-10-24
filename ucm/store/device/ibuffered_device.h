@@ -38,7 +38,6 @@ public:
     Status Setup() override
     {
         auto totalSize = this->bufferSize * this->bufferNumber;
-        if (totalSize == 0) { return Status::OK(); }
         this->_addr = this->MakeBuffer(totalSize);
         if (!this->_addr) { return Status::OutOfMemory(); }
         this->_indexPool.Setup(this->bufferNumber);
@@ -46,18 +45,21 @@ public:
     }
     virtual std::shared_ptr<std::byte> GetBuffer(const size_t size) override
     {
-        if (!this->_addr || size > this->bufferSize) { return this->MakeBuffer(size); }
-        auto idx = this->_indexPool.Acquire();
-        if (idx != IndexPool::npos) {
+        auto idx = IndexPool::npos;
+        if (size <= this->bufferSize && (idx = this->_indexPool.Acquire()) != IndexPool::npos) {
             auto ptr = this->_addr.get() + this->bufferSize * idx;
-            return std::shared_ptr<std::byte>(ptr,
-                                              [this, idx](auto) { this->_indexPool.Release(idx); });
+            return std::shared_ptr<std::byte>(
+                ptr, [this, idx](std::byte*) { this->_indexPool.Release(idx); });
         }
-        return this->MakeBuffer(size);
+        auto buffer = this->MakeBuffer(size);
+        if (buffer) { return buffer; }
+        auto host = (std::byte*)malloc(size);
+        if (host) { return std::shared_ptr<std::byte>(host, free); }
+        return nullptr;
     }
 
 private:
-    std::shared_ptr<std::byte> _addr{nullptr};
+    std::shared_ptr<std::byte> _addr;
     IndexPool _indexPool;
 };
 

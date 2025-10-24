@@ -45,10 +45,6 @@ public:
     virtual Status D2HAsync(std::byte* dst, const std::byte* src, const size_t count) = 0;
     virtual Status AppendCallback(std::function<void(bool)> cb) = 0;
     virtual Status Synchronized() = 0;
-    virtual Status H2DBatchSync(std::byte* dArr[], const std::byte* hArr[], const size_t number,
-                                const size_t count) = 0;
-    virtual Status D2HBatchSync(std::byte* hArr[], const std::byte* dArr[], const size_t number,
-                                const size_t count) = 0;
 
 protected:
     virtual std::shared_ptr<std::byte> MakeBuffer(const size_t size) = 0;
