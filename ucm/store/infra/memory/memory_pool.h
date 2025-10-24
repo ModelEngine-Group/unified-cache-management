@@ -94,9 +94,13 @@ public:
         return availableBlocks_.count(blockId);
     }
 
-    size_t GetOffest(const std::string& blockId) const {
+    bool GetOffest(const std::string& blockId, size_t* offset) const {
         auto it = offsetMap_.find(blockId);
-        return it == offsetMap_.end() ? nullptr : it->second;
+        if (it == offsetMap_.end()) {
+            return false;
+        }
+        *offset = it->second;
+        return true;
     }
 
     Status CommitBlock(const std::string& blockId, bool success) {
@@ -109,7 +113,6 @@ public:
         return Status::OK();
     }
 
-    // 单元测试用，外部应该用不到
     std::shared_ptr<std::byte> GetStartAddr() {
         return pool_;
     }

@@ -73,20 +73,24 @@ void DramTransQueue::Work(Task::Shard& shard, const Device& device) {
 }
 
 Status DramTransQueue::H2D(Task::Shard& shard, const Device& device) {
-    auto block_addr = this->memPool_->GetAddress(shard.block);
-    if (!block_addr) {
+    // auto block_addr = this->memPool_->GetAddress(shard.block);
+    size_t* pool_offset = nullptr;
+    bool found = this->memPool_->GetOffset(shard.block, pool_offset);
+    if (!found) {
         return Status::Error();
     }
-    auto host_src = block_addr + shard.offset;
+    auto host_src = this->memPool_->GetStartAddr().get() + pool_offset + shard.offset;
     return device->H2DAsync((std::byte*)shard.address, (std::byte*)host_src, shard.length);
 }
 
 Status DramTransQueue::D2H(Task::Shard& shard, const Device& device) {
-    auto block_addr = this->memPool_->GetAddress(shard.block);
-    if (!block_addr) {
+    // auto block_addr = this->memPool_->GetAddress(shard.block);
+    size_t* pool_offset = nullptr;
+    bool found = this->memPool_->GetOffset(shard.block, pool_offset);
+    if (!found) {
         return Status::Error();
     }
-    auto host_src = block_addr + shard.offset;
+    auto host_src = this->memPool_->GetStartAddr().get() + pool_offset + shard.offset;
     return device->D2HAsync((std::byte*)host_src, (std::byte*)shard.address, shard.length);
 }
 
