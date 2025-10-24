@@ -113,7 +113,7 @@ public:
         return Status::OK();
     }
 
-    std::shared_ptr<std::byte> GetStartAddr() {
+    std::shared_ptr<std::byte> GetStartAddr() const {
         return pool_;
     }
 

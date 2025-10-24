@@ -79,7 +79,7 @@ Status DramTransQueue::H2D(Task::Shard& shard, const Device& device) {
     if (!found) {
         return Status::Error();
     }
-    auto host_src = this->memPool_->GetStartAddr().get() + pool_offset + shard.offset;
+    auto host_src = this->memPool_->GetStartAddr().get() + *pool_offset + shard.offset;
     return device->H2DAsync((std::byte*)shard.address, (std::byte*)host_src, shard.length);
 }
 
@@ -90,7 +90,7 @@ Status DramTransQueue::D2H(Task::Shard& shard, const Device& device) {
     if (!found) {
         return Status::Error();
     }
-    auto host_src = this->memPool_->GetStartAddr().get() + pool_offset + shard.offset;
+    auto host_src = this->memPool_->GetStartAddr().get() + *pool_offset + shard.offset;
     return device->D2HAsync((std::byte*)host_src, (std::byte*)shard.address, shard.length);
 }
 
