@@ -10,15 +10,25 @@ import time
 from collections import defaultdict
 from datetime import datetime
 
-import aiohttp
 import pandas
-from endpoint_request_func import (
+from tqdm.asyncio import tqdm
+from transformers import PreTrainedTokenizerBase
+
+benchmark_path = os.environ.get("BENCHMARK_PATH")
+if benchmark_path:
+    sys.path.append(benchmark_path)
+    print(f"Added benchmark path: {benchmark_path}")
+else:
+    raise EnvironmentError(
+        "Missing BENCHMARK_PATH environment variable.\n"
+        "Usage: export BENCHMARK_PATH=<your_vllm_benchmark_directory>"
+    )
+
+from backend_request_func import (
     ASYNC_REQUEST_FUNCS,
     RequestFuncInput,
 )
-from tqdm.asyncio import tqdm
-from transformers import PreTrainedTokenizerBase
-from vllm.benchmarks.datasets import (
+from benchmark_dataset import (
     AIMODataset,
     ASRDataset,
     BenchmarkDataset,
@@ -35,9 +45,9 @@ from vllm.benchmarks.datasets import (
     SonnetDataset,
     VisionArenaDataset,
 )
-from vllm.benchmarks.serve import (
-    add_cli_args,
+from benchmark_serving import (
     calculate_metrics,
+    create_argument_parser,
     get_tokenizer,
 )
 
@@ -453,12 +463,6 @@ async def replay_trace_by_time(
             break
     if test_request is None:
         raise ValueError("No request found for initial test run.")
-
-    session = aiohttp.ClientSession(
-        trust_env=True,
-        timeout=aiohttp.ClientTimeout(total=6 * 60 * 60),
-    )
-
     test_input = RequestFuncInput(
         model=model_id,
         model_name=model_name,
@@ -472,7 +476,7 @@ async def replay_trace_by_time(
         extra_body={"temperature": 0.9},
     )
 
-    test_output = await request_func(request_func_input=test_input, session=session)
+    test_output = await request_func(request_func_input=test_input)
 
     if not getattr(test_output, "success", False):
         raise ValueError(
@@ -509,13 +513,9 @@ async def replay_trace_by_time(
         )
         if semaphore is not None:
             async with semaphore:
-                return await request_func(
-                    request_func_input=req_input, session=session, pbar=pbar
-                )
+                return await request_func(request_func_input=req_input, pbar=pbar)
         else:
-            return await request_func(
-                request_func_input=req_input, session=session, pbar=pbar
-            )
+            return await request_func(request_func_input=req_input, pbar=pbar)
 
     for sec, reqs in sorted(req_groups.items()):
         delay = sec - (time.perf_counter() - start_time)
@@ -554,6 +554,7 @@ async def replay_trace_by_time(
         outputs=outputs,
         dur_s=benchmark_duration,
         tokenizer=tokenizer,
+        selected_percentile_metrics=["ttft", "tpot", "itl", "e2el"],
         selected_percentiles=[25.0, 50.0, 75.0, 99.0],
         goodput_config_dict={"ttft": 2000, "tpot": 50},
     )
@@ -626,9 +627,7 @@ async def replay_trace_by_time(
 
 
 def create_argument_trace():
-    parser = argparse.ArgumentParser(description="Benchmark LLM serving performance")
-    add_cli_args(parser)
-
+    parser = create_argument_parser()
     trace_group = parser.add_argument_group("tracing parameters")
     trace_group.add_argument(
         "--trace-path",
