@@ -29,21 +29,7 @@ class UCSpaceManagerTest : public UC::PathBase {};
 TEST_F(UCSpaceManagerTest, NewBlockTwice)
 {
     UC::SpaceManager spaceMgr;
-    ASSERT_EQ(spaceMgr.Setup({this->Path()}, 1024 * 1024, false), UC::Status::OK());
-    const std::string block1 = "block1";
-    ASSERT_FALSE(spaceMgr.LookupBlock(block1));
-    ASSERT_EQ(spaceMgr.NewBlock(block1), UC::Status::OK());
-    ASSERT_FALSE(spaceMgr.LookupBlock(block1));
-    ASSERT_EQ(spaceMgr.NewBlock(block1), UC::Status::DuplicateKey());
-    ASSERT_EQ(spaceMgr.CommitBlock(block1), UC::Status::OK());
-    ASSERT_TRUE(spaceMgr.LookupBlock(block1));
-    ASSERT_EQ(spaceMgr.NewBlock(block1), UC::Status::DuplicateKey());
-}
-
-TEST_F(UCSpaceManagerTest, NewBlockTwiceWithTempDir)
-{
-    UC::SpaceManager spaceMgr;
-    ASSERT_EQ(spaceMgr.Setup({this->Path()}, 1024 * 1024, true), UC::Status::OK());
+    ASSERT_EQ(spaceMgr.Setup({this->Path()}, 1024 * 1024), UC::Status::OK());
     const std::string block1 = "block1";
     ASSERT_FALSE(spaceMgr.LookupBlock(block1));
     ASSERT_EQ(spaceMgr.NewBlock(block1), UC::Status::OK());

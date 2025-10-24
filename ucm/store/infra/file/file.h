@@ -42,7 +42,6 @@ public:
                         const uintptr_t address, const bool directIo = false);
     static void MUnmap(void* addr, size_t size);
     static void ShmUnlink(const std::string& path);
-    static void Remove(const std::string& path);
 };
 
 } // namespace UC

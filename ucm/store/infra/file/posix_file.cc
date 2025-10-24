@@ -121,7 +121,9 @@ void PosixFile::Remove()
     auto ret = remove(this->Path().c_str());
     auto eno = errno;
     if (ret != 0) {
-        if (eno != ENOENT) { UC_WARN("Failed({},{}) to remove file({}).", ret, eno, this->Path()); }
+        if (eno == ENOENT) {
+            UC_WARN("Failed to remove file, path: {}, file not found.", this->Path());
+        }
     }
 }
 

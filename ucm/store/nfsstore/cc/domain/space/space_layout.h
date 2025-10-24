@@ -32,10 +32,20 @@ namespace UC {
 
 class SpaceLayout {
 public:
-    virtual ~SpaceLayout() = default;
-    virtual Status Setup(const std::vector<std::string>& storageBackends) = 0;
-    virtual std::string DataFileParent(const std::string& blockId, bool activated) const = 0;
-    virtual std::string DataFilePath(const std::string& blockId, bool activated) const = 0;
+    Status Setup(const std::vector<std::string>& storageBackends);
+    std::string DataFileParent(const std::string& blockId) const;
+    std::string DataFilePath(const std::string& blockId, bool activated) const;
+
+private:
+    Status AddStorageBackend(const std::string& path);
+    Status AddFirstStorageBackend(const std::string& path);
+    Status AddSecondaryStorageBackend(const std::string& path);
+    std::string StorageBackend(const std::string& blockId) const;
+    std::vector<std::string> RelativeRoots() const;
+    std::string DataFileRoot() const;
+
+private:
+    std::vector<std::string> storageBackends_;
 };
 
 } // namespace UC

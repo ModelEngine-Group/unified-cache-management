@@ -24,31 +24,16 @@
 #include "space_manager.h"
 #include "file/file.h"
 #include "logger/logger.h"
-#include "space_shard_temp_layout.h"
 
 namespace UC {
 
-std::unique_ptr<SpaceLayout> MakeSpaceLayout(const bool tempDumpDirEnable)
-{
-    try {
-        if (tempDumpDirEnable) { return std::make_unique<SpaceShardTempLayout>(); }
-        return std::make_unique<SpaceShardLayout>();
-    } catch (const std::exception& e) {
-        UC_ERROR("Failed({}) to make space layout object.", e.what());
-    }
-    return nullptr;
-}
-
-Status SpaceManager::Setup(const std::vector<std::string>& storageBackends, const size_t blockSize,
-                           const bool tempDumpDirEnable)
+Status SpaceManager::Setup(const std::vector<std::string>& storageBackends, const size_t blockSize)
 {
     if (blockSize == 0) {
         UC_ERROR("Invalid block size({}).", blockSize);
         return Status::InvalidParam();
     }
-    this->layout_ = MakeSpaceLayout(tempDumpDirEnable);
-    if (!this->layout_) { return Status::OutOfMemory(); }
-    auto status = this->layout_->Setup(storageBackends);
+    auto status = this->layout_.Setup(storageBackends);
     if (status.Failure()) { return status; }
     this->blockSize_ = blockSize;
     return Status::OK();
@@ -56,9 +41,8 @@ Status SpaceManager::Setup(const std::vector<std::string>& storageBackends, cons
 
 Status SpaceManager::NewBlock(const std::string& blockId) const
 {
-    constexpr auto activated = true;
-    auto parent = File::Make(this->layout_->DataFileParent(blockId, activated));
-    auto file = File::Make(this->layout_->DataFilePath(blockId, activated));
+    auto parent = File::Make(this->layout_.DataFileParent(blockId));
+    auto file = File::Make(this->layout_.DataFilePath(blockId, true));
     if (!parent || !file) {
         UC_ERROR("Failed to new block({}).", blockId);
         return Status::OutOfMemory();
@@ -69,7 +53,7 @@ Status SpaceManager::NewBlock(const std::string& blockId) const
         UC_ERROR("Failed({}) to new block({}).", status, blockId);
         return status;
     }
-    if ((File::Access(this->layout_->DataFilePath(blockId, false), IFile::AccessMode::EXIST))
+    if ((File::Access(this->layout_.DataFilePath(blockId, false), IFile::AccessMode::EXIST))
             .Success()) {
         status = Status::DuplicateKey();
         UC_ERROR("Failed({}) to new block({}).", status, blockId);
@@ -93,31 +77,29 @@ Status SpaceManager::NewBlock(const std::string& blockId) const
 
 Status SpaceManager::CommitBlock(const std::string& blockId, bool success) const
 {
-    const auto activatedParent = this->layout_->DataFileParent(blockId, true);
-    const auto activatedFile = this->layout_->DataFilePath(blockId, true);
-    auto status = Status::OK();
-    do {
-        if (!success) { break; }
-        const auto archivedParent = this->layout_->DataFileParent(blockId, false);
-        const auto archivedFile = this->layout_->DataFilePath(blockId, false);
-        if (archivedParent != activatedParent) {
-            status = File::MkDir(archivedParent);
-            if (status == Status::DuplicateKey()) { status = Status::OK(); }
-            if (status.Failure()) { break; }
-        }
-        status = File::Rename(activatedFile, archivedFile);
-    } while (0);
-    File::Remove(activatedFile);
-    File::RmDir(activatedParent);
-    if (status.Failure()) {
-        UC_ERROR("Failed({}) to {} block({}).", status, success ? "commit" : "cancel", blockId);
+    auto file = File::Make(this->layout_.DataFilePath(blockId, true));
+    if (!file) {
+        UC_ERROR("Failed to {} block({}).", success ? "commit" : "cancel", blockId);
+        return Status::OutOfMemory();
     }
-    return status;
+    if (success) {
+        auto status = file->Rename(this->layout_.DataFilePath(blockId, false));
+        if (status.Failure()) { UC_ERROR("Failed({}) to commit block({}).", status, blockId); }
+        return status;
+    }
+    auto parent = File::Make(this->layout_.DataFileParent(blockId));
+    if (!parent) {
+        UC_ERROR("Failed to cancel block({}).", blockId);
+        return Status::OutOfMemory();
+    }
+    file->Remove();
+    parent->RmDir();
+    return Status::OK();
 }
 
 bool SpaceManager::LookupBlock(const std::string& blockId) const
 {
-    auto path = this->layout_->DataFilePath(blockId, false);
+    auto path = this->layout_.DataFilePath(blockId, false);
     auto file = File::Make(path);
     if (!file) {
         UC_ERROR("Failed to make file smart pointer, path: {}.", path);
@@ -134,6 +116,6 @@ bool SpaceManager::LookupBlock(const std::string& blockId) const
     return true;
 }
 
-const SpaceLayout* SpaceManager::GetSpaceLayout() const { return this->layout_.get(); }
+const SpaceLayout* SpaceManager::GetSpaceLayout() const { return &this->layout_; }
 
 } // namespace UC
