@@ -21,19 +21,6 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  * */
-#ifndef UNIFIEDCACHE_MEMORY_POOL_H
-#define UNIFIEDCACHE_MEMORY_POOL_H
-
-#include <cstddef>
-#include <cstdlib>
-#include <string>
-#include <list>
-#include <unordered_map>
-#include <set>
-#include "status/status.h"
-#include "device/idevice.h"
-#include <stdexcept>
-
 namespace UC {
 
 class MemoryPool {
@@ -42,7 +29,6 @@ public:
     MemoryPool(int32_t deviceId, size_t capacity, size_t blockSize) {
         capacity_ = capacity;
         blockSize_ = blockSize;
-        // pool_ = new char[capacity];
         device_ = DeviceFactory::Make(deviceId, blockSize, static_cast<int>(capacity / blockSize)); // 大小是内存池的总容量大小
         if (!device_) {
             throw std::runtime_error("MemoryPool::MemoryPool() failed due to failure to initialize device");
@@ -51,7 +37,7 @@ public:
         if (!success.Success()) {
             throw std::runtime_error("MemoryPool::MemoryPool() failed due to failure to setup device");
         }
-        pool_ = reinterpret_cast<char*>(device_->GetBuffer(capacity_).get());
+        pool_ = device_->GetBuffer(capacity_);
 
         if (!pool_) {
             throw std::bad_alloc();
@@ -60,10 +46,12 @@ public:
         for (size_t i = 0; i < slotNum; ++i) {
             // 将所有槽位都预先占好，插入LRU队列中。
             std::string dummy = "__slot_" + std::to_string(i);
-            char* addr = pool_ + i * blockSize_;
+            // std::shared_ptr<std::byte> addr = pool_ + i * blockSize_;
+            size_t offset = i * blockSize_;
             lruList_.push_front(dummy);
             lruIndex_[dummy] = lruList_.begin();
-            addressMap_[dummy] = addr;
+            // offsetMap_[dummy] = addr;
+            offsetMap_[dummy] = offset;
         }
     }
 
@@ -75,15 +63,15 @@ public:
     MemoryPool& operator=(const MemoryPool&) = delete;
 
     Status NewBlock(const std::string& blockId) {
-        if (addressMap_.count(blockId)) {
+        if (offsetMap_.count(blockId)) {
             return Status::DuplicateKey();
         }
         if (lruList_.empty()) {
             // 所有空间里的块都正在写，那么就不能够分配
             return Status::Error();
         }
-        char* addr = LRUEvictOne();
-        addressMap_[blockId] = addr;
+        size_t offset = LRUEvictOne();
+        offsetMap_[blockId] = offset;
         return Status::OK();
     }
 
@@ -91,9 +79,9 @@ public:
         return availableBlocks_.count(blockId);
     }
 
-    char* GetAddress(const std::string& blockId) const {
-        auto it = addressMap_.find(blockId);
-        return it == addressMap_.end() ? nullptr : it->second;
+    size_t GetOffest(const std::string& blockId) const {
+        auto it = offsetMap_.find(blockId);
+        return it == offsetMap_.end() ? nullptr : it->second;
     }
 
     Status CommitBlock(const std::string& blockId, bool success) {
@@ -107,17 +95,17 @@ public:
     }
 
     // 单元测试用，外部应该用不到
-    char* GetFirstAddr() {
+    std::shared_ptr<std::byte> GetStartAddr() {
         return pool_;
     }
 
 private:
-    char* pool_ = nullptr;
+    std::shared_ptr<std::byte> pool_ = nullptr;
     Device device_ = nullptr;
     size_t capacity_;
     size_t blockSize_;
 
-    std::unordered_map<std::string, char*> addressMap_;
+    std::unordered_map<std::string, size_t> offsetMap_;
     std::set<std::string> availableBlocks_;
 
     using ListType = std::list<std::string>;
@@ -135,26 +123,26 @@ private:
         }
     }
 
-    char* LRUEvictOne() {
+    size_t LRUEvictOne() {
         const std::string& victim = lruList_.back();
         // 真实数据块，才从availableBlocks_中删掉
         if (victim.rfind("__slot_", 0) != 0) {
             availableBlocks_.erase(victim);
         }
-        char* addr = addressMap_[victim];
-        addressMap_.erase(victim);
+        size_t offset = offsetMap_[victim];
+        offsetMap_.erase(victim);
         lruIndex_.erase(victim);
         lruList_.pop_back();
-        return addr;
+        return offset;
     }
 
     void resetSpaceOfBlock(const std::string& blockId) {
         // availableBlocks_.erase(blockId); // 这句大概不需要？
-        auto it = addressMap_.find(blockId);
-        char* addr = it->second;
-        int32_t offset = static_cast<size_t>(addr - pool_);
+        auto it = offsetMap_.find(blockId);
+        // int32_t offset = static_cast<size_t>(addr - pool_);
+        size_t offset = it->second;
         std::string dummy = "__slot_" + std::to_string(offset / blockSize_);
-        addressMap_.erase(blockId);
+        offsetMap_.erase(blockId);
 
         auto lit = lruIndex_.find(blockId);
         if (lit != lruIndex_.end()) {
@@ -163,7 +151,7 @@ private:
         }
         lruList_.push_back(dummy); // 将一个块commit false后，回收之前分配的内存，并且要将其放到LRU队列的尾部（下次可以写的时候，要马上就写。因为该块的优先级高于已经写了的块）
         lruIndex_[dummy] = std::prev(lruList_.end());
-        addressMap_[dummy] = addr;
+        offsetMap_[dummy] = offset;
     }
 };
 
