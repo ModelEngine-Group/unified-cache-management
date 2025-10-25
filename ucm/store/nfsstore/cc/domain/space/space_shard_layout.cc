@@ -111,16 +111,27 @@ std::string SpaceShardLayout::StorageBackend(const std::string& blockId) const
     return this->storageBackends_[hasher(blockId) % this->storageBackends_.size()];
 }
 
-std::vector<std::string> SpaceShardLayout::RelativeRoots() const { return {this->DataFileRoot()}; }
+std::vector<std::string> SpaceShardLayout::RelativeRoots() const {
+    return {
+        this->DataFileRoot(),
+        this->ClusterFileRoot(),
+    };
+}
 
 std::string SpaceShardLayout::DataFileRoot() const { return "data"; }
-
+std::string SpaceShardLayout::ClusterFileRoot() const { return "cluster"; }
 void SpaceShardLayout::ShardBlockId(const std::string& blockId, uint64_t& front,
                                     uint64_t& back) const
 {
     auto id = static_cast<const BlockId*>(static_cast<const void*>(blockId.data()));
     front = id->front();
     back = id->back();
+}
+
+std::string SpaceShardLayout::StorageBackend() const { return this->storageBackends_.front(); }
+std::string SpaceShardLayout::ClusterPropertyFilePath() const
+{
+    return fmt::format("{}{}/{}.bin", this->StorageBackend(), this->ClusterFileRoot(), "uc_property.bin");
 }
 
 } // namespace UC

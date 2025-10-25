@@ -36,6 +36,7 @@ public:
     virtual Status Setup(const std::vector<std::string>& storageBackends) = 0;
     virtual std::string DataFileParent(const std::string& blockId, bool activated) const = 0;
     virtual std::string DataFilePath(const std::string& blockId, bool activated) const = 0;
+    virtual std::string ClusterPropertyFilePath() const = 0;
 };
 
 } // namespace UC

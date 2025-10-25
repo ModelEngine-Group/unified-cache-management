@@ -53,3 +53,13 @@ TEST_F(UCSpaceManagerTest, NewBlockTwiceWithTempDir)
     ASSERT_TRUE(spaceMgr.LookupBlock(block1));
     ASSERT_EQ(spaceMgr.NewBlock(block1), UC::Status::DuplicateKey());
 }
+
+TEST_F(UCSpaceManagerTest, CreateBlockWhenNoSpace)
+{
+    UC::SpaceManager spaceMgr;
+    size_t blockSize = 1024 * 1024;
+    size_t capacity = blockSize;
+    ASSERT_EQ(spaceMgr.Setup({this->Path()}, blockSize, false, capacity), UC::Status::OK());
+    ASSERT_EQ(spaceMgr.NewBlock("block3"), UC::Status::OK());
+    ASSERT_EQ(spaceMgr.NewBlock("block4"), UC::Status::NoSpace());
+}

@@ -21,32 +21,29 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  * */
-#ifndef UNIFIEDCACHE_SPACE_MANAGER_H
-#define UNIFIEDCACHE_SPACE_MANAGER_H
 
-#include <memory>
-#include "space_layout.h"
-#include "space_property.h"
+#ifndef UNIFIEDCACHE_SPACE_PROPERTY_H
+#define UNIFIEDCACHE_SPACE_PROPERTY_H
+
+#include "file/ifile.h"
 #include "status/status.h"
 
 namespace UC {
 
-class SpaceManager {
+class SpaceProperty {
 public:
-    Status Setup(const std::vector<std::string>& storageBackends, const size_t blockSize,
-                 const bool tempDumpDirEnable, const size_t storageCapacity = 0);
-    Status NewBlock(const std::string& blockId);
-    Status CommitBlock(const std::string& blockId, bool success = true);
-    bool LookupBlock(const std::string& blockId) const;
-    const SpaceLayout* GetSpaceLayout() const;
+    ~SpaceProperty();
+    Status Setup(const std::string& propertyFilePath);
+    void IncreaseCapacity(const size_t delta);
+    void DecreaseCapacity(const size_t delta);
+    size_t GetCapacity() const;
 
 private:
-    Status CapacityCheck() const;
+    Status InitShmProperty(IFile* shmPropertyFile);
+    Status LoadShmProperty(IFile* shmPropertyFile);
+
 private:
-    std::unique_ptr<SpaceLayout> layout_;
-    SpaceProperty property_;
-    size_t blockSize_;
-    size_t capacity_;
+    void* addr_{nullptr};
 };
 
 } // namespace UC
