@@ -17,53 +17,78 @@ logger = init_logger(__name__)
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """
-    Lifespan context manager to handle startup and shutdown events.
+    Lifespan context manager to initialize clients based on mode.
     """
-    # Startup: Initialize client pools for prefiller and decoder services
     app.state.prefill_clients = []
     app.state.decode_clients = []
+    app.state.worker_clients = []  # For PD-mixed workers
 
-    # Create prefill clients
-    for i, (host, port) in enumerate(global_args.prefiller_instances):
-        prefiller_base_url = f"http://{host}:{port}/v1"
-        app.state.prefill_clients.append(
-            {
-                "client": httpx.AsyncClient(timeout=None, base_url=prefiller_base_url),
-                "host": host,
-                "port": port,
-                "id": i,
-            }
+    if global_args.pd_disaggregation:
+        # === PD disaggregation ===
+        for i, (host, port) in enumerate(global_args.prefiller_instances):
+            base_url = f"http://{host}:{port}/v1"
+            app.state.prefill_clients.append(
+                {
+                    "client": httpx.AsyncClient(timeout=None, base_url=base_url),
+                    "host": host,
+                    "port": port,
+                    "id": i,
+                }
+            )
+
+        for i, (host, port) in enumerate(global_args.decoder_instances):
+            base_url = f"http://{host}:{port}/v1"
+            app.state.decode_clients.append(
+                {
+                    "client": httpx.AsyncClient(timeout=None, base_url=base_url),
+                    "host": host,
+                    "port": port,
+                    "id": i,
+                }
+            )
+
+        app.state.prefill_iterator = itertools.cycle(
+            range(len(app.state.prefill_clients))
+        )
+        app.state.decode_iterator = itertools.cycle(
+            range(len(app.state.decode_clients))
         )
 
-    # Create decode clients
-    for i, (host, port) in enumerate(global_args.decoder_instances):
-        decoder_base_url = f"http://{host}:{port}/v1"
-        app.state.decode_clients.append(
-            {
-                "client": httpx.AsyncClient(timeout=None, base_url=decoder_base_url),
-                "host": host,
-                "port": port,
-                "id": i,
-            }
+        print(
+            f"[PD Mode] Initialized {len(app.state.prefill_clients)} prefillers "
+            f"and {len(app.state.decode_clients)} decoders."
         )
 
-    # Initialize round-robin iterators
-    app.state.prefill_iterator = itertools.cycle(range(len(app.state.prefill_clients)))
-    app.state.decode_iterator = itertools.cycle(range(len(app.state.decode_clients)))
+    else:
+        # === PD mix ===
+        for i, (host, port) in enumerate(global_args.worker_instances):
+            base_url = f"http://{host}:{port}/v1"
+            app.state.worker_clients.append(
+                {
+                    "client": httpx.AsyncClient(timeout=None, base_url=base_url),
+                    "host": host,
+                    "port": port,
+                    "id": i,
+                }
+            )
 
-    print(
-        f"Initialized {len(app.state.prefill_clients)} prefill clients "
-        f"and {len(app.state.decode_clients)} decode clients."
-    )
+        app.state.worker_iterator = itertools.cycle(
+            range(len(app.state.worker_clients))
+        )
+        print(
+            f"[Mixed Mode] Initialized {len(app.state.worker_clients)} PD-mixed workers."
+        )
 
     yield
 
-    # Shutdown: Close all clients
-    for client_info in app.state.prefill_clients:
-        await client_info["client"].aclose()
-
-    for client_info in app.state.decode_clients:
-        await client_info["client"].aclose()
+    # Close all clients
+    for client_list in [
+        app.state.prefill_clients,
+        app.state.decode_clients,
+        app.state.worker_clients,
+    ]:
+        for client_info in client_list:
+            await client_info["client"].aclose()
 
 
 # Update FastAPI app initialization to use lifespan
@@ -75,6 +100,26 @@ def parse_args():
 
     parser.add_argument("--port", type=int, default=8000)
     parser.add_argument("--host", type=str, default="localhost")
+    parser.add_argument(
+        "--pd-disaggregation",
+        action="store_true",
+        help="Enable PD disaggregation mode (prefill and decode separation)",
+    )
+    # For PD mix instances
+    parser.add_argument(
+        "--worker-hosts",
+        "--work-host",
+        type=str,
+        nargs="+",
+        default=["localhost"],
+    )
+    parser.add_argument(
+        "--worker-ports",
+        "--work-port",
+        type=int,
+        nargs="+",
+        default=[8100],
+    )
 
     # For prefiller instances
     parser.add_argument(
@@ -107,9 +152,15 @@ def parse_args():
     if len(args.decoder_hosts) != len(args.decoder_ports):
         raise ValueError("Number of decoder hosts must match number of decoder ports")
 
-    # Create tuples of (host, port) for each service type
+    if len(args.worker_hosts) != len(args.worker_ports):
+        raise ValueError("Number of worker hosts must match number of worker ports")
+
+    # Create instance tuples
     args.prefiller_instances = list(zip(args.prefiller_hosts, args.prefiller_ports))
     args.decoder_instances = list(zip(args.decoder_hosts, args.decoder_ports))
+    args.worker_instances = list(
+        zip(args.worker_hosts, args.worker_ports)
+    )  # Mixed workers
 
     return args
 
@@ -120,12 +171,15 @@ def get_next_client(app, service_type: str):
 
     Args:
         app: The FastAPI app instance
-        service_type: Either 'prefill' or 'decode'
+        service_type:  'worker' 、'prefill' 、'decode'
 
     Returns:
         The next client to use
     """
-    if service_type == "prefill":
+    if service_type == "worker":
+        worker_idx = next(app.state.worker_iterator)
+        return app.state.worker_clients[worker_idx]
+    elif service_type == "prefill":
         client_idx = next(app.state.prefill_iterator)
         return app.state.prefill_clients[client_idx]
     elif service_type == "decode":
@@ -183,37 +237,72 @@ async def _handle_completions(api: str, request: Request):
         req_data = await request.json()
         request_id = str(uuid.uuid4())
 
-        # Get the next prefill client in round-robin fashion
-        prefill_client_info = get_next_client(request.app, "prefill")
+        headers = {
+            "Authorization": f"Bearer {os.environ.get('OPENAI_API_KEY')}",
+            "X-Request-Id": request_id,
+        }
 
-        # Send request to prefill service
-        response = await send_request_to_service(
-            prefill_client_info, api, req_data, request_id
-        )
+        if global_args.pd_disaggregation:
+            # === PD disaggregation logic ===
 
-        # Extract the needed fields
-        response_json = response.json()
+            # Step 1: Send request to prefiller (to trigger computation and cache KV)
+            prefill_client_info = get_next_client(request.app, "prefill")
+            prefill_req_data = req_data.copy()
+            prefill_req_data["stream"] = False
+            prefill_req_data["max_tokens"] = 1
+            if "stream_options" in prefill_req_data:
+                del prefill_req_data["stream_options"]
 
-        # Get the next decode client in round-robin fashion
-        decode_client_info = get_next_client(request.app, "decode")
+            response = await prefill_client_info["client"].post(
+                api, json=prefill_req_data, headers=headers
+            )
+            response.raise_for_status()
 
-        logger.debug("Using %s %s", prefill_client_info, decode_client_info)
+            # Step 2: Stream full output from decoder
+            decode_client_info = get_next_client(request.app, "decode")
 
-        # Stream response from decode service
-        async def generate_stream():
-            async for chunk in stream_service_response(
-                decode_client_info, api, req_data, request_id=request_id
-            ):
-                yield chunk
+            logger.debug(
+                "PD-DISAGG: Prefill=%s:%d, Decode=%s:%d",
+                prefill_client_info["host"],
+                prefill_client_info["port"],
+                decode_client_info["host"],
+                decode_client_info["port"],
+            )
 
-        return StreamingResponse(generate_stream(), media_type="application/json")
+            async def generate_stream():
+                async for chunk in stream_service_response(
+                    decode_client_info, api, req_data, request_id
+                ):
+                    yield chunk
+
+            return StreamingResponse(generate_stream(), media_type="application/json")
+
+        else:
+            # === PD mixed mode: Directly forward the entire stream using round-robin ===
+            worker_client_info = get_next_client(request.app, "worker")
+
+            logger.debug(
+                "PD-MIXED: Forwarding to %s:%d",
+                worker_client_info["host"],
+                worker_client_info["port"],
+            )
+
+            async def generate_stream():
+                async with worker_client_info["client"].stream(
+                    "POST", api, json=req_data, headers=headers
+                ) as resp:
+                    resp.raise_for_status()
+                    async for chunk in resp.aiter_bytes():
+                        yield chunk
+
+            return StreamingResponse(generate_stream(), media_type="application/json")
 
     except Exception as e:
         import sys
         import traceback
 
         exc_info = sys.exc_info()
-        print("Error occurred in disagg prefill proxy server" f" - {api} endpoint")
+        print(f"Error in proxy server - {api} endpoint")
         print(e)
         print("".join(traceback.format_exception(*exc_info)))
         raise
@@ -231,12 +320,19 @@ async def handle_chat_completions(request: Request):
 
 @app.get("/healthcheck")
 async def healthcheck():
-    """Simple endpoint to check if the server is running."""
-    return {
-        "status": "ok",
-        "prefill_instances": len(app.state.prefill_clients),
-        "decode_instances": len(app.state.decode_clients),
-    }
+    if global_args.pd_disaggregation:
+        return {
+            "status": "ok",
+            "mode": "pd-disaggregation",
+            "prefill_instances": len(app.state.prefill_clients),
+            "decode_instances": len(app.state.decode_clients),
+        }
+    else:
+        return {
+            "status": "ok",
+            "mode": "pd-mixed",
+            "worker_instances": len(app.state.worker_clients),
+        }
 
 
 if __name__ == "__main__":
