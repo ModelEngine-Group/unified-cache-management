@@ -63,3 +63,29 @@ TEST_F(UCSpaceManagerTest, CreateBlockWhenNoSpace)
     ASSERT_EQ(spaceMgr.NewBlock("block3"), UC::Status::OK());
     ASSERT_EQ(spaceMgr.NewBlock("block4"), UC::Status::NoSpace());
 }
+
+TEST_F(UCSpaceManagerTest, IterAllBlockFile)
+{
+    constexpr size_t blockSize = 1024 * 1024;
+    constexpr size_t capacity = blockSize * 1024;
+    UC::SpaceManager spaceMgr;
+    ASSERT_EQ(spaceMgr.Setup({this->Path()}, blockSize, false, capacity), UC::Status::OK());
+    const std::string block1 = "a1b2c3d4e5f6789012345678901234ab";
+    const std::string block2 = "a2b2c3d4e5f6789012345678901234ab";
+    const std::string block3 = "a3b2c3d4e5f6789012345678901234ab";
+    ASSERT_EQ(spaceMgr.NewBlock(block1),  UC::Status::OK());
+    ASSERT_EQ(spaceMgr.NewBlock(block2),  UC::Status::OK());
+    ASSERT_EQ(spaceMgr.NewBlock(block3),  UC::Status::OK());
+    auto layout = spaceMgr.GetSpaceLayout();
+    auto iter = layout->CreateFilePathIterator();
+    size_t count = 0;
+    while (!layout->NextDataFilePath(iter).empty()) { count++; }
+    ASSERT_EQ(count, 0);
+    ASSERT_EQ(spaceMgr.CommitBlock(block1), UC::Status::OK());
+    ASSERT_EQ(spaceMgr.CommitBlock(block2), UC::Status::OK());
+    ASSERT_EQ(spaceMgr.CommitBlock(block3), UC::Status::OK());
+    iter = layout->CreateFilePathIterator();
+    count = 0;
+    while (!layout->NextDataFilePath(iter).empty()) { count++; }
+    ASSERT_EQ(count, 3);
+}

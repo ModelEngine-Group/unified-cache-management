@@ -53,6 +53,16 @@ Status File::Access(const std::string& path, const int32_t mode)
     return FileImpl{path}.Access(mode);
 }
 
+Status File::Stat(const std::string& path, IFile::FileStat& st)
+{
+    FileImpl file{path};
+    auto status = file.Open(IFile::OpenFlag::READ_ONLY);
+    if (status.Failure()) { return status; }
+    status = file.Stat(st);
+    file.Close();
+    return status;
+}
+
 Status File::Read(const std::string& path, const size_t offset, const size_t length,
                   uintptr_t address, const bool directIo)
 {

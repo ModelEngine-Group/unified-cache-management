@@ -44,6 +44,8 @@ public:
         bool hotnessEnable;
         size_t hotnessInterval;
         size_t storageCapacity;
+        bool recycleEnable;
+        float recycleThresholdRatio;
 
         Config(const std::vector<std::string>& storageBackends, const size_t kvcacheBlockSize,
                const bool transferEnable)
@@ -51,7 +53,7 @@ public:
               transferEnable{transferEnable}, transferDeviceId{-1}, transferStreamNumber{32},
               transferIoSize{262144}, transferBufferNumber{512}, transferTimeoutMs{30000},
               tempDumpDirEnable{false}, hotnessEnable{true}, hotnessInterval{60},
-              storageCapacity{0}
+              storageCapacity{0}, recycleEnable{true}, recycleThresholdRatio{0.7f}
         {
         }
     };

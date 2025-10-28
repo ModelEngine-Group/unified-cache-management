@@ -126,6 +126,8 @@ PYBIND11_MODULE(ucmnfsstore, module)
     config.def_readwrite("hotnessEnable", &UC::NFSStorePy::Config::hotnessEnable);
     config.def_readwrite("hotnessInterval", &UC::NFSStorePy::Config::hotnessInterval);
     config.def_readwrite("storageCapacity", &UC::NFSStorePy::Config::storageCapacity);
+    config.def_readwrite("recycleEnable", &UC::NFSStorePy::Config::recycleEnable);
+    config.def_readwrite("recycleThresholdRatio", &UC::NFSStorePy::Config::recycleThresholdRatio);
     store.def(py::init<>());
     store.def("CCStoreImpl", &UC::NFSStorePy::CCStoreImpl);
     store.def("Setup", &UC::NFSStorePy::Setup);

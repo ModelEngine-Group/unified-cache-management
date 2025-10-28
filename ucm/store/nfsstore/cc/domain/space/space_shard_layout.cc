@@ -23,7 +23,9 @@
  * */
 #include "space_shard_layout.h"
 #include <algorithm>
+#include <dirent.h>
 #include <array>
+#include <stack>
 #include "file/file.h"
 #include "logger/logger.h"
 
@@ -33,6 +35,69 @@ constexpr size_t blockIdSize = 16;
 constexpr size_t nU64PerBlock = blockIdSize / sizeof(uint64_t);
 using BlockId = std::array<uint64_t, nU64PerBlock>;
 static_assert(sizeof(BlockId) == blockIdSize);
+
+const std::string activatedFileSuffix = "act";
+const std::string archivedFileSuffix = "dat";
+
+inline auto OpenDir(const std::string& path)
+{
+    auto dir = ::opendir(path.c_str());
+    auto eno = errno;
+    if (!dir) { UC_ERROR("Failed({}) to open dir({}).", eno, path); }
+    return dir;
+}
+
+// Define SpaceLayout::DataIterator as an empty base class
+struct SpaceLayout::DataIterator {
+    virtual ~DataIterator() = default;
+};
+
+struct SpaceShardLayout::DataIterator : public SpaceLayout::DataIterator {
+    const SpaceLayout* layout{nullptr};
+    std::string root;
+    std::string current;
+    std::stack<std::pair<DIR*, std::string>> stk;
+    ~DataIterator()
+    {
+        while (!this->stk.empty()) {
+            ::closedir(this->stk.top().first);
+            this->stk.pop();
+        }
+    }
+    Status Setup(const SpaceLayout* layout, const std::string& root) {
+        this->layout = layout;
+        this->root = root;
+        auto dir = OpenDir(root);
+        if (!dir) { return Status::OsApiError(); }
+        this->stk.emplace(dir, root);
+        return Status::OK();
+    }
+    Status Next() {
+        this->current.clear();
+        while (!this->stk.empty()) {
+            auto entry = ::readdir64(this->stk.top().first);
+            if (entry == nullptr) {
+                ::closedir(this->stk.top().first);
+                this->stk.pop();
+                continue;
+            }
+            std::string name{entry->d_name};
+            if (name.front() == '.') { continue; }
+            if (this->layout->IsActivatedFile(name)) { continue; }
+            const auto& dir = this->stk.top().second;
+            auto fullpath = this->stk.top().second + "/" + name;
+            if (dir == this->root) {
+                auto sub = OpenDir(fullpath);
+                if (!sub) { return Status::OsApiError(); }
+                this->stk.emplace(sub, fullpath);
+                continue;
+            }
+            this->current = std::move(fullpath);
+            return Status::OK();
+        }
+        return Status::NotFound();
+    }
+};
 
 Status SpaceShardLayout::Setup(const std::vector<std::string>& storageBackends)
 {
@@ -59,7 +124,7 @@ std::string SpaceShardLayout::DataFilePath(const std::string& blockId, bool acti
     uint64_t front, back;
     this->ShardBlockId(blockId, front, back);
     return fmt::format("{}{}/{:016x}/{:016x}.{}", this->StorageBackend(blockId),
-                       this->DataFileRoot(), front, back, activated ? "act" : "dat");
+                       this->DataFileRoot(), front, back, activated ? activatedFileSuffix : archivedFileSuffix);
 }
 
 Status SpaceShardLayout::AddStorageBackend(const std::string& path)
@@ -134,4 +199,32 @@ std::string SpaceShardLayout::ClusterPropertyFilePath() const
     return fmt::format("{}{}/{}.bin", this->StorageBackend(), this->ClusterFileRoot(), "uc_property.bin");
 }
 
+std::shared_ptr<SpaceLayout::DataIterator> SpaceShardLayout::CreateFilePathIterator() const
+{
+    auto dataRoot = this->StorageBackend() + this->DataFileRoot();
+    std::shared_ptr<DataIterator> iter = nullptr;
+    try {
+        iter = std::make_shared<DataIterator>();
+    } catch (const std::exception& e) {
+        UC_ERROR("Failed to create data iterator: {}", e.what());
+        return nullptr;
+    }
+    if (iter->Setup(this, dataRoot).Failure()) {
+        return nullptr;
+    }
+    return std::dynamic_pointer_cast<SpaceLayout::DataIterator>(iter);
+}
+
+std::string SpaceShardLayout::NextDataFilePath(std::shared_ptr<SpaceLayout::DataIterator> iter) const
+{
+    auto shard_iter = std::dynamic_pointer_cast<DataIterator>(iter);
+    if (!shard_iter) { return std::string{}; }
+    if (shard_iter->Next().Failure()) { return std::string{}; }
+    return shard_iter->current;
+}
+
+bool SpaceShardLayout::IsActivatedFile(const std::string& filePath) const
+{
+    return std::equal(activatedFileSuffix.rbegin(), activatedFileSuffix.rend(), filePath.rbegin());
+}
 } // namespace UC

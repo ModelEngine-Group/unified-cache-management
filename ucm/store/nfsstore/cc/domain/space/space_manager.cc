@@ -40,7 +40,8 @@ std::unique_ptr<SpaceLayout> MakeSpaceLayout(const bool tempDumpDirEnable)
 }
 
 Status SpaceManager::Setup(const std::vector<std::string>& storageBackends, const size_t blockSize,
-                           const bool tempDumpDirEnable, const size_t storageCapacity)
+                           const bool tempDumpDirEnable, const size_t storageCapacity,
+                           const bool recycleEnable, const float recycleThresholdRatio)
 {
     if (blockSize == 0) {
         UC_ERROR("Invalid block size({}).", blockSize);
@@ -51,9 +52,18 @@ Status SpaceManager::Setup(const std::vector<std::string>& storageBackends, cons
     auto status = this->layout_->Setup(storageBackends);
     if (status.Failure()) { return status; }
     status = this->property_.Setup(this->layout_->ClusterPropertyFilePath());
+    if (recycleEnable && storageCapacity > 0) {
+        auto totalBlocks = storageCapacity / blockSize;
+        status = this->recycle_.Setup(this->GetSpaceLayout(), totalBlocks, [this] {
+            this->property_.DecreaseCapacity(this->blockSize_);
+        });
+        if (status.Failure()) { return status; }
+    }
     if (status.Failure()) { return status; }
     this->blockSize_ = blockSize;
     this->capacity_ = storageCapacity;
+    this->recycleEnable_ = recycleEnable;
+    this->capacityRecycleThreshold_ = static_cast<size_t>(storageCapacity * recycleThresholdRatio);
     return Status::OK();
 }
 
@@ -143,11 +153,14 @@ bool SpaceManager::LookupBlock(const std::string& blockId) const
 
 const SpaceLayout* SpaceManager::GetSpaceLayout() const { return this->layout_.get(); }
 
-Status SpaceManager::CapacityCheck() const
+Status SpaceManager::CapacityCheck()
 {
     if (this->capacity_ == 0) { return Status::OK(); }
     
     const size_t used = this->property_.GetCapacity();
+    if (this->recycleEnable_ && used >= this->capacityRecycleThreshold_) {
+        this->recycle_.Trigger();
+    }
     if (used > this->capacity_ - this->blockSize_) {
         UC_ERROR("Capacity is not enough, capacity: {}, current: {}, block size: {}.", 
                  this->capacity_, used, this->blockSize_);
