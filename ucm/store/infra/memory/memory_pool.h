@@ -39,6 +39,8 @@
 namespace UC {
 
 class MemoryPool {
+
+    std::string DUMMY_SLOT_PREFIX{"__slot_"};
     using Device = std::unique_ptr<IDevice>;
 public:
     MemoryPool(int32_t deviceId, size_t capacity, size_t blockSize) {
@@ -60,7 +62,7 @@ public:
         size_t slotNum = capacity / blockSize;
         for (size_t i = 0; i < slotNum; ++i) {
             // 将所有槽位都预先占好，插入LRU队列中。
-            std::string dummy = "__slot_" + std::to_string(i);
+            std::string dummy = DUMMY_SLOT_PREFIX + std::to_string(i);
             // std::shared_ptr<std::byte> addr = pool_ + i * blockSize_;
             size_t offset = i * blockSize_;
             lruList_.push_front(dummy);
@@ -144,7 +146,7 @@ private:
     size_t LRUEvictOne() {
         const std::string& victim = lruList_.back();
         // 真实数据块，才从availableBlocks_中删掉
-        if (victim.rfind("__slot_", 0) != 0) {
+        if (victim.rfind(DUMMY_SLOT_PREFIX, 0) != 0) {
             availableBlocks_.erase(victim);
         }
         size_t offset = offsetMap_[victim];
@@ -159,7 +161,7 @@ private:
         auto it = offsetMap_.find(blockId);
         // int32_t offset = static_cast<size_t>(addr - pool_);
         size_t offset = it->second;
-        std::string dummy = "__slot_" + std::to_string(offset / blockSize_);
+        std::string dummy = DUMMY_SLOT_PREFIX + std::to_string(offset / blockSize_);
         offsetMap_.erase(blockId);
 
         auto lit = lruIndex_.find(blockId);
