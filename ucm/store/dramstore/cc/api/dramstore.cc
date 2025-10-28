@@ -35,11 +35,16 @@ public:
         // 这里如何传入参数，待讨论
         // int32_t capacity = 14400;
         // int32_t blockSize = 144;
-        this->memPool_ = std::make_unique<MemoryPool>(config.deviceId, config.capacity, config.blockSize).release();
+        // this->memPool_ = std::make_unique<MemoryPool>(config.deviceId, config.capacity, config.blockSize).release();
+        auto status = this->memPool_.Setup(config.deviceId, config.capacity, config.blockSize);
+        if (status.Failure()) {
+            UC_ERROR("Failed({}) to setup MemoryPool.", status);
+            return status.Underlying();
+        }
         // int32_t deviceId = 1;
         // int32_t streamNumber = 10;
         // int32_t timeoutMs = 10000;
-        auto status = this->transMgr_.Setup(config.deviceId, config.streamNumber, this->memPool_, config.timeoutMs);
+        status = this->transMgr_.Setup(config.deviceId, config.streamNumber, this->memPool_, config.timeoutMs);
         if (status.Failure()) {
             UC_ERROR("Failed({}) to setup TsfTaskManager.", status);
             return status.Underlying();
