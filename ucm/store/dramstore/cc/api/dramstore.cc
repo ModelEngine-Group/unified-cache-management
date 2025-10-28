@@ -44,16 +44,16 @@ public:
         // int32_t deviceId = 1;
         // int32_t streamNumber = 10;
         // int32_t timeoutMs = 10000;
-        status = this->transMgr_.Setup(config.deviceId, config.streamNumber, this->memPool_, config.timeoutMs);
+        status = this->transMgr_.Setup(config.deviceId, config.streamNumber, &this->memPool_, config.timeoutMs);
         if (status.Failure()) {
             UC_ERROR("Failed({}) to setup TsfTaskManager.", status);
             return status.Underlying();
         }
         return Status::OK().Underlying();
     }
-    int32_t Alloc(const std::string& block) override { return this->memPool_->NewBlock(block).Underlying(); }
-    bool Lookup(const std::string& block) override { return this->memPool_->LookupBlock(block); }
-    void Commit(const std::string& block, const bool success) override { this->memPool_->CommitBlock(block, success).Underlying(); }
+    int32_t Alloc(const std::string& block) override { return this->memPool_.NewBlock(block).Underlying(); }
+    bool Lookup(const std::string& block) override { return this->memPool_.LookupBlock(block); }
+    void Commit(const std::string& block, const bool success) override { this->memPool_.CommitBlock(block, success).Underlying(); }
     std::list<int32_t> Alloc(const std::list<std::string>& blocks) override
     {
         std::list<int32_t> results;
@@ -93,7 +93,7 @@ public:
 private:
 
     DramTransManager transMgr_;
-    MemoryPool* memPool_;
+    MemoryPool memPool_;
 
 };
 
