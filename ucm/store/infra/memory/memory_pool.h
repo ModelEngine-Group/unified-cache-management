@@ -72,7 +72,6 @@ public:
         //     // offsetMap_[dummy] = addr;
         //     offsetMap_[dummy] = offset;
         // }
-    }
 
     Status Setup(int32_t deviceId, size_t capacity, size_t blockSize) {
         capacity_ = capacity;
