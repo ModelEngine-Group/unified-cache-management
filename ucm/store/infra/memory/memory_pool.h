@@ -44,34 +44,6 @@ class MemoryPool {
     std::string DUMMY_SLOT_PREFIX{"__slot_"};
     using Device = std::unique_ptr<IDevice>;
 public:
-    // MemoryPool(int32_t deviceId, size_t capacity, size_t blockSize) {
-    //     capacity_ = capacity;
-    //     blockSize_ = blockSize;
-    //     deviceId_ = deviceId;
-        // device_ = DeviceFactory::Make(deviceId, blockSize, static_cast<int>(capacity / blockSize)); // 大小是内存池的总容量大小
-        // if (!device_) {
-        //     throw std::runtime_error("MemoryPool::MemoryPool() failed due to failure to initialize device");
-        // }
-        // Status success = device_->Setup();
-        // if (!success.Success()) {
-        //     throw std::runtime_error("MemoryPool::MemoryPool() failed due to failure to setup device");
-        // }
-        // pool_ = device_->GetBuffer(capacity_);
-
-        // if (!pool_) {
-        //     throw std::bad_alloc();
-        // }
-        // size_t slotNum = capacity / blockSize;
-        // for (size_t i = 0; i < slotNum; ++i) {
-        //     // 将所有槽位都预先占好，插入LRU队列中。
-        //     std::string dummy = DUMMY_SLOT_PREFIX + std::to_string(i);
-        //     // std::shared_ptr<std::byte> addr = pool_ + i * blockSize_;
-        //     size_t offset = i * blockSize_;
-        //     lruList_.push_front(dummy);
-        //     lruIndex_[dummy] = lruList_.begin();
-        //     // offsetMap_[dummy] = addr;
-        //     offsetMap_[dummy] = offset;
-        // }
 
     Status Setup(int32_t deviceId, size_t capacity, size_t blockSize) {
         capacity_ = capacity;
@@ -99,6 +71,7 @@ public:
             lruList_.push_front(dummy);
             lruIndex_[dummy] = lruList_.begin();
             offsetMap_[dummy] = offset;
+        }
         return Status::OK();
 
     }
