@@ -66,15 +66,17 @@ class RequestBlockInfo:
     block_operations: list[BlockOperation] = field(default_factory=list)
     # Next block position to process
     start_position: int = 0
+    # vllm_block_ids in HBM
+    vllm_block_ids: list[int] = field(default_factory=list)
 
 
 @dataclass
 class ReqMeta:
     request_id: str
     # list[(block_hash, vllm_block_id)]
-    load_blocks: list[tuple[str, int]] = field(default_factory=list)
+    load_blocks: list[tuple[str, torch.Tensor]] = field(default_factory=list)
     # list[(block_hash, vllm_block_id)]
-    dump_blocks: list[tuple[str, int]] = field(default_factory=list)
+    dump_blocks: list[tuple[str, torch.Tensor]] = field(default_factory=list)
     # Whether use load_async
     load_async: bool = False
 
@@ -158,6 +160,8 @@ class UnifiedCacheConnectorV1(KVConnectorBase_V1):
                     "use_layerwise"
                 ]
             )
+        self.chunk_size = 256
+        self.blocks_per_chunk = self.chunk_size // self.block_size
 
     def _init_kv_caches_from_forward_context(self, forward_context: "ForwardContext"):
         for layer_name in forward_context.no_compile_layers:
@@ -204,7 +208,7 @@ class UnifiedCacheConnectorV1(KVConnectorBase_V1):
             )
 
     def get_tensor_and_offset_layerwise(
-        self, vllm_block_ids: List[int], kv_layer: torch.Tensor, layer_name: str
+        self, vllm_block_ids_tensors: List[torch.Tensor], kv_layer: torch.Tensor, layer_name: str
     ) -> tuple[List[torch.Tensor], List[int]]:
         k_tensors = []
         k_offsets = []
@@ -212,16 +216,16 @@ class UnifiedCacheConnectorV1(KVConnectorBase_V1):
         v_offsets = []
         layer_id = self._extract_layer_index(layer_name)
 
-        for blk_id in vllm_block_ids:
+        for vllm_block_ids_tensor in vllm_block_ids_tensors:
             k_data_offset = self.DataOffset(kv_layer, self.rank, layer_id, False)
             if self.is_mla:
-                k_tensors.append(kv_layer[blk_id])
+                k_tensors.append(kv_layer[vllm_block_ids_tensor])
             else:
-                k_tensors.append(kv_layer[0][blk_id])
+                k_tensors.append(kv_layer[0][vllm_block_ids_tensor])
             k_offsets.append(k_data_offset)
             if not self.is_mla:
                 v_data_offset = self.DataOffset(kv_layer, self.rank, layer_id, True)
-                v_tensors.append(kv_layer[1][blk_id])
+                v_tensors.append(kv_layer[1][vllm_block_ids_tensor])
                 v_offsets.append(v_data_offset)
         return k_tensors + v_tensors, k_offsets + v_offsets
 
@@ -266,14 +270,15 @@ class UnifiedCacheConnectorV1(KVConnectorBase_V1):
                 continue
 
             storage_block_ids = [block[0] for block in request.load_blocks]
-            vllm_block_ids = [block[1] for block in request.load_blocks]
+            vllm_block_ids_tensors = [block[1] for block in request.load_blocks]
             blocks_len = len(storage_block_ids)
-            self._load_req_to_blocks.setdefault(request.request_id, set()).update(
-                vllm_block_ids
-            )
+            for vllm_block_ids_tensor in vllm_block_ids_tensors:
+                self._load_req_to_blocks.setdefault(request.request_id, set()).update(
+                    vllm_block_ids_tensor.tolist()
+                )
             for layer_name, kv_layer in self.kv_caches.items():
                 tensors, offsets = self.get_tensor_and_offset_layerwise(
-                    vllm_block_ids, kv_layer, layer_name
+                    vllm_block_ids_tensors, kv_layer, layer_name
                 )
                 k_task_id = self.connector.load(
                     storage_block_ids, offsets[:blocks_len], tensors[:blocks_len]
@@ -397,10 +402,10 @@ class UnifiedCacheConnectorV1(KVConnectorBase_V1):
             # Example: [("hash_123", 5), ("hash_456", 8), ("hash_789", 12)]
             # ["hash_123", "hash_456", "hash_789"]
             storage_block_ids = [block[0] for block in request.dump_blocks]
-            vllm_block_ids = [block[1] for block in request.dump_blocks]  # [5, 8, 12]
+            vllm_block_ids_tensors = [block[1] for block in request.dump_blocks]  # [5, 8, 12]
             blocks_len = len(storage_block_ids)
             tensors, offsets = self.get_tensor_and_offset_layerwise(
-                vllm_block_ids, kv_layer, layer_name
+                vllm_block_ids_tensors, kv_layer, layer_name
             )
 
             if kv_layer[0].device.type == "npu":
@@ -457,11 +462,11 @@ class UnifiedCacheConnectorV1(KVConnectorBase_V1):
                 continue
 
             storage_block_ids = [block[0] for block in request.dump_blocks]
-            vllm_block_ids = [block[1] for block in request.dump_blocks]
+            vllm_block_ids_tensors = [block[1] for block in request.dump_blocks]
             blocks_len = len(storage_block_ids)
             for layer_name, kv_layer in self.kv_caches.items():
                 tensors, offsets = self.get_tensor_and_offset_layerwise(
-                    vllm_block_ids, kv_layer, layer_name
+                    vllm_block_ids_tensors, kv_layer, layer_name
                 )
                 for block_id, offset, tensor in zip(
                     storage_block_ids, offsets[:blocks_len], tensors[:blocks_len]
@@ -580,13 +585,13 @@ class UnifiedCacheConnectorV1(KVConnectorBase_V1):
             return ret
 
         assert num_computed_tokens % self.block_size == 0
-        block_hashes = hash_request_tokens(md5, self.block_size, request)
+        block_hashes = hash_request_tokens(md5, self.chunk_size, request)
         if not block_hashes:
             logger.debug("Maybe tokens too short to load.")
             return 0, False
 
         # Calculate start position (exclude blocks already in HBM)
-        start_position = num_computed_tokens // self.block_size
+        start_position = num_computed_tokens // self.chunk_size
 
         block_operations = [BlockOperation.NONE] * len(block_hashes)
 
@@ -655,12 +660,14 @@ class UnifiedCacheConnectorV1(KVConnectorBase_V1):
         """
         if request.request_id in self._need_load_reqs:
             local_block_ids = (
-                # since we use unhashed blocks, so we don't need to reset start_position
-                blocks.get_unhashed_block_ids()
+                blocks.get_block_ids()
                 if num_external_tokens > 0
                 else []
             )
-            self._need_load_reqs[request.request_id] = local_block_ids
+            self._need_load_reqs[request.request_id] = local_block_ids[0]
+            request_block_info = self.request_block_infos.get(request.request_id, None)
+            if request_block_info:
+                request_block_info.start_position = 0
             return
 
         request_block_info = self.request_block_infos.get(request.request_id, None)
@@ -699,15 +706,16 @@ class UnifiedCacheConnectorV1(KVConnectorBase_V1):
         for req_id, block_ids in self._need_load_reqs.items():
             block_info = self.request_block_infos.get(req_id)
             if block_info:
-                load_blocks, dump_blocks = self._extract_blocks(block_ids, block_info)
-            meta.requests.append(
-                ReqMeta(
-                    request_id=req_id,
-                    load_blocks=load_blocks,
-                    dump_blocks=dump_blocks,
-                    load_async=True,
+                block_info.vllm_block_ids = block_ids
+                load_blocks, dump_blocks = self._extract_blocks(block_info)
+                meta.requests.append(
+                    ReqMeta(
+                        request_id=req_id,
+                        load_blocks=load_blocks,
+                        dump_blocks=dump_blocks,
+                        load_async=True,
+                    )
                 )
-            )
         self._need_load_reqs.clear()
 
         for new_req in scheduler_output.scheduled_new_reqs:
@@ -716,9 +724,8 @@ class UnifiedCacheConnectorV1(KVConnectorBase_V1):
 
             block_info = self.request_block_infos.get(req_id)
             if block_info:
-                load_blocks, dump_blocks = self._extract_blocks(
-                    vllm_block_ids, block_info
-                )
+                block_info.vllm_block_ids = vllm_block_ids
+                load_blocks, dump_blocks = self._extract_blocks(block_info)
                 if load_blocks or dump_blocks:
                     meta.requests.append(
                         ReqMeta(
@@ -756,9 +763,8 @@ class UnifiedCacheConnectorV1(KVConnectorBase_V1):
         for req_id, new_block_ids in get_requests():
             block_info = self.request_block_infos.get(req_id)
             if block_info:
-                load_blocks, dump_blocks = self._extract_blocks(
-                    new_block_ids[0], block_info
-                )
+                block_info.vllm_block_ids.extend(new_block_ids[0])
+                load_blocks, dump_blocks = self._extract_blocks(block_info)
                 if load_blocks or dump_blocks:
                     meta.requests.append(
                         ReqMeta(
@@ -791,8 +797,8 @@ class UnifiedCacheConnectorV1(KVConnectorBase_V1):
         return False, None
 
     def _extract_blocks(
-        self, vllm_block_ids: list[int], block_info: RequestBlockInfo
-    ) -> tuple[list[tuple[str, int]], list[tuple[str, int]]]:
+        self, block_info: RequestBlockInfo
+    ) -> tuple[list[tuple[str, torch.Tensor]], list[tuple[str, torch.Tensor]]]:
         """
         Extract blocks that need load and dump, block_info.start_position
         is the next block position to process, only return blocks that need
@@ -802,23 +808,31 @@ class UnifiedCacheConnectorV1(KVConnectorBase_V1):
 
         if start_pos >= len(block_info.block_operations):
             return [], []
-
-        process_length = min(
-            len(block_info.block_operations) - start_pos, len(vllm_block_ids)
-        )
-        ops = block_info.block_operations[start_pos : start_pos + process_length]
-        hashes = block_info.block_hashes[start_pos : start_pos + process_length]
-        vllm_ids = vllm_block_ids[:process_length]
-
+        
         load_blocks = []
         dump_blocks = []
-        for op, hash, vllm_id in zip(ops, hashes, vllm_ids):
-            if op == BlockOperation.LOAD:
-                load_blocks.append((hash, vllm_id))
-            elif op == BlockOperation.DUMP:
-                dump_blocks.append((hash, vllm_id))
 
-        block_info.start_position += process_length
+        block_mapping: dict[str, torch.Tensor] = {}
+        vllm_block_ids = block_info.vllm_block_ids
+        for idx, vllm_block_id in enumerate(vllm_block_ids[start_pos * self.blocks_per_chunk :], start_pos * self.blocks_per_chunk):
+            chunk_idx = idx // self.blocks_per_chunk
+            if chunk_idx >= len(block_info.block_hashes):
+                break
+            if idx + self.blocks_per_chunk > len(vllm_block_ids):
+                break
+            chunk_blocks = vllm_block_ids[idx : idx + self.blocks_per_chunk]
+            block_mapping[block_info.block_hashes[chunk_idx]] = torch.tensor(chunk_blocks)
+
+        for i in range(start_pos, start_pos + len(block_mapping)):
+            if block_info.block_operations[i] == BlockOperation.LOAD:
+                chunk_hash = block_info.block_hashes[i]
+                load_blocks.append((chunk_hash, block_mapping[chunk_hash]))
+            elif block_info.block_operations[i] == BlockOperation.DUMP:
+                chunk_hash = block_info.block_hashes[i]
+                dump_blocks.append((chunk_hash, block_mapping[chunk_hash]))
+
+        block_info.start_position += len(block_mapping)
+            
         return load_blocks, dump_blocks
 
     def get_block_ids_with_load_errors(self) -> set[int]:
