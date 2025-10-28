@@ -123,6 +123,8 @@ PYBIND11_MODULE(ucmnfsstore, module)
     config.def_readwrite("transferBufferNumber", &UC::NFSStorePy::Config::transferBufferNumber);
     config.def_readwrite("transferTimeoutMs", &UC::NFSStorePy::Config::transferTimeoutMs);
     config.def_readwrite("tempDumpDirEnable", &UC::NFSStorePy::Config::tempDumpDirEnable);
+    config.def_readwrite("hotnessEnable", &UC::NFSStorePy::Config::hotnessEnable);
+    config.def_readwrite("hotnessInterval", &UC::NFSStorePy::Config::hotnessInterval);
     store.def(py::init<>());
     store.def("CCStoreImpl", &UC::NFSStorePy::CCStoreImpl);
     store.def("Setup", &UC::NFSStorePy::Setup);

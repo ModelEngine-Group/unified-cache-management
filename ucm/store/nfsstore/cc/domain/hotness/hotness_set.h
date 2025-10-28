@@ -21,38 +21,27 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  * */
-#ifndef UNIFIEDCACHE_POSIX_FILE_H
-#define UNIFIEDCACHE_POSIX_FILE_H
 
-#include "ifile.h"
+#ifndef UNIFIEDCACHE_HOTNESS_SET_H
+#define UNIFIEDCACHE_HOTNESS_SET_H
+
+#include <unordered_set>
+#include <mutex>
+#include "space/space_layout.h"
 
 namespace UC {
 
-class PosixFile : public IFile {
+class HotnessSet {
 public:
-    PosixFile(const std::string& path) : IFile{path}, handle_{-1} {}
-    ~PosixFile() override;
-    Status MkDir() override;
-    Status RmDir() override;
-    Status Rename(const std::string& newName) override;
-    Status Access(const int32_t mode) override;
-    Status Open(const uint32_t flags) override;
-    void Close() override;
-    void Remove() override;
-    Status Read(void* buffer, size_t size, off64_t offset = -1) override;
-    Status Write(const void* buffer, size_t size, off64_t offset = -1) override;
-    Status Truncate(size_t length) override;
-    Status Stat(FileStat& st) override;
-    Status ShmOpen(const uint32_t flags) override;
-    Status MMap(void*& addr, size_t size, bool write, bool read, bool shared) override;
-    void MUnmap(void* addr, size_t size) override;
-    void ShmUnlink() override;
-    Status UpdateTime() override;
+    void Insert(const std::string& blockId);
+    void UpdateHotness(const SpaceLayout* spaceLayout);
 
 private:
-    int32_t handle_;
+    std::mutex mutex_;
+    std::unordered_set<std::string> pendingBlocks_;
 };
+
 
 } // namespace UC
 
-#endif // UNIFIEDCACHE_POSIX_FILE_H
+#endif
