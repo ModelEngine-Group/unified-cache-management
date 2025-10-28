@@ -7,7 +7,7 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 option(BUILD_UCM_STORE "build ucm store module." ON)
-option(BUILD_UCM_SPARSE "build ucm sparse module." ON)
+option(BUILD_UCM_SPARSE "build ucm sparse module." OFF)
 option(BUILD_UNIT_TESTS "build all unit test suits." OFF)
 set(RUNTIME_ENVIRONMENT "simu" CACHE STRING "runtime: simu, ascend or cuda.")
 
