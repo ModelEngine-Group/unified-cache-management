@@ -1,0 +1,90 @@
+From 468600209ce3cddb9e9aae5921dd0de32baf49e5 Mon Sep 17 00:00:00 2001
+From: flesher0813 <1208954694@qq.com>
+Date: Mon, 27 Oct 2025 17:38:30 +0800
+Subject: [PATCH] [Patch] Adapt ucm
+
+---
+ vllm/v1/core/sched/scheduler.py    | 6 ++++++
+ vllm/v1/outputs.py                 | 1 +
+ vllm/v1/request.py                 | 2 ++
+ vllm/v1/worker/gpu_model_runner.py | 7 ++++---
+ 4 files changed, 13 insertions(+), 3 deletions(-)
+
+diff --git a/vllm/v1/core/sched/scheduler.py b/vllm/v1/core/sched/scheduler.py
+index fe552db..1207977 100644
+--- a/vllm/v1/core/sched/scheduler.py
++++ b/vllm/v1/core/sched/scheduler.py
+@@ -792,6 +792,12 @@ class Scheduler(SchedulerInterface):
+             new_token_ids = generated_token_ids
+             kv_transfer_params = None
+ 
++            if model_runner_output.finished_dumping is not None:
++                request.succeed_dumped_blocks.extend(model_runner_output.finished_dumping.get(req_id, []))
++                is_prefill = request.num_output_tokens == 0
++                if is_prefill:
++                    self.connector.connector.commit(model_runner_output.finished_dumping.get(req_id, []), True)
++
+             # Append generated tokens and check for stop. Note that if
+             # a request is still being prefilled, we expect the model runner
+             # to return empty token ids for the request.
+diff --git a/vllm/v1/outputs.py b/vllm/v1/outputs.py
+index f78623f..c8388ba 100644
+--- a/vllm/v1/outputs.py
++++ b/vllm/v1/outputs.py
+@@ -107,6 +107,7 @@ class ModelRunnerOutput:
+     # [req_ids]
+     finished_sending: Optional[set[str]] = None
+     finished_recving: Optional[set[str]] = None
++    finished_dumping: Optional[dict[str, list[str]]] = None
+ 
+     # req_id -> num_nans_in_logits
+     num_nans_in_logits: Optional[dict[str, int]] = None
+diff --git a/vllm/v1/request.py b/vllm/v1/request.py
+index 9b96f45..e70d169 100644
+--- a/vllm/v1/request.py
++++ b/vllm/v1/request.py
+@@ -103,6 +103,8 @@ class Request:
+         # The number of tokens with prefix cache hits.
+         self.num_cached_tokens = -1
+ 
++        self.succeed_dumped_blocks: list[str] = []
++
+         # The number of NaNs in logits. A value greater than 0
+         # indicates that the output is corrupted
+         self.num_nans_in_logits = 0
+diff --git a/vllm/v1/worker/gpu_model_runner.py b/vllm/v1/worker/gpu_model_runner.py
+index 5a26e88..53ee8cf 100644
+--- a/vllm/v1/worker/gpu_model_runner.py
++++ b/vllm/v1/worker/gpu_model_runner.py
+@@ -1378,7 +1378,7 @@ class GPUModelRunner(LoRAModelRunnerMixin):
+                 inputs_embeds=inputs_embeds,
+             )
+ 
+-            self.maybe_wait_for_kv_save()
++            finished_dumping = self.maybe_wait_for_kv_save()
+             finished_sending, finished_recving = (
+                 self.get_finished_kv_transfers(scheduler_output))
+ 
+@@ -1562,6 +1562,7 @@ class GPUModelRunner(LoRAModelRunnerMixin):
+             pooler_output=[],
+             finished_sending=finished_sending,
+             finished_recving=finished_recving,
++            finished_dumping=finished_dumping,
+             num_nans_in_logits=num_nans_in_logits,
+         )
+ 
+@@ -1719,9 +1720,9 @@ class GPUModelRunner(LoRAModelRunnerMixin):
+             kv_connector.start_load_kv(get_forward_context())
+ 
+     @staticmethod
+-    def maybe_wait_for_kv_save() -> None:
++    def maybe_wait_for_kv_save():
+         if has_kv_transfer_group():
+-            get_kv_transfer_group().wait_for_save()
++            return get_kv_transfer_group().wait_for_save()
+ 
+     @staticmethod
+     def get_finished_kv_transfers(
+-- 
+2.9.3.windows.1
+
