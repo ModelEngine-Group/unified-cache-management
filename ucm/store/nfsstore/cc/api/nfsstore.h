@@ -52,8 +52,7 @@ public:
             : storageBackends{storageBackends}, kvcacheBlockSize{kvcacheBlockSize},
               transferEnable{transferEnable}, transferDeviceId{-1}, transferStreamNumber{32},
               transferIoSize{262144}, transferBufferNumber{512}, transferTimeoutMs{30000},
-              tempDumpDirEnable{false}, hotnessEnable{true}, hotnessInterval{60},
-              storageCapacity{0}, recycleEnable{true}, recycleThresholdRatio{0.7f}
+              tempDumpDirEnable{true}
         {
         }
     };
