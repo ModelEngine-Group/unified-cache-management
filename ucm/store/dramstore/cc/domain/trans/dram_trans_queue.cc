@@ -63,7 +63,7 @@ void DramTransQueue::Work(std::list<Task::Shard>& shards, const Device& device) 
         this->Done(shards, device, true);
     }
     auto status = Status::OK();
-    if (shards[0].type == Task::Type::DUMP) {
+    if (it->type == Task::Type::DUMP) {
         // TODO: D2H
         status = this->D2H(shards, device);
     } else {
@@ -91,7 +91,8 @@ Status DramTransQueue::H2D(std::list<Task::Shard>& shards, const Device& device)
         shard_index++;
     }
     // return device->H2DAsync((std::byte*)shard.address, (std::byte*)host_src, shard.length);
-    return device->H2DBatchSync(device_addrs.data(), host_addrs.data(), shards.size(), shards[0].length * shards.size());
+    auto it = shards.begin();
+    return device->H2DBatchSync(device_addrs.data(), host_addrs.data(), shards.size(), it->length * shards.size());
 }
 
 Status DramTransQueue::D2H(std::list<Task::Shard>& shards, const Device& device) {
@@ -112,7 +113,8 @@ Status DramTransQueue::D2H(std::list<Task::Shard>& shards, const Device& device)
         shard_index++;
     }
     // return device->D2HAsync((std::byte*)host_src, (std::byte*)shard.address, shard.length);
-    return device->D2HBatchSync(host_addrs.data(), device_addrs.data(), shards.size(), shards[0].length * shards.size());
+    auto it = shards.begin();
+    return device->D2HBatchSync(host_addrs.data(), device_addrs.data(), shards.size(), it->length * shards.size());
 }
 
 void DramTransQueue::Done(std::list<Task::Shard>& shards, const Device& device, const bool success) {
