@@ -72,6 +72,52 @@ public:
         this->backend_.Push([=] { std::copy(src, src + count, dst); });
         return Status::OK();
     }
+    Status S2DSync(int fd, void* address, const size_t length, const size_t fileOffset, const size_t devOffset) override
+    {
+        CUfileHandle_t cuFileHandle = nullptr;
+        auto status = HandlePool<int, CUfileHandle_t>::Instance().Get(fd, cuFileHandle,
+            [fd](CUfileHandle_t& handle) -> Status {
+                return CreateCuFileHandle(fd, handle);
+            });
+        if (status.Failure()) {
+            return status;
+        }
+        ssize_t bytesRead = cuFileRead(cuFileHandle, address, length, fileOffset, devOffset);
+        HandlePool<int, CUfileHandle_t>::Instance().Put(fd, [](CUfileHandle_t h) {
+            if (h != nullptr) {
+                cuFileHandleDeregister(h);
+            }
+        });
+
+        if (bytesRead < 0 || (size_t)bytesRead != length) {
+            UC_ERROR("cuFileRead failed for fd {}: expected {}, got {}", fd, length, bytesRead);
+            return Status::Error();
+        }
+        return Status::OK();
+    }
+     Status D2SSync(int fd, void* address, const size_t length, const size_t fileOffset, const size_t devOffset) override
+    {
+        CUfileHandle_t cuFileHandle = nullptr;
+        auto status = HandlePool<int, CUfileHandle_t>::Instance().Get(fd, cuFileHandle,
+            [fd](CUfileHandle_t& handle) -> Status {
+                return CreateCuFileHandle(fd, handle);
+            });
+        if (status.Failure()) {
+            return status;
+        }
+        ssize_t bytesWrite = cuFileWrite(cuFileHandle, address, length, fileOffset, devOffset);
+        HandlePool<int, CUfileHandle_t>::Instance().Put(fd, [](CUfileHandle_t h) {
+            if (h != nullptr) {
+                cuFileHandleDeregister(h);
+            }
+        });
+
+        if (bytesWrite < 0 || (size_t)bytesWrite != length) {
+            UC_ERROR("cuFileWrite failed for fd {}: expected {}, got {}", fd, length, bytesWrite);
+            return Status::Error();
+        }
+        return Status::OK();
+    }
     Status AppendCallback(std::function<void(bool)> cb) override
     {
         this->backend_.Push([=] { cb(true); });
