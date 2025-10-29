@@ -47,13 +47,13 @@ public:
         Location location;
         std::string block;
         size_t offset;
-        uintptr_t address;
+        std::vector<uintptr_t> address;
         size_t length;
         size_t owner;
         std::shared_ptr<void> buffer;
         std::function<void(void)> done;
         Shard(const Type type, const Location location, const std::string& block,
-              const size_t offset, const uintptr_t address, const size_t length, const size_t owner)
+              const size_t offset, const std::vector<uintptr_t> address, const size_t length, const size_t owner)
             : type{type}, location{location}, block{block}, offset{offset}, address{address},
               length{length}, owner{owner}, buffer{nullptr}, done{nullptr}
         {
@@ -86,7 +86,7 @@ public:
     auto Id() const noexcept { return id_; }
     auto StartTp() const noexcept { return startTp_; }
     auto Str() const noexcept { return fmt::format("{},{},{},{}", id_, brief_, number_, size_); }
-    void Append(const std::string& block, const size_t offset, const uintptr_t address,
+    void Append(const std::string& block, const size_t offset, const std::vector<uintptr_t> address,
                 const size_t length)
     {
         shards_.emplace_back(type_, location_, block, offset, address, length, id_);

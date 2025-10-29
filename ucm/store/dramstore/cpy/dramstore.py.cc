@@ -78,8 +78,12 @@ private:
         auto length = lengths.begin();
         while ((blockId != blockIds.end()) && (offset != offsets.end()) &&
                (address != addresses.end()) && (length != lengths.end())) {
+            std::vector<uintptr_t> addr_vec;
+            for (auto addr_item : address->cast<py::list>()) {
+                addr_vec.push_back(addr_item.cast<uintptr_t>());
+            }
             task.Append(blockId->cast<std::string>(), offset->cast<size_t>(),
-                        address->cast<uintptr_t>(), length->cast<size_t>());
+                        std::move(addr_vec), length->cast<size_t>());
             blockId++;
             offset++;
             address++;

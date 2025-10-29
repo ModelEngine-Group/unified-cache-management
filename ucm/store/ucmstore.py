@@ -129,7 +129,7 @@ class UcmKVStoreBase(ABC):
         self,
         block_ids: List[str],
         offset: List[int],
-        dst_addr: List[int],
+        dst_addr: List[List[int]],
         size: List[int],
     ) -> Task:
         """
@@ -150,7 +150,7 @@ class UcmKVStoreBase(ABC):
         self,
         block_ids: List[str],
         offset: List[int],
-        src_addr: List[int],
+        src_addr: List[List[int]],
         size: List[int],
     ) -> Task:
         """

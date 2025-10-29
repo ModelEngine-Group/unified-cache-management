@@ -103,7 +103,13 @@ Status PosixQueue::D2S(Task::Shard& shard, const Device& device)
         return Status::OutOfMemory();
     }
     auto hub = shard.buffer.get();
-    auto status = device->D2HSync((std::byte*)hub, (std::byte*)shard.address, shard.length);
+    auto dAddr = new std::byte*[shard.address.size()];
+    auto hAddr = new std::byte*[shard.address.size()];
+    for (size_t i = 0; i < shard.address.size(); i++) {
+        hAddr[i] = (std::byte*)hub + i * shard.length / shard.address.size();
+        dAddr[i] = (std::byte*)shard.address[i];
+    }
+    auto status = device->D2HBatchSync(hAddr, const_cast<const std::byte**>(dAddr), shard.address.size(), shard.length / shard.address.size());
     if (status.Failure()) { return status; }
     auto path = this->layout_->DataFilePath(shard.block, true);
     return File::Write(path, shard.offset, shard.length, (uintptr_t)hub);
@@ -120,21 +126,27 @@ Status PosixQueue::S2D(Task::Shard& shard, const Device& device)
     auto path = this->layout_->DataFilePath(shard.block, false);
     auto status = File::Read(path, shard.offset, shard.length, (uintptr_t)hub);
     if (status.Failure()) { return status; }
-    return device->H2DAsync((std::byte*)shard.address, (std::byte*)hub, shard.length);
+    auto dAddr = new std::byte*[shard.address.size()];
+    auto hAddr = new std::byte*[shard.address.size()];
+    for (size_t i = 0; i < shard.address.size(); i++) {
+        hAddr[i] = (std::byte*)hub + i * shard.length / shard.address.size();
+        dAddr[i] = (std::byte*)shard.address[i];
+    }
+    return device->H2DBatchSync(dAddr, const_cast<const std::byte**>(hAddr), shard.address.size(), shard.length / shard.address.size());
 }
 
 Status PosixQueue::H2S(Task::Shard& shard)
 {
     auto path = this->layout_->DataFilePath(shard.block, true);
-    auto aligned = IsAligned(shard.offset) && IsAligned(shard.length) && IsAligned(shard.address);
-    return File::Write(path, shard.offset, shard.length, shard.address, aligned);
+    auto aligned = IsAligned(shard.offset) && IsAligned(shard.length) && IsAligned(shard.address[0]);
+    return File::Write(path, shard.offset, shard.length, shard.address[0], aligned);
 }
 
 Status PosixQueue::S2H(Task::Shard& shard)
 {
     auto path = this->layout_->DataFilePath(shard.block, false);
-    auto aligned = IsAligned(shard.offset) && IsAligned(shard.length) && IsAligned(shard.address);
-    return File::Read(path, shard.offset, shard.length, shard.address, aligned);
+    auto aligned = IsAligned(shard.offset) && IsAligned(shard.length) && IsAligned(shard.address[0]);
+    return File::Read(path, shard.offset, shard.length, shard.address[0], aligned);
 }
 
 } // namespace UC

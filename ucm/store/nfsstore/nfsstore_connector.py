@@ -51,6 +51,7 @@ class UcmNfsStore(UcmKVStoreBase):
         if transfer_enable:
             param.transferDeviceId = config["device"]
             param.transferIoSize = config["io_size"]
+            param.transferStreamNumber = config.get("transfer_stream_number", 128)
         ret = self.store.Setup(param)
         if ret != 0:
             msg = f"Failed to initialize ucmnfsstore, errcode: {ret}."

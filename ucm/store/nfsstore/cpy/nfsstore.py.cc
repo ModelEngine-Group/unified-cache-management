@@ -91,8 +91,12 @@ private:
         auto length = lengths.begin();
         while ((blockId != blockIds.end()) && (offset != offsets.end()) &&
                (address != addresses.end()) && (length != lengths.end())) {
+            std::vector<uintptr_t> addr_vec;
+            for (auto addr_item : address->cast<py::list>()) {
+                addr_vec.push_back(addr_item.cast<uintptr_t>());
+            }
             task.Append(blockId->cast<std::string>(), offset->cast<size_t>(),
-                        address->cast<uintptr_t>(), length->cast<size_t>());
+                        std::move(addr_vec), length->cast<size_t>());
             blockId++;
             offset++;
             address++;
@@ -123,8 +127,6 @@ PYBIND11_MODULE(ucmnfsstore, module)
     config.def_readwrite("transferBufferNumber", &UC::NFSStorePy::Config::transferBufferNumber);
     config.def_readwrite("transferTimeoutMs", &UC::NFSStorePy::Config::transferTimeoutMs);
     config.def_readwrite("tempDumpDirEnable", &UC::NFSStorePy::Config::tempDumpDirEnable);
-    config.def_readwrite("hotnessEnable", &UC::NFSStorePy::Config::hotnessEnable);
-    config.def_readwrite("hotnessInterval", &UC::NFSStorePy::Config::hotnessInterval);
     store.def(py::init<>());
     store.def("CCStoreImpl", &UC::NFSStorePy::CCStoreImpl);
     store.def("Setup", &UC::NFSStorePy::Setup);
