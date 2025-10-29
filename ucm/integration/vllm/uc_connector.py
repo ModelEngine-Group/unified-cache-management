@@ -336,7 +336,7 @@ class UnifiedCacheConnectorV1(KVConnectorBase_V1):
 
         if self.current_layer >= self.num_layers:
             return
-        
+
         for request_id, layer_to_task in self.layerwise_load_tasks.items():
             if request_id in self._load_failed_reqs:
                 continue
@@ -386,7 +386,7 @@ class UnifiedCacheConnectorV1(KVConnectorBase_V1):
 
         if self.current_layer > self.num_layers:
             return
-        
+
         metadata = self._get_connector_metadata()
         assert isinstance(metadata, UCConnectorV1Metadata)
 
