@@ -80,6 +80,39 @@ def embed(store: UcmKVStoreBase, hashes: List[str], tensors: List[List[torch.Ten
     store.commit(hashes, True)
 
 
+def fetch(store: UcmKVStoreBase, hashes: List[str], tensors: List[List[torch.Tensor]]):
+    founds = store.lookup(hashes)
+    for found in founds:
+        assert found
+    block_ids = []
+    offsets = []
+    layers = []
+    for hash_id, block in zip(hashes, tensors):
+        offset = 0
+        for layer in block:
+            block_ids.append(hash_id)
+            offsets.append(offset)
+            layers.append(layer)
+            offset += layer.untyped_storage().size()
+    task = store.load(block_ids, offsets, layers)
+    assert task.task_id > 0
+    ret = store.wait(task)
+    assert ret == 0
+
+
+def cmp_and_print_diff(a, b, rtol=0.0, atol=0.0):
+    for r, (row_a, row_b) in enumerate(zip(a, b)):
+        for c, (ta, tb) in enumerate(zip(row_a, row_b)):
+            if not torch.allclose(ta, tb, rtol=rtol, atol=atol):
+                mask = ~torch.isclose(ta, tb, rtol=rtol, atol=atol)
+                diff_a = ta[mask].cpu()
+                diff_b = tb[mask].cpu()
+                print(f"DIFF at [{r}][{c}]  total {mask.sum().item()} element(s)")
+                print("  a val:", diff_a.flatten())
+                print("  b val:", diff_b.flatten())
+                assert False
+
+
 def store_all_hashes(hashes):
     kvcache_block_hashes_file = "kvcache_block_hashes.txt"
     current_directory = os.path.dirname(__file__)
@@ -108,7 +141,10 @@ def main():
     for batch in range(total_batches):
         start = batch_size * batch
         end = min(start + batch_size, block_number)
+        tensors2 = [[torch.empty_like(t) for t in row] for row in tensors]
         embed(store, hashes[start:end], tensors)
+        fetch(store, hashes[start:end], tensors2)
+        cmp_and_print_diff(tensors, tensors2)
     store_all_hashes(hashes)
 
 
