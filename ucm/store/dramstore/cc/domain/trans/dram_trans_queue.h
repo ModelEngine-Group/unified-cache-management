@@ -54,10 +54,10 @@ public:
 private:
     bool Init(Device& device);
     void Exit(Device& device);
-    void Work(Task::Shard& shard, const Device& device);
-    void Done(Task::Shard& shard, const Device& device, const bool success);
-    Status H2D(Task::Shard& shard, const Device& device);
-    Status D2H(Task::Shard& shard, const Device& device);
+    void Work(std::list<Task::Shard>& shard, const Device& device);
+    void Done(std::list<Task::Shard>& shard, const Device& device, const bool success);
+    Status H2D(std::list<Task::Shard>& shard, const Device& device);
+    Status D2H(std::list<Task::Shard>& shard, const Device& device);
 };
 
 } // namespace UC
