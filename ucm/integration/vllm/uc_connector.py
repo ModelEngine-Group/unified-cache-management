@@ -682,7 +682,9 @@ class UnifiedCacheConnectorV1(KVConnectorBase_V1):
 
         for new_req in scheduler_output.scheduled_new_reqs:
             req_id = new_req.req_id
-            vllm_block_ids = new_req.block_ids[0]
+            vllm_block_ids = new_req.block_ids
+            if isinstance(vllm_block_ids, tuple):
+                vllm_block_ids = new_req.block_ids[0]
 
             block_info = self.request_block_infos.get(req_id)
             if block_info:
@@ -726,8 +728,11 @@ class UnifiedCacheConnectorV1(KVConnectorBase_V1):
         for req_id, new_block_ids in get_requests():
             block_info = self.request_block_infos.get(req_id)
             if block_info:
+                if isinstance(new_block_ids, tuple):
+                    new_block_ids = new_block_ids[0]
+
                 load_blocks, dump_blocks = self._extract_blocks(
-                    new_block_ids[0], block_info
+                    new_block_ids, block_info
                 )
                 if load_blocks or dump_blocks:
                     meta.requests.append(
