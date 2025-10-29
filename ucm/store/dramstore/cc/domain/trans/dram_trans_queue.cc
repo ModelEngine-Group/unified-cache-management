@@ -77,7 +77,7 @@ Status DramTransQueue::H2D(std::list<Task::Shard>& shards, const Device& device)
     // TODO: 里面要重写
     size_t pool_offset = 0;
     std::vector<std::byte*> host_addrs(shards.size());
-    std::vector<std::byte*> device_addrs(shards.size());
+    std::vector<uintptr_t> device_addrs(shards.size());
     for (auto& shard : shards) {
         int shard_index = 0;
         bool found = this->memPool_->GetOffset(shard.block, &pool_offset);
@@ -99,7 +99,7 @@ Status DramTransQueue::D2H(std::list<Task::Shard>& shards, const Device& device)
     // TODO: 里面要重写
     size_t pool_offset = 0;
     std::vector<std::byte*> host_addrs(shards.size());
-    std::vector<std::byte*> device_addrs(shards.size());
+    std::vector<uintptr_t> device_addrs(shards.size());
     for (auto& shard : shards) {
         int shard_index = 0;
         bool found = this->memPool_->GetOffset(shard.block, &pool_offset);
