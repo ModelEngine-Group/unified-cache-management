@@ -52,9 +52,9 @@ void DirectStorageQueue::Push(std::list<Task::Shard>& shards) noexcept { this->b
 bool DirectStorageQueue::Init(Device& device)
 {
     if (this->deviceId_ < 0) { return true; }
-    device = DeviceFactory::Make(this->deviceId_, this->bufferSize_, this->bufferNumber_);
+    device = DeviceFactory::Make(this->deviceId_, this->bufferSize_, this->bufferNumber_, this->transferUseDirect_);
     if (!device) { return false; }
-    return device->Setup(this->transferUseDirect_).Success();
+    return device->Setup().Success();
 }
 
 void DirectStorageQueue::Exit(Device& device) { device.reset(); }
@@ -78,20 +78,43 @@ void DirectStorageQueue::Done(Task::Shard& shard, const Device& device, const bo
 {
     if (!success) { this->failureSet_->Insert(shard.owner); }
     if (!shard.done) { return; }
-    if (device) {
-        if (device->Synchronized().Failure()) { this->failureSet_->Insert(shard.owner); }
-    }
     shard.done();
 }
 
 Status DirectStorageQueue::S2D(Task::Shard& shard, const Device& device) {
     auto path = this->layout_->DataFilePath(shard.block, false);
-    return device->S2DSync(path, (void*)shard.address, shard.length, shard.offset, 0);
+    int fd = -1;
+    auto status = HandlePool<std::string, int>::Instance().Get(path, fd,
+        [&path](int& newFd) -> Status {
+            newFd = open(path.c_str(), O_RDONLY | O_DIRECT, 0644);
+            if (newFd < 0) {
+                UC_ERROR("Failed to open file {} for reading: {}", path, strerror(errno));
+                return Status::Error();
+            }
+            return Status::OK();
+        });
+    if (status.Failure()) {
+        return status;
+    }
+    return device->S2DSync(fd, (void*)shard.address, shard.length, shard.offset, 0);
 }
 
 Status DirectStorageQueue::D2S(Task::Shard& shard, const Device& device) {
     auto path = this->layout_->DataFilePath(shard.block, true);
-    return device->D2SSync(path, (void*)shard.address, shard.length, shard.offset, 0);
+    int fd = -1;
+    auto status = HandlePool<std::string, int>::Instance().Get(path, fd,
+        [&path](int& newFd) -> Status {
+            newFd = open(path.c_str(), O_WRONLY | O_CREAT | O_DIRECT, 0644);
+            if (newFd < 0) {
+                UC_ERROR("Failed to open file {} for writing: {}", path, strerror(errno));
+                return Status::Error();
+            }
+            return Status::OK();
+        });
+    if (status.Failure()) {
+        return status;
+    }
+    return device->D2SSync(fd, (void*)shard.address, shard.length, shard.offset, 0);
 }
 
 } // namespace UC

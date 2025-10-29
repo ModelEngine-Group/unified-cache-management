@@ -56,9 +56,9 @@ void PosixQueue::Push(std::list<Task::Shard>& shards) noexcept { this->backend_.
 bool PosixQueue::Init(Device& device)
 {
     if (this->deviceId_ < 0) { return true; }
-    device = DeviceFactory::Make(this->deviceId_, this->bufferSize_, this->bufferNumber_);
+    device = DeviceFactory::Make(this->deviceId_, this->bufferSize_, this->bufferNumber_, this->transferUseDirect_);
     if (!device) { return false; }
-    return device->Setup(this->transferUseDirect_).Success();
+    return device->Setup().Success();
 }
 
 void PosixQueue::Exit(Device& device) { device.reset(); }

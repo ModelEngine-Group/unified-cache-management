@@ -34,8 +34,7 @@
 #include <unordered_map>
 #include <mutex>
 #include <string>
-#include <cufile.h>
-#include <cuda_runtime.h>
+#include "infra/template/sharded_handle_recorder.h"
 
 namespace UC {
 
@@ -51,7 +50,7 @@ class DirectStorageQueue : public TaskQueue {
 
 public:
     Status Setup(const int32_t deviceId, const size_t bufferSize, const size_t bufferNumber,
-                 TaskSet* failureSet, const SpaceLayout* layout, const size_t timeoutMs, bool transferUseDirect) override;
+                 TaskSet* failureSet, const SpaceLayout* layout, const size_t timeoutMs, bool transferUseDirect);
     void Push(std::list<Task::Shard>& shards) noexcept override;
 
 private:

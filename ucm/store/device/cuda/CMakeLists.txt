@@ -14,3 +14,4 @@ set_target_properties(Cuda::cudart PROPERTIES
     IMPORTED_LOCATION "${CUDA_ROOT}/lib64/libcudart.so"
     IMPORTED_LOCATION "${CUDA_ROOT}/lib64/libcufile.so"
 )
+target_link_libraries(storedevice PUBLIC Cuda::cudart)

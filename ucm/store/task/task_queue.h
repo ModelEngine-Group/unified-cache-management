@@ -32,8 +32,6 @@ class TaskQueue {
 public:
     virtual ~TaskQueue() = default;
     virtual void Push(std::list<Task::Shard>& shards) noexcept = 0;
-    virtual Status Setup(const int32_t deviceId, const size_t bufferSize, const size_t bufferNumber,
-                 class TaskSet* failureSet, const class SpaceLayout* layout, const size_t timeoutMs, bool transferUseDirect) = 0;
 };
 
 } // namespace UC

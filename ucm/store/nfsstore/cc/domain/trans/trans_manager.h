@@ -37,14 +37,25 @@ public:
     {
         this->timeoutMs_ = timeoutMs;
         auto status = Status::OK();
-        for (size_t i = 0; i < streamNumber; i++) {
-            auto q = transferUseDirect
-            ? std::shared_ptr<TaskQueue>(std::make_shared<DirectStorageQueue>())
-            : std::shared_ptr<TaskQueue>(std::make_shared<PosixQueue>());
-            status =
-                q->Setup(deviceId, ioSize, bufferNumber, &this->failureSet_, layout, timeoutMs, transferUseDirect);
-            if (status.Failure()) { break; }
-            this->queues_.emplace_back(std::move(q));
+        if(transferUseDirect)
+        {
+            for (size_t i = 0; i < streamNumber; i++) {
+                auto q = std::make_shared<DirectStorageQueue>();
+                status =
+                    q->Setup(deviceId, ioSize, bufferNumber, &this->failureSet_, layout, timeoutMs, transferUseDirect);
+                if (status.Failure()) { break; }
+                this->queues_.emplace_back(std::move(q));
+            }
+        }
+        else
+        {
+            for (size_t i = 0; i < streamNumber; i++) {
+                auto q = std::make_shared<PosixQueue>();
+                status =
+                    q->Setup(deviceId, ioSize, bufferNumber, &this->failureSet_, layout, timeoutMs, transferUseDirect);
+                if (status.Failure()) { break; }
+                this->queues_.emplace_back(std::move(q));
+            }
         }
         return status;
     }
