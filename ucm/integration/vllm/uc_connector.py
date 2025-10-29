@@ -342,9 +342,7 @@ class UnifiedCacheConnectorV1(KVConnectorBase_V1):
         if self.layerwise_load_tasks:
             logger.debug(f"Waiting for layer {self.current_layer} to be loaded")
 
-        assert (
-            self.current_layer < self.num_layers
-        ), "The current layer should be less than total layers!"
+        if self.current_layer >= self.num_layers: return
         for request_id, layer_to_task in self.layerwise_load_tasks.items():
             if request_id in self._load_failed_reqs:
                 continue
@@ -391,7 +389,7 @@ class UnifiedCacheConnectorV1(KVConnectorBase_V1):
 
         if not self.use_layerwise:
             return
-
+        if self.current_layer > self.num_layers: return
         metadata = self._get_connector_metadata()
         assert isinstance(metadata, UCConnectorV1Metadata)
 
