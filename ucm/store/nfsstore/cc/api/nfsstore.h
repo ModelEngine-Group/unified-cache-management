@@ -43,14 +43,14 @@ public:
         bool tempDumpDirEnable;
         bool hotnessEnable;
         size_t hotnessInterval;
-        bool transferUseDirect;
+        bool useDirect;
 
         Config(const std::vector<std::string>& storageBackends, const size_t kvcacheBlockSize,
                const bool transferEnable)
             : storageBackends{storageBackends}, kvcacheBlockSize{kvcacheBlockSize},
               transferEnable{transferEnable}, transferDeviceId{-1}, transferStreamNumber{32},
               transferIoSize{262144}, transferBufferNumber{512}, transferTimeoutMs{30000},
-              tempDumpDirEnable{false}, hotnessEnable{true}, hotnessInterval{60}, transferUseDirect{false}
+              tempDumpDirEnable{false}, hotnessEnable{true}, hotnessInterval{60}, useDirect{false}
         {
         }
     };

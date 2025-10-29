@@ -32,7 +32,7 @@
 #include <cstring>
 #include <unordered_map>
 #include <cstdlib>
-#include "infra/template/sharded_handle_recorder.h"
+#include "infra/template/handle_recorder.h"
 
 #define CUDA_TRANS_UNIT_SIZE (sizeof(uint64_t) * 2)
 #define CUDA_TRANS_BLOCK_NUMBER (32)
@@ -311,13 +311,17 @@ private:
     cudaStream_t stream_;
 };
 
+void DeviceFactory::Setup(bool useDirect)
+{
+    if (useDirect) {
+            CudaDevice::InitGdsOnce();
+    }
+}
+
 std::unique_ptr<IDevice> DeviceFactory::Make(const int32_t deviceId, const size_t bufferSize,
-                                             const size_t bufferNumber, bool transferUseDirect)
+                                             const size_t bufferNumber)
 {
     try {
-        if (transferUseDirect) {
-            CudaDevice::InitGdsOnce();
-        }
         return std::make_unique<CudaDevice>(deviceId, bufferSize, bufferNumber);
     } catch (const std::exception& e) {
         UC_ERROR("Failed({}) to make cuda device({},{},{}).", e.what(), deviceId, bufferSize,

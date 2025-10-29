@@ -41,11 +41,11 @@ class PosixQueue : public TaskQueue {
     TaskSet* failureSet_{nullptr};
     const SpaceLayout* layout_{nullptr};
     ThreadPool<Task::Shard, Device> backend_{};
-    bool transferUseDirect_{false};
+    bool useDirect{false};
 
 public:
     Status Setup(const int32_t deviceId, const size_t bufferSize, const size_t bufferNumber,
-                 TaskSet* failureSet, const SpaceLayout* layout, const size_t timeoutMs, bool transferUseDirect);
+                 TaskSet* failureSet, const SpaceLayout* layout, const size_t timeoutMs, bool useDirect);
     void Push(std::list<Task::Shard>& shards) noexcept override;
 
 private:

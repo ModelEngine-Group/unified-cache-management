@@ -44,7 +44,7 @@ public:
             status =
                 this->transMgr_.Setup(config.transferDeviceId, config.transferStreamNumber,
                                       config.transferIoSize, config.transferBufferNumber,
-                                      this->spaceMgr_.GetSpaceLayout(), config.transferTimeoutMs, config.transferUseDirect);
+                                      this->spaceMgr_.GetSpaceLayout(), config.transferTimeoutMs, config.useDirect);
             if (status.Failure()) {
                 UC_ERROR("Failed({}) to setup TsfTaskManager.", status);
                 return status.Underlying();

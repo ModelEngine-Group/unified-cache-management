@@ -31,14 +31,14 @@
 namespace UC {
 
 Status DirectStorageQueue::Setup(const int32_t deviceId, const size_t bufferSize, const size_t bufferNumber,
-                         TaskSet* failureSet, const SpaceLayout* layout, const size_t timeoutMs, bool transferUseDirect)
+                         TaskSet* failureSet, const SpaceLayout* layout, const size_t timeoutMs, bool useDirect)
 {
     this->deviceId_ = deviceId;
     this->bufferSize_ = bufferSize;
     this->bufferNumber_ = bufferNumber;
     this->failureSet_ = failureSet;
     this->layout_ = layout;
-    this->transferUseDirect_ = transferUseDirect;
+    this->useDirect = useDirect;
     auto success =
         this->backend_.SetWorkerInitFn([this](auto& device) { return this->Init(device); })
             .SetWorkerFn([this](auto& shard, const auto& device) { this->Work(shard, device); })
@@ -52,7 +52,8 @@ void DirectStorageQueue::Push(std::list<Task::Shard>& shards) noexcept { this->b
 bool DirectStorageQueue::Init(Device& device)
 {
     if (this->deviceId_ < 0) { return true; }
-    device = DeviceFactory::Make(this->deviceId_, this->bufferSize_, this->bufferNumber_, this->transferUseDirect_);
+    DeviceFactory::Setup(useDirect);
+    device = DeviceFactory::Make(this->deviceId_, this->bufferSize_, this->bufferNumber_);
     if (!device) { return false; }
     return device->Setup().Success();
 }

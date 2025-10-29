@@ -61,8 +61,9 @@ protected:
 
 class DeviceFactory {
 public:
+    static void Setup(bool useDirect = false);
     static std::unique_ptr<IDevice> Make(const int32_t deviceId, const size_t bufferSize,
-                                         const size_t bufferNumber, bool transferUseDirect = false);
+                                         const size_t bufferNumber);
 };
 
 } // namespace UC
