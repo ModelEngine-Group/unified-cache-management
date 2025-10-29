@@ -70,6 +70,7 @@ public:
     virtual Status MMap(void*& addr, size_t size, bool write, bool read, bool shared) = 0;
     virtual void MUnmap(void* addr, size_t size) = 0;
     virtual void ShmUnlink() = 0;
+    virtual Status UpdateTime() = 0;
 
 private:
     std::string path_;

@@ -24,6 +24,7 @@
 #ifndef UNIFIEDCACHE_SPACE_MANAGER_H
 #define UNIFIEDCACHE_SPACE_MANAGER_H
 
+#include <memory>
 #include "space_layout.h"
 #include "status/status.h"
 
@@ -31,14 +32,15 @@ namespace UC {
 
 class SpaceManager {
 public:
-    Status Setup(const std::vector<std::string>& storageBackends, const size_t blockSize);
+    Status Setup(const std::vector<std::string>& storageBackends, const size_t blockSize,
+                 const bool tempDumpDirEnable);
     Status NewBlock(const std::string& blockId) const;
     Status CommitBlock(const std::string& blockId, bool success = true) const;
     bool LookupBlock(const std::string& blockId) const;
     const SpaceLayout* GetSpaceLayout() const;
 
 private:
-    SpaceLayout layout_;
+    std::unique_ptr<SpaceLayout> layout_;
     size_t blockSize_;
 };
 

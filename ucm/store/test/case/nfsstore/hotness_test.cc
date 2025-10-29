@@ -21,30 +21,34 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  * */
-#ifndef UNIFIEDCACHE_FILE_H
-#define UNIFIEDCACHE_FILE_H
 
-#include <memory>
-#include "ifile.h"
+#include <chrono>
+#include <filesystem>
+#include "hotness/hotness_set.h"
+#include "hotness/hotness_timer.h"
+#include "cmn/path_base.h"
+#include "file/file.h"
+#include "space/space_manager.h"
 
-namespace UC {
+class UCHotnessTest : public UC::PathBase {};
 
-class File {
-public:
-    static std::unique_ptr<IFile> Make(const std::string& path);
-    static Status MkDir(const std::string& path);
-    static Status RmDir(const std::string& path);
-    static Status Rename(const std::string& path, const std::string& newName);
-    static Status Access(const std::string& path, const int32_t mode);
-    static Status Read(const std::string& path, const size_t offset, const size_t length,
-                       uintptr_t address, const bool directIo = false);
-    static Status Write(const std::string& path, const size_t offset, const size_t length,
-                        const uintptr_t address, const bool directIo = false);
-    static void MUnmap(void* addr, size_t size);
-    static void ShmUnlink(const std::string& path);
-    static void Remove(const std::string& path);
-};
+TEST_F(UCHotnessTest, UpdateHotness)
+{
+    UC::SpaceManager mgr;
+    ASSERT_EQ(mgr.Setup({this->Path()}, 1024 * 1024, false), UC::Status::OK());
 
-} // namespace UC
+    std::string block1 = "a1b2c3d4e5f6789012345678901234ab";
+    ASSERT_EQ(mgr.NewBlock(block1), UC::Status::OK());
+    ASSERT_EQ(mgr.CommitBlock(block1), UC::Status::OK());
 
-#endif
+    UC::HotnessSet hotness_set;
+    hotness_set.Insert(block1);
+    auto space_layout = mgr.GetSpaceLayout();
+    auto path = space_layout->DataFilePath(block1, false);
+    auto currentTime = std::filesystem::last_write_time(path);
+    std::filesystem::last_write_time(path, currentTime - std::chrono::seconds(2));
+    auto lastTime = std::filesystem::last_write_time(path);
+    hotness_set.UpdateHotness(space_layout);
+    auto newTime = std::filesystem::last_write_time(path);
+    ASSERT_GT(newTime, lastTime);
+}

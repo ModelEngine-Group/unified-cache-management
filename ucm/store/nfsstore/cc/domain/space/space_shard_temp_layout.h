@@ -21,28 +21,21 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  * */
-#ifndef UNIFIEDCACHE_FILE_H
-#define UNIFIEDCACHE_FILE_H
+#ifndef UNIFIEDCACHE_SPACE_SHARD_TEMP_LAYOUT_H
+#define UNIFIEDCACHE_SPACE_SHARD_TEMP_LAYOUT_H
 
-#include <memory>
-#include "ifile.h"
+#include "space_shard_layout.h"
 
 namespace UC {
 
-class File {
+class SpaceShardTempLayout : public SpaceShardLayout {
 public:
-    static std::unique_ptr<IFile> Make(const std::string& path);
-    static Status MkDir(const std::string& path);
-    static Status RmDir(const std::string& path);
-    static Status Rename(const std::string& path, const std::string& newName);
-    static Status Access(const std::string& path, const int32_t mode);
-    static Status Read(const std::string& path, const size_t offset, const size_t length,
-                       uintptr_t address, const bool directIo = false);
-    static Status Write(const std::string& path, const size_t offset, const size_t length,
-                        const uintptr_t address, const bool directIo = false);
-    static void MUnmap(void* addr, size_t size);
-    static void ShmUnlink(const std::string& path);
-    static void Remove(const std::string& path);
+    std::string DataFileParent(const std::string& blockId, bool activated) const override;
+    std::string DataFilePath(const std::string& blockId, bool activated) const override;
+
+protected:
+    std::vector<std::string> RelativeRoots() const override;
+    virtual std::string TempDataFileRoot() const;
 };
 
 } // namespace UC

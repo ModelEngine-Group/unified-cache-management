@@ -25,6 +25,7 @@
 #include <sys/mman.h>
 #include <sys/stat.h>
 #include <sys/xattr.h>
+#include <utime.h>
 #include <unistd.h>
 #include "logger/logger.h"
 
@@ -121,9 +122,7 @@ void PosixFile::Remove()
     auto ret = remove(this->Path().c_str());
     auto eno = errno;
     if (ret != 0) {
-        if (eno == ENOENT) {
-            UC_WARN("Failed to remove file, path: {}, file not found.", this->Path());
-        }
+        if (eno != ENOENT) { UC_WARN("Failed({},{}) to remove file({}).", ret, eno, this->Path()); }
     }
 }
 
@@ -230,6 +229,17 @@ void PosixFile::ShmUnlink()
     if (ret < 0) {
         if (eno != ENOENT) { UC_WARN("Failed({},{}) to unlink file({}).", ret, eno, this->Path()); }
     }
+}
+
+Status PosixFile::UpdateTime()
+{
+    auto ret = utime(this->Path().c_str(), nullptr);
+    auto eno = errno;
+    if (ret != 0) {
+        UC_ERROR("Failed({},{}) to update time file({}).", ret, eno, this->Path());
+        return Status::OsApiError();
+    }
+    return Status::OK();
 }
 
 } // namespace UC

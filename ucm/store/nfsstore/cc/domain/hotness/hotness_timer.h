@@ -21,28 +21,31 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  * */
-#ifndef UNIFIEDCACHE_FILE_H
-#define UNIFIEDCACHE_FILE_H
 
-#include <memory>
-#include "ifile.h"
+#ifndef UNIFIEDCACHE_HOTNESS_TIMER_H
+#define UNIFIEDCACHE_HOTNESS_TIMER_H
+#include <chrono>
+#include <functional>
+#include "template/timer.h"
 
 namespace UC {
 
-class File {
+class HotnessTimer {
 public:
-    static std::unique_ptr<IFile> Make(const std::string& path);
-    static Status MkDir(const std::string& path);
-    static Status RmDir(const std::string& path);
-    static Status Rename(const std::string& path, const std::string& newName);
-    static Status Access(const std::string& path, const int32_t mode);
-    static Status Read(const std::string& path, const size_t offset, const size_t length,
-                       uintptr_t address, const bool directIo = false);
-    static Status Write(const std::string& path, const size_t offset, const size_t length,
-                        const uintptr_t address, const bool directIo = false);
-    static void MUnmap(void* addr, size_t size);
-    static void ShmUnlink(const std::string& path);
-    static void Remove(const std::string& path);
+   void SetInterval(const size_t interval) { this->interval_ = std::chrono::seconds(interval); }
+   Status Start(std::function<void()> callable) 
+   {
+        try {
+            this->timer_ = std::make_unique<Timer<std::function<void()>>>(this->interval_, std::move(callable));  
+        } catch (const std::exception& e) {
+            UC_ERROR("Failed({}) to start hotness timer.", e.what());
+            return Status::OutOfMemory();
+        }
+        return this->timer_->Start(); 
+   }
+private:
+    std::chrono::seconds interval_;
+    std::unique_ptr<Timer<std::function<void()>>> timer_;
 };
 
 } // namespace UC

@@ -21,44 +21,53 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  * */
-#ifndef UNIFIEDCACHE_IBUFFERED_DEVICE_H
-#define UNIFIEDCACHE_IBUFFERED_DEVICE_H
 
-#include "idevice.h"
-#include "thread/index_pool.h"
+#ifndef UNIFIEDCACHE_HOTNESS_MANAGER_H
+#define UNIFIEDCACHE_HOTNESS_MANAGER_H
+
+#include <atomic>
+#include <functional>
+#include "hotness_set.h"
+#include "hotness_timer.h"
+#include "logger/logger.h"
 
 namespace UC {
 
-class IBufferedDevice : public IDevice {
+class HotnessManager {
 public:
-    IBufferedDevice(const int32_t deviceId, const size_t bufferSize, const size_t bufferNumber)
-        : IDevice{deviceId, bufferSize, bufferNumber}
+    Status Setup(const size_t interval, const SpaceLayout* spaceLayout)
     {
-    }
-    Status Setup() override
-    {
-        auto totalSize = this->bufferSize * this->bufferNumber;
-        if (totalSize == 0) { return Status::OK(); }
-        this->_addr = this->MakeBuffer(totalSize);
-        if (!this->_addr) { return Status::OutOfMemory(); }
-        this->_indexPool.Setup(this->bufferNumber);
+        this->hotnessTimer_.SetInterval(interval);
+        this->layout_ = spaceLayout;
+        this->setupSuccess_ = true;
         return Status::OK();
     }
-    virtual std::shared_ptr<std::byte> GetBuffer(const size_t size) override
+    
+    void Visit(const std::string& blockId)
     {
-        if (!this->_addr || size > this->bufferSize) { return this->MakeBuffer(size); }
-        auto idx = this->_indexPool.Acquire();
-        if (idx != IndexPool::npos) {
-            auto ptr = this->_addr.get() + this->bufferSize * idx;
-            return std::shared_ptr<std::byte>(ptr,
-                                              [this, idx](auto) { this->_indexPool.Release(idx); });
+        if (!this->setupSuccess_) {
+            return;
         }
-        return this->MakeBuffer(size);
+
+        this->hotnessSet_.Insert(blockId);
+        auto old = this->serviceRunning_.load(std::memory_order_acquire);
+        if (old) { return; }
+        if (this->serviceRunning_.compare_exchange_weak(old, true, std::memory_order_acq_rel)) {
+            auto updater = std::bind(&HotnessSet::UpdateHotness, &this->hotnessSet_, this->layout_);
+            if (this->hotnessTimer_.Start(std::move(updater)).Success()) {
+                UC_INFO("Space hotness service started.");
+                return;
+            }
+            this->serviceRunning_ = old;
+        }
     }
 
 private:
-    std::shared_ptr<std::byte> _addr{nullptr};
-    IndexPool _indexPool;
+    bool setupSuccess_{false};
+    std::atomic_bool serviceRunning_{false};
+    const SpaceLayout* layout_;
+    HotnessSet hotnessSet_;
+    HotnessTimer hotnessTimer_;
 };
 
 } // namespace UC

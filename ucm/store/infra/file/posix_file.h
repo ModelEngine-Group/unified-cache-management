@@ -47,6 +47,7 @@ public:
     Status MMap(void*& addr, size_t size, bool write, bool read, bool shared) override;
     void MUnmap(void* addr, size_t size) override;
     void ShmUnlink() override;
+    Status UpdateTime() override;
 
 private:
     int32_t handle_;

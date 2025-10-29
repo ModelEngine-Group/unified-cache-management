@@ -489,6 +489,7 @@ class UnifiedCacheConnectorV1(KVConnectorBase_V1):
         done_recving: set[str] = set()
         for req_id, tasks in self._need_load_reqs.items():
             if req_id in self._load_failed_reqs:
+                done_recving.add(req_id)
                 continue
             unfinished_tasks = []
             for task in tasks:
@@ -509,9 +510,10 @@ class UnifiedCacheConnectorV1(KVConnectorBase_V1):
                     )
                     self._load_failed_reqs.add(req_id)
                     break
-            if not unfinished_tasks:
-                done_recving.add(req_id)
-            self._need_load_reqs[req_id] = unfinished_tasks
+            if unfinished_tasks:
+                self._need_load_reqs[req_id] = unfinished_tasks
+                continue
+            done_recving.add(req_id)
 
         # remove the finished requests
         for req_id in list(done_recving):
@@ -605,9 +607,9 @@ class UnifiedCacheConnectorV1(KVConnectorBase_V1):
                 # TODO we will fix hole match later
                 break
         logger.info(
-            f"\nnum_total_blocks: {len(block_hashes)}\n"
-            f"\nnum_lookup_hits on hbm: {start_position}\n"
-            f"\nnum_lookup_hits on storage except hbm: {num_lookup_hits}\n"
+            f"num_total_blocks: {len(block_hashes)}, "
+            f"num_lookup_hits on hbm: {start_position}, "
+            f"num_lookup_hits on storage except hbm: {num_lookup_hits}"
         )
 
         # Load async when Decode instance need to load
