@@ -34,7 +34,7 @@ Status DramTransQueue::Setup(const int32_t deviceId, TaskSet* failureSet,
     this->memPool_ = memPool;
     auto success =
         this->backend_.SetWorkerInitFn([this](auto& device) { return this->Init(device); })
-            .SetWorkerFn([this](auto& shard, const auto& device) { this->Work(shard, device); })
+            .SetWorkerFn([this](auto& shards, const auto& device) { this->Work(shards, device); })
             .SetWorkerExitFn([this](auto& device) { this->Exit(device); })
             .Run();
     return success ? Status::OK() : Status::Error();
@@ -57,50 +57,73 @@ void DramTransQueue::Exit(Device& device) {
     device.reset();
 }
 
-void DramTransQueue::Work(Task::Shard& shard, const Device& device) {
-    if (this->failureSet_->Contains(shard.owner)) {
-        this->Done(shard, device, true);
+void DramTransQueue::Work(std::list<Task::Shard>& shards, const Device& device) {
+    if (this->failureSet_->Contains(shards[0].owner)) {
+        this->Done(shards, device, true);
     }
     auto status = Status::OK();
-    if (shard.type == Task::Type::DUMP) {
+    if (shards[0].type == Task::Type::DUMP) {
         // TODO: D2H
-        status = this->D2H(shard, device);
+        status = this->D2H(shards, device);
     } else {
         // TODO: H2D
-        status = this->H2D(shard, device);
+        status = this->H2D(shards, device);
     }
-    this->Done(shard, device, status.Success());
+    this->Done(shards, device, status.Success());
 }
 
-Status DramTransQueue::H2D(Task::Shard& shard, const Device& device) {
-    // auto block_addr = this->memPool_->GetAddress(shard.block);
+Status DramTransQueue::H2D(std::list<Task::Shard>& shards, const Device& device) {
+    // TODO: 里面要重写
     size_t pool_offset = 0;
-    bool found = this->memPool_->GetOffset(shard.block, &pool_offset);
-    if (!found) {
-        return Status::Error();
+    std::byte*[shards.size()] host_addrs = {0};
+    std::byte*[shards.size()] device_addrs = {0};
+    for (auto& shard : shards) {
+        int shard_index = 0;
+        bool found = this->memPool_->GetOffset(shard.block, &pool_offset);
+        if (!found) {
+            return Status::Error();
+        }
+        auto host_addr = this->memPool_->GetStartAddr().get() + pool_offset + shard.offset;       
+        auto device_addr = shard.address;
+        host_addrs[shard_index] = host_addr;
+        device_addrs[shard_index] = device_addr;
+        shard_index++;
     }
-    auto host_src = this->memPool_->GetStartAddr().get() + pool_offset + shard.offset;
-    return device->H2DAsync((std::byte*)shard.address, (std::byte*)host_src, shard.length);
+    // return device->H2DAsync((std::byte*)shard.address, (std::byte*)host_src, shard.length);
+    return device->H2DBatchSync(device_addrs, host_addrs, shards.size(), shards[0].length * shards.size());
 }
 
-Status DramTransQueue::D2H(Task::Shard& shard, const Device& device) {
-    // auto block_addr = this->memPool_->GetAddress(shard.block);
+Status DramTransQueue::D2H(std::list<Task::Shard>& shards, const Device& device) {
+    // TODO: 里面要重写
     size_t pool_offset = 0;
-    bool found = this->memPool_->GetOffset(shard.block, &pool_offset);
-    if (!found) {
-        return Status::Error();
+    std::byte*[shards.size()] host_addrs = {0};
+    std::byte*[shards.size()] device_addrs = {0};
+    for (auto& shard : shards) {
+        int shard_index = 0;
+        bool found = this->memPool_->GetOffset(shard.block, &pool_offset);
+        if (!found) {
+            return Status::Error();
+        }
+        auto host_addr = this->memPool_->GetStartAddr().get() + pool_offset + shard.offset;       
+        auto device_addr = shard.address;
+        host_addrs[shard_index] = host_addr;
+        device_addrs[shard_index] = device_addr;
+        shard_index++;
     }
-    auto host_src = this->memPool_->GetStartAddr().get() + pool_offset + shard.offset;
-    return device->D2HAsync((std::byte*)host_src, (std::byte*)shard.address, shard.length);
+    // return device->D2HAsync((std::byte*)host_src, (std::byte*)shard.address, shard.length);
+    return device->D2HBatchSync(host_addrs, device_addrs, shards.size(), shards[0].length * shards.size());
 }
 
-void DramTransQueue::Done(Task::Shard& shard, const Device& device, const bool success) {
-    if (!success) { this->failureSet_->Insert(shard.owner); }
-    if (!shard.done) { return; }
-    if (device) {
-        if (device->Synchronized().Failure()) { this->failureSet_->Insert(shard.owner); }
+void DramTransQueue::Done(std::list<Task::Shard>& shards, const Device& device, const bool success) {
+    if (!success) { this->failureSet_->Insert(shards[0].owner); }
+    for (auto& shard : shards) { 
+        if (shard.done) {
+            if (device) {
+                if (device->Synchronized().Failure()) { this->failureSet_->Insert(shards.owner); }
+            }
+            shard.done();
+        }
     }
-    shard.done();
 }
 
 } // namespace UC
