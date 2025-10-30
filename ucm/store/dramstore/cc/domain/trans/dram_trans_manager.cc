@@ -21,22 +21,22 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  * */
-#ifndef UNIFIEDCACHE_DRAM_TRANS_MANAGER_H
-#define UNIFIEDCACHE_DRAM_TRANS_MANAGER_H
 
-#include "task_manager.h"
-#include "dram_trans_queue.h"
+#include "dram_trans_manager.h"
 
 namespace UC {
 
-class DramTransManager : public TaskManager {
-public:
-    Status Setup(const int32_t deviceId, const size_t streamNumber, const MemoryPool* memPool, size_t timeoutMs);
-    // Status Submit(Task&& task, size_t& taskId) noexcept override;
+Status DramTransManager::Setup(const int32_t deviceId, const size_t streamNumber, const MemoryPool* memPool, size_t timeoutMs) {
+    this->timeoutMs_ = timeoutMs;
+    auto status = Status::OK();
+    for (size_t i = 0; i < streamNumber; i++) {
+        auto q = std::make_shared<DramTransQueue>();
+        status =
+            q->Setup(deviceId, &this->failureSet_, memPool, timeoutMs);
+        if (status.Failure()) { break; }
+        this->queues_.emplace_back(std::move(q));
+    }
+    return status;
+}
 
-    // 之后如要搞IO聚合（即调用H2DBatch/D2HBatch这些接口），可以在这里重写Submit方法
-};
-
-} // namespace UC
-
-#endif
+}

@@ -41,7 +41,7 @@ Status DramTransQueue::Setup(const int32_t deviceId, TaskSet* failureSet,
 }
 
 void DramTransQueue::Push(std::list<Task::Shard>& shards) noexcept {
-    this->backend_.Push(std::move(*shards));
+    this->backend_.Push(std::move(shards));
 }
 
 bool DramTransQueue::Init(Device& device) {
