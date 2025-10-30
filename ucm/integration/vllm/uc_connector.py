@@ -846,7 +846,7 @@ class UnifiedCacheConnectorV1(KVConnectorBase_V1):
 
         block_mapping: dict[str, torch.Tensor] = {}
         vllm_block_ids = block_info.vllm_block_ids
-        for idx, vllm_block_id in enumerate(vllm_block_ids[start_pos * self.blocks_per_chunk :], start_pos * self.blocks_per_chunk):
+        for idx in range(start_pos * self.blocks_per_chunk, len(vllm_block_ids), self.blocks_per_chunk):
             chunk_idx = idx // self.blocks_per_chunk
             if chunk_idx >= len(block_info.block_hashes):
                 break
