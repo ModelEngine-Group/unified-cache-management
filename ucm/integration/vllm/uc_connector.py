@@ -27,6 +27,7 @@ import hashlib
 import pickle
 from dataclasses import dataclass, field
 from enum import Enum
+import time
 from typing import TYPE_CHECKING, Any, Generator, List, Optional, Union
 
 import torch
@@ -187,10 +188,8 @@ class UnifiedCacheConnectorV1(KVConnectorBase_V1):
         # One block size
         k_min_data_block_size = (
             kv_layer[0][0].numel() if not self.is_mla else kv_layer[0].numel()
-        ) * elem_size
-        v_min_data_block_size = (
-            kv_layer[1][0].numel() if not self.is_mla else 0
-        ) * elem_size
+        ) * elem_size * self.blocks_per_chunk
+        v_min_data_block_size = k_min_data_block_size
         # When tp > 1 layer_size = (k_min_data_block_size + v_min_data_block_size) * tp_size
         layer_size = (k_min_data_block_size + v_min_data_block_size) * (
             self.total_tp_size if not self.is_mla else 1
@@ -295,6 +294,8 @@ class UnifiedCacheConnectorV1(KVConnectorBase_V1):
 
         self.layerwise_load_tasks.clear()
         self.current_layer = 0
+        total_size = 0
+        start_time = time.perf_counter()
         for request in metadata.requests:
             if not request.load_blocks:
                 continue
@@ -310,6 +311,7 @@ class UnifiedCacheConnectorV1(KVConnectorBase_V1):
                 pointers_list, offsets = self.get_pointers_and_offset_layerwise(
                     vllm_block_ids_tensors, kv_layer, layer_name
                 )
+                total_size += len(offsets) * self.io_size
                 size = [self.io_size] * blocks_len
                 k_task_id = self.connector.fetch_data(
                     storage_block_ids, offsets[:blocks_len], pointers_list[:blocks_len], size
@@ -354,6 +356,11 @@ class UnifiedCacheConnectorV1(KVConnectorBase_V1):
                     if v_task and self.connector.wait(v_task) != 0:
                         self._load_failed_reqs.add(request.request_id)
                         break
+                end_time = time.perf_counter()
+                elapsed_time = end_time - start_time
+                throughput_gbps = (total_size / (1024**3)) / elapsed_time
+                if total_size > 0:
+                    logger.info(f"LOAD: 数据量={(total_size / (1024**3)):.4f}GB, 耗时={elapsed_time:.4f}, KV加载传输完成: 速度={throughput_gbps:.4f} GB/s")
 
     def wait_for_layer_load(self, layer_name: str) -> None:
         """
@@ -489,6 +496,8 @@ class UnifiedCacheConnectorV1(KVConnectorBase_V1):
             self.dump_tasks.clear()
             return success_dumped_blocks if success_dumped_blocks else None
 
+        start_time = time.perf_counter()
+        total_size = 0
         for request in metadata.requests:
             if not request.dump_blocks:
                 continue
@@ -500,6 +509,7 @@ class UnifiedCacheConnectorV1(KVConnectorBase_V1):
                 pointers_list, offsets = self.get_pointers_and_offset_layerwise(
                     vllm_block_ids_tensors, kv_layer, layer_name
                 )
+                total_size += len(offsets) * self.io_size
                 for block_id, offset, pointers in zip(
                     storage_block_ids, offsets[:blocks_len], pointers_list[:blocks_len]
                 ):
@@ -519,6 +529,11 @@ class UnifiedCacheConnectorV1(KVConnectorBase_V1):
                         ).append(task)
         wait_for_tasks()
         self.dump_tasks.clear()
+        end_time = time.perf_counter()
+        elapsed_time = end_time - start_time
+        throughput_gbps = (total_size / (1024**3)) / elapsed_time
+        if total_size > 0:
+            logger.info(f"DUMP: 数据量={(total_size / (1024**3)):.4f}GB, 耗时={elapsed_time:.4f}, KV保存传输完成: 速度={throughput_gbps:.4f} GB/s")
         return success_dumped_blocks if success_dumped_blocks else None
 
     def get_finished(self, finished_req_ids: set[str]) -> tuple[set[str], set[str]]:

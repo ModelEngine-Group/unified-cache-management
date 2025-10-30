@@ -103,13 +103,13 @@ Status PosixQueue::D2S(Task::Shard& shard, const Device& device)
         return Status::OutOfMemory();
     }
     auto hub = shard.buffer.get();
-    auto dAddr = new std::byte*[shard.address.size()];
-    auto hAddr = new std::byte*[shard.address.size()];
+    std::vector<std::byte*> dAddr(shard.address.size());
+    std::vector<std::byte*> hAddr(shard.address.size());
     for (size_t i = 0; i < shard.address.size(); i++) {
         hAddr[i] = (std::byte*)hub + i * shard.length / shard.address.size();
         dAddr[i] = (std::byte*)shard.address[i];
     }
-    auto status = device->D2HBatchSync(hAddr, const_cast<const std::byte**>(dAddr), shard.address.size(), shard.length / shard.address.size());
+    auto status = device->D2HBatchSync(hAddr.data(), const_cast<const std::byte**>(dAddr.data()), shard.address.size(), shard.length / shard.address.size());
     if (status.Failure()) { return status; }
     auto path = this->layout_->DataFilePath(shard.block, true);
     return File::Write(path, shard.offset, shard.length, (uintptr_t)hub);
@@ -126,13 +126,13 @@ Status PosixQueue::S2D(Task::Shard& shard, const Device& device)
     auto path = this->layout_->DataFilePath(shard.block, false);
     auto status = File::Read(path, shard.offset, shard.length, (uintptr_t)hub);
     if (status.Failure()) { return status; }
-    auto dAddr = new std::byte*[shard.address.size()];
-    auto hAddr = new std::byte*[shard.address.size()];
+    std::vector<std::byte*> dAddr(shard.address.size());
+    std::vector<std::byte*> hAddr(shard.address.size());
     for (size_t i = 0; i < shard.address.size(); i++) {
         hAddr[i] = (std::byte*)hub + i * shard.length / shard.address.size();
         dAddr[i] = (std::byte*)shard.address[i];
     }
-    return device->H2DBatchSync(dAddr, const_cast<const std::byte**>(hAddr), shard.address.size(), shard.length / shard.address.size());
+    return device->H2DBatchSync(dAddr.data(), const_cast<const std::byte**>(hAddr.data()), shard.address.size(), shard.length / shard.address.size());
 }
 
 Status PosixQueue::H2S(Task::Shard& shard)

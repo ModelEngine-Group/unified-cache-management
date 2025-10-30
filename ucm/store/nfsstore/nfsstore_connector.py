@@ -93,7 +93,7 @@ class UcmNfsStore(UcmKVStoreBase):
         self,
         block_ids: List[str],
         offset: List[int],
-        dst_addr: List[int],
+        dst_addr: List[List[int]],
         size: List[int],
     ) -> Task:
         task_id = self.store.LoadToDevice(block_ids, offset, dst_addr, size)
@@ -103,7 +103,7 @@ class UcmNfsStore(UcmKVStoreBase):
         self,
         block_ids: List[str],
         offset: List[int],
-        src_addr: List[int],
+        src_addr: List[List[int]],
         size: List[int],
     ) -> Task:
         task_id = self.store.DumpFromDevice(block_ids, offset, src_addr, size)
