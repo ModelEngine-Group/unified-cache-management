@@ -21,28 +21,29 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  * */
-#ifndef UNIFIEDCACHE_SPACE_LAYOUT_H
-#define UNIFIEDCACHE_SPACE_LAYOUT_H
 
-#include <memory>
-#include <string>
-#include <vector>
+#ifndef UNIFIEDCACHE_SPACE_PROPERTY_H
+#define UNIFIEDCACHE_SPACE_PROPERTY_H
+
+#include "file/ifile.h"
 #include "status/status.h"
 
 namespace UC {
 
-class SpaceLayout {
+class SpaceProperty {
 public:
-    struct DataIterator;
-public:
-    virtual ~SpaceLayout() = default;
-    virtual Status Setup(const std::vector<std::string>& storageBackends) = 0;
-    virtual std::string DataFileParent(const std::string& blockId, bool activated) const = 0;
-    virtual std::string DataFilePath(const std::string& blockId, bool activated) const = 0;
-    virtual std::string ClusterPropertyFilePath() const = 0;
-    virtual std::shared_ptr<DataIterator> CreateFilePathIterator() const = 0;
-    virtual std::string NextDataFilePath(std::shared_ptr<DataIterator> iter) const = 0;
-    virtual bool IsActivatedFile(const std::string& filePath) const = 0;
+    ~SpaceProperty();
+    Status Setup(const std::string& propertyFilePath);
+    void IncreaseCapacity(const size_t delta);
+    void DecreaseCapacity(const size_t delta);
+    size_t GetCapacity() const;
+
+private:
+    Status InitShmProperty(IFile* shmPropertyFile);
+    Status LoadShmProperty(IFile* shmPropertyFile);
+
+private:
+    void* addr_{nullptr};
 };
 
 } // namespace UC

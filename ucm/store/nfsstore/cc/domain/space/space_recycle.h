@@ -21,30 +21,41 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  * */
-#ifndef UNIFIEDCACHE_SPACE_LAYOUT_H
-#define UNIFIEDCACHE_SPACE_LAYOUT_H
+#ifndef UNIFIEDCACHE_SPACE_RECYCLE_H
+#define UNIFIEDCACHE_SPACE_RECYCLE_H
 
-#include <memory>
-#include <string>
-#include <vector>
-#include "status/status.h"
+#include <thread>
+#include <mutex>
+#include <condition_variable>
+#include <atomic>
+#include <functional>
+#include "space_layout.h"
 
 namespace UC {
 
-class SpaceLayout {
+class SpaceRecycle {
 public:
-    struct DataIterator;
-public:
-    virtual ~SpaceLayout() = default;
-    virtual Status Setup(const std::vector<std::string>& storageBackends) = 0;
-    virtual std::string DataFileParent(const std::string& blockId, bool activated) const = 0;
-    virtual std::string DataFilePath(const std::string& blockId, bool activated) const = 0;
-    virtual std::string ClusterPropertyFilePath() const = 0;
-    virtual std::shared_ptr<DataIterator> CreateFilePathIterator() const = 0;
-    virtual std::string NextDataFilePath(std::shared_ptr<DataIterator> iter) const = 0;
-    virtual bool IsActivatedFile(const std::string& filePath) const = 0;
+    using RecycleOneBlockDone = std::function<void(void)>;
+    SpaceRecycle() = default;
+    SpaceRecycle(const SpaceRecycle&) = delete;
+    SpaceRecycle& operator=(const SpaceRecycle&) = delete;
+    ~SpaceRecycle();
+    Status Setup(const SpaceLayout* layout, const size_t totalNumber,
+                 RecycleOneBlockDone done);
+    void Trigger();
+private:
+    void Recycler();
+private:
+    bool stop_{false};
+    bool recycling_{false};
+    std::atomic_bool serviceRunning_{false};
+    uint32_t recycleNum_{0};
+    RecycleOneBlockDone recycleOneBlockDone_;
+    const SpaceLayout* layout_{nullptr};
+    std::mutex mtx_;
+    std::condition_variable cv_;
+    std::thread worker_;
 };
 
 } // namespace UC
-
 #endif
