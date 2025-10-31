@@ -31,9 +31,6 @@ namespace UC {
 class DRAMStore : public CCStore {
 public:
     struct Config {
-        // size_t ioSize;
-        // size_t capacity;
-        // int32_t deviceId;
         size_t capacity;
         size_t blockSize;
         int32_t deviceId;

@@ -28,7 +28,6 @@ namespace UC {
 
 Status DramTransQueue::Setup(const int32_t deviceId, TaskSet* failureSet, 
                                 const MemoryPool* memPool, const size_t timeoutMs) {
-    // return Status::OK();
     this->deviceId_ = deviceId;
     this->failureSet_ = failureSet;
     this->memPool_ = memPool;
@@ -64,17 +63,14 @@ void DramTransQueue::Work(std::list<Task::Shard>& shards, const Device& device) 
     }
     auto status = Status::OK();
     if (it->type == Task::Type::DUMP) {
-        // TODO: D2H
         status = this->D2H(shards, device);
     } else {
-        // TODO: H2D
         status = this->H2D(shards, device);
     }
     this->Done(shards, device, status.Success());
 }
 
 Status DramTransQueue::H2D(std::list<Task::Shard>& shards, const Device& device) {
-    // TODO: 里面要重写
     size_t pool_offset = 0;
     std::vector<std::byte*> host_addrs(shards.size());
     std::vector<std::byte*> device_addrs(shards.size());
@@ -90,13 +86,11 @@ Status DramTransQueue::H2D(std::list<Task::Shard>& shards, const Device& device)
         device_addrs[shard_index] = reinterpret_cast<std::byte*>(device_addr);
         shard_index++;
     }
-    // return device->H2DAsync((std::byte*)shard.address, (std::byte*)host_src, shard.length);
     auto it = shards.begin();
     return device->H2DBatchSync(device_addrs.data(), const_cast<const std::byte**>(host_addrs.data()), shards.size(), it->length);
 }
 
 Status DramTransQueue::D2H(std::list<Task::Shard>& shards, const Device& device) {
-    // TODO: 里面要重写
     size_t pool_offset = 0;
     std::vector<std::byte*> host_addrs(shards.size());
     std::vector<std::byte*> device_addrs(shards.size());
@@ -112,7 +106,6 @@ Status DramTransQueue::D2H(std::list<Task::Shard>& shards, const Device& device)
         device_addrs[shard_index] = reinterpret_cast<std::byte*>(device_addr);
         shard_index++;
     }
-    // return device->D2HAsync((std::byte*)host_src, (std::byte*)shard.address, shard.length);
     auto it = shards.begin();
     return device->D2HBatchSync(host_addrs.data(), const_cast<const std::byte**>(device_addrs.data()), shards.size(), it->length);
 }

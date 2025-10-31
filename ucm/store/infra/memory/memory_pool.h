@@ -76,9 +76,6 @@ public:
 
     }
 
-    // MemoryPool(const MemoryPool&) = delete;
-    // MemoryPool& operator=(const MemoryPool&) = delete;
-
     Status NewBlock(const std::string& blockId) {
         if (offsetMap_.count(blockId)) {
             return Status::DuplicateKey();
@@ -157,9 +154,7 @@ private:
     }
 
     void resetSpaceOfBlock(const std::string& blockId) {
-        // availableBlocks_.erase(blockId); // 这句大概不需要？
         auto it = offsetMap_.find(blockId);
-        // int32_t offset = static_cast<size_t>(addr - pool_);
         size_t offset = it->second;
         std::string dummy = DUMMY_SLOT_PREFIX + std::to_string(offset / blockSize_);
         offsetMap_.erase(blockId);

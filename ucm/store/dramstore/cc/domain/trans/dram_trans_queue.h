@@ -38,11 +38,7 @@ class DramTransQueue : public TaskQueue {
     int32_t deviceId_{-1};
     TaskSet* failureSet_{nullptr};
     const MemoryPool* memPool_{nullptr};
-    // ThreadPool<Task::Shard, Device> backend_{};
     ThreadPool<std::list<Task::Shard>, Device> backend_{};
-    // 之后要搞IO聚合（即调用H2DBatch/D2HBatch这些接口）的话，这里ThreadPool里的第一个范型，大概就需要从Task::Shard变成std::list<Task::Shard>吧，以及重写一下Work, Done这两个函数。
-    // 根据ThreadPool的第一个范型的类型，期望在调用ThreadPool::Push()时，
-    // 调用到void Push(Task&& task)而不是void Push(std::list<Task>& tasks)这个方法，将一个std::list<Task::Shard>当成线程池任务队列中的一个任务（即改变任务的粒度）
 
 public:
     Status Setup(const int32_t deviceId, 

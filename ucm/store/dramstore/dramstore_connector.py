@@ -50,7 +50,6 @@ else:
 @dataclass
 class DramTask(Task):
     task_id: int
-    # task_id: str = "1"
     event: Optional[Any] = None
 
 
