@@ -35,13 +35,14 @@ bool IsAligned(const T value)
 }
 
 Status PosixQueue::Setup(const int32_t deviceId, const size_t bufferSize, const size_t bufferNumber,
-                         TaskSet* failureSet, const SpaceLayout* layout, const size_t timeoutMs)
+                         TaskSet* failureSet, const SpaceLayout* layout, const size_t timeoutMs, bool useDirect)
 {
     this->deviceId_ = deviceId;
     this->bufferSize_ = bufferSize;
     this->bufferNumber_ = bufferNumber;
     this->failureSet_ = failureSet;
     this->layout_ = layout;
+    this->useDirect = useDirect;
     auto success =
         this->backend_.SetWorkerInitFn([this](auto& device) { return this->Init(device); })
             .SetWorkerFn([this](auto& shard, const auto& device) { this->Work(shard, device); })

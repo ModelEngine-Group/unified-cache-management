@@ -49,6 +49,8 @@ public:
                                 const size_t count) = 0;
     virtual Status D2HBatchSync(std::byte* hArr[], const std::byte* dArr[], const size_t number,
                                 const size_t count) = 0;
+    virtual Status S2DSync(int fd, void* address, const size_t length, const size_t fileOffset, const size_t devOffset) = 0;
+    virtual Status D2SSync(int fd, void* address, const size_t length, const size_t fileOffset, const size_t devOffset) = 0;
 
 protected:
     virtual std::shared_ptr<std::byte> MakeBuffer(const size_t size) = 0;
@@ -59,6 +61,7 @@ protected:
 
 class DeviceFactory {
 public:
+    static void Setup(bool useDirect = false);
     static std::unique_ptr<IDevice> Make(const int32_t deviceId, const size_t bufferSize,
                                          const size_t bufferNumber);
 };
