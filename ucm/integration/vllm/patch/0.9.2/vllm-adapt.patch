@@ -1,30 +1,35 @@
-From acc0c1a279e77568d92dfc7a36dc1dbd3acdf0ca Mon Sep 17 00:00:00 2001
-From: flesher0813 <1208954694@qq.com>
-Date: Fri, 17 Oct 2025 21:01:17 +0800
-Subject: [PATCH] [Feat] support aggregate and load failure
+From 00c537e5a0031b949926b3c379d5d61a75ab092b Mon Sep 17 00:00:00 2001
+From: wenxinwang <wangwenxin21@huawei.com>
+Date: Fri, 31 Oct 2025 09:56:04 +0800
+Subject: [PATCH] fix deepseek patch
 
 ---
- vllm/attention/layer.py                       |  45 +++-
- .../kv_transfer/kv_connector/utils.py         | 113 +++++++++
- .../kv_transfer/kv_connector/v1/base.py       |   9 +
- .../kv_connector/v1/multi_connector.py        |   6 +
- .../v1/shared_storage_connector.py            |   7 +-
- vllm/v1/core/block_pool.py                    |   2 +-
- vllm/v1/core/kv_cache_manager.py              |  11 +-
- vllm/v1/core/sched/output.py                  |   5 +
- vllm/v1/core/sched/scheduler.py               | 217 ++++++++++++++++--
- vllm/v1/core/single_type_kv_cache_manager.py  |   3 +
- vllm/v1/executor/multiproc_executor.py        |  30 ++-
- vllm/v1/outputs.py                            |   7 +-
- vllm/v1/request.py                            |   2 +-
- vllm/v1/worker/block_table.py                 |  13 ++
- vllm/v1/worker/gpu_input_batch.py             |  14 ++
- vllm/v1/worker/gpu_model_runner.py            | 104 +++++++--
- vllm/v1/worker/gpu_worker.py                  |  25 +-
- 17 files changed, 564 insertions(+), 49 deletions(-)
+ vllm/attention/layer.py                       |   49 +-
+ vllm/config.py                                |    2 +-
+ .../kv_transfer/kv_connector/utils.py         |  113 ++
+ .../kv_transfer/kv_connector/v1/base.py       |    9 +
+ .../v1/shared_storage_connector.py            |    7 +-
+ vllm/engine/metrics.py                        | 1258 ++++++++---------
+ vllm/v1/attention/backends/mla/common.py      |   10 +-
+ vllm/v1/core/block_pool.py                    |    2 +-
+ vllm/v1/core/kv_cache_manager.py              |   14 +-
+ vllm/v1/core/sched/output.py                  |    3 +
+ vllm/v1/core/sched/scheduler.py               |  163 ++-
+ vllm/v1/core/single_type_kv_cache_manager.py  |    3 +
+ vllm/v1/engine/llm_engine.py                  |  644 ++++-----
+ vllm/v1/executor/multiproc_executor.py        |   30 +-
+ vllm/v1/metrics/loggers.py                    |    2 +
+ vllm/v1/metrics/stats.py                      |    1 +
+ vllm/v1/outputs.py                            |    5 +
+ vllm/v1/request.py                            |    2 +-
+ vllm/v1/worker/block_table.py                 |   13 +
+ vllm/v1/worker/gpu_input_batch.py             |    9 +
+ vllm/v1/worker/gpu_model_runner.py            |  122 +-
+ vllm/v1/worker/gpu_worker.py                  |   25 +-
+ 22 files changed, 1493 insertions(+), 993 deletions(-)
 
 diff --git a/vllm/attention/layer.py b/vllm/attention/layer.py
-index f0ad68b16..26cdf0445 100644
+index f0ad68b16..728ab99fd 100644
 --- a/vllm/attention/layer.py
 +++ b/vllm/attention/layer.py
 @@ -2,7 +2,6 @@
@@ -40,8 +45,8 @@ index f0ad68b16..26cdf0445 100644
  from vllm.utils import direct_register_custom_op
  from vllm.v1.attention.backends.utils import validate_kv_sharing_target
 +from ucm.sparse.state import get_ucm_sparse, has_ucm_sparse
-
-
+ 
+ 
  class Attention(nn.Module):
 @@ -409,9 +409,10 @@ def unified_attention(
          attn_metadata = attn_metadata[layer_name]
@@ -54,25 +59,27 @@ index f0ad68b16..26cdf0445 100644
 +    maybe_execute_sparse_attention_finished(query, key, value, output, layer_name, forward_context)
      maybe_save_kv_layer_to_connector(layer_name, kv_cache)
      return output
-
-@@ -449,6 +450,7 @@ def unified_attention_with_output(
+ 
+@@ -449,6 +450,8 @@ def unified_attention_with_output(
          attn_metadata = attn_metadata[layer_name]
      self = forward_context.no_compile_layers[layer_name]
      kv_cache = self.kv_cache[forward_context.virtual_engine]
-+    maybe_execute_sparse_attention_begin(query, key, value, layer_name, forward_context)
++    if not self.use_mla:
++        maybe_execute_sparse_attention_begin(query, key, value, layer_name, forward_context)
      self.impl.forward(self,
                        query,
                        key,
-@@ -457,7 +459,7 @@ def unified_attention_with_output(
+@@ -457,7 +460,8 @@ def unified_attention_with_output(
                        attn_metadata,
                        output=output,
                        output_scale=output_scale)
 -
-+    maybe_execute_sparse_attention_finished(query, key, value, output, layer_name, forward_context)
++    if not self.use_mla:
++        maybe_execute_sparse_attention_finished(query, key, value, output, layer_name, forward_context)
      maybe_save_kv_layer_to_connector(layer_name, kv_cache)
-
-
-@@ -479,3 +481,40 @@ direct_register_custom_op(
+ 
+ 
+@@ -479,3 +483,42 @@ direct_register_custom_op(
      fake_impl=unified_attention_with_output_fake,
      dispatch_key=current_platform.dispatch_key,
  )
@@ -83,6 +90,7 @@ index f0ad68b16..26cdf0445 100644
 +        value: torch.Tensor,
 +        layer_name: str,
 +        forward_context: ForwardContext,
++        phase: Optional[str] = None,
 +):
 +    if not has_ucm_sparse():
 +        return
@@ -93,7 +101,7 @@ index f0ad68b16..26cdf0445 100644
 +    if attn_metadata is None:
 +        return
 +
-+    ucm_sparse.attention_begin(query, key, value, layer_name, forward_context)
++    ucm_sparse.attention_begin(query, key, value, layer_name, forward_context, phase)
 +
 +def maybe_execute_sparse_attention_finished(
 +        query: torch.Tensor,
@@ -102,6 +110,7 @@ index f0ad68b16..26cdf0445 100644
 +        attn_output: torch.Tensor,
 +        layer_name: str,
 +        forward_context: ForwardContext,
++        phase: Optional[str] = None,
 +):
 +    if not has_ucm_sparse():
 +        return
@@ -112,7 +121,20 @@ index f0ad68b16..26cdf0445 100644
 +    if attn_metadata is None:
 +        return
 +
-+    ucm_sparse.attention_finished(query, key, value, attn_output, layer_name, forward_context)
++    ucm_sparse.attention_finished(query, key, value, attn_output, layer_name, forward_context, phase)
+diff --git a/vllm/config.py b/vllm/config.py
+index 724f69a38..9ebdf8777 100644
+--- a/vllm/config.py
++++ b/vllm/config.py
+@@ -1131,7 +1131,7 @@ class ModelConfig:
+         if not hasattr(self.hf_text_config, "model_type"):
+             return False
+         elif self.hf_text_config.model_type in \
+-            ('deepseek_v2', 'deepseek_v3', 'deepseek_mtp'):
++            ('deepseek_v2', 'deepseek_v3', 'deepseek_mtp', 'deepseek_v32'):
+             return self.hf_text_config.kv_lora_rank is not None
+         elif self.hf_text_config.model_type == 'eagle':
+             # if the model is an EAGLE module, check for the
 diff --git a/vllm/distributed/kv_transfer/kv_connector/utils.py b/vllm/distributed/kv_transfer/kv_connector/utils.py
 index 5cbc8ca31..8556a979e 100644
 --- a/vllm/distributed/kv_transfer/kv_connector/utils.py
@@ -127,15 +149,15 @@ index 5cbc8ca31..8556a979e 100644
 +from typing import Optional, cast
 +
  import torch
-
+ 
  import vllm.envs as envs
  from vllm import _custom_ops as ops
  from vllm.config import VllmConfig, get_current_vllm_config
  from vllm.logger import init_logger
 +from vllm.v1.outputs import ModelRunnerOutput
-
+ 
  logger = init_logger(__name__)
-
+ 
 @@ -107,3 +113,110 @@ def get_kv_connector_cache_layout():
              "layout to HND for better xfer performance.")
              return "HND"
@@ -248,38 +270,21 @@ index 5cbc8ca31..8556a979e 100644
 +
 +        return result_future
 diff --git a/vllm/distributed/kv_transfer/kv_connector/v1/base.py b/vllm/distributed/kv_transfer/kv_connector/v1/base.py
-index f80b5eba2..39d8fa389 100644
+index f80b5eba2..8891246e6 100644
 --- a/vllm/distributed/kv_transfer/kv_connector/v1/base.py
 +++ b/vllm/distributed/kv_transfer/kv_connector/v1/base.py
 @@ -201,6 +201,15 @@ class KVConnectorBase_V1(ABC):
          """
          return None, None
-
-+    def get_block_ids_with_load_errors(self) -> set[int]:
+ 
++    def get_block_ids_with_load_errors(self) -> Optional[set[int]]:
 +        """
 +        Get the set of block IDs that failed to load.
 +        Returns:
 +            Optional[set[int]]: A set of block IDs that encountered load errors.
 +            Returns None if no errors occurred during load.
 +        """
-+        return set()
-+
-     # ==============================
-     # Scheduler-side methods
-     # ==============================
-diff --git a/vllm/distributed/kv_transfer/kv_connector/v1/multi_connector.py b/vllm/distributed/kv_transfer/kv_connector/v1/multi_connector.py
-index be3c23399..c4fedb3a7 100644
---- a/vllm/distributed/kv_transfer/kv_connector/v1/multi_connector.py
-+++ b/vllm/distributed/kv_transfer/kv_connector/v1/multi_connector.py
-@@ -129,6 +129,12 @@ class MultiConnector(KVConnectorBase_V1):
-
-         return finished_sending or None, finished_recving or None
-
-+    def get_block_ids_with_load_errors(self) -> set[int]:
-+        agg_block_ids: set[int] = set()
-+        for c in self._connectors:
-+            agg_block_ids |= c.get_block_ids_with_load_errors()
-+        return agg_block_ids
++        return None
 +
      # ==============================
      # Scheduler-side methods
@@ -295,10 +300,10 @@ index 3c574d065..223106def 100644
 -from dataclasses import dataclass
 +from dataclasses import dataclass, field
  from typing import TYPE_CHECKING
-
+ 
  import safetensors
 @@ -53,10 +53,7 @@ class ReqMeta:
-
+ 
  @dataclass
  class SharedStorageConnectorMetadata(KVConnectorMetadata):
 -    requests: list[ReqMeta]
@@ -306,9 +311,1325 @@ index 3c574d065..223106def 100644
 -    def __init__(self):
 -        self.requests = []
 +    requests: list[ReqMeta] = field(default_factory=list)
-
+ 
      def add_request(
          self,
+diff --git a/vllm/engine/metrics.py b/vllm/engine/metrics.py
+index 8d51f0472..ff6cdf2a9 100644
+--- a/vllm/engine/metrics.py
++++ b/vllm/engine/metrics.py
+@@ -1,629 +1,629 @@
+-# SPDX-License-Identifier: Apache-2.0
+-# SPDX-FileCopyrightText: Copyright contributors to the vLLM project
+-
+-import time
+-from typing import TYPE_CHECKING
+-from typing import Counter as CollectionsCounter
+-from typing import Dict, List, Optional, Type, Union, cast
+-
+-import numpy as np
+-import prometheus_client
+-
+-from vllm.config import SupportsMetricsInfo, VllmConfig
+-from vllm.engine.metrics_types import StatLoggerBase, Stats
+-from vllm.executor.ray_utils import ray
+-from vllm.logger import init_logger
+-
+-if ray is not None:
+-    from ray.util import metrics as ray_metrics
+-else:
+-    ray_metrics = None
+-
+-if TYPE_CHECKING:
+-    from vllm.spec_decode.metrics import SpecDecodeWorkerMetrics
+-
+-logger = init_logger(__name__)
+-
+-prometheus_client.disable_created_metrics()
+-
+-# The begin-* and end* here are used by the documentation generator
+-# to extract the metrics definitions.
+-
+-
+-# --8<-- [start:metrics-definitions]
+-class Metrics:
+-    """
+-    vLLM uses a multiprocessing-based frontend for the OpenAI server.
+-    This means that we need to run prometheus_client in multiprocessing mode
+-    See https://prometheus.github.io/client_python/multiprocess/ for more
+-    details on limitations.
+-    """
+-
+-    labelname_finish_reason = "finished_reason"
+-    labelname_waiting_lora_adapters = "waiting_lora_adapters"
+-    labelname_running_lora_adapters = "running_lora_adapters"
+-    labelname_max_lora = "max_lora"
+-    _gauge_cls = prometheus_client.Gauge
+-    _counter_cls = prometheus_client.Counter
+-    _histogram_cls = prometheus_client.Histogram
+-
+-    def __init__(self, labelnames: List[str], vllm_config: VllmConfig):
+-        # Unregister any existing vLLM collectors (for CI/CD)
+-        self._unregister_vllm_metrics()
+-
+-        max_model_len = vllm_config.model_config.max_model_len
+-
+-        # Use this flag to hide metrics that were deprecated in
+-        # a previous release and which will be removed future
+-        self.show_hidden_metrics = \
+-            vllm_config.observability_config.show_hidden_metrics
+-
+-        # System stats
+-        #   Scheduler State
+-        self.gauge_scheduler_running = self._gauge_cls(
+-            name="vllm:num_requests_running",
+-            documentation="Number of requests currently running on GPU.",
+-            labelnames=labelnames,
+-            multiprocess_mode="sum")
+-        self.gauge_scheduler_waiting = self._gauge_cls(
+-            name="vllm:num_requests_waiting",
+-            documentation="Number of requests waiting to be processed.",
+-            labelnames=labelnames,
+-            multiprocess_mode="sum")
+-        self.gauge_lora_info = self._gauge_cls(
+-            name="vllm:lora_requests_info",
+-            documentation="Running stats on lora requests.",
+-            labelnames=[
+-                self.labelname_running_lora_adapters,
+-                self.labelname_max_lora,
+-                self.labelname_waiting_lora_adapters,
+-            ],
+-            multiprocess_mode="livemostrecent",
+-        )
+-
+-        #   KV Cache Usage in %
+-        self.gauge_gpu_cache_usage = self._gauge_cls(
+-            name="vllm:gpu_cache_usage_perc",
+-            documentation="GPU KV-cache usage. 1 means 100 percent usage.",
+-            labelnames=labelnames,
+-            multiprocess_mode="sum")
+-
+-        # Iteration stats
+-        self.counter_num_preemption = self._counter_cls(
+-            name="vllm:num_preemptions_total",
+-            documentation="Cumulative number of preemption from the engine.",
+-            labelnames=labelnames)
+-        self.counter_prompt_tokens = self._counter_cls(
+-            name="vllm:prompt_tokens_total",
+-            documentation="Number of prefill tokens processed.",
+-            labelnames=labelnames)
+-        self.counter_generation_tokens = self._counter_cls(
+-            name="vllm:generation_tokens_total",
+-            documentation="Number of generation tokens processed.",
+-            labelnames=labelnames)
+-        self.histogram_iteration_tokens = self._histogram_cls(
+-            name="vllm:iteration_tokens_total",
+-            documentation="Histogram of number of tokens per engine_step.",
+-            labelnames=labelnames,
+-            buckets=[
+-                1, 8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096, 8192, 16384
+-            ])
+-        self.histogram_time_to_first_token = self._histogram_cls(
+-            name="vllm:time_to_first_token_seconds",
+-            documentation="Histogram of time to first token in seconds.",
+-            labelnames=labelnames,
+-            buckets=[
+-                0.001, 0.005, 0.01, 0.02, 0.04, 0.06, 0.08, 0.1, 0.25, 0.5,
+-                0.75, 1.0, 2.5, 5.0, 7.5, 10.0, 20.0, 40.0, 80.0, 160.0, 640.0,
+-                2560.0
+-            ])
+-        self.histogram_time_per_output_token = self._histogram_cls(
+-            name="vllm:time_per_output_token_seconds",
+-            documentation="Histogram of time per output token in seconds.",
+-            labelnames=labelnames,
+-            buckets=[
+-                0.01, 0.025, 0.05, 0.075, 0.1, 0.15, 0.2, 0.3, 0.4, 0.5, 0.75,
+-                1.0, 2.5, 5.0, 7.5, 10.0, 20.0, 40.0, 80.0
+-            ])
+-
+-        # Request stats
+-        #   Latency
+-        request_latency_buckets = [
+-            0.3, 0.5, 0.8, 1.0, 1.5, 2.0, 2.5, 5.0, 10.0, 15.0, 20.0, 30.0,
+-            40.0, 50.0, 60.0, 120.0, 240.0, 480.0, 960.0, 1920.0, 7680.0
+-        ]
+-        self.histogram_e2e_time_request = self._histogram_cls(
+-            name="vllm:e2e_request_latency_seconds",
+-            documentation="Histogram of end to end request latency in seconds.",
+-            labelnames=labelnames,
+-            buckets=request_latency_buckets)
+-        self.histogram_queue_time_request = self._histogram_cls(
+-            name="vllm:request_queue_time_seconds",
+-            documentation=
+-            "Histogram of time spent in WAITING phase for request.",
+-            labelnames=labelnames,
+-            buckets=request_latency_buckets)
+-        self.histogram_inference_time_request = self._histogram_cls(
+-            name="vllm:request_inference_time_seconds",
+-            documentation=
+-            "Histogram of time spent in RUNNING phase for request.",
+-            labelnames=labelnames,
+-            buckets=request_latency_buckets)
+-        self.histogram_prefill_time_request = self._histogram_cls(
+-            name="vllm:request_prefill_time_seconds",
+-            documentation=
+-            "Histogram of time spent in PREFILL phase for request.",
+-            labelnames=labelnames,
+-            buckets=request_latency_buckets)
+-        self.histogram_decode_time_request = self._histogram_cls(
+-            name="vllm:request_decode_time_seconds",
+-            documentation=
+-            "Histogram of time spent in DECODE phase for request.",
+-            labelnames=labelnames,
+-            buckets=request_latency_buckets)
+-
+-        #   Metadata
+-        self.histogram_num_prompt_tokens_request = self._histogram_cls(
+-            name="vllm:request_prompt_tokens",
+-            documentation="Number of prefill tokens processed.",
+-            labelnames=labelnames,
+-            buckets=build_1_2_5_buckets(max_model_len),
+-        )
+-        self.histogram_num_generation_tokens_request = \
+-            self._histogram_cls(
+-                name="vllm:request_generation_tokens",
+-                documentation="Number of generation tokens processed.",
+-                labelnames=labelnames,
+-                buckets=build_1_2_5_buckets(max_model_len),
+-            )
+-        self.histogram_max_num_generation_tokens_request = self._histogram_cls(
+-            name="vllm:request_max_num_generation_tokens",
+-            documentation=
+-            "Histogram of maximum number of requested generation tokens.",
+-            labelnames=labelnames,
+-            buckets=build_1_2_5_buckets(max_model_len))
+-        self.histogram_n_request = self._histogram_cls(
+-            name="vllm:request_params_n",
+-            documentation="Histogram of the n request parameter.",
+-            labelnames=labelnames,
+-            buckets=[1, 2, 5, 10, 20],
+-        )
+-        self.histogram_max_tokens_request = self._histogram_cls(
+-            name="vllm:request_params_max_tokens",
+-            documentation="Histogram of the max_tokens request parameter.",
+-            labelnames=labelnames,
+-            buckets=build_1_2_5_buckets(max_model_len),
+-        )
+-        self.counter_request_success = self._counter_cls(
+-            name="vllm:request_success_total",
+-            documentation="Count of successfully processed requests.",
+-            labelnames=labelnames + [Metrics.labelname_finish_reason])
+-
+-        # Speculative decoding stats
+-        self.gauge_spec_decode_draft_acceptance_rate = self._gauge_cls(
+-            name="vllm:spec_decode_draft_acceptance_rate",
+-            documentation="Speulative token acceptance rate.",
+-            labelnames=labelnames,
+-            multiprocess_mode="sum")
+-        self.gauge_spec_decode_efficiency = self._gauge_cls(
+-            name="vllm:spec_decode_efficiency",
+-            documentation="Speculative decoding system efficiency.",
+-            labelnames=labelnames,
+-            multiprocess_mode="sum")
+-        self.counter_spec_decode_num_accepted_tokens = (self._counter_cls(
+-            name="vllm:spec_decode_num_accepted_tokens_total",
+-            documentation="Number of accepted tokens.",
+-            labelnames=labelnames))
+-        self.counter_spec_decode_num_draft_tokens = self._counter_cls(
+-            name="vllm:spec_decode_num_draft_tokens_total",
+-            documentation="Number of draft tokens.",
+-            labelnames=labelnames)
+-        self.counter_spec_decode_num_emitted_tokens = (self._counter_cls(
+-            name="vllm:spec_decode_num_emitted_tokens_total",
+-            documentation="Number of emitted tokens.",
+-            labelnames=labelnames))
+-
+-
+-# --8<-- [end:metrics-definitions]
+-
+-    def _unregister_vllm_metrics(self) -> None:
+-        for collector in list(prometheus_client.REGISTRY._collector_to_names):
+-            if hasattr(collector, "_name") and "vllm" in collector._name:
+-                prometheus_client.REGISTRY.unregister(collector)
+-
+-
+-class _RayGaugeWrapper:
+-    """Wraps around ray.util.metrics.Gauge to provide same API as
+-    prometheus_client.Gauge"""
+-
+-    def __init__(self,
+-                 name: str,
+-                 documentation: str = "",
+-                 labelnames: Optional[List[str]] = None,
+-                 multiprocess_mode: str = ""):
+-        del multiprocess_mode
+-        labelnames_tuple = tuple(labelnames) if labelnames else None
+-        self._gauge = ray_metrics.Gauge(name=name,
+-                                        description=documentation,
+-                                        tag_keys=labelnames_tuple)
+-
+-    def labels(self, **labels):
+-        self._gauge.set_default_tags(labels)
+-        return self
+-
+-    def set(self, value: Union[int, float]):
+-        return self._gauge.set(value)
+-
+-    def set_to_current_time(self):
+-        # ray metrics doesn't have set_to_current time, https://docs.ray.io/en/latest/_modules/ray/util/metrics.html
+-        return self._gauge.set(time.time())
+-
+-
+-class _RayCounterWrapper:
+-    """Wraps around ray.util.metrics.Counter to provide same API as
+-    prometheus_client.Counter"""
+-
+-    def __init__(self,
+-                 name: str,
+-                 documentation: str = "",
+-                 labelnames: Optional[List[str]] = None):
+-        labelnames_tuple = tuple(labelnames) if labelnames else None
+-        self._counter = ray_metrics.Counter(name=name,
+-                                            description=documentation,
+-                                            tag_keys=labelnames_tuple)
+-
+-    def labels(self, **labels):
+-        self._counter.set_default_tags(labels)
+-        return self
+-
+-    def inc(self, value: Union[int, float] = 1.0):
+-        if value == 0:
+-            return
+-        return self._counter.inc(value)
+-
+-
+-class _RayHistogramWrapper:
+-    """Wraps around ray.util.metrics.Histogram to provide same API as
+-    prometheus_client.Histogram"""
+-
+-    def __init__(self,
+-                 name: str,
+-                 documentation: str = "",
+-                 labelnames: Optional[List[str]] = None,
+-                 buckets: Optional[List[float]] = None):
+-        labelnames_tuple = tuple(labelnames) if labelnames else None
+-        boundaries = buckets if buckets else []
+-        self._histogram = ray_metrics.Histogram(name=name,
+-                                                description=documentation,
+-                                                tag_keys=labelnames_tuple,
+-                                                boundaries=boundaries)
+-
+-    def labels(self, **labels):
+-        self._histogram.set_default_tags(labels)
+-        return self
+-
+-    def observe(self, value: Union[int, float]):
+-        return self._histogram.observe(value)
+-
+-
+-class RayMetrics(Metrics):
+-    """
+-    RayMetrics is used by RayPrometheusStatLogger to log to Ray metrics.
+-    Provides the same metrics as Metrics but uses Ray's util.metrics library.
+-    """
+-    _gauge_cls: Type[prometheus_client.Gauge] = cast(
+-        Type[prometheus_client.Gauge], _RayGaugeWrapper)
+-    _counter_cls: Type[prometheus_client.Counter] = cast(
+-        Type[prometheus_client.Counter], _RayCounterWrapper)
+-    _histogram_cls: Type[prometheus_client.Histogram] = cast(
+-        Type[prometheus_client.Histogram], _RayHistogramWrapper)
+-
+-    def __init__(self, labelnames: List[str], vllm_config: VllmConfig):
+-        if ray_metrics is None:
+-            raise ImportError("RayMetrics requires Ray to be installed.")
+-        super().__init__(labelnames, vllm_config)
+-
+-    def _unregister_vllm_metrics(self) -> None:
+-        # No-op on purpose
+-        pass
+-
+-
+-def build_buckets(mantissa_lst: List[int], max_value: int) -> List[int]:
+-    """
+-    Builds a list of buckets with increasing powers of 10 multiplied by
+-    mantissa values until the value exceeds the specified maximum.
+-
+-    """
+-    exponent = 0
+-    buckets: List[int] = []
+-    while True:
+-        for m in mantissa_lst:
+-            value = m * 10**exponent
+-            if value <= max_value:
+-                buckets.append(value)
+-            else:
+-                return buckets
+-        exponent += 1
+-
+-
+-def build_1_2_5_buckets(max_value: int) -> List[int]:
+-    """
+-    Example:
+-    >>> build_1_2_5_buckets(100)
+-    [1, 2, 5, 10, 20, 50, 100]
+-    """
+-    return build_buckets([1, 2, 5], max_value)
+-
+-
+-def build_1_2_3_5_8_buckets(max_value: int) -> List[int]:
+-    """
+-    Example:
+-    >>> build_1_2_3_5_8_buckets(100)
+-    [1, 2, 3, 5, 8, 10, 20, 30, 50, 80, 100]
+-    """
+-    return build_buckets([1, 2, 3, 5, 8], max_value)
+-
+-
+-def local_interval_elapsed(now: float, last_log: float,
+-                           local_interval: float) -> bool:
+-    elapsed_time = now - last_log
+-    return elapsed_time > local_interval
+-
+-
+-def get_throughput(tracked_stats: List[int], now: float,
+-                   last_log: float) -> float:
+-    return float(np.sum(tracked_stats) / (now - last_log))
+-
+-
+-class LoggingStatLogger(StatLoggerBase):
+-    """LoggingStatLogger is used in LLMEngine to log to Stdout."""
+-
+-    def __init__(self, local_interval: float, vllm_config: VllmConfig) -> None:
+-        super().__init__(local_interval, vllm_config)
+-        self.last_prompt_throughput: Optional[float] = None
+-        self.last_generation_throughput: Optional[float] = None
+-
+-    def log(self, stats: Stats) -> None:
+-        """Called by LLMEngine.
+-           Logs to Stdout every self.local_interval seconds."""
+-
+-        # Save tracked stats for token counters.
+-        self.num_prompt_tokens.append(stats.num_prompt_tokens_iter)
+-        self.num_generation_tokens.append(stats.num_generation_tokens_iter)
+-
+-        # Update spec decode metrics
+-        self.maybe_update_spec_decode_metrics(stats)
+-
+-        # Log locally every local_interval seconds.
+-        if local_interval_elapsed(stats.now, self.last_local_log,
+-                                  self.local_interval):
+-            # Compute summary metrics for tracked stats (and log them
+-            # to promethus if applicable).
+-            prompt_throughput = get_throughput(self.num_prompt_tokens,
+-                                               now=stats.now,
+-                                               last_log=self.last_local_log)
+-            generation_throughput = get_throughput(
+-                self.num_generation_tokens,
+-                now=stats.now,
+-                last_log=self.last_local_log)
+-
+-            log_fn = logger.info
+-            if not any((prompt_throughput, generation_throughput,
+-                        self.last_prompt_throughput,
+-                        self.last_generation_throughput)):
+-                # Avoid log noise on an idle production system
+-                log_fn = logger.debug
+-
+-            log_fn(
+-                "Avg prompt throughput: %.1f tokens/s, "
+-                "Avg generation throughput: %.1f tokens/s, "
+-                "Running: %d reqs, Swapped: %d reqs, "
+-                "Pending: %d reqs, GPU KV cache usage: %.1f%%, "
+-                "CPU KV cache usage: %.1f%%.",
+-                prompt_throughput,
+-                generation_throughput,
+-                stats.num_running_sys,
+-                stats.num_swapped_sys,
+-                stats.num_waiting_sys,
+-                stats.gpu_cache_usage_sys * 100,
+-                stats.cpu_cache_usage_sys * 100,
+-            )
+-            if (stats.cpu_prefix_cache_hit_rate >= 0
+-                    or stats.gpu_prefix_cache_hit_rate >= 0):
+-                log_fn(
+-                    "Prefix cache hit rate: GPU: %.2f%%, CPU: %.2f%%",
+-                    stats.gpu_prefix_cache_hit_rate * 100,
+-                    stats.cpu_prefix_cache_hit_rate * 100,
+-                )
+-            if self.spec_decode_metrics is not None:
+-                log_fn(
+-                    self._format_spec_decode_metrics_str(
+-                        self.spec_decode_metrics))
+-
+-            self._reset(stats, prompt_throughput, generation_throughput)
+-
+-    def _reset(self, stats, prompt_throughput, generation_throughput) -> None:
+-        # Reset tracked stats for next interval.
+-        self.num_prompt_tokens = []
+-        self.num_generation_tokens = []
+-        self.last_local_log = stats.now
+-        self.spec_decode_metrics = None
+-        self.last_prompt_throughput = prompt_throughput
+-        self.last_generation_throughput = generation_throughput
+-
+-    def _format_spec_decode_metrics_str(
+-            self, metrics: "SpecDecodeWorkerMetrics") -> str:
+-
+-        return ("Speculative metrics: "
+-                f"Draft acceptance rate: {metrics.draft_acceptance_rate:.3f}, "
+-                f"System efficiency: {metrics.system_efficiency:.3f}, "
+-                f"Number of speculative tokens: {metrics.num_spec_tokens}, "
+-                f"Number of accepted tokens: {metrics.accepted_tokens}, "
+-                f"Number of draft tokens: {metrics.draft_tokens}, "
+-                f"Number of emitted tokens: {metrics.emitted_tokens}.")
+-
+-    def info(self, type: str, obj: SupportsMetricsInfo) -> None:
+-        raise NotImplementedError
+-
+-
+-class PrometheusStatLogger(StatLoggerBase):
+-    """PrometheusStatLogger is used LLMEngine to log to Promethus."""
+-    _metrics_cls = Metrics
+-    _gauge_cls = prometheus_client.Gauge
+-
+-    def __init__(self, local_interval: float, labels: Dict[str, str],
+-                 vllm_config: VllmConfig) -> None:
+-        super().__init__(local_interval, vllm_config)
+-        # Prometheus metrics
+-        self.labels = labels
+-        self.metrics = self._metrics_cls(labelnames=list(labels.keys()),
+-                                         vllm_config=vllm_config)
+-
+-    def _log_gauge(self, gauge, data: Union[int, float]) -> None:
+-        # Convenience function for logging to gauge.
+-        gauge.labels(**self.labels).set(data)
+-
+-    def _log_counter(self, counter, data: Union[int, float]) -> None:
+-        # Convenience function for logging to counter.
+-        # Prevent ValueError from negative increment
+-        if data < 0:
+-            logger.warning("Skipping negative increment of %g to %s", data,
+-                           counter)
+-            return
+-        counter.labels(**self.labels).inc(data)
+-
+-    def _log_counter_labels(self, counter, data: CollectionsCounter,
+-                            label_key: str) -> None:
+-        # Convenience function for collection counter of labels.
+-        for label, count in data.items():
+-            counter.labels(**{**self.labels, label_key: label}).inc(count)
+-
+-    def _log_histogram(self, histogram, data: Union[List[int],
+-                                                    List[float]]) -> None:
+-        # Convenience function for logging list to histogram.
+-        for datum in data:
+-            histogram.labels(**self.labels).observe(datum)
+-
+-    def _log_gauge_string(self, gauge, data: Dict[str, str]) -> None:
+-        gauge.labels(**data).set_to_current_time()
+-
+-    def _log_prometheus(self, stats: Stats) -> None:
+-        # System state data
+-        self._log_gauge(self.metrics.gauge_scheduler_running,
+-                        stats.num_running_sys)
+-        self._log_gauge(self.metrics.gauge_scheduler_waiting,
+-                        stats.num_waiting_sys)
+-        self._log_gauge(self.metrics.gauge_gpu_cache_usage,
+-                        stats.gpu_cache_usage_sys)
+-        # Including max-lora in metric, in future this property of lora
+-        # config maybe extended to be dynamic.
+-        lora_info = {
+-            self.metrics.labelname_running_lora_adapters:
+-            ",".join(stats.running_lora_adapters),
+-            self.metrics.labelname_waiting_lora_adapters:
+-            ",".join(stats.waiting_lora_adapters),
+-            self.metrics.labelname_max_lora:
+-            stats.max_lora,
+-        }
+-        self._log_gauge_string(self.metrics.gauge_lora_info, lora_info)
+-        # Iteration level data
+-        self._log_counter(self.metrics.counter_num_preemption,
+-                          stats.num_preemption_iter)
+-        self._log_counter(self.metrics.counter_prompt_tokens,
+-                          stats.num_prompt_tokens_iter)
+-        self._log_counter(self.metrics.counter_generation_tokens,
+-                          stats.num_generation_tokens_iter)
+-        self._log_histogram(self.metrics.histogram_iteration_tokens,
+-                            [stats.num_tokens_iter])
+-        self._log_histogram(self.metrics.histogram_time_to_first_token,
+-                            stats.time_to_first_tokens_iter)
+-        self._log_histogram(self.metrics.histogram_time_per_output_token,
+-                            stats.time_per_output_tokens_iter)
+-
+-        # Request level data
+-        # Latency
+-        self._log_histogram(self.metrics.histogram_e2e_time_request,
+-                            stats.time_e2e_requests)
+-        self._log_histogram(self.metrics.histogram_queue_time_request,
+-                            stats.time_queue_requests)
+-        self._log_histogram(self.metrics.histogram_inference_time_request,
+-                            stats.time_inference_requests)
+-        self._log_histogram(self.metrics.histogram_prefill_time_request,
+-                            stats.time_prefill_requests)
+-        self._log_histogram(self.metrics.histogram_decode_time_request,
+-                            stats.time_decode_requests)
+-        # Metadata
+-        finished_reason_counter = CollectionsCounter(
+-            stats.finished_reason_requests)
+-        self._log_counter_labels(self.metrics.counter_request_success,
+-                                 finished_reason_counter,
+-                                 Metrics.labelname_finish_reason)
+-        self._log_histogram(self.metrics.histogram_num_prompt_tokens_request,
+-                            stats.num_prompt_tokens_requests)
+-        self._log_histogram(
+-            self.metrics.histogram_num_generation_tokens_request,
+-            stats.num_generation_tokens_requests)
+-        self._log_histogram(self.metrics.histogram_n_request, stats.n_requests)
+-        self._log_histogram(
+-            self.metrics.histogram_max_num_generation_tokens_request,
+-            stats.max_num_generation_tokens_requests)
+-        self._log_histogram(self.metrics.histogram_max_tokens_request,
+-                            stats.max_tokens_requests)
+-
+-    def log(self, stats: Stats):
+-        """Logs to prometheus and tracked stats every iteration."""
+-        # Log to prometheus.
+-        self._log_prometheus(stats)
+-
+-        # Save tracked stats for token counters.
+-        self.num_prompt_tokens.append(stats.num_prompt_tokens_iter)
+-        self.num_generation_tokens.append(stats.num_generation_tokens_iter)
+-
+-        # Update spec decode metrics
+-        self.maybe_update_spec_decode_metrics(stats)
+-
+-        # Log locally every local_interval seconds.
+-        if local_interval_elapsed(stats.now, self.last_local_log,
+-                                  self.local_interval):
+-            if self.spec_decode_metrics is not None:
+-                self._log_gauge(
+-                    self.metrics.gauge_spec_decode_draft_acceptance_rate,
+-                    self.spec_decode_metrics.draft_acceptance_rate)
+-                self._log_gauge(self.metrics.gauge_spec_decode_efficiency,
+-                                self.spec_decode_metrics.system_efficiency)
+-                self._log_counter(
+-                    self.metrics.counter_spec_decode_num_accepted_tokens,
+-                    self.spec_decode_metrics.accepted_tokens)
+-                self._log_counter(
+-                    self.metrics.counter_spec_decode_num_draft_tokens,
+-                    self.spec_decode_metrics.draft_tokens)
+-                self._log_counter(
+-                    self.metrics.counter_spec_decode_num_emitted_tokens,
+-                    self.spec_decode_metrics.emitted_tokens)
+-
+-            # Reset tracked stats for next interval.
+-            self.num_prompt_tokens = []
+-            self.num_generation_tokens = []
+-            self.last_local_log = stats.now
+-            self.spec_decode_metrics = None
+-
+-    def info(self, type: str, obj: SupportsMetricsInfo) -> None:
+-        # Info type metrics are syntactic sugar for a gauge permanently set to 1
+-        # Since prometheus multiprocessing mode does not support Info, emulate
+-        # info here with a gauge.
+-        if type == "cache_config":
+-            metrics_info = obj.metrics_info()
+-            info_gauge = self._gauge_cls(
+-                name="vllm:cache_config_info",
+-                documentation="Information of the LLMEngine CacheConfig",
+-                labelnames=metrics_info.keys(),
+-                multiprocess_mode="mostrecent")
+-            info_gauge.labels(**metrics_info).set(1)
+-
+-
+-class RayPrometheusStatLogger(PrometheusStatLogger):
+-    """RayPrometheusStatLogger uses Ray metrics instead."""
+-    _metrics_cls = RayMetrics
+-
+-    def info(self, type: str, obj: SupportsMetricsInfo) -> None:
+-        return None
++# SPDX-License-Identifier: Apache-2.0
++# SPDX-FileCopyrightText: Copyright contributors to the vLLM project
++
++import time
++from typing import TYPE_CHECKING
++from typing import Counter as CollectionsCounter
++from typing import Dict, List, Optional, Type, Union, cast
++
++import numpy as np
++import prometheus_client
++
++from vllm.config import SupportsMetricsInfo, VllmConfig
++from vllm.engine.metrics_types import StatLoggerBase, Stats
++from vllm.executor.ray_utils import ray
++from vllm.logger import init_logger
++
++if ray is not None:
++    from ray.util import metrics as ray_metrics
++else:
++    ray_metrics = None
++
++if TYPE_CHECKING:
++    from vllm.spec_decode.metrics import SpecDecodeWorkerMetrics
++
++logger = init_logger(__name__)
++
++prometheus_client.disable_created_metrics()
++
++# The begin-* and end* here are used by the documentation generator
++# to extract the metrics definitions.
++
++
++# --8<-- [start:metrics-definitions]
++class Metrics:
++    """
++    vLLM uses a multiprocessing-based frontend for the OpenAI server.
++    This means that we need to run prometheus_client in multiprocessing mode
++    See https://prometheus.github.io/client_python/multiprocess/ for more
++    details on limitations.
++    """
++
++    labelname_finish_reason = "finished_reason"
++    labelname_waiting_lora_adapters = "waiting_lora_adapters"
++    labelname_running_lora_adapters = "running_lora_adapters"
++    labelname_max_lora = "max_lora"
++    _gauge_cls = prometheus_client.Gauge
++    _counter_cls = prometheus_client.Counter
++    _histogram_cls = prometheus_client.Histogram
++
++    def __init__(self, labelnames: List[str], vllm_config: VllmConfig):
++        # Unregister any existing vLLM collectors (for CI/CD)
++        self._unregister_vllm_metrics()
++
++        max_model_len = vllm_config.model_config.max_model_len
++
++        # Use this flag to hide metrics that were deprecated in
++        # a previous release and which will be removed future
++        self.show_hidden_metrics = \
++            vllm_config.observability_config.show_hidden_metrics
++
++        # System stats
++        #   Scheduler State
++        self.gauge_scheduler_running = self._gauge_cls(
++            name="vllm:num_requests_running",
++            documentation="Number of requests currently running on GPU.",
++            labelnames=labelnames,
++            multiprocess_mode="sum")
++        self.gauge_scheduler_waiting = self._gauge_cls(
++            name="vllm:num_requests_waiting",
++            documentation="Number of requests waiting to be processed.",
++            labelnames=labelnames,
++            multiprocess_mode="sum")
++        self.gauge_lora_info = self._gauge_cls(
++            name="vllm:lora_requests_info",
++            documentation="Running stats on lora requests.",
++            labelnames=[
++                self.labelname_running_lora_adapters,
++                self.labelname_max_lora,
++                self.labelname_waiting_lora_adapters,
++            ],
++            multiprocess_mode="livemostrecent",
++        )
++
++        #   KV Cache Usage in %
++        self.gauge_gpu_cache_usage = self._gauge_cls(
++            name="vllm:gpu_cache_usage_perc",
++            documentation="GPU KV-cache usage. 1 means 100 percent usage.",
++            labelnames=labelnames,
++            multiprocess_mode="sum")
++
++        # Iteration stats
++        self.counter_num_preemption = self._counter_cls(
++            name="vllm:num_preemptions_total",
++            documentation="Cumulative number of preemption from the engine.",
++            labelnames=labelnames)
++        self.counter_prompt_tokens = self._counter_cls(
++            name="vllm:prompt_tokens_total",
++            documentation="Number of prefill tokens processed.",
++            labelnames=labelnames)
++        self.counter_generation_tokens = self._counter_cls(
++            name="vllm:generation_tokens_total",
++            documentation="Number of generation tokens processed.",
++            labelnames=labelnames)
++        self.histogram_iteration_tokens = self._histogram_cls(
++            name="vllm:iteration_tokens_total",
++            documentation="Histogram of number of tokens per engine_step.",
++            labelnames=labelnames,
++            buckets=[
++                1, 8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096, 8192, 16384
++            ])
++        self.histogram_time_to_first_token = self._histogram_cls(
++            name="vllm:time_to_first_token_seconds",
++            documentation="Histogram of time to first token in seconds.",
++            labelnames=labelnames,
++            buckets=[
++                0.001, 0.005, 0.01, 0.02, 0.04, 0.06, 0.08, 0.1, 0.25, 0.5,
++                0.75, 1.0, 2.5, 5.0, 7.5, 10.0, 20.0, 40.0, 80.0, 160.0, 640.0,
++                2560.0
++            ])
++        self.histogram_time_per_output_token = self._histogram_cls(
++            name="vllm:time_per_output_token_seconds",
++            documentation="Histogram of time per output token in seconds.",
++            labelnames=labelnames,
++            buckets=[
++                0.01, 0.025, 0.05, 0.075, 0.1, 0.15, 0.2, 0.3, 0.4, 0.5, 0.75,
++                1.0, 2.5, 5.0, 7.5, 10.0, 20.0, 40.0, 80.0
++            ])
++
++        # Request stats
++        #   Latency
++        request_latency_buckets = [
++            0.3, 0.5, 0.8, 1.0, 1.5, 2.0, 2.5, 5.0, 10.0, 15.0, 20.0, 30.0,
++            40.0, 50.0, 60.0, 120.0, 240.0, 480.0, 960.0, 1920.0, 7680.0
++        ]
++        self.histogram_e2e_time_request = self._histogram_cls(
++            name="vllm:e2e_request_latency_seconds",
++            documentation="Histogram of end to end request latency in seconds.",
++            labelnames=labelnames,
++            buckets=request_latency_buckets)
++        self.histogram_queue_time_request = self._histogram_cls(
++            name="vllm:request_queue_time_seconds",
++            documentation=
++            "Histogram of time spent in WAITING phase for request.",
++            labelnames=labelnames,
++            buckets=request_latency_buckets)
++        self.histogram_inference_time_request = self._histogram_cls(
++            name="vllm:request_inference_time_seconds",
++            documentation=
++            "Histogram of time spent in RUNNING phase for request.",
++            labelnames=labelnames,
++            buckets=request_latency_buckets)
++        self.histogram_prefill_time_request = self._histogram_cls(
++            name="vllm:request_prefill_time_seconds",
++            documentation=
++            "Histogram of time spent in PREFILL phase for request.",
++            labelnames=labelnames,
++            buckets=request_latency_buckets)
++        self.histogram_decode_time_request = self._histogram_cls(
++            name="vllm:request_decode_time_seconds",
++            documentation=
++            "Histogram of time spent in DECODE phase for request.",
++            labelnames=labelnames,
++            buckets=request_latency_buckets)
++
++        #   Metadata
++        self.histogram_num_prompt_tokens_request = self._histogram_cls(
++            name="vllm:request_prompt_tokens",
++            documentation="Number of prefill tokens processed.",
++            labelnames=labelnames,
++            buckets=build_1_2_5_buckets(max_model_len),
++        )
++        self.histogram_num_generation_tokens_request = \
++            self._histogram_cls(
++                name="vllm:request_generation_tokens",
++                documentation="Number of generation tokens processed.",
++                labelnames=labelnames,
++                buckets=build_1_2_5_buckets(max_model_len),
++            )
++        self.histogram_max_num_generation_tokens_request = self._histogram_cls(
++            name="vllm:request_max_num_generation_tokens",
++            documentation=
++            "Histogram of maximum number of requested generation tokens.",
++            labelnames=labelnames,
++            buckets=build_1_2_5_buckets(max_model_len))
++        self.histogram_n_request = self._histogram_cls(
++            name="vllm:request_params_n",
++            documentation="Histogram of the n request parameter.",
++            labelnames=labelnames,
++            buckets=[1, 2, 5, 10, 20],
++        )
++        self.histogram_max_tokens_request = self._histogram_cls(
++            name="vllm:request_params_max_tokens",
++            documentation="Histogram of the max_tokens request parameter.",
++            labelnames=labelnames,
++            buckets=build_1_2_5_buckets(max_model_len),
++        )
++        self.counter_request_success = self._counter_cls(
++            name="vllm:request_success_total",
++            documentation="Count of successfully processed requests.",
++            labelnames=labelnames + [Metrics.labelname_finish_reason])
++
++        # Speculative decoding stats
++        self.gauge_spec_decode_draft_acceptance_rate = self._gauge_cls(
++            name="vllm:spec_decode_draft_acceptance_rate",
++            documentation="Speulative token acceptance rate.",
++            labelnames=labelnames,
++            multiprocess_mode="sum")
++        self.gauge_spec_decode_efficiency = self._gauge_cls(
++            name="vllm:spec_decode_efficiency",
++            documentation="Speculative decoding system efficiency.",
++            labelnames=labelnames,
++            multiprocess_mode="sum")
++        self.counter_spec_decode_num_accepted_tokens = (self._counter_cls(
++            name="vllm:spec_decode_num_accepted_tokens_total",
++            documentation="Number of accepted tokens.",
++            labelnames=labelnames))
++        self.counter_spec_decode_num_draft_tokens = self._counter_cls(
++            name="vllm:spec_decode_num_draft_tokens_total",
++            documentation="Number of draft tokens.",
++            labelnames=labelnames)
++        self.counter_spec_decode_num_emitted_tokens = (self._counter_cls(
++            name="vllm:spec_decode_num_emitted_tokens_total",
++            documentation="Number of emitted tokens.",
++            labelnames=labelnames))
++
++
++# --8<-- [end:metrics-definitions]
++
++    def _unregister_vllm_metrics(self) -> None:
++        for collector in list(prometheus_client.REGISTRY._collector_to_names):
++            if hasattr(collector, "_name") and "vllm" in collector._name:
++                prometheus_client.REGISTRY.unregister(collector)
++
++
++class _RayGaugeWrapper:
++    """Wraps around ray.util.metrics.Gauge to provide same API as
++    prometheus_client.Gauge"""
++
++    def __init__(self,
++                 name: str,
++                 documentation: str = "",
++                 labelnames: Optional[List[str]] = None,
++                 multiprocess_mode: str = ""):
++        del multiprocess_mode
++        labelnames_tuple = tuple(labelnames) if labelnames else None
++        self._gauge = ray_metrics.Gauge(name=name,
++                                        description=documentation,
++                                        tag_keys=labelnames_tuple)
++
++    def labels(self, **labels):
++        self._gauge.set_default_tags(labels)
++        return self
++
++    def set(self, value: Union[int, float]):
++        return self._gauge.set(value)
++
++    def set_to_current_time(self):
++        # ray metrics doesn't have set_to_current time, https://docs.ray.io/en/latest/_modules/ray/util/metrics.html
++        return self._gauge.set(time.time())
++
++
++class _RayCounterWrapper:
++    """Wraps around ray.util.metrics.Counter to provide same API as
++    prometheus_client.Counter"""
++
++    def __init__(self,
++                 name: str,
++                 documentation: str = "",
++                 labelnames: Optional[List[str]] = None):
++        labelnames_tuple = tuple(labelnames) if labelnames else None
++        self._counter = ray_metrics.Counter(name=name,
++                                            description=documentation,
++                                            tag_keys=labelnames_tuple)
++
++    def labels(self, **labels):
++        self._counter.set_default_tags(labels)
++        return self
++
++    def inc(self, value: Union[int, float] = 1.0):
++        if value == 0:
++            return
++        return self._counter.inc(value)
++
++
++class _RayHistogramWrapper:
++    """Wraps around ray.util.metrics.Histogram to provide same API as
++    prometheus_client.Histogram"""
++
++    def __init__(self,
++                 name: str,
++                 documentation: str = "",
++                 labelnames: Optional[List[str]] = None,
++                 buckets: Optional[List[float]] = None):
++        labelnames_tuple = tuple(labelnames) if labelnames else None
++        boundaries = buckets if buckets else []
++        self._histogram = ray_metrics.Histogram(name=name,
++                                                description=documentation,
++                                                tag_keys=labelnames_tuple,
++                                                boundaries=boundaries)
++
++    def labels(self, **labels):
++        self._histogram.set_default_tags(labels)
++        return self
++
++    def observe(self, value: Union[int, float]):
++        return self._histogram.observe(value)
++
++
++class RayMetrics(Metrics):
++    """
++    RayMetrics is used by RayPrometheusStatLogger to log to Ray metrics.
++    Provides the same metrics as Metrics but uses Ray's util.metrics library.
++    """
++    _gauge_cls: Type[prometheus_client.Gauge] = cast(
++        Type[prometheus_client.Gauge], _RayGaugeWrapper)
++    _counter_cls: Type[prometheus_client.Counter] = cast(
++        Type[prometheus_client.Counter], _RayCounterWrapper)
++    _histogram_cls: Type[prometheus_client.Histogram] = cast(
++        Type[prometheus_client.Histogram], _RayHistogramWrapper)
++
++    def __init__(self, labelnames: List[str], vllm_config: VllmConfig):
++        if ray_metrics is None:
++            raise ImportError("RayMetrics requires Ray to be installed.")
++        super().__init__(labelnames, vllm_config)
++
++    def _unregister_vllm_metrics(self) -> None:
++        # No-op on purpose
++        pass
++
++
++def build_buckets(mantissa_lst: List[int], max_value: int) -> List[int]:
++    """
++    Builds a list of buckets with increasing powers of 10 multiplied by
++    mantissa values until the value exceeds the specified maximum.
++
++    """
++    exponent = 0
++    buckets: List[int] = []
++    while True:
++        for m in mantissa_lst:
++            value = m * 10**exponent
++            if value <= max_value:
++                buckets.append(value)
++            else:
++                return buckets
++        exponent += 1
++
++
++def build_1_2_5_buckets(max_value: int) -> List[int]:
++    """
++    Example:
++    >>> build_1_2_5_buckets(100)
++    [1, 2, 5, 10, 20, 50, 100]
++    """
++    return build_buckets([1, 2, 5], max_value)
++
++
++def build_1_2_3_5_8_buckets(max_value: int) -> List[int]:
++    """
++    Example:
++    >>> build_1_2_3_5_8_buckets(100)
++    [1, 2, 3, 5, 8, 10, 20, 30, 50, 80, 100]
++    """
++    return build_buckets([1, 2, 3, 5, 8], max_value)
++
++
++def local_interval_elapsed(now: float, last_log: float,
++                           local_interval: float) -> bool:
++    elapsed_time = now - last_log
++    return elapsed_time > local_interval
++
++
++def get_throughput(tracked_stats: List[int], now: float,
++                   last_log: float) -> float:
++    return float(np.sum(tracked_stats) / (now - last_log))
++
++
++class LoggingStatLogger(StatLoggerBase):
++    """LoggingStatLogger is used in LLMEngine to log to Stdout."""
++
++    def __init__(self, local_interval: float, vllm_config: VllmConfig) -> None:
++        super().__init__(local_interval, vllm_config)
++        self.last_prompt_throughput: Optional[float] = None
++        self.last_generation_throughput: Optional[float] = None
++
++    def log(self, stats: Stats) -> None:
++        """Called by LLMEngine.
++           Logs to Stdout every self.local_interval seconds."""
++
++        # Save tracked stats for token counters.
++        self.num_prompt_tokens.append(stats.num_prompt_tokens_iter)
++        self.num_generation_tokens.append(stats.num_generation_tokens_iter)
++
++        # Update spec decode metrics
++        self.maybe_update_spec_decode_metrics(stats)
++
++        # Log locally every local_interval seconds.
++        if local_interval_elapsed(stats.now, self.last_local_log,
++                                  self.local_interval):
++            # Compute summary metrics for tracked stats (and log them
++            # to promethus if applicable).
++            prompt_throughput = get_throughput(self.num_prompt_tokens,
++                                               now=stats.now,
++                                               last_log=self.last_local_log)
++            generation_throughput = get_throughput(
++                self.num_generation_tokens,
++                now=stats.now,
++                last_log=self.last_local_log)
++
++            log_fn = logger.info
++            if not any((prompt_throughput, generation_throughput,
++                        self.last_prompt_throughput,
++                        self.last_generation_throughput)):
++                # Avoid log noise on an idle production system
++                log_fn = logger.debug
++
++            log_fn(
++                "Avg prompt throughput: %.1f tokens/s, "
++                "Avg generation throughput: %.1f tokens/s, "
++                "Running: %d reqs, Swapped: %d reqs, "
++                "Pending: %d reqs, GPU KV cache usage: %.1f%%, "
++                "CPU KV cache usage: %.1f%%.",
++                prompt_throughput,
++                generation_throughput,
++                stats.num_running_sys,
++                stats.num_swapped_sys,
++                stats.num_waiting_sys,
++                stats.gpu_cache_usage_sys * 100,
++                stats.cpu_cache_usage_sys * 100,
++            )
++            if (stats.cpu_prefix_cache_hit_rate >= 0
++                    or stats.gpu_prefix_cache_hit_rate >= 0):
++                log_fn(
++                    "Prefix cache hit rate: GPU: %.2f%%, CPU: %.2f%%",
++                    stats.gpu_prefix_cache_hit_rate * 100,
++                    stats.cpu_prefix_cache_hit_rate * 100,
++                )
++            if self.spec_decode_metrics is not None:
++                log_fn(
++                    self._format_spec_decode_metrics_str(
++                        self.spec_decode_metrics))
++
++            self._reset(stats, prompt_throughput, generation_throughput)
++
++    def _reset(self, stats, prompt_throughput, generation_throughput) -> None:
++        # Reset tracked stats for next interval.
++        self.num_prompt_tokens = []
++        self.num_generation_tokens = []
++        self.last_local_log = stats.now
++        self.spec_decode_metrics = None
++        self.last_prompt_throughput = prompt_throughput
++        self.last_generation_throughput = generation_throughput
++
++    def _format_spec_decode_metrics_str(
++            self, metrics: "SpecDecodeWorkerMetrics") -> str:
++
++        return ("Speculative metrics: "
++                f"Draft acceptance rate: {metrics.draft_acceptance_rate:.3f}, "
++                f"System efficiency: {metrics.system_efficiency:.3f}, "
++                f"Number of speculative tokens: {metrics.num_spec_tokens}, "
++                f"Number of accepted tokens: {metrics.accepted_tokens}, "
++                f"Number of draft tokens: {metrics.draft_tokens}, "
++                f"Number of emitted tokens: {metrics.emitted_tokens}.")
++
++    def info(self, type: str, obj: SupportsMetricsInfo) -> None:
++        raise NotImplementedError
++
++
++class PrometheusStatLogger(StatLoggerBase):
++    """PrometheusStatLogger is used LLMEngine to log to Promethus."""
++    _metrics_cls = Metrics
++    _gauge_cls = prometheus_client.Gauge
++
++    def __init__(self, local_interval: float, labels: Dict[str, str],
++                 vllm_config: VllmConfig) -> None:
++        super().__init__(local_interval, vllm_config)
++        # Prometheus metrics
++        self.labels = labels
++        self.metrics = self._metrics_cls(labelnames=list(labels.keys()),
++                                         vllm_config=vllm_config)
++
++    def _log_gauge(self, gauge, data: Union[int, float]) -> None:
++        # Convenience function for logging to gauge.
++        gauge.labels(**self.labels).set(data)
++
++    def _log_counter(self, counter, data: Union[int, float]) -> None:
++        # Convenience function for logging to counter.
++        # Prevent ValueError from negative increment
++        if data < 0:
++            logger.warning("Skipping negative increment of %g to %s", data,
++                           counter)
++            return
++        counter.labels(**self.labels).inc(data)
++
++    def _log_counter_labels(self, counter, data: CollectionsCounter,
++                            label_key: str) -> None:
++        # Convenience function for collection counter of labels.
++        for label, count in data.items():
++            counter.labels(**{**self.labels, label_key: label}).inc(count)
++
++    def _log_histogram(self, histogram, data: Union[List[int],
++                                                    List[float]]) -> None:
++        # Convenience function for logging list to histogram.
++        for datum in data:
++            histogram.labels(**self.labels).observe(datum)
++
++    def _log_gauge_string(self, gauge, data: Dict[str, str]) -> None:
++        gauge.labels(**data).set_to_current_time()
++
++    def _log_prometheus(self, stats: Stats) -> None:
++        # System state data
++        self._log_gauge(self.metrics.gauge_scheduler_running,
++                        stats.num_running_sys)
++        self._log_gauge(self.metrics.gauge_scheduler_waiting,
++                        stats.num_waiting_sys)
++        self._log_gauge(self.metrics.gauge_gpu_cache_usage,
++                        stats.gpu_cache_usage_sys)
++        # Including max-lora in metric, in future this property of lora
++        # config maybe extended to be dynamic.
++        lora_info = {
++            self.metrics.labelname_running_lora_adapters:
++            ",".join(stats.running_lora_adapters),
++            self.metrics.labelname_waiting_lora_adapters:
++            ",".join(stats.waiting_lora_adapters),
++            self.metrics.labelname_max_lora:
++            stats.max_lora,
++        }
++        self._log_gauge_string(self.metrics.gauge_lora_info, lora_info)
++        # Iteration level data
++        self._log_counter(self.metrics.counter_num_preemption,
++                          stats.num_preemption_iter)
++        self._log_counter(self.metrics.counter_prompt_tokens,
++                          stats.num_prompt_tokens_iter)
++        self._log_counter(self.metrics.counter_generation_tokens,
++                          stats.num_generation_tokens_iter)
++        self._log_histogram(self.metrics.histogram_iteration_tokens,
++                            [stats.num_tokens_iter])
++        self._log_histogram(self.metrics.histogram_time_to_first_token,
++                            stats.time_to_first_tokens_iter)
++        self._log_histogram(self.metrics.histogram_time_per_output_token,
++                            stats.time_per_output_tokens_iter)
++
++        # Request level data
++        # Latency
++        self._log_histogram(self.metrics.histogram_e2e_time_request,
++                            stats.time_e2e_requests)
++        self._log_histogram(self.metrics.histogram_queue_time_request,
++                            stats.time_queue_requests)
++        self._log_histogram(self.metrics.histogram_inference_time_request,
++                            stats.time_inference_requests)
++        self._log_histogram(self.metrics.histogram_prefill_time_request,
++                            stats.time_prefill_requests)
++        self._log_histogram(self.metrics.histogram_decode_time_request,
++                            stats.time_decode_requests)
++        # Metadata
++        finished_reason_counter = CollectionsCounter(
++            stats.finished_reason_requests)
++        self._log_counter_labels(self.metrics.counter_request_success,
++                                 finished_reason_counter,
++                                 Metrics.labelname_finish_reason)
++        self._log_histogram(self.metrics.histogram_num_prompt_tokens_request,
++                            stats.num_prompt_tokens_requests)
++        self._log_histogram(
++            self.metrics.histogram_num_generation_tokens_request,
++            stats.num_generation_tokens_requests)
++        self._log_histogram(self.metrics.histogram_n_request, stats.n_requests)
++        self._log_histogram(
++            self.metrics.histogram_max_num_generation_tokens_request,
++            stats.max_num_generation_tokens_requests)
++        self._log_histogram(self.metrics.histogram_max_tokens_request,
++                            stats.max_tokens_requests)
++
++    def log(self, stats: Stats):
++        """Logs to prometheus and tracked stats every iteration."""
++        # Log to prometheus.
++        self._log_prometheus(stats)
++
++        # Save tracked stats for token counters.
++        self.num_prompt_tokens.append(stats.num_prompt_tokens_iter)
++        self.num_generation_tokens.append(stats.num_generation_tokens_iter)
++
++        # Update spec decode metrics
++        self.maybe_update_spec_decode_metrics(stats)
++
++        # Log locally every local_interval seconds.
++        if local_interval_elapsed(stats.now, self.last_local_log,
++                                  self.local_interval):
++            if self.spec_decode_metrics is not None:
++                self._log_gauge(
++                    self.metrics.gauge_spec_decode_draft_acceptance_rate,
++                    self.spec_decode_metrics.draft_acceptance_rate)
++                self._log_gauge(self.metrics.gauge_spec_decode_efficiency,
++                                self.spec_decode_metrics.system_efficiency)
++                self._log_counter(
++                    self.metrics.counter_spec_decode_num_accepted_tokens,
++                    self.spec_decode_metrics.accepted_tokens)
++                self._log_counter(
++                    self.metrics.counter_spec_decode_num_draft_tokens,
++                    self.spec_decode_metrics.draft_tokens)
++                self._log_counter(
++                    self.metrics.counter_spec_decode_num_emitted_tokens,
++                    self.spec_decode_metrics.emitted_tokens)
++
++            # Reset tracked stats for next interval.
++            self.num_prompt_tokens = []
++            self.num_generation_tokens = []
++            self.last_local_log = stats.now
++            self.spec_decode_metrics = None
++
++    def info(self, type: str, obj: SupportsMetricsInfo) -> None:
++        # Info type metrics are syntactic sugar for a gauge permanently set to 1
++        # Since prometheus multiprocessing mode does not support Info, emulate
++        # info here with a gauge.
++        if type == "cache_config":
++            metrics_info = obj.metrics_info()
++            info_gauge = self._gauge_cls(
++                name="vllm:cache_config_info",
++                documentation="Information of the LLMEngine CacheConfig",
++                labelnames=metrics_info.keys(),
++                multiprocess_mode="mostrecent")
++            info_gauge.labels(**metrics_info).set(1)
++
++
++class RayPrometheusStatLogger(PrometheusStatLogger):
++    """RayPrometheusStatLogger uses Ray metrics instead."""
++    _metrics_cls = RayMetrics
++
++    def info(self, type: str, obj: SupportsMetricsInfo) -> None:
++        return None
+diff --git a/vllm/v1/attention/backends/mla/common.py b/vllm/v1/attention/backends/mla/common.py
+index f2aaf59a4..b56f62b39 100644
+--- a/vllm/v1/attention/backends/mla/common.py
++++ b/vllm/v1/attention/backends/mla/common.py
+@@ -200,6 +200,7 @@ from vllm.attention.backends.abstract import (AttentionBackend, AttentionLayer,
+                                               MLAAttentionImpl)
+ from vllm.attention.backends.utils import get_mla_dims
+ from vllm.attention.ops.merge_attn_states import merge_attn_states
++from vllm.forward_context import ForwardContext, get_forward_context
+ from vllm.attention.utils.fa_utils import get_flash_attn_version
+ from vllm.logger import init_logger
+ from vllm.model_executor.layers.linear import (ColumnParallelLinear,
+@@ -211,6 +212,7 @@ from vllm.v1.attention.backends.utils import (AttentionMetadataBuilder,
+                                               CommonAttentionMetadata)
+ from vllm.v1.kv_cache_interface import AttentionSpec
+ from vllm.v1.worker.block_table import BlockTable
++from vllm.attention.layer import (maybe_execute_sparse_attention_begin, maybe_execute_sparse_attention_finished)
+ 
+ try:
+     from vllm.vllm_flash_attn import flash_attn_varlen_func
+@@ -908,7 +910,7 @@ class MLACommonImpl(MLAAttentionImpl[M], Generic[M]):
+         output: Optional[torch.Tensor] = None,
+         output_scale: Optional[torch.Tensor] = None,
+     ) -> torch.Tensor:
+-
++        forward_context: ForwardContext = get_forward_context()
+         assert output is not None, "Output tensor must be provided."
+ 
+         if output_scale is not None:
+@@ -957,10 +959,11 @@ class MLACommonImpl(MLAAttentionImpl[M], Generic[M]):
+             )
+ 
+         if has_prefill:
++            maybe_execute_sparse_attention_begin(prefill_q, prefill_k_c_normed, prefill_k_pe, layer.layer_name, forward_context, "prefill")
+             output[num_decode_tokens:] = self._forward_prefill(
+                 prefill_q, prefill_k_c_normed, prefill_k_pe, kv_cache,
+                 attn_metadata)
+-
++            maybe_execute_sparse_attention_finished(prefill_q, prefill_k_c_normed, prefill_k_pe, output[num_decode_tokens:], layer.layer_name, forward_context, "prefill")
+         if has_decode:
+             assert attn_metadata.decode is not None
+             decode_q_nope, decode_q_pe = decode_q.split(
+@@ -971,8 +974,9 @@ class MLACommonImpl(MLAAttentionImpl[M], Generic[M]):
+             decode_ql_nope = torch.bmm(decode_q_nope, self.W_UK_T)
+             # Convert from (N, B, L) to (B, N, L)
+             decode_ql_nope = decode_ql_nope.transpose(0, 1)
+-
++            maybe_execute_sparse_attention_begin(torch.cat([decode_ql_nope, decode_q_pe],dim=-1), decode_ql_nope, decode_q_pe, layer.layer_name, forward_context, "decode")
+             output[:num_decode_tokens] = self._forward_decode(
+                 decode_ql_nope, decode_q_pe, kv_cache, attn_metadata)
++            maybe_execute_sparse_attention_finished(torch.cat([decode_ql_nope, decode_q_pe],dim=-1), decode_ql_nope, decode_q_pe, output[:num_decode_tokens], layer.layer_name, forward_context, "decode")
+ 
+         return output_padded
 diff --git a/vllm/v1/core/block_pool.py b/vllm/v1/core/block_pool.py
 index d21f94727..1800665c7 100644
 --- a/vllm/v1/core/block_pool.py
@@ -323,16 +1644,16 @@ index d21f94727..1800665c7 100644
          new_full_blocks = blocks[num_cached_blocks:num_full_blocks]
          assert len(block_hashes) >= num_cached_blocks
 diff --git a/vllm/v1/core/kv_cache_manager.py b/vllm/v1/core/kv_cache_manager.py
-index 6937455e7..0099f4a0f 100644
+index 6937455e7..c62e93beb 100644
 --- a/vllm/v1/core/kv_cache_manager.py
 +++ b/vllm/v1/core/kv_cache_manager.py
 @@ -3,7 +3,7 @@
-
+ 
  from collections import defaultdict
  from dataclasses import dataclass
 -from typing import Optional
 +from typing import Optional, Union
-
+ 
  from vllm.distributed.kv_events import KVCacheEvent
  from vllm.logger import init_logger
 @@ -14,6 +14,8 @@ from vllm.v1.core.kv_cache_utils import (BlockHash, KVCacheBlock,
@@ -341,9 +1662,9 @@ index 6937455e7..0099f4a0f 100644
  from vllm.v1.request import Request, RequestStatus
 +from ucm.sparse.state import get_ucm_sparse, has_ucm_sparse
 +from ucm.sparse.base import INVALID_SLOT
-
+ 
  logger = init_logger(__name__)
-
+ 
 @@ -193,6 +195,7 @@ class KVCacheManager:
          num_draft_tokens: int = 0,
          num_lookahead_tokens: int = 0,
@@ -351,8 +1672,8 @@ index 6937455e7..0099f4a0f 100644
 +        num_slots_sparsed: Union[None, int] = None
      ) -> Optional[KVCacheBlocks]:
          """Add slots for a request with new tokens to append.
-
-@@ -231,6 +234,12 @@ class KVCacheManager:
+ 
+@@ -231,6 +234,15 @@ class KVCacheManager:
          """
          if num_new_tokens == 0:
              raise ValueError("num_new_tokens must be greater than 0")
@@ -362,38 +1683,25 @@ index 6937455e7..0099f4a0f 100644
 +                                                   self.coordinator,
 +                                                   self.block_pool,
 +                                                   self.kv_cache_config.kv_cache_groups)
-
++            # return get_ucm_sparse().allocate_slots(self, request,
++            #                                        num_slots_sparsed,
++            #                                        )
+ 
          if new_computed_blocks is not None:
              new_computed_block_list = new_computed_blocks.blocks
 diff --git a/vllm/v1/core/sched/output.py b/vllm/v1/core/sched/output.py
-index d34f39327..fff0eeb42 100644
+index d34f39327..141d750b3 100644
 --- a/vllm/v1/core/sched/output.py
 +++ b/vllm/v1/core/sched/output.py
-@@ -93,6 +93,7 @@ class CachedRequestData:
-     new_token_ids: list[list[int]]
-     new_block_ids: list[tuple[list[int], ...]]
-     num_computed_tokens: list[int]
-+    num_output_tokens: list[int]
-
-     @property
-     def num_reqs(self) -> int:
-@@ -106,6 +107,7 @@ class CachedRequestData:
-             new_token_ids=[],
-             new_block_ids=[],
-             num_computed_tokens=[],
-+            num_output_tokens=[],
-         )
-
-
-@@ -155,3 +157,6 @@ class SchedulerOutput:
-
+@@ -155,3 +155,6 @@ class SchedulerOutput:
+ 
      # KV Cache Connector metadata.
      kv_connector_metadata: Optional[KVConnectorMetadata] = None
 +
 +    # modified slots by sparse algorithm
 +    req_sparsed_slots: dict[str, int] = None
 diff --git a/vllm/v1/core/sched/scheduler.py b/vllm/v1/core/sched/scheduler.py
-index fe552db74..aa172e943 100644
+index fe552db74..26acf0a1a 100644
 --- a/vllm/v1/core/sched/scheduler.py
 +++ b/vllm/v1/core/sched/scheduler.py
 @@ -34,6 +34,8 @@ from vllm.v1.outputs import ModelRunnerOutput
@@ -402,9 +1710,9 @@ index fe552db74..aa172e943 100644
  from vllm.v1.structured_output import StructuredOutputManager
 +from ucm.sparse.state import ensure_ucm_sparse_initialized, get_ucm_sparse, has_ucm_sparse
 +from ucm.sparse.base import UcmSparseBase, UcmSparseRole, INVALID_SLOT
-
+ 
  logger = init_logger(__name__)
-
+ 
 @@ -79,12 +81,18 @@ class Scheduler(SchedulerInterface):
          # will have a corresponding KVConnector with Role=WORKER.
          # KV Connector pushes/pull of remote KVs for P/D and offloading.
@@ -421,19 +1729,11 @@ index fe552db74..aa172e943 100644
 +                ensure_ucm_sparse_initialized(vllm_config, role=UcmSparseRole.SCHEDULER)
 +                self.ucm_sparse = get_ucm_sparse()
 +                logger.info("UCM Sparse initialized successfully: {}".format(self.ucm_sparse))
-
+ 
          self.kv_event_publisher = EventPublisherFactory.create(
              self.kv_events_config,
-@@ -118,6 +126,7 @@ class Scheduler(SchedulerInterface):
-
-         # KV Connector: requests in process of async KV loading or recving
-         self.finished_recving_kv_req_ids: set[str] = set()
-+        self.failed_recving_kv_req_ids: set[str] = set()
-
-         # Encoder-related.
-         # Calculate encoder cache size if applicable
-@@ -201,8 +210,13 @@ class Scheduler(SchedulerInterface):
-
+@@ -201,8 +209,13 @@ class Scheduler(SchedulerInterface):
+ 
          # First, schedule the RUNNING requests.
          req_index = 0
 +        req_sparsed_slots: dict[str, int] = {}
@@ -443,10 +1743,10 @@ index fe552db74..aa172e943 100644
 +            if self.ucm_sparse:
 +                num_slots_sparsed = self.ucm_sparse.estimate_num_slots_sparsed(request)
 +            req_sparsed_slots.update({request.request_id: num_slots_sparsed})
-
+ 
              num_new_tokens = (request.num_tokens_with_spec -
                                request.num_computed_tokens)
-@@ -250,7 +264,8 @@ class Scheduler(SchedulerInterface):
+@@ -250,7 +263,8 @@ class Scheduler(SchedulerInterface):
                      request,
                      num_new_tokens,
                      num_draft_tokens=num_draft_tokens,
@@ -456,18 +1756,18 @@ index fe552db74..aa172e943 100644
                  if new_blocks is None:
                      # The request cannot be scheduled.
                      # Preempt the lowest-priority request.
-@@ -337,6 +352,10 @@ class Scheduler(SchedulerInterface):
+@@ -337,6 +351,10 @@ class Scheduler(SchedulerInterface):
                      break
-
+ 
                  request = self.waiting.peek_request()
 +                num_slots_sparsed = INVALID_SLOT
 +                if self.ucm_sparse:
 +                    num_slots_sparsed = self.ucm_sparse.estimate_num_slots_sparsed(request)
 +                req_sparsed_slots.update({request.request_id: num_slots_sparsed})
-
+ 
                  # KVTransfer: skip request if still waiting for remote kvs.
                  if request.status == RequestStatus.WAITING_FOR_REMOTE_KVS:
-@@ -446,6 +465,7 @@ class Scheduler(SchedulerInterface):
+@@ -446,6 +464,7 @@ class Scheduler(SchedulerInterface):
                      new_computed_blocks,
                      num_lookahead_tokens=self.num_lookahead_tokens,
                      delay_cache_blocks=load_kv_async,
@@ -475,7 +1775,7 @@ index fe552db74..aa172e943 100644
                  )
                  if new_blocks is None:
                      # The request cannot be scheduled.
-@@ -559,6 +579,7 @@ class Scheduler(SchedulerInterface):
+@@ -559,6 +578,7 @@ class Scheduler(SchedulerInterface):
              scheduled_spec_decode_tokens=scheduled_spec_decode_tokens,
              scheduled_encoder_inputs=scheduled_encoder_inputs,
              num_common_prefix_blocks=num_common_prefix_blocks,
@@ -483,46 +1783,22 @@ index fe552db74..aa172e943 100644
              # finished_req_ids is an existing state in the scheduler,
              # instead of being newly scheduled in this step.
              # It contains the request IDs that are finished in between
-@@ -620,6 +641,7 @@ class Scheduler(SchedulerInterface):
-         new_token_ids: list[list[int]] = []
-         new_block_ids: list[tuple[list[int], ...]] = []
-         num_computed_tokens: list[int] = []
-+        num_output_tokens: list[int] = []
-
-         for req in itertools.chain(running_reqs, resumed_reqs):
-             req_id = req.request_id
-@@ -637,6 +659,7 @@ class Scheduler(SchedulerInterface):
-                 new_token_ids.append(token_ids)
-             new_block_ids.append(req_to_new_block_ids[req_id])
-             num_computed_tokens.append(req.num_computed_tokens)
-+            num_output_tokens.append(len(req.output_token_ids))
-         # Because resumed_reqs is usually empty, it is more efficient to do
-         # in-place appending so that we don't need to allocate a new list.
-         resumed_from_preemption = [False] * len(running_reqs)
-@@ -648,6 +671,7 @@ class Scheduler(SchedulerInterface):
-             new_token_ids=new_token_ids,
-             new_block_ids=new_block_ids,
-             num_computed_tokens=num_computed_tokens,
-+            num_output_tokens=num_output_tokens,
-         )
-
-     def _try_schedule_encoder_inputs(
-@@ -745,16 +769,29 @@ class Scheduler(SchedulerInterface):
+@@ -745,16 +765,31 @@ class Scheduler(SchedulerInterface):
          num_scheduled_tokens = scheduler_output.num_scheduled_tokens
          pooler_outputs = model_runner_output.pooler_output
          num_nans_in_logits = model_runner_output.num_nans_in_logits
 +        invalid_block_ids = model_runner_output.invalid_block_ids
-
+ 
          new_running: list[Request] = []
          outputs: dict[int, list[EngineCoreOutput]] = defaultdict(list)
          spec_decoding_stats: Optional[SpecDecodingStats] = None
-
-+        failed_kv_load_req_ids = None
+ 
++        recovered_req_ids = None
 +        if invalid_block_ids:
 +            # These blocks contain externally computed tokens that failed to
 +            # load. Identify affected requests and adjust their computed token
 +            # count to trigger recomputation of the invalid blocks.
-+            failed_kv_load_req_ids = self._handle_invalid_blocks(invalid_block_ids)
++            recovered_req_ids = self._handle_invalid_blocks(invalid_block_ids)
 +
          # NOTE(woosuk): As len(self.running) can be up to 1K or more, the below
          # loop can be a performance bottleneck. We should do our best to avoid
@@ -530,17 +1806,19 @@ index fe552db74..aa172e943 100644
          for request in self.running:
              req_id = request.request_id
 +            # self.req_meta.stage == SequenceStage.PREFILL and self.req_meta.is_last_chunk
-+            if failed_kv_load_req_ids and req_id in failed_kv_load_req_ids:
++
++
++            if recovered_req_ids and req_id in recovered_req_ids:
 +                # Skip requests that were recovered from KV load failure
 +                new_running.append(request)
 +                continue
              num_tokens_scheduled = num_scheduled_tokens.get(req_id, 0)
              if num_tokens_scheduled == 0:
                  # The request was not scheduled in this step.
-@@ -792,6 +829,12 @@ class Scheduler(SchedulerInterface):
+@@ -792,6 +827,12 @@ class Scheduler(SchedulerInterface):
              new_token_ids = generated_token_ids
              kv_transfer_params = None
-
+ 
 +            if model_runner_output.finished_dumping is not None:
 +                request.succeed_dumped_blocks.extend(model_runner_output.finished_dumping.get(req_id, []))
 +                is_prefill = request.num_output_tokens == 0
@@ -550,7 +1828,7 @@ index fe552db74..aa172e943 100644
              # Append generated tokens and check for stop. Note that if
              # a request is still being prefilled, we expect the model runner
              # to return empty token ids for the request.
-@@ -842,7 +885,6 @@ class Scheduler(SchedulerInterface):
+@@ -842,7 +883,6 @@ class Scheduler(SchedulerInterface):
                          spec_token_ids[req_index])
                  else:
                      request.spec_token_ids = spec_token_ids[req_index]
@@ -558,15 +1836,15 @@ index fe552db74..aa172e943 100644
              # Get prompt logprobs for this request.
              prompt_logprobs_tensors = prompt_logprobs_dict.get(req_id)
              if new_token_ids or pooler_output is not None \
-@@ -869,6 +911,7 @@ class Scheduler(SchedulerInterface):
-
+@@ -869,6 +909,7 @@ class Scheduler(SchedulerInterface):
+ 
              if not stopped:
                  new_running.append(request)
 +
          self.running = new_running
-
+ 
          # KV Connector: update state for finished KV Transfers.
-@@ -927,6 +970,8 @@ class Scheduler(SchedulerInterface):
+@@ -927,6 +968,8 @@ class Scheduler(SchedulerInterface):
      def add_request(self, request: Request) -> None:
          self.waiting.add_request(request)
          self.requests[request.request_id] = request
@@ -574,111 +1852,44 @@ index fe552db74..aa172e943 100644
 +            self.ucm_sparse.request_begin(request.request_id, request.prompt_token_ids)
          if self.log_stats:
              request.record_event(EngineCoreEventType.QUEUED)
-
-@@ -976,6 +1021,8 @@ class Scheduler(SchedulerInterface):
-
+ 
+@@ -976,6 +1019,8 @@ class Scheduler(SchedulerInterface):
+ 
      def _free_request(self, request: Request) -> Optional[dict[str, Any]]:
          assert request.is_finished()
 +        if self.ucm_sparse:
 +            self.ucm_sparse.request_finished_in_scheduler(request.request_id)
-
+ 
          delay_free_blocks, kv_xfer_params = self._connector_finished(request)
          self.encoder_cache_manager.free(request)
-@@ -1078,18 +1125,31 @@ class Scheduler(SchedulerInterface):
-         if request.request_id not in self.finished_recving_kv_req_ids:
-             return False
-
--        # Now that the blocks are ready, actually cache them.
--        (block_ids, ) = self.kv_cache_manager.get_block_ids(request.request_id)
--        num_computed_tokens = len(block_ids) * self.block_size
--        # Handle the case where num request tokens less then one block.
--        num_computed_tokens = min(num_computed_tokens, request.num_tokens)
--        if num_computed_tokens == request.num_tokens:
--            num_computed_tokens -= 1
--        # This will cache the blocks iff caching is enabled.
--        self.kv_cache_manager.cache_blocks(request, num_computed_tokens)
--
--        # Update the request state for scheduling.
--        request.num_computed_tokens = num_computed_tokens
-+        if request.request_id in self.failed_recving_kv_req_ids:
-+            # Request had KV load failures; num_computed_tokens was already
-+            # updated in _update_requests_with_invalid_blocks
-+            if request.num_computed_tokens:
-+                # Cache any valid computed tokens.
-+                self.kv_cache_manager.cache_blocks(request,
-+                                                   request.num_computed_tokens)
-+            else:
-+                # No valid computed tokens, release allocated blocks.
-+                # There may be a local cache hit on retry.
-+                self.kv_cache_manager.free(request)
-+                self.failed_recving_kv_req_ids.remove(request.request_id)
-+        else:
-+            # Now that the blocks are ready, actually cache them.
-+            (block_ids, ) = self.kv_cache_manager.get_block_ids(request.request_id)
-+            num_computed_tokens = len(block_ids) * self.block_size
-+            # Handle the case where num request tokens less then one block.
-+            num_computed_tokens = min(num_computed_tokens, request.num_tokens)
-+            if num_computed_tokens == request.num_tokens:
-+                num_computed_tokens -= 1
-+            # This will cache the blocks iff caching is enabled.
-+            self.kv_cache_manager.cache_blocks(request, num_computed_tokens)
-+
-+            # Update the request state for scheduling.
-+            request.num_computed_tokens = num_computed_tokens
-
-         # Return that we are ready.
-         self.finished_recving_kv_req_ids.remove(request.request_id)
-@@ -1113,3 +1173,132 @@ class Scheduler(SchedulerInterface):
+@@ -1113,3 +1158,117 @@ class Scheduler(SchedulerInterface):
          for req_id in (model_runner_output.finished_sending or ()):
              logger.debug("Finished sending KV transfer for request %s", req_id)
              self._free_blocks(self.requests[req_id])
 +
 +    def _update_requests_with_invalid_blocks(
 +            self, requests: Iterable[Request],
-+            invalid_block_ids: set[int]) -> tuple[set[str], int]:
-+        """
-+        Identify and update requests affected by invalid KV cache blocks.
-+        This method scans the given requests, detects those with invalid blocks
-+        and adjusts their `num_computed_tokens` to the longest valid prefix.
-+        For observability, it also accumulates the total number of tokens that
-+        will need to be recomputed across all affected requests.
-+        Args:
-+            requests: The set of requests to scan for invalid blocks.
-+            invalid_block_ids: IDs of invalid blocks.
-+        Returns:
-+            tuple:
-+                - affected_req_ids (set[str]): IDs of requests impacted by
-+                invalid blocks.
-+                - total_affected_tokens (int): Total number of tokens that must
-+                be recomputed across all affected requests (for observability).
-+        """
-+        affected_req_ids: set[str] = set()
-+        total_affected_tokens = 0
++            invalid_block_ids: set[int]) -> tuple[set[Request], int, set[int]]:
++        affected_requests: set[Request] = set()
++        num_tokens_to_reschedule = 0
 +        # If a block is invalid and shared by multiple requests in the batch,
-+        # these requests must be rescheduled, but only the first will recompute
++        # all requests must be rescheduled, but only the first will recompute
 +        # it. This set tracks blocks already marked for recomputation.
 +        marked_invalid_block_ids: set[int] = set()
 +        for request in requests:
 +            is_affected = False
 +            marked_invalid_block = False
 +            req_id = request.request_id
-+            # TODO (davidb): add support for hybrid memory allocator
-+            (req_block_ids, ) = self.kv_cache_manager.get_block_ids(req_id)
++            req_block_ids = self.kv_cache_manager.get_block_ids(req_id)[0]
 +            # We iterate only over blocks that may contain externally computed
 +            # tokens
-+            if request.status == RequestStatus.WAITING_FOR_REMOTE_KVS:
-+                # Async loading. If num_computed_tokens is set it implies we
-+                # already processed some block failures for it in a prior step
-+                req_num_computed_tokens = (
-+                    request.num_computed_tokens if req_id
-+                    in self.failed_recving_kv_req_ids else len(req_block_ids) *
-+                    self.block_size)
++            if request.num_cached_tokens > 0:
++                req_num_computed_blocks = (request.num_cached_tokens +
++                                           self.block_size -
++                                           1) // self.block_size
 +            else:
-+                # Sync loading. num_computed_tokens includes new tokens
-+                req_num_computed_tokens = request.num_cached_tokens
++                req_num_computed_blocks = len(req_block_ids)
 +
-+            req_num_computed_blocks = (req_num_computed_tokens +
-+                                       self.block_size - 1) // self.block_size
 +            for idx, block_id in zip(range(req_num_computed_blocks),
 +                                     req_block_ids):
 +
@@ -692,8 +1903,6 @@ index fe552db74..aa172e943 100644
 +                    # and was already marked for recomputation.
 +                    # This means this request can still consider this block
 +                    # as computed when rescheduled.
-+                    # Currently this only applies to sync loading; Async
-+                    # loading does not yet support block sharing
 +                    continue
 +
 +                marked_invalid_block_ids.add(block_id)
@@ -704,26 +1913,23 @@ index fe552db74..aa172e943 100644
 +                    continue
 +
 +                marked_invalid_block = True
-+                # Truncate the computed tokens at the first failed block
++                num_tokens_to_reschedule += request.num_computed_tokens
 +                request.num_computed_tokens = idx * self.block_size
-+                total_affected_tokens += (req_num_computed_tokens -
-+                                          request.num_computed_tokens)
++                num_tokens_to_reschedule -= request.num_computed_tokens
 +
 +            if is_affected:
 +                if not marked_invalid_block:
 +                    # All invalid blocks of this request are shared with
 +                    # previous requests and will be recomputed by them.
 +                    # Revert to considering only cached tokens as computed.
-+                    # Currently this only applies to sync loading; Async
-+                    # loading does not yet support block sharing
-+                    total_affected_tokens += (request.num_computed_tokens -
-+                                              request.num_cached_tokens)
++                    num_tokens_to_reschedule += (request.num_computed_tokens -
++                                                 request.num_cached_tokens)
 +                    request.num_computed_tokens = request.num_cached_tokens
 +
-+                affected_req_ids.add(request.request_id)
++                affected_requests.add(request)
 +
-+        return (affected_req_ids, total_affected_tokens)
-+
++        return (affected_requests, num_tokens_to_reschedule,
++                marked_invalid_block_ids)
 +
 +    def _handle_invalid_blocks(self, invalid_block_ids: set[int]) -> set[str]:
 +        total_requests_to_reschedule = 0
@@ -733,34 +1939,47 @@ index fe552db74..aa172e943 100644
 +        async_load_reqs = (
 +            req for req in self.waiting
 +            if req.status == RequestStatus.WAITING_FOR_REMOTE_KVS)
-+        async_affected_req_ids, num_tokens_to_reschedule = (
-+            self._update_requests_with_invalid_blocks(async_load_reqs,
-+                                                      invalid_block_ids))
++        (affected_requests, num_tokens_to_reschedule,
++         marked_invalid_block_ids) = (
++             self._update_requests_with_invalid_blocks(async_load_reqs,
++                                                       invalid_block_ids))
 +
-+        total_requests_to_reschedule += len(async_affected_req_ids)
++        total_requests_to_reschedule += len(affected_requests)
 +        total_tokens_to_reschedule += num_tokens_to_reschedule
 +
-+        # Mark requests with async KV load failures; they will be rescheduled
-+        # once loading completes
-+        self.failed_recving_kv_req_ids |= async_affected_req_ids
++        for request in affected_requests:
++            if request.num_computed_tokens:
++                # Cache any valid computed tokens.
++                self.kv_cache_manager.cache_blocks(request,
++                                                   request.num_computed_tokens)
++            else:
++                # No valid computed tokens, release allocated blocks.
++                # There may be a local cache hit on retry.
++                self.kv_cache_manager.free(request)
++
++            request.status = RequestStatus.WAITING
++
++        # Remove async loaded invalid blocks already handled,
++        # as they cannot be shared with running requests.
++        invalid_block_ids.difference_update(marked_invalid_block_ids)
 +
 +        # --- Handle sync KV loads (running requests) ---
-+        sync_affected_req_ids, num_tokens_to_reschedule = (
++        affected_requests, num_tokens_to_reschedule, _ = (
 +            self._update_requests_with_invalid_blocks(self.running,
 +                                                      invalid_block_ids))
 +
-+        total_requests_to_reschedule += len(sync_affected_req_ids)
++        total_requests_to_reschedule += len(affected_requests)
 +        total_tokens_to_reschedule += num_tokens_to_reschedule
 +
 +        if total_requests_to_reschedule:
-+            logger.warning(
++            logger.info(
 +                "Recovered from KV load failure: "
 +                "%d request(s) rescheduled (%d tokens affected).",
 +                total_requests_to_reschedule, total_tokens_to_reschedule)
 +
 +        # Return the IDs of affected running requests to skip in
 +        # update_from_output.
-+        return sync_affected_req_ids
++        return {r.request_id for r in affected_requests}
 diff --git a/vllm/v1/core/single_type_kv_cache_manager.py b/vllm/v1/core/single_type_kv_cache_manager.py
 index 5b4718038..28bd4618a 100644
 --- a/vllm/v1/core/single_type_kv_cache_manager.py
@@ -768,13 +1987,662 @@ index 5b4718038..28bd4618a 100644
 @@ -142,6 +142,9 @@ class SingleTypeKVCacheManager(ABC):
          num_cached_blocks = self.num_cached_block[request.request_id]
          num_full_blocks = num_tokens // self.block_size
-
+ 
 +        if num_cached_blocks >= num_full_blocks:
 +            return
 +
          self.block_pool.cache_full_blocks(
              request=request,
              blocks=self.req_to_blocks[request.request_id],
+diff --git a/vllm/v1/engine/llm_engine.py b/vllm/v1/engine/llm_engine.py
+index a2328c37b..59a93c698 100644
+--- a/vllm/v1/engine/llm_engine.py
++++ b/vllm/v1/engine/llm_engine.py
+@@ -1,322 +1,322 @@
+-# SPDX-License-Identifier: Apache-2.0
+-# SPDX-FileCopyrightText: Copyright contributors to the vLLM project
+-
+-from collections.abc import Mapping
+-from copy import copy
+-from typing import Any, Callable, Optional, Union
+-
+-from typing_extensions import TypeVar
+-
+-import vllm.envs as envs
+-from vllm.config import ParallelConfig, VllmConfig
+-from vllm.distributed import stateless_destroy_torch_distributed_process_group
+-from vllm.engine.arg_utils import EngineArgs
+-from vllm.inputs import PromptType
+-from vllm.logger import init_logger
+-from vllm.lora.request import LoRARequest
+-from vllm.multimodal import MULTIMODAL_REGISTRY, MultiModalRegistry
+-from vllm.outputs import PoolingRequestOutput, RequestOutput
+-from vllm.pooling_params import PoolingParams
+-from vllm.prompt_adapter.request import PromptAdapterRequest
+-from vllm.sampling_params import SamplingParams
+-from vllm.transformers_utils.tokenizer_group import (
+-    TokenizerGroup, init_tokenizer_from_configs)
+-from vllm.usage.usage_lib import UsageContext
+-from vllm.utils import Device
+-from vllm.v1.engine.core_client import EngineCoreClient
+-from vllm.v1.engine.output_processor import OutputProcessor
+-from vllm.v1.engine.parallel_sampling import ParentRequest
+-from vllm.v1.engine.processor import Processor
+-from vllm.v1.executor.abstract import Executor
+-from vllm.v1.metrics.loggers import (PrometheusStatLogger, StatLoggerBase,
+-                                     StatLoggerFactory)
+-from vllm.v1.metrics.reader import Metric, get_metrics_snapshot
+-from vllm.v1.metrics.stats import IterationStats
+-
+-logger = init_logger(__name__)
+-
+-_R = TypeVar("_R", default=Any)
+-
+-
+-class LLMEngine:
+-    """Legacy LLMEngine for backwards compatibility."""
+-
+-    def __init__(
+-        self,
+-        vllm_config: VllmConfig,
+-        executor_class: type[Executor],
+-        log_stats: bool,
+-        usage_context: UsageContext = UsageContext.ENGINE_CONTEXT,
+-        stat_loggers: Optional[list[StatLoggerFactory]] = None,
+-        mm_registry: MultiModalRegistry = MULTIMODAL_REGISTRY,
+-        use_cached_outputs: bool = False,
+-        multiprocess_mode: bool = False,
+-    ) -> None:
+-        if not envs.VLLM_USE_V1:
+-            raise ValueError(
+-                "Using V1 LLMEngine, but envs.VLLM_USE_V1=False. "
+-                "This should not happen. As a workaround, try using "
+-                "LLMEngine.from_vllm_config(...) or explicitly set "
+-                "VLLM_USE_V1=0 or 1 and report this issue on Github.")
+-
+-        if stat_loggers is not None:
+-            raise NotImplementedError(
+-                "Passing StatLoggers to LLMEngine in V1 is not yet supported. "
+-                "Set VLLM_USE_V1=0 and file and issue on Github.")
+-
+-        self.vllm_config = vllm_config
+-        self.model_config = vllm_config.model_config
+-        self.cache_config = vllm_config.cache_config
+-
+-        self.log_stats = log_stats
+-        self.stat_logger: Optional[StatLoggerBase] = None
+-        if self.log_stats:
+-            self.stat_logger = PrometheusStatLogger(vllm_config)
+-
+-        # important: init dp group before init the engine_core
+-        # In the decoupled engine case this is handled in EngineCoreProc.
+-        parallel_config = vllm_config.parallel_config
+-        if not multiprocess_mode and parallel_config.data_parallel_size > 1:
+-            self.dp_group = parallel_config.stateless_init_dp_group()
+-        else:
+-            self.dp_group = None
+-        self.should_execute_dummy_batch = False
+-
+-        # Tokenizer (+ ensure liveness if running in another process).
+-        self.tokenizer = init_tokenizer_from_configs(
+-            model_config=vllm_config.model_config,
+-            scheduler_config=vllm_config.scheduler_config,
+-            lora_config=vllm_config.lora_config)
+-
+-        # Processor (convert Inputs --> EngineCoreRequests)
+-        self.processor = Processor(vllm_config=vllm_config,
+-                                   tokenizer=self.tokenizer,
+-                                   mm_registry=mm_registry)
+-
+-        # OutputProcessor (convert EngineCoreOutputs --> RequestOutput).
+-        self.output_processor = OutputProcessor(self.tokenizer,
+-                                                log_stats=self.log_stats)
+-
+-        # EngineCore (gets EngineCoreRequests and gives EngineCoreOutputs)
+-        self.engine_core = EngineCoreClient.make_client(
+-            multiprocess_mode=multiprocess_mode,
+-            asyncio_mode=False,
+-            vllm_config=vllm_config,
+-            executor_class=executor_class,
+-            log_stats=self.log_stats,
+-        )
+-
+-        if not multiprocess_mode:
+-            # for v0 compatibility
+-            self.model_executor = self.engine_core.engine_core.model_executor  # type: ignore
+-
+-        # Don't keep the dummy data in memory
+-        self.reset_mm_cache()
+-
+-    @classmethod
+-    def from_vllm_config(
+-        cls,
+-        vllm_config: VllmConfig,
+-        usage_context: UsageContext = UsageContext.ENGINE_CONTEXT,
+-        stat_loggers: Optional[list[StatLoggerFactory]] = None,
+-        disable_log_stats: bool = False,
+-    ) -> "LLMEngine":
+-        return cls(vllm_config=vllm_config,
+-                   executor_class=Executor.get_class(vllm_config),
+-                   log_stats=(not disable_log_stats),
+-                   usage_context=usage_context,
+-                   stat_loggers=stat_loggers,
+-                   multiprocess_mode=envs.VLLM_ENABLE_V1_MULTIPROCESSING)
+-
+-    @classmethod
+-    def from_engine_args(
+-        cls,
+-        engine_args: EngineArgs,
+-        usage_context: UsageContext = UsageContext.ENGINE_CONTEXT,
+-        stat_loggers: Optional[list[StatLoggerFactory]] = None,
+-        enable_multiprocessing: bool = False,
+-    ) -> "LLMEngine":
+-        """Creates an LLM engine from the engine arguments."""
+-
+-        # Create the engine configs.
+-        vllm_config = engine_args.create_engine_config(usage_context)
+-        executor_class = Executor.get_class(vllm_config)
+-
+-        if envs.VLLM_ENABLE_V1_MULTIPROCESSING:
+-            logger.debug("Enabling multiprocessing for LLMEngine.")
+-            enable_multiprocessing = True
+-
+-        # Create the LLMEngine.
+-        return cls(vllm_config=vllm_config,
+-                   executor_class=executor_class,
+-                   log_stats=not engine_args.disable_log_stats,
+-                   usage_context=usage_context,
+-                   stat_loggers=stat_loggers,
+-                   multiprocess_mode=enable_multiprocessing)
+-
+-    def get_num_unfinished_requests(self) -> int:
+-        return self.output_processor.get_num_unfinished_requests()
+-
+-    def has_unfinished_requests(self) -> bool:
+-        has_unfinished = self.output_processor.has_unfinished_requests()
+-        if self.dp_group is None:
+-            return has_unfinished or self.engine_core.dp_engines_running()
+-        return self.has_unfinished_requests_dp(has_unfinished)
+-
+-    def has_unfinished_requests_dp(self, has_unfinished: bool) -> bool:
+-        aggregated_has_unfinished = ParallelConfig.has_unfinished_dp(
+-            self.dp_group, has_unfinished)
+-        if not has_unfinished and aggregated_has_unfinished:
+-            self.should_execute_dummy_batch = True
+-        return aggregated_has_unfinished
+-
+-    @classmethod
+-    def validate_outputs(cls, outputs, output_type):
+-        return outputs
+-
+-    def abort_request(self, request_ids: list[str]) -> None:
+-        """Remove request_ids from EngineCore and Detokenizer."""
+-
+-        request_ids = self.output_processor.abort_requests(request_ids)
+-        self.engine_core.abort_requests(request_ids)
+-
+-    def add_request(
+-        self,
+-        request_id: str,
+-        prompt: PromptType,
+-        params: Union[SamplingParams, PoolingParams],
+-        arrival_time: Optional[float] = None,
+-        lora_request: Optional[LoRARequest] = None,
+-        tokenization_kwargs: Optional[dict[str, Any]] = None,
+-        trace_headers: Optional[Mapping[str, str]] = None,
+-        prompt_adapter_request: Optional[PromptAdapterRequest] = None,
+-        priority: int = 0,
+-    ) -> None:
+-        # Validate the request_id type.
+-        if not isinstance(request_id, str):
+-            raise TypeError(
+-                f"request_id must be a string, got {type(request_id)}")
+-
+-        # Process raw inputs into the request.
+-        prompt_str, request = self.processor.process_inputs(
+-            request_id, prompt, params, arrival_time, lora_request,
+-            tokenization_kwargs, trace_headers, prompt_adapter_request,
+-            priority)
+-
+-        n = params.n if isinstance(params, SamplingParams) else 1
+-
+-        if n == 1:
+-            # Make a new RequestState and queue.
+-            self.output_processor.add_request(request, prompt_str, None, 0)
+-            # Add the request to EngineCore.
+-            self.engine_core.add_request(request)
+-            return
+-
+-        # Fan out child requests (for n>1).
+-        parent_req = ParentRequest(request_id, params)
+-        for idx in range(n):
+-            request_id, params = parent_req.get_child_info(idx)
+-            child_request = request if idx == n - 1 else copy(request)
+-            child_request.request_id = request_id
+-            child_request.sampling_params = params
+-
+-            # Make a new RequestState and queue.
+-            self.output_processor.add_request(child_request, prompt_str,
+-                                              parent_req, idx)
+-            # Add the request to EngineCore.
+-            self.engine_core.add_request(child_request)
+-
+-    def step(self) -> Union[list[RequestOutput], list[PoolingRequestOutput]]:
+-
+-        if self.should_execute_dummy_batch:
+-            self.should_execute_dummy_batch = False
+-            self.engine_core.execute_dummy_batch()
+-            return []
+-
+-        # 1) Get EngineCoreOutput from the EngineCore.
+-        outputs = self.engine_core.get_output()
+-
+-        # 2) Process EngineCoreOutputs.
+-        iteration_stats = IterationStats() if self.log_stats else None
+-        processed_outputs = self.output_processor.process_outputs(
+-            outputs.outputs,
+-            engine_core_timestamp=outputs.timestamp,
+-            iteration_stats=iteration_stats)
+-
+-        # 3) Abort any reqs that finished due to stop strings.
+-        self.engine_core.abort_requests(processed_outputs.reqs_to_abort)
+-
+-        # 4) Record stats
+-        if self.stat_logger is not None:
+-            assert outputs.scheduler_stats is not None
+-            self.stat_logger.record(scheduler_stats=outputs.scheduler_stats,
+-                                    iteration_stats=iteration_stats)
+-
+-        return processed_outputs.request_outputs
+-
+-    def get_vllm_config(self):
+-        return self.vllm_config
+-
+-    def get_model_config(self):
+-        return self.model_config
+-
+-    def start_profile(self):
+-        self.engine_core.profile(True)
+-
+-    def stop_profile(self):
+-        self.engine_core.profile(False)
+-
+-    def reset_mm_cache(self):
+-        self.processor.mm_registry.reset_processor_cache()
+-        self.processor.mm_input_cache_client.reset()
+-        self.engine_core.reset_mm_cache()
+-
+-    def reset_prefix_cache(self, device: Optional[Device] = None):
+-        self.engine_core.reset_prefix_cache()
+-
+-    def sleep(self, level: int = 1):
+-        self.engine_core.sleep(level)
+-
+-    def wake_up(self, tags: Optional[list[str]] = None):
+-        self.engine_core.wake_up(tags)
+-
+-    def is_sleeping(self) -> bool:
+-        return self.engine_core.is_sleeping()
+-
+-    def get_metrics(self) -> list[Metric]:
+-        assert self.log_stats, "Stat logging disabled"
+-        return get_metrics_snapshot()
+-
+-    def get_tokenizer_group(self) -> TokenizerGroup:
+-        if self.tokenizer is None:
+-            raise ValueError("Unable to get tokenizer because "
+-                             "skip_tokenizer_init is True")
+-
+-        return self.tokenizer
+-
+-    def add_lora(self, lora_request: LoRARequest) -> bool:
+-        """Load a new LoRA adapter into the engine for future requests."""
+-        return self.engine_core.add_lora(lora_request)
+-
+-    def remove_lora(self, lora_id: int) -> bool:
+-        """Remove an already loaded LoRA adapter."""
+-        return self.engine_core.remove_lora(lora_id)
+-
+-    def list_loras(self) -> set[int]:
+-        """List all registered adapters."""
+-        return self.engine_core.list_loras()
+-
+-    def pin_lora(self, lora_id: int) -> bool:
+-        """Prevent an adapter from being evicted."""
+-        return self.engine_core.pin_lora(lora_id)
+-
+-    def collective_rpc(self,
+-                       method: Union[str, Callable[..., _R]],
+-                       timeout: Optional[float] = None,
+-                       args: tuple = (),
+-                       kwargs: Optional[dict[str, Any]] = None) -> list[_R]:
+-        return self.engine_core.collective_rpc(method, timeout, args, kwargs)
+-
+-    def __del__(self):
+-        if dp_group := getattr(self, "dp_group", None):
+-            stateless_destroy_torch_distributed_process_group(dp_group)
++# SPDX-License-Identifier: Apache-2.0
++# SPDX-FileCopyrightText: Copyright contributors to the vLLM project
++
++from collections.abc import Mapping
++from copy import copy
++from typing import Any, Callable, Optional, Union
++
++from typing_extensions import TypeVar
++
++import vllm.envs as envs
++from vllm.config import ParallelConfig, VllmConfig
++from vllm.distributed import stateless_destroy_torch_distributed_process_group
++from vllm.engine.arg_utils import EngineArgs
++from vllm.inputs import PromptType
++from vllm.logger import init_logger
++from vllm.lora.request import LoRARequest
++from vllm.multimodal import MULTIMODAL_REGISTRY, MultiModalRegistry
++from vllm.outputs import PoolingRequestOutput, RequestOutput
++from vllm.pooling_params import PoolingParams
++from vllm.prompt_adapter.request import PromptAdapterRequest
++from vllm.sampling_params import SamplingParams
++from vllm.transformers_utils.tokenizer_group import (
++    TokenizerGroup, init_tokenizer_from_configs)
++from vllm.usage.usage_lib import UsageContext
++from vllm.utils import Device
++from vllm.v1.engine.core_client import EngineCoreClient
++from vllm.v1.engine.output_processor import OutputProcessor
++from vllm.v1.engine.parallel_sampling import ParentRequest
++from vllm.v1.engine.processor import Processor
++from vllm.v1.executor.abstract import Executor
++from vllm.v1.metrics.loggers import (PrometheusStatLogger, StatLoggerBase,
++                                     StatLoggerFactory)
++from vllm.v1.metrics.reader import Metric, get_metrics_snapshot
++from vllm.v1.metrics.stats import IterationStats
++
++logger = init_logger(__name__)
++
++_R = TypeVar("_R", default=Any)
++
++
++class LLMEngine:
++    """Legacy LLMEngine for backwards compatibility."""
++
++    def __init__(
++        self,
++        vllm_config: VllmConfig,
++        executor_class: type[Executor],
++        log_stats: bool,
++        usage_context: UsageContext = UsageContext.ENGINE_CONTEXT,
++        stat_loggers: Optional[list[StatLoggerFactory]] = None,
++        mm_registry: MultiModalRegistry = MULTIMODAL_REGISTRY,
++        use_cached_outputs: bool = False,
++        multiprocess_mode: bool = False,
++    ) -> None:
++        if not envs.VLLM_USE_V1:
++            raise ValueError(
++                "Using V1 LLMEngine, but envs.VLLM_USE_V1=False. "
++                "This should not happen. As a workaround, try using "
++                "LLMEngine.from_vllm_config(...) or explicitly set "
++                "VLLM_USE_V1=0 or 1 and report this issue on Github.")
++
++        if stat_loggers is not None:
++            raise NotImplementedError(
++                "Passing StatLoggers to LLMEngine in V1 is not yet supported. "
++                "Set VLLM_USE_V1=0 and file and issue on Github.")
++
++        self.vllm_config = vllm_config
++        self.model_config = vllm_config.model_config
++        self.cache_config = vllm_config.cache_config
++
++        self.log_stats = log_stats
++        self.stat_logger: Optional[StatLoggerBase] = None
++        if self.log_stats:
++            self.stat_logger = PrometheusStatLogger(vllm_config)
++
++        # important: init dp group before init the engine_core
++        # In the decoupled engine case this is handled in EngineCoreProc.
++        parallel_config = vllm_config.parallel_config
++        if not multiprocess_mode and parallel_config.data_parallel_size > 1:
++            self.dp_group = parallel_config.stateless_init_dp_group()
++        else:
++            self.dp_group = None
++        self.should_execute_dummy_batch = False
++
++        # Tokenizer (+ ensure liveness if running in another process).
++        self.tokenizer = init_tokenizer_from_configs(
++            model_config=vllm_config.model_config,
++            scheduler_config=vllm_config.scheduler_config,
++            lora_config=vllm_config.lora_config)
++
++        # Processor (convert Inputs --> EngineCoreRequests)
++        self.processor = Processor(vllm_config=vllm_config,
++                                   tokenizer=self.tokenizer,
++                                   mm_registry=mm_registry)
++
++        # OutputProcessor (convert EngineCoreOutputs --> RequestOutput).
++        self.output_processor = OutputProcessor(self.tokenizer,
++                                                log_stats=self.log_stats)
++
++        # EngineCore (gets EngineCoreRequests and gives EngineCoreOutputs)
++        self.engine_core = EngineCoreClient.make_client(
++            multiprocess_mode=multiprocess_mode,
++            asyncio_mode=False,
++            vllm_config=vllm_config,
++            executor_class=executor_class,
++            log_stats=self.log_stats,
++        )
++
++        if not multiprocess_mode:
++            # for v0 compatibility
++            self.model_executor = self.engine_core.engine_core.model_executor  # type: ignore
++
++        # Don't keep the dummy data in memory
++        self.reset_mm_cache()
++
++    @classmethod
++    def from_vllm_config(
++        cls,
++        vllm_config: VllmConfig,
++        usage_context: UsageContext = UsageContext.ENGINE_CONTEXT,
++        stat_loggers: Optional[list[StatLoggerFactory]] = None,
++        disable_log_stats: bool = False,
++    ) -> "LLMEngine":
++        return cls(vllm_config=vllm_config,
++                   executor_class=Executor.get_class(vllm_config),
++                   log_stats=(not disable_log_stats),
++                   usage_context=usage_context,
++                   stat_loggers=stat_loggers,
++                   multiprocess_mode=envs.VLLM_ENABLE_V1_MULTIPROCESSING)
++
++    @classmethod
++    def from_engine_args(
++        cls,
++        engine_args: EngineArgs,
++        usage_context: UsageContext = UsageContext.ENGINE_CONTEXT,
++        stat_loggers: Optional[list[StatLoggerFactory]] = None,
++        enable_multiprocessing: bool = False,
++    ) -> "LLMEngine":
++        """Creates an LLM engine from the engine arguments."""
++
++        # Create the engine configs.
++        vllm_config = engine_args.create_engine_config(usage_context)
++        executor_class = Executor.get_class(vllm_config)
++
++        if envs.VLLM_ENABLE_V1_MULTIPROCESSING:
++            logger.debug("Enabling multiprocessing for LLMEngine.")
++            enable_multiprocessing = True
++
++        # Create the LLMEngine.
++        return cls(vllm_config=vllm_config,
++                   executor_class=executor_class,
++                   log_stats=not engine_args.disable_log_stats,
++                   usage_context=usage_context,
++                   stat_loggers=stat_loggers,
++                   multiprocess_mode=enable_multiprocessing)
++
++    def get_num_unfinished_requests(self) -> int:
++        return self.output_processor.get_num_unfinished_requests()
++
++    def has_unfinished_requests(self) -> bool:
++        has_unfinished = self.output_processor.has_unfinished_requests()
++        if self.dp_group is None:
++            return has_unfinished or self.engine_core.dp_engines_running()
++        return self.has_unfinished_requests_dp(has_unfinished)
++
++    def has_unfinished_requests_dp(self, has_unfinished: bool) -> bool:
++        aggregated_has_unfinished = ParallelConfig.has_unfinished_dp(
++            self.dp_group, has_unfinished)
++        if not has_unfinished and aggregated_has_unfinished:
++            self.should_execute_dummy_batch = True
++        return aggregated_has_unfinished
++
++    @classmethod
++    def validate_outputs(cls, outputs, output_type):
++        return outputs
++
++    def abort_request(self, request_ids: list[str]) -> None:
++        """Remove request_ids from EngineCore and Detokenizer."""
++
++        request_ids = self.output_processor.abort_requests(request_ids)
++        self.engine_core.abort_requests(request_ids)
++
++    def add_request(
++        self,
++        request_id: str,
++        prompt: PromptType,
++        params: Union[SamplingParams, PoolingParams],
++        arrival_time: Optional[float] = None,
++        lora_request: Optional[LoRARequest] = None,
++        tokenization_kwargs: Optional[dict[str, Any]] = None,
++        trace_headers: Optional[Mapping[str, str]] = None,
++        prompt_adapter_request: Optional[PromptAdapterRequest] = None,
++        priority: int = 0,
++    ) -> None:
++        # Validate the request_id type.
++        if not isinstance(request_id, str):
++            raise TypeError(
++                f"request_id must be a string, got {type(request_id)}")
++
++        # Process raw inputs into the request.
++        prompt_str, request = self.processor.process_inputs(
++            request_id, prompt, params, arrival_time, lora_request,
++            tokenization_kwargs, trace_headers, prompt_adapter_request,
++            priority)
++
++        n = params.n if isinstance(params, SamplingParams) else 1
++
++        if n == 1:
++            # Make a new RequestState and queue.
++            self.output_processor.add_request(request, prompt_str, None, 0)
++            # Add the request to EngineCore.
++            self.engine_core.add_request(request)
++            return
++
++        # Fan out child requests (for n>1).
++        parent_req = ParentRequest(request_id, params)
++        for idx in range(n):
++            request_id, params = parent_req.get_child_info(idx)
++            child_request = request if idx == n - 1 else copy(request)
++            child_request.request_id = request_id
++            child_request.sampling_params = params
++
++            # Make a new RequestState and queue.
++            self.output_processor.add_request(child_request, prompt_str,
++                                              parent_req, idx)
++            # Add the request to EngineCore.
++            self.engine_core.add_request(child_request)
++
++    def step(self) -> Union[list[RequestOutput], list[PoolingRequestOutput]]:
++
++        if self.should_execute_dummy_batch:
++            self.should_execute_dummy_batch = False
++            self.engine_core.execute_dummy_batch()
++            return []
++
++        # 1) Get EngineCoreOutput from the EngineCore.
++        outputs = self.engine_core.get_output()
++
++        # 2) Process EngineCoreOutputs.
++        iteration_stats = IterationStats() if self.log_stats else None
++        processed_outputs = self.output_processor.process_outputs(
++            outputs.outputs,
++            engine_core_timestamp=outputs.timestamp,
++            iteration_stats=iteration_stats)
++
++        # 3) Abort any reqs that finished due to stop strings.
++        self.engine_core.abort_requests(processed_outputs.reqs_to_abort)
++
++        # 4) Record stats
++        if self.stat_logger is not None:
++            assert outputs.scheduler_stats is not None
++            self.stat_logger.record(scheduler_stats=outputs.scheduler_stats,
++                                    iteration_stats=iteration_stats)
++
++        return processed_outputs.request_outputs
++
++    def get_vllm_config(self):
++        return self.vllm_config
++
++    def get_model_config(self):
++        return self.model_config
++
++    def start_profile(self):
++        self.engine_core.profile(True)
++
++    def stop_profile(self):
++        self.engine_core.profile(False)
++
++    def reset_mm_cache(self):
++        self.processor.mm_registry.reset_processor_cache()
++        self.processor.mm_input_cache_client.reset()
++        self.engine_core.reset_mm_cache()
++
++    def reset_prefix_cache(self, device: Optional[Device] = None):
++        self.engine_core.reset_prefix_cache()
++
++    def sleep(self, level: int = 1):
++        self.engine_core.sleep(level)
++
++    def wake_up(self, tags: Optional[list[str]] = None):
++        self.engine_core.wake_up(tags)
++
++    def is_sleeping(self) -> bool:
++        return self.engine_core.is_sleeping()
++
++    def get_metrics(self) -> list[Metric]:
++        assert self.log_stats, "Stat logging disabled"
++        return get_metrics_snapshot()
++
++    def get_tokenizer_group(self) -> TokenizerGroup:
++        if self.tokenizer is None:
++            raise ValueError("Unable to get tokenizer because "
++                             "skip_tokenizer_init is True")
++
++        return self.tokenizer
++
++    def add_lora(self, lora_request: LoRARequest) -> bool:
++        """Load a new LoRA adapter into the engine for future requests."""
++        return self.engine_core.add_lora(lora_request)
++
++    def remove_lora(self, lora_id: int) -> bool:
++        """Remove an already loaded LoRA adapter."""
++        return self.engine_core.remove_lora(lora_id)
++
++    def list_loras(self) -> set[int]:
++        """List all registered adapters."""
++        return self.engine_core.list_loras()
++
++    def pin_lora(self, lora_id: int) -> bool:
++        """Prevent an adapter from being evicted."""
++        return self.engine_core.pin_lora(lora_id)
++
++    def collective_rpc(self,
++                       method: Union[str, Callable[..., _R]],
++                       timeout: Optional[float] = None,
++                       args: tuple = (),
++                       kwargs: Optional[dict[str, Any]] = None) -> list[_R]:
++        return self.engine_core.collective_rpc(method, timeout, args, kwargs)
++
++    def __del__(self):
++        if dp_group := getattr(self, "dp_group", None):
++            stateless_destroy_torch_distributed_process_group(dp_group)
 diff --git a/vllm/v1/executor/multiproc_executor.py b/vllm/v1/executor/multiproc_executor.py
 index b06b7cc80..61cd7110f 100644
 --- a/vllm/v1/executor/multiproc_executor.py
@@ -794,12 +2662,12 @@ index b06b7cc80..61cd7110f 100644
 +            # _async_aggregate_workers_output also assumes a single IO thread
              self.io_thread_pool = ThreadPoolExecutor(
                  max_workers=1, thread_name_prefix="mp_exec_io")
-
+ 
          self.output_rank = self._get_output_rank()
 +        self.has_connector = self.vllm_config.kv_transfer_config is not None
 +        self.kv_output_aggregator = KVOutputAggregator(
 +            self.parallel_config.world_size)
-
+ 
      def start_worker_monitor(self):
          workers = self.workers
 @@ -155,13 +160,30 @@ class MultiprocExecutor(Executor):
@@ -834,22 +2702,45 @@ index b06b7cc80..61cd7110f 100644
 +            return self.kv_output_aggregator.async_aggregate(
 +                outputs, self.output_rank)
 +        return self.kv_output_aggregator.aggregate(outputs, self.output_rank)
-
+ 
      def collective_rpc(self,
                         method: Union[str, Callable],
+diff --git a/vllm/v1/metrics/loggers.py b/vllm/v1/metrics/loggers.py
+index c720ca13e..accee3eab 100644
+--- a/vllm/v1/metrics/loggers.py
++++ b/vllm/v1/metrics/loggers.py
+@@ -96,6 +96,7 @@ class LoggingStatLogger(StatLoggerBase):
+             self.last_scheduler_stats = scheduler_stats
+ 
+     def log(self):
++        # print("===[debug begin]")
+         now = time.monotonic()
+         prompt_throughput = self._get_throughput(self.num_prompt_tokens, now)
+         generation_throughput = self._get_throughput(
+@@ -464,6 +465,7 @@ class PrometheusStatLogger(StatLoggerBase):
+             self.histogram_time_to_first_token.observe(ttft)
+         for tpot in iteration_stats.time_per_output_tokens_iter:
+             self.histogram_time_per_output_token.observe(tpot)
++            # print("====log", tpot)
+ 
+         for finished_request in iteration_stats.finished_requests:
+             self.counter_request_success[finished_request.finish_reason].inc()
+diff --git a/vllm/v1/metrics/stats.py b/vllm/v1/metrics/stats.py
+index 1eb10ccb6..6ca5aa7a8 100644
+--- a/vllm/v1/metrics/stats.py
++++ b/vllm/v1/metrics/stats.py
+@@ -126,6 +126,7 @@ class IterationStats:
+         else:
+             tpot = engine_core_timestamp - req_stats.last_token_ts
+             self.time_per_output_tokens_iter.append(tpot)
++            # print(f"reqid: {output.request_id}, tpot: {tpot}")
+ 
+         req_stats.last_token_ts = engine_core_timestamp
+ 
 diff --git a/vllm/v1/outputs.py b/vllm/v1/outputs.py
-index f78623f57..16af8dbce 100644
+index f78623f57..c7b4100e3 100644
 --- a/vllm/v1/outputs.py
 +++ b/vllm/v1/outputs.py
-@@ -1,7 +1,7 @@
- # SPDX-License-Identifier: Apache-2.0
- # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
-
--from dataclasses import dataclass
-+from dataclasses import dataclass, field
- from typing import NamedTuple, Optional
-
- import torch
 @@ -107,6 +107,11 @@ class ModelRunnerOutput:
      # [req_ids]
      finished_sending: Optional[set[str]] = None
@@ -858,8 +2749,8 @@ index f78623f57..16af8dbce 100644
 +
 +    # IDs of externally computed KV blocks that failed to load.
 +    # Requests referencing these blocks should be rescheduled to recompute them.
-+    invalid_block_ids: set[int] = field(default_factory=set)
-
++    invalid_block_ids: Optional[set[int]] = None
+ 
      # req_id -> num_nans_in_logits
      num_nans_in_logits: Optional[dict[str, int]] = None
 diff --git a/vllm/v1/request.py b/vllm/v1/request.py
@@ -882,7 +2773,7 @@ index 8f4e8d64c..f45e39f5c 100644
 @@ -61,6 +61,15 @@ class BlockTable:
          self.num_blocks_per_row[row_idx] += num_blocks
          self.block_table_np[row_idx, start:start + num_blocks] = block_ids
-
+ 
 +    def reset_row(
 +            self,
 +            row_idx: int,
@@ -898,7 +2789,7 @@ index 8f4e8d64c..f45e39f5c 100644
 @@ -117,6 +126,10 @@ class MultiGroupBlockTable:
          for i, block_table in enumerate(self.block_tables):
              block_table.append_row(block_ids[i], row_idx)
-
+ 
 +    def reset_row(self, row_idx: int) -> None:
 +        for i, block_table in enumerate(self.block_tables):
 +            block_table.reset_row(row_idx)
@@ -907,61 +2798,47 @@ index 8f4e8d64c..f45e39f5c 100644
          for i, block_table in enumerate(self.block_tables):
              block_table.add_row(block_ids[i], row_idx)
 diff --git a/vllm/v1/worker/gpu_input_batch.py b/vllm/v1/worker/gpu_input_batch.py
-index 1a79d72be..eb23c261a 100644
+index 1a79d72be..0e65c98f5 100644
 --- a/vllm/v1/worker/gpu_input_batch.py
 +++ b/vllm/v1/worker/gpu_input_batch.py
-@@ -96,6 +96,9 @@ class InputBatch:
-             pin_memory=False,
-         )
-         self.token_ids_cpu = self.token_ids_cpu_tensor.numpy()
-+        self.is_token_ids = torch.zeros(
-+            (max_num_reqs, max_model_len), device="cpu", dtype=bool, pin_memory=False
-+        )
-         self.num_tokens = np.zeros(max_num_reqs, dtype=np.int32)
-         self.num_tokens_no_spec = np.zeros(max_num_reqs, dtype=np.int32)
-         self.num_prompt_tokens = np.zeros(max_num_reqs, dtype=np.int32)
-@@ -286,8 +289,14 @@ class InputBatch:
-             req_index, :num_prompt_tokens] = request.prompt_token_ids
-         start_idx = num_prompt_tokens
-         end_idx = start_idx + len(request.output_token_ids)
-+        if request.prompt_token_ids is not None:
-+            self.token_ids_cpu[req_index, :num_prompt_tokens] = request.prompt_token_ids
-+            self.is_token_ids[req_index, :num_prompt_tokens] = True
-+        else:
-+            self.is_token_ids[req_index, :num_prompt_tokens] = False
-         self.token_ids_cpu[req_index,
-                            start_idx:end_idx] = request.output_token_ids
-+        self.is_token_ids[req_index, start_idx:end_idx] = True
-         # Number of token ids in token_ids_cpu.
-         # NOTE(woosuk): This may include spec decode tokens.
-         self.num_tokens[req_index] = request.num_tokens
-@@ -472,6 +481,8 @@ class InputBatch:
-         tmp = self.token_ids_cpu[i1, ...].copy()
-         self.token_ids_cpu[i1, ...] = self.token_ids_cpu[i2, ...]
-         self.token_ids_cpu[i2, ...] = tmp
-+
-+        self.is_token_ids[[i1, i2], ...] = self.is_token_ids[[i2, i1], ...]
-
-         swap_dict_values(self.generators, i1, i2)
-         swap_dict_values(self.bad_words_token_ids, i1, i2)
-@@ -542,6 +553,9 @@ class InputBatch:
-             num_tokens = self.num_tokens[last_req_index]
-             self.token_ids_cpu[empty_index, :num_tokens] = self.token_ids_cpu[
-                 last_req_index, :num_tokens]
-+            self.is_token_ids[empty_index, :num_tokens] = self.is_token_ids[
-+                last_req_index, :num_tokens
-+            ]
-             self.num_tokens[empty_index] = num_tokens
-             self.num_tokens_no_spec[empty_index] = self.num_tokens_no_spec[
-                 last_req_index]
+@@ -46,6 +46,11 @@ class CachedRequestState:
+ 
+     def __post_init__(self):
+         self.num_prompt_tokens = len(self.prompt_token_ids)
++        # 'last_generator_offset' and 'last_gelen_last_output_token_ids' are
++        # used to allow safe rollback in case a sampled token turns out to be
++        # invalid (e.g., due to KV load errors).
++        self.last_generator_offset = 0 if self.generator else None
++        self.len_last_output_token_ids = len(self.output_token_ids)
+ 
+     @property
+     def num_tokens(self) -> int:
+@@ -201,6 +206,7 @@ class InputBatch:
+         # NOTE(woosuk): The indices of the requests that do not have their own
+         # generator should not be included in the dictionary.
+         self.generators: dict[int, torch.Generator] = {}
++        self.generators_last_offset: dict[int, int] = {}
+ 
+         self.num_logprobs: dict[str, int] = {}
+         # NOTE(rob): num_prompt_logprobs only includes reqs
+@@ -335,6 +341,9 @@ class InputBatch:
+             # do not have their own generator.
+             if request.generator is not None:
+                 self.generators[req_index] = request.generator
++                assert (request.last_generator_offset is not None)
++                self.generators_last_offset[
++                    req_index] = request.last_generator_offset
+ 
+             if sampling_params.logprobs is not None:
+                 self.num_logprobs[req_id] = sampling_params.logprobs
 diff --git a/vllm/v1/worker/gpu_model_runner.py b/vllm/v1/worker/gpu_model_runner.py
-index 5a26e88db..e1c9252a4 100644
+index 5a26e88db..d44d7dc9a 100644
 --- a/vllm/v1/worker/gpu_model_runner.py
 +++ b/vllm/v1/worker/gpu_model_runner.py
 @@ -72,6 +72,9 @@ from ..sample.logits_processor import LogitsProcessorManager
  from .utils import (gather_mm_placeholders, initialize_kv_cache_for_kv_sharing,
                      sanity_check_mm_encoder_outputs, scatter_mm_placeholders)
-
+ 
 +from ucm.sparse.state import get_ucm_sparse, has_ucm_sparse
 +from ucm.sparse.base import UcmSparseMetadata, INVALID_SLOT
 +
@@ -976,7 +2853,7 @@ index 5a26e88db..e1c9252a4 100644
              self.requests.pop(req_id, None)
              self.encoder_cache.pop(req_id, None)
          # Remove the finished requests from the persistent batch.
-@@ -468,11 +472,14 @@ class GPUModelRunner(LoRAModelRunnerMixin):
+@@ -468,13 +472,33 @@ class GPUModelRunner(LoRAModelRunnerMixin):
          # Update the states of the running/resumed requests.
          is_last_rank = get_pp_group().is_last_rank
          req_data = scheduler_output.scheduled_cached_reqs
@@ -986,31 +2863,40 @@ index 5a26e88db..e1c9252a4 100644
              num_computed_tokens = req_data.num_computed_tokens[i]
              new_block_ids = req_data.new_block_ids[i]
              resumed_from_preemption = req_data.resumed_from_preemption[i]
-+            num_output_tokens = req_data.num_output_tokens[i]
 +            is_sparsed_request = req_sparsed_slots[req_id] != INVALID_SLOT
-
+ 
              # Update the cached states.
-             req_state.num_computed_tokens = num_computed_tokens
-@@ -492,17 +499,32 @@ class GPUModelRunner(LoRAModelRunnerMixin):
-                 elif num_new_tokens > 0:
-                     req_state.output_token_ids.extend(
-                         new_token_ids[-num_new_tokens:])
-+            elif num_output_tokens < len(req_state.output_token_ids):
-+                # Some output tokens were discarded due to a sync-KV-load
-+                # failure. Align the cached state.
-+                del req_state.output_token_ids[num_output_tokens:]
-+
++            if (num_computed_tokens <= req_state.num_computed_tokens):
++                # The request was rescheduled after a KV load failure. Clear
++                # the last sampled tokens and rewind the generator state
++                len_output_token_ids = len(req_state.output_token_ids)
++                del req_state.output_token_ids[req_state.
++                                               len_last_output_token_ids:]
++                if req_state.generator:
++                    req_state.generator.set_offset(
++                        req_state.last_generator_offset)
 +                req_index = self.input_batch.req_id_to_index.get(req_id)
 +                if req_index is not None:
-+                    old_end_idx = self.input_batch.num_tokens_no_spec[
-+                        req_index]
-+                    end_idx = self.input_batch.num_prompt_tokens[
-+                        req_index] + num_output_tokens
++                    len_last_sampled = (len_output_token_ids -
++                                        req_state.len_last_output_token_ids)
++                    end_idx = self.input_batch.num_tokens_no_spec[
++                        req_index] - len_last_sampled
 +                    self.input_batch.num_tokens[req_index] = end_idx
 +                    self.input_batch.num_tokens_no_spec[req_index] = end_idx
-+                    self.input_batch.is_token_ids[req_index,
-+                                                end_idx:old_end_idx] = False
-
++
+             req_state.num_computed_tokens = num_computed_tokens
+ 
+             if not is_last_rank:
+@@ -493,16 +517,22 @@ class GPUModelRunner(LoRAModelRunnerMixin):
+                     req_state.output_token_ids.extend(
+                         new_token_ids[-num_new_tokens:])
+ 
++            req_state.len_last_output_token_ids = len(
++                req_state.output_token_ids)
++            if req_state.generator:
++                req_state.last_generator_offset = (
++                    req_state.generator.get_offset())
++
              # Update the block IDs.
 -            if not resumed_from_preemption:
 -                # Append the new blocks to the existing block IDs.
@@ -1027,22 +2913,30 @@ index 5a26e88db..e1c9252a4 100644
 +                for block_ids, new_ids in zip(req_state.block_ids,
 +                                               new_block_ids):
 +                    block_ids.extend(new_ids)
-
+ 
              req_index = self.input_batch.req_id_to_index.get(req_id)
              if req_index is None:
-@@ -515,6 +537,8 @@ class GPUModelRunner(LoRAModelRunnerMixin):
+@@ -512,9 +542,16 @@ class GPUModelRunner(LoRAModelRunnerMixin):
+                 req_ids_to_add.append(req_id)
+                 continue
+ 
++            if req_state.generator:
++                assert (req_state.last_generator_offset is not None)
++                self.input_batch.generators_last_offset[
++                    req_index] = req_state.last_generator_offset
++
              # Update the persistent batch.
              self.input_batch.num_computed_tokens_cpu[req_index] = (
                  num_computed_tokens)
 +            if is_sparsed_request:
 +                self.input_batch.block_table.reset_row(req_index)
              self.input_batch.block_table.append_row(new_block_ids, req_index)
-
+ 
              # For the last rank, we don't need to update the token_ids_cpu
-@@ -623,6 +647,19 @@ class GPUModelRunner(LoRAModelRunnerMixin):
+@@ -623,6 +660,19 @@ class GPUModelRunner(LoRAModelRunnerMixin):
          if self.uses_mrope:
              self._calc_mrope_positions(scheduler_output)
-
+ 
 +        self.seq_lens_np[:num_reqs] = (
 +            self.input_batch.num_computed_tokens_cpu[:num_reqs] +
 +            num_scheduled_tokens)
@@ -1059,7 +2953,7 @@ index 5a26e88db..e1c9252a4 100644
          # Get token indices.
          # E.g., [0, 1, 0, 1, 2, 3, 4, 0, 1, 2]
          # -> [0, 1, M, M + 1, M + 2, M + 3, M + 4, 2 * M, 2 * M + 1, 2 * M + 2]
-@@ -652,11 +689,11 @@ class GPUModelRunner(LoRAModelRunnerMixin):
+@@ -652,11 +702,11 @@ class GPUModelRunner(LoRAModelRunnerMixin):
              # block_size.
              block_table_indices = (
                  req_indices * block_table.max_num_blocks_per_req +
@@ -1073,10 +2967,10 @@ index 5a26e88db..e1c9252a4 100644
              np.add(
                  block_numbers * block_size,
                  block_offsets,
-@@ -666,9 +703,11 @@ class GPUModelRunner(LoRAModelRunnerMixin):
+@@ -666,9 +716,11 @@ class GPUModelRunner(LoRAModelRunnerMixin):
          self.query_start_loc_np[0] = 0
          self.query_start_loc_np[1:num_reqs + 1] = cu_num_tokens
-
+ 
 -        self.seq_lens_np[:num_reqs] = (
 -            self.input_batch.num_computed_tokens_cpu[:num_reqs] +
 -            num_scheduled_tokens)
@@ -1085,10 +2979,10 @@ index 5a26e88db..e1c9252a4 100644
 +            is_sparsed_request = scheduler_output.req_sparsed_slots[req_id] != INVALID_SLOT
 +            if is_sparsed_request:
 +                self.seq_lens_np[req_index] = scheduler_output.req_sparsed_slots[req_id]
-
+ 
          # Copy the tensors to the GPU.
          self.input_ids[:total_num_scheduled_tokens].copy_(
-@@ -680,6 +719,8 @@ class GPUModelRunner(LoRAModelRunnerMixin):
+@@ -680,6 +732,8 @@ class GPUModelRunner(LoRAModelRunnerMixin):
                  non_blocking=True)
          else:
              # Common case (1D positions)
@@ -1097,18 +2991,18 @@ index 5a26e88db..e1c9252a4 100644
              self.positions[:total_num_scheduled_tokens].copy_(
                  self.positions_cpu[:total_num_scheduled_tokens],
                  non_blocking=True)
-@@ -1370,6 +1411,7 @@ class GPUModelRunner(LoRAModelRunnerMixin):
+@@ -1370,6 +1424,7 @@ class GPUModelRunner(LoRAModelRunnerMixin):
                  skip_cuda_graphs=skip_cuda_graphs,
          ):
              self.maybe_setup_kv_connector(scheduler_output)
 +            self.maybe_execute_ucm_sparse_begin(scheduler_output, attn_metadata)
-
+ 
              model_output = self.model(
                  input_ids=input_ids,
-@@ -1378,9 +1420,12 @@ class GPUModelRunner(LoRAModelRunnerMixin):
+@@ -1378,9 +1433,12 @@ class GPUModelRunner(LoRAModelRunnerMixin):
                  inputs_embeds=inputs_embeds,
              )
-
+ 
 -            self.maybe_wait_for_kv_save()
 +            finished_dumping = self.maybe_wait_for_kv_save()
 +            self.maybe_execute_ucm_sparse_finished()
@@ -1116,39 +3010,58 @@ index 5a26e88db..e1c9252a4 100644
              finished_sending, finished_recving = (
                  self.get_finished_kv_transfers(scheduler_output))
 +            invalid_block_ids = self.get_block_ids_with_load_errors()
-
+ 
          if self.use_aux_hidden_state_outputs:
              hidden_states, aux_hidden_states = model_output
-@@ -1563,6 +1608,8 @@ class GPUModelRunner(LoRAModelRunnerMixin):
+@@ -1430,7 +1488,7 @@ class GPUModelRunner(LoRAModelRunnerMixin):
+             sampler_output = self.sampler(
+                 logits=logits,
+                 sampling_metadata=sampling_metadata,
+-            )
++            ) # todo: 替换sampler.tokenid
+         else:
+             # When indexing with a tensor (bonus_logits_indices), PyTorch
+             # creates a new tensor with separate storage from the original
+@@ -1474,7 +1532,8 @@ class GPUModelRunner(LoRAModelRunnerMixin):
+                 # This relies on cuda-specific torch-internal impl details
+                 generator = self.input_batch.generators.get(i)
+                 if generator is not None:
+-                    generator.set_offset(generator.get_offset() - 4)
++                    generator.set_offset(
++                        self.input_batch.generators_last_offset.get(i))
+                 # Record the index of the request that should not be sampled,
+                 # so that we could clear the sampled tokens before returning.
+                 discard_sampled_tokens_req_indices.append(i)
+@@ -1563,6 +1622,8 @@ class GPUModelRunner(LoRAModelRunnerMixin):
              finished_sending=finished_sending,
              finished_recving=finished_recving,
              num_nans_in_logits=num_nans_in_logits,
 +            finished_dumping=finished_dumping,
 +            invalid_block_ids = invalid_block_ids
          )
-
+ 
      def propose_draft_token_ids(
-@@ -1693,13 +1740,16 @@ class GPUModelRunner(LoRAModelRunnerMixin):
+@@ -1693,13 +1754,16 @@ class GPUModelRunner(LoRAModelRunnerMixin):
              self.maybe_setup_kv_connector(scheduler_output)
              finished_sending, finished_recving = (
                  self.get_finished_kv_transfers(scheduler_output))
 +            invalid_block_ids = self.get_block_ids_with_load_errors()
 +            get_kv_transfer_group().clear_connector_metadata()
-
+ 
 -        if not finished_sending and not finished_recving:
 +        if not finished_sending and not finished_recving and not invalid_block_ids:
              return EMPTY_MODEL_RUNNER_OUTPUT
-
+ 
          output = copy.copy(EMPTY_MODEL_RUNNER_OUTPUT)
          output.finished_sending = finished_sending
          output.finished_recving = finished_recving
 +        output.invalid_block_ids = invalid_block_ids
          return output
-
+ 
      @staticmethod
-@@ -1719,9 +1769,28 @@ class GPUModelRunner(LoRAModelRunnerMixin):
+@@ -1719,9 +1783,28 @@ class GPUModelRunner(LoRAModelRunnerMixin):
              kv_connector.start_load_kv(get_forward_context())
-
+ 
      @staticmethod
 -    def maybe_wait_for_kv_save() -> None:
 +    def maybe_wait_for_kv_save() -> Optional[dict[str, list[str]]]:
@@ -1174,13 +3087,13 @@ index 5a26e88db..e1c9252a4 100644
 +            return
 +        ucm_sparse = get_ucm_sparse()
 +        ucm_sparse.request_finished_in_worker(request_id)
-
+ 
      @staticmethod
      def get_finished_kv_transfers(
-@@ -1732,6 +1801,11 @@ class GPUModelRunner(LoRAModelRunnerMixin):
+@@ -1732,6 +1815,11 @@ class GPUModelRunner(LoRAModelRunnerMixin):
                  scheduler_output.finished_req_ids)
          return None, None
-
+ 
 +    def get_block_ids_with_load_errors(self) -> Optional[set[int]]:
 +        if has_kv_transfer_group():
 +            return get_kv_transfer_group().get_block_ids_with_load_errors()
@@ -1221,9 +3134,9 @@ index 9e7e44d06..d9666d102 100644
  from vllm.v1.worker.gpu_model_runner import GPUModelRunner
  from vllm.v1.worker.worker_base import WorkerBase
 +from ucm.sparse.state import ensure_ucm_sparse_initialized
-
+ 
  logger = init_logger(__name__)
-
+ 
 @@ -313,9 +316,22 @@ class Worker(WorkerBase):
              assert isinstance(output, IntermediateTensors)
              get_pp_group().send_tensor_dict(output.tensors,
@@ -1246,17 +3159,17 @@ index 9e7e44d06..d9666d102 100644
          assert isinstance(output, ModelRunnerOutput)
 -        return output if self.is_driver_worker else None
 +        return output
-
+ 
      def profile(self, is_start: bool = True):
          if self.profiler is None:
 @@ -386,6 +402,7 @@ def init_worker_distributed_environment(
                                        parallel_config.pipeline_parallel_size)
-
+ 
      ensure_kv_transfer_initialized(vllm_config)
 +    ensure_ucm_sparse_initialized(vllm_config)
-
-
+ 
+ 
  def _check_if_gpu_supports_dtype(torch_dtype: torch.dtype):
---
-2.50.1.windows.1
+-- 
+2.34.1
 

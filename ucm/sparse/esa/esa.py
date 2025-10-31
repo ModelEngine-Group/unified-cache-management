@@ -126,7 +126,7 @@ def get_offset(block_shape, rank, tp_size, precision, layer_id, is_v, is_mla) ->
     block_size, num_key_heads_per_tp, head_size = block_shape
     k_min_data_block_size = block_size * num_key_heads_per_tp * head_size * precision
     v_min_data_block_size = k_min_data_block_size if not is_mla else 0
-    layer_size = (k_min_data_block_size + v_min_data_block_size) * tp_size
+    layer_size = (k_min_data_block_size + v_min_data_block_size) * (tp_size if not is_mla else 1)
     if is_mla:
         k_offset = layer_size * layer_id
     else:
@@ -198,6 +198,7 @@ class ReqStatePerLayer:
         )
         self.head_size = vllm_config.model_config.get_head_size()
         self.sparse_range = self.get_sparse_prefill_range()
+        self.is_mla = self.vllm_config.model_config.is_deepseek_mla
 
     def set_block_hashes(self, token_ids):
         if self.block_hashes is not None:
@@ -223,9 +224,8 @@ class ReqStatePerLayer:
         fn = getattr(self.store_instance, transfer_type)
         length = len(block_hashes)
         block_shape = (self.block_size, self.num_key_heads, self.head_size)
-        precision = self.k_cache.storage().element_size()
+        precision = self.vllm_config.model_config.dtype.itemsize
         # TODO: consider is_mla here
-        is_mla = False
 
         block_shape = tuple(block_shape)
         offsets_k = [
@@ -236,34 +236,36 @@ class ReqStatePerLayer:
                 precision,
                 self.layer_id,
                 is_v=False,
-                is_mla=is_mla,
+                is_mla=self.is_mla,
             )
         ] * length
-        offsets_v = [
-            get_offset(
-                block_shape,
-                self.rank,
-                self.tp_size,
-                precision,
-                self.layer_id,
-                is_v=True,
-                is_mla=is_mla,
-            )
-        ] * length
-
+        
         key_src_tensors = [self.k_cache[id_] for id_ in vllm_block_ids]
-        value_src_tensors = [self.v_cache[id_] for id_ in vllm_block_ids]
-
         task_k = fn(block_hashes, offsets_k, key_src_tensors)
-        task_v = fn(block_hashes, offsets_v, value_src_tensors)
-
         task_k_hash = task_hash_func(block_hashes, transfer_type, "key")
         self.tasks[task_k_hash] = task_k
-        task_v_hash = task_hash_func(block_hashes, transfer_type, "value")
-        self.tasks[task_v_hash] = task_v
+        
+        if not self.is_mla:
+            offsets_v = [
+                get_offset(
+                    block_shape,
+                    self.rank,
+                    self.tp_size,
+                    precision,
+                    self.layer_id,
+                    is_v=True,
+                    is_mla=self.is_mla,
+                )
+            ] * length
+            value_src_tensors = [self.v_cache[id_] for id_ in vllm_block_ids]
+            task_v = fn(block_hashes, offsets_v, value_src_tensors)
+            task_v_hash = task_hash_func(block_hashes, transfer_type, "value")
+            self.tasks[task_v_hash] = task_v
 
     def extract_block_repre(self, vllm_block_ids):
-        return self.k_cache[vllm_block_ids].mean(1)
+        if not self.is_mla:
+            return self.k_cache[vllm_block_ids].mean(1)
+        return self.k_cache[vllm_block_ids].mean(1).unsqueeze(-2)
 
     def maybe_register_static_data(self, forward_context: ForwardContext):
         if self.init_static_flag:
@@ -271,8 +273,11 @@ class ReqStatePerLayer:
         attn = forward_context.no_compile_layers[self.layer_name]
         kv_cache = attn.kv_cache[forward_context.virtual_engine]
         # TODO not mla
-        self.k_cache = kv_cache[0]
-        self.v_cache = kv_cache[1]
+        if self.is_mla:
+            self.k_cache = kv_cache
+        else:
+            self.k_cache = kv_cache[0]
+            self.v_cache = kv_cache[1]
         self.set_block_hashes(self.req_meta.prompt_token_ids)
         self.init_static_flag = True
 
@@ -289,7 +294,7 @@ class ReqStatePerLayer:
         query = batch_query[query_start_loc : query_start_loc + query_len]
         ntokens, num_q_heads, _ = query.shape
         if num_q_heads > self.num_key_heads:
-            query = query.view(ntokens, self.num_key_heads, -1, self.head_size)
+            query = query.view(ntokens, self.num_key_heads, num_q_heads // self.num_key_heads, self.head_size)
             query = query.mean(2)
         elif num_q_heads < self.num_key_heads:
             query = torch.repeat_interleave(query, self.num_key_heads // num_q_heads, 1)
@@ -400,7 +405,7 @@ class ReqStatePerLayer:
 
 
 class ESA(UcmSparseBase):
-    # handle batch
+    # handle batch 
     def __init__(self, vllm_config: VllmConfig, role: UcmSparseRole):
         super().__init__(vllm_config, role)
         self.req_states: dict[str, List[ReqStatePerLayer]] = {}
@@ -416,7 +421,10 @@ class ESA(UcmSparseBase):
         self.total_num_hidden_layers = (
             vllm_config.model_config.hf_config.num_hidden_layers
         )
-
+        self.is_mla = vllm_config.model_config.is_deepseek_mla
+        self._sparse_metadata_prefill: ESASparseMetaData = ESASparseMetaData()
+        self._sparse_metadata_decode: ESASparseMetaData = ESASparseMetaData()
+        self._sparse_metadata: ESASparseMetaData = ESASparseMetaData()
         global data
 
         if data is None:
@@ -471,11 +479,25 @@ class ESA(UcmSparseBase):
         value: torch.Tensor,
         layer_name: str,
         forward_context: ForwardContext,
+        phase: Optional[str] = None,
     ) -> None:
-        for req_meta in self._sparse_metadata.requests:
-            req_state = self.create_layerwise_req_state(req_meta, layer_name)
-            req_state.update_meta(req_meta)
-            req_state.attention_begin(query, key, value, forward_context)
+        if not self.is_mla:
+            for req_meta in self._sparse_metadata.requests:
+                req_state = self.create_layerwise_req_state(req_meta, layer_name)
+                req_state.update_meta(req_meta)
+                req_state.attention_begin(query, key, value, forward_context)
+        else:
+            if phase == "prefill":
+                for req_meta in self._sparse_metadata_prefill.requests:
+                    req_state = self.create_layerwise_req_state(req_meta, layer_name)
+                    req_state.update_meta(req_meta)
+                    req_state.attention_begin(query, key, value, forward_context)
+            if phase == "decode":
+                for req_meta in self._sparse_metadata_decode.requests:
+                    req_state = self.create_layerwise_req_state(req_meta, layer_name)
+                    req_state.update_meta(req_meta)
+                    req_state.attention_begin(query, key, value, forward_context)
+            
 
     def attention_finished(
         self,
@@ -485,13 +507,33 @@ class ESA(UcmSparseBase):
         attn_output: torch.Tensor,
         layer_name: str,
         forward_context: ForwardContext,
+        phase: Optional[str] = None,
     ) -> None:
-        for req_meta in self._sparse_metadata.requests:
-            req_state = self.create_layerwise_req_state(req_meta, layer_name)
-            req_state.update_meta(req_meta)
-            req_state.attention_finished(
-                query, key, value, attn_output, forward_context
-            )
+        layer_id = int(layer_name.split(".")[2])
+        if not self.is_mla:    
+            for req_meta in self._sparse_metadata.requests:
+                req_state = self.req_states[req_meta.request_id][layer_id]
+                req_state.update_meta(req_meta)
+                req_state.attention_finished(
+                    query, key, value, attn_output, forward_context
+                )
+        else:
+            if phase == "prefill":
+                for req_meta in self._sparse_metadata_prefill.requests:
+                    req_state = self.req_states[req_meta.request_id][layer_id]
+                    req_state.update_meta(req_meta)
+                    req_state.attention_finished(
+                        query, key, value, attn_output, forward_context
+                    )
+            if phase == "decode":
+                for req_meta in self._sparse_metadata_decode.requests:
+                    req_state = self.req_states[req_meta.request_id][layer_id]
+                    req_state.update_meta(req_meta)
+                    req_state.attention_finished(
+                        query, key, value, attn_output, forward_context
+                    )
+            
+
 
     def is_sparsed_request(self, req):
         return (
@@ -502,7 +544,18 @@ class ESA(UcmSparseBase):
     def build_sparse_meta(
         self, scheduler_output, requests, input_batch, attn_metadata
     ) -> UcmSparseMetadata:
-        sparse_meta = ESASparseMetaData()
+        self._sparse_metadata_prefill = ESASparseMetaData()
+        self._sparse_metadata_decode = ESASparseMetaData()
+        self._sparse_metadata = ESASparseMetaData()
+
+        num_sched = scheduler_output.num_scheduled_tokens
+        req_ids = list(getattr(input_batch, "req_ids", []))
+        decode_ids = [rid for rid in req_ids if num_sched.get(rid, 0) == 1]
+        prefill_ids = [rid for rid in req_ids if num_sched.get(rid, 0) != 1]
+        decode_set = set(decode_ids)
+        pre_req_id_to_index_decode = {rid: i for i, rid in enumerate(decode_ids)}
+        pre_req_id_to_index_decodereq_id_to_index_prefill = {rid: i for i, rid in enumerate(prefill_ids)}
+
         for (
             req_id,
             num_scheduled_tokens,
@@ -512,17 +565,52 @@ class ESA(UcmSparseBase):
                 continue
             if isinstance(attn_metadata, dict):
                 attn_metadata = next(iter(attn_metadata.values()))
-            sparse_meta.add_request(
-                req_id,
-                input_batch.req_id_to_index[req_id],
-                num_scheduled_tokens,
-                req.num_computed_tokens,
-                req.block_ids[0],
-                attn_metadata.query_start_loc[input_batch.req_id_to_index[req_id]],
-                req.prompt_token_ids,
-                req.output_token_ids,
-            )
-        self._sparse_metadata = sparse_meta
+
+            if not self.is_mla:
+                self._sparse_metadata.add_request(
+                    req_id,
+                    input_batch.req_id_to_index[req_id],
+                    num_scheduled_tokens,
+                    req.num_computed_tokens,
+                    req.block_ids[0],
+                    attn_metadata.query_start_loc[input_batch.req_id_to_index[req_id]],
+                    req.prompt_token_ids,
+                    req.output_token_ids,
+                )
+            
+            else:
+                attn_metadata_prefill = getattr(attn_metadata, "prefill", None)
+                attn_metadata_decode = getattr(attn_metadata, "decode", None)
+
+                # 区分该req是在decode阶段还是prefill
+                if req_id in decode_set:
+                    if attn_metadata_decode:
+                        req_id_to_index_decode = input_batch.req_id_to_index[req_id]
+                        self._sparse_metadata_decode.add_request(
+                            req_id,
+                            req_id_to_index_decode,
+                            num_scheduled_tokens,
+                            req.num_computed_tokens,
+                            req.block_ids[0],
+                            attn_metadata.query_start_loc[req_id_to_index_decode],
+                            req.prompt_token_ids,
+                            req.output_token_ids,
+                        )
+
+                else:
+                    req_id_to_index_prefill = input_batch.req_id_to_index[req_id] - attn_metadata.num_decodes
+                    self._sparse_metadata_prefill.add_request(
+                        req_id,
+                        req_id_to_index_prefill,
+                        num_scheduled_tokens,
+                        req.num_computed_tokens,
+                        req.block_ids[0],
+                        attn_metadata_prefill.query_start_loc[req_id_to_index_prefill],
+                        req.prompt_token_ids,
+                        req.output_token_ids,
+                    )
+            
+            # self._sparse_metadata = sparse_meta
 
     def request_begin(self, request_id: ReqType, prompt_token_ids: List[int]):
         pass
