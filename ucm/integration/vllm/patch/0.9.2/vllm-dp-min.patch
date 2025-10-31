@@ -1,34 +1,67 @@
-From 468600209ce3cddb9e9aae5921dd0de32baf49e5 Mon Sep 17 00:00:00 2001
-From: flesher0813 <1208954694@qq.com>
-Date: Mon, 27 Oct 2025 17:38:30 +0800
-Subject: [PATCH] [Patch] Adapt ucm
+From f7097e7edb138cee90a76dcb329429bf7b563d86 Mon Sep 17 00:00:00 2001
+From: harrisonyhq <harrisonyhq@gmail.com>
+Date: Fri, 31 Oct 2025 00:19:38 -0700
+Subject: [PATCH] [Patch] Adapt ucm to multi connector
 
 ---
- vllm/v1/core/sched/scheduler.py    | 6 ++++++
- vllm/v1/outputs.py                 | 1 +
- vllm/v1/request.py                 | 2 ++
- vllm/v1/worker/gpu_model_runner.py | 7 ++++---
- 4 files changed, 13 insertions(+), 3 deletions(-)
+ .../kv_transfer/kv_connector/v1/multi_connector.py   |  7 ++++++-
+ vllm/v1/core/sched/scheduler.py                      | 12 ++++++++++++
+ vllm/v1/outputs.py                                   |  1 +
+ vllm/v1/request.py                                   |  2 ++
+ vllm/v1/worker/gpu_model_runner.py                   |  7 ++++---
+ 5 files changed, 25 insertions(+), 4 deletions(-)
 
+diff --git a/vllm/distributed/kv_transfer/kv_connector/v1/multi_connector.py b/vllm/distributed/kv_transfer/kv_connector/v1/multi_connector.py
+index be3c23399..5f92d69bd 100644
+--- a/vllm/distributed/kv_transfer/kv_connector/v1/multi_connector.py
++++ b/vllm/distributed/kv_transfer/kv_connector/v1/multi_connector.py
+@@ -99,8 +99,13 @@ class MultiConnector(KVConnectorBase_V1):
+             c.save_kv_layer(layer_name, kv_layer, attn_metadata, **kwargs)
+ 
+     def wait_for_save(self):
++        success_dumped_blocks = None
+         for c in self._connectors:
+-            c.wait_for_save()
++            uc_dump_blocks = c.wait_for_save()
++            if uc_dump_blocks:
++                success_dumped_blocks = uc_dump_blocks
++
++        return success_dumped_blocks if success_dumped_blocks else None
+ 
+     def get_finished(
+         self, finished_req_ids: set[str]
 diff --git a/vllm/v1/core/sched/scheduler.py b/vllm/v1/core/sched/scheduler.py
-index fe552db..1207977 100644
+index fe552db74..7774135da 100644
 --- a/vllm/v1/core/sched/scheduler.py
 +++ b/vllm/v1/core/sched/scheduler.py
-@@ -792,6 +792,12 @@ class Scheduler(SchedulerInterface):
+@@ -34,6 +34,8 @@ from vllm.v1.outputs import ModelRunnerOutput
+ from vllm.v1.request import Request, RequestStatus
+ from vllm.v1.spec_decode.metrics import SpecDecodingStats
+ from vllm.v1.structured_output import StructuredOutputManager
++from vllm.distributed.kv_transfer.kv_connector.v1.multi_connector import MultiConnector
++from ucm.integration.vllm.uc_connector import UnifiedCacheConnectorV1
+ 
+ logger = init_logger(__name__)
+ 
+@@ -791,6 +793,16 @@ class Scheduler(SchedulerInterface):
+             new_logprobs = None
              new_token_ids = generated_token_ids
              kv_transfer_params = None
- 
 +            if model_runner_output.finished_dumping is not None:
 +                request.succeed_dumped_blocks.extend(model_runner_output.finished_dumping.get(req_id, []))
 +                is_prefill = request.num_output_tokens == 0
 +                if is_prefill:
-+                    self.connector.connector.commit(model_runner_output.finished_dumping.get(req_id, []), True)
-+
++                    if isinstance(self.connector, MultiConnector):
++                        for c in self.connector._connectors:
++                            if isinstance(c, UnifiedCacheConnectorV1):
++                                c.connector.commit(model_runner_output.finished_dumping.get(req_id, []), True)
++                    else:
++                        self.connector.connector.commit(model_runner_output.finished_dumping.get(req_id, []), True)
+ 
              # Append generated tokens and check for stop. Note that if
              # a request is still being prefilled, we expect the model runner
-             # to return empty token ids for the request.
 diff --git a/vllm/v1/outputs.py b/vllm/v1/outputs.py
-index f78623f..c8388ba 100644
+index f78623f57..c8388baed 100644
 --- a/vllm/v1/outputs.py
 +++ b/vllm/v1/outputs.py
 @@ -107,6 +107,7 @@ class ModelRunnerOutput:
@@ -40,7 +73,7 @@ index f78623f..c8388ba 100644
      # req_id -> num_nans_in_logits
      num_nans_in_logits: Optional[dict[str, int]] = None
 diff --git a/vllm/v1/request.py b/vllm/v1/request.py
-index 9b96f45..e70d169 100644
+index 9b96f4599..e70d1695b 100644
 --- a/vllm/v1/request.py
 +++ b/vllm/v1/request.py
 @@ -103,6 +103,8 @@ class Request:
@@ -53,7 +86,7 @@ index 9b96f45..e70d169 100644
          # indicates that the output is corrupted
          self.num_nans_in_logits = 0
 diff --git a/vllm/v1/worker/gpu_model_runner.py b/vllm/v1/worker/gpu_model_runner.py
-index 5a26e88..53ee8cf 100644
+index 5a26e88db..53ee8cfcd 100644
 --- a/vllm/v1/worker/gpu_model_runner.py
 +++ b/vllm/v1/worker/gpu_model_runner.py
 @@ -1378,7 +1378,7 @@ class GPUModelRunner(LoRAModelRunnerMixin):
@@ -86,5 +119,5 @@ index 5a26e88..53ee8cf 100644
      @staticmethod
      def get_finished_kv_transfers(
 -- 
-2.9.3.windows.1
+2.34.1
 
