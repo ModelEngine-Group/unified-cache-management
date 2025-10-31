@@ -99,7 +99,7 @@ public:
     void Push(Task&& task) noexcept
     {
         std::unique_lock<std::mutex> lk(this->mtx_);
-        this->taskQ_.push_back(task);
+        this->taskQ_.push_back(std::move(task));
         this->cv_.notify_one();
     }
 
