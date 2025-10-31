@@ -461,6 +461,9 @@ class GSA(UcmSparseBase):
         self.model_input = None
         self.gsa_stats = {}
         self.init_topk_cal(vllm_config, self.prefetch_engine)
+        self.decode_ids = []
+        self.prefill_ids = []
+        self.copy_k_flag = [False] = self.layer_num
 
     def init_topk_cal(
         self,
@@ -499,15 +502,24 @@ class GSA(UcmSparseBase):
         ids = [-1] * len(self.prefetch_engine.req_ids_bs)
         for req_id in self.prefetch_engine.req_ids_bs:
             req_meta = self.gsa_metadata.gsa_stats[req_id]
-            if req_meta.is_gsa():
-                index_in_batch = req_meta.index_in_batch
-                ids[index_in_batch] = (
-                    self.model_input["query_locals"][index_in_batch + 1] - 1
-                )
+            if not self.use_mla:
+                if req_meta.is_gsa():
+                    index_in_batch = req_meta.index_in_batch
+                    ids[index_in_batch] = (
+                        self.model_input["query_locals"][index_in_batch + 1] - 1
+                    )
+            else:
+                ids[index_in_batch] = 1
         if CUDA_TOPK:
-            self.gsa_cuda_topk.cal_topk(query[ids], current_layer_id)
+            if not self.use_mla:
+                self.gsa_cuda_topk.cal_topk(query[ids], current_layer_id)    #####  todo 计算的ids
+            else:
+                self.gsa_cuda_topk.cal_topk(query, current_layer_id)
         else:
-            self.gsa_q_cache[current_layer_id][: len(ids)].copy_(query[ids])
+            if not self.use_mla:
+                self.gsa_q_cache[current_layer_id][: len(ids)].copy_(query[ids])
+            else:
+                self.gsa_q_cache[current_layer_id][: len(self.decode_ids)].copy_(query)
             is_cal_kpre = len(self.model_input["calc_block_table"]) > 0
             self.gsa_offload_ops.add_copy_req(
                 is_cal_kpre, current_layer_id, ids, self.gsa_q_cache[current_layer_id]
@@ -557,14 +569,17 @@ class GSA(UcmSparseBase):
     ) -> None:
         current_layer_id = int(layer_name.split(".")[2])
         if self.prefetch_engine.atb_gsa_enable and self.prefetch_engine.is_topk_cal:
-            self.copy_q(query, current_layer_id)
-
-        if not self.use_mla:
-            if isinstance(forward_context.attn_metadata, dict):
-                attn_metadata = forward_context.attn_metadata[layer_name]
+            if not self.use_mla:
+                self.copy_q(query, current_layer_id)
             else:
-                attn_metadata = forward_context.attn_metadata
-            if self.prefetch_engine.atb_gsa_enable:
+                if phase == "decode":
+                    self.copy_q(query, current_layer_id)
+        if isinstance(forward_context.attn_metadata, dict):
+            attn_metadata = forward_context.attn_metadata[layer_name]
+        else:
+            attn_metadata = forward_context.attn_metadata
+        if self.prefetch_engine.atb_gsa_enable:
+            if not self.use_mla:
                 if torch.cuda.is_available():
                     attn_metadata.block_table = self.model_input["block_tables_mp"][
                         current_layer_id
@@ -579,9 +594,24 @@ class GSA(UcmSparseBase):
                     attn_metadata.seq_lens.copy_(
                         self.model_input["gsa_seq_len"][current_layer_id]
                     )
-        else:
-            if phase == "decode":
-                pass
+            else:
+                if phase == "decode":
+                    attn_metadata_decode = getattr(attn_metadata, "decode", None)
+                    decode_len = len(self.decode_ids)
+                    if torch.cuda.is_available():
+                        attn_metadata_decode.block_table = self.model_input["block_tables_mp"][
+                            current_layer_id
+                        ][:decode_len]
+                        attn_metadata_decode.seq_lens = self.model_input["gsa_seq_len"][
+                            current_layer_id
+                        ][:decode_len]
+                    else:
+                        attn_metadata_decode.block_tables[
+                            : len(self.prefetch_engine.req_ids_bs)
+                        ].copy_(self.model_input["block_tables_mp"][current_layer_id][:decode_len])
+                        attn_metadata_decode.seq_lens.copy_(
+                            self.model_input["gsa_seq_len"][current_layer_id][:decode_len]
+                        )
 
 
     def attention_finished(
@@ -594,8 +624,9 @@ class GSA(UcmSparseBase):
         forward_context: ForwardContext,
         phase: Optional[str] = None,
     ) -> None:
-        self.copy_k(layer_name, forward_context)
         current_layer_id = int(layer_name.split(".")[2])
+        if self.copy_k_flag[current_layer_id]:
+            self.copy_k(layer_name, forward_context)
         for req_id in self.prefetch_engine.req_ids_bs:
             assert req_id in self.gsa_metadata.gsa_stats
             req_meta = self.gsa_metadata.gsa_stats[req_id]
@@ -627,7 +658,10 @@ class GSA(UcmSparseBase):
     def last_chunk_topk_cal(self, req_meta, query, current_layer_id, first_topk_len):
         index_in_batch = req_meta.index_in_batch
         bs = 1
-        cal_topk_id = [self.model_input["query_locals"][index_in_batch + 1] - 1]
+        if not self.use_mla:
+            cal_topk_id = [self.model_input["query_locals"][index_in_batch + 1] - 1]
+        else:
+            cal_topk_id = [self.model_input["query_locals"][index_in_batch + 1] - 1 - len(self.decode_ids)]
         head_group_num = self.att_num_heads // self.num_key_heads
         q_decode = query[cal_topk_id]
 
@@ -784,6 +818,10 @@ class GSA(UcmSparseBase):
         self.gsa_metadata = self.build_gsa_metadata(
             scheduler_output, requests, input_batch
         )
+        num_sched = scheduler_output.num_scheduled_tokens
+        req_ids = list(getattr(input_batch, "req_ids", []))
+        self.decode_ids = [rid for rid in req_ids if num_sched.get(rid, 0) == 1]
+        self.prefill_ids = [rid for rid in req_ids if num_sched.get(rid, 0) != 1]
 
     def request_begin(self, request_id: ReqType, prompt_token_ids: List[int]):
         pass

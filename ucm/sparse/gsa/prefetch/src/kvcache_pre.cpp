@@ -465,7 +465,11 @@ namespace ucmprefetch
     {
         if (mKVSzieBytes == 0) {
             mTensorElemSize = kvCaches[0].element_size();
-            mKVSzieBytes = kvCaches[0].element_size() * kvCaches[0][0][0].numel();
+            if (mUseMla) {
+                mKVSzieBytes = kvCaches[0].element_size() * kvCaches[0][0].numel();
+            } else {
+                mKVSzieBytes = kvCaches[0].element_size() * kvCaches[0][0][0].numel();
+            }
             mStore = static_cast<UC::CCStore *>(storePtr);
             mLogger.log(LogLevel::DEBUG,
                 "Decode step: %u, |KVCache Prefetch| start mKVSzieBytes: %u, mTensorElemSize %u\n",
