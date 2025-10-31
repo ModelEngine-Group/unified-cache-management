@@ -196,7 +196,7 @@ void SpaceShardLayout::ShardBlockId(const std::string& blockId, uint64_t& front,
 std::string SpaceShardLayout::StorageBackend() const { return this->storageBackends_.front(); }
 std::string SpaceShardLayout::ClusterPropertyFilePath() const
 {
-    return fmt::format("{}{}/{}.bin", this->StorageBackend(), this->ClusterFileRoot(), "uc_property.bin");
+    return fmt::format("{}{}/{}.bin", this->StorageBackend(), this->ClusterFileRoot(), "uc_property");
 }
 
 std::shared_ptr<SpaceLayout::DataIterator> SpaceShardLayout::CreateFilePathIterator() const

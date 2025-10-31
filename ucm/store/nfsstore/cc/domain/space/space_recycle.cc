@@ -88,6 +88,9 @@ Status SpaceRecycle::Setup(const SpaceLayout* layout, const size_t totalNumber,
                            RecycleOneBlockDone done) {
     this->layout_ = layout;
     this->recycleNum_ = totalNumber * recyclePercent;
+    if (this->recycleNum_ == 0) {
+        this->recycleNum_ = 1;
+    }
     this->recycleOneBlockDone_ = done;
     if (this->recycleNum_ > maxRecycleNum) {
         this->recycleNum_ = maxRecycleNum;
