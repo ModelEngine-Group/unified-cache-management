@@ -11,7 +11,8 @@ CUDA_TOPK = False
 PTOPK_PREFETCH_ENABLE = False
 VLLM_CUDA_MEM_ALIGN_KV_CACHE = False
 LOCAL_WINDOW_SZ = MIN_TOPK_LEN - 1
-
+INIT_WINDOW_SZ = 1
+NUM_PREFETCH_BLOCKS = 16
 
 def round_up(x: int, y: int) -> int:
     return ((x + y - 1) // y) * y
@@ -27,8 +28,8 @@ def align_to_256bytes(extent: int, dtype: torch.dtype) -> int:
     return round_up(extent, eles_per_256bytes)
 
 
-def compute_topk_len(raw_seq_len):
-    topk_len = int(raw_seq_len * 0.3)
+def compute_topk_len(raw_seq_len): 
+    topk_len = math.ceil(raw_seq_len * 0.3)
     if topk_len < MIN_TOPK_LEN:
         topk_len = min(MIN_TOPK_LEN, raw_seq_len)
     elif topk_len > MAX_TOPK_LEN:

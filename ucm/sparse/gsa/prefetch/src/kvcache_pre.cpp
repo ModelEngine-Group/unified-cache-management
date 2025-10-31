@@ -425,21 +425,24 @@ namespace ucmprefetch
             while (mStopPrefetch) {
                 std::this_thread::sleep_for(std::chrono::microseconds(2));
             }
-            UC::CCStore::Task task{UC::CCStore::Task::Type::LOAD, UC::CCStore::Task::Location::DEVICE, "NFS::S2D"};
+            UC::Task task{UC::Task::Type::LOAD, UC::Task::Location::DEVICE, "NFS::S2D"};
             std::string blockId = mAllBlcoksHash[reqID][missIdxs[i]];
             size_t kOffset = GetOffset(layerID, false);
             size_t vOffset = GetOffset(layerID, true);
-            auto ret = task.Append(blockId, kOffset,
-                reinterpret_cast<uintptr_t>(mKvCaches[layerID][0][loadNPUBlockIDs[i]].data_ptr()),
-                mKVSzieBytes);
             if (!mUseMla) {
-                ret = task.Append(blockId, vOffset,
+                task.Append(blockId, kOffset,
+                    reinterpret_cast<uintptr_t>(mKvCaches[layerID][0][loadNPUBlockIDs[i]].data_ptr()),
+                    mKVSzieBytes);
+                task.Append(blockId, vOffset,
                     reinterpret_cast<uintptr_t>(mKvCaches[layerID][1][loadNPUBlockIDs[i]].data_ptr()),
                     mKVSzieBytes);
-                
+            } else {
+                task.Append(blockId, kOffset,
+                    reinterpret_cast<uintptr_t>(mKvCaches[layerID][loadNPUBlockIDs[i]].data_ptr()),
+                    mKVSzieBytes);
             }
             size_t taskID = mStore->Submit(std::move(task));
-            ret = mStore->Wait(taskID);
+            auto ret = mStore->Wait(taskID);
             if (ret != 0) {
                 mLogger.log(LogLevel::ERROR,
                     "Decode step: %u, Rank: %d, reqID: %s, layer: %d, blockID: %lu, load k error\n",

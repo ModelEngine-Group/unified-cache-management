@@ -6,7 +6,7 @@ import pickle, hashlib
 from functools import cache
 from functools import wraps
 from itertools import accumulate
-from typing import Dict, List, Union
+from typing import Dict, List, Union, Optional
 
 import torch
 from vllm.config import VllmConfig
@@ -519,11 +519,19 @@ class GSA(UcmSparseBase):
         calc_repre_slot_mappings = self.model_input["calc_repre_slot_mapping"]
         if len(block_ids) > 0:
             attn = forward_context.no_compile_layers
-            key_cache_mean_out = (
-                attn[layer_name]
-                .kv_cache[forward_context.virtual_engine][0][block_ids]
-                .mean(dim=1, keepdim=True)
-            )
+            if not self.use_mla:
+                key_cache_mean_out = (
+                    attn[layer_name]
+                    .kv_cache[forward_context.virtual_engine][0][block_ids]
+                    .mean(dim=1, keepdim=True)
+                )
+            else:
+                key_cache_mean_out = (
+                    attn[layer_name]
+                    .kv_cache[forward_context.virtual_engine][block_ids]
+                    .mean(dim=1, keepdim=True)
+                )
+                key_cache_mean_out = torch.unsqueeze(key_cache_mean_out, 1)
             if CUDA_TOPK:
                 self.prefetch_engine.kpre_caches[current_layer_id][
                     calc_repre_slot_mappings
@@ -532,8 +540,11 @@ class GSA(UcmSparseBase):
                 self.prefetch_engine.kpre_caches[current_layer_id][
                     calc_repre_slot_mappings
                 ] = key_cache_mean_out.to(dtype=torch.float32, device="cpu")
-            k_needed = attn[layer_name].kv_cache[forward_context.virtual_engine][0]
-            self.gsa_offload_ops.add_copy_req(True, current_layer_id, [], k_needed)
+            if not self.use_mla:
+                k_needed = attn[layer_name].kv_cache[forward_context.virtual_engine][0]
+            else:
+                k_needed = attn[layer_name].kv_cache[forward_context.virtual_engine]
+            self.gsa_offload_ops.add_copy_req(True, current_layer_id, [], k_needed)  #####  todo  适配kcache形状
 
     def attention_begin(
         self,
@@ -542,30 +553,36 @@ class GSA(UcmSparseBase):
         value: torch.Tensor,
         layer_name: str,
         forward_context: ForwardContext,
+        phase: Optional[str] = None,
     ) -> None:
         current_layer_id = int(layer_name.split(".")[2])
         if self.prefetch_engine.atb_gsa_enable and self.prefetch_engine.is_topk_cal:
             self.copy_q(query, current_layer_id)
 
-        if isinstance(forward_context.attn_metadata, dict):
-            attn_metadata = forward_context.attn_metadata[layer_name]
-        else:
-            attn_metadata = forward_context.attn_metadata
-        if self.prefetch_engine.atb_gsa_enable:
-            if torch.cuda.is_available():
-                attn_metadata.block_table = self.model_input["block_tables_mp"][
-                    current_layer_id
-                ]
-                attn_metadata.seq_lens = self.model_input["gsa_seq_len"][
-                    current_layer_id
-                ]
+        if not self.use_mla:
+            if isinstance(forward_context.attn_metadata, dict):
+                attn_metadata = forward_context.attn_metadata[layer_name]
             else:
-                attn_metadata.block_tables[
-                    : len(self.prefetch_engine.req_ids_bs)
-                ].copy_(self.model_input["block_tables_mp"][current_layer_id])
-                attn_metadata.seq_lens.copy_(
-                    self.model_input["gsa_seq_len"][current_layer_id]
-                )
+                attn_metadata = forward_context.attn_metadata
+            if self.prefetch_engine.atb_gsa_enable:
+                if torch.cuda.is_available():
+                    attn_metadata.block_table = self.model_input["block_tables_mp"][
+                        current_layer_id
+                    ]
+                    attn_metadata.seq_lens = self.model_input["gsa_seq_len"][
+                        current_layer_id
+                    ]
+                else:
+                    attn_metadata.block_tables[
+                        : len(self.prefetch_engine.req_ids_bs)
+                    ].copy_(self.model_input["block_tables_mp"][current_layer_id])
+                    attn_metadata.seq_lens.copy_(
+                        self.model_input["gsa_seq_len"][current_layer_id]
+                    )
+        else:
+            if phase == "decode":
+                pass
+
 
     def attention_finished(
         self,
@@ -575,6 +592,7 @@ class GSA(UcmSparseBase):
         attn_output: torch.Tensor,
         layer_name: str,
         forward_context: ForwardContext,
+        phase: Optional[str] = None,
     ) -> None:
         self.copy_k(layer_name, forward_context)
         current_layer_id = int(layer_name.split(".")[2])
@@ -659,9 +677,11 @@ class GSA(UcmSparseBase):
                                                            remain_len)
         self.gsa_metadata.gsa_stats[req_id].reamin_map[current_layer_id] = reamin_map
         self.gsa_metadata.gsa_stats[req_id].prefetch_map[current_layer_id] = prefetch_map
-        layer_k_cache = forward_context.no_compile_layers[layer_name].kv_cache[forward_context.virtual_engine][0]
-        layer_v_cache = forward_context.no_compile_layers[layer_name].kv_cache[forward_context.virtual_engine][1]
-
+        if not self.use_mla:
+            layer_k_cache = forward_context.no_compile_layers[layer_name].kv_cache[forward_context.virtual_engine][0]
+            layer_v_cache = forward_context.no_compile_layers[layer_name].kv_cache[forward_context.virtual_engine][1]
+        else:
+            layer_k_cache = forward_context.no_compile_layers[layer_name].kv_cache[forward_context.virtual_engine]
         for block_id in mv_map:
             layer_k_cache[mv_map[block_id]].copy_(layer_k_cache[block_id])
             if not self.use_mla:
@@ -753,7 +773,10 @@ class GSA(UcmSparseBase):
             kv_cache = attn[layer_name].kv_cache[forward_context.virtual_engine]
             layer_id = int(layer_name.split(".")[2])
             kv_caches[layer_id] = kv_cache
-        self.prefetch_engine.deal_async_prefetch(self.gsa_metadata, kv_caches, self.connector.cc_store())
+        if PTOPK_PREFETCH_ENABLE:
+            self.prefetch_engine.deal_async_prefetch(self.gsa_metadata, kv_caches, self.connector.cc_store())
+        else:
+            self.prefetch_engine.deal_async_prefetch(self.gsa_metadata, kv_caches, None)
 
     def build_sparse_meta(
         self, scheduler_output: SchedulerOutput, requests, input_batch, attn_metadata
