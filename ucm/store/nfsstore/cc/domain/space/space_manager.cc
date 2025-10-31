@@ -52,6 +52,7 @@ Status SpaceManager::Setup(const std::vector<std::string>& storageBackends, cons
     auto status = this->layout_->Setup(storageBackends);
     if (status.Failure()) { return status; }
     status = this->property_.Setup(this->layout_->ClusterPropertyFilePath());
+    if (status.Failure()) { return status; }
     if (recycleEnable && storageCapacity > 0) {
         auto totalBlocks = storageCapacity / blockSize;
         status = this->recycle_.Setup(this->GetSpaceLayout(), totalBlocks, [this] {
@@ -59,7 +60,7 @@ Status SpaceManager::Setup(const std::vector<std::string>& storageBackends, cons
         });
         if (status.Failure()) { return status; }
     }
-    if (status.Failure()) { return status; }
+    
     this->blockSize_ = blockSize;
     this->capacity_ = storageCapacity;
     this->recycleEnable_ = recycleEnable;
