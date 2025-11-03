@@ -13,16 +13,13 @@ namespace KVStar {
 
 struct SetupParam {
     std::vector<int> cpuNumaIds;
-    int physicalCorePerNuma;
-    float allocRatio;
-    size_t blkRepreSize;
+    std::vector<std::pair<int, int>> bindInfo; // coreId, numaId
     DeviceType deviceType;
     int totalTpSize;
     int localRankId;
-    std::vector<std::vector<int>> perNumaCoreIds;
     int threadNum;
 
-    SetupParam(const std::vector<int>& cpuNumaIds, const int physicalCorePerNuma, const float allocRatio, const size_t blkRepreSize,
+    SetupParam(const std::vector<int>& cpuNumaIds, const std::vector<std::pair<int, int>>& bindInfo,
                const DeviceType deviceType, const int totalTpSize, const int localRankId);
 
 };

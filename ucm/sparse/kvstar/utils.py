@@ -1,3 +1,4 @@
+import collections
 import hashlib
 import pickle
 import subprocess
@@ -103,3 +104,113 @@ def bind_cpus(world_size, rank_id, ratio=0.5):
     print(f"cpu_core_alloc: {cpu_core_alloc}")
 
     return numa_nodes_num, alloc_numa_ids, phy_cpu_core_per_numa
+
+def get_physical_core_topology():
+    """
+    use lscpu -e parse accurate cpu topology
+    return a dict, key: numa_id, value: physical core ids in this numa
+    """
+    # topology[numa_id][core_id] = logical_cpu_id
+    # make sure each physical core only record once
+    topology = collections.defaultdict(dict)
+
+    # execute lscpu -e, split as line
+    # e.g.: 36  0    0      0    0:0:0:0       yes    3700.0000 1000.0000
+    lscpu_output = execute_command(["lscpu", "-e"]).strip().split("\n")
+
+    # skip title
+    for line in lscpu_output[1:]:
+        parts = line.split()
+        if len(parts) < 4:
+            continue
+
+        logical_cpu_id = int(parts[0])
+        numa_id = int(parts[1])
+        core_id = int(parts[3])  # physical core id
+
+        if core_id not in topology[numa_id]:
+            topology[numa_id][core_id] = logical_cpu_id
+
+    final_mapping = {
+        numa_id: list(sorted(cores.values())) for numa_id, cores in topology.items()
+    }
+    return final_mapping
+
+
+def get_bind_cpus_for_rank(world_size, rank_id, ratio=1.0):
+    """
+    for each rank, compute alloc numa id
+
+    scenario:
+    1. numa_num >= world_size, equal division numa for each rank
+    2. numa_num < world_size, equal division total cores for each rank
+    """
+    physical_core_map = get_physical_core_topology()
+    if not physical_core_map:
+        print("Could not determine CPU topology. Aborting bind.")
+        return [], []
+
+    print(f"Detected Physical Core Topology: {physical_core_map}")
+
+    numa_nodes_num = len(physical_core_map)
+    sorted_numa_ids = sorted(physical_core_map.keys())
+
+    bind_info_list = []
+    alloc_numa_ids = []
+
+    numas_per_rank = numa_nodes_num // world_size
+
+    if numas_per_rank > 0:
+        print(f"Strategy: NUMA-level discard binding.")
+
+        discarded_numa_count = numa_nodes_num % world_size
+        if discarded_numa_count > 0:
+            print(
+                f"Note: {discarded_numa_count} NUMA node(s) (IDs: {sorted_numa_ids[-discarded_numa_count:]}) will be unused to ensure fair distribution."
+            )
+
+        start_numa_idx = rank_id * numas_per_rank
+        end_numa_idx = start_numa_idx + numas_per_rank
+
+        alloc_numa_ids = sorted_numa_ids[start_numa_idx:end_numa_idx]
+
+        print(f"Rank {rank_id} allocated to NUMA nodes: {alloc_numa_ids}")
+
+        for numa_id in alloc_numa_ids:
+            physical_cores_on_numa = physical_core_map.get(numa_id, [])
+            cores_to_take = int(len(physical_cores_on_numa) * ratio)
+            for core_id in physical_cores_on_numa[:cores_to_take]:
+                bind_info_list.append((core_id, numa_id))
+
+    else:
+        print(
+            f"Strategy: Fallback to uniform core distribution ({world_size} ranks > {numa_nodes_num} NUMA nodes)."
+        )
+
+        all_physical_cores_with_numa = []
+        for numa_id in sorted_numa_ids:
+            for core_id in physical_core_map[numa_id]:
+                all_physical_cores_with_numa.append((core_id, numa_id))
+
+        total_physical_cores = len(all_physical_cores_with_numa)
+        cores_per_rank = total_physical_cores // world_size
+        if cores_per_rank == 0:
+            print(
+                f"Warning: Not enough physical cores ({total_physical_cores}) to assign at least one to each of the {world_size} ranks. Rank {rank_id} will not be bound to any core."
+            )
+            return [], sorted_numa_ids
+
+        start_core_idx = rank_id * cores_per_rank
+        end_core_idx = start_core_idx + cores_per_rank
+
+        rank_core_share = all_physical_cores_with_numa[start_core_idx:end_core_idx]
+        cores_to_take = int(len(rank_core_share) * ratio)
+        bind_info_list = rank_core_share[:cores_to_take]
+
+        alloc_numa_ids = sorted_numa_ids
+
+    bind_info_list.sort()
+    print(
+        f"Rank {rank_id} will bind to {len(bind_info_list)} (CPU, NUMA) pairs: {bind_info_list}"
+    )
+    return bind_info_list, alloc_numa_ids

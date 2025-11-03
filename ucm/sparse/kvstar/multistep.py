@@ -17,7 +17,7 @@ from ucm.sparse.base import (
     UcmSparseRole,
 )
 from ucm.sparse.kvstar.retrieve import kvstar_retrieve
-from ucm.sparse.kvstar.utils import bind_cpus, block_hash_func, get_offset
+from ucm.sparse.kvstar.utils import block_hash_func, get_bind_cpus_for_rank, get_offset
 from ucm.store.ucmstore import Task, UcmKVStoreBase
 
 """
@@ -447,9 +447,7 @@ class ReqPerLayerState:
             need_retrieve_record
         ).copy()
         if need_retrieve_record != "prefill" or load_step == 1:
-            if (
-                len(self.layer_wise_pre_swap_area_block_hashes) == 0
-            ):
+            if len(self.layer_wise_pre_swap_area_block_hashes) == 0:
                 self.layer_wise_pre_swap_area_block_hashes = {
                     blk_id: blk_hash
                     for (blk_id, blk_hash) in zip(
@@ -478,7 +476,6 @@ class ReqPerLayerState:
                     self.layer_wise_pre_swap_area_block_hashes[diff_blk_id] = (
                         diff_blk_hash
                     )
-                    
             if len(retrieve_result_hash_list) > 0:
                 self.launch_transfer_task(
                     "load", retrieve_result_hash_list, candidate_swap_vllm_block_ids
@@ -652,16 +649,14 @@ class KVStarMultiStep(UcmSparseBase):
         )
         if self.role == UcmSparseRole.WORKER:
             ratio = 0.75
-            numa_nodes_num, alloc_numa_ids, phy_cpu_core_per_numa = bind_cpus(
+            bind_info_list, alloc_numa_ids = get_bind_cpus_for_rank(
                 self.total_tp_size, self.local_tp_rank, ratio=ratio
             )
 
             cpu_device = kvstar_retrieve.CPU
             param = kvstar_retrieve.SetupParam(
                 cpuNumaIds=alloc_numa_ids,
-                physicalCorePerNuma=phy_cpu_core_per_numa,
-                allocRatio=ratio,
-                blkRepreSize=4096,
+                bindInfo=bind_info_list,
                 deviceType=cpu_device,
                 totalTpSize=self.total_tp_size,
                 localRankId=self.local_tp_rank,

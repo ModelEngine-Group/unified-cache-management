@@ -10,7 +10,7 @@
 namespace KVStar {
 class RetrieveTaskManager {
 public:
-    Status Setup(const size_t threadNum, const std::vector<int>& cpuNumaIds, const std::vector<std::vector<int>>& bindCoreId); // 重要, 线程池拉起的入口
+    Status Setup(const size_t threadNum, const std::vector<std::pair<int, int>>& bindInfo);
     Status SubmitSingleTask(RetrieveTask&&task, size_t &taskId);
 
     Status GetResult(size_t taskId, std::shared_ptr<TaskResult>& result);
