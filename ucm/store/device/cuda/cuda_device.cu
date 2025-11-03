@@ -24,6 +24,15 @@
 #include <cuda_runtime.h>
 #include "ibuffered_device.h"
 #include "logger/logger.h"
+#include <cufile.h>
+#include <mutex>
+#include <fcntl.h>
+#include <unistd.h>
+#include <cerrno>
+#include <cstring>
+#include <unordered_map>
+#include <cstdlib>
+#include "infra/template/handle_recorder.h"
 
 #define CUDA_TRANS_UNIT_SIZE (sizeof(uint64_t) * 2)
 #define CUDA_TRANS_BLOCK_NUMBER (32)
@@ -90,6 +99,25 @@ struct fmt::formatter<cudaError_t> : formatter<int32_t> {
 
 namespace UC {
 
+static Status CreateCuFileHandle(int fd, CUfileHandle_t& cuFileHandle)
+{
+    if (fd < 0) {
+        UC_ERROR("Invalid file descriptor: {}", fd);
+        return Status::Error();
+    }
+
+    CUfileDescr_t cfDescr{};
+    cfDescr.handle.fd = fd;
+    cfDescr.type = CU_FILE_HANDLE_TYPE_OPAQUE_FD;
+    CUfileError_t err = cuFileHandleRegister(&cuFileHandle, &cfDescr);
+    if (err.err != CU_FILE_SUCCESS) {
+        UC_ERROR("Failed to register cuFile handle for fd {}: error {}",
+                 fd, static_cast<int>(err.err));
+        return Status::Error();
+    }
+
+    return Status::OK();
+}
 template <typename Api, typename... Args>
 Status CudaApi(const char* caller, const char* file, const size_t line, const char* name, Api&& api,
                Args&&... args)
@@ -133,11 +161,22 @@ class CudaDevice : public IBufferedDevice {
         return nullptr;
     }
     static void ReleaseDeviceArray(void* deviceArray) { CUDA_API(cudaFree, deviceArray); }
+    static std::once_flag gdsOnce_;
 
 public:
+    static Status InitGdsOnce();
     CudaDevice(const int32_t deviceId, const size_t bufferSize, const size_t bufferNumber)
         : IBufferedDevice{deviceId, bufferSize, bufferNumber}, stream_{nullptr}
     {
+    }
+    ~CudaDevice() {
+        HandlePool<int, CUfileHandle_t>::Instance().ClearAll([](CUfileHandle_t h) {
+            cuFileHandleDeregister(h);
+        });
+
+        if (stream_ != nullptr) {
+            cudaStreamDestroy((cudaStream_t)stream_);
+        }
     }
     Status Setup() override
     {
@@ -164,6 +203,52 @@ public:
     Status D2HAsync(std::byte* dst, const std::byte* src, const size_t count) override
     {
         return CUDA_API(cudaMemcpyAsync, dst, src, count, cudaMemcpyDeviceToHost, this->stream_);
+    }
+    Status S2DSync(int fd, void* address, const size_t length, const size_t fileOffset, const size_t devOffset) override
+    {
+        CUfileHandle_t cuFileHandle = nullptr;
+        auto status = HandlePool<int, CUfileHandle_t>::Instance().Get(fd, cuFileHandle,
+            [fd](CUfileHandle_t& handle) -> Status {
+                return CreateCuFileHandle(fd, handle);
+            });
+        if (status.Failure()) {
+            return status;
+        }
+        ssize_t bytesRead = cuFileRead(cuFileHandle, address, length, fileOffset, devOffset);
+        HandlePool<int, CUfileHandle_t>::Instance().Put(fd, [](CUfileHandle_t h) {
+            if (h != nullptr) {
+                cuFileHandleDeregister(h);
+            }
+        });
+
+        if (bytesRead < 0 || (size_t)bytesRead != length) {
+            UC_ERROR("cuFileRead failed for fd {}: expected {}, got {}", fd, length, bytesRead);
+            return Status::Error();
+        }
+        return Status::OK();
+    }
+     Status D2SSync(int fd, void* address, const size_t length, const size_t fileOffset, const size_t devOffset) override
+    {
+        CUfileHandle_t cuFileHandle = nullptr;
+        auto status = HandlePool<int, CUfileHandle_t>::Instance().Get(fd, cuFileHandle,
+            [fd](CUfileHandle_t& handle) -> Status {
+                return CreateCuFileHandle(fd, handle);
+            });
+        if (status.Failure()) {
+            return status;
+        }
+        ssize_t bytesWrite = cuFileWrite(cuFileHandle, address, length, fileOffset, devOffset);
+        HandlePool<int, CUfileHandle_t>::Instance().Put(fd, [](CUfileHandle_t h) {
+            if (h != nullptr) {
+                cuFileHandleDeregister(h);
+            }
+        });
+
+        if (bytesWrite < 0 || (size_t)bytesWrite != length) {
+            UC_ERROR("cuFileWrite failed for fd {}: expected {}, got {}", fd, length, bytesWrite);
+            return Status::Error();
+        }
+        return Status::OK();
     }
     Status AppendCallback(std::function<void(bool)> cb) override
     {
@@ -226,6 +311,14 @@ private:
     cudaStream_t stream_;
 };
 
+Status DeviceFactory::Setup(bool useDirect)
+{
+    if (useDirect) {
+        return CudaDevice::InitGdsOnce();
+    }
+    return Status::OK();
+}
+
 std::unique_ptr<IDevice> DeviceFactory::Make(const int32_t deviceId, const size_t bufferSize,
                                              const size_t bufferNumber)
 {
@@ -236,6 +329,21 @@ std::unique_ptr<IDevice> DeviceFactory::Make(const int32_t deviceId, const size_
                  bufferNumber);
         return nullptr;
     }
+}
+std::once_flag CudaDevice::gdsOnce_{};
+Status CudaDevice::InitGdsOnce()
+{
+    Status result = Status::OK();
+    std::call_once(gdsOnce_, [&result]() {
+        CUfileError_t ret = cuFileDriverOpen();
+        if (ret.err == CU_FILE_SUCCESS) {
+            UC_INFO("GDS driver initialized successfully");
+        } else {
+            UC_ERROR("GDS driver initialization failed with error code: {}", static_cast<int>(ret.err));
+            result = Status::Error();
+        }
+    });
+    return result;
 }
 
 } // namespace UC

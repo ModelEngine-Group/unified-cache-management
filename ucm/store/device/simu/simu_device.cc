@@ -72,6 +72,14 @@ public:
         this->backend_.Push([=] { std::copy(src, src + count, dst); });
         return Status::OK();
     }
+    Status S2DSync(int fd, void* address, const size_t length, const size_t fileOffset, const size_t devOffset) override
+    {
+        return Status::Unsupported();
+    }
+     Status D2SSync(int fd, void* address, const size_t length, const size_t fileOffset, const size_t devOffset) override
+    {
+        return Status::Unsupported();
+    }
     Status AppendCallback(std::function<void(bool)> cb) override
     {
         this->backend_.Push([=] { cb(true); });

@@ -26,24 +26,55 @@
 
 #include "posix_queue.h"
 #include "task_manager.h"
+#include "directstorage_queue.h"
+#include "infra/template/handle_recorder.h"
+#include <unistd.h>
 
 namespace UC {
 
 class TransManager : public TaskManager {
+private:
+    HandlePool<std::string, int> handlePool_;
+
 public:
     Status Setup(const int32_t deviceId, const size_t streamNumber, const size_t ioSize,
-                 const size_t bufferNumber, const SpaceLayout* layout, const size_t timeoutMs)
+                 const size_t bufferNumber, const SpaceLayout* layout, const size_t timeoutMs, bool useDirect)
     {
         this->timeoutMs_ = timeoutMs;
         auto status = Status::OK();
+
+        status = DeviceFactory::Setup(useDirect);
+        if (status.Failure()) {
+            UC_ERROR("Failed to setup device factory");
+            return status;
+        }
+
         for (size_t i = 0; i < streamNumber; i++) {
-            auto q = std::make_shared<PosixQueue>();
-            status =
-                q->Setup(deviceId, ioSize, bufferNumber, &this->failureSet_, layout, timeoutMs);
+            std::shared_ptr<TaskQueue> q;
+
+            if(useDirect) {
+                auto directQ = std::make_shared<DirectStorageQueue>();
+                status = directQ->Setup(deviceId, ioSize, bufferNumber, &this->failureSet_, layout, timeoutMs, &handlePool_);
+                q = directQ;
+            }
+            else {
+                auto posixQ = std::make_shared<PosixQueue>();
+                status = posixQ->Setup(deviceId, ioSize, bufferNumber, &this->failureSet_, layout, timeoutMs);
+                q = posixQ;
+            }
+
             if (status.Failure()) { break; }
             this->queues_.emplace_back(std::move(q));
         }
         return status;
+    }
+
+    ~TransManager() {
+        handlePool_.ClearAll([](int fd) {
+            if (fd >= 0) {
+                close(fd);
+            }
+        });
     }
 };
 

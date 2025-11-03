@@ -32,6 +32,7 @@ class PosixFile : public IFile {
 public:
     PosixFile(const std::string& path) : IFile{path}, handle_{-1} {}
     ~PosixFile() override;
+    int32_t GetHandle() const override { return handle_; }
     Status MkDir() override;
     Status RmDir() override;
     Status Rename(const std::string& newName) override;
