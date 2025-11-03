@@ -449,7 +449,7 @@ class ReqPerLayerState:
         if need_retrieve_record != "prefill" or load_step == 1:
             if (
                 len(self.layer_wise_pre_swap_area_block_hashes) == 0
-            ):  # 无之前的稀疏逻辑块地址<->kvcache块hash映射, 则直接构造
+            ):
                 self.layer_wise_pre_swap_area_block_hashes = {
                     blk_id: blk_hash
                     for (blk_id, blk_hash) in zip(
