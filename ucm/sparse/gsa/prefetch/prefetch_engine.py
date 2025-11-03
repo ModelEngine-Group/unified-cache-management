@@ -11,14 +11,11 @@ from vllm.utils import is_pin_memory_available
 
 from ucm.sparse.gsa.prefetch import gsa_prefetch
 from ucm.sparse.utils import (
-    NUM_PREFETCH_BLOCKS,
-    CUDA_TOPK,
     MAX_BS,
     PTOPK_PREFETCH_ENABLE,
-    SEG_PREFILL_THRESHOLD,
     VLLM_CUDA_MEM_ALIGN_KV_CACHE,
     align_to_256bytes,
-    compute_topk_len,
+    gsa_config
 )
 
 
@@ -97,7 +94,7 @@ class GSAPrefetchBase:
             self.is_log,
             self.tp_size,
             self.rank,
-            NUM_PREFETCH_BLOCKS
+            gsa_config.num_prefetch_blocks
         )
 
         self.topk_space = 0
@@ -140,7 +137,7 @@ class GSAPrefetchBase:
 
         if self.atb_gsa_enable:
             block_table_index = torch.tensor(self.select_bs_index, device="cpu")
-            self.topk_len = compute_topk_len(self._get_max_block_len(gsa_metadata)) + NUM_PREFETCH_BLOCKS
+            self.topk_len = gsa_config.compute_topk_len(self._get_max_block_len(gsa_metadata)) + gsa_config.num_prefetch_blocks
             topk_buf_tmp = self.use_topk_caches[:, block_table_index, :]
             topk_buf_tmp = topk_buf_tmp[:, :, :self.topk_len]
             self.is_topk_cal = is_topk_done and self.topk_space % 3 == 0
@@ -184,7 +181,7 @@ class GSAPrefetchBase:
                     )
         self.topk_bs = []
         for index, req_id in enumerate(self.req_ids_bs):
-            one_topk_len = compute_topk_len(len(gsa_metadata.gsa_stats[req_id].blocks)) + NUM_PREFETCH_BLOCKS
+            one_topk_len = gsa_config.compute_topk_len(len(gsa_metadata.gsa_stats[req_id].blocks)) + gsa_config.num_prefetch_blocks
             self.topk_bs.append(
                 [
                     req_id,
@@ -543,6 +540,7 @@ class GSAPrefetchBase:
                     self.gsa_seq_len[:, bs_index] = gsa_metadata.gsa_stats[
                         req_id
                     ].get_seq_len()
+                    self.use_block_table[:, bs_index, :].fill_(0)
                     self.use_block_table[
                         :, bs_index, : len(gsa_metadata.gsa_stats[req_id].blocks)
                     ] = one_block_table
