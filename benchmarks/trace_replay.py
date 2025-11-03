@@ -540,13 +540,15 @@ async def replay_trace_by_time(
         flat_requests.extend(reqs)
 
     group_results = await asyncio.gather(*tasks)
+
+    if pbar is not None:
+        pbar.close()
+    await session.close()
+
     outputs = []
     for res in group_results:
         if isinstance(res, list):
             outputs.extend(res)
-
-    if pbar is not None:
-        pbar.close()
 
     benchmark_duration = time.perf_counter() - start_time
     metrics, actual_output_lens = calculate_metrics(
@@ -678,6 +680,14 @@ def main(args: argparse.Namespace):
 
 
 if __name__ == "__main__":
+    # Check openpyxl for Excel export
+    try:
+        import openpyxl
+    except ImportError:
+        print("\nMissing package: openpyxl")
+        print("Please install openpyxl via pip install.\n")
+        sys.exit(1)
+
     parser = create_argument_trace()
     args = parser.parse_args()
     main(args)

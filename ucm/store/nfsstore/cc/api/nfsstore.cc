@@ -35,7 +35,8 @@ public:
     int32_t Setup(const Config& config)
     {
         auto status = this->spaceMgr_.Setup(config.storageBackends, config.kvcacheBlockSize,
-                                            config.tempDumpDirEnable);
+                                            config.tempDumpDirEnable, config.storageCapacity,
+                                            config.recycleEnable, config.recycleThresholdRatio);
         if (status.Failure()) {
             UC_ERROR("Failed({}) to setup SpaceManager.", status);
             return status.Underlying();
@@ -120,6 +121,9 @@ private:
         UC_INFO("Set UC::TempDumpDirEnable to {}.", config.tempDumpDirEnable);
         UC_INFO("Set UC::HotnessInterval to {}.", config.hotnessInterval);
         UC_INFO("Set UC::HotnessEnable to {}.", config.hotnessEnable);
+        UC_INFO("Set UC::storageCapacity to {}.", config.storageCapacity);
+        UC_INFO("Set UC::RecycleEnable to {}.", config.recycleEnable);
+        UC_INFO("Set UC::RecycleThreshold to {}.", config.recycleThresholdRatio);
     }
 
 private:

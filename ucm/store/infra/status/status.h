@@ -42,6 +42,7 @@ class Status {
         ESERIALIZE = UC_MAKE_STATUS_CODE(6),
         EDESERIALIZE = UC_MAKE_STATUS_CODE(7),
         EUNSUPPORTED = UC_MAKE_STATUS_CODE(8),
+        ENOSPACE = UC_MAKE_STATUS_CODE(9),
 #undef UC_MAKE_STATUS_CODE
     };
 
@@ -101,7 +102,11 @@ public:
         static Status s{Code::EUNSUPPORTED};
         return s;
     }
-
+    static Status& NoSpace()
+    {
+        static Status s{Code::ENOSPACE};
+        return s;
+    }
 public:
     Status(const Status& status) { this->code_ = status.code_; }
     Status& operator=(const Status& status)
