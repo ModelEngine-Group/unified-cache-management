@@ -217,6 +217,10 @@ class ReqPerLayerState:
 
         self.num_blocks_dumped = 0
 
+        self.layer_wise_pre_swap_area_block_hashes: Dict[int, str] = (
+            {}
+        )  # key: block id, value: block hash id
+
     @classmethod
     def block_hash(cls, request_id, block_id):
         return f"req_{request_id}_blk_{block_id}"
@@ -441,8 +445,40 @@ class ReqPerLayerState:
                 assert 0
         retrieve_result_hash_list = self.step_group_retrieve_result.get(
             need_retrieve_record
-        )
+        ).copy()
         if need_retrieve_record != "prefill" or load_step == 1:
+            if (
+                len(self.layer_wise_pre_swap_area_block_hashes) == 0
+            ):  # 无之前的稀疏逻辑块地址<->kvcache块hash映射, 则直接构造
+                self.layer_wise_pre_swap_area_block_hashes = {
+                    blk_id: blk_hash
+                    for (blk_id, blk_hash) in zip(
+                        candidate_swap_vllm_block_ids, retrieve_result_hash_list
+                    )
+                }
+            else:
+                already_matched_record = {}
+                for logic_blk_id in candidate_swap_vllm_block_ids:
+                    if (
+                        logic_blk_id in self.layer_wise_pre_swap_area_block_hashes
+                        and self.layer_wise_pre_swap_area_block_hashes[logic_blk_id]
+                        in retrieve_result_hash_list
+                    ):
+                        already_matched_record[logic_blk_id] = (
+                            self.layer_wise_pre_swap_area_block_hashes[logic_blk_id]
+                        )
+                        candidate_swap_vllm_block_ids.remove(logic_blk_id)
+                        retrieve_result_hash_list.remove(
+                            already_matched_record[logic_blk_id]
+                        )
+                self.layer_wise_pre_swap_area_block_hashes = already_matched_record
+                for diff_blk_id, diff_blk_hash in zip(
+                    candidate_swap_vllm_block_ids, retrieve_result_hash_list
+                ):
+                    self.layer_wise_pre_swap_area_block_hashes[diff_blk_id] = (
+                        diff_blk_hash
+                    )
+                    
             if len(retrieve_result_hash_list) > 0:
                 self.launch_transfer_task(
                     "load", retrieve_result_hash_list, candidate_swap_vllm_block_ids
