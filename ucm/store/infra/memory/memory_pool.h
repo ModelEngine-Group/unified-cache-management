@@ -48,6 +48,18 @@ public:
     Status Setup(int32_t deviceId, size_t capacity, size_t blockSize) {
         capacity_ = capacity;
         blockSize_ = blockSize;
+        size_t slotNum = capacity_ / blockSize_;
+        for (size_t i = 0; i < slotNum; ++i) {
+            std::string dummy = DUMMY_SLOT_PREFIX + std::to_string(i);
+            size_t offset = i * blockSize_;
+            lruList_.push_front(dummy);
+            lruIndex_[dummy] = lruList_.begin();
+            offsetMap_[dummy] = offset;
+        }
+        if (deviceId < 0) {
+            return Status::OK();
+        }
+        
         device_ = DeviceFactory::Make(deviceId, blockSize, static_cast<int>(capacity / blockSize));
         if (!device_) {
             UC_ERROR("MemoryPool: failed to create device");
@@ -64,14 +76,6 @@ public:
             return Status::Error();
         }
 
-        size_t slotNum = capacity_ / blockSize_;
-        for (size_t i = 0; i < slotNum; ++i) {
-            std::string dummy = DUMMY_SLOT_PREFIX + std::to_string(i);
-            size_t offset = i * blockSize_;
-            lruList_.push_front(dummy);
-            lruIndex_[dummy] = lruList_.begin();
-            offsetMap_[dummy] = offset;
-        }
         return Status::OK();
 
     }
