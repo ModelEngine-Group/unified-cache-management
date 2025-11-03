@@ -105,6 +105,7 @@ def bind_cpus(world_size, rank_id, ratio=0.5):
 
     return numa_nodes_num, alloc_numa_ids, phy_cpu_core_per_numa
 
+
 def get_physical_core_topology():
     """
     use lscpu -e parse accurate cpu topology
