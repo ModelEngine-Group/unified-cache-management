@@ -21,8 +21,10 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  * */
+#include <utime.h>
 #include "cmn/path_base.h"
 #include "space/space_manager.h"
+#include "file/file.h"
 
 class UCSpaceManagerTest : public UC::PathBase {};
 
@@ -88,4 +90,36 @@ TEST_F(UCSpaceManagerTest, IterAllBlockFile)
     count = 0;
     while (!layout->NextDataFilePath(iter).empty()) { count++; }
     ASSERT_EQ(count, 3);
+}
+
+TEST_F(UCSpaceManagerTest, NewBlockReuseIfActiveAccessedLongAgo)
+{
+    UC::SpaceManager spaceMgr;
+    constexpr size_t blockSize = 1024 * 1024;
+    constexpr size_t capacity = blockSize * 1024;
+    ASSERT_EQ(spaceMgr.Setup({this->Path()}, blockSize, false, capacity), UC::Status::OK());
+    const auto* layout = spaceMgr.GetSpaceLayout();
+    ASSERT_NE(layout, nullptr);
+
+    const std::string block1 = "a1b2c3d4e5f6789012345678901234ab";
+    auto parent = UC::File::Make(layout->DataFileParent(block1, /*activated=*/true));
+    ASSERT_NE(parent, nullptr);
+    ASSERT_EQ(parent->MkDir(), UC::Status::OK());
+
+    const auto activePath = layout->DataFilePath(block1, /*activated=*/true);
+    auto activeFile = UC::File::Make(activePath);
+    ASSERT_NE(activeFile, nullptr);
+    ASSERT_EQ(activeFile->Open(UC::IFile::OpenFlag::CREATE | UC::IFile::OpenFlag::READ_WRITE), UC::Status::OK());
+    activeFile->Close();
+
+    // NewBlock should return DuplicateKey because the file is recent
+    ASSERT_EQ(spaceMgr.NewBlock(block1), UC::Status::DuplicateKey());
+
+    // Set atime to 10 minutes ago so it is not considered recent
+    struct utimbuf newTime;
+    auto tp = time(nullptr) - 600;
+    newTime.modtime = tp;
+    newTime.actime = tp;
+    utime(activePath.c_str(), &newTime);
+    ASSERT_EQ(spaceMgr.NewBlock(block1), UC::Status::OK());
 }
