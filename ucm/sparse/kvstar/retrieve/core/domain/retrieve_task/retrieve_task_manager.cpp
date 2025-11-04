@@ -2,47 +2,25 @@
 #include "retrieve_task_manager.h"
 
 namespace KVStar {
-Status RetrieveTaskManager::Setup(const size_t threadNum, const std::vector<int>& cpuNumaIds, const std::vector<std::vector<int>>& bindCoreId) {
+Status RetrieveTaskManager::Setup(const size_t threadNum, const std::vector<std::pair<int, int>>& bindInfo) {
 
-    const size_t numaNodeCount = cpuNumaIds.size();
-    if (numaNodeCount == 0) {
-        KVSTAR_ERROR("Retrieve task manager get error numa id info {}.", cpuNumaIds);
+    if (threadNum != bindInfo.size()) {
+        KVSTAR_ERROR("Thread count ({}) does not match the size of bind-core-ID list ({}).", threadNum, bindInfo.size());
         return Status::InvalidParam();
     }
-
-    if (threadNum % numaNodeCount != 0) {
-        KVSTAR_ERROR("Retrieve task manager can not split threads into each numa, thread num {}, numa id info {}.", threadNum, cpuNumaIds);
-        return Status::InvalidParam();
-    }
-
-    if (bindCoreId.size() != numaNodeCount) {
-        KVSTAR_ERROR("Bind core ids {} can not match numa id info {}.", bindCoreId, cpuNumaIds);
-        return Status::InvalidParam();
-    }
-
-    const size_t threadsPerNuma = threadNum / numaNodeCount;
 
     this->_queues.reserve(threadNum);
     for (size_t i = 0; i < threadNum; ++i) {
-        const size_t numaListIndex = i / threadsPerNuma;
-
-        const size_t coreListIndex = i % threadsPerNuma;
-
-        if (coreListIndex >= bindCoreId[numaListIndex].size()) {
-            KVSTAR_ERROR("Bind core ids {} can not alloc per numa need alloc threads num {}.", bindCoreId, threadsPerNuma);
-            return Status::InvalidParam();
-        }
-
-        const int targetNumaId = cpuNumaIds[numaListIndex];
-        const int targetCoreId = bindCoreId[numaListIndex][coreListIndex];
+        const int targetCoreId = bindInfo[i].first;
+        const int targetNumaId = bindInfo[i].second;
 
         auto& queue = this->_queues.emplace_back(std::make_unique<RetrieveTaskQueue>());
         auto status = queue->Setup(targetNumaId, targetCoreId, &this->_failureSet);
         if (status.Failure()) {
-            KVSTAR_ERROR("Init and setup thread id {} in pool failed.", i);
+            KVSTAR_ERROR("Init and setup thread id {} (to core {}) in pool failed.", i, targetCoreId);
             return status;
         }
-        KVSTAR_DEBUG("Init and setup thread id {} in pool success.", i);
+        KVSTAR_DEBUG("Init and setup thread id {} in pool to core {} success.", i, targetCoreId);
     }
     return Status::OK();
 }

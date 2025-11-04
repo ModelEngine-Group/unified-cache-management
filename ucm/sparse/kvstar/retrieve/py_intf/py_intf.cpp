@@ -106,23 +106,17 @@ PYBIND11_MODULE(kvstar_retrieve, module)
 
     py::class_<KVStar::SetupParam>(module, "SetupParam")
         .def(py::init<const std::vector<int>&,
-                      const int,
-                      const float,
-                      const size_t,
+                      const std::vector<std::pair<int, int>>&,
                       const KVStar::DeviceType,
                       const int,
                       const int>(),
              py::arg("cpuNumaIds"),
-             py::arg("physicalCorePerNuma"),
-             py::arg("allocRatio"),
-             py::arg("blkRepreSize"),
+             py::arg("bindInfo"),
              py::arg("deviceType"),
              py::arg("totalTpSize"),
              py::arg("localRankId"))
         .def_readwrite("cpuNumaIds", &KVStar::SetupParam::cpuNumaIds)
-        .def_readwrite("physicalCorePerNuma", &KVStar::SetupParam::physicalCorePerNuma)
-        .def_readwrite("allocRatio", &KVStar::SetupParam::allocRatio)
-        .def_readwrite("blkRepreSize", &KVStar::SetupParam::blkRepreSize)
+        .def_readwrite("bindInfo", &KVStar::SetupParam::bindInfo)
         .def_readwrite("deviceType", &KVStar::SetupParam::deviceType)
         .def_readwrite("totalTpSize", &KVStar::SetupParam::totalTpSize)
         .def_readwrite("localRankId", &KVStar::SetupParam::localRankId);
