@@ -17,7 +17,7 @@
 /ucm/store/mooncakestore @chinesezyc @mag1c-h @ygwpz
 /ucm/store/nfsstore @mag1c-h @ygwpz
 
-/ucm/integration @qyh111 @harrisonyhq @ygwpz @mag1c-h
+/ucm/integration @qyh111 @harrisonyhq @ygwpz @mag1c-h @hek14
 
 /ucm/pd @flesher0813 @ygwpz @mag1c-h
 
@@ -27,12 +27,12 @@
 
 /docker @harrisonyhq @ygwpz @mag1c-h
 
-/docs @flesher0813 @ygwpz @mag1c-h @FangRun2 @Tarrei
+/docs @flesher0813 @ygwpz @mag1c-h @FangRun2 @Tarrei @hek14
 /docs/source/user-guide/sparse-attention/esa.md @wangwenxin0312 @hek14 @flesher0813 @ygwpz @mag1c-h @FangRun2 @Tarrei
 /docs/source/user-guide/sparse-attention/gsa.md @Zbm1996 @zbb200819 @yxkyong @HaoLi980405 @flesher0813 @ygwpz @mag1c-h @FangRun2 @Tarrei
 /docs/source/user-guide/sparse-attention/kvcomp.md @leideng @pengwwang @flesher0813 @ygwpz @mag1c-h @FangRun2 @Tarrei
 /docs/source/user-guide/sparse-attention/kvstar.md @saki-daisuki @summer-ai007 @flesher0813 @ygwpz @mag1c-h @FangRun2 @Tarrei
 
-/examples @harrisonyhq @ygwpz @mag1c-h
+/examples @harrisonyhq @ygwpz @mag1c-h @hek14
 
 /test @Wwwzff @ygwpz @mag1c-h
