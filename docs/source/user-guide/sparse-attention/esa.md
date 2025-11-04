@@ -31,8 +31,8 @@ ktc = KVTransferConfig(
                 "init_window_sz": 1,
                 "local_window_sz": 2,
                 "min_blocks": 4,
-                "sparse_ratio": 0.3,
-                "retrieval_stride": 5,
+                "sparse_ratio": 0.2,
+                "retrieval_stride": 10,
             }
         },
     },
@@ -80,8 +80,8 @@ The following results were obtained using `Qwen2.5-14B-Instruct` under the speci
         "init_window_sz": 1,
         "local_window_sz": 2,
         "min_blocks": 4,
-        "sparse_ratio": 0.3,
-        "retrieval_stride": 5
+        "sparse_ratio": 0.2,
+        "retrieval_stride": 10
     }
 },
 ```
@@ -92,5 +92,5 @@ The following results were obtained using `Qwen2.5-14B-Instruct` under the speci
 We use [LongBench](https://huggingface.co/datasets/zai-org/LongBench) to evaluate the accuracy of the ESA algorithm.
 | Dataset | F1-Score |
 |-------|-----------|
-| multifieldqa_zh | 59.4 |
-| dureader | 26.4 |
+| multifieldqa_zh | 64.28 |
+| dureader | 28.73 |

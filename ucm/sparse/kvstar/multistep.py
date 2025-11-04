@@ -813,9 +813,11 @@ class KVStarMultiStep(UcmSparseBase):
             estimate_num_slots_budget = num_blocks_this_step_budget * block_size
         return estimate_num_slots_budget
 
-    def allocate_slots(
-        self, request, num_slots_sparsed, coordinator, block_pool, kv_cache_groups
-    ):
+    def allocate_slots(self, kv_cache_manager, request, num_slots_sparsed):
+        coordinator = kv_cache_manager.coordinator
+        block_pool = kv_cache_manager.block_pool
+        kv_cache_groups = kv_cache_manager.kv_cache_config.kv_cache_groups
+
         block_size = self._vllm_config.cache_config.block_size
         num_blocks_need = math.ceil(num_slots_sparsed / block_size)
         allocated_blocks = coordinator.get_blocks(request.request_id)[0]

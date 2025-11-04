@@ -13,7 +13,7 @@ from vllm.distributed.kv_transfer import get_kv_transfer_group
 from vllm.forward_context import ForwardContext
 from vllm.sequence import SequenceStage
 from vllm.v1.core.kv_cache_manager import KVCacheBlocks
-from vllm.v1.request import Request
+from vllm.v1.request import Request, RequestStatus
 
 from ucm.sparse.base import (
     INVALID_SLOT,
@@ -58,10 +58,7 @@ class ReqMeta:
     query_start_loc: int
     prompt_token_ids: list[int]
     output_token_ids: list[int]
-
-    @property
-    def step(self) -> int:
-        return self.num_output_tokens
+    is_preempt: bool
 
     @property
     def num_prompt_tokens(self) -> int:
@@ -72,19 +69,13 @@ class ReqMeta:
         return len(self.output_token_ids)
 
     @property
-    def stage(self) -> SequenceStage:
-        return (
-            SequenceStage.DECODE
-            if self.num_output_tokens > 0
-            else SequenceStage.PREFILL
-        )
+    def num_tokens(self) -> int:
+        return self.num_prompt_tokens + self.num_output_tokens
 
     @property
     def is_last_chunk(self) -> bool:
-        return (
-            self.num_computed_tokens + self.num_scheduled_tokens
-            >= self.num_prompt_tokens
-        )
+        # NOTE: both decode and last chunk-prefill meet `self.num_computed_tokens + self.num_scheduled_tokens >= self.num_tokens`
+        return self.num_computed_tokens + self.num_scheduled_tokens >= self.num_tokens
 
 
 @dataclass
@@ -106,6 +97,7 @@ class ESASparseMetaData(UcmSparseMetadata):
         query_start_loc: int,
         prompt_token_ids: list[int],
         output_token_ids: list[int],
+        is_preempt: bool,
     ) -> None:
 
         meta = ReqMeta(
@@ -117,6 +109,7 @@ class ESASparseMetaData(UcmSparseMetadata):
             query_start_loc=query_start_loc,
             prompt_token_ids=prompt_token_ids,
             output_token_ids=output_token_ids,
+            is_preempt=is_preempt,
         )
         self.requests.append(meta)
 
@@ -133,6 +126,13 @@ def get_offset(block_shape, rank, tp_size, precision, layer_id, is_v, is_mla) ->
         k_offset = layer_size * layer_id + layer_size // tp_size * rank
     v_offset = k_offset + k_min_data_block_size
     return v_offset if is_v else k_offset
+
+
+@cache
+def get_sparse_range(init_window_sz, local_window_sz, prompt_len, block_size):
+    num_blocks_upper_bound = math.ceil(prompt_len / block_size)
+    sparse_range = num_blocks_upper_bound - init_window_sz - local_window_sz
+    return sparse_range
 
 
 @cache
@@ -154,12 +154,29 @@ def task_hash_func(block_ids, store_type, tensor_type):
     return hash((tuple(block_ids), store_type, tensor_type))
 
 
+def diff_two_map(map1: dict, map2: dict):
+    keys2 = map2.keys()
+    values2 = map2.values()
+    keys2_set = set(keys2)
+    values2_set = set(values2)
+    diff_map = {}
+    updated_map = {}
+    for k1, v1 in map1.items():
+        if k1 in keys2 and v1 in values2:
+            updated_map[k1] = v1
+            keys2_set.remove(k1)
+            values2_set.remove(v1)
+    for k2, v2 in zip(keys2_set, values2_set):
+        diff_map[k2] = v2
+        updated_map[k2] = v2
+    return updated_map, diff_map
+
+
 class ReqStatePerLayer:
     # handle single request per layer
 
     def __init__(
         self,
-        req_meta: ReqMeta,
         layer_name: str,
         rank: int,
         tp_size: int,
@@ -176,7 +193,7 @@ class ReqStatePerLayer:
         self.store_instance = store_instance
         self.retrieval_worker: Optional[RetrievalWorker] = retrieval_worker
         self.retrieval_task = None
-        self.req_meta = req_meta
+        self.req_meta = None
         self.vllm_config = vllm_config
         self.block_size = vllm_config.cache_config.block_size
         self.k_cache = None
@@ -192,20 +209,26 @@ class ReqStatePerLayer:
         self.pre_topk_block_hashes: Dict[int, str] = {}
         self.sparse_range: int = 0
         self.init_static_flag = False
+        self.init_window = None
+        self.local_window = None
 
         self.num_key_heads = vllm_config.model_config.get_num_kv_heads(
             vllm_config.parallel_config
         )
         self.head_size = vllm_config.model_config.get_head_size()
-        self.sparse_range = self.get_sparse_prefill_range()
+        self.step = 0
 
     def set_block_hashes(self, token_ids):
         if self.block_hashes is not None:
             return
         self.block_hashes = []
         parent_block_hash_value = None
+        num_total_blocks = math.ceil(len(token_ids) / self.block_size)
         for start in range(0, len(token_ids), self.block_size):
             end = start + self.block_size
+            block_idx = start // self.block_size
+            if block_idx >= num_total_blocks - self.esa_cfg["local_window_sz"]:
+                continue
             block_token_ids = token_ids[start:end]
             if len(block_token_ids) < self.block_size:
                 break
@@ -213,7 +236,8 @@ class ReqStatePerLayer:
             block_hash = block_hash_func(
                 parent_block_hash_value, curr_block_token_ids_tuple
             )
-            self.block_hashes.append(str(block_hash))
+            if block_idx >= self.esa_cfg["init_window_sz"]:
+                self.block_hashes.append(str(block_hash))
             parent_block_hash_value = block_hash
 
     def update_meta(self, req_meta: ReqMeta):
@@ -307,52 +331,41 @@ class ReqStatePerLayer:
         rel_block_ids = [self.slots_to_relative_indexes[int(e)] for e in choosed_slots]
         block_hashes = [self.block_hashes[id_] for id_ in rel_block_ids]
         top_k = int(self.sparse_range * self.esa_cfg["sparse_ratio"])
-        sparse_vllm_block_ids = self.req_meta.vllm_block_ids[:top_k]
-
-        # load delta
-        diff_vllm_block_ids = set(sparse_vllm_block_ids)
-        diff_block_hashes = set(block_hashes)
-        if len(self.pre_topk_block_hashes) == 0:
-            self.pre_topk_block_hashes = {
-                blk_id: blk_hash
-                for (blk_id, blk_hash) in zip(sparse_vllm_block_ids, block_hashes)
-            }
-        else:
-            matched = {}
-            for k in sparse_vllm_block_ids:
-                if (
-                    k in self.pre_topk_block_hashes
-                    and self.pre_topk_block_hashes[k] in diff_block_hashes
-                ):
-                    matched[k] = self.pre_topk_block_hashes[k]
-                    diff_vllm_block_ids.remove(k)
-                    diff_block_hashes.remove(matched[k])
-            self.pre_topk_block_hashes = matched
-            for diff_blk_id, diff_blk_hash in zip(
-                diff_vllm_block_ids, diff_block_hashes
-            ):
-                self.pre_topk_block_hashes[diff_blk_id] = diff_blk_hash
-
-        self.launch_transfer_task(
-            "load", list(diff_block_hashes), list(diff_vllm_block_ids)
+        vllm_block_ids = self.req_meta.vllm_block_ids[
+            self.esa_cfg["init_window_sz"] : self.esa_cfg["init_window_sz"] + top_k
+        ]
+        ## 1. load delta
+        target_map = {
+            b_id: b_hash for b_id, b_hash in zip(vllm_block_ids, block_hashes)
+        }
+        self.pre_topk_block_hashes, diff_blocks = diff_two_map(
+            self.pre_topk_block_hashes, target_map
         )
+        self.launch_transfer_task(
+            "load", list(diff_blocks.values()), list(diff_blocks.keys())
+        )
+
+        ## 2. load all
+        # self.launch_transfer_task(
+        #     "load", block_hashes, vllm_block_ids
+        # )
+
         self.retrieval_task = None
 
-    def get_sparse_prefill_range(self):
-        if (self.req_meta.num_prompt_tokens % self.block_size) == 0:
-            sparse_range = (
-                self.req_meta.num_prompt_tokens // self.block_size
-                - self.esa_cfg["local_window_sz"]
-            )
-        else:
-            sparse_range = math.floor(
-                self.req_meta.num_prompt_tokens / self.block_size
-            ) - (self.esa_cfg["local_window_sz"] - 1)
-        return sparse_range
-
     def block_repre_data(self):
+        self.sparse_range = get_sparse_range(
+            self.esa_cfg["init_window_sz"],
+            self.esa_cfg["local_window_sz"],
+            self.req_meta.num_prompt_tokens,
+            self.block_size,
+        )
         vllm_block_ids = self.req_meta.vllm_block_ids
-        vllm_block_ids_dump = vllm_block_ids[: self.sparse_range]
+        # torch.save({"k": self.k_cache[vllm_block_ids].cpu(), "v": self.v_cache[vllm_block_ids].cpu()},
+        #            f"/home/heke/debug/{self.layer_id}.pkl")
+        vllm_block_ids_dump = vllm_block_ids[
+            self.esa_cfg["init_window_sz"] : self.esa_cfg["init_window_sz"]
+            + self.sparse_range
+        ]
         repre = self.extract_block_repre(vllm_block_ids_dump)
         repre_flat = repre.reshape(repre.shape[0], -1)
         new_slots = self.repre_pool.allocate(self.sparse_range)
@@ -360,8 +373,18 @@ class ReqStatePerLayer:
         for i, slot in enumerate(new_slots):
             self.slots_to_relative_indexes[slot] = og_len + i
         self.slots.extend(new_slots)
-        vals = repre_flat.to("cpu", non_blocking=True, dtype=torch.float32)
+        vals = repre_flat.to("cpu", dtype=torch.float32)
         data[self.layer_id][new_slots] = vals
+        self.init_window = (
+            self.k_cache[vllm_block_ids[: self.esa_cfg["init_window_sz"]]].clone(),
+            self.v_cache[vllm_block_ids[: self.esa_cfg["init_window_sz"]]].clone(),
+        )
+        # NOTE: in Preemption, local_window_start != -self.esa_cfg['local_window_sz']
+        local_window_start = self.esa_cfg["init_window_sz"] + self.sparse_range
+        self.local_window = (
+            self.k_cache[vllm_block_ids[local_window_start:]].clone(),
+            self.v_cache[vllm_block_ids[local_window_start:]].clone(),
+        )
 
     def attention_begin(
         self,
@@ -371,8 +394,19 @@ class ReqStatePerLayer:
         forward_context: ForwardContext,
     ) -> None:
         self.maybe_register_static_data(forward_context)
-        if self.req_meta.step % self.esa_cfg["retrieval_stride"] == 1:
-            if self.req_meta.step == 1:
+        if self.step % self.esa_cfg["retrieval_stride"] == 1:
+            if self.step == 1:
+                vllm_block_ids = self.req_meta.vllm_block_ids
+                self.k_cache[vllm_block_ids[: self.esa_cfg["init_window_sz"]]] = (
+                    self.init_window[0]
+                )
+                self.v_cache[vllm_block_ids[: self.esa_cfg["init_window_sz"]]] = (
+                    self.init_window[1]
+                )
+                # NOTE: in Preemption, local_window_start != -self.esa_cfg['local_window_sz']
+                local_window_sz = self.local_window[0].shape[0]
+                self.k_cache[vllm_block_ids[-local_window_sz:]] = self.local_window[0]
+                self.v_cache[vllm_block_ids[-local_window_sz:]] = self.local_window[1]
                 self.start_retrieval(query, forward_context)
                 self.wait_retrieval_and_start_load()
             self.wait_transfer_task_done()
@@ -385,18 +419,16 @@ class ReqStatePerLayer:
         attn_output: torch.Tensor,
         forward_context: ForwardContext,
     ) -> None:
-        should_save = (
-            self.req_meta.stage == SequenceStage.PREFILL and self.req_meta.is_last_chunk
-        )
-        if should_save:
-            self.block_repre_data()
+        if self.step == 0:
+            if self.req_meta.is_last_chunk:
+                self.block_repre_data()
+                self.step += 1
         else:
-            if self.req_meta.step == 0:
-                return
-            if self.req_meta.step % self.esa_cfg["retrieval_stride"] == 2:
+            if self.step % self.esa_cfg["retrieval_stride"] == 2:
                 self.start_retrieval(query, forward_context)
-            if self.req_meta.step % self.esa_cfg["retrieval_stride"] == 0:
+            if self.step % self.esa_cfg["retrieval_stride"] == 0:
                 self.wait_retrieval_and_start_load()
+            self.step += 1
 
 
 class ESA(UcmSparseBase):
@@ -444,8 +476,14 @@ class ESA(UcmSparseBase):
             backend = retrieval_backend.RetrievalWorkerBackend(backend_src)
             self.retrieval_workers.append(RetrievalWorker(backend))
 
-    def create_layerwise_req_state(self, req_meta, layer_name):
+        self.preempt_req_output_tokens: Dict[ReqType, int] = {}
+
+    def get_or_create_layerwise_req_state(self, req_meta, layer_name):
         layer_id = int(layer_name.split(".")[2])
+        if req_meta.is_preempt:
+            layer_state = self.req_states[req_meta.request_id][layer_id]
+            layer_state.repre_pool.free(layer_state.slots)
+            self.req_states[req_meta.request_id][layer_id] = None
         if req_meta.request_id not in self.req_states:
             if self.req_states.get(req_meta.request_id) is None:
                 self.req_states[req_meta.request_id] = [
@@ -453,7 +491,6 @@ class ESA(UcmSparseBase):
                 ] * self.total_num_hidden_layers
         if self.req_states[req_meta.request_id][layer_id] is None:
             self.req_states[req_meta.request_id][layer_id] = ReqStatePerLayer(
-                req_meta,
                 layer_name,
                 self.rank,
                 self.tp_size,
@@ -473,7 +510,7 @@ class ESA(UcmSparseBase):
         forward_context: ForwardContext,
     ) -> None:
         for req_meta in self._sparse_metadata.requests:
-            req_state = self.create_layerwise_req_state(req_meta, layer_name)
+            req_state = self.get_or_create_layerwise_req_state(req_meta, layer_name)
             req_state.update_meta(req_meta)
             req_state.attention_begin(query, key, value, forward_context)
 
@@ -486,8 +523,9 @@ class ESA(UcmSparseBase):
         layer_name: str,
         forward_context: ForwardContext,
     ) -> None:
+        layer_id = int(layer_name.split(".")[2])
         for req_meta in self._sparse_metadata.requests:
-            req_state = self.create_layerwise_req_state(req_meta, layer_name)
+            req_state = self.req_states[req_meta.request_id][layer_id]
             req_state.update_meta(req_meta)
             req_state.attention_finished(
                 query, key, value, attn_output, forward_context
@@ -503,6 +541,15 @@ class ESA(UcmSparseBase):
         self, scheduler_output, requests, input_batch, attn_metadata
     ) -> UcmSparseMetadata:
         sparse_meta = ESASparseMetaData()
+
+        cached_reqs = scheduler_output.scheduled_cached_reqs
+        preempt_reqs = set()
+        if cached_reqs:
+            for req, is_preempt in zip(
+                cached_reqs.req_ids, cached_reqs.resumed_from_preemption
+            ):
+                if is_preempt:
+                    preempt_reqs.add(req)
         for (
             req_id,
             num_scheduled_tokens,
@@ -521,6 +568,7 @@ class ESA(UcmSparseBase):
                 attn_metadata.query_start_loc[input_batch.req_id_to_index[req_id]],
                 req.prompt_token_ids,
                 req.output_token_ids,
+                req_id in preempt_reqs,
             )
         self._sparse_metadata = sparse_meta
 
@@ -534,46 +582,71 @@ class ESA(UcmSparseBase):
             layer_state.repre_pool.free(layer_state.slots)
         del self.req_states[request_id]
 
+    def request_finished_in_scheduler(self, request_id: Union[int, str]):
+        """
+        This is called inside "Scheduler->finish_requests" function.
+        Generate the metadata required by UcmSparse instance at worker-side.
+        """
+        pass
+
     def estimate_num_slots_sparsed(self, request: Request) -> int:
-        if request.num_output_tokens == 0 or not self.is_sparsed_request(request):
+        if request.status == RequestStatus.PREEMPTED:
+            self.preempt_req_output_tokens[request.request_id] = (
+                request.num_output_tokens
+            )
+
+        if request.request_id in self.preempt_req_output_tokens:
+            num_output_tokens = (
+                request.num_output_tokens
+                - self.preempt_req_output_tokens[request.request_id]
+            )
+        else:
+            num_output_tokens = request.num_output_tokens
+
+        if (
+            request.num_computed_tokens == 0
+            or num_output_tokens == 0
+            or not self.is_sparsed_request(request)
+        ):
             return INVALID_SLOT
         prompt_len = request.num_prompt_tokens
         output_len = request.num_output_tokens
         block_size = self._vllm_config.cache_config.block_size
+        sparse_range = get_sparse_range(
+            self.esa_cfg["init_window_sz"],
+            self.esa_cfg["local_window_sz"],
+            prompt_len,
+            block_size,
+        )
         if (flaw := prompt_len % block_size) == 0:
-            sparse_range = prompt_len // block_size - self.esa_cfg["local_window_sz"]
-            local_window = block_size * self.esa_cfg["local_window_sz"] + output_len
+            local_window_tokens = block_size * self.esa_cfg["local_window_sz"]
         else:
-            sparse_range = math.floor(prompt_len / block_size) - (
+            local_window_tokens = flaw + block_size * (
                 self.esa_cfg["local_window_sz"] - 1
             )
-            local_window = (
-                flaw + block_size * (self.esa_cfg["local_window_sz"] - 1) + output_len
-            )
-        return (
-            int(sparse_range * self.esa_cfg["sparse_ratio"]) * block_size + local_window
+        compressed_prompt_len = (
+            self.esa_cfg["init_window_sz"] * block_size
+            + int(sparse_range * self.esa_cfg["sparse_ratio"]) * block_size
+            + local_window_tokens
         )
+        return compressed_prompt_len + output_len
 
-    def allocate_slots(
-        self, request, num_slots_sparsed, coordinator, block_pool, kv_cache_groups
-    ):
-        block_size = self._vllm_config.cache_config.block_size
-        num_blocks_need = math.ceil(num_slots_sparsed / block_size)
-        allocated_blocks = coordinator.get_blocks(request.request_id)[0]
-        returned_blocks = []
-        kept_blocks = []
-        num_blocks_original = len(allocated_blocks)
-        for i, block in enumerate(allocated_blocks):
-            if i >= num_blocks_original - num_blocks_need:
-                kept_blocks.append(block)
-            else:
-                returned_blocks.append(block)
-            block_pool._maybe_evict_cached_block(block)
-        block_pool.free_blocks(returned_blocks)
+    def allocate_slots(self, kv_cache_manager, request, num_slots_sparsed):
+        coordinator = kv_cache_manager.coordinator
+        block_pool = kv_cache_manager.block_pool
+        kv_cache_groups = kv_cache_manager.kv_cache_config.kv_cache_groups
 
-        coordinator.single_type_managers[0].req_to_blocks[
-            request.request_id
-        ] = kept_blocks
+        if request.request_id in self.preempt_req_output_tokens:
+            # handle preempt: get the TRUE output_len
+            num_output_tokens = (
+                request.num_output_tokens
+                - self.preempt_req_output_tokens[request.request_id]
+            )
+        else:
+            num_output_tokens = request.num_output_tokens
+
+        if num_output_tokens == 1:
+            kv_cache_manager.free(request)
 
         new_computed_block_list = tuple([] for _ in range(len(kv_cache_groups)))
         num_blocks_to_allocate = coordinator.get_num_blocks_to_allocate(
@@ -581,7 +654,10 @@ class ESA(UcmSparseBase):
             num_tokens=num_slots_sparsed,
             new_computed_blocks=new_computed_block_list,
         )
-        if num_blocks_to_allocate > block_pool.get_num_free_blocks():
+        manual_preempt = False
+        # manual_preempt = (request.num_output_tokens % 10) == 0
+        if manual_preempt or num_blocks_to_allocate > block_pool.get_num_free_blocks():
             return None
         coordinator.allocate_new_blocks(request.request_id, num_slots_sparsed)
-        return KVCacheBlocks(tuple([kept_blocks]))
+        blocks = coordinator.single_type_managers[0].req_to_blocks[request.request_id]
+        return KVCacheBlocks(tuple([blocks]))
