@@ -1,15 +1,15 @@
-From efb56ce711e3a2be60981bb5fe01d14f07dcb870 Mon Sep 17 00:00:00 2001
-From: flesher0813 <1208954694@qq.com>
-Date: Fri, 17 Oct 2025 21:01:17 +0800
-Subject: [PATCH] support aggregate and load failure
+From 67bb33e6d97dc5f55013ecfb4fb419f51e8b3c36 Mon Sep 17 00:00:00 2001
+From: wenxinwang <wangwenxin21@huawei.com>
+Date: Tue, 4 Nov 2025 17:41:40 +0800
+Subject: [PATCH] adapt to deepseek patch
 
-simplify sparse kv cache manager interface
 ---
- vllm/attention/layer.py                       |  45 +++-
+ vllm/attention/layer.py                       |  49 +++-
  .../kv_transfer/kv_connector/utils.py         | 113 +++++++++
  .../kv_transfer/kv_connector/v1/base.py       |   9 +
  .../kv_connector/v1/multi_connector.py        |   6 +
  .../v1/shared_storage_connector.py            |   7 +-
+ vllm/v1/attention/backends/mla/common.py      |  10 +-
  vllm/v1/core/block_pool.py                    |   2 +-
  vllm/v1/core/kv_cache_manager.py              |   7 +-
  vllm/v1/core/sched/output.py                  |   5 +
@@ -22,10 +22,10 @@ simplify sparse kv cache manager interface
  vllm/v1/worker/gpu_input_batch.py             |  14 ++
  vllm/v1/worker/gpu_model_runner.py            | 104 +++++++--
  vllm/v1/worker/gpu_worker.py                  |  25 +-
- 17 files changed, 560 insertions(+), 49 deletions(-)
+ 18 files changed, 571 insertions(+), 52 deletions(-)
 
 diff --git a/vllm/attention/layer.py b/vllm/attention/layer.py
-index f0ad68b16..26cdf0445 100644
+index f0ad68b16..728ab99fd 100644
 --- a/vllm/attention/layer.py
 +++ b/vllm/attention/layer.py
 @@ -2,7 +2,6 @@
@@ -56,24 +56,26 @@ index f0ad68b16..26cdf0445 100644
      maybe_save_kv_layer_to_connector(layer_name, kv_cache)
      return output
  
-@@ -449,6 +450,7 @@ def unified_attention_with_output(
+@@ -449,6 +450,8 @@ def unified_attention_with_output(
          attn_metadata = attn_metadata[layer_name]
      self = forward_context.no_compile_layers[layer_name]
      kv_cache = self.kv_cache[forward_context.virtual_engine]
-+    maybe_execute_sparse_attention_begin(query, key, value, layer_name, forward_context)
++    if not self.use_mla:
++        maybe_execute_sparse_attention_begin(query, key, value, layer_name, forward_context)
      self.impl.forward(self,
                        query,
                        key,
-@@ -457,7 +459,7 @@ def unified_attention_with_output(
+@@ -457,7 +460,8 @@ def unified_attention_with_output(
                        attn_metadata,
                        output=output,
                        output_scale=output_scale)
 -
-+    maybe_execute_sparse_attention_finished(query, key, value, output, layer_name, forward_context)
++    if not self.use_mla:
++        maybe_execute_sparse_attention_finished(query, key, value, output, layer_name, forward_context)
      maybe_save_kv_layer_to_connector(layer_name, kv_cache)
  
  
-@@ -479,3 +481,40 @@ direct_register_custom_op(
+@@ -479,3 +483,42 @@ direct_register_custom_op(
      fake_impl=unified_attention_with_output_fake,
      dispatch_key=current_platform.dispatch_key,
  )
@@ -84,6 +86,7 @@ index f0ad68b16..26cdf0445 100644
 +        value: torch.Tensor,
 +        layer_name: str,
 +        forward_context: ForwardContext,
++        phase: Optional[str] = None,
 +):
 +    if not has_ucm_sparse():
 +        return
@@ -94,7 +97,7 @@ index f0ad68b16..26cdf0445 100644
 +    if attn_metadata is None:
 +        return
 +
-+    ucm_sparse.attention_begin(query, key, value, layer_name, forward_context)
++    ucm_sparse.attention_begin(query, key, value, layer_name, forward_context, phase)
 +
 +def maybe_execute_sparse_attention_finished(
 +        query: torch.Tensor,
@@ -103,6 +106,7 @@ index f0ad68b16..26cdf0445 100644
 +        attn_output: torch.Tensor,
 +        layer_name: str,
 +        forward_context: ForwardContext,
++        phase: Optional[str] = None,
 +):
 +    if not has_ucm_sparse():
 +        return
@@ -113,7 +117,7 @@ index f0ad68b16..26cdf0445 100644
 +    if attn_metadata is None:
 +        return
 +
-+    ucm_sparse.attention_finished(query, key, value, attn_output, layer_name, forward_context)
++    ucm_sparse.attention_finished(query, key, value, attn_output, layer_name, forward_context, phase)
 diff --git a/vllm/distributed/kv_transfer/kv_connector/utils.py b/vllm/distributed/kv_transfer/kv_connector/utils.py
 index 5cbc8ca31..8556a979e 100644
 --- a/vllm/distributed/kv_transfer/kv_connector/utils.py
@@ -310,6 +314,59 @@ index 3c574d065..223106def 100644
  
      def add_request(
          self,
+diff --git a/vllm/v1/attention/backends/mla/common.py b/vllm/v1/attention/backends/mla/common.py
+index f2aaf59a4..b56f62b39 100644
+--- a/vllm/v1/attention/backends/mla/common.py
++++ b/vllm/v1/attention/backends/mla/common.py
+@@ -200,6 +200,7 @@ from vllm.attention.backends.abstract import (AttentionBackend, AttentionLayer,
+                                               MLAAttentionImpl)
+ from vllm.attention.backends.utils import get_mla_dims
+ from vllm.attention.ops.merge_attn_states import merge_attn_states
++from vllm.forward_context import ForwardContext, get_forward_context
+ from vllm.attention.utils.fa_utils import get_flash_attn_version
+ from vllm.logger import init_logger
+ from vllm.model_executor.layers.linear import (ColumnParallelLinear,
+@@ -211,6 +212,7 @@ from vllm.v1.attention.backends.utils import (AttentionMetadataBuilder,
+                                               CommonAttentionMetadata)
+ from vllm.v1.kv_cache_interface import AttentionSpec
+ from vllm.v1.worker.block_table import BlockTable
++from vllm.attention.layer import (maybe_execute_sparse_attention_begin, maybe_execute_sparse_attention_finished)
+ 
+ try:
+     from vllm.vllm_flash_attn import flash_attn_varlen_func
+@@ -908,7 +910,7 @@ class MLACommonImpl(MLAAttentionImpl[M], Generic[M]):
+         output: Optional[torch.Tensor] = None,
+         output_scale: Optional[torch.Tensor] = None,
+     ) -> torch.Tensor:
+-
++        forward_context: ForwardContext = get_forward_context()
+         assert output is not None, "Output tensor must be provided."
+ 
+         if output_scale is not None:
+@@ -957,10 +959,11 @@ class MLACommonImpl(MLAAttentionImpl[M], Generic[M]):
+             )
+ 
+         if has_prefill:
++            maybe_execute_sparse_attention_begin(prefill_q, prefill_k_c_normed, prefill_k_pe, layer.layer_name, forward_context, "prefill")
+             output[num_decode_tokens:] = self._forward_prefill(
+                 prefill_q, prefill_k_c_normed, prefill_k_pe, kv_cache,
+                 attn_metadata)
+-
++            maybe_execute_sparse_attention_finished(prefill_q, prefill_k_c_normed, prefill_k_pe, output[num_decode_tokens:], layer.layer_name, forward_context, "prefill")
+         if has_decode:
+             assert attn_metadata.decode is not None
+             decode_q_nope, decode_q_pe = decode_q.split(
+@@ -971,8 +974,9 @@ class MLACommonImpl(MLAAttentionImpl[M], Generic[M]):
+             decode_ql_nope = torch.bmm(decode_q_nope, self.W_UK_T)
+             # Convert from (N, B, L) to (B, N, L)
+             decode_ql_nope = decode_ql_nope.transpose(0, 1)
+-
++            maybe_execute_sparse_attention_begin(torch.cat([decode_ql_nope, decode_q_pe],dim=-1), decode_ql_nope, decode_q_pe, layer.layer_name, forward_context, "decode")
+             output[:num_decode_tokens] = self._forward_decode(
+                 decode_ql_nope, decode_q_pe, kv_cache, attn_metadata)
++            maybe_execute_sparse_attention_finished(torch.cat([decode_ql_nope, decode_q_pe],dim=-1), decode_ql_nope, decode_q_pe, output[:num_decode_tokens], layer.layer_name, forward_context, "decode")
+ 
+         return output_padded
 diff --git a/vllm/v1/core/block_pool.py b/vllm/v1/core/block_pool.py
 index d21f94727..1800665c7 100644
 --- a/vllm/v1/core/block_pool.py

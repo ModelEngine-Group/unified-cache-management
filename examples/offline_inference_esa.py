@@ -93,6 +93,7 @@ def build_llm_with_uc(module_path: str, name: str, model: str):
         enforce_eager=True,
         distributed_executor_backend="mp",
         tensor_parallel_size=1,
+        trust_remote_code=True,
     )
 
     llm = LLM(**asdict(llm_args))
@@ -153,9 +154,8 @@ def main():
         for i in range(batch_size):
             line = lines[i]
             data = json.loads(line)
-            context = data["context"]
-            question = data["input"]
-            prompts.append(get_prompt(f"{context}\n\n{question}"))
+            prompt = f"""阅读以下文字并用中文简短回答：\n\n{data["context"]}\n\n现在请基于上面的文章回答下面的问题，只告诉我答案，不要输出任何其他字词。\n\n问题：{data["input"]}\n回答："""
+            prompts.append(get_prompt(prompt))
 
         sampling_params = SamplingParams(
             temperature=0, top_p=0.95, max_tokens=256, ignore_eos=False
