@@ -25,6 +25,9 @@
 #include "file/file.h"
 #include "logger/logger.h"
 #include "space_shard_temp_layout.h"
+#include <chrono>
+
+constexpr auto MIN_REUSE_BLOCK_AGE = 300; // 5 minutes
 
 namespace UC {
 
@@ -96,9 +99,28 @@ Status SpaceManager::NewBlock(const std::string& blockId)
     if (status.Failure()) {
         if (status != Status::DuplicateKey()) {
             UC_ERROR("Failed({}) to new block({}).", status, blockId);
+            return status;
         }
-        return status;
+        // Reuse the active block if it is not accessed within the last 5 minutes
+        status = file->Open(IFile::OpenFlag::READ_WRITE);
+        if (status.Failure()) {
+            UC_ERROR("Failed({}) to open file({}).", status, file->Path());
+            return status;
+        }
+        IFile::FileStat st{};
+        status = file->Stat(st);
+        if (status.Failure()) {
+            UC_ERROR("Failed({}) to stat file({}).", status, file->Path());
+            return status;
+        }
+        const auto now = std::chrono::system_clock::now();
+        const auto lastAccess = std::chrono::system_clock::from_time_t(st.st_atime);
+        if (now - lastAccess <= std::chrono::seconds(MIN_REUSE_BLOCK_AGE)) {
+            UC_ERROR("Block({}) is active, cannot reuse it.", blockId);
+            return Status::DuplicateKey();
+        }
     }
+
     status = file->Truncate(this->blockSize_);
     if (status.Failure()) {
         UC_ERROR("Failed({}) to new block({}).", status, blockId);
