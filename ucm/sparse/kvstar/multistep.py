@@ -446,6 +446,7 @@ class ReqPerLayerState:
         retrieve_result_hash_list = self.step_group_retrieve_result.get(
             need_retrieve_record
         ).copy()
+        fixed_origin_candidate_swap_vllm_block_ids = candidate_swap_vllm_block_ids.copy()
         if need_retrieve_record != "prefill" or load_step == 1:
             if len(self.layer_wise_pre_swap_area_block_hashes) == 0:
                 self.layer_wise_pre_swap_area_block_hashes = {
@@ -456,7 +457,7 @@ class ReqPerLayerState:
                 }
             else:
                 already_matched_record = {}
-                for logic_blk_id in candidate_swap_vllm_block_ids:
+                for logic_blk_id in fixed_origin_candidate_swap_vllm_block_ids:
                     if (
                         logic_blk_id in self.layer_wise_pre_swap_area_block_hashes
                         and self.layer_wise_pre_swap_area_block_hashes[logic_blk_id]
