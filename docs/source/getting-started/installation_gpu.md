@@ -48,7 +48,8 @@ After installation, please apply patch to ensure uc_connector can be used:
 
 ```bash
 cd $(pip show vllm | grep Location | awk '{print $2}')
-git apply /vllm-workspace/unified-cache-management/ucm/integration/vllm/patch/0.9.2/vllm-adapt.patch
+git apply /vllm-workspace/unified-cache-management/ucm/integration/vllm/patch/0.9.2/vllm-adapt-pc.patch
+git apply /vllm-workspace/unified-cache-management/ucm/integration/vllm/patch/0.9.2/vllm-adapt-aggre.patch
 git apply /vllm-workspace/unified-cache-management/ucm/integration/vllm/patch/0.9.2/vllm-adapt-sparse.patch
 ``` 
 
