@@ -1,7 +1,7 @@
 import enum
 import math
 from dataclasses import dataclass, field
-from typing import Dict, List, Union
+from typing import Dict, List, Optional, Union
 
 import torch
 from vllm.config import VllmConfig
@@ -352,6 +352,7 @@ class ReqPerLayerState:
         key: torch.Tensor,
         value: torch.Tensor,
         forward_context: ForwardContext,
+        phase: Optional[str] = None,
     ) -> None:
         index_in_batch = self.req_meta.index_in_batch
         query_start_loc = self.req_meta.query_start_loc
