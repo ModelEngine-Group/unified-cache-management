@@ -5,15 +5,16 @@ This example demonstrates how to run unified-cache-management with disaggregated
 
 ## Prerequisites
 - UCM: Installed with reference to the Installation documentation.
-- Hardware: At least 4 GPUs (At least 2 GPUs for prefiller + 2 for decoder in 2d2p setup)
+- Hardware: At least 4 GPUs (At least 2 GPUs for prefiller + 2 for decoder in 2d2p setup or 2 NPUs for prefiller + 2 for decoder in 2d2p setup)
 
 ## Start disaggregated service
-For illustration purposes, let us assume that the model used is Qwen2.5-7B-Instruct.
+For illustration purposes, let us take a GPU as an example and assume the model used is Qwen2.5-7B-Instruct.
 ### Run prefill servers
 Prefiller1 Launch Command:
 ```bash
 export PYTHONHASHSEED=123456
-CUDA_VISIBLE_DEVICES=0 vllm serve /home/models/Qwen2.5-7B-Instruct \
+export CUDA_VISIBLE_DEVICES=0 
+vllm serve /home/models/Qwen2.5-7B-Instruct \
 --max-model-len 20000 \
 --tensor-parallel-size 1 \
 --gpu_memory_utilization 0.87 \
@@ -40,7 +41,8 @@ CUDA_VISIBLE_DEVICES=0 vllm serve /home/models/Qwen2.5-7B-Instruct \
 Prefiller2 Launch Command:
 ```bash
 export PYTHONHASHSEED=123456
-CUDA_VISIBLE_DEVICES=1 vllm serve /home/models/Qwen2.5-7B-Instruct \
+export CUDA_VISIBLE_DEVICES=1 
+vllm serve /home/models/Qwen2.5-7B-Instruct \
 --max-model-len 20000 \
 --tensor-parallel-size 1 \
 --gpu_memory_utilization 0.87 \
@@ -68,7 +70,8 @@ CUDA_VISIBLE_DEVICES=1 vllm serve /home/models/Qwen2.5-7B-Instruct \
 Decoder1 Launch Command:
 ```bash
 export PYTHONHASHSEED=123456
-CUDA_VISIBLE_DEVICES=2 vllm serve /home/models/Qwen2.5-7B-Instruct \
+export CUDA_VISIBLE_DEVICES=2 
+vllm serve /home/models/Qwen2.5-7B-Instruct \
 --max-model-len 20000 \
 --tensor-parallel-size 1 \
 --gpu_memory_utilization 0.87 \
@@ -94,7 +97,8 @@ CUDA_VISIBLE_DEVICES=2 vllm serve /home/models/Qwen2.5-7B-Instruct \
 Decoder2 Launch Command:
 ```bash
 export PYTHONHASHSEED=123456
-CUDA_VISIBLE_DEVICES=3 vllm serve /home/models/Qwen2.5-7B-Instruct \
+export CUDA_VISIBLE_DEVICES=3 
+vllm serve /home/models/Qwen2.5-7B-Instruct \
 --max-model-len 20000 \
 --tensor-parallel-size 1 \
 --gpu_memory_utilization 0.87 \
@@ -121,7 +125,7 @@ CUDA_VISIBLE_DEVICES=3 vllm serve /home/models/Qwen2.5-7B-Instruct \
 ### Run proxy server
 Make sure prefill nodes and decode nodes can connect to each other. the number of prefill/decode hosts should be equal to the number of prefill/decode ports.
 ```bash
-cd vllm-workspace/unified-cache-management/ucm/pd
+cd /vllm-workspace/unified-cache-management/ucm/pd
 python3 toy_proxy_server.py --pd-disaggregation --host localhost --port 7805 --prefiller-hosts <prefill-node-ip-1> <prefill-node-ip-2> --prefiller-port 7800 7801 --decoder-hosts <decoder-node-ip-1> <decoder-node-ip-2> --decoder-ports 7802 7803
 ```
 
@@ -141,8 +145,7 @@ curl http://localhost:7805/v1/completions \
 ### Benchmark Test
 Use the benchmark scripts provided by vLLM.
 ```bash
-cd /vllm-workspace/vllm/benchmarks
-python3 benchmark_serving.py \
+vllm bench serve \
     --backend vllm \
     --dataset-name random \
     --random-input-len 4096 \

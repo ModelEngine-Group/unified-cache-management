@@ -50,7 +50,8 @@ vllm serve /home/models/Qwen2.5-7B-Instruct \
 Decoder Launch Command:
 ```bash
 export PYTHONHASHSEED=123456
-CUDA_VISIBLE_DEVICES=0 vllm serve /home/models/Qwen2.5-7B-Instruct \
+export CUDA_VISIBLE_DEVICES=0 
+vllm serve /home/models/Qwen2.5-7B-Instruct \
 --max-model-len 20000 \
 --tensor-parallel-size 1 \
 --gpu_memory_utilization 0.87 \
@@ -97,8 +98,7 @@ curl http://localhost:7802/v1/completions \
 ### Benchmark Test
 Use the benchmark scripts provided by vLLM.
 ```bash
-cd /vllm-workspace/vllm/benchmarks
-python3 benchmark_serving.py \
+vllm bench serve \
     --backend vllm \
     --dataset-name random \
     --random-input-len 4096 \

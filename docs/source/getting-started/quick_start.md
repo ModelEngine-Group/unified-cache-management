@@ -21,7 +21,7 @@ Before you start with UCM, please make sure that you have installed UCM correctl
 
 ## Features Overview
 
-UCM supports two key features: **Prefix Cache** and **GSA Sparsity**. 
+UCM supports two key features: **Prefix Cache** and **Sparse-attention**. 
 
 Each feature supports both **Offline Inference** and **Online API** modes. 
 
