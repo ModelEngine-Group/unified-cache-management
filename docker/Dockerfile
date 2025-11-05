@@ -15,6 +15,8 @@ RUN export PLATFORM="cuda" && \
 
 # Apply patch for vLLM
 RUN cd $(pip show vllm | grep Location | awk '{print $2}') \
-    && git apply /vllm-workspace/unified-cache-management/ucm/integration/vllm/patch/0.9.2/vllm-adapt.patch
+    && git apply /vllm-workspace/unified-cache-management/ucm/integration/vllm/patch/0.9.2/vllm-adapt-pc.patch \
+    && git apply /vllm-workspace/unified-cache-management/ucm/integration/vllm/patch/0.9.2/vllm-adapt-aggre.patch \
+    && git apply /vllm-workspace/unified-cache-management/ucm/integration/vllm/patch/0.9.2/vllm-adapt-sparse.patch
 
 ENTRYPOINT ["/bin/bash"]
