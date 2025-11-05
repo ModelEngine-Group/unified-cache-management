@@ -11,14 +11,11 @@ from vllm.utils import is_pin_memory_available
 
 from ucm.sparse.gsa.prefetch import gsa_prefetch
 from ucm.sparse.utils import (
-    LOCAL_WINDOW_SZ,
     MAX_BS,
-    MAX_TOPK_LEN,
     PTOPK_PREFETCH_ENABLE,
-    SEG_PREFILL_THRESHOLD,
     VLLM_CUDA_MEM_ALIGN_KV_CACHE,
     align_to_256bytes,
-    compute_topk_len,
+    gsa_config,
 )
 
 
@@ -35,6 +32,7 @@ class GSAPrefetchBase:
         head_num: Optional[int] = None,
         is_mutli_head: Optional[bool] = None,
     ) -> None:
+        self.rank = vllm_config.parallel_config.rank
         self.is_cpu_topk = is_cpu_topk
         self.is_max_norm = is_max_norm
         self.async_thread = async_thread
@@ -85,18 +83,22 @@ class GSAPrefetchBase:
                 self.device_config.device, self.dtype, torch.int64
             )
         self._init_tensor()
+        kv_shape = [self.block_size, self.num_kv_heads, self.head_size]
         self.prefetch_engine_c = gsa_prefetch.GSAPrefetchEngineC(
             self.prefetch_blocks,
             self.m_load_success_list,
             self.prefetch_block_len,
             self.block_table_len,
+            kv_shape,
+            self.use_mla,
             self.is_log,
+            self.tp_size,
+            self.rank,
+            gsa_config.num_prefetch_blocks,
         )
 
-        self.prefetch_space = 0
-        self.num_token = 0
+        self.topk_space = 0
         self.step_time = 0
-        self.is_prefetch_flag = False
         self.is_topk_cal = False
         self.select_bs_index = None
         self.open_gsa = True
@@ -112,12 +114,12 @@ class GSAPrefetchBase:
         self.atten_score = []
 
         self.is_gsa_req_id = {}
-        self.min_gsa_len = math.ceil(SEG_PREFILL_THRESHOLD / self.block_size)
 
         self.topk_buf_tmp = None
         self.topk_bs = []
+        self.is_topk_update = False
 
-    def model_input_del(
+    def model_input_deal(
         self,
         req_ids,
         block_table_ori,
@@ -135,12 +137,16 @@ class GSAPrefetchBase:
 
         if self.atb_gsa_enable:
             block_table_index = torch.tensor(self.select_bs_index, device="cpu")
-            self.topk_len = compute_topk_len(self._get_max_block_len())
-            topk_buf_tmp = self.use_topk_caches[:, block_table_index.cpu(), :]
+            self.topk_len = (
+                gsa_config.compute_topk_len(self._get_max_block_len(gsa_metadata))
+                + gsa_config.num_prefetch_blocks
+            )
+            topk_buf_tmp = self.use_topk_caches[:, block_table_index, :]
             topk_buf_tmp = topk_buf_tmp[:, :, : self.topk_len]
-            self.is_topk_cal = is_topk_done and self.num_token % 3 == 0
+            self.is_topk_cal = is_topk_done and self.topk_space % 3 == 0
             if self.is_topk_cal:
                 self._topk_tmp_deal(gsa_metadata, topk_buf_tmp)
+                self.is_topk_update = True
 
             self._topk_insert_last_idx(gsa_metadata)
             if self.ptopk_prefetch_enable:
@@ -167,20 +173,21 @@ class GSAPrefetchBase:
 
     def _topk_tmp_deal(self, gsa_metadata, topk_buf_tmp):
         for index, topk_info in enumerate(self.topk_bs):
-            if topk_info[1]:
-                if topk_info[0] in gsa_metadata.gsa_stats:
-                    if not self.is_cpu_topk:
-                        gsa_metadata.gsa_stats[topk_info[0]].topk_buf_tmp = (
-                            self.topk_buf_tmp[:, index, : topk_info[2]].cpu()
-                        )
-                    else:
-                        gsa_metadata.gsa_stats[topk_info[0]].topk_buf_tmp = (
-                            self.topk_buf_tmp[:, index, : topk_info[2]].clone()
-                        )
+            if topk_info[1] and topk_info[0] in gsa_metadata.gsa_stats:
+                if not self.is_cpu_topk:
+                    gsa_metadata.gsa_stats[topk_info[0]].topk_buf_tmp = (
+                        self.topk_buf_tmp[:, index, : topk_info[2]].cpu()
+                    )
+                else:
+                    gsa_metadata.gsa_stats[topk_info[0]].topk_buf_tmp = (
+                        self.topk_buf_tmp[:, index, : topk_info[2]].clone()
+                    )
         self.topk_bs = []
         for index, req_id in enumerate(self.req_ids_bs):
-            one_block_len = len(gsa_metadata.gsa_stats[req_id].blocks)
-            one_topk_len = compute_topk_len(one_block_len)
+            one_topk_len = (
+                gsa_config.compute_topk_len(len(gsa_metadata.gsa_stats[req_id].blocks))
+                + gsa_config.num_prefetch_blocks
+            )
             self.topk_bs.append(
                 [
                     req_id,
@@ -190,62 +197,60 @@ class GSAPrefetchBase:
             )
         self.topk_buf_tmp = topk_buf_tmp
 
-    def deal_async_prefetch(
-        self,
-        rank,
-        gsa_metadata,
-    ) -> None:
-        if self.atb_gsa_enable:
-            if self.ptopk_prefetch_enable:
-                if self.prefetch_space >= 5:
-                    tmp = self.use_block_table
-                    self.use_block_table = self.m_load_success_list
-                    self.m_load_success_list = tmp
+    def deal_async_prefetch(self, gsa_metadata, kvcache, store_ptr) -> None:
+        if not self.atb_gsa_enable:
+            return
 
-                    tmp = self.use_block_table_len
-                    self.use_block_table_len = self.block_table_len
-                    self.block_table_len = tmp
+        if (
+            self.prefetch_engine_c.get_prefetch_status()
+            and self.ptopk_prefetch_enable
+            and self.is_topk_update
+        ):
+            tmp = self.use_block_table
+            self.use_block_table = self.m_load_success_list
+            self.m_load_success_list = tmp
 
-                    self._swap_block_table_tensor(self.select_bs_index, gsa_metadata)
-                    self.prefetch_engine_c.set_blocks_table_info(
-                        self.m_load_success_list,
-                        self.block_table_len,
-                        self.prefetch_topk_buf[:, : len(self.select_bs_index), :],
-                        self.step_time,
-                    )
+            tmp = self.use_block_table_len
+            self.use_block_table_len = self.block_table_len
+            self.block_table_len = tmp
 
-                    topk_len_list = []
-                    req_id_list = []
-                    for req_id in self.req_ids_bs:
-                        req_id_list.append(int(req_id))
-                        if not self.is_gsa_req_id[req_id]:
-                            topk_len_list.append(0)
-                            continue
-                        else:
-                            if gsa_metadata.gsa_stats[req_id].topk_buf_tmp != None:
-                                topk_len_list.append(
-                                    len(gsa_metadata.gsa_stats[req_id].topk_buf_tmp[0])
-                                )
-                            else:
-                                topk_len_list.append(0)
-                    self.prefetch_engine_c.run_async_prefetch_bs(
-                        req_id_list, topk_len_list, self.select_bs_index, rank
-                    )
-                    self.is_prefetch_flag = True
-                    self.prefetch_space = 0
+            self._swap_block_table_tensor(self.select_bs_index, gsa_metadata)
+            self.prefetch_engine_c.set_blocks_table_info(
+                self.m_load_success_list,
+                self.block_table_len,
+                self.prefetch_topk_buf[:, : len(self.select_bs_index), :],
+                self.step_time,
+            )
+            topk_len_list = []
+            req_id_list = []
+            for req_id in self.req_ids_bs:
+                req_id_list.append(req_id)
+                if not self.is_gsa_req_id[req_id]:
+                    topk_len_list.append(0)
+                    continue
                 else:
-                    self.prefetch_space += 1
-            self.num_token += 1
+                    if gsa_metadata.gsa_stats[req_id].topk_buf_tmp != None:
+                        topk_len_list.append(
+                            len(gsa_metadata.gsa_stats[req_id].topk_buf_tmp[0])
+                        )
+                    else:
+                        topk_len_list.append(0)
+            self.prefetch_engine_c.run_async_prefetch_bs(
+                req_id_list, topk_len_list, self.select_bs_index, kvcache, store_ptr
+            )
+            self.is_topk_update = False
+        else:
+            self.topk_space += 1
 
-    def del_finish_meta(self, del_req) -> None:
+    def del_finish_meta(self, del_req, flag: bool = True) -> None:
         if del_req in self.block_map_flag:
             del self.block_map_flag[del_req]
         if del_req in self.block_table_flag:
             del self.block_table_flag[del_req]
         if del_req in self.is_gsa_req_id:
             del self.is_gsa_req_id[del_req]
-        if self.ptopk_prefetch_enable:
-            self.prefetch_engine_c.del_blocks_map(int(del_req))
+        if PTOPK_PREFETCH_ENABLE and flag:
+            self.prefetch_engine_c.del_blocks_map(del_req)
 
     def _init_tensor(self):
         device = "cpu"
@@ -326,56 +331,76 @@ class GSAPrefetchBase:
 
     def _first_topk_deal(self, gsa_metadata) -> None:
         for index, req_id in enumerate(self.req_ids_bs):
-            if gsa_metadata.gsa_stats[req_id].remain_idx != None:
-                bs_index = self.select_bs_index[index]
+            if gsa_metadata.gsa_stats[req_id].remain_idx == None:
+                continue
+
+            bs_index = self.select_bs_index[index]
+            if gsa_metadata.gsa_stats[req_id].reamin_map != None:
+                topk_block_list_all = []
+                prefetch_blocks_list_all = []
+                for layer_id in range(self.num_attention_layers):
+                    topk_block_list = sorted(
+                        list(
+                            gsa_metadata.gsa_stats[req_id].reamin_map[layer_id].values()
+                        )
+                    )
+                    prefetch_blocks_list = list(
+                        gsa_metadata.gsa_stats[req_id].prefetch_map[layer_id].values()
+                    )
+                    topk_block_list_all.append(topk_block_list)
+                    prefetch_blocks_list_all.append(prefetch_blocks_list)
+                topk_block_tensor = torch.tensor(
+                    topk_block_list_all, dtype=torch.int32, device="cpu"
+                )
+                prefetch_block_tensor = torch.tensor(
+                    prefetch_blocks_list_all, dtype=torch.int32
+                )
+            else:
                 real_length = len(gsa_metadata.gsa_stats[req_id].blocks)
                 block_table_list = self.block_table_list_bs[index][:real_length]
                 remain_index = gsa_metadata.gsa_stats[req_id].remain_idx
                 prefetch_idx = gsa_metadata.gsa_stats[req_id].prefetch_idx
                 assert len(remain_index) < self.sp_max_len
 
-                self.prefetch_block_len[:, bs_index] = len(prefetch_idx)
-                self.block_table_len[:, bs_index] = len(remain_index)
-                self.use_block_table_len[:, bs_index] = len(remain_index)
-
                 prefetch_blocks_list = [block_table_list[x] for x in prefetch_idx]
-                self.prefetch_blocks[:, bs_index, : len(prefetch_blocks_list)] = (
-                    torch.tensor(prefetch_blocks_list, dtype=torch.int32)
-                )
                 topk_block_list = [block_table_list[x] for x in remain_index]
                 topk_block_tensor = torch.tensor(
                     topk_block_list, dtype=torch.int32, device="cpu"
                 )
+                prefetch_block_tensor = torch.tensor(
+                    prefetch_blocks_list, dtype=torch.int32
+                )
 
-                if (
-                    gsa_metadata.gsa_stats[req_id].num_prompt_tokens
-                    <= SEG_PREFILL_THRESHOLD
-                ):
-                    block_table_list_input = block_table_list
+            self.prefetch_block_len[:, bs_index] = len(prefetch_blocks_list)
+            self.block_table_len[:, bs_index] = len(topk_block_list)
+            self.use_block_table_len[:, bs_index] = len(topk_block_list)
+
+            self.prefetch_blocks[:, bs_index, : len(prefetch_blocks_list)] = (
+                prefetch_block_tensor
+            )
+            self.use_block_table[:, bs_index, : len(topk_block_list)] = (
+                topk_block_tensor
+            )
+            self.m_load_success_list[:, bs_index, : len(topk_block_list)] = (
+                topk_block_tensor
+            )
+            max_idx = len(gsa_metadata.gsa_stats[req_id].block_hashes)
+            if self.is_gsa_req_id[req_id]:
+                if gsa_metadata.gsa_stats[req_id].reamin_map != None:
+                    self.prefetch_engine_c.set_blocks_map_multilayer(
+                        req_id,
+                        gsa_metadata.gsa_stats[req_id].reamin_map,
+                        gsa_metadata.gsa_stats[req_id].prefetch_map,
+                        gsa_metadata.gsa_stats[req_id].block_hashes,
+                        max_idx,
+                    )
                 else:
-                    block_table_list_input = [x for x in block_table_list]
-                    remain_all_len = len(prefetch_idx) + len(remain_index)
-                    block_table_list_input[-1 * LOCAL_WINDOW_SZ :] = block_table_list[
-                        remain_all_len - LOCAL_WINDOW_SZ : remain_all_len
-                    ]
-
-                    block_table_list_input[
-                        remain_all_len - LOCAL_WINDOW_SZ : real_length - LOCAL_WINDOW_SZ
-                    ] = block_table_list[remain_all_len - real_length :]
-
-                    remain_index[-1 * LOCAL_WINDOW_SZ :] = list(range(real_length))[
-                        -1 * LOCAL_WINDOW_SZ :
-                    ]
-                input_idxs = prefetch_idx + remain_index
-                self.use_block_table[:, bs_index, : len(topk_block_list)] = (
-                    topk_block_tensor
-                )
-                self.m_load_success_list[:, bs_index, : len(topk_block_list)] = (
-                    topk_block_tensor
-                )
-                if self.is_gsa_req_id[req_id]:
                     self.prefetch_engine_c.set_blocks_map(
-                        int(req_id), block_table_list_input, input_idxs
+                        req_id,
+                        block_table_list,
+                        prefetch_idx + remain_index,
+                        gsa_metadata.gsa_stats[req_id].block_hashes,
+                        max_idx,
                     )
 
     def _gsa_block_len_pre(
@@ -427,16 +452,19 @@ class GSAPrefetchBase:
     def _topk_insert_last_idx(self, gsa_metadata) -> None:
         for index in range(len(self.req_ids_bs)):
             req_id = self.req_ids_bs[index]
-            if gsa_metadata.gsa_stats[req_id].topk_buf_tmp != None:
-                last_idx = len(gsa_metadata.gsa_stats[req_id].blocks) - 1
-                if last_idx not in gsa_metadata.gsa_stats[req_id].topk_buf_tmp:
-                    gsa_metadata.gsa_stats[req_id].topk_buf_tmp = (
-                        torch.nn.functional.pad(
-                            gsa_metadata.gsa_stats[req_id].topk_buf_tmp,
-                            (0, 1),
-                            value=last_idx,
-                        )
-                    )
+            if gsa_metadata.gsa_stats[req_id].topk_buf_tmp == None:
+                continue
+
+            last_idx = len(gsa_metadata.gsa_stats[req_id].blocks) - 1
+
+            if last_idx in gsa_metadata.gsa_stats[req_id].topk_buf_tmp:
+                continue
+
+            gsa_metadata.gsa_stats[req_id].topk_buf_tmp = torch.nn.functional.pad(
+                gsa_metadata.gsa_stats[req_id].topk_buf_tmp,
+                (0, 1),
+                value=last_idx,
+            )
 
     def _swap_block_table_tensor(
         self,
@@ -448,7 +476,7 @@ class GSAPrefetchBase:
             if req_id in self.block_map_flag:
                 for block_mp_add in self.block_map_flag[req_id]:
                     self.prefetch_engine_c.add_blocks_map(
-                        int(req_id), block_mp_add[0], block_mp_add[1]
+                        req_id, block_mp_add[0], block_mp_add[1]
                     )
                 self.block_map_flag[req_id].clear()
 
@@ -462,6 +490,7 @@ class GSAPrefetchBase:
                         ] = block_table_add
                         self.use_block_table_len[layer_id][bs_index].add_(1)
                 self.block_table_flag[req_id].clear()
+
             if gsa_metadata.gsa_stats[req_id].topk_buf_tmp != None:
                 self.prefetch_topk_buf[
                     :, index, : len(gsa_metadata.gsa_stats[req_id].topk_buf_tmp[0])
@@ -498,10 +527,10 @@ class GSAPrefetchBase:
                 else:
                     self.is_gsa_req_id[req_id] = False
 
-    def _get_max_block_len(self) -> int:
+    def _get_max_block_len(self, gsa_metadata) -> int:
         max_len = 0
-        for blocks in self.block_table_list_bs:
-            max_len = max(max_len, len(blocks))
+        for req_id in self.req_ids_bs:
+            max_len = max(max_len, len(gsa_metadata.gsa_stats[req_id].blocks))
         return max_len
 
     def _no_gsa_input_deal(
@@ -523,6 +552,7 @@ class GSAPrefetchBase:
                     self.gsa_seq_len[:, bs_index] = gsa_metadata.gsa_stats[
                         req_id
                     ].get_seq_len()
+                    self.use_block_table[:, bs_index, :].fill_(0)
                     self.use_block_table[
                         :, bs_index, : len(gsa_metadata.gsa_stats[req_id].blocks)
                     ] = one_block_table

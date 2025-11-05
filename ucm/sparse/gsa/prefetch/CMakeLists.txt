@@ -24,6 +24,7 @@ set(INCLUDE_DIRS
     ${PYTORCH_PATH}/include/torch/csrc/api/include
     ${PYTORCH_PATH}/include
     ${CMAKE_CURRENT_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR}/ucm/store
 )
 
 set(LIBRARY_DIRS
@@ -38,6 +39,7 @@ set(LIBRARIES
     torch_python
     gomp
     pthread
+    storetask
 )
 
 # NPU特殊配置
