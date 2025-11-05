@@ -544,6 +544,7 @@ class ReqPerLayerState:
         value: torch.Tensor,
         attn_output: torch.Tensor,
         forward_context: ForwardContext,
+        phase: Optional[str] = None,
     ) -> None:
         if self.req_meta.stage != ReqStage.PREFILL:
             if (
