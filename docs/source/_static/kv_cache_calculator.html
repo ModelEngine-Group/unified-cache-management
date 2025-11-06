@@ -1,0 +1,2351 @@
+  <!-- KV Cache Calculator - Optimized for Sphinx Integration -->
+    <style>
+        /* CSS Variables for Theme Support - fully compatible with Sphinx themes */
+        :root {
+            /* Use system colors and transparent backgrounds to match Sphinx */
+            --bg-primary: transparent;
+            --bg-secondary: rgba(248, 250, 252, 0.5);
+            --bg-card: rgba(255, 255, 255, 0.8);
+            --text-primary: currentColor;
+            --text-secondary: currentColor;
+            --border-color: rgba(128, 128, 128, 0.2);
+            --border-hover: rgba(128, 128, 128, 0.4);
+            --accent-primary: #5191ee; /* Updated to match requirement */
+            --accent-primary-hover: #4179d8; /* Darker shade for hover */
+            --accent-secondary: currentColor;
+            --accent-success: #10b981;
+            --accent-warning: #f59e0b;
+            --accent-error: #ef4444;
+            --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.1);
+            --shadow-md: 0 4px 6px rgba(0, 0, 0, 0.1);
+            --shadow-lg: 0 10px 15px rgba(0, 0, 0, 0.1);
+        }
+
+        /* Dark theme adjustments for Sphinx dark theme */
+        [data-theme="dark"], html[data-theme="dark"] {
+            --bg-secondary: rgba(30, 41, 59, 0.6);
+            --bg-card: rgba(30, 41, 59, 0.8);
+            --border-color: rgba(255, 255, 255, 0.1);
+            --border-hover: rgba(255, 255, 255, 0.2);
+            --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.3);
+            --shadow-md: 0 4px 6px rgba(0, 0, 0, 0.3);
+            --shadow-lg: 0 10px 15px rgba(0, 0, 0, 0.3);
+        }
+
+        /* Reset and base styles */
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: '微软雅黑', 'Microsoft YaHei', 'Times New Roman', sans-serif;
+            background-color: var(--bg-primary);
+            color: var(--text-primary);
+            line-height: 1.6;
+        }
+
+        /* Layout components */
+        .container {
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 0 0.5rem;
+        }
+
+        .main-content {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 1rem;
+            margin-bottom: 1rem;
+        }
+
+        @media (max-width: 768px) {
+            .main-content {
+                grid-template-columns: 1fr;
+            }
+        }
+
+        .card {
+            background-color: var(--bg-card);
+            border: 1px solid var(--border-color);
+            border-radius: 12px;
+            padding: 1.5rem;
+            box-shadow: var(--shadow-md);
+        }
+
+        
+        /* Typography */
+        .title {
+            font-size: 1.5rem;
+            font-weight: 700;
+            color: var(--text-primary);
+            margin-bottom: 0.3rem;
+        }
+
+        .subtitle {
+            font-size: 0.9rem;
+            color: var(--text-secondary);
+            margin-bottom: 1rem;
+        }
+
+        .section-title {
+            font-size: 1.1rem;
+            font-weight: 600;
+            color: var(--text-primary);
+            margin-bottom: 1rem;
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+        }
+
+        /* Form elements */
+        .form-group {
+            margin-bottom: 1rem;
+        }
+
+        .form-label {
+            display: block;
+            font-size: 0.8rem;
+            font-weight: 500;
+            color: var(--text-primary);
+            margin-bottom: 0.3rem;
+        }
+
+        .form-select {
+            width: 100%;
+            padding: 0.75rem 1rem;
+            border: 1px solid var(--border-color);
+            border-radius: 8px;
+            background-color: var(--bg-primary);
+            color: var(--text-primary);
+            font-size: 0.875rem;
+        }
+
+        .form-select:focus {
+            outline: none;
+            border-color: var(--accent-primary);
+            box-shadow: 0 0 0 3px rgba(81, 145, 238, 0.1); /* Updated to use new blue color */
+        }
+
+        .form-input {
+            width: 100%;
+            padding: 0.75rem 1rem;
+            border: 1px solid var(--border-color);
+            border-radius: 8px;
+            background-color: var(--bg-primary);
+            color: var(--text-primary);
+            font-size: 0.875rem;
+        }
+
+        .form-input:focus {
+            outline: none;
+            border-color: var(--accent-primary);
+            box-shadow: 0 0 0 3px rgba(81, 145, 238, 0.1); /* Updated to use new blue color */
+        }
+
+        .form-input::placeholder {
+            color: var(--text-secondary);
+        }
+
+        /* Buttons */
+        .btn {
+            padding: 0.75rem 1.5rem;
+            border: none;
+            border-radius: 8px;
+            font-size: 0.875rem;
+            font-weight: 500;
+            cursor: pointer;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            gap: 0.5rem;
+            text-decoration: none;
+            min-height: 44px;
+        }
+
+        .btn-primary {
+            background: #5191ee; /* Unified blue color - removed gradient */
+            color: white;
+        }
+
+        
+        .btn-secondary {
+            background: #5191ee; /* Unified blue color - removed gradient */
+            color: white;
+        }
+
+        
+        .btn-group {
+            display: flex;
+            gap: 0.75rem;
+            flex-wrap: wrap;
+        }
+
+        .btn-group .btn {
+            flex: 1;
+            min-width: 0;
+        }
+
+        /* Model source selector */
+        .model-source-selector {
+            display: flex;
+            gap: 0.25rem;
+            background: var(--bg-secondary);
+            padding: 0.25rem;
+            border-radius: 8px;
+            border: 1px solid var(--border-color);
+        }
+
+        .model-source-option {
+            flex: 1;
+            padding: 0.5rem 1rem;
+            text-align: center;
+            border-radius: 6px;
+            font-size: 0.875rem;
+            font-weight: 500;
+            cursor: pointer;
+            background: transparent;
+            color: var(--text-secondary);
+            border: 1px solid transparent;
+        }
+
+        .model-source-option:hover {
+            color: var(--text-primary);
+            background: var(--bg-card);
+        }
+
+        .model-source-option.active {
+            background: #5191ee; /* Unified blue color - removed gradient */
+            color: white;
+            border-color: #4179d8;
+        }
+
+        /* File upload */
+        .file-upload-container {
+            position: relative;
+            width: 100%;
+        }
+
+        .file-upload-label {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 0.5rem;
+            padding: 0.5rem 1rem;
+            border: 2px dashed var(--border-color);
+            border-radius: 6px;
+            background: var(--bg-secondary);
+            cursor: pointer;
+            min-height: 36px;
+            transition: border-color 0.2s ease;
+        }
+
+        .file-upload-label:hover,
+        .file-upload-label.dragover {
+            border-color: var(--accent-primary);
+            background: var(--bg-primary);
+        }
+
+        .file-upload-icon {
+            font-size: 2rem;
+            margin-bottom: 0.5rem;
+        }
+
+        .file-upload-text {
+            text-align: center;
+        }
+
+        .file-upload-title {
+            font-weight: 600;
+            color: var(--text-primary);
+            margin-bottom: 0.25rem;
+        }
+
+        .file-upload-subtitle {
+            font-size: 0.8rem;
+            color: var(--text-secondary);
+        }
+
+        .upload-status {
+            margin-top: 0.5rem;
+            padding: 0.4rem 0.5rem;
+            border-radius: 4px;
+            font-size: 0.75rem;
+        }
+
+        .upload-status.success {
+            background: rgba(16, 185, 129, 0.1);
+            border: 1px solid rgba(16, 185, 129, 0.2);
+            color: var(--accent-success);
+        }
+
+        .upload-status.error {
+            background: rgba(239, 68, 68, 0.1);
+            border: 1px solid rgba(239, 68, 68, 0.2);
+            color: var(--accent-error);
+        }
+
+        .file-info {
+            font-weight: 600;
+            margin-bottom: 0.1rem;
+        }
+
+        .model-count {
+            font-size: 0.7rem;
+            opacity: 0.8;
+        }
+
+        /* Results display */
+        .result-display {
+            text-align: center;
+            padding: 1.5rem;
+            background: var(--bg-secondary);
+            border-radius: 8px;
+            margin-bottom: 1rem;
+        }
+
+        .result-value {
+            font-size: 2rem;
+            font-weight: 700;
+            color: var(--accent-primary);
+            margin-bottom: 0.5rem;
+        }
+
+        .result-label {
+            font-size: 0.9rem;
+            color: var(--text-secondary);
+        }
+
+        .metrics-row {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 0.75rem;
+            margin-bottom: 1rem;
+        }
+
+        .metric-item {
+            background: var(--bg-secondary);
+            padding: 0.5rem 0.75rem;
+            border-radius: 6px;
+            font-size: 0.8rem;
+            display: flex;
+            align-items: center;
+            gap: 0.25rem;
+        }
+
+        /* Calculation steps */
+        .calculation-steps {
+            background: var(--bg-secondary);
+            border-radius: 8px;
+            padding: 1rem;
+            margin-top: 1rem;
+        }
+
+        .calculation-section {
+            border-top: 1px solid var(--border-color);
+            padding-top: 1rem;
+            margin-top: 1rem;
+        }
+
+        /* Toast notifications */
+        .toast-container {
+            position: fixed;
+            top: 1rem;
+            right: 1rem;
+            z-index: 1000;
+            display: flex;
+            flex-direction: column;
+            gap: 0.5rem;
+            max-width: 400px;
+        }
+
+        .toast {
+            background: var(--bg-card);
+            border: 1px solid var(--border-color);
+            border-radius: 8px;
+            padding: 1rem;
+            box-shadow: var(--shadow-lg);
+            display: flex;
+            align-items: center;
+            gap: 0.75rem;
+            max-width: 100%;
+        }
+
+        .toast.show {
+            display: flex;
+        }
+
+        .toast.hide {
+            display: none;
+        }
+
+        .toast-content {
+            display: flex;
+            align-items: center;
+            gap: 0.75rem;
+            flex: 1;
+        }
+
+        .toast-icon {
+            font-size: 1.2rem;
+            flex-shrink: 0;
+        }
+
+        .toast-info {
+            flex: 1;
+            min-width: 0;
+        }
+
+        .toast-title {
+            font-weight: 600;
+            color: var(--text-primary);
+            margin-bottom: 0.25rem;
+            font-size: 0.9rem;
+        }
+
+        .toast-message {
+            color: var(--text-secondary);
+            font-size: 0.8rem;
+            word-wrap: break-word;
+        }
+
+        .toast-close {
+            background: none;
+            border: none;
+            color: var(--text-secondary);
+            cursor: pointer;
+            font-size: 1.2rem;
+            padding: 0.25rem;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            border-radius: 4px;
+            flex-shrink: 0;
+        }
+
+        .toast-close:hover {
+            background: var(--bg-secondary);
+            color: var(--text-primary);
+        }
+
+        /* Alert Modal - Simplified message style */
+        .modal {
+            position: fixed;
+            top: 2rem;
+            right: 2rem;
+            z-index: 1000;
+            max-width: 350px;
+            background: var(--bg-card);
+            border: 1px solid var(--border-color);
+            border-radius: 8px;
+            padding: 1rem;
+            box-shadow: var(--shadow-md);
+            display: none;
+        }
+
+        .modal-content {
+            padding: 0;
+            max-width: none;
+            width: auto;
+            box-shadow: none;
+            background: transparent;
+            text-align: left;
+        }
+
+        .modal-header {
+            display: flex;
+            align-items: center;
+            gap: 0.75rem;
+            margin-bottom: 0.5rem;
+        }
+
+        .modal-icon {
+            font-size: 1.25rem;
+            margin-bottom: 0;
+            flex-shrink: 0;
+        }
+
+        #alert-title {
+            margin: 0;
+            font-size: 0.9rem;
+            font-weight: 600;
+            flex: 1;
+        }
+
+        #alert-message {
+            margin: 0 0 1rem 0;
+            font-size: 0.8rem;
+            line-height: 1.4;
+        }
+
+        /* Modal responsive styles */
+        @media (max-width: 768px) {
+            .modal {
+                top: 1rem;
+                right: 1rem;
+                left: 1rem;
+                max-width: none;
+            }
+        }
+
+        /* Utilities */
+        .hidden {
+            display: none !important;
+        }
+
+        .text-sm {
+            font-size: 0.8rem;
+        }
+
+        .text-secondary {
+            color: var(--text-secondary);
+        }
+
+        .w-full {
+            width: 100%;
+        }
+
+        
+        /* Responsive design */
+        @media (max-width: 768px) {
+            .container {
+                padding: 0 0.25rem;
+            }
+
+            .card {
+                padding: 1rem;
+            }
+
+            .btn-group {
+                flex-direction: column;
+            }
+
+            .btn-group .btn {
+                min-width: auto;
+            }
+
+            .model-source-selector {
+                flex-direction: column;
+                gap: 0.5rem;
+            }
+
+            .metrics-row {
+                flex-direction: column;
+                gap: 0.5rem;
+            }
+
+            .toast-container {
+                top: 0.5rem;
+                right: 0.5rem;
+                left: 0.5rem;
+                max-width: none;
+            }
+
+            .modal-content {
+                margin: 0.5rem;
+            }
+        }
+
+        @media (max-width: 480px) {
+            .card {
+                padding: 0.75rem;
+            }
+
+            .btn {
+                padding: 0.625rem 1rem;
+                font-size: 0.8rem;
+            }
+
+            .form-select,
+            .form-input {
+                padding: 0.625rem 0.875rem;
+                font-size: 0.8rem;
+            }
+        }
+
+        
+        /* Focus visible for accessibility */
+        .btn:focus-visible,
+        .form-select:focus-visible,
+        .form-input:focus-visible {
+            outline: 2px solid var(--accent-primary);
+            outline-offset: 2px;
+        }
+    </style>
+
+    <!-- Main Content -->
+    <main class="container">
+        <div class="main-content">
+            <!-- Input Panel -->
+            <section class="card">
+                <h2 class="section-title">
+                    <span>⚙️</span>
+                    <span>Configuration</span>
+                </h2>
+
+                <div class="form-group">
+                    <label class="form-label">Model Source</label>
+                    <div class="model-source-selector">
+                        <div class="model-source-option active" id="preset-option" onclick="setModelSource('preset')">Preset Models</div>
+                        <div class="model-source-option" id="upload-option" onclick="setModelSource('upload')">Upload Config</div>
+                        <div class="model-source-option" id="custom-option" onclick="setModelSource('custom')">Custom Model</div>
+                    </div>
+                </div>
+
+                <!-- Preset Models -->
+                <div id="preset-model-section" class="form-group">
+                    <label class="form-label">Select Model</label>
+                    <select id="preset-model-select" class="form-select">
+                        <option value="">Loading models...</option>
+                    </select>
+                </div>
+
+                <!-- Upload Configuration File -->
+                <div id="upload-config-section" class="form-group hidden">
+                    <label class="form-label">Upload Configuration File</label>
+                    <div class="file-upload-container">
+                        <input type="file" id="config-file-input" accept=".json" style="display: none;" onchange="handleConfigFileUpload(event)">
+                        <label for="config-file-input" class="file-upload-label">
+                            <div class="file-upload-icon" style="font-size: 1.2rem;">📁</div>
+                            <div class="file-upload-text">
+                                <div class="file-upload-title" style="font-size: 0.8rem; margin: 0;">Click to upload JSON file</div>
+                            </div>
+                        </label>
+                    </div>
+                    <div id="upload-status" class="upload-status hidden"></div>
+
+                    <!-- Uploaded Models Selection -->
+                    <div id="uploaded-models-section" class="form-group hidden" style="margin-top: 1.5rem;">
+                        <label class="form-label">Select Uploaded Model</label>
+                        <select id="uploaded-model-select" class="form-select">
+                            <option value="">No models uploaded yet</option>
+                        </select>
+                    </div>
+                </div>
+
+                <!-- Custom Model URL -->
+                <div id="custom-model-section" class="form-group hidden">
+                    <label class="form-label">Model URL</label>
+                    <input type="url" id="model-url" class="form-input" placeholder="">
+                </div>
+
+                <!-- Data Type -->
+                <div class="form-group">
+                    <label class="form-label">Data Type</label>
+                    <select id="dtype-select" class="form-select">
+                        <option value="float16">float16 (2 bytes)</option>
+                        <option value="bfloat16">bfloat16 (2 bytes)</option>
+                        <option value="float32">float32 (4 bytes)</option>
+                        <option value="int8">int8 (1 byte)</option>
+                    </select>
+                </div>
+
+                <!-- Input Parameters Row 1 -->
+                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 0.75rem; margin-bottom: 0.75rem;">
+                    <!-- Number of Tokens -->
+                    <div class="form-group">
+                        <label class="form-label">Number of Tokens</label>
+                        <input type="number" id="token-input" class="form-input" value="4096" min="1">
+                    </div>
+
+                    <!-- Batch Size -->
+                    <div class="form-group">
+                        <label class="form-label">Batch Size</label>
+                        <input type="number" id="batch-size" class="form-input" value="1" min="1">
+                    </div>
+                </div>
+
+                <!-- Input Parameters Row 2 -->
+                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 0.75rem; margin-bottom: 0.75rem;">
+                    <!-- Tensor Parallelism -->
+                    <div class="form-group">
+                        <label class="form-label">Tensor Parallelism (TP)</label>
+                        <input type="number" id="tp" class="form-input" value="1" min="1">
+                    </div>
+
+                    <!-- Data Parallelism -->
+                    <div class="form-group">
+                        <label class="form-label">Data Parallelism (DP)</label>
+                        <input type="number" id="dp" class="form-input" value="1" min="1">
+                    </div>
+                </div>
+
+                <!-- Calculate Button -->
+                <div class="btn-group">
+                    <button onclick="calculateKVCache()" class="btn btn-primary">
+                        <span>Calculate KV Cache</span>
+                    </button>
+                </div>
+
+                <!-- Max Tokens Calculator Section -->
+                <div class="calculation-section" style="margin-top: 1.5rem; padding-top: 1rem; border-top: 1px solid var(--border-color);">
+                    <h4 style="margin: 0 0 1rem 0; font-size: 1rem; color: var(--text-primary);">
+                        <span>Maximum Tokens Calculator</span>
+                    </h4>
+
+                    <!-- GPU Memory -->
+                    <div class="form-group">
+                        <label class="form-label">GPU Memory (GB)</label>
+                        <input type="number" id="gpu-memory-input" class="form-input" value="24" min="0.1" step="0.1">
+                        <div class="text-sm text-secondary mt-1">Optional: Calculate max tokens for given GPU memory</div>
+                    </div>
+
+                    <!-- Calculate Max Tokens Button -->
+                    <div class="btn-group">
+                        <button onclick="calculateMaxTokens()" class="btn btn-secondary" style="background: #5191ee;">
+                            <span>Calculate Max Tokens</span>
+                        </button>
+                    </div>
+                </div>
+
+              </section>
+
+            <!-- Results Panel -->
+            <section class="card">
+                <h2 class="section-title">
+                    <span>📊</span>
+                    <span>Results</span>
+                </h2>
+
+                <div id="results-container">
+                    <div class="text-center" style="padding: 3rem 0;">
+                        <div style="font-size: 4rem; margin-bottom: 1rem;">📊</div>
+                        <div class="subtitle">Configure your model and click calculate to see results.</div>
+                    </div>
+                </div>
+
+                <!-- Calculation Details (Initially Hidden) -->
+                <div id="calculation-details" class="hidden">
+                    <h3 class="section-title" style="margin-top: 2rem;">
+                        <span>📝</span>
+                        <span>Calculation Details</span>
+                    </h3>
+                    <div id="calculation-steps" class="calculation-steps">
+                        <!-- Steps will be inserted here -->
+                    </div>
+                </div>
+            </section>
+        </div>
+    </main>
+
+    <!-- Toast Container -->
+    <div id="toast-container" class="toast-container"></div>
+
+    <!-- Alert Modal - Simplified Message Style -->
+    <div id="alert-modal" class="modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <div id="alert-icon" class="modal-icon"></div>
+                <h3 id="alert-title"></h3>
+            </div>
+            <p id="alert-message"></p>
+        </div>
+    </div>
+
+    <!-- KV Cache Calculator JavaScript -->
+    <script>
+        // English-only translations (removed Chinese translations)
+        const translations = {
+            en: {
+                'title': 'KV Cache Size Calculator',
+                'subtitle': 'Calculate KV cache size for large language models',
+                'input-panel': 'Configuration',
+                'model-source': 'Model Source',
+                'preset-models': 'Preset Models',
+                'upload-config': 'Upload Config',
+                'custom-model': 'Custom Model',
+                'select-model': 'Select Model',
+                'select-uploaded-model': 'Select Uploaded Model',
+                'no-models-uploaded': 'No models uploaded yet',
+                'loading': 'Loading models...',
+                'upload-file': 'Upload Configuration File',
+                'click-to-upload': 'Click to upload or drag and drop',
+                'json-files-only': 'JSON files only (modelconfig.json)',
+                'model-url': 'Model URL',
+                'data-type': 'Data Type',
+                'token-count': 'Number of Tokens',
+                'batch-size': 'Batch Size',
+                'tp': 'Tensor Parallelism (TP)',
+                'dp': 'Data Parallelism (DP)',
+                'gpu-memory': 'GPU Memory (GB)',
+                'gpu-memory-hint': 'Optional: Calculate max tokens for given GPU memory',
+                'calculate': 'Calculate KV Cache',
+                'max-tokens-calculator': 'Maximum Tokens Calculator',
+                'calculate-max-tokens': 'Calculate Max Tokens',
+                  'results': 'Results',
+                'no-results': 'Configure your model and click calculate to see results.',
+                'calculation-details': 'Calculation Details',
+                'footer': 'KV Cache Calculator',
+                'close': 'Close',
+                'error': 'Error',
+                'success': 'Success',
+                'warning': 'Warning',
+                'invalid-tokens': 'Please enter a valid number of tokens.',
+                'model-not-found': 'Model configuration not found. Using preset models.',
+                'calculation-success': 'KV cache size calculated successfully!',
+                'no-model-selected': 'Please select a model first',
+                'model-url-invalid': 'Please enter a valid model URL.',
+                'fetch-error': 'Failed to fetch model configuration. Please check the URL and try again.',
+                'config-load-failed': 'Failed to load model configurations from file. Using embedded models.',
+                'file-upload-success': 'Configuration file loaded successfully!',
+                'file-upload-error': 'Failed to load configuration file. Please check the file format.',
+                'invalid-json-format': 'Invalid JSON format. Please upload a valid modelconfig.json file.',
+                'no-models-found': 'No models found in the uploaded configuration file.',
+                'calculating': 'Calculating...'
+            }
+        };
+
+        let currentLanguage = 'en'; // Always English
+        let modelConfigs = {};
+        let currentModelSource = 'preset';
+        let uploadedModelConfigs = {}; // Store uploaded configurations separately
+
+        // Initialize
+        window.onload = function() {
+            loadModelConfigs();
+            initializeEventListeners();
+            initializeDragAndDrop();
+        };
+
+        // Model Source Management
+        function setModelSource(source) {
+            currentModelSource = source;
+            console.log('Setting model source to:', source);
+
+            // Update selector state
+            const presetOption = document.getElementById('preset-option');
+            const uploadOption = document.getElementById('upload-option');
+            const customOption = document.getElementById('custom-option');
+
+            // Reset all options
+            presetOption.classList.remove('active');
+            uploadOption.classList.remove('active');
+            customOption.classList.remove('active');
+
+            // Hide all sections
+            document.getElementById('preset-model-section').classList.add('hidden');
+            document.getElementById('upload-config-section').classList.add('hidden');
+            document.getElementById('custom-model-section').classList.add('hidden');
+
+            // Activate selected option and show corresponding section
+            switch(source) {
+                case 'custom':
+                    customOption.classList.add('active');
+                    document.getElementById('custom-model-section').classList.remove('hidden');
+                    break;
+                case 'upload':
+                    uploadOption.classList.add('active');
+                    document.getElementById('upload-config-section').classList.remove('hidden');
+                    // Update uploaded models dropdown (it handles empty state automatically)
+                    updateUploadedModelDropdown();
+                    break;
+                default: // preset
+                    presetOption.classList.add('active');
+                    document.getElementById('preset-model-section').classList.remove('hidden');
+                    // Repopulate with preset models
+                    populateModelDropdown();
+                    break;
+            }
+        }
+
+        // File Upload Handler
+        function handleConfigFileUpload(event) {
+            const file = event.target.files[0];
+            if (!file) return;
+
+            if (!file.name.toLowerCase().endsWith('.json')) {
+                showUploadStatus('error', translations[currentLanguage]['file-upload-error'], translations[currentLanguage]['json-files-only']);
+                return;
+            }
+
+            const reader = new FileReader();
+            reader.onload = function(e) {
+                try {
+                    const configData = JSON.parse(e.target.result);
+
+                    if (!configData || typeof configData !== 'object') {
+                        throw new Error('Invalid JSON structure');
+                    }
+
+                    const modelCount = Object.keys(configData).length;
+                    if (modelCount === 0) {
+                        throw new Error('No models found');
+                    }
+
+                    // Store uploaded configurations
+                    uploadedModelConfigs = configData;
+
+                    // Update the uploaded model dropdown
+                    updateUploadedModelDropdown();
+
+                    // Show success message in top-right alert
+                    showAlert('success', translations[currentLanguage]['file-upload-success'],
+                              `${modelCount} models loaded from ${file.name}`);
+
+                } catch (error) {
+                    console.error('Error parsing uploaded file:', error);
+                    showUploadStatus('error', translations[currentLanguage]['invalid-json-format'], error.message);
+                }
+            };
+
+            reader.onerror = function() {
+                showUploadStatus('error', translations[currentLanguage]['file-upload-error'], 'Failed to read file');
+            };
+
+            reader.readAsText(file);
+        }
+
+        // Update Uploaded Model Dropdown
+        function updateUploadedModelDropdown() {
+            const uploadedModelSelect = document.getElementById('uploaded-model-select');
+            const uploadedModelsSection = document.getElementById('uploaded-models-section');
+
+            uploadedModelSelect.innerHTML = '';
+
+            const sortedModelNames = Object.keys(uploadedModelConfigs).sort((a, b) => a.localeCompare(b, undefined, { numeric: true, sensitivity: 'base' }));
+
+            console.log('Updating uploaded model dropdown:', uploadedModelConfigs);
+            console.log('Available uploaded models:', sortedModelNames);
+
+            if (sortedModelNames.length === 0) {
+                const option = document.createElement('option');
+                option.value = "";
+                option.textContent = translations[currentLanguage]['no-models-uploaded'];
+                uploadedModelSelect.appendChild(option);
+                uploadedModelsSection.classList.add('hidden');
+                return;
+            }
+
+            uploadedModelsSection.classList.remove('hidden');
+
+            sortedModelNames.forEach(modelName => {
+                const option = document.createElement('option');
+                option.value = modelName;
+                option.textContent = modelName;
+                uploadedModelSelect.appendChild(option);
+            });
+
+            // Select the first model by default
+            if (sortedModelNames.length > 0) {
+                uploadedModelSelect.value = sortedModelNames[0];
+            }
+        }
+
+        // Show Upload Status
+        function showUploadStatus(type, title, message) {
+            const statusDiv = document.getElementById('upload-status');
+            statusDiv.className = `upload-status ${type}`;
+            statusDiv.innerHTML = `
+                <div class="file-info">${title}</div>
+                <div class="model-count">${message}</div>
+            `;
+            statusDiv.classList.remove('hidden');
+
+            // Auto-hide success messages after 4 seconds
+            if (type === 'success') {
+                setTimeout(() => {
+                    statusDiv.classList.add('hidden');
+                }, 4000);
+            }
+        }
+
+        // Initialize Drag and Drop
+        function initializeDragAndDrop() {
+            const uploadLabel = document.querySelector('.file-upload-label');
+            const fileInput = document.getElementById('config-file-input');
+
+            ['dragenter', 'dragover', 'dragleave', 'drop'].forEach(eventName => {
+                uploadLabel.addEventListener(eventName, preventDefaults, false);
+            });
+
+            ['dragenter', 'dragover'].forEach(eventName => {
+                uploadLabel.addEventListener(eventName, () => {
+                    uploadLabel.classList.add('dragover');
+                }, false);
+            });
+
+            ['dragleave', 'drop'].forEach(eventName => {
+                uploadLabel.addEventListener(eventName, () => {
+                    uploadLabel.classList.remove('dragover');
+                }, false);
+            });
+
+            uploadLabel.addEventListener('drop', (e) => {
+                const files = e.dataTransfer.files;
+                if (files.length > 0) {
+                    fileInput.files = files;
+                    handleConfigFileUpload({ target: fileInput });
+                }
+            }, false);
+        }
+
+        function preventDefaults(e) {
+            e.preventDefault();
+            e.stopPropagation();
+        }
+
+        // Load Model Configurations
+        async function loadModelConfigs() {
+            const url = 'https://raw.githubusercontent.com/LMCache/LMCache/refs/heads/dev/examples/kv_cache_calculator/modelconfig.json';
+            try {
+                const response = await fetch(url);
+                if (!response.ok) {
+                    throw new Error(`HTTP error! Status: ${response.status}`);
+                }
+                modelConfigs = await response.json();
+                console.log('Model configurations loaded successfully:', Object.keys(modelConfigs).length, 'models');
+                populateModelDropdown();
+            } catch (error) {
+                console.error('Failed to load model configurations:', error);
+                // Use embedded fallback configurations if loading fails
+                modelConfigs = getEmbeddedModelConfigs();
+                console.log('Using embedded fallback configurations:', Object.keys(modelConfigs).length, 'models');
+                populateModelDropdown();
+                showAlert('warning', translations[currentLanguage]['warning'],
+                         translations[currentLanguage]['config-load-failed']);
+            }
+        }
+
+        // Embedded fallback model configurations (synced with modelconfig.json)
+        function getEmbeddedModelConfigs() {
+            return {
+                "meta-llama/Llama-3.1-8B-Instruct": {
+                    "hidden_size": 4096,
+                    "num_attention_heads": 32,
+                    "num_hidden_layers": 32,
+                    "num_key_value_heads": 8
+                },
+                "meta-llama/Llama-3.1-70B-Instruct": {
+                    "hidden_size": 8192,
+                    "num_attention_heads": 64,
+                    "num_hidden_layers": 80,
+                    "num_key_value_heads": 8
+                },
+                "mistralai/Mistral-7B-Instruct-v0.2": {
+                    "hidden_size": 4096,
+                    "num_attention_heads": 32,
+                    "num_hidden_layers": 32,
+                    "num_key_value_heads": 8
+                },
+                "mistralai/Mistral-Large-Instruct-2407": {
+                    "hidden_size": 12288,
+                    "num_attention_heads": 96,
+                    "num_hidden_layers": 88,
+                    "num_key_value_heads": 8
+                },
+                "lmsys/longchat-7b-16k": {
+                    "hidden_size": 4096,
+                    "num_attention_heads": 32,
+                    "num_hidden_layers": 32,
+                    "num_key_value_heads": 32
+                },
+                "Sao10K/L3-8B-Lunaris-v1": {
+                    "hidden_size": 4096,
+                    "num_attention_heads": 32,
+                    "num_hidden_layers": 32,
+                    "num_key_value_heads": 8
+                },
+                "meta-llama/Llama-3.2-3B-Instruct": {
+                    "hidden_size": 3072,
+                    "num_attention_heads": 24,
+                    "num_hidden_layers": 28,
+                    "num_key_value_heads": 8
+                },
+                "deepseek-ai/DeepSeek-V3": {
+                    "hidden_size": 7168,
+                    "num_attention_heads": 128,
+                    "num_hidden_layers": 61,
+                    "num_key_value_heads": 128,
+                    "kv_lora_rank": 512,
+                    "qk_rope_head_dim": 64
+                },
+                "deepseek-ai/DeepSeek-R1": {
+                    "hidden_size": 7168,
+                    "num_attention_heads": 128,
+                    "num_hidden_layers": 61,
+                    "num_key_value_heads": 128,
+                    "kv_lora_rank": 512,
+                    "qk_rope_head_dim": 64
+                },
+                "DeepSeek-R1": {
+                    "hidden_size": 7168,
+                    "num_attention_heads": 128,
+                    "num_hidden_layers": 61,
+                    "num_key_value_heads": 128,
+                    "kv_lora_rank": 512,
+                    "qk_rope_head_dim": 64
+                },
+                "deepseek-ai/DeepSeek-R1-distill-Qwen-32B": {
+                    "hidden_size": 5120,
+                    "num_attention_heads": 40,
+                    "num_hidden_layers": 64,
+                    "num_key_value_heads": 8,
+                    "kv_lora_rank": 512,
+                    "qk_rope_head_dim": 64
+                },
+                "meta-llama/Llama-3.1-405B": {
+                    "hidden_size": 16384,
+                    "num_attention_heads": 128,
+                    "num_hidden_layers": 126,
+                    "num_key_value_heads": 8
+                },
+                "meta-llama/Llama-3.2-1B-Instruct": {
+                    "hidden_size": 2048,
+                    "num_attention_heads": 32,
+                    "num_hidden_layers": 16,
+                    "num_key_value_heads": 8
+                },
+                "Qwen/Qwen3-32B": {
+                    "hidden_size": 5120,
+                    "num_attention_heads": 64,
+                    "num_hidden_layers": 64,
+                    "num_key_value_heads": 8,
+                    "head_dim": 128
+                },
+                "Qwen/Qwen3-14B": {
+                    "hidden_size": 5120,
+                    "num_attention_heads": 40,
+                    "num_hidden_layers": 40,
+                    "num_key_value_heads": 8,
+                    "head_dim": 128
+                },
+                "Qwen/Qwen3-8B": {
+                    "hidden_size": 4096,
+                    "num_attention_heads": 32,
+                    "num_hidden_layers": 36,
+                    "num_key_value_heads": 8,
+                    "head_dim": 128
+                },
+                "Qwen/Qwen3-4B": {
+                    "hidden_size": 2560,
+                    "num_attention_heads": 32,
+                    "num_hidden_layers": 36,
+                    "num_key_value_heads": 8,
+                    "head_dim": 128
+                },
+                "Qwen/Qwen3-0.6B": {
+                    "hidden_size": 1024,
+                    "num_attention_heads": 16,
+                    "num_hidden_layers": 28,
+                    "num_key_value_heads": 8,
+                    "head_dim": 128
+                },
+                "Qwen/Qwen2.5-7B-Instruct": {
+                    "hidden_size": 3584,
+                    "num_attention_heads": 28,
+                    "num_hidden_layers": 28,
+                    "num_key_value_heads": 4
+                },
+                "Qwen/Qwen2.5-3B-Instruct": {
+                    "hidden_size": 2048,
+                    "num_attention_heads": 16,
+                    "num_hidden_layers": 36,
+                    "num_key_value_heads": 2
+                },
+                "Qwen/Qwen2.5-0.5B": {
+                    "hidden_size": 896,
+                    "num_attention_heads": 14,
+                    "num_hidden_layers": 24,
+                    "num_key_value_heads": 2
+                },
+                "Qwen/Qwen-7B": {
+                    "hidden_size": 4096,
+                    "num_attention_heads": 32,
+                    "num_hidden_layers": 32,
+                    "num_key_value_heads": 32
+                }
+            };
+        }
+
+        // Populate Preset Model Dropdown
+        function populateModelDropdown() {
+            const presetModelSelect = document.getElementById('preset-model-select');
+            presetModelSelect.innerHTML = '';
+
+            const sortedModelNames = Object.keys(modelConfigs).sort((a, b) => a.localeCompare(b, undefined, { numeric: true, sensitivity: 'base' }));
+
+            console.log('Populating preset model dropdown:', sortedModelNames);
+
+            sortedModelNames.forEach(modelName => {
+                const option = document.createElement('option');
+                option.value = modelName;
+                option.textContent = modelName;
+                presetModelSelect.appendChild(option);
+            });
+
+            // Select the first model by default
+            if (sortedModelNames.length > 0) {
+                presetModelSelect.value = sortedModelNames[0];
+            }
+        }
+
+        // Fetch Model Configuration from URL
+        async function fetchModelConfigFromUrl(url) {
+            try {
+                // Parse URL to determine platform and extract model identifier
+                const urlObj = new URL(url);
+                let modelIdentifier;
+
+                if (urlObj.hostname.includes('huggingface.co')) {
+                    // Extract model path from Hugging Face URL
+                    const pathParts = urlObj.pathname.split('/').filter(part => part);
+                    if (pathParts.length >= 2) {
+                        modelIdentifier = pathParts.slice(0, 2).join('/');
+                    }
+                } else if (urlObj.hostname.includes('modelscope.cn')) {
+                    // Extract model path from ModelScope URL
+                    const pathParts = urlObj.pathname.split('/').filter(part => part);
+                    if (pathParts.length >= 3 && pathParts[0] === 'models') {
+                        modelIdentifier = pathParts.slice(1, 3).join('/');
+                    }
+                }
+
+                if (!modelIdentifier) {
+                    throw new Error(translations[currentLanguage]['model-url-invalid']);
+                }
+
+                // Try to fetch from online APIs with CORS proxy fallbacks
+                let configData = null;
+
+                // Try direct fetch first (might work in some environments)
+                try {
+                    if (urlObj.hostname.includes('huggingface.co')) {
+                        const apiUrl = `https://huggingface.co/${modelIdentifier}/resolve/main/config.json`;
+                        const response = await fetch(apiUrl);
+                        if (response.ok) {
+                            configData = await response.json();
+                        }
+                    } else if (urlObj.hostname.includes('modelscope.cn')) {
+                        const apiUrl = `https://modelscope.cn/api/v1/models/${modelIdentifier}/repo?Revision=master&FilePath=config.json`;
+                        const response = await fetch(apiUrl);
+                        if (response.ok) {
+                            configData = await response.json();
+                        }
+                    }
+                } catch (directError) {
+                    console.warn('Direct fetch failed, trying fallback methods:', directError.message);
+                }
+
+                // If direct fetch failed, try CORS proxy
+                if (!configData) {
+                    try {
+                        let proxyUrl;
+                        if (urlObj.hostname.includes('huggingface.co')) {
+                            proxyUrl = `https://corsproxy.io/?https://huggingface.co/${modelIdentifier}/resolve/main/config.json`;
+                        } else if (urlObj.hostname.includes('modelscope.cn')) {
+                            proxyUrl = `https://corsproxy.io/?https://modelscope.cn/api/v1/models/${modelIdentifier}/repo?Revision=master&FilePath=config.json`;
+                        }
+
+                        if (proxyUrl) {
+                            const response = await fetch(proxyUrl);
+                            if (response.ok) {
+                                configData = await response.json();
+                            }
+                        }
+                    } catch (proxyError) {
+                        console.warn('CORS proxy fetch failed:', proxyError.message);
+                    }
+                }
+
+                // If all online methods fail, check if we have this model in our local configs
+                if (!configData && modelConfigs[modelIdentifier]) {
+                    console.log('Using local configuration for model:', modelIdentifier);
+                    return modelConfigs[modelIdentifier];
+                }
+
+                // If still no config, return a fallback based on common patterns
+                if (!configData) {
+                    console.warn('All fetch methods failed, generating fallback config');
+                    // Generate a reasonable fallback config based on model name patterns
+                    return generateFallbackConfig(modelIdentifier);
+                }
+
+                // Transform to our format
+                const transformedConfig = {
+                    hidden_size: configData.hidden_size,
+                    num_attention_heads: configData.num_attention_heads,
+                    num_hidden_layers: configData.num_hidden_layers,
+                    num_key_value_heads: configData.num_key_value_heads,
+                    kv_lora_rank: configData.kv_lora_rank,
+                    qk_rope_head_dim: configData.qk_rope_head_dim,
+                    head_dim: configData.head_dim
+                };
+
+                return transformedConfig;
+
+            } catch (error) {
+                throw error;
+            }
+        }
+
+        // Generate fallback configuration based on model name patterns
+        function generateFallbackConfig(modelIdentifier) {
+            const fallbackConfigs = {
+                // Llama models
+                'meta-llama/Llama-3.1-8B-Instruct': {
+                    hidden_size: 4096,
+                    num_attention_heads: 32,
+                    num_hidden_layers: 32,
+                    num_key_value_heads: 8
+                },
+                'meta-llama/Llama-3.1-70B-Instruct': {
+                    hidden_size: 8192,
+                    num_attention_heads: 64,
+                    num_hidden_layers: 80,
+                    num_key_value_heads: 8
+                },
+                // Mistral models
+                'mistralai/Mistral-7B-Instruct-v0.2': {
+                    hidden_size: 4096,
+                    num_attention_heads: 32,
+                    num_hidden_layers: 32,
+                    num_key_value_heads: 8
+                },
+                // DeepSeek models
+                'deepseek-ai/DeepSeek-V3': {
+                    hidden_size: 7168,
+                    num_attention_heads: 128,
+                    num_hidden_layers: 61,
+                    num_key_value_heads: 128,
+                    kv_lora_rank: 512,
+                    qk_rope_head_dim: 64
+                },
+                'DeepSeek-R1': {
+                    hidden_size: 7168,
+                    num_attention_heads: 128,
+                    num_hidden_layers: 61,
+                    num_key_value_heads: 128,
+                    kv_lora_rank: 512,
+                    qk_rope_head_dim: 64
+                },
+                'deepseek-ai/DeepSeek-R1': {
+                    hidden_size: 7168,
+                    num_attention_heads: 128,
+                    num_hidden_layers: 61,
+                    num_key_value_heads: 128,
+                    kv_lora_rank: 512,
+                    qk_rope_head_dim: 64
+                },
+                'deepseek-ai/DeepSeek-R1-distill-Qwen-32B': {
+                    hidden_size: 5120,
+                    num_attention_heads: 40,
+                    num_hidden_layers: 64,
+                    num_key_value_heads: 8,
+                    kv_lora_rank: 512,
+                    qk_rope_head_dim: 64
+                },
+                // Qwen models
+                'Qwen/Qwen2.5-7B-Instruct': {
+                    hidden_size: 3584,
+                    num_attention_heads: 28,
+                    num_hidden_layers: 28,
+                    num_key_value_heads: 4
+                }
+            };
+
+            // Check for exact match first
+            if (fallbackConfigs[modelIdentifier]) {
+                return fallbackConfigs[modelIdentifier];
+            }
+
+            // Check for partial matches and patterns
+            if (modelIdentifier.includes('Llama-3.1-8B')) return fallbackConfigs['meta-llama/Llama-3.1-8B-Instruct'];
+            if (modelIdentifier.includes('Llama-3.1-70B')) return fallbackConfigs['meta-llama/Llama-3.1-70B-Instruct'];
+            if (modelIdentifier.includes('Mistral-7B')) return fallbackConfigs['mistralai/Mistral-7B-Instruct-v0.2'];
+            if (modelIdentifier.includes('DeepSeek-V3') || modelIdentifier.includes('DeepSeekV3')) return fallbackConfigs['deepseek-ai/DeepSeek-V3'];
+            if (modelIdentifier.includes('DeepSeek-R1') || modelIdentifier.includes('DeepSeekR1') || modelIdentifier.includes('DeepSeek_R1') ||
+                modelIdentifier.includes('DeepSeek-R1-distill')) return fallbackConfigs['deepseek-ai/DeepSeek-R1'];
+            if (modelIdentifier.includes('Qwen2.5-7B')) return fallbackConfigs['Qwen/Qwen2.5-7B-Instruct'];
+
+            // Generic fallback based on model size patterns
+            if (modelIdentifier.includes('8B') || modelIdentifier.includes('8b')) {
+                return {
+                    hidden_size: 4096,
+                    num_attention_heads: 32,
+                    num_hidden_layers: 32,
+                    num_key_value_heads: 8
+                };
+            }
+            if (modelIdentifier.includes('70B') || modelIdentifier.includes('70b')) {
+                return {
+                    hidden_size: 8192,
+                    num_attention_heads: 64,
+                    num_hidden_layers: 80,
+                    num_key_value_heads: 8
+                };
+            }
+
+            // Default generic config
+            return {
+                hidden_size: 4096,
+                num_attention_heads: 32,
+                num_hidden_layers: 32,
+                num_key_value_heads: 8
+            };
+        }
+
+        // Calculate KV Cache Size
+        async function calculateKVCache() {
+            // Get and validate token input
+            const tokenInput = document.getElementById('token-input').value.trim();
+            const tokens = parseInt(tokenInput);
+            const dtype = document.getElementById('dtype-select').value;
+
+            // Validate input
+            if (!tokenInput) {
+                showAlert('error', translations[currentLanguage]['error'], translations[currentLanguage]['invalid-tokens'] + ' (Please enter token count)');
+                return;
+            }
+
+            if (isNaN(tokens) || tokens <= 0) {
+                showAlert('error', translations[currentLanguage]['error'], translations[currentLanguage]['invalid-tokens'] + ' (Please enter a valid number)');
+                return;
+            }
+
+            if (tokens > 1000000) {
+                showAlert('warning', translations[currentLanguage]['warning'], 'Large token count detected, calculation may take some time');
+            }
+
+            let config;
+            let modelName;
+            let hasError = false;
+
+            // Show loading state
+            const calculateBtn = document.querySelector('button[onclick="calculateKVCache()"]');
+            const originalText = calculateBtn.innerHTML;
+            calculateBtn.innerHTML = '<span>⏳</span> <span>Calculating...</span>';
+            calculateBtn.disabled = true;
+
+            try {
+                console.log('Current model source:', currentModelSource);
+
+                if (currentModelSource === 'preset') {
+                    const presetSelect = document.getElementById('preset-model-select');
+                    modelName = presetSelect.value;
+                    console.log('Selected preset model:', modelName);
+                    if (!modelName || !modelConfigs[modelName]) {
+                        console.log('Preset model not found:', modelName);
+                        showAlert('error', translations[currentLanguage]['error'], translations[currentLanguage]['model-not-found']);
+                        hasError = true;
+                        throw new Error('Model not found');
+                    }
+                    config = modelConfigs[modelName];
+                    console.log('Using preset config for:', modelName);
+                } else if (currentModelSource === 'upload') {
+                    const uploadSelect = document.getElementById('uploaded-model-select');
+                    modelName = uploadSelect.value;
+                    console.log('Selected uploaded model:', modelName);
+                    console.log('Available uploaded models:', Object.keys(uploadedModelConfigs));
+                    if (!modelName || !uploadedModelConfigs[modelName]) {
+                        console.log('Uploaded model not found:', modelName);
+                        showAlert('error', translations[currentLanguage]['error'], translations[currentLanguage]['model-not-found']);
+                        hasError = true;
+                        throw new Error('Model not found');
+                    }
+                    config = uploadedModelConfigs[modelName];
+                    console.log('Using uploaded config for:', modelName);
+                } else {
+                    // Custom model URL
+                    const modelUrlInput = document.getElementById('model-url');
+                    const modelUrl = modelUrlInput.value.trim();
+                    if (!modelUrl) {
+                        showAlert('error', translations[currentLanguage]['error'], translations[currentLanguage]['model-url-invalid']);
+                        modelUrlInput.focus();
+                        hasError = true;
+                        throw new Error('Invalid model URL');
+                    }
+
+                    // Basic URL validation
+                    try {
+                        new URL(modelUrl);
+                    } catch (urlError) {
+                        showAlert('error', translations[currentLanguage]['error'], 'Please enter a valid URL');
+                        modelUrlInput.focus();
+                        hasError = true;
+                        throw new Error('Invalid URL');
+                    }
+
+                    try {
+                        config = await fetchModelConfigFromUrl(modelUrl);
+                        modelName = modelUrl;
+                    } catch (fetchError) {
+                        console.error('Fetch error:', fetchError);
+                        showAlert('error', translations[currentLanguage]['error'], translations[currentLanguage]['fetch-error'] + ': ' + fetchError.message);
+                        hasError = true;
+                        throw new Error('Fetch error');
+                    }
+                }
+
+                // Validate model config
+                if (!config || !config.hidden_size || !config.num_attention_heads || !config.num_hidden_layers) {
+                    showAlert('error', translations[currentLanguage]['error'], 'Model configuration is incomplete, please check model parameters');
+                    hasError = true;
+                    throw new Error('Incomplete model configuration');
+                }
+
+                // Perform calculation
+                const result = performCalculation(config, tokens, dtype, modelName);
+                displayResults(result);
+
+                showAlert('success', translations[currentLanguage]['success'], translations[currentLanguage]['calculation-success']);
+
+            } catch (error) {
+                if (!hasError) {
+                    console.error('Calculation error:', error);
+                    showAlert('error', translations[currentLanguage]['error'], error.message || 'An unknown error occurred during calculation');
+                }
+            } finally {
+                // Always restore button state
+                calculateBtn.innerHTML = originalText;
+                calculateBtn.disabled = false;
+
+                // Update translations for the button text
+                const calcText = document.querySelector('button[onclick="calculateKVCache()"] span:last-child');
+                if (calcText) calcText.textContent = translations[currentLanguage]['calculate'] || 'Calculate KV Cache';
+            }
+        }
+
+        // Calculate Maximum Tokens
+        async function calculateMaxTokens() {
+            // Get and validate GPU memory input
+            const gpuMemoryInput = document.getElementById('gpu-memory-input').value.trim();
+            const gpuMemoryGB = parseFloat(gpuMemoryInput);
+            const dtype = document.getElementById('dtype-select').value;
+
+            // Validate input
+            if (!gpuMemoryInput) {
+                showAlert('error', translations[currentLanguage]['error'], 'Please enter GPU memory size (GB)');
+                return;
+            }
+
+            if (isNaN(gpuMemoryGB) || gpuMemoryGB <= 0) {
+                showAlert('error', translations[currentLanguage]['error'], 'Please enter a valid GPU memory size in GB');
+                return;
+            }
+
+            if (gpuMemoryGB > 1000) {
+                showAlert('warning', translations[currentLanguage]['warning'], 'Large GPU memory size detected, please verify the input');
+            }
+
+            let config;
+            let modelName;
+
+            // Show loading state
+            const calculateBtn = document.querySelector('button[onclick="calculateMaxTokens()"]');
+            const originalText = calculateBtn.innerHTML;
+            calculateBtn.innerHTML = '<span>⏳</span> <span>Calculating...</span>';
+            calculateBtn.disabled = true;
+
+            try {
+                // Get model configuration (same logic as calculateKVCache)
+                if (currentModelSource === 'preset') {
+                    const presetSelect = document.getElementById('preset-model-select');
+                    modelName = presetSelect.value;
+                    if (!modelName || !modelConfigs[modelName]) {
+                        showAlert('error', translations[currentLanguage]['error'], translations[currentLanguage]['model-not-found']);
+                        return;
+                    }
+                    config = modelConfigs[modelName];
+                } else if (currentModelSource === 'upload') {
+                    const uploadSelect = document.getElementById('uploaded-model-select');
+                    modelName = uploadSelect.value;
+                    if (!modelName || !uploadedModelConfigs[modelName]) {
+                        showAlert('error', translations[currentLanguage]['error'], translations[currentLanguage]['model-not-found']);
+                        return;
+                    }
+                    config = uploadedModelConfigs[modelName];
+                } else {
+                    const modelUrlInput = document.getElementById('model-url');
+                    const modelUrl = modelUrlInput.value.trim();
+                    if (!modelUrl) {
+                        showAlert('error', translations[currentLanguage]['error'], translations[currentLanguage]['model-url-invalid']);
+                        modelUrlInput.focus();
+                        return;
+                    }
+
+                    // Basic URL validation
+                    try {
+                        new URL(modelUrl);
+                    } catch (urlError) {
+                        showAlert('error', translations[currentLanguage]['error'], 'Please enter a valid URL');
+                        modelUrlInput.focus();
+                        return;
+                    }
+
+                    try {
+                        config = await fetchModelConfigFromUrl(modelUrl);
+                        modelName = modelUrl;
+                    } catch (fetchError) {
+                        showAlert('error', translations[currentLanguage]['error'], translations[currentLanguage]['fetch-error'] + ': ' + fetchError.message);
+                        return;
+                    }
+                }
+
+                // Validate model config
+                if (!config || !config.hidden_size || !config.num_attention_heads || !config.num_hidden_layers) {
+                    showAlert('error', translations[currentLanguage]['error'], 'Model configuration is incomplete, please check model parameters');
+                    return;
+                }
+
+                // Calculate maximum tokens
+                const result = calculateMaxTokensForMemory(config, gpuMemoryGB, dtype, modelName);
+                displayMaxTokensResults(result);
+
+                showAlert('success', translations[currentLanguage]['success'], 'Maximum tokens calculated successfully!');
+
+            } catch (error) {
+                console.error('Max tokens calculation error:', error);
+                showAlert('error', translations[currentLanguage]['error'], error.message || 'An unknown error occurred during calculation');
+            } finally {
+                // Restore button state
+                calculateBtn.innerHTML = originalText;
+                calculateBtn.disabled = false;
+
+                // Update translations for the button text
+                const calcText = document.querySelector('button[onclick="calculateMaxTokens()"] span:last-child');
+                if (calcText) calcText.textContent = translations[currentLanguage]['calculate-max-tokens'] || 'Calculate Max Tokens';
+            }
+        }
+
+        // Calculate maximum tokens for given GPU memory
+        function calculateMaxTokensForMemory(config, gpuMemoryGB, dtype, modelName) {
+            let hidden_size, num_attention_heads, num_hidden_layers, num_key_value_heads;
+            let kv_lora_rank, qk_rope_head_dim; // for deepseek-ai/DeepSeek-V3
+            let head_size;
+
+            // Check for DeepSeek models (support different platforms)
+            const isDeepSeekModel = modelName.toLowerCase().includes("deepseek") &&
+                                   (modelName.toLowerCase().includes("deepseek-v3") ||
+                                    modelName.toLowerCase().includes("deepseek-r1") ||
+                                    modelName.toLowerCase().includes("deepseek_r1") ||
+                                    (modelName.toLowerCase().includes("deepseek") &&
+                                     config.kv_lora_rank && config.qk_rope_head_dim));
+
+            // Check for Qwen3 models (fuzzy matching)
+            const isQwen3Model = modelName.toLowerCase().includes("qwen/qwen3-");
+
+            if (isDeepSeekModel) {
+                ({ hidden_size, num_attention_heads, num_hidden_layers, num_key_value_heads, kv_lora_rank, qk_rope_head_dim } = config);
+            } else if (isQwen3Model) {
+                // The Qwen3 series use GQA, and `head_dim` needs to be read from config file.
+                ({ hidden_size, num_attention_heads, num_hidden_layers, num_key_value_heads, head_dim } = config);
+                console.log(config);
+            } else {
+                ({ hidden_size, num_attention_heads, num_hidden_layers, num_key_value_heads } = config);
+                head_size = hidden_size / num_attention_heads;
+            }
+
+            // Validate required fields
+            const requiredFields = ['hidden_size', 'num_attention_heads', 'num_hidden_layers'];
+            for (const field of requiredFields) {
+                if (!config[field]) {
+                    throw new Error(`Missing required field: ${field}`);
+                }
+            }
+
+            // Get additional parameters
+            const batchSize = parseInt(document.getElementById('batch-size').value) || 1;
+            const tp = parseInt(document.getElementById('tp').value) || 1;
+            const dp = parseInt(document.getElementById('dp').value) || 1;
+
+            // Data type sizes in bytes
+            const dtypeSizes = {
+                'float32': 4,
+                'float16': 2,
+                'bfloat16': 2,
+                'int8': 1
+            };
+
+            if (!dtypeSizes[dtype]) {
+                throw new Error(`Unsupported data type: ${dtype}`);
+            }
+
+            const dtypeSize = dtypeSizes[dtype];
+
+            // Calculate elements per token using model-specific formula
+            let elementsPerToken;
+            if (isDeepSeekModel) {
+                elementsPerToken = num_hidden_layers * batchSize * (kv_lora_rank + qk_rope_head_dim) / tp / dp;
+            } else if (isQwen3Model) {
+                elementsPerToken = 2 * num_hidden_layers * batchSize * num_key_value_heads * head_dim / tp / dp;
+            } else {
+                const kvHeads = num_key_value_heads || num_attention_heads;
+                elementsPerToken = 2 * batchSize * hidden_size * (kvHeads / num_attention_heads) * num_hidden_layers / tp / dp;
+            }
+
+            // Calculate model parameters (approximate)
+            const modelParams = num_hidden_layers * hidden_size * hidden_size * 3;
+            const modelSizeGB = (modelParams * dtypeSize * 2 / tp) / (1024 ** 3);
+
+            // Calculate maximum tokens
+            const totalMemoryBytes = gpuMemoryGB * (1024 ** 3);
+            const maxTokens = Math.floor(totalMemoryBytes / (elementsPerToken * dtypeSize));
+
+            // Create formula based on model type
+            let formula;
+            if (isDeepSeekModel) {
+                formula = `${num_hidden_layers} × ${batchSize} × (${kv_lora_rank} + ${qk_rope_head_dim}) ÷ ${tp} ÷ ${dp} × ${dtypeSize} bytes`;
+            } else if (isQwen3Model) {
+                formula = `2 × ${num_hidden_layers} × ${batchSize} × ${num_key_value_heads} × ${head_dim} ÷ ${tp} ÷ ${dp} × ${dtypeSize} bytes`;
+            } else {
+                const kvHeads = num_key_value_heads || num_attention_heads;
+                formula = `2 × ${batchSize} × ${hidden_size} × (${kvHeads}/${num_attention_heads}) × ${num_hidden_layers} ÷ ${tp} ÷ ${dp} × ${dtypeSize} bytes`;
+            }
+
+            // Create config object for display
+            const displayConfig = {
+                num_hidden_layers: num_hidden_layers,
+                hidden_size: hidden_size,
+                num_attention_heads: num_attention_heads,
+                num_key_value_heads: isDeepSeekModel ? num_key_value_heads : (num_key_value_heads || num_attention_heads)
+            };
+
+            if (isDeepSeekModel) {
+                displayConfig.kv_lora_rank = kv_lora_rank;
+                displayConfig.qk_rope_head_dim = qk_rope_head_dim;
+            } else if (isQwen3Model) {
+                displayConfig.head_dim = head_dim;
+            }
+
+            return {
+                modelName,
+                batchSize,
+                tp,
+                dp,
+                gpuMemoryGB,
+                dtype,
+                dtypeSize,
+                maxTokens,
+                elementsPerToken,
+                totalMemoryBytes,
+                config: displayConfig,
+                formula,
+                modelSizeGB,
+                modelParams,
+                perTokenMemoryMB: (elementsPerToken * dtypeSize) / (1024 ** 2)
+            };
+        }
+
+        // Display maximum tokens results
+        function displayMaxTokensResults(result) {
+            const resultsContainer = document.getElementById('results-container');
+            const detailsContainer = document.getElementById('calculation-details');
+            const stepsContainer = document.getElementById('calculation-steps');
+
+            // Check if required elements exist
+            if (!resultsContainer) {
+                console.error('Results container not found');
+                return;
+            }
+
+            // Main result display
+            resultsContainer.innerHTML = `
+                <div class="result-display" style="text-align: center; margin-bottom: 1rem;">
+                    <div class="result-value" style="font-size: 1.8rem; font-weight: 700; color: var(--accent-success);">${result.maxTokens.toLocaleString()}</div>
+                    <div class="result-label" style="font-size: 0.8rem; color: var(--text-secondary);">Maximum Tokens</div>
+                </div>
+
+                <!-- Single-line metrics for high density -->
+                <div class="metrics-row" style="display: flex; flex-wrap: wrap; gap: 0.75rem; margin-bottom: 1rem;">
+                    <div class="metric-item" style="background: var(--bg-secondary); padding: 0.4rem 0.6rem; border-radius: 4px; font-size: 0.75rem;">
+                        <span style="color: var(--text-secondary);">Model:</span>
+                        <strong style="color: var(--text-primary); margin-left: 0.25rem;">${result.modelName.split('/').pop()}</strong>
+                    </div>
+                    <div class="metric-item" style="background: var(--bg-secondary); padding: 0.4rem 0.6rem; border-radius: 4px; font-size: 0.75rem;">
+                        <span style="color: var(--text-secondary);">Batch:</span>
+                        <strong style="color: var(--text-primary); margin-left: 0.25rem;">${result.batchSize}</strong>
+                    </div>
+                    <div class="metric-item" style="background: var(--bg-secondary); padding: 0.4rem 0.6rem; border-radius: 4px; font-size: 0.75rem;">
+                        <span style="color: var(--text-secondary);">GPU:</span>
+                        <strong style="color: var(--text-primary); margin-left: 0.25rem;">${result.gpuMemoryGB}GB</strong>
+                    </div>
+                    <div class="metric-item" style="background: var(--bg-secondary); padding: 0.4rem 0.6rem; border-radius: 4px; font-size: 0.75rem;">
+                        <span style="color: var(--text-secondary);">Type:</span>
+                        <strong style="color: var(--text-primary); margin-left: 0.25rem;">${result.dtype}</strong>
+                    </div>
+                    <div class="metric-item" style="background: var(--bg-secondary); padding: 0.4rem 0.6rem; border-radius: 4px; font-size: 0.75rem;">
+                        <span style="color: var(--text-secondary);">TP:</span>
+                        <strong style="color: var(--text-primary); margin-left: 0.25rem;">${result.tp}</strong>
+                    </div>
+                    <div class="metric-item" style="background: var(--bg-secondary); padding: 0.4rem 0.6rem; border-radius: 4px; font-size: 0.75rem;">
+                        <span style="color: var(--text-secondary);">DP:</span>
+                        <strong style="color: var(--text-primary); margin-left: 0.25rem;">${result.dp}</strong>
+                    </div>
+                </div>
+
+                <!-- Additional metrics -->
+                <div class="metrics-row" style="display: flex; flex-wrap: wrap; gap: 0.75rem; margin-bottom: 1rem;">
+                    <div class="metric-item" style="background: var(--bg-secondary); padding: 0.4rem 0.6rem; border-radius: 4px; font-size: 0.75rem;">
+                        <span style="color: var(--text-secondary);">Model:</span>
+                        <strong style="color: var(--accent-success); margin-left: 0.25rem;">${result.modelSizeGB.toFixed(2)}GB</strong>
+                    </div>
+                    <div class="metric-item" style="background: var(--bg-secondary); padding: 0.4rem 0.6rem; border-radius: 4px; font-size: 0.75rem;">
+                        <span style="color: var(--text-secondary);">Per Token:</span>
+                        <strong style="color: var(--text-primary); margin-left: 0.25rem;">${result.perTokenMemoryMB.toFixed(3)}MB</strong>
+                    </div>
+                    <div class="metric-item" style="background: var(--bg-secondary); padding: 0.4rem 0.6rem; border-radius: 4px; font-size: 0.75rem;">
+                        <span style="color: var(--text-secondary);">Elements:</span>
+                        <strong style="color: var(--text-primary); margin-left: 0.25rem;">${(result.elementsPerToken).toLocaleString()}</strong>
+                    </div>
+                </div>
+            `;
+
+            // Calculation details (only if elements exist)
+            if (stepsContainer || detailsContainer) {
+                const config = result.config;
+                const kvHeads = config.num_key_value_heads || config.num_attention_heads;
+
+                const stepsHTML = `
+                    <div style="font-family: '微软雅黑', 'Microsoft YaHei', 'Courier New', monospace; background: var(--bg-secondary); padding: 0.75rem; border-radius: 4px; margin: 0.5rem 0; font-size: 0.8rem; line-height: 1.4;">
+                        <div style="margin-bottom: 0.5rem;"><strong>Per-Token Formula:</strong></div>
+                        <div style="margin-bottom: 0.5rem;">${result.formula}</div>
+                        <div style="margin-bottom: 0.5rem;">= ${result.elementsPerToken.toLocaleString()} elements × ${result.dtypeSize} bytes</div>
+                        <div style="margin-bottom: 0.5rem;">= ${(result.perTokenMemoryMB * 1024).toFixed(1)} MB per token</div>
+
+                        <div style="margin-bottom: 0.5rem;"><strong>Max Tokens Calculation:</strong></div>
+                        <div style="margin-bottom: 0.5rem;">${(result.gpuMemoryGB * 1024).toFixed(0)} MB ÷ ${(result.perTokenMemoryMB).toFixed(3)} MB = ${result.maxTokens.toLocaleString()} Tokens</div>
+
+                        <div style="margin-top: 1rem; padding-top: 0.5rem; border-top: 1px solid var(--border-color);">
+                            <div style="margin-bottom: 0.25rem;"><strong>Model Config:</strong></div>
+                            <div style="font-size: 0.75rem;">
+                                Layers: ${config.num_hidden_layers} |
+                                Hidden Size: ${config.hidden_size} |
+                                Attn Heads: ${config.num_attention_heads} |
+                                KV Heads: ${kvHeads}
+                            </div>
+                        </div>
+
+                        <div style="margin-top: 0.5rem; font-size: 0.75rem; color: var(--text-secondary);">
+                            Model Weights: ${(result.modelSizeGB * 1024).toFixed(1)}MB |
+                            Batch: ${result.batchSize} |
+                            TP: ${result.tp} | DP: ${result.dp}
+                        </div>
+                    </div>
+                `;
+
+                // Update steps container if it exists
+                if (stepsContainer) {
+                    stepsContainer.innerHTML = stepsHTML;
+                }
+
+                // Show details container if it exists
+                if (detailsContainer) {
+                    detailsContainer.classList.remove('hidden');
+                }
+            }
+
+            // Apply translations to elements with data-i18n attributes
+            document.querySelectorAll('[data-i18n]').forEach(element => {
+                const key = element.getAttribute('data-i18n');
+                if (translations[currentLanguage][key]) {
+                    element.textContent = translations[currentLanguage][key];
+                }
+            });
+        }
+
+        // Perform Calculation (ported from Python version)
+        function performCalculation(config, tokens, dtype, modelName) {
+            let hidden_size, num_attention_heads, num_hidden_layers, num_key_value_heads;
+            let kv_lora_rank, qk_rope_head_dim; // for deepseek-ai/DeepSeek-V3
+            let head_size;
+
+            // Check for DeepSeek models (support different platforms)
+            const isDeepSeekModel = modelName.toLowerCase().includes("deepseek") &&
+                                   (modelName.toLowerCase().includes("deepseek-v3") ||
+                                    modelName.toLowerCase().includes("deepseek-r1") ||
+                                    modelName.toLowerCase().includes("deepseek_r1") ||
+                                    (modelName.toLowerCase().includes("deepseek") &&
+                                     config.kv_lora_rank && config.qk_rope_head_dim));
+
+            // Check for Qwen3 models (fuzzy matching)
+            const isQwen3Model = modelName.toLowerCase().includes("qwen/qwen3-");
+
+            if (isDeepSeekModel) {
+                ({ hidden_size, num_attention_heads, num_hidden_layers, num_key_value_heads, kv_lora_rank, qk_rope_head_dim } = config);
+            } else if (isQwen3Model) {
+                // The Qwen3 series use GQA, and `head_dim` needs to be read from config file.
+                ({ hidden_size, num_attention_heads, num_hidden_layers, num_key_value_heads, head_dim } = config);
+                console.log(config);
+            } else {
+                ({ hidden_size, num_attention_heads, num_hidden_layers, num_key_value_heads } = config);
+                head_size = hidden_size / num_attention_heads;
+            }
+
+            // Validate required fields
+            const requiredFields = ['hidden_size', 'num_attention_heads', 'num_hidden_layers'];
+            for (const field of requiredFields) {
+                if (!config[field]) {
+                    throw new Error(`Missing required field: ${field}`);
+                }
+            }
+
+            // Get additional parameters
+            const batchSize = parseInt(document.getElementById('batch-size').value) || 1;
+            const tp = parseInt(document.getElementById('tp').value) || 1;
+            const dp = parseInt(document.getElementById('dp').value) || 1;
+
+            // Data type sizes in bytes
+            const dtypeSizes = {
+                'float32': 4,
+                'float16': 2,
+                'bfloat16': 2,
+                'int8': 1
+            };
+
+            if (!dtypeSizes[dtype]) {
+                throw new Error(`Unsupported data type: ${dtype}`);
+            }
+
+            const dtypeSize = dtypeSizes[dtype];
+
+            // Calculate KV cache size
+            let totalElements;
+            let formula;
+
+            if (isDeepSeekModel) {
+                totalElements = num_hidden_layers * tokens * batchSize * (kv_lora_rank + qk_rope_head_dim) / tp / dp;
+                formula = `${num_hidden_layers} × ${tokens} × ${batchSize} × (${kv_lora_rank} + ${qk_rope_head_dim}) ÷ ${tp} ÷ ${dp} × ${dtypeSize} bytes`;
+            } else if (isQwen3Model) {
+                totalElements = 2 * num_hidden_layers * tokens * batchSize * num_key_value_heads * head_dim / tp / dp;
+                formula = `2 × ${num_hidden_layers} × ${tokens} × ${batchSize} × ${num_key_value_heads} × ${head_dim} ÷ ${tp} ÷ ${dp} × ${dtypeSize} bytes`;
+            } else {
+                const kvHeads = num_key_value_heads || num_attention_heads;
+                totalElements = 2 * num_hidden_layers * tokens * batchSize * hidden_size * (kvHeads / num_attention_heads) / tp / dp;
+                formula = `2 × ${num_hidden_layers} × ${tokens} × ${batchSize} × ${hidden_size} × (${kvHeads}/${num_attention_heads}) ÷ ${tp} ÷ ${dp} × ${dtypeSize} bytes`;
+            }
+
+            const totalBytes = totalElements * dtypeSize;
+            const kvCacheSizeGB = totalBytes / (1024 ** 3);
+
+            // Calculate model parameters (approximate)
+            const modelParams = num_hidden_layers * hidden_size * hidden_size * 3;
+            const modelSizeGB = (modelParams * dtypeSize * 2 / tp) / (1024 ** 3); // 2 * n / tp
+
+            // Calculate FLOPs
+            const prefillFLOPs = 2 * modelParams * batchSize * tokens / tp;
+            const decodeFLOPs = 2 * modelParams * batchSize * 1 / tp;
+
+            // Create details object based on model type
+            const details = {
+                tokens,
+                batch_size: batchSize,
+                tp,
+                dp,
+                dtype,
+                dtype_size: dtypeSize,
+                model_params: modelParams,
+                model_size_gb: modelSizeGB,
+                prefill_flops: prefillFLOPs,
+                decode_flops: decodeFLOPs,
+                calculation_formula: formula
+            };
+
+            if (isDeepSeekModel) {
+                details.hidden_size = hidden_size;
+                details.num_attention_heads = num_attention_heads;
+                details.num_hidden_layers = num_hidden_layers;
+                details.num_key_value_heads = num_key_value_heads;
+                details.kv_lora_rank = kv_lora_rank;
+                details.qk_rope_head_dim = qk_rope_head_dim;
+            } else if (isQwen3Model) {
+                details.hidden_size = hidden_size;
+                details.num_attention_heads = num_attention_heads;
+                details.num_hidden_layers = num_hidden_layers;
+                details.num_key_value_heads = num_key_value_heads;
+                details.head_dim = head_dim;
+            } else {
+                const kvHeads = num_key_value_heads || num_attention_heads;
+                details.hidden_size = hidden_size;
+                details.num_attention_heads = num_attention_heads;
+                details.num_hidden_layers = num_hidden_layers;
+                details.num_key_value_heads = kvHeads;
+                details.head_size = head_size;
+            }
+
+            return {
+                modelName,
+                tokens,
+                batchSize,
+                tp,
+                dp,
+                dtype,
+                dtypeSize,
+                kvCacheSizeGB,
+                modelSizeGB,
+                prefillFLOPs,
+                decodeFLOPs,
+                totalElements,
+                totalBytes,
+                config,
+                formula,
+                details
+            };
+        }
+
+        // Display Results
+        function displayResults(result) {
+            const resultsContainer = document.getElementById('results-container');
+            const detailsContainer = document.getElementById('calculation-details');
+            const stepsContainer = document.getElementById('calculation-steps');
+
+            // Check if required elements exist
+            if (!resultsContainer) {
+                console.error('Results container not found');
+                return;
+            }
+
+            // Main result display
+            resultsContainer.innerHTML = `
+                <div class="result-display" style="text-align: center; margin-bottom: 1rem;">
+                    <div class="result-value" style="font-size: 1.8rem; font-weight: 700; color: var(--accent-primary);">${result.kvCacheSizeGB.toFixed(4)} GB</div>
+                    <div class="result-label" style="font-size: 0.8rem; color: var(--text-secondary);">KV Cache Size</div>
+                </div>
+
+                <!-- Single-line metrics for high density -->
+                <div class="metrics-row" style="display: flex; flex-wrap: wrap; gap: 0.75rem; margin-bottom: 1rem;">
+                    <div class="metric-item" style="background: var(--bg-secondary); padding: 0.4rem 0.6rem; border-radius: 4px; font-size: 0.75rem;">
+                        <span style="color: var(--text-secondary);">Model:</span>
+                        <strong style="color: var(--text-primary); margin-left: 0.25rem;">${result.modelName.split('/').pop()}</strong>
+                    </div>
+                    <div class="metric-item" style="background: var(--bg-secondary); padding: 0.4rem 0.6rem; border-radius: 4px; font-size: 0.75rem;">
+                        <span style="color: var(--text-secondary);">Tokens:</span>
+                        <strong style="color: var(--text-primary); margin-left: 0.25rem;">${result.tokens.toLocaleString()}</strong>
+                    </div>
+                    <div class="metric-item" style="background: var(--bg-secondary); padding: 0.4rem 0.6rem; border-radius: 4px; font-size: 0.75rem;">
+                        <span style="color: var(--text-secondary);">Batch:</span>
+                        <strong style="color: var(--text-primary); margin-left: 0.25rem;">${result.batchSize}</strong>
+                    </div>
+                    <div class="metric-item" style="background: var(--bg-secondary); padding: 0.4rem 0.6rem; border-radius: 4px; font-size: 0.75rem;">
+                        <span style="color: var(--text-secondary);">Type:</span>
+                        <strong style="color: var(--text-primary); margin-left: 0.25rem;">${result.dtype}</strong>
+                    </div>
+                    <div class="metric-item" style="background: var(--bg-secondary); padding: 0.4rem 0.6rem; border-radius: 4px; font-size: 0.75rem;">
+                        <span style="color: var(--text-secondary);">TP:</span>
+                        <strong style="color: var(--text-primary); margin-left: 0.25rem;">${result.tp}</strong>
+                    </div>
+                    <div class="metric-item" style="background: var(--bg-secondary); padding: 0.4rem 0.6rem; border-radius: 4px; font-size: 0.75rem;">
+                        <span style="color: var(--text-secondary);">DP:</span>
+                        <strong style="color: var(--text-primary); margin-left: 0.25rem;">${result.dp}</strong>
+                    </div>
+                </div>
+
+                <!-- Additional metrics -->
+                <div class="metrics-row" style="display: flex; flex-wrap: wrap; gap: 0.75rem; margin-bottom: 1rem;">
+                    <div class="metric-item" style="background: var(--bg-secondary); padding: 0.4rem 0.6rem; border-radius: 4px; font-size: 0.75rem;">
+                        <span style="color: var(--text-secondary);">Model:</span>
+                        <strong style="color: var(--accent-success); margin-left: 0.25rem;">${result.modelSizeGB.toFixed(2)}GB</strong>
+                    </div>
+                    <div class="metric-item" style="background: var(--bg-secondary); padding: 0.4rem 0.6rem; border-radius: 4px; font-size: 0.75rem;">
+                        <span style="color: var(--text-secondary);">Bytes:</span>
+                        <strong style="color: var(--text-primary); margin-left: 0.25rem;">${(result.totalBytes / 1024 / 1024).toFixed(1)}MB</strong>
+                    </div>
+                    <div class="metric-item" style="background: var(--bg-secondary); padding: 0.4rem 0.6rem; border-radius: 4px; font-size: 0.75rem;">
+                        <span style="color: var(--text-secondary);">Elements:</span>
+                        <strong style="color: var(--text-primary); margin-left: 0.25rem;">${(result.totalElements / 1024 / 1024).toFixed(1)}M</strong>
+                    </div>
+                </div>
+            `;
+
+            // Calculation details (only if elements exist)
+            if (stepsContainer || detailsContainer) {
+                const config = result.config;
+                const kvHeads = config.num_key_value_heads || config.num_attention_heads;
+
+                const stepsHTML = `
+                    <div style="font-family: '微软雅黑', 'Microsoft YaHei', 'Courier New', monospace; background: var(--bg-secondary); padding: 0.75rem; border-radius: 4px; margin: 0.5rem 0; font-size: 0.8rem; line-height: 1.4;">
+                        <div style="margin-bottom: 0.5rem;"><strong>Formula:</strong></div>
+                        <div style="margin-bottom: 0.5rem;">${result.formula}</div>
+                        <div style="margin-bottom: 0.5rem;">= ${result.totalElements.toLocaleString()} elements × ${result.dtypeSize} bytes</div>
+                        <div style="margin-bottom: 0.5rem;">= ${result.totalBytes.toLocaleString()} total bytes</div>
+                        <div style="margin-bottom: 0.5rem;">= ${(result.totalBytes / 1024 / 1024).toFixed(2)} MB</div>
+                        <div style="margin-bottom: 0.5rem;">= ${result.kvCacheSizeGB.toFixed(4)} GB</div>
+
+                        <div style="margin-top: 1rem; padding-top: 0.5rem; border-top: 1px solid var(--border-color);">
+                            <div style="margin-bottom: 0.25rem;"><strong>Model Config:</strong></div>
+                            <div style="font-size: 0.75rem;">
+                                Layers: ${config.num_hidden_layers} |
+                                Hidden Size: ${config.hidden_size} |
+                                Attn Heads: ${config.num_attention_heads} |
+                                KV Heads: ${kvHeads}
+                            </div>
+                        </div>
+
+                        <div style="margin-top: 0.5rem; font-size: 0.75rem; color: var(--text-secondary);">
+                            Model Weights: ${(result.modelSizeGB * 1024).toFixed(1)}MB |
+                            Batch: ${result.batchSize} |
+                            TP: ${result.tp} | DP: ${result.dp}
+                        </div>
+                    </div>
+                `;
+
+                // Update steps container if it exists
+                if (stepsContainer) {
+                    stepsContainer.innerHTML = stepsHTML;
+                }
+
+                // Show details container if it exists
+                if (detailsContainer) {
+                    detailsContainer.classList.remove('hidden');
+                }
+            }
+        }
+
+        // Toast Notification System
+        function showToast(type, title, message) {
+            const container = document.getElementById('toast-container');
+
+            // Remove any existing toasts of the same type
+            const existingToasts = container.querySelectorAll(`.toast.${type}`);
+            existingToasts.forEach(toast => toast.remove());
+
+            // Create toast element
+            const toast = document.createElement('div');
+            toast.className = `toast ${type}`;
+
+            // Set icon based on type
+            const icons = {
+                'error': '❌',
+                'success': '✅',
+                'warning': '⚠️'
+            };
+
+            toast.innerHTML = `
+                <div class="toast-content">
+                    <div class="toast-icon">${icons[type] || icons['error']}</div>
+                    <div class="toast-info">
+                        <div class="toast-title">${title}</div>
+                        <div class="toast-message">${message}</div>
+                    </div>
+                </div>
+                <button class="toast-close" onclick="closeToast(this.parentElement)">×</button>
+            `;
+
+            // Add to container
+            container.appendChild(toast);
+
+            // Trigger animation
+            setTimeout(() => {
+                toast.classList.add('show');
+            }, 10);
+
+            // Auto remove after 5 seconds for success/warning, 8 seconds for error
+            const timeout = type === 'error' ? 8000 : 5000;
+            setTimeout(() => {
+                closeToast(toast);
+            }, timeout);
+        }
+
+        // Close toast function
+        function closeToast(toast) {
+            if (toast) {
+                toast.classList.remove('show');
+                toast.classList.add('hide');
+                setTimeout(() => {
+                    if (toast.parentElement) {
+                        toast.remove();
+                    }
+                }, 300);
+            }
+        }
+
+        // Legacy showAlert function for backward compatibility - now shows simplified modal
+        function showAlert(type, title, message) {
+            const modal = document.getElementById('alert-modal');
+            const iconElement = document.getElementById('alert-icon');
+            const titleElement = document.getElementById('alert-title');
+            const messageElement = document.getElementById('alert-message');
+
+            // Set icon based on type
+            const icons = {
+                'error': '❌',
+                'success': '✅',
+                'warning': '⚠️'
+            };
+            iconElement.textContent = icons[type] || icons['error'];
+            titleElement.textContent = title;
+            messageElement.textContent = message;
+
+            // Show modal
+            modal.style.display = 'block';
+
+            // Auto-hide after 4 seconds
+            setTimeout(() => {
+                closeAlert();
+            }, 4000);
+        }
+
+        function closeAlert() {
+            const modal = document.getElementById('alert-modal');
+            if (modal) {
+                modal.style.display = 'none';
+            }
+        }
+
+        // Close modal when clicking outside
+        document.addEventListener('click', function(event) {
+            const modal = document.getElementById('alert-modal');
+            if (modal && modal.style.display === 'block' && !modal.contains(event.target)) {
+                closeAlert();
+            }
+        });
+
+        // Calculate KV Cache Size for performance metrics
+        function calculateKVCacheSize(config, tokens, dtype) {
+            const { hidden_size, num_attention_heads, num_hidden_layers, num_key_value_heads, kv_lora_rank, qk_rope_head_dim, head_dim } = config;
+
+            // Validate required fields
+            const requiredFields = ['hidden_size', 'num_attention_heads', 'num_hidden_layers'];
+            for (const field of requiredFields) {
+                if (!config[field]) {
+                    throw new Error(`Missing required field: ${field}`);
+                }
+            }
+
+            // Data type sizes in bytes
+            const dtypeSizes = {
+                'float32': 4,
+                'float16': 2,
+                'bfloat16': 2,
+                'int8': 1
+            };
+
+            if (!dtypeSizes[dtype]) {
+                throw new Error(`Unsupported data type: ${dtype}`);
+            }
+
+            const dtypeSize = dtypeSizes[dtype];
+            const kvHeads = num_key_value_heads || num_attention_heads;
+
+            // Calculate total elements based on model type
+            let totalElements;
+
+            if (kv_lora_rank && qk_rope_head_dim) {
+                // DeepSeek models (support different platforms)
+                totalElements = num_hidden_layers * tokens * (kv_lora_rank + qk_rope_head_dim);
+            } else if (head_dim) {
+                // Qwen3 models
+                totalElements = 2 * num_hidden_layers * tokens * kvHeads * head_dim;
+            } else {
+                // Standard transformer models
+                const headSize = hidden_size / num_attention_heads;
+                totalElements = 2 * num_hidden_layers * tokens * kvHeads * headSize;
+            }
+
+            const sizeBytes = totalElements * dtypeSize;
+
+            return {
+                sizeBytes,
+                totalElements,
+                dtypeSize,
+                kvHeads
+            };
+        }
+
+        // Test function availability (for debugging)
+        console.log('calculateKVCacheSize function:', typeof calculateKVCacheSize);
+
+        // Get current model configuration
+        async function getCurrentModelConfig() {
+            let config;
+            let modelName;
+
+            try {
+                console.log('Current model source:', currentModelSource);
+
+                if (currentModelSource === 'preset') {
+                    const presetSelect = document.getElementById('preset-model-select');
+                    if (!presetSelect) {
+                        console.log('Preset model select element not found');
+                        return null;
+                    }
+                    modelName = presetSelect.value;
+                    console.log('Selected preset model:', modelName);
+                    if (!modelName || !modelConfigs[modelName]) {
+                        console.log('Preset model not found:', modelName);
+                        return null;
+                    }
+                    config = modelConfigs[modelName];
+                    console.log('Using preset config for:', modelName);
+                } else if (currentModelSource === 'upload') {
+                    const uploadSelect = document.getElementById('uploaded-model-select');
+                    if (!uploadSelect) {
+                        console.log('Uploaded model select element not found');
+                        return null;
+                    }
+                    modelName = uploadSelect.value;
+                    console.log('Selected uploaded model:', modelName);
+                    console.log('Available uploaded models:', Object.keys(uploadedModelConfigs));
+                    if (!modelName || !uploadedModelConfigs[modelName]) {
+                        console.log('Uploaded model not found:', modelName);
+                        return null;
+                    }
+                    config = uploadedModelConfigs[modelName];
+                    console.log('Using uploaded config for:', modelName);
+                } else {
+                    // Custom model URL
+                    const modelUrlElement = document.getElementById('model-url');
+                    if (!modelUrlElement) {
+                        console.log('Model URL element not found');
+                        return null;
+                    }
+                    const modelUrl = modelUrlElement.value.trim();
+                    if (!modelUrl) {
+                        console.log('No model URL provided');
+                        return null;
+                    }
+
+                    // Try to fetch config from URL (async)
+                    try {
+                        config = await fetchModelConfigFromUrl(modelUrl);
+                    } catch (fetchError) {
+                        console.log('Failed to fetch config from URL:', fetchError);
+                        return null;
+                    }
+
+                    if (!config) {
+                        console.log('Failed to fetch config from URL');
+                        return null;
+                    }
+                    modelName = modelUrl;
+                }
+
+                // Validate required fields
+                const requiredFields = ['hidden_size', 'num_attention_heads', 'num_hidden_layers'];
+                for (const field of requiredFields) {
+                    if (!config[field]) {
+                        console.log(`Missing required field: ${field}`);
+                        return null;
+                    }
+                }
+
+                // Add model name to config for display
+                config._name = modelName;
+                return config;
+
+            } catch (error) {
+                console.error('Error getting model config:', error);
+                return null;
+            }
+        }
+
+
+        // Event Listeners
+        function initializeEventListeners() {
+            // Enter key support for token input
+            document.getElementById('token-input').addEventListener('keydown', function(event) {
+                if (event.key === 'Enter') {
+                    calculateKVCache();
+                }
+            });
+
+            // Enter key support for model URL
+            document.getElementById('model-url').addEventListener('keydown', function(event) {
+                if (event.key === 'Enter') {
+                    calculateKVCache();
+                }
+            });
+
+            // Toast notifications don't need escape key handling
+        }
+    </script>
