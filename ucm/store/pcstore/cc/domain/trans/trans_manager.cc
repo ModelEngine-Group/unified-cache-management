@@ -29,7 +29,20 @@ Status TransManager::Setup(const int32_t deviceId, const size_t streamNumber, co
                            const size_t bufferNumber, const SpaceLayout* layout,
                            const size_t timeoutMs)
 {
-    return Status::Unsupported();
+    this->device_ = DeviceFactory::Make(deviceId, ioSize, bufferNumber);
+    if (!this->device_) { return Status::OutOfMemory(); }
+    auto s = this->device_->Setup();
+    if (s.Failure()) { return s; }
+    auto success =
+        this->devPool_.SetWorkerFn([this](auto& t, auto) { this->DeviceWorker(t); }).Run();
+    if (!success) { return Status::Error(); }
+    success = this->filePool_.SetWorkerFn([this](auto& t, auto) { this->FileWorker(t); })
+                  .SetNWorker(streamNumber)
+                  .Run();
+    if (!success) { return Status::Error(); }
+    this->layout_ = layout;
+    this->timeoutMs_ = timeoutMs_;
+    return Status::OK();
 }
 
 Status TransManager::Submit(TransTask task, size_t& taskId) noexcept
@@ -43,5 +56,9 @@ Status TransManager::Check(const size_t taskId, bool& finish) noexcept
 {
     return Status::Unsupported();
 }
+
+void TransManager::DeviceWorker(DeviceTask&) {}
+
+void TransManager::FileWorker(FileTask&) {}
 
 } // namespace UC

@@ -24,8 +24,10 @@
 #ifndef UNIFIEDCACHE_TRANS_MANAGER_H
 #define UNIFIEDCACHE_TRANS_MANAGER_H
 
+#include "device/idevice.h"
 #include "space/space_layout.h"
 #include "status/status.h"
+#include "thread/thread_pool.h"
 #include "trans_task.h"
 
 namespace UC {
@@ -37,6 +39,19 @@ public:
     Status Submit(TransTask task, size_t& taskId) noexcept;
     Status Wait(const size_t taskId) noexcept;
     Status Check(const size_t taskId, bool& finish) noexcept;
+
+private:
+    struct DeviceTask {};
+    struct FileTask {};
+    void DeviceWorker(DeviceTask&);
+    void FileWorker(FileTask&);
+
+private:
+    std::unique_ptr<IDevice> device_;
+    ThreadPool<DeviceTask> devPool_;
+    ThreadPool<FileTask> filePool_;
+    const SpaceLayout* layout_;
+    size_t timeoutMs_;
 };
 
 } // namespace UC
