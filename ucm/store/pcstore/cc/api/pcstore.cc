@@ -26,6 +26,7 @@
 #include "logger/logger.h"
 #include "space/space_manager.h"
 #include "status/status.h"
+#include "trans/trans_manager.h"
 
 namespace UC {
 
@@ -35,6 +36,13 @@ public:
     {
         auto status = this->spaceMgr_.Setup(config.storageBackends, config.kvcacheBlockSize);
         if (status.Failure()) { return status.Underlying(); }
+        if (config.transferEnable) {
+            status =
+                this->transMgr_.Setup(config.transferDeviceId, config.transferStreamNumber,
+                                      config.kvcacheBlockSize, config.transferBufferNumber,
+                                      this->spaceMgr_.GetSpaceLayout(), config.transferTimeoutMs);
+            if (status.Failure()) { return status.Underlying(); }
+        }
         this->ShowConfig(config);
         return Status::OK().Underlying();
     }
@@ -57,9 +65,18 @@ public:
         return founds;
     }
     void Commit(const std::list<std::string>& blocks, const bool success) override {}
-    size_t Submit(TransTask&& task) override { return TransTask::invalid; }
-    int32_t Wait(const size_t task) override { return -1; }
-    int32_t Check(const size_t task, bool& finish) override { return -1; }
+    size_t Submit(TransTask&& task) override
+    {
+        auto taskId = TransTask::invalid;
+        auto status = this->transMgr_.Submit(std::move(task), taskId);
+        if (status.Failure()) { taskId = TransTask::invalid; }
+        return taskId;
+    }
+    int32_t Wait(const size_t task) override { return this->transMgr_.Wait(task).Underlying(); }
+    int32_t Check(const size_t task, bool& finish) override
+    {
+        return this->transMgr_.Check(task, finish).Underlying();
+    }
 
 private:
     void ShowConfig(const Config& config)
@@ -72,13 +89,13 @@ private:
         UC_INFO("Set UC::TransferEnable to {}.", config.transferEnable);
         UC_INFO("Set UC::DeviceId to {}.", config.transferDeviceId);
         UC_INFO("Set UC::StreamNumber to {}.", config.transferStreamNumber);
-        UC_INFO("Set UC::IOSize to {}.", config.transferIoSize);
         UC_INFO("Set UC::BufferNumber to {}.", config.transferBufferNumber);
         UC_INFO("Set UC::TimeoutMs to {}.", config.transferTimeoutMs);
     }
 
 private:
     SpaceManager spaceMgr_;
+    TransManager transMgr_;
 };
 
 int32_t PCStore::Setup(const Config& config)
