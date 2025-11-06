@@ -1,0 +1,44 @@
+reports:
+  base_dir: "results/reports"
+  use_timestamp: true
+  directory_prefix: "pytest"
+  html: # pytest-html
+    enabled: true
+    filename: "report.html"
+    title: "UCM Pytest Test Report"
+
+database:
+  enabled: true
+  host: "127.0.0.1"
+  port: 3306
+  name: "ucm_pytest"
+  user: "root"
+  password: "123456"
+  charset: "utf8mb4"
+
+
+easyPerf:
+  api:
+    type: "openai"
+    url: "https://api.openai.cn/v1/chat/completion"
+    api_key: "sk-123456"
+  model:
+    name: "Qwen/Qwen3-8B"
+    tokenizer:
+      path: "dataset/tokenizers/Qwen3-8B/tokenizer.json"
+      type: "hf"
+  save_to_db: false
+  save_to_file:
+    enabled: true
+    filename: "results/easyperf.json"
+  experiments:
+    - input_length: 10
+      output_length: 1
+      single_concurrency: 1
+      request_rounds: 1
+    - input_length: 100
+      output_length: 1
+      single_concurrency: 1
+      request_rounds: 1
+
+  

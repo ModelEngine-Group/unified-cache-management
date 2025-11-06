@@ -50,3 +50,14 @@
 .venv/**
 **/__pycache__/**
 *.egg-info/**
+reports/
+dataset/
+logs/
+.*
+*.log
+result_outputs/
+results/
+.cache/
+backup/
+$null
+*__pycache__/
