@@ -44,46 +44,30 @@ class TransTask {
 
 public:
     enum class Type { DUMP, LOAD };
-    struct Shard {
-        uintptr_t address;
-        size_t offset;
-        size_t length;
-        Shard(uintptr_t address, size_t offset, size_t length)
-            : address{address}, offset{offset}, length{length}
-        {
-        }
-    };
+    size_t id;
     Type type;
     static constexpr auto invalid = std::numeric_limits<size_t>::min();
     TransTask(Type&& type, std::string&& brief)
-        : type{std::move(type)}, id_{NextId()}, brief_{std::move(brief)}
+        : id{NextId()}, type{std::move(type)}, brief_{std::move(brief)}
     {
     }
-    void Append(const std::string& block, const size_t offset, const uintptr_t address,
-                const size_t length)
+    void Append(const std::string& block, const uintptr_t address)
     {
-        auto& shard = shards_.emplace_back(address, offset, length);
-        addresses_.push_back(address);
-        grouped_[block].push_back(&shard);
-        size_ += length;
+        grouped_[block].push_back(address);
+        number_++;
     }
-    size_t Id() const { return id_; }
-    auto Str() const noexcept { return fmt::format("{},{},{},{}", id_, brief_, Number(), size_); }
-    uintptr_t* Addresses() { return addresses_.data(); }
-    size_t Number() const { return addresses_.size(); }
+    auto Str() const noexcept { return fmt::format("{},{},{}", id, brief_, number_); }
     size_t GroupNumber() const { return grouped_.size(); }
-    void ForEachGroup(std::function<void(const std::string&, std::list<Shard*>&)> fn)
+    void ForEachGroup(std::function<void(const std::string&, std::vector<uintptr_t>&)> fn)
     {
         for (auto& [block, shards] : grouped_) { fn(block, shards); }
     }
 
 private:
-    size_t id_;
     std::string brief_;
+    size_t number_{0};
     size_t size_{0};
-    std::list<Shard> shards_;
-    std::vector<uintptr_t> addresses_;
-    std::unordered_map<std::string, std::list<Shard*>> grouped_;
+    std::unordered_map<std::string, std::vector<uintptr_t>> grouped_;
 };
 
 } // namespace UC

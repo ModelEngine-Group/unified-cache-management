@@ -26,11 +26,11 @@
 
 namespace UC {
 
-Status TransManager::Setup(const int32_t deviceId, const size_t streamNumber, const size_t ioSize,
-                           const size_t bufferNumber, const SpaceLayout* layout,
-                           const size_t timeoutMs)
+Status TransManager::Setup(const int32_t deviceId, const size_t streamNumber,
+                           const size_t blockSize, const size_t ioSize, const size_t bufferNumber,
+                           const SpaceLayout* layout, const size_t timeoutMs)
 {
-    this->device_ = DeviceFactory::Make(deviceId, ioSize, bufferNumber);
+    this->device_ = DeviceFactory::Make(deviceId, blockSize, bufferNumber);
     if (!this->device_) { return Status::OutOfMemory(); }
     auto s = this->device_->Setup();
     if (s.Failure()) { return s; }
@@ -42,13 +42,14 @@ Status TransManager::Setup(const int32_t deviceId, const size_t streamNumber, co
                   .Run();
     if (!success) { return Status::Error(); }
     this->layout_ = layout;
+    this->ioSize_ = ioSize;
     this->timeoutMs_ = timeoutMs_;
     return Status::OK();
 }
 
 Status TransManager::Submit(TransTask task, size_t& taskId) noexcept
 {
-    taskId = task.Id();
+    taskId = task.id;
     const auto taskStr = task.Str();
     const auto blockNumber = task.GroupNumber();
     TaskPtr taskPtr = nullptr;
@@ -111,15 +112,34 @@ Status TransManager::Check(const size_t taskId, bool& finish) noexcept
     return Status::OK();
 }
 
-void TransManager::DeviceWorker(BlockTask&) {}
+void TransManager::DeviceWorker(BlockTask& task)
+{
+    if (this->failureSet_.Contains(task.owner)) {
+        task.waiter->Done(nullptr);
+        return;
+    }
+    if (task.type == TransTask::Type::DUMP) {
+    } else {
+    }
+}
 
-void TransManager::FileWorker(BlockTask&) {}
+void TransManager::FileWorker(BlockTask& task)
+{
+    if (this->failureSet_.Contains(task.owner)) {
+        task.waiter->Done(nullptr);
+        return;
+    }
+    if (task.type == TransTask::Type::DUMP) {
+    } else {
+    }
+}
 
 void TransManager::Dispatch(TaskPtr task, WaiterPtr waiter)
 {
-    task->ForEachGroup([type = task->type, waiter, this](const std::string& block,
-                                                         std::list<TransTask::Shard*>& shards) {
+    task->ForEachGroup([type = task->type, owner = task->id, waiter,
+                        this](const std::string& block, std::vector<uintptr_t>& shards) {
         BlockTask blockTask;
+        blockTask.owner = owner;
         blockTask.block = block;
         blockTask.type = type;
         std::swap(blockTask.shards, shards);

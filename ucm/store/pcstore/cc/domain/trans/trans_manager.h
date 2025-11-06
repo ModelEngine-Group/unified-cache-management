@@ -36,8 +36,9 @@ namespace UC {
 
 class TransManager {
 public:
-    Status Setup(const int32_t deviceId, const size_t streamNumber, const size_t ioSize,
-                 const size_t bufferNumber, const SpaceLayout* layout, const size_t timeoutMs);
+    Status Setup(const int32_t deviceId, const size_t streamNumber, const size_t blockSize,
+                 const size_t ioSize, const size_t bufferNumber, const SpaceLayout* layout,
+                 const size_t timeoutMs);
     Status Submit(TransTask task, size_t& taskId) noexcept;
     Status Wait(const size_t taskId) noexcept;
     Status Check(const size_t taskId, bool& finish) noexcept;
@@ -47,9 +48,10 @@ private:
     using WaiterPtr = std::shared_ptr<TaskWaiter>;
     using TaskPair = std::pair<TaskPtr, WaiterPtr>;
     struct BlockTask {
+        size_t owner;
         std::string block;
         TransTask::Type type;
-        std::list<TransTask::Shard*> shards;
+        std::vector<uintptr_t> shards;
         std::shared_ptr<void> buffer;
         WaiterPtr waiter;
     };
@@ -60,6 +62,7 @@ private:
 private:
     std::unique_ptr<IDevice> device_;
     const SpaceLayout* layout_;
+    size_t ioSize_;
     size_t timeoutMs_;
     ThreadPool<BlockTask> devPool_;
     ThreadPool<BlockTask> filePool_;

@@ -35,6 +35,7 @@ public:
         std::vector<std::string> storageBackends;
         size_t kvcacheBlockSize;
         bool transferEnable;
+        size_t transferIoSize{262144};
         int32_t transferDeviceId{-1};
         size_t transferStreamNumber{64};
         size_t transferBufferNumber{12288};
