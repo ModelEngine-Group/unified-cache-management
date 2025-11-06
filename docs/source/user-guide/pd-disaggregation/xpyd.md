@@ -8,7 +8,8 @@ This example demonstrates how to run unified-cache-management with disaggregated
 - Hardware: At least 4 GPUs (At least 2 GPUs for prefiller + 2 for decoder in 2d2p setup or 2 NPUs for prefiller + 2 for decoder in 2d2p setup)
 
 ## Start disaggregated service
-For illustration purposes, let us take a GPU as an example and assume the model used is Qwen2.5-7B-Instruct.
+For illustration purposes, let us take GPU as an example and assume the model used is Qwen2.5-7B-Instruct.Using ASCEND_RT_VISIBLE_DEVICES instead of CUDA_VISIBLE_DEVICES to specify visible devices when starting service on Ascend platform.
+
 ### Run prefill servers
 Prefiller1 Launch Command:
 ```bash

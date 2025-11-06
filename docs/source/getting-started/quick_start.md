@@ -21,14 +21,16 @@ Before you start with UCM, please make sure that you have installed UCM correctl
 
 ## Features Overview
 
-UCM supports two key features: **Prefix Cache** and **Sparse-attention**. 
+UCM supports two key features: **Prefix Cache** and **Sparse attention**. 
 
 Each feature supports both **Offline Inference** and **Online API** modes. 
 
 For quick start, just follow the [usage](./quick_start.md) guide below to launch your own inference experience;
 
-For further research, click on the links blow to see more details of each feature:
+For further research on Prefix Cache, more details are available via the link below:
 - [Prefix Cache](../user-guide/prefix-cache/index.md)
+
+Various Sparse Attention features are now available, try GSA Sparsity via the link below:
 - [GSA Sparsity](../user-guide/sparse-attention/gsa.md)
 
 ## Usage
@@ -47,7 +49,7 @@ python offline_inference.py
 
 </details>
 
-<details>
+<details open>
 <summary><b>OpenAI-Compatible Online API</b></summary>
 
 For online inference , vLLM with our connector can also be deployed as a server that implements the OpenAI API protocol.
