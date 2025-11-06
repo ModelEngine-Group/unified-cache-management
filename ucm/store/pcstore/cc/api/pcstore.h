@@ -29,7 +29,7 @@
 
 namespace UC {
 
-class PCStore : CCStore<TransTask> {
+class PcStore : CCStore<TransTask> {
 public:
     struct Config {
         std::vector<std::string> storageBackends;
@@ -51,7 +51,7 @@ public:
     };
 
 public:
-    ~PCStore() override
+    ~PcStore() override
     {
         if (this->impl_) { delete this->impl_; }
     }
@@ -82,7 +82,7 @@ public:
     }
 
 private:
-    PCStore* impl_{nullptr};
+    PcStore* impl_{nullptr};
 };
 
 } // namespace UC

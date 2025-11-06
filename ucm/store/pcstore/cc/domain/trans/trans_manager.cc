@@ -32,9 +32,7 @@ Status TransManager::Setup(const int32_t deviceId, const size_t streamNumber,
                            const size_t bufferNumber, const SpaceLayout* layout,
                            const size_t timeoutMs)
 {
-    this->device_ = DeviceFactory::Make(deviceId, blockSize, bufferNumber);
-    if (!this->device_) { return Status::OutOfMemory(); }
-    auto s = this->device_->Setup();
+    auto s = this->device_.Setup(deviceId, blockSize, bufferNumber);
     if (s.Failure()) { return s; }
     auto success =
         this->devPool_.SetWorkerFn([this](auto t, auto) { this->DeviceWorker(std::move(t)); })
@@ -125,13 +123,13 @@ void TransManager::DeviceWorker(BlockTask&& task)
     auto number = task.shards.size();
     auto size = this->ioSize_;
     auto waiter = task.waiter;
-    // auto devPtrs = task.shards.data();
-    // auto hostPtr = (uintptr_t)task.buffer.get();
+    auto devPtrs = task.shards.data();
+    auto hostPtr = (uintptr_t)task.buffer.get();
     auto s = Status::OK();
     if (task.type == TransTask::Type::LOAD) {
-        s = this->device_->H2DBatchSync(nullptr, nullptr, number, size); // fixme
+        s = this->device_.stream.H2DBatchSync(hostPtr, devPtrs, size, number);
     } else {
-        s = this->device_->D2HBatchSync(nullptr, nullptr, number, size); // fixme
+        s = this->device_.stream.D2HBatchSync(devPtrs, hostPtr, size, number);
         if (s.Success()) { this->filePool_.Push(std::move(task)); }
     }
     if (s.Failure()) { this->failureSet_.Insert(task.owner); }
@@ -171,8 +169,9 @@ void TransManager::Dispatch(TaskPtr task, WaiterPtr waiter)
         blockTask.owner = owner;
         blockTask.block = block;
         blockTask.type = type;
+        auto bufferSize = this->ioSize_ * shards.size();
         std::swap(blockTask.shards, shards);
-        blockTask.buffer = this->device_->GetBuffer(0); // fixme
+        blockTask.buffer = this->device_.buffer.GetBuffer(bufferSize);
         blockTask.waiter = waiter;
         if (type == TransTask::Type::DUMP) {
             this->devPool_.Push(std::move(blockTask));

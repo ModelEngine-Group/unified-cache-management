@@ -30,7 +30,7 @@
 
 namespace UC {
 
-class PCStoreImpl : public PCStore {
+class PcStoreImpl : public PcStore {
 public:
     int32_t Setup(const Config& config)
     {
@@ -83,7 +83,7 @@ private:
     {
         std::string buildType = UCM_BUILD_TYPE;
         if (buildType.empty()) { buildType = "Release"; }
-        UC_INFO("PCStore-{}({}).", UCM_COMMIT_ID, buildType);
+        UC_INFO("PcStore-{}({}).", UCM_COMMIT_ID, buildType);
         UC_INFO("Set UC::StorageBackends to {}.", config.storageBackends);
         UC_INFO("Set UC::BlockSize to {}.", config.kvcacheBlockSize);
         UC_INFO("Set UC::TransferEnable to {}.", config.transferEnable);
@@ -100,9 +100,9 @@ private:
     TransManager transMgr_;
 };
 
-int32_t PCStore::Setup(const Config& config)
+int32_t PcStore::Setup(const Config& config)
 {
-    auto impl = new (std::nothrow) PCStoreImpl();
+    auto impl = new (std::nothrow) PcStoreImpl();
     if (!impl) {
         UC_ERROR("Out of memory.");
         return Status::OutOfMemory().Underlying();

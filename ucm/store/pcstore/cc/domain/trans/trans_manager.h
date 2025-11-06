@@ -24,7 +24,7 @@
 #ifndef UNIFIEDCACHE_TRANS_MANAGER_H
 #define UNIFIEDCACHE_TRANS_MANAGER_H
 
-#include "device/idevice.h"
+#include "device.h"
 #include "space/space_layout.h"
 #include "status/status.h"
 #include "task/task_set.h"
@@ -60,7 +60,7 @@ private:
     void Dispatch(TaskPtr task, WaiterPtr waiter);
 
 private:
-    std::unique_ptr<IDevice> device_;
+    Device device_;
     const SpaceLayout* layout_;
     size_t ioSize_;
     bool ioDirect_;
