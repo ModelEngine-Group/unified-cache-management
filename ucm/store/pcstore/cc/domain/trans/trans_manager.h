@@ -37,8 +37,8 @@ namespace UC {
 class TransManager {
 public:
     Status Setup(const int32_t deviceId, const size_t streamNumber, const size_t blockSize,
-                 const size_t ioSize, const size_t bufferNumber, const SpaceLayout* layout,
-                 const size_t timeoutMs);
+                 const size_t ioSize, const bool ioDirect, const size_t bufferNumber,
+                 const SpaceLayout* layout, const size_t timeoutMs);
     Status Submit(TransTask task, size_t& taskId) noexcept;
     Status Wait(const size_t taskId) noexcept;
     Status Check(const size_t taskId, bool& finish) noexcept;
@@ -63,6 +63,7 @@ private:
     std::unique_ptr<IDevice> device_;
     const SpaceLayout* layout_;
     size_t ioSize_;
+    bool ioDirect_;
     size_t timeoutMs_;
     ThreadPool<BlockTask> devPool_;
     ThreadPool<BlockTask> filePool_;

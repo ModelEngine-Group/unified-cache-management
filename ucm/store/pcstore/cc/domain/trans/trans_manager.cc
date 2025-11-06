@@ -28,8 +28,9 @@
 namespace UC {
 
 Status TransManager::Setup(const int32_t deviceId, const size_t streamNumber,
-                           const size_t blockSize, const size_t ioSize, const size_t bufferNumber,
-                           const SpaceLayout* layout, const size_t timeoutMs)
+                           const size_t blockSize, const size_t ioSize, const bool ioDirect,
+                           const size_t bufferNumber, const SpaceLayout* layout,
+                           const size_t timeoutMs)
 {
     this->device_ = DeviceFactory::Make(deviceId, blockSize, bufferNumber);
     if (!this->device_) { return Status::OutOfMemory(); }
@@ -45,6 +46,7 @@ Status TransManager::Setup(const int32_t deviceId, const size_t streamNumber,
     if (!success) { return Status::Error(); }
     this->layout_ = layout;
     this->ioSize_ = ioSize;
+    this->ioDirect_ = ioDirect;
     this->timeoutMs_ = timeoutMs_;
     return Status::OK();
 }
@@ -147,12 +149,12 @@ void TransManager::FileWorker(BlockTask&& task)
     auto length = this->ioSize_ * task.shards.size();
     if (task.type == TransTask::Type::DUMP) {
         const auto& path = this->layout_->DataFilePath(task.block, false);
-        auto s = File::Write(path, 0, length, hostPtr);
+        auto s = File::Write(path, 0, length, hostPtr, this->ioDirect_);
         this->layout_->Commit(task.block, s.Success());
         return;
     }
     const auto& path = this->layout_->DataFilePath(task.block, false);
-    auto s = File::Read(path, 0, length, hostPtr);
+    auto s = File::Read(path, 0, length, hostPtr, this->ioDirect_);
     if (s.Success()) {
         this->devPool_.Push(std::move(task));
         return;
