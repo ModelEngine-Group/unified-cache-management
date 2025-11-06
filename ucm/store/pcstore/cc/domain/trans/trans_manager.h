@@ -55,8 +55,8 @@ private:
         std::shared_ptr<void> buffer;
         WaiterPtr waiter;
     };
-    void DeviceWorker(BlockTask&);
-    void FileWorker(BlockTask&);
+    void DeviceWorker(BlockTask&&);
+    void FileWorker(BlockTask&&);
     void Dispatch(TaskPtr task, WaiterPtr waiter);
 
 private:

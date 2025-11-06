@@ -35,9 +35,10 @@ Status TransManager::Setup(const int32_t deviceId, const size_t streamNumber,
     auto s = this->device_->Setup();
     if (s.Failure()) { return s; }
     auto success =
-        this->devPool_.SetWorkerFn([this](auto& t, auto) { this->DeviceWorker(t); }).Run();
+        this->devPool_.SetWorkerFn([this](auto t, auto) { this->DeviceWorker(std::move(t)); })
+            .Run();
     if (!success) { return Status::Error(); }
-    success = this->filePool_.SetWorkerFn([this](auto& t, auto) { this->FileWorker(t); })
+    success = this->filePool_.SetWorkerFn([this](auto t, auto) { this->FileWorker(std::move(t)); })
                   .SetNWorker(streamNumber)
                   .Run();
     if (!success) { return Status::Error(); }
@@ -112,18 +113,29 @@ Status TransManager::Check(const size_t taskId, bool& finish) noexcept
     return Status::OK();
 }
 
-void TransManager::DeviceWorker(BlockTask& task)
+void TransManager::DeviceWorker(BlockTask&& task)
 {
     if (this->failureSet_.Contains(task.owner)) {
         task.waiter->Done(nullptr);
         return;
     }
-    if (task.type == TransTask::Type::DUMP) {
+    auto number = task.shards.size();
+    auto size = this->ioSize_;
+    // auto devPtrs = task.shards.data();
+    // auto hostPtr = (uintptr_t)task.buffer.get();
+    auto s = Status::OK();
+    if (task.type == TransTask::Type::LOAD) {
+        s = this->device_->H2DBatchSync(nullptr, nullptr, number, size); // fixme
     } else {
+        s = this->device_->D2HBatchSync(nullptr, nullptr, number, size); // fixme
     }
+    if (s.Failure()) { this->failureSet_.Insert(task.owner); }
+    this->filePool_.Push(std::move(task));
+    task.waiter->Done(nullptr);
+    return;
 }
 
-void TransManager::FileWorker(BlockTask& task)
+void TransManager::FileWorker(BlockTask&& task)
 {
     if (this->failureSet_.Contains(task.owner)) {
         task.waiter->Done(nullptr);

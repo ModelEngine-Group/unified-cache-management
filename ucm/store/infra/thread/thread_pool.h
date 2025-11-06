@@ -36,7 +36,7 @@ namespace UC {
 template <class Task, class WorkerArgs = void*>
 class ThreadPool {
     using WorkerInitFn = std::function<bool(WorkerArgs&)>;
-    using WorkerFn = std::function<void(Task&, const WorkerArgs&)>;
+    using WorkerFn = std::function<void(Task&&, const WorkerArgs&)>;
     using WorkerExitFn = std::function<void(WorkerArgs&)>;
 
 public:
@@ -115,10 +115,10 @@ private:
             this->cv_.wait(lk, [this] { return this->stop_ || !this->taskQ_.empty(); });
             if (this->stop_) { break; }
             if (this->taskQ_.empty()) { continue; }
-            auto task = std::make_shared<Task>(std::move(this->taskQ_.front()));
+            auto task = std::move(this->taskQ_.front());
             this->taskQ_.pop_front();
             lk.unlock();
-            this->fn_(*task, args);
+            this->fn_(std::move(task), args);
         }
         if (this->exitFn_) { this->exitFn_(args); }
     }

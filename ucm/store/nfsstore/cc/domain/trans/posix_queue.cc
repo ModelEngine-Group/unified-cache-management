@@ -44,7 +44,7 @@ Status PosixQueue::Setup(const int32_t deviceId, const size_t bufferSize, const 
     this->layout_ = layout;
     auto success =
         this->backend_.SetWorkerInitFn([this](auto& device) { return this->Init(device); })
-            .SetWorkerFn([this](auto& shard, const auto& device) { this->Work(shard, device); })
+            .SetWorkerFn([this](auto shard, const auto& device) { this->Work(std::move(shard), device); })
             .SetWorkerExitFn([this](auto& device) { this->Exit(device); })
             .Run();
     return success ? Status::OK() : Status::Error();
@@ -62,7 +62,7 @@ bool PosixQueue::Init(Device& device)
 
 void PosixQueue::Exit(Device& device) { device.reset(); }
 
-void PosixQueue::Work(Task::Shard& shard, const Device& device)
+void PosixQueue::Work(Task::Shard&& shard, const Device& device)
 {
     if (this->failureSet_->Contains(shard.owner)) {
         this->Done(shard, device, true);

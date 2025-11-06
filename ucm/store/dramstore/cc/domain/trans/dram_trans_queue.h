@@ -41,16 +41,16 @@ class DramTransQueue : public TaskQueue {
     ThreadPool<std::list<Task::Shard>, Device> backend_{};
 
 public:
-    Status Setup(const int32_t deviceId, 
-                 TaskSet* failureSet, 
-                 const MemoryPool* memPool, 
+    Status Setup(const int32_t deviceId,
+                 TaskSet* failureSet,
+                 const MemoryPool* memPool,
                  const size_t timeoutMs);
     void Push(std::list<Task::Shard>& shards) noexcept override;
 
 private:
     bool Init(Device& device);
     void Exit(Device& device);
-    void Work(std::list<Task::Shard>& shards, const Device& device);
+    void Work(std::list<Task::Shard>&& shards, const Device& device);
     void Done(std::list<Task::Shard>& shards, const Device& device, const bool success);
     Status H2D(std::list<Task::Shard>& shards, const Device& device);
     Status D2H(std::list<Task::Shard>& shards, const Device& device);
