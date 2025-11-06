@@ -24,10 +24,13 @@
 #ifndef UNIFIEDCACHE_STORE_H
 #define UNIFIEDCACHE_STORE_H
 
-#include "task_shard.h"
+#include <cstddef>
+#include <list>
+#include <string>
 
 namespace UC {
 
+template <class Task>
 class CCStore {
     using BlockId = std::string;
     using TaskId = size_t;

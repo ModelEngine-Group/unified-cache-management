@@ -25,10 +25,11 @@
 #define UNIFIEDCACHE_LOCALSTORE_H
 
 #include "ucmstore.h"
+#include "task_shard.h"
 
 namespace UC {
 
-class LocalStore : public CCStore {
+class LocalStore : public CCStore<Task> {
 public:
     struct Config {
         size_t ioSize;
