@@ -54,13 +54,11 @@ public:
         auto ret = this->Check(task, finish);
         return py::make_tuple(ret, finish);
     }
-    size_t LoadToDevice(const py::list& blockIds, const py::list& offsets,
-                        const py::list& addresses, const py::list& lengths)
+    size_t LoadToDevice(const py::list& blockIds, const py::list& addresses)
     {
         return this->SubmitPy(blockIds, addresses, TransTask::Type::LOAD, "PC::S2D");
     }
-    size_t DumpFromDevice(const py::list& blockIds, const py::list& offsets,
-                          const py::list& addresses, const py::list& lengths)
+    size_t DumpFromDevice(const py::list& blockIds, const py::list& addresses)
     {
         return this->SubmitPy(blockIds, addresses, TransTask::Type::DUMP, "PC::D2S");
     }
@@ -96,6 +94,7 @@ PYBIND11_MODULE(ucmpcstore, module)
     config.def_readwrite("storageBackends", &UC::PcStorePy::Config::storageBackends);
     config.def_readwrite("kvcacheBlockSize", &UC::PcStorePy::Config::kvcacheBlockSize);
     config.def_readwrite("transferEnable", &UC::PcStorePy::Config::transferEnable);
+    config.def_readwrite("transferIoDirect", &UC::PcStorePy::Config::transferIoDirect);
     config.def_readwrite("transferDeviceId", &UC::PcStorePy::Config::transferDeviceId);
     config.def_readwrite("transferStreamNumber", &UC::PcStorePy::Config::transferStreamNumber);
     config.def_readwrite("transferIoSize", &UC::PcStorePy::Config::transferIoSize);

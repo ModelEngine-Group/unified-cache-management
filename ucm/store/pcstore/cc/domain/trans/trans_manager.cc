@@ -58,7 +58,7 @@ Status TransManager::Submit(TransTask task, size_t& taskId) noexcept
     WaiterPtr waiterPtr = nullptr;
     try {
         taskPtr = std::make_shared<TransTask>(std::move(task));
-        waiterPtr = std::make_shared<TaskWaiter>(blockNumber);
+        waiterPtr = std::make_shared<TaskWaiter>(blockNumber, taskPtr->startTp);
     } catch (const std::exception& e) {
         UC_ERROR("Failed({}) to submit task({}).", e.what(), taskStr);
         return Status::OutOfMemory();
@@ -117,12 +117,12 @@ Status TransManager::Check(const size_t taskId, bool& finish) noexcept
 void TransManager::DeviceWorker(BlockTask&& task)
 {
     if (this->failureSet_.Contains(task.owner)) {
-        task.waiter->Done(nullptr);
+        task.done(false);
         return;
     }
     auto number = task.shards.size();
     auto size = this->ioSize_;
-    auto waiter = task.waiter;
+    auto done = task.done;
     auto devPtrs = task.shards.data();
     auto hostPtr = (uintptr_t)task.buffer.get();
     auto s = Status::OK();
@@ -133,20 +133,20 @@ void TransManager::DeviceWorker(BlockTask&& task)
         if (s.Success()) { this->filePool_.Push(std::move(task)); }
     }
     if (s.Failure()) { this->failureSet_.Insert(task.owner); }
-    waiter->Done(nullptr);
+    done(s.Success());
     return;
 }
 
 void TransManager::FileWorker(BlockTask&& task)
 {
     if (this->failureSet_.Contains(task.owner)) {
-        task.waiter->Done(nullptr);
+        task.done(false);
         return;
     }
     auto hostPtr = (uintptr_t)task.buffer.get();
     auto length = this->ioSize_ * task.shards.size();
     if (task.type == TransTask::Type::DUMP) {
-        const auto& path = this->layout_->DataFilePath(task.block, false);
+        const auto& path = this->layout_->DataFilePath(task.block, true);
         auto s = File::Write(path, 0, length, hostPtr, this->ioDirect_);
         this->layout_->Commit(task.block, s.Success());
         return;
@@ -158,27 +158,33 @@ void TransManager::FileWorker(BlockTask&& task)
         return;
     }
     this->failureSet_.Insert(task.owner);
-    task.waiter->Done(nullptr);
+    task.done(false);
 }
 
 void TransManager::Dispatch(TaskPtr task, WaiterPtr waiter)
 {
-    task->ForEachGroup([type = task->type, owner = task->id, waiter,
-                        this](const std::string& block, std::vector<uintptr_t>& shards) {
-        BlockTask blockTask;
-        blockTask.owner = owner;
-        blockTask.block = block;
-        blockTask.type = type;
-        auto bufferSize = this->ioSize_ * shards.size();
-        std::swap(blockTask.shards, shards);
-        blockTask.buffer = this->device_.buffer.GetBuffer(bufferSize);
-        blockTask.waiter = waiter;
-        if (type == TransTask::Type::DUMP) {
-            this->devPool_.Push(std::move(blockTask));
-        } else {
-            this->filePool_.Push(std::move(blockTask));
-        }
-    });
+    task->ForEachGroup(
+        [task, waiter, this](const std::string& block, std::vector<uintptr_t>& shards) {
+            BlockTask blockTask;
+            blockTask.owner = task->id;
+            blockTask.block = block;
+            blockTask.type = task->type;
+            auto bufferSize = this->ioSize_ * shards.size();
+            std::swap(blockTask.shards, shards);
+            blockTask.buffer = this->device_.buffer.GetBuffer(bufferSize);
+            blockTask.done = [task, waiter, ioSize = this->ioSize_](bool success) {
+                if (!success) {
+                    waiter->Done(nullptr);
+                } else {
+                    waiter->Done([task, ioSize] { UC_DEBUG("{}", task->Epilog(ioSize)); });
+                }
+            };
+            if (task->type == TransTask::Type::DUMP) {
+                this->devPool_.Push(std::move(blockTask));
+            } else {
+                this->filePool_.Push(std::move(blockTask));
+            }
+        });
 }
 
 } // namespace UC

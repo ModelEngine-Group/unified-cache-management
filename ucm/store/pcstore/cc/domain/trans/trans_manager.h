@@ -53,7 +53,7 @@ private:
         TransTask::Type type;
         std::vector<uintptr_t> shards;
         std::shared_ptr<void> buffer;
-        WaiterPtr waiter;
+        std::function<void(bool)> done;
     };
     void DeviceWorker(BlockTask&&);
     void FileWorker(BlockTask&&);

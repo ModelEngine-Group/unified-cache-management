@@ -39,9 +39,6 @@ public:
                         const size_t number);
     Status D2HBatchSync(uintptr_t deviceAddrs[], uintptr_t hostAddr, const size_t size,
                         const size_t number);
-
-private:
-    void* MakeDevicePtrs(uintptr_t deviceAddrs[], const size_t number);
 };
 
 } // namespace UC

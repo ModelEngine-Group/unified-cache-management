@@ -55,7 +55,7 @@ std::shared_ptr<void> Buffer::GetBuffer(const size_t size)
 std::shared_ptr<void> Buffer::MakeBuffer(const size_t size)
 {
     void* hostAddr = nullptr;
-    auto ret = cudaHostAlloc(&hostAddr, size, cudaHostAllocPortable);
+    auto ret = cudaMallocHost(&hostAddr, size);
     if (ret != cudaSuccess) {
         CUDA_ERROR(ret);
         return nullptr;

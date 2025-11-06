@@ -48,7 +48,7 @@ std::string SpaceLayout::DataFilePath(const std::string& blockId, bool activated
     const auto& dir = activated ? TempFileRoot() : DataFileRoot();
     uint64_t front, back;
     ShardBlockId(blockId, front, back);
-    return fmt::format("{}{}/{:016x}{:016x}", backend, dir, front, back);
+    return fmt::format("{}{}{:016x}{:016x}", backend, dir, front, back);
 }
 
 Status SpaceLayout::Commit(const std::string& blockId, bool success) const
