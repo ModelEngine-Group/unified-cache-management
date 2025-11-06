@@ -1,3 +1,5 @@
+add_subdirectory(kernel)
+
 file(GLOB_RECURSE UCMSTORE_PC_CC_SOURCE_FILES "./cc/*.cc")
 add_library(pcstore STATIC ${UCMSTORE_PC_CC_SOURCE_FILES})
 target_include_directories(pcstore PUBLIC
