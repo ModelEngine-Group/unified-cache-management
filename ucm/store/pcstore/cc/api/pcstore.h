@@ -39,6 +39,7 @@ public:
         size_t transferStreamNumber{64};
         size_t transferIoSize{262144};
         size_t transferBufferNumber{32768};
+        size_t transferTimeoutMs{30000};
 
         Config(const std::vector<std::string>& storageBackends, const size_t kvcacheBlockSize,
                const bool transferEnable)

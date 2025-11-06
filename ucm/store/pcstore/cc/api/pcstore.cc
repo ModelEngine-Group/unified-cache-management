@@ -22,23 +22,63 @@
  * SOFTWARE.
  * */
 #include "pcstore.h"
+#include <fmt/ranges.h>
 #include "logger/logger.h"
+#include "space/space_manager.h"
 #include "status/status.h"
 
 namespace UC {
 
 class PCStoreImpl : public PCStore {
 public:
-    int32_t Setup(const Config& config) { return -1; }
-    int32_t Alloc(const std::string& block) override { return -1; }
-    bool Lookup(const std::string& block) override { return false; }
+    int32_t Setup(const Config& config)
+    {
+        auto status = this->spaceMgr_.Setup(config.storageBackends, config.kvcacheBlockSize);
+        if (status.Failure()) { return status.Underlying(); }
+        this->ShowConfig(config);
+        return Status::OK().Underlying();
+    }
+    int32_t Alloc(const std::string& block) override
+    {
+        return this->spaceMgr_.NewBlock(block).Underlying();
+    }
+    bool Lookup(const std::string& block) override { return this->spaceMgr_.LookupBlock(block); }
     void Commit(const std::string& block, const bool success) override {}
-    std::list<int32_t> Alloc(const std::list<std::string>& blocks) override { return {}; }
-    std::list<bool> Lookup(const std::list<std::string>& blocks) override { return {}; }
+    std::list<int32_t> Alloc(const std::list<std::string>& blocks) override
+    {
+        std::list<int32_t> results;
+        for (const auto& block : blocks) { results.emplace_back(this->Alloc(block)); }
+        return results;
+    }
+    std::list<bool> Lookup(const std::list<std::string>& blocks) override
+    {
+        std::list<bool> founds;
+        for (const auto& block : blocks) { founds.emplace_back(this->Lookup(block)); }
+        return founds;
+    }
     void Commit(const std::list<std::string>& blocks, const bool success) override {}
     size_t Submit(TransTask&& task) override { return TransTask::invalid; }
     int32_t Wait(const size_t task) override { return -1; }
     int32_t Check(const size_t task, bool& finish) override { return -1; }
+
+private:
+    void ShowConfig(const Config& config)
+    {
+        std::string buildType = UCM_BUILD_TYPE;
+        if (buildType.empty()) { buildType = "Release"; }
+        UC_INFO("PCStore-{}({}).", UCM_COMMIT_ID, buildType);
+        UC_INFO("Set UC::StorageBackends to {}.", config.storageBackends);
+        UC_INFO("Set UC::BlockSize to {}.", config.kvcacheBlockSize);
+        UC_INFO("Set UC::TransferEnable to {}.", config.transferEnable);
+        UC_INFO("Set UC::DeviceId to {}.", config.transferDeviceId);
+        UC_INFO("Set UC::StreamNumber to {}.", config.transferStreamNumber);
+        UC_INFO("Set UC::IOSize to {}.", config.transferIoSize);
+        UC_INFO("Set UC::BufferNumber to {}.", config.transferBufferNumber);
+        UC_INFO("Set UC::TimeoutMs to {}.", config.transferTimeoutMs);
+    }
+
+private:
+    SpaceManager spaceMgr_;
 };
 
 int32_t PCStore::Setup(const Config& config)
