@@ -70,11 +70,45 @@ Status TransManager::Submit(TransTask task, size_t& taskId) noexcept
     return Status::OK();
 }
 
-Status TransManager::Wait(const size_t taskId) noexcept { return Status::Unsupported(); }
+Status TransManager::Wait(const size_t taskId) noexcept
+{
+    TaskPtr task = nullptr;
+    WaiterPtr waiter = nullptr;
+    {
+        std::lock_guard<std::mutex> lg(mutex_);
+        auto iter = tasks_.find(taskId);
+        if (iter == tasks_.end()) {
+            UC_ERROR("Not found task by id({}).", taskId);
+            return Status::NotFound();
+        }
+        task = iter->second.first;
+        waiter = iter->second.second;
+        tasks_.erase(iter);
+    }
+    if (!waiter->Wait(timeoutMs_)) {
+        UC_ERROR("Task({}) timeout({}).", task->Str(), timeoutMs_);
+        failureSet_.Insert(taskId);
+        waiter->Wait();
+    }
+    auto failure = failureSet_.Contains(taskId);
+    if (failure) {
+        failureSet_.Remove(taskId);
+        UC_ERROR("Task({}) failed.", task->Str());
+        return Status::Error();
+    }
+    return Status::OK();
+}
 
 Status TransManager::Check(const size_t taskId, bool& finish) noexcept
 {
-    return Status::Unsupported();
+    std::lock_guard<std::mutex> lg(mutex_);
+    auto iter = tasks_.find(taskId);
+    if (iter == tasks_.end()) {
+        UC_ERROR("Not found task by id({}).", taskId);
+        return Status::NotFound();
+    }
+    finish = iter->second.second->Finish();
+    return Status::OK();
 }
 
 void TransManager::DeviceWorker(BlockTask&) {}
