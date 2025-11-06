@@ -22,6 +22,7 @@
  * SOFTWARE.
  * */
 #include "trans_manager.h"
+#include "file/file.h"
 #include "logger/logger.h"
 
 namespace UC {
@@ -121,6 +122,7 @@ void TransManager::DeviceWorker(BlockTask&& task)
     }
     auto number = task.shards.size();
     auto size = this->ioSize_;
+    auto waiter = task.waiter;
     // auto devPtrs = task.shards.data();
     // auto hostPtr = (uintptr_t)task.buffer.get();
     auto s = Status::OK();
@@ -128,10 +130,10 @@ void TransManager::DeviceWorker(BlockTask&& task)
         s = this->device_->H2DBatchSync(nullptr, nullptr, number, size); // fixme
     } else {
         s = this->device_->D2HBatchSync(nullptr, nullptr, number, size); // fixme
+        if (s.Success()) { this->filePool_.Push(std::move(task)); }
     }
     if (s.Failure()) { this->failureSet_.Insert(task.owner); }
-    this->filePool_.Push(std::move(task));
-    task.waiter->Done(nullptr);
+    waiter->Done(nullptr);
     return;
 }
 
@@ -141,9 +143,22 @@ void TransManager::FileWorker(BlockTask&& task)
         task.waiter->Done(nullptr);
         return;
     }
+    auto hostPtr = (uintptr_t)task.buffer.get();
+    auto length = this->ioSize_ * task.shards.size();
     if (task.type == TransTask::Type::DUMP) {
-    } else {
+        const auto& path = this->layout_->DataFilePath(task.block, false);
+        auto s = File::Write(path, 0, length, hostPtr);
+        this->layout_->Commit(task.block, s.Success());
+        return;
     }
+    const auto& path = this->layout_->DataFilePath(task.block, false);
+    auto s = File::Read(path, 0, length, hostPtr);
+    if (s.Success()) {
+        this->devPool_.Push(std::move(task));
+        return;
+    }
+    this->failureSet_.Insert(task.owner);
+    task.waiter->Done(nullptr);
 }
 
 void TransManager::Dispatch(TaskPtr task, WaiterPtr waiter)

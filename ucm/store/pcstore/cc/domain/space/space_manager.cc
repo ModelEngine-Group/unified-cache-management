@@ -67,11 +67,7 @@ Status SpaceManager::NewBlock(const std::string& blockId)
 
 Status SpaceManager::CommitBlock(const std::string& blockId, bool success)
 {
-    const auto& activated = this->layout_.DataFilePath(blockId, true);
-    const auto& archived = this->layout_.DataFilePath(blockId, false);
-    if (success) { return File::Rename(activated, archived); }
-    File::Remove(activated);
-    return Status::OK();
+    return this->layout_.Commit(blockId, success);
 }
 
 bool SpaceManager::LookupBlock(const std::string& blockId) const

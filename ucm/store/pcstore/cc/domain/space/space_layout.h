@@ -34,6 +34,7 @@ class SpaceLayout {
 public:
     Status Setup(const std::vector<std::string>& storageBackends);
     std::string DataFilePath(const std::string& blockId, bool activated) const;
+    Status Commit(const std::string& blockId, bool success) const;
 
 private:
     std::vector<std::string> RelativeRoots() const;

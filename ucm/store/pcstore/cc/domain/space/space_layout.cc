@@ -51,6 +51,15 @@ std::string SpaceLayout::DataFilePath(const std::string& blockId, bool activated
     return fmt::format("{}{}/{:016x}{:016x}", backend, dir, front, back);
 }
 
+Status SpaceLayout::Commit(const std::string& blockId, bool success) const
+{
+    const auto& activated = this->DataFilePath(blockId, true);
+    const auto& archived = this->DataFilePath(blockId, false);
+    if (success) { return File::Rename(activated, archived); }
+    File::Remove(activated);
+    return Status::OK();
+}
+
 std::vector<std::string> SpaceLayout::RelativeRoots() const
 {
     return {DataFileRoot(), TempFileRoot()};
