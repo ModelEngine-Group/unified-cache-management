@@ -27,6 +27,8 @@
 #include "device/idevice.h"
 #include "space/space_layout.h"
 #include "status/status.h"
+#include "task/task_set.h"
+#include "task/task_waiter.h"
 #include "thread/thread_pool.h"
 #include "trans_task.h"
 
@@ -41,17 +43,29 @@ public:
     Status Check(const size_t taskId, bool& finish) noexcept;
 
 private:
-    struct DeviceTask {};
-    struct FileTask {};
-    void DeviceWorker(DeviceTask&);
-    void FileWorker(FileTask&);
+    using TaskPtr = std::shared_ptr<TransTask>;
+    using WaiterPtr = std::shared_ptr<TaskWaiter>;
+    using TaskPair = std::pair<TaskPtr, WaiterPtr>;
+    struct BlockTask {
+        std::string block;
+        TransTask::Type type;
+        std::list<TransTask::Shard*> shards;
+        std::shared_ptr<void> buffer;
+        WaiterPtr waiter;
+    };
+    void DeviceWorker(BlockTask&);
+    void FileWorker(BlockTask&);
+    void Dispatch(TaskPtr task, WaiterPtr waiter);
 
 private:
     std::unique_ptr<IDevice> device_;
-    ThreadPool<DeviceTask> devPool_;
-    ThreadPool<FileTask> filePool_;
     const SpaceLayout* layout_;
     size_t timeoutMs_;
+    ThreadPool<BlockTask> devPool_;
+    ThreadPool<BlockTask> filePool_;
+    std::mutex mutex_;
+    std::unordered_map<size_t, TaskPair> tasks_;
+    TaskSet failureSet_;
 };
 
 } // namespace UC

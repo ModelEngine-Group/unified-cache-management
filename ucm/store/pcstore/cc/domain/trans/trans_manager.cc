@@ -22,6 +22,7 @@
  * SOFTWARE.
  * */
 #include "trans_manager.h"
+#include "logger/logger.h"
 
 namespace UC {
 
@@ -47,7 +48,26 @@ Status TransManager::Setup(const int32_t deviceId, const size_t streamNumber, co
 
 Status TransManager::Submit(TransTask task, size_t& taskId) noexcept
 {
-    return Status::Unsupported();
+    taskId = task.Id();
+    const auto taskStr = task.Str();
+    const auto blockNumber = task.GroupNumber();
+    TaskPtr taskPtr = nullptr;
+    WaiterPtr waiterPtr = nullptr;
+    try {
+        taskPtr = std::make_shared<TransTask>(std::move(task));
+        waiterPtr = std::make_shared<TaskWaiter>(blockNumber);
+    } catch (const std::exception& e) {
+        UC_ERROR("Failed({}) to submit task({}).", e.what(), taskStr);
+        return Status::OutOfMemory();
+    }
+    std::lock_guard<std::mutex> lg(mutex_);
+    const auto& [iter, success] = tasks_.emplace(taskId, std::make_pair(taskPtr, waiterPtr));
+    if (!success) {
+        UC_ERROR("Failed to submit task({}).", taskStr);
+        return Status::OutOfMemory();
+    }
+    Dispatch(iter->second.first, iter->second.second);
+    return Status::OK();
 }
 
 Status TransManager::Wait(const size_t taskId) noexcept { return Status::Unsupported(); }
@@ -57,8 +77,26 @@ Status TransManager::Check(const size_t taskId, bool& finish) noexcept
     return Status::Unsupported();
 }
 
-void TransManager::DeviceWorker(DeviceTask&) {}
+void TransManager::DeviceWorker(BlockTask&) {}
 
-void TransManager::FileWorker(FileTask&) {}
+void TransManager::FileWorker(BlockTask&) {}
+
+void TransManager::Dispatch(TaskPtr task, WaiterPtr waiter)
+{
+    task->ForEachGroup([type = task->type, waiter, this](const std::string& block,
+                                                         std::list<TransTask::Shard*>& shards) {
+        BlockTask blockTask;
+        blockTask.block = block;
+        blockTask.type = type;
+        std::swap(blockTask.shards, shards);
+        blockTask.buffer = this->device_->GetBuffer(0); // fixme
+        blockTask.waiter = waiter;
+        if (type == TransTask::Type::DUMP) {
+            this->devPool_.Push(std::move(blockTask));
+        } else {
+            this->filePool_.Push(std::move(blockTask));
+        }
+    });
+}
 
 } // namespace UC

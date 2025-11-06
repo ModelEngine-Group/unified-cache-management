@@ -35,6 +35,7 @@ protected:
 
 public:
     TaskWaiter(const size_t expected, const double startTp) : Latch{expected}, startTp_{startTp} {}
+    explicit TaskWaiter(const size_t expected) : TaskWaiter{expected, NowTp()} {}
     virtual ~TaskWaiter() = default;
     virtual void Set(const size_t expected) noexcept { this->counter_.store(expected); }
     using Latch::Wait;

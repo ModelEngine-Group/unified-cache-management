@@ -25,6 +25,8 @@
 #define UNIFIEDCACHE_TRANS_TASK_H
 
 #include <atomic>
+#include <fmt/format.h>
+#include <functional>
 #include <limits>
 #include <list>
 #include <string>
@@ -51,9 +53,10 @@ public:
         {
         }
     };
+    Type type;
     static constexpr auto invalid = std::numeric_limits<size_t>::min();
     TransTask(Type&& type, std::string&& brief)
-        : id_{NextId()}, type_{std::move(type)}, brief_{std::move(brief)}
+        : type{std::move(type)}, id_{NextId()}, brief_{std::move(brief)}
     {
     }
     void Append(const std::string& block, const size_t offset, const uintptr_t address,
@@ -62,14 +65,22 @@ public:
         auto& shard = shards_.emplace_back(address, offset, length);
         addresses_.push_back(address);
         grouped_[block].push_back(&shard);
+        size_ += length;
     }
+    size_t Id() const { return id_; }
+    auto Str() const noexcept { return fmt::format("{},{},{},{}", id_, brief_, Number(), size_); }
     uintptr_t* Addresses() { return addresses_.data(); }
     size_t Number() const { return addresses_.size(); }
+    size_t GroupNumber() const { return grouped_.size(); }
+    void ForEachGroup(std::function<void(const std::string&, std::list<Shard*>&)> fn)
+    {
+        for (auto& [block, shards] : grouped_) { fn(block, shards); }
+    }
 
 private:
     size_t id_;
-    Type type_;
     std::string brief_;
+    size_t size_{0};
     std::list<Shard> shards_;
     std::vector<uintptr_t> addresses_;
     std::unordered_map<std::string, std::list<Shard*>> grouped_;
