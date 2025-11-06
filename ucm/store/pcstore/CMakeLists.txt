@@ -4,7 +4,7 @@ target_include_directories(pcstore PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/cc/api
     ${CMAKE_CURRENT_SOURCE_DIR}/cc/domain
 )
-target_link_libraries(pcstore PUBLIC storeinfra storedevice storetask)
+target_link_libraries(pcstore PUBLIC storeinfra storedevice)
 
 file(GLOB_RECURSE UCMSTORE_PC_CPY_SOURCE_FILES "./cpy/*.cc")
 pybind11_add_module(ucmpcstore ${UCMSTORE_PC_CPY_SOURCE_FILES})
