@@ -28,7 +28,6 @@ from typing import Any, Dict, List, Optional
 import torch
 
 from ucm.logger import init_logger
-from ucm.store.dramstore import ucmdramstore
 from ucm.store.ucmstore import Task, UcmKVStoreBase
 
 logger = init_logger(__name__)
@@ -49,7 +48,7 @@ else:
 
 @dataclass
 class DramTask(Task):
-    task_id: int
+    task_id: str = "1"
     event: Optional[Any] = None
 
 
@@ -60,50 +59,110 @@ class UcmDramStore(UcmKVStoreBase):
 
     def __init__(self, config: Dict):
         super().__init__(config)
-        self.store = ucmdramstore.DRAMStore()
-
-        capacity = int(config.get("capacity", 1073741824))  # Default 1GB
-        block_size = int(config.get("kv_block_size", 262144))  # Default 256KB
-        device_id = int(config.get("device_id", -1))
-        stream_number = int(config.get("stream_number", 32))
-        timeout_ms = int(config.get("timeout_ms", 30000))
-
-        param = ucmdramstore.DRAMStore.Config(
-            capacity, block_size, device_id, stream_number, timeout_ms
-        )
-
-        ret = self.store.Setup(param)
-        if ret != 0:
-            msg = f"Failed to initialize ucmdramstore, errcode: {ret}."
-            raise RuntimeError(msg)
+        self.dram_cache: Dict[str, any] = {}
+        self.max_cache_byte = int(config.get("max_cache_size", 5368709120))
+        self.kv_block_size = int(config.get("kv_block_size", 262144))
+        self.max_block_num = self.max_cache_byte // self.kv_block_size
+        if config["role"] == "scheduler":
+            self.cached_blocks = set()
 
     def cc_store(self) -> int:
-        return self.store.CCStoreImpl()
+        """
+        get the underlying implementation of Store
+
+        Returns:
+            cc pointer to Store
+        """
+        return 0
 
     def create(self, block_ids: List[str]) -> List[int]:
-        return self.store.AllocBatch(block_ids)
+        """
+        create kv cache space in storage
+
+        Args:
+            block_ids (List[str]): vLLM block hash.
+        Returns:
+            success mask
+        """
+        return [SUCCESS] * len(block_ids)
 
     def lookup(self, block_ids: List[str]) -> List[bool]:
-        return self.store.LookupBatch(block_ids)
+        """
+        Get number of blocks that can be loaded from the
+        external KV cache.
+
+        Args:
+            block_ids (List[str]): vLLM block hash.
+
+        Returns:
+            hit block mask, True -> hit
+        """
+        hit_list = [block_id in self.cached_blocks for block_id in block_ids]
+        return hit_list
 
     def prefetch(self, block_ids: List[str]) -> None:
+        """
+        prefetch kv cache to high speed cache according to block_ids.
+
+        Args:
+            block_ids (List[str]): vLLM block hash.
+        """
         pass
 
     def load(
         self, block_ids: List[str], offset: List[int], dst_tensor: List[torch.Tensor]
     ) -> Task:
-        dst_tensor_ptr = [t.data_ptr() for t in dst_tensor]
-        dst_tensor_size = [t.numel() * t.element_size() for t in dst_tensor]
-        task_id = self.store.Load(block_ids, offset, dst_tensor_ptr, dst_tensor_size)
-        return DramTask(task_id=task_id)
+        """
+        load kv cache to device.
+
+        Args:
+            block_ids (List[str]): vLLM block hash.
+            offset(List[int]): tp > 1 scene
+            dst_tensor: List[torch.Tensor]: device tensor addr.
+        Returns:
+            task(Task).
+        """
+        task = DramTask()
+        stream = device.Stream()
+        task.event = device.Event(enable_timing=True)
+        with device.stream(stream):
+            for i, block_id in enumerate(block_ids):
+                key = block_id + "_" + str(offset[i])
+                dst_tensor[i].copy_(self.dram_cache[key], non_blocking=True)
+            task.event.record(stream=stream)
+        logger.debug(f"load block {block_ids} finished.")
+        return task
 
     def dump(
         self, block_ids: List[str], offset: List[int], src_tensor: List[torch.Tensor]
     ) -> Task:
-        src_tensor_ptr = [t.data_ptr() for t in src_tensor]
-        src_tensor_size = [t.numel() * t.element_size() for t in src_tensor]
-        task_id = self.store.Dump(block_ids, offset, src_tensor_ptr, src_tensor_size)
-        return DramTask(task_id=task_id)
+        """
+        dump kv cache to device.
+
+        Args:
+            block_ids (List[str]): vLLM block hash.
+            offset(List[int]): tp > 1 scene
+            src_tensor: List[torch.Tensor]: device tensor addr.
+        Returns:
+            task(Task).
+        """
+        task = DramTask()
+        if len(self.dram_cache) > self.max_block_num:
+            logger.warning(
+                "Dram cache usage exceeds limit! No more kv cache offload! Try to increase your initial max_cache_size."
+            )
+            task.task_id = "-1"
+            return task
+        else:
+            stream = device.Stream()
+            task.event = device.Event(enable_timing=True)
+            with device.stream(stream):
+                for i, block_id in enumerate(block_ids):
+                    key = block_id + "_" + str(offset[i])
+                    self.dram_cache[key] = src_tensor[i].to("cpu", non_blocking=True)
+                task.event.record(stream=stream)
+        logger.debug(f"dump block {block_ids} finished.")
+        return task
 
     def fetch_data(
         self,
@@ -112,8 +171,18 @@ class UcmDramStore(UcmKVStoreBase):
         dst_addr: List[int],
         size: List[int],
     ) -> Task:
-        task_id = self.store.Load(block_ids, offset, dst_addr, size)
-        return DramTask(task_id=task_id)
+        """
+        load kv cache data to device.
+
+        Args:
+            block_ids (List[str]): vLLM block hash.
+            offset(List[int]): tp > 1 scene
+            dst_addr: List[int]: device tensor addr ptr.
+            size: List[int]: device tensor size.
+        Returns:
+            task(Task).
+        """
+        pass
 
     def dump_data(
         self,
@@ -122,14 +191,59 @@ class UcmDramStore(UcmKVStoreBase):
         src_addr: List[int],
         size: List[int],
     ) -> Task:
-        task_id = self.store.Dump(block_ids, offset, src_addr, size)
-        return DramTask(task_id=task_id)
+        """
+        dump kv cache data from device.
+
+        Args:
+            block_ids (List[str]): vLLM block hash.
+            offset(List[int]): tp > 1 scene
+            src_addr: List[int]: device tensor addr ptr.
+            size: List[int]: device tensor size.
+        Returns:
+            task(Task).
+        """
+        pass
 
     def wait(self, task: DramTask) -> int:
-        return self.store.Wait(task.task_id)
+        """
+        wait kv cache kv transfer task finished.
+
+        Args:
+            task (Task): transfer engine task.
+        Returns:
+            0 - success
+            others - failed.
+        """
+        if task.task_id == "-1":
+            logger.warning("Dump failure with full cache usage!")
+            return FAILURE
+        try:
+            event = task.event
+            event.synchronize()
+            return SUCCESS
+        except Exception as e:
+            logger.error(f"Error waiting cache for block IDs: {e}")
+            return FAILURE
 
     def commit(self, block_ids: List[str], is_success: bool = True) -> None:
-        self.store.CommitBatch(block_ids, is_success)
+        """
+        commit kv cache, now kv cache can be reused.
+
+        Args:
+            block_ids (List[str]): vLLM block hash.
+            is_success(bool): if False, we need release block
+        """
+        if is_success:
+            self.cached_blocks.update(block_ids)
 
     def check(self, task: Task) -> int:
-        return self.store.Check(task.task_id)
+        """
+        check if kv transfer task finished.
+
+        Args:
+            task (Task): transfer engine task.
+        Returns:
+            0 - finished
+            others - in process.
+        """
+        pass
