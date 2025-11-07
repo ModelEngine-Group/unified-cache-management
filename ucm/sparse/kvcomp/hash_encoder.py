@@ -62,13 +62,25 @@ class HashEncoder:
                 logger.warning("automatically using  float16 for hash_weights now")
                 self.dtype = torch.float16
 
-        self.hash_weights = torch.normal(
+        if self.device.type == "cuda" and dtype == torch.bfloat16:
+            logger.warning("geqrf_cuda not implemented for BFloat16")
+            logger.warning("automatically using  float32 for hash_weights now")
+            self.dtype = torch.float32
+
+        # Step 1: 随机高斯矩阵
+        random_weights = torch.normal(
             mean=0,
             std=2,
             size=(self.input_dim, self.hash_bits),
             dtype=self.dtype,
             device=self.device,
         )
+        # Step 2: QR分解
+        Q, R = torch.linalg.qr(random_weights)
+
+        # Step 3: 调整符号，保证Haar 分布
+        d = torch.sign(torch.diag(R))
+        self.hash_weights = Q * d
 
         if self.device.type == "cuda" or self.device.type == "cpu":
             self._init_bit_masks()

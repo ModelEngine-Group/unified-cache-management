@@ -11,12 +11,15 @@
 #include <vector>
 #include <algorithm>
 #include <random>
+#include <numaif.h>
+#include <iostream>
 
 namespace py = pybind11;
 
 class RetrievalWorkerBackend {
 public:
-    RetrievalWorkerBackend(py::array_t<float> data)
+    RetrievalWorkerBackend(py::array_t<float> data,
+                           py::dict cpu_idx_tbl) 
         : data_array_(data), stop_workers_(false), next_req_id_(0)
     {
         py::buffer_info info = data_array_.request();
@@ -25,9 +28,35 @@ public:
         data_ = static_cast<const float*>(info.ptr);
 
         // Start worker threads
-        int n_workers = std::thread::hardware_concurrency();
-        for (int i = 0; i < n_workers; ++i) {
-            worker_threads_.emplace_back(&RetrievalWorkerBackend::worker_loop, this);
+        for (auto cpu_idx : cpu_idx_tbl) {
+            int numaId = cpu_idx.first.cast<int>();
+            py::list core_ids = cpu_idx.second.cast<py::list>();
+
+            for (size_t i = 0; i < core_ids.size(); ++i) {
+                int core_id = core_ids[i].cast<int>();
+                worker_threads_.emplace_back(&RetrievalWorkerBackend::worker_loop, this);
+
+                // 核心绑定代码
+                cpu_set_t cpuset;
+                CPU_ZERO(&cpuset);
+                CPU_SET(core_id, &cpuset);  // 绑定每个线程到指定的核心
+
+                pthread_t thread = worker_threads_.back().native_handle();
+                
+                // 设置 CPU 亲和性
+                int rc = pthread_setaffinity_np(thread, sizeof(cpu_set_t), &cpuset);
+                if (rc != 0) {
+                    std::cerr << "Error binding thread " << i << " to CPU core " << core_id << std::endl;
+                }
+
+                // 设置内存亲和性
+                unsigned long nodeMask = 1UL << numaId;
+                rc = set_mempolicy(MPOL_BIND, &nodeMask, sizeof(nodeMask) * 8);
+                if (rc != 0) {
+                    std::cerr << "Error binding memory to NUMA node " << numaId << std::endl;
+                }
+            }
+
         }
     }
 
@@ -217,7 +246,7 @@ private:
 
 PYBIND11_MODULE(retrieval_backend, m) {
     py::class_<RetrievalWorkerBackend>(m, "RetrievalWorkerBackend")
-        .def(py::init<py::array_t<float>>())
+        .def(py::init<py::array_t<float>, py::dict>())
         .def("submit", &RetrievalWorkerBackend::submit)
         .def("poll", &RetrievalWorkerBackend::poll)
         .def("get_result", &RetrievalWorkerBackend::get_result)

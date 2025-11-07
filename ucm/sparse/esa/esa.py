@@ -1,6 +1,7 @@
 import hashlib
 import math
 import pickle
+from collections import defaultdict
 from dataclasses import dataclass
 from functools import cache
 from typing import Dict, List, Optional, Union
@@ -23,6 +24,7 @@ from ucm.sparse.base import (
 )
 from ucm.sparse.esa.retrieval import retrieval_backend
 from ucm.sparse.esa.retrieval.retrieval_worker import RetrievalWorker
+from ucm.sparse.kvstar.utils import get_bind_cpus_for_rank
 from ucm.store.ucmstore import Task, UcmKVStoreBase
 
 ReqType = Union[str, int]
@@ -203,9 +205,9 @@ class ReqStatePerLayer:
         self.rank = rank
         self.tp_size = tp_size
         self.tasks: Dict[str, Task] = {}
-        self.esa_cfg = vllm_config.kv_transfer_config.kv_connector_extra_config[
-            "ucm_sparse_config"
-        ]["ESA"]
+        self.esa_cfg = vllm_config.kv_transfer_config.kv_connector_extra_config.get(
+            "ucm_sparse_config", {}
+        ).get("ESA", None)
         self.indexes: Optional[NDArray[np.int64]] = None
         self.block_hashes = None
         self.pre_topk_block_hashes: Dict[int, str] = {}
@@ -502,10 +504,25 @@ class ESA(UcmSparseBase):
                 ReprePool(num_slots) for _ in range(self.total_num_hidden_layers)
             ]
 
+        self.local_tp_rank = vllm_config.parallel_config.rank
+        self.total_tp_size = vllm_config.parallel_config.tensor_parallel_size
+        ratio = 0.75
+
+        bind_info_list, alloc_numa_ids = get_bind_cpus_for_rank(
+            self.total_tp_size, self.local_tp_rank, ratio=ratio
+        )
+
+        bind_info_dict = defaultdict(list)
+        for item in bind_info_list:
+            bind_info_dict[item[1]].append(item[0])
+        bind_info_dict = dict(bind_info_dict)
+
         self.retrieval_workers: List[RetrievalWorker] = []
         for i in range(self.total_num_hidden_layers):
             backend_src = data[i]
-            backend = retrieval_backend.RetrievalWorkerBackend(backend_src)
+            backend = retrieval_backend.RetrievalWorkerBackend(
+                backend_src, bind_info_dict
+            )
             self.retrieval_workers.append(RetrievalWorker(backend))
 
         self.preempt_req_output_tokens: Dict[ReqType, int] = {}
