@@ -1,0 +1,9 @@
+{"ESA": 
+    {
+    "init_window_sz": 1,
+    "local_window_sz": 2,
+    "min_blocks":4,
+    "sparse_ratio": 0.3,
+    "retrieval_stride": 10
+    }
+}
