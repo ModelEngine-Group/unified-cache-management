@@ -26,6 +26,7 @@ import os
 import subprocess
 import sys
 import sysconfig
+from glob import glob
 
 import pybind11
 import torch
@@ -104,17 +105,37 @@ class CMakeBuild(build_ext):
         )
 
 
+def _get_package_data_with_so():
+    """Automatically discover all packages and include .so files."""
+    packages = find_packages()
+    package_data = {}
+
+    for package in packages:
+        # Convert package name to directory path
+        package_dir = os.path.join(ROOT_DIR, package.replace(".", os.sep))
+
+        # Check if this package directory contains .so files
+        so_files = glob(os.path.join(package_dir, "*.so"))
+        if so_files:
+            package_data[package] = ["*.so"]
+            print(f"[INFO] Including .so files for package: {package}")
+
+    print(f"[INFO] Package data: {package_data}")
+    return package_data
+
+
 ext_modules = []
 ext_modules.append(CMakeExtension(name="ucm", sourcedir=ROOT_DIR))
 
 setup(
     name="ucm",
-    version="0.0.2",
+    version="0.1.0",
     description="Unified Cache Management",
     author="Unified Cache Team",
     packages=find_packages(),
     python_requires=">=3.10",
     ext_modules=ext_modules,
     cmdclass={"build_ext": CMakeBuild},
+    package_data=_get_package_data_with_so(),
     zip_safe=False,
 )
