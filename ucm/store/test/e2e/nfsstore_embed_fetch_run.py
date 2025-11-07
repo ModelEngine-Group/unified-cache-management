@@ -38,13 +38,40 @@ def run_wrapper(result_queue, *args):
         result_queue.put(("error", str(e)))
 
 
+def get_user_input(prompt, default=None):
+    if default is not None:
+        user_input = input(f"{prompt} (default: {default}): ").strip()
+        return user_input if user_input else default
+    else:
+        return input(f"{prompt}: ").strip()
+
+
 def main():
     storage_backends = "."
     device_id = 1
-    mla = False
     repeat = 3
     num_tokens_list = [2048, 4096, 8192, 16384, 32768]
     transferStreamNumbers = [32, 64, 128]
+
+    print("1. Model Selection:")
+    print("   1 - QwQ-32B")
+    print("   2 - deepseek-v3")
+    model_choice = get_user_input("Please select model", "1")
+    mla = True if model_choice == "2" else False
+
+    print("\n2. GDS Transfer:")
+    print("   1 - Enable GDS (default)")
+    print("   2 - Disable GDS")
+    useDirect = get_user_input("Please select Direct IO mode", "1")
+    useDirect = False if useDirect == "2" else True
+
+    print("\n3. Operation Mode:")
+    print("   1 - Read and Write Test (default)")
+    print("   2 - Write Only Test")
+    print("   3 - Read Only Test")
+    op_choice = get_user_input("Please select operation mode", "1")
+    operation_mode_map = {"1": "both", "2": "write_only", "3": "read_only"}
+    operation_mode = operation_mode_map.get(op_choice, "both")
 
     if mla:
         block_lens = [64, 128]
@@ -64,8 +91,10 @@ def main():
         num_head_list = [1, 2, 4, 8]
 
     SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-    csv_file = os.path.join(SCRIPT_DIR, "embed_fetch_result.csv")
+    csv_file = os.path.join(SCRIPT_DIR, "embed_fetch_all.csv")
     need_header = not os.path.exists(csv_file)
+
+    os.makedirs(SCRIPT_DIR, exist_ok=True)
 
     with open(csv_file, "a", newline="", encoding="utf-8") as csv_fp:
         writer = csv.writer(csv_fp)
@@ -107,7 +136,6 @@ def main():
                         batch_size = int(num_tokens / block_len)
                         io_num = int(num_tokens / block_len * block_layer)
 
-                        # Run test and get results
                         result_queue = multiprocessing.Queue()
 
                         process = multiprocessing.Process(
@@ -126,6 +154,8 @@ def main():
                                 block_elem_size,
                                 kv,
                                 mla,
+                                useDirect,
+                                operation_mode,
                             ),
                         )
 
@@ -165,8 +195,11 @@ def main():
                                 f"{avg_r_bw:.4f}",
                             ]
                         )
-
                         csv_fp.flush()
+
+                        print(
+                            f"WRITE COMPLETE for num_head={num_head}, num_tokens={num_tokens}"
+                        )
 
     print("\n" + "=" * 60 + "\n= All combinations tested =\n" + "=" * 60 + "\n")
 
