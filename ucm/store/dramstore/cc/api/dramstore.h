@@ -25,11 +25,10 @@
 #define UNIFIEDCACHE_DRAMSTORE_H
 
 #include "ucmstore.h"
-#include "task_shard.h"
 
 namespace UC {
 
-class DRAMStore : public CCStore<Task> {
+class DRAMStore : public CCStore<> {
 public:
     struct Config {
         size_t capacity;

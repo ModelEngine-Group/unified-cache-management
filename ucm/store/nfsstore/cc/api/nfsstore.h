@@ -25,12 +25,11 @@
 #define UNIFIEDCACHE_NFSSTORE_H
 
 #include <vector>
-#include "task_shard.h"
 #include "ucmstore.h"
 
 namespace UC {
 
-class NFSStore : public CCStore<Task> {
+class NFSStore : public CCStore<> {
 public:
     struct Config {
         std::vector<std::string> storageBackends;
