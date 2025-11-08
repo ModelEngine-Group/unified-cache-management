@@ -22,6 +22,7 @@
  * SOFTWARE.
  * */
 #include "trans_manager.h"
+#include "device.h"
 #include "file/file.h"
 #include "logger/logger.h"
 
@@ -32,7 +33,11 @@ Status TransManager::Setup(const int32_t deviceId, const size_t streamNumber,
                            const size_t bufferNumber, const SpaceLayout* layout,
                            const size_t timeoutMs)
 {
-    auto s = this->device_.Setup(deviceId, blockSize, bufferNumber);
+    auto s = Device::Setup(deviceId);
+    if (s.Failure()) { return s; }
+    s = this->buffer_.Setup(blockSize, bufferNumber);
+    if (s.Failure()) { return s; }
+    s = this->stream_.Setup();
     if (s.Failure()) { return s; }
     auto success =
         this->devPool_.SetWorkerFn([this](auto t, auto) { this->DeviceWorker(std::move(t)); })
@@ -127,9 +132,9 @@ void TransManager::DeviceWorker(BlockTask&& task)
     auto hostPtr = (uintptr_t)task.buffer.get();
     auto s = Status::OK();
     if (task.type == TransTask::Type::LOAD) {
-        s = this->device_.stream.H2DBatchSync(hostPtr, devPtrs, size, number);
+        s = this->stream_.H2DBatchSync(hostPtr, devPtrs, size, number);
     } else {
-        s = this->device_.stream.D2HBatchSync(devPtrs, hostPtr, size, number);
+        s = this->stream_.D2HBatchSync(devPtrs, hostPtr, size, number);
         if (s.Success()) { this->filePool_.Push(std::move(task)); }
     }
     if (s.Failure()) { this->failureSet_.Insert(task.owner); }
@@ -172,7 +177,7 @@ void TransManager::Dispatch(TaskPtr task, WaiterPtr waiter)
             blockTask.type = task->type;
             auto bufferSize = this->ioSize_ * shards.size();
             std::swap(blockTask.shards, shards);
-            blockTask.buffer = this->device_.buffer.GetBuffer(bufferSize);
+            blockTask.buffer = this->buffer_.GetBuffer(bufferSize);
             blockTask.done = [task, waiter, ioSize = this->ioSize_](bool success) {
                 if (!success) {
                     waiter->Done(nullptr);

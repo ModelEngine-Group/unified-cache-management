@@ -24,16 +24,13 @@
 #ifndef UNIFIEDCACHE_DEVICE_H
 #define UNIFIEDCACHE_DEVICE_H
 
-#include "buffer.h"
-#include "stream.h"
+#include "status/status.h"
 
 namespace UC {
 
 class Device {
 public:
-    Buffer buffer;
-    Stream stream;
-    Status Setup(const int32_t deviceId, const size_t size, const size_t number);
+    static Status Setup(const int32_t deviceId);
 };
 
 } // namespace UC

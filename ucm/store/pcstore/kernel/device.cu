@@ -35,7 +35,7 @@ void SetCpuAffinity(const int32_t deviceId)
     nvmlDeviceSetCpuAffinity(device);
 }
 
-Status Device::Setup(const int32_t deviceId, const size_t size, const size_t number)
+Status Device::Setup(const int32_t deviceId)
 {
     auto ret = cudaSetDevice(deviceId);
     if (ret != cudaSuccess) {
@@ -43,9 +43,7 @@ Status Device::Setup(const int32_t deviceId, const size_t size, const size_t num
         return Status::Error();
     }
     SetCpuAffinity(deviceId);
-    auto s = this->buffer.Setup(size, number);
-    if (s.Failure()) { return s; }
-    return this->stream.Setup();
+    return Status::OK();
 }
 
 } // namespace UC

@@ -24,9 +24,10 @@
 #ifndef UNIFIEDCACHE_TRANS_MANAGER_H
 #define UNIFIEDCACHE_TRANS_MANAGER_H
 
-#include "device.h"
+#include "buffer.h"
 #include "space/space_layout.h"
 #include "status/status.h"
+#include "stream.h"
 #include "task/task_set.h"
 #include "task/task_waiter.h"
 #include "thread/thread_pool.h"
@@ -60,7 +61,8 @@ private:
     void Dispatch(TaskPtr task, WaiterPtr waiter);
 
 private:
-    Device device_;
+    Buffer buffer_;
+    Stream stream_;
     const SpaceLayout* layout_;
     size_t ioSize_;
     bool ioDirect_;
