@@ -21,35 +21,18 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  * */
-#ifndef UNIFIEDCACHE_TRANS_MANAGER_H
-#define UNIFIEDCACHE_TRANS_MANAGER_H
-
-#include "trans_d2s_pool.h"
 #include "trans_s2d_pool.h"
+#include "device.h"
 
 namespace UC {
 
-class TransManager {
-public:
-    Status Setup(const int32_t deviceId, const size_t streamNumber, const size_t blockSize,
-                 const size_t ioSize, const bool ioDirect, const size_t bufferNumber,
-                 const SpaceLayout* layout, const size_t timeoutMs);
-    Status Submit(TransTask task, size_t& taskId) noexcept;
-    Status Wait(const size_t taskId) noexcept;
-    Status Check(const size_t taskId, bool& finish) noexcept;
+Status TransS2DPool::Setup(const int32_t deviceId, const size_t streamNumber,
+                           const size_t blockSize, const size_t ioSize, const bool ioDirect,
+                           const SpaceLayout* layout, TaskSet* failureSet_)
+{
+    return Status::Error();
+}
 
-private:
-    using TaskPtr = std::shared_ptr<TransTask>;
-    using WaiterPtr = std::shared_ptr<TaskWaiter>;
-    using TaskPair = std::pair<TaskPtr, WaiterPtr>;
-    TransS2DPool s2dPool_;
-    TransD2SPool d2sPool_;
-    size_t timeoutMs_;
-    std::mutex mutex_;
-    std::unordered_map<size_t, TaskPair> tasks_;
-    TaskSet failureSet_;
-};
+void TransS2DPool::Dispatch(TaskPtr task, WaiterPtr waiter) {}
 
 } // namespace UC
-
-#endif

@@ -21,33 +21,48 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  * */
-#ifndef UNIFIEDCACHE_TRANS_MANAGER_H
-#define UNIFIEDCACHE_TRANS_MANAGER_H
+#ifndef UNIFIEDCACHE_TRAN_S2D_POOL_H
+#define UNIFIEDCACHE_TRAN_S2D_POOL_H
 
-#include "trans_d2s_pool.h"
-#include "trans_s2d_pool.h"
+#include "buffer.h"
+#include "space/space_layout.h"
+#include "stream.h"
+#include "task/task_set.h"
+#include "task/task_waiter.h"
+#include "thread/thread_pool.h"
+#include "trans_task.h"
 
 namespace UC {
 
-class TransManager {
+class TransD2SPool {
+    using TaskPtr = std::shared_ptr<TransTask>;
+    using WaiterPtr = std::shared_ptr<TaskWaiter>;
+    struct BlockTask {
+        size_t owner;
+        std::string block;
+        TransTask::Type type;
+        std::vector<uintptr_t> shards;
+        std::shared_ptr<void> buffer;
+        std::function<void(bool)> done;
+    };
+    void DeviceWorker(BlockTask&& task);
+    void FileWorker(BlockTask&& task);
+
 public:
     Status Setup(const int32_t deviceId, const size_t streamNumber, const size_t blockSize,
                  const size_t ioSize, const bool ioDirect, const size_t bufferNumber,
-                 const SpaceLayout* layout, const size_t timeoutMs);
-    Status Submit(TransTask task, size_t& taskId) noexcept;
-    Status Wait(const size_t taskId) noexcept;
-    Status Check(const size_t taskId, bool& finish) noexcept;
+                 const SpaceLayout* layout, TaskSet* failureSet_);
+    void Dispatch(TaskPtr task, WaiterPtr waiter);
 
 private:
-    using TaskPtr = std::shared_ptr<TransTask>;
-    using WaiterPtr = std::shared_ptr<TaskWaiter>;
-    using TaskPair = std::pair<TaskPtr, WaiterPtr>;
-    TransS2DPool s2dPool_;
-    TransD2SPool d2sPool_;
-    size_t timeoutMs_;
-    std::mutex mutex_;
-    std::unordered_map<size_t, TaskPair> tasks_;
-    TaskSet failureSet_;
+    Buffer buffer_;
+    Stream stream_;
+    const SpaceLayout* layout_;
+    size_t ioSize_;
+    bool ioDirect_;
+    ThreadPool<BlockTask> devPool_;
+    ThreadPool<BlockTask> filePool_;
+    TaskSet* failureSet_;
 };
 
 } // namespace UC
