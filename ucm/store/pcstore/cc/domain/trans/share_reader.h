@@ -26,16 +26,29 @@
 
 #include <status/status.h>
 #include <string>
+#include "file/ifile.h"
 
 namespace UC {
 
 class ShareReader {
+    std::string block_;
+    std::string path_;
+    size_t length_;
+    bool ioDirect_;
+    size_t nSharer_;
+    void* addr_;
+
 public:
     ShareReader(const std::string& block, const std::string& path, const size_t length,
                 const bool ioDirect, const size_t nSharer);
     ~ShareReader();
     Status Ready4Read();
-    void* GetData();
+    uintptr_t GetData();
+
+private:
+    size_t ShmSize() const;
+    Status InitShmBlock(IFile* file);
+    Status LoadShmBlock(IFile* file);
 };
 
 } // namespace UC

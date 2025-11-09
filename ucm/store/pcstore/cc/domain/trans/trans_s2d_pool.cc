@@ -133,7 +133,7 @@ void TransS2DPool::HandleReadyTask(Status s, BlockTask&& task, Stream& stream)
         return;
     }
     if (s.Success()) {
-        s = stream.H2DBatchSync((uintptr_t)task.reader.GetData(), task.shards.data(), this->ioSize_,
+        s = stream.H2DBatchSync(task.reader.GetData(), task.shards.data(), this->ioSize_,
                                 task.shards.size());
     }
     if (s.Failure()) { this->failureSet_->Insert(task.owner); }

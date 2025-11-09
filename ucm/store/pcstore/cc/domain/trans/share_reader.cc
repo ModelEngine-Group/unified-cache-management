@@ -22,18 +22,97 @@
  * SOFTWARE.
  * */
 #include "share_reader.h"
+#include <atomic>
+#include <fmt/ranges.h>
+#include <semaphore.h>
+#include <unistd.h>
+#include "file/file.h"
 
 namespace UC {
+
+struct FileCacheHeader {
+    std::atomic<int32_t> ref;
+    std::atomic_bool loaded;
+    std::atomic_bool failure;
+    size_t offset;
+    auto* Data() { return reinterpret_cast<char*>(this) + offset; }
+};
+
+static const auto PAGE_SIZE = sysconf(_SC_PAGESIZE);
+static const auto DATA_OFFSET = (sizeof(FileCacheHeader) + PAGE_SIZE - 1) & ~(PAGE_SIZE - 1);
+#define CacheHeader() ((FileCacheHeader*)this->addr_)
 
 ShareReader::ShareReader(const std::string& block, const std::string& path, const size_t length,
                          const bool ioDirect, const size_t nSharer)
 {
+    this->block_ = fmt::format("{:02x}", fmt::join(block, ""));
+    this->path_ = path;
+    this->length_ = length;
+    this->ioDirect_ = ioDirect;
+    this->nSharer_ = nSharer;
+    this->addr_ = nullptr;
 }
 
-ShareReader::~ShareReader() {}
+ShareReader::~ShareReader()
+{
+    if (!this->addr_) { return; }
+    const auto shmSize = this->ShmSize();
+    auto ref = CacheHeader()->ref.fetch_sub(1) - 1;
+    File::MUnmap(this->addr_, shmSize);
+    if (ref == 0) { File::ShmUnlink(this->block_); }
+}
 
-Status ShareReader::Ready4Read() { return Status::Retry(); }
+Status ShareReader::Ready4Read()
+{
+    if (this->addr_) {
+        if (CacheHeader()->loaded.load()) { return Status::OK(); }
+        if (CacheHeader()->failure.load()) { return Status::Error(); }
+        return Status::Retry();
+    }
+    auto file = File::Make(this->block_);
+    if (!file) { return Status::OutOfMemory(); }
+    auto flags = IFile::OpenFlag::CREATE | IFile::OpenFlag::EXCL | IFile::OpenFlag::READ_WRITE;
+    auto s = file->ShmOpen(flags);
+    if (s.Success()) { return this->InitShmBlock(file.get()); }
+    if (s == Status::DuplicateKey()) { return this->LoadShmBlock(file.get()); }
+    return s;
+}
 
-void* ShareReader::GetData() { return nullptr; }
+uintptr_t ShareReader::GetData() { return (uintptr_t)(CacheHeader()->Data()); }
+
+size_t ShareReader::ShmSize() const { return DATA_OFFSET + this->length_; }
+
+Status ShareReader::InitShmBlock(IFile* file)
+{
+    const auto shmSize = this->ShmSize();
+    auto s = file->Truncate(shmSize);
+    if (s.Failure()) { return s; }
+    s = file->MMap(this->addr_, shmSize, false, true, true);
+    if (s.Failure()) { return s; }
+    CacheHeader()->ref = this->nSharer_;
+    CacheHeader()->loaded = false;
+    CacheHeader()->failure = false;
+    CacheHeader()->offset = DATA_OFFSET;
+    s = File::Read(this->path_, 0, this->length_, this->GetData(), this->ioDirect_);
+    if (s.Success()) {
+        CacheHeader()->loaded = true;
+    } else {
+        CacheHeader()->failure = true;
+    }
+    return s;
+}
+
+Status ShareReader::LoadShmBlock(IFile* file)
+{
+    const auto flags = IFile::OpenFlag::READ_WRITE;
+    auto s = file->ShmOpen(flags);
+    if (s.Failure()) { return s; }
+    const auto shmSize = this->ShmSize();
+    s = file->MMap(this->addr_, shmSize, false, true, true);
+    if (s.Failure()) { return s; }
+    if (CacheHeader()->loaded.load()) { return Status::OK(); }
+    if (CacheHeader()->failure.load()) { return Status::Error(); }
+    return Status::Retry();
+}
 
 } // namespace UC
