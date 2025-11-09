@@ -26,17 +26,21 @@
 
 namespace UC {
 
-Status TransManager::Setup(const int32_t deviceId, const size_t streamNumber,
+Status TransManager::Setup(const size_t rankSize, const int32_t deviceId, const size_t streamNumber,
                            const size_t blockSize, const size_t ioSize, const bool ioDirect,
                            const size_t bufferNumber, const SpaceLayout* layout,
                            const size_t timeoutMs)
 {
-    auto s = this->s2dPool_.Setup(deviceId, streamNumber, blockSize, ioSize, ioDirect, layout,
-                                  &this->failureSet_);
-    if (s.Failure()) { return s; }
+    auto s = Status::OK();
+    if (rankSize > 1) {
+        s = this->s2dPool_.Setup(rankSize, deviceId, streamNumber, blockSize, ioSize, ioDirect,
+                                 layout, &this->failureSet_);
+        if (s.Failure()) { return s; }
+    }
     s = this->d2sPool_.Setup(deviceId, streamNumber, blockSize, ioSize, ioDirect, bufferNumber,
                              layout, &this->failureSet_);
     if (s.Failure()) { return s; }
+    this->rankSize_ = rankSize;
     this->timeoutMs_ = timeoutMs;
     return Status::OK();
 }
@@ -61,7 +65,7 @@ Status TransManager::Submit(TransTask task, size_t& taskId) noexcept
         UC_ERROR("Failed to submit task({}).", taskStr);
         return Status::OutOfMemory();
     }
-    if (iter->second.first->type == TransTask::Type::LOAD) {
+    if (this->rankSize_ > 1 && iter->second.first->type == TransTask::Type::LOAD) {
         this->s2dPool_.Dispatch(iter->second.first, iter->second.second);
         return Status::OK();
     }

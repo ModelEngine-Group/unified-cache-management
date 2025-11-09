@@ -38,9 +38,10 @@ public:
         if (status.Failure()) { return status.Underlying(); }
         if (config.transferEnable) {
             status = this->transMgr_.Setup(
-                config.transferDeviceId, config.transferStreamNumber, config.kvcacheBlockSize,
-                config.transferIoSize, config.transferIoDirect, config.transferBufferNumber,
-                this->spaceMgr_.GetSpaceLayout(), config.transferTimeoutMs);
+                config.transferLocalRankSize, config.transferDeviceId, config.transferStreamNumber,
+                config.kvcacheBlockSize, config.transferIoSize, config.transferIoDirect,
+                config.transferBufferNumber, this->spaceMgr_.GetSpaceLayout(),
+                config.transferTimeoutMs);
             if (status.Failure()) { return status.Underlying(); }
         }
         this->ShowConfig(config);
@@ -89,6 +90,7 @@ private:
         UC_INFO("Set UC::TransferEnable to {}.", config.transferEnable);
         UC_INFO("Set UC::IoSize to {}.", config.transferIoSize);
         UC_INFO("Set UC::IoDirect to {}.", config.transferIoDirect);
+        UC_INFO("Set UC::LocalRankSize to {}.", config.transferLocalRankSize);
         UC_INFO("Set UC::DeviceId to {}.", config.transferDeviceId);
         UC_INFO("Set UC::StreamNumber to {}.", config.transferStreamNumber);
         UC_INFO("Set UC::BufferNumber to {}.", config.transferBufferNumber);

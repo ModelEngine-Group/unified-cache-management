@@ -32,7 +32,7 @@ namespace UC {
 class ShareReader {
 public:
     ShareReader(const std::string& block, const std::string& path, const size_t length,
-                const bool ioDirect);
+                const bool ioDirect, const size_t nSharer);
     ~ShareReader();
     Status Ready4Read();
     void* GetData();

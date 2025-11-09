@@ -46,11 +46,12 @@ class TransS2DPool {
         std::vector<uintptr_t> shards;
         std::function<void(bool)> done;
         BlockTask(const std::string& block, const std::string& path, const size_t length,
-                  const bool ioDirect)
-            : reader{block, path, length, ioDirect}
+                  const bool ioDirect, const size_t nSharer)
+            : reader{block, path, length, ioDirect, nSharer}
         {
         }
     };
+    size_t nSharer_;
     int32_t deviceId_;
     size_t streamNumber_;
     size_t blockSize_;
@@ -67,9 +68,9 @@ class TransS2DPool {
 
 public:
     ~TransS2DPool();
-    Status Setup(const int32_t deviceId, const size_t streamNumber, const size_t blockSize,
-                 const size_t ioSize, const bool ioDirect, const SpaceLayout* layout,
-                 TaskSet* failureSet);
+    Status Setup(const size_t nSharer, const int32_t deviceId, const size_t streamNumber,
+                 const size_t blockSize, const size_t ioSize, const bool ioDirect,
+                 const SpaceLayout* layout, TaskSet* failureSet);
     void Dispatch(TaskPtr task, WaiterPtr waiter);
 
 private:

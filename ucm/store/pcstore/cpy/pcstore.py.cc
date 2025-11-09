@@ -95,6 +95,7 @@ PYBIND11_MODULE(ucmpcstore, module)
     config.def_readwrite("kvcacheBlockSize", &UC::PcStorePy::Config::kvcacheBlockSize);
     config.def_readwrite("transferEnable", &UC::PcStorePy::Config::transferEnable);
     config.def_readwrite("transferIoDirect", &UC::PcStorePy::Config::transferIoDirect);
+    config.def_readwrite("transferLocalRankSize", &UC::PcStorePy::Config::transferLocalRankSize);
     config.def_readwrite("transferDeviceId", &UC::PcStorePy::Config::transferDeviceId);
     config.def_readwrite("transferStreamNumber", &UC::PcStorePy::Config::transferStreamNumber);
     config.def_readwrite("transferIoSize", &UC::PcStorePy::Config::transferIoSize);

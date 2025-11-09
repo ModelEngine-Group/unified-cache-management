@@ -37,6 +37,7 @@ public:
         bool transferEnable;
         size_t transferIoSize{262144};
         bool transferIoDirect{false};
+        size_t transferLocalRankSize{1};
         int32_t transferDeviceId{-1};
         size_t transferStreamNumber{64};
         size_t transferBufferNumber{4096};

@@ -39,10 +39,11 @@ TransS2DPool::~TransS2DPool()
     }
 }
 
-Status TransS2DPool::Setup(const int32_t deviceId, const size_t streamNumber,
+Status TransS2DPool::Setup(const size_t nSharer, const int32_t deviceId, const size_t streamNumber,
                            const size_t blockSize, const size_t ioSize, const bool ioDirect,
                            const SpaceLayout* layout, TaskSet* failureSet)
 {
+    this->nSharer_ = nSharer;
     this->deviceId_ = deviceId;
     this->streamNumber_ = streamNumber;
     this->blockSize_ = blockSize;
@@ -70,7 +71,7 @@ void TransS2DPool::Dispatch(TaskPtr task, WaiterPtr waiter)
     task->ForEachGroup(
         [task, waiter, this](const std::string& block, std::vector<uintptr_t>& shards) {
             BlockTask blockTask{block, this->layout_->DataFilePath(block, false), this->blockSize_,
-                                this->ioDirect_};
+                                this->ioDirect_, this->nSharer_};
             blockTask.owner = task->id;
             std::swap(blockTask.shards, shards);
             blockTask.done = [task, waiter, ioSize = this->ioSize_](bool success) {
