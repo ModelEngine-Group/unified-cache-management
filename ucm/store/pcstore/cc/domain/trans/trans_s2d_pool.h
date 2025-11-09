@@ -28,6 +28,7 @@
 #include <list>
 #include <memory>
 #include <thread>
+#include "share_reader.h"
 #include "space/space_layout.h"
 #include "stream.h"
 #include "task/task_set.h"
@@ -40,12 +41,18 @@ class TransS2DPool {
     using TaskPtr = std::shared_ptr<TransTask>;
     using WaiterPtr = std::shared_ptr<TaskWaiter>;
     struct BlockTask {
+        ShareReader reader;
         size_t owner;
-        std::string block;
         std::vector<uintptr_t> shards;
         std::function<void(bool)> done;
+        BlockTask(const std::string& block, const std::string& path, const size_t length,
+                  const bool ioDirect)
+            : reader{block, path, length, ioDirect}
+        {
+        }
     };
     int32_t deviceId_;
+    size_t streamNumber_;
     size_t blockSize_;
     size_t ioSize_;
     bool ioDirect_;
@@ -68,6 +75,8 @@ public:
 private:
     void WorkerLoop(std::promise<Status>& status);
     void Worker(Stream& stream);
+    void HandleReadyTask(Status s, BlockTask&& task, Stream& stream);
+    void HandleLoadTask(BlockTask&& task, Stream& stream);
 };
 
 } // namespace UC
