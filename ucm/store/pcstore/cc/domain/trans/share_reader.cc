@@ -45,7 +45,7 @@ static const auto DATA_OFFSET = (sizeof(FileCacheHeader) + PAGE_SIZE - 1) & ~(PA
 ShareReader::ShareReader(const std::string& block, const std::string& path, const size_t length,
                          const bool ioDirect, const size_t nSharer)
 {
-    this->block_ = fmt::format("{:02x}", fmt::join(block, ""));
+    this->block_ = "uc." + fmt::format("{:02x}", fmt::join(block, ""));
     this->path_ = path;
     this->length_ = length;
     this->ioDirect_ = ioDirect;
@@ -87,7 +87,7 @@ Status ShareReader::InitShmBlock(IFile* file)
     const auto shmSize = this->ShmSize();
     auto s = file->Truncate(shmSize);
     if (s.Failure()) { return s; }
-    s = file->MMap(this->addr_, shmSize, false, true, true);
+    s = file->MMap(this->addr_, shmSize, true, true, true);
     if (s.Failure()) { return s; }
     CacheHeader()->ref = this->nSharer_;
     CacheHeader()->loaded = false;
@@ -108,7 +108,7 @@ Status ShareReader::LoadShmBlock(IFile* file)
     auto s = file->ShmOpen(flags);
     if (s.Failure()) { return s; }
     const auto shmSize = this->ShmSize();
-    s = file->MMap(this->addr_, shmSize, false, true, true);
+    s = file->MMap(this->addr_, shmSize, true, true, true);
     if (s.Failure()) { return s; }
     if (CacheHeader()->loaded.load()) { return Status::OK(); }
     if (CacheHeader()->failure.load()) { return Status::Error(); }

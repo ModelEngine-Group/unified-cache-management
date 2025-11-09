@@ -81,7 +81,7 @@ void TransS2DPool::Dispatch(TaskPtr task, WaiterPtr waiter)
                     waiter->Done([task, ioSize] { UC_DEBUG("{}", task->Epilog(ioSize)); });
                 }
             };
-            this->wait_.push_back(std::move(blockTask));
+            this->wait_.push_back(blockTask);
         });
     this->cv_.notify_all();
 }
@@ -96,37 +96,36 @@ void TransS2DPool::WorkerLoop(std::promise<Status>& status)
     } while (0);
     status.set_value(s);
     if (s.Failure()) { return; }
-    for (;;) { this->Worker(stream); }
+    while (!this->stop_) { this->Worker(stream); }
 }
 
 void TransS2DPool::Worker(Stream& stream)
 {
-    constexpr auto interval = std::chrono::milliseconds(10);
     std::unique_lock<std::mutex> ul{this->mutex_};
-    this->cv_.wait_for(ul, interval, [this] {
-        return this->stop_ || !this->load_.empty() || !this->wait_.empty();
-    });
+    if (this->load_.empty() && this->wait_.empty()) {
+        this->cv_.wait(
+            ul, [this] { return this->stop_ || !this->load_.empty() || !this->wait_.empty(); });
+    }
     if (this->stop_) { return; }
-    auto iter = this->load_.begin();
-    while (iter != this->load_.end()) {
+    for (auto iter = this->load_.begin(); iter != this->load_.end(); iter++) {
         auto s = iter->reader.Ready4Read();
         if (s != Status::Retry()) {
-            auto&& task = std::move(*iter);
+            auto task = std::move(*iter);
             this->load_.erase(iter);
             ul.unlock();
-            this->HandleReadyTask(s, std::move(task), stream);
+            this->HandleReadyTask(s, task, stream);
             return;
         }
     }
     if (this->load_.size() >= this->streamNumber_) { return; }
     if (this->wait_.empty()) { return; }
-    auto&& task = std::move(this->wait_.front());
+    auto task = std::move(this->wait_.front());
     this->wait_.pop_front();
     ul.unlock();
-    this->HandleLoadTask(std::move(task), stream);
+    this->HandleLoadTask(task, stream);
 }
 
-void TransS2DPool::HandleReadyTask(Status s, BlockTask&& task, Stream& stream)
+void TransS2DPool::HandleReadyTask(Status s, BlockTask& task, Stream& stream)
 {
     if (this->failureSet_->Contains(task.owner)) {
         task.done(false);
@@ -140,7 +139,7 @@ void TransS2DPool::HandleReadyTask(Status s, BlockTask&& task, Stream& stream)
     task.done(s.Success());
 }
 
-void TransS2DPool::HandleLoadTask(BlockTask&& task, Stream& stream)
+void TransS2DPool::HandleLoadTask(BlockTask& task, Stream& stream)
 {
     if (this->failureSet_->Contains(task.owner)) {
         task.done(false);
@@ -149,10 +148,11 @@ void TransS2DPool::HandleLoadTask(BlockTask&& task, Stream& stream)
     auto s = task.reader.Ready4Read();
     if (s == Status::Retry()) {
         std::lock_guard<std::mutex> lg{this->mutex_};
-        this->load_.push_back(std::move(task));
+        this->load_.push_back(task);
+        this->cv_.notify_one();
         return;
     }
-    this->HandleReadyTask(s, std::move(task), stream);
+    this->HandleReadyTask(s, task, stream);
 }
 
 } // namespace UC

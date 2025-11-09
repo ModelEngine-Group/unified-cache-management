@@ -76,8 +76,8 @@ public:
 private:
     void WorkerLoop(std::promise<Status>& status);
     void Worker(Stream& stream);
-    void HandleReadyTask(Status s, BlockTask&& task, Stream& stream);
-    void HandleLoadTask(BlockTask&& task, Stream& stream);
+    void HandleReadyTask(Status s, BlockTask& task, Stream& stream);
+    void HandleLoadTask(BlockTask& task, Stream& stream);
 };
 
 } // namespace UC
