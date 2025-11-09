@@ -23,16 +23,78 @@
  * */
 #include "trans_s2d_pool.h"
 #include "device.h"
+#include "logger/logger.h"
 
 namespace UC {
 
-Status TransS2DPool::Setup(const int32_t deviceId, const size_t streamNumber,
-                           const size_t blockSize, const size_t ioSize, const bool ioDirect,
-                           const SpaceLayout* layout, TaskSet* failureSet_)
+TransS2DPool::~TransS2DPool()
 {
-    return Status::Error();
+    {
+        std::lock_guard<std::mutex> lg(this->mutex_);
+        this->stop_ = true;
+    }
+    for (auto& w : this->threads_) {
+        if (w.joinable()) { w.join(); }
+    }
 }
 
-void TransS2DPool::Dispatch(TaskPtr task, WaiterPtr waiter) {}
+Status TransS2DPool::Setup(const int32_t deviceId, const size_t streamNumber,
+                           const size_t blockSize, const size_t ioSize, const bool ioDirect,
+                           const SpaceLayout* layout, TaskSet* failureSet)
+{
+    this->deviceId_ = deviceId;
+    this->blockSize_ = blockSize;
+    this->ioSize_ = ioSize;
+    this->ioDirect_ = ioDirect;
+    this->layout_ = layout;
+    this->failureSet_ = failureSet;
+    std::list<std::promise<Status>> start(streamNumber);
+    std::list<std::future<Status>> fut;
+    for (auto& s : start) {
+        fut.push_back(s.get_future());
+        this->threads_.emplace_back([&] { this->WorkerLoop(s); });
+    }
+    auto status = Status::OK();
+    for (auto& f : fut) {
+        if (status.Failure()) { break; }
+        status = f.get();
+    }
+    return status;
+}
+
+void TransS2DPool::Dispatch(TaskPtr task, WaiterPtr waiter)
+{
+    std::lock_guard<std::mutex> lg(this->mutex_);
+    task->ForEachGroup(
+        [task, waiter, this](const std::string& block, std::vector<uintptr_t>& shards) {
+            BlockTask blockTask;
+            blockTask.owner = task->id;
+            blockTask.block = block;
+            std::swap(blockTask.shards, shards);
+            blockTask.done = [task, waiter, ioSize = this->ioSize_](bool success) {
+                if (!success) {
+                    waiter->Done(nullptr);
+                } else {
+                    waiter->Done([task, ioSize] { UC_DEBUG("{}", task->Epilog(ioSize)); });
+                }
+            };
+            this->wait_.push_back(std::move(blockTask));
+        });
+}
+
+void TransS2DPool::WorkerLoop(std::promise<Status>& status)
+{
+    auto s = Status::OK();
+    Stream stream;
+    do {
+        if ((s = Device::Setup(this->deviceId_)).Failure()) { break; }
+        if ((s = stream.Setup()).Failure()) { break; }
+    } while (0);
+    status.set_value(s);
+    if (s.Failure()) { return; }
+    for (;;) { this->Worker(stream); }
+}
+
+void TransS2DPool::Worker(Stream& stream) {}
 
 } // namespace UC
