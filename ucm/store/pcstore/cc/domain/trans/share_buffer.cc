@@ -35,6 +35,22 @@ namespace UC {
 
 static constexpr int32_t SHARE_BUFFER_MAGIC = (('S' << 16) | ('b' << 8) | 1);
 
+struct ShareMutex {
+    pthread_mutex_t mutex;
+    ~ShareMutex() = delete;
+    void Init()
+    {
+        pthread_mutexattr_t attr;
+        pthread_mutexattr_init(&attr);
+        pthread_mutexattr_setpshared(&attr, PTHREAD_PROCESS_SHARED);
+        pthread_mutexattr_setrobust(&attr, PTHREAD_MUTEX_ROBUST);
+        pthread_mutex_init(&mutex, &attr);
+        pthread_mutexattr_destroy(&attr);
+    }
+    void Lock() { pthread_mutex_lock(&mutex); }
+    void Unlock() { pthread_mutex_unlock(&mutex); }
+};
+
 struct ShareBlockId {
     uint64_t lo{0};
     uint64_t hi{0};
@@ -57,16 +73,17 @@ enum class ShareBlockStatus { INIT, LOADING, LOADED, FAILURE };
 
 struct ShareBlockHeader {
     ShareBlockId id;
-    std::atomic<int32_t> ref;
-    std::atomic<ShareBlockStatus> status;
+    ShareMutex mutex;
+    int32_t ref;
+    ShareBlockStatus status;
     size_t offset;
     void* Data() { return reinterpret_cast<char*>(this) + offset; }
 };
 
 struct ShareBufferHeader {
+    ShareMutex mutex;
     std::atomic<int32_t> magic;
-    std::atomic<int32_t> ref;
-    pthread_rwlock_t lock;
+    int32_t ref;
     size_t blockSize;
     size_t blockNumber;
     ShareBlockHeader headers[0];
@@ -108,7 +125,9 @@ ShareBuffer::~ShareBuffer()
 {
     if (!this->addr_) { return; }
     auto bufferHeader = (ShareBufferHeader*)this->addr_;
-    auto ref = bufferHeader->ref.fetch_sub(1) - 1;
+    bufferHeader->mutex.Lock();
+    auto ref = (--bufferHeader->ref);
+    bufferHeader->mutex.Unlock();
     void* dataAddr = static_cast<char*>(this->addr_) + this->DataOffset();
     Device::UnregisterHost(dataAddr);
     const auto shmSize = this->ShmSize();
@@ -152,17 +171,15 @@ Status ShareBuffer::InitShmBuffer(IFile* file)
     s = file->MMap(this->addr_, shmSize, true, true, true);
     if (s.Failure()) { return s; }
     auto bufferHeader = (ShareBufferHeader*)this->addr_;
+    bufferHeader->magic = 1;
+    bufferHeader->mutex.Init();
     bufferHeader->ref = this->nSharer_;
-    pthread_rwlockattr_t attr;
-    pthread_rwlockattr_init(&attr);
-    pthread_rwlockattr_setpshared(&attr, PTHREAD_PROCESS_SHARED);
-    pthread_rwlock_init(&bufferHeader->lock, &attr);
-    pthread_rwlockattr_destroy(&attr);
     bufferHeader->blockSize = this->blockSize_;
     bufferHeader->blockNumber = this->blockNumber_;
     const auto dataOffset = this->DataOffset();
     for (size_t i = 0; i < this->blockNumber_; i++) {
         bufferHeader->headers[i].id.Reset();
+        bufferHeader->headers[i].mutex.Init();
         bufferHeader->headers[i].ref = 0;
         bufferHeader->headers[i].status = ShareBlockStatus::INIT;
         const auto headerOffset = sizeof(ShareBufferHeader) + sizeof(ShareBlockHeader) * i;
@@ -208,7 +225,7 @@ size_t ShareBuffer::AcquireBlock(const std::string& block)
     auto pos = hasher(block) % this->blockNumber_;
     auto bufferHeader = (ShareBufferHeader*)this->addr_;
     auto reusedIdx = this->blockNumber_;
-    pthread_rwlock_wrlock(&bufferHeader->lock);
+    bufferHeader->mutex.Lock();
     for (size_t i = 0;; i++) {
         if (!bufferHeader->headers[pos].id.Used()) {
             if (reusedIdx == this->blockNumber_) { reusedIdx = pos; }
@@ -227,14 +244,16 @@ size_t ShareBuffer::AcquireBlock(const std::string& block)
     bufferHeader->headers[reusedIdx].id.Set(block);
     bufferHeader->headers[reusedIdx].ref = this->nSharer_;
     bufferHeader->headers[reusedIdx].status = ShareBlockStatus::INIT;
-    pthread_rwlock_unlock(&bufferHeader->lock);
+    bufferHeader->mutex.Unlock();
     return reusedIdx;
 }
 
 void ShareBuffer::ReleaseBlock(const size_t index)
 {
     auto bufferHeader = (ShareBufferHeader*)this->addr_;
+    bufferHeader->headers[index].mutex.Lock();
     bufferHeader->headers[index].ref--;
+    bufferHeader->headers[index].mutex.Unlock();
 }
 
 void* ShareBuffer::BlockAt(const size_t index)
@@ -246,13 +265,16 @@ void* ShareBuffer::BlockAt(const size_t index)
 Status ShareBuffer::Reader::Ready4Read()
 {
     auto header = (ShareBlockHeader*)this->addr_;
-    auto status = header->status.load();
-    if (status == ShareBlockStatus::LOADED) { return Status::OK(); }
-    if (status == ShareBlockStatus::FAILURE) { return Status::Error(); }
-    if (status == ShareBlockStatus::LOADED) { return Status::Retry(); }
-    auto expected = ShareBlockStatus::LOADING;
-    auto loading =
-        header->status.compare_exchange_strong(status, expected, std::memory_order_acq_rel);
+    if (header->status == ShareBlockStatus::LOADED) { return Status::OK(); }
+    if (header->status == ShareBlockStatus::FAILURE) { return Status::Error(); }
+    if (header->status == ShareBlockStatus::LOADING) { return Status::Retry(); }
+    auto loading = false;
+    header->mutex.Lock();
+    if (header->status == ShareBlockStatus::INIT) {
+        header->status = ShareBlockStatus::LOADING;
+        loading = true;
+    }
+    header->mutex.Unlock();
     if (!loading) { return Status::Retry(); }
     auto s = File::Read(this->path_, 0, this->length_, this->GetData(), this->ioDirect_);
     if (s.Success()) {
