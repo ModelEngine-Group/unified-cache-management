@@ -130,6 +130,7 @@ class UcmSparseBase(ABC):
         value: torch.Tensor,
         layer_name: str,
         forward_context: ForwardContext,
+        phase: Optional[str] = None,
     ) -> None:
         """
         This is called at the beginning of "unified_attention".
@@ -146,6 +147,7 @@ class UcmSparseBase(ABC):
         attn_output: torch.Tensor,
         layer_name: str,
         forward_context: ForwardContext,
+        phase: Optional[str] = None,
     ) -> None:
         """
         This is called at the end of "unified_attention".

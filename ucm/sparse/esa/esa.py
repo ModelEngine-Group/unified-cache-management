@@ -290,9 +290,7 @@ class ReqStatePerLayer:
             self.tasks[task_v_hash] = task_v
 
     def extract_block_repre(self, vllm_block_ids):
-        if not self.is_mla:
-            return self.k_cache[vllm_block_ids].mean(1)
-        return self.k_cache[vllm_block_ids].mean(1).unsqueeze(-2)
+        return self.k_cache[vllm_block_ids].mean(1)
 
     def maybe_register_static_data(self, forward_context: ForwardContext):
         if self.init_static_flag:
