@@ -28,7 +28,7 @@
 #include <list>
 #include <memory>
 #include <thread>
-#include "share_reader.h"
+#include "share_buffer.h"
 #include "space/space_layout.h"
 #include "stream.h"
 #include "task/task_set.h"
@@ -41,22 +41,15 @@ class TransS2DPool {
     using TaskPtr = std::shared_ptr<TransTask>;
     using WaiterPtr = std::shared_ptr<TaskWaiter>;
     struct BlockTask {
-        ShareReader reader;
+        std::shared_ptr<ShareBuffer::Reader> reader;
         size_t owner;
         std::vector<uintptr_t> shards;
         std::function<void(bool)> done;
-        BlockTask(const std::string& block, const std::string& path, const size_t length,
-                  const bool ioDirect, const size_t nSharer)
-            : reader{block, path, length, ioDirect, nSharer}
-        {
-        }
     };
-    size_t nSharer_;
     int32_t deviceId_;
     size_t streamNumber_;
-    size_t blockSize_;
     size_t ioSize_;
-    bool ioDirect_;
+    ShareBuffer buffer_;
     const SpaceLayout* layout_;
     TaskSet* failureSet_;
     std::atomic_bool stop_{false};
@@ -70,7 +63,7 @@ public:
     ~TransS2DPool();
     Status Setup(const size_t nSharer, const int32_t deviceId, const size_t streamNumber,
                  const size_t blockSize, const size_t ioSize, const bool ioDirect,
-                 const SpaceLayout* layout, TaskSet* failureSet);
+                 const size_t bufferNumber, const SpaceLayout* layout, TaskSet* failureSet);
     void Dispatch(TaskPtr task, WaiterPtr waiter);
 
 private:

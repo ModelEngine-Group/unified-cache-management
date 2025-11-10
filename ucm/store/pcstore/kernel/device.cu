@@ -21,8 +21,8 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  * */
-#include "device.h"
 #include <nvml.h>
+#include "device.h"
 #include "helper.h"
 
 namespace UC {
@@ -44,6 +44,22 @@ Status Device::Setup(const int32_t deviceId)
     }
     SetCpuAffinity(deviceId);
     return Status::OK();
+}
+
+Status Device::RegisterHost(void* ptr, const size_t size)
+{
+    auto ret = cudaHostRegister(ptr, size, cudaHostRegisterDefault);
+    if (ret != cudaSuccess) {
+        CUDA_ERROR(ret);
+        return Status::Error();
+    }
+    return Status::OK();
+}
+
+void Device::UnregisterHost(void* ptr)
+{
+    auto ret = cudaHostUnregister(ptr);
+    if (ret != cudaSuccess) { CUDA_ERROR(ret); }
 }
 
 } // namespace UC

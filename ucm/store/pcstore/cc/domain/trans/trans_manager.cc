@@ -34,7 +34,7 @@ Status TransManager::Setup(const size_t rankSize, const int32_t deviceId, const 
     auto s = Status::OK();
     if (rankSize > 1) {
         s = this->s2dPool_.Setup(rankSize, deviceId, streamNumber, blockSize, ioSize, ioDirect,
-                                 layout, &this->failureSet_);
+                                 bufferNumber, layout, &this->failureSet_);
         if (s.Failure()) { return s; }
     }
     s = this->d2sPool_.Setup(deviceId, streamNumber, blockSize, ioSize, ioDirect, bufferNumber,

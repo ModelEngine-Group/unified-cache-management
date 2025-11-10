@@ -31,6 +31,8 @@ namespace UC {
 class Device {
 public:
     static Status Setup(const int32_t deviceId);
+    static Status RegisterHost(void* ptr, const size_t size);
+    static void UnregisterHost(void* ptr);
 };
 
 } // namespace UC

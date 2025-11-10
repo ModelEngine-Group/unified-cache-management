@@ -41,23 +41,22 @@ TransS2DPool::~TransS2DPool()
 
 Status TransS2DPool::Setup(const size_t nSharer, const int32_t deviceId, const size_t streamNumber,
                            const size_t blockSize, const size_t ioSize, const bool ioDirect,
-                           const SpaceLayout* layout, TaskSet* failureSet)
+                           const size_t bufferNumber, const SpaceLayout* layout,
+                           TaskSet* failureSet)
 {
-    this->nSharer_ = nSharer;
     this->deviceId_ = deviceId;
     this->streamNumber_ = streamNumber;
-    this->blockSize_ = blockSize;
     this->ioSize_ = ioSize;
-    this->ioDirect_ = ioDirect;
     this->layout_ = layout;
     this->failureSet_ = failureSet;
+    auto status = this->buffer_.Setup(blockSize, bufferNumber, ioDirect, nSharer);
+    if (status.Failure()) { return status; }
     std::list<std::promise<Status>> start(streamNumber);
     std::list<std::future<Status>> fut;
     for (auto& s : start) {
         fut.push_back(s.get_future());
         this->threads_.emplace_back([&] { this->WorkerLoop(s); });
     }
-    auto status = Status::OK();
     for (auto& f : fut) {
         if (status.Failure()) { break; }
         status = f.get();
@@ -70,8 +69,9 @@ void TransS2DPool::Dispatch(TaskPtr task, WaiterPtr waiter)
     std::lock_guard<std::mutex> lg(this->mutex_);
     task->ForEachGroup(
         [task, waiter, this](const std::string& block, std::vector<uintptr_t>& shards) {
-            BlockTask blockTask{block, this->layout_->DataFilePath(block, false), this->blockSize_,
-                                this->ioDirect_, this->nSharer_};
+            BlockTask blockTask;
+            blockTask.reader =
+                this->buffer_.MakeReader(block, this->layout_->DataFilePath(block, false));
             blockTask.owner = task->id;
             std::swap(blockTask.shards, shards);
             blockTask.done = [task, waiter, ioSize = this->ioSize_](bool success) {
@@ -108,7 +108,7 @@ void TransS2DPool::Worker(Stream& stream)
     }
     if (this->stop_) { return; }
     for (auto iter = this->load_.begin(); iter != this->load_.end(); iter++) {
-        auto s = iter->reader.Ready4Read();
+        auto s = iter->reader->Ready4Read();
         if (s != Status::Retry()) {
             auto task = std::move(*iter);
             this->load_.erase(iter);
@@ -132,7 +132,7 @@ void TransS2DPool::HandleReadyTask(Status s, BlockTask& task, Stream& stream)
         return;
     }
     if (s.Success()) {
-        s = stream.H2DBatchSync(task.reader.GetData(), task.shards.data(), this->ioSize_,
+        s = stream.H2DBatchSync(task.reader->GetData(), task.shards.data(), this->ioSize_,
                                 task.shards.size());
     }
     if (s.Failure()) { this->failureSet_->Insert(task.owner); }
@@ -145,7 +145,7 @@ void TransS2DPool::HandleLoadTask(BlockTask& task, Stream& stream)
         task.done(false);
         return;
     }
-    auto s = task.reader.Ready4Read();
+    auto s = task.reader->Ready4Read();
     if (s == Status::Retry()) {
         std::lock_guard<std::mutex> lg{this->mutex_};
         this->load_.push_back(task);
