@@ -25,6 +25,7 @@
 import random
 import secrets
 import unittest
+from collections import defaultdict
 from typing import List, Union
 from unittest.mock import MagicMock, Mock, patch
 
@@ -106,12 +107,14 @@ class TestUCConnector(unittest.TestCase):
             ucconnector.dump_tasks: dict[str, dict[str, List[Task]]] = {}
             ucconnector.total_tp_size = self.total_tp_size
             ucconnector._connector_metadata = metadata
-            ucconnector.layerwise_load_tasks: dict[
-                str, dict[str, tuple[Task, Task]]
-            ] = {}
+            ucconnector.layerwise_load_tasks: dict[str, dict[str, Task]] = defaultdict(
+                dict
+            )
             ucconnector._need_load_reqs: dict[str, Union[list[int], list[Task]]] = {}
             ucconnector._load_failed_reqs: set[str] = set()
             ucconnector._load_req_to_blocks: dict[str, set[int]] = {}
+            ucconnector.num_layers = 48
+            ucconnector.is_mla = False
         return ucconnector
 
     def test_get_num_new_matched_tokens_hit_all_on_storage(self):
@@ -508,6 +511,7 @@ class TestUCConnector(unittest.TestCase):
             ucconnector.block_size = self.block_size
             ucconnector.use_layerwise = False
             ucconnector._connector_metadata = Mock()
+            ucconnector.is_mla = False
 
         with self.assertRaises(AssertionError):
             ucconnector.wait_for_save()
@@ -542,6 +546,7 @@ class TestUCConnector(unittest.TestCase):
         )
         forward_context = Mock()
         ucconnector.start_load_kv(forward_context)
+        assert mock_connector.load.call_count == 1
 
     def test_start_load_kv_invalid_para(self):
         with patch.object(UnifiedCacheConnectorV1, "__init__", return_value=None):
@@ -559,6 +564,7 @@ class TestUCConnector(unittest.TestCase):
         req_meta1.load_blocks = [
             (secrets.token_hex(8), i) for i in range(self.block_number)
         ]
+        req_meta1.load_async = False
 
         metadata = UCConnectorV1Metadata()
         metadata.requests = [req_meta1]
@@ -575,7 +581,7 @@ class TestUCConnector(unittest.TestCase):
         ucconnector = self.init_uc(mock_connector, metadata=metadata)
         forward_context = Mock()
         ucconnector.start_load_kv(forward_context)
-        assert mock_connector.load.call_count == 2 * self.num_layers
+        assert mock_connector.load.call_count == self.num_layers
 
 
 if __name__ == "__main__":
