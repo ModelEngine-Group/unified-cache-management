@@ -24,7 +24,6 @@
 #include "share_buffer.h"
 #include <atomic>
 #include <chrono>
-#include <random>
 #include <thread>
 #include <unistd.h>
 #include "device.h"
@@ -89,18 +88,10 @@ struct ShareBufferHeader {
     ShareBlockHeader headers[0];
 };
 
-std::string GenShareBufferName(const size_t blockSize, const size_t blockNumber,
-                               const bool ioDirect, const size_t nSharer)
+inline std::string GenShareBufferName(const size_t blockSize, const size_t blockNumber,
+                                      const bool ioDirect, const size_t nSharer)
 {
-    static std::random_device rd;
-    static const std::string allowedChars =
-        "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890";
-    static constexpr size_t rdLen = 10;
-    std::mt19937 gen(rd());
-    std::uniform_int_distribution<> dis(0, allowedChars.length() - 1);
-    std::string rdStr(rdLen, 0);
-    for (size_t i = 0; i < rdLen; i++) { rdStr[i] = allowedChars[dis(gen)]; }
-    return fmt::format("uc.buf-{}-{}-{}-{}.{}", blockSize, blockNumber, ioDirect, nSharer, rdStr);
+    return fmt::format("uc.buf-{}-{}-{}-{:04x}", blockSize, blockNumber, ioDirect, nSharer);
 }
 
 Status ShareBuffer::Setup(const size_t blockSize, const size_t blockNumber, const bool ioDirect,
