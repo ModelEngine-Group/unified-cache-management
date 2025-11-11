@@ -25,9 +25,10 @@
 #
 import hashlib
 import pickle
+from collections import defaultdict
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import TYPE_CHECKING, Any, Generator, List, Optional, Union
+from typing import TYPE_CHECKING, Any, List, Optional, Union
 
 import torch
 from vllm.config import VllmConfig
@@ -89,7 +90,7 @@ class UnifiedCacheConnectorV1(KVConnectorBase_V1):
     def __init__(self, vllm_config: "VllmConfig", role: KVConnectorRole):
         super().__init__(vllm_config=vllm_config, role=role)
         self.block_size = vllm_config.cache_config.block_size
-        self.use_layerwise = False
+        self.use_layerwise = True
         self.kv_caches: dict[str, torch.Tensor] = {}
         self.total_tp_size = vllm_config.parallel_config.tensor_parallel_size
         self.rank = (
@@ -98,7 +99,7 @@ class UnifiedCacheConnectorV1(KVConnectorBase_V1):
         self.request_block_infos: dict[str, RequestBlockInfo] = {}
         # dump tasks record request -> block -> list[task]
         self.dump_tasks: dict[str, dict[str, List[Task]]] = {}
-        self.layerwise_load_tasks: dict[str, dict[str, tuple[Task, Task]]] = {}
+        self.layerwise_load_tasks: dict[str, dict[str, Task]] = defaultdict(dict)
         self.is_mla = self._vllm_config.model_config.is_deepseek_mla
         self.num_layers = vllm_config.model_config.get_num_layers(
             vllm_config.parallel_config
@@ -224,6 +225,7 @@ class UnifiedCacheConnectorV1(KVConnectorBase_V1):
                 v_tensors.append(kv_layer[1][blk_id])
                 v_offsets.append(v_data_offset)
         return k_tensors + v_tensors, k_offsets + v_offsets
+
     # ==============================
     # Worker-side methods
     # ==============================
@@ -273,15 +275,13 @@ class UnifiedCacheConnectorV1(KVConnectorBase_V1):
             is_load_async = request.load_async
             total_offsets = []
             total_tensors = []
-            storage_block_ids = storage_block_ids * 2 **(0 if self.is_mla else 1)
+            storage_block_ids = storage_block_ids * 2 ** (0 if self.is_mla else 1)
             for layer_name, kv_layer in self.kv_caches.items():
                 tensors, offsets = self.get_tensor_and_offset_layerwise(
                     vllm_block_ids, kv_layer, layer_name
                 )
                 if self.use_layerwise and not is_load_async:
-                    task_id = self.connector.load(
-                        storage_block_ids, offsets, tensors
-                    )
+                    task_id = self.connector.load(storage_block_ids, offsets, tensors)
                     self.layerwise_load_tasks[request.request_id][layer_name] = task_id
                     continue
                 else:
@@ -322,20 +322,13 @@ class UnifiedCacheConnectorV1(KVConnectorBase_V1):
         for request_id, layer_to_task in self.layerwise_load_tasks.items():
             if request_id in self._load_failed_reqs:
                 continue
-            k_task, v_task = layer_to_task[layer_name]
-            if self.connector.wait(k_task) != 0:
+            task = layer_to_task[layer_name]
+            if self.connector.wait(task) != 0:
                 self._load_failed_reqs.add(request_id)
                 logger.error(
                     f"Failed to load block for request {request_id} on layer {layer_name}"
                 )
                 continue
-            if not self.is_mla:
-                if self.connector.wait(v_task) != 0:
-                    self._load_failed_reqs.add(request_id)
-                    logger.error(
-                        f"Failed to load block for request {request_id} on layer {layer_name}"
-                    )
-                    continue
             logger.debug(f"Load tasks for {request_id} on layer {layer_name} finished.")
 
     def save_kv_layer(
@@ -419,6 +412,8 @@ class UnifiedCacheConnectorV1(KVConnectorBase_V1):
         """
         if hasattr(self, "kv_role") and self.kv_role == "kv_consumer":
             return
+        if self.is_mla and self.rank != 0:
+            return
         # request id -> succeed dumped blocks
         success_dumped_blocks: dict[str, list[str]] = {}
 
@@ -437,28 +432,34 @@ class UnifiedCacheConnectorV1(KVConnectorBase_V1):
             self.dump_tasks.clear()
             return success_dumped_blocks if success_dumped_blocks else None
 
+        req_to_dump_blocks: dict[str, list[str]] = {}
+        need_dump_tasks: dict[str, Task] = {}
         for request in metadata.requests:
             if not request.dump_blocks:
                 continue
 
             storage_block_ids = [block[0] for block in request.dump_blocks]
             vllm_block_ids = [block[1] for block in request.dump_blocks]
+            req_to_dump_blocks[request.request_id] = storage_block_ids
             total_offsets = []
             total_tensors = []
-            total_block_ids = storage_block_ids * 2 **(0 if self.is_mla else 1) * self.num_layers
+            total_block_ids = (
+                storage_block_ids * 2 ** (0 if self.is_mla else 1) * self.num_layers
+            )
             for layer_name, kv_layer in self.kv_caches.items():
                 tensors, offsets = self.get_tensor_and_offset_layerwise(
                     vllm_block_ids, kv_layer, layer_name
                 )
                 total_offsets.extend(offsets)
                 total_tensors.extend(tensors)
-            task_id = self.connector.dump(
-                total_block_ids, total_offsets, total_tensors
-            )
+            task_id = self.connector.dump(total_block_ids, total_offsets, total_tensors)
+            need_dump_tasks[request.request_id] = task_id
+
+        for req_id, task_id in need_dump_tasks.items():
             if self.connector.wait(task_id) != 0:
                 logger.error(f"Failed to dump blocks for req {request.request_id}")
             else:
-                success_dumped_blocks[request.request_id] = storage_block_ids
+                success_dumped_blocks[req_id] = req_to_dump_blocks[req_id]
         return success_dumped_blocks if success_dumped_blocks else None
 
     def get_finished(self, finished_req_ids: set[str]) -> tuple[set[str], set[str]]:
