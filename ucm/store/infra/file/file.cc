@@ -87,6 +87,20 @@ Status File::Write(const std::string& path, const size_t offset, const size_t le
     return status;
 }
 
+Status File::OpenForDirectIO(const std::string& path, uint32_t flags, int& fd)
+{
+    auto file = std::make_unique<FileImpl>(path);
+    auto status = file->Open(flags);
+    if (status.Failure()) {
+        UC_ERROR("Failed to open file({}) with flags({}).", path, flags);
+        fd = -1;
+        return status;
+    }
+    fd = file->GetHandle();
+    file.release();
+    return Status::OK();
+}
+
 void File::MUnmap(void* addr, size_t size) { FileImpl{{}}.MUnmap(addr, size); }
 
 void File::ShmUnlink(const std::string& path) { FileImpl{path}.ShmUnlink(); }

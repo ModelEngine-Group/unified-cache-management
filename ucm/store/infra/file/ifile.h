@@ -55,6 +55,7 @@ public:
     IFile(const std::string& path) : path_{path} {}
     virtual ~IFile() = default;
     const std::string& Path() const { return this->path_; }
+    virtual int32_t GetHandle() const = 0;
     virtual Status MkDir() = 0;
     virtual Status RmDir() = 0;
     virtual Status Rename(const std::string& newName) = 0;

@@ -41,6 +41,7 @@ public:
                        uintptr_t address, const bool directIo = false);
     static Status Write(const std::string& path, const size_t offset, const size_t length,
                         const uintptr_t address, const bool directIo = false);
+    static Status OpenForDirectIO(const std::string& path, uint32_t flags, int& fd);
     static void MUnmap(void* addr, size_t size);
     static void ShmUnlink(const std::string& path);
     static void Remove(const std::string& path);
