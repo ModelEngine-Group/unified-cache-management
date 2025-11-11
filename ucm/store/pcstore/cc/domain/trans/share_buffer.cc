@@ -222,7 +222,10 @@ size_t ShareBuffer::AcquireBlock(const std::string& block)
             if (reusedIdx == this->blockNumber_) { reusedIdx = pos; }
             break;
         }
-        if (bufferHeader->headers[pos].id == block) { break; }
+        if (bufferHeader->headers[pos].id == block) {
+            reusedIdx = pos;
+            break;
+        }
         if (bufferHeader->headers[pos].ref <= 0) {
             if (reusedIdx == this->blockNumber_) { reusedIdx = pos; }
         }
