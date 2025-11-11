@@ -89,7 +89,7 @@ class UnifiedCacheConnectorV1(KVConnectorBase_V1):
     def __init__(self, vllm_config: "VllmConfig", role: KVConnectorRole):
         super().__init__(vllm_config=vllm_config, role=role)
         self.block_size = vllm_config.cache_config.block_size
-        self.use_layerwise = True
+        self.use_layerwise = False
         self.kv_caches: dict[str, torch.Tensor] = {}
         self.total_tp_size = vllm_config.parallel_config.tensor_parallel_size
         self.rank = (
@@ -224,7 +224,6 @@ class UnifiedCacheConnectorV1(KVConnectorBase_V1):
                 v_tensors.append(kv_layer[1][blk_id])
                 v_offsets.append(v_data_offset)
         return k_tensors + v_tensors, k_offsets + v_offsets
-
     # ==============================
     # Worker-side methods
     # ==============================
@@ -261,62 +260,45 @@ class UnifiedCacheConnectorV1(KVConnectorBase_V1):
 
         self.layerwise_load_tasks.clear()
         self.current_layer = 0
+        need_wait_tasks = []
         for request in metadata.requests:
             if not request.load_blocks:
                 continue
 
             storage_block_ids = [block[0] for block in request.load_blocks]
             vllm_block_ids = [block[1] for block in request.load_blocks]
-            blocks_len = len(storage_block_ids)
             self._load_req_to_blocks.setdefault(request.request_id, set()).update(
                 vllm_block_ids
             )
+            is_load_async = request.load_async
+            total_offsets = []
+            total_tensors = []
+            storage_block_ids = storage_block_ids * 2 **(0 if self.is_mla else 1)
             for layer_name, kv_layer in self.kv_caches.items():
                 tensors, offsets = self.get_tensor_and_offset_layerwise(
                     vllm_block_ids, kv_layer, layer_name
                 )
-                k_task_id = self.connector.load(
-                    storage_block_ids, offsets[:blocks_len], tensors[:blocks_len]
-                )
-                v_task_id = None
-                if not self.is_mla:
-                    v_task_id = self.connector.load(
-                        storage_block_ids,
-                        offsets[blocks_len:],
-                        tensors[blocks_len:],
+                if self.use_layerwise and not is_load_async:
+                    task_id = self.connector.load(
+                        storage_block_ids, offsets, tensors
                     )
-                if request.request_id not in self.layerwise_load_tasks:
-                    self.layerwise_load_tasks[request.request_id] = {}
-                self.layerwise_load_tasks[request.request_id][layer_name] = (
-                    k_task_id,
-                    v_task_id,
+                    self.layerwise_load_tasks[request.request_id][layer_name] = task_id
+                    continue
+                else:
+                    total_offsets.extend(offsets)
+                    total_tensors.extend(tensors)
+            if total_offsets and total_tensors:
+                storage_block_ids = storage_block_ids * self.num_layers
+                task_id = self.connector.load(
+                    storage_block_ids, total_offsets, total_tensors
                 )
-
-            if request.load_async and request.request_id in self.layerwise_load_tasks:
-                for _, (k_task, v_task) in self.layerwise_load_tasks[
-                    request.request_id
-                ].items():
-                    if request.request_id not in self._need_load_reqs:
-                        self._need_load_reqs[request.request_id] = []
-                    self._need_load_reqs[request.request_id].append(k_task)
-                    if not self.is_mla:
-                        self._need_load_reqs[request.request_id].append(v_task)
-                self.layerwise_load_tasks.pop(request.request_id)
-                continue
-
-            if (
-                not self.use_layerwise
-                and request.request_id in self.layerwise_load_tasks
-            ):
-                for _, (k_task, v_task) in self.layerwise_load_tasks[
-                    request.request_id
-                ].items():
-                    if self.connector.wait(k_task) != 0:
-                        self._load_failed_reqs.add(request.request_id)
-                        break
-                    if v_task and self.connector.wait(v_task) != 0:
-                        self._load_failed_reqs.add(request.request_id)
-                        break
+                if is_load_async:
+                    self._need_load_reqs[request.request_id] = task_id
+                else:
+                    need_wait_tasks.append(task_id)
+        for task_id in need_wait_tasks:
+            if self.connector.wait(task_id) != 0:
+                self._load_failed_reqs.add(request.request_id)
 
     def wait_for_layer_load(self, layer_name: str) -> None:
         """
@@ -461,30 +443,22 @@ class UnifiedCacheConnectorV1(KVConnectorBase_V1):
 
             storage_block_ids = [block[0] for block in request.dump_blocks]
             vllm_block_ids = [block[1] for block in request.dump_blocks]
-            blocks_len = len(storage_block_ids)
+            total_offsets = []
+            total_tensors = []
+            total_block_ids = storage_block_ids * 2 **(0 if self.is_mla else 1) * self.num_layers
             for layer_name, kv_layer in self.kv_caches.items():
                 tensors, offsets = self.get_tensor_and_offset_layerwise(
                     vllm_block_ids, kv_layer, layer_name
                 )
-                for block_id, offset, tensor in zip(
-                    storage_block_ids, offsets[:blocks_len], tensors[:blocks_len]
-                ):
-                    task = self.connector.dump([block_id], [offset], [tensor])
-                    self.dump_tasks.setdefault(request.request_id, {}).setdefault(
-                        block_id, []
-                    ).append(task)
-                if not self.is_mla:
-                    for block_id, offset, tensor in zip(
-                        storage_block_ids,
-                        offsets[blocks_len:],
-                        tensors[blocks_len:],
-                    ):
-                        task = self.connector.dump([block_id], [offset], [tensor])
-                        self.dump_tasks.setdefault(request.request_id, {}).setdefault(
-                            block_id, []
-                        ).append(task)
-        wait_for_tasks()
-        self.dump_tasks.clear()
+                total_offsets.extend(offsets)
+                total_tensors.extend(tensors)
+            task_id = self.connector.dump(
+                total_block_ids, total_offsets, total_tensors
+            )
+            if self.connector.wait(task_id) != 0:
+                logger.error(f"Failed to dump blocks for req {request.request_id}")
+            else:
+                success_dumped_blocks[request.request_id] = storage_block_ids
         return success_dumped_blocks if success_dumped_blocks else None
 
     def get_finished(self, finished_req_ids: set[str]) -> tuple[set[str], set[str]]:
