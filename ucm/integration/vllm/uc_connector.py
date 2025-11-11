@@ -275,7 +275,7 @@ class UnifiedCacheConnectorV1(KVConnectorBase_V1):
             is_load_async = request.load_async
             total_offsets = []
             total_tensors = []
-            storage_block_ids = storage_block_ids * 2 ** (0 if self.is_mla else 1)
+            storage_block_ids = storage_block_ids * (1 if self.is_mla else 2)
             for layer_name, kv_layer in self.kv_caches.items():
                 tensors, offsets = self.get_tensor_and_offset_layerwise(
                     vllm_block_ids, kv_layer, layer_name
@@ -444,7 +444,7 @@ class UnifiedCacheConnectorV1(KVConnectorBase_V1):
             total_offsets = []
             total_tensors = []
             total_block_ids = (
-                storage_block_ids * 2 ** (0 if self.is_mla else 1) * self.num_layers
+                storage_block_ids * (1 if self.is_mla else 2) * self.num_layers
             )
             for layer_name, kv_layer in self.kv_caches.items():
                 tensors, offsets = self.get_tensor_and_offset_layerwise(
