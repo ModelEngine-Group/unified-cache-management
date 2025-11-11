@@ -120,6 +120,7 @@ PYBIND11_MODULE(ucmnfsstore, module)
     config.def_readwrite("transferDeviceId", &UC::NFSStorePy::Config::transferDeviceId);
     config.def_readwrite("transferStreamNumber", &UC::NFSStorePy::Config::transferStreamNumber);
     config.def_readwrite("transferIoSize", &UC::NFSStorePy::Config::transferIoSize);
+    config.def_readwrite("transferIoDirect", &UC::NFSStorePy::Config::transferIoDirect);
     config.def_readwrite("transferBufferNumber", &UC::NFSStorePy::Config::transferBufferNumber);
     config.def_readwrite("transferTimeoutMs", &UC::NFSStorePy::Config::transferTimeoutMs);
     config.def_readwrite("tempDumpDirEnable", &UC::NFSStorePy::Config::tempDumpDirEnable);

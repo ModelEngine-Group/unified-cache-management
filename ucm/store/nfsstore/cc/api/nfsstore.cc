@@ -45,7 +45,7 @@ public:
             status =
                 this->transMgr_.Setup(config.transferDeviceId, config.transferStreamNumber,
                                       config.transferIoSize, config.transferBufferNumber,
-                                      this->spaceMgr_.GetSpaceLayout(), config.transferTimeoutMs);
+                                      this->spaceMgr_.GetSpaceLayout(), config.transferTimeoutMs, config.transferIoDirect);
             if (status.Failure()) {
                 UC_ERROR("Failed({}) to setup TsfTaskManager.", status);
                 return status.Underlying();
@@ -124,6 +124,7 @@ private:
         UC_INFO("Set UC::storageCapacity to {}.", config.storageCapacity);
         UC_INFO("Set UC::RecycleEnable to {}.", config.recycleEnable);
         UC_INFO("Set UC::RecycleThreshold to {}.", config.recycleThresholdRatio);
+        UC_INFO("Set UC::IoDirect to {}.", config.transferIoDirect);
     }
 
 private:
