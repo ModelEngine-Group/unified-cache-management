@@ -35,13 +35,14 @@ bool IsAligned(const T value)
 }
 
 Status PosixQueue::Setup(const int32_t deviceId, const size_t bufferSize, const size_t bufferNumber,
-                         TaskSet* failureSet, const SpaceLayout* layout, const size_t timeoutMs)
+                         TaskSet* failureSet, const SpaceLayout* layout, const size_t timeoutMs, bool useDirect)
 {
     this->deviceId_ = deviceId;
     this->bufferSize_ = bufferSize;
     this->bufferNumber_ = bufferNumber;
     this->failureSet_ = failureSet;
     this->layout_ = layout;
+    this->useDirect_ = useDirect;
     auto success =
         this->backend_.SetWorkerInitFn([this](auto& device) { return this->Init(device); })
             .SetWorkerFn([this](auto& shard, const auto& device) { this->Work(shard, device); })
@@ -106,7 +107,7 @@ Status PosixQueue::D2S(Task::Shard& shard, const Device& device)
     auto status = device->D2HSync((std::byte*)hub, (std::byte*)shard.address, shard.length);
     if (status.Failure()) { return status; }
     auto path = this->layout_->DataFilePath(shard.block, true);
-    return File::Write(path, shard.offset, shard.length, (uintptr_t)hub);
+    return File::Write(path, shard.offset, shard.length, (uintptr_t)hub, useDirect_);
 }
 
 Status PosixQueue::S2D(Task::Shard& shard, const Device& device)
@@ -118,7 +119,7 @@ Status PosixQueue::S2D(Task::Shard& shard, const Device& device)
     }
     auto hub = shard.buffer.get();
     auto path = this->layout_->DataFilePath(shard.block, false);
-    auto status = File::Read(path, shard.offset, shard.length, (uintptr_t)hub);
+    auto status = File::Read(path, shard.offset, shard.length, (uintptr_t)hub, useDirect_);
     if (status.Failure()) { return status; }
     return device->H2DAsync((std::byte*)shard.address, (std::byte*)hub, shard.length);
 }
