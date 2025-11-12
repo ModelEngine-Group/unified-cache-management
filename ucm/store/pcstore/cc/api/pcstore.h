@@ -39,7 +39,7 @@ public:
         bool transferIoDirect{false};
         size_t transferLocalRankSize{1};
         int32_t transferDeviceId{-1};
-        size_t transferStreamNumber{64};
+        size_t transferStreamNumber{8};
         size_t transferBufferNumber{4096};
         size_t transferTimeoutMs{30000};
 

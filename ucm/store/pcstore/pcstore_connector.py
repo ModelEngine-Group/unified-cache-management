@@ -50,7 +50,7 @@ class UcmPcStore(UcmKVStoreBase):
             param.transferDeviceId = config["device"]
             param.transferIoSize = config["io_size"]
             param.transferIoDirect = True
-            param.transferStreamNumber = 64
+            param.transferStreamNumber = 8
             param.transferBufferNumber = 4096
         ret = self.store.Setup(param)
         if ret != 0:
