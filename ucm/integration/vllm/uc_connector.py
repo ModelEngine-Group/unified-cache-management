@@ -94,7 +94,7 @@ class UnifiedCacheConnectorV1(KVConnectorBase_V1):
     def __init__(self, vllm_config: "VllmConfig", role: KVConnectorRole):
         super().__init__(vllm_config=vllm_config, role=role)
         self.block_size = vllm_config.cache_config.block_size
-        self.use_layerwise = False
+        self.use_layerwise = True
         self.kv_caches: dict[str, torch.Tensor] = {}
         self.total_tp_size = vllm_config.parallel_config.tensor_parallel_size
         if role == KVConnectorRole.WORKER:
