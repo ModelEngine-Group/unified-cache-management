@@ -43,11 +43,20 @@ struct ShareMutex {
         pthread_mutexattr_init(&attr);
         pthread_mutexattr_setpshared(&attr, PTHREAD_PROCESS_SHARED);
         pthread_mutexattr_setrobust(&attr, PTHREAD_MUTEX_ROBUST);
+        pthread_mutexattr_settype(&attr, PTHREAD_MUTEX_ADAPTIVE_NP);
         pthread_mutex_init(&mutex, &attr);
         pthread_mutexattr_destroy(&attr);
     }
     void Lock() { pthread_mutex_lock(&mutex); }
     void Unlock() { pthread_mutex_unlock(&mutex); }
+};
+
+struct ShareLock {
+    pthread_spinlock_t lock;
+    ~ShareLock() = delete;
+    void Init() { pthread_spin_init(&lock, PTHREAD_PROCESS_SHARED); }
+    void Lock() { pthread_spin_lock(&lock); }
+    void Unlock() { pthread_spin_unlock(&lock); }
 };
 
 struct ShareBlockId {
@@ -72,7 +81,7 @@ enum class ShareBlockStatus { INIT, LOADING, LOADED, FAILURE };
 
 struct ShareBlockHeader {
     ShareBlockId id;
-    ShareMutex mutex;
+    ShareLock mutex;
     int32_t ref;
     ShareBlockStatus status;
     size_t offset;
