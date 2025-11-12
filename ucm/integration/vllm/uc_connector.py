@@ -110,6 +110,7 @@ class UnifiedCacheConnectorV1(KVConnectorBase_V1):
         self.is_mla = self._vllm_config.model_config.is_deepseek_mla
         if self.is_mla:
             self.broadcast_stream = torch.cuda.Stream()
+        self.skip_wait_in_mla = self.is_mla and self.rank != 0
         self.num_layers = vllm_config.model_config.get_num_layers(
             vllm_config.parallel_config
         )
@@ -278,7 +279,7 @@ class UnifiedCacheConnectorV1(KVConnectorBase_V1):
                 continue
 
             storage_block_ids = [block[0] for block in request.load_blocks]
-            blocks_len = len(storage_block_ids)
+            total_block_num = len(storage_block_ids)
             vllm_block_ids = [block[1] for block in request.load_blocks]
             self._load_req_to_blocks.setdefault(request.request_id, set()).update(
                 vllm_block_ids
@@ -293,7 +294,7 @@ class UnifiedCacheConnectorV1(KVConnectorBase_V1):
                     vllm_block_ids, kv_layer, layer_name
                 )
                 layer_to_tensors[layer_name] = tensors
-                if self.is_mla and self.rank != 0:
+                if self.skip_wait_in_mla:
                     need_load_or_rec_tasks[request.request_id] = None
                     continue
                 if self.use_layerwise and not is_load_async:
@@ -312,32 +313,32 @@ class UnifiedCacheConnectorV1(KVConnectorBase_V1):
                     self._need_load_reqs[request.request_id] = task_id
                 else:
                     need_load_or_rec_tasks[request.request_id] = task_id
-            req_to_layer[request.request_id] = (layer_to_tensors, blocks_len)
+            req_to_layer[request.request_id] = (layer_to_tensors, total_block_num)
         for req_id, task_id in need_load_or_rec_tasks.items():
-            if self.is_mla and self.rank == 0:
+            if not self.skip_wait_in_mla:
                 if self.connector.wait(task_id) != 0:
                     self._load_failed_reqs.add(req_id)
                     logger.error(f"Failed to load blocks for req {req_id}")
                     continue
             if self.is_mla:
-                layer_to_tensors, blocks_len = req_to_layer[req_id]
+                layer_to_tensors, total_block_num = req_to_layer[req_id]
                 with torch.cuda.stream(self.broadcast_stream):
                     receive_dict = self._broadcast_or_receive_blocks(
-                        layer_to_tensors, blocks_len
+                        layer_to_tensors, total_block_num
                     )
                 self.broadcast_stream.synchronize()
                 if self.rank > 0 and receive_dict:
                     for layer_name, kv_layer in self.kv_caches.items():
                         received_tensor = receive_dict[layer_name]
-                        for i in range(blocks_len):
+                        for i in range(total_block_num):
                             layer_to_tensors[layer_name][i].copy_(received_tensor[i])
 
     def _broadcast_or_receive_blocks(
-        self, layer_to_tensors: dict[str : torch.Tensor], blocks_len
+        self, layer_to_tensors: dict[str : torch.Tensor], total_block_num
     ):
         receive_dict = {}
         for layer_name, kv_layer in self.kv_caches.items():
-            k_tensors = layer_to_tensors[layer_name][:blocks_len]
+            k_tensors = layer_to_tensors[layer_name][:total_block_num]
             if self.rank == 0:
                 tensor_to_broadcast = torch.stack(k_tensors, dim=0)
                 self.broadcast_fn(tensor_to_broadcast, 0)
