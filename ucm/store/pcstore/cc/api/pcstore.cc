@@ -88,6 +88,7 @@ private:
         UC_INFO("Set UC::StorageBackends to {}.", config.storageBackends);
         UC_INFO("Set UC::BlockSize to {}.", config.kvcacheBlockSize);
         UC_INFO("Set UC::TransferEnable to {}.", config.transferEnable);
+        if (!config.transferEnable) { return; }
         UC_INFO("Set UC::IoSize to {}.", config.transferIoSize);
         UC_INFO("Set UC::IoDirect to {}.", config.transferIoDirect);
         UC_INFO("Set UC::LocalRankSize to {}.", config.transferLocalRankSize);
