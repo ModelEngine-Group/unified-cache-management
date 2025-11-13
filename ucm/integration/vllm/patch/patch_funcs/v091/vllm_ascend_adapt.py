@@ -22,27 +22,7 @@
 # SOFTWARE.
 #
 
-"""
-vLLM integration module for Unified Cache Management.
 
-This module automatically applies patches to vLLM when imported,
-eliminating the need for manual `git apply` commands.
-"""
-
-# Auto-apply patches when this module is imported
-try:
-    from ucm.integration.vllm.patch.apply_patch import ensure_patches_applied
-
-    ensure_patches_applied()
-except Exception as e:
-    # Don't fail if patches can't be applied - might be running in environment without vLLM
-    import warnings
-
-    warnings.warn(
-        f"Failed to apply vLLM patches: {e}. "
-        f"If you're using vLLM, ensure it's installed and patches are compatible."
-    )
-
-from ucm.integration.vllm.uc_connector import UnifiedCacheConnectorV1
-
-__all__ = ["UnifiedCacheConnectorV1"]
+def _apply_ascend_patch() -> None:
+    """Apply patches for vLLM 0.9.1."""
+    raise NotImplementedError("vLLM 0.9.1 is not supported for Ascend")
