@@ -24,8 +24,8 @@
 #ifndef UNIFIEDCACHE_TRANS_MANAGER_H
 #define UNIFIEDCACHE_TRANS_MANAGER_H
 
-#include "trans_d2s_pool.h"
-#include "trans_s2d_pool.h"
+#include "trans_queue.h"
+#include "trans_share_queue.h"
 
 namespace UC {
 
@@ -42,8 +42,8 @@ private:
     using TaskPtr = std::shared_ptr<TransTask>;
     using WaiterPtr = std::shared_ptr<TaskWaiter>;
     using TaskPair = std::pair<TaskPtr, WaiterPtr>;
-    TransS2DPool s2dPool_;
-    TransD2SPool d2sPool_;
+    TransShareQueue shareQueue_;
+    TransQueue queue_;
     size_t rankSize_;
     size_t timeoutMs_;
     std::mutex mutex_;

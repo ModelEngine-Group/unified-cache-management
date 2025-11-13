@@ -21,13 +21,13 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  * */
-#include "trans_s2d_pool.h"
+#include "trans_share_queue.h"
 #include "device.h"
 #include "logger/logger.h"
 
 namespace UC {
 
-TransS2DPool::~TransS2DPool()
+TransShareQueue::~TransShareQueue()
 {
     {
         std::lock_guard<std::mutex> lg(this->mutex_);
@@ -39,10 +39,10 @@ TransS2DPool::~TransS2DPool()
     }
 }
 
-Status TransS2DPool::Setup(const size_t nSharer, const int32_t deviceId, const size_t streamNumber,
-                           const size_t blockSize, const size_t ioSize, const bool ioDirect,
-                           const size_t bufferNumber, const SpaceLayout* layout,
-                           TaskSet* failureSet)
+Status TransShareQueue::Setup(const size_t nSharer, const int32_t deviceId,
+                              const size_t streamNumber, const size_t blockSize,
+                              const size_t ioSize, const bool ioDirect, const size_t bufferNumber,
+                              const SpaceLayout* layout, TaskSet* failureSet)
 {
     this->deviceId_ = deviceId;
     this->streamNumber_ = streamNumber;
@@ -64,7 +64,7 @@ Status TransS2DPool::Setup(const size_t nSharer, const int32_t deviceId, const s
     return status;
 }
 
-void TransS2DPool::Dispatch(TaskPtr task, WaiterPtr waiter)
+void TransShareQueue::Dispatch(TaskPtr task, WaiterPtr waiter)
 {
     std::lock_guard<std::mutex> lg(this->mutex_);
     task->ForEachGroup(
@@ -86,7 +86,7 @@ void TransS2DPool::Dispatch(TaskPtr task, WaiterPtr waiter)
     this->cv_.notify_all();
 }
 
-void TransS2DPool::WorkerLoop(std::promise<Status>& status)
+void TransShareQueue::WorkerLoop(std::promise<Status>& status)
 {
     auto s = Status::OK();
     Stream stream;
@@ -99,7 +99,7 @@ void TransS2DPool::WorkerLoop(std::promise<Status>& status)
     while (!this->stop_) { this->Worker(stream); }
 }
 
-void TransS2DPool::Worker(Stream& stream)
+void TransShareQueue::Worker(Stream& stream)
 {
     std::unique_lock<std::mutex> ul{this->mutex_};
     if (this->load_.empty() && this->wait_.empty()) {
@@ -125,7 +125,7 @@ void TransS2DPool::Worker(Stream& stream)
     this->HandleLoadTask(task, stream);
 }
 
-void TransS2DPool::HandleReadyTask(Status s, BlockTask& task, Stream& stream)
+void TransShareQueue::HandleReadyTask(Status s, BlockTask& task, Stream& stream)
 {
     if (this->failureSet_->Contains(task.owner)) {
         task.done(false);
@@ -139,7 +139,7 @@ void TransS2DPool::HandleReadyTask(Status s, BlockTask& task, Stream& stream)
     task.done(s.Success());
 }
 
-void TransS2DPool::HandleLoadTask(BlockTask& task, Stream& stream)
+void TransShareQueue::HandleLoadTask(BlockTask& task, Stream& stream)
 {
     if (this->failureSet_->Contains(task.owner)) {
         task.done(false);

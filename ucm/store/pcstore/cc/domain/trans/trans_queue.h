@@ -21,8 +21,8 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  * */
-#ifndef UNIFIEDCACHE_TRAN_S2D_POOL_H
-#define UNIFIEDCACHE_TRAN_S2D_POOL_H
+#ifndef UNIFIEDCACHE_TRAN_QUEUE_H
+#define UNIFIEDCACHE_TRAN_QUEUE_H
 
 #include "buffer.h"
 #include "space/space_layout.h"
@@ -34,7 +34,7 @@
 
 namespace UC {
 
-class TransD2SPool {
+class TransQueue {
     using TaskPtr = std::shared_ptr<TransTask>;
     using WaiterPtr = std::shared_ptr<TaskWaiter>;
     struct BlockTask {

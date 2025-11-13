@@ -21,14 +21,14 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  * */
-#include "trans_d2s_pool.h"
+#include "trans_queue.h"
 #include "device.h"
 #include "file/file.h"
 #include "logger/logger.h"
 
 namespace UC {
 
-void TransD2SPool::DeviceWorker(BlockTask&& task)
+void TransQueue::DeviceWorker(BlockTask&& task)
 {
     if (this->failureSet_->Contains(task.owner)) {
         task.done(false);
@@ -51,7 +51,7 @@ void TransD2SPool::DeviceWorker(BlockTask&& task)
     return;
 }
 
-void TransD2SPool::FileWorker(BlockTask&& task)
+void TransQueue::FileWorker(BlockTask&& task)
 {
     if (this->failureSet_->Contains(task.owner)) {
         task.done(false);
@@ -76,10 +76,9 @@ void TransD2SPool::FileWorker(BlockTask&& task)
     task.done(false);
 }
 
-Status TransD2SPool::Setup(const int32_t deviceId, const size_t streamNumber,
-                           const size_t blockSize, const size_t ioSize, const bool ioDirect,
-                           const size_t bufferNumber, const SpaceLayout* layout,
-                           TaskSet* failureSet_)
+Status TransQueue::Setup(const int32_t deviceId, const size_t streamNumber, const size_t blockSize,
+                         const size_t ioSize, const bool ioDirect, const size_t bufferNumber,
+                         const SpaceLayout* layout, TaskSet* failureSet_)
 {
     auto s = Device::Setup(deviceId);
     if (s.Failure()) { return s; }
@@ -102,7 +101,7 @@ Status TransD2SPool::Setup(const int32_t deviceId, const size_t streamNumber,
     return Status::OK();
 }
 
-void TransD2SPool::Dispatch(TaskPtr task, WaiterPtr waiter)
+void TransQueue::Dispatch(TaskPtr task, WaiterPtr waiter)
 {
     task->ForEachGroup(
         [task, waiter, this](const std::string& block, std::vector<uintptr_t>& shards) {

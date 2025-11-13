@@ -21,8 +21,8 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  * */
-#ifndef UNIFIEDCACHE_TRANS_D2S_POOL_H
-#define UNIFIEDCACHE_TRANS_D2S_POOL_H
+#ifndef UNIFIEDCACHE_TRANS_SHARE_QUEUE_H
+#define UNIFIEDCACHE_TRANS_SHARE_QUEUE_H
 
 #include <future>
 #include <list>
@@ -37,7 +37,7 @@
 
 namespace UC {
 
-class TransS2DPool {
+class TransShareQueue {
     using TaskPtr = std::shared_ptr<TransTask>;
     using WaiterPtr = std::shared_ptr<TaskWaiter>;
     struct BlockTask {
@@ -60,7 +60,7 @@ class TransS2DPool {
     std::list<std::thread> threads_;
 
 public:
-    ~TransS2DPool();
+    ~TransShareQueue();
     Status Setup(const size_t nSharer, const int32_t deviceId, const size_t streamNumber,
                  const size_t blockSize, const size_t ioSize, const bool ioDirect,
                  const size_t bufferNumber, const SpaceLayout* layout, TaskSet* failureSet);

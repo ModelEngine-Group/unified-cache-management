@@ -33,12 +33,12 @@ Status TransManager::Setup(const size_t rankSize, const int32_t deviceId, const 
 {
     auto s = Status::OK();
     if (rankSize > 1) {
-        s = this->s2dPool_.Setup(rankSize, deviceId, streamNumber, blockSize, ioSize, ioDirect,
-                                 bufferNumber, layout, &this->failureSet_);
+        s = this->shareQueue_.Setup(rankSize, deviceId, streamNumber, blockSize, ioSize, ioDirect,
+                                    bufferNumber, layout, &this->failureSet_);
         if (s.Failure()) { return s; }
     }
-    s = this->d2sPool_.Setup(deviceId, streamNumber, blockSize, ioSize, ioDirect, bufferNumber,
-                             layout, &this->failureSet_);
+    s = this->queue_.Setup(deviceId, streamNumber, blockSize, ioSize, ioDirect, bufferNumber,
+                           layout, &this->failureSet_);
     if (s.Failure()) { return s; }
     this->rankSize_ = rankSize;
     this->timeoutMs_ = timeoutMs;
@@ -66,10 +66,10 @@ Status TransManager::Submit(TransTask task, size_t& taskId) noexcept
         return Status::OutOfMemory();
     }
     if (this->rankSize_ > 1 && iter->second.first->type == TransTask::Type::LOAD) {
-        this->s2dPool_.Dispatch(iter->second.first, iter->second.second);
+        this->shareQueue_.Dispatch(iter->second.first, iter->second.second);
         return Status::OK();
     }
-    this->d2sPool_.Dispatch(iter->second.first, iter->second.second);
+    this->queue_.Dispatch(iter->second.first, iter->second.second);
     return Status::OK();
 }
 
