@@ -144,4 +144,5 @@ setup(
     cmdclass={"build_ext": CMakeBuild},
     package_data=_get_package_data_with_so(),
     zip_safe=False,
+    options={"bdist_wheel": {"plat_name": "manylinux1_x86_64"}},
 )

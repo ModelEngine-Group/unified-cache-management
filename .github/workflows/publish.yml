@@ -1,0 +1,119 @@
+# This workflow will upload a Python Package to Release asset
+# For more information see: https://help.github.com/en/actions/language-and-framework-guides/using-python-with-github-actions
+
+name: Release
+
+on:
+  push:
+    tags:
+      - "v[0-9]+.[0-9]+.[0-9]+"
+      - "v[0-9]+.[0-9]+.[0-9]+rc[0-9]+"
+
+# Needed to create release and upload assets
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # Required to create a release
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      - name: Update CHANGELOG
+        id: changelog
+        uses: requarks/changelog-action@v1
+        with:
+          token: ${{ github.token }}
+          tag: ${{ github.ref_name }}
+          includeInvalidCommits: true
+      - name: Create Release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG_NAME=${{ github.ref_name }}
+          echo "TAG_NAME: $TAG_NAME"
+          gh release create "$TAG_NAME" --generate-notes --draft --prerelease --title "$TAG_NAME" --notes "## Support Features: ${{ steps.changelog.outputs.changelog }}"
+ 
+  wheel:
+    env:
+      HTTP_PROXY: ${{ secrets.HTTP_PROXY }}
+      HTTPS_PROXY: ${{ secrets.HTTPS_PROXY }}
+      TWINE_USERNAME: __token__
+      TWINE_PASSWORD: ${{ secrets.PYPI_API_TOKEN }}
+    name: Build Wheel
+    runs-on: self-hosted
+    needs: release
+    strategy:
+      fail-fast: false
+      matrix:
+          os: ['ubuntu-20.04']
+          python-version: ['3.12']
+          pytorch-version: ['2.7.0']  # Must be the most recent version that meets requirements/cuda.txt.
+          cuda-version: ['12.8.1']
+          vllm-version: ['0.9.2']
+
+    steps:
+      - uses: actions/checkout@v4
+      - run: echo "🔎 The name of your branch is ${{ github.ref }} and your repository is ${{ github.repository }}."
+      - name: build wheel and upload to PyPI
+        run: |
+          docker run --rm \
+            --network host \
+            --gpus all \
+            -v ${{ github.workspace }}:/workspace/unified-cache-management \
+            -w /workspace/unified-cache-management \
+            --entrypoint /bin/bash \
+            vllm/vllm-openai:v0.9.2 \
+            -c "
+              git config --global http.sslVerify false
+              git config --global http.proxy ${{ secrets.HTTP_PROXY }}
+              git config --global https.proxy ${{ secrets.HTTPS_PROXY }}
+              git config --global http.version HTTP/1.1
+              sed -i 's/version=\".*\"/version=\"${{ github.ref_name }}\"/g' setup.py
+              set -euo pipefail
+              export PLATFORM=cuda
+              python3 setup.py bdist_wheel
+              pip install --upgrade pip --proxy ${{ secrets.HTTP_PROXY }} -i ${{ vars.PIP_INDEX_URL }}
+              pip install twine --proxy ${{ secrets.HTTP_PROXY }} -i ${{ vars.PIP_INDEX_URL }}
+              echo "[${{ vars.PYPI_REPO }}]" >> "~/.pypirc"
+              echo "username=__token__" >> "~/.pypirc"
+              echo "password=${{ secrets.PYPI_API_TOKEN }}" >> "~/.pypirc"
+              HTTP_PROXY=${{ secrets.HTTP_PROXY }} python3 -m twine upload --repository ${{ vars.PYPI_REPO }} --skip-existing dist/*
+            "
+      - name: find whl
+        id: find_whl
+        run: |
+          path=$(basename $(find ${{ github.workspace }} -name "*.whl" -type f)) 
+          echo "whl_path=${path}" >> $GITHUB_OUTPUT
+      - name: Download whl
+        run: |
+           curl -L -O https://${{ vars.PYPI_REPO_URL }}/simple/uc-manager/${{ steps.find_whl.outputs.whl_path }}
+      - name: Upload .whl to GitHub Release
+        uses: svenstaro/upload-release-action@v2
+        with:
+          repo_token: ${{ secrets.GITHUB_TOKEN }}
+          file: ${{ steps.find_whl.outputs.whl_path }} # Path to your .whl file(s)
+          tag: ${{ github.ref_name }} # Use the release tag as the target
+          overwrite: true # Overwrite if the asset already exists
+  
+  docker_push:
+    runs-on: self-hosted
+    needs: wheel
+    steps:
+      - uses: actions/checkout@v4
+      - name: Login to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKER_USERNAME }}
+          password: ${{ secrets.DOCKER_PASSWORD }}
+      - run: |
+          git config --global http.sslVerify false
+          git config --global http.proxy ${{ secrets.HTTP_PROXY }}
+          git config --global https.proxy ${{ secrets.HTTPS_PROXY }}
+          git config --global http.version HTTP/1.1
+          docker build --network host --build-arg HTTP_PROXY=${{ secrets.HTTP_PROXY }}   --build-arg HTTPS_PROXY=${{ secrets.HTTPS_PROXY }} -t ${{ vars.DOCKER_HUB_REPO}}:${{ github.ref_name }}  -f docker/Dockerfile .
+          docker tag ${{ vars.DOCKER_HUB_REPO}}:${{ github.ref_name }} ${{ vars.DOCKER_HUB_REPO}}:latest
+          docker push ${{ vars.DOCKER_HUB_REPO}}:${{ github.ref_name }}
+          docker push ${{ vars.DOCKER_HUB_REPO}}:latest
