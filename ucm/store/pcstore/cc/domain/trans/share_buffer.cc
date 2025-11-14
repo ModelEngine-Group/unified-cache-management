@@ -244,9 +244,14 @@ size_t ShareBuffer::AcquireBlock(const std::string& block)
             i = 0;
         }
     }
-    bufferHeader->headers[reusedIdx].id.Set(block);
-    bufferHeader->headers[reusedIdx].ref = this->nSharer_;
-    bufferHeader->headers[reusedIdx].status = ShareBlockStatus::INIT;
+    auto blockHeader = bufferHeader->headers + reusedIdx;
+    blockHeader->mutex.Lock();
+    if (blockHeader->ref <= 0) {
+        blockHeader->id.Set(block);
+        blockHeader->ref = this->nSharer_;
+        blockHeader->status = ShareBlockStatus::INIT;
+    }
+    blockHeader->mutex.Unlock();
     bufferHeader->mutex.Unlock();
     return reusedIdx;
 }
