@@ -1,0 +1,13 @@
+reports/
+dataset/
+logs/
+result_outputs/
+results/
+.cache/
+backup/
+$null
+*__pycache__/
+.*
+*.log
+start.bat
+!.gitignore

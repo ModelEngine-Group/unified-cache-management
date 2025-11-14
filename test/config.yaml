@@ -1,0 +1,18 @@
+reports:
+  base_dir: "results/reports"
+  use_timestamp: true
+  directory_prefix: "pytest"
+  html: # pytest-html
+    enabled: true
+    filename: "report.html"
+    title: "UCM Pytest Test Report"
+
+database:
+  backup: "results/"
+  enabled: true
+  host: "127.0.0.1"
+  port: 3306
+  name: "ucm_pytest"
+  user: "root"
+  password: "123456"
+  charset: "utf8mb4"
