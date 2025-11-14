@@ -53,6 +53,7 @@ public:
                  const size_t ioSize, const bool ioDirect, const size_t bufferNumber,
                  const SpaceLayout* layout, TaskSet* failureSet_);
     void Dispatch(TaskPtr task, WaiterPtr waiter);
+    void DispatchDump(TaskPtr task, WaiterPtr waiter);
 
 private:
     Buffer buffer_;

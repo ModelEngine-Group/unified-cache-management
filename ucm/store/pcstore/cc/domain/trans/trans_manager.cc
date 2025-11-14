@@ -59,12 +59,13 @@ Status TransManager::Submit(TransTask task, size_t& taskId) noexcept
         UC_ERROR("Failed({}) to submit task({}).", e.what(), taskStr);
         return Status::OutOfMemory();
     }
-    std::lock_guard<std::mutex> lg(mutex_);
+    std::unique_lock<std::mutex> lg(mutex_);
     const auto& [iter, success] = tasks_.emplace(taskId, std::make_pair(taskPtr, waiterPtr));
     if (!success) {
         UC_ERROR("Failed to submit task({}).", taskStr);
         return Status::OutOfMemory();
     }
+    lg.unlock();
     if (this->rankSize_ > 1 && iter->second.first->type == TransTask::Type::LOAD) {
         this->shareQueue_.Dispatch(iter->second.first, iter->second.second);
         return Status::OK();

@@ -103,6 +103,10 @@ Status TransQueue::Setup(const int32_t deviceId, const size_t streamNumber, cons
 
 void TransQueue::Dispatch(TaskPtr task, WaiterPtr waiter)
 {
+    if (task->type == TransTask::Type::DUMP) {
+        this->DispatchDump(task, waiter);
+        return;
+    }
     task->ForEachGroup(
         [task, waiter, this](const std::string& block, std::vector<uintptr_t>& shards) {
             BlockTask blockTask;
@@ -125,6 +129,35 @@ void TransQueue::Dispatch(TaskPtr task, WaiterPtr waiter)
                 this->filePool_.Push(std::move(blockTask));
             }
         });
+}
+
+void TransQueue::DispatchDump(TaskPtr task, WaiterPtr waiter)
+{
+    std::vector<BlockTask> blocks;
+    blocks.reserve(task->GroupNumber());
+    task->ForEachGroup(
+        [task, &blocks, this](const std::string& block, std::vector<uintptr_t>& shards) {
+            BlockTask blockTask;
+            blockTask.owner = task->id;
+            blockTask.block = block;
+            blockTask.type = task->type;
+            auto bufferSize = this->ioSize_ * shards.size();
+            blockTask.buffer = this->buffer_.GetBuffer(bufferSize);
+            std::swap(blockTask.shards, shards);
+            this->stream_.D2HBatchAsync(blockTask.shards.data(), (uintptr_t)blockTask.buffer.get(),
+                                        this->ioSize_, blockTask.shards.size());
+            blocks.push_back(std::move(blockTask));
+        });
+    auto s = this->stream_.Synchronize();
+    if (s.Failure()) { this->failureSet_->Insert(task->id); }
+    for (auto&& block : blocks) {
+        if (s.Failure()) {
+            waiter->Done(nullptr);
+            return;
+        }
+        this->filePool_.Push(std::move(block));
+        waiter->Done([task, ioSize = this->ioSize_] { UC_DEBUG("{}", task->Epilog(ioSize)); });
+    }
 }
 
 } // namespace UC
