@@ -66,6 +66,14 @@ Status Stream::H2DBatchSync(uintptr_t hostAddr, uintptr_t deviceAddrs[], const s
 Status Stream::D2HBatchSync(uintptr_t deviceAddrs[], uintptr_t hostAddr, const size_t size,
                             const size_t number)
 {
+    auto s = this->D2HBatchAsync(deviceAddrs, hostAddr, size, number);
+    if (s.Failure()) { return s; }
+    return this->Synchronize();
+}
+
+Status Stream::D2HBatchAsync(uintptr_t deviceAddrs[], uintptr_t hostAddr, const size_t size,
+                             const size_t number)
+{
     auto ret = cudaSuccess;
     for (size_t i = 0; i < number; i++) {
         void* src = (void*)deviceAddrs[i];
@@ -76,7 +84,12 @@ Status Stream::D2HBatchSync(uintptr_t deviceAddrs[], uintptr_t hostAddr, const s
             return Status::Error();
         }
     }
-    ret = cudaStreamSynchronize((cudaStream_t)this->stream_);
+    return Status::OK();
+}
+
+Status Stream::Synchronize()
+{
+    auto ret = cudaStreamSynchronize((cudaStream_t)this->stream_);
     if (ret != cudaSuccess) {
         CUDA_ERROR(ret);
         return Status::Error();
