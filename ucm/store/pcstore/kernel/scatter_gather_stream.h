@@ -21,28 +21,17 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  * */
-#ifndef UNIFIEDCACHE_STREAM_H
-#define UNIFIEDCACHE_STREAM_H
+#ifndef UNIFIEDCACHE_SCATTER_GATHER_STREAM_H
+#define UNIFIEDCACHE_SCATTER_GATHER_STREAM_H
 
-#include <cstddef>
-#include "status/status.h"
+#include "stream.h"
 
 namespace UC {
 
-class Stream {
-protected:
-    void* stream_;
-
+class ScatterGatherStream : public Stream {
 public:
-    virtual ~Stream();
-    virtual Status Setup();
-    virtual Status H2DBatchSync(uintptr_t hostAddr, uintptr_t deviceAddrs[], const size_t size,
-                                const size_t number);
-    virtual Status D2HBatchSync(uintptr_t deviceAddrs[], uintptr_t hostAddr, const size_t size,
-                                const size_t number);
     virtual Status D2HBatchAsync(uintptr_t deviceAddrs[], uintptr_t hostAddr, const size_t size,
                                  const size_t number);
-    virtual Status Synchronize();
 };
 
 } // namespace UC

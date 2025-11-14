@@ -25,8 +25,8 @@
 #define UNIFIEDCACHE_TRAN_QUEUE_H
 
 #include "buffer.h"
+#include "scatter_gather_stream.h"
 #include "space/space_layout.h"
-#include "stream.h"
 #include "task/task_set.h"
 #include "task/task_waiter.h"
 #include "thread/thread_pool.h"
@@ -57,7 +57,7 @@ public:
 
 private:
     Buffer buffer_;
-    Stream stream_;
+    ScatterGatherStream stream_;
     const SpaceLayout* layout_;
     size_t ioSize_;
     bool ioDirect_;
