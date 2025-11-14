@@ -5,7 +5,6 @@ import asyncio
 import json
 import logging
 import os
-import sys
 import time
 from collections import defaultdict
 from datetime import datetime
@@ -79,19 +78,20 @@ class TraceReplayDataset(BenchmarkDataset):
     def generate_prompt(
         self, hash_ids: list[int], target_length: int, tokenizer
     ) -> str:
-
+        DEFAULT_BLOCK_SIZE = 512
         vocab_size = tokenizer.vocab_size
 
         # Use hash_ids to influence token generation
         base_offset = hash_ids[0] if hash_ids else 0
+
         token_ids = []
 
         for i, value in enumerate(hash_ids):
             if value in self.hash_to_tokens:
                 token_ids.extend(self.hash_to_tokens[value])
-            elif (i + 1) * 512 <= target_length:
-                for j in range(512):
-                    token_idx = i * 512 + j
+            elif (i + 1) * DEFAULT_BLOCK_SIZE <= target_length:
+                for j in range(DEFAULT_BLOCK_SIZE):
+                    token_idx = i * DEFAULT_BLOCK_SIZE + j
                     token_id = (
                         base_offset
                         + token_idx
@@ -102,10 +102,11 @@ class TraceReplayDataset(BenchmarkDataset):
                             ]
                         )
                     ) % vocab_size
+
                     self.hash_to_tokens.setdefault(value, []).append(token_id)
                 token_ids.extend(self.hash_to_tokens[value])
             else:
-                needed = target_length - i * 512
+                needed = target_length - i * DEFAULT_BLOCK_SIZE
                 padding = [
                     (base_offset + len(token_ids) + j) % vocab_size
                     for j in range(needed)
