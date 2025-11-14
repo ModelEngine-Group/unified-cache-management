@@ -106,7 +106,7 @@ class UnifiedCacheConnectorV1(KVConnectorBase_V1):
         )
         self.element_size = vllm_config.model_config.dtype.itemsize
         self.kv_role = vllm_config.kv_transfer_config.kv_role
-        self._need_load_reqs: dict[str, Union[list[int], list[Task]]] = {}
+        self._need_load_reqs: dict[str, Union[list[int], Task]] = {}
         self._load_failed_reqs: set[str] = set()
         self._load_req_to_blocks: dict[str, set[int]] = {}
         self.num_head = vllm_config.model_config.get_num_kv_heads(
@@ -466,32 +466,23 @@ class UnifiedCacheConnectorV1(KVConnectorBase_V1):
     def get_finished(self, finished_req_ids: set[str]) -> tuple[set[str], set[str]]:
         """Get the finished recving and sending requests."""
         done_recving: set[str] = set()
-        for req_id, tasks in self._need_load_reqs.items():
+        for req_id, task in self._need_load_reqs.items():
             if req_id in self._load_failed_reqs:
                 done_recving.add(req_id)
                 continue
-            unfinished_tasks = []
-            for task in tasks:
-                ret, finish = self.connector.check(task)
-                if ret != 0:
-                    logger.error(
-                        f"Task {task} failed, check return {ret} for request {req_id}"
-                    )
-                    self._load_failed_reqs.add(req_id)
-                    break
-                if not finish:
-                    unfinished_tasks.append(task)
-                    continue
-                wret = self.connector.wait(task)
-                if wret != 0:
-                    logger.error(
-                        f"Task {task} failed, wait return {wret} for request {req_id}"
-                    )
-                    self._load_failed_reqs.add(req_id)
-                    break
-            if unfinished_tasks:
-                self._need_load_reqs[req_id] = unfinished_tasks
+            ret, finish = self.connector.check(task)
+            if ret != 0:
+                logger.error(
+                    f"Task {task} failed, check return {ret} for request {req_id}"
+                )
+                self._load_failed_reqs.add(req_id)
+            elif not finish:
                 continue
+            elif (wret := self.connector.wait(task)) != 0:
+                logger.error(
+                    f"Task {task} failed, wait return {wret} for request {req_id}"
+                )
+                self._load_failed_reqs.add(req_id)
             done_recving.add(req_id)
 
         # remove the finished requests
