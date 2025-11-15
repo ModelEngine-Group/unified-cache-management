@@ -1,6 +1,5 @@
-import hashlib
-import pickle
-from typing import TYPE_CHECKING, Any
+import os
+from typing import TYPE_CHECKING
 
 from vllm.config import VllmConfig
 from vllm.distributed.kv_transfer.kv_connector.v1.base import (
@@ -25,20 +24,48 @@ class UnifiedCacheLimitConnectorV1(UnifiedCacheConnectorV1):
 
     def __init__(self, vllm_config: "VllmConfig", role: KVConnectorRole):
         super().__init__(vllm_config=vllm_config, role=role)
-        self.hit_miss_ratio = 0.0
+        self._last_miss_ratio = 0.0
         if (
             self._vllm_config.kv_transfer_config is not None
             and "hit_miss_ratio"
             in self._vllm_config.kv_transfer_config.kv_connector_extra_config
         ):
-            self.hit_miss_ratio = (
+            self._last_miss_ratio = (
                 self._vllm_config.kv_transfer_config.kv_connector_extra_config[
                     "hit_miss_ratio"
                 ]
             )
+        self._last_miss_ratio = max(0.0, min(1.0, self._last_miss_ratio))
 
-        self.hit_ratio_upper = 1 - self.hit_miss_ratio
-        logger.info(f"Upper hit ratio is {self.hit_ratio_upper}")
+        logger.info(f"Miss hit ratio is {self._last_miss_ratio}")
+
+    @property
+    def hit_ratio_upper(self) -> float:
+        env_val = os.getenv("UC_HIT_MISS_RATIO")
+
+        try:
+            if env_val is None:
+                return 1 - self._last_miss_ratio
+
+            current_miss_ratio = float(env_val)
+            current_miss_ratio = max(0.0, min(1.0, current_miss_ratio))
+
+            if current_miss_ratio == self._last_miss_ratio:
+                return 1 - current_miss_ratio
+
+            logger.info(
+                f"UC_HIT_MISS_RATIO changed from {self._last_miss_ratio} to {current_miss_ratio}"
+            )
+            self._last_miss_ratio = current_miss_ratio
+            return 1 - current_miss_ratio
+
+        except ValueError:
+            logger.warning(
+                f"UC_HIT_MISS_RATIO={env_val} is invalid, use last miss ratio {self._last_miss_ratio}"
+            )
+            if self._last_miss_ratio is None:
+                self._last_miss_ratio = 0.0
+            return 1 - self._last_miss_ratio
 
     def get_num_new_matched_tokens(
         self,
@@ -46,6 +73,8 @@ class UnifiedCacheLimitConnectorV1(UnifiedCacheConnectorV1):
         num_computed_tokens: int,
     ) -> tuple[int, bool]:
         logger.info(f"get_num_new_matched_tokens request {request.request_id}.")
+
+        hit_ratio_upper = self.hit_ratio_upper
 
         if request.status == RequestStatus.PREEMPTED:
             logger.info(f"Handle preempted request {request.request_id}.")
@@ -66,13 +95,13 @@ class UnifiedCacheLimitConnectorV1(UnifiedCacheConnectorV1):
         if total_blocks_length > 0:
             current_hit_ratio = lookup_hits / total_blocks_length
         # Limit the hit blocks
-        if current_hit_ratio > self.hit_ratio_upper:
+        if current_hit_ratio > hit_ratio_upper:
             original_hits = lookup_hits
             # Align to block size
-            new_hits = int(total_blocks_length * self.hit_ratio_upper)
+            new_hits = int(total_blocks_length * hit_ratio_upper)
             lookup_hits = min(lookup_hits, new_hits)
             logger.info(
-                f"hit ratio upper: {self.hit_ratio_upper} is smaller than "
+                f"hit ratio upper: {hit_ratio_upper} is smaller than "
                 f"the real hit ratio {current_hit_ratio}, "
                 f"the origin hits is {original_hits}, "
                 f"the new hits is {new_hits}, the final hits is {lookup_hits}"
