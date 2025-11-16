@@ -90,7 +90,8 @@ class UnifiedCacheConnectorV1(KVConnectorBase_V1):
     def __init__(self, vllm_config: "VllmConfig", role: KVConnectorRole):
         super().__init__(vllm_config=vllm_config, role=role)
         self.block_size = vllm_config.cache_config.block_size
-        self.use_layerwise = True
+        self.use_layerwise = False
+        self.block_threshold = 1
         self.kv_caches: dict[str, torch.Tensor] = {}
         self.total_tp_size = vllm_config.parallel_config.tensor_parallel_size
         self.rank = (
@@ -159,6 +160,18 @@ class UnifiedCacheConnectorV1(KVConnectorBase_V1):
                     "use_layerwise"
                 ]
             )
+        logger.info(f"use layerwise {self.use_layerwise}")
+        if (
+            self._vllm_config.kv_transfer_config is not None
+            and "block_threshold"
+            in self._vllm_config.kv_transfer_config.kv_connector_extra_config
+        ):
+            self.block_threshold = (
+                self._vllm_config.kv_transfer_config.kv_connector_extra_config[
+                    "block_threshold"
+                ]
+            )
+        logger.info(f"block_threshold = {self.block_threshold}")
 
     def _init_kv_caches_from_forward_context(self, forward_context: "ForwardContext"):
         for layer_name in forward_context.no_compile_layers:
@@ -206,24 +219,19 @@ class UnifiedCacheConnectorV1(KVConnectorBase_V1):
 
     def get_tensor_and_offset_layerwise(
         self, vllm_block_ids: List[int], kv_layer: torch.Tensor, layer_name: str
-    ) -> tuple[List[torch.Tensor], List[int]]:
+    ) -> tuple[List[int], List[int]]:
         k_tensors = []
         k_offsets = []
         v_tensors = []
         v_offsets = []
-        layer_id = self._extract_layer_index(layer_name)
 
         for blk_id in vllm_block_ids:
-            k_data_offset = self.DataOffset(kv_layer, self.rank, layer_id, False)
             if self.is_mla:
-                k_tensors.append(kv_layer[blk_id])
+                k_tensors.append(kv_layer[blk_id].data_ptr())
             else:
-                k_tensors.append(kv_layer[0][blk_id])
-            k_offsets.append(k_data_offset)
+                k_tensors.append(kv_layer[0][blk_id].data_ptr())
             if not self.is_mla:
-                v_data_offset = self.DataOffset(kv_layer, self.rank, layer_id, True)
-                v_tensors.append(kv_layer[1][blk_id])
-                v_offsets.append(v_data_offset)
+                v_tensors.append(kv_layer[1][blk_id].data_ptr())
         return k_tensors + v_tensors, k_offsets + v_offsets
 
     # ==============================
@@ -263,6 +271,8 @@ class UnifiedCacheConnectorV1(KVConnectorBase_V1):
         self.layerwise_load_tasks.clear()
         self.current_layer = 0
         need_load_tasks: dict[str, Task] = {}
+        total_block_ids = []
+        total_ptrs = []
         for request in metadata.requests:
             if not request.load_blocks:
                 continue
@@ -273,33 +283,23 @@ class UnifiedCacheConnectorV1(KVConnectorBase_V1):
                 vllm_block_ids
             )
             is_load_async = request.load_async
-            total_offsets = []
-            total_tensors = []
             storage_block_ids = storage_block_ids * (1 if self.is_mla else 2)
             for layer_name, kv_layer in self.kv_caches.items():
-                tensors, offsets = self.get_tensor_and_offset_layerwise(
+                ptrs, _ = self.get_tensor_and_offset_layerwise(
                     vllm_block_ids, kv_layer, layer_name
                 )
                 if self.use_layerwise and not is_load_async:
-                    task_id = self.connector.load(storage_block_ids, offsets, tensors)
+                    task_id = self.connector.fetch_data(storage_block_ids, [], ptrs, [])
                     self.layerwise_load_tasks[request.request_id][layer_name] = task_id
                     continue
                 else:
-                    total_offsets.extend(offsets)
-                    total_tensors.extend(tensors)
-            if total_offsets and total_tensors:
-                storage_block_ids = storage_block_ids * self.num_layers
-                task_id = self.connector.load(
-                    storage_block_ids, total_offsets, total_tensors
-                )
-                if is_load_async:
-                    self._need_load_reqs[request.request_id] = task_id
-                else:
-                    need_load_tasks[request.request_id] = task_id
-        for req_id, task_id in need_load_tasks.items():
+                    total_ptrs.extend(ptrs)
+            storage_block_ids = storage_block_ids * self.num_layers
+            total_block_ids.extend(storage_block_ids)
+        if total_block_ids and total_ptrs:
+            task_id = self.connector.fetch_data(total_block_ids, [], total_ptrs, [])
             if self.connector.wait(task_id) != 0:
-                self._load_failed_reqs.add(req_id)
-                logger.error(f"Failed to load blocks for req {req_id}")
+                logger.error(f"Failed to load blocks")
 
     def wait_for_layer_load(self, layer_name: str) -> None:
         """
@@ -435,6 +435,8 @@ class UnifiedCacheConnectorV1(KVConnectorBase_V1):
 
         req_to_dump_blocks: dict[str, list[str]] = {}
         need_dump_tasks: dict[str, Task] = {}
+        total_block_ids = []
+        total_ptrs = []
         for request in metadata.requests:
             if not request.dump_blocks:
                 continue
@@ -442,25 +444,17 @@ class UnifiedCacheConnectorV1(KVConnectorBase_V1):
             storage_block_ids = [block[0] for block in request.dump_blocks]
             vllm_block_ids = [block[1] for block in request.dump_blocks]
             req_to_dump_blocks[request.request_id] = storage_block_ids
-            total_offsets = []
-            total_tensors = []
-            total_block_ids = (
-                storage_block_ids * (1 if self.is_mla else 2) * self.num_layers
-            )
+            block_ids = storage_block_ids * (1 if self.is_mla else 2) * self.num_layers
+            total_block_ids.extend(block_ids)
             for layer_name, kv_layer in self.kv_caches.items():
-                tensors, offsets = self.get_tensor_and_offset_layerwise(
+                ptrs, _ = self.get_tensor_and_offset_layerwise(
                     vllm_block_ids, kv_layer, layer_name
                 )
-                total_offsets.extend(offsets)
-                total_tensors.extend(tensors)
-            task_id = self.connector.dump(total_block_ids, total_offsets, total_tensors)
-            need_dump_tasks[request.request_id] = task_id
-
-        for req_id, task_id in need_dump_tasks.items():
+                total_ptrs.extend(ptrs)
+        if total_ptrs and total_block_ids:
+            task_id = self.connector.dump_data(total_block_ids, [], total_ptrs, [])
             if self.connector.wait(task_id) != 0:
-                logger.error(f"Failed to dump blocks for req {request.request_id}")
-            else:
-                success_dumped_blocks[req_id] = req_to_dump_blocks[req_id]
+                logger.error(f"Failed to dump blocks")
         return success_dumped_blocks if success_dumped_blocks else None
 
     def get_finished(self, finished_req_ids: set[str]) -> tuple[set[str], set[str]]:
@@ -545,6 +539,13 @@ class UnifiedCacheConnectorV1(KVConnectorBase_V1):
             else:
                 # TODO we will fix hole match later
                 break
+        num_total_hits = start_position + num_lookup_hits
+        if self.block_threshold > 1:
+            num_lookup_hits = self.block_threshold * (
+                num_lookup_hits // self.block_threshold
+            )
+            for idx in range(start_position + num_lookup_hits, num_total_hits):
+                block_operations[idx] = BlockOperation.NONE
         logger.info(
             f"num_total_blocks: {len(block_hashes)}, "
             f"num_lookup_hits on hbm: {start_position}, "
@@ -608,7 +609,14 @@ class UnifiedCacheConnectorV1(KVConnectorBase_V1):
             block_operations = request_block_info.block_operations
             block_hashes = request_block_info.block_hashes
             start_create_pos = start_position + num_external_tokens // self.block_size
-            remaining_hashes = block_hashes[start_create_pos:]
+            end_create_pos = len(block_hashes)
+            if self.block_threshold > 1:
+                num_need_save_blocks = end_create_pos - start_create_pos
+                num_need_save_blocks = self.block_threshold * (
+                    num_need_save_blocks // self.block_threshold
+                )
+                end_create_pos = start_create_pos + num_need_save_blocks
+            remaining_hashes = block_hashes[start_create_pos:end_create_pos]
             if remaining_hashes:
                 create_results = self.connector.create(remaining_hashes)
                 if any(ret != 0 for ret in create_results):
