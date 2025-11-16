@@ -47,10 +47,7 @@ public:
         this->ShowConfig(config);
         return Status::OK().Underlying();
     }
-    int32_t Alloc(const std::string& block) override
-    {
-        return this->spaceMgr_.NewBlock(block).Underlying();
-    }
+    int32_t Alloc(const std::string& block) override { return Status::OK().Underlying(); }
     bool Lookup(const std::string& block) override { return this->spaceMgr_.LookupBlock(block); }
     void Commit(const std::string& block, const bool success) override {}
     std::list<int32_t> Alloc(const std::list<std::string>& blocks) override

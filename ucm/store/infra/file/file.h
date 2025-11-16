@@ -40,7 +40,8 @@ public:
     static Status Read(const std::string& path, const size_t offset, const size_t length,
                        uintptr_t address, const bool directIo = false);
     static Status Write(const std::string& path, const size_t offset, const size_t length,
-                        const uintptr_t address, const bool directIo = false);
+                        const uintptr_t address, const bool directIo = false,
+                        const bool create = false);
     static void MUnmap(void* addr, size_t size);
     static void ShmUnlink(const std::string& path);
     static void Remove(const std::string& path);
