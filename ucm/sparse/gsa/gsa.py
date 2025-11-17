@@ -310,7 +310,7 @@ class GSAMetaData(UcmSparseMetadata):
             query_locals[req_in_batch + 1] = scheduler_output.num_scheduled_tokens[
                 req_id
             ]
-            if self.use_mla and num_tokens == 0:
+            if self.use_mla and self.gsa_stats[req_id].stage() == SequenceStage.PREFILL:
                 query_locals_prefill[req_in_batch + 1] = num_tokens
         query_locals = list(accumulate(query_locals))
         if self.use_mla:
@@ -652,6 +652,10 @@ class GSA(UcmSparseBase):
         if not self.copy_k_flag[current_layer_id]:
             self.copy_k(layer_name, forward_context)
             self.copy_k_flag[current_layer_id] = True
+        
+        if self.use_mla:
+            return
+		
         for req_id in self.prefetch_engine.req_ids_bs:
             assert req_id in self.gsa_metadata.gsa_stats
             req_meta = self.gsa_metadata.gsa_stats[req_id]
@@ -968,9 +972,10 @@ class GSA(UcmSparseBase):
                     self.model_input["topk_caches"], topk_len_list
                 )
 
-    def allocate_slots(
-        self, request, num_slots_sparsed, coordinator, block_pool, kv_cache_groups
-    ):
+    def allocate_slots(self, kv_cache_manager, request, num_slots_sparsed):
+        coordinator = kv_cache_manager.coordinator
+        block_pool = kv_cache_manager.block_pool
+        kv_cache_groups = kv_cache_manager.kv_cache_config.kv_cache_groups
         if (
             request.num_prompt_tokens + 1 == request.num_tokens
             and request.num_tokens % self.block_size == 1
