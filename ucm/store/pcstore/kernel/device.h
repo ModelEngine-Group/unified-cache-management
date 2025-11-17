@@ -21,30 +21,18 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  * */
-#ifndef UNIFIEDCACHE_FILE_H
-#define UNIFIEDCACHE_FILE_H
+#ifndef UNIFIEDCACHE_DEVICE_H
+#define UNIFIEDCACHE_DEVICE_H
 
-#include <memory>
-#include "ifile.h"
+#include "status/status.h"
 
 namespace UC {
 
-class File {
+class Device {
 public:
-    static std::unique_ptr<IFile> Make(const std::string& path);
-    static Status MkDir(const std::string& path);
-    static Status RmDir(const std::string& path);
-    static Status Rename(const std::string& path, const std::string& newName);
-    static Status Access(const std::string& path, const int32_t mode);
-    static Status Stat(const std::string& path, IFile::FileStat& st);
-    static Status Read(const std::string& path, const size_t offset, const size_t length,
-                       uintptr_t address, const bool directIo = false);
-    static Status Write(const std::string& path, const size_t offset, const size_t length,
-                        const uintptr_t address, const bool directIo = false,
-                        const bool create = false);
-    static void MUnmap(void* addr, size_t size);
-    static void ShmUnlink(const std::string& path);
-    static void Remove(const std::string& path);
+    static Status Setup(const int32_t deviceId);
+    static Status RegisterHost(void* ptr, const size_t size);
+    static void UnregisterHost(void* ptr);
 };
 
 } // namespace UC

@@ -21,30 +21,26 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  * */
-#ifndef UNIFIEDCACHE_FILE_H
-#define UNIFIEDCACHE_FILE_H
+#ifndef UNIFIEDCACHE_BUFFER_H
+#define UNIFIEDCACHE_BUFFER_H
 
 #include <memory>
-#include "ifile.h"
+#include "status/status.h"
+#include "thread/index_pool.h"
 
 namespace UC {
 
-class File {
+class Buffer {
+    IndexPool index_;
+    std::shared_ptr<void> base_{nullptr};
+    size_t size_{0};
+
 public:
-    static std::unique_ptr<IFile> Make(const std::string& path);
-    static Status MkDir(const std::string& path);
-    static Status RmDir(const std::string& path);
-    static Status Rename(const std::string& path, const std::string& newName);
-    static Status Access(const std::string& path, const int32_t mode);
-    static Status Stat(const std::string& path, IFile::FileStat& st);
-    static Status Read(const std::string& path, const size_t offset, const size_t length,
-                       uintptr_t address, const bool directIo = false);
-    static Status Write(const std::string& path, const size_t offset, const size_t length,
-                        const uintptr_t address, const bool directIo = false,
-                        const bool create = false);
-    static void MUnmap(void* addr, size_t size);
-    static void ShmUnlink(const std::string& path);
-    static void Remove(const std::string& path);
+    Status Setup(const size_t size, const size_t number);
+    std::shared_ptr<void> GetBuffer(const size_t size);
+
+private:
+    std::shared_ptr<void> MakeBuffer(const size_t size);
 };
 
 } // namespace UC

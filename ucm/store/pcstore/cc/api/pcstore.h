@@ -21,30 +21,38 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  * */
-#ifndef UNIFIEDCACHE_DRAMSTORE_H
-#define UNIFIEDCACHE_DRAMSTORE_H
+#ifndef UNIFIEDCACHE_PCSTORE_H
+#define UNIFIEDCACHE_PCSTORE_H
 
+#include "trans/trans_task.h"
 #include "ucmstore.h"
 
 namespace UC {
 
-class DRAMStore : public CCStore<> {
+class PcStore : CCStore<TransTask> {
 public:
     struct Config {
-        size_t capacity;
-        size_t blockSize;
-        int32_t deviceId;
-        size_t streamNumber;
-        size_t timeoutMs;
-        Config(const size_t capacity, const size_t blockSize, const int32_t deviceId, const size_t streamNumber, const size_t timeoutMs)
-            : capacity{capacity}, blockSize{blockSize}, deviceId{deviceId}, streamNumber{streamNumber}, timeoutMs{timeoutMs}
+        std::vector<std::string> storageBackends;
+        size_t kvcacheBlockSize;
+        bool transferEnable;
+        size_t transferIoSize{262144};
+        bool transferIoDirect{false};
+        size_t transferLocalRankSize{1};
+        int32_t transferDeviceId{-1};
+        size_t transferStreamNumber{8};
+        size_t transferBufferNumber{4096};
+        size_t transferTimeoutMs{30000};
+
+        Config(const std::vector<std::string>& storageBackends, const size_t kvcacheBlockSize,
+               const bool transferEnable)
+            : storageBackends{storageBackends}, kvcacheBlockSize{kvcacheBlockSize},
+              transferEnable{transferEnable}
         {
         }
     };
 
 public:
-    DRAMStore() : impl_{nullptr} {}
-    ~DRAMStore() override
+    ~PcStore() override
     {
         if (this->impl_) { delete this->impl_; }
     }
@@ -67,7 +75,7 @@ public:
     {
         this->impl_->Commit(blocks, success);
     }
-    size_t Submit(Task&& task) override { return this->impl_->Submit(std::move(task)); }
+    size_t Submit(TransTask&& task) override { return this->impl_->Submit(std::move(task)); }
     int32_t Wait(const size_t task) override { return this->impl_->Wait(task); }
     int32_t Check(const size_t task, bool& finish) override
     {
@@ -75,7 +83,7 @@ public:
     }
 
 private:
-    DRAMStore* impl_;
+    PcStore* impl_{nullptr};
 };
 
 } // namespace UC

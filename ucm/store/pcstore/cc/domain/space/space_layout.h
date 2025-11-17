@@ -21,30 +21,33 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  * */
-#ifndef UNIFIEDCACHE_FILE_H
-#define UNIFIEDCACHE_FILE_H
+#ifndef UNIFIEDCACHE_SPACE_LAYOUT_H
+#define UNIFIEDCACHE_SPACE_LAYOUT_H
 
-#include <memory>
-#include "ifile.h"
+#include <string>
+#include <vector>
+#include "status/status.h"
 
 namespace UC {
 
-class File {
+class SpaceLayout {
 public:
-    static std::unique_ptr<IFile> Make(const std::string& path);
-    static Status MkDir(const std::string& path);
-    static Status RmDir(const std::string& path);
-    static Status Rename(const std::string& path, const std::string& newName);
-    static Status Access(const std::string& path, const int32_t mode);
-    static Status Stat(const std::string& path, IFile::FileStat& st);
-    static Status Read(const std::string& path, const size_t offset, const size_t length,
-                       uintptr_t address, const bool directIo = false);
-    static Status Write(const std::string& path, const size_t offset, const size_t length,
-                        const uintptr_t address, const bool directIo = false,
-                        const bool create = false);
-    static void MUnmap(void* addr, size_t size);
-    static void ShmUnlink(const std::string& path);
-    static void Remove(const std::string& path);
+    Status Setup(const std::vector<std::string>& storageBackends);
+    std::string DataFilePath(const std::string& blockId, bool activated) const;
+    Status Commit(const std::string& blockId, bool success) const;
+
+private:
+    std::vector<std::string> RelativeRoots() const;
+    Status AddStorageBackend(const std::string& path);
+    Status AddFirstStorageBackend(const std::string& path);
+    Status AddSecondaryStorageBackend(const std::string& path);
+    std::string StorageBackend(const std::string& blockId) const;
+    std::string DataFileRoot() const;
+    std::string TempFileRoot() const;
+    void ShardBlockId(const std::string& blockId, uint64_t& front, uint64_t& back) const;
+
+private:
+    std::vector<std::string> storageBackends_;
 };
 
 } // namespace UC

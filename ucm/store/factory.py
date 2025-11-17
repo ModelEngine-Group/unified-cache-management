@@ -64,6 +64,9 @@ UcmConnectorFactory.register_connector(
     "UcmNfsStore", "ucm.store.nfsstore.nfsstore_connector", "UcmNfsStore"
 )
 UcmConnectorFactory.register_connector(
+    "UcmPcStore", "ucm.store.pcstore.pcstore_connector", "UcmPcStore"
+)
+UcmConnectorFactory.register_connector(
     "UcmMooncakeStore",
     "ucm.store.mooncakestore.mooncake_connector",
     "UcmMooncakeStore",

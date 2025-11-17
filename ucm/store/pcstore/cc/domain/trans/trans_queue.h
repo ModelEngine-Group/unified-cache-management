@@ -21,39 +21,49 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  * */
-#ifndef UNIFIEDCACHE_DRAM_TRANS_QUEUE_H
-#define UNIFIEDCACHE_DRAM_TRANS_QUEUE_H
+#ifndef UNIFIEDCACHE_TRAN_QUEUE_H
+#define UNIFIEDCACHE_TRAN_QUEUE_H
 
-#include "device/idevice.h"
-#include "status/status.h"
-#include "task_queue.h"
-#include "task_set.h"
+#include "buffer.h"
+#include "scatter_gather_stream.h"
+#include "space/space_layout.h"
+#include "task/task_set.h"
+#include "task/task_waiter.h"
 #include "thread/thread_pool.h"
-#include "memory/memory_pool.h"
+#include "trans_task.h"
 
 namespace UC {
 
-class DramTransQueue : public TaskQueue {
-    using Device = std::unique_ptr<IDevice>;
-    int32_t deviceId_{-1};
-    TaskSet* failureSet_{nullptr};
-    const MemoryPool* memPool_{nullptr};
-    ThreadPool<std::list<Task::Shard>, Device> backend_{};
+class TransQueue {
+    using TaskPtr = std::shared_ptr<TransTask>;
+    using WaiterPtr = std::shared_ptr<TaskWaiter>;
+    struct BlockTask {
+        size_t owner;
+        std::string block;
+        TransTask::Type type;
+        std::vector<uintptr_t> shards;
+        std::shared_ptr<void> buffer;
+        std::function<void(bool)> done;
+    };
+    void DeviceWorker(BlockTask&& task);
+    void FileWorker(BlockTask&& task);
 
 public:
-    Status Setup(const int32_t deviceId,
-                 TaskSet* failureSet,
-                 const MemoryPool* memPool,
-                 const size_t timeoutMs);
-    void Push(std::list<Task::Shard>& shards) noexcept override;
+    Status Setup(const int32_t deviceId, const size_t streamNumber, const size_t blockSize,
+                 const size_t ioSize, const bool ioDirect, const size_t bufferNumber,
+                 const SpaceLayout* layout, TaskSet* failureSet_);
+    void Dispatch(TaskPtr task, WaiterPtr waiter);
+    void DispatchDump(TaskPtr task, WaiterPtr waiter);
 
 private:
-    bool Init(Device& device);
-    void Exit(Device& device);
-    void Work(std::list<Task::Shard>&& shards, const Device& device);
-    void Done(std::list<Task::Shard>& shards, const Device& device, const bool success);
-    Status H2D(std::list<Task::Shard>& shards, const Device& device);
-    Status D2H(std::list<Task::Shard>& shards, const Device& device);
+    Buffer buffer_;
+    ScatterGatherStream stream_;
+    const SpaceLayout* layout_;
+    size_t ioSize_;
+    bool ioDirect_;
+    ThreadPool<BlockTask> devPool_;
+    ThreadPool<BlockTask> filePool_;
+    TaskSet* failureSet_;
 };
 
 } // namespace UC
