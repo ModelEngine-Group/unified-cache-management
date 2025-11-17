@@ -24,10 +24,14 @@
 #ifndef UNIFIEDCACHE_STORE_H
 #define UNIFIEDCACHE_STORE_H
 
-#include "task_shard.h"
+#include <cstddef>
+#include <list>
+#include <string>
+#include "task/task_shard.h"
 
 namespace UC {
 
+template <class T = Task>
 class CCStore {
     using BlockId = std::string;
     using TaskId = size_t;
@@ -40,7 +44,7 @@ public:
     virtual std::list<int32_t> Alloc(const std::list<BlockId>& blocks) = 0;
     virtual std::list<bool> Lookup(const std::list<BlockId>& blocks) = 0;
     virtual void Commit(const std::list<BlockId>& blocks, const bool success) = 0;
-    virtual TaskId Submit(Task&& task) = 0;
+    virtual TaskId Submit(T&& task) = 0;
     virtual int32_t Wait(const TaskId task) = 0;
     virtual int32_t Check(const TaskId task, bool& finish) = 0;
 };

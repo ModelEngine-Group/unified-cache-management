@@ -29,7 +29,7 @@
 
 namespace UC {
 
-class NFSStore : public CCStore {
+class NFSStore : public CCStore<> {
 public:
     struct Config {
         std::vector<std::string> storageBackends;
