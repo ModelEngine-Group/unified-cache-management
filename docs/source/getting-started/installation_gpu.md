@@ -44,16 +44,7 @@ export PLATFORM=cuda
 pip install -v -e . --no-build-isolation
 ```
 
-After installation, please apply patch to ensure uc_connector can be used:
-
-```bash
-cd $(pip show vllm | grep Location | awk '{print $2}')
-git apply /vllm-workspace/unified-cache-management/ucm/integration/vllm/patch/0.9.2/vllm-adapt-pc.patch
-git apply /vllm-workspace/unified-cache-management/ucm/integration/vllm/patch/0.9.2/vllm-adapt-aggre.patch
-git apply /vllm-workspace/unified-cache-management/ucm/integration/vllm/patch/0.9.2/vllm-adapt-sparse.patch
-``` 
-
-Refer to this [issue](https://github.com/vllm-project/vllm/issues/21702) to see details of this patch's changes.
+**Note:** Patches are now applied automatically via dynamic patching when you import the unified-cache-management package. You no longer need to manually apply patches using `git apply`. The patches are automatically applied when you use the `UnifiedCacheConnectorV1` connector.
 
 ## Setup from docker
 Download the pre-built `vllm/vllm-openai:v0.9.2` docker image and build unified-cache-management docker image by commands below:
