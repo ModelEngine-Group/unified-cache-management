@@ -652,10 +652,8 @@ class GSA(UcmSparseBase):
         if not self.copy_k_flag[current_layer_id]:
             self.copy_k(layer_name, forward_context)
             self.copy_k_flag[current_layer_id] = True
-        
         if self.use_mla:
             return
-		
         for req_id in self.prefetch_engine.req_ids_bs:
             assert req_id in self.gsa_metadata.gsa_stats
             req_meta = self.gsa_metadata.gsa_stats[req_id]
