@@ -50,8 +50,9 @@ class UcmPcStore(UcmKVStoreBase):
             param.transferDeviceId = config["device"]
             param.transferIoSize = config["io_size"]
             param.transferIoDirect = True
-            param.transferStreamNumber = 8
-            param.transferBufferNumber = 4096
+            param.transferStreamNumber = config.get("stream_number", 8)
+            param.transferBufferNumber = 12288
+            param.transferLocalRankSize = 8
         ret = self.store.Setup(param)
         if ret != 0:
             msg = f"Failed to initialize ucmpcstore, errcode: {ret}."
@@ -61,7 +62,8 @@ class UcmPcStore(UcmKVStoreBase):
         return self.store.CCStoreImpl()
 
     def create(self, block_ids: List[str]) -> List[int]:
-        return self.store.AllocBatch(block_ids)
+        # return self.store.AllocBatch(block_ids)
+        return [0] * len(block_ids)
 
     def lookup(self, block_ids: List[str]) -> List[bool]:
         return self.store.LookupBatch(block_ids)
@@ -90,7 +92,8 @@ class UcmPcStore(UcmKVStoreBase):
         dst_addr: List[int],
         size: List[int],
     ) -> Task:
-        pass
+        task_id = self.store.LoadToDevice(block_ids, dst_addr)
+        return NfsTask(task_id=task_id)
 
     def dump_data(
         self,
@@ -99,7 +102,8 @@ class UcmPcStore(UcmKVStoreBase):
         src_addr: List[int],
         size: List[int],
     ) -> Task:
-        pass
+        task_id = self.store.DumpFromDevice(block_ids, src_addr)
+        return NfsTask(task_id=task_id)
 
     def wait(self, task: Task) -> int:
         return self.store.Wait(task.task_id)

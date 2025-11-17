@@ -76,7 +76,7 @@ Status File::Read(const std::string& path, const size_t offset, const size_t len
 }
 
 Status File::Write(const std::string& path, const size_t offset, const size_t length,
-                   const uintptr_t address, const bool directIo, const bool create = false)
+                   const uintptr_t address, const bool directIo, const bool create)
 {
     FileImpl file{path};
     Status status = Status::OK();
