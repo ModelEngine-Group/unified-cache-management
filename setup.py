@@ -128,8 +128,8 @@ ext_modules = []
 ext_modules.append(CMakeExtension(name="ucm", sourcedir=ROOT_DIR))
 
 setup(
-    name="ucm",
-    version="0.1.0",
+    name="uc-manager",
+    version="0.1.0rc1",
     description="Unified Cache Management",
     author="Unified Cache Team",
     packages=find_packages(),
@@ -138,4 +138,5 @@ setup(
     cmdclass={"build_ext": CMakeBuild},
     package_data=_get_package_data_with_so(),
     zip_safe=False,
+    install_requires=["vllm==0.9.2"],
 )
