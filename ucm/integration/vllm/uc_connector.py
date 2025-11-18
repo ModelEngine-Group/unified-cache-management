@@ -386,6 +386,8 @@ class UnifiedCacheConnectorV1(KVConnectorBase_V1):
                 torch.npu.current_stream().synchronize()
             elif kv_layer[0].device.type == "cuda":
                 torch.cuda.current_stream().synchronize()
+            elif kv_layer[0].device.type == "musa":
+                torch.musa.current_stream().synchronize()
 
             for block_id, offset, tensor in zip(
                 storage_block_ids, offsets[:blocks_len], tensors[:blocks_len]

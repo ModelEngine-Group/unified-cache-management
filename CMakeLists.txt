@@ -9,7 +9,7 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 option(BUILD_UCM_STORE "build ucm store module." ON)
 option(BUILD_UCM_SPARSE "build ucm sparse module." ON)
 option(BUILD_UNIT_TESTS "build all unit test suits." OFF)
-set(RUNTIME_ENVIRONMENT "simu" CACHE STRING "runtime: simu, ascend or cuda.")
+set(RUNTIME_ENVIRONMENT "simu" CACHE STRING "runtime: simu, ascend, musa or cuda.")
 
 execute_process(COMMAND git rev-parse HEAD OUTPUT_VARIABLE UCM_COMMIT_ID OUTPUT_STRIP_TRAILING_WHITESPACE)
 add_compile_definitions(UCM_PROJECT_NAME="${PROJECT_NAME}")

@@ -46,6 +46,10 @@ def _is_npu() -> bool:
     return PLATFORM == "ascend"
 
 
+def _is_musa() -> bool:
+    return PLATFORM == "musa"
+
+
 class CMakeExtension(Extension):
     def __init__(self, name: str, sourcedir: str = ""):
         super().__init__(name, sources=[])
@@ -85,10 +89,12 @@ class CMakeBuild(build_ext):
             cmake_args.append("-DRUNTIME_ENVIRONMENT=cuda")
         elif _is_npu():
             cmake_args.append("-DRUNTIME_ENVIRONMENT=ascend")
+        elif _is_musa():
+            cmake_args.append("-DRUNTIME_ENVIRONMENT=musa")
         else:
             raise RuntimeError(
                 "No supported accelerator found. "
-                "Please ensure either CUDA or NPU is available."
+                "Please ensure either CUDA/MUSA or NPU is available."
             )
 
         cmake_args.append(ext.sourcedir)
