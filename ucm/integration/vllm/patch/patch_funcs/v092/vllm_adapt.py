@@ -24,11 +24,16 @@
 
 from __future__ import annotations
 
-from ucm.logger import init_logger
 from torch.library import Library
+
+from ucm.logger import init_logger
+
 logger = init_logger(__name__)
 import sys
+
 _UCM_UNIFIED_ATTENTION_WITH_OUTPUT_REGISTERED = False
+
+
 def _apply_adapt_patches() -> None:
     try:
         _patch_block_pool()
@@ -50,7 +55,7 @@ def _apply_adapt_patches() -> None:
         _patch_request_succeed_dumped_blocks()
         _patch_multi_connector()
         _patch_multiproc_executor()
-     
+
     except Exception as e:
         logger.error(f"Failed to apply aggre patch: {e}", exc_info=True)
         raise
@@ -794,117 +799,98 @@ def _patch_attention_layer() -> None:
         from typing import Optional
 
         import torch
-
-        from vllm.forward_context import ForwardContext, get_forward_context
         from vllm.attention.layer import (
             maybe_save_kv_layer_to_connector,
             wait_for_kv_layer_from_connector,
         )
+        from vllm.forward_context import ForwardContext, get_forward_context
 
         from ucm.sparse.state import get_ucm_sparse, has_ucm_sparse
 
         def maybe_execute_sparse_attention_begin(
-                query: torch.Tensor,
-                key: torch.Tensor,
-                value: torch.Tensor,
-                layer_name: str,
-                forward_context: ForwardContext,
-                phase: Optional[str] = None,
-            ):
-                if not has_ucm_sparse():
-                    return
+            query: torch.Tensor,
+            key: torch.Tensor,
+            value: torch.Tensor,
+            layer_name: str,
+            forward_context: ForwardContext,
+            phase: Optional[str] = None,
+        ):
+            if not has_ucm_sparse():
+                return
 
-                ucm_sparse = get_ucm_sparse()
+            ucm_sparse = get_ucm_sparse()
 
-                attn_metadata = forward_context.attn_metadata
-                if attn_metadata is None:
-                    return
+            attn_metadata = forward_context.attn_metadata
+            if attn_metadata is None:
+                return
 
-                ucm_sparse.attention_begin(
-                    query, key, value, layer_name, forward_context, phase
-                )
-
+            ucm_sparse.attention_begin(
+                query, key, value, layer_name, forward_context, phase
+            )
 
         def maybe_execute_sparse_attention_finished(
-                query: torch.Tensor,
-                key: torch.Tensor,
-                value: torch.Tensor,
-                attn_output: torch.Tensor,
-                layer_name: str,
-                forward_context: ForwardContext,
-                phase: Optional[str] = None,
-            ):
-                if not has_ucm_sparse():
-                    return
+            query: torch.Tensor,
+            key: torch.Tensor,
+            value: torch.Tensor,
+            attn_output: torch.Tensor,
+            layer_name: str,
+            forward_context: ForwardContext,
+            phase: Optional[str] = None,
+        ):
+            if not has_ucm_sparse():
+                return
 
-                ucm_sparse = get_ucm_sparse()
+            ucm_sparse = get_ucm_sparse()
 
-                attn_metadata = forward_context.attn_metadata
-                if attn_metadata is None:
-                    return
+            attn_metadata = forward_context.attn_metadata
+            if attn_metadata is None:
+                return
 
-                ucm_sparse.attention_finished(
-                    query, key, value, attn_output, layer_name, forward_context, phase
-                )
+            ucm_sparse.attention_finished(
+                query, key, value, attn_output, layer_name, forward_context, phase
+            )
 
         vllm_ops = torch.ops.vllm
-        orig_packet = vllm_ops.unified_attention_with_output
+        orig_unified_attention_with_output = vllm_ops.unified_attention_with_output
+        orig_unified_attention = vllm_ops.unified_attention
 
-        class _UnifiedWrapper:
-            """包装原 OpOverloadPacket，只重写 __call__，其他属性透传."""
-            def __init__(self, orig):
-                self._orig = orig
+        def _wrap_op_overload(orig, impl):
+            class _Wrapper:
+                def __init__(self, orig):
+                    self._orig = orig
 
-            def __call__(
-                self,
-                query: torch.Tensor,
-                key: torch.Tensor,
-                value: torch.Tensor,
-                output: torch.Tensor,
-                layer_name: str,
-                output_scale: Optional[torch.Tensor] = None,
-            ) -> None:
-                return unified_attention_with_output_impl(
-                    query,
-                    key,
-                    value,
-                    output,
-                    layer_name,
-                    output_scale=output_scale,
-                )
+                def __call__(self, *args, **kwargs):
+                    return impl(*args, **kwargs)
 
-            def __getattr__(self, name):
-                # 保证 .default / .overload 等还能用
-                return getattr(self._orig, name)
+                def __getattr__(self, name):
+                    return getattr(self._orig, name)
 
-        vllm_ops.unified_attention_with_output = _UnifiedWrapper(orig_packet)
+            return _Wrapper(orig)
 
+        def unified_attention_impl(
+            query: torch.Tensor,
+            key: torch.Tensor,
+            value: torch.Tensor,
+            layer_name: str,
+        ) -> torch.Tensor:
+            wait_for_kv_layer_from_connector(layer_name)
 
-        def unified_attention(
-                query: torch.Tensor,
-                key: torch.Tensor,
-                value: torch.Tensor,
-                layer_name: str,
-            ) -> torch.Tensor:
-                wait_for_kv_layer_from_connector(layer_name)
+            forward_context: ForwardContext = get_forward_context()
+            attn_metadata = forward_context.attn_metadata
+            if isinstance(attn_metadata, dict):
+                attn_metadata = attn_metadata[layer_name]
+            self = forward_context.no_compile_layers[layer_name]
+            kv_cache = self.kv_cache[forward_context.virtual_engine]
+            maybe_execute_sparse_attention_begin(
+                query, key, value, layer_name, forward_context
+            )
+            output = self.impl.forward(self, query, key, value, kv_cache, attn_metadata)
+            maybe_execute_sparse_attention_finished(
+                query, key, value, output, layer_name, forward_context
+            )
+            maybe_save_kv_layer_to_connector(layer_name, kv_cache)
+            return output
 
-                forward_context: ForwardContext = get_forward_context()
-                attn_metadata = forward_context.attn_metadata
-                if isinstance(attn_metadata, dict):
-                    attn_metadata = attn_metadata[layer_name]
-                self = forward_context.no_compile_layers[layer_name]
-                kv_cache = self.kv_cache[forward_context.virtual_engine]
-                maybe_execute_sparse_attention_begin(
-                    query, key, value, layer_name, forward_context
-                )
-                output = self.impl.forward(self, query, key, value, kv_cache, attn_metadata)
-                maybe_execute_sparse_attention_finished(
-                    query, key, value, output, layer_name, forward_context
-                )
-                maybe_save_kv_layer_to_connector(layer_name, kv_cache)
-                return output
-
-        # ------- 重点：覆盖 C++ op 的实现 --------
         def unified_attention_with_output_impl(
             query: torch.Tensor,
             key: torch.Tensor,
@@ -913,24 +899,17 @@ def _patch_attention_layer() -> None:
             layer_name: str,
             output_scale: Optional[torch.Tensor] = None,
         ) -> None:
-            # 这里是被 torch.ops.vllm.unified_attention_with_output 直接调用的实现
-            print("=========== [UCM PATCH] unified_attention_with_output HIT", layer_name, flush=True)
-
             wait_for_kv_layer_from_connector(layer_name)
-
             forward_context: ForwardContext = get_forward_context()
             attn_metadata = forward_context.attn_metadata
             if isinstance(attn_metadata, dict):
                 attn_metadata = attn_metadata[layer_name]
-
             self = forward_context.no_compile_layers[layer_name]
             kv_cache = self.kv_cache[forward_context.virtual_engine]
-
             if not self.use_mla:
                 maybe_execute_sparse_attention_begin(
                     query, key, value, layer_name, forward_context
                 )
-
             self.impl.forward(
                 self,
                 query,
@@ -941,26 +920,29 @@ def _patch_attention_layer() -> None:
                 output=output,
                 output_scale=output_scale,
             )
-
             if not self.use_mla:
                 maybe_execute_sparse_attention_finished(
                     query, key, value, output, layer_name, forward_context
                 )
 
             maybe_save_kv_layer_to_connector(layer_name, kv_cache)
-            # 注意：C++ schema 是返回 None，所以这里不要 return output
-        
+
+        vllm_ops.unified_attention_with_output = _wrap_op_overload(
+            orig_unified_attention_with_output, unified_attention_with_output_impl
+        )
+        vllm_ops.unified_attention = _wrap_op_overload(
+            orig_unified_attention, unified_attention_impl
+        )
         from vllm.attention import layer
-        
+
         layer.maybe_execute_sparse_attention_begin = (
             maybe_execute_sparse_attention_begin
         )
         layer.maybe_execute_sparse_attention_finished = (
             maybe_execute_sparse_attention_finished
         )
-        layer.unified_attention = unified_attention
+        layer.unified_attention = unified_attention_impl
         layer.unified_attention_with_output = unified_attention_with_output_impl
-        
 
     except ImportError:
         logger.warning(
