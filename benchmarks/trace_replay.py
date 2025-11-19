@@ -9,13 +9,11 @@ import sys
 import time
 from collections import defaultdict
 from datetime import datetime
+from typing import Optional
 
 import aiohttp
 import pandas
-from endpoint_request_func import (
-    ASYNC_REQUEST_FUNCS,
-    RequestFuncInput,
-)
+import vllm
 from tqdm.asyncio import tqdm
 from transformers import PreTrainedTokenizerBase
 from vllm.benchmarks.datasets import (
@@ -35,13 +33,19 @@ from vllm.benchmarks.datasets import (
     SonnetDataset,
     VisionArenaDataset,
 )
+from vllm.benchmarks.endpoint_request_func import (
+    ASYNC_REQUEST_FUNCS,
+    RequestFuncInput,
+)
 from vllm.benchmarks.serve import (
+    BenchmarkMetrics,
     add_cli_args,
     calculate_metrics,
     get_tokenizer,
 )
 
 logger = logging.getLogger(__name__)
+REQUEST_FUC = None
 
 
 class TraceReplayDataset(BenchmarkDataset):
@@ -79,19 +83,20 @@ class TraceReplayDataset(BenchmarkDataset):
     def generate_prompt(
         self, hash_ids: list[int], target_length: int, tokenizer
     ) -> str:
-
+        DEFAULT_BLOCK_SIZE = 512
         vocab_size = tokenizer.vocab_size
 
         # Use hash_ids to influence token generation
         base_offset = hash_ids[0] if hash_ids else 0
+
         token_ids = []
 
         for i, value in enumerate(hash_ids):
             if value in self.hash_to_tokens:
                 token_ids.extend(self.hash_to_tokens[value])
-            elif (i + 1) * 512 <= target_length:
-                for j in range(512):
-                    token_idx = i * 512 + j
+            elif (i + 1) * DEFAULT_BLOCK_SIZE <= target_length:
+                for j in range(DEFAULT_BLOCK_SIZE):
+                    token_idx = i * DEFAULT_BLOCK_SIZE + j
                     token_id = (
                         base_offset
                         + token_idx
@@ -102,10 +107,11 @@ class TraceReplayDataset(BenchmarkDataset):
                             ]
                         )
                     ) % vocab_size
+
                     self.hash_to_tokens.setdefault(value, []).append(token_id)
                 token_ids.extend(self.hash_to_tokens[value])
             else:
-                needed = target_length - i * 512
+                needed = target_length - i * DEFAULT_BLOCK_SIZE
                 padding = [
                     (base_offset + len(token_ids) + j) % vocab_size
                     for j in range(needed)
@@ -347,7 +353,9 @@ def gene_prompts_by_dataset_name(
     return input_requests
 
 
-def save_metrics_to_file(metrics, output_dir="./"):
+def save_metrics_to_file(
+    metrics: BenchmarkMetrics, metric_percentiles: list[float], output_dir: str = "./"
+):
     output_path = output_dir
     if not os.path.exists(output_path):
         os.makedirs(output_path, exist_ok=True)
@@ -355,33 +363,32 @@ def save_metrics_to_file(metrics, output_dir="./"):
 
     outputs = {}
     outputs["time"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    outputs["mean_ttft(ms)"] = round(metrics.mean_ttft_ms, 2)
-    outputs["p99_ttft(ms)"] = round(metrics.percentiles_ttft_ms[3][1], 2)
-    outputs["mean_tpot(ms)"] = round(metrics.mean_tpot_ms, 2)
-    outputs["p99_tpot(ms)"] = round(metrics.percentiles_tpot_ms[3][1], 2)
-    outputs["total_input_tokens"] = round(metrics.total_input, 2)
-    outputs["total_output_tokens"] = round(metrics.total_output, 2)
-    outputs["total_token_throughput(tok/s)"] = round(metrics.total_token_throughput, 2)
-    outputs["output_throughput(tok/s)"] = round(metrics.output_throughput, 2)
-    outputs["request_throughput(req/s)"] = round(metrics.request_throughput, 2)
-    outputs["request_goodput(req/s)"] = metrics.request_goodput
+    outputs["total_input_tokens"] = metrics.total_input
+    outputs["total_output_tokens"] = metrics.total_output
     outputs["completed requests"] = metrics.completed
+    outputs["request_throughput"] = metrics.request_throughput
+    outputs["request_goodput"] = metrics.request_goodput
+    outputs["output_throughput"] = metrics.output_throughput
+    outputs["total_token_throughput"] = metrics.total_token_throughput
+    outputs["mean_ttft_ms"] = metrics.mean_ttft_ms
+    for p, value in metrics.percentiles_ttft_ms:
+        outputs[f"p{int(p)}_ttft_ms"] = value
+    outputs["mean_tpot_ms"] = metrics.mean_tpot_ms
+    for p, value in metrics.percentiles_tpot_ms:
+        outputs[f"p{int(p)}_tpot_ms"] = value
+    outputs["mean_itl_ms"] = metrics.mean_itl_ms
+    for p, value in metrics.percentiles_itl_ms:
+        outputs[f"p{int(p)}_itl_ms"] = value
+    outputs["mean_e2el_ms"] = metrics.mean_e2el_ms
+    for p, value in metrics.percentiles_e2el_ms:
+        outputs[f"p{int(p)}_e2el_ms"] = value
 
     df = pandas.DataFrame([outputs])
-    if os.path.isfile(excel_file):
-        try:
-            existing_df = pandas.read_excel(excel_file)
-            updated_df = pandas.concat([existing_df, df], ignore_index=True)
-        except Exception as e:
-            print(
-                f"Warning: Failed to read {excel_file}, it will be overwritten. Error: {e}"
-            )
-            updated_df = df
-    else:
-        updated_df = df
-    # Save back to Excel (automatically create or overwrite)
-    with pandas.ExcelWriter(excel_file, engine="openpyxl", mode="w") as writer:
-        updated_df.to_excel(writer, index=False, sheet_name="Performance Metrics")
+    os.makedirs(os.path.dirname(excel_file), exist_ok=True)
+    with pandas.ExcelWriter(
+        excel_file, engine="openpyxl", mode="a", if_sheet_exists="replace"
+    ) as writer:
+        df.to_excel(writer, index=False, sheet_name="Metrics")
     print(f"Successfully saved performance metrics to {excel_file}")
 
 
@@ -389,8 +396,9 @@ def save_req_results_to_file(outputs, output_dir="./"):
     output_path = output_dir
     if not os.path.exists(output_path):
         os.makedirs(output_path, exist_ok=True)
-    excel_file = os.path.join(output_path, "req_results.xlsx")
+    excel_file = os.path.join(output_path, "metrics.xlsx")
     rows = []
+    # print(f"outputs: {outputs}")
     for output in outputs:
         ttft = output.ttft * 1000 if output.ttft is not None else None
         output_len = output.output_tokens if output.output_tokens is not None else 0
@@ -400,29 +408,54 @@ def save_req_results_to_file(outputs, output_dir="./"):
         if output_len > 1 and output.ttft is not None and output.latency is not None:
             tpot = (output.latency - output.ttft) / (output_len - 1) * 1000
         row = {
-            "ttft(ms)": ttft,
-            "tpot(ms)": tpot,
-            "e2el(ms)": latency,
-            "input_tokens": input_len,
-            "output_tokens": output_len,
-            "success": output.success,
+            "input_lens": input_len,
+            "output_lens": output_len,
+            "ttfts_ms": ttft,
+            "tpot_ms": tpot,
         }
-        rows.append(row)
-    df = pandas.DataFrame(rows)
-    file_exists = os.path.isfile(excel_file)
-    if file_exists:
-        try:
-            existing_df = pandas.read_excel(excel_file)
-            updated_df = pandas.concat([existing_df, df], ignore_index=True)
-        except Exception as e:
-            print(
-                f"Warning: Failed to read {excel_file}, it will be overwritten. Error: {e}"
+        if output.send_time and output.running_time:
+            row["send_to_funning"] = output.running_time - output.send_time
+        if output.running_time and output.worker_time:
+            row["running_to_worker"] = output.worker_time - output.running_time
+        if output.worker_time and output.start_loadkv_time:
+            row["worker_to_loadkv"] = output.start_loadkv_time - output.worker_time
+        if output.start_loadkv_time and output.start_forward_time:
+            row["loadkv_duration"] = (
+                output.start_forward_time - output.start_loadkv_time
             )
-            updated_df = df
-    else:
-        updated_df = df
-    with pandas.ExcelWriter(excel_file, engine="openpyxl", mode="w") as writer:
-        updated_df.to_excel(writer, index=False, sheet_name="Performance Metrics")
+        if output.start_forward_time and output.finish_forward_time:
+            row["forward_duration"] = (
+                output.finish_forward_time - output.start_forward_time
+            )
+        if output.finish_forward_time and output.finish_savekv_time:
+            row["savekv_duration"] = (
+                output.finish_savekv_time - output.finish_forward_time
+            )
+        if output.first_token_time and output.running_time:
+            row["running_to_first_token"] = (
+                output.first_token_time - output.running_time
+            )
+        row["success"] = output.success
+        rows.append(row)
+
+    df = pandas.DataFrame(rows)
+    os.makedirs(os.path.dirname(excel_file), exist_ok=True)
+    with pandas.ExcelWriter(
+        excel_file, engine="openpyxl", mode="a", if_sheet_exists="replace"
+    ) as writer:
+        df.to_excel(writer, index=False, sheet_name="details")
+
+
+async def request_func(
+    request_func_input: RequestFuncInput,
+    pbar: Optional[tqdm] = None,
+    session: aiohttp.ClientSession = None,
+):
+    if session:
+        return await REQUEST_FUC(
+            request_func_input=request_func_input, pbar=pbar, session=session
+        )
+    return await REQUEST_FUC(request_func_input=request_func_input, pbar=pbar)
 
 
 # Send requests by timestamp
@@ -433,6 +466,8 @@ async def replay_trace_by_time(
     model_id = args.model
     model_name = args.served_model_name
     disable_tqdm = args.disable_tqdm
+    if backend not in ASYNC_REQUEST_FUNCS:
+        raise ValueError(f"Unknown backend: {backend}")
 
     if args.base_url is not None:
         api_url = f"{args.base_url}{args.endpoint}"
@@ -440,10 +475,6 @@ async def replay_trace_by_time(
     else:
         api_url = f"http://{args.host}:{args.port}{args.endpoint}"
         base_url = f"http://{args.host}:{args.port}"
-
-    if backend not in ASYNC_REQUEST_FUNCS:
-        raise ValueError(f"Unknown backend: {backend}")
-    request_func = ASYNC_REQUEST_FUNCS[backend]
 
     print("Starting initial single prompt test run...")
     test_request = None
@@ -454,10 +485,16 @@ async def replay_trace_by_time(
     if test_request is None:
         raise ValueError("No request found for initial test run.")
 
-    session = aiohttp.ClientSession(
-        trust_env=True,
-        timeout=aiohttp.ClientTimeout(total=6 * 60 * 60),
-    )
+    use_session = tuple(map(int, vllm.__version__.split(".")[:3])) >= (0, 10, 1)
+    session = None
+    if use_session:
+        session = vllm.aiohttp.ClientSession(
+            base_url=base_url,
+            trust_env=True,
+            timeout=aiohttp.ClientTimeout(total=6 * 60 * 60),
+        )
+    global REQUEST_FUC
+    REQUEST_FUC = ASYNC_REQUEST_FUNCS[backend]
 
     test_input = RequestFuncInput(
         model=model_id,
@@ -543,12 +580,25 @@ async def replay_trace_by_time(
 
     if pbar is not None:
         pbar.close()
-    await session.close()
+    if use_session:
+        await session.close()
 
     outputs = []
     for res in group_results:
         if isinstance(res, list):
             outputs.extend(res)
+
+    percentile_metrics = (
+        args.metric_percentiles.split(",")
+        if args.metric_percentiles
+        else ["ttft", "tpot", "itl", "e2el"]
+    )
+    metric_percentiles = (
+        [int(x) for x in args.metric_percentiles.split(",")]
+        if args.metric_percentiles
+        else [50, 90]
+    )
+    goodput = {k: float(v) for item in args.goodput for k, v in [item.split(":", 1)]}
 
     benchmark_duration = time.perf_counter() - start_time
     metrics, actual_output_lens = calculate_metrics(
@@ -556,8 +606,8 @@ async def replay_trace_by_time(
         outputs=outputs,
         dur_s=benchmark_duration,
         tokenizer=tokenizer,
-        selected_percentiles=[25.0, 50.0, 75.0, 99.0],
-        goodput_config_dict={"ttft": 2000, "tpot": 50},
+        selected_percentiles=metric_percentiles,
+        goodput_config_dict=goodput,
     )
 
     print("{s:{c}^{n}}".format(s=" Serving Benchmark Result ", n=50, c="="))
@@ -587,7 +637,7 @@ async def replay_trace_by_time(
         metric_name: str,
         metric_header: str,
     ):
-        selected_percentile_metrics = ["ttft", "tpot", "itl", "e2el"]
+        selected_percentile_metrics = percentile_metrics
         if metric_attribute_name not in selected_percentile_metrics:
             return
         print("{s:{c}^{n}}".format(s=metric_header, n=50, c="-"))
@@ -622,7 +672,11 @@ async def replay_trace_by_time(
 
     output_dir = args.result_dir if args.result_dir is not None else "./"
     if args.save_result:
-        save_metrics_to_file(metrics=metrics, output_dir=output_dir)
+        save_metrics_to_file(
+            metrics=metrics,
+            metric_percentiles=metric_percentiles,
+            output_dir=output_dir,
+        )
         save_req_results_to_file(outputs=outputs, output_dir=output_dir)
     return
 
