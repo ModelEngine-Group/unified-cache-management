@@ -390,25 +390,31 @@ class UCMDirectConnector(KVConnectorBase_V1):
 
     def _wait_for_broadcast(
         self,
-        request_to_task: dict[str, Task],
-        req_to_layer: dict[str, tuple[dict[str, torch.Tensor], int]],
+        req_id: str,
+        task: Task,
+        layer_to_tensors: dict[str, torch.Tensor],
+        total_block_num: int,
     ):
-        for req_id, task in request_to_task.items():
-            if self.rank == 0:
-                if self.store.wait(task) != 0:
-                    logger.error(f"request {req_id} load kv cache failed.")
-                    continue
-            layer_to_tensors, total_block_num = req_to_layer[req_id]
-            with torch.cuda.stream(self.broadcast_stream):
-                receive_dict = self._broadcast_or_receive_blocks(
-                    layer_to_tensors, total_block_num
-                )
-            self.broadcast_stream.synchronize()
-            if self.rank > 0 and receive_dict:
-                for layer_name, kv_layer in self.kv_caches.items():
-                    received_tensor = receive_dict[layer_name]
-                    for i in range(total_block_num):
-                        layer_to_tensors[layer_name][i].copy_(received_tensor[i])
+        if self.rank == 0:
+            if self.store.wait(task) != 0:
+                logger.error(f"request {req_id} load kv cache failed.")
+                return
+            logger.debug(
+                f"request {req_id} load {total_block_num} blocks on rank {self.rank}"
+            )
+        with torch.cuda.stream(self.broadcast_stream):
+            receive_dict = self._broadcast_or_receive_blocks(
+                layer_to_tensors, total_block_num
+            )
+        self.broadcast_stream.synchronize()
+        if self.rank > 0 and receive_dict:
+            for layer_name, kv_layer in self.kv_caches.items():
+                received_tensor = receive_dict[layer_name]
+                for i in range(total_block_num):
+                    layer_to_tensors[layer_name][i].copy_(received_tensor[i])
+            logger.debug(
+                f"request {req_id} receive broadcast {total_block_num} blocks on rank {self.rank}"
+            )
 
     def start_load_kv(self, forward_context: "ForwardContext", **kwargs) -> None:
 
@@ -444,12 +450,15 @@ class UCMDirectConnector(KVConnectorBase_V1):
                 )
             request_to_task[request_id] = task
 
-        if not self.load_only_first_rank:
-            for req_id, task in request_to_task.items():
+        for req_id, task in request_to_task.items():
+            if self.load_only_first_rank:
+                layer_to_tensors, total_block_num = req_to_layer[req_id]
+                self._wait_for_broadcast(
+                    req_id, task, layer_to_tensors, total_block_num
+                )
+            else:
                 if self.store.wait(task) != 0:
                     logger.error(f"request {req_id} load kv cache failed.")
-        else:
-            self._wait_for_broadcast(request_to_task, req_to_layer)
 
     def wait_for_layer_load(self, layer_name: str) -> None:
         pass
