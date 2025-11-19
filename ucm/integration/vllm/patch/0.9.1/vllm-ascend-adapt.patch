@@ -1,15 +1,17 @@
-From e45ed500c23f3b8905c68ada894657fd0794906b Mon Sep 17 00:00:00 2001
-From: y00945504 <yuhui87@huawei.com>
-Date: Fri, 22 Aug 2025 11:46:48 +0800
-Subject: [PATCH] manually apply patch
+From 80b25c8524133d64a763a5bd5b719ff8b73e6543 Mon Sep 17 00:00:00 2001
+From: hero0307 <1303898335@qq.com>
+Date: Wed, 19 Nov 2025 17:38:36 +0800
+Subject: [PATCH] add commit
 
 ---
- vllm_ascend/attention/attention_v1.py | 33 +++++++++++++++++++++++++++
- vllm_ascend/worker/model_runner_v1.py | 14 +++++++-----
- 2 files changed, 41 insertions(+), 6 deletions(-)
+ vllm_ascend/attention/attention_v1.py | 33 ++++++++++++++++++++
+ vllm_ascend/attention/mla_v1.py       | 10 ++++--
+ vllm_ascend/worker/model_runner_v1.py | 12 +++++---
+ vllm_ascend/worker/worker_v1.py       | 44 ++++++++++++++++++++++++---
+ 4 files changed, 88 insertions(+), 11 deletions(-)
 
 diff --git a/vllm_ascend/attention/attention_v1.py b/vllm_ascend/attention/attention_v1.py
-index 694adab..487b12b 100644
+index 188ba9f..ef18395 100644
 --- a/vllm_ascend/attention/attention_v1.py
 +++ b/vllm_ascend/attention/attention_v1.py
 @@ -24,6 +24,9 @@ import torch_npu
@@ -19,19 +21,18 @@ index 694adab..487b12b 100644
 +from vllm.distributed.kv_transfer import (get_kv_transfer_group,
 +                                          has_kv_transfer_group,
 +                                          is_v1_kv_transfer_group)
- from vllm.config import get_current_vllm_config
+ from vllm.config import VllmConfig, get_current_vllm_config
  from vllm.forward_context import ForwardContext, get_forward_context
  from vllm.utils import direct_register_custom_op
-@@ -458,6 +461,8 @@ def unified_ascend_attention_with_output(
+@@ -482,6 +485,7 @@ def unified_ascend_attention_with_output(
      output: torch.Tensor,
      layer_name: str,
  ) -> None:
 +    wait_for_kv_layer_from_connector(layer_name)
-+
      forward_context: ForwardContext = get_forward_context()
      attn_metadata = forward_context.attn_metadata
      self = forward_context.no_compile_layers[layer_name]
-@@ -470,8 +475,36 @@ def unified_ascend_attention_with_output(
+@@ -494,8 +498,37 @@ def unified_ascend_attention_with_output(
                        attn_metadata,
                        output,
                        trace_flag=False)
@@ -65,14 +66,73 @@ index 694adab..487b12b 100644
 +        return
 +    connector.save_kv_layer(layer_name, kv_cache_layer,
 +                            attn_metadata)
++
  
  def unified_attention_with_output_fake(
      query: torch.Tensor,
+diff --git a/vllm_ascend/attention/mla_v1.py b/vllm_ascend/attention/mla_v1.py
+index b6ff26a..13dbc2f 100644
+--- a/vllm_ascend/attention/mla_v1.py
++++ b/vllm_ascend/attention/mla_v1.py
+@@ -15,7 +15,7 @@ from vllm.utils import cdiv, round_down
+ 
+ from vllm_ascend import envs
+ from vllm_ascend.ascend_config import get_ascend_config
+-from vllm_ascend.attention.attention_v1 import AscendAttentionState
++from vllm_ascend.attention.attention_v1 import AscendAttentionState, wait_for_kv_layer_from_connector, maybe_save_kv_layer_to_connector
+ from vllm_ascend.attention.utils import (AscendCommonAttentionMetadata,
+                                          split_decodes_and_prefills)
+ from vllm_ascend.multistream.base import MSAttentionMetadataSplitConfig
+@@ -27,6 +27,8 @@ if TYPE_CHECKING:
+     from vllm.v1.core.sched.output import SchedulerOutput
+     from vllm.v1.worker.gpu_input_batch import InputBatch
+ 
++from vllm.forward_context import ForwardContext, get_forward_context
++
+ 
+ class AscendMLABackend(AttentionBackend):
+ 
+@@ -1069,6 +1071,7 @@ class AscendMLAImpl(MLAAttentionImpl):
+         output: Optional[torch.Tensor] = None,
+         enable_multistream_mla=False,
+     ) -> torch.Tensor:
++        forward_context: ForwardContext = get_forward_context()
+         assert output is not None, "Output tensor must be provided."
+         if attn_metadata is None:
+             # Profiling run.
+@@ -1205,6 +1208,7 @@ class AscendMLAImpl(MLAAttentionImpl):
+             # FIX: aicore move should be also placed on the comm stream in dbo,
+             # otherwise it may affect the accuracy
+             # TODO: use an elegant way to overlap
++            wait_for_kv_layer_from_connector(layer.layer_name)
+             output_prefill = self._forward_prefill(prefill_q,
+                                                    prefill_k_c_normed,
+                                                    prefill_k_pe, kv_cache,
+@@ -1217,8 +1221,10 @@ class AscendMLAImpl(MLAAttentionImpl):
+                     o_proj_input[num_decode_tokens:] = output_prefill
+             else:
+                 o_proj_input[num_decode_tokens:] = output_prefill
++            maybe_save_kv_layer_to_connector(layer.layer_name, kv_cache)
+ 
+         if has_decode:
++            wait_for_kv_layer_from_connector(layer.layer_name)
+             if self.running_in_graph:
+                 return self._forward_decode(decode_ql_nope, decode_q_pe,
+                                             decode_k_nope, decode_k_pe,
+@@ -1236,7 +1242,7 @@ class AscendMLAImpl(MLAAttentionImpl):
+                     o_proj_input[:num_decode_tokens] = output_decode
+             else:
+                 o_proj_input[:num_decode_tokens] = output_decode
+-
++            maybe_save_kv_layer_to_connector(layer.layer_name, kv_cache)
+         current_ms_metadata = get_multistream_comm_context()
+         MAX_O_PROJ_PREFETCH_SIZE = 16 * 1024 * 1024
+         if current_ms_metadata is None:
 diff --git a/vllm_ascend/worker/model_runner_v1.py b/vllm_ascend/worker/model_runner_v1.py
-index dc28bfa..ddc996b 100644
+index c19928b..77041d3 100644
 --- a/vllm_ascend/worker/model_runner_v1.py
 +++ b/vllm_ascend/worker/model_runner_v1.py
-@@ -889,7 +889,7 @@ class NPUModelRunner(LoRAModelRunnerMixin):
+@@ -879,7 +879,7 @@ class NPUModelRunner(LoRAModelRunnerMixin):
          intermediate_tensors: Optional[IntermediateTensors] = None,
      ) -> tuple[SpecDecodeMetadata, torch.Tensor, SpecDecodeMetadata,
                 torch.Tensor, int, torch.Tensor, Optional[set[str]],
@@ -81,7 +141,7 @@ index dc28bfa..ddc996b 100644
          # Check input valid
          total_num_scheduled_tokens = scheduler_output.total_num_scheduled_tokens
          assert total_num_scheduled_tokens > 0
-@@ -1140,6 +1140,7 @@ class NPUModelRunner(LoRAModelRunnerMixin):
+@@ -1131,6 +1131,7 @@ class NPUModelRunner(LoRAModelRunnerMixin):
              positions = self.positions[:padded_num_tokens_across_dp]
  
          # Run forward pass
@@ -89,7 +149,7 @@ index dc28bfa..ddc996b 100644
          # TODO(zzzzwwjj): check param `num_tokens_across_dp` later.
          with set_ascend_forward_context(
                  attn_metadata,
-@@ -1174,7 +1175,7 @@ class NPUModelRunner(LoRAModelRunnerMixin):
+@@ -1168,7 +1169,7 @@ class NPUModelRunner(LoRAModelRunnerMixin):
                          inputs_embeds=inputs_embeds,
                          **model_kwargs)
  
@@ -98,7 +158,7 @@ index dc28bfa..ddc996b 100644
          finished_sending, finished_recving = self.get_finished_kv_transfer(
              scheduler_output)
          use_spec_decode = len(
-@@ -1202,7 +1203,7 @@ class NPUModelRunner(LoRAModelRunnerMixin):
+@@ -1205,7 +1206,7 @@ class NPUModelRunner(LoRAModelRunnerMixin):
  
          return (attn_metadata, hidden_states, spec_decode_metadata, positions,
                  total_num_scheduled_tokens, sample_indices, finished_sending,
@@ -107,7 +167,7 @@ index dc28bfa..ddc996b 100644
  
      def _calc_spec_decode_metadata(
          self,
-@@ -1386,7 +1387,7 @@ class NPUModelRunner(LoRAModelRunnerMixin):
+@@ -1399,7 +1400,7 @@ class NPUModelRunner(LoRAModelRunnerMixin):
  
              (attn_metadata, hidden_states, spec_decode_metadata, positions,
               num_scheduled_tokens, sample_indices, finished_sending,
@@ -116,7 +176,7 @@ index dc28bfa..ddc996b 100644
                                                       intermediate_tensors))
  
              if self.dynamic_eplb:
-@@ -1493,6 +1494,7 @@ class NPUModelRunner(LoRAModelRunnerMixin):
+@@ -1512,6 +1513,7 @@ class NPUModelRunner(LoRAModelRunnerMixin):
                  prompt_logprobs_dict={},
                  finished_sending=finished_sending,
                  finished_recving=finished_recving,
@@ -124,17 +184,97 @@ index dc28bfa..ddc996b 100644
              )
  
          durations = ProfileExecuteDuration().pop_captured_sync()
-@@ -1543,8 +1545,8 @@ class NPUModelRunner(LoRAModelRunnerMixin):
+@@ -1562,7 +1564,7 @@ class NPUModelRunner(LoRAModelRunnerMixin):
      @staticmethod
      def maybe_wait_for_kv_save() -> None:
          if has_kv_transfer_group():
 -            get_kv_transfer_group().wait_for_save()
--
 +            return get_kv_transfer_group().wait_for_save()
-+            
+ 
      @staticmethod
      def get_finished_kv_transfer(
+diff --git a/vllm_ascend/worker/worker_v1.py b/vllm_ascend/worker/worker_v1.py
+index 2f3423c..7628c99 100644
+--- a/vllm_ascend/worker/worker_v1.py
++++ b/vllm_ascend/worker/worker_v1.py
+@@ -18,6 +18,7 @@
+ #
+ 
+ from typing import Optional
++import copy
+ 
+ import torch
+ import torch.nn as nn
+@@ -28,14 +29,15 @@ from vllm.config import VllmConfig
+ from vllm.distributed import (ensure_model_parallel_initialized,
+                               init_distributed_environment,
+                               set_custom_all_reduce)
+-from vllm.distributed.kv_transfer import ensure_kv_transfer_initialized
++from vllm.distributed.kv_transfer import (ensure_kv_transfer_initialized,
++                                          has_kv_transfer_group)
+ from vllm.logger import logger
+ from vllm.lora.request import LoRARequest
+ from vllm.model_executor import set_random_seed
+ from vllm.utils import STR_DTYPE_TO_TORCH_DTYPE, GiB_bytes
+ from vllm.v1.core.sched.output import SchedulerOutput
+ from vllm.v1.kv_cache_interface import KVCacheConfig, KVCacheSpec
+-from vllm.v1.outputs import ModelRunnerOutput
++from vllm.v1.outputs import EMPTY_MODEL_RUNNER_OUTPUT, ModelRunnerOutput
+ from vllm.v1.worker.worker_base import WorkerBase
+ 
+ import vllm_ascend.envs as envs_ascend
+@@ -50,6 +52,8 @@ from vllm_ascend.utils import (check_kv_cache_bytes_cache_exist,
+                                init_ascend_soc_version,
+                                read_kv_cache_bytes_from_file, try_register_lib)
+ from vllm_ascend.worker.model_runner_v1 import NPUModelRunner
++from vllm.distributed.parallel_state import get_pp_group, get_tp_group
++from vllm.sequence import IntermediateTensors
+ 
+ 
+ class NPUWorker(WorkerBase):
+@@ -221,8 +225,40 @@ class NPUWorker(WorkerBase):
+         self,
          scheduler_output: "SchedulerOutput",
+     ) -> Optional[ModelRunnerOutput]:
+-        output = self.model_runner.execute_model(scheduler_output)
+-        return output if self.is_driver_worker else None
++        intermediate_tensors = None
++        if not get_pp_group().is_first_rank:
++            intermediate_tensors = IntermediateTensors(
++                get_pp_group().recv_tensor_dict(all_gather_group=get_tp_group())
++            )
++
++        output = self.model_runner.execute_model(
++            scheduler_output, intermediate_tensors
++        )
++        parallel_config = self.vllm_config.parallel_config
++        if (
++            parallel_config.distributed_executor_backend != "external_launcher"
++            and not get_pp_group().is_last_rank
++        ):
++            assert isinstance(output, IntermediateTensors)
++            get_pp_group().send_tensor_dict(
++                output.tensors, all_gather_group=get_tp_group()
++            )
++            if not has_kv_transfer_group():
++                return None
++
++            kv_connector_output = output.kv_connector_output
++            finished_sending = kv_connector_output.finished_sending
++            finished_recving = kv_connector_output.finished_recving
++
++            if not finished_sending and not finished_recving:
++                return EMPTY_MODEL_RUNNER_OUTPUT
++
++            new_output = copy.copy(EMPTY_MODEL_RUNNER_OUTPUT)
++            new_output.kv_connector_output = kv_connector_output
++            return new_output
++
++        assert isinstance(output, ModelRunnerOutput)
++        return output
+ 
+     def load_model(self) -> None:
+         if self.vllm_config.model_config.enable_sleep_mode:
 -- 
-2.50.1.windows.1
+2.43.0
 
