@@ -133,7 +133,7 @@ namespace ucmprefetch
             mIsLog = false;
         }
         mExtraTopkLen = extraTopkLen;
-        mLogger.log(LogLevel::DEBUG,
+        mLogger.log(LogLevel::INFO,
             "GSAPrefetchEngineC Init mLayerNum %d mMaxBs %u, mUseMla %d, mHeadSzie %u, mTPSize %u mBlockSize %u mHeadNum %u\n",
             mLayerNum, mMaxBs, mUseMla, mHeadSzie, mTPSize, mBlockSize, mHeadNum);
     }
@@ -142,10 +142,11 @@ namespace ucmprefetch
     {
         size_t kMinDataBlockSize = static_cast<size_t>(mBlockSize) * mHeadNum * mHeadSzie * mTensorElemSize;
         size_t vMinDataBlockSize = kMinDataBlockSize;
+        size_t layerSize = (kMinDataBlockSize + vMinDataBlockSize) * mTPSize;
         if (mUseMla) {
             vMinDataBlockSize = 0;
+            layerSize = kMinDataBlockSize;
         }
-        size_t layerSize = (kMinDataBlockSize + vMinDataBlockSize) * mTPSize;
         size_t kOffset = 0;
         if (mUseMla) {
             kOffset = layerSize * layerID;
@@ -196,6 +197,7 @@ namespace ucmprefetch
             mBlocksMap[reqID].push_back(oneBlockMap);
         }
         mPromptLen[reqID] = maxIdx;
+        PrintMap(reqID, 0);
     }
 
     void GSAPrefetchEngineC::SetBlocksMapMultiLayer(std::string reqID, std::vector<std::map<int, int>> &remainMap,
@@ -329,8 +331,8 @@ namespace ucmprefetch
         oss.str("");
         if ((hitBlocks.size() + missIdxs.size()) != (uint32_t)topkLen) {
             mLogger.log(LogLevel::ERROR,
-                "|KVCache Prefetch| Decode step: %u, Rank: %d, reqID: %s, layer: %d, hit size: %lu, miss size: %lu not equal error\n",
-                mDecodeStep, mRank, reqID, layerID, hitBlocks.size(), missIdxs.size());
+                "|KVCache Prefetch| Decode step: %u, Rank: %d, reqID: %s, layer: %d, hit size: %lu, miss size: %lu , topkLen: %d, not equal error\n",
+                mDecodeStep, mRank, reqID, layerID, hitBlocks.size(), missIdxs.size(), topkLen);
             PrintMap(reqID, layerID);
         }
 
@@ -445,8 +447,8 @@ namespace ucmprefetch
             auto ret = mStore->Wait(taskID);
             if (ret != 0) {
                 mLogger.log(LogLevel::ERROR,
-                    "Decode step: %u, Rank: %d, reqID: %s, layer: %d, blockID: %lu, load k error\n",
-                    mDecodeStep, mRank, reqID.c_str(), layerID, blockId);
+                    "Decode step: %u, Rank: %d, reqID: %s, layer: %d, blockID: %lu, miss idx: %u, load blockid: %u load k error\n",
+                    mDecodeStep, mRank, reqID.c_str(), layerID, blockId, missIdxs[i], loadNPUBlockIDs[i]);
                 return;
             }
 
@@ -471,12 +473,12 @@ namespace ucmprefetch
                 mKVSzieBytes = kvCaches[0].element_size() * kvCaches[0][0][0].numel();
             }
             mStore = static_cast<UC::CCStore *>(storePtr);
-            mLogger.log(LogLevel::DEBUG,
+            mLogger.log(LogLevel::INFO,
                 "Decode step: %u, |KVCache Prefetch| start mKVSzieBytes: %u, mTensorElemSize %u\n",
-                mKVSzieBytes, mTensorElemSize);
+                mDecodeStep, mKVSzieBytes, mTensorElemSize);
         }
         mKvCaches = kvCaches;
-        mLogger.log(LogLevel::DEBUG,
+        mLogger.log(LogLevel::INFO,
             "Decode step: %u, |KVCache Prefetch| start async pretch batch size: %lu\n",
             mDecodeStep, reqIDsInput.size());
         runBsLen = reqIDsInput.size();
@@ -524,7 +526,7 @@ namespace ucmprefetch
         }
         auto end = std::chrono::high_resolution_clock::now();
         auto duration = std::chrono::duration_cast<std::chrono::microseconds>(end - start);
-        mLogger.log(LogLevel::DEBUG,
+        mLogger.log(LogLevel::INFO,
             "Decode step: %u, |KVCache Prefetch| Finish async pretch cost: %lu\n",
             mDecodeStep, duration.count());
         return 0;
