@@ -1,4 +1,5 @@
 import hashlib
+import os
 import pickle
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Callable, List, Optional
@@ -585,11 +586,60 @@ class UCMPDConnector(UCMDirectConnector):
         raise NotImplementedError
 
 
+class UCMMockConnector(UCMDirectConnector):
+    """
+    This Connector can control hit ratio, for example: if your hit ratio is 100%,
+    you can set "hit_ratio" by config or env_vars, then get_num_new_matched_tokens()
+    will reduce hit_tokens under the hit_ratio you set.
+    """
+
+    def __init__(self, vllm_config: "VllmConfig", role: KVConnectorRole):
+        super().__init__(vllm_config, role)
+        self._hit_ratio = float(
+            self._vllm_config.kv_transfer_config.kv_connector_extra_config["hit_ratio"]
+        )
+        logger.info(f"hit_ratio: {self._hit_ratio}")
+
+    def get_num_new_matched_tokens(
+        self,
+        request: "Request",
+        num_computed_tokens: int,
+    ) -> tuple[int, bool]:
+        hit_tokens, _ = super().get_num_new_matched_tokens(request, num_computed_tokens)
+        expect_hit_tokens = int(self._hit_ratio * request.num_prompt_tokens)
+        if hit_tokens <= expect_hit_tokens:
+            return hit_tokens, False
+        expect_hit_block_num = expect_hit_tokens // self.block_size
+        request_meta = self.request_meta[request.request_id]
+        request_meta.total_hit_block_num = expect_hit_block_num
+        request_meta.hbm_hit_block_num = min(
+            expect_hit_block_num, request_meta.hbm_hit_block_num
+        )
+
+        logger.info(
+            "Hijacked By MockConnector,"
+            f"request_id: {request.request_id}, "
+            f"total_blocks_num: {len(request_meta.ucm_block_ids)}, "
+            f"hit hbm: {request_meta.hbm_hit_block_num}, "
+            f"hit external: {request_meta.total_hit_block_num - request_meta.hbm_hit_block_num}"
+        )
+
+        return expect_hit_block_num * self.block_size, False
+
+
 class UCMConnector(KVConnectorBase_V1):
     def __init__(self, vllm_config: "VllmConfig", role: KVConnectorRole):
         super().__init__(vllm_config=vllm_config, role=role)
+        self.connector: KVConnectorBase_V1
         # TODO new conn by config
-        self.connector = UCMDirectConnector(vllm_config, role)
+        if (
+            self._vllm_config.kv_transfer_config is not None
+            and "hit_ratio"
+            in self._vllm_config.kv_transfer_config.kv_connector_extra_config
+        ):
+            self.connector = UCMMockConnector(vllm_config, role)
+        else:
+            self.connector = UCMDirectConnector(vllm_config, role)
 
     def get_num_new_matched_tokens(
         self,
