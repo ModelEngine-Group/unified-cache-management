@@ -259,6 +259,8 @@ class UnifiedCacheConnectorV1(KVConnectorBase_V1):
 
         if len(self.kv_caches) == 0:
             self._init_kv_caches_from_forward_context(forward_context)
+            if len(list(self.kv_caches.values())[0]) == 2:
+                self.is_mla = False
 
         self.layerwise_load_tasks.clear()
         self.current_layer = 0
