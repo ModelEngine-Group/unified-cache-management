@@ -41,12 +41,7 @@ docker run --rm \
 ```
 Codes of vLLM and vLLM Ascend are placed in /vllm-workspace, you can refer to [vLLM-Ascend Installation](https://vllm-ascend.readthedocs.io/en/latest/installation.html) for more information.
 
-**Note:** For vLLM patches, they are now applied automatically via dynamic patching when you import the unified-cache-management package. However, for vLLM-Ascend, you still need to manually apply the vLLM-Ascend specific patch:
-
-```bash
-cd /vllm-workspace/vllm-ascend
-git apply /vllm-workspace/unified-cache-management/ucm/integration/vllm/patch/0.9.2/vllm-ascend-adapt.patch
-```
+**Note:** For vLLM and vLLM Ascend patches, they are now applied automatically via dynamic patching when you import the unified-cache-management package.
 
 Refer to these issues [vllm-issue](https://github.com/vllm-project/vllm/issues/21702) and [vllm-ascend-issue](https://github.com/vllm-project/vllm-ascend/issues/2057) to see details of patches' changes.
 
@@ -60,16 +55,6 @@ export PLATFORM=ascend
 pip install -v -e . --no-build-isolation
 cd ..
 ```
-
-Codes of vLLM and vLLM Ascend are placed in /vllm-workspace, you can refer to [vLLM-Ascend Installation](https://vllm-ascend.readthedocs.io/en/latest/installation.html) for more information. After installation, please apply patches to ensure uc_connector can be used:
-```bash
-cd /vllm-workspace/vllm
-git apply /vllm-workspace/unified-cache-management/ucm/integration/vllm/patch/0.9.2/vllm-adapt.patch
-cd /vllm-workspace/vllm-ascend
-git apply /vllm-workspace/unified-cache-management/ucm/integration/vllm/patch/0.9.2/vllm-ascend-adapt.patch
-```
-Refer to these issues [vllm-issue](https://github.com/vllm-project/vllm/issues/21702) and [vllm-ascend-issue](https://github.com/vllm-project/vllm-ascend/issues/2057) to see details of patches' changes.
-
 
 ## Setup from docker
 Download the pre-built docker image provided or build unified-cache-management docker image by commands below:
