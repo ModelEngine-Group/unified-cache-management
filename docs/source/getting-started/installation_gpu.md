@@ -33,6 +33,13 @@ docker run \
 ```
 Refer to [Set up using docker](https://docs.vllm.ai/en/latest/getting_started/installation/gpu.html#set-up-using-docker) for more information to run your own vLLM container.
 
+### Install by pip
+Install by pip or find the pre-build wheels on [Pypi](https://pypi.org/project/uc-manager/).
+```
+pip install uc-manager
+```
+
+
 ### Build from source code
 Follow commands below to install unified-cache-management:
 
@@ -46,7 +53,10 @@ pip install -v -e . --no-build-isolation
 
 **Note:** Patches are now applied automatically via dynamic patching when you import the unified-cache-management package. You no longer need to manually apply patches using `git apply`. The patches are automatically applied when you use the `UnifiedCacheConnectorV1` connector.
 
+
 ## Setup from docker
+
+### Build image from source
 Download the pre-built `vllm/vllm-openai:v0.9.2` docker image and build unified-cache-management docker image by commands below:
  ```bash
  # Build docker image using source code, replace <branch_or_tag_name> with the branch or tag name needed
@@ -54,6 +64,14 @@ Download the pre-built `vllm/vllm-openai:v0.9.2` docker image and build unified-
  cd unified-cache-management
  docker build -t ucm-vllm:latest -f ./docker/Dockerfile ./
  ```
+
+
+### Pre-built images
+
+```bash
+docker pull unifiedcachemanager/ucm:latest
+```
+
 Then run your container using following command. You can add or remove Docker parameters as needed.
 ```bash
 # Use `--ipc=host` to make sure the shared memory is large enough.

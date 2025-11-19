@@ -37,6 +37,8 @@ FAILURE = -1
 
 if torch.cuda.is_available():
     device = torch.cuda
+elif torch.musa.is_available():
+    device = torch.musa
 elif hasattr(torch, "npu") and torch.npu.is_available():
     device = torch.npu
 else:
