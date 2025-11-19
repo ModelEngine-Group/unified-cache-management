@@ -11,7 +11,9 @@
 #include <vector>
 #include <algorithm>
 #include <random>
+#ifdef NUMA_ENABLED
 #include <numaif.h>
+#endif
 #include <iostream>
 
 namespace py = pybind11;
@@ -29,7 +31,6 @@ public:
 
         // Start worker threads
         for (auto cpu_idx : cpu_idx_tbl) {
-            int numaId = cpu_idx.first.cast<int>();
             py::list core_ids = cpu_idx.second.cast<py::list>();
 
             for (size_t i = 0; i < core_ids.size(); ++i) {
@@ -49,12 +50,17 @@ public:
                     std::cerr << "Error binding thread " << i << " to CPU core " << core_id << std::endl;
                 }
 
+            #ifdef NUMA_ENABLED
+                int numaId = cpu_idx.first.cast<int>();
                 // 设置内存亲和性
                 unsigned long nodeMask = 1UL << numaId;
                 rc = set_mempolicy(MPOL_BIND, &nodeMask, sizeof(nodeMask) * 8);
                 if (rc != 0) {
                     std::cerr << "Error binding memory to NUMA node " << numaId << std::endl;
                 }
+            #else
+                std::cerr << "NUMA support is disabled." << std::endl;
+            #endif
             }
 
         }

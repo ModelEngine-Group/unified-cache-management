@@ -1,4 +1,6 @@
+#ifdef NUMA_ENABLED
 #include <numaif.h>
+#endif
 #include "retrieve_task_queue.h"
 #include "retrieve_task_runner.h"
 
@@ -27,6 +29,7 @@ void RetrieveTaskQueue::Worker(const int numaId, const int bindCoreId, std::prom
         return;
     }
 
+#ifdef NUMA_ENABLED
     unsigned long nodemask = 1UL << numaId;
     rc = set_mempolicy(MPOL_BIND, &nodemask, sizeof(nodemask) * 8);
     if (rc != 0) {
@@ -34,6 +37,9 @@ void RetrieveTaskQueue::Worker(const int numaId, const int bindCoreId, std::prom
         started.set_value(Status::OsApiError());
         return;
     }
+#else
+    KVSTAR_DEBUG("NUMA support is disabled.");
+#endif
 
     KVSTAR_DEBUG("Bind current thread {} to numa {} core {} and set memory affinity success.", thread, numaId, bindCoreId);
     RetrieveTaskRunner runner;
