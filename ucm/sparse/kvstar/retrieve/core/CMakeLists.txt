@@ -11,6 +11,6 @@ target_include_directories(kvstar_retrieve.core PUBLIC
 target_link_libraries(kvstar_retrieve.core PUBLIC
         spdlog::spdlog
         fmt::fmt
-        ${NUMA_INSTALL_DIR}/lib/libnuma.so
+        $<$<BOOL:${BUILD_NUMA}>:${NUMA_INSTALL_DIR}/lib/libnuma.so>
         ${Torch_LIBRARIES}
 )

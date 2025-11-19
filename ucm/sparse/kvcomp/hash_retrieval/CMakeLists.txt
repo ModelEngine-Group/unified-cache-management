@@ -12,6 +12,6 @@ target_include_directories(hash_retrieval_backend PUBLIC
 
 # 链接所需的库
 target_link_libraries(hash_retrieval_backend PUBLIC
-    ${NUMA_INSTALL_DIR}/lib/libnuma.so
+    $<$<BOOL:${BUILD_NUMA}>:${NUMA_INSTALL_DIR}/lib/libnuma.so>
     ${Torch_LIBRARIES}
 )
