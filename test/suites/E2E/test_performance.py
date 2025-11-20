@@ -15,40 +15,28 @@ def model_config() -> ModelConfig:
 
 
 sync_perf_cases = [
-    # pytest.param(
-    #     PerfConfig(
-    #         data_type="synthetic",
-    #         enable_prefix_cache=False,
-    #         parallel_num=[1, 4, 8],
-    #         prompt_tokens=[4000, 8000],
-    #         output_tokens=[1000, 1000],
-    #         benchmark_mode="default-perf",
-    #     ),
-    #     id="benchmark-complete-recalculate-default-perf",
-    # ),
-    # pytest.param(
-    #     PerfConfig(
-    #         data_type="synthetic",
-    #         enable_prefix_cache=True,
-    #         parallel_num=[1, 4, 8],
-    #         prompt_tokens=[4000, 8000],
-    #         output_tokens=[1000, 1000],
-    #         prefix_cache_num=[0.8, 0.8],
-    #         benchmark_mode="stable-perf",
-    #     ),
-    #     id="benchmark-prefix-cache-stable-perf",
-    # ),
+    pytest.param(
+        PerfConfig(
+            data_type="synthetic",
+            enable_prefix_cache=False,
+            parallel_num=[1, 4, 8],
+            prompt_tokens=[4000, 8000],
+            output_tokens=[1000, 1000],
+            benchmark_mode="default-perf",
+        ),
+        id="benchmark-complete-recalculate-default-perf",
+    ),
     pytest.param(
         PerfConfig(
             data_type="synthetic",
             enable_prefix_cache=True,
-            parallel_num=[1],
-            prompt_tokens=[4000],
-            output_tokens=[100],
-            prefix_cache_num=[0.8],
+            parallel_num=[1, 4, 8],
+            prompt_tokens=[4000, 8000],
+            output_tokens=[1000, 1000],
+            prefix_cache_num=[0.8, 0.8],
             benchmark_mode="stable-perf",
         ),
-        id="benchmark-complete-recalculate-default-perf",
+        id="benchmark-prefix-cache-stable-perf",
     ),
 ]
 
@@ -69,7 +57,7 @@ multiturn_dialogue_perf_cases = [
     pytest.param(
         PerfConfig(
             data_type="multi_turn_dialogue",
-            dataset_file_path="/home/externals/zhuzy/pyproject/uc-eval-new/datasets/multi_turn_dialogues/multiturndialog.json",
+            dataset_file_path="test/uc_eval /datasets/multi_turn_dialogues/multiturndialog.json",
             enable_prefix_cache=False,
             parallel_num=1,
             benchmark_mode="default-perf",

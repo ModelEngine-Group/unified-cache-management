@@ -18,8 +18,8 @@ database:
   charset: "utf8mb4"
 
 models:
-  ip_ports: "0.0.0.0:10045"
-  tokenizer_path: "/home/models/QwQ-32B/"
-  served_model_name: "vllm_cpu_offload"
-  payload: '{"max_tokens": 1024, "ignore_eos": true, "temperature": 0.7}'
+  ip_ports: ""
+  tokenizer_path: ""
+  served_model_name: ""
+  payload: ''
   enable_clear_hbm: false
