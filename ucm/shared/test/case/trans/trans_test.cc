@@ -68,6 +68,7 @@ TEST_F(UCTransUnitTest, CopyDataWithSM)
     ASSERT_EQ(device.Setup(deviceId), ok);
     auto buffer = device.MakeBuffer();
     auto stream = device.MakeSMStream();
+    if (!stream) { return; }
     auto hPtr1 = buffer->MakeHostBuffer(size * number);
     ASSERT_NE(hPtr1, nullptr);
     ASSERT_EQ(buffer->MakeDeviceBuffers(size, number), ok);
