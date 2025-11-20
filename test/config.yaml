@@ -9,10 +9,17 @@ reports:
 
 database:
   backup: "results/"
-  enabled: true
+  enabled: false
   host: "127.0.0.1"
   port: 3306
   name: "ucm_pytest"
   user: "root"
   password: "123456"
   charset: "utf8mb4"
+
+models:
+  ip_ports: "0.0.0.0:10045"
+  tokenizer_path: "/home/models/QwQ-32B/"
+  served_model_name: "vllm_cpu_offload"
+  payload: '{"max_tokens": 1024, "ignore_eos": true, "temperature": 0.7}'
+  enable_clear_hbm: false
