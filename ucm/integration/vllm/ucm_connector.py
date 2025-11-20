@@ -110,11 +110,11 @@ class UCMDirectConnector(KVConnectorBase_V1):
         # save block info, avoid hash request twice, and track them until request finished
         self.requests_meta: dict[str, RequestMeta] = {}
         ucm_config = Config(vllm_config.kv_transfer_config)
-        launch_config = ucm_config.get_config()
+        self.launch_config = ucm_config.get_config()
 
-        if "ucm_connector_name" in launch_config:
-            name = launch_config.get("ucm_connector_name")
-            config = launch_config.get("ucm_connector_config") or {}
+        if "ucm_connector_name" in self.launch_config:
+            name = self.launch_config.get("ucm_connector_name")
+            config = self.launch_config.get("ucm_connector_config") or {}
             config["device"] = self.rank
             config["role"] = (
                 "scheduler" if role == KVConnectorRole.SCHEDULER else "worker"
@@ -624,9 +624,7 @@ class UCMMockConnector(UCMDirectConnector):
 
     def __init__(self, vllm_config: "VllmConfig", role: KVConnectorRole):
         super().__init__(vllm_config, role)
-        self._hit_ratio = float(
-            self._vllm_config.kv_transfer_config.kv_connector_extra_config["hit_ratio"]
-        )
+        self._hit_ratio = float(self.launch_config["hit_ratio"])
         logger.info(f"hit_ratio: {self._hit_ratio}")
 
     def get_num_new_matched_tokens(

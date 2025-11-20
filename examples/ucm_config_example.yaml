@@ -31,4 +31,5 @@ ucm_connector_config:
 
 # Whether to use layerwise loading/saving (optional, default: True for UnifiedCacheConnectorV1)
 # use_layerwise: true
+# hit_ratio: 0.9
 
