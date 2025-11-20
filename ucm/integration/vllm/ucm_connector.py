@@ -19,6 +19,7 @@ from vllm.v1.request import Request
 from ucm.logger import init_logger
 from ucm.store.factory import UcmConnectorFactory
 from ucm.store.ucmstore import Task, UcmKVStoreBase
+from ucm.utils import Config
 
 if TYPE_CHECKING:
     from vllm.attention.backends.abstract import AttentionMetadata
@@ -102,36 +103,18 @@ class UCMDirectConnector(KVConnectorBase_V1):
         self.block_size = self._vllm_config.cache_config.block_size
         self.is_mla = self._vllm_config.model_config.is_deepseek_mla
 
-        self.load_only_first_rank = self.is_mla
-        if self.is_mla:
-            if role == KVConnectorRole.WORKER:
-                self.group_coordinator = get_tp_group()
-                self.broadcast_fn = self.group_coordinator.broadcast
-                self.broadcast_stream = torch.cuda.Stream()
         self.store: UcmKVStoreBase
 
         self.request_hasher = RequestHasher()
 
         # save block info, avoid hash request twice, and track them until request finished
         self.requests_meta: dict[str, RequestMeta] = {}
+        ucm_config = Config(vllm_config.kv_transfer_config)
+        self.launch_config = ucm_config.get_config()
 
-        # TODO use yaml
-        if (
-            vllm_config.kv_transfer_config is not None
-            and "ucm_connector_name"
-            in vllm_config.kv_transfer_config.kv_connector_extra_config
-        ):
-            name = vllm_config.kv_transfer_config.kv_connector_extra_config[
-                "ucm_connector_name"
-            ]
-            config = {}
-            if (
-                "ucm_connector_config"
-                in vllm_config.kv_transfer_config.kv_connector_extra_config
-            ):
-                config = vllm_config.kv_transfer_config.kv_connector_extra_config[
-                    "ucm_connector_config"
-                ]
+        if "ucm_connector_name" in self.launch_config:
+            name = self.launch_config.get("ucm_connector_name")
+            config = self.launch_config.get("ucm_connector_config") or {}
             config["device"] = self.rank
             config["role"] = (
                 "scheduler" if role == KVConnectorRole.SCHEDULER else "worker"
@@ -154,6 +137,14 @@ class UCMDirectConnector(KVConnectorBase_V1):
             config["io_size"] = block_size_per_layer * (
                 1 if self.is_mla else num_head_per_tp
             )
+            self.load_only_first_rank: bool = (
+                config.get("load_only_first_rank", self.is_mla) and self.is_mla
+            )
+            if self.load_only_first_rank:
+                if role == KVConnectorRole.WORKER:
+                    self.group_coordinator = get_tp_group()
+                    self.broadcast_fn = self.group_coordinator.broadcast
+                    self.broadcast_stream = torch.cuda.Stream()
             self.store = UcmConnectorFactory.create_connector(name, config)
 
             logger.info("init UCConnectorImpl, connector: %s", name)
@@ -162,6 +153,8 @@ class UCMDirectConnector(KVConnectorBase_V1):
                 config["kv_block_size"] / 1024 / 1024,
                 config["io_size"] / 1024,
             )
+        else:
+            raise TypeError(f"no storage connector name in config.")
 
     def get_num_new_matched_tokens(
         self,
@@ -631,9 +624,7 @@ class UCMMockConnector(UCMDirectConnector):
 
     def __init__(self, vllm_config: "VllmConfig", role: KVConnectorRole):
         super().__init__(vllm_config, role)
-        self._hit_ratio = float(
-            self._vllm_config.kv_transfer_config.kv_connector_extra_config["hit_ratio"]
-        )
+        self._hit_ratio = float(self.launch_config["hit_ratio"])
         logger.info(f"hit_ratio: {self._hit_ratio}")
 
     def get_num_new_matched_tokens(
