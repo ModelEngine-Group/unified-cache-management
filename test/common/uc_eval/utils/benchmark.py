@@ -244,7 +244,7 @@ class PerformanceBenchmark(BenchmarkBase):
                 break
 
         if len(stable_stage_requests) > 1:
-            # igore first request
+            # ignore first request
             stable_stage_requests.pop(0)
         if len(stable_stage_requests) == 0:
             logger.error("cannot find stable stage, please check your settings")

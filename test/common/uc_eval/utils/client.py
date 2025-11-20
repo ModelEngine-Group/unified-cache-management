@@ -112,7 +112,7 @@ class BaseClient:
 
     def _update_payload(self, prompt, max_tokens) -> Dict:
         """
-        update reqeust payload
+        update request payload
         """
         payload = copy.deepcopy(self.payload)
         payload.update({"model": self.served_model_name})
