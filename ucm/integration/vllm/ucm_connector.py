@@ -109,12 +109,6 @@ class UCMDirectConnector(KVConnectorBase_V1):
         self.block_size = self._vllm_config.cache_config.block_size
         self.is_mla = self._vllm_config.model_config.is_deepseek_mla
 
-        self.load_only_first_rank = self.is_mla
-        if self.is_mla:
-            if role == KVConnectorRole.WORKER:
-                self.group_coordinator = get_tp_group()
-                self.broadcast_fn = self.group_coordinator.broadcast
-                self.broadcast_stream = torch.cuda.Stream()
         self.store: UcmKVStoreBase
 
         self.request_hasher = RequestHasher()
@@ -149,6 +143,14 @@ class UCMDirectConnector(KVConnectorBase_V1):
             config["io_size"] = block_size_per_layer * (
                 1 if self.is_mla else num_head_per_tp
             )
+            self.load_only_first_rank: bool = config.get(
+                "load_only_first_rank", self.is_mla
+            )
+            if self.load_only_first_rank:
+                if role == KVConnectorRole.WORKER:
+                    self.group_coordinator = get_tp_group()
+                    self.broadcast_fn = self.group_coordinator.broadcast
+                    self.broadcast_stream = torch.cuda.Stream()
             self.store = UcmConnectorFactory.create_connector(name, config)
 
             logger.info("init UCConnectorImpl, connector: %s", name)

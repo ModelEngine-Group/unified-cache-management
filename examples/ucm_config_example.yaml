@@ -13,6 +13,8 @@ ucm_connector_name: "UcmNfsStore"
 # Connector-specific configuration
 ucm_connector_config:
   storage_backends: "/mnt/test"
+  transferIoDirect: false
+  load_only_first_rank: false
 
 # Sparse attention configuration
 # Format 1: Dictionary format (for methods like ESA, KvComp)
