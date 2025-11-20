@@ -44,6 +44,7 @@ from vllm.v1.request import Request, RequestStatus
 from ucm.logger import init_logger
 from ucm.store.factory import UcmConnectorFactory
 from ucm.store.ucmstore import Task
+from ucm.utils import Config
 
 if TYPE_CHECKING:
     from vllm.attention.backends.abstract import AttentionMetadata
@@ -113,22 +114,11 @@ class UnifiedCacheConnectorV1(KVConnectorBase_V1):
             vllm_config.parallel_config
         )
         self.head_size = vllm_config.model_config.get_head_size()
-        if (
-            self._vllm_config.kv_transfer_config is not None
-            and "ucm_connector_name"
-            in self._vllm_config.kv_transfer_config.kv_connector_extra_config
-        ):
-            name = self._vllm_config.kv_transfer_config.kv_connector_extra_config[
-                "ucm_connector_name"
-            ]
-            config = {}
-            if (
-                "ucm_connector_config"
-                in self._vllm_config.kv_transfer_config.kv_connector_extra_config
-            ):
-                config = self._vllm_config.kv_transfer_config.kv_connector_extra_config[
-                    "ucm_connector_config"
-                ]
+        ucm_config = Config(vllm_config.kv_transfer_config)
+        launch_config = ucm_config.get_config()
+        if "ucm_connector_name" in launch_config:
+            name = launch_config.get("ucm_connector_name")
+            config = launch_config.get("ucm_connector_config") or {}
             config["device"] = self.rank
             config["role"] = (
                 "scheduler" if role == KVConnectorRole.SCHEDULER else "worker"
