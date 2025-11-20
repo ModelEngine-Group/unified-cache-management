@@ -39,38 +39,16 @@ def _apply_adapt_patch() -> None:
     This function contains all the necessary monkey patches for version 0.9.1.
     """
     try:
-        # Patch for vllm/distributed/kv_transfer/kv_connector/utils.py
         _patch_kv_connector_utils()
-
-        # Patch for vllm/distributed/kv_transfer/kv_connector/v1/base.py
         _patch_kv_connector_v1_base()
-
-        # Patch for vllm/v1/core/block_pool.py
         _patch_block_pool()
-
-        # Patch for vllm/v1/core/single_type_kv_cache_manager.py
         _patch_single_type_kv_cache_manager()
-
-        # Patch for vllm/v1/executor/multiproc_executor.py
         _patch_multiproc_executor()
-
-        # Patch for vllm/v1/outputs.py
         _patch_outputs()
-
-        # Patch for vllm/v1/request.py
         _patch_request()
-
-        # Patch for vllm/v1/worker/gpu_input_batch.py
         _patch_gpu_input_batch()
-
-        # Patch for vllm/v1/worker/gpu_model_runner.py
         _patch_gpu_model_runner()
-
-        # _patch_gpu_worker()
-        # Patch for vllm/v1/worker/gpu_worker.py
         _patch_gpu_worker()
-
-        # Patch for vllm/v1/core/sched/scheduler.py
         _patch_scheduler()
 
     except Exception as e:
@@ -1817,7 +1795,6 @@ def _patch_gpu_worker():
     Adds KV transfer handling in execute_model method.
     """
     try:
-        # Import the target module
         import copy
         import gc
         import os
@@ -1906,7 +1883,6 @@ def _patch_gpu_worker():
 def _patch_scheduler() -> None:
     """Patch Scheduler to add num_output_tokens field."""
     try:
-
         from collections.abc import Iterable
         from typing import Optional
 
