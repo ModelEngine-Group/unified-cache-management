@@ -385,10 +385,15 @@ def save_metrics_to_file(
 
     df = pandas.DataFrame([outputs])
     os.makedirs(os.path.dirname(excel_file), exist_ok=True)
+    mode = "a" if os.path.exists(excel_file) else "w"
     with pandas.ExcelWriter(
-        excel_file, engine="openpyxl", mode="a", if_sheet_exists="replace"
+        excel_file,
+        engine="openpyxl",
+        mode=mode,
+        if_sheet_exists="replace" if mode == "a" else None,
     ) as writer:
         df.to_excel(writer, index=False, sheet_name="Metrics")
+
     print(f"Successfully saved performance metrics to {excel_file}")
 
 
@@ -414,7 +419,7 @@ def save_req_results_to_file(outputs, output_dir="./"):
             "tpot_ms": tpot,
         }
         if output.send_time and output.running_time:
-            row["send_to_funning"] = output.running_time - output.send_time
+            row["send_to_running"] = output.running_time - output.send_time
         if output.running_time and output.worker_time:
             row["running_to_worker"] = output.worker_time - output.running_time
         if output.worker_time and output.start_loadkv_time:
@@ -440,8 +445,12 @@ def save_req_results_to_file(outputs, output_dir="./"):
 
     df = pandas.DataFrame(rows)
     os.makedirs(os.path.dirname(excel_file), exist_ok=True)
+    mode = "a" if os.path.exists(excel_file) else "w"
     with pandas.ExcelWriter(
-        excel_file, engine="openpyxl", mode="a", if_sheet_exists="replace"
+        excel_file,
+        engine="openpyxl",
+        mode=mode,
+        if_sheet_exists="replace" if mode == "a" else None,
     ) as writer:
         df.to_excel(writer, index=False, sheet_name="details")
 
@@ -589,8 +598,8 @@ async def replay_trace_by_time(
             outputs.extend(res)
 
     percentile_metrics = (
-        args.metric_percentiles.split(",")
-        if args.metric_percentiles
+        args.percentile_metrics.split(",")
+        if args.percentile_metrics
         else ["ttft", "tpot", "itl", "e2el"]
     )
     metric_percentiles = (
@@ -598,7 +607,11 @@ async def replay_trace_by_time(
         if args.metric_percentiles
         else [50, 90]
     )
-    goodput = {k: float(v) for item in args.goodput for k, v in [item.split(":", 1)]}
+    goodput = (
+        {k: float(v) for item in args.goodput for k, v in [item.split(":", 1)]}
+        if args.goodput
+        else {}
+    )
 
     benchmark_duration = time.perf_counter() - start_time
     metrics, actual_output_lens = calculate_metrics(
