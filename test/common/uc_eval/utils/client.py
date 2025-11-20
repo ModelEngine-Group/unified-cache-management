@@ -190,9 +190,6 @@ class BaseClient:
         return output
 
     def do_stream_request(self, payload: Dict) -> RequestRecord:
-        """
-        发送单个请求
-        """
         prompt = payload["messages"]
         record = self._create_record(prompt)
         while True:
