@@ -1,14 +1,15 @@
-import numpy as np
-from tqdm import tqdm
 from abc import ABC, abstractmethod
-from typing import List, Dict, Any, Optional
-from common.uc_eval.utils.utils import get_logger
+from typing import Any, Dict, List, Optional
+
+import numpy as np
 from common.uc_eval.utils.data_class import (
-    LatencyStatistics,
-    RequestRecord,
-    MultiTurnDialogRecord,
     EvalConfig,
+    LatencyStatistics,
+    MultiTurnDialogRecord,
+    RequestRecord,
 )
+from common.uc_eval.utils.utils import get_logger
+from tqdm import tqdm
 
 logger = get_logger()
 MS_SCALE = 1000
@@ -60,6 +61,7 @@ class EvaluatorBenchmark(BenchmarkBase):
     def perf_show(self, records: List[RequestRecord | MultiTurnDialogRecord]):
         pass
 
+
 class PerformanceBenchmark(BenchmarkBase):
     def __init__(self, stable_perf: bool):
         super().__init__(stable_perf)
@@ -78,7 +80,9 @@ class PerformanceBenchmark(BenchmarkBase):
             request_ids = self._get_stable_request_id(request_record_dict, parallel_num)
         else:
             request_ids = request_record_dict.get("request_id")
-        records = [record for record in input_data_lists if record.request_id in request_ids]
+        records = [
+            record for record in input_data_lists if record.request_id in request_ids
+        ]
         perf_result = self._get_performance_data(records)
         return perf_result
 
@@ -93,14 +97,18 @@ class PerformanceBenchmark(BenchmarkBase):
         latency = LatencyStatistics()
         record_dict = self.result_to_column_dict(record_list)
 
-        e2e_latency_all = (max(record_dict["end_time"]) - min(record_dict["start_time"])) * MS_SCALE
+        e2e_latency_all = (
+            max(record_dict["end_time"]) - min(record_dict["start_time"])
+        ) * MS_SCALE
         latency.e2e_latency_all = round(e2e_latency_all, 2)
         logger.debug("All request latencies: %.4f ms", e2e_latency_all)
 
         total_output_tokens = sum(record_dict["output_tokens"])
         output_token_throughput = total_output_tokens / e2e_latency_all * MS_SCALE
         latency.output_token_throughput = round(output_token_throughput, 2)
-        logger.debug("Total output token throughput: %.4f tokens/s", output_token_throughput)
+        logger.debug(
+            "Total output token throughput: %.4f tokens/s", output_token_throughput
+        )
 
         throughputs = []
         for tokens, cost in zip(record_dict["output_tokens"], record_dict["req_cost"]):
@@ -108,7 +116,9 @@ class PerformanceBenchmark(BenchmarkBase):
                 throughputs.append(tokens / cost)
         if throughputs:
             token_throughput_per_request = np.mean(throughputs)
-            latency.token_throughput_per_request = round(token_throughput_per_request, 2)
+            latency.token_throughput_per_request = round(
+                token_throughput_per_request, 2
+            )
             logger.debug(
                 "Average per-request throughput: %.4f tokens/s",
                 token_throughput_per_request,
@@ -131,11 +141,15 @@ class PerformanceBenchmark(BenchmarkBase):
 
         max_prefill_latency = np.max(prefill_latency_list) * MS_SCALE
         latency.max_prefill_latency = round(max_prefill_latency, 2)
-        logger.debug("Maximum time to first token latency: %.4f ms", max_prefill_latency)
+        logger.debug(
+            "Maximum time to first token latency: %.4f ms", max_prefill_latency
+        )
 
         avg_prefill_latency = np.mean(prefill_latency_list) * MS_SCALE
         latency.avg_prefill_latency = round(avg_prefill_latency, 2)
-        logger.debug("Average time to first token latency: %.4f ms", avg_prefill_latency)
+        logger.debug(
+            "Average time to first token latency: %.4f ms", avg_prefill_latency
+        )
 
         # 这里是list[list[float]]，要求的是这里所有float的平均（这里可能也会要求list[float]中去除前两个元素后，取所有请求per decode time的均值）
         decode_latency_list = []
@@ -164,7 +178,9 @@ class PerformanceBenchmark(BenchmarkBase):
 
         return latency.to_dict()
 
-    def _get_stable_request_id(self, result: Dict[str, List[Any]], target_concurrency: int):
+    def _get_stable_request_id(
+        self, result: Dict[str, List[Any]], target_concurrency: int
+    ):
         """
         Get steady-state request ids via start_time vs. end_time delta
         """
@@ -191,19 +207,27 @@ class PerformanceBenchmark(BenchmarkBase):
         stable_stage_requests = []
         logger.info("Start calculating stable request id")
         used_request_num = 0
-        for idx, item in enumerate(tqdm(sorted_events, desc="search stable request id")):
+        for idx, item in enumerate(
+            tqdm(sorted_events, desc="search stable request id")
+        ):
             if item["event_type"] == "start":
                 used_request_num += 1
-                concurrent_levels[idx] = concurrent_levels[idx - 1] + 1 if idx > 0 else 1
+                concurrent_levels[idx] = (
+                    concurrent_levels[idx - 1] + 1 if idx > 0 else 1
+                )
             else:
                 concurrent_levels[idx] = concurrent_levels[idx - 1] - 1
-            if item["event_type"] == "start" and concurrent_levels[idx] == target_concurrency:
+            if (
+                item["event_type"] == "start"
+                and concurrent_levels[idx] == target_concurrency
+            ):
                 stable_stage_requests.append(item["request_id"])
                 if len(stable_stage_requests) == 2:
                     self.stable_work_time[0] = item["timestamp"]
             elif (
                 item["event_type"] == "start"
-                and concurrent_levels[idx] >= int(target_concurrency * (1 - MAX_WAVE_RATE))
+                and concurrent_levels[idx]
+                >= int(target_concurrency * (1 - MAX_WAVE_RATE))
                 and len(stable_stage_requests) > 2
             ):
                 stable_stage_requests.append(item["request_id"])
@@ -213,7 +237,8 @@ class PerformanceBenchmark(BenchmarkBase):
             elif (
                 len(stable_stage_requests) > 1
                 and item["event_type"] == "end"
-                and concurrent_levels[idx] < int(target_concurrency * (1 - MAX_WAVE_RATE))
+                and concurrent_levels[idx]
+                < int(target_concurrency * (1 - MAX_WAVE_RATE))
             ):
                 self.stable_work_time[1] = item["timestamp"]
                 break

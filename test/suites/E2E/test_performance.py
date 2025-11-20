@@ -1,9 +1,10 @@
-import pytest
 import dataclasses
-from common.config_utils import config_utils as config_instance
+
+import pytest
 from common.capture_utils import export_vars
+from common.config_utils import config_utils as config_instance
+from common.uc_eval.task import DocQaPerfTask, MultiPerfTask, SyntheticPerfTask
 from common.uc_eval.utils.data_class import ModelConfig, PerfConfig
-from common.uc_eval.task import SyntheticPerfTask, MultiPerfTask, DocQaPerfTask
 
 
 @pytest.fixture(scope="session")
@@ -44,13 +45,12 @@ sync_perf_cases = [
 @pytest.mark.feature("perf_test")
 @pytest.mark.parametrize("perf_config", sync_perf_cases)
 @export_vars
-def test_sync_perf(perf_config: PerfConfig, model_config: ModelConfig, request: pytest.FixtureRequest):
+def test_sync_perf(
+    perf_config: PerfConfig, model_config: ModelConfig, request: pytest.FixtureRequest
+):
     task = SyntheticPerfTask(model_config, perf_config)
     result = task.process()
-    return {
-        "_name": request.node.callspec.id,
-        "_data": result
-    }
+    return {"_name": request.node.callspec.id, "_data": result}
 
 
 multiturn_dialogue_perf_cases = [
@@ -70,13 +70,13 @@ multiturn_dialogue_perf_cases = [
 @pytest.mark.feature("perf_test")
 @pytest.mark.parametrize("perf_config", multiturn_dialogue_perf_cases)
 @export_vars
-def test_multiturn_dialogue_perf(perf_config: PerfConfig, model_config: ModelConfig, request: pytest.FixtureRequest):
+def test_multiturn_dialogue_perf(
+    perf_config: PerfConfig, model_config: ModelConfig, request: pytest.FixtureRequest
+):
     task = MultiPerfTask(model_config, perf_config)
     result = task.process()
-    return {
-        "_name": request.node.callspec.id,
-        "_data": result
-    }
+    return {"_name": request.node.callspec.id, "_data": result}
+
 
 doc_qa_perf_cases = [
     pytest.param(
@@ -95,10 +95,9 @@ doc_qa_perf_cases = [
 @pytest.mark.feature("perf_test")
 @pytest.mark.parametrize("perf_config", doc_qa_perf_cases)
 @export_vars
-def test_doc_qa_perf(perf_config: PerfConfig, model_config: ModelConfig, request: pytest.FixtureRequest):
+def test_doc_qa_perf(
+    perf_config: PerfConfig, model_config: ModelConfig, request: pytest.FixtureRequest
+):
     task = DocQaPerfTask(model_config, perf_config)
     result = task.process()
-    return {
-        "_name": request.node.callspec.id,
-        "_data": result
-    }
+    return {"_name": request.node.callspec.id, "_data": result}

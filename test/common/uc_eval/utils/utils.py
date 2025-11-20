@@ -1,10 +1,10 @@
+import logging
+import logging.handlers
 import os
 import sys
 import time
-import logging
-from typing import Dict
 from pathlib import Path
-import logging.handlers
+from typing import Dict
 
 current_dir = os.path.dirname(os.path.abspath(__file__))
 
@@ -47,7 +47,9 @@ class PathUtil(object):
 
 
 class LoggerHandler(logging.Logger):
-    def __init__(self, name: str, level: int = logging.INFO, log_path: str = None) -> None:
+    def __init__(
+        self, name: str, level: int = logging.INFO, log_path: str = None
+    ) -> None:
         super().__init__(name, level)
         # format of the log message
         fmt = "%(asctime)s.%(msecs)03d %(levelname)s [pid:%(process)d] [%(threadName)s] [tid:%(thread)d] [%(filename)s:%(lineno)d %(funcName)s] %(message)s"

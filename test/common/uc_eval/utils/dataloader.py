@@ -1,14 +1,14 @@
+import json
 import random
 import time
-import json
-import numpy as np
 from abc import ABC, abstractmethod
-from tqdm import tqdm
-from typing import List, Dict, Any, Union
-from transformers import AutoTokenizer, PreTrainedTokenizer
-from common.uc_eval.utils.data_class import SynthericParams
-from common.uc_eval.utils.utils import get_logger, PathUtil
+from typing import Any, Dict, List, Union
 
+import numpy as np
+from common.uc_eval.utils.data_class import SynthericParams
+from common.uc_eval.utils.utils import PathUtil, get_logger
+from tqdm import tqdm
+from transformers import AutoTokenizer, PreTrainedTokenizer
 
 logger = get_logger()
 EPOCH_NUM = 10
@@ -20,7 +20,9 @@ class BaseDataset(ABC):
         tokenizer_path: str = None,
     ):
         tokenizer_path = PathUtil.get_datasets_dir_path(tokenizer_path)
-        self.tokenizer: PreTrainedTokenizer = AutoTokenizer.from_pretrained(tokenizer_path)
+        self.tokenizer: PreTrainedTokenizer = AutoTokenizer.from_pretrained(
+            tokenizer_path
+        )
 
     @abstractmethod
     def prepare_data(self, param: Any):
@@ -34,7 +36,9 @@ class SyntheticDataset(BaseDataset):
     def prepare_data(self, syntheric_params: SynthericParams) -> list[str]:
         prompt_list = []
         for parallel_num in tqdm(
-            range(syntheric_params.parallel_num), desc="Generate synthetic data", unit="prompt"
+            range(syntheric_params.parallel_num),
+            desc="Generate synthetic data",
+            unit="prompt",
         ):
             random_prompt_len = max(
                 0, syntheric_params.prompt_tokens - syntheric_params.prefix_cache_tokens
@@ -80,7 +84,9 @@ class SyntheticDataset(BaseDataset):
 
             while len(completion_token_ids[0]) < length:
                 diff = length - len(completion_token_ids[0])
-                diff_ids_list = random.choices(range(vocab_size // 4, vocab_size // 3), k=diff)
+                diff_ids_list = random.choices(
+                    range(vocab_size // 4, vocab_size // 3), k=diff
+                )
                 diff_ids = np.array(diff_ids_list)
                 ids = np.append(ids, diff_ids)
                 text = self.tokenizer.decode(ids)
@@ -113,7 +119,9 @@ class MultiTurnDialogueDataset(BaseDataset):
         mtd_data: dict = self.load_json_file(json_path)
         for dataset_name, files_list in mtd_data.items():
             for file_name in files_list:
-                case_path = PathUtil.get_dirname(json_path).joinpath(dataset_name, file_name)
+                case_path = PathUtil.get_dirname(json_path).joinpath(
+                    dataset_name, file_name
+                )
                 if case_path.exists():
                     dialogues = self.load_json_file(case_path)
                     cases.extend(self.process_single_case_file(dialogues))
@@ -122,15 +130,21 @@ class MultiTurnDialogueDataset(BaseDataset):
                         f"JSON file {case_path} does not exist, please check the file path"
                     )
         if len(cases) == 0:
-            logger.warning(f"The file {json_path} does not contain multi-turn dialogue data")
+            logger.warning(
+                f"The file {json_path} does not contain multi-turn dialogue data"
+            )
         return cases
 
     def process_single_case_file(self, dialogues: dict) -> List[List[Union[str, Dict]]]:
         cases = []
         for dialogue_name, dialogue_data in dialogues.items():
             for i, dialog in enumerate(dialogue_data):
-                dialog_tokens = len(self.tokenizer.tokenize(str(dialog["conversations"])))
-                logger.info(f"Current dialogue {dialogue_name}-{i} token count: {dialog_tokens}")
+                dialog_tokens = len(
+                    self.tokenizer.tokenize(str(dialog["conversations"]))
+                )
+                logger.info(
+                    f"Current dialogue {dialogue_name}-{i} token count: {dialog_tokens}"
+                )
                 cases.append([f"{dialogue_name}-{i}", dialog])
         return cases
 

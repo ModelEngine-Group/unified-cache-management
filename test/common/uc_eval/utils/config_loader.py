@@ -1,24 +1,29 @@
-import importlib
 import dataclasses
 import functools
+import importlib
 import json
 from typing import Any, Optional, Tuple
-from common.uc_eval.utils.utils import get_logger
+
+from common.uc_eval.utils.benchmark import (
+    BenchmarkBase,
+    EvaluatorBenchmark,
+    PerformanceBenchmark,
+)
+from common.uc_eval.utils.client import BaseClient, DocQaClient, MultiDialogClient
 from common.uc_eval.utils.data_class import (
     BenchmarkModeType,
     DatasetType,
     EvalConfig,
-    PerfConfig,
     ModelConfig,
+    PerfConfig,
 )
 from common.uc_eval.utils.dataloader import (
     BaseDataset,
-    SyntheticDataset,
-    MultiTurnDialogueDataset,
     DocQADataset,
+    MultiTurnDialogueDataset,
+    SyntheticDataset,
 )
-from common.uc_eval.utils.client import BaseClient, MultiDialogClient, DocQaClient
-from common.uc_eval.utils.benchmark import BenchmarkBase, PerformanceBenchmark, EvaluatorBenchmark
+from common.uc_eval.utils.utils import get_logger
 
 logger = get_logger()
 
@@ -53,7 +58,9 @@ class ConfigLoader:
                 "perf_config and eval_config are mutually exclusive – one must be None."
             )
         if self.perf_config is None and self.eval_config is None:
-            raise ValueError("At least one of perf_config or eval_config must be provided.")
+            raise ValueError(
+                "At least one of perf_config or eval_config must be provided."
+            )
 
         result = (
             self._valid_model_config() and self._valid_perf_config()
@@ -88,7 +95,10 @@ class ConfigLoader:
     def _valid_perf_config(self) -> bool:
         data_type = self.perf_config.data_type
         benchmark_mode = self.perf_config.benchmark_mode
-        if benchmark_mode not in [BenchmarkModeType.DEFAULT_PERF, BenchmarkModeType.STABLE_PREF]:
+        if benchmark_mode not in [
+            BenchmarkModeType.DEFAULT_PERF,
+            BenchmarkModeType.STABLE_PREF,
+        ]:
             raise ValueError(
                 f"Invalid benchmark mode: {benchmark_mode}. Valid modes are: {BenchmarkModeType.DEFAULT_PERF}, {BenchmarkModeType.STABLE_PREF}"
             )
@@ -106,16 +116,22 @@ class ConfigLoader:
                     f"The following dataset config fields must be non-empty list for synthetic data: {', '.join(invalid_fields)}"
                 )
 
-            length = {field: len(getattr(self.perf_config, field)) for field in prompt_fields}
+            length = {
+                field: len(getattr(self.perf_config, field)) for field in prompt_fields
+            }
             if len(set(length.values())) > 1:
                 raise ValueError(
                     f"The following dataset config is not matched: {', '.join(length.keys())}"
                 )
         else:
             if self.perf_config.dataset_file_path is None:
-                raise ValueError(f"dataset_file_path is required for {data_type} data type")
+                raise ValueError(
+                    f"dataset_file_path is required for {data_type} data type"
+                )
             if not isinstance(self.perf_config.parallel_num, int):
-                raise TypeError(f"parallel_num must be an integer for {data_type} data type")
+                raise TypeError(
+                    f"parallel_num must be an integer for {data_type} data type"
+                )
             not_empty_fields = [
                 field for field in prompt_fields if getattr(self.perf_config, field)
             ]

@@ -1,21 +1,22 @@
+import concurrent.futures
+import copy
+import json
 import os
 import time
-import json
-import requests
-import copy
 import uuid
-import concurrent.futures
-from tqdm import tqdm
-from typing_extensions import override
-from typing import Union, List, Dict, Optional
 from concurrent.futures import ThreadPoolExecutor
-from transformers import AutoTokenizer, PreTrainedTokenizer
-from common.uc_eval.utils.utils import get_logger, PathUtil
+from typing import Dict, List, Optional, Union
+
+import requests
 from common.uc_eval.utils.data_class import (
-    RequestRecord,
-    MultiTurnDialogRecord,
     ModelConfig,
+    MultiTurnDialogRecord,
+    RequestRecord,
 )
+from common.uc_eval.utils.utils import PathUtil, get_logger
+from tqdm import tqdm
+from transformers import AutoTokenizer, PreTrainedTokenizer
+from typing_extensions import override
 
 logger = get_logger()
 TIMEOUT = 6000
@@ -49,7 +50,10 @@ def _excute_with_pool(
                     result = process_func(future.result())
                     record_results.append(result)
                     pbar.set_postfix(
-                        {"Completed": len(record_results), "Pending": len(futures) - pbar.n}
+                        {
+                            "Completed": len(record_results),
+                            "Pending": len(futures) - pbar.n,
+                        }
                     )
                 except Exception as e:
                     pbar.update(1)
@@ -69,15 +73,21 @@ class BaseClient:
         self.url = f"http://{self.ip_ports}/v1/chat/completions"
         self.served_model_name = config.served_model_name
         tokenizer_path = PathUtil.get_datasets_dir_path(config.tokenizer_path)
-        self.tokenizer: PreTrainedTokenizer = AutoTokenizer.from_pretrained(tokenizer_path)
+        self.tokenizer: PreTrainedTokenizer = AutoTokenizer.from_pretrained(
+            tokenizer_path
+        )
         self.session = requests.Session()
         self.payload = config.payload
         self.enable_prefix_cache = enable_prefix_cache
         self.stream = stream
         if self.stream:
-            self.payload.update({"stream": True, "ignore_eos": True, "temperature": 0.0})
+            self.payload.update(
+                {"stream": True, "ignore_eos": True, "temperature": 0.0}
+            )
         else:
-            self.payload.update({"stream": False, "ignore_eos": False, "temperature": 0.0})
+            self.payload.update(
+                {"stream": False, "ignore_eos": False, "temperature": 0.0}
+            )
 
     def handle_requests_with_pool(
         self, prompt_list: List, parallel_num: int, max_tokens: int
@@ -230,14 +240,20 @@ class BaseClient:
                 if "[DONE]" in chunk_output:
                     logger.debug(f"Finished chunk: {chunk_output=}")
                     continue
-                output = self._get_message_from_stream_response(json.loads(chunk_output))
+                output = self._get_message_from_stream_response(
+                    json.loads(chunk_output)
+                )
                 if record.request_id == "":
-                    record.request_id = json.loads(chunk_output).get("id", "request_id not found")
+                    record.request_id = json.loads(chunk_output).get(
+                        "id", "request_id not found"
+                    )
                 record.output_data += output
 
                 # when the uc-vllm request timeout, finish_reason == "length" and the final output is empty
                 finish_reason = (
-                    json.loads(chunk_output).get("choices", [])[0].get("finish_reason", "")
+                    json.loads(chunk_output)
+                    .get("choices", [])[0]
+                    .get("finish_reason", "")
                 )
                 if finish_reason == "length":
                     timeout_finish_reason = True
@@ -307,7 +323,9 @@ class BaseClient:
         payload = {}
         url = f"http://{self.ip_ports}/reset_prefix_cache"
         try:
-            response = requests.post(url, json=payload, headers=headers, timeout=TIMEOUT)
+            response = requests.post(
+                url, json=payload, headers=headers, timeout=TIMEOUT
+            )
             response.raise_for_status()
         except Exception as err:
             raise self._handle_request_error(err)
@@ -324,7 +342,9 @@ class BaseClient:
             return ConnectionError(f"Cannot connect to {self.url}")
         elif isinstance(err, requests.exceptions.Timeout):
             logger.error("The request timed out, please check your server status")
-            return TimeoutError("The request timed out, please check your server status")
+            return TimeoutError(
+                "The request timed out, please check your server status"
+            )
         elif isinstance(err, requests.exceptions.HTTPError):
             status_code = err.response.status_code
             if status_code == 404:
@@ -342,7 +362,11 @@ class BaseClient:
     def _print_request_info(**kwargs):
         """print request info when the request is failed"""
         for key, value in kwargs.items():
-            value = json.dumps(value, ensure_ascii=False) if isinstance(value, dict) else value
+            value = (
+                json.dumps(value, ensure_ascii=False)
+                if isinstance(value, dict)
+                else value
+            )
             logger.error(f"{key} => {value}")
 
 
@@ -353,7 +377,10 @@ class MultiDialogClient(BaseClient):
 
     @override
     def handle_requests_with_pool(
-        self, cases: List[List[Union[str, Dict]]], parallel_num: int, max_tokens: int = -1
+        self,
+        cases: List[List[Union[str, Dict]]],
+        parallel_num: int,
+        max_tokens: int = -1,
     ) -> List[List[MultiTurnDialogRecord]]:
         return _excute_with_pool(
             task_func=lambda case: self._send_multi_request(case, max_tokens),
@@ -376,8 +403,8 @@ class MultiDialogClient(BaseClient):
             record: RequestRecord = self.send_request(prompt, max_tokens)
             record.case_name = case_name
             history = self._update_history(history, in_content, reply)
-            multi_turn_record: MultiTurnDialogRecord = self._update_multi_turn_request_record(
-                record, len(turns), i
+            multi_turn_record: MultiTurnDialogRecord = (
+                self._update_multi_turn_request_record(record, len(turns), i)
             )
             conv_record.append(multi_turn_record)
         return conv_record
@@ -403,7 +430,8 @@ class MultiDialogClient(BaseClient):
             raise ValueError(f"the chunk size {chunk_size} must be greater than 0")
         num_full_chunks = len(conversion_list) // chunk_size
         return [
-            conversion_list[i * chunk_size : (i + 1) * chunk_size] for i in range(num_full_chunks)
+            conversion_list[i * chunk_size : (i + 1) * chunk_size]
+            for i in range(num_full_chunks)
         ]
 
     def _update_request_body(self, history: Optional[List[Dict]], in_content: str):
@@ -415,7 +443,9 @@ class MultiDialogClient(BaseClient):
             # To make sure the prefix cache is unique
             history[0]["content"] = f"uuid: [{self.uuid}]" + history[0]["content"]
         if history and not self.enable_prefix_cache:
-            history[0]["content"] = f"uuid: [{uuid.uuid4().hex}]" + history[0]["content"]
+            history[0]["content"] = (
+                f"uuid: [{uuid.uuid4().hex}]" + history[0]["content"]
+            )
 
         message = history + [{"role": "user", "content": in_content}]
         return message

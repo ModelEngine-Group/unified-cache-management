@@ -1,15 +1,16 @@
 import time
-from typing import Any
 from abc import ABC, abstractmethod
-from common.uc_eval.utils.utils import get_logger
+from typing import Any
+
 from common.uc_eval.utils.config_loader import ConfigLoader, TaskFactory
 from common.uc_eval.utils.data_class import (
-    SynthericParams,
     BenchmarkModeType,
+    EvalConfig,
     ModelConfig,
     PerfConfig,
-    EvalConfig,
+    SynthericParams,
 )
+from common.uc_eval.utils.utils import get_logger
 
 BAD_COMPLETION_TOKENS_THR = 20
 logger = get_logger()
@@ -50,7 +51,9 @@ class SyntheticPerfTask(BaseTask):
         self.prompt_seed = 0 if self.enable_prefix_cache else -1
 
     def process(self):
-        logger.info("-------------------------------------------------------------------")
+        logger.info(
+            "-------------------------------------------------------------------"
+        )
         logger.info(
             f"Starting synthetic performance benchmark, the benchmark mode is {self.benchmark_mode}"
         )
@@ -63,11 +66,14 @@ class SyntheticPerfTask(BaseTask):
                     syntheric_params.parallel_num *= 5
                 if self.enable_prefix_cache:
                     syntheric_params.seeds = [
-                        self.prompt_seed + i for i in range(syntheric_params.parallel_num)
+                        self.prompt_seed + i
+                        for i in range(syntheric_params.parallel_num)
                     ]
                     self.prompt_seed += syntheric_params.parallel_num
                 else:
-                    syntheric_params.seeds = [self.prompt_seed] * syntheric_params.parallel_num
+                    syntheric_params.seeds = [
+                        self.prompt_seed
+                    ] * syntheric_params.parallel_num
                 syntheric_params.prompt_tokens = self.prompt_tokens[idx]
                 syntheric_params.prefix_cache_tokens = (
                     int(self.prefix_cache_num[idx] * syntheric_params.prompt_tokens)
@@ -83,7 +89,9 @@ class SyntheticPerfTask(BaseTask):
                     self.client.handle_requests_with_pool(
                         input_data, parallel_num, BAD_COMPLETION_TOKENS_THR
                     )
-                    logger.info("To ensure thal all kvcache is offload2ssd, sleep for 10 seconds")
+                    logger.info(
+                        "To ensure thal all kvcache is offload2ssd, sleep for 10 seconds"
+                    )
                     time.sleep(10)
 
                 if self.enable_clear_hbm:
@@ -94,7 +102,9 @@ class SyntheticPerfTask(BaseTask):
                 request_records = self.client.handle_requests_with_pool(
                     input_data, parallel_num, self.output_tokens[idx]
                 )
-                latency_statistics = self.benchmark.perf_show(request_records, parallel_num)
+                latency_statistics = self.benchmark.perf_show(
+                    request_records, parallel_num
+                )
                 result.append(latency_statistics)
         return result
 
