@@ -17,6 +17,7 @@ from vllm.v1.request import Request
 from ucm.logger import init_logger
 from ucm.store.factory import UcmConnectorFactory
 from ucm.store.ucmstore import Task, UcmKVStoreBase
+from ucm.utils import UCMConfig
 
 if TYPE_CHECKING:
     from vllm.attention.backends.abstract import AttentionMetadata
@@ -120,24 +121,12 @@ class UCMDirectConnector(KVConnectorBase_V1):
 
         # save block info, avoid hash request twice
         self.request_meta: dict[str, ReqMeta] = {}
+        ucm_config = UCMConfig(vllm_config.kv_transfer_config)
+        launch_config = ucm_config.get_config()
 
-        # TODO use yaml
-        if (
-            vllm_config.kv_transfer_config is not None
-            and "ucm_connector_name"
-            in vllm_config.kv_transfer_config.kv_connector_extra_config
-        ):
-            name = vllm_config.kv_transfer_config.kv_connector_extra_config[
-                "ucm_connector_name"
-            ]
-            config = {}
-            if (
-                "ucm_connector_config"
-                in vllm_config.kv_transfer_config.kv_connector_extra_config
-            ):
-                config = vllm_config.kv_transfer_config.kv_connector_extra_config[
-                    "ucm_connector_config"
-                ]
+        if "ucm_connector_name" in launch_config:
+            name = launch_config.get("ucm_connector_name")
+            config = launch_config.get("ucm_connector_config") or {}
             config["device"] = self.rank
             config["role"] = (
                 "scheduler" if role == KVConnectorRole.SCHEDULER else "worker"
@@ -168,6 +157,8 @@ class UCMDirectConnector(KVConnectorBase_V1):
                 config["kv_block_size"] / 1024 / 1024,
                 config["io_size"] / 1024,
             )
+        else:
+            raise TypeError(f"no storage connector name in config.")
 
     def get_num_new_matched_tokens(
         self,
