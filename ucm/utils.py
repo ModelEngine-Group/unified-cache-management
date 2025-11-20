@@ -31,16 +31,17 @@ from ucm.logger import init_logger
 logger = init_logger(__name__)
 
 
-class UCMConfig:
+class Config:
     def __init__(self, kv_transfer_config: Any):
         self.kv_transfer_config = kv_transfer_config
         self.config: Dict[str, Any] = {}
         self._load_config()
+
     def load_ucm_config_from_yaml(self, file_path: str) -> Dict[str, Any]:
         if not file_path:
             logger.warning("No UCM config file path provided.")
             return {}
-        
+
         try:
             with open(file_path, "r", encoding="utf-8") as f:
                 config = yaml.safe_load(f) or {}
@@ -58,7 +59,7 @@ class UCMConfig:
         except yaml.YAMLError as e:
             logger.error(f"Failed to parse YAML config file {file_path}: {e}")
             return {}
-    
+
     def _load_config(self) -> None:
         has_extra_config = (
             self.kv_transfer_config is not None
@@ -79,14 +80,11 @@ class UCMConfig:
                     self.config = dict(extra_config)
                     logger.info("Using kv_connector_extra_config from terminal input")
 
-    
     def _get_default_config(self) -> Dict[str, Any]:
-        config = {
-            "ucm_connector_name": "UcmDramStore"
-        }
+        config = {"ucm_connector_name": "UcmDramStore"}
         logger.warning(f"No UCM config provided, using default configuration {config}")
         return config
-    
+
     def get_config(self) -> Dict[str, Any]:
         logger.info(f"Using UCM with config: {self.config}")
         return self.config

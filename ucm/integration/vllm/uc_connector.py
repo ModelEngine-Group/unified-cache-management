@@ -44,7 +44,7 @@ from vllm.v1.request import Request, RequestStatus
 from ucm.logger import init_logger
 from ucm.store.factory import UcmConnectorFactory
 from ucm.store.ucmstore import Task
-from ucm.utils import UCMConfig
+from ucm.utils import Config
 
 if TYPE_CHECKING:
     from vllm.attention.backends.abstract import AttentionMetadata
@@ -114,7 +114,7 @@ class UnifiedCacheConnectorV1(KVConnectorBase_V1):
             vllm_config.parallel_config
         )
         self.head_size = vllm_config.model_config.get_head_size()
-        ucm_config = UCMConfig(vllm_config.kv_transfer_config)
+        ucm_config = Config(vllm_config.kv_transfer_config)
         launch_config = ucm_config.get_config()
         if "ucm_connector_name" in launch_config:
             name = launch_config.get("ucm_connector_name")

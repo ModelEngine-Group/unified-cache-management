@@ -17,7 +17,7 @@ from vllm.v1.request import Request
 from ucm.logger import init_logger
 from ucm.store.factory import UcmConnectorFactory
 from ucm.store.ucmstore import Task, UcmKVStoreBase
-from ucm.utils import UCMConfig
+from ucm.utils import Config
 
 if TYPE_CHECKING:
     from vllm.attention.backends.abstract import AttentionMetadata
@@ -121,7 +121,7 @@ class UCMDirectConnector(KVConnectorBase_V1):
 
         # save block info, avoid hash request twice
         self.request_meta: dict[str, ReqMeta] = {}
-        ucm_config = UCMConfig(vllm_config.kv_transfer_config)
+        ucm_config = Config(vllm_config.kv_transfer_config)
         launch_config = ucm_config.get_config()
 
         if "ucm_connector_name" in launch_config:
