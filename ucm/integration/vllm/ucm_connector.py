@@ -137,8 +137,8 @@ class UCMDirectConnector(KVConnectorBase_V1):
             config["io_size"] = block_size_per_layer * (
                 1 if self.is_mla else num_head_per_tp
             )
-            self.load_only_first_rank: bool = config.get(
-                "load_only_first_rank", self.is_mla
+            self.load_only_first_rank: bool = (
+                config.get("load_only_first_rank", self.is_mla) and self.is_mla
             )
             if self.load_only_first_rank:
                 if role == KVConnectorRole.WORKER:
