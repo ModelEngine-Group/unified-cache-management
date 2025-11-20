@@ -87,8 +87,15 @@ To use the NFS connector, you need to configure the `connector_config` dictionar
 
 ### Example:
 
-```python
-kv_connector_extra_config={"ucm_connector_name": "UcmNfsStore", "ucm_connector_config":{"storage_backends": "/mnt/test1", "transferStreamNumber": 32}}
+Create a config yaml like following and save it to your own directory:
+```yaml
+# UCM Configuration File Example
+# Refer to file unified-cache-management/examples/ucm_config_example.yaml for more details
+ucm_connector_name: "UcmNfsStore"
+
+ucm_connector_config:
+  storage_backends: "/mnt/test"
+  transferStreamNumber: 32
 ```
 
 ## Launching Inference
@@ -101,7 +108,7 @@ To start **offline inference** with the NFS connector，modify the script `examp
 # In examples/offline_inference.py
 ktc = KVTransferConfig(
     ...
-    kv_connector_extra_config={"ucm_connector_name": "UcmNfsStore", "ucm_connector_config":{"storage_backends": "/mnt/test1", "transferStreamNumber": 32}}
+    kv_connector_extra_config={"UCM_CONFIG_FILE": "/workspace/unified-cache-management/examples/ucm_config_example.yaml"}
 )
 ```
 
@@ -131,13 +138,7 @@ vllm serve /home/models/Qwen2.5-14B-Instruct \
     "kv_connector": "UnifiedCacheConnectorV1",
     "kv_connector_module_path": "ucm.integration.vllm.uc_connector",
     "kv_role": "kv_both",
-    "kv_connector_extra_config": {
-        "ucm_connector_name": "UcmNfsStore",
-        "ucm_connector_config": {
-            "storage_backends": "/mnt/test",
-            "transferStreamNumber":32
-        }
-    }
+    "kv_connector_extra_config": {"UCM_CONFIG_FILE": "/workspace/unified-cache-management/examples/ucm_config_example.yaml"}
 }'
 ```
 
