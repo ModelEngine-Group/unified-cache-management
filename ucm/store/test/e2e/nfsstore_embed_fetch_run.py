@@ -47,6 +47,12 @@ def get_user_input(prompt, default=None):
 
 
 def main():
+
+    try:
+        multiprocessing.set_start_method("spawn", force=True)
+    except RuntimeError:
+        pass
+
     storage_backends = "."
     device_id = 1
     repeat = 3
