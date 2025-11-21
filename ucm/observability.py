@@ -1,18 +1,21 @@
 # SPDX-License-Identifier: Apache-2.0
 # Standard
-from dataclasses import dataclass
-from typing import Dict, List, Optional, Union
 import os
 import threading
 import time
+from dataclasses import dataclass
+from typing import Dict, List, Optional, Union
+
+import prometheus_client
 
 # Third Party
 from prometheus_client import REGISTRY
-import prometheus_client
 from vllm.config import VllmConfig
 
 # First Party
 from ucm.logger import init_logger
+
+
 def thread_safe(func):
     def wrapper(*args, **kwargs):
         with threading.Lock():
@@ -20,6 +23,7 @@ def thread_safe(func):
         return result
 
     return wrapper
+
 
 logger = init_logger(__name__)
 
@@ -208,7 +212,6 @@ class UCMStatsMonitor:
         if num_tokens >= 0:
             store_stats.num_tokens = num_tokens
 
-
     @thread_safe
     def update_interval_vllm_hit_tokens(self, delta: int):
         self.interval_vllm_hit_tokens += delta
@@ -355,7 +358,7 @@ class PrometheusLogger:
 
         labelnames = ["model_name", "engine"]
 
-        self.labels =  {
+        self.labels = {
             "model_name": vllm_config.model_config.served_model_name,
             "engine": str(engine_index),
         }
@@ -422,7 +425,6 @@ class PrometheusLogger:
             labelnames=labelnames,
         )
 
-
         self.gauge_retrieve_hit_rate = self._gauge_cls(
             name="ucm:retrieve_hit_rate",
             documentation="Hit rate of lmcache retrieve requests since last log",
@@ -436,7 +438,6 @@ class PrometheusLogger:
             labelnames=labelnames,
             multiprocess_mode="livemostrecent",
         )
-
 
         time_to_retrieve_buckets = [
             0.001,
@@ -555,7 +556,6 @@ class PrometheusLogger:
             buckets=request_cache_hit_rate,
         )
 
-
     def _log_gauge(self, gauge, data: Union[int, float]) -> None:
         # Convenience function for logging to gauge.
         gauge.labels(**self.labels).set(data)
@@ -621,9 +621,9 @@ class PrometheusLogger:
 
     @staticmethod
     def GetInstance() -> "PrometheusLogger":
-        assert PrometheusLogger._instance is not None, (
-            "PrometheusLogger instance not created yet"
-        )
+        assert (
+            PrometheusLogger._instance is not None
+        ), "PrometheusLogger instance not created yet"
         return PrometheusLogger._instance
 
     @staticmethod
@@ -651,7 +651,7 @@ class UCMStatsLogger:
             logger.info(f"The current pid is {current_pid} for UCMStatsLogger")
             stats = self.monitor.get_stats_and_clear()
             self.prometheus_logger.log_prometheus(stats)
-            #TODO continous usage context
+            # TODO continuous usage context
             time.sleep(self.log_interval)
 
     def shutdown(self):

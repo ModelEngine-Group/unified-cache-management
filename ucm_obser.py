@@ -1,25 +1,31 @@
-from dataclasses import dataclass
-from typing import Dict, List, Optional, Union, Any
 import os
 import threading
 import time
+from dataclasses import dataclass
+from typing import Any, Dict, List, Optional, Union
+
+import prometheus_client
 import yaml
 
 # Third Party
 from prometheus_client import REGISTRY
-import prometheus_client
-'''====================================='''
+
+"""====================================="""
 import UCMStatsMonitor
-'''====================================='''
+
+"""====================================="""
+
+from vllm.distributed.parallel_state import get_world_group
 
 from ucm.logger import init_logger
-from vllm.distributed.parallel_state import get_world_group
+
 logger = init_logger(__name__)
 
 
 @dataclass
 class UCMEngineMetadata:
     """Metadata for UCM engine"""
+
     model_name: str
     worker_id: str
 
@@ -29,10 +35,10 @@ class PrometheusLogger:
     _counter_cls = prometheus_client.Counter
     _histogram_cls = prometheus_client.Histogram
 
-    def __init__(self, metadata: UCMEngineMetadata, config_path:str):
+    def __init__(self, metadata: UCMEngineMetadata, config_path: str):
         # Load configuration from YAML file
         config = self._load_config(config_path)
-        
+
         # Ensure PROMETHEUS_MULTIPROC_DIR is set before any metric registration
         prometheus_config = config.get("prometheus", {})
         multiproc_dir = prometheus_config.get("multiproc_dir", "/vllm-workspace")
@@ -45,17 +51,19 @@ class PrometheusLogger:
         self.config = config
         self.labels = self._metadata_to_labels(metadata)
         labelnames = list(self.labels.keys())
-        
+
         # Initialize metrics based on configuration
         self._init_metrics_from_config(labelnames, prometheus_config)
 
     def _load_config(self, config_path: str) -> Dict[str, Any]:
         """Load configuration from YAML file"""
         try:
-            with open(config_path, 'r') as f:
+            with open(config_path, "r") as f:
                 config = yaml.safe_load(f)
                 if config is None:
-                    logger.warning(f"Config file {config_path} is empty, using defaults")
+                    logger.warning(
+                        f"Config file {config_path} is empty, using defaults"
+                    )
                     return {}
                 return config
         except FileNotFoundError:
@@ -65,18 +73,20 @@ class PrometheusLogger:
             logger.error(f"Error parsing YAML config file {config_path}: {e}")
             return {}
 
-    def _init_metrics_from_config(self, labelnames: List[str], prometheus_config: Dict[str, Any]):
+    def _init_metrics_from_config(
+        self, labelnames: List[str], prometheus_config: Dict[str, Any]
+    ):
         """Initialize metrics based on configuration"""
         enabled = prometheus_config.get("enabled_metrics", {})
-        
+
         # Get metric name prefix from config (e.g., "ucm:")
         # If not specified, use empty string
         metric_prefix = prometheus_config.get("metric_prefix", "ucm:")
-        
+
         # Store metric mapping: metric_name -> (metric_type, attribute_name, stats_field_name)
         # This mapping will be used in log_prometheus to dynamically log metrics
         self.metric_mappings: Dict[str, Dict[str, str]] = {}
-        
+
         # Initialize counters
         if enabled.get("counters", True):
             counters = prometheus_config.get("counters", [])
@@ -89,20 +99,24 @@ class PrometheusLogger:
                 prometheus_name = f"{metric_prefix}{name}" if metric_prefix else name
                 # Internal attribute name for storing the metric object
                 attr_name = f"counter_{name.replace(':', '_').replace('-', '_')}"
-                
+
                 if not hasattr(self, attr_name):
-                    setattr(self, attr_name, self._counter_cls(
-                        name=prometheus_name,
-                        documentation=doc,
-                        labelnames=labelnames,
-                    ))
+                    setattr(
+                        self,
+                        attr_name,
+                        self._counter_cls(
+                            name=prometheus_name,
+                            documentation=doc,
+                            labelnames=labelnames,
+                        ),
+                    )
                     # Store mapping for dynamic logging
                     self.metric_mappings[name] = {
                         "type": "counter",
                         "attr": attr_name,
-                        "stats_field": stats_field
+                        "stats_field": stats_field,
                     }
-        
+
         # Initialize gauges
         if enabled.get("gauges", True):
             gauges = prometheus_config.get("gauges", [])
@@ -116,21 +130,25 @@ class PrometheusLogger:
                 prometheus_name = f"{metric_prefix}{name}" if metric_prefix else name
                 # Internal attribute name
                 attr_name = f"gauge_{name.replace(':', '_').replace('-', '_')}"
-                
+
                 if not hasattr(self, attr_name):
-                    setattr(self, attr_name, self._gauge_cls(
-                        name=prometheus_name,
-                        documentation=doc,
-                        labelnames=labelnames,
-                        multiprocess_mode=multiprocess_mode,
-                    ))
+                    setattr(
+                        self,
+                        attr_name,
+                        self._gauge_cls(
+                            name=prometheus_name,
+                            documentation=doc,
+                            labelnames=labelnames,
+                            multiprocess_mode=multiprocess_mode,
+                        ),
+                    )
                     # Store mapping for dynamic logging
                     self.metric_mappings[name] = {
                         "type": "gauge",
                         "attr": attr_name,
-                        "stats_field": stats_field
+                        "stats_field": stats_field,
                     }
-        
+
         # Initialize histograms
         if enabled.get("histograms", True):
             histograms = prometheus_config.get("histograms", [])
@@ -144,19 +162,23 @@ class PrometheusLogger:
                 prometheus_name = f"{metric_prefix}{name}" if metric_prefix else name
                 # Internal attribute name
                 attr_name = f"histogram_{name.replace(':', '_').replace('-', '_')}"
-                
+
                 if not hasattr(self, attr_name):
-                    setattr(self, attr_name, self._histogram_cls(
-                        name=prometheus_name,
-                        documentation=doc,
-                        labelnames=labelnames,
-                        buckets=buckets,
-                    ))
+                    setattr(
+                        self,
+                        attr_name,
+                        self._histogram_cls(
+                            name=prometheus_name,
+                            documentation=doc,
+                            labelnames=labelnames,
+                            buckets=buckets,
+                        ),
+                    )
                     # Store mapping for dynamic logging
                     self.metric_mappings[name] = {
                         "type": "histogram",
                         "attr": attr_name,
-                        "stats_field": stats_field
+                        "stats_field": stats_field,
                     }
 
     def _log_gauge(self, gauge, data: Union[int, float]) -> None:
@@ -183,19 +205,21 @@ class PrometheusLogger:
                 metric_type = mapping["type"]
                 attr_name = mapping["attr"]
                 stats_field = mapping["stats_field"]
-                
+
                 # Get the metric object
                 metric_obj = getattr(self, attr_name, None)
                 if metric_obj is None:
-                    logger.warning(f"Metric {metric_name} not initialized (attr: {attr_name})")
+                    logger.warning(
+                        f"Metric {metric_name} not initialized (attr: {attr_name})"
+                    )
                     continue
-                
+
                 # Get the stats value
                 stats_value = getattr(stats, stats_field, None)
                 if stats_value is None:
                     # Try to get with default value for missing fields
                     continue
-                
+
                 # Log based on metric type
                 if metric_type == "counter":
                     self._log_counter(metric_obj, stats_value)
@@ -222,7 +246,10 @@ class PrometheusLogger:
     _instance = None
 
     @staticmethod
-    def GetOrCreate(metadata: UCMEngineMetadata, config_path: str = "/vllm-workspace/metrics_configs.yaml") -> "PrometheusLogger":
+    def GetOrCreate(
+        metadata: UCMEngineMetadata,
+        config_path: str = "/vllm-workspace/metrics_configs.yaml",
+    ) -> "PrometheusLogger":
         if PrometheusLogger._instance is None:
             PrometheusLogger._instance = PrometheusLogger(metadata, config_path)
         # assert PrometheusLogger._instance.metadata == metadata, \
@@ -237,9 +264,9 @@ class PrometheusLogger:
 
     @staticmethod
     def GetInstance() -> "PrometheusLogger":
-        assert PrometheusLogger._instance is not None, (
-            "PrometheusLogger instance not created yet"
-        )
+        assert (
+            PrometheusLogger._instance is not None
+        ), "PrometheusLogger instance not created yet"
         return PrometheusLogger._instance
 
     @staticmethod
@@ -252,18 +279,24 @@ class PrometheusLogger:
 
 
 class UCMStatsLogger:
-    def __init__(self, vllm_config: "VllmConfig", log_interval: int, config_path: str = "/vllm-workspace/metrics_configs.yaml"):
+    def __init__(
+        self,
+        vllm_config: "VllmConfig",
+        log_interval: int,
+        config_path: str = "/vllm-workspace/metrics_configs.yaml",
+    ):
         # Parse model_name and worker_id from vllm_config
-        model_name = getattr(vllm_config, "model_name", None)       
-        worker_id = get_world_group().local_rank       
+        model_name = getattr(vllm_config, "model_name", None)
+        worker_id = get_world_group().local_rank
         # Create metadata
         self.metadata = UCMEngineMetadata(
-            model_name=str(model_name),
-            worker_id=str(worker_id)
-            )
-        
+            model_name=str(model_name), worker_id=str(worker_id)
+        )
+
         self.log_interval = log_interval
-        self.prometheus_logger = PrometheusLogger.GetOrCreate(self.metadata, config_path)
+        self.prometheus_logger = PrometheusLogger.GetOrCreate(
+            self.metadata, config_path
+        )
         self.is_running = True
 
         self.thread = threading.Thread(target=self.log_worker, daemon=True)
