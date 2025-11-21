@@ -277,7 +277,8 @@ def run(
 
             if operation_mode == "write_only":
                 del kvcaches, hashes
-                torch.cuda.empty_cache()
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
 
         if operation_mode in ["read_only", "both"]:
             if operation_mode == "read_only":
@@ -316,10 +317,12 @@ def run(
 
             if operation_mode == "read_only":
                 del kvcaches
-                torch.cuda.empty_cache()
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
             else:
                 del kvcaches, hashes
-                torch.cuda.empty_cache()
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
 
     del store
     avg_w_bw = sum(w_bw_list) / len(w_bw_list) if w_bw_list else 0.0
