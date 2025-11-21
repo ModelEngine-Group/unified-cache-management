@@ -39,7 +39,7 @@ public:
     {
         auto status = IBufferedDevice::Setup();
         if (status.Failure()) { return status; }
-        if (!this->backend_.SetWorkerFn([](auto& task, const auto&) { task(); }).Run()) {
+        if (!this->backend_.SetWorkerFn([](auto&& task, const auto&) { task(); }).Run()) {
             return Status::Error();
         }
         return Status::OK();

@@ -51,7 +51,7 @@ public:
 private:
     bool Init(Device& device);
     void Exit(Device& device);
-    void Work(Task::Shard& shard, const Device& device);
+    void Work(Task::Shard&& shard, const Device& device);
     void Done(Task::Shard& shard, const Device& device, const bool success);
     Status D2S(Task::Shard& shard, const Device& device);
     Status S2D(Task::Shard& shard, const Device& device);

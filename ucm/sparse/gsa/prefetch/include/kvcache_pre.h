@@ -95,7 +95,7 @@ namespace ucmprefetch
         std::map<std::string, std::vector<std::vector<int>>> allNeedLoadBlock;
         std::map<std::string, std::vector<std::vector<int>>> allMissIdxs;
         std::map<std::string, int> mPromptLen;
-        UC::CCStore *mStore = nullptr;
+        UC::CCStore<> *mStore = nullptr;
         std::vector<torch::Tensor> mKvCaches;
         uint32_t mBlockSize = 128;
         uint32_t mTensorElemSize = 2; // fp16

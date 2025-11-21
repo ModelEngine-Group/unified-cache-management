@@ -26,14 +26,14 @@
 
 namespace UC {
 
-Status DramTransQueue::Setup(const int32_t deviceId, TaskSet* failureSet, 
+Status DramTransQueue::Setup(const int32_t deviceId, TaskSet* failureSet,
                                 const MemoryPool* memPool, const size_t timeoutMs) {
     this->deviceId_ = deviceId;
     this->failureSet_ = failureSet;
     this->memPool_ = memPool;
     auto success =
         this->backend_.SetWorkerInitFn([this](auto& device) { return this->Init(device); })
-            .SetWorkerFn([this](auto& shards, const auto& device) { this->Work(shards, device); })
+            .SetWorkerFn([this](auto shards, const auto& device) { this->Work(std::move(shards), device); })
             .SetWorkerExitFn([this](auto& device) { this->Exit(device); })
             .Run();
     return success ? Status::OK() : Status::Error();
@@ -56,7 +56,7 @@ void DramTransQueue::Exit(Device& device) {
     device.reset();
 }
 
-void DramTransQueue::Work(std::list<Task::Shard>& shards, const Device& device) {
+void DramTransQueue::Work(std::list<Task::Shard>&& shards, const Device& device) {
     auto it = shards.begin();
     if (this->failureSet_->Contains(it->owner)) {
         this->Done(shards, device, true);
@@ -80,7 +80,7 @@ Status DramTransQueue::H2D(std::list<Task::Shard>& shards, const Device& device)
         if (!found) {
             return Status::Error();
         }
-        auto host_addr = this->memPool_->GetStartAddr().get() + pool_offset + shard.offset;       
+        auto host_addr = this->memPool_->GetStartAddr().get() + pool_offset + shard.offset;
         auto device_addr = shard.address;
         host_addrs[shard_index] = host_addr;
         device_addrs[shard_index] = reinterpret_cast<std::byte*>(device_addr);
@@ -100,7 +100,7 @@ Status DramTransQueue::D2H(std::list<Task::Shard>& shards, const Device& device)
         if (!found) {
             return Status::Error();
         }
-        auto host_addr = this->memPool_->GetStartAddr().get() + pool_offset + shard.offset;       
+        auto host_addr = this->memPool_->GetStartAddr().get() + pool_offset + shard.offset;
         auto device_addr = shard.address;
         host_addrs[shard_index] = host_addr;
         device_addrs[shard_index] = reinterpret_cast<std::byte*>(device_addr);
@@ -113,7 +113,7 @@ Status DramTransQueue::D2H(std::list<Task::Shard>& shards, const Device& device)
 void DramTransQueue::Done(std::list<Task::Shard>& shards, const Device& device, const bool success) {
     auto it = shards.begin();
     if (!success) { this->failureSet_->Insert(it->owner); }
-    for (auto& shard : shards) { 
+    for (auto& shard : shards) {
         if (shard.done) {
             if (device) {
                 if (device->Synchronized().Failure()) { this->failureSet_->Insert(shard.owner); }
