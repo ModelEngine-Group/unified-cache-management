@@ -534,7 +534,7 @@ class UCMDirectConnector(KVConnectorBase_V1):
                     break
                 end += 1
 
-            if end == len(ucm_block_ids):
+            if end == 0:
                 continue
             ucm_block_ids = ucm_block_ids[:end]
             vllm_block_ids = vllm_block_ids[:end]
