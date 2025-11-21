@@ -144,5 +144,4 @@ setup(
     cmdclass={"build_ext": CMakeBuild},
     package_data=_get_package_data_with_so(),
     zip_safe=False,
-    install_requires=["vllm==0.9.2"],
 )
