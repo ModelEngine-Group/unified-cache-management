@@ -21,29 +21,17 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  * */
-#ifndef UNIFIEDCACHE_STORE_H
-#define UNIFIEDCACHE_STORE_H
+#ifndef UNIFIEDCACHE_SCATTER_GATHER_STREAM_H
+#define UNIFIEDCACHE_SCATTER_GATHER_STREAM_H
 
-#include "task/task_shard.h"
+#include "stream.h"
 
 namespace UC {
 
-template <class T = Task>
-class CCStore {
-    using BlockId = std::string;
-    using TaskId = size_t;
-
+class ScatterGatherStream : public Stream {
 public:
-    virtual ~CCStore() = default;
-    virtual int32_t Alloc(const BlockId& block) = 0;
-    virtual bool Lookup(const BlockId& block) = 0;
-    virtual void Commit(const BlockId& block, const bool success) = 0;
-    virtual std::list<int32_t> Alloc(const std::list<BlockId>& blocks) = 0;
-    virtual std::list<bool> Lookup(const std::list<BlockId>& blocks) = 0;
-    virtual void Commit(const std::list<BlockId>& blocks, const bool success) = 0;
-    virtual TaskId Submit(T&& task) = 0;
-    virtual int32_t Wait(const TaskId task) = 0;
-    virtual int32_t Check(const TaskId task, bool& finish) = 0;
+    virtual Status D2HBatchAsync(uintptr_t deviceAddrs[], uintptr_t hostAddr, const size_t size,
+                                 const size_t number);
 };
 
 } // namespace UC

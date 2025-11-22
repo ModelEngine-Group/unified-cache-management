@@ -21,31 +21,17 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  * */
-#ifndef UNIFIEDCACHE_STORE_H
-#define UNIFIEDCACHE_STORE_H
+#ifndef UNIFIEDCACHE_HELPER_H
+#define UNIFIEDCACHE_HELPER_H
 
-#include "task/task_shard.h"
+#include <cuda_runtime.h>
+#include "logger/logger.h"
 
-namespace UC {
-
-template <class T = Task>
-class CCStore {
-    using BlockId = std::string;
-    using TaskId = size_t;
-
-public:
-    virtual ~CCStore() = default;
-    virtual int32_t Alloc(const BlockId& block) = 0;
-    virtual bool Lookup(const BlockId& block) = 0;
-    virtual void Commit(const BlockId& block, const bool success) = 0;
-    virtual std::list<int32_t> Alloc(const std::list<BlockId>& blocks) = 0;
-    virtual std::list<bool> Lookup(const std::list<BlockId>& blocks) = 0;
-    virtual void Commit(const std::list<BlockId>& blocks, const bool success) = 0;
-    virtual TaskId Submit(T&& task) = 0;
-    virtual int32_t Wait(const TaskId task) = 0;
-    virtual int32_t Check(const TaskId task, bool& finish) = 0;
-};
-
-} // namespace UC
+#define CUDA_ERROR(x)                                                                              \
+    do {                                                                                           \
+        auto __e = (x);                                                                            \
+        UC_ERROR("CUDA_ERROR({},{}): {}.", fmt::underlying(__e), cudaGetErrorName(__e),            \
+                 cudaGetErrorString(__e));                                                         \
+    } while (0)
 
 #endif

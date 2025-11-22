@@ -21,29 +21,24 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  * */
-#ifndef UNIFIEDCACHE_STORE_H
-#define UNIFIEDCACHE_STORE_H
+#ifndef UNIFIEDCACHE_SPACE_MANAGER_H
+#define UNIFIEDCACHE_SPACE_MANAGER_H
 
-#include "task/task_shard.h"
+#include "space_layout.h"
 
 namespace UC {
 
-template <class T = Task>
-class CCStore {
-    using BlockId = std::string;
-    using TaskId = size_t;
-
+class SpaceManager {
 public:
-    virtual ~CCStore() = default;
-    virtual int32_t Alloc(const BlockId& block) = 0;
-    virtual bool Lookup(const BlockId& block) = 0;
-    virtual void Commit(const BlockId& block, const bool success) = 0;
-    virtual std::list<int32_t> Alloc(const std::list<BlockId>& blocks) = 0;
-    virtual std::list<bool> Lookup(const std::list<BlockId>& blocks) = 0;
-    virtual void Commit(const std::list<BlockId>& blocks, const bool success) = 0;
-    virtual TaskId Submit(T&& task) = 0;
-    virtual int32_t Wait(const TaskId task) = 0;
-    virtual int32_t Check(const TaskId task, bool& finish) = 0;
+    Status Setup(const std::vector<std::string>& storageBackends, const size_t blockSize);
+    Status NewBlock(const std::string& blockId);
+    Status CommitBlock(const std::string& blockId, bool success);
+    bool LookupBlock(const std::string& blockId) const;
+    const SpaceLayout* GetSpaceLayout() const { return &this->layout_; }
+
+private:
+    SpaceLayout layout_;
+    size_t blockSize_;
 };
 
 } // namespace UC

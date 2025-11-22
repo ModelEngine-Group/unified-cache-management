@@ -21,29 +21,18 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  * */
-#ifndef UNIFIEDCACHE_STORE_H
-#define UNIFIEDCACHE_STORE_H
+#ifndef UNIFIEDCACHE_DEVICE_H
+#define UNIFIEDCACHE_DEVICE_H
 
-#include "task/task_shard.h"
+#include "status/status.h"
 
 namespace UC {
 
-template <class T = Task>
-class CCStore {
-    using BlockId = std::string;
-    using TaskId = size_t;
-
+class Device {
 public:
-    virtual ~CCStore() = default;
-    virtual int32_t Alloc(const BlockId& block) = 0;
-    virtual bool Lookup(const BlockId& block) = 0;
-    virtual void Commit(const BlockId& block, const bool success) = 0;
-    virtual std::list<int32_t> Alloc(const std::list<BlockId>& blocks) = 0;
-    virtual std::list<bool> Lookup(const std::list<BlockId>& blocks) = 0;
-    virtual void Commit(const std::list<BlockId>& blocks, const bool success) = 0;
-    virtual TaskId Submit(T&& task) = 0;
-    virtual int32_t Wait(const TaskId task) = 0;
-    virtual int32_t Check(const TaskId task, bool& finish) = 0;
+    static Status Setup(const int32_t deviceId);
+    static Status RegisterHost(void* ptr, const size_t size);
+    static void UnregisterHost(void* ptr);
 };
 
 } // namespace UC

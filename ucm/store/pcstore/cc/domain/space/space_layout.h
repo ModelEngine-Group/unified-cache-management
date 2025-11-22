@@ -21,29 +21,33 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  * */
-#ifndef UNIFIEDCACHE_STORE_H
-#define UNIFIEDCACHE_STORE_H
+#ifndef UNIFIEDCACHE_SPACE_LAYOUT_H
+#define UNIFIEDCACHE_SPACE_LAYOUT_H
 
-#include "task/task_shard.h"
+#include <string>
+#include <vector>
+#include "status/status.h"
 
 namespace UC {
 
-template <class T = Task>
-class CCStore {
-    using BlockId = std::string;
-    using TaskId = size_t;
-
+class SpaceLayout {
 public:
-    virtual ~CCStore() = default;
-    virtual int32_t Alloc(const BlockId& block) = 0;
-    virtual bool Lookup(const BlockId& block) = 0;
-    virtual void Commit(const BlockId& block, const bool success) = 0;
-    virtual std::list<int32_t> Alloc(const std::list<BlockId>& blocks) = 0;
-    virtual std::list<bool> Lookup(const std::list<BlockId>& blocks) = 0;
-    virtual void Commit(const std::list<BlockId>& blocks, const bool success) = 0;
-    virtual TaskId Submit(T&& task) = 0;
-    virtual int32_t Wait(const TaskId task) = 0;
-    virtual int32_t Check(const TaskId task, bool& finish) = 0;
+    Status Setup(const std::vector<std::string>& storageBackends);
+    std::string DataFilePath(const std::string& blockId, bool activated) const;
+    Status Commit(const std::string& blockId, bool success) const;
+
+private:
+    std::vector<std::string> RelativeRoots() const;
+    Status AddStorageBackend(const std::string& path);
+    Status AddFirstStorageBackend(const std::string& path);
+    Status AddSecondaryStorageBackend(const std::string& path);
+    std::string StorageBackend(const std::string& blockId) const;
+    std::string DataFileRoot() const;
+    std::string TempFileRoot() const;
+    void ShardBlockId(const std::string& blockId, uint64_t& front, uint64_t& back) const;
+
+private:
+    std::vector<std::string> storageBackends_;
 };
 
 } // namespace UC

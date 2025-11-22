@@ -21,29 +21,26 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  * */
-#ifndef UNIFIEDCACHE_STORE_H
-#define UNIFIEDCACHE_STORE_H
+#ifndef UNIFIEDCACHE_BUFFER_H
+#define UNIFIEDCACHE_BUFFER_H
 
-#include "task/task_shard.h"
+#include <memory>
+#include "status/status.h"
+#include "thread/index_pool.h"
 
 namespace UC {
 
-template <class T = Task>
-class CCStore {
-    using BlockId = std::string;
-    using TaskId = size_t;
+class Buffer {
+    IndexPool index_;
+    std::shared_ptr<void> base_{nullptr};
+    size_t size_{0};
 
 public:
-    virtual ~CCStore() = default;
-    virtual int32_t Alloc(const BlockId& block) = 0;
-    virtual bool Lookup(const BlockId& block) = 0;
-    virtual void Commit(const BlockId& block, const bool success) = 0;
-    virtual std::list<int32_t> Alloc(const std::list<BlockId>& blocks) = 0;
-    virtual std::list<bool> Lookup(const std::list<BlockId>& blocks) = 0;
-    virtual void Commit(const std::list<BlockId>& blocks, const bool success) = 0;
-    virtual TaskId Submit(T&& task) = 0;
-    virtual int32_t Wait(const TaskId task) = 0;
-    virtual int32_t Check(const TaskId task, bool& finish) = 0;
+    Status Setup(const size_t size, const size_t number);
+    std::shared_ptr<void> GetBuffer(const size_t size);
+
+private:
+    std::shared_ptr<void> MakeBuffer(const size_t size);
 };
 
 } // namespace UC

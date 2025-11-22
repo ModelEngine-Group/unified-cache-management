@@ -21,29 +21,34 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  * */
-#ifndef UNIFIEDCACHE_STORE_H
-#define UNIFIEDCACHE_STORE_H
+#ifndef UNIFIEDCACHE_TRANS_MANAGER_H
+#define UNIFIEDCACHE_TRANS_MANAGER_H
 
-#include "task/task_shard.h"
+#include "trans_queue.h"
+#include "trans_share_queue.h"
 
 namespace UC {
 
-template <class T = Task>
-class CCStore {
-    using BlockId = std::string;
-    using TaskId = size_t;
-
+class TransManager {
 public:
-    virtual ~CCStore() = default;
-    virtual int32_t Alloc(const BlockId& block) = 0;
-    virtual bool Lookup(const BlockId& block) = 0;
-    virtual void Commit(const BlockId& block, const bool success) = 0;
-    virtual std::list<int32_t> Alloc(const std::list<BlockId>& blocks) = 0;
-    virtual std::list<bool> Lookup(const std::list<BlockId>& blocks) = 0;
-    virtual void Commit(const std::list<BlockId>& blocks, const bool success) = 0;
-    virtual TaskId Submit(T&& task) = 0;
-    virtual int32_t Wait(const TaskId task) = 0;
-    virtual int32_t Check(const TaskId task, bool& finish) = 0;
+    Status Setup(const size_t rankSize, const int32_t deviceId, const size_t streamNumber,
+                 const size_t blockSize, const size_t ioSize, const bool ioDirect,
+                 const size_t bufferNumber, const SpaceLayout* layout, const size_t timeoutMs);
+    Status Submit(TransTask task, size_t& taskId) noexcept;
+    Status Wait(const size_t taskId) noexcept;
+    Status Check(const size_t taskId, bool& finish) noexcept;
+
+private:
+    using TaskPtr = std::shared_ptr<TransTask>;
+    using WaiterPtr = std::shared_ptr<TaskWaiter>;
+    using TaskPair = std::pair<TaskPtr, WaiterPtr>;
+    TransShareQueue shareQueue_;
+    TransQueue queue_;
+    size_t rankSize_;
+    size_t timeoutMs_;
+    std::mutex mutex_;
+    std::unordered_map<size_t, TaskPair> tasks_;
+    TaskSet failureSet_;
 };
 
 } // namespace UC

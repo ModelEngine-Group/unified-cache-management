@@ -21,31 +21,45 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  * */
-#ifndef UNIFIEDCACHE_STORE_H
-#define UNIFIEDCACHE_STORE_H
-
-#include "task/task_shard.h"
+#include <nvml.h>
+#include "device.h"
+#include "helper.h"
 
 namespace UC {
 
-template <class T = Task>
-class CCStore {
-    using BlockId = std::string;
-    using TaskId = size_t;
+void SetCpuAffinity(const int32_t deviceId)
+{
+    nvmlDevice_t device;
+    auto ret = nvmlDeviceGetHandleByIndex(deviceId, &device);
+    if (ret != NVML_SUCCESS) { return; }
+    nvmlDeviceSetCpuAffinity(device);
+}
 
-public:
-    virtual ~CCStore() = default;
-    virtual int32_t Alloc(const BlockId& block) = 0;
-    virtual bool Lookup(const BlockId& block) = 0;
-    virtual void Commit(const BlockId& block, const bool success) = 0;
-    virtual std::list<int32_t> Alloc(const std::list<BlockId>& blocks) = 0;
-    virtual std::list<bool> Lookup(const std::list<BlockId>& blocks) = 0;
-    virtual void Commit(const std::list<BlockId>& blocks, const bool success) = 0;
-    virtual TaskId Submit(T&& task) = 0;
-    virtual int32_t Wait(const TaskId task) = 0;
-    virtual int32_t Check(const TaskId task, bool& finish) = 0;
-};
+Status Device::Setup(const int32_t deviceId)
+{
+    auto ret = cudaSetDevice(deviceId);
+    if (ret != cudaSuccess) {
+        CUDA_ERROR(ret);
+        return Status::Error();
+    }
+    SetCpuAffinity(deviceId);
+    return Status::OK();
+}
+
+Status Device::RegisterHost(void* ptr, const size_t size)
+{
+    auto ret = cudaHostRegister(ptr, size, cudaHostRegisterDefault);
+    if (ret != cudaSuccess) {
+        CUDA_ERROR(ret);
+        return Status::Error();
+    }
+    return Status::OK();
+}
+
+void Device::UnregisterHost(void* ptr)
+{
+    auto ret = cudaHostUnregister(ptr);
+    if (ret != cudaSuccess) { CUDA_ERROR(ret); }
+}
 
 } // namespace UC
-
-#endif
