@@ -28,7 +28,7 @@
 
 namespace UC {
 
-class DRAMStore : public CCStore {
+class DRAMStore : public CCStore<> {
 public:
     struct Config {
         size_t capacity;
