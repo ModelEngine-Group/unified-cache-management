@@ -30,9 +30,9 @@
 #include <thread>
 #include "share_buffer.h"
 #include "space/space_layout.h"
-#include "stream.h"
 #include "task/task_set.h"
 #include "task/task_waiter.h"
+#include "trans/stream.h"
 #include "trans_task.h"
 
 namespace UC {
@@ -68,9 +68,9 @@ public:
 
 private:
     void WorkerLoop(std::promise<Status>& status);
-    void Worker(Stream& stream);
-    void HandleReadyTask(Status s, BlockTask& task, Stream& stream);
-    void HandleLoadTask(BlockTask& task, Stream& stream);
+    void Worker(Trans::Stream& stream);
+    void HandleReadyTask(Status s, BlockTask& task, Trans::Stream& stream);
+    void HandleLoadTask(BlockTask& task, Trans::Stream& stream);
 };
 
 } // namespace UC

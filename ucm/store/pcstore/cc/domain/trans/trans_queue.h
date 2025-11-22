@@ -24,12 +24,12 @@
 #ifndef UNIFIEDCACHE_TRAN_QUEUE_H
 #define UNIFIEDCACHE_TRAN_QUEUE_H
 
-#include "buffer.h"
-#include "scatter_gather_stream.h"
 #include "space/space_layout.h"
 #include "task/task_set.h"
 #include "task/task_waiter.h"
 #include "thread/thread_pool.h"
+#include "trans/buffer.h"
+#include "trans/stream.h"
 #include "trans_task.h"
 
 namespace UC {
@@ -56,8 +56,8 @@ public:
     void DispatchDump(TaskPtr task, WaiterPtr waiter);
 
 private:
-    Buffer buffer_;
-    ScatterGatherStream stream_;
+    std::unique_ptr<Trans::Buffer> buffer_{nullptr};
+    std::unique_ptr<Trans::Stream> stream_{nullptr};
     const SpaceLayout* layout_;
     size_t ioSize_;
     bool ioDirect_;

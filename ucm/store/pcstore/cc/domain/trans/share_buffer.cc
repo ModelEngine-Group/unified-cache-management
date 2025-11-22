@@ -26,9 +26,9 @@
 #include <chrono>
 #include <thread>
 #include <unistd.h>
-#include "device.h"
 #include "file/file.h"
 #include "logger/logger.h"
+#include "trans/buffer.h"
 
 namespace UC {
 
@@ -129,7 +129,7 @@ ShareBuffer::~ShareBuffer()
     auto ref = (--bufferHeader->ref);
     bufferHeader->mutex.Unlock();
     void* dataAddr = static_cast<char*>(this->addr_) + this->DataOffset();
-    Device::UnregisterHost(dataAddr);
+    Trans::Buffer::UnregisterHostBuffer(dataAddr);
     const auto shmSize = this->ShmSize();
     File::MUnmap(this->addr_, shmSize);
     if (ref == 0) { File::ShmUnlink(this->shmName_); }
@@ -188,7 +188,10 @@ Status ShareBuffer::InitShmBuffer(IFile* file)
     bufferHeader->magic = SHARE_BUFFER_MAGIC;
     void* dataAddr = static_cast<char*>(this->addr_) + dataOffset;
     auto dataSize = shmSize - dataOffset;
-    return Device::RegisterHost(dataAddr, dataSize);
+    auto status = Trans::Buffer::RegisterHostBuffer(dataAddr, dataSize);
+    if (status.Success()) { return Status::OK(); }
+    UC_ERROR("Failed({}) to regitster host buffer({}).", status.ToString(), dataSize);
+    return Status::Error();
 }
 
 Status ShareBuffer::LoadShmBuffer(IFile* file)
@@ -216,7 +219,10 @@ Status ShareBuffer::LoadShmBuffer(IFile* file)
     const auto dataOffset = this->DataOffset();
     void* dataAddr = static_cast<char*>(this->addr_) + dataOffset;
     auto dataSize = shmSize - dataOffset;
-    return Device::RegisterHost(dataAddr, dataSize);
+    auto status = Trans::Buffer::RegisterHostBuffer(dataAddr, dataSize);
+    if (status.Success()) { return Status::OK(); }
+    UC_ERROR("Failed({}) to regitster host buffer({}).", status.ToString(), dataSize);
+    return Status::Error();
 }
 
 size_t ShareBuffer::AcquireBlock(const std::string& block)

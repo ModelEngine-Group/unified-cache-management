@@ -22,8 +22,8 @@
  * SOFTWARE.
  * */
 #include "trans_share_queue.h"
-#include "device.h"
 #include "logger/logger.h"
+#include "trans/device.h"
 
 namespace UC {
 
@@ -88,18 +88,24 @@ void TransShareQueue::Dispatch(TaskPtr task, WaiterPtr waiter)
 
 void TransShareQueue::WorkerLoop(std::promise<Status>& status)
 {
-    auto s = Status::OK();
-    Stream stream;
-    do {
-        if ((s = Device::Setup(this->deviceId_)).Failure()) { break; }
-        if ((s = stream.Setup()).Failure()) { break; }
-    } while (0);
-    status.set_value(s);
-    if (s.Failure()) { return; }
-    while (!this->stop_) { this->Worker(stream); }
+    Trans::Device device;
+    auto s = device.Setup(deviceId_);
+    if (s.Failure()) {
+        UC_ERROR("Failed({}) to set context on device({}).", s.ToString(), deviceId_);
+        status.set_value(Status::Error());
+        return;
+    }
+    auto stream = device.MakeStream();
+    if (!stream) {
+        UC_ERROR("Failed to create stream on device({}).", deviceId_);
+        status.set_value(Status::Error());
+        return;
+    }
+    status.set_value(Status::OK());
+    while (!stop_) { Worker(*stream); }
 }
 
-void TransShareQueue::Worker(Stream& stream)
+void TransShareQueue::Worker(Trans::Stream& stream)
 {
     std::unique_lock<std::mutex> ul{this->mutex_};
     if (this->load_.empty() && this->wait_.empty()) {
@@ -125,21 +131,26 @@ void TransShareQueue::Worker(Stream& stream)
     this->HandleLoadTask(task, stream);
 }
 
-void TransShareQueue::HandleReadyTask(Status s, BlockTask& task, Stream& stream)
+void TransShareQueue::HandleReadyTask(Status s, BlockTask& task, Trans::Stream& stream)
 {
     if (this->failureSet_->Contains(task.owner)) {
         task.done(false);
         return;
     }
     if (s.Success()) {
-        s = stream.H2DBatchSync(task.reader->GetData(), task.shards.data(), this->ioSize_,
-                                task.shards.size());
+        auto host = (void*)task.reader->GetData();
+        auto device = (void**)task.shards.data();
+        auto status = stream.HostToDeviceAsync(host, device, this->ioSize_, task.shards.size());
+        if (status.Failure()) [[unlikely]] {
+            UC_ERROR("Failed({}) to copy data from host to device.", status.ToString());
+            s = Status::Error();
+        }
     }
     if (s.Failure()) { this->failureSet_->Insert(task.owner); }
     task.done(s.Success());
 }
 
-void TransShareQueue::HandleLoadTask(BlockTask& task, Stream& stream)
+void TransShareQueue::HandleLoadTask(BlockTask& task, Trans::Stream& stream)
 {
     if (this->failureSet_->Contains(task.owner)) {
         task.done(false);

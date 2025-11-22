@@ -22,9 +22,9 @@
  * SOFTWARE.
  * */
 #include "trans_queue.h"
-#include "device.h"
 #include "file/file.h"
 #include "logger/logger.h"
+#include "trans/device.h"
 
 namespace UC {
 
@@ -37,13 +37,13 @@ void TransQueue::DeviceWorker(BlockTask&& task)
     auto number = task.shards.size();
     auto size = this->ioSize_;
     auto done = task.done;
-    auto devPtrs = task.shards.data();
-    auto hostPtr = (uintptr_t)task.buffer.get();
-    auto s = Status::OK();
+    auto devPtrs = (void**)task.shards.data();
+    auto hostPtr = task.buffer.get();
+    auto s = Trans::Status::OK();
     if (task.type == TransTask::Type::LOAD) {
-        s = this->stream_.H2DBatchSync(hostPtr, devPtrs, size, number);
+        s = stream_->HostToDevice(hostPtr, devPtrs, size, number);
     } else {
-        s = this->stream_.D2HBatchSync(devPtrs, hostPtr, size, number);
+        s = stream_->DeviceToHost(devPtrs, hostPtr, size, number);
         if (s.Success()) { this->filePool_.Push(std::move(task)); }
     }
     if (s.Failure()) { this->failureSet_->Insert(task.owner); }
@@ -79,12 +79,23 @@ Status TransQueue::Setup(const int32_t deviceId, const size_t streamNumber, cons
                          const size_t ioSize, const bool ioDirect, const size_t bufferNumber,
                          const SpaceLayout* layout, TaskSet* failureSet_)
 {
-    auto s = Device::Setup(deviceId);
-    if (s.Failure()) { return s; }
-    s = this->buffer_.Setup(blockSize, bufferNumber);
-    if (s.Failure()) { return s; }
-    s = this->stream_.Setup();
-    if (s.Failure()) { return s; }
+    Trans::Device device;
+    auto ts = device.Setup(deviceId);
+    if (ts.Failure()) {
+        UC_ERROR("Failed({}) to set context on device({}).", ts.ToString(), deviceId);
+        return Status::Error();
+    }
+    buffer_ = device.MakeBuffer();
+    stream_ = device.MakeStream();
+    if (!buffer_ || !stream_) {
+        UC_ERROR("Failed to make buffer and stream on device({}).", deviceId);
+        return Status::Error();
+    }
+    ts = buffer_->MakeHostBuffers(blockSize, bufferNumber);
+    if (ts.Failure()) {
+        UC_ERROR("Failed({}) to make host buffer({},{}).", ts.ToString(), blockSize, bufferNumber);
+        return Status::Error();
+    }
     auto success =
         this->devPool_.SetWorkerFn([this](auto t, auto) { this->DeviceWorker(std::move(t)); })
             .Run();
@@ -114,7 +125,7 @@ void TransQueue::Dispatch(TaskPtr task, WaiterPtr waiter)
             blockTask.type = task->type;
             auto bufferSize = this->ioSize_ * shards.size();
             std::swap(blockTask.shards, shards);
-            blockTask.buffer = this->buffer_.GetBuffer(bufferSize);
+            blockTask.buffer = buffer_->GetHostBuffer(bufferSize);
             blockTask.done = [task, waiter, ioSize = this->ioSize_](bool success) {
                 if (!success) {
                     waiter->Done(nullptr);
@@ -141,13 +152,14 @@ void TransQueue::DispatchDump(TaskPtr task, WaiterPtr waiter)
             blockTask.block = block;
             blockTask.type = task->type;
             auto bufferSize = this->ioSize_ * shards.size();
-            blockTask.buffer = this->buffer_.GetBuffer(bufferSize);
+            blockTask.buffer = buffer_->GetHostBuffer(bufferSize);
             std::swap(blockTask.shards, shards);
-            this->stream_.D2HBatchAsync(blockTask.shards.data(), (uintptr_t)blockTask.buffer.get(),
-                                        this->ioSize_, blockTask.shards.size());
+            auto device = (void**)blockTask.shards.data();
+            auto host = blockTask.buffer.get();
+            stream_->DeviceToHostAsync(device, host, this->ioSize_, blockTask.shards.size());
             blocks.push_back(std::move(blockTask));
         });
-    auto s = this->stream_.Synchronize();
+    auto s = stream_->Synchronized();
     if (s.Failure()) { this->failureSet_->Insert(task->id); }
     for (auto&& block : blocks) {
         if (s.Failure()) {
