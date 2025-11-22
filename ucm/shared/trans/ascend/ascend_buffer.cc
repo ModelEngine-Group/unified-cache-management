@@ -42,35 +42,15 @@ std::shared_ptr<void> Trans::AscendBuffer::MakeHostBuffer(size_t size)
     return nullptr;
 }
 
-Status Trans::AscendBuffer::RegisterHostBuffer(void* ptr, size_t size)
+Status Buffer::RegisterHostBuffer(void* host, size_t size, void** pDevice)
 {
-    if (registerOnHost_) {
-        aclrtHostUnregister(registerOnHost_);
-        registerOnHost_ = nullptr;
-        registerOnDevice_ = nullptr;
-    }
-    auto ret = aclrtHostRegister(ptr, size, ACL_HOST_REGISTER_MAPPED, &registerOnDevice_);
-    if (ret == ACL_SUCCESS) {
-        registerOnHost_ = ptr;
-        return Status::OK();
-    }
-    registerOnDevice_ = nullptr;
-    return Status{ret, std::to_string(ret)};
+    void* device = nullptr;
+    auto ret = aclrtHostRegister(host, size, ACL_HOST_REGISTER_MAPPED, &device);
+    if (ret != ACL_SUCCESS) [[unlikely]] { return Status{ret, std::to_string(ret)}; }
+    if (pDevice) { *pDevice = device; }
+    return Status::OK();
 }
 
-void Trans::AscendBuffer::UnregisterHostBuffer(void* ptr)
-{
-    aclrtHostUnregister(ptr);
-    if (registerOnHost_ == ptr) {
-        registerOnHost_ = nullptr;
-        registerOnDevice_ = nullptr;
-    }
-}
-
-void* Trans::AscendBuffer::GetHostPtrOnDevice(void* ptr)
-{
-    if (registerOnHost_ == ptr) { return registerOnDevice_; }
-    return nullptr;
-}
+void Buffer::UnregisterHostBuffer(void* host) { aclrtHostUnregister(host); }
 
 } // namespace UC::Trans

@@ -42,21 +42,17 @@ std::shared_ptr<void> CudaBuffer::MakeHostBuffer(size_t size)
     return nullptr;
 }
 
-Status CudaBuffer::RegisterHostBuffer(void* ptr, size_t size)
+Status Buffer::RegisterHostBuffer(void* host, size_t size, void** pDevice)
 {
-    auto ret = cudaHostRegister(ptr, size, cudaHostRegisterDefault);
-    if (ret == cudaSuccess) { return Status::OK(); }
-    return Status{ret, cudaGetErrorString(ret)};
+    auto ret = cudaHostRegister(host, size, cudaHostRegisterDefault);
+    if (ret != cudaSuccess) [[unlikely]] { return Status{ret, cudaGetErrorString(ret)}; }
+    if (pDevice) {
+        ret = cudaHostGetDevicePointer(pDevice, host, 0);
+        if (ret != cudaSuccess) [[unlikely]] { return Status{ret, cudaGetErrorString(ret)}; }
+    }
+    return Status::OK();
 }
 
-void CudaBuffer::UnregisterHostBuffer(void* ptr) { cudaHostUnregister(ptr); }
-
-void* CudaBuffer::GetHostPtrOnDevice(void* ptr)
-{
-    void* device = nullptr;
-    auto ret = cudaHostGetDevicePointer(&device, ptr, 0);
-    if (ret == cudaSuccess) { return nullptr; }
-    return device;
-}
+void Buffer::UnregisterHostBuffer(void* host) { cudaHostUnregister(host); }
 
 } // namespace UC::Trans

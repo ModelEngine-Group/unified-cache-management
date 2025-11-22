@@ -67,10 +67,12 @@ std::shared_ptr<void> SimuBuffer::MakeHostBuffer(size_t size)
     return std::shared_ptr<void>(device, FreeMemory);
 }
 
-Status SimuBuffer::RegisterHostBuffer(void* ptr, size_t size) { return Status::OK(); }
+Status Buffer::RegisterHostBuffer(void* host, size_t size, void** pDevice)
+{
+    if (pDevice) { *pDevice = host; }
+    return Status::OK();
+}
 
-void SimuBuffer::UnregisterHostBuffer(void* ptr) {}
-
-void* SimuBuffer::GetHostPtrOnDevice(void* ptr) { return ptr; }
+void Buffer::UnregisterHostBuffer(void* host) {}
 
 } // namespace UC::Trans
