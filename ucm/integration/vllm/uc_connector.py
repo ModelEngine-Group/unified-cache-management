@@ -761,7 +761,8 @@ class UnifiedCacheConnectorV1(KVConnectorBase_V1):
             if cancel_blocks:
                 logger.debug(f"commit {cancel_blocks} to False.")
                 self.connector.commit(cancel_blocks, False)
-        request.succeed_dumped_blocks.clear()
+        if hasattr(request, "succeed_dumped_blocks"):
+            request.succeed_dumped_blocks.clear()
         return False, None
 
     def _extract_blocks(
