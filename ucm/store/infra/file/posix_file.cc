@@ -31,7 +31,7 @@
 
 namespace UC {
 
-static constexpr auto NewFilePerm = (S_IRWXU | S_IRGRP | S_IXGRP | S_IROTH | S_IXOTH);
+static constexpr auto NewFilePerm = (S_IREAD | S_IWRITE | S_IRGRP | S_IROTH);
 
 PosixFile::~PosixFile() { this->Close(); }
 

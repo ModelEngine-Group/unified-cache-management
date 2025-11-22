@@ -54,32 +54,32 @@ namespace ucmprefetch
         -> std::future<typename std::result_of<F(Args...)>::type>
     {
         using return_type = typename std::result_of<F(Args...)>::type;
-    
+
         auto task = std::make_shared<std::packaged_task<return_type()>>(
                 std::bind(std::forward<F>(f), std::forward<Args>(args)...)
             );
-            
+
         std::future<return_type> res = task->get_future();
         {
             std::unique_lock<std::mutex> lock(queueMutex);
-            
+
             condition.wait(lock, [this] {
                 if (!(activeThreads < maxThreads || tasks.size() < maxThreads * 2)) {
                     std::cout << "Need wait: " << activeThreads << " " << tasks.size() << std::endl;
                 }
-                return (activeThreads < maxThreads || tasks.size() < maxThreads * 2); 
+                return (activeThreads < maxThreads || tasks.size() < maxThreads * 2);
             });
             // don't allow enqueueing after stopping the pool
             if(stop) {
                 throw std::runtime_error("enqueue on stopped ThreadPool");
             }
-    
+
             tasks.emplace([task](){ (*task)(); });
         }
         condition.notify_one();
         return res;
     }
-    
+
     size_t ThreadPool::GetActiveThreads() const
     {
         return activeThreads;
@@ -160,7 +160,7 @@ namespace ucmprefetch
             return kOffset;
         }
     }
-    
+
     void GSAPrefetchEngineC::CheckInputIndex(uint32_t maxLen, uint32_t index)
     {
         if (index >= maxLen) {
@@ -249,7 +249,7 @@ namespace ucmprefetch
     {
         mMutex.lock();
         mDelSeqIds.insert(reqID);
-        if (mIsPrefetchDone) {   
+        if (mIsPrefetchDone) {
             DelReqIDRun();
         }
         mMutex.unlock();
@@ -337,7 +337,7 @@ namespace ucmprefetch
         }
 
     }
-    
+
     void GSAPrefetchEngineC::RunPrefetchH2D(PrefetchReqInfo oneBsInfo,
             std::unordered_set<int> &hitBlocks,
             std::map<int, int> &hitBlocksIdx,
@@ -389,7 +389,7 @@ namespace ucmprefetch
             oneBsInfo.bsIndex = bsIndex;
             oneBsInfo.layerID = i;
             GetHitAndMissBlock(oneBsInfo, hitBlocks, hitBlocksIdx, missIdxs);
-            if (missIdxs.size() != 0 || hitBlocksIdx.size() < (topkLen - mExtraTopkLen)) { 
+            if (missIdxs.size() != 0 || hitBlocksIdx.size() < (topkLen - mExtraTopkLen)) {
                 RunPrefetchH2D(oneBsInfo, hitBlocks, hitBlocksIdx, missIdxs);
             }
             int successIndex = 0;
@@ -412,8 +412,8 @@ namespace ucmprefetch
             mFreeBlockLen[i][bsIndex] = oneFreeBlockIndex;
             mSuccessTableLen[i][bsIndex] = (int)(hitBlocks.size());
         }
-    } 
- 
+    }
+
     void GSAPrefetchEngineC::LoadKVToHBM(std::vector<int> loadNPUBlockIDs,
         std::vector<int> missIdxs, int layerID, std::string reqID)
     {
@@ -458,7 +458,7 @@ namespace ucmprefetch
             mDocsTables[reqID][layerID][missIdxs[i]] = loadNPUBlockIDs[i];
         }
     }
-    
+
     void GSAPrefetchEngineC::RunAsyncPrefetchBs(std::vector<std::string> &reqIDsInput,
         std::vector<int> &topkLensInput,
         std::vector<int> &bsIndexInput,
@@ -472,7 +472,7 @@ namespace ucmprefetch
             } else {
                 mKVSzieBytes = kvCaches[0].element_size() * kvCaches[0][0][0].numel();
             }
-            mStore = static_cast<UC::CCStore *>(storePtr);
+            mStore = static_cast<UC::CCStore<> *>(storePtr);
             mLogger.log(LogLevel::INFO,
                 "Decode step: %u, |KVCache Prefetch| start mKVSzieBytes: %u, mTensorElemSize %u\n",
                 mDecodeStep, mKVSzieBytes, mTensorElemSize);
@@ -548,7 +548,7 @@ namespace ucmprefetch
     {
         mStopPrefetch = flag;
     }
-    
+
     std::map<std::string, std::vector<std::vector<int>>> GSAPrefetchEngineC::ObtainLoadBlocks()
     {
         return allNeedLoadBlock;

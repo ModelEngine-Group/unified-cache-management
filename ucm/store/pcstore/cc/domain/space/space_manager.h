@@ -21,30 +21,24 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  * */
-#ifndef UNIFIEDCACHE_FILE_H
-#define UNIFIEDCACHE_FILE_H
+#ifndef UNIFIEDCACHE_SPACE_MANAGER_H
+#define UNIFIEDCACHE_SPACE_MANAGER_H
 
-#include <memory>
-#include "ifile.h"
+#include "space_layout.h"
 
 namespace UC {
 
-class File {
+class SpaceManager {
 public:
-    static std::unique_ptr<IFile> Make(const std::string& path);
-    static Status MkDir(const std::string& path);
-    static Status RmDir(const std::string& path);
-    static Status Rename(const std::string& path, const std::string& newName);
-    static Status Access(const std::string& path, const int32_t mode);
-    static Status Stat(const std::string& path, IFile::FileStat& st);
-    static Status Read(const std::string& path, const size_t offset, const size_t length,
-                       uintptr_t address, const bool directIo = false);
-    static Status Write(const std::string& path, const size_t offset, const size_t length,
-                        const uintptr_t address, const bool directIo = false,
-                        const bool create = false);
-    static void MUnmap(void* addr, size_t size);
-    static void ShmUnlink(const std::string& path);
-    static void Remove(const std::string& path);
+    Status Setup(const std::vector<std::string>& storageBackends, const size_t blockSize);
+    Status NewBlock(const std::string& blockId);
+    Status CommitBlock(const std::string& blockId, bool success);
+    bool LookupBlock(const std::string& blockId) const;
+    const SpaceLayout* GetSpaceLayout() const { return &this->layout_; }
+
+private:
+    SpaceLayout layout_;
+    size_t blockSize_;
 };
 
 } // namespace UC

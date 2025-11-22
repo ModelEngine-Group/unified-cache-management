@@ -7,6 +7,7 @@ endif()
 if(RUNTIME_ENVIRONMENT STREQUAL "simu")
     add_subdirectory(simu)
 endif()
+target_include_directories(trans PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/..)
 
 file(GLOB_RECURSE UCMTRANS_CPY_SOURCE_FILES "./cpy/*.cc")
 pybind11_add_module(ucmtrans ${UCMTRANS_CPY_SOURCE_FILES})

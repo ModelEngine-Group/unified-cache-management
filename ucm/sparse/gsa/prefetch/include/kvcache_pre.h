@@ -37,10 +37,10 @@ namespace ucmprefetch
         int bsIndex;
     } PrefetchReqInfo;
 
-    class ThreadPool 
+    class ThreadPool
     {
     public:
-        static ThreadPool *GetInst() 
+        static ThreadPool *GetInst()
         {
             static ThreadPool pool(1);
             return &pool;
@@ -52,7 +52,7 @@ namespace ucmprefetch
         auto enqueue(F&& f, Args&&... args) -> std::future<typename std::result_of<F(Args...)>::type>;
 
         size_t GetActiveThreads() const;
-    
+
     private:
         explicit ThreadPool(size_t threadCount);
         std::vector<std::thread> workers;
@@ -66,7 +66,7 @@ namespace ucmprefetch
 
     void MutliBSThreadFun(void *args);
 
-    class __attribute__((visibility("hidden"))) GSAPrefetchEngineC 
+    class __attribute__((visibility("hidden"))) GSAPrefetchEngineC
     {
     private:
         std::map<std::string, std::vector<std::map<int, int>>> mDocsTables;
@@ -95,7 +95,7 @@ namespace ucmprefetch
         std::map<std::string, std::vector<std::vector<int>>> allNeedLoadBlock;
         std::map<std::string, std::vector<std::vector<int>>> allMissIdxs;
         std::map<std::string, int> mPromptLen;
-        UC::CCStore *mStore = nullptr;
+        UC::CCStore<> *mStore = nullptr;
         std::vector<torch::Tensor> mKvCaches;
         uint32_t mBlockSize = 128;
         uint32_t mTensorElemSize = 2; // fp16
@@ -108,21 +108,21 @@ namespace ucmprefetch
     public:
         std::mutex mMutex;
         bool mStopPrefetch = false;
-    
+
     private:
         void LoadKVToHBM(std::vector<int> loadNPUBlockIDs,
             std::vector<int> missIdxs, int layerID, std::string reqID);
-        
+
         void GetHitAndMissBlock(PrefetchReqInfo oneBsInfo,
             std::unordered_set<int> &hitBlocks,
             std::map<int, int> &hitBlocksIdx,
             std::vector<int> &missIdxs);
-        
+
         void RunPrefetchH2D(PrefetchReqInfo oneBsInfo,
             std::unordered_set<int> &hitBlocks,
             std::map<int, int> &hitBlocksIdx,
             std::vector<int> &missIdxs);
-        
+
         void RunOneBsPrefetch(std::string reqID, int topkLen,
             int bsIndex, int topkIndex);
 
@@ -144,7 +144,7 @@ namespace ucmprefetch
         void SetBlocksMap(std::string reqID, std::vector<int> &blockTableList,
             std::vector<int> &selectIndex, std::vector<std::string> &blocksHash,
             int maxIdx);
-        
+
         void SetBlocksMapMultiLayer(std::string reqID,
             std::vector<std::map<int, int>> &remainMap,
             std::vector<std::map<int, int>> &prefetchMap,
@@ -168,7 +168,7 @@ namespace ucmprefetch
             std::vector<int> &bsIndexInput,
             std::vector<torch::Tensor> &kvCaches,
             void *storePtr);
-        
+
         int CallPrefetchProcessFun();
 
         void PrintMap(std::string reqID, int i);
@@ -178,7 +178,7 @@ namespace ucmprefetch
         void SetPrefetchStatus(bool flag);
 
         void SetModelRunningStatus(bool flag);
-        
+
         size_t GetOffset(uint32_t layerID, bool isV);
 
         std::map<std::string, std::vector<std::vector<int>>> ObtainLoadBlocks();
@@ -189,7 +189,7 @@ namespace ucmprefetch
 
         std::map<std::string, std::vector<std::map<int, int>>> ObtainDocsMap();
     };
-    
+
 } // namespace uc
 
 #endif

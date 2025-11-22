@@ -76,12 +76,13 @@ Status File::Read(const std::string& path, const size_t offset, const size_t len
 }
 
 Status File::Write(const std::string& path, const size_t offset, const size_t length,
-                   const uintptr_t address, const bool directIo)
+                   const uintptr_t address, const bool directIo, const bool create)
 {
     FileImpl file{path};
     Status status = Status::OK();
-    auto flags = directIo ? IFile::OpenFlag::WRITE_ONLY | IFile::OpenFlag::DIRECT
-                          : IFile::OpenFlag::WRITE_ONLY;
+    auto flags = IFile::OpenFlag::WRITE_ONLY;
+    if (directIo) { flags |= IFile::OpenFlag::DIRECT; }
+    if (create) { flags |= IFile::OpenFlag::CREATE; }
     if ((status = file.Open(flags)).Failure()) { return status; }
     if ((status = file.Write((const void*)address, length, offset)).Failure()) { return status; }
     return status;

@@ -29,16 +29,9 @@
 namespace UC::Trans {
 
 class AscendBuffer : public ReservedBuffer {
-    void* registerOnHost_{nullptr};
-    void* registerOnDevice_{nullptr};
-
 public:
     std::shared_ptr<void> MakeDeviceBuffer(size_t size) override;
     std::shared_ptr<void> MakeHostBuffer(size_t size) override;
-
-    Status RegisterHostBuffer(void* ptr, size_t size) override;
-    void UnregisterHostBuffer(void* ptr) override;
-    void* GetHostPtrOnDevice(void* ptr) override;
 };
 
 } // namespace UC::Trans

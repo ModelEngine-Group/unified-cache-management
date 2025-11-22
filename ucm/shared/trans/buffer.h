@@ -41,9 +41,8 @@ public:
     virtual Status MakeHostBuffers(size_t size, size_t number) = 0;
     virtual std::shared_ptr<void> GetHostBuffer(size_t size) = 0;
 
-    virtual Status RegisterHostBuffer(void* ptr, size_t size) = 0;
-    virtual void UnregisterHostBuffer(void* ptr) = 0;
-    virtual void* GetHostPtrOnDevice(void* ptr) = 0;
+    static Status RegisterHostBuffer(void* host, size_t size, void** pDevice = nullptr);
+    static void UnregisterHostBuffer(void* host);
 };
 
 } // namespace UC::Trans
