@@ -39,7 +39,7 @@ void TransQueue::DeviceWorker(BlockTask&& task)
     auto done = task.done;
     auto devPtrs = (void**)task.shards.data();
     auto hostPtr = task.buffer.get();
-    auto s = Trans::Status::OK();
+    auto s = Status::OK();
     if (task.type == TransTask::Type::LOAD) {
         s = stream_->HostToDevice(hostPtr, devPtrs, size, number);
     } else {

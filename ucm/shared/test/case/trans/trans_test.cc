@@ -28,7 +28,7 @@ class UCTransUnitTest : public ::testing::Test {};
 
 TEST_F(UCTransUnitTest, CopyDataWithCE)
 {
-    const auto ok = UC::Trans::Status::OK();
+    const auto ok = UC::Status::OK();
     constexpr int32_t deviceId = 0;
     constexpr size_t size = 36 * 1024;
     constexpr size_t number = 64 * 61;
@@ -60,7 +60,7 @@ TEST_F(UCTransUnitTest, CopyDataWithCE)
 
 TEST_F(UCTransUnitTest, CopyDataWithSM)
 {
-    const auto ok = UC::Trans::Status::OK();
+    const auto ok = UC::Status::OK();
     constexpr int32_t deviceId = 0;
     constexpr size_t size = 36 * 1024;
     constexpr size_t number = 64 * 61;

@@ -21,49 +21,70 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  * */
-#ifndef UNIFIEDCACHE_LATCH_H
-#define UNIFIEDCACHE_LATCH_H
+#ifndef UNIFIEDCACHE_INFRA_TIMER_H
+#define UNIFIEDCACHE_INFRA_TIMER_H
 
 #include <atomic>
+#include <chrono>
 #include <condition_variable>
-#include <functional>
 #include <mutex>
+#include <thread>
 
 namespace UC {
 
-class Latch {
+template <typename Callable>
+class Timer {
 public:
-    explicit Latch(const size_t expected = 0) : counter_{expected} {}
-    void Up() { ++this->counter_; }
-    void Done(std::function<void(void)> finish) noexcept
+    Timer(const std::chrono::seconds& interval, Callable&& callable)
+        : interval_(interval), callable_(callable), running_(false)
     {
-        auto counter = this->counter_.load(std::memory_order_acquire);
-        while (counter > 0) {
-            auto desired = counter - 1;
-            if (this->counter_.compare_exchange_weak(counter, desired, std::memory_order_acq_rel)) {
-                if (desired == 0) {
-                    if (finish) { finish(); }
-                    std::lock_guard<std::mutex> lg(this->mutex_);
-                    this->cv_.notify_all();
-                }
-                return;
-            }
-            counter = this->counter_.load(std::memory_order_acquire);
+    }
+    ~Timer()
+    {
+        {
+            std::lock_guard<std::mutex> lg(this->mutex_);
+            this->running_ = false;
+            this->cv_.notify_one();
+        }
+        if (this->thread_.joinable()) { this->thread_.join(); }
+    }
+    bool Start()
+    {
+        {
+            std::lock_guard<std::mutex> lg(this->mutex_);
+            if (this->running_) { return true; }
+        }
+        try {
+            this->running_ = true;
+            this->thread_ = std::thread(&Timer::Runner, this);
+            return true;
+        } catch (...) {
+            return false;
         }
     }
-    void Wait()
+
+private:
+    void Runner()
     {
-        std::unique_lock<std::mutex> lk(this->mutex_);
-        if (this->counter_ == 0) { return; }
-        this->cv_.wait(lk, [this] { return this->counter_ == 0; });
+        while (this->running_) {
+            {
+                std::unique_lock<std::mutex> lg(this->mutex_);
+                this->cv_.wait_for(lg, this->interval_, [this] { return !this->running_; });
+                if (!this->running_) { break; }
+            }
+            this->callable_();
+        }
     }
 
-protected:
+private:
+    std::chrono::seconds interval_;
+    Callable callable_;
+    std::thread thread_;
     std::mutex mutex_;
     std::condition_variable cv_;
-    std::atomic<size_t> counter_;
+    std::atomic<bool> running_;
 };
 
 } // namespace UC
 
-#endif // UNIFIEDCACHE_LATCH_H
+#endif
