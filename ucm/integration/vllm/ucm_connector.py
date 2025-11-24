@@ -482,7 +482,7 @@ class UCMDirectConnector(KVConnectorBase_V1):
 
     def wait_for_save(self) -> None:
 
-        if self.load_only_first_rank and self.rank != 0:
+        if self.is_mla and self.rank != 0:
             return
 
         metadata = self._get_connector_metadata()
