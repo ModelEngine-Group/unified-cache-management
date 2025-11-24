@@ -307,7 +307,7 @@ class ReqStatePerLayer:
         self.init_static_flag = True
 
     def wait_transfer_task_done(self):
-        assert len(self.tasks) > 0
+        # assert len(self.tasks) > 0
         for task_hash, task in self.tasks.items():
             # TODO: handle exceptions
             ret = self.store_instance.wait(task)
@@ -352,9 +352,10 @@ class ReqStatePerLayer:
         self.pre_topk_block_hashes, diff_blocks = diff_two_map(
             self.pre_topk_block_hashes, target_map
         )
-        self.launch_transfer_task(
-            "load", list(diff_blocks.values()), list(diff_blocks.keys())
-        )
+        if diff_blocks:
+            self.launch_transfer_task(
+                "load", list(diff_blocks.values()), list(diff_blocks.keys())
+            )
 
         ## 2. load all
         # self.launch_transfer_task(
@@ -438,7 +439,8 @@ class ReqStatePerLayer:
                     self.k_cache[vllm_block_ids[-local_window_sz:]] = self.local_window
                 self.start_retrieval(query, forward_context)
                 self.wait_retrieval_and_start_load()
-            self.wait_transfer_task_done()
+            if len(self.tasks) > 0:
+                self.wait_transfer_task_done()
 
     def attention_finished(
         self,
