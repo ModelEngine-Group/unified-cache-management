@@ -21,34 +21,49 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  * */
+#ifndef UNIFIEDCACHE_INFRA_LATCH_H
+#define UNIFIEDCACHE_INFRA_LATCH_H
 
-#ifndef UNIFIEDCACHE_HOTNESS_TIMER_H
-#define UNIFIEDCACHE_HOTNESS_TIMER_H
-#include <chrono>
+#include <atomic>
+#include <condition_variable>
 #include <functional>
-#include "logger/logger.h"
-#include "template/timer.h"
+#include <mutex>
 
 namespace UC {
 
-class HotnessTimer {
+class Latch {
 public:
-   void SetInterval(const size_t interval) { this->interval_ = std::chrono::seconds(interval); }
-   Status Start(std::function<void()> callable) 
-   {
-        try {
-            this->timer_ = std::make_unique<Timer<std::function<void()>>>(this->interval_, std::move(callable));  
-        } catch (const std::exception& e) {
-            UC_ERROR("Failed({}) to start hotness timer.", e.what());
-            return Status::OutOfMemory();
+    explicit Latch(const size_t expected = 0) : counter_{expected} {}
+    void Up() { ++this->counter_; }
+    void Done(std::function<void(void)> finish) noexcept
+    {
+        auto counter = this->counter_.load(std::memory_order_acquire);
+        while (counter > 0) {
+            auto desired = counter - 1;
+            if (this->counter_.compare_exchange_weak(counter, desired, std::memory_order_acq_rel)) {
+                if (desired == 0) {
+                    if (finish) { finish(); }
+                    std::lock_guard<std::mutex> lg(this->mutex_);
+                    this->cv_.notify_all();
+                }
+                return;
+            }
+            counter = this->counter_.load(std::memory_order_acquire);
         }
-        return this->timer_->Start() ? Status::OK() : Status::Error(); 
-   }
-private:
-    std::chrono::seconds interval_;
-    std::unique_ptr<Timer<std::function<void()>>> timer_;
+    }
+    void Wait()
+    {
+        std::unique_lock<std::mutex> lk(this->mutex_);
+        if (this->counter_ == 0) { return; }
+        this->cv_.wait(lk, [this] { return this->counter_ == 0; });
+    }
+
+protected:
+    std::mutex mutex_;
+    std::condition_variable cv_;
+    std::atomic<size_t> counter_;
 };
 
 } // namespace UC
 
-#endif
+#endif // UNIFIEDCACHE_INFRA_LATCH_H

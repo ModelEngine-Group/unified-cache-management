@@ -1,21 +1,11 @@
 add_library(storeinfra STATIC)
 target_include_directories(storeinfra PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 file(GLOB_RECURSE UCMSTORE_COMMON_FILE_SOURCE_FILES "file/*.cc")
-if(LOGGER_BACKEND STREQUAL "spdlog")
-    file(GLOB_RECURSE UCMSTORE_COMMON_LOGGER_SOURCE_FILES "logger/spdlog/*.cc")
-endif()
-if(LOGGER_BACKEND STREQUAL "flux")
-    file(GLOB_RECURSE UCMSTORE_COMMON_LOGGER_SOURCE_FILES "logger/flux/*.cc")
-endif()
-file(GLOB_RECURSE UCMSTORE_COMMON_STATUS_SOURCE_FILES "status/*.cc")
-file(GLOB_RECURSE UCMSTORE_COMMON_TEMPLATE_SOURCE_FILES "template/*.cc")
-file(GLOB_RECURSE UCMSTORE_COMMON_THREAD_SOURCE_FILES "thread/*.cc")
 target_sources(storeinfra PRIVATE ${UCMSTORE_COMMON_FILE_SOURCE_FILES})
-target_sources(storeinfra PRIVATE ${UCMSTORE_COMMON_LOGGER_SOURCE_FILES})
-target_sources(storeinfra PRIVATE ${UCMSTORE_COMMON_STATUS_SOURCE_FILES})
-target_sources(storeinfra PRIVATE ${UCMSTORE_COMMON_TEMPLATE_SOURCE_FILES})
-target_sources(storeinfra PRIVATE ${UCMSTORE_COMMON_THREAD_SOURCE_FILES})
-target_link_libraries(storeinfra PUBLIC fmt)
-if(LOGGER_BACKEND STREQUAL "spdlog")
-    target_link_libraries(storeinfra PUBLIC spdlog)
-endif()
+target_link_libraries(storeinfra PUBLIC
+    infra_status
+    infra_logger
+    infra_template
+    infra_thread
+    infra_time
+)

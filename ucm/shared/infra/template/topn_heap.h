@@ -22,11 +22,12 @@
  * SOFTWARE.
  * */
 
-#ifndef UNIFIEDCACHE_TOP_N_HEAP_H
-#define UNIFIEDCACHE_TOP_N_HEAP_H
+#ifndef UNIFIEDCACHE_INFRA_TOP_N_HEAP_H
+#define UNIFIEDCACHE_INFRA_TOP_N_HEAP_H
 
 #include <algorithm>
 #include <cstdint>
+#include <functional>
 
 namespace UC {
 
