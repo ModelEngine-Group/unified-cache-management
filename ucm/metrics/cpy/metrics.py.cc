@@ -8,10 +8,12 @@ namespace UC {
 
 void bind_monitor(py::module_& m) {
     py::class_<UCMStatsMonitor>(m, "UCMStatsMonitor")
-        .def(py::init<>())                              // 用默认构造函数
+        .def_static("get_instance", &UCMStatsMonitor::getInstance,
+                    py::return_value_policy::reference)
         .def("update_stats", &UCMStatsMonitor::updateStats)
         .def("reset_all", &UCMStatsMonitor::resetAllStats)
-        .def("get_stats", &UCMStatsMonitor::getStats);
+        .def("get_stats", &UCMStatsMonitor::getStats)
+        .def("get_stats_and_clear", &UCMStatsMonitor::getStatsAndClear);
 }
 
 }  // namespace UC

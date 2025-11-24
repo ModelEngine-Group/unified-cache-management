@@ -1,0 +1,34 @@
+# Prometheus Metrics Configuration
+# This file defines which metrics should be enabled and their configurations
+
+prometheus:
+  multiproc_dir: "/vllm-workspace"  # Directory for Prometheus multiprocess mode
+
+  metric_prefix: "ucm:" 
+  
+  # Enable/disable metrics by category
+  enabled_metrics:
+    counters: true
+    gauges: true
+    histograms: true
+  
+  # Counter metrics configuration
+  # counters:
+  #   - name: "received_requests"
+  #     documentation: "Total number of requests sent to ucm"
+  
+  # Gauge metrics configuration
+  # gauges:
+  #   - name: "lookup_hit_rate"
+  #     documentation: "Hit rate of ucm lookup requests since last log"
+  #     multiprocess_mode: "livemostrecent"
+  
+  # Histogram metrics configuration
+  histograms:
+    - name: "load_duration"
+      documentation: "Time to load from ucm (seconds)"
+      buckets: [0.001, 0.005, 0.01, 0.02, 0.04, 0.06, 0.08, 0.1, 0.25, 0.5, 0.75, 1.0, 2.5, 5.0, 7.5, 10.0]
+    - name: "save_duration"
+      documentation: "Time to save to ucm (seconds)"
+      buckets: [0.001, 0.005, 0.01, 0.02, 0.04, 0.06, 0.08, 0.1, 0.25, 0.5, 0.75, 1.0, 2.5, 5.0, 7.5, 10.0]
+

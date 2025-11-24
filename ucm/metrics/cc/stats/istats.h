@@ -11,5 +11,4 @@ public:
     virtual void update(const std::unordered_map<std::string, double>& params) = 0;
     virtual void reset() = 0;
     virtual std::unordered_map<std::string, std::vector<double>> data() = 0;
-    virtual std::unique_ptr<IStats> clone() const = 0;
 };

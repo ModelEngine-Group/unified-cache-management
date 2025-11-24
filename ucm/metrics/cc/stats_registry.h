@@ -1,13 +1,10 @@
-#ifndef STATS_REGISTRY_H
-#define STATS_REGISTRY_H
-
-#include "stats/istats.h"   // 仅含接口，无实现
-#include "stats/ucm_stats.h" // 具体 Stats 实现
+#pragma once
+#include "stats/istats.h"
+#include "stats/ucm_stats.h" // Specific stats
 #include <unordered_map>
 #include <functional>
 #include <mutex>
 
-//  ========== 1. 单例工厂 ==========
 class StatsRegistry {
 public:
     static StatsRegistry& getInstance() {
@@ -25,7 +22,7 @@ public:
         };
     }
 
-    std::unique_ptr<IStats> getStats(const std::string& name) {
+    std::unique_ptr<IStats> createStats(const std::string& name) {
         std::lock_guard lk(mutex_);
         if (auto it = registry_.find(name); it != registry_.end())
             return it->second();
@@ -49,5 +46,3 @@ private:
     std::mutex mutex_;
     std::unordered_map<std::string, std::function<std::unique_ptr<IStats>()>> registry_;
 };
-
-#endif // STATS_REGISTRY_H

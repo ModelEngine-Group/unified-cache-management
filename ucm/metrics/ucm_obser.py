@@ -9,15 +9,10 @@ import yaml
 
 # Third Party
 from prometheus_client import REGISTRY
-
-"""====================================="""
-import UCMStatsMonitor
-
-"""====================================="""
-
 from vllm.distributed.parallel_state import get_world_group
 
 from ucm.logger import init_logger
+from ucm.metrics.ucmmonitor import UCMStatsMonitor
 
 logger = init_logger(__name__)
 
@@ -93,12 +88,10 @@ class PrometheusLogger:
             for counter_cfg in counters:
                 name = counter_cfg.get("name")
                 doc = counter_cfg.get("documentation", "")
-                # Use name directly as stats field name (since YAML name matches stats attribute)
-                stats_field = name
                 # Prometheus metric name with prefix
                 prometheus_name = f"{metric_prefix}{name}" if metric_prefix else name
                 # Internal attribute name for storing the metric object
-                attr_name = f"counter_{name.replace(':', '_').replace('-', '_')}"
+                attr_name = f"counter_{name}"
 
                 if not hasattr(self, attr_name):
                     setattr(
@@ -114,7 +107,6 @@ class PrometheusLogger:
                     self.metric_mappings[name] = {
                         "type": "counter",
                         "attr": attr_name,
-                        "stats_field": stats_field,
                     }
 
         # Initialize gauges
@@ -123,13 +115,11 @@ class PrometheusLogger:
             for gauge_cfg in gauges:
                 name = gauge_cfg.get("name")
                 doc = gauge_cfg.get("documentation", "")
-                multiprocess_mode = gauge_cfg.get("multiprocess_mode", "livemostrecent")
-                # Use name directly as stats field name
-                stats_field = name
+                multiprocess_mode = gauge_cfg.get("multiprocess_mode", "live")
                 # Prometheus metric name with prefix
                 prometheus_name = f"{metric_prefix}{name}" if metric_prefix else name
                 # Internal attribute name
-                attr_name = f"gauge_{name.replace(':', '_').replace('-', '_')}"
+                attr_name = f"gauge_{name}"
 
                 if not hasattr(self, attr_name):
                     setattr(
@@ -146,7 +136,6 @@ class PrometheusLogger:
                     self.metric_mappings[name] = {
                         "type": "gauge",
                         "attr": attr_name,
-                        "stats_field": stats_field,
                     }
 
         # Initialize histograms
@@ -156,12 +145,10 @@ class PrometheusLogger:
                 name = hist_cfg.get("name")
                 doc = hist_cfg.get("documentation", "")
                 buckets = hist_cfg.get("buckets", [])
-                # Use name directly as stats field name
-                stats_field = name
                 # Prometheus metric name with prefix
                 prometheus_name = f"{metric_prefix}{name}" if metric_prefix else name
                 # Internal attribute name
-                attr_name = f"histogram_{name.replace(':', '_').replace('-', '_')}"
+                attr_name = f"histogram_{name}"
 
                 if not hasattr(self, attr_name):
                     setattr(
@@ -178,7 +165,6 @@ class PrometheusLogger:
                     self.metric_mappings[name] = {
                         "type": "histogram",
                         "attr": attr_name,
-                        "stats_field": stats_field,
                     }
 
     def _log_gauge(self, gauge, data: Union[int, float]) -> None:
@@ -200,41 +186,32 @@ class PrometheusLogger:
     def log_prometheus(self, stats: Any):
         """Log metrics to Prometheus based on configuration file"""
         # Dynamically log metrics based on what's configured in YAML
-        for metric_name, mapping in self.metric_mappings.items():
+        for stat_name, value in stats.items():
             try:
-                metric_type = mapping["type"]
-                attr_name = mapping["attr"]
-                stats_field = mapping["stats_field"]
-
-                # Get the metric object
-                metric_obj = getattr(self, attr_name, None)
-                if metric_obj is None:
-                    logger.warning(
-                        f"Metric {metric_name} not initialized (attr: {attr_name})"
-                    )
+                metric_mapped = self.metric_mappings[stat_name]
+                if metric_mapped is None:
+                    logger.warning(f"Stat {stat_name} not initialized.")
                     continue
-
-                # Get the stats value
-                stats_value = getattr(stats, stats_field, None)
-                if stats_value is None:
-                    # Try to get with default value for missing fields
-                    continue
+                else:
+                    logger.info(f"Find stats {metric_mapped}")
+                metric_obj = getattr(self, metric_mapped["attr"], None)
+                metric_type = metric_mapped["type"]
 
                 # Log based on metric type
                 if metric_type == "counter":
-                    self._log_counter(metric_obj, stats_value)
+                    self._log_counter(metric_obj, value)
                 elif metric_type == "gauge":
-                    self._log_gauge(metric_obj, stats_value)
+                    self._log_gauge(metric_obj, value)
                 elif metric_type == "histogram":
                     # Histograms expect a list
-                    if not isinstance(stats_value, list):
-                        if stats_value:
-                            stats_value = [stats_value]
+                    if not isinstance(value, list):
+                        if value:
+                            value = [value]
                         else:
-                            stats_value = []
-                    self._log_histogram(metric_obj, stats_value)
+                            value = []
+                    self._log_histogram(metric_obj, value)
             except Exception as e:
-                logger.warning(f"Failed to log metric {metric_name}: {e}")
+                logger.warning(f"Failed to log metric {stat_name}: {e}")
 
     @staticmethod
     def _metadata_to_labels(metadata: UCMEngineMetadata):
@@ -283,10 +260,10 @@ class UCMStatsLogger:
         self,
         vllm_config: "VllmConfig",
         log_interval: int,
-        config_path: str = "/vllm-workspace/metrics_configs.yaml",
+        config_path: str = "./metrics_configs.yaml",
     ):
         # Parse model_name and worker_id from vllm_config
-        model_name = getattr(vllm_config, "model_name", None)
+        model_name = vllm_config.model_config.served_model_name
         worker_id = get_world_group().local_rank
         # Create metadata
         self.metadata = UCMEngineMetadata(
@@ -294,6 +271,7 @@ class UCMStatsLogger:
         )
 
         self.log_interval = log_interval
+        self.monitor = UCMStatsMonitor.get_instance()
         self.prometheus_logger = PrometheusLogger.GetOrCreate(
             self.metadata, config_path
         )
@@ -305,7 +283,7 @@ class UCMStatsLogger:
     def log_worker(self):
         while self.is_running:
             # Use UCMStatsMonitor.get_states_and_clear() from external import
-            stats = UCMStatsMonitor.get_states_and_clear()
+            stats = self.monitor.get_stats_and_clear("UCMStats")
             self.prometheus_logger.log_prometheus(stats)
             time.sleep(self.log_interval)
 

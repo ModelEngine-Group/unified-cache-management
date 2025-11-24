@@ -2,6 +2,7 @@ import hashlib
 import itertools
 import os
 import pickle
+import time
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Callable, List, Optional
 
@@ -18,8 +19,10 @@ from vllm.v1.core.sched.output import SchedulerOutput
 from vllm.v1.request import Request
 
 from ucm.logger import init_logger
+from ucm.metrics.ucmmonitor import UCMStatsMonitor
 from ucm.store.factory import UcmConnectorFactory
 from ucm.store.ucmstore import Task, UcmKVStoreBase
+from ucm.metrics.ucm_obser import UCMStatsLogger
 from ucm.utils import Config
 
 if TYPE_CHECKING:
@@ -667,6 +670,10 @@ class UCMConnector(KVConnectorBase_V1):
             self.connector = UCMMockConnector(vllm_config, role)
         else:
             self.connector = UCMDirectConnector(vllm_config, role)
+
+        if role == KVConnectorRole.WORKER:
+            self.stats_logger = UCMStatsLogger(vllm_config, 10)
+            self.monitor = UCMStatsMonitor.get_instance()
 
     def get_num_new_matched_tokens(
         self,

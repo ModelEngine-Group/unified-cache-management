@@ -1,0 +1,262 @@
+{
+  "annotations": {
+    "list": [
+      {
+        "builtIn": 1,
+        "datasource": {
+          "type": "grafana",
+          "uid": "-- Grafana --"
+        },
+        "enable": true,
+        "hide": true,
+        "iconColor": "rgba(0, 211, 255, 1)",
+        "name": "Annotations & Alerts",
+        "target": {
+          "limit": 100,
+          "matchAny": false,
+          "tags": [],
+          "type": "dashboard"
+        },
+        "type": "dashboard"
+      }
+    ]
+  },
+  "description": "Monitoring UnifiedCache Connector Service",
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 0,
+  "id": 1,
+  "links": [],
+  "liveNow": false,
+  "panels": [
+    {
+    "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+    },
+    "description": "P50, P90, P95, and P99 load duration in seconds for each start_load_kv.",
+    "fieldConfig": {
+        "defaults": {
+        "color": {
+            "mode": "palette-classic"
+        },
+        "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "barWidthFactor": 0.6,
+            "drawStyle": "line",
+            "fillOpacity": 0,
+            "gradientMode": "none",
+            "hideFrom": {
+            "legend": false,
+            "tooltip": false,
+            "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+            "type": "linear"
+            },
+            "showPoints": "auto",
+            "spanNulls": false,
+            "stacking": {
+            "group": "A",
+            "mode": "none"
+            },
+            "thresholdsStyle": {
+            "mode": "off"
+            }
+        },
+        "mappings": [],
+        "thresholds": {
+            "mode": "absolute",
+            "steps": [
+            {
+                "color": "green",
+                "value": null
+            },
+            {
+                "color": "red",
+                "value": 80
+            }
+            ]
+        },
+        "unit": "s"
+        },
+        "overrides": []
+    },
+    "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 16
+    },
+    "id": 17, 
+    "options": {
+        "legend": {
+        "calcs": [],
+        "displayMode": "list",
+        "placement": "bottom",
+        "showLegend": true
+        },
+        "tooltip": {
+        "mode": "single",
+        "sort": "none"
+        }
+    },
+    "targets": [
+        {
+        "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+        },
+        "disableTextWrap": false,
+        "editorMode": "builder",
+        "expr": "histogram_quantile(0.99, sum by(le) (rate(ucm:load_duration_bucket{model_name=\"$model_name\"}[$__rate_interval])))",
+        "fullMetaSearch": false,
+        "includeNullMetadata": false,
+        "instant": false,
+        "legendFormat": "P99",
+        "range": true,
+        "refId": "A",
+        "useBackend": false
+        },
+        {
+        "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+        },
+        "disableTextWrap": false,
+        "editorMode": "builder",
+        "expr": "histogram_quantile(0.95, sum by(le) (rate(ucm:load_duration_bucket{model_name=\"$model_name\"}[$__rate_interval])))",
+        "fullMetaSearch": false,
+        "hide": false,
+        "includeNullMetadata": false,
+        "instant": false,
+        "legendFormat": "P95",
+        "range": true,
+        "refId": "B",
+        "useBackend": false
+        },
+        {
+        "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+        },
+        "disableTextWrap": false,
+        "editorMode": "builder",
+        "expr": "histogram_quantile(0.9, sum by(le) (rate(ucm:load_duration_bucket{model_name=\"$model_name\"}[$__rate_interval])))",
+        "fullMetaSearch": false,
+        "hide": false,
+        "includeNullMetadata": false,
+        "instant": false,
+        "legendFormat": "P90",
+        "range": true,
+        "refId": "C",
+        "useBackend": false
+        },
+        {
+        "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+        },
+        "disableTextWrap": false,
+        "editorMode": "builder",
+        "expr": "histogram_quantile(0.5, sum by(le) (rate(ucm:load_duration_bucket{model_name=\"$model_name\"}[$__rate_interval])))",
+        "fullMetaSearch": false,
+        "hide": false,
+        "includeNullMetadata": false,
+        "instant": false,
+        "legendFormat": "P50",
+        "range": true,
+        "refId": "D",
+        "useBackend": false
+        },
+        {
+        "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+        },
+        "editorMode": "code",
+        "expr": "rate(ucm:load_duration_sum{model_name=\"$model_name\"}[$__rate_interval])\n/\nrate(ucm:load_duration_count{model_name=\"$model_name\"}[$__rate_interval])",
+        "hide": false,
+        "instant": false,
+        "legendFormat": "Average",
+        "range": true,
+        "refId": "E"
+        }
+    ],
+    "title": "Connector Load Duration",
+    "type": "timeseries"
+    }
+    ],
+    "refresh": "",
+    "schemaVersion": 39,
+    "tags": [],
+    "templating": {
+        "list": [
+        {
+            "current": {
+            "selected": false,
+            "text": "prometheus",
+            "value": "edx8memhpd9tsa"
+            },
+            "hide": 0,
+            "includeAll": false,
+            "label": "datasource",
+            "multi": false,
+            "name": "DS_PROMETHEUS",
+            "options": [],
+            "query": "prometheus",
+            "queryValue": "",
+            "refresh": 1,
+            "regex": "",
+            "skipUrlSync": false,
+            "type": "datasource"
+        },
+        {
+            "current": {
+            "selected": false,
+            "text": "/share/datasets/public_models/Meta-Llama-3-8B-Instruct",
+            "value": "/share/datasets/public_models/Meta-Llama-3-8B-Instruct"
+            },
+            "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+            },
+            "definition": "label_values(model_name)",
+            "hide": 0,
+            "includeAll": false,
+            "label": "model_name",
+            "multi": false,
+            "name": "model_name",
+            "options": [],
+            "query": {
+            "query": "label_values(model_name)",
+            "refId": "StandardVariableQuery"
+            },
+            "refresh": 1,
+            "regex": "",
+            "skipUrlSync": false,
+            "sort": 0,
+            "type": "query"
+        }
+        ]
+    },
+    "time": {
+        "from": "now-5m",
+        "to": "now"
+    },
+    "timepicker": {},
+    "timezone": "",
+    "title": "vLLM",
+    "uid": "b281712d-8bff-41ef-9f3f-71ad43c05e9b",
+    "version": 8,
+    "weekStart": ""
+}

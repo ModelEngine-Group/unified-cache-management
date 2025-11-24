@@ -7,13 +7,25 @@
 UCMStatsMonitor::UCMStatsMonitor() {
     auto& registry = StatsRegistry::getInstance();
     for (const auto& name : registry.getRegisteredStatsNames()) {
-        stats_map_[name] = registry.getStats(name);
+        stats_map_[name] = registry.createStats(name);
     }
 }
 
 std::unordered_map<std::string, std::vector<double>> UCMStatsMonitor::getStats(const std::string& name) {
     std::lock_guard<std::mutex> lock(mutex_);
     return stats_map_[name]->data();
+}
+
+void UCMStatsMonitor::resetStats(const std::string& name) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    stats_map_[name]->reset();
+}
+
+std::unordered_map<std::string, std::vector<double>> UCMStatsMonitor::getStatsAndClear(const std::string& name) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    auto result = stats_map_[name]->data();
+    stats_map_[name]->reset();
+    return result;
 }
 
 void UCMStatsMonitor::updateStats(
@@ -25,16 +37,6 @@ void UCMStatsMonitor::updateStats(
     if (it != stats_map_.end()) {
         it->second->update(params);
     }
-}
-
-std::unordered_map<std::string, std::unique_ptr<IStats>>
-UCMStatsMonitor::getStatsSnapshot() {
-    std::lock_guard<std::mutex> lock(mutex_);
-    std::unordered_map<std::string, std::unique_ptr<IStats>> snapshot;
-    for (const auto& [n, ptr] : stats_map_) {
-        snapshot[n] = ptr->clone();
-    }
-    return snapshot;
 }
 
 void UCMStatsMonitor::resetAllStats() {
