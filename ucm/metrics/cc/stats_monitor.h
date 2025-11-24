@@ -1,4 +1,6 @@
-#pragma once
+#ifndef UCM_METRICS_MONITOR_H
+#define UCM_METRICS_MONITOR_H
+
 #include "stats/istats.h" 
 #include <unordered_map>
 #include <memory>
@@ -14,6 +16,8 @@ public:
     }
 
     ~UCMStatsMonitor() = default;
+
+    void createStats(const std::string& name);
 
     std::unordered_map<std::string, std::vector<double>>
         getStats(const std::string& name);
@@ -36,3 +40,5 @@ private:
     UCMStatsMonitor(const UCMStatsMonitor&) = delete;
     UCMStatsMonitor& operator=(const UCMStatsMonitor&) = delete;
 };
+
+#endif  // UCM_METRICS_MONITOR_H

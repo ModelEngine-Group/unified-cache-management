@@ -19,10 +19,10 @@ from vllm.v1.core.sched.output import SchedulerOutput
 from vllm.v1.request import Request
 
 from ucm.logger import init_logger
+from ucm.metrics.ucm_obser import UCMStatsLogger
 from ucm.metrics.ucmmonitor import UCMStatsMonitor
 from ucm.store.factory import UcmConnectorFactory
 from ucm.store.ucmstore import Task, UcmKVStoreBase
-from ucm.metrics.ucm_obser import UCMStatsLogger
 from ucm.utils import Config
 
 if TYPE_CHECKING:
@@ -132,6 +132,8 @@ class UCMDirectConnector(KVConnectorBase_V1):
 
         connector_configs = self.launch_config.get("ucm_connectors", [])
         assert len(connector_configs) > 0, "no storage connector name in config."
+            self.io_size = config["io_size"]
+            self.num_layers = num_layers
 
         name = connector_configs[0].get("ucm_connector_name")
         config = connector_configs[0].get("ucm_connector_config") or {}
@@ -455,7 +457,6 @@ class UCMDirectConnector(KVConnectorBase_V1):
                 tensor.copy_(rec_tensor[i])
 
     def start_load_kv(self, forward_context: "ForwardContext", **kwargs) -> None:
-
         metadata = self._get_connector_metadata()
         assert isinstance(metadata, UCMConnectorMetadata)
 
@@ -463,9 +464,14 @@ class UCMDirectConnector(KVConnectorBase_V1):
 
         request_to_task: dict[str, Optional[Task]] = {}
         req_broadcast_addr = {}
+        is_load = False
+        num_loaded_block = 0
+        load_start_time = time.perf_counter() * 1000
         for request_id, request in metadata.request_meta.items():
             if len(request.load_block_ids[0]) == 0:
                 continue
+            is_load = True
+            num_loaded_block += len(request.load_block_ids[0])
 
             ucm_block_ids, vllm_block_ids = request.load_block_ids
             if self.rank != 0 and not self.is_mla:
@@ -489,6 +495,20 @@ class UCMDirectConnector(KVConnectorBase_V1):
                     logger.error(f"request {request_id} load kv cache failed.")
             if self.load_only_first_rank:
                 self._broadcast(req_broadcast_addr[request_id])
+        load_end_time = time.perf_counter() * 1000
+        if is_load:
+            UCMStatsMonitor.get_instance().update_stats(
+                "UCMStats",
+                {
+                    "load_duration": load_end_time - load_start_time,
+                    "load_speed": num_loaded_block
+                    * self.io_size
+                    * self.num_layers
+                    / (load_end_time - load_start_time)
+                    / 1024
+                    / 1024,  # GB/s
+                },
+            )
 
     def wait_for_layer_load(self, layer_name: str) -> None:
         pass
@@ -512,9 +532,14 @@ class UCMDirectConnector(KVConnectorBase_V1):
 
         request_to_task: dict[str, Task] = {}
         request_to_blocks: dict[str, list[str]] = {}
+        is_dump = False
+        dump_start_time = time.perf_counter() * 1000
+        num_dumped_block = 0
         for request_id, request in metadata.request_meta.items():
             if len(request.dump_block_ids[0]) == 0:
                 continue
+            is_dump = True
+            num_dumped_block += len(request.dump_block_ids[0])
 
             ucm_block_ids, vllm_block_ids = request.dump_block_ids
             if self.rank != 0:
@@ -549,6 +574,20 @@ class UCMDirectConnector(KVConnectorBase_V1):
             else:
                 logger.error(f"request {request_id} dump kv cache failed.")
                 self.store.commit(ucm_block_ids, False)
+        dump_end_time = time.perf_counter() * 1000
+        if is_dump:
+            UCMStatsMonitor.get_instance().update_stats(
+                "UCMStats",
+                {
+                    "save_duration": dump_end_time - dump_start_time,
+                    "save_speed": num_dumped_block
+                    * self.io_size
+                    * self.num_layers
+                    / (dump_end_time - dump_start_time)
+                    / 1024
+                    / 1024,  # GB/s
+                },
+            )
 
     def clear_connector_metadata(self) -> None:
         super().clear_connector_metadata()

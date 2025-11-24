@@ -1,41 +1,22 @@
-#pragma once
+#ifndef UCM_METRICS_REGISTRY_H
+#define UCM_METRICS_REGISTRY_H
+
 #include "stats/istats.h"
-#include "stats/ucm_stats.h" // Specific stats
 #include <unordered_map>
 #include <functional>
 #include <mutex>
 
+using Creator = std::unique_ptr<IStats>(*)();
+
 class StatsRegistry {
 public:
-    static StatsRegistry& getInstance() {
-        static StatsRegistry inst;
-        inst.registerStats<UCMStats>();
-        return inst;
-    }
+    static StatsRegistry& getInstance();
 
-    template <typename T>
-    void registerStats() {
-        static_assert(std::is_base_of_v<IStats, T>);
-        std::lock_guard lk(mutex_);
-        registry_[T().name()] = []() -> std::unique_ptr<IStats> {
-            return std::make_unique<T>();
-        };
-    }
+    static void registerStats(std::string name, Creator creator);
 
-    std::unique_ptr<IStats> createStats(const std::string& name) {
-        std::lock_guard lk(mutex_);
-        if (auto it = registry_.find(name); it != registry_.end())
-            return it->second();
-        return nullptr;
-    }
+    std::unique_ptr<IStats> createStats(const std::string& name);
 
-    std::vector<std::string> getRegisteredStatsNames() {
-        std::lock_guard lk(mutex_);
-        std::vector<std::string> names;
-        names.reserve(registry_.size());
-        for (auto& [n, _] : registry_) names.push_back(n);
-        return names;
-    }
+    std::vector<std::string> getRegisteredStatsNames();
 
 private:
     StatsRegistry() = default;
@@ -43,6 +24,8 @@ private:
     StatsRegistry(const StatsRegistry&) = delete;
     StatsRegistry& operator=(const StatsRegistry&) = delete;
 
-    std::mutex mutex_;
-    std::unordered_map<std::string, std::function<std::unique_ptr<IStats>()>> registry_;
+    static std::mutex mutex_;
+    static std::unordered_map<std::string, Creator> registry_;
 };
+
+#endif  // UCM_METRICS_REGISTRY_H

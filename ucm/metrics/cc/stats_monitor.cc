@@ -3,12 +3,20 @@
 #include "stats_monitor.h"
 #include <mutex>
 #include <vector>
+#include <iostream>
 
 UCMStatsMonitor::UCMStatsMonitor() {
     auto& registry = StatsRegistry::getInstance();
     for (const auto& name : registry.getRegisteredStatsNames()) {
+        std::cout<<"Creating stats instance for: " << name << std::endl;
         stats_map_[name] = registry.createStats(name);
     }
+}
+
+void UCMStatsMonitor::createStats(const std::string& name) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    auto& registry = StatsRegistry::getInstance();
+    stats_map_[name] = registry.createStats(name);
 }
 
 std::unordered_map<std::string, std::vector<double>> UCMStatsMonitor::getStats(const std::string& name) {
