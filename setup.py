@@ -135,7 +135,7 @@ ext_modules.append(CMakeExtension(name="ucm", sourcedir=ROOT_DIR))
 
 setup(
     name="uc-manager",
-    version="0.1.0rc3",
+    version="0.1.0rc4",
     description="Unified Cache Management",
     author="Unified Cache Team",
     packages=find_packages(),
