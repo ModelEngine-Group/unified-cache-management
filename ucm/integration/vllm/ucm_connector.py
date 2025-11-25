@@ -65,28 +65,6 @@ class RequestHasher:
         md5_bytes = hashlib.md5(input_bytes).digest()
         return int.from_bytes(md5_bytes, byteorder="big")
 
-    def process(self, block_size: int, request: "Request") -> list[str]:
-        token_ids = request.all_token_ids
-
-        ret = []
-        parent_block_hash_value = None
-        for start in range(0, len(token_ids), block_size):
-            end = start + block_size
-            block_token_ids = token_ids[start:end]
-            # Do not hash the block if it is not full.
-            if len(block_token_ids) < block_size:
-                break
-
-            if not parent_block_hash_value:
-                parent_block_hash_value = RequestHasher._SEED_HASH
-
-            block_token_ids_tuple = tuple(block_token_ids)
-            hash_value = self((parent_block_hash_value, block_token_ids_tuple))
-            parent_block_hash_value = hash_value
-            ret.append(str(hash_value))
-
-        return ret
-
 
 class UCMDirectConnector(KVConnectorBase_V1):
     """
@@ -172,6 +150,30 @@ class UCMDirectConnector(KVConnectorBase_V1):
             config["io_size"] / 1024,
         )
 
+    def generate_hash(self, block_size: int, request: "Request") -> list[str]:
+        token_ids = request.all_token_ids
+
+        ret = []
+        parent_block_hash_value = None
+        for start in range(0, len(token_ids), block_size):
+            end = start + block_size
+            block_token_ids = token_ids[start:end]
+            # Do not hash the block if it is not full.
+            if len(block_token_ids) < block_size:
+                break
+
+            if not parent_block_hash_value:
+                parent_block_hash_value = RequestHasher._SEED_HASH
+
+            block_token_ids_tuple = tuple(block_token_ids)
+            hash_value = self.request_hasher(
+                (parent_block_hash_value, block_token_ids_tuple)
+            )
+            parent_block_hash_value = hash_value
+            ret.append(str(hash_value))
+
+        return ret
+
     def get_num_new_matched_tokens(
         self,
         request: "Request",
@@ -181,7 +183,7 @@ class UCMDirectConnector(KVConnectorBase_V1):
         assert num_computed_tokens % self.block_size == 0
         hbm_hit_block_num = num_computed_tokens // self.block_size
 
-        ucm_block_ids = self.request_hasher.process(self.block_size, request)
+        ucm_block_ids = self.generate_hash(self.block_size, request)
 
         external_block_ids = ucm_block_ids[hbm_hit_block_num:]
         if not external_block_ids:
