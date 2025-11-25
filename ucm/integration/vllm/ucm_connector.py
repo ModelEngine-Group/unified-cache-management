@@ -56,13 +56,24 @@ class RequestHasher:
 
     _SEED_HASH = None
 
-    def __init__(self):
+    def __init__(self, vllm_config: "VllmConfig"):
+        self.model = vllm_config.model_config.model
+        self.world_size = vllm_config.parallel_config.world_size
+        self.dtype = vllm_config.model_config.dtype
+
+        meta = (self.model, self.world_size, str(self.dtype))
+        self.meta_bytes = pickle.dumps(meta, protocol=pickle.HIGHEST_PROTOCOL)
         if RequestHasher._SEED_HASH is None:
             RequestHasher._SEED_HASH = self("UCM_HASH_SEED")
 
     def __call__(self, input_data) -> int:
         input_bytes = pickle.dumps(input_data, protocol=pickle.HIGHEST_PROTOCOL)
-        md5_bytes = hashlib.md5(input_bytes).digest()
+
+        h = hashlib.md5()
+        h.update(self.meta_bytes)
+        h.update(input_bytes)
+
+        md5_bytes = h.digest()
         return int.from_bytes(md5_bytes, byteorder="big")
 
 
@@ -99,7 +110,7 @@ class UCMDirectConnector(KVConnectorBase_V1):
 
         self.store: UcmKVStoreBase
 
-        self.request_hasher = RequestHasher()
+        self.request_hasher = RequestHasher(vllm_config)
 
         # save block info, avoid hash request twice, and track them until request finished
         self.requests_meta: dict[str, RequestMeta] = {}
