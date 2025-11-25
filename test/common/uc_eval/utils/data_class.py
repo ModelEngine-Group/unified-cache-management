@@ -98,6 +98,8 @@ class RequestRecord:
     prefill_latency: float = 0.0
     # Time between tokens
     tbt_list: list[float] = field(default_factory=list)
+    # Average latency of the tbt_list
+    tbt_latency: float = 0.0
     # Whether the request is successful
     is_success: bool = False
 
@@ -120,6 +122,8 @@ class MultiTurnDialogRecord(RequestRecord):
     # If this request belongs to QA dialog
     is_qa: bool = False
 
+    def to_dict(self):
+        return vars(self)
 
 @dataclass
 class LatencyStatistics:
@@ -153,8 +157,6 @@ class LatencyStatistics:
     max_decode_latency: float = -1
     # The average latency of decoder latency(ms)
     avg_decode_latency: float = -1
-    # The average confidence
-    avg_confidence: Dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self):
         return vars(self)

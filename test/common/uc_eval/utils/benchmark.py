@@ -115,7 +115,7 @@ class PerformanceBenchmark(BenchmarkBase):
             if cost > 0:
                 throughputs.append(tokens / cost)
         if throughputs:
-            token_throughput_per_request = np.mean(throughputs)
+            token_throughput_per_request = np.mean(throughputs).item()
             latency.token_throughput_per_request = round(
                 token_throughput_per_request, 2
             )
@@ -127,56 +127,55 @@ class PerformanceBenchmark(BenchmarkBase):
             logger.warning("No valid requests for throughput calculation")
 
         prefill_latency_list = [record_dict["prefill_latency"]]
-        p50_prefill_latency = np.percentile(prefill_latency_list, 50) * MS_SCALE
+        p50_prefill_latency = np.percentile(prefill_latency_list, 50).item() * MS_SCALE
         latency.p50_prefill_latency = round(p50_prefill_latency, 2)
         logger.debug("Time to First token latency P50: %.4f ms", p50_prefill_latency)
 
-        p90_prefill_latency = np.percentile(prefill_latency_list, 90) * MS_SCALE
+        p90_prefill_latency = np.percentile(prefill_latency_list, 90).item() * MS_SCALE
         latency.p90_prefill_latency = round(p90_prefill_latency, 2)
         logger.debug("Time to First token latency TP90: %.4f ms", p90_prefill_latency)
 
-        p99_prefill_latency = np.percentile(prefill_latency_list, 99) * MS_SCALE
+        p99_prefill_latency = np.percentile(prefill_latency_list, 99).item() * MS_SCALE
         latency.p99_prefill_latency = round(p99_prefill_latency, 2)
         logger.debug("Time to First token latency TP99: %.4f ms", p99_prefill_latency)
 
-        max_prefill_latency = np.max(prefill_latency_list) * MS_SCALE
+        max_prefill_latency = np.max(prefill_latency_list).item() * MS_SCALE
         latency.max_prefill_latency = round(max_prefill_latency, 2)
         logger.debug(
             "Maximum time to first token latency: %.4f ms", max_prefill_latency
         )
 
-        avg_prefill_latency = np.mean(prefill_latency_list) * MS_SCALE
+        avg_prefill_latency = np.mean(prefill_latency_list).item() * MS_SCALE
         latency.avg_prefill_latency = round(avg_prefill_latency, 2)
         logger.debug(
             "Average time to first token latency: %.4f ms", avg_prefill_latency
         )
 
-        # 这里是list[list[float]]，要求的是这里所有float的平均（这里可能也会要求list[float]中去除前两个元素后，取所有请求per decode time的均值）
         decode_latency_list = []
-        for tmp_list in record_dict["tbt_list"]:
-            decode_latency_list.extend(tmp_list[2:])
+        for tbt_latency in record_dict["tbt_latency"]:
+            decode_latency_list.append(tbt_latency)
 
-        p50_decode_latency = np.percentile(decode_latency_list, 50) * MS_SCALE
+        p50_decode_latency = np.percentile(decode_latency_list, 50).item() * MS_SCALE
         latency.p50_decode_latency = round(p50_decode_latency, 2)
         logger.debug("Tokens Per Second latency TP50: %.4f ms", p50_decode_latency)
 
-        p90_decode_latency = np.percentile(decode_latency_list, 90) * MS_SCALE
+        p90_decode_latency = np.percentile(decode_latency_list, 90).item() * MS_SCALE
         latency.p90_decode_latency = round(p90_decode_latency, 2)
         logger.debug("Tokens Per Second latency TP90: %.4f ms", p90_decode_latency)
 
-        p99_decode_latency = np.percentile(decode_latency_list, 99) * MS_SCALE
+        p99_decode_latency = np.percentile(decode_latency_list, 99).item() * MS_SCALE
         latency.p99_decode_latency = round(p99_decode_latency, 2)
         logger.debug("Tokens Per Second latency TP99: %.4f ms", p99_decode_latency)
 
-        max_decode_latency = np.max(decode_latency_list) * MS_SCALE
+        max_decode_latency = np.max(decode_latency_list).item() * MS_SCALE
         latency.max_decode_latency = round(max_decode_latency, 2)
         logger.debug("Maximum tokens per second latency: %.4f ms", max_decode_latency)
 
-        avg_decode_latency = np.mean(decode_latency_list) * MS_SCALE
+        avg_decode_latency = np.mean(decode_latency_list).item() * MS_SCALE
         latency.avg_decode_latency = round(avg_decode_latency, 2)
         logger.debug("Average tokens per second latency: %.4f ms", avg_decode_latency)
 
-        return latency.to_dict()
+        return latency
 
     def _get_stable_request_id(
         self, result: Dict[str, List[Any]], target_concurrency: int

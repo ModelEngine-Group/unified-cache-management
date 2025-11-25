@@ -155,6 +155,8 @@ class BaseClient:
         for record in records:
             record.input_tokens = len(self.tokenizer.tokenize(record.input_data))
             record.output_tokens = len(self.tokenizer.tokenize(record.output_data))
+            record.tbt_list = record.tbt_list[2:]
+            record.tbt_latency = sum(record.tbt_list) / len(record.tbt_list)
 
         return records[0] if single_record is not None else records
 

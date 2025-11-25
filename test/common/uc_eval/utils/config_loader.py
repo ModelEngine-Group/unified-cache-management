@@ -55,7 +55,7 @@ class ConfigLoader:
         logger.info("Validating config...")
         if self.perf_config is not None and self.eval_config is not None:
             raise ValueError(
-                "perf_config and eval_config are mutually exclusive – one must be None."
+                "perf_config and eval_config are mutually exclusive, one must be None."
             )
         if self.perf_config is None and self.eval_config is None:
             raise ValueError(
@@ -182,6 +182,7 @@ class TaskFactory:
         perf_config: Optional[PerfConfig],
         eval_config: Optional[EvalConfig],
     ) -> Tuple[BaseDataset, BaseClient, BenchmarkBase]:
+        stream = False
         data_type = (perf_config or eval_config).data_type
         tokenizer_path = model_config.tokenizer_path
         enable_prefix_cache = perf_config.enable_prefix_cache

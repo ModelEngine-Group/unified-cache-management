@@ -3,7 +3,11 @@ import dataclasses
 import pytest
 from common.capture_utils import export_vars
 from common.config_utils import config_utils as config_instance
-from common.uc_eval.task import DocQaPerfTask, MultiPerfTask, SyntheticPerfTask
+from common.uc_eval.task import (
+    DocQaPerfTask,
+    MultiTurnDialogPerfTask,
+    SyntheticPerfTask,
+)
 from common.uc_eval.utils.data_class import ModelConfig, PerfConfig
 
 
@@ -48,8 +52,9 @@ sync_perf_cases = [
 def test_sync_perf(
     perf_config: PerfConfig, model_config: ModelConfig, request: pytest.FixtureRequest
 ):
-    task = SyntheticPerfTask(model_config, perf_config)
-    result = task.process()
+    file_save_path = config_instance.get_config("reports").get("base_dir")
+    task = SyntheticPerfTask(model_config, perf_config, file_save_path)
+    result = task.run()
     return {"_name": request.node.callspec.id, "_data": result}
 
 
@@ -73,8 +78,9 @@ multiturn_dialogue_perf_cases = [
 def test_multiturn_dialogue_perf(
     perf_config: PerfConfig, model_config: ModelConfig, request: pytest.FixtureRequest
 ):
-    task = MultiPerfTask(model_config, perf_config)
-    result = task.process()
+    file_save_path = config_instance.get_config("reports").get("base_dir")
+    task = MultiTurnDialogPerfTask(model_config, perf_config, file_save_path)
+    result = task.run()
     return {"_name": request.node.callspec.id, "_data": result}
 
 
@@ -82,7 +88,7 @@ doc_qa_perf_cases = [
     pytest.param(
         PerfConfig(
             data_type="doc_qa",
-            dataset_file_path="test/uc-eval-new/datasets/doc_qa/demo.jsonl",
+            dataset_file_path="test/uc-eval/datasets/doc_qa/demo.jsonl",
             enable_prefix_cache=False,
             parallel_num=1,
             benchmark_mode="default-perf",
@@ -98,6 +104,7 @@ doc_qa_perf_cases = [
 def test_doc_qa_perf(
     perf_config: PerfConfig, model_config: ModelConfig, request: pytest.FixtureRequest
 ):
-    task = DocQaPerfTask(model_config, perf_config)
-    result = task.process()
+    file_save_path = config_instance.get_config("reports").get("base_dir")
+    task = DocQaPerfTask(model_config, perf_config, file_save_path)
+    result = task.run()
     return {"_name": request.node.callspec.id, "_data": result}
