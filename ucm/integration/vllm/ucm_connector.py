@@ -56,37 +56,21 @@ class RequestHasher:
 
     _SEED_HASH = None
 
-    def __init__(self):
+    def __init__(self, vllm_config, rank_id):
+        meta = f"{vllm_config.model_config.model}:{vllm_config.parallel_config.world_size}:{vllm_config.model_config.dtype}:{rank_id}"
+        self.meta_bytes = meta.encode("utf-8")
+
         if RequestHasher._SEED_HASH is None:
-            RequestHasher._SEED_HASH = self._md5("UCM_HASH_SEED")
+            RequestHasher._SEED_HASH = self("UCM_HASH_SEED")
 
-    @staticmethod
-    def _md5(input_data) -> int:
-        input_bytes = pickle.dumps(input_data, protocol=pickle.HIGHEST_PROTOCOL)
-        md5_bytes = hashlib.md5(input_bytes).digest()
-        return int.from_bytes(md5_bytes, byteorder="big")
+    def __call__(self, input_data) -> int:
+        if isinstance(input_data, str):
+            input_bytes = input_data.encode("utf-8")
+        else:
+            input_bytes = pickle.dumps(input_data, protocol=pickle.HIGHEST_PROTOCOL)
 
-    def __call__(self, block_size: int, request: "Request") -> list[str]:
-        token_ids = request.all_token_ids
-
-        ret = []
-        parent_block_hash_value = None
-        for start in range(0, len(token_ids), block_size):
-            end = start + block_size
-            block_token_ids = token_ids[start:end]
-            # Do not hash the block if it is not full.
-            if len(block_token_ids) < block_size:
-                break
-
-            if not parent_block_hash_value:
-                parent_block_hash_value = RequestHasher._SEED_HASH
-
-            block_token_ids_tuple = tuple(block_token_ids)
-            hash_value = self._md5((parent_block_hash_value, block_token_ids_tuple))
-            parent_block_hash_value = hash_value
-            ret.append(str(hash_value))
-
-        return ret
+        h = hashlib.md5(self.meta_bytes + input_bytes)
+        return int.from_bytes(h.digest(), byteorder="big")
 
 
 class UCMDirectConnector(KVConnectorBase_V1):
@@ -114,7 +98,7 @@ class UCMDirectConnector(KVConnectorBase_V1):
             torch_dev = torch.npu
             dev_name = "npu"
         else:
-            raise RuntimeError("Unsupported device platform for LMCache engine.")
+            raise RuntimeError("Unsupported device platform for UCMDirectConnector.")
 
         if self.rank >= 0:
             self.device = torch_dev.device(f"{dev_name}:{self.rank}")
@@ -122,7 +106,10 @@ class UCMDirectConnector(KVConnectorBase_V1):
 
         self.store: UcmKVStoreBase
 
-        self.request_hasher = RequestHasher()
+        if role == KVConnectorRole.SCHEDULER:
+            self.request_hasher = RequestHasher(vllm_config, 0)
+        else:
+            self.request_hasher = RequestHasher(vllm_config, self.rank)
 
         # save block info, avoid hash request twice, and track them until request finished
         self.requests_meta: dict[str, RequestMeta] = {}
@@ -139,41 +126,60 @@ class UCMDirectConnector(KVConnectorBase_V1):
                 self.broadcast_fn = self.group_coordinator.broadcast
                 self.broadcast_stream = torch.cuda.Stream()
 
-        if "ucm_connector_name" in self.launch_config:
-            name = self.launch_config.get("ucm_connector_name")
-            config = self.launch_config.get("ucm_connector_config") or {}
-            config["device"] = self.rank
-            config["role"] = (
-                "scheduler" if role == KVConnectorRole.SCHEDULER else "worker"
-            )
-            element_size = vllm_config.model_config.dtype.itemsize
-            single_head_dim = vllm_config.model_config.get_head_size()
-            num_head_per_tp = vllm_config.model_config.get_num_kv_heads(
-                vllm_config.parallel_config
-            )
-            total_tp_size = vllm_config.parallel_config.tensor_parallel_size
-            num_layers = vllm_config.model_config.get_num_layers(
-                vllm_config.parallel_config
-            )
-            block_size_per_layer = self.block_size * element_size * single_head_dim
-            config["kv_block_size"] = (
-                block_size_per_layer
-                * num_layers
-                * (1 if self.is_mla else num_head_per_tp * total_tp_size * 2)
-            )
-            config["io_size"] = block_size_per_layer * (
-                1 if self.is_mla else num_head_per_tp
-            )
-            self.store = UcmConnectorFactory.create_connector(name, config)
+        connector_configs = self.launch_config.get("ucm_connectors", [])
+        assert len(connector_configs) > 0, "no storage connector name in config."
 
-            logger.info("init UCConnectorImpl, connector: %s", name)
-            logger.info(
-                "single file size = %d MB, io_size = %d KB,",
-                config["kv_block_size"] / 1024 / 1024,
-                config["io_size"] / 1024,
+        name = connector_configs[0].get("ucm_connector_name")
+        config = connector_configs[0].get("ucm_connector_config") or {}
+        config["device"] = self.rank
+        config["role"] = "scheduler" if role == KVConnectorRole.SCHEDULER else "worker"
+        element_size = vllm_config.model_config.dtype.itemsize
+        single_head_dim = vllm_config.model_config.get_head_size()
+        num_head_per_tp = vllm_config.model_config.get_num_kv_heads(
+            vllm_config.parallel_config
+        )
+        total_tp_size = vllm_config.parallel_config.tensor_parallel_size
+        num_layers = vllm_config.model_config.get_num_layers(
+            vllm_config.parallel_config
+        )
+        block_size_per_layer = self.block_size * element_size * single_head_dim
+        config["kv_block_size"] = (
+            block_size_per_layer
+            * num_layers
+            * (1 if self.is_mla else num_head_per_tp * 2)
+        )
+        config["io_size"] = block_size_per_layer * (
+            1 if self.is_mla else num_head_per_tp
+        )
+        self.store = UcmConnectorFactory.create_connector(name, config)
+
+        logger.info("init UCConnectorImpl, connector: %s", name)
+        logger.info(
+            "single file size = %d MB, io_size = %d KB,",
+            config["kv_block_size"] / 1024 / 1024,
+            config["io_size"] / 1024,
+        )
+
+    def generate_hash(self, block_size: int, request: "Request") -> list[str]:
+        token_ids = request.all_token_ids
+
+        ret = []
+        parent_block_hash_value = RequestHasher._SEED_HASH
+        for start in range(0, len(token_ids), block_size):
+            end = start + block_size
+            block_token_ids = token_ids[start:end]
+            # Do not hash the block if it is not full.
+            if len(block_token_ids) < block_size:
+                break
+
+            block_token_ids_tuple = tuple(block_token_ids)
+            hash_value = self.request_hasher(
+                (parent_block_hash_value, block_token_ids_tuple)
             )
-        else:
-            raise TypeError(f"no storage connector name in config.")
+            parent_block_hash_value = hash_value
+            ret.append(str(hash_value))
+
+        return ret
 
     def get_num_new_matched_tokens(
         self,
@@ -184,7 +190,7 @@ class UCMDirectConnector(KVConnectorBase_V1):
         assert num_computed_tokens % self.block_size == 0
         hbm_hit_block_num = num_computed_tokens // self.block_size
 
-        ucm_block_ids = self.request_hasher(self.block_size, request)
+        ucm_block_ids = self.generate_hash(self.block_size, request)
 
         external_block_ids = ucm_block_ids[hbm_hit_block_num:]
         if not external_block_ids:
@@ -210,7 +216,7 @@ class UCMDirectConnector(KVConnectorBase_V1):
         # When all the tokens are cached in ssd or hbm,
         # we need to recompute the last token. This if condition will be removed
         # once vLLM scheduler provides a better solution in the future.
-        if external_hit_tokens == request.num_prompt_tokens:
+        if total_hit_block_num * self.block_size == request.num_tokens:
             external_hit_tokens -= 1
 
         self.requests_meta[request.request_id] = RequestMeta(
@@ -449,6 +455,9 @@ class UCMDirectConnector(KVConnectorBase_V1):
                 continue
 
             ucm_block_ids, vllm_block_ids = request.load_block_ids
+            if self.rank != 0 and not self.is_mla:
+                for i, ucm_block_id in enumerate(ucm_block_ids):
+                    ucm_block_ids[i] = str(self.request_hasher(ucm_block_id))
             ucm_total_block_ids, ucm_offsets, dst_tensor_addr = self._generate_task(
                 vllm_block_ids, ucm_block_ids
             )
@@ -495,6 +504,9 @@ class UCMDirectConnector(KVConnectorBase_V1):
                 continue
 
             ucm_block_ids, vllm_block_ids = request.dump_block_ids
+            if self.rank != 0:
+                for i, ucm_block_id in enumerate(ucm_block_ids):
+                    ucm_block_ids[i] = str(self.request_hasher(ucm_block_id))
             rets = self.store.create(ucm_block_ids)
             end = 0
             for i, ret in enumerate(rets):
