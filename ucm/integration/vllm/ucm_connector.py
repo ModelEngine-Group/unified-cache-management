@@ -464,9 +464,7 @@ class UCMDirectConnector(KVConnectorBase_V1):
             ucm_block_ids, vllm_block_ids = request.load_block_ids
             if self.rank != 0 and not self.is_mla:
                 for i, ucm_block_id in enumerate(ucm_block_ids):
-                    ucm_block_ids[i] = str(
-                        self.request_hasher(ucm_block_id)
-                    )
+                    ucm_block_ids[i] = str(self.request_hasher(ucm_block_id))
             ucm_total_block_ids, ucm_offsets, dst_tensor_addr = self._generate_task(
                 vllm_block_ids, ucm_block_ids
             )
@@ -515,9 +513,7 @@ class UCMDirectConnector(KVConnectorBase_V1):
             ucm_block_ids, vllm_block_ids = request.dump_block_ids
             if self.rank != 0:
                 for i, ucm_block_id in enumerate(ucm_block_ids):
-                    ucm_block_ids[i] = str(
-                        self.request_hasher(ucm_block_id)
-                    )
+                    ucm_block_ids[i] = str(self.request_hasher(ucm_block_id))
             rets = self.store.create(ucm_block_ids)
             end = 0
             for i, ret in enumerate(rets):
