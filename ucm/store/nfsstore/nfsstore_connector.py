@@ -41,7 +41,7 @@ class UcmNfsStore(UcmKVStoreBase):
         super().__init__(config)
         self.store = ucmnfsstore.NFSStore()
         storage_backends = [
-            path for path in config["storageBackends"].split(":") if path
+            path for path in config["storage_backends"].split(":") if path
         ]
         block_size = int(config["kv_block_size"])
         transfer_enable = True if config["role"] == "worker" else False
@@ -51,7 +51,7 @@ class UcmNfsStore(UcmKVStoreBase):
         if transfer_enable:
             param.transferDeviceId = config["device"]
             param.transferIoSize = config["io_size"]
-            param.transferIoDirect = config.get("transferIoDirect", False)
+            param.transferIoDirect = config.get("use_direct", False)
 
         # NOTE: compatible with legacy nfsstore lib
         if hasattr(param, "storageCapacity"):
