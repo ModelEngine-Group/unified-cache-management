@@ -164,16 +164,13 @@ class UCMDirectConnector(KVConnectorBase_V1):
         token_ids = request.all_token_ids
 
         ret = []
-        parent_block_hash_value = None
+        parent_block_hash_value = RequestHasher._SEED_HASH
         for start in range(0, len(token_ids), block_size):
             end = start + block_size
             block_token_ids = token_ids[start:end]
             # Do not hash the block if it is not full.
             if len(block_token_ids) < block_size:
                 break
-
-            if not parent_block_hash_value:
-                parent_block_hash_value = RequestHasher._SEED_HASH
 
             block_token_ids_tuple = tuple(block_token_ids)
             hash_value = self.request_hasher(
