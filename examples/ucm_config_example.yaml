@@ -11,7 +11,7 @@
 ucm_connectors:
   - ucm_connector_name: "UcmNfsStore"
     ucm_connector_config:
-      storage_backends: "/mnt/test"
+      storageBackends: "/mnt/test"
       transferIoDirect: false
 
 load_only_first_rank: false

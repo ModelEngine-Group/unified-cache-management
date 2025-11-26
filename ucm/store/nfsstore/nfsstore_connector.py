@@ -41,7 +41,7 @@ class UcmNfsStore(UcmKVStoreBase):
         super().__init__(config)
         self.store = ucmnfsstore.NFSStore()
         storage_backends = [
-            path for path in config["storage_backends"].split(":") if path
+            path for path in config["storageBackends"].split(":") if path
         ]
         block_size = int(config["kv_block_size"])
         transfer_enable = True if config["role"] == "worker" else False

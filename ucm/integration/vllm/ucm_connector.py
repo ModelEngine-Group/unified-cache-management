@@ -56,25 +56,28 @@ class RequestHasher:
 
     _SEED_HASH = None
 
-    def __init__(self, vllm_config: "VllmConfig"):
+    def __init__(self, vllm_config: "VllmConfig", rank_id: int):
         self.model = vllm_config.model_config.model
         self.world_size = vllm_config.parallel_config.world_size
-        self.dtype = vllm_config.model_config.dtype
+        self.dtype = str(vllm_config.model_config.dtype)
+        self.rank = rank_id
 
-        meta = (self.model, self.world_size, str(self.dtype))
-        self.meta_bytes = pickle.dumps(meta, protocol=pickle.HIGHEST_PROTOCOL)
+        meta = f"{self.model}:{self.world_size}:{self.dtype}:{self.rank}"
+        meta_bytes = meta.encode("utf-8")
+
+        self._prefix_md5 = hashlib.md5()
+        self._prefix_md5.update(meta_bytes)
+
         if RequestHasher._SEED_HASH is None:
             RequestHasher._SEED_HASH = self("UCM_HASH_SEED")
 
     def __call__(self, input_data) -> int:
         input_bytes = pickle.dumps(input_data, protocol=pickle.HIGHEST_PROTOCOL)
 
-        h = hashlib.md5()
-        h.update(self.meta_bytes)
+        h = self._prefix_md5.copy()
         h.update(input_bytes)
 
-        md5_bytes = h.digest()
-        return int.from_bytes(md5_bytes, byteorder="big")
+        return int.from_bytes(h.digest(), byteorder="big")
 
 
 class UCMDirectConnector(KVConnectorBase_V1):
@@ -110,7 +113,7 @@ class UCMDirectConnector(KVConnectorBase_V1):
 
         self.store: UcmKVStoreBase
 
-        self.request_hasher = RequestHasher(vllm_config)
+        self.request_hasher = RequestHasher(vllm_config, max(0, self.rank))
 
         # save block info, avoid hash request twice, and track them until request finished
         self.requests_meta: dict[str, RequestMeta] = {}
@@ -459,10 +462,10 @@ class UCMDirectConnector(KVConnectorBase_V1):
                 continue
 
             ucm_block_ids, vllm_block_ids = request.load_block_ids
-            if self.rank != 0:
+            if self.rank != 0 and not self.is_mla:
                 for i, ucm_block_id in enumerate(ucm_block_ids):
                     ucm_block_ids[i] = str(
-                        self.request_hasher((ucm_block_id, self.rank))
+                        self.request_hasher(ucm_block_id)
                     )
             ucm_total_block_ids, ucm_offsets, dst_tensor_addr = self._generate_task(
                 vllm_block_ids, ucm_block_ids
@@ -513,7 +516,7 @@ class UCMDirectConnector(KVConnectorBase_V1):
             if self.rank != 0:
                 for i, ucm_block_id in enumerate(ucm_block_ids):
                     ucm_block_ids[i] = str(
-                        self.request_hasher((ucm_block_id, self.rank))
+                        self.request_hasher(ucm_block_id)
                     )
             rets = self.store.create(ucm_block_ids)
             end = 0
