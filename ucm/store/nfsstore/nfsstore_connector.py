@@ -51,7 +51,7 @@ class UcmNfsStore(UcmKVStoreBase):
         if transfer_enable:
             param.transferDeviceId = config["device"]
             param.transferIoSize = config["io_size"]
-            param.transferIoDirect = config.get("transferIoDirect", False)
+            param.transferIoDirect = config.get("use_direct", False)
 
         # NOTE: compatible with legacy nfsstore lib
         if hasattr(param, "storageCapacity"):
