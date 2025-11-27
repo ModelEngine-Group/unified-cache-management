@@ -82,8 +82,6 @@ def apply_all_patches() -> None:
 
     try:
         version = get_vllm_version()
-
-        version = "0.9.2"
         if version is None:
             raise ValueError("Could not detect vLLM version")
 
