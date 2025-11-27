@@ -82,9 +82,10 @@ class UCMDirectConnector(KVConnectorBase_V1):
     def __init__(self, vllm_config: "VllmConfig", role: KVConnectorRole):
         super().__init__(vllm_config=vllm_config, role=role)
         self.kv_caches: dict[str, torch.Tensor] = {}
-        self.rank = (
+        self.local_rank = (
             -1 if role == KVConnectorRole.SCHEDULER else get_world_group().local_rank
         )
+        self.global_rank = self._vllm_config.parallel_config.rank
         self.block_size = self._vllm_config.cache_config.block_size
         self.is_mla = self._vllm_config.model_config.is_deepseek_mla
         self.is_dsa = False
@@ -101,8 +102,8 @@ class UCMDirectConnector(KVConnectorBase_V1):
         else:
             raise RuntimeError("Unsupported device platform for UCMDirectConnector.")
 
-        if self.rank >= 0:
-            self.device = torch_dev.device(f"{dev_name}:{self.rank}")
+        if self.local_rank >= 0:
+            self.device = torch_dev.device(f"{dev_name}:{self.local_rank}")
             self._layer_offset_cache = {}
 
         self.store: UcmKVStoreBase
@@ -110,7 +111,7 @@ class UCMDirectConnector(KVConnectorBase_V1):
         if role == KVConnectorRole.SCHEDULER:
             self.request_hasher = RequestHasher(vllm_config, 0)
         else:
-            self.request_hasher = RequestHasher(vllm_config, self.rank)
+            self.request_hasher = RequestHasher(vllm_config, self.global_rank)
 
         # save block info, avoid hash request twice, and track them until request finished
         self.requests_meta: dict[str, RequestMeta] = {}
@@ -132,7 +133,7 @@ class UCMDirectConnector(KVConnectorBase_V1):
 
         name = connector_configs[0].get("ucm_connector_name")
         config = connector_configs[0].get("ucm_connector_config") or {}
-        config["device"] = self.rank
+        config["device"] = self.local_rank
         config["role"] = "scheduler" if role == KVConnectorRole.SCHEDULER else "worker"
         element_size = vllm_config.model_config.dtype.itemsize
         single_head_dim = vllm_config.model_config.get_head_size()
@@ -436,7 +437,8 @@ class UCMDirectConnector(KVConnectorBase_V1):
     def _broadcast(self, dst_tensor_addr: list[torch.Tensor]):
         rec_tensor: torch.Tensor = None
         with torch.cuda.stream(self.broadcast_stream):
-            if self.rank == 0:
+            # TODO support broadcast when PP
+            if self.global_rank == 0:
                 tensor_to_broadcast = torch.stack(dst_tensor_addr, dim=0)
                 self.broadcast_fn(tensor_to_broadcast, 0)
             else:
@@ -447,7 +449,7 @@ class UCMDirectConnector(KVConnectorBase_V1):
                 )
                 self.broadcast_fn(rec_tensor, 0)
         self.broadcast_stream.synchronize()
-        if self.rank != 0 and rec_tensor is not None:
+        if self.global_rank != 0 and rec_tensor is not None:
             for i, tensor in enumerate(dst_tensor_addr):
                 tensor.copy_(rec_tensor[i])
 
@@ -465,13 +467,13 @@ class UCMDirectConnector(KVConnectorBase_V1):
                 continue
 
             ucm_block_ids, vllm_block_ids = request.load_block_ids
-            if self.rank != 0 and not self.is_mla:
+            if self.global_rank != 0 and not self.is_mla and not self.is_dsa:
                 for i, ucm_block_id in enumerate(ucm_block_ids):
                     ucm_block_ids[i] = str(self.request_hasher(ucm_block_id))
             ucm_total_block_ids, ucm_offsets, dst_tensor_addr = self._generate_task(
                 vllm_block_ids, ucm_block_ids
             )
-            if self.rank == 0 or not self.load_only_first_rank:
+            if self.global_rank == 0 or not self.load_only_first_rank:
                 request_to_task[request_id] = self.store.load(
                     ucm_total_block_ids, ucm_offsets, dst_tensor_addr
                 )
@@ -481,7 +483,7 @@ class UCMDirectConnector(KVConnectorBase_V1):
 
         for request_id, task in request_to_task.items():
             # TODO error handling
-            if self.rank == 0 or not self.load_only_first_rank:
+            if self.global_rank == 0 or not self.load_only_first_rank:
                 if self.store.wait(task) != 0:
                     logger.error(f"request {request_id} load kv cache failed.")
             if self.load_only_first_rank:
@@ -501,7 +503,8 @@ class UCMDirectConnector(KVConnectorBase_V1):
 
     def wait_for_save(self) -> None:
 
-        if (self.is_mla or self.is_dsa) and self.rank != 0:
+        # TODO support PP
+        if (self.is_mla or self.is_dsa) and self.global_rank != 0:
             return
 
         metadata = self._get_connector_metadata()
@@ -514,7 +517,7 @@ class UCMDirectConnector(KVConnectorBase_V1):
                 continue
 
             ucm_block_ids, vllm_block_ids = request.dump_block_ids
-            if self.rank != 0:
+            if self.global_rank != 0:
                 for i, ucm_block_id in enumerate(ucm_block_ids):
                     ucm_block_ids[i] = str(self.request_hasher(ucm_block_id))
             rets = self.store.create(ucm_block_ids)
