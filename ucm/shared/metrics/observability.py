@@ -2,6 +2,7 @@ import os
 import threading
 import time
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
 
 import prometheus_client
@@ -12,7 +13,7 @@ from prometheus_client import REGISTRY
 from vllm.distributed.parallel_state import get_world_group
 
 from ucm.logger import init_logger
-from ucm.metrics.ucmmonitor import UCMStatsMonitor
+from ucm.shared.metrics import monitor
 
 logger = init_logger(__name__)
 
@@ -30,10 +31,7 @@ class PrometheusLogger:
     _counter_cls = prometheus_client.Counter
     _histogram_cls = prometheus_client.Histogram
 
-    def __init__(self, metadata: UCMEngineMetadata, config_path: str):
-        # Load configuration from YAML file
-        config = self._load_config(config_path)
-
+    def __init__(self, metadata: UCMEngineMetadata, config: Dict[str, Any]):
         # Ensure PROMETHEUS_MULTIPROC_DIR is set before any metric registration
         prometheus_config = config.get("prometheus", {})
         multiproc_dir = prometheus_config.get("multiproc_dir", "/vllm-workspace")
@@ -49,24 +47,6 @@ class PrometheusLogger:
 
         # Initialize metrics based on configuration
         self._init_metrics_from_config(labelnames, prometheus_config)
-
-    def _load_config(self, config_path: str) -> Dict[str, Any]:
-        """Load configuration from YAML file"""
-        try:
-            with open(config_path, "r") as f:
-                config = yaml.safe_load(f)
-                if config is None:
-                    logger.warning(
-                        f"Config file {config_path} is empty, using defaults"
-                    )
-                    return {}
-                return config
-        except FileNotFoundError:
-            logger.warning(f"Config file {config_path} not found, using defaults")
-            return {}
-        except yaml.YAMLError as e:
-            logger.error(f"Error parsing YAML config file {config_path}: {e}")
-            return {}
 
     def _init_metrics_from_config(
         self, labelnames: List[str], prometheus_config: Dict[str, Any]
@@ -192,8 +172,6 @@ class PrometheusLogger:
                 if metric_mapped is None:
                     logger.warning(f"Stat {stat_name} not initialized.")
                     continue
-                else:
-                    logger.info(f"Find stats {metric_mapped}")
                 metric_obj = getattr(self, metric_mapped["attr"], None)
                 metric_type = metric_mapped["type"]
 
@@ -256,34 +234,46 @@ class PrometheusLogger:
 
 
 class UCMStatsLogger:
-    def __init__(
-        self,
-        vllm_config: "VllmConfig",
-        log_interval: int,
-        config_path: str = "./metrics_configs.yaml",
-    ):
-        # Parse model_name and worker_id from vllm_config
-        model_name = vllm_config.model_config.served_model_name
-        worker_id = get_world_group().local_rank
+    def __init__(self, model_name: str, rank: int):
         # Create metadata
         self.metadata = UCMEngineMetadata(
-            model_name=str(model_name), worker_id=str(worker_id)
+            model_name=str(model_name), worker_id=str(rank)
         )
+        # Load configuration
+        current_file_path = Path(__file__)
+        config_path = current_file_path.parent / "metrics_configs.yaml"
+        config = self._load_config(config_path)
+        self.log_interval = config.get("log_interval", 10)
 
-        self.log_interval = log_interval
-        self.monitor = UCMStatsMonitor.get_instance()
-        self.prometheus_logger = PrometheusLogger.GetOrCreate(
-            self.metadata, config_path
-        )
+        self.monitor = monitor.StatsMonitor.get_instance()
+        self.prometheus_logger = PrometheusLogger.GetOrCreate(self.metadata, config)
         self.is_running = True
 
         self.thread = threading.Thread(target=self.log_worker, daemon=True)
         self.thread.start()
 
+    def _load_config(self, config_path: str) -> Dict[str, Any]:
+        """Load configuration from YAML file"""
+        try:
+            with open(config_path, "r") as f:
+                config = yaml.safe_load(f)
+                if config is None:
+                    logger.warning(
+                        f"Config file {config_path} is empty, using defaults"
+                    )
+                    return {}
+                return config
+        except FileNotFoundError:
+            logger.warning(f"Config file {config_path} not found, using defaults")
+            return {}
+        except yaml.YAMLError as e:
+            logger.error(f"Error parsing YAML config file {config_path}: {e}")
+            return {}
+
     def log_worker(self):
         while self.is_running:
             # Use UCMStatsMonitor.get_states_and_clear() from external import
-            stats = self.monitor.get_stats_and_clear("UCMStats")
+            stats = self.monitor.get_stats_and_clear("ConnStats")
             self.prometheus_logger.log_prometheus(stats)
             time.sleep(self.log_interval)
 

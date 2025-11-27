@@ -2,13 +2,13 @@ import os
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from ucm.metrics import ucmmonitor
+from ucm.shared.metrics import monitor
 
-# import ucmmonitor
+# import monitor
 
-mon = ucmmonitor.UCMStatsMonitor.get_instance()
+mon = monitor.StatsMonitor.get_instance()
 mon.update_stats(
-    "UCMStats",
+    "ConnStats",
     {
         "save_duration": 1.2,
         "save_speed": 300.5,
@@ -18,7 +18,7 @@ mon.update_stats(
     },
 )
 mon.update_stats(
-    "UCMStats",
+    "ConnStats",
     {
         "save_duration": 1.2,
         "save_speed": 300.5,
@@ -28,5 +28,5 @@ mon.update_stats(
     },
 )
 
-data = mon.get_stats("UCMStats")
+data = mon.get_stats("ConnStats")
 print(data)
