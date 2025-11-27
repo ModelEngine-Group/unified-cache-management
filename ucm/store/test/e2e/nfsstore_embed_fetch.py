@@ -281,7 +281,6 @@ def run(
                     torch.cuda.empty_cache()
                 elif hasattr(torch, "npu") and torch.npu.is_available():
                     torch.npu.empty_cache()
-                
 
         if operation_mode in ["read_only", "both"]:
             if operation_mode == "read_only":
