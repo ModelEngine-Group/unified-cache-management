@@ -346,16 +346,17 @@ class UCMDirectConnector(KVConnectorBase_V1):
                 self.kv_caches[layer_name] = attn_layer.kv_cache[
                     forward_context.virtual_engine
                 ]
-                if self.kv_cache_dtype is None:
-                    self.kv_cache_dtype = self.kv_caches[layer_name][0].dtype
         # Since vllm_ascend >= 0.10.0, the MLA model's tensor shape has changed to
         # (2, num_blocks, block_size, num_kv_heads, nope_dim/rope_dim).
         # Currently, we treat it as GQA, and use is_dsa to mark it,
         # which works but leads to space inefficiency.
         # TODO: Optimize this to avoid unnecessary space usage.
-        if self.is_mla and len(list(self.kv_caches.values())[0]) == 2:
+        sample_kv_layer = next(iter(self.kv_caches.values()))
+        if self.is_mla and len(sample_kv_layer) == 2:
             self.is_mla = False
             self.is_dsa = True
+        if self.kv_cache_dtype is None:
+            self.kv_cache_dtype = sample_kv_layer[0].dtype
 
     @staticmethod
     def _extract_layer_index(layer_name: str) -> Optional[int]:
