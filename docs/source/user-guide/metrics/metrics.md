@@ -40,7 +40,7 @@ vllm serve /home/models/Qwen2.5-14B-Instruct  \
         }
     }'
 ```
-**Note**: Ensure that the `metrics_config_path` parameter exists in the `unified-cache-management/examples/ucm_config.yaml` file.
+**Note**: You can refer to the `ucm_config.yaml` file at https://github.com/ModelEngine-Group/unified-cache-management/tree/develop/examples to configure the `metrics_config_path` parameter.
 
 You can use the `vllm bench serve` command to run benchmarks:
 
