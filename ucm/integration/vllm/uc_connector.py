@@ -80,7 +80,7 @@ class ReqMeta:
     # Whether use load_async
     load_async: bool = False
     # blend rag cache
-    rag_chunks_load_meta: list[ChunkMetaData] = field(default_factory=list)
+    chunks_load_meta: list[ChunkMetaData] = field(default_factory=list)
 
 
 @dataclass
@@ -172,7 +172,6 @@ class UnifiedCacheConnectorV1(KVConnectorBase_V1):
             self.enable_blend = True
             end_token_id = ucm_blend_config["chunk_end_token_id"]
         self.chunk_processor = ChunkProcessor(
-            # 151643 for qw pad token id, 0 for llama
             config={'chunk_end_token_id': end_token_id, 'block_size': self.block_size}
         )
 
@@ -358,7 +357,7 @@ class UnifiedCacheConnectorV1(KVConnectorBase_V1):
         all_hits_vllm_ids = []
         positions = []
         for reqMeta in self._connector_metadata.requests:
-            for meta in reqMeta.rag_chunks_load_meta:
+            for meta in reqMeta.chunks_load_meta:
                 all_hits_vllm_ids.extend(meta.hits_vllm_blk_ids)
                 positions.extend([meta.position_offset]*len(meta.hits_vllm_blk_ids))
         if all_hits_vllm_ids:
@@ -596,7 +595,8 @@ class UnifiedCacheConnectorV1(KVConnectorBase_V1):
 
         # state machine
         # default to dump all blks, when blk allocation fail, turn to be NONE, when cache hit, turn to be LOAD
-        block_operations = [BlockOperation.DUMP] * len(block_hashes)
+        block_operations = ([BlockOperation.NONE] * start_position +
+                            [BlockOperation.DUMP] * (len(block_hashes) - start_position))
 
         remain_hashes = block_hashes[start_position:]
         if not remain_hashes:
@@ -615,49 +615,50 @@ class UnifiedCacheConnectorV1(KVConnectorBase_V1):
                 # TODO we will fix hole match later
                 break
 
-        # for unmatched blocks, further match the rag chunk
-        rag_start_blk_idx = start_position + num_lookup_hits
-        rag_chunks_meta, is_build_cache = self.chunk_processor.process_request(request, md5, rag_start_blk_idx)
-
         num_rag_lookup_hits = 0
-        if not is_build_cache:
-            # blend stage
-            final_rag_chunks_meta = []
-            old_lookup_results = [False]
-            old_chunk_meta = None
-            for chunk_meta in rag_chunks_meta:
-                lookup_results = self.connector.lookup(chunk_meta.chunk_blks_hash)
-                chunk_meta.store_hits = lookup_results
-                final_rag_chunks_meta.append(chunk_meta)
-                if sum(lookup_results) == 0 and old_lookup_results[-1]:
-                    # current whole chunk is miss and last chunk's last blk hit, try to merge chunk
-                    merge_tokens = request.prompt_token_ids[chunk_meta.start_idx_in_req:chunk_meta.end_idx_in_req]
-                    merge_chunk_blks_hash = hash_token_ids(md5, self.block_size, merge_tokens, old_chunk_meta.chunk_blks_hash[-1])
-                    merge_lookup_results = self.connector.lookup(merge_chunk_blks_hash)
-                    if merge_lookup_results[0]:
-                        # current chunk meta need to merge into old chunk meta
-                        chunk_meta.store_hits = merge_lookup_results
-                        chunk_meta.chunk_blks_hash = merge_chunk_blks_hash
-                        self.chunk_processor.merge_chunks(old_chunk_meta, chunk_meta)
-                        final_rag_chunks_meta.pop()
-                for i, hit in enumerate(chunk_meta.store_hits):
-                    # replace the origin pc hash with chunk pc hash
-                    # maybe we should also invalid the block hash in HBM's block manager, cause after cache blend,
-                    # the kv cache of rag chunk in HBM is recomputed, they can contact all chunks in this req.
-                    block_hashes[rag_start_blk_idx] = chunk_meta.chunk_blks_hash[i]
-                    if hit:
-                        num_rag_lookup_hits += 1
-                        block_operations[rag_start_blk_idx] = BlockOperation.LOAD
-                    else:
-                        block_operations[rag_start_blk_idx] = BlockOperation.NONE
-                        # handle the hole in chunk prefix cache in future work
-                        pass
-                    rag_start_blk_idx += 1
-                old_chunk_meta = final_rag_chunks_meta[-1]
-                old_lookup_results = old_chunk_meta.store_hits
+        if self.enable_blend:
+            # for unmatched blocks, further match the rag chunk
+            rag_start_blk_idx = start_position + num_lookup_hits
+            rag_chunks_meta, is_build_cache = self.chunk_processor.process_request(request, md5, rag_start_blk_idx)
 
-            if num_rag_lookup_hits:
-                self.req2rag_load_chunks[request.request_id] = final_rag_chunks_meta
+            if not is_build_cache:
+                # blend stage
+                final_rag_chunks_meta = []
+                old_lookup_results = [False]
+                old_chunk_meta = None
+                for chunk_meta in rag_chunks_meta:
+                    lookup_results = self.connector.lookup(chunk_meta.chunk_blks_hash)
+                    chunk_meta.store_hits = lookup_results
+                    final_rag_chunks_meta.append(chunk_meta)
+                    if sum(lookup_results) == 0 and old_lookup_results[-1]:
+                        # current whole chunk is miss and last chunk's last blk hit, try to merge chunk
+                        merge_tokens = request.prompt_token_ids[chunk_meta.start_idx_in_req:chunk_meta.end_idx_in_req]
+                        merge_chunk_blks_hash = hash_token_ids(md5, self.block_size, merge_tokens, old_chunk_meta.chunk_blks_hash[-1])
+                        merge_lookup_results = self.connector.lookup(merge_chunk_blks_hash)
+                        if merge_lookup_results[0]:
+                            # current chunk meta need to merge into old chunk meta
+                            chunk_meta.store_hits = merge_lookup_results
+                            chunk_meta.chunk_blks_hash = merge_chunk_blks_hash
+                            self.chunk_processor.merge_chunks(old_chunk_meta, chunk_meta)
+                            final_rag_chunks_meta.pop()
+                    for i, hit in enumerate(chunk_meta.store_hits):
+                        # replace the origin pc hash with chunk pc hash
+                        # maybe we should also invalid the block hash in HBM's block manager, cause after cache blend,
+                        # the kv cache of rag chunk in HBM is recomputed, they can contact all chunks in this req.
+                        block_hashes[rag_start_blk_idx] = chunk_meta.chunk_blks_hash[i]
+                        if hit:
+                            num_rag_lookup_hits += 1
+                            block_operations[rag_start_blk_idx] = BlockOperation.LOAD
+                        else:
+                            # cache blend can recompute the missing hole, but this cache is no longer context independent
+                            block_operations[rag_start_blk_idx] = BlockOperation.NONE
+                            pass
+                        rag_start_blk_idx += 1
+                    old_chunk_meta = final_rag_chunks_meta[-1]
+                    old_lookup_results = old_chunk_meta.store_hits
+
+                if num_rag_lookup_hits:
+                    self.req2rag_load_chunks[request.request_id] = final_rag_chunks_meta
 
         logger.info(
             f"num_total_blocks: {len(block_hashes)}, "
@@ -777,8 +778,8 @@ class UnifiedCacheConnectorV1(KVConnectorBase_V1):
                     vllm_block_ids, block_info
                 )
                 if load_blocks or dump_blocks:
-                    rag_chunks_load_meta = self.req2rag_load_chunks.pop(req_id, [])
-                    for chunk_meta in rag_chunks_load_meta:
+                    chunks_load_meta = self.req2rag_load_chunks.pop(req_id, [])
+                    for chunk_meta in chunks_load_meta:
                         chunk_meta.vllm_blk_ids = vllm_block_ids[chunk_meta.start_idx_in_req_blks: chunk_meta.end_idx_in_req_blks]
 
                     meta.requests.append(
@@ -786,7 +787,7 @@ class UnifiedCacheConnectorV1(KVConnectorBase_V1):
                             request_id=req_id,
                             load_blocks=load_blocks,
                             dump_blocks=dump_blocks,
-                            rag_chunks_load_meta=rag_chunks_load_meta,
+                            chunks_load_meta=chunks_load_meta,
                         )
                     )
 
