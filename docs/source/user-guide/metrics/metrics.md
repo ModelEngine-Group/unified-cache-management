@@ -1,4 +1,4 @@
-# Observability with Prometheus
+# Observability
 
 UCM (Unified Cache Management) provides detailed metrics monitoring through Prometheus endpoints, allowing in-depth monitoring of cache performance and behavior. This document describes how to enable and configure observability from the embedded vLLM `/metrics` API endpoint.
 
@@ -17,7 +17,6 @@ export PROMETHEUS_MULTIPROC_DIR=/vllm-workspace
 Then, start the UCM service.
 
 ```bash
-export PYTHONHASHSEED=123456
 export CUDA_VISIBLE_DEVICES=0
 vllm serve /home/models/Qwen2.5-14B-Instruct  \
     --max-model-len 5000 \
@@ -37,11 +36,11 @@ vllm serve /home/models/Qwen2.5-14B-Instruct  \
         "kv_connector_module_path": "ucm.integration.vllm.ucm_connector",
         "kv_role": "kv_both",
         "kv_connector_extra_config": {
-            "UCM_CONFIG_FILE": "/vllm-workspace/ucm_config.yaml"
+            "UCM_CONFIG_FILE": "/vllm-workspace/unified-cache-management/examples/ucm_config.yaml"
         }
     }'
 ```
-**Note**: Ensure that the `use_metrics: true` parameter exists in the `ucm_config.yaml` file.
+**Note**: Ensure that the `metrics_config_path` parameter exists in the `unified-cache-management/examples/ucm_config.yaml` file.
 
 You can use the `vllm bench serve` command to run benchmarks:
 
@@ -140,7 +139,7 @@ Navigate to `http://<your-host>:3000`. Log in with the default username (`admin`
 
 1. Navigate to `http://<your-host>:3000/dashboard/import`.
 
-2. Click **Upload JSON file**, then upload the `ucm/metrics/grafana.json` file.
+2. Click **Upload JSON file**, then upload the `unified-cache-management/examples/metrics/grafana.json` file.
 
 3. Select the Prometheus data source configured earlier.
 
@@ -169,7 +168,7 @@ UCM exposes various metrics to monitor its performance. The following table list
 
 ## Prometheus Configuration
 
-Metrics configuration is defined in the `ucm/metrics/metrics_configs.yaml` file:
+Metrics configuration is defined in the `unified-cache-management/examples/metrics/metrics_configs.yaml` file:
 
 ```yaml
 log_interval: 5  # Interval in seconds for logging metrics
