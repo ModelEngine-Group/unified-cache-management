@@ -1,3 +1,4 @@
+import functools
 from typing import Any, Dict, List
 
 from common.db_utils import write_to_db
@@ -44,6 +45,7 @@ def post_process(table_name: str, **kwargs) -> List[Dict[str, Any]]:
 
 # ---------------- decorator ----------------
 def export_vars(func):
+    @functools.wraps(func)
     def wrapper(*args, **kwargs):
         result = func(*args, **kwargs)
         # If the function returns a dict containing '_data' or 'data', post-process it
