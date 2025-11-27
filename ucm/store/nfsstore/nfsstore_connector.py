@@ -52,14 +52,17 @@ class UcmNfsStore(UcmKVStoreBase):
             param.transferDeviceId = config["device"]
             param.transferIoSize = config["io_size"]
             param.transferIoDirect = config.get("use_direct", False)
-
+            param.transferStreamNumber = config.get("stream_number", 32)
+            param.transferBufferNumber = config.get("buffer_number", 512)
         # NOTE: compatible with legacy nfsstore lib
-        if hasattr(param, "storageCapacity"):
-            param.storageCapacity = config.get("storageCapacity", 0)
-        if hasattr(param, "recycleEnable"):
-            param.recycleEnable = True if config.get("recycleEnable", 0) == 1 else False
+        if hasattr(param, "storage_capacity"):
+            param.storageCapacity = config.get("storage_capacity", 0)
+        if hasattr(param, "recycle_enable"):
+            param.recycleEnable = (
+                True if config.get("recycle_enable", 0) == 1 else False
+            )
             if param.recycleEnable:
-                param.recycleThresholdRatio = config.get("recycleThresholdRatio", 0.7)
+                param.recycleThresholdRatio = config.get("recycle_threshold_ratio", 0.7)
 
         ret = self.store.Setup(param)
         if ret != 0:
