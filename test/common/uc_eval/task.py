@@ -142,7 +142,7 @@ class BaseTask(ABC):
     def run(self):
         logger.info("-----------------------------------------------------------")
         logger.info(
-            "Begin test, the data type: {self.data_type}, the benchmark mode: {self.benchmark_mode}"
+            f"Begin test, the data type: {self.data_type}, the benchmark mode: {self.benchmark_mode}"
         )
         latency_results, case_len = self.process()
         result_to_pytest = self.pytest_result(latency_results, case_len)
