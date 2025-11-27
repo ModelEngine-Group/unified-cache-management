@@ -87,13 +87,14 @@ class UCMDirectConnector(KVConnectorBase_V1):
         )
         self.block_size = self._vllm_config.cache_config.block_size
         self.is_mla = self._vllm_config.model_config.is_deepseek_mla
+        self.is_dsa = False
         self.kv_cache_dtype: torch.dtype = None
 
         if current_platform.is_cuda_alike():
             logger.info("CUDA device is available.")
             torch_dev = torch
             dev_name = "cuda"
-        elif current_platform.is_npu():
+        elif current_platform.device_type == "npu":
             logger.info("NPU device is available.")
             torch_dev = torch.npu
             dev_name = "npu"
@@ -347,6 +348,14 @@ class UCMDirectConnector(KVConnectorBase_V1):
                 ]
                 if self.kv_cache_dtype is None:
                     self.kv_cache_dtype = self.kv_caches[layer_name][0].dtype
+        # Since vllm_ascend >= 0.10.0, the MLA model's tensor shape has changed to
+        # (2, num_blocks, block_size, num_kv_heads, nope_dim/rope_dim).
+        # Currently, we treat it as GQA, and use is_dsa to mark it,
+        # which works but leads to space inefficiency.
+        # TODO: Optimize this to avoid unnecessary space usage.
+        if self.is_mla and len(list(self.kv_caches.values())[0]) == 2:
+            self.is_mla = False
+            self.is_dsa = True
 
     @staticmethod
     def _extract_layer_index(layer_name: str) -> Optional[int]:
@@ -491,7 +500,7 @@ class UCMDirectConnector(KVConnectorBase_V1):
 
     def wait_for_save(self) -> None:
 
-        if self.is_mla and self.rank != 0:
+        if (self.is_mla or self.is_dsa) and self.rank != 0:
             return
 
         metadata = self._get_connector_metadata()

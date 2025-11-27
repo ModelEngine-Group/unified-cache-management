@@ -49,9 +49,10 @@ class UcmPcStore(UcmKVStoreBase):
         if transfer_enable:
             param.transferDeviceId = config["device"]
             param.transferIoSize = config["io_size"]
-            param.transferIoDirect = True
-            param.transferStreamNumber = 8
-            param.transferBufferNumber = 4096
+            param.transferIoDirect = config.get("use_direct", False)
+            param.transferStreamNumber = config.get("stream_number", 8)
+            param.transferBufferNumber = config.get("buffer_number", 4096)
+            param.transferLocalRankSize = config.get("local_rank_size", 8)
         ret = self.store.Setup(param)
         if ret != 0:
             msg = f"Failed to initialize ucmpcstore, errcode: {ret}."
