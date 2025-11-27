@@ -21,5 +21,5 @@ models:
   ip_ports: ""
   tokenizer_path: ""
   served_model_name: ""
-  payload: ''
+  payload: '{}'
   enable_clear_hbm: false
