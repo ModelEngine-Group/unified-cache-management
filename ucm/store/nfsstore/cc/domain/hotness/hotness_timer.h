@@ -26,6 +26,7 @@
 #define UNIFIEDCACHE_HOTNESS_TIMER_H
 #include <chrono>
 #include <functional>
+#include "logger/logger.h"
 #include "template/timer.h"
 
 namespace UC {
@@ -41,7 +42,7 @@ public:
             UC_ERROR("Failed({}) to start hotness timer.", e.what());
             return Status::OutOfMemory();
         }
-        return this->timer_->Start(); 
+        return this->timer_->Start() ? Status::OK() : Status::Error(); 
    }
 private:
     std::chrono::seconds interval_;

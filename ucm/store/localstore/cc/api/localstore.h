@@ -28,7 +28,7 @@
 
 namespace UC {
 
-class LocalStore : public CCStore {
+class LocalStore : public CCStore<> {
 public:
     struct Config {
         size_t ioSize;

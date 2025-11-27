@@ -23,3 +23,13 @@ models:
   served_model_name: ""
   payload: '{}'
   enable_clear_hbm: false
+
+
+# LLM Connection Configuration
+llm_connection:
+  model: "qwen3"
+  server_url: "http://141.111.32.70:9382"
+  tokenizer_path: "/home/models/QwQ-32B"
+  stream: true    # stream output
+  ignore_eos: true    # Ignore the returned terminator
+  timeout: 180    # request time out

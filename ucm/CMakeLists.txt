@@ -1,3 +1,4 @@
+add_subdirectory(shared)
 if(BUILD_UCM_STORE)
     add_subdirectory(store)
 endif()
