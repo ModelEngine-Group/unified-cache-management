@@ -19,7 +19,7 @@ from vllm.v1.core.sched.output import SchedulerOutput
 from vllm.v1.request import Request
 
 from ucm.logger import init_logger
-from ucm.shared.metrics import monitor
+from ucm.shared.metrics import ucmmonitor
 from ucm.shared.metrics.observability import UCMStatsLogger
 from ucm.store.factory import UcmConnectorFactory
 from ucm.store.ucmstore import Task, UcmKVStoreBase
@@ -166,12 +166,14 @@ class UCMDirectConnector(KVConnectorBase_V1):
             config["io_size"] / 1024,
         )
 
-        self.use_metrics = self.launch_config.get("use_metrics", False)
-        if self.use_metrics:
+        self.metrics_config = self.launch_config.get("metrics_config_path", "")
+        if self.metrics_config:
             self.stats_logger = UCMStatsLogger(
-                vllm_config.model_config.served_model_name, self.rank
+                vllm_config.model_config.served_model_name,
+                self.rank,
+                self.metrics_config,
             )
-            self.monitor = monitor.StatsMonitor.get_instance()
+            self.monitor = ucmmonitor.StatsMonitor.get_instance()
             self.synchronize = (
                 torch.cuda.synchronize
                 if current_platform.is_cuda_alike()
@@ -226,7 +228,7 @@ class UCMDirectConnector(KVConnectorBase_V1):
             f"hit hbm: {hbm_hit_block_num}, "
             f"hit external: {external_hit_blocks}"
         )
-        if self.use_metrics:
+        if self.metrics_config:
             self.monitor.update_stats(
                 "ConnStats",
                 {"interval_lookup_hit_rates": external_hit_blocks / len(ucm_block_ids)},
@@ -522,7 +524,7 @@ class UCMDirectConnector(KVConnectorBase_V1):
             / 1024
             / 1024
         )  # GB/s
-        if self.use_metrics and is_load:
+        if self.metrics_config and is_load:
             self.monitor.update_stats(
                 "ConnStats",
                 {
@@ -549,7 +551,7 @@ class UCMDirectConnector(KVConnectorBase_V1):
 
         if (self.is_mla or self.is_dsa) and self.rank != 0:
             return
-        if self.use_metrics:
+        if self.metrics_config:
             self.synchronize()
 
         metadata = self._get_connector_metadata()
@@ -609,7 +611,7 @@ class UCMDirectConnector(KVConnectorBase_V1):
             / 1024
             / 1024
         )  # GB/s
-        if self.use_metrics and is_save:
+        if self.metrics_config and is_save:
             self.monitor.update_stats(
                 "ConnStats",
                 {

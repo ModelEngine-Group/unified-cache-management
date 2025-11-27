@@ -1,3 +1,28 @@
+#
+# MIT License
+#
+# Copyright (c) 2025 Huawei Technologies Co., Ltd. All rights reserved.
+#
+# Permission is hereby granted, free of charge, to any person obtaining a copy
+# of this software and associated documentation files (the "Software"), to deal
+# in the Software without restriction, including without limitation the rights
+# to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+# copies of the Software, and to permit persons to whom the Software is
+# furnished to do so, subject to the following conditions:
+#
+# The above copyright notice and this permission notice shall be included in all
+# copies or substantial portions of the Software.
+#
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+# AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+# OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+# SOFTWARE.
+#
+
+
 import os
 import threading
 import time
@@ -13,7 +38,7 @@ from prometheus_client import REGISTRY
 from vllm.distributed.parallel_state import get_world_group
 
 from ucm.logger import init_logger
-from ucm.shared.metrics import monitor
+from ucm.shared.metrics import ucmmonitor
 
 logger = init_logger(__name__)
 
@@ -203,7 +228,7 @@ class PrometheusLogger:
     @staticmethod
     def GetOrCreate(
         metadata: UCMEngineMetadata,
-        config_path: str = "/vllm-workspace/metrics_configs.yaml",
+        config_path: str = "",
     ) -> "PrometheusLogger":
         if PrometheusLogger._instance is None:
             PrometheusLogger._instance = PrometheusLogger(metadata, config_path)
@@ -234,18 +259,16 @@ class PrometheusLogger:
 
 
 class UCMStatsLogger:
-    def __init__(self, model_name: str, rank: int):
+    def __init__(self, model_name: str, rank: int, config_path: str = ""):
         # Create metadata
         self.metadata = UCMEngineMetadata(
             model_name=str(model_name), worker_id=str(rank)
         )
         # Load configuration
-        current_file_path = Path(__file__)
-        config_path = current_file_path.parent / "metrics_configs.yaml"
         config = self._load_config(config_path)
         self.log_interval = config.get("log_interval", 10)
 
-        self.monitor = monitor.StatsMonitor.get_instance()
+        self.monitor = ucmmonitor.StatsMonitor.get_instance()
         self.prometheus_logger = PrometheusLogger.GetOrCreate(self.metadata, config)
         self.is_running = True
 
