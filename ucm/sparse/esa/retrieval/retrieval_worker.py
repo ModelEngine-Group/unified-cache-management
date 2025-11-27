@@ -1,10 +1,11 @@
 import time
+from collections import defaultdict
 
 import numpy as np
 import torch
 
-# import retrieval_backend
 from ucm.sparse.esa.retrieval import retrieval_backend
+from ucm.sparse.kvstar.utils import get_bind_cpus_for_rank
 
 
 class RetrievalWorker:
@@ -42,7 +43,19 @@ if __name__ == "__main__":
     data = torch.rand(kv_cache_blocks, dim).to(torch.float32)
     print("data created", data.shape)
 
-    backend = retrieval_backend.RetrievalWorkerBackend(data)
+    ratio = 0.75
+    total_tp_size = 4
+    local_tp_rank = 0
+    bind_info_list, alloc_numa_ids = get_bind_cpus_for_rank(
+        total_tp_size, local_tp_rank, ratio=ratio
+    )
+
+    bind_info_dict = defaultdict(list)
+    for item in bind_info_list:
+        bind_info_dict[item[1]].append(item[0])
+    bind_info_dict = dict(bind_info_dict)
+
+    backend = retrieval_backend.RetrievalWorkerBackend(data, bind_info_dict)
     worker = RetrievalWorker(backend)
     topk = 3000
     search_blocks_range = 8000

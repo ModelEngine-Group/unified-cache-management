@@ -1,10 +1,12 @@
 import time
+from collections import defaultdict
 
 import numpy as np
 import torch
 
 from ucm.sparse.kvcomp.hash_encoder import HashEncoder
 from ucm.sparse.kvcomp.hash_retrieval import hash_retrieval_backend
+from ucm.sparse.kvstar.utils import get_bind_cpus_for_rank
 
 
 class HashRetrievalWorker:
@@ -37,15 +39,16 @@ class HashRetrievalWorker:
 if __name__ == "__main__":
     ################# data
     batch_size = 2
-    dim = 1024
-    kv_cache_blocks = 25600
-    data = torch.rand(kv_cache_blocks, dim).to(torch.float32)
+    block_size = 2
+    head_dim = 128
+    head_num = 1
+    dim = head_dim * head_num
+    kv_cache_blocks = 2560
+    data = torch.rand(kv_cache_blocks, block_size, dim).to(torch.float32)
     print("data created", data.shape)
 
-    backend = hash_retrieval_backend.HashRetrievalWorkerBackend(data)
-    worker = HashRetrievalWorker(backend)
-    topk = 3000
-    search_blocks_range = 8000
+    topk = 10
+    search_blocks_range = 100
     tpot = 30 / 1000
 
     indexes = np.arange(batch_size * search_blocks_range).reshape(
@@ -54,8 +57,35 @@ if __name__ == "__main__":
 
     query = torch.rand(batch_size, dim).to(torch.float32)
 
+    hash_encoder = HashEncoder(
+        input_dim=dim,
+        hash_bits=dim,
+        dtype=torch.float32,
+        device=torch.device("cpu"),
+    )
+
+    hash_query = hash_encoder.compute_hash(query)
+    hash_key_cache = hash_encoder.compute_hash(data)
+
+    ratio = 0.75
+    total_tp_size = 4
+    local_tp_rank = 0
+    bind_info_list, alloc_numa_ids = get_bind_cpus_for_rank(
+        total_tp_size, local_tp_rank, ratio=ratio
+    )
+
+    bind_info_dict = defaultdict(list)
+    for item in bind_info_list:
+        bind_info_dict[item[1]].append(item[0])
+    bind_info_dict = dict(bind_info_dict)
+
+    backend = hash_retrieval_backend.HashRetrievalWorkerBackend(
+        hash_key_cache, bind_info_dict
+    )
+    worker = HashRetrievalWorker(backend)
+
     #################### cpp async version
-    req_id = worker.submit(query, topk=topk, indexes=indexes)
+    req_id = worker.submit(hash_query, topk=topk, indexes=indexes)
 
     #################### LLM decode begin
     time.sleep(tpot * 3)
@@ -66,28 +96,24 @@ if __name__ == "__main__":
     worker.wait(req_id)
     result = worker.get_result(req_id)
     print("cpp spent:", time.time() - begin)
+    cpp_indices = np.sort(result["indices"], 1)
+    print(f"cpp indices={cpp_indices}")
 
     ################### numpy version
+    unpacked_hash_query = hash_encoder._unpack_hash(hash_query)
+    unpacked_hash_key_cache = hash_encoder._unpack_hash(hash_key_cache)
     begin = time.time()
-    data_indexed = (
-        data[indexes.flatten()].reshape(indexes.shape[0], indexes.shape[1], dim).numpy()
+    data_indexed = unpacked_hash_key_cache[indexes.flatten()].reshape(
+        indexes.shape[0], indexes.shape[1], block_size, dim
     )
-    query = HashRetrievalWorker.handle_input(query)
-    scores = np.matmul(query[:, None, :], data_indexed.transpose((0, 2, 1)))
-    scores = scores[:, 0, :]
-    topk_elements = np.partition(scores, -topk, -1)[:, -topk:]
-    topk_indices = np.argpartition(scores, -topk, -1)[:, -topk:]
-    topk_indices = indexes[np.arange(indexes.shape[0])[:, None], topk_indices]
+    scores = torch.einsum("td, tnjd->tnj", unpacked_hash_query, data_indexed)
+
+    block_scores_ret = torch.max(scores, dim=-1)
+    blocks_scores = block_scores_ret.values
+
+    topk_ret = torch.topk(blocks_scores, topk, dim=-1)
+    topk_index = topk_ret.indices
+    topk_index = topk_index.sort(dim=-1).values
+    topk_index = indexes[np.arange(indexes.shape[0])[:, None], topk_index]
     print("numpy spent: ", time.time() - begin)
-
-    ## compare
-    cpp_elements = np.sort(result["scores"], 1)
-    cpp_indices = np.sort(result["indices"], 1)
-
-    np_elements = np.sort(topk_elements, 1)
-    np_indices = np.sort(topk_indices, 1)
-
-    diff_elements = np.abs(np_elements - cpp_elements)
-    diff_indices = np.abs(np_indices - cpp_indices)
-
-    print(f"diff topk: {diff_indices.max()}")
+    print(f"numpy indices={topk_index}")

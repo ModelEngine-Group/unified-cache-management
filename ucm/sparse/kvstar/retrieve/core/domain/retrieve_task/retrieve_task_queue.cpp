@@ -37,8 +37,6 @@ void RetrieveTaskQueue::Worker(const int numaId, const int bindCoreId, std::prom
         started.set_value(Status::OsApiError());
         return;
     }
-#else
-    KVSTAR_DEBUG("NUMA support is disabled.");
 #endif
 
     KVSTAR_DEBUG("Bind current thread {} to numa {} core {} and set memory affinity success.", thread, numaId, bindCoreId);

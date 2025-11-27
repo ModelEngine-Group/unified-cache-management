@@ -18,15 +18,127 @@
 #include <omp.h>
 #ifdef NUMA_ENABLED
 #include <numaif.h>
+#include <numa.h>
 #endif
-#ifdef __ARM_NEON
-#include <arm_neon.h>  // ARM NEON SIMD 指令集头文件
-#elif defined(__x86_64__) || defined(_M_X64)
-#include <immintrin.h>  // x86_64 SSE SIMD 指令集头文件
-#endif
+#include <sched.h>
+#include <unistd.h>
+#include <cstring>
+#include <errno.h>
 
+
+#if defined(__ARM_NEON) || defined(__ARM_NEON__)
+    #include <arm_neon.h>
+#elif defined(__x86_64__) || defined(_M_X64) || defined(__i386) || defined(_M_IX86)
+    #include <immintrin.h>   // SSE/AVX
+    #include <nmmintrin.h>   // POPCNT (SSE4.2)
+#endif
 
 #define VEC_SIZE 16
+
+#if defined(__ARM_NEON) || defined(__ARM_NEON__)
+
+using vec16u = uint8x16_t;
+
+static inline vec16u vec_loadu16(const uint8_t* p) {
+    return vld1q_u8(p);
+}
+
+static inline vec16u vec_xor(vec16u a, vec16u b) {
+    return veorq_u8(a, b);
+}
+
+static inline uint16_t vec_sum_u8(vec16u v) {
+#if defined(__aarch64__) || defined(_M_ARM64)
+    return vaddvq_u8(v);
+#else
+    uint16x8_t s16 = vpaddlq_u8(v);
+    uint32x4_t s32 = vpaddlq_u16(s16);
+    uint64x2_t s64 = vpaddlq_u32(s32);
+    return (uint16_t)(vgetq_lane_u64(s64, 0) + vgetq_lane_u64(s64, 1));
+#endif
+}
+
+static inline uint16_t vec_popcnt_xor_sum16(const uint8_t* a, const uint8_t* b) {
+    vec16u va = vec_loadu16(a);
+    vec16u vb = vec_loadu16(b);
+    vec16u vx = vec_xor(va, vb);
+    vec16u pc = vcntq_u8(vx);
+    return vec_sum_u8(pc);
+}
+
+static inline uint16_t vec_popcnt_xor_sum16_vec(vec16u qa, const uint8_t* b) {
+    vec16u vb = vec_loadu16(b);
+    vec16u vx = vec_xor(qa, vb);
+    vec16u pc = vcntq_u8(vx);
+    return vec_sum_u8(pc);
+}
+
+void print_uint8x16(uint8x16_t vec) {
+    uint8_t array[16];
+    vst1q_u8(array, vec);
+    for (int i = 0; i < 16; ++i) {
+        std::cout << static_cast<int>(array[i]) << " ";
+    }
+    std::cout << std::endl;
+}
+
+#elif defined(__x86_64__) || defined(_M_X64) || defined(__i386) || defined(_M_IX86)
+
+using vec16u = __m128i;
+
+static inline vec16u vec_loadu16(const uint8_t* p) {
+    return _mm_loadu_si128(reinterpret_cast<const __m128i*>(p));
+}
+
+static inline vec16u vec_xor(vec16u a, vec16u b) {
+    return _mm_xor_si128(a, b);
+}
+
+static inline uint16_t vec_popcnt_xor_sum16(const uint8_t* a, const uint8_t* b) {
+    __m128i va = _mm_loadu_si128(reinterpret_cast<const __m128i*>(a));
+    __m128i vb = _mm_loadu_si128(reinterpret_cast<const __m128i*>(b));
+    __m128i vx = _mm_xor_si128(va, vb);
+
+    uint64_t lo, hi;
+#if defined(__SSE4_1__)
+    lo = static_cast<uint64_t>(_mm_extract_epi64(vx, 0));
+    hi = static_cast<uint64_t>(_mm_extract_epi64(vx, 1));
+#else
+    alignas(16) uint64_t tmp[2];
+    _mm_storeu_si128(reinterpret_cast<__m128i*>(tmp), vx);
+    lo = tmp[0];
+    hi = tmp[1];
+#endif
+    return (uint16_t)(__builtin_popcountll(lo) + __builtin_popcountll(hi));
+}
+
+static inline uint16_t vec_popcnt_xor_sum16_vec(vec16u qa, const uint8_t* b) {
+    __m128i vb = _mm_loadu_si128(reinterpret_cast<const __m128i*>(b));
+    __m128i vx = _mm_xor_si128(qa, vb);
+
+    uint64_t lo, hi;
+#if defined(__SSE4_1__)
+    lo = static_cast<uint64_t>(_mm_extract_epi64(vx, 0));
+    hi = static_cast<uint64_t>(_mm_extract_epi64(vx, 1));
+#else
+    alignas(16) uint64_t tmp[2];
+    _mm_storeu_si128(reinterpret_cast<__m128i*>(tmp), vx);
+    lo = tmp[0];
+    hi = tmp[1];
+#endif
+    return (uint16_t)(__builtin_popcountll(lo) + __builtin_popcountll(hi));
+}
+
+#else   
+
+static inline uint16_t vec_popcnt_xor_sum16(const uint8_t* a, const uint8_t* b) {
+    uint16_t s = 0;
+    for (int i = 0; i < 16; ++i)
+        s += __builtin_popcount((unsigned)(a[i] ^ b[i]));
+    return s;
+}
+
+#endif
 
 namespace py = pybind11;
 
@@ -37,11 +149,13 @@ public:
         : data_array_(data), stop_workers_(false), next_req_id_(0)
     {
         py::buffer_info info = data_array_.request();
-        num_blocks_ = info.shape[0];
-        block_size_ = info.shape[1];
-        dim_ = info.shape[2];
-        vec_per_dim_ = dim_ / VEC_SIZE; // data_每个值类型uint8_t,组成8*16_t进行simd加速
-        data_ = static_cast<const uint8_t*>(info.ptr);
+        num_blocks_  = info.shape[0];
+        block_size_  = info.shape[1];
+        dim_         = info.shape[2];
+        vec_per_dim_ = dim_ / VEC_SIZE;  // data_每个值类型uint8_t,组成8*16_t进行simd加速
+        tail_dim_    = dim_ % VEC_SIZE;      
+        tail_start_  = vec_per_dim_ * VEC_SIZE;
+        data_        = static_cast<const uint8_t*>(info.ptr);
 
         // Start worker threads
         for (auto cpu_idx : cpu_idx_tbl) {
@@ -72,8 +186,6 @@ public:
                 if (rc != 0) {
                     std::cerr << "Error binding memory to NUMA node " << numaId << std::endl;
                 }
-            #else
-                std::cerr << "NUMA support is disabled." << std::endl;
             #endif
 
             }
@@ -183,49 +295,6 @@ private:
         bool done = false;
     };
 
-#ifdef __ARM_NEON
-    static inline uint16_t vaddvq_u8_compat(uint8x16_t v) {
-        #if defined(__aarch64__) || defined(_M_ARM64)
-            return vaddvq_u8(v);
-        #else 
-            uint16x8_t s16 = vpaddlq_u8(v);
-            uint32x4_t s32 = vpaddlq_u16(s16);
-            uint64x2_t s64 = vpaddlq_u32(s32);
-            return (uint16_t)(vgetq_lane_u64(s64, 0) + vgetq_lane_u64(s64, 1));
-        #endif
-    }
-
-    void print_uint8x16(uint8x16_t vec) {
-        uint8_t array[16];
-        vst1q_u8(array, vec);
-        for (int i = 0; i < 16; ++i) {
-            std::cout << static_cast<int>(array[i]) << " ";
-        }
-        std::cout << std::endl;
-    }
-
-#elif defined(__x86_64__) || defined(_M_X64)
-    // 采用 Brian Kernighan's 算法计算 64 位数的 Hamming Weight
-    unsigned int popcnt64(uint64_t x) {
-        x -= (x >> 1) & 0x5555555555555555; // 将相邻的两位合并
-        x = (x & 0x3333333333333333) + ((x >> 2) & 0x3333333333333333); // 合并四位
-        x = (x + (x >> 4)) & 0x0F0F0F0F0F0F0F0F; // 合并八位
-        x = x + (x >> 8); // 合并十六位
-        x = x + (x >> 16); // 合并三十二位
-        x = x + (x >> 32); // 合并六十四位
-        return x & 0x7F;  // 返回最后的1的个数，0x7F表示最多返回 7 位
-    }
-
-    // 计算 128 位向量中 1 的个数
-    int popcount_128(__m128i xor_result) {
-        // 将 128 位数据拆成两个 64 位整数
-        uint64_t* result = (uint64_t*)&xor_result;
-
-        // 分别计算每个 64 位的 Hamming 权重并返回结果之和
-        return popcnt64(result[0]) + popcnt64(result[1]);
-    }
-#endif
-
     void worker_loop() {
         while (true) {
             Request req;
@@ -248,18 +317,14 @@ private:
                 std::vector<std::pair<int, int>> heap;
                 heap.reserve(allowed.size());
 
+#if defined(__ARM_NEON) || defined(__ARM_NEON__) || \
+    defined(__x86_64__) || defined(_M_X64) || defined(__i386) || defined(_M_IX86)
                 // 1.预加载 query 向量
-    #ifdef __ARM_NEON
-                uint8x16_t q_vecs[vec_per_dim_];  // 存储 query 向量
+                vec16u q_vecs[vec_per_dim_]; // 存储query向量
                 for (size_t v = 0; v < vec_per_dim_; ++v) {
-                    q_vecs[v] = vld1q_u8(q_ptr + v * VEC_SIZE);
+                    q_vecs[v] = vec_loadu16(q_ptr + v * VEC_SIZE);
                 }
-    #elif defined(__x86_64__) || defined(_M_X64)
-                __m128i q_vecs[vec_per_dim_];  // 存储 query 向量
-                for (size_t v = 0; v < vec_per_dim_; ++v) {
-                    q_vecs[v] = _mm_loadu_si128(reinterpret_cast<const __m128i*>(q_ptr + v * VEC_SIZE));
-                }
-    #endif
+#endif
 
                 // 2.遍历允许的索引
                 for (auto idx : allowed) {
@@ -274,37 +339,27 @@ private:
                         const uint8_t* k_base = base_idx_ptr + t_idx * dim_;
 
                         // 计算每个向量的相似度
+#if defined(__ARM_NEON) || defined(__ARM_NEON__) || \
+    defined(__x86_64__) || defined(_M_X64) || defined(__i386) || defined(_M_IX86)
                         for (size_t v = 0; v < vec_per_dim_; ++v) {
-    #ifdef __ARM_NEON
-                            uint8x16_t k = vld1q_u8(k_base + v * VEC_SIZE);
-                            sum += vaddvq_u8_compat(vcntq_u8(veorq_u8(q_vecs[v], k)));
-    #elif defined(__x86_64__) || defined(_M_X64)
-                            __m128i k = _mm_loadu_si128(reinterpret_cast<const __m128i*>(k_base + v * VEC_SIZE));
-                            __m128i xor_result = _mm_xor_si128(q_vecs[v], k);  // 16 * 8
-                            int popcount_result = popcount_128(xor_result);    // 计算128位 xor_result 中所有位为 1 的个数
-                            sum += popcount_result;  // 获取每个字节的累计值
-    #endif
+                            sum += vec_popcnt_xor_sum16_vec(
+                                q_vecs[v],
+                                k_base + v * VEC_SIZE
+                            );
                         }
-
-                        // 处理不足16字节的部分
-                        ssize_t tail_dim = dim_ % VEC_SIZE;
-                        if (tail_dim != 0) {
-                            uint8_t q_tmp[16] = { 0 }; // 初始化填充为0
-                            uint8_t k_tmp[16] = { 0 };
-                            memcpy(q_tmp, q_ptr, dim_);
-                            memcpy(k_tmp, k_base, dim_);
-
-    #ifdef __ARM_NEON
-                            uint8x16_t q = vld1q_u8(q_tmp);
-                            uint8x16_t k = vld1q_u8(k_tmp);
-                            sum += vaddvq_u8_compat(vcntq_u8(veorq_u8(q, k)));
-    #elif defined(__x86_64__) || defined(_M_X64)
-                            __m128i q = _mm_loadu_si128(reinterpret_cast<const __m128i*>(q_tmp));
-                            __m128i k = _mm_loadu_si128(reinterpret_cast<const __m128i*>(k_tmp));
-                            __m128i xor_result = _mm_xor_si128(q, k);
-                            int popcount_result = popcount_128(xor_result);    // 计算128位 xor_result 中所有位为 1 的个数
-                            sum += popcount_result;  // 获取每个字节的累计值
-    #endif
+#else
+                        for (size_t v = 0; v < vec_per_dim_; ++v) {
+                            sum += vec_popcnt_xor_sum16(
+                                q_ptr  + v * VEC_SIZE,
+                                k_base + v * VEC_SIZE
+                            );
+                        }
+#endif
+                        if (tail_dim_ != 0) {
+                            for (size_t t = 0; t < tail_dim_; ++t) {
+                                uint8_t x = q_ptr [tail_start_+t] ^ k_base[tail_start_+t];
+                                sum += __builtin_popcount((unsigned)x);
+                            }
                         }
 
                         // 如果得分为0，则跳出循环
@@ -350,7 +405,7 @@ private:
     py::array_t<uint8_t> data_array_;
     const uint8_t* data_ = nullptr;
     ssize_t dim_;
-    size_t num_blocks_, block_size_, vec_per_dim_;
+    size_t num_blocks_, block_size_, vec_per_dim_, tail_dim_, tail_start_;
     std::queue<Request> requests_;
     std::unordered_map<int, Result> results_;
     std::vector<std::thread> worker_threads_;
