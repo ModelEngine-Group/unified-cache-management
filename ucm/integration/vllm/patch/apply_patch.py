@@ -88,19 +88,19 @@ def apply_all_patches() -> None:
         supported_versions = get_supported_versions()
         if version not in supported_versions:
             logger.warning(
-                f"vLLM version {version} is not explicitly supported. "
+                f"vLLM version {version} is not explicitly supported to apply UCM patches. "
                 f"Supported versions: {', '.join(supported_versions)}. "
-                f"Attempting to apply 0.9.2 patches..."
             )
-            raise ValueError(f"vLLM version {version} is not explicitly supported")
 
         # Apply version-specific patches
-        if version == "0.9.1":
-            _apply_patches_v091()
-        elif version == "0.9.2":
-            _apply_patches_v092()
-        else:
-            raise ValueError(f"Unsupported vLLM version: {version}")
+        match version:
+            case "0.9.2":
+                _apply_patches_v092()
+            case _:
+                logger.warning(
+                    f"Unsupported vLLM version: {version} to apply UCM patches. "
+                    f"Supported versions: {', '.join(supported_versions)}."
+                )
 
         _patches_applied = True
         logger.info(f"All vLLM patches applied successfully for version {version}")
@@ -109,25 +109,13 @@ def apply_all_patches() -> None:
         raise
 
 
-def _apply_patches_v091() -> None:
-    """Apply patches for vLLM 0.9.1."""
-    from .patch_funcs.v091.vllm_adapt import _apply_adapt_patch
-
-    _apply_adapt_patch()  # apply vllm-adapt-pc.patch
-    if _patch_ascend():
-        from .patch_funcs.v091.vllm_ascend_adapt import _apply_ascend_patch
-
-        _apply_ascend_patch()  # apply vllm-ascend-adapt.patch
-
-
 def _apply_patches_v092() -> None:
     """Apply patches for vLLM 0.9.2."""
-    from .patch_funcs.v092.vllm_adapt import _apply_adapt_patches
+    from .patch_funcs.v092.vllm_patch import _apply_sparse_adapt
 
-    _apply_adapt_patches()
-
+    _apply_sparse_adapt()  # apply vllm-sparse-adapt.patch
     if _patch_ascend():
-        from .patch_funcs.v092.vllm_ascend_adapt import _apply_ascend_patch
+        from .patch_funcs.v092.vllm_ascend_patch import _apply_ascend_patch
 
         _apply_ascend_patch()  # apply vllm-ascend-adapt.patch
 
