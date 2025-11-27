@@ -44,6 +44,7 @@ from vllm.v1.request import Request, RequestStatus
 from ucm.logger import init_logger
 from ucm.store.factory import UcmConnectorFactory
 from ucm.store.ucmstore import Task
+from ucm.sparse.blend.chunk_processor import ChunkProcessor, ChunkMetaData, hash_token_ids
 
 if TYPE_CHECKING:
     from vllm.attention.backends.abstract import AttentionMetadata
@@ -78,6 +79,8 @@ class ReqMeta:
     dump_blocks: list[tuple[str, int]] = field(default_factory=list)
     # Whether use load_async
     load_async: bool = False
+    # blend rag cache
+    rag_chunks_load_meta: list[ChunkMetaData] = field(default_factory=list)
 
 
 @dataclass
@@ -159,6 +162,19 @@ class UnifiedCacheConnectorV1(KVConnectorBase_V1):
                     "use_layerwise"
                 ]
             )
+
+        self.enable_blend = False
+        self.req2rag_load_chunks: dict[str, list[ChunkMetaData]] = {}
+        end_token_id = 0
+        if (("ucm_sparse_config" in self._vllm_config.kv_transfer_config.kv_connector_extra_config)
+                and "Blend" in self._vllm_config.kv_transfer_config.kv_connector_extra_config["ucm_sparse_config"]):
+            ucm_blend_config = self._vllm_config.kv_transfer_config.kv_connector_extra_config[ "ucm_sparse_config" ]["Blend"]
+            self.enable_blend = True
+            end_token_id = ucm_blend_config["chunk_end_token_id"]
+        self.chunk_processor = ChunkProcessor(
+            # 151643 for qw pad token id, 0 for llama
+            config={'chunk_end_token_id': end_token_id, 'block_size': self.block_size}
+        )
 
     def _init_kv_caches_from_forward_context(self, forward_context: "ForwardContext"):
         for layer_name in forward_context.no_compile_layers:
@@ -303,6 +319,10 @@ class UnifiedCacheConnectorV1(KVConnectorBase_V1):
                 self._load_failed_reqs.add(req_id)
                 logger.error(f"Failed to load blocks for req {req_id}")
 
+    def setup_model(self, model) -> None:
+        # get cos_sin_embedding cache for kv cache load post process (block-wise delta rope)
+        self.chunk_processor.setup_rotary_emb(model)
+
     def wait_for_layer_load(self, layer_name: str) -> None:
         """
         Block until the KV for a specific layer is loaded into vLLM's
@@ -333,6 +353,18 @@ class UnifiedCacheConnectorV1(KVConnectorBase_V1):
                 )
                 continue
             logger.debug(f"Load tasks for {request_id} on layer {layer_name} finished.")
+        # prepare rerope for rag chunk k cache
+        k_cache = self.kv_caches[layer_name][0]
+        all_hits_vllm_ids = []
+        positions = []
+        for reqMeta in self._connector_metadata.requests:
+            for meta in reqMeta.rag_chunks_load_meta:
+                all_hits_vllm_ids.extend(meta.hits_vllm_blk_ids)
+                positions.extend([meta.position_offset]*len(meta.hits_vllm_blk_ids))
+        if all_hits_vllm_ids:
+            vllm_ids = torch.tensor(all_hits_vllm_ids, device=k_cache.device)
+            positions = torch.tensor(positions, device=k_cache.device)
+            self.chunk_processor.process_chunk_cache(k_cache, vllm_ids, positions)
 
     def save_kv_layer(
         self,
@@ -548,8 +580,8 @@ class UnifiedCacheConnectorV1(KVConnectorBase_V1):
                 hash_value = hash_function(
                     (parent_block_hash_value, block_token_ids_tuple)
                 )
-                parent_block_hash_value = hash_value
-                ret.append(str(hash_value))
+                parent_block_hash_value = str(hash_value)
+                ret.append(parent_block_hash_value)
 
             return ret
 
@@ -562,7 +594,9 @@ class UnifiedCacheConnectorV1(KVConnectorBase_V1):
         # Calculate start position (exclude blocks already in HBM)
         start_position = num_computed_tokens // self.block_size
 
-        block_operations = [BlockOperation.NONE] * len(block_hashes)
+        # state machine
+        # default to dump all blks, when blk allocation fail, turn to be NONE, when cache hit, turn to be LOAD
+        block_operations = [BlockOperation.DUMP] * len(block_hashes)
 
         remain_hashes = block_hashes[start_position:]
         if not remain_hashes:
@@ -580,10 +614,56 @@ class UnifiedCacheConnectorV1(KVConnectorBase_V1):
             else:
                 # TODO we will fix hole match later
                 break
+
+        # for unmatched blocks, further match the rag chunk
+        rag_start_blk_idx = start_position + num_lookup_hits
+        rag_chunks_meta, is_build_cache = self.chunk_processor.process_request(request, md5, rag_start_blk_idx)
+
+        num_rag_lookup_hits = 0
+        if not is_build_cache:
+            # blend stage
+            final_rag_chunks_meta = []
+            old_lookup_results = [False]
+            old_chunk_meta = None
+            for chunk_meta in rag_chunks_meta:
+                lookup_results = self.connector.lookup(chunk_meta.chunk_blks_hash)
+                chunk_meta.store_hits = lookup_results
+                final_rag_chunks_meta.append(chunk_meta)
+                if sum(lookup_results) == 0 and old_lookup_results[-1]:
+                    # current whole chunk is miss and last chunk's last blk hit, try to merge chunk
+                    merge_tokens = request.prompt_token_ids[chunk_meta.start_idx_in_req:chunk_meta.end_idx_in_req]
+                    merge_chunk_blks_hash = hash_token_ids(md5, self.block_size, merge_tokens, old_chunk_meta.chunk_blks_hash[-1])
+                    merge_lookup_results = self.connector.lookup(merge_chunk_blks_hash)
+                    if merge_lookup_results[0]:
+                        # current chunk meta need to merge into old chunk meta
+                        chunk_meta.store_hits = merge_lookup_results
+                        chunk_meta.chunk_blks_hash = merge_chunk_blks_hash
+                        self.chunk_processor.merge_chunks(old_chunk_meta, chunk_meta)
+                        final_rag_chunks_meta.pop()
+                for i, hit in enumerate(chunk_meta.store_hits):
+                    # replace the origin pc hash with chunk pc hash
+                    # maybe we should also invalid the block hash in HBM's block manager, cause after cache blend,
+                    # the kv cache of rag chunk in HBM is recomputed, they can contact all chunks in this req.
+                    block_hashes[rag_start_blk_idx] = chunk_meta.chunk_blks_hash[i]
+                    if hit:
+                        num_rag_lookup_hits += 1
+                        block_operations[rag_start_blk_idx] = BlockOperation.LOAD
+                    else:
+                        block_operations[rag_start_blk_idx] = BlockOperation.NONE
+                        # handle the hole in chunk prefix cache in future work
+                        pass
+                    rag_start_blk_idx += 1
+                old_chunk_meta = final_rag_chunks_meta[-1]
+                old_lookup_results = old_chunk_meta.store_hits
+
+            if num_rag_lookup_hits:
+                self.req2rag_load_chunks[request.request_id] = final_rag_chunks_meta
+
         logger.info(
             f"num_total_blocks: {len(block_hashes)}, "
             f"num_lookup_hits on hbm: {start_position}, "
-            f"num_lookup_hits on storage except hbm: {num_lookup_hits}"
+            f"num_lookup_hits on storage except hbm: {num_lookup_hits}, "
+            f"num_lookup_hits on rag chunk: {num_rag_lookup_hits}"
         )
 
         # Load async when Decode instance need to load
@@ -643,17 +723,20 @@ class UnifiedCacheConnectorV1(KVConnectorBase_V1):
             block_operations = request_block_info.block_operations
             block_hashes = request_block_info.block_hashes
             start_create_pos = start_position + num_external_tokens // self.block_size
-            remaining_hashes = block_hashes[start_create_pos:]
-            if remaining_hashes:
-                create_results = self.connector.create(remaining_hashes)
+            need_dump_blks = []
+            need_dump_blks_idx = []
+            for idx in range(start_create_pos, len(block_hashes)):
+                # for chunk cache hit, no need to save
+                if block_operations[idx] == BlockOperation.DUMP:
+                    need_dump_blks.append(block_hashes[idx])
+                    need_dump_blks_idx.append(idx)
+            if need_dump_blks:
+                create_results = self.connector.create(need_dump_blks)
                 if any(ret != 0 for ret in create_results):
                     logger.warning(f"\ncreate_results on storage: {create_results}\n")
-                for j, ret in enumerate(create_results):
-                    idx = start_create_pos + j
-                    block_operations[idx] = (
-                        BlockOperation.DUMP if ret == 0 else BlockOperation.NONE
-                    )
-            # set start_position to 0, so that we can process from the beginning
+                for i, ret in enumerate(create_results):
+                    block_operations[need_dump_blks_idx[i]] = BlockOperation.DUMP if ret == 0 else BlockOperation.NONE
+                # set start_position to 0, so that we can process from the beginning
             request_block_info.start_position = 0
 
     def build_connector_meta(
@@ -694,11 +777,16 @@ class UnifiedCacheConnectorV1(KVConnectorBase_V1):
                     vllm_block_ids, block_info
                 )
                 if load_blocks or dump_blocks:
+                    rag_chunks_load_meta = self.req2rag_load_chunks.pop(req_id, [])
+                    for chunk_meta in rag_chunks_load_meta:
+                        chunk_meta.vllm_blk_ids = vllm_block_ids[chunk_meta.start_idx_in_req_blks: chunk_meta.end_idx_in_req_blks]
+
                     meta.requests.append(
                         ReqMeta(
                             request_id=req_id,
                             load_blocks=load_blocks,
                             dump_blocks=dump_blocks,
+                            rag_chunks_load_meta=rag_chunks_load_meta,
                         )
                     )
 

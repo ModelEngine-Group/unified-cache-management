@@ -50,3 +50,5 @@ UcmSparseFactory.register_sparse_method("GSA", "ucm.sparse.gsa.gsa", "GSA")
 UcmSparseFactory.register_sparse_method(
     "KVStarMultiStep", "ucm.sparse.kvstar.multistep", "KVStarMultiStep"
 )
+UcmSparseFactory.register_sparse_method("Blend", "ucm.sparse.blend.blend", "Blend")
+

@@ -1,7 +1,7 @@
 import enum
 import math
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Union
+from typing import Dict, List, Optional, Union, Tuple
 
 import torch
 from vllm.config import VllmConfig
@@ -726,7 +726,9 @@ class KVStarMultiStep(UcmSparseBase):
         value: torch.Tensor,
         layer_name: str,
         forward_context: ForwardContext,
-    ) -> None:
+        output: Optional[torch.Tensor] = None,
+        phase: Optional[str] = None,
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         """
         This is called at the beginning of "unified_attention".
         Sparse attention algorithm can modify forward_context.attn_metadata if necessary.
@@ -739,6 +741,8 @@ class KVStarMultiStep(UcmSparseBase):
             req_layerwise_state = self.create_layerwise_req_state(req_meta, layer_name)
             req_layerwise_state.update_meta(req_meta, forward_context)
             req_layerwise_state.attention_begin(query, key, value, forward_context)
+
+        return query, key, value, output
 
     def attention_finished(
         self,

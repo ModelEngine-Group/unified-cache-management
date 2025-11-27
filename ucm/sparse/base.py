@@ -23,7 +23,7 @@ from __future__ import annotations
 
 import enum
 from abc import ABC, abstractmethod
-from typing import TYPE_CHECKING, List, Optional, Union
+from typing import TYPE_CHECKING, List, Optional, Union, Tuple
 
 if TYPE_CHECKING:
     from vllm.v1.core.sched.output import SchedulerOutput
@@ -117,11 +117,11 @@ class UcmSparseBase(ABC):
         """
         pass
 
-    def execute_finished(self):
+    def execute_finished(self, logits_indices :torch.Tensor) -> torch.Tensor:
         """
         This is called at the end of "ModelRunner->execute_model" function.
         """
-        pass
+        return logits_indices
 
     def attention_begin(
         self,
@@ -130,8 +130,9 @@ class UcmSparseBase(ABC):
         value: torch.Tensor,
         layer_name: str,
         forward_context: ForwardContext,
+        output: Optional[torch.Tensor] = None,
         phase: Optional[str] = None,
-    ) -> None:
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         """
         This is called at the beginning of "unified_attention".
         Sparse attention algorithm can modify forward_context.attn_metadata if necessary.
@@ -153,6 +154,38 @@ class UcmSparseBase(ABC):
         This is called at the end of "unified_attention".
         """
         pass
+
+    def attention_end(
+            self,
+            attn_output: torch.Tensor,
+            layer_name: str
+    ) -> torch.Tensor:
+        """
+        This is called at the end of Attention Forward.
+        For Blend, we "sparse" the prefill cached tokens
+        """
+        return attn_output
+
+    def self_attention_finished(
+            self,
+            residual: torch.Tensor,
+            hidden_states: torch.Tensor
+    ) -> torch.Tensor:
+        """
+        This is called at the end of Self Attention Forward for each DecodeLayer.
+        """
+        return residual
+
+    def layer_finished(
+            self,
+            positions: torch.Tensor,
+            hidden_states: torch.Tensor
+    ) -> torch.Tensor:
+        """
+        This is called at the end of Self Attention Forward for each DecodeLayer.
+        """
+        return positions
+
 
     def request_finished_in_worker(self, request_id: Union[int, str]):
         """
