@@ -77,10 +77,9 @@ vllm serve ${MODEL_PATH} \
     "kv_connector_module_path": "ucm.integration.vllm.uc_connector",
     "kv_role": "kv_both",
     "kv_connector_extra_config": {
-        "ucm_connector_name": "UcmDramStore",
+        "ucm_connector_name": "UcmNfsStore",
         "ucm_connector_config": {
-            "max_cache_size": 5368709120,
-            "kv_block_size": 262144
+            "storage_backends": "/home/test"
         }
     }
 }'

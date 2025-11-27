@@ -79,6 +79,5 @@ performance.
 
 :::{toctree}
 :maxdepth: 1
-dram_store
 nfs_store
 :::
