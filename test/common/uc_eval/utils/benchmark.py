@@ -1,3 +1,5 @@
+import functools
+import importlib
 from abc import ABC, abstractmethod
 from typing import Any, Dict, List, Optional
 
@@ -17,8 +19,19 @@ MS_SCALE = 1000
 MAX_WAVE_RATE = 0.05
 
 
+def make_object(object_ref: str, *args: Any, **kwargs: Any) -> Any:
+    """create object based on class name"""
+    modname, qualname_separator, qualname = object_ref.partition(":")
+    obj = importlib.import_module(modname)
+    if qualname_separator:
+        for attr in qualname.split("."):
+            obj = getattr(obj, attr)
+    return functools.partial(obj, *args, **kwargs)
+
+
 class BenchmarkBase(ABC):
     def __init__(self, eval_config: Optional[EvalConfig], stable_perf: bool = False):
+        self.eval_config = eval_config
         self.stable_perf = stable_perf
 
     def get_success_request(self, data: List[RequestRecord | MultiTurnDialogRecord]):
@@ -54,12 +67,25 @@ class BenchmarkBase(ABC):
 
 
 class EvaluatorBenchmark(BenchmarkBase):
-    def __init__(self, stable_perf: bool, eval_class: str):
-        self.stable_perf = stable_perf
-        self.metric_method = eval_class
+    def __init__(self, eval_config: EvalConfig):
+        super().__init__(eval_config=eval_config)
+        self.metric_method = eval_config.metrics
+        self.eval_class = eval_config.eval_class
 
-    def perf_show(self, records: List[RequestRecord | MultiTurnDialogRecord]):
-        pass
+    def perf_show(
+        self,
+        record_list: List[RequestRecord | MultiTurnDialogRecord],
+        parallel_num: int,
+    ):
+        logger.info(f"Begin calculate metrics...")
+        success_request = self.get_success_request(record_list)
+        eval_cls = make_object(self.eval_class)(success_request)
+        latency = LatencyStatistics()
+        metric_result = eval_cls.calculate_metric(self.metric_method)
+        latency.metric_dict = metric_result
+        match_record_list = eval_cls.record_list
+
+        return latency, match_record_list
 
 
 class PerformanceBenchmark(BenchmarkBase):
@@ -70,19 +96,17 @@ class PerformanceBenchmark(BenchmarkBase):
 
     def perf_show(
         self,
-        input_data_lists: List[RequestRecord | MultiTurnDialogRecord],
+        record_list: List[RequestRecord | MultiTurnDialogRecord],
         parallel_num: int,
     ) -> LatencyStatistics:
         logger.info(f"Begin calculate latency...")
-        success_request = self.get_success_request(input_data_lists)
+        success_request = self.get_success_request(record_list)
         request_record_dict = self.result_to_column_dict(success_request)
         if self.stable_perf:
             request_ids = self._get_stable_request_id(request_record_dict, parallel_num)
         else:
             request_ids = request_record_dict.get("request_id")
-        records = [
-            record for record in input_data_lists if record.request_id in request_ids
-        ]
+        records = [record for record in record_list if record.request_id in request_ids]
         perf_result = self._get_performance_data(records)
         return perf_result
 

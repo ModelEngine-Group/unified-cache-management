@@ -102,6 +102,8 @@ class RequestRecord:
     tbt_latency: float = 0.0
     # Whether the request is successful
     is_success: bool = False
+    # whether the output_data matches the expected output
+    is_match: bool = False
 
     def to_dict(self):
         return vars(self)
@@ -124,6 +126,7 @@ class MultiTurnDialogRecord(RequestRecord):
 
     def to_dict(self):
         return vars(self)
+
 
 @dataclass
 class LatencyStatistics:
@@ -157,6 +160,8 @@ class LatencyStatistics:
     max_decode_latency: float = -1
     # The average latency of decoder latency(ms)
     avg_decode_latency: float = -1
+    # The metrics
+    metric_dict: Dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self):
         return vars(self)

@@ -67,7 +67,7 @@ class BaseClient:
         self,
         config: ModelConfig,
         stream: bool = False,
-        enable_prefix_cache: bool = False,
+        **kwargs,
     ):
         self.ip_ports = config.ip_ports
         self.url = f"http://{self.ip_ports}/v1/chat/completions"
@@ -78,7 +78,6 @@ class BaseClient:
         )
         self.session = requests.Session()
         self.payload = config.payload
-        self.enable_prefix_cache = enable_prefix_cache
         self.stream = stream
         if self.stream:
             self.payload.update(
@@ -104,10 +103,11 @@ class BaseClient:
         update payload and send request
         """
         payload = self._update_payload(prompt, max_tokens)
+        record = self._create_record(prompt)
         if self.stream:
-            record = self.do_stream_request(payload)
+            record = self.do_stream_request(payload, record)
         else:
-            record = self.do_request(payload)
+            record = self.do_request(payload, record)
         return record
 
     def _update_payload(self, prompt, max_tokens) -> Dict:
@@ -131,8 +131,8 @@ class BaseClient:
 
     def _create_record(self, prompt):
         # If the prompt is not a dict, it must be a list of dicts for multi-turn dialogue.
-        if isinstance(prompt, dict):
-            record = RequestRecord(input_data=prompt["content"])
+        if isinstance(prompt, str):
+            record = RequestRecord(input_data=prompt)
         else:
             record = RequestRecord(input_data=str(prompt))
 
@@ -155,8 +155,10 @@ class BaseClient:
         for record in records:
             record.input_tokens = len(self.tokenizer.tokenize(record.input_data))
             record.output_tokens = len(self.tokenizer.tokenize(record.output_data))
-            record.tbt_list = record.tbt_list[2:]
-            record.tbt_latency = sum(record.tbt_list) / len(record.tbt_list)
+            record.tbt_list = record.tbt_list[2:] if record.tbt_list else []
+            record.tbt_latency = (
+                sum(record.tbt_list) / len(record.tbt_list) if record.tbt_list else 0
+            )
 
         return records[0] if single_record is not None else records
 
@@ -175,9 +177,7 @@ class BaseClient:
         except Exception as err:
             raise self._handle_request_error(err)
 
-    def do_request(self, payload: Dict) -> RequestRecord:
-        prompt = payload["messages"]
-        record = self._create_record(prompt)
+    def do_request(self, payload: Dict, record: RequestRecord) -> RequestRecord:
         record.start_time = time.time()
 
         response = self._requset(payload)
@@ -201,9 +201,7 @@ class BaseClient:
             output += message.get("reasoning_content", "")
         return output
 
-    def do_stream_request(self, payload: Dict) -> RequestRecord:
-        prompt = payload["messages"]
-        record = self._create_record(prompt)
+    def do_stream_request(self, payload: Dict, record: RequestRecord) -> RequestRecord:
         while True:
             all_chunks = []
             first_token = True
@@ -373,9 +371,10 @@ class BaseClient:
 
 
 class MultiDialogClient(BaseClient):
-    def __init__(self, config: ModelConfig, stream: bool, enable_prefix_cache: bool):
-        super().__init__(config, stream, enable_prefix_cache)
+    def __init__(self, config: ModelConfig, stream: bool, **kwargs):
+        super().__init__(config, stream, **kwargs)
         self.uuid = uuid.uuid4().hex
+        self.enable_prefix_cache = kwargs.get("enable_prefix_cache", False)
 
     @override
     def handle_requests_with_pool(
@@ -465,8 +464,8 @@ class MultiDialogClient(BaseClient):
 
 
 class DocQaClient(BaseClient):
-    def __init__(self, config: ModelConfig, stream: bool, enable_prefix_cache: bool):
-        super().__init__(config, stream, enable_prefix_cache)
+    def __init__(self, config: ModelConfig, stream: bool, **kwargs):
+        super().__init__(config, stream, **kwargs)
 
     @override
     def handle_requests_with_pool(

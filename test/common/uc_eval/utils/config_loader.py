@@ -1,8 +1,6 @@
 import dataclasses
-import functools
-import importlib
 import json
-from typing import Any, Optional, Tuple
+from typing import Optional, Tuple
 
 from common.uc_eval.utils.benchmark import (
     BenchmarkBase,
@@ -26,16 +24,6 @@ from common.uc_eval.utils.dataloader import (
 from common.uc_eval.utils.utils import get_logger
 
 logger = get_logger()
-
-
-def make_object(object_ref: str, *args: Any, **kwargs: Any) -> Any:
-    """create object based on class name"""
-    modname, qualname_separator, qualname = object_ref.partition(":")
-    obj = importlib.import_module(modname)
-    if qualname_separator:
-        for attr in qualname.split("."):
-            obj = getattr(obj, attr)
-    return functools.partial(obj, *args, **kwargs)
 
 
 class ConfigLoader:
@@ -62,8 +50,8 @@ class ConfigLoader:
                 "At least one of perf_config or eval_config must be provided."
             )
 
-        result = (
-            self._valid_model_config() and self._valid_perf_config()
+        result = self._valid_model_config() and (
+            self._valid_perf_config()
             if self.perf_config is not None
             else self._valid_eval_config()
         )
@@ -143,9 +131,12 @@ class ConfigLoader:
         return True
 
     def _valid_eval_config(self) -> bool:
-        data_type = self.perf_config.data_type
-        dataset_file_path = self.perf_config.dataset_file_path
-        benchmark_mode = self.perf_config.benchmark_mode
+        data_type = self.eval_config.data_type
+        dataset_file_path = self.eval_config.dataset_file_path
+        benchmark_mode = self.eval_config.benchmark_mode
+        parallem_num = self.eval_config.parallel_num
+        eval_cls = self.eval_config.eval_class
+        metrics = self.eval_config.metrics
         if benchmark_mode != BenchmarkModeType.EVAL:
             raise ValueError(
                 f"Invalid benchmark mode: {benchmark_mode}. Valid modes are: {BenchmarkModeType.EVAL}"
@@ -154,7 +145,15 @@ class ConfigLoader:
             raise ValueError(
                 f"Invalid dataset type: {data_type} or Invalid dataset file path: {dataset_file_path}"
             )
-        # TODO: add more validations
+        if not isinstance(parallem_num, int):
+            raise TypeError(
+                f"parallel_num must be an integer for {data_type} data type"
+            )
+        if not metrics or not eval_cls:
+            raise ValueError(
+                f"metrics and eval_class must be provided for {data_type} data type"
+            )
+
         return True
 
 
@@ -185,7 +184,6 @@ class TaskFactory:
         stream = False
         data_type = (perf_config or eval_config).data_type
         tokenizer_path = model_config.tokenizer_path
-        enable_prefix_cache = perf_config.enable_prefix_cache
         benchmark_mode = (perf_config or eval_config).benchmark_mode
         stable = benchmark_mode == BenchmarkModeType.STABLE_PREF
         if benchmark_mode in [
@@ -193,8 +191,11 @@ class TaskFactory:
             BenchmarkModeType.DEFAULT_PERF,
         ]:
             stream = True
+        client_kwargs = {}
+        if data_type is DatasetType.MULTI_DIALOGUE:
+            client_kwargs["enable_prefix_cache"] = perf_config.enable_prefix_cache
         return (
             cls._dataset[data_type](tokenizer_path),
-            cls._client[data_type](model_config, stream, enable_prefix_cache),
+            cls._client[data_type](model_config, stream, **client_kwargs),
             cls._benchmark[benchmark_mode](stable if perf_config else eval_config),
         )

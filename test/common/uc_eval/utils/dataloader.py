@@ -174,7 +174,7 @@ class DocQADataset(BaseDataset):
         for case in case_data:
             context = case.get("context")
             question = case.get("question")
-            answer = case.get("answers")[0]
+            answer = case.get("answers")
             case_name = case.get("dataset") + "_" + case.get("_id")
             cases_list.append([case_name, context, question, answer])
         return cases_list
