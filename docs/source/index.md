@@ -57,6 +57,7 @@ getting-started/installation_npu
 user-guide/prefix-cache/index
 user-guide/sparse-attention/index
 user-guide/pd-disaggregation/index
+user-guide/metrics/metrics
 :::
 
 :::{toctree}
