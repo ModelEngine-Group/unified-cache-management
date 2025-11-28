@@ -24,18 +24,19 @@
 #ifndef UNIFIEDCACHE_MONITOR_H
 #define UNIFIEDCACHE_MONITOR_H
 
-#include "stats/istats.h" 
-#include <unordered_map>
 #include <memory>
+#include <mutex>
 #include <string>
+#include <unordered_map>
 #include <vector>
+#include "stats/istats.h"
 
 namespace UC::Metrics {
 
 class StatsMonitor {
 public:
-   
-    static StatsMonitor& GetInstance() {
+    static StatsMonitor& GetInstance()
+    {
         static StatsMonitor inst;
         return inst;
     }
@@ -44,16 +45,14 @@ public:
 
     void CreateStats(const std::string& name);
 
-    std::unordered_map<std::string, std::vector<double>>
-        GetStats(const std::string& name);
-    
+    std::unordered_map<std::string, std::vector<double>> GetStats(const std::string& name);
+
     void ResetStats(const std::string& name);
 
-    std::unordered_map<std::string, std::vector<double>>
-        GetStatsAndClear(const std::string& name);
+    std::unordered_map<std::string, std::vector<double>> GetStatsAndClear(const std::string& name);
 
     void UpdateStats(const std::string& name,
-                      const std::unordered_map<std::string, double>& params);
+                     const std::unordered_map<std::string, double>& params);
 
     void ResetAllStats();
 
@@ -66,6 +65,6 @@ private:
     StatsMonitor& operator=(const StatsMonitor&) = delete;
 };
 
-}    
+} // namespace UC::Metrics
 
-#endif  // UNIFIEDCACHE_MONITOR_H
+#endif // UNIFIEDCACHE_MONITOR_H
