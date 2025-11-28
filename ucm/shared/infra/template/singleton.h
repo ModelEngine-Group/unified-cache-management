@@ -21,30 +21,26 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  * */
-#include <pybind11/pybind11.h>
-#include <pybind11/stl.h>
-#include "stats_monitor.h"
+#ifndef UNIFIEDCACHE_INFRA_SINGLETON_H
+#define UNIFIEDCACHE_INFRA_SINGLETON_H
 
-namespace py = pybind11;
-namespace UC::Metrics {
+namespace UC {
 
-void bind_monitor(py::module_& m)
-{
-    py::class_<StatsMonitor>(m, "StatsMonitor")
-        .def_static("get_instance", &StatsMonitor::GetInstance, py::return_value_policy::reference)
-        .def("update_stats", &StatsMonitor::UpdateStats)
-        .def("reset_all", &StatsMonitor::ResetAllStats)
-        .def("get_stats", &StatsMonitor::GetStats)
-        .def("get_stats_and_clear", &StatsMonitor::GetStatsAndClear);
-}
+template <typename T>
+class Singleton {
+public:
+    Singleton(const Singleton&) = delete;
+    Singleton& operator=(const Singleton&) = delete;
+    static T* Instance()
+    {
+        static T t;
+        return &t;
+    }
 
-} // namespace UC::Metrics
+private:
+    Singleton() = default;
+};
 
-PYBIND11_MODULE(ucmmonitor, module)
-{
-    module.attr("project") = UCM_PROJECT_NAME;
-    module.attr("version") = UCM_PROJECT_VERSION;
-    module.attr("commit_id") = UCM_COMMIT_ID;
-    module.attr("build_type") = UCM_BUILD_TYPE;
-    UC::Metrics::bind_monitor(module);
-}
+} // namespace UC
+
+#endif

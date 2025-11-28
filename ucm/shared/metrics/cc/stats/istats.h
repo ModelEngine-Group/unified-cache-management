@@ -24,8 +24,8 @@
 #ifndef UNIFIEDCACHE_ISTATS_H
 #define UNIFIEDCACHE_ISTATS_H
 
-#include <string>
 #include <memory>
+#include <string>
 #include <unordered_map>
 #include <vector>
 
@@ -40,6 +40,6 @@ public:
     virtual std::unordered_map<std::string, std::vector<double>> Data() = 0;
 };
 
-}  
+} // namespace UC::Metrics
 
-#endif 
+#endif

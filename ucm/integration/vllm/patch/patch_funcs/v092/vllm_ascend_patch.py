@@ -79,6 +79,13 @@ def _patch_attention_v1() -> None:
         ):
             if not has_ucm_sparse():
                 return
+            ucm_sparse = get_ucm_sparse()
+            attn_metadata = forward_context.attn_metadata
+            if attn_metadata is None:
+                return
+            ucm_sparse.attention_finished(
+                query, key, value, attn_output, layer_name, forward_context
+            )
 
         attention_v1.maybe_execute_sparse_attention_finished = (
             maybe_execute_sparse_attention_finished

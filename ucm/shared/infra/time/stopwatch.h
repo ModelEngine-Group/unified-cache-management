@@ -21,30 +21,30 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  * */
-#include <pybind11/pybind11.h>
-#include <pybind11/stl.h>
-#include "stats_monitor.h"
+#ifndef UNIFIEDCACHE_INFRA_STOPWATCH_H
+#define UNIFIEDCACHE_INFRA_STOPWATCH_H
 
-namespace py = pybind11;
-namespace UC::Metrics {
+#include <chrono>
 
-void bind_monitor(py::module_& m)
-{
-    py::class_<StatsMonitor>(m, "StatsMonitor")
-        .def_static("get_instance", &StatsMonitor::GetInstance, py::return_value_policy::reference)
-        .def("update_stats", &StatsMonitor::UpdateStats)
-        .def("reset_all", &StatsMonitor::ResetAllStats)
-        .def("get_stats", &StatsMonitor::GetStats)
-        .def("get_stats_and_clear", &StatsMonitor::GetStatsAndClear);
-}
+namespace UC {
 
-} // namespace UC::Metrics
+class StopWatch {
+    using clock = std::chrono::steady_clock;
+    std::chrono::time_point<clock> startTp_;
 
-PYBIND11_MODULE(ucmmonitor, module)
-{
-    module.attr("project") = UCM_PROJECT_NAME;
-    module.attr("version") = UCM_PROJECT_VERSION;
-    module.attr("commit_id") = UCM_COMMIT_ID;
-    module.attr("build_type") = UCM_BUILD_TYPE;
-    UC::Metrics::bind_monitor(module);
-}
+public:
+    StopWatch() : startTp_{clock::now()} {}
+    std::chrono::duration<double> Elapsed() const
+    {
+        return std::chrono::duration<double>(clock::now() - startTp_);
+    }
+    std::chrono::milliseconds ElapsedMs() const
+    {
+        return std::chrono::duration_cast<std::chrono::milliseconds>(clock::now() - startTp_);
+    }
+    void Reset() { startTp_ = clock::now(); }
+};
+
+} // namespace UC
+
+#endif

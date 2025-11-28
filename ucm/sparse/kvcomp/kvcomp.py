@@ -186,10 +186,10 @@ class KvComp(ESA):
 
         if hasattr(torch, "npu") and torch.npu.is_available():
             device = torch.device(f"npu:{self.rank}")
-        elif torch.cuda.is_available():
+        elif hasattr(torch, "cuda") and torch.cuda.is_available():
             device = torch.device(f"cuda:{self.rank}")
         else:
-            device = torch.device("npu")
+            device = torch.device("cpu")
 
         self.hash_encoder = HashEncoder(
             input_dim=self.kvcomp_config.head_dim,

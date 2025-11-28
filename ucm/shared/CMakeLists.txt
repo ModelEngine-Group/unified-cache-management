@@ -1,4 +1,5 @@
 add_subdirectory(vendor)
+add_subdirectory(infra)
 add_subdirectory(trans)
 add_subdirectory(metrics)
 add_subdirectory(test)

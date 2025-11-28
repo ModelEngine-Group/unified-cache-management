@@ -21,50 +21,49 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  * */
-#ifndef UNIFIEDCACHE_MONITOR_H
-#define UNIFIEDCACHE_MONITOR_H
+#ifndef UNIFIEDCACHE_INFRA_LATCH_H
+#define UNIFIEDCACHE_INFRA_LATCH_H
 
-#include <memory>
+#include <atomic>
+#include <condition_variable>
+#include <functional>
 #include <mutex>
-#include <string>
-#include <unordered_map>
-#include <vector>
-#include "stats/istats.h"
 
-namespace UC::Metrics {
+namespace UC {
 
-class StatsMonitor {
+class Latch {
 public:
-    static StatsMonitor& GetInstance()
+    explicit Latch(const size_t expected = 0) : counter_{expected} {}
+    void Up() { ++this->counter_; }
+    void Done(std::function<void(void)> finish) noexcept
     {
-        static StatsMonitor inst;
-        return inst;
+        auto counter = this->counter_.load(std::memory_order_acquire);
+        while (counter > 0) {
+            auto desired = counter - 1;
+            if (this->counter_.compare_exchange_weak(counter, desired, std::memory_order_acq_rel)) {
+                if (desired == 0) {
+                    if (finish) { finish(); }
+                    std::lock_guard<std::mutex> lg(this->mutex_);
+                    this->cv_.notify_all();
+                }
+                return;
+            }
+            counter = this->counter_.load(std::memory_order_acquire);
+        }
+    }
+    void Wait()
+    {
+        std::unique_lock<std::mutex> lk(this->mutex_);
+        if (this->counter_ == 0) { return; }
+        this->cv_.wait(lk, [this] { return this->counter_ == 0; });
     }
 
-    ~StatsMonitor() = default;
-
-    void CreateStats(const std::string& name);
-
-    std::unordered_map<std::string, std::vector<double>> GetStats(const std::string& name);
-
-    void ResetStats(const std::string& name);
-
-    std::unordered_map<std::string, std::vector<double>> GetStatsAndClear(const std::string& name);
-
-    void UpdateStats(const std::string& name,
-                     const std::unordered_map<std::string, double>& params);
-
-    void ResetAllStats();
-
-private:
+protected:
     std::mutex mutex_;
-    std::unordered_map<std::string, std::unique_ptr<IStats>> stats_map_;
-
-    StatsMonitor();
-    StatsMonitor(const StatsMonitor&) = delete;
-    StatsMonitor& operator=(const StatsMonitor&) = delete;
+    std::condition_variable cv_;
+    std::atomic<size_t> counter_;
 };
 
-} // namespace UC::Metrics
+} // namespace UC
 
-#endif // UNIFIEDCACHE_MONITOR_H
+#endif // UNIFIEDCACHE_INFRA_LATCH_H

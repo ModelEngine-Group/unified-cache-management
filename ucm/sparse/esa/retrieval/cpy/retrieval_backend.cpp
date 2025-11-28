@@ -1,16 +1,16 @@
 // retrieval_backend.cpp
 
-#include <pybind11/pybind11.h>
-#include <pybind11/numpy.h>
+#include <algorithm>
 #include <atomic>
 #include <condition_variable>
 #include <mutex>
+#include <pybind11/numpy.h>
+#include <pybind11/pybind11.h>
 #include <queue>
+#include <random>
 #include <thread>
 #include <unordered_map>
 #include <vector>
-#include <algorithm>
-#include <random>
 #ifdef NUMA_ENABLED
 #include <numaif.h>
 #endif
@@ -20,8 +20,7 @@ namespace py = pybind11;
 
 class RetrievalWorkerBackend {
 public:
-    RetrievalWorkerBackend(py::array_t<float> data,
-                           py::dict cpu_idx_tbl) 
+    RetrievalWorkerBackend(py::array_t<float> data, py::dict cpu_idx_tbl)
         : data_array_(data), stop_workers_(false), next_req_id_(0)
     {
         py::buffer_info info = data_array_.request();
@@ -40,17 +39,18 @@ public:
                 // 核心绑定代码
                 cpu_set_t cpuset;
                 CPU_ZERO(&cpuset);
-                CPU_SET(core_id, &cpuset);  // 绑定每个线程到指定的核心
+                CPU_SET(core_id, &cpuset); // 绑定每个线程到指定的核心
 
                 pthread_t thread = worker_threads_.back().native_handle();
-                
+
                 // 设置 CPU 亲和性
                 int rc = pthread_setaffinity_np(thread, sizeof(cpu_set_t), &cpuset);
                 if (rc != 0) {
-                    std::cerr << "Error binding thread " << i << " to CPU core " << core_id << std::endl;
+                    std::cerr << "Error binding thread " << i << " to CPU core " << core_id
+                              << std::endl;
                 }
 
-            #ifdef NUMA_ENABLED
+#ifdef NUMA_ENABLED
                 int numaId = cpu_idx.first.cast<int>();
                 // 设置内存亲和性
                 unsigned long nodeMask = 1UL << numaId;
@@ -58,28 +58,26 @@ public:
                 if (rc != 0) {
                     std::cerr << "Error binding memory to NUMA node " << numaId << std::endl;
                 }
-            #else
-                std::cerr << "NUMA support is disabled." << std::endl;
-            #endif
+#endif
             }
-
         }
     }
 
-    ~RetrievalWorkerBackend() {
+    ~RetrievalWorkerBackend()
+    {
         {
             std::lock_guard<std::mutex> lock(mutex_);
             stop_workers_ = true;
             cond_.notify_all();
         }
-        for (auto& t: worker_threads_) t.join();
+        for (auto& t : worker_threads_) t.join();
     }
 
-    int submit(py::array_t<float> query, int topk, py::array_t<int> indexes) {
+    int submit(py::array_t<float> query, int topk, py::array_t<int> indexes)
+    {
         py::buffer_info qinfo = query.request();
         py::buffer_info iinfo = indexes.request();
-        if (qinfo.shape[1] != dim_)
-            throw std::runtime_error("Query dim mismatch");
+        if (qinfo.shape[1] != dim_) throw std::runtime_error("Query dim mismatch");
         if ((size_t)iinfo.shape[0] != (size_t)qinfo.shape[0])
             throw std::runtime_error("Query and indexes batch mismatch");
 
@@ -108,12 +106,14 @@ public:
         return req_id;
     }
 
-    bool poll(int req_id) {
+    bool poll(int req_id)
+    {
         std::lock_guard<std::mutex> lock(mutex_);
         return results_.find(req_id) != results_.end();
     }
 
-    void wait(int req_id) {
+    void wait(int req_id)
+    {
         std::shared_ptr<RequestStatus> s;
         {
             std::lock_guard<std::mutex> lock(mutex_);
@@ -125,7 +125,8 @@ public:
         s->cv.wait(lk2, [&] { return s->done; });
     }
 
-    py::dict get_result(int req_id) {
+    py::dict get_result(int req_id)
+    {
         std::lock_guard<std::mutex> lock(mutex_);
         auto it = results_.find(req_id);
         if (it == results_.end()) throw std::runtime_error("Result not ready");
@@ -167,12 +168,13 @@ private:
         bool done = false;
     };
 
-    void worker_loop() {
+    void worker_loop()
+    {
         while (true) {
             Request req;
             {
                 std::unique_lock<std::mutex> lock(mutex_);
-                cond_.wait(lock, [&]{ return stop_workers_ || !requests_.empty(); });
+                cond_.wait(lock, [&] { return stop_workers_ || !requests_.empty(); });
                 if (stop_workers_ && requests_.empty()) return;
                 req = std::move(requests_.front());
                 requests_.pop();
@@ -216,7 +218,7 @@ private:
                 }
                 int curr_topk = std::min((int)heap.size(), req.topk);
                 std::partial_sort(heap.begin(), heap.begin() + curr_topk, heap.end(),
-                    [](const auto& a, const auto& b){ return a.first > b.first; });
+                                  [](const auto& a, const auto& b) { return a.first > b.first; });
 
                 for (int k = 0; k < curr_topk; ++k) {
                     res.scores[b].push_back(heap[k].first);
@@ -250,7 +252,8 @@ private:
     std::atomic<int> next_req_id_;
 };
 
-PYBIND11_MODULE(retrieval_backend, m) {
+PYBIND11_MODULE(retrieval_backend, m)
+{
     py::class_<RetrievalWorkerBackend>(m, "RetrievalWorkerBackend")
         .def(py::init<py::array_t<float>, py::dict>())
         .def("submit", &RetrievalWorkerBackend::submit)
