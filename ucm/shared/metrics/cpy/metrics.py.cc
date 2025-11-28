@@ -28,19 +28,20 @@
 namespace py = pybind11;
 namespace UC::Metrics {
 
-void bind_monitor(py::module_& m) {
+void bind_monitor(py::module_& m)
+{
     py::class_<StatsMonitor>(m, "StatsMonitor")
-        .def_static("get_instance", &StatsMonitor::GetInstance,
-                    py::return_value_policy::reference)
+        .def_static("get_instance", &StatsMonitor::GetInstance, py::return_value_policy::reference)
         .def("update_stats", &StatsMonitor::UpdateStats)
         .def("reset_all", &StatsMonitor::ResetAllStats)
         .def("get_stats", &StatsMonitor::GetStats)
         .def("get_stats_and_clear", &StatsMonitor::GetStatsAndClear);
 }
 
-}  // namespace UC
+} // namespace UC::Metrics
 
-PYBIND11_MODULE(ucmmonitor, module) {
+PYBIND11_MODULE(ucmmonitor, module)
+{
     module.attr("project") = UCM_PROJECT_NAME;
     module.attr("version") = UCM_PROJECT_VERSION;
     module.attr("commit_id") = UCM_COMMIT_ID;
