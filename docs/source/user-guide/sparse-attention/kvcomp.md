@@ -97,6 +97,7 @@ This design ensures both **efficiency** and **accuracy** by preserving essential
 KVComp is part of the UCM Sparse Attention module. For installation instructions, please refer to the [UCM's top-level README](https://github.com/ModelEngine-Group/unified-cache-management). Once UCM is installed, KVComp is naturally supported by running the following example python scripts.
 
 ```bash
+export ENABLE_SPARSE=TRUE
 python ucm/sandbox/sparse/kvcomp/offline_inference_kvcomp.py
 ```
 
