@@ -24,14 +24,14 @@
 #ifndef UNIFIEDCACHE_REGISTRY_H
 #define UNIFIEDCACHE_REGISTRY_H
 
-#include "stats/istats.h"
-#include <unordered_map>
 #include <functional>
 #include <mutex>
+#include <unordered_map>
+#include "stats/istats.h"
 
 namespace UC::Metrics {
 
-using Creator = std::unique_ptr<IStats>(*)();
+using Creator = std::unique_ptr<IStats> (*)();
 
 class StatsRegistry {
 public:
@@ -53,6 +53,6 @@ private:
     std::unordered_map<std::string, Creator> registry_;
 };
 
-}  
+} // namespace UC::Metrics
 
-#endif  // UNIFIEDCACHE_REGISTRY_H
+#endif // UNIFIEDCACHE_REGISTRY_H
