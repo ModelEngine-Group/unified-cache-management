@@ -171,7 +171,7 @@ class UCMDirectConnector(KVConnectorBase_V1):
         if self.metrics_config:
             self.stats_logger = UCMStatsLogger(
                 vllm_config.model_config.served_model_name,
-                self.rank,
+                self.global_rank,
                 self.metrics_config,
             )
             self.monitor = ucmmonitor.StatsMonitor.get_instance()
@@ -332,6 +332,9 @@ class UCMDirectConnector(KVConnectorBase_V1):
                     continue
                 req_meta = self.requests_meta.get(request_id)
                 if req_meta:
+                    # when vllm >= 0.11.0 new_block_ids could be NONE
+                    if scheduled_cached_reqs.new_block_ids[i] is None:
+                        continue
                     requests_dispatch_meta[request_id] = self._generate_dispatch_meta(
                         req_meta,
                         scheduler_output.num_scheduled_tokens[request_id],
