@@ -113,6 +113,7 @@ PYBIND11_MODULE(ucmds3fsstore, module)
     store.def("DumpFromDevice", &UC::Ds3FsStorePy::DumpFromDevice);
     store.def("Wait", &UC::Ds3FsStorePy::Wait);
     store.def("Check", &UC::Ds3FsStorePy::CheckPy);
-    store.def("Commit", py::overload_cast<const std::string&, const bool>(&UC::Ds3FsStorePy::Commit));
+    store.def("Commit",
+              py::overload_cast<const std::string&, const bool>(&UC::Ds3FsStorePy::Commit));
     store.def("CommitBatch", &UC::Ds3FsStorePy::CommitBatch);
 }

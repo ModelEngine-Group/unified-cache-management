@@ -25,8 +25,8 @@
 #define UC_INFRA_HANDLE_POOL_H
 
 #include <functional>
-#include "status/status.h"
 #include "hashmap.h"
+#include "status/status.h"
 
 namespace UC {
 
@@ -58,18 +58,14 @@ public:
             HandleType h{};
 
             auto status = instantiate(h);
-            if (status.Failure()) {
-                return false;
-            }
+            if (status.Failure()) { return false; }
 
             entry.handle = h;
             entry.refCount = 1;
             return true;
         });
 
-        if (!result.has_value()) {
-            return Status::Error();
-        }
+        if (!result.has_value()) { return Status::Error(); }
 
         auto& entry = result.value().get();
         entry.refCount++;
@@ -77,14 +73,11 @@ public:
         return Status::OK();
     }
 
-    void Put(const KeyType& key,
-             std::function<void(HandleType)> cleanup)
+    void Put(const KeyType& key, std::function<void(HandleType)> cleanup)
     {
         pool_.Upsert(key, [&cleanup](PoolEntry& entry) -> bool {
             entry.refCount--;
-            if (entry.refCount > 0) {
-                return false;
-            }
+            if (entry.refCount > 0) { return false; }
             cleanup(entry.handle);
             return true;
         });

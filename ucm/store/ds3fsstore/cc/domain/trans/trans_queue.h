@@ -1,6 +1,8 @@
 #ifndef UNIFIEDCACHE_TRANS_QUEUE_USRBIO_H
 #define UNIFIEDCACHE_TRANS_QUEUE_USRBIO_H
 
+#include <hf3fs_usrbio.h>
+#include "handle_recorder.h"
 #include "space/space_layout.h"
 #include "task/task_set.h"
 #include "task/task_waiter.h"
@@ -8,8 +10,6 @@
 #include "trans/buffer.h"
 #include "trans/stream.h"
 #include "trans_task.h"
-#include "handle_recorder.h"
-#include <hf3fs_usrbio.h>
 
 namespace UC {
 

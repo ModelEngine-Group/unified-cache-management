@@ -48,38 +48,28 @@ class HashMap {
     Hash hash_;
     std::atomic<size_t> size_{0};
 
-    static size_t ShardIndex(size_t h) noexcept {
-        return h & (Shards - 1);
-    }
+    static size_t ShardIndex(size_t h) noexcept { return h & (Shards - 1); }
 
-    static size_t ProbeIdx(size_t idx, size_t cap) noexcept {
-        return (idx + 1) & (cap - 1);
-    }
+    static size_t ProbeIdx(size_t idx, size_t cap) noexcept { return (idx + 1) & (cap - 1); }
 
-    static bool IsEmpty(const std::optional<Key>& slot) noexcept {
-        return !slot.has_value();
-    }
+    static bool IsEmpty(const std::optional<Key>& slot) noexcept { return !slot.has_value(); }
 
-    void RehashShard(Shard& s) {
-        std::vector<std::pair<std::optional<Key>, std::optional<Value>>> old =
-            std::move(s.slots);
+    void RehashShard(Shard& s)
+    {
+        std::vector<std::pair<std::optional<Key>, std::optional<Value>>> old = std::move(s.slots);
         size_t new_cap = (old.empty() ? 8 : old.size() * 2);
         s.slots.assign(new_cap, {std::optional<Key>{}, std::optional<Value>{}});
         s.used = 0;
 
         for (const auto& slot : old) {
-            if (!slot.first.has_value()) {
-                continue;
-            }
+            if (!slot.first.has_value()) { continue; }
 
             const Key& k = *slot.first;
             const Value& v = *slot.second;
             size_t h = hash_(k);
             size_t idx = (h >> ShardBits) & (new_cap - 1);
 
-            while (!IsEmpty(s.slots[idx].first)) {
-                idx = ProbeIdx(idx, new_cap);
-            }
+            while (!IsEmpty(s.slots[idx].first)) { idx = ProbeIdx(idx, new_cap); }
 
             s.slots[idx].first.emplace(k);
             s.slots[idx].second.emplace(v);
@@ -89,17 +79,14 @@ class HashMap {
 
 public:
     HashMap() = default;
-    std::optional<std::reference_wrapper<Value>> GetOrCreate(
-        const Key& key,
-        std::function<bool(Value&)> creator)
+    std::optional<std::reference_wrapper<Value>> GetOrCreate(const Key& key,
+                                                             std::function<bool(Value&)> creator)
     {
         size_t h = hash_(key);
         auto& shard = shards_[ShardIndex(h)];
         std::unique_lock lg(shard.mtx);
 
-        if (shard.used * 4 >= shard.slots.size() * 3) [[unlikely]] {
-            RehashShard(shard);
-        }
+        if (shard.used * 4 >= shard.slots.size() * 3) [[unlikely]] { RehashShard(shard); }
 
         size_t cap = shard.slots.size();
         if (cap == 0) {
@@ -116,9 +103,7 @@ public:
             }
             if (IsEmpty(shard.slots[idx].first)) {
                 Value newValue;
-                if (!creator(newValue)) {
-                    return std::optional<std::reference_wrapper<Value>>{};
-                }
+                if (!creator(newValue)) { return std::optional<std::reference_wrapper<Value>>{}; }
                 shard.slots[idx].first.emplace(key);
                 shard.slots[idx].second.emplace(std::move(newValue));
                 ++shard.used;
@@ -131,15 +116,14 @@ public:
         return GetOrCreate(key, creator);
     }
 
-    void Upsert(const Key& key, std::function<bool(Value&)> updater) {
+    void Upsert(const Key& key, std::function<bool(Value&)> updater)
+    {
         size_t h = hash_(key);
         auto& shard = shards_[ShardIndex(h)];
         std::unique_lock lg(shard.mtx);
 
         size_t cap = shard.slots.size();
-        if (cap == 0) {
-            return;
-        }
+        if (cap == 0) { return; }
 
         size_t idx = (h >> ShardBits) & (cap - 1);
         size_t start = idx;
@@ -156,26 +140,24 @@ public:
                 return;
             }
 
-            if (IsEmpty(shard.slots[idx].first)) {
-                return;
-            }
+            if (IsEmpty(shard.slots[idx].first)) { return; }
 
             idx = ProbeIdx(idx, cap);
         } while (idx != start);
     }
 
-    void ForEach(std::function<void(const Key&, Value&)> visitor) {
+    void ForEach(std::function<void(const Key&, Value&)> visitor)
+    {
         for (auto& shard : shards_) {
             std::shared_lock lg(shard.mtx);
             for (auto& slot : shard.slots) {
-                if (slot.first.has_value()) {
-                    visitor(*slot.first, *slot.second);
-                }
+                if (slot.first.has_value()) { visitor(*slot.first, *slot.second); }
             }
         }
     }
 
-    void Clear() {
+    void Clear()
+    {
         for (auto& shard : shards_) {
             std::unique_lock lg(shard.mtx);
             shard.slots.clear();
