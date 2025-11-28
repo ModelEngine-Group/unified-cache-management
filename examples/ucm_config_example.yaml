@@ -16,6 +16,8 @@ ucm_connectors:
 
 load_only_first_rank: false
 
+metrics_config_path: "/vllm-workspace/metrics_config.yaml"
+
 # Sparse attention configuration
 # Format 1: Dictionary format (for methods like ESA, KvComp)
 # ucm_sparse_config:
