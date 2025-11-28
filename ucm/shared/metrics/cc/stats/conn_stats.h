@@ -24,21 +24,21 @@
 #ifndef UNIFIEDCACHE_CONNSTATS_H
 #define UNIFIEDCACHE_CONNSTATS_H
 
-#include "istats.h"
-#include "stats_registry.h"   
 #include <array>
-#include <vector>
-#include <unordered_map>
-#include <string>
 #include <cstdint>
+#include <string>
+#include <unordered_map>
+#include <vector>
+#include "istats.h"
+#include "stats_registry.h"
 
-namespace UC::Metrics {  
+namespace UC::Metrics {
 
 enum class Key : uint8_t {
     interval_lookup_hit_rates = 0,
     save_requests_num,
     save_blocks_num,
-    save_duration ,
+    save_duration,
     save_speed,
     load_requests_num,
     load_blocks_num,
@@ -66,13 +66,13 @@ private:
 };
 
 struct Registrar {
-    Registrar() {
-        StatsRegistry::RegisterStats("ConnStats", []()->std::unique_ptr<IStats> {
-            return std::make_unique<ConnStats>();
-        });
+    Registrar()
+    {
+        StatsRegistry::RegisterStats(
+            "ConnStats", []() -> std::unique_ptr<IStats> { return std::make_unique<ConnStats>(); });
     }
 };
 
-}  
+} // namespace UC::Metrics
 
-#endif  // UNIFIEDCACHE_CONNSTATS_H
+#endif // UNIFIEDCACHE_CONNSTATS_H
