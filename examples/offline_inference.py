@@ -1,5 +1,4 @@
 import contextlib
-import json
 import os
 import time
 from dataclasses import asdict
@@ -16,11 +15,6 @@ from ucm.logger import init_logger
 logger = init_logger(__name__)
 
 
-def setup_environment_variables():
-    os.environ["VLLM_USE_V1"] = "1"
-    os.environ["PYTHONHASHSEED"] = "123456"
-
-
 @contextlib.contextmanager
 def build_llm_with_uc(module_path: str, name: str, model: str):
     ktc = KVTransferConfig(
@@ -28,20 +22,7 @@ def build_llm_with_uc(module_path: str, name: str, model: str):
         kv_connector_module_path=module_path,
         kv_role="kv_both",
         kv_connector_extra_config={
-            "ucm_connector_name": "UcmDramStore",
-            "ucm_connector_config": {
-                "max_cache_size": 5368709120,
-                "kv_block_size": 262144,
-            },
-            "ucm_sparse_config": {
-                "ESA": {
-                    "init_window_sz": 1,
-                    "local_window_sz": 2,
-                    "min_blocks": 4,
-                    "sparse_ratio": 0.3,
-                    "retrieval_stride": 5,
-                }
-            },
+            "UCM_CONFIG_FILE": "/workspace/unified-cache-management/examples/ucm_config_example.yaml"
         },
     )
 
@@ -53,6 +34,8 @@ def build_llm_with_uc(module_path: str, name: str, model: str):
         max_num_batched_tokens=30000,
         block_size=128,
         enforce_eager=True,
+        trust_remote_code=True,
+        enable_prefix_caching=False,
     )
 
     llm = LLM(**asdict(llm_args))
@@ -79,22 +62,41 @@ def print_output(
 
 
 def main():
-    module_path = "ucm.integration.vllm.uc_connector"
-    name = "UnifiedCacheConnectorV1"
-    model = os.getenv("MODEL_PATH", "/home/models/Qwen2.5-14B-Instruct")
+    module_path = "ucm.integration.vllm.ucm_connector"
+    name = "UCMConnector"
+    model = os.getenv("MODEL_PATH", "/home/models/DeepSeek-V2-Lite")
 
     tokenizer = AutoTokenizer.from_pretrained(model, use_chat_template=True)
-    setup_environment_variables()
 
     with build_llm_with_uc(module_path, name, model) as llm:
         messages = [
             {
                 "role": "system",
-                "content": "You are a highly specialized assistant whose mission is to faithfully reproduce English literary texts verbatim, without any deviation, paraphrasing, or omission. Your primary responsibility is accuracy: every word, every punctuation mark, and every line must appear exactly as in the original source. Core Principles: Verbatim Reproduction: If the user asks for a passage, you must output the text word-for-word. Do not alter spelling, punctuation, capitalization, or line breaks. Do not paraphrase, summarize, modernize, or “improve” the language. Consistency: The same input must always yield the same output. Do not generate alternative versions or interpretations. Clarity of Scope: Your role is not to explain, interpret, or critique. You are not a storyteller or commentator, but a faithful copyist of English literary and cultural texts. Recognizability: Because texts must be reproduced exactly, they will carry their own cultural recognition. You should not add labels, introductions, or explanations before or after the text. Coverage: You must handle passages from classic literature, poetry, speeches, or cultural texts. Regardless of tone—solemn, visionary, poetic, persuasive—you must preserve the original form, structure, and rhythm by reproducing it precisely. Success Criteria: A human reader should be able to compare your output directly with the original and find zero differences. The measure of success is absolute textual fidelity. Your function can be summarized as follows: verbatim reproduction only, no paraphrase, no commentary, no embellishment, no omission.",
+                "content": "You are a highly specialized assistant whose mission is to faithfully reproduce English "
+                "literary texts verbatim, without any deviation, paraphrasing, or omission. Your primary "
+                "responsibility is accuracy: every word, every punctuation mark, and every line must "
+                "appear exactly as in the original source. Core Principles: Verbatim Reproduction: If the "
+                "user asks for a passage, you must output the text word-for-word. Do not alter spelling, "
+                "punctuation, capitalization, or line breaks. Do not paraphrase, summarize, modernize, "
+                "or “improve” the language. Consistency: The same input must always yield the same output. "
+                "Do not generate alternative versions or interpretations. Clarity of Scope: Your role is "
+                "not to explain, interpret, or critique. You are not a storyteller or commentator, "
+                "but a faithful copyist of English literary and cultural texts. Recognizability: Because "
+                "texts must be reproduced exactly, they will carry their own cultural recognition. You "
+                "should not add labels, introductions, or explanations before or after the text. Coverage: "
+                "You must handle passages from classic literature, poetry, speeches, or cultural texts. "
+                "Regardless of tone—solemn, visionary, poetic, persuasive—you must preserve the original "
+                "form, structure, and rhythm by reproducing it precisely. Success Criteria: A human reader "
+                "should be able to compare your output directly with the original and find zero "
+                "differences. The measure of success is absolute textual fidelity. Your function can be "
+                "summarized as follows: verbatim reproduction only, no paraphrase, no commentary, "
+                "no embellishment, no omission.",
             },
             {
                 "role": "user",
-                "content": "Please reproduce verbatim the opening sentence of the United States Declaration of Independence (1776), starting with 'When in the Course of human events' and continuing word-for-word without paraphrasing.",
+                "content": "Please reproduce verbatim the opening sentence of the United States Declaration of "
+                "Independence (1776), starting with 'When in the Course of human events' and continuing "
+                "word-for-word without paraphrasing.",
             },
         ]
 
