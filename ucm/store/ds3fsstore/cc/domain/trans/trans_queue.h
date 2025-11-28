@@ -8,8 +8,7 @@
 #include "trans/buffer.h"
 #include "trans/stream.h"
 #include "trans_task.h"
-#include "infra/template/handle_recorder.h"
-
+#include "handle_recorder.h"
 #include <hf3fs_usrbio.h>
 
 namespace UC {
@@ -49,6 +48,9 @@ class TransQueue {
     UsrbioResources& GetThreadUsrbioResources();
     Status InitUsrbio();
     Status CleanupUsrbio();
+    Status OpenFile(const std::string& path, bool isWrite, FdHandle& fdHandle);
+    Status DoWrite(const BlockTask& task, const FdHandle& fdHandle, UsrbioResources& usrbio);
+    Status DoRead(const BlockTask& task, const FdHandle& fdHandle, UsrbioResources& usrbio);
 
 public:
     ~TransQueue();

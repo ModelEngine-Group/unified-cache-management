@@ -14,6 +14,14 @@ thread_local void* g_threadUsrbioResources = nullptr;
 
 TransQueue::~TransQueue()
 {
+    fdHandlePool_.ClearAll([](const FdHandle& handle) {
+        if (handle.regFd >= 0) {
+            hf3fs_unreg_fd(handle.regFd);
+        }
+        if (handle.fd >= 0) {
+            close(handle.fd);
+        }
+    });
     CleanupUsrbio();
 }
 
@@ -47,31 +55,132 @@ void TransQueue::DeviceWorker(BlockTask&& task)
     done(s.Success());
 }
 
-static inline void* memcpy_fast(void* dst, const void* src, size_t size)
+Status TransQueue::OpenFile(const std::string& path, bool isWrite, FdHandle& fdHandle)
 {
-    if (size == 0) return dst;
+    int openFlags = isWrite ? (O_WRONLY | O_CREAT | O_TRUNC) : O_RDONLY;
+    int openMode = isWrite ? 0644 : 0;
 
-    size_t aligned_size = size & ~(sizeof(uint64_t) - 1);
-    if (aligned_size > 0) {
-        uint64_t* d = (uint64_t*)dst;
-        const uint64_t* s = (const uint64_t*)src;
-        size_t count = aligned_size / sizeof(uint64_t);
-        for (size_t i = 0; i < count; ++i) {
-            d[i] = s[i];
-        }
+    int fd = open(path.c_str(), openFlags, openMode);
+    if (fd < 0) {
+        return Status::Error();
     }
 
-    size_t remaining = size - aligned_size;
-    if (remaining > 0) {
-        uint8_t* d = (uint8_t*)dst + aligned_size;
-        const uint8_t* s = (const uint8_t*)src + aligned_size;
-        for (size_t i = 0; i < remaining; ++i) {
-            d[i] = s[i];
-        }
+    if (!hf3fs_is_hf3fs(fd)) {
+        close(fd);
+        return Status::Error();
     }
 
-    return dst;
+    int regRes = hf3fs_reg_fd(fd, 0);
+    if (regRes > 0) {
+        close(fd);
+        return Status::Error();
+    }
+
+    fdHandle.fd = fd;
+    fdHandle.regFd = regRes;
+    return Status::OK();
 }
+
+Status TransQueue::DoWrite(const BlockTask& task, const FdHandle& fdHandle, UsrbioResources& usrbio)
+{
+    auto hostPtr = (uintptr_t)task.buffer.get();
+    auto length = this->ioSize_ * task.shards.size();
+    int regFd = fdHandle.regFd;
+
+    if (hostPtr > 0 && length > 0) {
+        if (length > usrbio.writeIov.size) {
+            return Status::Error();
+        }
+        memcpy(usrbio.writeIov.base, (void*)hostPtr, length);
+    }
+
+    int prepRes = hf3fs_prep_io(&usrbio.writeIor,
+                               &usrbio.writeIov,
+                               false,
+                               usrbio.writeIov.base,
+                               regFd,
+                               0,
+                               length,
+                               (const void*)(uintptr_t)task.owner);
+
+    if (prepRes < 0) {
+        return Status::Error();
+    }
+
+    int submitRes = hf3fs_submit_ios(&usrbio.writeIor);
+    if (submitRes < 0) {
+        return Status::Error();
+    }
+
+    struct hf3fs_cqe cqe;
+    int waitRes = hf3fs_wait_for_ios(&usrbio.writeIor,
+                                    &cqe,
+                                    1,
+                                    1,
+                                    nullptr);
+
+    if (waitRes <= 0) {
+        return Status::Error();
+    }
+
+    if (cqe.result < 0) {
+        return Status::Error();
+    }
+
+    this->layout_->Commit(task.block, true);
+    return Status::OK();
+}
+
+Status TransQueue::DoRead(const BlockTask& task, const FdHandle& fdHandle, UsrbioResources& usrbio)
+{
+    auto hostPtr = (uintptr_t)task.buffer.get();
+    auto length = this->ioSize_ * task.shards.size();
+    int regFd = fdHandle.regFd;
+
+    if (length > usrbio.readIov.size) {
+        return Status::Error();
+    }
+
+    int prepRes = hf3fs_prep_io(&usrbio.readIor,
+                               &usrbio.readIov,
+                               true,
+                               usrbio.readIov.base,
+                               regFd,
+                               0,
+                               length,
+                               (const void*)(uintptr_t)task.owner);
+
+    if (prepRes < 0) {
+        return Status::Error();
+    }
+
+    int submitRes = hf3fs_submit_ios(&usrbio.readIor);
+    if (submitRes < 0) {
+        return Status::Error();
+    }
+
+    struct hf3fs_cqe cqe;
+    int waitRes = hf3fs_wait_for_ios(&usrbio.readIor,
+                                    &cqe,
+                                    1,
+                                    1,
+                                    nullptr);
+
+    if (waitRes <= 0) {
+        return Status::Error();
+    }
+
+    if (cqe.result < 0) {
+        return Status::Error();
+    }
+
+    if (hostPtr > 0 && cqe.result > 0) {
+        memcpy((void*)hostPtr, usrbio.readIov.base, cqe.result);
+    }
+
+    return Status::OK();
+}
+
 
 void TransQueue::FileWorker(BlockTask&& task)
 {
@@ -81,123 +190,12 @@ void TransQueue::FileWorker(BlockTask&& task)
     }
 
     UsrbioResources& usrbio_ = GetThreadUsrbioResources();
-
-    auto hostPtr = (uintptr_t)task.buffer.get();
-    auto length = this->ioSize_ * task.shards.size();
-
-    if (task.type == TransTask::Type::DUMP) {
-        const auto& path = this->layout_->DataFilePath(task.block, true);
-
-        FdHandle fdHandle{};
-        auto status = fdHandlePool_.Get(path, fdHandle, [&path](FdHandle& handle) -> Status {
-            int fd = open(path.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0644);
-            if (fd < 0) {
-                return Status::Error();
-            }
-
-            if (!hf3fs_is_hf3fs(fd)) {
-                close(fd);
-                return Status::Error();
-            }
-
-            int regRes = hf3fs_reg_fd(fd, 0);
-            if (regRes > 0) {
-                close(fd);
-                return Status::Error();
-            }
-
-            handle.fd = fd;
-            handle.regFd = regRes;
-            return Status::OK();
-        });
-
-        if (status.Failure()) {
-            this->failureSet_->Insert(task.owner);
-            task.done(false);
-            return;
-        }
-
-        int regFd = fdHandle.regFd;
-
-        if (hostPtr > 0 && length > 0) {
-            if (length > usrbio_.writeIov.size) {
-                this->failureSet_->Insert(task.owner);
-                task.done(false);
-                return;
-            }
-            memcpy_fast(usrbio_.writeIov.base, (void*)hostPtr, length);
-        }
-
-        int prepRes = hf3fs_prep_io(&usrbio_.writeIor,
-                                   &usrbio_.writeIov,
-                                   false,
-                                   usrbio_.writeIov.base,
-                                   regFd,
-                                   0,
-                                   length,
-                                   (const void*)(uintptr_t)task.owner);
-
-        if (prepRes < 0) {
-            this->failureSet_->Insert(task.owner);
-            task.done(false);
-            return;
-        }
-
-        int submitRes = hf3fs_submit_ios(&usrbio_.writeIor);
-        if (submitRes < 0) {
-            this->failureSet_->Insert(task.owner);
-            task.done(false);
-            return;
-        }
-
-        struct hf3fs_cqe cqe;
-        int waitRes = hf3fs_wait_for_ios(&usrbio_.writeIor,
-                                        &cqe,
-                                        1,
-                                        1,
-                                        nullptr);
-
-        if (waitRes <= 0) {
-            this->failureSet_->Insert(task.owner);
-            task.done(false);
-            return;
-        }
-
-        if (cqe.result < 0) {
-            this->failureSet_->Insert(task.owner);
-            task.done(false);
-            return;
-        }
-
-        this->layout_->Commit(task.block, true);
-
-        task.done(true);
-        return;
-    }
-
-    const auto& path = this->layout_->DataFilePath(task.block, false);
+    bool isDump = task.type == TransTask::Type::DUMP;
+    const auto& path = this->layout_->DataFilePath(task.block, isDump);
 
     FdHandle fdHandle{};
-    auto status = fdHandlePool_.Get(path, fdHandle, [&path](FdHandle& handle) -> Status {
-        int fd = open(path.c_str(), O_RDONLY);
-        if (fd < 0) {
-            return Status::Error();
-        }
-
-        if (!hf3fs_is_hf3fs(fd)) {
-            close(fd);
-            return Status::Error();
-        }
-
-        int regRes = hf3fs_reg_fd(fd, 0);
-        if (regRes > 0) {
-            close(fd);
-            return Status::Error();
-        }
-
-        handle.fd = fd;
-        handle.regFd = regRes;
-        return Status::OK();
+    auto status = fdHandlePool_.Get(path, fdHandle, [&path, isDump, this](FdHandle& handle) -> Status {
+        return OpenFile(path, isDump, handle);
     });
 
     if (status.Failure()) {
@@ -206,60 +204,19 @@ void TransQueue::FileWorker(BlockTask&& task)
         return;
     }
 
-    int regFd = fdHandle.regFd;
+    Status result = isDump ? DoWrite(task, fdHandle, usrbio_) : DoRead(task, fdHandle, usrbio_);
 
-    if (length > usrbio_.readIov.size) {
+    if (result.Failure()) {
         this->failureSet_->Insert(task.owner);
         task.done(false);
         return;
     }
 
-    int prepRes = hf3fs_prep_io(&usrbio_.readIor,
-                               &usrbio_.readIov,
-                               true,
-                               usrbio_.readIov.base,
-                               regFd,
-                               0,
-                               length,
-                               (const void*)(uintptr_t)task.owner);
-
-    if (prepRes < 0) {
-        this->failureSet_->Insert(task.owner);
-        task.done(false);
-        return;
+    if (isDump) {
+        task.done(true);
+    } else {
+        this->devPool_.Push(std::move(task));
     }
-
-    int submitRes = hf3fs_submit_ios(&usrbio_.readIor);
-    if (submitRes < 0) {
-        this->failureSet_->Insert(task.owner);
-        task.done(false);
-        return;
-    }
-
-    struct hf3fs_cqe cqe;
-    int waitRes = hf3fs_wait_for_ios(&usrbio_.readIor,
-                                    &cqe,
-                                    1,
-                                    1,
-                                    nullptr);
-
-    if (waitRes <= 0) {
-        this->failureSet_->Insert(task.owner);
-        task.done(false);
-        return;
-    }
-
-    if (cqe.result < 0) {
-        this->failureSet_->Insert(task.owner);
-        task.done(false);
-        return;
-    }
-
-    if (hostPtr > 0 && cqe.result > 0) {
-        memcpy_fast((void*)hostPtr, usrbio_.readIov.base, cqe.result);
-    }
-
-    this->devPool_.Push(std::move(task));
 }
 
 TransQueue::UsrbioResources& TransQueue::GetThreadUsrbioResources()

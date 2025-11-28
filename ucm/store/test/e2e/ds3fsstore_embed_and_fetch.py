@@ -29,7 +29,7 @@ from typing import List
 
 import torch
 
-from ucm.store.ds3fs_store.ds3fs_store_connector import UcmDs3FsStore
+from ucm.store.ds3fsstore.ds3fsstore_connector import UcmDs3FsStore
 from ucm.store.ucmstore import UcmKVStoreBase
 
 

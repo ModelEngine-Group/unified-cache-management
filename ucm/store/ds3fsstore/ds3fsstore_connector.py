@@ -5,7 +5,7 @@ from typing import Dict, List, Tuple
 
 import torch
 
-from ucm.store.ds3fs_store import ucmds3fsstore
+from ucm.store.ds3fsstore import ucmds3fsstore
 from ucm.store.ucmstore import Task, UcmKVStoreBase
 
 
