@@ -58,8 +58,6 @@ public:
                 if (rc != 0) {
                     std::cerr << "Error binding memory to NUMA node " << numaId << std::endl;
                 }
-            #else
-                std::cerr << "NUMA support is disabled." << std::endl;
             #endif
             }
 
