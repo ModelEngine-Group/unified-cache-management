@@ -2,6 +2,7 @@ import hashlib
 import itertools
 import os
 import pickle
+import time
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Callable, List, Optional
 
@@ -18,6 +19,8 @@ from vllm.v1.core.sched.output import SchedulerOutput
 from vllm.v1.request import Request
 
 from ucm.logger import init_logger
+from ucm.shared.metrics import ucmmonitor
+from ucm.shared.metrics.observability import UCMStatsLogger
 from ucm.store.factory import UcmConnectorFactory
 from ucm.store.ucmstore import Task, UcmKVStoreBase
 from ucm.utils import Config
@@ -128,6 +131,7 @@ class UCMDirectConnector(KVConnectorBase_V1):
                 self.broadcast_fn = self.group_coordinator.broadcast
                 self.broadcast_stream = torch.cuda.Stream()
 
+        logger.info(f"self.launch_config: {self.launch_config}")
         connector_configs = self.launch_config.get("ucm_connectors", [])
         assert len(connector_configs) > 0, "no storage connector name in config."
 
@@ -154,6 +158,7 @@ class UCMDirectConnector(KVConnectorBase_V1):
             1 if self.is_mla else num_head_per_tp
         )
         self.store = UcmConnectorFactory.create_connector(name, config)
+        self.block_data_size = config["kv_block_size"]
 
         logger.info("init UCConnectorImpl, connector: %s", name)
         logger.info(
@@ -161,6 +166,20 @@ class UCMDirectConnector(KVConnectorBase_V1):
             config["kv_block_size"] / 1024 / 1024,
             config["io_size"] / 1024,
         )
+
+        self.metrics_config = self.launch_config.get("metrics_config_path", "")
+        if self.metrics_config:
+            self.stats_logger = UCMStatsLogger(
+                vllm_config.model_config.served_model_name,
+                self.rank,
+                self.metrics_config,
+            )
+            self.monitor = ucmmonitor.StatsMonitor.get_instance()
+            self.synchronize = (
+                torch.cuda.synchronize
+                if current_platform.is_cuda_alike()
+                else torch.npu.synchronize
+            )
 
     def generate_hash(self, block_size: int, request: "Request") -> list[str]:
         token_ids = request.all_token_ids
@@ -210,6 +229,11 @@ class UCMDirectConnector(KVConnectorBase_V1):
             f"hit hbm: {hbm_hit_block_num}, "
             f"hit external: {external_hit_blocks}"
         )
+        if self.metrics_config:
+            self.monitor.update_stats(
+                "ConnStats",
+                {"interval_lookup_hit_rates": external_hit_blocks / len(ucm_block_ids)},
+            )
 
         total_hit_block_num = hbm_hit_block_num + external_hit_blocks
 
@@ -454,7 +478,6 @@ class UCMDirectConnector(KVConnectorBase_V1):
                 tensor.copy_(rec_tensor[i])
 
     def start_load_kv(self, forward_context: "ForwardContext", **kwargs) -> None:
-
         metadata = self._get_connector_metadata()
         assert isinstance(metadata, UCMConnectorMetadata)
 
@@ -462,9 +485,16 @@ class UCMDirectConnector(KVConnectorBase_V1):
 
         request_to_task: dict[str, Optional[Task]] = {}
         req_broadcast_addr = {}
+        is_load = False
+        num_loaded_block = 0
+        num_loaded_request = 0
+        load_start_time = time.perf_counter() * 1000
         for request_id, request in metadata.request_meta.items():
             if len(request.load_block_ids[0]) == 0:
                 continue
+            is_load = True
+            num_loaded_block += len(request.load_block_ids[0])
+            num_loaded_request += 1
 
             ucm_block_ids, vllm_block_ids = request.load_block_ids
             if self.global_rank != 0 and not self.is_mla and not self.is_dsa:
@@ -488,6 +518,24 @@ class UCMDirectConnector(KVConnectorBase_V1):
                     logger.error(f"request {request_id} load kv cache failed.")
             if self.load_only_first_rank:
                 self._broadcast(req_broadcast_addr[request_id])
+        load_end_time = time.perf_counter() * 1000
+        load_speed = (
+            num_loaded_block
+            * self.block_data_size
+            / (load_end_time - load_start_time)
+            / 1024
+            / 1024
+        )  # GB/s
+        if self.metrics_config and is_load:
+            self.monitor.update_stats(
+                "ConnStats",
+                {
+                    "load_requests_num": num_loaded_request,
+                    "load_blocks_num": num_loaded_block,
+                    "load_duration": load_end_time - load_start_time,
+                    "load_speed": load_speed,
+                },
+            )
 
     def wait_for_layer_load(self, layer_name: str) -> None:
         pass
@@ -506,15 +554,24 @@ class UCMDirectConnector(KVConnectorBase_V1):
         # TODO support PP
         if (self.is_mla or self.is_dsa) and self.global_rank != 0:
             return
+        if self.metrics_config:
+            self.synchronize()
 
         metadata = self._get_connector_metadata()
         assert isinstance(metadata, UCMConnectorMetadata)
 
         request_to_task: dict[str, Task] = {}
         request_to_blocks: dict[str, list[str]] = {}
+        is_save = False
+        num_saved_block = 0
+        num_saved_request = 0
+        save_start_time = time.perf_counter() * 1000
         for request_id, request in metadata.request_meta.items():
             if len(request.dump_block_ids[0]) == 0:
                 continue
+            is_save = True
+            num_saved_block += len(request.dump_block_ids[0])
+            num_saved_request += 1
 
             ucm_block_ids, vllm_block_ids = request.dump_block_ids
             if self.global_rank != 0:
@@ -549,6 +606,24 @@ class UCMDirectConnector(KVConnectorBase_V1):
             else:
                 logger.error(f"request {request_id} dump kv cache failed.")
                 self.store.commit(ucm_block_ids, False)
+        save_end_time = time.perf_counter() * 1000
+        save_speed = (
+            num_saved_block
+            * self.block_data_size
+            / (save_end_time - save_start_time)
+            / 1024
+            / 1024
+        )  # GB/s
+        if self.metrics_config and is_save:
+            self.monitor.update_stats(
+                "ConnStats",
+                {
+                    "save_requests_num": num_saved_request,
+                    "save_blocks_num": num_saved_block,
+                    "save_duration": save_end_time - save_start_time,
+                    "save_speed": save_speed,
+                },
+            )
 
     def clear_connector_metadata(self) -> None:
         super().clear_connector_metadata()
