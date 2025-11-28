@@ -22,8 +22,7 @@ def build_llm_with_uc(module_path: str, name: str, model: str):
         kv_connector_module_path=module_path,
         kv_role="kv_both",
         kv_connector_extra_config={
-            "ucm_connector_name": "UcmNfsStore",
-            "ucm_connector_config": {"storage_backends": "/home/share/wc/nfs"},
+            "UCM_CONFIG_FILE": "/workspace/unified-cache-management/examples/ucm_config_example.yaml"
         },
     )
 
