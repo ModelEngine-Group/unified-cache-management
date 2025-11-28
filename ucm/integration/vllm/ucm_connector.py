@@ -1,11 +1,17 @@
 import hashlib
 import itertools
+import json
 import os
 import pickle
 from dataclasses import dataclass, field
+import queue
+import threading
+import time
 from typing import TYPE_CHECKING, Callable, List, Optional
 
+from sympy import Dict
 import torch
+from transformers import Any
 from vllm.config import VllmConfig
 from vllm.distributed.kv_transfer.kv_connector.v1.base import (
     KVConnectorBase_V1,
@@ -159,6 +165,64 @@ class UCMDirectConnector(KVConnectorBase_V1):
             config["kv_block_size"] / 1024 / 1024,
             config["io_size"] / 1024,
         )
+        self.record_oper: bool = self.launch_config.get("record_oper", False)
+        if self.record_oper:
+            self.write_thread = threading.Thread(target=self._async_record_loop, daemon=True)
+            self.write_thread.start()
+    
+    def log_operation(self, operation_data: Dict[str, Any]) -> None:
+        """Record operation log (non-blocking)"""
+
+        default_data = {
+            "timestamp": time.time(),
+            "op_type": "None",
+            "block_size": self.block_size
+        }
+        log_entry = {**default_data, **operation_data}
+
+        try:
+            self.log_queue.put_nowait(log_entry)
+        except queue.Full:
+            logger.error(
+                f"Log queue is full, dropping one log: {log_entry.get('request_id')}"
+            )
+    
+    def _async_record_loop(self):
+        self.log_queue = queue.Queue(maxsize=10000)  # Max cache: 10000 entries
+        log_path = self.launch_config.get("record_oper_path", "/vllm-workspace/ucm_logs")
+        batch_size = self.launch_config.get("record_oper_batch_size", 100)
+        flush_interval = self.launch_config.get("record_oper_flush_interval", 5.0)
+        batch_buffer = []
+        last_flush_time = time.time()
+        while True:
+            try:
+                # Get log from queue (1 second timeout)
+                is_flush = False
+                current_time = time.time()
+                log_entry = self.log_queue.get(timeout=1.0)
+                batch_buffer.append(log_entry)
+
+                # Flush if conditions are met
+                if (
+                    len(batch_buffer) >= batch_size
+                    or (current_time - last_flush_time) >= flush_interval
+                ):
+                    is_flush = True
+                    last_flush_time = current_time
+                self.log_queue.task_done()
+            except queue.Empty:
+                if (current_time - last_flush_time) >= flush_interval:
+                    last_flush_time = current_time
+            except Exception as e:
+                logger.error(f"Log thread exception: {str(e)}")
+            
+            if is_flush:
+                with open(log_path, "a", encoding="utf-8") as f:
+                    for log_entry in self.batch_buffer:
+                        f.write(json.dumps(log_entry, ensure_ascii=False) + "\n")
+                    batch_buffer.clear()
+            
+        
 
     def generate_hash(self, block_size: int, request: "Request") -> list[str]:
         token_ids = request.all_token_ids
@@ -465,6 +529,13 @@ class UCMDirectConnector(KVConnectorBase_V1):
                 request_to_task[request_id] = self.store.load(
                     ucm_total_block_ids, ucm_offsets, dst_tensor_addr
                 )
+            if self.record_oper:
+                self.log_operation(
+                    {
+                        "op_type": "load",
+                        "blocks": ucm_block_ids,
+                    }
+                )
             else:
                 request_to_task[request_id] = None
             req_broadcast_addr[request_id] = dst_tensor_addr
@@ -527,6 +598,13 @@ class UCMDirectConnector(KVConnectorBase_V1):
             request_to_task[request_id] = self.store.dump(
                 ucm_total_block_ids, ucm_offsets, dst_tensor_addr
             )
+            if self.record_oper:
+                self.log_operation(
+                    {
+                        "op_type": "dump",
+                        "blocks": ucm_block_ids,
+                    }
+                )
             request_to_blocks[request_id] = ucm_block_ids
 
         for request_id, task in request_to_task.items():
