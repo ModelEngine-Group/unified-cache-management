@@ -1,0 +1,27 @@
+# Set to other image if needed
+FROM quay.io/ascend/vllm-ascend:v0.9.2rc1-openeuler
+
+ARG PIP_INDEX_URL="https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple  "
+
+WORKDIR /vllm-workspace
+
+# Install unified-cache-management
+COPY . /vllm-workspace/unified-cache-management
+
+RUN pip config set global.index-url ${PIP_INDEX_URL}
+
+RUN export PLATFORM="ascend" && \
+    export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:/usr/local/Ascend/ascend-toolkit/latest/`uname -i`-linux/devlib && \
+    pip install -v -e /vllm-workspace/unified-cache-management --no-build-isolation
+
+# Apply patch for vLLM
+RUN cd /vllm-workspace/vllm \
+    && git apply /vllm-workspace/unified-cache-management/ucm/integration/vllm/patch/0.9.2/vllm-adapt-pc.patch \
+    && git apply /vllm-workspace/unified-cache-management/ucm/integration/vllm/patch/0.9.2/vllm-adapt-aggre.patch \
+    && git apply /vllm-workspace/unified-cache-management/ucm/integration/vllm/patch/0.9.2/vllm-adapt-sparse.patch
+
+# Apply patch for vLLM-Ascend
+RUN cd /vllm-workspace/vllm-ascend \
+    && git apply /vllm-workspace/unified-cache-management/ucm/integration/vllm/patch/0.9.2/vllm-ascend-adapt.patch
+
+CMD ["vllm", "serve", "/home/models/Qwen3-0.6B", "--trust-remote-code"]
