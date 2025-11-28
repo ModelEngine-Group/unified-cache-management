@@ -38,26 +38,6 @@ PERF_CSV_HEADER = [
     "TBT Average(ms)",
 ]
 
-PERF_CSV_HEADER = [
-    "Test Time",
-    "Total Cases",
-    "Parallel Num",
-    "Prefix Cache",
-    "Total Latency(ms)",
-    "E2E TPS(tokens/s)",
-    "Per Request TPS(tokens/s)",
-    "TTFT P50(ms)",
-    "TTFT P90(ms)",
-    "TTFT P99(ms)",
-    "MAX TTFT(ms)",
-    "Average TTFT(ms)",
-    "TBT P50(ms)",
-    "TBT P90(ms)",
-    "TBT P99(ms)",
-    "TBT MAX(ms)",
-    "TBT Average(ms)",
-]
-
 SYNC_PERF_CSV_HEADER = [
     "Test Time",
     "Parallel Num",
