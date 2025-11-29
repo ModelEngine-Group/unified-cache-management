@@ -40,6 +40,8 @@ def _enable_sparse() -> bool:
 def _apply_ascend_patch() -> None:
     """Apply patch for vLLM-Ascend."""
     try:
+        from vllm_ascend.patch import platform, worker
+
         if _enable_sparse():
             _patch_attention_v1()
             _patch_mla_v1()
