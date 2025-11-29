@@ -390,12 +390,14 @@ def run_test(
         (w_size, w_time, w_bw), (r_size, r_time, r_bw) = run_once(
             connector, kv_caches, round_hashes, batch_size, mla
         )
-        w_sizes.append(w_size)
-        w_times.append(w_time)
-        w_bws.append(w_bw)
-        r_sizes.append(r_size)
-        r_times.append(r_time)
-        r_bws.append(r_bw)
+
+        if round_idx != 0:
+            w_sizes.append(w_size)
+            w_times.append(w_time)
+            w_bws.append(w_bw)
+            r_sizes.append(r_size)
+            r_times.append(r_time)
+            r_bws.append(r_bw)
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
         elif hasattr(torch, "npu") and torch.npu.is_available():
@@ -437,13 +439,15 @@ def get_user_input(prompt, default=None):
 
 
 def main():
+
     try:
         multiprocessing.set_start_method("spawn", force=True)
     except RuntimeError:
         pass
+
     storage_backends = "."
     device_id = 0
-    repeat = 2
+    repeat = 3
     num_tokens_list = [2048, 4096, 8192, 16384, 32768]
     ucm_connector_name = "UcmNfsStore"
     model_path = "/home/models/QwQ-32B"
