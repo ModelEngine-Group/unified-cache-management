@@ -94,8 +94,8 @@ __global__ void CudaCopyKernel(const void* src, void** dst, size_t size, size_t 
 cudaError_t CudaSMCopyAsync(void* src[], void* dst[], size_t size, size_t number,
                             cudaStream_t stream)
 {
-    CudaCopyKernel<<<CUDA_TRANS_BLOCK_NUMBER, CUDA_TRANS_BLOCK_SIZE, 0, stream>>>(src, dst, size,
-                                                                                  number);
+    CudaCopyKernel<<<CUDA_TRANS_BLOCK_NUMBER, CUDA_TRANS_BLOCK_SIZE, 0, stream>>>(
+        (const void**)src, dst, size, number);
     return cudaGetLastError();
 }
 
@@ -108,8 +108,8 @@ cudaError_t CudaSMCopyAsync(void* src[], void* dst, size_t size, size_t number, 
 
 cudaError_t CudaSMCopyAsync(void* src, void* dst[], size_t size, size_t number, cudaStream_t stream)
 {
-    CudaCopyKernel<<<CUDA_TRANS_BLOCK_NUMBER, CUDA_TRANS_BLOCK_SIZE, 0, stream>>>(src, dst, size,
-                                                                                  number);
+    CudaCopyKernel<<<CUDA_TRANS_BLOCK_NUMBER, CUDA_TRANS_BLOCK_SIZE, 0, stream>>>(
+        (const void*)src, dst, size, number);
     return cudaGetLastError();
 }
 
