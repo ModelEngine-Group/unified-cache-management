@@ -24,6 +24,7 @@ from ucm.shared.metrics.observability import UCMStatsLogger
 from ucm.store.factory import UcmConnectorFactory
 from ucm.store.ucmstore import Task, UcmKVStoreBase
 from ucm.utils import Config
+from ucm.profiling.profiler import Profiler
 
 if TYPE_CHECKING:
     from vllm.attention.backends.abstract import AttentionMetadata
@@ -171,7 +172,7 @@ class UCMDirectConnector(KVConnectorBase_V1):
         if self.metrics_config:
             self.stats_logger = UCMStatsLogger(
                 vllm_config.model_config.served_model_name,
-                self.rank,
+                self.global_rank,
                 self.metrics_config,
             )
             self.monitor = ucmmonitor.StatsMonitor.get_instance()
@@ -180,6 +181,8 @@ class UCMDirectConnector(KVConnectorBase_V1):
                 if current_platform.is_cuda_alike()
                 else torch.npu.synchronize
             )
+        
+        self.profiler = Profiler(self.launch_config, self.block_size, self.local_rank)
 
     def generate_hash(self, block_size: int, request: "Request") -> list[str]:
         token_ids = request.all_token_ids
@@ -507,6 +510,12 @@ class UCMDirectConnector(KVConnectorBase_V1):
                 request_to_task[request_id] = self.store.load(
                     ucm_total_block_ids, ucm_offsets, dst_tensor_addr
                 )
+                self.profiler.log_operation(
+                    {
+                        "op_type": "load",
+                        "blocks": ucm_block_ids,
+                    }
+                )
             else:
                 request_to_task[request_id] = None
             req_broadcast_addr[request_id] = dst_tensor_addr
@@ -598,6 +607,12 @@ class UCMDirectConnector(KVConnectorBase_V1):
                 ucm_total_block_ids, ucm_offsets, dst_tensor_addr
             )
             request_to_blocks[request_id] = ucm_block_ids
+            self.profiler.log_operation(
+                {
+                    "op_type": "dump",
+                    "blocks": ucm_block_ids,
+                }
+            )
 
         for request_id, task in request_to_task.items():
             ucm_block_ids = request_to_blocks[request_id]
