@@ -16,7 +16,7 @@ from vllm.distributed.kv_transfer.kv_connector.v1.base import (
 from vllm.distributed.parallel_state import get_tp_group, get_world_group
 from vllm.platforms import current_platform
 from vllm.v1.core.sched.output import SchedulerOutput
-from vllm.v1.request import Request, RequestStatus
+from vllm.v1.request import Request
 
 from ucm.logger import init_logger
 from ucm.shared.metrics import ucmmonitor
@@ -210,9 +210,6 @@ class UCMDirectConnector(KVConnectorBase_V1):
         request: "Request",
         num_computed_tokens: int,
     ) -> tuple[int, bool]:
-        if request.status == RequestStatus.PREEMPTED:
-            self.requests_meta.pop(request.request_id, None)
-
         assert num_computed_tokens % self.block_size == 0
         hbm_hit_block_num = num_computed_tokens // self.block_size
 
