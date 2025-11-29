@@ -16,7 +16,15 @@ ucm_connectors:
 
 load_only_first_rank: false
 
-metrics_config_path: "/vllm-workspace/metrics_config.yaml"
+# Enable UCM metrics; metrics can be viewed online via Grafana and Prometheus
+# metrics_config_path: "/workspace/unified-cache-management/examples/metrics/metrics_configs.yaml"
+
+# UCM operation recording configuration, whether to write UCM dump/load logs to a file
+record_config:
+  enable: false
+  log_path: "/workspace/ucm_ops.log"
+  flush_size: 10
+  flush_interval: 5.0
 
 # Sparse attention configuration
 # Format 1: Dictionary format (for methods like ESA, KvComp)
@@ -34,4 +42,3 @@ metrics_config_path: "/vllm-workspace/metrics_config.yaml"
 # Whether to use layerwise loading/saving (optional, default: True for UnifiedCacheConnectorV1)
 # use_layerwise: true
 # hit_ratio: 0.9
-
