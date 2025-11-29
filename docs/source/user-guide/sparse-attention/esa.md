@@ -9,6 +9,7 @@ ESA provides developers with an intuitive example of how to implement their own 
 ### Basic Usage
 ESA can be launched using the following command:
 ```shell
+export ENABLE_SPARSE=TRUE
 export MODEL_PATH="/path/to/model" # For example: /home/models/Qwen2.5-14B-Instruct
 export DATASET_PATH="/path/to/longbench/multifieldqa_zh.jsonl" # For example: /home/data/Longbench/data/multifieldqa_zh.jsonl
 python examples/offline_inference_esa.py

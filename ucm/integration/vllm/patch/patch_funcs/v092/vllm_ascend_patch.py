@@ -24,17 +24,32 @@
 
 from __future__ import annotations
 
+import os
+
 from ucm.logger import init_logger
 
 logger = init_logger(__name__)
 
+ENABLE_SPARSE = os.getenv("ENABLE_SPARSE")
+
+
+def _enable_sparse() -> bool:
+    return ENABLE_SPARSE is not None and ENABLE_SPARSE.lower() == "true"
+
 
 def _apply_ascend_patch() -> None:
     """Apply patch for vLLM-Ascend."""
-    _patch_attention_v1()
-    _patch_mla_v1()
-    _patch_model_runner_v1()
-    _patch_worker_v1()
+    try:
+        if _enable_sparse():
+            _patch_attention_v1()
+            _patch_mla_v1()
+            _patch_model_runner_v1()
+            _patch_worker_v1()
+            logger.info("UCM sparse adapt patches applied successfully")
+
+    except Exception as e:
+        logger.error(f"Could not apply sparse adapt patches: {e}")
+        raise e
 
 
 # ========================= vllm_ascend/attention/attention_v1.py =========================
