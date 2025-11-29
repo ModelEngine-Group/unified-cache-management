@@ -252,6 +252,7 @@ class UCMDirectConnector(KVConnectorBase_V1):
             hbm_hit_block_num=hbm_hit_block_num,
             total_hit_block_num=total_hit_block_num,
             num_token_ids=len(request.all_token_ids),
+            token_processed = self.block_size * total_hit_block_num
         )
 
         return external_hit_tokens, False
@@ -285,24 +286,11 @@ class UCMDirectConnector(KVConnectorBase_V1):
         ucm_block_ids = req_meta.ucm_block_ids
         req_meta.vllm_block_ids.extend(vllm_block_ids)
 
-        if need_load:
-            new_blocks_num = new_tokens // self.block_size
-            scheduled_block_num = total_hit_block_num + new_blocks_num
-            dump_ucm_block_ids = ucm_block_ids[total_hit_block_num:scheduled_block_num]
-            dump_vllm_block_ids = vllm_block_ids[
-                total_hit_block_num:scheduled_block_num
-            ]
-            req_meta.token_processed = (
-                new_tokens + self.block_size * total_hit_block_num
-            )
-        else:
-            if req_meta.token_processed >= req_meta.num_token_ids:
-                return RequestDispatchMeta(([], []), ([], []))
-            start_idx = req_meta.token_processed // self.block_size
-            end_idx = (req_meta.token_processed + new_tokens) // self.block_size
-            dump_ucm_block_ids = ucm_block_ids[start_idx:end_idx]
-            dump_vllm_block_ids = req_meta.vllm_block_ids[start_idx:end_idx]
-            req_meta.token_processed += new_tokens
+        start_idx = req_meta.token_processed // self.block_size
+        end_idx = (req_meta.token_processed + new_tokens) // self.block_size
+        dump_ucm_block_ids = ucm_block_ids[start_idx:end_idx]
+        dump_vllm_block_ids = req_meta.vllm_block_ids[start_idx:end_idx]
+        req_meta.token_processed += new_tokens
 
         load_ucm_block_ids, load_vllm_block_ids = [], []
         if need_load:
@@ -337,6 +325,9 @@ class UCMDirectConnector(KVConnectorBase_V1):
         if not isinstance(scheduled_cached_reqs, list):
             # >= 0.9.2
             for i, request_id in enumerate(scheduled_cached_reqs.req_ids):
+                if scheduler_output.num_scheduled_tokens[request_id] == 1:
+                    # decode stage
+                    continue
                 req_meta = self.requests_meta.get(request_id)
                 if req_meta:
                     if scheduled_cached_reqs.new_block_ids[i] != None:
