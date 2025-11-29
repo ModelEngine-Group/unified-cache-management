@@ -244,7 +244,8 @@ class UCMDirectConnector(KVConnectorBase_V1):
         # When all the tokens are cached in ssd or hbm,
         # we need to recompute the last token. This if condition will be removed
         # once vLLM scheduler provides a better solution in the future.
-        if total_hit_block_num * self.block_size == request.num_tokens:
+        num_total_hit_tokens = total_hit_block_num * self.block_size
+        if num_total_hit_tokens == request.num_tokens:
             external_hit_tokens -= 1
 
         self.requests_meta[request.request_id] = RequestMeta(
@@ -252,7 +253,7 @@ class UCMDirectConnector(KVConnectorBase_V1):
             hbm_hit_block_num=hbm_hit_block_num,
             total_hit_block_num=total_hit_block_num,
             num_token_ids=len(request.all_token_ids),
-            token_processed = self.block_size * total_hit_block_num
+            token_processed=num_total_hit_tokens,
         )
 
         return external_hit_tokens, False
@@ -330,10 +331,9 @@ class UCMDirectConnector(KVConnectorBase_V1):
                     continue
                 req_meta = self.requests_meta.get(request_id)
                 if req_meta:
+                    new_block_ids = []
                     if scheduled_cached_reqs.new_block_ids[i] != None:
                         new_block_ids = scheduled_cached_reqs.new_block_ids[i][0]
-                    else:
-                        new_block_ids = []
                     requests_dispatch_meta[request_id] = self._generate_dispatch_meta(
                         req_meta,
                         scheduler_output.num_scheduled_tokens[request_id],
