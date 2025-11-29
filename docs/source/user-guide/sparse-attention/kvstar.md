@@ -32,6 +32,7 @@ For long-sequence inference, KVstar achieves the following with minimal accuracy
 ### Basic Usage
 KVstar can be launched using the following command:
 ```shell
+export ENABLE_SPARSE=TRUE
 export MODEL_PATH="/path/to/model" # For example: /home/models/Qwen2.5-14B-Instruct
 export DATASET_PATH="/path/to/longbench/multifieldqa_zh.jsonl" # For example: /home/data/Longbench/data/multifieldqa_zh.jsonl
 export DATA_DIR="/path/to/data"
