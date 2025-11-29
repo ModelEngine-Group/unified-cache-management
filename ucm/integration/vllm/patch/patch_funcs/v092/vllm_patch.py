@@ -23,23 +23,33 @@
 #
 from __future__ import annotations
 
+import os
+
 from ucm.logger import init_logger
 
 logger = init_logger(__name__)
+
+ENABLE_SPARSE = os.getenv("ENABLE_SPARSE")
+
+
+def _enable_sparse() -> bool:
+    return ENABLE_SPARSE is not None and ENABLE_SPARSE.lower() == "true"
 
 
 def _apply_sparse_adapt() -> None:
     """Apply sparse adapt patches."""
     try:
-        _patch_block_table()
-        _patch_kv_cache_manager()
-        _patch_shared_storage_connector()
-        _patch_attention_layer()
-        _patch_mla_common()
-        _patch_gpu_model_runner()
-        _patch_gpu_worker()
-        _patch_scheduler_output()
-        _patch_scheduler()
+        if _enable_sparse():
+            _patch_block_table()
+            _patch_kv_cache_manager()
+            _patch_shared_storage_connector()
+            _patch_attention_layer()
+            _patch_mla_common()
+            _patch_gpu_model_runner()
+            _patch_gpu_worker()
+            _patch_scheduler_output()
+            _patch_scheduler()
+            logger.info("UCM sparse adapt patches applied successfully")
     except Exception as e:
         logger.error(f"Could not apply sparse adapt patches: {e}")
         raise e

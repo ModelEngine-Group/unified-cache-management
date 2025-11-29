@@ -24,6 +24,7 @@ tokenizer = None
 def setup_environment_variables():
     os.environ["VLLM_USE_V1"] = "1"
     os.environ["PYTHONHASHSEED"] = "123456"
+    os.environ["ENABLE_SPARSE"] = "true"
 
     global model, path_to_dataset, data_dir, tokenizer
     model = os.getenv("MODEL_PATH", "/home/models/Qwen2.5-14B-Instruct")
