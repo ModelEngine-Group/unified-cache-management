@@ -64,6 +64,7 @@ user-guide/metrics/metrics
 :caption: Developer Guide
 :maxdepth: 1
 developer-guide/contribute
+developer-guide/profiling
 :::
 
 :::{toctree}
