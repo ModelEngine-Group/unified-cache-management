@@ -49,6 +49,7 @@ Paper list:
 getting-started/quick_start
 getting-started/installation_gpu
 getting-started/installation_npu
+getting-started/kv_cache_calculator
 :::
 
 :::{toctree}
