@@ -12,6 +12,7 @@ option(BUILD_UNIT_TESTS "build all unit test suits." OFF)
 option(BUILD_NUMA "build numactl library." OFF)
 option(DOWNLOAD_DEPENDENCE "download dependence by cmake." ON)
 set(RUNTIME_ENVIRONMENT "simu" CACHE STRING "runtime: simu, ascend, musa or cuda.")
+set(LOGGER_BACKEND "spdlog" CACHE STRING "backend: spdlog or flux.")
 
 execute_process(COMMAND git rev-parse HEAD OUTPUT_VARIABLE UCM_COMMIT_ID OUTPUT_STRIP_TRAILING_WHITESPACE)
 add_compile_definitions(UCM_PROJECT_NAME="${PROJECT_NAME}")

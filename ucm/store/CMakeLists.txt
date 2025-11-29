@@ -1,5 +1,3 @@
-set(LOGGER_BACKEND "spdlog" CACHE STRING "backend: spdlog or flux.")
-
 include_directories(.)
 add_subdirectory(infra)
 add_subdirectory(device)
