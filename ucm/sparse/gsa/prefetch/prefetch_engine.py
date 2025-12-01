@@ -28,6 +28,7 @@ class GSAPrefetchBase:
         is_cpu_topk: bool = False,
         is_max_norm: bool = False,
         max_norm_num: int = 1,
+        is_prefetch_done: bool = False,
         is_prefetch: Optional[bool] = True,
         head_num: Optional[int] = None,
         is_mutli_head: Optional[bool] = None,
@@ -95,6 +96,7 @@ class GSAPrefetchBase:
             self.tp_size,
             self.rank,
             gsa_config.num_prefetch_blocks,
+            is_prefetch_done
         )
 
         self.topk_space = 0
@@ -157,9 +159,7 @@ class GSAPrefetchBase:
             block_table_tmp = self.use_block_table[:, block_table_index, :].to(
                 self.device_config.device
             )
-            gen_len_tmp = self.gsa_seq_len[:, self.select_bs_index].to(
-                self.device_config.device
-            )
+            gen_len_tmp = self.gsa_seq_len[:, self.select_bs_index]
 
             list_topk_buf = list(topk_buf_tmp.unbind(dim=0))
             list_block_table = list(block_table_tmp.unbind(dim=0))
@@ -197,12 +197,14 @@ class GSAPrefetchBase:
             )
         self.topk_buf_tmp = topk_buf_tmp
 
-    def deal_async_prefetch(self, gsa_metadata, kvcache, store_ptr) -> None:
+    def deal_async_prefetch(self, is_prefetch_done, gsa_metadata, kvcache, store_ptr):
+        self.topk_space += 1
+        all_free_block_ids = None
+        all_miss_ids = None
         if not self.atb_gsa_enable:
-            return
-
+            return all_free_block_ids, all_miss_ids
         if (
-            self.prefetch_engine_c.get_prefetch_status()
+            is_prefetch_done
             and self.ptopk_prefetch_enable
             and self.is_topk_update
         ):
@@ -239,8 +241,10 @@ class GSAPrefetchBase:
                 req_id_list, topk_len_list, self.select_bs_index, kvcache, store_ptr
             )
             self.is_topk_update = False
-        else:
-            self.topk_space += 1
+            if is_prefetch_done:
+                all_free_block_ids = self.prefetch_engine_c.obtain_load_blocks()
+                all_miss_ids = self.prefetch_engine_c.obtain_miss_idxs()
+        return all_free_block_ids, all_miss_ids
 
     def del_finish_meta(self, del_req, flag: bool = True) -> None:
         if del_req in self.block_map_flag:

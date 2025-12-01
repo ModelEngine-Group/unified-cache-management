@@ -106,7 +106,8 @@ namespace ucmprefetch
         bool isLog,
         int tpSize,
         int rank,
-        int extraTopkLen
+        int extraTopkLen,
+        bool isPythonLoad
     )
         :mLogger("./log/kvcache_pre_log.txt", LogLevel::INFO, isLog)
     {
@@ -128,6 +129,7 @@ namespace ucmprefetch
         mBlockSize = kvShape[0];
         mTPSize = tpSize;
         mRank = rank;
+        mIsPythonLoad = isPythonLoad;
         if(mRank != 0) {
             mLogger.SetLevel(LogLevel::WARNING);
             mIsLog = false;
@@ -322,6 +324,9 @@ namespace ucmprefetch
                 int blockID = mDocsTables[reqID][layerID][item];
                 hitBlocks.insert(blockID);
                 hitBlocksIdx.insert(std::make_pair(item, blockID));
+                if (hitBlocks.size() == (topkLen - mExtraTopkLen)) {
+                    break;
+                }
             } else {
                 missIdxs.push_back(item);
             }
@@ -329,7 +334,7 @@ namespace ucmprefetch
         oss << "------\n";
         mLogger.log(LogLevel::DEBUG, oss.str().c_str());
         oss.str("");
-        if ((hitBlocks.size() + missIdxs.size()) != (uint32_t)topkLen) {
+        if ((hitBlocks.size() + missIdxs.size()) != (uint32_t)topkLen && hitBlocks.size() != (topkLen - mExtraTopkLen)) {
             mLogger.log(LogLevel::ERROR,
                 "|KVCache Prefetch| Decode step: %u, Rank: %d, reqID: %s, layer: %d, hit size: %lu, miss size: %lu , topkLen: %d, not equal error\n",
                 mDecodeStep, mRank, reqID, layerID, hitBlocks.size(), missIdxs.size(), topkLen);
@@ -367,6 +372,8 @@ namespace ucmprefetch
                 oneFreeBlockIndex += 1;
             }
         }
+        uint32_t loadLen = oneFreeBlockTable.size();
+        missIdxs.erase(missIdxs.begin() + loadLen, missIdxs.end()); 
         allNeedLoadBlock[reqID][layerID] = oneFreeBlockTable;
         allMissIdxs[reqID][layerID] = missIdxs;
         LoadKVToHBM(oneFreeBlockTable, missIdxs, layerID, reqID);
@@ -389,7 +396,7 @@ namespace ucmprefetch
             oneBsInfo.bsIndex = bsIndex;
             oneBsInfo.layerID = i;
             GetHitAndMissBlock(oneBsInfo, hitBlocks, hitBlocksIdx, missIdxs);
-            if (missIdxs.size() != 0 || hitBlocksIdx.size() < (topkLen - mExtraTopkLen)) {
+            if (missIdxs.size() != 0 && hitBlocksIdx.size() < (topkLen - mExtraTopkLen)) {
                 RunPrefetchH2D(oneBsInfo, hitBlocks, hitBlocksIdx, missIdxs);
             }
             int successIndex = 0;
@@ -418,38 +425,40 @@ namespace ucmprefetch
         std::vector<int> missIdxs, int layerID, std::string reqID)
     {
         for (size_t i = 0; i < loadNPUBlockIDs.size(); i++) {
-            if (mDelSeqIds.find(reqID) != mDelSeqIds.end()) {
-                mLogger.log(LogLevel::INFO,
-                    "Decode step: %u, Rank: %d, reqID: %s, layer: %d, stop prefetch\n",
-                    mDecodeStep, mRank, reqID.c_str(), layerID);
-                return;
-            }
-            while (mStopPrefetch) {
-                std::this_thread::sleep_for(std::chrono::microseconds(2));
-            }
-            UC::Task task{UC::Task::Type::LOAD, UC::Task::Location::DEVICE, "NFS::S2D"};
-            std::string blockId = mAllBlcoksHash[reqID][missIdxs[i]];
-            size_t kOffset = GetOffset(layerID, false);
-            size_t vOffset = GetOffset(layerID, true);
-            if (!mUseMla) {
-                task.Append(blockId, kOffset,
-                    reinterpret_cast<uintptr_t>(mKvCaches[layerID][0][loadNPUBlockIDs[i]].data_ptr()),
-                    mKVSzieBytes);
-                task.Append(blockId, vOffset,
-                    reinterpret_cast<uintptr_t>(mKvCaches[layerID][1][loadNPUBlockIDs[i]].data_ptr()),
-                    mKVSzieBytes);
-            } else {
-                task.Append(blockId, kOffset,
-                    reinterpret_cast<uintptr_t>(mKvCaches[layerID][loadNPUBlockIDs[i]].data_ptr()),
-                    mKVSzieBytes);
-            }
-            size_t taskID = mStore->Submit(std::move(task));
-            auto ret = mStore->Wait(taskID);
-            if (ret != 0) {
-                mLogger.log(LogLevel::ERROR,
-                    "Decode step: %u, Rank: %d, reqID: %s, layer: %d, blockID: %lu, miss idx: %u, load blockid: %u load k error\n",
-                    mDecodeStep, mRank, reqID.c_str(), layerID, blockId, missIdxs[i], loadNPUBlockIDs[i]);
-                return;
+            if (mIsPythonLoad) {
+                if (mDelSeqIds.find(reqID) != mDelSeqIds.end()) {
+                    mLogger.log(LogLevel::INFO,
+                        "Decode step: %u, Rank: %d, reqID: %s, layer: %d, stop prefetch\n",
+                        mDecodeStep, mRank, reqID.c_str(), layerID);
+                    return;
+                }
+                while (mStopPrefetch) {
+                    std::this_thread::sleep_for(std::chrono::microseconds(2));
+                }
+                UC::Task task{UC::Task::Type::LOAD, UC::Task::Location::DEVICE, "NFS::S2D"};
+                std::string blockId = mAllBlcoksHash[reqID][missIdxs[i]];
+                size_t kOffset = GetOffset(layerID, false);
+                size_t vOffset = GetOffset(layerID, true);
+                if (!mUseMla) {
+                    task.Append(blockId, kOffset,
+                        reinterpret_cast<uintptr_t>(mKvCaches[layerID][0][loadNPUBlockIDs[i]].data_ptr()),
+                        mKVSzieBytes);
+                    task.Append(blockId, vOffset,
+                        reinterpret_cast<uintptr_t>(mKvCaches[layerID][1][loadNPUBlockIDs[i]].data_ptr()),
+                        mKVSzieBytes);
+                } else {
+                    task.Append(blockId, kOffset,
+                        reinterpret_cast<uintptr_t>(mKvCaches[layerID][loadNPUBlockIDs[i]].data_ptr()),
+                        mKVSzieBytes);
+                }
+                size_t taskID = mStore->Submit(std::move(task));
+                auto ret = mStore->Wait(taskID);
+                if (ret != 0) {
+                    mLogger.log(LogLevel::ERROR,
+                        "Decode step: %u, Rank: %d, reqID: %s, layer: %d, blockID: %lu, miss idx: %u, load blockid: %u load k error\n",
+                        mDecodeStep, mRank, reqID.c_str(), layerID, blockId, missIdxs[i], loadNPUBlockIDs[i]);
+                    return;
+                }
             }
 
             int oriIdx = mBlocksMap[reqID][layerID][loadNPUBlockIDs[i]];
@@ -472,10 +481,16 @@ namespace ucmprefetch
             } else {
                 mKVSzieBytes = kvCaches[0].element_size() * kvCaches[0][0][0].numel();
             }
+            if (storePtr == nullptr) {
+                mLogger.log(LogLevel::ERROR,
+                    "Decode step: %u, |KVCache Prefetch| storePtr is nullptr error\n",
+                    mDecodeStep);
+                std::abort();
+            }
             mStore = static_cast<UC::CCStore<> *>(storePtr);
             mLogger.log(LogLevel::INFO,
-                "Decode step: %u, |KVCache Prefetch| start mKVSzieBytes: %u, mTensorElemSize %u\n",
-                mDecodeStep, mKVSzieBytes, mTensorElemSize);
+                "Decode step: %u, |KVCache Prefetch| start mKVSzieBytes: %u, mTensorElemSize %u, store %p\n",
+                mDecodeStep, mKVSzieBytes, mTensorElemSize, mStore);
         }
         mKvCaches = kvCaches;
         mLogger.log(LogLevel::INFO,
@@ -495,7 +510,11 @@ namespace ucmprefetch
         mMutex.lock();
         mIsPrefetchDone = false;
         mMutex.unlock();
-        mThreadPool->enqueue(MutliBSThreadFun, this);
+        if (mIsPythonLoad) {
+            MutliBSThreadFun(this);
+        } else {
+            mThreadPool->enqueue(MutliBSThreadFun, this);
+        }
     }
 
     void GSAPrefetchEngineC::SetBlockTableInfo(torch::Tensor &blockTables, torch::Tensor &blockLengths,

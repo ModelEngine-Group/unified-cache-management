@@ -29,6 +29,9 @@ void TopkBlockSelector::TopKImpl(const float* scores, uint32_t numScores, uint32
     for (uint32_t i = 0; i < startWindow_; ++i) {
         topkIndices[idx++] = i;
     }
+    for (uint32_t i = 0; i < endWindow_; ++i) {
+        topkIndices[idx++] = numScores - endWindow_ + i;
+    }
     int32_t midCount = k - startWindow_ - endWindow_;
     if (midCount > 0) {
         std::vector<uint32_t> middleIndices;
@@ -44,10 +47,6 @@ void TopkBlockSelector::TopKImpl(const float* scores, uint32_t numScores, uint32
             topkIndices[idx++] = middleIndices[i];
         }
     }
-    for (uint32_t i = 0; i < endWindow_; ++i) {
-        topkIndices[idx++] = numScores - endWindow_ + i;
-    }
-    std::sort(topkIndices, topkIndices + k);
 }
 
 float TopkBlockSelector::ComputeBlockScore(float* qMean, const float* blockBase,

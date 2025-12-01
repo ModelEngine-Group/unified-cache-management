@@ -105,6 +105,7 @@ namespace ucmprefetch
         std::map<std::string, std::vector<std::string>> mAllBlcoksHash;
         uint32_t mKVSzieBytes = 0;
         uint32_t mExtraTopkLen = 16;
+        bool mIsPythonLoad = false;
     public:
         std::mutex mMutex;
         bool mStopPrefetch = false;
@@ -138,7 +139,8 @@ namespace ucmprefetch
             bool isLog,
             int tpSize,
             int rank,
-            int extraTopkLen
+            int extraTopkLen,
+            bool isPythonLoad
         );
 
         void SetBlocksMap(std::string reqID, std::vector<int> &blockTableList,
