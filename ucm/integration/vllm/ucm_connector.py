@@ -341,10 +341,7 @@ class UCMDirectConnector(KVConnectorBase_V1):
                     )
         else:
             for request in scheduled_cached_reqs:
-                request_id = request.request_id
-                if scheduler_output.num_scheduled_tokens[request_id] == 1:
-                    # decode stage
-                    continue
+                request_id = request.req_id
                 req_meta = self.requests_meta.get(request_id)
                 if req_meta:
                     requests_dispatch_meta[request_id] = self._generate_dispatch_meta(
