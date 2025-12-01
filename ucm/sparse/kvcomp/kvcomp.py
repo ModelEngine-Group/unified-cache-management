@@ -10,6 +10,7 @@ from vllm.distributed.kv_transfer import get_kv_transfer_group
 from vllm.forward_context import ForwardContext
 from vllm.v1.request import Request, RequestStatus
 
+from ucm.integration.vllm.ucm_connector import RequestHasher
 from ucm.logger import init_logger
 from ucm.sparse.base import (
     INVALID_SLOT,
@@ -151,7 +152,7 @@ class KvComp(ESA):
         self.rank = vllm_config.parallel_config.rank
         self.tp_size = vllm_config.parallel_config.tensor_parallel_size
         if role == UcmSparseRole.WORKER:
-            self.connector = get_kv_transfer_group().connector
+            self.connector = get_kv_transfer_group().connector.store
         else:
             self.connector = None
         self.total_num_hidden_layers = (
@@ -166,6 +167,8 @@ class KvComp(ESA):
         ]["KvComp"]
 
         self.block_size = vllm_config.cache_config.block_size
+        self.block_hashes: dict[int, dict[int, list[str]]] = {}
+        self.request_hasher = RequestHasher(vllm_config, 0)
         self.num_kv_heads = vllm_config.model_config.get_num_kv_heads(
             vllm_config.parallel_config
         )
