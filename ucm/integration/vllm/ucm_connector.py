@@ -174,7 +174,7 @@ class UCMDirectConnector(KVConnectorBase_V1):
         if self.metrics_config:
             self.stats_logger = UCMStatsLogger(
                 vllm_config.model_config.served_model_name,
-                self.rank,
+                self.global_rank,
                 self.metrics_config,
             )
             self.monitor = ucmmonitor.StatsMonitor.get_instance()
