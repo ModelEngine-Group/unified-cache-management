@@ -287,16 +287,18 @@ class UCMDirectConnector(KVConnectorBase_V1):
         ucm_block_ids = req_meta.ucm_block_ids
         req_meta.vllm_block_ids.extend(vllm_block_ids)
 
-        start_idx = req_meta.token_processed // self.block_size
-        end_idx = (req_meta.token_processed + new_tokens) // self.block_size
-        dump_ucm_block_ids = ucm_block_ids[start_idx:end_idx]
-        dump_vllm_block_ids = req_meta.vllm_block_ids[start_idx:end_idx]
-        req_meta.token_processed += new_tokens
-
         load_ucm_block_ids, load_vllm_block_ids = [], []
+        dump_ucm_block_ids, dump_vllm_block_ids = [], []
         if need_load:
             load_ucm_block_ids = ucm_block_ids[hbm_hit_block_num:total_hit_block_num]
             load_vllm_block_ids = vllm_block_ids[hbm_hit_block_num:total_hit_block_num]
+
+        if req_meta.token_processed < req_meta.num_token_ids:
+            start_idx = req_meta.token_processed // self.block_size
+            end_idx = (req_meta.token_processed + new_tokens) // self.block_size
+            dump_ucm_block_ids = ucm_block_ids[start_idx:end_idx]
+            dump_vllm_block_ids = req_meta.vllm_block_ids[start_idx:end_idx]
+            req_meta.token_processed += new_tokens
 
         return RequestDispatchMeta(
             (load_ucm_block_ids, load_vllm_block_ids),
@@ -326,9 +328,6 @@ class UCMDirectConnector(KVConnectorBase_V1):
         if not isinstance(scheduled_cached_reqs, list):
             # >= 0.9.2
             for i, request_id in enumerate(scheduled_cached_reqs.req_ids):
-                if scheduler_output.num_scheduled_tokens[request_id] == 1:
-                    # decode stage
-                    continue
                 req_meta = self.requests_meta.get(request_id)
                 if req_meta:
                     new_block_ids = []
