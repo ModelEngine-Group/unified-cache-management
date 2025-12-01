@@ -293,17 +293,12 @@ class UCMDirectConnector(KVConnectorBase_V1):
             load_ucm_block_ids = ucm_block_ids[hbm_hit_block_num:total_hit_block_num]
             load_vllm_block_ids = vllm_block_ids[hbm_hit_block_num:total_hit_block_num]
 
-        if req_meta.token_processed >= req_meta.num_token_ids:
-            return RequestDispatchMeta(
-                (load_ucm_block_ids, load_vllm_block_ids),
-                (dump_ucm_block_ids, dump_vllm_block_ids),
-            )
-
-        start_idx = req_meta.token_processed // self.block_size
-        end_idx = (req_meta.token_processed + new_tokens) // self.block_size
-        dump_ucm_block_ids = ucm_block_ids[start_idx:end_idx]
-        dump_vllm_block_ids = req_meta.vllm_block_ids[start_idx:end_idx]
-        req_meta.token_processed += new_tokens
+        if req_meta.token_processed < req_meta.num_token_ids:
+            start_idx = req_meta.token_processed // self.block_size
+            end_idx = (req_meta.token_processed + new_tokens) // self.block_size
+            dump_ucm_block_ids = ucm_block_ids[start_idx:end_idx]
+            dump_vllm_block_ids = req_meta.vllm_block_ids[start_idx:end_idx]
+            req_meta.token_processed += new_tokens
 
         return RequestDispatchMeta(
             (load_ucm_block_ids, load_vllm_block_ids),
