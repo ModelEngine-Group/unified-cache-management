@@ -96,7 +96,7 @@ class GSAPrefetchBase:
             self.tp_size,
             self.rank,
             gsa_config.num_prefetch_blocks,
-            is_prefetch_done
+            is_prefetch_done,
         )
 
         self.topk_space = 0
@@ -203,11 +203,7 @@ class GSAPrefetchBase:
         all_miss_ids = None
         if not self.atb_gsa_enable:
             return all_free_block_ids, all_miss_ids
-        if (
-            is_prefetch_done
-            and self.ptopk_prefetch_enable
-            and self.is_topk_update
-        ):
+        if is_prefetch_done and self.ptopk_prefetch_enable and self.is_topk_update:
             tmp = self.use_block_table
             self.use_block_table = self.m_load_success_list
             self.m_load_success_list = tmp

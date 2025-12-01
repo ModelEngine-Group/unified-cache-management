@@ -124,9 +124,7 @@ class GSAReqStat:
         if self.rank != 0 and not self.is_mla:
             self.newqrequest_hasher = RequestHasher(self._vllm_config, self.rank)
             for i, ucm_block_id in enumerate(self.block_hashes):
-                self.block_hashes[i] = str(
-                    self.newqrequest_hasher(ucm_block_id)
-                )
+                self.block_hashes[i] = str(self.newqrequest_hasher(ucm_block_id))
 
     def add_req_new(
         self, num_scheduled_tokens, add_req_state, index_in_batch, offset
@@ -295,7 +293,9 @@ class GSAMetaData(UcmSparseMetadata):
         for new_req in scheduler_output.scheduled_new_reqs:
             if new_req.req_id in self.gsa_stats:
                 del self.gsa_stats[new_req.req_id]
-            self.gsa_stats[new_req.req_id] = GSAReqStat(new_req.req_id, self.block_size, self._vllm_config)
+            self.gsa_stats[new_req.req_id] = GSAReqStat(
+                new_req.req_id, self.block_size, self._vllm_config
+            )
             self.gsa_stats[new_req.req_id].add_req_new(
                 scheduler_output.num_scheduled_tokens[new_req.req_id],
                 requests[new_req.req_id],
@@ -417,12 +417,8 @@ class TopkCal:
             qk.reshape(bs, self.att_num_heads, blk_num, max_norm_num), dim=-1
         )
         dot_product_weights = attention_weights_without_norm.mean(1)
-        dot_product_weights.masked_fill_(
-            self.include_mask == 1, float("inf")
-        )
-        dot_product_weights.masked_fill_(
-            self.exclude_mask == 1, float("-inf")
-        )
+        dot_product_weights.masked_fill_(self.include_mask == 1, float("inf"))
+        dot_product_weights.masked_fill_(self.exclude_mask == 1, float("-inf"))
         selected_block_nums = self.topk_len_list[0]
         _, top_indices = torch.topk(
             dot_product_weights, selected_block_nums, dim=-1, sorted=False
@@ -549,7 +545,11 @@ class GSA(UcmSparseBase):
         )
         if CUDA_TOPK:
             self.gsa_cuda_topk = TopkCal(
-                att_num_heads, kv_num_heads, head_size, prefetch_engine.kpre_caches, self.use_mla
+                att_num_heads,
+                kv_num_heads,
+                head_size,
+                prefetch_engine.kpre_caches,
+                self.use_mla
             )
 
     def copy_q(self, query: torch.Tensor, current_layer_id: int) -> None:
@@ -910,19 +910,26 @@ class GSA(UcmSparseBase):
             if self.is_python_load:
                 is_prefetch_done = self.check_transfer_task_done()
             else:
-                is_prefetch_done = self.prefetch_engine.prefetch_engine_c.get_prefetch_status()
+                is_prefetch_done = (
+                    self.prefetch_engine.prefetch_engine_c.get_prefetch_status()
+                )
             all_free_block_ids, all_miss_ids = self.prefetch_engine.deal_async_prefetch(
-                is_prefetch_done, self.gsa_metadata, kv_caches, self.connector.cc_store()
+                is_prefetch_done,
+                self.gsa_metadata,
+                kv_caches,
+                self.connector.cc_store()
             )
             if is_prefetch_done:
-                self.load_transfer_task(all_free_block_ids, all_miss_ids, kv_caches)
+                self.launch_transfer_task(all_free_block_ids, all_miss_ids, kv_caches)
         else:
-            self.prefetch_engine.deal_async_prefetch(False, self.gsa_metadata, kv_caches, None)
+            self.prefetch_engine.deal_async_prefetch(
+                False, self.gsa_metadata, kv_caches, None
+            )
 
     def launch_transfer_task(self, all_free_block_ids, all_miss_ids, kv_caches):
         if all_free_block_ids == None:
             return
-        fn = getattr(self.connector, 'load')
+        fn = getattr(self.connector, "load")
         precision = self.element_size
         if self.use_mla:
             block_data_size = kv_caches[0].numel() * precision
@@ -948,8 +955,7 @@ class GSA(UcmSparseBase):
                 )
                 offsets_k += [offset_k] * length
                 block_hashes += [
-                    req_block_hash[i]
-                    for i in all_miss_ids[req_id][layer_id]
+                    req_block_hash[i] for i in all_miss_ids[req_id][layer_id]
                 ]
                 
                 if not self.use_mla:
@@ -965,8 +971,7 @@ class GSA(UcmSparseBase):
                     )
                     offsets_k += [offset_v] * length
                     block_hashes += [
-                        req_block_hash[i]
-                        for i in all_miss_ids[req_id][layer_id]
+                        req_block_hash[i] for i in all_miss_ids[req_id][layer_id]
                     ]
                     key_src_tensors += [
                         kv_caches[layer_id][1][_id]
@@ -1065,16 +1070,9 @@ class GSA(UcmSparseBase):
                     )
                     topk_len_list.append(one_topk_len)
                     if CUDA_TOPK:
-                        include_masks.append(
-                            req_meta.include_mask
-                        )
-                        exclude_masks.append(
-                            req_meta.exclude_mask
-                        )
-                        repre_slot_mappings.append(
-                            req_meta.repre_slot_mapping
-                        )
-
+                        include_masks.append(req_meta.include_mask)
+                        exclude_masks.append(req_meta.exclude_mask)
+                        repre_slot_mappings.append(req_meta.repre_slot_mapping)
                 else:
                     is_decode.append(False)
                 repre_slot_mappings_all.append(req_meta.repre_slot_mapping)
