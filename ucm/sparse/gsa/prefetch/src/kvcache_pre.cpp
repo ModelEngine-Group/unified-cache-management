@@ -444,7 +444,7 @@ namespace ucmprefetch
         std::vector<int> missIdxs, int layerID, std::string reqID)
     {
         for (size_t i = 0; i < loadNPUBlockIDs.size(); i++) {
-            if (mIsPythonLoad) {
+            if (!mIsPythonLoad) {
                 if (mDelSeqIds.find(reqID) != mDelSeqIds.end()) {
                     mLogger.log(LogLevel::INFO,
                         "Decode step: %u, Rank: %d, reqID: %s, layer: %d, stop prefetch\n",
