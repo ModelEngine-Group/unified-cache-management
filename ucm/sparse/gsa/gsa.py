@@ -277,9 +277,7 @@ class GSAMetaData(UcmSparseMetadata):
             if scheduler_output.scheduled_cached_reqs.resumed_from_preemption[index]:
                 del self.gsa_stats[req_id]
                 prefetch_engine.del_finish_meta(req_id, False)
-                self.gsa_stats[req_id] = GSAReqStat(
-                    req_id, self._vllm_config
-                )
+                self.gsa_stats[req_id] = GSAReqStat(req_id, self._vllm_config)
                 self.gsa_stats[req_id].add_req_new(
                     scheduler_output.num_scheduled_tokens[req_id],
                     requests[req_id],
