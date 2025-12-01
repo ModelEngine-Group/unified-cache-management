@@ -271,13 +271,17 @@ def run(
             if r == 0:
                 store_all_hashes(hashes[:batch_size])
 
-            w_bw_list.append(w_bw)
-            w_time_list.append(w_time)
-            w_size_sum += w_size
+            if r != 0:
+                w_bw_list.append(w_bw)
+                w_time_list.append(w_time)
+                w_size_sum += w_size
 
             if operation_mode == "write_only":
                 del kvcaches, hashes
-                torch.cuda.empty_cache()
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+                elif hasattr(torch, "npu") and torch.npu.is_available():
+                    torch.npu.empty_cache()
 
         if operation_mode in ["read_only", "both"]:
             if operation_mode == "read_only":
@@ -310,16 +314,23 @@ def run(
                     mla,
                 )
 
-            r_bw_list.append(r_bw)
-            r_time_list.append(r_time)
-            r_size_sum += r_size
+            if r != 0:
+                r_bw_list.append(r_bw)
+                r_time_list.append(r_time)
+                r_size_sum += r_size
 
             if operation_mode == "read_only":
                 del kvcaches
-                torch.cuda.empty_cache()
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+                elif hasattr(torch, "npu") and torch.npu.is_available():
+                    torch.npu.empty_cache()
             else:
                 del kvcaches, hashes
-                torch.cuda.empty_cache()
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+                elif hasattr(torch, "npu") and torch.npu.is_available():
+                    torch.npu.empty_cache()
 
     del store
     avg_w_bw = sum(w_bw_list) / len(w_bw_list) if w_bw_list else 0.0
@@ -330,3 +341,33 @@ def run(
     avg_r_size = r_size_sum / (1024**3) / len(r_time_list) if r_time_list else 0.0
 
     return avg_w_size, avg_w_time, avg_w_bw, avg_r_time, avg_r_bw, avg_r_size
+
+
+if __name__ == "__main__":
+    os.environ["UC_LOGGER_LEVEL"] = "debug"
+
+    try:
+        result = run(
+            storage_backends=".",
+            device_id=1,
+            repeat=1,
+            num_head=1,
+            block_len=128,
+            transferStreamNumber=32,
+            num_tokens=4096,
+            block_layer=61,
+            head_size=576,
+            block_elem_size=2,
+            kv=1,
+            mla=True,
+            transferIoDirect=False,
+            operation_mode="both",
+        )
+
+        avg_w_size, avg_w_time, avg_w_bw, avg_r_time, avg_r_bw, avg_r_size = result
+
+    except Exception as e:
+        print(f"Error: {e}")
+        import traceback
+
+        traceback.print_exc()
