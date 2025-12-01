@@ -57,7 +57,7 @@ cd ..
 ```
 
 ## Setup from docker
-Download the pre-built docker image provided or build unified-cache-management docker image by commands below:
+Download the pre-built `vllm-ascend` docker image or build unified-cache-management docker image by commands below:
  ```bash
  # Build docker image using source code, replace <branch_or_tag_name> with the branch or tag name needed
  git clone --depth 1 --branch <branch_or_tag_name> https://github.com/ModelEngine-Group/unified-cache-management.git
