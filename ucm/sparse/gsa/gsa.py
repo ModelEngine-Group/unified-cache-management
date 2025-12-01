@@ -97,7 +97,7 @@ class GSAReqStat:
 
     def get_seq_len(self) -> int:
         return self.num_computed_tokens + self.num_scheduled_tokens
-    
+
     def set_block_hashes(self, token_ids):
         if self.block_hashes is not None:
             return
@@ -277,7 +277,9 @@ class GSAMetaData(UcmSparseMetadata):
             if scheduler_output.scheduled_cached_reqs.resumed_from_preemption[index]:
                 del self.gsa_stats[req_id]
                 prefetch_engine.del_finish_meta(req_id, False)
-                self.gsa_stats[req_id] = GSAReqStat(req_id, self.block_size, self._vllm_config)
+                self.gsa_stats[req_id] = GSAReqStat(
+                    req_id, self.block_size, self._vllm_config
+                )
                 self.gsa_stats[req_id].add_req_new(
                     scheduler_output.num_scheduled_tokens[req_id],
                     requests[req_id],
@@ -425,6 +427,7 @@ class TopkCal:
         )
         self.topk_caches[current_layer_id][self.cal_topk_id] = top_indices
 
+
 @cache
 def get_offset(block_shape, rank, tp_size, precision, layer_id, is_v, is_mla) -> int:
     block_size, num_key_heads_per_tp, head_size = block_shape
@@ -440,12 +443,14 @@ def get_offset(block_shape, rank, tp_size, precision, layer_id, is_v, is_mla) ->
     v_offset = k_offset + k_min_data_block_size
     return v_offset if is_v else k_offset
 
+
 @cache
 def compute_parent_block_hash(model_name, world_size, dtype, seed_rank=0) -> int:
     meta = f"{model_name}:{world_size}:{dtype}:{seed_rank}"
     meta_bytes = meta.encode("utf-8")
     h_seed = hashlib.md5(meta_bytes + b"UCM_HASH_SEED").digest()
     return int.from_bytes(h_seed, byteorder="big")
+
 
 @cache
 def compute_layer_offset(
@@ -464,8 +469,10 @@ def compute_layer_offset(
     v_offset = k_offset + block_data_size
     return v_offset if is_v else k_offset
 
+
 def task_hash_func(block_ids, store_type, tensor_type):
     return hash((tuple(block_ids), store_type, tensor_type))
+
 
 class GSA(UcmSparseBase):
     def __init__(self, vllm_config: VllmConfig, role: UcmSparseRole):
@@ -549,7 +556,7 @@ class GSA(UcmSparseBase):
                 kv_num_heads,
                 head_size,
                 prefetch_engine.kpre_caches,
-                self.use_mla
+                self.use_mla,
             )
 
     def copy_q(self, query: torch.Tensor, current_layer_id: int) -> None:
@@ -917,7 +924,7 @@ class GSA(UcmSparseBase):
                 is_prefetch_done,
                 self.gsa_metadata,
                 kv_caches,
-                self.connector.cc_store()
+                self.connector.cc_store(),
             )
             if is_prefetch_done:
                 self.launch_transfer_task(all_free_block_ids, all_miss_ids, kv_caches)
@@ -935,7 +942,7 @@ class GSA(UcmSparseBase):
             block_data_size = kv_caches[0].numel() * precision
         else:
             block_data_size = kv_caches[0][0].numel() * precision
-        
+
         offsets_k = []
         key_src_tensors = []
         block_hashes = []
@@ -957,7 +964,7 @@ class GSA(UcmSparseBase):
                 block_hashes += [
                     req_block_hash[i] for i in all_miss_ids[req_id][layer_id]
                 ]
-                
+
                 if not self.use_mla:
                     key_src_tensors += [
                         kv_caches[layer_id][0][_id]
@@ -986,11 +993,11 @@ class GSA(UcmSparseBase):
         task_all = fn(block_hashes, offsets_k, key_src_tensors)
         task_all_hash = task_hash_func(block_hashes, "load", "value")
         self.task_load[task_all_hash] = task_all
-    
+
     def check_transfer_task_done(self) -> bool:
         if len(self.task_load) == 0:
             return True
-        
+
         for task_hash, task in self.task_load.items():
             ret = self.connector.check(task)
             if not ret:
