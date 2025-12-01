@@ -121,7 +121,7 @@ class GSAReqStat:
             )
             parent_block_hash_value = hash_value
 
-        if self.rank != 0 and not self.is_mla:
+        if self.rank != 0 and not self.use_mla:
             self.newqrequest_hasher = RequestHasher(self._vllm_config, self.rank)
             for i, ucm_block_id in enumerate(self.block_hashes):
                 self.block_hashes[i] = str(self.newqrequest_hasher(ucm_block_id))
@@ -278,7 +278,7 @@ class GSAMetaData(UcmSparseMetadata):
                 del self.gsa_stats[req_id]
                 prefetch_engine.del_finish_meta(req_id, False)
                 self.gsa_stats[req_id] = GSAReqStat(
-                    req_id, self.block_size, self._vllm_config
+                    req_id, self._vllm_config
                 )
                 self.gsa_stats[req_id].add_req_new(
                     scheduler_output.num_scheduled_tokens[req_id],
@@ -296,7 +296,7 @@ class GSAMetaData(UcmSparseMetadata):
             if new_req.req_id in self.gsa_stats:
                 del self.gsa_stats[new_req.req_id]
             self.gsa_stats[new_req.req_id] = GSAReqStat(
-                new_req.req_id, self.block_size, self._vllm_config
+                new_req.req_id, self._vllm_config
             )
             self.gsa_stats[new_req.req_id].add_req_new(
                 scheduler_output.num_scheduled_tokens[new_req.req_id],
@@ -500,10 +500,10 @@ class GSA(UcmSparseBase):
         self.dtype = vllm_config.model_config.dtype
         if PTOPK_PREFETCH_ENABLE:
             if role == UcmSparseRole.WORKER:
-                self.connector = get_kv_transfer_group().connector
+                self.connector = get_kv_transfer_group().connector.store
             else:
                 self.connector = None
-        self.is_python_load = torch.npu.is_available()
+        self.is_python_load = not torch.cuda.is_available()
         if CUDA_TOPK:
             self.prefetch_engine = GSAPrefetchBase(
                 vllm_config, 16, True, False, False, 1, self.is_python_load
@@ -926,7 +926,7 @@ class GSA(UcmSparseBase):
                 kv_caches,
                 self.connector.cc_store(),
             )
-            if is_prefetch_done:
+            if self.is_python_load:
                 self.launch_transfer_task(all_free_block_ids, all_miss_ids, kv_caches)
         else:
             self.prefetch_engine.deal_async_prefetch(

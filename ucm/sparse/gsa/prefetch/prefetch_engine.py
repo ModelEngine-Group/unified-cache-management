@@ -28,7 +28,7 @@ class GSAPrefetchBase:
         is_cpu_topk: bool = False,
         is_max_norm: bool = False,
         max_norm_num: int = 1,
-        is_prefetch_done: bool = False,
+        is_python_load: bool = False,
         is_prefetch: Optional[bool] = True,
         head_num: Optional[int] = None,
         is_mutli_head: Optional[bool] = None,
@@ -85,6 +85,7 @@ class GSAPrefetchBase:
             )
         self._init_tensor()
         kv_shape = [self.block_size, self.num_kv_heads, self.head_size]
+        self.is_python_load = is_python_load
         self.prefetch_engine_c = gsa_prefetch.GSAPrefetchEngineC(
             self.prefetch_blocks,
             self.m_load_success_list,
@@ -96,7 +97,7 @@ class GSAPrefetchBase:
             self.tp_size,
             self.rank,
             gsa_config.num_prefetch_blocks,
-            is_prefetch_done,
+            self.is_python_load,
         )
 
         self.topk_space = 0
@@ -159,7 +160,12 @@ class GSAPrefetchBase:
             block_table_tmp = self.use_block_table[:, block_table_index, :].to(
                 self.device_config.device
             )
-            gen_len_tmp = self.gsa_seq_len[:, self.select_bs_index]
+            if torch.cuda.is_available():
+                gen_len_tmp = self.gsa_seq_len[:, self.select_bs_index].to(
+                    self.device_config.device
+                )
+            else:
+                gen_len_tmp = self.gsa_seq_len[:, self.select_bs_index]
 
             list_topk_buf = list(topk_buf_tmp.unbind(dim=0))
             list_block_table = list(block_table_tmp.unbind(dim=0))
@@ -237,7 +243,7 @@ class GSAPrefetchBase:
                 req_id_list, topk_len_list, self.select_bs_index, kvcache, store_ptr
             )
             self.is_topk_update = False
-            if is_prefetch_done:
+            if self.is_python_load:
                 all_free_block_ids = self.prefetch_engine_c.obtain_load_blocks()
                 all_miss_ids = self.prefetch_engine_c.obtain_miss_idxs()
         return all_free_block_ids, all_miss_ids

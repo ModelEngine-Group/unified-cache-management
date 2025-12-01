@@ -163,6 +163,25 @@ namespace ucmprefetch
         }
     }
 
+    size_t GSAPrefetchEngineC::GetOffsetNew(uint32_t layerID, bool isV)
+    {
+        size_t kMinDataBlockSize = static_cast<size_t>(mBlockSize) * mHeadNum * mHeadSzie * mTensorElemSize;
+        size_t layerSize = kMinDataBlockSize * 2;
+        size_t kOffset = layerSize * layerID;
+        if (mUseMla) {
+            layerSize = kMinDataBlockSize;
+            kOffset = layerSize * layerID;
+            return kOffset;
+        }
+        size_t vOffset = kOffset + kMinDataBlockSize;
+
+        if (isV) {
+            return vOffset;
+        } else {
+            return kOffset;
+        }
+    }
+
     void GSAPrefetchEngineC::CheckInputIndex(uint32_t maxLen, uint32_t index)
     {
         if (index >= maxLen) {
@@ -437,8 +456,8 @@ namespace ucmprefetch
                 }
                 UC::Task task{UC::Task::Type::LOAD, UC::Task::Location::DEVICE, "NFS::S2D"};
                 std::string blockId = mAllBlcoksHash[reqID][missIdxs[i]];
-                size_t kOffset = GetOffset(layerID, false);
-                size_t vOffset = GetOffset(layerID, true);
+                size_t kOffset = GetOffsetNew(layerID, false);
+                size_t vOffset = GetOffsetNew(layerID, true);
                 if (!mUseMla) {
                     task.Append(blockId, kOffset,
                         reinterpret_cast<uintptr_t>(mKvCaches[layerID][0][loadNPUBlockIDs[i]].data_ptr()),

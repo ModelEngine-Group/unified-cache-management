@@ -183,6 +183,8 @@ namespace ucmprefetch
 
         size_t GetOffset(uint32_t layerID, bool isV);
 
+        size_t GetOffsetNew(uint32_t layerID, bool isV);
+
         std::map<std::string, std::vector<std::vector<int>>> ObtainLoadBlocks();
 
         std::map<std::string, std::vector<std::vector<int>>> ObtainMissIdxs();
