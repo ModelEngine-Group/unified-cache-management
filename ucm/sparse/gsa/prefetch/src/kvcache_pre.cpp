@@ -43,7 +43,7 @@ ThreadPool::~ThreadPool()
 }
 
 template <class F, class... Args>
-auto ThreadPool::enqueue(F&& f, Args&&... args)
+auto ThreadPool::Enqueue(F&& f, Args&&... args)
     -> std::future<typename std::result_of<F(Args...)>::type>
 {
     using return_type = typename std::result_of<F(Args...)>::type;
@@ -509,7 +509,7 @@ void GSAPrefetchEngineC::RunAsyncPrefetchBs(std::vector<std::string>& reqIDsInpu
     if (mIsPythonLoad) {
         MutliBSThreadFun(this);
     } else {
-        mThreadPool->enqueue(MutliBSThreadFun, this);
+        mThreadPool->Enqueue(MutliBSThreadFun, this);
     }
 }
 
