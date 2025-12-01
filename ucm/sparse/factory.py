@@ -5,6 +5,7 @@ from vllm.config import VllmConfig
 
 from ucm.logger import init_logger
 from ucm.sparse.base import UcmSparseBase, UcmSparseRole
+from ucm.utils import Config
 
 logger = init_logger(__name__)
 
@@ -30,9 +31,9 @@ class UcmSparseFactory:
     def create_sparse_method(
         cls, config: "VllmConfig", role: UcmSparseRole
     ) -> UcmSparseBase:
-        ucm_cfg = config.kv_transfer_config.kv_connector_extra_config.get(
-            "ucm_sparse_config"
-        )
+        ucm_config = Config(config.kv_transfer_config)
+        ucm_cfg = ucm_config.get_config().get("ucm_sparse_config")
+
         sparse_method_name, _ = next(iter(ucm_cfg.items()))
         if sparse_method_name in cls._registry:
             sparse_method_cls = cls._registry[sparse_method_name]()
