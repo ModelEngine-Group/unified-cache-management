@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING, Optional
 from ucm.logger import init_logger
 from ucm.sparse.base import UcmSparseBase, UcmSparseRole
 from ucm.sparse.factory import UcmSparseFactory
+from ucm.utils import Config
 
 if TYPE_CHECKING:
     from vllm.config import VllmConfig
@@ -37,15 +38,12 @@ def ensure_ucm_sparse_initialized(
         return
 
     # Check if UCM sparse is enabled
-    if (
-        "ucm_sparse_config"
-        not in vllm_config.kv_transfer_config.kv_connector_extra_config
-    ):
+    ucm_config = Config(vllm_config.kv_transfer_config)
+    ucm_sparse_config = ucm_config.get_config().get("ucm_sparse_config")
+    if not ucm_sparse_config:
         return
 
-    sparse_method_name = vllm_config.kv_transfer_config.kv_connector_extra_config[
-        "ucm_sparse_config"
-    ]
+    sparse_method_name = ucm_sparse_config
 
     if _UCM_SPARSE_AGENT is None:
         logger.info("Initializing UCM sparse agent with method: %s", sparse_method_name)

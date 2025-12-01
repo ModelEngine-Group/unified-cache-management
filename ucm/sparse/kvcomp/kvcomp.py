@@ -1,7 +1,7 @@
 import math
 from collections import defaultdict
 from dataclasses import dataclass
-from typing import Dict, List, Optional, Union
+from typing import Any, Dict, List, Optional, Union
 
 import numpy as np
 import torch
@@ -31,6 +31,7 @@ from ucm.sparse.kvcomp.kvcomp_config import KvCompConfig
 from ucm.sparse.kvstar.utils import get_bind_cpus_for_rank
 from ucm.sparse.state import get_ucm_sparse
 from ucm.store.ucmstore import Task, UcmKVStoreBase
+from ucm.utils import Config
 
 logger = init_logger(__name__)
 
@@ -51,6 +52,7 @@ class ReqStatePerLayerKvComp(ReqStatePerLayer):
         vllm_config: VllmConfig,
         retrieval_worker: Optional[HashRetrievalWorker] = None,
         repre_pool: Optional[ReprePool] = None,
+        esa_cfg: Optional[Dict[str, Any]] = None,
     ):
         super().__init__(
             layer_name,
@@ -62,9 +64,7 @@ class ReqStatePerLayerKvComp(ReqStatePerLayer):
             repre_pool,
         )
 
-        self.esa_cfg = vllm_config.kv_transfer_config.kv_connector_extra_config[
-            "ucm_sparse_config"
-        ]["KvComp"]
+        self.esa_cfg = esa_cfg
         # `retrieval_worker` 类型是 HashRetrievalWorker
         self.retrieval_worker = retrieval_worker
 
@@ -162,9 +162,12 @@ class KvComp(ESA):
         self._sparse_metadata_prefill: ESASparseMetaData = ESASparseMetaData()
         self._sparse_metadata_decode: ESASparseMetaData = ESASparseMetaData()
         self._sparse_metadata: ESASparseMetaData = ESASparseMetaData()
-        self.esa_cfg = vllm_config.kv_transfer_config.kv_connector_extra_config[
-            "ucm_sparse_config"
-        ]["KvComp"]
+        self.esa_cfg = (
+            Config(vllm_config.kv_transfer_config)
+            .get_config()
+            .get("ucm_sparse_config")
+            .get("KvComp")
+        )
 
         self.block_size = vllm_config.cache_config.block_size
         self.block_hashes: dict[int, dict[int, list[str]]] = {}
@@ -271,6 +274,7 @@ class KvComp(ESA):
                 self._vllm_config,
                 self.retrieval_workers[layer_id],
                 self.layer_pools[layer_id],
+                self.esa_cfg,
             )
         return self.req_states[req_meta.request_id][layer_id]
 

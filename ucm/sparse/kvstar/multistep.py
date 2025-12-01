@@ -25,6 +25,7 @@ from ucm.sparse.kvstar.utils import (
     get_bind_cpus_for_rank,
 )
 from ucm.store.ucmstore import Task, UcmKVStoreBase
+from ucm.utils import Config
 
 """
 --------------------------------------------------------------------------------------
@@ -683,9 +684,10 @@ class KVStarMultiStep(UcmSparseBase):
         assert self._vllm_config.kv_transfer_config is not None
 
         self.kvstar_multistep_cfg = (
-            vllm_config.kv_transfer_config.kv_connector_extra_config[
-                "ucm_sparse_config"
-            ]["KVStarMultiStep"]
+            Config(vllm_config.kv_transfer_config)
+            .get_config()
+            .get("ucm_sparse_config")
+            .get("KVStarMultiStep")
         )
         print(f"kvstar_multistep_cfg: {self.kvstar_multistep_cfg}")
 

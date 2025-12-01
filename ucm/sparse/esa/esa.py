@@ -4,7 +4,7 @@ import pickle
 from collections import defaultdict
 from dataclasses import dataclass
 from functools import cache
-from typing import Dict, List, Optional, Union
+from typing import Any, Dict, List, Optional, Union
 
 import numpy as np
 import torch
@@ -27,6 +27,7 @@ from ucm.sparse.esa.retrieval import retrieval_backend
 from ucm.sparse.esa.retrieval.retrieval_worker import RetrievalWorker
 from ucm.sparse.kvstar.utils import get_bind_cpus_for_rank
 from ucm.store.ucmstore import Task, UcmKVStoreBase
+from ucm.utils import Config
 
 ReqType = Union[str, int]
 HashType = Union[str, int]
@@ -202,6 +203,7 @@ class ReqStatePerLayer:
         vllm_config: VllmConfig,
         retrieval_worker: Optional[RetrievalWorker] = None,
         repre_pool: Optional[ReprePool] = None,
+        esa_cfg: Optional[Dict[str, Any]] = None,
     ):
         self.layer_name = layer_name
         self.layer_id = int(layer_name.split(".")[2])
@@ -219,9 +221,7 @@ class ReqStatePerLayer:
         self.rank = rank
         self.tp_size = tp_size
         self.tasks: Dict[str, Task] = {}
-        self.esa_cfg = vllm_config.kv_transfer_config.kv_connector_extra_config.get(
-            "ucm_sparse_config", {}
-        ).get("ESA", None)
+        self.esa_cfg = esa_cfg
         self.indexes: Optional[NDArray[np.int64]] = None
         self.block_hashes = None
         self.pre_topk_block_hashes: Dict[int, str] = {}
@@ -456,9 +456,12 @@ class ESA(UcmSparseBase):
             self.connector = get_kv_transfer_group().connector.store
         else:
             self.connector = None
-        self.esa_cfg = vllm_config.kv_transfer_config.kv_connector_extra_config[
-            "ucm_sparse_config"
-        ]["ESA"]
+        self.esa_cfg = (
+            Config(vllm_config.kv_transfer_config)
+            .get_config()
+            .get("ucm_sparse_config")
+            .get("ESA")
+        )
         self.total_num_hidden_layers = (
             vllm_config.model_config.hf_config.num_hidden_layers
         )
@@ -533,6 +536,7 @@ class ESA(UcmSparseBase):
                 self._vllm_config,
                 self.retrieval_workers[layer_id],
                 self.layer_pools[layer_id],
+                self.esa_cfg,
             )
         return self.req_states[req_meta.request_id][layer_id]
 
