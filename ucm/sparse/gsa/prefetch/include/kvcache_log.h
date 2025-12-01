@@ -1,22 +1,17 @@
 #ifndef ATB_KV_LOG_H
 #define ATB_KV_LOG_H
-#include <iostream>
-#include <fstream>
-#include <string>
 #include <ctime>
-#include <mutex>
-#include <sstream>
+#include <fstream>
 #include <iomanip>
+#include <iostream>
+#include <mutex>
 #include <omp.h>
-enum class LogLevel {
-    DEBUG,
-    INFO,
-    WARNING,
-    ERROR
-};
+#include <sstream>
+#include <stdarg.h>
+#include <string>
+enum class LogLevel { DEBUG, INFO, WARNING, ERROR };
 
-class Logger 
-{
+class Logger {
 private:
     std::ofstream mLogFile;
     LogLevel mMinLevel;
@@ -25,13 +20,12 @@ private:
 
     static std::string LevelToString(LogLevel level)
     {
-        switch (level)
-        {
-            case LogLevel::DEBUG: return "DEBUG";
-            case LogLevel::INFO: return "INFO";
-            case LogLevel::WARNING: return "WARNING";
-            case LogLevel::ERROR: return "ERROR";
-            default: return "UNKNOWN";
+        switch (level) {
+        case LogLevel::DEBUG: return "DEBUG";
+        case LogLevel::INFO: return "INFO";
+        case LogLevel::WARNING: return "WARNING";
+        case LogLevel::ERROR: return "ERROR";
+        default: return "UNKNOWN";
         }
     }
 
@@ -39,8 +33,8 @@ private:
     {
         auto now = std::chrono::system_clock::now();
         auto nowC = std::chrono::system_clock::to_time_t(now);
-        auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
-            now.time_since_epoch()) % 1000;
+        auto ms =
+            std::chrono::duration_cast<std::chrono::milliseconds>(now.time_since_epoch()) % 1000;
         std::stringstream oss;
         oss << std::put_time(std::localtime(&nowC), "%Y-%m-%d %H:%M:%S");
         oss << '.' << std::setfill('0') << std::setw(3) << ms.count();
@@ -48,8 +42,8 @@ private:
     }
 
 public:
-    Logger(const std::string &fileName, LogLevel level = LogLevel::INFO, bool enable = true)
-        :mMinLevel(level), mEnable(enable)
+    Logger(const std::string& fileName, LogLevel level = LogLevel::INFO, bool enable = true)
+        : mMinLevel(level), mEnable(enable)
     {
         if (enable) {
             mLogFile.open(fileName, std::ios::app);
@@ -59,43 +53,37 @@ public:
         }
     }
 
-    Logger(){}
+    Logger() {}
 
     ~Logger()
     {
-        if (mLogFile.is_open()) {
-            mLogFile.close();
-        }
+        if (mLogFile.is_open()) { mLogFile.close(); }
     }
 
-    void SetLevel(LogLevel level)
-    {
-        mMinLevel = level;
-    }
+    void SetLevel(LogLevel level) { mMinLevel = level; }
 
     void log(LogLevel level, const char* format, ...)
     {
-        if (level < mMinLevel || !mLogFile.is_open() || !mEnable) {
-            return;
-        }
+        if (level < mMinLevel || !mLogFile.is_open() || !mEnable) { return; }
         std::lock_guard<std::mutex> lock(mMutex);
         auto now = std::chrono::system_clock::now();
         auto nowC = std::chrono::system_clock::to_time_t(now);
         auto duration = now.time_since_epoch();
-        auto millis = std::chrono::duration_cast<std::chrono::milliseconds>(duration).count() % 1000;
-        auto micros = std::chrono::duration_cast<std::chrono::microseconds>(duration).count() % 1000;
+        auto millis =
+            std::chrono::duration_cast<std::chrono::milliseconds>(duration).count() % 1000;
+        auto micros =
+            std::chrono::duration_cast<std::chrono::microseconds>(duration).count() % 1000;
 
         std::tm localTime = *std::localtime(&nowC);
         char timeBuffer[26];
         std::strftime(timeBuffer, sizeof(timeBuffer), "%Y-%m-%d %H:%M:%S", &localTime);
-        const char *levelStr = "";
-        switch (level)
-        {
-            case LogLevel::DEBUG: levelStr = "DEBUG"; break;
-            case LogLevel::INFO: levelStr = "INFO"; break;
-            case LogLevel::WARNING: levelStr = "WARNING"; break;
-            case LogLevel::ERROR: levelStr = "ERROR"; break;
-            default: levelStr = "UNKNOWN"; break;
+        const char* levelStr = "";
+        switch (level) {
+        case LogLevel::DEBUG: levelStr = "DEBUG"; break;
+        case LogLevel::INFO: levelStr = "INFO"; break;
+        case LogLevel::WARNING: levelStr = "WARNING"; break;
+        case LogLevel::ERROR: levelStr = "ERROR"; break;
+        default: levelStr = "UNKNOWN"; break;
         }
         char messageBuffer[4096];
         va_list args;
@@ -103,18 +91,14 @@ public:
         vsnprintf(messageBuffer, sizeof(messageBuffer), format, args);
         va_end(args);
 
-        mLogFile << timeBuffer << "."
-                 << std::setfill('0') << std::setw(3) << millis << std::setw(3)
-                 << micros << " " << "[" << levelStr << "]"
-                 << messageBuffer;
+        mLogFile << timeBuffer << "." << std::setfill('0') << std::setw(3) << millis << std::setw(3)
+                 << micros << " " << "[" << levelStr << "]" << messageBuffer;
         mLogFile.flush();
     }
 
     void LogWOPrefix(LogLevel level, const char* format, ...)
     {
-        if (level < mMinLevel || !mLogFile.is_open() || !mEnable) {
-            return;
-        }
+        if (level < mMinLevel || !mLogFile.is_open() || !mEnable) { return; }
         std::lock_guard<std::mutex> lock(mMutex);
         char messageBuffer[2048];
         va_list args;
