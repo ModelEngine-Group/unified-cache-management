@@ -21,36 +21,39 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  * */
+#include "stats_registry.h"
 
-#ifndef UNIFIEDCACHE_HOTNESS_TIMER_H
-#define UNIFIEDCACHE_HOTNESS_TIMER_H
-#include <chrono>
-#include <functional>
-#include "logger/logger.h"
-#include "template/timer.h"
+namespace UC::Metrics {
 
-namespace UC {
+StatsRegistry& StatsRegistry::GetInstance()
+{
+    static StatsRegistry inst;
+    return inst;
+}
 
-class HotnessTimer {
-public:
-    void SetInterval(const size_t interval) { this->interval_ = std::chrono::seconds(interval); }
-    Status Start(std::function<void()> callable)
-    {
-        try {
-            this->timer_ = std::make_unique<Timer<std::function<void()>>>(this->interval_,
-                                                                          std::move(callable));
-        } catch (const std::exception& e) {
-            UC_ERROR("Failed({}) to start hotness timer.", e.what());
-            return Status::OutOfMemory();
-        }
-        return this->timer_->Start() ? Status::OK() : Status::Error();
-    }
+void StatsRegistry::RegisterStats(std::string name, Creator creator)
+{
+    auto& reg = GetInstance();
+    std::lock_guard lk(reg.mutex_);
+    reg.registry_[name] = creator;
+}
 
-private:
-    std::chrono::seconds interval_;
-    std::unique_ptr<Timer<std::function<void()>>> timer_;
-};
+std::unique_ptr<IStats> StatsRegistry::CreateStats(const std::string& name)
+{
+    auto& reg = GetInstance();
+    std::lock_guard lk(reg.mutex_);
+    if (auto it = reg.registry_.find(name); it != reg.registry_.end()) return it->second();
+    return nullptr;
+}
 
-} // namespace UC
+std::vector<std::string> StatsRegistry::GetRegisteredStatsNames()
+{
+    auto& reg = GetInstance();
+    std::lock_guard lk(reg.mutex_);
+    std::vector<std::string> names;
+    names.reserve(reg.registry_.size());
+    for (auto& [n, _] : reg.registry_) names.push_back(n);
+    return names;
+}
 
-#endif
+} // namespace UC::Metrics

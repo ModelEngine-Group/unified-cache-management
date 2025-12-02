@@ -21,36 +21,50 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  * */
+#ifndef UNIFIEDCACHE_MONITOR_H
+#define UNIFIEDCACHE_MONITOR_H
 
-#ifndef UNIFIEDCACHE_HOTNESS_TIMER_H
-#define UNIFIEDCACHE_HOTNESS_TIMER_H
-#include <chrono>
-#include <functional>
-#include "logger/logger.h"
-#include "template/timer.h"
+#include <memory>
+#include <mutex>
+#include <string>
+#include <unordered_map>
+#include <vector>
+#include "stats/istats.h"
 
-namespace UC {
+namespace UC::Metrics {
 
-class HotnessTimer {
+class StatsMonitor {
 public:
-    void SetInterval(const size_t interval) { this->interval_ = std::chrono::seconds(interval); }
-    Status Start(std::function<void()> callable)
+    static StatsMonitor& GetInstance()
     {
-        try {
-            this->timer_ = std::make_unique<Timer<std::function<void()>>>(this->interval_,
-                                                                          std::move(callable));
-        } catch (const std::exception& e) {
-            UC_ERROR("Failed({}) to start hotness timer.", e.what());
-            return Status::OutOfMemory();
-        }
-        return this->timer_->Start() ? Status::OK() : Status::Error();
+        static StatsMonitor inst;
+        return inst;
     }
 
+    ~StatsMonitor() = default;
+
+    void CreateStats(const std::string& name);
+
+    std::unordered_map<std::string, std::vector<double>> GetStats(const std::string& name);
+
+    void ResetStats(const std::string& name);
+
+    std::unordered_map<std::string, std::vector<double>> GetStatsAndClear(const std::string& name);
+
+    void UpdateStats(const std::string& name,
+                     const std::unordered_map<std::string, double>& params);
+
+    void ResetAllStats();
+
 private:
-    std::chrono::seconds interval_;
-    std::unique_ptr<Timer<std::function<void()>>> timer_;
+    std::mutex mutex_;
+    std::unordered_map<std::string, std::unique_ptr<IStats>> stats_map_;
+
+    StatsMonitor();
+    StatsMonitor(const StatsMonitor&) = delete;
+    StatsMonitor& operator=(const StatsMonitor&) = delete;
 };
 
-} // namespace UC
+} // namespace UC::Metrics
 
-#endif
+#endif // UNIFIEDCACHE_MONITOR_H

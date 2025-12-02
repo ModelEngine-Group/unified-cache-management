@@ -107,6 +107,8 @@ ktc = KVTransferConfig(
 Thus, an example command for launching the online LLM service is as follows:
 
 ```shell
+export ENABLE_SPARSE=TRUE
+
 vllm serve /home/models/DeepSeek-R1-Distill-Qwen-32B \
 --served-model-name DeepSeek-R1-Distill-Qwen-32B \
 --max-model-len 131000 \

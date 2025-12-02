@@ -47,9 +47,15 @@ def get_user_input(prompt, default=None):
 
 
 def main():
+
+    try:
+        multiprocessing.set_start_method("spawn", force=True)
+    except RuntimeError:
+        pass
+
     storage_backends = "."
     device_id = 1
-    repeat = 3
+    repeat = 3  # This parameter must be greater than 1; the results from the first round of testing are not included in the bandwidth calculation.
     num_tokens_list = [2048, 4096, 8192, 16384, 32768]
     transferStreamNumbers = [32, 64, 128]
 

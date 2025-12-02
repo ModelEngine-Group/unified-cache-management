@@ -24,6 +24,7 @@ tokenizer = None
 def setup_environment_variables():
     os.environ["VLLM_USE_V1"] = "1"
     os.environ["PYTHONHASHSEED"] = "123456"
+    os.environ["ENABLE_SPARSE"] = "true"
 
     global model, path_to_dataset, data_dir, tokenizer
     model = os.getenv("MODEL_PATH", "/home/models/Qwen2.5-14B-Instruct")
@@ -66,11 +67,15 @@ def build_llm_with_uc(module_path: str, name: str, model: str):
         kv_connector_module_path=module_path,
         kv_role="kv_both",
         kv_connector_extra_config={
-            "ucm_connector_name": "UcmNfsStore",
-            "ucm_connector_config": {
-                "storage_backends": data_dir,
-                "kv_block_size": 33554432,
-            },
+            "ucm_connectors": [
+                {
+                    "ucm_connector_name": "UcmNfsStore",
+                    "ucm_connector_config": {
+                        "storage_backends": data_dir,
+                        "use_direct": False,
+                    },
+                }
+            ],
             "ucm_sparse_config": {
                 "KvComp": {
                     "init_window_sz": 1,
@@ -122,8 +127,8 @@ def print_output(
 
 
 def main():
-    module_path = "ucm.integration.vllm.uc_connector"
-    name = "UnifiedCacheConnectorV1"
+    module_path = "ucm.integration.vllm.ucm_connector"
+    name = "UCMConnector"
     setup_environment_variables()
 
     def get_prompt(prompt):

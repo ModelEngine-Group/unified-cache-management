@@ -24,17 +24,34 @@
 
 from __future__ import annotations
 
+import os
+
 from ucm.logger import init_logger
 
 logger = init_logger(__name__)
 
+ENABLE_SPARSE = os.getenv("ENABLE_SPARSE")
+
+
+def _enable_sparse() -> bool:
+    return ENABLE_SPARSE is not None and ENABLE_SPARSE.lower() == "true"
+
 
 def _apply_ascend_patch() -> None:
     """Apply patch for vLLM-Ascend."""
-    _patch_attention_v1()
-    _patch_mla_v1()
-    _patch_model_runner_v1()
-    _patch_worker_v1()
+    try:
+        from vllm_ascend.patch import platform, worker
+
+        if _enable_sparse():
+            _patch_attention_v1()
+            _patch_mla_v1()
+            _patch_model_runner_v1()
+            _patch_worker_v1()
+            logger.info("UCM sparse adapt patches applied successfully")
+
+    except Exception as e:
+        logger.error(f"Could not apply sparse adapt patches: {e}")
+        raise e
 
 
 # ========================= vllm_ascend/attention/attention_v1.py =========================
@@ -44,43 +61,10 @@ def _patch_attention_v1() -> None:
         from typing import List
 
         import torch
-        from vllm.distributed.kv_transfer import (
-            get_kv_transfer_group,
-            has_kv_transfer_group,
-            is_v1_kv_transfer_group,
-        )
         from vllm.forward_context import ForwardContext, get_forward_context
         from vllm_ascend.attention import attention_v1
 
         from ucm.sparse.state import get_ucm_sparse, has_ucm_sparse
-
-        def wait_for_kv_layer_from_connector(layer_name: str):
-            if not has_kv_transfer_group() or not is_v1_kv_transfer_group():
-                return
-
-            connector = get_kv_transfer_group()
-            forward_context: ForwardContext = get_forward_context()
-            attn_metadata = forward_context.attn_metadata
-            if attn_metadata is None:
-                return
-            connector.wait_for_layer_load(layer_name)
-
-        attention_v1.wait_for_kv_layer_from_connector = wait_for_kv_layer_from_connector
-
-        def maybe_save_kv_layer_to_connector(
-            layer_name: str,
-            kv_cache_layer: List[torch.Tensor],
-        ):
-            if not has_kv_transfer_group() or not is_v1_kv_transfer_group():
-                return
-            connector = get_kv_transfer_group()
-            forward_context: ForwardContext = get_forward_context()
-            attn_metadata = forward_context.attn_metadata
-            if attn_metadata is None:
-                return
-            connector.save_kv_layer(layer_name, kv_cache_layer, attn_metadata)
-
-        attention_v1.maybe_save_kv_layer_to_connector = maybe_save_kv_layer_to_connector
 
         def maybe_execute_sparse_attention_begin(
             query: torch.Tensor,
@@ -149,7 +133,6 @@ def _patch_attention_v1() -> None:
             output: torch.Tensor,
             layer_name: str,
         ) -> None:
-            wait_for_kv_layer_from_connector(layer_name)
 
             forward_context: ForwardContext = get_forward_context()
             attn_metadata = forward_context.attn_metadata
@@ -173,7 +156,6 @@ def _patch_attention_v1() -> None:
                 maybe_execute_sparse_attention_finished(
                     query, key, value, output, layer_name, forward_context
                 )
-            maybe_save_kv_layer_to_connector(layer_name, kv_cache)
             return
 
         vllm_ops.unified_ascend_attention_with_output = _wrap_op_overload(
@@ -205,8 +187,6 @@ def _patch_mla_v1() -> None:
         from vllm.forward_context import ForwardContext, get_forward_context
         from vllm_ascend.attention.attention_v1 import (
             AscendAttentionState,
-            maybe_save_kv_layer_to_connector,
-            wait_for_kv_layer_from_connector,
         )
         from vllm_ascend.attention.mla_v1 import AscendMLAImpl
         from vllm_ascend.multistream.context import get_multistream_comm_context
@@ -406,7 +386,6 @@ def _patch_mla_v1() -> None:
                 # FIX: aicore move should be also placed on the comm stream in dbo,
                 # otherwise it may affect the accuracy
                 # TODO: use an elegant way to overlap
-                wait_for_kv_layer_from_connector(layer.layer_name)
                 maybe_execute_sparse_attention_begin(
                     prefill_q,
                     prefill_k_c_normed,
@@ -434,9 +413,7 @@ def _patch_mla_v1() -> None:
                     forward_context,
                     "prefill",
                 )
-                maybe_save_kv_layer_to_connector(layer.layer_name, kv_cache)
             if has_decode:
-                wait_for_kv_layer_from_connector(layer.layer_name)
                 maybe_execute_sparse_attention_begin(
                     torch.cat([decode_ql_nope, decode_q_pe], dim=-1),
                     decode_ql_nope,
@@ -480,7 +457,6 @@ def _patch_mla_v1() -> None:
                     forward_context,
                     "decode",
                 )
-                maybe_save_kv_layer_to_connector(layer.layer_name, kv_cache)
 
             return output_padded
 
@@ -1041,7 +1017,6 @@ def _patch_model_runner_v1() -> None:
                 positions = self.positions[:padded_batch_size]
 
             # Run forward pass
-            finished_dumping = None
             with set_forward_context(
                 attn_metadata, self.vllm_config, num_tokens=num_input_tokens
             ):
@@ -1082,7 +1057,7 @@ def _patch_model_runner_v1() -> None:
                             inputs_embeds=inputs_embeds,
                             **model_kwargs,
                         )
-                        finished_dumping = self.maybe_wait_for_kv_save()
+                        self.maybe_wait_for_kv_save()
                         self.maybe_execute_ucm_sparse_finished()
 
             use_spec_decode = len(scheduler_output.scheduled_spec_decode_tokens) > 0
@@ -1123,7 +1098,6 @@ def _patch_model_runner_v1() -> None:
                 logits_indices,
                 aux_hidden_states,
                 num_scheduled_tokens,
-                finished_dumping,
             )
 
         NPUModelRunner._process_reqs = _process_reqs
@@ -1148,7 +1122,6 @@ def _patch_model_runner_v1() -> None:
                     logits_indices,
                     aux_hidden_states,
                     num_scheduled_tokens_np,
-                    finished_dumping,
                 ) = self._process_reqs(scheduler_output, intermediate_tensors)
 
             with ProfileExecuteDuration().capture_async("post process"):
@@ -1320,7 +1293,6 @@ def _patch_model_runner_v1() -> None:
                     logprobs=logprobs_lists,
                     prompt_logprobs_dict=prompt_logprobs_dict,
                     pooler_output=[],
-                    finished_dumping=finished_dumping,
                 )
 
             durations = ProfileExecuteDuration().pop_captured_sync()
@@ -1357,10 +1329,14 @@ def _patch_model_runner_v1() -> None:
                 # Do this here to save a collective_rpc.
                 kv_connector.start_load_kv(get_forward_context())
 
+        NPUModelRunner.maybe_setup_kv_connector = maybe_setup_kv_connector
+
         @staticmethod
         def maybe_wait_for_kv_save():
             if has_kv_transfer_group():
-                return get_kv_transfer_group().wait_for_save()
+                get_kv_transfer_group().wait_for_save()
+
+        NPUModelRunner.maybe_wait_for_kv_save = maybe_wait_for_kv_save
 
         def maybe_execute_ucm_sparse_begin(
             self,
@@ -1387,8 +1363,6 @@ def _patch_model_runner_v1() -> None:
             ucm_sparse = get_ucm_sparse()
             ucm_sparse.request_finished_in_worker(request_id)
 
-        NPUModelRunner.maybe_setup_kv_connector = maybe_setup_kv_connector
-        NPUModelRunner.maybe_wait_for_kv_save = maybe_wait_for_kv_save
         NPUModelRunner.maybe_execute_ucm_sparse_begin = maybe_execute_ucm_sparse_begin
         NPUModelRunner.maybe_execute_ucm_sparse_finished = (
             maybe_execute_ucm_sparse_finished
@@ -1408,9 +1382,6 @@ def _patch_worker_v1() -> None:
         import copy
         from typing import Optional
 
-        from vllm.distributed.kv_transfer import (
-            has_kv_transfer_group,
-        )
         from vllm.distributed.parallel_state import get_pp_group, get_tp_group
         from vllm.logger import logger
         from vllm.sequence import IntermediateTensors
@@ -1442,8 +1413,6 @@ def _patch_worker_v1() -> None:
                 get_pp_group().send_tensor_dict(
                     output.tensors, all_gather_group=get_tp_group()
                 )
-                if not has_kv_transfer_group():
-                    return None
 
                 kv_connector_output = output.kv_connector_output
                 finished_sending = kv_connector_output.finished_sending

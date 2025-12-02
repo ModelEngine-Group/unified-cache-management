@@ -21,36 +21,30 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  * */
+#include <pybind11/pybind11.h>
+#include <pybind11/stl.h>
+#include "stats_monitor.h"
 
-#ifndef UNIFIEDCACHE_HOTNESS_TIMER_H
-#define UNIFIEDCACHE_HOTNESS_TIMER_H
-#include <chrono>
-#include <functional>
-#include "logger/logger.h"
-#include "template/timer.h"
+namespace py = pybind11;
+namespace UC::Metrics {
 
-namespace UC {
+void bind_monitor(py::module_& m)
+{
+    py::class_<StatsMonitor>(m, "StatsMonitor")
+        .def_static("get_instance", &StatsMonitor::GetInstance, py::return_value_policy::reference)
+        .def("update_stats", &StatsMonitor::UpdateStats)
+        .def("reset_all", &StatsMonitor::ResetAllStats)
+        .def("get_stats", &StatsMonitor::GetStats)
+        .def("get_stats_and_clear", &StatsMonitor::GetStatsAndClear);
+}
 
-class HotnessTimer {
-public:
-    void SetInterval(const size_t interval) { this->interval_ = std::chrono::seconds(interval); }
-    Status Start(std::function<void()> callable)
-    {
-        try {
-            this->timer_ = std::make_unique<Timer<std::function<void()>>>(this->interval_,
-                                                                          std::move(callable));
-        } catch (const std::exception& e) {
-            UC_ERROR("Failed({}) to start hotness timer.", e.what());
-            return Status::OutOfMemory();
-        }
-        return this->timer_->Start() ? Status::OK() : Status::Error();
-    }
+} // namespace UC::Metrics
 
-private:
-    std::chrono::seconds interval_;
-    std::unique_ptr<Timer<std::function<void()>>> timer_;
-};
-
-} // namespace UC
-
-#endif
+PYBIND11_MODULE(ucmmonitor, module)
+{
+    module.attr("project") = UCM_PROJECT_NAME;
+    module.attr("version") = UCM_PROJECT_VERSION;
+    module.attr("commit_id") = UCM_COMMIT_ID;
+    module.attr("build_type") = UCM_BUILD_TYPE;
+    UC::Metrics::bind_monitor(module);
+}

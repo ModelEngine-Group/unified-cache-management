@@ -59,7 +59,17 @@ First, specify the python hash seed by:
 export PYTHONHASHSEED=123456
 ```
 
-Run the following command to start the vLLM server with the Qwen/Qwen2.5-14B-Instruct model:
+Create a config yaml like following and save it to your own directory:
+```yaml
+# UCM Configuration File Example
+# Refer to file unified-cache-management/examples/ucm_config_example.yaml for more details
+ucm_connector_name: "UcmNfsStore"
+
+ucm_connector_config:
+  storage_backends: "/mnt/test"
+```
+
+Run the following command to start the vLLM server with the Qwen/Qwen2.5-14B-Instruct model and your config file path:
 
 ```bash
 # Change the model path to your own model path
@@ -73,14 +83,11 @@ vllm serve ${MODEL_PATH} \
 --port 7800 \
 --kv-transfer-config \
 '{
-    "kv_connector": "UnifiedCacheConnectorV1",
-    "kv_connector_module_path": "ucm.integration.vllm.uc_connector",
+    "kv_connector": "UCMConnector",
+    "kv_connector_module_path": "ucm.integration.vllm.ucm_connector",
     "kv_role": "kv_both",
     "kv_connector_extra_config": {
-        "ucm_connector_name": "UcmNfsStore",
-        "ucm_connector_config": {
-            "storage_backends": "/home/test"
-        }
+        "UCM_CONFIG_FILE": "/workspace/unified-cache-management/examples/ucm_config_example.yaml"
     }
 }'
 ```

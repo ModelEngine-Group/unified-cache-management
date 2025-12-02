@@ -10,6 +10,7 @@ from vllm.forward_context import ForwardContext
 from vllm.v1.core.kv_cache_manager import KVCacheBlocks
 from vllm.v1.request import Request
 
+from ucm.integration.vllm.ucm_connector import RequestHasher
 from ucm.sparse.base import (
     INVALID_SLOT,
     UcmSparseBase,
@@ -17,8 +18,14 @@ from ucm.sparse.base import (
     UcmSparseRole,
 )
 from ucm.sparse.kvstar.retrieve import kvstar_retrieve
-from ucm.sparse.kvstar.utils import block_hash_func, get_bind_cpus_for_rank, get_offset
+from ucm.sparse.kvstar.utils import (
+    block_hash_func,
+    compute_layer_offset,
+    compute_parent_block_hash,
+    get_bind_cpus_for_rank,
+)
 from ucm.store.ucmstore import Task, UcmKVStoreBase
+from ucm.utils import Config
 
 """
 --------------------------------------------------------------------------------------
@@ -57,28 +64,28 @@ class ReqMeta:
     retrieval_stride: int = 8
     block_hashes: list[str] = field(default_factory=list)
 
-    def set_block_hashes(self, token_ids):
-        block_hashes = []
-        parent_block_hash_value = None
-        for start in range(0, len(token_ids), self.token_blk_size):
-            end = start + self.token_blk_size
-            block_token_ids = token_ids[start:end]
-            if len(block_token_ids) < self.token_blk_size:
-                break
-            curr_block_token_ids_tuple = tuple(block_token_ids)
-            block_hash = block_hash_func(
-                parent_block_hash_value, curr_block_token_ids_tuple
-            )
-            block_hashes.append(str(block_hash))
-            parent_block_hash_value = block_hash
-        return block_hashes
+    # def set_block_hashes(self, token_ids):
+    #     block_hashes = []
+    #     parent_block_hash_value = None
+    #     for start in range(0, len(token_ids), self.token_blk_size):
+    #         end = start + self.token_blk_size
+    #         block_token_ids = token_ids[start:end]
+    #         if len(block_token_ids) < self.token_blk_size:
+    #             break
+    #         curr_block_token_ids_tuple = tuple(block_token_ids)
+    #         block_hash = block_hash_func(
+    #             parent_block_hash_value, curr_block_token_ids_tuple
+    #         )
+    #         block_hashes.append(str(block_hash))
+    #         parent_block_hash_value = block_hash
+    #     return block_hashes
 
-    @property
-    def req_block_hashes(self) -> list[str]:
-        if self.block_hashes:
-            return self.block_hashes
-        self.block_hashes = self.set_block_hashes(self.prompt_token_ids)
-        return self.block_hashes
+    # @property
+    # def req_block_hashes(self) -> list[str]:
+    #     if self.block_hashes:
+    #         return self.block_hashes
+    #     self.block_hashes = self.set_block_hashes(self.prompt_token_ids)
+    #     return self.block_hashes
 
     @property
     def step(self) -> int:
@@ -153,6 +160,7 @@ class KVStarMultiStepSparseMetaData(UcmSparseMetadata):
         query_len: int,
         retrieval_stride: int,
         prompt_token_ids: list[int],
+        ucm_block_hashes: list[str],
     ) -> None:
         meta = ReqMeta(
             request_id=request_id,
@@ -168,6 +176,7 @@ class KVStarMultiStepSparseMetaData(UcmSparseMetadata):
             query_start_loc=query_start_loc,
             query_len=query_len,
             retrieval_stride=retrieval_stride,
+            block_hashes=ucm_block_hashes,
         )
         self.requests.append(meta)
 
@@ -181,7 +190,6 @@ class ReqPerLayerState:
         rank: int,
         tp_size: int,
         store_instance: UcmKVStoreBase,
-        store_name: str,
         sparse_cfg,
     ):
         self.sparse_cfg = sparse_cfg
@@ -193,7 +201,6 @@ class ReqPerLayerState:
 
         self.num_tokens = 0  # the number of all_tokens, prompt+output
         self.store_instance = store_instance
-        self.store_name = store_name
         self.req_meta = req_meta
         self.init_window: tuple[torch.Tensor, torch.Tensor] = None
         self.local_window: tuple[torch.Tensor, torch.Tensor] = None
@@ -577,7 +584,7 @@ class ReqPerLayerState:
         self.v_cache = kv_cache[1]
         self.block_size = self.k_cache.shape[1]
         self.num_key_heads = self.k_cache.shape[2]
-        self.block_hashes = self.req_meta.req_block_hashes
+        self.block_hashes = self.req_meta.block_hashes
         self.head_size = self.k_cache.shape[3]
 
     @classmethod
@@ -594,29 +601,22 @@ class ReqPerLayerState:
     def launch_transfer_task(self, transfer_type, block_hashes, vllm_block_ids):
         fn = getattr(self.store_instance, transfer_type)
         length = len(block_hashes)
-        block_shape = (self.block_size, self.num_key_heads, self.head_size)
         precision = self.k_cache.storage().element_size()
         is_mla = False
 
-        block_shape = tuple(block_shape)
+        block_data_size = self.k_cache[0].numel() * precision
 
         offsets_k = [
-            get_offset(
-                block_shape,
-                self.local_tp_rank,
-                self.total_tp_size,
-                precision,
+            compute_layer_offset(
+                block_data_size,
                 self.layer_id,
                 is_v=False,
                 is_mla=is_mla,
             )
         ] * length
         offsets_v = [
-            get_offset(
-                block_shape,
-                self.local_tp_rank,
-                self.total_tp_size,
-                precision,
+            compute_layer_offset(
+                block_data_size,
                 self.layer_id,
                 is_v=True,
                 is_mla=is_mla,
@@ -652,6 +652,11 @@ class KVStarMultiStep(UcmSparseBase):
         self.total_num_hidden_layers = (
             vllm_config.model_config.hf_config.num_hidden_layers
         )
+        self.block_size = vllm_config.cache_config.block_size
+        self.block_hashes: dict[int, dict[int, list[str]]] = {}
+        self.rank = vllm_config.parallel_config.rank
+        self.is_mla = vllm_config.model_config.is_deepseek_mla
+        self.request_hasher = RequestHasher(vllm_config, 0)
         if self.role == UcmSparseRole.WORKER:
             ratio = 0.75
             bind_info_list, alloc_numa_ids = get_bind_cpus_for_rank(
@@ -667,21 +672,22 @@ class KVStarMultiStep(UcmSparseBase):
                 localRankId=self.local_tp_rank,
             )
             kvstar_retrieve.Setup(param)
-            self.connector_name = (
-                self._vllm_config.kv_transfer_config.kv_connector_extra_config[
-                    "ucm_connector_name"
-                ]
-            )
-            self.connector = get_kv_transfer_group().connector
+            # self.connector_name = (
+            #     self._vllm_config.kv_transfer_config.kv_connector_extra_config[
+            #         "ucm_connector_name"
+            #     ]
+            # )
+            self.connector = get_kv_transfer_group().connector.store
 
         else:
             self.connector = None
         assert self._vllm_config.kv_transfer_config is not None
 
         self.kvstar_multistep_cfg = (
-            vllm_config.kv_transfer_config.kv_connector_extra_config[
-                "ucm_sparse_config"
-            ]["KVStarMultiStep"]
+            Config(vllm_config.kv_transfer_config)
+            .get_config()
+            .get("ucm_sparse_config")
+            .get("KVStarMultiStep")
         )
         print(f"kvstar_multistep_cfg: {self.kvstar_multistep_cfg}")
 
@@ -701,7 +707,6 @@ class KVStarMultiStep(UcmSparseBase):
                 self.local_tp_rank,
                 self.total_tp_size,
                 self.connector,
-                self.connector_name,
                 self.kvstar_multistep_cfg,
             )
         return self.req_states[req_meta.request_id][layer_id]
@@ -726,6 +731,7 @@ class KVStarMultiStep(UcmSparseBase):
         value: torch.Tensor,
         layer_name: str,
         forward_context: ForwardContext,
+        phase: Optional[str] = None,
     ) -> None:
         """
         This is called at the beginning of "unified_attention".
@@ -748,6 +754,7 @@ class KVStarMultiStep(UcmSparseBase):
         attn_output: torch.Tensor,
         layer_name: str,
         forward_context: ForwardContext,
+        phase: Optional[str] = None,
     ) -> None:
         """
         This is called at the end of "unified_attention".
@@ -758,6 +765,44 @@ class KVStarMultiStep(UcmSparseBase):
             req_layerwise_state.attention_finished(
                 query, key, value, attn_output, forward_context
             )
+
+    def set_block_hashes(self, req_id, token_ids):
+        if req_id not in self.block_hashes:
+            self.block_hashes[req_id] = {}
+
+        if self.rank in self.block_hashes[req_id]:
+            return
+
+        self.block_hashes[req_id][self.rank] = []
+
+        parent_block_hash_value = compute_parent_block_hash(
+            self._vllm_config.model_config.model,
+            self._vllm_config.parallel_config.world_size,
+            self._vllm_config.model_config.dtype,
+            seed_rank=0,
+        )
+
+        for start in range(0, len(token_ids), self.block_size):
+            end = start + self.block_size
+
+            block_token_ids = token_ids[start:end]
+            if len(block_token_ids) < self.block_size:
+                break
+            curr_block_token_ids_tuple = tuple(block_token_ids)
+            hash_value = self.request_hasher(
+                (parent_block_hash_value, curr_block_token_ids_tuple)
+            )
+
+            self.block_hashes[req_id][self.rank].append(str(hash_value))
+
+            parent_block_hash_value = hash_value
+
+        if self.rank != 0 and not self.is_mla:
+            self.newqrequest_hasher = RequestHasher(self._vllm_config, self.rank)
+            for i, ucm_block_id in enumerate(self.block_hashes[req_id][self.rank]):
+                self.block_hashes[req_id][self.rank][i] = str(
+                    self.newqrequest_hasher(ucm_block_id)
+                )
 
     def build_sparse_meta(
         self, scheduler_output, requests, input_batch, attn_metadata
@@ -778,7 +823,7 @@ class KVStarMultiStep(UcmSparseBase):
             num_scheduled_tokens,
         ) in scheduler_output.num_scheduled_tokens.items():
             req_state = requests[req_id]
-
+            self.set_block_hashes(int(req_id), req_state.prompt_token_ids)
             q_start_loc = query_start_locs[input_batch.req_id_to_index[req_id]].item()
             q_len = (
                 query_start_locs[input_batch.req_id_to_index[req_id] + 1].item()
@@ -800,6 +845,7 @@ class KVStarMultiStep(UcmSparseBase):
                     q_len,
                     self.kvstar_multistep_cfg["retrieval_stride"],
                     req_state.prompt_token_ids,
+                    self.block_hashes[int(req_id)][self.rank],
                 )
 
         self._sparse_metadata = sparse_meta

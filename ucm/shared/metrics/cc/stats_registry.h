@@ -21,36 +21,38 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  * */
+#ifndef UNIFIEDCACHE_REGISTRY_H
+#define UNIFIEDCACHE_REGISTRY_H
 
-#ifndef UNIFIEDCACHE_HOTNESS_TIMER_H
-#define UNIFIEDCACHE_HOTNESS_TIMER_H
-#include <chrono>
 #include <functional>
-#include "logger/logger.h"
-#include "template/timer.h"
+#include <mutex>
+#include <unordered_map>
+#include "stats/istats.h"
 
-namespace UC {
+namespace UC::Metrics {
 
-class HotnessTimer {
+using Creator = std::unique_ptr<IStats> (*)();
+
+class StatsRegistry {
 public:
-    void SetInterval(const size_t interval) { this->interval_ = std::chrono::seconds(interval); }
-    Status Start(std::function<void()> callable)
-    {
-        try {
-            this->timer_ = std::make_unique<Timer<std::function<void()>>>(this->interval_,
-                                                                          std::move(callable));
-        } catch (const std::exception& e) {
-            UC_ERROR("Failed({}) to start hotness timer.", e.what());
-            return Status::OutOfMemory();
-        }
-        return this->timer_->Start() ? Status::OK() : Status::Error();
-    }
+    static StatsRegistry& GetInstance();
+
+    static void RegisterStats(std::string name, Creator creator);
+
+    std::unique_ptr<IStats> CreateStats(const std::string& name);
+
+    std::vector<std::string> GetRegisteredStatsNames();
 
 private:
-    std::chrono::seconds interval_;
-    std::unique_ptr<Timer<std::function<void()>>> timer_;
+    StatsRegistry() = default;
+    ~StatsRegistry() = default;
+    StatsRegistry(const StatsRegistry&) = delete;
+    StatsRegistry& operator=(const StatsRegistry&) = delete;
+
+    std::mutex mutex_;
+    std::unordered_map<std::string, Creator> registry_;
 };
 
-} // namespace UC
+} // namespace UC::Metrics
 
-#endif
+#endif // UNIFIEDCACHE_REGISTRY_H
