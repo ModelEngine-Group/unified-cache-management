@@ -81,7 +81,7 @@ class Config:
                     logger.info("Using kv_connector_extra_config from terminal input")
 
     def _get_default_config(self) -> Dict[str, Any]:
-        config = {"ucm_connector_name": "UcmDramStore"}
+        config = {"ucm_connector_name": "UcmNfsStore"}
         logger.warning(f"No UCM config provided, using default configuration {config}")
         return config
 
