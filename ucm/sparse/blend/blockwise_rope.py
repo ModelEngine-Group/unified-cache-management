@@ -19,7 +19,8 @@ def _triton_rope_blockwise_kernel(
     pad_hd: tl.constexpr,
 ):
     """
-    each program/batch process a single head of kcache (batch_idx, seq_idx, head_idx)
+    each program/batch process a single head for each token
+    programs matrix (batch_idx, seq_idx, head_idx)
     """
     pid = tl.program_id(0)
 
@@ -145,8 +146,8 @@ def rope_naive_torch(k_cache, vllm_ids, positions, cos_sin_cache):
     return k_out
 
 if __name__ == "__main__":
-    # just prepare the dumped_tensors from real setting
     import time
+    torch.manual_seed(42)
 
     total_blocks = 5120
     num_blocks = 128
@@ -164,9 +165,8 @@ if __name__ == "__main__":
     # naive torch result
     baseline_rope_kcache = rope_naive_torch(kcache, vllm_ids, positions, cos_sin_cache)
 
-    torch.manual_seed(42)
-
     triton_rope_kcache = block_wise_rope_forward(kcache, vllm_ids, positions, cos_sin_cache)
+
     # precision compare
     diff = (triton_rope_kcache[vllm_ids] - baseline_rope_kcache[vllm_ids]).abs()
     mean_err = diff.mean().item()
@@ -185,13 +185,14 @@ if __name__ == "__main__":
         lambda: block_wise_rope_forward(kcache, vllm_ids, positions, cos_sin_cache)
     )
     print(f"Kernel avg latency: {ms:.3f} ms. Expected 100 us")
-    bs = vllm_ids.shape[0]
-    _, sl, nh, hd = kcache.shape
+
     # load K,load cos,sin -> dump K
-    bytes_total = (
-            bs * sl * nh * hd * 2 * kcache.dtype.itemsize  # K load dump
-            + bs * positions.dtype.itemsize  # positions load
-            + bs * hd * cos_sin_cache.dtype.itemsize
-    )  # cos_sin_cache load
+    bytes_total = num_blocks * block_size * num_heads * (
+        head_size * kcache.dtype.itemsize # K load
+        + vllm_ids.dtype.itemsize # vllm_ids load
+        + positions.dtype.itemsize # positions load
+        + head_size * cos_sin_cache.dtype.itemsize # cos sin load
+        + head_size * kcache.dtype.itemsize # K dump
+    )
     bw = bytes_total / (ms / 1e3) / (1024**3)
     print(f"Estimated memory BW: {bw:.1f} GiB/s")
