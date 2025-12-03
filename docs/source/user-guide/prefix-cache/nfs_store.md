@@ -90,12 +90,44 @@ To use the NFS connector, you need to configure the `connector_config` dictionar
 Create a config yaml like following and save it to your own directory:
 ```yaml
 # UCM Configuration File Example
-# Refer to file unified-cache-management/examples/ucm_config_example.yaml for more details
-ucm_connector_name: "UcmNfsStore"
+# 
+# This file demonstrates how to configure UCM using YAML.
+# You can use this config file by setting the path to this file in kv_connector_extra_config in launch script or command line like this:
+# kv_connector_extra_config={"UCM_CONFIG_FILE": "/workspace/unified-cache-management/examples/ucm_config_example.yaml"}
+#
+# Alternatively, you can still use kv_connector_extra_config in KVTransferConfig
+# for backward compatibility.
 
-ucm_connector_config:
-  storage_backends: "/mnt/test"
-  transferStreamNumber: 32
+# Connector name (e.g., "UcmNfsStore", "UcmDramStore")
+ucm_connectors:
+  - ucm_connector_name: "UcmNfsStore"
+    ucm_connector_config:
+      storage_backends: "/mnt/test"
+      use_direct: false
+
+load_only_first_rank: false
+
+# Enable UCM metrics so they can be monitored online via Grafana and Prometheus.
+# metrics_config_path: "/workspace/unified-cache-management/examples/metrics/metrics_configs.yaml"
+
+# Sparse attention configuration
+# Format 1: Dictionary format (for methods like ESA, KvComp)
+# ucm_sparse_config:
+#   ESA:
+#     init_window_sz: 1
+#     local_window_sz: 2
+#     min_blocks: 4
+#     sparse_ratio: 0.3
+#     retrieval_stride: 5
+  # Or for GSA:
+  # GSA: {}
+
+
+# Whether to use layerwise loading/saving (optional, default: True for UnifiedCacheConnectorV1)
+# use_layerwise: true
+# hit_ratio: 0.9
+
+
 ```
 
 ## Launching Inference
@@ -116,7 +148,6 @@ Then run the script as follows:
 
 ```bash
 cd examples/
-export PYTHONHASHSEED=123456
 python offline_inference.py
 ```
 
@@ -166,10 +197,9 @@ curl http://localhost:7800/v1/completions \
 ```
 To quickly experience the NFS Connector's effect:
 
-1. Start the service with:  
-   `--no-enable-prefix-caching`  
+1. Start the service with:   `--no-enable-prefix-caching`  
 2. Send the same request (exceed 128 tokens) twice consecutively
-3. Remember to enable prefix caching (do not add `--no-enable-prefix-caching`) in production environments.
+
 ### Log Message Structure
 ```text
 [UCMNFSSTORE] [I] Task(<task_id>,<direction>,<task_count>,<size>) finished, elapsed <time>s
