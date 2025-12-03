@@ -203,6 +203,7 @@ sync_perf_cases = [
 
 
 @pytest.mark.feature("perf_test")
+@pytest.mark.stage(2)
 @pytest.mark.parametrize("perf_config", sync_perf_cases)
 @export_vars
 def test_sync_perf(
@@ -211,7 +212,7 @@ def test_sync_perf(
     file_save_path = config_instance.get_config("reports").get("base_dir")
     task = SyntheticPerfTask(model_config, perf_config, file_save_path)
     result = task.run()
-    return {"_name": request.node.callspec.id, "_data": result}
+    return {"_name": request.node.callspec.id, "_proj": result}
 
 
 multiturn_dialogue_perf_cases = [
@@ -229,6 +230,7 @@ multiturn_dialogue_perf_cases = [
 
 
 @pytest.mark.feature("perf_test")
+@pytest.mark.stage(2)
 @pytest.mark.parametrize("perf_config", multiturn_dialogue_perf_cases)
 @export_vars
 def test_multiturn_dialogue_perf(
@@ -255,6 +257,7 @@ doc_qa_perf_cases = [
 
 
 @pytest.mark.feature("perf_test")
+@pytest.mark.stage(2)
 @pytest.mark.parametrize("perf_config", doc_qa_perf_cases)
 @export_vars
 def test_doc_qa_perf(
