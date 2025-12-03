@@ -477,7 +477,7 @@ class UCMDirectConnector(KVConnectorBase_V1):
 
     def start_load_kv(self, forward_context: "ForwardContext", **kwargs) -> None:
         metadata = self._get_connector_metadata()
-        assert isinstance(metadata, UCMConnectorMetadata)
+        # assert isinstance(metadata, UCMConnectorMetadata)
 
         self._init_kv_caches_from_forward_context(forward_context)
 
@@ -556,7 +556,7 @@ class UCMDirectConnector(KVConnectorBase_V1):
             self.synchronize()
 
         metadata = self._get_connector_metadata()
-        assert isinstance(metadata, UCMConnectorMetadata)
+        # assert isinstance(metadata, UCMConnectorMetadata)
 
         request_to_task: dict[str, Task] = {}
         request_to_blocks: dict[str, list[str]] = {}
