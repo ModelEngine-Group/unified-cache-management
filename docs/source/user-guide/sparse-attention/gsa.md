@@ -88,7 +88,7 @@ Similar to UCM's `offline_inference_esa.py` examples. We only need to specify `u
 ...
 ktc = KVTransferConfig(
     kv_connector=name,
-    kv_connector_module_path="ucm.integration.vllm.uc_connector",
+    kv_connector_module_path="ucm.integration.vllm.ucm_connector",
     kv_role="kv_both",
     kv_connector_extra_config={
         "ucm_connector_name": "UcmNfsStore",
@@ -121,7 +121,7 @@ vllm serve /home/models/DeepSeek-R1-Distill-Qwen-32B \
 --kv-transfer-config \
 '{
     "kv_connector": name,
-    "kv_connector_module_path": "ucm.integration.vllm.uc_connector",
+    "kv_connector_module_path": "ucm.integration.vllm.ucm_connector",
     "kv_role": "kv_both",
     "kv_connector_extra_config": {
         "ucm_connector_name": "UcmNfsStore",

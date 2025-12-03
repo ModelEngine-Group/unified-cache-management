@@ -76,8 +76,8 @@ def print_output(
 
 
 def main():
-    module_path = "ucm.integration.vllm.uc_connector"
-    name = "UnifiedCacheConnectorV1"
+    module_path = "ucm.integration.vllm.ucm_connector"
+    name = "UCMConnector"
     model = os.getenv("MODEL_PATH", "/data/models/Qwen3-4B")
 
     setup_environment_variables()
