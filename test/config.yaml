@@ -9,13 +9,21 @@ reports:
 
 database:
   backup: "results/"
-  enabled: true
+  enabled: false
   host: "127.0.0.1"
   port: 3306
   name: "ucm_pytest"
   user: "root"
   password: "123456"
   charset: "utf8mb4"
+
+models:
+  ip_ports: ""
+  tokenizer_path: ""
+  served_model_name: ""
+  payload: '{}'
+  enable_clear_hbm: false
+
 
 # LLM Connection Configuration
 llm_connection:
