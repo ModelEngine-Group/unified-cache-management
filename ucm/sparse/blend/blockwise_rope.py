@@ -94,26 +94,83 @@ def block_wise_rope_forward(k_cache, vllm_ids, positions, cos_sin_cache):
 
     return k_cache
 
+def rope_naive_torch(k_cache, vllm_ids, positions, cos_sin_cache):
+    """
+    naive torch implementation for accuracy and perf baseline
+    Args:
+        k_cache: (total_blocks, seq_len, n_heads, hd)
+        vllm_ids: (bs,)
+        positions: (bs,)
+        cos_sin_cache: (1, seq_len, hd)
+    Returns:
+        rotated_k: same shape as k_cache
+    """
+    total_blocks, sl, nh, hd = k_cache.shape
+    bs = vllm_ids.shape[0]
+
+    # copy to avoid in-place modifying original
+    k_out = k_cache.clone()
+
+    half = hd // 2
+
+    # cos_sin_cache shape: (1, seq_len, hd)
+    cos_sin_cache = cos_sin_cache.squeeze(0)   # (sl, hd)
+    cos_table = cos_sin_cache[:, :half]        # (sl, half)
+    sin_table = cos_sin_cache[:, half:]        # (sl, half)
+
+    # Loop in python (slow but clear)
+    for b in range(bs):
+        blk = vllm_ids[b].item()
+        pos = positions[b].item()  # rope offset
+
+        for s in range(sl):
+            # cos, sin row for this position
+            cos = cos_table[pos]    # (half,)
+            sin = sin_table[pos]
+
+            for h in range(nh):
+                # read original k
+                k_vec = k_out[blk, s, h]                  # (hd,)
+                k1 = k_vec[:half]                         # (half,)
+                k2 = k_vec[half:]                         # (half,)
+
+                # rope rotate
+                new_k1 = k1 * cos - k2 * sin
+                new_k2 = k2 * cos + k1 * sin
+
+                # write back
+                k_out[blk, s, h, :half] = new_k1
+                k_out[blk, s, h, half:] = new_k2
+
+    return k_out
 
 if __name__ == "__main__":
     # just prepare the dumped_tensors from real setting
     import time
 
-    base_dir = "/vllm-workspace/dumped_tensors/kvcache"
-    kcacche = torch.load(f"{base_dir}/kcache.pt")
-    cos_sin_cache = torch.load(f"{base_dir}/cos_sin_cache.pt")
-    positions = torch.load(f"{base_dir}/positions.pt")
-    vllm_ids = torch.load(f"{base_dir}/vllm_ids.pt")
-    baseline_rope_kcache = torch.load(f"{base_dir}/baseline_rope_kcache.pt")
-    device = "cuda"
+    total_blocks = 5120
+    num_blocks = 128
+    block_size = 128
+    max_num_tokens = num_blocks * block_size
+    num_heads = 8
+    head_size = 128
+    dtype = torch.bfloat16
+
+    kcache = torch.randn(total_blocks, block_size, num_heads, head_size, device='cuda', dtype=dtype)
+    vllm_ids = torch.randint(0, total_blocks, (num_blocks,), device='cuda', dtype=torch.long)
+    positions = torch.randint(0, max_num_tokens, (num_blocks,), device='cuda', dtype=torch.long)
+    cos_sin_cache = torch.randn(max_num_tokens,  head_size, device='cuda', dtype=dtype)
+
+    # naive torch result
+    baseline_rope_kcache = rope_naive_torch(kcache, vllm_ids, positions, cos_sin_cache)
+
     torch.manual_seed(42)
 
-    block_wise_rope_forward(kcacche, vllm_ids, positions, cos_sin_cache)
+    triton_rope_kcache = block_wise_rope_forward(kcache, vllm_ids, positions, cos_sin_cache)
     # precision compare
-    diff = (kcacche - baseline_rope_kcache).abs()
-    max_err = diff.max().item()
+    diff = (triton_rope_kcache[vllm_ids] - baseline_rope_kcache[vllm_ids]).abs()
     mean_err = diff.mean().item()
-    print(f"MAE : {mean_err:.6f}, max diff: {max_err:.6f}")
+    print(f"MAE : {mean_err:.6f}. Expected 1e-3")
 
     def bench(fn, n_iter=50):
         torch.cuda.synchronize()
@@ -125,16 +182,16 @@ if __name__ == "__main__":
         return dt * 1e3  # ms
 
     ms = bench(
-        lambda: block_wise_rope_forward(kcacche, vllm_ids, positions, cos_sin_cache)
+        lambda: block_wise_rope_forward(kcache, vllm_ids, positions, cos_sin_cache)
     )
-    print(f"kernel avg latency: {ms:.3f} ms")
+    print(f"Kernel avg latency: {ms:.3f} ms. Expected 100 us")
     bs = vllm_ids.shape[0]
-    _, sl, nh, hd = kcacche.shape
+    _, sl, nh, hd = kcache.shape
     # load K,load cos,sin -> dump K
     bytes_total = (
-        bs * sl * nh * hd * 2 * kcacche.dtype.itemsize  # K load dump
-        + bs * positions.dtype.itemsize  # positions load
-        + bs * hd * cos_sin_cache.dtype.itemsize
+            bs * sl * nh * hd * 2 * kcache.dtype.itemsize  # K load dump
+            + bs * positions.dtype.itemsize  # positions load
+            + bs * hd * cos_sin_cache.dtype.itemsize
     )  # cos_sin_cache load
     bw = bytes_total / (ms / 1e3) / (1024**3)
     print(f"Estimated memory BW: {bw:.1f} GiB/s")
