@@ -63,7 +63,7 @@ def setup_environment_variables():
 
     # now support wikimqa
     path_to_dataset = os.getenv(
-        "DATASET_PATH", "/home/data/Longbench/data/2wikimqa.jsonl"
+        "BLEND_DATASET_PATH", "/home/data/Longbench/data/2wikimqa.jsonl"
     )
     if not os.path.isfile(path_to_dataset):
         path_to_dataset = input(
