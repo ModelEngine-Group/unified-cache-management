@@ -1,2 +1,7 @@
-recursive-include ucm/csrc *
-exclude CMakeLists.txt
+include LICENSE
+include pyproject.toml
+include CMakeLists.txt
+include requirements.txt
+
+recursive-include examples *
+recursive-include benchmarks *
