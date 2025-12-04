@@ -17,6 +17,14 @@ database:
   password: "123456"
   charset: "utf8mb4"
 
+models:
+  ip_ports: ""
+  tokenizer_path: ""
+  served_model_name: ""
+  payload: ''
+  enable_clear_hbm: false
+
+
 # LLM Connection Configuration
 llm_connection:
   model: "qwen3"
