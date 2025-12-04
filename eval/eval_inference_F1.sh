@@ -10,7 +10,7 @@ for pkg in "${REQUIRED_PACKAGES[@]}"; do
 done
 
 CODE_ROOT=$(dirname "$(dirname "$(readlink -f "$0")")")
-
+export ENABLE_SPARSE=true
 
 MODEL_PATH=""
 UCM_SPARSE_CONFIG=""
