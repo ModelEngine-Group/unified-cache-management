@@ -159,7 +159,7 @@ class UcmSparseBase(ABC):
         self, hidden_states: torch.Tensor, residual: torch.Tensor
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         """
-        This is called at the beginning of moe in each DecodeLayer.
+        This is called at the beginning of ffn in each DecodeLayer.
         """
         return hidden_states, residual
 
@@ -167,7 +167,7 @@ class UcmSparseBase(ABC):
         self, hidden_states: torch.Tensor, residual: torch.Tensor
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         """
-        This is called at the end of moe in each DecodeLayer.
+        This is called at the end of ffn in each DecodeLayer.
         """
         return hidden_states, residual
 

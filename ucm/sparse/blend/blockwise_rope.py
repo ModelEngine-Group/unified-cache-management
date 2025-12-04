@@ -95,6 +95,7 @@ def block_wise_rope_forward(k_cache, vllm_ids, positions, cos_sin_cache):
 
     return k_cache
 
+
 def rope_naive_torch(k_cache, vllm_ids, positions, cos_sin_cache):
     """
     naive torch implementation for accuracy and perf baseline
@@ -115,9 +116,9 @@ def rope_naive_torch(k_cache, vllm_ids, positions, cos_sin_cache):
     half = hd // 2
 
     # cos_sin_cache shape: (1, seq_len, hd)
-    cos_sin_cache = cos_sin_cache.squeeze(0)   # (sl, hd)
-    cos_table = cos_sin_cache[:, :half]        # (sl, half)
-    sin_table = cos_sin_cache[:, half:]        # (sl, half)
+    cos_sin_cache = cos_sin_cache.squeeze(0)  # (sl, hd)
+    cos_table = cos_sin_cache[:, :half]  # (sl, half)
+    sin_table = cos_sin_cache[:, half:]  # (sl, half)
 
     # Loop in python (slow but clear)
     for b in range(bs):
@@ -126,14 +127,14 @@ def rope_naive_torch(k_cache, vllm_ids, positions, cos_sin_cache):
 
         for s in range(sl):
             # cos, sin row for this position
-            cos = cos_table[pos]    # (half,)
+            cos = cos_table[pos]  # (half,)
             sin = sin_table[pos]
 
             for h in range(nh):
                 # read original k
-                k_vec = k_out[blk, s, h]                  # (hd,)
-                k1 = k_vec[:half]                         # (half,)
-                k2 = k_vec[half:]                         # (half,)
+                k_vec = k_out[blk, s, h]  # (hd,)
+                k1 = k_vec[:half]  # (half,)
+                k2 = k_vec[half:]  # (half,)
 
                 # rope rotate
                 new_k1 = k1 * cos - k2 * sin
@@ -145,8 +146,10 @@ def rope_naive_torch(k_cache, vllm_ids, positions, cos_sin_cache):
 
     return k_out
 
+
 if __name__ == "__main__":
     import time
+
     torch.manual_seed(42)
 
     total_blocks = 5120
@@ -157,15 +160,23 @@ if __name__ == "__main__":
     head_size = 128
     dtype = torch.bfloat16
 
-    kcache = torch.randn(total_blocks, block_size, num_heads, head_size, device='cuda', dtype=dtype)
-    vllm_ids = torch.randint(0, total_blocks, (num_blocks,), device='cuda', dtype=torch.long)
-    positions = torch.randint(0, max_num_tokens, (num_blocks,), device='cuda', dtype=torch.long)
-    cos_sin_cache = torch.randn(max_num_tokens,  head_size, device='cuda', dtype=dtype)
+    kcache = torch.randn(
+        total_blocks, block_size, num_heads, head_size, device="cuda", dtype=dtype
+    )
+    vllm_ids = torch.randint(
+        0, total_blocks, (num_blocks,), device="cuda", dtype=torch.long
+    )
+    positions = torch.randint(
+        0, max_num_tokens, (num_blocks,), device="cuda", dtype=torch.long
+    )
+    cos_sin_cache = torch.randn(max_num_tokens, head_size, device="cuda", dtype=dtype)
 
     # naive torch result
     baseline_rope_kcache = rope_naive_torch(kcache, vllm_ids, positions, cos_sin_cache)
 
-    triton_rope_kcache = block_wise_rope_forward(kcache, vllm_ids, positions, cos_sin_cache)
+    triton_rope_kcache = block_wise_rope_forward(
+        kcache, vllm_ids, positions, cos_sin_cache
+    )
 
     # precision compare
     diff = (triton_rope_kcache[vllm_ids] - baseline_rope_kcache[vllm_ids]).abs()
@@ -187,12 +198,17 @@ if __name__ == "__main__":
     print(f"Kernel avg latency: {ms:.3f} ms. Expected 100 us")
 
     # load K,load cos,sin -> dump K
-    bytes_total = num_blocks * block_size * num_heads * (
-        head_size * kcache.dtype.itemsize # K load
-        + vllm_ids.dtype.itemsize # vllm_ids load
-        + positions.dtype.itemsize # positions load
-        + head_size * cos_sin_cache.dtype.itemsize # cos sin load
-        + head_size * kcache.dtype.itemsize # K dump
+    bytes_total = (
+        num_blocks
+        * block_size
+        * num_heads
+        * (
+            head_size * kcache.dtype.itemsize  # K load
+            + vllm_ids.dtype.itemsize  # vllm_ids load
+            + positions.dtype.itemsize  # positions load
+            + head_size * cos_sin_cache.dtype.itemsize  # cos sin load
+            + head_size * kcache.dtype.itemsize  # K dump
+        )
     )
     bw = bytes_total / (ms / 1e3) / (1024**3)
     print(f"Estimated memory BW: {bw:.1f} GiB/s")

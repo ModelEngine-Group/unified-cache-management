@@ -5,7 +5,7 @@ import pickle
 import time
 from dataclasses import dataclass, field
 from enum import Enum, auto
-from typing import TYPE_CHECKING, Callable, List, Optional, Tuple
+from typing import TYPE_CHECKING, Callable, List, Optional, Self, Tuple
 
 import torch
 from vllm.config import VllmConfig
@@ -81,6 +81,24 @@ class ChunkMetaData:
     @property
     def hits_chunk_blks_hash(self) -> List[str]:
         return list(itertools.compress(self.chunk_blks_hash, self.store_hits))
+
+    def merge_chunk(self, temp_chunk_meta: Self):
+        # current we use a fix pattern(end with a fix token id) to recognize the text token chunk
+        # in some special situation, one text chunk maybe split as multi text chunk, so we should merge them into one
+        self.chunk_tokens_len += temp_chunk_meta.chunk_tokens_len
+        self.chunk_blks_len += temp_chunk_meta.chunk_blks_len
+        self.chunk_blks_hash += temp_chunk_meta.chunk_blks_hash
+
+    def update_meta_partial_pc(self, num_pc_part_blks: int, block_size: int) -> None:
+        self.start_idx_in_req += num_pc_part_blks * block_size
+        self.chunk_tokens_len -= num_pc_part_blks * block_size
+
+        self.start_idx_in_req_blks += num_pc_part_blks
+        self.chunk_blks_len -= num_pc_part_blks
+
+        self.chunk_blks_hash = self.chunk_blks_hash[num_pc_part_blks:]
+        self.store_hits = self.store_hits[num_pc_part_blks:]
+        self.cached_start_position += num_pc_part_blks * block_size
 
 
 class BlendStage(Enum):
@@ -311,7 +329,7 @@ class UCMBlendConnector(UCMDirectConnector):
                 if chunk_start_hash != RequestHasher._SEED_HASH:
                     # merge the last two chunk
                     temp_chunk_meta = chunks_meta.pop()
-                    self._merge_chunks(chunks_meta[-1], temp_chunk_meta)
+                    chunks_meta[-1].merge_chunk(temp_chunk_meta)
 
         if req_stage == BlendStage.BUILD_CHUNK_CACHE:
             return req_stage, req_block_hashes, chunks_meta
@@ -325,30 +343,6 @@ class UCMBlendConnector(UCMDirectConnector):
                 self._generate_hash(self.block_size, all_token_ids),
                 chunks_meta,
             )
-
-    def _merge_chunks(
-        self, old_chunk_meta: ChunkMetaData, temp_chunk_meta: ChunkMetaData
-    ):
-        # current we use a fix pattern(end with a fix token id) to recognize the text token chunk
-        # in some special situation, one text chunk maybe split as multi text chunk, so we should merge them into one
-        old_chunk_meta.chunk_tokens_len += temp_chunk_meta.chunk_tokens_len
-        old_chunk_meta.chunk_blks_len += temp_chunk_meta.chunk_blks_len
-        old_chunk_meta.chunk_blks_hash += temp_chunk_meta.chunk_blks_hash
-
-    def _update_meta_partial_pc(
-        self, rag_chunk_meta: ChunkMetaData, num_pc_part_blks: int
-    ) -> None:
-        rag_chunk_meta.start_idx_in_req += num_pc_part_blks * self.block_size
-        rag_chunk_meta.chunk_tokens_len -= num_pc_part_blks * self.block_size
-
-        rag_chunk_meta.start_idx_in_req_blks += num_pc_part_blks
-        rag_chunk_meta.chunk_blks_len -= num_pc_part_blks
-
-        rag_chunk_meta.chunk_blks_hash = rag_chunk_meta.chunk_blks_hash[
-            num_pc_part_blks:
-        ]
-        rag_chunk_meta.store_hits = rag_chunk_meta.store_hits[num_pc_part_blks:]
-        rag_chunk_meta.cached_start_position += num_pc_part_blks * self.block_size
 
     def _get_req_chunk_hit(
         self,
@@ -379,7 +373,7 @@ class UCMBlendConnector(UCMDirectConnector):
             if not hit:
                 break
             pc_hit_blocks += 1
-        self._update_meta_partial_pc(req_chunks_meta[0], pc_hit_blocks)
+        req_chunks_meta[0].update_meta_partial_pc(pc_hit_blocks, self.block_size)
         if req_chunks_meta[0].chunk_tokens_len == 0:
             req_chunks_meta.pop(0)
 
