@@ -1,21 +1,14 @@
-import hashlib
 import itertools
-import os
-import pickle
-import time
 from dataclasses import dataclass, field
 from enum import Enum, auto
-from typing import TYPE_CHECKING, Callable, List, Optional, Self, Tuple
+from typing import TYPE_CHECKING, List, Self, Tuple
 
 import torch
 from vllm.config import VllmConfig
 from vllm.distributed.kv_transfer.kv_connector.v1.base import (
-    KVConnectorBase_V1,
     KVConnectorMetadata,
     KVConnectorRole,
 )
-from vllm.distributed.parallel_state import get_tp_group, get_world_group
-from vllm.platforms import current_platform
 from vllm.v1.core.sched.output import SchedulerOutput
 from vllm.v1.request import Request
 
@@ -28,16 +21,9 @@ from ucm.integration.vllm.ucm_connector import (
 )
 from ucm.logger import init_logger
 from ucm.shared.metrics import ucmmonitor
-from ucm.shared.metrics.observability import UCMStatsLogger
 from ucm.sparse.blend.blockwise_rope import block_wise_rope_forward
-from ucm.sparse.kvstar.multistep import ReqStage
-from ucm.store.factory import UcmConnectorFactory
-from ucm.store.ucmstore import Task, UcmKVStoreBase
-from ucm.utils import Config
 
 if TYPE_CHECKING:
-    from vllm.attention.backends.abstract import AttentionMetadata
-    from vllm.forward_context import ForwardContext
     from vllm.v1.core.kv_cache_manager import KVCacheBlocks
 
 logger = init_logger(__name__)
@@ -82,7 +68,7 @@ class ChunkMetaData:
     def hits_chunk_blks_hash(self) -> List[str]:
         return list(itertools.compress(self.chunk_blks_hash, self.store_hits))
 
-    def merge_chunk(self, temp_chunk_meta: Self):
+    def merge_chunk(self, temp_chunk_meta: Self) -> None:
         # current we use a fix pattern(end with a fix token id) to recognize the text token chunk
         # in some special situation, one text chunk maybe split as multi text chunk, so we should merge them into one
         self.chunk_tokens_len += temp_chunk_meta.chunk_tokens_len
@@ -107,10 +93,10 @@ class BlendStage(Enum):
     BUILD_PREFIX_CACHE = auto()
     CACHE_BLEND = auto()
 
-    def is_blend_cache(self):
+    def is_blend_cache(self) -> bool:
         return self == BlendStage.CACHE_BLEND
 
-    def is_prefix_cache(self):
+    def is_prefix_cache(self) -> bool:
         return self == BlendStage.BUILD_PREFIX_CACHE
 
 
@@ -137,10 +123,7 @@ class UCMBlendConnectorMetadata(UCMConnectorMetadata):
 
 class UCMBlendConnector(UCMDirectConnector):
     """
-    This Connector means overlap:
-    load l0 -> forward l0 -> save l0
-               load l1    -> forward l1 -> save l1
-                             load l2    -> forward l2 -> save l2
+    This Connector process chunk hash and prefix cache
     """
 
     def __init__(self, vllm_config: "VllmConfig", role: KVConnectorRole):
@@ -265,7 +248,7 @@ class UCMBlendConnector(UCMDirectConnector):
         prefix_block_hashes: List[str],
         req_chunks_meta: List[ChunkMetaData],
         req_chunks_hashes: List[str],
-    ):
+    ) -> Tuple[int, int]:
 
         # first perform prefix cache lookup
         pc_lookup_results = self.store.lookup(prefix_block_hashes)
@@ -312,7 +295,7 @@ class UCMBlendConnector(UCMDirectConnector):
         ----------------------------------------------------------------------------------------------------------
         |            LOAD               |          DUMP          |
         ----------------------------------------------------------------------------------------------------------
-        |           REUSE               |    RECOMPUTE           |
+        |           REUSE               |     RECOMPUTE          |
         ----------------------------------------------------------------------------------------------------------
 
 
@@ -362,7 +345,7 @@ class UCMBlendConnector(UCMDirectConnector):
             req_meta.chunks_meta,
         )
 
-    def _post_process_chunk_cache(self, k_cache, vllm_ids, positions):
+    def _post_process_chunk_cache(self, k_cache, vllm_ids, positions) -> None:
         """
         post process loaded chunk kcache
         """
@@ -371,7 +354,7 @@ class UCMBlendConnector(UCMDirectConnector):
         # triton kernl for block-wise delta rope
         block_wise_rope_forward(k_cache, vllm_ids, positions, self.cos_sin_cache)
 
-    def _register_cos_sin_cache(self, model: "Model"):
+    def _register_cos_sin_cache(self, model: "Model") -> None:
         try:
             rotary_emb = model.model.layers[0].self_attn.rotary_emb
             self.cos_sin_cache = rotary_emb.cos_sin_cache

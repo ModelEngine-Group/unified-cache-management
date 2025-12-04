@@ -933,6 +933,7 @@ class GSA(UcmSparseBase):
             self.prefetch_engine.deal_async_prefetch(
                 False, self.gsa_metadata, kv_caches, None
             )
+        return logits_indices
 
     def launch_transfer_task(self, all_free_block_ids, all_miss_ids, kv_caches):
         if all_free_block_ids == None:
@@ -1005,8 +1006,6 @@ class GSA(UcmSparseBase):
                 return False
         self.task_load.clear()
         return True
-
-        return logits_indices
 
     def build_sparse_meta(
         self, scheduler_output: SchedulerOutput, requests, input_batch, attn_metadata

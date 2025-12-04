@@ -82,7 +82,6 @@ def maybe_execute_sparse_layer_begin(
     if not has_ucm_sparse():
         return positions, hidden_states, residual
     ucm_spare = get_ucm_sparse()
-    # after sparse, n_tokens of source tensor is larger than target
     return ucm_spare.layer_begin(positions, hidden_states, residual)
 
 
@@ -92,7 +91,6 @@ def maybe_execute_sparse_layer_finished(
     if not has_ucm_sparse():
         return positions, hidden_states, residual
     ucm_spare = get_ucm_sparse()
-    # after sparse, n_tokens of source tensor is larger than target
     return ucm_spare.layer_finished(positions, hidden_states, residual)
 
 
@@ -100,7 +98,6 @@ def maybe_execute_sparse_ffn_begin(hidden_states: torch.Tensor, residual: torch.
     if not has_ucm_sparse():
         return hidden_states, residual
     ucm_spare = get_ucm_sparse()
-    # after sparse, n_tokens of source tensor is larger than target
     return ucm_spare.ffn_begin(hidden_states, residual)
 
 
@@ -110,5 +107,4 @@ def maybe_execute_sparse_ffn_finished(
     if not has_ucm_sparse():
         return hidden_states, residual
     ucm_spare = get_ucm_sparse()
-    # after sparse, n_tokens of source tensor is larger than target
     return ucm_spare.ffn_finished(hidden_states, residual)

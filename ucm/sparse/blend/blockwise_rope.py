@@ -59,7 +59,12 @@ def _triton_rope_blockwise_kernel(
     tl.store(k_ptr + offs + hd // 2, new_k_tile_2, mask=mask)
 
 
-def block_wise_rope_forward(k_cache, vllm_ids, positions, cos_sin_cache):
+def block_wise_rope_forward(
+    k_cache: torch.Tensor,
+    vllm_ids: torch.Tensor,
+    positions: torch.Tensor,
+    cos_sin_cache: torch.Tensor,
+) -> torch.Tensor:
     """
     Args：
         k_cache: torch.Tensor (total_blocks, seq_len, n_kv_heads, hd), vllm owned.
@@ -96,7 +101,12 @@ def block_wise_rope_forward(k_cache, vllm_ids, positions, cos_sin_cache):
     return k_cache
 
 
-def rope_naive_torch(k_cache, vllm_ids, positions, cos_sin_cache):
+def rope_naive_torch(
+    k_cache: torch.Tensor,
+    vllm_ids: torch.Tensor,
+    positions: torch.Tensor,
+    cos_sin_cache: torch.Tensor,
+) -> torch.Tensor:
     """
     naive torch implementation for accuracy and perf baseline
     Args:

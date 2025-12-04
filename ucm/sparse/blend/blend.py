@@ -13,10 +13,9 @@ logger = init_logger(__name__)
 
 from vllm.config import VllmConfig
 from vllm.forward_context import ForwardContext
-from vllm.v1.core.sched.output import SchedulerOutput
 from vllm.v1.request import Request
 
-from ucm.integration.vllm.blend_connector import BlendRequestDispatchMeta, ChunkMetaData
+from ucm.integration.vllm.blend_connector import BlendRequestDispatchMeta
 from ucm.sparse.base import (
     INVALID_SLOT,
     UcmSparseBase,
