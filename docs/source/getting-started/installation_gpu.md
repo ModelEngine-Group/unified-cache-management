@@ -51,7 +51,7 @@ export PLATFORM=cuda
 pip install -v -e . --no-build-isolation
 ```
 
-**Note:** Patches are now applied automatically via dynamic patching when you import the unified-cache-management package. You no longer need to manually apply patches using `git apply`. The patches are automatically applied when you use the `UnifiedCacheConnectorV1` connector.
+**Note:** Patches are now applied automatically via dynamic patching when you import the unified-cache-management package. You no longer need to manually apply patches using `git apply`. The patches are automatically applied when you use the `UCMConnector` connector.
 
 
 ## Setup from docker
