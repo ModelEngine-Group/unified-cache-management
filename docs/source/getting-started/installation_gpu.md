@@ -50,6 +50,7 @@ cd unified-cache-management
 export PLATFORM=cuda
 pip install -v -e . --no-build-isolation
 ```
+**Note:** The sparse module was not compiled by default. To enable it, set the environment variable `export ENABLE_SPARSE=TRUE` before you build.
 
 **Note:** Patches are now applied automatically via dynamic patching when you import the unified-cache-management package. You no longer need to manually apply patches using `git apply`. The patches are automatically applied when you use the `UCMConnector` connector.
 

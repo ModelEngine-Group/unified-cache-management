@@ -56,6 +56,9 @@ pip install -v -e . --no-build-isolation
 cd ..
 ```
 
+**Note:** The sparse module was not compiled by default. To enable it, set the environment variable `export ENABLE_SPARSE=TRUE` before you build.
+
+
 ## Setup from docker
 Download the pre-built `vllm-ascend` docker image or build unified-cache-management docker image by commands below:
  ```bash
