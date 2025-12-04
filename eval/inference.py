@@ -24,6 +24,7 @@ tokenizer = None
 def setup_environment_variables():
     os.environ["VLLM_USE_V1"] = "1"
     os.environ["PYTHONHASHSEED"] = "123456"
+    os.environ["ENABLE_SPARSE"] = "true"
 
     global model, path_to_dataset, data_dir, ucm_sparse_config, dataset_name, tokenizer
     model = os.getenv("MODEL_PATH", "/home/models/Qwen2.5-14B-Instruct")
@@ -80,11 +81,15 @@ def build_llm_with_uc(module_path: str, name: str, model: str):
         kv_connector_module_path=module_path,
         kv_role="kv_both",
         kv_connector_extra_config={
-            "ucm_connector_name": "UcmNfsStore",
-            "ucm_connector_config": {
-                "storage_backends": data_dir,
-                "kv_block_size": 33554432,
-            },
+            "ucm_connectors": [
+                {
+                    "ucm_connector_name": "UcmNfsStore",
+                    "ucm_connector_config": {
+                        "storage_backends": data_dir,
+                        "use_direct": False,
+                    },
+                }
+            ],
             "ucm_sparse_config": ucm_sparse_config,
         },
     )
@@ -132,8 +137,8 @@ def print_output(
 
 
 def main():
-    module_path = "ucm.integration.vllm.uc_connector"
-    name = "UnifiedCacheConnectorV1"
+    module_path = "ucm.integration.vllm.ucm_connector"
+    name = "UCMConnector"
     setup_environment_variables()
 
     def get_prompt(prompt):
@@ -156,7 +161,7 @@ def main():
         batch_size = int(os.getenv("BATCH_SIZE", 20))
         with open(path_to_dataset, "r") as f:
             lines = f.readlines()
-
+        # lines=lines[:20]
         total_data = len(lines)
         for start_idx in range(0, total_data, batch_size):
             end_idx = min(start_idx + batch_size, total_data)
