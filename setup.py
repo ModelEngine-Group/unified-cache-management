@@ -155,7 +155,7 @@ packages = _get_packages()
 
 setup(
     name="uc-manager",
-    version="0.1.0",
+    version="0.1.1",
     description="Unified Cache Management",
     author="Unified Cache Team",
     packages=packages,
