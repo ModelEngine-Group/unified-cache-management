@@ -32,7 +32,7 @@ load_only_first_rank: false
   # GSA: {}
 
 
-# Whether to use layerwise loading/saving (optional, default: True for UnifiedCacheConnectorV1)
+# Whether to use layerwise loading/saving (optional, default: True for UCMConnector)
 # use_layerwise: true
 # hit_ratio: 0.9
 

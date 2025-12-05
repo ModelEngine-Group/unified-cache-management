@@ -37,6 +37,12 @@ from setuptools.command.build_ext import build_ext
 ROOT_DIR = os.path.abspath(os.path.dirname(__file__))
 PLATFORM = os.getenv("PLATFORM")
 
+ENABLE_SPARSE = os.getenv("ENABLE_SPARSE")
+
+
+def _enable_sparse() -> bool:
+    return ENABLE_SPARSE is not None and ENABLE_SPARSE.lower() == "true"
+
 
 def _is_cuda() -> bool:
     return PLATFORM == "cuda"
@@ -97,6 +103,9 @@ class CMakeBuild(build_ext):
                 "Please ensure either CUDA/MUSA or NPU is available."
             )
 
+        if _enable_sparse():
+            cmake_args.append("-DBUILD_UCM_SPARSE=ON")
+
         cmake_args.append(ext.sourcedir)
 
         print(f"[INFO] Building {ext.name} module with CMake")
@@ -111,9 +120,18 @@ class CMakeBuild(build_ext):
         )
 
 
-def _get_package_data_with_so():
-    """Automatically discover all packages and include .so files."""
+def _get_packages():
+    """Discover Python packages, optionally filtering out sparse-related ones."""
     packages = find_packages()
+    if not _enable_sparse():
+        packages = [pkg for pkg in packages if not pkg.startswith("ucm.sparse")]
+    return packages
+
+
+def _get_package_data_with_so(packages=None):
+    """Automatically discover all packages and include .so files."""
+    if packages is None:
+        packages = _get_packages()
     package_data = {}
 
     for package in packages:
@@ -133,15 +151,17 @@ def _get_package_data_with_so():
 ext_modules = []
 ext_modules.append(CMakeExtension(name="ucm", sourcedir=ROOT_DIR))
 
+packages = _get_packages()
+
 setup(
     name="uc-manager",
     version="0.1.0",
     description="Unified Cache Management",
     author="Unified Cache Team",
-    packages=find_packages(),
+    packages=packages,
     python_requires=">=3.10",
     ext_modules=ext_modules,
     cmdclass={"build_ext": CMakeBuild},
-    package_data=_get_package_data_with_so(),
+    package_data=_get_package_data_with_so(packages),
     zip_safe=False,
 )
