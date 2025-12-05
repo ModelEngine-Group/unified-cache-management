@@ -98,7 +98,7 @@ Create a config yaml like following and save it to your own directory:
 # Alternatively, you can still use kv_connector_extra_config in KVTransferConfig
 # for backward compatibility.
 
-# Connector name (e.g., "UcmNfsStore", "UcmDramStore")
+# Connector name (e.g., "UcmNfsStore")
 ucm_connectors:
   - ucm_connector_name: "UcmNfsStore"
     ucm_connector_config:

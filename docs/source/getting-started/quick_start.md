@@ -14,7 +14,7 @@
 - NPU: Atlas 800 A2/A3 series
 - CANN: CANN Version 8.1.RC1
 - vLLM: v0.9.2
-- vLLM Ascend: v0.9.2rc1
+- vLLM Ascend: v0.9.1
 
 ## Installation
 Before you start with UCM, please make sure that you have installed UCM correctly by following the [GPU Installation](./installation_gpu.md) guide or [NPU Installation](./installation_npu.md) guide.
@@ -67,7 +67,7 @@ Create a config yaml like following and save it to your own directory:
 # Alternatively, you can still use kv_connector_extra_config in KVTransferConfig
 # for backward compatibility.
 
-# Connector name (e.g., "UcmNfsStore", "UcmDramStore")
+# Connector name (e.g., "UcmNfsStore")
 ucm_connectors:
   - ucm_connector_name: "UcmNfsStore"
     ucm_connector_config:
