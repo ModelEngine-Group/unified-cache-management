@@ -46,9 +46,8 @@ Paper list:
 :::{toctree}
 :caption: Getting Started
 :maxdepth: 1
-getting-started/quick_start
-getting-started/installation_gpu
-getting-started/installation_npu
+getting-started/quickstart_vllm
+getting-started/quickstart_vllm_ascend
 :::
 
 :::{toctree}
