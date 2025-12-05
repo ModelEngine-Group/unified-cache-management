@@ -4,7 +4,7 @@ import pickle
 from collections import defaultdict
 from dataclasses import dataclass
 from functools import cache
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 import numpy as np
 import torch
@@ -554,8 +554,9 @@ class ESA(UcmSparseBase):
         value: torch.Tensor,
         layer_name: str,
         forward_context: ForwardContext,
+        output: Optional[torch.Tensor] = None,
         phase: Optional[str] = None,
-    ) -> None:
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         if not self.is_mla:
             for req_meta in self._sparse_metadata.requests:
                 self.create_req_state_attention_begin(
@@ -572,6 +573,8 @@ class ESA(UcmSparseBase):
                     self.create_req_state_attention_begin(
                         req_meta, layer_name, query, key, value, forward_context
                     )
+
+        return query, key, value, output
 
     def update_req_state_attention_end(
         self, req_meta, layer_name, query, key, value, attn_output, forward_context

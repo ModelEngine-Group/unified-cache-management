@@ -58,7 +58,7 @@ def _apply_ascend_patch() -> None:
 def _patch_attention_v1() -> None:
     """Patch attention_v1.py for vLLM-Ascend."""
     try:
-        from typing import List
+        from typing import List, Optional
 
         import torch
         from vllm.forward_context import ForwardContext, get_forward_context
@@ -72,15 +72,19 @@ def _patch_attention_v1() -> None:
             value: torch.Tensor,
             layer_name: str,
             forward_context: ForwardContext,
+            output: Optional[torch.Tensor] = None,
+            phase: Optional[str] = None,
         ):
             if not has_ucm_sparse():
-                return
+                return query, key, value, output
 
             ucm_sparse = get_ucm_sparse()
             attn_metadata = forward_context.attn_metadata
             if attn_metadata is None:
-                return
-            ucm_sparse.attention_begin(query, key, value, layer_name, forward_context)
+                return query, key, value, output
+            return ucm_sparse.attention_begin(
+                query, key, value, layer_name, forward_context, output, phase
+            )
 
         attention_v1.maybe_execute_sparse_attention_begin = (
             maybe_execute_sparse_attention_begin
@@ -139,7 +143,7 @@ def _patch_attention_v1() -> None:
             self = forward_context.no_compile_layers[layer_name]
             kv_cache = self.kv_cache[forward_context.virtual_engine]
             if not self.use_mla:
-                maybe_execute_sparse_attention_begin(
+                query, key, value, _ = maybe_execute_sparse_attention_begin(
                     query, key, value, layer_name, forward_context
                 )
             self.impl.forward(
@@ -386,13 +390,15 @@ def _patch_mla_v1() -> None:
                 # FIX: aicore move should be also placed on the comm stream in dbo,
                 # otherwise it may affect the accuracy
                 # TODO: use an elegant way to overlap
-                maybe_execute_sparse_attention_begin(
-                    prefill_q,
-                    prefill_k_c_normed,
-                    prefill_k_pe,
-                    layer.layer_name,
-                    forward_context,
-                    "prefill",
+                prefill_q, prefill_k_c_normed, prefill_k_pe, _ = (
+                    maybe_execute_sparse_attention_begin(
+                        prefill_q,
+                        prefill_k_c_normed,
+                        prefill_k_pe,
+                        layer.layer_name,
+                        forward_context,
+                        phase="prefill",
+                    )
                 )
                 output_prefill = self._forward_prefill(
                     prefill_q, prefill_k_c_normed, prefill_k_pe, kv_cache, attn_metadata
@@ -414,13 +420,15 @@ def _patch_mla_v1() -> None:
                     "prefill",
                 )
             if has_decode:
-                maybe_execute_sparse_attention_begin(
-                    torch.cat([decode_ql_nope, decode_q_pe], dim=-1),
-                    decode_ql_nope,
-                    decode_q_pe,
-                    layer.layer_name,
-                    forward_context,
-                    "decode",
+                _, decode_ql_nope, decode_q_pe, _ = (
+                    maybe_execute_sparse_attention_begin(
+                        torch.cat([decode_ql_nope, decode_q_pe], dim=-1),
+                        decode_ql_nope,
+                        decode_q_pe,
+                        layer.layer_name,
+                        forward_context,
+                        phase="decode",
+                    )
                 )
                 if self.running_in_graph:
                     return self._forward_decode(

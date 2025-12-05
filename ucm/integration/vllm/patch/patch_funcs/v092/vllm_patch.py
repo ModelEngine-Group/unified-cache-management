@@ -49,6 +49,8 @@ def _apply_sparse_adapt() -> None:
             _patch_gpu_worker()
             _patch_scheduler_output()
             _patch_scheduler()
+            _patch_llama_model()
+            _patch_qwen_model()
             logger.info("UCM sparse adapt patches applied successfully")
     except Exception as e:
         logger.error(f"Could not apply sparse adapt patches: {e}")
@@ -147,25 +149,103 @@ def _patch_attention_layer() -> None:
 
         from ucm.sparse.state import get_ucm_sparse, has_ucm_sparse
 
+        def attn_forward(
+            self,
+            query: torch.Tensor,
+            key: torch.Tensor,
+            value: torch.Tensor,
+            # For some alternate attention backends like MLA the attention output
+            # shape does not match the query shape, so we optionally let the model
+            # definition specify the output tensor shape.
+            output_shape: Optional[torch.Size] = None,
+        ) -> torch.Tensor:
+            """
+            The KV cache is stored inside this class and is accessed via
+            `self.kv_cache`.
+
+            Attention metadata (`attn_metadata`) is set using a context manager in
+            the model runner's `execute_model` method. It is accessed via forward
+            context using
+            `vllm.forward_context.get_forward_context().attn_metadata`.
+            """
+            if self.calculate_kv_scales:
+                attn_metadata = get_forward_context().attn_metadata
+                if attn_metadata.enable_kv_scales_calculation:
+                    self.calc_kv_scales(query, key, value)
+            if self.use_output:
+                output_shape = output_shape if output_shape is not None else query.shape
+                output = torch.zeros(
+                    output_shape, dtype=query.dtype, device=query.device
+                )
+                hidden_size = output_shape[-1]
+                # We skip reshaping query, key and value tensors for the MLA
+                # backend since these tensors have different semantics and are
+                # processed differently.
+                if not self.use_mla:
+                    # Reshape the query, key, and value tensors.
+                    # NOTE(woosuk): We do this outside the custom op to minimize the
+                    # CPU overheads from the non-CUDA-graph regions.
+                    query = query.view(-1, self.num_heads, self.head_size)
+                    output = output.view(-1, self.num_heads, self.head_size)
+                    if key is not None:
+                        key = key.view(-1, self.num_kv_heads, self.head_size)
+                    if value is not None:
+                        value = value.view(-1, self.num_kv_heads, self.head_size)
+                if self.use_direct_call:
+                    forward_context: ForwardContext = get_forward_context()
+                    attn_metadata = forward_context.attn_metadata
+                    if isinstance(attn_metadata, dict):
+                        attn_metadata = attn_metadata[self.layer_name]
+                    self_kv_cache = self.kv_cache[forward_context.virtual_engine]
+                    self.impl.forward(
+                        self,
+                        query,
+                        key,
+                        value,
+                        self_kv_cache,
+                        attn_metadata,
+                        output=output,
+                    )
+                else:
+                    torch.ops.vllm.unified_attention_with_output(
+                        query, key, value, output, self.layer_name
+                    )
+                return output.view(-1, hidden_size)
+            else:
+                if self.use_direct_call:
+                    forward_context = get_forward_context()
+                    attn_metadata = forward_context.attn_metadata
+                    if isinstance(attn_metadata, dict):
+                        attn_metadata = attn_metadata[self.layer_name]
+                    self_kv_cache = self.kv_cache[forward_context.virtual_engine]
+                    return self.impl.forward(
+                        self, query, key, value, self_kv_cache, attn_metadata
+                    )
+                else:
+                    return torch.ops.vllm.unified_attention(
+                        query, key, value, self.layer_name
+                    )
+
         def maybe_execute_sparse_attention_begin(
             query: torch.Tensor,
             key: torch.Tensor,
             value: torch.Tensor,
             layer_name: str,
             forward_context: ForwardContext,
+            output: Optional[torch.Tensor] = None,
             phase: Optional[str] = None,
         ):
             if not has_ucm_sparse():
-                return
+                return query, key, value, output
 
             ucm_sparse = get_ucm_sparse()
 
             attn_metadata = forward_context.attn_metadata
             if attn_metadata is None:
-                return
+                return query, key, value, output
 
-            ucm_sparse.attention_begin(
-                query, key, value, layer_name, forward_context, phase
+            return ucm_sparse.attention_begin(
+                query, key, value, layer_name, forward_context, output, phase
             )
 
         def maybe_execute_sparse_attention_finished(
@@ -221,7 +301,7 @@ def _patch_attention_layer() -> None:
                 attn_metadata = attn_metadata[layer_name]
             self = forward_context.no_compile_layers[layer_name]
             kv_cache = self.kv_cache[forward_context.virtual_engine]
-            maybe_execute_sparse_attention_begin(
+            query, key, value, _ = maybe_execute_sparse_attention_begin(
                 query, key, value, layer_name, forward_context
             )
             output = self.impl.forward(self, query, key, value, kv_cache, attn_metadata)
@@ -247,8 +327,8 @@ def _patch_attention_layer() -> None:
             self = forward_context.no_compile_layers[layer_name]
             kv_cache = self.kv_cache[forward_context.virtual_engine]
             if not self.use_mla:
-                maybe_execute_sparse_attention_begin(
-                    query, key, value, layer_name, forward_context
+                query, key, value, output = maybe_execute_sparse_attention_begin(
+                    query, key, value, layer_name, forward_context, output
                 )
             self.impl.forward(
                 self,
@@ -281,6 +361,7 @@ def _patch_attention_layer() -> None:
         layer.maybe_execute_sparse_attention_finished = (
             maybe_execute_sparse_attention_finished
         )
+        layer.Attention.forward = attn_forward
         layer.unified_attention = unified_attention_impl
         layer.unified_attention_with_output = unified_attention_with_output_impl
 
@@ -412,13 +493,15 @@ def _patch_mla_common() -> None:
                 )
 
             if has_prefill:
-                maybe_execute_sparse_attention_begin(
-                    prefill_q,
-                    prefill_k_c_normed,
-                    prefill_k_pe,
-                    layer.layer_name,
-                    forward_context,
-                    "prefill",
+                prefill_q, prefill_k_c_normed, prefill_k_pe, _ = (
+                    maybe_execute_sparse_attention_begin(
+                        prefill_q,
+                        prefill_k_c_normed,
+                        prefill_k_pe,
+                        layer.layer_name,
+                        forward_context,
+                        phase="prefill",
+                    )
                 )
                 output[num_decode_tokens:] = self._forward_prefill(
                     prefill_q, prefill_k_c_normed, prefill_k_pe, kv_cache, attn_metadata
@@ -443,13 +526,15 @@ def _patch_mla_common() -> None:
                 decode_ql_nope = torch.bmm(decode_q_nope, self.W_UK_T)
                 # Convert from (N, B, L) to (B, N, L)
                 decode_ql_nope = decode_ql_nope.transpose(0, 1)
-                maybe_execute_sparse_attention_begin(
-                    torch.cat([decode_ql_nope, decode_q_pe], dim=-1),
-                    decode_ql_nope,
-                    decode_q_pe,
-                    layer.layer_name,
-                    forward_context,
-                    "decode",
+                _, decode_ql_nope, decode_q_pe, _ = (
+                    maybe_execute_sparse_attention_begin(
+                        torch.cat([decode_ql_nope, decode_q_pe], dim=-1),
+                        decode_ql_nope,
+                        decode_q_pe,
+                        layer.layer_name,
+                        forward_context,
+                        phase="decode",
+                    )
                 )
                 output[:num_decode_tokens] = self._forward_decode(
                     decode_ql_nope, decode_q_pe, kv_cache, attn_metadata
@@ -1155,17 +1240,24 @@ def _patch_gpu_model_runner() -> None:
         ):
             if not has_ucm_sparse():
                 return
+
+            if has_kv_transfer_group():
+                uc_connector = get_kv_transfer_group()
+                uc_setup_model = getattr(uc_connector, "setup_model", None)
+                if callable(uc_setup_model):
+                    uc_setup_model(self.model)
+
             ucm_sparse = get_ucm_sparse()
             ucm_sparse.build_sparse_meta(
                 scheduler_output, self.requests, self.input_batch, attn_metadata
             )
             ucm_sparse.execute_begin(scheduler_output)
 
-        def maybe_execute_ucm_sparse_finished(self):
+        def maybe_execute_ucm_sparse_finished(self, logits_indices):
             if not has_ucm_sparse():
-                return
+                return logits_indices
             ucm_sparse = get_ucm_sparse()
-            ucm_sparse.execute_finished()
+            return ucm_sparse.execute_finished(logits_indices)
 
         def ucm_sparse_request_finished_in_worker(self, request_id: str | int):
             if not has_ucm_sparse():
@@ -1749,7 +1841,7 @@ def _patch_gpu_model_runner() -> None:
                 )
 
                 self.maybe_wait_for_kv_save()
-                self.maybe_execute_ucm_sparse_finished()
+                logits_indices = self.maybe_execute_ucm_sparse_finished(logits_indices)
 
                 finished_sending, finished_recving = self.get_finished_kv_transfers(
                     scheduler_output
@@ -1990,3 +2082,235 @@ def _patch_gpu_worker() -> None:
         )
     except ImportError:
         logger.warning("Could not patch gpu worker - module not found")
+
+
+# ==================== vllm/model_executor/models/llama.py  ====================
+def _patch_llama_model() -> None:
+    """Patch gpu worker to add UCM sparse support."""
+    try:
+        from typing import Optional, Union
+
+        import torch
+        from vllm.config import VllmConfig
+        from vllm.distributed import get_pp_group
+        from vllm.model_executor.models.llama import LlamaDecoderLayer, LlamaModel
+        from vllm.sequence import IntermediateTensors
+
+        from ucm.sparse.state import (
+            get_ucm_sparse,
+            has_ucm_sparse,
+            maybe_execute_sparse_ffn_begin,
+            maybe_execute_sparse_ffn_finished,
+            maybe_execute_sparse_layer_begin,
+            maybe_execute_sparse_layer_finished,
+        )
+
+        def llamaDecoderLayer_forward(
+            self,
+            positions: torch.Tensor,
+            hidden_states: torch.Tensor,
+            residual: Optional[torch.Tensor],
+        ) -> tuple[torch.Tensor, torch.Tensor]:
+            # Self Attention
+            if residual is None:
+                residual = hidden_states
+                hidden_states = self.input_layernorm(hidden_states)
+            else:
+                hidden_states, residual = self.input_layernorm(hidden_states, residual)
+            hidden_states = self.self_attn(
+                positions=positions, hidden_states=hidden_states
+            )
+            ######################
+            ### UCM PATCH START###
+            hidden_states, residual = maybe_execute_sparse_ffn_begin(
+                hidden_states, residual
+            )
+            ### UCM PATCH END  ###
+            ######################
+            # Fully Connected
+            hidden_states, residual = self.post_attention_layernorm(
+                hidden_states, residual
+            )
+            hidden_states = self.mlp(hidden_states)
+            ######################
+            ### UCM PATCH START###
+            hidden_states, residual = maybe_execute_sparse_ffn_finished(
+                hidden_states, residual
+            )
+            ### UCM PATCH END  ###
+            ######################
+            return hidden_states, residual
+
+        LlamaDecoderLayer.forward = llamaDecoderLayer_forward
+
+        def llamaModel_forward(
+            self,
+            input_ids: Optional[torch.Tensor],
+            positions: torch.Tensor,
+            intermediate_tensors: Optional[IntermediateTensors],
+            inputs_embeds: Optional[torch.Tensor] = None,
+        ) -> Union[
+            torch.Tensor, IntermediateTensors, tuple[torch.Tensor, list[torch.Tensor]]
+        ]:
+            if get_pp_group().is_first_rank:
+                if inputs_embeds is not None:
+                    hidden_states = inputs_embeds
+                else:
+                    hidden_states = self.get_input_embeddings(input_ids)
+                residual = None
+            else:
+                assert intermediate_tensors is not None
+                hidden_states = intermediate_tensors["hidden_states"]
+                residual = intermediate_tensors["residual"]
+
+            aux_hidden_states = []
+            for idx, layer in enumerate(self.layers[self.start_layer : self.end_layer]):
+                ######################
+                ### UCM PATCH START###
+                positions, hidden_states, residual = maybe_execute_sparse_layer_begin(
+                    positions, hidden_states, residual
+                )
+                ### UCM PATCH END  ###
+                ######################
+                if idx in self.aux_hidden_state_layers:
+                    aux_hidden_states.append(hidden_states + residual)
+                hidden_states, residual = layer(positions, hidden_states, residual)
+                ######################
+                ### UCM PATCH START###
+                positions, hidden_states, residual = (
+                    maybe_execute_sparse_layer_finished(
+                        positions, hidden_states, residual
+                    )
+                )
+                ### UCM PATCH END  ###
+                ######################
+
+            if not get_pp_group().is_last_rank:
+                return IntermediateTensors(
+                    {"hidden_states": hidden_states, "residual": residual}
+                )
+
+            hidden_states, _ = self.norm(hidden_states, residual)
+
+            if len(aux_hidden_states) > 0:
+                return hidden_states, aux_hidden_states
+            return hidden_states
+
+        LlamaModel.forward = llamaModel_forward
+
+    except ImportError:
+        logger.warning("Could not patch llama modelr - module not found")
+
+
+# ==================== vllm/model_executor/models/qwen2.py  ====================
+def _patch_qwen_model() -> None:
+    """Patch gpu worker to add UCM sparse support."""
+    try:
+        from typing import Optional, Union
+
+        import torch
+        from vllm.config import VllmConfig
+        from vllm.distributed import get_pp_group
+        from vllm.model_executor.models.qwen2 import Qwen2DecoderLayer, Qwen2Model
+        from vllm.sequence import IntermediateTensors
+
+        from ucm.sparse.state import (
+            get_ucm_sparse,
+            has_ucm_sparse,
+            maybe_execute_sparse_ffn_begin,
+            maybe_execute_sparse_ffn_finished,
+            maybe_execute_sparse_layer_begin,
+            maybe_execute_sparse_layer_finished,
+        )
+
+        def qwen2DecoderLayer_forward(
+            self,
+            positions: torch.Tensor,
+            hidden_states: torch.Tensor,
+            residual: Optional[torch.Tensor],
+        ) -> tuple[torch.Tensor, torch.Tensor]:
+            # Self Attention
+            if residual is None:
+                residual = hidden_states
+                hidden_states = self.input_layernorm(hidden_states)
+            else:
+                hidden_states, residual = self.input_layernorm(hidden_states, residual)
+            hidden_states = self.self_attn(
+                positions=positions,
+                hidden_states=hidden_states,
+            )
+            ######################
+            ### UCM PATCH START###
+            residual, hidden_states = maybe_execute_sparse_ffn_begin(
+                residual, hidden_states
+            )
+            ### UCM PATCH END  ###
+            ######################
+            # Fully Connected
+            hidden_states, residual = self.post_attention_layernorm(
+                hidden_states, residual
+            )
+            hidden_states = self.mlp(hidden_states)
+            ######################
+            ### UCM PATCH START###
+            residual, hidden_states = maybe_execute_sparse_ffn_finished(
+                residual, hidden_states
+            )
+            ### UCM PATCH END  ###
+            ######################
+            return hidden_states, residual
+
+        Qwen2DecoderLayer.forward = qwen2DecoderLayer_forward
+
+        def qwen2Model_forward(
+            self,
+            input_ids: torch.Tensor,
+            positions: torch.Tensor,
+            intermediate_tensors: Optional[IntermediateTensors] = None,
+            inputs_embeds: Optional[torch.Tensor] = None,
+        ) -> Union[torch.Tensor, IntermediateTensors]:
+            if get_pp_group().is_first_rank:
+                if inputs_embeds is not None:
+                    hidden_states = inputs_embeds
+                else:
+                    hidden_states = self.get_input_embeddings(input_ids)
+                residual = None
+            else:
+                assert intermediate_tensors is not None
+                hidden_states = intermediate_tensors["hidden_states"]
+                residual = intermediate_tensors["residual"]
+            for layer in self.layers[self.start_layer : self.end_layer]:
+                ######################
+                ### UCM PATCH START###
+                positions, hidden_states, residual = maybe_execute_sparse_layer_begin(
+                    positions,
+                    hidden_states,
+                    residual,
+                )
+                ### UCM PATCH END  ###
+                ######################
+                hidden_states, residual = layer(
+                    positions,
+                    hidden_states,
+                    residual,
+                )
+                ######################
+                ### UCM PATCH START###
+                positions, hidden_states, residual = (
+                    maybe_execute_sparse_layer_finished(
+                        positions, hidden_states, residual
+                    )
+                )
+                ### UCM PATCH END  ###
+                ######################
+            if not get_pp_group().is_last_rank:
+                return IntermediateTensors(
+                    {"hidden_states": hidden_states, "residual": residual}
+                )
+            hidden_states, _ = self.norm(hidden_states, residual)
+            return hidden_states
+
+        Qwen2Model.forward = qwen2Model_forward
+
+    except ImportError:
+        logger.warning("Could not patch llama modelr - module not found")

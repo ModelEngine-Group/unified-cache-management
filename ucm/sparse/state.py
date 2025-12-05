@@ -8,6 +8,8 @@ the same UCM sparse agent across different processes.
 
 from typing import TYPE_CHECKING, Optional
 
+import torch
+
 from ucm.logger import init_logger
 from ucm.sparse.base import UcmSparseBase, UcmSparseRole
 from ucm.sparse.factory import UcmSparseFactory
@@ -72,3 +74,37 @@ def has_ucm_sparse() -> bool:
     """Check if UCM sparse agent is available."""
     global _UCM_SPARSE_AGENT
     return _UCM_SPARSE_AGENT is not None
+
+
+def maybe_execute_sparse_layer_begin(
+    positions: torch.Tensor, hidden_states: torch.Tensor, residual: torch.Tensor
+):
+    if not has_ucm_sparse():
+        return positions, hidden_states, residual
+    ucm_spare = get_ucm_sparse()
+    return ucm_spare.layer_begin(positions, hidden_states, residual)
+
+
+def maybe_execute_sparse_layer_finished(
+    positions: torch.Tensor, hidden_states: torch.Tensor, residual: torch.Tensor
+):
+    if not has_ucm_sparse():
+        return positions, hidden_states, residual
+    ucm_spare = get_ucm_sparse()
+    return ucm_spare.layer_finished(positions, hidden_states, residual)
+
+
+def maybe_execute_sparse_ffn_begin(hidden_states: torch.Tensor, residual: torch.Tensor):
+    if not has_ucm_sparse():
+        return hidden_states, residual
+    ucm_spare = get_ucm_sparse()
+    return ucm_spare.ffn_begin(hidden_states, residual)
+
+
+def maybe_execute_sparse_ffn_finished(
+    hidden_states: torch.Tensor, residual: torch.Tensor
+):
+    if not has_ucm_sparse():
+        return hidden_states, residual
+    ucm_spare = get_ucm_sparse()
+    return ucm_spare.ffn_finished(hidden_states, residual)

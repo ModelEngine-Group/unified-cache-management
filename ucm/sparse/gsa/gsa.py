@@ -6,7 +6,7 @@ import time
 from dataclasses import dataclass
 from functools import cache, wraps
 from itertools import accumulate
-from typing import Dict, List, Optional, Union
+from typing import Dict, List, Optional, Tuple, Union
 
 import torch
 from vllm.config import VllmConfig
@@ -631,8 +631,9 @@ class GSA(UcmSparseBase):
         value: torch.Tensor,
         layer_name: str,
         forward_context: ForwardContext,
+        output: Optional[torch.Tensor] = None,
         phase: Optional[str] = None,
-    ) -> None:
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         current_layer_id = int(layer_name.split(".")[2])
         if self.prefetch_engine.atb_gsa_enable and self.prefetch_engine.is_topk_cal:
             if not self.use_mla:
@@ -682,6 +683,8 @@ class GSA(UcmSparseBase):
                                 self.decode_index
                             ]
                         )
+
+        return query, key, value, output
 
     def attention_finished(
         self,
@@ -901,7 +904,7 @@ class GSA(UcmSparseBase):
         self.gsa_stats = self.gsa_metadata.gsa_stats
         self._start_topk_cal()
 
-    def execute_finished(self):
+    def execute_finished(self, logits_indices: torch.Tensor):
         kv_caches = [None] * self.layer_num
         forward_context = get_forward_context()
         attn = forward_context.no_compile_layers
@@ -930,6 +933,7 @@ class GSA(UcmSparseBase):
             self.prefetch_engine.deal_async_prefetch(
                 False, self.gsa_metadata, kv_caches, None
             )
+        return logits_indices
 
     def launch_transfer_task(self, all_free_block_ids, all_miss_ids, kv_caches):
         if all_free_block_ids == None:
