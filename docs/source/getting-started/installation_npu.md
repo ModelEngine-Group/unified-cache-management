@@ -6,7 +6,7 @@ This document describes how to install unified-cache-management when using Ascen
 - Python: >= 3.9, < 3.12
 - A hardware with Ascend NPU. It’s usually the Atlas 800 A2 series.
 
-The current version of unified-cache-management based on vLLM-Ascend v0.9.2rc1, refer to [vLLM-Ascend Installation Requirements](https://vllm-ascend.readthedocs.io/en/latest/installation.html#requirements) to meet the requirements.
+The current version of unified-cache-management based on vLLM-Ascend v0.11.0rc1 and v0.9.1, refer to [vLLM-Ascend Installation Requirements](https://vllm-ascend.readthedocs.io/en/latest/installation.html#requirements) to meet the requirements.
 
 You have 2 ways to install for now:
 - Setup from code: First, prepare vLLM-Ascend environment, then install unified-cache-management from source code.
@@ -17,14 +17,14 @@ You have 2 ways to install for now:
 ### Prepare vLLM-Ascend Environment
 For the sake of environment isolation and simplicity, we recommend preparing the vLLM-Ascend environment by pulling the official, pre-built vLLM-Ascend Docker image.
 ```bash
-docker pull quay.io/ascend/vllm-ascend:v0.9.2rc1
+docker pull quay.io/ascend/vllm-ascend:v0.9.1
 ```
 Use the following command to run your own container:
 ```bash
 # Update DEVICE according to your device (/dev/davinci[0-7])
 export DEVICE=/dev/davinci7
 # Update the vllm-ascend image
-export IMAGE=quay.io/ascend/vllm-ascend:v0.9.2rc1
+export IMAGE=quay.io/ascend/vllm-ascend:v0.9.1
 docker run --rm \
     --name vllm-ascend-env \
     --device $DEVICE \
