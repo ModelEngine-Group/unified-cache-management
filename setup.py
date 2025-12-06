@@ -56,6 +56,10 @@ def _is_musa() -> bool:
     return PLATFORM == "musa"
 
 
+def _is_maca() -> bool:
+    return PLATFORM == "maca"
+
+
 class CMakeExtension(Extension):
     def __init__(self, name: str, sourcedir: str = ""):
         super().__init__(name, sources=[])
@@ -97,6 +101,9 @@ class CMakeBuild(build_ext):
             cmake_args.append("-DRUNTIME_ENVIRONMENT=ascend")
         elif _is_musa():
             cmake_args.append("-DRUNTIME_ENVIRONMENT=musa")
+        elif _is_maca():
+            cmake_args.append("-DRUNTIME_ENVIRONMENT=maca")
+            cmake_args.append("-DBUILD_UCM_SPARSE=OFF")
         else:
             raise RuntimeError(
                 "No supported accelerator found. "
