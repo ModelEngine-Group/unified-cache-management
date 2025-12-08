@@ -16,7 +16,6 @@ from vllm.distributed.kv_transfer.kv_connector.v1.base import (
 from vllm.distributed.parallel_state import get_tp_group, get_world_group
 from vllm.platforms import current_platform
 from vllm.v1.core.sched.output import SchedulerOutput
-from vllm.v1.request import Request
 
 from ucm.logger import init_logger
 from ucm.shared.metrics import ucmmonitor
@@ -29,6 +28,7 @@ if TYPE_CHECKING:
     from vllm.attention.backends.abstract import AttentionMetadata
     from vllm.forward_context import ForwardContext
     from vllm.v1.core.kv_cache_manager import KVCacheBlocks
+    from vllm.v1.request import Request
 
 logger = init_logger(__name__)
 
@@ -570,6 +570,9 @@ class UCMDirectConnector(KVConnectorBase_V1):
         num_saved_block = 0
         num_saved_request = 0
         save_start_time = time.perf_counter() * 1000
+        # This has already been fixed in the latest main branch of vllm_ascend, so synchronize will no longer be needed in future versions.
+        if current_platform.device_type == "npu":
+            torch.npu.current_stream().synchronize()
         for request_id, request in metadata.request_meta.items():
             if len(request.dump_block_ids[0]) == 0:
                 continue
