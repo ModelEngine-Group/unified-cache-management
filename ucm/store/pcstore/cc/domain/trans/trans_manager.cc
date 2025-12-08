@@ -29,7 +29,7 @@ namespace UC {
 Status TransManager::Setup(const size_t rankSize, const int32_t deviceId, const size_t streamNumber,
                            const size_t blockSize, const size_t ioSize, const bool ioDirect,
                            const size_t bufferNumber, const SpaceLayout* layout,
-                           const size_t timeoutMs)
+                           const size_t timeoutMs, const bool scatterGatherEnable)
 {
     auto s = Status::OK();
     if (rankSize > 1) {
@@ -38,7 +38,7 @@ Status TransManager::Setup(const size_t rankSize, const int32_t deviceId, const 
         if (s.Failure()) { return s; }
     }
     s = this->queue_.Setup(deviceId, streamNumber, blockSize, ioSize, ioDirect, bufferNumber,
-                           layout, &this->failureSet_);
+                           layout, &this->failureSet_, scatterGatherEnable);
     if (s.Failure()) { return s; }
     this->rankSize_ = rankSize;
     this->timeoutMs_ = timeoutMs;

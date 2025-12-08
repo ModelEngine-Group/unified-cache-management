@@ -77,7 +77,8 @@ void TransQueue::FileWorker(BlockTask&& task)
 
 Status TransQueue::Setup(const int32_t deviceId, const size_t streamNumber, const size_t blockSize,
                          const size_t ioSize, const bool ioDirect, const size_t bufferNumber,
-                         const SpaceLayout* layout, TaskSet* failureSet_)
+                         const SpaceLayout* layout, TaskSet* failureSet_,
+                         const bool scatterGatherEnable)
 {
     Trans::Device device;
     auto ts = device.Setup(deviceId);
@@ -90,6 +91,14 @@ Status TransQueue::Setup(const int32_t deviceId, const size_t streamNumber, cons
     if (!buffer_ || !stream_) {
         UC_ERROR("Failed to make buffer and stream on device({}).", deviceId);
         return Status::Error();
+    }
+    if (scatterGatherEnable) {
+        devBuffer_ = device.MakeBuffer();
+        smStream_ = device.MakeSMStream();
+        if (!devBuffer_ || !smStream_) {
+            UC_ERROR("Failed to make devBuffer and smStream on device({}).", deviceId);
+            return Status::Error();
+        }
     }
     ts = buffer_->MakeHostBuffers(blockSize, bufferNumber);
     if (ts.Failure()) {
@@ -108,13 +117,18 @@ Status TransQueue::Setup(const int32_t deviceId, const size_t streamNumber, cons
     this->ioSize_ = ioSize;
     this->ioDirect_ = ioDirect;
     this->failureSet_ = failureSet_;
+    this->scatterGatherEnable_ = scatterGatherEnable;
     return Status::OK();
 }
 
 void TransQueue::Dispatch(TaskPtr task, WaiterPtr waiter)
 {
     if (task->type == TransTask::Type::DUMP) {
-        this->DispatchDump(task, waiter);
+        if (this->scatterGatherEnable_) {
+            this->DispatchSatterGatherDump(task, waiter);
+        } else {
+            this->DispatchDump(task, waiter);
+        }
         return;
     }
     task->ForEachGroup(
@@ -160,6 +174,42 @@ void TransQueue::DispatchDump(TaskPtr task, WaiterPtr waiter)
             blocks.push_back(std::move(blockTask));
         });
     auto s = stream_->Synchronized();
+    if (s.Failure()) { this->failureSet_->Insert(task->id); }
+    for (auto&& block : blocks) {
+        if (s.Failure()) {
+            waiter->Done(nullptr);
+            return;
+        }
+        this->filePool_.Push(std::move(block));
+        waiter->Done([task, ioSize = this->ioSize_] { UC_DEBUG("{}", task->Epilog(ioSize)); });
+    }
+}
+
+void TransQueue::DispatchSatterGatherDump(TaskPtr task, WaiterPtr waiter)
+{
+    std::vector<BlockTask> blocks;
+    blocks.reserve(task->GroupNumber());
+    std::vector<std::shared_ptr<void>> addrs;
+    addrs.reserve(task->GroupNumber());
+    task->ForEachGroup(
+        [task, &blocks, &addrs, this](const std::string& block, std::vector<uintptr_t>& shards) {
+            BlockTask blockTask;
+            blockTask.owner = task->id;
+            blockTask.block = block;
+            blockTask.type = task->type;
+            auto number = shards.size();
+            auto bufferSize = this->ioSize_ * number;
+            blockTask.buffer = buffer_->GetHostBuffer(bufferSize);
+            std::swap(blockTask.shards, shards);
+            auto device = (void*)blockTask.shards.data();
+            auto host = blockTask.buffer.get();
+            auto devAddr = this->devBuffer_->MakeDeviceBuffer(sizeof(void*) * number);
+            smStream_->HostToDeviceAsync(device, devAddr.get(), sizeof(void*) * number);
+            smStream_->DeviceToHostAsync((void**)devAddr.get(), host, this->ioSize_, number);
+            addrs.push_back(devAddr);
+            blocks.push_back(std::move(blockTask));
+        });
+    auto s = smStream_->Synchronized();
     if (s.Failure()) { this->failureSet_->Insert(task->id); }
     for (auto&& block : blocks) {
         if (s.Failure()) {

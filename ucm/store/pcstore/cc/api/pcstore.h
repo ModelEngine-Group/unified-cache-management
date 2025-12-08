@@ -42,6 +42,7 @@ public:
         size_t transferStreamNumber{8};
         size_t transferBufferNumber{4096};
         size_t transferTimeoutMs{30000};
+        bool transferScatterGatherEnable{false};
 
         Config(const std::vector<std::string>& storageBackends, const size_t kvcacheBlockSize,
                const bool transferEnable)

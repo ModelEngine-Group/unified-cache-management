@@ -101,6 +101,8 @@ PYBIND11_MODULE(ucmpcstore, module)
     config.def_readwrite("transferIoSize", &UC::PcStorePy::Config::transferIoSize);
     config.def_readwrite("transferBufferNumber", &UC::PcStorePy::Config::transferBufferNumber);
     config.def_readwrite("transferTimeoutMs", &UC::PcStorePy::Config::transferTimeoutMs);
+    config.def_readwrite("transferScatterGatherEnable",
+                         &UC::PcStorePy::Config::transferScatterGatherEnable);
     store.def(py::init<>());
     store.def("CCStoreImpl", &UC::PcStorePy::CCStoreImpl);
     store.def("Setup", &UC::PcStorePy::Setup);
