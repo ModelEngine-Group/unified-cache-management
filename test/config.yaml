@@ -3,16 +3,16 @@ reports:
   use_timestamp: true
   directory_prefix: "pytest"
   html: # pytest-html
-    enabled: true
+    enabled: false
     filename: "report.html"
     title: "UCM Pytest Test Report"
 
 database:
   backup: "results/"
-  enabled: true
+  enabled: false
   host: "127.0.0.1"
   port: 3306
-  name: "ucm_pytest"
+  name: "ucm_test"
   user: "root"
   password: "123456"
   charset: "utf8mb4"
