@@ -33,7 +33,8 @@ class TransManager {
 public:
     Status Setup(const size_t rankSize, const int32_t deviceId, const size_t streamNumber,
                  const size_t blockSize, const size_t ioSize, const bool ioDirect,
-                 const size_t bufferNumber, const SpaceLayout* layout, const size_t timeoutMs);
+                 const size_t bufferNumber, const SpaceLayout* layout, const size_t timeoutMs,
+                 const bool scatterGatherEnable);
     Status Submit(TransTask task, size_t& taskId) noexcept;
     Status Wait(const size_t taskId) noexcept;
     Status Check(const size_t taskId, bool& finish) noexcept;
