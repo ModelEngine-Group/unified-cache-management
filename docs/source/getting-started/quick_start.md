@@ -16,7 +16,7 @@
 - vLLM: v0.9.2
 - vLLM Ascend: v0.9.1/0.9.2rc1
 
-note: If you are using Prefix Cache, please choose the vllm ascend v0.9.1 vesion; if you are using Sparse Attention, please choose the vllm ascend v0.9.2rc1 version.
+note: If you are using Prefix Cache, please choose the **vllm ascend v0.9.1** version; if you are using Sparse Attention, please choose the **vllm ascend v0.9.2rc1** version.
 
 ## Installation
 Before you start with UCM, please make sure that you have installed UCM correctly by following the [GPU Installation](./installation_gpu.md) guide or [NPU Installation](./installation_npu.md) guide.
