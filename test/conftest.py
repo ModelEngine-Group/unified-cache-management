@@ -34,6 +34,8 @@ def pytest_collection_modifyitems(config, items):
 
     markers = [m.split(":", 1)[0].strip() for m in config.getini("markers")]
     for name in markers:
+        if name == "forked":
+            continue
         opt = config.getoption(f"--{name}", "").strip()
         if not opt:
             continue

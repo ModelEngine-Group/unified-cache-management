@@ -7,15 +7,15 @@ reports:
     filename: "report.html"
     title: "UCM Pytest Test Report"
 
-database:
-  backup: "results/"
-  enabled: true
-  host: "127.0.0.1"
-  port: 3306
-  name: "ucm_pytest"
-  user: "root"
-  password: "123456"
-  charset: "utf8mb4"
+# database:
+#   backup: "results/"
+#   enabled: true
+#   host: "127.0.0.1"
+#   port: 3306
+#   name: "ucm_pytest"
+#   user: "root"
+#   password: "123456"
+#   charset: "utf8mb4"
 
 # LLM Connection Configuration
 llm_connection:
@@ -25,3 +25,7 @@ llm_connection:
   stream: true    # stream output
   ignore_eos: true    # Ignore the returned terminator
   timeout: 180    # request time out
+  
+  # Offline inference configuration (for accuracy tests)
+  model_path: "/home/models/DeepSeek-V2-Lite"
+  ucm_storage_dir: "/home/share/qyh-test"
