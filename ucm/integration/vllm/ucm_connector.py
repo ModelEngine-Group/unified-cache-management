@@ -559,7 +559,9 @@ class UCMDirectConnector(KVConnectorBase_V1):
         # TODO support PP
         if (self.is_mla or self.is_dsa) and self.global_rank != 0:
             return
-        if self.metrics_config:
+        if self.metrics_config or current_platform.device_type == "npu":
+            # When use vllm_ascend, we should add synchronize here, otherwise accuracy problem will raise
+            # This has already been fixed in the latest main branch of vllm_ascend, so synchronize will no longer be needed in future versions.
             self.synchronize()
 
         metadata = self._get_connector_metadata()
@@ -571,9 +573,6 @@ class UCMDirectConnector(KVConnectorBase_V1):
         num_saved_block = 0
         num_saved_request = 0
         save_start_time = time.perf_counter() * 1000
-        # This has already been fixed in the latest main branch of vllm_ascend, so synchronize will no longer be needed in future versions.
-        if current_platform.device_type == "npu":
-            self.synchronize()
         for request_id, request in metadata.request_meta.items():
             if len(request.dump_block_ids[0]) == 0:
                 continue
