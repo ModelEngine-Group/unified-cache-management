@@ -178,11 +178,12 @@ class UCMDirectConnector(KVConnectorBase_V1):
                 self.metrics_config,
             )
             self.monitor = ucmmonitor.StatsMonitor.get_instance()
-            self.synchronize = (
-                torch.cuda.synchronize
-                if current_platform.is_cuda_alike()
-                else torch.npu.synchronize
-            )
+
+        self.synchronize = (
+            torch.cuda.synchronize
+            if current_platform.is_cuda_alike()
+            else torch.npu.synchronize
+        )
 
         # invlalid block ids due to load errors
         self._invalid_block_ids: set[int] = set()
@@ -572,7 +573,7 @@ class UCMDirectConnector(KVConnectorBase_V1):
         save_start_time = time.perf_counter() * 1000
         # This has already been fixed in the latest main branch of vllm_ascend, so synchronize will no longer be needed in future versions.
         if current_platform.device_type == "npu":
-            torch.npu.current_stream().synchronize()
+            self.synchronize()
         for request_id, request in metadata.request_meta.items():
             if len(request.dump_block_ids[0]) == 0:
                 continue
