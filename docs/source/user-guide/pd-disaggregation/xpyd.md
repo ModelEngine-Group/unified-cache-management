@@ -13,14 +13,12 @@ For illustration purposes, let us take GPU as an example and assume the model us
 ### Run prefill servers
 Prefiller1 Launch Command:
 ```bash
-export PYTHONHASHSEED=123456
 export CUDA_VISIBLE_DEVICES=0 
 vllm serve /home/models/Qwen2.5-7B-Instruct \
 --max-model-len 20000 \
 --tensor-parallel-size 1 \
 --gpu_memory_utilization 0.87 \
 --trust-remote-code \
---enforce-eager \
 --no-enable-prefix-caching \
 --port 7800 \
 --block-size 128 \
@@ -41,14 +39,12 @@ vllm serve /home/models/Qwen2.5-7B-Instruct \
 
 Prefiller2 Launch Command:
 ```bash
-export PYTHONHASHSEED=123456
 export CUDA_VISIBLE_DEVICES=1 
 vllm serve /home/models/Qwen2.5-7B-Instruct \
 --max-model-len 20000 \
 --tensor-parallel-size 1 \
 --gpu_memory_utilization 0.87 \
 --trust-remote-code \
---enforce-eager \
 --no-enable-prefix-caching \
 --port 7801 \
 --block-size 128 \
