@@ -25,3 +25,17 @@ llm_connection:
   stream: true    # stream output
   ignore_eos: true    # Ignore the returned terminator
   timeout: 180    # request time out
+
+# Environment Pre-Check Configuration
+Env_preCheck:
+  master_ip: 141.111.32.70
+  worker_ip: 141.111.32.72
+  ascend_rt_visible_devices: "0,1"
+  node_num: 2
+  model_path: "/home/models/QwQ-32B"
+  hf_model_name: "QwQ-32B"
+  middle_page: "Qwen"
+  expected_embed_bandwidth: 10
+  expected_fetch_bandwidth: 10
+  kvCache_block_number: 1024
+  storage_backends: ["/home/menglong/data"]
