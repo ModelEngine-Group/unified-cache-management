@@ -9,4 +9,9 @@ target_link_libraries(nfsstore PUBLIC storeinfra storedevice storetask)
 file(GLOB_RECURSE UCMSTORE_NFS_CPY_SOURCE_FILES "./cpy/*.cc")
 pybind11_add_module(ucmnfsstore ${UCMSTORE_NFS_CPY_SOURCE_FILES})
 target_link_libraries(ucmnfsstore PRIVATE nfsstore)
-set_target_properties(ucmnfsstore PROPERTIES LIBRARY_OUTPUT_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
+
+file(RELATIVE_PATH INSTALL_REL_PATH
+     ${CMAKE_SOURCE_DIR}
+     ${CMAKE_CURRENT_SOURCE_DIR}
+)
+install(TARGETS ucmnfsstore LIBRARY DESTINATION ${INSTALL_REL_PATH} COMPONENT ucm)

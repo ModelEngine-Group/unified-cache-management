@@ -1,5 +1,5 @@
 # auto detect cuda ------------------------
-if($ENV{PLATFORM} STREQUAL "cuda")
+if(${RUNTIME_ENVIRONMENT} STREQUAL "cuda")
     if(NOT DEFINED CMAKE_CUDA_COMPILER)
         set(CUDA_ROOT "/usr/local/cuda/" CACHE PATH "Path to CUDA root directory")
         set(CMAKE_CUDA_COMPILER ${CUDA_ROOT}/bin/nvcc)
@@ -106,4 +106,8 @@ endif()
 add_subdirectory(core)
 add_subdirectory(py_intf)
 
-set_target_properties(kvstar_retrieve PROPERTIES LIBRARY_OUTPUT_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
+file(RELATIVE_PATH INSTALL_REL_PATH
+     ${CMAKE_SOURCE_DIR}
+     ${CMAKE_CURRENT_SOURCE_DIR}
+)
+install(TARGETS kvstar_retrieve LIBRARY DESTINATION ${INSTALL_REL_PATH} COMPONENT ucm)
