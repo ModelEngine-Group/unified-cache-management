@@ -16,7 +16,6 @@ from vllm.distributed.kv_transfer.kv_connector.v1.base import (
 from vllm.distributed.parallel_state import get_tp_group, get_world_group
 from vllm.platforms import current_platform
 from vllm.v1.core.sched.output import SchedulerOutput
-from vllm.v1.request import Request
 
 from ucm.logger import init_logger
 from ucm.shared.metrics import ucmmonitor
@@ -29,6 +28,7 @@ if TYPE_CHECKING:
     from vllm.attention.backends.abstract import AttentionMetadata
     from vllm.forward_context import ForwardContext
     from vllm.v1.core.kv_cache_manager import KVCacheBlocks
+    from vllm.v1.request import Request
 
 logger = init_logger(__name__)
 
@@ -178,11 +178,12 @@ class UCMDirectConnector(KVConnectorBase_V1):
                 self.metrics_config,
             )
             self.monitor = ucmmonitor.StatsMonitor.get_instance()
-            self.synchronize = (
-                torch.cuda.synchronize
-                if current_platform.is_cuda_alike()
-                else torch.npu.synchronize
-            )
+
+        self.synchronize = (
+            torch.cuda.synchronize
+            if current_platform.is_cuda_alike()
+            else torch.npu.synchronize
+        )
 
         # invlalid block ids due to load errors
         self._invalid_block_ids: set[int] = set()
@@ -558,7 +559,9 @@ class UCMDirectConnector(KVConnectorBase_V1):
         # TODO support PP
         if (self.is_mla or self.is_dsa) and self.global_rank != 0:
             return
-        if self.metrics_config:
+        if self.metrics_config or current_platform.device_type == "npu":
+            # When use vllm_ascend, we should add synchronize here, otherwise accuracy problem will raise
+            # This has already been fixed in the latest main branch of vllm_ascend, so synchronize will no longer be needed in future versions.
             self.synchronize()
 
         metadata = self._get_connector_metadata()
