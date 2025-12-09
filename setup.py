@@ -23,9 +23,11 @@
 #
 
 import os
+import shutil
 import subprocess
 import sys
 import sysconfig
+import warnings
 from glob import glob
 
 import pybind11
@@ -33,6 +35,12 @@ import torch
 import torch.utils.cpp_extension
 from setuptools import Extension, find_packages, setup
 from setuptools.command.build_ext import build_ext
+
+# Suppress warnings about packages absent from packages configuration
+# These are expected for C++ source directories, test directories, etc.
+warnings.filterwarnings(
+    "ignore", message=".*Package.*is absent from the `packages` configuration.*"
+)
 
 ROOT_DIR = os.path.abspath(os.path.dirname(__file__))
 PLATFORM = os.getenv("PLATFORM")
@@ -45,15 +53,7 @@ def _enable_sparse() -> bool:
 
 
 def _is_cuda() -> bool:
-    return PLATFORM == "cuda"
-
-
-def _is_npu() -> bool:
-    return PLATFORM == "ascend"
-
-
-def _is_musa() -> bool:
-    return PLATFORM == "musa"
+    return PLATFORM == "cuda" or (hasattr(torch, "cuda") and torch.cuda.is_available())
 
 
 def _is_maca() -> bool:
@@ -70,6 +70,8 @@ class CMakeBuild(build_ext):
     def run(self):
         for ext in self.extensions:
             self.build_cmake(ext)
+
+        self._copy_so_files_to_build_lib()
 
     def build_cmake(self, ext: CMakeExtension):
         build_dir = self.build_temp
@@ -97,18 +99,8 @@ class CMakeBuild(build_ext):
 
         if _is_cuda():
             cmake_args.append("-DRUNTIME_ENVIRONMENT=cuda")
-        elif _is_npu():
-            cmake_args.append("-DRUNTIME_ENVIRONMENT=ascend")
-        elif _is_musa():
-            cmake_args.append("-DRUNTIME_ENVIRONMENT=musa")
-        elif _is_maca():
-            cmake_args.append("-DRUNTIME_ENVIRONMENT=maca")
-            cmake_args.append("-DBUILD_UCM_SPARSE=OFF")
         else:
-            raise RuntimeError(
-                "No supported accelerator found. "
-                "Please ensure either CUDA/MUSA or NPU is available."
-            )
+            cmake_args.append("-DRUNTIME_ENVIRONMENT=ascend")
 
         if _enable_sparse():
             cmake_args.append("-DBUILD_UCM_SPARSE=ON")
@@ -126,33 +118,58 @@ class CMakeBuild(build_ext):
             cwd=build_dir,
         )
 
+    def _copy_so_files_to_build_lib(self):
+        """Copy .so files from source directories to build_lib for installation."""
+        if not hasattr(self, "build_lib") or not self.build_lib:
+            return
+
+        packages = _get_packages()
+        copied_count = 0
+
+        for package in packages:
+            # Source directory where CMake outputs .so files
+            source_package_dir = os.path.join(ROOT_DIR, package.replace(".", os.sep))
+
+            # Destination in build_lib
+            build_package_dir = os.path.join(
+                self.build_lib, package.replace(".", os.sep)
+            )
+
+            # Find all .so files in the source package directory
+            so_files = glob(os.path.join(source_package_dir, "*.so"))
+
+            if so_files:
+                # Ensure destination directory exists
+                os.makedirs(build_package_dir, exist_ok=True)
+
+                # Copy each .so file
+                for so_file in so_files:
+                    dest_file = os.path.join(
+                        build_package_dir, os.path.basename(so_file)
+                    )
+                    shutil.copy2(so_file, dest_file)
+                    copied_count += 1
+                    print(
+                        f"[INFO] Copied {os.path.basename(so_file)} to {build_package_dir}"
+                    )
+
+        if copied_count > 0:
+            print(f"[INFO] Successfully copied {copied_count} .so file(s) to build_lib")
+        else:
+            print(
+                "[WARNING] No .so files found to copy. Extensions may not have been built."
+            )
+
 
 def _get_packages():
     """Discover Python packages, optionally filtering out sparse-related ones."""
-    packages = find_packages()
-    if not _enable_sparse():
-        packages = [pkg for pkg in packages if not pkg.startswith("ucm.sparse")]
+    sparse_enabled = _enable_sparse()
+    exclude_patterns = []
+    if not sparse_enabled:
+        exclude_patterns.append("ucm.sparse*")
+
+    packages = find_packages(exclude=exclude_patterns)
     return packages
-
-
-def _get_package_data_with_so(packages=None):
-    """Automatically discover all packages and include .so files."""
-    if packages is None:
-        packages = _get_packages()
-    package_data = {}
-
-    for package in packages:
-        # Convert package name to directory path
-        package_dir = os.path.join(ROOT_DIR, package.replace(".", os.sep))
-
-        # Check if this package directory contains .so files
-        so_files = glob(os.path.join(package_dir, "*.so"))
-        if so_files:
-            package_data[package] = ["*.so"]
-            print(f"[INFO] Including .so files for package: {package}")
-
-    print(f"[INFO] Package data: {package_data}")
-    return package_data
 
 
 ext_modules = []
@@ -162,13 +179,12 @@ packages = _get_packages()
 
 setup(
     name="uc-manager",
-    version="0.1.1",
+    version="0.1.2",
     description="Unified Cache Management",
     author="Unified Cache Team",
     packages=packages,
     python_requires=">=3.10",
     ext_modules=ext_modules,
     cmdclass={"build_ext": CMakeBuild},
-    package_data=_get_package_data_with_so(packages),
     zip_safe=False,
 )

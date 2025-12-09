@@ -5,8 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "uc-manager"
 authors = [{name = "UCM Team"}]
-license = "MIT"
-license-files = ["LICENSE"]
+license = { file="LICENSE" }
 readme = "README.md"
 description = "Persist and reuse KV Cache to speedup your LLM."
 requires-python = ">=3.10"
