@@ -1,10 +1,15 @@
 [build-system]
-requires = ["setuptools>=45", "wheel", "cmake", "torch", "pybind11"]
+requires = [
+    "setuptools>=64",
+    "cmake>=3.18",
+    "torch>=2.5.1",
+    "wheel",
+]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "uc-manager"
-authors = [{name = "UCM Team"}]
+authors = [{name = "Unified Cache Team"}]
 license = { file="LICENSE" }
 readme = "README.md"
 description = "Persist and reuse KV Cache to speedup your LLM."

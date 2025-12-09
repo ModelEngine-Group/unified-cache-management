@@ -9,4 +9,9 @@ target_link_libraries(pcstore PUBLIC trans storeinfra)
 file(GLOB_RECURSE UCMSTORE_PC_CPY_SOURCE_FILES "./cpy/*.cc")
 pybind11_add_module(ucmpcstore ${UCMSTORE_PC_CPY_SOURCE_FILES})
 target_link_libraries(ucmpcstore PRIVATE pcstore)
-set_target_properties(ucmpcstore PROPERTIES LIBRARY_OUTPUT_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
+
+file(RELATIVE_PATH INSTALL_REL_PATH
+     ${CMAKE_SOURCE_DIR}
+     ${CMAKE_CURRENT_SOURCE_DIR}
+)
+install(TARGETS ucmpcstore LIBRARY DESTINATION ${INSTALL_REL_PATH} COMPONENT ucm)
