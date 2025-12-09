@@ -32,10 +32,10 @@ logger = init_logger(__name__)
 @dataclass
 class ChunkMetaData:
     # [start, start + len)
-    start_idx_in_req: int
+    start_token_dix: int
     chunk_tokens_len: int
 
-    start_idx_in_req_blks: int
+    start_blk_idx: int
     chunk_blks_len: int
 
     cached_start_position: int
@@ -45,12 +45,12 @@ class ChunkMetaData:
     store_hits: List[bool] = field(default_factory=list)
 
     @property
-    def end_idx_in_req(self) -> int:
-        return self.start_idx_in_req + self.chunk_tokens_len
+    def end_token_dix(self) -> int:
+        return self.start_token_dix + self.chunk_tokens_len
 
     @property
-    def end_idx_in_req_blks(self) -> int:
-        return self.start_idx_in_req_blks + self.chunk_blks_len
+    def end_blk_idx(self) -> int:
+        return self.start_blk_idx + self.chunk_blks_len
 
     @property
     def cached_end_position(self) -> int:
@@ -58,7 +58,7 @@ class ChunkMetaData:
 
     @property
     def position_offset(self) -> int:
-        return self.start_idx_in_req - self.cached_start_position
+        return self.start_token_dix - self.cached_start_position
 
     @property
     def hits_vllm_blk_ids(self) -> List[int]:
@@ -77,10 +77,10 @@ class ChunkMetaData:
 
     def update_meta_partial_pc(self, num_pc_part_blks: int, block_size: int) -> None:
         if num_pc_part_blks > 0:
-            self.start_idx_in_req += num_pc_part_blks * block_size
+            self.start_token_dix += num_pc_part_blks * block_size
             self.chunk_tokens_len -= num_pc_part_blks * block_size
 
-            self.start_idx_in_req_blks += num_pc_part_blks
+            self.start_blk_idx += num_pc_part_blks
             self.chunk_blks_len -= num_pc_part_blks
 
             self.chunk_blks_hash = self.chunk_blks_hash[num_pc_part_blks:]
@@ -211,9 +211,9 @@ class UCMBlendConnector(UCMDirectConnector):
                 chunk_tokens_len = chunk_blks_len * self.block_size
 
                 rag_chunk_meta = ChunkMetaData(
-                    start_idx_in_req=start_token_dix,
+                    start_token_dix=start_token_dix,
                     chunk_tokens_len=chunk_tokens_len,
-                    start_idx_in_req_blks=start_blk_idx,
+                    start_blk_idx=start_blk_idx,
                     chunk_blks_len=chunk_blks_len,
                     chunk_blks_hash=chunk_blks_hash,
                     cached_start_position=0,
@@ -271,7 +271,7 @@ class UCMBlendConnector(UCMDirectConnector):
         # for cache blend
         for i, chunk_meta in enumerate(req_chunks_meta):
             chunk_meta.store_hits = chunk_lookup_results[
-                chunk_meta.start_idx_in_req_blks : chunk_meta.end_idx_in_req_blks
+                chunk_meta.start_blk_idx : chunk_meta.end_blk_idx
             ]
         first_chunk_meta = req_chunks_meta[0]
         first_chunk_meta.update_meta_partial_pc(pc_hit_blocks, self.block_size)
@@ -324,7 +324,7 @@ class UCMBlendConnector(UCMDirectConnector):
             # just need to load, in future we may create a multi-chunk hash to dump and reuse the blended cache
             for chunk_meta in req_meta.chunks_meta:
                 chunk_meta.vllm_blk_ids = vllm_block_ids[
-                    chunk_meta.start_idx_in_req_blks : chunk_meta.end_idx_in_req_blks
+                    chunk_meta.start_blk_idx : chunk_meta.end_blk_idx
                 ]
                 load_ucm_block_ids.extend(chunk_meta.hits_chunk_blks_hash)
                 load_vllm_block_ids.extend(chunk_meta.hits_vllm_blk_ids)

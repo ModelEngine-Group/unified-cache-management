@@ -85,10 +85,8 @@ class BlendMetaData(UcmSparseMetadata):
                 hit_mask.extend(meta.store_hits)
             reqMeta = ReqMeta(
                 req_idx=req_idx_batch,
-                prefix_len=chunks_meta[0].start_idx_in_req,
-                prefix_blk_len=get_num_blks(
-                    chunks_meta[0].start_idx_in_req, block_size
-                ),
+                prefix_len=chunks_meta[0].start_token_dix,
+                prefix_blk_len=get_num_blks(chunks_meta[0].start_token_dix, block_size),
                 chunks_len=len(hit_mask) * block_size,
                 chunks_blk_len=len(hit_mask),
                 chunk_hit_mask=hit_mask,
