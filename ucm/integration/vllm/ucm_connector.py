@@ -1017,27 +1017,18 @@ class UCMKVConnectorStats(KVConnectorStats):
     def aggregate(self, other: KVConnectorStats) -> KVConnectorStats:
         """Aggregate stats from another worker, preserving per-worker separation"""
         if not other.is_empty():
-            if isinstance(other, UCMKVConnectorStats):
-                # Other is also UCMKVConnectorStats with per-worker data
-                for worker_rank, worker_data in other.data.items():
-                    if worker_rank not in self.data:
-                        self.data[worker_rank] = copy.deepcopy(worker_data)
-                    else:
-                        # Aggregate metrics for this worker
-                        for metric_name, values in worker_data.items():
-                            if metric_name not in self.data[worker_rank]:
-                                self.data[worker_rank][metric_name] = []
-                            self.data[worker_rank][metric_name].extend(values)
-            else:
-                # Other is a different type, treat as single worker "0"
-                worker_key = "0"
-                if worker_key not in self.data:
-                    self.data[worker_key] = {}
-
-                for metric_name, values in other.data.items():
-                    if metric_name not in self.data[worker_key]:
-                        self.data[worker_key][metric_name] = []
-                    self.data[worker_key][metric_name].extend(values)
+            assert isinstance(
+                other, UCMKVConnectorStats
+            ), "Expected UCMKVConnectorStats"
+            for worker_rank, worker_data in other.data.items():
+                if worker_rank not in self.data:
+                    self.data[worker_rank] = copy.deepcopy(worker_data)
+                else:
+                    # Aggregate metrics for this worker
+                    for metric_name, values in worker_data.items():
+                        if metric_name not in self.data[worker_rank]:
+                            self.data[worker_rank][metric_name] = []
+                        self.data[worker_rank][metric_name].extend(values)
         return self
 
     def reduce(self) -> dict[str, int | float]:
@@ -1202,17 +1193,10 @@ class UCMPromMetrics(KVConnectorPromMetrics):
                     "extended_labelnames": extended_labelnames,
                 }
 
-    def observe(
-        self,
-        transfer_stats_data: dict[str, Any] | KVConnectorStats,
-        engine_idx: int = 0,
-    ):
+    def observe(self, transfer_stats_data: dict[str, Any], engine_idx: int = 0):
         """
         Record transfer statistics to Prometheus metrics based on configuration.
         """
-        if isinstance(transfer_stats_data, KVConnectorStats):
-            transfer_stats_data = transfer_stats_data.data
-
         if transfer_stats_data and isinstance(transfer_stats_data, dict):
             first_key = next(iter(transfer_stats_data.keys()), None)
             if first_key and isinstance(transfer_stats_data[first_key], dict):
