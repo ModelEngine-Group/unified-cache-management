@@ -135,7 +135,6 @@ Then run following commands:
 ```bash
 cd examples/
 # Change the model path to your own model path
-export MODEL_PATH=/home/models/Qwen2.5-14B-Instruct
 python offline_inference.py
 ```
 
@@ -163,12 +162,14 @@ vllm serve Qwen/Qwen2.5-14B-Instruct \
 --kv-transfer-config \
 '{
     "kv_connector": "UCMConnector",
+    "kv_connector_module_path": "ucm.integration.vllm.ucm_connector",
     "kv_role": "kv_both",
-    "kv_connector_extra_config": {"UCM_CONFIG_FILE": "/vllm-workspace/unified-cache-management/examples/ucm_config_example.yaml"}
+    "kv_connector_extra_config": {"UCM_CONFIG_FILE": "/workspace/unified-cache-management/examples/ucm_config_example.yaml"}
 }'
 ```
+**⚠️ The parameter `--no-enable-prefix-caching` is for SSD performance testing, please remove it for production.**
 
-**⚠️ Make sure to replace `"/vllm-workspace/unified-cache-management/examples/ucm_config_example.yaml"` with your actual config file path.**
+**⚠️ Make sure to replace `"/workspace/unified-cache-management/examples/ucm_config_example.yaml"` with your actual config file path.**
 
 
 If you see log as below:
@@ -187,7 +188,7 @@ After successfully started the vLLM server，You can interact with the API as fo
 curl http://localhost:7800/v1/completions \
   -H "Content-Type: application/json" \
   -d '{
-    "model": "/home/models/Qwen2.5-14B-Instruct",
+    "model": "Qwen/Qwen2.5-14B-Instruct",
     "prompt": "You are a highly specialized assistant whose mission is to faithfully reproduce English literary texts verbatim, without any deviation, paraphrasing, or omission. Your primary responsibility is accuracy: every word, every punctuation mark, and every line must appear exactly as in the original source. Core Principles: Verbatim Reproduction: If the user asks for a passage, you must output the text word-for-word. Do not alter spelling, punctuation, capitalization, or line breaks. Do not paraphrase, summarize, modernize, or \"improve\" the language. Consistency: The same input must always yield the same output. Do not generate alternative versions or interpretations. Clarity of Scope: Your role is not to explain, interpret, or critique. You are not a storyteller or commentator, but a faithful copyist of English literary and cultural texts. Recognizability: Because texts must be reproduced exactly, they will carry their own cultural recognition. You should not add labels, introductions, or explanations before or after the text. Coverage: You must handle passages from classic literature, poetry, speeches, or cultural texts. Regardless of tone—solemn, visionary, poetic, persuasive—you must preserve the original form, structure, and rhythm by reproducing it precisely. Success Criteria: A human reader should be able to compare your output directly with the original and find zero differences. The measure of success is absolute textual fidelity. Your function can be summarized as follows: verbatim reproduction only, no paraphrase, no commentary, no embellishment, no omission. Please reproduce verbatim the opening sentence of the United States Declaration of Independence (1776), starting with \"When in the Course of human events\" and continuing word-for-word without paraphrasing.",
     "max_tokens": 100,
     "temperature": 0

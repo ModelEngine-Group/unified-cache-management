@@ -109,8 +109,6 @@ Explanation:
 
 ## Launching Inference
 
-### Offline Inference
-
 In this guide, we describe **online inference** using vLLM with the UCM connector, deployed as an OpenAI-compatible server. For best performance with UCM, it is recommended to set `block_size` to 128.
 
 To start the vLLM server with the Qwen/Qwen2.5-14B-Instruct model, run:
@@ -129,6 +127,7 @@ vllm serve Qwen/Qwen2.5-14B-Instruct \
 '{
     "kv_connector": "UCMConnector",
     "kv_role": "kv_both",
+    "kv_connector_module_path": "ucm.integration.vllm.ucm_connector",
     "kv_connector_extra_config": {"UCM_CONFIG_FILE": "/vllm-workspace/unified-cache-management/examples/ucm_config_example.yaml"}
 }'
 ```

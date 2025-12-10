@@ -68,7 +68,7 @@ in either a local filesystem for single-machine scenarios or through NFS mount p
 
 ## Quick Start
 
-please refer to [Quick Start](https://ucm.readthedocs.io/en/latest/getting-started/quick_start.html).
+please refer to [Quick Start for vLLM](https://ucm.readthedocs.io/en/latest/getting-started/quickstart_vllm.html) and [Quick Start for vLLM-Ascend](https://ucm.readthedocs.io/en/latest/getting-started/quickstart_vllm_ascend.html).
 
 ---
 
