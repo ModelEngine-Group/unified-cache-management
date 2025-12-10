@@ -3,6 +3,7 @@ from common.capture_utils import export_vars
 from common.llmperf.run_inference import inference_results
 
 
+@pytest.mark.stage(0)
 @pytest.mark.parametrize("mean_input_tokens", [[2000, 3000]])
 @pytest.mark.parametrize("mean_output_tokens", [[200, 500]])
 @pytest.mark.parametrize("max_num_completed_requests", [[8, 4]])
