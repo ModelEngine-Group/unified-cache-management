@@ -169,10 +169,7 @@ def pad_rag_chunks(token_ids, block_size, pad_id, end_id):
     return padded
 
 
-systemPrompt = """
-    You are a helpful assistant.
-    Please read the following Passages and answer the Question below.
-"""
+systemPrompt = "Answer the question based on the given passages. Only give me the answer and do not output any other words.\n\nThe following are given passages.\n"
 
 
 def main():
@@ -198,7 +195,7 @@ def main():
             r"Passage\s+(\d+):(.*?)(?=Passage\s+\d+:|$)", dataset_row["context"], re.S
         )
         chunks = [f"Passage {i}:{passages[i][1]}" for i in range(len(passages))]
-        question = "\n Question: " + dataset_row["input"] + "Answer within 5 words."
+        question = f"\n\nAnswer the question based on the given passages. Answer the question within 5 words. Do NOT repeat the question or output any other words. Question: {dataset_row["input"]}\nAnswer:"
         origin_sys_prompt_ids = tokenizer.encode(systemPrompt)
         padded_sys_prompt_ids = pad_rag_chunks(
             origin_sys_prompt_ids, block_size, chunk_pad_token_id, chunk_end_token_id
