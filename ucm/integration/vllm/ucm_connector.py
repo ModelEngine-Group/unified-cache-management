@@ -413,10 +413,6 @@ class UCMDirectConnector(KVConnectorBase_V1):
     def _generate_task(
         self, vllm_block_ids: List[int], ucm_block_ids: List[bytes]
     ) -> Tuple[List[bytes], List[int], List[List[torch.Tensor]]]:
-        """
-        GQA/MHA: one layer shape is (2, num_blocks, block_size, num_kv_heads, head_size)
-        MLA: one layer shape is (num_blocks, block_size, head_size)
-        """
         block_ids, shard_indexs, tensors = [], [], []
         for i, vllm_block_id in enumerate(vllm_block_ids):
             k_tensors, v_tensors = self._get_tensors(vllm_block_id)
