@@ -29,10 +29,10 @@ from typing import List
 import torch
 
 from ucm.store.pcstore.pcstore_connector import UcmPcStore
-from ucm.store.ucmstore import UcmKVStoreBase
+from ucm.store.ucmstore_v1 import UcmKVStoreBaseV1
 
 
-def setup_store(storage_backends, block_size, device_id, io_size) -> UcmKVStoreBase:
+def setup_store(storage_backends, block_size, device_id, io_size) -> UcmKVStoreBaseV1:
     config = {}
     config["storage_backends"] = storage_backends
     config["kv_block_size"] = block_size
@@ -48,7 +48,7 @@ def get_hashes(batch_size, batch_number):
     file_path = os.path.join(current_directory, kvcache_block_hashes_file)
     with open(file_path, "r", encoding="utf-8") as file:
         lines = file.readlines()
-    total = [line.strip() for line in lines]
+    total = [bytes.fromhex(line.strip()) for line in lines]
     hashes = []
     for _ in range(batch_number):
         hashes.extend(random.sample(total, batch_size))
@@ -70,24 +70,16 @@ def make_buffers(device_id, batch_size, block_dim, block_len, block_layer):
     return tensors
 
 
-def fetch(store: UcmKVStoreBase, hashes: List[str], tensors: List[List[torch.Tensor]]):
+def fetch(
+    store: UcmKVStoreBaseV1, hashes: List[bytes], tensors: List[List[torch.Tensor]]
+):
     founds = store.lookup(hashes)
     for found in founds:
         assert found
-    block_ids = []
-    offsets = []
-    layers = []
-    for hash_id, block in zip(hashes, tensors):
-        offset = 0
-        for layer in block:
-            block_ids.append(hash_id)
-            offsets.append(offset)
-            layers.append(layer)
-            offset += layer.untyped_storage().size()
-    task = store.load(block_ids, offsets, layers)
+    shard_index = [0] * len(hashes)
+    task = store.load(hashes, shard_index, tensors)
     assert task.task_id > 0
-    ret = store.wait(task)
-    assert ret == 0
+    store.wait(task)
 
 
 def main():

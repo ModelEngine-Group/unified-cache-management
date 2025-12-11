@@ -28,15 +28,15 @@ from typing import Dict, List, Tuple
 import torch
 
 from ucm.store.pcstore import ucmpcstore
-from ucm.store.ucmstore import Task, UcmKVStoreBase
+from ucm.store.ucmstore_v1 import Task, UcmKVStoreBaseV1
 
 
 @dataclass
-class NfsTask(Task):
+class PcTask(Task):
     task_id: int
 
 
-class UcmPcStore(UcmKVStoreBase):
+class UcmPcStore(UcmKVStoreBaseV1):
     def __init__(self, config: Dict):
         super().__init__(config)
         self.store = ucmpcstore.PcStore()
@@ -52,7 +52,7 @@ class UcmPcStore(UcmKVStoreBase):
             param.transferIoDirect = config.get("use_direct", False)
             param.transferStreamNumber = config.get("stream_number", 8)
             param.transferBufferNumber = config.get("buffer_number", 4096)
-            param.transferLocalRankSize = config.get("local_rank_size", 8)
+            param.transferLocalRankSize = config.get("local_rank_size", 1)
             param.transferScatterGatherEnable = config.get("use_scatter_gatter", False)
         ret = self.store.Setup(param)
         if ret != 0:
@@ -62,52 +62,54 @@ class UcmPcStore(UcmKVStoreBase):
     def cc_store(self) -> int:
         return self.store.CCStoreImpl()
 
-    def create(self, block_ids: List[str]) -> List[int]:
-        return self.store.AllocBatch(block_ids)
-
-    def lookup(self, block_ids: List[str]) -> List[bool]:
+    def lookup(self, block_ids: List[bytes]) -> List[bool]:
         return self.store.LookupBatch(block_ids)
 
-    def prefetch(self, block_ids: List[str]) -> None:
+    def prefetch(self, block_ids: List[bytes]) -> None:
         pass
 
     def load(
-        self, block_ids: List[str], offset: List[int], dst_tensor: List[torch.Tensor]
+        self,
+        block_ids: List[bytes],
+        shard_index: List[int],
+        dst_tensor: List[List[torch.Tensor]],
     ) -> Task:
-        dst_tensor_ptr = [t.data_ptr() for t in dst_tensor]
-        task_id = self.store.LoadToDevice(block_ids, dst_tensor_ptr)
-        return NfsTask(task_id=task_id)
+        dst_tensor_ptrs = [[t.data_ptr() for t in tensors] for tensors in dst_tensor]
+        task_id = self.store.LoadToDevice(block_ids, dst_tensor_ptrs)
+        return PcTask(task_id=task_id)
 
     def dump(
-        self, block_ids: List[str], offset: List[int], src_tensor: List[torch.Tensor]
+        self,
+        block_ids: List[bytes],
+        shard_index: List[int],
+        src_tensor: List[List[torch.Tensor]],
     ) -> Task:
-        src_tensor_ptr = [t.data_ptr() for t in src_tensor]
-        task_id = self.store.DumpFromDevice(block_ids, src_tensor_ptr)
-        return NfsTask(task_id=task_id)
+        src_tensor_ptrs = [[t.data_ptr() for t in tensors] for tensors in src_tensor]
+        task_id = self.store.DumpFromDevice(block_ids, src_tensor_ptrs)
+        return PcTask(task_id=task_id)
 
     def fetch_data(
         self,
-        block_ids: List[str],
-        offset: List[int],
-        dst_addr: List[int],
-        size: List[int],
+        block_ids: List[bytes],
+        shard_index: List[int],
+        dst_addr: List[List[int]],
     ) -> Task:
-        pass
+        task_id = self.store.LoadToDevice(block_ids, dst_addr)
+        return task_id
 
     def dump_data(
         self,
-        block_ids: List[str],
-        offset: List[int],
-        src_addr: List[int],
-        size: List[int],
+        block_ids: List[bytes],
+        shard_index: List[int],
+        src_addr: List[List[int]],
     ) -> Task:
-        pass
+        task_id = self.store.DumpFromDevice(block_ids, src_addr)
+        return task_id
 
-    def wait(self, task: Task) -> int:
-        return self.store.Wait(task.task_id)
+    def wait(self, task: Task) -> None:
+        ret = self.store.Wait(task.task_id)
+        if ret != 0:
+            raise RuntimeError(f"Wait failed for task {task.task_id}, return={ret}")
 
-    def commit(self, block_ids: List[str], is_success: bool = True) -> None:
-        self.store.CommitBatch(block_ids, is_success)
-
-    def check(self, task: Task) -> Tuple[int, bool]:
+    def check(self, task: Task) -> bool:
         return self.store.Check(task.task_id)

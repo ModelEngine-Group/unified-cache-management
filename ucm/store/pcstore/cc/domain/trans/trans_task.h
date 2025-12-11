@@ -58,10 +58,10 @@ public:
         : id{NextId()}, type{std::move(type)}, startTp{NowTp()}, brief_{std::move(brief)}
     {
     }
-    void Append(const std::string& block, const uintptr_t address)
+    void Append(const std::string& block, const std::vector<uintptr_t>& addresses)
     {
-        grouped_[block].push_back(address);
-        number_++;
+        grouped_[block] = addresses;
+        number_ += addresses.size();
     }
     auto Str() const noexcept { return fmt::format("{},{},{}", id, brief_, number_); }
     size_t GroupNumber() const { return grouped_.size(); }
