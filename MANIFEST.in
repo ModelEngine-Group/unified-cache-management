@@ -1,8 +1,4 @@
-include LICENSE
-include pyproject.toml
 include CMakeLists.txt
-include requirements.txt
-include setup.py
-
-recursive-include examples *
-recursive-include benchmarks *
+graft ucm
+graft examples
+graft benchmarks
