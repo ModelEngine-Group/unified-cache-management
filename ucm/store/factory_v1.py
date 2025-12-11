@@ -56,6 +56,7 @@ class UcmConnectorFactoryV1:
         logger.info("Creating connector with name: %s", connector_name)
         return connector_cls(config)
 
+
 UcmConnectorFactoryV1.register_connector(
     "UcmPcStore", "ucm.store.pcstore.pcstore_connector", "UcmPcStore"
 )
