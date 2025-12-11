@@ -76,12 +76,8 @@ class CMakeBuild(build_ext):
                 cmake_args += ["-DRUNTIME_ENVIRONMENT=maca"]
                 cmake_args += ["-DBUILD_UCM_SPARSE=OFF"]
             case _:
-                import torch
-
-                if hasattr(torch, "cuda") and torch.cuda.is_available():
-                    cmake_args += ["-DRUNTIME_ENVIRONMENT=cuda"]
-                else:
-                    cmake_args += ["-DRUNTIME_ENVIRONMENT=ascend"]
+                cmake_args += ["-DRUNTIME_ENVIRONMENT=simu"]
+                cmake_args += ["-DBUILD_UCM_SPARSE=OFF"]
 
         subprocess.check_call(
             ["cmake", *cmake_args, ext.cmake_file_path], cwd=build_dir
