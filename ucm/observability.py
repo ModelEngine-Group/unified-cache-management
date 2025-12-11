@@ -195,7 +195,7 @@ class PrometheusLogger:
             try:
                 metric_mapped = self.metric_mappings[stat_name]
                 if metric_mapped is None:
-                    logger.warning(f"Stat {stat_name} not initialized.")
+                    logger.debug(f"Stat {stat_name} not initialized.")
                     continue
                 metric_obj = getattr(self, metric_mapped["attr"], None)
                 metric_type = metric_mapped["type"]
@@ -213,8 +213,8 @@ class PrometheusLogger:
                         else:
                             value = []
                     self._log_histogram(metric_obj, value)
-            except Exception as e:
-                logger.warning(f"Failed to log metric {stat_name}: {e}")
+            except Exception:
+                logger.debug(f"Failed to log metric {stat_name}")
 
     @staticmethod
     def _metadata_to_labels(metadata: UCMEngineMetadata):
@@ -267,8 +267,6 @@ class UCMStatsLogger:
         # Load configuration
         config = self._load_config(config_path)
         self.log_interval = config.get("log_interval", 10)
-
-        self.monitor = ucmmonitor.StatsMonitor.get_instance()
         self.prometheus_logger = PrometheusLogger.GetOrCreate(self.metadata, config)
         self.is_running = True
 
@@ -296,7 +294,7 @@ class UCMStatsLogger:
     def log_worker(self):
         while self.is_running:
             # Use UCMStatsMonitor.get_states_and_clear() from external import
-            stats = self.monitor.get_stats_and_clear("ConnStats")
+            stats = ucmmonitor.get_all_stats_and_clear().data
             self.prometheus_logger.log_prometheus(stats)
             time.sleep(self.log_interval)
 
