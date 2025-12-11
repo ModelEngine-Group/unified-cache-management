@@ -1,89 +1,120 @@
 import json
 import logging
 import threading
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, Optional
 
-import peewee
-from common.config_utils import config_utils as config_instance
-from peewee import AutoField, Model, MySQLDatabase, TextField
+# Lazy imports for database components
+peewee = None
+PostgresqlDatabase = None
+Model = None
+AutoField = None
+DateTimeField = None
+TextField = None
 
 logger = logging.getLogger("db_handler")
 logger.setLevel(logging.DEBUG)
 
-# Avoid adding handlers multiple times
 if not logger.handlers:
-    logger.setLevel(logging.DEBUG)
+    # Basic config only once
+    handler = logging.StreamHandler()
+    formatter = logging.Formatter(
+        "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+    )
+    handler.setFormatter(formatter)
+    logger.addHandler(handler)
 
-# Global DB instance and lock for thread-safe singleton
-_db_instance: Optional[MySQLDatabase] = None
+# Global state
+_db_instance = None
 _db_lock = threading.Lock()
 _test_build_id: Optional[str] = None
 _backup_path: Optional[Path] = None
-_db_enabled: bool = False  # from config
+_db_enabled: bool = False
 
 
-def _get_db() -> Optional[MySQLDatabase]:
-    """Return a singleton MySQLDatabase instance based on YAML configuration."""
+def _ensure_peewee_imported():
+    """Import peewee components only when DB is enabled."""
+    global peewee, PostgresqlDatabase, Model, AutoField, DateTimeField, TextField
+    if peewee is None:
+        import peewee
+        from peewee import AutoField as _AF
+        from peewee import DateTimeField as _DTF
+        from peewee import Model as _Model
+        from peewee import PostgresqlDatabase as _PGDB
+        from peewee import TextField as _TF
+
+        PostgresqlDatabase = _PGDB
+        Model = _Model
+        AutoField = _AF
+        DateTimeField = _DTF
+        TextField = _TF
+
+
+def _get_db():
+    """Return a singleton PostgresqlDatabase instance if enabled."""
     global _db_instance, _backup_path, _db_enabled
 
-    if _db_instance is None:
-        with _db_lock:
-            if _db_instance is None:
-                db_config = config_instance.get_config("database", {})
-                _db_enabled = db_config.get("enabled", False)
+    if _db_instance is not None:
+        return _db_instance
 
-                backup_str = db_config.get("backup", "results/")
-                _backup_path = Path(backup_str).resolve()
-                _backup_path.mkdir(parents=True, exist_ok=True)
-                logger.info(f"Backup directory set to: {_backup_path}")
+    with _db_lock:
+        if _db_instance is not None:
+            return _db_instance
 
-                if not _db_enabled:
-                    return None
+        db_config = _get_db_config()
+        _db_enabled = db_config.get("enabled", False)
 
-                try:
-                    _db_instance = MySQLDatabase(
-                        db_config.get("name", "test_db"),
-                        user=db_config.get("user", "root"),
-                        password=db_config.get("password", ""),
-                        host=db_config.get("host", "localhost"),
-                        port=db_config.get("port", 3306),
-                        charset=db_config.get("charset", "utf8mb4"),
-                    )
-                    logger.info(
-                        f"Database instance created for: {_db_instance.database}"
-                    )
-                except Exception as e:
-                    logger.error(f"Failed to create database instance: {e}")
-                    _db_instance = None
+        backup_str = db_config.get("backup", "results/")
+        _backup_path = Path(backup_str).resolve()
+        _backup_path.mkdir(parents=True, exist_ok=True)
+        logger.info(f"Backup directory set to: {_backup_path}")
+
+        if not _db_enabled:
+            return None
+
+        # Only import peewee when enabled
+        _ensure_peewee_imported()
+
+        try:
+            _db_instance = PostgresqlDatabase(
+                db_config.get("name", "test_db"),
+                user=db_config.get("user", "postgres"),
+                password=db_config.get("password", ""),
+                host=db_config.get("host", "localhost"),
+                port=db_config.get("port", 5432),
+            )
+            logger.info(
+                f"PostgreSQL database instance created for: {_db_instance.database}"
+            )
+        except Exception as e:
+            logger.error(f"Failed to create PostgreSQL database instance: {e}")
+            _db_instance = None
 
     return _db_instance
 
 
+def _get_db_config():
+    """Wrapper to get config without early peewee dependency."""
+    from common.config_utils import config_utils as config_instance
+
+    return config_instance.get_config("database", {})
+
+
 def _set_test_build_id(build_id: Optional[str] = None) -> None:
-    """Set or generate a unique test build ID."""
     global _test_build_id
     _test_build_id = build_id or "default_build_id"
     logger.debug(f"Test build ID set to: {_test_build_id}")
 
 
 def _get_test_build_id() -> str:
-    """Return the current test build ID, generating one if necessary."""
     global _test_build_id
     if _test_build_id is None:
         _set_test_build_id()
     return _test_build_id
 
 
-class BaseEntity(Model):
-    """Base PeeWee model class using the singleton database."""
-
-    class Meta:
-        database = _get_db()
-
-
 def _backup_to_file(table_name: str, data: Dict[str, Any]) -> None:
-    """Write data to a JSON Lines (.jsonl) file in the backup directory."""
     if not _backup_path:
         logger.warning("Backup path is not set. Skipping backup.")
         return
@@ -100,73 +131,89 @@ def _backup_to_file(table_name: str, data: Dict[str, Any]) -> None:
 
 
 def write_to_db(table_name: str, data: Dict[str, Any]) -> bool:
-    """
-    Attempt to insert data into the specified database table.
-    If the table doesn't exist or an error occurs, back up to a JSONL file.
-    """
-    db = _get_db()
+    # Always add build ID
     data["test_build_id"] = _get_test_build_id()
 
-    # Skip DB entirely if disabled
-    if not _db_enabled or db is None:
+    # Early exit if DB disabled
+    db_config = _get_db_config()
+    if not db_config.get("enabled", False):
         _backup_to_file(table_name, data)
         return False
 
+    # Load DB and peewee only when needed
+    db = _get_db()
+    if db is None:
+        _backup_to_file(table_name, data)
+        return False
+
+    _ensure_peewee_imported()
+
     try:
-        if not db.table_exists(table_name):
-            logger.warning(f"Table '{table_name}' does not exist. Writing to backup.")
-            _backup_to_file(table_name, data)
-            return False
+        # Check if table exists
+        table_exists = db.table_exists(table_name)
 
-        # Get existing columns and filter data
-        columns = db.get_columns(table_name)
-        col_names = {col.name for col in columns}
-        filtered_data = {k: v for k, v in data.items() if k in col_names}
+        # Get or create dynamic model
+        columns = db.get_columns(table_name) if table_exists else []
+        col_names = {col.name for col in columns} if table_exists else set()
 
-        # Build dynamic model for insertion
-        fields = {"id": AutoField()}
-        for col in columns:
-            if col.name != "id":
-                fields[col.name] = TextField(null=True)
+        # Ensure required fields are present
+        all_fields = {"id", "created_at", "test_build_id"}
+        all_fields.update(data.keys())
 
-        DynamicEntity = type(
-            f"{table_name.capitalize()}DynamicModel",
-            (BaseEntity,),
-            {
-                "Meta": type("Meta", (), {"database": db, "table_name": table_name}),
-                **fields,
-            },
-        )
+        # Build field definitions
+        fields = {
+            "id": AutoField(),
+            "created_at": DateTimeField(default=datetime.utcnow),
+            "test_build_id": TextField(null=True),
+        }
 
+        # Add TextField for all other data keys (including future ones)
+        for key in data.keys():
+            if key not in fields:
+                fields[key] = TextField(null=True)
+
+        # Define dynamic model
+        Meta = type("Meta", (), {"database": db, "table_name": table_name})
+
+        attrs = {"Meta": Meta, **fields}
+        DynamicModel = type(f"{table_name.capitalize()}DynamicModel", (Model,), attrs)
+
+        # Create table if not exists
+        if not table_exists:
+            db.create_tables([DynamicModel], safe=True)
+            logger.info(
+                f"Table '{table_name}' created with id, created_at, test_build_id, and dynamic fields."
+            )
+
+        # Prepare data for insert (only include fields that exist in model)
+        model_fields = set(fields.keys())
+        filtered_data = {k: v for k, v in data.items() if k in model_fields}
+
+        # Insert
         with db.atomic():
-            DynamicEntity.insert(filtered_data).execute()
+            DynamicModel.insert(filtered_data).execute()
+
         logger.info(f"Successfully inserted data into table '{table_name}'.")
         return True
 
-    except peewee.PeeweeException as e:
-        logger.error(
-            f"Database write error for table '{table_name}': {e}", exc_info=True
-        )
     except Exception as e:
-        logger.critical(
-            f"Unexpected error during DB write for '{table_name}': {e}", exc_info=True
+        logger.error(
+            f"Error during DB write for table '{table_name}': {e}", exc_info=True
         )
-
-    # Fallback to backup on any failure
-    _backup_to_file(table_name, data)
-    return False
+        _backup_to_file(table_name, data)
+        return False
 
 
 def database_connection(build_id: str) -> None:
-    """Test database connection and set the build ID."""
     logger.info(f"Setting test build ID: {build_id}")
     _set_test_build_id(build_id)
 
-    db = _get_db()
-    if not _db_enabled:
+    db_config = _get_db_config()
+    if not db_config.get("enabled", False):
         logger.info("Database connection skipped because enabled=false.")
         return
 
+    db = _get_db()
     if db is None:
         logger.error("No database instance available.")
         return
@@ -174,9 +221,9 @@ def database_connection(build_id: str) -> None:
     logger.info(f"Attempting connection to database: {db.database}")
     try:
         db.connect(reuse_if_open=True)
-        logger.info("Database connection successful.")
+        logger.info("PostgreSQL connection successful.")
     except Exception as e:
-        logger.error(f"Database connection failed: {e}", exc_info=True)
+        logger.error(f"PostgreSQL connection failed: {e}", exc_info=True)
     finally:
         if not db.is_closed():
             db.close()
