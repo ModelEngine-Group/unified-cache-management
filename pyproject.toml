@@ -2,7 +2,6 @@
 requires = [
     "setuptools>=64",
     "cmake>=3.18",
-    "torch>=2.5.1",
     "wheel",
 ]
 build-backend = "setuptools.build_meta"
