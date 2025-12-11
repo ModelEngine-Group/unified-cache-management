@@ -1010,17 +1010,17 @@ class UCMKVConnectorStats(KVConnectorStats):
         """Aggregate stats from another worker, preserving per-worker separation"""
         if other.is_empty():
             return self
-        
+
         assert isinstance(other, UCMKVConnectorStats), "Expected UCMKVConnectorStats"
-        
+
         for worker_rank, worker_data in other.data.items():
             if worker_rank not in self.data:
                 self.data[worker_rank] = copy.deepcopy(worker_data)
                 continue
-            
+
             for metric_name, values in worker_data.items():
                 self.data[worker_rank].setdefault(metric_name, []).extend(values)
-        
+
         return self
 
     def reduce(self) -> dict[str, int | float]:
@@ -1028,25 +1028,25 @@ class UCMKVConnectorStats(KVConnectorStats):
         result = {}
         is_count_metric = lambda k: any(x in k for x in ["num", "requests", "blocks"])
         is_hit_rate_metric = lambda k: "hit_rate" in k or "hit_rates" in k
-        
+
         for worker_rank, worker_data in sorted(self.data.items()):
             for metric_name, values in worker_data.items():
                 if is_hit_rate_metric(metric_name) and worker_rank != "0":
                     continue
-                
+
                 suffix = "(total)" if is_count_metric(metric_name) else "(avg)"
                 if is_hit_rate_metric(metric_name) and worker_rank == "0":
                     worker_key = f"{metric_name} {suffix}"
                 else:
                     worker_key = f"worker_{worker_rank}_{metric_name} {suffix}"
-                
+
                 if not values:
                     result[worker_key] = 0 if is_count_metric(metric_name) else 0.0
                 elif is_count_metric(metric_name):
                     result[worker_key] = int(sum(values))
                 else:
                     result[worker_key] = round(sum(values) / len(values), 3)
-        
+
         return result
 
 
