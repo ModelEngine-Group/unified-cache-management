@@ -8,7 +8,7 @@ on:
 
 jobs:
   offline-inference:
-    runs-on: [self-hosted, gpu]
+    runs-on: [self-hosted]
 
     steps:
       - name: Checkout code
