@@ -974,17 +974,9 @@ class UCMConnector(KVConnectorBase_V1):
 
 @dataclass
 class UCMKVConnectorStats(KVConnectorStats):
-    """
-    Container for UCM connector transfer performance metrics.
-    Data structure: {worker_rank: {metric_name: [values]}}
-    """
+    """Data structure: {worker_rank: {metric_name: [values]}}"""
 
-    def __post_init__(self):
-        # Initialize data as dict of dicts: {worker_rank: {metric_name: [values]}}
-        if not self.data:
-            self.data: dict[str, dict[str, list[float]]] = {}
-
-    def reset(self, metric_names: list[str] | None = None):
+    def reset(self):
         """Reset stats for all workers"""
         for worker_data in self.data.values():
             worker_data.clear()
@@ -1024,7 +1016,6 @@ class UCMKVConnectorStats(KVConnectorStats):
                 if worker_rank not in self.data:
                     self.data[worker_rank] = copy.deepcopy(worker_data)
                 else:
-                    # Aggregate metrics for this worker
                     for metric_name, values in worker_data.items():
                         if metric_name not in self.data[worker_rank]:
                             self.data[worker_rank][metric_name] = []
@@ -1032,14 +1023,11 @@ class UCMKVConnectorStats(KVConnectorStats):
         return self
 
     def reduce(self) -> dict[str, int | float]:
-        """
-        Reduce the observations to representative values for CLI logging.
-        """
+        """Reduce the observations to representative values for CLI logging"""
         result = {}
         is_count_metric = lambda k: any(x in k for x in ["num", "requests", "blocks"])
         is_hit_rate_metric = lambda k: "hit_rate" in k or "hit_rates" in k
 
-        # Output each worker's stats separately
         for worker_rank, worker_data in sorted(self.data.items()):
             for metric_name, values in worker_data.items():
                 # For hit rate metrics, only show worker_0
@@ -1047,7 +1035,6 @@ class UCMKVConnectorStats(KVConnectorStats):
                     continue
 
                 suffix = "(total)" if is_count_metric(metric_name) else "(avg)"
-                # For hit rate metrics from worker_0, don't include worker prefix
                 if is_hit_rate_metric(metric_name) and worker_rank == "0":
                     worker_key = f"{metric_name} {suffix}"
                 else:
@@ -1069,7 +1056,7 @@ class UCMPromMetrics(KVConnectorPromMetrics):
     Records metrics from self.monitor data based on metrics_configs.yaml configuration.
     """
 
-    _config_cache: Dict[str, Dict[str, Any]] = {}  # Cache for loaded configs
+    _config_cache: Dict[str, Dict[str, Any]] = {}
 
     def __init__(
         self,
@@ -1105,11 +1092,9 @@ class UCMPromMetrics(KVConnectorPromMetrics):
         if not metrics_config_path:
             return {}
 
-        # Check cache first
         if metrics_config_path in self._config_cache:
             return self._config_cache[metrics_config_path]
 
-        # Load and cache config
         try:
             with open(metrics_config_path, "r") as f:
                 config = yaml.safe_load(f)
@@ -1131,12 +1116,10 @@ class UCMPromMetrics(KVConnectorPromMetrics):
         enabled = prometheus_config.get("enabled_metrics", {})
         metric_prefix = prometheus_config.get("metric_prefix", "ucm:")
 
-        # Add worker label to support per-worker metrics
         extended_labelnames = (
             labelnames + ["worker_id"] if "worker_id" not in labelnames else labelnames
         )
 
-        # Metric type configurations
         metric_types_config = {
             "counter": (
                 self._counter_cls,
@@ -1171,7 +1154,6 @@ class UCMPromMetrics(KVConnectorPromMetrics):
                 prometheus_name = f"{metric_prefix}{name}"
                 attr_name = f"{metric_type}_{name}"
 
-                # Create metric with extended labelnames (including worker)
                 metric_kwargs = {
                     "name": prometheus_name,
                     "documentation": doc,
@@ -1185,7 +1167,6 @@ class UCMPromMetrics(KVConnectorPromMetrics):
                     metric_kwargs["buckets"] = metric_cfg.get("buckets", [])
 
                 metric = metric_cls(**metric_kwargs)
-                # Store base metric for creating per-worker labeled instances
                 setattr(self, attr_name, metric)
                 self.metric_mappings[name] = {
                     "type": metric_type,
@@ -1194,9 +1175,7 @@ class UCMPromMetrics(KVConnectorPromMetrics):
                 }
 
     def observe(self, transfer_stats_data: dict[str, Any], engine_idx: int = 0):
-        """
-        Record transfer statistics to Prometheus metrics based on configuration.
-        """
+        """Record transfer statistics to Prometheus metrics based on configuration."""
         if transfer_stats_data and isinstance(transfer_stats_data, dict):
             first_key = next(iter(transfer_stats_data.keys()), None)
             if first_key and isinstance(transfer_stats_data[first_key], dict):
@@ -1217,7 +1196,6 @@ class UCMPromMetrics(KVConnectorPromMetrics):
         base_labelvalues = self._per_engine_labelvalues.get(engine_idx, [])
         extended_labelvalues = list(base_labelvalues) + [str(worker_rank)]
 
-        # Dynamically log metrics based on configuration
         for stat_name, value in worker_stats.items():
             try:
                 if stat_name not in self.metric_mappings:
@@ -1232,7 +1210,6 @@ class UCMPromMetrics(KVConnectorPromMetrics):
                 metric_type = metric_mapped["type"]
                 extended_labelnames = metric_mapped.get("extended_labelnames", [])
 
-                # Create metric instance with worker label
                 if "worker_id" in extended_labelnames:
                     per_engine_metric = base_metric.labels(*extended_labelvalues)
                 else:
