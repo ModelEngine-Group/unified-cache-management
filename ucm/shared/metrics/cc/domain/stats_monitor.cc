@@ -24,8 +24,6 @@
 #include "stats_monitor.h"
 #include <mutex>
 #include <vector>
-#include "stats/istats.h"
-#include "stats_registry.h"
 
 namespace UC::Metrics {
 
@@ -47,22 +45,43 @@ void StatsMonitor::CreateStats(const std::string& name)
 std::unordered_map<std::string, std::vector<double>> StatsMonitor::GetStats(const std::string& name)
 {
     std::lock_guard<std::mutex> lock(mutex_);
-    return stats_map_[name]->Data();
+    auto it = stats_map_.find(name);
+    if (it == stats_map_.end() || !it->second) { return {}; }
+    return it->second->Data();
 }
 
 void StatsMonitor::ResetStats(const std::string& name)
 {
     std::lock_guard<std::mutex> lock(mutex_);
-    stats_map_[name]->Reset();
+    auto it = stats_map_.find(name);
+    if (it == stats_map_.end() || !it->second) { return; }
+    it->second->Reset();
 }
 
 std::unordered_map<std::string, std::vector<double>>
 StatsMonitor::GetStatsAndClear(const std::string& name)
 {
     std::lock_guard<std::mutex> lock(mutex_);
-    auto result = stats_map_[name]->Data();
-    stats_map_[name]->Reset();
+    auto it = stats_map_.find(name);
+    if (it == stats_map_.end() || !it->second) { return {}; }
+    auto result = it->second->Data();
+    it->second->Reset();
     return result;
+}
+
+std::unordered_map<std::string, std::vector<double>> StatsMonitor::GetAllStatsAndClear()
+{
+    std::lock_guard<std::mutex> lock(mutex_);
+    std::unordered_map<std::string, std::vector<double>> all_stats;
+
+    for (const auto& [name, stats_ptr] : stats_map_) {
+        if (stats_ptr) {
+            auto data = stats_ptr->Data();
+            all_stats.insert(data.begin(), data.end());
+            stats_ptr->Reset();
+        }
+    }
+    return all_stats;
 }
 
 void StatsMonitor::UpdateStats(const std::string& name,
@@ -70,13 +89,20 @@ void StatsMonitor::UpdateStats(const std::string& name,
 {
     std::lock_guard<std::mutex> lock(mutex_);
     auto it = stats_map_.find(name);
-    if (it != stats_map_.end()) { it->second->Update(params); }
+    if (it == stats_map_.end() || !it->second) { return; }
+    try {
+        it->second->Update(params);
+    } catch (...) {
+        return;
+    }
 }
 
 void StatsMonitor::ResetAllStats()
 {
     std::lock_guard<std::mutex> lock(mutex_);
-    for (auto& [n, ptr] : stats_map_) { ptr->Reset(); }
+    for (const auto& [name, stats_ptr] : stats_map_) {
+        if (stats_ptr) { stats_ptr->Reset(); }
+    }
 }
 
 } // namespace UC::Metrics

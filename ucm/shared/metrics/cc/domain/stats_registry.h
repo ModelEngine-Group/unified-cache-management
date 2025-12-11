@@ -21,50 +21,40 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  * */
-#ifndef UNIFIEDCACHE_MONITOR_H
-#define UNIFIEDCACHE_MONITOR_H
+#ifndef UNIFIEDCACHE_REGISTRY_H
+#define UNIFIEDCACHE_REGISTRY_H
 
-#include <memory>
+#include <functional>
 #include <mutex>
-#include <string>
 #include <unordered_map>
-#include <vector>
 #include "stats/istats.h"
 
 namespace UC::Metrics {
 
-class StatsMonitor {
+using Creator = std::function<std::unique_ptr<IStats>()>;
+
+class StatsRegistry {
 public:
-    static StatsMonitor& GetInstance()
-    {
-        static StatsMonitor inst;
-        return inst;
-    }
+    static StatsRegistry& GetInstance();
 
-    ~StatsMonitor() = default;
+    static void RegisterStats(std::string name, Creator creator);
 
-    void CreateStats(const std::string& name);
+    std::unique_ptr<IStats> CreateStats(const std::string& name);
 
-    std::unordered_map<std::string, std::vector<double>> GetStats(const std::string& name);
-
-    void ResetStats(const std::string& name);
-
-    std::unordered_map<std::string, std::vector<double>> GetStatsAndClear(const std::string& name);
-
-    void UpdateStats(const std::string& name,
-                     const std::unordered_map<std::string, double>& params);
-
-    void ResetAllStats();
+    std::vector<std::string> GetRegisteredStatsNames();
 
 private:
-    std::mutex mutex_;
-    std::unordered_map<std::string, std::unique_ptr<IStats>> stats_map_;
+    StatsRegistry() = default;
+    ~StatsRegistry() = default;
+    StatsRegistry(const StatsRegistry&) = delete;
+    StatsRegistry& operator=(const StatsRegistry&) = delete;
+    StatsRegistry(StatsRegistry&&) = delete;
+    StatsRegistry& operator=(StatsRegistry&&) = delete;
 
-    StatsMonitor();
-    StatsMonitor(const StatsMonitor&) = delete;
-    StatsMonitor& operator=(const StatsMonitor&) = delete;
+    std::mutex mutex_;
+    std::unordered_map<std::string, Creator> registry_;
 };
 
 } // namespace UC::Metrics
 
-#endif // UNIFIEDCACHE_MONITOR_H
+#endif // UNIFIEDCACHE_REGISTRY_H

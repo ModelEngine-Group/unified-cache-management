@@ -28,23 +28,17 @@ import os
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from ucm.integration.vllm.conn_stats import ConnStats
 from ucm.shared.metrics import ucmmonitor
 
 # import monitor
 
-mon = ucmmonitor.StatsMonitor.get_instance()
-mon.update_stats(
-    "ConnStats",
-    {
-        "save_duration": 1.2,
-        "save_speed": 300.5,
-        "load_duration": 0.8,
-        "load_speed": 450.0,
-        "interval_lookup_hit_rates": 0.95,
-    },
-)
-mon.update_stats(
-    "ConnStats",
+conn_stats1 = ConnStats(name="PyStats1")
+ucmmonitor.register_stats("PyStats1", conn_stats1)
+
+ucmmonitor.create_stats("PyStats1")
+ucmmonitor.update_stats(
+    "PyStats1",
     {
         "save_duration": 1.2,
         "save_speed": 300.5,
@@ -54,5 +48,5 @@ mon.update_stats(
     },
 )
 
-data = mon.get_stats("ConnStats")
+data = ucmmonitor.get_stats("PyStats1").data
 print(data)

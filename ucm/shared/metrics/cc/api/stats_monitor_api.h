@@ -21,58 +21,26 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  * */
-#ifndef UNIFIEDCACHE_CONNSTATS_H
-#define UNIFIEDCACHE_CONNSTATS_H
-
-#include <array>
-#include <cstdint>
+#ifndef UNIFIEDCACHE_MONITOR_API_H
+#define UNIFIEDCACHE_MONITOR_API_H
 #include <string>
 #include <unordered_map>
-#include <vector>
-#include "istats.h"
-#include "stats_registry.h"
+#include "stats_monitor.h"
 
 namespace UC::Metrics {
-
-enum class Key : uint8_t {
-    interval_lookup_hit_rates = 0,
-    save_requests_num,
-    save_blocks_num,
-    save_duration,
-    save_speed,
-    load_requests_num,
-    load_blocks_num,
-    load_duration,
-    load_speed,
-    COUNT
+struct StatsResult {
+    StatsResult() = default;
+    std::unordered_map<std::string, std::vector<double>> data;
 };
 
-class ConnStats : public IStats {
-public:
-    ConnStats();
-    ~ConnStats() = default;
-
-    std::string Name() const override;
-    void Reset() override;
-    void Update(const std::unordered_map<std::string, double>& params) override;
-    std::unordered_map<std::string, std::vector<double>> Data() override;
-
-private:
-    static constexpr std::size_t N = static_cast<std::size_t>(Key::COUNT);
-    std::array<std::vector<double>, N> data_;
-
-    static Key KeyFromString(const std::string& k);
-    void EmplaceBack(Key id, double value);
-};
-
-struct Registrar {
-    Registrar()
-    {
-        StatsRegistry::RegisterStats(
-            "ConnStats", []() -> std::unique_ptr<IStats> { return std::make_unique<ConnStats>(); });
-    }
-};
+void RegistStats(std::string name, Creator creator);
+void CreateStats(const std::string& name);
+void UpdateStats(const std::string& name, const std::unordered_map<std::string, double>& params);
+void ResetStats(const std::string& name);
+void ResetAllStats();
+StatsResult GetStats(const std::string& name);
+StatsResult GetStatsAndClear(const std::string& name);
+StatsResult GetAllStatsAndClear();
 
 } // namespace UC::Metrics
-
-#endif // UNIFIEDCACHE_CONNSTATS_H
+#endif

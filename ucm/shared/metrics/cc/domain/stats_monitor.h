@@ -21,25 +21,52 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  * */
-#ifndef UNIFIEDCACHE_ISTATS_H
-#define UNIFIEDCACHE_ISTATS_H
+#ifndef UNIFIEDCACHE_MONITOR_H
+#define UNIFIEDCACHE_MONITOR_H
 
 #include <memory>
+#include <mutex>
 #include <string>
 #include <unordered_map>
 #include <vector>
+#include "stats/istats.h"
+#include "stats_registry.h"
 
 namespace UC::Metrics {
 
-class IStats {
+class StatsMonitor {
 public:
-    virtual ~IStats() = default;
-    virtual std::string Name() const = 0;
-    virtual void Update(const std::unordered_map<std::string, double>& params) = 0;
-    virtual void Reset() = 0;
-    virtual std::unordered_map<std::string, std::vector<double>> Data() = 0;
-};
+    static StatsMonitor& GetInstance()
+    {
+        static StatsMonitor inst;
+        return inst;
+    }
 
+    ~StatsMonitor() = default;
+
+    void CreateStats(const std::string& name);
+
+    std::unordered_map<std::string, std::vector<double>> GetStats(const std::string& name);
+
+    void ResetStats(const std::string& name);
+
+    std::unordered_map<std::string, std::vector<double>> GetStatsAndClear(const std::string& name);
+
+    std::unordered_map<std::string, std::vector<double>> GetAllStatsAndClear();
+
+    void UpdateStats(const std::string& name,
+                     const std::unordered_map<std::string, double>& params);
+
+    void ResetAllStats();
+
+private:
+    std::mutex mutex_;
+    std::unordered_map<std::string, std::unique_ptr<IStats>> stats_map_;
+
+    StatsMonitor();
+    StatsMonitor(const StatsMonitor&) = delete;
+    StatsMonitor& operator=(const StatsMonitor&) = delete;
+};
 } // namespace UC::Metrics
 
-#endif
+#endif // UNIFIEDCACHE_MONITOR_H

@@ -21,38 +21,26 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  * */
-#ifndef UNIFIEDCACHE_REGISTRY_H
-#define UNIFIEDCACHE_REGISTRY_H
+#ifndef UNIFIEDCACHE_ISTATS_H
+#define UNIFIEDCACHE_ISTATS_H
 
 #include <functional>
-#include <mutex>
+#include <memory>
+#include <string>
 #include <unordered_map>
-#include "stats/istats.h"
+#include <vector>
 
 namespace UC::Metrics {
 
-using Creator = std::unique_ptr<IStats> (*)();
-
-class StatsRegistry {
+class IStats {
 public:
-    static StatsRegistry& GetInstance();
-
-    static void RegisterStats(std::string name, Creator creator);
-
-    std::unique_ptr<IStats> CreateStats(const std::string& name);
-
-    std::vector<std::string> GetRegisteredStatsNames();
-
-private:
-    StatsRegistry() = default;
-    ~StatsRegistry() = default;
-    StatsRegistry(const StatsRegistry&) = delete;
-    StatsRegistry& operator=(const StatsRegistry&) = delete;
-
-    std::mutex mutex_;
-    std::unordered_map<std::string, Creator> registry_;
+    virtual ~IStats() = default;
+    virtual std::string Name() const = 0;
+    virtual void Update(const std::unordered_map<std::string, double>& params) = 0;
+    virtual void Reset() = 0;
+    virtual std::unordered_map<std::string, std::vector<double>> Data() = 0;
 };
 
 } // namespace UC::Metrics
 
-#endif // UNIFIEDCACHE_REGISTRY_H
+#endif
