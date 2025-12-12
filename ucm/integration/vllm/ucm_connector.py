@@ -98,6 +98,7 @@ class UCMDirectConnector(KVConnectorBase_V1):
         self.num_layers = self._vllm_config.model_config.get_num_layers(
             self._vllm_config.parallel_config
         )
+        self.tp_size = self._vllm_config.parallel_config.tensor_parallel_size
         self.kv_cache_dtype: torch.dtype = None
 
         if current_platform.is_cuda_alike():
@@ -218,6 +219,7 @@ class UCMDirectConnector(KVConnectorBase_V1):
         config = self.connector_configs[0].get("ucm_connector_config") or {}
         config["device"] = self.local_rank
         config["role"] = "worker"
+        config["local_rank_size"] = self.tp_size if self.is_mla or self.is_dsa else 1
         if len(sample_kv_layer) == 2:
             k_io_size = (
                 sample_kv_layer[0][0].numel() * sample_kv_layer[0][0].element_size()
