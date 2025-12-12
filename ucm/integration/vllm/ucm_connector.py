@@ -95,6 +95,9 @@ class UCMDirectConnector(KVConnectorBase_V1):
         self.block_size = self._vllm_config.cache_config.block_size
         self.is_mla = self._vllm_config.model_config.is_deepseek_mla
         self.is_dsa = False
+        self.num_layers = self._vllm_config.model_config.get_num_layers(
+            self._vllm_config.parallel_config
+        )
         self.kv_cache_dtype: torch.dtype = None
 
         if current_platform.is_cuda_alike():
@@ -111,7 +114,8 @@ class UCMDirectConnector(KVConnectorBase_V1):
         if self.local_rank >= 0:
             self.device = torch_dev.device(f"{dev_name}:{self.local_rank}")
 
-        self.store: UcmKVStoreBaseV1
+        self.k_store: UcmKVStoreBaseV1
+        self.v_store: Optional[UcmKVStoreBaseV1] = None
 
         if role == KVConnectorRole.SCHEDULER:
             self.request_hasher = RequestHasher(vllm_config, 0)
@@ -134,40 +138,6 @@ class UCMDirectConnector(KVConnectorBase_V1):
                 self.broadcast_stream = torch.cuda.Stream()
 
         logger.info(f"self.launch_config: {self.launch_config}")
-        connector_configs = self.launch_config.get("ucm_connectors", [])
-        assert len(connector_configs) > 0, "no storage connector name in config."
-
-        name = connector_configs[0].get("ucm_connector_name")
-        config = connector_configs[0].get("ucm_connector_config") or {}
-        config["device"] = self.local_rank
-        config["role"] = "scheduler" if role == KVConnectorRole.SCHEDULER else "worker"
-        element_size = vllm_config.model_config.dtype.itemsize
-        single_head_dim = vllm_config.model_config.get_head_size()
-        num_head_per_tp = vllm_config.model_config.get_num_kv_heads(
-            vllm_config.parallel_config
-        )
-        total_tp_size = vllm_config.parallel_config.tensor_parallel_size
-        num_layers = vllm_config.model_config.get_num_layers(
-            vllm_config.parallel_config
-        )
-        block_size_per_layer = self.block_size * element_size * single_head_dim
-        config["kv_block_size"] = (
-            block_size_per_layer
-            * num_layers
-            * (1 if self.is_mla else num_head_per_tp * 2)
-        )
-        config["io_size"] = block_size_per_layer * (
-            1 if self.is_mla else num_head_per_tp
-        )
-        self.store = UcmConnectorFactoryV1.create_connector(name, config)
-        self.block_data_size = config["kv_block_size"]
-
-        logger.info("init UCConnectorImpl, connector: %s", name)
-        logger.info(
-            "single file size = %d MB, io_size = %d KB,",
-            config["kv_block_size"] / 1024 / 1024,
-            config["io_size"] / 1024,
-        )
 
         self.metrics_config = self.launch_config.get("metrics_config_path", "")
         if self.metrics_config:
@@ -208,6 +178,84 @@ class UCMDirectConnector(KVConnectorBase_V1):
 
         return ret
 
+    def register_kv_caches(self, kv_caches: dict[str, torch.Tensor]):
+        self.kv_caches = kv_caches
+        sample_kv_layer = next(iter(self.kv_caches.values()))
+        if isinstance(sample_kv_layer, torch.Tensor):
+            logger.info(f"kv cache shape {sample_kv_layer.shape}")
+            if self.kv_cache_dtype is None:
+                self.kv_cache_dtype = sample_kv_layer.dtype
+        elif isinstance(sample_kv_layer, Tuple):
+            # Since vllm_ascend >= 0.10.0, the MLA model's tensor shape has changed to Tuple
+            # [(num_blocks, block_size, num_kv_heads, nope_dim/rope_dim)]
+            # Currently, we treat it as GQA, and use is_dsa to mark it
+            for i, tensor in enumerate(sample_kv_layer):
+                logger.info(f"kv cache shape {i}: {tensor.shape}")
+            if self.kv_cache_dtype is None:
+                self.kv_cache_dtype = sample_kv_layer[0].dtype
+            if self.is_mla:
+                self.is_mla = False
+                self.is_dsa = True
+
+        # When handling the GQA case, we will separately dump the k_cache and v_cache.
+        connector_configs = self.launch_config.get("ucm_connectors", [])
+        assert len(connector_configs) > 0, "no storage connector name in config."
+
+        name = connector_configs[0].get("ucm_connector_name")
+        config = connector_configs[0].get("ucm_connector_config") or {}
+        config["device"] = self.local_rank
+        config["role"] = (
+            "scheduler" if self._role == KVConnectorRole.SCHEDULER else "worker"
+        )
+        if len(sample_kv_layer) == 2:
+            storage_backends = config["storage_backends"]
+            k_dir = os.path.join(storage_backends, "k")
+            v_dir = os.path.join(storage_backends, "v")
+            os.makedirs(k_dir, exist_ok=True)
+            os.makedirs(v_dir, exist_ok=True)
+            logger.info(f"Created subdirectories: {k_dir}, {v_dir}")
+
+            k_io_size = (
+                sample_kv_layer[0][0].numel() * sample_kv_layer[0][0].element_size()
+            )
+            config["io_size"] = k_io_size
+            config["kv_block_size"] = k_io_size * self.num_layers
+            config["storage_backends"] = k_dir
+            self.k_store = UcmConnectorFactoryV1.create_connector(name, config)
+            logger.info("init UCConnectorImpl, k_connector: %s", name)
+            logger.info(
+                "single file size = %d MB, io_size = %d KB,",
+                config["kv_block_size"] / 1024 / 1024,
+                config["io_size"] / 1024,
+            )
+
+            v_io_size = (
+                sample_kv_layer[1][0].numel() * sample_kv_layer[1][0].element_size()
+            )
+            config["io_size"] = v_io_size
+            config["kv_block_size"] = v_io_size * self.num_layers
+            config["storage_backends"] = v_dir
+            self.v_store = UcmConnectorFactoryV1.create_connector(name, config)
+            logger.info("init UCConnectorImpl, v_connector: %s", name)
+            logger.info(
+                "single file size = %d MB, io_size = %d KB,",
+                config["kv_block_size"] / 1024 / 1024,
+                config["io_size"] / 1024,
+            )
+            self.block_data_size = (k_io_size + v_io_size) * self.num_layers
+        else:
+            k_io_size = sample_kv_layer[0].numel() * sample_kv_layer[0].element_size()
+            config["io_size"] = k_io_size
+            config["kv_block_size"] = k_io_size * self.num_layers
+            self.k_store = UcmConnectorFactoryV1.create_connector(name, config)
+            logger.info("init UCConnectorImpl, k_connector: %s", name)
+            logger.info(
+                "single file size = %d MB, io_size = %d KB,",
+                config["kv_block_size"] / 1024 / 1024,
+                config["io_size"] / 1024,
+            )
+            self.block_data_size = k_io_size * self.num_layers
+
     def get_num_new_matched_tokens(
         self,
         request: "Request",
@@ -222,7 +270,7 @@ class UCMDirectConnector(KVConnectorBase_V1):
         if not external_block_ids:
             return 0, False
 
-        lookup_results = self.store.lookup(external_block_ids)
+        lookup_results = self.k_store.lookup(external_block_ids)
         external_hit_blocks = 0
         for i, hit in enumerate(lookup_results):
             if not hit:
@@ -412,15 +460,18 @@ class UCMDirectConnector(KVConnectorBase_V1):
 
     def _generate_task(
         self, vllm_block_ids: List[int], ucm_block_ids: List[bytes]
-    ) -> Tuple[List[bytes], List[int], List[List[torch.Tensor]]]:
-        block_ids, shard_indexs, tensors = [], [], []
+    ) -> Tuple[
+        List[bytes], List[int], List[List[torch.Tensor]], List[List[torch.Tensor]]
+    ]:
+        block_ids, shard_indexs, total_k_tensors, total_v_tensors = [], [], [], []
         for i, vllm_block_id in enumerate(vllm_block_ids):
             k_tensors, v_tensors = self._get_tensors(vllm_block_id)
             block_ids.append(ucm_block_ids[i])
-            tensors.append(k_tensors + v_tensors)
+            total_k_tensors.append(k_tensors)
+            total_v_tensors.append(v_tensors)
             shard_indexs.append(0)
 
-        return block_ids, shard_indexs, tensors
+        return block_ids, shard_indexs, total_k_tensors, total_v_tensors
 
     def _broadcast(self, dst_tensor_addr: list[torch.Tensor]):
         rec_tensor: torch.Tensor = None
@@ -447,7 +498,7 @@ class UCMDirectConnector(KVConnectorBase_V1):
 
         self._init_kv_caches_from_forward_context(forward_context)
 
-        request_to_task: dict[str, Optional[Task]] = {}
+        request_to_task: dict[str, Optional[List[Task]]] = {}
         req_broadcast_addr = {}
         is_load = False
         num_loaded_block = 0
@@ -464,22 +515,28 @@ class UCMDirectConnector(KVConnectorBase_V1):
             if self.global_rank != 0 and not self.is_mla and not self.is_dsa:
                 for i, ucm_block_id in enumerate(ucm_block_ids):
                     ucm_block_ids[i] = self.request_hasher(ucm_block_id)
-            block_ids, shard_indexs, tensors = self._generate_task(
+            block_ids, shard_indexs, k_tensors, v_tensors = self._generate_task(
                 vllm_block_ids, ucm_block_ids
             )
             if self.global_rank == 0 or not self.load_only_first_rank:
-                request_to_task[request_id] = self.store.load(
-                    block_ids, shard_indexs, tensors
-                )
+                k_task = self.k_store.load(block_ids, shard_indexs, k_tensors)
+                request_to_task[request_id] = [k_task]
+                if v_tensors and self.v_store:
+                    v_task = self.v_store.load(block_ids, shard_indexs, v_tensors)
+                    request_to_task[request_id].append(v_task)
             else:
                 request_to_task[request_id] = None
-            req_broadcast_addr[request_id] = [t for row in tensors for t in row]
+            req_broadcast_addr[request_id] = [t for row in k_tensors for t in row] + [
+                t for row in v_tensors for t in row
+            ]
 
-        for request_id, task in request_to_task.items():
+        for request_id, tasks in request_to_task.items():
             # TODO error handling
             if self.global_rank == 0 or not self.load_only_first_rank:
                 try:
-                    self.store.wait(task)
+                    self.k_store.wait(tasks[0])
+                    if len(tasks) > 1 and self.v_store:
+                        self.v_store.wait(tasks[1])
                 except RuntimeError as e:
                     logger.error("request {request_id} load kv cache failed.:", e)
                     self._invalid_block_ids.update(
@@ -531,7 +588,7 @@ class UCMDirectConnector(KVConnectorBase_V1):
         metadata = self._get_connector_metadata()
         assert isinstance(metadata, UCMConnectorMetadata)
 
-        request_to_task: dict[str, Task] = {}
+        request_to_task: dict[str, List[Task]] = {}
         is_save = False
         num_saved_block = 0
         num_saved_request = 0
@@ -547,16 +604,20 @@ class UCMDirectConnector(KVConnectorBase_V1):
             if self.global_rank != 0:
                 for i, ucm_block_id in enumerate(ucm_block_ids):
                     ucm_block_ids[i] = self.request_hasher(ucm_block_id)
-            block_ids, shard_indexs, tensors = self._generate_task(
+            block_ids, shard_indexs, k_tensors, v_tensors = self._generate_task(
                 vllm_block_ids, ucm_block_ids
             )
-            request_to_task[request_id] = self.store.dump(
-                block_ids, shard_indexs, tensors
-            )
+            k_task = self.k_store.dump(block_ids, shard_indexs, k_tensors)
+            request_to_task[request_id] = [k_task]
+            if v_tensors and self.v_store:
+                v_task = self.v_store.dump(block_ids, shard_indexs, v_tensors)
+                request_to_task[request_id].append(v_task)
 
-        for request_id, task in request_to_task.items():
+        for request_id, tasks in request_to_task.items():
             try:
-                self.store.wait(task)
+                self.k_store.wait(tasks[0])
+                if len(tasks) > 1 and self.v_store:
+                    self.v_store.wait(tasks[1])
             except RuntimeError as e:
                 logger.error("request {request_id} dump kv cache failed.:", e)
         save_end_time = time.perf_counter() * 1000
@@ -738,6 +799,16 @@ class UCMConnector(KVConnectorBase_V1):
         Update KVConnector state after block allocation.
         """
         self.connector.update_state_after_alloc(request, blocks, num_external_tokens)
+
+    def register_kv_caches(self, kv_caches: dict[str, torch.Tensor]):
+        """
+        Initialize with the KV caches. Useful for pre-registering the
+        KV Caches in the KVConnector (e.g. for NIXL).
+
+        Args: kv_caches:
+            dictionary of layer names, kv cache
+        """
+        self.connector.register_kv_caches(kv_caches)
 
     def build_connector_meta(
         self, scheduler_output: SchedulerOutput
