@@ -181,18 +181,16 @@ class UCMDirectConnector(KVConnectorBase_V1):
     def register_kv_caches(self, kv_caches: dict[str, torch.Tensor]):
         self.kv_caches = kv_caches
         sample_kv_layer = next(iter(self.kv_caches.values()))
+        if self.kv_cache_dtype is None:
+            self.kv_cache_dtype = sample_kv_layer[0].dtype
         if isinstance(sample_kv_layer, torch.Tensor):
             logger.info(f"kv cache shape {sample_kv_layer.shape}")
-            if self.kv_cache_dtype is None:
-                self.kv_cache_dtype = sample_kv_layer.dtype
         elif isinstance(sample_kv_layer, Tuple):
             # Since vllm_ascend >= 0.10.0, the MLA model's tensor shape has changed to Tuple
             # [(num_blocks, block_size, num_kv_heads, nope_dim/rope_dim)]
             # Currently, we treat it as GQA, and use is_dsa to mark it
             for i, tensor in enumerate(sample_kv_layer):
                 logger.info(f"kv cache shape {i}: {tensor.shape}")
-            if self.kv_cache_dtype is None:
-                self.kv_cache_dtype = sample_kv_layer[0].dtype
             if self.is_mla:
                 self.is_mla = False
                 self.is_dsa = True
@@ -408,30 +406,6 @@ class UCMDirectConnector(KVConnectorBase_V1):
 
         return UCMConnectorMetadata(requests_dispatch_meta)
 
-    def _init_kv_caches_from_forward_context(self, forward_context: "ForwardContext"):
-        if len(self.kv_caches) > 0:
-            return
-        for layer_name in forward_context.no_compile_layers:
-            attn_layer = forward_context.no_compile_layers[layer_name]
-            if not hasattr(attn_layer, "kv_cache"):
-                continue
-
-            if layer_name not in self.kv_caches:
-                self.kv_caches[layer_name] = attn_layer.kv_cache[
-                    forward_context.virtual_engine
-                ]
-        # Since vllm_ascend >= 0.10.0, the MLA model's tensor shape has changed to
-        # (2, num_blocks, block_size, num_kv_heads, nope_dim/rope_dim).
-        # Currently, we treat it as GQA, and use is_dsa to mark it,
-        # which works but leads to space inefficiency.
-        # TODO: Optimize this to avoid unnecessary space usage.
-        sample_kv_layer = next(iter(self.kv_caches.values()))
-        if self.is_mla and len(sample_kv_layer) == 2:
-            self.is_mla = False
-            self.is_dsa = True
-        if self.kv_cache_dtype is None:
-            self.kv_cache_dtype = sample_kv_layer[0].dtype
-
     @staticmethod
     def _extract_layer_index(layer_name: str) -> Optional[int]:
         """
@@ -495,8 +469,6 @@ class UCMDirectConnector(KVConnectorBase_V1):
     def start_load_kv(self, forward_context: "ForwardContext", **kwargs) -> None:
         metadata = self._get_connector_metadata()
         assert isinstance(metadata, UCMConnectorMetadata)
-
-        self._init_kv_caches_from_forward_context(forward_context)
 
         request_to_task: dict[str, Optional[List[Task]]] = {}
         req_broadcast_addr = {}
