@@ -117,17 +117,14 @@ class UCMDirectConnector(KVConnectorBase_V1):
         self.k_store: UcmKVStoreBaseV1
         self.v_store: Optional[UcmKVStoreBaseV1] = None
 
-        if role == KVConnectorRole.SCHEDULER:
-            self.request_hasher = RequestHasher(vllm_config, 0)
-        else:
-            self.request_hasher = RequestHasher(vllm_config, self.global_rank)
-
         # save block info, avoid hash request twice, and track them until request finished
         self.requests_meta: dict[str, RequestMeta] = {}
 
         ucm_config = Config(vllm_config.kv_transfer_config)
         self.launch_config = ucm_config.get_config()
-
+        logger.info(f"self.launch_config: {self.launch_config}")
+        self.connector_configs = self.launch_config.get("ucm_connectors", [])
+        assert len(self.connector_configs) > 0, "no storage connector name in config."
         self.load_only_first_rank: bool = (
             self.launch_config.get("load_only_first_rank", self.is_mla) and self.is_mla
         )
@@ -137,7 +134,27 @@ class UCMDirectConnector(KVConnectorBase_V1):
                 self.broadcast_fn = self.group_coordinator.broadcast
                 self.broadcast_stream = torch.cuda.Stream()
 
-        logger.info(f"self.launch_config: {self.launch_config}")
+        name = self.connector_configs[0].get("ucm_connector_name")
+        config = self.connector_configs[0].get("ucm_connector_config") or {}
+        storage_backends = [
+            path for path in config["storage_backends"].split(":") if path
+        ]
+        self.k_storage_backends = [os.path.join(p, "k") for p in storage_backends]
+        self.v_storage_backends = [os.path.join(p, "v") for p in storage_backends]
+        os.makedirs(self.k_storage_backends[0], exist_ok=True)
+        os.makedirs(self.v_storage_backends[0], exist_ok=True)
+        logger.info(
+            f"Created subdirectories: {self.k_storage_backends}, {self.v_storage_backends}"
+        )
+
+        if role == KVConnectorRole.SCHEDULER:
+            self.request_hasher = RequestHasher(vllm_config, 0)
+            # init scheduler-size connector
+            config["storage_backends"] = ":".join(self.k_storage_backends)
+            config["role"] = "scheduler"
+            self.k_store = UcmConnectorFactoryV1.create_connector(name, config)
+        else:
+            self.request_hasher = RequestHasher(vllm_config, self.global_rank)
 
         self.metrics_config = self.launch_config.get("metrics_config_path", "")
         if self.metrics_config:
@@ -195,30 +212,19 @@ class UCMDirectConnector(KVConnectorBase_V1):
                 self.is_mla = False
                 self.is_dsa = True
 
+        # init work-side connector
         # When handling the GQA case, we will separately dump the k_cache and v_cache.
-        connector_configs = self.launch_config.get("ucm_connectors", [])
-        assert len(connector_configs) > 0, "no storage connector name in config."
-
-        name = connector_configs[0].get("ucm_connector_name")
-        config = connector_configs[0].get("ucm_connector_config") or {}
+        name = self.connector_configs[0].get("ucm_connector_name")
+        config = self.connector_configs[0].get("ucm_connector_config") or {}
         config["device"] = self.local_rank
-        config["role"] = (
-            "scheduler" if self._role == KVConnectorRole.SCHEDULER else "worker"
-        )
+        config["role"] = "worker"
         if len(sample_kv_layer) == 2:
-            storage_backends = config["storage_backends"]
-            k_dir = os.path.join(storage_backends, "k")
-            v_dir = os.path.join(storage_backends, "v")
-            os.makedirs(k_dir, exist_ok=True)
-            os.makedirs(v_dir, exist_ok=True)
-            logger.info(f"Created subdirectories: {k_dir}, {v_dir}")
-
             k_io_size = (
                 sample_kv_layer[0][0].numel() * sample_kv_layer[0][0].element_size()
             )
             config["io_size"] = k_io_size
             config["kv_block_size"] = k_io_size * self.num_layers
-            config["storage_backends"] = k_dir
+            config["storage_backends"] = ":".join(self.k_storage_backends)
             self.k_store = UcmConnectorFactoryV1.create_connector(name, config)
             logger.info("init UCConnectorImpl, k_connector: %s", name)
             logger.info(
@@ -232,7 +238,7 @@ class UCMDirectConnector(KVConnectorBase_V1):
             )
             config["io_size"] = v_io_size
             config["kv_block_size"] = v_io_size * self.num_layers
-            config["storage_backends"] = v_dir
+            config["storage_backends"] = ":".join(self.v_storage_backends)
             self.v_store = UcmConnectorFactoryV1.create_connector(name, config)
             logger.info("init UCConnectorImpl, v_connector: %s", name)
             logger.info(
@@ -245,6 +251,7 @@ class UCMDirectConnector(KVConnectorBase_V1):
             k_io_size = sample_kv_layer[0].numel() * sample_kv_layer[0].element_size()
             config["io_size"] = k_io_size
             config["kv_block_size"] = k_io_size * self.num_layers
+            config["storage_backends"] = ":".join(self.k_storage_backends)
             self.k_store = UcmConnectorFactoryV1.create_connector(name, config)
             logger.info("init UCConnectorImpl, k_connector: %s", name)
             logger.info(
