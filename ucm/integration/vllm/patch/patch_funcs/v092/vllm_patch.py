@@ -553,14 +553,14 @@ def _patch_scheduler() -> None:
 
         from ucm.sparse.base import INVALID_SLOT, UcmSparseRole
         from ucm.sparse.state import ensure_ucm_sparse_initialized, get_ucm_sparse
+        from ucm.utils import Config
 
         def init_ucm_sparse(self):
             self.ucm_sparse = None
             if self.vllm_config.kv_transfer_config is not None:
-                if (
-                    "ucm_sparse_config"
-                    in self.vllm_config.kv_transfer_config.kv_connector_extra_config
-                ):
+                ucm_config = Config(self.vllm_config.kv_transfer_config)
+                ucm_sparse_config = ucm_config.get_config().get("ucm_sparse_config")
+                if ucm_sparse_config:
                     ensure_ucm_sparse_initialized(
                         self.vllm_config, role=UcmSparseRole.SCHEDULER
                     )
