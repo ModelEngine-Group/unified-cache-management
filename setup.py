@@ -34,8 +34,13 @@ PLATFORM = os.getenv("PLATFORM")
 ENABLE_SPARSE = os.getenv("ENABLE_SPARSE")
 
 
-def _enable_sparse() -> bool:
+def enable_sparse() -> bool:
     return ENABLE_SPARSE is not None and ENABLE_SPARSE.lower() == "true"
+
+
+def is_editable_mode() -> bool:
+    commands = [arg.lower() for arg in sys.argv]
+    return "develop" in commands or "--editable" in commands or "-e" in commands or "editable_wheel" in commands
 
 
 class CMakeExtension(Extension):
@@ -55,6 +60,8 @@ class CMakeBuild(build_ext):
     def build_cmake(self, ext: CMakeExtension):
         build_dir = os.path.abspath(self.build_temp)
         install_dir = os.path.abspath(self.build_lib)
+        if is_editable_mode():
+            install_dir = ext.cmake_file_path
 
         cmake_args = [
             "-DCMAKE_BUILD_TYPE=Release",
@@ -62,7 +69,7 @@ class CMakeBuild(build_ext):
             f"-DCMAKE_INSTALL_PREFIX={install_dir}",
         ]
 
-        if _enable_sparse():
+        if enable_sparse():
             cmake_args += ["-DBUILD_UCM_SPARSE=ON"]
 
         match PLATFORM:
