@@ -37,6 +37,13 @@ import os
 
 PLATFORM = os.getenv("PLATFORM")
 
+vllm_use_rerope = os.getenv("VLLM_USE_REROPE", "0").lower() in (
+    "1",
+    "true",
+    "yes",
+    "on",
+)
+
 
 def _patch_ascend() -> bool:
     return PLATFORM == "ascend"
@@ -94,6 +101,8 @@ def apply_all_patches() -> None:
 
         # Apply version-specific patches
         match version:
+            case "0.9.2" if vllm_use_rerope:
+                _apply_patches_rerope()
             case "0.9.2":
                 _apply_patches_v092()
             case _:
@@ -118,6 +127,13 @@ def _apply_patches_v092() -> None:
         from .patch_funcs.v092.vllm_ascend_patch import _apply_ascend_patch
 
         _apply_ascend_patch()  # apply vllm-ascend-adapt.patch
+
+
+def _apply_patches_rerope() -> None:
+    """Apply patches for vLLM 0.9.2 for triton rerope"""
+    from .patch_funcs.v092.vllm_rerope_patch import _apply_rerope_adapt_patches
+
+    _apply_rerope_adapt_patches()
 
 
 def install_import_hook() -> None:
