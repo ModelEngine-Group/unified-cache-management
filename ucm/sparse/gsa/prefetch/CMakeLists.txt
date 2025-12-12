@@ -39,7 +39,7 @@ set(LIBRARIES
     torch_python
     gomp
     pthread
-    storetask
+    storeintf
 )
 
 # NPU特殊配置

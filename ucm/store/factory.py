@@ -58,9 +58,6 @@ class UcmConnectorFactory:
 
 
 UcmConnectorFactory.register_connector(
-    "UcmDramStore", "ucm.store.dramstore.dramstore_connector", "UcmDramStore"
-)
-UcmConnectorFactory.register_connector(
     "UcmNfsStore", "ucm.store.nfsstore.nfsstore_connector", "UcmNfsStore"
 )
 UcmConnectorFactory.register_connector(

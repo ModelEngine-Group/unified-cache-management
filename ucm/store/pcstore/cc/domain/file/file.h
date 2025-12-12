@@ -21,30 +21,30 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  * */
-#ifndef UNIFIEDCACHE_TRANS_MANAGER_H
-#define UNIFIEDCACHE_TRANS_MANAGER_H
+#ifndef UNIFIEDCACHE_FILE_H
+#define UNIFIEDCACHE_FILE_H
 
-#include "posix_queue.h"
-#include "task/task_manager.h"
+#include <memory>
+#include "ifile.h"
 
 namespace UC {
 
-class TransManager : public TaskManager {
+class File {
 public:
-    Status Setup(const int32_t deviceId, const size_t streamNumber, const size_t ioSize,
-                 const size_t bufferNumber, const SpaceLayout* layout, const size_t timeoutMs, bool useDirect = false)
-    {
-        this->timeoutMs_ = timeoutMs;
-        auto status = Status::OK();
-        for (size_t i = 0; i < streamNumber; i++) {
-            auto q = std::make_shared<PosixQueue>();
-            status =
-                q->Setup(deviceId, ioSize, bufferNumber, &this->failureSet_, layout, timeoutMs, useDirect);
-            if (status.Failure()) { break; }
-            this->queues_.emplace_back(std::move(q));
-        }
-        return status;
-    }
+    static std::unique_ptr<IFile> Make(const std::string& path);
+    static Status MkDir(const std::string& path);
+    static Status RmDir(const std::string& path);
+    static Status Rename(const std::string& path, const std::string& newName);
+    static Status Access(const std::string& path, const int32_t mode);
+    static Status Stat(const std::string& path, IFile::FileStat& st);
+    static Status Read(const std::string& path, const size_t offset, const size_t length,
+                       uintptr_t address, const bool directIo = false);
+    static Status Write(const std::string& path, const size_t offset, const size_t length,
+                        const uintptr_t address, const bool directIo = false,
+                        const bool create = false);
+    static void MUnmap(void* addr, size_t size);
+    static void ShmUnlink(const std::string& path);
+    static void Remove(const std::string& path);
 };
 
 } // namespace UC

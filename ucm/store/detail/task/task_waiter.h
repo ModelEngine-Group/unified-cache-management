@@ -21,32 +21,25 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  * */
-#ifndef UNIFIEDCACHE_TRANS_MANAGER_H
-#define UNIFIEDCACHE_TRANS_MANAGER_H
+#ifndef UNIFIEDCACHE_ITASK_WAITER_H
+#define UNIFIEDCACHE_ITASK_WAITER_H
 
-#include "posix_queue.h"
-#include "task/task_manager.h"
+#include "thread/latch.h"
 
 namespace UC {
 
-class TransManager : public TaskManager {
+class TaskWaiter : public Latch {
 public:
-    Status Setup(const int32_t deviceId, const size_t streamNumber, const size_t ioSize,
-                 const size_t bufferNumber, const SpaceLayout* layout, const size_t timeoutMs, bool useDirect = false)
+    TaskWaiter(const size_t expected, const double startTp) : Latch{}
     {
-        this->timeoutMs_ = timeoutMs;
-        auto status = Status::OK();
-        for (size_t i = 0; i < streamNumber; i++) {
-            auto q = std::make_shared<PosixQueue>();
-            status =
-                q->Setup(deviceId, ioSize, bufferNumber, &this->failureSet_, layout, timeoutMs, useDirect);
-            if (status.Failure()) { break; }
-            this->queues_.emplace_back(std::move(q));
-        }
-        return status;
+        this->startTp = startTp;
+        Set(expected);
     }
+    using Latch::Wait;
+    virtual bool Wait(const size_t timeoutMs) noexcept { return WaitFor(timeoutMs); }
+    virtual bool Finish() noexcept { return Check(); }
 };
 
-} // namespace UC
+}  // namespace UC
 
 #endif
