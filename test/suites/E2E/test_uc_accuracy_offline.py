@@ -22,7 +22,10 @@ import yaml
 from common.capture_utils import export_vars
 from transformers import AutoTokenizer
 
+from ucm.logger import init_logger
+
 _test_functions = {}
+logger = init_logger(__name__)
 
 
 def _run_test_in_spawn_process(test_id, args, kwargs, result_queue, error_queue):
@@ -85,14 +88,10 @@ try:
     from vllm.distributed import cleanup_dist_env_and_memory
     from vllm.engine.arg_utils import EngineArgs
 
-    from ucm.logger import init_logger
-
     VLLM_AVAILABLE = True
 except ImportError:
     VLLM_AVAILABLE = False
     pytest.skip("vLLM not available", allow_module_level=True)
-
-logger = init_logger(__name__)
 
 
 @contextlib.contextmanager
@@ -125,9 +124,7 @@ def build_llm_with_uc(
         "gpu_memory_utilization": 0.3,  # Reduced to prevent OOM after Phase 1
         "max_num_batched_tokens": max_num_batched_tokens,
         "block_size": 128,
-        "enforce_eager": llm_kwargs.get(
-            "enforce_eager", True
-        ),  # Allow override via llm_kwargs, default True
+        "enforce_eager": llm_kwargs.get("enforce_eager", True),
         "trust_remote_code": True,
         "enable_prefix_caching": enable_prefix_caching,
         "tensor_parallel_size": tensor_parallel_size,
@@ -142,7 +139,6 @@ def build_llm_with_uc(
     finally:
         logger.info("LLM engine is exiting")
         del llm
-        # Use vLLM's cleanup function to properly release distributed resources
         cleanup_dist_env_and_memory(shutdown_ray=False)
 
 
@@ -176,7 +172,6 @@ def _run_phase_in_subprocess(
         error_queue: Queue to put errors
     """
     try:
-        # Clear any GPU memory in subprocess before starting
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
             torch.cuda.synchronize()
@@ -185,20 +180,18 @@ def _run_phase_in_subprocess(
             torch.npu.synchronize()
         gc.collect()
 
-        # Recreate SamplingParams in subprocess
         sampling_params = SamplingParams(**sampling_params_dict)
 
         with build_llm_with_uc(
             model_path=model_path,
             ucm_config=ucm_config,
             enable_prefix_caching=enable_prefix_caching,
-            gpu_memory_utilization=0.3,  # Lower utilization for subprocess
+            gpu_memory_utilization=0.3,
             max_num_batched_tokens=max_num_batched_tokens,
             enforce_eager=enforce_eager,
         ) as llm:
             outputs = run_inference(llm, prompts, sampling_params, phase_description)
 
-        # Return all outputs
         result_queue.put(outputs)
     except Exception as e:
         import traceback
@@ -316,7 +309,7 @@ def run_inference(
         generated_texts.append(generated_text)
 
     if description:
-        print(f"[INFO] {description} completed")
+        logger.info(f"{description} completed")
 
     return generated_texts
 
@@ -377,13 +370,13 @@ def test_offline_accuracy_hbm_ssd_mixed(
 
     try:
         test_prompt, standard_answers = load_prompt_from_file()
-        print(
-            f"[INFO] Loaded prompt from prompt.json (length: {len(test_prompt)} chars)"
+        logger.info(
+            f"Loaded prompt from prompt.json (length: {len(test_prompt)} chars)"
         )
         if standard_answers:
-            print(f"[INFO] Standard answers: {standard_answers}")
+            logger.info(f"Standard answers: {standard_answers}")
         else:
-            print(f"[INFO] No standard answers found in prompt.json")
+            logger.info(f"No standard answers found in prompt.json")
     except Exception as e:
         pytest.skip(f"Failed to load prompt from prompt.json: {e}")
 
@@ -424,19 +417,19 @@ def test_offline_accuracy_hbm_ssd_mixed(
         ignore_eos=False,
     )
 
-    print(f"\n[INFO] ===== HBM + SSD Mixed Accuracy Test =====")
-    print(f"[INFO] Model: {model_path}")
-    print(f"[INFO] Full prompt length: {len(test_prompt)} chars")
-    print(f"[INFO] Max tokens: {max_tokens}")
-    print(f"[INFO] Temperature: 0.0 (deterministic)")
-    print(f"[INFO] UCM storage: {ucm_storage_dir}")
-    print(f"[INFO] Prompt split ratio: {prompt_split_ratio}")
-    print(f"[INFO] Enforce eager: {enforce_eager}")
-    print(f"[INFO] Max num batched tokens: {max_num_batched_tokens}")
+    logger.info(f"\n===== HBM + SSD Mixed Accuracy Test =====")
+    logger.info(f"Model: {model_path}")
+    logger.info(f"Full prompt length: {len(test_prompt)} chars")
+    logger.info(f"Max tokens: {max_tokens}")
+    logger.info(f"Temperature: 0.0 (deterministic)")
+    logger.info(f"UCM storage: {ucm_storage_dir}")
+    logger.info(f"Prompt split ratio: {prompt_split_ratio}")
+    logger.info(f"Enforce eager: {enforce_eager}")
+    logger.info(f"Max num batched tokens: {max_num_batched_tokens}")
 
     # ===== Phase 1: Disable HBM PC, save KV cache to SSD and load (baseline) =====
     # Run Phase 1 in a separate subprocess to ensure GPU memory is fully released
-    print(f"\n[INFO] ===== Phase 1: Save KV Cache to SSD And Load (Baseline) =====")
+    logger.info(f"\n===== Phase 1: Save KV Cache to SSD And Load (Baseline) =====")
 
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
@@ -445,7 +438,7 @@ def test_offline_accuracy_hbm_ssd_mixed(
         torch.npu.empty_cache()
         torch.npu.synchronize()
     gc.collect()
-    time.sleep(2)  # Wait a bit for GPU memory to be released
+    time.sleep(2)
 
     ctx = multiprocessing.get_context("spawn")
     result_queue = ctx.Queue()
@@ -467,7 +460,7 @@ def test_offline_accuracy_hbm_ssd_mixed(
             [
                 formatted_full_prompt,
                 formatted_full_prompt,
-            ],  # Phase 1: send same prompt twice
+            ],
             sampling_params_dict,
             False,  # enable_prefix_caching=False for Phase 1
             enforce_eager,
@@ -500,26 +493,19 @@ def test_offline_accuracy_hbm_ssd_mixed(
             f"Phase 1 failed in subprocess with exit code {process.exitcode}"
         )
 
-    # Get results from subprocess
     if result_queue.empty():
         raise RuntimeError("Phase 1 subprocess completed but no result in queue")
     phase1_outputs = result_queue.get()
     phase1_1_output = phase1_outputs[0]  # Phase 1.1: SSD save
     phase1_2_output = phase1_outputs[1]  # Phase 1.2: SSD load
-    print(
-        f"[INFO] Phase 1 completed in subprocess, GPU memory should be fully released"
-    )
-    print(f"[INFO] Phase 1.1 output: {phase1_1_output}")
-    print(f"[INFO] Phase 1.2 output: {phase1_2_output}")
+    logger.info(f"Phase 1 completed in subprocess, GPU memory should be fully released")
+    logger.info(f"Phase 1.1 output: {phase1_1_output}")
+    logger.info(f"Phase 1.2 output: {phase1_2_output}")
 
     # ===== Phase 2: Enable HBM PC, test HBM + SSD mixed hit =====
     # Run Phase 2 in a separate subprocess to ensure GPU memory is fully released
-    print(f"\n[INFO] ===== Phase 2: HBM + SSD Mixed Hit Test =====")
+    logger.info(f"\n===== Phase 2: HBM + SSD Mixed Hit Test =====")
 
-    # Clear GPU memory in main process before starting subprocess
-    print(
-        f"[INFO] Clearing GPU memory in main process before starting Phase 2 subprocess..."
-    )
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
         torch.cuda.synchronize()
@@ -527,7 +513,7 @@ def test_offline_accuracy_hbm_ssd_mixed(
         torch.npu.empty_cache()
         torch.npu.synchronize()
     gc.collect()
-    time.sleep(2)  # Wait a bit for GPU memory to be released
+    time.sleep(2)
 
     ctx = multiprocessing.get_context("spawn")
     result_queue_2 = ctx.Queue()
@@ -574,28 +560,19 @@ def test_offline_accuracy_hbm_ssd_mixed(
             f"Phase 2 failed in subprocess with exit code {process_2.exitcode}"
         )
 
-    # Get results from subprocess
     if result_queue_2.empty():
         raise RuntimeError("Phase 2 subprocess completed but no result in queue")
     phase2_outputs = result_queue_2.get()
-    phase2_partial_output = phase2_outputs[
-        0
-    ]  # Output from partial prompt (for reference)
-    phase2_full_output = phase2_outputs[
-        1
-    ]  # Output from full prompt (this is what we compare)
-    print(
-        f"[INFO] Phase 2 completed in subprocess, GPU memory should be fully released"
-    )
-    print(f"[INFO] Phase 2.1 output: {phase2_partial_output}")
-    print(f"[INFO] Phase 2.2 output: {phase2_full_output}")
+    phase2_partial_output = phase2_outputs[0]
+    phase2_full_output = phase2_outputs[1]
+    logger.info(f"Phase 2 completed in subprocess, GPU memory should be fully released")
+    logger.info(f"[INFO] Phase 2.1 output: {phase2_partial_output}")
+    logger.info(f"[INFO] Phase 2.2 output: {phase2_full_output}")
 
-    # ===== Compare outputs =====
-    print(f"\n[INFO] ===== Accuracy Test Results =====")
+    logger.info(f"\n[INFO] ===== Accuracy Test Results =====")
 
     def normalize_text(text: str) -> str:
         """Normalize text for comparison by replacing similar punctuation."""
-        # Replace full-width punctuation with half-width for comparison
         text = text.replace("，", ",")
         text = text.replace("。", ".")
         text = text.replace("！", "!")
@@ -610,15 +587,15 @@ def test_offline_accuracy_hbm_ssd_mixed(
         phase1_2_output
     )
     if not phase1_identical:
-        print(f"\n[WARNING] ===== Phase 1: SSD Load Accuracy Test (Exact Match) =====")
-        print(
-            f"[WARNING] Phase 1.1 (SSD save) output differs from Phase 1.2 (SSD load) output!"
+        logger.warning(f"\n===== Phase 1: SSD Load Accuracy Test (Exact Match) =====")
+        logger.warning(
+            f"Phase 1.1 (SSD save) output differs from Phase 1.2 (SSD load) output!"
         )
-        print(f"[WARNING] Phase 1.1 output:\n{phase1_1_output}")
-        print(f"[WARNING] Phase 1.2 output:\n{phase1_2_output}")
+        logger.warning(f"Phase 1.1 output:\n{phase1_1_output}")
+        logger.warning(f"Phase 1.2 output:\n{phase1_2_output}")
         if phase1_normalized_identical:
-            print(
-                f"[INFO] But normalized outputs are identical (punctuation difference only)"
+            logger.info(
+                f"But normalized outputs are identical (punctuation difference only)"
             )
 
     phase2_identical = phase1_1_output == phase2_full_output
@@ -626,23 +603,23 @@ def test_offline_accuracy_hbm_ssd_mixed(
         phase2_full_output
     )
     if not phase2_identical:
-        print(
-            f"\n[WARNING] ===== Phase 2: HBM + SSD Mixed Accuracy Test (Exact Match) ====="
+        logger.warning(
+            f"\n===== Phase 2: HBM + SSD Mixed Accuracy Test (Exact Match) ====="
         )
-        print(
-            f"[WARNING] Phase 1.1 (SSD save) output differs from Phase 2.2 (HBM + SSD mixed) output!"
+        logger.warning(
+            f"Phase 1.1 (SSD save) output differs from Phase 2.2 (HBM + SSD mixed) output!"
         )
-        print(f"[WARNING] Phase 1.1 output:\n{phase1_1_output}")
-        print(f"[WARNING] Phase 2.2 output:\n{phase2_full_output}")
+        logger.warning(f"Phase 1.1 output:\n{phase1_1_output}")
+        logger.warning(f"Phase 2.2 output:\n{phase2_full_output}")
         if phase2_normalized_identical:
-            print(
-                f"[INFO] But normalized outputs are identical (punctuation difference only)"
+            logger.info(
+                f"But normalized outputs are identical (punctuation difference only)"
             )
-            print(
-                f"[INFO] This is likely due to numerical precision differences in KV cache loading"
+            logger.info(
+                f"This is likely due to numerical precision differences in KV cache loading"
             )
-            print(f"[INFO] Normalized Phase 1.1: {normalize_text(phase1_1_output)}")
-            print(f"[INFO] Normalized Phase 2.2: {normalize_text(phase2_full_output)}")
+            logger.info(f"Normalized Phase 1.1: {normalize_text(phase1_1_output)}")
+            logger.info(f"Normalized Phase 2.2: {normalize_text(phase2_full_output)}")
 
     # Assert outputs are identical (using normalized comparison for punctuation differences)
     # Note: Small numerical precision differences in KV cache loading can cause
@@ -663,13 +640,13 @@ def test_offline_accuracy_hbm_ssd_mixed(
     )
 
     if phase2_identical:
-        print(f"\n[INFO] ✓ HBM + SSD mixed accuracy test passed: outputs are identical")
+        logger.info(f"\n✓ HBM + SSD mixed accuracy test passed: outputs are identical")
     else:
-        print(
-            f"\n[INFO] ✓ HBM + SSD mixed accuracy test passed: normalized outputs are identical"
+        logger.info(
+            f"\n ✓ HBM + SSD mixed accuracy test passed: normalized outputs are identical"
         )
-        print(
-            f"[INFO] Note: Punctuation difference detected (likely due to numerical precision in KV cache)"
+        logger.info(
+            f"Note: Punctuation difference detected (likely due to numerical precision in KV cache)"
         )
 
     value_lists = {
