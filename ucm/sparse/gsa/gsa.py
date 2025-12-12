@@ -119,6 +119,7 @@ class GSAReqStat:
             hash_value = self.request_hasher(
                 (parent_block_hash_value, curr_block_token_ids_tuple)
             )
+            self.block_hashes.append(str(hash_value))
             parent_block_hash_value = hash_value
 
         if self.rank != 0 and not self.use_mla:
@@ -421,7 +422,7 @@ class TopkCal:
         dot_product_weights.masked_fill_(self.exclude_mask == 1, float("-inf"))
         selected_block_nums = self.topk_len_list[0]
         _, top_indices = torch.topk(
-            dot_product_weights, selected_block_nums, dim=-1, sorted=False
+            dot_product_weights, selected_block_nums, dim=-1, sorted=True
         )
         self.topk_caches[current_layer_id][self.cal_topk_id] = top_indices
 
@@ -582,7 +583,9 @@ class GSA(UcmSparseBase):
             if not self.use_mla:
                 self.gsa_q_cache[current_layer_id][: len(ids)].copy_(query[ids])
             else:
-                self.gsa_q_cache[current_layer_id][self.decode_index].copy_(query)
+                self.gsa_q_cache[current_layer_id][: len(self.decode_index)].copy_(
+                    query
+                )
             is_cal_kpre = len(self.model_input["calc_block_table"]) > 0
             self.gsa_offload_ops.add_copy_req(
                 is_cal_kpre, current_layer_id, ids, self.gsa_q_cache[current_layer_id]
@@ -656,7 +659,7 @@ class GSA(UcmSparseBase):
                 else:
                     attn_metadata.block_tables[
                         : len(self.prefetch_engine.req_ids_bs)
-                    ].copy_(self.model_input["block_tables_mp"][current_layer_id])
+                    ] = self.model_input["block_tables_mp"][current_layer_id]
                     attn_metadata.seq_lens.copy_(
                         self.model_input["gsa_seq_len"][current_layer_id]
                     )
@@ -670,9 +673,7 @@ class GSA(UcmSparseBase):
                             current_layer_id
                         ][self.decode_index]
                     else:
-                        attn_metadata.decode.block_table[
-                            : len(self.prefetch_engine.req_ids_bs)
-                        ].copy_(
+                        attn_metadata.decode.block_table[: len(self.decode_index)] = (
                             self.model_input["block_tables_mp"][current_layer_id][
                                 self.decode_index
                             ]
@@ -937,9 +938,9 @@ class GSA(UcmSparseBase):
         fn = getattr(self.connector, "load")
         precision = self.element_size
         if self.use_mla:
-            block_data_size = kv_caches[0].numel() * precision
-        else:
             block_data_size = kv_caches[0][0].numel() * precision
+        else:
+            block_data_size = kv_caches[0][0][0].numel() * precision
 
         offsets_k = []
         key_src_tensors = []
@@ -1069,10 +1070,7 @@ class GSA(UcmSparseBase):
                 if req_meta.is_gsa():
                     cal_topk_id.append(req_meta.index_in_batch)
                     is_decode.append(True)
-                    one_topk_len = (
-                        gsa_config.compute_topk_len(len(req_meta.blocks))
-                        + gsa_config.num_prefetch_blocks
-                    )
+                    one_topk_len = gsa_config.compute_topk_len(len(req_meta.blocks))
                     topk_len_list.append(one_topk_len)
                     if CUDA_TOPK:
                         include_masks.append(req_meta.include_mask)

@@ -140,9 +140,8 @@ class GSAPrefetchBase:
 
         if self.atb_gsa_enable:
             block_table_index = torch.tensor(self.select_bs_index, device="cpu")
-            self.topk_len = (
-                gsa_config.compute_topk_len(self._get_max_block_len(gsa_metadata))
-                + gsa_config.num_prefetch_blocks
+            self.topk_len = gsa_config.compute_topk_len(
+                self._get_max_block_len(gsa_metadata)
             )
             topk_buf_tmp = self.use_topk_caches[:, block_table_index, :]
             topk_buf_tmp = topk_buf_tmp[:, :, : self.topk_len]
@@ -190,9 +189,8 @@ class GSAPrefetchBase:
                     )
         self.topk_bs = []
         for index, req_id in enumerate(self.req_ids_bs):
-            one_topk_len = (
-                gsa_config.compute_topk_len(len(gsa_metadata.gsa_stats[req_id].blocks))
-                + gsa_config.num_prefetch_blocks
+            one_topk_len = gsa_config.compute_topk_len(
+                len(gsa_metadata.gsa_stats[req_id].blocks)
             )
             self.topk_bs.append(
                 [
@@ -536,7 +534,8 @@ class GSAPrefetchBase:
     def _get_max_block_len(self, gsa_metadata) -> int:
         max_len = 0
         for req_id in self.req_ids_bs:
-            max_len = max(max_len, len(gsa_metadata.gsa_stats[req_id].blocks))
+            if self.is_gsa_req_id[req_id]:
+                max_len = max(max_len, len(gsa_metadata.gsa_stats[req_id].blocks))
         return max_len
 
     def _no_gsa_input_deal(
