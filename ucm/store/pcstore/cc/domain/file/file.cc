@@ -94,4 +94,4 @@ void File::ShmUnlink(const std::string& path) { FileImpl{path}.ShmUnlink(); }
 
 void File::Remove(const std::string& path) { FileImpl{path}.Remove(); }
 
-} // namespace UC
+}  // namespace UC

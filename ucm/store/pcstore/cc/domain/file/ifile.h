@@ -76,6 +76,6 @@ private:
     std::string path_;
 };
 
-} // namespace UC
+}  // namespace UC
 
 #endif

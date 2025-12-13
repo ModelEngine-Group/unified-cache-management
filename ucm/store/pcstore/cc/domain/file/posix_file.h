@@ -53,6 +53,6 @@ private:
     int32_t handle_;
 };
 
-} // namespace UC
+}  // namespace UC
 
-#endif // UNIFIEDCACHE_POSIX_FILE_H
+#endif  // UNIFIEDCACHE_POSIX_FILE_H

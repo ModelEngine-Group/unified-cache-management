@@ -29,12 +29,13 @@ namespace UC {
 Status TransManager::Setup(const size_t rankSize, const int32_t deviceId, const size_t streamNumber,
                            const size_t blockSize, const size_t ioSize, const bool ioDirect,
                            const size_t bufferNumber, const SpaceLayout* layout,
-                           const size_t timeoutMs, const bool scatterGatherEnable)
+                           const size_t timeoutMs, const bool scatterGatherEnable,
+                           const std::string& uniqueId)
 {
     auto s = Status::OK();
     if (rankSize > 1) {
         s = this->shareQueue_.Setup(rankSize, deviceId, streamNumber, blockSize, ioSize, ioDirect,
-                                    bufferNumber, layout, &this->failureSet_);
+                                    bufferNumber, layout, &this->failureSet_, uniqueId);
         if (s.Failure()) { return s; }
     }
     s = this->queue_.Setup(deviceId, streamNumber, blockSize, ioSize, ioDirect, bufferNumber,
@@ -115,4 +116,4 @@ Status TransManager::Check(const size_t taskId, bool& finish) noexcept
     return Status::OK();
 }
 
-} // namespace UC
+}  // namespace UC

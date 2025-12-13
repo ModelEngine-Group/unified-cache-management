@@ -25,8 +25,8 @@
 #include <sys/mman.h>
 #include <sys/stat.h>
 #include <sys/xattr.h>
-#include <utime.h>
 #include <unistd.h>
+#include <utime.h>
 #include "logger/logger.h"
 
 namespace UC {
@@ -242,4 +242,4 @@ Status PosixFile::UpdateTime()
     return Status::OK();
 }
 
-} // namespace UC
+}  // namespace UC
