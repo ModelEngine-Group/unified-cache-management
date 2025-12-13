@@ -105,9 +105,14 @@ Status TransQueue::Setup(const int32_t deviceId, const size_t streamNumber, cons
         UC_ERROR("Failed({}) to make host buffer({},{}).", ts.ToString(), blockSize, bufferNumber);
         return Status::Error();
     }
-    auto success =
-        this->devPool_.SetWorkerFn([this](auto t, auto) { this->DeviceWorker(std::move(t)); })
-            .Run();
+    auto success = this->devPool_
+                       .SetWorkerInitFn([deviceId](auto&) {
+                           Trans::Device device;
+                           auto ts = device.Setup(deviceId);
+                           return ts.Success();
+                       })
+                       .SetWorkerFn([this](auto t, auto) { this->DeviceWorker(std::move(t)); })
+                       .Run();
     if (!success) { return Status::Error(); }
     success = this->filePool_.SetWorkerFn([this](auto t, auto) { this->FileWorker(std::move(t)); })
                   .SetNWorker(streamNumber)

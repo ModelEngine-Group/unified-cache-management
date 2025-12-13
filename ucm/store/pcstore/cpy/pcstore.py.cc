@@ -71,7 +71,9 @@ private:
         auto blockId = blockIds.begin();
         auto address = addresses.begin();
         while ((blockId != blockIds.end()) && (address != addresses.end())) {
-            task.Append(blockId->cast<std::string>(), address->cast<uintptr_t>());
+            std::string id = blockId->cast<py::bytes>();
+            std::vector<uintptr_t> addrs = address->cast<std::vector<uintptr_t>>();
+            task.Append(id, addrs);
             blockId++;
             address++;
         }
