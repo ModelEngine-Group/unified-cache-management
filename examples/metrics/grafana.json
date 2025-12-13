@@ -121,7 +121,7 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "rate(ucm:interval_lookup_hit_rates_sum{model_name=\"$model_name\"}[$__rate_interval])\n/\nrate(ucm:interval_lookup_hit_rates_count{model_name=\"$model_name\"}[$__rate_interval])",
+          "expr": "rate(ucm:interval_lookup_hit_rates_sum{model_name=\"$model_name\",worker_id=\"0\"}[$__rate_interval])\n/\nrate(ucm:interval_lookup_hit_rates_count{model_name=\"$model_name\",worker_id=\"0\"}[$__rate_interval])",
           "hide": false,
           "instant": false,
           "legendFormat": "Average",
