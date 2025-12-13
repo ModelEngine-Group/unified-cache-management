@@ -48,6 +48,7 @@ class UcmPcStoreV1(UcmKVStoreBaseV1):
         transfer_enable = True if config["role"] == "worker" else False
         param = ucmpcstore.PcStore.Config(storage_backends, block_size, transfer_enable)
         if transfer_enable:
+            param.uniqueId = config["unique_id"]
             param.transferDeviceId = config["device"]
             param.transferIoSize = config["io_size"]
             param.transferIoDirect = config.get("use_direct", False)

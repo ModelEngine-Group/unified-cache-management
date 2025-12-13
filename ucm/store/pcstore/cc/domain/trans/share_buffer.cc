@@ -24,6 +24,7 @@
 #include "share_buffer.h"
 #include <atomic>
 #include <chrono>
+#include <filesystem>
 #include <thread>
 #include <unistd.h>
 #include "file/file.h"
@@ -97,21 +98,36 @@ struct ShareBufferHeader {
     ShareBlockHeader headers[0];
 };
 
-inline std::string GenShareBufferName(const size_t blockSize, const size_t blockNumber,
-                                      const bool ioDirect, const size_t nSharer)
+const inline std::string& ShmPrefix() noexcept
 {
-    return fmt::format("uc.buf-{}-{}-{}-{:04x}", blockSize, blockNumber, ioDirect, nSharer);
+    static std::string prefix{"uc_shm_pcstore_"};
+    return prefix;
+}
+void CleanUpShmFileExceptMe(const std::string& me)
+{
+    namespace fs = std::filesystem;
+    std::string_view prefix = ShmPrefix();
+    fs::path shmDir = "/dev/shm";
+    if (!fs::exists(shmDir)) { return; }
+    for (const auto& entry : fs::directory_iterator(shmDir)) {
+        const auto& name = entry.path().filename().string();
+        if (entry.is_regular_file() && (name.compare(0, prefix.length(), prefix) == 0) &&
+            name != me) {
+            fs::remove(entry.path());
+        }
+    }
 }
 
 Status ShareBuffer::Setup(const size_t blockSize, const size_t blockNumber, const bool ioDirect,
-                          const size_t nSharer)
+                          const size_t nSharer, const std::string& uniqueId)
 {
     this->blockSize_ = blockSize;
     this->blockNumber_ = blockNumber;
     this->ioDirect_ = ioDirect;
     this->nSharer_ = nSharer;
     this->addr_ = nullptr;
-    this->shmName_ = GenShareBufferName(blockSize, blockNumber, ioDirect, nSharer);
+    this->shmName_ = ShmPrefix() + uniqueId;
+    CleanUpShmFileExceptMe(this->shmName_);
     auto file = File::Make(this->shmName_);
     if (!file) { return Status::OutOfMemory(); }
     auto flags = IFile::OpenFlag::CREATE | IFile::OpenFlag::EXCL | IFile::OpenFlag::READ_WRITE;
@@ -305,4 +321,4 @@ uintptr_t ShareBuffer::Reader::GetData()
     return (uintptr_t)header->Data();
 }
 
-} // namespace UC
+}  // namespace UC

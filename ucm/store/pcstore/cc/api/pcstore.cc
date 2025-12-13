@@ -37,11 +37,15 @@ public:
         auto status = this->spaceMgr_.Setup(config.storageBackends, config.kvcacheBlockSize);
         if (status.Failure()) { return status.Underlying(); }
         if (config.transferEnable) {
+            if (config.uniqueId.empty()) {
+                UC_ERROR("UniqueId is required.");
+                return Status::InvalidParam().Underlying();
+            }
             status = this->transMgr_.Setup(
                 config.transferLocalRankSize, config.transferDeviceId, config.transferStreamNumber,
                 config.kvcacheBlockSize, config.transferIoSize, config.transferIoDirect,
                 config.transferBufferNumber, this->spaceMgr_.GetSpaceLayout(),
-                config.transferTimeoutMs, config.transferScatterGatherEnable);
+                config.transferTimeoutMs, config.transferScatterGatherEnable, config.uniqueId);
             if (status.Failure()) { return status.Underlying(); }
         }
         this->ShowConfig(config);
@@ -86,6 +90,7 @@ private:
         UC_INFO("Set UC::BlockSize to {}.", config.kvcacheBlockSize);
         UC_INFO("Set UC::TransferEnable to {}.", config.transferEnable);
         if (!config.transferEnable) { return; }
+        UC_INFO("Set UC::UniqueId to {}.", config.uniqueId);
         UC_INFO("Set UC::IoSize to {}.", config.transferIoSize);
         UC_INFO("Set UC::IoDirect to {}.", config.transferIoDirect);
         UC_INFO("Set UC::LocalRankSize to {}.", config.transferLocalRankSize);
@@ -112,4 +117,4 @@ int32_t PcStore::Setup(const Config& config)
     return impl->Setup(config);
 }
 
-} // namespace UC
+}  // namespace UC
