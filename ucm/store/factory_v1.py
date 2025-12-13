@@ -58,8 +58,5 @@ class UcmConnectorFactoryV1:
 
 
 UcmConnectorFactoryV1.register_connector(
-    "UcmCacheStore", "ucm.store.cache.connector", "UcmCacheStore"
-)
-UcmConnectorFactoryV1.register_connector(
-    "UcmPosixStore", "ucm.store.posix.connector", "UcmPosixStore"
+    "UcmPcStoreV1", "ucm.store.pcstore.pcstore_connector_v1", "UcmPcStoreV1"
 )
