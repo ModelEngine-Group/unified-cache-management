@@ -11,7 +11,7 @@ COPY . /workspace/unified-cache-management
 RUN pip config set global.index-url ${PIP_INDEX_URL}
 
 RUN export PLATFORM="cuda" && \
-     pip install -v -e /workspace/unified-cache-management --no-build-isolation
+     pip install -v /workspace/unified-cache-management --no-build-isolation
 
 
 ENTRYPOINT ["/bin/bash"]
