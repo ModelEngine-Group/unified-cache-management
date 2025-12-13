@@ -58,5 +58,5 @@ class UcmConnectorFactoryV1:
 
 
 UcmConnectorFactoryV1.register_connector(
-    "UcmPcStoreV1", "ucm.store.pcstore.pcstore_connector_v1", "UcmPcStoreV1"
+    "UcmNfsStore", "ucm.store.pcstore.pcstore_connector_v1", "UcmPcStoreV1"
 )
