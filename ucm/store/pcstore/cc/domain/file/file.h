@@ -47,6 +47,6 @@ public:
     static void Remove(const std::string& path);
 };
 
-} // namespace UC
+}  // namespace UC
 
 #endif
