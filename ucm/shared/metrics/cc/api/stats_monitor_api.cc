@@ -24,11 +24,6 @@
 #include "stats_monitor_api.h"
 namespace UC::Metrics {
 
-void RegistStats(std::string name, Creator creator)
-{
-    StatsRegistry::GetInstance().RegisterStats(name, creator);
-}
-
 void CreateStats(const std::string& name) { StatsMonitor::GetInstance().CreateStats(name); }
 
 void UpdateStats(const std::string& name, const std::unordered_map<std::string, double>& params)

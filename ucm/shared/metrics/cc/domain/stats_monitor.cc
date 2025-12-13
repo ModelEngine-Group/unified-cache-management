@@ -22,24 +22,26 @@
  * SOFTWARE.
  * */
 #include "stats_monitor.h"
-#include <mutex>
-#include <vector>
 
 namespace UC::Metrics {
-
-StatsMonitor::StatsMonitor()
-{
-    auto& registry = StatsRegistry::GetInstance();
-    for (const auto& name : registry.GetRegisteredStatsNames()) {
-        stats_map_[name] = registry.CreateStats(name);
-    }
-}
 
 void StatsMonitor::CreateStats(const std::string& name)
 {
     std::lock_guard<std::mutex> lock(mutex_);
-    auto& registry = StatsRegistry::GetInstance();
-    stats_map_[name] = registry.CreateStats(name);
+    stats_map_[name] = std::make_unique<Stats>(name);
+}
+
+void StatsMonitor::UpdateStats(const std::string& name,
+                               const std::unordered_map<std::string, double>& params)
+{
+    std::lock_guard<std::mutex> lock(mutex_);
+    auto it = stats_map_.find(name);
+    if (it == stats_map_.end() || !it->second) { return; }
+    try {
+        it->second->Update(params);
+    } catch (...) {
+        return;
+    }
 }
 
 std::unordered_map<std::string, std::vector<double>> StatsMonitor::GetStats(const std::string& name)
@@ -48,14 +50,6 @@ std::unordered_map<std::string, std::vector<double>> StatsMonitor::GetStats(cons
     auto it = stats_map_.find(name);
     if (it == stats_map_.end() || !it->second) { return {}; }
     return it->second->Data();
-}
-
-void StatsMonitor::ResetStats(const std::string& name)
-{
-    std::lock_guard<std::mutex> lock(mutex_);
-    auto it = stats_map_.find(name);
-    if (it == stats_map_.end() || !it->second) { return; }
-    it->second->Reset();
 }
 
 std::unordered_map<std::string, std::vector<double>>
@@ -84,17 +78,12 @@ std::unordered_map<std::string, std::vector<double>> StatsMonitor::GetAllStatsAn
     return all_stats;
 }
 
-void StatsMonitor::UpdateStats(const std::string& name,
-                               const std::unordered_map<std::string, double>& params)
+void StatsMonitor::ResetStats(const std::string& name)
 {
     std::lock_guard<std::mutex> lock(mutex_);
     auto it = stats_map_.find(name);
     if (it == stats_map_.end() || !it->second) { return; }
-    try {
-        it->second->Update(params);
-    } catch (...) {
-        return;
-    }
+    it->second->Reset();
 }
 
 void StatsMonitor::ResetAllStats()

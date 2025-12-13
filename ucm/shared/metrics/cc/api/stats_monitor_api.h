@@ -23,8 +23,6 @@
  * */
 #ifndef UNIFIEDCACHE_MONITOR_API_H
 #define UNIFIEDCACHE_MONITOR_API_H
-#include <string>
-#include <unordered_map>
 #include "stats_monitor.h"
 
 namespace UC::Metrics {
@@ -33,7 +31,6 @@ struct StatsResult {
     std::unordered_map<std::string, std::vector<double>> data;
 };
 
-void RegistStats(std::string name, Creator creator);
 void CreateStats(const std::string& name);
 void UpdateStats(const std::string& name, const std::unordered_map<std::string, double>& params);
 void ResetStats(const std::string& name);
