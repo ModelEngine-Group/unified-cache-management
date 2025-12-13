@@ -102,7 +102,7 @@ class CMakeBuild(build_ext):
 
 setup(
     name="uc-manager",
-    version="0.1.2",
+    version="0.2.0rc1",
     description="Unified Cache Management",
     author="Unified Cache Team",
     packages=find_packages(),
