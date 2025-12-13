@@ -4,7 +4,6 @@ add_library(kvstar_retrieve.core STATIC ${CORE_SRC_FILES})
 
 target_include_directories(kvstar_retrieve.core PUBLIC
         "." "api" "domain" "infra"
-        ${EXTERNAL_INCLUDE_DIRS}
         ${NUMA_INSTALL_DIR}/include
 )
 
