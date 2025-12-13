@@ -29,8 +29,7 @@
 #include <string>
 #include <unordered_map>
 #include <vector>
-#include "stats/istats.h"
-#include "stats_registry.h"
+#include "stats/stats.h"
 
 namespace UC::Metrics {
 
@@ -46,24 +45,24 @@ public:
 
     void CreateStats(const std::string& name);
 
-    std::unordered_map<std::string, std::vector<double>> GetStats(const std::string& name);
+    void UpdateStats(const std::string& name,
+                     const std::unordered_map<std::string, double>& params);
 
-    void ResetStats(const std::string& name);
+    std::unordered_map<std::string, std::vector<double>> GetStats(const std::string& name);
 
     std::unordered_map<std::string, std::vector<double>> GetStatsAndClear(const std::string& name);
 
     std::unordered_map<std::string, std::vector<double>> GetAllStatsAndClear();
 
-    void UpdateStats(const std::string& name,
-                     const std::unordered_map<std::string, double>& params);
+    void ResetStats(const std::string& name);
 
     void ResetAllStats();
 
 private:
     std::mutex mutex_;
-    std::unordered_map<std::string, std::unique_ptr<IStats>> stats_map_;
+    std::unordered_map<std::string, std::unique_ptr<Stats>> stats_map_;
 
-    StatsMonitor();
+    StatsMonitor() = default;
     StatsMonitor(const StatsMonitor&) = delete;
     StatsMonitor& operator=(const StatsMonitor&) = delete;
 };

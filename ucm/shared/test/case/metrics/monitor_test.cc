@@ -23,41 +23,18 @@
  * */
 #include <gtest/gtest.h>
 #include <unistd.h>
-#include "stats/istats.h"
 #include "stats_monitor_api.h"
 
 using namespace UC::Metrics;
-
-class TestStats : public IStats {
-public:
-    explicit TestStats(const std::string& name) : name_(name) {}
-    std::string Name() const override { return name_; }
-    void Update(const std::unordered_map<std::string, double>& params) override
-    {
-        for (const auto& [key, val] : params) { data_[key].push_back(val); }
-    }
-    void Reset() override { data_.clear(); }
-    std::unordered_map<std::string, std::vector<double>> Data() override { return data_; }
-
-private:
-    std::string name_;
-    std::unordered_map<std::string, std::vector<double>> data_;
-};
 
 class UCStatsMonitorUT : public testing::Test {
 protected:
     void SetUp() override
     {
         try {
-            RegistStats("test_stats", [name = "test_stats"]() -> std::unique_ptr<IStats> {
-                return std::make_unique<TestStats>(name);
-            });
-            RegistStats("stats1", [name = "stats1"]() -> std::unique_ptr<IStats> {
-                return std::make_unique<TestStats>(name);
-            });
-            RegistStats("stats2", [name = "stats2"]() -> std::unique_ptr<IStats> {
-                return std::make_unique<TestStats>(name);
-            });
+            CreateStats("test_stats");
+            CreateStats("stats1");
+            CreateStats("stats2");
         } catch (const std::exception& e) {
             throw;
         }
@@ -67,7 +44,6 @@ protected:
 TEST_F(UCStatsMonitorUT, UpdateAndGetStats)
 {
     std::string statsName = "test_stats";
-    CreateStats(statsName);
 
     std::unordered_map<std::string, double> params;
     params["value1"] = 10.5;
@@ -109,9 +85,6 @@ TEST_F(UCStatsMonitorUT, MultipleStatsAndResetAll)
     std::string stats1 = "stats1";
     std::string stats2 = "stats2";
 
-    CreateStats(stats1);
-    CreateStats(stats2);
-
     UpdateStats(stats1, {
                             {"a", 1.0},
                             {"b", 2.0}
@@ -135,9 +108,6 @@ TEST_F(UCStatsMonitorUT, MultipleStatsAndGetAll)
 {
     std::string statsA = "stats1";
     std::string statsB = "stats2";
-
-    CreateStats(statsA);
-    CreateStats(statsB);
 
     UpdateStats(statsA, {
                             {"x", 100.0}

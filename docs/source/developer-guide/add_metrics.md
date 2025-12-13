@@ -3,8 +3,8 @@ UCM supports custom metrics with bidirectional updates from both Python and C++ 
 
 ## Architecture Overview
 The metrics consists of these components below:
-- **metrics** : Central stats registry that manages all metric lifecycle operations (registration, creation, updates, queries)
-- **observability.py** : Prometheus integration layer that handles metric exposition and multiprocess collection
+- **monitor** : Central stats registry that manages all metric lifecycle operations (registration, creation, updates, queries)
+- **observability.py** : Prometheus integration layer that handles metric exposition
 - **metrics_config.yaml** : Declarative configuration that defines which custom metrics to register and their properties
 
 ## Getting Started
@@ -31,7 +31,7 @@ prometheus:
   
   # Gauge metrics configuration
   gauges:
-    - name: "lookup_hit_rate"
+    - name: "external_lookup_hit_rate"
       documentation: "Hit rate of ucm lookup requests"
       multiprocess_mode: "livemostrecent"
   
@@ -43,7 +43,7 @@ prometheus:
 ```
 
 ### Use Monitor APIs to Update Stats
-The monitor provides a unified interface for metric operations. Note that the workflow requires registering a stats class before creating an instance.
+The monitor provides a unified interface for metric operations. Users only need to create stats and update them, while the observability component is responsible for fetching the stats and pushing them to Prometheus.
 :::::{tab-set}
 :sync-group: install
 
@@ -51,7 +51,6 @@ The monitor provides a unified interface for metric operations. Note that the wo
 :selected:
 :sync: py
 **Lifecycle Methods**
-- `register_istats(name, py::object)`: Register a new stats class implementation.
 - `create_stats(name)`: Create and initialize a registered stats object.
 
 **Operation Methods**
@@ -64,11 +63,8 @@ The monitor provides a unified interface for metric operations. Note that the wo
 
 **Example:** Using built-in ConnStats
 ```python
-from ucm.integration.vllm.conn_stats import ConnStats
 from ucm.shared.metrics import ucmmonitor
 
-conn_stats = ConnStats(name="ConnStats")
-ucmmonitor.register_stats("ConnStats", conn_stats) # Register stats
 ucmmonitor.create_stats("ConnStats") # Create a stats obj
 
 # Update stats
@@ -85,7 +81,6 @@ See more detailed example in [test case](https://github.com/ModelEngine-Group/un
 ::::{tab-item} C++ side interfaces
 :sync: cc
 **Lifecycle Methods**
-- `RegistStats(std::string name, Creator creator)`: Register a new stats class implementation.
 - `CreateStats(const std::string& name)`: Create and initialize a registered stats object.
 
 **Operation Methods**
@@ -102,10 +97,8 @@ UCM supports custom metrics by following steps:
    ```c++
     target_link_libraries(xxxstore PUBLIC storeinfra monitor_static)
     ```
-- Step 2: Inheriting from the IStats class to implement custom stats classes
-- Step 3: Register stats class to monitor
-- Step 4: Create stats object in monitor
-- Step 5: Update or get stats info using operation methods
+- Step 2: Create stats object using function **CreateStats**
+- Step 3: Update using function **UpdateStats**
 
 See more detailed example in [test case](https://github.com/ModelEngine-Group/unified-cache-management/tree/develop/ucm/shared/test/case).
 

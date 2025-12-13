@@ -17,7 +17,6 @@ from vllm.distributed.parallel_state import get_tp_group, get_world_group
 from vllm.platforms import current_platform
 from vllm.v1.core.sched.output import SchedulerOutput
 
-from ucm.integration.vllm.conn_stats import ConnStats
 from ucm.logger import init_logger
 from ucm.observability import UCMStatsLogger
 from ucm.shared.metrics import ucmmonitor
@@ -173,8 +172,6 @@ class UCMDirectConnector(KVConnectorBase_V1):
 
         self.metrics_config = self.launch_config.get("metrics_config_path", "")
         if self.metrics_config:
-            conn_stats = ConnStats(name="ConnStats")
-            ucmmonitor.register_stats("ConnStats", conn_stats)
             ucmmonitor.create_stats("ConnStats")
             self.stats_logger = UCMStatsLogger(
                 vllm_config.model_config.served_model_name,

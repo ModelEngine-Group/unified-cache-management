@@ -21,21 +21,16 @@
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 # SOFTWARE.
 #
-
+# Be impressed by https://github.com/LMCache/LMCache/blob/dev/lmcache/observability.py
 
 import os
 import threading
 import time
 from dataclasses import dataclass
-from pathlib import Path
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, List
 
 import prometheus_client
 import yaml
-
-# Third Party
-from prometheus_client import REGISTRY
-from vllm.distributed.parallel_state import get_world_group
 
 from ucm.logger import init_logger
 from ucm.shared.metrics import ucmmonitor
@@ -56,7 +51,7 @@ class PrometheusLogger:
     _counter_cls = prometheus_client.Counter
     _histogram_cls = prometheus_client.Histogram
 
-    def __init__(self, metadata: UCMEngineMetadata, config: Dict[str, Any]):
+    def __init__(self, metadata: UCMEngineMetadata, config: dict[str, Any]):
         # Ensure PROMETHEUS_MULTIPROC_DIR is set before any metric registration
         prometheus_config = config.get("prometheus", {})
         multiproc_dir = prometheus_config.get("multiproc_dir", "/vllm-workspace")
@@ -74,7 +69,7 @@ class PrometheusLogger:
         self._init_metrics_from_config(labelnames, prometheus_config)
 
     def _init_metrics_from_config(
-        self, labelnames: List[str], prometheus_config: Dict[str, Any]
+        self, labelnames: List[str], prometheus_config: dict[str, Any]
     ):
         """Initialize metrics based on configuration"""
         enabled = prometheus_config.get("enabled_metrics", {})
@@ -85,7 +80,7 @@ class PrometheusLogger:
 
         # Store metric mapping: metric_name -> (metric_type, attribute_name, stats_field_name)
         # This mapping will be used in log_prometheus to dynamically log metrics
-        self.metric_mappings: Dict[str, Dict[str, str]] = {}
+        self.metric_mappings: dict[str, dict[str, str]] = {}
 
         # Initialize counters
         if enabled.get("counters", True):
@@ -172,23 +167,23 @@ class PrometheusLogger:
                         "attr": attr_name,
                     }
 
-    def _log_gauge(self, gauge, data: Union[int, float]) -> None:
+    def _set_gauge(self, gauge, data: List) -> None:
         # Convenience function for logging to gauge.
+        if not data:
+            return
         gauge.labels(**self.labels).set(data)
 
-    def _log_counter(self, counter, data: Union[int, float]) -> None:
+    def _inc_counter(self, counter, data: List) -> None:
         # Convenience function for logging to counter.
         # Prevent ValueError from negative increment
-        if data < 0:
-            return
-        counter.labels(**self.labels).inc(data)
+        counter.labels(**self.labels).inc(sum(data))
 
-    def _log_histogram(self, histogram, data: Union[List[int], List[float]]) -> None:
+    def _observe_histogram(self, histogram, data: List) -> None:
         # Convenience function for logging to histogram.
         for value in data:
             histogram.labels(**self.labels).observe(value)
 
-    def log_prometheus(self, stats: Any):
+    def update_stats(self, stats: dict[str, List]):
         """Log metrics to Prometheus based on configuration file"""
         # Dynamically log metrics based on what's configured in YAML
         for stat_name, value in stats.items():
@@ -202,17 +197,14 @@ class PrometheusLogger:
 
                 # Log based on metric type
                 if metric_type == "counter":
-                    self._log_counter(metric_obj, value)
+                    self._set_gauge(metric_obj, value)
                 elif metric_type == "gauge":
-                    self._log_gauge(metric_obj, value)
+                    self._inc_counter(metric_obj, value)
                 elif metric_type == "histogram":
                     # Histograms expect a list
-                    if not isinstance(value, list):
-                        if value:
-                            value = [value]
-                        else:
-                            value = []
-                    self._log_histogram(metric_obj, value)
+                    self._observe_histogram(metric_obj, value)
+                else:
+                    logger.error(f"Not found metric type for {stat_name}")
             except Exception:
                 logger.debug(f"Failed to log metric {stat_name}")
 
@@ -222,40 +214,6 @@ class PrometheusLogger:
             "model_name": metadata.model_name,
             "worker_id": metadata.worker_id,
         }
-
-    _instance = None
-
-    @staticmethod
-    def GetOrCreate(
-        metadata: UCMEngineMetadata,
-        config_path: str = "",
-    ) -> "PrometheusLogger":
-        if PrometheusLogger._instance is None:
-            PrometheusLogger._instance = PrometheusLogger(metadata, config_path)
-        # assert PrometheusLogger._instance.metadata == metadata, \
-        #    "PrometheusLogger instance already created with different metadata"
-        if PrometheusLogger._instance.metadata != metadata:
-            logger.error(
-                "PrometheusLogger instance already created with"
-                "different metadata. This should not happen except "
-                "in test"
-            )
-        return PrometheusLogger._instance
-
-    @staticmethod
-    def GetInstance() -> "PrometheusLogger":
-        assert (
-            PrometheusLogger._instance is not None
-        ), "PrometheusLogger instance not created yet"
-        return PrometheusLogger._instance
-
-    @staticmethod
-    def GetInstanceOrNone() -> Optional["PrometheusLogger"]:
-        """
-        Returns the singleton instance of PrometheusLogger if it exists,
-        otherwise returns None.
-        """
-        return PrometheusLogger._instance
 
 
 class UCMStatsLogger:
@@ -267,13 +225,13 @@ class UCMStatsLogger:
         # Load configuration
         config = self._load_config(config_path)
         self.log_interval = config.get("log_interval", 10)
-        self.prometheus_logger = PrometheusLogger.GetOrCreate(self.metadata, config)
+        self.prometheus_logger = PrometheusLogger(self.metadata, config)
         self.is_running = True
 
         self.thread = threading.Thread(target=self.log_worker, daemon=True)
         self.thread.start()
 
-    def _load_config(self, config_path: str) -> Dict[str, Any]:
+    def _load_config(self, config_path: str) -> dict[str, Any]:
         """Load configuration from YAML file"""
         try:
             with open(config_path, "r") as f:
@@ -293,11 +251,16 @@ class UCMStatsLogger:
 
     def log_worker(self):
         while self.is_running:
-            # Use UCMStatsMonitor.get_states_and_clear() from external import
             stats = ucmmonitor.get_all_stats_and_clear().data
-            self.prometheus_logger.log_prometheus(stats)
+            self.prometheus_logger.update_stats(stats)
             time.sleep(self.log_interval)
 
     def shutdown(self):
         self.is_running = False
         self.thread.join()
+
+    def __del__(self):
+        try:
+            self.shutdown()
+        except Exception:
+            pass

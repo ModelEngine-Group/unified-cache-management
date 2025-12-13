@@ -22,31 +22,87 @@
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 # SOFTWARE.
 #
+from functools import wraps
 
-
-import os
-import sys
-
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from ucm.integration.vllm.conn_stats import ConnStats
 from ucm.shared.metrics import ucmmonitor
 
-# import monitor
 
-conn_stats1 = ConnStats(name="PyStats1")
-ucmmonitor.register_stats("PyStats1", conn_stats1)
+def test_wrap(func):
+    @wraps(func)
+    def wrapper(*args, **kwargs):
+        print(f"========>> Running in {func.__name__}:")
+        result = func(*args, **kwargs)
+        print()
+        return result
 
-ucmmonitor.create_stats("PyStats1")
-ucmmonitor.update_stats(
-    "PyStats1",
-    {
-        "save_duration": 1.2,
-        "save_speed": 300.5,
-        "load_duration": 0.8,
-        "load_speed": 450.0,
-        "interval_lookup_hit_rates": 0.95,
-    },
-)
+    return wrapper
 
-data = ucmmonitor.get_stats("PyStats1").data
-print(data)
+
+@test_wrap
+def metrics_with_update_stats():
+    ucmmonitor.create_stats("PyStats")
+    ucmmonitor.update_stats(
+        "PyStats",
+        {
+            "save_duration": 1.2,
+            "save_speed": 300.5,
+            "load_duration": 0.8,
+            "load_speed": 450.0,
+            "interval_lookup_hit_rates": 0.95,
+        },
+    )
+
+    data = ucmmonitor.get_stats("PyStats").data
+    assert data["save_duration"][0] == 1.2
+    assert len(data) == 5
+    print(f"Get PyStats stats: {data}")
+
+    data = ucmmonitor.get_stats_and_clear("PyStats").data
+    assert data["save_duration"][0] == 1.2
+    assert len(data) == 5
+    print(f"Get PyStats stats and clear: {data}")
+
+    data = ucmmonitor.get_stats_and_clear("PyStats").data
+    assert len(data) == 0
+    print(f"After clear then get PyStats: {data}")
+
+
+@test_wrap
+def metrics_with_update_all_stats():
+    ucmmonitor.create_stats("PyStats1")
+    ucmmonitor.create_stats("PyStats2")
+    ucmmonitor.update_stats(
+        "PyStats1",
+        {
+            "save_duration": 1.2,
+            "save_speed": 300.5,
+        },
+    )
+
+    ucmmonitor.update_stats(
+        "PyStats2",
+        {
+            "load_duration": 0.8,
+            "load_speed": 450.0,
+        },
+    )
+
+    data = ucmmonitor.get_stats("PyStats1").data
+    assert data["save_duration"][0] == 1.2
+    assert len(data) == 2
+    print(f"Only get PyStats1 stats: {data}")
+
+    data = ucmmonitor.get_all_stats_and_clear().data
+    assert data["save_duration"][0] == 1.2
+    assert data["load_duration"][0] == 0.8
+    assert len(data) == 4
+    print(f"Get all stats and clear: {data}")
+
+    data = ucmmonitor.get_stats("PyStats2").data
+    assert len(data) == 0
+    print(f"After clear then get PyStats2: {data}")
+
+
+if __name__ == "__main__":
+    metrics_with_update_stats()
+    metrics_with_update_all_stats()

@@ -21,40 +21,31 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  * */
-#ifndef UNIFIEDCACHE_REGISTRY_H
-#define UNIFIEDCACHE_REGISTRY_H
+#ifndef UNIFIEDCACHE_STATS_H
+#define UNIFIEDCACHE_STATS_H
 
-#include <functional>
-#include <mutex>
+#include <string>
 #include <unordered_map>
-#include "stats/istats.h"
+#include <vector>
 
 namespace UC::Metrics {
 
-using Creator = std::function<std::unique_ptr<IStats>()>;
-
-class StatsRegistry {
+class Stats {
 public:
-    static StatsRegistry& GetInstance();
-
-    static void RegisterStats(std::string name, Creator creator);
-
-    std::unique_ptr<IStats> CreateStats(const std::string& name);
-
-    std::vector<std::string> GetRegisteredStatsNames();
+    explicit Stats(const std::string& name) : name_(name) {}
+    std::string Name() { return name_; }
+    void Update(const std::unordered_map<std::string, double>& params)
+    {
+        for (const auto& [key, val] : params) { data_[key].push_back(val); }
+    }
+    void Reset() { data_.clear(); }
+    std::unordered_map<std::string, std::vector<double>> Data() { return data_; }
 
 private:
-    StatsRegistry() = default;
-    ~StatsRegistry() = default;
-    StatsRegistry(const StatsRegistry&) = delete;
-    StatsRegistry& operator=(const StatsRegistry&) = delete;
-    StatsRegistry(StatsRegistry&&) = delete;
-    StatsRegistry& operator=(StatsRegistry&&) = delete;
-
-    std::mutex mutex_;
-    std::unordered_map<std::string, Creator> registry_;
+    std::string name_;
+    std::unordered_map<std::string, std::vector<double>> data_;
 };
 
 } // namespace UC::Metrics
 
-#endif // UNIFIEDCACHE_REGISTRY_H
+#endif
