@@ -6,11 +6,13 @@ on:
       - 'main'
       - 'dev*'
       - '*release'
+      - 'feature*'
   pull_request:
     branches:
       - 'main'
       - 'dev*'
       - '*release'
+      - 'feature*'
 
 jobs:
   # gpu-test:
