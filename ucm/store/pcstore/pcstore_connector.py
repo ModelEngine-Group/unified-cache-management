@@ -47,12 +47,13 @@ class UcmPcStore(UcmKVStoreBase):
         transfer_enable = True if config["role"] == "worker" else False
         param = ucmpcstore.PcStore.Config(storage_backends, block_size, transfer_enable)
         if transfer_enable:
+            param.uniqueId = config["unique_id"]
             param.transferDeviceId = config["device"]
             param.transferIoSize = config["io_size"]
             param.transferIoDirect = config.get("use_direct", False)
             param.transferStreamNumber = config.get("stream_number", 8)
             param.transferBufferNumber = config.get("buffer_number", 4096)
-            param.transferLocalRankSize = config.get("local_rank_size", 8)
+            param.transferLocalRankSize = config.get("local_rank_size", 1)
             param.transferScatterGatherEnable = config.get("use_scatter_gatter", False)
         ret = self.store.Setup(param)
         if ret != 0:

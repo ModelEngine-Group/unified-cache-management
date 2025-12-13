@@ -27,8 +27,8 @@
 #include "device/idevice.h"
 #include "space/space_layout.h"
 #include "status/status.h"
-#include "task_queue.h"
-#include "task_set.h"
+#include "task/task_queue.h"
+#include "task/task_set.h"
 #include "thread/thread_pool.h"
 
 namespace UC {
@@ -45,7 +45,8 @@ class PosixQueue : public TaskQueue {
 
 public:
     Status Setup(const int32_t deviceId, const size_t bufferSize, const size_t bufferNumber,
-                 TaskSet* failureSet, const SpaceLayout* layout, const size_t timeoutMs, bool useDirect = false);
+                 TaskSet* failureSet, const SpaceLayout* layout, const size_t timeoutMs,
+                 bool useDirect = false);
     void Push(std::list<Task::Shard>& shards) noexcept override;
 
 private:
@@ -59,6 +60,6 @@ private:
     Status S2H(Task::Shard& shard);
 };
 
-} // namespace UC
+}  // namespace UC
 
 #endif
