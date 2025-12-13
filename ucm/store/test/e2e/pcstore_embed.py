@@ -40,7 +40,6 @@ def setup_store(storage_backends, block_size, device_id, io_size) -> UcmKVStoreB
     config["role"] = "worker"
     config["device"] = device_id
     config["io_size"] = io_size
-    config["use_scatter_gatter"] = True
     return UcmPcStore(config)
 
 

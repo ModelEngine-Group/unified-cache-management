@@ -53,6 +53,7 @@ class UcmPcStore(UcmKVStoreBaseV1):
             param.transferStreamNumber = config.get("stream_number", 8)
             param.transferBufferNumber = config.get("buffer_number", 4096)
             param.transferScatterGatherEnable = config.get("use_scatter_gatter", False)
+            param.transferLocalRankSize = config.get("local_rank_size", 1)
         ret = self.store.Setup(param)
         if ret != 0:
             msg = f"Failed to initialize ucmpcstore, errcode: {ret}."

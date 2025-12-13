@@ -212,6 +212,7 @@ class UCMDirectConnector(KVConnectorBase_V1):
             if self.is_mla:
                 self.is_mla = False
                 self.is_dsa = True
+        logger.info(f"use mla: {self.is_mla}, use dsa: {self.is_dsa}")
 
         # init work-side connector
         # When handling the GQA case, we will separately dump the k_cache and v_cache.
@@ -230,7 +231,7 @@ class UCMDirectConnector(KVConnectorBase_V1):
             self.k_store = UcmConnectorFactoryV1.create_connector(name, config)
             logger.info("init UCConnectorImpl, k_connector: %s", name)
             logger.info(
-                "single file size = %d MB, io_size = %d KB,",
+                "single file size = %.3f MB, io_size = %d KB,",
                 config["kv_block_size"] / 1024 / 1024,
                 config["io_size"] / 1024,
             )
@@ -244,7 +245,7 @@ class UCMDirectConnector(KVConnectorBase_V1):
             self.v_store = UcmConnectorFactoryV1.create_connector(name, config)
             logger.info("init UCConnectorImpl, v_connector: %s", name)
             logger.info(
-                "single file size = %d MB, io_size = %d KB,",
+                "single file size = %.3f MB, io_size = %d KB,",
                 config["kv_block_size"] / 1024 / 1024,
                 config["io_size"] / 1024,
             )
@@ -257,7 +258,7 @@ class UCMDirectConnector(KVConnectorBase_V1):
             self.k_store = UcmConnectorFactoryV1.create_connector(name, config)
             logger.info("init UCConnectorImpl, k_connector: %s", name)
             logger.info(
-                "single file size = %d MB, io_size = %d KB,",
+                "single file size = %.3f MB, io_size = %d KB,",
                 config["kv_block_size"] / 1024 / 1024,
                 config["io_size"] / 1024,
             )
