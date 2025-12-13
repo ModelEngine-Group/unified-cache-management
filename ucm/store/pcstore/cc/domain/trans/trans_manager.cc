@@ -39,7 +39,7 @@ Status TransManager::Setup(const size_t rankSize, const int32_t deviceId, const 
         if (s.Failure()) { return s; }
     }
     s = this->queue_.Setup(deviceId, streamNumber, blockSize, ioSize, ioDirect, bufferNumber,
-                           layout, &this->failureSet_, scatterGatherEnable);
+                           layout, &this->failureSet_, scatterGatherEnable, timeoutMs);
     if (s.Failure()) { return s; }
     this->rankSize_ = rankSize;
     this->timeoutMs_ = timeoutMs;
