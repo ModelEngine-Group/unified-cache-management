@@ -44,7 +44,7 @@ class UcmPcStoreV1(UcmKVStoreBaseV1):
         storage_backends = [
             path for path in config["storage_backends"].split(":") if path
         ]
-        block_size = int(config["kv_block_size"])
+        block_size = config.get("kv_block_size", 33554432)
         transfer_enable = True if config["role"] == "worker" else False
         param = ucmpcstore.PcStore.Config(storage_backends, block_size, transfer_enable)
         if transfer_enable:
