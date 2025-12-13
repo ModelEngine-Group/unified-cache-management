@@ -21,32 +21,22 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  * */
-#ifndef UNIFIEDCACHE_TRANS_MANAGER_H
-#define UNIFIEDCACHE_TRANS_MANAGER_H
+#ifndef UNIFIEDCACHE_SHARED_INFRA_TIME_NOW_TIME_H
+#define UNIFIEDCACHE_SHARED_INFRA_TIME_NOW_TIME_H
 
-#include "posix_queue.h"
-#include "task/task_manager.h"
+#include <chrono>
 
 namespace UC {
 
-class TransManager : public TaskManager {
+class NowTime {
 public:
-    Status Setup(const int32_t deviceId, const size_t streamNumber, const size_t ioSize,
-                 const size_t bufferNumber, const SpaceLayout* layout, const size_t timeoutMs, bool useDirect = false)
+    static auto Now()
     {
-        this->timeoutMs_ = timeoutMs;
-        auto status = Status::OK();
-        for (size_t i = 0; i < streamNumber; i++) {
-            auto q = std::make_shared<PosixQueue>();
-            status =
-                q->Setup(deviceId, ioSize, bufferNumber, &this->failureSet_, layout, timeoutMs, useDirect);
-            if (status.Failure()) { break; }
-            this->queues_.emplace_back(std::move(q));
-        }
-        return status;
+        auto now = std::chrono::steady_clock::now().time_since_epoch();
+        return std::chrono::duration<double>(now).count();
     }
 };
 
-} // namespace UC
+}  // namespace UC
 
 #endif

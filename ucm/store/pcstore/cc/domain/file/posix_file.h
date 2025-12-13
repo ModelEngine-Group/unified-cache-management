@@ -21,32 +21,38 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  * */
-#ifndef UNIFIEDCACHE_TRANS_MANAGER_H
-#define UNIFIEDCACHE_TRANS_MANAGER_H
+#ifndef UNIFIEDCACHE_POSIX_FILE_H
+#define UNIFIEDCACHE_POSIX_FILE_H
 
-#include "posix_queue.h"
-#include "task/task_manager.h"
+#include "ifile.h"
 
 namespace UC {
 
-class TransManager : public TaskManager {
+class PosixFile : public IFile {
 public:
-    Status Setup(const int32_t deviceId, const size_t streamNumber, const size_t ioSize,
-                 const size_t bufferNumber, const SpaceLayout* layout, const size_t timeoutMs, bool useDirect = false)
-    {
-        this->timeoutMs_ = timeoutMs;
-        auto status = Status::OK();
-        for (size_t i = 0; i < streamNumber; i++) {
-            auto q = std::make_shared<PosixQueue>();
-            status =
-                q->Setup(deviceId, ioSize, bufferNumber, &this->failureSet_, layout, timeoutMs, useDirect);
-            if (status.Failure()) { break; }
-            this->queues_.emplace_back(std::move(q));
-        }
-        return status;
-    }
+    PosixFile(const std::string& path) : IFile{path}, handle_{-1} {}
+    ~PosixFile() override;
+    Status MkDir() override;
+    Status RmDir() override;
+    Status Rename(const std::string& newName) override;
+    Status Access(const int32_t mode) override;
+    Status Open(const uint32_t flags) override;
+    void Close() override;
+    void Remove() override;
+    Status Read(void* buffer, size_t size, off64_t offset = -1) override;
+    Status Write(const void* buffer, size_t size, off64_t offset = -1) override;
+    Status Truncate(size_t length) override;
+    Status Stat(FileStat& st) override;
+    Status ShmOpen(const uint32_t flags) override;
+    Status MMap(void*& addr, size_t size, bool write, bool read, bool shared) override;
+    void MUnmap(void* addr, size_t size) override;
+    void ShmUnlink() override;
+    Status UpdateTime() override;
+
+private:
+    int32_t handle_;
 };
 
 } // namespace UC
 
-#endif
+#endif // UNIFIEDCACHE_POSIX_FILE_H

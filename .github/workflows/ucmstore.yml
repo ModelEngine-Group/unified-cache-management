@@ -13,7 +13,7 @@ env:
   BUILD_TYPE: Debug
 
 jobs:
-  ci:
+  cc_gtest:
     # The CMake configure and build commands are platform agnostic and should work equally well on Windows or Mac.
     # You can convert this to a matrix build if you need cross-platform coverage.
     # See: https://docs.github.com/en/free-pro-team@latest/actions/learn-github-actions/managing-complex-workflows#using-a-build-matrix
@@ -24,18 +24,10 @@ jobs:
 
     - name: Install googletest
       run: |
-        git clone https://github.com/google/googletest.git --depth=1 --branch=v1.12.0
+        git clone https://github.com/google/googletest.git --depth=1 --branch=v1.17.0
         cd googletest
         mkdir build && cd build
         cmake -DCMAKE_CXX_FLAGS="-fPIC" -DCMAKE_C_FLAGS="-fPIC" -DCMAKE_CXX_STANDARD=17 -DCMAKE_CXX_STANDARD_REQUIRED=True ..
-        sudo make install -j
-
-    - name: Install mockcpp
-      run: |
-        git clone https://github.com/sinojelly/mockcpp.git --depth=1
-        cd mockcpp
-        mkdir build && cd build
-        cmake -DCMAKE_CXX_FLAGS="-fPIC" -DCMAKE_C_FLAGS="-fPIC" -DCMAKE_CXX_STANDARD=17 -DCMAKE_CXX_STANDARD_REQUIRED=True -DMOCKCPP_XUNIT="gtest" -DMOCKCPP_XUNIT_HOME=/usr/local/ ..
         sudo make install -j
 
     - name: Configure CMake
@@ -45,7 +37,7 @@ jobs:
 
     - name: Build
       # Build your program with the given configuration
-      run: cmake --build ${{github.workspace}}/build --config ${{env.BUILD_TYPE}}
+      run: cmake --build ${{github.workspace}}/build --config ${{env.BUILD_TYPE}} -j
 
     - name: Test
       working-directory: ${{github.workspace}}/build
