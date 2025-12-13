@@ -40,7 +40,12 @@ def enable_sparse() -> bool:
 
 def is_editable_mode() -> bool:
     commands = [arg.lower() for arg in sys.argv]
-    return "develop" in commands or "--editable" in commands or "-e" in commands
+    return (
+        "develop" in commands
+        or "--editable" in commands
+        or "-e" in commands
+        or "editable_wheel" in commands
+    )
 
 
 class CMakeExtension(Extension):
