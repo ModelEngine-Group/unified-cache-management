@@ -21,38 +21,23 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  * */
-#ifndef UNIFIEDCACHE_REGISTRY_H
-#define UNIFIEDCACHE_REGISTRY_H
-
-#include <functional>
-#include <mutex>
-#include <unordered_map>
-#include "stats/istats.h"
+#ifndef UNIFIEDCACHE_MONITOR_API_H
+#define UNIFIEDCACHE_MONITOR_API_H
+#include "stats_monitor.h"
 
 namespace UC::Metrics {
-
-using Creator = std::unique_ptr<IStats> (*)();
-
-class StatsRegistry {
-public:
-    static StatsRegistry& GetInstance();
-
-    static void RegisterStats(std::string name, Creator creator);
-
-    std::unique_ptr<IStats> CreateStats(const std::string& name);
-
-    std::vector<std::string> GetRegisteredStatsNames();
-
-private:
-    StatsRegistry() = default;
-    ~StatsRegistry() = default;
-    StatsRegistry(const StatsRegistry&) = delete;
-    StatsRegistry& operator=(const StatsRegistry&) = delete;
-
-    std::mutex mutex_;
-    std::unordered_map<std::string, Creator> registry_;
+struct StatsResult {
+    StatsResult() = default;
+    std::unordered_map<std::string, std::vector<double>> data;
 };
 
-} // namespace UC::Metrics
+void CreateStats(const std::string& name);
+void UpdateStats(const std::string& name, const std::unordered_map<std::string, double>& params);
+void ResetStats(const std::string& name);
+void ResetAllStats();
+StatsResult GetStats(const std::string& name);
+StatsResult GetStatsAndClear(const std::string& name);
+StatsResult GetAllStatsAndClear();
 
-#endif // UNIFIEDCACHE_REGISTRY_H
+} // namespace UC::Metrics
+#endif

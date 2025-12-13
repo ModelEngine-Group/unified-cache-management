@@ -23,19 +23,23 @@
  * */
 #include <pybind11/pybind11.h>
 #include <pybind11/stl.h>
-#include "stats_monitor.h"
+#include "stats_monitor_api.h"
 
 namespace py = pybind11;
 namespace UC::Metrics {
 
 void bind_monitor(py::module_& m)
 {
-    py::class_<StatsMonitor>(m, "StatsMonitor")
-        .def_static("get_instance", &StatsMonitor::GetInstance, py::return_value_policy::reference)
-        .def("update_stats", &StatsMonitor::UpdateStats)
-        .def("reset_all", &StatsMonitor::ResetAllStats)
-        .def("get_stats", &StatsMonitor::GetStats)
-        .def("get_stats_and_clear", &StatsMonitor::GetStatsAndClear);
+    py::class_<StatsResult>(m, "StatsResult")
+        .def(py::init<>())
+        .def_readonly("data", &StatsResult::data);
+    m.def("create_stats", &CreateStats);
+    m.def("update_stats", &UpdateStats);
+    m.def("get_stats", &GetStats);
+    m.def("get_stats_and_clear", &GetStatsAndClear);
+    m.def("get_all_stats_and_clear", &GetAllStatsAndClear);
+    m.def("reset_stats", &ResetStats);
+    m.def("reset_all", &ResetAllStats);
 }
 
 } // namespace UC::Metrics

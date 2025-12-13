@@ -21,39 +21,39 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  * */
-#include "stats_registry.h"
-
+#include "stats_monitor_api.h"
 namespace UC::Metrics {
 
-StatsRegistry& StatsRegistry::GetInstance()
+void CreateStats(const std::string& name) { StatsMonitor::GetInstance().CreateStats(name); }
+
+void UpdateStats(const std::string& name, const std::unordered_map<std::string, double>& params)
 {
-    static StatsRegistry inst;
-    return inst;
+    StatsMonitor::GetInstance().UpdateStats(name, params);
 }
 
-void StatsRegistry::RegisterStats(std::string name, Creator creator)
+void ResetStats(const std::string& name) { StatsMonitor::GetInstance().ResetStats(name); }
+
+void ResetAllStats() { StatsMonitor::GetInstance().ResetAllStats(); }
+
+StatsResult GetStats(const std::string& name)
 {
-    auto& reg = GetInstance();
-    std::lock_guard lk(reg.mutex_);
-    reg.registry_[name] = creator;
+    StatsResult result;
+    result.data = StatsMonitor::GetInstance().GetStats(name);
+    return result;
 }
 
-std::unique_ptr<IStats> StatsRegistry::CreateStats(const std::string& name)
+StatsResult GetStatsAndClear(const std::string& name)
 {
-    auto& reg = GetInstance();
-    std::lock_guard lk(reg.mutex_);
-    if (auto it = reg.registry_.find(name); it != reg.registry_.end()) return it->second();
-    return nullptr;
+    StatsResult result;
+    result.data = StatsMonitor::GetInstance().GetStatsAndClear(name);
+    return result;
 }
 
-std::vector<std::string> StatsRegistry::GetRegisteredStatsNames()
+StatsResult GetAllStatsAndClear()
 {
-    auto& reg = GetInstance();
-    std::lock_guard lk(reg.mutex_);
-    std::vector<std::string> names;
-    names.reserve(reg.registry_.size());
-    for (auto& [n, _] : reg.registry_) names.push_back(n);
-    return names;
+    StatsResult result;
+    result.data = StatsMonitor::GetInstance().GetAllStatsAndClear();
+    return result;
 }
 
 } // namespace UC::Metrics
