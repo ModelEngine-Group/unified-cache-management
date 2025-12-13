@@ -60,7 +60,7 @@ class CMakeBuild(build_ext):
     def build_cmake(self, ext: CMakeExtension):
         build_dir = os.path.abspath(self.build_temp)
         install_dir = os.path.abspath(self.build_lib)
-        if is_editable_mode:
+        if is_editable_mode():
             install_dir = ext.cmake_file_path
 
         cmake_args = [
