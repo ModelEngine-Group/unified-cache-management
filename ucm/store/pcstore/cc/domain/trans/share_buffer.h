@@ -49,7 +49,11 @@ public:
     private:
         Reader(const std::string& block, const std::string& path, const size_t length,
                const bool ioDirect, const size_t nSharer, void* addr)
-            : block_{block}, path_{path}, length_{length}, ioDirect_{ioDirect}, nSharer_{nSharer},
+            : block_{block},
+              path_{path},
+              length_{length},
+              ioDirect_{ioDirect},
+              nSharer_{nSharer},
               addr_{addr}
         {
         }
@@ -58,7 +62,7 @@ public:
 
 public:
     Status Setup(const size_t blockSize, const size_t blockNumber, const bool ioDirect,
-                 const size_t nSharer);
+                 const size_t nSharer, const std::string& uniqueId);
     ~ShareBuffer();
     std::shared_ptr<Reader> MakeReader(const std::string& block, const std::string& path);
 
@@ -80,6 +84,6 @@ private:
     void* addr_;
 };
 
-} // namespace UC
+}  // namespace UC
 
 #endif

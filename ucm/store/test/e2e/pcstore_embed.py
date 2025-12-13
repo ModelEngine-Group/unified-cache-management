@@ -40,6 +40,7 @@ def setup_store(storage_backends, block_size, device_id, io_size) -> UcmKVStoreB
     config["role"] = "worker"
     config["device"] = device_id
     config["io_size"] = io_size
+    config["unique_id"] = secrets.token_hex(8)
     return UcmPcStore(config)
 
 
