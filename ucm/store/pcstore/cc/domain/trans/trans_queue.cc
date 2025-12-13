@@ -106,7 +106,8 @@ Status TransQueue::Setup(const int32_t deviceId, const size_t streamNumber, cons
         return Status::Error();
     }
     auto success = this->devPool_
-                       .SetWorkerInitFn([deviceId, &device](auto&) {
+                       .SetWorkerInitFn([deviceId](auto&) {
+                           Trans::Device device;
                            auto ts = device.Setup(deviceId);
                            return ts.Success();
                        })
