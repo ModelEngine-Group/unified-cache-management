@@ -3,7 +3,6 @@ from __future__ import annotations
 import datetime as dt
 import platform as pf
 import sys
-from functools import wraps
 from pathlib import Path
 
 import pytest
