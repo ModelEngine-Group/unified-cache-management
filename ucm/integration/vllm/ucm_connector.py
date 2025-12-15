@@ -458,6 +458,10 @@ class UCMDirectConnector(KVConnectorBase_V1):
         return block_ids, shard_indexs, total_k_tensors, total_v_tensors
 
     def _ensure_buffer(self, total_numel: int):
+        """
+        Initialize or ensure buffer for broadcast;
+        Typically this buffer length equals to one layer kv cache tensor size.
+        """
         if self._broadcast_buffer is None or self._broadcast_buffer_size < total_numel:
             self._broadcast_buffer = torch.empty(
                 total_numel,
@@ -467,6 +471,9 @@ class UCMDirectConnector(KVConnectorBase_V1):
             self._broadcast_buffer_size = total_numel
 
     def _broadcast(self, dst_tensor_addr: List[torch.Tensor]):
+        """
+        Broadcast tensor list in tp group.
+        """
         rec_tensor = None
         total_numel = len(dst_tensor_addr) * dst_tensor_addr[0].numel()
         group = self.group_coordinator.device_group
@@ -485,8 +492,11 @@ class UCMDirectConnector(KVConnectorBase_V1):
         return handle, rec_tensor
 
     def _broadcast_layers(self, dst_tensor_addr: list[torch.Tensor]):
+        """
+        Broadcast kv caches by layer.
+        """
         num_layers = len(self.kv_caches)
-        total = total = len(dst_tensor_addr)
+        total = len(dst_tensor_addr)
         assert num_layers > 0 and total % num_layers == 0, (num_layers, total)
         num_tensors_per_layer = total // num_layers
 
@@ -536,9 +546,10 @@ class UCMDirectConnector(KVConnectorBase_V1):
             else:
                 request_to_task[request_id] = None
             if v_tensors and self.v_store:
-                req_broadcast_addr[request_id] = ([t for row in k_tensors for t in row], [
-                    t for row in v_tensors for t in row
-                ])
+                req_broadcast_addr[request_id] = (
+                    [t for row in k_tensors for t in row],
+                    [t for row in v_tensors for t in row],
+                )
             else:
                 req_broadcast_addr[request_id] = [t for row in k_tensors for t in row]
 
@@ -556,12 +567,13 @@ class UCMDirectConnector(KVConnectorBase_V1):
                     )
             if self.load_only_first_rank:
                 if isinstance(req_broadcast_addr[request_id], tuple) and self.v_store:
+                    # In vllm_ascend >= 0.10.0, the MLA model's k cache is separated into (nope_dim, rope_dim)
                     k_nope, k_rope = req_broadcast_addr[request_id]
                     self._broadcast_layers(k_nope)
                     self._broadcast_layers(k_rope)
                 else:
                     self._broadcast_layers(req_broadcast_addr[request_id])
-                    
+
         load_end_time = time.perf_counter() * 1000
         load_speed = (
             num_loaded_block
