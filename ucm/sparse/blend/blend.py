@@ -189,6 +189,8 @@ class Blend(UcmSparseBase):
 
     def _update_attn_metadata(self):
         # update attn_metadata, cause we sparse the prefill tokens
+        # golden kv caches are available in current blend layer, so maybe we should cache all of them
+        # so maybe we should modify slot_mapping at the beginning of next layer/attn
         self.attn_metadata.slot_mapping = self.attn_metadata.slot_mapping[
             self.blend_req_metas.compute_mask
         ]
