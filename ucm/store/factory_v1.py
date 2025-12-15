@@ -63,3 +63,6 @@ UcmConnectorFactoryV1.register_connector(
 UcmConnectorFactoryV1.register_connector(
     "UcmPosixStore", "ucm.store.posix.connector", "UcmPosixStore"
 )
+UcmConnectorFactoryV1.register_connector(
+    "UcmCacheStore", "ucm.store.cache.connector", "UcmCacheStore"
+)
