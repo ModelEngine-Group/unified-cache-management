@@ -86,7 +86,7 @@ public:
                     const pybind11::buffer& addrs)
     {
         auto desc = MakeTaskDesc(ids, indexes, addrs);
-        desc.brief = TaskBriefPrefix() + "Load";
+        desc.brief = "Load";
         auto res = store_.Load(std::move(desc));
         if (res) { return res.Value(); }
         throw std::runtime_error{res.Error().ToString()};
@@ -95,7 +95,7 @@ public:
                     const pybind11::buffer& addrs)
     {
         auto desc = MakeTaskDesc(ids, indexes, addrs);
-        desc.brief = TaskBriefPrefix() + "Dump";
+        desc.brief = "Dump";
         auto res = store_.Dump(desc);
         if (res) { return res.Value(); }
         throw std::runtime_error{res.Error().ToString()};
@@ -113,7 +113,6 @@ protected:
     {
         if (s.Failure()) [[unlikely]] { throw std::runtime_error{s.ToString()}; }
     }
-    virtual const std::string& TaskBriefPrefix() const noexcept = 0;
 
 private:
     TaskDesc MakeTaskDesc(const pybind11::buffer& ids, const pybind11::buffer& indexes,

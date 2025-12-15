@@ -24,23 +24,11 @@
 #include "posix_store.h"
 #include "template/store_binder.h"
 
-namespace UC::PosixStore {
-
-class PosixStorePy : public UC::Detail::StoreBinder<PosixStore, Config> {
-protected:
-    const std::string& TaskBriefPrefix() const noexcept override
-    {
-        static std::string prefix{"Posix::"};
-        return prefix;
-    }
-};
-
-}  // namespace UC::PosixStore
-
 PYBIND11_MODULE(ucmposixstore, module)
 {
     namespace py = pybind11;
     using namespace UC::PosixStore;
+    using PosixStorePy = UC::Detail::StoreBinder<PosixStore, Config>;
     module.attr("project") = UCM_PROJECT_NAME;
     module.attr("version") = UCM_PROJECT_VERSION;
     module.attr("commit_id") = UCM_COMMIT_ID;
