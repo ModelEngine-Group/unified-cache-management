@@ -12,4 +12,9 @@ file(GLOB_RECURSE BINDINGS_SRCS CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/c
 pybind11_add_module(ucmmonitor ${BINDINGS_SRCS})
 target_link_libraries(ucmmonitor PRIVATE -Wl,--whole-archive monitor_static -Wl,--no-whole-archive)
 target_include_directories(ucmmonitor PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/cc)
-set_target_properties(ucmmonitor PROPERTIES LIBRARY_OUTPUT_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
+
+file(RELATIVE_PATH INSTALL_REL_PATH
+     ${CMAKE_SOURCE_DIR}
+     ${CMAKE_CURRENT_SOURCE_DIR}
+)
+install(TARGETS ucmmonitor LIBRARY DESTINATION ${INSTALL_REL_PATH} COMPONENT ucm)
