@@ -136,23 +136,3 @@ class UcmCacheStore(UcmKVStoreBaseV1):
 
     def check(self, task: Task) -> bool:
         return self.store.Check(task.task_id)
-
-
-if __name__ == "__main__":
-    import secrets
-
-    config = {}
-    config["backend"] = 0xDEAD
-    config["engine_id"] = "stub_engine_xxxxdead"
-    config["device_id"] = 1
-    config["tensor_size"] = 32768
-    config["shard_size"] = 32768 * 4
-    config["block_size"] = 32768 * 4 * 64
-    config["buffer_size"] = 32768 * 4 * 64 * 2048
-    config["share_buffer_enable"] = False
-    config["waiting_queue_depth"] = 128
-    config["running_queue_depth"] = 1024
-    config["transfer_timeout_ms"] = 30000
-    store = UcmCacheStore(config)
-    block_ids = [secrets.token_bytes(16) for _ in range(1024)]
-    store.prefetch(block_ids)

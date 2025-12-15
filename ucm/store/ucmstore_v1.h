@@ -41,6 +41,13 @@ public:
     virtual ~StoreV1() = default;
 
     /**
+     * @brief Get the readme information of the Store instance.
+     *
+     * @return Self descriptive information.
+     */
+    virtual std::string Readme() const = 0;
+
+    /**
      * @brief Check whether the given blocks exist in storage.
      *
      * @param blocks Array of block identifiers to test.

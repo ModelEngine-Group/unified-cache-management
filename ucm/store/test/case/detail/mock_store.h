@@ -31,6 +31,7 @@ namespace UC::Test::Detail {
 
 class MockStore : public UC::StoreV1 {
 public:
+    MOCK_METHOD((std::string), Readme, (), (const, override));
     MOCK_METHOD((UC::Expected<std::vector<uint8_t>>), Lookup,
                 (const UC::Detail::BlockId* blocks, size_t num), (override));
     MOCK_METHOD(void, Prefetch, (const UC::Detail::BlockId* blocks, size_t num), (override));

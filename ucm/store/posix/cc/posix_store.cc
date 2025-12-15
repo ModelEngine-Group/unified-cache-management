@@ -101,6 +101,8 @@ Status PosixStore::PosixStore::Setup(const Config& config)
     return impl_->Setup(config);
 }
 
+std::string PosixStore::Readme() const { return "PosixStore"; }
+
 Expected<std::vector<uint8_t>> PosixStore::PosixStore::Lookup(const Detail::BlockId* blocks,
                                                               size_t num)
 {
