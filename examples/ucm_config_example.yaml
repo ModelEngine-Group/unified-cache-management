@@ -9,10 +9,19 @@
 
 # Connector name (e.g., "UcmNfsStore", "UcmDramStore")
 ucm_connectors:
-  - ucm_connector_name: "UcmNfsStore"
+  backend:
+    ucm_connector_name: "UcmPosixStore"
     ucm_connector_config:
-      storage_backends: "/mnt/test"
-      use_direct: false
+      backends: "/home/share/qyh-test"
+      transfer_io_direct: true
+      transfer_stream_number: 16
+  cache:
+    ucm_connector_name: "UcmCacheStore"
+    ucm_connector_config:
+      share_buffer_enable: true
+      waiting_queue_depth: 16
+      running_queue_depth: 1024
+      transfer_timeout_ms: 30000
 
 load_only_first_rank: false
 
