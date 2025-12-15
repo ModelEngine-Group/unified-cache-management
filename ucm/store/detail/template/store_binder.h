@@ -62,15 +62,16 @@ class StoreBinder {
     };
 
 private:
-    Store store_;
+    std::unique_ptr<Store> store_;
 
 public:
-    uintptr_t Self() { return (uintptr_t)(void*)&store_; }
-    void Setup(const Config& config) { ThrowIfFailed(store_.Setup(config)); }
+    StoreBinder() : store_{std::make_unique<Store>()} {}
+    uintptr_t Self() { return (uintptr_t)(void*)store_.get(); }
+    void Setup(const Config& config) { ThrowIfFailed(store_->Setup(config)); }
     pybind11::bytes Lookup(const pybind11::buffer& ids)
     {
         BufferArrayView<BlockId> idArr{ids};
-        auto res = store_.Lookup(idArr.data, idArr.num);
+        auto res = store_->Lookup(idArr.data, idArr.num);
         if (res) {
             auto& v = res.Value();
             return pybind11::bytes(reinterpret_cast<const char*>(v.data()), v.size());
@@ -80,14 +81,14 @@ public:
     void Prefetch(const pybind11::buffer& ids)
     {
         BufferArrayView<BlockId> idArr{ids};
-        store_.Prefetch(idArr.data, idArr.num);
+        store_->Prefetch(idArr.data, idArr.num);
     }
     TaskHandle Load(const pybind11::buffer& ids, const pybind11::buffer& indexes,
                     const pybind11::buffer& addrs)
     {
         auto desc = MakeTaskDesc(ids, indexes, addrs);
         desc.brief = "Load";
-        auto res = store_.Load(std::move(desc));
+        auto res = store_->Load(std::move(desc));
         if (res) { return res.Value(); }
         throw std::runtime_error{res.Error().ToString()};
     }
@@ -96,17 +97,17 @@ public:
     {
         auto desc = MakeTaskDesc(ids, indexes, addrs);
         desc.brief = "Dump";
-        auto res = store_.Dump(desc);
+        auto res = store_->Dump(desc);
         if (res) { return res.Value(); }
         throw std::runtime_error{res.Error().ToString()};
     }
     bool Check(TaskHandle taskId)
     {
-        auto res = store_.Check(taskId);
+        auto res = store_->Check(taskId);
         if (res) { return res.Value(); }
         throw std::runtime_error{res.Error().ToString()};
     }
-    void Wait(TaskHandle taskId) { ThrowIfFailed(store_.Wait(taskId)); }
+    void Wait(TaskHandle taskId) { ThrowIfFailed(store_->Wait(taskId)); }
 
 protected:
     virtual void ThrowIfFailed(const Status& s)
