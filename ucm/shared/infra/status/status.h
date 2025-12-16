@@ -27,6 +27,7 @@
 #include <cstdint>
 #include <fmt/format.h>
 #include <string>
+#include <variant>
 
 namespace UC {
 
@@ -49,6 +50,7 @@ class Status {
     static constexpr int32_t EDESERIALIZE_ = __MakeStatusCode<7>();
     static constexpr int32_t EUNSUPPORTED_ = __MakeStatusCode<8>();
     static constexpr int32_t ENOSPACE_ = __MakeStatusCode<9>();
+    static constexpr int32_t ETIMEOUT_ = __MakeStatusCode<10>();
     int32_t code_;
     std::string message_;
     explicit Status(int32_t code) : code_(code) {}
@@ -72,8 +74,15 @@ public:
     static Status Error(std::string message) { return {ERROR_, std::move(message)}; }
     static Status Error() { return Status{ERROR_}; }
     static Status InvalidParam() { return Status{EPARAM_}; }
+    static Status InvalidParam(std::string message) { return {EPARAM_, std::move(message)}; }
+    template <typename... Args>
+    static Status InvalidParam(fmt::format_string<Args...> fmt, Args&&... args)
+    {
+        return InvalidParam(fmt::format(fmt, std::forward<Args>(args)...));
+    }
     static Status OutOfMemory() { return Status{EOOM_}; }
     static Status OsApiError() { return Status{EOSERROR_}; }
+    static Status OsApiError(std::string message) { return Status{EOSERROR_, std::move(message)}; }
     static Status DuplicateKey() { return Status{EDUPLICATE_}; }
     static Status Retry() { return Status{ERETRY_}; }
     static Status NotFound() { return Status{ENOOBJ_}; }
@@ -81,10 +90,25 @@ public:
     static Status DeserializeFailed() { return Status{EDESERIALIZE_}; }
     static Status Unsupported() { return Status{EUNSUPPORTED_}; }
     static Status NoSpace() { return Status{ENOSPACE_}; }
+    static Status Timeout() { return Status{ETIMEOUT_}; }
+};
+
+template <class T>
+class Expected {
+    std::variant<Status, T> v_;
+
+public:
+    Expected(T&& val) : v_(std::move(val)) {}
+    Expected(Status err) : v_(err) {}
+    bool HasValue() const noexcept { return v_.index() == 1; }
+    explicit operator bool() const noexcept { return HasValue(); }
+    T& Value() & { return std::get<T>(v_); }
+    T&& Value() && { return std::get<T>(std::move(v_)); }
+    Status Error() const { return std::get<Status>(v_); }
 };
 
 inline std::string format_as(const Status& status) { return status.ToString(); }
 
-} // namespace UC
+}  // namespace UC
 
 #endif

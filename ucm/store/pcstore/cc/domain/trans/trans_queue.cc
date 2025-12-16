@@ -51,10 +51,10 @@ void TransQueue::DeviceWorker(BlockTask&& task)
     return;
 }
 
-void TransQueue::FileWorker(BlockTask&& task)
+void TransQueue::FileWorker(BlockTask& task)
 {
     if (this->failureSet_->Contains(task.owner)) {
-        task.done(false);
+        if (task.type != TransTask::Type::DUMP) { task.done(false); }
         return;
     }
     auto hostPtr = (uintptr_t)task.buffer.get();
@@ -75,10 +75,22 @@ void TransQueue::FileWorker(BlockTask&& task)
     task.done(false);
 }
 
+void TransQueue::FileWorkerTimeout(BlockTask& task)
+{
+    static size_t lastTaskId = 0;
+    if (lastTaskId != task.owner) {
+        lastTaskId = task.owner;
+        UC_WARN("Task({}) timeout.", task.owner);
+    }
+
+    if (task.type != TransTask::Type::DUMP) { this->failureSet_->Insert(task.owner); }
+    if (task.done) { task.done(false); }
+}
+
 Status TransQueue::Setup(const int32_t deviceId, const size_t streamNumber, const size_t blockSize,
                          const size_t ioSize, const bool ioDirect, const size_t bufferNumber,
                          const SpaceLayout* layout, TaskSet* failureSet_,
-                         const bool scatterGatherEnable)
+                         const bool scatterGatherEnable, const size_t timeoutMs)
 {
     Trans::Device device;
     auto ts = device.Setup(deviceId);
@@ -105,13 +117,21 @@ Status TransQueue::Setup(const int32_t deviceId, const size_t streamNumber, cons
         UC_ERROR("Failed({}) to make host buffer({},{}).", ts.ToString(), blockSize, bufferNumber);
         return Status::Error();
     }
-    auto success =
-        this->devPool_.SetWorkerFn([this](auto t, auto) { this->DeviceWorker(std::move(t)); })
-            .Run();
+    auto success = this->devPool_
+                       .SetWorkerInitFn([deviceId](auto&) {
+                           Trans::Device device;
+                           auto ts = device.Setup(deviceId);
+                           return ts.Success();
+                       })
+                       .SetWorkerFn([this](auto t, auto) { this->DeviceWorker(std::move(t)); })
+                       .SetNWorker(streamNumber)
+                       .Run();
     if (!success) { return Status::Error(); }
-    success = this->filePool_.SetWorkerFn([this](auto t, auto) { this->FileWorker(std::move(t)); })
-                  .SetNWorker(streamNumber)
-                  .Run();
+    success =
+        this->filePool_.SetWorkerFn([this](auto t, auto) { this->FileWorker(t); })
+            .SetWorkerTimeoutFn([this](auto t, auto) { this->FileWorkerTimeout(t); }, timeoutMs)
+            .SetNWorker(streamNumber)
+            .Run();
     if (!success) { return Status::Error(); }
     this->layout_ = layout;
     this->ioSize_ = ioSize;
@@ -221,4 +241,4 @@ void TransQueue::DispatchSatterGatherDump(TaskPtr task, WaiterPtr waiter)
     }
 }
 
-} // namespace UC
+}  // namespace UC

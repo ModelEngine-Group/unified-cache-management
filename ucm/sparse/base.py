@@ -23,7 +23,7 @@ from __future__ import annotations
 
 import enum
 from abc import ABC, abstractmethod
-from typing import TYPE_CHECKING, List, Optional, Union
+from typing import TYPE_CHECKING, List, Optional, Tuple, Union
 
 if TYPE_CHECKING:
     from vllm.v1.core.sched.output import SchedulerOutput
@@ -117,11 +117,11 @@ class UcmSparseBase(ABC):
         """
         pass
 
-    def execute_finished(self):
+    def execute_finished(self, logits_indices: torch.Tensor) -> torch.Tensor:
         """
         This is called at the end of "ModelRunner->execute_model" function.
         """
-        pass
+        return logits_indices
 
     def attention_begin(
         self,
@@ -130,14 +130,15 @@ class UcmSparseBase(ABC):
         value: torch.Tensor,
         layer_name: str,
         forward_context: ForwardContext,
+        output: Optional[torch.Tensor] = None,
         phase: Optional[str] = None,
-    ) -> None:
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         """
         This is called at the beginning of "unified_attention".
         Sparse attention algorithm can modify forward_context.attn_metadata if necessary.
         (UC_TODO: modify dataclass is not allowed in python?)
         """
-        pass
+        return query, key, value, output
 
     def attention_finished(
         self,
@@ -153,6 +154,44 @@ class UcmSparseBase(ABC):
         This is called at the end of "unified_attention".
         """
         pass
+
+    def ffn_begin(
+        self, hidden_states: torch.Tensor, residual: torch.Tensor
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        """
+        This is called at the beginning of ffn in each DecodeLayer.
+        """
+        return hidden_states, residual
+
+    def ffn_finished(
+        self, hidden_states: torch.Tensor, residual: torch.Tensor
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        """
+        This is called at the end of ffn in each DecodeLayer.
+        """
+        return hidden_states, residual
+
+    def layer_begin(
+        self,
+        positions: torch.Tensor,
+        hidden_states: torch.Tensor,
+        residual: torch.Tensor,
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """
+        This is called at the beginning of DecodeLayer.
+        """
+        return positions, hidden_states, residual
+
+    def layer_finished(
+        self,
+        positions: torch.Tensor,
+        hidden_states: torch.Tensor,
+        residual: torch.Tensor,
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """
+        This is called at the end of DecodeLayer.
+        """
+        return positions, hidden_states, residual
 
     def request_finished_in_worker(self, request_id: Union[int, str]):
         """

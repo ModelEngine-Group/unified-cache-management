@@ -40,7 +40,12 @@ def enable_sparse() -> bool:
 
 def is_editable_mode() -> bool:
     commands = [arg.lower() for arg in sys.argv]
-    return "develop" in commands or "--editable" in commands or "-e" in commands
+    return (
+        "develop" in commands
+        or "--editable" in commands
+        or "-e" in commands
+        or "editable_wheel" in commands
+    )
 
 
 class CMakeExtension(Extension):
@@ -60,7 +65,7 @@ class CMakeBuild(build_ext):
     def build_cmake(self, ext: CMakeExtension):
         build_dir = os.path.abspath(self.build_temp)
         install_dir = os.path.abspath(self.build_lib)
-        if is_editable_mode:
+        if is_editable_mode():
             install_dir = ext.cmake_file_path
 
         cmake_args = [
@@ -102,7 +107,7 @@ class CMakeBuild(build_ext):
 
 setup(
     name="uc-manager",
-    version="0.1.2",
+    version="0.2.0rc1",
     description="Unified Cache Management",
     author="Unified Cache Team",
     packages=find_packages(),

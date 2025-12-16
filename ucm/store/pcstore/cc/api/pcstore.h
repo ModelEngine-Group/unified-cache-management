@@ -35,6 +35,7 @@ public:
         std::vector<std::string> storageBackends;
         size_t kvcacheBlockSize;
         bool transferEnable;
+        std::string uniqueId{};
         size_t transferIoSize{262144};
         bool transferIoDirect{false};
         size_t transferLocalRankSize{1};
@@ -46,7 +47,8 @@ public:
 
         Config(const std::vector<std::string>& storageBackends, const size_t kvcacheBlockSize,
                const bool transferEnable)
-            : storageBackends{storageBackends}, kvcacheBlockSize{kvcacheBlockSize},
+            : storageBackends{storageBackends},
+              kvcacheBlockSize{kvcacheBlockSize},
               transferEnable{transferEnable}
         {
         }
@@ -87,6 +89,6 @@ private:
     PcStore* impl_{nullptr};
 };
 
-} // namespace UC
+}  // namespace UC
 
 #endif
