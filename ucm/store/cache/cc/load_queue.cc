@@ -125,43 +125,52 @@ void LoadQueue::TransferStage(int32_t deviceId, size_t tensorSize, std::promise<
 
 void LoadQueue::TransferOneTask(Trans::Stream* stream, size_t tensorSize, ShardTask&& task)
 {
+    if (failureSet_->Contains(task.taskHandle)) {
+        if (task.waiter) { task.waiter->Done(); }
+        return;
+    }
+    auto s = Status::OK();
+    do {
+        s = WaitBackendTaskReady(task);
+        if (s.Failure()) [[unlikely]] { break; }
+        s = stream->HostToDeviceAsync(task.bufferHandle.Data(), task.shard.addrs.data(), tensorSize,
+                                      task.shard.addrs.size());
+        if (s.Failure()) [[unlikely]] {
+            UC_ERROR("Failed({}) to do H2D({}) batch({}) async.", s, tensorSize,
+                     task.shard.addrs.size());
+            break;
+        }
+        if (!task.waiter) { return; }
+        s = stream->Synchronized();
+        if (s.Failure()) [[unlikely]] {
+            UC_ERROR("Failed({}) to sync on stream.", s);
+            break;
+        }
+    } while (0);
+    if (s.Failure()) [[unlikely]] { failureSet_->Insert(task.taskHandle); }
+    if (task.waiter) { task.waiter->Done(); }
+}
+
+Status LoadQueue::WaitBackendTaskReady(ShardTask& task)
+{
+    if (task.bufferHandle.Ready()) { return Status::OK(); }
+    if (!task.bufferHandle.Owner()) {
+        for (;;) {
+            if (failureSet_->Contains(task.taskHandle)) { return Status::Error(); }
+            if (task.bufferHandle.Ready()) { return Status::OK(); }
+            std::this_thread::yield();
+        }
+    }
     if (task.backendTaskHandle > finishedBackendTaskHandle_) {
         auto s = backend_->Wait(task.backendTaskHandle);
         finishedBackendTaskHandle_ = task.backendTaskHandle;
         if (s.Failure()) [[unlikely]] {
-            failureSet_->Insert(task.taskHandle);
-            if (task.waiter) { task.waiter->Done(); }
             UC_ERROR("Failed({}) to wait backend task({}).", s, task.backendTaskHandle);
-            return;
+            return s;
         }
-        task.bufferHandle.MarkReady();
     }
-    for (;;) {
-        if (failureSet_->Contains(task.taskHandle)) {
-            if (task.waiter) { task.waiter->Done(); }
-            return;
-        }
-        if (task.bufferHandle.Ready()) { break; }
-        std::this_thread::yield();
-    }
-    auto s = stream->HostToDeviceAsync(task.bufferHandle.Data(), task.shard.addrs.data(),
-                                       tensorSize, task.shard.addrs.size());
-    if (s.Failure()) [[unlikely]] {
-        failureSet_->Insert(task.taskHandle);
-        if (task.waiter) { task.waiter->Done(); }
-        UC_ERROR("Failed({}) to do H2D({}) batch({}) async.", s, tensorSize,
-                 task.shard.addrs.size());
-        return;
-    }
-    if (!task.waiter) { return; }
-    s = stream->Synchronized();
-    if (s.Failure()) [[unlikely]] {
-        failureSet_->Insert(task.taskHandle);
-        if (task.waiter) { task.waiter->Done(); }
-        UC_ERROR("Failed({}) to sync on stream.", s);
-        return;
-    }
-    task.waiter->Done();
+    task.bufferHandle.MarkReady();
+    return Status::OK();
 }
 
 }  // namespace UC::CacheStore

@@ -35,6 +35,7 @@ class CacheStore : public StoreV1 {
 public:
     ~CacheStore() override;
     Status Setup(const Config& config);
+    std::string Readme() const override;
     Expected<std::vector<uint8_t>> Lookup(const Detail::BlockId* blocks, size_t num) override;
     void Prefetch(const Detail::BlockId* blocks, size_t num) override;
     Expected<Detail::TaskHandle> Load(Detail::TaskDesc task) override;

@@ -87,6 +87,7 @@ private:
         std::string buildType = UCM_BUILD_TYPE;
         if (buildType.empty()) { buildType = "Release"; }
         UC_INFO("{}-{}({}).", ns, UCM_COMMIT_ID, buildType);
+        UC_INFO("Set {}::Backend to {}.", ns, backend->Readme());
         UC_INFO("Set {}::EngineId to {}.", ns, config.engineId);
         UC_INFO("Set {}::DeviceId to {}.", ns, config.deviceId);
         if (config.deviceId < 0) { return; }
@@ -113,6 +114,8 @@ Status CacheStore::Setup(const Config& config)
     }
     return impl_->Setup(config);
 }
+
+std::string CacheStore::Readme() const { return "CacheStore"; }
 
 Expected<std::vector<uint8_t>> CacheStore::Lookup(const Detail::BlockId* blocks, size_t num)
 {

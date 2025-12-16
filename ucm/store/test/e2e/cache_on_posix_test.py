@@ -48,6 +48,7 @@ class HierarchicalStore(ABC):
         chunk_block_size = tensor_size * layer_size * chunk_size
         posix_config = {}
         posix_config["backends"] = storage_backends
+        posix_config["transfer_enable"] = True if device_id >= 0 else False
         posix_config["io_size"] = chunk_block_size
         posix_config["shard_size"] = chunk_block_size
         posix_config["block_size"] = chunk_block_size
@@ -127,7 +128,8 @@ def cmp_and_print_diff(a, b, rtol=0.0, atol=0.0):
 
 
 def e2e_test(
-    store: HierarchicalStore,
+    worker: HierarchicalStore,
+    scheduler: HierarchicalStore,
     tensor_size: int,
     layer_size: int,
     chunk_size: int,
@@ -135,7 +137,7 @@ def e2e_test(
     device_id: int,
 ):
     chunk_block_ids = [secrets.token_bytes(16) for _ in range(request_size)]
-    founds = store.lookup(chunk_block_ids)
+    founds = scheduler.lookup(chunk_block_ids)
     assert not all(founds)
     shard_indexes = [0 for _ in range(request_size)]
     src_tensors = [
@@ -149,11 +151,11 @@ def e2e_test(
         ]
         for _ in range(request_size)
     ]
-    task = store.dump(chunk_block_ids, shard_indexes, src_tensors)
-    store.wait(task)
+    task = worker.dump(chunk_block_ids, shard_indexes, src_tensors)
+    worker.wait(task)
     dst_tensors = [[torch.empty_like(t) for t in row] for row in src_tensors]
-    task = store.load(chunk_block_ids, shard_indexes, dst_tensors)
-    store.wait(task)
+    task = worker.load(chunk_block_ids, shard_indexes, dst_tensors)
+    worker.wait(task)
     cmp_and_print_diff(src_tensors, dst_tensors)
 
 
@@ -165,11 +167,22 @@ def main():
     storage_backends = ["."]
     device_id = 1
     test_batch_number = 512
-    store = HierarchicalStore(
+    worker = HierarchicalStore(
         tensor_size, layer_size, chunk_size, storage_backends, device_id
     )
+    scheduler = HierarchicalStore(
+        tensor_size, layer_size, chunk_size, storage_backends, -1
+    )
     for _ in range(test_batch_number):
-        e2e_test(store, tensor_size, layer_size, chunk_size, request_size, device_id)
+        e2e_test(
+            worker,
+            scheduler,
+            tensor_size,
+            layer_size,
+            chunk_size,
+            request_size,
+            device_id,
+        )
     time.sleep(10)
 
 
