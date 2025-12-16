@@ -9,6 +9,10 @@ from itertools import accumulate
 from typing import Dict, List, Optional, Union
 
 import torch
+if hasattr(torch, "npu") and torch.npu.is_available():
+    import torch_npu
+    import ucm_custom_ops
+    from vllm_ascend.attention.attention_v1 import AscendAttentionState
 from vllm.config import VllmConfig
 from vllm.distributed.kv_transfer import get_kv_transfer_group
 from vllm.forward_context import (
@@ -33,11 +37,15 @@ from ucm.sparse.gsa.offload_ops import gsa_offload_ops
 from ucm.sparse.gsa.prefetch.prefetch_engine import GSAPrefetchBase
 from ucm.sparse.utils import (
     CUDA_TOPK,
+    ENABLE_KVCOMP,
     MAX_BS,
     PTOPK_PREFETCH_ENABLE,
     SEG_PREFILL_THRESHOLD,
     gsa_config,
 )
+
+if ENABLE_KVCOMP:
+    from ucm.sparse.kvcomp.hash_encoder import HashEncoder
 
 ReqType = Union[str, int]
 
@@ -71,7 +79,7 @@ class GSAReqStat:
         self._vllm_config = vllm_config
         self.rank = vllm_config.parallel_config.rank
         self.use_mla = vllm_config.model_config.use_mla
-        self.request_hasher = RequestHasher(vllm_config, 0)
+        self.request_hasher = RequestHasher(vllm_config, self.rank)
 
     def step(self) -> int:
         return self.num_output_tokens
@@ -103,12 +111,14 @@ class GSAReqStat:
             return
         self.block_hashes = []
 
-        parent_block_hash_value = compute_parent_block_hash(
-            self._vllm_config.model_config.model,
-            self._vllm_config.parallel_config.world_size,
-            self._vllm_config.model_config.dtype,
-            seed_rank=0,
-        )
+        #(ldeng): why this is needed? The RequestHasher() is overlapped with compute_parent_block_hash()
+        # parent_block_hash_value = compute_parent_block_hash(
+        #     self._vllm_config.model_config.model,
+        #     self._vllm_config.parallel_config.world_size,
+        #     self._vllm_config.model_config.dtype,
+        #     seed_rank=0,
+        # )
+        parent_block_hash_value = None
 
         for start in range(0, len(token_ids), self.block_size):
             end = start + self.block_size
@@ -116,15 +126,23 @@ class GSAReqStat:
             if len(block_token_ids) < self.block_size:
                 break
             curr_block_token_ids_tuple = tuple(block_token_ids)
-            hash_value = self.request_hasher(
-                (parent_block_hash_value, curr_block_token_ids_tuple)
-            )
+            if parent_block_hash_value is None:
+                hash_value = self.request_hasher(
+                    (curr_block_token_ids_tuple)
+                )
+            else:
+                hash_value = self.request_hasher(
+                    (parent_block_hash_value, curr_block_token_ids_tuple)
+                )
+            #(ldeng): we forgot to update self.block_hashes here originally
+            self.block_hashes.append(hash_value)
             parent_block_hash_value = hash_value
 
-        if self.rank != 0 and not self.use_mla:
-            self.newqrequest_hasher = RequestHasher(self._vllm_config, self.rank)
-            for i, ucm_block_id in enumerate(self.block_hashes):
-                self.block_hashes[i] = str(self.newqrequest_hasher(ucm_block_id))
+        #(ldeng): It is no longer needed now since we initialize the RequestHasher() with the rank before
+        # if self.rank != 0 and not self.use_mla:
+        #     self.newqrequest_hasher = RequestHasher(self._vllm_config, self.rank)
+        #     for i, ucm_block_id in enumerate(self.block_hashes):
+        #         self.block_hashes[i] = str(self.newqrequest_hasher(ucm_block_id))
 
     def add_req_new(
         self, num_scheduled_tokens, add_req_state, index_in_batch, offset
