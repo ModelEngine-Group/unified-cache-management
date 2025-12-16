@@ -14,6 +14,7 @@ from ucm.sparse.utils import (
     MAX_BS,
     PTOPK_PREFETCH_ENABLE,
     VLLM_CUDA_MEM_ALIGN_KV_CACHE,
+    ENABLE_KVCOMP,
     align_to_256bytes,
     gsa_config,
 )
@@ -60,29 +61,44 @@ class GSAPrefetchBase:
         self.tp_size = vllm_config.parallel_config.tensor_parallel_size
 
         self.sp_max_len = self.max_block_len
-        if self.is_max_norm:
+        
+        if ENABLE_KVCOMP:
+            assert is_cpu_topk == False, "KVComp requires is_cpu_topk to be False (i.e., CUDA_TOPK to be True)"
             self.kpre_shape = (
                 self.max_bs * self.max_block_len,
-                1,
                 self.num_kv_heads,
-                self.head_size,
+                self.block_size,
+                self.head_size // 8,
             )
-        else:
-            self.kpre_shape = (
-                self.max_bs * self.max_block_len,
-                max_norm_num,
-                self.num_kv_heads,
-                self.head_size,
-            )
+        else: #original GSA logic
+            if self.is_max_norm:
+                self.kpre_shape = (
+                    self.max_bs * self.max_block_len,
+                    1,
+                    self.num_kv_heads,
+                    self.head_size,
+                )
+            else:
+                self.kpre_shape = (
+                    self.max_bs * self.max_block_len,
+                    max_norm_num,
+                    self.num_kv_heads,
+                    self.head_size,
+                )
         self.topk_shape = (self.num_attention_layers, self.max_bs, self.max_block_len)
         if self.is_cpu_topk:
             self.kpre_caches, self.use_topk_caches = self._init_kpre_and_topk_cache(
                 "cpu", torch.float32, torch.int32
             )
         else:
-            self.kpre_caches, self.use_topk_caches = self._init_kpre_and_topk_cache(
-                self.device_config.device, self.dtype, torch.int64
-            )
+            if ENABLE_KVCOMP:
+                self.kpre_caches, self.use_topk_caches = self._init_kpre_and_topk_cache(
+                    self.device_config.device, torch.uint8, torch.int32
+                )
+            else:
+                self.kpre_caches, self.use_topk_caches = self._init_kpre_and_topk_cache(
+                    self.device_config.device, self.dtype, torch.int64
+                )
         self._init_tensor()
         kv_shape = [self.block_size, self.num_kv_heads, self.head_size]
         self.is_python_load = is_python_load
