@@ -328,7 +328,7 @@ public:
         header_->lock.Unlock();
         return iNode;
     }
-    void* DataAt(size_t iNode) override { return dataOnDevice_ + nodeSize_ * iNode; }
+    void* DataAt(size_t iNode) override { return data_ + nodeSize_ * iNode; }
     BufferMetaNode* MetaAt(size_t iNode) override { return meta_ + iNode; }
 };
 
