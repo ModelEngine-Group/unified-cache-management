@@ -54,7 +54,7 @@ def print_platform_warning():
 {YELLOW}Please set PLATFORM to one of: cuda, ascend, musa, maca{RESET}
 Example:
   {BOLD}export PLATFORM=cuda{RESET}    # For CUDA platform
-{YELLOW}Please uninstall first, then select the PLATFORM, and reinstall.{RESET}
+{YELLOW}In CI scenarios only, you don't need to specify PLATFORM. If it's not a CI scenario, please uninstall and then reinstall with PLATFORM specified.{RESET}
 {RED}{'=' * 80}{RESET}
 """
         # Use write and flush to ensure output even without -v flag
