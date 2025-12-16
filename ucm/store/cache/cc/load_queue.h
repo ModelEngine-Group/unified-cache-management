@@ -70,6 +70,7 @@ private:
     void DispatchOneTask(TaskPair&& pair);
     void TransferStage(int32_t deviceId, size_t tensorSize, std::promise<Status>& started);
     void TransferOneTask(Trans::Stream* stream, size_t tensorSize, ShardTask&& task);
+    Status WaitBackendTaskReady(ShardTask& task);
 };
 
 }  // namespace UC::CacheStore
