@@ -7,16 +7,18 @@ MIN_TOPK_LEN = 32
 MAX_TOPK_LEN = 48
 MAX_BS = 256
 SEG_PREFILL_THRESHOLD = 8400
-CUDA_TOPK = True #True for KVComp
+CUDA_TOPK = True  # True for KVComp
 PTOPK_PREFETCH_ENABLE = False
 VLLM_CUDA_MEM_ALIGN_KV_CACHE = False
 INIT_WINDOW_SZ = 1
 NUM_PREFETCH_BLOCKS = 1
 NUM_GSA_BLOCKS = 1
 
-#KVComp utils
-ENABLE_KVCOMP = True        #should be True for KVComp inside GSA
-KVCOMP_PRESERVE_BLOCKS = 32 #number of blocks to preserve in KVComp for attention computation
+# KVComp utils
+ENABLE_KVCOMP = True  # should be True for KVComp inside GSA
+KVCOMP_PRESERVE_BLOCKS = (
+    32  # number of blocks to preserve in KVComp for attention computation
+)
 RECENT_WINDOW_SZ = 4
 
 
