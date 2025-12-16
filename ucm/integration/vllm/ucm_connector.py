@@ -1,10 +1,9 @@
 import hashlib
-import itertools
 import os
 import pickle
 import time
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Callable, List, Optional, Tuple
+from typing import TYPE_CHECKING, List, Optional, Tuple
 
 import torch
 from vllm.config import VllmConfig
@@ -60,14 +59,9 @@ class UCMConnectorMetadata(KVConnectorMetadata):
 class RequestHasher:
     """hash(md5) request to generate ucm block id"""
 
-    _SEED_HASH = None
-
     def __init__(self, vllm_config, rank_id):
         meta = f"{vllm_config.model_config.model}:{vllm_config.parallel_config.world_size}:{vllm_config.model_config.dtype}:{rank_id}"
         self.meta_bytes = meta.encode("utf-8")
-
-        if RequestHasher._SEED_HASH is None:
-            RequestHasher._SEED_HASH = self("UCM_HASH_SEED")
 
     def __call__(self, input_data) -> bytes:
         if isinstance(input_data, bytes):
@@ -139,6 +133,7 @@ class UCMDirectConnector(KVConnectorBase_V1):
 
         if role == KVConnectorRole.SCHEDULER:
             self.request_hasher = RequestHasher(vllm_config, 0)
+            self._seed = self.request_hasher("UCM_HASH_SEED")
             # init scheduler-size connector
             self.backend_store, self.store = self._create_store(None, None)
         else:
@@ -166,7 +161,7 @@ class UCMDirectConnector(KVConnectorBase_V1):
         token_ids = request.all_token_ids
 
         ret = []
-        parent_block_hash_value = RequestHasher._SEED_HASH
+        parent_block_hash_value = self._seed
         for start in range(0, len(token_ids), block_size):
             end = start + block_size
             block_token_ids = token_ids[start:end]
@@ -597,7 +592,8 @@ class UCMDirectConnector(KVConnectorBase_V1):
             return
         if self.metrics_config or current_platform.device_type == "npu":
             # When use vllm_ascend, we should add synchronize here, otherwise accuracy problem will raise
-            # This has already been fixed in the latest main branch of vllm_ascend, so synchronize will no longer be needed in future versions.
+            # This has already been fixed in the latest main branch of vllm_ascend, 
+            # so synchronize will no longer be needed in future versions.
             self.synchronize()
 
         metadata = self._get_connector_metadata()
