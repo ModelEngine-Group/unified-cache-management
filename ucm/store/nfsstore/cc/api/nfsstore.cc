@@ -23,10 +23,10 @@
  * */
 #include "nfsstore.h"
 #include <fmt/ranges.h>
+#include "hotness/hotness_manager.h"
 #include "logger/logger.h"
 #include "space/space_manager.h"
 #include "trans/trans_manager.h"
-#include "hotness/hotness_manager.h"
 
 namespace UC {
 
@@ -42,17 +42,18 @@ public:
             return status.Underlying();
         }
         if (config.transferEnable) {
-            status =
-                this->transMgr_.Setup(config.transferDeviceId, config.transferStreamNumber,
-                                      config.transferIoSize, config.transferBufferNumber,
-                                      this->spaceMgr_.GetSpaceLayout(), config.transferTimeoutMs, config.transferIoDirect);
+            status = this->transMgr_.Setup(config.transferDeviceId, config.transferStreamNumber,
+                                           config.transferIoSize, config.transferBufferNumber,
+                                           this->spaceMgr_.GetSpaceLayout(),
+                                           config.transferTimeoutMs, config.transferIoDirect);
             if (status.Failure()) {
                 UC_ERROR("Failed({}) to setup TsfTaskManager.", status);
                 return status.Underlying();
             }
         }
         if (config.hotnessEnable) {
-            status = this->hotnessMgr_.Setup(config.hotnessInterval, this->spaceMgr_.GetSpaceLayout());
+            status =
+                this->hotnessMgr_.Setup(config.hotnessInterval, this->spaceMgr_.GetSpaceLayout());
             if (status.Failure()) {
                 UC_ERROR("Failed({}) to setup HotnessManager.", status);
                 return status.Underlying();
@@ -65,11 +66,11 @@ public:
     {
         return this->spaceMgr_.NewBlock(block).Underlying();
     }
-    bool Lookup(const std::string& block) override
+    Status Lookup(const std::string& block) override
     {
-        auto found = this->spaceMgr_.LookupBlock(block);
-        if (found) { this->hotnessMgr_.Visit(block); }
-        return found;
+        Status s = this->spaceMgr_.LookupBlock(block);
+        if (s.Success()) { this->hotnessMgr_.Visit(block); }
+        return s;
     }
     void Commit(const std::string& block, const bool success) override
     {
@@ -84,7 +85,10 @@ public:
     std::list<bool> Lookup(const std::list<std::string>& blocks) override
     {
         std::list<bool> founds;
-        for (const auto& block : blocks) { founds.emplace_back(this->Lookup(block)); }
+        for (const auto& block : blocks) {
+            Status s = this->Lookup(block);
+            founds.emplace_back(s.Success());
+        }
         return founds;
     }
     void Commit(const std::list<std::string>& blocks, const bool success) override
@@ -144,4 +148,4 @@ int32_t NFSStore::Setup(const Config& config)
     return impl->Setup(config);
 }
 
-} // namespace UC
+}  // namespace UC

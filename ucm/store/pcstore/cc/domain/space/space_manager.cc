@@ -23,12 +23,15 @@
  * */
 #include "space_manager.h"
 #include <chrono>
+#include <future>
+#include <thread>
 #include "file/file.h"
 #include "logger/logger.h"
 
 namespace UC {
 
-Status SpaceManager::Setup(const std::vector<std::string>& storageBackends, const size_t blockSize)
+Status SpaceManager::Setup(const std::vector<std::string>& storageBackends, const size_t blockSize,
+                           const size_t lookupTimeoutMs)
 {
     if (blockSize == 0) {
         UC_ERROR("Invalid block size({}).", blockSize);
@@ -37,6 +40,7 @@ Status SpaceManager::Setup(const std::vector<std::string>& storageBackends, cons
     auto status = this->layout_.Setup(storageBackends);
     if (status.Failure()) { return status; }
     this->blockSize_ = blockSize;
+    this->lookupTimeoutMs_ = lookupTimeoutMs;
     return Status::OK();
 }
 
@@ -70,17 +74,29 @@ Status SpaceManager::CommitBlock(const std::string& blockId, bool success)
     return this->layout_.Commit(blockId, success);
 }
 
-bool SpaceManager::LookupBlock(const std::string& blockId) const
+Status SpaceManager::LookupBlock(const std::string& blockId) const
 {
     const auto& path = this->layout_.DataFilePath(blockId, false);
     constexpr auto mode =
         IFile::AccessMode::EXIST | IFile::AccessMode::READ | IFile::AccessMode::WRITE;
-    auto s = File::Access(path, mode);
-    if (s.Failure()) {
-        if (s != Status::NotFound()) { UC_ERROR("Failed({}) to access file({}).", s, path); }
-        return false;
+    const auto timeoutMs = std::chrono::milliseconds(this->lookupTimeoutMs_);
+
+    std::future<Status> s = std::async(std::launch::async, File::Access, std::ref(path), mode);
+    std::future_status status = s.wait_for(timeoutMs);
+    if (status == std::future_status::ready) {
+        auto result = s.get();
+        if (result.Failure()) {
+            if (result != Status::NotFound()) {
+                UC_ERROR("Failed({}) to access file({}).", result, path);
+            }
+            return Status::Error();
+        }
+        return Status::OK();
+    } else if (status == std::future_status::timeout) {
+        UC_ERROR("Timeout({}ms) to access file({}).", this->lookupTimeoutMs_, path);
+        return Status::Timeout();
     }
-    return true;
+    return Status::Error();
 }
 
-} // namespace UC
+}  // namespace UC

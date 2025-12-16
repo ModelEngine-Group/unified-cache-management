@@ -22,12 +22,12 @@
  * SOFTWARE.
  * */
 #include "space_manager.h"
+#include <chrono>
 #include "file/file.h"
 #include "logger/logger.h"
 #include "space_shard_temp_layout.h"
-#include <chrono>
 
-constexpr auto MIN_REUSE_BLOCK_AGE = 300; // 5 minutes
+constexpr auto MIN_REUSE_BLOCK_AGE = 300;  // 5 minutes
 
 namespace UC {
 
@@ -63,7 +63,7 @@ Status SpaceManager::Setup(const std::vector<std::string>& storageBackends, cons
         });
         if (status.Failure()) { return status; }
     }
-    
+
     this->blockSize_ = blockSize;
     this->capacity_ = storageCapacity;
     this->recycleEnable_ = recycleEnable;
@@ -155,23 +155,20 @@ Status SpaceManager::CommitBlock(const std::string& blockId, bool success)
     return status;
 }
 
-bool SpaceManager::LookupBlock(const std::string& blockId) const
+Status SpaceManager::LookupBlock(const std::string& blockId) const
 {
     auto path = this->layout_->DataFilePath(blockId, false);
     auto file = File::Make(path);
     if (!file) {
         UC_ERROR("Failed to make file smart pointer, path: {}.", path);
-        return false;
+        return Status::Error();
     }
     auto s =
         file->Access(IFile::AccessMode::EXIST | IFile::AccessMode::READ | IFile::AccessMode::WRITE);
-    if (s.Failure()) {
-        if (s != Status::NotFound()) {
-            UC_ERROR("Failed to access file, path: {}, errcode: {}.", path, s);
-        }
-        return false;
+    if (s.Failure() && s != Status::NotFound()) {
+        UC_ERROR("Failed to access file, path: {}, errcode: {}.", path, s);
     }
-    return true;
+    return s;
 }
 
 const SpaceLayout* SpaceManager::GetSpaceLayout() const { return this->layout_.get(); }
@@ -179,17 +176,17 @@ const SpaceLayout* SpaceManager::GetSpaceLayout() const { return this->layout_.g
 Status SpaceManager::CapacityCheck()
 {
     if (this->capacity_ == 0) { return Status::OK(); }
-    
+
     const size_t used = this->property_.GetCapacity();
     if (this->recycleEnable_ && used >= this->capacityRecycleThreshold_) {
         this->recycle_.Trigger();
     }
     if (used > this->capacity_ - this->blockSize_) {
-        UC_ERROR("Capacity is not enough, capacity: {}, current: {}, block size: {}.", 
+        UC_ERROR("Capacity is not enough, capacity: {}, current: {}, block size: {}.",
                  this->capacity_, used, this->blockSize_);
         return Status::NoSpace();
     }
     return Status::OK();
 }
 
-} // namespace UC
+}  // namespace UC

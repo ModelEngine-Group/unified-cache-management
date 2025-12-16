@@ -50,11 +50,20 @@ public:
 
         Config(const std::vector<std::string>& storageBackends, const size_t kvcacheBlockSize,
                const bool transferEnable)
-            : storageBackends{storageBackends}, kvcacheBlockSize{kvcacheBlockSize},
-              transferEnable{transferEnable}, transferDeviceId{-1}, transferStreamNumber{32},
-              transferIoSize{262144}, transferBufferNumber{512}, transferTimeoutMs{30000},
-              tempDumpDirEnable{false}, hotnessEnable{true}, hotnessInterval{60},
-              storageCapacity{0}, recycleEnable{true}, recycleThresholdRatio{0.7f},
+            : storageBackends{storageBackends},
+              kvcacheBlockSize{kvcacheBlockSize},
+              transferEnable{transferEnable},
+              transferDeviceId{-1},
+              transferStreamNumber{32},
+              transferIoSize{262144},
+              transferBufferNumber{512},
+              transferTimeoutMs{30000},
+              tempDumpDirEnable{false},
+              hotnessEnable{true},
+              hotnessInterval{60},
+              storageCapacity{0},
+              recycleEnable{true},
+              recycleThresholdRatio{0.7f},
               transferIoDirect{false}
         {
         }
@@ -68,7 +77,7 @@ public:
     }
     int32_t Setup(const Config& config);
     int32_t Alloc(const std::string& block) override { return this->impl_->Alloc(block); }
-    bool Lookup(const std::string& block) override { return this->impl_->Lookup(block); }
+    Status Lookup(const std::string& block) override { return this->impl_->Lookup(block); }
     void Commit(const std::string& block, const bool success) override
     {
         this->impl_->Commit(block, success);
@@ -96,6 +105,6 @@ private:
     NFSStore* impl_;
 };
 
-}; // namespace UC
+};  // namespace UC
 
 #endif

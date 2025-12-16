@@ -34,7 +34,8 @@ class PcStoreImpl : public PcStore {
 public:
     int32_t Setup(const Config& config)
     {
-        auto status = this->spaceMgr_.Setup(config.storageBackends, config.kvcacheBlockSize);
+        auto status = this->spaceMgr_.Setup(config.storageBackends, config.kvcacheBlockSize,
+                                            config.lookupTimeoutMs);
         if (status.Failure()) { return status.Underlying(); }
         if (config.transferEnable) {
             if (config.uniqueId.empty()) {
@@ -52,7 +53,7 @@ public:
         return Status::OK().Underlying();
     }
     int32_t Alloc(const std::string& block) override { return Status::OK().Underlying(); }
-    bool Lookup(const std::string& block) override { return this->spaceMgr_.LookupBlock(block); }
+    Status Lookup(const std::string& block) override { return this->spaceMgr_.LookupBlock(block); }
     void Commit(const std::string& block, const bool success) override {}
     std::list<int32_t> Alloc(const std::list<std::string>& blocks) override
     {
@@ -63,7 +64,10 @@ public:
     std::list<bool> Lookup(const std::list<std::string>& blocks) override
     {
         std::list<bool> founds;
-        for (const auto& block : blocks) { founds.emplace_back(this->Lookup(block)); }
+        for (const auto& block : blocks) {
+            Status s = this->Lookup(block);
+            founds.emplace_back(s.Success());
+        }
         return founds;
     }
     void Commit(const std::list<std::string>& blocks, const bool success) override {}
@@ -97,7 +101,8 @@ private:
         UC_INFO("Set UC::DeviceId to {}.", config.transferDeviceId);
         UC_INFO("Set UC::StreamNumber to {}.", config.transferStreamNumber);
         UC_INFO("Set UC::BufferNumber to {}.", config.transferBufferNumber);
-        UC_INFO("Set UC::TimeoutMs to {}.", config.transferTimeoutMs);
+        UC_INFO("Set UC::transferTimeoutMs to {}.", config.transferTimeoutMs);
+        UC_INFO("Set UC::lookupTimeoutMs to {}.", config.lookupTimeoutMs);
         UC_INFO("Set UC::ScatterGatherEnable to {}.", config.transferScatterGatherEnable);
     }
 

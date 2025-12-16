@@ -41,7 +41,9 @@ public:
     py::list LookupBatch(const py::list& blocks)
     {
         py::list founds;
-        for (auto& block : blocks) { founds.append(this->Lookup(block.cast<std::string>())); }
+        for (auto& block : blocks) {
+            founds.append(this->Lookup(block.cast<std::string>()).Success());
+        }
         return founds;
     }
     void CommitBatch(const py::list& blocks, const bool success)
@@ -79,7 +81,7 @@ private:
     }
 };
 
-} // namespace UC
+}  // namespace UC
 
 PYBIND11_MODULE(ucmpcstore, module)
 {
@@ -101,6 +103,7 @@ PYBIND11_MODULE(ucmpcstore, module)
     config.def_readwrite("transferStreamNumber", &UC::PcStorePy::Config::transferStreamNumber);
     config.def_readwrite("transferIoSize", &UC::PcStorePy::Config::transferIoSize);
     config.def_readwrite("transferBufferNumber", &UC::PcStorePy::Config::transferBufferNumber);
+    config.def_readwrite("lookupTimeoutMs", &UC::PcStorePy::Config::lookupTimeoutMs);
     config.def_readwrite("transferTimeoutMs", &UC::PcStorePy::Config::transferTimeoutMs);
     config.def_readwrite("transferScatterGatherEnable",
                          &UC::PcStorePy::Config::transferScatterGatherEnable);

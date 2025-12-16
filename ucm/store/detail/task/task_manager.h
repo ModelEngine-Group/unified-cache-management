@@ -86,6 +86,8 @@ public:
             UC_ERROR("Task({}) timeout({}).", task->Str(), timeoutMs_);
             failureSet_.Insert(taskId);
             waiter->Wait();
+            failureSet_.Remove(taskId);
+            return Status::Timeout();
         }
         auto failure = failureSet_.Contains(taskId);
         if (failure) {

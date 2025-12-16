@@ -23,7 +23,7 @@
  * */
 #ifndef UNIFIEDCACHE_PCSTORE_H
 #define UNIFIEDCACHE_PCSTORE_H
-
+#include "status/status.h"
 #include "trans/trans_task.h"
 #include "ucmstore.h"
 
@@ -43,6 +43,7 @@ public:
         size_t transferStreamNumber{8};
         size_t transferBufferNumber{4096};
         size_t transferTimeoutMs{30000};
+        size_t lookupTimeoutMs{1000};
         bool transferScatterGatherEnable{false};
 
         Config(const std::vector<std::string>& storageBackends, const size_t kvcacheBlockSize,
@@ -61,7 +62,7 @@ public:
     }
     int32_t Setup(const Config& config);
     int32_t Alloc(const std::string& block) override { return this->impl_->Alloc(block); }
-    bool Lookup(const std::string& block) override { return this->impl_->Lookup(block); }
+    Status Lookup(const std::string& block) override { return this->impl_->Lookup(block); }
     void Commit(const std::string& block, const bool success) override
     {
         this->impl_->Commit(block, success);

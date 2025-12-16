@@ -21,40 +21,29 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  * */
-#ifndef UNIFIEDCACHE_SPACE_MANAGER_H
-#define UNIFIEDCACHE_SPACE_MANAGER_H
+#include "space/space_manager.h"
+#include <gtest/gtest.h>
 
-#include <memory>
-#include "space_layout.h"
-#include "space_property.h"
-#include "space_recycle.h"
-#include "status/status.h"
+class PCSpaceManagerTest : public ::testing::Test {};
 
-namespace UC {
+TEST_F(PCSpaceManagerTest, NewBlock)
+{
+    UC::SpaceManager spaceMgr;
+    const size_t lookupTimeoutMs = 1000;
+    ASSERT_EQ(spaceMgr.Setup({"./"}, 1024 * 1024, lookupTimeoutMs), UC::Status::OK());
+    const std::string block1 = "block1";
+    ASSERT_EQ(spaceMgr.NewBlock(block1), UC::Status::OK());
+    ASSERT_EQ(spaceMgr.CommitBlock(block1, true), UC::Status::OK());
+    ASSERT_EQ(spaceMgr.LookupBlock(block1), UC::Status::OK());
+}
 
-class SpaceManager {
-public:
-    Status Setup(const std::vector<std::string>& storageBackends, const size_t blockSize,
-                 const bool tempDumpDirEnable, const size_t storageCapacity = 0,
-                 const bool recycleEnable = false, const float recycleThresholdRatio = 0.7f);
-    Status NewBlock(const std::string& blockId);
-    Status CommitBlock(const std::string& blockId, bool success = true);
-    Status LookupBlock(const std::string& blockId) const;
-    const SpaceLayout* GetSpaceLayout() const;
-
-private:
-    Status CapacityCheck();
-
-private:
-    std::unique_ptr<SpaceLayout> layout_;
-    SpaceProperty property_;
-    SpaceRecycle recycle_;
-    size_t blockSize_;
-    size_t capacity_;
-    bool recycleEnable_;
-    size_t capacityRecycleThreshold_;
-};
-
-}  // namespace UC
-
-#endif
+TEST_F(PCSpaceManagerTest, LookupTimeout)
+{
+    UC::SpaceManager spaceMgr;
+    const size_t lookupTimeoutMs = 0;  // look up timeout
+    ASSERT_EQ(spaceMgr.Setup({"./"}, 1024 * 1024, lookupTimeoutMs), UC::Status::OK());
+    const std::string block1 = "block2";
+    ASSERT_EQ(spaceMgr.NewBlock(block1), UC::Status::OK());
+    ASSERT_EQ(spaceMgr.CommitBlock(block1, true), UC::Status::OK());
+    ASSERT_EQ(spaceMgr.LookupBlock(block1), UC::Status::Timeout());
+}
