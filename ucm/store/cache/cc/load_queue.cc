@@ -134,9 +134,10 @@ void LoadQueue::TransferOneTask(Trans::Stream* stream, size_t tensorSize, ShardT
             UC_ERROR("Failed({}) to wait backend task({}).", s, task.backendTaskHandle);
             return;
         }
-        task.bufferHandle.MarkReady();
     }
-    for (;;) {
+    auto owner = task.bufferHandle.Owner();
+    if (owner) { task.bufferHandle.MarkReady(); }
+    while (!owner) {
         if (failureSet_->Contains(task.taskHandle)) {
             if (task.waiter) { task.waiter->Done(); }
             return;
