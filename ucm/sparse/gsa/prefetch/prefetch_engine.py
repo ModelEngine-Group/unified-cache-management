@@ -11,10 +11,10 @@ from vllm.utils import is_pin_memory_available
 
 from ucm.sparse.gsa.prefetch import gsa_prefetch
 from ucm.sparse.utils import (
+    ENABLE_KVCOMP,
     MAX_BS,
     PTOPK_PREFETCH_ENABLE,
     VLLM_CUDA_MEM_ALIGN_KV_CACHE,
-    ENABLE_KVCOMP,
     align_to_256bytes,
     gsa_config,
 )
@@ -61,16 +61,18 @@ class GSAPrefetchBase:
         self.tp_size = vllm_config.parallel_config.tensor_parallel_size
 
         self.sp_max_len = self.max_block_len
-        
+
         if ENABLE_KVCOMP:
-            assert is_cpu_topk == False, "KVComp requires is_cpu_topk to be False (i.e., CUDA_TOPK to be True)"
+            assert (
+                is_cpu_topk == False
+            ), "KVComp requires is_cpu_topk to be False (i.e., CUDA_TOPK to be True)"
             self.kpre_shape = (
                 self.max_bs * self.max_block_len,
                 self.num_kv_heads,
                 self.block_size,
                 self.head_size // 8,
             )
-        else: #original GSA logic
+        else:  # original GSA logic
             if self.is_max_norm:
                 self.kpre_shape = (
                     self.max_bs * self.max_block_len,
