@@ -53,7 +53,7 @@ class GSAConfig:
     # (NOTE) raw_seq_len is the number of blocks (not tokens) in the sequence)
     def compute_topk_len(self, raw_seq_len):
         if ENABLE_KVCOMP:
-            topk_len = self.kvcomp_preserve_blocks
+            topk_len = min(self.kvcomp_preserve_blocks, raw_seq_len)
         else:
             topk_len = math.ceil(raw_seq_len * 0.3)
         # topk_len = max(1, topk_len)
