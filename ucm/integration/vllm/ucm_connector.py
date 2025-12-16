@@ -140,7 +140,7 @@ class UCMDirectConnector(KVConnectorBase_V1):
         if role == KVConnectorRole.SCHEDULER:
             self.request_hasher = RequestHasher(vllm_config, 0)
             # init scheduler-size connector
-            self.store = self._create_store(None, None)
+            self.backend_store, self.store = self._create_store(None, None)
         else:
             self.request_hasher = RequestHasher(vllm_config, self.global_rank)
 
@@ -188,7 +188,7 @@ class UCMDirectConnector(KVConnectorBase_V1):
         tensor_size: Optional[int],
         chunk_block_size: Optional[int],
         is_rope: bool = False,
-    ) -> UcmKVStoreBaseV1:
+    ) -> Tuple[UcmKVStoreBaseV1, UcmKVStoreBaseV1]:
         backend_store = None
         cache_store = None
         if "backend" in self.connector_configs:
@@ -201,7 +201,6 @@ class UCMDirectConnector(KVConnectorBase_V1):
             if self._role == KVConnectorRole.SCHEDULER:
                 config["transfer_enable"] = False
                 backend_store = UcmConnectorFactoryV1.create_connector(name, config)
-                logger.info(f"scheduler store {backend_store.cc_store()}")
             else:
                 config["transfer_enable"] = True
                 config["io_size"] = chunk_block_size
@@ -221,7 +220,6 @@ class UCMDirectConnector(KVConnectorBase_V1):
             )
             if self._role == KVConnectorRole.SCHEDULER:
                 config["device_id"] = -1
-                logger.info(f"use backend {config["backend"]}")
                 cache_store = UcmConnectorFactoryV1.create_connector(name, config)
             else:
                 config["device_id"] = self.local_rank
@@ -230,9 +228,10 @@ class UCMDirectConnector(KVConnectorBase_V1):
                 config["block_size"] = chunk_block_size
                 config["buffer_size"] = chunk_block_size * 2048
                 cache_store = UcmConnectorFactoryV1.create_connector(name, config)
-            return cache_store
         else:
             raise ValueError("No cache connector found in config.")
+
+        return backend_store, cache_store
 
     def _generate_storage_backends(
         self, storage_backends: str, is_rope: bool = False
@@ -270,20 +269,20 @@ class UCMDirectConnector(KVConnectorBase_V1):
             if not self.is_mla
             else sample_kv_layer[0].numel() * sample_kv_layer[0].element_size()
         )
-        chunk_block_size = tensor_size * self.num_layers * self.chunk_size
+        chunk_block_size = tensor_size * self.num_layers * self.chunk_size * (1 if self.is_mla or self.is_dsa else 2)
         logger.info(
             "chunk_block_size = %.3f MB, tensor_size = %d KB,",
             chunk_block_size / 1024 / 1024,
             tensor_size / 1024,
         )
         self.block_data_size = chunk_block_size
-        self.store = self._create_store(tensor_size, chunk_block_size)
+        self.backend_store, self.store = self._create_store(tensor_size, chunk_block_size)
         if isinstance(sample_kv_layer, Tuple):
             rope_tensor_size = (
                 sample_kv_layer[1][0].numel() * sample_kv_layer[1][0].element_size()
             )
             rope_chunk_block_size = rope_tensor_size * self.num_layers * self.chunk_size
-            self.rope_store = self._create_store(
+            self.rope_backend_store, self.rope_store = self._create_store(
                 rope_tensor_size, rope_chunk_block_size, True
             )
             logger.info(
@@ -307,10 +306,7 @@ class UCMDirectConnector(KVConnectorBase_V1):
         if not external_block_ids:
             return 0, False
 
-        logger.info(f"before look up {external_block_ids}")
-        logger.info(f"store = {self.store}")
         lookup_results = self.store.lookup(external_block_ids)
-        logger.info(f"ret = {lookup_results}")
         external_hit_blocks = 0
         for i, hit in enumerate(lookup_results):
             if not hit:
@@ -626,8 +622,6 @@ class UCMDirectConnector(KVConnectorBase_V1):
             block_ids, shard_indexs, total_tensors, rope_tensors = self._generate_task(
                 vllm_block_ids, ucm_block_ids
             )
-            logger.info("len = {len(block_ids)}")
-            logger.info("store:{self.store}")
             task = self.store.dump(block_ids, shard_indexs, total_tensors)
             request_to_task[request_id] = [task]
             if rope_tensors and self.rope_store:
