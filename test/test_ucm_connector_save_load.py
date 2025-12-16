@@ -254,7 +254,13 @@ def run_once(
         load_block_ids=([], []),
         dump_block_ids=(dump_hashes, dump_vllm_block_ids),
     )
-    connector.connector.kv_caches = kv_caches
+
+    if (
+        not hasattr(connector.connector, "k_store")
+        or connector.connector.k_store is None
+    ):
+        connector.connector.register_kv_caches(kv_caches)
+
     connector.bind_connector_metadata(metadata)
 
     total_bytes = compute_total_bytes(kv_caches, batch_size, is_mla)
@@ -267,7 +273,7 @@ def run_once(
 
     write_bw = (total_bytes / (1024**3)) / write_time if write_time > 0 else 0.0
 
-    lookup = connector.connector.store.lookup(dump_hashes)
+    lookup = connector.connector.k_store.lookup(dump_hashes)
     if not all(lookup):
         raise RuntimeError("Found missing cache blocks before load test.")
 
@@ -277,7 +283,7 @@ def run_once(
         load_block_ids=(dump_hashes, load_vllm_block_ids),
         dump_block_ids=([], []),
     )
-    connector.connector.kv_caches = kv_caches
+
     connector.bind_connector_metadata(load_metadata)
 
     forward_context = build_forward_context(kv_caches, is_mla)
@@ -374,6 +380,8 @@ def run_test(
         kv,
         mla,
     )
+
+    connector.connector.register_kv_caches(kv_caches)
 
     w_sizes, w_times, w_bws = [], [], []
     r_sizes, r_times, r_bws = [], [], []
