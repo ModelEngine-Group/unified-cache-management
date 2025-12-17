@@ -74,7 +74,7 @@ class GSAReqStat:
         self.block_size = vllm_config.cache_config.block_size
         self.block_hashes = None
         self.num_prompt_blocks = 0
-        self.reamin_map = None
+        self.remain_map = None
         self.prefetch_map = None
         self._vllm_config = vllm_config
         self.rank = vllm_config.parallel_config.rank
@@ -820,8 +820,8 @@ class GSA(UcmSparseBase):
                     req_meta, query, current_layer_id, remain_len + prefetch_len
                 )
 
-                if self.gsa_metadata.gsa_stats[req_id].reamin_map == None:
-                    self.gsa_metadata.gsa_stats[req_id].reamin_map = [
+                if self.gsa_metadata.gsa_stats[req_id].remain_map == None:
+                    self.gsa_metadata.gsa_stats[req_id].remain_map = [
                         None
                     ] * self.layer_num
                     self.gsa_metadata.gsa_stats[req_id].prefetch_map = [
@@ -901,13 +901,13 @@ class GSA(UcmSparseBase):
             + req_idx_list[init_windows_size - remain_len - prefetch_len :]
         )
         assert len(remain_idx) == len(topk_value)
-        mv_map, reamin_map, prefetch_map = self.get_mv_map(
+        mv_map, remain_map, prefetch_map = self.get_mv_map(
             self.gsa_metadata.gsa_stats[req_id].blocks,
             remain_idx,
             topk_value.tolist(),
             remain_len,
         )
-        self.gsa_metadata.gsa_stats[req_id].reamin_map[current_layer_id] = reamin_map
+        self.gsa_metadata.gsa_stats[req_id].remain_map[current_layer_id] = remain_map
         self.gsa_metadata.gsa_stats[req_id].prefetch_map[
             current_layer_id
         ] = prefetch_map
