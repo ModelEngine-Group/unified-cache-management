@@ -331,7 +331,7 @@ class GSAMetaData(UcmSparseMetadata):
             query_locals_prefill = [0] * (batch_size + 1)
 
         if ENABLE_KVCOMP:
-            block_table_for_hamming = [] * batch_size
+            block_table_for_hamming = [None] * batch_size
 
         for req_id, num_tokens in scheduler_output.num_scheduled_tokens.items():
             req_in_batch = self.gsa_stats[req_id].index_in_batch
