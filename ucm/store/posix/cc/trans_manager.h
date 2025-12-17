@@ -37,7 +37,7 @@ class TransManager : public Detail::TaskWrapper<TransTask, Detail::TaskHandle> {
 public:
     Status Setup(const Config& config, const SpaceLayout* layout)
     {
-        timeoutMs_ = config.transferTimeoutMs;
+        timeoutMs_ = config.timeoutMs;
         shardSize_ = config.shardSize;
         return queue_.Setup(config, &failureSet_, layout);
     }

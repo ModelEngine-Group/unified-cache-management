@@ -27,7 +27,7 @@
 
 namespace UC::PosixStore {
 
-Status SpaceManager::Setup(const Config& config) { return layout_.Setup(config.backends); }
+Status SpaceManager::Setup(const Config& config) { return layout_.Setup(config.storageBackends); }
 
 std::vector<uint8_t> SpaceManager::Lookup(const Detail::BlockId* blocks, size_t num)
 {

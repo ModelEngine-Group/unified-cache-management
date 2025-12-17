@@ -37,7 +37,7 @@ TEST_F(UCPosixSpaceManagerTest, SetStorageBackends)
         SpaceManager spaceMgr;
         auto invalidPath = this->Path() + "invalid";
         Config config;
-        config.backends.push_back(std::move(invalidPath));
+        config.storageBackends.push_back(std::move(invalidPath));
         auto s = spaceMgr.Setup(config);
         ASSERT_EQ(s, UC::Status::OsApiError());
     }
@@ -46,16 +46,16 @@ TEST_F(UCPosixSpaceManagerTest, SetStorageBackends)
         auto validPath = this->Path();
         auto invalidPath = this->Path() + "invalid";
         Config config;
-        config.backends.push_back(std::move(validPath));
-        config.backends.push_back(std::move(invalidPath));
+        config.storageBackends.push_back(std::move(validPath));
+        config.storageBackends.push_back(std::move(invalidPath));
         auto s = spaceMgr.Setup(config);
         ASSERT_EQ(s, UC::Status::NotFound());
     }
     {
         SpaceManager spaceMgr;
         Config config;
-        config.backends.push_back(this->Path());
-        config.backends.push_back(this->Path());
+        config.storageBackends.push_back(this->Path());
+        config.storageBackends.push_back(this->Path());
         auto s = spaceMgr.Setup(config);
         ASSERT_EQ(s, UC::Status::OK());
     }
@@ -66,7 +66,7 @@ TEST_F(UCPosixSpaceManagerTest, DataFilePath)
     using namespace UC::PosixStore;
     SpaceManager spaceMgr;
     Config config;
-    config.backends.push_back(this->Path());
+    config.storageBackends.push_back(this->Path());
     auto s = spaceMgr.Setup(config);
     ASSERT_EQ(s, UC::Status::OK());
     auto blockId = UC::Test::Detail::TypesHelper::MakeBlockId("a1b2c3d4e5f6789012345678901234ab");

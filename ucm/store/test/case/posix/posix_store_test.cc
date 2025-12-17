@@ -38,17 +38,17 @@ TEST_F(UCPosixStoreTest, SetupWithInvalidParam)
     }
     {
         Config config;
-        config.backends.push_back(this->Path());
+        config.storageBackends.push_back(this->Path());
         PosixStore store;
         ASSERT_EQ(store.Setup(config), UC::Status::InvalidParam());
     }
     {
         Config config;
-        config.backends.push_back(this->Path());
-        config.ioSize = 4096;
-        config.shardSize = config.ioSize;
+        config.storageBackends.push_back(this->Path());
+        config.tensorSize = 4096;
+        config.shardSize = config.tensorSize;
         config.blockSize = config.shardSize;
-        config.transferStreamNumber = 0;
+        config.streamNumber = 0;
         PosixStore store;
         ASSERT_EQ(store.Setup(config), UC::Status::InvalidParam());
     }
@@ -58,9 +58,9 @@ TEST_F(UCPosixStoreTest, DumpThenLoad)
 {
     using namespace UC::PosixStore;
     Config config;
-    config.backends.push_back(this->Path());
-    config.ioSize = 32768;
-    config.shardSize = config.ioSize;
+    config.storageBackends.push_back(this->Path());
+    config.tensorSize = 32768;
+    config.shardSize = config.tensorSize;
     config.blockSize = config.shardSize;
     PosixStore store;
     auto s = store.Setup(config);
@@ -98,11 +98,11 @@ TEST_F(UCPosixStoreTest, DumpThenLoadWithIoDirect)
 {
     using namespace UC::PosixStore;
     Config config;
-    config.backends.push_back(this->Path());
-    config.ioSize = 32768;
-    config.shardSize = config.ioSize;
+    config.storageBackends.push_back(this->Path());
+    config.tensorSize = 32768;
+    config.shardSize = config.tensorSize;
     config.blockSize = config.shardSize;
-    config.transferIoDirect = true;
+    config.ioDirect = true;
     PosixStore store;
     auto s = store.Setup(config);
     ASSERT_EQ(s, UC::Status::OK());

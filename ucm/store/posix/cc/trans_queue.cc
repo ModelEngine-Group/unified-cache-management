@@ -31,15 +31,15 @@ Status TransQueue::Setup(const Config& config, TaskIdSet* failureSet, const Spac
 {
     failureSet_ = failureSet;
     layout_ = layout;
-    ioSize_ = config.ioSize;
+    ioSize_ = config.tensorSize;
     shardSize_ = config.shardSize;
     nShardPerBlock_ = config.blockSize / config.shardSize;
-    ioDirect_ = config.transferIoDirect;
-    auto success = pool_.SetNWorker(config.transferStreamNumber)
+    ioDirect_ = config.ioDirect;
+    auto success = pool_.SetNWorker(config.streamNumber)
                        .SetWorkerFn([this](auto& ios, auto&) { Worker(ios); })
                        .Run();
     if (!success) [[unlikely]] {
-        return Status::Error(fmt::format("workers({}) start failed", config.transferStreamNumber));
+        return Status::Error(fmt::format("workers({}) start failed", config.streamNumber));
     }
     return Status::OK();
 }
