@@ -330,6 +330,10 @@ class GSAMetaData(UcmSparseMetadata):
         query_locals = [0] * (batch_size + 1)
         if self.use_mla:
             query_locals_prefill = [0] * (batch_size + 1)
+
+        if ENABLE_KVCOMP:
+            block_table_for_hamming = [] * batch_size
+
         for req_id, num_tokens in scheduler_output.num_scheduled_tokens.items():
             req_in_batch = self.gsa_stats[req_id].index_in_batch
             calc_block_table += self.gsa_stats[req_id].calc_block_table
@@ -339,6 +343,10 @@ class GSAMetaData(UcmSparseMetadata):
             ]
             if self.use_mla and self.gsa_stats[req_id].stage() == SequenceStage.PREFILL:
                 query_locals_prefill[req_in_batch + 1] = num_tokens
+            
+            if ENABLE_KVCOMP:
+                block_table_for_hamming[req_in_batch] = self.gsa_stats[req_id].repre_slot_mapping
+
         query_locals = list(accumulate(query_locals))
         if self.use_mla:
             query_locals_prefill = list(accumulate(query_locals_prefill))
@@ -351,6 +359,11 @@ class GSAMetaData(UcmSparseMetadata):
         model_input["query_locals"] = query_locals
         if self.use_mla:
             model_input["query_locals_prefill"] = query_locals_prefill
+        
+        if ENABLE_KVCOMP:
+            model_input["block_table_for_hamming"] = make_tensor_with_pad(
+                block_table_for_hamming, dtype=torch.int32, device="cpu"
+            ).to(device=self.device, non_blocking=True)
         return model_input
 
 
