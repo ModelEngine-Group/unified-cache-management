@@ -21,28 +21,22 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  * */
-#include <pybind11/pybind11.h>
-#include <pybind11/stl.h>
-#include "metrics_api.h"
+#ifndef UNIFIEDCACHE_METRICS_API_H
+#define UNIFIEDCACHE_METRICS_API_H
+#include "metrics.h"
 
-namespace py = pybind11;
 namespace UC::Metrics {
+void CreateStats(const std::string& name, std::string& type);
 
-void bind_monitor(py::module_& m)
-{
-    m.def("create_stats", &CreateStats);
-    m.def("update_stats", py::overload_cast<const std::string&, double>(&UpdateStats));
-    m.def("update_stats", py::overload_cast<const std::unordered_map<std::string, double>&>(&UpdateStats));
-    m.def("get_all_stats_and_clear", &GetAllStatsAndClear);
-}
+void UpdateStats(const std::string& name, double value);
+
+void UpdateStats(const std::unordered_map<std::string, double>& values);
+
+std::tuple<
+        std::unordered_map<std::string, double>,
+        std::unordered_map<std::string, double>,
+        std::unordered_map<std::string, std::vector<double>>
+    > GetAllStatsAndClear();
 
 } // namespace UC::Metrics
-
-PYBIND11_MODULE(ucmmetrics, module)
-{
-    module.attr("project") = UCM_PROJECT_NAME;
-    module.attr("version") = UCM_PROJECT_VERSION;
-    module.attr("commit_id") = UCM_COMMIT_ID;
-    module.attr("build_type") = UCM_BUILD_TYPE;
-    UC::Metrics::bind_monitor(module);
-}
+#endif

@@ -1,7 +1,8 @@
 file(GLOB_RECURSE UCMMETRICS_CC_SOURCE_FILES "./cc/*.cc")
 add_library(metrics STATIC ${UCMMETRICS_CC_SOURCE_FILES})
 target_include_directories(metrics PUBLIC
-  ${CMAKE_CURRENT_SOURCE_DIR}/cc
+    ${CMAKE_CURRENT_SOURCE_DIR}/cc/api
+    ${CMAKE_CURRENT_SOURCE_DIR}/cc/domain
 )
 
 file(GLOB_RECURSE UCMMETRICS_CPY_SOURCE_FILES CONFIGURE_DEPENDS "./cpy/*.cc")
