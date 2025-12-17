@@ -453,13 +453,13 @@ class TopkCal:
         self.batch_size = block_table_for_hamming.shape[0]
         self.top_k_for_hamming = torch.full(
             size=[self.batch_size],
-            full_value=self.preserved_blocks,
+            fill_value=self.preserved_blocks,
             dtype=torch.int32,
             device=self.device,
         )
         self.chunk_sizes_for_hamming = torch.full(
             size=[self.batch_size],
-            full_value=gsa_config.block_size,
+            fill_value=gsa_config.block_size,
             dtype=torch.int32,
             device=self.device,
         )
