@@ -423,10 +423,42 @@ class TopkCal:
         self.topk_ratio = 0.3
         self.use_mla = use_mla
 
+        if ENABLE_KVCOMP:
+            self.device = kpre_caches[0].device
+            #(TODO) support other dtypes, we simply use float16 here
+            self.hash_encoder = HashEncoder(input_dim=head_size, hash_bits=head_size, dtype=torch.float16, device=self.device)
+            self.preserved_blocks = gsa_config.kvcomp_preserve_blocks + gsa_config.num_prefetch_blocks
+
     def set_topk_param(self, repre_slot_mapping, include_mask, exclude_mask):
         self.repre_slot_mapping = repre_slot_mapping
         self.include_mask = include_mask
         self.exclude_mask = exclude_mask
+
+    def set_topk_param_for_hamming(self, block_table_for_hamming, include_mask, exclude_mask, seq_lens_ori):
+        self.block_table_for_hamming = block_table_for_hamming
+        self.include_mask = include_mask
+        self.exclude_mask = exclude_mask
+        self.seq_lens_for_hamming = seq_lens_ori
+        self.max_seq_len_for_hamming = torch.max(self.seq_lens_for_hamming).item()
+        self.batch_size = len(self.cal_topk_id)
+        self.top_k_for_hamming = torch.full(size=[self.batch_size], 
+                                            full_value = self.preserved_blocks,
+                                            dtype=torch.int32, 
+                                            device=self.device)
+        self.chunk_sizes_for_hamming = torch.full(size=[self.batch_size], 
+                                                  full_value = gsa_config.block_size,
+                                                  dtype=torch.int32, 
+                                                  device=self.device)
+        
+        if self.kv_num_heads == 1:
+            self.hamming_output = torch.zeros(size=[self.batch_size, self.preserved_blocks],
+                                              dtype=torch.torch.int32,
+                                              device=self.device)
+        else:
+            self.hamming_output = torch.zeros(size=[self.batch_size, self.kv_num_heads,self.preserved_blocks],
+                                              dtype=torch.int32,
+                                              device=self.device)
+            
 
     def set_topk_caches(self, cal_topk_id, topk_caches, topk_len_list):
         self.cal_topk_id = cal_topk_id
@@ -455,7 +487,33 @@ class TopkCal:
             dot_product_weights, selected_block_nums, dim=-1, sorted=False
         )
         self.topk_caches[current_layer_id][self.cal_topk_id] = top_indices
+    
+    def cal_topk_for_hamming(self, intermediate_q, current_layer_id):
+        q_decode = intermediate_q[self.cal_topk_id]
+        block_table_decode = self.block_table_for_hamming[self.cal_topk_id]
+        hashq = self.hash_encoder.compute_hash(q_decode)
+        hashq = hashq.unsqueeze(2).contiguous()
+        hashk_cache_op = self.kpre_caches[current_layer_id]
 
+        ucm_custom_ops.hamming_dist_top_k(
+            hashq_op=hashq,
+            hashk_cache_op=hashk_cache_op,
+            top_n_op=self.top_k_for_hamming,
+            seq_len_op=self.seq_lens_for_hamming,
+            chunk_size_op=self.chunk_sizes_for_hamming,
+            max_seq_len=self.max_seq_len_for_hamming,
+            sink=gsa_config.init_windows_size,
+            recent=gsa_config.recent_window_size,
+            block_table_op=block_table_decode,
+            indices=self.hamming_output,
+        )
+
+        if self.kv_num_heads == 1:
+            topk_indices = self.hamming_output
+        else:
+            # (ldeng) we use the first head's topk indices as the final topk indices now, need to support multi-head later
+            topk_indices = self.hamming_output[:,0,:]
+        self.topk_caches[current_layer_id][self.cal_topk_id] = topk_indices
 
 @cache
 def get_offset(block_shape, rank, tp_size, precision, layer_id, is_v, is_mla) -> int:
