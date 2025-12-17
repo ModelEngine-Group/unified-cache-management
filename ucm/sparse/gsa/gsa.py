@@ -813,9 +813,15 @@ class GSA(UcmSparseBase):
                 prefetch_len = min(
                     gsa_config.num_prefetch_blocks, blocks_len - remain_len
                 )
-                topk_value = self.last_chunk_topk_cal(
-                    req_meta, query, current_layer_id, remain_len + prefetch_len
-                )
+                
+                if ENABLE_KVCOMP:
+                    topk_value = self.last_chunk_topk_cal_for_hamming(
+                        req_meta, query, current_layer_id, remain_len + prefetch_len
+                    )
+                else:
+                    topk_value = self.last_chunk_topk_cal(
+                        req_meta, query, current_layer_id, remain_len + prefetch_len
+                    )
 
                 if self.gsa_metadata.gsa_stats[req_id].remain_map == None:
                     self.gsa_metadata.gsa_stats[req_id].remain_map = [
@@ -883,6 +889,57 @@ class GSA(UcmSparseBase):
         dot_product_weights.masked_fill_(exclude_mask == 1, float("-inf"))
         _, top_indices = torch.topk(dot_product_weights, first_topk_len, dim=-1)
         return top_indices[0].cpu()
+    
+    def last_chunk_topk_cal_for_hamming(self, req_meta, query, current_layer_id, first_topk_len):
+        assert ENABLE_KVCOMP
+        assert CUDA_TOPK
+
+        index_in_batch = req_meta.index_in_batch
+        bs = 1
+        if not self.use_mla:
+            cal_topk_id = [self.model_input["query_locals"][index_in_batch + 1] - 1]
+        else:
+            cal_topk_id = [
+                self.model_input["query_locals_prefill"][index_in_batch + 1] - 1
+            ]
+        q_decode = query[cal_topk_id]
+        hashq = self.gsa_cuda_topk.hash_encoder.compute_hash(q_decode)
+        hashq = hashq.unsqueeze(2).contiguous()
+        hashk_cache = self.prefetch_engine.kpre_caches[current_layer_id]
+        hamming_output = torch.zeros(size=[bs, self.preserved_blocks], dtype=torch.int32, device=self.device)
+        
+        top_k_for_hamming = torch.tensor([first_topk_len], dtype=torch.int32, device=self.device)
+
+        seq_lens_for_hamming = torch.tensor(
+            req_meta.seq_lens, dtype=torch.int32, device=self.device
+        )
+        chunk_sizes_for_hamming = torch.tensor(
+            gsa_config.block_size, dtype=torch.int32, device=self.device
+        )
+        max_seq_len_for_hamming = req_meta.seq_lens
+
+        block_table_for_hamming = torch.tensor(
+                req_meta.repre_slot_mapping, dtype=torch.int32, device=self.device
+        )
+
+        ucm_custom_ops.hamming_dist_top_k(
+            hashq_op=hashq,
+            hashk_cache_op=hashk_cache,
+            top_n_op=top_k_for_hamming,
+            seq_len_op=seq_lens_for_hamming,
+            chunk_size_op=chunk_sizes_for_hamming,
+            max_seq_len=max_seq_len_for_hamming,
+            sink=gsa_config.init_windows_size,
+            recent=gsa_config.recent_window_size,
+            block_table_op=block_table_for_hamming,
+            indices=hamming_output,
+        )
+    
+        if self.kv_num_heads == 1:
+            return hamming_output[0].cpu()
+        else:
+            # (ldeng) we use the first head's topk indices as the final topk indices now, need to support multi-head later
+            return hamming_output[0,0,:].cpu()
 
     def kvcache_init_last_chunk(
         self, forward_context: ForwardContext, layer_name, topk_value, req_id
