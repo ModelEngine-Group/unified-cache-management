@@ -35,11 +35,11 @@ from ucm.store.ucmstore_v1 import UcmKVStoreBaseV1
 
 def setup_store(storage_backends, block_size, device_id, io_size) -> UcmKVStoreBaseV1:
     config = {}
-    config["storage_backends"] = storage_backends
-    config["kv_block_size"] = block_size
+    config["storage_backends"] = [storage_backends]
+    config["block_size"] = block_size
     config["role"] = "worker"
-    config["device"] = device_id
-    config["io_size"] = io_size
+    config["device_id"] = device_id
+    config["tensor_size"] = io_size
     config["unique_id"] = secrets.token_hex(8)
     return UcmPcStoreV1(config)
 
