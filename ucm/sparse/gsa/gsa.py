@@ -363,7 +363,7 @@ class GSAMetaData(UcmSparseMetadata):
 
         if ENABLE_KVCOMP:
             model_input["block_table_for_hamming"] = make_tensor_with_pad(
-                block_table_for_hamming, dtype=torch.int32, device="cpu"
+                block_table_for_hamming, pad=0, dtype=torch.int32, device="cpu"
             ).to(device=self.device, non_blocking=True)
         return model_input
 
