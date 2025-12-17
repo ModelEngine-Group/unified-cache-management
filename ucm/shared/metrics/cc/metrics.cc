@@ -67,6 +67,12 @@ void Metrics::UpdateStats(const std::string& name, double value)
     }
 }
 
+void Metrics::UpdateStats(const std::unordered_map<std::string, double>& values)
+{
+    for(const auto& pair: values) {
+        UpdateStats(pair.first, pair.second);
+    }
+}
 
 std::tuple<
         std::unordered_map<std::string, double>,

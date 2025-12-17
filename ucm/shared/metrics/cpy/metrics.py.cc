@@ -36,6 +36,10 @@ inline void UpdateStats(const std::string& name, double value) {
     Metrics::GetInstance().UpdateStats(name, value);
 }
 
+inline void UpdateStats(const std::unordered_map<std::string, double>& params) {
+    Metrics::GetInstance().UpdateStats(params);
+}
+
 inline std::tuple<
     std::unordered_map<std::string, double>,
     std::unordered_map<std::string, double>,
@@ -47,7 +51,8 @@ inline std::tuple<
 void bind_monitor(py::module_& m)
 {
     m.def("create_stats", &CreateStats);
-    m.def("update_stats", &UpdateStats);
+    m.def("update_stats", py::overload_cast<const std::string&, double>(&UpdateStats));
+    m.def("update_stats", py::overload_cast<const std::unordered_map<std::string, double>&>(&UpdateStats));
     m.def("get_all_stats_and_clear", &GetAllStatsAndClear);
 }
 

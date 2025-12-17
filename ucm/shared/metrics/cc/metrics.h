@@ -47,6 +47,8 @@ public:
 
     void UpdateStats(const std::string& name, double value);
 
+    void UpdateStats(const std::unordered_map<std::string, double>& values);
+
     std::tuple<
         std::unordered_map<std::string, double>,
         std::unordered_map<std::string, double>,
