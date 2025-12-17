@@ -687,11 +687,15 @@ class GSA(UcmSparseBase):
         if len(block_ids) > 0:
             attn = forward_context.no_compile_layers
             if not self.use_mla:
-                key_cache_mean_out = (
-                    attn[layer_name]
-                    .kv_cache[forward_context.virtual_engine][0][block_ids]
-                    .mean(dim=1, keepdim=True)
-                )
+                if ENABLE_KVCOMP:
+                    hashk_cache_out = self.gsa_cuda_topk.hash_encoder.compute_hash(attn[layer_name].kv_cache[forward_context.virtual_engine][0][block_ids])
+                    hashk_cache_out = hashk_cache_out.transpose(1,2).contiguous()
+                else:
+                    key_cache_mean_out = (
+                        attn[layer_name]
+                        .kv_cache[forward_context.virtual_engine][0][block_ids]
+                        .mean(dim=1, keepdim=True)
+                    )
             else:
                 key_cache_mean_out = (
                     attn[layer_name]
@@ -701,9 +705,14 @@ class GSA(UcmSparseBase):
                 if torch.cuda.is_available():
                     key_cache_mean_out = torch.unsqueeze(key_cache_mean_out, 1)
             if CUDA_TOPK:
-                self.prefetch_engine.kpre_caches[current_layer_id][
-                    calc_repre_slot_mappings
-                ] = key_cache_mean_out.clone()
+                if ENABLE_KVCOMP:
+                    self.prefetch_engine.kpre_caches[current_layer_id][
+                        calc_repre_slot_mappings
+                    ] = hashk_cache_out.clone()
+                else:
+                    self.prefetch_engine.kpre_caches[current_layer_id][
+                        calc_repre_slot_mappings
+                    ] = key_cache_mean_out.clone()
             else:
                 self.prefetch_engine.kpre_caches[current_layer_id][
                     calc_repre_slot_mappings
