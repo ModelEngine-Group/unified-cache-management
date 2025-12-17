@@ -96,7 +96,6 @@ def main():
     config["tensor_size"] = tensor_size
     config["shard_size"] = chunk_block_size
     config["block_size"] = chunk_block_size
-    config["buffer_size"] = chunk_block_size * 2048
     config["share_buffer_enable"] = True
     config["waiting_queue_depth"] = 16
     config["running_queue_depth"] = 1024
