@@ -41,21 +41,26 @@ class UcmPcStoreV1(UcmKVStoreBaseV1):
     def __init__(self, config: Dict):
         super().__init__(config)
         self.store = ucmpcstore.PcStore()
-        storage_backends = [
-            path for path in config["storage_backends"].split(":") if path
-        ]
-        block_size = config.get("kv_block_size", 33554432)
+        storage_backends = config["storage_backends"]
+        block_size = config["block_size"]
         transfer_enable = True if config["role"] == "worker" else False
         param = ucmpcstore.PcStore.Config(storage_backends, block_size, transfer_enable)
         if transfer_enable:
-            param.uniqueId = config["unique_id"]
-            param.transferDeviceId = config["device"]
-            param.transferIoSize = config["io_size"]
-            param.transferIoDirect = config.get("use_direct", False)
-            param.transferStreamNumber = config.get("stream_number", 8)
-            param.transferBufferNumber = config.get("buffer_number", 4096)
-            param.transferLocalRankSize = config.get("local_rank_size", 1)
-            param.transferScatterGatherEnable = config.get("use_scatter_gatter", False)
+            key_mapping = {
+                "unique_id": "uniqueId",
+                "io_direct": "transferIoDirect",
+                "local_rank_size": "transferLocalRankSize",
+                "device_id": "transferDeviceId",
+                "stream_number": "transferStreamNumber",
+                "tensor_size": "transferIoSize",
+                "buffer_number": "transferBufferNumber",
+                "timeout_ms": "transferTimeoutMs",
+                "use_scatter_gather": "transferScatterGatherEnable",
+            }
+            for key, value in config.items():
+                attr = key_mapping.get(key)
+                if attr and hasattr(param, attr):
+                    setattr(param, attr, value)
         ret = self.store.Setup(param)
         if ret != 0:
             msg = f"Failed to initialize ucmpcstore, errcode: {ret}."
