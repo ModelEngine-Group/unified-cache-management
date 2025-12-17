@@ -467,7 +467,7 @@ class TopkCal:
         if self.kv_num_heads == 1:
             self.hamming_output = torch.zeros(
                 size=[self.batch_size, self.preserved_blocks],
-                dtype=torch.torch.int32,
+                dtype=torch.int32,
                 device=self.device,
             )
         else:
