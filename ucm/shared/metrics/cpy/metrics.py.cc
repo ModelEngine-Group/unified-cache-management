@@ -36,7 +36,11 @@ inline void UpdateStats(const std::string& name, double value) {
     Metrics::GetInstance().UpdateStats(name, value);
 }
 
-inline auto GetAllStatsAndClear() {
+inline std::tuple<
+    std::unordered_map<std::string, double>,
+    std::unordered_map<std::string, double>,
+    std::unordered_map<std::string, std::vector<double>>
+> GetAllStatsAndClear() {
     return Metrics::GetInstance().GetAllStatsAndClear();
 }
 
@@ -49,7 +53,7 @@ void bind_monitor(py::module_& m)
 
 } // namespace UC::Metrics
 
-PYBIND11_MODULE(ucmmonitor, module)
+PYBIND11_MODULE(ucmmetrics, module)
 {
     module.attr("project") = UCM_PROJECT_NAME;
     module.attr("version") = UCM_PROJECT_VERSION;

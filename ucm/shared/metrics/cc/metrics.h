@@ -54,13 +54,13 @@ public:
     > GetAllStatsAndClear();
 
 private:
-    enum class MetricType { COUNTER, GUAGE, HISTOGRAM };
+    enum class MetricType { COUNTER, GAUGE, HISTOGRAM };
 
     std::mutex mutex_;
     std::unordered_map<std::string, double> counter_stats_;
     std::unordered_map<std::string, double> gauge_stats_;
     std::unordered_map<std::string, std::vector<double>> histogram_stats_;
-    std::unordered_map<std::string, int> stats_type_;
+    std::unordered_map<std::string, MetricType> stats_type_;
 
     Metrics() = default;
     Metrics(const Metrics&) = delete;

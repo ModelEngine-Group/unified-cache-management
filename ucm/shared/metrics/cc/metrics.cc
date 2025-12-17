@@ -35,8 +35,8 @@ void Metrics::CreateStats(const std::string& name, std::string& type)
     } else {
         if (type == "COUNTER") {
             stats_type_[name] = MetricType::COUNTER;
-        } else if (type == "GUAGE") {
-            stats_type_[name] = MetricType::GUAGE;
+        } else if (type == "GAUGE") {
+            stats_type_[name] = MetricType::GAUGE;
         } else if (type == "HISTOGRAM") {
             stats_type_[name] = MetricType::HISTOGRAM;
         } else {
@@ -49,13 +49,13 @@ void Metrics::UpdateStats(const std::string& name, double value)
 {
     std::lock_guard<std::mutex> lock(mutex_);
     auto it = stats_type_.find(name);
-    if (it == stats_map_.end() || !it->second) { return; }
+    if (it == stats_type_.end()) { return; }
     switch (it->second)
     {
     case MetricType::COUNTER:
         counter_stats_[name] += value;
         break;
-    case MetricType::GUAGE:
+    case MetricType::GAUGE:
         gauge_stats_[name] = value;
         break;
     case MetricType::HISTOGRAM:
