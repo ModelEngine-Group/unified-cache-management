@@ -37,7 +37,7 @@ TEST_P(UCCacheTransBufferTest, GetFirstNode)
 {
     UC::CacheStore::TransBuffer transBuffer;
     UC::CacheStore::Config config;
-    config.engineId = rd.RandomString(10);
+    config.uniqueId = rd.RandomString(10);
     config.shardSize = 32768;
     config.bufferSize = config.shardSize * 32768;
     config.shareBufferEnable = GetParam();

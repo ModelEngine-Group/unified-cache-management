@@ -342,7 +342,7 @@ Status TransBuffer::Setup(const Config& config)
     } else {
         strategy_ = std::make_shared<SharedBufferStrategy>();
     }
-    return strategy_->Setup(config.engineId, config.deviceId, dataNodeSize, nNode);
+    return strategy_->Setup(config.uniqueId, config.deviceId, dataNodeSize, nNode);
 }
 
 TransBuffer::Handle TransBuffer::Get(const Detail::BlockId& blockId, size_t shardIdx)

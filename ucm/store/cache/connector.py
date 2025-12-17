@@ -42,8 +42,8 @@ class UcmCacheStore(UcmKVStoreBaseV1):
     def __init__(self, config: Dict[str, object]) -> None:
         super().__init__(config)
         key_mapping = {
-            "backend": "backend",
-            "engine_id": "engineId",
+            "store_backend": "storeBackend",
+            "unique_id": "uniqueId",
             "device_id": "deviceId",
             "tensor_size": "tensorSize",
             "shard_size": "shardSize",
@@ -52,7 +52,7 @@ class UcmCacheStore(UcmKVStoreBaseV1):
             "share_buffer_enable": "shareBufferEnable",
             "waiting_queue_depth": "waitingQueueDepth",
             "running_queue_depth": "runningQueueDepth",
-            "transfer_timeout_ms": "transferTimeoutMs",
+            "timeout_ms": "timeoutMs",
         }
         self.store = ucmcachestore.CacheStore()
         param = ucmcachestore.CacheStore.Config()

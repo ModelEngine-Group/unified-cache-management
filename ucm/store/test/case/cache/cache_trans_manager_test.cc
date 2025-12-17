@@ -49,13 +49,13 @@ TEST_F(UCCacheTransManagerTest, DumpThenLoad)
         return UC::Status::OK();
     }));
     Config config;
-    config.backend = (uintptr_t)(void*)&backend;
+    config.storeBackend = (uintptr_t)(void*)&backend;
     config.tensorSize = 32768;
     config.shardSize = config.tensorSize;
     config.blockSize = config.shardSize;
     config.deviceId = 0;
     config.bufferSize = config.blockSize * 2048;
-    config.engineId = rd.RandomString(10);
+    config.uniqueId = rd.RandomString(10);
     config.shareBufferEnable = true;
     TransManager transMgr;
     auto s = transMgr.Setup(config);

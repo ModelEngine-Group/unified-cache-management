@@ -31,17 +31,17 @@
 namespace UC::CacheStore {
 
 struct Config {
-    uintptr_t backend{};
-    std::string engineId{};
+    uintptr_t storeBackend{};
+    std::string uniqueId{};
     int32_t deviceId{-1};
     size_t tensorSize{0};
     size_t shardSize{0};
     size_t blockSize{0};
-    size_t bufferSize{0};
+    size_t bufferSize{size_t(2) << 30};
     bool shareBufferEnable{false};
     size_t waitingQueueDepth{1024};
     size_t runningQueueDepth{32768};
-    size_t transferTimeoutMs{30000};
+    size_t timeoutMs{30000};
 };
 
 }  // namespace UC::CacheStore

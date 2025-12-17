@@ -44,7 +44,7 @@ public:
             UC_ERROR("Failed to check config params: {}.", s);
             return s;
         }
-        backend = static_cast<StoreV1*>((void*)config.backend);
+        backend = static_cast<StoreV1*>((void*)config.storeBackend);
         transEnable = config.deviceId >= 0;
         if (transEnable) {
             s = transMgr.Setup(config);
@@ -57,11 +57,11 @@ public:
 private:
     Status CheckConfig(const Config& config)
     {
-        if (!config.backend) { return Status::InvalidParam("invalid backend"); }
+        if (!config.storeBackend) { return Status::InvalidParam("invalid store backend"); }
         if (config.deviceId < -1) {
             return Status::InvalidParam("invalid device({})", config.deviceId);
         }
-        if (config.engineId.empty()) { return Status::InvalidParam("invalid engine id"); }
+        if (config.uniqueId.empty()) { return Status::InvalidParam("invalid unique id"); }
         if (config.deviceId == -1) { return Status::OK(); }
         if (config.tensorSize == 0 || config.shardSize < config.tensorSize ||
             config.blockSize < config.shardSize || config.shardSize % config.tensorSize != 0 ||
@@ -71,9 +71,6 @@ private:
         }
         if (config.bufferSize < config.blockSize * 1024) {
             return Status::InvalidParam("too small buffer size({})", config.bufferSize);
-        }
-        if (config.bufferSize % config.shardSize != 0) {
-            return Status::InvalidParam("invalid buffer size({})", config.bufferSize);
         }
         if (config.waitingQueueDepth <= 1 || config.runningQueueDepth <= 1) {
             return Status::InvalidParam("invalid queue depth({},{})", config.waitingQueueDepth,
@@ -87,10 +84,10 @@ private:
         std::string buildType = UCM_BUILD_TYPE;
         if (buildType.empty()) { buildType = "Release"; }
         UC_INFO("{}-{}({}).", ns, UCM_COMMIT_ID, buildType);
-        UC_INFO("Set {}::Backend to {}.", ns, backend->Readme());
-        UC_INFO("Set {}::EngineId to {}.", ns, config.engineId);
+        UC_INFO("Set {}::StoreBackend to {}.", ns, backend->Readme());
+        UC_INFO("Set {}::UniqueId to {}.", ns, config.uniqueId);
         UC_INFO("Set {}::DeviceId to {}.", ns, config.deviceId);
-        if (config.deviceId < 0) { return; }
+        if (config.deviceId == -1) { return; }
         UC_INFO("Set {}::TensorSize to {}.", ns, config.tensorSize);
         UC_INFO("Set {}::ShardSize to {}.", ns, config.shardSize);
         UC_INFO("Set {}::BlockSize to {}.", ns, config.blockSize);
@@ -98,7 +95,7 @@ private:
         UC_INFO("Set {}::ShareBufferEnable to {}.", ns, config.shareBufferEnable);
         UC_INFO("Set {}::WaitingQueueDepth to {}.", ns, config.waitingQueueDepth);
         UC_INFO("Set {}::RunningQueueDepth to {}.", ns, config.runningQueueDepth);
-        UC_INFO("Set {}::TransferTimeoutMs to {}.", ns, config.transferTimeoutMs);
+        UC_INFO("Set {}::TimeoutMs to {}.", ns, config.timeoutMs);
     }
 };
 

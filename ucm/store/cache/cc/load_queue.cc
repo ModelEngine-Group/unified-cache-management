@@ -38,7 +38,7 @@ Status LoadQueue::Setup(const Config& config, TaskIdSet* failureSet, TransBuffer
 {
     failureSet_ = failureSet;
     buffer_ = buffer;
-    backend_ = static_cast<StoreV1*>((void*)config.backend);
+    backend_ = static_cast<StoreV1*>((void*)config.storeBackend);
     waiting_.Setup(config.waitingQueueDepth);
     running_.Setup(config.runningQueueDepth);
     dispatcher_ = std::thread{&LoadQueue::DispatchStage, this};

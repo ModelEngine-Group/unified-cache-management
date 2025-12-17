@@ -36,8 +36,8 @@ PYBIND11_MODULE(ucmcachestore, module)
     auto store = py::class_<CacheStorePy, std::unique_ptr<CacheStorePy>>(module, "CacheStore");
     auto config = py::class_<Config>(store, "Config");
     config.def(py::init<>());
-    config.def_readwrite("backend", &Config::backend);
-    config.def_readwrite("engineId", &Config::engineId);
+    config.def_readwrite("storeBackend", &Config::storeBackend);
+    config.def_readwrite("uniqueId", &Config::uniqueId);
     config.def_readwrite("deviceId", &Config::deviceId);
     config.def_readwrite("tensorSize", &Config::tensorSize);
     config.def_readwrite("shardSize", &Config::shardSize);
@@ -46,7 +46,7 @@ PYBIND11_MODULE(ucmcachestore, module)
     config.def_readwrite("shareBufferEnable", &Config::shareBufferEnable);
     config.def_readwrite("waitingQueueDepth", &Config::waitingQueueDepth);
     config.def_readwrite("runningQueueDepth", &Config::runningQueueDepth);
-    config.def_readwrite("transferTimeoutMs", &Config::transferTimeoutMs);
+    config.def_readwrite("timeoutMs", &Config::timeoutMs);
     store.def(py::init<>());
     store.def("Self", &CacheStorePy::Self);
     store.def("Setup", &CacheStorePy::Setup);
