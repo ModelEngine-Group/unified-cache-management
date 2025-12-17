@@ -515,19 +515,21 @@ class TopkCal:
 
         # debug
         if current_layer_id == 0 and True:
-            print(f"hashq.shape: {hashq.shape}, \
-                   hashk_cache.shape: {hashk_cache.shape}, \
-                   top_k_for_hamming.shape: {self.top_k_for_hamming.shape}, \
-                   seq_lens_for_hamming.shape: {self.seq_lens_for_hamming.shape}, \
-                   chunk_sizes_for_hamming.shape: {self.chunk_sizes_for_hamming.shape}, \
-                   block_table_for_hamming.shape: {block_table_decode.shape}, \
-                   hamming_output.shape: {self.hamming_output.shape}")
+            print(f"=======cal_topk_for_hamming=======")
+            print(f"hashq.shape: {hashq.shape}")
+            print(f"hashk_cache.shape: {hashk_cache.shape}")
+            print(f"top_k_for_hamming.shape: {self.top_k_for_hamming.shape}")
+            print(f"seq_lens_for_hamming.shape: {self.seq_lens_for_hamming.shape}")
+            print(f"chunk_sizes_for_hamming.shape: {self.chunk_sizes_for_hamming.shape}")
+            print(f"block_table_for_hamming.shape: {block_table_decode.shape}")
+            print(f"hamming_output.shape: {self.hamming_output.shape}")
             print(f"top_k_for_hamming: {self.top_k_for_hamming}")
             print(f"seq_lens_for_hamming: {self.seq_lens_for_hamming}")
             print(f"chunk_sizes_for_hamming: {self.chunk_sizes_for_hamming}")
             print(f"max_seq_len_for_hamming: {self.max_seq_len_for_hamming}")
             print(f"block_table_for_hamming: {block_table_decode}")
-            print(f"hamming_output: {self.hamming_output}")
+            torch.npu.synchronize()
+        
 
         ucm_custom_ops.hamming_dist_top_k(
             hashq_op=hashq,
@@ -541,6 +543,10 @@ class TopkCal:
             block_table_op=block_table_decode,
             indices=self.hamming_output,
         )
+
+        if current_layer_id == 0 and True:
+            print(f"=======cal_topk_for_hamming=======")
+            print(f"after ucm_custom_ops.hamming_dist_top_k, hamming_output: {self.hamming_output}")
 
         if self.kv_num_heads == 1:
             topk_indices = self.hamming_output
@@ -973,19 +979,21 @@ class GSA(UcmSparseBase):
 
         # debug
         if self.rank == 0 and True:
-            print(f"hashq.shape: {hashq.shape}, \
-                 hashk_cache.shape: {hashk_cache.shape}, \
-                   top_k_for_hamming.shape: {top_k_for_hamming.shape}, \
-                   seq_lens_for_hamming.shape: {seq_lens_for_hamming.shape}, \
-                   chunk_sizes_for_hamming.shape: {chunk_sizes_for_hamming.shape}, \
-                   block_table_for_hamming.shape: {block_table_for_hamming.shape}, \
-                   hamming_output.shape: {hamming_output.shape}")
+            print(f"=======last_chunk_topk_cal_for_hamming=======")
+            print(f"hashq.shape: {hashq.shape}")
+            print(f"hashk_cache.shape: {hashk_cache.shape}")
+            print(f"top_k_for_hamming.shape: {top_k_for_hamming.shape}")
+            print(f"seq_lens_for_hamming.shape: {seq_lens_for_hamming.shape}")
+            print(f"chunk_sizes_for_hamming.shape: {chunk_sizes_for_hamming.shape}")
+            print(f"block_table_for_hamming.shape: {block_table_for_hamming.shape}")
+            print(f"hamming_output.shape: {hamming_output.shape}")
             print(f"top_k_for_hamming: {top_k_for_hamming}")
             print(f"seq_lens_for_hamming: {seq_lens_for_hamming}")
             print(f"chunk_sizes_for_hamming: {chunk_sizes_for_hamming}")
             print(f"max_seq_len_for_hamming: {max_seq_len_for_hamming}")
             print(f"block_table_for_hamming: {block_table_for_hamming}")
             print(f"hamming_output: {hamming_output}")
+            torch.npu.synchronize()
 
         ucm_custom_ops.hamming_dist_top_k(
             hashq_op=hashq,
@@ -999,6 +1007,10 @@ class GSA(UcmSparseBase):
             block_table_op=block_table_for_hamming,
             indices=hamming_output,
         )
+
+        if self.rank == 0 and True:
+            print(f"=======last_chunk_topk_cal_for_hamming=======")
+            print(f"after ucm_custom_ops.hamming_dist_top_k, hamming_output: {hamming_output}")
 
         if self.kv_num_heads == 1:
             return hamming_output[0].cpu()
