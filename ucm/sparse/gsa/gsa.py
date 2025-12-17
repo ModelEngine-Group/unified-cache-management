@@ -943,10 +943,10 @@ class GSA(UcmSparseBase):
         )
 
         seq_lens_for_hamming = torch.tensor(
-            req_meta.get_seq_len(), dtype=torch.int32, device=self.device
+            [req_meta.get_seq_len()], dtype=torch.int32, device=self.device
         )
         chunk_sizes_for_hamming = torch.tensor(
-            gsa_config.block_size, dtype=torch.int32, device=self.device
+            [gsa_config.block_size], dtype=torch.int32, device=self.device
         )
         max_seq_len_for_hamming = req_meta.get_seq_len()
 
