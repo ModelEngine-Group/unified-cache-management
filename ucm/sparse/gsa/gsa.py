@@ -933,7 +933,7 @@ class GSA(UcmSparseBase):
         hashq = hashq.unsqueeze(2).contiguous()
         hashk_cache = self.prefetch_engine.kpre_caches[current_layer_id]
         hamming_output = torch.zeros(
-            size=[bs, self.preserved_blocks], dtype=torch.int32, device=self.device
+            size=[bs, self.gsa_cuda_topk.preserved_blocks], dtype=torch.int32, device=self.device
         )
 
         top_k_for_hamming = torch.tensor(
@@ -941,12 +941,12 @@ class GSA(UcmSparseBase):
         )
 
         seq_lens_for_hamming = torch.tensor(
-            req_meta.seq_lens, dtype=torch.int32, device=self.device
+            req_meta.get_seq_len(), dtype=torch.int32, device=self.device
         )
         chunk_sizes_for_hamming = torch.tensor(
             gsa_config.block_size, dtype=torch.int32, device=self.device
         )
-        max_seq_len_for_hamming = req_meta.seq_lens
+        max_seq_len_for_hamming = req_meta.get_seq_len()
 
         block_table_for_hamming = torch.tensor(
             req_meta.repre_slot_mapping, dtype=torch.int32, device=self.device
