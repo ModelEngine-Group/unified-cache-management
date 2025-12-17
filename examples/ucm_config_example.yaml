@@ -9,10 +9,17 @@
 
 # Connector name (e.g., "UcmNfsStore", "UcmDramStore")
 ucm_connectors:
-  - ucm_connector_name: "UcmNfsStore"
+  - ucm_connector_name: "UcmPipelineStore"
     ucm_connector_config:
-      storage_backends: "/mnt/test"
-      use_direct: false
+      store_pipeline: "Cache|Posix"
+      # posix store
+      storage_backends: "."
+      io_direct: false
+      stream_number: 16
+      # cache store
+      waiting_queue_depth: 16
+      running_queue_depth: 1024
+      timeout_ms: 30000
 
 load_only_first_rank: false
 
