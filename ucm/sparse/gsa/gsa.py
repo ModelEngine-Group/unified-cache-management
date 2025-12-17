@@ -1279,7 +1279,7 @@ class GSA(UcmSparseBase):
                     is_decode.append(False)
                 repre_slot_mappings_all.append(req_meta.repre_slot_mapping)
 
-            if ENABLE_KVCOMP:
+            if ENABLE_KVCOMP and len(topk_len_list) != 0:
                 seq_lens_ori = torch.tensor(seq_lens_ori, dtype=torch.int32).to(
                     device=self.device, non_blocking=True
                 )
@@ -1301,7 +1301,7 @@ class GSA(UcmSparseBase):
                     self.model_input["calc_block_table"], []
                 )
 
-            if CUDA_TOPK:
+            if CUDA_TOPK and len(topk_len_list) != 0:
                 if ENABLE_KVCOMP:
                     self.gsa_cuda_topk.set_topk_param_for_hamming(
                         repre_slot_mappings,
