@@ -39,12 +39,14 @@ TEST_F(UCPosixStoreTest, SetupWithInvalidParam)
     {
         Config config;
         config.storageBackends.push_back(this->Path());
+        config.deviceId = 0;
         PosixStore store;
         ASSERT_EQ(store.Setup(config), UC::Status::InvalidParam());
     }
     {
         Config config;
         config.storageBackends.push_back(this->Path());
+        config.deviceId = 0;
         config.tensorSize = 4096;
         config.shardSize = config.tensorSize;
         config.blockSize = config.shardSize;
@@ -58,6 +60,7 @@ TEST_F(UCPosixStoreTest, DumpThenLoad)
 {
     using namespace UC::PosixStore;
     Config config;
+    config.deviceId = 0;
     config.storageBackends.push_back(this->Path());
     config.tensorSize = 32768;
     config.shardSize = config.tensorSize;
@@ -98,6 +101,7 @@ TEST_F(UCPosixStoreTest, DumpThenLoadWithIoDirect)
 {
     using namespace UC::PosixStore;
     Config config;
+    config.deviceId = 0;
     config.storageBackends.push_back(this->Path());
     config.tensorSize = 32768;
     config.shardSize = config.tensorSize;
