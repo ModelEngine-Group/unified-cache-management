@@ -1222,6 +1222,10 @@ class GSA(UcmSparseBase):
             repre_slot_mappings_all = []
             include_masks = []
             exclude_masks = []
+
+            if ENABLE_KVCOMP:
+                seq_lens_ori = []
+
             for req_id in self.prefetch_engine.req_ids_bs:
                 req_meta = self.gsa_metadata.gsa_stats[req_id]
                 if req_meta.is_gsa():
@@ -1236,9 +1240,15 @@ class GSA(UcmSparseBase):
                         include_masks.append(req_meta.include_mask)
                         exclude_masks.append(req_meta.exclude_mask)
                         repre_slot_mappings.append(req_meta.repre_slot_mapping)
+                    
+                    if ENABLE_KVCOMP:
+                        seq_lens_ori.append(req_meta.get_seq_len())
                 else:
                     is_decode.append(False)
                 repre_slot_mappings_all.append(req_meta.repre_slot_mapping)
+
+            if ENABLE_KVCOMP:
+                seq_lens_ori = torch.tensor(seq_lens_ori, dtype=torch.int32).to(device=self.device, non_blocking=True)
 
             if CUDA_TOPK and len(topk_len_list) != 0:
                 topk_len_list = [max(topk_len_list)] * len(topk_len_list)
@@ -1258,11 +1268,19 @@ class GSA(UcmSparseBase):
                 )
 
             if CUDA_TOPK:
-                self.gsa_cuda_topk.set_topk_param(
-                    repre_slot_mappings,
-                    include_masks,
-                    exclude_masks,
-                )
+                if ENABLE_KVCOMP:
+                    self.gsa_cuda_topk.set_topk_param_for_hamming(
+                        repre_slot_mappings,
+                        include_masks,
+                        exclude_masks,
+                        seq_lens_ori,
+                    )
+                else:
+                    self.gsa_cuda_topk.set_topk_param(
+                        repre_slot_mappings,
+                        include_masks,
+                        exclude_masks,
+                    )
                 self.gsa_cuda_topk.set_topk_caches(
                     cal_topk_id, self.model_input["topk_caches"], topk_len_list
                 )
