@@ -25,93 +25,10 @@
 import os
 import secrets
 import time
-from abc import ABC
-from typing import List
 
 import torch
 
-from ucm.store.cache.connector import UcmCacheStore
-from ucm.store.posix.connector import UcmPosixStore
-from ucm.store.ucmstore import Task
-
-
-class HierarchicalStore(ABC):
-    def __init__(
-        self,
-        tensor_size: int,
-        layer_size: int,
-        chunk_size: int,
-        storage_backends: List[str],
-        device_id: int,
-    ):
-        super().__init__()
-        chunk_block_size = tensor_size * layer_size * chunk_size
-        posix_config = {}
-        posix_config["backends"] = storage_backends
-        posix_config["transfer_enable"] = True if device_id >= 0 else False
-        posix_config["io_size"] = chunk_block_size
-        posix_config["shard_size"] = chunk_block_size
-        posix_config["block_size"] = chunk_block_size
-        posix_config["transfer_io_direct"] = True
-        posix_config["transfer_stream_number"] = 16
-        self.posix = UcmPosixStore(posix_config)
-        cache_config = {}
-        cache_config["backend"] = self.posix.cc_store()
-        cache_config["engine_id"] = secrets.token_hex(8)
-        cache_config["device_id"] = device_id
-        cache_config["tensor_size"] = tensor_size
-        cache_config["shard_size"] = chunk_block_size
-        cache_config["block_size"] = chunk_block_size
-        cache_config["buffer_size"] = chunk_block_size * 2048
-        cache_config["share_buffer_enable"] = True
-        cache_config["waiting_queue_depth"] = 16
-        cache_config["running_queue_depth"] = 1024
-        cache_config["transfer_timeout_ms"] = 30000
-        self.cache = UcmCacheStore(cache_config)
-
-    def lookup(self, block_ids: List[bytes]) -> List[bool]:
-        return self.cache.lookup(block_ids)
-
-    def prefetch(self, block_ids: List[bytes]) -> None:
-        return self.cache.prefetch(block_ids)
-
-    def load(
-        self,
-        block_ids: List[bytes],
-        shard_index: List[int],
-        dst_tensor: List[List[torch.Tensor]],
-    ) -> Task:
-        return self.cache.load(block_ids, shard_index, dst_tensor)
-
-    def dump(
-        self,
-        block_ids: List[bytes],
-        shard_index: List[int],
-        src_tensor: List[List[torch.Tensor]],
-    ) -> Task:
-        return self.cache.dump(block_ids, shard_index, src_tensor)
-
-    def load_data(
-        self,
-        block_ids: List[bytes],
-        shard_index: List[int],
-        dst_addr: List[List[int]],
-    ) -> Task:
-        return self.cache.load_data(block_ids, shard_index, dst_addr)
-
-    def dump_data(
-        self,
-        block_ids: List[bytes],
-        shard_index: List[int],
-        src_addr: List[List[int]],
-    ) -> Task:
-        return self.cache.dump_data(block_ids, shard_index, src_addr)
-
-    def wait(self, task: Task) -> None:
-        return self.cache.wait(task)
-
-    def check(self, task: Task) -> bool:
-        return self.cache.check(task)
+from ucm.store.pipeline.connector import UcmPipelineStore
 
 
 def cmp_and_print_diff(a, b, rtol=0.0, atol=0.0):
@@ -128,8 +45,8 @@ def cmp_and_print_diff(a, b, rtol=0.0, atol=0.0):
 
 
 def e2e_test(
-    worker: HierarchicalStore,
-    scheduler: HierarchicalStore,
+    worker: UcmPipelineStore,
+    scheduler: UcmPipelineStore,
     tensor_size: int,
     layer_size: int,
     chunk_size: int,
@@ -166,13 +83,28 @@ def main():
     request_size = chunk_size * 16
     storage_backends = ["."]
     device_id = 1
+    chunk_block_size = tensor_size * layer_size * chunk_size
+    config = {}
+    config["pipeline"] = "Cache|Posix"
+    config["backends"] = storage_backends
+    config["transfer_enable"] = True
+    config["engine_id"] = secrets.token_hex(8)
+    config["device_id"] = device_id
+    config["tensor_size"] = tensor_size
+    config["shard_size"] = chunk_block_size
+    config["block_size"] = chunk_block_size
+    config["buffer_size"] = chunk_block_size * 2048
+    config["share_buffer_enable"] = True
+    config["waiting_queue_depth"] = 16
+    config["running_queue_depth"] = 1024
+    config["transfer_io_direct"] = True
+    config["transfer_stream_number"] = 16
+    config["transfer_timeout_ms"] = 30000
+    worker = UcmPipelineStore(config)
+    config["device_id"] = -1
+    config["transfer_enable"] = False
+    scheduler = UcmPipelineStore(config)
     test_batch_number = 512
-    worker = HierarchicalStore(
-        tensor_size, layer_size, chunk_size, storage_backends, device_id
-    )
-    scheduler = HierarchicalStore(
-        tensor_size, layer_size, chunk_size, storage_backends, -1
-    )
     for _ in range(test_batch_number):
         e2e_test(
             worker,
