@@ -450,7 +450,7 @@ class TopkCal:
         self.exclude_mask = exclude_mask
         self.seq_lens_for_hamming = seq_lens_ori
         self.max_seq_len_for_hamming = torch.max(self.seq_lens_for_hamming).item()
-        self.batch_size = len(self.cal_topk_id)
+        self.batch_size = block_table_for_hamming.shape[0]
         self.top_k_for_hamming = torch.full(
             size=[self.batch_size],
             full_value=self.preserved_blocks,
