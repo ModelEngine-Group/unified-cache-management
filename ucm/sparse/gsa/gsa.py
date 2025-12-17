@@ -936,7 +936,9 @@ class GSA(UcmSparseBase):
         hashq = hashq.unsqueeze(2).contiguous()
         hashk_cache = self.prefetch_engine.kpre_caches[current_layer_id]
         hamming_output = torch.zeros(
-            size=[bs, self.gsa_cuda_topk.preserved_blocks], dtype=torch.int32, device=self.device
+            size=[bs, self.gsa_cuda_topk.preserved_blocks],
+            dtype=torch.int32,
+            device=self.device,
         )
 
         top_k_for_hamming = torch.tensor(
