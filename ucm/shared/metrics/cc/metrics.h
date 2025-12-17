@@ -29,42 +29,42 @@
 #include <string>
 #include <unordered_map>
 #include <vector>
-#include "stats/stats.h"
+#include <tuple>
 
 namespace UC::Metrics {
 
-class StatsMonitor {
+class Metrics {
 public:
-    static StatsMonitor& GetInstance()
+    static Metrics& GetInstance()
     {
-        static StatsMonitor inst;
+        static Metrics inst;
         return inst;
     }
 
-    ~StatsMonitor() = default;
+    ~Metrics() = default;
 
-    void CreateStats(const std::string& name);
+    void CreateStats(const std::string& name, std::string& type);
 
-    void UpdateStats(const std::string& name,
-                     const std::unordered_map<std::string, double>& params);
+    void UpdateStats(const std::string& name, double value);
 
-    std::unordered_map<std::string, std::vector<double>> GetStats(const std::string& name);
-
-    std::unordered_map<std::string, std::vector<double>> GetStatsAndClear(const std::string& name);
-
-    std::unordered_map<std::string, std::vector<double>> GetAllStatsAndClear();
-
-    void ResetStats(const std::string& name);
-
-    void ResetAllStats();
+    std::tuple<
+        std::unordered_map<std::string, double>,
+        std::unordered_map<std::string, double>,
+        std::unordered_map<std::string, std::vector<double>>
+    > GetAllStatsAndClear();
 
 private:
-    std::mutex mutex_;
-    std::unordered_map<std::string, std::unique_ptr<Stats>> stats_map_;
+    enum class MetricType { COUNTER, GUAGE, HISTOGRAM };
 
-    StatsMonitor() = default;
-    StatsMonitor(const StatsMonitor&) = delete;
-    StatsMonitor& operator=(const StatsMonitor&) = delete;
+    std::mutex mutex_;
+    std::unordered_map<std::string, double> counter_stats_;
+    std::unordered_map<std::string, double> gauge_stats_;
+    std::unordered_map<std::string, std::vector<double>> histogram_stats_;
+    std::unordered_map<std::string, int> stats_type_;
+
+    Metrics() = default;
+    Metrics(const Metrics&) = delete;
+    Metrics& operator=(const Metrics&) = delete;
 };
 } // namespace UC::Metrics
 
