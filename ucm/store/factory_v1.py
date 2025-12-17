@@ -61,8 +61,5 @@ UcmConnectorFactoryV1.register_connector(
     "UcmNfsStore", "ucm.store.pcstore.pcstore_connector_v1", "UcmPcStoreV1"
 )
 UcmConnectorFactoryV1.register_connector(
-    "UcmPosixStore", "ucm.store.posix.connector", "UcmPosixStore"
-)
-UcmConnectorFactoryV1.register_connector(
-    "UcmCacheStore", "ucm.store.cache.connector", "UcmCacheStore"
+    "UcmPipelineStore", "ucm.store.pipeline.connector", "UcmPipelineStore"
 )
