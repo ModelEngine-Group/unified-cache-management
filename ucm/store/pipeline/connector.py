@@ -37,7 +37,9 @@ PipelineBuilder = Callable[[Dict[str, object], List[UcmKVStoreBaseV1]], None]
 def _build_cache_posix_pipeline(
     config: Dict[str, object], store: List[UcmKVStoreBaseV1]
 ) -> None:
-    posix_config = copy.deepcopy(config) | {"tensor_size": config["shard_size"]}
+    posix_config = copy.deepcopy(config)
+    if int(config["device_id"]) >= 0:
+        posix_config |= {"tensor_size": config["shard_size"]}
     posix_store = UcmPosixStore(posix_config)
     store.append(posix_store)
     cache_config = copy.deepcopy(config) | {"store_backend": posix_store.cc_store()}

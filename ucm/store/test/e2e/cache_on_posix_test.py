@@ -89,6 +89,10 @@ def main():
     config["device_id"] = device_id
     config["storage_backends"] = storage_backends
     config["unique_id"] = secrets.token_hex(8)
+    config["timeout_ms"] = 10000
+    config["device_id"] = -1
+    scheduler = UcmPipelineStore(config)
+    config["device_id"] = device_id
     config["tensor_size"] = tensor_size
     config["shard_size"] = chunk_block_size
     config["block_size"] = chunk_block_size
@@ -98,10 +102,7 @@ def main():
     config["running_queue_depth"] = 1024
     config["io_direct"] = True
     config["stream_number"] = 16
-    config["timeout_ms"] = 30000
     worker = UcmPipelineStore(config)
-    config["device_id"] = -1
-    scheduler = UcmPipelineStore(config)
     test_batch_number = 512
     for _ in range(test_batch_number):
         e2e_test(
