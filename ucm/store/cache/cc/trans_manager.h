@@ -41,7 +41,7 @@ class TransManager : public Detail::TaskWrapper<TransTask, Detail::TaskHandle> {
 public:
     Status Setup(const Config& config)
     {
-        timeoutMs_ = config.transferTimeoutMs;
+        timeoutMs_ = config.timeoutMs;
         shardSize_ = config.shardSize;
         auto s = buffer_.Setup(config);
         if (s.Failure()) [[unlikely]] { return s; }

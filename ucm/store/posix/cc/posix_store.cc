@@ -45,7 +45,7 @@ public:
         }
         s = spaceMgr.Setup(config);
         if (s.Failure()) [[unlikely]] { return s; }
-        transEnable = config.transferEnable;
+        transEnable = config.deviceId >= 0;
         if (transEnable) {
             s = transMgr.Setup(config, spaceMgr.GetLayout());
             if (s.Failure()) [[unlikely]] { return s; }
@@ -57,16 +57,21 @@ public:
 private:
     Status CheckConfig(const Config& config)
     {
-        if (config.backends.empty()) { return Status::InvalidParam("invalid backends"); }
-        if (!config.transferEnable) { return Status::OK(); }
-        if (config.ioSize == 0 || config.shardSize < config.ioSize ||
-            config.blockSize < config.shardSize || config.shardSize % config.ioSize != 0 ||
-            config.blockSize % config.shardSize != 0) {
-            return Status::InvalidParam("invalid size({},{},{})", config.ioSize, config.shardSize,
-                                        config.blockSize);
+        if (config.storageBackends.empty()) {
+            return Status::InvalidParam("invalid storage backends");
         }
-        if (config.transferStreamNumber == 0) {
-            return Status::InvalidParam("invalid stream number({})", config.transferStreamNumber);
+        if (config.deviceId < -1) {
+            return Status::InvalidParam("invalid device({})", config.deviceId);
+        }
+        if (config.deviceId == -1) { return Status::OK(); }
+        if (config.tensorSize == 0 || config.shardSize < config.tensorSize ||
+            config.blockSize < config.shardSize || config.shardSize % config.tensorSize != 0 ||
+            config.blockSize % config.shardSize != 0) {
+            return Status::InvalidParam("invalid size({},{},{})", config.tensorSize,
+                                        config.shardSize, config.blockSize);
+        }
+        if (config.streamNumber == 0) {
+            return Status::InvalidParam("invalid stream number({})", config.streamNumber);
         }
         return Status::OK();
     }
@@ -76,15 +81,15 @@ private:
         std::string buildType = UCM_BUILD_TYPE;
         if (buildType.empty()) { buildType = "Release"; }
         UC_INFO("{}-{}({}).", ns, UCM_COMMIT_ID, buildType);
-        UC_INFO("Set {}::Backends to {}.", ns, config.backends);
-        UC_INFO("Set {}::TransferEnable to {}.", ns, config.transferEnable);
-        if (!config.transferEnable) { return; }
-        UC_INFO("Set {}::IOSize to {}.", ns, config.ioSize);
+        UC_INFO("Set {}::StorageBackends to {}.", ns, config.storageBackends);
+        UC_INFO("Set {}::DeviceId to {}.", ns, config.deviceId);
+        if (config.deviceId == -1) { return; }
+        UC_INFO("Set {}::TensorSize to {}.", ns, config.tensorSize);
         UC_INFO("Set {}::ShardSize to {}.", ns, config.shardSize);
         UC_INFO("Set {}::BlockSize to {}.", ns, config.blockSize);
-        UC_INFO("Set {}::TransferIoDirect to {}.", ns, config.transferIoDirect);
-        UC_INFO("Set {}::TransferStreamNumber to {}.", ns, config.transferStreamNumber);
-        UC_INFO("Set {}::TransferTimeoutMs to {}.", ns, config.transferTimeoutMs);
+        UC_INFO("Set {}::IoDirect to {}.", ns, config.ioDirect);
+        UC_INFO("Set {}::StreamNumber to {}.", ns, config.streamNumber);
+        UC_INFO("Set {}::TimeoutMs to {}.", ns, config.timeoutMs);
     }
 };
 

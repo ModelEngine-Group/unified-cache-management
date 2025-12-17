@@ -37,10 +37,10 @@ PipelineBuilder = Callable[[Dict[str, object], List[UcmKVStoreBaseV1]], None]
 def _build_cache_posix_pipeline(
     config: Dict[str, object], store: List[UcmKVStoreBaseV1]
 ) -> None:
-    posix_config = copy.deepcopy(config) | {"io_size": config["shard_size"]}
+    posix_config = copy.deepcopy(config) | {"tensor_size": config["shard_size"]}
     posix_store = UcmPosixStore(posix_config)
     store.append(posix_store)
-    cache_config = copy.deepcopy(config) | {"backend": posix_store.cc_store()}
+    cache_config = copy.deepcopy(config) | {"store_backend": posix_store.cc_store()}
     cache_store = UcmCacheStore(cache_config)
     store.append(cache_store)
 
@@ -54,9 +54,9 @@ class UcmPipelineStore(UcmKVStoreBaseV1):
     def __init__(self, config: Dict[str, object]) -> None:
         super().__init__(config)
         self._stores: List[UcmKVStoreBaseV1] = []
-        builder = PIPELINE_REGISTRY.get(config["pipeline"])
+        builder = PIPELINE_REGISTRY.get(config["store_pipeline"])
         if builder is None:
-            raise ValueError(f"unknown pipeline: {config['pipeline']}")
+            raise ValueError(f"unknown store pipeline: {config['store_pipeline']}")
         builder(config, self._stores)
 
     @property

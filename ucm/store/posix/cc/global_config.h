@@ -30,14 +30,14 @@
 namespace UC::PosixStore {
 
 struct Config {
-    std::vector<std::string> backends{};
-    bool transferEnable{true};
-    size_t ioSize{0};
+    std::vector<std::string> storageBackends{};
+    int32_t deviceId{-1};
+    size_t tensorSize{0};
     size_t shardSize{0};
     size_t blockSize{0};
-    bool transferIoDirect{false};
-    size_t transferStreamNumber{8};
-    size_t transferTimeoutMs{30000};
+    bool ioDirect{false};
+    size_t streamNumber{8};
+    size_t timeoutMs{30000};
 };
 
 }  // namespace UC::PosixStore

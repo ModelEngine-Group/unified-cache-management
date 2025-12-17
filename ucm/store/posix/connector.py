@@ -42,14 +42,14 @@ class UcmPosixStore(UcmKVStoreBaseV1):
     def __init__(self, config: Dict[str, object]) -> None:
         super().__init__(config)
         key_mapping = {
-            "backends": "backends",
-            "transfer_enable": "transferEnable",
-            "io_size": "ioSize",
+            "storage_backends": "storageBackends",
+            "device_id": "deviceId",
+            "tensor_size": "tensorSize",
             "shard_size": "shardSize",
             "block_size": "blockSize",
-            "transfer_io_direct": "transferIoDirect",
-            "transfer_stream_number": "transferStreamNumber",
-            "transfer_timeout_ms": "transferTimeoutMs",
+            "io_direct": "ioDirect",
+            "stream_number": "streamNumber",
+            "timeout_ms": "timeoutMs",
         }
         self.store = ucmposixstore.PosixStore()
         param = ucmposixstore.PosixStore.Config()
@@ -144,12 +144,12 @@ if __name__ == "__main__":
     os.environ["UC_LOGGER_LEVEL"] = "debug"
     block_size = 1048576
     config = {}
-    config["backends"] = ["."]
-    config["io_size"] = block_size
+    config["storage_backends"] = ["."]
+    config["tensor_size"] = block_size
     config["shard_size"] = block_size
     config["block_size"] = block_size
-    config["transfer_io_direct"] = True
-    config["transfer_stream_number"] = 16
+    config["io_direct"] = True
+    config["stream_number"] = 16
     store = UcmPosixStore(config)
     block_num = 1024
     block_ids = [secrets.token_bytes(16) for _ in range(block_num)]

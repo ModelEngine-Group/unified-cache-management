@@ -44,8 +44,8 @@ TEST_F(UCPosixTransManagerTest, TransBlock)
 {
     using namespace UC::PosixStore;
     Config config;
-    config.ioSize = 32768;
-    config.shardSize = config.ioSize;
+    config.tensorSize = 32768;
+    config.shardSize = config.tensorSize;
     config.blockSize = config.shardSize;
     TransManager transMgr;
     auto s = transMgr.Setup(config, layout_.get());
@@ -78,15 +78,15 @@ TEST_F(UCPosixTransManagerTest, TransBlockLayerWise)
     using namespace UC::PosixStore;
     constexpr size_t nShards = 8;
     Config config;
-    config.ioSize = 32768;
-    config.shardSize = config.ioSize;
+    config.tensorSize = 32768;
+    config.shardSize = config.tensorSize;
     config.blockSize = config.shardSize * nShards;
     TransManager transMgr;
     auto s = transMgr.Setup(config, layout_.get());
     ASSERT_EQ(s, UC::Status::OK());
     auto block = UC::Test::Detail::TypesHelper::MakeBlockId("a1b2c3d4e5f6789012345678901234ab");
     auto data1 = UC::Test::Detail::TypesHelper::MakeArray<UC::Test::Detail::DataGenerator, nShards>(
-        size_t(1), config.ioSize);
+        size_t(1), config.tensorSize);
     UC::Detail::TaskDesc desc1;
     desc1.brief = "Dump";
     for (size_t i = 0; i < nShards; i++) {
@@ -99,7 +99,7 @@ TEST_F(UCPosixTransManagerTest, TransBlockLayerWise)
     s = transMgr.Wait(handle1.Value());
     ASSERT_EQ(s, UC::Status::OK());
     auto data2 = UC::Test::Detail::TypesHelper::MakeArray<UC::Test::Detail::DataGenerator, nShards>(
-        size_t(1), config.ioSize);
+        size_t(1), config.tensorSize);
     UC::Detail::TaskDesc desc2;
     desc2.brief = "Load";
     for (size_t i = 0; i < nShards; i++) {

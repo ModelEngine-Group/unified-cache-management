@@ -85,11 +85,10 @@ def main():
     device_id = 1
     chunk_block_size = tensor_size * layer_size * chunk_size
     config = {}
-    config["pipeline"] = "Cache|Posix"
-    config["backends"] = storage_backends
-    config["transfer_enable"] = True
-    config["engine_id"] = secrets.token_hex(8)
+    config["store_pipeline"] = "Cache|Posix"
     config["device_id"] = device_id
+    config["storage_backends"] = storage_backends
+    config["unique_id"] = secrets.token_hex(8)
     config["tensor_size"] = tensor_size
     config["shard_size"] = chunk_block_size
     config["block_size"] = chunk_block_size
@@ -97,12 +96,11 @@ def main():
     config["share_buffer_enable"] = True
     config["waiting_queue_depth"] = 16
     config["running_queue_depth"] = 1024
-    config["transfer_io_direct"] = True
-    config["transfer_stream_number"] = 16
-    config["transfer_timeout_ms"] = 30000
+    config["io_direct"] = True
+    config["stream_number"] = 16
+    config["timeout_ms"] = 30000
     worker = UcmPipelineStore(config)
     config["device_id"] = -1
-    config["transfer_enable"] = False
     scheduler = UcmPipelineStore(config)
     test_batch_number = 512
     for _ in range(test_batch_number):
