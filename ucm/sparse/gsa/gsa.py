@@ -758,7 +758,7 @@ class GSA(UcmSparseBase):
                 else:
                     attn_metadata.block_tables[
                         : len(self.prefetch_engine.req_ids_bs)
-                    ].copy_(self.model_input["block_tables_mp"][current_layer_id])
+                    ] = self.model_input["block_tables_mp"][current_layer_id]
                     attn_metadata.seq_lens.copy_(
                         self.model_input["gsa_seq_len"][current_layer_id]
                     )
