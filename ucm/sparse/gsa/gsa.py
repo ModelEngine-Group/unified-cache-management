@@ -566,7 +566,7 @@ class GSA(UcmSparseBase):
         super().__init__(vllm_config, role)
         self.rank = vllm_config.parallel_config.rank
         self.tp_size = vllm_config.parallel_config.tensor_parallel_size
-        self.device = vllm_config.device_config.device_type
+        self.device = vllm_config.device_config.device     
         self.num_key_heads = vllm_config.model_config.get_num_kv_heads(
             vllm_config.parallel_config
         )
@@ -662,9 +662,12 @@ class GSA(UcmSparseBase):
                     ids[index_in_batch] = 1
         if CUDA_TOPK:
             if not self.use_mla:
-                self.gsa_cuda_topk.cal_topk(
-                    query[ids], current_layer_id
-                )  #####  todo 计算的ids
+                if ENABLE_KVCOMP:
+                    self.gsa_cuda_topk.cal_topk_for_hamming(query[ids], current_layer_id)
+                else:
+                    self.gsa_cuda_topk.cal_topk(
+                        query[ids], current_layer_id
+                    )  #####  todo 计算的ids
             else:
                 self.gsa_cuda_topk.cal_topk(query, current_layer_id)
         else:
