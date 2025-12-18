@@ -42,7 +42,7 @@ class UcmPcStoreV1(UcmKVStoreBaseV1):
         super().__init__(config)
         self.store = ucmpcstore.PcStore()
         storage_backends = config["storage_backends"]
-        block_size = config.get("block_size", 33554432)
+        block_size = config.get("block_size", 0)
         transfer_enable = True if int(config["device_id"]) >= 0 else False
         param = ucmpcstore.PcStore.Config(storage_backends, block_size, transfer_enable)
         if transfer_enable:

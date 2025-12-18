@@ -30,10 +30,6 @@ namespace UC {
 
 Status SpaceManager::Setup(const std::vector<std::string>& storageBackends, const size_t blockSize)
 {
-    if (blockSize == 0) {
-        UC_ERROR("Invalid block size({}).", blockSize);
-        return Status::InvalidParam();
-    }
     auto status = this->layout_.Setup(storageBackends);
     if (status.Failure()) { return status; }
     this->blockSize_ = blockSize;
