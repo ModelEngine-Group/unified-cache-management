@@ -7,19 +7,12 @@
 # Alternatively, you can still use kv_connector_extra_config in KVTransferConfig
 # for backward compatibility.
 
-# Connector name (e.g., "UcmNfsStore", "UcmDramStore")
+# Connector name (e.g., "UcmNfsStore", "UcmPipelineStore")
 ucm_connectors:
-  - ucm_connector_name: "UcmPipelineStore"
+  - ucm_connector_name: "UcmNfsStore"
     ucm_connector_config:
-      store_pipeline: "Cache|Posix"
-      # posix store
       storage_backends: "."
       io_direct: false
-      stream_number: 16
-      # cache store
-      waiting_queue_depth: 16
-      running_queue_depth: 1024
-      timeout_ms: 30000
 
 load_only_first_rank: false
 

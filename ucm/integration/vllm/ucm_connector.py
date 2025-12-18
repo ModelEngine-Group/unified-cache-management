@@ -198,7 +198,9 @@ class UCMDirectConnector(KVConnectorBase_V1):
         config["storage_backends"] = self._generate_storage_backends(
             config["storage_backends"], is_rope
         )
-        config["unique_id"] = self.engine_id if not is_rope else self.engine_id + "rope"
+        config["unique_id"] = (
+            self.engine_id if not is_rope else self.engine_id + "_rope"
+        )
 
         if self._role == KVConnectorRole.SCHEDULER:
             config["device_id"] = -1
@@ -208,7 +210,11 @@ class UCMDirectConnector(KVConnectorBase_V1):
             config["tensor_size"] = tensor_size
             config["shard_size"] = chunk_block_size
             config["block_size"] = chunk_block_size
-            config["share_buffer_enable"] = self.is_dsa or self.is_mla
+            if self.is_dsa or self.is_mla:
+                config["share_buffer_enable"] = True
+                config["local_rank_size"] = self.tp_size
+            else:
+                config["share_buffer_enable"] = False
             store = UcmConnectorFactoryV1.create_connector(name, config)
 
         return store
@@ -255,11 +261,6 @@ class UCMDirectConnector(KVConnectorBase_V1):
             * self.chunk_size
             * (1 if self.is_mla or self.is_dsa else 2)
         )
-        logger.info(
-            "chunk_block_size = %.3f MB, tensor_size = %d KB,",
-            chunk_block_size / 1024 / 1024,
-            tensor_size / 1024,
-        )
         self.block_data_size = chunk_block_size
         self.store = self._create_store(tensor_size, chunk_block_size)
         if self.is_dsa:
@@ -270,12 +271,7 @@ class UCMDirectConnector(KVConnectorBase_V1):
             self.rope_store = self._create_store(
                 rope_tensor_size, rope_chunk_block_size, True
             )
-            logger.info(
-                "rope_chunk_block_size = %.3f MB, rope_tensor_size = %d KB,",
-                rope_chunk_block_size / 1024 / 1024,
-                rope_tensor_size / 1024,
-            )
-            self.block_data_size += chunk_block_size
+            self.block_data_size += rope_chunk_block_size
 
     def get_num_new_matched_tokens(
         self,
