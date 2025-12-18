@@ -542,11 +542,9 @@ class TopkCal:
             print(f"=======cal_topk_for_hamming=======")
             print(f"after ucm_custom_ops.hamming_dist_top_k, hamming_output: {self.hamming_output}")
 
-        if self.kv_num_heads == 1:
-            topk_indices = self.hamming_output
-        else:
-            # (ldeng) we use the first head's topk indices as the final topk indices now, need to support multi-head later
-            topk_indices = self.hamming_output[:, 0, :]
+
+        # (ldeng) we use the first head's topk indices as the final topk indices now even if kv_num_heads > 1, need to support multi-head later
+        topk_indices = self.hamming_output[:, 0, :]
         self.topk_caches[current_layer_id][self.cal_topk_id] = topk_indices
 
 
