@@ -1162,9 +1162,9 @@ class GSA(UcmSparseBase):
         fn = getattr(self.connector, "load")
         precision = self.element_size
         if self.use_mla:
-            block_data_size = kv_caches[0].numel() * precision
-        else:
             block_data_size = kv_caches[0][0].numel() * precision
+        else:
+            block_data_size = kv_caches[0][0][0].numel() * precision
 
         offsets_k = []
         key_src_tensors = []
