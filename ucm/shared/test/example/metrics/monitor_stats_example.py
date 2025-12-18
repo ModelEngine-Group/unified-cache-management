@@ -42,15 +42,17 @@ def test_wrap(func):
 def metrics_with_update_stats():
     ucmmetrics.create_stats("counter_1", "counter")
     ucmmetrics.update_stats("counter_1", 1.2)
-    
+
     ucmmetrics.create_stats("gauge_1", "gauge")
     ucmmetrics.update_stats("gauge_1", 2.2)
-    
+
     ucmmetrics.create_stats("histogram_1", "histogram")
     ucmmetrics.update_stats("histogram_1", 1)
 
     counters, gauges, histograms = ucmmetrics.get_all_stats_and_clear()
-    print(f"After clear then get counters: {counters}, gauges: {gauges}, histograms: {histograms}")
+    print(
+        f"After clear then get counters: {counters}, gauges: {gauges}, histograms: {histograms}"
+    )
     ucmmetrics.update_stats(
         {
             "counter_1": 5,
@@ -59,7 +61,9 @@ def metrics_with_update_stats():
         }
     )
     counters, gauges, histograms = ucmmetrics.get_all_stats_and_clear()
-    print(f"After clear then get counters: {counters}, gauges: {gauges}, histograms: {histograms}")
+    print(
+        f"After clear then get counters: {counters}, gauges: {gauges}, histograms: {histograms}"
+    )
 
 
 if __name__ == "__main__":

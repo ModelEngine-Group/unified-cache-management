@@ -6,7 +6,7 @@ target_include_directories(nfsstore PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/cc/api
     ${CMAKE_CURRENT_SOURCE_DIR}/cc/domain
 )
-target_link_libraries(nfsstore PUBLIC storeintf storedevice infra_logger)
+target_link_libraries(nfsstore PUBLIC storeintf storedevice infra_logger metrics)
 
 file(GLOB_RECURSE UCMSTORE_NFS_CPY_SOURCE_FILES "./cpy/*.cc")
 pybind11_add_module(ucmnfsstore ${UCMSTORE_NFS_CPY_SOURCE_FILES})

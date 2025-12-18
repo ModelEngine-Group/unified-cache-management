@@ -28,16 +28,17 @@ import threading
 import time
 from typing import Any, Union
 
-from prometheus_client import Gauge, Counter, Histogram
 import yaml
+from prometheus_client import Counter, Gauge, Histogram
 
 from ucm.logger import init_logger
 from ucm.shared.metrics import ucmmetrics
 
 logger = init_logger(__name__)
 
+
 class PrometheusStatsLogger:
-    
+
     def _load_config(self, config_path: str) -> dict[str, Any]:
         """Load configuration from YAML file"""
         try:
@@ -57,9 +58,14 @@ class PrometheusStatsLogger:
             return {}
 
     def __init__(self, model_name, worker_id, config_path):
-        # Ensure PROMETHEUS_MULTIPROC_DIR is set before any metric registration
+        """
+        Load metrics config from YAML file (config_path),
+        register metrics using prometheus_client, and start a thread to get updated metrics.
+        """
+        # Load metrics config
         self.config = self._load_config(config_path)
         self.log_interval = self.config.get("log_interval", 10)
+
         multiproc_dir = self.config.get("multiproc_dir", "/vllm-workspace")
         if "PROMETHEUS_MULTIPROC_DIR" not in os.environ:
             os.environ["PROMETHEUS_MULTIPROC_DIR"] = multiproc_dir
@@ -71,50 +77,46 @@ class PrometheusStatsLogger:
             "worker_id": worker_id,
         }
         self.labelnames = list(self.labels.keys())
-        
-        # Initialize metrics based on configuration
+
         self.metric_type_config = {
-            "counter": (
-                Counter,
-                {}
-            ),
-            "gauge": (
-                Gauge,
-                {"multiprocess_mode": "all"}
-            ),
-            "histogram": (
-                Histogram,
-                {"buckets": []}
-            )
+            "counter": (Counter, {}),
+            "gauge": (Gauge, {"multiprocess_mode": "all"}),
+            "histogram": (Histogram, {"buckets": []}),
         }
+        # Initialize metrics based on config
         self._init_metrics_from_config()
+
+        # Start thread to update metrics
         self.is_running = True
-        self.thread = threading.Thread(target=self.obtain_stats_thread, daemon=True)
+        self.thread = threading.Thread(target=self.update_stats_loop, daemon=True)
         self.thread.start()
-        
-    def _process_metric_group(self, group_name):
-        metric_cls, default_kwargs = self.metric_type_config[group_name]
-        cfg_list = self.config.get(group_name, [])
-        
+
+    def _register_metrics_by_type(self, metric_type):
+        """
+        Register metrics by different metric types.
+        """
+        metric_cls, default_kwargs = self.metric_type_config[metric_type]
+        cfg_list = self.config.get(metric_type, [])
+
         for cfg in cfg_list:
             name = cfg.get("name")
             doc = cfg.get("documentation", "")
             # Prometheus metric name with prefix
             prometheus_name = f"{self.metric_prefix}{name}"
-            ucmmetrics.create_stats(name, group_name)
-            
+            ucmmetrics.create_stats(name, metric_type)
+
             metric_kwargs = {
                 "name": prometheus_name,
                 "documentation": doc,
                 "labelnames": self.labelnames,
                 **default_kwargs,
-                **{k: v for k, v in cfg.items() if k in default_kwargs}
+                **{k: v for k, v in cfg.items() if k in default_kwargs},
             }
-            
+
             self.metric_mappings[name] = metric_cls(**metric_kwargs)
 
     def _init_metrics_from_config(self):
-        """Initialize metrics based on configuration"""
+        """Initialize metrics based on config"""
         # Get metric name prefix from config (e.g., "ucm:")
         self.metric_prefix = self.config.get("metric_prefix", "ucm:")
 
@@ -122,9 +124,9 @@ class PrometheusStatsLogger:
         # This mapping will be used in update_stats to dynamically log metrics
         self.metric_mappings: dict[str, Union[Counter, Gauge, Histogram]] = {}
 
-        for group_name in self.metric_type_config.keys():
-            self._process_metric_group(group_name)
-    
+        for metric_type in self.metric_type_config.keys():
+            self._register_metrics_by_type(metric_type)
+
     def _update_counter(self, metric, value):
         if value < 0:
             return
@@ -136,13 +138,17 @@ class PrometheusStatsLogger:
     def _update_histogram(self, metric, value):
         for data in value:
             metric.observe(data)
-        
+
     def _update_with_func(self, update_func, stats: dict[str, Any], op_desc: str):
+        """
+        Generic update for Prometheus metrics: match metrics by name, bind labels,
+        and update values via the specified function (update_func).
+        """
         for stat_name, value in stats.items():
             if stat_name not in self.metric_mappings:
                 logger.error(f"Metric {stat_name} not found")
                 continue
-            
+
             metric = self.metric_mappings[stat_name]
             try:
                 metric_with_labels = metric.labels(**self.labels)
@@ -153,8 +159,9 @@ class PrometheusStatsLogger:
                 logger.debug(f"Failed to {op_desc} {stat_name}: {e}")
 
     def update_stats(self, counter_stats, gauge_stats, histogram_stats):
-        """Log metrics to Prometheus based on configuration file"""
-        # Dynamically log metrics based on what's configured in YAML
+        """
+        Update all Prometheus metrics (Counter/Gauge/Histogram) with given stats.
+        """
         update_tasks = [
             (self._update_counter, counter_stats, "increment"),
             (self._update_gauge, gauge_stats, "set"),
@@ -163,9 +170,14 @@ class PrometheusStatsLogger:
         for update_func, stats, op_desc in update_tasks:
             self._update_with_func(update_func, stats, op_desc)
 
-    def obtain_stats_thread(self):
+    def update_stats_loop(self):
+        """
+        Periodically update Prometheus metrics in a loop until stopped.
+        """
         while self.is_running:
-            counter_stats, gauge_stats, histogram_stats = ucmmetrics.get_all_stats_and_clear()
+            counter_stats, gauge_stats, histogram_stats = (
+                ucmmetrics.get_all_stats_and_clear()
+            )
             self.update_stats(counter_stats, gauge_stats, histogram_stats)
             time.sleep(self.log_interval)
 
