@@ -464,18 +464,12 @@ class TopkCal:
             device=self.device,
         )
 
-        if self.kv_num_heads == 1:
-            self.hamming_output = torch.zeros(
-                size=[self.batch_size, self.preserved_blocks],
-                dtype=torch.int32,
-                device=self.device,
-            )
-        else:
-            self.hamming_output = torch.zeros(
-                size=[self.batch_size, self.kv_num_heads, self.preserved_blocks],
-                dtype=torch.int32,
-                device=self.device,
-            )
+
+        self.hamming_output = torch.zeros(
+            size=[self.batch_size, self.kv_num_heads, self.preserved_blocks],
+            dtype=torch.int32,
+            device=self.device,
+        )
 
     def set_topk_caches(self, cal_topk_id, topk_caches, topk_len_list):
         self.cal_topk_id = cal_topk_id
@@ -956,7 +950,7 @@ class GSA(UcmSparseBase):
         hashq = hashq.unsqueeze(2).contiguous()
         hashk_cache = self.prefetch_engine.kpre_caches[current_layer_id]
         hamming_output = torch.zeros(
-            size=[bs, self.gsa_cuda_topk.preserved_blocks],
+            size=[bs, self.kv_num_heads, first_topk_len],
             dtype=torch.int32,
             device=self.device,
         )
@@ -1012,11 +1006,9 @@ class GSA(UcmSparseBase):
             print(f"=======last_chunk_topk_cal_for_hamming=======")
             print(f"after ucm_custom_ops.hamming_dist_top_k, hamming_output: {hamming_output}")
 
-        if self.kv_num_heads == 1:
-            return hamming_output[0].cpu()
-        else:
-            # (ldeng) we use the first head's topk indices as the final topk indices now, need to support multi-head later
-            return hamming_output[0, 0, :].cpu()
+    
+        # (ldeng) we use the first head's topk indices as the final topk indices now even if kv_num_heads > 1, need to support multi-head later
+        return hamming_output[0, 0, :].cpu()
 
     def kvcache_init_last_chunk(
         self, forward_context: ForwardContext, layer_name, topk_value, req_id
