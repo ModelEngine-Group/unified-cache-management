@@ -434,7 +434,7 @@ class TopkCal:
                 device=self.device,
             )
             self.preserved_blocks = (
-                gsa_config.kvcomp_preserve_blocks + gsa_config.num_prefetch_blocks
+                gsa_config.kvcomp_preserve_blocks
             )
 
     def set_topk_param(self, repre_slot_mapping, include_mask, exclude_mask):
