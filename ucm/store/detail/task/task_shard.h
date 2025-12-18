@@ -35,7 +35,7 @@
 #include <vector>
 #include "logger/logger.h"
 #include "task_waiter.h"
-#include "metrics_api.h"
+
 
 namespace UC {
 
@@ -130,17 +130,6 @@ private:
         auto wait = execTp_ - startTp_;
         auto exec = NowTp() - execTp_;
         auto bw = size_ / exec / 1024 / 1024 / 1024;
-        switch (type_)
-        {
-        case Type::DUMP:
-            UC::Metrics::UpdateStats("d2s_bandwidth", bw);
-            break;
-        case Type::LOAD:
-            UC::Metrics::UpdateStats("s2d_bandwidth", bw);
-            break;
-        default:
-            break;
-        }
         return fmt::format("wait={:.06f}s, exec={:.06f}s, bw={:.06f}GB/s", wait, exec, bw);
     }
 
