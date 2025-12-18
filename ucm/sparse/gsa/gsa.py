@@ -717,7 +717,7 @@ class GSA(UcmSparseBase):
             if not self.use_mla:
                 self.gsa_q_cache[current_layer_id][: len(ids)].copy_(query[ids])
             else:
-                self.gsa_q_cache[current_layer_id][self.decode_index].copy_(query)
+                self.gsa_q_cache[current_layer_id][:len(self.decode_index)].copy_(query)
             is_cal_kpre = len(self.model_input["calc_block_table"]) > 0
             self.gsa_offload_ops.add_copy_req(
                 is_cal_kpre, current_layer_id, ids, self.gsa_q_cache[current_layer_id]
