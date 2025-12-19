@@ -436,7 +436,7 @@ class TopkCal:
         self.block_table_for_hamming = repre_slot_mapping
         self.seq_lens_for_hamming = seq_lens_ori
         self.max_seq_len_for_hamming = torch.max(self.seq_lens_for_hamming).item()
-        self.batch_size = self.block_table_for_hamming.shape[0]
+        self.batch_size = len(self.cal_topk_id)
         self.top_k_for_hamming = torch.full(
             size=[self.batch_size],
             fill_value=self.preserved_blocks,
