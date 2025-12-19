@@ -654,7 +654,7 @@ class GSA(UcmSparseBase):
                 head_size,
             ),
             device=vllm_config.device_config.device,
-            dtype=torch.float32,
+            dtype=self.dtype,
         )
         if CUDA_TOPK:
             self.gsa_cuda_topk = TopkCal(
