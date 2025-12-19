@@ -129,7 +129,7 @@ public:
                        int rank, bool isPythonLoad);
 
     void SetBlocksMap(std::string reqID, std::vector<int>& blockTableList,
-                      std::vector<int>& remainIdx, std::vector<int>& preftchIndex,
+                      std::vector<int>& remainIdx, std::vector<int>& prefetchIndex,
                       std::vector<std::string>& blocksHash, int maxIdx);
 
     void SetBlocksMapMultiLayer(std::string reqID, std::vector<std::map<int, int>>& remainMap,
