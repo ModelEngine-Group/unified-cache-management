@@ -330,9 +330,6 @@ class GSAMetaData(UcmSparseMetadata):
         if self.use_mla:
             query_locals_prefill = [0] * (batch_size + 1)
 
-        if ENABLE_KVCOMP:
-            block_table_for_hamming = [None] * batch_size
-
         for req_id, num_tokens in scheduler_output.num_scheduled_tokens.items():
             req_in_batch = self.gsa_stats[req_id].index_in_batch
             calc_block_table += self.gsa_stats[req_id].calc_block_table
@@ -342,11 +339,6 @@ class GSAMetaData(UcmSparseMetadata):
             ]
             if self.use_mla and self.gsa_stats[req_id].stage() == SequenceStage.PREFILL:
                 query_locals_prefill[req_in_batch + 1] = num_tokens
-
-            if ENABLE_KVCOMP:
-                block_table_for_hamming[req_in_batch] = self.gsa_stats[
-                    req_id
-                ].repre_slot_mapping
 
         query_locals = list(accumulate(query_locals))
         if self.use_mla:
@@ -361,10 +353,6 @@ class GSAMetaData(UcmSparseMetadata):
         if self.use_mla:
             model_input["query_locals_prefill"] = query_locals_prefill
 
-        if ENABLE_KVCOMP:
-            model_input["block_table_for_hamming"] = make_tensor_with_pad(
-                block_table_for_hamming, pad=0, dtype=torch.int32, device="cpu"
-            ).to(device=self.device, non_blocking=True)
         return model_input
 
 
@@ -443,14 +431,12 @@ class TopkCal:
         self.exclude_mask = exclude_mask
 
     def set_topk_param_for_hamming(
-        self, block_table_for_hamming, include_mask, exclude_mask, seq_lens_ori
+        self, repre_slot_mapping, seq_lens_ori
     ):
-        self.block_table_for_hamming = block_table_for_hamming
-        self.include_mask = include_mask
-        self.exclude_mask = exclude_mask
+        self.block_table_for_hamming = repre_slot_mapping
         self.seq_lens_for_hamming = seq_lens_ori
         self.max_seq_len_for_hamming = torch.max(self.seq_lens_for_hamming).item()
-        self.batch_size = block_table_for_hamming.shape[0]
+        self.batch_size = self.block_table_for_hamming.shape[0]
         self.top_k_for_hamming = torch.full(
             size=[self.batch_size],
             fill_value=self.preserved_blocks,
@@ -1300,7 +1286,7 @@ class GSA(UcmSparseBase):
                     is_decode.append(True)
                     one_topk_len = (
                         gsa_config.compute_topk_len(len(req_meta.blocks))
-                        + gsa_config.num_prefetch_blocks
+                        #+ gsa_config.num_prefetch_blocks
                     )
                     topk_len_list.append(one_topk_len)
                     if CUDA_TOPK:
@@ -1340,8 +1326,6 @@ class GSA(UcmSparseBase):
                 if ENABLE_KVCOMP:
                     self.gsa_cuda_topk.set_topk_param_for_hamming(
                         repre_slot_mappings,
-                        include_masks,
-                        exclude_masks,
                         seq_lens_ori,
                     )
                 else:
