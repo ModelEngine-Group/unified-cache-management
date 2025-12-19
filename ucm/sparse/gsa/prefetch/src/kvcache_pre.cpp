@@ -202,7 +202,7 @@ GSAPrefetchEngineC::~GSAPrefetchEngineC()
 }
 
 void GSAPrefetchEngineC::SetBlocksMap(std::string reqID, std::vector<int>& blockTableList,
-                                      std::vector<int>& remainIdx, std::vector<int>& preftchIndex,
+                                      std::vector<int>& remainIdx, std::vector<int>& prefetchIndex,
                                       std::vector<std::string>& blocksHash, int maxIdx)
 {
     if (mBlocksMap.find(reqID) != mBlocksMap.end()) {
@@ -220,7 +220,7 @@ void GSAPrefetchEngineC::SetBlocksMap(std::string reqID, std::vector<int>& block
             oneDocTable[idx] = blockTableList[idx];
             oneBlockMap[blockTableList[idx]] = idx;
         }
-        for (auto idx : preftchIndex) {
+        for (auto idx : prefetchIndex) {
             oneDocTable[idx] = blockTableList[idx];
             oneBlockMap[blockTableList[idx]] = idx;
             onePrefetchIdx.push_back(idx);
