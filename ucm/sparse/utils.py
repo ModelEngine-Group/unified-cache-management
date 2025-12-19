@@ -26,7 +26,7 @@ class GSAConfig:
     def __init__(self):
         self.block_size = DEFAULT_BLOCK_SIZE
         self.init_windows_size = INIT_WINDOW_SZ
-        self.recent_window_size = RECENT_WINDOW_SZ
+        self.recent_windows_size = RECENT_WINDOW_SZ
         self.kvcomp_preserve_blocks = KVCOMP_PRESERVE_BLOCKS
         self.num_prefetch_blocks = NUM_PREFETCH_BLOCKS
         self.min_topk_len = MIN_TOPK_LEN
