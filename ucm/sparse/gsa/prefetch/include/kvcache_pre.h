@@ -101,7 +101,7 @@ private:
     uint32_t mTPSize = 2;
     std::map<std::string, std::vector<std::string>> mAllBlcoksHash;
     uint32_t mKVSzieBytes = 0;
-    uint32_t mExtraTopkLen = 16;
+    //uint32_t mExtraTopkLen = 16;
     bool mIsPythonLoad = false;
 
 public:

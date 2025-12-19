@@ -134,7 +134,7 @@ GSAPrefetchEngineC::GSAPrefetchEngineC(torch::Tensor& freeBlock, torch::Tensor& 
         mLogger.SetLevel(LogLevel::WARNING);
         mIsLog = false;
     }
-    mExtraTopkLen = extraTopkLen;
+    //mExtraTopkLen = extraTopkLen;
     mLogger.log(LogLevel::INFO,
                 "GSAPrefetchEngineC Init mLayerNum %d mMaxBs %u, mUseMla %d, mHeadSzie %u, mTPSize "
                 "%u mBlockSize %u mHeadNum %u\n",
@@ -343,7 +343,7 @@ void GSAPrefetchEngineC::GetHitAndMissBlock(PrefetchReqInfo oneBsInfo,
             int blockID = mDocsTables[reqID][layerID][item];
             hitBlocks.insert(blockID);
             hitBlocksIdx.insert(std::make_pair(item, blockID));
-            if (hitBlocks.size() == (topkLen - mExtraTopkLen)) { break; }
+            //if (hitBlocks.size() == (topkLen - mExtraTopkLen)) { break; }
         } else {
             missIdxs.push_back(item);
         }
@@ -351,8 +351,9 @@ void GSAPrefetchEngineC::GetHitAndMissBlock(PrefetchReqInfo oneBsInfo,
     oss << "------\n";
     mLogger.log(LogLevel::DEBUG, oss.str().c_str());
     oss.str("");
-    if ((hitBlocks.size() + missIdxs.size()) != (uint32_t)topkLen &&
-        hitBlocks.size() != (topkLen - mExtraTopkLen)) {
+    //if ((hitBlocks.size() + missIdxs.size()) != (uint32_t)topkLen &&
+    //    hitBlocks.size() != (topkLen - mExtraTopkLen)) {
+    if ((hitBlocks.size() + missIdxs.size()) != (uint32_t)topkLen) {
         mLogger.log(LogLevel::ERROR,
                     "|KVCache Prefetch| Decode step: %u, Rank: %d, reqID: %s, layer: %d, hit size: "
                     "%lu, miss size: %lu , topkLen: %d, not equal error\n",
@@ -368,7 +369,7 @@ void GSAPrefetchEngineC::RunPrefetchH2D(PrefetchReqInfo oneBsInfo,
 {
     int layerID = oneBsInfo.layerID;
     std::string reqID = oneBsInfo.reqID;
-    uint32_t topkLen = oneBsInfo.topkLen;
+    //uint32_t topkLen = oneBsInfo.topkLen;
     int bsIndex = oneBsInfo.bsIndex;
 
     int oneFreeBlockLen = mFreeBlockLen[layerID][bsIndex].item<int>();
@@ -377,8 +378,9 @@ void GSAPrefetchEngineC::RunPrefetchH2D(PrefetchReqInfo oneBsInfo,
 
     uint32_t index = 0;
     int oneFreeBlockIndex = 0;
-    while (oneFreeBlockIndex < oneFreeBlockLen && index < missIdxs.size() &&
-           hitBlocks.size() < (topkLen - mExtraTopkLen)) {
+    //while (oneFreeBlockIndex < oneFreeBlockLen && index < missIdxs.size() &&
+    //       hitBlocks.size() < (topkLen - mExtraTopkLen)) {
+    while (oneFreeBlockIndex < oneFreeBlockLen && index < missIdxs.size()) {
         int oneFreeBlockID = freeBlockPtr[oneFreeBlockIndex];
         if (hitBlocks.find(oneFreeBlockID) != hitBlocks.end()) {
             oneFreeBlockIndex += 1;
@@ -415,7 +417,8 @@ void GSAPrefetchEngineC::RunOneBsPrefetch(std::string reqID, int topkLen, int bs
         oneBsInfo.bsIndex = bsIndex;
         oneBsInfo.layerID = i;
         GetHitAndMissBlock(oneBsInfo, hitBlocks, hitBlocksIdx, missIdxs);
-        if (missIdxs.size() != 0 && hitBlocksIdx.size() < (topkLen - mExtraTopkLen)) {
+        //if (missIdxs.size() != 0 && hitBlocksIdx.size() < (topkLen - mExtraTopkLen)) {
+        if (missIdxs.size() != 0) {
             RunPrefetchH2D(oneBsInfo, hitBlocks, hitBlocksIdx, missIdxs);
         }
         int successIndex = 0;
