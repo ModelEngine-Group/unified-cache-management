@@ -10,8 +10,8 @@ namespace ucmprefetch {
 PYBIND11_MODULE(gsa_prefetch, m)
 {
     pybind11::class_<ucmprefetch::GSAPrefetchEngineC>(m, "GSAPrefetchEngineC")
-        .def(pybind11::init<torch::Tensor&, torch::Tensor&, torch::Tensor&, torch::Tensor&,
-                            std::vector<uint32_t>&, bool, bool, int, int, int, bool>())
+        .def(pybind11::init<torch::Tensor&, torch::Tensor&,
+                            std::vector<uint32_t>&, bool, bool, int, int, bool>())
         .def("set_blocks_map", &ucmprefetch::GSAPrefetchEngineC::SetBlocksMap)
         .def("set_blocks_map_multilayer", &ucmprefetch::GSAPrefetchEngineC::SetBlocksMapMultiLayer)
         .def("add_blocks_map", &ucmprefetch::GSAPrefetchEngineC::AddBlocksMap)

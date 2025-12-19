@@ -108,7 +108,7 @@ void MutliBSThreadFun(void* args)
 GSAPrefetchEngineC::GSAPrefetchEngineC(torch::Tensor& loadSuccessBlocks,
                                        torch::Tensor& successTableLen,
                                        std::vector<uint32_t>& kvShape, bool useMla, bool isLog,
-                                       int tpSize, int rank, int extraTopkLen, bool isPythonLoad)
+                                       int tpSize, int rank, bool isPythonLoad)
     : mLogger("./log/kvcache_pre_log.txt", LogLevel::INFO, isLog)
 {
     mLoadSuccessBlocks = loadSuccessBlocks;
@@ -215,7 +215,7 @@ void GSAPrefetchEngineC::SetBlocksMap(std::string reqID, std::vector<int>& block
     for (int i = 0; i < mLayerNum; i++) {
         std::map<int, int> oneDocTable;
         std::map<int, int> oneBlockMap;
-        std::map<int> onePrefetchIdx;
+        std::vector<int> onePrefetchIdx;
         for (auto idx : remainIdx) {
             oneDocTable[idx] = blockTableList[idx];
             oneBlockMap[blockTableList[idx]] = idx;

@@ -105,16 +105,13 @@ class GSAPrefetchBase:
         kv_shape = [self.block_size, self.num_kv_heads, self.head_size]
         self.is_python_load = is_python_load
         self.prefetch_engine_c = gsa_prefetch.GSAPrefetchEngineC(
-            #self.prefetch_blocks,
             self.m_load_success_list,
-            #self.prefetch_block_len,
             self.block_table_len,
             kv_shape,
             self.use_mla,
             self.is_log,
             self.tp_size,
             self.rank,
-            gsa_config.num_prefetch_blocks,
             self.is_python_load,
         )
 

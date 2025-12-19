@@ -126,7 +126,7 @@ public:
     GSAPrefetchEngineC(torch::Tensor& loadSuccessBlocks,
                        torch::Tensor& successTableLen,
                        std::vector<uint32_t>& kvShape, bool useMla, bool isLog, int tpSize,
-                       int rank, int extraTopkLen, bool isPythonLoad);
+                       int rank, bool isPythonLoad);
 
     void SetBlocksMap(std::string reqID, std::vector<int>& blockTableList,
                       std::vector<int>& remainIdx, std::vector<int>& preftchIndex,
