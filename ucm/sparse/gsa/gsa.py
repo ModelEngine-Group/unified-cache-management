@@ -911,6 +911,8 @@ class GSA(UcmSparseBase):
         for layer_name in attn.keys():
             if self.use_mla and "mlp.experts" in layer_name:
                 continue
+            if not hasattr(attn[layer_name], "kv_cache"):
+                continue
             kv_cache = attn[layer_name].kv_cache[forward_context.virtual_engine]
             layer_id = int(layer_name.split(".")[2])
             kv_caches[layer_id] = kv_cache
