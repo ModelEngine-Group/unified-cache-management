@@ -1324,6 +1324,10 @@ class GSA(UcmSparseBase):
 
             if CUDA_TOPK and len(topk_len_list) != 0:
                 if ENABLE_KVCOMP:
+                    # first set topk caches and then set topk params for hamming 
+                    self.gsa_cuda_topk.set_topk_caches(
+                        cal_topk_id, self.model_input["topk_caches"], topk_len_list
+                    )
                     self.gsa_cuda_topk.set_topk_param_for_hamming(
                         repre_slot_mappings,
                         seq_lens_ori,
@@ -1334,9 +1338,9 @@ class GSA(UcmSparseBase):
                         include_masks,
                         exclude_masks,
                     )
-                self.gsa_cuda_topk.set_topk_caches(
-                    cal_topk_id, self.model_input["topk_caches"], topk_len_list
-                )
+                    self.gsa_cuda_topk.set_topk_caches(
+                        cal_topk_id, self.model_input["topk_caches"], topk_len_list
+                    )
             else:
                 self.gsa_offload_ops.set_topk_param(repre_slot_mappings_all)
                 self.gsa_offload_ops.set_topk_cache(

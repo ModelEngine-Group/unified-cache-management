@@ -359,13 +359,13 @@ class GSAPrefetchBase:
                 continue
 
             bs_index = self.select_bs_index[index]
-            if gsa_metadata.gsa_stats[req_id].reamin_map != None:
+            if gsa_metadata.gsa_stats[req_id].remain_map != None:
                 topk_block_list_all = []
                 prefetch_blocks_list_all = []
                 for layer_id in range(self.num_attention_layers):
                     topk_block_list = sorted(
                         list(
-                            gsa_metadata.gsa_stats[req_id].reamin_map[layer_id].values()
+                            gsa_metadata.gsa_stats[req_id].remain_map[layer_id].values()
                         )
                     )
                     prefetch_blocks_list = list(
@@ -410,10 +410,10 @@ class GSAPrefetchBase:
             )
             max_idx = len(gsa_metadata.gsa_stats[req_id].block_hashes)
             if self.is_gsa_req_id[req_id]:
-                if gsa_metadata.gsa_stats[req_id].reamin_map != None:
+                if gsa_metadata.gsa_stats[req_id].remain_map != None:
                     self.prefetch_engine_c.set_blocks_map_multilayer(
                         req_id,
-                        gsa_metadata.gsa_stats[req_id].reamin_map,
+                        gsa_metadata.gsa_stats[req_id].remain_map,
                         gsa_metadata.gsa_stats[req_id].prefetch_map,
                         gsa_metadata.gsa_stats[req_id].block_hashes,
                         max_idx,
