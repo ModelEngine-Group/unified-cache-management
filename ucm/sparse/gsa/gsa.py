@@ -953,7 +953,7 @@ class GSA(UcmSparseBase):
 
         block_table_for_hamming = torch.tensor(
             req_meta.repre_slot_mapping, dtype=torch.int32, device=self.device
-        )
+        ).unsqueeze(0)
 
         # debug
         if self.rank == 0 and True:
