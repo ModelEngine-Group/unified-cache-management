@@ -1298,24 +1298,28 @@ class GSA(UcmSparseBase):
                         seq_lens_ori.append(req_meta.get_seq_len())
                 else:
                     is_decode.append(False)
-                repre_slot_mappings_all.append(req_meta.repre_slot_mapping)
-
-            if ENABLE_KVCOMP and len(topk_len_list) != 0:
-                seq_lens_ori = torch.tensor(seq_lens_ori, dtype=torch.int32).to(
-                    device=self.device, non_blocking=True
-                )
+                repre_slot_mappings_all.append(req_meta.repre_slot_mapping)                
 
             if CUDA_TOPK and len(topk_len_list) != 0:
                 topk_len_list = [max(topk_len_list)] * len(topk_len_list)
                 repre_slot_mappings = make_tensor_with_pad(
                     repre_slot_mappings, pad=0, dtype=torch.int32, device=self.device
                 )
-                include_masks = make_tensor_with_pad(
-                    include_masks, pad=False, dtype=torch.uint8, device=self.device
-                )
-                exclude_masks = make_tensor_with_pad(
-                    exclude_masks, pad=True, dtype=torch.uint8, device=self.device
-                )
+                if ENABLE_KVCOMP:
+                    seq_lens_ori = torch.tensor(seq_lens_ori, dtype=torch.int32).to(
+                        device=self.device, non_blocking=True
+                    )
+                    cal_topk_id_tensor = torch.tensor(cal_topk_id, dtype=torch.int32).to(
+                        device=self.device, non_blocking=True
+                    )
+                else:
+                    include_masks = make_tensor_with_pad(
+                        include_masks, pad=False, dtype=torch.uint8, device=self.device
+                    )
+                    exclude_masks = make_tensor_with_pad(
+                        exclude_masks, pad=True, dtype=torch.uint8, device=self.device
+                    )
+
             self.gsa_offload_ops.set_common_param(cal_topk_id, is_decode)
             if len(self.model_input["calc_block_table"]) != 0:
                 self.gsa_offload_ops.set_kpre_param(
@@ -1326,7 +1330,7 @@ class GSA(UcmSparseBase):
                 if ENABLE_KVCOMP:
                     # first set topk caches and then set topk params for hamming 
                     self.gsa_cuda_topk.set_topk_caches(
-                        cal_topk_id, self.model_input["topk_caches"], topk_len_list
+                        cal_topk_id_tensor, self.model_input["topk_caches"], topk_len_list
                     )
                     self.gsa_cuda_topk.set_topk_param_for_hamming(
                         repre_slot_mappings,
