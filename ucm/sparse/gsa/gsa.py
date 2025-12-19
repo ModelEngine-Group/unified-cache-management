@@ -134,7 +134,7 @@ class GSAReqStat:
                     (parent_block_hash_value, curr_block_token_ids_tuple)
                 )
             # (ldeng): we forgot to update self.block_hashes here originally
-            self.block_hashes.append(hash_value)
+            self.block_hashes.append(str(hash_value))
             parent_block_hash_value = hash_value
 
         # (ldeng): It is no longer needed now since we initialize the RequestHasher() with the rank before
