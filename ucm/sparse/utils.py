@@ -42,7 +42,7 @@ class GSAConfig:
         self.init_windows_size = math.ceil(
             INIT_WINDOW_SZ * DEFAULT_BLOCK_SIZE / block_szie
         )
-        self.recent_window_size = math.ceil(
+        self.recent_windows_size = math.ceil(
             RECENT_WINDOW_SZ * DEFAULT_BLOCK_SIZE / block_szie
         )
         self.kvcomp_preserve_blocks = math.ceil(

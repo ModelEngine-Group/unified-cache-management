@@ -981,7 +981,7 @@ class GSA(UcmSparseBase):
             chunk_size_op=chunk_sizes_for_hamming,
             max_seq_len=max_seq_len_for_hamming,
             sink=gsa_config.init_windows_size,
-            recent=gsa_config.recent_window_size,
+            recent=gsa_config.recent_windows_size,
             block_table_op=block_table_for_hamming,
             indices=hamming_output,
         )
