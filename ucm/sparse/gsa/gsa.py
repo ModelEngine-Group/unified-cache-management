@@ -21,7 +21,7 @@ from vllm.forward_context import (
     get_forward_context,
 )
 from vllm.sequence import SequenceStage
-from vllm.utils import make_tensor_with_pad, sha256
+from vllm.utils import make_tensor_with_pad, sha256, is_pin_memory_available
 from vllm.v1.core.kv_cache_manager import KVCacheBlocks
 from vllm.v1.core.kv_cache_utils import NONE_HASH
 from vllm.v1.core.sched.output import SchedulerOutput
@@ -343,11 +343,12 @@ class GSAMetaData(UcmSparseMetadata):
         query_locals = list(accumulate(query_locals))
         if self.use_mla:
             query_locals_prefill = list(accumulate(query_locals_prefill))
+        # Use pinned memory for non-blocking CPU-GPU transfers
         model_input["calc_block_table"] = torch.tensor(
-            calc_block_table, dtype=torch.int32, device="cpu"
+            calc_block_table, dtype=torch.int32, device="cpu", pin_memory=is_pin_memory_available()
         )
         model_input["calc_repre_slot_mapping"] = torch.tensor(
-            calc_repre_slot_mappings, dtype=torch.int32, device="cpu"
+            calc_repre_slot_mappings, dtype=torch.int32, device="cpu", pin_memory=is_pin_memory_available()
         )
         model_input["query_locals"] = query_locals
         if self.use_mla:
@@ -494,7 +495,7 @@ class TopkCal:
 
 
         # debug
-        if current_layer_id == 0 and True:
+        if current_layer_id == 0 and False:  # Disabled debug sync to reduce latency
             print(f"=======cal_topk_for_hamming=======")
             print(f"hashq.shape: {hashq.shape}")
             print(f"hashk_cache.shape: {hashk_cache.shape}")
@@ -693,8 +694,10 @@ class GSA(UcmSparseBase):
                 self.gsa_cuda_topk.cal_topk(query, current_layer_id)
         else:
             if not self.use_mla:
+                # GPU-to-GPU copy, already asynchronous, no need for non_blocking
                 self.gsa_q_cache[current_layer_id][: len(ids)].copy_(query[ids])
             else:
+                # GPU-to-GPU copy, already asynchronous, no need for non_blocking
                 self.gsa_q_cache[current_layer_id][:len(self.decode_index)].copy_(query)
             is_cal_kpre = len(self.model_input["calc_block_table"]) > 0
             self.gsa_offload_ops.add_copy_req(
@@ -739,9 +742,10 @@ class GSA(UcmSparseBase):
                         calc_repre_slot_mappings
                     ] = key_cache_mean_out.clone()
             else:
+                # Use non_blocking transfer to reduce synchronization latency
                 self.prefetch_engine.kpre_caches[current_layer_id][
                     calc_repre_slot_mappings
-                ] = key_cache_mean_out.to(dtype=torch.float32, device="cpu")
+                ] = key_cache_mean_out.to(dtype=torch.float32, device="cpu", non_blocking=True)
             if not self.use_mla:
                 k_needed = attn[layer_name].kv_cache[forward_context.virtual_engine][0]
             else:
@@ -783,6 +787,7 @@ class GSA(UcmSparseBase):
                     attn_metadata.block_tables[
                         : len(self.prefetch_engine.req_ids_bs)
                     ] = self.model_input["block_tables_mp"][current_layer_id]
+                    # CPU-to-CPU copy, no need for non_blocking
                     attn_metadata.seq_lens.copy_(
                         self.model_input["gsa_seq_len"][current_layer_id]
                     )
@@ -796,6 +801,7 @@ class GSA(UcmSparseBase):
                             current_layer_id
                         ][self.decode_index]
                     else:
+                        # CPU-to-CPU copy, no need for non_blocking
                         attn_metadata.decode.block_table[
                             : len(self.prefetch_engine.req_ids_bs)
                         ].copy_(
@@ -803,6 +809,7 @@ class GSA(UcmSparseBase):
                                 self.decode_index
                             ]
                         )
+                        # CPU-to-CPU copy, no need for non_blocking
                         attn_metadata.decode.seq_lens.copy_(
                             self.model_input["gsa_seq_len"][current_layer_id][
                                 self.decode_index
@@ -861,10 +868,12 @@ class GSA(UcmSparseBase):
                 )
 
                 if self.gsa_metadata.gsa_stats[req_id].topk_buf_tmp == None:
+                    # Use pinned memory for non-blocking CPU-GPU transfers
                     self.gsa_metadata.gsa_stats[req_id].topk_buf_tmp = torch.zeros(
                         (self.layer_num, len(topk_value)),
                         dtype=torch.int32,
                         device="cpu",
+                        pin_memory=is_pin_memory_available(),
                     )
                 self.gsa_metadata.gsa_stats[req_id].topk_buf_tmp[
                     current_layer_id
@@ -894,12 +903,13 @@ class GSA(UcmSparseBase):
             )
             kpre_need = self.prefetch_engine.kpre_caches[current_layer_id][kpre_index]
         else:
+            # Use pinned memory for non-blocking CPU-GPU transfers
             kpre_index = torch.tensor(
-                req_meta.repre_slot_mapping, dtype=torch.int32, device="cpu"
+                req_meta.repre_slot_mapping, dtype=torch.int32, device="cpu", pin_memory=is_pin_memory_available()
             )
             kpre_need = self.prefetch_engine.kpre_caches[current_layer_id][
                 kpre_index
-            ].to(device=self.device, dtype=self.dtype)
+            ].to(device=self.device, dtype=self.dtype, non_blocking=True)
 
         max_norm_num = kpre_need.shape[1]
         kpre_out = kpre_need.unsqueeze(2).expand(-1, -1, head_group_num, -1, -1)
@@ -913,7 +923,8 @@ class GSA(UcmSparseBase):
         dot_product_weights.masked_fill_(include_mask == 1, float("inf"))
         dot_product_weights.masked_fill_(exclude_mask == 1, float("-inf"))
         _, top_indices = torch.topk(dot_product_weights, first_topk_len, dim=-1)
-        return top_indices[0].cpu()
+        # Use non_blocking transfer to reduce synchronization latency
+        return top_indices[0].to("cpu", non_blocking=True)
 
     def last_chunk_topk_cal_for_hamming(
         self, req_meta, query, current_layer_id, first_topk_len
@@ -992,7 +1003,8 @@ class GSA(UcmSparseBase):
 
     
         # (ldeng) we use the first head's topk indices as the final topk indices now even if kv_num_heads > 1, need to support multi-head later
-        return hamming_output[0, 0, :].cpu()
+        # Use non_blocking transfer to reduce synchronization latency
+        return hamming_output[0, 0, :].to("cpu", non_blocking=True)
 
     def kvcache_init_last_chunk(
         self, forward_context: ForwardContext, layer_name, topk_value, req_id
@@ -1030,8 +1042,10 @@ class GSA(UcmSparseBase):
                 forward_context.virtual_engine
             ]
         for block_id in mv_map:
+            # GPU-to-GPU copy, already asynchronous, no need for non_blocking
             layer_k_cache[mv_map[block_id]].copy_(layer_k_cache[block_id])
             if not self.use_mla:
+                # GPU-to-GPU copy, already asynchronous, no need for non_blocking
                 layer_v_cache[mv_map[block_id]].copy_(layer_v_cache[block_id])
 
     def get_mv_map(self, blocks, remain_idxs, topk_values, remain_len):
@@ -1306,9 +1320,11 @@ class GSA(UcmSparseBase):
                     repre_slot_mappings, pad=0, dtype=torch.int32, device=self.device
                 )
                 if ENABLE_KVCOMP:
+                    # Use non_blocking transfer to reduce synchronization latency
                     seq_lens_ori = torch.tensor(seq_lens_ori, dtype=torch.int32).to(
                         device=self.device, non_blocking=True
                     )
+                    # Use non_blocking transfer to reduce synchronization latency
                     cal_topk_id_tensor = torch.tensor(cal_topk_id, dtype=torch.int32).to(
                         device=self.device, non_blocking=True
                     )
