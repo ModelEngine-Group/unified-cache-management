@@ -6,6 +6,7 @@ import time
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, List, Optional, Tuple
 
+import numpy as np
 import torch
 from vllm.config import VllmConfig
 from vllm.distributed.kv_transfer.kv_connector.v1.base import (
@@ -130,7 +131,17 @@ class UCMDirectConnector(KVConnectorBase_V1):
                 self.group_coordinator = get_tp_group()
                 self.broadcast_fn = self.group_coordinator.broadcast
                 self.broadcast_stream = torch.cuda.Stream()
-        self.chunk_size = 1
+
+        self.chunk_size = self.launch_config.get("chunk_size", self.block_size)
+        if self.chunk_size % self.block_size != 0:
+            raise ValueError(
+                f"chunk_size ({self.chunk_size}) must be a multiple of "
+                f"block_size ({self.block_size})"
+            )
+        self.blocks_per_chunk = self.chunk_size // self.block_size
+        logger.info(
+            f"chunk_size = {self.chunk_size}, blocks_per_chunk = {self.blocks_per_chunk}"
+        )
 
         if role == KVConnectorRole.SCHEDULER:
             self.request_hasher = RequestHasher(vllm_config, 0)
@@ -249,6 +260,19 @@ class UCMDirectConnector(KVConnectorBase_V1):
                 self.is_dsa = True
         logger.info(f"use mla: {self.is_mla}, use dsa: {self.is_dsa}")
 
+        # Initialize KV cache base addresses
+        k_ptrs, v_ptrs = [], []
+        self.k_base_ptrs: np.ndarray
+        self.v_base_ptrs: Optional[np.ndarray] = None
+        for _, kv_layer in self.kv_caches.items():
+            if len(sample_kv_layer) == 2:
+                k_ptrs.append(kv_layer[0].data_ptr())
+                v_ptrs.append(kv_layer[1].data_ptr())
+            else:
+                k_ptrs.append(kv_layer.data_ptr())
+        self.k_base_ptrs = np.array(k_ptrs, dtype=np.uint64)
+        self.v_base_ptrs = np.array(v_ptrs, dtype=np.uint64) if v_ptrs else None
+
         # init work-side connector
         tensor_size = (
             sample_kv_layer[0][0].numel() * sample_kv_layer[0][0].element_size()
@@ -258,19 +282,24 @@ class UCMDirectConnector(KVConnectorBase_V1):
         chunk_block_size = (
             tensor_size
             * self.num_layers
-            * self.chunk_size
+            * self.blocks_per_chunk
             * (1 if self.is_mla or self.is_dsa else 2)
         )
+        self.block_stride = tensor_size
+
         self.block_data_size = chunk_block_size
         self.store = self._create_store(tensor_size, chunk_block_size)
         if self.is_dsa:
             rope_tensor_size = (
                 sample_kv_layer[1][0].numel() * sample_kv_layer[1][0].element_size()
             )
-            rope_chunk_block_size = rope_tensor_size * self.num_layers * self.chunk_size
+            rope_chunk_block_size = (
+                rope_tensor_size * self.num_layers * self.blocks_per_chunk
+            )
             self.rope_store = self._create_store(
                 rope_tensor_size, rope_chunk_block_size, True
             )
+            self.rope_block_stride = rope_tensor_size
             self.block_data_size += rope_chunk_block_size
 
     def get_num_new_matched_tokens(
@@ -279,9 +308,9 @@ class UCMDirectConnector(KVConnectorBase_V1):
         num_computed_tokens: int,
     ) -> tuple[int, bool]:
         assert num_computed_tokens % self.block_size == 0
-        hbm_hit_block_num = num_computed_tokens // self.block_size
+        hbm_hit_block_num = num_computed_tokens // self.chunk_size
 
-        ucm_block_ids = self.generate_hash(self.block_size, request)
+        ucm_block_ids = self.generate_hash(self.chunk_size, request)
 
         external_block_ids = ucm_block_ids[hbm_hit_block_num:]
         if not external_block_ids:
@@ -307,12 +336,12 @@ class UCMDirectConnector(KVConnectorBase_V1):
 
         total_hit_block_num = hbm_hit_block_num + external_hit_blocks
 
-        external_hit_tokens = external_hit_blocks * self.block_size
+        external_hit_tokens = external_hit_blocks * self.chunk_size
 
         # When all the tokens are cached in ssd or hbm,
         # we need to recompute the last token. This if condition will be removed
         # once vLLM scheduler provides a better solution in the future.
-        num_total_hit_tokens = total_hit_block_num * self.block_size
+        num_total_hit_tokens = total_hit_block_num * self.chunk_size
         if num_total_hit_tokens == request.num_tokens:
             external_hit_tokens -= 1
 
@@ -359,13 +388,19 @@ class UCMDirectConnector(KVConnectorBase_V1):
         dump_ucm_block_ids, dump_vllm_block_ids = [], []
         if need_load:
             load_ucm_block_ids = ucm_block_ids[hbm_hit_block_num:total_hit_block_num]
-            load_vllm_block_ids = vllm_block_ids[hbm_hit_block_num:total_hit_block_num]
+            load_vllm_block_ids = vllm_block_ids[
+                hbm_hit_block_num
+                * self.blocks_per_chunk : total_hit_block_num
+                * self.blocks_per_chunk
+            ]
 
         if req_meta.token_processed < req_meta.num_token_ids:
-            start_idx = req_meta.token_processed // self.block_size
-            end_idx = (req_meta.token_processed + new_tokens) // self.block_size
+            start_idx = req_meta.token_processed // self.chunk_size
+            end_idx = (req_meta.token_processed + new_tokens) // self.chunk_size
             dump_ucm_block_ids = ucm_block_ids[start_idx:end_idx]
-            dump_vllm_block_ids = req_meta.vllm_block_ids[start_idx:end_idx]
+            dump_vllm_block_ids = req_meta.vllm_block_ids[
+                start_idx * self.blocks_per_chunk : end_idx * self.blocks_per_chunk
+            ]
             req_meta.token_processed += new_tokens
 
         return RequestDispatchMeta(
@@ -453,21 +488,48 @@ class UCMDirectConnector(KVConnectorBase_V1):
 
     def _generate_task(
         self, vllm_block_ids: List[int], ucm_block_ids: List[bytes]
-    ) -> Tuple[
-        List[bytes], List[int], List[List[torch.Tensor]], List[List[torch.Tensor]]
-    ]:
-        block_ids, shard_indexs, total_tensors, rope_tensors = [], [], [], []
-        for i, vllm_block_id in enumerate(vllm_block_ids):
-            k_tensors, v_tensors = self._get_tensors(vllm_block_id)
-            block_ids.append(ucm_block_ids[i])
-            if self.is_dsa:
-                total_tensors.append(k_tensors)
-                rope_tensors.append(v_tensors)
-            else:
-                total_tensors.append(k_tensors + v_tensors)
-            shard_indexs.append(0)
+    ) -> Tuple[List[bytes], List[int], np.ndarray, np.ndarray]:
+        block_addrs, rope_block_addrs = None, None
+        vllm_block_ids_np = np.array(vllm_block_ids, np.uint64)
+        k_addrs = (
+            vllm_block_ids_np[:, None] * self.block_stride + self.k_base_ptrs[None, :]
+        )
+        num_blocks, num_layers = k_addrs.shape
+        shard_indexs = [0] * num_blocks
+        if self.v_base_ptrs is None:
+            block_addrs = k_addrs
+        elif self.is_dsa:
+            v_addrs = (
+                vllm_block_ids_np[:, None] * self.rope_block_stride
+                + self.v_base_ptrs[None, :]
+            )
+            block_addrs = k_addrs
+            rope_block_addrs = v_addrs
+        else:
+            v_addrs = (
+                vllm_block_ids_np[:, None] * self.block_stride
+                + self.v_base_ptrs[None, :]
+            )
+            block_addrs = np.empty((num_blocks, num_layers * 2), dtype=np.uint64)
+            block_addrs[:, :num_layers] = k_addrs
+            block_addrs[:, num_layers:] = v_addrs
 
-        return block_ids, shard_indexs, total_tensors, rope_tensors
+        num_cols = block_addrs.shape[1]
+        block_addrs = block_addrs.reshape(
+            num_blocks // self.blocks_per_chunk, self.blocks_per_chunk, num_cols
+        ).reshape(num_blocks // self.blocks_per_chunk, num_cols * self.blocks_per_chunk)
+        if rope_block_addrs is not None:
+            num_rope_cols = rope_block_addrs.shape[1]
+            rope_block_addrs = rope_block_addrs.reshape(
+                num_blocks // self.blocks_per_chunk,
+                self.blocks_per_chunk,
+                num_rope_cols,
+            ).reshape(
+                num_blocks // self.blocks_per_chunk,
+                num_rope_cols * self.blocks_per_chunk,
+            )
+
+        return ucm_block_ids, shard_indexs, block_addrs, rope_block_addrs
 
     def _broadcast(self, dst_tensor_addr: list[torch.Tensor]):
         rec_tensor: torch.Tensor = None
@@ -509,22 +571,25 @@ class UCMDirectConnector(KVConnectorBase_V1):
             if self.global_rank != 0 and not self.is_mla and not self.is_dsa:
                 for i, ucm_block_id in enumerate(ucm_block_ids):
                     ucm_block_ids[i] = self.request_hasher(ucm_block_id)
+            start = time.perf_counter()
             block_ids, shard_indexs, total_tensors, rope_tensors = self._generate_task(
                 vllm_block_ids, ucm_block_ids
             )
+            end = time.perf_counter()
+            logger.info(f"start_load_kv prepare time {(end - start) * 1000:.4f}")
             if self.global_rank == 0 or not self.load_only_first_rank:
-                task = self.store.load(block_ids, shard_indexs, total_tensors)
+                task = self.store.load_data(block_ids, shard_indexs, total_tensors)
                 request_to_task[request_id] = [task]
                 if rope_tensors and self.rope_store:
-                    rope_task = self.rope_store.load(
+                    rope_task = self.rope_store.load_data(
                         block_ids, shard_indexs, rope_tensors
                     )
                     request_to_task[request_id].append(rope_task)
             else:
                 request_to_task[request_id] = None
-            req_broadcast_addr[request_id] = [
-                t for row in total_tensors for t in row
-            ] + [t for row in rope_tensors for t in row]
+            # req_broadcast_addr[request_id] = [
+            #     t for row in total_tensors for t in row
+            # ] + [t for row in rope_tensors for t in row]
 
         for request_id, tasks in request_to_task.items():
             # TODO error handling
@@ -601,13 +666,18 @@ class UCMDirectConnector(KVConnectorBase_V1):
             if self.global_rank != 0:
                 for i, ucm_block_id in enumerate(ucm_block_ids):
                     ucm_block_ids[i] = self.request_hasher(ucm_block_id)
+            start = time.perf_counter()
             block_ids, shard_indexs, total_tensors, rope_tensors = self._generate_task(
                 vllm_block_ids, ucm_block_ids
             )
-            task = self.store.dump(block_ids, shard_indexs, total_tensors)
+            end = time.perf_counter()
+            logger.info(f"wait_for_save prepare time {(end - start) * 1000:.4f}")
+            task = self.store.dump_data(block_ids, shard_indexs, total_tensors)
             request_to_task[request_id] = [task]
             if rope_tensors and self.rope_store:
-                rope_task = self.rope_store.dump(block_ids, shard_indexs, rope_tensors)
+                rope_task = self.rope_store.dump_data(
+                    block_ids, shard_indexs, rope_tensors
+                )
                 request_to_task[request_id].append(rope_task)
 
         for request_id, tasks in request_to_task.items():
@@ -737,7 +807,7 @@ class UCMMockConnector(UCMDirectConnector):
         expect_hit_tokens = int(self._hit_ratio * request.num_prompt_tokens)
         if hit_tokens <= expect_hit_tokens:
             return hit_tokens, False
-        expect_hit_block_num = expect_hit_tokens // self.block_size
+        expect_hit_block_num = expect_hit_tokens // self.chunk_size
         request_meta = self.requests_meta[request.request_id]
         request_meta.total_hit_block_num = expect_hit_block_num
         request_meta.hbm_hit_block_num = min(
@@ -752,7 +822,7 @@ class UCMMockConnector(UCMDirectConnector):
             f"hit external: {request_meta.total_hit_block_num - request_meta.hbm_hit_block_num}"
         )
 
-        return expect_hit_block_num * self.block_size, False
+        return expect_hit_block_num * self.chunk_size, False
 
 
 class UCMConnector(KVConnectorBase_V1):
