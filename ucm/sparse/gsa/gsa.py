@@ -460,10 +460,11 @@ class TopkCal:
             device=self.device,
         )
 
-    def set_topk_caches(self, cal_topk_id, topk_caches, topk_len_list, gsa_q_cache=None, query_similarity_threshold=None):
+    def set_topk_caches(self, cal_topk_id, topk_caches, topk_len_list, enable_query_similarity=False, gsa_q_cache=None, query_similarity_threshold=None):
         self.cal_topk_id = cal_topk_id
         self.topk_caches = topk_caches
         self.topk_len_list = topk_len_list
+        self.enable_query_similarity = enable_query_similarity
         self.gsa_q_cache = gsa_q_cache
         self.query_similarity_threshold = query_similarity_threshold
 
@@ -532,7 +533,7 @@ class TopkCal:
         
         q_decode = intermediate_q[new_cal_topk_id]
         block_table_decode = self.block_table_for_hamming[new_cal_topk_id]
-
+        hashq = self.hash_encoder.compute_hash(q_decode)
         hashq = hashq.unsqueeze(2).contiguous()
         hashk_cache = self.kpre_caches[current_layer_id]
 
@@ -1397,7 +1398,7 @@ class GSA(UcmSparseBase):
                 if ENABLE_KVCOMP:
                     # first set topk caches and then set topk params for hamming 
                     self.gsa_cuda_topk.set_topk_caches(
-                        cal_topk_id_tensor, self.model_input["topk_caches"], topk_len_list, self.gsa_q_cache, self.query_similarity_threshold
+                        cal_topk_id_tensor, self.model_input["topk_caches"], topk_len_list, self.enable_query_similarity, self.gsa_q_cache, self.query_similarity_threshold
                     )
                     self.gsa_cuda_topk.set_topk_param_for_hamming(
                         repre_slot_mappings,
