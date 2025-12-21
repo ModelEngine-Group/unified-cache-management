@@ -48,6 +48,8 @@ from ucm.sparse.utils import (
 if ENABLE_KVCOMP:
     from ucm.sparse.kvcomp.hash_encoder import HashEncoder
 
+import torch.nn.functional as F
+
 ReqType = Union[str, int]
 
 
@@ -458,10 +460,12 @@ class TopkCal:
             device=self.device,
         )
 
-    def set_topk_caches(self, cal_topk_id, topk_caches, topk_len_list):
+    def set_topk_caches(self, cal_topk_id, topk_caches, topk_len_list, gsa_q_cache=None, query_similarity_threshold=None):
         self.cal_topk_id = cal_topk_id
         self.topk_caches = topk_caches
         self.topk_len_list = topk_len_list
+        self.gsa_q_cache = gsa_q_cache
+        self.query_similarity_threshold = query_similarity_threshold
 
     def cal_topk(self, intermediate_q, current_layer_id):
         bs = len(self.cal_topk_id)
@@ -487,9 +491,48 @@ class TopkCal:
         self.topk_caches[current_layer_id][self.cal_topk_id] = top_indices
 
     def cal_topk_for_hamming(self, intermediate_q, current_layer_id):
-        q_decode = intermediate_q[self.cal_topk_id]
-        block_table_decode = self.block_table_for_hamming[self.cal_topk_id]
-        hashq = self.hash_encoder.compute_hash(q_decode)
+        
+        def get_low_similarity_indices(q1, q2, threshold=0.7):
+            """
+            Returns a 1-D NPU tensor containing the indices of requests where the 
+            cosine similarity between flattened q1 and q2 is less than the threshold.
+            
+            Args:
+                q1 (torch.Tensor): Shape [batch_size, number_heads, head_size], on NPU.
+                q2 (torch.Tensor): Shape [batch_size, number_heads, head_size], on NPU.
+                threshold (float): Similarity threshold.
+
+            Returns:
+                torch.Tensor: A 1-D tensor of indices on the same device as inputs.
+            """
+            
+            # Shape: [batch_size, number_heads * head_size]
+            q1_flat = q1.flatten(start_dim=1)
+            q2_flat = q2.flatten(start_dim=1)
+            
+            # shape: [batch_size]
+            similarities = F.cosine_similarity(q1_flat, q2_flat, dim=1)
+
+            
+            # shape: [batch_size] (e.g., [True, False, True, True, False])
+            mask = similarities < threshold
+            
+            # shape: [num_trues] (e.g., [0, 2, 3])
+            indices = torch.nonzero(mask, as_tuple=False).squeeze(dim=1)
+            
+            return indices
+
+
+        q_decode_org = intermediate_q[self.cal_topk_id]
+        if self.enable_query_similarity:
+            indices = get_low_similarity_indices(self.gsa_q_cache[current_layer_id][self.cal_topk_id], q_decode_org, self.query_similarity_threshold)
+            new_cal_topk_id = self.cal_topk_id[indices]
+        else:
+            new_cal_topk_id = self.cal_topk_id
+        
+        q_decode = intermediate_q[new_cal_topk_id]
+        block_table_decode = self.block_table_for_hamming[new_cal_topk_id]
+
         hashq = hashq.unsqueeze(2).contiguous()
         hashk_cache = self.kpre_caches[current_layer_id]
 
@@ -533,7 +576,10 @@ class TopkCal:
         # (ldeng) we use the first head's topk indices as the final topk indices now even if kv_num_heads > 1, need to support multi-head later
         topk_indices = self.hamming_output[:, 0, :]
         # use non_blocking transfer here to reduce synchronization latency as self.topk_caches will be used in much later
-        self.topk_caches[current_layer_id][self.cal_topk_id] = topk_indices.to('cpu', non_blocking=True)
+        self.topk_caches[current_layer_id][new_cal_topk_id] = topk_indices.to('cpu', non_blocking=True)
+
+        # store the latest query for query-similarity feature for current layer and current decoding requests
+        self.gsa_q_cache[current_layer_id][new_cal_topk_id].copy_(q_decode)
 
 
 @cache
@@ -630,6 +676,10 @@ class GSA(UcmSparseBase):
         gsa_config.set_config(self.block_size)
         self.task_load = {}
 
+        #query-similarity feature
+        self.enable_query_similarity = True
+        self.query_similarity_threshold = 0.7 if self.enable_query_similarity else None
+
     def init_topk_cal(
         self,
         vllm_config: VllmConfig,
@@ -648,6 +698,7 @@ class GSA(UcmSparseBase):
         self.gsa_offload_ops.set_kpre_method_param(kv_num_heads, 1)
         self.gsa_offload_ops.set_kpre_cache(prefetch_engine.kpre_caches)
         self.is_cal_kpre = [False] * self.layer_num
+        # we will use gas_q_cache for both KVComp and CPU-TopK but they behave differently 
         self.gsa_q_cache = torch.zeros(
             (
                 self.layer_num,
@@ -924,8 +975,8 @@ class GSA(UcmSparseBase):
         dot_product_weights.masked_fill_(include_mask == 1, float("inf"))
         dot_product_weights.masked_fill_(exclude_mask == 1, float("-inf"))
         _, top_indices = torch.topk(dot_product_weights, first_topk_len, dim=-1)
-        # Use non_blocking transfer to reduce synchronization latency
-        return top_indices[0].to("cpu", non_blocking=True)
+        # Use blocking transfer here for later immediate use in kvcache_init_last_chunk
+        return top_indices[0].to("cpu")
 
     def last_chunk_topk_cal_for_hamming(
         self, req_meta, query, current_layer_id, first_topk_len
@@ -1346,7 +1397,7 @@ class GSA(UcmSparseBase):
                 if ENABLE_KVCOMP:
                     # first set topk caches and then set topk params for hamming 
                     self.gsa_cuda_topk.set_topk_caches(
-                        cal_topk_id_tensor, self.model_input["topk_caches"], topk_len_list
+                        cal_topk_id_tensor, self.model_input["topk_caches"], topk_len_list, self.gsa_q_cache, self.query_similarity_threshold
                     )
                     self.gsa_cuda_topk.set_topk_param_for_hamming(
                         repre_slot_mappings,
