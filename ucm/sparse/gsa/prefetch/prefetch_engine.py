@@ -155,14 +155,12 @@ class GSAPrefetchBase:
 
         if self.atb_gsa_enable:
             # CPU tensor used only for CPU indexing operations, no need for pinned memory
-            block_table_index = torch.tensor(
-                self.select_bs_index, device="cpu"
-            )
+            block_table_index = torch.tensor(self.select_bs_index, device="cpu")
             self.topk_len = (
                 gsa_config.compute_topk_len(self._get_max_block_len(gsa_metadata))
-                #+ gsa_config.num_prefetch_blocks
+                # + gsa_config.num_prefetch_blocks
             )
-            #self.use_topk_caches is in CPU under KVComp
+            # self.use_topk_caches is in CPU under KVComp
             topk_buf_tmp = self.use_topk_caches[:, block_table_index, :]
             topk_buf_tmp = topk_buf_tmp[:, :, : self.topk_len]
             self.is_topk_cal = is_topk_done and self.topk_space % 3 == 0
@@ -176,7 +174,7 @@ class GSAPrefetchBase:
                 self._gsa_block_len_pre(gsa_metadata)
             else:
                 self._no_gsa_input_deal(gsa_metadata)
-            #self.use_block_table in cpu
+            # self.use_block_table in cpu
             block_table_tmp = self.use_block_table[:, block_table_index, :]
             if torch.cuda.is_available():
                 gen_len_tmp = self.gsa_seq_len[:, self.select_bs_index].to(
@@ -188,7 +186,10 @@ class GSAPrefetchBase:
             list_topk_buf = list(topk_buf_tmp.unbind(dim=0))
             list_block_table = list(block_table_tmp.unbind(dim=0))
             # Convert each tensor in list_block_table to NPU tensor asynchronously
-            list_block_table_device = [t.to(self.device_config.device, non_blocking=True) for t in list_block_table]
+            list_block_table_device = [
+                t.to(self.device_config.device, non_blocking=True)
+                for t in list_block_table
+            ]
             gsa_len_list = list(gen_len_tmp.unbind(dim=0))
             gsa_model_input["topk_caches"] = list_topk_buf
             gsa_model_input["kpre_caches"] = self.kpre_caches
@@ -203,7 +204,9 @@ class GSAPrefetchBase:
                 if not self.is_cpu_topk:
                     # Use non_blocking transfer to reduce synchronization latency
                     gsa_metadata.gsa_stats[topk_info[0]].topk_buf_tmp = (
-                        self.topk_buf_tmp[:, index, : topk_info[2]].to("cpu", non_blocking=True)
+                        self.topk_buf_tmp[:, index, : topk_info[2]].to(
+                            "cpu", non_blocking=True
+                        )
                     )
                 else:
                     gsa_metadata.gsa_stats[topk_info[0]].topk_buf_tmp = (
@@ -213,7 +216,7 @@ class GSAPrefetchBase:
         for index, req_id in enumerate(self.req_ids_bs):
             one_topk_len = (
                 gsa_config.compute_topk_len(len(gsa_metadata.gsa_stats[req_id].blocks))
-                #+ gsa_config.num_prefetch_blocks
+                # + gsa_config.num_prefetch_blocks
             )
             self.topk_bs.append(
                 [
@@ -339,9 +342,9 @@ class GSAPrefetchBase:
     ) -> Tuple[List[torch.tensor], torch.tensor]:
         kpre_caches = []
         pin_memory = is_pin_memory_available() if device == "cpu" else False
-        #we put use_topk_caches in CPU under KVComp for better performance
+        # we put use_topk_caches in CPU under KVComp for better performance
         use_topk_caches = torch.zeros(
-            self.topk_shape, dtype=topk_type, pin_memory=pin_memory, device='cpu'
+            self.topk_shape, dtype=topk_type, pin_memory=pin_memory, device="cpu"
         )
         for _ in range(self.num_attention_layers):
             if self.align_cache:
@@ -356,7 +359,7 @@ class GSAPrefetchBase:
             )
             if self.align_cache:
                 one_kpre_value = one_kpre_value[..., :entry_size]
-            #we put kpre_caches in NPU under KVComp
+            # we put kpre_caches in NPU under KVComp
             kpre_caches.append(one_kpre_value)
 
         return kpre_caches, use_topk_caches
@@ -369,25 +372,25 @@ class GSAPrefetchBase:
             bs_index = self.select_bs_index[index]
             if gsa_metadata.gsa_stats[req_id].remain_map != None:
                 topk_block_list_all = []
-                #prefetch_blocks_list_all = []
+                # prefetch_blocks_list_all = []
                 for layer_id in range(self.num_attention_layers):
                     topk_block_list = sorted(
                         list(
                             gsa_metadata.gsa_stats[req_id].remain_map[layer_id].values()
                         )
                     )
-                    #prefetch_blocks_list = list(
+                    # prefetch_blocks_list = list(
                     #    gsa_metadata.gsa_stats[req_id].prefetch_map[layer_id].values()
-                    #)
+                    # )
                     topk_block_list_all.append(topk_block_list)
-                    #prefetch_blocks_list_all.append(prefetch_blocks_list)
+                    # prefetch_blocks_list_all.append(prefetch_blocks_list)
                 # CPU tensor used only for CPU-to-CPU assignment, no need for pinned memory
                 topk_block_tensor = torch.tensor(
                     topk_block_list_all, dtype=torch.int32, device="cpu"
                 )
-                #prefetch_block_tensor = torch.tensor(
+                # prefetch_block_tensor = torch.tensor(
                 #    prefetch_blocks_list_all, dtype=torch.int32
-                #)
+                # )
             else:
                 real_length = len(gsa_metadata.gsa_stats[req_id].blocks)
                 block_table_list = self.block_table_list_bs[index][:real_length]
@@ -395,23 +398,23 @@ class GSAPrefetchBase:
                 prefetch_idx = gsa_metadata.gsa_stats[req_id].prefetch_idx
                 assert len(remain_index) < self.sp_max_len
 
-                #prefetch_blocks_list = [block_table_list[x] for x in prefetch_idx]
+                # prefetch_blocks_list = [block_table_list[x] for x in prefetch_idx]
                 topk_block_list = [block_table_list[x] for x in remain_index]
                 # CPU tensor used only for CPU-to-CPU assignment, no need for pinned memory
                 topk_block_tensor = torch.tensor(
                     topk_block_list, dtype=torch.int32, device="cpu"
                 )
-                #prefetch_block_tensor = torch.tensor(
+                # prefetch_block_tensor = torch.tensor(
                 #    prefetch_blocks_list, dtype=torch.int32
-                #)
+                # )
 
-            #self.prefetch_block_len[:, bs_index] = len(prefetch_blocks_list)
+            # self.prefetch_block_len[:, bs_index] = len(prefetch_blocks_list)
             self.block_table_len[:, bs_index] = len(topk_block_list)
             self.use_block_table_len[:, bs_index] = len(topk_block_list)
 
-            #self.prefetch_blocks[:, bs_index, : len(prefetch_blocks_list)] = (
+            # self.prefetch_blocks[:, bs_index, : len(prefetch_blocks_list)] = (
             #    prefetch_block_tensor
-            #)
+            # )
             self.use_block_table[:, bs_index, : len(topk_block_list)] = (
                 topk_block_tensor
             )

@@ -14,6 +14,7 @@ if hasattr(torch, "npu") and torch.npu.is_available():
     import torch_npu
     import ucm_custom_ops
     from vllm_ascend.attention.attention_v1 import AscendAttentionState
+
 from vllm.config import VllmConfig
 from vllm.distributed.kv_transfer import get_kv_transfer_group
 from vllm.forward_context import (
@@ -21,7 +22,7 @@ from vllm.forward_context import (
     get_forward_context,
 )
 from vllm.sequence import SequenceStage
-from vllm.utils import make_tensor_with_pad, sha256, is_pin_memory_available
+from vllm.utils import is_pin_memory_available, make_tensor_with_pad, sha256
 from vllm.v1.core.kv_cache_manager import KVCacheBlocks
 from vllm.v1.core.kv_cache_utils import NONE_HASH
 from vllm.v1.core.sched.output import SchedulerOutput
@@ -347,10 +348,16 @@ class GSAMetaData(UcmSparseMetadata):
             query_locals_prefill = list(accumulate(query_locals_prefill))
         # Use pinned memory for non-blocking CPU-GPU transfers
         model_input["calc_block_table"] = torch.tensor(
-            calc_block_table, dtype=torch.int32, device="cpu", pin_memory=is_pin_memory_available()
+            calc_block_table,
+            dtype=torch.int32,
+            device="cpu",
+            pin_memory=is_pin_memory_available(),
         )
         model_input["calc_repre_slot_mapping"] = torch.tensor(
-            calc_repre_slot_mappings, dtype=torch.int32, device="cpu", pin_memory=is_pin_memory_available()
+            calc_repre_slot_mappings,
+            dtype=torch.int32,
+            device="cpu",
+            pin_memory=is_pin_memory_available(),
         )
         model_input["query_locals"] = query_locals
         if self.use_mla:
@@ -424,18 +431,14 @@ class TopkCal:
                 dtype=torch.float16,
                 device=self.device,
             )
-            self.preserved_blocks = (
-                gsa_config.kvcomp_preserve_blocks
-            )
+            self.preserved_blocks = gsa_config.kvcomp_preserve_blocks
 
     def set_topk_param(self, repre_slot_mapping, include_mask, exclude_mask):
         self.repre_slot_mapping = repre_slot_mapping
         self.include_mask = include_mask
         self.exclude_mask = exclude_mask
 
-    def set_topk_param_for_hamming(
-        self, repre_slot_mapping, seq_lens_ori
-    ):
+    def set_topk_param_for_hamming(self, repre_slot_mapping, seq_lens_ori):
         self.block_table_for_hamming = repre_slot_mapping
         self.seq_lens_for_hamming = seq_lens_ori
         self.max_seq_len_for_hamming = torch.max(self.seq_lens_for_hamming).item()
@@ -453,14 +456,21 @@ class TopkCal:
             device=self.device,
         )
 
-
         self.hamming_output = torch.zeros(
             size=[self.batch_size, self.kv_num_heads, self.preserved_blocks],
             dtype=torch.int32,
             device=self.device,
         )
 
-    def set_topk_caches(self, cal_topk_id, topk_caches, topk_len_list, enable_query_similarity=False, gsa_q_cache=None, query_similarity_threshold=None):
+    def set_topk_caches(
+        self,
+        cal_topk_id,
+        topk_caches,
+        topk_len_list,
+        enable_query_similarity=False,
+        gsa_q_cache=None,
+        query_similarity_threshold=None,
+    ):
         self.cal_topk_id = cal_topk_id
         self.topk_caches = topk_caches
         self.topk_len_list = topk_len_list
@@ -492,12 +502,12 @@ class TopkCal:
         self.topk_caches[current_layer_id][self.cal_topk_id] = top_indices
 
     def cal_topk_for_hamming(self, intermediate_q, current_layer_id):
-        
+
         def get_low_similarity_indices(q1, q2, threshold=0.7):
             """
-            Returns a 1-D NPU tensor containing the indices of requests where the 
+            Returns a 1-D NPU tensor containing the indices of requests where the
             cosine similarity between flattened q1 and q2 is less than the threshold.
-            
+
             Args:
                 q1 (torch.Tensor): Shape [batch_size, number_heads, head_size], on NPU.
                 q2 (torch.Tensor): Shape [batch_size, number_heads, head_size], on NPU.
@@ -506,37 +516,38 @@ class TopkCal:
             Returns:
                 torch.Tensor: A 1-D tensor of indices on the same device as inputs.
             """
-            
+
             # Shape: [batch_size, number_heads * head_size]
             q1_flat = q1.flatten(start_dim=1)
             q2_flat = q2.flatten(start_dim=1)
-            
+
             # shape: [batch_size]
             similarities = F.cosine_similarity(q1_flat, q2_flat, dim=1)
 
-            
             # shape: [batch_size] (e.g., [True, False, True, True, False])
             mask = similarities < threshold
-            
+
             # shape: [num_trues] (e.g., [0, 2, 3])
             indices = torch.nonzero(mask, as_tuple=False).squeeze(dim=1)
-            
-            return indices
 
+            return indices
 
         q_decode_org = intermediate_q[self.cal_topk_id]
         if self.enable_query_similarity:
-            indices = get_low_similarity_indices(self.gsa_q_cache[current_layer_id][self.cal_topk_id], q_decode_org, self.query_similarity_threshold)
+            indices = get_low_similarity_indices(
+                self.gsa_q_cache[current_layer_id][self.cal_topk_id],
+                q_decode_org,
+                self.query_similarity_threshold,
+            )
             new_cal_topk_id = self.cal_topk_id[indices]
         else:
             new_cal_topk_id = self.cal_topk_id
-        
+
         q_decode = intermediate_q[new_cal_topk_id]
         block_table_decode = self.block_table_for_hamming[new_cal_topk_id]
         hashq = self.hash_encoder.compute_hash(q_decode)
         hashq = hashq.unsqueeze(2).contiguous()
         hashk_cache = self.kpre_caches[current_layer_id]
-
 
         # debug
         if current_layer_id == 0 and False:  # Disabled debug sync to reduce latency
@@ -545,7 +556,9 @@ class TopkCal:
             print(f"hashk_cache.shape: {hashk_cache.shape}")
             print(f"top_k_for_hamming.shape: {self.top_k_for_hamming.shape}")
             print(f"seq_lens_for_hamming.shape: {self.seq_lens_for_hamming.shape}")
-            print(f"chunk_sizes_for_hamming.shape: {self.chunk_sizes_for_hamming.shape}")
+            print(
+                f"chunk_sizes_for_hamming.shape: {self.chunk_sizes_for_hamming.shape}"
+            )
             print(f"block_table_for_hamming.shape: {block_table_decode.shape}")
             print(f"hamming_output.shape: {self.hamming_output.shape}")
             print(f"top_k_for_hamming: {self.top_k_for_hamming}")
@@ -554,7 +567,6 @@ class TopkCal:
             print(f"max_seq_len_for_hamming: {self.max_seq_len_for_hamming}")
             print(f"block_table_for_hamming: {block_table_decode}")
             torch.npu.synchronize()
-        
 
         ucm_custom_ops.hamming_dist_top_k(
             hashq_op=hashq,
@@ -571,13 +583,16 @@ class TopkCal:
 
         if current_layer_id == 0 and False:
             print(f"=======cal_topk_for_hamming=======")
-            print(f"after ucm_custom_ops.hamming_dist_top_k, hamming_output: {self.hamming_output}")
-
+            print(
+                f"after ucm_custom_ops.hamming_dist_top_k, hamming_output: {self.hamming_output}"
+            )
 
         # (ldeng) we use the first head's topk indices as the final topk indices now even if kv_num_heads > 1, need to support multi-head later
         topk_indices = self.hamming_output[:, 0, :]
         # use non_blocking transfer here to reduce synchronization latency as self.topk_caches will be used in much later
-        self.topk_caches[current_layer_id][new_cal_topk_id] = topk_indices.to('cpu', non_blocking=True)
+        self.topk_caches[current_layer_id][new_cal_topk_id] = topk_indices.to(
+            "cpu", non_blocking=True
+        )
 
         # store the latest query for query-similarity feature for current layer and current decoding requests
         self.gsa_q_cache[current_layer_id][new_cal_topk_id].copy_(q_decode)
@@ -677,7 +692,7 @@ class GSA(UcmSparseBase):
         gsa_config.set_config(self.block_size)
         self.task_load = {}
 
-        #query-similarity feature
+        # query-similarity feature
         self.enable_query_similarity = True
         self.query_similarity_threshold = 0.7 if self.enable_query_similarity else None
 
@@ -699,7 +714,7 @@ class GSA(UcmSparseBase):
         self.gsa_offload_ops.set_kpre_method_param(kv_num_heads, 1)
         self.gsa_offload_ops.set_kpre_cache(prefetch_engine.kpre_caches)
         self.is_cal_kpre = [False] * self.layer_num
-        # we will use gas_q_cache for both KVComp and CPU-TopK but they behave differently 
+        # we will use gas_q_cache for both KVComp and CPU-TopK but they behave differently
         self.gsa_q_cache = torch.zeros(
             (
                 self.layer_num,
@@ -751,7 +766,9 @@ class GSA(UcmSparseBase):
                 self.gsa_q_cache[current_layer_id][: len(ids)].copy_(query[ids])
             else:
                 # GPU-to-GPU copy, already asynchronous, no need for non_blocking
-                self.gsa_q_cache[current_layer_id][:len(self.decode_index)].copy_(query)
+                self.gsa_q_cache[current_layer_id][: len(self.decode_index)].copy_(
+                    query
+                )
             is_cal_kpre = len(self.model_input["calc_block_table"]) > 0
             self.gsa_offload_ops.add_copy_req(
                 is_cal_kpre, current_layer_id, ids, self.gsa_q_cache[current_layer_id]
@@ -798,7 +815,9 @@ class GSA(UcmSparseBase):
                 # Use non_blocking transfer to reduce synchronization latency
                 self.prefetch_engine.kpre_caches[current_layer_id][
                     calc_repre_slot_mappings
-                ] = key_cache_mean_out.to(dtype=torch.float32, device="cpu", non_blocking=True)
+                ] = key_cache_mean_out.to(
+                    dtype=torch.float32, device="cpu", non_blocking=True
+                )
             if not self.use_mla:
                 k_needed = attn[layer_name].kv_cache[forward_context.virtual_engine][0]
             else:
@@ -958,7 +977,10 @@ class GSA(UcmSparseBase):
         else:
             # Use pinned memory for non-blocking CPU-GPU transfers
             kpre_index = torch.tensor(
-                req_meta.repre_slot_mapping, dtype=torch.int32, device="cpu", pin_memory=is_pin_memory_available()
+                req_meta.repre_slot_mapping,
+                dtype=torch.int32,
+                device="cpu",
+                pin_memory=is_pin_memory_available(),
             )
             kpre_need = self.prefetch_engine.kpre_caches[current_layer_id][
                 kpre_index
@@ -1051,9 +1073,10 @@ class GSA(UcmSparseBase):
 
         if self.rank == 0 and False:
             print(f"=======last_chunk_topk_cal_for_hamming=======")
-            print(f"after ucm_custom_ops.hamming_dist_top_k, hamming_output: {hamming_output}")
+            print(
+                f"after ucm_custom_ops.hamming_dist_top_k, hamming_output: {hamming_output}"
+            )
 
-    
         # (ldeng) we use the first head's topk indices as the final topk indices now even if kv_num_heads > 1, need to support multi-head later
         # Use blocking transfer here for later immediate use in kvcache_init_last_chunk
         return hamming_output[0, 0, :].to("cpu")
@@ -1352,7 +1375,7 @@ class GSA(UcmSparseBase):
                     is_decode.append(True)
                     one_topk_len = (
                         gsa_config.compute_topk_len(len(req_meta.blocks))
-                        #+ gsa_config.num_prefetch_blocks
+                        # + gsa_config.num_prefetch_blocks
                     )
                     topk_len_list.append(one_topk_len)
                     if CUDA_TOPK:
@@ -1364,7 +1387,7 @@ class GSA(UcmSparseBase):
                         seq_lens_ori.append(req_meta.get_seq_len())
                 else:
                     is_decode.append(False)
-                repre_slot_mappings_all.append(req_meta.repre_slot_mapping)                
+                repre_slot_mappings_all.append(req_meta.repre_slot_mapping)
 
             if CUDA_TOPK and len(topk_len_list) != 0:
                 topk_len_list = [max(topk_len_list)] * len(topk_len_list)
@@ -1377,9 +1400,9 @@ class GSA(UcmSparseBase):
                         device=self.device, non_blocking=True
                     )
                     # Use non_blocking transfer to reduce synchronization latency
-                    cal_topk_id_tensor = torch.tensor(cal_topk_id, dtype=torch.int32).to(
-                        device=self.device, non_blocking=True
-                    )
+                    cal_topk_id_tensor = torch.tensor(
+                        cal_topk_id, dtype=torch.int32
+                    ).to(device=self.device, non_blocking=True)
                 else:
                     include_masks = make_tensor_with_pad(
                         include_masks, pad=False, dtype=torch.uint8, device=self.device
@@ -1396,9 +1419,14 @@ class GSA(UcmSparseBase):
 
             if CUDA_TOPK and len(topk_len_list) != 0:
                 if ENABLE_KVCOMP:
-                    # first set topk caches and then set topk params for hamming 
+                    # first set topk caches and then set topk params for hamming
                     self.gsa_cuda_topk.set_topk_caches(
-                        cal_topk_id_tensor, self.model_input["topk_caches"], topk_len_list, self.enable_query_similarity, self.gsa_q_cache, self.query_similarity_threshold
+                        cal_topk_id_tensor,
+                        self.model_input["topk_caches"],
+                        topk_len_list,
+                        self.enable_query_similarity,
+                        self.gsa_q_cache,
+                        self.query_similarity_threshold,
                     )
                     self.gsa_cuda_topk.set_topk_param_for_hamming(
                         repre_slot_mappings,
