@@ -525,14 +525,15 @@ class TopkCal:
             indices=self.hamming_output,
         )
 
-        if current_layer_id == 0 and True:
+        if current_layer_id == 0 and False:
             print(f"=======cal_topk_for_hamming=======")
             print(f"after ucm_custom_ops.hamming_dist_top_k, hamming_output: {self.hamming_output}")
 
 
         # (ldeng) we use the first head's topk indices as the final topk indices now even if kv_num_heads > 1, need to support multi-head later
         topk_indices = self.hamming_output[:, 0, :]
-        self.topk_caches[current_layer_id][self.cal_topk_id] = topk_indices
+        # use non_blocking transfer here to reduce synchronization latency as self.topk_caches will be used in much later
+        self.topk_caches[current_layer_id][self.cal_topk_id] = topk_indices.to('cpu', non_blocking=True)
 
 
 @cache
@@ -967,7 +968,7 @@ class GSA(UcmSparseBase):
         ).unsqueeze(0)
 
         # debug
-        if self.rank == 0 and True:
+        if self.rank == 0 and False:
             print(f"=======last_chunk_topk_cal_for_hamming=======")
             print(f"hashq.shape: {hashq.shape}")
             print(f"hashk_cache.shape: {hashk_cache.shape}")
@@ -982,7 +983,6 @@ class GSA(UcmSparseBase):
             print(f"max_seq_len_for_hamming: {max_seq_len_for_hamming}")
             print(f"block_table_for_hamming: {block_table_for_hamming}")
             print(f"hamming_output: {hamming_output}")
-            torch.npu.synchronize()
 
         ucm_custom_ops.hamming_dist_top_k(
             hashq_op=hashq,
@@ -997,14 +997,14 @@ class GSA(UcmSparseBase):
             indices=hamming_output,
         )
 
-        if self.rank == 0 and True:
+        if self.rank == 0 and False:
             print(f"=======last_chunk_topk_cal_for_hamming=======")
             print(f"after ucm_custom_ops.hamming_dist_top_k, hamming_output: {hamming_output}")
 
     
         # (ldeng) we use the first head's topk indices as the final topk indices now even if kv_num_heads > 1, need to support multi-head later
-        # Use non_blocking transfer to reduce synchronization latency
-        return hamming_output[0, 0, :].to("cpu", non_blocking=True)
+        # Use blocking transfer here for later immediate use in kvcache_init_last_chunk
+        return hamming_output[0, 0, :].to("cpu")
 
     def kvcache_init_last_chunk(
         self, forward_context: ForwardContext, layer_name, topk_value, req_id
