@@ -55,6 +55,7 @@ class UcmPcStoreV1(UcmKVStoreBaseV1):
             "buffer_number": "transferBufferNumber",
             "timeout_ms": "transferTimeoutMs",
             "use_scatter_gather": "transferScatterGatherEnable",
+            "shard_data_dir": "shardDataDir",
         }
         for key, value in config.items():
             attr = key_mapping.get(key)
