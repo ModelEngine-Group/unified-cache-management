@@ -47,11 +47,11 @@ public:
     {
         auto ret = Setup(config);
         if (config.transferEnable || ret != Status::OK().Underlying()) { return ret; }
-        auto success =
-            lookupService_.SetNWorker(4)
-                .SetWorkerFn([this](auto& ctx, auto) { OnLookup(ctx); })
-                .SetWorkerTimeoutFn([this](auto& ctx, auto) { OnLookupTimeouted(ctx); }, 10000)
-                .Run();
+        auto success = lookupService_.SetNWorker(4)
+                           .SetWorkerFn([this](auto& ctx, auto) { OnLookup(ctx); })
+                           .SetWorkerTimeoutFn([this](auto& ctx, auto) { OnLookupTimeouted(ctx); },
+                                               config.transferTimeoutMs)
+                           .Run();
         if (!success) {
             UC_ERROR("Failed to start lookup service.");
             return Status::Error().Underlying();

@@ -52,7 +52,6 @@ public:
                 }
                 return;
             }
-            counter = this->counter_.load(std::memory_order_acquire);
         }
     }
     void Wait()
