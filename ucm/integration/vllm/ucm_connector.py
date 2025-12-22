@@ -579,7 +579,7 @@ class UCMDirectConnector(KVConnectorBase_V1):
             if self.global_rank == 0 or not self.load_only_first_rank:
                 task = self.store.load_data(block_ids, shard_indexs, total_tensors)
                 request_to_task[request_id] = [task]
-                if rope_tensors and self.rope_store:
+                if rope_tensors is not None and self.rope_store:
                     rope_task = self.rope_store.load_data(
                         block_ids, shard_indexs, rope_tensors
                     )
@@ -667,7 +667,7 @@ class UCMDirectConnector(KVConnectorBase_V1):
             )
             task = self.store.dump_data(block_ids, shard_indexs, total_tensors)
             request_to_task[request_id] = [task]
-            if rope_tensors and self.rope_store:
+            if rope_tensors is not None and self.rope_store:
                 rope_task = self.rope_store.dump_data(
                     block_ids, shard_indexs, rope_tensors
                 )
