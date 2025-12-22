@@ -123,9 +123,8 @@ class UCMDirectConnector(KVConnectorBase_V1):
         logger.info(f"self.launch_config: {self.launch_config}")
         self.connector_configs = self.launch_config.get("ucm_connectors", [])
         assert len(self.connector_configs) > 0, "no storage connector name in config."
-        self.load_only_first_rank: bool = (
-            self.launch_config.get("load_only_first_rank", self.is_mla) and self.is_mla
-        )
+        # TODO: haven't support broadcast
+        self.load_only_first_rank = False
         if self.load_only_first_rank:
             if role == KVConnectorRole.WORKER:
                 self.group_coordinator = get_tp_group()
@@ -559,6 +558,7 @@ class UCMDirectConnector(KVConnectorBase_V1):
         is_load = False
         num_loaded_block = 0
         num_loaded_request = 0
+        load_start_time = time.perf_counter() * 1000
         for request_id, request in metadata.request_meta.items():
             if len(request.load_block_ids[0]) == 0:
                 continue
@@ -570,7 +570,6 @@ class UCMDirectConnector(KVConnectorBase_V1):
             if self.global_rank != 0 and not self.is_mla and not self.is_dsa:
                 for i, ucm_block_id in enumerate(ucm_block_ids):
                     ucm_block_ids[i] = self.request_hasher(ucm_block_id)
-            start = time.perf_counter()
             block_ids, shard_indexs, total_tensors, rope_tensors = self._generate_task(
                 vllm_block_ids, ucm_block_ids
             )
@@ -584,9 +583,6 @@ class UCMDirectConnector(KVConnectorBase_V1):
                     request_to_task[request_id].append(rope_task)
             else:
                 request_to_task[request_id] = None
-            # req_broadcast_addr[request_id] = [
-            #     t for row in total_tensors for t in row
-            # ] + [t for row in rope_tensors for t in row]
 
         for request_id, tasks in request_to_task.items():
             # TODO error handling
@@ -651,6 +647,7 @@ class UCMDirectConnector(KVConnectorBase_V1):
         is_save = False
         num_saved_block = 0
         num_saved_request = 0
+        save_start_time = time.perf_counter() * 1000
         for request_id, request in metadata.request_meta.items():
             if len(request.dump_block_ids[0]) == 0:
                 continue
@@ -662,7 +659,6 @@ class UCMDirectConnector(KVConnectorBase_V1):
             if self.global_rank != 0:
                 for i, ucm_block_id in enumerate(ucm_block_ids):
                     ucm_block_ids[i] = self.request_hasher(ucm_block_id)
-            start = time.perf_counter()
             block_ids, shard_indexs, total_tensors, rope_tensors = self._generate_task(
                 vllm_block_ids, ucm_block_ids
             )
