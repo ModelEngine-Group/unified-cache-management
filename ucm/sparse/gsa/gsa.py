@@ -115,36 +115,62 @@ class GSAReqStat:
             return
         self.block_hashes = []
 
-        # (ldeng): why this is needed? The RequestHasher() is overlapped with compute_parent_block_hash()
-        # parent_block_hash_value = compute_parent_block_hash(
-        #     self._vllm_config.model_config.model,
-        #     self._vllm_config.parallel_config.world_size,
-        #     self._vllm_config.model_config.dtype,
-        #     seed_rank=0,
-        # )
-        parent_block_hash_value = None
+        use_old_hash = True
+        if use_old_hash:
+            parent_block_hash_value = compute_parent_block_hash(
+                self._vllm_config.model_config.model,
+                self._vllm_config.parallel_config.world_size,
+                self._vllm_config.model_config.dtype,
+                seed_rank=0,
+            )
 
-        for start in range(0, len(token_ids), self.block_size):
-            end = start + self.block_size
-            block_token_ids = token_ids[start:end]
-            if len(block_token_ids) < self.block_size:
-                break
-            curr_block_token_ids_tuple = tuple(block_token_ids)
-            if parent_block_hash_value is None:
-                hash_value = self.request_hasher((curr_block_token_ids_tuple))
-            else:
+            for start in range(0, len(token_ids), self.block_size):
+                end = start + self.block_size
+                block_token_ids = token_ids[start:end]
+                if len(block_token_ids) < self.block_size:
+                    break
+                curr_block_token_ids_tuple = tuple(block_token_ids)
                 hash_value = self.request_hasher(
                     (parent_block_hash_value, curr_block_token_ids_tuple)
                 )
-            # (ldeng): we forgot to update self.block_hashes here originally
-            self.block_hashes.append(str(hash_value))
-            parent_block_hash_value = hash_value
+                self.block_hashes.append(str(hash_value))
+                parent_block_hash_value = hash_value
 
-        # (ldeng): It is no longer needed now since we initialize the RequestHasher() with the rank before
-        # if self.rank != 0 and not self.use_mla:
-        #     self.newqrequest_hasher = RequestHasher(self._vllm_config, self.rank)
-        #     for i, ucm_block_id in enumerate(self.block_hashes):
-        #         self.block_hashes[i] = str(self.newqrequest_hasher(ucm_block_id))
+            if self.rank != 0 and not self.use_mla:
+                self.newqrequest_hasher = RequestHasher(self._vllm_config, self.rank)
+                for i, ucm_block_id in enumerate(self.block_hashes):
+                    self.block_hashes[i] = str(self.newqrequest_hasher(ucm_block_id))
+        else:
+            # (ldeng): why this is needed? The RequestHasher() is overlapped with compute_parent_block_hash()
+            # parent_block_hash_value = compute_parent_block_hash(
+            #     self._vllm_config.model_config.model,
+            #     self._vllm_config.parallel_config.world_size,
+            #     self._vllm_config.model_config.dtype,
+            #     seed_rank=0,
+            # )
+            parent_block_hash_value = None
+
+            for start in range(0, len(token_ids), self.block_size):
+                end = start + self.block_size
+                block_token_ids = token_ids[start:end]
+                if len(block_token_ids) < self.block_size:
+                    break
+                curr_block_token_ids_tuple = tuple(block_token_ids)
+                if parent_block_hash_value is None:
+                    hash_value = self.request_hasher((curr_block_token_ids_tuple))
+                else:
+                    hash_value = self.request_hasher(
+                        (parent_block_hash_value, curr_block_token_ids_tuple)
+                    )
+                # (ldeng): we forgot to update self.block_hashes here originally
+                self.block_hashes.append(str(hash_value))
+                parent_block_hash_value = hash_value
+
+            # (ldeng): It is no longer needed now since we initialize the RequestHasher() with the rank before
+            # if self.rank != 0 and not self.use_mla:
+            #     self.newqrequest_hasher = RequestHasher(self._vllm_config, self.rank)
+            #     for i, ucm_block_id in enumerate(self.block_hashes):
+            #         self.block_hashes[i] = str(self.newqrequest_hasher(ucm_block_id))
 
     def add_req_new(
         self, num_scheduled_tokens, add_req_state, index_in_batch, offset
