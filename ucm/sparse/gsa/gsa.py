@@ -569,7 +569,7 @@ class TopkCal:
                 self.query_similarity_threshold,
             )
             new_cal_topk_id = self.cal_topk_id[indices]
-            self.is_topk_update_np[current_layer_id][new_cal_topk_id] = True
+            self.is_topk_update_np[current_layer_id][new_cal_topk_id.cpu().tolist()] = True
         else:
             new_cal_topk_id = self.cal_topk_id
 

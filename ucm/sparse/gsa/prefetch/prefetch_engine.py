@@ -163,7 +163,7 @@ class GSAPrefetchBase:
             # self.use_topk_caches is in CPU under KVComp
             topk_buf_tmp = self.use_topk_caches[:, block_table_index, :]
             topk_buf_tmp = topk_buf_tmp[:, :, : self.topk_len]
-            self.is_topk_cal = is_topk_done and self.topk_space % 3 == 0
+            self.is_topk_cal = is_topk_done and self.topk_space % 1 == 0
             if self.is_topk_cal:
                 self._topk_tmp_deal(gsa_metadata, topk_buf_tmp)
                 self.is_topk_update = True
