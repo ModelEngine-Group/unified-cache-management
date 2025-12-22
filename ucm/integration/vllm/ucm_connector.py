@@ -335,12 +335,15 @@ class UCMDirectConnector(KVConnectorBase_V1):
 
         total_hit_block_num = hbm_hit_block_num + external_hit_blocks
 
-        external_hit_tokens = external_hit_blocks * self.chunk_size
+        external_hit_tokens = 0
+        if external_hit_blocks > 0:
+            remainder = num_computed_tokens % self.chunk_size
+            external_hit_tokens = external_hit_blocks * self.chunk_size - remainder
 
         # When all the tokens are cached in ssd or hbm,
         # we need to recompute the last token. This if condition will be removed
         # once vLLM scheduler provides a better solution in the future.
-        num_total_hit_tokens = total_hit_block_num * self.chunk_size
+        num_total_hit_tokens = external_hit_tokens + num_computed_tokens
         if num_total_hit_tokens == request.num_tokens:
             external_hit_tokens -= 1
 
