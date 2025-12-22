@@ -34,7 +34,8 @@ class PcStoreImpl : public PcStore {
 public:
     int32_t Setup(const Config& config)
     {
-        auto status = this->spaceMgr_.Setup(config.storageBackends, config.kvcacheBlockSize);
+        auto status = this->spaceMgr_.Setup(config.storageBackends, config.kvcacheBlockSize,
+                                            config.shardDataDir);
         if (status.Failure()) { return status.Underlying(); }
         if (config.transferEnable) {
             if (config.uniqueId.empty()) {
@@ -89,7 +90,6 @@ private:
         UC_INFO("Set UC::StorageBackends to {}.", config.storageBackends);
         UC_INFO("Set UC::BlockSize to {}.", config.kvcacheBlockSize);
         UC_INFO("Set UC::TransferEnable to {}.", config.transferEnable);
-        if (!config.transferEnable) { return; }
         UC_INFO("Set UC::UniqueId to {}.", config.uniqueId);
         UC_INFO("Set UC::IoSize to {}.", config.transferIoSize);
         UC_INFO("Set UC::IoDirect to {}.", config.transferIoDirect);
@@ -99,6 +99,7 @@ private:
         UC_INFO("Set UC::BufferNumber to {}.", config.transferBufferNumber);
         UC_INFO("Set UC::TimeoutMs to {}.", config.transferTimeoutMs);
         UC_INFO("Set UC::ScatterGatherEnable to {}.", config.transferScatterGatherEnable);
+        UC_INFO("Set UC::ShardDataDir to {}.", config.shardDataDir);
     }
 
 private:

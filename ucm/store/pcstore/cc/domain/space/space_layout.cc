@@ -24,17 +24,19 @@
 #include "space_layout.h"
 #include <algorithm>
 #include <array>
+#include <fmt/ranges.h>
 #include "file/file.h"
 #include "logger/logger.h"
 
 namespace UC {
 
-Status SpaceLayout::Setup(const std::vector<std::string>& storageBackends)
+Status SpaceLayout::Setup(const std::vector<std::string>& storageBackends, bool shardDataDir)
 {
     if (storageBackends.empty()) {
         UC_ERROR("Empty backend list.");
         return Status::InvalidParam();
     }
+    shardDataDir_ = shardDataDir;
     auto status = Status::OK();
     for (auto& path : storageBackends) {
         if ((status = this->AddStorageBackend(path)).Failure()) { return status; }
@@ -45,24 +47,34 @@ Status SpaceLayout::Setup(const std::vector<std::string>& storageBackends)
 std::string SpaceLayout::DataFilePath(const std::string& blockId, bool activated) const
 {
     const auto& backend = StorageBackend(blockId);
-    const auto& dir = activated ? TempFileRoot() : DataFileRoot();
-    uint64_t front, back;
-    ShardBlockId(blockId, front, back);
-    return fmt::format("{}{}{:016x}{:016x}", backend, dir, front, back);
+    const auto& file = DataFileName(blockId);
+    const auto& parent = DataParentName(file, activated);
+    return fmt::format("{}{}/{}", backend, parent, file);
 }
 
 Status SpaceLayout::Commit(const std::string& blockId, bool success) const
 {
-    const auto& activated = this->DataFilePath(blockId, true);
-    const auto& archived = this->DataFilePath(blockId, false);
-    if (success) { return File::Rename(activated, archived); }
-    File::Remove(activated);
-    return Status::OK();
+    const auto& backend = StorageBackend(blockId);
+    const auto& file = DataFileName(blockId);
+    const auto& activated = fmt::format("{}{}/{}", backend, TempFileRoot(), file);
+    auto s = Status::OK();
+    if (success) {
+        const auto& parent = fmt::format("{}{}", backend, DataParentName(file, false));
+        const auto& archived = fmt::format("{}/{}", parent, file);
+        if (shardDataDir_) { s = File::MkDir(parent); }
+        if (s == Status::OK() || s == Status::DuplicateKey()) {
+            s = File::Rename(activated, archived);
+        }
+    }
+    if (!success || s.Failure()) { File::Remove(activated); }
+    return s;
 }
 
 std::vector<std::string> SpaceLayout::RelativeRoots() const
 {
-    return {DataFileRoot(), TempFileRoot()};
+    std::vector<std::string> roots{TempFileRoot()};
+    if (!shardDataDir_) { roots.push_back(DataFileRoot()); }
+    return roots;
 }
 
 Status SpaceLayout::AddStorageBackend(const std::string& path)
@@ -111,22 +123,28 @@ Status SpaceLayout::AddSecondaryStorageBackend(const std::string& path)
 std::string SpaceLayout::StorageBackend(const std::string& blockId) const
 {
     static std::hash<std::string> hasher;
-    return this->storageBackends_[hasher(blockId) % this->storageBackends_.size()];
+    static const auto size = this->storageBackends_.size();
+    if (size == 1) { return storageBackends_.front(); }
+    return this->storageBackends_[hasher(blockId) % size];
 }
 
-std::string SpaceLayout::DataFileRoot() const { return "data/"; }
+std::string SpaceLayout::DataParentName(const std::string& blockFile, bool activated) const
+{
+    if (activated) { return TempFileRoot(); }
+    if (!shardDataDir_) { return DataFileRoot(); }
+    return blockFile.substr(0, 8);
+}
 
-std::string SpaceLayout::TempFileRoot() const { return "temp/"; }
+std::string SpaceLayout::DataFileRoot() const { return "data"; }
 
-void SpaceLayout::ShardBlockId(const std::string& blockId, uint64_t& front, uint64_t& back) const
+std::string SpaceLayout::TempFileRoot() const { return "temp"; }
+
+std::string SpaceLayout::DataFileName(const std::string& blockId) const
 {
     constexpr size_t blockIdSize = 16;
-    constexpr size_t nU64PerBlock = blockIdSize / sizeof(uint64_t);
-    using BlockId = std::array<uint64_t, nU64PerBlock>;
-    static_assert(sizeof(BlockId) == blockIdSize);
+    using BlockId = std::array<std::byte, blockIdSize>;
     auto id = static_cast<const BlockId*>(static_cast<const void*>(blockId.data()));
-    front = id->front();
-    back = id->back();
+    return fmt::format("{:02x}", fmt::join(*id, ""));
 }
 
-} // namespace UC
+}  // namespace UC

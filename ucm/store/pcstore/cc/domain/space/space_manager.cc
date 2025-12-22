@@ -28,9 +28,10 @@
 
 namespace UC {
 
-Status SpaceManager::Setup(const std::vector<std::string>& storageBackends, const size_t blockSize)
+Status SpaceManager::Setup(const std::vector<std::string>& storageBackends, const size_t blockSize,
+                           bool shardDataDir)
 {
-    auto status = this->layout_.Setup(storageBackends);
+    auto status = this->layout_.Setup(storageBackends, shardDataDir);
     if (status.Failure()) { return status; }
     this->blockSize_ = blockSize;
     return Status::OK();

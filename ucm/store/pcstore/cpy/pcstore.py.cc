@@ -155,6 +155,7 @@ PYBIND11_MODULE(ucmpcstore, module)
     config.def_readwrite("transferTimeoutMs", &UC::PcStorePy::Config::transferTimeoutMs);
     config.def_readwrite("transferScatterGatherEnable",
                          &UC::PcStorePy::Config::transferScatterGatherEnable);
+    config.def_readwrite("shardDataDir", &UC::PcStorePy::Config::shardDataDir);
     store.def(py::init<>());
     store.def("CCStoreImpl", &UC::PcStorePy::CCStoreImpl);
     store.def("Setup", &UC::PcStorePy::SetupPy);
