@@ -25,6 +25,7 @@
 from abc import ABC, abstractmethod
 from typing import Dict, List
 
+import numpy as np
 import torch
 
 
@@ -130,7 +131,7 @@ class UcmKVStoreBaseV1(ABC):
         self,
         block_ids: List[bytes],
         shard_index: List[int],
-        dst_addr: List[List[int]],
+        dst_addr: List[List[int]] | np.ndarray,
     ) -> Task:
         """Low-level fetch: copy KV data to device pointers.
 
@@ -150,7 +151,7 @@ class UcmKVStoreBaseV1(ABC):
         self,
         block_ids: List[bytes],
         shard_index: List[int],
-        src_addr: List[List[int]],
+        src_addr: List[List[int]] | np.ndarray,
     ) -> Task:
         """Low-level dump: copy KV data from device pointers.
 

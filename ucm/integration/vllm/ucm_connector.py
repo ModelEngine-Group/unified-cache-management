@@ -559,7 +559,6 @@ class UCMDirectConnector(KVConnectorBase_V1):
         is_load = False
         num_loaded_block = 0
         num_loaded_request = 0
-        load_start_time = time.perf_counter() * 1000
         for request_id, request in metadata.request_meta.items():
             if len(request.load_block_ids[0]) == 0:
                 continue
@@ -575,8 +574,6 @@ class UCMDirectConnector(KVConnectorBase_V1):
             block_ids, shard_indexs, total_tensors, rope_tensors = self._generate_task(
                 vllm_block_ids, ucm_block_ids
             )
-            end = time.perf_counter()
-            logger.info(f"start_load_kv prepare time {(end - start) * 1000:.4f}")
             if self.global_rank == 0 or not self.load_only_first_rank:
                 task = self.store.load_data(block_ids, shard_indexs, total_tensors)
                 request_to_task[request_id] = [task]
@@ -654,7 +651,6 @@ class UCMDirectConnector(KVConnectorBase_V1):
         is_save = False
         num_saved_block = 0
         num_saved_request = 0
-        save_start_time = time.perf_counter() * 1000
         for request_id, request in metadata.request_meta.items():
             if len(request.dump_block_ids[0]) == 0:
                 continue
@@ -670,8 +666,6 @@ class UCMDirectConnector(KVConnectorBase_V1):
             block_ids, shard_indexs, total_tensors, rope_tensors = self._generate_task(
                 vllm_block_ids, ucm_block_ids
             )
-            end = time.perf_counter()
-            logger.info(f"wait_for_save prepare time {(end - start) * 1000:.4f}")
             task = self.store.dump_data(block_ids, shard_indexs, total_tensors)
             request_to_task[request_id] = [task]
             if rope_tensors and self.rope_store:

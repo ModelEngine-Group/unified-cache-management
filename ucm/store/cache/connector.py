@@ -23,18 +23,14 @@
 # SOFTWARE.
 #
 import array
-import time
 from dataclasses import dataclass
 from typing import Dict, List
 
 import numpy as np
 import torch
 
-from ucm.logger import init_logger
 from ucm.store.cache import ucmcachestore
 from ucm.store.ucmstore_v1 import Task, UcmKVStoreBaseV1
-
-logger = init_logger(__name__)
 
 
 @dataclass
@@ -93,13 +89,10 @@ class UcmCacheStore(UcmKVStoreBaseV1):
         shard_index: List[int],
         dst_tensor: List[List[torch.Tensor]],
     ) -> Task:
-        start = time.perf_counter()
         ids = np.frombuffer(b"".join(block_ids), dtype=np.uint8)
         indexes = array.array("Q", shard_index)
         addrs = self._tensor_normalize(dst_tensor)
         task_id = self.store.Load(ids, indexes, addrs)
-        end = time.perf_counter()
-        logger.info(f"load prepare {(end-start) * 1000:.4f}")
         return CacheTransTask(task_id)
 
     def dump(
@@ -108,20 +101,17 @@ class UcmCacheStore(UcmKVStoreBaseV1):
         shard_index: List[int],
         src_tensor: List[List[torch.Tensor]],
     ) -> Task:
-        start = time.perf_counter()
         ids = np.frombuffer(b"".join(block_ids), dtype=np.uint8)
         indexes = array.array("Q", shard_index)
         addrs = self._tensor_normalize(src_tensor)
         task_id = self.store.Dump(ids, indexes, addrs)
-        end = time.perf_counter()
-        logger.info(f"dump prepare {(end - start) * 1000:.4f}")
         return CacheTransTask(task_id)
 
     def load_data(
         self,
         block_ids: List[bytes],
         shard_index: List[int],
-        dst_addr: List[List[int]],
+        dst_addr: List[List[int]] | np.ndarray,
     ) -> Task:
         ids = np.frombuffer(b"".join(block_ids), dtype=np.uint8)
         indexes = array.array("Q", shard_index)
@@ -136,7 +126,7 @@ class UcmCacheStore(UcmKVStoreBaseV1):
         self,
         block_ids: List[bytes],
         shard_index: List[int],
-        src_addr: List[List[int]],
+        src_addr: List[List[int]] | np.ndarray,
     ) -> Task:
         ids = np.frombuffer(b"".join(block_ids), dtype=np.uint8)
         indexes = array.array("Q", shard_index)

@@ -160,7 +160,7 @@ class UcmPcStoreV1(UcmKVStoreBaseV1):
         self,
         block_ids: List[bytes],
         shard_index: List[int],
-        dst_addr: List[List[int]],
+        dst_addr: List[List[int]] | np.ndarray,
     ) -> Task:
         """Low-level fetch: copy KV data to device pointers.
 
@@ -187,7 +187,7 @@ class UcmPcStoreV1(UcmKVStoreBaseV1):
         self,
         block_ids: List[bytes],
         shard_index: List[int],
-        src_addr: List[List[int]],
+        src_addr: List[List[int]] | np.ndarray,
     ) -> Task:
         """Low-level dump: copy KV data from device pointers.
 
