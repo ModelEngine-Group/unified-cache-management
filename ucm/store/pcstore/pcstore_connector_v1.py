@@ -45,22 +45,21 @@ class UcmPcStoreV1(UcmKVStoreBaseV1):
         block_size = config.get("block_size", 0)
         transfer_enable = True if int(config["device_id"]) >= 0 else False
         param = ucmpcstore.PcStore.Config(storage_backends, block_size, transfer_enable)
-        if transfer_enable:
-            key_mapping = {
-                "unique_id": "uniqueId",
-                "io_direct": "transferIoDirect",
-                "local_rank_size": "transferLocalRankSize",
-                "device_id": "transferDeviceId",
-                "stream_number": "transferStreamNumber",
-                "tensor_size": "transferIoSize",
-                "buffer_number": "transferBufferNumber",
-                "timeout_ms": "transferTimeoutMs",
-                "use_scatter_gather": "transferScatterGatherEnable",
-            }
-            for key, value in config.items():
-                attr = key_mapping.get(key)
-                if attr and hasattr(param, attr):
-                    setattr(param, attr, value)
+        key_mapping = {
+            "unique_id": "uniqueId",
+            "io_direct": "transferIoDirect",
+            "local_rank_size": "transferLocalRankSize",
+            "device_id": "transferDeviceId",
+            "stream_number": "transferStreamNumber",
+            "tensor_size": "transferIoSize",
+            "buffer_number": "transferBufferNumber",
+            "timeout_ms": "transferTimeoutMs",
+            "use_scatter_gather": "transferScatterGatherEnable",
+        }
+        for key, value in config.items():
+            attr = key_mapping.get(key)
+            if attr and hasattr(param, attr):
+                setattr(param, attr, value)
         ret = self.store.Setup(param)
         if ret != 0:
             msg = f"Failed to initialize ucmpcstore, errcode: {ret}."
