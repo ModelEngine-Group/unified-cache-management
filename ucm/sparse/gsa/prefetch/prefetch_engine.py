@@ -227,10 +227,11 @@ class GSAPrefetchBase:
             )
         self.topk_buf_tmp = topk_buf_tmp
 
-    def deal_async_prefetch(self, is_prefetch_done, gsa_metadata, kvcache, store_ptr):
+    def deal_async_prefetch(self, is_prefetch_done, gsa_metadata, kvcache, store_ptr, is_topk_update_np=None):
         self.topk_space += 1
         all_free_block_ids = None
         all_miss_ids = None
+        prefetch_threshold = 10 # the minimum number of layers with topk indices updated under QS feature for prefetching
         if not self.atb_gsa_enable:
             return all_free_block_ids, all_miss_ids
         if is_prefetch_done and self.ptopk_prefetch_enable and self.is_topk_update:
@@ -252,8 +253,14 @@ class GSAPrefetchBase:
             topk_len_list = []
             req_id_list = []
             for req_id in self.req_ids_bs:
+                index_in_batch = gsa_metadata.gsa_stats[req_id].index_in_batch
                 req_id_list.append(req_id)
                 if not self.is_gsa_req_id[req_id]:
+                    print(f"req_id: {req_id} with index_in_batch: {index_in_batch} is not a GSA request")
+                    topk_len_list.append(0)
+                    continue
+                elif is_topk_update_np[:,index_in_batch].sum() < prefetch_threshold: 
+                    print(f"req_id: {req_id} with index_in_batch: {index_in_batch} does not have enough (<{prefetch_threshold}) layers with topk indices updated under QS feature")
                     topk_len_list.append(0)
                     continue
                 else:

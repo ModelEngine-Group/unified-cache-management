@@ -50,6 +50,7 @@ if ENABLE_KVCOMP:
     from ucm.sparse.kvcomp.hash_encoder import HashEncoder
 
 import torch.nn.functional as F
+import numpy as np
 
 ReqType = Union[str, int]
 
@@ -496,6 +497,7 @@ class TopkCal:
         enable_query_similarity=False,
         gsa_q_cache=None,
         query_similarity_threshold=None,
+        is_topk_update_np=None,
     ):
         self.cal_topk_id = cal_topk_id
         self.topk_caches = topk_caches
@@ -503,6 +505,7 @@ class TopkCal:
         self.enable_query_similarity = enable_query_similarity
         self.gsa_q_cache = gsa_q_cache
         self.query_similarity_threshold = query_similarity_threshold
+        self.is_topk_update_np = is_topk_update_np
 
     def cal_topk(self, intermediate_q, current_layer_id):
         bs = len(self.cal_topk_id)
@@ -566,6 +569,7 @@ class TopkCal:
                 self.query_similarity_threshold,
             )
             new_cal_topk_id = self.cal_topk_id[indices]
+            self.is_topk_update_np[current_layer_id][new_cal_topk_id] = True
         else:
             new_cal_topk_id = self.cal_topk_id
 
@@ -721,6 +725,9 @@ class GSA(UcmSparseBase):
         # query-similarity feature
         self.enable_query_similarity = True
         self.query_similarity_threshold = 0.7 if self.enable_query_similarity else None
+
+        # self.is_topk_update_np[layer_id][bs_index] is True if the topk indices are updated for the corresponding layer and bs index under QS feature
+        self.is_topk_update_np = np.full((self.layer_num, MAX_BS), False, dtype=bool) if self.enable_query_similarity else None
 
     def init_topk_cal(
         self,
@@ -1226,6 +1233,9 @@ class GSA(UcmSparseBase):
         )
         self.gsa_stats = self.gsa_metadata.gsa_stats
         self._start_topk_cal()
+        
+        #reset is_topk_update_np to False for the current decoding step
+        self.is_topk_update_np.fill(False)
 
     def execute_finished(self):
         kv_caches = [None] * self.layer_num
@@ -1249,6 +1259,7 @@ class GSA(UcmSparseBase):
                 self.gsa_metadata,
                 kv_caches,
                 self.connector.cc_store(),
+                self.is_topk_update_np,
             )
             if self.is_python_load:
                 self.launch_transfer_task(all_free_block_ids, all_miss_ids, kv_caches)
@@ -1453,6 +1464,7 @@ class GSA(UcmSparseBase):
                         self.enable_query_similarity,
                         self.gsa_q_cache,
                         self.query_similarity_threshold,
+                        self.is_topk_update_np,
                     )
                     self.gsa_cuda_topk.set_topk_param_for_hamming(
                         repre_slot_mappings,
