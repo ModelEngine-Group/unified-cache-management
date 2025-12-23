@@ -23,7 +23,7 @@ def model_config() -> ModelConfig:
 
 _DOC_QA_BASE_CONFIG = {
     "data_type": "doc_qa",
-    "dataset_file_path": "../../common/uc_eval/datasets/doc_qa/Galaxy_Railroad.json",
+    "dataset_file_path": "../../common/uc_eval/datasets/doc_qa/prompts.jsonl",
     "enable_prefix_cache": True,
     "parallel_num": 1,
     "benchmark_mode": "evaluate",
