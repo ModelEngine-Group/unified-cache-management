@@ -250,6 +250,15 @@ class GSAPrefetchBase:
                 self.prefetch_topk_buf[:, : len(self.select_bs_index), :],
                 self.step_time,
             )
+            # Synchronize streams once before checking all requests to ensure CPU tensor is ready
+            # This avoids blocking issues and is more efficient than synchronizing per request
+            if self.enable_query_similarity:
+                # Then synchronize transfer stream to ensure the async GPU->CPU transfer is complete
+                if transfer_stream is not None:
+                    # Synchronize the transfer stream to ensure GPU->CPU transfer is complete
+                    with torch.npu.stream(transfer_stream):
+                        torch.npu.synchronize()
+            
             topk_len_list = []
             req_id_list = []
             for req_id in self.req_ids_bs:
@@ -261,9 +270,6 @@ class GSAPrefetchBase:
                     continue
                 else:
                     if self.enable_query_similarity:
-                        if transfer_stream is not None:
-                            with torch.npu.stream(transfer_stream):
-                                torch.npu.synchronize()
                         if num_layers_topk_updated_cpu is not None and num_layers_topk_updated_cpu[index_in_batch] < prefetch_threshold:
                             print(f"req_id: {req_id} with index_in_batch: {index_in_batch} does not have enough (<{prefetch_threshold}) layers with topk indices updated under QS feature")
                             topk_len_list.append(0)
