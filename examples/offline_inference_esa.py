@@ -1,6 +1,11 @@
+import os
+os.environ["ENABLE_SPARSE"] = "true"
+
+import ucm
+
+
 import contextlib
 import json
-import os
 import sys
 import time
 from dataclasses import asdict
@@ -24,7 +29,6 @@ tokenizer = None
 def setup_environment_variables():
     os.environ["VLLM_USE_V1"] = "1"
     os.environ["PYTHONHASHSEED"] = "123456"
-    os.environ["ENABLE_SPARSE"] = "true"
 
     global model, path_to_dataset, data_dir, tokenizer
     model = os.getenv("MODEL_PATH", "/home/models/Qwen2.5-14B-Instruct")
@@ -60,7 +64,6 @@ def setup_environment_variables():
     tokenizer = AutoTokenizer.from_pretrained(model, use_chat_template=True)
 
 
-@contextlib.contextmanager
 def build_llm_with_uc(module_path: str, name: str, model: str):
     ktc = KVTransferConfig(
         kv_connector=name,
@@ -92,20 +95,17 @@ def build_llm_with_uc(module_path: str, name: str, model: str):
         model=model,
         kv_transfer_config=ktc,
         max_model_len=32768,
-        gpu_memory_utilization=0.8,
-        max_num_batched_tokens=30000,
+        gpu_memory_utilization=0.45,
+        max_num_batched_tokens=10000,
         block_size=128,
         enforce_eager=True,
-        distributed_executor_backend="mp",
+        # distributed_executor_backend="mp",
         tensor_parallel_size=1,
         trust_remote_code=True,
     )
 
     llm = LLM(**asdict(llm_args))
-    try:
-        yield llm
-    finally:
-        logger.info("LLM engine is exiting.")
+    return llm
 
 
 def print_output(
@@ -122,13 +122,12 @@ def print_output(
         generated_text = output.outputs[0].text
         print(f"Generated text: {generated_text!r}")
         lines.append(generated_text + "\n")
-    print(f"Generation took {time.time() - start:.2f} seconds, {req_str} request done.")
-    with open("./newest_out.txt", "w") as f:
-        f.writelines(lines)
+    print(f"ESA Generation took {time.time() - start:.2f} seconds, {req_str} request done.")
     print("-" * 50)
 
 
 def main():
+    import os; print(f"esa main @ {os.getpid()}")
     module_path = "ucm.integration.vllm.ucm_connector"
     name = "UCMConnector"
     setup_environment_variables()
@@ -148,25 +147,38 @@ def main():
             add_special_tokens=True,
         )
 
-    with build_llm_with_uc(module_path, name, model) as llm:
-        prompts = []
-        batch_size = 20
-        assert os.path.isfile(
-            path_to_dataset
-        ), f"Incorrect dataset path. Please specify the dataset path by `export DATASET_PATH=/path/to/longbench/multifieldqa_zh.jsonl`"
-        with open(path_to_dataset, "r") as f:
-            lines = f.readlines()
-        for i in range(batch_size):
-            line = lines[i]
-            data = json.loads(line)
-            prompt = f"""阅读以下文字并用中文简短回答：\n\n{data["context"]}\n\n现在请基于上面的文章回答下面的问题，只告诉我答案，不要输出任何其他字词。\n\n问题：{data["input"]}\n回答："""
-            prompts.append(get_prompt(prompt))
+    llm = build_llm_with_uc(module_path, name, model)
+    prompts = []
+    batch_size = 1
+    assert os.path.isfile(
+        path_to_dataset
+    ), f"Incorrect dataset path. Please specify the dataset path by `export DATASET_PATH=/path/to/longbench/multifieldqa_zh.jsonl`"
+    with open(path_to_dataset, "r") as f:
+        lines = f.readlines()
+    line = lines[10]
+    data = json.loads(line)
+    prompt = f"""阅读以下文字并用中文简短回答：\n\n{data["context"]}\n\n现在请基于上面的文章回答下面的问题，只告诉我答案，不要输出任何其他字词。\n\n问题：{data["input"]}\n回答："""
+    prompts = [get_prompt(prompt)]
+    # og_prompt = get_prompt(prompt)
+    # og_len = len(og_prompt)
+    # prompts = [og_prompt[:og_len//3]]
 
-        sampling_params = SamplingParams(
-            temperature=0, top_p=0.95, max_tokens=256, ignore_eos=False
-        )
+    sampling_params = SamplingParams(
+        temperature=0, top_p=0.95, max_tokens=256, ignore_eos=True
+    )
+    for _ in range(1):
+        print_output(llm, prompts, sampling_params, "init")
+    llm.reset_prefix_cache()
 
-        print_output(llm, prompts, sampling_params, "first")
+    print("========\n\n\n========")
+    line = lines[0]
+    data = json.loads(line)
+    prompt = f"""阅读以下文字并用中文简短回答：\n\n{data["context"]}\n\n现在请基于上面的文章回答下面的问题，只告诉我答案，不要输出任何其他字词。\n\n问题：{data["input"]}\n回答："""
+    prompts = [get_prompt(prompt)]
+    # og_prompt = get_prompt(prompt)
+    # og_len = len(og_prompt)
+    # prompts = [og_prompt[:og_len//3]]
+    print_output(llm, prompts, sampling_params, "formal")
 
 
 if __name__ == "__main__":

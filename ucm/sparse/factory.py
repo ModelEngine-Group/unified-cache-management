@@ -45,9 +45,10 @@ class UcmSparseFactory:
 
 
 # Register available sparse methods
-UcmSparseFactory.register_sparse_method("ESA", "ucm.sparse.esa.esa", "ESA")
+UcmSparseFactory.register_sparse_method("ESA", "ucm.sparse.esa.esa_new", "ESA")
 UcmSparseFactory.register_sparse_method("KvComp", "ucm.sparse.kvcomp.kvcomp", "KvComp")
 UcmSparseFactory.register_sparse_method("GSA", "ucm.sparse.gsa.gsa", "GSA")
 UcmSparseFactory.register_sparse_method(
     "KVStarMultiStep", "ucm.sparse.kvstar.multistep", "KVStarMultiStep"
 )
+from ucm.sparse.esa.esa_new import ESA

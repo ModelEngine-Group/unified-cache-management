@@ -38,6 +38,7 @@ def _enable_sparse() -> bool:
 
 def _apply_sparse_adapt() -> None:
     """Apply sparse adapt patches."""
+    _patch_stat()
     try:
         if _enable_sparse():
             _patch_block_table()
@@ -53,7 +54,39 @@ def _apply_sparse_adapt() -> None:
     except Exception as e:
         logger.error(f"Could not apply sparse adapt patches: {e}")
         raise e
+    print("====\nucm_sparse patch apply end")
 
+def _patch_stat():
+    def update_from_output(self, output, engine_core_timestamp, is_prefilling,
+                               prompt_len, req_stats,
+                               lora_stats):
+            num_new_generation_tokens = len(output.new_token_ids)
+            self.num_generation_tokens += num_new_generation_tokens
+            if is_prefilling:
+                self.num_prompt_tokens += prompt_len
+
+                first_token_latency = self._time_since(req_stats.arrival_time)
+                self.time_to_first_tokens_iter.append(first_token_latency)
+                print(f"req: {output.request_id}, ttft: {first_token_latency}")
+
+            req_stats.num_generation_tokens += num_new_generation_tokens
+
+            # Process request-level engine core events
+            if output.events is not None:
+                self.update_from_events(output.request_id, output.events,
+                                        is_prefilling, req_stats, lora_stats)
+
+            # Process the batch-level "new tokens" engine core event
+            if is_prefilling:
+                req_stats.first_token_ts = engine_core_timestamp
+            else:
+                tpot = engine_core_timestamp - req_stats.last_token_ts
+                self.time_per_output_tokens_iter.append(tpot)
+                print(f"req: {output.request_id}, tpot: {tpot}")
+
+            req_stats.last_token_ts = engine_core_timestamp
+    from vllm.v1.metrics.stats import IterationStats
+    IterationStats.update_from_output = update_from_output
 
 # ==================== vllm/v1/core/sched/output.py  ====================
 def _patch_scheduler_output() -> None:
@@ -1052,6 +1085,7 @@ def _patch_scheduler() -> None:
         Scheduler.schedule = patched_schedule
 
         def patched_add_request(self, request: Request) -> None:
+            import os; print(f'scheduler add_request: @ {os.getpid()}')
             if not hasattr(self, "ucm_sparse"):
                 init_ucm_sparse(self)
             self.waiting.add_request(request)
@@ -1243,6 +1277,7 @@ def _patch_gpu_model_runner() -> None:
                 else:
                     generator = None
 
+                print(f"req_id {req_id}, prompt_len: {len(new_req_data.prompt_token_ids)}")
                 self.requests[req_id] = CachedRequestState(
                     req_id=req_id,
                     prompt_token_ids=new_req_data.prompt_token_ids,

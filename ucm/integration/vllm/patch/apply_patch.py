@@ -50,6 +50,7 @@ _vllm_import_hook = None
 
 
 def get_vllm_version() -> Optional[str]:
+    import time; begin = time.time()
     """Detect vLLM version."""
     global _vllm_version
     if _vllm_version is not None:
@@ -110,6 +111,7 @@ def apply_all_patches() -> None:
 
 
 def _apply_patches_v092() -> None:
+    import time; begin = time.time()
     """Apply patches for vLLM 0.9.2."""
     from .patch_funcs.v092.vllm_patch import _apply_sparse_adapt
 
@@ -118,6 +120,7 @@ def _apply_patches_v092() -> None:
         from .patch_funcs.v092.vllm_ascend_patch import _apply_ascend_patch
 
         _apply_ascend_patch()  # apply vllm-ascend-adapt.patch
+    print(f"_apply_patches_v092 end @{time.time()} spent: {time.time() - begin}")
 
 
 def install_import_hook() -> None:

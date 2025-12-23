@@ -22,7 +22,7 @@ The class provides the following primitives:
 from __future__ import annotations
 
 import enum
-from abc import ABC, abstractmethod
+from abc import ABC
 from typing import TYPE_CHECKING, List, Optional, Union
 
 if TYPE_CHECKING:
@@ -164,7 +164,6 @@ class UcmSparseBase(ABC):
     # Scheduler-side methods
     # ==============================
 
-    @abstractmethod
     def request_begin(self, request_id: Union[int, str], prompt_token_ids: List[int]):
         """
         This is called at the beginning of "Scheduler->add_request" function.
@@ -182,7 +181,7 @@ class UcmSparseBase(ABC):
         """
         This is called by "Scheduler->schedule" function to estimate the number of required blocks.
         """
-        pass
+        return INVALID_SLOT
 
     def update_state_after_alloc(self, request: Request, num_blocks: int):
         """
