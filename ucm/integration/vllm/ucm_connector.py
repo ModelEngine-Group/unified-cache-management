@@ -212,7 +212,7 @@ class UCMDirectConnector(KVConnectorBase_V1):
             config["block_size"] = chunk_block_size
             if self.is_dsa or self.is_mla:
                 config["share_buffer_enable"] = True
-                config["local_rank_size"] = self.tp_size
+                config["local_rank_size"] = max(self.tp_size, 8)
             else:
                 config["share_buffer_enable"] = False
             store = UcmConnectorFactoryV1.create_connector(name, config)
@@ -302,8 +302,11 @@ class UCMDirectConnector(KVConnectorBase_V1):
         external_block_ids = ucm_block_ids[hbm_hit_block_num:]
         if not external_block_ids:
             return 0, False
-
-        lookup_results = self.store.lookup(external_block_ids)
+        try:
+            lookup_results = self.store.lookup(external_block_ids)
+        except RuntimeError as e:
+            lookup_results = []
+            logger.error(f"request {request.request_id} look up error. {e}")
         external_hit_blocks = 0
         for i, hit in enumerate(lookup_results):
             if not hit:
@@ -451,22 +454,6 @@ class UCMDirectConnector(KVConnectorBase_V1):
                 return int(chunk)
         return None
 
-    def _get_tensors(
-        self, vllm_block_id: int
-    ) -> Tuple[List[torch.Tensor], List[torch.Tensor]]:
-        """
-        GQA/MHA: one layer shape is (2, num_blocks, block_size, num_kv_heads, head_size)
-        MLA: one layer shape is (num_blocks, block_size, head_size)
-        """
-        k_tensors, v_tensors = [], []
-        for _, kv_layer in self.kv_caches.items():
-            k_tensors.append(
-                kv_layer[vllm_block_id] if self.is_mla else kv_layer[0][vllm_block_id]
-            )
-            if not self.is_mla:
-                v_tensors.append(kv_layer[1][vllm_block_id])
-        return k_tensors, v_tensors
-
     def _generate_task(
         self, vllm_block_ids: List[int], ucm_block_ids: List[bytes]
     ) -> Tuple[List[bytes], List[int], np.ndarray, np.ndarray]:
@@ -541,13 +528,19 @@ class UCMDirectConnector(KVConnectorBase_V1):
                 vllm_block_ids, ucm_block_ids
             )
             if self.global_rank == 0 or not self.load_only_first_rank:
-                task = self.store.load_data(block_ids, shard_indexs, total_tensors)
-                request_to_task[request_id] = [task]
-                if rope_tensors is not None and self.rope_store:
-                    rope_task = self.rope_store.load_data(
-                        block_ids, shard_indexs, rope_tensors
+                try:
+                    task = self.store.load_data(block_ids, shard_indexs, total_tensors)
+                    request_to_task[request_id] = [task]
+                    if rope_tensors is not None and self.rope_store:
+                        rope_task = self.rope_store.load_data(
+                            block_ids, shard_indexs, rope_tensors
+                        )
+                        request_to_task[request_id].append(rope_task)
+                except RuntimeError as e:
+                    logger.error(f"request {request_id} load data error. {e}")
+                    self._invalid_block_ids.update(
+                        metadata.request_meta[request_id].load_block_ids[1]
                     )
-                    request_to_task[request_id].append(rope_task)
             else:
                 request_to_task[request_id] = None
 
@@ -559,7 +552,7 @@ class UCMDirectConnector(KVConnectorBase_V1):
                     if len(tasks) > 1 and self.rope_store:
                         self.rope_store.wait(tasks[1])
                 except RuntimeError as e:
-                    logger.error("request {request_id} load kv cache failed.:", e)
+                    logger.error(f"request {request_id} load kv cache failed. {e}")
                     self._invalid_block_ids.update(
                         metadata.request_meta[request_id].load_block_ids[1]
                     )
@@ -629,13 +622,16 @@ class UCMDirectConnector(KVConnectorBase_V1):
             block_ids, shard_indexs, total_tensors, rope_tensors = self._generate_task(
                 vllm_block_ids, ucm_block_ids
             )
-            task = self.store.dump_data(block_ids, shard_indexs, total_tensors)
-            request_to_task[request_id] = [task]
-            if rope_tensors is not None and self.rope_store:
-                rope_task = self.rope_store.dump_data(
-                    block_ids, shard_indexs, rope_tensors
-                )
-                request_to_task[request_id].append(rope_task)
+            try:
+                task = self.store.dump_data(block_ids, shard_indexs, total_tensors)
+                request_to_task[request_id] = [task]
+                if rope_tensors is not None and self.rope_store:
+                    rope_task = self.rope_store.dump_data(
+                        block_ids, shard_indexs, rope_tensors
+                    )
+                    request_to_task[request_id].append(rope_task)
+            except RuntimeError as e:
+                logger.error(f"request {request_id} dump kv cache failed. {e}")
 
         for request_id, tasks in request_to_task.items():
             try:
@@ -643,7 +639,7 @@ class UCMDirectConnector(KVConnectorBase_V1):
                 if len(tasks) > 1 and self.rope_store:
                     self.rope_store.wait(tasks[1])
             except RuntimeError as e:
-                logger.error("request {request_id} dump kv cache failed.:", e)
+                logger.error(f"request {request_id} dump kv cache failed.{e}")
         save_end_time = time.perf_counter() * 1000
         save_speed = (
             num_saved_block
