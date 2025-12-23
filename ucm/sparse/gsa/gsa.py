@@ -751,8 +751,8 @@ class GSA(UcmSparseBase):
 
      
         if self.enable_query_similarity:
-            self.num_layers_topk_updated = [torch.full((MAX_BS,), 0, dtype=torch.int32, device=self.device) for _ in range(self.layer_num)]
-            self.num_layers_topk_updated_cpu = [torch.full((MAX_BS,), 0, dtype=torch.int32, device=self.device) for _ in range(self.layer_num)]
+            self.num_layers_topk_updated = torch.zeros((MAX_BS,), dtype=torch.int32, device=self.device)
+            self.num_layers_topk_updated_cpu = torch.zeros((MAX_BS,), dtype=torch.int32, device="cpu") 
         else:
             self.num_layers_topk_updated = None
             self.num_layers_topk_updated_cpu = None
