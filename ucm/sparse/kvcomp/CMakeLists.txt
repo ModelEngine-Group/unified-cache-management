@@ -48,3 +48,4 @@ else()
 endif()
 
 add_subdirectory(hash_retrieval)
+add_subdirectory(ham_dist)

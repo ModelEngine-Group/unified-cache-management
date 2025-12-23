@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, List, Optional, Tuple
 
 import numpy as np
 import torch
+import vllm.envs as envs
 from vllm.config import VllmConfig
 from vllm.distributed.kv_transfer.kv_connector.v1.base import (
     KVConnectorBase_V1,
@@ -232,7 +233,12 @@ class UCMDirectConnector(KVConnectorBase_V1):
             return [path for path in storage_backends.split(":") if path]
 
     def register_kv_caches(self, kv_caches: dict[str, torch.Tensor]):
-        self.kv_caches = kv_caches
+        if os.environ["VLLM_HASH_ATTENTION"] == "1":
+            for layer_name, value in kv_caches.items():
+                kv_cache, k_hash = value
+                self.kv_caches[layer_name] = kv_cache
+        else:
+            self.kv_caches = kv_caches
         sample_kv_layer = next(iter(self.kv_caches.values()))
         if self.kv_cache_dtype is None:
             self.kv_cache_dtype = sample_kv_layer[0].dtype
