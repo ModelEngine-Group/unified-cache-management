@@ -234,6 +234,9 @@ class GSAPrefetchBase:
         prefetch_threshold = 10 # the minimum number of layers with topk indices updated under QS feature for prefetching
         if not self.atb_gsa_enable:
             return all_free_block_ids, all_miss_ids
+        # Skip prefetch during prefill stage - prefetch is only for decode stage
+        if self.req_ids_bs and all(gsa_metadata.gsa_stats[req_id].stage() == SequenceStage.PREFILL for req_id in self.req_ids_bs if req_id in gsa_metadata.gsa_stats):
+            return all_free_block_ids, all_miss_ids
         if is_prefetch_done and self.ptopk_prefetch_enable and self.is_topk_update:
             tmp = self.use_block_table
             self.use_block_table = self.m_load_success_list
