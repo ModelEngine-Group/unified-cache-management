@@ -1,6 +1,10 @@
 from typing import Any, Dict, List, Optional, Union
 
 import torch
+if hasattr(torch,'npu') and torch.npu.is_available():
+    import torch_npu
+    import ucm_custom_ops
+    from vllm_ascend.attention.attention_v1 import AscendAttentionState
 from vllm import _custom_ops as ops
 from vllm.attention.ops.flashmla import get_mla_metadata
 from vllm.config import VllmConfig
@@ -30,7 +34,18 @@ class KvCompOnDevice(UcmSparseBase):
         super().__init__(vllm_config, role)
         self.rank = vllm_config.parallel_config.rank
         self.is_mla = vllm_config.model_config.is_deepseek_mla
-        self.device = torch.device(f"cuda:{self.rank}")
+
+        if vllm_config.device_config.device_type == "cuda":
+            self.is_cuda = True
+            self.is_npu = False
+            self.device = torch.device(f"cuda:{self.rank}")
+        elif vllm_config.device_config.device_type == "npu":
+            self.is_cuda = False
+            self.is_npu = True
+            self.device = torch.device(f"npu:{self.rank}")
+        else:
+            raise ValueError(f"Unsupported device type: {vllm_config.device_config.device_type}")
+
         self.num_q_heads = vllm_config.model_config.get_num_attention_heads(
             vllm_config.parallel_config
         )
