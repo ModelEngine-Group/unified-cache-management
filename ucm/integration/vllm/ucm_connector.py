@@ -6,6 +6,7 @@ import time
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, List, Optional, Tuple
 
+import numpy as np
 import torch
 from vllm.config import VllmConfig
 from vllm.distributed.kv_transfer.kv_connector.v1.base import (
@@ -122,9 +123,8 @@ class UCMDirectConnector(KVConnectorBase_V1):
         logger.info(f"self.launch_config: {self.launch_config}")
         self.connector_configs = self.launch_config.get("ucm_connectors", [])
         assert len(self.connector_configs) > 0, "no storage connector name in config."
-        self.load_only_first_rank: bool = (
-            self.launch_config.get("load_only_first_rank", self.is_mla) and self.is_mla
-        )
+        # TODO: haven't support broadcast
+        self.load_only_first_rank = False
         if self.load_only_first_rank:
             if role == KVConnectorRole.WORKER:
                 self.group_coordinator = get_tp_group()
@@ -249,6 +249,19 @@ class UCMDirectConnector(KVConnectorBase_V1):
                 self.is_dsa = True
         logger.info(f"use mla: {self.is_mla}, use dsa: {self.is_dsa}")
 
+        # Initialize KV cache base addresses
+        k_ptrs, v_ptrs = [], []
+        self.k_base_ptrs: np.ndarray
+        self.v_base_ptrs: Optional[np.ndarray] = None
+        for _, kv_layer in self.kv_caches.items():
+            if len(sample_kv_layer) == 2:
+                k_ptrs.append(kv_layer[0].data_ptr())
+                v_ptrs.append(kv_layer[1].data_ptr())
+            else:
+                k_ptrs.append(kv_layer.data_ptr())
+        self.k_base_ptrs = np.array(k_ptrs, dtype=np.uint64)
+        self.v_base_ptrs = np.array(v_ptrs, dtype=np.uint64) if v_ptrs else None
+
         # init work-side connector
         tensor_size = (
             sample_kv_layer[0][0].numel() * sample_kv_layer[0][0].element_size()
@@ -261,6 +274,8 @@ class UCMDirectConnector(KVConnectorBase_V1):
             * self.chunk_size
             * (1 if self.is_mla or self.is_dsa else 2)
         )
+        self.block_stride = tensor_size
+
         self.block_data_size = chunk_block_size
         self.store = self._create_store(tensor_size, chunk_block_size)
         if self.is_dsa:
@@ -271,6 +286,7 @@ class UCMDirectConnector(KVConnectorBase_V1):
             self.rope_store = self._create_store(
                 rope_tensor_size, rope_chunk_block_size, True
             )
+            self.rope_block_stride = rope_tensor_size
             self.block_data_size += rope_chunk_block_size
 
     def get_num_new_matched_tokens(
@@ -453,21 +469,33 @@ class UCMDirectConnector(KVConnectorBase_V1):
 
     def _generate_task(
         self, vllm_block_ids: List[int], ucm_block_ids: List[bytes]
-    ) -> Tuple[
-        List[bytes], List[int], List[List[torch.Tensor]], List[List[torch.Tensor]]
-    ]:
-        block_ids, shard_indexs, total_tensors, rope_tensors = [], [], [], []
-        for i, vllm_block_id in enumerate(vllm_block_ids):
-            k_tensors, v_tensors = self._get_tensors(vllm_block_id)
-            block_ids.append(ucm_block_ids[i])
-            if self.is_dsa:
-                total_tensors.append(k_tensors)
-                rope_tensors.append(v_tensors)
-            else:
-                total_tensors.append(k_tensors + v_tensors)
-            shard_indexs.append(0)
+    ) -> Tuple[List[bytes], List[int], np.ndarray, np.ndarray]:
+        block_addrs, rope_block_addrs = None, None
+        vllm_block_ids_np = np.array(vllm_block_ids, np.uint64)
+        k_addrs = (
+            vllm_block_ids_np[:, None] * self.block_stride + self.k_base_ptrs[None, :]
+        )
+        num_blocks, num_layers = k_addrs.shape
+        shard_indexs = [0] * num_blocks
+        if self.v_base_ptrs is None:
+            block_addrs = k_addrs
+        elif self.is_dsa:
+            v_addrs = (
+                vllm_block_ids_np[:, None] * self.rope_block_stride
+                + self.v_base_ptrs[None, :]
+            )
+            block_addrs = k_addrs
+            rope_block_addrs = v_addrs
+        else:
+            v_addrs = (
+                vllm_block_ids_np[:, None] * self.block_stride
+                + self.v_base_ptrs[None, :]
+            )
+            block_addrs = np.empty((num_blocks, num_layers * 2), dtype=np.uint64)
+            block_addrs[:, :num_layers] = k_addrs
+            block_addrs[:, num_layers:] = v_addrs
 
-        return block_ids, shard_indexs, total_tensors, rope_tensors
+        return ucm_block_ids, shard_indexs, block_addrs, rope_block_addrs
 
     def _broadcast(self, dst_tensor_addr: list[torch.Tensor]):
         rec_tensor: torch.Tensor = None
@@ -513,18 +541,15 @@ class UCMDirectConnector(KVConnectorBase_V1):
                 vllm_block_ids, ucm_block_ids
             )
             if self.global_rank == 0 or not self.load_only_first_rank:
-                task = self.store.load(block_ids, shard_indexs, total_tensors)
+                task = self.store.load_data(block_ids, shard_indexs, total_tensors)
                 request_to_task[request_id] = [task]
-                if rope_tensors and self.rope_store:
-                    rope_task = self.rope_store.load(
+                if rope_tensors is not None and self.rope_store:
+                    rope_task = self.rope_store.load_data(
                         block_ids, shard_indexs, rope_tensors
                     )
                     request_to_task[request_id].append(rope_task)
             else:
                 request_to_task[request_id] = None
-            req_broadcast_addr[request_id] = [
-                t for row in total_tensors for t in row
-            ] + [t for row in rope_tensors for t in row]
 
         for request_id, tasks in request_to_task.items():
             # TODO error handling
@@ -604,10 +629,12 @@ class UCMDirectConnector(KVConnectorBase_V1):
             block_ids, shard_indexs, total_tensors, rope_tensors = self._generate_task(
                 vllm_block_ids, ucm_block_ids
             )
-            task = self.store.dump(block_ids, shard_indexs, total_tensors)
+            task = self.store.dump_data(block_ids, shard_indexs, total_tensors)
             request_to_task[request_id] = [task]
-            if rope_tensors and self.rope_store:
-                rope_task = self.rope_store.dump(block_ids, shard_indexs, rope_tensors)
+            if rope_tensors is not None and self.rope_store:
+                rope_task = self.rope_store.dump_data(
+                    block_ids, shard_indexs, rope_tensors
+                )
                 request_to_task[request_id].append(rope_task)
 
         for request_id, tasks in request_to_task.items():

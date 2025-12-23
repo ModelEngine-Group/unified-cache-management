@@ -111,11 +111,14 @@ class UcmCacheStore(UcmKVStoreBaseV1):
         self,
         block_ids: List[bytes],
         shard_index: List[int],
-        dst_addr: List[List[int]],
+        dst_addr: List[List[int]] | np.ndarray,
     ) -> Task:
         ids = np.frombuffer(b"".join(block_ids), dtype=np.uint8)
         indexes = array.array("Q", shard_index)
-        addrs = np.array(dst_addr, np.uint64)
+        if isinstance(dst_addr, np.ndarray):
+            addrs = dst_addr
+        else:
+            addrs = np.array(dst_addr, dtype=np.uint64)
         task_id = self.store.Load(ids, indexes, addrs)
         return CacheTransTask(task_id)
 
@@ -123,11 +126,14 @@ class UcmCacheStore(UcmKVStoreBaseV1):
         self,
         block_ids: List[bytes],
         shard_index: List[int],
-        src_addr: List[List[int]],
+        src_addr: List[List[int]] | np.ndarray,
     ) -> Task:
         ids = np.frombuffer(b"".join(block_ids), dtype=np.uint8)
         indexes = array.array("Q", shard_index)
-        addrs = np.array(src_addr, np.uint64)
+        if isinstance(src_addr, np.ndarray):
+            addrs = src_addr
+        else:
+            addrs = np.array(src_addr, dtype=np.uint64)
         task_id = self.store.Dump(ids, indexes, addrs)
         return CacheTransTask(task_id)
 

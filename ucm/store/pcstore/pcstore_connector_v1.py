@@ -160,7 +160,7 @@ class UcmPcStoreV1(UcmKVStoreBaseV1):
         self,
         block_ids: List[bytes],
         shard_index: List[int],
-        dst_addr: List[List[int]],
+        dst_addr: List[List[int]] | np.ndarray,
     ) -> Task:
         """Low-level fetch: copy KV data to device pointers.
 
@@ -174,9 +174,12 @@ class UcmPcStoreV1(UcmKVStoreBaseV1):
             A ``Task`` handle for the asynchronous copy.
         """
         block_ids_np = np.array(block_ids, dtype=object)
-        dst_addr_np = np.array(dst_addr, dtype=int)
-        ids = np.repeat(block_ids_np, dst_addr_np.shape[1])
-        addrs = dst_addr_np.ravel()
+        if isinstance(dst_addr, np.ndarray):
+            dst_addr_np = dst_addr
+        else:
+            dst_addr_np = np.array(dst_addr, dtype=int)
+        ids = np.repeat(block_ids_np, dst_addr_np.shape[1]).tolist()
+        addrs = dst_addr_np.ravel().tolist()
         task_id = self.store.LoadToDevice(ids, addrs)
         return UcmPcTask(task_id=task_id)
 
@@ -184,7 +187,7 @@ class UcmPcStoreV1(UcmKVStoreBaseV1):
         self,
         block_ids: List[bytes],
         shard_index: List[int],
-        src_addr: List[List[int]],
+        src_addr: List[List[int]] | np.ndarray,
     ) -> Task:
         """Low-level dump: copy KV data from device pointers.
 
@@ -197,9 +200,12 @@ class UcmPcStoreV1(UcmKVStoreBaseV1):
             A ``Task`` handle for the asynchronous copy.
         """
         block_ids_np = np.array(block_ids, dtype=object)
-        src_addr_np = np.array(src_addr, dtype=int)
-        ids = np.repeat(block_ids_np, src_addr_np.shape[1])
-        addrs = src_addr_np.ravel()
+        if isinstance(src_addr, np.ndarray):
+            src_addr_np = src_addr
+        else:
+            src_addr_np = np.array(src_addr, dtype=int)
+        ids = np.repeat(block_ids_np, src_addr_np.shape[1]).tolist()
+        addrs = src_addr_np.ravel().tolist()
         task_id = self.store.DumpFromDevice(ids, addrs)
         return UcmPcTask(task_id=task_id)
 
