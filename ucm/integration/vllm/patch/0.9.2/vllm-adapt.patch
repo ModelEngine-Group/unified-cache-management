@@ -1,16 +1,16 @@
-From 6e03ead228d64bebf9516eaf6aaf7af90a9df7ff Mon Sep 17 00:00:00 2001
-From: wenxinwang <wangwenxin21@huawei.com>
-Date: Tue, 23 Dec 2025 01:13:52 -0800
-Subject: [PATCH] kvcomp qwen deepseek
+From 771931a7c8412a3cde7d026cbc9556086592f0f8 Mon Sep 17 00:00:00 2001
+From: Clarence-1103 <indirashi@163.com>
+Date: Tue, 23 Dec 2025 02:35:03 -0800
+Subject: [PATCH] kvcomp new patch
 
 ---
- vllm/attention/layer.py                       | 63 ++++++++++++++-
+ vllm/attention/layer.py                       | 64 ++++++++++++++-
  .../kv_transfer/kv_connector/utils.py         |  5 ++
  .../v1/shared_storage_connector.py            |  7 +-
- vllm/envs.py                                  | 47 ++++++++++-
+ vllm/envs.py                                  |  2 +-
  vllm/model_executor/models/llama.py           | 23 +++++-
  vllm/model_executor/models/qwen2.py           | 25 +++++-
- vllm/v1/attention/backends/flash_attn.py      |  7 ++
+ vllm/v1/attention/backends/flash_attn.py      |  9 +++
  vllm/v1/attention/backends/mla/common.py      | 15 +++-
  vllm/v1/attention/backends/mla/flashmla.py    | 18 ++++-
  vllm/v1/core/kv_cache_manager.py              |  7 +-
@@ -18,15 +18,15 @@ Subject: [PATCH] kvcomp qwen deepseek
  vllm/v1/core/sched/output.py                  |  3 +
  vllm/v1/core/sched/scheduler.py               | 30 ++++++-
  vllm/v1/worker/block_table.py                 | 13 +++
- vllm/v1/worker/gpu_model_runner.py            | 79 ++++++++++++++++---
+ vllm/v1/worker/gpu_model_runner.py            | 80 ++++++++++++++++---
  vllm/v1/worker/gpu_worker.py                  |  2 +
- 16 files changed, 331 insertions(+), 27 deletions(-)
+ 16 files changed, 290 insertions(+), 27 deletions(-)
 
 diff --git a/vllm/attention/layer.py b/vllm/attention/layer.py
-index f0ad68b16..5e9f9afdc 100644
+index f0ad68b16..b7e816292 100644
 --- a/vllm/attention/layer.py
 +++ b/vllm/attention/layer.py
-@@ -2,7 +2,6 @@
+@@ -2,12 +2,12 @@
  # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
  """Attention layer."""
  from typing import Any, Dict, List, Optional
@@ -34,7 +34,13 @@ index f0ad68b16..5e9f9afdc 100644
  import torch
  import torch.nn as nn
  import torch.nn.functional as F
-@@ -22,6 +21,7 @@ from vllm.model_executor.layers.quantization.kv_cache import BaseKVCacheMethod
+ 
+ import vllm.envs as envs
++import os
+ from vllm.attention import AttentionType
+ from vllm.attention.selector import backend_name_to_enum, get_attn_backend
+ from vllm.config import CacheConfig, get_current_vllm_config
+@@ -22,6 +22,7 @@ from vllm.model_executor.layers.quantization.kv_cache import BaseKVCacheMethod
  from vllm.platforms import _Backend, current_platform
  from vllm.utils import direct_register_custom_op
  from vllm.v1.attention.backends.utils import validate_kv_sharing_target
@@ -42,7 +48,7 @@ index f0ad68b16..5e9f9afdc 100644
  
  
  class Attention(nn.Module):
-@@ -409,9 +409,10 @@ def unified_attention(
+@@ -409,9 +410,10 @@ def unified_attention(
          attn_metadata = attn_metadata[layer_name]
      self = forward_context.no_compile_layers[layer_name]
      kv_cache = self.kv_cache[forward_context.virtual_engine]
@@ -54,13 +60,13 @@ index f0ad68b16..5e9f9afdc 100644
      maybe_save_kv_layer_to_connector(layer_name, kv_cache)
      return output
  
-@@ -449,6 +450,15 @@ def unified_attention_with_output(
+@@ -449,6 +451,15 @@ def unified_attention_with_output(
          attn_metadata = attn_metadata[layer_name]
      self = forward_context.no_compile_layers[layer_name]
      kv_cache = self.kv_cache[forward_context.virtual_engine]
 +    if not self.use_mla:
 +        if attn_metadata is not None:
-+            if envs.VLLM_HASH_ATTENTION:
++            if os.environ["VLLM_HASH_ATTENTION"] == "1":
 +                kv_cache, k_hash = kv_cache
 +            else:
 +                k_hash = None
@@ -70,7 +76,7 @@ index f0ad68b16..5e9f9afdc 100644
      self.impl.forward(self,
                        query,
                        key,
-@@ -457,6 +467,10 @@ def unified_attention_with_output(
+@@ -457,6 +468,10 @@ def unified_attention_with_output(
                        attn_metadata,
                        output=output,
                        output_scale=output_scale)
@@ -81,7 +87,7 @@ index f0ad68b16..5e9f9afdc 100644
  
      maybe_save_kv_layer_to_connector(layer_name, kv_cache)
  
-@@ -479,3 +493,48 @@ direct_register_custom_op(
+@@ -479,3 +494,48 @@ direct_register_custom_op(
      fake_impl=unified_attention_with_output_fake,
      dispatch_key=current_platform.dispatch_key,
  )
@@ -172,67 +178,15 @@ index 3c574d065..223106def 100644
      def add_request(
          self,
 diff --git a/vllm/envs.py b/vllm/envs.py
-index 0cc6792d7..8fd1ba2e7 100644
+index 0cc6792d7..495adfbf7 100644
 --- a/vllm/envs.py
 +++ b/vllm/envs.py
-@@ -7,6 +7,33 @@ import sys
- import tempfile
- from typing import TYPE_CHECKING, Any, Callable, Optional
- 
-+# VLLM_HASH_ATTENTION: bool = False
-+VLLM_HASH_ATTENTION_TOPK: int = 2048
-+VLLM_HASH_ATTENTION_REDUCTION_HEAD_NUM: int = 2
-+VLLM_HASH_ATTENTION_ROLLBACK_LAYERS: list[int] = [0, 1, 2, 3, 4, 5, 61, 62, 63]
-+# VLLM_HASH_ATTENTION_SKIP_LAYERS: list[bool] = [
-+#     False, False, False, False, False, False,
-+#     False, True, False, False, True, True,
-+#     False, True, False, False, False, False,
-+#     False, False, False, False, True, True,
-+#     False, False, False, True, True, True,
-+#     True, True, True, True, False, True,
-+#     True, True, True, True, True, True,
-+#     True, True, True, True, True, True,
-+#     True, False, True, True, True, True,
-+#     True, True, True, True, True, True, True
-+# ]
-+VLLM_HASH_ATTENTION_SKIP_LAYERS: list[bool] = [
-+    True, True, True, True, True, True, False, False,
-+    True, False, True, False, False, False, False, False,
-+    False, False, False, False, True, True, True, False,
-+    True, True, True, True, True, False, True, False,
-+    False, False, True, False, True, False, False, True,
-+    True, True, True, True, False, True, True, True,
-+    True, True, True, True, True, True, True, True,
-+    True, True, True, True, True, True, True, True,
-+]
-+
- if TYPE_CHECKING:
-     VLLM_HOST_IP: str = ""
-     VLLM_PORT: Optional[int] = None
-@@ -953,7 +980,25 @@ environment_variables: dict[str, Callable[[], Any]] = {
+@@ -953,7 +953,7 @@ environment_variables: dict[str, Callable[[], Any]] = {
      # generations on machines < 100 for compressed-tensors
      # models
      "VLLM_USE_NVFP4_CT_EMULATIONS":
 -    lambda: bool(int(os.getenv("VLLM_USE_NVFP4_CT_EMULATIONS", "0")))
 +    lambda: bool(int(os.getenv("VLLM_USE_NVFP4_CT_EMULATIONS", "0"))),
-+
-+    # for hash attention
-+    "VLLM_HASH_ATTENTION":
-+    lambda: bool(int(os.getenv("VLLM_HASH_ATTENTION", "0"))),
-+
-+    "VLLM_HASH_ATTENTION_TOPK":
-+    lambda: int(os.getenv("VLLM_HASH_ATTENTION_TOPK", "2048")),
-+
-+    "VLLM_HASH_ATTENTION_REDUCTION_HEAD_NUM":
-+    lambda: int(os.getenv("VLLM_HASH_ATTENTION_REDUCTION_HEAD_NUM", "2")),
-+
-+    "VLLM_HASH_ATTENTION_ROLLBACK_LAYERS":
-+    lambda: VLLM_HASH_ATTENTION_ROLLBACK_LAYERS if "VLLM_HASH_ATTENTION_ROLLBACK_LAYERS" not in os.environ else \
-+        [int(x.strip()) for x in os.environ["VLLM_HASH_ATTENTION_ROLLBACK_LAYERS"].split(",")],
-+
-+    "VLLM_HASH_ATTENTION_SKIP_LAYERS":
-+    lambda: VLLM_HASH_ATTENTION_SKIP_LAYERS if "VLLM_HASH_ATTENTION_SKIP_LAYERS" not in os.environ else \
-+        [x.strip().lower() == "true" for x in os.environ["VLLM_HASH_ATTENTION_SKIP_LAYERS"].split(",")],
  }
  
  # --8<-- [end:env-vars-definition]
@@ -351,7 +305,7 @@ index 7ef9d248d..f36ea8586 100644
              return IntermediateTensors({
                  "hidden_states": hidden_states,
 diff --git a/vllm/v1/attention/backends/flash_attn.py b/vllm/v1/attention/backends/flash_attn.py
-index fbc13c06c..36ccaf0e1 100755
+index fbc13c06c..af26b877a 100755
 --- a/vllm/v1/attention/backends/flash_attn.py
 +++ b/vllm/v1/attention/backends/flash_attn.py
 @@ -16,6 +16,8 @@ from vllm.attention.ops.merge_attn_states import merge_attn_states
@@ -359,24 +313,26 @@ index fbc13c06c..36ccaf0e1 100755
                                             get_flash_attn_version,
                                             is_flash_attn_varlen_func_available)
 +from ucm.sparse.state import get_ucm_sparse, has_ucm_sparse
-+import vllm.envs as envs
++import os
  
  if is_flash_attn_varlen_func_available():
      from vllm.attention.utils.fa_utils import (flash_attn_varlen_func,
-@@ -221,6 +223,11 @@ class FlashAttentionMetadataBuilder(
+@@ -221,6 +223,13 @@ class FlashAttentionMetadataBuilder(
          block_table = self.block_table
          block_table_tensor = block_table.get_device_tensor()[:num_reqs]
  
 +        if has_ucm_sparse():
 +            ucm_sparse = get_ucm_sparse()
-+            if envs.VLLM_HASH_ATTENTION:
++            if os.environ["VLLM_HASH_ATTENTION"] == "1":
 +                decode_mask, topk_seq_lens = ucm_sparse.build_decode_attention_meta(query_start_loc, seq_lens, block_table_tensor)
++                # if topk_seq_lens is not None:
++                #     seq_lens[decode_mask] = topk_seq_lens
 +
          block_table.slot_mapping[:num_actual_tokens].copy_(
              block_table.slot_mapping_cpu[:num_actual_tokens],
              non_blocking=True)
 diff --git a/vllm/v1/attention/backends/mla/common.py b/vllm/v1/attention/backends/mla/common.py
-index f2aaf59a4..8999b4326 100644
+index f2aaf59a4..09330d96b 100644
 --- a/vllm/v1/attention/backends/mla/common.py
 +++ b/vllm/v1/attention/backends/mla/common.py
 @@ -200,6 +200,7 @@ from vllm.attention.backends.abstract import (AttentionBackend, AttentionLayer,
@@ -392,7 +348,7 @@ index f2aaf59a4..8999b4326 100644
  from vllm.v1.kv_cache_interface import AttentionSpec
  from vllm.v1.worker.block_table import BlockTable
 +from vllm.attention.layer import (maybe_execute_sparse_attention_begin, maybe_execute_sparse_attention_finished)
-+import vllm.envs as envs
++import os
  
  try:
      from vllm.vllm_flash_attn import flash_attn_varlen_func
@@ -409,7 +365,7 @@ index f2aaf59a4..8999b4326 100644
          prefill_k_pe = k_pe[num_decode_tokens:]
          prefill_k_c_normed = k_c_normed[num_decode_tokens:]
  
-+        if envs.VLLM_HASH_ATTENTION:
++        if os.environ["VLLM_HASH_ATTENTION"] == "1":
 +            kv_cache, k_hash = kv_cache
 +        else:
 +            k_hash = None
@@ -441,7 +397,7 @@ index f2aaf59a4..8999b4326 100644
 +            maybe_execute_sparse_attention_finished(torch.cat([decode_ql_nope, decode_q_pe],dim=-1), decode_ql_nope, decode_q_pe, output[:num_decode_tokens], layer.layer_name, forward_context, "decode")
          return output_padded
 diff --git a/vllm/v1/attention/backends/mla/flashmla.py b/vllm/v1/attention/backends/mla/flashmla.py
-index be26e0060..9edcf6f91 100644
+index be26e0060..53787a8b5 100644
 --- a/vllm/v1/attention/backends/mla/flashmla.py
 +++ b/vllm/v1/attention/backends/mla/flashmla.py
 @@ -5,7 +5,7 @@ from dataclasses import dataclass
@@ -449,7 +405,7 @@ index be26e0060..9edcf6f91 100644
  
  import torch
 -
-+import vllm.envs as envs
++import os
  from vllm.attention.backends.abstract import (AttentionType,
                                                is_quantized_kv_cache)
  from vllm.attention.ops.flashmla import (flash_mla_with_kvcache,
@@ -481,7 +437,7 @@ index be26e0060..9edcf6f91 100644
 +        topk_num_splits = None
 +        if has_ucm_sparse():
 +            ucm_sparse = get_ucm_sparse()
-+            if envs.VLLM_HASH_ATTENTION:
++            if os.environ["VLLM_HASH_ATTENTION"] == "1":
 +                topk_seq_lens, topk_tile_scheduler_metadata, topk_num_splits = ucm_sparse.build_decode_hash(seq_lens)
  
          if self.runner.full_cuda_graph:
@@ -543,7 +499,7 @@ index 6937455e7..bf9aec864 100644
          if new_computed_blocks is not None:
              new_computed_block_list = new_computed_blocks.blocks
 diff --git a/vllm/v1/core/kv_cache_utils.py b/vllm/v1/core/kv_cache_utils.py
-index 2fbcb569e..464c39dee 100644
+index 2fbcb569e..e1e32b28e 100644
 --- a/vllm/v1/core/kv_cache_utils.py
 +++ b/vllm/v1/core/kv_cache_utils.py
 @@ -16,6 +16,7 @@ from vllm.v1.kv_cache_interface import (FullAttentionSpec, KVCacheConfig,
@@ -558,7 +514,7 @@ index 2fbcb569e..464c39dee 100644
      num_blocks = get_num_blocks(vllm_config, len(kv_cache_spec),
                                  available_memory, page_size)
  
-+    if envs.VLLM_HASH_ATTENTION:
++    if os.environ["VLLM_HASH_ATTENTION"] == "1":
 +        from vllm.utils import STR_DTYPE_TO_TORCH_DTYPE
 +
 +        if vllm_config.cache_config.cache_dtype == 'auto':
@@ -722,10 +678,18 @@ index 8f4e8d64c..f45e39f5c 100644
          for i, block_table in enumerate(self.block_tables):
              block_table.add_row(block_ids[i], row_idx)
 diff --git a/vllm/v1/worker/gpu_model_runner.py b/vllm/v1/worker/gpu_model_runner.py
-index 5a26e88db..943a61a3e 100644
+index 5a26e88db..cc492d31b 100644
 --- a/vllm/v1/worker/gpu_model_runner.py
 +++ b/vllm/v1/worker/gpu_model_runner.py
-@@ -72,6 +72,9 @@ from ..sample.logits_processor import LogitsProcessorManager
+@@ -15,6 +15,7 @@ import torch.nn as nn
+ from tqdm import tqdm
+ 
+ import vllm.envs as envs
++import os
+ from vllm.attention import AttentionType, get_attn_backend
+ from vllm.attention.backends.abstract import AttentionBackend
+ from vllm.attention.layer import Attention
+@@ -72,6 +73,9 @@ from ..sample.logits_processor import LogitsProcessorManager
  from .utils import (gather_mm_placeholders, initialize_kv_cache_for_kv_sharing,
                      sanity_check_mm_encoder_outputs, scatter_mm_placeholders)
  
@@ -735,7 +699,7 @@ index 5a26e88db..943a61a3e 100644
  if TYPE_CHECKING:
      import xgrammar as xgr
      import xgrammar.kernels.apply_token_bitmask_inplace_torch_compile as xgr_torch_compile  # noqa: E501
-@@ -365,6 +368,7 @@ class GPUModelRunner(LoRAModelRunnerMixin):
+@@ -365,6 +369,7 @@ class GPUModelRunner(LoRAModelRunnerMixin):
          """
          # Remove finished requests from the cached states.
          for req_id in scheduler_output.finished_req_ids:
@@ -743,7 +707,7 @@ index 5a26e88db..943a61a3e 100644
              self.requests.pop(req_id, None)
              self.encoder_cache.pop(req_id, None)
          # Remove the finished requests from the persistent batch.
-@@ -468,11 +472,13 @@ class GPUModelRunner(LoRAModelRunnerMixin):
+@@ -468,11 +473,13 @@ class GPUModelRunner(LoRAModelRunnerMixin):
          # Update the states of the running/resumed requests.
          is_last_rank = get_pp_group().is_last_rank
          req_data = scheduler_output.scheduled_cached_reqs
@@ -757,7 +721,7 @@ index 5a26e88db..943a61a3e 100644
  
              # Update the cached states.
              req_state.num_computed_tokens = num_computed_tokens
-@@ -494,15 +500,15 @@ class GPUModelRunner(LoRAModelRunnerMixin):
+@@ -494,15 +501,15 @@ class GPUModelRunner(LoRAModelRunnerMixin):
                          new_token_ids[-num_new_tokens:])
  
              # Update the block IDs.
@@ -779,7 +743,7 @@ index 5a26e88db..943a61a3e 100644
  
              req_index = self.input_batch.req_id_to_index.get(req_id)
              if req_index is None:
-@@ -515,6 +521,8 @@ class GPUModelRunner(LoRAModelRunnerMixin):
+@@ -515,6 +522,8 @@ class GPUModelRunner(LoRAModelRunnerMixin):
              # Update the persistent batch.
              self.input_batch.num_computed_tokens_cpu[req_index] = (
                  num_computed_tokens)
@@ -788,7 +752,7 @@ index 5a26e88db..943a61a3e 100644
              self.input_batch.block_table.append_row(new_block_ids, req_index)
  
              # For the last rank, we don't need to update the token_ids_cpu
-@@ -623,6 +631,19 @@ class GPUModelRunner(LoRAModelRunnerMixin):
+@@ -623,6 +632,19 @@ class GPUModelRunner(LoRAModelRunnerMixin):
          if self.uses_mrope:
              self._calc_mrope_positions(scheduler_output)
  
@@ -808,7 +772,7 @@ index 5a26e88db..943a61a3e 100644
          # Get token indices.
          # E.g., [0, 1, 0, 1, 2, 3, 4, 0, 1, 2]
          # -> [0, 1, M, M + 1, M + 2, M + 3, M + 4, 2 * M, 2 * M + 1, 2 * M + 2]
-@@ -652,11 +673,11 @@ class GPUModelRunner(LoRAModelRunnerMixin):
+@@ -652,11 +674,11 @@ class GPUModelRunner(LoRAModelRunnerMixin):
              # block_size.
              block_table_indices = (
                  req_indices * block_table.max_num_blocks_per_req +
@@ -822,7 +786,7 @@ index 5a26e88db..943a61a3e 100644
              np.add(
                  block_numbers * block_size,
                  block_offsets,
-@@ -666,9 +687,11 @@ class GPUModelRunner(LoRAModelRunnerMixin):
+@@ -666,9 +688,11 @@ class GPUModelRunner(LoRAModelRunnerMixin):
          self.query_start_loc_np[0] = 0
          self.query_start_loc_np[1:num_reqs + 1] = cu_num_tokens
  
@@ -837,7 +801,7 @@ index 5a26e88db..943a61a3e 100644
  
          # Copy the tensors to the GPU.
          self.input_ids[:total_num_scheduled_tokens].copy_(
-@@ -680,6 +703,8 @@ class GPUModelRunner(LoRAModelRunnerMixin):
+@@ -680,6 +704,8 @@ class GPUModelRunner(LoRAModelRunnerMixin):
                  non_blocking=True)
          else:
              # Common case (1D positions)
@@ -846,7 +810,7 @@ index 5a26e88db..943a61a3e 100644
              self.positions[:total_num_scheduled_tokens].copy_(
                  self.positions_cpu[:total_num_scheduled_tokens],
                  non_blocking=True)
-@@ -1370,6 +1395,7 @@ class GPUModelRunner(LoRAModelRunnerMixin):
+@@ -1370,6 +1396,7 @@ class GPUModelRunner(LoRAModelRunnerMixin):
                  skip_cuda_graphs=skip_cuda_graphs,
          ):
              self.maybe_setup_kv_connector(scheduler_output)
@@ -854,7 +818,7 @@ index 5a26e88db..943a61a3e 100644
  
              model_output = self.model(
                  input_ids=input_ids,
-@@ -1379,6 +1405,8 @@ class GPUModelRunner(LoRAModelRunnerMixin):
+@@ -1379,6 +1406,8 @@ class GPUModelRunner(LoRAModelRunnerMixin):
              )
  
              self.maybe_wait_for_kv_save()
@@ -863,7 +827,7 @@ index 5a26e88db..943a61a3e 100644
              finished_sending, finished_recving = (
                  self.get_finished_kv_transfers(scheduler_output))
  
-@@ -1723,6 +1751,30 @@ class GPUModelRunner(LoRAModelRunnerMixin):
+@@ -1723,6 +1752,30 @@ class GPUModelRunner(LoRAModelRunnerMixin):
          if has_kv_transfer_group():
              get_kv_transfer_group().wait_for_save()
  
@@ -894,13 +858,13 @@ index 5a26e88db..943a61a3e 100644
      @staticmethod
      def get_finished_kv_transfers(
          scheduler_output: "SchedulerOutput",
-@@ -2570,6 +2622,11 @@ class GPUModelRunner(LoRAModelRunnerMixin):
+@@ -2570,6 +2623,11 @@ class GPUModelRunner(LoRAModelRunnerMixin):
          kv_caches = self._reshape_kv_cache_tensors(kv_cache_config,
                                                     kv_cache_raw_tensors)
  
 +        if has_ucm_sparse():
 +            ucm_sparse = get_ucm_sparse()
-+            if envs.VLLM_HASH_ATTENTION:
++            if os.environ["VLLM_HASH_ATTENTION"] == "1":
 +                ucm_sparse.initialize_kv_hash_cache_tensors(kv_caches, self.device)
 +
          # Setup `kv_cache_config` and `kv_caches` for models

@@ -1,7 +1,6 @@
 from typing import Any, Dict, List, Optional, Union
 
 import torch
-import vllm.envs as envs
 from vllm import _custom_ops as ops
 from vllm.attention.ops.flashmla import get_mla_metadata
 from vllm.config import VllmConfig
@@ -17,6 +16,8 @@ from ucm.sparse.base import (
 )
 from ucm.sparse.kvcomp.hamming_topk import cuda_hamming_topk, fake_hamming_topk
 from ucm.sparse.kvcomp.hash_encoder import HashEncoder, reshape_and_cache_khash_triton
+from ucm.sparse.kvcomp.kvcomp_config import KvCompConfig
+from ucm.utils import Config
 
 logger = init_logger(__name__)
 
@@ -37,6 +38,26 @@ class KvCompOnDevice(UcmSparseBase):
             vllm_config.parallel_config
         )
         self.block_size = vllm_config.cache_config.block_size
+
+        self.kvcompOnDevice_cfg = (
+            Config(vllm_config.kv_transfer_config)
+            .get_config()
+            .get("ucm_sparse_config")
+            .get("KvCompOnDevice")
+        )
+
+        kvcompOnDevice_config_path = self.kvcompOnDevice_cfg[
+            "kvcompOnDevice_config_path"
+        ]
+        self.kvcompOnDevice_config = KvCompConfig.from_json(kvcompOnDevice_config_path)
+        logger.info(f"read kvcomp config file : {kvcompOnDevice_config_path} ")
+        self.hash_topk_tokens = self.kvcompOnDevice_config.vllm_hash_attention_topk
+        self.hash_rollback_layers = (
+            self.kvcompOnDevice_config.vllm_hash_attention_rollback_layers
+        )
+        self.hash_skip_layers = (
+            self.kvcompOnDevice_config.vllm_hash_attention_skip_layers
+        )
 
         if role == UcmSparseRole.WORKER:
             device_properties = torch.cuda.get_device_properties(self.device)
@@ -69,6 +90,9 @@ class KvCompOnDevice(UcmSparseBase):
 
             if self.is_mla:
                 logger.info("KvCompOnDevice initialized with MLA model config")
+                self.hash_reduction_head_num = (
+                    self.kvcompOnDevice_config.vllm_hash_attention_reduction_head_num
+                )
                 self.kv_lora_rank = getattr(
                     vllm_config.model_config.hf_text_config, "kv_lora_rank", None
                 )
@@ -150,12 +174,10 @@ class KvCompOnDevice(UcmSparseBase):
 
     def get_layer_state(self, layer_name: str):
         layer_id = int(layer_name.split(".")[2])
-        is_rollback_layer = layer_id in envs.VLLM_HASH_ATTENTION_ROLLBACK_LAYERS
+        is_rollback_layer = layer_id in self.hash_rollback_layers
         is_skip_hash_layer = (
-            layer_id < len(envs.VLLM_HASH_ATTENTION_SKIP_LAYERS)
-            and envs.VLLM_HASH_ATTENTION_SKIP_LAYERS[layer_id]
+            layer_id < len(self.hash_skip_layers) and self.hash_skip_layers[layer_id]
         )
-
         return is_rollback_layer, is_skip_hash_layer
 
     def attention_begin(
@@ -175,11 +197,7 @@ class KvCompOnDevice(UcmSparseBase):
         # TODO: Should mark MTP layer as rollback layer
         is_rollback_layer, is_skip_hash_layer = self.get_layer_state(layer_name)
 
-        if (
-            envs.VLLM_HASH_ATTENTION
-            and not is_rollback_layer
-            and not is_skip_hash_layer
-        ):
+        if not is_rollback_layer and not is_skip_hash_layer:
             if self.is_mla:
                 k_c_normed_hash, k_pe_hash = self.hash_code(nope=key, rope=value)
                 ops.concat_and_cache_mla(
@@ -202,7 +220,7 @@ class KvCompOnDevice(UcmSparseBase):
                 )
         if self.is_mla:
             if phase == "decode":
-                if envs.VLLM_HASH_ATTENTION and not is_rollback_layer:
+                if not is_rollback_layer:
                     if is_skip_hash_layer:
                         assert attn_metadata.decode.topk_block_table is not None
                         block_table = attn_metadata.decode.topk_block_table
@@ -210,10 +228,10 @@ class KvCompOnDevice(UcmSparseBase):
                         q_nope_hash, q_rope_hash = self.hash_code(
                             nope=decode_ql_nope,
                             rope=decode_q_pe,
-                            reduction_head_num=envs.VLLM_HASH_ATTENTION_REDUCTION_HEAD_NUM,
+                            reduction_head_num=self.hash_reduction_head_num,
                         )
                         q_hash = torch.cat([q_nope_hash, q_rope_hash], dim=-1)
-                        topk_token = envs.VLLM_HASH_ATTENTION_TOPK
+                        topk_token = self.hash_topk_tokens
                         block_table = cuda_hamming_topk(
                             q_hash.unsqueeze(1),
                             k_hash.unsqueeze(1),
@@ -247,7 +265,7 @@ class KvCompOnDevice(UcmSparseBase):
         else:
             q_start = attn_metadata.query_start_loc
             if self.decode_mask.any():  # 有decode阶段的req
-                if envs.VLLM_HASH_ATTENTION and not is_rollback_layer:
+                if not is_rollback_layer:
                     if is_skip_hash_layer:
                         # 跳层 使用上一个topk结果
                         attn_metadata.block_tables = self.topk_block_table
@@ -260,7 +278,7 @@ class KvCompOnDevice(UcmSparseBase):
                         q_decode = query.index_select(0, decode_token_idx)
                         q_hash = self.hash_code(query=q_decode)
 
-                        topk_token = envs.VLLM_HASH_ATTENTION_TOPK
+                        topk_token = self.hash_topk_tokens
 
                         block_table_decode = attn_metadata.block_table.index_select(
                             0, decode_req_ids
@@ -308,7 +326,7 @@ class KvCompOnDevice(UcmSparseBase):
             if phase == "decode":
                 # TODO: Should mark MTP layer as rollback layer
                 is_rollback_layer, is_skip_hash_layer = self.get_layer_state(layer_name)
-                if envs.VLLM_HASH_ATTENTION and not is_rollback_layer:
+                if not is_rollback_layer:
                     attn_metadata.decode.block_table = self.ori_block_table_decode
                     attn_metadata.decode.seq_lens = self.ori_seq_lens_decode
                     attn_metadata.decode.tile_scheduler_metadata = (
@@ -317,9 +335,8 @@ class KvCompOnDevice(UcmSparseBase):
                     attn_metadata.decode.num_splits = self.origin_num_splits
         else:  # 判断req decode阶段
             if self.decode_mask.any():
-                if envs.VLLM_HASH_ATTENTION:
-                    attn_metadata.block_table = self.ori_block_table_decode
-                    attn_metadata.seq_lens = self.ori_seq_lens_decode
+                attn_metadata.block_table = self.ori_block_table_decode
+                attn_metadata.seq_lens = self.ori_seq_lens_decode
 
     def request_begin(self, request_id: ReqType, prompt_token_ids: List[int]):
         pass
@@ -335,61 +352,56 @@ class KvCompOnDevice(UcmSparseBase):
         return INVALID_SLOT
 
     def initialize_kv_hash_cache_tensors(self, kv_caches, device):
-        if envs.VLLM_HASH_ATTENTION:
-            dtype = torch.bfloat16
-            for layer_name, kv_cache in kv_caches.items():
-                khash_cache_shape = list(
-                    (kv_cache if self.is_mla else kv_cache[0]).shape
-                )
-                khash_cache_shape[-1] //= dtype.itemsize * 8
-                khash_cache = torch.zeros(khash_cache_shape, dtype=dtype, device=device)
-                kv_caches[layer_name] = (kv_cache, khash_cache)
+        dtype = torch.bfloat16
+        for layer_name, kv_cache in kv_caches.items():
+            khash_cache_shape = list((kv_cache if self.is_mla else kv_cache[0]).shape)
+            khash_cache_shape[-1] //= dtype.itemsize * 8
+            khash_cache = torch.zeros(khash_cache_shape, dtype=dtype, device=device)
+            kv_caches[layer_name] = (kv_cache, khash_cache)
 
     def build_decode_hash(self, seq_lens):
-        if envs.VLLM_HASH_ATTENTION:
-            from ucm.sparse.kvcomp.hamming_topk import update_seq_lens
+        from ucm.sparse.kvcomp.hamming_topk import update_seq_lens
 
-            topk_seq_lens = update_seq_lens(
-                seq_lens,
-                topk_token=envs.VLLM_HASH_ATTENTION_TOPK,
-                block_size=self.block_size,
-            )
-            topk_tile_scheduler_metadata, topk_num_splits = get_mla_metadata(
-                topk_seq_lens,
-                self.num_q_heads,
-                1,
-            )
+        topk_seq_lens = update_seq_lens(
+            seq_lens,
+            topk_token=self.hash_topk_tokens,
+            block_size=self.block_size,
+        )
+        topk_tile_scheduler_metadata, topk_num_splits = get_mla_metadata(
+            topk_seq_lens,
+            self.num_q_heads,
+            1,
+        )
         return topk_seq_lens, topk_tile_scheduler_metadata, topk_num_splits
 
     def build_decode_attention_meta(self, query_start_loc, seq_lens, block_table):
-        if envs.VLLM_HASH_ATTENTION:
-            from ucm.sparse.kvcomp.hamming_topk import update_seq_lens
 
-            q_lens = query_start_loc[1:] - query_start_loc[:-1]
-            self.decode_mask = q_lens == 1
+        from ucm.sparse.kvcomp.hamming_topk import update_seq_lens
 
-            self.ori_seq_lens_decode = seq_lens.clone()
-            self.ori_block_table_decode = block_table.clone()
-            if self.decode_mask.any():
-                decode_seq_lens = seq_lens[self.decode_mask]
-                self.topk_seq_lens_qwen = update_seq_lens(
-                    decode_seq_lens,
-                    topk_token=envs.VLLM_HASH_ATTENTION_TOPK,
-                    block_size=self.block_size,
-                )
+        q_lens = query_start_loc[1:] - query_start_loc[:-1]
+        self.decode_mask = q_lens == 1
+
+        self.ori_seq_lens_decode = seq_lens.clone()
+        self.ori_block_table_decode = block_table.clone()
+        if self.decode_mask.any():
+            decode_seq_lens = seq_lens[self.decode_mask]
+            self.topk_seq_lens_qwen = update_seq_lens(
+                decode_seq_lens,
+                topk_token=self.hash_topk_tokens,
+                block_size=self.block_size,
+            )
         return self.decode_mask, self.topk_seq_lens_qwen
 
     def maybe_init_cudagraph_buffers_for_topk(self, n, tile_scheduler_metadata):
         sm_parts = tile_scheduler_metadata.size(0)
-        if envs.VLLM_HASH_ATTENTION:
-            topk_tile_scheduler_metadata_view = (
-                self.cg_buf_topk_tile_scheduler_metadata[:sm_parts]
-            )
-            topk_tile_scheduler_metadata_view.copy_(topk_tile_scheduler_metadata)
-            topk_tile_scheduler_metadata = topk_tile_scheduler_metadata_view
+        topk_tile_scheduler_metadata_view = self.cg_buf_topk_tile_scheduler_metadata[
+            :sm_parts
+        ]
+        topk_tile_scheduler_metadata_view.copy_(topk_tile_scheduler_metadata)
+        topk_tile_scheduler_metadata = topk_tile_scheduler_metadata_view
 
-            topk_num_splits_view = self.cg_buf_topk_num_splits[:n]
-            topk_num_splits_view.copy_(topk_num_splits)
-            self.cg_buf_topk_num_splits[n:].fill_(topk_num_splits[-1])
-            topk_num_splits = topk_num_splits_view
+        topk_num_splits_view = self.cg_buf_topk_num_splits[:n]
+        topk_num_splits_view.copy_(topk_num_splits)
+        self.cg_buf_topk_num_splits[n:].fill_(topk_num_splits[-1])
+        topk_num_splits = topk_num_splits_view
         return topk_tile_scheduler_metadata, topk_num_splits
