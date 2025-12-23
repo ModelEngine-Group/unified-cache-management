@@ -1,26 +1,24 @@
-From 771931a7c8412a3cde7d026cbc9556086592f0f8 Mon Sep 17 00:00:00 2001
-From: Clarence-1103 <indirashi@163.com>
-Date: Tue, 23 Dec 2025 02:35:03 -0800
-Subject: [PATCH] kvcomp new patch
+From 8b41dedc935ab7a235b366aca45e11566184c452 Mon Sep 17 00:00:00 2001
+From: wenxinwang <wangwenxin21@huawei.com>
+Date: Tue, 23 Dec 2025 04:18:38 -0800
+Subject: [PATCH] kvcomp qwen deepseek
 
 ---
- vllm/attention/layer.py                       | 64 ++++++++++++++-
- .../kv_transfer/kv_connector/utils.py         |  5 ++
- .../v1/shared_storage_connector.py            |  7 +-
- vllm/envs.py                                  |  2 +-
- vllm/model_executor/models/llama.py           | 23 +++++-
- vllm/model_executor/models/qwen2.py           | 25 +++++-
- vllm/v1/attention/backends/flash_attn.py      |  9 +++
- vllm/v1/attention/backends/mla/common.py      | 15 +++-
- vllm/v1/attention/backends/mla/flashmla.py    | 18 ++++-
- vllm/v1/core/kv_cache_manager.py              |  7 +-
- vllm/v1/core/kv_cache_utils.py                | 14 ++++
- vllm/v1/core/sched/output.py                  |  3 +
- vllm/v1/core/sched/scheduler.py               | 30 ++++++-
- vllm/v1/worker/block_table.py                 | 13 +++
- vllm/v1/worker/gpu_model_runner.py            | 80 ++++++++++++++++---
- vllm/v1/worker/gpu_worker.py                  |  2 +
- 16 files changed, 290 insertions(+), 27 deletions(-)
+ vllm/attention/layer.py                    | 64 ++++++++++++++++-
+ vllm/envs.py                               |  2 +-
+ vllm/model_executor/models/llama.py        | 23 ++++++-
+ vllm/model_executor/models/qwen2.py        | 23 ++++++-
+ vllm/v1/attention/backends/flash_attn.py   |  7 ++
+ vllm/v1/attention/backends/mla/common.py   | 15 +++-
+ vllm/v1/attention/backends/mla/flashmla.py | 18 ++++-
+ vllm/v1/core/kv_cache_manager.py           |  7 +-
+ vllm/v1/core/kv_cache_utils.py             | 13 ++++
+ vllm/v1/core/sched/output.py               |  3 +
+ vllm/v1/core/sched/scheduler.py            | 30 +++++++-
+ vllm/v1/worker/block_table.py              | 13 ++++
+ vllm/v1/worker/gpu_model_runner.py         | 80 +++++++++++++++++++---
+ vllm/v1/worker/gpu_worker.py               |  2 +
+ 14 files changed, 278 insertions(+), 22 deletions(-)
 
 diff --git a/vllm/attention/layer.py b/vllm/attention/layer.py
 index f0ad68b16..b7e816292 100644
@@ -136,47 +134,6 @@ index f0ad68b16..b7e816292 100644
 +        return
 +
 +    ucm_sparse.attention_finished(query, key, value, attn_output, layer_name, forward_context, phase)
-diff --git a/vllm/distributed/kv_transfer/kv_connector/utils.py b/vllm/distributed/kv_transfer/kv_connector/utils.py
-index 5cbc8ca31..b2a90a626 100644
---- a/vllm/distributed/kv_transfer/kv_connector/utils.py
-+++ b/vllm/distributed/kv_transfer/kv_connector/utils.py
-@@ -3,6 +3,11 @@
- """
- KV cache helper for store.
- """
-+from collections import defaultdict
-+from collections.abc import Sequence
-+from concurrent.futures import CancelledError, Future
-+from typing import Optional, cast
-+
- import torch
- 
- import vllm.envs as envs
-diff --git a/vllm/distributed/kv_transfer/kv_connector/v1/shared_storage_connector.py b/vllm/distributed/kv_transfer/kv_connector/v1/shared_storage_connector.py
-index 3c574d065..223106def 100644
---- a/vllm/distributed/kv_transfer/kv_connector/v1/shared_storage_connector.py
-+++ b/vllm/distributed/kv_transfer/kv_connector/v1/shared_storage_connector.py
-@@ -2,7 +2,7 @@
- # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
- import hashlib
- import os
--from dataclasses import dataclass
-+from dataclasses import dataclass, field
- from typing import TYPE_CHECKING
- 
- import safetensors
-@@ -53,10 +53,7 @@ class ReqMeta:
- 
- @dataclass
- class SharedStorageConnectorMetadata(KVConnectorMetadata):
--    requests: list[ReqMeta]
--
--    def __init__(self):
--        self.requests = []
-+    requests: list[ReqMeta] = field(default_factory=list)
- 
-     def add_request(
-         self,
 diff --git a/vllm/envs.py b/vllm/envs.py
 index 0cc6792d7..495adfbf7 100644
 --- a/vllm/envs.py
@@ -246,16 +203,14 @@ index 5d5080479..c5af4491d 100644
          if not get_pp_group().is_last_rank:
              return IntermediateTensors({
 diff --git a/vllm/model_executor/models/qwen2.py b/vllm/model_executor/models/qwen2.py
-index 7ef9d248d..f36ea8586 100644
+index 7ef9d248d..e35ab2fdc 100644
 --- a/vllm/model_executor/models/qwen2.py
 +++ b/vllm/model_executor/models/qwen2.py
-@@ -56,6 +56,14 @@ from .utils import (AutoWeightsLoader, PPMissingLayer, extract_layer_index,
+@@ -56,6 +56,12 @@ from .utils import (AutoWeightsLoader, PPMissingLayer, extract_layer_index,
                      is_pp_missing_parameter,
                      make_empty_intermediate_tensors_factory, make_layers,
                      maybe_prefix)
 +from ucm.sparse.state import (
-+            get_ucm_sparse,
-+            has_ucm_sparse,
 +            maybe_execute_sparse_ffn_begin,
 +            maybe_execute_sparse_ffn_finished,
 +            maybe_execute_sparse_layer_begin,
@@ -264,7 +219,7 @@ index 7ef9d248d..f36ea8586 100644
  
  
  class Qwen2MLP(nn.Module):
-@@ -255,11 +263,16 @@ class Qwen2DecoderLayer(nn.Module):
+@@ -255,11 +261,16 @@ class Qwen2DecoderLayer(nn.Module):
              positions=positions,
              hidden_states=hidden_states,
          )
@@ -282,7 +237,7 @@ index 7ef9d248d..f36ea8586 100644
          return hidden_states, residual
  
  
-@@ -352,11 +365,21 @@ class Qwen2Model(nn.Module):
+@@ -352,11 +363,21 @@ class Qwen2Model(nn.Module):
              hidden_states = intermediate_tensors["hidden_states"]
              residual = intermediate_tensors["residual"]
          for layer in self.layers[self.start_layer:self.end_layer]:
@@ -305,7 +260,7 @@ index 7ef9d248d..f36ea8586 100644
              return IntermediateTensors({
                  "hidden_states": hidden_states,
 diff --git a/vllm/v1/attention/backends/flash_attn.py b/vllm/v1/attention/backends/flash_attn.py
-index fbc13c06c..af26b877a 100755
+index fbc13c06c..d75c843d6 100755
 --- a/vllm/v1/attention/backends/flash_attn.py
 +++ b/vllm/v1/attention/backends/flash_attn.py
 @@ -16,6 +16,8 @@ from vllm.attention.ops.merge_attn_states import merge_attn_states
@@ -317,7 +272,7 @@ index fbc13c06c..af26b877a 100755
  
  if is_flash_attn_varlen_func_available():
      from vllm.attention.utils.fa_utils import (flash_attn_varlen_func,
-@@ -221,6 +223,13 @@ class FlashAttentionMetadataBuilder(
+@@ -221,6 +223,11 @@ class FlashAttentionMetadataBuilder(
          block_table = self.block_table
          block_table_tensor = block_table.get_device_tensor()[:num_reqs]
  
@@ -325,8 +280,6 @@ index fbc13c06c..af26b877a 100755
 +            ucm_sparse = get_ucm_sparse()
 +            if os.environ["VLLM_HASH_ATTENTION"] == "1":
 +                decode_mask, topk_seq_lens = ucm_sparse.build_decode_attention_meta(query_start_loc, seq_lens, block_table_tensor)
-+                # if topk_seq_lens is not None:
-+                #     seq_lens[decode_mask] = topk_seq_lens
 +
          block_table.slot_mapping[:num_actual_tokens].copy_(
              block_table.slot_mapping_cpu[:num_actual_tokens],
@@ -499,18 +452,10 @@ index 6937455e7..bf9aec864 100644
          if new_computed_blocks is not None:
              new_computed_block_list = new_computed_blocks.blocks
 diff --git a/vllm/v1/core/kv_cache_utils.py b/vllm/v1/core/kv_cache_utils.py
-index 2fbcb569e..e1e32b28e 100644
+index 2fbcb569e..46ee72e4d 100644
 --- a/vllm/v1/core/kv_cache_utils.py
 +++ b/vllm/v1/core/kv_cache_utils.py
-@@ -16,6 +16,7 @@ from vllm.v1.kv_cache_interface import (FullAttentionSpec, KVCacheConfig,
-                                         KVCacheTensor, SlidingWindowSpec)
- from vllm.v1.metrics.stats import PrefixCacheStats
- from vllm.v1.request import Request
-+import vllm.envs as envs
- 
- logger = init_logger(__name__)
- 
-@@ -693,6 +694,19 @@ def _get_kv_cache_config_uniform_type(vllm_config: VllmConfig,
+@@ -693,6 +693,19 @@ def _get_kv_cache_config_uniform_type(vllm_config: VllmConfig,
      num_blocks = get_num_blocks(vllm_config, len(kv_cache_spec),
                                  available_memory, page_size)
  

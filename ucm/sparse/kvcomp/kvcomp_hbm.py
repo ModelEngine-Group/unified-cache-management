@@ -43,7 +43,7 @@ class KvCompOnDevice(UcmSparseBase):
             Config(vllm_config.kv_transfer_config)
             .get_config()
             .get("ucm_sparse_config")
-            .get("KvCompOnDevice")
+            .get("GSA")
         )
 
         kvcompOnDevice_config_path = self.kvcompOnDevice_cfg[
