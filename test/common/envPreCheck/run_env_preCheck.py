@@ -9,7 +9,6 @@ import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-import ucmstore
 import yaml
 
 CODE_ROOT = Path(__file__).resolve().parent
@@ -1192,6 +1191,8 @@ def setup_uc(block_size):
     Raises:
         RuntimeError: if ucmstore.Setup returns a non-zero value.
     """
+    import ucmstore
+
     param = ucmstore.SetupParam(STORAGE_BACKENDS, block_size, True)
     ret = ucmstore.Setup(param)
     if ret != 0:
@@ -1232,6 +1233,8 @@ def embed(hashes, block_layer_size, block_layer):
     Raises:
         RuntimeError: If any UC operation fails.
     """
+    import ucmstore
+
     with StdoutInterceptor() as cap:
         # Allocate blocks in UC
         ret = ucmstore.AllocBatch(hashes)
@@ -1296,6 +1299,8 @@ def fetch(hashes, block_layer_size, block_layer):
     Raises:
         RuntimeError: If any UC operation fails.
     """
+    import ucmstore
+
     with StdoutInterceptor() as cap:
         block_number = len(hashes)
         results = ucmstore.LookupBatch(hashes)

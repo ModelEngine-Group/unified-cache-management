@@ -41,21 +41,26 @@ class UcmPcStoreV1(UcmKVStoreBaseV1):
     def __init__(self, config: Dict):
         super().__init__(config)
         self.store = ucmpcstore.PcStore()
-        storage_backends = [
-            path for path in config["storage_backends"].split(":") if path
-        ]
-        block_size = config.get("kv_block_size", 33554432)
-        transfer_enable = True if config["role"] == "worker" else False
+        storage_backends = config["storage_backends"]
+        block_size = config.get("block_size", 0)
+        transfer_enable = True if int(config["device_id"]) >= 0 else False
         param = ucmpcstore.PcStore.Config(storage_backends, block_size, transfer_enable)
-        if transfer_enable:
-            param.uniqueId = config["unique_id"]
-            param.transferDeviceId = config["device"]
-            param.transferIoSize = config["io_size"]
-            param.transferIoDirect = config.get("use_direct", False)
-            param.transferStreamNumber = config.get("stream_number", 8)
-            param.transferBufferNumber = config.get("buffer_number", 4096)
-            param.transferLocalRankSize = config.get("local_rank_size", 1)
-            param.transferScatterGatherEnable = config.get("use_scatter_gatter", False)
+        key_mapping = {
+            "unique_id": "uniqueId",
+            "io_direct": "transferIoDirect",
+            "local_rank_size": "transferLocalRankSize",
+            "device_id": "transferDeviceId",
+            "stream_number": "transferStreamNumber",
+            "tensor_size": "transferIoSize",
+            "buffer_number": "transferBufferNumber",
+            "timeout_ms": "transferTimeoutMs",
+            "use_scatter_gather": "transferScatterGatherEnable",
+            "shard_data_dir": "shardDataDir",
+        }
+        for key, value in config.items():
+            attr = key_mapping.get(key)
+            if attr and hasattr(param, attr):
+                setattr(param, attr, value)
         ret = self.store.Setup(param)
         if ret != 0:
             msg = f"Failed to initialize ucmpcstore, errcode: {ret}."
@@ -155,7 +160,7 @@ class UcmPcStoreV1(UcmKVStoreBaseV1):
         self,
         block_ids: List[bytes],
         shard_index: List[int],
-        dst_addr: List[List[int]],
+        dst_addr: List[List[int]] | np.ndarray,
     ) -> Task:
         """Low-level fetch: copy KV data to device pointers.
 
@@ -169,9 +174,12 @@ class UcmPcStoreV1(UcmKVStoreBaseV1):
             A ``Task`` handle for the asynchronous copy.
         """
         block_ids_np = np.array(block_ids, dtype=object)
-        dst_addr_np = np.array(dst_addr, dtype=int)
-        ids = np.repeat(block_ids_np, dst_addr_np.shape[1])
-        addrs = dst_addr_np.ravel()
+        if isinstance(dst_addr, np.ndarray):
+            dst_addr_np = dst_addr
+        else:
+            dst_addr_np = np.array(dst_addr, dtype=int)
+        ids = np.repeat(block_ids_np, dst_addr_np.shape[1]).tolist()
+        addrs = dst_addr_np.ravel().tolist()
         task_id = self.store.LoadToDevice(ids, addrs)
         return UcmPcTask(task_id=task_id)
 
@@ -179,7 +187,7 @@ class UcmPcStoreV1(UcmKVStoreBaseV1):
         self,
         block_ids: List[bytes],
         shard_index: List[int],
-        src_addr: List[List[int]],
+        src_addr: List[List[int]] | np.ndarray,
     ) -> Task:
         """Low-level dump: copy KV data from device pointers.
 
@@ -192,9 +200,12 @@ class UcmPcStoreV1(UcmKVStoreBaseV1):
             A ``Task`` handle for the asynchronous copy.
         """
         block_ids_np = np.array(block_ids, dtype=object)
-        src_addr_np = np.array(src_addr, dtype=int)
-        ids = np.repeat(block_ids_np, src_addr_np.shape[1])
-        addrs = src_addr_np.ravel()
+        if isinstance(src_addr, np.ndarray):
+            src_addr_np = src_addr
+        else:
+            src_addr_np = np.array(src_addr, dtype=int)
+        ids = np.repeat(block_ids_np, src_addr_np.shape[1]).tolist()
+        addrs = src_addr_np.ravel().tolist()
         task_id = self.store.DumpFromDevice(ids, addrs)
         return UcmPcTask(task_id=task_id)
 

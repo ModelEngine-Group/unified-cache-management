@@ -44,6 +44,7 @@ public:
         size_t transferBufferNumber{4096};
         size_t transferTimeoutMs{30000};
         bool transferScatterGatherEnable{false};
+        bool shardDataDir{true};
 
         Config(const std::vector<std::string>& storageBackends, const size_t kvcacheBlockSize,
                const bool transferEnable)

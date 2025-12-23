@@ -24,25 +24,63 @@
 #include "pcstore.h"
 #include <pybind11/pybind11.h>
 #include <pybind11/stl.h>
+#include "status/status.h"
+#include "thread/latch.h"
+#include "thread/thread_pool.h"
 
 namespace py = pybind11;
 
 namespace UC {
 
 class PcStorePy : public PcStore {
+    struct LookupCtx {
+        std::string block;
+        size_t index;
+        std::shared_ptr<std::vector<uint8_t>> founds;
+        std::shared_ptr<Latch> waiter;
+        std::shared_ptr<std::atomic<int32_t>> status;
+    };
+    ThreadPool<LookupCtx> lookupService_;
+
 public:
     void* CCStoreImpl() { return this; }
+    int32_t SetupPy(const Config& config)
+    {
+        auto ret = Setup(config);
+        if (config.transferEnable || ret != Status::OK().Underlying()) { return ret; }
+        auto success = lookupService_.SetNWorker(4)
+                           .SetWorkerFn([this](auto& ctx, auto) { OnLookup(ctx); })
+                           .SetWorkerTimeoutFn([this](auto& ctx, auto) { OnLookupTimeouted(ctx); },
+                                               config.transferTimeoutMs)
+                           .Run();
+        if (!success) {
+            UC_ERROR("Failed to start lookup service.");
+            return Status::Error().Underlying();
+        }
+        return Status::OK().Underlying();
+    }
     py::list AllocBatch(const py::list& blocks)
     {
         py::list results;
         for (auto& block : blocks) { results.append(this->Alloc(block.cast<std::string>())); }
         return results;
     }
-    py::list LookupBatch(const py::list& blocks)
+    std::vector<uint8_t> LookupBatch(const py::list& blocks)
     {
-        py::list founds;
-        for (auto& block : blocks) { founds.append(this->Lookup(block.cast<std::string>())); }
-        return founds;
+        const auto number = blocks.size();
+        const auto ok = Status::OK().Underlying();
+        auto founds = std::make_shared<std::vector<uint8_t>>(number);
+        auto waiter = std::make_shared<Latch>();
+        auto status = std::make_shared<std::atomic<int32_t>>(ok);
+        waiter->Set(number);
+        size_t idx = 0;
+        for (auto& block : blocks) {
+            lookupService_.Push({block.cast<std::string>(), idx++, founds, waiter, status});
+        }
+        waiter->Wait();
+        const auto ret = status->load(std::memory_order_acquire);
+        if (ret == ok) { return std::move(*founds); }
+        throw std::runtime_error(fmt::format("LookupBatch failed with status({})", ret));
     }
     void CommitBatch(const py::list& blocks, const bool success)
     {
@@ -77,9 +115,22 @@ private:
         }
         return this->Submit(std::move(task));
     }
+    void OnLookup(LookupCtx& ctx)
+    {
+        const auto ok = Status::OK().Underlying();
+        if (ctx.status->load() == ok) { (*ctx.founds)[ctx.index] = Lookup(ctx.block); }
+        ctx.waiter->Done();
+    }
+    void OnLookupTimeouted(LookupCtx& ctx)
+    {
+        auto ok = Status::OK().Underlying();
+        auto timeout = Status::Timeout().Underlying();
+        ctx.status->compare_exchange_weak(ok, timeout, std::memory_order_acq_rel);
+        ctx.waiter->Done();
+    }
 };
 
-} // namespace UC
+}  // namespace UC
 
 PYBIND11_MODULE(ucmpcstore, module)
 {
@@ -104,9 +155,10 @@ PYBIND11_MODULE(ucmpcstore, module)
     config.def_readwrite("transferTimeoutMs", &UC::PcStorePy::Config::transferTimeoutMs);
     config.def_readwrite("transferScatterGatherEnable",
                          &UC::PcStorePy::Config::transferScatterGatherEnable);
+    config.def_readwrite("shardDataDir", &UC::PcStorePy::Config::shardDataDir);
     store.def(py::init<>());
     store.def("CCStoreImpl", &UC::PcStorePy::CCStoreImpl);
-    store.def("Setup", &UC::PcStorePy::Setup);
+    store.def("Setup", &UC::PcStorePy::SetupPy);
     store.def("Alloc", py::overload_cast<const std::string&>(&UC::PcStorePy::Alloc));
     store.def("AllocBatch", &UC::PcStorePy::AllocBatch);
     store.def("Lookup", py::overload_cast<const std::string&>(&UC::PcStorePy::Lookup));

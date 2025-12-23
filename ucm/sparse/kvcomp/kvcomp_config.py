@@ -80,6 +80,15 @@ class KvCompConfig:
         None  # used when is_mla=True and hash_weight_type="fixed"
     )
 
+    vllm_hash_attention_topk: Optional[int] = None
+    vllm_hash_attention_reduction_head_num: Optional[int] = None
+    vllm_hash_attention_rollback_layers: List[int] = field(
+        default_factory=lambda: []
+    )  # layers to rollback, empty means no rollback
+    vllm_hash_attention_skip_layers: List[int] = field(
+        default_factory=lambda: []
+    )  # layers to skip, empty means no skip
+
     # generate non-MLA config data
     def generate_config_data(
         self,

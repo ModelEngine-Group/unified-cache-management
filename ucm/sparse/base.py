@@ -132,6 +132,9 @@ class UcmSparseBase(ABC):
         forward_context: ForwardContext,
         output: Optional[torch.Tensor] = None,
         phase: Optional[str] = None,
+        k_hash: Optional[torch.Tensor] = None,
+        decode_ql_nope: Optional[torch.Tensor] = None,
+        decode_q_pe: Optional[torch.Tensor] = None,
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         """
         This is called at the beginning of "unified_attention".

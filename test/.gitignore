@@ -5,6 +5,7 @@ result_outputs/
 results/
 .cache/
 backup/
+sites/Demo/*
 $null
 *__pycache__/
 .*

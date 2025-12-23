@@ -35,11 +35,10 @@ from ucm.store.ucmstore_v1 import UcmKVStoreBaseV1
 
 def setup_store(storage_backends, block_size, device_id, io_size) -> UcmKVStoreBaseV1:
     config = {}
-    config["storage_backends"] = storage_backends
-    config["kv_block_size"] = block_size
-    config["role"] = "worker"
-    config["device"] = device_id
-    config["io_size"] = io_size
+    config["storage_backends"] = [storage_backends]
+    config["block_size"] = block_size
+    config["device_id"] = device_id
+    config["tensor_size"] = io_size
     config["unique_id"] = secrets.token_hex(8)
     return UcmPcStoreV1(config)
 
@@ -63,22 +62,28 @@ def make_buffers(
 
 
 def embed(
-    store: UcmKVStoreBaseV1, hashes: List[bytes], tensors: List[List[torch.Tensor]]
+    worker: UcmKVStoreBaseV1, hashes: List[bytes], tensors: List[List[torch.Tensor]]
 ):
-    task = store.dump(hashes, [], tensors)
+    task = worker.dump(hashes, [], tensors)
     assert task.task_id > 0
-    store.wait(task)
+    worker.wait(task)
 
 
 def fetch(
-    store: UcmKVStoreBaseV1, hashes: List[bytes], tensors: List[List[torch.Tensor]]
+    scheduler: UcmKVStoreBaseV1,
+    worker: UcmKVStoreBaseV1,
+    hashes: List[bytes],
+    tensors: List[List[torch.Tensor]],
 ):
-    founds = store.lookup(hashes)
-    for found in founds:
-        assert found
-    task = store.load(hashes, [], tensors)
+    number = len(hashes)
+    tp = time.perf_counter()
+    founds = scheduler.lookup(hashes)
+    cost = time.perf_counter() - tp
+    print(f"Lookup {number} blocks cost {cost * 1e3:.03f}ms.")
+    assert all(founds)
+    task = worker.load(hashes, [], tensors)
     assert task.task_id > 0
-    store.wait(task)
+    worker.wait(task)
 
 
 def cmp_and_print_diff(a, b, rtol=0.0, atol=0.0):
@@ -95,7 +100,7 @@ def cmp_and_print_diff(a, b, rtol=0.0, atol=0.0):
 
 
 def main():
-    storage_backends = "."
+    storage_backends = "./build"
     block_number = 4096
     device_id = 1
     block_dim = 576
@@ -104,8 +109,9 @@ def main():
     block_layer = 61
     io_size = block_dim * block_len * block_elem_size
     block_size = io_size * block_layer
-    batch_size = 64
-    store = setup_store(storage_backends, block_size, device_id, io_size)
+    batch_size = 256
+    worker = setup_store(storage_backends, block_size, device_id, io_size)
+    scheduler = setup_store(storage_backends, block_size, -1, io_size)
     hashes, tensors = make_buffers(
         block_number, device_id, batch_size, block_dim, block_len, block_layer
     )
@@ -114,9 +120,9 @@ def main():
         start = batch_size * batch
         end = min(start + batch_size, block_number)
         tensors2 = [[torch.empty_like(t) for t in row] for row in tensors]
-        embed(store, hashes[start:end], tensors)
+        embed(worker, hashes[start:end], tensors)
         time.sleep(1)
-        fetch(store, hashes[start:end], tensors2)
+        fetch(scheduler, worker, hashes[start:end], tensors2)
         cmp_and_print_diff(tensors, tensors2)
 
 
