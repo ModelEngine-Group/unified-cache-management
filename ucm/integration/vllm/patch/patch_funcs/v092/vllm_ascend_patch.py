@@ -56,15 +56,35 @@ def _apply_ascend_patch() -> None:
 
 # ========================= vllm_ascend/attention/attention_v1.py =========================
 def _patch_attention_v1() -> None:
-    """Patch attention_v1.py for vLLM-Ascend."""
+    """Patch attention_v1.py for vLLM-Ascend..
+
+    Key points:
+      - Skip hooks during compile/fake/meta stage to keep graph stable
+      - Allow hook begin() to return None (in-place) or (q,k,v,out) tuple
+    """
     try:
-        from typing import List, Optional
+        from typing import Optional
 
         import torch
         from vllm.forward_context import ForwardContext, get_forward_context
         from vllm_ascend.attention import attention_v1
 
         from ucm.sparse.state import get_ucm_sparse, has_ucm_sparse
+
+        # ------------------------------------------------------------
+        # 1) Graph-safe guards
+        # ------------------------------------------------------------
+        def _should_skip_ucm_hooks(*tensors: torch.Tensor) -> bool:
+            # Skip during torch.compile / Dynamo capture
+            if hasattr(torch, "_dynamo") and torch._dynamo.is_compiling():
+                return True
+            # Skip FakeTensor / meta tensors (tracing/fake phase)
+            for t in tensors:
+                if isinstance(t, torch.Tensor) and (
+                    t.is_meta or "Fake" in type(t).__name__
+                ):
+                    return True
+            return False
 
         def maybe_execute_sparse_attention_begin(
             query: torch.Tensor,
@@ -97,79 +117,104 @@ def _patch_attention_v1() -> None:
             attn_output: torch.Tensor,
             layer_name: str,
             forward_context: ForwardContext,
+            phase: Optional[str] = None,
         ):
             if not has_ucm_sparse():
                 return
+
             ucm_sparse = get_ucm_sparse()
+
             attn_metadata = forward_context.attn_metadata
             if attn_metadata is None:
                 return
+
             ucm_sparse.attention_finished(
-                query, key, value, attn_output, layer_name, forward_context
+                query, key, value, attn_output, layer_name, forward_context, phase
             )
 
         attention_v1.maybe_execute_sparse_attention_finished = (
             maybe_execute_sparse_attention_finished
         )
 
-        vllm_ops = torch.ops.vllm
-        orig_unified_ascend_attention_with_output = (
-            vllm_ops.unified_ascend_attention_with_output
-        )
-
-        def _wrap_op_overload(orig, impl):
-            class _Wrapper:
-                def __init__(self, orig):
-                    self._orig = orig
-
-                def __call__(self, *args, **kwargs):
-                    return impl(*args, **kwargs)
-
-                def __getattr__(self, name):
-                    return getattr(self._orig, name)
-
-            return _Wrapper(orig)
-
-        def unified_ascend_attention_with_output_impl(
-            query: torch.Tensor,
-            key: torch.Tensor,
-            value: torch.Tensor,
-            output: torch.Tensor,
-            layer_name: str,
-        ) -> None:
-
-            forward_context: ForwardContext = get_forward_context()
-            attn_metadata = forward_context.attn_metadata
-            self = forward_context.no_compile_layers[layer_name]
-            kv_cache = self.kv_cache[forward_context.virtual_engine]
-            if not self.use_mla:
-                query, key, value, _ = maybe_execute_sparse_attention_begin(
-                    query, key, value, layer_name, forward_context
-                )
-            self.impl.forward(
-                self,
-                query,
-                key,
-                value,
-                kv_cache,
-                attn_metadata,
-                output,
-                trace_flag=False,
+        # ------------------------------------------------------------
+        # 2) Patch Python attention_v1 functions in-place (dispatcher remains)
+        # ------------------------------------------------------------
+        target = getattr(attention_v1, "unified_ascend_attention_with_output", None)
+        if target is None:
+            raise AttributeError(
+                "vllm_ascend.attention.attention_v1 has no unified_ascend_attention_with_output"
             )
-            if not self.use_mla:
-                maybe_execute_sparse_attention_finished(
-                    query, key, value, output, layer_name, forward_context
-                )
-            return
 
-        vllm_ops.unified_ascend_attention_with_output = _wrap_op_overload(
-            orig_unified_ascend_attention_with_output,
-            unified_ascend_attention_with_output_impl,
+        g = target.__globals__
+        g.update(
+            {
+                "torch": torch,
+                "Optional": Optional,
+                "ForwardContext": ForwardContext,
+                "get_forward_context": get_forward_context,
+                "_should_skip_ucm_hooks": _should_skip_ucm_hooks,
+                "maybe_execute_sparse_attention_begin": maybe_execute_sparse_attention_begin,
+                "maybe_execute_sparse_attention_finished": maybe_execute_sparse_attention_finished,
+            }
         )
 
-        attention_v1.unified_ascend_attention_with_output = (
-            unified_ascend_attention_with_output_impl
+        # NOTE:
+        # - Keep calling torch.ops.vllm.unified_ascend_attention_with_output inside this function.
+        # - We are NOT replacing torch.ops itself, only the Python caller.
+        src = r"""
+def __ucm_hooked_unified_ascend_attention_with_output(
+    query: torch.Tensor,
+    key: torch.Tensor,
+    value: torch.Tensor,
+    output: torch.Tensor,
+    layer_name: str,
+) -> None:
+    forward_context: ForwardContext = get_forward_context()
+    attn_metadata = forward_context.attn_metadata
+
+    layer = forward_context.no_compile_layers[layer_name]
+    kv_cache = layer.kv_cache[forward_context.virtual_engine]
+
+    # ====================== UCM-SPARSE-PATCH-BEGIN  ======================
+    # Graph-safe: skip hooks during compile/fake/meta and MLA path
+    do_sparse_hooks = (not _should_skip_ucm_hooks(query, key, value, output)) and (not layer.use_mla)
+
+    if do_sparse_hooks:
+        # begin() may return None (in-place) or tuple; helper already normalizes to tuple
+        query, key, value, _ = maybe_execute_sparse_attention_begin(
+            query, key, value, layer_name, forward_context, output=None, phase=None
         )
+     # ====================== UCM-SPARSE-PATCH-END  ========================
+    layer.impl.forward(
+        layer,
+        query,
+        key,
+        value,
+        kv_cache,
+        attn_metadata,
+        output,
+        trace_flag=False,
+    )
+    # ====================== UCM-SPARSE-PATCH-BEGIN  ======================
+    if do_sparse_hooks:
+        maybe_execute_sparse_attention_finished(
+            query, key, value, output, layer_name, forward_context, phase=None
+        )
+    # ====================== UCM-SPARSE-PATCH-END  ========================
+    return
+"""
+        exec(src, g, g)
+        repl = g["__ucm_hooked_unified_ascend_attention_with_output"]
+
+        # In-place swap code (0 freevars -> 0 freevars)
+        target.__code__ = repl.__code__
+        target.__defaults__ = repl.__defaults__
+        target.__kwdefaults__ = repl.__kwdefaults__
+        try:
+            target.__name__ = "unified_ascend_attention_with_output_ucm_hooked"
+        except Exception:
+            pass
+
     except ImportError as e:
         logger.error(f"Failed to patch attention_v1.py: {e}", exc_info=True)
         raise
@@ -208,7 +253,9 @@ def _patch_mla_v1() -> None:
             enable_multistream_mla: bool = False,
             ckq: Optional[torch.Tensor] = None,
         ) -> torch.Tensor:
+            # ====================== UCM-SPARSE-PATCH-BEGIN  ======================
             forward_context: ForwardContext = get_forward_context()
+            # ====================== UCM-SPARSE-PATCH-END  ========================
             assert output is not None, "Output tensor must be provided."
             if attn_metadata is None:
                 # Profiling run.
@@ -389,6 +436,7 @@ def _patch_mla_v1() -> None:
             if has_prefill:
                 # FIX: aicore move should be also placed on the comm stream in dbo,
                 # otherwise it may affect the accuracy
+                # ====================== UCM-SPARSE-PATCH-BEGIN-hook1  ======================
                 # TODO: use an elegant way to overlap
                 prefill_q, prefill_k_c_normed, prefill_k_pe, _ = (
                     maybe_execute_sparse_attention_begin(
@@ -400,6 +448,7 @@ def _patch_mla_v1() -> None:
                         phase="prefill",
                     )
                 )
+                # ====================== UCM-SPARSE-PATCH-END-hook1  ========================
                 output_prefill = self._forward_prefill(
                     prefill_q, prefill_k_c_normed, prefill_k_pe, kv_cache, attn_metadata
                 )
@@ -410,6 +459,7 @@ def _patch_mla_v1() -> None:
                         current_ms_metadata.after_comm_event.record()
                 else:
                     output[num_decode_tokens:] = output_prefill
+                # ====================== UCM-SPARSE-PATCH-BEGIN-hook2  ======================
                 maybe_execute_sparse_attention_finished(
                     prefill_q,
                     prefill_k_c_normed,
@@ -419,7 +469,9 @@ def _patch_mla_v1() -> None:
                     forward_context,
                     "prefill",
                 )
+                # ====================== UCM-SPARSE-PATCH-END-hook2  ========================
             if has_decode:
+                # ====================== UCM-SPARSE-PATCH-BEGIN-hook3  ======================
                 _, decode_ql_nope, decode_q_pe, _ = (
                     maybe_execute_sparse_attention_begin(
                         torch.cat([decode_ql_nope, decode_q_pe], dim=-1),
@@ -430,6 +482,7 @@ def _patch_mla_v1() -> None:
                         phase="decode",
                     )
                 )
+                # ====================== UCM-SPARSE-PATCH-END-hook3  ========================
                 if self.running_in_graph:
                     return self._forward_decode(
                         decode_ql_nope,
@@ -456,6 +509,7 @@ def _patch_mla_v1() -> None:
                         current_ms_metadata.after_comm_event.record()
                 else:
                     output[:num_decode_tokens] = output_decode
+                # ====================== UCM-SPARSE-PATCH-BEGIN-hook4  ======================
                 maybe_execute_sparse_attention_finished(
                     torch.cat([decode_ql_nope, decode_q_pe], dim=-1),
                     decode_ql_nope,
@@ -465,6 +519,7 @@ def _patch_mla_v1() -> None:
                     forward_context,
                     "decode",
                 )
+                # ====================== UCM-SPARSE-PATCH-END-hook4  ========================
 
             return output_padded
 
@@ -532,7 +587,9 @@ def _patch_model_runner_v1() -> None:
             """
             # Remove finished requests from the cached states.
             for req_id in scheduler_output.finished_req_ids:
+                # ====================== UCM-SPARSE-PATCH-BEGIN-hook1  ======================
                 self.ucm_sparse_request_finished_in_worker(req_id)
+                # ====================== UCM-SPARSE-PATCH-END-hook1  ========================
                 self.requests.pop(req_id, None)
                 self.encoder_cache.pop(req_id, None)
             # Remove the finished requests from the persistent batch.
@@ -640,14 +697,18 @@ def _patch_model_runner_v1() -> None:
 
             # Update the states of the running/resumed requests.
             req_data = scheduler_output.scheduled_cached_reqs
-            req_sparsed_slots = scheduler_output.req_sparsed_slots
+            req_sparsed_slots = (
+                scheduler_output.req_sparsed_slots
+            )  ### UCM-SPARSE-PATCH ###
             is_last_rank = get_pp_group().is_last_rank
             for i, req_id in enumerate(req_data.req_ids):
                 req_state = self.requests[req_id]
                 num_computed_tokens = req_data.num_computed_tokens[i]
                 new_block_ids = req_data.new_block_ids[i]
                 resumed_from_preemption = req_data.resumed_from_preemption[i]
-                is_sparsed_request = req_sparsed_slots[req_id] != INVALID_SLOT
+                is_sparsed_request = (
+                    req_sparsed_slots[req_id] != INVALID_SLOT
+                )  ### UCM-SPARSE-PATCH ###
 
                 req_state.num_computed_tokens = num_computed_tokens
                 if not is_last_rank:
@@ -665,6 +726,7 @@ def _patch_model_runner_v1() -> None:
                             new_token_ids[-num_new_tokens:]
                         )
                 # Update the block IDs.
+                # ====================== UCM-SPARSE-PATCH-BEGIN-hook2  ======================
                 if resumed_from_preemption or is_sparsed_request:
                     # The request is resumed from preemption.
                     # Replace the existing block IDs with the new ones.
@@ -675,6 +737,7 @@ def _patch_model_runner_v1() -> None:
                         req_state.block_ids, new_block_ids
                     ):
                         block_ids.extend(new_ids)
+                # ====================== UCM-SPARSE-PATCH-END-hook2  ========================
 
                 req_index = self.input_batch.req_id_to_index.get(req_id)
                 if req_index is None:
@@ -689,8 +752,10 @@ def _patch_model_runner_v1() -> None:
                     num_computed_tokens
                 )
 
+                # ====================== UCM-SPARSE-PATCH-BEGIN-hook3  ======================
                 if is_sparsed_request:
                     self.input_batch.block_table.reset_row(req_index)
+                # ====================== UCM-SPARSE-PATCH-END-hook3  ========================
 
                 self.input_batch.block_table.append_row(new_block_ids, req_index)
 
@@ -844,6 +909,7 @@ def _patch_model_runner_v1() -> None:
             )
             seq_lens = self.seq_lens_cpu[:num_reqs]
 
+            # ====================== UCM-SPARSE-PATCH-BEGIN-hook1  ======================
             # TODO: improve performance, no `positions_np.copy()`
             sparsed_positions = positions_np.copy()
             req_sparsed_slots = scheduler_output.req_sparsed_slots
@@ -864,6 +930,8 @@ def _patch_model_runner_v1() -> None:
             block_table_cpu = self.input_batch.block_table[0].get_cpu_tensor()
             block_numbers = block_table_cpu.flatten()[block_table_indices].numpy()
             block_offsets = sparsed_positions % self.block_size
+            # ====================== UCM-SPARSE-PATCH-END-hook1  ========================
+
             np.add(
                 block_numbers * self.block_size,
                 block_offsets,
@@ -892,16 +960,20 @@ def _patch_model_runner_v1() -> None:
             else:
                 attn_state = AscendAttentionState.PrefillCacheHit
 
+            # ====================== UCM-SPARSE-PATCH-BEGIN-hook2  ======================
             for req_id in self.input_batch.req_id_to_index:
                 is_sparsed_request = req_sparsed_slots[req_id] != INVALID_SLOT
                 req_index = self.input_batch.req_id_to_index[req_id]
                 if is_sparsed_request:
                     seq_lens[req_index] = req_sparsed_slots[req_id]
+            # ====================== UCM-SPARSE-PATCH-END-hook2  ========================
 
             self.attn_mask = self._make_attention_mask(
                 seq_lens=seq_lens,
                 query_lens=num_scheduled_tokens,
-                position=torch.tensor(sparsed_positions).npu(),
+                position=torch.tensor(
+                    sparsed_positions
+                ).npu(),  ### UCM-SPARSE-PATCH ###
                 attn_state=attn_state,
             )
             self.attn_state = attn_state  # type: ignore
@@ -1053,10 +1125,13 @@ def _patch_model_runner_v1() -> None:
                         maybe_converting_weight_acl_format(
                             self.model, ACL_FORMAT_FRACTAL_ND
                         )
+
+                        # ====================== UCM-SPARSE-PATCH-BEGIN-hook3  ======================
                         self.maybe_setup_kv_connector(scheduler_output)
                         self.maybe_execute_ucm_sparse_begin(
                             scheduler_output, attn_metadata
                         )
+                        # ====================== UCM-SPARSE-PATCH-END-hook3  ========================
 
                         hidden_states = self.model(
                             input_ids=input_ids,
@@ -1065,8 +1140,13 @@ def _patch_model_runner_v1() -> None:
                             inputs_embeds=inputs_embeds,
                             **model_kwargs,
                         )
+
+                        # ====================== UCM-SPARSE-PATCH-BEGIN-hook4  ======================
                         self.maybe_wait_for_kv_save()
-                        self.maybe_execute_ucm_sparse_finished()
+                        logits_indices = self.maybe_execute_ucm_sparse_finished(
+                            logits_indices
+                        )
+                        # ====================== UCM-SPARSE-PATCH-END-hook4  ========================
 
             use_spec_decode = len(scheduler_output.scheduled_spec_decode_tokens) > 0
             if not use_spec_decode:
@@ -1359,11 +1439,11 @@ def _patch_model_runner_v1() -> None:
             )
             ucm_sparse.execute_begin(scheduler_output)
 
-        def maybe_execute_ucm_sparse_finished(self):
+        def maybe_execute_ucm_sparse_finished(self, logits_indices):
             if not has_ucm_sparse():
-                return
+                return logits_indices
             ucm_sparse = get_ucm_sparse()
-            ucm_sparse.execute_finished()
+            return ucm_sparse.execute_finished(logits_indices)
 
         def ucm_sparse_request_finished_in_worker(self, request_id: str | int):
             if not has_ucm_sparse():
@@ -1390,6 +1470,7 @@ def _patch_worker_v1() -> None:
         import copy
         from typing import Optional
 
+        from vllm.distributed.kv_transfer import has_kv_transfer_group
         from vllm.distributed.parallel_state import get_pp_group, get_tp_group
         from vllm.logger import logger
         from vllm.sequence import IntermediateTensors
@@ -1422,6 +1503,9 @@ def _patch_worker_v1() -> None:
                     output.tensors, all_gather_group=get_tp_group()
                 )
 
+                # ====================== UCM-SPARSE-PATCH-BEGIN-hook1  ======================
+                if not has_kv_transfer_group():
+                    return None
                 kv_connector_output = output.kv_connector_output
                 finished_sending = kv_connector_output.finished_sending
                 finished_recving = kv_connector_output.finished_recving
@@ -1432,6 +1516,7 @@ def _patch_worker_v1() -> None:
                 new_output = copy.copy(EMPTY_MODEL_RUNNER_OUTPUT)
                 new_output.kv_connector_output = kv_connector_output
                 return new_output
+                # ====================== UCM-SPARSE-PATCH-END-hook1  ========================
 
             assert isinstance(output, ModelRunnerOutput)
             return output
@@ -1444,7 +1529,9 @@ def _patch_worker_v1() -> None:
 
         def patched_init_worker_distributed_environment(self) -> None:
             original_init_worker_distributed_environment(self)
+            # ====================== UCM-SPARSE-PATCH-BEGIN  ======================
             ensure_ucm_sparse_initialized(self.vllm_config)
+            # ====================== UCM-SPARSE-PATCH-END  ========================
 
         NPUWorker._init_worker_distributed_environment = (
             patched_init_worker_distributed_environment
