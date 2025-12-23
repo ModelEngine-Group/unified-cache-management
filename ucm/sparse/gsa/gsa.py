@@ -461,6 +461,11 @@ class TopkCal:
                 device=self.device,
             )
             self.preserved_blocks = gsa_config.kvcomp_preserve_blocks
+            # Create NPU stream for async GPU-to-CPU transfer to parallelize with hamming_dist_top_k
+            if hasattr(torch, "npu") and torch.npu.is_available():
+                self.transfer_stream = torch.npu.Stream()
+            else:
+                self.transfer_stream = None
 
     def set_topk_param(self, repre_slot_mapping, include_mask, exclude_mask):
         self.repre_slot_mapping = repre_slot_mapping
@@ -571,9 +576,16 @@ class TopkCal:
                 self.query_similarity_threshold,
             )
             new_cal_topk_id = self.cal_topk_id[indices]
-            self.is_topk_update_np[current_layer_id][new_cal_topk_id.cpu().tolist()] = True
+            # Use NPU stream for async GPU-to-CPU transfer to parallelize with hamming_dist_top_k
+            if self.transfer_stream is not None:
+                # Start async transfer in dedicated stream - this will run in parallel with hamming_dist_top_k
+                with torch.npu.stream(self.transfer_stream):
+                    new_cal_topk_id_cpu = new_cal_topk_id.to("cpu", non_blocking=True)
+            else:
+                new_cal_topk_id_cpu = None
         else:
             new_cal_topk_id = self.cal_topk_id
+            new_cal_topk_id_cpu = None
 
         q_decode = intermediate_q[new_cal_topk_id]
         block_table_decode = self.block_table_for_hamming[new_cal_topk_id]
@@ -600,6 +612,7 @@ class TopkCal:
             print(f"block_table_for_hamming: {block_table_decode}")
             torch.npu.synchronize()
 
+        # hamming_dist_top_k runs on default stream, parallel with the GPU-to-CPU transfer
         ucm_custom_ops.hamming_dist_top_k(
             hashq_op=hashq,
             hashk_cache_op=hashk_cache,
@@ -612,6 +625,16 @@ class TopkCal:
             block_table_op=block_table_decode,
             indices=self.hamming_output,
         )
+
+        # Synchronize transfer stream and update numpy array after hamming_dist_top_k
+        if self.enable_query_similarity:
+            if self.transfer_stream is not None and new_cal_topk_id_cpu is not None:
+                # Transfer was done asynchronously, synchronize now and update
+                self.transfer_stream.synchronize()
+                self.is_topk_update_np[current_layer_id][new_cal_topk_id_cpu.tolist()] = True
+            else:
+                # Fallback: do blocking transfer (when transfer_stream is not available)
+                self.is_topk_update_np[current_layer_id][new_cal_topk_id.cpu().tolist()] = True
 
         if current_layer_id == 0 and False:
             print(f"=======cal_topk_for_hamming=======")

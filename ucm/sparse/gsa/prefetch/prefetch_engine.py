@@ -259,6 +259,9 @@ class GSAPrefetchBase:
                     print(f"req_id: {req_id} with index_in_batch: {index_in_batch} is not a GSA request")
                     topk_len_list.append(0)
                     continue
+                # Note: is_topk_update_np is updated asynchronously via NPU stream in cal_topk_for_hamming.
+                # The stream is synchronized per-layer before updating the numpy array, so by the time
+                # this function is called (in execute_end, after all layers are processed), all updates are complete.
                 elif is_topk_update_np[:,index_in_batch].sum() < prefetch_threshold: 
                     print(f"req_id: {req_id} with index_in_batch: {index_in_batch} does not have enough (<{prefetch_threshold}) layers with topk indices updated under QS feature")
                     topk_len_list.append(0)
