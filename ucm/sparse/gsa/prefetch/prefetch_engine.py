@@ -135,7 +135,7 @@ class GSAPrefetchBase:
 
         self.topk_buf_tmp = None
         self.topk_bs = []
-        self.is_topk_update = False
+        self.enable_query_similarity = False
 
     def model_input_deal(
         self,
@@ -264,7 +264,7 @@ class GSAPrefetchBase:
                         if transfer_stream is not None:
                             with torch.npu.stream(transfer_stream):
                                 torch.npu.synchronize()
-                        if self.num_layers_topk_updated_cpu[index_in_batch] < prefetch_threshold:
+                        if num_layers_topk_updated_cpu is not None and num_layers_topk_updated_cpu[index_in_batch] < prefetch_threshold:
                             print(f"req_id: {req_id} with index_in_batch: {index_in_batch} does not have enough (<{prefetch_threshold}) layers with topk indices updated under QS feature")
                             topk_len_list.append(0)
                             continue

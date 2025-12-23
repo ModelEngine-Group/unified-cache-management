@@ -585,12 +585,14 @@ class TopkCal:
                     # GPU Operation
                     self.num_layers_topk_updated[new_cal_topk_id] += 1
 
-                    # non-blocking transfer to CPU
-                    self.num_layers_topk_updated_cpu = self.num_layers_topk_updated.to("cpu", non_blocking=True)
+                    # non-blocking transfer to CPU - copy into existing tensor to maintain reference
+                    # First transfer to CPU (non-blocking), then copy into existing tensor
+                    temp_cpu = self.num_layers_topk_updated.to("cpu", non_blocking=True)
+                    self.num_layers_topk_updated_cpu.copy_(temp_cpu)
             else:
                 self.num_layers_topk_updated[new_cal_topk_id] +=1 
-                # blocking transfer to CPU in the default stream
-                self.num_layers_topk_updated_cpu = self.num_layers_topk_updated.to("cpu")
+                # blocking transfer to CPU - copy into existing tensor to maintain reference
+                self.num_layers_topk_updated_cpu.copy_(self.num_layers_topk_updated.to("cpu"))
         else:
             new_cal_topk_id = self.cal_topk_id
 
@@ -752,10 +754,13 @@ class GSA(UcmSparseBase):
      
         if self.enable_query_similarity:
             self.num_layers_topk_updated = torch.zeros((MAX_BS,), dtype=torch.int32, device=self.device)
-            self.num_layers_topk_updated_cpu = torch.zeros((MAX_BS,), dtype=torch.int32, device="cpu") 
+            self.num_layers_topk_updated_cpu = torch.zeros((MAX_BS,), dtype=torch.int32, device="cpu")
+            # Set enable_query_similarity in prefetch_engine so it can access it
+            self.prefetch_engine.enable_query_similarity = self.enable_query_similarity
         else:
             self.num_layers_topk_updated = None
             self.num_layers_topk_updated_cpu = None
+            self.prefetch_engine.enable_query_similarity = False
 
     def init_topk_cal(
         self,
@@ -1263,8 +1268,9 @@ class GSA(UcmSparseBase):
         self._start_topk_cal()
         
         #reset num_layers_topk_updated to be 0 for the current decoding step
-        self.num_layers_topk_updated.fill(0)
-        self.num_layers_topk_updated_cpu.fill(0)
+        if self.enable_query_similarity:
+            self.num_layers_topk_updated.fill_(0)
+            self.num_layers_topk_updated_cpu.fill_(0)
 
     def execute_finished(self):
         kv_caches = [None] * self.layer_num
