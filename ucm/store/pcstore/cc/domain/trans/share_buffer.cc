@@ -103,17 +103,26 @@ const inline std::string& ShmPrefix() noexcept
     static std::string prefix{"uc_shm_pcstore_"};
     return prefix;
 }
+
 void CleanUpShmFileExceptMe(const std::string& me)
 {
     namespace fs = std::filesystem;
     std::string_view prefix = ShmPrefix();
     fs::path shmDir = "/dev/shm";
     if (!fs::exists(shmDir)) { return; }
+    const auto now = fs::file_time_type::clock::now();
+    const auto keepThreshold = std::chrono::minutes(10);
     for (const auto& entry : fs::directory_iterator(shmDir)) {
-        const auto& name = entry.path().filename().string();
-        if (entry.is_regular_file() && (name.compare(0, prefix.length(), prefix) == 0) &&
-            name != me) {
-            fs::remove(entry.path());
+        const auto& path = entry.path();
+        const auto& name = path.filename().string();
+        if (!entry.is_regular_file() || name.compare(0, prefix.size(), prefix) != 0 || name == me) {
+            continue;
+        }
+        try {
+            const auto lwt = fs::last_write_time(path);
+            if (now - lwt <= keepThreshold) { continue; }
+            fs::remove(path);
+        } catch (...) {
         }
     }
 }
