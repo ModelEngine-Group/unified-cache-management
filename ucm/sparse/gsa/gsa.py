@@ -907,7 +907,7 @@ class GSA(UcmSparseBase):
             attn_metadata = forward_context.attn_metadata
         if self.prefetch_engine.atb_gsa_enable and self.prefetch_engine.is_topk_cal:
             if not self.use_mla:
-                if attn_metadata.attn_state == AscendAttentionState.DECODE:
+                if attn_metadata.attn_state == AscendAttentionState.DecodeOnly:
                     self.copy_q(query, current_layer_id)
             else:
                 if phase == "decode":
