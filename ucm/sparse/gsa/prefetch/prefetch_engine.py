@@ -268,13 +268,13 @@ class GSAPrefetchBase:
                 index_in_batch = gsa_metadata.gsa_stats[req_id].index_in_batch
                 req_id_list.append(req_id)
                 if not self.is_gsa_req_id[req_id]:
-                    print(f"req_id: {req_id} with index_in_batch: {index_in_batch} is not a GSA request")
+                    #print(f"req_id: {req_id} with index_in_batch: {index_in_batch} is not a GSA request")
                     topk_len_list.append(0)
                     continue
                 else:
                     if self.enable_query_similarity:
                         if num_layers_topk_updated_cpu is not None and num_layers_topk_updated_cpu[index_in_batch] < prefetch_threshold:
-                            print(f"req_id: {req_id} with index_in_batch: {index_in_batch} does not have enough (<{prefetch_threshold}) layers with topk indices updated under QS feature")
+                            # print(f"req_id: {req_id} with index_in_batch: {index_in_batch} does not have enough (<{prefetch_threshold}) layers with topk indices updated under QS feature")
                             topk_len_list.append(0)
                             continue
                     if gsa_metadata.gsa_stats[req_id].topk_buf_tmp != None:
