@@ -10,16 +10,8 @@ COPY . /workspace/unified-cache-management
 
 RUN pip config set global.index-url ${PIP_INDEX_URL}
 
-RUN export PLATFORM="ascend" ENABLE_SPARSE=true && \
+RUN export PLATFORM="ascend" && \
     export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:/usr/local/Ascend/ascend-toolkit/latest/`uname -i`-linux/devlib && \
     pip install -v -e /workspace/unified-cache-management --no-build-isolation
 
-# Apply patch for vLLM
-RUN cd /workspace/vllm \
-    && git apply /workspace/unified-cache-management/ucm/integration/vllm/patch/0.9.2/vllm-adapt.patch
-
-# Apply patch for vLLM-Ascend
-RUN cd /workspace/vllm-ascend \
-    && git apply /workspace/unified-cache-management/ucm/integration/vllm/patch/0.9.2/vllm-ascend-adapt.patch
-    
 CMD ["/bin/bash"]
