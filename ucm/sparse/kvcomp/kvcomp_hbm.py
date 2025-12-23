@@ -75,27 +75,28 @@ class KvCompOnDevice(UcmSparseBase):
         )
 
         if role == UcmSparseRole.WORKER:
-            device_properties = torch.cuda.get_device_properties(self.device)
-            num_sms = device_properties.multi_processor_count
+            if self.is_cuda: # cuda only variables
+                device_properties = torch.cuda.get_device_properties(self.device)
+                num_sms = device_properties.multi_processor_count
 
-            if not vllm_config.model_config.enforce_eager:
-                self.cg_buf_topk_tile_scheduler_metadata = torch.zeros(
-                    (num_sms, 8),
-                    device=self.device,
-                    dtype=torch.int32,
-                )
-                self.cg_buf_topk_num_splits = torch.empty(
-                    (vllm_config.scheduler_config.max_num_seqs + 1),
-                    device=self.device,
-                    dtype=torch.int32,
-                )
+                if not vllm_config.model_config.enforce_eager:
+                    self.cg_buf_topk_tile_scheduler_metadata = torch.zeros(
+                        (num_sms, 8),
+                        device=self.device,
+                        dtype=torch.int32,
+                    )
+                    self.cg_buf_topk_num_splits = torch.empty(
+                        (vllm_config.scheduler_config.max_num_seqs + 1),
+                        device=self.device,
+                        dtype=torch.int32,
+                    )
 
             self.ori_seq_lens_decode = None
             self.ori_block_table_decode = None
-            self.origin_tile_scheduler_metadata = None
-            self.origin_num_splits = None
+            self.origin_tile_scheduler_metadata = None # for MLA
+            self.origin_num_splits = None # for MLA
 
-            # for qwen
+            # for GQA
             self.topk_block_table = None
             self.topk_seq_lens = None
             self.topk_seq_lens_qwen = None
@@ -223,16 +224,27 @@ class KvCompOnDevice(UcmSparseBase):
                     kv_cache_dtype="auto",
                     scale=self._k_scale,
                 )
-            else:
-                k_hash_compute = self.hash_encoder.compute_hash(key).view(
-                    torch.bfloat16
-                )
-                reshape_and_cache_khash_triton(
-                    k_hash_compute,
-                    attn_metadata.slot_mapping.flatten(),
-                    k_hash,
-                    block_size=self.block_size,
-                )
+            else: # GQA
+                if self.is_cuda:
+                    k_hash_compute = self.hash_encoder.compute_hash(key).view(
+                        torch.bfloat16
+                    )
+                    reshape_and_cache_khash_triton(
+                        k_hash_compute,
+                        attn_metadata.slot_mapping.flatten(),
+                        k_hash,
+                        block_size=self.block_size,
+                    )
+                else: # NPU
+                    k_hash_compute = self.hash_encoder.compute_hash(key)
+                    k_hash_compute = k_hash_compute.transpose(0,1).reshape(-1, k_hash_compute.shape[-1]).contiguous()
+                    ucm_custom_ops.reshape_and_cache_bnsd(
+                        k_hash_compute,
+                        k_hash,
+                        attn_metadata.slot_mapping,
+                        attn_metadata.query_lens_device, # need to modify attention_v1.py in vllm-asecnd
+                        k_hash,
+                    )
         if self.is_mla:
             if phase == "decode":
                 if not is_rollback_layer:
@@ -277,7 +289,7 @@ class KvCompOnDevice(UcmSparseBase):
                         tile_scheduler_metadata
                     )
                     attn_metadata.decode.num_splits = num_splits
-        else:
+        else: #GQA
             q_start = attn_metadata.query_start_loc
             if self.decode_mask.any():  # 有decode阶段的req
                 if not is_rollback_layer:
