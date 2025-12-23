@@ -212,7 +212,6 @@ class UCMDirectConnector(KVConnectorBase_V1):
             config["block_size"] = chunk_block_size
             if self.is_dsa or self.is_mla:
                 config["share_buffer_enable"] = True
-                config["local_rank_size"] = max(self.tp_size, 8)
             else:
                 config["share_buffer_enable"] = False
             store = UcmConnectorFactoryV1.create_connector(name, config)
