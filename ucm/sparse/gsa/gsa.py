@@ -587,8 +587,7 @@ class TopkCal:
 
                     # non-blocking transfer to CPU - copy into existing tensor to maintain reference
                     # First transfer to CPU (non-blocking), then copy into existing tensor
-                    temp_cpu = self.num_layers_topk_updated.to("cpu", non_blocking=True)
-                    self.num_layers_topk_updated_cpu.copy_(temp_cpu)
+                    self.num_layers_topk_updated_cpu.copy_(self.num_layers_topk_updated, non_blocking=True)
             else:
                 self.num_layers_topk_updated[new_cal_topk_id] +=1 
                 # blocking transfer to CPU - copy into existing tensor to maintain reference
@@ -754,7 +753,7 @@ class GSA(UcmSparseBase):
      
         if self.enable_query_similarity:
             self.num_layers_topk_updated = torch.zeros((MAX_BS,), dtype=torch.int32, device=self.device)
-            self.num_layers_topk_updated_cpu = torch.zeros((MAX_BS,), dtype=torch.int32, device="cpu")
+            self.num_layers_topk_updated_cpu = torch.zeros((MAX_BS,), dtype=torch.int32, device="cpu", pin_memory=is_pin_memory_available())
             # Set enable_query_similarity in prefetch_engine so it can access it
             self.prefetch_engine.enable_query_similarity = self.enable_query_similarity
         else:
@@ -902,16 +901,17 @@ class GSA(UcmSparseBase):
         phase: Optional[str] = None,
     ) -> None:
         current_layer_id = int(layer_name.split(".")[2])
-        if self.prefetch_engine.atb_gsa_enable and self.prefetch_engine.is_topk_cal:
-            if not self.use_mla:
-                self.copy_q(query, current_layer_id)
-            else:
-                if phase == "decode":
-                    self.copy_q(query, current_layer_id)
         if isinstance(forward_context.attn_metadata, dict):
             attn_metadata = forward_context.attn_metadata[layer_name]
         else:
             attn_metadata = forward_context.attn_metadata
+        if self.prefetch_engine.atb_gsa_enable and self.prefetch_engine.is_topk_cal:
+            if not self.use_mla:
+                if attn_metadata.attn_state == AscendAttentionState.DECODE:
+                    self.copy_q(query, current_layer_id)
+            else:
+                if phase == "decode":
+                    self.copy_q(query, current_layer_id)
         if self.prefetch_engine.atb_gsa_enable:
             if not self.use_mla:
                 if torch.cuda.is_available():
