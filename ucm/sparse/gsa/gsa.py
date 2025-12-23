@@ -504,7 +504,8 @@ class TopkCal:
         enable_query_similarity=False,
         gsa_q_cache=None,
         query_similarity_threshold=None,
-        is_topk_update_np=None,
+        num_layers_topk_updated=None,
+        num_layers_topk_updated_cpu=None,
     ):
         self.cal_topk_id = cal_topk_id
         self.topk_caches = topk_caches
@@ -512,7 +513,8 @@ class TopkCal:
         self.enable_query_similarity = enable_query_similarity
         self.gsa_q_cache = gsa_q_cache
         self.query_similarity_threshold = query_similarity_threshold
-        self.is_topk_update_np = is_topk_update_np
+        self.num_layers_topk_updated = num_layers_topk_updated
+        self.num_layers_topk_updated_cpu = num_layers_topk_updated_cpu
 
     def cal_topk(self, intermediate_q, current_layer_id):
         bs = len(self.cal_topk_id)
@@ -580,12 +582,17 @@ class TopkCal:
             if self.transfer_stream is not None:
                 # Start async transfer in dedicated stream - this will run in parallel with hamming_dist_top_k
                 with torch.npu.stream(self.transfer_stream):
-                    new_cal_topk_id_cpu = new_cal_topk_id.to("cpu", non_blocking=True)
+                    # GPU Operation
+                    self.num_layers_topk_updated[new_cal_topk_id] += 1
+
+                    # non-blocking transfer to CPU
+                    self.num_layers_topk_updated_cpu = self.num_layers_topk_updated.to("cpu", non_blocking=True)
             else:
-                new_cal_topk_id_cpu = None
+                self.num_layers_topk_updated[new_cal_topk_id] +=1 
+                # blocking transfer to CPU in the default stream
+                self.num_layers_topk_updated_cpu = self.num_layers_topk_updated.to("cpu")
         else:
             new_cal_topk_id = self.cal_topk_id
-            new_cal_topk_id_cpu = None
 
         q_decode = intermediate_q[new_cal_topk_id]
         block_table_decode = self.block_table_for_hamming[new_cal_topk_id]
@@ -626,15 +633,6 @@ class TopkCal:
             indices=self.hamming_output,
         )
 
-        # Synchronize transfer stream and update numpy array after hamming_dist_top_k
-        if self.enable_query_similarity:
-            if self.transfer_stream is not None and new_cal_topk_id_cpu is not None:
-                # Transfer was done asynchronously, synchronize now and update
-                self.transfer_stream.synchronize()
-                self.is_topk_update_np[current_layer_id][new_cal_topk_id_cpu.tolist()] = True
-            else:
-                # Fallback: do blocking transfer (when transfer_stream is not available)
-                self.is_topk_update_np[current_layer_id][new_cal_topk_id.cpu().tolist()] = True
 
         if current_layer_id == 0 and False:
             print(f"=======cal_topk_for_hamming=======")
@@ -751,8 +749,13 @@ class GSA(UcmSparseBase):
         self.enable_query_similarity = True
         self.query_similarity_threshold = 0.7 if self.enable_query_similarity else None
 
-        # self.is_topk_update_np[layer_id][bs_index] is True if the topk indices are updated for the corresponding layer and bs index under QS feature
-        self.is_topk_update_np = np.full((self.layer_num, MAX_BS), False, dtype=bool) if self.enable_query_similarity else None
+     
+        if self.enable_query_similarity:
+            self.num_layers_topk_updated = [torch.full((MAX_BS,), 0, dtype=torch.int32, device=self.device) for _ in range(self.layer_num)]
+            self.num_layers_topk_updated_cpu = [torch.full((MAX_BS,), 0, dtype=torch.int32, device=self.device) for _ in range(self.layer_num)]
+        else:
+            self.num_layers_topk_updated = None
+            self.num_layers_topk_updated_cpu = None
 
     def init_topk_cal(
         self,
@@ -1259,8 +1262,9 @@ class GSA(UcmSparseBase):
         self.gsa_stats = self.gsa_metadata.gsa_stats
         self._start_topk_cal()
         
-        #reset is_topk_update_np to False for the current decoding step
-        self.is_topk_update_np.fill(False)
+        #reset num_layers_topk_updated to be 0 for the current decoding step
+        self.num_layers_topk_updated.fill(0)
+        self.num_layers_topk_updated_cpu.fill(0)
 
     def execute_finished(self):
         kv_caches = [None] * self.layer_num
@@ -1284,7 +1288,8 @@ class GSA(UcmSparseBase):
                 self.gsa_metadata,
                 kv_caches,
                 self.connector.cc_store(),
-                self.is_topk_update_np,
+                self.num_layers_topk_updated_cpu,
+                self.gsa_cuda_topk.transfer_stream,
             )
             if self.is_python_load:
                 self.launch_transfer_task(all_free_block_ids, all_miss_ids, kv_caches)
@@ -1489,7 +1494,8 @@ class GSA(UcmSparseBase):
                         self.enable_query_similarity,
                         self.gsa_q_cache,
                         self.query_similarity_threshold,
-                        self.is_topk_update_np,
+                        self.num_layers_topk_updated,
+                        self.num_layers_topk_updated_cpu,
                     )
                     self.gsa_cuda_topk.set_topk_param_for_hamming(
                         repre_slot_mappings,

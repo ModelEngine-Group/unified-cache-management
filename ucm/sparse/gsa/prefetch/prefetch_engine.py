@@ -227,7 +227,7 @@ class GSAPrefetchBase:
             )
         self.topk_buf_tmp = topk_buf_tmp
 
-    def deal_async_prefetch(self, is_prefetch_done, gsa_metadata, kvcache, store_ptr, is_topk_update_np=None):
+    def deal_async_prefetch(self, is_prefetch_done, gsa_metadata, kvcache, store_ptr, num_layers_topk_updated_cpu=None, transfer_stream=None):
         self.topk_space += 1
         all_free_block_ids = None
         all_miss_ids = None
@@ -259,14 +259,15 @@ class GSAPrefetchBase:
                     print(f"req_id: {req_id} with index_in_batch: {index_in_batch} is not a GSA request")
                     topk_len_list.append(0)
                     continue
-                # Note: is_topk_update_np is updated asynchronously via NPU stream in cal_topk_for_hamming.
-                # The stream is synchronized per-layer before updating the numpy array, so by the time
-                # this function is called (in execute_end, after all layers are processed), all updates are complete.
-                elif is_topk_update_np[:,index_in_batch].sum() < prefetch_threshold: 
-                    print(f"req_id: {req_id} with index_in_batch: {index_in_batch} does not have enough (<{prefetch_threshold}) layers with topk indices updated under QS feature")
-                    topk_len_list.append(0)
-                    continue
                 else:
+                    if self.enable_query_similarity:
+                        if transfer_stream is not None:
+                            with torch.npu.stream(transfer_stream):
+                                torch.npu.synchronize()
+                        if self.num_layers_topk_updated_cpu[index_in_batch] < prefetch_threshold:
+                            print(f"req_id: {req_id} with index_in_batch: {index_in_batch} does not have enough (<{prefetch_threshold}) layers with topk indices updated under QS feature")
+                            topk_len_list.append(0)
+                            continue
                     if gsa_metadata.gsa_stats[req_id].topk_buf_tmp != None:
                         topk_len_list.append(
                             len(gsa_metadata.gsa_stats[req_id].topk_buf_tmp[0])
