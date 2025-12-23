@@ -90,7 +90,7 @@ public:
             auto buffer = GetBufferFrom(this->hostBuffers_);
             if (buffer) { return buffer; }
         }
-        return this->MakeDeviceBuffer(size);
+        return this->MakeHostBuffer(size);
     }
 };
 
