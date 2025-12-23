@@ -84,7 +84,9 @@ class GSAReqStat:
         self._vllm_config = vllm_config
         self.rank = vllm_config.parallel_config.rank
         self.use_mla = vllm_config.model_config.use_mla
-        self.request_hasher = RequestHasher(vllm_config, self.rank)
+        # (ldeng): old hash use rank=0
+        # self.request_hasher = RequestHasher(vllm_config, self.rank)
+        self.request_hasher = RequestHasher(vllm_config, 0)
 
     def step(self) -> int:
         return self.num_output_tokens
