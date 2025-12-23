@@ -633,6 +633,9 @@ class GSA(UcmSparseBase):
         forward_context: ForwardContext,
         output: Optional[torch.Tensor] = None,
         phase: Optional[str] = None,
+        k_hash: Optional[torch.Tensor] = None,
+        decode_ql_nope: Optional[torch.Tensor] = None,
+        decode_q_pe: Optional[torch.Tensor] = None,
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         current_layer_id = int(layer_name.split(".")[2])
         if self.prefetch_engine.atb_gsa_enable and self.prefetch_engine.is_topk_cal:
