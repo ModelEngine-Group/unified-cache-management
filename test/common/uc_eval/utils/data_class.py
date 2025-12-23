@@ -36,11 +36,14 @@ class ModelConfig:
 class EvalConfig:
     data_type: str = ""
     dataset_file_path: str = ""
-    enable_prefix_cache: str = False
+    enable_prefix_cache: bool = False
     parallel_num: int = 1
     benchmark_mode: str = "evaluate"
     metrics: Optional[List[str]] = field(default_factory=list)
     eval_class: Optional[str] = None
+    prompt_split_ratio: Optional[float] = None
+    enable_warmup: bool = True
+    round: int = 0
 
 
 @dataclass
@@ -53,6 +56,7 @@ class PerfConfig:
     output_tokens: List[int] = field(default_factory=list)
     prefix_cache_num: List[float] = field(default_factory=list)
     benchmark_mode: str = ""
+    enable_warmup: bool = True
 
 
 @dataclass
