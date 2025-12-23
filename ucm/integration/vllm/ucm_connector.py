@@ -130,17 +130,7 @@ class UCMDirectConnector(KVConnectorBase_V1):
                 self.group_coordinator = get_tp_group()
                 self.broadcast_fn = self.group_coordinator.broadcast
                 self.broadcast_stream = torch.cuda.Stream()
-
-        self.chunk_size = self.launch_config.get("chunk_size", self.block_size)
-        if self.chunk_size % self.block_size != 0:
-            raise ValueError(
-                f"chunk_size ({self.chunk_size}) must be a multiple of "
-                f"block_size ({self.block_size})"
-            )
-        self.blocks_per_chunk = self.chunk_size // self.block_size
-        logger.info(
-            f"chunk_size = {self.chunk_size}, blocks_per_chunk = {self.blocks_per_chunk}"
-        )
+        self.chunk_size = 1
 
         if role == KVConnectorRole.SCHEDULER:
             self.request_hasher = RequestHasher(vllm_config, 0)
@@ -281,7 +271,7 @@ class UCMDirectConnector(KVConnectorBase_V1):
         chunk_block_size = (
             tensor_size
             * self.num_layers
-            * self.blocks_per_chunk
+            * self.chunk_size
             * (1 if self.is_mla or self.is_dsa else 2)
         )
         self.block_stride = tensor_size
@@ -292,9 +282,7 @@ class UCMDirectConnector(KVConnectorBase_V1):
             rope_tensor_size = (
                 sample_kv_layer[1][0].numel() * sample_kv_layer[1][0].element_size()
             )
-            rope_chunk_block_size = (
-                rope_tensor_size * self.num_layers * self.blocks_per_chunk
-            )
+            rope_chunk_block_size = rope_tensor_size * self.num_layers * self.chunk_size
             self.rope_store = self._create_store(
                 rope_tensor_size, rope_chunk_block_size, True
             )
@@ -307,9 +295,9 @@ class UCMDirectConnector(KVConnectorBase_V1):
         num_computed_tokens: int,
     ) -> tuple[int, bool]:
         assert num_computed_tokens % self.block_size == 0
-        hbm_hit_block_num = num_computed_tokens // self.chunk_size
+        hbm_hit_block_num = num_computed_tokens // self.block_size
 
-        ucm_block_ids = self.generate_hash(self.chunk_size, request)
+        ucm_block_ids = self.generate_hash(self.block_size, request)
 
         external_block_ids = ucm_block_ids[hbm_hit_block_num:]
         if not external_block_ids:
@@ -335,15 +323,12 @@ class UCMDirectConnector(KVConnectorBase_V1):
 
         total_hit_block_num = hbm_hit_block_num + external_hit_blocks
 
-        external_hit_tokens = 0
-        if external_hit_blocks > 0:
-            remainder = num_computed_tokens % self.chunk_size
-            external_hit_tokens = external_hit_blocks * self.chunk_size - remainder
+        external_hit_tokens = external_hit_blocks * self.block_size
 
         # When all the tokens are cached in ssd or hbm,
         # we need to recompute the last token. This if condition will be removed
         # once vLLM scheduler provides a better solution in the future.
-        num_total_hit_tokens = external_hit_tokens + num_computed_tokens
+        num_total_hit_tokens = total_hit_block_num * self.block_size
         if num_total_hit_tokens == request.num_tokens:
             external_hit_tokens -= 1
 
@@ -390,19 +375,13 @@ class UCMDirectConnector(KVConnectorBase_V1):
         dump_ucm_block_ids, dump_vllm_block_ids = [], []
         if need_load:
             load_ucm_block_ids = ucm_block_ids[hbm_hit_block_num:total_hit_block_num]
-            load_vllm_block_ids = vllm_block_ids[
-                hbm_hit_block_num
-                * self.blocks_per_chunk : total_hit_block_num
-                * self.blocks_per_chunk
-            ]
+            load_vllm_block_ids = vllm_block_ids[hbm_hit_block_num:total_hit_block_num]
 
         if req_meta.token_processed < req_meta.num_token_ids:
-            start_idx = req_meta.token_processed // self.chunk_size
-            end_idx = (req_meta.token_processed + new_tokens) // self.chunk_size
+            start_idx = req_meta.token_processed // self.block_size
+            end_idx = (req_meta.token_processed + new_tokens) // self.block_size
             dump_ucm_block_ids = ucm_block_ids[start_idx:end_idx]
-            dump_vllm_block_ids = req_meta.vllm_block_ids[
-                start_idx * self.blocks_per_chunk : end_idx * self.blocks_per_chunk
-            ]
+            dump_vllm_block_ids = req_meta.vllm_block_ids[start_idx:end_idx]
             req_meta.token_processed += new_tokens
 
         return RequestDispatchMeta(
@@ -515,21 +494,6 @@ class UCMDirectConnector(KVConnectorBase_V1):
             block_addrs = np.empty((num_blocks, num_layers * 2), dtype=np.uint64)
             block_addrs[:, :num_layers] = k_addrs
             block_addrs[:, num_layers:] = v_addrs
-
-        num_cols = block_addrs.shape[1]
-        block_addrs = block_addrs.reshape(
-            num_blocks // self.blocks_per_chunk, self.blocks_per_chunk, num_cols
-        ).reshape(num_blocks // self.blocks_per_chunk, num_cols * self.blocks_per_chunk)
-        if rope_block_addrs is not None:
-            num_rope_cols = rope_block_addrs.shape[1]
-            rope_block_addrs = rope_block_addrs.reshape(
-                num_blocks // self.blocks_per_chunk,
-                self.blocks_per_chunk,
-                num_rope_cols,
-            ).reshape(
-                num_blocks // self.blocks_per_chunk,
-                num_rope_cols * self.blocks_per_chunk,
-            )
 
         return ucm_block_ids, shard_indexs, block_addrs, rope_block_addrs
 
@@ -800,7 +764,7 @@ class UCMMockConnector(UCMDirectConnector):
         expect_hit_tokens = int(self._hit_ratio * request.num_prompt_tokens)
         if hit_tokens <= expect_hit_tokens:
             return hit_tokens, False
-        expect_hit_block_num = expect_hit_tokens // self.chunk_size
+        expect_hit_block_num = expect_hit_tokens // self.block_size
         request_meta = self.requests_meta[request.request_id]
         request_meta.total_hit_block_num = expect_hit_block_num
         request_meta.hbm_hit_block_num = min(
@@ -815,7 +779,7 @@ class UCMMockConnector(UCMDirectConnector):
             f"hit external: {request_meta.total_hit_block_num - request_meta.hbm_hit_block_num}"
         )
 
-        return expect_hit_block_num * self.chunk_size, False
+        return expect_hit_block_num * self.block_size, False
 
 
 class UCMConnector(KVConnectorBase_V1):
