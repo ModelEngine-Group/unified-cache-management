@@ -35,9 +35,10 @@ namespace UC {
 class PcStorePy : public PcStore {
     struct LookupCtx {
         std::string block;
-        uint8_t* found;
-        Latch* waiter;
-        std::atomic<int32_t>* status;
+        size_t index;
+        std::shared_ptr<std::vector<uint8_t>> founds;
+        std::shared_ptr<Latch> waiter;
+        std::shared_ptr<std::atomic<int32_t>> status;
     };
     ThreadPool<LookupCtx> lookupService_;
 
@@ -68,19 +69,18 @@ public:
     {
         const auto number = blocks.size();
         const auto ok = Status::OK().Underlying();
-        std::atomic<int32_t> status{ok};
-        Latch waiter{};
-        waiter.Set(number);
-        std::vector<uint8_t> founds(number);
+        auto founds = std::make_shared<std::vector<uint8_t>>(number);
+        auto waiter = std::make_shared<Latch>();
+        auto status = std::make_shared<std::atomic<int32_t>>(ok);
+        waiter->Set(number);
         size_t idx = 0;
         for (auto& block : blocks) {
-            lookupService_.Push({block.cast<std::string>(), founds.data() + idx, &waiter, &status});
-            idx++;
+            lookupService_.Push({block.cast<std::string>(), idx++, founds, waiter, status});
         }
-        waiter.Wait();
-        const auto ret = status.load();
-        if (ret == ok) { return founds; }
-        throw std::runtime_error{fmt::format("error({}) when performing LookupBatch", ret)};
+        waiter->Wait();
+        const auto ret = status->load(std::memory_order_acquire);
+        if (ret == ok) { return std::move(*founds); }
+        throw std::runtime_error(fmt::format("LookupBatch failed with status({})", ret));
     }
     void CommitBatch(const py::list& blocks, const bool success)
     {
@@ -118,7 +118,7 @@ private:
     void OnLookup(LookupCtx& ctx)
     {
         const auto ok = Status::OK().Underlying();
-        if (ctx.status->load() == ok) { *ctx.found = Lookup(ctx.block); }
+        if (ctx.status->load() == ok) { (*ctx.founds)[ctx.index] = Lookup(ctx.block); }
         ctx.waiter->Done();
     }
     void OnLookupTimeouted(LookupCtx& ctx)
