@@ -470,6 +470,17 @@ class KvCompOnDevice(UcmSparseBase):
             khash_cache = torch.zeros(khash_cache_shape, dtype=dtype, device=device)
             kv_caches[layer_name] = (kv_cache, khash_cache)
 
+    def initialize_kv_hash_cache_tensors_npu(self, kv_caches, device):
+        for layer_name, kv_cache in kv_caches.items():
+            is_rollback_layer, is_skip_hash_layer = self.get_layer_state(layer_name)
+            k_cache_shape = kv_cache[0].shape
+            khash_cache_shape = (k_cache_shape[0], k_cache_shape[2], k_cache_shape[1], self.hash_encoder.hash_bits // 8)
+            if not is_rollback_layer and not is_skip_hash_layer:
+                khash_cache = torch.empty(khash_cache_shape, dtype=torch.uint8, device=device)
+            else:
+                khash_cache = None
+            kv_caches[layer_name] = (kv_cache, khash_cache)
+
     def build_decode_hash(self, seq_lens):
         from ucm.sparse.kvcomp.hamming_topk import update_seq_lens
 
