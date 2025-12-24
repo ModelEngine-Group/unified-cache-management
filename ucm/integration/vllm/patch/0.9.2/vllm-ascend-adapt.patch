@@ -1,14 +1,14 @@
-From 140050ef0ca76c5fe35f8050a49917b067102250 Mon Sep 17 00:00:00 2001
+From c92cb68fd1fa6215cd6d5b207b95c841ac20dbe1 Mon Sep 17 00:00:00 2001
 From: wenxinwang <wangwenxin21@huawei.com>
-Date: Tue, 23 Dec 2025 18:44:45 -0800
+Date: Tue, 23 Dec 2025 19:21:33 -0800
 Subject: [PATCH] sparse patch for vllm-ascend
 
 ---
- vllm_ascend/attention/attention_v1.py |  80 ++++++++++++++++++++
- vllm_ascend/attention/mla_v1.py       |  14 +++-
- vllm_ascend/worker/model_runner_v1.py | 104 +++++++++++++++++++++++---
- vllm_ascend/worker/worker_v1.py       |  25 ++++++-
- 4 files changed, 205 insertions(+), 18 deletions(-)
+ vllm_ascend/attention/attention_v1.py | 80 ++++++++++++++++++++++
+ vllm_ascend/attention/mla_v1.py       | 14 +++-
+ vllm_ascend/worker/model_runner_v1.py | 98 ++++++++++++++++++++++++---
+ vllm_ascend/worker/worker_v1.py       | 25 +++++--
+ 4 files changed, 201 insertions(+), 16 deletions(-)
 
 diff --git a/vllm_ascend/attention/attention_v1.py b/vllm_ascend/attention/attention_v1.py
 index 7d7f488f..ea982244 100644
@@ -185,7 +185,7 @@ index f50fe56e..ae8f50bf 100644
  
          return output_padded
 diff --git a/vllm_ascend/worker/model_runner_v1.py b/vllm_ascend/worker/model_runner_v1.py
-index eabcdbcc..5129ecc8 100644
+index eabcdbcc..782b9a3b 100644
 --- a/vllm_ascend/worker/model_runner_v1.py
 +++ b/vllm_ascend/worker/model_runner_v1.py
 @@ -39,7 +39,10 @@ from vllm.config import CompilationLevel, VllmConfig
@@ -317,15 +317,7 @@ index eabcdbcc..5129ecc8 100644
              attn_state=attn_state)
          self.attn_state = attn_state  # type: ignore
  
-@@ -1100,6 +1129,7 @@ class NPUModelRunner(LoRAModelRunnerMixin):
-             positions = self.positions[:padded_batch_size]
- 
-         # Run forward pass
-+        finished_dumping = None
-         with set_forward_context(attn_metadata,
-                                  self.vllm_config,
-                                  num_tokens=num_input_tokens):
-@@ -1125,6 +1155,8 @@ class NPUModelRunner(LoRAModelRunnerMixin):
+@@ -1125,6 +1154,8 @@ class NPUModelRunner(LoRAModelRunnerMixin):
                      assert self.model is not None
                      maybe_converting_weight_acl_format(self.model,
                                                         ACL_FORMAT_FRACTAL_ND)
@@ -334,42 +326,16 @@ index eabcdbcc..5129ecc8 100644
  
                      hidden_states = self.model(
                          input_ids=input_ids,
-@@ -1133,6 +1165,8 @@ class NPUModelRunner(LoRAModelRunnerMixin):
+@@ -1133,6 +1164,8 @@ class NPUModelRunner(LoRAModelRunnerMixin):
                          inputs_embeds=inputs_embeds,
                          **model_kwargs,
                      )
-+                    finished_dumping = self.maybe_wait_for_kv_save()
++                    self.maybe_wait_for_kv_save()
 +                    logits_indices = self.maybe_execute_ucm_sparse_finished(logits_indices)
  
          use_spec_decode = len(
              scheduler_output.scheduled_spec_decode_tokens) > 0
-@@ -1163,7 +1197,7 @@ class NPUModelRunner(LoRAModelRunnerMixin):
- 
-         return (attn_metadata, hidden_states, spec_decode_metadata, positions,
-                 total_num_scheduled_tokens, logits_indices, aux_hidden_states,
--                num_scheduled_tokens)
-+                num_scheduled_tokens, finished_dumping)
- 
-     def _get_cumsum_and_arange(
-         self,
-@@ -1400,7 +1434,7 @@ class NPUModelRunner(LoRAModelRunnerMixin):
-                 return EMPTY_MODEL_RUNNER_OUTPUT
-             (attn_metadata, hidden_states, spec_decode_metadata, positions,
-              num_scheduled_tokens, logits_indices, aux_hidden_states,
--             num_scheduled_tokens_np) = (self._process_reqs(
-+             num_scheduled_tokens_np, finished_dumping) = (self._process_reqs(
-                  scheduler_output, intermediate_tensors))
- 
-         with ProfileExecuteDuration().capture_async("post process"):
-@@ -1561,6 +1595,7 @@ class NPUModelRunner(LoRAModelRunnerMixin):
-                 logprobs=logprobs_lists,
-                 prompt_logprobs_dict=prompt_logprobs_dict,
-                 pooler_output=[],
-+                finished_dumping=finished_dumping
-             )
- 
-         durations = ProfileExecuteDuration().pop_captured_sync()
-@@ -2369,3 +2404,48 @@ class NPUModelRunner(LoRAModelRunnerMixin):
+@@ -2369,3 +2402,48 @@ class NPUModelRunner(LoRAModelRunnerMixin):
              if batch_size <= padded_batch_size < selected_batch_size:
                  selected_batch_size = padded_batch_size
          return selected_batch_size

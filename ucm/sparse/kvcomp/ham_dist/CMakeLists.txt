@@ -85,7 +85,7 @@ set_target_properties(hamming PROPERTIES
 # ---- Includes / Link dirs / Link libs ----
 target_include_directories(hamming PRIVATE ${INCLUDE_DIRS})
 target_link_directories(hamming PRIVATE ${LIBRARY_DIRS})
-target_link_libraries(hamming PRIVATE Torch::Torch Python::Module)
+target_link_libraries(hamming PRIVATE ${LIBRARIES} Python::Module)
 
 # ---- Extra compile options (keep your original intent) ----
 target_compile_options(hamming PRIVATE
