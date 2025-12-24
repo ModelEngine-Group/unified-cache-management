@@ -11,6 +11,7 @@ from vllm.config import VllmConfig
 from vllm.forward_context import ForwardContext
 from vllm.v1.attention.backends.mla.common import MLACommonMetadata
 from vllm.v1.request import Request, RequestStatus
+from vllm.v1.core.sched.output import SchedulerOutput
 
 from ucm.logger import init_logger
 from ucm.sparse.base import (
@@ -458,6 +459,9 @@ class KvCompOnDevice(UcmSparseBase):
         Generate the metadata required by UcmSparse instance at worker-side.
         """
         pass
+
+    def execute_begin(self, scheduler_output: SchedulerOutput):
+        self.is_tensor_computed = False
 
     def estimate_num_slots_sparsed(self, request: Request) -> int:
         return INVALID_SLOT
