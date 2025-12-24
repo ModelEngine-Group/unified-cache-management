@@ -1,6 +1,6 @@
-From 8b41dedc935ab7a235b366aca45e11566184c452 Mon Sep 17 00:00:00 2001
+From 2f4adc594410c61a8f7bc5172ef443eca72d230e Mon Sep 17 00:00:00 2001
 From: wenxinwang <wangwenxin21@huawei.com>
-Date: Tue, 23 Dec 2025 04:18:38 -0800
+Date: Tue, 23 Dec 2025 18:35:23 -0800
 Subject: [PATCH] kvcomp qwen deepseek
 
 ---
@@ -21,7 +21,7 @@ Subject: [PATCH] kvcomp qwen deepseek
  14 files changed, 278 insertions(+), 22 deletions(-)
 
 diff --git a/vllm/attention/layer.py b/vllm/attention/layer.py
-index f0ad68b16..b7e816292 100644
+index f0ad68b16..bc48849b1 100644
 --- a/vllm/attention/layer.py
 +++ b/vllm/attention/layer.py
 @@ -2,12 +2,12 @@
@@ -64,7 +64,7 @@ index f0ad68b16..b7e816292 100644
      kv_cache = self.kv_cache[forward_context.virtual_engine]
 +    if not self.use_mla:
 +        if attn_metadata is not None:
-+            if os.environ["VLLM_HASH_ATTENTION"] == "1":
++            if os.getenv("VLLM_HASH_ATTENTION") == "1":
 +                kv_cache, k_hash = kv_cache
 +            else:
 +                k_hash = None
@@ -260,7 +260,7 @@ index 7ef9d248d..e35ab2fdc 100644
              return IntermediateTensors({
                  "hidden_states": hidden_states,
 diff --git a/vllm/v1/attention/backends/flash_attn.py b/vllm/v1/attention/backends/flash_attn.py
-index fbc13c06c..d75c843d6 100755
+index fbc13c06c..2b2244949 100755
 --- a/vllm/v1/attention/backends/flash_attn.py
 +++ b/vllm/v1/attention/backends/flash_attn.py
 @@ -16,6 +16,8 @@ from vllm.attention.ops.merge_attn_states import merge_attn_states
@@ -278,14 +278,14 @@ index fbc13c06c..d75c843d6 100755
  
 +        if has_ucm_sparse():
 +            ucm_sparse = get_ucm_sparse()
-+            if os.environ["VLLM_HASH_ATTENTION"] == "1":
++            if os.getenv("VLLM_HASH_ATTENTION") == "1":
 +                decode_mask, topk_seq_lens = ucm_sparse.build_decode_attention_meta(query_start_loc, seq_lens, block_table_tensor)
 +
          block_table.slot_mapping[:num_actual_tokens].copy_(
              block_table.slot_mapping_cpu[:num_actual_tokens],
              non_blocking=True)
 diff --git a/vllm/v1/attention/backends/mla/common.py b/vllm/v1/attention/backends/mla/common.py
-index f2aaf59a4..09330d96b 100644
+index f2aaf59a4..439bb9b14 100644
 --- a/vllm/v1/attention/backends/mla/common.py
 +++ b/vllm/v1/attention/backends/mla/common.py
 @@ -200,6 +200,7 @@ from vllm.attention.backends.abstract import (AttentionBackend, AttentionLayer,
@@ -318,7 +318,7 @@ index f2aaf59a4..09330d96b 100644
          prefill_k_pe = k_pe[num_decode_tokens:]
          prefill_k_c_normed = k_c_normed[num_decode_tokens:]
  
-+        if os.environ["VLLM_HASH_ATTENTION"] == "1":
++        if os.getenv("VLLM_HASH_ATTENTION") == "1":
 +            kv_cache, k_hash = kv_cache
 +        else:
 +            k_hash = None
@@ -350,7 +350,7 @@ index f2aaf59a4..09330d96b 100644
 +            maybe_execute_sparse_attention_finished(torch.cat([decode_ql_nope, decode_q_pe],dim=-1), decode_ql_nope, decode_q_pe, output[:num_decode_tokens], layer.layer_name, forward_context, "decode")
          return output_padded
 diff --git a/vllm/v1/attention/backends/mla/flashmla.py b/vllm/v1/attention/backends/mla/flashmla.py
-index be26e0060..53787a8b5 100644
+index be26e0060..4d74e9d5b 100644
 --- a/vllm/v1/attention/backends/mla/flashmla.py
 +++ b/vllm/v1/attention/backends/mla/flashmla.py
 @@ -5,7 +5,7 @@ from dataclasses import dataclass
@@ -390,7 +390,7 @@ index be26e0060..53787a8b5 100644
 +        topk_num_splits = None
 +        if has_ucm_sparse():
 +            ucm_sparse = get_ucm_sparse()
-+            if os.environ["VLLM_HASH_ATTENTION"] == "1":
++            if os.getenv("VLLM_HASH_ATTENTION") == "1":
 +                topk_seq_lens, topk_tile_scheduler_metadata, topk_num_splits = ucm_sparse.build_decode_hash(seq_lens)
  
          if self.runner.full_cuda_graph:
@@ -452,14 +452,14 @@ index 6937455e7..bf9aec864 100644
          if new_computed_blocks is not None:
              new_computed_block_list = new_computed_blocks.blocks
 diff --git a/vllm/v1/core/kv_cache_utils.py b/vllm/v1/core/kv_cache_utils.py
-index 2fbcb569e..46ee72e4d 100644
+index 2fbcb569e..40c199563 100644
 --- a/vllm/v1/core/kv_cache_utils.py
 +++ b/vllm/v1/core/kv_cache_utils.py
 @@ -693,6 +693,19 @@ def _get_kv_cache_config_uniform_type(vllm_config: VllmConfig,
      num_blocks = get_num_blocks(vllm_config, len(kv_cache_spec),
                                  available_memory, page_size)
  
-+    if os.environ["VLLM_HASH_ATTENTION"] == "1":
++    if os.getenv("VLLM_HASH_ATTENTION") == "1":
 +        from vllm.utils import STR_DTYPE_TO_TORCH_DTYPE
 +
 +        if vllm_config.cache_config.cache_dtype == 'auto':
@@ -623,7 +623,7 @@ index 8f4e8d64c..f45e39f5c 100644
          for i, block_table in enumerate(self.block_tables):
              block_table.add_row(block_ids[i], row_idx)
 diff --git a/vllm/v1/worker/gpu_model_runner.py b/vllm/v1/worker/gpu_model_runner.py
-index 5a26e88db..cc492d31b 100644
+index 5a26e88db..6a39240d2 100644
 --- a/vllm/v1/worker/gpu_model_runner.py
 +++ b/vllm/v1/worker/gpu_model_runner.py
 @@ -15,6 +15,7 @@ import torch.nn as nn
@@ -809,7 +809,7 @@ index 5a26e88db..cc492d31b 100644
  
 +        if has_ucm_sparse():
 +            ucm_sparse = get_ucm_sparse()
-+            if os.environ["VLLM_HASH_ATTENTION"] == "1":
++            if os.getenv("VLLM_HASH_ATTENTION") == "1":
 +                ucm_sparse.initialize_kv_hash_cache_tensors(kv_caches, self.device)
 +
          # Setup `kv_cache_config` and `kv_caches` for models
