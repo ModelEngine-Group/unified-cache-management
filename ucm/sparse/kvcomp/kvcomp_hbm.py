@@ -167,7 +167,7 @@ class KvCompOnDevice(UcmSparseBase):
                     self.seq_lens_for_hamming = torch.zeros([self.max_batch_size],
                                                                dtype=torch.int32,
                                                                device=self.device)
-                    self.hamming_output = torch.zeros([self.max_batch_size, (self.hash_topk_tokens // self.block_size) + 1],
+                    self.hamming_output = torch.zeros([self.max_batch_size, self.hash_topk_tokens // self.block_size],
                                                                dtype=torch.int32,
                                                                device=self.device)
 
@@ -270,11 +270,19 @@ class KvCompOnDevice(UcmSparseBase):
                     )
                 else: # NPU
                     if not self.is_tensor_computed:
-                        self.query_lens_device = attn_metadata.query_lens_device
+                        decode_req_ids = torch.nonzero(
+                                self.decode_mask, as_tuple=False
+                        ).flatten()
+                        decode_req_ids_npu = torch.nonzero(
+                                self.decode_mask_npu, as_tuple=False
+                        ).flatten()
+                        batch_size_for_hamming = self.decode_mask.sum().item()
+                        self.query_lens_device = attn_metadata.query_lens_device[decode_req_ids_npu]
+                        self.topk_for_hamming = self.topk_for_hamming_full[:batch_size_for_hamming]
+                        self.chunk_size_for_hamming = self.chunk_sizes_for_hamming[:batch_size_for_hamming]
+                        self.seq_lens_for_hamming = attn_metadata.seq_lens_device[decode_req_ids_npu]
+                        self.max_seq_len_for_hamming = torch.max(attn_metadata.seq_lens[decode_req_ids]).item()
                         self.is_tensor_computed = True
-                        self.seq_lens_for_hamming = attn_metadata.seq_lens_device
-                        self.max_seq_len_for_hamming = torch.max(attn_metadata.seq_lens).item()
-                        # (TODO ldeng)
                         
                     k_hash_compute = self.hash_encoder.compute_hash(key)
                     k_hash_compute = k_hash_compute.transpose(0,1).reshape(-1, k_hash_compute.shape[-1]).contiguous()
@@ -399,11 +407,12 @@ class KvCompOnDevice(UcmSparseBase):
                                 self.max_seq_len_for_hamming,
                                 self.hamming_keep_chunks_head,
                                 self.hamming_keep_chunks_tail,
-                                self.block_tables_for_hamming,
-                                self.hamming_output
+                                block_table_decode,
+                                self.hamming_output[:len(decode_req_ids)]
                             )
-                            attn_metadata.block_table[decode_req_ids,:self.topk_for_hamming] = self.hamming_output[:len(decode_req_ids)]
-                            attn_metadata.block_table[decode_req_ids,self.topk_for_hamming:] = 0
+                            topk = self.hamming_output.shape[1]
+                            attn_metadata.block_table[decode_req_ids,:topk] = self.hamming_output[:len(decode_req_ids)]
+                            attn_metadata.block_table[decode_req_ids,topk:] = 0
                             attn_metadata.seq_lens[self.decode_mask] = self.seq_lens_for_hamming
 
                         # topk for skip layer
