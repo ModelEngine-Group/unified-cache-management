@@ -389,7 +389,8 @@ class KvCompOnDevice(UcmSparseBase):
                             decode_req_ids = torch.nonzero(
                                 self.decode_mask_npu, as_tuple=False
                             ).flatten()
-                            q_decode = query.index_select(0, decode_req_ids)
+                            decode_token_idx = q_start[:-1].index_select(0, decode_req_ids)
+                            q_decode = query.index_select(0, decode_token_idx)
 
                             q_hash = self.self.hash_encoder.compute_hash(q_decode).unsqueeze(2).contiguous()
 
@@ -522,7 +523,6 @@ class KvCompOnDevice(UcmSparseBase):
                 topk_token=self.hash_topk_tokens,
                 block_size=self.block_size,
             )
-        return self.decode_mask, self.topk_seq_lens_qwen
 
     def maybe_init_cudagraph_buffers_for_topk(self, n, tile_scheduler_metadata):
         sm_parts = tile_scheduler_metadata.size(0)
