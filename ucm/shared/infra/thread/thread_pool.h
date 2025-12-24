@@ -179,12 +179,8 @@ private:
     void MonitorLoop()
     {
         const auto interval = std::chrono::milliseconds(this->intervalMs_);
-        while (true) {
-            {
-                std::unique_lock<std::mutex> lock(this->taskMtx_);
-                this->cv_.wait_for(lock, interval, [this] { return this->stop_; });
-                if (this->stop_) { break; }
-            }
+        while (!this->stop_) {
+            std::this_thread::sleep_for(interval);
             size_t nWorker = this->Monitor();
             for (size_t i = nWorker; i < this->nWorker_; i++) { (void)this->AddOneWorker(); }
         }
@@ -194,7 +190,6 @@ private:
     {
         using namespace std::chrono;
         const auto timeout = milliseconds(this->timeoutMs_);
-        size_t nWorker = 0;
         for (auto it = this->workers_.begin(); it != this->workers_.end();) {
             auto tp = (*it)->tp.load(std::memory_order_relaxed);
             auto task = (*it)->current.lock();
@@ -207,9 +202,8 @@ private:
             } else {
                 it++;
             }
-            nWorker++;
         }
-        return nWorker;
+        return this->workers_.size();
     }
 
 private:
