@@ -390,7 +390,7 @@ class KvCompOnDevice(UcmSparseBase):
                                 0, decode_req_ids
                             )
 
-                            ucm_custom_ops.hamming_dist_topk(
+                            ucm_custom_ops.hamming_dist_top_k(
                                 q_hash,
                                 k_hash,
                                 self.topk_for_hamming,
