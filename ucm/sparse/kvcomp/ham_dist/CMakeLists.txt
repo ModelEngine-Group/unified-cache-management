@@ -7,7 +7,7 @@ set(CMAKE_CUDA_ARCHITECTURES 75 80 86 89 90)
 enable_language(CUDA)
 
 # ---- Python ----
-find_package(Python COMPONENTS Interpreter Development REQUIRED)
+find_package(Python COMPONENTS Interpreter Development.Module REQUIRED)
 
 # ---- Python ext suffix ----
 execute_process(
@@ -85,7 +85,7 @@ set_target_properties(hamming PROPERTIES
 # ---- Includes / Link dirs / Link libs ----
 target_include_directories(hamming PRIVATE ${INCLUDE_DIRS})
 target_link_directories(hamming PRIVATE ${LIBRARY_DIRS})
-target_link_libraries(hamming PRIVATE ${LIBRARIES} Python::Python)
+target_link_libraries(hamming PRIVATE Torch::Torch Python::Module)
 
 # ---- Extra compile options (keep your original intent) ----
 target_compile_options(hamming PRIVATE
