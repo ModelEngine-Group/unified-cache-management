@@ -148,4 +148,5 @@ setup(
     cmdclass={"build_ext": CMakeBuild},
     zip_safe=False,
     include_package_data=False,
+    package_data={"ucm": ["sparse/kvcomp/configs/**/*.json"]},
 )
