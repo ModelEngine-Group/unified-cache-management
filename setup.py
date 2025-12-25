@@ -147,5 +147,6 @@ setup(
     ext_modules=[CMakeExtension(name="ucm", source_dir=ROOT_DIR)],
     cmdclass={"build_ext": CMakeBuild},
     zip_safe=False,
-    include_package_data=False,
+    include_package_data=True,
+    package_data={"ucm": ["sparse/kvcomp/configs/**/*.json"]},
 )
