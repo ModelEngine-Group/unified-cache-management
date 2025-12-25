@@ -1,5 +1,7 @@
 # TODO: handle preemption
 # TODO: init ESA before warmup to make profile_run right!!!
+# TODO: reduce memory usage
+# TODO: interface of esa_retrieval
 
 
 import numpy as np
@@ -174,6 +176,21 @@ class ESA(UcmSparseBase):
 
                 # construct metadata for decode batch
                 if is_decode:
+
+                    ################ TODO: HERE，检索需要排除掉local window， 需要记录topk长度等
+                    # if req_id not in self.req_topk_block_tables:
+                    #     print("init topk @decode step 1")
+                    #     decode_blocks = len(req.block_ids[0])
+                    #     layer_block_tables = [] # NOTE: 默认逐层block_tables可以不一样，留给以后做逐层topk
+                    #     for i in range(self.total_num_hidden_layers):
+                    #         layer_block_tables.append(np.array(req.block_ids[0])) # TODO: handle local window
+                    #     self.req_topk_block_tables[req_id] = layer_block_tables                        
+
+                    #     layer_repre_indexes = []
+                    #     for i in range(self.total_num_hidden_layers):
+                    #         layer_repre_indexes.append(np.array([-1 for _ in range(decode_blocks)]))
+                    #     self.req_topk_repre_indexes = layer_repre_indexes
+
                     self.has_decode = True
                     assert req_id in self.req_row_id, f"req {req_id} does not has repre_blocks"
                     row_id = self.req_row_id[req_id]
@@ -188,18 +205,7 @@ class ESA(UcmSparseBase):
                     self.decode_retrieval_batch += 1
                     decode_repre_index_offset += len(repre_blocks)
 
-                    # if req_id not in self.req_topk_block_tables:
-                    #     print("init topk @decode step 1")
-                    #     decode_blocks = len(req.block_ids[0])
-                    #     layer_block_tables = [] # NOTE: 默认逐层block_tables可以不一样，留给以后做逐层topk
-                    #     for i in range(self.total_num_hidden_layers):
-                    #         layer_block_tables.append(np.array(req.block_ids[0])) # TODO: handle local window
-                    #     self.req_topk_block_tables[req_id] = layer_block_tables                        
 
-                    #     layer_repre_indexes = []
-                    #     for i in range(self.total_num_hidden_layers):
-                    #         layer_repre_indexes.append(np.array([-1 for _ in range(decode_blocks)]))
-                    #     self.req_topk_repre_indexes = layer_repre_indexes
                         
 
             self.prefill_num_blocks = prefill_repre_index_offset
