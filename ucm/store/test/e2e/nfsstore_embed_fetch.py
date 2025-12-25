@@ -42,17 +42,16 @@ def setup(
     block_size,
     device_id,
     io_size,
-    transferStreamNumber,
-    transferIoDirect,
+    stream_number,
+    io_direct,
 ) -> UcmKVStoreBaseV1:
     config = {
         "storage_backends": storage_backends,
-        "kv_block_size": block_size,
-        "role": "worker",
-        "device": device_id,
-        "io_size": io_size,
-        "transferStreamNumber": transferStreamNumber,
-        "transferIoDirect": transferIoDirect,
+        "block_size": block_size,
+        "device_id": device_id,
+        "tensor_size": io_size,
+        "stream_number": stream_number,
+        "io_direct": io_direct,
         "unique_id": secrets.token_hex(8),
     }
     return UcmPcStoreV1(config)
@@ -150,13 +149,14 @@ def embed(
 
 def fetch(
     store: UcmKVStoreBaseV1,
+    scheduler: UcmKVStoreBaseV1,
     hashes: List[bytes],
     kvcaches: Dict[int, torch.Tensor],
     mla: bool,
 ):
     start_time = time.perf_counter()
 
-    founds = store.lookup(hashes)
+    founds = scheduler.lookup(hashes)
     for f in founds:
         assert f, "Cache block miss detected"
 
@@ -179,6 +179,7 @@ def fetch(
         totoal_tensors.append(tensors)
 
     task = store.load(hashes, [], totoal_tensors)
+
     try:
         ret = store.wait(task)
         if ret is None:
@@ -205,14 +206,14 @@ def run(
     repeat: int,
     num_head: int,
     block_len: int,
-    transferStreamNumber: int,
+    stream_number: int,
     num_tokens: int,
     block_layer: int,
     head_size: int,
     block_elem_size: int,
     kv: int,
     mla: bool,
-    transferIoDirect: bool,
+    io_direct: bool,
     operation_mode: str = "both",  #  "write_only", "read_only", or "both"
 ) -> Tuple[float, float, float, float, float, float]:
     """
@@ -241,8 +242,17 @@ def run(
         block_size,
         device_id,
         io_size,
-        transferStreamNumber,
-        transferIoDirect,
+        stream_number,
+        io_direct,
+    )
+
+    scheduler = setup(
+        storage_backends,
+        block_size,
+        -1,  # device_id=-1 means transferEnable=false
+        io_size,
+        stream_number,
+        io_direct,
     )
 
     for r in range(repeat):
@@ -302,6 +312,7 @@ def run(
 
                 r_size, r_time, r_bw = fetch(
                     store,
+                    scheduler,
                     saved_hashes[:batch_size],
                     kvcaches,
                     mla,
@@ -309,6 +320,7 @@ def run(
             else:
                 r_size, r_time, r_bw = fetch(
                     store,
+                    scheduler,
                     hashes[:batch_size],
                     kvcaches,
                     mla,
@@ -353,14 +365,14 @@ if __name__ == "__main__":
             repeat=2,
             num_head=1,
             block_len=64,
-            transferStreamNumber=32,
+            stream_number=32,
             num_tokens=4096,
             block_layer=61,
             head_size=576,
             block_elem_size=2,
             kv=1,
             mla=True,
-            transferIoDirect=False,
+            io_direct=False,
             operation_mode="both",
         )
 
