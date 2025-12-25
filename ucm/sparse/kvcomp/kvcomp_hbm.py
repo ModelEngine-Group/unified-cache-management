@@ -1,3 +1,5 @@
+from importlib import resources
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
 
 import torch
@@ -24,6 +26,49 @@ logger = init_logger(__name__)
 ReqType = Union[str, int]
 
 
+def kvcomp_config_path_for_model(vllm_config) -> str:
+    model = vllm_config.model_config.model.lower()
+    logger.info("[KvComp] model name: %s", model)
+
+    if "deepseek" in model and "r1" in model:
+        rel = "ucm/sparse/kvcomp/configs/kvcomp_deepseek_r1_awq_config.json"
+    elif "qwen3" in model and "32b" in model:
+        rel = "ucm/sparse/kvcomp/configs/kvcomp_qwen3_32B_config.json"
+    else:
+        raise ValueError(f"[KvCompOnDevice] Unsupported model for kvcomp: {model}")
+
+    logger.info("[KvComp] target relative path: %s", rel)
+
+    cur = Path(__file__).resolve()
+    repo = cur
+    for depth in range(30):
+        if (
+            (repo / "pyproject.toml").is_file()
+            or (repo / "setup.cfg").is_file()
+            or (repo / ".git").exists()
+        ):
+
+            p = repo / rel
+            logger.info("[KvComp] repo root detected at depth=%d: %s", depth, repo)
+            if p.is_file():
+                logger.info("[KvComp] config loaded from SOURCE tree: %s", p)
+                return str(p)
+            logger.warning("[KvComp] repo root found but config missing: %s", p)
+            break
+        if repo.parent == repo:
+            logger.debug("[KvComp] reached filesystem root, stop searching")
+            break
+
+        repo = repo.parent
+
+    sub = rel[len("ucm/") :] if rel.startswith("ucm/") else rel
+    res = resources.files("ucm").joinpath(*sub.split("/"))
+
+    with resources.as_file(res) as p:
+        logger.info("[KvComp] config loaded from PACKAGE resource (wheel): %s", p)
+        return str(p)
+
+
 class KvCompOnDevice(UcmSparseBase):
     # handle batch
     def __init__(self, vllm_config: VllmConfig, role: UcmSparseRole):
@@ -39,16 +84,7 @@ class KvCompOnDevice(UcmSparseBase):
         )
         self.block_size = vllm_config.cache_config.block_size
 
-        self.kvcompOnDevice_cfg = (
-            Config(vllm_config.kv_transfer_config)
-            .get_config()
-            .get("ucm_sparse_config")
-            .get("GSA")
-        )
-
-        kvcompOnDevice_config_path = self.kvcompOnDevice_cfg[
-            "kvcompOnDevice_config_path"
-        ]
+        kvcompOnDevice_config_path = kvcomp_config_path_for_model(vllm_config)
         self.kvcompOnDevice_config = KvCompConfig.from_json(kvcompOnDevice_config_path)
         logger.info(f"read kvcomp config file : {kvcompOnDevice_config_path} ")
         self.hash_topk_tokens = self.kvcompOnDevice_config.vllm_hash_attention_topk

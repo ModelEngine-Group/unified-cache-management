@@ -41,7 +41,7 @@ def ensure_ucm_sparse_initialized(
 
     # Check if UCM sparse is enabled
     ucm_config = Config(vllm_config.kv_transfer_config)
-    ucm_sparse_config = ucm_config.get_config().get("ucm_sparse_config")
+    ucm_sparse_config = ucm_config.get_config().get("ucm_sparse_method")
     if not ucm_sparse_config:
         return
 
