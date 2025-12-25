@@ -28,7 +28,7 @@ function(EnableDept)
     set(${NAME_UPPER}_BUILD_EXAMPLES OFF CACHE INTERNAL "" FORCE)
     FetchContent_MakeAvailable(${DEPT_NAME})
 endfunction()
-
+set(SPDLOG_FMT_EXTERNAL ON CACHE INTERNAL "" FORCE)
 if(DOWNLOAD_DEPENDENCE)
     include(FetchContent)
     EnableDept(
