@@ -7,22 +7,32 @@ if [[ -z "$NODE" ]]; then
 fi
 
 load_config() {
+    local config_file
     config_file="$(dirname "${BASH_SOURCE[0]}")/config.properties"
     if [[ ! -f "$config_file" ]]; then
-        echo "ERROR: Config file '$config_file' not found!"
+        echo "ERROR: Config file '$config_file' not found!" >&2
         exit 1
     fi
 
-    while IFS='=' read -r key value; do
-        key=$(echo "$key" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
-        value=$(echo "$value" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+    while IFS= read -r line; do
+        line=$(echo "$line" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+        [[ -z "$line" || "$line" == \#* ]] && continue
 
-        if [[ -z "$key" ]] || [[ "$key" == \#* ]]; then
-            continue
+        if [[ "$line" == export\ * ]]; then
+            rest="${line#export }"
+            eval "export $rest"
+        else
+            if [[ "$line" == *=* ]]; then
+                key="${line%%=*}"
+                value="${line#*=}"
+                key=$(echo "$key" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+                value=$(echo "$value" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+                eval "$key=\$value"
+            else
+                echo "WARNING: Invalid config line (no '=' found): $line" >&2
+            fi
         fi
-
-        export "$key"="$value"
-    done < <(grep -v '^\s*#' "$config_file" | grep -v '^\s*$')
+    done < "$config_file"
 }
 
 ensure_ifconfig_installed() {
@@ -76,9 +86,9 @@ get_interface_by_ip() {
 
 set_node_env(){
     if [[ "$NODE" == "0" ]]; then
-        export TARGET_IP="$MASTER_IP"
+        export TARGET_IP="$master_ip"
     else
-        export TARGET_IP="$WORKER_IP"
+        export TARGET_IP="$worker_ip"
     fi
 
     IFACE=$(get_interface_by_ip "$TARGET_IP")
@@ -94,17 +104,15 @@ set_node_env(){
     export NCCL_SOCKET_IFNAME="$IFACE"
     export GLOO_SOCKET_IFNAME="$IFACE"
     export TP_SOCKET_IFNAME="$IFACE"
-    export NUM_GPUS=$(($TP_SIZE / $NODE_NUM))
+    export NUM_GPUS=$((tp_size / node_num))
 
     echo ""
-    echo "===== Ray Startup Configuration ======"
-    echo "NODE                     = $NODE"
-    echo "LOCAL_IP                 = $TARGET_IP"
-    if [[ "$NODE" != "0" ]]; then
-        echo "MASTER_IP                = $MASTER_IP"
-    fi
-    echo "NETWORK_INTERFACE        = $IFACE"
-    echo "NUM_GPUS (per node)      = $NUM_GPUS"
+    echo "===== ray startup configuration ======"
+    echo "node                     = $NODE"
+    echo "master_ip                = $master_ip"
+    echo "local_ip                 = $TARGET_IP"
+    echo "network_interface        = $IFACE"
+    echo "num_gpus (per node)      = $NUM_GPUS"
     echo "CUDA_VISIBLE_DEVICES     = $CUDA_VISIBLE_DEVICES"
     echo "ASCEND_RT_VISIBLE_DEVICES= $ASCEND_RT_VISIBLE_DEVICES"
     echo "======================================"
@@ -118,6 +126,6 @@ if [[ "$NODE" == "0" ]]; then
     echo "Starting Ray head node on NODE 0, MASTER_IP: $TARGET_IP"
     ray start --head --num-gpus=$NUM_GPUS --node-ip-address="$TARGET_IP" --port=6379
 else
-    echo "Starting Ray worker node on NODE $NODE, WORKER_IP=$TARGET_IP, connecting to master at $MASTER_IP"
-    ray start --address="$MASTER_IP:6379" --num-gpus=$NUM_GPUS --node-ip-address="$TARGET_IP"
+    echo "Starting Ray worker node on NODE $NODE, WORKER_IP=$TARGET_IP, connecting to master at $master_ip"
+    ray start --address="$master_ip:6379" --num-gpus=$NUM_GPUS --node-ip-address="$TARGET_IP"
 fi
