@@ -11,6 +11,11 @@ done
 
 CODE_ROOT=$(dirname "$(dirname "$(readlink -f "$0")")")
 export ENABLE_SPARSE=true
+export VLLM_HASH_ATTENTION=1
+
+# 生成时间戳（格式：YYYYMMDD_HHMMSS）
+TIMESTAMP=$(date +"%Y%m%d_%H%M%S")
+export TIMESTAMP
 
 MODEL_PATH=""
 UCM_SPARSE_CONFIG=""
@@ -26,6 +31,7 @@ show_help() {
     echo "  --data PATH             Path to test data directory"
     echo "  --strip_think 0|1       Whether to apply --strip_think"
     echo "  --batch INT             Batch size"
+    echo "  --resume                Resume from existing result file"
     echo "  -h, --help              Show help"
     exit 0
 }
@@ -52,6 +58,10 @@ while [[ $# -gt 0 ]]; do
             BATCH_SIZE="$2"
             shift 2
             ;;
+        --resume)
+            RESUME_FLAG=1
+            shift
+            ;;
         -h|--help)
             show_help
             ;;
@@ -65,7 +75,7 @@ done
 # Set default values
 MODEL_PATH="${MODEL_PATH:-/home/models/Qwen2.5-14B-Instruct/}"
 UCM_SPARSE_CONFIG="${UCM_SPARSE_CONFIG:-${CODE_ROOT}/eval/ucm_sparse_config_esa.json}"
-TEST_DATA_DIR="${TEST_DATA_DIR:-${CODE_ROOT}/eval/data}"
+TEST_DATA_DIR="${TEST_DATA_DIR:-${CODE_ROOT}/eval/data/longbench}"
 BATCH_SIZE="${BATCH_SIZE:-20}"
 
 echo "------------- Final Arguments -------------"
@@ -74,6 +84,7 @@ echo "UCM_SPARSE_CONFIG= $UCM_SPARSE_CONFIG"
 echo "TEST_DATA_DIR    = $TEST_DATA_DIR"
 echo "STRIP_THINK      = $STRIP_THINK"
 echo "BATCH_SIZE       = $BATCH_SIZE"
+echo "RESUME_FLAG      = $RESUME_FLAG"
 echo "--------------------------------------------"
 
 
@@ -93,7 +104,7 @@ export STORAGE_BACKENDS
 
 SAVE_PATH="${CODE_ROOT}/eval/ucm_sparse_predictions"
 DATASET="LongBench" 
-DATASET_SAVE_DIR="${SAVE_PATH}/${MODEL_NAME}/${DATASET}"
+DATASET_SAVE_DIR="${SAVE_PATH}/${DATASET}"
 
 mkdir -p "$STORAGE_BACKENDS" "$DATASET_SAVE_DIR" || { echo "Failed to create dirs!"; exit 1; }
 
@@ -102,7 +113,7 @@ mkdir -p "$STORAGE_BACKENDS" "$DATASET_SAVE_DIR" || { echo "Failed to create dir
 # -------------------------- LongBench --------------------------
 TARGET_FILES=(
 "${TEST_DATA_DIR}/multifieldqa_zh.jsonl"
-"${TEST_DATA_DIR}/dureader.jsonl"
+# "${TEST_DATA_DIR}/dureader.jsonl"
 )
 # ---------------------------------------------------------------
 EXISTING_FILES=()
@@ -132,18 +143,18 @@ for DATASET_FLIE in "${EXISTING_FILES[@]}"; do
     file_name_no_ext="${filename%.*}"
     export DATASET_FLIE
     
-    RES_FILE="${DATASET_SAVE_DIR}/${file_name_no_ext}_${UCM_CONFIG_NAME_NO_EXT}_bs${BATCH_SIZE}.jsonl"
+    RES_FILE="${DATASET_SAVE_DIR}/${MODEL_NAME}_${file_name_no_ext}_${UCM_CONFIG_NAME_NO_EXT}_offline_bs${BATCH_SIZE}_${TIMESTAMP}.jsonl"
     export RES_FILE
-    [[ -f "$RES_FILE" ]] && > "$RES_FILE"
 
     export UCM_SPARSE_CONFIG
     export BATCH_SIZE
+    export RESUME_FLAG
     echo -e "\n======================================"
     echo "Executed model: $MODEL_NAME"
     echo "Using Config: $UCM_SPARSE_CONFIG"
     echo "======================================"
 
-    python3 "${CODE_ROOT}/eval/inference.py" \
+    python3 "${CODE_ROOT}/eval/offline_inference_longbench_F1.py" \
 
     if [[ ! -f "$RES_FILE" ]]; then
         echo "Warning: test finished but result file not found!"

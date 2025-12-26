@@ -25,6 +25,7 @@ def setup_environment_variables():
     os.environ["VLLM_USE_V1"] = "1"
     os.environ["PYTHONHASHSEED"] = "123456"
     os.environ["ENABLE_SPARSE"] = "true"
+    os.environ["VLLM_HASH_ATTENTION"] = "1"
 
     global model, path_to_dataset, data_dir, ucm_sparse_config, dataset_name, tokenizer
     model = os.getenv("MODEL_PATH", "/home/models/Qwen2.5-14B-Instruct")
@@ -96,7 +97,7 @@ def build_llm_with_uc(module_path: str, name: str, model: str):
 
     llm_args = EngineArgs(
         model=model,
-        kv_transfer_config=ktc,
+        # kv_transfer_config=ktc,
         max_model_len=32768,
         gpu_memory_utilization=0.8,
         max_num_batched_tokens=30000,
@@ -159,11 +160,63 @@ def main():
     with build_llm_with_uc(module_path, name, model) as llm:
         res_file = os.getenv("RES_FILE", "./ucm_sparse_output/multifieldqa_zh.jsonl")
         batch_size = int(os.getenv("BATCH_SIZE", 20))
+        resume_flag = os.getenv("RESUME_FLAG", "0") == "1"
+        
+        # 读取数据集
         with open(path_to_dataset, "r") as f:
             lines = f.readlines()
         # lines=lines[:20]
         total_data = len(lines)
-        for start_idx in range(0, total_data, batch_size):
+        
+        # 检查是否需要恢复
+        processed_count = 0
+        if resume_flag:
+            import glob
+            import re
+            res_file_dir = os.path.dirname(res_file) if os.path.dirname(res_file) else "."
+            res_file_basename = os.path.basename(res_file)
+            
+            # 提取文件名模式（去掉时间戳部分）
+            # 例如: multifieldqa_zh_esa_bs20_20241215_143025.jsonl -> multifieldqa_zh_esa_bs20
+            pattern_match = re.match(r"(.+?)_\d{8}_\d{6}\.jsonl$", res_file_basename)
+            if pattern_match:
+                # 有时间戳，查找所有匹配的文件
+                base_pattern = pattern_match.group(1)
+                pattern = os.path.join(res_file_dir, f"{base_pattern}_*.jsonl")
+                matching_files = glob.glob(pattern)
+                if matching_files:
+                    # 按修改时间排序，获取最新的文件
+                    resume_file = max(matching_files, key=os.path.getmtime)
+                    logger.info(f"Resuming from existing file (latest): {resume_file}")
+                else:
+                    resume_file = None
+            else:
+                # 没有时间戳，直接使用原文件名
+                resume_file = res_file if os.path.exists(res_file) else None
+                if resume_file:
+                    logger.info(f"Resuming from existing file: {resume_file}")
+            
+            if resume_file and os.path.exists(resume_file):
+                # 读取已处理的数据行数
+                with open(resume_file, "r", encoding="utf-8") as f:
+                    for line in f:
+                        if line.strip():
+                            try:
+                                json.loads(line)
+                                processed_count += 1
+                            except:
+                                pass
+                logger.info(f"Found {processed_count} already processed samples")
+        
+        # 计算起始索引
+        start_index = processed_count
+        if start_index >= total_data:
+            logger.info("All data has been processed. Nothing to do.")
+            return
+        
+        logger.info(f"Starting from index {start_index}, processing {total_data - start_index} remaining samples")
+        
+        for start_idx in range(start_index, total_data, batch_size):
             end_idx = min(start_idx + batch_size, total_data)
             current_batch = lines[start_idx:end_idx]
             prompts = []

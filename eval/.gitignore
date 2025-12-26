@@ -1,0 +1,4 @@
+ucm_sparse_predictions/
+data/
+*__pycache__/
+!.gitignore
