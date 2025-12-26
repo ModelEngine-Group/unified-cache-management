@@ -20,16 +20,16 @@ def cuda_hamming_topk(
     topk_token,
     sink_token,
     recent_token,
+    is_mla,
 ):
     q_hash = q_hash.view(torch.int32)
     k_hash = k_hash.view(torch.int32)
-    assert k_hash.shape[1] == 1
+    # assert k_hash.shape[1] == 1
     # assert k_hash.shape[-1] == 18 and q_hash.shape[-1] == 18
-    block_size = k_hash.shape[2]
+    block_size = k_hash.shape[1]
     assert topk_token % block_size == 0
     assert recent_token > 0 and topk_token > (sink_token + recent_token)
     max_seqlen = block_size * block_table.shape[1]
-
     output = hamming.hamming_score(
         k_hash,
         q_hash,
@@ -40,17 +40,23 @@ def cuda_hamming_topk(
         recent_token,
     )
 
-    block_output = torch.min(
-        output.view(output.shape[0], output.shape[-1] // block_size, block_size), dim=-1
-    )[0]
+    k_blocks = topk_token // block_size
+    B, Hk, S = output.shape
+    num_blocks = S // block_size
 
-    ind = torch.topk(block_output, k=(topk_token // block_size), dim=-1, largest=False)[
-        1
-    ]
-    ind = torch.sort(ind, dim=-1, descending=False)[0]
+    # block_output: [B, Hk, num_blocks]
+    block_output = output.view(B, Hk, num_blocks, block_size).amin(dim=-1)
 
-    new_block_table = torch.gather(block_table, dim=-1, index=ind)
-    return new_block_table
+    if is_mla:
+        block_score = block_output[:, 0, :]
+        ind = torch.topk(block_score, k=k_blocks, dim=-1, largest=False).indices
+        ind = ind.sort(dim=-1).values
+        return torch.gather(block_table, dim=-1, index=ind)
+
+    block_score = block_output.amin(dim=1)  # [B, num_blocks]
+    ind = torch.topk(block_score, k=k_blocks, dim=-1, largest=False).indices
+    ind = ind.sort(dim=-1).values
+    return torch.gather(block_table, dim=-1, index=ind)
 
 
 def fake_hamming_topk(
@@ -66,7 +72,7 @@ def fake_hamming_topk(
     k_hash = k_hash.view(torch.int32)
     assert k_hash.shape[1] == 1
     assert k_hash.shape[-1] == 18 and q_hash.shape[-1] == 18
-    block_size = k_hash.shape[2]
+    block_size = k_hash.shape[1]
     assert topk_token % block_size == 0
     assert recent_token > 0 and topk_token > (sink_token + recent_token)
     max_seqlen = block_size * block_table.shape[1]
