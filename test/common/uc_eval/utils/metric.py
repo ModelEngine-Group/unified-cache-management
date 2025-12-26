@@ -72,7 +72,7 @@ class MetricClass(ABC):
         self,
         expected_output: Union[str, List[str], tuple[str]],
         real_output: str,
-        **kwargs
+        **kwargs,
     ):
         pass
 
