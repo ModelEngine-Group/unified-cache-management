@@ -31,6 +31,7 @@ llm_connection:
   stream: true    # stream output
   ignore_eos: true    # Ignore the returned terminator
   timeout: 180    # request time out
+  extra_info: "vllm_qwen3-32b_pc-gsa"  # extra info, Used to mark different service pull-up parameters
 
 # Environment Pre-Check Configuration
 Env_preCheck:
