@@ -43,6 +43,7 @@ Status TransManager::Setup(const size_t rankSize, const int32_t deviceId, const 
     if (s.Failure()) { return s; }
     this->rankSize_ = rankSize;
     this->timeoutMs_ = timeoutMs;
+    this->bufferNumber_ = bufferNumber;
     return Status::OK();
 }
 
@@ -67,7 +68,8 @@ Status TransManager::Submit(TransTask task, size_t& taskId) noexcept
         return Status::OutOfMemory();
     }
     lg.unlock();
-    if (this->rankSize_ > 1 && iter->second.first->type == TransTask::Type::LOAD) {
+    if (this->rankSize_ > 1 && iter->second.first->type == TransTask::Type::LOAD &&
+        iter->second.first->AddressNumber() <= this->bufferNumber_) {
         this->shareQueue_.Dispatch(iter->second.first, iter->second.second);
         return Status::OK();
     }

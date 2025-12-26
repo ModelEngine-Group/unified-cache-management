@@ -65,6 +65,7 @@ public:
     }
     auto Str() const noexcept { return fmt::format("{},{},{}", id, brief_, number_); }
     size_t GroupNumber() const { return grouped_.size(); }
+    size_t AddressNumber() const { return number_; }
     void ForEachGroup(std::function<void(const std::string&, std::vector<uintptr_t>&)> fn)
     {
         for (auto& [block, shards] : grouped_) { fn(block, shards); }
@@ -84,6 +85,6 @@ private:
     std::unordered_map<std::string, std::vector<uintptr_t>> grouped_;
 };
 
-} // namespace UC
+}  // namespace UC
 
 #endif

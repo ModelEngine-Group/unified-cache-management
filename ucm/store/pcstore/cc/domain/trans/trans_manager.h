@@ -50,6 +50,7 @@ private:
     std::mutex mutex_;
     std::unordered_map<size_t, TaskPair> tasks_;
     TaskSet failureSet_;
+    size_t bufferNumber_;
 };
 
 }  // namespace UC

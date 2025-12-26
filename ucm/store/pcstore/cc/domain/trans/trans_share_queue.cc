@@ -67,9 +67,9 @@ Status TransShareQueue::Setup(const size_t nSharer, const int32_t deviceId,
 
 void TransShareQueue::Dispatch(TaskPtr task, WaiterPtr waiter)
 {
-    std::lock_guard<std::mutex> lg(this->mutex_);
+    std::vector<BlockTask> tasks;
     task->ForEachGroup(
-        [task, waiter, this](const std::string& block, std::vector<uintptr_t>& shards) {
+        [task, waiter, &tasks, this](const std::string& block, std::vector<uintptr_t>& shards) {
             BlockTask blockTask;
             blockTask.reader =
                 this->buffer_.MakeReader(block, this->layout_->DataFilePath(block, false));
@@ -82,8 +82,14 @@ void TransShareQueue::Dispatch(TaskPtr task, WaiterPtr waiter)
                     waiter->Done([task, ioSize] { UC_DEBUG("{}", task->Epilog(ioSize)); });
                 }
             };
-            this->wait_.push_back(blockTask);
+            tasks.push_back(std::move(blockTask));
         });
+
+    {
+        std::lock_guard<std::mutex> lg(this->mutex_);
+        for (auto& task : tasks) { this->wait_.push_back(std::move(task)); }
+    }
+
     this->cv_.notify_all();
 }
 
