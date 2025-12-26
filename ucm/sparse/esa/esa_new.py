@@ -91,12 +91,11 @@ class ESA(UcmSparseBase):
         # retrieval input and output
         self.size_of_int32 = 4
         self.retrieval_input = esa_lib.RetrievalInputTensor()
-        self.retrieval_input.workspace = torch.zeros(10000, dtype=torch.int32).to(self.device) # TODO: change 10000 to model_config.xxx
         self.retrieval_output = esa_lib.RetrievalOutputTensor()
         self.retrieval_output.score = torch.zeros(max_num_blocks, dtype=self.dtype, device=self.device)
-        self.retrieval_output.index = torch.zeros(max_num_blocks, dtype=torch.int32, device=self.device)
-        self.retrieval_output.score_sorted = torch.zeros(max_num_blocks, dtype=self.dtype, device=self.device)
-        self.retrieval_output.index_sorted = torch.zeros(max_num_blocks, dtype=torch.int32, device=self.device)
+        self.retrieval_output.score_cpu = torch.zeros(max_num_blocks, dtype=self.dtype, device="cpu", pin_memory=True)
+        self.retrieval_output.score_sorted_cpu = torch.zeros(max_num_blocks, dtype=self.dtype, device="cpu", pin_memory=True)
+        self.retrieval_output.index_sorted_cpu = torch.zeros(max_num_blocks, dtype=torch.int32, device="cpu", pin_memory=True)
          ########################
 
         ########################
@@ -243,16 +242,15 @@ class ESA(UcmSparseBase):
             return
         with nvtx.range(f"retrieval"):
             layer_id = self.get_layer_id(layer_name)
-            self.retrieval_input.batch = self.decode_retrieval_batch
-            self.retrieval_input.s = self.decode_retrieval_s_len
             self.retrieval_input.query = query
             self.retrieval_input.repre_cache = self.repre_cache[layer_id]
             self.retrieval_input.q_index = self.decode_q_index
             self.retrieval_input.repre_index = self.decode_repre_index
-            self.retrieval_input.batch_offset = self.decode_batch_offset
-            self.retrieval_output.index = self.decode_repre_index
+            self.retrieval_input.repre_index_cpu = self.decode_repre_index_cpu
+            self.retrieval_input.batch_offset = self.decode_batch_offset_cpu
+            self.retrieval_input.batch = self.decode_retrieval_batch
+            self.retrieval_input.s = self.decode_retrieval_s_len
             esa_retrieval(self.retrieval_input, self.retrieval_output)
-            print(f"debug: score: {self.retrieval_output.score[:self.retrieval_input.s]}")
 
     def attention_finished(
         self,
