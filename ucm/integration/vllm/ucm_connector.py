@@ -121,7 +121,7 @@ class UCMDirectConnector(KVConnectorBase_V1):
         ucm_config = Config(vllm_config.kv_transfer_config)
         self.engine_id = vllm_config.kv_transfer_config.engine_id
         self.launch_config = ucm_config.get_config()
-        logger.info(f"self.launch_config: {self.launch_config}")
+        logger.info("self.launch_config: {}", self.launch_config)
         self.connector_configs = self.launch_config.get("ucm_connectors", [])
         assert len(self.connector_configs) > 0, "no storage connector name in config."
         # TODO: haven't support broadcast
@@ -239,17 +239,17 @@ class UCMDirectConnector(KVConnectorBase_V1):
         if self.kv_cache_dtype is None:
             self.kv_cache_dtype = sample_kv_layer[0].dtype
         if isinstance(sample_kv_layer, torch.Tensor):
-            logger.info(f"kv cache shape {sample_kv_layer.shape}")
+            logger.info("kv cache shape {}", sample_kv_layer.shape)
         elif isinstance(sample_kv_layer, Tuple):
             # Since vllm_ascend >= 0.10.0, the MLA model's tensor shape has changed to Tuple
             # [(num_blocks, block_size, num_kv_heads, nope_dim/rope_dim)]
             # Currently, we treat it as GQA, dump rope_dim to a separate directory and use is_dsa to mark it
             for i, tensor in enumerate(sample_kv_layer):
-                logger.info(f"kv cache shape {i}: {tensor.shape}")
+                logger.info("kv cache shape {}: {}", i, tensor.shape)
             if self.is_mla:
                 self.is_mla = False
                 self.is_dsa = True
-        logger.info(f"use mla: {self.is_mla}, use dsa: {self.is_dsa}")
+        logger.info("use mla: {}, use dsa: {}", self.is_mla, self.is_dsa)
 
         # Initialize KV cache base addresses
         k_ptrs, v_ptrs = [], []
@@ -308,17 +308,21 @@ class UCMDirectConnector(KVConnectorBase_V1):
             lookup_results = self.store.lookup(external_block_ids)
         except RuntimeError as e:
             lookup_results = []
-            logger.error(f"request {request.request_id} look up error. {e}")
+            logger.error("request {} look up error. {}", request.request_id, e)
         external_hit_blocks = 0
         for i, hit in enumerate(lookup_results):
             if not hit:
                 break
             external_hit_blocks += 1
         logger.info(
-            f"request_id: {request.request_id}, "
-            f"total_blocks_num: {len(ucm_block_ids)}, "
-            f"hit hbm: {hbm_hit_block_num}, "
-            f"hit external: {external_hit_blocks}"
+            "request_id: {}, "
+            "total_blocks_num: {}, "
+            "hit hbm: {}, "
+            "hit external: {}",
+            request.request_id,
+            len(ucm_block_ids),
+            hbm_hit_block_num,
+            external_hit_blocks
         )
         if self.metrics_config:
             self.monitor.update_stats(
@@ -539,7 +543,7 @@ class UCMDirectConnector(KVConnectorBase_V1):
                         )
                         request_to_task[request_id].append(rope_task)
                 except RuntimeError as e:
-                    logger.error(f"request {request_id} load data error. {e}")
+                    logger.error("request {} load data error. {}", request_id, e)
                     self._invalid_block_ids.update(
                         metadata.request_meta[request_id].load_block_ids[1]
                     )
@@ -554,7 +558,7 @@ class UCMDirectConnector(KVConnectorBase_V1):
                     if len(tasks) > 1 and self.rope_store:
                         self.rope_store.wait(tasks[1])
                 except RuntimeError as e:
-                    logger.error(f"request {request_id} load kv cache failed. {e}")
+                    logger.error("request {} load kv cache failed. {}", request_id, e)
                     self._invalid_block_ids.update(
                         metadata.request_meta[request_id].load_block_ids[1]
                     )
@@ -633,7 +637,7 @@ class UCMDirectConnector(KVConnectorBase_V1):
                     )
                     request_to_task[request_id].append(rope_task)
             except RuntimeError as e:
-                logger.error(f"request {request_id} dump kv cache failed. {e}")
+                logger.error("request {} dump kv cache failed. {}", request_id, e)
 
         for request_id, tasks in request_to_task.items():
             try:
@@ -641,7 +645,7 @@ class UCMDirectConnector(KVConnectorBase_V1):
                 if len(tasks) > 1 and self.rope_store:
                     self.rope_store.wait(tasks[1])
             except RuntimeError as e:
-                logger.error(f"request {request_id} dump kv cache failed.{e}")
+                logger.error("request {} dump kv cache failed. {}", request_id, e)
         save_end_time = time.perf_counter() * 1000
         save_speed = (
             num_saved_block
@@ -751,7 +755,7 @@ class UCMMockConnector(UCMDirectConnector):
     def __init__(self, vllm_config: "VllmConfig", role: KVConnectorRole):
         super().__init__(vllm_config, role)
         self._hit_ratio = float(self.launch_config["hit_ratio"])
-        logger.info(f"hit_ratio: {self._hit_ratio}")
+        logger.info("hit_ratio: {}", self._hit_ratio)
 
     def get_num_new_matched_tokens(
         self,
@@ -771,10 +775,14 @@ class UCMMockConnector(UCMDirectConnector):
 
         logger.info(
             "Hijacked By MockConnector,"
-            f"request_id: {request.request_id}, "
-            f"total_blocks_num: {len(request_meta.ucm_block_ids)}, "
-            f"hit hbm: {request_meta.hbm_hit_block_num}, "
-            f"hit external: {request_meta.total_hit_block_num - request_meta.hbm_hit_block_num}"
+            "request_id: {}, "
+            "total_blocks_num: {}, "
+            "hit hbm: {}, "
+            "hit external: {}",
+            request.request_id,
+            len(request_meta.ucm_block_ids),
+            request_meta.hbm_hit_block_num,
+            request_meta.total_hit_block_num - request_meta.hbm_hit_block_num
         )
 
         return expect_hit_block_num * self.block_size, False

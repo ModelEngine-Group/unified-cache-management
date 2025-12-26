@@ -296,7 +296,7 @@ class UcmMooncakeStore(UcmKVStoreBase):
             future = self.tasks.pop(task.task_id, None)
 
         if future is None:
-            logger.error(f"Invalid task ID: {task.task_id}")
+            logger.error("Invalid task ID: {}", task.task_id)
             return 1
 
         try:
@@ -305,13 +305,13 @@ class UcmMooncakeStore(UcmKVStoreBase):
         except TimeoutError:
             # Cancel the task if it times out
             future.cancel()
-            logger.error(f"Task {task.task_id} timed out after {TIMEOUT_S_THR}s")
+            logger.error("Task {} timed out after {}s", task.task_id, TIMEOUT_S_THR)
             return 1
         except asyncio.CancelledError:
-            logger.error(f"Task {task.task_id} was cancelled")
+            logger.error("Task {} was cancelled", task.task_id)
             return 1
         except Exception as e:
-            logger.error(f"Task {task.task_id} failed: {str(e)}")
+            logger.error("Task {} failed: {}", task.task_id, e)
             return 1
 
     def commit(self, block_ids: List[str], is_success: bool = True) -> None:

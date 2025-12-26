@@ -45,7 +45,6 @@ public:
         this->Log(std::move(lv), std::move(loc), fmt::format(fmt, std::forward<Args>(args)...));
     }
 
-protected:
     virtual void Log(Level&& lv, SourceLocation&& loc, std::string&& msg) = 0;
 };
 

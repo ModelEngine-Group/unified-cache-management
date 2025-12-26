@@ -182,7 +182,7 @@ class KvComp(ESA):
         ]
 
         self.kvcomp_config = KvCompConfig.from_json(kvcomp_config_path)
-        logger.info(f"read kvcomp config file : {kvcomp_config_path} ")
+        logger.info("read kvcomp config file : {}", kvcomp_config_path)
 
         assert (
             self.kvcomp_config.num_hidden_layers == self.total_num_hidden_layers

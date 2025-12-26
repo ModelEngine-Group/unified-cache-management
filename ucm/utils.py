@@ -47,17 +47,18 @@ class Config:
                 config = yaml.safe_load(f) or {}
                 if not isinstance(config, dict):
                     logger.warning(
-                        f"Config file {file_path} does not contain a dictionary. "
-                        "Returning empty config."
+                        "Config file {} does not contain a dictionary. "
+                        "Returning empty config.", file_path
+
                     )
                     return {}
-                logger.info(f"Loaded UCM config from {file_path}")
+                logger.info("Loaded UCM config from {}", file_path)
                 return config
         except FileNotFoundError:
-            logger.error(f"UCM config file not found: {file_path}")
+            logger.error("UCM config file not found: {}", file_path)
             return {}
         except yaml.YAMLError as e:
-            logger.error(f"Failed to parse YAML config file {file_path}: {e}")
+            logger.error("Failed to parse YAML config file {}: {}", file_path, e)
             return {}
 
     def _load_config(self) -> None:
@@ -82,9 +83,9 @@ class Config:
 
     def _get_default_config(self) -> Dict[str, Any]:
         config = {"ucm_connector_name": "UcmNfsStore"}
-        logger.warning(f"No UCM config provided, using default configuration {config}")
+        logger.warning("No UCM config provided, using default configuration {}", config)
         return config
 
     def get_config(self) -> Dict[str, Any]:
-        logger.info(f"Using UCM with config: {self.config}")
+        logger.info("Using UCM with config: {}", self.config)
         return self.config

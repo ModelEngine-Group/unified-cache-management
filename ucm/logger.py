@@ -22,33 +22,60 @@
 # SOFTWARE.
 #
 
-import logging
 import os
+import inspect
+
+from ucm.shared.infra import spdlog_logger
+from ucm.shared.infra import source_location
 
 
-def init_logger(name: str = "UNIFIED_CACHE") -> logging.Logger:
-    log_level = os.getenv("UNIFIED_CACHE_LOG_LEVEL", "INFO").upper()
+class Logger:
+    def __init__(self):
+        self.logger = spdlog_logger.Logger()
 
-    logger = logging.getLogger(name)
-    logger.setLevel(log_level)
+    def get_source_location(self):
+        """Helper function to print the current file, function, and line number."""
+        frame = inspect.currentframe()
+        caller_frame = frame.f_back.f_back
+        filename = os.path.basename(caller_frame.f_code.co_filename)
+        lineno = caller_frame.f_lineno
+        func_name = caller_frame.f_code.co_name
+        return source_location.SourceLocation(filename, func_name, lineno)
+    
+    def debug(self, message: str, *args):
+        self.logger.debug(message, self.get_source_location(), *args)
 
-    if not logger.handlers:
-        handler = logging.StreamHandler()
-        formatter = logging.Formatter(
-            "[%(asctime)s] - %(name)s - %(levelname)s [%(filename)s:%(lineno)d] %(message)s",
-            datefmt="%Y-%m-%d %H:%M:%S",
-        )
+    def info(self, message: str, *args):
+        self.logger.info(message, self.get_source_location(), *args)
 
-        handler.setFormatter(formatter)
-        logger.addHandler(handler)
+    def warning(self, message: str, *args):
+        self.logger.warning(message, self.get_source_location(), *args)
 
-    return logger
+    def error(self, message: str, *args):
+        self.logger.error(message, self.get_source_location(), *args)
 
+def init_logger(name: str = "UNIFIED_CACHE")->Logger:
+    return Logger()
 
-if __name__ == "__main__":
-    os.environ["UNIFIED_CACHE_LOG_LEVEL"] = "DEBUG"
+def test_logger():
     logger = init_logger()
     logger.debug("debug message")
     logger.info("info message")
     logger.warning("warning message")
     logger.error("error message")
+    logger.info("info message with format: {} {}", "test", "test2")
+
+def test_logger_multi_thread():
+    import threading
+    for i in range(10):
+        logger = init_logger()
+        threading.Thread(target=logger.debug, args=("debug message", i))
+        threading.Thread(target=logger.info, args=("info message", i))
+        threading.Thread(target=logger.warning, args=("warning message", i))
+        threading.Thread(target=logger.error, args=("error message", i))
+        threading.Thread(target=logger.info, args=("[Thread %d]info message with format: %s %s ", i, "test", "test2"))
+    
+
+if __name__ == "__main__":
+    os.environ["UNIFIED_CACHE_LOG_LEVEL"] = "DEBUG"
+    test_logger_multi_thread()

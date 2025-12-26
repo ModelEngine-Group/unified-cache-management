@@ -3,7 +3,7 @@ add_library(cachestore STATIC ${UCM_CACHE_STORE_CC_SOURCE_FILES})
 target_include_directories(cachestore PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/cc
 )
-target_link_libraries(cachestore PUBLIC storeintf trans infra_logger)
+target_link_libraries(cachestore PUBLIC storeintf trans infra_logger zlib)
 
 file(GLOB_RECURSE UCM_CACHE_STORE_CPY_SOURCE_FILES "./cpy/*.cc")
 pybind11_add_module(ucmcachestore ${UCM_CACHE_STORE_CPY_SOURCE_FILES})

@@ -397,11 +397,16 @@ class UCMBlendConnector(UCMDirectConnector):
             req_block_hashes = req_chunks_hashes
 
         logger.info(
-            f"request_id: {request.request_id}, "
-            f"total_blocks_num: {max_blk_num}, "
-            f"req_stage: {req_stage}, "
-            f"first chunk prefix hit: {pc_hit_blocks}, "
-            f"chunks cache total hit: {chunk_hit_blocks}, "
+            "request_id: {}, "
+            "total_blocks_num: {}, "
+            "req_stage: {}, "
+            "first chunk prefix hit: {}, "
+            "chunks cache total hit: {}",
+            request.request_id,
+            max_blk_num,
+            req_stage,
+            pc_hit_blocks,
+            chunk_hit_blocks,
         )
         if self.metrics_config:
             self.monitor.update_stats(

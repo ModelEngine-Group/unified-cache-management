@@ -90,7 +90,7 @@ def make_buffers(
     kv: int,
     is_mla: bool,
 ) -> Tuple[List[str], Dict[str, torch.Tensor]]:
-    logger.info(f"Allocating buffers: blocks={block_number}, batch_size={batch_size}")
+    logger.info("Allocating buffers: blocks={}, batch_size={}", block_number, batch_size)
     hashes = [secrets.token_hex(16) for _ in range(block_number)]
     device = f"cuda:{device_id}"
     kv_caches: Dict[str, torch.Tensor] = {}
@@ -289,10 +289,16 @@ def run_once(
     read_bw = (total_bytes / (1024**3)) / read_time if read_time > 0 else 0.0
 
     logger.info(
-        f"Size: {total_bytes / (1024**3):.4f} GB, Time: {write_time:.4f}s, WRITE SPEED: {write_bw:.4f} GB/s "
+        "Size: {.4f} GB, Time: {.4f}s, WRITE SPEED: {.4f} GB/s ",
+        total_bytes / (1024**3),
+        write_time,
+        write_bw,
     )
     logger.info(
-        f"Size: {total_bytes / (1024**3):.4f} GB, Time: {read_time:.4f}s, READ SPEED: {read_bw:.4f} GB/s"
+        "Size: {.4f} GB, Time: {.4f}s, READ SPEED: {.4f} GB/s",
+        total_bytes / (1024**3),
+        read_time,
+        read_bw,
     )
 
     return (
@@ -379,7 +385,7 @@ def run_test(
     r_sizes, r_times, r_bws = [], [], []
 
     for round_idx in range(repeat):
-        logger.info(f"Round {round_idx + 1}: start write test")
+        logger.info("Round {}: start write test", round_idx + 1)
         start_hash_idx = round_idx * batch_size
         end_hash_idx = start_hash_idx + batch_size
         round_hashes = hashes[start_hash_idx:end_hash_idx]
@@ -415,8 +421,10 @@ def run_test(
 
     logger.info(
         "\n=== Summary ===\n"
-        f"Write : size={avg_w_size:.4f} GB | time={avg_w_time:.4f} s | bw={avg_w_bw:.4f} GB/s\n"
-        f"Read  : size={avg_r_size:.4f} GB | time={avg_r_time:.4f} s | bw={avg_r_bw:.4f} GB/s\n"
+        "Write : size={.4f} GB | time={.4f} s | bw={.4f} GB/s\n"
+        "Read  : size={.4f} GB | time={.4f} s | bw={.4f} GB/s\n"
+        avg_w_size, avg_w_time, avg_w_bw,
+        avg_r_size, avg_r_time, avg_r_bw
     )
 
     return avg_w_size, avg_w_time, avg_w_bw, avg_r_time, avg_r_bw, avg_r_size

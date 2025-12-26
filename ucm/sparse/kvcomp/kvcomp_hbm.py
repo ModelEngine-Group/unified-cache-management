@@ -88,7 +88,7 @@ class KvCompOnDevice(UcmSparseBase):
 
         kvcompOnDevice_config_path = kvcomp_config_path_for_model(vllm_config)
         self.kvcompOnDevice_config = KvCompConfig.from_json(kvcompOnDevice_config_path)
-        logger.info(f"read kvcomp config file : {kvcompOnDevice_config_path} ")
+        logger.info("read kvcomp config file : {}", kvcompOnDevice_config_path)
         self.hash_topk_tokens = self.kvcompOnDevice_config.vllm_hash_attention_topk
         self.hash_rollback_layers = (
             self.kvcompOnDevice_config.vllm_hash_attention_rollback_layers

@@ -122,7 +122,9 @@ class BaseTask(ABC):
     def run(self):
         logger.info("-----------------------------------------------------------")
         logger.info(
-            f"Begin test, the data type: {self.data_type}, the benchmark mode: {self.benchmark_mode}"
+            "Begin test, the data type: {}, the benchmark mode: {}",
+            self.data_type,
+            self.benchmark_mode,
         )
         latency_results, case_len = self.process()
         result_to_pytest = self.pytest_result(latency_results, case_len)
@@ -143,7 +145,7 @@ class BaseTask(ABC):
         data = list(data_dict.values())
         if self.perf_config and self.save_to_excel:
             logger.info(
-                f"Begin save latency data to excel, file name: {self.file_save_path}"
+                "Begin save latency data to excel, file name: {}", self.file_save_path
             )
             FileUtil.save_excel(
                 self.file_save_path, [data], PERF_CSV_HEADER, "Overall Performance"
@@ -151,7 +153,7 @@ class BaseTask(ABC):
         return data_dict
 
     def update_single_record(self, record: LatencyStatistics, case_len: int):
-        logger.info(f"There are {case_len} cases to save to the database.")
+        logger.info("There are {} cases to save to the database.", case_len)
         data_dict = {
             "current_time": self.current_time,
             "total_case_num": case_len,
@@ -270,10 +272,12 @@ class SyntheticPerfTask(BaseTask):
                     else 0
                 )
                 logger.info(
-                    f"Performance benchmark running with: enable prefix cache: ({self.enable_prefix_cache}), {syntheric_params=}"
+                    "Performance benchmark running with: enable prefix cache: ({}), {}",
+                    self.enable_prefix_cache,
+                    syntheric_params,
                 )
                 if self.enable_prefix_cache and self.prefix_cache_num[idx] > 0:
-                    logger.info(f"Begin build kvcache...")
+                    logger.info("Begin build kvcache...")
                     input_data = self.dataset.prepare_data(syntheric_params)
                     self.client.handle_requests_with_pool(
                         input_data, parallel_num, BAD_COMPLETION_TOKENS_THR
@@ -286,7 +290,7 @@ class SyntheticPerfTask(BaseTask):
                 if self.enable_clear_hbm:
                     self.client.clear_hbm()
 
-                logger.info(f"Begin post cases...")
+                logger.info("Begin post cases...")
                 input_data = self.dataset.prepare_data(syntheric_params)
                 records: List[RequestRecord] = self.client.handle_requests_with_pool(
                     input_data, parallel_num, self.output_tokens[idx]
@@ -311,7 +315,8 @@ class SyntheticPerfTask(BaseTask):
                 data = data_dict.values()
                 if self.save_to_excel:
                     logger.info(
-                        f"Begin save latency data to excel, file name: {self.file_save_path}"
+                        "Begin save latency data to excel, file name: {}",
+                        self.file_save_path,
                     )
                     FileUtil.save_excel(
                         self.file_save_path,
