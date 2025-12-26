@@ -216,6 +216,7 @@ class ESA(UcmSparseBase):
                 # esa_copy(self.block_tables_cpu, self.block_tables, bytes)
 
             if self.has_decode:
+                self.handles = []
                 self.decode_retrieval_s_len = decode_repre_index_offset
                 self.decode_repre_index[:decode_repre_index_offset].copy_(self.decode_repre_index_cpu[:decode_repre_index_offset], True)
                 self.decode_q_index[:decode_repre_index_offset].copy_(self.decode_q_index_cpu[:decode_repre_index_offset], True)
@@ -238,19 +239,21 @@ class ESA(UcmSparseBase):
         forward_context,
         phase = None,
     ) -> None:
-        if not self.has_decode:
-            return
-        with nvtx.range(f"retrieval"):
-            layer_id = self.get_layer_id(layer_name)
-            self.retrieval_input.query = query
-            self.retrieval_input.repre_cache = self.repre_cache[layer_id]
-            self.retrieval_input.q_index = self.decode_q_index
-            self.retrieval_input.repre_index = self.decode_repre_index
-            self.retrieval_input.repre_index_cpu = self.decode_repre_index_cpu
-            self.retrieval_input.batch_offset = self.decode_batch_offset_cpu
-            self.retrieval_input.batch = self.decode_retrieval_batch
-            self.retrieval_input.s = self.decode_retrieval_s_len
-            esa_retrieval(self.retrieval_input, self.retrieval_output)
+        return
+        # if not self.has_decode:
+        #     return
+        # with nvtx.range(f"retrieval"):
+        #     layer_id = self.get_layer_id(layer_name)
+        #     self.retrieval_input.query = query
+        #     self.retrieval_input.repre_cache = self.repre_cache[layer_id]
+        #     self.retrieval_input.q_index = self.decode_q_index
+        #     self.retrieval_input.repre_index = self.decode_repre_index
+        #     self.retrieval_input.repre_index_cpu = self.decode_repre_index_cpu
+        #     self.retrieval_input.batch_offset = self.decode_batch_offset_cpu
+        #     self.retrieval_input.batch = self.decode_retrieval_batch
+        #     self.retrieval_input.s = self.decode_retrieval_s_len
+        #     h = esa_retrieval(self.retrieval_input, self.retrieval_output)
+        #     self.handles.append(h)
 
     def attention_finished(
         self,
@@ -262,15 +265,48 @@ class ESA(UcmSparseBase):
         forward_context,
         phase = None,
     ) -> None:
-        if self.prefill_num_blocks == 0:
-            return
-        with nvtx.range(f"dump_kv_and_compute_repre"):
-            layer_id = self.get_layer_id(layer_name)
-            k_cache, _ = self.get_kv_cache(forward_context, layer_name)
-            esa_repre(k_cache.flatten(-2, -1), self.repre_cache[layer_id].flatten(-2, -1),
-                      self.prefill_block_tables[:self.prefill_num_blocks], self.prefill_repre_index[:self.prefill_num_blocks])
-            esa_scatter_copy(k_cache.flatten(-3), self.host_kv_cache[layer_id].flatten(-3),
-                             self.prefill_block_tables[:self.prefill_num_blocks], self.prefill_repre_index[:self.prefill_num_blocks])
+        if self.has_prefill:
+            with nvtx.range(f"dump_kv_and_compute_repre"):
+                layer_id = self.get_layer_id(layer_name)
+                k_cache, _ = self.get_kv_cache(forward_context, layer_name)
+                esa_repre(k_cache.flatten(-2, -1), self.repre_cache[layer_id].flatten(-2, -1),
+                          self.prefill_block_tables[:self.prefill_num_blocks], self.prefill_repre_index[:self.prefill_num_blocks])
+                esa_scatter_copy(k_cache.flatten(-3), self.host_kv_cache[layer_id].flatten(-3),
+                                 self.prefill_block_tables[:self.prefill_num_blocks], self.prefill_repre_index[:self.prefill_num_blocks])
+
+
+        if self.has_decode:
+            with nvtx.range(f"retrieval"):
+                layer_id = self.get_layer_id(layer_name)
+                self.retrieval_input.query = query
+                self.retrieval_input.repre_cache = self.repre_cache[layer_id]
+                self.retrieval_input.q_index = self.decode_q_index
+                self.retrieval_input.repre_index = self.decode_repre_index
+                self.retrieval_input.repre_index_cpu = self.decode_repre_index_cpu
+                self.retrieval_input.batch_offset = self.decode_batch_offset_cpu
+                self.retrieval_input.batch = self.decode_retrieval_batch
+                self.retrieval_input.s = self.decode_retrieval_s_len
+                h = esa_retrieval(self.retrieval_input, self.retrieval_output)
+                self.handles.append(h)
+
+    def _wait(self, h, timeout_in_seconds):
+        deadline = time.time() + timeout_in_seconds
+        while time.time() < deadline:
+            ready = esa_lib.esa_retrieval_poll(h)
+            if ready == 1:
+                break
+            time.sleep(1 / 1e6) # 1us
+        assert esa_lib.esa_retrieval_cleanup(h) == 1
+
+
+    def execute_finished(self):
+        """
+        This is called at the end of "ModelRunner->execute_model" function.
+        """
+        return
+        if self.has_decode:
+            for h in self.handles:
+                self._wait(h, 10)
 
     def estimate_num_slots_sparsed(self, request) -> int:
         return INVALID_SLOT
