@@ -34,6 +34,8 @@ def kvcomp_config_path_for_model(vllm_config) -> str:
         rel = "ucm/sparse/kvcomp/configs/kvcomp_deepseek_r1_awq_config.json"
     elif "qwen3" in model and "32b" in model:
         rel = "ucm/sparse/kvcomp/configs/kvcomp_qwen3_32B_config.json"
+    elif "deepseek" in model and "v2" in model:
+        rel = "ucm/sparse/kvcomp/configs/kvcomp_deepseek_v2_lite_config.json"
     else:
         raise ValueError(f"[KvCompOnDevice] Unsupported model for kvcomp: {model}")
 
@@ -270,12 +272,13 @@ class KvCompOnDevice(UcmSparseBase):
                         topk_token = self.hash_topk_tokens
                         block_table = cuda_hamming_topk(
                             q_hash.unsqueeze(1),
-                            k_hash.unsqueeze(1),
+                            k_hash.unsqueeze(2),
                             attn_metadata.decode.block_table,
                             attn_metadata.decode.seq_lens,
                             topk_token=topk_token,
                             sink_token=64,
                             recent_token=512,
+                            is_mla=self.is_mla,
                         )
                         attn_metadata.decode.topk_block_table = block_table
 
@@ -324,12 +327,13 @@ class KvCompOnDevice(UcmSparseBase):
                         )
                         block_table_decode = cuda_hamming_topk(
                             q_hash.unsqueeze(1),
-                            k_hash.unsqueeze(1),
+                            k_hash,
                             block_table_decode,
                             seq_len_decode,
                             topk_token=topk_token,
                             sink_token=64,
                             recent_token=512,
+                            is_mla=self.is_mla,
                         )
                         # update topk_block_table
                         topk = block_table_decode.shape[1]
