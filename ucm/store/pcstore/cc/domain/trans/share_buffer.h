@@ -40,7 +40,7 @@ public:
         std::string path_;
         size_t length_;
         bool ioDirect_;
-        size_t nSharer_;
+        bool shared_;
         void* addr_;
 
     public:
@@ -49,12 +49,12 @@ public:
 
     private:
         Reader(const std::string& block, const std::string& path, const size_t length,
-               const bool ioDirect, const size_t nSharer, void* addr)
+               const bool ioDirect, const bool shared, void* addr)
             : block_{block},
               path_{path},
               length_{length},
               ioDirect_{ioDirect},
-              nSharer_{nSharer},
+              shared_{shared},
               addr_{addr}
         {
         }
@@ -63,7 +63,7 @@ public:
 
 public:
     Status Setup(const size_t blockSize, const size_t blockNumber, const bool ioDirect,
-                 const size_t nSharer, const std::string& uniqueId);
+                 const std::string& uniqueId);
     ~ShareBuffer();
     std::shared_ptr<Reader> MakeReader(const std::string& block, const std::string& path);
 
@@ -80,7 +80,6 @@ private:
     size_t blockSize_;
     size_t blockNumber_;
     bool ioDirect_;
-    size_t nSharer_;
     std::string shmName_;
     void* addr_{nullptr};
     std::unique_ptr<Trans::Buffer> tmpBufMaker_{nullptr};

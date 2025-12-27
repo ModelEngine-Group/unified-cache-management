@@ -92,7 +92,6 @@ struct ShareBlockHeader {
 struct ShareBufferHeader {
     ShareMutex mutex;
     std::atomic<int32_t> magic;
-    int32_t ref;
     size_t blockSize;
     size_t blockNumber;
     ShareBlockHeader headers[0];
@@ -128,12 +127,11 @@ void CleanUpShmFileExceptMe(const std::string& me)
 }
 
 Status ShareBuffer::Setup(const size_t blockSize, const size_t blockNumber, const bool ioDirect,
-                          const size_t nSharer, const std::string& uniqueId)
+                          const std::string& uniqueId)
 {
     this->blockSize_ = blockSize;
     this->blockNumber_ = blockNumber;
     this->ioDirect_ = ioDirect;
-    this->nSharer_ = nSharer;
     this->addr_ = nullptr;
     tmpBufMaker_ = Trans::Device{}.MakeBuffer();
     if (!tmpBufMaker_) { return Status::OutOfMemory(); }
@@ -151,15 +149,11 @@ Status ShareBuffer::Setup(const size_t blockSize, const size_t blockNumber, cons
 ShareBuffer::~ShareBuffer()
 {
     if (!this->addr_) { return; }
-    auto bufferHeader = (ShareBufferHeader*)this->addr_;
-    bufferHeader->mutex.Lock();
-    auto ref = (--bufferHeader->ref);
-    bufferHeader->mutex.Unlock();
     void* dataAddr = static_cast<char*>(this->addr_) + this->DataOffset();
     Trans::Buffer::UnregisterHostBuffer(dataAddr);
     const auto shmSize = this->ShmSize();
     File::MUnmap(this->addr_, shmSize);
-    if (ref == 0) { File::ShmUnlink(this->shmName_); }
+    File::ShmUnlink(this->shmName_);
 }
 
 std::shared_ptr<ShareBuffer::Reader> ShareBuffer::MakeReader(const std::string& block,
@@ -169,7 +163,7 @@ std::shared_ptr<ShareBuffer::Reader> ShareBuffer::MakeReader(const std::string& 
     try {
         void* addr = this->BlockAt(index);
         return std::shared_ptr<Reader>(
-            new Reader{block, path, blockSize_, ioDirect_, nSharer_, addr},
+            new Reader{block, path, blockSize_, ioDirect_, true, addr},
             [this, index](auto) { this->ReleaseBlock(index); });
     } catch (...) {
         this->ReleaseBlock(index);
@@ -200,7 +194,6 @@ Status ShareBuffer::InitShmBuffer(IFile* file)
     auto bufferHeader = (ShareBufferHeader*)this->addr_;
     bufferHeader->magic = 1;
     bufferHeader->mutex.Init();
-    bufferHeader->ref = this->nSharer_;
     bufferHeader->blockSize = this->blockSize_;
     bufferHeader->blockNumber = this->blockNumber_;
     const auto dataOffset = this->DataOffset();
@@ -281,7 +274,7 @@ size_t ShareBuffer::AcquireBlock(const std::string& block)
     blockHeader->mutex.Lock();
     if (blockHeader->ref <= 0) {
         blockHeader->id.Set(block);
-        blockHeader->ref = this->nSharer_;
+        blockHeader->ref = 99;
         blockHeader->status = ShareBlockStatus::INIT;
     }
     blockHeader->mutex.Unlock();

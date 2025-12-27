@@ -39,18 +39,17 @@ TransShareQueue::~TransShareQueue()
     }
 }
 
-Status TransShareQueue::Setup(const size_t nSharer, const int32_t deviceId,
-                              const size_t streamNumber, const size_t blockSize,
-                              const size_t ioSize, const bool ioDirect, const size_t bufferNumber,
-                              const SpaceLayout* layout, TaskSet* failureSet,
-                              const std::string& uniqueId)
+Status TransShareQueue::Setup(const int32_t deviceId, const size_t streamNumber,
+                              const size_t blockSize, const size_t ioSize, const bool ioDirect,
+                              const size_t bufferNumber, const SpaceLayout* layout,
+                              TaskSet* failureSet, const std::string& uniqueId)
 {
     this->deviceId_ = deviceId;
     this->streamNumber_ = streamNumber;
     this->ioSize_ = ioSize;
     this->layout_ = layout;
     this->failureSet_ = failureSet;
-    auto status = this->buffer_.Setup(blockSize, bufferNumber, ioDirect, nSharer, uniqueId);
+    auto status = this->buffer_.Setup(blockSize, bufferNumber, ioDirect, uniqueId);
     if (status.Failure()) { return status; }
     std::list<std::promise<Status>> start(streamNumber);
     std::list<std::future<Status>> fut;
