@@ -250,8 +250,9 @@ class KvCompOnDevice(UcmSparseBase):
                 k_hash_compute = self.hash_encoder.compute_hash(key).view(
                     torch.bfloat16
                 )
+                valid_k_hash_token = attn_metadata.slot_mapping.flatten().numel()
                 reshape_and_cache_khash_triton(
-                    k_hash_compute,
+                    k_hash_compute[:valid_k_hash_token],
                     attn_metadata.slot_mapping.flatten(),
                     k_hash,
                     block_size=self.block_size,
