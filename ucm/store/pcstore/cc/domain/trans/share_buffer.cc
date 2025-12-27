@@ -215,7 +215,7 @@ Status ShareBuffer::InitShmBuffer(IFile* file)
     auto dataSize = shmSize - dataOffset;
     auto status = Trans::Buffer::RegisterHostBuffer(dataAddr, dataSize);
     if (status.Success()) { return Status::OK(); }
-    UC_ERROR("Failed({}) to regitster host buffer({}).", status.ToString(), dataSize);
+    UC_ERROR("Failed({}) to register host buffer({}).", status.ToString(), dataSize);
     return Status::Error();
 }
 
@@ -246,7 +246,7 @@ Status ShareBuffer::LoadShmBuffer(IFile* file)
     auto dataSize = shmSize - dataOffset;
     auto status = Trans::Buffer::RegisterHostBuffer(dataAddr, dataSize);
     if (status.Success()) { return Status::OK(); }
-    UC_ERROR("Failed({}) to regitster host buffer({}).", status.ToString(), dataSize);
+    UC_ERROR("Failed({}) to register host buffer({}).", status.ToString(), dataSize);
     return Status::Error();
 }
 
