@@ -77,6 +77,9 @@ private:
     size_t AcquireBlock(const std::string& block);
     void ReleaseBlock(const size_t index);
     void* BlockAt(const size_t index);
+    std::shared_ptr<Reader> MakeLocalReader(const std::string& block, const std::string& path);
+    std::shared_ptr<Reader> MakeSharedReader(const std::string& block, const std::string& path,
+                                             size_t position);
 
 private:
     size_t blockSize_;

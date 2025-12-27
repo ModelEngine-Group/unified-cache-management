@@ -34,6 +34,7 @@
 namespace UC {
 
 static constexpr int32_t SHARE_BUFFER_MAGIC = (('S' << 16) | ('b' << 8) | 1);
+static constexpr size_t INVALID_POSITION = size_t(-1);
 
 struct ShareMutex {
     pthread_mutex_t mutex;
@@ -159,16 +160,9 @@ ShareBuffer::~ShareBuffer()
 std::shared_ptr<ShareBuffer::Reader> ShareBuffer::MakeReader(const std::string& block,
                                                              const std::string& path)
 {
-    auto index = this->AcquireBlock(block);
-    try {
-        void* addr = this->BlockAt(index);
-        return std::shared_ptr<Reader>(new Reader{block, path, blockSize_, ioDirect_, true, addr},
-                                       [this, index](auto) { this->ReleaseBlock(index); });
-    } catch (...) {
-        this->ReleaseBlock(index);
-        UC_ERROR("Failed to create reader.");
-        return nullptr;
-    }
+    auto pos = this->AcquireBlock(block);
+    if (pos != INVALID_POSITION) { return MakeSharedReader(block, path, pos); }
+    return MakeLocalReader(block, path);
 }
 
 size_t ShareBuffer::DataOffset() const
@@ -293,6 +287,46 @@ void* ShareBuffer::BlockAt(const size_t index)
 {
     auto bufferHeader = (ShareBufferHeader*)this->addr_;
     return bufferHeader->headers + index;
+}
+
+std::shared_ptr<ShareBuffer::Reader> ShareBuffer::MakeLocalReader(const std::string& block,
+                                                                  const std::string& path)
+{
+    auto addr = tmpBufMaker_->MakeHostBuffer(blockSize_);
+    if (!addr) [[unlikely]] {
+        UC_ERROR("Failed to make buffer({}) on host.", blockSize_);
+        return nullptr;
+    }
+    Reader* reader = nullptr;
+    try {
+        reader = new Reader{block, path, blockSize_, ioDirect_, false, addr.get()};
+        return std::shared_ptr<Reader>(reader,
+                                       [addr = std::move(addr)](Reader* reader) { delete reader; });
+    } catch (const std::exception& e) {
+        if (reader) { delete reader; }
+        UC_ERROR("Failed({}) to create reader.", e.what());
+        return nullptr;
+    }
+}
+
+std::shared_ptr<ShareBuffer::Reader> ShareBuffer::MakeSharedReader(const std::string& block,
+                                                                   const std::string& path,
+                                                                   size_t position)
+{
+    void* addr = this->BlockAt(position);
+    Reader* reader = nullptr;
+    try {
+        reader = new Reader{block, path, blockSize_, ioDirect_, true, addr};
+        return std::shared_ptr<Reader>(reader, [this, position](Reader* reader) {
+            delete reader;
+            this->ReleaseBlock(position);
+        });
+    } catch (...) {
+        this->ReleaseBlock(position);
+        if (reader) { delete reader; }
+        UC_ERROR("Failed to create reader.");
+        return nullptr;
+    }
 }
 
 Status ShareBuffer::Reader::Ready4Read()
