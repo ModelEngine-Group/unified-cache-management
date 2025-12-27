@@ -225,7 +225,7 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "rate(ucm:load_requests_num_sum{model_name=\"$model_name\"}[$__rate_interval])\n/\nrate(ucm:load_requests_num_count{model_name=\"$model_name\"}[$__rate_interval])",
+          "expr": "rate(ucm:load_requests_total_sum{model_name=\"$model_name\"}[$__rate_interval])\n/\nrate(ucm:load_requests_total_count{model_name=\"$model_name\"}[$__rate_interval])",
           "hide": false,
           "instant": false,
           "legendFormat": "worker-{{worker_id}}",
@@ -328,7 +328,7 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "rate(ucm:load_blocks_num_sum{model_name=\"$model_name\"}[$__rate_interval])\n/\nrate(ucm:load_blocks_num_count{model_name=\"$model_name\"}[$__rate_interval])",
+          "expr": "rate(ucm:load_blocks_total_sum{model_name=\"$model_name\"}[$__rate_interval])\n/\nrate(ucm:load_blocks_total_count{model_name=\"$model_name\"}[$__rate_interval])",
           "hide": false,
           "instant": false,
           "legendFormat": "worker-{{worker_id}}",
@@ -638,7 +638,7 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "rate(ucm:save_requests_num_sum{model_name=\"$model_name\"}[$__rate_interval])\n/\nrate(ucm:save_requests_num_count{model_name=\"$model_name\"}[$__rate_interval])",
+          "expr": "rate(ucm:save_requests_total_sum{model_name=\"$model_name\"}[$__rate_interval])\n/\nrate(ucm:save_requests_total_count{model_name=\"$model_name\"}[$__rate_interval])",
           "hide": false,
           "instant": false,
           "legendFormat": "worker-{{worker_id}}",
@@ -741,7 +741,7 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "rate(ucm:save_blocks_num_sum{model_name=\"$model_name\"}[$__rate_interval])\n/\nrate(ucm:save_blocks_num_count{model_name=\"$model_name\"}[$__rate_interval])",
+          "expr": "rate(ucm:save_blocks_total_sum{model_name=\"$model_name\"}[$__rate_interval])\n/\nrate(ucm:save_blocks_total_count{model_name=\"$model_name\"}[$__rate_interval])",
           "hide": false,
           "instant": false,
           "legendFormat": "worker-{{worker_id}}",
@@ -957,7 +957,214 @@
       ],
       "title": "Connector Save Speed",
       "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "description": "P50 S2D speed in GB/s for each start_load_kv.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "barWidthFactor": 0.6,
+            "drawStyle": "line",
+            "fillOpacity": 0,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "auto",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 0.005
+              },
+              {
+                "color": "green",
+                "value": 0.01
+              }
+            ]
+          },
+          "unit": "gb/s"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 32
+      },
+      "id": 21,
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "single",
+          "sort": "none"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "rate(ucm:s2d_bandwidth_sum{model_name=\"$model_name\"}[$__rate_interval])\n/\nrate(ucm:s2d_bandwidth_count{model_name=\"$model_name\"}[$__rate_interval])",
+          "hide": false,
+          "instant": false,
+          "legendFormat": "worker-{{worker_id}}",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "title": "NFS S2D BandWidth",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "description": "P50 D2S speed in GB/s for each start_load_kv.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "barWidthFactor": 0.6,
+            "drawStyle": "line",
+            "fillOpacity": 0,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "auto",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 0.005
+              },
+              {
+                "color": "green",
+                "value": 0.01
+              }
+            ]
+          },
+          "unit": "gb/s"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 32
+      },
+      "id": 21,
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "single",
+          "sort": "none"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "rate(ucm:d2s_bandwidth_sum{model_name=\"$model_name\"}[$__rate_interval])\n/\nrate(ucm:d2s_bandwidth_count{model_name=\"$model_name\"}[$__rate_interval])",
+          "hide": false,
+          "instant": false,
+          "legendFormat": "worker-{{worker_id}}",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "title": "NFS D2S BandWidth",
+      "type": "timeseries"
     }
+
   ],
   "refresh": "",
   "schemaVersion": 39,

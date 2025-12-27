@@ -21,25 +21,22 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  * */
-#ifndef UNIFIEDCACHE_ISTATS_H
-#define UNIFIEDCACHE_ISTATS_H
-
-#include <memory>
-#include <string>
-#include <unordered_map>
-#include <vector>
+#ifndef UNIFIEDCACHE_METRICS_API_H
+#define UNIFIEDCACHE_METRICS_API_H
+#include "metrics.h"
 
 namespace UC::Metrics {
+void CreateStats(const std::string& name, std::string& type);
 
-class IStats {
-public:
-    virtual ~IStats() = default;
-    virtual std::string Name() const = 0;
-    virtual void Update(const std::unordered_map<std::string, double>& params) = 0;
-    virtual void Reset() = 0;
-    virtual std::unordered_map<std::string, std::vector<double>> Data() = 0;
-};
+void UpdateStats(const std::string& name, double value);
+
+void UpdateStats(const std::unordered_map<std::string, double>& values);
+
+std::tuple<
+        std::unordered_map<std::string, double>,
+        std::unordered_map<std::string, double>,
+        std::unordered_map<std::string, std::vector<double>>
+    > GetAllStatsAndClear();
 
 } // namespace UC::Metrics
-
 #endif

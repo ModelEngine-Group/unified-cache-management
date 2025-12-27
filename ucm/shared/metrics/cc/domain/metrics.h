@@ -21,50 +21,53 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  * */
-#ifndef UNIFIEDCACHE_MONITOR_H
-#define UNIFIEDCACHE_MONITOR_H
+#ifndef UNIFIEDCACHE_METRICS_H
+#define UNIFIEDCACHE_METRICS_H
 
 #include <memory>
 #include <mutex>
 #include <string>
 #include <unordered_map>
 #include <vector>
-#include "stats/istats.h"
+#include <tuple>
 
 namespace UC::Metrics {
 
-class StatsMonitor {
+class Metrics {
 public:
-    static StatsMonitor& GetInstance()
+    static Metrics& GetInstance()
     {
-        static StatsMonitor inst;
+        static Metrics inst;
         return inst;
     }
 
-    ~StatsMonitor() = default;
+    ~Metrics() = default;
 
-    void CreateStats(const std::string& name);
+    void CreateStats(const std::string& name, std::string& type);
 
-    std::unordered_map<std::string, std::vector<double>> GetStats(const std::string& name);
+    void UpdateStats(const std::string& name, double value);
 
-    void ResetStats(const std::string& name);
+    void UpdateStats(const std::unordered_map<std::string, double>& values);
 
-    std::unordered_map<std::string, std::vector<double>> GetStatsAndClear(const std::string& name);
-
-    void UpdateStats(const std::string& name,
-                     const std::unordered_map<std::string, double>& params);
-
-    void ResetAllStats();
+    std::tuple<
+        std::unordered_map<std::string, double>,
+        std::unordered_map<std::string, double>,
+        std::unordered_map<std::string, std::vector<double>>
+    > GetAllStatsAndClear();
 
 private:
+    enum class MetricType { COUNTER, GAUGE, HISTOGRAM };
+
     std::mutex mutex_;
-    std::unordered_map<std::string, std::unique_ptr<IStats>> stats_map_;
+    std::unordered_map<std::string, double> counter_stats_;
+    std::unordered_map<std::string, double> gauge_stats_;
+    std::unordered_map<std::string, std::vector<double>> histogram_stats_;
+    std::unordered_map<std::string, MetricType> stats_type_;
 
-    StatsMonitor();
-    StatsMonitor(const StatsMonitor&) = delete;
-    StatsMonitor& operator=(const StatsMonitor&) = delete;
+    Metrics() = default;
+    Metrics(const Metrics&) = delete;
+    Metrics& operator=(const Metrics&) = delete;
 };
-
 } // namespace UC::Metrics
 
 #endif // UNIFIEDCACHE_MONITOR_H
