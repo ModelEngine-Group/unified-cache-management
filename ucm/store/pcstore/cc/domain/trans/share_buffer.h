@@ -29,6 +29,7 @@
 #include <string>
 #include "file/ifile.h"
 #include "status/status.h"
+#include "trans/buffer.h"
 
 namespace UC {
 
@@ -81,7 +82,8 @@ private:
     bool ioDirect_;
     size_t nSharer_;
     std::string shmName_;
-    void* addr_;
+    void* addr_{nullptr};
+    std::unique_ptr<Trans::Buffer> tmpBufMaker_{nullptr};
 };
 
 }  // namespace UC

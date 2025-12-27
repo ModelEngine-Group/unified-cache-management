@@ -29,7 +29,7 @@
 #include <unistd.h>
 #include "file/file.h"
 #include "logger/logger.h"
-#include "trans/buffer.h"
+#include "trans/device.h"
 
 namespace UC {
 
@@ -135,6 +135,8 @@ Status ShareBuffer::Setup(const size_t blockSize, const size_t blockNumber, cons
     this->ioDirect_ = ioDirect;
     this->nSharer_ = nSharer;
     this->addr_ = nullptr;
+    tmpBufMaker_ = Trans::Device{}.MakeBuffer();
+    if (!tmpBufMaker_) { return Status::OutOfMemory(); }
     this->shmName_ = ShmPrefix() + uniqueId;
     CleanUpShmFileExceptMe(this->shmName_);
     auto file = File::Make(this->shmName_);
