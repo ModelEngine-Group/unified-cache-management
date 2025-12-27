@@ -59,6 +59,8 @@ public:
         {
         }
         friend class ShareBuffer;
+        Status Ready4ReadOnLocalBuffer();
+        Status Ready4ReadOnSharedBuffer();
     };
 
 public:

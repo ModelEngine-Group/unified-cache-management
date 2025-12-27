@@ -162,9 +162,8 @@ std::shared_ptr<ShareBuffer::Reader> ShareBuffer::MakeReader(const std::string& 
     auto index = this->AcquireBlock(block);
     try {
         void* addr = this->BlockAt(index);
-        return std::shared_ptr<Reader>(
-            new Reader{block, path, blockSize_, ioDirect_, true, addr},
-            [this, index](auto) { this->ReleaseBlock(index); });
+        return std::shared_ptr<Reader>(new Reader{block, path, blockSize_, ioDirect_, true, addr},
+                                       [this, index](auto) { this->ReleaseBlock(index); });
     } catch (...) {
         this->ReleaseBlock(index);
         UC_ERROR("Failed to create reader.");
@@ -298,6 +297,26 @@ void* ShareBuffer::BlockAt(const size_t index)
 
 Status ShareBuffer::Reader::Ready4Read()
 {
+    if (shared_) { return Ready4ReadOnSharedBuffer(); }
+    return Ready4ReadOnLocalBuffer();
+}
+
+uintptr_t ShareBuffer::Reader::GetData()
+{
+    if (shared_) {
+        auto header = (ShareBlockHeader*)this->addr_;
+        return (uintptr_t)header->Data();
+    }
+    return (uintptr_t)this->addr_;
+}
+
+Status ShareBuffer::Reader::Ready4ReadOnLocalBuffer()
+{
+    return File::Read(this->path_, 0, this->length_, this->GetData(), this->ioDirect_);
+}
+
+Status ShareBuffer::Reader::Ready4ReadOnSharedBuffer()
+{
     auto header = (ShareBlockHeader*)this->addr_;
     if (header->status == ShareBlockStatus::LOADED) { return Status::OK(); }
     if (header->status == ShareBlockStatus::FAILURE) { return Status::Error(); }
@@ -317,12 +336,6 @@ Status ShareBuffer::Reader::Ready4Read()
     }
     header->status = ShareBlockStatus::FAILURE;
     return s;
-}
-
-uintptr_t ShareBuffer::Reader::GetData()
-{
-    auto header = (ShareBlockHeader*)this->addr_;
-    return (uintptr_t)header->Data();
 }
 
 }  // namespace UC
