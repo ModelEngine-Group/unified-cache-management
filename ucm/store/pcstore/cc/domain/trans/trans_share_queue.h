@@ -61,10 +61,9 @@ class TransShareQueue {
 
 public:
     ~TransShareQueue();
-    Status Setup(const size_t nSharer, const int32_t deviceId, const size_t streamNumber,
-                 const size_t blockSize, const size_t ioSize, const bool ioDirect,
-                 const size_t bufferNumber, const SpaceLayout* layout, TaskSet* failureSet,
-                 const std::string& uniqueId);
+    Status Setup(const int32_t deviceId, const size_t streamNumber, const size_t blockSize,
+                 const size_t ioSize, const bool ioDirect, const size_t bufferNumber,
+                 const SpaceLayout* layout, TaskSet* failureSet, const std::string& uniqueId);
     void Dispatch(TaskPtr task, WaiterPtr waiter);
 
 private:
