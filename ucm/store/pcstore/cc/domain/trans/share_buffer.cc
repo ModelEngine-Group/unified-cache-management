@@ -88,6 +88,25 @@ struct ShareBlockHeader {
     ShareBlockStatus status;
     size_t offset;
     void* Data() { return reinterpret_cast<char*>(this) + offset; }
+    void Refer()
+    {
+        if (this->ref == 0 && this->status != ShareBlockStatus::LOADED) {
+            this->status = ShareBlockStatus::INIT;
+        }
+        this->ref++;
+    }
+    void Reuse(const std::string& block)
+    {
+        this->id.Set(block);
+        this->ref = 1;
+        if (this->status != ShareBlockStatus::LOADED) { this->status = ShareBlockStatus::INIT; }
+    }
+    void Occupy(const std::string& block)
+    {
+        this->id.Set(block);
+        this->ref = 1;
+        this->status = ShareBlockStatus::INIT;
+    }
 };
 
 struct ShareBufferHeader {
@@ -243,36 +262,39 @@ size_t ShareBuffer::AcquireBlock(const std::string& block)
     static std::hash<std::string> hasher{};
     auto pos = hasher(block) % this->blockNumber_;
     auto bufferHeader = (ShareBufferHeader*)this->addr_;
-    auto reusedIdx = this->blockNumber_;
+    auto reusedPos = INVALID_POSITION;
     bufferHeader->mutex.Lock();
-    for (size_t i = 0;; i++) {
-        if (!bufferHeader->headers[pos].id.Used()) {
-            if (reusedIdx == this->blockNumber_) { reusedIdx = pos; }
-            break;
+    for (size_t i = 0; i < this->blockNumber_; i++) {
+        auto header = bufferHeader->headers + pos;
+        header->mutex.Lock();
+        if (header->id == block) {
+            header->Refer();
+            header->mutex.Unlock();
+            bufferHeader->mutex.Unlock();
+            return pos;
         }
-        if (bufferHeader->headers[pos].id == block) {
-            reusedIdx = pos;
-            break;
+        if (!header->id.Used()) {
+            if (reusedPos != INVALID_POSITION) {
+                header->mutex.Unlock();
+                break;
+            }
+            header->Occupy(block);
+            header->mutex.Unlock();
+            bufferHeader->mutex.Unlock();
+            return pos;
         }
-        if (bufferHeader->headers[pos].ref <= 0) {
-            if (reusedIdx == this->blockNumber_) { reusedIdx = pos; }
-        }
+        if (header->ref <= 0 && reusedPos == INVALID_POSITION) { reusedPos = pos; }
+        header->mutex.Unlock();
         pos = (pos + 1) % this->blockNumber_;
-        if (i == this->blockNumber_) {
-            UC_WARN("Buffer({}) used out.", this->blockNumber_);
-            i = 0;
-        }
     }
-    auto blockHeader = bufferHeader->headers + reusedIdx;
-    blockHeader->mutex.Lock();
-    if (blockHeader->ref <= 0) {
-        blockHeader->id.Set(block);
-        blockHeader->ref = 99;
-        blockHeader->status = ShareBlockStatus::INIT;
+    if (reusedPos != INVALID_POSITION) {
+        auto header = bufferHeader->headers + reusedPos;
+        header->mutex.Lock();
+        header->Reuse(block);
+        header->mutex.Unlock();
     }
-    blockHeader->mutex.Unlock();
     bufferHeader->mutex.Unlock();
-    return reusedIdx;
+    return reusedPos;
 }
 
 void ShareBuffer::ReleaseBlock(const size_t index)
