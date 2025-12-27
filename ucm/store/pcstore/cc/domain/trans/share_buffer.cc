@@ -95,12 +95,6 @@ struct ShareBlockHeader {
         }
         this->ref++;
     }
-    void Reuse(const std::string& block)
-    {
-        this->id.Set(block);
-        this->ref = 1;
-        if (this->status != ShareBlockStatus::LOADED) { this->status = ShareBlockStatus::INIT; }
-    }
     void Occupy(const std::string& block)
     {
         this->id.Set(block);
@@ -290,7 +284,7 @@ size_t ShareBuffer::AcquireBlock(const std::string& block)
     if (reusedPos != INVALID_POSITION) {
         auto header = bufferHeader->headers + reusedPos;
         header->mutex.Lock();
-        header->Reuse(block);
+        header->Occupy(block);
         header->mutex.Unlock();
     }
     bufferHeader->mutex.Unlock();
