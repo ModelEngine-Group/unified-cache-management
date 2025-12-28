@@ -393,7 +393,7 @@ class KvCompOnDevice(UcmSparseBase):
                             decode_token_idx = q_start[:-1].index_select(0, decode_req_ids)
                             q_decode = query.index_select(0, decode_token_idx)
 
-                            q_hash = self.self.hash_encoder.compute_hash(q_decode).unsqueeze(2).contiguous()
+                            q_hash = self.hash_encoder.compute_hash(q_decode).unsqueeze(2).contiguous()
 
             
                             block_table_decode = attn_metadata.block_table.index_select(
