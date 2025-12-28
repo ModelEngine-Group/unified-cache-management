@@ -16,9 +16,8 @@ from ucm.sparse.base import (
     UcmSparseMetadata,
     UcmSparseRole,
 )
-import sys
-sys.path.append("/root/hk/cuda")
-import esa_interface as esa_lib
+
+import ucm.sparse.esa.esa_interface as esa_lib
 esa_retrieval = esa_lib.esa_retrieval
 esa_repre = esa_lib.esa_repre
 esa_copy = esa_lib.esa_copy
@@ -240,20 +239,20 @@ class ESA(UcmSparseBase):
         phase = None,
     ) -> None:
         return
-        # if not self.has_decode:
-        #     return
-        # with nvtx.range(f"retrieval"):
-        #     layer_id = self.get_layer_id(layer_name)
-        #     self.retrieval_input.query = query
-        #     self.retrieval_input.repre_cache = self.repre_cache[layer_id]
-        #     self.retrieval_input.q_index = self.decode_q_index
-        #     self.retrieval_input.repre_index = self.decode_repre_index
-        #     self.retrieval_input.repre_index_cpu = self.decode_repre_index_cpu
-        #     self.retrieval_input.batch_offset = self.decode_batch_offset_cpu
-        #     self.retrieval_input.batch = self.decode_retrieval_batch
-        #     self.retrieval_input.s = self.decode_retrieval_s_len
-        #     h = esa_retrieval(self.retrieval_input, self.retrieval_output)
-        #     self.handles.append(h)
+        if not self.has_decode:
+            return
+        with nvtx.range(f"retrieval"):
+            layer_id = self.get_layer_id(layer_name)
+            self.retrieval_input.query = query
+            self.retrieval_input.repre_cache = self.repre_cache[layer_id]
+            self.retrieval_input.q_index = self.decode_q_index
+            self.retrieval_input.repre_index = self.decode_repre_index
+            self.retrieval_input.repre_index_cpu = self.decode_repre_index_cpu
+            self.retrieval_input.batch_offset = self.decode_batch_offset_cpu
+            self.retrieval_input.batch = self.decode_retrieval_batch
+            self.retrieval_input.s = self.decode_retrieval_s_len
+            h = esa_retrieval(self.retrieval_input, self.retrieval_output)
+            self.handles.append(h)
 
     def attention_finished(
         self,

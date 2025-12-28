@@ -64,5 +64,5 @@ def build_shared(src_files, target, mode = "release"):
     subprocess.run(cmd, check=True)
 
 if __name__ == "__main__":
-    build_shared(["./diff_map_thrust_pybind.cu"], "diff_map.so")
+    # build_shared(["./diff_map_thrust_pybind.cu"], "diff_map.so")
     build_shared(["./esa_interface.cc", "./esa_kernels.cu", "./esa_sm_copy.cu"], "esa_interface.so")
