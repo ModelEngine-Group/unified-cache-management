@@ -442,28 +442,28 @@ class KvCompOnDevice(UcmSparseBase):
 
                             topk_token = self.hash_topk_tokens
 
-                        block_table_decode = attn_metadata.block_table.index_select(
-                            0, decode_req_ids
-                        )
-                        seq_len_decode = self.ori_seq_lens_decode.index_select(
-                            0, decode_req_ids
-                        )
-                        block_table_decode = cuda_hamming_topk(
-                            q_hash.unsqueeze(1),
-                            k_hash,
-                            block_table_decode,
-                            seq_len_decode,
-                            topk_token=topk_token,
-                            sink_token=64,
-                            recent_token=512,
-                            is_mla=self.is_mla,
-                        )
-                        # update topk_block_table
-                        topk = block_table_decode.shape[1]
-                        attn_metadata.block_table[decode_req_ids, :topk] = (
-                            block_table_decode
-                        )
-                        attn_metadata.block_table[decode_req_ids, topk:] = 0
+                            block_table_decode = attn_metadata.block_table.index_select(
+                                0, decode_req_ids
+                            )
+                            seq_len_decode = self.ori_seq_lens_decode.index_select(
+                                0, decode_req_ids
+                            )
+                            block_table_decode = cuda_hamming_topk(
+                                q_hash.unsqueeze(1),
+                                k_hash,
+                                block_table_decode,
+                                seq_len_decode,
+                                topk_token=topk_token,
+                                sink_token=64,
+                                recent_token=512,
+                                is_mla=self.is_mla,
+                            )
+                            # update topk_block_table
+                            topk = block_table_decode.shape[1]
+                            attn_metadata.block_table[decode_req_ids, :topk] = (
+                                block_table_decode
+                            )
+                            attn_metadata.block_table[decode_req_ids, topk:] = 0
 
                             attn_metadata.seq_lens[self.decode_mask] = (
                                 self.topk_seq_lens_qwen
