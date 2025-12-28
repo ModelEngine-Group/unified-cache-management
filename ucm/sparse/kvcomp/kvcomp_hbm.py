@@ -475,15 +475,18 @@ class KvCompOnDevice(UcmSparseBase):
             kv_caches[layer_name] = (kv_cache, khash_cache)
 
     def initialize_kv_hash_cache_tensors_npu(self, kv_caches, device):
-        print(f"initialize_kv_hash_cache_tensors_npu: allocating hashk cache for KVComp in NPU")
+        print(f"[NPU KVComp Debug] initialize_kv_hash_cache_tensors_npu: allocating hashk cache for KVComp in NPU")
         for layer_name, kv_cache in kv_caches.items():
             is_rollback_layer, is_skip_hash_layer = self.get_layer_state(layer_name)
             k_cache_shape = kv_cache[0].shape
+            print(f"[NPU KVComp Debug] layer_name: {layer_name}, is_rollback_layer={is_rollback_layer}, is_skip_hash_layer={is_skip_hash_layer}, k_cache_shape: {k_cache_shape}")
             khash_cache_shape = (k_cache_shape[0], k_cache_shape[2], k_cache_shape[1], self.hash_encoder.hash_bits // 8)
             if not is_rollback_layer and not is_skip_hash_layer:
                 khash_cache = torch.empty(khash_cache_shape, dtype=torch.uint8, device=device)
+                print(f"[NPU KVComp Debug] layer_name: {layer_name}, khash_cache_shape: {khash_cache_shape}")
             else:
                 khash_cache = None
+                print(f"[NPU KVComp Debug] layer_name: {layer_name}, khash_cache is None")
             kv_caches[layer_name] = (kv_cache, khash_cache)
 
     def build_decode_hash(self, seq_lens):
