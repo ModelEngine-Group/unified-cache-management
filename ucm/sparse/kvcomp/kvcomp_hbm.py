@@ -279,7 +279,7 @@ class KvCompOnDevice(UcmSparseBase):
                         batch_size_for_hamming = self.decode_mask.sum().item()
                         self.query_lens_device = attn_metadata.query_lens_device[decode_req_ids_npu]
                         self.topk_for_hamming = self.topk_for_hamming_full[:batch_size_for_hamming]
-                        self.chunk_size_for_hamming = self.chunk_sizes_for_hamming[:batch_size_for_hamming]
+                        self.chunk_sizes_for_hamming = self.chunk_sizes_for_hamming_full[:batch_size_for_hamming]
                         self.seq_lens_for_hamming = attn_metadata.seq_lens_device[decode_req_ids_npu]
                         self.max_seq_len_for_hamming = torch.max(attn_metadata.seq_lens[decode_req_ids]).item()
                         self.is_tensor_computed = True
@@ -404,7 +404,7 @@ class KvCompOnDevice(UcmSparseBase):
                                 k_hash,
                                 self.topk_for_hamming,
                                 self.seq_lens_for_hamming,
-                                self.chunk_size_for_hamming,
+                                self.chunk_sizes_for_hamming,
                                 self.max_seq_len_for_hamming,
                                 self.hamming_keep_chunks_head,
                                 self.hamming_keep_chunks_tail,
