@@ -1,17 +1,17 @@
-From 73de421dd3a9d3877b8903b8ee419e692da62b29 Mon Sep 17 00:00:00 2001
+From c92cb68fd1fa6215cd6d5b207b95c841ac20dbe1 Mon Sep 17 00:00:00 2001
 From: wenxinwang <wangwenxin21@huawei.com>
-Date: Mon, 10 Nov 2025 20:44:02 +0800
-Subject: [PATCH]  adapt to deepseek
+Date: Tue, 23 Dec 2025 19:21:33 -0800
+Subject: [PATCH] sparse patch for vllm-ascend
 
 ---
- vllm_ascend/attention/attention_v1.py | 76 ++++++++++++++++++++
+ vllm_ascend/attention/attention_v1.py | 80 ++++++++++++++++++++++
  vllm_ascend/attention/mla_v1.py       | 14 +++-
- vllm_ascend/worker/model_runner_v1.py | 99 +++++++++++++++++++++++----
+ vllm_ascend/worker/model_runner_v1.py | 98 ++++++++++++++++++++++++---
  vllm_ascend/worker/worker_v1.py       | 25 +++++--
- 4 files changed, 196 insertions(+), 18 deletions(-)
+ 4 files changed, 201 insertions(+), 16 deletions(-)
 
 diff --git a/vllm_ascend/attention/attention_v1.py b/vllm_ascend/attention/attention_v1.py
-index 7d7f488f..18039f42 100644
+index 7d7f488f..ea982244 100644
 --- a/vllm_ascend/attention/attention_v1.py
 +++ b/vllm_ascend/attention/attention_v1.py
 @@ -24,6 +24,9 @@ import torch_npu
@@ -44,11 +44,11 @@ index 7d7f488f..18039f42 100644
      self = forward_context.no_compile_layers[layer_name]
      kv_cache = self.kv_cache[forward_context.virtual_engine]
 +    if not self.use_mla:
-+        maybe_execute_sparse_attention_begin(query, key, value, layer_name, forward_context)
++        query, _, _, _ = maybe_execute_sparse_attention_begin(query, key, value, layer_name, forward_context)
      self.impl.forward(self,
                        query,
                        key,
-@@ -456,8 +465,75 @@ def unified_ascend_attention_with_output(
+@@ -456,8 +465,79 @@ def unified_ascend_attention_with_output(
                        attn_metadata,
                        output,
                        trace_flag=False)
@@ -91,17 +91,21 @@ index 7d7f488f..18039f42 100644
 +        value: torch.Tensor,
 +        layer_name: str,
 +        forward_context: ForwardContext,
++        output: Optional[torch.Tensor] = None,
++        phase: Optional[str] = None,
 +):
 +    if not has_ucm_sparse():
-+        return
++            return query, key, value, output
 +
 +    ucm_sparse = get_ucm_sparse()
 +
 +    attn_metadata = forward_context.attn_metadata
 +    if attn_metadata is None:
-+        return
++        return query, key, value, output
 +
-+    ucm_sparse.attention_begin(query, key, value, layer_name, forward_context)
++    return ucm_sparse.attention_begin(
++        query, key, value, layer_name, forward_context, output, phase
++    )
 +
 +def maybe_execute_sparse_attention_finished(
 +        query: torch.Tensor,
@@ -125,7 +129,7 @@ index 7d7f488f..18039f42 100644
  def unified_attention_with_output_fake(
      query: torch.Tensor,
 diff --git a/vllm_ascend/attention/mla_v1.py b/vllm_ascend/attention/mla_v1.py
-index f50fe56e..4a27c22f 100644
+index f50fe56e..ae8f50bf 100644
 --- a/vllm_ascend/attention/mla_v1.py
 +++ b/vllm_ascend/attention/mla_v1.py
 @@ -13,10 +13,12 @@ from vllm.distributed import get_tensor_model_parallel_world_size
@@ -155,7 +159,7 @@ index f50fe56e..4a27c22f 100644
              # otherwise it may affect the accuracy
              # TODO: use an elegant way to overlap
 +            wait_for_kv_layer_from_connector(layer.layer_name)
-+            maybe_execute_sparse_attention_begin(prefill_q, prefill_k_c_normed, prefill_k_pe, layer.layer_name, forward_context, "prefill")
++            prefill_q, _, _, _ =  maybe_execute_sparse_attention_begin(prefill_q, prefill_k_c_normed, k_pe, layer.layer_name, forward_context, output=output, phase="prefill")
              output_prefill = self._forward_prefill(prefill_q,
                                                     prefill_k_c_normed,
                                                     prefill_k_pe, kv_cache,
@@ -168,7 +172,7 @@ index f50fe56e..4a27c22f 100644
 +            maybe_save_kv_layer_to_connector(layer.layer_name, kv_cache)
          if has_decode:
 +            wait_for_kv_layer_from_connector(layer.layer_name)
-+            maybe_execute_sparse_attention_begin(torch.cat([decode_ql_nope, decode_q_pe],dim=-1), decode_ql_nope, decode_q_pe, layer.layer_name, forward_context, "decode")
++            _, _, _, _ = maybe_execute_sparse_attention_begin(torch.cat([decode_ql_nope, decode_q_pe],dim=-1), decode_k_nope, k_pe, layer.layer_name, forward_context, output=output, phase="decode")
              if self.running_in_graph:
                  return self._forward_decode(decode_ql_nope, decode_q_pe,
                                              decode_k_nope, decode_k_pe,
@@ -181,7 +185,7 @@ index f50fe56e..4a27c22f 100644
  
          return output_padded
 diff --git a/vllm_ascend/worker/model_runner_v1.py b/vllm_ascend/worker/model_runner_v1.py
-index eabcdbcc..179dffde 100644
+index eabcdbcc..782b9a3b 100644
 --- a/vllm_ascend/worker/model_runner_v1.py
 +++ b/vllm_ascend/worker/model_runner_v1.py
 @@ -39,7 +39,10 @@ from vllm.config import CompilationLevel, VllmConfig
@@ -313,15 +317,7 @@ index eabcdbcc..179dffde 100644
              attn_state=attn_state)
          self.attn_state = attn_state  # type: ignore
  
-@@ -1100,6 +1129,7 @@ class NPUModelRunner(LoRAModelRunnerMixin):
-             positions = self.positions[:padded_batch_size]
- 
-         # Run forward pass
-+        finished_dumping = None
-         with set_forward_context(attn_metadata,
-                                  self.vllm_config,
-                                  num_tokens=num_input_tokens):
-@@ -1125,6 +1155,8 @@ class NPUModelRunner(LoRAModelRunnerMixin):
+@@ -1125,6 +1154,8 @@ class NPUModelRunner(LoRAModelRunnerMixin):
                      assert self.model is not None
                      maybe_converting_weight_acl_format(self.model,
                                                         ACL_FORMAT_FRACTAL_ND)
@@ -330,42 +326,16 @@ index eabcdbcc..179dffde 100644
  
                      hidden_states = self.model(
                          input_ids=input_ids,
-@@ -1133,6 +1165,8 @@ class NPUModelRunner(LoRAModelRunnerMixin):
+@@ -1133,6 +1164,8 @@ class NPUModelRunner(LoRAModelRunnerMixin):
                          inputs_embeds=inputs_embeds,
                          **model_kwargs,
                      )
-+                    finished_dumping = self.maybe_wait_for_kv_save()
-+                    self.maybe_execute_ucm_sparse_finished()
++                    self.maybe_wait_for_kv_save()
++                    logits_indices = self.maybe_execute_ucm_sparse_finished(logits_indices)
  
          use_spec_decode = len(
              scheduler_output.scheduled_spec_decode_tokens) > 0
-@@ -1163,7 +1197,7 @@ class NPUModelRunner(LoRAModelRunnerMixin):
- 
-         return (attn_metadata, hidden_states, spec_decode_metadata, positions,
-                 total_num_scheduled_tokens, logits_indices, aux_hidden_states,
--                num_scheduled_tokens)
-+                num_scheduled_tokens, finished_dumping)
- 
-     def _get_cumsum_and_arange(
-         self,
-@@ -1400,7 +1434,7 @@ class NPUModelRunner(LoRAModelRunnerMixin):
-                 return EMPTY_MODEL_RUNNER_OUTPUT
-             (attn_metadata, hidden_states, spec_decode_metadata, positions,
-              num_scheduled_tokens, logits_indices, aux_hidden_states,
--             num_scheduled_tokens_np) = (self._process_reqs(
-+             num_scheduled_tokens_np, finished_dumping) = (self._process_reqs(
-                  scheduler_output, intermediate_tensors))
- 
-         with ProfileExecuteDuration().capture_async("post process"):
-@@ -1561,6 +1595,7 @@ class NPUModelRunner(LoRAModelRunnerMixin):
-                 logprobs=logprobs_lists,
-                 prompt_logprobs_dict=prompt_logprobs_dict,
-                 pooler_output=[],
-+                finished_dumping=finished_dumping
-             )
- 
-         durations = ProfileExecuteDuration().pop_captured_sync()
-@@ -2369,3 +2404,43 @@ class NPUModelRunner(LoRAModelRunnerMixin):
+@@ -2369,3 +2402,48 @@ class NPUModelRunner(LoRAModelRunnerMixin):
              if batch_size <= padded_batch_size < selected_batch_size:
                  selected_batch_size = padded_batch_size
          return selected_batch_size
@@ -394,15 +364,20 @@ index eabcdbcc..179dffde 100644
 +    def maybe_execute_ucm_sparse_begin(self, scheduler_output: "SchedulerOutput", attn_metadata: CommonAttentionMetadata):
 +        if not has_ucm_sparse():
 +            return
++        if has_kv_transfer_group():
++            uc_connector = get_kv_transfer_group()
++            uc_setup_model = getattr(uc_connector, "setup_model", None)
++            if callable(uc_setup_model):
++                uc_setup_model(self.model)
 +        ucm_sparse = get_ucm_sparse()
 +        ucm_sparse.build_sparse_meta(scheduler_output, self.requests, self.input_batch, attn_metadata)
 +        ucm_sparse.execute_begin(scheduler_output)
 +
-+    def maybe_execute_ucm_sparse_finished(self):
++    def maybe_execute_ucm_sparse_finished(self, logits_indices):
 +        if not has_ucm_sparse():
-+            return
++            return logits_indices
 +        ucm_sparse = get_ucm_sparse()
-+        ucm_sparse.execute_finished()
++        return ucm_sparse.execute_finished(logits_indices)
 +
 +    def ucm_sparse_request_finished_in_worker(self, request_id: str | int):
 +        if not has_ucm_sparse():

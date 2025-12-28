@@ -137,7 +137,7 @@ std::string SpaceLayout::DataParentName(const std::string& blockFile, bool activ
 
 std::string SpaceLayout::DataFileRoot() const { return "data"; }
 
-std::string SpaceLayout::TempFileRoot() const { return "temp"; }
+std::string SpaceLayout::TempFileRoot() const { return ".temp"; }
 
 std::string SpaceLayout::DataFileName(const std::string& blockId) const
 {

@@ -77,11 +77,7 @@ def build_llm_with_uc(module_path: str, name: str, model: str):
                     },
                 }
             ],
-            "ucm_sparse_config": {
-                "KvCompOnDevice": {
-                    "kvcompOnDevice_config_path": "/workspace/unified-cache-management/ucm/sparse/kvcomp/configs/kvcomp_deepseek_v2_lite_config.json"
-                }
-            },
+            "ucm_sparse_config": {"GSA": {}},
         },
     )
 

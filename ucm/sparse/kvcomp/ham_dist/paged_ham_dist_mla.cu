@@ -59,6 +59,21 @@
       {                                         \
         __VA_ARGS__                             \
       }                                         \
+    } else if ((val) == 2) {                   \
+      constexpr int NumKVHead = 2;              \
+      {                                        \
+        __VA_ARGS__                            \
+      }                                        \
+    } else if ((val) == 4) {                   \
+      constexpr int NumKVHead = 4;              \
+      {                                        \
+        __VA_ARGS__                            \
+      }                                        \
+    } else if ((val) == 8) {                     \
+      constexpr int NumKVHead = 8;              \
+      {                                        \
+        __VA_ARGS__                            \
+      }                                        \
     } else {                                    \
       LOG(FATAL) << "NumKVHead is not support"; \
     }                                           \
@@ -295,7 +310,7 @@ torch::Tensor HammingScoreContiCUDA(torch::Tensor& key_codes,
   bool is_block_mode = block_table_opt.has_value();
  
   int32_t bsz = query_code.size(0);
-  int32_t num_kv_head = is_block_mode ? key_codes.size(1) : key_codes.size(2);
+  int32_t num_kv_head = key_codes.size(2);
   int32_t num_chunk = key_codes.size(3);
  
   int32_t num_head = query_code.size(2);
@@ -309,7 +324,7 @@ torch::Tensor HammingScoreContiCUDA(torch::Tensor& key_codes,
  
   if(is_block_mode) {
     int32_t num_blocks = key_codes.size(0);
-    int32_t block_size = key_codes.size(2);
+    int32_t block_size = key_codes.size(1);
     const auto& block_table = block_table_opt.value(); // *block_table_opt;
     int32_t max_num_block_per_seq = block_table.size(1);
     TORCH_CHECK(bsz == block_table.size(0), "batch size mismatch between query_code and block_table");

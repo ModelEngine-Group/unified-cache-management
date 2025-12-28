@@ -1,3 +1,5 @@
+from importlib import resources
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
 
 import torch
@@ -33,6 +35,51 @@ from ucm.utils import Config
 logger = init_logger(__name__)
 
 ReqType = Union[str, int]
+
+
+def kvcomp_config_path_for_model(vllm_config) -> str:
+    model = vllm_config.model_config.model.lower()
+    logger.info("[KvComp] model name: %s", model)
+
+    if "deepseek" in model and "r1" in model:
+        rel = "ucm/sparse/kvcomp/configs/kvcomp_deepseek_r1_awq_config.json"
+    elif "qwen3" in model and "32b" in model:
+        rel = "ucm/sparse/kvcomp/configs/kvcomp_qwen3_32B_config.json"
+    elif "deepseek" in model and "v2" in model:
+        rel = "ucm/sparse/kvcomp/configs/kvcomp_deepseek_v2_lite_config.json"
+    else:
+        raise ValueError(f"[KvCompOnDevice] Unsupported model for kvcomp: {model}")
+
+    logger.info("[KvComp] target relative path: %s", rel)
+
+    cur = Path(__file__).resolve()
+    repo = cur
+    for depth in range(30):
+        if (
+            (repo / "pyproject.toml").is_file()
+            or (repo / "setup.cfg").is_file()
+            or (repo / ".git").exists()
+        ):
+
+            p = repo / rel
+            logger.info("[KvComp] repo root detected at depth=%d: %s", depth, repo)
+            if p.is_file():
+                logger.info("[KvComp] config loaded from SOURCE tree: %s", p)
+                return str(p)
+            logger.warning("[KvComp] repo root found but config missing: %s", p)
+            break
+        if repo.parent == repo:
+            logger.debug("[KvComp] reached filesystem root, stop searching")
+            break
+
+        repo = repo.parent
+
+    sub = rel[len("ucm/") :] if rel.startswith("ucm/") else rel
+    res = resources.files("ucm").joinpath(*sub.split("/"))
+
+    with resources.as_file(res) as p:
+        logger.info("[KvComp] config loaded from PACKAGE resource (wheel): %s", p)
+        return str(p)
 
 
 class KvCompOnDevice(UcmSparseBase):
@@ -344,12 +391,13 @@ class KvCompOnDevice(UcmSparseBase):
                         topk_token = self.hash_topk_tokens
                         block_table = cuda_hamming_topk(
                             q_hash.unsqueeze(1),
-                            k_hash.unsqueeze(1),
+                            k_hash.unsqueeze(2),
                             attn_metadata.decode.block_table,
                             attn_metadata.decode.seq_lens,
                             topk_token=topk_token,
                             sink_token=64,
                             recent_token=512,
+                            is_mla=self.is_mla,
                         )
                         attn_metadata.decode.topk_block_table = block_table
 
@@ -394,28 +442,28 @@ class KvCompOnDevice(UcmSparseBase):
 
                             topk_token = self.hash_topk_tokens
 
-                            block_table_decode = attn_metadata.block_table.index_select(
-                                0, decode_req_ids
-                            )
-                            seq_len_decode = self.ori_seq_lens_decode.index_select(
-                                0, decode_req_ids
-                            )
-
-                            block_table_decode = cuda_hamming_topk(
-                                q_hash.unsqueeze(1),
-                                k_hash.unsqueeze(1),
-                                block_table_decode,
-                                seq_len_decode,
-                                topk_token=topk_token,
-                                sink_token=64,
-                                recent_token=512,
-                            )
-                            # update topk_block_table
-                            topk = block_table_decode.shape[1]
-                            attn_metadata.block_table[decode_req_ids, :topk] = (
-                                block_table_decode
-                            )
-                            attn_metadata.block_table[decode_req_ids, topk:] = 0
+                        block_table_decode = attn_metadata.block_table.index_select(
+                            0, decode_req_ids
+                        )
+                        seq_len_decode = self.ori_seq_lens_decode.index_select(
+                            0, decode_req_ids
+                        )
+                        block_table_decode = cuda_hamming_topk(
+                            q_hash.unsqueeze(1),
+                            k_hash,
+                            block_table_decode,
+                            seq_len_decode,
+                            topk_token=topk_token,
+                            sink_token=64,
+                            recent_token=512,
+                            is_mla=self.is_mla,
+                        )
+                        # update topk_block_table
+                        topk = block_table_decode.shape[1]
+                        attn_metadata.block_table[decode_req_ids, :topk] = (
+                            block_table_decode
+                        )
+                        attn_metadata.block_table[decode_req_ids, topk:] = 0
 
                             attn_metadata.seq_lens[self.decode_mask] = (
                                 self.topk_seq_lens_qwen

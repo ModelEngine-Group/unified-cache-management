@@ -139,7 +139,7 @@ class CMakeBuild(build_ext):
 
 setup(
     name="uc-manager",
-    version="0.2.0rc1",
+    version="0.2.0rc2",
     description="Unified Cache Management",
     author="Unified Cache Team",
     packages=find_packages(),
@@ -148,4 +148,5 @@ setup(
     cmdclass={"build_ext": CMakeBuild},
     zip_safe=False,
     include_package_data=False,
+    package_data={"ucm": ["sparse/kvcomp/configs/**/*.json"]},
 )

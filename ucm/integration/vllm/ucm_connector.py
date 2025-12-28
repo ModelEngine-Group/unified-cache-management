@@ -222,14 +222,10 @@ class UCMDirectConnector(KVConnectorBase_V1):
     def _generate_storage_backends(
         self, storage_backends: str, is_rope: bool = False
     ) -> List[str]:
-        if is_rope:
-            backends = [
-                os.path.join(path, "rope") for path in storage_backends.split(":")
-            ]
-            os.makedirs(backends[0], exist_ok=True)
-            return backends
-        else:
-            return [path for path in storage_backends.split(":") if path]
+        subdir = "rope" if is_rope else "kv"
+        backends = [os.path.join(path, subdir) for path in storage_backends.split(":")]
+        os.makedirs(backends[0], exist_ok=True)
+        return backends
 
     def register_kv_caches(self, kv_caches: dict[str, torch.Tensor]):
         if os.getenv("VLLM_HASH_ATTENTION", "0") == "1":
