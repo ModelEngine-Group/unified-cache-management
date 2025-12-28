@@ -419,7 +419,9 @@ class KvCompOnDevice(UcmSparseBase):
                             topk = self.hamming_output.shape[1]
                             attn_metadata.block_table[decode_req_ids,:topk] = self.hamming_output[:len(decode_req_ids)]
                             attn_metadata.block_table[decode_req_ids,topk:] = 0
-                            attn_metadata.seq_lens[self.decode_mask] = self.seq_lens_for_hamming
+
+                            # we have already computed the topk_seq_lens_qwen in `build_decode_attention_meta_npu()`
+                            attn_metadata.seq_lens[self.decode_mask] = self.topk_seq_lens_qwen
 
                         # topk for skip layer
                         self.topk_block_table = attn_metadata.block_table
