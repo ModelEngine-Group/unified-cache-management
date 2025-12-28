@@ -19,8 +19,10 @@ from ucm.sparse.base import (
     UcmSparseBase,
     UcmSparseRole,
 )
-from ucm.sparse.kvcomp.hamming_topk import cuda_hamming_topk, fake_hamming_topk
-from ucm.sparse.kvcomp.hash_encoder import HashEncoder, reshape_and_cache_khash_triton
+if hasattr(torch, 'cuda') and torch.cuda.is_available():
+    from ucm.sparse.kvcomp.hamming_topk import cuda_hamming_topk, fake_hamming_topk
+    from ucm.sparse.kvcomp.hash_encoder import reshape_and_cache_khash_triton
+from ucm.sparse.kvcomp.hash_encoder import HashEncoder
 from ucm.sparse.kvcomp.kvcomp_config import KvCompConfig
 from ucm.utils import Config
 
