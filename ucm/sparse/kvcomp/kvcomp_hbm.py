@@ -152,6 +152,9 @@ class KvCompOnDevice(UcmSparseBase):
                     else:
                         self.max_batch_size = min(self.max_batch_size, vllm_config.scheduler_config.max_num_seqs)
 
+                    self.hamming_keep_chunks_head = 1
+                    self.hamming_keep_chunks_tail = 4
+
                     self.chunk_sizes_for_hamming_full = torch.full([self.max_batch_size],
                                                                fill_value=self.block_size,
                                                                dtype=torch.int32,
