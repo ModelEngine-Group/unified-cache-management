@@ -408,6 +408,7 @@ class KvCompOnDevice(UcmSparseBase):
                                 self.max_seq_len_for_hamming,
                                 self.hamming_keep_chunks_head,
                                 self.hamming_keep_chunks_tail,
+                                0, #support_offload is disabled
                                 block_table_decode,
                                 self.hamming_output[:len(decode_req_ids)]
                             )
