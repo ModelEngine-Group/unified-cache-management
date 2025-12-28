@@ -1,6 +1,6 @@
 import torch
 
-if hasattr(torch, 'cuda') and torch.cuda.is_available():
+if hasattr(torch, "cuda") and torch.cuda.is_available():
     from ucm.sparse.kvcomp.ham_dist import hamming
 
 
