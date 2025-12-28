@@ -164,9 +164,6 @@ class KvCompOnDevice(UcmSparseBase):
                                                         fill_value=self.hash_topk_tokens // self.block_size,
                                                         dtype=torch.int32,
                                                         device='cpu')
-                    self.block_tables_for_hamming = torch.zeros([self.max_batch_size, self.max_seq_len_for_hamming],
-                                                               dtype=torch.int32,
-                                                               device=self.device)
                     self.seq_lens_for_hamming = torch.zeros([self.max_batch_size],
                                                                dtype=torch.int32,
                                                                device=self.device)
