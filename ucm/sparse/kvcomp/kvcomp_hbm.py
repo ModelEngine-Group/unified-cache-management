@@ -475,6 +475,7 @@ class KvCompOnDevice(UcmSparseBase):
             kv_caches[layer_name] = (kv_cache, khash_cache)
 
     def initialize_kv_hash_cache_tensors_npu(self, kv_caches, device):
+        print(f"initialize_kv_hash_cache_tensors_npu: allocating hashk cache for KVComp in NPU")
         for layer_name, kv_cache in kv_caches.items():
             is_rollback_layer, is_skip_hash_layer = self.get_layer_state(layer_name)
             k_cache_shape = kv_cache[0].shape
