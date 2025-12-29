@@ -141,6 +141,7 @@ public:
 };
 
 class SharedBufferStrategy : public BufferStrategy {
+protected:
     struct ShareMutex {
         pthread_mutex_t mutex;
         ~ShareMutex() = delete;
@@ -184,7 +185,6 @@ class SharedBufferStrategy : public BufferStrategy {
     void* addrress_{nullptr};
     size_t totalSize_;
 
-private:
     size_t MetaOffset() const noexcept { return sizeof(BufferHeader) + sizeof(ShareLock) * nNode_; }
     size_t DataOffset() const noexcept
     {
@@ -221,12 +221,15 @@ private:
             }
         }
     }
-    Status MmapShmFile(PosixShm& shmFile)
+    Status MmapShmFile(PosixShm& shmFile, bool needTrunc = true)
     {
-        auto s = shmFile.Truncate(totalSize_);
-        if (s.Failure()) [[unlikely]] {
-            UC_ERROR("Failed({}) to truncate file({}) with size({}).", s, shmName_, totalSize_);
-            return s;
+        auto s = Status::OK();
+        if (needTrunc) {
+            s = shmFile.Truncate(totalSize_);
+            if (s.Failure()) [[unlikely]] {
+                UC_ERROR("Failed({}) to truncate file({}) with size({}).", s, shmName_, totalSize_);
+                return s;
+            }
         }
         s = shmFile.MMap(addrress_, totalSize_, true, true, true);
         if (s.Failure()) [[unlikely]] {
@@ -261,7 +264,7 @@ private:
             UC_ERROR("Failed({}) to open file({}).", s, shmName_);
             return s;
         }
-        s = MmapShmFile(shmFile);
+        s = MmapShmFile(shmFile, false);
         if (s.Failure()) [[unlikely]] { return s; }
         constexpr auto retryInterval = std::chrono::milliseconds(100);
         constexpr auto maxTryTime = 100;
@@ -341,17 +344,36 @@ public:
     BufferMetaNode* MetaAt(size_t iNode) override { return meta_ + iNode; }
 };
 
+class SharedBufferWatcherStrategy : public SharedBufferStrategy {
+public:
+    Status Setup(const std::string& uuid, int32_t deviceId, size_t nodeSize, size_t nNode) override
+    {
+        shmName_ = ShmPrefix() + uuid;
+        nodeSize_ = nodeSize;
+        nNode_ = nNode;
+        totalSize_ = DataOffset();
+        CleanUpShmFileExceptMe();
+        PosixShm shmFile{shmName_};
+        return LoadShmBuffer(shmFile);
+    }
+    void* DataAt(size_t iNode) override { return nullptr; }
+};
+
 Status TransBuffer::Setup(const Config& config)
 {
-    const auto dataNodeSize = config.shardSize;
-    constexpr auto metaNodeSize = sizeof(BufferMetaNode);
-    const auto nNode = config.bufferSize / (dataNodeSize + metaNodeSize);
-    if (!config.shareBufferEnable) {
-        strategy_ = std::make_shared<LocalBufferStrategy>();
-    } else {
-        strategy_ = std::make_shared<SharedBufferStrategy>();
+    try {
+        if (!config.shareBufferEnable) {
+            strategy_ = std::make_shared<LocalBufferStrategy>();
+        } else if (config.deviceId >= 0) {
+            strategy_ = std::make_shared<SharedBufferStrategy>();
+        } else {
+            strategy_ = std::make_shared<SharedBufferWatcherStrategy>();
+        }
+    } catch (const std::exception& e) {
+        return Status::Error(fmt::format("failed({}) to make buffer strategy", e.what()));
     }
-    return strategy_->Setup(config.uniqueId, config.deviceId, dataNodeSize, nNode);
+    return strategy_->Setup(config.uniqueId, config.deviceId, config.shardSize,
+                            config.bufferNumber);
 }
 
 TransBuffer::Handle TransBuffer::Get(const Detail::BlockId& blockId, size_t shardIdx)
@@ -367,6 +389,32 @@ TransBuffer::Handle TransBuffer::Get(const Detail::BlockId& blockId, size_t shar
     iNode = Alloc(blockId, shardIdx, iBucket);
     strategy_->BucketUnlock(iBucket);
     return Handle(this, iNode, true);
+}
+
+bool TransBuffer::Exist(const Detail::BlockId& blockId, size_t shardIdx)
+{
+    auto iBucket = Hash(blockId, shardIdx);
+    strategy_->BucketLock(iBucket);
+    auto exist = ExistAt(iBucket, blockId, shardIdx);
+    strategy_->BucketUnlock(iBucket);
+    return exist;
+}
+
+bool TransBuffer::ExistAt(size_t iBucket, const Detail::BlockId& blockId, size_t shardIdx)
+{
+    auto iNode = strategy_->FirstAt(iBucket);
+    while (iNode != invalidIndex) {
+        auto meta = strategy_->MetaAt(iNode);
+        strategy_->NodeLock(iNode);
+        if (meta->block == blockId && meta->shard == shardIdx) {
+            strategy_->NodeUnlock(iNode);
+            return true;
+        }
+        auto next = meta->next;
+        strategy_->NodeUnlock(iNode);
+        iNode = next;
+    }
+    return false;
 }
 
 size_t TransBuffer::FindAt(size_t iBucket, const Detail::BlockId& blockId, size_t shardIdx,

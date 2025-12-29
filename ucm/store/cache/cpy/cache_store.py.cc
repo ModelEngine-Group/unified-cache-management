@@ -42,7 +42,7 @@ PYBIND11_MODULE(ucmcachestore, module)
     config.def_readwrite("tensorSize", &Config::tensorSize);
     config.def_readwrite("shardSize", &Config::shardSize);
     config.def_readwrite("blockSize", &Config::blockSize);
-    config.def_readwrite("bufferSize", &Config::bufferSize);
+    config.def_readwrite("bufferNumber", &Config::bufferNumber);
     config.def_readwrite("shareBufferEnable", &Config::shareBufferEnable);
     config.def_readwrite("waitingQueueDepth", &Config::waitingQueueDepth);
     config.def_readwrite("runningQueueDepth", &Config::runningQueueDepth);

@@ -39,7 +39,7 @@ TEST_P(UCCacheTransBufferTest, GetFirstNode)
     UC::CacheStore::Config config;
     config.uniqueId = rd.RandomString(10);
     config.shardSize = 32768;
-    config.bufferSize = config.shardSize * 32768;
+    config.bufferNumber = 32768;
     config.shareBufferEnable = GetParam();
     config.deviceId = 0;
     auto s = transBuffer.Setup(config);
