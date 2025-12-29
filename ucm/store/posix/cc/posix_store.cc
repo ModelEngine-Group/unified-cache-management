@@ -111,7 +111,9 @@ std::string PosixStore::Readme() const { return "PosixStore"; }
 Expected<std::vector<uint8_t>> PosixStore::PosixStore::Lookup(const Detail::BlockId* blocks,
                                                               size_t num)
 {
-    return impl_->spaceMgr.Lookup(blocks, num);
+    auto res = impl_->spaceMgr.Lookup(blocks, num);
+    if (!res) [[unlikely]] { UC_ERROR("Failed({}) to lookup blocks({}).", res.Error(), num); }
+    return res;
 }
 
 void PosixStore::PosixStore::Prefetch(const Detail::BlockId* blocks, size_t num) {}

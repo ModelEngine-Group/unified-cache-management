@@ -55,7 +55,7 @@ def e2e_test(
 ):
     chunk_block_ids = [secrets.token_bytes(16) for _ in range(request_size)]
     founds = scheduler.lookup(chunk_block_ids)
-    assert not all(founds)
+    assert not any(founds)
     shard_indexes = [0 for _ in range(request_size)]
     src_tensors = [
         [
@@ -70,6 +70,8 @@ def e2e_test(
     ]
     task = worker.dump(chunk_block_ids, shard_indexes, src_tensors)
     worker.wait(task)
+    founds = scheduler.lookup(chunk_block_ids)
+    assert all(founds)
     dst_tensors = [[torch.empty_like(t) for t in row] for row in src_tensors]
     task = worker.load(chunk_block_ids, shard_indexes, dst_tensors)
     worker.wait(task)
@@ -77,7 +79,7 @@ def e2e_test(
 
 
 def main():
-    tensor_size = 262144
+    tensor_size = 32768
     layer_size = 64
     chunk_size = 4
     request_size = chunk_size * 16
@@ -86,13 +88,9 @@ def main():
     chunk_block_size = tensor_size * layer_size * chunk_size
     config = {}
     config["store_pipeline"] = "Cache|Posix"
-    config["device_id"] = device_id
     config["storage_backends"] = storage_backends
     config["unique_id"] = secrets.token_hex(8)
     config["timeout_ms"] = 10000
-    config["device_id"] = -1
-    scheduler = UcmPipelineStore(config)
-    config["device_id"] = device_id
     config["tensor_size"] = tensor_size
     config["shard_size"] = chunk_block_size
     config["block_size"] = chunk_block_size
@@ -101,7 +99,8 @@ def main():
     config["running_queue_depth"] = 1024
     config["io_direct"] = True
     config["stream_number"] = 16
-    worker = UcmPipelineStore(config)
+    worker = UcmPipelineStore(config | {"device_id": device_id})
+    scheduler = UcmPipelineStore(config)
     test_batch_number = 512
     for _ in range(test_batch_number):
         e2e_test(

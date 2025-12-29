@@ -26,19 +26,33 @@
 
 #include "global_config.h"
 #include "space_layout.h"
+#include "thread/latch.h"
+#include "thread/thread_pool.h"
 
 namespace UC::PosixStore {
 
 class SpaceManager {
+    struct LookupContext {
+        const Detail::BlockId block;
+        size_t index;
+        std::shared_ptr<std::vector<uint8_t>> founds;
+        std::shared_ptr<std::atomic<int32_t>> status;
+        std::shared_ptr<Latch> waiter;
+    };
+
+private:
     SpaceLayout layout_;
+    ThreadPool<LookupContext> lookupSrv_;
 
 public:
     Status Setup(const Config& config);
-    std::vector<uint8_t> Lookup(const Detail::BlockId* blocks, size_t num);
+    Expected<std::vector<uint8_t>> Lookup(const Detail::BlockId* blocks, size_t num);
     const SpaceLayout* GetLayout() const { return &layout_; }
 
 private:
     uint8_t Lookup(const Detail::BlockId* block);
+    void OnLookup(LookupContext& ctx);
+    void OnLookupTimeout(LookupContext& ctx);
 };
 
 }  // namespace UC::PosixStore
