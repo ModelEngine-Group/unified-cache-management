@@ -136,6 +136,7 @@ void CleanUpShmFileExceptMe(const std::string& me)
             if (now - lwt <= keepThreshold) { continue; }
             fs::remove(path);
         } catch (...) {
+            // Ignore filesystem errors;
         }
     }
 }
