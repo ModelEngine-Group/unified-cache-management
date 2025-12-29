@@ -21,38 +21,28 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  * */
-#ifndef UNIFIEDCACHE_REGISTRY_H
-#define UNIFIEDCACHE_REGISTRY_H
-
-#include <functional>
-#include <mutex>
-#include <unordered_map>
-#include "stats/istats.h"
-
+#include "metrics_api.h"
 namespace UC::Metrics {
 
-using Creator = std::unique_ptr<IStats> (*)();
+void CreateStats(const std::string& name, std::string& type) { Metrics::GetInstance().CreateStats(name, type); }
 
-class StatsRegistry {
-public:
-    static StatsRegistry& GetInstance();
+void UpdateStats(const std::string& name, double value)
+{
+    Metrics::GetInstance().UpdateStats(name, value);
+}
 
-    static void RegisterStats(std::string name, Creator creator);
+void UpdateStats(const std::unordered_map<std::string, double>& values)
+{
+    Metrics::GetInstance().UpdateStats(values);
+}
 
-    std::unique_ptr<IStats> CreateStats(const std::string& name);
-
-    std::vector<std::string> GetRegisteredStatsNames();
-
-private:
-    StatsRegistry() = default;
-    ~StatsRegistry() = default;
-    StatsRegistry(const StatsRegistry&) = delete;
-    StatsRegistry& operator=(const StatsRegistry&) = delete;
-
-    std::mutex mutex_;
-    std::unordered_map<std::string, Creator> registry_;
-};
+std::tuple<
+        std::unordered_map<std::string, double>,
+        std::unordered_map<std::string, double>,
+        std::unordered_map<std::string, std::vector<double>>
+    > GetAllStatsAndClear()
+{
+    return Metrics::GetInstance().GetAllStatsAndClear();
+}
 
 } // namespace UC::Metrics
-
-#endif // UNIFIEDCACHE_REGISTRY_H

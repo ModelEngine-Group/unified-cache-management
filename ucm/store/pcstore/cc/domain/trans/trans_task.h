@@ -33,6 +33,7 @@
 #include <string>
 #include <unordered_map>
 #include <vector>
+#include "metrics_api.h"
 
 namespace UC {
 
@@ -74,6 +75,17 @@ public:
         auto total = ioSize * number_;
         auto costs = NowTp() - startTp;
         auto bw = double(total) / costs / 1e9;
+        switch (type)
+        {
+        case Type::DUMP:
+            UC::Metrics::UpdateStats("d2s_bandwidth", bw);
+            break;
+        case Type::LOAD:
+            UC::Metrics::UpdateStats("s2d_bandwidth", bw);
+            break;
+        default:
+            break;
+        }
         return fmt::format("Task({},{},{},{}) finished, costs={:.06f}s, bw={:.06f}GB/s.", id,
                            brief_, number_, total, costs, bw);
     }
