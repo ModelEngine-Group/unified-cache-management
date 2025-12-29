@@ -1,26 +1,34 @@
-# Rectified Rotary Position Embeddings (ReRoPE)
+# Rectified Rotary Position Embeddings
 
-Using ReRoPE, we can more effectively extend the context length of LLM without the need for fine-tuning. This is about the Triton implementation of ReRoPE and its integration into the vLLM inference framework.
+Using Rectified Rotary Position Embeddings (ReRoPE), we can more effectively extend the context length of LLM without the need for fine-tuning. This is about the Triton implementation of ReRoPE and its integration into the vLLM inference framework.
+
+<div align="center">
 
 **🚀 ReRoPE | 📄 blog [https://kexue.fm/archives/9708] [https://normxu.github.io/Rethinking-Rotary-Position-Embedding-3]**
+
 
 [![License](https://img.shields.io/badge/License-MIT-green.svg)](https://github.com/ModelEngine-Group/unified-cache-management/blob/main/LICENSE)
 [![Python](https://img.shields.io/badge/Python-3.10+-blue.svg)](https://python.org)
 
+</div>
 
 ## 🌟 What is ReRoPE? 
 
+<div align="center">
+
 <img src="https://raw.githubusercontent.com/bojone/rerope/main/idea.png" width=750>
+
+</div>
 
 This approach combines direct extrapolation with position interpolation. A window size $w$ is established, where a position interval of $1$ is used within the window, and an interval of $\frac{1}{k}$ is applied outside. As $k \to \infty$, this simplifies to the form illustrated above. Under this scheme, the position encoding range never exceeds $w$ regardless of input length, potentially enabling support for arbitrarily long contexts.
 
 The attention score calculation formulas are as follows,
 
 $$
-\begin{align}
+\begin{aligned}
 score_{ij}^{1} &= (q_iR_i)(k_jR_j)^T, && i-j<w \\
 score_{ij}^{2} &= (q_iR_w)(k_j)^T, && i-j\ge w
-\end{align}
+\end{aligned}
 $$
 
 ReRoPE extends context length effectively but requires double attention—local within w and global compressed—significantly reducing throughput. Despite this overhead, it remains valuable for training-free long contexts, especially when combined with local attention windows to balance efficiency.
@@ -37,7 +45,14 @@ ReRoPE extends context length effectively but requires double attention—local 
 
 ## 🏆 Results
 
-![alt text](results.png)
+<div align="center">
+
+### The Experiment Results
+![ReRoPE Results](../../_static/images/rerope_performace.png)
+
+The experiment is based on a hybrid Transformer-GAU (Gated Attention Unit) model with a size of 100M parameters. $logn$ indicates we add the scale factor $log n$⁡ at pretraining stage; $log n^{*}$ denotes we apply the scale factor to the attention matrix only for text exceeding the max sequence length, without any pretraining; $w256$ denotes the rerope windopw $w=256$.
+
+</div>
 
 ## 🚀 Quick Start
 
@@ -46,12 +61,12 @@ ReRoPE extends context length effectively but requires double attention—local 
 For installation instructions, please refer to the UCM's top-level README. Once UCM is installed, ReRoPE is naturally supported by running the following example python scripts.
 
 ```python
-export VLLM_ATTENTION_BACKEND = TRITON_ATTN_VLLM_V1
-export VLLM_USE_REROPE = true
+export VLLM_ATTENTION_BACKEND=TRITON_ATTN_VLLM_V1
+export VLLM_USE_REROPE=true
 export DATA_DIR=/home/data/kv_cache
 export MODEL_PATH=/home/models/Qwen2.5-14B-Instruct
-export REROPE_WINDOW = 32768
-export TRAINING_LENGTH = 32768
+export REROPE_WINDOW=32768
+export TRAINING_LENGTH=32768
 
 python examples/offline_inference_rerope.py
 ```
