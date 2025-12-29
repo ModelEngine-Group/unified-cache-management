@@ -23,6 +23,7 @@
  * */
 #include "cache_store.h"
 #include <shared_mutex>
+#include "buffer_manager.h"
 #include "load_queue.h"
 #include "logger/logger.h"
 #include "template/hashset.h"
@@ -32,7 +33,7 @@ namespace UC::CacheStore {
 
 class CacheStoreImpl {
 public:
-    StoreV1* backend{nullptr};
+    BufferManager bufferMgr;
     bool transEnable{false};
     TransManager transMgr;
 
@@ -44,10 +45,14 @@ public:
             UC_ERROR("Failed to check config params: {}.", s);
             return s;
         }
-        backend = static_cast<StoreV1*>((void*)config.storeBackend);
+        s = bufferMgr.Setup(config);
+        if (s.Failure()) [[unlikely]] {
+            UC_ERROR("Failed({}) to setup buffer manager.", s);
+            return s;
+        }
         transEnable = config.deviceId >= 0;
         if (transEnable) {
-            s = transMgr.Setup(config);
+            s = transMgr.Setup(config, bufferMgr.GetTransBuffer());
             if (s.Failure()) [[unlikely]] { return s; }
         }
         ShowConfig(config);
@@ -69,8 +74,8 @@ private:
             return Status::InvalidParam("invalid size({},{},{})", config.tensorSize,
                                         config.shardSize, config.blockSize);
         }
-        if (config.bufferSize < config.blockSize * 1024) {
-            return Status::InvalidParam("too small buffer size({})", config.bufferSize);
+        if (config.bufferNumber < 1024) {
+            return Status::InvalidParam("too small buffer number({})", config.bufferNumber);
         }
         if (config.waitingQueueDepth <= 1 || config.runningQueueDepth <= 1) {
             return Status::InvalidParam("invalid queue depth({},{})", config.waitingQueueDepth,
@@ -80,6 +85,7 @@ private:
     }
     void ShowConfig(const Config& config)
     {
+        auto backend = static_cast<StoreV1*>((void*)config.storeBackend);
         constexpr const char* ns = "CacheStore";
         std::string buildType = UCM_BUILD_TYPE;
         if (buildType.empty()) { buildType = "Release"; }
@@ -87,11 +93,10 @@ private:
         UC_INFO("Set {}::StoreBackend to {}.", ns, backend->Readme());
         UC_INFO("Set {}::UniqueId to {}.", ns, config.uniqueId);
         UC_INFO("Set {}::DeviceId to {}.", ns, config.deviceId);
-        if (config.deviceId == -1) { return; }
         UC_INFO("Set {}::TensorSize to {}.", ns, config.tensorSize);
         UC_INFO("Set {}::ShardSize to {}.", ns, config.shardSize);
         UC_INFO("Set {}::BlockSize to {}.", ns, config.blockSize);
-        UC_INFO("Set {}::BufferSize to {}.", ns, config.bufferSize);
+        UC_INFO("Set {}::BufferNumber to {}.", ns, config.bufferNumber);
         UC_INFO("Set {}::ShareBufferEnable to {}.", ns, config.shareBufferEnable);
         UC_INFO("Set {}::WaitingQueueDepth to {}.", ns, config.waitingQueueDepth);
         UC_INFO("Set {}::RunningQueueDepth to {}.", ns, config.runningQueueDepth);
@@ -116,7 +121,7 @@ std::string CacheStore::Readme() const { return "CacheStore"; }
 
 Expected<std::vector<uint8_t>> CacheStore::Lookup(const Detail::BlockId* blocks, size_t num)
 {
-    auto res = impl_->backend->Lookup(blocks, num);
+    auto res = impl_->bufferMgr.Lookup(blocks, num);
     if (!res) [[unlikely]] { UC_ERROR("Failed({}) to lookup blocks({}).", res.Error(), num); }
     return res;
 }

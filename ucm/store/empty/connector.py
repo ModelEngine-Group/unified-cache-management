@@ -29,37 +29,20 @@ from typing import Dict, List
 import numpy as np
 import torch
 
-from ucm.store.cache import ucmcachestore
+from ucm.store.empty import ucmemptystore
 from ucm.store.ucmstore_v1 import Task, UcmKVStoreBaseV1
 
 
 @dataclass
-class CacheTransTask(Task):
+class EmptyTransTask(Task):
     task_id: int
 
 
-class UcmCacheStore(UcmKVStoreBaseV1):
+class UcmEmptyStore(UcmKVStoreBaseV1):
     def __init__(self, config: Dict[str, object]) -> None:
         super().__init__(config)
-        key_mapping = {
-            "store_backend": "storeBackend",
-            "unique_id": "uniqueId",
-            "device_id": "deviceId",
-            "tensor_size": "tensorSize",
-            "shard_size": "shardSize",
-            "block_size": "blockSize",
-            "buffer_number": "bufferNumber",
-            "share_buffer_enable": "shareBufferEnable",
-            "waiting_queue_depth": "waitingQueueDepth",
-            "running_queue_depth": "runningQueueDepth",
-            "timeout_ms": "timeoutMs",
-        }
-        self.store = ucmcachestore.CacheStore()
-        param = ucmcachestore.CacheStore.Config()
-        for key, value in config.items():
-            attr = key_mapping.get(key)
-            if attr and hasattr(param, attr):
-                setattr(param, attr, value)
+        self.store = ucmemptystore.EmptyStore()
+        param = ucmemptystore.EmptyStore.Config()
         self.store.Setup(param)
 
     def cc_store(self) -> int:
@@ -93,7 +76,7 @@ class UcmCacheStore(UcmKVStoreBaseV1):
         indexes = array.array("Q", shard_index)
         addrs = self._tensor_normalize(dst_tensor)
         task_id = self.store.Load(ids, indexes, addrs)
-        return CacheTransTask(task_id)
+        return EmptyTransTask(task_id)
 
     def dump(
         self,
@@ -105,37 +88,31 @@ class UcmCacheStore(UcmKVStoreBaseV1):
         indexes = array.array("Q", shard_index)
         addrs = self._tensor_normalize(src_tensor)
         task_id = self.store.Dump(ids, indexes, addrs)
-        return CacheTransTask(task_id)
+        return EmptyTransTask(task_id)
 
     def load_data(
         self,
         block_ids: List[bytes],
         shard_index: List[int],
-        dst_addr: List[List[int]] | np.ndarray,
+        dst_addr: List[List[int]],
     ) -> Task:
         ids = np.frombuffer(b"".join(block_ids), dtype=np.uint8)
         indexes = array.array("Q", shard_index)
-        if isinstance(dst_addr, np.ndarray):
-            addrs = dst_addr
-        else:
-            addrs = np.array(dst_addr, dtype=np.uint64)
+        addrs = np.array(dst_addr, np.uint64)
         task_id = self.store.Load(ids, indexes, addrs)
-        return CacheTransTask(task_id)
+        return EmptyTransTask(task_id)
 
     def dump_data(
         self,
         block_ids: List[bytes],
         shard_index: List[int],
-        src_addr: List[List[int]] | np.ndarray,
+        src_addr: List[List[int]],
     ) -> Task:
         ids = np.frombuffer(b"".join(block_ids), dtype=np.uint8)
         indexes = array.array("Q", shard_index)
-        if isinstance(src_addr, np.ndarray):
-            addrs = src_addr
-        else:
-            addrs = np.array(src_addr, dtype=np.uint64)
+        addrs = np.array(src_addr, np.uint64)
         task_id = self.store.Dump(ids, indexes, addrs)
-        return CacheTransTask(task_id)
+        return EmptyTransTask(task_id)
 
     def wait(self, task: Task) -> None:
         return self.store.Wait(task.task_id)

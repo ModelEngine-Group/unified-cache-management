@@ -28,6 +28,7 @@ from typing import Callable, Dict, List
 import torch
 
 from ucm.store.cache.connector import UcmCacheStore
+from ucm.store.empty.connector import UcmEmptyStore
 from ucm.store.posix.connector import UcmPosixStore
 from ucm.store.ucmstore_v1 import Task, UcmKVStoreBaseV1
 
@@ -47,8 +48,20 @@ def _build_cache_posix_pipeline(
     store.append(cache_store)
 
 
+def _build_cache_empty_pipeline(
+    config: Dict[str, object], store: List[UcmKVStoreBaseV1]
+) -> None:
+    empty_config = copy.deepcopy(config)
+    empty_store = UcmEmptyStore(empty_config)
+    store.append(empty_store)
+    cache_config = copy.deepcopy(config) | {"store_backend": empty_store.cc_store()}
+    cache_store = UcmCacheStore(cache_config)
+    store.append(cache_store)
+
+
 PIPELINE_REGISTRY: Dict[str, PipelineBuilder] = {
     "Cache|Posix": _build_cache_posix_pipeline,
+    "Cache|Empty": _build_cache_empty_pipeline,
 }
 
 

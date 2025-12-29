@@ -54,11 +54,14 @@ TEST_F(UCCacheTransManagerTest, DumpThenLoad)
     config.shardSize = config.tensorSize;
     config.blockSize = config.shardSize;
     config.deviceId = 0;
-    config.bufferSize = config.blockSize * 2048;
+    config.bufferNumber = 2048;
     config.uniqueId = rd.RandomString(10);
     config.shareBufferEnable = true;
+    TransBuffer buffer;
+    auto s = buffer.Setup(config);
+    ASSERT_EQ(s, UC::Status::OK());
     TransManager transMgr;
-    auto s = transMgr.Setup(config);
+    s = transMgr.Setup(config, &buffer);
     ASSERT_EQ(s, UC::Status::OK());
     auto block = UC::Test::Detail::TypesHelper::MakeBlockId("a1b2c3d4e5f6789012345678901234ab");
     constexpr size_t nBlocks = 1;

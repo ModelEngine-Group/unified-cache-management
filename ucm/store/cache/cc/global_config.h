@@ -37,7 +37,7 @@ struct Config {
     size_t tensorSize{0};
     size_t shardSize{0};
     size_t blockSize{0};
-    size_t bufferSize{size_t(1) << 36};
+    size_t bufferNumber{4096};
     bool shareBufferEnable{false};
     size_t waitingQueueDepth{1024};
     size_t runningQueueDepth{32768};
