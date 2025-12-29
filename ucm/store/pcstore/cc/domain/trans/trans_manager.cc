@@ -34,7 +34,7 @@ Status TransManager::Setup(const size_t rankSize, const int32_t deviceId, const 
 {
     auto s = Status::OK();
     if (rankSize > 1) {
-        s = this->shareQueue_.Setup(rankSize, deviceId, streamNumber, blockSize, ioSize, ioDirect,
+        s = this->shareQueue_.Setup(deviceId, streamNumber, blockSize, ioSize, ioDirect,
                                     bufferNumber, layout, &this->failureSet_, uniqueId);
         if (s.Failure()) { return s; }
     }
