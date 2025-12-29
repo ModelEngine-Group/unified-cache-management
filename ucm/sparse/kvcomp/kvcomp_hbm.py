@@ -197,14 +197,7 @@ class KvCompOnDevice(UcmSparseBase):
                 if not self.is_cuda:  # NPU only variables
                     self.decode_mask_npu = None
                     self.is_tensor_computed = False
-                    self.max_batch_size = self.kvcompOnDevice_cfg["max_batch_size"]
-                    if self.max_batch_size is None:
-                        self.max_batch_size = vllm_config.scheduler_config.max_num_seqs
-                    else:
-                        self.max_batch_size = min(
-                            self.max_batch_size,
-                            vllm_config.scheduler_config.max_num_seqs,
-                        )
+                    self.max_batch_size = vllm_config.scheduler_config.max_num_seqs
 
                     self.hamming_keep_chunks_head = 1
                     self.hamming_keep_chunks_tail = 4
