@@ -39,18 +39,17 @@ TransShareQueue::~TransShareQueue()
     }
 }
 
-Status TransShareQueue::Setup(const size_t nSharer, const int32_t deviceId,
-                              const size_t streamNumber, const size_t blockSize,
-                              const size_t ioSize, const bool ioDirect, const size_t bufferNumber,
-                              const SpaceLayout* layout, TaskSet* failureSet,
-                              const std::string& uniqueId)
+Status TransShareQueue::Setup(const int32_t deviceId, const size_t streamNumber,
+                              const size_t blockSize, const size_t ioSize, const bool ioDirect,
+                              const size_t bufferNumber, const SpaceLayout* layout,
+                              TaskSet* failureSet, const std::string& uniqueId)
 {
     this->deviceId_ = deviceId;
     this->streamNumber_ = streamNumber;
     this->ioSize_ = ioSize;
     this->layout_ = layout;
     this->failureSet_ = failureSet;
-    auto status = this->buffer_.Setup(blockSize, bufferNumber, ioDirect, nSharer, uniqueId);
+    auto status = this->buffer_.Setup(blockSize, bufferNumber, ioDirect, uniqueId);
     if (status.Failure()) { return status; }
     std::list<std::promise<Status>> start(streamNumber);
     std::list<std::future<Status>> fut;
@@ -67,9 +66,9 @@ Status TransShareQueue::Setup(const size_t nSharer, const int32_t deviceId,
 
 void TransShareQueue::Dispatch(TaskPtr task, WaiterPtr waiter)
 {
-    std::lock_guard<std::mutex> lg(this->mutex_);
+    std::list<BlockTask> blkTasks;
     task->ForEachGroup(
-        [task, waiter, this](const std::string& block, std::vector<uintptr_t>& shards) {
+        [task, waiter, this, &blkTasks](const std::string& block, std::vector<uintptr_t>& shards) {
             BlockTask blockTask;
             blockTask.reader =
                 this->buffer_.MakeReader(block, this->layout_->DataFilePath(block, false));
@@ -82,8 +81,10 @@ void TransShareQueue::Dispatch(TaskPtr task, WaiterPtr waiter)
                     waiter->Done([task, ioSize] { UC_DEBUG("{}", task->Epilog(ioSize)); });
                 }
             };
-            this->wait_.push_back(blockTask);
+            blkTasks.push_back(std::move(blockTask));
         });
+    std::lock_guard<std::mutex> lg(this->mutex_);
+    this->wait_.splice(this->wait_.end(), blkTasks);
     this->cv_.notify_all();
 }
 
