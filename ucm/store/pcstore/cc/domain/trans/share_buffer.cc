@@ -329,14 +329,18 @@ std::shared_ptr<ShareBuffer::Reader> ShareBuffer::MakeSharedReader(const std::st
                                                                    size_t position)
 {
     void* addr = this->BlockAt(position);
-    try {
-        return std::shared_ptr<Reader>(new Reader{block, path, blockSize_, ioDirect_, true, addr},
-                                       [this, position](Reader* reader) {
-                                           delete reader;
-                                           this->ReleaseBlock(position);
-                                       });
-    } catch (const std::exception& e) {
+    auto reader = new (std::nothrow) Reader(block, path, blockSize_, ioDirect_, true, addr);
+    if (!reader) [[unlikely]] {
         this->ReleaseBlock(position);
+        UC_ERROR("Failed to create reader.");
+        return nullptr;
+    }
+    try {
+        return std::shared_ptr<Reader>(reader, [this, position](Reader* reader) {
+            delete reader;
+            this->ReleaseBlock(position);
+        });
+    } catch (const std::exception& e) {
         UC_ERROR("Failed({}) to create reader.", e.what());
         return nullptr;
     }
