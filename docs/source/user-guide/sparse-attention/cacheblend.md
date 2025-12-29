@@ -28,11 +28,11 @@ CacheBlend reduces TTFT by 2.2 ~ 3.3× and increases throughput by 2.8 ~ 5× und
 ## 🧠 Ucm Implementation
 
 ### Native Block-Wise Chunk KV Cache Dump, Load, PostProcess and Recompute
-1. **🔐 Chunk Hash Encoding**: Similar as prefix hash encoder, hash all blocks in each chunk from the same hash meta beginning.
-2. **⚡ Combine Prefix Cache and Chunk Cache**: Since chunk cache and native prefix cache share the same hash space, ucm first performs prefix cache lookup to fetch fully reused cache and then conduct chunk cache lookup to fetch the candidate cache for blending.
-3. **🎯 Delta-Rope PostProcess**: Rectify loaded chunk cache according to their position in the new request.
-3. **🔍 Integrate Cache Blend and First Token Generation**: Construct compute mask and attention meta according to the HKVD tokens, cache miss tokens and suffix tokens, then compute their kv cache in a single model forward stage.
-4. **🚀 Comprehensive Hook for LLM Forward Pipeline**: Based on ucm sparse module, blend module sparse the prefill tokens not only in attention stage but also in ffn, layer stage.
+1. **🔐 Chunk Hash Encoding**: Similar as prefix hash, blend connector encode the blocks of each chunk from the same hash meta beginning.
+2. **⚡ Combine Prefix Cache and Chunk Cache**: Since chunk cache and native prefix cache share the same hash space, they can be stored and shared in a single store.When look up chunk cache, Blend connector first performs prefix cache lookup to the fully reused part and then conduct chunk cache lookup to fetch the candidate cache for blending.
+3. **🎯 Delta-Rope PostProcess**: Rectify the loaded chunk cache according to their position in the new request.
+3. **🔍 Integrate Cache Blend and First Token Generation**: Construct compute mask of the HKVD tokens, cache miss tokens and suffix tokens, then modify attention metadata to support the combination of chunk cache blending, missing cache recomputing and first token generation.
+4. **🚀 Comprehensive Hook for LLM Forward Pipeline**: Based on and extended from ucm sparse, blend sparse module reduces the input tokens for all the computation kernel, not just the attention kernel.
 
 ## 🚀 Quick Start
 
@@ -98,12 +98,3 @@ Llama-based models and Qwen-based models now are available
   year={2025}
 }
 ```
-
-
----
-
-<div align="center">
-
-**🌟 Star [UCM](https://github.com/ModelEngine-Group/unified-cache-management) repository if you find KvComp useful!**
-
-</div>
