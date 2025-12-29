@@ -328,7 +328,7 @@ class KvCompOnDevice(UcmSparseBase):
                         torch.bfloat16
                     )
                     valid_k_hash_token = attn_metadata.slot_mapping.flatten().numel()
-                reshape_and_cache_khash_triton(
+                    reshape_and_cache_khash_triton(
                         k_hash_compute[:valid_k_hash_token],
                         attn_metadata.slot_mapping.flatten(),
                         k_hash,
