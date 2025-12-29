@@ -224,7 +224,11 @@ class KvCompOnDevice(UcmSparseBase):
                         [self.max_batch_size], dtype=torch.int32, device=self.device
                     )
                     self.hamming_output = torch.zeros(
-                        [self.max_batch_size, self.num_key_heads, self.hash_topk_tokens // self.block_size],
+                        [
+                            self.max_batch_size,
+                            self.num_key_heads,
+                            self.hash_topk_tokens // self.block_size,
+                        ],
                         dtype=torch.int32,
                         device=self.device,
                     )
