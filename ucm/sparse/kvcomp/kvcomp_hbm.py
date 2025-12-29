@@ -224,7 +224,7 @@ class KvCompOnDevice(UcmSparseBase):
                         [self.max_batch_size], dtype=torch.int32, device=self.device
                     )
                     self.hamming_output = torch.zeros(
-                        [self.max_batch_size, self.hash_topk_tokens // self.block_size],
+                        [self.max_batch_size, self.num_key_heads, self.hash_topk_tokens // self.block_size],
                         dtype=torch.int32,
                         device=self.device,
                     )
@@ -495,9 +495,9 @@ class KvCompOnDevice(UcmSparseBase):
                                 block_table_decode,
                                 self.hamming_output[: len(decode_req_ids)],
                             )
-                            topk = self.hamming_output.shape[1]
+                            topk = self.hamming_output.shape[-1]
                             attn_metadata.block_table[decode_req_ids, :topk] = (
-                                self.hamming_output[: len(decode_req_ids)]
+                                self.hamming_output[: len(decode_req_ids), 0, :]
                             )
                             attn_metadata.block_table[decode_req_ids, topk:] = 0
 
