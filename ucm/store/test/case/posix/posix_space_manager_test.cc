@@ -75,9 +75,9 @@ TEST_F(UCPosixSpaceManagerTest, DataFilePath)
     ASSERT_EQ(PosixFile{activated}.Access(PosixFile::AccessMode::EXIST), UC::Status::NotFound());
     ASSERT_EQ(PosixFile{activated}.Open(PosixFile::OpenFlag::CREATE), UC::Status::OK());
     ASSERT_EQ(PosixFile{activated}.Access(PosixFile::AccessMode::EXIST), UC::Status::OK());
-    ASSERT_EQ(spaceMgr.Lookup(&blockId, 1), std::vector<uint8_t>{false});
+    ASSERT_EQ(spaceMgr.Lookup(&blockId, 1).Value(), std::vector<uint8_t>{false});
     ASSERT_EQ(spaceMgr.GetLayout()->CommitFile(blockId, true), UC::Status::OK());
-    ASSERT_EQ(spaceMgr.Lookup(&blockId, 1), std::vector<uint8_t>{true});
+    ASSERT_EQ(spaceMgr.Lookup(&blockId, 1).Value(), std::vector<uint8_t>{true});
     ASSERT_EQ(PosixFile{activated}.Access(PosixFile::AccessMode::EXIST), UC::Status::NotFound());
     auto archived = spaceMgr.GetLayout()->DataFilePath(blockId, false);
     ASSERT_EQ(archived, fmt::format("{}data/{:02x}", this->Path(), fmt::join(blockId, "")));
