@@ -28,7 +28,7 @@
 namespace UC::PosixStore {
 
 static constexpr auto NewFilePerm = (S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH);
-static constexpr auto NewDirPerm = (S_IRWXU | S_IRGRP | S_IROTH);
+static constexpr auto NewDirPerm = (S_IRWXU | S_IRWXG | S_IROTH);
 
 PosixFile::~PosixFile()
 {
@@ -37,12 +37,14 @@ PosixFile::~PosixFile()
 
 Status PosixFile::MkDir()
 {
-    auto ret = mkdir(path_.c_str(), NewDirPerm);
+    const auto dir = path_.c_str();
+    auto ret = mkdir(dir, NewDirPerm);
     auto eno = errno;
     if (ret != 0) [[unlikely]] {
         if (eno == EEXIST) { return Status::DuplicateKey(); }
         return Status::OsApiError(std::to_string(eno));
     }
+    chmod(dir, NewDirPerm);
     return Status::OK();
 }
 
