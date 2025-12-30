@@ -365,6 +365,7 @@ class KvCompOnDevice(UcmSparseBase):
                             self.is_tensor_computed = True
 
                     k_hash_compute = self.hash_encoder.compute_hash(key)
+                    assert k_hash_compute.shape[0] == attn_metadata.slot_mapping.numel(), f"shape mismatch: k_hash_compute.shape[0]={k_hash_compute.shape[0]} != attn_metadata.slot_mapping.numel()={attn_metadata.slot_mapping.numel()}"
                     k_hash_compute = (
                         k_hash_compute.transpose(0, 1)
                         .reshape(-1, k_hash_compute.shape[-1])
