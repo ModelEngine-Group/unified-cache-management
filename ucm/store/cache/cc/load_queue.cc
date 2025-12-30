@@ -65,12 +65,12 @@ void LoadQueue::DispatchOneTask(TaskPair&& pair)
 {
     auto& task = pair.first;
     auto& waiter = pair.second;
-    auto wait = NowTime::Now() - waiter->startTp;
-    UC_DEBUG("Cache task({}) start running, wait {:.3f}ms.", task->id, wait * 1e3);
     if (failureSet_->Contains(task->id)) {
         waiter->Done();
         return;
     }
+    auto tp = waiter->startTp;
+    auto tpWait = NowTime::Now();
     Detail::TaskDesc backendTaskDesc;
     backendTaskDesc.brief = "Backend2Cache";
     const auto nShard = task->desc.size();
@@ -91,6 +91,7 @@ void LoadQueue::DispatchOneTask(TaskPair&& pair)
         shardTask.shard = std::move(shard);
         shardTask.waiter = (i + 1 < nShard) ? nullptr : waiter;
     }
+    auto tpMakeBuffer = NowTime::Now();
     if (!backendTaskDesc.empty()) {
         auto res = backend_->Load(std::move(backendTaskDesc));
         if (!res) [[unlikely]] {
@@ -102,6 +103,9 @@ void LoadQueue::DispatchOneTask(TaskPair&& pair)
         for (const auto& i : backendTaskIndex) { shardTasks[i].backendTaskHandle = res.Value(); }
     }
     for (size_t i = 0; i < nShard; i++) { running_.Push(std::move(shardTasks[i])); }
+    auto tpBackend = NowTime::Now();
+    UC_DEBUG("Cache task({}) wait={:.3f}ms, mk_buf={:.3f}ms, back={:.3f}ms.", task->id,
+             (tpWait - tp) * 1e3, (tpMakeBuffer - tpWait) * 1e3, (tpBackend - tpMakeBuffer) * 1e3);
 }
 
 void LoadQueue::TransferStage(int32_t deviceId, size_t tensorSize, std::promise<Status>& started)
