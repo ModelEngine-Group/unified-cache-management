@@ -50,6 +50,7 @@ class UcmPosixStore(UcmKVStoreBaseV1):
             "io_direct": "ioDirect",
             "stream_number": "streamNumber",
             "timeout_ms": "timeoutMs",
+            "shard_data_dir": "shardDataDir",
         }
         self.store = ucmposixstore.PosixStore()
         param = ucmposixstore.PosixStore.Config()
@@ -154,7 +155,7 @@ if __name__ == "__main__":
     block_num = 1024
     block_ids = [secrets.token_bytes(16) for _ in range(block_num)]
     founds = store.lookup(block_ids)
-    assert not all(founds)
+    assert not any(founds)
     shard_idxes = [0 for _ in range(block_num)]
     data1 = [[cupy.cuda.alloc_pinned_memory(block_size).ptr] for _ in range(block_num)]
     handle = store.dump_data(block_ids, shard_idxes, data1)

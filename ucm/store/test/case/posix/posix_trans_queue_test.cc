@@ -29,18 +29,7 @@
 #include "posix/cc/trans_queue.h"
 #include "template/hashset.h"
 
-class UCPosixTransQueueTest : public UC::Test::Detail::PathBase {
-public:
-    void SetUp() override
-    {
-        UC::Test::Detail::PathBase::SetUp();
-        layout_ = std::make_unique<UC::PosixStore::SpaceLayout>();
-        ASSERT_TRUE(layout_->Setup({Path()}).Success());
-    }
-
-protected:
-    std::unique_ptr<UC::PosixStore::SpaceLayout> layout_{nullptr};
-};
+class UCPosixTransQueueTest : public UC::Test::Detail::PathBase {};
 
 TEST_F(UCPosixTransQueueTest, TransBlock)
 {
@@ -49,9 +38,12 @@ TEST_F(UCPosixTransQueueTest, TransBlock)
     config.tensorSize = 32768 * 64;
     config.shardSize = config.tensorSize;
     config.blockSize = config.shardSize;
+    config.storageBackends.push_back(Path());
     UC::HashSet<UC::Detail::TaskHandle> failureSet;
+    UC::PosixStore::SpaceLayout layout;
+    ASSERT_TRUE(layout.Setup(config).Success());
     TransQueue queue;
-    auto s = queue.Setup(config, &failureSet, layout_.get());
+    auto s = queue.Setup(config, &failureSet, &layout);
     ASSERT_EQ(s, UC::Status::OK());
     auto block = UC::Test::Detail::TypesHelper::MakeBlockId("a1b2c3d4e5f6789012345678901234ab");
     constexpr size_t nBlocks = 1;
@@ -84,9 +76,12 @@ TEST_F(UCPosixTransQueueTest, TransBlockLayerWise)
     config.tensorSize = 4096;
     config.shardSize = config.tensorSize;
     config.blockSize = config.shardSize * nShards;
+    config.storageBackends.push_back(Path());
     UC::HashSet<UC::Detail::TaskHandle> failureSet;
+    UC::PosixStore::SpaceLayout layout;
+    ASSERT_TRUE(layout.Setup(config).Success());
     TransQueue queue;
-    auto s = queue.Setup(config, &failureSet, layout_.get());
+    auto s = queue.Setup(config, &failureSet, &layout);
     ASSERT_EQ(s, UC::Status::OK());
     auto block = UC::Test::Detail::TypesHelper::MakeBlockId("a1b2c3d4e5f6789012345678901234ab");
     auto data1 = UC::Test::Detail::TypesHelper::MakeArray<UC::Test::Detail::DataGenerator, nShards>(

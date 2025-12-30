@@ -38,6 +38,7 @@ struct Config {
     bool ioDirect{false};
     size_t streamNumber{8};
     size_t timeoutMs{30000};
+    bool shardDataDir{true};
 };
 
 }  // namespace UC::PosixStore

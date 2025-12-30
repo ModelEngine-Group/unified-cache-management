@@ -29,7 +29,7 @@ namespace UC::PosixStore {
 
 Status SpaceManager::Setup(const Config& config)
 {
-    auto s = layout_.Setup(config.storageBackends);
+    auto s = layout_.Setup(config);
     if (s.Failure()) [[unlikely]] { return s; }
     auto success =
         lookupSrv_.SetWorkerFn([this](LookupContext& ctx, auto&) { OnLookup(ctx); })
