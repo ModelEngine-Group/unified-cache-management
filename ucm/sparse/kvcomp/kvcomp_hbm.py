@@ -45,6 +45,10 @@ def kvcomp_config_path_for_model(vllm_config) -> str:
         rel = "ucm/sparse/kvcomp/configs/kvcomp_deepseek_r1_awq_config.json"
     elif "qwen3" in model and "32b" in model:
         rel = "ucm/sparse/kvcomp/configs/kvcomp_qwen3_32B_config.json"
+    elif "qwen3" in model and "4b" in model:
+        rel = "ucm/sparse/kvcomp/configs/kvcomp_qwen3_4B_config.json"
+    elif "qwq" in model and "32b" in model:
+        rel = "ucm/sparse/kvcomp/configs/kvcomp_qwq_32B_config.json"
     elif "deepseek" in model and "v2" in model:
         rel = "ucm/sparse/kvcomp/configs/kvcomp_deepseek_v2_lite_config.json"
     else:
@@ -115,9 +119,9 @@ class KvCompOnDevice(UcmSparseBase):
             .get("KvCompOnDevice")
         )
 
-        kvcompOnDevice_config_path = self.kvcompOnDevice_cfg[
-            "kvcompOnDevice_config_path"
-        ]
+        # auto detect config file for KVCompOnDevice
+        kvcompOnDevice_config_path = kvcomp_config_path_for_model(vllm_config)
+        
         self.kvcompOnDevice_config = KvCompConfig.from_json(kvcompOnDevice_config_path)
         logger.info(f"read kvcomp config file : {kvcompOnDevice_config_path} ")
         self.hash_topk_tokens = self.kvcompOnDevice_config.vllm_hash_attention_topk
