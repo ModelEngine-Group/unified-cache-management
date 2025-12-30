@@ -1,5 +1,11 @@
 #!/bin/bash
 
+if [[ -z "$NODE" ]]; then
+    echo "ERROR: Please set NODE=N before running. N should be 0 for master node; 1,2,3... for workers. Note the IPs and environment variables in the script should be modified accordingly. "
+    echo "Usage: NODE=0 ./run_vllm.sh"
+    exit 1
+fi
+
 load_config() {
     local config_file
     config_file="$(dirname "${BASH_SOURCE[0]}")/config.properties"
@@ -29,7 +35,78 @@ load_config() {
     done < "$config_file"
 }
 
+ensure_ifconfig_installed() {
+    if command -v ifconfig >/dev/null 2>&1; then
+        return 0
+    fi
+
+    echo "ifconfig not found. Attempting to install net-tools..."
+
+    if command -v apt-get >/dev/null 2>&1; then
+        echo "Detected apt-get (Debian/Ubuntu). Installing net-tools..."
+        sudo apt-get update && sudo apt-get install -y net-tools
+    elif command -v yum >/dev/null 2>&1; then
+        echo "Detected yum (RHEL/CentOS). Installing net-tools..."
+        sudo yum install -y net-tools
+    elif command -v dnf >/dev/null 2>&1; then
+        echo "Detected dnf (Fedora). Installing net-tools..."
+        sudo dnf install -y net-tools
+    else
+        echo "ERROR: No supported package manager (apt/yum/dnf) found."
+        echo "Please install 'net-tools' manually or use a system with 'ip' command."
+        exit 1
+    fi
+
+    if ! command -v ifconfig >/dev/null 2>&1; then
+        echo "ERROR: Failed to install ifconfig. Please check permissions or network."
+        exit 1
+    fi
+
+    echo "✅ ifconfig is now available."
+}
+
+get_interface_by_ip() {
+    local target_ip="$1"
+    ifconfig | awk -v target="$target_ip" '
+        /^[[:alnum:]]/ {
+            iface = $1
+            sub(/:$/, "", iface)  
+        }
+        /inet / {
+            for (i = 1; i <= NF; i++) {
+                gsub(/addr:/, "", $i)
+                if ($i == target) {
+                    print iface
+                    exit
+                }
+            }
+        }
+    '
+}
+
 start_server() {
+    # Ascend environment variables
+    if [[ "$NODE" == "0" ]]; then
+        export TARGET_IP="$master_ip"
+    else
+        export TARGET_IP="$worker_ip"
+    fi
+
+    IFACE=$(get_interface_by_ip "$TARGET_IP")
+
+    if [[ -z "$IFACE" ]]; then
+        echo "WARNING: Could not find interface with IP $TARGET_IP via ifconfig. Falling back to 'eth0'."
+        IFACE="eth0"
+    else
+        echo "✅ Detected interface: $IFACE (bound to IP $TARGET_IP)"
+    fi
+
+    export HCCL_IF_IP="$TARGET_IP"
+    export HCCL_SOCKET_IFNAME="$IFACE"
+    export GLOO_SOCKET_IFNAME="$IFACE"
+    export TP_SOCKET_IFNAME="$IFACE"
+
+    # vLLM parameters 
     [[ -z "$model" ]] && { echo "ERROR: model not set in config.properties" >&2; exit 1; }
 
     if [[ "$ucm_enable" == "true" ]]; then
@@ -44,11 +121,18 @@ start_server() {
 
     echo ""
     echo "===== vllm server configuration ====="
+    echo "node                     = $NODE"
+    echo "master_ip                = $master_ip"
+    echo "local_ip                 = $TARGET_IP"
+    echo "network_interface        = $IFACE"
     echo "model                    = $model"
     echo "served_model_name        = ${served_model_name:-<default>}"
     echo "tp_size                  = $tp_size"
     echo "dp_size                  = $dp_size"
     echo "pp_size                  = $pp_size"
+    echo "dp_size_local            = $dp_size_local"
+    echo "dp_start_rank            = $((dp_size_local * NODE))"
+    echo "dp_address               = $master_ip"
     echo "enable_expert_parallel   = $enable_expert_parallel"
     echo "max_model_len            = $max_model_len"
     echo "max_num_batched_tokens   = $max_num_batch_tokens"
@@ -74,6 +158,11 @@ start_server() {
         --max-model-len "$max_model_len"
         --tensor-parallel-size "$tp_size"
         --data-parallel-size "$dp_size"
+        --data-parallel-size-local "$dp_size_local"
+        --data-parallel-start-rank "$((dp_size_local * NODE))"
+        --data-parallel-address "$master_ip"
+        --data-parallel-rpc-port "$dp_rpc_port"
+        --seed "$seed"
         --pipeline-parallel-size "$pp_size"
         --gpu-memory-utilization "$gpu_memory_utilization"
         --trust-remote-code
@@ -82,8 +171,8 @@ start_server() {
         --block-size "$block_size"
         --host "$server_host"
         --port "$server_port"
-        --distributed-executor-backend "$distributed_executor_backend"
     )
+    if [[ "$NODE" != "0" ]]; then CMD+=("--headless"); fi
 
     if [[ "$enable_expert_parallel" == "true" ]]; then CMD+=("--enable-expert-parallel"); fi
 
@@ -95,6 +184,19 @@ start_server() {
     
     [[ "$quantization" != "NONE" ]] && CMD+=("--quantization" "$quantization")
 
+    if [[ -n "$graph_mode" ]]; then 
+        COMPILATION_CONFIG='{"cudagraph_mode": "'"$graph_mode"'"}'
+        CMD+=("--compilation-config" "$COMPILATION_CONFIG")
+    fi
+
+    if [[ -n "$method" ]]; then
+        SPECULATIVE_CONFIG='{"num_speculative_tokens": 1, "method":"'"$method"'"}'
+        CMD+=("--compilation-config" "$SPECULATIVE_CONFIG")
+    fi
+
+    ADDITIONAL_CONFIG='{"ascend_scheduler_config":{"enabled":'"$enable_ascend_scheduler"'},"torchair_graph_config":{"enabled":'"$enable_torchair_graph"'}}'
+    CMD+=("--additional-config" "$ADDITIONAL_CONFIG")
+
     if [[ "$ucm_enable" == "true" ]]; then
         KV_CONFIG_JSON="{
             \"kv_connector\":\"UCMConnector\",
@@ -103,11 +205,6 @@ start_server() {
             \"kv_connector_extra_config\":{\"UCM_CONFIG_FILE\":\"$ucm_config_yaml_path\"}
         }"
         CMD+=("--kv-transfer-config" "$KV_CONFIG_JSON")
-    fi
-
-    if [[ -n "$graph_mode" ]]; then 
-        COMPILATION_CONFIG='{"cudagraph_mode":"'"$graph_mode"'"}'
-        CMD+=("--compilation-config" "$COMPILATION_CONFIG")
     fi
 
     echo "Executing command: ${CMD[*]}"
