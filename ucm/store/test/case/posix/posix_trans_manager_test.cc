@@ -27,18 +27,7 @@
 #include "posix/cc/trans_manager.h"
 #include "space_layout.h"
 
-class UCPosixTransManagerTest : public UC::Test::Detail::PathBase {
-public:
-    void SetUp() override
-    {
-        UC::Test::Detail::PathBase::SetUp();
-        layout_ = std::make_unique<UC::PosixStore::SpaceLayout>();
-        ASSERT_TRUE(layout_->Setup({Path()}).Success());
-    }
-
-protected:
-    std::unique_ptr<UC::PosixStore::SpaceLayout> layout_{nullptr};
-};
+class UCPosixTransManagerTest : public UC::Test::Detail::PathBase {};
 
 TEST_F(UCPosixTransManagerTest, TransBlock)
 {
@@ -47,8 +36,11 @@ TEST_F(UCPosixTransManagerTest, TransBlock)
     config.tensorSize = 32768;
     config.shardSize = config.tensorSize;
     config.blockSize = config.shardSize;
+    config.storageBackends.push_back(Path());
+    UC::PosixStore::SpaceLayout layout;
+    ASSERT_TRUE(layout.Setup(config).Success());
     TransManager transMgr;
-    auto s = transMgr.Setup(config, layout_.get());
+    auto s = transMgr.Setup(config, &layout);
     ASSERT_EQ(s, UC::Status::OK());
     auto block = UC::Test::Detail::TypesHelper::MakeBlockId("a1b2c3d4e5f6789012345678901234ab");
     constexpr size_t nBlocks = 1;
@@ -81,8 +73,11 @@ TEST_F(UCPosixTransManagerTest, TransBlockLayerWise)
     config.tensorSize = 32768;
     config.shardSize = config.tensorSize;
     config.blockSize = config.shardSize * nShards;
+    config.storageBackends.push_back(Path());
+    UC::PosixStore::SpaceLayout layout;
+    ASSERT_TRUE(layout.Setup(config).Success());
     TransManager transMgr;
-    auto s = transMgr.Setup(config, layout_.get());
+    auto s = transMgr.Setup(config, &layout);
     ASSERT_EQ(s, UC::Status::OK());
     auto block = UC::Test::Detail::TypesHelper::MakeBlockId("a1b2c3d4e5f6789012345678901234ab");
     auto data1 = UC::Test::Detail::TypesHelper::MakeArray<UC::Test::Detail::DataGenerator, nShards>(

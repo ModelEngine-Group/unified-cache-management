@@ -24,6 +24,7 @@
 #ifndef UNIFIEDCACHE_POSIX_STORE_CC_SPACE_LAYOUT_H
 #define UNIFIEDCACHE_POSIX_STORE_CC_SPACE_LAYOUT_H
 
+#include "global_config.h"
 #include "status/status.h"
 #include "type/types.h"
 
@@ -31,9 +32,10 @@ namespace UC::PosixStore {
 
 class SpaceLayout {
     std::vector<std::string> storageBackends_;
+    bool shardDataDir_;
 
 public:
-    Status Setup(const std::vector<std::string>& storageBackends);
+    Status Setup(const Config& config);
     std::string DataFilePath(const Detail::BlockId& blockId, bool activated) const;
     Status CommitFile(const Detail::BlockId& blockId, bool success) const;
 
