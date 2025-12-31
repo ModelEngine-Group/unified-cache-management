@@ -37,18 +37,17 @@ PosixFile::~PosixFile() { this->Close(); }
 
 Status PosixFile::MkDir()
 {
-    constexpr auto permission = (S_IRUSR | S_IWUSR | S_IXUSR | S_IRGRP | S_IROTH);
+    constexpr auto permission = (S_IRWXU | S_IRWXG | S_IROTH);
     auto ret = mkdir(this->Path().c_str(), permission);
     auto eno = errno;
     if (ret != 0) {
-        if (eno == EEXIST) {
-            return Status::DuplicateKey();
-        } else {
-            UC_ERROR("Failed to create directory, path: {}, errcode: {}, errno: {}.", this->Path(),
-                     ret, eno);
-            return Status::OsApiError();
-        }
+        if (eno == EEXIST) { return Status::DuplicateKey(); }
+        UC_ERROR("Failed({},{}) to create dir({}).", ret, eno, this->Path());
+        return Status::OsApiError();
     }
+    ret = chmod(this->Path().c_str(), permission);
+    eno = errno;
+    if (ret != 0) { UC_WARN("Failed({},{}) to set perm on dir({}).", ret, eno, this->Path()); }
     return Status::OK();
 }
 
