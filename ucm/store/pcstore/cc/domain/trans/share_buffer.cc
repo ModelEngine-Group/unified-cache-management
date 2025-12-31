@@ -314,13 +314,11 @@ std::shared_ptr<ShareBuffer::Reader> ShareBuffer::MakeLocalReader(const std::str
         UC_ERROR("Failed to make buffer({}) on host.", blockSize_);
         return nullptr;
     }
-    Reader* reader = nullptr;
     try {
-        reader = new Reader{block, path, blockSize_, ioDirect_, false, addr.get()};
-        return std::shared_ptr<Reader>(reader,
-                                       [addr = std::move(addr)](Reader* reader) { delete reader; });
+        return std::shared_ptr<Reader>(
+            new Reader{block, path, blockSize_, ioDirect_, false, addr.get()},
+            [addr = std::move(addr)](Reader* reader) { delete reader; });
     } catch (const std::exception& e) {
-        if (reader) { delete reader; }
         UC_ERROR("Failed({}) to create reader.", e.what());
         return nullptr;
     }
@@ -331,17 +329,19 @@ std::shared_ptr<ShareBuffer::Reader> ShareBuffer::MakeSharedReader(const std::st
                                                                    size_t position)
 {
     void* addr = this->BlockAt(position);
-    Reader* reader = nullptr;
+    auto reader = new (std::nothrow) Reader(block, path, blockSize_, ioDirect_, true, addr);
+    if (!reader) [[unlikely]] {
+        this->ReleaseBlock(position);
+        UC_ERROR("Failed to create reader.");
+        return nullptr;
+    }
     try {
-        reader = new Reader{block, path, blockSize_, ioDirect_, true, addr};
         return std::shared_ptr<Reader>(reader, [this, position](Reader* reader) {
             delete reader;
             this->ReleaseBlock(position);
         });
-    } catch (...) {
-        this->ReleaseBlock(position);
-        if (reader) { delete reader; }
-        UC_ERROR("Failed to create reader.");
+    } catch (const std::exception& e) {
+        UC_ERROR("Failed({}) to create reader.", e.what());
         return nullptr;
     }
 }
