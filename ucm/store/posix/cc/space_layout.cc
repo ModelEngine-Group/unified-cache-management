@@ -30,7 +30,7 @@
 namespace UC::PosixStore {
 
 static const std::string DATA_ROOT = "data";
-static const std::string TEMP_ROOT = "temp";
+static const std::string TEMP_ROOT = ".temp";
 
 inline std::string DataFileName(const Detail::BlockId& blockId)
 {
