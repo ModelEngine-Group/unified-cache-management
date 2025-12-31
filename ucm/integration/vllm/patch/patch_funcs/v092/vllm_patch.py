@@ -53,7 +53,7 @@ def _apply_sparse_adapt() -> None:
             _patch_qwen_model()
             logger.info("UCM sparse adapt patches applied successfully")
     except Exception as e:
-        logger.error(f"Could not apply sparse adapt patches: {e}")
+        logger.error("Could not apply sparse adapt patches: {}", e)
         raise e
 
 
@@ -651,9 +651,8 @@ def _patch_scheduler() -> None:
                     )
                     self.ucm_sparse = get_ucm_sparse()
                     logger.info(
-                        "UCM Sparse initialized successfully: {}".format(
+                        "UCM Sparse initialized successfully: {}",
                             self.ucm_sparse
-                        )
                     )
 
         def patched_schedule(self) -> SchedulerOutput:

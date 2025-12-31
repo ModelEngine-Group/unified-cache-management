@@ -43,7 +43,7 @@ class BenchmarkBase(ABC):
             if request.is_success:
                 success_request.append(request)
         if len(success_request) == 0:
-            logger.warning(f"No success request found, please check the result")
+            logger.warning("No success request found, please check the result")
         return success_request
 
     def result_to_column_dict(
@@ -77,7 +77,7 @@ class EvaluatorBenchmark(BenchmarkBase):
         record_list: List[RequestRecord | MultiTurnDialogRecord],
         parallel_num: int,
     ):
-        logger.info(f"Begin calculate metrics...")
+        logger.info("Begin calculate metrics...")
         success_request = self.get_success_request(record_list)
         eval_cls = make_object(self.eval_class)(success_request)
         latency = LatencyStatistics()
@@ -99,7 +99,7 @@ class PerformanceBenchmark(BenchmarkBase):
         record_list: List[RequestRecord | MultiTurnDialogRecord],
         parallel_num: int,
     ) -> LatencyStatistics:
-        logger.info(f"Begin calculate latency...")
+        logger.info("Begin calculate latency...")
         success_request = self.get_success_request(record_list)
         request_record_dict = self.result_to_column_dict(success_request)
         if self.stable_perf:
@@ -117,7 +117,7 @@ class PerformanceBenchmark(BenchmarkBase):
         After all requests are completed, get the performance data
         """
         if len(record_list) == 0:
-            logger.warning(f"there is no request_id in the record_list, please check")
+            logger.warning("there is no request_id in the record_list, please check")
         latency = LatencyStatistics()
         record_dict = self.result_to_column_dict(record_list)
 
@@ -272,5 +272,5 @@ class PerformanceBenchmark(BenchmarkBase):
         if len(stable_stage_requests) == 0:
             logger.error("cannot find stable stage, please check your settings")
             raise ValueError("cannot find stable stage, please check your settings")
-        logger.info(f"stable request id list: {stable_stage_requests=}")
+        logger.info("stable request id list: {}", stable_stage_requests)
         return stable_stage_requests

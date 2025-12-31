@@ -72,7 +72,7 @@ def get_vllm_version() -> Optional[str]:
         logger.warning("vLLM is not installed")
         return None
     except Exception as e:
-        logger.warning(f"Failed to detect vLLM version: {e}")
+        logger.warning("Failed to detect vLLM version: {}", e)
         return None
 
 
@@ -95,8 +95,10 @@ def apply_all_patches() -> None:
         supported_versions = get_supported_versions()
         if version not in supported_versions:
             logger.warning(
-                f"vLLM version {version} is not explicitly supported to apply UCM patches. "
-                f"Supported versions: {', '.join(supported_versions)}. "
+                "vLLM version {} is not explicitly supported to apply UCM patches. "
+                "Supported versions: {}",
+                version,
+                ", ".join(supported_versions)
             )
 
         # Apply version-specific patches
@@ -107,14 +109,16 @@ def apply_all_patches() -> None:
                 _apply_patches_v092()
             case _:
                 logger.warning(
-                    f"Unsupported vLLM version: {version} to apply UCM patches. "
-                    f"Supported versions: {', '.join(supported_versions)}."
+                    "Unsupported vLLM version: {} to apply UCM patches. "
+                    "Supported versions: {}",
+                    version,
+                    ", ".join(supported_versions)
                 )
 
         _patches_applied = True
-        logger.info(f"All vLLM patches applied successfully for version {version}")
+        logger.info("All vLLM patches applied successfully for version {}", version)
     except Exception as e:
-        logger.error(f"Failed to apply vLLM patches: {e}", exc_info=True)
+        logger.error("Failed to apply vLLM patches: {}", e)
         raise
 
 
@@ -166,7 +170,7 @@ def install_import_hook() -> None:
                     try:
                         apply_all_patches()
                     except Exception as e:
-                        logger.warning(f"Failed to apply patches during import: {e}")
+                        logger.warning("Failed to apply patches during import: {}", e)
 
                 return module
 
@@ -177,7 +181,7 @@ def install_import_hook() -> None:
             logger.debug("Import hook installed to intercept vLLM imports")
 
     except Exception as e:
-        logger.warning(f"Failed to install import hook: {e}")
+        logger.warning("Failed to install import hook: {}", e)
 
 
 def ensure_patches_applied() -> None:

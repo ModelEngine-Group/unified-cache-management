@@ -195,7 +195,7 @@ class PrometheusLogger:
             try:
                 metric_mapped = self.metric_mappings[stat_name]
                 if metric_mapped is None:
-                    logger.warning(f"Stat {stat_name} not initialized.")
+                    logger.warning("Stat {} not initialized.", stat_name)
                     continue
                 metric_obj = getattr(self, metric_mapped["attr"], None)
                 metric_type = metric_mapped["type"]
@@ -214,7 +214,7 @@ class PrometheusLogger:
                             value = []
                     self._log_histogram(metric_obj, value)
             except Exception as e:
-                logger.warning(f"Failed to log metric {stat_name}: {e}")
+                logger.warning("Failed to log metric {}: {}", stat_name, e)
 
     @staticmethod
     def _metadata_to_labels(metadata: UCMEngineMetadata):
@@ -282,15 +282,15 @@ class UCMStatsLogger:
                 config = yaml.safe_load(f)
                 if config is None:
                     logger.warning(
-                        f"Config file {config_path} is empty, using defaults"
+                        "Config file {} is empty, using defaults", config_path
                     )
                     return {}
                 return config
         except FileNotFoundError:
-            logger.warning(f"Config file {config_path} not found, using defaults")
+            logger.warning("Config file {} not found, using defaults", config_path)
             return {}
         except yaml.YAMLError as e:
-            logger.error(f"Error parsing YAML config file {config_path}: {e}")
+            logger.error("Error parsing YAML config file {}: {}", config_path, e)
             return {}
 
     def log_worker(self):

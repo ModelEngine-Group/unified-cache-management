@@ -39,7 +39,7 @@ def _excute_with_pool(
         raise ValueError(
             f"The number of requests: {len(tasks)} is less than parallel_num: {parallel_num}, please check..."
         )
-    logger.info(f"Start to send {len(tasks)} requests to server...")
+    logger.info("Start to send {} requests to server...", len(tasks))
     with ThreadPoolExecutor(max_workers=parallel_num) as executor:
         futures = [executor.submit(task_func, task) for task in tasks]
 
@@ -57,7 +57,7 @@ def _excute_with_pool(
                     )
                 except Exception as e:
                     pbar.update(1)
-                    logger.error(f"Requested failed: {str(e)}")
+                    logger.error("Requested failed: {}", str(e))
                     raise Exception(f"Requested failed: {str(e)}")
         return record_results
 
@@ -238,7 +238,7 @@ class BaseClient:
                     record.output_data = "TIMEOUT"
                     return record
                 if "[DONE]" in chunk_output:
-                    logger.debug(f"Finished chunk: {chunk_output=}")
+                    logger.debug("Finished chunk: {}", chunk_output)
                     continue
                 output = self._get_message_from_stream_response(
                     json.loads(chunk_output)
@@ -301,7 +301,7 @@ class BaseClient:
         record.is_success = True
         record.end_time = time.perf_counter()
         record.req_cost = record.end_time - record.start_time
-        logger.debug(f"{record.request_id} finished, cost: {record.req_cost:.2f}s")
+        logger.debug("{} finished, cost: {:.2f}s", record.request_id, record.req_cost)
         return record
 
     def _get_message_from_stream_response(self, response) -> str:
@@ -338,7 +338,7 @@ class BaseClient:
         Used to handle request errors
         """
         if isinstance(err, requests.exceptions.ConnectionError):
-            logger.error(f"Cannot connect to {self.url}, please check your network")
+            logger.error("Cannot connect to {}, please check your network", self.url)
             return ConnectionError(f"Cannot connect to {self.url}")
         elif isinstance(err, requests.exceptions.Timeout):
             logger.error("The request timed out, please check your server status")
@@ -349,13 +349,13 @@ class BaseClient:
             status_code = err.response.status_code
             if status_code == 404:
                 logger.error(
-                    f"The requested resource does not exist, or the served model name is incorrect"
+                    "The requested resource does not exist, or the served model name is incorrect"
                 )
             else:
-                logger.error(f"HTTP error, status code: {status_code}")
+                logger.error("HTTP error, status code: {}", status_code)
             return Exception(f"HTTP error, status code: {status_code}, err: {err}")
         else:
-            logger.error(f"Other error: {err}")
+            logger.error("Other error: {}", err)
             return Exception(f"Other error: {err}")
 
     @staticmethod
@@ -367,7 +367,7 @@ class BaseClient:
                 if isinstance(value, dict)
                 else value
             )
-            logger.error(f"{key} => {value}")
+            logger.error("{} => {}", key, value)
 
 
 class MultiDialogClient(BaseClient):

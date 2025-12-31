@@ -69,7 +69,9 @@ class SyntheticDataset(BaseDataset):
         text = self.tokenizer.decode(ids)
         completion_token_ids = self.tokenizer([text]).input_ids
         logger.debug(
-            f"len(completion_token_ids[0]) = {len(completion_token_ids[0])}, length = {length}"
+            "len(completion_token_ids[0]) = {}, length = {}",
+            len(completion_token_ids[0]),
+            length,
         )
 
         epoch = EPOCH_NUM
@@ -143,7 +145,10 @@ class MultiTurnDialogueDataset(BaseDataset):
                     self.tokenizer.tokenize(str(dialog["conversations"]))
                 )
                 logger.info(
-                    f"Current dialogue {dialogue_name}-{i} token count: {dialog_tokens}"
+                    "Current dialogue {}-{} token count: {}",
+                    dialogue_name,
+                    i,
+                    dialog_tokens,
                 )
                 cases.append([f"{dialogue_name}-{i}", dialog])
         return cases
@@ -154,13 +159,13 @@ class MultiTurnDialogueDataset(BaseDataset):
                 data = json.load(f)
             return data
         except FileNotFoundError:
-            logger.error(f"JSON file not found: {file_path}")
+            logger.error("JSON file not found: {}", file_path)
             raise FileNotFoundError(f"JSON file not found: {file_path}")
         except json.JSONDecodeError as e:
-            logger.error(f"JSON decode error in file {file_path}: {e}")
+            logger.error("JSON decode error in file {}: {}", file_path, e)
             raise ValueError(f"Invalid JSON format in file {file_path}: {e}")
         except Exception as e:
-            logger.error(f"Unexpected error while loading JSON file {file_path}: {e}")
+            logger.error("Unexpected error while loading JSON file {}: {}", file_path, e)
             raise ValueError(f"Failed to load JSON file {file_path}: {e}")
 
 
@@ -204,11 +209,11 @@ class DocQADataset(BaseDataset):
                     case_data.append(extracted_data)
             return case_data
         except FileNotFoundError:
-            logger.error(f"JSONL file not found: {file_path}")
+            logger.error("JSONL file not found: {}", file_path)
             raise FileNotFoundError(f"JSONL file not found: {file_path}")
         except json.JSONDecodeError as e:
-            logger.error(f"JSONL decode error in file {file_path}: {e}")
+            logger.error("JSONL decode error in file {}: {}", file_path, e)
             raise ValueError(f"Invalid JSONL format in file {file_path}: {e}")
         except Exception as e:
-            logger.error(f"Unexpected error while loading JSONL file {file_path}: {e}")
+            logger.error("Unexpected error while loading JSONL file {}: {}", file_path, e)
             raise ValueError(f"Failed to load JSONL file {file_path}: {e}")

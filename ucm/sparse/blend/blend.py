@@ -300,7 +300,8 @@ class Blend(UcmSparseBase):
 
             if need_update:
                 logger.info(
-                    f"[blend-attn] compute_mask time: {(time.perf_counter() - start_time) * 1000}ms"
+                    "[blend-attn] compute_mask time: {}ms",
+                    (time.perf_counter() - start_time) * 1000,
                 )
                 self.blend_req_metas.update_need_re_index(True)
                 self._update_attn_metadata()
@@ -312,11 +313,13 @@ class Blend(UcmSparseBase):
                 if output is not None:
                     indexed_output = output[: self.blend_req_metas.compute_mask.sum()]
                 logger.info(
-                    f"[blend-attn]  compute_mask time + index time: {(time.perf_counter() - start_time) * 1000}ms"
+                    "[blend-attn]  compute_mask time + index time: {}ms",
+                    (time.perf_counter() - start_time) * 1000,
                 )
                 logger.info(
-                    f"[blend-attn] reduce attn tokens from {len(self.blend_req_metas.compute_mask)} "
-                    f"to {self.attn_metadata.num_actual_tokens}"
+                    "[blend-attn] reduce attn tokens from {} to {}",
+                    len(self.blend_req_metas.compute_mask),
+                    self.attn_metadata.num_actual_tokens,
                 )
                 return indexed_query, indexed_key, indexed_value, indexed_output
         return query, key, value, output
@@ -329,8 +332,9 @@ class Blend(UcmSparseBase):
             self.blend_req_metas.compute_mask
         ) == len(residual):
             logger.info(
-                f"[blend-ffn] after cache blend, reduce ffn tokens from {len(self.blend_req_metas.compute_mask)} "
-                f"to {self.blend_req_metas.compute_mask.sum().item()}"
+                "[blend-ffn] after cache blend, reduce ffn tokens from {} to {}",
+                len(self.blend_req_metas.compute_mask),
+                self.blend_req_metas.compute_mask.sum().item(),
             )
             return hidden_states[
                 : self.attn_metadata.num_actual_tokens
@@ -345,8 +349,9 @@ class Blend(UcmSparseBase):
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         if len(positions) != len(hidden_states):
             logger.info(
-                f"[blend-layer] after cache blend, reduce layer tokens from {len(self.blend_req_metas.compute_mask)} "
-                f"to {self.blend_req_metas.compute_mask.sum().item()}"
+                "[blend-layer] after cache blend, reduce layer tokens from {} to {}",
+                len(self.blend_req_metas.compute_mask),
+                self.blend_req_metas.compute_mask.sum().item(),
             )
             return self._index_tensor(positions), hidden_states, residual
         return positions, hidden_states, residual
@@ -355,8 +360,9 @@ class Blend(UcmSparseBase):
         if self.blend_req_metas.need_re_index:
             modified_logits_indices = self.attn_metadata.query_start_loc[1:] - 1
             logger.info(
-                f"[blend-model] modify logits_indices from {logits_indices} "
-                f"to {modified_logits_indices}"
+                "[blend-model] modify logits_indices from {} to {}",
+                logits_indices,
+                modified_logits_indices,
             )
             return modified_logits_indices
         return logits_indices

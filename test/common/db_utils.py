@@ -68,7 +68,7 @@ def _get_db():
         backup_str = db_config.get("backup", "results/")
         _backup_path = Path(backup_str).resolve()
         _backup_path.mkdir(parents=True, exist_ok=True)
-        logger.info(f"Backup directory set to: {_backup_path}")
+        logger.info("Backup directory set to: {}", _backup_path)
 
         if not _db_enabled:
             return None
@@ -85,10 +85,10 @@ def _get_db():
                 port=db_config.get("port", 5432),
             )
             logger.info(
-                f"PostgreSQL database instance created for: {_db_instance.database}"
+                "PostgreSQL database instance created for: {}", _db_instance.database
             )
         except Exception as e:
-            logger.error(f"Failed to create PostgreSQL database instance: {e}")
+            logger.error("Failed to create PostgreSQL database instance: {}", e)
             _db_instance = None
 
     return _db_instance
@@ -104,7 +104,7 @@ def _get_db_config():
 def _set_test_build_id(build_id: Optional[str] = None) -> None:
     global _test_build_id
     _test_build_id = build_id or "default_build_id"
-    logger.debug(f"Test build ID set to: {_test_build_id}")
+    logger.debug("Test build ID set to: {}", _test_build_id)
 
 
 def _get_test_build_id() -> str:
@@ -125,9 +125,9 @@ def _backup_to_file(table_name: str, data: Dict[str, Any]) -> None:
         with file_path.open("a", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False)
             f.write("\n")
-        logger.info(f"Data backed up to {file_path}")
+        logger.info("Data backed up to {}", file_path)
     except Exception as e:
-        logger.error(f"Failed to write backup file {file_path}: {e}")
+        logger.error("Failed to write backup file {}: {}", file_path, e)
 
 
 def write_to_db(table_name: str, data: Dict[str, Any]) -> bool:
@@ -182,7 +182,8 @@ def write_to_db(table_name: str, data: Dict[str, Any]) -> bool:
         if not table_exists:
             db.create_tables([DynamicModel], safe=True)
             logger.info(
-                f"Table '{table_name}' created with id, created_at, test_build_id, and dynamic fields."
+                "Table '{}' created with id, created_at, test_build_id, and dynamic fields.",
+                table_name,
             )
 
         # Prepare data for insert (only include fields that exist in model)
@@ -193,19 +194,19 @@ def write_to_db(table_name: str, data: Dict[str, Any]) -> bool:
         with db.atomic():
             DynamicModel.insert(filtered_data).execute()
 
-        logger.info(f"Successfully inserted data into table '{table_name}'.")
+        logger.info("Successfully inserted data into table '{}'.", table_name)
         return True
 
     except Exception as e:
         logger.error(
-            f"Error during DB write for table '{table_name}': {e}", exc_info=True
+            "Error during DB write for table '{}': {}", table_name, e
         )
         _backup_to_file(table_name, data)
         return False
 
 
 def database_connection(build_id: str) -> None:
-    logger.info(f"Setting test build ID: {build_id}")
+    logger.info("Setting test build ID: {}", build_id)
     _set_test_build_id(build_id)
 
     db_config = _get_db_config()
@@ -218,12 +219,12 @@ def database_connection(build_id: str) -> None:
         logger.error("No database instance available.")
         return
 
-    logger.info(f"Attempting connection to database: {db.database}")
+    logger.info("Attempting connection to database: {}", db.database)
     try:
         db.connect(reuse_if_open=True)
         logger.info("PostgreSQL connection successful.")
     except Exception as e:
-        logger.error(f"PostgreSQL connection failed: {e}", exc_info=True)
+        logger.error("PostgreSQL connection failed: {}", e)
     finally:
         if not db.is_closed():
             db.close()
