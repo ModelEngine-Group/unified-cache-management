@@ -10,3 +10,4 @@ requests>=2.10.0
 pandas>=2.3.0
 pydantic>=2.12.0
 transformers>=4.0.0
+httpx>=0.25.0
