@@ -1,14 +1,14 @@
-From c92cb68fd1fa6215cd6d5b207b95c841ac20dbe1 Mon Sep 17 00:00:00 2001
-From: wenxinwang <wangwenxin21@huawei.com>
-Date: Tue, 23 Dec 2025 19:21:33 -0800
-Subject: [PATCH] sparse patch for vllm-ascend
+From 57681500369b33dc3ac9a2cc97ad10980bab56fc Mon Sep 17 00:00:00 2001
+From: qyh <qiuyuhao1@huawei.com>
+Date: Wed, 31 Dec 2025 17:15:08 +0800
+Subject: [PATCH] modify ascend patch for register_kv_cache
 
 ---
- vllm_ascend/attention/attention_v1.py | 80 ++++++++++++++++++++++
- vllm_ascend/attention/mla_v1.py       | 14 +++-
- vllm_ascend/worker/model_runner_v1.py | 98 ++++++++++++++++++++++++---
- vllm_ascend/worker/worker_v1.py       | 25 +++++--
- 4 files changed, 201 insertions(+), 16 deletions(-)
+ vllm_ascend/attention/attention_v1.py |  80 ++++++++++++++++++++
+ vllm_ascend/attention/mla_v1.py       |  14 +++-
+ vllm_ascend/worker/model_runner_v1.py | 101 +++++++++++++++++++++++---
+ vllm_ascend/worker/worker_v1.py       |  25 ++++++-
+ 4 files changed, 204 insertions(+), 16 deletions(-)
 
 diff --git a/vllm_ascend/attention/attention_v1.py b/vllm_ascend/attention/attention_v1.py
 index 7d7f488f..ea982244 100644
@@ -185,7 +185,7 @@ index f50fe56e..ae8f50bf 100644
  
          return output_padded
 diff --git a/vllm_ascend/worker/model_runner_v1.py b/vllm_ascend/worker/model_runner_v1.py
-index eabcdbcc..782b9a3b 100644
+index eabcdbcc..2762fbc7 100644
 --- a/vllm_ascend/worker/model_runner_v1.py
 +++ b/vllm_ascend/worker/model_runner_v1.py
 @@ -39,7 +39,10 @@ from vllm.config import CompilationLevel, VllmConfig
@@ -335,7 +335,17 @@ index eabcdbcc..782b9a3b 100644
  
          use_spec_decode = len(
              scheduler_output.scheduled_spec_decode_tokens) > 0
-@@ -2369,3 +2402,48 @@ class NPUModelRunner(LoRAModelRunnerMixin):
+@@ -1965,6 +1998,9 @@ class NPUModelRunner(LoRAModelRunnerMixin):
+             self.vllm_config.compilation_config.static_forward_context,
+             self.kv_caches)
+ 
++        if has_kv_transfer_group():
++            get_kv_transfer_group().register_kv_caches(kv_caches)
++
+     def get_kv_cache_spec(self) -> dict[str, KVCacheSpec]:
+         """
+         Generates the KVCacheSpec by parsing the kv cache format from each
+@@ -2369,3 +2405,48 @@ class NPUModelRunner(LoRAModelRunnerMixin):
              if batch_size <= padded_batch_size < selected_batch_size:
                  selected_batch_size = padded_batch_size
          return selected_batch_size
@@ -458,5 +468,5 @@ index df03d508..5d5d9b5a 100644
      def _init_profiler(self):
          # Torch profiler. Enabled and configured through env vars:
 -- 
-2.34.1
+2.50.1.windows.1
 
