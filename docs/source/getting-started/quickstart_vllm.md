@@ -91,6 +91,8 @@ Download the pre-built `vllm/vllm-openai:v0.9.2` docker image and build unified-
     export PLATFORM=cuda
     pip install uc-manager
     ```
+    > **Note:** If installing via `pip install`, you need to manually add the `config.yaml` file, similar to `unified-cache-management/examples/ucm_config_example.yaml`, because PyPI packages do not include YAML files.
+
 
 ## Step 2: Configuration
 
