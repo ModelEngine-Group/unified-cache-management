@@ -3,11 +3,18 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
 
 import torch
+
+if hasattr(torch, "npu") and torch.npu.is_available():
+    import torch_npu
+    import ucm_custom_ops
+    from vllm_ascend.attention.attention_v1 import AscendAttentionState
+
 from vllm import _custom_ops as ops
 from vllm.attention.ops.flashmla import get_mla_metadata
 from vllm.config import VllmConfig
 from vllm.forward_context import ForwardContext
 from vllm.v1.attention.backends.mla.common import MLACommonMetadata
+from vllm.v1.core.sched.output import SchedulerOutput
 from vllm.v1.request import Request, RequestStatus
 
 from ucm.logger import init_logger
@@ -16,8 +23,12 @@ from ucm.sparse.base import (
     UcmSparseBase,
     UcmSparseRole,
 )
-from ucm.sparse.kvcomp.hamming_topk import cuda_hamming_topk, fake_hamming_topk
-from ucm.sparse.kvcomp.hash_encoder import HashEncoder, reshape_and_cache_khash_triton
+
+if hasattr(torch, "cuda") and torch.cuda.is_available():
+    from ucm.sparse.kvcomp.hamming_topk import cuda_hamming_topk, fake_hamming_topk
+    from ucm.sparse.kvcomp.hash_encoder import reshape_and_cache_khash_triton
+
+from ucm.sparse.kvcomp.hash_encoder import HashEncoder
 from ucm.sparse.kvcomp.kvcomp_config import KvCompConfig
 from ucm.utils import Config
 
@@ -34,6 +45,10 @@ def kvcomp_config_path_for_model(vllm_config) -> str:
         rel = "ucm/sparse/kvcomp/configs/kvcomp_deepseek_r1_awq_config.json"
     elif "qwen3" in model and "32b" in model:
         rel = "ucm/sparse/kvcomp/configs/kvcomp_qwen3_32B_config.json"
+    elif "qwen3" in model and "4b" in model:
+        rel = "ucm/sparse/kvcomp/configs/kvcomp_qwen3_4B_config.json"
+    elif "qwq" in model and "32b" in model:
+        rel = "ucm/sparse/kvcomp/configs/kvcomp_qwq_32B_config.json"
     elif "deepseek" in model and "v2" in model:
         rel = "ucm/sparse/kvcomp/configs/kvcomp_deepseek_v2_lite_config.json"
     else:
@@ -77,7 +92,18 @@ class KvCompOnDevice(UcmSparseBase):
         super().__init__(vllm_config, role)
         self.rank = vllm_config.parallel_config.rank
         self.is_mla = vllm_config.model_config.is_deepseek_mla
-        self.device = torch.device(f"cuda:{self.rank}")
+
+        if vllm_config.device_config.device_type == "cuda":
+            self.is_cuda = True
+            self.device = torch.device(f"cuda:{self.rank}")
+        elif vllm_config.device_config.device_type == "npu":
+            self.is_cuda = False
+            self.device = torch.device(f"npu:{self.rank}")
+        else:
+            raise ValueError(
+                f"Unsupported device type: {vllm_config.device_config.device_type}"
+            )
+
         self.num_q_heads = vllm_config.model_config.get_num_attention_heads(
             vllm_config.parallel_config
         )
@@ -86,7 +112,16 @@ class KvCompOnDevice(UcmSparseBase):
         )
         self.block_size = vllm_config.cache_config.block_size
 
+        self.kvcompOnDevice_cfg = (
+            Config(vllm_config.kv_transfer_config)
+            .get_config()
+            .get("ucm_sparse_config")
+            .get("KvCompOnDevice")
+        )
+
+        # auto detect config file for KVCompOnDevice
         kvcompOnDevice_config_path = kvcomp_config_path_for_model(vllm_config)
+
         self.kvcompOnDevice_config = KvCompConfig.from_json(kvcompOnDevice_config_path)
         logger.info(f"read kvcomp config file : {kvcompOnDevice_config_path} ")
         self.hash_topk_tokens = self.kvcompOnDevice_config.vllm_hash_attention_topk
@@ -97,28 +132,31 @@ class KvCompOnDevice(UcmSparseBase):
             self.kvcompOnDevice_config.vllm_hash_attention_skip_layers
         )
 
-        if role == UcmSparseRole.WORKER:
-            device_properties = torch.cuda.get_device_properties(self.device)
-            num_sms = device_properties.multi_processor_count
+        self.seq_len_threshhold = self.kvcompOnDevice_config.seq_len_threshhold
 
-            if not vllm_config.model_config.enforce_eager:
-                self.cg_buf_topk_tile_scheduler_metadata = torch.zeros(
-                    (num_sms, 8),
-                    device=self.device,
-                    dtype=torch.int32,
-                )
-                self.cg_buf_topk_num_splits = torch.empty(
-                    (vllm_config.scheduler_config.max_num_seqs + 1),
-                    device=self.device,
-                    dtype=torch.int32,
-                )
+        if role == UcmSparseRole.WORKER:
+            if self.is_cuda:  # cuda only variables
+                device_properties = torch.cuda.get_device_properties(self.device)
+                num_sms = device_properties.multi_processor_count
+
+                if not vllm_config.model_config.enforce_eager:
+                    self.cg_buf_topk_tile_scheduler_metadata = torch.zeros(
+                        (num_sms, 8),
+                        device=self.device,
+                        dtype=torch.int32,
+                    )
+                    self.cg_buf_topk_num_splits = torch.empty(
+                        (vllm_config.scheduler_config.max_num_seqs + 1),
+                        device=self.device,
+                        dtype=torch.int32,
+                    )
 
             self.ori_seq_lens_decode = None
             self.ori_block_table_decode = None
-            self.origin_tile_scheduler_metadata = None
-            self.origin_num_splits = None
+            self.origin_tile_scheduler_metadata = None  # for MLA
+            self.origin_num_splits = None  # for MLA
 
-            # for qwen
+            # for GQA
             self.topk_block_table = None
             self.topk_seq_lens = None
             self.topk_seq_lens_qwen = None
@@ -159,6 +197,45 @@ class KvCompOnDevice(UcmSparseBase):
                     dtype=vllm_config.model_config.dtype,
                     device=self.device,
                 )
+
+                if not self.is_cuda:  # NPU only variables
+                    self.decode_mask_npu = None
+                    self.is_tensor_computed = False
+                    self.max_batch_size = vllm_config.scheduler_config.max_num_seqs
+
+                    self.hamming_keep_chunks_head = 1
+                    self.hamming_keep_chunks_tail = 4
+
+                    self.chunk_sizes_for_hamming_full = torch.full(
+                        [self.max_batch_size],
+                        fill_value=self.block_size,
+                        dtype=torch.int32,
+                        device=self.device,
+                    )
+                    self.topk_for_hamming_full = torch.full(
+                        [self.max_batch_size],
+                        fill_value=self.hash_topk_tokens // self.block_size,
+                        dtype=torch.int32,
+                        device=self.device,
+                    )
+                    self.topk_for_hamming_full_cpu = torch.full(
+                        [self.max_batch_size],
+                        fill_value=self.hash_topk_tokens // self.block_size,
+                        dtype=torch.int32,
+                        device="cpu",
+                    )
+                    self.seq_lens_for_hamming = torch.zeros(
+                        [self.max_batch_size], dtype=torch.int32, device=self.device
+                    )
+                    self.hamming_output = torch.zeros(
+                        [
+                            self.max_batch_size,
+                            self.num_key_heads,
+                            self.hash_topk_tokens // self.block_size,
+                        ],
+                        dtype=torch.int32,
+                        device=self.device,
+                    )
 
     def hash_code(
         self,
@@ -246,17 +323,63 @@ class KvCompOnDevice(UcmSparseBase):
                     kv_cache_dtype="auto",
                     scale=self._k_scale,
                 )
-            else:
-                k_hash_compute = self.hash_encoder.compute_hash(key).view(
-                    torch.bfloat16
-                )
-                valid_k_hash_token = attn_metadata.slot_mapping.flatten().numel()
-                reshape_and_cache_khash_triton(
-                    k_hash_compute[:valid_k_hash_token],
-                    attn_metadata.slot_mapping.flatten(),
-                    k_hash,
-                    block_size=self.block_size,
-                )
+            else:  # GQA
+                if self.is_cuda:
+                    k_hash_compute = self.hash_encoder.compute_hash(key).view(
+                        torch.bfloat16
+                    )
+                    valid_k_hash_token = attn_metadata.slot_mapping.flatten().numel()
+                    reshape_and_cache_khash_triton(
+                        k_hash_compute[:valid_k_hash_token],
+                        attn_metadata.slot_mapping.flatten(),
+                        k_hash,
+                        block_size=self.block_size,
+                    )
+                else:  # NPU
+                    if not self.is_tensor_computed:
+                        if self.decode_mask.any():  # with at least one decode request
+                            decode_req_ids = torch.nonzero(
+                                self.decode_mask, as_tuple=False
+                            ).flatten()
+                            decode_req_ids_npu = torch.nonzero(
+                                self.decode_mask_npu, as_tuple=False
+                            ).flatten()
+                            batch_size_for_hamming = self.decode_mask.sum().item()
+                            self.query_lens_device = attn_metadata.query_lens_device[
+                                decode_req_ids_npu
+                            ]
+                            self.topk_for_hamming = self.topk_for_hamming_full[
+                                :batch_size_for_hamming
+                            ]
+                            self.chunk_sizes_for_hamming = (
+                                self.chunk_sizes_for_hamming_full[
+                                    :batch_size_for_hamming
+                                ]
+                            )
+                            self.seq_lens_for_hamming = attn_metadata.seq_lens_device[
+                                decode_req_ids_npu
+                            ]
+                            self.max_seq_len_for_hamming = torch.max(
+                                attn_metadata.seq_lens[decode_req_ids]
+                            ).item()
+                            self.is_tensor_computed = True
+
+                    k_hash_compute = self.hash_encoder.compute_hash(key)
+                    assert (
+                        k_hash_compute.shape[0] == attn_metadata.slot_mapping.numel()
+                    ), f"shape mismatch: k_hash_compute.shape[0]={k_hash_compute.shape[0]} != attn_metadata.slot_mapping.numel()={attn_metadata.slot_mapping.numel()}"
+                    k_hash_compute = (
+                        k_hash_compute.transpose(0, 1)
+                        .reshape(-1, k_hash_compute.shape[-1])
+                        .contiguous()
+                    )
+                    ucm_custom_ops.reshape_and_cache_bnsd(
+                        k_hash_compute,
+                        k_hash,
+                        attn_metadata.slot_mapping,
+                        attn_metadata.query_lens_device,  # need to modify attention_v1.py in vllm-asecnd
+                        k_hash,
+                    )
         if self.is_mla:
             if phase == "decode":
                 if not is_rollback_layer:
@@ -302,7 +425,7 @@ class KvCompOnDevice(UcmSparseBase):
                         tile_scheduler_metadata
                     )
                     attn_metadata.decode.num_splits = num_splits
-        else:
+        else:  # GQA
             q_start = attn_metadata.query_start_loc
             if self.decode_mask.any():  # 有decode阶段的req
                 if not is_rollback_layer:
@@ -311,41 +434,89 @@ class KvCompOnDevice(UcmSparseBase):
                         attn_metadata.block_tables = self.topk_block_table
                         attn_metadata.seq_lens = self.topk_seq_lens
                     else:
-                        decode_req_ids = torch.nonzero(
-                            self.decode_mask, as_tuple=False
-                        ).flatten()
-                        decode_token_idx = q_start[:-1].index_select(0, decode_req_ids)
-                        q_decode = query.index_select(0, decode_token_idx)
-                        q_hash = self.hash_code(query=q_decode)
+                        if self.is_cuda:
 
-                        topk_token = self.hash_topk_tokens
+                            decode_req_ids = torch.nonzero(
+                                self.decode_mask, as_tuple=False
+                            ).flatten()
+                            decode_token_idx = q_start[:-1].index_select(
+                                0, decode_req_ids
+                            )
+                            q_decode = query.index_select(0, decode_token_idx)
+                            q_hash = self.hash_code(query=q_decode)
 
-                        block_table_decode = attn_metadata.block_table.index_select(
-                            0, decode_req_ids
-                        )
-                        seq_len_decode = self.ori_seq_lens_decode.index_select(
-                            0, decode_req_ids
-                        )
-                        block_table_decode = cuda_hamming_topk(
-                            q_hash.unsqueeze(1),
-                            k_hash,
-                            block_table_decode,
-                            seq_len_decode,
-                            topk_token=topk_token,
-                            sink_token=64,
-                            recent_token=512,
-                            is_mla=self.is_mla,
-                        )
-                        # update topk_block_table
-                        topk = block_table_decode.shape[1]
-                        attn_metadata.block_table[decode_req_ids, :topk] = (
-                            block_table_decode
-                        )
-                        attn_metadata.block_table[decode_req_ids, topk:] = 0
+                            topk_token = self.hash_topk_tokens
 
-                        attn_metadata.seq_lens[self.decode_mask] = (
-                            self.topk_seq_lens_qwen
-                        )
+                            block_table_decode = attn_metadata.block_table.index_select(
+                                0, decode_req_ids
+                            )
+                            seq_len_decode = self.ori_seq_lens_decode.index_select(
+                                0, decode_req_ids
+                            )
+                            block_table_decode = cuda_hamming_topk(
+                                q_hash.unsqueeze(1),
+                                k_hash,
+                                block_table_decode,
+                                seq_len_decode,
+                                topk_token=topk_token,
+                                sink_token=64,
+                                recent_token=512,
+                                is_mla=self.is_mla,
+                            )
+                            # update topk_block_table
+                            topk = block_table_decode.shape[1]
+                            attn_metadata.block_table[decode_req_ids, :topk] = (
+                                block_table_decode
+                            )
+                            attn_metadata.block_table[decode_req_ids, topk:] = 0
+
+                            attn_metadata.seq_lens[self.decode_mask] = (
+                                self.topk_seq_lens_qwen
+                            )
+                        else:  # NPU
+
+                            decode_req_ids = torch.nonzero(
+                                self.decode_mask_npu, as_tuple=False
+                            ).flatten()
+                            decode_token_idx = q_start[:-1].index_select(
+                                0, decode_req_ids
+                            )
+                            q_decode = query.index_select(0, decode_token_idx)
+
+                            q_hash = (
+                                self.hash_encoder.compute_hash(q_decode)
+                                .unsqueeze(2)
+                                .contiguous()
+                            )
+
+                            block_table_decode = attn_metadata.block_table.index_select(
+                                0, decode_req_ids
+                            )
+
+                            ucm_custom_ops.hamming_dist_top_k(
+                                q_hash,
+                                k_hash,
+                                self.topk_for_hamming,
+                                self.seq_lens_for_hamming,
+                                self.chunk_sizes_for_hamming,
+                                self.max_seq_len_for_hamming,
+                                self.hamming_keep_chunks_head,
+                                self.hamming_keep_chunks_tail,
+                                0,  # support_offload is disabled
+                                block_table_decode,
+                                self.hamming_output[: len(decode_req_ids)],
+                            )
+                            topk = self.hamming_output.shape[-1]
+                            attn_metadata.block_table[decode_req_ids, :topk] = (
+                                self.hamming_output[: len(decode_req_ids), 0, :]
+                            )
+                            attn_metadata.block_table[decode_req_ids, topk:] = 0
+
+                            # we have already computed the topk_seq_lens_qwen in `build_decode_attention_meta_npu()`
+                            attn_metadata.seq_lens[self.decode_mask] = (
+                                self.topk_seq_lens_qwen
+                            )
+
                         # topk for skip layer
                         self.topk_block_table = attn_metadata.block_table
                         self.topk_seq_lens = attn_metadata.seq_lens
@@ -389,6 +560,9 @@ class KvCompOnDevice(UcmSparseBase):
         """
         pass
 
+    def execute_begin(self, scheduler_output: SchedulerOutput):
+        self.is_tensor_computed = False
+
     def estimate_num_slots_sparsed(self, request: Request) -> int:
         return INVALID_SLOT
 
@@ -398,6 +572,36 @@ class KvCompOnDevice(UcmSparseBase):
             khash_cache_shape = list((kv_cache if self.is_mla else kv_cache[0]).shape)
             khash_cache_shape[-1] //= dtype.itemsize * 8
             khash_cache = torch.zeros(khash_cache_shape, dtype=dtype, device=device)
+            kv_caches[layer_name] = (kv_cache, khash_cache)
+
+    def initialize_kv_hash_cache_tensors_npu(self, kv_caches, device):
+        print(
+            f"[NPU KVComp Debug] initialize_kv_hash_cache_tensors_npu: allocating hashk cache for KVComp in NPU"
+        )
+        for layer_name, kv_cache in kv_caches.items():
+            is_rollback_layer, is_skip_hash_layer = self.get_layer_state(layer_name)
+            k_cache_shape = kv_cache[0].shape
+            print(
+                f"[NPU KVComp Debug] layer_name: {layer_name}, is_rollback_layer={is_rollback_layer}, is_skip_hash_layer={is_skip_hash_layer}, k_cache_shape: {k_cache_shape}"
+            )
+            khash_cache_shape = (
+                k_cache_shape[0],
+                k_cache_shape[2],
+                k_cache_shape[1],
+                self.hash_encoder.hash_bits // 8,
+            )
+            if not is_rollback_layer and not is_skip_hash_layer:
+                khash_cache = torch.empty(
+                    khash_cache_shape, dtype=torch.uint8, device=device
+                )
+                print(
+                    f"[NPU KVComp Debug] layer_name: {layer_name}, khash_cache_shape: {khash_cache_shape}"
+                )
+            else:
+                khash_cache = None
+                print(
+                    f"[NPU KVComp Debug] layer_name: {layer_name}, khash_cache is None"
+                )
             kv_caches[layer_name] = (kv_cache, khash_cache)
 
     def build_decode_hash(self, seq_lens):
@@ -432,6 +636,27 @@ class KvCompOnDevice(UcmSparseBase):
                 block_size=self.block_size,
             )
         return self.decode_mask, self.topk_seq_lens_qwen
+
+    def build_decode_attention_meta_npu(self, query_lens, seq_lens, block_table):
+
+        from ucm.sparse.kvcomp.hamming_topk import update_seq_lens
+
+        # self.decode_mask is on cpu in vllm-asencd under NPU device
+        self.decode_mask = (query_lens == 1) & (seq_lens >= self.seq_len_threshhold)
+        self.decode_mask = self.decode_mask.pin_memory()
+
+        self.ori_seq_lens_decode = seq_lens.clone()
+        self.ori_block_table_decode = block_table.clone()
+
+        self.decode_mask_npu = self.decode_mask.to(self.device, non_blocking=True)
+
+        if self.decode_mask.any():
+            decode_seq_lens = seq_lens[self.decode_mask]
+            self.topk_seq_lens_qwen = update_seq_lens(
+                decode_seq_lens,
+                topk_token=self.hash_topk_tokens,
+                block_size=self.block_size,
+            )
 
     def maybe_init_cudagraph_buffers_for_topk(self, n, tile_scheduler_metadata):
         sm_parts = tile_scheduler_metadata.size(0)
