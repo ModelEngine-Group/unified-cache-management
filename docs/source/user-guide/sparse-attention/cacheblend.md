@@ -1,4 +1,4 @@
-# CacheBlend: : Fast Large Language Model Serving for RAG with Cached Knowledge Fusion
+# CacheBlend: Fast Large Language Model Serving for RAG with Cached Knowledge Fusion
 <div align="center">
 
 ![blend_scheme.jpg](../../_static/images/blend_scheme.jpg)
@@ -104,6 +104,6 @@ Llama-based models and Qwen-based models now are available
 
 <div align="center">
 
-**🌟 Star [UCM](https://github.com/ModelEngine-Group/unified-cache-management) repository if you find KvComp useful!**
+**🌟 Star [UCM](https://github.com/ModelEngine-Group/unified-cache-management) repository if you find CacheBlend useful!**
 
 </div>
