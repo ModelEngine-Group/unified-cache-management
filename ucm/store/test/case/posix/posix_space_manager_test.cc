@@ -72,7 +72,7 @@ TEST_F(UCPosixSpaceManagerTest, DataFilePath)
     ASSERT_EQ(s, UC::Status::OK());
     auto blockId = UC::Test::Detail::TypesHelper::MakeBlockId("a1b2c3d4e5f6789012345678901234ab");
     auto activated = spaceMgr.GetLayout()->DataFilePath(blockId, true);
-    ASSERT_EQ(activated, fmt::format("{}temp/{:02x}", this->Path(), fmt::join(blockId, "")));
+    ASSERT_EQ(activated, fmt::format("{}.temp/{:02x}", this->Path(), fmt::join(blockId, "")));
     ASSERT_EQ(PosixFile{activated}.Access(PosixFile::AccessMode::EXIST), UC::Status::NotFound());
     ASSERT_EQ(PosixFile{activated}.Open(PosixFile::OpenFlag::CREATE), UC::Status::OK());
     ASSERT_EQ(PosixFile{activated}.Access(PosixFile::AccessMode::EXIST), UC::Status::OK());
@@ -96,7 +96,7 @@ TEST_F(UCPosixSpaceManagerTest, ShardFilePath)
     ASSERT_EQ(s, UC::Status::OK());
     auto blockId = UC::Test::Detail::TypesHelper::MakeBlockIdRandomly();
     auto activated = spaceMgr.GetLayout()->DataFilePath(blockId, true);
-    ASSERT_EQ(activated, fmt::format("{}temp/{:02x}", this->Path(), fmt::join(blockId, "")));
+    ASSERT_EQ(activated, fmt::format("{}.temp/{:02x}", this->Path(), fmt::join(blockId, "")));
     ASSERT_EQ(PosixFile{activated}.Access(PosixFile::AccessMode::EXIST), UC::Status::NotFound());
     ASSERT_EQ(PosixFile{activated}.Open(PosixFile::OpenFlag::CREATE), UC::Status::OK());
     ASSERT_EQ(PosixFile{activated}.Access(PosixFile::AccessMode::EXIST), UC::Status::OK());
