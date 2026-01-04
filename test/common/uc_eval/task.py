@@ -1,7 +1,10 @@
+import json
+import os
 import time
 from abc import ABC, abstractmethod
 from typing import Any, Dict, List, Union
 
+import pandas as pd
 from common.uc_eval.utils.config_loader import ConfigLoader, TaskFactory
 from common.uc_eval.utils.data_class import (
     BenchmarkModeType,
@@ -241,6 +244,7 @@ class SyntheticPerfTask(BaseTask):
         self.prompt_tokens = perf_config.prompt_tokens
         self.output_tokens = perf_config.output_tokens
         self.prefix_cache_num = perf_config.prefix_cache_num
+        self.enable_warmup = perf_config.enable_warmup
         self.prompt_seed = 0 if self.enable_prefix_cache else -1
         self.stable_perf = self.benchmark_mode == BenchmarkModeType.STABLE_PREF
         self.stable_rate = stable_rate
@@ -272,7 +276,11 @@ class SyntheticPerfTask(BaseTask):
                 logger.info(
                     f"Performance benchmark running with: enable prefix cache: ({self.enable_prefix_cache}), {syntheric_params=}"
                 )
-                if self.enable_prefix_cache and self.prefix_cache_num[idx] > 0:
+                if (
+                    self.enable_prefix_cache
+                    and self.prefix_cache_num[idx] > 0
+                    and self.enable_warmup
+                ):
                     logger.info(f"Begin build kvcache...")
                     input_data = self.dataset.prepare_data(syntheric_params)
                     self.client.handle_requests_with_pool(
@@ -359,10 +367,11 @@ class DocQaPerfTask(BaseTask):
         )
         self.dataset_file_path = perf_config.dataset_file_path
         self.max_tokens = model_config.payload.get("max_tokens")
+        self.enable_warmup = perf_config.enable_warmup
 
     def process(self):
         cases_list = self.dataset.prepare_data(self.dataset_file_path)
-        if self.enable_prefix_cache:
+        if self.enable_prefix_cache and self.enable_warmup:
             logger.info("Begin build kvcache...")
             self.client.handle_requests_with_pool(
                 cases_list, self.parallel_num, BAD_COMPLETION_TOKENS_THR
@@ -389,10 +398,39 @@ class DocQaEvalTask(BaseTask):
         self.dataset_file_path = eval_config.dataset_file_path
         self.max_tokens = model_config.payload.get("max_tokens")
         self.eval_cls = eval_config.eval_class
+        self.prompt_split_ratio = eval_config.prompt_split_ratio
+        self.enable_warmup = eval_config.enable_warmup
+        self.enable_clear_hbm = model_config.enable_clear_hbm
+        self.round = getattr(eval_config, "round", 0)
+
+    def _split_prompt_by_tokens(
+        self, prompt: str, tokenizer, split_ratio: float
+    ) -> str:
+        """Split prompt by token ratio and return the first part."""
+        tokens = tokenizer.encode(prompt)
+        split_idx = int(len(tokens) * split_ratio)
+        first_tokens = tokens[:split_idx]
+        return tokenizer.decode(first_tokens, skip_special_tokens=False)
 
     def process(self):
         cases_list = self.dataset.prepare_data(self.dataset_file_path)
-        if self.enable_prefix_cache:
+
+        if self.prompt_split_ratio is not None and 0 < self.prompt_split_ratio < 1:
+            logger.info(
+                f"Applying prompt split ratio: {self.prompt_split_ratio} (only sending first {self.prompt_split_ratio*100:.0f}% of prompt)"
+            )
+            tokenizer = self.client.tokenizer
+            modified_cases = []
+            for case in cases_list:
+                case_name, context, question, answer = case
+                full_prompt = context + question
+                split_prompt = self._split_prompt_by_tokens(
+                    full_prompt, tokenizer, self.prompt_split_ratio
+                )
+                modified_cases.append([case_name, split_prompt, "", answer])
+            cases_list = modified_cases
+
+        if self.enable_prefix_cache and self.enable_warmup:
             logger.info("Begin build kvcache...")
             self.client.handle_requests_with_pool(
                 cases_list, self.parallel_num, BAD_COMPLETION_TOKENS_THR
@@ -402,8 +440,56 @@ class DocQaEvalTask(BaseTask):
         records: List[RequestRecord] = self.client.handle_requests_with_pool(
             cases_list, self.parallel_num, self.max_tokens
         )
+
+        if self.prompt_split_ratio is not None and 0 < self.prompt_split_ratio < 1:
+            logger.info(
+                f"Skipping accuracy evaluation when prompt_split_ratio={self.prompt_split_ratio} (service ran but no accuracy check)"
+            )
+            from common.uc_eval.utils.data_class import LatencyStatistics
+
+            empty_latency = LatencyStatistics()
+            empty_latency.metric_dict = {}
+            return empty_latency, len(records)
+
         metric_result, match_record_list = self.benchmark.perf_show(
             records, self.parallel_num
         )
+
+        if self.enable_clear_hbm:
+            self.client.clear_hbm()
+
         self.save_eval_cases_excel(match_record_list, self.eval_cls)
+        self.compare_first_round_results(match_record_list, self.round)
         return metric_result, len(records)
+
+    def compare_first_round_results(
+        self, match_record_list: List[RequestRecord], round: int
+    ):
+        if round == 0:
+            return
+        cache_file = "first_round_outputs.json"
+        if round == 1:
+            first_round_data = {r.case_name: r.output_data for r in match_record_list}
+            with open(cache_file, "w", encoding="utf-8") as f:
+                json.dump(first_round_data, f, ensure_ascii=False, indent=2)
+            logger.info(f"First round outputs saved to {cache_file}")
+        elif round == 2:
+            if not os.path.exists(cache_file):
+                return
+            with open(cache_file, "r", encoding="utf-8") as f:
+                first_round_data = json.load(f)
+            for r in match_record_list:
+                if r.case_name in first_round_data:
+                    first_output = first_round_data[r.case_name]
+                    is_match = first_output == r.output_data
+                    logger.info(f"First Round Output: {first_output}")
+                    logger.info(f"Second Round Output: {r.output_data}")
+                    if not is_match:
+                        logger.error(
+                            f"Case {r.case_name}: The output results are inconsistent."
+                        )
+                    else:
+                        logger.info(
+                            f"Case {r.case_name}: The output results are consistent"
+                        )
+            os.remove(cache_file)
