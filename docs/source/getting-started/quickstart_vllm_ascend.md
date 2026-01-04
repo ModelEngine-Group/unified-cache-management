@@ -30,6 +30,7 @@ Install by pip or find the pre-build wheels on [Pypi](https://pypi.org/project/u
 export PLATFORM=ascend
 pip install uc-manager
 ```
+> **Note:** If installing via `pip install`, you need to manually add the `config.yaml` file, similar to `unified-cache-management/examples/ucm_config_example.yaml`, because PyPI packages do not include YAML files.
 
 ### Option 3: Setup from docker
 Download the pre-built `vllm-ascend` docker image and build unified-cache-management docker image by commands below:
@@ -39,6 +40,14 @@ Download the pre-built `vllm-ascend` docker image and build unified-cache-manage
  cd unified-cache-management
  docker build -t ucm-vllm:latest -f ./docker/Dockerfile-NPU ./
  ```
+vllm-ascend provides two variants: **Ubuntu** and **openEuler**.  
+The `Dockerfile-NPU` uses the **openEuler** variant by default.
+
+If you want to use the **Ubuntu** variant, please remove the `-openeuler` suffix and use the following image instead:
+
+```text
+quay.io/ascend/vllm-ascend:v0.9.2rc1
+```
 Then run your container using following command. You can add or remove Docker parameters as needed.
 ```bash
 # Update DEVICE according to your device (/dev/davinci[0-7])
