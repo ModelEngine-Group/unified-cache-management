@@ -30,6 +30,7 @@ Install by pip or find the pre-build wheels on [Pypi](https://pypi.org/project/u
 export PLATFORM=ascend
 pip install uc-manager
 ```
+> **Note:** If installing via `pip install`, you need to manually add the `config.yaml` file, similar to `unified-cache-management/examples/ucm_config_example.yaml`, because PyPI packages do not include YAML files.
 
 ### Option 3: Setup from docker
 Download the pre-built `vllm-ascend` docker image and build unified-cache-management docker image by commands below:

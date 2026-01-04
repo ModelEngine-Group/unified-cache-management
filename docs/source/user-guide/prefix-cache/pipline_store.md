@@ -227,12 +227,12 @@ This log indicates that the **Cache Store** has received a **load or dump task**
 | `subtask_number` | Number of subtasks executed in this operation                                  |
 | `size`       | Total size of data transferred in bytes (across all tasks)                  |
 
-```test
+```text
 [UC][D] Cache task({task_id},{operation},{subtask_number},{size}) finished, cost {time}ms. [PID,TID]
 ```
 This log indicates that a load or dump task in the **Cache Store** has completed, along with its execution time **in ms**.
 
-```test
+```text
 [UC][D] Posix task({task_id},{operation},{subtask_number},{size}) dispatching. [PID,TID]
 ```
 This log indicates that the **Posix Store** has received a **load or dump task**
@@ -243,7 +243,7 @@ This log indicates that the **Posix Store** has received a **load or dump task**
 | `subtask_number` | Number of subtasks executed in this operation                                  |
 | `size`       | Total size of data transferred in bytes (across all tasks)                  |
 
-```test
+```text
 [UC][D] Posix task({task_id},{operation},{subtask_number},{size}) finished, cost {time}ms. [PID,TID]
 ```
 This log indicates that a load or dump task in the **Posix Store** has completed, along with its execution time in **in ms**.
