@@ -36,7 +36,6 @@ _UCM_UNIFIED_ATTENTION_WITH_OUTPUT_REGISTERED = False
 def _apply_rerope_adapt_patches() -> None:
     try:
         _patch_attention_spec()
-        _patch_request_succeed_dumped_blocks()
         _patch_utils()
         _patch_gpu_model_runner()
         _patch_qwen2_model()
@@ -81,23 +80,6 @@ def _patch_attention_spec() -> None:
         logger.warning(
             "Could not patch AttentionSpec with _page_size_bytes_rerope - module not found"
         )
-
-
-# ==================== vllm/v1/request.py ====================
-def _patch_request_succeed_dumped_blocks() -> None:
-    """Patch Request to add succeed_dumped_blocks field."""
-    try:
-        from vllm.v1.request import Request
-
-        original_init = Request.__init__
-
-        def __init__(self, *args, **kwargs):
-            original_init(self, *args, **kwargs)
-            self.succeed_dumped_blocks = []
-
-        Request.__init__ = __init__
-    except ImportError:
-        logger.warning("Could not patch Request.__init__ - module not found")
 
 
 # ==================== vllm/v1/attention/backends/utils.py ====================

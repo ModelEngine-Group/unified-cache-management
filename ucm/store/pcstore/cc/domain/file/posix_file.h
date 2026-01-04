@@ -30,7 +30,7 @@ namespace UC {
 
 class PosixFile : public IFile {
 public:
-    PosixFile(const std::string& path) : IFile{path}, handle_{-1} {}
+    explicit PosixFile(const std::string& path) : IFile{path}, handle_{-1} {}
     ~PosixFile() override;
     Status MkDir() override;
     Status RmDir() override;

@@ -86,26 +86,40 @@ ucm_connectors:
   - ucm_connector_name: "UcmNfsStore"
     ucm_connector_config:
       storage_backends: "/mnt/test"
-      use_direct: false
+      io_direct: false
 
 load_only_first_rank: false
 ```
+### Required Parameters
 
-Explanation:
-
-* ucm_connector_name: "UcmNfsStore":
+* **ucm_connector_name**:  
   Specifies `UcmNfsStore` as the UCM connector.
 
-* storage_backends:
-  Specify the directory used for storing KV blocks. It can be a local directory or an NFS-mounted path. UCM will store KV blocks here.
-   **⚠️ Make sure to replace `"/mnt/test"` with your actual storage directory.**
+* **storage_backends**:  
+  Directory used for storing KV blocks. Can be a local path or an NFS-mounted path.  
+  **⚠️ Replace `"/mnt/test"` with your actual storage directory.**
 
-* use_direct:
-  Whether to enable direct I/O (optional). Default is `false`.
+### Optional Parameters
 
-* load_only_first_rank:
-  Controls whether only rank 0 loads KV cache and broadcasts it to other ranks.  
-  This feature is currently not supported on Ascend, so it must be set to `false` (all ranks load/dump independently).
+* **io_direct** (optional, default: `false`):  
+  Whether to enable direct I/O.
+
+* **stream_number** *(optional, default: 8)*  
+  Number of concurrent streams used for data transfer.
+
+* **timeout_ms** *(optional, default: 30000)*  
+  Timeout in milliseconds for external interfaces.
+
+* **buffer_number** *(optional, default: 4096)*  
+  The number of intermediate buffers for data transfer.
+
+* **shard_data_dir** *(optional, default: true)*   
+  Whether files are spread across subdirectories or stored in a single directory.
+
+### Must-be-Set Parameters
+
+* **load_only_first_rank** (must be `false`):  
+  This feature is currently disabled.
 
 ## Launching Inference
 
@@ -185,7 +199,7 @@ Running the same benchmark again produces:
 
 ```
 ---------------Time to First Token----------------
-Mean TTFT (ms):                            1920.68
+Mean TTFT (ms):                            3183.97
 ```
 
 The vLLM server logs now contain similar entries:
@@ -194,16 +208,18 @@ The vLLM server logs now contain similar entries:
 INFO ucm_connector.py:228: request_id: xxx, total_blocks_num: 125, hit hbm: 0, hit external: 125
 ```
 
-This indicates that during the second request, UCM successfully retrieved all 125 cached KV blocks from the storage backend. Leveraging the fully cached prefix significantly reduces the initial latency observed by the model, yielding an approximate **8× improvement in TTFT** compared to the initial run.
+This indicates that during the second request, UCM successfully retrieved all 125 cached KV blocks from the storage backend. Leveraging the fully cached prefix significantly reduces the initial latency observed by the model, yielding an approximate **5× improvement in TTFT** compared to the initial run.
 
 ### Log Message Structure
+> If you want to view detailed transfer information, set the environment variable `UC_LOGGER_LEVEL` to `debug`.
 ```text
-[UCMNFSSTORE] [I] Task(<task_id>,<direction>,<task_count>,<size>) finished, elapsed <time>s
+[UC][D] Task(<task_id>,<direction>,<task_count>,<size>) finished, costs=<time>s, bw={speed}GB/s
 ```
 | Component    | Description                                                                 |
 |--------------|-----------------------------------------------------------------------------|
 | `task_id`    | Unique identifier for the task                                              |
-| `direction`  | `D2S`: Dump to Storage (Device → SSD)<br>`S2D`: Load from Storage (SSD → Device) |
+| `direction`  | `PC::D2S`: Dump to Storage (Device → SSD)<br>`PC::S2D`: Load from Storage (SSD → Device) |
 | `task_count` | Number of tasks executed in this operation                                  |
 | `size`       | Total size of data transferred in bytes (across all tasks)                  |
 | `time`       | Time taken for the complete operation in seconds                            |
+| `speed`      | Task transfer speed between Device and Storage                              |

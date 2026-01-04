@@ -52,7 +52,7 @@ public:
     using FileStat = struct stat64;
 
 public:
-    IFile(const std::string& path) : path_{path} {}
+    explicit IFile(const std::string& path) : path_{path} {}
     virtual ~IFile() = default;
     const std::string& Path() const { return this->path_; }
     virtual Status MkDir() = 0;

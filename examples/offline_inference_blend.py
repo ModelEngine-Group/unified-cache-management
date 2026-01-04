@@ -186,7 +186,7 @@ def main():
         # choose one data row in LongBenchV1 (wikimqa)
         assert os.path.isfile(
             path_to_dataset
-        ), f"Incorrect dataset path. Please specify the dataset path by `export DATASET_PATH=/path/to/longbench/multifieldqa_zh.jsonl`"
+        ), f"Incorrect dataset path. Please specify the dataset path by `export DATASET_PATH=/home/data/Longbench/data/2wikimqa.jsonl`"
         with open(path_to_dataset, "r") as f:
             lines = f.readlines()
         dataset_row = json.loads(lines[0])

@@ -39,8 +39,8 @@ namespace UC {
 class TransTask {
     static size_t NextId() noexcept
     {
-        static std::atomic<size_t> id{invalid + 1};
-        return id.fetch_add(1, std::memory_order_relaxed);
+        static std::atomic<size_t> idSeed{invalid + 1};
+        return idSeed.fetch_add(1, std::memory_order_relaxed);
     };
     static double NowTp() noexcept
     {

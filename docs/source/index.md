@@ -57,6 +57,7 @@ user-guide/prefix-cache/index
 user-guide/sparse-attention/index
 user-guide/pd-disaggregation/index
 user-guide/metrics/metrics
+user-guide/rerope/rerope
 :::
 
 :::{toctree}
