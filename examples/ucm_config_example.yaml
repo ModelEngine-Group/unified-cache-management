@@ -31,8 +31,7 @@ load_only_first_rank: false
   # Or for GSA:
   # GSA: {}
   # Or for KvCompOnDevice:
-  # GSA:
-  #   "kvcompOnDevice_config_path": "workspace/unified-cache-management/ucm/sparse/kvcomp/configs/kvcomp_qwen3_32B_config.json"
+  # KvCompOnDevice: {}
 
 
 # Whether to use layerwise loading/saving (optional, default: True for UCMConnector)
