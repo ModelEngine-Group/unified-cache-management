@@ -304,6 +304,7 @@ public:
     {
         if (data_) { Trans::Buffer::UnregisterHostBuffer(data_); }
         if (addrress_) { PosixShm::MUnmap(addrress_, totalSize_); }
+        PosixShm{shmName_}.ShmUnlink();
     }
     Status Setup(const std::string& uuid, int32_t deviceId, size_t nodeSize, size_t nNode) override
     {
