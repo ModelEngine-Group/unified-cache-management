@@ -6,6 +6,10 @@ set(CMAKE_CUDA_COMPILER ${CUDA_ROOT}/bin/nvcc)
 set(CMAKE_CUDA_ARCHITECTURES 75 80 86 89 90)
 enable_language(CUDA)
 
+# ---- CUDA Toolkit ----
+find_package(CUDAToolkit REQUIRED)
+message(STATUS "Found CUDAToolkit: ${CUDAToolkit_INCLUDE_DIRS}")
+
 # ---- Python ----
 find_package(Python COMPONENTS Interpreter Development.Module REQUIRED)
 
@@ -52,6 +56,7 @@ set(INCLUDE_DIRS
     ${PYTORCH_PATH}/include
     ${PYTORCH_PATH}/include/torch/csrc/api/include
     ${CMAKE_CURRENT_SOURCE_DIR}
+    ${CUDAToolkit_INCLUDE_DIRS}
 )
 
 set(LIBRARY_DIRS
@@ -66,6 +71,7 @@ set(LIBRARIES
     torch_cpu
     torch_python
     pthread
+    CUDA::cudart
 )
 
 # ---- Build: hamming python module (.so) ----

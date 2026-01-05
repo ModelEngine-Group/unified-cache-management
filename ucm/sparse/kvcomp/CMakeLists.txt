@@ -48,7 +48,7 @@ else()
 endif()
 
 string(TOLOWER "$ENV{PLATFORM}" PLATFORM_ENV)
-if(PLATFORM_ENV STREQUAL "cuda")
+if(RUNTIME_ENVIRONMENT STREQUAL "cuda")
     message(STATUS "Building kvcomp for CUDA...")
     add_subdirectory(hash_retrieval)
     add_subdirectory(ham_dist)
