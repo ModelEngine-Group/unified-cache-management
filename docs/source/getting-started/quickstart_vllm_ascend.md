@@ -12,7 +12,7 @@ We offer 3 options to install UCM.
 
 ### Option 1: Build from source
 
-Follow commands below to install unified-cache-management from source code:
+1、Follow commands below to install unified-cache-management from source code:
 **Note:** The sparse module was not compiled by default. To enable it, set the environment variable `export ENABLE_SPARSE=TRUE` before you build.
 ```bash
 # Replace <branch_or_tag_name> with the branch or tag name needed
@@ -22,6 +22,31 @@ export PLATFORM=ascend
 pip install -v -e . --no-build-isolation
 cd ..
 ```
+
+2、Apply vLLM and vLLM-Ascend Integration Patches (Required)
+To enable Unified Cache Management (UCM) integration, you need to apply patches to both vLLM and vLLM-Ascend source trees.
+
+**Step 1:** Apply the vLLM Patch
+
+First, apply the standard vLLM integration patch in the vLLM source directory:
+    
+```bash
+cd <path_to_vllm>
+git apply unified-cache-management/ucm/integration/vllm/patch/0.9.2/vllm-adapt.patch
+```
+    
+**Step 2:** Apply the vLLM-Ascend Patch
+
+Then, switch to the vLLM-Ascend source directory and apply the Ascend-specific patch:
+
+```bash
+cd <path_to_vllm_ascend>
+git apply unified-cache-management/ucm/integration/vllm/patch/0.9.2/vllm-ascend-adapt.patch
+```
+
+**Note:**
+    The ReRoPE algorithm is not supported on Ascend at the moment.
+    Only the standard UCM integration is applicable for vLLM-Ascend.
 
 
 ### Option 2: Install by pip
