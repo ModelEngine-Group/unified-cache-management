@@ -416,9 +416,6 @@ def _patch_qwen2_model() -> None:
 
         from ucm.sparse.rerope.rerope_utils import default_config
 
-        REROPE_WINDOW = default_config.rerope_window
-        TRAINING_LENGTH = default_config.training_length
-
         def Qwen2Attention_forward(
             self,
             positions: torch.Tensor,
@@ -430,6 +427,8 @@ def _patch_qwen2_model() -> None:
             q, k, v = qkv.split([self.q_size, self.kv_size, self.kv_size], dim=-1)
 
             ###################### rerope patch ###############
+            REROPE_WINDOW = default_config.rerope_window
+            TRAINING_LENGTH = default_config.training_length
             if attn_metadata and next(iter(attn_metadata.values())).use_rerope:
                 q *= (
                     ((positions + 1)[:, None].log() / math.log(TRAINING_LENGTH))
@@ -448,9 +447,10 @@ def _patch_qwen2_model() -> None:
                 k0 = k.clone()
                 q, k = self.rotary_emb(positions, q, k)
                 q2 = q.clone()
+
+            attn_output = self.attn(q, k, v, query2=q2, key2=k0)
             ###################### rerope patch ###############
 
-            attn_output = self.attn(q, k, q2, k0, v)
             output, _ = self.o_proj(attn_output)
             return output
 
@@ -471,9 +471,6 @@ def _patch_qwen3_model() -> None:
         from vllm.model_executor.models.qwen3 import Qwen3Attention
 
         from ucm.sparse.rerope.rerope_utils import default_config
-
-        REROPE_WINDOW = default_config.rerope_window
-        TRAINING_LENGTH = default_config.training_length
 
         def Qwen3Attention_forward(
             self,
@@ -497,6 +494,8 @@ def _patch_qwen3_model() -> None:
             k = k_by_head.view(k.shape)
 
             ###################### rerope patch ###############
+            REROPE_WINDOW = default_config.rerope_window
+            TRAINING_LENGTH = default_config.training_length
             if attn_metadata and next(iter(attn_metadata.values())).use_rerope:
                 q *= (
                     ((positions + 1)[:, None].log() / math.log(TRAINING_LENGTH))
@@ -514,9 +513,10 @@ def _patch_qwen3_model() -> None:
                 k0 = k.clone()
                 q, k = self.rotary_emb(positions, q, k)
                 q2 = q.clone()
+
+            attn_output = self.attn(q, k, v, query2=q2, key2=k0)
             ###################### rerope patch ###############
 
-            attn_output = self.attn(q, k, q2, k0, v)
             output, _ = self.o_proj(attn_output)
             return output
 
@@ -537,9 +537,6 @@ def _patch_qwen3moe_model() -> None:
         from vllm.model_executor.models.qwen3_moe import Qwen3MoeAttention
 
         from ucm.sparse.rerope.rerope_utils import default_config
-
-        REROPE_WINDOW = default_config.rerope_window
-        TRAINING_LENGTH = default_config.training_length
 
         def Qwen3MoeAttention_forward(
             self,
@@ -563,6 +560,8 @@ def _patch_qwen3moe_model() -> None:
             k = k_by_head.view(k.shape)
 
             ###################### rerope patch ###############
+            REROPE_WINDOW = default_config.rerope_window
+            TRAINING_LENGTH = default_config.training_length
             if attn_metadata and next(iter(attn_metadata.values())).use_rerope:
                 q *= (
                     ((positions + 1)[:, None].log() / math.log(TRAINING_LENGTH))
@@ -580,9 +579,10 @@ def _patch_qwen3moe_model() -> None:
                 k0 = k.clone()
                 q, k = self.rotary_emb(positions, q, k)
                 q2 = q.clone()
+
+            attn_output = self.attn(q, k, v, query2=q2, key2=k0)
             ###################### rerope patch ###############
 
-            attn_output = self.attn(q, k, q2, k0, v)
             output, _ = self.o_proj(attn_output)
             return output
 
@@ -609,9 +609,9 @@ def _patch_attention_layer() -> None:
             self,
             query: torch.Tensor,
             key: torch.Tensor,
-            query2: Optional[torch.Tensor],
-            key2: Optional[torch.Tensor],
             value: torch.Tensor,
+            query2: Optional[torch.Tensor] = None,
+            key2: Optional[torch.Tensor] = None,
             # For some alternate attention backends like MLA the attention output
             # shape does not match the query shape, so we optionally let the model
             # definition specify the output tensor shape.
@@ -666,16 +666,22 @@ def _patch_attention_layer() -> None:
                         self,
                         query,
                         key,
-                        query2,
-                        key2,
                         value,
                         self_kv_cache,
                         attn_metadata,
+                        query2=query2,
+                        key2=key2,
                         output=output,
                     )
                 else:
                     torch.ops.vllm.unified_attention_with_output(
-                        query, key, query2, key2, value, output, self.layer_name
+                        query,
+                        key,
+                        value,
+                        output,
+                        self.layer_name,
+                        query2=query2,
+                        key2=key2,
                     )
                 return output.view(-1, hidden_size)
             else:
@@ -689,15 +695,15 @@ def _patch_attention_layer() -> None:
                         self,
                         query,
                         key,
-                        query2,
-                        key2,
                         value,
                         self_kv_cache,
                         attn_metadata,
+                        query2=query2,
+                        key2=key2,
                     )
                 else:
                     return torch.ops.vllm.unified_attention(
-                        query, key, query2, key2, value, self.layer_name
+                        query, key, value, self.layer_name, query2=query2, key2=key2
                     )
                     ###################### rerope patch ###############
 
@@ -721,10 +727,10 @@ def _patch_attention_layer() -> None:
         def unified_attention_impl(
             query: torch.Tensor,
             key: torch.Tensor,
-            query2: Optional[torch.Tensor],
-            key2: Optional[torch.Tensor],
             value: torch.Tensor,
             layer_name: str,
+            query2: Optional[torch.Tensor] = None,
+            key2: Optional[torch.Tensor] = None,
         ) -> torch.Tensor:
             wait_for_kv_layer_from_connector(layer_name)
 
@@ -736,7 +742,14 @@ def _patch_attention_layer() -> None:
             kv_cache = self.kv_cache[forward_context.virtual_engine]
 
             output = self.impl.forward(
-                self, query, key, query2, key2, value, kv_cache, attn_metadata
+                self,
+                query,
+                key,
+                value,
+                kv_cache,
+                attn_metadata,
+                query2=query2,
+                key2=key2,
             )
 
             maybe_save_kv_layer_to_connector(layer_name, kv_cache)
@@ -745,11 +758,11 @@ def _patch_attention_layer() -> None:
         def unified_attention_with_output_impl(
             query: torch.Tensor,
             key: torch.Tensor,
-            query2: Optional[torch.Tensor],
-            key2: Optional[torch.Tensor],
             value: torch.Tensor,
             output: torch.Tensor,
             layer_name: str,
+            query2: Optional[torch.Tensor] = None,
+            key2: Optional[torch.Tensor] = None,
             output_scale: Optional[torch.Tensor] = None,
         ) -> None:
             wait_for_kv_layer_from_connector(layer_name)
@@ -763,11 +776,11 @@ def _patch_attention_layer() -> None:
                 self,
                 query,
                 key,
-                query2,
-                key2,
                 value,
                 kv_cache,
                 attn_metadata,
+                query2=query2,
+                key2=key2,
                 output=output,
                 output_scale=output_scale,
             )
@@ -987,11 +1000,11 @@ def _patch_triton_attn() -> None:
             layer: torch.nn.Module,
             query: torch.Tensor,
             key: torch.Tensor,
-            query2: Optional[torch.Tensor],
-            key2: Optional[torch.Tensor],
             value: torch.Tensor,
             kv_cache: torch.Tensor,
             attn_metadata: TritonAttentionMetadata,
+            query2: Optional[torch.Tensor] = None,
+            key2: Optional[torch.Tensor] = None,
             output: Optional[torch.Tensor] = None,
             output_scale: Optional[torch.Tensor] = None,
         ) -> torch.Tensor:
@@ -1048,22 +1061,24 @@ def _patch_triton_attn() -> None:
                     layer._v_scale,
                 )
                 ###################### rerope patch ###############
-                torch.ops._C_cache_ops.reshape_and_cache_flash(
-                    key2,
-                    value,
-                    key_cache2,
-                    value_cache,
-                    attn_metadata.slot_mapping,
-                    self.kv_cache_dtype,
-                    layer._k_scale,
-                    layer._v_scale,
-                )
+                if key2 is not None:
+                    torch.ops._C_cache_ops.reshape_and_cache_flash(
+                        key2,
+                        value,
+                        key_cache2,
+                        value_cache,
+                        attn_metadata.slot_mapping,
+                        self.kv_cache_dtype,
+                        layer._k_scale,
+                        layer._v_scale,
+                    )
                 ###################### rerope patch ###############
 
             if self.kv_cache_dtype.startswith("fp8"):
                 key_cache = key_cache.view(self.fp8_dtype)
                 ###################### rerope patch ###############
-                key_cache2 = key_cache2.view(self.fp8_dtype)
+                if key_cache2 is not None:
+                    key_cache2 = key_cache2.view(self.fp8_dtype)
                 ###################### rerope patch ###############
                 value_cache = value_cache.view(self.fp8_dtype)
                 num_tokens, num_heads, head_size = query.shape
@@ -1079,13 +1094,14 @@ def _patch_triton_attn() -> None:
                     )
                     query = query.reshape((num_tokens, num_heads, head_size))
                     ###################### rerope patch ###############
-                    query2, _ = ops.scaled_fp8_quant(
-                        query2.reshape(
-                            (num_tokens, num_heads * head_size)
-                        ).contiguous(),
-                        layer._q_scale,
-                    )
-                    query2 = query2.reshape((num_tokens, num_heads, head_size))
+                    if query2 is not None:
+                        query2, _ = ops.scaled_fp8_quant(
+                            query2.reshape(
+                                (num_tokens, num_heads * head_size)
+                            ).contiguous(),
+                            layer._q_scale,
+                        )
+                        query2 = query2.reshape((num_tokens, num_heads, head_size))
                     ###################### rerope patch ###############
 
             use_local_attn = (
