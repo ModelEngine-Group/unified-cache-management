@@ -127,10 +127,10 @@ Status SpaceLayout::AddSecondaryStorageBackend(const std::string& path)
 
 std::string SpaceLayout::StorageBackend(const Detail::BlockId& blockId) const
 {
-    static Detail::BlockIdHasher hasher;
     const auto number = storageBackends_.size();
-    if (number > 1) { return storageBackends_[hasher(blockId) % number]; }
-    return storageBackends_.front();
+    if (number == 1) { return storageBackends_.front(); }
+    static Detail::BlockIdHasher hasher;
+    return storageBackends_[hasher(blockId) % number];
 }
 
 }  // namespace UC::PosixStore
