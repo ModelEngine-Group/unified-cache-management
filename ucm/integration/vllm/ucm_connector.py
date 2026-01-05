@@ -229,7 +229,7 @@ class UCMDirectConnector(KVConnectorBase_V1):
         return backends
 
     def register_kv_caches(self, kv_caches: dict[str, torch.Tensor]):
-        if os.getenv("VLLM_HASH_ATTENTION") == "1":
+        if os.getenv("VLLM_HASH_ATTENTION", "0") == "1":
             for layer_name, value in kv_caches.items():
                 kv_cache, k_hash = value
                 self.kv_caches[layer_name] = kv_cache
