@@ -4,8 +4,8 @@ from collections import defaultdict
 import numpy as np
 import torch
 
-from ucm.sparse.kvcomp.hash_encoder import HashEncoder
-from ucm.sparse.kvcomp.hash_retrieval import hash_retrieval_backend
+from ucm.sparse.gsa_on_device.hash_encoder import HashEncoder
+from ucm.sparse.gsa_on_device.hash_retrieval import hash_retrieval_backend
 from ucm.sparse.kvstar.utils import get_bind_cpus_for_rank
 
 
