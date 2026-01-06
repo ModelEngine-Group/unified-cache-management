@@ -195,7 +195,7 @@ protected:
     size_t DataSize() const noexcept { return nodeSize_ * nNode_; }
     const std::string& ShmPrefix() const noexcept
     {
-        static std::string prefix{"unifiedcache_shm_"};
+        static std::string prefix{"uc_shm_cache_"};
         return prefix;
     }
     void CleanUpShmFileExceptMe()
