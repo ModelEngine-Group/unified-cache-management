@@ -25,11 +25,14 @@ from ucm.sparse.base import (
 )
 
 if hasattr(torch, "cuda") and torch.cuda.is_available():
-    from ucm.sparse.gsa_on_device.hamming_topk import cuda_hamming_topk, fake_hamming_topk
+    from ucm.sparse.gsa_on_device.hamming_topk import (
+        cuda_hamming_topk,
+        fake_hamming_topk,
+    )
     from ucm.sparse.gsa_on_device.hash_encoder import reshape_and_cache_khash_triton
 
-from ucm.sparse.gsa_on_device.hash_encoder import HashEncoder
 from ucm.sparse.gsa_on_device.gsa_on_device_config import GSAOnDeviceConfig
+from ucm.sparse.gsa_on_device.hash_encoder import HashEncoder
 from ucm.utils import Config
 
 logger = init_logger(__name__)
@@ -42,7 +45,9 @@ def gsa_on_device_config_path_for_model(vllm_config) -> str:
     logger.info("[GSAOnDevice] model name: %s", model)
 
     if "deepseek" in model and "r1" in model:
-        rel = "ucm/sparse/gsa_on_device/configs/gsa_on_device_deepseek_r1_awq_config.json"
+        rel = (
+            "ucm/sparse/gsa_on_device/configs/gsa_on_device_deepseek_r1_awq_config.json"
+        )
     elif "qwen3" in model and "32b" in model:
         rel = "ucm/sparse/gsa_on_device/configs/gsa_on_device_qwen3_32B_config.json"
     elif "qwen3" in model and "4b" in model:
@@ -115,7 +120,9 @@ class GSAOnDevice(UcmSparseBase):
         # auto detect config file for GSAOnDevice
         gsa_on_device_config_path = gsa_on_device_config_path_for_model(vllm_config)
 
-        self.gsa_on_device_config = GSAOnDeviceConfig.from_json(gsa_on_device_config_path)
+        self.gsa_on_device_config = GSAOnDeviceConfig.from_json(
+            gsa_on_device_config_path
+        )
         logger.info(f"read gsa_on_device config file : {gsa_on_device_config_path} ")
         self.hash_topk_tokens = self.gsa_on_device_config.vllm_hash_attention_topk
         self.hash_rollback_layers = (
