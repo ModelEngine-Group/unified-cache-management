@@ -43,7 +43,7 @@ class UcmPcStoreV1(UcmKVStoreBaseV1):
         self.store = ucmpcstore.PcStore()
         storage_backends = config["storage_backends"]
         block_size = config.get("block_size", 0)
-        transfer_enable = True if int(config["device_id"]) >= 0 else False
+        transfer_enable = True if config.get("device_id", -1) >= 0 else False
         param = ucmpcstore.PcStore.Config(storage_backends, block_size, transfer_enable)
         key_mapping = {
             "unique_id": "uniqueId",
