@@ -25,11 +25,14 @@ from ucm.sparse.base import (
 )
 
 if hasattr(torch, "cuda") and torch.cuda.is_available():
-    from ucm.sparse.kvcomp.hamming_topk import cuda_hamming_topk, fake_hamming_topk
-    from ucm.sparse.kvcomp.hash_encoder import reshape_and_cache_khash_triton
+    from ucm.sparse.gsa_on_device.hamming_topk import (
+        cuda_hamming_topk,
+        fake_hamming_topk,
+    )
+    from ucm.sparse.gsa_on_device.hash_encoder import reshape_and_cache_khash_triton
 
-from ucm.sparse.kvcomp.hash_encoder import HashEncoder
-from ucm.sparse.kvcomp.kvcomp_config import KvCompConfig
+from ucm.sparse.gsa_on_device.gsa_on_device_config import GSAOnDeviceConfig
+from ucm.sparse.gsa_on_device.hash_encoder import HashEncoder
 from ucm.utils import Config
 
 logger = init_logger(__name__)
@@ -37,24 +40,26 @@ logger = init_logger(__name__)
 ReqType = Union[str, int]
 
 
-def kvcomp_config_path_for_model(vllm_config) -> str:
+def gsa_on_device_config_path_for_model(vllm_config) -> str:
     model = vllm_config.model_config.model.lower()
-    logger.info("[KvComp] model name: %s", model)
+    logger.info("[GSAOnDevice] model name: %s", model)
 
     if "deepseek" in model and "r1" in model:
-        rel = "ucm/sparse/kvcomp/configs/kvcomp_deepseek_r1_awq_config.json"
+        rel = (
+            "ucm/sparse/gsa_on_device/configs/gsa_on_device_deepseek_r1_awq_config.json"
+        )
     elif "qwen3" in model and "32b" in model:
-        rel = "ucm/sparse/kvcomp/configs/kvcomp_qwen3_32B_config.json"
+        rel = "ucm/sparse/gsa_on_device/configs/gsa_on_device_qwen3_32B_config.json"
     elif "qwen3" in model and "4b" in model:
-        rel = "ucm/sparse/kvcomp/configs/kvcomp_qwen3_4B_config.json"
+        rel = "ucm/sparse/gsa_on_device/configs/gsa_on_device_qwen3_4B_config.json"
     elif "qwq" in model and "32b" in model:
-        rel = "ucm/sparse/kvcomp/configs/kvcomp_qwq_32B_config.json"
+        rel = "ucm/sparse/gsa_on_device/configs/gsa_on_device_qwq_32B_config.json"
     elif "deepseek" in model and "v2" in model:
-        rel = "ucm/sparse/kvcomp/configs/kvcomp_deepseek_v2_lite_config.json"
+        rel = "ucm/sparse/gsa_on_device/configs/gsa_on_device_deepseek_v2_lite_config.json"
     else:
-        raise ValueError(f"[KvCompOnDevice] Unsupported model for kvcomp: {model}")
+        raise ValueError(f"[GSAOnDevice] Unsupported model for gsa_on_device: {model}")
 
-    logger.info("[KvComp] target relative path: %s", rel)
+    logger.info("[GSAOnDevice] target relative path: %s", rel)
 
     cur = Path(__file__).resolve()
     repo = cur
@@ -66,14 +71,14 @@ def kvcomp_config_path_for_model(vllm_config) -> str:
         ):
 
             p = repo / rel
-            logger.info("[KvComp] repo root detected at depth=%d: %s", depth, repo)
+            logger.info("[GSAOnDevice] repo root detected at depth=%d: %s", depth, repo)
             if p.is_file():
-                logger.info("[KvComp] config loaded from SOURCE tree: %s", p)
+                logger.info("[GSAOnDevice] config loaded from SOURCE tree: %s", p)
                 return str(p)
-            logger.warning("[KvComp] repo root found but config missing: %s", p)
+            logger.warning("[GSAOnDevice] repo root found but config missing: %s", p)
             break
         if repo.parent == repo:
-            logger.debug("[KvComp] reached filesystem root, stop searching")
+            logger.debug("[GSAOnDevice] reached filesystem root, stop searching")
             break
 
         repo = repo.parent
@@ -82,11 +87,11 @@ def kvcomp_config_path_for_model(vllm_config) -> str:
     res = resources.files("ucm").joinpath(*sub.split("/"))
 
     with resources.as_file(res) as p:
-        logger.info("[KvComp] config loaded from PACKAGE resource (wheel): %s", p)
+        logger.info("[GSAOnDevice] config loaded from PACKAGE resource (wheel): %s", p)
         return str(p)
 
 
-class KvCompOnDevice(UcmSparseBase):
+class GSAOnDevice(UcmSparseBase):
     # handle batch
     def __init__(self, vllm_config: VllmConfig, role: UcmSparseRole):
         super().__init__(vllm_config, role)
@@ -112,27 +117,22 @@ class KvCompOnDevice(UcmSparseBase):
         )
         self.block_size = vllm_config.cache_config.block_size
 
-        self.kvcompOnDevice_cfg = (
-            Config(vllm_config.kv_transfer_config)
-            .get_config()
-            .get("ucm_sparse_config")
-            .get("KvCompOnDevice")
+        # auto detect config file for GSAOnDevice
+        gsa_on_device_config_path = gsa_on_device_config_path_for_model(vllm_config)
+
+        self.gsa_on_device_config = GSAOnDeviceConfig.from_json(
+            gsa_on_device_config_path
         )
-
-        # auto detect config file for KVCompOnDevice
-        kvcompOnDevice_config_path = kvcomp_config_path_for_model(vllm_config)
-
-        self.kvcompOnDevice_config = KvCompConfig.from_json(kvcompOnDevice_config_path)
-        logger.info(f"read kvcomp config file : {kvcompOnDevice_config_path} ")
-        self.hash_topk_tokens = self.kvcompOnDevice_config.vllm_hash_attention_topk
+        logger.info(f"read gsa_on_device config file : {gsa_on_device_config_path} ")
+        self.hash_topk_tokens = self.gsa_on_device_config.vllm_hash_attention_topk
         self.hash_rollback_layers = (
-            self.kvcompOnDevice_config.vllm_hash_attention_rollback_layers
+            self.gsa_on_device_config.vllm_hash_attention_rollback_layers
         )
         self.hash_skip_layers = (
-            self.kvcompOnDevice_config.vllm_hash_attention_skip_layers
+            self.gsa_on_device_config.vllm_hash_attention_skip_layers
         )
 
-        self.seq_len_threshhold = self.kvcompOnDevice_config.seq_len_threshhold
+        self.seq_len_threshhold = self.gsa_on_device_config.seq_len_threshhold
 
         if role == UcmSparseRole.WORKER:
             if self.is_cuda:  # cuda only variables
@@ -165,9 +165,9 @@ class KvCompOnDevice(UcmSparseBase):
             self._k_scale = torch.tensor(1.0, dtype=torch.float32)
 
             if self.is_mla:
-                logger.info("KvCompOnDevice initialized with MLA model config")
+                logger.info("GSAOnDevice initialized with MLA model config")
                 self.hash_reduction_head_num = (
-                    self.kvcompOnDevice_config.vllm_hash_attention_reduction_head_num
+                    self.gsa_on_device_config.vllm_hash_attention_reduction_head_num
                 )
                 self.kv_lora_rank = getattr(
                     vllm_config.model_config.hf_text_config, "kv_lora_rank", None
@@ -189,7 +189,7 @@ class KvCompOnDevice(UcmSparseBase):
                     device=self.device,
                 )
             else:
-                logger.info("KvCompOnDevice initialized with non-MLA model config")
+                logger.info("GSAOnDevice initialized with non-MLA model config")
                 self.head_dim = vllm_config.model_config.get_head_size()
                 self.hash_encoder = HashEncoder(
                     input_dim=self.head_dim,
@@ -576,13 +576,13 @@ class KvCompOnDevice(UcmSparseBase):
 
     def initialize_kv_hash_cache_tensors_npu(self, kv_caches, device):
         print(
-            f"[NPU KVComp Debug] initialize_kv_hash_cache_tensors_npu: allocating hashk cache for KVComp in NPU"
+            f"[NPU GSAOnDevice Debug] initialize_kv_hash_cache_tensors_npu: allocating hashk cache for GSAOnDevice in NPU"
         )
         for layer_name, kv_cache in kv_caches.items():
             is_rollback_layer, is_skip_hash_layer = self.get_layer_state(layer_name)
             k_cache_shape = kv_cache[0].shape
             print(
-                f"[NPU KVComp Debug] layer_name: {layer_name}, is_rollback_layer={is_rollback_layer}, is_skip_hash_layer={is_skip_hash_layer}, k_cache_shape: {k_cache_shape}"
+                f"[NPU GSAOnDevice Debug] layer_name: {layer_name}, is_rollback_layer={is_rollback_layer}, is_skip_hash_layer={is_skip_hash_layer}, k_cache_shape: {k_cache_shape}"
             )
             khash_cache_shape = (
                 k_cache_shape[0],
@@ -595,17 +595,17 @@ class KvCompOnDevice(UcmSparseBase):
                     khash_cache_shape, dtype=torch.uint8, device=device
                 )
                 print(
-                    f"[NPU KVComp Debug] layer_name: {layer_name}, khash_cache_shape: {khash_cache_shape}"
+                    f"[NPU GSAOnDevice Debug] layer_name: {layer_name}, khash_cache_shape: {khash_cache_shape}"
                 )
             else:
                 khash_cache = None
                 print(
-                    f"[NPU KVComp Debug] layer_name: {layer_name}, khash_cache is None"
+                    f"[NPU GSAOnDevice Debug] layer_name: {layer_name}, khash_cache is None"
                 )
             kv_caches[layer_name] = (kv_cache, khash_cache)
 
     def build_decode_hash(self, seq_lens):
-        from ucm.sparse.kvcomp.hamming_topk import update_seq_lens
+        from ucm.sparse.gsa_on_device.hamming_topk import update_seq_lens
 
         topk_seq_lens = update_seq_lens(
             seq_lens,
@@ -621,7 +621,7 @@ class KvCompOnDevice(UcmSparseBase):
 
     def build_decode_attention_meta(self, query_start_loc, seq_lens, block_table):
 
-        from ucm.sparse.kvcomp.hamming_topk import update_seq_lens
+        from ucm.sparse.gsa_on_device.hamming_topk import update_seq_lens
 
         q_lens = query_start_loc[1:] - query_start_loc[:-1]
         self.decode_mask = q_lens == 1
@@ -639,7 +639,7 @@ class KvCompOnDevice(UcmSparseBase):
 
     def build_decode_attention_meta_npu(self, query_lens, seq_lens, block_table):
 
-        from ucm.sparse.kvcomp.hamming_topk import update_seq_lens
+        from ucm.sparse.gsa_on_device.hamming_topk import update_seq_lens
 
         # self.decode_mask is on cpu in vllm-asencd under NPU device
         self.decode_mask = (query_lens == 1) & (seq_lens >= self.seq_len_threshhold)
