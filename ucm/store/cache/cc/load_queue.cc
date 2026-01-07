@@ -41,6 +41,7 @@ Status LoadQueue::Setup(const Config& config, TaskIdSet* failureSet, TransBuffer
     backend_ = static_cast<StoreV1*>((void*)config.storeBackend);
     waiting_.Setup(config.waitingQueueDepth);
     running_.Setup(config.runningQueueDepth);
+    holder_.reserve(1024);
     dispatcher_ = std::thread{&LoadQueue::DispatchStage, this};
     std::promise<Status> started;
     auto fut = started.get_future();
@@ -144,8 +145,12 @@ void LoadQueue::TransferOneTask(Trans::Stream* stream, size_t tensorSize, ShardT
                      task.shard.addrs.size());
             break;
         }
-        if (!task.waiter) { return; }
+        if (!task.waiter) {
+            holder_.push_back(std::move(task));
+            return;
+        }
         s = stream->Synchronized();
+        holder_.clear();
         if (s.Failure()) [[unlikely]] {
             UC_ERROR("Failed({}) to sync on stream.", s);
             break;

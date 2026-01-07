@@ -86,3 +86,70 @@ TEST_F(UCCacheTransManagerTest, DumpThenLoad)
     ASSERT_EQ(data1.Compare(data2), 0);
     finish.Wait();
 }
+
+TEST_F(UCCacheTransManagerTest, DumpThenLoadWithLayerWise)
+{
+    using namespace UC::Test::Detail;
+    using namespace UC::CacheStore;
+    constexpr size_t tensorSize = 32768;
+    constexpr size_t shardSize = tensorSize;
+    constexpr size_t layerNumber = 16;
+    constexpr size_t blockSize = shardSize * layerNumber;
+    constexpr size_t blockNumber = 5;
+    MockStore backend;
+    EXPECT_CALL(backend, Dump).WillRepeatedly(testing::Invoke(NextId));
+    UC::Latch finish{};
+    finish.Set(layerNumber);
+    EXPECT_CALL(backend, Wait).WillRepeatedly(testing::Invoke([&finish]() {
+        finish.Done();
+        return UC::Status::OK();
+    }));
+    Config config;
+    config.storeBackend = (uintptr_t)(void*)&backend;
+    config.tensorSize = tensorSize;
+    config.shardSize = shardSize;
+    config.blockSize = blockSize;
+    config.deviceId = 0;
+    config.bufferNumber = 2048;
+    config.uniqueId = rd.RandomString(10);
+    config.shareBufferEnable = true;
+    config.timeoutMs = 10 * 60 * 1000;
+    TransBuffer buffer;
+    auto s = buffer.Setup(config);
+    ASSERT_EQ(s, UC::Status::OK());
+    TransManager transMgr;
+    s = transMgr.Setup(config, &buffer);
+    ASSERT_EQ(s, UC::Status::OK());
+    UC::Detail::BlockId blockIds[blockNumber];
+    std::for_each_n(blockIds, blockNumber, [](auto& b) { b = TypesHelper::MakeBlockIdRandomly(); });
+    DataGenerator data1{blockNumber, blockSize};
+    data1.GenerateRandom();
+    for (size_t i = 0; i < layerNumber; i++) {
+        UC::Detail::TaskDesc desc;
+        desc.brief = "Dump";
+        for (size_t j = 0; j < blockNumber; j++) {
+            auto addr = (void*)(((char*)data1.Buffer()) + blockSize * j + shardSize * i);
+            desc.push_back(UC::Detail::Shard{blockIds[j], i, {addr}});
+        }
+        auto handle = transMgr.Submit({TransTask::Type::DUMP, desc});
+        ASSERT_TRUE(handle.HasValue());
+        s = transMgr.Wait(handle.Value());
+        ASSERT_EQ(s.Underlying(), UC::Status::OK().Underlying());
+    }
+    finish.Wait();
+    DataGenerator data2{blockNumber, blockSize};
+    data2.Generate();
+    for (size_t i = 0; i < layerNumber; i++) {
+        UC::Detail::TaskDesc desc;
+        desc.brief = "Load";
+        for (size_t j = 0; j < blockNumber; j++) {
+            auto addr = (void*)(((char*)data2.Buffer()) + blockSize * j + shardSize * i);
+            desc.push_back(UC::Detail::Shard{blockIds[j], i, {addr}});
+        }
+        auto handle = transMgr.Submit({TransTask::Type::LOAD, desc});
+        ASSERT_TRUE(handle.HasValue());
+        s = transMgr.Wait(handle.Value());
+        ASSERT_EQ(s.Underlying(), UC::Status::OK().Underlying());
+    }
+    ASSERT_EQ(data1.Compare(data2), 0);
+}
