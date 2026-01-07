@@ -1,7 +1,7 @@
-From 3ce6a6053ca9854d95828ab600e01b848a253a56 Mon Sep 17 00:00:00 2001
+From 93d2b945ec463d1f0b71d177aa9d6a0933e45746 Mon Sep 17 00:00:00 2001
 From: wenxinwang <wangwenxin21@huawei.com>
 Date: Tue, 23 Dec 2025 19:21:33 -0800
-Subject: [PATCH 1/4] sparse patch for vllm-ascend
+Subject: [PATCH 1/5] sparse patch for vllm-ascend
 
 ---
  vllm_ascend/attention/attention_v1.py | 80 ++++++++++++++++++++++
@@ -11,7 +11,7 @@ Subject: [PATCH 1/4] sparse patch for vllm-ascend
  4 files changed, 201 insertions(+), 16 deletions(-)
 
 diff --git a/vllm_ascend/attention/attention_v1.py b/vllm_ascend/attention/attention_v1.py
-index 7d7f488..ea98224 100644
+index 7d7f488f..ea982244 100644
 --- a/vllm_ascend/attention/attention_v1.py
 +++ b/vllm_ascend/attention/attention_v1.py
 @@ -24,6 +24,9 @@ import torch_npu
@@ -129,7 +129,7 @@ index 7d7f488..ea98224 100644
  def unified_attention_with_output_fake(
      query: torch.Tensor,
 diff --git a/vllm_ascend/attention/mla_v1.py b/vllm_ascend/attention/mla_v1.py
-index f50fe56..ae8f50b 100644
+index f50fe56e..ae8f50bf 100644
 --- a/vllm_ascend/attention/mla_v1.py
 +++ b/vllm_ascend/attention/mla_v1.py
 @@ -13,10 +13,12 @@ from vllm.distributed import get_tensor_model_parallel_world_size
@@ -185,7 +185,7 @@ index f50fe56..ae8f50b 100644
  
          return output_padded
 diff --git a/vllm_ascend/worker/model_runner_v1.py b/vllm_ascend/worker/model_runner_v1.py
-index eabcdbc..782b9a3 100644
+index eabcdbcc..782b9a3b 100644
 --- a/vllm_ascend/worker/model_runner_v1.py
 +++ b/vllm_ascend/worker/model_runner_v1.py
 @@ -39,7 +39,10 @@ from vllm.config import CompilationLevel, VllmConfig
@@ -386,7 +386,7 @@ index eabcdbc..782b9a3 100644
 +        ucm_sparse.request_finished_in_worker(request_id)
 \ No newline at end of file
 diff --git a/vllm_ascend/worker/worker_v1.py b/vllm_ascend/worker/worker_v1.py
-index df03d50..5d5d9b5 100644
+index df03d508..5d5d9b5a 100644
 --- a/vllm_ascend/worker/worker_v1.py
 +++ b/vllm_ascend/worker/worker_v1.py
 @@ -17,6 +17,7 @@
@@ -458,20 +458,20 @@ index df03d50..5d5d9b5 100644
      def _init_profiler(self):
          # Torch profiler. Enabled and configured through env vars:
 -- 
-2.43.0
+2.34.1
 
 
-From 9b685ed319bae31f5e56d596499fbd7c7f60c4b0 Mon Sep 17 00:00:00 2001
+From 35eb0e1c84ef9786a0c77561e3298002167c88c3 Mon Sep 17 00:00:00 2001
 From: ldeng <ldeng.sjtu@gmail.com>
 Date: Mon, 29 Dec 2025 17:59:28 +0800
-Subject: [PATCH 2/4] update attention_v1 for kvcomp in NPU
+Subject: [PATCH 2/5] update attention_v1 for kvcomp in NPU
 
 ---
  vllm_ascend/attention/attention_v1.py | 59 +++++++++++++++++++--------
  1 file changed, 43 insertions(+), 16 deletions(-)
 
 diff --git a/vllm_ascend/attention/attention_v1.py b/vllm_ascend/attention/attention_v1.py
-index ea98224..b924d8e 100644
+index ea982244..b924d8ea 100644
 --- a/vllm_ascend/attention/attention_v1.py
 +++ b/vllm_ascend/attention/attention_v1.py
 @@ -37,7 +37,7 @@ from vllm_ascend.utils import (ACL_FORMAT_FRACTAL_NZ, aligned_16, is_310p,
@@ -619,13 +619,13 @@ index ea98224..b924d8e 100644
 +)
 \ No newline at end of file
 -- 
-2.43.0
+2.34.1
 
 
-From d82f08b6981ca4d01432309b659bea57b9d18576 Mon Sep 17 00:00:00 2001
+From 5c81688c4b5af2a474ac14c24e7c10abd7f9e4d2 Mon Sep 17 00:00:00 2001
 From: ldeng <ldeng.sjtu@gmail.com>
 Date: Mon, 29 Dec 2025 18:04:02 +0800
-Subject: [PATCH 3/4] call initialize_kv_hash_cache_tensors_npu to allocate
+Subject: [PATCH 3/5] call initialize_kv_hash_cache_tensors_npu to allocate
  hashk cache in NPUModelRunner when VLLM_HASH_ATTENTION is enabled for KVComp
 
 ---
@@ -633,7 +633,7 @@ Subject: [PATCH 3/4] call initialize_kv_hash_cache_tensors_npu to allocate
  1 file changed, 5 insertions(+)
 
 diff --git a/vllm_ascend/worker/model_runner_v1.py b/vllm_ascend/worker/model_runner_v1.py
-index 782b9a3..766316e 100644
+index 782b9a3b..766316e1 100644
 --- a/vllm_ascend/worker/model_runner_v1.py
 +++ b/vllm_ascend/worker/model_runner_v1.py
 @@ -1993,6 +1993,11 @@ class NPUModelRunner(LoRAModelRunnerMixin):
@@ -649,20 +649,20 @@ index 782b9a3..766316e 100644
              kv_caches,
              self.vllm_config.compilation_config.static_forward_context,
 -- 
-2.43.0
+2.34.1
 
 
-From 3d28d477a4887e7d5c909a66b448086994751567 Mon Sep 17 00:00:00 2001
+From 9d61017d7f144e4d8125b6cacb9dce39d5da45fc Mon Sep 17 00:00:00 2001
 From: ldeng <ldeng.sjtu@gmail.com>
 Date: Mon, 29 Dec 2025 18:04:50 +0800
-Subject: [PATCH 4/4] uncomment connector
+Subject: [PATCH 4/5] uncomment connector
 
 ---
  vllm_ascend/attention/attention_v1.py | 4 ++--
  1 file changed, 2 insertions(+), 2 deletions(-)
 
 diff --git a/vllm_ascend/attention/attention_v1.py b/vllm_ascend/attention/attention_v1.py
-index b924d8e..ece7d17 100644
+index b924d8ea..ece7d173 100644
 --- a/vllm_ascend/attention/attention_v1.py
 +++ b/vllm_ascend/attention/attention_v1.py
 @@ -468,7 +468,7 @@ def unified_ascend_attention_with_output(
@@ -684,5 +684,32 @@ index b924d8e..ece7d17 100644
  
  def wait_for_kv_layer_from_connector(layer_name: str):
 -- 
-2.43.0
+2.34.1
+
+
+From 34cb655d94fc08f7853d6fd0fe95b78df978096b Mon Sep 17 00:00:00 2001
+From: Clarence-1103 <indirashi@163.com>
+Date: Tue, 6 Jan 2026 19:31:40 -0800
+Subject: [PATCH 5/5] [bugfix] register_kv_caches
+
+---
+ vllm_ascend/worker/model_runner_v1.py | 3 +++
+ 1 file changed, 3 insertions(+)
+
+diff --git a/vllm_ascend/worker/model_runner_v1.py b/vllm_ascend/worker/model_runner_v1.py
+index 766316e1..04b0f4e2 100644
+--- a/vllm_ascend/worker/model_runner_v1.py
++++ b/vllm_ascend/worker/model_runner_v1.py
+@@ -2003,6 +2003,9 @@ class NPUModelRunner(LoRAModelRunnerMixin):
+             self.vllm_config.compilation_config.static_forward_context,
+             self.kv_caches)
+ 
++        if has_kv_transfer_group():
++            get_kv_transfer_group().register_kv_caches(kv_caches)
++
+     def get_kv_cache_spec(self) -> dict[str, KVCacheSpec]:
+         """
+         Generates the KVCacheSpec by parsing the kv cache format from each
+-- 
+2.34.1
 
