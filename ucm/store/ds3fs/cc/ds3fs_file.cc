@@ -1,0 +1,98 @@
+/**
+ * MIT License
+ *
+ * Copyright (c) 2025 Huawei Technologies Co., Ltd. All rights reserved.
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining a copy
+ * of this software and associated documentation files (the "Software"), to deal
+ * in the Software without restriction, including without limitation the rights
+ * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+ * copies of the Software, and to permit persons to whom the Software is
+ * furnished to do so, subject to the following conditions:
+ *
+ * The above copyright notice and this permission notice shall be included in all
+ * copies or substantial portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+ * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+ * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+ * SOFTWARE.
+ * */
+#include "ds3fs_file.h"
+#include <sys/stat.h>
+#include <unistd.h>
+
+namespace UC::Ds3fsStore {
+
+static constexpr auto NewFilePerm = (S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH);
+static constexpr auto NewDirPerm = (S_IRWXU | S_IRGRP | S_IROTH);
+
+Ds3fsFile::~Ds3fsFile()
+{
+    if (handle_ != -1) { Close(); }
+}
+
+Status Ds3fsFile::MkDir()
+{
+    auto ret = mkdir(path_.c_str(), NewDirPerm);
+    auto eno = errno;
+    if (ret != 0) [[unlikely]] {
+        if (eno == EEXIST) { return Status::DuplicateKey(); }
+        return Status::OsApiError(std::to_string(eno));
+    }
+    return Status::OK();
+}
+
+Status Ds3fsFile::RmDir()
+{
+    auto ret = rmdir(path_.c_str());
+    auto eno = errno;
+    if (ret != 0) [[unlikely]] { return Status::OsApiError(std::to_string(eno)); }
+    return Status::OK();
+}
+
+Status Ds3fsFile::Rename(const std::string& newName)
+{
+    auto ret = rename(path_.c_str(), newName.c_str());
+    auto eno = errno;
+    if (ret != 0) [[unlikely]] {
+        if (eno == ENOENT) { return Status::NotFound(); }
+        return Status::OsApiError(std::to_string(eno));
+    }
+    return Status::OK();
+}
+
+Status Ds3fsFile::Access(const int32_t mode)
+{
+    auto ret = access(path_.c_str(), mode);
+    auto eno = errno;
+    if (ret != 0) [[unlikely]] {
+        if (eno == ENOENT) { return Status::NotFound(); }
+        return Status::OsApiError(std::to_string(eno));
+    }
+    return Status::OK();
+}
+
+Status Ds3fsFile::Open(const uint32_t flags)
+{
+    handle_ = open(path_.c_str(), flags, NewFilePerm);
+    auto eno = errno;
+    if (handle_ < 0) [[unlikely]] {
+        if (eno == EEXIST) { return Status::DuplicateKey(); }
+        return Status::OsApiError(std::to_string(eno));
+    }
+    return Status::OK();
+}
+
+void Ds3fsFile::Close()
+{
+    close(handle_);
+    handle_ = -1;
+}
+
+void Ds3fsFile::Remove() { remove(path_.c_str()); }
+
+}  // namespace UC::Ds3fsStore
