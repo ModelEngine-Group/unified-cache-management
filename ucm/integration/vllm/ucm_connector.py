@@ -505,7 +505,26 @@ class UCMDirectConnector(KVConnectorBase_V1):
             for i, tensor in enumerate(dst_tensor_addr):
                 tensor.copy_(rec_tensor[i])
 
+    def _init_kv_caches_from_forward_context(self, forward_context: "ForwardContext"):
+        logger.info(
+            "register_kv_caches was not called; initializing KV caches from forward context."
+        )
+        kv_caches = {}
+        for layer_name in forward_context.no_compile_layers:
+            attn_layer = forward_context.no_compile_layers[layer_name]
+            if not hasattr(attn_layer, "kv_cache"):
+                continue
+
+            if layer_name not in kv_caches:
+                kv_caches[layer_name] = attn_layer.kv_cache[
+                    forward_context.virtual_engine
+                ]
+        self.register_kv_caches(kv_caches)
+
     def start_load_kv(self, forward_context: "ForwardContext", **kwargs) -> None:
+        if not self.kv_caches:
+            self._init_kv_caches_from_forward_context(forward_context)
+
         metadata = self._get_connector_metadata()
         assert isinstance(metadata, UCMConnectorMetadata)
 
