@@ -77,6 +77,33 @@ Download the pre-built `vllm/vllm-openai:v0.9.2` docker image and build unified-
     pip install -v -e . --no-build-isolation
     ```
 
+3. Apply vLLM Integration Patches (Required)
+
+    To enable Unified Cache Management (UCM) integration with vLLM, you must **manually apply the corresponding vLLM patch**.
+
+    You may directly navigate to the vLLM source directory:
+    ```bash
+    cd <path_to_vllm>
+    ```
+    Apply the patch that matches your development needs:
+
+    - Full UCM integration (recommended):
+    ```bash
+    git apply unified-cache-management/ucm/integration/vllm/patch/0.9.2/vllm-adapt.patch
+    ```
+
+    - Sparse attention only:
+    ```bash
+    git apply unified-cache-management/ucm/integration/vllm/patch/0.9.2/vllm-adapt-sparse.patch
+    ```
+
+    - ReRoPE support only:
+    ```bash
+    git apply unified-cache-management/ucm/integration/vllm/patch/0.9.2/vllm-adapt-rerope.patch
+    ```
+
+    Choose the patch according to your development needs.
+    If you are working on **sparse attention** or **ReRoPE** independently, applying only the corresponding patch is sufficient.
 
 
 ### Option 3: Install by pip
@@ -91,6 +118,7 @@ Download the pre-built `vllm/vllm-openai:v0.9.2` docker image and build unified-
     export PLATFORM=cuda
     pip install uc-manager
     ```
+> **Note:** If installing via `pip install`, you need to manually add the `config.yaml` file, similar to `unified-cache-management/examples/ucm_config_example.yaml`, because PyPI packages do not include YAML files.
 
 ## Step 2: Configuration
 

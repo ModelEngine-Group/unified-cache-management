@@ -29,11 +29,12 @@
 #include <unistd.h>
 #include "file/file.h"
 #include "logger/logger.h"
-#include "trans/buffer.h"
+#include "trans/device.h"
 
 namespace UC {
 
 static constexpr int32_t SHARE_BUFFER_MAGIC = (('S' << 16) | ('b' << 8) | 1);
+static constexpr size_t INVALID_POSITION = size_t(-1);
 
 struct ShareMutex {
     pthread_mutex_t mutex;
@@ -87,12 +88,24 @@ struct ShareBlockHeader {
     ShareBlockStatus status;
     size_t offset;
     void* Data() { return reinterpret_cast<char*>(this) + offset; }
+    void Refer()
+    {
+        if (this->ref == 0 && this->status != ShareBlockStatus::LOADED) {
+            this->status = ShareBlockStatus::INIT;
+        }
+        this->ref++;
+    }
+    void Occupy(const std::string& block)
+    {
+        this->id.Set(block);
+        this->ref = 1;
+        this->status = ShareBlockStatus::INIT;
+    }
 };
 
 struct ShareBufferHeader {
     ShareMutex mutex;
     std::atomic<int32_t> magic;
-    int32_t ref;
     size_t blockSize;
     size_t blockNumber;
     ShareBlockHeader headers[0];
@@ -123,18 +136,20 @@ void CleanUpShmFileExceptMe(const std::string& me)
             if (now - lwt <= keepThreshold) { continue; }
             fs::remove(path);
         } catch (...) {
+            // Ignore filesystem errors;
         }
     }
 }
 
 Status ShareBuffer::Setup(const size_t blockSize, const size_t blockNumber, const bool ioDirect,
-                          const size_t nSharer, const std::string& uniqueId)
+                          const std::string& uniqueId)
 {
     this->blockSize_ = blockSize;
     this->blockNumber_ = blockNumber;
     this->ioDirect_ = ioDirect;
-    this->nSharer_ = nSharer;
     this->addr_ = nullptr;
+    tmpBufMaker_ = Trans::Device{}.MakeBuffer();
+    if (!tmpBufMaker_) { return Status::OutOfMemory(); }
     this->shmName_ = ShmPrefix() + uniqueId;
     CleanUpShmFileExceptMe(this->shmName_);
     auto file = File::Make(this->shmName_);
@@ -149,31 +164,19 @@ Status ShareBuffer::Setup(const size_t blockSize, const size_t blockNumber, cons
 ShareBuffer::~ShareBuffer()
 {
     if (!this->addr_) { return; }
-    auto bufferHeader = (ShareBufferHeader*)this->addr_;
-    bufferHeader->mutex.Lock();
-    auto ref = (--bufferHeader->ref);
-    bufferHeader->mutex.Unlock();
     void* dataAddr = static_cast<char*>(this->addr_) + this->DataOffset();
     Trans::Buffer::UnregisterHostBuffer(dataAddr);
     const auto shmSize = this->ShmSize();
     File::MUnmap(this->addr_, shmSize);
-    if (ref == 0) { File::ShmUnlink(this->shmName_); }
+    File::ShmUnlink(this->shmName_);
 }
 
 std::shared_ptr<ShareBuffer::Reader> ShareBuffer::MakeReader(const std::string& block,
                                                              const std::string& path)
 {
-    auto index = this->AcquireBlock(block);
-    try {
-        void* addr = this->BlockAt(index);
-        return std::shared_ptr<Reader>(
-            new Reader{block, path, blockSize_, ioDirect_, nSharer_, addr},
-            [this, index](auto) { this->ReleaseBlock(index); });
-    } catch (...) {
-        this->ReleaseBlock(index);
-        UC_ERROR("Failed to create reader.");
-        return nullptr;
-    }
+    auto pos = this->AcquireBlock(block);
+    if (pos != INVALID_POSITION) { return MakeSharedReader(block, path, pos); }
+    return MakeLocalReader(block, path);
 }
 
 size_t ShareBuffer::DataOffset() const
@@ -198,7 +201,6 @@ Status ShareBuffer::InitShmBuffer(IFile* file)
     auto bufferHeader = (ShareBufferHeader*)this->addr_;
     bufferHeader->magic = 1;
     bufferHeader->mutex.Init();
-    bufferHeader->ref = this->nSharer_;
     bufferHeader->blockSize = this->blockSize_;
     bufferHeader->blockNumber = this->blockNumber_;
     const auto dataOffset = this->DataOffset();
@@ -215,7 +217,7 @@ Status ShareBuffer::InitShmBuffer(IFile* file)
     auto dataSize = shmSize - dataOffset;
     auto status = Trans::Buffer::RegisterHostBuffer(dataAddr, dataSize);
     if (status.Success()) { return Status::OK(); }
-    UC_ERROR("Failed({}) to regitster host buffer({}).", status.ToString(), dataSize);
+    UC_ERROR("Failed({}) to register host buffer({}).", status.ToString(), dataSize);
     return Status::Error();
 }
 
@@ -246,7 +248,7 @@ Status ShareBuffer::LoadShmBuffer(IFile* file)
     auto dataSize = shmSize - dataOffset;
     auto status = Trans::Buffer::RegisterHostBuffer(dataAddr, dataSize);
     if (status.Success()) { return Status::OK(); }
-    UC_ERROR("Failed({}) to regitster host buffer({}).", status.ToString(), dataSize);
+    UC_ERROR("Failed({}) to register host buffer({}).", status.ToString(), dataSize);
     return Status::Error();
 }
 
@@ -255,36 +257,39 @@ size_t ShareBuffer::AcquireBlock(const std::string& block)
     static std::hash<std::string> hasher{};
     auto pos = hasher(block) % this->blockNumber_;
     auto bufferHeader = (ShareBufferHeader*)this->addr_;
-    auto reusedIdx = this->blockNumber_;
+    auto reusedPos = INVALID_POSITION;
     bufferHeader->mutex.Lock();
-    for (size_t i = 0;; i++) {
-        if (!bufferHeader->headers[pos].id.Used()) {
-            if (reusedIdx == this->blockNumber_) { reusedIdx = pos; }
-            break;
+    for (size_t i = 0; i < this->blockNumber_; i++) {
+        auto header = bufferHeader->headers + pos;
+        header->mutex.Lock();
+        if (header->id == block) {
+            header->Refer();
+            header->mutex.Unlock();
+            bufferHeader->mutex.Unlock();
+            return pos;
         }
-        if (bufferHeader->headers[pos].id == block) {
-            reusedIdx = pos;
-            break;
+        if (!header->id.Used()) {
+            if (reusedPos != INVALID_POSITION) {
+                header->mutex.Unlock();
+                break;
+            }
+            header->Occupy(block);
+            header->mutex.Unlock();
+            bufferHeader->mutex.Unlock();
+            return pos;
         }
-        if (bufferHeader->headers[pos].ref <= 0) {
-            if (reusedIdx == this->blockNumber_) { reusedIdx = pos; }
-        }
+        if (header->ref <= 0 && reusedPos == INVALID_POSITION) { reusedPos = pos; }
+        header->mutex.Unlock();
         pos = (pos + 1) % this->blockNumber_;
-        if (i == this->blockNumber_) {
-            UC_WARN("Buffer({}) used out.", this->blockNumber_);
-            i = 0;
-        }
     }
-    auto blockHeader = bufferHeader->headers + reusedIdx;
-    blockHeader->mutex.Lock();
-    if (blockHeader->ref <= 0) {
-        blockHeader->id.Set(block);
-        blockHeader->ref = this->nSharer_;
-        blockHeader->status = ShareBlockStatus::INIT;
+    if (reusedPos != INVALID_POSITION) {
+        auto header = bufferHeader->headers + reusedPos;
+        header->mutex.Lock();
+        header->Occupy(block);
+        header->mutex.Unlock();
     }
-    blockHeader->mutex.Unlock();
     bufferHeader->mutex.Unlock();
-    return reusedIdx;
+    return reusedPos;
 }
 
 void ShareBuffer::ReleaseBlock(const size_t index)
@@ -301,7 +306,67 @@ void* ShareBuffer::BlockAt(const size_t index)
     return bufferHeader->headers + index;
 }
 
+std::shared_ptr<ShareBuffer::Reader> ShareBuffer::MakeLocalReader(const std::string& block,
+                                                                  const std::string& path)
+{
+    auto addr = tmpBufMaker_->MakeHostBuffer(blockSize_);
+    if (!addr) [[unlikely]] {
+        UC_ERROR("Failed to make buffer({}) on host.", blockSize_);
+        return nullptr;
+    }
+    try {
+        return std::shared_ptr<Reader>(
+            new Reader{block, path, blockSize_, ioDirect_, false, addr.get()},
+            [addr = std::move(addr)](Reader* reader) { delete reader; });
+    } catch (const std::exception& e) {
+        UC_ERROR("Failed({}) to create reader.", e.what());
+        return nullptr;
+    }
+}
+
+std::shared_ptr<ShareBuffer::Reader> ShareBuffer::MakeSharedReader(const std::string& block,
+                                                                   const std::string& path,
+                                                                   size_t position)
+{
+    void* addr = this->BlockAt(position);
+    auto reader = new (std::nothrow) Reader(block, path, blockSize_, ioDirect_, true, addr);
+    if (!reader) [[unlikely]] {
+        this->ReleaseBlock(position);
+        UC_ERROR("Failed to create reader.");
+        return nullptr;
+    }
+    try {
+        return std::shared_ptr<Reader>(reader, [this, position](Reader* reader) {
+            delete reader;
+            this->ReleaseBlock(position);
+        });
+    } catch (const std::exception& e) {
+        UC_ERROR("Failed({}) to create reader.", e.what());
+        return nullptr;
+    }
+}
+
 Status ShareBuffer::Reader::Ready4Read()
+{
+    if (shared_) { return Ready4ReadOnSharedBuffer(); }
+    return Ready4ReadOnLocalBuffer();
+}
+
+uintptr_t ShareBuffer::Reader::GetData()
+{
+    if (shared_) {
+        auto header = (ShareBlockHeader*)this->addr_;
+        return (uintptr_t)header->Data();
+    }
+    return (uintptr_t)this->addr_;
+}
+
+Status ShareBuffer::Reader::Ready4ReadOnLocalBuffer()
+{
+    return File::Read(this->path_, 0, this->length_, this->GetData(), this->ioDirect_);
+}
+
+Status ShareBuffer::Reader::Ready4ReadOnSharedBuffer()
 {
     auto header = (ShareBlockHeader*)this->addr_;
     if (header->status == ShareBlockStatus::LOADED) { return Status::OK(); }
@@ -322,12 +387,6 @@ Status ShareBuffer::Reader::Ready4Read()
     }
     header->status = ShareBlockStatus::FAILURE;
     return s;
-}
-
-uintptr_t ShareBuffer::Reader::GetData()
-{
-    auto header = (ShareBlockHeader*)this->addr_;
-    return (uintptr_t)header->Data();
 }
 
 }  // namespace UC
