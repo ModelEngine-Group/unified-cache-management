@@ -9,10 +9,10 @@
 
 # Connector name (e.g., "UcmNfsStore", "UcmPipelineStore")
 ucm_connectors:
-  - ucm_connector_name: "UcmNfsStore"
+  - ucm_connector_name: "UcmPipelineStore"
     ucm_connector_config:
-      storage_backends: "/mnt/test"
-      io_direct: false
+      store_pipeline: "Cache|Posix"
+      storage_backends: "/home/share/qyh-test"
 
 load_only_first_rank: false
 

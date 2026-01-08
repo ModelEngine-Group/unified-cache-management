@@ -21,7 +21,10 @@ def build_llm_with_uc(module_path: str, name: str, model: str):
         kv_connector=name,
         kv_connector_module_path=module_path,
         kv_role="kv_both",
-        kv_connector_extra_config={"UCM_CONFIG_FILE": "./ucm_config_example.yaml"},
+        kv_connector_extra_config={
+            "use_layerwise": True,
+            "UCM_CONFIG_FILE": "./ucm_config_example.yaml",
+        },
     )
 
     llm_args = EngineArgs(
@@ -32,6 +35,7 @@ def build_llm_with_uc(module_path: str, name: str, model: str):
         max_num_batched_tokens=30000,
         block_size=128,
         enforce_eager=True,
+        tensor_parallel_size=2,
         trust_remote_code=True,
         enable_prefix_caching=False,
     )
