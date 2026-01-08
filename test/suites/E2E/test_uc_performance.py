@@ -1,4 +1,5 @@
 import dataclasses
+import os
 
 import pytest
 from common.capture_utils import export_vars
@@ -11,160 +12,83 @@ from common.uc_eval.task import (
 )
 from common.uc_eval.utils.data_class import ModelConfig, PerfConfig
 
+perf_scenarios = [
+    # (mean_in, mean_out, max_req, concurrent, sampling, hit_rate)
+    (4000, 1024, 1, 1, "{}", 80),
+    (4000, 1024, 8, 8, "{}", 80),
+]
+scenario_ids = [f"in_{s[0]}-out_{s[1]}-con_{s[3]}" for s in perf_scenarios]
 
-@pytest.mark.parametrize("mean_input_tokens", [[2000, 3000]])
-@pytest.mark.parametrize("mean_output_tokens", [[200, 500]])
-@pytest.mark.parametrize("max_num_completed_requests", [[8, 4]])
-@pytest.mark.parametrize("concurrent_requests", [[8, 4]])
-@pytest.mark.parametrize("additional_sampling_params", [["{}", "{}"]])
-@pytest.mark.parametrize("hit_rate", [[0, 50]])
+
+@pytest.mark.stage(2)
 @pytest.mark.feature("uc_performance_test")
+@pytest.mark.parametrize(
+    "in_tokens, out_tokens, max_req, concurrent, sampling, hit_rate",
+    perf_scenarios,
+    ids=scenario_ids,
+)
 @export_vars
 def test_performance(
-    mean_input_tokens,
-    mean_output_tokens,
-    max_num_completed_requests,
-    concurrent_requests,
-    additional_sampling_params,
-    hit_rate,
+    in_tokens, out_tokens, max_req, concurrent, sampling, hit_rate, request
 ):
     all_summaries = inference_results(
-        mean_input_tokens,
-        mean_output_tokens,
-        max_num_completed_requests,
-        concurrent_requests,
-        additional_sampling_params,
-        hit_rate,
+        [in_tokens], [out_tokens], [max_req], [concurrent], [sampling], [hit_rate]
     )
+    summary = all_summaries[0]
     failed_cases = []
 
-    value_lists = {
-        "mean_input_tokens": [],
-        "mean_output_tokens": [],
-        "results_inter_token_latency_s_quantiles_p50": [],
-        "results_inter_token_latency_s_quantiles_p90": [],
-        "results_inter_token_latency_s_quantiles_p99": [],
-        "results_inter_token_latency_s_mean": [],
-        "results_ttft_s_quantiles_p50": [],
-        "results_ttft_s_quantiles_p90": [],
-        "results_ttft_s_quantiles_p99": [],
-        "results_ttft_s_mean": [],
-        "results_end_to_end_latency_s_quantiles_p50": [],
-        "results_end_to_end_latency_s_quantiles_p90": [],
-        "results_end_to_end_latency_s_quantiles_p99": [],
-        "results_end_to_end_latency_s_mean": [],
-        "num_completed_requests": [],
-        "elapsed_time": [],
-        "incremental_time_delay": [],
-        "total_throughput": [],
-        "incremental_throughput": [],
+    results = summary.get("results", {})
+
+    # 构造扁平化的结果字典，方便后续分析和看板展示
+    metrics = {
+        # 输入指标
+        "input_tokens": in_tokens,
+        "output_tokens": out_tokens,
+        "concurrent": concurrent,
+        "sum_requests": max_req,
+        "hit_rate": hit_rate,
+        "ttft_mean": results.get("ttft_s", {}).get("mean"),
+        "tpot_mean": results.get("inter_token_latency_s", {}).get("mean"),
+        "total_throughput": summary.get("total_throughput"),
+        "e2e_mean": results.get("end_to_end_latency_s", {}).get("mean"),
+        "extra_info": os.getenv("TEST_EXTRA_INFO")
+        or config_instance.get_nested_config("llm_connection.extra_info"),
+        "mean_input_tokens": summary.get("mean_input_tokens"),
+        "mean_output_tokens": summary.get("mean_output_tokens"),
+        # Latency ITL
+        "itl_p50": results.get("inter_token_latency_s", {})
+        .get("quantiles", {})
+        .get("p50"),
+        "itl_p90": results.get("inter_token_latency_s", {})
+        .get("quantiles", {})
+        .get("p90"),
+        "itl_p99": results.get("inter_token_latency_s", {})
+        .get("quantiles", {})
+        .get("p99"),
+        # TTFT
+        "ttft_p50": results.get("ttft_s", {}).get("quantiles", {}).get("p50"),
+        "ttft_p90": results.get("ttft_s", {}).get("quantiles", {}).get("p90"),
+        "ttft_p99": results.get("ttft_s", {}).get("quantiles", {}).get("p99"),
+        # End to End
+        "e2e_p50": results.get("end_to_end_latency_s", {})
+        .get("quantiles", {})
+        .get("p50"),
+        "e2e_p90": results.get("end_to_end_latency_s", {})
+        .get("quantiles", {})
+        .get("p90"),
+        "e2e_p99": results.get("end_to_end_latency_s", {})
+        .get("quantiles", {})
+        .get("p99"),
+        # Throughput & Stats
+        "num_completed_requests": summary.get("num_completed_requests"),
+        "elapsed_time": summary.get("elapsed_time"),
+        "incremental_throughput": summary.get("incremental_throughput"),
     }
 
-    for i, summary in enumerate(all_summaries):
-        mean_input_tokens = summary["mean_input_tokens"]
-        mean_output_tokens = summary["mean_output_tokens"]
+    for key, val in metrics.items():
+        assert val is not None, f"Metric '{key}' is missing"
 
-        results_inter_token_latency_s_quantiles_p50 = summary["results"][
-            "inter_token_latency_s"
-        ]["quantiles"]["p50"]
-        results_inter_token_latency_s_quantiles_p90 = summary["results"][
-            "inter_token_latency_s"
-        ]["quantiles"]["p90"]
-        results_inter_token_latency_s_quantiles_p99 = summary["results"][
-            "inter_token_latency_s"
-        ]["quantiles"]["p99"]
-        results_inter_token_latency_s_mean = summary["results"][
-            "inter_token_latency_s"
-        ]["mean"]
-
-        results_ttft_s_quantiles_p50 = summary["results"]["ttft_s"]["quantiles"]["p50"]
-        results_ttft_s_quantiles_p90 = summary["results"]["ttft_s"]["quantiles"]["p90"]
-        results_ttft_s_quantiles_p99 = summary["results"]["ttft_s"]["quantiles"]["p99"]
-        results_ttft_s_mean = summary["results"]["ttft_s"]["mean"]
-
-        results_end_to_end_latency_s_quantiles_p50 = summary["results"][
-            "end_to_end_latency_s"
-        ]["quantiles"]["p50"]
-        results_end_to_end_latency_s_quantiles_p90 = summary["results"][
-            "end_to_end_latency_s"
-        ]["quantiles"]["p90"]
-        results_end_to_end_latency_s_quantiles_p99 = summary["results"][
-            "end_to_end_latency_s"
-        ]["quantiles"]["p99"]
-        results_end_to_end_latency_s_mean = summary["results"]["end_to_end_latency_s"][
-            "mean"
-        ]
-
-        num_completed_requests = summary["num_completed_requests"]
-        elapsed_time = summary["elapsed_time"]
-        incremental_time_delay = summary["incremental_time_delay"]
-        total_throughput = summary["total_throughput"]
-        incremental_throughput = summary["incremental_throughput"]
-
-        values = [
-            mean_input_tokens,
-            mean_output_tokens,
-            results_inter_token_latency_s_quantiles_p50,
-            results_inter_token_latency_s_quantiles_p90,
-            results_inter_token_latency_s_quantiles_p99,
-            results_inter_token_latency_s_mean,
-            results_ttft_s_quantiles_p50,
-            results_ttft_s_quantiles_p90,
-            results_ttft_s_quantiles_p99,
-            results_ttft_s_mean,
-            results_end_to_end_latency_s_quantiles_p50,
-            results_end_to_end_latency_s_quantiles_p90,
-            results_end_to_end_latency_s_quantiles_p99,
-            results_end_to_end_latency_s_mean,
-            num_completed_requests,
-            elapsed_time,
-            incremental_time_delay,
-            total_throughput,
-            incremental_throughput,
-        ]
-
-        for var_name, val in zip(
-            [
-                "mean_input_tokens",
-                "mean_output_tokens",
-                "results_inter_token_latency_s_quantiles_p50",
-                "results_inter_token_latency_s_quantiles_p90",
-                "results_inter_token_latency_s_quantiles_p99",
-                "results_inter_token_latency_s_mean",
-                "results_ttft_s_quantiles_p50",
-                "results_ttft_s_quantiles_p90",
-                "results_ttft_s_quantiles_p99",
-                "results_ttft_s_mean",
-                "results_end_to_end_latency_s_quantiles_p50",
-                "results_end_to_end_latency_s_quantiles_p90",
-                "results_end_to_end_latency_s_quantiles_p99",
-                "results_end_to_end_latency_s_mean",
-                "num_completed_requests",
-                "elapsed_time",
-                "incremental_time_delay",
-                "total_throughput",
-                "incremental_throughput",
-            ],
-            values,
-        ):
-            value_lists[var_name].append(val)
-            if val is None:
-                failed_cases.append((i, var_name, "missing"))
-
-            try:
-                assert val > 0, f"value <= 0"
-            except AssertionError as e:
-                failed_cases.append((i, var_name, str(e)))
-
-    # Output final result
-    if failed_cases:
-        print(f"\n[WARNING] Assertion failed: {len(failed_cases)} abnormal cases found")
-        for i, key, reason in failed_cases:
-            print(f"   Iteration={i + 1}, key='{key}' -> {reason}")
-    else:
-        print("\n[INFO] All values are greater than 0. Assertion passed!")
-
-    return {"_name": "llmperf", "_data": value_lists}
+    return {"_name": "llmperf", "_proj": metrics}
 
 
 @pytest.fixture(scope="session")
