@@ -81,4 +81,5 @@ performance.
 :maxdepth: 1
 nfs_store
 pipeline_store
+ds3fs_store
 :::
