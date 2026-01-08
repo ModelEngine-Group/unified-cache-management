@@ -12,7 +12,7 @@ We offer 3 options to install UCM.
 
 ### Option 1: Build from source
 
-Follow commands below to install unified-cache-management from source code:
+1、Follow commands below to install unified-cache-management from source code:
 **Note:** The sparse module was not compiled by default. To enable it, set the environment variable `export ENABLE_SPARSE=TRUE` before you build.
 ```bash
 # Replace <branch_or_tag_name> with the branch or tag name needed
@@ -23,6 +23,31 @@ pip install -v -e . --no-build-isolation
 cd ..
 ```
 
+2、Apply vLLM and vLLM-Ascend Integration Patches (Required)
+To enable Unified Cache Management (UCM) integration, you need to apply patches to both vLLM and vLLM-Ascend source trees.
+
+**Step 1:** Apply the vLLM Patch
+
+First, apply the standard vLLM integration patch in the vLLM source directory:
+    
+```bash
+cd <path_to_vllm>
+git apply unified-cache-management/ucm/integration/vllm/patch/0.9.2/vllm-adapt.patch
+```
+    
+**Step 2:** Apply the vLLM-Ascend Patch
+
+Then, switch to the vLLM-Ascend source directory and apply the Ascend-specific patch:
+
+```bash
+cd <path_to_vllm_ascend>
+git apply unified-cache-management/ucm/integration/vllm/patch/0.9.2/vllm-ascend-adapt.patch
+```
+
+**Note:**
+    The ReRoPE algorithm is not supported on Ascend at the moment.
+    Only the standard UCM integration is applicable for vLLM-Ascend.
+
 
 ### Option 2: Install by pip
 Install by pip or find the pre-build wheels on [Pypi](https://pypi.org/project/uc-manager/).
@@ -30,6 +55,7 @@ Install by pip or find the pre-build wheels on [Pypi](https://pypi.org/project/u
 export PLATFORM=ascend
 pip install uc-manager
 ```
+> **Note:** If installing via `pip install`, you need to manually add the `config.yaml` file, similar to `unified-cache-management/examples/ucm_config_example.yaml`, because PyPI packages do not include YAML files.
 
 ### Option 3: Setup from docker
 Download the pre-built `vllm-ascend` docker image and build unified-cache-management docker image by commands below:
@@ -39,6 +65,14 @@ Download the pre-built `vllm-ascend` docker image and build unified-cache-manage
  cd unified-cache-management
  docker build -t ucm-vllm:latest -f ./docker/Dockerfile-NPU ./
  ```
+vllm-ascend provides two variants: **Ubuntu** and **openEuler**.  
+The `Dockerfile-NPU` uses the **openEuler** variant by default.
+
+If you want to use the **Ubuntu** variant, please remove the `-openeuler` suffix and use the following image instead:
+
+```text
+quay.io/ascend/vllm-ascend:v0.9.2rc1
+```
 Then run your container using following command. You can add or remove Docker parameters as needed.
 ```bash
 # Update DEVICE according to your device (/dev/davinci[0-7])

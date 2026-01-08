@@ -1,6 +1,7 @@
 import torch
 
-from ucm.sparse.kvcomp.ham_dist import hamming
+if hasattr(torch, "cuda") and torch.cuda.is_available():
+    from ucm.sparse.gsa_on_device.ham_dist import hamming
 
 
 @torch.compile()

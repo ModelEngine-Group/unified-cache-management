@@ -34,9 +34,9 @@ logger = init_logger(__name__)
 
 
 @dataclass
-class KvCompConfig:
+class GSAOnDeviceConfig:
     """
-    Dataclass representing the configuration for KvComp.
+    Dataclass representing the configuration for GSAOnDevice.
     """
 
     model_name: str = "DummyModel"
@@ -47,7 +47,7 @@ class KvCompConfig:
 
     num_hidden_layers: int = 36
 
-    # the minimal seq_len to trigger KvComp
+    # the minimal seq_len to trigger GSAOnDevice
     seq_len_threshhold: int = 2048
 
     # any value divisible by 128
@@ -272,7 +272,7 @@ class KvCompConfig:
             json.dump(asdict(self), f, indent=4)
 
     @classmethod
-    def from_json(cls, file_path: str) -> "KvCompConfig":
+    def from_json(cls, file_path: str) -> "GSAOnDeviceConfig":
         with open(file_path, "r") as f:
             config_dict = json.load(f)
         return cls(**config_dict)
