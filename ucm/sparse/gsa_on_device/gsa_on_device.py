@@ -56,6 +56,8 @@ def gsa_on_device_config_path_for_model(vllm_config) -> str:
         rel = "ucm/sparse/gsa_on_device/configs/gsa_on_device_qwq_32B_config.json"
     elif "deepseek" in model and "v2" in model:
         rel = "ucm/sparse/gsa_on_device/configs/gsa_on_device_deepseek_v2_lite_config.json"
+    elif "qwen3" in model and "30b" in model:
+        rel = "ucm/sparse/gsa_on_device/configs/gsa_on_device_qwen3_coder_30B_A3B_Instruct_FP8.json"
     else:
         raise ValueError(f"[GSAOnDevice] Unsupported model for gsa_on_device: {model}")
 
@@ -198,11 +200,16 @@ class GSAOnDevice(UcmSparseBase):
                     device=self.device,
                 )
 
-                if not self.is_cuda:  # NPU only variables
-                    self.decode_mask_npu = None
-                    self.is_tensor_computed = False
-                    self.max_batch_size = vllm_config.scheduler_config.max_num_seqs
+                self.is_tensor_computed = False
+                self.max_batch_size = vllm_config.scheduler_config.max_num_seqs
 
+                if self.is_cuda:  # CUDA only variables
+                    self.seq_len_decode = torch.zeros(
+                        [self.max_batch_size], dtype=torch.int32, device=self.device
+                    )
+
+                else:  # NPU only variables
+                    self.decode_mask_npu = None
                     self.hamming_keep_chunks_head = 1
                     self.hamming_keep_chunks_tail = 4
 
@@ -325,6 +332,29 @@ class GSAOnDevice(UcmSparseBase):
                 )
             else:  # GQA
                 if self.is_cuda:
+                    if not self.is_tensor_computed:
+                        if self.decode_mask.any():  # with at least one decode request
+                            self.decode_req_ids = torch.nonzero(
+                                self.decode_mask, as_tuple=False
+                            ).flatten()
+
+                            q_start = attn_metadata.query_start_loc
+
+                            self.decode_token_idx = q_start[:-1].index_select(
+                                0, self.decode_req_ids
+                            )
+
+                            self.block_table_decode = attn_metadata.block_table.index_select(
+                                0, self.decode_req_ids
+                            )
+
+                            self.seq_len_decode = self.ori_seq_lens_decode.index_select(
+                                0, self.decode_req_ids
+                            )
+                            self.new_block_table = attn_metadata.block_table
+                            self.new_seq_lens = attn_metadata.seq_lens
+                            self.is_tensor_computed = True
+
                     k_hash_compute = self.hash_encoder.compute_hash(key).view(
                         torch.bfloat16
                     )
@@ -426,53 +456,36 @@ class GSAOnDevice(UcmSparseBase):
                     )
                     attn_metadata.decode.num_splits = num_splits
         else:  # GQA
-            q_start = attn_metadata.query_start_loc
             if self.decode_mask.any():  # 有decode阶段的req
                 if not is_rollback_layer:
                     if is_skip_hash_layer:
                         # 跳层 使用上一个topk结果
-                        attn_metadata.block_tables = self.topk_block_table
+                        attn_metadata.block_table = self.topk_block_table
                         attn_metadata.seq_lens = self.topk_seq_lens
                     else:
                         if self.is_cuda:
-
-                            decode_req_ids = torch.nonzero(
-                                self.decode_mask, as_tuple=False
-                            ).flatten()
-                            decode_token_idx = q_start[:-1].index_select(
-                                0, decode_req_ids
-                            )
-                            q_decode = query.index_select(0, decode_token_idx)
+                            q_decode = query.index_select(0, self.decode_token_idx)
                             q_hash = self.hash_code(query=q_decode)
-
-                            topk_token = self.hash_topk_tokens
-
-                            block_table_decode = attn_metadata.block_table.index_select(
-                                0, decode_req_ids
-                            )
-                            seq_len_decode = self.ori_seq_lens_decode.index_select(
-                                0, decode_req_ids
-                            )
                             block_table_decode = cuda_hamming_topk(
                                 q_hash.unsqueeze(1),
                                 k_hash,
-                                block_table_decode,
-                                seq_len_decode,
-                                topk_token=topk_token,
+                                self.block_table_decode,
+                                self.seq_len_decode,
+                                topk_token=self.hash_topk_tokens,
                                 sink_token=64,
                                 recent_token=512,
                                 is_mla=self.is_mla,
                             )
                             # update topk_block_table
                             topk = block_table_decode.shape[1]
-                            attn_metadata.block_table[decode_req_ids, :topk] = (
+                            self.new_block_table[self.decode_req_ids, :topk] = (
                                 block_table_decode
                             )
-                            attn_metadata.block_table[decode_req_ids, topk:] = 0
-
-                            attn_metadata.seq_lens[self.decode_mask] = (
-                                self.topk_seq_lens_qwen
-                            )
+                            self.new_block_table[self.decode_req_ids, topk:] = 0
+                            attn_metadata.block_table = self.new_block_table
+                            self.new_seq_lens[self.decode_mask] = self.topk_seq_lens_qwen
+                            attn_metadata.seq_lens = self.new_seq_lens
+                            
                         else:  # NPU
 
                             decode_req_ids = torch.nonzero(
