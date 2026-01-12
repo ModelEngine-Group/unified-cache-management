@@ -66,7 +66,7 @@ TEST_F(UCPosixSpaceManagerTest, DataFilePath)
     using namespace UC::PosixStore;
     SpaceManager spaceMgr;
     Config config;
-    config.shardDataDir = false;
+    config.dataDirShardBytes = 0;
     config.storageBackends.push_back(this->Path());
     auto s = spaceMgr.Setup(config);
     ASSERT_EQ(s, UC::Status::OK());
@@ -90,7 +90,7 @@ TEST_F(UCPosixSpaceManagerTest, ShardFilePath)
     using namespace UC::PosixStore;
     SpaceManager spaceMgr;
     Config config;
-    config.shardDataDir = true;
+    config.dataDirShardBytes = 2;
     config.storageBackends.push_back(this->Path());
     auto s = spaceMgr.Setup(config);
     ASSERT_EQ(s, UC::Status::OK());
@@ -106,7 +106,7 @@ TEST_F(UCPosixSpaceManagerTest, ShardFilePath)
     ASSERT_EQ(PosixFile{activated}.Access(PosixFile::AccessMode::EXIST), UC::Status::NotFound());
     auto archived = spaceMgr.GetLayout()->DataFilePath(blockId, false);
     const auto& file = fmt::format("{:02x}", fmt::join(blockId, ""));
-    const auto& shard = file.substr(0, 8);
+    const auto& shard = file.substr(0, config.dataDirShardBytes);
     ASSERT_EQ(archived, fmt::format("{}{}/{}", this->Path(), shard, file));
     ASSERT_EQ(PosixFile{archived}.Access(PosixFile::AccessMode::EXIST), UC::Status::OK());
 }
