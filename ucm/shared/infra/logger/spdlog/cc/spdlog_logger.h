@@ -1,0 +1,52 @@
+/**
+ * MIT License
+ *
+ * Copyright (c) 2025 Huawei Technologies Co., Ltd. All rights reserved.
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining a copy
+ * of this software and associated documentation files (the "Software"), to deal
+ * in the Software without restriction, including without limitation the rights
+ * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+ * copies of the Software, and to permit persons to whom the Software is
+ * furnished to do so, subject to the following conditions:
+ *
+ * The above copyright notice and this permission notice shall be included in all
+ * copies or substantial portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+ * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+ * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+ * SOFTWARE.
+ * */
+#ifndef UNIFIEDCACHE_INFRA_LOGGER_SPDLOG_SPDLOG_LOGGER_H
+#define UNIFIEDCACHE_INFRA_LOGGER_SPDLOG_SPDLOG_LOGGER_H
+#include <spdlog/spdlog.h>
+#include "logger.h"
+namespace UC::Logger {
+
+class SpdLogger : public ILogger {
+    std::shared_ptr<spdlog::logger> logger_;
+    std::mutex mutex_;
+
+public:
+    SpdLogger() : logger_{nullptr} {}
+    void Log(Level&& lv, SourceLocation&& loc, std::string&& msg) override;
+    void Setup(const std::string& path, int max_files, int max_size) override;
+    void Flush() override;
+
+private:
+    std::shared_ptr<spdlog::logger> CreateLogger();
+    std::string path_{"log/ucm.log"};
+    int max_files_{3};
+    int max_size_{5 * 1048576};  // 5MB
+};
+
+void Log(Level&& lv, std::string file, std::string func, int line, std::string&& msg);
+void Setup(const std::string& path, int max_files, int max_size);
+void Flush();
+}  // namespace UC::Logger
+
+#endif

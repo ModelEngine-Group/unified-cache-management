@@ -3,11 +3,7 @@ add_library(infra_status OBJECT ${UCMINFRA_STATUS_SOURCE_FILES})
 target_include_directories(infra_status PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(infra_status PUBLIC fmt)
 
-file(GLOB UCMINFRA_LOGGER_SOURCE_FILES "logger/*.*")
-file(GLOB_RECURSE UCMINFRA_LOGGER_DETAIL_SOURCE_FILES "logger/${LOGGER_BACKEND}/*.cc")
-add_library(infra_logger OBJECT ${UCMINFRA_LOGGER_SOURCE_FILES} ${UCMINFRA_LOGGER_DETAIL_SOURCE_FILES})
-target_include_directories(infra_logger PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
-target_link_libraries(infra_logger PUBLIC fmt spdlog)
+add_subdirectory(logger)
 
 file(GLOB_RECURSE UCMINFRA_TEMPLATE_SOURCE_FILES "template/*.*")
 add_library(infra_template OBJECT ${UCMINFRA_TEMPLATE_SOURCE_FILES})

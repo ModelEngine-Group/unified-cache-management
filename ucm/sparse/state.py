@@ -48,15 +48,14 @@ def ensure_ucm_sparse_initialized(
     sparse_method_name = ucm_sparse_config
 
     if _UCM_SPARSE_AGENT is None:
-        logger.info("Initializing UCM sparse agent with method: %s", sparse_method_name)
+        logger.info(f"Initializing UCM sparse agent with method: {sparse_method_name}")
         _UCM_SPARSE_AGENT = UcmSparseFactory.create_sparse_method(
             vllm_config, role=role
         )
     else:
         # Update role if needed (for debugging/logging purposes)
         logger.debug(
-            "UCM sparse agent already initialized, current role: %s",
-            _UCM_SPARSE_AGENT._role,
+            f"UCM sparse agent already initialized, current role: {_UCM_SPARSE_AGENT._role}"
         )
 
 

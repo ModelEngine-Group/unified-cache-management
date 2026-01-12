@@ -197,9 +197,7 @@ def write_to_db(table_name: str, data: Dict[str, Any]) -> bool:
         return True
 
     except Exception as e:
-        logger.error(
-            f"Error during DB write for table '{table_name}': {e}", exc_info=True
-        )
+        logger.error(f"Error during DB write for table '{table_name}': {e}")
         _backup_to_file(table_name, data)
         return False
 
@@ -223,7 +221,7 @@ def database_connection(build_id: str) -> None:
         db.connect(reuse_if_open=True)
         logger.info("PostgreSQL connection successful.")
     except Exception as e:
-        logger.error(f"PostgreSQL connection failed: {e}", exc_info=True)
+        logger.error(f"PostgreSQL connection failed: {e}")
     finally:
         if not db.is_closed():
             db.close()
