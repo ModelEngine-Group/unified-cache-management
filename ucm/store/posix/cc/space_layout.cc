@@ -37,11 +37,10 @@ inline std::string DataFileName(const Detail::BlockId& blockId)
     return fmt::format("{:02x}", fmt::join(blockId, ""));
 }
 
-inline std::string DataFileShardName(const std::string& fileName) { return fileName.substr(0, 8); }
-
 Status SpaceLayout::Setup(const Config& config)
 {
-    shardDataDir_ = config.shardDataDir;
+    dataDirShardBytes_ = config.dataDirShardBytes;
+    dataDirShard_ = dataDirShardBytes_ > 0;
     auto status = Status::OK();
     for (auto& path : config.storageBackends) {
         if ((status = AddStorageBackend(path)).Failure()) { return status; }
@@ -53,8 +52,7 @@ std::string SpaceLayout::DataFilePath(const Detail::BlockId& blockId, bool activ
 {
     const auto& backend = StorageBackend(blockId);
     const auto& file = DataFileName(blockId);
-    const auto& shard =
-        activated ? TEMP_ROOT : (shardDataDir_ ? DataFileShardName(file) : DATA_ROOT);
+    const auto& shard = activated ? TEMP_ROOT : (dataDirShard_ ? FileShardName(file) : DATA_ROOT);
     return fmt::format("{}{}/{}", backend, shard, file);
 }
 
@@ -65,9 +63,9 @@ Status SpaceLayout::CommitFile(const Detail::BlockId& blockId, bool success) con
     const auto& activated = fmt::format("{}{}/{}", backend, TEMP_ROOT, file);
     auto s = Status::OK();
     if (success) {
-        const auto& shard = shardDataDir_ ? DataFileShardName(file) : DATA_ROOT;
+        const auto& shard = dataDirShard_ ? FileShardName(file) : DATA_ROOT;
         const auto& archived = fmt::format("{}{}/{}", backend, shard, file);
-        if (shardDataDir_) { s = PosixFile{backend + shard}.MkDir(); }
+        if (dataDirShard_) { s = PosixFile{backend + shard}.MkDir(); }
         if (s == Status::OK() || s == Status::DuplicateKey()) {
             s = PosixFile{activated}.Rename(archived);
         }
@@ -79,7 +77,7 @@ Status SpaceLayout::CommitFile(const Detail::BlockId& blockId, bool success) con
 std::vector<std::string> SpaceLayout::RelativeRoots() const
 {
     std::vector<std::string> roots{TEMP_ROOT};
-    if (!shardDataDir_) { roots.push_back(DATA_ROOT); }
+    if (!dataDirShard_) { roots.push_back(DATA_ROOT); }
     return roots;
 }
 

@@ -32,7 +32,8 @@ namespace UC::PosixStore {
 
 class SpaceLayout {
     std::vector<std::string> storageBackends_;
-    bool shardDataDir_;
+    bool dataDirShard_;
+    size_t dataDirShardBytes_;
 
 public:
     Status Setup(const Config& config);
@@ -45,6 +46,10 @@ private:
     Status AddFirstStorageBackend(const std::string& path);
     Status AddSecondaryStorageBackend(const std::string& path);
     std::string StorageBackend(const Detail::BlockId& blockId) const;
+    std::string FileShardName(const std::string& fileName) const
+    {
+        return fileName.substr(0, dataDirShardBytes_);
+    }
 };
 
 }  // namespace UC::PosixStore
