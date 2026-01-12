@@ -27,49 +27,36 @@ from typing import Callable, Dict, List
 
 import torch
 
-from ucm.store.cache.connector import UcmCacheStore
-from ucm.store.empty.connector import UcmEmptyStore
-from ucm.store.posix.connector import UcmPosixStore
 from ucm.store.ucmstore_v1 import Task, UcmKVStoreBaseV1
 
-PipelineBuilder = Callable[[Dict[str, object], List[UcmKVStoreBaseV1]], None]
 
+class UcmPipelineStoreBuilder:
+    _registry: Dict[
+        str, Callable[[Dict[str, object], List[UcmKVStoreBaseV1]], None]
+    ] = {}
 
-def _build_cache_posix_pipeline(
-    config: Dict[str, object], store: List[UcmKVStoreBaseV1]
-) -> None:
-    posix_config = copy.deepcopy(config)
-    if config.get("device_id", -1) >= 0:
-        posix_config |= {"tensor_size": config["shard_size"]}
-    posix_store = UcmPosixStore(posix_config)
-    store.append(posix_store)
-    cache_config = copy.deepcopy(config) | {"store_backend": posix_store.cc_store()}
-    cache_store = UcmCacheStore(cache_config)
-    store.append(cache_store)
+    @classmethod
+    def register(
+        cls,
+        name: str,
+        builder: Callable[[Dict[str, object], List[UcmKVStoreBaseV1]], None],
+    ) -> None:
+        if name in cls._registry:
+            raise ValueError(f"Builder '{name}' is already registered.")
+        cls._registry[name] = builder
 
-
-def _build_cache_empty_pipeline(
-    config: Dict[str, object], store: List[UcmKVStoreBaseV1]
-) -> None:
-    empty_config = copy.deepcopy(config)
-    empty_store = UcmEmptyStore(empty_config)
-    store.append(empty_store)
-    cache_config = copy.deepcopy(config) | {"store_backend": empty_store.cc_store()}
-    cache_store = UcmCacheStore(cache_config)
-    store.append(cache_store)
-
-
-PIPELINE_REGISTRY: Dict[str, PipelineBuilder] = {
-    "Cache|Posix": _build_cache_posix_pipeline,
-    "Cache|Empty": _build_cache_empty_pipeline,
-}
+    @classmethod
+    def get(
+        cls, name: str
+    ) -> Callable[[Dict[str, object], List[UcmKVStoreBaseV1]], None]:
+        return cls._registry.get(name)
 
 
 class UcmPipelineStore(UcmKVStoreBaseV1):
     def __init__(self, config: Dict[str, object]) -> None:
         super().__init__(config)
         self._stores: List[UcmKVStoreBaseV1] = []
-        builder = PIPELINE_REGISTRY.get(config["store_pipeline"])
+        builder = UcmPipelineStoreBuilder.get(config["store_pipeline"])
         if builder is None:
             raise ValueError(f"unknown store pipeline: {config['store_pipeline']}")
         builder(config, self._stores)
@@ -124,3 +111,37 @@ class UcmPipelineStore(UcmKVStoreBaseV1):
 
     def check(self, task: Task) -> bool:
         return self._backend.check(task)
+
+
+def _cache_posix_pipeline_builder(
+    config: Dict[str, object], store: List[UcmKVStoreBaseV1]
+) -> None:
+    from ucm.store.cache.connector import UcmCacheStore
+    from ucm.store.posix.connector import UcmPosixStore
+
+    posix_config = copy.deepcopy(config)
+    if config.get("device_id", -1) >= 0:
+        posix_config |= {"tensor_size": config["shard_size"]}
+    posix_store = UcmPosixStore(posix_config)
+    store.append(posix_store)
+    cache_config = copy.deepcopy(config) | {"store_backend": posix_store.cc_store()}
+    cache_store = UcmCacheStore(cache_config)
+    store.append(cache_store)
+
+
+def _cache_empty_pipeline_builder(
+    config: Dict[str, object], store: List[UcmKVStoreBaseV1]
+) -> None:
+    from ucm.store.cache.connector import UcmCacheStore
+    from ucm.store.empty.connector import UcmEmptyStore
+
+    empty_config = copy.deepcopy(config)
+    empty_store = UcmEmptyStore(empty_config)
+    store.append(empty_store)
+    cache_config = copy.deepcopy(config) | {"store_backend": empty_store.cc_store()}
+    cache_store = UcmCacheStore(cache_config)
+    store.append(cache_store)
+
+
+UcmPipelineStoreBuilder.register("Cache|Posix", _cache_posix_pipeline_builder)
+UcmPipelineStoreBuilder.register("Cache|Empty", _cache_empty_pipeline_builder)
