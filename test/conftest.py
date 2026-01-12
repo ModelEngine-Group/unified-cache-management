@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import dataclasses
 import datetime as dt
 import os
 import platform as pf
@@ -11,6 +12,7 @@ import pynvml
 import pytest
 from common.config_utils import config_utils as config_instance
 from common.db_utils import database_connection, write_to_db
+from common.uc_eval.utils.data_class import ModelConfig
 
 # ---------------- Constants ----------------
 PRJ_ROOT = Path(__file__).resolve().parent
@@ -196,3 +198,11 @@ def setup_gpu_resource(request):
             pytest.fail(
                 f"No GPU with {mem_needed}MB(+30% buffer) free memory available"
             )
+
+
+@pytest.fixture(scope="session")
+def model_config() -> ModelConfig:
+    cfg = config_instance.get_config("models") or {}
+    field_names = [field.name for field in dataclasses.fields(ModelConfig)]
+    kwargs = {k: v for k, v in cfg.items() if k in field_names and v is not None}
+    return ModelConfig(**kwargs)
