@@ -24,7 +24,7 @@
 #include <gtest/gtest.h>
 #include "detail/random.h"
 #include "detail/types_helper.h"
-#include "meta_manager.h"
+#include "fake/cc/meta_manager.h"
 
 class UCFakeMetaManagerTest : public testing::Test {
 protected:

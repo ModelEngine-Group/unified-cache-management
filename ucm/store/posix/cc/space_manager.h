@@ -47,6 +47,7 @@ private:
 public:
     Status Setup(const Config& config);
     Expected<std::vector<uint8_t>> Lookup(const Detail::BlockId* blocks, size_t num);
+    Expected<ssize_t> LookupOnPrefix(const Detail::BlockId* blocks, size_t num);
     const SpaceLayout* GetLayout() const { return &layout_; }
 
 private:

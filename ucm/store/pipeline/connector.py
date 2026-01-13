@@ -71,6 +71,9 @@ class UcmPipelineStore(UcmKVStoreBaseV1):
     def lookup(self, block_ids: List[bytes]) -> List[bool]:
         return self._backend.lookup(block_ids)
 
+    def lookup_on_prefix(self, block_ids: List[bytes]) -> int:
+        return self._backend.lookup_on_prefix(block_ids)
+
     def prefetch(self, block_ids: List[bytes]) -> None:
         return self._backend.prefetch(block_ids)
 
