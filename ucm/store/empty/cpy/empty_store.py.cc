@@ -39,6 +39,10 @@ public:
     {
         return std::vector<uint8_t>(num, false);
     }
+    Expected<ssize_t> LookupOnPrefix(const Detail::BlockId* blocks, size_t num) override
+    {
+        return -1;
+    }
     void Prefetch(const Detail::BlockId* blocks, size_t num) override {}
     Expected<Detail::TaskHandle> Load(Detail::TaskDesc task) override { return NextId(); }
     Expected<Detail::TaskHandle> Dump(Detail::TaskDesc task) override { return NextId(); }
@@ -71,6 +75,7 @@ PYBIND11_MODULE(ucmemptystore, module)
     store.def("Self", &EmptyStorePy::Self);
     store.def("Setup", &EmptyStorePy::Setup);
     store.def("Lookup", &EmptyStorePy::Lookup, py::arg("ids").noconvert());
+    store.def("LookupOnPrefix", &EmptyStorePy::LookupOnPrefix, py::arg("ids").noconvert());
     store.def("Prefetch", &EmptyStorePy::Prefetch, py::arg("ids").noconvert());
     store.def("Load", &EmptyStorePy::Load, py::arg("ids").noconvert(),
               py::arg("indexes").noconvert(), py::arg("addrs").noconvert());

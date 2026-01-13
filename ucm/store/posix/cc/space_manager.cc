@@ -63,6 +63,13 @@ Expected<std::vector<uint8_t>> SpaceManager::Lookup(const Detail::BlockId* block
     return std::move(*founds);
 }
 
+Expected<ssize_t> SpaceManager::LookupOnPrefix(const Detail::BlockId* blocks, size_t num)
+{
+    ssize_t index = -1;
+    for (size_t i = 0; i < num && Lookup(blocks + i); i++) { index = static_cast<ssize_t>(i); }
+    return index;
+}
+
 uint8_t SpaceManager::Lookup(const Detail::BlockId* block)
 {
     const auto& path = layout_.DataFilePath(*block, false);

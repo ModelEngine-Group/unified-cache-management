@@ -126,6 +126,13 @@ Expected<std::vector<uint8_t>> CacheStore::Lookup(const Detail::BlockId* blocks,
     return res;
 }
 
+Expected<ssize_t> CacheStore::LookupOnPrefix(const Detail::BlockId* blocks, size_t num)
+{
+    auto res = impl_->bufferMgr.LookupOnPrefix(blocks, num);
+    if (!res) [[unlikely]] { UC_ERROR("Failed({}) to lookup blocks({}).", res.Error(), num); }
+    return res;
+}
+
 void CacheStore::Prefetch(const Detail::BlockId*, size_t) {}
 
 Expected<Detail::TaskHandle> CacheStore::Load(Detail::TaskDesc task)

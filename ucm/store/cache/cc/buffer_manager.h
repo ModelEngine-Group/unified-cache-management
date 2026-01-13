@@ -35,6 +35,16 @@ class BufferManager {
     std::unique_ptr<TransBuffer> buffer_{nullptr};
     StoreV1* backend_{nullptr};
 
+    template <auto LookupFunc>
+    auto LookupThrough(const Detail::BlockId* blocks, size_t num)
+    {
+        StopWatch sw;
+        auto res = (backend_->*LookupFunc)(blocks, num);
+        if (!res) [[unlikely]] { return decltype(res)(res.Error()); }
+        UC_DEBUG("Cache lookup({}) in backend costs {:.3f}ms.", num, sw.Elapsed().count() * 1e3);
+        return res;
+    }
+
 public:
     Status Setup(const Config& config)
     {
@@ -50,25 +60,20 @@ public:
     TransBuffer* GetTransBuffer() { return buffer_ ? buffer_.get() : nullptr; }
     Expected<std::vector<uint8_t>> Lookup(const Detail::BlockId* blocks, size_t num)
     {
-        if (!buffer_) { return LookupThrough(blocks, num); }
+        if (!buffer_) { return LookupThrough<&StoreV1::Lookup>(blocks, num); }
         return LookupFast(blocks, num);
+    }
+    Expected<ssize_t> LookupOnPrefix(const Detail::BlockId* blocks, size_t num)
+    {
+        if (!buffer_) { return LookupThrough<&StoreV1::LookupOnPrefix>(blocks, num); }
+        return LookupOnPrefixFast(blocks, num);
     }
 
 private:
-    Expected<std::vector<uint8_t>> LookupThrough(const Detail::BlockId* blocks, size_t num)
+    void Lookup(const Detail::BlockId* blocks, size_t num, std::vector<uint8_t>& results,
+                std::vector<Detail::BlockId>& missBlk, std::vector<size_t>& missIdx)
     {
-        StopWatch sw;
-        auto res = backend_->Lookup(blocks, num);
-        if (!res) [[unlikely]] { return res.Error(); }
-        UC_DEBUG("Cache lookup({}) in backend costs {:.3f}ms.", num, sw.Elapsed().count() * 1e3);
-        return res;
-    }
-    Expected<std::vector<uint8_t>> LookupFast(const Detail::BlockId* blocks, size_t num)
-    {
-        std::vector<uint8_t> results;
         results.reserve(num);
-        std::vector<Detail::BlockId> missBlk;
-        std::vector<size_t> missIdx;
         missBlk.reserve(num);
         missIdx.reserve(num);
         StopWatch sw;
@@ -80,8 +85,15 @@ private:
             missIdx.push_back(i);
         }
         UC_DEBUG("Cache lookup({}) costs {:.3f}ms.", num, sw.Elapsed().count() * 1e3);
+    }
+    Expected<std::vector<uint8_t>> LookupFast(const Detail::BlockId* blocks, size_t num)
+    {
+        std::vector<uint8_t> results;
+        std::vector<Detail::BlockId> missBlk;
+        std::vector<size_t> missIdx;
+        Lookup(blocks, num, results, missBlk, missIdx);
         if (missBlk.empty()) { return results; }
-        sw.Reset();
+        StopWatch sw;
         auto res = backend_->Lookup(missBlk.data(), missBlk.size());
         if (!res) [[unlikely]] { return res.Error(); }
         UC_DEBUG("Cache lookup({}/{}) in backend costs {:.3f}ms.", missBlk.size(), num,
@@ -89,6 +101,24 @@ private:
         const auto& backendVec = res.Value();
         for (size_t i = 0; i < missIdx.size(); ++i) { results[missIdx[i]] = backendVec[i]; }
         return results;
+    }
+    Expected<ssize_t> LookupOnPrefixFast(const Detail::BlockId* blocks, size_t num)
+    {
+        std::vector<uint8_t> results;
+        std::vector<Detail::BlockId> missBlk;
+        std::vector<size_t> missIdx;
+        Lookup(blocks, num, results, missBlk, missIdx);
+        if (missBlk.empty()) { return static_cast<ssize_t>(num) - 1; }
+        StopWatch sw;
+        auto res = backend_->LookupOnPrefix(missBlk.data(), missBlk.size());
+        if (!res) [[unlikely]] { return res.Error(); }
+        UC_DEBUG("Cache lookup({}/{}) in backend costs {:.3f}ms.", missBlk.size(), num,
+                 sw.Elapsed().count() * 1e3);
+        const auto& result = res.Value();
+        if (static_cast<size_t>(result + 1) == missIdx.size()) {
+            return static_cast<ssize_t>(num) - 1;
+        }
+        return static_cast<ssize_t>(missIdx[result + 1]) - 1;
     }
 };
 

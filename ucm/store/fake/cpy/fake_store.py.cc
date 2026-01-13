@@ -43,6 +43,7 @@ PYBIND11_MODULE(ucmfakestore, module)
     store.def("Self", &FakeStorePy::Self);
     store.def("Setup", &FakeStorePy::Setup);
     store.def("Lookup", &FakeStorePy::Lookup, py::arg("ids").noconvert());
+    store.def("LookupOnPrefix", &FakeStorePy::LookupOnPrefix, py::arg("ids").noconvert());
     store.def("Prefetch", &FakeStorePy::Prefetch, py::arg("ids").noconvert());
     store.def("Load", &FakeStorePy::Load, py::arg("ids").noconvert(),
               py::arg("indexes").noconvert(), py::arg("addrs").noconvert());

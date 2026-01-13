@@ -110,3 +110,46 @@ TEST_F(UCPosixSpaceManagerTest, ShardFilePath)
     ASSERT_EQ(archived, fmt::format("{}{}/{}", this->Path(), shard, file));
     ASSERT_EQ(PosixFile{archived}.Access(PosixFile::AccessMode::EXIST), UC::Status::OK());
 }
+
+TEST_F(UCPosixSpaceManagerTest, Lookup)
+{
+    using namespace UC::PosixStore;
+    SpaceManager spaceMgr;
+    Config config;
+    config.dataDirShardBytes = 0;
+    config.storageBackends.push_back(Path());
+    ASSERT_TRUE(spaceMgr.Setup(config).Success());
+    std::vector<UC::Detail::BlockId> blocks(3);
+    std::for_each(blocks.begin(), blocks.end(), [](auto& block) {
+        block = UC::Test::Detail::TypesHelper::MakeBlockIdRandomly();
+    });
+    {
+        auto foundIdx = spaceMgr.LookupOnPrefix(blocks.data(), blocks.size()).Value();
+        ASSERT_EQ(foundIdx, -1);
+        auto founds = spaceMgr.Lookup(blocks.data(), blocks.size()).Value();
+        ASSERT_EQ(founds.size(), blocks.size());
+        std::for_each(founds.begin(), founds.end(), [](auto found) { ASSERT_FALSE(found); });
+    }
+    std::for_each(blocks.begin(), blocks.end(), [&](const auto& block) {
+        auto archived = spaceMgr.GetLayout()->DataFilePath(block, false);
+        ASSERT_EQ(PosixFile{archived}.Open(PosixFile::OpenFlag::CREATE), UC::Status::OK());
+    });
+    {
+        auto foundIdx = spaceMgr.LookupOnPrefix(blocks.data(), blocks.size()).Value();
+        ASSERT_EQ(foundIdx, 2);
+        auto founds = spaceMgr.Lookup(blocks.data(), blocks.size()).Value();
+        ASSERT_EQ(founds.size(), blocks.size());
+        std::for_each(founds.begin(), founds.end(), [](auto found) { ASSERT_TRUE(found); });
+    }
+    auto pos = blocks.begin();
+    std::advance(pos, 2);
+    blocks.insert(pos, UC::Test::Detail::TypesHelper::MakeBlockIdRandomly());
+    {
+        auto foundIdx = spaceMgr.LookupOnPrefix(blocks.data(), blocks.size()).Value();
+        ASSERT_EQ(foundIdx, 1);
+        auto founds = spaceMgr.Lookup(blocks.data(), blocks.size()).Value();
+        ASSERT_EQ(founds.size(), blocks.size());
+        std::vector<uint8_t> expected{true, true, false, true};
+        ASSERT_TRUE(founds == expected);
+    }
+}

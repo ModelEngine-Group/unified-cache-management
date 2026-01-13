@@ -51,6 +51,7 @@ PYBIND11_MODULE(ucmcachestore, module)
     store.def("Self", &CacheStorePy::Self);
     store.def("Setup", &CacheStorePy::Setup);
     store.def("Lookup", &CacheStorePy::Lookup, py::arg("ids").noconvert());
+    store.def("LookupOnPrefix", &CacheStorePy::LookupOnPrefix, py::arg("ids").noconvert());
     store.def("Prefetch", &CacheStorePy::Prefetch, py::arg("ids").noconvert());
     store.def("Load", &CacheStorePy::Load, py::arg("ids").noconvert(),
               py::arg("indexes").noconvert(), py::arg("addrs").noconvert());

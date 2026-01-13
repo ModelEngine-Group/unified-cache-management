@@ -60,6 +60,18 @@ public:
     virtual Expected<std::vector<uint8_t>> Lookup(const Detail::BlockId* blocks, size_t num) = 0;
 
     /**
+     * @brief Check whether the given blocks exist in storage.
+     *
+     * @param blocks Array of block identifiers to test.
+     * @param num Number of block identifiers to test.
+     * @return Expected<ssize_t>
+     *   - On success: an index representing the maximum index of blocks found in storage
+     *     is present, returns -1 if none are found.
+     *   - On failure: appropriate Status code.
+     * */
+    virtual Expected<ssize_t> LookupOnPrefix(const Detail::BlockId* blocks, size_t num) = 0;
+
+    /**
      * @brief Hint the store to prefetch given blocks into high-speed cache.
      *
      * This call is **non-blocking** and **fire-and-forget**; it returns

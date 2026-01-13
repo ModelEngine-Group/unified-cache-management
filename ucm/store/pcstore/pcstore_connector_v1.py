@@ -87,6 +87,20 @@ class UcmPcStoreV1(UcmKVStoreBaseV1):
         """
         return self.store.LookupBatch(block_ids)
 
+    def lookup_on_prefix(self, block_ids: List[bytes]) -> int:
+        """Check presence of blocks in external storage.
+
+        Args:
+            block_ids: List of vLLM block hashes (raw bytes).
+
+        Returns:
+            An index representing the maximum index of blocks found in storage,
+            returns -1 if none are found.
+        """
+        raise NotImplementedError(
+            "Method(lookup_on_prefix) not yet implemented in this version"
+        )
+
     def prefetch(self, block_ids: List[bytes]) -> None:
         """Asynchronously prefetch blocks into high-speed cache.
 

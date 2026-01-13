@@ -116,6 +116,13 @@ Expected<std::vector<uint8_t>> PosixStore::PosixStore::Lookup(const Detail::Bloc
     return res;
 }
 
+Expected<ssize_t> PosixStore::LookupOnPrefix(const Detail::BlockId* blocks, size_t num)
+{
+    auto res = impl_->spaceMgr.LookupOnPrefix(blocks, num);
+    if (!res) [[unlikely]] { UC_ERROR("Failed({}) to lookup blocks({}).", res.Error(), num); }
+    return res;
+}
+
 void PosixStore::PosixStore::Prefetch(const Detail::BlockId* blocks, size_t num) {}
 
 Expected<Detail::TaskHandle> PosixStore::PosixStore::Load(Detail::TaskDesc task)
