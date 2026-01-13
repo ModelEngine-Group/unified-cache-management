@@ -61,6 +61,16 @@ public:
         UC_DEBUG("Fake lookup({}) costs {:.3f}ms.", num, sw.Elapsed().count() * 1e3);
         return founds;
     }
+    Expected<ssize_t> LookupOnPrefix(const Detail::BlockId* blocks, size_t num)
+    {
+        ssize_t index = -1;
+        StopWatch sw;
+        for (size_t i = 0; i < num && metaMgr_.Exist(blocks[i]); i++) {
+            index = static_cast<ssize_t>(i);
+        }
+        UC_DEBUG("Fake Lookup({}/{}) costs {:.3f}ms.", index, num, sw.Elapsed().count() * 1e3);
+        return index;
+    }
     Expected<Detail::TaskHandle> Dump(Detail::TaskDesc task)
     {
         StopWatch sw;
@@ -108,6 +118,11 @@ std::string FakeStore::Readme() const { return impl_->Readme(); }
 Expected<std::vector<uint8_t>> FakeStore::Lookup(const Detail::BlockId* blocks, size_t num)
 {
     return impl_->Lookup(blocks, num);
+}
+
+Expected<ssize_t> FakeStore::LookupOnPrefix(const Detail::BlockId* blocks, size_t num)
+{
+    return impl_->LookupOnPrefix(blocks, num);
 }
 
 Expected<Detail::TaskHandle> FakeStore::Load(Detail::TaskDesc task)

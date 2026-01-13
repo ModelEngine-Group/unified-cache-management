@@ -49,6 +49,7 @@ PYBIND11_MODULE(ucmposixstore, module)
     store.def("Self", &PosixStorePy::Self);
     store.def("Setup", &PosixStorePy::Setup);
     store.def("Lookup", &PosixStorePy::Lookup, py::arg("ids").noconvert());
+    store.def("LookupOnPrefix", &PosixStorePy::LookupOnPrefix, py::arg("ids").noconvert());
     store.def("Prefetch", &PosixStorePy::Prefetch, py::arg("ids").noconvert());
     store.def("Load", &PosixStorePy::Load, py::arg("ids").noconvert(),
               py::arg("indexes").noconvert(), py::arg("addrs").noconvert());
