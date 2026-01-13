@@ -55,6 +55,7 @@ def e2e_test(
     chunk_block_ids = [secrets.token_bytes(16) for _ in range(request_size)]
     founds = scheduler.lookup(chunk_block_ids)
     assert not any(founds)
+    assert scheduler.lookup_on_prefix(chunk_block_ids) == -1
     shard_indexes = [0 for _ in range(request_size)]
     src_tensors = [
         [
@@ -71,6 +72,7 @@ def e2e_test(
     worker.wait(task)
     founds = scheduler.lookup(chunk_block_ids)
     assert all(founds)
+    assert scheduler.lookup_on_prefix(chunk_block_ids) + 1 == request_size
     dst_tensors = [[torch.empty_like(t) for t in row] for row in src_tensors]
     task = worker.load(chunk_block_ids, shard_indexes, dst_tensors)
     worker.wait(task)

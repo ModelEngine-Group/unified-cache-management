@@ -79,8 +79,13 @@ def main():
 
         tp = time.perf_counter()
         founds = scheduler.lookup(block_ids)
-        cost_lookup1 = time.perf_counter() - tp
+        cost_fully_lookup1 = time.perf_counter() - tp
         assert not any(founds)
+
+        tp = time.perf_counter()
+        found_idx = scheduler.lookup_on_prefix(block_ids)
+        cost_prefix_lookup1 = time.perf_counter() - tp
+        assert found_idx == -1
 
         tp = time.perf_counter()
         handle = worker.dump_data(block_ids, shard_idxes, data1)
@@ -89,8 +94,13 @@ def main():
 
         tp = time.perf_counter()
         founds = scheduler.lookup(block_ids)
-        cost_lookup2 = time.perf_counter() - tp
+        cost_fully_lookup2 = time.perf_counter() - tp
         assert all(founds)
+
+        tp = time.perf_counter()
+        found_idx = scheduler.lookup_on_prefix(block_ids)
+        cost_prefix_lookup2 = time.perf_counter() - tp
+        assert found_idx == batch_size - 1
 
         tp = time.perf_counter()
         handle = worker.load_data(block_ids, shard_idxes, data2)
@@ -101,8 +111,10 @@ def main():
         bw_load = data_size / cost_load
         print(
             f"[{idx:03}/{batch_number:03}] [{block_size}] [{batch_size}] "
-            f"lookup1={cost_lookup1 * 1e3:.3f}ms, "
-            f"lookup2={cost_lookup2 * 1e3:.3f}ms, "
+            f"fully_lookup1={cost_fully_lookup1 * 1e3:.3f}ms, "
+            f"prefix_lookup1={cost_prefix_lookup1 * 1e3:.3f}ms, "
+            f"fully_lookup2={cost_fully_lookup2 * 1e3:.3f}ms, "
+            f"prefix_lookup2={cost_prefix_lookup2 * 1e3:.3f}ms, "
             f"dump={cost_dump * 1e3:.3f}ms, load={cost_load * 1e3:.3f}ms, "
             f"bw_dump={bw_dump / 1e9:.3f}GB/s, bw_load={bw_load / 1e9:.3f}GB/s."
         )
