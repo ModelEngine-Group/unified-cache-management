@@ -10,11 +10,11 @@ reports:
 database:
   backup: "results/"
   enabled: true
-  host: "127.0.0.1"
-  port: 5432
+  host: ${DB_URL:-127.0.0.1}
+  port: ${DB_URL:-5432}
   name: "ucm_test"
   user: "postgres"
-  password: "123456"
+  password: ${DB_PASSWD:-123456}
 
 models:
   ip_ports: ""
@@ -25,13 +25,13 @@ models:
 
 # LLM Connection Configuration
 llm_connection:
-  model: ""
-  server_url: ""
-  tokenizer_path: ""
-  stream: true    # stream output
-  ignore_eos: true    # Ignore the returned terminator
-  timeout: 180    # request time out
-  extra_info: "vllm_qwen3-32b_pc-gsa"  # extra info, Used to mark different service pull-up parameters
+  model: ${SERVER_MODEL_NAME:-Qwen3-32B}
+  server_url: ${SERVER_URL:-https://10.10.10.123:8764}
+  tokenizer_path: ${TOKENIZER_PATH:-/mnt/model/Qwen3-32B}
+  stream: true
+  ignore_eos: true
+  timeout: 36000
+  extra_info: ${LLM_EX_INFO}
 
 # Environment Pre-Check Configuration
 Env_preCheck:

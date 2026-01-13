@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Any, Dict, List
 
 import yaml
+from common.config_utils import config_utils as config_instance
 from common.llmperf.utils.token_benchmark import run_token_benchmark
 from common.llmperf.utils.utils import reset_prefill_cache
 
@@ -140,46 +141,47 @@ def inference_results(
     additional_sampling_params,
     hit_rate,
 ):
-    config_file = Path(__file__).parent.parent.parent / "config.yaml"
-    print("[INFO] Initialization complete, starting main process")
-    print(f"[INFO] Reading configuration file: {config_file}")
-    with open(config_file, "r", encoding="utf-8") as f:
-        config = yaml.safe_load(f)
-        llm_api = config.get("llm_connection", {}).get("llm_api", "openai")
-        model = config.get("llm_connection", {}).get("model", "")
-        test_timeout_s = config.get("llm_connection", {}).get("test_timeout_s", 60000)
-        stddev_input_tokens = config.get("llm_connection", {}).get(
-            "stddev_input_tokens", 0
-        )
-        stddev_output_tokens = config.get("llm_connection", {}).get(
-            "stddev_output_tokens", 0
-        )
-        timestamp_dir = Path("results")
-        timestamp_dir.mkdir(parents=True, exist_ok=True)
-        server_url = config.get("llm_connection", {}).get("server_url", "")
-        tokenizer_path = config.get("llm_connection", {}).get("tokenizer_path", "")
-        print(f"[INFO] Created results directory: {timestamp_dir}")
-
-        all_summaries, failed_cases = run_test_cases(
-            llm_api,
-            model,
-            test_timeout_s,
-            max_num_completed_requests,
-            concurrent_requests,
-            mean_input_tokens,
-            stddev_input_tokens,
-            mean_output_tokens,
-            stddev_output_tokens,
-            additional_sampling_params,
-            timestamp_dir,
-            server_url,
-            tokenizer_path,
-            hit_rate,
-        )
-        total = len(mean_input_tokens)
-        print(
-            f"\n[INFO] All tests completed! Success: {total - len(failed_cases)}/{total}"
-        )
-        if failed_cases:
-            print(f"[WARN] Failed case indices: {failed_cases}")
+    # No Content in Config
+    llm_api = "openai"
+    stddev_input_tokens = 0
+    stddev_output_tokens = 0
+    llm_conn = config_instance.get_config("llm_connection")
+    model = llm_conn["model"]
+    test_timeout_s = llm_conn["timeout"]
+    server_url = llm_conn["server_url"]
+    tokenizer_path = llm_conn["tokenizer_path"]
+    print(
+        f"[INFO]Run LLmPerf Test Case:\n"
+        f"  model                    = {model}\n"
+        f"  llm_api                  = {llm_api}\n"
+        f"  server_url               = {server_url}\n"
+        f"  tokenizer_path           = {tokenizer_path}\n"
+        f"  mean_input_tokens        = {mean_input_tokens}\n"
+        f"  mean_output_tokens       = {mean_output_tokens}\n"
+        f"  concurrent_requests      = {concurrent_requests}\n"
+        f"  hit_rate                 = {hit_rate}\n"
+        f"  test_timeout_s           = {test_timeout_s}"
+    )
+    timestamp_dir = config_instance.get_config("database.backup")
+    timestamp_dir.mkdir(parents=True, exist_ok=True)
+    all_summaries, failed_cases = run_test_cases(
+        llm_api,
+        model,
+        test_timeout_s,
+        max_num_completed_requests,
+        concurrent_requests,
+        mean_input_tokens,
+        stddev_input_tokens,
+        mean_output_tokens,
+        stddev_output_tokens,
+        additional_sampling_params,
+        timestamp_dir,
+        server_url,
+        tokenizer_path,
+        hit_rate,
+    )
+    total = len(mean_input_tokens)
+    print(f"\n[INFO] All tests completed! Success: {total - len(failed_cases)}/{total}")
+    if failed_cases:
+        print(f"[WARN] Failed case indices: {failed_cases}")
     return all_summaries

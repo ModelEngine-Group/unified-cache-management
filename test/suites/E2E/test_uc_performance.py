@@ -39,9 +39,7 @@ def test_performance(
 
     results = summary.get("results", {})
 
-    # 构造扁平化的结果字典，方便后续分析和看板展示
     metrics = {
-        # 输入指标
         "input_tokens": in_tokens,
         "output_tokens": out_tokens,
         "concurrent": concurrent,
@@ -51,8 +49,7 @@ def test_performance(
         "tpot_mean": results.get("inter_token_latency_s", {}).get("mean"),
         "total_throughput": summary.get("total_throughput"),
         "e2e_mean": results.get("end_to_end_latency_s", {}).get("mean"),
-        "extra_info": os.getenv("TEST_EXTRA_INFO")
-        or config_instance.get_nested_config("llm_connection.extra_info"),
+        "extra_info": config_instance.get_nested_config("llm_connection.extra_info"),
         "mean_input_tokens": summary.get("mean_input_tokens"),
         "mean_output_tokens": summary.get("mean_output_tokens"),
         # Latency ITL

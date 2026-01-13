@@ -7,15 +7,14 @@ from typing import Any, Dict, Tuple
 
 import requests
 import yaml
+from common.config_utils import config_utils as config_instance
 from common.llmperf.utils import common_metrics
 from common.llmperf.utils.models import RequestConfig
 
-config_file = Path(__file__).parent.parent.parent.parent / "config.yaml"
-with open(config_file, "r", encoding="utf-8") as f:
-    config = yaml.safe_load(f)
-stream = config.get("llm_connection", {}).get("stream", True)
-ignore_eos = config.get("llm_connection", {}).get("ignore_eos", True)
-timeout = config.get("llm_connection", {}).get("timeout", 180)
+llm_conn = config_instance.get_config("llm_connection")
+stream = llm_conn["stream"]
+ignore_eos = llm_conn["ignore_eos"]
+timeout = llm_conn["timeout"]
 
 
 class OpenAIChatCompletionsClient:
