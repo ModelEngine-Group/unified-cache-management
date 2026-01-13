@@ -27,6 +27,10 @@ def pytest_addoption(parser):
     )
 
 
+def pytest_sessionstart(session):
+    config_instance.reload_config()
+
+
 # ---------------- Test Filtering ----------------
 def pytest_collection_modifyitems(config, items):
     kept = items[:]
