@@ -99,7 +99,7 @@ jobs:
     - uses: actions/checkout@v4
     - name: Build
       run: |
-        cd ${{github.workspace}}/example
+        cd ${{github.workspace}}/examples
         export PLATFORM=cuda
         pip install -v -e . --no-build-isolation
         python3 offline_inference.py
