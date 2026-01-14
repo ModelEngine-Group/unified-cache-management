@@ -153,9 +153,9 @@ class UCMDirectConnector(KVConnectorBase_V1):
             self.monitor = ucmmonitor.StatsMonitor.get_instance()
 
         self.synchronize = (
-            torch.cuda.synchronize
+            lambda: torch.cuda.current_stream().synchronize()
             if current_platform.is_cuda_alike()
-            else torch.npu.synchronize
+            else torch.npu.current_stream().synchronize()
         )
 
         # invlalid block ids due to load errors
@@ -590,10 +590,7 @@ class UCMDirectConnector(KVConnectorBase_V1):
         # TODO support PP
         if (self.is_mla or self.is_dsa) and self.global_rank != 0:
             return
-        if self.metrics_config or current_platform.device_type == "npu":
-            # When use vllm_ascend, we should add synchronize here, otherwise accuracy problem will raise
-            # This has already been fixed in the latest main branch of vllm_ascend,
-            # so synchronize will no longer be needed in future versions.
+        if self.metrics_config:
             self.synchronize()
 
         metadata = self._get_connector_metadata()
@@ -604,6 +601,7 @@ class UCMDirectConnector(KVConnectorBase_V1):
         num_saved_block = 0
         num_saved_request = 0
         save_start_time = time.perf_counter() * 1000
+        is_first_req = True
         for request_id, request in metadata.request_meta.items():
             if len(request.dump_block_ids[0]) == 0:
                 continue
@@ -618,6 +616,9 @@ class UCMDirectConnector(KVConnectorBase_V1):
             total_tensors, rope_tensors = self._generate_task(vllm_block_ids)
             shard_indexs = [0] * len(ucm_block_ids)
             try:
+                if is_first_req:
+                    self.synchronize()
+                    is_first_req = False
                 task = self.store.dump_data(ucm_block_ids, shard_indexs, total_tensors)
                 request_to_task[request_id] = [task]
                 if rope_tensors is not None and self.rope_store:
@@ -771,6 +772,7 @@ class UCMLayerWiseConnector(UCMDirectConnector):
         metadata = self._get_connector_metadata()
         assert isinstance(metadata, UCMConnectorMetadata)
 
+        is_first_req = True
         layer_id = self._extract_layer_index(layer_name)
         for request_id, request in metadata.request_meta.items():
             if len(request.dump_block_ids[0]) == 0:
@@ -786,6 +788,9 @@ class UCMLayerWiseConnector(UCMDirectConnector):
                 k_block_ptrs = (
                     vllm_block_ids_np * self.block_stride + self.k_base_ptrs[layer_id]
                 )
+                if is_first_req:
+                    self.synchronize()
+                    is_first_req = False
                 task = self.store.dump_data(
                     ucm_block_ids, shard_indexs, k_block_ptrs[:, None]
                 )
