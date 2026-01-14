@@ -1,5 +1,4 @@
-self-hosted-runner:
+runner-label:
   # Labels of self-hosted runner in array of strings.
-  labels:
-    - default
-    - arc-runner-ucm
+  - default
+  - gpu40
