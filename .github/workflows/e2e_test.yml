@@ -4,7 +4,7 @@ on:
 
 jobs:
   offline-inference:
-    runs-on: arc-runner-ucm       
+    runs-on: gpu40       
     steps:
       - uses: actions/checkout@v4
       - run: nvidia-smi

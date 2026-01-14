@@ -1,4 +1,4 @@
-runner-label:
+self-hosted-runner:
   # Labels of self-hosted runner in array of strings.
   - default
   - gpu40
