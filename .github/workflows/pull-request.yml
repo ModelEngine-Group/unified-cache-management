@@ -93,7 +93,7 @@ jobs:
   #   runs-on: ubuntu-latest
   #   needs: [cpp_gtest, py-linter]
   build-e2e-gpu:
-    runs-on: gpu40
+    runs-on: gpu
     needs: [cpp_gtest, py-linter]
     steps:
     - uses: actions/checkout@v4
