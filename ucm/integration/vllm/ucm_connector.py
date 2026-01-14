@@ -822,8 +822,14 @@ class UCMLayerWiseConnector(UCMDirectConnector):
     def wait_for_save(self) -> None:
         for request_id, tasks in self.dump_tasks.items():
             try:
-                for task in tasks:
-                    self.store.wait(task)
+                for i in range(self.num_layers):
+                    idx = i if self.is_mla else i * 2
+                    self.store.wait(tasks[idx])
+                    if self.v_base_ptrs is not None:
+                        if self.is_dsa:
+                            self.rope_store.wait(tasks[idx + 1])
+                        else:
+                            self.store.wait(tasks[idx + 1])
             except RuntimeError as e:
                 logger.error(f"request {request_id} dump kv cache failed.{e}")
         self.dump_tasks.clear()
