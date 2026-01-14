@@ -1,4 +1,4 @@
-name: cpp-linter
+name: pull-request-pipeline
 
 on:
   pull_request:
