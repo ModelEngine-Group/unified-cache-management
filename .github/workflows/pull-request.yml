@@ -92,15 +92,16 @@ jobs:
   # build-e2e-cpu:
   #   runs-on: ubuntu-latest
   #   needs: [cpp_gtest, py-linter]
-  build-e2e-gpu:
+  test-e2e-gpu:
     runs-on: gpu
     needs: [cpp_gtest, py-linter]
     steps:
     - uses: actions/checkout@v4
     - name: Build
       run: |
-        cd ${{github.workspace}}/examples
+        cd ${{github.workspace}}
         export PLATFORM=cuda
         pip install -v -e . --no-build-isolation
+        cd examples
         python3 offline_inference.py
 
