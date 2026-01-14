@@ -339,44 +339,65 @@ class GSAOnDevice(UcmSparseBase):
                         if self.decode_mask.any():  # with at least one decode request
                             self.batch_size_for_hamming = len(self.decode_req_ids)
                             self.topk_for_hamming = self.topk_for_hamming_full[
-                                :self.batch_size_for_hamming
+                                : self.batch_size_for_hamming
                             ]
                             self.chunk_sizes_for_hamming = (
                                 self.chunk_sizes_for_hamming_full[
-                                    :self.batch_size_for_hamming
+                                    : self.batch_size_for_hamming
                                 ]
                             )
-                            if attn_metadata.attn_state == AscendAttentionState.DecodeOnly:
-                                self.query_lens_device = attn_metadata.query_lens_device[
-                                    :self.batch_size_for_hamming
-                                ]
+                            if (
+                                attn_metadata.attn_state
+                                == AscendAttentionState.DecodeOnly
+                            ):
+                                self.query_lens_device = (
+                                    attn_metadata.query_lens_device[
+                                        : self.batch_size_for_hamming
+                                    ]
+                                )
 
-                                self.seq_lens_for_hamming = attn_metadata.seq_lens_device[
-                                    :self.batch_size_for_hamming
-                                ]
+                                self.seq_lens_for_hamming = (
+                                    attn_metadata.seq_lens_device[
+                                        : self.batch_size_for_hamming
+                                    ]
+                                )
                                 self.max_seq_len_for_hamming = torch.max(
-                                    attn_metadata.seq_lens[:self.batch_size_for_hamming]
+                                    attn_metadata.seq_lens[
+                                        : self.batch_size_for_hamming
+                                    ]
                                 ).item()
-                                self.block_table_decode = self.ori_block_table_decode[:self.batch_size_for_hamming]
+                                self.block_table_decode = self.ori_block_table_decode[
+                                    : self.batch_size_for_hamming
+                                ]
                             else:
-                                self.query_lens_device = attn_metadata.query_lens_device[
-                                    self.decode_req_ids_npu
-                                ]
+                                self.query_lens_device = (
+                                    attn_metadata.query_lens_device[
+                                        self.decode_req_ids_npu
+                                    ]
+                                )
 
-                                self.seq_lens_for_hamming = attn_metadata.seq_lens_device[
-                                    self.decode_req_ids_npu
-                                ]
+                                self.seq_lens_for_hamming = (
+                                    attn_metadata.seq_lens_device[
+                                        self.decode_req_ids_npu
+                                    ]
+                                )
                                 self.max_seq_len_for_hamming = torch.max(
                                     attn_metadata.seq_lens[self.decode_req_ids]
                                 ).item()
-                                self.block_table_decode = self.ori_block_table_decode.index_select(0, self.decode_req_ids_npu)
-                                self.decode_token_idx = attn_metadata.query_start_loc[:-1].index_select(0, self.decode_req_ids_npu)
+                                self.block_table_decode = (
+                                    self.ori_block_table_decode.index_select(
+                                        0, self.decode_req_ids_npu
+                                    )
+                                )
+                                self.decode_token_idx = attn_metadata.query_start_loc[
+                                    :-1
+                                ].index_select(0, self.decode_req_ids_npu)
                             self.is_tensor_computed = True
 
                     k_hash_compute = self.hash_encoder.compute_hash(key)
-                    #assert (
+                    # assert (
                     #    k_hash_compute.shape[0] == attn_metadata.slot_mapping.numel()
-                    #), f"shape mismatch: k_hash_compute.shape[0]={k_hash_compute.shape[0]} != attn_metadata.slot_mapping.numel()={attn_metadata.slot_mapping.numel()}"
+                    # ), f"shape mismatch: k_hash_compute.shape[0]={k_hash_compute.shape[0]} != attn_metadata.slot_mapping.numel()={attn_metadata.slot_mapping.numel()}"
                     k_hash_compute = (
                         k_hash_compute.transpose(0, 1)
                         .reshape(-1, k_hash_compute.shape[-1])
@@ -485,16 +506,19 @@ class GSAOnDevice(UcmSparseBase):
                             attn_metadata.seq_lens[self.decode_mask] = (
                                 self.topk_seq_lens_qwen
                             )
-                            
+
                             # topk for skip layer
                             self.topk_block_table = attn_metadata.block_table
                             self.topk_seq_lens = attn_metadata.seq_lens
                         else:  # NPU
-                            if attn_metadata.attn_state == AscendAttentionState.DecodeOnly:
-                                q_decode = query[:self.batch_size_for_hamming]
+                            if (
+                                attn_metadata.attn_state
+                                == AscendAttentionState.DecodeOnly
+                            ):
+                                q_decode = query[: self.batch_size_for_hamming]
                             else:
-                                q_decode = query.index_select(0,self.decode_token_idx)
- 
+                                q_decode = query.index_select(0, self.decode_token_idx)
+
                             q_hash = (
                                 self.hash_encoder.compute_hash(q_decode)
                                 .unsqueeze(2)
@@ -514,15 +538,24 @@ class GSAOnDevice(UcmSparseBase):
                                 self.block_table_decode,
                                 self.hamming_output[: self.batch_size_for_hamming],
                             )
-                            if attn_metadata.attn_state == AscendAttentionState.DecodeOnly:
+                            if (
+                                attn_metadata.attn_state
+                                == AscendAttentionState.DecodeOnly
+                            ):
                                 attn_metadata.seq_lens = self.topk_seq_lens_qwen
-                                attn_metadata.block_tables = self.hamming_output[:self.batch_size_for_hamming,0,:]
+                                attn_metadata.block_tables = self.hamming_output[
+                                    : self.batch_size_for_hamming, 0, :
+                                ]
                             else:
                                 topk = self.hamming_output.shape[-1]
-                                attn_metadata.block_tables[self.decode_req_ids_npu, :topk] = (
-                                    self.hamming_output[: self.batch_size_for_hamming, 0, :]
-                                )
-                                attn_metadata.block_tables[self.decode_req_ids_npu, topk:] = 0
+                                attn_metadata.block_tables[
+                                    self.decode_req_ids_npu, :topk
+                                ] = self.hamming_output[
+                                    : self.batch_size_for_hamming, 0, :
+                                ]
+                                attn_metadata.block_tables[
+                                    self.decode_req_ids_npu, topk:
+                                ] = 0
 
                                 # we have already computed the topk_seq_lens_qwen in `build_decode_attention_meta_npu()`
                                 attn_metadata.seq_lens[self.decode_mask] = (
@@ -558,7 +591,11 @@ class GSAOnDevice(UcmSparseBase):
                     )
                     attn_metadata.decode.num_splits = self.origin_num_splits
         else:  # 判断req decode阶段
-            if self.decode_mask.any() and int(layer_name.split(".")[2]) == self.gsa_on_device_config.num_hidden_layers - 1:
+            if (
+                self.decode_mask.any()
+                and int(layer_name.split(".")[2])
+                == self.gsa_on_device_config.num_hidden_layers - 1
+            ):
                 if self.is_cuda:
                     attn_metadata.block_table = self.ori_block_table_decode
                 else:
@@ -667,7 +704,9 @@ class GSAOnDevice(UcmSparseBase):
             self.decode_req_ids = torch.nonzero(
                 self.decode_mask, as_tuple=False
             ).flatten()
-            self.decode_req_ids_npu = self.decode_req_ids.to(self.device, non_blocking=True)
+            self.decode_req_ids_npu = self.decode_req_ids.to(
+                self.device, non_blocking=True
+            )
             decode_seq_lens = seq_lens[self.decode_mask]
             self.topk_seq_lens_qwen = update_seq_lens(
                 decode_seq_lens,
