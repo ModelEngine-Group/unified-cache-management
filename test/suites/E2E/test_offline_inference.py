@@ -3,15 +3,14 @@ import os
 import time
 from dataclasses import asdict
 from typing import Any, Dict, Optional
+
 import pytest
-
 from transformers import AutoTokenizer
-
-from ucm.logger import init_logger
 from vllm import LLM, SamplingParams
 from vllm.config import KVTransferConfig
 from vllm.engine.arg_utils import EngineArgs
 
+from ucm.logger import init_logger
 
 logger = init_logger(__name__)
 
@@ -22,7 +21,7 @@ def build_llm_without_uc(
     engine_args_override: Optional[Dict[str, Any]] = None,
 ):
     """Build LLM without UCM connector.
-    
+
     Args:
         model: Model path or identifier
         engine_args_override: Optional overrides for EngineArgs
@@ -38,7 +37,7 @@ def build_llm_without_uc(
         "trust_remote_code": True,
         "enable_prefix_caching": False,
     }
-    
+
     # Apply overrides if provided
     if engine_args_override:
         llm_args.update(engine_args_override)
@@ -59,7 +58,7 @@ def build_llm_with_uc(
     engine_args_override: Optional[Dict[str, Any]] = None,
 ):
     """Build LLM with UCM connector.
-    
+
     Args:
         module_path: Path to the UCM connector module
         name: Name of the connector
@@ -88,7 +87,7 @@ def build_llm_with_uc(
         "trust_remote_code": True,
         "enable_prefix_caching": False,
     }
-    
+
     # Apply overrides if provided
     if engine_args_override:
         llm_args.update(engine_args_override)
@@ -107,20 +106,20 @@ def get_output(
     req_str: str,
 ) -> str:
     """Generate and print output from LLM.
-    
+
     Returns:
         Generated text
     """
     start = time.time()
     outputs = llm.generate(prompt, sampling_params)
     elapsed = time.time() - start
-    
+
     print("-" * 50)
     generated_text = "".join(output.outputs[0].text for output in outputs)
     print(f"Generated text: {generated_text!r}")
     print(f"Generation took {elapsed:.2f} seconds, {req_str} request done.")
     print("-" * 50)
-    
+
     return {
         "generated_text": generated_text,
         "elapsed_time": elapsed,
@@ -142,13 +141,14 @@ def sampling_params():
 
 class TestBasicOfflineInference:
     """Test basic offline inference functionality."""
+
     @pytest.mark.stage(1)
     def test_simple_offline_inference(self, model_path, sampling_params):
         """Test single inference request."""
         module_path = "ucm.integration.vllm.ucm_connector"
         name = "UCMConnector"
         tokenizer = AutoTokenizer.from_pretrained(model_path, use_chat_template=True)
-        
+
         messages = [
             {
                 "role": "system",
@@ -179,7 +179,7 @@ class TestBasicOfflineInference:
                 "word-for-word without paraphrasing.",
             },
         ]
-        
+
         result1 = None
         result2 = None
         # get result from pure vllm
@@ -195,6 +195,5 @@ class TestBasicOfflineInference:
                 messages, tokenize=False, add_generation_prompt=True
             )
             result2 = get_output(llm, prompts, sampling_params, "with UCM")
-        
-        assert result1["generated_text"] == result2["generated_text"]
 
+        assert result1["generated_text"] == result2["generated_text"]
