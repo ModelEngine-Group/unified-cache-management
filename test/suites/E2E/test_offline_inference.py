@@ -90,8 +90,8 @@ def build_llm_with_uc(
         kv_connector_config: Optional custom KV connector config
         engine_args_override: Optional overrides for EngineArgs
     """
-    # if kv_connector_config is None:
-    #     kv_connector_config = {"UCM_CONFIG_FILE": "./ucm_config_example.yaml"}
+    if kv_connector_config is None:
+        kv_connector_config = {"UCM_CONFIG_FILE": "./ucm_config_example.yaml"}
 
     ktc = KVTransferConfig(
         kv_connector=name,
