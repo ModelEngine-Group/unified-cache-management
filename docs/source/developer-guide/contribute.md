@@ -51,6 +51,17 @@ Make your code or documentation changes in the branch, keeping them focused and 
 
 ### Step 4: Run Lint Checks
 
+**UCM adheres to standard style conventions:**
+
+- Python code: [PEP 8](https://peps.python.org/pep-0008/)
+- C++ code: [Google C++ Style Guide](https://google.github.io/styleguide/cppguide.html)
+
+**The following tools help keep the codebase clean and consistently formatted:**
+
+- Python linting and formatting: [black](https://black.readthedocs.io/en/stable/the_black_code_style) and [isort](https://pycqa.github.io/isort/)
+- Spell checking: [codespell](https://github.com/codespell-project/codespell)
+- C++ formatting: [clang-format](https://clang.llvm.org/docs/ClangFormat.html)
+
 It’s recommended to set up a local development environment and run the linter before submitting a PR to help ensure consistent code style.
 
 - **Run lint locally:** run code style checks and fix any issues.
