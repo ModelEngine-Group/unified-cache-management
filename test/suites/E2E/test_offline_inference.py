@@ -167,6 +167,7 @@ class TestBasicOfflineInference:
     """Test basic offline inference functionality."""
 
     @pytest.mark.stage(1)
+    @pytest.mark.feature("offline_inference")
     @pytest.mark.gpu_mem(60000)
     def test_simple_offline_inference(self, model_path, sampling_params):
         """Test single inference request."""

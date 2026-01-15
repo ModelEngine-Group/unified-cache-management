@@ -100,5 +100,5 @@ jobs:
         export PLATFORM=cuda
         pip install -v -e . --no-build-isolation
         cd test
-        pytest --stage=1
+        pytest --stage=1 --feature=offline_inference
 
