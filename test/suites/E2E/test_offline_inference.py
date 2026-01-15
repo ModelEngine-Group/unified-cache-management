@@ -4,6 +4,7 @@ import time
 from dataclasses import asdict
 from typing import Any, Dict, Optional
 
+import pynvml
 import pytest
 from transformers import AutoTokenizer
 from vllm import LLM, SamplingParams
@@ -13,6 +14,29 @@ from vllm.engine.arg_utils import EngineArgs
 from ucm.logger import init_logger
 
 logger = init_logger(__name__)
+
+
+def get_free_gpu(required_memory_mb):
+    pynvml.nvmlInit()
+    device_count = pynvml.nvmlDeviceGetCount()
+    for i in range(device_count):
+        handle = pynvml.nvmlDeviceGetHandleByIndex(i)
+        info = pynvml.nvmlDeviceGetMemoryInfo(handle)
+        if (info.free / 1024**2) >= required_memory_mb:
+            return i
+    return None
+
+
+@pytest.fixture(autouse=True)
+def setup_gpu_resource(request):
+    marker = request.node.get_closest_marker("gpu_mem")
+    if marker:
+        mem_needed = marker.args[0]
+        gpu_id = get_free_gpu(mem_needed)
+        if gpu_id is not None:
+            os.environ["CUDA_VISIBLE_DEVICES"] = str(gpu_id)
+        else:
+            pytest.skip(f"No GPU with {mem_needed}MB free memory available")
 
 
 @contextlib.contextmanager
@@ -143,6 +167,7 @@ class TestBasicOfflineInference:
     """Test basic offline inference functionality."""
 
     @pytest.mark.stage(1)
+    @pytest.mark.gpu_mem(60000)
     def test_simple_offline_inference(self, model_path, sampling_params):
         """Test single inference request."""
         module_path = "ucm.integration.vllm.ucm_connector"
