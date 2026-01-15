@@ -56,7 +56,7 @@ def build_llm_without_uc(
     llm_args = {
         "model": model,
         "max_model_len": 5000,
-        "gpu_memory_utilization": 0.8,
+        "gpu_memory_utilization": 0.4,
         "max_num_batched_tokens": 30000,
         "block_size": 128,
         "enforce_eager": True,
@@ -110,7 +110,7 @@ def build_llm_with_uc(
         "model": model,
         "kv_transfer_config": ktc,
         "max_model_len": 5000,
-        "gpu_memory_utilization": 0.8,
+        "gpu_memory_utilization": 0.4,
         "max_num_batched_tokens": 30000,
         "block_size": 128,
         "enforce_eager": True,
