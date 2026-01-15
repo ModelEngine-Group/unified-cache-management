@@ -1,4 +1,5 @@
 import contextlib
+import gc
 import os
 import time
 from dataclasses import asdict
@@ -6,6 +7,7 @@ from typing import Any, Dict, Optional
 
 import pynvml
 import pytest
+import torch
 from transformers import AutoTokenizer
 from vllm import LLM, SamplingParams
 from vllm.config import KVTransferConfig
@@ -71,6 +73,10 @@ def build_llm_without_uc(
         yield llm
     finally:
         logger.info("LLM engine is exiting.")
+        # 显式清理 LLM 实例和显存
+        del llm
+        gc.collect()
+        torch.cuda.empty_cache()
 
 
 @contextlib.contextmanager
@@ -121,6 +127,10 @@ def build_llm_with_uc(
         yield llm
     finally:
         logger.info("LLM engine is exiting.")
+        # 显式清理 LLM 实例和显存
+        del llm
+        gc.collect()
+        torch.cuda.empty_cache()
 
 
 def get_output(
