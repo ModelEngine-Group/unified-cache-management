@@ -56,7 +56,7 @@ TEST_F(UCCacheDumpQueueTest, DumpOneBlock)
     config.shardSize = config.tensorSize;
     config.blockSize = config.shardSize;
     config.deviceId = 0;
-    config.bufferSize = config.blockSize * 2048;
+    config.bufferNumber = 2048;
     config.uniqueId = rd.RandomString(10);
     config.shareBufferEnable = true;
     TransBuffer buffer;
@@ -92,7 +92,7 @@ TEST_F(UCCacheDumpQueueTest, DumpBlockWhileBackendSubmitFailed)
     config.shardSize = config.tensorSize;
     config.blockSize = config.shardSize;
     config.deviceId = 0;
-    config.bufferSize = config.blockSize * 2048;
+    config.bufferNumber = 2048;
     config.uniqueId = rd.RandomString(10);
     config.shareBufferEnable = true;
     TransBuffer buffer;
