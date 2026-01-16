@@ -77,7 +77,7 @@ def build_llm_with_uc(module_path: str, name: str, model: str):
                     },
                 }
             ],
-            "ucm_sparse_config": {"KvCompOnDevice": {}},
+            "ucm_sparse_config": {"GSAOnDevice": {}},
         },
     )
 
