@@ -21,25 +21,31 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  * */
-#ifndef UNIFIEDCACHE_ISTATS_H
-#define UNIFIEDCACHE_ISTATS_H
-
-#include <memory>
-#include <string>
-#include <unordered_map>
-#include <vector>
-
+#include "metrics_api.h"
 namespace UC::Metrics {
 
-class IStats {
-public:
-    virtual ~IStats() = default;
-    virtual std::string Name() const = 0;
-    virtual void Update(const std::unordered_map<std::string, double>& params) = 0;
-    virtual void Reset() = 0;
-    virtual std::unordered_map<std::string, std::vector<double>> Data() = 0;
-};
+void SetUp(size_t maxVectorLen) { Metrics::SetUp(maxVectorLen); }
 
-} // namespace UC::Metrics
+void CreateStats(const std::string& name, const std::string& type)
+{
+    Metrics::GetInstance().CreateStats(name, type);
+}
 
-#endif
+void UpdateStats(const std::string& name, double value)
+{
+    Metrics::GetInstance().UpdateStats(name, value);
+}
+
+void UpdateStats(const std::unordered_map<std::string, double>& values)
+{
+    Metrics::GetInstance().UpdateStats(values);
+}
+
+std::tuple<std::unordered_map<std::string, double>, std::unordered_map<std::string, double>,
+           std::unordered_map<std::string, std::vector<double>>>
+GetAllStatsAndClear()
+{
+    return Metrics::GetInstance().GetAllStatsAndClear();
+}
+
+}  // namespace UC::Metrics
