@@ -7,5 +7,8 @@ if(BUILD_UNIT_TESTS)
         posixstore cachestore fakestore
         gtest_main gtest gmock
     )
+    # Add RPATH so the test executable can find libinfra_logger.so
+    # $ORIGIN/../../shared/infra/logger points to where libinfra_logger.so is built
+    target_link_options(ucmstore.test PRIVATE "-Wl,-rpath,\$ORIGIN/../../shared/infra/logger")
     gtest_discover_tests(ucmstore.test)
 endif()

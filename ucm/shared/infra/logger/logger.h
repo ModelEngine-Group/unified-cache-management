@@ -45,17 +45,18 @@ public:
         this->Log(std::move(lv), std::move(loc), fmt::format(fmt, std::forward<Args>(args)...));
     }
 
-protected:
     virtual void Log(Level&& lv, SourceLocation&& loc, std::string&& msg) = 0;
+    virtual void Setup(const std::string& path, int max_files, int max_size) = 0;
+    virtual void Flush() = 0;
 };
 
-ILogger* Make();
+ILogger& Make();
 
-} // namespace UC::Logger
+}  // namespace UC::Logger
 
 #define UC_SOURCE_LOCATION {__FILE__, __FUNCTION__, __LINE__}
-#define UC_LOG(lv, fmt, ...)                                                                       \
-    UC::Logger::Make()->Log(lv, UC_SOURCE_LOCATION, FMT_STRING(fmt), ##__VA_ARGS__)
+#define UC_LOG(lv, fmt, ...) \
+    UC::Logger::Make().Log(lv, UC_SOURCE_LOCATION, FMT_STRING(fmt), ##__VA_ARGS__)
 #define UC_DEBUG(fmt, ...) UC_LOG(UC::Logger::Level::DEBUG, fmt, ##__VA_ARGS__)
 #define UC_INFO(fmt, ...) UC_LOG(UC::Logger::Level::INFO, fmt, ##__VA_ARGS__)
 #define UC_WARN(fmt, ...) UC_LOG(UC::Logger::Level::WARN, fmt, ##__VA_ARGS__)

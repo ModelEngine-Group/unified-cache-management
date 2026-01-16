@@ -171,7 +171,7 @@ def _patch_attention_v1() -> None:
             unified_ascend_attention_with_output_impl
         )
     except ImportError as e:
-        logger.error(f"Failed to patch attention_v1.py: {e}", exc_info=True)
+        logger.error(f"Failed to patch attention_v1.py: {e}")
         raise
 
 
@@ -470,7 +470,7 @@ def _patch_mla_v1() -> None:
 
         AscendMLAImpl.forward = forward
     except ImportError as e:
-        logger.error(f"Failed to patch mla_v1.py: {e}", exc_info=True)
+        logger.error(f"Failed to patch mla_v1.py: {e}")
         raise
 
 
@@ -1379,7 +1379,7 @@ def _patch_model_runner_v1() -> None:
             ucm_sparse_request_finished_in_worker
         )
     except ImportError as e:
-        logger.error(f"Failed to patch model_runner_v1.py: {e}", exc_info=True)
+        logger.error(f"Failed to patch model_runner_v1.py: {e}")
         raise
 
 
@@ -1450,5 +1450,5 @@ def _patch_worker_v1() -> None:
             patched_init_worker_distributed_environment
         )
     except ImportError as e:
-        logger.error(f"Failed to patch worker_v1.py: {e}", exc_info=True)
+        logger.error(f"Failed to patch worker_v1.py: {e}")
         raise

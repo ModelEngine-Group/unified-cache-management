@@ -60,7 +60,7 @@ def _to_chunk(line: str) -> Optional[LLMStreamChunk]:
             finish_reason=finish_reason,
         )
     except (json.JSONDecodeError, KeyError, IndexError) as e:
-        logger.error("Failed to parse SSE line: %r (%s)", line, e)
+        logger.error(f"Failed to parse SSE line: {line} ({e})")
         return None
 
 
