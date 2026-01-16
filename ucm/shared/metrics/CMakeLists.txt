@@ -1,20 +1,16 @@
-file(GLOB_RECURSE CORE_SRCS CONFIGURE_DEPENDS
-     "${CMAKE_CURRENT_SOURCE_DIR}/cc/stats/*.cc"
-     "${CMAKE_CURRENT_SOURCE_DIR}/cc/*.cc")
-add_library(monitor_static STATIC ${CORE_SRCS})
-set_property(TARGET monitor_static PROPERTY POSITION_INDEPENDENT_CODE ON)
-target_include_directories(monitor_static PUBLIC
-    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/cc>
-    $<INSTALL_INTERFACE:include>)
-set_target_properties(monitor_static PROPERTIES OUTPUT_NAME monitor)
+file(GLOB_RECURSE UCMMETRICS_CC_SOURCE_FILES "./cc/*.cc")
+add_library(metrics STATIC ${UCMMETRICS_CC_SOURCE_FILES})
+target_include_directories(metrics PUBLIC
+    ${CMAKE_CURRENT_SOURCE_DIR}/cc/api
+    ${CMAKE_CURRENT_SOURCE_DIR}/cc/domain
+)
 
-file(GLOB_RECURSE BINDINGS_SRCS CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/cpy/*.cc")
-pybind11_add_module(ucmmonitor ${BINDINGS_SRCS})
-target_link_libraries(ucmmonitor PRIVATE -Wl,--whole-archive monitor_static -Wl,--no-whole-archive)
-target_include_directories(ucmmonitor PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/cc)
+file(GLOB_RECURSE UCMMETRICS_CPY_SOURCE_FILES CONFIGURE_DEPENDS "./cpy/*.cc")
+pybind11_add_module(ucmmetrics ${UCMMETRICS_CPY_SOURCE_FILES})
+target_link_libraries(ucmmetrics PRIVATE metrics)
 
 file(RELATIVE_PATH INSTALL_REL_PATH
      ${CMAKE_SOURCE_DIR}
      ${CMAKE_CURRENT_SOURCE_DIR}
 )
-install(TARGETS ucmmonitor LIBRARY DESTINATION ${INSTALL_REL_PATH} COMPONENT ucm)
+install(TARGETS ucmmetrics LIBRARY DESTINATION ${INSTALL_REL_PATH} COMPONENT ucm)

@@ -65,6 +65,7 @@ user-guide/rerope/rerope
 :caption: Developer Guide
 :maxdepth: 1
 developer-guide/contribute
+developer-guide/add_metrics
 :::
 
 :::{toctree}
