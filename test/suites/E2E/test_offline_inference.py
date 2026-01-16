@@ -62,9 +62,7 @@ class TestBasicOfflineInference:
     @pytest.mark.parametrize("max_tokens", [200])
     @pytest.mark.parametrize("prompt_split_ratio", [0.5])  # Split prompt in half
     @pytest.mark.parametrize("enforce_eager", [True, False])
-    # @pytest.mark.parametrize("max_num_batched_tokens", [2047, 2048, 12000])
     @pytest.mark.parametrize("max_num_batched_tokens", [2047])
-    @pytest.mark.feature("uc_accuracy_test_offline")
     def test_offline_accuracy_hbm_ssd_mixed(
         model_path: str,
         max_tokens: int,
