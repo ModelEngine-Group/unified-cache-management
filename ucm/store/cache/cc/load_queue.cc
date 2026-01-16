@@ -75,6 +75,7 @@ void LoadQueue::DispatchOneTask(TaskPair&& pair)
     Detail::TaskDesc backendTaskDesc;
     backendTaskDesc.brief = "Backend2Cache";
     const auto nShard = task->desc.size();
+    UC_DEBUG("Try to load ({}) shards.", nShard);
     std::vector<size_t> backendTaskIndex;
     backendTaskIndex.reserve(nShard);
     std::vector<ShardTask> shardTasks(nShard);
