@@ -1,5 +1,5 @@
 from __future__ import annotations
-
+import dataclasses
 import datetime as dt
 import platform as pf
 import sys
@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 from common.config_utils import config_utils as config_instance
 from common.db_utils import database_connection, write_to_db
+from common.uc_eval.utils.data_class import ModelConfig
 
 # ---------------- Constants ----------------
 PRJ_ROOT = Path(__file__).resolve().parent
@@ -156,3 +157,11 @@ def pytest_runtest_logreport(report):
         "error": str(report.longrepr) if report.failed else None,
     }
     write_to_db("test_case_info", test_result)
+
+
+@pytest.fixture(scope="session")
+def model_config() -> ModelConfig:
+    cfg = config_instance.get_config("models") or {}
+    field_names = [field.name for field in dataclasses.fields(ModelConfig)]
+    kwargs = {k: v for k, v in cfg.items() if k in field_names and v is not None}
+    return ModelConfig(**kwargs)

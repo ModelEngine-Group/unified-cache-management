@@ -91,14 +91,6 @@ def test_performance(
     return {"_name": "llmperf", "_proj": metrics}
 
 
-@pytest.fixture(scope="session")
-def model_config() -> ModelConfig:
-    cfg = config_instance.get_config("models") or {}
-    field_name = [field.name for field in dataclasses.fields(ModelConfig)]
-    kwargs = {k: v for k, v in cfg.items() if k in field_name and v is not None}
-    return ModelConfig(**kwargs)
-
-
 sync_perf_cases = [
     pytest.param(
         PerfConfig(
