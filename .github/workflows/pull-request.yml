@@ -100,5 +100,6 @@ jobs:
         export PLATFORM=cuda
         pip install -v -e . --no-build-isolation
         cd test
+        mkdir -p /tmp/ucm_cache
         pytest --stage=1 --feature=offline_inference
 
