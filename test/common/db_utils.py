@@ -65,11 +65,6 @@ def _get_db():
         db_config = _get_db_config()
         _db_enabled = db_config.get("enabled", False)
 
-        backup_str = db_config.get("backup", "results/")
-        _backup_path = Path(backup_str).resolve()
-        _backup_path.mkdir(parents=True, exist_ok=True)
-        logger.info(f"Backup directory set to: {_backup_path}")
-
         if not _db_enabled:
             return None
 
@@ -205,10 +200,16 @@ def write_to_db(table_name: str, data: Dict[str, Any]) -> bool:
 
 
 def database_connection(build_id: str) -> None:
+    global _backup_path
     logger.info(f"Setting test build ID: {build_id}")
     _set_test_build_id(build_id)
 
     db_config = _get_db_config()
+    backup_str = db_config.get("backup", "results/")
+    _backup_path = Path(backup_str).resolve()
+    _backup_path.mkdir(parents=True, exist_ok=True)
+    logger.info(f"Backup directory set to: {_backup_path}")
+
     if not db_config.get("enabled", False):
         logger.info("Database connection skipped because enabled=false.")
         return
