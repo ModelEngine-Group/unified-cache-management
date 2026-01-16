@@ -28,7 +28,6 @@ from typing import Callable, Dict, List
 import torch
 
 from ucm.store.cache.connector import UcmCacheStore
-from ucm.store.ds3fs.connector import UcmDs3fsStore
 from ucm.store.posix.connector import UcmPosixStore
 from ucm.store.ucmstore_v1 import Task, UcmKVStoreBaseV1
 
@@ -38,6 +37,8 @@ PipelineBuilder = Callable[[Dict[str, object], List[UcmKVStoreBaseV1]], None]
 def _build_cache_ds3fs_pipeline(
     config: Dict[str, object], store: List[UcmKVStoreBaseV1]
 ) -> None:
+    from ucm.store.ds3fs.connector import UcmDs3fsStore
+
     ds3fs_config = copy.deepcopy(config)
     if int(config["device_id"]) >= 0:
         ds3fs_config |= {"tensor_size": config["shard_size"]}
