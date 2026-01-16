@@ -46,7 +46,6 @@ from vllm.engine.arg_utils import EngineArgs
 
 from ucm.logger import init_logger
 
-_test_functions = {}
 logger = init_logger(__name__)
 
 

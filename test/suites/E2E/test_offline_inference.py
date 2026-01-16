@@ -49,7 +49,7 @@ def setup_gpu_resource(request):
         if gpu_id is not None:
             os.environ["CUDA_VISIBLE_DEVICES"] = str(gpu_id)
         else:
-            pytest.skip(f"No GPU with {mem_needed}MB free memory available")
+            pytest.fail(f"No GPU with {mem_needed}MB free memory available")
 
 
 class TestBasicOfflineInference:
@@ -64,6 +64,7 @@ class TestBasicOfflineInference:
     @pytest.mark.parametrize("enforce_eager", [True, False])
     @pytest.mark.parametrize("max_num_batched_tokens", [2047])
     def test_offline_accuracy_hbm_ssd_mixed(
+        self,
         model_path: str,
         max_tokens: int,
         prompt_split_ratio: float,
@@ -94,11 +95,10 @@ class TestBasicOfflineInference:
                 "model_path"
             ) or os.getenv("MODEL_PATH")
             assert (
-                model_path is not None,
-                "model_path must be specified via parameter, config, or environment variable",
-            )
+                model_path is not None
+            ), "model_path must be specified via parameter, config, or environment variable"
 
-        assert (os.path.exists(model_path), f"Model path does not exist: {model_path}")
+        assert os.path.exists(model_path), f"Model path does not exist: {model_path}"
 
         ucm_storage_dir = config.get("llm_connection", {}).get(
             "ucm_storage_dir"
