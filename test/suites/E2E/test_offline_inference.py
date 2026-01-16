@@ -7,18 +7,18 @@ import tempfile
 import time
 from dataclasses import asdict
 from pathlib import Path
-from test.common.offline_inference_utils import (
-    load_prompt_from_file,
-    run_in_spawn_subprocess,
-    run_offline_inference,
-    split_prompt_by_tokens,
-)
 from typing import Any, Dict, Optional
 
 import pynvml
 import pytest
 import torch
 import yaml
+from common.offline_inference_utils import (
+    load_prompt_from_file,
+    run_in_spawn_subprocess,
+    run_offline_inference,
+    split_prompt_by_tokens,
+)
 from transformers import AutoTokenizer
 from vllm import LLM, SamplingParams
 from vllm.config import KVTransferConfig
