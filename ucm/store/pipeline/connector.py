@@ -188,6 +188,32 @@ def _cache_posix_pipeline_builder(
     pipeline.Stack("Cache", str(store_dir / "cache/libcachestore.so"), config)
 
 
+def _build_cache_compress_posix_pipeline(
+    config: Dict[str, object], pipeline: ucmpipelinestore.PipelineStore
+) -> None:
+    store_dir = Path(__file__).resolve().parent.parent
+    posix_config = copy.deepcopy(config)
+
+    if config.get("device_id", -1) >= 0:
+        if (posix_config["block_size"] % posix_config["shard_size"]) != 0:
+            print(
+                f'_build_cache_compress_posix_pipeline: error paraments {posix_config["block_size"]} {posix_config["shard_size"]}'
+            )
+            return
+        layers = posix_config["block_size"] // posix_config["shard_size"]
+        posix_config["shard_size"] = (
+            (posix_config["shard_size"] * posix_config["compress_ratio"] // 32)
+            // 4096
+            * 4096
+        )
+        posix_config["tensor_size"] = int(posix_config["shard_size"])
+        posix_config["block_size"] = int(posix_config["shard_size"] * layers)
+
+    pipeline.Stack("Posix", str(store_dir / "posix/libposixstore.so"), posix_config)
+    pipeline.Stack("Compress", str(store_dir / "compress/libcompressor.so"), config)
+    pipeline.Stack("Cache", str(store_dir / "cache/libcachestore.so"), config)
+
+
 def _empty_pipeline_builder(
     config: Dict[str, object], pipeline: ucmpipelinestore.PipelineStore
 ):
@@ -215,3 +241,6 @@ UcmPipelineStoreBuilder.register("Cache|Posix", _cache_posix_pipeline_builder)
 UcmPipelineStoreBuilder.register("Empty", _empty_pipeline_builder)
 UcmPipelineStoreBuilder.register("Fake", _fake_pipeline_builder)
 UcmPipelineStoreBuilder.register("Posix", _posix_pipeline_builder)
+UcmPipelineStoreBuilder.register(
+    "Cache|Compress|Posix", _build_cache_compress_posix_pipeline
+)
