@@ -43,7 +43,7 @@ class UcmPcStoreV1(UcmKVStoreBaseV1):
         self.store = ucmpcstore.PcStore()
         storage_backends = config["storage_backends"]
         block_size = config.get("block_size", 0)
-        transfer_enable = True if int(config["device_id"]) >= 0 else False
+        transfer_enable = True if config.get("device_id", -1) >= 0 else False
         param = ucmpcstore.PcStore.Config(storage_backends, block_size, transfer_enable)
         key_mapping = {
             "unique_id": "uniqueId",
@@ -86,6 +86,20 @@ class UcmPcStoreV1(UcmKVStoreBaseV1):
             storage, ``False`` otherwise. The order matches ``block_ids``.
         """
         return self.store.LookupBatch(block_ids)
+
+    def lookup_on_prefix(self, block_ids: List[bytes]) -> int:
+        """Check presence of blocks in external storage.
+
+        Args:
+            block_ids: List of vLLM block hashes (raw bytes).
+
+        Returns:
+            An index representing the maximum index of blocks found in storage,
+            returns -1 if none are found.
+        """
+        raise NotImplementedError(
+            "Method(lookup_on_prefix) not yet implemented in this version"
+        )
 
     def prefetch(self, block_ids: List[bytes]) -> None:
         """Asynchronously prefetch blocks into high-speed cache.

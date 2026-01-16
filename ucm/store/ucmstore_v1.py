@@ -78,6 +78,19 @@ class UcmKVStoreBaseV1(ABC):
         pass
 
     @abstractmethod
+    def lookup_on_prefix(self, block_ids: List[bytes]) -> int:
+        """Check presence of blocks in external storage.
+
+        Args:
+            block_ids: List of vLLM block hashes (raw bytes).
+
+        Returns:
+            An index representing the maximum index of blocks found in storage,
+            returns -1 if none are found.
+        """
+        pass
+
+    @abstractmethod
     def prefetch(self, block_ids: List[bytes]) -> None:
         """Asynchronously prefetch blocks into high-speed cache.
 

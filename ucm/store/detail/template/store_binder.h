@@ -78,6 +78,13 @@ public:
         }
         throw std::runtime_error{res.Error().ToString()};
     }
+    ssize_t LookupOnPrefix(const pybind11::buffer& ids)
+    {
+        BufferArrayView<BlockId> idArr{ids};
+        auto res = store_->LookupOnPrefix(idArr.data, idArr.num);
+        if (res) { return res.Value(); }
+        throw std::runtime_error{res.Error().ToString()};
+    }
     void Prefetch(const pybind11::buffer& ids)
     {
         BufferArrayView<BlockId> idArr{ids};

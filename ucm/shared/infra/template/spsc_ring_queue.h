@@ -95,8 +95,8 @@ public:
         constexpr size_t kTaskBatch = 64;
         size_t spinCount = 0;
         size_t taskCount = 0;
-        T task;
         while (!stop.load(std::memory_order_relaxed)) {
+            T task;
             if (TryPop(task)) {
                 spinCount = 0;
                 std::invoke(handler, std::forward<Args>(args)..., std::move(task));
