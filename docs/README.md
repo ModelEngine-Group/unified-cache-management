@@ -14,7 +14,7 @@ make html
 
 
 # Open the docs with your browser
-python -m http.server -d build/html/
+python3 -m http.server -d build/html/
 ```
 
 Launch your browser and open:
