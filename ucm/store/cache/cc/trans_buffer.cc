@@ -70,6 +70,7 @@ public:
     virtual Status Setup(const std::string& uuid, int32_t deviceId, size_t nodeSize,
                          size_t nNode) = 0;
     virtual void BucketLock(size_t iBucket) = 0;
+    virtual bool BucketTryLock(size_t iBucket) = 0;
     virtual void BucketUnlock(size_t iBucket) = 0;
     virtual void NodeLock(size_t iNode) = 0;
     virtual void NodeUnlock(size_t iNode) = 0;
@@ -123,6 +124,7 @@ public:
         return Status::OK();
     }
     void BucketLock(size_t iBucket) override {}
+    bool BucketTryLock(size_t iBucket) override { return true; }
     void BucketUnlock(size_t iBucket) override {}
     void NodeLock(size_t iNode) override {}
     void NodeUnlock(size_t iNode) override {}
@@ -156,6 +158,7 @@ protected:
             pthread_mutexattr_destroy(&attr);
         }
         void Lock() { pthread_mutex_lock(&mutex); }
+        bool TryLock() { return pthread_mutex_trylock(&mutex) == 0; }
         void Unlock() { pthread_mutex_unlock(&mutex); }
     };
     struct ShareLock {
@@ -163,6 +166,7 @@ protected:
         ~ShareLock() = delete;
         void Init() { pthread_spin_init(&lock, PTHREAD_PROCESS_SHARED); }
         void Lock() { pthread_spin_lock(&lock); }
+        bool TryLock() { return pthread_spin_trylock(&lock) == 0; }
         void Unlock() { pthread_spin_unlock(&lock); }
     };
     static constexpr size_t sharedBufferMagic = (('S' << 16) | ('b' << 8) | 1);
@@ -329,6 +333,7 @@ public:
         return RegisterBuffer(deviceId);
     }
     void BucketLock(size_t iBucket) override { header_->bucketLocks[iBucket].Lock(); }
+    bool BucketTryLock(size_t iBucket) override { return header_->bucketLocks[iBucket].TryLock(); }
     void BucketUnlock(size_t iBucket) override { header_->bucketLocks[iBucket].Unlock(); }
     void NodeLock(size_t iNode) override { header_->nodeLocks[iNode].Lock(); }
     void NodeUnlock(size_t iNode) override { header_->nodeLocks[iNode].Unlock(); }
@@ -448,19 +453,22 @@ size_t TransBuffer::Alloc(const Detail::BlockId& blockId, size_t shardIdx, size_
             strategy_->NodeUnlock(iNode);
             continue;
         }
-        ++meta->reference;
-        meta->block = blockId;
-        meta->shard = shardIdx;
-        meta->ready = false;
         const auto oldBucket = meta->hash;
         if (oldBucket != iBucket) {
             if (oldBucket != invalidIndex) {
-                strategy_->BucketLock(oldBucket);
+                if (!strategy_->BucketTryLock(oldBucket)) {
+                    strategy_->NodeUnlock(iNode);
+                    continue;
+                }
                 Remove(oldBucket, iNode);
                 strategy_->BucketUnlock(oldBucket);
             }
             MoveTo(iBucket, iNode);
         }
+        ++meta->reference;
+        meta->block = blockId;
+        meta->shard = shardIdx;
+        meta->ready = false;
         strategy_->NodeUnlock(iNode);
         return iNode;
     }

@@ -57,6 +57,7 @@ public:
     virtual ~MetaStrategy() = default;
     virtual Status Setup(const std::string& uuid, size_t nNode) = 0;
     virtual void BucketLock(size_t iBucket) = 0;
+    virtual bool BucketTryLock(size_t iBucket) = 0;
     virtual void BucketUnlock(size_t iBucket) = 0;
     virtual void NodeLock(size_t iNode) = 0;
     virtual void NodeUnlock(size_t iNode) = 0;
@@ -81,6 +82,7 @@ protected:
             pthread_mutexattr_destroy(&attr);
         }
         void Lock() { pthread_mutex_lock(&mutex); }
+        bool TryLock() { return pthread_mutex_trylock(&mutex) == 0; }
         void Unlock() { pthread_mutex_unlock(&mutex); }
     };
     struct ShareLock {
@@ -88,6 +90,7 @@ protected:
         ~ShareLock() = delete;
         void Init() { pthread_spin_init(&lock, PTHREAD_PROCESS_SHARED); }
         void Lock() { pthread_spin_lock(&lock); }
+        bool TryLock() { return pthread_spin_trylock(&lock) == 0; }
         void Unlock() { pthread_spin_unlock(&lock); }
     };
     static constexpr size_t sharedBufferMagic = (('S' << 16) | ('b' << 8) | 1);
@@ -224,6 +227,7 @@ public:
         return s;
     }
     void BucketLock(size_t iBucket) override { header_->bucketLocks[iBucket].Lock(); }
+    bool BucketTryLock(size_t iBucket) override { return header_->bucketLocks[iBucket].TryLock(); }
     void BucketUnlock(size_t iBucket) override { header_->bucketLocks[iBucket].Unlock(); }
     void NodeLock(size_t iNode) override { header_->nodeLocks[iNode].Lock(); }
     void NodeUnlock(size_t iNode) override { header_->nodeLocks[iNode].Unlock(); }
@@ -286,20 +290,26 @@ bool MetaManager::ExistAt(size_t iBucket, const Detail::BlockId& block) const no
 
 void MetaManager::InsertAt(size_t iBucket, const Detail::BlockId& block) noexcept
 {
-    auto iNode = strategy_->FetchNode();
-    strategy_->NodeLock(iNode);
-    auto meta = strategy_->MetaAt(iNode);
-    meta->block = block;
-    const auto oldBucket = meta->hash;
-    if (oldBucket != iBucket) {
-        if (oldBucket != invalidIndex) {
-            strategy_->BucketLock(oldBucket);
-            Remove(oldBucket, iNode);
-            strategy_->BucketUnlock(oldBucket);
+    for (;;) {
+        auto iNode = strategy_->FetchNode();
+        strategy_->NodeLock(iNode);
+        auto meta = strategy_->MetaAt(iNode);
+        const auto oldBucket = meta->hash;
+        if (oldBucket != iBucket) {
+            if (oldBucket != invalidIndex) {
+                if (!strategy_->BucketTryLock(oldBucket)) {
+                    strategy_->NodeUnlock(iNode);
+                    continue;
+                }
+                Remove(oldBucket, iNode);
+                strategy_->BucketUnlock(oldBucket);
+            }
+            MoveTo(iBucket, iNode);
         }
-        MoveTo(iBucket, iNode);
+        meta->block = block;
+        strategy_->NodeUnlock(iNode);
+        return;
     }
-    strategy_->NodeUnlock(iNode);
 }
 
 void MetaManager::MoveTo(size_t iBucket, size_t iNode) noexcept
