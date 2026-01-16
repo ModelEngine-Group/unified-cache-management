@@ -245,9 +245,6 @@ def load_prompt_from_file(prompt_file: Optional[Path] = None) -> Tuple[str, List
         - combined_prompt_string: Combined prompt (context + input)
         - answers_list: List of standard answers from the file
     """
-    if prompt_file is None:
-        prompt_file = Path(__file__).parent / "prompt.json"
-
     if not prompt_file.exists():
         raise FileNotFoundError(f"Prompt file not found: {prompt_file}")
 

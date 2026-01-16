@@ -105,7 +105,9 @@ class TestBasicOfflineInference:
         ) or os.getenv("UCM_STORAGE_DIR", "/tmp/ucm_cache")
 
         try:
-            test_prompt, standard_answers = load_prompt_from_file()
+            test_prompt, standard_answers = load_prompt_from_file(
+                Path(__file__).parent / "prompt.json"
+            )
             logger.info(
                 f"Loaded prompt from prompt.json (length: {len(test_prompt)} chars)"
             )
