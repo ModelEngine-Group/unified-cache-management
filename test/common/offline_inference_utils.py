@@ -49,6 +49,21 @@ from ucm.logger import init_logger
 logger = init_logger(__name__)
 
 
+def _run_subprocess_wrapper(func, args, kwargs, result_queue, error_queue):
+    """Module-level wrapper function for subprocess execution.
+
+    This must be at module level (not local) to be picklable by spawn mode.
+    """
+    try:
+        result = func(*args, **kwargs)
+        result_queue.put(result)
+    except Exception as e:
+        import traceback
+
+        error_info = f"{type(e).__name__}: {str(e)}\n{traceback.format_exc()}"
+        error_queue.put(RuntimeError(error_info))
+
+
 def run_in_spawn_subprocess(func, *args, timeout: int = 180, **kwargs):
     """Run a function in a subprocess.
 
@@ -70,17 +85,10 @@ def run_in_spawn_subprocess(func, *args, timeout: int = 180, **kwargs):
     result_queue = ctx.Queue()
     error_queue = ctx.Queue()
 
-    def _wrapper(result_queue, error_queue):
-        try:
-            result = func(*args, **kwargs)
-            result_queue.put(result)
-        except Exception as e:
-            import traceback
-
-            error_info = f"{type(e).__name__}: {str(e)}\n{traceback.format_exc()}"
-            error_queue.put(RuntimeError(error_info))
-
-    process = ctx.Process(target=_wrapper, args=(result_queue, error_queue))
+    process = ctx.Process(
+        target=_run_subprocess_wrapper,
+        args=(func, args, kwargs, result_queue, error_queue),
+    )
     process.start()
     process.join(timeout=timeout)
 
