@@ -107,12 +107,12 @@ jobs:
         cd ${{github.workspace}}
         cd test
         pytest --stage=1 --feature=offline_inference --junitxml=offline-inference.xml
-    - name: Publish test results
+    - name: Prefix cache test results
       uses: EnricoMi/publish-unit-test-result-action/linux@v2
       if: (!cancelled())
       with:
         files: |
-          offline-inference.xml
+          ${{github.workspace}}/test/offline-inference.xml
 
   test-e2e-sparse-gpu:
     runs-on: gpu
@@ -133,10 +133,10 @@ jobs:
         cd ${{github.workspace}}
         cd test
         pytest --stage=1 --feature=offline_inference_sparse --junitxml=offline-inference-sparse.xml
-    - name: Publish test results
+    - name: Sparse attention test results
       uses: EnricoMi/publish-unit-test-result-action/linux@v2
       if: (!cancelled())
       with:
         files: |
-          offline-inference-sparse.xml
+          ${{github.workspace}}/test/offline-inference-sparse.xml
 
