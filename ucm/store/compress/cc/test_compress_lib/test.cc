@@ -90,7 +90,7 @@ int test_huf_compression(const char* filename) {
     }
 
     // 可选：把待压缩数据的BF16的指数部分全部设为同一个值（也即构造一个极端情况），看看能否正常 
-    //set_BF16_e((uint16_t*)srcBuf, srcSize/2);
+    set_BF16_e((uint16_t*)srcBuf, srcSize/2);
     
     /* 3. 调用压缩函数 */
     DataType dt = DT_BF16;
