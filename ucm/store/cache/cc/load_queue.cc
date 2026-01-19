@@ -84,11 +84,11 @@ void LoadQueue::DispatchOneTask(TaskPair&& pair)
         auto& shardTask = shardTasks[i];
         shardTask.bufferHandle = buffer_->Get(shard.owner, shard.index);
         shardTask.backendTaskHandle = 0;
-        if (shardTask.bufferHandle.Owner() && !shardTask.bufferHandle.Ready()) {
+        // if (shardTask.bufferHandle.Owner() && !shardTask.bufferHandle.Ready()) {
             backendTaskDesc.push_back(
                 Detail::Shard{shard.owner, shard.index, {shardTask.bufferHandle.Data()}});
             backendTaskIndex.emplace_back(i);
-        }
+        // }
         shardTask.taskHandle = task->id;
         shardTask.shard = std::move(shard);
         shardTask.waiter = (i + 1 < nShard) ? nullptr : waiter;

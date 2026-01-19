@@ -51,7 +51,7 @@ protected:
         const auto num = t->desc.size();
         const auto size = shardSize_ * num;
         const auto tp = w->startTp;
-        UC_DEBUG("Compressor task({},{},{},{}) dispatching.", id, brief, num, size);
+        UC_DEBUG("Compressor task({},{},{},{},{}) dispatching.", id, brief, num, size, tp);
         compress_action.Push(t, w);
     }
 };

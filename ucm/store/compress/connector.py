@@ -42,7 +42,7 @@ class UcmCompressor(UcmKVStoreBaseV1):
     def __init__(self, config: Dict[str, object]) -> None:
         super().__init__(config)
         key_mapping = {
-            "storage_backends": "storeBackend",
+            "store_backend": "storeBackend",
             "unique_id": "uniqueId",
             "device_id": "deviceId",
             "tensor_size": "tensorSize",
@@ -53,6 +53,7 @@ class UcmCompressor(UcmKVStoreBaseV1):
             "waiting_queue_depth": "waitingQueueDepth",
             "running_queue_depth": "runningQueueDepth",
             "timeout_ms": "timeoutMs",
+            "stream_number": "streamNumber",
         }
         self.store = ucmcompressor.Compressor()
         param = ucmcompressor.Compressor.Config()
