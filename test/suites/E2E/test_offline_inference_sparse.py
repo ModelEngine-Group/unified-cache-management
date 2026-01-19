@@ -18,18 +18,18 @@ from ucm.logger import init_logger
 logger = init_logger(__name__)
 
 
-class TestBasicOfflineInference:
+class TestBasicOfflineInferenceSparse:
     """Test basic offline inference functionality."""
 
     @pytest.mark.stage(1)
-    @pytest.mark.feature("offline_inference")
+    @pytest.mark.feature("offline_inference_sparse")
     @pytest.mark.gpu_mem(30000)
     @pytest.mark.parametrize("model_path", ["/home/models/Qwen2.5-1.5B-Instruct"])
     @pytest.mark.parametrize("max_tokens", [200])
     @pytest.mark.parametrize("prompt_split_ratio", [0.5])  # Split prompt in half
     @pytest.mark.parametrize("enforce_eager", [True, False])
     @pytest.mark.parametrize("max_num_batched_tokens", [2047])
-    def test_offline_accuracy_hbm_ssd_mixed(
+    def test_offline_accuracy_no_sparse(
         self,
         model_path: str,
         max_tokens: int,

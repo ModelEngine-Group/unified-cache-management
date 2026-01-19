@@ -120,5 +120,5 @@ jobs:
       run: |
         cd ${{github.workspace}}
         cd test
-        pytest --stage=1 --feature=offline_inference
+        pytest --stage=1 --feature=offline_inference_sparse
 
