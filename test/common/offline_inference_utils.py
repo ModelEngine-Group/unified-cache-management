@@ -70,7 +70,7 @@ def run_in_spawn_subprocess(func, *args, timeout: int = 180, **kwargs):
     Args:
         func: The function to run in subprocess
         *args: Positional arguments to pass to func
-        timeout: Timeout in seconds (default 180)
+        timeout: Timeout in seconds (default 180), this can only be set using keyword argument(e.g. timeout=300)
         **kwargs: Keyword arguments to pass to func
 
     Returns:
@@ -106,6 +106,19 @@ def run_in_spawn_subprocess(func, *args, timeout: int = 180, **kwargs):
 
     if process.exitcode != 0:
         raise RuntimeError(f"Subprocess failed with exit code {process.exitcode}")
+
+
+def ensure_storage_dir(storage_path: str, clear_existing: bool = False):
+    os.makedirs(storage_path, exist_ok=True)
+    if clear_existing:
+        for item in os.listdir(storage_path):
+            item_path = os.path.join(storage_path, item)
+            if os.path.isfile(item_path):
+                os.remove(item_path)
+            elif os.path.isdir(item_path):
+                import shutil
+
+                shutil.rmtree(item_path)
 
 
 def cleanup_gpu_memory():

@@ -14,6 +14,7 @@ import pytest
 import torch
 import yaml
 from common.offline_inference_utils import (
+    ensure_storage_dir,
     load_prompt_from_file,
     run_in_spawn_subprocess,
     run_offline_inference,
@@ -103,6 +104,9 @@ class TestBasicOfflineInference:
         ucm_storage_dir = config.get("llm_connection", {}).get(
             "ucm_storage_dir"
         ) or os.getenv("UCM_STORAGE_DIR", "/tmp/ucm_cache")
+
+        # make sure UCM storage directory exists and is empty
+        ensure_storage_dir(ucm_storage_dir, clear_existing=True)
 
         try:
             test_prompt, standard_answers = load_prompt_from_file(
