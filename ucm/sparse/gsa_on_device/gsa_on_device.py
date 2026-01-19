@@ -45,7 +45,7 @@ ReqType = Union[str, int]
 
 def gsa_on_device_config_path_for_model(vllm_config) -> str:
     model = vllm_config.model_config.model.lower()
-    logger.info("[GSAOnDevice] model name: %s", model)
+    logger.info(f"[GSAOnDevice] model name: {model}")
 
     if "deepseek" in model and "r1" in model:
         rel = (
@@ -64,7 +64,7 @@ def gsa_on_device_config_path_for_model(vllm_config) -> str:
     else:
         raise ValueError(f"[GSAOnDevice] Unsupported model for gsa_on_device: {model}")
 
-    logger.info("[GSAOnDevice] target relative path: %s", rel)
+    logger.info(f"[GSAOnDevice] target relative path: {rel}")
 
     cur = Path(__file__).resolve()
     repo = cur
@@ -76,11 +76,11 @@ def gsa_on_device_config_path_for_model(vllm_config) -> str:
         ):
 
             p = repo / rel
-            logger.info("[GSAOnDevice] repo root detected at depth=%d: %s", depth, repo)
+            logger.info(f"[GSAOnDevice] repo root detected at depth={depth}: {repo}")
             if p.is_file():
-                logger.info("[GSAOnDevice] config loaded from SOURCE tree: %s", p)
+                logger.info(f"[GSAOnDevice] config loaded from SOURCE tree: {p}")
                 return str(p)
-            logger.warning("[GSAOnDevice] repo root found but config missing: %s", p)
+            logger.warning(f"[GSAOnDevice] repo root found but config missing: {p}")
             break
         if repo.parent == repo:
             logger.debug("[GSAOnDevice] reached filesystem root, stop searching")
@@ -92,7 +92,7 @@ def gsa_on_device_config_path_for_model(vllm_config) -> str:
     res = resources.files("ucm").joinpath(*sub.split("/"))
 
     with resources.as_file(res) as p:
-        logger.info("[GSAOnDevice] config loaded from PACKAGE resource (wheel): %s", p)
+        logger.info(f"[GSAOnDevice] config loaded from PACKAGE resource (wheel): {p}")
         return str(p)
 
 

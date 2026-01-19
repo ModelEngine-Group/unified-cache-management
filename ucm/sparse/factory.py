@@ -40,7 +40,7 @@ class UcmSparseFactory:
         else:
             raise ValueError(f"Unsupported sparse method type: {sparse_method_name}")
         assert issubclass(sparse_method_cls, UcmSparseBase)
-        logger.info("Creating sparse method with name: %s", sparse_method_name)
+        logger.info(f"Creating sparse method with name: {sparse_method_name}")
         return sparse_method_cls(config, role)
 
 

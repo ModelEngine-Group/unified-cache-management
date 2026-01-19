@@ -905,8 +905,7 @@ def _patch_scheduler() -> None:
                             request.status = RequestStatus.WAITING
                         else:
                             logger.debug(
-                                "%s is still in WAITING_FOR_REMOTE_KVS state.",
-                                request.request_id,
+                                f"{request.request_id} is still in WAITING_FOR_REMOTE_KVS state."
                             )
                             self.waiting.pop_request()
                             skipped_waiting_requests.prepend_request(request)

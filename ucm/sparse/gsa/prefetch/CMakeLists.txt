@@ -79,7 +79,15 @@ set(SOURCES
 
 # 创建pybind11模块
 pybind11_add_module(gsa_prefetch ${SOURCES})
+get_target_property(SPDLOG_INCLUDE_DIRS spdlog INTERFACE_INCLUDE_DIRECTORIES)
+if(SPDLOG_INCLUDE_DIRS)
+    target_include_directories(gsa_prefetch BEFORE PRIVATE ${SPDLOG_INCLUDE_DIRS})
+endif()
 
+get_target_property(FMT_INCLUDE_DIRS fmt INTERFACE_INCLUDE_DIRECTORIES)
+if(FMT_INCLUDE_DIRS)
+    target_include_directories(gsa_prefetch BEFORE PRIVATE ${FMT_INCLUDE_DIRS})
+endif()
 # 设置头文件目录
 target_include_directories(gsa_prefetch PRIVATE ${INCLUDE_DIRS})
 
@@ -88,6 +96,8 @@ target_link_directories(gsa_prefetch PRIVATE ${LIBRARY_DIRS})
 
 # 链接库
 target_link_libraries(gsa_prefetch PRIVATE ${LIBRARIES})
+# Link spdlog and fmt (required by logger headers included via storeintf)
+target_link_libraries(gsa_prefetch PRIVATE spdlog::spdlog fmt::fmt)
 
 # 链接OpenMP
 if(OpenMP_CXX_FOUND)
