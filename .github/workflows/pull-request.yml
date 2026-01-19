@@ -92,6 +92,9 @@ jobs:
   test-e2e-pc-gpu:
     runs-on: gpu
     needs: [cpp_gtest, py-linter]
+    permissions:
+      checks: write
+      pull-requests: write
     steps:
     - uses: actions/checkout@v4
     - name: Build
@@ -105,7 +108,7 @@ jobs:
         cd test
         pytest --stage=1 --feature=offline_inference --junitxml=offline-inference.xml
     - name: Publish test results
-      uses: EnricoMi/publish-unit-test-result-action@v2
+      uses: EnricoMi/publish-unit-test-result-action/linux@v2
       if: (!cancelled())
       with:
         files: |
@@ -114,6 +117,9 @@ jobs:
   test-e2e-sparse-gpu:
     runs-on: gpu
     needs: [cpp_gtest, py-linter]
+    permissions:
+      checks: write
+      pull-requests: write
     steps:
     - uses: actions/checkout@v4
     - name: Build
@@ -128,7 +134,7 @@ jobs:
         cd test
         pytest --stage=1 --feature=offline_inference_sparse --junitxml=offline-inference-sparse.xml
     - name: Publish test results
-      uses: EnricoMi/publish-unit-test-result-action@v2
+      uses: EnricoMi/publish-unit-test-result-action/linux@v2
       if: (!cancelled())
       with:
         files: |
