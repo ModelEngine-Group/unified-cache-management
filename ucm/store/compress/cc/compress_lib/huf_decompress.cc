@@ -15,14 +15,15 @@
 /* **************************************************************
 *  Dependencies
 ****************************************************************/
-#include <string.h>     /* memcpy, memset */
+#include <cstring>     /* memcpy, memset */
 #include "compiler.h"
 #include "bitstream.h"  /* BIT_* */
 #include "fse.h"        /* to compress headers */
 #define HUF_STATIC_LINKING_ONLY
 #include "huf.h"
 #include "error_private.h"
-#include <stdio.h>
+#include <cstdlib>
+
 
 /* **************************************************************
 *  Macros
@@ -366,8 +367,8 @@ inline static int8_t trailbit_u64 (uint64_t val) {
 }
 
 
-#define HUF4X1_RELD(k)   { int8_t c=trailbit_u64(d[k]);  ip[k]-=(c>>3);  d[k]=(1|(*(U64*)ip[k]));  d[k]<<=(c&7); }
-#define HUF4X1_DECK(k)   { HUF_DEltX1 item= dtable[(d[k]>>table_sft)];  d[k]<<=item.nbBits;    *op++ = item.byte;}
+
+
 
 FORCE_INLINE_TEMPLATE size_t
 HUF_decompress8X1_usingDTable_interleaved_stream(
@@ -403,6 +404,9 @@ HUF_decompress8X1_usingDTable_interleaved_stream(
             d[k]   = (1|(*(U64*)ip[k]));
             d[k] <<= (8 - highbit_u9(ip[k][7]));
         }
+
+        #define HUF4X1_RELD(k)   { int8_t c=trailbit_u64(d[k]);  ip[k]-=(c>>3);  d[k]=(1|(*(U64*)ip[k]));  d[k]<<=(c&7); }
+        #define HUF4X1_DECK(k)   { HUF_DEltX1 item= dtable[(d[k]>>table_sft)];  d[k]<<=item.nbBits;    *op++ = item.byte;}
 
         /* up to 16 symbols per loop (4 symbols per stream) in 64-bit mode */
         for (size_t i = 0; i < groupCount; ++i) {
@@ -471,14 +475,132 @@ HUF_decompress8X1_usingDTable_interleaved_stream(
             HUF4X1_DECK(6);
             HUF4X1_DECK(7);
         }
-        /* decoded size */
-        // printf("dstSize %zu\n", dstSize);
+        
+        #undef HUF4X1_RELD
+        #undef HUF4X1_DECK
+
         return dstSize;
     }
 }
 
-#undef HUF4X1_RELD
-#undef HUF4X1_DECK
+
+FORCE_INLINE_TEMPLATE size_t
+HUF_decompress8X1_usingDTable_interleaved_stream_stride_2byte (
+          void* dst,  size_t dstCount,
+    const void* cHufSrc, size_t cHufSrcSize,
+    const HUF_DTable* DTable)
+{
+    /* Check */
+    if (cHufSrcSize < 10) return ERROR(corruption_detected);  /* strict minimum : jump table + 1 byte per stream */
+    {   
+        const HUF_DEltX1* dtable = (const HUF_DEltX1*)(DTable + 1);
+        U32 const table_sft = (64 - HUF_getDTableDesc(DTable).tableLog) & 0x3F;
+
+        const size_t segmentSize    = ((dstCount+7) >> 3);
+        const size_t groupCount     = segmentSize / 5;
+        const size_t groupRemainder = segmentSize - groupCount * 5;
+
+        uint16_t* op = (uint16_t*)dst;
+
+        const uint8_t *ip1 = ((uint8_t*)cHufSrc) + 14 + ((const uint16_t*)cHufSrc)[0] - 8;
+        const uint8_t *ip2 = ip1                      + ((const uint16_t*)cHufSrc)[1];
+        const uint8_t *ip3 = ip2                      + ((const uint16_t*)cHufSrc)[2];
+        const uint8_t *ip4 = ip3                      + ((const uint16_t*)cHufSrc)[3];
+        const uint8_t *ip5 = ip4                      + ((const uint16_t*)cHufSrc)[4];
+        const uint8_t *ip6 = ip5                      + ((const uint16_t*)cHufSrc)[5];
+        const uint8_t *ip7 = ip6                      + ((const uint16_t*)cHufSrc)[6];
+        const uint8_t *ip8 = ((uint8_t*)cHufSrc)      + cHufSrcSize - 8;
+
+        const uint8_t* ip[] = {ip1, ip2, ip3, ip4, ip5, ip6, ip7, ip8};
+        uint64_t       d[8];
+
+        for (int k=0; k<8; k++) {
+            d[k]   = (1|(*(U64*)ip[k]));
+            d[k] <<= (8 - highbit_u9(ip[k][7]));
+        }
+
+        #define HUF4X1_RELD(k)   { int8_t c=trailbit_u64(d[k]);  ip[k]-=(c>>3);  d[k]=(1|(*(U64*)ip[k]));  d[k]<<=(c&7); }
+        #define HUF4X1_DECK(k)   { HUF_DEltX1 item= dtable[(d[k]>>table_sft)];  d[k]<<=item.nbBits;    *op++=(uint16_t)item.byte; }
+
+        /* up to 16 symbols per loop (4 symbols per stream) in 64-bit mode */
+        for (size_t i = 0; i < groupCount; ++i) {
+            HUF4X1_DECK(0);      // 0 1 2 3 4 5 6 7
+            HUF4X1_DECK(1);
+            HUF4X1_DECK(2);
+            HUF4X1_DECK(3);
+            HUF4X1_DECK(4);
+            HUF4X1_DECK(5);
+            HUF4X1_DECK(6);
+            HUF4X1_DECK(7);
+
+            HUF4X1_DECK(0);
+            HUF4X1_DECK(1);
+            HUF4X1_DECK(2);
+            HUF4X1_DECK(3);
+            HUF4X1_DECK(4);
+            HUF4X1_DECK(5);
+            HUF4X1_DECK(6);
+            HUF4X1_DECK(7);
+
+            HUF4X1_DECK(0);
+            HUF4X1_DECK(1);
+            HUF4X1_DECK(2);
+            HUF4X1_DECK(3);
+            HUF4X1_DECK(4);
+            HUF4X1_DECK(5);
+            HUF4X1_DECK(6);
+            HUF4X1_DECK(7);
+
+            HUF4X1_DECK(0);
+            HUF4X1_DECK(1);
+            HUF4X1_DECK(2);
+            HUF4X1_DECK(3);
+            HUF4X1_DECK(4);
+            HUF4X1_DECK(5);
+            HUF4X1_DECK(6);
+            HUF4X1_DECK(7);
+
+            HUF4X1_DECK(0);
+            HUF4X1_DECK(1);
+            HUF4X1_DECK(2);
+            HUF4X1_DECK(3);
+            HUF4X1_DECK(4);
+            HUF4X1_DECK(5);
+            HUF4X1_DECK(6);
+            HUF4X1_DECK(7);
+
+            HUF4X1_RELD(0);
+            HUF4X1_RELD(1);
+            HUF4X1_RELD(2);
+            HUF4X1_RELD(3);
+            HUF4X1_RELD(4);
+            HUF4X1_RELD(5);
+            HUF4X1_RELD(6);
+            HUF4X1_RELD(7);
+        }
+
+        for (size_t i = 0; i < groupRemainder; ++i) {
+            HUF4X1_DECK(0);
+            HUF4X1_DECK(1);
+            HUF4X1_DECK(2);
+            HUF4X1_DECK(3);
+            HUF4X1_DECK(4);
+            HUF4X1_DECK(5);
+            HUF4X1_DECK(6);
+            HUF4X1_DECK(7);
+        }
+
+        #undef HUF4X1_RELD
+        #undef HUF4X1_DECK
+
+        return dstCount;    // 这里返回的是uint16_t的数量
+    }
+}
+
+
+
+
+
 
 typedef size_t (*HUF_decompress_usingDTable_t)(void *dst, size_t dstSize,
                                                const void *cSrc,
@@ -1205,86 +1327,69 @@ size_t HUF_decompress (void* dst, size_t dstSize, const void* cSrc, size_t cSrcS
     }
 }
 
-#include <stdlib.h>
-size_t HUF_decompress_float_fixRatio_bf16 (void* dst, size_t dstSize, const void* cSrc, size_t cSrcSize)
-{
-    /* validation checks */
+
+
+size_t HUF_decompress_float_fixRatio_bf16 (void* dst, size_t dstSize, const void* cSrc, size_t cSrcSize) {
     if (dstSize == 0) return ERROR(dstSize_tooSmall);
-    if (cSrcSize > dstSize) return ERROR(corruption_detected);   /* invalid */
-    if (cSrcSize == dstSize) { memcpy(dst, cSrc, dstSize); return dstSize; }   /* not compressed */
-    if (cSrcSize == 1) { memset(dst, *(const BYTE*)cSrc, dstSize); return dstSize; }   /* RLE */
 
-    {
-        const BYTE* const istart = (const BYTE*)cSrc;
-        const BYTE* ip = istart;
+    // 解析元数据
+    uint32_t count      = ((const uint32_t*)cSrc)[1];  // 元数据1: 浮点数总量
+    uint32_t count_full = ((const uint32_t*)cSrc)[2];  // 元数据2: 全精度尾数的浮点数的数量
+    uint32_t e_len      = ((const uint32_t*)cSrc)[3];  // 元数据3: 尾数的偏移量，用该变量可以定位到尾数的起始存放地址
 
-        uint32_t srcSize = ((const uint32_t*)cSrc)[0];
-        uint32_t eLen = ((const uint32_t*)cSrc)[1];
-        uint32_t fullSmLen = ((const uint32_t*)cSrc)[2];
-        uint32_t truncSmLen = 0;
-        if (fullSmLen != (srcSize / sizeof(uint16_t))) {
-            truncSmLen = ((const uint32_t*)cSrc)[3];
-        }
+    // 计算输入buffer上的的一些区域的起始指针
+    const uint8_t* ip_e     = (const BYTE*)cSrc + 16;                 // 起始指针: huffman表, 跳过16byte元数据
+    const uint8_t* ip_full  = (const BYTE*)cSrc + e_len;              // 起始指针: 全精度尾数
+    const uint8_t* ip_trunc = (const BYTE*)cSrc + e_len + count_full; // 起始指针: 低精度尾数
 
-        uint8_t* eBytes = (uint8_t*)malloc(srcSize / sizeof(uint16_t));
-        if (!eBytes) {
-            printf("malloc failed!\n");
-            return -1;
-        }
+    // 解析huffman表
+    HUF_CREATE_STATIC_DTABLEX1(DTable, HUF_TABLELOG_MAX);
+    U32 workSpace[HUF_DECOMPRESS_WORKSPACE_SIZE_U32];
+    size_t hSize = HUF_readDTableX1_wksp(DTable, ip_e, (ip_full-ip_e), workSpace, sizeof(workSpace)); // hSize是huffman表在压缩流中的大小
+    if (HUF_isError(hSize)) return hSize;
 
-        ip += 16;
+    // 从huffman部分解码出指数, 直接放在dst里，稍后再拼装
+    ip_e += hSize;
+    size_t ret_code = HUF_decompress8X1_usingDTable_interleaved_stream_stride_2byte(dst, count, ip_e, (ip_full-ip_e), DTable);
+    if (HUF_isError(ret_code)) return ret_code;
+    
+    // 解析全精度尾数
+    uint16_t* op = (uint16_t*)dst;
+    for (uint32_t i=0; i<count_full; i++) {
+        op[0] = ((ip_full[0] & 0x80) << 8) | (op[0] << 7) | (ip_full[0] & 0x7F);
+        op ++;
+        ip_full ++;
+    }
 
-        // printf("e_len=%u  full_sm_len=%u  trunc_sm_len=%u\n", eLen, fullSmLen, truncSmLen);
+    // 解析低精度尾数
+    for (uint32_t i=0; i<(count-count_full); i+=2) {
+        op[0] = ((ip_trunc[0] & 0x80) << 8) | (op[0] << 7) |  (ip_trunc[0] & 0x70)      | 0x7;
+        op[1] = ((ip_trunc[0] & 0x8) << 12) | (op[1] << 7) | ((ip_trunc[0] & 0x7) << 4) | 0x7;
+        op += 2;
+        ip_trunc ++;
+    }
 
-        HUF_CREATE_STATIC_DTABLEX1(DTable, HUF_TABLELOG_MAX);
-        U32 workSpace[HUF_DECOMPRESS_WORKSPACE_SIZE_U32];
-        size_t const hSize = HUF_readDTableX1_wksp (DTable, ip, eLen, workSpace, sizeof(workSpace));
+    return count * sizeof(uint16_t);  // 返回解压后的字节数量
+}
 
-        if (HUF_isError(hSize)) return hSize;
-        if (hSize >= eLen) return ERROR(srcSize_wrong);
-        ip += hSize; eLen -= hSize;
-        // printf("HUF_decompress_float_fixRatio_bf16: hSize %zu\n", hSize);
 
-        size_t decomSize = HUF_decompress8X1_usingDTable_interleaved_stream(eBytes, fullSmLen + truncSmLen, ip, eLen, DTable);
-        // printf("e decomSize = %zu\n", decomSize);
 
-        // 拼接尾数
-        uint16_t* op = (uint16_t*)dst;
-        const uint8_t* fullSm = istart + 16 + (eLen + hSize);
-        const uint8_t* truncSm = istart + 16 + (eLen + hSize) + fullSmLen; 
 
-        ip = eBytes;
-        for (int i = 0; i < fullSmLen; ++i) {
-            *op++ = (((*fullSm) & 0x80) << 8) | (*ip << 7) | ((*fullSm) & 0x7F); 
-            ip++;
-            fullSm++;
-        }
-
-        uint16_t* op2 = op + truncSmLen/2;
-        const uint8_t* ip2 = ip + truncSmLen/2;
-        for (int i = 0; i < truncSmLen/2; ++i) {
-            *op++ = (((*truncSm) & 0x80) << 8) | (*ip << 7) | ((*truncSm) & 0x70); 
-            *op2++ = (((*truncSm) & 0x8) << 12) | (*ip2 << 7) | (((*truncSm) & 0x7) << 4) ; 
-            truncSm++;  // 确保truncSm指针正确移动
-            ip++;
-            ip2++;
-        }
-
-        if (eBytes) free(eBytes);
-        return srcSize;
+size_t HUF_decompress_float_fixRatio (void* dst, size_t dstSize, const void* cSrc, size_t cSrcSize, DataType *p_dataType) {
+    if (cSrcSize <= 16) {
+        return 0;   // srcbuffer不够大, 连元数据都放不下，报错
+    }
+    DataType dt = (DataType)((const uint16_t*)cSrc)[0];
+    if  (p_dataType) {
+        *p_dataType = dt;
+    }
+    switch (dt) {
+        case DT_BF16: return HUF_decompress_float_fixRatio_bf16 (dst, dstSize, cSrc, cSrcSize);
+        default:      return 0;
     }
 }
 
 
-size_t HUF_decompress_float_fixRatio (void* dst, size_t dstSize, const void* cSrc, size_t cSrcSize, DataType dataType) {
-    switch(dataType) {
-        case DT_BF16: 
-            return HUF_decompress_float_fixRatio_bf16 (dst, dstSize, cSrc, cSrcSize);
-        default:
-            printf("处理符号和尾数暂不支持该数据类型...\n");
-            return 0;
-    }
-}
 
 size_t HUF_decompress4X_DCtx (HUF_DTable* dctx, void* dst, size_t dstSize, const void* cSrc, size_t cSrcSize)
 {
