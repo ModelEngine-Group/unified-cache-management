@@ -9,6 +9,7 @@ from common.offline_inference_utils import (
     run_in_spawn_subprocess,
     run_offline_inference,
     split_prompt_by_tokens,
+    to_dict_for_serialization,
 )
 from transformers import AutoTokenizer
 from vllm import LLM, SamplingParams
@@ -144,13 +145,8 @@ class TestBasicOfflineInference:
         # Run Phase 1 in a separate subprocess to ensure GPU memory is fully released
         logger.info(f"\n===== Phase 1: Save KV Cache to SSD And Load (Baseline) =====")
 
-        # Convert SamplingParams to dict for serialization
-        sampling_params_dict = {
-            "temperature": sampling_params.temperature,
-            "top_p": sampling_params.top_p,
-            "max_tokens": sampling_params.max_tokens,
-            "ignore_eos": sampling_params.ignore_eos,
-        }
+        # Convert SamplingParams to dict for serialization, as non-picklable objects cannot be passed to subprocess
+        sampling_params_dict = to_dict_for_serialization(sampling_params)
 
         phase1_outputs = run_in_spawn_subprocess(
             run_offline_inference,
