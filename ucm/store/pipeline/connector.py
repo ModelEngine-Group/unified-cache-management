@@ -140,7 +140,6 @@ class UcmPipelineStore(UcmKVStoreBaseV1):
         block_ids: List[bytes],
         shard_index: List[int],
         src_addr: List[List[int]] | np.ndarray,
-        prerequisite_handle: int = 0,
     ) -> Task:
         ids = np.frombuffer(b"".join(block_ids), dtype=np.uint8)
         indexes = array.array("Q", shard_index)
@@ -148,15 +147,34 @@ class UcmPipelineStore(UcmKVStoreBaseV1):
             addrs = src_addr
         else:
             addrs = np.array(src_addr, dtype=np.uint64)
-        task_id = self.store_.Dump(ids, indexes, addrs, prerequisite_handle)
+        task_id = self.store_.Dump(ids, indexes, addrs)
         return UcmPipelineStoreTransTask(task_id)
 
     def wait(self, task: Task) -> None:
         return self.store_.Wait(task.task_id)
 
     def check(self, task: Task) -> bool:
-        return self.store_.Check(task.task_id)
+        return self._backend.check(task)
 
+def _build_cache_compress_posix_pipeline(
+    config: Dict[str, object], pipeline: ucmpipelinestore.PipelineStore
+) -> None:
+    store_dir = Path(__file__).resolve().parent.parent
+    posix_config = copy.deepcopy(config)
+    
+    if config.get("device_id", -1) >= 0:
+        if (posix_config["block_size"] % posix_config["shard_size"]) != 0:
+            print(f'_build_cache_compress_posix_pipeline: error paraments {posix_config["block_size"]} {posix_config["shard_size"]}')
+            return
+        layers = posix_config["block_size"] // posix_config["shard_size"]
+        posix_config["shard_size"] = (posix_config["shard_size"] * posix_config["compress_ratio"] // 32) // 4096 * 4096
+        posix_config["tensor_size"] = int(posix_config["shard_size"])
+        posix_config["block_size"] = int(posix_config["shard_size"] * layers)
+    
+    
+    pipeline.Stack("Posix", str(store_dir / "posix/libposixstore.so"), posix_config)
+    pipeline.Stack("Compress", str(store_dir / "compress/libcompressor.so"), config)
+    pipeline.Stack("Cache", str(store_dir / "cache/libcachestore.so"), config)
 
 def _cache_ds3fs_pipeline_builder(
     config: Dict[str, object], pipeline: ucmpipelinestore.PipelineStore
@@ -215,3 +233,4 @@ UcmPipelineStoreBuilder.register("Cache|Posix", _cache_posix_pipeline_builder)
 UcmPipelineStoreBuilder.register("Empty", _empty_pipeline_builder)
 UcmPipelineStoreBuilder.register("Fake", _fake_pipeline_builder)
 UcmPipelineStoreBuilder.register("Posix", _posix_pipeline_builder)
+UcmPipelineStoreBuilder.register("Cache|Compress|Posix", _build_cache_compress_posix_pipeline)
