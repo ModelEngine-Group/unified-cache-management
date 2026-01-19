@@ -8,8 +8,8 @@
 #include "ucmstore_v1.h"
 #include "thread/thread_pool.h"
 
-namespace UC::Compressor {
 
+namespace UC::Compressor {
 
 // #define USE_C_COMPRESS
 

@@ -38,15 +38,9 @@ extern "C" {
 #endif
 
 typedef enum {
-    R139 = 139,   // 1.39
-    R145 = 145,   // 1.45
-    R152 = 152,   // 1.52
-    R160 = 160,   // 1.60
-    R168 = 168,   // 1.68
-    R177 = 177,   // 1.77
-    R188 = 188,   // 1.88
-    R200 = 200,   // 2.00
-    R_MAX = R200  // 上限
+    R139 = 23,   // 32 / 23 = 1.39x
+    R145 = 22,   // 32 / 22 = 1.45x
+    R152 = 21    // 32 / 21 = 1.52x
 } FixedRatio;
 
 typedef enum {
@@ -69,10 +63,10 @@ typedef enum {
  *  Special values : if return == 0, srcData is not compressible => Nothing is stored within dst !!!
  *                   if HUF_isError(return), compression failed (more details using HUF_getErrorName())
  */
-HUF_PUBLIC_API size_t HUF_compress(void* dst, size_t dstCapacity,
-                             const void* src, size_t srcSize);
+HUF_PUBLIC_API size_t HUF_compress(void* dst, size_t dstCapacity, const void* src, size_t srcSize);
 
-size_t HUF_compress_float_fixRatio (void* dst, size_t maxDstSize, const void* src, size_t srcSize, FixedRatio ratio, DataType dataType);
+size_t HUF_compress_float_fixRatio   (void* dst, size_t maxDstSize, const void* src, size_t srcSize, FixedRatio ratio, DataType dataType);
+size_t HUF_decompress_float_fixRatio (void* dst, size_t dstSize, const void* cSrc, size_t cSrcSize, DataType *p_dataType);
 
 /** HUF_decompress() :
  *  Decompress HUF data from buffer 'cSrc', of size 'cSrcSize',
@@ -84,10 +78,7 @@ size_t HUF_compress_float_fixRatio (void* dst, size_t maxDstSize, const void* sr
  * @return : size of regenerated data (== originalSize),
  *           or an error code, which can be tested using HUF_isError()
  */
-HUF_PUBLIC_API size_t HUF_decompress(void* dst,  size_t originalSize,
-                               const void* cSrc, size_t cSrcSize);
-
-size_t HUF_decompress_float_fixRatio (void* dst, size_t dstSize, const void* cSrc, size_t cSrcSize, DataType dataType);
+HUF_PUBLIC_API size_t HUF_decompress(void* dst,  size_t originalSize, const void* cSrc, size_t cSrcSize);
 
 /* ***   Tool functions *** */
 #define HUF_BLOCKSIZE_MAX (128 * 1024)                  /**< maximum input size for a single block compressed with HUF_compress */
@@ -308,7 +299,7 @@ size_t HUF_decompress4X2_usingDTable(void* dst, size_t maxDstSize, const void* c
 
 size_t HUF_compress1X (void* dst, size_t dstSize, const void* src, size_t srcSize, unsigned maxSymbolValue, unsigned tableLog);
 size_t HUF_compress1X_wksp (void* dst, size_t dstSize, const void* src, size_t srcSize, unsigned maxSymbolValue, unsigned tableLog, void* workSpace, size_t wkspSize);  /**< `workSpace` must be a table of at least HUF_WORKSPACE_SIZE_U32 unsigned */
-size_t HUF_compress1X_usingCTable(void* dst, size_t dstSize, const void* src, size_t srcSize, const HUF_CElt* CTable);
+
 /** HUF_compress1X_repeat() :
  *  Same as HUF_compress1X_wksp(), but considers using hufTable if *repeat != HUF_repeat_none.
  *  If it uses hufTable it does not modify hufTable or repeat.
