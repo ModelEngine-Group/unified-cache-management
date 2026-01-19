@@ -110,7 +110,7 @@ class TestBasicOfflineInference:
 
         try:
             test_prompt, standard_answers = load_prompt_from_file(
-                Path(__file__).parent / "prompt.json"
+                Path(__file__).parent / "prompts" / "test_offline_inference.json"
             )
             logger.info(
                 f"Loaded prompt from prompt.json (length: {len(test_prompt)} chars)"

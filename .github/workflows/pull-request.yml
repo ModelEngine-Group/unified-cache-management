@@ -89,7 +89,7 @@ jobs:
       # See https://cmake.org/cmake/help/latest/manual/ctest.1.html for more detail
       run: ctest -C ${{env.BUILD_TYPE}} --output-on-failure
 
-  test-e2e-gpu:
+  test-e2e-pc-gpu:
     runs-on: gpu
     needs: [cpp_gtest, py-linter]
     steps:
@@ -98,6 +98,23 @@ jobs:
       run: |
         cd ${{github.workspace}}
         export PLATFORM=cuda
+        pip install -v -e . --no-build-isolation
+    - name: Test E2E
+      run: |
+        cd ${{github.workspace}}
+        cd test
+        pytest --stage=1 --feature=offline_inference
+
+  test-e2e-sparse-gpu:
+    runs-on: gpu
+    needs: [cpp_gtest, py-linter]
+    steps:
+    - uses: actions/checkout@v4
+    - name: Build
+      run: |
+        cd ${{github.workspace}}
+        export PLATFORM=cuda
+        export ENABLE_SPARSE=TRUE
         pip install -v -e . --no-build-isolation
     - name: Test E2E
       run: |
