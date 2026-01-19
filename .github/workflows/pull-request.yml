@@ -103,7 +103,13 @@ jobs:
       run: |
         cd ${{github.workspace}}
         cd test
-        pytest --stage=1 --feature=offline_inference
+        pytest --stage=1 --feature=offline_inference --junitxml=offline-inference.xml
+    - name: Publish test results
+      uses: EnricoMi/publish-unit-test-result-action@v2
+      if: (!cancelled())
+      with:
+        files: |
+          offline-inference.xml
 
   test-e2e-sparse-gpu:
     runs-on: gpu
@@ -120,5 +126,11 @@ jobs:
       run: |
         cd ${{github.workspace}}
         cd test
-        pytest --stage=1 --feature=offline_inference_sparse
+        pytest --stage=1 --feature=offline_inference_sparse --junitxml=offline-inference-sparse.xml
+    - name: Publish test results
+      uses: EnricoMi/publish-unit-test-result-action@v2
+      if: (!cancelled())
+      with:
+        files: |
+          offline-inference-sparse.xml
 
