@@ -63,15 +63,15 @@ private:
         if (config.deviceId < -1) {
             return Status::InvalidParam("invalid device({})", config.deviceId);
         }
+        if (config.streamNumber == 0) {
+            return Status::InvalidParam("invalid stream number({})", config.streamNumber);
+        }
         if (config.deviceId == -1) { return Status::OK(); }
         if (config.tensorSize == 0 || config.shardSize < config.tensorSize ||
             config.blockSize < config.shardSize || config.shardSize % config.tensorSize != 0 ||
             config.blockSize % config.shardSize != 0) {
             return Status::InvalidParam("invalid size({},{},{})", config.tensorSize,
                                         config.shardSize, config.blockSize);
-        }
-        if (config.streamNumber == 0) {
-            return Status::InvalidParam("invalid stream number({})", config.streamNumber);
         }
         return Status::OK();
     }
@@ -83,13 +83,13 @@ private:
         UC_INFO("{}-{}({}).", ns, UCM_COMMIT_ID, buildType);
         UC_INFO("Set {}::StorageBackends to {}.", ns, config.storageBackends);
         UC_INFO("Set {}::DeviceId to {}.", ns, config.deviceId);
-        if (config.deviceId == -1) { return; }
         UC_INFO("Set {}::TensorSize to {}.", ns, config.tensorSize);
         UC_INFO("Set {}::ShardSize to {}.", ns, config.shardSize);
         UC_INFO("Set {}::BlockSize to {}.", ns, config.blockSize);
         UC_INFO("Set {}::IoDirect to {}.", ns, config.ioDirect);
         UC_INFO("Set {}::StreamNumber to {}.", ns, config.streamNumber);
         UC_INFO("Set {}::TimeoutMs to {}.", ns, config.timeoutMs);
+        UC_INFO("Set {}::DataDirShardBytes to {}.", ns, config.dataDirShardBytes);
     }
 };
 
@@ -111,7 +111,16 @@ std::string PosixStore::Readme() const { return "PosixStore"; }
 Expected<std::vector<uint8_t>> PosixStore::PosixStore::Lookup(const Detail::BlockId* blocks,
                                                               size_t num)
 {
-    return impl_->spaceMgr.Lookup(blocks, num);
+    auto res = impl_->spaceMgr.Lookup(blocks, num);
+    if (!res) [[unlikely]] { UC_ERROR("Failed({}) to lookup blocks({}).", res.Error(), num); }
+    return res;
+}
+
+Expected<ssize_t> PosixStore::LookupOnPrefix(const Detail::BlockId* blocks, size_t num)
+{
+    auto res = impl_->spaceMgr.LookupOnPrefix(blocks, num);
+    if (!res) [[unlikely]] { UC_ERROR("Failed({}) to lookup blocks({}).", res.Error(), num); }
+    return res;
 }
 
 void PosixStore::PosixStore::Prefetch(const Detail::BlockId* blocks, size_t num) {}

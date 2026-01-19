@@ -48,7 +48,7 @@ class UcmCacheStore(UcmKVStoreBaseV1):
             "tensor_size": "tensorSize",
             "shard_size": "shardSize",
             "block_size": "blockSize",
-            "buffer_size": "bufferSize",
+            "buffer_number": "bufferNumber",
             "share_buffer_enable": "shareBufferEnable",
             "waiting_queue_depth": "waitingQueueDepth",
             "running_queue_depth": "runningQueueDepth",
@@ -69,6 +69,10 @@ class UcmCacheStore(UcmKVStoreBaseV1):
         flat = np.frombuffer(b"".join(block_ids), dtype=np.uint8)
         res = self.store.Lookup(flat)
         return np.frombuffer(res, dtype=bool)
+
+    def lookup_on_prefix(self, block_ids: List[bytes]) -> int:
+        flat = np.frombuffer(b"".join(block_ids), dtype=np.uint8)
+        return self.store.LookupOnPrefix(flat)
 
     def prefetch(self, block_ids: List[bytes]) -> None:
         flat = np.frombuffer(b"".join(block_ids), dtype=np.uint8)

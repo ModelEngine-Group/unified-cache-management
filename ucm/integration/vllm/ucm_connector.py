@@ -193,32 +193,23 @@ class UCMDirectConnector(KVConnectorBase_V1):
                 f"{self.connector_configs}"
             )
 
-        store = None
         name = self.connector_configs[0]["ucm_connector_name"]
         config = copy.deepcopy(self.connector_configs[0]["ucm_connector_config"])
-        config["storage_backends"] = self._generate_storage_backends(
-            config["storage_backends"], is_rope
-        )
-        config["unique_id"] = (
-            self.engine_id if not is_rope else self.engine_id + "_rope"
-        )
-
-        if self._role == KVConnectorRole.SCHEDULER:
-            config["device_id"] = -1
-            store = UcmConnectorFactoryV1.create_connector(name, config)
-        else:
+        shared_data = self.is_dsa or self.is_mla
+        config.setdefault("share_buffer_enable", shared_data)
+        if "storage_backends" in config:
+            config["storage_backends"] = self._generate_storage_backends(
+                config["storage_backends"], is_rope
+            )
+        config["unique_id"] = f"{self.engine_id}_rope" if is_rope else self.engine_id
+        if self._role == KVConnectorRole.WORKER:
             config["device_id"] = self.local_rank
             config["tensor_size"] = tensor_size
             config["shard_size"] = chunk_block_size
             config["block_size"] = chunk_block_size
-            if self.is_dsa or self.is_mla:
-                config["share_buffer_enable"] = True
-                config["local_rank_size"] = self.tp_size
-            else:
-                config["share_buffer_enable"] = False
-            store = UcmConnectorFactoryV1.create_connector(name, config)
-
-        return store
+            config["local_rank_size"] = self.tp_size if shared_data else 1
+        logger.info(f"create {name} with config: {config}")
+        return UcmConnectorFactoryV1.create_connector(name, config)
 
     def _generate_storage_backends(
         self, storage_backends: str, is_rope: bool = False
@@ -592,7 +583,6 @@ class UCMDirectConnector(KVConnectorBase_V1):
         pass
 
     def wait_for_save(self) -> None:
-
         # TODO support PP
         if (self.is_mla or self.is_dsa) and self.global_rank != 0:
             return
