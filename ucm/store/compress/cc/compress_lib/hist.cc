@@ -174,40 +174,51 @@ size_t HIST_count_BF16(unsigned* count, unsigned* maxSymbolValuePtr,
     return (size_t)largestCount;
 }
 
-size_t HIST_count_BF16_fixRatio(unsigned* count, unsigned* maxSymbolValuePtr, const void* src, size_t srcSize)
-{
-    const uint16_t* ip = (const uint16_t*)src;
-    const uint16_t* const iend = ip + srcSize;
-    size_t const countSize = (*maxSymbolValuePtr + 1) * sizeof(*count);
-    unsigned largestCount = 0;
 
-    /* safety checks */
-    assert(*maxSymbolValuePtr <= 255);
-    if (!srcSize) {
-        memset(count, 0, countSize);
-        *maxSymbolValuePtr = 0;
+size_t HIST_count_BF16_fixRatio(unsigned* count, unsigned* maxSymbolValuePtr, const void* src, size_t srcSize) {
+    if (srcSize == 0) {
         return 0;
     }
+    
+    // safety checks
+    assert(*maxSymbolValuePtr <= 255);
 
-    /* counting */
-    while (ip < iend) {
-        // exponent_buffer[i] = (buffer[i] >> 7) & 0xFF;  // 提取指数位
-        count[((*ip)>>7) & 0xFF] ++;
-        ip ++;
+    // 统计直方图
+    const uint16_t* ip = (const uint16_t*)src;
+    for (size_t i=0; i<srcSize; i++) {
+        count[ ((ip[i])>>7) & 0xFF ] ++;  // 提取指数位
     }
     
+    // 找出统计值最大的symbol
+    U32 count_largest = 0;
+    U32 s_largest = 0;
     {   U32 s;
         for (s=0; s<256; s++) {
-            if (count[s] > largestCount) largestCount = count[s];
-    }   }
+            if (count_largest < count[s]) {
+                count_largest = count[s];
+                s_largest = s;
+            }
+        }
+    }
+
+    // 如果只有一个symbol，特殊处理一下，避免采用RLE编码
+    if (count_largest == srcSize) {
+        if (s_largest == 0) {
+            count[1]           = 1;
+        } else {
+            count[s_largest-1] = 1;
+        }
+    }
 
     {   unsigned maxSymbolValue = 255;
         while (!count[maxSymbolValue]) maxSymbolValue--;
         if (maxSymbolValue > *maxSymbolValuePtr) return ERROR(maxSymbolValue_tooSmall);
         *maxSymbolValuePtr = maxSymbolValue;
     }
-    return (size_t)largestCount;
+
+    return (size_t)count_largest;
 }
+
 
 size_t HIST_count_FP16(unsigned* count, unsigned* maxSymbolValuePtr,
                        const void* src, size_t srcSize, 

@@ -23,8 +23,8 @@
 /* **************************************************************
 *  Includes
 ****************************************************************/
-#include <string.h>     /* memcpy, memset */
-#include <stdio.h>      /* printf (debug) */
+#include <cstring>     /* memcpy, memset */
+#include <cstdio>      /* printf (debug) */
 #include "compiler.h"
 #include "bitstream.h"
 #include "hist.h"
@@ -534,37 +534,32 @@ HUF_compress1X_stride_usingCTable_internal_body_BF16(void* dst, size_t dstSize,
     /* 该流的元素总数（按 stride=8） */
     size_t const count = HUF_countStride(srcSize, startIndex, streamNum);
     size_t n = count & ~((size_t)3);  /* 对齐到 4 的倍数 */
+    n *= streamNum;
 
-    // printf("count %zu\n", count);
+    base += startIndex;
 
     /* 处理尾数（count % 4 个），顺序与原版一致：先编码尾部，再主循环从尾往前成组编码 */
     switch (count & 3) {
         case 3:
-            HUF_encodeSymbol(&bitC, (base[startIndex + streamNum*(n + 2)] >> 7) & 0xFF, CTable);
+            HUF_encodeSymbol(&bitC, (uint8_t)(base[n + streamNum*2] >> 7), CTable);
             HUF_FLUSHBITS_2(&bitC);
-            /* fall-through */
         case 2:
-            HUF_encodeSymbol(&bitC, (base[startIndex + streamNum*(n + 1)] >> 7) & 0xFF, CTable);
+            HUF_encodeSymbol(&bitC, (uint8_t)(base[n + streamNum  ] >> 7), CTable);
             HUF_FLUSHBITS_1(&bitC);
-            /* fall-through */
         case 1:
-            HUF_encodeSymbol(&bitC, (base[startIndex + streamNum*(n + 0)] >> 7) & 0xFF, CTable);
+            HUF_encodeSymbol(&bitC, (uint8_t)(base[n              ] >> 7), CTable);
             HUF_FLUSHBITS(&bitC);
-            /* fall-through */
-        case 0:
-        default:
-            break;
     }
 
     /* 主循环：每轮处理 4 个符号，按照原版的倒序写入与刷新节奏 */
-    for (; n > 0; n -= 4) {
-        HUF_encodeSymbol(&bitC, (base[startIndex + streamNum*(n - 1)] >> 7) & 0xFF, CTable);
+    for (; n > 0; n -= (4*streamNum)) {
+        HUF_encodeSymbol(&bitC, (uint8_t)(base[n - streamNum  ] >> 7), CTable);
         HUF_FLUSHBITS_1(&bitC);
-        HUF_encodeSymbol(&bitC, (base[startIndex + streamNum*(n - 2)] >> 7) & 0xFF, CTable);
+        HUF_encodeSymbol(&bitC, (uint8_t)(base[n - streamNum*2] >> 7), CTable);
         HUF_FLUSHBITS_2(&bitC);
-        HUF_encodeSymbol(&bitC, (base[startIndex + streamNum*(n - 3)] >> 7) & 0xFF, CTable);
+        HUF_encodeSymbol(&bitC, (uint8_t)(base[n - streamNum*3] >> 7), CTable);
         HUF_FLUSHBITS_1(&bitC);
-        HUF_encodeSymbol(&bitC, (base[startIndex + streamNum*(n - 4)] >> 7) & 0xFF, CTable);
+        HUF_encodeSymbol(&bitC, (uint8_t)(base[n - streamNum*4] >> 7), CTable);
         HUF_FLUSHBITS(&bitC);
     }
 
@@ -689,45 +684,7 @@ HUF_compress1X8_usingCTable_internal_body_BF16(void* dst, size_t dstSize,
     return BIT_closeCStream(&bitC);
 }
 
-static size_t
-HUF_compress1X8_usingCTable_internal(void* dst, size_t dstSize,
-                              const void* src, size_t srcSize,
-                              const HUF_CElt* CTable, const int bmi2)
-{
-    (void)bmi2;
-    return HUF_compress1X8_usingCTable_internal_body_BF16(dst, dstSize, src, srcSize, CTable);
-}
 
-#if DYNAMIC_BMI2
-
-static TARGET_ATTRIBUTE("bmi2") size_t
-HUF_compress1X_usingCTable_internal_bmi2(void* dst, size_t dstSize,
-                                   const void* src, size_t srcSize,
-                                   const HUF_CElt* CTable)
-{
-    return HUF_compress1X_usingCTable_internal_body(dst, dstSize, src, srcSize, CTable);
-}
-
-static size_t
-HUF_compress1X_usingCTable_internal_default(void* dst, size_t dstSize,
-                                      const void* src, size_t srcSize,
-                                      const HUF_CElt* CTable)
-{
-    return HUF_compress1X_usingCTable_internal_body(dst, dstSize, src, srcSize, CTable);
-}
-
-static size_t
-HUF_compress1X_usingCTable_internal(void* dst, size_t dstSize,
-                              const void* src, size_t srcSize,
-                              const HUF_CElt* CTable, const int bmi2)
-{
-    if (bmi2) {
-        return HUF_compress1X_usingCTable_internal_bmi2(dst, dstSize, src, srcSize, CTable);
-    }
-    return HUF_compress1X_usingCTable_internal_default(dst, dstSize, src, srcSize, CTable);
-}
-
-#else
 
 static size_t
 HUF_compress1X_usingCTable_internal(void* dst, size_t dstSize,
@@ -738,12 +695,7 @@ HUF_compress1X_usingCTable_internal(void* dst, size_t dstSize,
     return HUF_compress1X_usingCTable_internal_body(dst, dstSize, src, srcSize, CTable);
 }
 
-#endif
 
-size_t HUF_compress1X_usingCTable(void* dst, size_t dstSize, const void* src, size_t srcSize, const HUF_CElt* CTable)
-{
-    return HUF_compress1X_usingCTable_internal(dst, dstSize, src, srcSize, CTable, /* bmi2 */ 0);
-}
 
 
 static size_t
@@ -823,73 +775,7 @@ static size_t HUF_compressCTable_internal(
     return (size_t)(op-ostart);
 }
 
-/* 4X 压缩：按 stride=4 的交错方式分成 4 个流：
-   流0: 0,4,8,...
-   流1: 1,5,9,...
-   流2: 2,6,10,...
-   流3: 3,7,11,...
-   跳表写入每个流的压缩大小（前 3 个写入 16-bit） */
-static size_t
-HUF_compressCTable4x_stride_float_BF16 (void* dst, size_t dstSize,
-                              const void* src, size_t srcSize,
-                              const HUF_CElt* CTable)
-{
-    const uint16_t* ip         = (const uint16_t*) src;
-    const uint16_t* const iend = ip + srcSize;
-    BYTE* const ostart         = (BYTE*) dst;
-    BYTE* const oend           = ostart + dstSize;
-    BYTE* op                   = ostart;
 
-    if (dstSize < 6 + 1 + 1 + 1 + 8) return 0;   /* minimum space to compress successfully */
-    if (srcSize < 12) return 0;                  /* no saving possible : too small input */
-
-    op += 6;
-    assert(op <= oend);
-
-    /* 流 0：起始偏移 0 */
-    {   CHECK_V_F(cSize,
-            HUF_compress1X_stride_usingCTable_internal_body_BF16(op, (size_t)(oend-op),
-                                                        ip, srcSize, 0, 4, CTable) );
-        if (cSize == 0) return 0;
-        assert(cSize <= 65535);
-        MEM_writeLE16(ostart,   (U16)cSize);
-        op += cSize;
-    }
-
-    /* 流 1：起始偏移 1 */
-    assert(op <= oend);
-    {   CHECK_V_F(cSize,
-            HUF_compress1X_stride_usingCTable_internal_body_BF16(op, (size_t)(oend-op),
-                                                        ip, srcSize, 1, 4, CTable) );
-        if (cSize == 0) return 0;
-        assert(cSize <= 65535);
-        MEM_writeLE16(ostart+2, (U16)cSize);
-        op += cSize;
-    }
-
-    /* 流 2：起始偏移 2 */
-    assert(op <= oend);
-    {   CHECK_V_F(cSize,
-            HUF_compress1X_stride_usingCTable_internal_body_BF16(op, (size_t)(oend-op),
-                                                        ip, srcSize, 2, 4, CTable) );
-        if (cSize == 0) return 0;
-        assert(cSize <= 65535);
-        MEM_writeLE16(ostart+4, (U16)cSize);
-        op += cSize;
-    }
-
-    /* 流 3：起始偏移 3（长度不写入跳表，直接跟在前三个之后） */
-    assert(op <= oend);
-    assert(ip <= iend);
-    {   CHECK_V_F(cSize,
-            HUF_compress1X_stride_usingCTable_internal_body_BF16(op, (size_t)(oend-op),
-                                                        ip, srcSize, 3, 4, CTable) );
-        if (cSize == 0) return 0;
-        op += cSize;
-    }
-
-    return (size_t)(op - ostart);
-}
 
 /* 8X 压缩：按 stride=8 的交错方式分成 8 个流：
    流0: 0,8,...
@@ -899,26 +785,20 @@ HUF_compressCTable4x_stride_float_BF16 (void* dst, size_t dstSize,
    ....
    跳表写入每个流的压缩大小（前 7 个写入 16-bit） */
 static size_t
-HUF_compressCTable8x_stride_float_BF16 (void* dst, size_t dstSize,
-                              const void* src, size_t srcSize,
-                              const HUF_CElt* CTable)
-{
+HUF_compressCTable8x_stride_float_BF16 (void* dst, size_t dstSize, const void* src, size_t srcSize, const HUF_CElt* CTable) {
     const uint16_t* ip         = (const uint16_t*) src;
-    const uint16_t* const iend = ip + srcSize;
     BYTE* const ostart         = (BYTE*) dst;
     BYTE* const oend           = ostart + dstSize;
     BYTE* op                   = ostart;
 
     if (dstSize < 14 + 7 + 8) return 0;   /* minimum space to compress successfully */
-    if (srcSize < 12) return 0;                  /* no saving possible : too small input */
+    if (srcSize < 12) return 0;           /* no saving possible : too small input */
 
     op += 14;
     assert(op <= oend);
 
     /* 流 0：起始偏移 0 */
-    {   CHECK_V_F(cSize,
-            HUF_compress1X_stride_usingCTable_internal_body_BF16(op, (size_t)(oend-op),
-                                                        ip, srcSize, 0, 8, CTable) );
+    {   CHECK_V_F(cSize, HUF_compress1X_stride_usingCTable_internal_body_BF16(op, (size_t)(oend-op), ip, srcSize, 0, 8, CTable) );
         if (cSize == 0) return 0;
         assert(cSize <= 65535);
         MEM_writeLE16(ostart,   (U16)cSize);
@@ -927,9 +807,7 @@ HUF_compressCTable8x_stride_float_BF16 (void* dst, size_t dstSize,
 
     /* 流 1：起始偏移 1 */
     assert(op <= oend);
-    {   CHECK_V_F(cSize,
-            HUF_compress1X_stride_usingCTable_internal_body_BF16(op, (size_t)(oend-op),
-                                                        ip, srcSize, 1, 8, CTable) );
+    {   CHECK_V_F(cSize, HUF_compress1X_stride_usingCTable_internal_body_BF16(op, (size_t)(oend-op), ip, srcSize, 1, 8, CTable) );
         if (cSize == 0) return 0;
         assert(cSize <= 65535);
         MEM_writeLE16(ostart+2, (U16)cSize);
@@ -938,9 +816,7 @@ HUF_compressCTable8x_stride_float_BF16 (void* dst, size_t dstSize,
 
     /* 流 2：起始偏移 2 */
     assert(op <= oend);
-    {   CHECK_V_F(cSize,
-            HUF_compress1X_stride_usingCTable_internal_body_BF16(op, (size_t)(oend-op),
-                                                        ip, srcSize, 2, 8, CTable) );
+    {   CHECK_V_F(cSize, HUF_compress1X_stride_usingCTable_internal_body_BF16(op, (size_t)(oend-op), ip, srcSize, 2, 8, CTable) );
         if (cSize == 0) return 0;
         assert(cSize <= 65535);
         MEM_writeLE16(ostart+4, (U16)cSize);
@@ -949,9 +825,7 @@ HUF_compressCTable8x_stride_float_BF16 (void* dst, size_t dstSize,
 
     /* 流 3：起始偏移 3 */
     assert(op <= oend);
-    {   CHECK_V_F(cSize,
-            HUF_compress1X_stride_usingCTable_internal_body_BF16(op, (size_t)(oend-op),
-                                                        ip, srcSize, 3, 8, CTable) );
+    {   CHECK_V_F(cSize, HUF_compress1X_stride_usingCTable_internal_body_BF16(op, (size_t)(oend-op), ip, srcSize, 3, 8, CTable) );
         if (cSize == 0) return 0;
         assert(cSize <= 65535);
         MEM_writeLE16(ostart+6, (U16)cSize);
@@ -960,9 +834,7 @@ HUF_compressCTable8x_stride_float_BF16 (void* dst, size_t dstSize,
     
     /* 流 4：起始偏移 4 */
     assert(op <= oend);
-    {   CHECK_V_F(cSize,
-            HUF_compress1X_stride_usingCTable_internal_body_BF16(op, (size_t)(oend-op),
-                                                        ip, srcSize, 4, 8, CTable) );
+    {   CHECK_V_F(cSize, HUF_compress1X_stride_usingCTable_internal_body_BF16(op, (size_t)(oend-op), ip, srcSize, 4, 8, CTable) );
         if (cSize == 0) return 0;
         assert(cSize <= 65535);
         MEM_writeLE16(ostart+8, (U16)cSize);
@@ -971,9 +843,7 @@ HUF_compressCTable8x_stride_float_BF16 (void* dst, size_t dstSize,
     
     /* 流 5：起始偏移 5 */
     assert(op <= oend);
-    {   CHECK_V_F(cSize,
-            HUF_compress1X_stride_usingCTable_internal_body_BF16(op, (size_t)(oend-op),
-                                                        ip, srcSize, 5, 8, CTable) );
+    {   CHECK_V_F(cSize, HUF_compress1X_stride_usingCTable_internal_body_BF16(op, (size_t)(oend-op), ip, srcSize, 5, 8, CTable) );
         if (cSize == 0) return 0;
         assert(cSize <= 65535);
         MEM_writeLE16(ostart+10, (U16)cSize);
@@ -982,9 +852,7 @@ HUF_compressCTable8x_stride_float_BF16 (void* dst, size_t dstSize,
     
     /* 流 6：起始偏移 6 */
     assert(op <= oend);
-    {   CHECK_V_F(cSize,
-            HUF_compress1X_stride_usingCTable_internal_body_BF16(op, (size_t)(oend-op),
-                                                        ip, srcSize, 6, 8, CTable) );
+    {   CHECK_V_F(cSize, HUF_compress1X_stride_usingCTable_internal_body_BF16(op, (size_t)(oend-op), ip, srcSize, 6, 8, CTable) );
         if (cSize == 0) return 0;
         assert(cSize <= 65535);
         MEM_writeLE16(ostart+12, (U16)cSize);
@@ -994,9 +862,7 @@ HUF_compressCTable8x_stride_float_BF16 (void* dst, size_t dstSize,
     /* 流 7：起始偏移 7（长度不写入跳表，直接跟在前七个之后） */
     assert(op <= oend);
     assert(ip <= iend);
-    {   CHECK_V_F(cSize,
-            HUF_compress1X_stride_usingCTable_internal_body_BF16(op, (size_t)(oend-op),
-                                                        ip, srcSize, 7, 8, CTable) );
+    {   CHECK_V_F(cSize, HUF_compress1X_stride_usingCTable_internal_body_BF16(op, (size_t)(oend-op), ip, srcSize, 7, 8, CTable) );
         if (cSize == 0) return 0;
         op += cSize;
     }
@@ -1004,214 +870,7 @@ HUF_compressCTable8x_stride_float_BF16 (void* dst, size_t dstSize,
     return (size_t)(op - ostart);
 }
 
-static size_t HUF_compressCTable2x_float_BF16(BYTE* dst, size_t const dstSize,
-                const void* src, size_t srcSize, const HUF_CElt* CTable)
-{
-    size_t const segmentSize = (srcSize+1)/2;   /* first 3 segments */
-    // printf("segmentSize  %zu\n", segmentSize);
-    const uint16_t* ip = (const uint16_t*) src;
-    const uint16_t* const iend = ip + srcSize;
-    
-    BYTE* const ostart = (BYTE*) dst;
-    BYTE* const oend = ostart + dstSize;
-    BYTE* op = ostart;
 
-    if (dstSize < 2 + 1 + 8) return 0;   /* minimum space to compress successfully */
-    if (srcSize < 12) return 0;   /* no saving possible : too small input */
-    op += 2;   /* jumpTable */
-
-    assert(op <= oend);
-    {   CHECK_V_F(cSize, HUF_compress1X_usingCTable_internal_body_BF16(op, (size_t)(oend-op), ip, segmentSize, CTable) );
-        if (cSize==0) return 0;
-        assert(cSize <= 65535);
-        MEM_writeLE16(ostart, (U16)cSize);
-        op += cSize;
-        // printf("cSize %zu\n", cSize);
-    }
-
-    ip += segmentSize;
-    assert(op <= oend);
-    assert(ip <= iend);
-    {   CHECK_V_F(cSize, HUF_compress1X_usingCTable_internal_body_BF16(op, (size_t)(oend-op), ip, (size_t)(iend-ip), CTable) );
-        if (cSize==0) return 0;
-        op += cSize;
-        // printf("cSize %zu\n", cSize);
-    }
-
-    size_t const cSize = (size_t)(op-ostart);
-    // printf("total cSize %zu\n", cSize);
-    if (HUF_isError(cSize)) { return cSize; }
-    if (cSize==0) { return 0; }   /* incompressible */
-
-    return cSize;
-}
-
-static size_t HUF_compressCTable4x_float_BF16(BYTE* dst, size_t const dstSize,
-                const void* src, size_t srcSize, const HUF_CElt* CTable)
-{
-    size_t const segmentSize = (srcSize+3)/4;   /* first 3 segments */
-    // printf("segmentSize  %zu\n", segmentSize);
-    const uint16_t* ip = (const uint16_t*) src;
-    const uint16_t* const iend = ip + srcSize;
-    
-    BYTE* const ostart = (BYTE*) dst;
-    BYTE* const oend = ostart + dstSize;
-    BYTE* op = ostart;
-
-    if (dstSize < 6 + 1 + 1 + 1 + 8) return 0;   /* minimum space to compress successfully */
-    if (srcSize < 12) return 0;   /* no saving possible : too small input */
-    op += 6;   /* jumpTable */
-
-    assert(op <= oend);
-    {   CHECK_V_F(cSize, HUF_compress1X_usingCTable_internal_body_BF16(op, (size_t)(oend-op), ip, segmentSize, CTable) );
-        if (cSize==0) return 0;
-        assert(cSize <= 65535);
-        MEM_writeLE16(ostart, (U16)cSize);
-        op += cSize;
-        // printf("cSize %zu\n", cSize);
-    }
-
-    ip += segmentSize;
-    assert(op <= oend);
-    {   CHECK_V_F(cSize, HUF_compress1X_usingCTable_internal_body_BF16(op, (size_t)(oend-op), ip, segmentSize, CTable) );
-        if (cSize==0) return 0;
-        assert(cSize <= 65535);
-        MEM_writeLE16(ostart+2, (U16)cSize);
-        op += cSize;
-        // printf("cSize %zu\n", cSize);
-    }
-
-    ip += segmentSize;
-    assert(op <= oend);
-    {   CHECK_V_F(cSize, HUF_compress1X_usingCTable_internal_body_BF16(op, (size_t)(oend-op), ip, segmentSize, CTable) );
-        if (cSize==0) return 0;
-        assert(cSize <= 65535);
-        MEM_writeLE16(ostart+4, (U16)cSize);
-        op += cSize;
-        // printf("cSize %zu\n", cSize);
-    }
-
-    ip += segmentSize;
-    assert(op <= oend);
-    assert(ip <= iend);
-    {   CHECK_V_F(cSize, HUF_compress1X_usingCTable_internal_body_BF16(op, (size_t)(oend-op), ip, (size_t)(iend-ip), CTable) );
-        if (cSize==0) return 0;
-        op += cSize;
-        // printf("cSize %zu\n", cSize);
-    }
-
-    size_t const cSize = (size_t)(op-ostart);
-    // printf("total cSize %zu\n", cSize);
-    if (HUF_isError(cSize)) { return cSize; }
-    if (cSize==0) { return 0; }   /* incompressible */
-
-    return cSize;
-}
-
-
-static size_t HUF_compressCTable8x_float_BF16(BYTE* dst, size_t const dstSize,
-                const void* src, size_t srcSize, const HUF_CElt* CTable)
-{
-    size_t const segmentSize = (srcSize+7)/8;   /* first 3 segments */
-    // printf("segmentSize  %zu\n", segmentSize);
-    const uint16_t* ip = (const uint16_t*) src;
-    const uint16_t* const iend = ip + srcSize;
-    
-    BYTE* const ostart = (BYTE*) dst;
-    BYTE* const oend = ostart + dstSize;
-    BYTE* op = ostart;
-
-    if (dstSize < 14 + 7 + 8) return 0;   /* minimum space to compress successfully */
-    if (srcSize < 12) return 0;   /* no saving possible : too small input */
-    op += 14;   /* jumpTable */
-
-    assert(op <= oend);
-    {   CHECK_V_F(cSize, HUF_compress1X_usingCTable_internal_body_BF16(op, (size_t)(oend-op), ip, segmentSize, CTable) );
-        if (cSize==0) return 0;
-        assert(cSize <= 65535);
-        MEM_writeLE16(ostart, (U16)cSize);
-        op += cSize;
-        // printf("cSize %zu\n", cSize);
-    }
-
-    ip += segmentSize;
-    assert(op <= oend);
-    {   CHECK_V_F(cSize, HUF_compress1X_usingCTable_internal_body_BF16(op, (size_t)(oend-op), ip, segmentSize, CTable) );
-        if (cSize==0) return 0;
-        assert(cSize <= 65535);
-        MEM_writeLE16(ostart+2, (U16)cSize);
-        op += cSize;
-        // printf("cSize %zu\n", cSize);
-    }
-
-    ip += segmentSize;
-    assert(op <= oend);
-    {   CHECK_V_F(cSize, HUF_compress1X_usingCTable_internal_body_BF16(op, (size_t)(oend-op), ip, segmentSize, CTable) );
-        if (cSize==0) return 0;
-        assert(cSize <= 65535);
-        MEM_writeLE16(ostart+4, (U16)cSize);
-        op += cSize;
-        // printf("cSize %zu\n", cSize);
-    }
-
-    ip += segmentSize;
-    assert(op <= oend);
-    {   CHECK_V_F(cSize, HUF_compress1X_usingCTable_internal_body_BF16(op, (size_t)(oend-op), ip, segmentSize, CTable) );
-        if (cSize==0) return 0;
-        assert(cSize <= 65535);
-        MEM_writeLE16(ostart+6, (U16)cSize);
-        op += cSize;
-        // printf("cSize %zu\n", cSize);
-    }
-
-
-    ip += segmentSize;
-    assert(op <= oend);
-    {   CHECK_V_F(cSize, HUF_compress1X_usingCTable_internal_body_BF16(op, (size_t)(oend-op), ip, segmentSize, CTable) );
-        if (cSize==0) return 0;
-        assert(cSize <= 65535);
-        MEM_writeLE16(ostart+8, (U16)cSize);
-        op += cSize;
-        // printf("cSize %zu\n", cSize);
-    }
-
-
-    ip += segmentSize;
-    assert(op <= oend);
-    {   CHECK_V_F(cSize, HUF_compress1X_usingCTable_internal_body_BF16(op, (size_t)(oend-op), ip, segmentSize, CTable) );
-        if (cSize==0) return 0;
-        assert(cSize <= 65535);
-        MEM_writeLE16(ostart+10, (U16)cSize);
-        op += cSize;
-        // printf("cSize %zu\n", cSize);
-    }
-
-    ip += segmentSize;
-    assert(op <= oend);
-    {   CHECK_V_F(cSize, HUF_compress1X_usingCTable_internal_body_BF16(op, (size_t)(oend-op), ip, segmentSize, CTable) );
-        if (cSize==0) return 0;
-        assert(cSize <= 65535);
-        MEM_writeLE16(ostart+12, (U16)cSize);
-        op += cSize;
-        // printf("cSize %zu\n", cSize);
-    }
-
-    ip += segmentSize;
-    assert(op <= oend);
-    assert(ip <= iend);
-    {   CHECK_V_F(cSize, HUF_compress1X_usingCTable_internal_body_BF16(op, (size_t)(oend-op), ip, (size_t)(iend-ip), CTable) );
-        if (cSize==0) return 0;
-        op += cSize;
-        // printf("cSize %zu\n", cSize);
-    }
-
-    size_t const cSize = (size_t)(op-ostart);
-    // printf("total cSize %zu\n", cSize);
-    if (HUF_isError(cSize)) { return cSize; }
-    if (cSize==0) { return 0; }   /* incompressible */
-
-    return cSize;
-}
 
 typedef struct {
     unsigned count[HUF_SYMBOLVALUE_MAX + 1];
@@ -1312,16 +971,13 @@ HUF_compress_internal (void* dst, size_t dstSize,
 
 
 
-/* HUF_compress_float_fixRatio_internal_bf16() :
- * `workSpace` must a table of at least HUF_WORKSPACE_SIZE_U32 unsigned */
+// HUF_compress_float_fixRatio_internal_bf16() : `workSpace` must a table of at least HUF_WORKSPACE_SIZE_U32 unsigned
 static size_t
 HUF_compress_float_fixRatio_internal_bf16 (void* dst, size_t dstSize,
-                 const void* src, size_t srcSize,
-                       unsigned maxSymbolValue, unsigned huffLog,
-                       HUF_nbStreams_e nbStreams,
-                       void* workSpace, size_t wkspSize,
-                       HUF_CElt* oldHufTable, HUF_repeat* repeat, int preferRepeat,
-                 const int bmi2, FixedRatio ratio, DataType dataType)
+    const void* src, size_t srcSize,
+    unsigned maxSymbolValue, unsigned huffLog,
+    void* workSpace, size_t wkspSize,
+    FixedRatio ratio, DataType dataType)
 {
     HUF_compress_tables_t* const table = (HUF_compress_tables_t*)workSpace;
     BYTE* const ostart = (BYTE*)dst;
@@ -1333,111 +989,82 @@ HUF_compress_float_fixRatio_internal_bf16 (void* dst, size_t dstSize,
     /* checks & inits */
     if (((size_t)workSpace & 3) != 0) return ERROR(GENERIC);  /* must be aligned on 4-bytes boundaries */
     if (wkspSize < HUF_WORKSPACE_SIZE) return ERROR(workSpace_tooSmall);
-    if (!srcSize) return 0;  /* Uncompressed */
-    if (!dstSize) return 0;  /* cannot fit anything within dst budget */
+    if (!srcSize) return 0;          // Uncompressed 
+    if (srcSize & 1) return 0;       // 由于是BF16, srcsize必须是偶数
+    if (dstSize <= 16) return 0;     // cannot fit anything within dst budget 
     if (srcSize > HUF_BLOCKSIZE_MAX) return ERROR(srcSize_wrong);   /* current block size limit */
     if (huffLog > HUF_TABLELOG_MAX) return ERROR(tableLog_tooLarge);
     if (maxSymbolValue > HUF_SYMBOLVALUE_MAX) return ERROR(maxSymbolValue_tooLarge);
     if (!maxSymbolValue) maxSymbolValue = HUF_SYMBOLVALUE_MAX;
     if (!huffLog) huffLog = HUF_TABLELOG_DEFAULT;
+
+    size_t count_total = srcSize / sizeof(uint16_t);                 // 浮点数总数量
+    size_t comp_len = (srcSize * (size_t)ratio / 32) / 4096 * 4096;  // 压缩后总大小 (对齐到4096整数倍)
     
-    {
-        srcSize /= sizeof(uint16_t);
-        CHECK_V_F(largest, HIST_count_BF16_fixRatio(table->count, &maxSymbolValue, src, srcSize) );
-        if (largest == srcSize) { *(ostart) = ((((const uint16_t*)src)[0] >> 7) & 0xFF); return 1; }   /* single symbol, rle */
-        if (largest <= (srcSize >> 7)+4) return 0;
+    // 直方图统计 -------------------------------------------------
+    {   CHECK_V_F(largest, HIST_count_BF16_fixRatio(table->count, &maxSymbolValue, src, count_total) );
+        if (largest == 0) return 0;
     }
 
-    /* Build Huffman Tree */
-    huffLog = HUF_optimalTableLog(huffLog, srcSize, maxSymbolValue);
-    {   size_t const maxBits = HUF_buildCTable_wksp(table->CTable, table->count,
-                                            maxSymbolValue, huffLog,
-                                            &table->buildCTable_wksp, sizeof(table->buildCTable_wksp));
+    // Build Huffman Tree -------------------------------------------------
+    huffLog = HUF_optimalTableLog(huffLog, count_total, maxSymbolValue);
+    {   size_t const maxBits = HUF_buildCTable_wksp(table->CTable, table->count, maxSymbolValue, huffLog, &table->buildCTable_wksp, sizeof(table->buildCTable_wksp));
         CHECK_F(maxBits);
         huffLog = (U32)maxBits;
-        /* Zero unused symbols in CTable, so we can check it for validity */
-        memset(table->CTable + (maxSymbolValue + 1), 0,
-               sizeof(table->CTable) - ((maxSymbolValue + 1) * sizeof(HUF_CElt)));
+        memset(table->CTable + (maxSymbolValue + 1), 0, sizeof(table->CTable) - ((maxSymbolValue + 1) * sizeof(HUF_CElt)));  // Zero unused symbols in CTable, so we can check it for validity 
     }
     
-    op += 16;        // 预留 src_len  e_len + full_sm_len + trunc_sm_len
-    /* Write table description header */
+    op += 16; // 预留16byte，存放4个数(元数据)
+
+    // 向目的地址中写入huffman编码表 -------------------------------------------------
     {   CHECK_V_F(hSize, HUF_writeCTable (op, oend - op, table->CTable, maxSymbolValue, huffLog) );
-
-        /* Use the new huffman table */
-        if (hSize + 12ul >= srcSize) { return 0; }
-        // printf("com hSize %zu\n", hSize);
-        op += hSize;
+        op += hSize;                                        // 编码表大小
+        if ( (size_t)(op-ostart) >= comp_len) return 0;     // 检查是否超出压缩buffer的大小
     }
     
-    {
-        CHECK_V_F(cSize, HUF_compressCTable8x_stride_float_BF16(op, oend - op, src, srcSize, table->CTable));
-        if (cSize == 0) return 0;   /* not enough space for compressed data */
+    // 写入huffman压缩的指数部分 -------------------------------------------------
+    {   CHECK_V_F(cSize, HUF_compressCTable8x_stride_float_BF16(op, oend - op, src, count_total, table->CTable));  // cSize是压缩后大小
+        if (cSize == 0) return 0;                           // not enough space for compressed data
         op += cSize;
-        // printf("cSize %zu\n", cSize);
-        srcSize *= sizeof(uint16_t);
+        if ( (size_t)(op-ostart) >= comp_len) return 0;     // 检查是否超出压缩buffer的大小
     }
 
-    /* check compressibility */
-    if ( (size_t)(op-ostart) >= srcSize-1 ) return 0;
+    // 测算元数据 -------------------------------------------------
+    size_t e_len    = (op - ostart);                        // 指数部分压缩后大小 (算上了最开始的元数据)
+    size_t count_trunc;                                     // 低精度尾数的浮点数的数量
+    if                (e_len + count_total > comp_len) {    // 如果全部使用全精度放不下
+        count_trunc = (e_len + count_total - comp_len) * 2; //   e_len+count 是假设全都用全精度所占用的字节数量，再减去comp_len是超出缓冲的字节数量。由于每将2个全精度数转化为低精度可以省出1字节，因此将该数字*2就是低精度的数量。
+    } else {                                                // 如果全部使用全精度能放下
+        count_trunc = 0;                                    //   没有低精度
+    }                                                       //
+    if (count_trunc > count_total) { return 0; }            // 该条件成立，就说明即使全部转化为低精度，也放不下。报错
+    size_t count_full = count_total - count_trunc;          // 全精度尾数的浮点数的数量
 
-    uint32_t* op_len = (uint32_t*)dst;
-    *op_len++ = srcSize;
-    *op_len++ = (op-ostart) - 16;
-
-    // 测算压缩后大小 comSize = srcSize / (ratio / 100.0) && comSize % 4096 == 0
-    // size_t cSize = op-ostart;
-    size_t cSize = srcSize / (ratio / 100.0);
-    cSize = (cSize / 4096) * 4096;
-    size_t e_len = (op-ostart);
+    // 写入元数据 -------------------------------------------------
+    uint32_t* op_meta = (uint32_t*)dst;
+    op_meta[0] = (uint16_t)dataType | (((uint32_t)ratio)<<16); // 元数据0: ratio 和 dataType
+    op_meta[1] = count_total;                                  // 元数据1: 浮点数总量
+    op_meta[2] = count_full;                                   // 元数据2: 全精度尾数的浮点数的数量
+    op_meta[3] = e_len;                                        // 元数据3: 尾数的偏移量，用该变量可以定位到尾数的起始存放地址
     
-    size_t smSize = cSize - (op-ostart);  // 6B -> e_len + full_sm_len + trunc_sm_len
-    size_t full_sm_len = srcSize/sizeof(uint16_t);
-    size_t trunc_sm_len = 0;
-    size_t fill_zero_num = 0;
-    if (e_len + full_sm_len <= cSize) {
-        // tail fill zero
-        fill_zero_num = cSize - (e_len + full_sm_len);
-    } else {
-        full_sm_len = (smSize - srcSize/2/2) * 2;
-        trunc_sm_len = (srcSize/2 - smSize) * 2;
-        assert(full_sm_len > 0 && trunc_sm_len > 0 && trunc_sm_len%2 == 0);
-        assert(full_sm_len + trunc_sm_len == srcSize / 2);
-        assert(full_sm_len + trunc_sm_len / 2 == smSize);
-    }
-
-    // printf("srcSize = %zu  cSize = %zu  smSize = %zu  full_sm_len = %zu  trunc_sm_len = %zu  e_len = %zu fill_zero_num = %zu\n",
-    //    srcSize, cSize, smSize, full_sm_len, trunc_sm_len, op - ostart - 16, fill_zero_num);
-
-    *op_len++ = full_sm_len;
-    
+    // 写入全精度部分 -------------------------------------------------
     const uint16_t* ip = (const uint16_t*)src;
-    for (size_t i = 0; i < full_sm_len; ++i) {
-        *op++ = ((((*ip) >> 15) & 0x1) << 7) | ((*ip) & 0x7F);
+    for (size_t i=0; i<count_full; i++) {
+        *op++ = (((ip[0] >> 15) & 0x1) << 7) | (ip[0] & 0x7F);
         ip ++;
     }
-
-    if (full_sm_len == srcSize/sizeof(uint16_t)) {
-        // 第三个长度代表的就是 fill_zero_num
-        *op_len++ = fill_zero_num;
-        // memset(op, 0, fill_zero_num);
-        op += fill_zero_num;
-    } else {
-        // 第三个长度代表的就是 trunc_sm_len
-        *op_len++ = trunc_sm_len;
-        const uint16_t* ip2 = ip + trunc_sm_len/2;
-        for (size_t i = 0; i < trunc_sm_len/2; ++i) {
-            *op++ = ((((*ip) >> 15) & 0x1) << 7) | ((((*ip) >> 4) & 0x7) << 4) | ((((*ip2) >> 15) & 0x1) << 3) | (((*ip2) >> 4) & 0x7);
-            ip ++;
-            ip2 ++;
-        }
+    
+    // 写入低精度部分 -------------------------------------------------
+    for (size_t i=0; i<count_trunc; i+=2) {
+        *op++ = (((ip[0] >> 15) & 0x1) << 7) | (((ip[0] >> 4) & 0x7) << 4) |
+                (((ip[1] >> 15) & 0x1) << 3) | (((ip[1] >> 4) & 0x7)     ) ;
+        ip += 2;
     }
 
-    // 填写 cSize full_sm_len  trunc_sm_len|fill_zero_num
-    // printf("op-ostart = %zu\n", op-ostart);
-
-    return op-ostart;
+    return comp_len;
 }
+
+
 
 size_t HUF_compress1X_wksp (void* dst, size_t dstSize,
                       const void* src, size_t srcSize,
@@ -1507,25 +1134,15 @@ size_t HUF_compress2 (void* dst, size_t dstSize,
     return HUF_compress4X_wksp(dst, dstSize, src, srcSize, maxSymbolValue, huffLog, workSpace, sizeof(workSpace));
 }
 
-size_t HUF_compress2_float_fixRatio (void* dst, size_t dstSize,
-                const void* src, size_t srcSize,
-                unsigned maxSymbolValue, unsigned huffLog, FixedRatio ratio, DataType dataType)
-{
-    unsigned workSpace[HUF_WORKSPACE_SIZE_U32] = {0};
 
+size_t HUF_compress_float_fixRatio (void* dst, size_t maxDstSize, const void* src, size_t srcSize, FixedRatio ratio, DataType dataType) {
+    unsigned workSpace[HUF_WORKSPACE_SIZE_U32];
     switch (dataType) {
-        case DT_BF16: 
-            return HUF_compress_float_fixRatio_internal_bf16(dst, dstSize, src, srcSize, maxSymbolValue, huffLog, HUF_fourStreams, workSpace, sizeof(workSpace), NULL, NULL, 0, 0, ratio, dataType);
-        default:
-            return 0;
+        case DT_BF16: return HUF_compress_float_fixRatio_internal_bf16(dst, maxDstSize, src, srcSize, 255, HUF_TABLELOG_DEFAULT, workSpace, sizeof(workSpace), ratio, dataType);
+        default:      return 0;  // 暂时不支持
     }
 }
 
-
-size_t HUF_compress_float_fixRatio (void* dst, size_t maxDstSize, const void* src, size_t srcSize, FixedRatio ratio, DataType dataType)
-{
-    return HUF_compress2_float_fixRatio(dst, maxDstSize, src, srcSize, 255, HUF_TABLELOG_DEFAULT, ratio, dataType);
-}
 
 size_t HUF_compress (void* dst, size_t maxDstSize, const void* src, size_t srcSize)
 {
