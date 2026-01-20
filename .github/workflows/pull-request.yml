@@ -46,6 +46,8 @@ jobs:
             -H "Accept: application/vnd.github+json" \
             https://api.github.com/orgs/ModelEngine-Group/teams/ucm/memberships/$ACTOR)
 
+          echo "Membership check status: $STATUS"
+
           if [ "$STATUS" = "200" ]; then
             echo "Actor is team member"
             echo "allowed=true" >> "$GITHUB_OUTPUT"
