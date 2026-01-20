@@ -475,14 +475,8 @@ class GSAOnDevice(UcmSparseBase):
                             self.topk_block_table = attn_metadata.block_table
                             self.topk_seq_lens = attn_metadata.seq_lens
                         else:  # NPU
-                            if (
-                                attn_metadata.attn_state
-                                == AscendAttentionState.DecodeOnly
-                            ):
-                                q_decode = query[: self.batch_size_for_hamming]
-                            else:
-                                q_decode = query.index_select(0, self.decode_token_idx)
-
+                            q_decode = query[: self.batch_size_for_hamming]
+                          
                             q_hash = (
                                 self.hash_encoder.compute_hash(q_decode)
                                 .unsqueeze(2)
