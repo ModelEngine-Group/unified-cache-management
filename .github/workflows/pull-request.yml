@@ -9,8 +9,49 @@ env:
   BUILD_TYPE: Debug
 
 jobs:
+  # protect the workflows dir, only allow specific users to modify
+  protect-workflows-dir:
+    runs-on: ubuntu-latest
+    outputs:
+      allowed: ${{ steps.check.outputs.allowed }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - id: check
+        run: |
+          git fetch origin ${{ github.base_ref }}
+
+          CHANGED_FILES=$(git diff --name-only origin/${{ github.base_ref }}...HEAD)
+
+          if ! echo "$CHANGED_FILES" | grep -q '^\.github/workflows/'; then
+            echo "No .github/workflows changes, allow."
+            echo "allowed=true" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+
+          echo ".github changes detected"
+
+          ALLOWED_USERS=("dante159753" "bob" "ci-bot")
+          ACTOR="${{ github.actor }}"
+
+          for u in "${ALLOWED_USERS[@]}"; do
+            if [[ "$ACTOR" == "$u" ]]; then
+              echo "Authorized user"
+              echo "allowed=true" >> $GITHUB_OUTPUT
+              exit 0
+            fi
+          done
+
+          echo "Unauthorized .github modification"
+          echo "allowed=false" >> $GITHUB_OUTPUT
+          exit 1
+
   cpp-linter:
     runs-on: ubuntu-latest
+    needs: protect-workflows-dir
+    if: needs.protect-workflows-dir.outputs.allowed == 'true'
     steps:
       - uses: actions/checkout@1af3b93b6815bc44a9784bd300feb67ff0d1eeb3  # v6.0.0
         with:
@@ -35,6 +76,8 @@ jobs:
           exit 1
   py-linter:
     runs-on: ubuntu-latest
+    needs: protect-workflows-dir
+    if: needs.protect-workflows-dir.outputs.allowed == 'true'
     steps:
     - name: Checkout repository
       uses: actions/checkout@v4
