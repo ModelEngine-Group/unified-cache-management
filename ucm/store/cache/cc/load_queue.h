@@ -59,6 +59,7 @@ private:
     SpscRingQueue<ShardTask> running_;
     std::thread dispatcher_;
     std::thread transfer_;
+    std::vector<ShardTask> holder_;
 
 public:
     ~LoadQueue();

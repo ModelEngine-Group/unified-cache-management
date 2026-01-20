@@ -34,20 +34,17 @@ namespace UC::CacheStore {
 
 class TransManager : public Detail::TaskWrapper<TransTask, Detail::TaskHandle> {
     size_t shardSize_;
-    TransBuffer buffer_;
     LoadQueue loadQ_;
     DumpQueue dumpQ_;
 
 public:
-    Status Setup(const Config& config)
+    Status Setup(const Config& config, TransBuffer* buffer)
     {
         timeoutMs_ = config.timeoutMs;
         shardSize_ = config.shardSize;
-        auto s = buffer_.Setup(config);
+        auto s = loadQ_.Setup(config, &failureSet_, buffer);
         if (s.Failure()) [[unlikely]] { return s; }
-        s = loadQ_.Setup(config, &failureSet_, &buffer_);
-        if (s.Failure()) [[unlikely]] { return s; }
-        return dumpQ_.Setup(config, &failureSet_, &buffer_);
+        return dumpQ_.Setup(config, &failureSet_, buffer);
     }
 
 protected:

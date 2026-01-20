@@ -99,8 +99,10 @@ public:
 public:
     Status Setup(const Config& config);
     Handle Get(const Detail::BlockId& blockId, size_t shardIdx);
+    bool Exist(const Detail::BlockId& blockId, size_t shardIdx);
 
 private:
+    bool ExistAt(size_t iBucket, const Detail::BlockId& blockId, size_t shardIdx);
     size_t FindAt(size_t iBucket, const Detail::BlockId& blockId, size_t shardIdx, bool& owner);
     size_t Alloc(const Detail::BlockId& blockId, size_t shardIdx, size_t iBucket);
     void MoveTo(size_t iBucket, size_t iNode);

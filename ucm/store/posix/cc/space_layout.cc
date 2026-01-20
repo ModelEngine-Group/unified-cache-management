@@ -29,13 +29,20 @@
 
 namespace UC::PosixStore {
 
-static const std::string DATA_ROOT = "data/";
-static const std::string TEMP_ROOT = "temp/";
+static const std::string DATA_ROOT = "data";
+static const std::string TEMP_ROOT = ".temp";
 
-Status SpaceLayout::Setup(const std::vector<std::string>& storageBackends)
+inline std::string DataFileName(const Detail::BlockId& blockId)
 {
+    return fmt::format("{:02x}", fmt::join(blockId, ""));
+}
+
+Status SpaceLayout::Setup(const Config& config)
+{
+    dataDirShardBytes_ = config.dataDirShardBytes;
+    dataDirShard_ = dataDirShardBytes_ > 0;
     auto status = Status::OK();
-    for (auto& path : storageBackends) {
+    for (auto& path : config.storageBackends) {
         if ((status = AddStorageBackend(path)).Failure()) { return status; }
     }
     return status;
@@ -44,26 +51,34 @@ Status SpaceLayout::Setup(const std::vector<std::string>& storageBackends)
 std::string SpaceLayout::DataFilePath(const Detail::BlockId& blockId, bool activated) const
 {
     const auto& backend = StorageBackend(blockId);
-    const auto& root = !activated ? DATA_ROOT : TEMP_ROOT;
-    return fmt::format("{}{}{:02x}", backend, root, fmt::join(blockId, ""));
+    const auto& file = DataFileName(blockId);
+    const auto& shard = activated ? TEMP_ROOT : (dataDirShard_ ? FileShardName(file) : DATA_ROOT);
+    return fmt::format("{}{}/{}", backend, shard, file);
 }
 
 Status SpaceLayout::CommitFile(const Detail::BlockId& blockId, bool success) const
 {
-    const auto& activated = this->DataFilePath(blockId, true);
-    const auto& archived = this->DataFilePath(blockId, false);
-    PosixFile file{activated};
-    if (success) { return file.Rename(archived); }
-    file.Remove();
-    return Status::OK();
+    const auto& backend = StorageBackend(blockId);
+    const auto& file = DataFileName(blockId);
+    const auto& activated = fmt::format("{}{}/{}", backend, TEMP_ROOT, file);
+    auto s = Status::OK();
+    if (success) {
+        const auto& shard = dataDirShard_ ? FileShardName(file) : DATA_ROOT;
+        const auto& archived = fmt::format("{}{}/{}", backend, shard, file);
+        if (dataDirShard_) { s = PosixFile{backend + shard}.MkDir(); }
+        if (s == Status::OK() || s == Status::DuplicateKey()) {
+            s = PosixFile{activated}.Rename(archived);
+        }
+    }
+    if (!success || s.Failure()) { PosixFile{activated}.Remove(); }
+    return s;
 }
 
 std::vector<std::string> SpaceLayout::RelativeRoots() const
 {
-    return {
-        DATA_ROOT,
-        TEMP_ROOT,
-    };
+    std::vector<std::string> roots{TEMP_ROOT};
+    if (!dataDirShard_) { roots.push_back(DATA_ROOT); }
+    return roots;
 }
 
 Status SpaceLayout::AddStorageBackend(const std::string& path)
@@ -110,10 +125,10 @@ Status SpaceLayout::AddSecondaryStorageBackend(const std::string& path)
 
 std::string SpaceLayout::StorageBackend(const Detail::BlockId& blockId) const
 {
-    static Detail::BlockIdHasher hasher;
     const auto number = storageBackends_.size();
-    if (number > 1) { return storageBackends_[hasher(blockId) % number]; }
-    return storageBackends_.front();
+    if (number == 1) { return storageBackends_.front(); }
+    static Detail::BlockIdHasher hasher;
+    return storageBackends_[hasher(blockId) % number];
 }
 
 }  // namespace UC::PosixStore

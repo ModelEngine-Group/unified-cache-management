@@ -27,13 +27,47 @@
 
 namespace UC::PosixStore {
 
-Status SpaceManager::Setup(const Config& config) { return layout_.Setup(config.storageBackends); }
-
-std::vector<uint8_t> SpaceManager::Lookup(const Detail::BlockId* blocks, size_t num)
+Status SpaceManager::Setup(const Config& config)
 {
-    std::vector<uint8_t> res(num);
-    for (size_t i = 0; i < num; i++) { res[i] = Lookup(blocks + i); }
-    return res;
+    auto s = layout_.Setup(config);
+    if (s.Failure()) [[unlikely]] { return s; }
+    auto success =
+        lookupSrv_.SetWorkerFn([this](LookupContext& ctx, auto&) { OnLookup(ctx); })
+            .SetWorkerTimeoutFn([this](LookupContext& ctx, auto) { OnLookupTimeout(ctx); },
+                                config.timeoutMs)
+            .SetNWorker(config.streamNumber)
+            .Run();
+    if (!success) [[unlikely]] { return Status::Error("failed to run lookup service thread pool"); }
+    return Status::OK();
+}
+
+Expected<std::vector<uint8_t>> SpaceManager::Lookup(const Detail::BlockId* blocks, size_t num)
+{
+    std::shared_ptr<std::vector<uint8_t>> founds;
+    std::shared_ptr<std::atomic<int32_t>> status;
+    std::shared_ptr<Latch> waiter;
+    const auto ok = Status::OK().Underlying();
+    try {
+        founds = std::make_shared<std::vector<uint8_t>>(num, 0);
+        status = std::make_shared<std::atomic<int32_t>>(ok);
+        waiter = std::make_shared<Latch>();
+    } catch (const std::exception& e) {
+        UC_ERROR("Failed({}) to allocate memory for lookup context.", e.what());
+        return Status::OutOfMemory();
+    }
+    waiter->Set(num);
+    for (size_t i = 0; i < num; i++) { lookupSrv_.Push({blocks[i], i, founds, status, waiter}); }
+    waiter->Wait();
+    auto s = status->load();
+    if (s != ok) [[unlikely]] { return Status{s, "failed to lookup some blocks"}; }
+    return std::move(*founds);
+}
+
+Expected<ssize_t> SpaceManager::LookupOnPrefix(const Detail::BlockId* blocks, size_t num)
+{
+    ssize_t index = -1;
+    for (size_t i = 0; i < num && Lookup(blocks + i); i++) { index = static_cast<ssize_t>(i); }
+    return index;
 }
 
 uint8_t SpaceManager::Lookup(const Detail::BlockId* block)
@@ -48,6 +82,21 @@ uint8_t SpaceManager::Lookup(const Detail::BlockId* block)
         return false;
     }
     return true;
+}
+
+void SpaceManager::OnLookup(LookupContext& ctx)
+{
+    const auto ok = Status::OK().Underlying();
+    if (ctx.status->load() == ok) { (*ctx.founds)[ctx.index] = Lookup(&ctx.block); }
+    ctx.waiter->Done();
+}
+
+void SpaceManager::OnLookupTimeout(LookupContext& ctx)
+{
+    auto ok = Status::OK().Underlying();
+    auto timeout = Status::Timeout().Underlying();
+    ctx.status->compare_exchange_weak(ok, timeout, std::memory_order_acq_rel);
+    ctx.waiter->Done();
 }
 
 }  // namespace UC::PosixStore
