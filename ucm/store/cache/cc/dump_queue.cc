@@ -97,6 +97,7 @@ Status DumpQueue::DumpOneTask(Trans::Stream* stream, size_t tensorSize, TaskPtr 
     Detail::TaskDesc backendTaskDesc;
     backendTaskDesc.brief = "Cache2Backend";
     const auto nShard = task->desc.size();
+    UC_DEBUG("Try to dump ({}) shards.", nShard);
     DumpCtx dumpCtx;
     for (size_t i = 0; i < nShard; i++) {
         auto& shard = task->desc[i];
