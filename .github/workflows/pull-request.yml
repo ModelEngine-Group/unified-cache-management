@@ -12,9 +12,6 @@ jobs:
   # protect the workflows dir, only allow specific users to modify
   protect-workflows-dir:
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      pull-requests: read
     outputs:
       allowed: ${{ steps.check.outputs.allowed }}
     steps:
@@ -25,7 +22,6 @@ jobs:
       - id: check
         env:
           ACTOR: ${{ github.actor }}
-          GH_TOKEN: ${{ secrets.GH_TOKEN }}
         run: |
           # get the target branch contents
           git fetch origin ${{ github.base_ref }}
@@ -42,7 +38,7 @@ jobs:
           echo ".github changes detected, checking team membership"
 
           STATUS=$(curl -s -o /dev/null -w "%{http_code}" \
-            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "Authorization: Bearer ${{ secrets.UCM_MEMBER_READER_TOKEN }}" \
             -H "Accept: application/vnd.github+json" \
             https://api.github.com/orgs/ModelEngine-Group/teams/ucm/memberships/$ACTOR)
 
