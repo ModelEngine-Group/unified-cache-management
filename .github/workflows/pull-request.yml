@@ -35,7 +35,7 @@ jobs:
 
           echo ".github changes detected"
 
-          ALLOWED_USERS=("aa" "bob" "ci-bot")
+          ALLOWED_USERS=("dante159753" "bob" "ci-bot")
           ACTOR="${{ github.actor }}"
 
           echo "PR opened by user: $ACTOR"
@@ -48,7 +48,7 @@ jobs:
             fi
           done
 
-          echo "Unauthorized .github modification"
+          echo "workflow modification from unauthorized user: $ACTOR, skip the workflow."
           echo "allowed=false" >> $GITHUB_OUTPUT
           exit 1
 
