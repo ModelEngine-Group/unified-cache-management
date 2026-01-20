@@ -12,9 +12,6 @@ jobs:
   # protect the workflows dir, only allow specific users to modify
   protect-workflows-dir:
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      pull-requests: read
     outputs:
       allowed: ${{ steps.check.outputs.allowed }}
     steps:
