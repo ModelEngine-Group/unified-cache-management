@@ -27,52 +27,8 @@ from typing import Callable, Dict, List
 
 import torch
 
-from ucm.store.cache.connector import UcmCacheStore
-from ucm.store.posix.connector import UcmPosixStore
-from ucm.store.compress.connector import UcmCompressor
 from ucm.store.ucmstore_v1 import Task, UcmKVStoreBaseV1
 
-PipelineBuilder = Callable[[Dict[str, object], List[UcmKVStoreBaseV1]], None]
-
-
-def _build_cache_posix_pipeline(
-    config: Dict[str, object], store: List[UcmKVStoreBaseV1]
-) -> None:
-    posix_config = copy.deepcopy(config)
-    if int(config["device_id"]) >= 0:
-        posix_config |= {"tensor_size": config["shard_size"]}
-    posix_store = UcmPosixStore(posix_config)
-    store.append(posix_store)
-    cache_config = copy.deepcopy(config) | {"store_backend": posix_store.cc_store()}
-    cache_store = UcmCacheStore(cache_config)
-    store.append(cache_store)
-
-def _build_cache_compress_posix_pipeline(
-    config: Dict[str, object], store: List[UcmKVStoreBaseV1]
-) -> None:
-    posix_config = copy.deepcopy(config)
-    # if int(config["device_id"]) >= 0:
-        # posix_config["shard_size"] = 90112
-        # posix_config |= {"tensor_size": 90112}
-        # posix_config["block_size"] = posix_config["shard_size"] * 144
-    posix_store = UcmPosixStore(posix_config)
-    store.append(posix_store)
-
-    # TODO add compressor
-    compressor_config = copy.deepcopy(config) | {"store_backend": posix_store.cc_store()}
-    compressor = UcmCompressor(compressor_config)
-    store.append(compressor)
-    
-    # compress end
-    cache_config = copy.deepcopy(config) | {"store_backend": compressor.cc_store()}
-    cache_store = UcmCacheStore(cache_config)
-    store.append(cache_store)
-
-
-PIPELINE_REGISTRY: Dict[str, PipelineBuilder] = {
-    "Cache|Posix": _build_cache_posix_pipeline,
-    "Cache|Compress|Posix": _build_cache_compress_posix_pipeline,
-}
 
 class UcmPipelineStoreBuilder:
     _registry: Dict[
@@ -175,6 +131,31 @@ def _cache_posix_pipeline_builder(
     cache_store = UcmCacheStore(cache_config)
     store.append(cache_store)
 
+def _build_cache_compress_posix_pipeline(
+    config: Dict[str, object], store: List[UcmKVStoreBaseV1]
+) -> None:
+    from ucm.store.cache.connector import UcmCacheStore
+    from ucm.store.posix.connector import UcmPosixStore
+    from ucm.store.compress.connector import UcmCompressor
+
+    posix_config = copy.deepcopy(config)
+    # if int(config["device_id"]) >= 0:
+        # posix_config["shard_size"] = 90112
+        # posix_config |= {"tensor_size": 90112}
+        # posix_config["block_size"] = posix_config["shard_size"] * 144
+    posix_store = UcmPosixStore(posix_config)
+    store.append(posix_store)
+
+    # TODO add compressor
+    compressor_config = copy.deepcopy(config) | {"store_backend": posix_store.cc_store()}
+    compressor = UcmCompressor(compressor_config)
+    store.append(compressor)
+    
+    # compress end
+    cache_config = copy.deepcopy(config) | {"store_backend": compressor.cc_store()}
+    cache_store = UcmCacheStore(cache_config)
+    store.append(cache_store)
+
 
 def _cache_empty_pipeline_builder(
     config: Dict[str, object], store: List[UcmKVStoreBaseV1]
@@ -209,3 +190,4 @@ def _cache_ds3fs_pipeline_builder(
 UcmPipelineStoreBuilder.register("Cache|Posix", _cache_posix_pipeline_builder)
 UcmPipelineStoreBuilder.register("Cache|Empty", _cache_empty_pipeline_builder)
 UcmPipelineStoreBuilder.register("Cache|Ds3fs", _cache_ds3fs_pipeline_builder)
+UcmPipelineStoreBuilder.register("Cache|Compress|Posix", _build_cache_compress_posix_pipeline)
