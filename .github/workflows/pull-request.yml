@@ -35,23 +35,9 @@ jobs:
             exit 0
           fi
           
-          echo ".github changes detected, checking team membership"
-
-          STATUS=$(curl -s -o /dev/null -w "%{http_code}" \
-            -H "Authorization: Bearer ${{ secrets.UCM_MEMBER_READER_TOKEN }}" \
-            -H "Accept: application/vnd.github+json" \
-            https://api.github.com/orgs/ModelEngine-Group/teams/ucm/memberships/$ACTOR)
-
-          echo "Membership check status: $STATUS"
-
-          if [ "$STATUS" = "200" ]; then
-            echo "Actor is team member"
-            echo "allowed=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "workflow modification from unauthorized user: $ACTOR, skip the workflow."
-            echo "allowed=false" >> "$GITHUB_OUTPUT"
-            exit 1
-          fi
+          echo ".github changes detected, skip the workflow"
+          echo "allowed=false" >> "$GITHUB_OUTPUT"
+          exit 1
 
   cpp-linter:
     runs-on: ubuntu-latest
