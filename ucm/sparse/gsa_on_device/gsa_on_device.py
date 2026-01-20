@@ -37,6 +37,7 @@ if hasattr(torch, "cuda") and torch.cuda.is_available():
 
 from ucm.sparse.gsa_on_device.gsa_on_device_config import GSAOnDeviceConfig
 from ucm.sparse.gsa_on_device.hash_encoder import HashEncoder
+from ucm.sparse.utils import cdiv
 from ucm.utils import Config
 
 logger = init_logger(__name__)
@@ -270,13 +271,14 @@ class GSAOnDevice(UcmSparseBase):
 
     def init_for_pc(self):
         # for pc hit
-        self.prefix_slot_mapping_buf = self._make_buffer(
-            self.max_num_tokens * self.max_batch_size, dtype=torch.int64
+        self.prefix_slot_mapping_buf = torch.empty(
+            self.max_num_tokens * self.max_batch_size,
+            device=self.device,
+            dtype=torch.int64,
         )
-        self.prefix_block_ids_buf = self._make_buffer(
-            (self.max_num_tokens * self.max_batch_size + self.block_size - 1)
-            // self.block_size
-            + 1,
+        self.prefix_block_ids_buf = torch.empty(
+            cdiv(self.max_num_tokens * self.max_batch_size, self.block_size),
+            device=self.device,
             dtype=torch.int32,
         )
         self.token_idx_buf = torch.arange(
@@ -289,11 +291,6 @@ class GSAOnDevice(UcmSparseBase):
         return UcmSparseCpuGpuBuffer(
             *size, dtype=dtype, device=self.device, pin_memory=True, with_numpy=numpy
         )
-
-    def _clear_buffer(self) -> None:
-        self.decode_req_ids_buf.clear()
-        self.prefix_slot_mapping_buf.clear()
-        self.prefix_block_ids_buf.clear()
 
     def hash_code(
         self,
@@ -750,7 +747,8 @@ class GSAOnDevice(UcmSparseBase):
         assert 0 <= qlen <= num_prompt_tokens
         num_prefix_tokens = num_prompt_tokens - qlen
         if num_prefix_tokens <= 0:
-            return [], []
+            empty = block_table_row[:0]
+            return 0, 0, empty, empty
 
         num_prefix_blocks = (num_prefix_tokens + block_size - 1) // block_size
         prefix_block_ids = block_table_row[:num_prefix_blocks]  # [prefix_blocks]
@@ -790,7 +788,7 @@ class GSAOnDevice(UcmSparseBase):
             compute_q_lens = (
                 attn_metadata.query_start_loc[1:] - attn_metadata.query_start_loc[:-1]
             )
-            self._clear_buffer()
+            self.decode_req_ids_buf.clear()
 
             self.num_reqs = len(scheduler_output.num_scheduled_tokens)
             for (
@@ -845,10 +843,10 @@ class GSAOnDevice(UcmSparseBase):
                             block_size=self.block_size,
                         )
 
-                        self.prefix_slot_mapping_buf.gpu[
+                        self.prefix_slot_mapping_buf[
                             all_prefix_tokens : all_prefix_tokens + num_prefix_tokens
                         ] = prefix_slot_mapping
-                        self.prefix_block_ids_buf.gpu[
+                        self.prefix_block_ids_buf[
                             all_prefix_blocks : all_prefix_blocks + num_prefix_blocks
                         ] = prefix_block_ids
 
@@ -894,12 +892,10 @@ class GSAOnDevice(UcmSparseBase):
 
             self.has_pc_hit = num_pc_hit > 0
             if self.has_pc_hit:
-                self.prefix_slot_mapping = self.prefix_slot_mapping_buf.gpu[
+                self.prefix_slot_mapping = self.prefix_slot_mapping_buf[
                     :all_prefix_tokens
                 ]
-                self.prefix_block_ids = self.prefix_block_ids_buf.gpu[
-                    :all_prefix_blocks
-                ]
+                self.prefix_block_ids = self.prefix_block_ids_buf[:all_prefix_blocks]
 
     def maybe_init_cudagraph_buffers_for_topk(self, n, tile_scheduler_metadata):
         sm_parts = tile_scheduler_metadata.size(0)

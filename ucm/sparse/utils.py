@@ -54,6 +54,10 @@ def round_up(x: int, y: int) -> int:
     return ((x + y - 1) // y) * y
 
 
+def cdiv(a: int, b: int) -> int:
+    return -(a // -b)
+
+
 def get_type_size(dtype: torch.dtype) -> int:
     return torch.tensor([], dtype=dtype).element_size()
 
