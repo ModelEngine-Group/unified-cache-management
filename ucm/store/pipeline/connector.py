@@ -154,7 +154,7 @@ class UcmPipelineStore(UcmKVStoreBaseV1):
         return self.store_.Wait(task.task_id)
 
     def check(self, task: Task) -> bool:
-        return self._backend.check(task)
+        return self.store_.Check(task.task_id)
 
 def _build_cache_compress_posix_pipeline(
     config: Dict[str, object], pipeline: ucmpipelinestore.PipelineStore
