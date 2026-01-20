@@ -10,6 +10,7 @@ import pynvml
 import pytest
 from common.config_utils import config_utils as config_instance
 from common.db_utils import database_connection, write_to_db
+from common.path_utils import get_test_root, get_test_subdir
 
 # ---------------- Constants ----------------
 PRJ_ROOT = Path(__file__).resolve().parent

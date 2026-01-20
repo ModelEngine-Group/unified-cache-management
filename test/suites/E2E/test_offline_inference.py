@@ -11,6 +11,7 @@ from common.offline_inference_utils import (
     split_prompt_by_tokens,
     to_dict_for_serialization,
 )
+from common.path_utils import get_path_relative_to_test_root, get_path_to_model
 from transformers import AutoTokenizer
 from vllm import LLM, SamplingParams
 
@@ -25,14 +26,14 @@ class TestBasicOfflineInference:
     @pytest.mark.stage(1)
     @pytest.mark.feature("offline_inference")
     @pytest.mark.gpu_mem(30000)
-    @pytest.mark.parametrize("model_path", ["/home/models/Qwen2.5-1.5B-Instruct"])
+    @pytest.mark.parametrize("model_name", ["Qwen2.5-1.5B-Instruct"])
     @pytest.mark.parametrize("max_tokens", [200])
     @pytest.mark.parametrize("prompt_split_ratio", [0.5])  # Split prompt in half
     @pytest.mark.parametrize("enforce_eager", [True, False])
     @pytest.mark.parametrize("max_num_batched_tokens", [2047])
     def test_offline_accuracy_hbm_ssd_mixed(
         self,
-        model_path: str,
+        model_name: str,
         max_tokens: int,
         prompt_split_ratio: float,
         enforce_eager: bool,
@@ -45,48 +46,47 @@ class TestBasicOfflineInference:
         2. Phase 2: Enable HBM PC, send partial prompt (warm HBM), then send full prompt (hits both HBM and SSD) -> verify mixed hit accuracy
         The prompt is loaded from prompt.json file (LongBench format).
         Args:
-            model_path: Path to the model.
+            model_name: Name of model.
             max_tokens: Maximum tokens to generate.
             prompt_split_ratio: Ratio to split prompt for Phase 2 (0.5 = split in half).
         """
-        config_file = Path(__file__).parent.parent.parent / "config.yaml"
+        config_file = get_path_relative_to_test_root("config.yaml")
         with open(config_file, "r", encoding="utf-8") as f:
             config = yaml.safe_load(f)
 
-        # if no model_path from parameter, fallback to config or environment
-        if not model_path:
-            logger.info(
-                "No model_path parameter provided, checking config and environment variable"
-            )
-            model_path = config.get("llm_connection", {}).get(
-                "model_path"
-            ) or os.getenv("MODEL_PATH")
-            assert (
-                model_path is not None
-            ), "model_path must be specified via parameter, config, or environment variable"
+        # # if no model_path from parameter, fallback to config or environment
+        # if not model_path:
+        #     logger.info(
+        #         "No model_path parameter provided, checking config and environment variable"
+        #     )
+        #     model_path = config.get("llm_connection", {}).get(
+        #         "model_path"
+        #     ) or os.getenv("MODEL_PATH")
+        #     assert (
+        #         model_path is not None
+        #     ), "model_path must be specified via parameter, config, or environment variable"
+
+        model_path = get_path_to_model(model_name, config)
 
         assert os.path.exists(model_path), f"Model path does not exist: {model_path}"
 
-        ucm_storage_dir = config.get("llm_connection", {}).get(
-            "ucm_storage_dir"
-        ) or os.getenv("UCM_STORAGE_DIR", "/tmp/ucm_cache")
+        ucm_storage_dir = "/tmp/ucm_cache"
 
         # make sure UCM storage directory exists and is empty
         ensure_storage_dir(ucm_storage_dir, clear_existing=True)
 
         try:
             test_prompt, standard_answers = load_prompt_from_file(
-                Path(__file__).parent / "prompts" / "test_offline_inference.json"
+                get_path_relative_to_test_root(
+                    "suites/E2E/prompts/test_offline_inference.json"
+                )
             )
-            logger.info(
-                f"Loaded prompt from prompt.json (length: {len(test_prompt)} chars)"
-            )
-            if standard_answers:
-                logger.info(f"Standard answers: {standard_answers}")
-            else:
+            if not standard_answers:
                 pytest.fail(f"No standard answers found in prompt.json")
         except Exception as e:
             pytest.fail(f"Failed to load prompt from prompt.json: {e}")
+
+        logger.info(f"Standard answers: {standard_answers}")
 
         tokenizer = AutoTokenizer.from_pretrained(model_path, use_chat_template=True)
 
