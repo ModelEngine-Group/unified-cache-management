@@ -20,18 +20,18 @@ from ucm.logger import init_logger
 logger = init_logger(__name__)
 
 
-class TestBasicOfflineInference:
+class TestBasicOfflineInferenceSparse:
     """Test basic offline inference functionality."""
 
     @pytest.mark.stage(1)
-    @pytest.mark.feature("offline_inference")
+    @pytest.mark.feature("offline_inference_sparse")
     @pytest.mark.gpu_mem(30000)
     @pytest.mark.parametrize("model_name", ["Qwen2.5-1.5B-Instruct"])
     @pytest.mark.parametrize("max_tokens", [200])
     @pytest.mark.parametrize("prompt_split_ratio", [0.5])  # Split prompt in half
     @pytest.mark.parametrize("enforce_eager", [True, False])
     @pytest.mark.parametrize("max_num_batched_tokens", [2047])
-    def test_offline_accuracy_hbm_ssd_mixed(
+    def test_offline_accuracy_hbm_ssd_mixed_nosparse(
         self,
         model_name: str,
         max_tokens: int,
@@ -46,25 +46,13 @@ class TestBasicOfflineInference:
         2. Phase 2: Enable HBM PC, send partial prompt (warm HBM), then send full prompt (hits both HBM and SSD) -> verify mixed hit accuracy
         The prompt is loaded from prompt.json file (LongBench format).
         Args:
-            model_name: Name of model.
+            model_name: Name of the model.
             max_tokens: Maximum tokens to generate.
             prompt_split_ratio: Ratio to split prompt for Phase 2 (0.5 = split in half).
         """
         config_file = get_path_relative_to_test_root("config.yaml")
         with open(config_file, "r", encoding="utf-8") as f:
             config = yaml.safe_load(f)
-
-        # # if no model_path from parameter, fallback to config or environment
-        # if not model_path:
-        #     logger.info(
-        #         "No model_path parameter provided, checking config and environment variable"
-        #     )
-        #     model_path = config.get("llm_connection", {}).get(
-        #         "model_path"
-        #     ) or os.getenv("MODEL_PATH")
-        #     assert (
-        #         model_path is not None
-        #     ), "model_path must be specified via parameter, config, or environment variable"
 
         model_path = get_path_to_model(model_name, config)
 
@@ -77,16 +65,17 @@ class TestBasicOfflineInference:
 
         try:
             test_prompt, standard_answers = load_prompt_from_file(
-                get_path_relative_to_test_root(
-                    "suites/E2E/prompts/test_offline_inference.json"
-                )
+                Path(__file__).parent / "prompts" / "test_offline_inference.json"
             )
-            if not standard_answers:
+            logger.info(
+                f"Loaded prompt from prompt.json (length: {len(test_prompt)} chars)"
+            )
+            if standard_answers:
+                logger.info(f"Standard answers: {standard_answers}")
+            else:
                 pytest.fail(f"No standard answers found in prompt.json")
         except Exception as e:
             pytest.fail(f"Failed to load prompt from prompt.json: {e}")
-
-        logger.info(f"Standard answers: {standard_answers}")
 
         tokenizer = AutoTokenizer.from_pretrained(model_path, use_chat_template=True)
 
@@ -235,3 +224,113 @@ class TestBasicOfflineInference:
             logger.warning(f"Phase 2.2 output:\n{phase2_full_output}")
             logger.warning(f"Standard answers:\n{standard_answers}")
             pytest.fail("HBM + SSD Mixed Accuracy Test Failed!")
+
+    """Test ESA sparse attention."""
+
+    @pytest.mark.stage(1)
+    @pytest.mark.feature("offline_inference_sparse")
+    @pytest.mark.gpu_mem(30000)
+    @pytest.mark.parametrize("model_name", ["Qwen2.5-1.5B-Instruct"])
+    @pytest.mark.parametrize("max_tokens", [200])
+    @pytest.mark.parametrize("enforce_eager", [False])
+    @pytest.mark.parametrize("max_num_batched_tokens", [2047])
+    def test_offline_esa(
+        self,
+        model_name: str,
+        max_tokens: int,
+        enforce_eager: bool,
+        max_num_batched_tokens: int,
+    ):
+        config_file = get_path_relative_to_test_root("config.yaml")
+        with open(config_file, "r", encoding="utf-8") as f:
+            config = yaml.safe_load(f)
+
+        model_path = get_path_to_model(model_name, config)
+
+        assert os.path.exists(model_path), f"Model path does not exist: {model_path}"
+
+        ucm_storage_dir = "/tmp/ucm_cache"
+
+        # make sure UCM storage directory exists and is empty
+        ensure_storage_dir(ucm_storage_dir, clear_existing=True)
+
+        try:
+            test_prompt, standard_answers = load_prompt_from_file(
+                get_path_relative_to_test_root(
+                    "suites/E2E/prompts/test_offline_inference.json"
+                )
+            )
+            if not standard_answers:
+                pytest.fail(f"No standard answers found in prompt.json")
+        except Exception as e:
+            pytest.fail(f"Failed to load prompt from prompt.json: {e}")
+
+        logger.info(f"Standard answers: {standard_answers}")
+
+        tokenizer = AutoTokenizer.from_pretrained(model_path, use_chat_template=True)
+
+        try:
+            messages = [
+                {
+                    "role": "system",
+                    "content": "先读问题，再根据下面的文章内容回答问题，不要进行分析，不要重复问题，用简短的语句给出答案。\n\n例如：“全国美国文学研究会的第十八届年会在哪所大学举办的？”\n回答应该为：“xx大学”。\n\n",
+                },
+                {"role": "user", "content": test_prompt},
+            ]
+            formatted_full_prompt = tokenizer.apply_chat_template(
+                messages,
+                tokenize=False,
+                add_generation_prompt=True,
+                add_special_tokens=True,
+            )
+        except Exception:
+            formatted_full_prompt = test_prompt
+
+        ucm_config = {
+            "ucm_connectors": [
+                {
+                    "ucm_connector_name": "UcmNfsStore",
+                    "ucm_connector_config": {
+                        "storage_backends": ucm_storage_dir,
+                        "use_direct": False,
+                    },
+                }
+            ],
+            "ucm_sparse_config": {
+                "ESA": {
+                    "init_window_sz": 1,
+                    "local_window_sz": 2,
+                    "min_blocks": 4,
+                    "sparse_ratio": 0.3,
+                    "retrieval_stride": 5,
+                }
+            },
+        }
+
+        sampling_params = SamplingParams(
+            temperature=0.0,
+            top_p=1,
+            max_tokens=max_tokens,
+            ignore_eos=False,
+        )
+
+        # Convert SamplingParams to dict for serialization, as non-picklable objects cannot be passed to subprocess
+        sampling_params_dict = to_dict_for_serialization(sampling_params)
+
+        phase1_outputs = run_in_spawn_subprocess(
+            run_offline_inference,
+            model_path,
+            ucm_config,
+            [formatted_full_prompt, formatted_full_prompt],
+            sampling_params_dict,
+            False,  # enable_prefix_caching=False
+            enforce_eager,
+            "ESA",
+            max_num_batched_tokens,
+            timeout=180,
+        )
+        phase1_1_output = phase1_outputs[0]  # Phase 1.1: SSD save
+        phase1_2_output = phase1_outputs[1]  # Phase 1.2: SSD load
+        logger.info(f"ESA inference completed in subprocess")
+        logger.info(f'Phase 1.1 output: "{phase1_1_output}"')
+        logger.info(f'Phase 1.2 output: "{phase1_2_output}"')

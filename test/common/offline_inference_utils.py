@@ -70,7 +70,7 @@ def run_in_spawn_subprocess(func, *args, timeout: int = 180, **kwargs):
     Args:
         func: The function to run in subprocess
         *args: Positional arguments to pass to func
-        timeout: Timeout in seconds (default 180)
+        timeout: Timeout in seconds (default 180), this can only be set using keyword argument(e.g. timeout=300)
         **kwargs: Keyword arguments to pass to func
 
     Returns:
@@ -106,6 +106,85 @@ def run_in_spawn_subprocess(func, *args, timeout: int = 180, **kwargs):
 
     if process.exitcode != 0:
         raise RuntimeError(f"Subprocess failed with exit code {process.exitcode}")
+
+
+def to_dict_for_serialization(obj: Any) -> Dict[str, Any]:
+    """Convert any object to dict for subprocess serialization.
+
+    Supports:
+    - dataclass objects
+    - regular objects with __dict__
+    - vLLM SamplingParams and other custom classes
+
+    Args:
+        obj: Object to serialize (dataclass, SamplingParams, etc.)
+
+    Returns:
+        Dict with _type and _data fields for reconstruction
+    """
+    from dataclasses import asdict, is_dataclass
+
+    try:
+        # Try dataclass first
+        if is_dataclass(obj) and not isinstance(obj, type):
+            data = asdict(obj)
+        # Try __dict__ for regular objects
+        elif hasattr(obj, "__dict__"):
+            data = obj.__dict__.copy()
+        else:
+            raise ValueError(f"Cannot serialize object of type {type(obj)}")
+
+        return {
+            "_type": f"{obj.__class__.__module__}.{obj.__class__.__name__}",
+            "_data": data,
+        }
+    except Exception as e:
+        logger.warning(f"Serialization failed for {type(obj)}: {e}")
+        raise
+
+
+def from_dict_for_serialization(serialized: Dict[str, Any]) -> Any:
+    """Recreate object from serialized dict.
+
+    Args:
+        serialized: Dict created by to_dict_for_serialization()
+
+    Returns:
+        Reconstructed object instance
+    """
+    import importlib
+
+    if "_type" not in serialized:
+        # Not a serialized object, return as-is
+        return serialized
+
+    type_str = serialized["_type"]
+    obj_data = serialized.get("_data", {})
+
+    try:
+        # Parse module and class name
+        module_name, class_name = type_str.rsplit(".", 1)
+        module = importlib.import_module(module_name)
+        cls = getattr(module, class_name)
+
+        # Reconstruct object
+        return cls(**obj_data)
+    except Exception as e:
+        logger.warning(f"Deserialization failed for {type_str}: {e}")
+        raise
+
+
+def ensure_storage_dir(storage_path: str, clear_existing: bool = False):
+    os.makedirs(storage_path, exist_ok=True)
+    if clear_existing:
+        for item in os.listdir(storage_path):
+            item_path = os.path.join(storage_path, item)
+            if os.path.isfile(item_path):
+                os.remove(item_path)
+            elif os.path.isdir(item_path):
+                import shutil
+
+                shutil.rmtree(item_path)
 
 
 def cleanup_gpu_memory():
@@ -195,7 +274,7 @@ def run_offline_inference(
     Returns:
         List of generated outputs
     """
-    sampling_params = SamplingParams(**sampling_params_dict)
+    sampling_params = from_dict_for_serialization(sampling_params_dict)
 
     with build_llm_with_uc(
         model_path=model_path,
