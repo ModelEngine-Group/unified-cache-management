@@ -102,7 +102,22 @@ load_only_first_rank: false
   Whether to enable direct I/O.
 
 * **stream_number** *(optional, default: 8)*  
-  Number of concurrent streams used for data transfer.
+  Number of threads used for data transfer between the Host and Storage.
+
+* **buffer_number** *(optional, default: 16384)*  
+  The number of dram pinned buffers for data transfer between the Device and Host.
+  In the vast majority of cases, the default value of 16384 is already sufficient.  
+  You can also check the vLLM startup logs, where you’ll see a line like  
+  ```
+  vllm cache_config_info with initialization after num_gpu_blocks is: xxx
+  ```
+  As a rule of thumb, set `buffer_number` **>=** the reported `num_gpu_blocks` for better performance.  
+  If you are using the **Layerwise Connector**, you could set  
+  ```
+  buffer_number = num_gpu_blocks × num_layers
+  ```
+  But as said before, the default value of 16384 is already enough in most cases.
+
 
 * **waiting_queue_depth** *(optional, default: 1024)*  
   Depth of the waiting queue for transfer tasks.  
@@ -112,9 +127,6 @@ load_only_first_rank: false
 
 * **timeout_ms** *(optional, default: 30000)*  
   Timeout in milliseconds for external interfaces.
-
-* **buffer_size** *(optional, default: 64GB)*  
-  Amount of dram pinned memory used by a single worker process.
 
 ### Must-be-Set Parameters
 
