@@ -14,7 +14,9 @@ First, set the `PROMETHEUS_MULTIPROC_DIR` environment variable.
 export PROMETHEUS_MULTIPROC_DIR=/vllm-workspace
 ```
 
-Then, start the UCM service.
+Then, you should uncomment `metrics_config_path` in ucm's config.yaml—this path specifies which metrics need to be collected.
+
+After completing the two steps above, you can start the service to collect metrics.
 
 ```bash
 export CUDA_VISIBLE_DEVICES=0
@@ -40,7 +42,6 @@ vllm serve /home/models/Qwen2.5-14B-Instruct  \
         }
     }'
 ```
-**Note**: You can refer to the `ucm_config.yaml` file at https://github.com/ModelEngine-Group/unified-cache-management/tree/develop/examples to configure the `metrics_config_path` parameter.
 
 You can use the `vllm bench serve` command to run benchmarks:
 
@@ -173,20 +174,14 @@ Metrics configuration is defined in the `unified-cache-management/examples/metri
 ```yaml
 log_interval: 5  # Interval in seconds for logging metrics
 
-prometheus:
-  multiproc_dir: "/vllm-workspace"  # Prometheus directory
-  metric_prefix: "ucm:"  # Metric name prefix
-  
-  enabled_metrics:
-    counters: true
-    gauges: true
-    histograms: true
-  
-  histograms:
-    - name: "load_requests_num"
-      documentation: "Number of requests loaded from ucm"
-      buckets: [1, 5, 10, 20, 50, 100, 200, 500, 1000]
-    # ... other metric configurations
+multiproc_dir: "/vllm-workspace"  # Prometheus directory
+metric_prefix: "ucm:"  # Metric name prefix
+
+histograms:
+  - name: "load_requests_num"
+    documentation: "Number of requests loaded from ucm"
+    buckets: [1, 5, 10, 20, 50, 100, 200, 500, 1000]
+  # ... other metric configurations
 ```
 
 ---
