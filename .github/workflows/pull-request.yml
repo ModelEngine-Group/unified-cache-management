@@ -21,9 +21,11 @@ jobs:
 
       - id: check
         run: |
+          # get the target branch contents
           git fetch origin ${{ github.base_ref }}
 
           CHANGED_FILES=$(git diff --name-only origin/${{ github.base_ref }}...HEAD)
+          echo "CHANGED_FILES=$CHANGED_FILES"
 
           if ! echo "$CHANGED_FILES" | grep -q '^\.github/workflows/'; then
             echo "No .github/workflows changes, allow."
@@ -33,8 +35,10 @@ jobs:
 
           echo ".github changes detected"
 
-          ALLOWED_USERS=("dante159753" "bob" "ci-bot")
+          ALLOWED_USERS=("aa" "bob" "ci-bot")
           ACTOR="${{ github.actor }}"
+
+          echo "PR opened by user: $ACTOR"
 
           for u in "${ALLOWED_USERS[@]}"; do
             if [[ "$ACTOR" == "$u" ]]; then
