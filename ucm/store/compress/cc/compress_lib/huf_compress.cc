@@ -129,6 +129,7 @@ size_t HUF_writeCTable (void* dst, size_t maxDstSize,
     for (n=0; n<maxSymbolValue; n++)
         huffWeight[n] = bitsToWeight[CTable[n].nbBits];
 
+    // printf("before maxSymbolValue %d ....\n", maxSymbolValue);
     /* attempt weights compression by FSE */
     {   CHECK_V_F(hSize, HUF_compressWeights(op+1, maxDstSize-1, huffWeight, maxSymbolValue) );
         if ((hSize>1) & (hSize < maxSymbolValue/2)) {   /* FSE compressed */
@@ -136,6 +137,8 @@ size_t HUF_writeCTable (void* dst, size_t maxDstSize,
             return hSize+1;
     }   }
 
+    
+    // printf("maxSymbolValue %d ....\n", maxSymbolValue);
     /* write raw values as 4-bits (max : 15) */
     if (maxSymbolValue > (256-128)) return ERROR(GENERIC);   /* should not happen : likely means source cannot be compressed */
     if (((maxSymbolValue+1)/2) + 1 > maxDstSize) return ERROR(dstSize_tooSmall);   /* not enough space within dst buffer */
@@ -1003,6 +1006,7 @@ HUF_compress_float_fixRatio_internal_bf16 (void* dst, size_t dstSize,
     
     // 直方图统计 -------------------------------------------------
     {   CHECK_V_F(largest, HIST_count_BF16_fixRatio(table->count, &maxSymbolValue, src, count_total) );
+        // printf("largest %d \n", largest);
         if (largest == 0) return 0;
     }
 
@@ -1019,6 +1023,7 @@ HUF_compress_float_fixRatio_internal_bf16 (void* dst, size_t dstSize,
     // 向目的地址中写入huffman编码表 -------------------------------------------------
     {   CHECK_V_F(hSize, HUF_writeCTable (op, oend - op, table->CTable, maxSymbolValue, huffLog) );
         op += hSize;                                        // 编码表大小
+        // printf("hSize %d \n", hSize);
         if ( (size_t)(op-ostart) >= comp_len) return 0;     // 检查是否超出压缩buffer的大小
     }
     
@@ -1136,7 +1141,7 @@ size_t HUF_compress2 (void* dst, size_t dstSize,
 
 
 size_t HUF_compress_float_fixRatio (void* dst, size_t maxDstSize, const void* src, size_t srcSize, FixedRatio ratio, DataType dataType) {
-    unsigned workSpace[HUF_WORKSPACE_SIZE_U32];
+    unsigned workSpace[HUF_WORKSPACE_SIZE_U32] = {0};
     switch (dataType) {
         case DT_BF16: return HUF_compress_float_fixRatio_internal_bf16(dst, maxDstSize, src, srcSize, 255, HUF_TABLELOG_DEFAULT, workSpace, sizeof(workSpace), ratio, dataType);
         default:      return 0;  // 暂时不支持

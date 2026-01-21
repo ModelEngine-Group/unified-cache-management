@@ -166,8 +166,12 @@ def main():
     config["device_id"] = device_id
     config["tensor_size"] = tensor_size
     config["shard_size"] = shard_size
+    config["layer_size"] = layer_size
+    config["chunk_size"] = chunk_size
     config["block_size"] = chunk_block_size
+    config["compress_ratio"] = 23           # R139 = 23 1.39x, R145 = 22  1.45x,  R152 = 21  1.52x
     config["share_buffer_enable"] = True
+    config["buffer_number"] = 1024
     config["waiting_queue_depth"] = 32
     config["running_queue_depth"] = 1024
     config["io_direct"] = True

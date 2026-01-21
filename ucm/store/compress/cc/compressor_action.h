@@ -7,11 +7,11 @@
 #include "thread/latch.h"
 #include "ucmstore_v1.h"
 #include "thread/thread_pool.h"
-
+#include "compress_lib/huf.h"  // HUF_compress_float_fixRatio, HUF_decompress_float_fixRatio
 
 namespace UC::Compressor {
 
-// #define USE_C_COMPRESS
+#define USE_C_COMPRESS
 
 class CompressorAction {
     using TaskPtr = std::shared_ptr<TransTask>;
@@ -20,6 +20,7 @@ class CompressorAction {
 private:
     StoreV1* backend_{nullptr};
     size_t shardSize_{0};
+    FixedRatio ratio{R145};
     static constexpr std::size_t pageSize = 4096;
     struct CompressTask {
         std::shared_ptr<TransTask> task;

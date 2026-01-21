@@ -54,6 +54,7 @@ class UcmCompressor(UcmKVStoreBaseV1):
             "running_queue_depth": "runningQueueDepth",
             "timeout_ms": "timeoutMs",
             "stream_number": "streamNumber",
+            "compress_ratio": "compressRatio",
         }
         self.store = ucmcompressor.Compressor()
         param = ucmcompressor.Compressor.Config()
@@ -70,6 +71,10 @@ class UcmCompressor(UcmKVStoreBaseV1):
         flat = np.frombuffer(b"".join(block_ids), dtype=np.uint8)
         res = self.store.Lookup(flat)
         return np.frombuffer(res, dtype=bool)
+
+    def lookup_on_prefix(self, block_ids: List[bytes]) -> int:
+        flat = np.frombuffer(b"".join(block_ids), dtype=np.uint8)
+        return self.store.LookupOnPrefix(flat)
 
     def prefetch(self, block_ids: List[bytes]) -> None:
         flat = np.frombuffer(b"".join(block_ids), dtype=np.uint8)
