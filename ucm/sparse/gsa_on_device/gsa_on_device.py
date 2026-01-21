@@ -338,7 +338,13 @@ class GSAOnDevice(UcmSparseBase):
                 else:  # NPU
                     if not self.is_tensor_computed:
                         if self.decode_mask.any():  # with at least one decode request
-                            self.batch_size_for_hamming = len(attn_metadata.seq_lens)
+                            if self.slice_enabled:
+                                # if slice_enabled, the batch_size_for_hamming is the number of decode requests
+                                self.batch_size_for_hamming = len(self.decode_req_ids)
+                            else:
+                                # if not slice_enabled, the batch_size_for_hamming is the number of all requests
+                                self.batch_size_for_hamming = len(attn_metadata.seq_lens)
+
                             self.topk_for_hamming = self.topk_for_hamming_full[
                                 : self.batch_size_for_hamming
                             ]
@@ -348,7 +354,7 @@ class GSAOnDevice(UcmSparseBase):
                                 ]
                             )
                             
-                            self.seq_lens_for_hamming =  attn_metadata.seq_lens_device
+                            self.seq_lens_for_hamming =  attn_metadata.seq_lens_device[:self.batch_size_for_hamming]
                             self.max_seq_len_for_hamming = torch.max(
                                 self.seq_lens_for_hamming
                             ).item()
@@ -475,8 +481,11 @@ class GSAOnDevice(UcmSparseBase):
                             self.topk_block_table = attn_metadata.block_table
                             self.topk_seq_lens = attn_metadata.seq_lens
                         else:  # NPU
-                            q_decode = query[: self.batch_size_for_hamming]
-                          
+                            if self.slice_enabled:
+                                q_decode = q_decode[:self.batch_size_for_hamming]
+                            else:
+                                q_decode = query.index_select(0, q_start[:-1])
+
                             q_hash = (
                                 self.hash_encoder.compute_hash(q_decode)
                                 .unsqueeze(2)
@@ -494,7 +503,7 @@ class GSAOnDevice(UcmSparseBase):
                                 self.hamming_keep_chunks_tail,
                                 0,  # support_offload is disabled
                                 self.block_table_decode,
-                                self.decode_mask_npu,
+                                self.decode_mask_npu if not self.slice_enabled else None,
                                 self.hamming_output[: self.batch_size_for_hamming],
                             )
                             new_seq_lens = self.topk_seq_lens_qwen
@@ -636,6 +645,12 @@ class GSAOnDevice(UcmSparseBase):
         # self.decode_mask is on cpu in vllm-asencd under NPU device
         self.decode_mask = (query_lens == 1) & (seq_lens >= self.seq_len_threshhold)
         self.decode_mask = self.decode_mask.pin_memory()
+
+        num_decode_requests = self.decode_mask.sum().item()
+        if num_decode_requests > 0:
+            self.slice_enabled = self.decode_mask[:num_decode_requests].all().item()
+        else:
+            self.slice_enabled = False
 
         self.ori_seq_lens_decode = seq_lens.clone()
         self.ori_block_table_decode = block_table.clone()
