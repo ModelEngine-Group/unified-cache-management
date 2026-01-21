@@ -338,7 +338,7 @@ class GSAOnDevice(UcmSparseBase):
                 else:  # NPU
                     if not self.is_tensor_computed:
                         if self.decode_mask.any():  # with at least one decode request
-                            self.batch_size_for_hamming = len(self.decode_req_ids)
+                            self.batch_size_for_hamming = len(attn_metadata.seq_lens)
                             self.topk_for_hamming = self.topk_for_hamming_full[
                                 : self.batch_size_for_hamming
                             ]
