@@ -482,7 +482,7 @@ class GSAOnDevice(UcmSparseBase):
                             self.topk_seq_lens = attn_metadata.seq_lens
                         else:  # NPU
                             if self.slice_enabled:
-                                q_decode = q_decode[:self.batch_size_for_hamming]
+                                q_decode = query[:self.batch_size_for_hamming]
                             else:
                                 q_decode = query.index_select(0, q_start[:-1])
 
