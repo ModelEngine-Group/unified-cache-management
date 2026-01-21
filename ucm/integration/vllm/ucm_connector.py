@@ -21,8 +21,8 @@ from vllm.platforms import current_platform
 from vllm.v1.core.sched.output import SchedulerOutput
 
 from ucm.logger import init_logger
-from ucm.shared.metrics import ucmmonitor
-from ucm.shared.metrics.observability import UCMStatsLogger
+from ucm.observability import PrometheusStatsLogger
+from ucm.shared.metrics import ucmmetrics
 from ucm.store.factory_v1 import UcmConnectorFactoryV1
 from ucm.store.ucmstore_v1 import Task, UcmKVStoreBaseV1
 from ucm.utils import Config
@@ -145,12 +145,11 @@ class UCMDirectConnector(KVConnectorBase_V1):
 
         self.metrics_config = self.launch_config.get("metrics_config_path", "")
         if self.metrics_config:
-            self.stats_logger = UCMStatsLogger(
+            self.stats_logger = PrometheusStatsLogger(
                 vllm_config.model_config.served_model_name,
                 self.global_rank,
                 self.metrics_config,
             )
-            self.monitor = ucmmonitor.StatsMonitor.get_instance()
 
         self.synchronize = lambda: (
             torch.cuda.current_stream().synchronize()
@@ -318,8 +317,7 @@ class UCMDirectConnector(KVConnectorBase_V1):
             f"hit external: {external_hit_blocks}"
         )
         if self.metrics_config:
-            self.monitor.update_stats(
-                "ConnStats",
+            ucmmetrics.update_stats(
                 {"interval_lookup_hit_rates": external_hit_blocks / len(ucm_block_ids)},
             )
 
@@ -568,14 +566,13 @@ class UCMDirectConnector(KVConnectorBase_V1):
             / 1024
         )  # GB/s
         if self.metrics_config and is_load:
-            self.monitor.update_stats(
-                "ConnStats",
+            ucmmetrics.update_stats(
                 {
                     "load_requests_num": num_loaded_request,
                     "load_blocks_num": num_loaded_block,
                     "load_duration": load_end_time - load_start_time,
                     "load_speed": load_speed,
-                },
+                }
             )
 
     def wait_for_layer_load(self, layer_name: str) -> None:
@@ -594,8 +591,6 @@ class UCMDirectConnector(KVConnectorBase_V1):
         # TODO support PP
         if (self.is_mla or self.is_dsa) and self.global_rank != 0:
             return
-        if self.metrics_config:
-            self.synchronize()
 
         metadata = self._get_connector_metadata()
         assert isinstance(metadata, UCMConnectorMetadata)
@@ -604,7 +599,6 @@ class UCMDirectConnector(KVConnectorBase_V1):
         is_save = False
         num_saved_block = 0
         num_saved_request = 0
-        save_start_time = time.perf_counter() * 1000
         total_ucm_block_ids, total_vllm_block_ids = [], []
         for request_id, request in metadata.request_meta.items():
             if len(request.dump_block_ids[0]) == 0:
@@ -625,6 +619,7 @@ class UCMDirectConnector(KVConnectorBase_V1):
             shard_indexs = [0] * len(total_ucm_block_ids)
             try:
                 self.synchronize()
+                save_start_time = time.perf_counter() * 1000
                 task = self.store.dump_data(
                     total_ucm_block_ids, shard_indexs, total_tensors
                 )
@@ -641,26 +636,26 @@ class UCMDirectConnector(KVConnectorBase_V1):
                 self.store.wait(dump_tasks[0]) if dump_tasks else None
                 if len(dump_tasks) > 1 and self.rope_store:
                     self.rope_store.wait(dump_tasks[1])
+                save_end_time = time.perf_counter() * 1000
             except RuntimeError as e:
                 logger.error(f"wait for dump kv cache failed.{e}")
-        save_end_time = time.perf_counter() * 1000
-        save_speed = (
-            num_saved_block
-            * self.block_data_size
-            / (save_end_time - save_start_time)
-            / 1024
-            / 1024
-        )  # GB/s
-        if self.metrics_config and is_save:
-            self.monitor.update_stats(
-                "ConnStats",
-                {
-                    "save_requests_num": num_saved_request,
-                    "save_blocks_num": num_saved_block,
-                    "save_duration": save_end_time - save_start_time,
-                    "save_speed": save_speed,
-                },
-            )
+
+            save_speed = (
+                num_saved_block
+                * self.block_data_size
+                / (save_end_time - save_start_time)
+                / 1024
+                / 1024
+            )  # GB/s
+            if self.metrics_config:
+                ucmmetrics.update_stats(
+                    {
+                        "save_requests_num": num_saved_request,
+                        "save_blocks_num": num_saved_block,
+                        "save_duration": save_end_time - save_start_time,
+                        "save_speed": save_speed,
+                    },
+                )
 
     def clear_connector_metadata(self) -> None:
         super().clear_connector_metadata()
