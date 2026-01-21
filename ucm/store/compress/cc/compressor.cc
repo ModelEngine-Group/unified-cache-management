@@ -37,6 +37,10 @@ private:
         if (config.deviceId < -1) {
             return Status::InvalidParam("invalid device({})", config.deviceId);
         }
+
+        if (config.compressRatio != 23 && config.compressRatio != 22 && config.compressRatio != 21) {
+            return Status::InvalidParam("invalid compressRatio({})", config.compressRatio);
+        }
         // TODO 参数校验
         return Status::OK();
     }
@@ -69,6 +73,13 @@ std::string Compressor::Readme() const { return "Compressor"; }
 Expected<std::vector<uint8_t>> Compressor::Lookup(const Detail::BlockId* blocks, size_t num)
 {
     auto res = impl_->backend->Lookup(blocks, num);
+    if (!res) [[unlikely]] { UC_ERROR("Failed({}) to lookup blocks({}).", res.Error(), num); }
+    return res;
+}
+
+Expected<ssize_t> Compressor::LookupOnPrefix(const Detail::BlockId* blocks, size_t num)
+{
+    auto res = impl_->backend->LookupOnPrefix(blocks, num);
     if (!res) [[unlikely]] { UC_ERROR("Failed({}) to lookup blocks({}).", res.Error(), num); }
     return res;
 }

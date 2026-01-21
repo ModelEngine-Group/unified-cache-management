@@ -38,7 +38,7 @@ struct Config {
     size_t shardSize{0};
     size_t blockSize{0};
     size_t timeoutMs{30000};
-    int8_t compress_ratio{2};
+    int32_t compressRatio{22};
     size_t streamNumber{8};
 };
 
