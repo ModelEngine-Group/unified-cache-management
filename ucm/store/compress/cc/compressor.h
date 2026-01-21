@@ -14,6 +14,7 @@ public:
     Status Setup(const Config& config);
     std::string Readme() const override;
     Expected<std::vector<uint8_t>> Lookup(const Detail::BlockId* blocks, size_t num) override;
+    Expected<ssize_t> LookupOnPrefix(const Detail::BlockId* blocks, size_t num) override;
     void Prefetch(const Detail::BlockId* blocks, size_t num) override;
     Expected<Detail::TaskHandle> Load(Detail::TaskDesc task) override;
     Expected<Detail::TaskHandle> Dump(Detail::TaskDesc task) override;

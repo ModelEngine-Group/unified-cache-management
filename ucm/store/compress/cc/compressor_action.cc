@@ -1,7 +1,7 @@
 #include "logger/logger.h"
 #include "compressor_action.h"
 
-#include "compress_lib/huf.h"  // HUF_compress_float_fixRatio, HUF_decompress_float_fixRatio
+
 
 
 namespace UC::Compressor {
@@ -15,7 +15,13 @@ Status CompressorAction::Setup(const Config& config)
 {
     backend_ = static_cast<StoreV1*>((void*)config.storeBackend);
     shardSize_ = config.shardSize;
-    UC_DEBUG("config.shardSize {}", config.shardSize);
+    switch (config.compressRatio) {
+        case 23: ratio = R139; break;
+        case 22: ratio = R145; break;
+        case 21: ratio = R152; break;
+        default: return Status::InvalidParam("invalid compressRatio({})", config.compressRatio);
+    }
+    
     // init thread pool
     dump_pool_.SetNWorker(config.streamNumber/2)
               .SetWorkerFn([this](auto& ct, auto&) { Compress_Dump(ct); })
@@ -29,7 +35,7 @@ Status CompressorAction::Setup(const Config& config)
 
 void CompressorAction::Push(TaskPtr task, WaiterPtr waiter)
 {
-    waiter->Set(1);
+    waiter->Set(task->desc.size());
     if (task->type == TransTask::Type::DUMP) {
         dump_pool_.Push(CompressTask {
             task,
@@ -58,8 +64,8 @@ void CompressorAction::Compress_Load(CompressTask& ct)
 
     size_t totalDecompBytes = 0;             // 总解压字节数（日志用）
 
-    size_t srcSize = 90112;
-    size_t decompBufSize = 65536*2;
+    size_t srcSize = (shardSize_ * (size_t)ratio / 32) / 4096 * 4096;;
+    size_t decompBufSize = shardSize_;
     void* decompBuf = malloc(decompBufSize);
 
     for (const UC::Detail::Shard& s : desc) {
@@ -162,7 +168,6 @@ void CompressorAction::Compress_Dump(CompressTask& ct)
     UC_DEBUG("COMPRESS DUMP END. Total compressed bytes: {}", totalCompBytes);
 #else
     // to posix dump
-    UC_DEBUG("没走走 C 压缩分支 \n");
     const auto n = ct.task->desc.size();
     if (n > 0) 
     {

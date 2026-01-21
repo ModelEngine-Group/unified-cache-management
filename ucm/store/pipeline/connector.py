@@ -139,10 +139,13 @@ def _build_cache_compress_posix_pipeline(
     from ucm.store.compress.connector import UcmCompressor
 
     posix_config = copy.deepcopy(config)
-    # if int(config["device_id"]) >= 0:
-        # posix_config["shard_size"] = 90112
-        # posix_config |= {"tensor_size": 90112}
-        # posix_config["block_size"] = posix_config["shard_size"] * 144
+    if int(config["device_id"]) >= 0:
+        posix_config["shard_size"] = (posix_config["shard_size"] * posix_config["compress_ratio"] // 32) // 4096 * 4096
+        posix_config["tensor_size"] = posix_config["shard_size"]
+        posix_config["block_size"] = posix_config["shard_size"] * posix_config["layer_size"] * posix_config["chunk_size"]
+        print("shard_size:", posix_config["shard_size"])
+        print("tensor_size:", posix_config["tensor_size"])
+        print("block_size:", posix_config["block_size"])
     posix_store = UcmPosixStore(posix_config)
     store.append(posix_store)
 
