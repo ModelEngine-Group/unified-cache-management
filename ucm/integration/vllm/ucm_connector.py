@@ -1011,6 +1011,14 @@ class UCMConnector(KVConnectorBase_V1):
         """
         self.connector.bind_connector_metadata(connector_metadata)
 
+    def has_connector_metadata(self) -> bool:
+        """Check whether the connector metadata is currently set.
+
+        Returns:
+            bool: True if connector metadata exists, False otherwise.
+        """
+        return self.connector.has_connector_metadata()
+
     def start_load_kv(self, forward_context: "ForwardContext", **kwargs) -> None:
         """
         Start loading the KV cache from the connector to vLLM's paged
