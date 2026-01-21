@@ -231,7 +231,12 @@ class GSAOnDevice(UcmSparseBase):
                         [
                             self.max_batch_size,
                             self.num_key_heads,
-                            (vllm_config.model_config.max_model_len + self.block_size - 1) // self.block_size,
+                            (
+                                vllm_config.model_config.max_model_len
+                                + self.block_size
+                                - 1
+                            )
+                            // self.block_size,
                         ],
                         dtype=torch.int32,
                         device=self.device,
@@ -343,7 +348,9 @@ class GSAOnDevice(UcmSparseBase):
                                 self.batch_size_for_hamming = len(self.decode_req_ids)
                             else:
                                 # if not slice_enabled, the batch_size_for_hamming is the number of all requests
-                                self.batch_size_for_hamming = len(attn_metadata.seq_lens)
+                                self.batch_size_for_hamming = len(
+                                    attn_metadata.seq_lens
+                                )
 
                             self.topk_for_hamming = self.topk_for_hamming_full[
                                 : self.batch_size_for_hamming
@@ -353,15 +360,17 @@ class GSAOnDevice(UcmSparseBase):
                                     : self.batch_size_for_hamming
                                 ]
                             )
-                            
-                            self.seq_lens_for_hamming =  attn_metadata.seq_lens_device[:self.batch_size_for_hamming]
+
+                            self.seq_lens_for_hamming = attn_metadata.seq_lens_device[
+                                : self.batch_size_for_hamming
+                            ]
                             self.max_seq_len_for_hamming = torch.max(
                                 self.seq_lens_for_hamming
                             ).item()
                             self.block_table_decode = self.ori_block_table_decode[
                                 : self.batch_size_for_hamming
                             ]
-                            
+
                             self.is_tensor_computed = True
 
                     k_hash_compute = self.hash_encoder.compute_hash(key)
@@ -482,7 +491,7 @@ class GSAOnDevice(UcmSparseBase):
                             self.topk_seq_lens = attn_metadata.seq_lens
                         else:  # NPU
                             if self.slice_enabled:
-                                q_decode = query[:self.batch_size_for_hamming]
+                                q_decode = query[: self.batch_size_for_hamming]
                             else:
                                 q_decode = query.index_select(0, q_start[:-1])
 
@@ -503,7 +512,11 @@ class GSAOnDevice(UcmSparseBase):
                                 self.hamming_keep_chunks_tail,
                                 0,  # support_offload is disabled
                                 self.block_table_decode,
-                                self.decode_mask_npu if not self.slice_enabled else None,
+                                (
+                                    self.decode_mask_npu
+                                    if not self.slice_enabled
+                                    else None
+                                ),
                                 self.hamming_output[: self.batch_size_for_hamming],
                             )
                             new_seq_lens = self.topk_seq_lens_qwen
@@ -512,7 +525,7 @@ class GSAOnDevice(UcmSparseBase):
                                 : self.batch_size_for_hamming, 0, :
                             ]
                             attn_metadata.block_tables = new_block_tables
-                
+
                             # topk for skip layer
                             self.topk_block_table = attn_metadata.block_tables
                             self.topk_seq_lens = attn_metadata.seq_lens
