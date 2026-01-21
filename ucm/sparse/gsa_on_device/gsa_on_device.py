@@ -647,12 +647,13 @@ class GSAOnDevice(UcmSparseBase):
             self.decode_req_ids_npu = self.decode_req_ids.to(
                 self.device, non_blocking=True
             )
-            decode_seq_lens = seq_lens[self.decode_mask]
             self.topk_seq_lens_qwen = update_seq_lens(
-                decode_seq_lens,
+                seq_lens,
                 topk_token=self.hash_topk_tokens,
                 block_size=self.block_size,
             )
+            # (ldeng) set the seq_lens for the non-decode requests to the original seq_lens
+            self.topk_seq_lens_qwen[~self.decode_mask] = seq_lens[~self.decode_mask]
 
     def maybe_init_cudagraph_buffers_for_topk(self, n, tile_scheduler_metadata):
         sm_parts = tile_scheduler_metadata.size(0)
