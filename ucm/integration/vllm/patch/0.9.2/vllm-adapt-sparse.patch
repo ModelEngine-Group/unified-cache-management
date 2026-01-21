@@ -1,7 +1,7 @@
-From d24997f66572362fa3a46ee76f5af65e027b856e Mon Sep 17 00:00:00 2001
+From 857bc2830fb294d893ca5fac50eff48e10aaddf2 Mon Sep 17 00:00:00 2001
 From: wenxinwang <wangwenxin21@huawei.com>
-Date: Mon, 19 Jan 2026 19:26:05 -0800
-Subject: [PATCH] update patch for gsaondevice + sparse + cache blend
+Date: Wed, 21 Jan 2026 00:53:52 -0800
+Subject: [PATCH] update for gsaondevice + sparse + cache blend
 
 ---
  vllm/attention/layer.py                    | 63 +++++++++++++++-
@@ -19,7 +19,7 @@ Subject: [PATCH] update patch for gsaondevice + sparse + cache blend
  12 files changed, 281 insertions(+), 22 deletions(-)
 
 diff --git a/vllm/attention/layer.py b/vllm/attention/layer.py
-index f0ad68b16..ba93960de 100644
+index f0ad68b16..5b2e0f04f 100644
 --- a/vllm/attention/layer.py
 +++ b/vllm/attention/layer.py
 @@ -8,6 +8,7 @@ import torch.nn as nn
@@ -60,7 +60,7 @@ index f0ad68b16..ba93960de 100644
 +                kv_cache, k_hash = kv_cache
 +            else:
 +                k_hash = None
-+            query, _, _, _ = maybe_execute_sparse_attention_begin(
++            query, key, value, output = maybe_execute_sparse_attention_begin(
 +                query, key, value, layer_name, forward_context, output, k_hash=k_hash
 +            )
      self.impl.forward(self,
@@ -237,7 +237,7 @@ index 7ef9d248d..e35ab2fdc 100644
              return IntermediateTensors({
                  "hidden_states": hidden_states,
 diff --git a/vllm/v1/attention/backends/mla/common.py b/vllm/v1/attention/backends/mla/common.py
-index f2aaf59a4..439bb9b14 100644
+index f2aaf59a4..205bdbe71 100644
 --- a/vllm/v1/attention/backends/mla/common.py
 +++ b/vllm/v1/attention/backends/mla/common.py
 @@ -200,6 +200,7 @@ from vllm.attention.backends.abstract import (AttentionBackend, AttentionLayer,
@@ -281,7 +281,7 @@ index f2aaf59a4..439bb9b14 100644
              )
  
          if has_prefill:
-+            prefill_q, _, _, _ =  maybe_execute_sparse_attention_begin(prefill_q, k_c_normed, k_pe, layer.layer_name, forward_context, output=output, phase="prefill", k_hash=k_hash)
++            prefill_q, k_c_normed, k_pe, output =  maybe_execute_sparse_attention_begin(prefill_q, k_c_normed, k_pe, layer.layer_name, forward_context, output=output, phase="prefill", k_hash=k_hash)
              output[num_decode_tokens:] = self._forward_prefill(
                  prefill_q, prefill_k_c_normed, prefill_k_pe, kv_cache,
                  attn_metadata)
@@ -294,7 +294,7 @@ index f2aaf59a4..439bb9b14 100644
              decode_ql_nope = torch.bmm(decode_q_nope, self.W_UK_T)
              # Convert from (N, B, L) to (B, N, L)
              decode_ql_nope = decode_ql_nope.transpose(0, 1)
-+            _, _, _, _ = maybe_execute_sparse_attention_begin(torch.cat([decode_ql_nope, decode_q_pe],dim=-1), k_c_normed, k_pe, layer.layer_name, forward_context, output=output, phase="decode", k_hash=k_hash, decode_ql_nope=decode_ql_nope, decode_q_pe=decode_q_pe)
++            _, k_c_normed, k_pe, output = maybe_execute_sparse_attention_begin(torch.cat([decode_ql_nope, decode_q_pe],dim=-1), k_c_normed, k_pe, layer.layer_name, forward_context, output=output, phase="decode", k_hash=k_hash, decode_ql_nope=decode_ql_nope, decode_q_pe=decode_q_pe)
  
              output[:num_decode_tokens] = self._forward_decode(
                  decode_ql_nope, decode_q_pe, kv_cache, attn_metadata)
