@@ -48,7 +48,7 @@ KVStoreBase有助于实现稀疏算法与外部存储的解耦。它定义了与
 
 ## 快速开始
 
-请参考 [快速开始](./docs/source/getting-started/quick_start.md).
+请参考 [快速开始_vLLM](https://ucm.readthedocs.io/en/latest/getting-started/quickstart_vllm.html) 和 [快速开始_vLLM-Ascend](https://ucm.readthedocs.io/en/latest/getting-started/quickstart_vllm_ascend.html).
 
 ---
 
