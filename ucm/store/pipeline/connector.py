@@ -171,7 +171,6 @@ def _build_cache_compress_posix_pipeline(
         posix_config["tensor_size"] = int(posix_config["shard_size"])
         posix_config["block_size"] = int(posix_config["shard_size"] * layers)
     
-    
     pipeline.Stack("Posix", str(store_dir / "posix/libposixstore.so"), posix_config)
     pipeline.Stack("Compress", str(store_dir / "compress/libcompressor.so"), config)
     pipeline.Stack("Cache", str(store_dir / "cache/libcachestore.so"), config)
