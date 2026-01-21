@@ -1,7 +1,7 @@
-From d24997f66572362fa3a46ee76f5af65e027b856e Mon Sep 17 00:00:00 2001
+From 857bc2830fb294d893ca5fac50eff48e10aaddf2 Mon Sep 17 00:00:00 2001
 From: wenxinwang <wangwenxin21@huawei.com>
-Date: Mon, 19 Jan 2026 19:26:05 -0800
-Subject: [PATCH] update patch for gsaondevice + sparse + cache blend
+Date: Wed, 21 Jan 2026 00:53:52 -0800
+Subject: [PATCH] update for gsaondevice + sparse + cache blend
 
 ---
  vllm/attention/layer.py                    | 63 +++++++++++++++-
