@@ -13,10 +13,10 @@ from vllm import _custom_ops as ops
 from vllm.attention.ops.flashmla import get_mla_metadata
 from vllm.config import VllmConfig
 from vllm.forward_context import ForwardContext
+from vllm.utils import cdiv
 from vllm.v1.attention.backends.mla.common import MLACommonMetadata
 from vllm.v1.core.sched.output import SchedulerOutput
 from vllm.v1.request import Request, RequestStatus
-from vllm.utils import cdiv
 
 from ucm.logger import init_logger
 from ucm.sparse.base import (
@@ -135,9 +135,17 @@ class GSAOnDevice(UcmSparseBase):
 
         self.seq_len_threshhold = self.gsa_on_device_config.seq_len_threshhold
 
-        assert self.seq_len_threshhold >= self.gsa_on_device_config.vllm_hash_attention_topk, "seq_len_threshhold must be larger than or equal to vllm_hash_attention_topk"
-        assert self.gsa_on_device_config.vllm_hash_attention_topk % self.block_size == 0, "vllm_hash_attention_topk must be divisible by block_size"
-        assert self.gsa_on_device_config.vllm_hash_attention_topk <= vllm_config.model_config.max_model_len, "vllm_hash_attention_topk must be less than max_model_len"
+        assert (
+            self.seq_len_threshhold
+            >= self.gsa_on_device_config.vllm_hash_attention_topk
+        ), "seq_len_threshhold must be larger than or equal to vllm_hash_attention_topk"
+        assert (
+            self.gsa_on_device_config.vllm_hash_attention_topk % self.block_size == 0
+        ), "vllm_hash_attention_topk must be divisible by block_size"
+        assert (
+            self.gsa_on_device_config.vllm_hash_attention_topk
+            <= vllm_config.model_config.max_model_len
+        ), "vllm_hash_attention_topk must be less than max_model_len"
 
         if role == UcmSparseRole.WORKER:
             if self.is_cuda:  # cuda only variables
@@ -236,7 +244,9 @@ class GSAOnDevice(UcmSparseBase):
                         [
                             self.max_batch_size,
                             self.num_key_heads,
-                            cdiv(vllm_config.model_config.max_model_len, self.block_size)
+                            cdiv(
+                                vllm_config.model_config.max_model_len, self.block_size
+                            ),
                         ],
                         dtype=torch.int32,
                         device=self.device,
@@ -521,13 +531,17 @@ class GSAOnDevice(UcmSparseBase):
                             )
                             new_seq_lens = self.topk_seq_lens_qwen
                             attn_metadata.seq_lens = new_seq_lens
-                            if self.slice_enabled and attn_metadata.attn_state != AscendAttentionState.DeocdeOnly:
+                            if (
+                                self.slice_enabled
+                                and attn_metadata.attn_state
+                                != AscendAttentionState.DeocdeOnly
+                            ):
                                 new_block_tables = attn_metadata.block_tables.clone()
-                                new_block_tables[
-                                    : self.batch_size_for_hamming
-                                ] = self.hamming_output[
-                                    : self.batch_size_for_hamming, 0, :
-                                ]
+                                new_block_tables[: self.batch_size_for_hamming] = (
+                                    self.hamming_output[
+                                        : self.batch_size_for_hamming, 0, :
+                                    ]
+                                )
                             else:
                                 new_block_tables = self.hamming_output[
                                     : self.batch_size_for_hamming, 0, :
@@ -670,7 +684,9 @@ class GSAOnDevice(UcmSparseBase):
 
         self.num_decode_requests = self.decode_mask.sum().item()
         if self.num_decode_requests > 0:
-            self.slice_enabled = self.decode_mask[:self.num_decode_requests].all().item()
+            self.slice_enabled = (
+                self.decode_mask[: self.num_decode_requests].all().item()
+            )
         else:
             self.slice_enabled = False
 
