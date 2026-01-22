@@ -534,7 +534,7 @@ class GSAOnDevice(UcmSparseBase):
                             if (
                                 self.slice_enabled
                                 and attn_metadata.attn_state
-                                != AscendAttentionState.DeocdeOnly
+                                != AscendAttentionState.DecodeOnly
                             ):
                                 new_block_tables = attn_metadata.block_tables.clone()
                                 new_block_tables[: self.batch_size_for_hamming] = (
