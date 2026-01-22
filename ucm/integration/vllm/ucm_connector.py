@@ -33,6 +33,8 @@ if TYPE_CHECKING:
     from vllm.v1.core.kv_cache_manager import KVCacheBlocks
     from vllm.v1.request import Request
 
+from ucm.sparse.state import has_ucm_sparse
+
 logger = init_logger(__name__)
 
 
@@ -225,7 +227,7 @@ class UCMDirectConnector(KVConnectorBase_V1):
         return backends
 
     def register_kv_caches(self, kv_caches: dict[str, torch.Tensor]):
-        if os.getenv("VLLM_HASH_ATTENTION", "0") == "1":
+        if has_ucm_sparse() and os.getenv("VLLM_HASH_ATTENTION") == "1":
             for layer_name, value in kv_caches.items():
                 kv_cache, k_hash = value
                 self.kv_caches[layer_name] = kv_cache
