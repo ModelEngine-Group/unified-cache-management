@@ -1,13 +1,14 @@
 import time
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Dict, List, Optional, Tuple, Union
 
 import torch
+import torch.cuda.nvtx as nvtx
 from sympy import false
 from torch import Tensor
 
 from ucm.logger import init_logger
-from ucm.store.dramstore.dramstore_connector import device
 
 logger = init_logger(__name__)
 
@@ -23,6 +24,17 @@ from ucm.sparse.base import (
     UcmSparseRole,
 )
 from ucm.sparse.utils import round_up
+
+
+@contextmanager
+def nvtx_range(msg: str, enable: bool = True):
+    if enable:
+        nvtx.range_push(msg)
+    try:
+        yield
+    finally:
+        if enable:
+            nvtx.range_pop()
 
 
 def get_num_blks(num_tokens, block_size):
@@ -226,98 +238,102 @@ class Blend(UcmSparseBase):
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         attn = forward_context.no_compile_layers[layer_name]
         kv_cache = attn.kv_cache[forward_context.virtual_engine]
-        start_time = time.perf_counter()
         if layer_name in self.compute_meta.keys():
             need_update = False
             self.blend_req_metas.reset_compute_mask()
-
             # maybe we can use triton kernel
             for req_meta in self.blend_req_metas.requests:
-                req_idx = req_meta.req_idx
-                req_query_start = self.attn_metadata.query_start_loc[req_idx].item()
-                req_query_end = self.attn_metadata.query_start_loc[req_idx + 1].item()
+                with nvtx_range(f"prepare meta req, :{req_meta.req_idx}"):
+                    req_idx = req_meta.req_idx
+                    req_query_start = self.attn_metadata.query_start_loc[req_idx].item()
+                    req_query_end = self.attn_metadata.query_start_loc[
+                        req_idx + 1
+                    ].item()
 
-                if not req_meta.need_blend:
-                    self.blend_req_metas.compute_mask[
-                        req_query_start:req_query_end
-                    ].fill_(True)
-                    continue
-                req_chunk_end = req_query_start + req_meta.chunks_len
+                    if not req_meta.need_blend:
+                        self.blend_req_metas.compute_mask[
+                            req_query_start:req_query_end
+                        ].fill_(True)
+                        continue
+                    req_chunk_end = req_query_start + req_meta.chunks_len
 
-                # HBM prefix cache is not supported now
-                # UC store prefix cache can be fully reused for the first chunk
-                his_vllm_blk_ids = self.attn_metadata.block_table[req_idx][
-                    req_meta.prefix_blk_len : req_meta.prefix_blk_len
-                    + req_meta.chunks_blk_len
-                ]
-                # only compute topk of chunk's hits block
-                chunk_hit_mask = self.blend_req_metas.chunk_blks_hit_mask[
-                    : len(req_meta.chunk_hit_mask)
-                ]
-                src = torch.as_tensor(
-                    req_meta.chunk_hit_mask,
-                    dtype=chunk_hit_mask.dtype,
-                    device=chunk_hit_mask.device,
-                )
-                chunk_hit_mask.copy_(src)
+                with nvtx_range(f"prepare data, req :{req_meta.req_idx}"):
+                    # HBM prefix cache is not supported now
+                    # UC store prefix cache can be fully reused for the first chunk
+                    his_vllm_blk_ids = self.attn_metadata.block_table[req_idx][
+                        req_meta.prefix_blk_len : req_meta.prefix_blk_len
+                        + req_meta.chunks_blk_len
+                    ]
+                    # only compute topk of chunk's hits block
+                    chunk_hit_mask = self.blend_req_metas.chunk_blks_hit_mask[
+                        : len(req_meta.chunk_hit_mask)
+                    ]
+                    src = torch.as_tensor(
+                        req_meta.chunk_hit_mask,
+                        dtype=chunk_hit_mask.dtype,
+                        device=chunk_hit_mask.device,
+                    )
+                    chunk_hit_mask.copy_(src)
 
-                his_vllm_blk_ids = his_vllm_blk_ids[chunk_hit_mask]
-                his_k = kv_cache[0, his_vllm_blk_ids]
-                candidate_len = req_meta.chunk_hit_blk_len * self.block_size
-                his_k = his_k.reshape(candidate_len, -1)
+                    his_vllm_blk_ids = his_vllm_blk_ids[chunk_hit_mask]
+                    his_k = kv_cache[0, his_vllm_blk_ids]
+                    candidate_len = req_meta.chunk_hit_blk_len * self.block_size
+                    his_k = his_k.reshape(candidate_len, -1)
 
-                req_key = key[req_query_start:req_chunk_end]
+                    req_key = key[req_query_start:req_chunk_end]
 
-                # req_key does not contain prefix cache
-                golden_k = req_key.reshape(
-                    req_meta.chunks_blk_len, self.block_size, -1
-                )[chunk_hit_mask]
-                golden_k = golden_k.reshape(candidate_len, -1)
+                    # req_key does not contain prefix cache
+                    golden_k = req_key.reshape(
+                        req_meta.chunks_blk_len, self.block_size, -1
+                    )[chunk_hit_mask]
+                    golden_k = golden_k.reshape(candidate_len, -1)
 
-                diff_k = torch.sum((his_k - golden_k).abs(), dim=[1])
-                topK_num = int(candidate_len * self.compute_meta[layer_name]["ratio"])
+                with nvtx_range(f"calculate topK, req :{req_meta.req_idx}"):
+                    diff_k = torch.sum((his_k - golden_k).abs(), dim=[1])
+                    topK_num = int(
+                        candidate_len * self.compute_meta[layer_name]["ratio"]
+                    )
 
-                topK_indices = torch.topk(diff_k, k=topK_num).indices
+                    topK_indices = torch.topk(diff_k, k=topK_num).indices
 
-                # get origin idx in req_key
-                topK_indices = self.mask_idx[: req_meta.chunks_blk_len][
-                    chunk_hit_mask
-                ].reshape(-1)[topK_indices]
+                    # get origin idx in req_key
+                    topK_indices = self.mask_idx[: req_meta.chunks_blk_len][
+                        chunk_hit_mask
+                    ].reshape(-1)[topK_indices]
 
-                # update compute_mask
-                self.blend_req_metas.update_req_compute_mask(
-                    req_query_start,
-                    req_chunk_end,
-                    req_query_end,
-                    chunk_hit_mask,
-                    topK_indices,
-                )
+                with nvtx_range(f"update blend meta, req :{req_meta.req_idx}"):
+                    # update compute_mask
+                    self.blend_req_metas.update_req_compute_mask(
+                        req_query_start,
+                        req_chunk_end,
+                        req_query_end,
+                        chunk_hit_mask,
+                        topK_indices,
+                    )
 
-                self.blend_req_metas.update_query_lens(
-                    req_idx, candidate_len - topK_num
-                )
-                need_update = True
+                    self.blend_req_metas.update_query_lens(
+                        req_idx, candidate_len - topK_num
+                    )
+                    need_update = True
 
             if need_update:
-                logger.info(
-                    f"[blend-attn] compute_mask time: {(time.perf_counter() - start_time) * 1000}ms"
-                )
-                self.blend_req_metas.update_need_re_index(True)
-                self._update_attn_metadata()
+                with nvtx_range(f"update attn meta"):
+                    self.blend_req_metas.update_need_re_index(True)
+                    self._update_attn_metadata()
 
-                indexed_query = query[self.blend_req_metas.compute_mask]
-                indexed_key = key[self.blend_req_metas.compute_mask]
-                indexed_value = value[self.blend_req_metas.compute_mask]
-                indexed_output = None
-                if output is not None:
-                    indexed_output = output[: self.blend_req_metas.compute_mask.sum()]
-                logger.info(
-                    f"[blend-attn]  compute_mask time + index time: {(time.perf_counter() - start_time) * 1000}ms"
-                )
-                logger.info(
-                    f"[blend-attn] reduce attn tokens from {len(self.blend_req_metas.compute_mask)} "
-                    f"to {self.attn_metadata.num_actual_tokens}"
-                )
+                    indexed_query = query[self.blend_req_metas.compute_mask]
+                    indexed_key = key[self.blend_req_metas.compute_mask]
+                    indexed_value = value[self.blend_req_metas.compute_mask]
+                    indexed_output = None
+                    if output is not None:
+                        indexed_output = output[
+                            : self.blend_req_metas.compute_mask.sum()
+                        ]
+
+                    logger.info(
+                        f"[blend-attn] reduce attn tokens from {len(self.blend_req_metas.compute_mask)} "
+                        f"to {self.attn_metadata.num_actual_tokens}"
+                    )
                 return indexed_query, indexed_key, indexed_value, indexed_output
         return query, key, value, output
 

@@ -162,11 +162,10 @@ class UCMDirectConnector(KVConnectorBase_V1):
         # invlalid block ids due to load errors
         self._invalid_block_ids: set[int] = set()
 
-    def generate_hash(self, block_size: int, request: "Request") -> list[bytes]:
-        token_ids = request.all_token_ids
-
+    def generate_hash(
+        self, block_size: int, token_ids: List[int], parent_block_hash_value: bytes
+    ) -> list[bytes]:
         ret = []
-        parent_block_hash_value = self._seed
         for start in range(0, len(token_ids), block_size):
             end = start + block_size
             block_token_ids = token_ids[start:end]
@@ -297,7 +296,9 @@ class UCMDirectConnector(KVConnectorBase_V1):
         assert num_computed_tokens % self.block_size == 0
         hbm_hit_block_num = num_computed_tokens // self.block_size
 
-        ucm_block_ids = self.generate_hash(self.block_size, request)
+        ucm_block_ids = self.generate_hash(
+            self.block_size, request.all_token_ids, self._seed
+        )
 
         external_block_ids = ucm_block_ids[hbm_hit_block_num:]
         if not external_block_ids:
