@@ -361,8 +361,8 @@ class GSAOnDevice(UcmSparseBase):
                                 self.batch_size_for_hamming = len(
                                     attn_metadata.seq_lens
                                 )
-                            
-                            self.decode_mask_npu = (attn_metadata.query_lens_device == 1) & (attn_metadata.seq_lens_device >= self.seq_len_threshhold)
+                                # only get decode_mask_npu when slice_enabled is False
+                                self.decode_mask_npu = (attn_metadata.query_lens_device == 1) & (attn_metadata.seq_lens_device >= self.seq_len_threshhold)
 
                             self.topk_for_hamming = self.topk_for_hamming_full[
                                 : self.batch_size_for_hamming
