@@ -222,7 +222,6 @@ def build_llm_with_uc(
         "model": model_path,
         "kv_transfer_config": ktc,
         "max_model_len": 12000,
-        "gpu_memory_utilization": 0.3,  # Reduced to prevent OOM after Phase 1
         "max_num_batched_tokens": max_num_batched_tokens,
         "block_size": 128,
         "enforce_eager": llm_kwargs.get("enforce_eager", True),
@@ -276,11 +275,17 @@ def run_offline_inference(
     """
     sampling_params = from_dict_for_serialization(sampling_params_dict)
 
+    gpu_memory_utilization = float(os.getenv("E2E_TEST_GPU_MEMORY_UTILIZATION", "0.1"))
+    logger.info(
+        "run offline inference with gpu memory utilization: %.4f",
+        gpu_memory_utilization,
+    )
+
     with build_llm_with_uc(
         model_path=model_path,
         ucm_config=ucm_config,
         enable_prefix_caching=enable_prefix_caching,
-        gpu_memory_utilization=0.3,
+        gpu_memory_utilization=gpu_memory_utilization,
         max_num_batched_tokens=max_num_batched_tokens,
         enforce_eager=enforce_eager,
     ) as llm:
