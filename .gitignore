@@ -53,7 +53,6 @@
 reports/
 dataset/
 logs/
-.*
 *.log
 result_outputs/
 results/
