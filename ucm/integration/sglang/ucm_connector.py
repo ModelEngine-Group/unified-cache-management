@@ -1,6 +1,5 @@
 import logging
 import os
-import shutil
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional, TYPE_CHECKING
@@ -11,6 +10,8 @@ import xxhash
 import yaml
 
 from ucm.store.factory_v1 import UcmConnectorFactoryV1
+
+from sglang.srt.distributed.parallel_state import get_world_group
 
 if TYPE_CHECKING:
     from sglang.srt.mem_cache.hicache_storage import (
@@ -79,58 +80,43 @@ class UnifiedCacheStoreConfig:
         extra = getattr(storage_config, "extra_config", None)
         if extra is None:
             extra = _load_extra_config_from_yaml_env()
-
         if extra is None:
             raise ValueError(
-                "storage_config.extra_config is missing, and UNIFIEDCACHE_CONFIG_FILE not provided or file not found"
+                "Missing extra_config: storage_config.extra_config is None and "
+                "UNIFIEDCACHE_CONFIG_FILE is not set or cannot be loaded"
             )
 
         kvc = extra.get("kv_connector_extra_config")
         if kvc is None:
-            raise ValueError("extra_config['kv_connector_extra_config'] is missing")
-
-        is_mla_model = storage_config.is_mla_model
+            raise ValueError(
+                "Missing config: extra_config['kv_connector_extra_config']"
+            )
 
         page_size = mem_pool_host.page_size
-        #    self.head_dim * self.head_num * self.layer_num * self.dtype.itemsize * 2 for MHA,
-        # or self.head_dim * self.head_num * self.layer_num * self.dtype.itemsize     for MLA.
-        element_size = mem_pool_host.get_size_per_token()
-        layer_num = mem_pool_host.device_pool.layer_num
-        # cfg_base is bytes for one page across all layers (and K+V for MHA).
-        cfg_base = page_size * element_size
+        page_bytes = page_size * mem_pool_host.get_size_per_token()
+        tensor_size = page_bytes if storage_config.is_mla_model else page_bytes // 2
+        block_size = tensor_size * (1 if storage_config.is_mla_model else 2)
 
         ucm_cfg = kvc.get("ucm_connector_config")
         name = kvc.get("ucm_connector_name")
-
-        # tensor_size: per-layer, per-page bytes for a single K tensor (MHA) or
-        #             the single MLA tensor.
-        #    page_size * self.head_dim * self.head_num * self.layer_num * self.dtype.itemsize * 2 for MHA,
-        # or page_size * self.head_dim * self.head_num * self.layer_num * self.dtype.itemsize     for MLA.
-        page_bytes = cfg_base
-        # page_size * self.head_dim * self.head_num * self.layer_num * self.dtype.itemsize
-        tensor_size = page_bytes if is_mla_model else page_bytes // 2
-        # block_size/shard_size: bytes for a full block across all layers.
-        block_size = tensor_size * (1 if is_mla_model else 2)
-
         if ucm_cfg is None:
             raise ValueError(
-                "kv_connector_extra_config['ucm_connector_config'] is missing"
+                "Missing config: kv_connector_extra_config['ucm_connector_config']"
             )
         if name is None:
             raise ValueError(
-                "kv_connector_extra_config['ucm_connector_name'] is missing"
+                "Missing config: kv_connector_extra_config['ucm_connector_name']"
             )
 
         cfg = dict(ucm_cfg)
         cfg["storage_backends"] = [
             path for path in cfg["storage_backends"].split(":") if path
         ]
-        from sglang.srt.distributed.parallel_state import get_world_group
-
         cfg["device_id"] = get_world_group().local_rank
         cfg["tensor_size"] = tensor_size
         cfg["shard_size"] = block_size
         cfg["block_size"] = block_size
+        cfg["stream_number"] = 1
 
         return UnifiedCacheStoreConfig(name=name, config=cfg)
 
@@ -145,13 +131,16 @@ class SglangUcmConnector:
     ):
         self.store = store
         self.mem_pool_host = mem_pool_host
+        self.storage_backends = storage_backends
+
         self.dtype = mem_pool_host.dtype
+        self.page_size = mem_pool_host.page_size
+        self.model = storage_config.model_name
         self.is_mla = storage_config.is_mla_model
         self.cache_nums = 1 if self.is_mla else 2
         self.tp_rank = storage_config.tp_rank
         self.tp_size = storage_config.tp_size
-        self.storage_backends = storage_backends
-        self.model = storage_config.model_name
+
         self.register_uc_hasher()
 
     @classmethod
@@ -184,25 +173,31 @@ class SglangUcmConnector:
     def _encode_keys(self, keys: List[str]) -> List[bytes]:
         return [key.encode("utf-8") for key in keys]
 
+    def _generate_task(
+        self,
+        keys: List[str],
+        host_indices: torch.Tensor,
+    ):
+        key_list = self._encode_keys(keys)
+        shard_index_list = [0] * len(key_list)
+        ptr_list, _ = self.mem_pool_host.get_page_buffer_meta(host_indices)
+
+        if not self.is_mla:
+            ptr_list = [list(p) for p in zip(ptr_list[::2], ptr_list[1::2])]
+        else:
+            ptr_list = [[p] for p in ptr_list]
+
+        return key_list, shard_index_list, ptr_list
+
     def batch_get_v1(
         self,
         keys: List[str],
         host_indices: torch.Tensor,
         extra_info: Optional["HiCacheStorageExtraInfo"] = None,
     ) -> List[bool]:
-        if len(keys) == 0:
-            return []
-        key_list = self._encode_keys(keys)
-        shard_index_list = [0] * len(key_list)
-        ptr_list, _ = self.mem_pool_host.get_page_buffer_meta(host_indices)
-
-        if not self.is_mla:
-            ptr_list = [ptr_list[i : i + 2] for i in range(0, len(ptr_list), 2)]
-        else:
-            ptr_list = [[ptr] * 2 for ptr in ptr_list]
+        key_list, shard_index_list, ptr_list = self._generate_task(keys, host_indices)
 
         task = self.store.load_data(key_list, shard_index_list, ptr_list)
-
         try:
             self.store.wait(task)
         except RuntimeError as e:
@@ -217,16 +212,7 @@ class SglangUcmConnector:
         host_indices: torch.Tensor,
         extra_info: Optional["HiCacheStorageExtraInfo"] = None,
     ) -> List[bool]:
-        if len(keys) == 0:
-            return []
-        key_list = self._encode_keys(keys)
-        shard_index_list = [0] * len(key_list)
-        ptr_list, _ = self.mem_pool_host.get_page_buffer_meta(host_indices)
-
-        if not self.is_mla:
-            ptr_list = [ptr_list[i : i + 2] for i in range(0, len(ptr_list), 2)]
-        else:
-            ptr_list = [[ptr] * 2 for ptr in ptr_list]
+        key_list, shard_index_list, ptr_list = self._generate_task(keys, host_indices)
 
         task = self.store.dump_data(key_list, shard_index_list, ptr_list)
         try:
@@ -244,40 +230,7 @@ class SglangUcmConnector:
     def batch_exists(
         self, keys: List[str], extra_info: Optional["HiCacheStorageExtraInfo"] = None
     ) -> int:
-        if len(keys) == 0:
-            return 0
-        results = self.store.lookup(self._encode_keys(keys))
-        idx = np.where(~results)[0]
-        if len(idx) == 0:
-            return results.shape[0]
-        return int(idx[0])
-
-    def clear(self) -> bool:
-        if self.tp_rank != 0:
-            return True
-        paths = self.storage_backends
-        if isinstance(paths, str):
-            paths = [p for p in paths.split(":") if p]
-        try:
-            for backend in paths:
-                if not backend:
-                    continue
-                data_dir = os.path.join(backend, "data")
-                if not os.path.isdir(data_dir):
-                    continue
-
-                for name in os.listdir(data_dir):
-                    path = os.path.join(data_dir, name)
-                    if os.path.isfile(path) or os.path.islink(path):
-                        os.remove(path)
-                    elif os.path.isdir(path):
-                        shutil.rmtree(path)
-
-            logger.info("Cleared all entries in UnifiedCache storage.")
-            return True
-        except Exception as e:
-            logger.error(f"Failed to clear UnifiedCache storage: {e}")
-            return False
+        return self.store.lookup_on_prefix(self._encode_keys(keys))
 
     def get_stats(self):
         return None
