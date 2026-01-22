@@ -21,38 +21,20 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  * */
-#ifndef UNIFIEDCACHE_REGISTRY_H
-#define UNIFIEDCACHE_REGISTRY_H
+#ifndef UNIFIEDCACHE_FAKE_STORE_CC_GLOBAL_CONFIG_H
+#define UNIFIEDCACHE_FAKE_STORE_CC_GLOBAL_CONFIG_H
 
-#include <functional>
-#include <mutex>
-#include <unordered_map>
-#include "stats/istats.h"
+#include <cstddef>
+#include <string>
 
-namespace UC::Metrics {
+namespace UC::FakeStore {
 
-using Creator = std::unique_ptr<IStats> (*)();
-
-class StatsRegistry {
-public:
-    static StatsRegistry& GetInstance();
-
-    static void RegisterStats(std::string name, Creator creator);
-
-    std::unique_ptr<IStats> CreateStats(const std::string& name);
-
-    std::vector<std::string> GetRegisteredStatsNames();
-
-private:
-    StatsRegistry() = default;
-    ~StatsRegistry() = default;
-    StatsRegistry(const StatsRegistry&) = delete;
-    StatsRegistry& operator=(const StatsRegistry&) = delete;
-
-    std::mutex mutex_;
-    std::unordered_map<std::string, Creator> registry_;
+struct Config {
+    std::string uniqueId{};
+    size_t bufferNumber{1048576};
+    bool shareBufferEnable{true};
 };
 
-} // namespace UC::Metrics
+}  // namespace UC::FakeStore
 
-#endif // UNIFIEDCACHE_REGISTRY_H
+#endif

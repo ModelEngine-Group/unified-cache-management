@@ -2,7 +2,7 @@
 This document describes how to install unified-cache-management with vllm on cuda platform.
 
 ## Prerequisites
-- vllm >=0.9.1, device=cuda (vllm == 0.9.2 to use the Sparse Feature)
+- vllm >=0.9.1, device=cuda (Sparse Feature is supported in vllm 0.9.2 and v0.11.0)
 
 ## Step 1: UCM Installation
 
@@ -44,6 +44,7 @@ Download the pre-built `vllm/vllm-openai:v0.9.2` docker image and build unified-
 1. Prepare vLLM Environment
 
     For the sake of environment isolation and simplicity, we recommend preparing the vLLM environment by pulling the official, pre-built vLLM Docker image.
+    > Note: v0.11.0 is newly supported (replace the tag with v0.11.0 if needed).
 
     ```bash
     docker pull vllm/vllm-openai:v0.9.2
@@ -87,6 +88,15 @@ Download the pre-built `vllm/vllm-openai:v0.9.2` docker image and build unified-
     ```
     Apply the patch that matches your development needs:
 
+    #### vLLM 0.11.0 
+
+    Note: v0.11.0 only requires the sparse attention patch.
+
+    ```bash
+    git apply unified-cache-management/ucm/integration/vllm/patch/0.11.0/vllm-adapt-sparse.patch
+    ```
+
+    #### vLLM 0.9.2 
     - Full UCM integration (recommended):
     ```bash
     git apply unified-cache-management/ucm/integration/vllm/patch/0.9.2/vllm-adapt.patch
@@ -133,7 +143,7 @@ For quick start, just follow the guide below to launch your own inference experi
 
 ### Feature 1:  Prefix Caching
 
-You may directly edit the example file at `unified-cache-management/examples/ucm_config_example.yaml`. For more please refer to [Prefix Cache with NFS Store](../user-guide/prefix-cache/nfs_store.md) document.
+You may directly edit the example file at `unified-cache-management/examples/ucm_config_example.yaml`. For more please refer to [Prefix Cache with NFS Store](../user-guide/prefix-cache/nfs_store.md) and [Prefix Cache with Pipeline Store](../user-guide/prefix-cache/pipeline_store.md) document.
 
 ⚠️ Make sure to replace `/mnt/test` with your actual storage directory. 
 

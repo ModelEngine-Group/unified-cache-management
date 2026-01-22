@@ -48,6 +48,7 @@ Paper list:
 :maxdepth: 1
 getting-started/quickstart_vllm
 getting-started/quickstart_vllm_ascend
+getting-started/kv_cache_calculator
 :::
 
 :::{toctree}
@@ -64,6 +65,7 @@ user-guide/rerope/rerope
 :caption: Developer Guide
 :maxdepth: 1
 developer-guide/contribute
+developer-guide/add_metrics
 :::
 
 :::{toctree}

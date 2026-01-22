@@ -21,25 +21,32 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  * */
-#ifndef UNIFIEDCACHE_ISTATS_H
-#define UNIFIEDCACHE_ISTATS_H
+#ifndef UNIFIEDCACHE_STORE_CC_FAKE_STORE_H
+#define UNIFIEDCACHE_STORE_CC_FAKE_STORE_H
 
 #include <memory>
-#include <string>
-#include <unordered_map>
-#include <vector>
+#include "global_config.h"
+#include "ucmstore_v1.h"
 
-namespace UC::Metrics {
+namespace UC::FakeStore {
 
-class IStats {
+class FakeStoreImpl;
+
+class FakeStore : public StoreV1 {
+    std::shared_ptr<FakeStoreImpl> impl_{nullptr};
+
 public:
-    virtual ~IStats() = default;
-    virtual std::string Name() const = 0;
-    virtual void Update(const std::unordered_map<std::string, double>& params) = 0;
-    virtual void Reset() = 0;
-    virtual std::unordered_map<std::string, std::vector<double>> Data() = 0;
+    Status Setup(const Config& config);
+    std::string Readme() const override;
+    Expected<std::vector<uint8_t>> Lookup(const Detail::BlockId* blocks, size_t num) override;
+    Expected<ssize_t> LookupOnPrefix(const Detail::BlockId* blocks, size_t num) override;
+    void Prefetch(const Detail::BlockId* blocks, size_t num) override {}
+    Expected<Detail::TaskHandle> Load(Detail::TaskDesc task) override;
+    Expected<Detail::TaskHandle> Dump(Detail::TaskDesc task) override;
+    Expected<bool> Check(Detail::TaskHandle taskId) override { return true; }
+    Status Wait(Detail::TaskHandle taskId) override { return Status::OK(); }
 };
 
-} // namespace UC::Metrics
+}  // namespace UC::FakeStore
 
 #endif

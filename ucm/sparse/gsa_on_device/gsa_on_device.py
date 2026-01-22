@@ -49,8 +49,10 @@ def gsa_on_device_config_path_for_model(vllm_config) -> str:
         rel = (
             "ucm/sparse/gsa_on_device/configs/gsa_on_device_deepseek_r1_awq_config.json"
         )
-    elif "qwen3" in model and "32b" in model:
+    elif "qwen3" in model and "32b" in model and "coder" not in model:
         rel = "ucm/sparse/gsa_on_device/configs/gsa_on_device_qwen3_32B_config.json"
+    elif "qwen3" in model and "30b" in model and "coder" in model:
+        rel = "ucm/sparse/gsa_on_device/configs/gsa_on_device_qwen3_coder_30B_A3B_config.json"
     elif "qwen3" in model and "4b" in model:
         rel = "ucm/sparse/gsa_on_device/configs/gsa_on_device_qwen3_4B_config.json"
     elif "qwq" in model and "32b" in model:

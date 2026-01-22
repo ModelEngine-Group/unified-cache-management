@@ -21,39 +21,33 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  * */
-#include "stats_registry.h"
+#ifndef UNIFIEDCACHE_FAKE_STORE_CC_META_MANAGER_H
+#define UNIFIEDCACHE_FAKE_STORE_CC_META_MANAGER_H
 
-namespace UC::Metrics {
+#include <memory>
+#include "global_config.h"
+#include "status/status.h"
+#include "type/types.h"
 
-StatsRegistry& StatsRegistry::GetInstance()
-{
-    static StatsRegistry inst;
-    return inst;
-}
+namespace UC::FakeStore {
 
-void StatsRegistry::RegisterStats(std::string name, Creator creator)
-{
-    auto& reg = GetInstance();
-    std::lock_guard lk(reg.mutex_);
-    reg.registry_[name] = creator;
-}
+class MetaStrategy;
 
-std::unique_ptr<IStats> StatsRegistry::CreateStats(const std::string& name)
-{
-    auto& reg = GetInstance();
-    std::lock_guard lk(reg.mutex_);
-    if (auto it = reg.registry_.find(name); it != reg.registry_.end()) return it->second();
-    return nullptr;
-}
+class MetaManager {
+    std::shared_ptr<MetaStrategy> strategy_{nullptr};
 
-std::vector<std::string> StatsRegistry::GetRegisteredStatsNames()
-{
-    auto& reg = GetInstance();
-    std::lock_guard lk(reg.mutex_);
-    std::vector<std::string> names;
-    names.reserve(reg.registry_.size());
-    for (auto& [n, _] : reg.registry_) names.push_back(n);
-    return names;
-}
+public:
+    Status Setup(const Config& config);
+    void Insert(const Detail::BlockId& block) noexcept;
+    bool Exist(const Detail::BlockId& block) const noexcept;
 
-} // namespace UC::Metrics
+private:
+    bool ExistAt(size_t iBucket, const Detail::BlockId& block) const noexcept;
+    void InsertAt(size_t iBucket, const Detail::BlockId& block) noexcept;
+    void MoveTo(size_t iBucket, size_t iNode) noexcept;
+    void Remove(size_t iBucket, size_t iNode) noexcept;
+};
+
+}  // namespace UC::FakeStore
+
+#endif

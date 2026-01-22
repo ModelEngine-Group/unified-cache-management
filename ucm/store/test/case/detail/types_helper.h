@@ -24,6 +24,7 @@
 #ifndef UNIFIEDCACHE_TEST_DETAIL_TYPES_HELPER_H
 #define UNIFIEDCACHE_TEST_DETAIL_TYPES_HELPER_H
 
+#include <random>
 #include "type/types.h"
 
 namespace UC::Test::Detail {
@@ -34,6 +35,15 @@ public:
     {
         UC::Detail::BlockId id{};
         for (size_t i = 0; i < id.size() && hex[i]; ++i) { id[i] = static_cast<std::byte>(hex[i]); }
+        return id;
+    }
+    static UC::Detail::BlockId MakeBlockIdRandomly()
+    {
+        static std::random_device rd;
+        static std::mt19937 gen(rd());
+        static std::uniform_int_distribution<std::uint8_t> dist(0, 255);
+        UC::Detail::BlockId id;
+        for (std::size_t i = 0; i < id.size(); ++i) { id[i] = static_cast<std::byte>(dist(gen)); }
         return id;
     }
     template <typename T, std::size_t N, typename... Args>
