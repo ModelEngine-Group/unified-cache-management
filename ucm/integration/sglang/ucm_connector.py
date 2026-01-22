@@ -167,7 +167,10 @@ class SglangUcmConnector:
     def register_uc_hasher(self) -> None:
         global UCM_META_BYTES
 
-        meta = f"{self.model}:{self.tp_size}:{self.dtype}:{self.tp_rank}"
+        if self.is_mla:
+            meta = f"{self.model}"
+        else:
+            meta = f"{self.model}:{self.tp_size}:{self.dtype}:{self.tp_rank}"
         UCM_META_BYTES = meta.encode("utf-8")
 
     def _encode_keys(self, keys: List[str]) -> List[bytes]:
@@ -230,6 +233,9 @@ class SglangUcmConnector:
     def batch_exists(
         self, keys: List[str], extra_info: Optional["HiCacheStorageExtraInfo"] = None
     ) -> int:
+        if self.is_mla and self.tp_rank != 0:
+            return len(keys)
+
         return self.store.lookup_on_prefix(self._encode_keys(keys))
 
     def get_stats(self):
