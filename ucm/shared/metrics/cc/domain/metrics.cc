@@ -29,14 +29,14 @@ thread_local std::shared_ptr<MetricBuffer> Metrics::threadBuffer_ =
     std::make_shared<MetricBuffer>();
 thread_local bool Metrics::isRegisteredThread_ = false;
 
-std::atomic<bool> Metrics::isInited_{false};
-size_t Metrics::maxVectorLen_{10000};
-
 void Metrics::CreateStats(const std::string& name, const std::string& type)
 {
-    std::unique_lock<std::shared_mutex> lock(mutex_);
+    if (!isInited_.load(std::memory_order_acquire)) {
+        throw std::runtime_error("Please call SetUp() first!");
+    }
     std::string typeUpper = type;
     std::transform(typeUpper.begin(), typeUpper.end(), typeUpper.begin(), ::toupper);
+    std::unique_lock<std::shared_mutex> lock(mutex_);
     if (statsType_.count(name)) {
         return;
     } else {

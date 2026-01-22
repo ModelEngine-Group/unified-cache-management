@@ -35,7 +35,6 @@
 #include <tuple>
 #include <unordered_map>
 #include <vector>
-
 namespace UC::Metrics {
 struct MetricBuffer {
     struct InnerBuffer {
@@ -74,13 +73,13 @@ class Metrics {
 public:
     static Metrics& GetInstance()
     {
-        if (!isInited_) { throw std::runtime_error("Please call SetUp() first!"); }
         static Metrics inst;
         return inst;
     }
 
-    static void SetUp(size_t maxVectorLen)
+    void SetUp(size_t maxVectorLen)
     {
+        std::unique_lock<std::shared_mutex> lock(mutex_);
         if (isInited_.load(std::memory_order_acquire)) { return; }
         bool expected = false;
         if (isInited_.compare_exchange_strong(expected, true, std::memory_order_release,
@@ -113,8 +112,8 @@ private:
     Metrics() = default;
     Metrics(const Metrics&) = delete;
     Metrics& operator=(const Metrics&) = delete;
-    static std::atomic<bool> isInited_;
-    static size_t maxVectorLen_;
+    std::atomic<bool> isInited_{false};
+    size_t maxVectorLen_{10000};
 };
 }  // namespace UC::Metrics
 
