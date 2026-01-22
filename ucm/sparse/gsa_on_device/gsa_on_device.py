@@ -382,7 +382,7 @@ class GSAOnDevice(UcmSparseBase):
                                 : self.batch_size_for_hamming
                             ]
                             self.max_seq_len_for_hamming = torch.max(
-                                self.seq_lens_for_hamming
+                                attn_metadata.seq_lens[: self.batch_size_for_hamming]
                             ).item()
                             self.block_table_decode = self.ori_block_table_decode[
                                 : self.batch_size_for_hamming
