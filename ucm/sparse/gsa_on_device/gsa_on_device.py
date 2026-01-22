@@ -660,12 +660,10 @@ class GSAOnDevice(UcmSparseBase):
 
         q_lens = query_start_loc[1:] - query_start_loc[:-1]
         self.decode_mask = q_lens == 1
-        self.decode_mask = self.decode_mask.pin_memory()
 
         self.ori_seq_lens_decode = seq_lens.clone()
         self.ori_block_table_decode = block_table.clone()
         if self.decode_mask.any():
-            self.decode_mask_npu = self.decode_mask.to(self.device, non_blocking=True)
             decode_seq_lens = seq_lens[self.decode_mask]
             self.topk_seq_lens_qwen = update_seq_lens(
                 decode_seq_lens,
@@ -694,6 +692,7 @@ class GSAOnDevice(UcmSparseBase):
         self.ori_block_table_decode = block_table.clone()
 
         if self.decode_mask.any():
+            self.decode_mask_npu = self.decode_mask.to(self.device, non_blocking=True)
             self.topk_seq_lens_qwen = update_seq_lens(
                 seq_lens,
                 topk_token=self.hash_topk_tokens,
