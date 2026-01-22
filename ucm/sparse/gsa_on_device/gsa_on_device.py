@@ -16,6 +16,7 @@ from vllm.forward_context import ForwardContext
 from vllm.v1.attention.backends.mla.common import MLACommonMetadata
 from vllm.v1.core.sched.output import SchedulerOutput
 from vllm.v1.request import Request, RequestStatus
+from vllm.utils import cdiv
 
 from ucm.logger import init_logger
 from ucm.sparse.base import (
@@ -134,6 +135,10 @@ class GSAOnDevice(UcmSparseBase):
 
         self.seq_len_threshhold = self.gsa_on_device_config.seq_len_threshhold
 
+        assert self.seq_len_threshhold >= self.gsa_on_device_config.vllm_hash_attention_topk, "seq_len_threshhold must be larger than or equal to vllm_hash_attention_topk"
+        assert self.gsa_on_device_config.vllm_hash_attention_topk % self.block_size == 0, "vllm_hash_attention_topk must be divisible by block_size"
+        assert self.gsa_on_device_config.vllm_hash_attention_topk <= vllm_config.model_config.max_model_len, "vllm_hash_attention_topk must be less than max_model_len"
+
         if role == UcmSparseRole.WORKER:
             if self.is_cuda:  # cuda only variables
                 device_properties = torch.cuda.get_device_properties(self.device)
@@ -231,12 +236,7 @@ class GSAOnDevice(UcmSparseBase):
                         [
                             self.max_batch_size,
                             self.num_key_heads,
-                            (
-                                vllm_config.model_config.max_model_len
-                                + self.block_size
-                                - 1
-                            )
-                            // self.block_size,
+                            cdiv(vllm_config.model_config.max_model_len, self.block_size)
                         ],
                         dtype=torch.int32,
                         device=self.device,
@@ -345,7 +345,7 @@ class GSAOnDevice(UcmSparseBase):
                         if self.decode_mask.any():  # with at least one decode request
                             if self.slice_enabled:
                                 # if slice_enabled, the batch_size_for_hamming is the number of decode requests
-                                self.batch_size_for_hamming = len(self.decode_req_ids)
+                                self.batch_size_for_hamming = self.num_decode_requests
                             else:
                                 # if not slice_enabled, the batch_size_for_hamming is the number of all requests
                                 self.batch_size_for_hamming = len(
@@ -668,9 +668,9 @@ class GSAOnDevice(UcmSparseBase):
         self.decode_mask = (query_lens == 1) & (seq_lens >= self.seq_len_threshhold)
         self.decode_mask = self.decode_mask.pin_memory()
 
-        num_decode_requests = self.decode_mask.sum().item()
-        if num_decode_requests > 0:
-            self.slice_enabled = self.decode_mask[:num_decode_requests].all().item()
+        self.num_decode_requests = self.decode_mask.sum().item()
+        if self.num_decode_requests > 0:
+            self.slice_enabled = self.decode_mask[:self.num_decode_requests].all().item()
         else:
             self.slice_enabled = False
 
@@ -678,12 +678,6 @@ class GSAOnDevice(UcmSparseBase):
         self.ori_block_table_decode = block_table.clone()
 
         if self.decode_mask.any():
-            self.decode_req_ids = torch.nonzero(
-                self.decode_mask, as_tuple=False
-            ).flatten()
-            self.decode_req_ids_npu = self.decode_req_ids.to(
-                self.device, non_blocking=True
-            )
             self.topk_seq_lens_qwen = update_seq_lens(
                 seq_lens,
                 topk_token=self.hash_topk_tokens,
