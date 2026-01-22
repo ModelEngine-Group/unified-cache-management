@@ -25,7 +25,7 @@ class TestBasicOfflineInference:
 
     @pytest.mark.stage(1)
     @pytest.mark.feature("offline_inference")
-    @pytest.mark.gpu_mem(30000)
+    @pytest.mark.gpu_mem(6000)
     @pytest.mark.parametrize("model_name", ["Qwen2.5-1.5B-Instruct"])
     @pytest.mark.parametrize("max_tokens", [200])
     @pytest.mark.parametrize("prompt_split_ratio", [0.5])  # Split prompt in half

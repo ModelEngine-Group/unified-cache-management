@@ -162,6 +162,7 @@ def pytest_runtest_logreport(report):
 
 
 def get_free_gpu(required_memory_mb):
+    mem_needed_with_buffer = int(required_memory_mb * 1.3)  # add buffer to avoid OOM
     pynvml.nvmlInit()
     device_count = pynvml.nvmlDeviceGetCount()
     device_indices = list(range(device_count))
@@ -170,9 +171,12 @@ def get_free_gpu(required_memory_mb):
         handle = pynvml.nvmlDeviceGetHandleByIndex(i)
         info = pynvml.nvmlDeviceGetMemoryInfo(handle)
         free_in_mb = info.free / 1024**2
-        if free_in_mb >= required_memory_mb:
-            return i, free_in_mb
-    return None, 0
+        if free_in_mb >= mem_needed_with_buffer:
+            utilization = (
+                required_memory_mb * (1024**2) / info.total if info.total else 0
+            )
+            return i, free_in_mb, utilization
+    return None, 0, 0
 
 
 @pytest.fixture(autouse=True)
@@ -180,9 +184,15 @@ def setup_gpu_resource(request):
     marker = request.node.get_closest_marker("gpu_mem")
     if marker:
         mem_needed = marker.args[0]
-        gpu_id, free_in_mb = get_free_gpu(mem_needed)
+        gpu_id, free_in_mb, gpu_utilization = get_free_gpu(mem_needed)
         if gpu_id is not None:
-            print(f"Allocating GPU {gpu_id} with {free_in_mb}MB free memory")
+            print(
+                f"Allocating GPU {gpu_id} with {free_in_mb}MB free memory, gpu utilization {gpu_utilization:.4%}"
+            )
             os.environ["CUDA_VISIBLE_DEVICES"] = str(gpu_id)
+            if gpu_utilization:
+                os.environ["E2E_TEST_GPU_MEMORY_UTILIZATION"] = str(gpu_utilization)
         else:
-            pytest.fail(f"No GPU with {mem_needed}MB free memory available")
+            pytest.fail(
+                f"No GPU with {mem_needed}MB(+30% buffer) free memory available"
+            )
