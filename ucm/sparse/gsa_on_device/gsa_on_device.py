@@ -361,6 +361,8 @@ class GSAOnDevice(UcmSparseBase):
                                 self.batch_size_for_hamming = len(
                                     attn_metadata.seq_lens
                                 )
+                            
+                            self.decode_mask_npu = (attn_metadata.query_lens_device == 1) & (attn_metadata.seq_lens_device >= self.seq_len_threshhold)
 
                             self.topk_for_hamming = self.topk_for_hamming_full[
                                 : self.batch_size_for_hamming
@@ -678,7 +680,7 @@ class GSAOnDevice(UcmSparseBase):
 
         # self.decode_mask is on cpu in vllm-asencd under NPU device
         self.decode_mask = (query_lens == 1) & (seq_lens >= self.seq_len_threshhold)
-        self.decode_mask = self.decode_mask.pin_memory()
+        # self.decode_mask = self.decode_mask.pin_memory()
 
         self.num_decode_requests = self.decode_mask.sum().item()
         if self.num_decode_requests > 0:
@@ -692,7 +694,7 @@ class GSAOnDevice(UcmSparseBase):
         self.ori_block_table_decode = block_table.clone()
 
         if self.decode_mask.any():
-            self.decode_mask_npu = self.decode_mask.to(self.device, non_blocking=True)
+            # self.decode_mask_npu = self.decode_mask.to(self.device, non_blocking=True)
             self.topk_seq_lens_qwen = update_seq_lens(
                 seq_lens,
                 topk_token=self.hash_topk_tokens,
