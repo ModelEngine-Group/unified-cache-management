@@ -521,9 +521,18 @@ class GSAOnDevice(UcmSparseBase):
                             )
                             new_seq_lens = self.topk_seq_lens_qwen
                             attn_metadata.seq_lens = new_seq_lens
-                            new_block_tables = self.hamming_output[
-                                : self.batch_size_for_hamming, 0, :
-                            ]
+                            if self.slice_enabled and attn_metadata.attn_state != AscendAttentionState.DeocdeOnly:
+                                new_block_tables = attn_metadata.block_tables.clone()
+                                new_block_tables[
+                                    : self.batch_size_for_hamming
+                                ] = self.hamming_output[
+                                    : self.batch_size_for_hamming, 0, :
+                                ]
+                            else:
+                                new_block_tables = self.hamming_output[
+                                    : self.batch_size_for_hamming, 0, :
+                                ]
+
                             attn_metadata.block_tables = new_block_tables
 
                             # topk for skip layer
