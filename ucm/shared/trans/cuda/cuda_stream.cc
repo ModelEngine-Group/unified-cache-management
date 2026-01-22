@@ -27,7 +27,7 @@ namespace UC::Trans {
 
 Status CudaStream::Setup()
 {
-    auto ret = cudaStreamCreate(&stream_);
+    auto ret = cudaStreamCreateWithFlags(&stream_, cudaStreamNonBlocking);
     if (ret != cudaSuccess) { return Status{ret, cudaGetErrorString(ret)}; }
     return Status::OK();
 }

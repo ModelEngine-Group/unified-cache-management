@@ -143,7 +143,7 @@ For quick start, just follow the guide below to launch your own inference experi
 
 ### Feature 1:  Prefix Caching
 
-You may directly edit the example file at `unified-cache-management/examples/ucm_config_example.yaml`. For more please refer to [Prefix Cache with NFS Store](../user-guide/prefix-cache/nfs_store.md) document.
+You may directly edit the example file at `unified-cache-management/examples/ucm_config_example.yaml`. For more please refer to [Prefix Cache with NFS Store](../user-guide/prefix-cache/nfs_store.md) and [Prefix Cache with Pipeline Store](../user-guide/prefix-cache/pipeline_store.md) document.
 
 ⚠️ Make sure to replace `/mnt/test` with your actual storage directory. 
 
