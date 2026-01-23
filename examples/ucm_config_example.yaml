@@ -30,8 +30,8 @@ load_only_first_rank: false
 #     retrieval_stride: 5
   # Or for GSA:
   # GSA: {}
-  # Or for KvCompOnDevice:
-  # KvCompOnDevice: {}
+  # Or for GSAOnDevice:
+  # GSAOnDevice: {}
 
 
 # Whether to use layerwise loading/saving (optional, default: True for UCMConnector)
