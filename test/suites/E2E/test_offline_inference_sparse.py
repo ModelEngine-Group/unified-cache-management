@@ -15,10 +15,6 @@ from common.path_utils import get_path_relative_to_test_root, get_path_to_model
 from transformers import AutoTokenizer
 from vllm import LLM, SamplingParams
 
-from ucm.logger import init_logger
-
-logger = init_logger(__name__)
-
 
 class TestBasicOfflineInferenceSparse:
     """Test basic offline inference functionality."""
@@ -67,11 +63,9 @@ class TestBasicOfflineInferenceSparse:
             test_prompt, standard_answers = load_prompt_from_file(
                 Path(__file__).parent / "prompts" / "test_offline_inference.json"
             )
-            logger.info(
-                f"Loaded prompt from prompt.json (length: {len(test_prompt)} chars)"
-            )
+            print(f"Loaded prompt from prompt.json (length: {len(test_prompt)} chars)")
             if standard_answers:
-                logger.info(f"Standard answers: {standard_answers}")
+                print(f"Standard answers: {standard_answers}")
             else:
                 pytest.fail(f"No standard answers found in prompt.json")
         except Exception as e:
@@ -120,19 +114,19 @@ class TestBasicOfflineInferenceSparse:
             ignore_eos=False,
         )
 
-        logger.info(f"\n===== HBM + SSD Mixed Accuracy Test =====")
-        logger.info(f"Model: {model_path}")
-        logger.info(f"Full prompt length: {len(test_prompt)} chars")
-        logger.info(f"Max tokens: {max_tokens}")
-        logger.info(f"Temperature: 0.0 (deterministic)")
-        logger.info(f"UCM storage: {ucm_storage_dir}")
-        logger.info(f"Prompt split ratio: {prompt_split_ratio}")
-        logger.info(f"Enforce eager: {enforce_eager}")
-        logger.info(f"Max num batched tokens: {max_num_batched_tokens}")
+        print(f"\n===== HBM + SSD Mixed Accuracy Test =====")
+        print(f"Model: {model_path}")
+        print(f"Full prompt length: {len(test_prompt)} chars")
+        print(f"Max tokens: {max_tokens}")
+        print(f"Temperature: 0.0 (deterministic)")
+        print(f"UCM storage: {ucm_storage_dir}")
+        print(f"Prompt split ratio: {prompt_split_ratio}")
+        print(f"Enforce eager: {enforce_eager}")
+        print(f"Max num batched tokens: {max_num_batched_tokens}")
 
         # ===== Phase 1: Disable HBM PC, save KV cache to SSD and load (baseline) =====
         # Run Phase 1 in a separate subprocess to ensure GPU memory is fully released
-        logger.info(f"\n===== Phase 1: Save KV Cache to SSD And Load (Baseline) =====")
+        print(f"\n===== Phase 1: Save KV Cache to SSD And Load (Baseline) =====")
 
         # Convert SamplingParams to dict for serialization, as non-picklable objects cannot be passed to subprocess
         sampling_params_dict = to_dict_for_serialization(sampling_params)
@@ -151,13 +145,13 @@ class TestBasicOfflineInferenceSparse:
         )
         phase1_1_output = phase1_outputs[0]  # Phase 1.1: SSD save
         phase1_2_output = phase1_outputs[1]  # Phase 1.2: SSD load
-        logger.info(f"Phase 1 completed in subprocess")
-        logger.info(f'Phase 1.1 output: "{phase1_1_output}"')
-        logger.info(f'Phase 1.2 output: "{phase1_2_output}"')
+        print(f"Phase 1 completed in subprocess")
+        print(f'Phase 1.1 output: "{phase1_1_output}"')
+        print(f'Phase 1.2 output: "{phase1_2_output}"')
 
         # ===== Phase 2: Enable HBM PC, test HBM + SSD mixed hit =====
         # Run Phase 2 in a separate subprocess to ensure GPU memory is fully released
-        logger.info(f"\n===== Phase 2: HBM + SSD Mixed Hit Test =====")
+        print(f"\n===== Phase 2: HBM + SSD Mixed Hit Test =====")
 
         phase2_outputs = run_in_spawn_subprocess(
             run_offline_inference,
@@ -173,11 +167,11 @@ class TestBasicOfflineInferenceSparse:
         )
         phase2_partial_output = phase2_outputs[0]
         phase2_full_output = phase2_outputs[1]
-        logger.info(f"Phase 2 completed in subprocess")
-        logger.info(f"[INFO] Phase 2.1 output: {phase2_partial_output}")
-        logger.info(f"[INFO] Phase 2.2 output: {phase2_full_output}")
+        print(f"Phase 2 completed in subprocess")
+        print(f"[INFO] Phase 2.1 output: {phase2_partial_output}")
+        print(f"[INFO] Phase 2.2 output: {phase2_full_output}")
 
-        logger.info(f"\n[INFO] ===== Accuracy Test Results =====")
+        print(f"\n[INFO] ===== Accuracy Test Results =====")
 
         # Note: Small numerical precision differences in KV cache loading can cause
         # punctuation token selection differences (e.g., full-width vs half-width comma)
@@ -203,26 +197,22 @@ class TestBasicOfflineInferenceSparse:
             phase1_1_output, standard_answers
         ) and match_any_answer(phase1_2_output, standard_answers)
         if not phase1_correct:
-            logger.warning(
-                f"\n===== Phase 1: SSD Load Accuracy Test (Exact Match) ====="
-            )
-            logger.warning(
+            print(f"\n===== Phase 1: SSD Load Accuracy Test (Exact Match) =====")
+            print(
                 f"Incorrect answer in Phase 1.1 (SSD save) or Phase 1.2 (SSD load) output!"
             )
-            logger.warning(f"Phase 1.1 output:\n{phase1_1_output}")
-            logger.warning(f"Phase 1.2 output:\n{phase1_2_output}")
-            logger.warning(f"Standard answers:\n{standard_answers}")
+            print(f"Phase 1.1 output:\n{phase1_1_output}")
+            print(f"Phase 1.2 output:\n{phase1_2_output}")
+            print(f"Standard answers:\n{standard_answers}")
             pytest.fail("SSD Load Accuracy Test Failed!")
 
         # Phase 2.1 should be skipped from accuracy check since it's only partial prompt
         phase2_correct = match_any_answer(phase2_full_output, standard_answers)
         if not phase2_correct:
-            logger.warning(
-                f"\n===== Phase 2: HBM + SSD Mixed Accuracy Test (Exact Match) ====="
-            )
-            logger.warning(f"Incorrect answer in Phase 2.2 (HBM + SSD mixed) output!")
-            logger.warning(f"Phase 2.2 output:\n{phase2_full_output}")
-            logger.warning(f"Standard answers:\n{standard_answers}")
+            print(f"\n===== Phase 2: HBM + SSD Mixed Accuracy Test (Exact Match) =====")
+            print(f"Incorrect answer in Phase 2.2 (HBM + SSD mixed) output!")
+            print(f"Phase 2.2 output:\n{phase2_full_output}")
+            print(f"Standard answers:\n{standard_answers}")
             pytest.fail("HBM + SSD Mixed Accuracy Test Failed!")
 
     """Test ESA sparse attention."""
@@ -265,7 +255,7 @@ class TestBasicOfflineInferenceSparse:
         except Exception as e:
             pytest.fail(f"Failed to load prompt from prompt.json: {e}")
 
-        logger.info(f"Standard answers: {standard_answers}")
+        print(f"Standard answers: {standard_answers}")
 
         tokenizer = AutoTokenizer.from_pretrained(model_path, use_chat_template=True)
 
@@ -331,6 +321,6 @@ class TestBasicOfflineInferenceSparse:
         )
         phase1_1_output = phase1_outputs[0]  # Phase 1.1: SSD save
         phase1_2_output = phase1_outputs[1]  # Phase 1.2: SSD load
-        logger.info(f"ESA inference completed in subprocess")
-        logger.info(f'Phase 1.1 output: "{phase1_1_output}"')
-        logger.info(f'Phase 1.2 output: "{phase1_2_output}"')
+        print(f"ESA inference completed in subprocess")
+        print(f'Phase 1.1 output: "{phase1_1_output}"')
+        print(f'Phase 1.2 output: "{phase1_2_output}"')
