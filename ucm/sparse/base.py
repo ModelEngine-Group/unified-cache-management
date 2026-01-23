@@ -158,6 +158,13 @@ class UcmSparseBase(ABC):
         """
         pass
 
+    def update_states(self, scheduler_output: SchedulerOutput) -> None:
+        """
+        This is called at the beginning of "ModelRunner->execute_model" function.
+        Update the cached states with the scheduler output.
+        """
+        pass
+
     def ffn_begin(
         self, hidden_states: torch.Tensor, residual: torch.Tensor
     ) -> Tuple[torch.Tensor, torch.Tensor]:
