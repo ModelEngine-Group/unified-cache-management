@@ -162,20 +162,25 @@ def pytest_runtest_logreport(report):
 
 
 def get_free_gpu(required_memory_mb):
-    mem_needed_with_buffer = int(required_memory_mb * 1.3)  # add buffer to avoid OOM
-    pynvml.nvmlInit()
-    device_count = pynvml.nvmlDeviceGetCount()
-    device_indices = list(range(device_count))
-    random.shuffle(device_indices)
-    for i in device_indices:  # random order to reduce collisions
-        handle = pynvml.nvmlDeviceGetHandleByIndex(i)
-        info = pynvml.nvmlDeviceGetMemoryInfo(handle)
-        free_in_mb = info.free / 1024**2
-        if free_in_mb >= mem_needed_with_buffer:
-            utilization = (
-                required_memory_mb * (1024**2) / info.total if info.total else 0
-            )
-            return i, free_in_mb, utilization
+    try:
+        mem_needed_with_buffer = int(
+            required_memory_mb * 1.3
+        )  # add buffer to avoid OOM
+        pynvml.nvmlInit()
+        device_count = pynvml.nvmlDeviceGetCount()
+        device_indices = list(range(device_count))
+        random.shuffle(device_indices)
+        for i in device_indices:  # random order to reduce collisions
+            handle = pynvml.nvmlDeviceGetHandleByIndex(i)
+            info = pynvml.nvmlDeviceGetMemoryInfo(handle)
+            free_in_mb = info.free / 1024**2
+            if free_in_mb >= mem_needed_with_buffer:
+                utilization = (
+                    required_memory_mb * (1024**2) / info.total if info.total else 0
+                )
+                return i, free_in_mb, utilization
+    finally:
+        pynvml.nvmlShutdown()
     return None, 0, 0
 
 

@@ -71,17 +71,30 @@ jobs:
           rm -rf .[!.]*
         fi
     - uses: actions/checkout@v4
+    - name: Generate Docker Image Version
+      id: version
+      run: |
+        DATE=$(date +%Y%m%d)
+        SHORT_SHA=$(echo '${{ github.sha }}' | cut -c1-7)
+        VERSION="${{ github.ref_name }}-${DATE}-${{ github.run_number }}-${SHORT_SHA}"
+        echo "version=${VERSION}" >> $GITHUB_OUTPUT
+        echo "Docker image version: ${VERSION}"
     - name: Build
       run: |
         cd ${{github.workspace}}
-        export PLATFORM=cuda
-        pip install -v -e . --no-build-isolation
-    - name: Test E2E
+        sudo docker build -t ucm-e2etest-gpu-pc:${{ steps.version.outputs.version }} -f ./docker/Dockerfile-onlyPC ./
+    - name: Test E2E in Docker
       run: |
-        cd ${{github.workspace}}
-        cd test
-        pip install pytest pytest-cov pynvml pandas
-        python3 -m pytest --stage=1 --feature=offline_inference --junitxml=offline-inference.xml
+        sudo docker run --rm \
+          -itd \
+          --gpus all \
+          --network=host \
+          --ipc=host \
+          --cap-add IPC_LOCK \
+          -v /home/models:/home/models \
+          -v ${{github.workspace}}:/workspace \
+          ucm-e2etest-gpu-pc:${{ steps.version.outputs.version }} \
+          -c "cd /workspace/test && pip install pytest pytest-cov nvidia-ml-py pandas && python3 -m pytest --stage=1 --feature=offline_inference --junitxml=offline-inference.xml"
     - name: Upload pytest results
       uses: EnricoMi/publish-unit-test-result-action/linux@v2
       if: (!cancelled())
@@ -89,6 +102,10 @@ jobs:
         files: |
           ${{github.workspace}}/test/offline-inference.xml
         check_name: Prefix cache test results
+    - name: Cleanup Docker Image
+      if: always()
+      run: |
+        sudo docker rmi ucm-e2etest-gpu-pc:${{ steps.version.outputs.version }} || true
 
   test-e2e-sparse-gpu:
     runs-on: gpu
@@ -107,18 +124,30 @@ jobs:
           rm -rf .[!.]*
         fi
     - uses: actions/checkout@v4
+    - name: Generate Docker Image Version
+      id: version
+      run: |
+        DATE=$(date +%Y%m%d)
+        SHORT_SHA=$(echo '${{ github.sha }}' | cut -c1-7)
+        VERSION="${{ github.ref_name }}-${DATE}-${{ github.run_number }}-${SHORT_SHA}"
+        echo "version=${VERSION}" >> $GITHUB_OUTPUT
+        echo "Docker image version: ${VERSION}"
     - name: Build
       run: |
         cd ${{github.workspace}}
-        export PLATFORM=cuda
-        export ENABLE_SPARSE=TRUE
-        pip install -v -e . --no-build-isolation
-    - name: Test E2E
+        sudo docker build -t ucm-e2etest-gpu-sparse:${{ steps.version.outputs.version }} -f ./docker/Dockerfile ./
+    - name: Test E2E in Docker
       run: |
-        cd ${{github.workspace}}
-        cd test
-        pip install pytest pytest-cov pynvml pandas
-        python3 -m pytest --stage=1 --feature=offline_inference_sparse --junitxml=offline-inference-sparse.xml
+        sudo docker run --rm \
+          -itd \
+          --gpus all \
+          --network=host \
+          --ipc=host \
+          --cap-add IPC_LOCK \
+          -v /home/models:/home/models \
+          -v ${{github.workspace}}:/workspace \
+          ucm-e2etest-gpu-sparse:${{ steps.version.outputs.version }} \
+          -c "cd /workspace/test && pip install pytest pytest-cov nvidia-ml-py pandas && python3 -m pytest --stage=1 --feature=offline_inference_sparse --junitxml=offline-inference-sparse.xml"
     - name: Upload pytest results
       uses: EnricoMi/publish-unit-test-result-action/linux@v2
       if: (!cancelled())
@@ -126,4 +155,8 @@ jobs:
         files: |
           ${{github.workspace}}/test/offline-inference-sparse.xml
         check_name: Sparse attention test results
+    - name: Cleanup Docker Image
+      if: always()
+      run: |
+        sudo docker rmi ucm-e2etest-gpu-sparse:${{ steps.version.outputs.version }} || true
 
