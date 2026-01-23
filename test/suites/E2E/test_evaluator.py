@@ -6,15 +6,6 @@ from common.config_utils import config_utils as config_instance
 from common.uc_eval.task import DocQaEvalTask
 from common.uc_eval.utils.data_class import EvalConfig, ModelConfig
 
-
-@pytest.fixture(scope="session")
-def model_config() -> ModelConfig:
-    cfg = config_instance.get_config("models") or {}
-    field_name = [field.name for field in dataclasses.fields(ModelConfig)]
-    kwargs = {k: v for k, v in cfg.items() if k in field_name and v is not None}
-    return ModelConfig(**kwargs)
-
-
 doc_qa_eval_cases = [
     pytest.param(
         EvalConfig(

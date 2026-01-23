@@ -13,3 +13,6 @@ pandas>=2.3.0
 pydantic>=2.12.0
 transformers>=4.0.0
 httpx>=0.25.0
+#uc_eval
+jieba>=0.42.1
+openpyxl>=3.1.5

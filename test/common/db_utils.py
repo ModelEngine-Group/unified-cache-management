@@ -3,7 +3,10 @@ import logging
 import threading
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
+
+from peewee import AutoField, DateTimeField, Model, TextField
+from playhouse.reflection import Introspector
 
 # Lazy imports for database components
 peewee = None
@@ -202,6 +205,55 @@ def write_to_db(table_name: str, data: Dict[str, Any]) -> bool:
         )
         _backup_to_file(table_name, data)
         return False
+
+
+def read_from_db(
+    table_name: str, filters: Optional[Dict[str, Any]] = None, limit: int = 1
+) -> List[Dict[str, Any]]:
+    db_config = _get_db_config()
+    if not db_config.get("enabled", False):
+        logger.warning("Database disabled. Skipping read.")
+        return []
+
+    db = _get_db()
+    if db is None:
+        logger.error("Failed to connect to database.")
+        return []
+
+    _ensure_peewee_imported()
+
+    try:
+        introspector = Introspector.from_database(db)
+        DynamicModel = introspector.generate_models(table_names=[table_name]).get(
+            table_name
+        )
+
+        if DynamicModel is None:
+            logger.warning(f"Table '{table_name}' not found in database.")
+            return []
+
+        query = DynamicModel.select()
+
+        if filters:
+            for key, value in filters.items():
+                if hasattr(DynamicModel, key):
+                    field = getattr(DynamicModel, key)
+                    query = query.where(field == value)
+                else:
+                    logger.warning(
+                        f"Filter key '{key}' does not exist in table '{table_name}'. Skipped."
+                    )
+
+        query = query.order_by(DynamicModel.created_at.desc()).limit(limit)
+
+        results = []
+        for row in query:
+            results.append(row.__data__)
+        return results
+
+    except Exception as e:
+        logger.error(f"Error reading from table '{table_name}': {e}")
+        return []
 
 
 def database_connection(build_id: str) -> None:
