@@ -37,6 +37,7 @@ struct Config {
     size_t tensorSize{0};
     size_t shardSize{0};
     size_t blockSize{0};
+    size_t layerSize{0};
     size_t timeoutMs{30000};
     int32_t compressRatio{22};
     size_t streamNumber{8};
