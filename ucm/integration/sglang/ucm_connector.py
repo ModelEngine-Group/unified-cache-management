@@ -236,7 +236,7 @@ class SglangUcmConnector:
         if self.is_mla and self.tp_rank != 0:
             return len(keys)
 
-        return self.store.lookup_on_prefix(self._encode_keys(keys))
+        return self.store.lookup_on_prefix(self._encode_keys(keys)) + 1
 
     def get_stats(self):
         return None
