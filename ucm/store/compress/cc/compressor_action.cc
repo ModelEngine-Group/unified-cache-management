@@ -30,6 +30,8 @@ Status CompressorAction::Setup(const Config& config)
               .SetWorkerFn([this](auto& ct, auto&) { Compress_Load(ct); })
               .Run();
 
+    memoryPool_ = std::make_unique<MemoryPool>(shardSize_, 32);
+
     return Status::OK();
 }
 
@@ -121,13 +123,10 @@ void CompressorAction::Compress_Dump(CompressTask& ct)
 
     size_t srcSize = shardSize_;
     size_t compBufSize = srcSize + 4096;              // 压缩后缓冲区的可用大小
-    uint8_t* compBuf = (uint8_t*)malloc(compBufSize);
+    uint8_t* compBuf = static_cast<uint8_t*>(memoryPool_->allocate());
 
-    // 测试代码
-    // void* decompBuf = malloc(srcSize);
-
-    size_t totalCompBytes = 0;
-
+    Detail::TaskDesc backendDesc;
+    backendDesc.brief = ct.task->desc.brief;
     for (const UC::Detail::Shard& s : desc) {
         uint16_t* src = static_cast<uint16_t*>(s.addrs[0]);
 
@@ -135,37 +134,25 @@ void CompressorAction::Compress_Dump(CompressTask& ct)
 
         size_t compBytes = HUF_compress_float_fixRatio (compBuf, compBufSize, src, srcSize, R145, DT_BF16);
 
-        // {   // 测试代码
-        //     size_t decompBytes = HUF_decompress_float_fixRatio(decompBuf, srcSize, compBuf, compBytes, NULL);
-        //     if (memcmp(src, decompBuf, 1024) == 0) {
-        //         UC_DEBUG("Consistency check passed ....");
-        //     } else {
-        //         UC_DEBUG("Data inconsistency detected...");
-        //         printf("src 前64字节:\n");
-        //         print_binary_block(src, 64);
-        //         printf("compressed_buffer 前96字节:\n");
-        //         print_binary_block(compBuf, 96);
-        //         printf("decompBuf 前64字节:\n");
-        //         print_binary_block(decompBuf, 64);
-        //         return;
-        //     }
-        //     UC_DEBUG("shard {} comp {} B decompBytes {} B", s.index, compBytes, decompBytes);
-        // }
+        std::vector<void*> _addrs{static_cast<void*>(compBuf)};
 
-        memcpy(s.addrs[0], compBuf, compBytes);   // 拷贝回原始地址，实现等效原地压缩的效果
+        backendDesc.push_back(Detail::Shard {
+            s.owner,
+            s.index,
+            _addrs
+        });
 
-        totalCompBytes += compBytes;
+        UC_DEBUG("COMPRESS DUMP ...  compBytes is {}", compBytes);
     }
 
-    UC_DEBUG("COMPRESS DUMP END....");
+    auto res = backend_->Dump(std::move(backendDesc));
 
-    if (compBuf) free(compBuf);
-    // if (decompBuf) free(decompBuf);
+    if (compBuf && res.Value() > 0) {
+        backend_->Wait(res.Value());
+        memoryPool_->deallocate(static_cast<void*>(compBuf));
+    }
 
-    /* 交给后端（PosixStore）*/
-    backend_->Dump(std::move(ct.task->desc));
-
-    UC_DEBUG("COMPRESS DUMP END. Total compressed bytes: {}", totalCompBytes);
+    UC_DEBUG("COMPRESS DUMP END.");
 #else
     // to posix dump
     const auto n = ct.task->desc.size();

@@ -8,6 +8,7 @@
 #include "ucmstore_v1.h"
 #include "thread/thread_pool.h"
 #include "compress_lib/huf.h"  // HUF_compress_float_fixRatio, HUF_decompress_float_fixRatio
+#include "memory_pool.h"
 
 namespace UC::Compressor {
 
@@ -28,6 +29,7 @@ private:
     };
     ThreadPool<CompressTask> dump_pool_;
     ThreadPool<CompressTask> load_pool_;
+    std::unique_ptr<MemoryPool> memoryPool_;
 public:
     ~CompressorAction();
     Status Setup(const Config& config);
