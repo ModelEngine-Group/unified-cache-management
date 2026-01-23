@@ -847,10 +847,16 @@ class GSAOnDevice(UcmSparseBase):
             self.has_decode = num_decodes > 0
             self.decode_only = self.has_decode and (num_decodes == self.num_reqs)
             if self.has_decode:
+                # for roll_back recode the full seqlens & block_table
+                self.ori_seq_lens_decode = attn_metadata.seq_lens.clone()
+                self.ori_block_table_decode = attn_metadata.block_table.clone()
+
                 if self.decode_only:
-                    decode_seq_lens = attn_metadata.seq_lens[: self.num_reqs]
-                    self.block_table_decode = attn_metadata.block_table[: self.num_reqs]
-                    self.seq_len_decode = attn_metadata.seq_lens[: self.num_reqs]
+                    decode_seq_lens = self.ori_seq_lens_decode[: self.num_reqs]
+                    self.block_table_decode = self.ori_block_table_decode[
+                        : self.num_reqs
+                    ]
+                    self.seq_len_decode = self.ori_seq_lens_decode[: self.num_reqs]
                 else:
                     self.decode_req_ids_buf.copy_to_gpu(num_decodes)
                     self.decode_req_ids = self.decode_req_ids_buf.gpu[:num_decodes]
@@ -870,9 +876,6 @@ class GSAOnDevice(UcmSparseBase):
                     topk_token=self.hash_topk_tokens,
                     block_size=self.block_size,
                 )
-                # for roll_back
-                self.ori_seq_lens_decode = attn_metadata.seq_lens.clone()
-                self.ori_block_table_decode = attn_metadata.block_table.clone()
 
                 self.new_block_table = attn_metadata.block_table
                 self.new_seq_lens = attn_metadata.seq_lens

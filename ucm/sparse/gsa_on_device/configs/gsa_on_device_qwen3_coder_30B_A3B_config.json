@@ -120,7 +120,7 @@
     "hash_bits_qk_rope": null,
     "hash_weight_kv_lora": null,
     "hash_weight_qk_rope": null,
-    "vllm_hash_attention_topk": 2048,
+    "vllm_hash_attention_topk": 4096,
     "vllm_hash_attention_reduction_head_num": null,
     "vllm_hash_attention_rollback_layers": [
         0,
