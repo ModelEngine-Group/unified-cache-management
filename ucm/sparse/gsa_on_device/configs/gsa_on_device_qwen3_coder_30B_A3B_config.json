@@ -3,7 +3,7 @@
     "is_mla": false,
     "hash_weight_type": "random",
     "num_hidden_layers": 48,
-    "seq_len_threshhold": 2048,
+    "seq_len_threshhold": 4096,
     "chunk_size": 128,
     "chunk_repre_method": "max",
     "head_dim": 128,
