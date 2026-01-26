@@ -14,10 +14,12 @@ from common.uc_eval.utils.data_class import ModelConfig, PerfConfig
 
 perf_scenarios = [
     # (mean_in, mean_out, max_req, concurrent, sampling, hit_rate)
-    (4000, 1024, 1, 1, "{}", 80),
-    (4000, 1024, 8, 8, "{}", 80),
+    (1000, 1024, 1, 1, "{}", 0),
+    (4000, 500, 1, 1, "{}", 0),
 ]
 scenario_ids = [f"in_{s[0]}-out_{s[1]}-con_{s[3]}" for s in perf_scenarios]
+TOTAL_COUNTER = len(perf_scenarios)
+ROUND_COUNTER = 1
 
 
 @pytest.mark.stage(2)
@@ -28,15 +30,20 @@ scenario_ids = [f"in_{s[0]}-out_{s[1]}-con_{s[3]}" for s in perf_scenarios]
     ids=scenario_ids,
 )
 @export_vars
-def test_performance(
-    in_tokens, out_tokens, max_req, concurrent, sampling, hit_rate, request
-):
-    all_summaries = inference_results(
-        [in_tokens], [out_tokens], [max_req], [concurrent], [sampling], [hit_rate]
+def test_performance(in_tokens, out_tokens, max_req, concurrent, sampling, hit_rate):
+    global TOTAL_COUNTER
+    global ROUND_COUNTER
+    summary = inference_results(
+        [in_tokens],
+        [out_tokens],
+        [max_req],
+        [concurrent],
+        [sampling],
+        [hit_rate],
+        TOTAL_COUNTER,
+        ROUND_COUNTER,
     )
-    summary = all_summaries[0]
-    failed_cases = []
-
+    ROUND_COUNTER += 1
     results = summary.get("results", {})
 
     # 构造扁平化的结果字典，方便后续分析和看板展示
@@ -89,6 +96,14 @@ def test_performance(
         assert val is not None, f"Metric '{key}' is missing"
 
     return {"_name": "llmperf", "_proj": metrics}
+
+
+@pytest.fixture(scope="session")
+def model_config() -> ModelConfig:
+    cfg = config_instance.get_config("models") or {}
+    field_name = [field.name for field in dataclasses.fields(ModelConfig)]
+    kwargs = {k: v for k, v in cfg.items() if k in field_name and v is not None}
+    return ModelConfig(**kwargs)
 
 
 sync_perf_cases = [
