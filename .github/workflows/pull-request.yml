@@ -5,29 +5,41 @@ on:
     branches: [ "dev*", "main", "*release", "feature*" ]
 
 jobs:
-  # protect the workflows dir, only allow specific users to modify
-  protect-workflows-dir:
+  pre-check:
     runs-on: ubuntu-latest
-    outputs:
-      allowed: ${{ steps.check.outputs.allowed }}
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+      
+      - id: fetch_base_and_pr_branches
+        env:
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+        run: |
+          git fetch origin ${{ github.base_ref }}
 
-      - id: check
+          if [ "${{ github.event.pull_request.head.repo.full_name }}" != "${{ github.repository }}" ]; then
+            echo "PR is from a fork, adding remote."
+            git remote add fork ${{ github.event.pull_request.head.repo.clone_url }}
+            git fetch fork $HEAD_REF
+            HEAD_BRANCH_NAME=fork/$HEAD_REF
+            echo "HEAD_BRANCH_NAME=$HEAD_BRANCH_NAME" >> $GITHUB_OUTPUT
+          else
+            git fetch origin $HEAD_REF
+            HEAD_BRANCH_NAME=origin/$HEAD_REF
+            echo "HEAD_BRANCH_NAME=$HEAD_BRANCH_NAME" >> $GITHUB_OUTPUT
+          fi
+
+      # protect the workflows dir, only allow specific users to modify
+      - id: permission-check
         env:
           ACTOR: ${{ github.actor }}
         run: |
-          # get the target branch contents
-          git fetch origin ${{ github.base_ref }}
-
-          CHANGED_FILES=$(git diff --name-only origin/${{ github.base_ref }}...HEAD)
+          CHANGED_FILES=$(git diff --name-only origin/${{ github.base_ref }}...${{ steps.fetch_base_and_pr_branches.outputs.HEAD_BRANCH_NAME }})
           echo "CHANGED_FILES=$CHANGED_FILES"
 
           if ! echo "$CHANGED_FILES" | grep -q '^\.github/workflows/'; then
             echo "No .github/workflows changes, allow."
-            echo "allowed=true" >> $GITHUB_OUTPUT
             exit 0
           fi
 
@@ -40,18 +52,25 @@ jobs:
           for u in "${ALLOWED_USERS[@]}"; do
             if [[ "$ACTOR" == "$u" ]]; then
               echo "Authorized user, allowing change."
-              echo "allowed=true" >> $GITHUB_OUTPUT
               exit 0
             fi
           done
 
-          echo "ERROR: Only privileged users may modify .github/workflows/"
-          echo "allowed=false" >> $GITHUB_OUTPUT
+          echo "::error:: Only privileged users may modify .github/workflows/"
           exit 1
 
+      - id: uptodate-check
+        run: |
+
+          if git merge-base --is-ancestor "origin/${{ github.base_ref }}" "${{ steps.fetch_base_and_pr_branches.outputs.HEAD_BRANCH_NAME }}"; then
+            echo "PR branch is up-to-date with target branch, continue workflow."
+          else
+            echo "::error::PR branch is OUT-OF-DATE with target branch, stop workflow, please update your branch and try again."
+            exit 1
+          fi
+
   lint-and-unit-tests:
-    needs: protect-workflows-dir
-    if: needs.protect-workflows-dir.outputs.allowed == 'true'
+    needs: pre-check
     uses: ./.github/workflows/lint-and-test.yml
 
   test-e2e-pc-gpu:
@@ -81,7 +100,7 @@ jobs:
         cd ${{github.workspace}}
         cd test
         pip install -r requirements.txt
-        python3 -m pytest --stage=1 --feature=offline_inference --junitxml=offline-inference.xml
+        python3 -m pytest -x --stage=1 --feature=offline_inference --junitxml=offline-inference.xml
     - name: Upload pytest results
       uses: EnricoMi/publish-unit-test-result-action/linux@v2
       if: (!cancelled())
@@ -118,7 +137,7 @@ jobs:
         cd ${{github.workspace}}
         cd test
         pip install -r requirements.txt
-        python3 -m pytest --stage=1 --feature=offline_inference_sparse --junitxml=offline-inference-sparse.xml
+        python3 -m pytest -x --stage=1 --feature=offline_inference_sparse --junitxml=offline-inference-sparse.xml
     - name: Upload pytest results
       uses: EnricoMi/publish-unit-test-result-action/linux@v2
       if: (!cancelled())
