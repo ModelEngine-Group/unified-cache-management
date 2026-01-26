@@ -1,6 +1,8 @@
 #pytest
 pytest>=7.0.0
+pytest-cov>=7.0.0
 pytest-html>=3.1.1
+nvidia-ml-py>=13.590.48
 PyYAML>=6.0
 #database
 peewee>=3.14.5
@@ -11,3 +13,6 @@ pandas>=2.3.0
 pydantic>=2.12.0
 transformers>=4.0.0
 httpx>=0.25.0
+#uc_eval
+jieba>=0.42.1
+openpyxl>=3.1.5

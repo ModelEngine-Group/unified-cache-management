@@ -80,7 +80,7 @@ jobs:
       run: |
         cd ${{github.workspace}}
         cd test
-        pip install pytest pytest-cov pynvml pandas
+        pip install -r requirements.txt
         python3 -m pytest --stage=1 --feature=offline_inference --junitxml=offline-inference.xml
     - name: Upload pytest results
       uses: EnricoMi/publish-unit-test-result-action/linux@v2
@@ -117,7 +117,7 @@ jobs:
       run: |
         cd ${{github.workspace}}
         cd test
-        pip install pytest pytest-cov pynvml pandas
+        pip install -r requirements.txt
         python3 -m pytest --stage=1 --feature=offline_inference_sparse --junitxml=offline-inference-sparse.xml
     - name: Upload pytest results
       uses: EnricoMi/publish-unit-test-result-action/linux@v2
