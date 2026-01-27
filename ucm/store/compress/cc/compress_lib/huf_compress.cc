@@ -1047,10 +1047,10 @@ HUF_compress_float_fixRatio_internal_bf16 (void* dst, size_t dstSize,
 
     // 写入元数据 -------------------------------------------------
     uint32_t* op_meta = (uint32_t*)dst;
-    op_meta[0] = (uint16_t)dataType | (((uint32_t)ratio)<<16); // 元数据0: ratio 和 dataType
-    op_meta[1] = count_total;                                  // 元数据1: 浮点数总量
-    op_meta[2] = count_full;                                   // 元数据2: 全精度尾数的浮点数的数量
-    op_meta[3] = e_len;                                        // 元数据3: 尾数的偏移量，用该变量可以定位到尾数的起始存放地址
+    op_meta[0] = (((uint8_t)dataType) << 24) | comp_len;    // 元数据0: ratio 和 dataType
+    op_meta[1] = (((uint8_t)ratio) << 24) | count_total;    // 元数据1: 浮点数总量
+    op_meta[2] = count_full;                                // 元数据2: 全精度尾数的浮点数的数量
+    op_meta[3] = e_len;                                     // 元数据3: 尾数的偏移量，用该变量可以定位到尾数的起始存放地址
     
     // 写入全精度部分 -------------------------------------------------
     const uint16_t* ip = (const uint16_t*)src;
@@ -1069,7 +1069,24 @@ HUF_compress_float_fixRatio_internal_bf16 (void* dst, size_t dstSize,
     return comp_len;
 }
 
+static size_t HUF_compress_float_fixRatio_bf16 (void* dst, size_t dstSize, const void* src, size_t srcSize,FixedRatio ratio, DataType dataType) {
+    uint8_t* istart = (uint8_t*)src;
+    uint8_t* ip     = istart;
+    uint8_t* iend   = istart + srcSize;
 
+    uint8_t* ostart = (uint8_t*)dst;
+    uint8_t* op     = ostart;
+
+    while (ip < iend) {
+        size_t hufBlockSize                        = iend - ip > HUF_BLOCKSIZE_MAX ? HUF_BLOCKSIZE_MAX : iend - ip;
+        unsigned workSpace[HUF_WORKSPACE_SIZE_U32] = {0};
+        size_t compLen                             = (hufBlockSize * (size_t)ratio / 32) /4096 * 4096;
+        CHECK_V_F(cSize, HUF_compress_float_fixRatio_internal_bf16(op, compLen, ip, hufBlockSize, 255, HUF_TABLELOG_DEFAULT, workSpace, sizeof(workSpace), ratio, dataType));
+        ip += hufBlockSize;
+        op += cSize;
+    }
+    return op - ostart;
+}
 
 size_t HUF_compress1X_wksp (void* dst, size_t dstSize,
                       const void* src, size_t srcSize,
@@ -1141,9 +1158,9 @@ size_t HUF_compress2 (void* dst, size_t dstSize,
 
 
 size_t HUF_compress_float_fixRatio (void* dst, size_t maxDstSize, const void* src, size_t srcSize, FixedRatio ratio, DataType dataType) {
-    unsigned workSpace[HUF_WORKSPACE_SIZE_U32] = {0};
+
     switch (dataType) {
-        case DT_BF16: return HUF_compress_float_fixRatio_internal_bf16(dst, maxDstSize, src, srcSize, 255, HUF_TABLELOG_DEFAULT, workSpace, sizeof(workSpace), ratio, dataType);
+        case DT_BF16: return HUF_compress_float_fixRatio_bf16(dst, maxDstSize, src, srcSize, ratio, dataType);
         default:      return 0;  // 暂时不支持
     }
 }

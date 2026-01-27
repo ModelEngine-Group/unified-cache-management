@@ -1329,7 +1329,7 @@ size_t HUF_decompress (void* dst, size_t dstSize, const void* cSrc, size_t cSrcS
 
 
 
-size_t HUF_decompress_float_fixRatio_bf16 (void* dst, size_t dstSize, const void* cSrc, size_t cSrcSize) {
+size_t HUF_decompress_float_fixRatio_internal_bf16 (void* dst, size_t dstSize, const void* cSrc, size_t cSrcSize) {
     if (dstSize == 0) return ERROR(dstSize_tooSmall);
 
     // 解析元数据
@@ -1372,14 +1372,30 @@ size_t HUF_decompress_float_fixRatio_bf16 (void* dst, size_t dstSize, const void
     return count * sizeof(uint16_t);  // 返回解压后的字节数量
 }
 
+size_t HUF_decompress_float_fixRatio_bf16 (void* dst, size_t dstSize, const void* cSrc, size_t cSrcSize) {
+    uint8_t* istart = (uint8_t*)cSrc;
+    uint8_t* ip     = istart;
+    uint8_t* iend   = istart + cSrcSize;
 
+    uint8_t* ostart = (uint8_t*)dst;
+    uint8_t* op     = ostart;
+
+    while (ip < iend) {
+        uint32_t srcSize     = ((((uint32_t*)ip)[0]) & 0X00FFFFFF);
+        uint32_t segmentSize = ((((uint32_t*)ip)[1]) & 0X00FFFFFF);
+        CHECK_V_F(decSize, HUF_decompress_float_fixRatio_internal_bf16(op, segmentSize, ip, srcSize));
+        ip += srcSize;
+        op += decSize;
+    }
+    return op - ostart;
+}
 
 
 size_t HUF_decompress_float_fixRatio (void* dst, size_t dstSize, const void* cSrc, size_t cSrcSize, DataType *p_dataType) {
     if (cSrcSize <= 16) {
         return 0;   // srcbuffer不够大, 连元数据都放不下，报错
     }
-    DataType dt = (DataType)((const uint16_t*)cSrc)[0];
+    DataType dt = (DataType)(((const uint16_t*)cSrc)[0] >> 24);
     if  (p_dataType) {
         *p_dataType = dt;
     }
@@ -1388,8 +1404,6 @@ size_t HUF_decompress_float_fixRatio (void* dst, size_t dstSize, const void* cSr
         default:      return 0;
     }
 }
-
-
 
 size_t HUF_decompress4X_DCtx (HUF_DTable* dctx, void* dst, size_t dstSize, const void* cSrc, size_t cSrcSize)
 {
