@@ -81,8 +81,6 @@ ucm_connectors:
     ucm_connector_config:
       store_pipeline: "Cache|Ds3fs"
       storage_backends: "/mount/3fs"
-
-load_only_first_rank: false
 ```
 
 ### Required Parameters
@@ -124,11 +122,6 @@ load_only_first_rank: false
 
 * **buffer_size** *(optional, default: 64GB)*
   Amount of dram pinned memory used by a single worker process.
-
-### Must-be-Set Parameters
-
-* **load_only_first_rank** (must be `false`):
-  This feature is currently disabled.
 
 
 ## Launching Inference
