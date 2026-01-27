@@ -179,7 +179,7 @@ class GSAOnDevice(UcmSparseBase):
             self.topk_seq_lens_qwen = None
             self.has_pc_hit = False
 
-            self.cached_reqs_to_step: dict[str, int] = dict()
+            self.is_prefill_flag: dict[str, bool] = dict()
 
             self._k_scale = torch.tensor(1.0, dtype=torch.float32)
 
@@ -790,6 +790,12 @@ class GSAOnDevice(UcmSparseBase):
             prefix_slot_mapping,
         )
 
+    def get_block_table_row(self, attn_metadata, req_row_id):
+        if self.is_cuda:
+            return attn_metadata.block_table[req_row_id]
+        else:
+            return attn_metadata.block_tables[req_row_id]
+
     def build_sparse_meta(
         self, scheduler_output, requests, input_batch, attn_metadata
     ) -> UcmSparseMetadata:
@@ -822,14 +828,12 @@ class GSAOnDevice(UcmSparseBase):
                 req = requests[req_id]
                 # req_state: is_decode  is_first_prefil is_prefill is_last_chunk
                 is_decode = (
-                    req_id in self.cached_reqs_to_step
-                    and self.cached_reqs_to_step[req_id]
-                    > 0  # step always=0 when prefill
+                    req_id in self.is_prefill_flag and not self.is_prefill_flag[req_id]
                 )
                 is_first_prefil = (
-                    req_id not in self.cached_reqs_to_step
+                    req_id not in self.is_prefill_flag
                 )  # first prefill when chunkprefill
-                is_prefill = is_first_prefil or self.cached_reqs_to_step[req_id] == 0
+                is_prefill = is_first_prefil or self.is_prefill_flag[req_id]
                 is_last_chunk = is_prefill and (
                     req.num_computed_tokens + num_scheduled_tokens
                     >= req.num_prompt_tokens
@@ -846,7 +850,7 @@ class GSAOnDevice(UcmSparseBase):
                     num_decodes += 1
 
                 if is_first_prefil:
-                    self.cached_reqs_to_step[req_id] = 0
+                    self.is_prefill_flag[req_id] = True
                     # num_prompt_tokens -> store pc -> rebuild slotmapping
                     req_row_id = input_batch.req_id_to_index[req_id]
                     ext_tokens = int(
@@ -855,13 +859,16 @@ class GSAOnDevice(UcmSparseBase):
                         )
                     )
                     if ext_tokens > 0:
+                        block_table_row = self.get_block_table_row(
+                            attn_metadata, req_row_id
+                        )
                         (
                             num_prefix_tokens,
                             num_prefix_blocks,
                             prefix_block_ids,
                             prefix_slot_mapping,
                         ) = self.rebuild_prefix_cache_info_for_req(
-                            block_table_row=attn_metadata.block_table[req_row_id],
+                            block_table_row=block_table_row,
                             num_prompt_tokens=req.num_prompt_tokens,
                             qlen=compute_q_lens[req_row_id],
                             block_size=self.block_size,
@@ -879,11 +886,12 @@ class GSAOnDevice(UcmSparseBase):
                         num_pc_hit += 1
 
                 if is_last_chunk:
-                    self.cached_reqs_to_step[req_id] += 1
+                    self.is_prefill_flag[req_id] = False
 
             self.has_decode = num_decodes > 0
             self.decode_only = self.has_decode and (num_decodes == self.num_reqs)
-            if self.has_decode:
+            # build sparse meta for cuda
+            if self.has_decode and self.is_cuda:
                 # for roll_back recode the full seqlens & block_table
                 self.ori_seq_lens_decode = attn_metadata.seq_lens.clone()
                 self.ori_block_table_decode = attn_metadata.block_table.clone()
@@ -939,9 +947,9 @@ class GSAOnDevice(UcmSparseBase):
         return topk_tile_scheduler_metadata, topk_num_splits
 
     def _free_cached_request(self, request_id: Union[int, str]) -> None:
-        if request_id not in self.cached_reqs_to_step:
+        if request_id not in self.is_prefill_flag:
             return
-        del self.cached_reqs_to_step[request_id]
+        del self.is_prefill_flag[request_id]
 
     def update_states(self, scheduler_output: SchedulerOutput) -> None:
         for req_id in scheduler_output.finished_req_ids:
