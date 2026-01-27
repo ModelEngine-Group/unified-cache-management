@@ -71,6 +71,8 @@ export TRAINING_LENGTH=32768
 python examples/offline_inference_rerope.py
 ```
 
+Note. REROPE_WINDOW and TRAINING_LENGTH are generally set to the model's pre-training length. For vLLM version 0.11.0, set VLLM_ATTENTION_BACKEND to TRITON_ATTN.
+
 ### Basic Usage
 
 We need to modify the max_position_embeddings of the model according to the input length of prompts, as shown below.
