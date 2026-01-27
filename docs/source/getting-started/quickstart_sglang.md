@@ -27,7 +27,6 @@ docker run --rm \
     -v <path_to_your_storage>:/home/storage \
     --name <name_of_your_container> \
     -it unifiedcachemanager/ucm-sglang:latest
-
 ```
 
 #### Build image from source
@@ -98,7 +97,7 @@ Download the pre-built `lmsysorg/sglang:v0.5.5.post3` docker image and build uni
 2. Install by pip
 
     Install by pip or find the pre-build wheels on [Pypi](https://pypi.org/project/uc-manager/).
-    ```
+    ```bash
     export PLATFORM=cuda
     pip install uc-manager
     ```
