@@ -444,7 +444,7 @@ class ESA(UcmSparseBase):
         self._sparse_metadata: ESASparseMetaData = ESASparseMetaData()
         self.request_hasher = RequestHasher(vllm_config, 0)
         self.block_size = vllm_config.cache_config.block_size
-        self.block_hashes: dict[int, dict[str, list[bytes]]] = {}
+        self.block_hashes: dict[str, dict[int, list[bytes]]] = {}
         global data
 
         if data is None:
