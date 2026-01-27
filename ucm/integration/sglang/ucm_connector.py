@@ -116,7 +116,7 @@ class UnifiedCacheStoreConfig:
         cfg["tensor_size"] = tensor_size
         cfg["shard_size"] = block_size
         cfg["block_size"] = block_size
-        cfg["stream_number"] = 1
+        cfg["stream_number"] = 8
 
         return UnifiedCacheStoreConfig(name=name, config=cfg)
 
