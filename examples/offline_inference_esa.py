@@ -67,12 +67,14 @@ def build_llm_with_uc(module_path: str, name: str, model: str):
         kv_connector_module_path=module_path,
         kv_role="kv_both",
         kv_connector_extra_config={
+            "use_layerwise": True,
             "ucm_connectors": [
                 {
-                    "ucm_connector_name": "UcmNfsStore",
+                    "ucm_connector_name": "UcmPipelineStore",
                     "ucm_connector_config": {
+                        "store_pipeline": "Cache|Posix",
                         "storage_backends": data_dir,
-                        "use_direct": False,
+                        "waiting_queue_depth": 200000,
                     },
                 }
             ],

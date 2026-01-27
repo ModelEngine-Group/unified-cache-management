@@ -144,32 +144,6 @@ def get_sparse_range(init_window_sz, local_window_sz, prompt_len, block_size):
     return sparse_range
 
 
-@cache
-def compute_parent_block_hash(model_name, world_size, dtype, seed_rank=0) -> int:
-    meta = f"{model_name}:{world_size}:{dtype}:{seed_rank}"
-    meta_bytes = meta.encode("utf-8")
-    h_seed = hashlib.md5(meta_bytes + b"UCM_HASH_SEED").digest()
-    return int.from_bytes(h_seed, byteorder="big")
-
-
-@cache
-def compute_layer_offset(
-    block_data_size: int,
-    layer_id: int,
-    is_v: bool,
-    is_mla: bool,
-) -> int:
-    layer_data_size = block_data_size if is_mla else block_data_size * 2
-
-    k_offset = layer_data_size * layer_id
-
-    if is_mla:
-        return k_offset
-
-    v_offset = k_offset + block_data_size
-    return v_offset if is_v else k_offset
-
-
 def task_hash_func(block_ids, store_type, tensor_type):
     return hash((tuple(block_ids), store_type, tensor_type))
 
@@ -229,7 +203,9 @@ class ReqStatePerLayer:
         self.init_static_flag = False
         self.init_window = None
         self.local_window = None
-
+        self.num_layers = vllm_config.model_config.get_num_layers(
+            vllm_config.parallel_config
+        )
         self.num_key_heads = vllm_config.model_config.get_num_kv_heads(
             vllm_config.parallel_config
         )
@@ -241,34 +217,28 @@ class ReqStatePerLayer:
         self.req_meta = req_meta
 
     def launch_transfer_task(self, transfer_type, block_hashes, vllm_block_ids):
-        fn = getattr(self.store_instance, transfer_type)
+        # fn = getattr(self.store_instance, transfer_type)
         length = len(block_hashes)
         precision = self.vllm_config.model_config.dtype.itemsize
         block_data_size = self.k_cache[0].numel() * precision
 
-        offset_k = compute_layer_offset(
-            block_data_size,
-            self.layer_id,
-            is_v=False,
-            is_mla=self.is_mla,
-        )
-        offsets_k = [offset_k] * length
+        shard_indexs = [self.layer_id] * length
 
-        key_src_tensors = [self.k_cache[id_] for id_ in vllm_block_ids]
-        task_k = fn(block_hashes, offsets_k, key_src_tensors)
+        vllm_block_ids_np = np.array(vllm_block_ids, np.uint64)
+        k_block_ptrs = vllm_block_ids_np * block_data_size + self.k_base_ptrs
+        task_k = self.store_instance.load_data(
+            block_hashes, shard_indexs, k_block_ptrs[:, None]
+        )
         task_k_hash = task_hash_func(block_hashes, transfer_type, "key")
         self.tasks[task_k_hash] = task_k
 
         if not self.is_mla:
-            offset_v = compute_layer_offset(
-                block_data_size,
-                self.layer_id,
-                is_v=True,
-                is_mla=self.is_mla,
+            v_shard_indexs = [self.layer_id + self.num_layers] * length
+            v_block_ptrs = vllm_block_ids_np * block_data_size + self.v_base_ptrs
+
+            task_v = self.store_instance.load_data(
+                block_hashes, v_shard_indexs, v_block_ptrs[:, None]
             )
-            offsets_v = [offset_v] * length
-            value_src_tensors = [self.v_cache[id_] for id_ in vllm_block_ids]
-            task_v = fn(block_hashes, offsets_v, value_src_tensors)
             task_v_hash = task_hash_func(block_hashes, transfer_type, "value")
             self.tasks[task_v_hash] = task_v
 
@@ -283,9 +253,12 @@ class ReqStatePerLayer:
         # TODO not mla
         if self.is_mla:
             self.k_cache = kv_cache
+            self.k_base_ptrs = np.array(self.k_cache.data_ptr(), dtype=np.uint64)
         else:
             self.k_cache = kv_cache[0]
             self.v_cache = kv_cache[1]
+            self.k_base_ptrs = np.array(self.k_cache.data_ptr(), dtype=np.uint64)
+            self.v_base_ptrs = np.array(self.v_cache.data_ptr(), dtype=np.uint64)
         self.block_hashes = self.req_meta.ucm_block_hashes
         self.init_static_flag = True
 
@@ -453,7 +426,7 @@ class ESA(UcmSparseBase):
         self.rank = vllm_config.parallel_config.rank
         self.tp_size = vllm_config.parallel_config.tensor_parallel_size
         if role == UcmSparseRole.WORKER:
-            self.connector = get_kv_transfer_group().connector.store
+            self.connector = get_kv_transfer_group().connector
         else:
             self.connector = None
         self.esa_cfg = (
@@ -471,7 +444,7 @@ class ESA(UcmSparseBase):
         self._sparse_metadata: ESASparseMetaData = ESASparseMetaData()
         self.request_hasher = RequestHasher(vllm_config, 0)
         self.block_size = vllm_config.cache_config.block_size
-        self.block_hashes: dict[int, dict[int, list[str]]] = {}
+        self.block_hashes: dict[int, dict[str, list[bytes]]] = {}
         global data
 
         if data is None:
@@ -532,7 +505,7 @@ class ESA(UcmSparseBase):
                 layer_name,
                 self.rank,
                 self.tp_size,
-                self.connector,
+                self.connector.store,
                 self._vllm_config,
                 self.retrieval_workers[layer_id],
                 self.layer_pools[layer_id],
@@ -647,13 +620,7 @@ class ESA(UcmSparseBase):
 
         self.block_hashes[req_id][self.rank] = []
 
-        parent_block_hash_value = compute_parent_block_hash(
-            self._vllm_config.model_config.model,
-            self._vllm_config.parallel_config.world_size,
-            self._vllm_config.model_config.dtype,
-            seed_rank=0,
-        )
-
+        parent_block_hash_value = self.request_hasher("UCM_HASH_SEED")
         num_total_blocks = math.ceil(len(token_ids) / self.block_size)
         for start in range(0, len(token_ids), self.block_size):
             end = start + self.block_size
@@ -667,16 +634,15 @@ class ESA(UcmSparseBase):
             hash_value = self.request_hasher(
                 (parent_block_hash_value, curr_block_token_ids_tuple)
             )
-            if block_idx >= self.esa_cfg["init_window_sz"]:
-                self.block_hashes[req_id][self.rank].append(str(hash_value))
-
             parent_block_hash_value = hash_value
+            if block_idx >= self.esa_cfg["init_window_sz"]:
+                self.block_hashes[req_id][self.rank].append(hash_value)
 
         if self.rank != 0 and not self.is_mla:
-            self.newqrequest_hasher = RequestHasher(self._vllm_config, self.rank)
+            self.newrequest_hasher = RequestHasher(self._vllm_config, self.rank)
             for i, ucm_block_id in enumerate(self.block_hashes[req_id][self.rank]):
-                self.block_hashes[req_id][self.rank][i] = str(
-                    self.newqrequest_hasher(ucm_block_id)
+                self.block_hashes[req_id][self.rank][i] = self.newrequest_hasher(
+                    ucm_block_id
                 )
 
     def build_sparse_meta(
@@ -705,7 +671,7 @@ class ESA(UcmSparseBase):
             req = requests[req_id]
             if not self.is_sparsed_request(req):
                 continue
-            self.set_block_hashes(int(req_id), req.prompt_token_ids)
+            self.set_block_hashes(req_id, req.prompt_token_ids)
             if isinstance(attn_metadata, dict):
                 attn_metadata = next(iter(attn_metadata.values()))
 
@@ -720,7 +686,7 @@ class ESA(UcmSparseBase):
                     req.prompt_token_ids,
                     req.output_token_ids,
                     req_id in preempt_reqs,
-                    self.block_hashes[int(req_id)][self.rank],
+                    self.block_hashes[req_id][self.rank],
                 )
 
             else:
@@ -741,7 +707,7 @@ class ESA(UcmSparseBase):
                             req.prompt_token_ids,
                             req.output_token_ids,
                             req_id in preempt_reqs,
-                            self.block_hashes[int(req_id)][self.rank],
+                            self.block_hashes[req_id][self.rank],
                         )
 
                 else:
@@ -758,7 +724,7 @@ class ESA(UcmSparseBase):
                         req.prompt_token_ids,
                         req.output_token_ids,
                         req_id in preempt_reqs,
-                        self.block_hashes[int(req_id)][self.rank],
+                        self.block_hashes[req_id][self.rank],
                     )
 
             # self._sparse_metadata = sparse_meta
