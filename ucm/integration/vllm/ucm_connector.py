@@ -147,10 +147,18 @@ class UCMDirectConnector(KVConnectorBase_V1):
 
         self.metrics_config = self.launch_config.get("metrics_config_path", "")
         if self.metrics_config:
+            worker_id = (
+                get_world_group().rank
+                if role == KVConnectorRole.WORKER
+                else self.engine_id
+            )
             self.stats_logger = PrometheusStatsLogger(
                 vllm_config.model_config.served_model_name,
-                self.global_rank,
+                worker_id,
                 self.metrics_config,
+            )
+            logger.info(
+                f"metrics_config_path: {self.metrics_config}, set worker_id: {worker_id}"
             )
 
         self.synchronize = lambda: (
