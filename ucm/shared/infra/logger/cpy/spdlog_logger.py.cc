@@ -21,31 +21,38 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  * */
-#ifndef UNIFIEDCACHE_INFRA_LOGGER_H
-#define UNIFIEDCACHE_INFRA_LOGGER_H
+#include <pybind11/pybind11.h>
+#include "logger.h"
 
-#include "cc/spdlog_logger.h"
+namespace py = pybind11;
 namespace UC::Logger {
 
-void Log(Level&& lv, std::string file, std::string func, int line, std::string&& msg);
-template <typename... Args>
-void Log(Level lv, const SourceLocation& loc, fmt::format_string<Args...> fmt, Args&&... args)
+std::string format(std::string fmt, py::args args)
 {
-    std::string msg = fmt::format(fmt, std::forward<Args>(args)...);
-    Log(std::forward<Level>(lv), std::string(loc.file), std::string(loc.func), loc.line,
-        std::move(msg));
+    std::string msg = fmt;
+    if (args.size() > 1) {
+        py::object formatted = py::str(fmt).format(*args);
+        msg = formatted.cast<std::string>();
+    }
+    return msg;
 }
 
-void Log(Level&& lv, std::string file, std::string func, int line, std::string&& msg);
-void Setup(const std::string& path, int max_files, int max_size);
-void Flush();
+void LogWrapper(Level lv, std::string file, std::string func, int line, std::string msg)
+{
+    Log(std::move(lv), std::move(file), std::move(func), line, std::move(msg));
+}
+
+PYBIND11_MODULE(ucmlogger, m)
+{
+    m.def("format", &format);
+    m.def("setup", &Setup);
+    m.def("flush", &Flush);
+    m.def("log", &LogWrapper);
+    py::enum_<Level>(m, "Level")
+        .value("DEBUG", Level::DEBUG)
+        .value("INFO", Level::INFO)
+        .value("WARNING", Level::WARN)
+        .value("ERROR", Level::ERROR);
+}
 
 }  // namespace UC::Logger
-#define UC_SOURCE_LOCATION {__FILE__, __FUNCTION__, __LINE__}
-#define UC_LOG(lv, fmt, ...) UC::Logger::Log(lv, UC_SOURCE_LOCATION, FMT_STRING(fmt), ##__VA_ARGS__)
-#define UC_DEBUG(fmt, ...) UC_LOG(UC::Logger::Level::DEBUG, fmt, ##__VA_ARGS__)
-#define UC_INFO(fmt, ...) UC_LOG(UC::Logger::Level::INFO, fmt, ##__VA_ARGS__)
-#define UC_WARN(fmt, ...) UC_LOG(UC::Logger::Level::WARN, fmt, ##__VA_ARGS__)
-#define UC_ERROR(fmt, ...) UC_LOG(UC::Logger::Level::ERROR, fmt, ##__VA_ARGS__)
-
-#endif

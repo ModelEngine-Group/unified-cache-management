@@ -45,7 +45,7 @@ def _apply_rerope_adapt_patches() -> None:
         _patch_triton_attn()
 
     except Exception as e:
-        logger.error(f"Failed to apply aggre patch: {e}", exc_info=True)
+        logger.error(f"Failed to apply aggre patch: {e}")
         raise
 
 

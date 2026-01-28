@@ -27,7 +27,6 @@
 #include <atomic>
 #include <chrono>
 #include <cstddef>
-#include <fmt/format.h>
 #include <limits>
 #include <list>
 #include <memory>
