@@ -25,7 +25,6 @@
 #define UNIFIEDCACHE_STORE_CC_CACHE_STORE_H
 
 #include <memory>
-#include "global_config.h"
 #include "ucmstore_v1.h"
 
 namespace UC::CacheStore {
@@ -34,7 +33,7 @@ class CacheStoreImpl;
 class CacheStore : public StoreV1 {
 public:
     ~CacheStore() override;
-    Status Setup(const Config& config);
+    Status Setup(const Detail::Dictionary& config) override;
     std::string Readme() const override;
     Expected<std::vector<uint8_t>> Lookup(const Detail::BlockId* blocks, size_t num) override;
     Expected<ssize_t> LookupOnPrefix(const Detail::BlockId* blocks, size_t num) override;

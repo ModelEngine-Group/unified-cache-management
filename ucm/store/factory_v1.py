@@ -63,6 +63,3 @@ UcmConnectorFactoryV1.register_connector(
 UcmConnectorFactoryV1.register_connector(
     "UcmPipelineStore", "ucm.store.pipeline.connector", "UcmPipelineStore"
 )
-UcmConnectorFactoryV1.register_connector(
-    "UcmFakeStore", "ucm.store.fake.connector", "UcmFakeStore"
-)

@@ -165,7 +165,7 @@ PYBIND11_MODULE(ucmpcstore, module)
     store.def("LookupBatch", &UC::PcStorePy::LookupBatch);
     store.def("LoadToDevice", &UC::PcStorePy::LoadToDevice);
     store.def("DumpFromDevice", &UC::PcStorePy::DumpFromDevice);
-    store.def("Wait", &UC::PcStorePy::Wait);
+    store.def("Wait", &UC::PcStorePy::Wait, py::call_guard<py::gil_scoped_release>());
     store.def("Check", &UC::PcStorePy::CheckPy);
     store.def("Commit", py::overload_cast<const std::string&, const bool>(&UC::PcStorePy::Commit));
     store.def("CommitBatch", &UC::PcStorePy::CommitBatch);

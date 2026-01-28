@@ -26,7 +26,7 @@ import time
 
 import numpy as np
 
-from ucm.store.posix.connector import UcmKVStoreBaseV1, UcmPosixStore
+from ucm.store.pipeline.connector import UcmKVStoreBaseV1, UcmPipelineStore
 
 
 def setup(
@@ -38,6 +38,7 @@ def setup(
     worker: bool,
 ) -> UcmKVStoreBaseV1:
     config = {}
+    config["store_pipeline"] = "Posix"
     config["storage_backends"] = backends
     config["tensor_size"] = block_size
     config["shard_size"] = block_size
@@ -46,7 +47,7 @@ def setup(
     config["io_direct"] = io_direct
     config["io_async"] = io_async
     config["device_id"] = 0 if worker else -1
-    return UcmPosixStore(config)
+    return UcmPipelineStore(config)
 
 
 def aligned_array(size, alignment=4096, dtype=np.uint8):

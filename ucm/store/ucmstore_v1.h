@@ -25,6 +25,7 @@
 #define UNIFIEDCACHE_STORE_V1_H
 
 #include "status/status.h"
+#include "type/dictionary.h"
 #include "type/types.h"
 
 namespace UC {
@@ -39,6 +40,25 @@ namespace UC {
 class StoreV1 {
 public:
     virtual ~StoreV1() = default;
+
+    /**
+     * @brief Sets up and configures the Store instance with the provided configuration.
+     *
+     * @param config A dictionary containing configuration key-value pairs specific
+     *               to this Store instance. The content and structure of the dictionary
+     *               may vary depending on the concrete implementation.
+     *
+     * @return Status indicating the result of the setup operation:
+     *         - Status::OK() if setup was successful
+     *         - Error status with appropriate code and message if configuration is
+     *           invalid or setup fails
+     *
+     * @note Implementations should validate all required configuration parameters
+     *       and perform any necessary resource allocation or initialization.
+     * @note This method is called after object construction but before any processing
+     *       operations that depend on the configuration.
+     */
+    virtual Status Setup(const Detail::Dictionary& config) = 0;
 
     /**
      * @brief Get the readme information of the Store instance.

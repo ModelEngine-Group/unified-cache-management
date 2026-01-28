@@ -85,12 +85,11 @@ private:
     }
     void ShowConfig(const Config& config)
     {
-        auto backend = static_cast<StoreV1*>((void*)config.storeBackend);
         constexpr const char* ns = "CacheStore";
         std::string buildType = UCM_BUILD_TYPE;
         if (buildType.empty()) { buildType = "Release"; }
         UC_INFO("{}-{}({}).", ns, UCM_COMMIT_ID, buildType);
-        UC_INFO("Set {}::StoreBackend to {}.", ns, backend->Readme());
+        UC_INFO("Set {}::StoreBackend to {}.", ns, config.storeBackend->Readme());
         UC_INFO("Set {}::UniqueId to {}.", ns, config.uniqueId);
         UC_INFO("Set {}::DeviceId to {}.", ns, config.deviceId);
         UC_INFO("Set {}::TensorSize to {}.", ns, config.tensorSize);
@@ -106,15 +105,27 @@ private:
 
 CacheStore::~CacheStore() = default;
 
-Status CacheStore::Setup(const Config& config)
+Status CacheStore::Setup(const Detail::Dictionary& config)
 {
+    Config param;
+    config.Get("store_backend", param.storeBackend);
+    config.Get("unique_id", param.uniqueId);
+    config.GetNumber("device_id", param.deviceId);
+    config.GetNumber("tensor_size", param.tensorSize);
+    config.GetNumber("shard_size", param.shardSize);
+    config.GetNumber("block_size", param.blockSize);
+    config.GetNumber("buffer_number", param.bufferNumber);
+    config.Get("share_buffer_enable", param.shareBufferEnable);
+    config.GetNumber("waiting_queue_depth", param.waitingQueueDepth);
+    config.GetNumber("running_queue_depth", param.runningQueueDepth);
+    config.GetNumber("timeout_ms", param.timeoutMs);
     try {
         impl_ = std::make_shared<CacheStoreImpl>();
     } catch (const std::exception& e) {
         UC_ERROR("Failed({}) to make cache store object.", e.what());
         return Status::Error(e.what());
     }
-    return impl_->Setup(config);
+    return impl_->Setup(param);
 }
 
 std::string CacheStore::Readme() const { return "CacheStore"; }
@@ -170,3 +181,5 @@ Status CacheStore::Wait(Detail::TaskHandle taskId)
 }
 
 }  // namespace UC::CacheStore
+
+extern "C" UC::StoreV1* MakeCacheStore() { return new UC::CacheStore::CacheStore(); }
