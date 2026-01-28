@@ -43,9 +43,11 @@ public:
         return block;
     }
 
-    void deallocate(void* block) {
+    void deallocate(const std::vector<void*>& blocks) {
+        if (blocks.empty()) return;
         std::lock_guard<std::mutex> lock(mutex_);
-        freeBlocks.push_back(block);
+        freeBlocks.insert(freeBlocks.end(), blocks.begin(), blocks.end());
+        UC_DEBUG("deallocate blocks count: {}", blocks.size());
     }
 };
 

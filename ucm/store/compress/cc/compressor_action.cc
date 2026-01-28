@@ -30,7 +30,7 @@ Status CompressorAction::Setup(const Config& config)
               .SetWorkerFn([this](auto& ct, auto&) { Compress_Load(ct); })
               .Run();
 
-    memoryPool_ = std::make_unique<MemoryPool>(shardSize_, 32);
+    dump_memoryPool_ = std::make_unique<MemoryPool>(shardSize_, 32);
 
     return Status::OK();
 }
@@ -80,22 +80,6 @@ void CompressorAction::Compress_Load(CompressTask& ct)
 
         totalDecompBytes += decompBytes;
 
-        // {
-        //     FILE *fp = fopen("cpu_decompressed.bin", "ab");          // a=append, b=binary, 不存在则创建
-        //     if (!fp) { perror("fopen"); return; }
-        //     size_t written = fwrite(decompBuf, 1, decompBytes, fp);
-        //     fclose(fp);
-        //     if (written != decompBytes) { perror("fwrite"); }
-        // }
-
-        // {
-        //     FILE *fp = fopen("npu_decompressed.bin", "ab");          // a=append, b=binary, 不存在则创建
-        //     if (!fp) { perror("fopen"); return; }
-        //     size_t written = fwrite(s.addrs[0], 1, decompBytes, fp);
-        //     fclose(fp);
-        //     if (written != decompBytes) { perror("fwrite"); }
-        // }
-
         UC_DEBUG("COMPRESS LOAD END.... decompBytes {}", decompBytes);
     }
 
@@ -123,16 +107,19 @@ void CompressorAction::Compress_Dump(CompressTask& ct)
 
     size_t srcSize = shardSize_;
     size_t compBufSize = srcSize + 4096;              // 压缩后缓冲区的可用大小
-    uint8_t* compBuf = static_cast<uint8_t*>(memoryPool_->allocate());
+    
 
     Detail::TaskDesc backendDesc;
     backendDesc.brief = ct.task->desc.brief;
+    std::vector<void*> blockToFree;
+
     for (const UC::Detail::Shard& s : desc) {
+        uint8_t* compBuf = static_cast<uint8_t*>(dump_memoryPool_->allocate());
         uint16_t* src = static_cast<uint16_t*>(s.addrs[0]);
 
         UC_DEBUG(" s.index {}  s.addrs.size {} s.addrs.data {}", s.index, s.addrs.size(), static_cast<const void*>(s.addrs.data()));
 
-        size_t compBytes = HUF_compress_float_fixRatio (compBuf, compBufSize, src, srcSize, R145, DT_BF16);
+        size_t compBytes = HUF_compress_float_fixRatio (compBuf, compBufSize, src, srcSize, ratio, DT_BF16);
 
         std::vector<void*> _addrs{static_cast<void*>(compBuf)};
 
@@ -143,13 +130,14 @@ void CompressorAction::Compress_Dump(CompressTask& ct)
         });
 
         UC_DEBUG("COMPRESS DUMP ...  compBytes is {}", compBytes);
+        blockToFree.push_back(static_cast<void*>(compBuf));
     }
 
     auto res = backend_->Dump(std::move(backendDesc));
 
-    if (compBuf && res.Value() > 0) {
+    if (!blockToFree.empty() && res.Value() > 0) {
         backend_->Wait(res.Value());
-        memoryPool_->deallocate(static_cast<void*>(compBuf));
+        dump_memoryPool_->deallocate(blockToFree);
     }
 
     UC_DEBUG("COMPRESS DUMP END.");
