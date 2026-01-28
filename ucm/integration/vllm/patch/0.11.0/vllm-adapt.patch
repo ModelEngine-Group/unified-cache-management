@@ -1,0 +1,1683 @@
+From c445c9b11bbfa3047335b78ebff99a40257cd09b Mon Sep 17 00:00:00 2001
+From: AooooooA-C <chenaozhu@outlook.com>
+Date: Mon, 19 Jan 2026 23:03:08 -0800
+Subject: [PATCH 1/2] apply sparse method patches
+
+---
+ vllm/attention/layer.py                    | 63 +++++++++++++++
+ vllm/model_executor/models/llama.py        | 24 ++++++
+ vllm/model_executor/models/qwen2.py        | 24 ++++++
+ vllm/v1/attention/backends/mla/common.py   | 21 +++++
+ vllm/v1/attention/backends/mla/flashmla.py | 18 +++++
+ vllm/v1/core/kv_cache_manager.py           | 10 ++-
+ vllm/v1/core/kv_cache_utils.py             | 14 ++++
+ vllm/v1/core/sched/output.py               |  8 +-
+ vllm/v1/core/sched/scheduler.py            | 40 ++++++++-
+ vllm/v1/worker/block_table.py              | 13 +++
+ vllm/v1/worker/gpu_model_runner.py         | 94 +++++++++++++++++++---
+ vllm/v1/worker/gpu_worker.py               |  3 +
+ 12 files changed, 318 insertions(+), 14 deletions(-)
+
+diff --git a/vllm/attention/layer.py b/vllm/attention/layer.py
+index 79879b680..c5324e47e 100644
+--- a/vllm/attention/layer.py
++++ b/vllm/attention/layer.py
+@@ -3,6 +3,7 @@
+ """Attention layer."""
+ from typing import List, Optional
+ 
++import os
+ import torch
+ import torch.nn as nn
+ import torch.nn.functional as F
+@@ -30,6 +31,8 @@ from vllm.model_executor.models.vision import get_vit_attn_backend
+ from vllm.platforms import _Backend, current_platform
+ from vllm.utils import GiB_bytes, direct_register_custom_op
+ 
++from ucm.sparse.state import get_ucm_sparse, has_ucm_sparse
++
+ logger = init_logger(__name__)
+ USE_XFORMERS_OPS = None
+ try:
+@@ -571,9 +574,11 @@ def unified_attention(
+         attn_metadata = attn_metadata[layer_name]
+     self = forward_context.no_compile_layers[layer_name]
+     kv_cache = self.kv_cache[forward_context.virtual_engine]
++    query, key, value, _ = maybe_execute_sparse_attention_begin(query, key, value, layer_name, forward_context)
+     output = self.impl.forward(self, query, key, value, kv_cache,
+                                attn_metadata)
+ 
++    maybe_execute_sparse_attention_finished(query, key, value, output, layer_name, forward_context)
+     maybe_save_kv_layer_to_connector(layer_name, kv_cache)
+     return output
+ 
+@@ -611,6 +616,16 @@ def unified_attention_with_output(
+         attn_metadata = attn_metadata[layer_name]
+     self = forward_context.no_compile_layers[layer_name]
+     kv_cache = self.kv_cache[forward_context.virtual_engine]
++    if not self.use_mla:
++        if attn_metadata is not None:
++            if os.getenv("VLLM_HASH_ATTENTION") == "1":
++                kv_cache, k_hash = kv_cache
++            else:
++                k_hash = None
++            query, key, value, output = maybe_execute_sparse_attention_begin(
++                query, key, value, layer_name, forward_context, output, k_hash=k_hash
++          )
++
+     self.impl.forward(self,
+                       query,
+                       key,
+@@ -621,6 +636,9 @@ def unified_attention_with_output(
+                       output_scale=output_scale,
+                       output_block_scale=output_block_scale)
+ 
++    if not self.use_mla:
++        maybe_execute_sparse_attention_finished(query, key, value, output, layer_name, forward_context)
++
+     maybe_save_kv_layer_to_connector(layer_name, kv_cache)
+ 
+ 
+@@ -643,3 +661,48 @@ direct_register_custom_op(
+     fake_impl=unified_attention_with_output_fake,
+     tags=tag_cudagraph_unsafe,
+ )
++
++def maybe_execute_sparse_attention_begin(
++        query: torch.Tensor,
++        key: torch.Tensor,
++        value: torch.Tensor,
++        layer_name: str,
++        forward_context: ForwardContext,
++        output: Optional[torch.Tensor] = None,
++        phase: Optional[str] = None,
++        k_hash: Optional[torch.Tensor] = None,
++        decode_ql_nope: Optional[torch.Tensor] = None,
++        decode_q_pe: Optional[torch.Tensor] = None,
++):
++    if not has_ucm_sparse():
++        return query, key, value, output
++
++    ucm_sparse = get_ucm_sparse()
++
++    attn_metadata = forward_context.attn_metadata
++    if attn_metadata is None:
++        return query, key, value, output
++
++    return ucm_sparse.attention_begin(
++        query, key, value, layer_name, forward_context, output, phase, k_hash, decode_ql_nope, decode_q_pe
++    )
++
++def maybe_execute_sparse_attention_finished(
++        query: torch.Tensor,
++        key: torch.Tensor,
++        value: torch.Tensor,
++        attn_output: torch.Tensor,
++        layer_name: str,
++        forward_context: ForwardContext,
++        phase: Optional[str] = None,
++):
++    if not has_ucm_sparse():
++        return
++
++    ucm_sparse = get_ucm_sparse()
++
++    attn_metadata = forward_context.attn_metadata
++    if attn_metadata is None:
++        return
++
++    ucm_sparse.attention_finished(query, key, value, attn_output, layer_name, forward_context, phase)
+\ No newline at end of file
+diff --git a/vllm/model_executor/models/llama.py b/vllm/model_executor/models/llama.py
+index c7dd134ea..da5d725b0 100644
+--- a/vllm/model_executor/models/llama.py
++++ b/vllm/model_executor/models/llama.py
+@@ -56,6 +56,12 @@ from .utils import (AutoWeightsLoader, PPMissingLayer, extract_layer_index,
+                     make_empty_intermediate_tensors_factory, make_layers,
+                     maybe_prefix)
+ 
++from ucm.sparse.state import(
++    maybe_execute_sparse_ffn_begin,
++    maybe_execute_sparse_ffn_finished,
++    maybe_execute_sparse_layer_begin,
++    maybe_execute_sparse_layer_finished,
++)
+ 
+ class LlamaMLP(nn.Module):
+ 
+@@ -322,10 +328,19 @@ class LlamaDecoderLayer(nn.Module):
+         hidden_states = self.self_attn(positions=positions,
+                                        hidden_states=hidden_states)
+ 
++        hidden_states, residual = maybe_execute_sparse_ffn_begin(
++            hidden_states, residual
++        )
++
+         # Fully Connected
+         hidden_states, residual = self.post_attention_layernorm(
+             hidden_states, residual)
+         hidden_states = self.mlp(hidden_states)
++
++        hidden_states, residual = maybe_execute_sparse_ffn_finished(
++             hidden_states, residual
++        )
++
+         return hidden_states, residual
+ 
+ 
+@@ -400,10 +415,19 @@ class LlamaModel(nn.Module):
+         aux_hidden_states = []
+         for idx, layer in enumerate(
+                 islice(self.layers, self.start_layer, self.end_layer)):
++
++            positions, hidden_states, residual = maybe_execute_sparse_layer_begin(
++                positions, hidden_states, residual
++            )
++
+             if idx in self.aux_hidden_state_layers:
+                 aux_hidden_states.append(hidden_states + residual)
+             hidden_states, residual = layer(positions, hidden_states, residual)
+ 
++            positions, hidden_states, residual = maybe_execute_sparse_layer_finished(
++                positions, hidden_states, residual
++            )
++
+         if not get_pp_group().is_last_rank:
+             return IntermediateTensors({
+                 "hidden_states": hidden_states,
+diff --git a/vllm/model_executor/models/qwen2.py b/vllm/model_executor/models/qwen2.py
+index c536b0f60..38a28fd1f 100644
+--- a/vllm/model_executor/models/qwen2.py
++++ b/vllm/model_executor/models/qwen2.py
+@@ -58,6 +58,12 @@ from .utils import (AutoWeightsLoader, PPMissingLayer, extract_layer_index,
+                     make_empty_intermediate_tensors_factory, make_layers,
+                     maybe_prefix)
+ 
++from ucm.sparse.state import(
++    maybe_execute_sparse_ffn_begin,
++    maybe_execute_sparse_ffn_finished,
++    maybe_execute_sparse_layer_begin,
++    maybe_execute_sparse_layer_finished,
++)
+ 
+ class Qwen2MLP(nn.Module):
+ 
+@@ -259,10 +265,19 @@ class Qwen2DecoderLayer(nn.Module):
+             hidden_states=hidden_states,
+         )
+ 
++        hidden_states, residual = maybe_execute_sparse_ffn_begin(
++            hidden_states, residual
++        )
++
+         # Fully Connected
+         hidden_states, residual = self.post_attention_layernorm(
+             hidden_states, residual)
+         hidden_states = self.mlp(hidden_states)
++
++        hidden_states, residual = maybe_execute_sparse_ffn_finished(
++             hidden_states, residual
++        )
++
+         return hidden_states, residual
+ 
+ 
+@@ -361,8 +376,17 @@ class Qwen2Model(nn.Module):
+                 islice(self.layers, self.start_layer, self.end_layer)):
+             if idx in self.aux_hidden_state_layers:
+                 aux_hidden_states.append(hidden_states + residual)
++
++            positions, hidden_states, residual = maybe_execute_sparse_layer_begin(
++                positions, hidden_states, residual
++            )
++
+             hidden_states, residual = layer(positions, hidden_states, residual)
+ 
++            positions, hidden_states, residual = maybe_execute_sparse_layer_finished(
++                positions, hidden_states, residual
++            )
++
+         if not get_pp_group().is_last_rank:
+             return IntermediateTensors({
+                 "hidden_states": hidden_states,
+diff --git a/vllm/v1/attention/backends/mla/common.py b/vllm/v1/attention/backends/mla/common.py
+index 963f1c5ab..71f147ba1 100755
+--- a/vllm/v1/attention/backends/mla/common.py
++++ b/vllm/v1/attention/backends/mla/common.py
+@@ -194,6 +194,7 @@ from typing import Generic, Optional, TypeVar, Union
+ 
+ import torch
+ from tqdm import tqdm
++import os
+ 
+ import vllm.envs as envs
+ from vllm import _custom_ops as ops
+@@ -220,6 +221,10 @@ from vllm.v1.attention.backends.utils import (AttentionMetadataBuilder,
+                                               split_decodes_and_prefills)
+ from vllm.v1.kv_cache_interface import AttentionSpec
+ 
++from vllm.forward_context import ForwardContext, get_forward_context
++from vllm.attention.layer import (maybe_execute_sparse_attention_begin,
++                                  maybe_execute_sparse_attention_finished)
++
+ try:
+     from vllm.vllm_flash_attn import flash_attn_varlen_func
+     is_vllm_fa = True
+@@ -1640,6 +1645,8 @@ class MLACommonImpl(MLACommonBaseImpl[M], Generic[M]):
+     ) -> torch.Tensor:
+         assert output is not None, "Output tensor must be provided."
+ 
++        forward_context: ForwardContext = get_forward_context()
++
+         if output_scale is not None or output_block_scale is not None:
+             raise NotImplementedError(
+                 "fused output quantization is not yet supported"
+@@ -1689,6 +1696,11 @@ class MLACommonImpl(MLACommonBaseImpl[M], Generic[M]):
+         prefill_k_pe = k_pe[num_decode_tokens:]
+         prefill_k_c_normed = k_c_normed[num_decode_tokens:]
+ 
++        if os.getenv("VLLM_HASH_ATTENTION") == "1":
++            kv_cache, k_hash = kv_cache
++        else:
++            k_hash = None
++
+         # write the latent and rope to kv cache
+         if kv_cache.numel() > 0:
+             ops.concat_and_cache_mla(
+@@ -1704,10 +1716,15 @@ class MLACommonImpl(MLACommonBaseImpl[M], Generic[M]):
+             kv_cache = kv_cache.view(current_platform.fp8_dtype())
+ 
+         if has_prefill:
++
++            prefill_q, k_c_normed, k_pe, output =  maybe_execute_sparse_attention_begin(prefill_q, k_c_normed, k_pe, layer.layer_name, forward_context, output=output, phase="prefill", k_hash=k_hash)
++
+             output[num_decode_tokens:] = self._forward_prefill(
+                 prefill_q, prefill_k_c_normed, prefill_k_pe, kv_cache,
+                 attn_metadata, layer._k_scale)
+ 
++            maybe_execute_sparse_attention_finished(prefill_q, prefill_k_c_normed, prefill_k_pe, output[num_decode_tokens:], layer.layer_name, forward_context, "prefill")
++
+         if has_decode:
+             assert attn_metadata.decode is not None
+             decode_q_nope, decode_q_pe = decode_q.split(
+@@ -1771,9 +1788,13 @@ class MLACommonImpl(MLACommonBaseImpl[M], Generic[M]):
+                 decode_q = get_dcp_group().all_gather(decode_q, dim=1)
+ 
+             # call decode attn
++            _, k_c_normed, k_pe, output = maybe_execute_sparse_attention_begin(torch.cat([decode_ql_nope, decode_q_pe],dim=-1), k_c_normed, k_pe, layer.layer_name, forward_context, output=output, phase="decode", k_hash=k_hash, decode_ql_nope=decode_ql_nope, decode_q_pe=decode_q_pe)
++
+             attn_out, lse = self._forward_decode(decode_q, kv_cache,
+                                                  attn_metadata, layer)
+ 
++            maybe_execute_sparse_attention_finished(torch.cat([decode_ql_nope, decode_q_pe],dim=-1), decode_ql_nope, decode_q_pe, output[:num_decode_tokens], layer.layer_name, forward_context, "decode")
++
+             # recorect dcp attn_out with lse.
+             if self.dcp_world_size > 1:
+                 attn_out = cp_lse_ag_out_rs(attn_out, lse, get_dcp_group())
+diff --git a/vllm/v1/attention/backends/mla/flashmla.py b/vllm/v1/attention/backends/mla/flashmla.py
+index 67c21f83c..43c26d333 100644
+--- a/vllm/v1/attention/backends/mla/flashmla.py
++++ b/vllm/v1/attention/backends/mla/flashmla.py
+@@ -5,6 +5,7 @@ from dataclasses import dataclass
+ from typing import ClassVar, Optional, Union
+ 
+ import torch
++import os
+ 
+ from vllm.attention.backends.abstract import AttentionLayer, AttentionType
+ from vllm.attention.ops.flashmla import (flash_mla_with_kvcache,
+@@ -20,6 +21,8 @@ from vllm.v1.attention.backends.mla.common import (MLACommonBackend,
+ from vllm.v1.attention.backends.utils import AttentionCGSupport
+ from vllm.v1.kv_cache_interface import AttentionSpec
+ 
++from ucm.sparse.state import get_ucm_sparse, has_ucm_sparse
++
+ logger = init_logger(__name__)
+ 
+ 
+@@ -46,6 +49,10 @@ class FlashMLABackend(MLACommonBackend):
+ class FlashMLADecodeMetadata(MLACommonDecodeMetadata):
+     tile_scheduler_metadata: torch.Tensor
+     num_splits: torch.Tensor
++    topk_seq_lens: torch.Tensor
++    topk_tile_scheduler_metadata: torch.Tensor
++    topk_num_splits: torch.Tensor
++    topk_block_table: torch.Tensor = None
+ 
+ 
+ @dataclass
+@@ -96,6 +103,13 @@ class FlashMLAMetadataBuilder(MLACommonMetadataBuilder[FlashMLAMetadata]):
+             self.num_q_heads,
+             1, # MQA for the decode path
+         )
++        topk_seq_lens = None
++        topk_tile_scheduler_metadata = None
++        topk_num_splits = None
++        if has_ucm_sparse():
++            ucm_sparse = get_ucm_sparse()
++            if os.getenv("VLLM_HASH_ATTENTION") == "1":
++                topk_seq_lens, topk_tile_scheduler_metadata, topk_num_splits = ucm_sparse.build_decode_hash(seq_lens_device)
+ 
+         # TODO: we can disambiguate between decode and mixed-prefill decode here
+         # so we can only use the persistent buffer if a cudagraph is actually
+@@ -123,12 +137,16 @@ class FlashMLAMetadataBuilder(MLACommonMetadataBuilder[FlashMLAMetadata]):
+             #  it needs to monotonically increasing by 1)
+             self.cg_buf_num_splits[n:].fill_(num_splits[-1])
+             num_splits = num_splits_view
++            topk_tile_scheduler_metadata, topk_num_splits = ucm_sparse.maybe_init_cudagraph_buffers_for_topk(n, tile_scheduler_metadata)
+ 
+         return FlashMLADecodeMetadata(
+             block_table=block_table_tensor,
+             seq_lens=seq_lens_device,
+             tile_scheduler_metadata=tile_scheduler_metadata,
+             num_splits=num_splits,
++            topk_seq_lens=topk_seq_lens,
++            topk_tile_scheduler_metadata=topk_tile_scheduler_metadata,
++            topk_num_splits=topk_num_splits,
+         )
+ 
+ 
+diff --git a/vllm/v1/core/kv_cache_manager.py b/vllm/v1/core/kv_cache_manager.py
+index 401327f72..eb7acf00d 100644
+--- a/vllm/v1/core/kv_cache_manager.py
++++ b/vllm/v1/core/kv_cache_manager.py
+@@ -2,7 +2,7 @@
+ # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
+ 
+ from dataclasses import dataclass
+-from typing import Literal, Optional, overload
++from typing import Literal, Optional, overload, Union
+ 
+ from vllm.distributed.kv_events import KVCacheEvent
+ from vllm.logger import init_logger
+@@ -12,6 +12,9 @@ from vllm.v1.kv_cache_interface import KVCacheConfig
+ from vllm.v1.metrics.stats import PrefixCacheStats
+ from vllm.v1.request import Request, RequestStatus
+ 
++from ucm.sparse.state import get_ucm_sparse
++from ucm.sparse.base import INVALID_SLOT
++
+ logger = init_logger(__name__)
+ 
+ 
+@@ -199,6 +202,7 @@ class KVCacheManager:
+         num_lookahead_tokens: int = 0,
+         delay_cache_blocks: bool = False,
+         num_encoder_tokens: int = 0,
++        num_slots_sparsed: Union[None, int] = None
+     ) -> Optional[KVCacheBlocks]:
+         """Add slots for a request with new tokens to append.
+ 
+@@ -238,6 +242,10 @@ class KVCacheManager:
+         if num_new_tokens == 0:
+             raise ValueError("num_new_tokens must be greater than 0")
+ 
++        if num_slots_sparsed != INVALID_SLOT:
++            return get_ucm_sparse().allocate_slots(self, request, num_slots_sparsed)
++
++
+         if new_computed_blocks is not None:
+             new_computed_block_list = new_computed_blocks.blocks
+         else:
+diff --git a/vllm/v1/core/kv_cache_utils.py b/vllm/v1/core/kv_cache_utils.py
+index 2ff1bb681..dca14b5d3 100644
+--- a/vllm/v1/core/kv_cache_utils.py
++++ b/vllm/v1/core/kv_cache_utils.py
+@@ -1035,6 +1035,20 @@ def get_kv_cache_config_from_groups(vllm_config: VllmConfig,
+         num_blocks = available_memory // kv_cache_groups[
+             0].kv_cache_spec.page_size_bytes
+         num_blocks = may_override_num_blocks(vllm_config, num_blocks)
++
++        if os.getenv("VLLM_HASH_ATTENTION") == "1":
++            from vllm.utils import STR_DTYPE_TO_TORCH_DTYPE
++
++            if vllm_config.cache_config.cache_dtype == 'auto':
++                dtype = vllm_config.model_config.dtype
++            else:
++                dtype = STR_DTYPE_TO_TORCH_DTYPE[vllm_config.cache_config.cache_dtype]
++            khash_scale = dtype.itemsize * 8
++            new_num_blocks = num_blocks * khash_scale // (khash_scale + 1)
++            logger.info("[HASH_ATTN] reduce num_blocks from %d to %d to allocate khash_cache",
++                        num_blocks, new_num_blocks)
++            num_blocks = new_num_blocks
++
+         per_layer_specs = kv_cache_groups[0].kv_cache_spec.kv_cache_specs
+         kv_cache_tensors = [
+             KVCacheTensor(size=per_layer_specs[layer_name].page_size_bytes *
+diff --git a/vllm/v1/core/sched/output.py b/vllm/v1/core/sched/output.py
+index 209fc2a44..b53dac474 100644
+--- a/vllm/v1/core/sched/output.py
++++ b/vllm/v1/core/sched/output.py
+@@ -3,7 +3,7 @@
+ 
+ from __future__ import annotations
+ 
+-from dataclasses import dataclass
++from dataclasses import dataclass, field
+ from typing import TYPE_CHECKING, Optional
+ 
+ from vllm._bc_linter import bc_linter_include
+@@ -164,3 +164,9 @@ class SchedulerOutput:
+ 
+     # KV Cache Connector metadata.
+     kv_connector_metadata: Optional[KVConnectorMetadata] = None
++
++    # modified slots by sparse algorithm
++    req_sparsed_slots: dict[str, int] = None
++
++    # The number of tokens computed externally for each request
++    num_external_computed_tokens_per_req: dict[str, int] = field(default_factory=dict)
+diff --git a/vllm/v1/core/sched/scheduler.py b/vllm/v1/core/sched/scheduler.py
+index 2b2cd63c2..e824f369e 100644
+--- a/vllm/v1/core/sched/scheduler.py
++++ b/vllm/v1/core/sched/scheduler.py
+@@ -36,6 +36,10 @@ from vllm.v1.outputs import DraftTokenIds, KVConnectorOutput, ModelRunnerOutput
+ from vllm.v1.request import Request, RequestStatus
+ from vllm.v1.spec_decode.metrics import SpecDecodingStats
+ from vllm.v1.structured_output import StructuredOutputManager
++from vllm.distributed.kv_transfer.kv_connector.v1.multi_connector import MultiConnector
++from ucm.utils import Config
++from ucm.sparse.state import ensure_ucm_sparse_initialized, get_ucm_sparse
++from ucm.sparse.base import  UcmSparseRole, INVALID_SLOT
+ 
+ logger = init_logger(__name__)
+ 
+@@ -82,6 +86,7 @@ class Scheduler(SchedulerInterface):
+         # will have a corresponding KVConnector with Role=WORKER.
+         # KV Connector pushes/pull of remote KVs for P/D and offloading.
+         self.connector = None
++        self.ucm_sparse = None
+         if self.vllm_config.kv_transfer_config is not None:
+             assert len(self.kv_cache_config.kv_cache_groups) == 1, (
+                 "Multiple KV cache groups are not currently supported "
+@@ -92,6 +97,14 @@ class Scheduler(SchedulerInterface):
+             self.connector = KVConnectorFactory.create_connector(
+                 config=self.vllm_config, role=KVConnectorRole.SCHEDULER)
+ 
++            # Initialize UCM Sparse if available
++            ucm_config = Config(self.vllm_config.kv_transfer_config)
++            ucm_sparse_config = ucm_config.get_config().get("ucm_sparse_config")
++            if ucm_sparse_config:
++                ensure_ucm_sparse_initialized(vllm_config, role=UcmSparseRole.SCHEDULER)
++                self.ucm_sparse = get_ucm_sparse()
++                logger.info("UCM Sparse initialized successfully: {}".format(self.ucm_sparse))
++
+         self.kv_event_publisher = EventPublisherFactory.create(
+             self.kv_events_config,
+             self.parallel_config.data_parallel_rank,
+@@ -207,9 +220,15 @@ class Scheduler(SchedulerInterface):
+ 
+         # First, schedule the RUNNING requests.
+         req_index = 0
++        req_sparsed_slots: dict[str, int] = {}
+         while req_index < len(self.running) and token_budget > 0:
+             request = self.running[req_index]
+ 
++            num_slots_sparsed = INVALID_SLOT
++            if self.ucm_sparse:
++                num_slots_sparsed = self.ucm_sparse.estimate_num_slots_sparsed(request)
++            req_sparsed_slots.update({request.request_id: num_slots_sparsed})
++
+             num_new_tokens = (request.num_tokens_with_spec +
+                               request.num_output_placeholders -
+                               request.num_computed_tokens)
+@@ -255,7 +274,8 @@ class Scheduler(SchedulerInterface):
+                 new_blocks = self.kv_cache_manager.allocate_slots(
+                     request,
+                     num_new_tokens,
+-                    num_lookahead_tokens=self.num_lookahead_tokens)
++                    num_lookahead_tokens=self.num_lookahead_tokens,
++                    num_slots_sparsed=num_slots_sparsed)
+                 if new_blocks is None:
+                     # The request cannot be scheduled.
+                     # Preempt the lowest-priority request.
+@@ -332,6 +352,7 @@ class Scheduler(SchedulerInterface):
+         skipped_waiting_requests = create_request_queue(self.policy)
+ 
+         # Next, schedule the WAITING requests.
++        num_external_computed_tokens_per_req: dict[str, int] = {}
+         if not preempted_reqs:
+             while self.waiting and token_budget > 0:
+                 if len(self.running) == self.max_num_running_reqs:
+@@ -339,6 +360,11 @@ class Scheduler(SchedulerInterface):
+ 
+                 request = self.waiting.peek_request()
+ 
++                num_slots_sparsed = INVALID_SLOT
++                if self.ucm_sparse:
++                    num_slots_sparsed = self.ucm_sparse.estimate_num_slots_sparsed(request)
++                req_sparsed_slots.update({request.request_id: num_slots_sparsed})
++
+                 # KVTransfer: skip request if still waiting for remote kvs.
+                 if request.status == RequestStatus.WAITING_FOR_REMOTE_KVS:
+                     is_ready = self._update_waiting_for_remote_kv(request)
+@@ -397,6 +423,8 @@ class Scheduler(SchedulerInterface):
+                             skipped_waiting_requests.prepend_request(request)
+                             continue
+ 
++                    num_external_computed_tokens_per_req.update({request.request_id: num_external_computed_tokens})
++
+                     # Total computed tokens (local + external).
+                     num_computed_tokens = (num_new_local_computed_tokens +
+                                            num_external_computed_tokens)
+@@ -476,6 +504,7 @@ class Scheduler(SchedulerInterface):
+                     num_lookahead_tokens=effective_lookahead_tokens,
+                     delay_cache_blocks=load_kv_async,
+                     num_encoder_tokens=num_encoder_tokens,
++                    num_slots_sparsed=num_slots_sparsed
+                 )
+ 
+                 if new_blocks is None:
+@@ -587,6 +616,8 @@ class Scheduler(SchedulerInterface):
+             scheduled_spec_decode_tokens=scheduled_spec_decode_tokens,
+             scheduled_encoder_inputs=scheduled_encoder_inputs,
+             num_common_prefix_blocks=num_common_prefix_blocks,
++            req_sparsed_slots=req_sparsed_slots,
++            num_external_computed_tokens_per_req=num_external_computed_tokens_per_req,
+             # finished_req_ids is an existing state in the scheduler,
+             # instead of being newly scheduled in this step.
+             # It contains the request IDs that are finished in between
+@@ -1097,6 +1128,10 @@ class Scheduler(SchedulerInterface):
+     def add_request(self, request: Request) -> None:
+         self.waiting.add_request(request)
+         self.requests[request.request_id] = request
++
++        if self.ucm_sparse:
++            self.ucm_sparse.request_begin(request.request_id, request.prompt_token_ids)
++
+         if self.log_stats:
+             request.record_event(EngineCoreEventType.QUEUED)
+ 
+@@ -1147,6 +1182,9 @@ class Scheduler(SchedulerInterface):
+     def _free_request(self, request: Request) -> Optional[dict[str, Any]]:
+         assert request.is_finished()
+ 
++        if self.ucm_sparse:
++            self.ucm_sparse.request_finished_in_scheduler(request.request_id)
++
+         delay_free_blocks, kv_xfer_params = self._connector_finished(request)
+         self.encoder_cache_manager.free(request)
+         request_id = request.request_id
+diff --git a/vllm/v1/worker/block_table.py b/vllm/v1/worker/block_table.py
+index 82b6d1b51..85cdcb7ac 100644
+--- a/vllm/v1/worker/block_table.py
++++ b/vllm/v1/worker/block_table.py
+@@ -58,6 +58,15 @@ class BlockTable:
+         self.num_blocks_per_row[row_idx] += num_blocks
+         self.block_table.np[row_idx, start:start + num_blocks] = block_ids
+ 
++    def reset_row(
++            self,
++            row_idx: int,
++    ) -> None:
++        self.num_blocks_per_row[row_idx] = 0
++        self.block_table.gpu[row_idx].fill_(0)
++        self.block_table.cpu[row_idx].fill_(0)
++        self.block_table.np[row_idx].fill(0)
++
+     def add_row(self, block_ids: list[int], row_idx: int) -> None:
+         self.num_blocks_per_row[row_idx] = 0
+         self.append_row(block_ids, row_idx)
+@@ -176,6 +185,10 @@ class MultiGroupBlockTable:
+         for i, block_table in enumerate(self.block_tables):
+             block_table.append_row(block_ids[i], row_idx)
+ 
++    def reset_row(self, row_idx: int) -> None:
++        for i, block_table in enumerate(self.block_tables):
++            block_table.reset_row(row_idx)
++
+     def add_row(self, block_ids: tuple[list[int], ...], row_idx: int) -> None:
+         for i, block_table in enumerate(self.block_tables):
+             block_table.add_row(block_ids[i], row_idx)
+diff --git a/vllm/v1/worker/gpu_model_runner.py b/vllm/v1/worker/gpu_model_runner.py
+index a438c7777..d7c6a8e0a 100644
+--- a/vllm/v1/worker/gpu_model_runner.py
++++ b/vllm/v1/worker/gpu_model_runner.py
+@@ -1,6 +1,7 @@
+ # SPDX-License-Identifier: Apache-2.0
+ # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
+ 
++import os
+ import gc
+ import itertools
+ import time
+@@ -114,6 +115,9 @@ from .utils import (AttentionGroup, MultiModalBudget,
+                     gather_mm_placeholders, sanity_check_mm_encoder_outputs,
+                     scatter_mm_placeholders)
+ 
++from ucm.sparse.state import get_ucm_sparse, has_ucm_sparse
++from ucm.sparse.base import INVALID_SLOT
++
+ if TYPE_CHECKING:
+     from vllm.model_executor.model_loader.tensorizer import TensorizerConfig
+     from vllm.v1.core.sched.output import SchedulerOutput
+@@ -534,7 +538,9 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
+         new/resumed/paused/finished request in the batch.
+         """
+         # Remove finished requests from the cached states.
++        self.ucm_sparse_update_states(scheduler_output)
+         for req_id in scheduler_output.finished_req_ids:
++            self.ucm_sparse_request_finished_in_worker(req_id)
+             self.requests.pop(req_id, None)
+         # Remove the finished requests from the persistent batch.
+         # NOTE(woosuk): There could be an edge case where finished_req_ids and
+@@ -611,11 +617,13 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
+         # Update the states of the running/resumed requests.
+         is_last_rank = get_pp_group().is_last_rank
+         req_data = scheduler_output.scheduled_cached_reqs
++        req_sparsed_slots = scheduler_output.req_sparsed_slots
+         for i, req_id in enumerate(req_data.req_ids):
+             req_state = self.requests[req_id]
+             num_computed_tokens = req_data.num_computed_tokens[i]
+             new_block_ids = req_data.new_block_ids[i]
+             resumed_from_preemption = req_data.resumed_from_preemption[i]
++            is_sparsed_request = req_sparsed_slots[req_id] != INVALID_SLOT
+ 
+             # Update the cached states.
+             req_state.num_computed_tokens = num_computed_tokens
+@@ -637,17 +645,16 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
+                         new_token_ids[-num_new_tokens:])
+ 
+             # Update the block IDs.
+-            if not resumed_from_preemption:
++            if resumed_from_preemption or is_sparsed_request:
++                # The request is resumed from preemption.
++                # Replace the existing block IDs with the new ones.
++                req_state.block_ids = new_block_ids
++            else:
+                 if new_block_ids is not None:
+                     # Append the new blocks to the existing block IDs.
+                     for block_ids, new_ids in zip(req_state.block_ids,
+                                                   new_block_ids):
+                         block_ids.extend(new_ids)
+-            else:
+-                assert new_block_ids is not None
+-                # The request is resumed from preemption.
+-                # Replace the existing block IDs with the new ones.
+-                req_state.block_ids = new_block_ids
+ 
+             req_index = self.input_batch.req_id_to_index.get(req_id)
+             if req_index is None:
+@@ -660,6 +667,10 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
+             # Update the persistent batch.
+             self.input_batch.num_computed_tokens_cpu[req_index] = (
+                 num_computed_tokens)
++
++            if is_sparsed_request:
++                self.input_batch.block_table.reset_row(req_index)
++
+             if new_block_ids is not None:
+                 self.input_batch.block_table.append_row(
+                     new_block_ids, req_index)
+@@ -968,6 +979,20 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
+         if self.uses_mrope:
+             self._calc_mrope_positions(scheduler_output)
+ 
++        self.seq_lens.np[:num_reqs] = (
++            self.input_batch.num_computed_tokens_cpu[:num_reqs] +
++            num_scheduled_tokens)
++
++        # TODO: improve performance, no `positions_np.copy()`
++        sparsed_positions = positions_np.copy()
++        req_sparsed_slots = scheduler_output.req_sparsed_slots
++        for req_id in self.input_batch.req_id_to_index:
++            is_sparsed_request = req_sparsed_slots[req_id] != INVALID_SLOT
++            req_index = self.input_batch.req_id_to_index[req_id]
++            offset = 0 if req_index == 0 else cu_num_tokens[req_index - 1] # TODO: support MTP
++            if is_sparsed_request:
++                sparsed_positions[offset] = req_sparsed_slots[req_id] - 1
++
+         # Get token indices.
+         # E.g., [0, 1, 0, 1, 2, 3, 4, 0, 1, 2]
+         # -> [0, 1, M, M + 1, M + 2, M + 3, M + 4, 2 * M, 2 * M + 1, 2 * M + 2]
+@@ -1031,7 +1056,7 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
+                 output_idx += num_sched
+ 
+         self.input_batch.block_table.compute_slot_mapping(
+-            req_indices, positions_np)
++            req_indices, sparsed_positions)
+         self.input_batch.block_table.commit_slot_mapping(
+             total_num_scheduled_tokens)
+ 
+@@ -1057,9 +1082,14 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
+                          uniform_decode=uniform_decode,
+                          vllm_config=self.vllm_config)
+ 
+-        self.seq_lens.np[:num_reqs] = (
+-            self.input_batch.num_computed_tokens_cpu[:num_reqs] +
+-            num_scheduled_tokens)
++        is_sparsed_np = np.zeros((num_reqs,), dtype=np.bool_)
++        for req_id in self.input_batch.req_id_to_index:
++            req_index = self.input_batch.req_id_to_index[req_id]
++            is_sparsed_request = req_sparsed_slots[req_id] != INVALID_SLOT
++            if is_sparsed_request:
++                self.seq_lens.np[req_index] = req_sparsed_slots[req_id]
++                is_sparsed_np[req_index] = True
++
+         # Fill unused with 0 for full cuda graph mode.
+         self.seq_lens.np[num_reqs:].fill(0)
+         self.seq_lens.copy_to_gpu()
+@@ -1073,7 +1103,7 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
+ 
+         # Record the index of requests that should not be sampled,
+         # so that we could clear the sampled tokens before returning
+-        discard_requests_mask = self.seq_lens.np[:num_reqs] < num_tokens_np
++        discard_requests_mask = (self.seq_lens.np[:num_reqs] < num_tokens_np) & (~is_sparsed_np)
+         discard_request_indices = np.nonzero(discard_requests_mask)[0]
+         self.num_discarded_requests = len(discard_request_indices)
+         self.discard_request_indices.np[:self.num_discarded_requests] = (
+@@ -1091,6 +1121,8 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
+                 non_blocking=True)
+         else:
+             # Common case (1D positions)
++            self.positions.cpu[:total_num_scheduled_tokens] =  torch.from_numpy(
++                self.positions.np[:total_num_scheduled_tokens])
+             self.positions.copy_to_gpu(total_num_scheduled_tokens)
+ 
+         use_spec_decode = len(
+@@ -2295,6 +2327,9 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
+         ), record_function_or_nullcontext("Forward"),
+               self.maybe_get_kv_connector_output(scheduler_output) as
+               kv_connector_output):
++
++            self.maybe_execute_ucm_sparse_begin(scheduler_output, attn_metadata)
++
+             model_output = self.model(
+                 input_ids=input_ids,
+                 positions=positions,
+@@ -2303,6 +2338,8 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
+                 **model_kwargs,
+             )
+ 
++            logits_indices = self.maybe_execute_ucm_sparse_finished(logits_indices)
++
+         with record_function_or_nullcontext("Postprocess"):
+             if self.use_aux_hidden_state_outputs:
+                 # True when EAGLE 3 is used.
+@@ -2584,6 +2621,36 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
+             )
+         return draft_token_ids
+ 
++    def maybe_execute_ucm_sparse_begin(self, scheduler_output: "SchedulerOutput", attn_metadata: CommonAttentionMetadata):
++        if not has_ucm_sparse():
++            return
++        if has_kv_transfer_group():
++            uc_connector = get_kv_transfer_group()
++            uc_setup_model = getattr(uc_connector, "setup_model", None)
++            if callable(uc_setup_model):
++                uc_setup_model(self.model)
++        ucm_sparse = get_ucm_sparse()
++        ucm_sparse.build_sparse_meta(scheduler_output, self.requests, self.input_batch, attn_metadata)
++        ucm_sparse.execute_begin(scheduler_output)
++
++    def maybe_execute_ucm_sparse_finished(self, logits_indices):
++        if not has_ucm_sparse():
++            return logits_indices
++        ucm_sparse = get_ucm_sparse()
++        return ucm_sparse.execute_finished(logits_indices)
++
++    def ucm_sparse_request_finished_in_worker(self, request_id: str | int):
++        if not has_ucm_sparse():
++            return
++        ucm_sparse = get_ucm_sparse()
++        ucm_sparse.request_finished_in_worker(request_id)
++
++    def ucm_sparse_update_states(self, scheduler_output: "SchedulerOutput"):
++            if not has_ucm_sparse():
++                return
++            ucm_sparse = get_ucm_sparse()
++            ucm_sparse.update_states(scheduler_output)
++
+     def update_config(self, overrides: dict[str, Any]) -> None:
+         allowed_config_names = {"load_config", "model_config"}
+         for config_name, config_overrides in overrides.items():
+@@ -3928,6 +3995,11 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
+         kv_caches = self._reshape_kv_cache_tensors(kv_cache_config,
+                                                    kv_cache_raw_tensors)
+ 
++        if has_ucm_sparse():
++            ucm_sparse = get_ucm_sparse()
++            if os.getenv("VLLM_HASH_ATTENTION") == "1":
++                ucm_sparse.initialize_kv_hash_cache_tensors(kv_caches, self.device)
++
+         # Set up cross-layer KV cache sharing
+         for layer_name, target_layer_name in self.shared_kv_cache_layers.items(
+         ):
+diff --git a/vllm/v1/worker/gpu_worker.py b/vllm/v1/worker/gpu_worker.py
+index 8c75e8914..c3e9e781f 100644
+--- a/vllm/v1/worker/gpu_worker.py
++++ b/vllm/v1/worker/gpu_worker.py
+@@ -35,6 +35,8 @@ from vllm.v1.worker.gpu_model_runner import GPUModelRunner
+ from vllm.v1.worker.utils import is_residual_scattered_for_sp
+ from vllm.v1.worker.worker_base import WorkerBase
+ 
++from ucm.sparse.state import ensure_ucm_sparse_initialized
++
+ logger = init_logger(__name__)
+ 
+ if TYPE_CHECKING:
+@@ -708,3 +710,4 @@ def init_worker_distributed_environment(
+         parallel_config.decode_context_parallel_size)
+ 
+     ensure_kv_transfer_initialized(vllm_config)
++    ensure_ucm_sparse_initialized(vllm_config)
+-- 
+2.34.1
+
+
+From 90cc03951b8ee1a060349993b1563110f3d04103 Mon Sep 17 00:00:00 2001
+From: wangxin <1848802892@qq.com>
+Date: Wed, 28 Jan 2026 01:59:05 -0800
+Subject: [PATCH 2/2] feature rerope for vllm0110
+
+apply sparse method patches
+---
+ vllm/attention/layer.py                   | 135 +++++++++++++++-------
+ vllm/envs.py                              |  23 +++-
+ vllm/model_executor/models/qwen2.py       |   8 +-
+ vllm/model_executor/models/qwen3.py       |   7 +-
+ vllm/model_executor/models/qwen3_moe.py   |   7 +-
+ vllm/v1/attention/backends/flash_attn.py  |  11 ++
+ vllm/v1/attention/backends/triton_attn.py | 103 +++++++++++++----
+ vllm/v1/attention/backends/utils.py       |  20 ++--
+ vllm/v1/kv_cache_interface.py             |  18 ++-
+ vllm/v1/worker/gpu_model_runner.py        |  21 +++-
+ 10 files changed, 263 insertions(+), 90 deletions(-)
+
+diff --git a/vllm/attention/layer.py b/vllm/attention/layer.py
+index c5324e47e..1ca3fe9c1 100644
+--- a/vllm/attention/layer.py
++++ b/vllm/attention/layer.py
+@@ -268,6 +268,8 @@ class Attention(nn.Module, AttentionLayerBase):
+         query: torch.Tensor,
+         key: torch.Tensor,
+         value: torch.Tensor,
++        query2: Optional[torch.Tensor] = None,
++        key2: Optional[torch.Tensor] = None,
+         # For some alternate attention backends like MLA the attention output
+         # shape does not match the query shape, so we optionally let the model
+         # definition specify the output tensor shape.
+@@ -315,6 +317,10 @@ class Attention(nn.Module, AttentionLayerBase):
+                 output = output.view(-1, self.num_heads, self.head_size)
+                 if key is not None:
+                     key = key.view(-1, self.num_kv_heads, self.head_size)
++                if envs.VLLM_USE_REROPE and query2 is not None:
++                    query2 = query2.view(-1, self.num_heads, self.head_size)
++                if envs.VLLM_USE_REROPE and key2 is not None:
++                    key2 = key2.view(-1, self.num_kv_heads, self.head_size)
+                 if value is not None:
+                     value = value.view(-1, self.num_kv_heads, self.head_size)
+             if self.use_direct_call:
+@@ -323,16 +329,31 @@ class Attention(nn.Module, AttentionLayerBase):
+                 if isinstance(attn_metadata, dict):
+                     attn_metadata = attn_metadata[self.layer_name]
+                 self_kv_cache = self.kv_cache[forward_context.virtual_engine]
+-                self.impl.forward(self,
+-                                  query,
+-                                  key,
+-                                  value,
+-                                  self_kv_cache,
+-                                  attn_metadata,
+-                                  output=output)
++                if envs.VLLM_USE_REROPE:
++                    self.impl.forward(self,
++                                    query,
++                                    key,
++                                    value,
++                                    self_kv_cache,
++                                    attn_metadata,
++                                    query2=query2,
++                                    key2=key2,
++                                    output=output)
++                else:
++                    self.impl.forward(self,
++                                    query,
++                                    key,
++                                    value,
++                                    self_kv_cache,
++                                    attn_metadata,
++                                    output=output)
+             else:
+-                torch.ops.vllm.unified_attention_with_output(
+-                    query, key, value, output, self.layer_name)
++                if envs.VLLM_USE_REROPE:
++                    torch.ops.vllm.unified_attention_with_output(
++                        query, key, value, output, self.layer_name, query2=query2, key2=key2)
++                else:
++                    torch.ops.vllm.unified_attention_with_output(
++                        query, key, value, output, self.layer_name)
+             return output.view(-1, hidden_size)
+         else:
+             if self.use_direct_call:
+@@ -341,11 +362,19 @@ class Attention(nn.Module, AttentionLayerBase):
+                 if isinstance(attn_metadata, dict):
+                     attn_metadata = attn_metadata[self.layer_name]
+                 self_kv_cache = self.kv_cache[forward_context.virtual_engine]
+-                return self.impl.forward(self, query, key, value,
+-                                         self_kv_cache, attn_metadata)
++                if envs.VLLM_USE_REROPE:
++                    return self.impl.forward(self, query, key, value,
++                                            self_kv_cache, attn_metadata, query2=query2, key2=key2)
++                else:
++                    return self.impl.forward(self, query, key, value,
++                                            self_kv_cache, attn_metadata)
+             else:
+-                return torch.ops.vllm.unified_attention(
+-                    query, key, value, self.layer_name)
++                if envs.VLLM_USE_REROPE:
++                    return torch.ops.vllm.unified_attention(
++                        query, key, value, self.layer_name, query2=query2, key2=key2)
++                else:
++                    return torch.ops.vllm.unified_attention(
++                        query, key, value, self.layer_name)
+ 
+     def calc_kv_scales(self, query, key, value):
+         self._q_scale.copy_(torch.abs(query).max() / self.q_range)
+@@ -454,7 +483,7 @@ class MultiHeadAttention(nn.Module):
+         key: torch.Tensor,
+         value: torch.Tensor,
+     ) -> torch.Tensor:
+-        """Input shape: 
++        """Input shape:
+         (batch_size x seq_len x hidden_size) or
+         (batch_size x seq_len x num_heads x head_size)
+         """
+@@ -565,6 +594,8 @@ def unified_attention(
+     key: torch.Tensor,
+     value: torch.Tensor,
+     layer_name: str,
++    query2: Optional[torch.Tensor] = None,
++    key2: Optional[torch.Tensor] = None,
+ ) -> torch.Tensor:
+     wait_for_kv_layer_from_connector(layer_name)
+ 
+@@ -574,11 +605,16 @@ def unified_attention(
+         attn_metadata = attn_metadata[layer_name]
+     self = forward_context.no_compile_layers[layer_name]
+     kv_cache = self.kv_cache[forward_context.virtual_engine]
+-    query, key, value, _ = maybe_execute_sparse_attention_begin(query, key, value, layer_name, forward_context)
+-    output = self.impl.forward(self, query, key, value, kv_cache,
+-                               attn_metadata)
+ 
+-    maybe_execute_sparse_attention_finished(query, key, value, output, layer_name, forward_context)
++    if envs.VLLM_USE_REROPE:
++        output = self.impl.forward(self, query, key, value, kv_cache,
++                                   attn_metadata, query2=query2, key2=key2)
++    else:
++        query, key, value, _ = maybe_execute_sparse_attention_begin(query, key, value, layer_name, forward_context)
++        output = self.impl.forward(self, query, key, value, kv_cache,
++                                   attn_metadata)
++        maybe_execute_sparse_attention_finished(query, key, value, output, layer_name, forward_context)
++
+     maybe_save_kv_layer_to_connector(layer_name, kv_cache)
+     return output
+ 
+@@ -588,6 +624,8 @@ def unified_attention_fake(
+     key: torch.Tensor,
+     value: torch.Tensor,
+     layer_name: str,
++    query2: Optional[torch.Tensor] = None,
++    key2: Optional[torch.Tensor] = None,
+ ) -> torch.Tensor:
+     return torch.empty_like(query).contiguous()
+ 
+@@ -606,6 +644,8 @@ def unified_attention_with_output(
+     value: torch.Tensor,
+     output: torch.Tensor,
+     layer_name: str,
++    query2: Optional[torch.Tensor] = None,
++    key2: Optional[torch.Tensor] = None,
+     output_scale: Optional[torch.Tensor] = None,
+     output_block_scale: Optional[torch.Tensor] = None,
+ ) -> None:
+@@ -616,28 +656,41 @@ def unified_attention_with_output(
+         attn_metadata = attn_metadata[layer_name]
+     self = forward_context.no_compile_layers[layer_name]
+     kv_cache = self.kv_cache[forward_context.virtual_engine]
+-    if not self.use_mla:
+-        if attn_metadata is not None:
+-            if os.getenv("VLLM_HASH_ATTENTION") == "1":
+-                kv_cache, k_hash = kv_cache
+-            else:
+-                k_hash = None
+-            query, key, value, output = maybe_execute_sparse_attention_begin(
+-                query, key, value, layer_name, forward_context, output, k_hash=k_hash
+-          )
+-
+-    self.impl.forward(self,
+-                      query,
+-                      key,
+-                      value,
+-                      kv_cache,
+-                      attn_metadata,
+-                      output=output,
+-                      output_scale=output_scale,
+-                      output_block_scale=output_block_scale)
+-
+-    if not self.use_mla:
+-        maybe_execute_sparse_attention_finished(query, key, value, output, layer_name, forward_context)
++
++    if envs.VLLM_USE_REROPE:
++        self.impl.forward(self,
++                        query,
++                        key,
++                        value,
++                        kv_cache,
++                        attn_metadata,
++                        query2=query2,
++                        key2=key2,
++                        output=output,
++                        output_scale=output_scale)
++    else:
++        if not self.use_mla:
++            if attn_metadata is not None:
++                if os.getenv("VLLM_HASH_ATTENTION") == "1":
++                    kv_cache, k_hash = kv_cache
++                else:
++                    k_hash = None
++                query, key, value, output = maybe_execute_sparse_attention_begin(
++                    query, key, value, layer_name, forward_context, output, k_hash=k_hash
++            )
++
++        self.impl.forward(self,
++                        query,
++                        key,
++                        value,
++                        kv_cache,
++                        attn_metadata,
++                        output=output,
++                        output_scale=output_scale,
++                        output_block_scale=output_block_scale)
++
++        if not self.use_mla:
++            maybe_execute_sparse_attention_finished(query, key, value, output, layer_name, forward_context)
+ 
+     maybe_save_kv_layer_to_connector(layer_name, kv_cache)
+ 
+@@ -648,6 +701,8 @@ def unified_attention_with_output_fake(
+     value: torch.Tensor,
+     output: torch.Tensor,
+     layer_name: str,
++    query2: Optional[torch.Tensor] = None,
++    key2: Optional[torch.Tensor] = None,
+     output_scale: Optional[torch.Tensor] = None,
+     output_block_scale: Optional[torch.Tensor] = None,
+ ) -> None:
+diff --git a/vllm/envs.py b/vllm/envs.py
+index e2ba31f3a..6dab2b8a3 100755
+--- a/vllm/envs.py
++++ b/vllm/envs.py
+@@ -100,6 +100,9 @@ if TYPE_CHECKING:
+     VLLM_DISABLED_KERNELS: list[str] = []
+     VLLM_DISABLE_NCCL_FOR_DP_SYNCHRONIZATION: bool = False
+     VLLM_USE_V1: bool = True
++    VLLM_USE_REROPE: bool = False
++    REROPE_WINDOW: int = 32768
++    TRAINING_LENGTH: int = 32768
+     VLLM_ROCM_USE_AITER: bool = False
+     VLLM_ROCM_USE_AITER_PAGED_ATTN: bool = False
+     VLLM_ROCM_USE_AITER_LINEAR: bool = True
+@@ -240,13 +243,13 @@ def env_with_choices(
+         case_sensitive: bool = True) -> Callable[[], Optional[str]]:
+     """
+     Create a lambda that validates environment variable against allowed choices
+-    
++
+     Args:
+         env_name: Name of the environment variable
+         default: Default value if not set (can be None)
+         choices: List of valid string options or callable that returns list
+         case_sensitive: Whether validation should be case sensitive
+-        
++
+     Returns:
+         Lambda function for environment_variables dict
+     """
+@@ -281,15 +284,15 @@ def env_list_with_choices(
+         choices: Union[list[str], Callable[[], list[str]]],
+         case_sensitive: bool = True) -> Callable[[], list[str]]:
+     """
+-    Create a lambda that validates environment variable 
++    Create a lambda that validates environment variable
+     containing comma-separated values against allowed choices
+-    
++
+     Args:
+         env_name: Name of the environment variable
+         default: Default list of values if not set
+         choices: List of valid string options or callable that returns list
+         case_sensitive: Whether validation should be case sensitive
+-        
++
+     Returns:
+         Lambda function for environment_variables
+         dict that returns list of strings
+@@ -900,6 +903,16 @@ environment_variables: dict[str, Callable[[], Any]] = {
+     "VLLM_USE_V1":
+     lambda: bool(int(os.getenv("VLLM_USE_V1", "1"))),
+ 
++    # add REROPE
++    "VLLM_USE_REROPE":
++    lambda: str(os.getenv("VLLM_USE_REROPE", "0")).lower() in {"1", "true", "yes", "on"},
++
++    # add REROPE setting
++    "REROPE_WINDOW":
++    lambda: int(os.getenv("REROPE_WINDOW", "32768")),
++    "TRAINING_LENGTH":
++    lambda: int(os.getenv("TRAINING_LENGTH", "32768")),
++
+     # Disable aiter ops unless specifically enabled.
+     # Acts as a parent switch to enable the rest of the other operations.
+     "VLLM_ROCM_USE_AITER":
+diff --git a/vllm/model_executor/models/qwen2.py b/vllm/model_executor/models/qwen2.py
+index 38a28fd1f..d87bc9de2 100644
+--- a/vllm/model_executor/models/qwen2.py
++++ b/vllm/model_executor/models/qwen2.py
+@@ -58,6 +58,8 @@ from .utils import (AutoWeightsLoader, PPMissingLayer, extract_layer_index,
+                     make_empty_intermediate_tensors_factory, make_layers,
+                     maybe_prefix)
+ 
++from ucm.sparse.rerope.attn_forward_utils import process_qkv
++
+ from ucm.sparse.state import(
+     maybe_execute_sparse_ffn_begin,
+     maybe_execute_sparse_ffn_finished,
+@@ -65,6 +67,7 @@ from ucm.sparse.state import(
+     maybe_execute_sparse_layer_finished,
+ )
+ 
++
+ class Qwen2MLP(nn.Module):
+ 
+     def __init__(
+@@ -189,8 +192,9 @@ class Qwen2Attention(nn.Module):
+     ) -> torch.Tensor:
+         qkv, _ = self.qkv_proj(hidden_states)
+         q, k, v = qkv.split([self.q_size, self.kv_size, self.kv_size], dim=-1)
+-        q, k = self.rotary_emb(positions, q, k)
+-        attn_output = self.attn(q, k, v)
++
++        attn_output = process_qkv(self, positions, q, k, v)
++
+         output, _ = self.o_proj(attn_output)
+         return output
+ 
+diff --git a/vllm/model_executor/models/qwen3.py b/vllm/model_executor/models/qwen3.py
+index ae72fd30c..53afe5826 100644
+--- a/vllm/model_executor/models/qwen3.py
++++ b/vllm/model_executor/models/qwen3.py
+@@ -49,6 +49,8 @@ from .qwen2 import Qwen2Model
+ from .utils import (AutoWeightsLoader, PPMissingLayer, extract_layer_index,
+                     maybe_prefix)
+ 
++from ucm.sparse.rerope.attn_forward_utils import process_qkv
++
+ logger = init_logger(__name__)
+ 
+ 
+@@ -152,8 +154,9 @@ class Qwen3Attention(nn.Module):
+                            self.head_dim)
+         k_by_head = self.k_norm(k_by_head)
+         k = k_by_head.view(k.shape)
+-        q, k = self.rotary_emb(positions, q, k)
+-        attn_output = self.attn(q, k, v)
++
++        attn_output = process_qkv(self, positions, q, k, v)
++
+         output, _ = self.o_proj(attn_output)
+         return output
+ 
+diff --git a/vllm/model_executor/models/qwen3_moe.py b/vllm/model_executor/models/qwen3_moe.py
+index 61f1abad7..4b304120f 100644
+--- a/vllm/model_executor/models/qwen3_moe.py
++++ b/vllm/model_executor/models/qwen3_moe.py
+@@ -60,6 +60,8 @@ from .utils import (AutoWeightsLoader, PPMissingLayer, extract_layer_index,
+                     make_empty_intermediate_tensors_factory, make_layers,
+                     maybe_prefix)
+ 
++from ucm.sparse.rerope.attn_forward_utils import process_qkv
++
+ logger = init_logger(__name__)
+ 
+ 
+@@ -282,8 +284,9 @@ class Qwen3MoeAttention(nn.Module):
+                            self.head_dim)
+         k_by_head = self.k_norm(k_by_head)
+         k = k_by_head.view(k.shape)
+-        q, k = self.rotary_emb(positions, q, k)
+-        attn_output = self.attn(q, k, v)
++
++        attn_output = process_qkv(self, positions, q, k, v)
++
+         output, _ = self.o_proj(attn_output)
+         return output
+ 
+diff --git a/vllm/v1/attention/backends/flash_attn.py b/vllm/v1/attention/backends/flash_attn.py
+index f0770f744..717dc836e 100755
+--- a/vllm/v1/attention/backends/flash_attn.py
++++ b/vllm/v1/attention/backends/flash_attn.py
+@@ -6,6 +6,7 @@ from typing import Optional
+ 
+ import numpy as np
+ import torch
++import os
+ 
+ from vllm import envs
+ from vllm.attention.backends.abstract import (AttentionBackend, AttentionImpl,
+@@ -31,6 +32,8 @@ from vllm.v1.attention.backends.utils import (AttentionCGSupport,
+                                               get_kv_cache_layout)
+ from vllm.v1.kv_cache_interface import AttentionSpec
+ 
++from ucm.sparse.state import get_ucm_sparse, has_ucm_sparse
++
+ logger = init_logger(__name__)
+ 
+ 
+@@ -236,6 +239,14 @@ class FlashAttentionMetadataBuilder(
+         seq_lens = common_attn_metadata.seq_lens
+         seq_lens_cpu = common_attn_metadata.seq_lens_cpu
+         block_table_tensor = common_attn_metadata.block_table_tensor
++
++        if has_ucm_sparse():
++            ucm_sparse = get_ucm_sparse()
++            if os.getenv("VLLM_HASH_ATTENTION") == "1":
++                decode_mask, topk_seq_lens = ucm_sparse.build_decode_attention_meta(
++                    query_start_loc, seq_lens, block_table_tensor
++                )
++
+         slot_mapping = common_attn_metadata.slot_mapping
+         causal = common_attn_metadata.causal
+ 
+diff --git a/vllm/v1/attention/backends/triton_attn.py b/vllm/v1/attention/backends/triton_attn.py
+index 3983c5edc..43a4181af 100644
+--- a/vllm/v1/attention/backends/triton_attn.py
++++ b/vllm/v1/attention/backends/triton_attn.py
+@@ -21,6 +21,9 @@ from vllm.v1.attention.backends.utils import (AttentionCGSupport,
+                                               CommonAttentionMetadata)
+ from vllm.v1.kv_cache_interface import AttentionSpec
+ 
++from vllm import envs
++from ucm.sparse.rerope.triton_unified_attention_rerope import unified_attention_rerope
++
+ if current_platform.is_cuda_alike():
+     from vllm import _custom_ops as ops
+ elif current_platform.is_xpu():
+@@ -47,6 +50,8 @@ class TritonAttentionMetadata:
+     block_table: torch.Tensor
+     slot_mapping: torch.Tensor
+ 
++    use_rerope: bool
++
+     # For cascade attention.
+     use_cascade: bool
+     common_prefix_len: int
+@@ -93,6 +98,8 @@ class TritonAttentionMetadataBuilder(
+         num_actual_tokens = common_attn_metadata.num_actual_tokens
+         max_query_len = common_attn_metadata.max_query_len
+ 
++        use_rerope = common_attn_metadata.use_rerope
++
+         max_seq_len = common_attn_metadata.max_seq_len
+         query_start_loc = common_attn_metadata.query_start_loc
+         seq_lens = common_attn_metadata.seq_lens
+@@ -131,6 +138,7 @@ class TritonAttentionMetadataBuilder(
+             prefix_kv_lens=prefix_kv_lens,
+             suffix_kv_lens=suffix_kv_lens,
+             prefix_scheduler_metadata=prefix_scheduler_metadata,
++            use_rerope = use_rerope,
+         )
+         return attn_metadata
+ 
+@@ -175,6 +183,8 @@ class TritonAttentionBackend(AttentionBackend):
+     ) -> tuple[int, ...]:
+         if block_size % 16 != 0:
+             raise ValueError("Block size must be a multiple of 16.")
++        if envs.VLLM_USE_REROPE:
++            return (num_blocks, 3, block_size, num_kv_heads, head_size)
+         return (num_blocks, 2, block_size, num_kv_heads, head_size)
+ 
+     @staticmethod
+@@ -250,6 +260,8 @@ class TritonAttentionImpl(AttentionImpl):
+         value: torch.Tensor,
+         kv_cache: torch.Tensor,
+         attn_metadata: TritonAttentionMetadata,
++        query2: Optional[torch.Tensor] = None,
++        key2: Optional[torch.Tensor] = None,
+         output: Optional[torch.Tensor] = None,
+         output_scale: Optional[torch.Tensor] = None,
+         output_block_scale: Optional[torch.Tensor] = None,
+@@ -289,7 +301,10 @@ class TritonAttentionImpl(AttentionImpl):
+         # performance to make sure it does not introduce any overhead.
+ 
+         num_actual_tokens = attn_metadata.num_actual_tokens
+-        key_cache, value_cache = kv_cache.unbind(1)
++        if envs.VLLM_USE_REROPE:
++            key_cache, value_cache, key_cache2 = kv_cache.unbind(1)
++        else:
++            key_cache, value_cache = kv_cache.unbind(1)
+ 
+         if self.kv_sharing_target_layer_name is None:
+             # Reshape the input keys and values and store them in the cache.
+@@ -311,9 +326,23 @@ class TritonAttentionImpl(AttentionImpl):
+                 layer._v_scale,
+             )
+ 
++            if key2 is not None:
++                triton_reshape_and_cache_flash(
++                    key2,
++                    value,
++                    key_cache2,
++                    value_cache,
++                    attn_metadata.slot_mapping,
++                    self.kv_cache_dtype,
++                    layer._k_scale,
++                    layer._v_scale,
++                )
++
+         if self.kv_cache_dtype.startswith("fp8"):
+             if key_cache.dtype != self.fp8_dtype:
+                 key_cache = key_cache.view(self.fp8_dtype)
++                if key_cache2 is not None:
++                    key_cache2 = key_cache2.view(self.fp8_dtype)
+                 value_cache = value_cache.view(self.fp8_dtype)
+             num_tokens, num_heads, head_size = query.shape
+             assert layer._q_scale_float == 1.0, \
+@@ -327,6 +356,12 @@ class TritonAttentionImpl(AttentionImpl):
+                         (num_tokens, num_heads * head_size)).contiguous(),
+                     layer._q_scale)
+                 query = query.reshape((num_tokens, num_heads, head_size))
++                if query2 is not None:
++                    query2, _ = ops.scaled_fp8_quant(
++                        query2.reshape(
++                            (num_tokens, num_heads * head_size)).contiguous(),
++                        layer._q_scale)
++                    query2 = query2.reshape((num_tokens, num_heads, head_size))
+ 
+         cu_seqlens_q = attn_metadata.query_start_loc
+         seqused_k = attn_metadata.seq_lens
+@@ -336,26 +371,50 @@ class TritonAttentionImpl(AttentionImpl):
+ 
+         descale_shape = (cu_seqlens_q.shape[0] - 1, key.shape[1])
+ 
+-        unified_attention(
+-            q=query[:num_actual_tokens],
+-            k=key_cache,
+-            v=value_cache,
+-            out=output[:num_actual_tokens],
+-            cu_seqlens_q=cu_seqlens_q,
+-            max_seqlen_q=max_seqlen_q,
+-            seqused_k=seqused_k,
+-            max_seqlen_k=max_seqlen_k,
+-            softmax_scale=self.scale,
+-            causal=True,
+-            alibi_slopes=self.alibi_slopes,
+-            window_size=self.sliding_window,
+-            block_table=block_table,
+-            softcap=self.logits_soft_cap,
+-            q_descale=None,  # Not supported
+-            k_descale=layer._k_scale.expand(descale_shape),
+-            v_descale=layer._v_scale.expand(descale_shape),
+-            sinks=self.sinks,
+-            output_scale=output_scale,
+-        )
++        if attn_metadata.use_rerope:
++            unified_attention_rerope(
++                q=query[:num_actual_tokens],
++                k=key_cache,
++                q2=query2[:num_actual_tokens],
++                k2=key_cache2,
++                v=value_cache,
++                out=output[:num_actual_tokens],
++                cu_seqlens_q=cu_seqlens_q,
++                max_seqlen_q=max_seqlen_q,
++                seqused_k=seqused_k,
++                max_seqlen_k=max_seqlen_k,
++                softmax_scale=self.scale,
++                causal=True,
++                rerope_window=envs.REROPE_WINDOW,
++                alibi_slopes=self.alibi_slopes,
++                window_size=self.sliding_window,
++                block_table=block_table,
++                softcap=self.logits_soft_cap,
++                q_descale=None,  # Not supported
++                k_descale=layer._k_scale.expand(descale_shape),
++                v_descale=layer._v_scale.expand(descale_shape),
++            )
++        else:
++            unified_attention(
++                q=query[:num_actual_tokens],
++                k=key_cache,
++                v=value_cache,
++                out=output[:num_actual_tokens],
++                cu_seqlens_q=cu_seqlens_q,
++                max_seqlen_q=max_seqlen_q,
++                seqused_k=seqused_k,
++                max_seqlen_k=max_seqlen_k,
++                softmax_scale=self.scale,
++                causal=True,
++                alibi_slopes=self.alibi_slopes,
++                window_size=self.sliding_window,
++                block_table=block_table,
++                softcap=self.logits_soft_cap,
++                q_descale=None,  # Not supported
++                k_descale=layer._k_scale.expand(descale_shape),
++                v_descale=layer._v_scale.expand(descale_shape),
++                sinks=self.sinks,
++                output_scale=output_scale,
++            )
+ 
+         return output
+diff --git a/vllm/v1/attention/backends/utils.py b/vllm/v1/attention/backends/utils.py
+index f37a829f4..b900f5d18 100644
+--- a/vllm/v1/attention/backends/utils.py
++++ b/vllm/v1/attention/backends/utils.py
+@@ -46,7 +46,7 @@ class CommonAttentionMetadata:
+     """
+     Per-batch attention metadata, shared across layers and backends.
+     AttentionMetadataBuilder instances use it to construct per-layer metadata.
+-    
++
+     For many of the tensors we keep both GPU and CPU versions.
+     """
+ 
+@@ -71,6 +71,8 @@ class CommonAttentionMetadata:
+     max_seq_len: int
+     """Longest context length in batch"""
+ 
++    use_rerope: bool
++
+     block_table_tensor: torch.Tensor
+     slot_mapping: torch.Tensor
+ 
+@@ -89,7 +91,7 @@ def slice_query_start_locs(
+     request_slice: slice,
+ ) -> torch.Tensor:
+     """
+-    Creates a new query_start_loc that corresponds to the requests in 
++    Creates a new query_start_loc that corresponds to the requests in
+     request_slice.
+ 
+     Note: This function creates a new tensor to hold the new query_start_locs.
+@@ -103,7 +105,7 @@ def _make_metadata_with_slice(
+         ubatch_slice: UBatchSlice,
+         attn_metadata: CommonAttentionMetadata) -> CommonAttentionMetadata:
+     """
+-    This function creates a new CommonAttentionMetadata that corresponds to 
++    This function creates a new CommonAttentionMetadata that corresponds to
+     the requests included in ubatch_slice
+     """
+ 
+@@ -196,7 +198,7 @@ def split_attn_metadata(
+     common_attn_metadata: CommonAttentionMetadata,
+ ) -> list[CommonAttentionMetadata]:
+     """
+-    Creates a new CommonAttentionMetadata instance that corresponds to the 
++    Creates a new CommonAttentionMetadata instance that corresponds to the
+     requests for each UBatchSlice in ubatch_slices.
+ 
+     Note: This function does not modify common_attn_metadata
+@@ -221,7 +223,7 @@ class AttentionCGSupport(enum.Enum):
+     """Cudagraph always supported; supports mixed-prefill-decode"""
+     UNIFORM_BATCH = 2
+     """Cudagraph supported for batches the only contain query lengths that are
+-    the same, this can be used for spec-decode 
++    the same, this can be used for spec-decode
+         i.e. "decodes" are 1 + num_speculative_tokens"""
+     UNIFORM_SINGLE_TOKEN_DECODE = 1
+     """Cudagraph supported for batches the only contain query_len==1 decodes"""
+@@ -270,7 +272,7 @@ class AttentionMetadataBuilder(abc.ABC, Generic[M]):
+         """
+         Central method that builds attention metadata.
+         Some builders (MLA) require reorder_batch to be called prior to build.
+-        
++
+         Args:
+             common_prefix_len: The length of the common prefix of the batch.
+             common_attn_metadata: The common attention metadata.
+@@ -314,7 +316,7 @@ class AttentionMetadataBuilder(abc.ABC, Generic[M]):
+     ) -> M:
+         """
+         Build attention metadata for draft model. Uses build by default.
+-        
++
+         Args:
+             common_attn_metadata: The common attention metadata.
+             draft_index: The index of the current draft operation.
+@@ -416,7 +418,7 @@ def get_per_layer_parameters(
+ def infer_global_hyperparameters(
+         per_layer_params: dict[str, PerLayerParameters]) -> PerLayerParameters:
+     """
+-    Currently, FlashInfer backend other than trtllm-gen 
++    Currently, FlashInfer backend other than trtllm-gen
+     only support models in which all layers share
+     the same values for the following hyperparameters:
+     - `window_left`
+@@ -779,7 +781,7 @@ def reorder_batch_to_split_decodes_and_prefills(
+     """
+     Reorders the batch to split into prefill and decode requests; places all
+     requests with <= decode_threshold tokens at the front of the batch.
+-    
++
+     Returns:
+         True if the batch was modified, False otherwise.
+     """
+diff --git a/vllm/v1/kv_cache_interface.py b/vllm/v1/kv_cache_interface.py
+index 281816653..493414806 100644
+--- a/vllm/v1/kv_cache_interface.py
++++ b/vllm/v1/kv_cache_interface.py
+@@ -13,6 +13,8 @@ from vllm.config import VllmConfig
+ from vllm.logger import init_logger
+ from vllm.utils import cdiv, get_dtype_size
+ 
++from vllm import envs
++
+ logger = init_logger(__name__)
+ 
+ 
+@@ -62,7 +64,11 @@ class AttentionSpec(KVCacheSpec):
+ 
+     @property
+     def page_size_bytes(self) -> int:
+-        return 2 * self.block_size * self.num_kv_heads * self.head_size \
++        if envs.VLLM_USE_REROPE:
++            coef = 3
++        else:
++            coef = 2
++        return coef * self.block_size * self.num_kv_heads * self.head_size \
+                 * get_dtype_size(self.dtype)
+ 
+ 
+@@ -71,10 +77,10 @@ class FullAttentionSpec(AttentionSpec):
+     sliding_window: Optional[int] = None
+     attention_chunk_size: Optional[int] = None
+     """
+-    When hybrid allocator is disabled and the model contains both full 
+-    attention layers and sliding window attention layers, sliding 
+-    window attention are regarded as full attention in KV cache manager 
+-    (blocks are allocated for all tokens), while computed as sliding window 
++    When hybrid allocator is disabled and the model contains both full
++    attention layers and sliding window attention layers, sliding
++    window attention are regarded as full attention in KV cache manager
++    (blocks are allocated for all tokens), while computed as sliding window
+     attention in model runner.
+     In this case, we use FullAttentionSpec and record the sliding window size.
+     Default to None for not using sliding window attention.
+@@ -104,7 +110,7 @@ class FullAttentionSpec(AttentionSpec):
+     @classmethod
+     def merge(cls, specs: list[Self]) -> Self:
+         """
+-        Merge a list of FullAttentionSpec objects into a single 
++        Merge a list of FullAttentionSpec objects into a single
+         FullAttentionSpec object.
+         """
+         assert all(isinstance(spec, FullAttentionSpec) for spec in specs), (
+diff --git a/vllm/v1/worker/gpu_model_runner.py b/vllm/v1/worker/gpu_model_runner.py
+index d7c6a8e0a..d7bb0eec8 100644
+--- a/vllm/v1/worker/gpu_model_runner.py
++++ b/vllm/v1/worker/gpu_model_runner.py
+@@ -115,6 +115,8 @@ from .utils import (AttentionGroup, MultiModalBudget,
+                     gather_mm_placeholders, sanity_check_mm_encoder_outputs,
+                     scatter_mm_placeholders)
+ 
++from vllm import envs
++
+ from ucm.sparse.state import get_ucm_sparse, has_ucm_sparse
+ from ucm.sparse.base import INVALID_SLOT
+ 
+@@ -160,7 +162,7 @@ class AsyncGPUModelRunnerOutput(AsyncModelRunnerOutput):
+ 
+     def get_output(self) -> ModelRunnerOutput:
+         """Copy the device tensors to the host and return a ModelRunnerOutput.
+-        
++
+         This function blocks until the copy is finished.
+         """
+         self._async_copy_ready_event.synchronize()
+@@ -445,6 +447,11 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
+             device="cpu",
+             pin_memory=self.pin_memory)
+ 
++        # use_rerope: current batch rerope state
++        # use_rerope_map: save every request rerope state
++        self.use_rerope = False
++        self.use_rerope_map: dict[str, bool] = {}
++
+     def _make_buffer(self,
+                      *size: Union[int, torch.SymInt],
+                      dtype: torch.dtype,
+@@ -841,7 +848,7 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
+     def _prepare_input_ids(self, total_num_scheduled_tokens: int,
+                            cu_num_tokens: np.ndarray) -> None:
+         """Prepare the input IDs for the current batch.
+-        
++
+         Carefully handles the `prev_sampled_token_ids` which can be cached
+         from the previous engine iteration, in which case those tokens on the
+         GPU need to be copied into the corresponding slots into input_ids."""
+@@ -958,6 +965,15 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
+         num_scheduled_tokens = np.array(tokens, dtype=np.int32)
+         max_num_scheduled_tokens = max(tokens)
+ 
++        # Setting use_rerope
++        if envs.VLLM_USE_REROPE:
++            use_rerope_this_batch = False
++            for req in scheduler_output.scheduled_new_reqs:
++                self.use_rerope_map[req.req_id] = len(req.prompt_token_ids) > envs.REROPE_WINDOW
++            for req_id in req_ids:
++                use_rerope_this_batch |= self.use_rerope_map[req_id]
++            self.use_rerope = use_rerope_this_batch
++
+         # Get request indices.
+         # E.g., [2, 5, 3] -> [0, 0, 1, 1, 1, 1, 1, 2, 2, 2]
+         req_indices = np.repeat(self.arange_np[:num_reqs],
+@@ -1228,6 +1244,7 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
+                 num_actual_tokens=total_num_scheduled_tokens,
+                 max_query_len=max_num_scheduled_tokens,
+                 max_seq_len=max_seq_len,
++                use_rerope=self.use_rerope,
+                 block_table_tensor=blk_table_tensor,
+                 slot_mapping=slot_mapping,
+                 logits_indices_padded=logits_indices_padded,
+-- 
+2.34.1
+
