@@ -214,16 +214,16 @@ class TestBasicOfflineInferenceSparse:
             print(f"Standard answers:\n{standard_answers}")
             pytest.fail("HBM + SSD Mixed Accuracy Test Failed!")
 
-    """Test ESA sparse attention."""
+    """Test GSA sparse attention."""
 
     @pytest.mark.stage(1)
     @pytest.mark.feature("offline_inference_sparse")
     @pytest.mark.gpu_mem(6000)
     @pytest.mark.parametrize("model_name", ["Qwen2.5-1.5B-Instruct"])
     @pytest.mark.parametrize("max_tokens", [200])
-    @pytest.mark.parametrize("enforce_eager", [False])
-    @pytest.mark.parametrize("max_num_batched_tokens", [2047])
-    def test_offline_esa(
+    @pytest.mark.parametrize("enforce_eager", [True])
+    @pytest.mark.parametrize("max_num_batched_tokens", [30000])
+    def test_offline_gsa(
         self,
         model_name: str,
         max_tokens: int,
@@ -285,15 +285,7 @@ class TestBasicOfflineInferenceSparse:
                     },
                 }
             ],
-            "ucm_sparse_config": {
-                "ESA": {
-                    "init_window_sz": 1,
-                    "local_window_sz": 2,
-                    "min_blocks": 4,
-                    "sparse_ratio": 0.3,
-                    "retrieval_stride": 5,
-                }
-            },
+            "ucm_sparse_config": {"GSAOnDevice": {}},
         }
 
         sampling_params = SamplingParams(
@@ -314,7 +306,7 @@ class TestBasicOfflineInferenceSparse:
             sampling_params_dict,
             False,  # enable_prefix_caching=False
             enforce_eager,
-            "ESA",
+            "GSA",
             max_num_batched_tokens,
             timeout=180,
         )
