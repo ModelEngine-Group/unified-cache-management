@@ -29,7 +29,7 @@ private:
     };
     ThreadPool<CompressTask> dump_pool_;
     ThreadPool<CompressTask> load_pool_;
-    std::unique_ptr<MemoryPool> memoryPool_;
+    std::unique_ptr<MemoryPool> dump_memoryPool_;
 public:
     ~CompressorAction();
     Status Setup(const Config& config);
