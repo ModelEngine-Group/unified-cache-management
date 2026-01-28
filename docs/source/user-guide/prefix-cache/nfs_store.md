@@ -87,8 +87,6 @@ ucm_connectors:
     ucm_connector_config:
       storage_backends: "/mnt/test"
       io_direct: false
-
-load_only_first_rank: false
 ```
 ### Required Parameters
 
@@ -116,10 +114,6 @@ load_only_first_rank: false
 * **shard_data_dir** *(optional, default: true)*   
   Whether files are spread across subdirectories or stored in a single directory.
 
-### Must-be-Set Parameters
-
-* **load_only_first_rank** (must be `false`):  
-  This feature is currently disabled.
 
 ## Launching Inference
 
