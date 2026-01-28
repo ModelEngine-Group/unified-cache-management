@@ -21,32 +21,34 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  * */
-#ifndef UNIFIEDCACHE_STORE_CC_POSIX_STORE_H
-#define UNIFIEDCACHE_STORE_CC_POSIX_STORE_H
-
-#include <memory>
+#include <atomic>
 #include "ucmstore_v1.h"
 
-namespace UC::PosixStore {
+namespace UC::EmptyStore {
 
-class PosixStoreImpl;
-class PosixStore : public StoreV1 {
+class EmptyStore : public StoreV1 {
 public:
-    ~PosixStore() override;
-    Status Setup(const Detail::Dictionary& config) override;
-    std::string Readme() const override;
-    Expected<std::vector<uint8_t>> Lookup(const Detail::BlockId* blocks, size_t num) override;
-    Expected<ssize_t> LookupOnPrefix(const Detail::BlockId* blocks, size_t num) override;
-    void Prefetch(const Detail::BlockId* blocks, size_t num) override;
-    Expected<Detail::TaskHandle> Load(Detail::TaskDesc task) override;
-    Expected<Detail::TaskHandle> Dump(Detail::TaskDesc task) override;
-    Expected<bool> Check(Detail::TaskHandle taskId) override;
-    Status Wait(Detail::TaskHandle taskId) override;
+    Status Setup(const Detail::Dictionary& config) { return Status::OK(); }
+    std::string Readme() const { return "EmptyStore"; }
+    Expected<std::vector<uint8_t>> Lookup(const Detail::BlockId* blocks, size_t num)
+    {
+        return std::vector<uint8_t>(num, false);
+    }
+    Expected<ssize_t> LookupOnPrefix(const Detail::BlockId* blocks, size_t num) { return -1; }
+    void Prefetch(const Detail::BlockId* blocks, size_t num) {}
+    Expected<Detail::TaskHandle> Load(Detail::TaskDesc task) { return NextId(); }
+    Expected<Detail::TaskHandle> Dump(Detail::TaskDesc task) { return NextId(); }
+    Expected<bool> Check(Detail::TaskHandle taskId) { return true; }
+    Status Wait(Detail::TaskHandle taskId) { return Status::OK(); }
 
 private:
-    std::shared_ptr<PosixStoreImpl> impl_;
+    static Detail::TaskHandle NextId() noexcept
+    {
+        static std::atomic<Detail::TaskHandle> id{1};
+        return id.fetch_add(1, std::memory_order_relaxed);
+    };
 };
 
-}  // namespace UC::PosixStore
+}  // namespace UC::EmptyStore
 
-#endif
+extern "C" UC::StoreV1* MakeEmptyStore() { return new UC::EmptyStore::EmptyStore(); }

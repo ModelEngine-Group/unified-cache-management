@@ -31,7 +31,7 @@
 
 namespace UC::Detail {
 
-template <typename Store, typename Config>
+template <typename Store>
 class StoreBinder {
     template <typename T>
     struct BufferArrayView {
@@ -66,12 +66,11 @@ private:
 
 public:
     StoreBinder() : store_{std::make_unique<Store>()} {}
-    uintptr_t Self() { return (uintptr_t)(void*)store_.get(); }
-    void Setup(const Config& config) { ThrowIfFailed(store_->Setup(config)); }
+    uintptr_t Self() { return StoreBase().RawPtr(); }
     pybind11::bytes Lookup(const pybind11::buffer& ids)
     {
         BufferArrayView<BlockId> idArr{ids};
-        auto res = store_->Lookup(idArr.data, idArr.num);
+        auto res = StoreBase()->Lookup(idArr.data, idArr.num);
         if (res) {
             auto& v = res.Value();
             return pybind11::bytes(reinterpret_cast<const char*>(v.data()), v.size());
@@ -81,21 +80,21 @@ public:
     ssize_t LookupOnPrefix(const pybind11::buffer& ids)
     {
         BufferArrayView<BlockId> idArr{ids};
-        auto res = store_->LookupOnPrefix(idArr.data, idArr.num);
+        auto res = StoreBase()->LookupOnPrefix(idArr.data, idArr.num);
         if (res) { return res.Value(); }
         throw std::runtime_error{res.Error().ToString()};
     }
     void Prefetch(const pybind11::buffer& ids)
     {
         BufferArrayView<BlockId> idArr{ids};
-        store_->Prefetch(idArr.data, idArr.num);
+        StoreBase()->Prefetch(idArr.data, idArr.num);
     }
     TaskHandle Load(const pybind11::buffer& ids, const pybind11::buffer& indexes,
                     const pybind11::buffer& addrs)
     {
         auto desc = MakeTaskDesc(ids, indexes, addrs);
         desc.brief = "Load";
-        auto res = store_->Load(std::move(desc));
+        auto res = StoreBase()->Load(std::move(desc));
         if (res) { return res.Value(); }
         throw std::runtime_error{res.Error().ToString()};
     }
@@ -104,23 +103,32 @@ public:
     {
         auto desc = MakeTaskDesc(ids, indexes, addrs);
         desc.brief = "Dump";
-        auto res = store_->Dump(desc);
+        auto res = StoreBase()->Dump(desc);
         if (res) { return res.Value(); }
         throw std::runtime_error{res.Error().ToString()};
     }
     bool Check(TaskHandle taskId)
     {
-        auto res = store_->Check(taskId);
+        auto res = StoreBase()->Check(taskId);
         if (res) { return res.Value(); }
         throw std::runtime_error{res.Error().ToString()};
     }
-    void Wait(TaskHandle taskId) { ThrowIfFailed(store_->Wait(taskId)); }
+    void Wait(TaskHandle taskId)
+    {
+        auto status = Status::OK();
+        {
+            pybind11::gil_scoped_release release;
+            status = StoreBase()->Wait(taskId);
+        }
+        ThrowIfFailed(status);
+    }
 
 protected:
     virtual void ThrowIfFailed(const Status& s)
     {
         if (s.Failure()) [[unlikely]] { throw std::runtime_error{s.ToString()}; }
     }
+    Store& StoreBase() const { return *store_; }
 
 private:
     TaskDesc MakeTaskDesc(const pybind11::buffer& ids, const pybind11::buffer& indexes,

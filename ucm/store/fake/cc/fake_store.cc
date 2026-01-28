@@ -102,15 +102,19 @@ private:
     }
 };
 
-Status FakeStore::Setup(const Config& config)
+Status FakeStore::Setup(const Detail::Dictionary& config)
 {
+    Config param;
+    config.Get("unique_id", param.uniqueId);
+    config.GetNumber("buffer_number", param.bufferNumber);
+    config.Get("share_buffer_enable", param.shareBufferEnable);
     try {
         impl_ = std::make_shared<FakeStoreImpl>();
     } catch (const std::exception& e) {
         UC_ERROR("Failed({}) to make FakeStore object.", e.what());
         return Status::Error(e.what());
     }
-    return impl_->Setup(config);
+    return impl_->Setup(param);
 }
 
 std::string FakeStore::Readme() const { return impl_->Readme(); }
@@ -133,3 +137,5 @@ Expected<Detail::TaskHandle> FakeStore::Load(Detail::TaskDesc task)
 Expected<Detail::TaskHandle> FakeStore::Dump(Detail::TaskDesc task) { return impl_->Dump(task); }
 
 }  // namespace UC::FakeStore
+
+extern "C" UC::StoreV1* MakeFakeStore() { return new UC::FakeStore::FakeStore(); }

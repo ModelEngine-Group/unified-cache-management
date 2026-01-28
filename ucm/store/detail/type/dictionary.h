@@ -21,32 +21,48 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  * */
-#ifndef UNIFIEDCACHE_STORE_CC_POSIX_STORE_H
-#define UNIFIEDCACHE_STORE_CC_POSIX_STORE_H
+#ifndef UNIFIEDCACHE_STORE_DETAIL_TYPE_DICTIONARY_H
+#define UNIFIEDCACHE_STORE_DETAIL_TYPE_DICTIONARY_H
 
-#include <memory>
-#include "ucmstore_v1.h"
+#include <any>
+#include <string>
+#include <unordered_map>
 
-namespace UC::PosixStore {
+namespace UC::Detail {
 
-class PosixStoreImpl;
-class PosixStore : public StoreV1 {
+class Dictionary {
+    std::unordered_map<std::string, std::any> data_;
+
+    template <typename T>
+    T Get(const std::string& key) const
+    {
+        return std::any_cast<T>(data_.find(key)->second);
+    }
+
 public:
-    ~PosixStore() override;
-    Status Setup(const Detail::Dictionary& config) override;
-    std::string Readme() const override;
-    Expected<std::vector<uint8_t>> Lookup(const Detail::BlockId* blocks, size_t num) override;
-    Expected<ssize_t> LookupOnPrefix(const Detail::BlockId* blocks, size_t num) override;
-    void Prefetch(const Detail::BlockId* blocks, size_t num) override;
-    Expected<Detail::TaskHandle> Load(Detail::TaskDesc task) override;
-    Expected<Detail::TaskHandle> Dump(Detail::TaskDesc task) override;
-    Expected<bool> Check(Detail::TaskHandle taskId) override;
-    Status Wait(Detail::TaskHandle taskId) override;
-
-private:
-    std::shared_ptr<PosixStoreImpl> impl_;
+    bool Contains(const std::string& key) const { return data_.find(key) != data_.end(); }
+    template <typename T>
+    void Set(const std::string& key, const T& value)
+    {
+        data_[key] = value;
+    }
+    template <typename T>
+    void SetNumber(const std::string& key, const T& value)
+    {
+        data_[key] = static_cast<ssize_t>(value);
+    }
+    template <typename T>
+    void Get(const std::string& key, T& target) const
+    {
+        if (Contains(key)) { target = Get<T>(key); }
+    }
+    template <typename T>
+    void GetNumber(const std::string& key, T& target) const
+    {
+        if (Contains(key)) { target = static_cast<T>(Get<ssize_t>(key)); }
+    }
 };
 
-}  // namespace UC::PosixStore
+}  // namespace UC::Detail
 
-#endif
+#endif  // UNIFIEDCACHE_STORE_DETAIL_TYPE_DICTIONARY_H

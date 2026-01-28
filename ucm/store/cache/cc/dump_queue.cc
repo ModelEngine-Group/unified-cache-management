@@ -38,7 +38,7 @@ Status DumpQueue::Setup(const Config& config, TaskIdSet* failureSet, TransBuffer
 {
     failureSet_ = failureSet;
     buffer_ = buffer;
-    backend_ = static_cast<StoreV1*>((void*)config.storeBackend);
+    backend_ = config.storeBackend;
     waiting_.Setup(config.waitingQueueDepth);
     dumping_.Setup(config.runningQueueDepth);
     dumper_ = std::thread{&DumpQueue::BackendDumpStage, this};
