@@ -53,7 +53,7 @@ class UcmConnectorFactory:
         else:
             raise ValueError(f"Unsupported connector type: {connector_name}")
         assert issubclass(connector_cls, UcmKVStoreBase)
-        logger.info("Creating connector with name: %s", connector_name)
+        logger.info(f"Creating connector with name: {connector_name}")
         return connector_cls(config)
 
 

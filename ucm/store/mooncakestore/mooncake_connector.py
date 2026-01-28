@@ -91,13 +91,13 @@ class UcmMooncakeStore(UcmKVStoreBase):
             )
 
         except ValueError as e:
-            logger.error("Configuration loading failed: %s", e)
+            logger.error(f"Configuration loading failed: {e}")
             raise
         except TypeError:
             logger.warning("Lack of configuration, please check the dict params .")
 
         except Exception as exc:
-            logger.error("An error occurred while loading the configuration: %s", exc)
+            logger.error(f"An error occurred while loading the configuration: {exc}")
             raise
 
         # Task management variables
@@ -203,7 +203,7 @@ class UcmMooncakeStore(UcmKVStoreBase):
                 block_hash = f"{block_ids[i]}_{offset[i]}"
                 data = self.store.get(block_hash)
             except TypeError as err:
-                logger.error("Failed to get value from Mooncake Store: %s", err)
+                logger.error(f"Failed to get value from Mooncake Store: {err}")
                 raise TypeError("Mooncake Store Get Type Error.") from err
 
             if data:
@@ -255,7 +255,7 @@ class UcmMooncakeStore(UcmKVStoreBase):
                 if ret != 0:
                     return ret
             except TypeError as err:
-                logger.error("Failed to put value into Mooncake Store: %s", err)
+                logger.error(f"Failed to put value into Mooncake Store: {err}")
                 raise TypeError("Mooncake Store Put Type Error.") from err
         return 0
 

@@ -22,27 +22,62 @@
 # SOFTWARE.
 #
 
+import atexit
+import inspect
 import logging
 import os
 
+from ucm.shared.infra import ucmlogger
 
-def init_logger(name: str = "UNIFIED_CACHE") -> logging.Logger:
-    log_level = os.getenv("UNIFIED_CACHE_LOG_LEVEL", "INFO").upper()
+LevelMap = {
+    logging.DEBUG: ucmlogger.Level.DEBUG,
+    logging.INFO: ucmlogger.Level.INFO,
+    logging.WARNING: ucmlogger.Level.WARNING,
+    logging.ERROR: ucmlogger.Level.ERROR,
+}
 
-    logger = logging.getLogger(name)
-    logger.setLevel(log_level)
 
-    if not logger.handlers:
-        handler = logging.StreamHandler()
-        formatter = logging.Formatter(
-            "[%(asctime)s] - %(name)s - %(levelname)s [%(filename)s:%(lineno)d] %(message)s",
-            datefmt="%Y-%m-%d %H:%M:%S",
-        )
+class Logger:
+    def __init__(self, name: str = "UC", log: dict = {}):
+        self.name = name
+        directory = log.get("directory", "log")
+        max_files = log.get("max_files", 3)
+        max_size = log.get("max_size", 5)
+        ucmlogger.setup(directory, max_files, max_size)
+        atexit.register(ucmlogger.flush)
 
-        handler.setFormatter(formatter)
-        logger.addHandler(handler)
+    def load_config(self, path: str):
+        with open(path, "r", encoding="utf-8") as f:
+            config = yaml.safe_load(f) or {}
+        return config
 
-    return logger
+    def log(self, levelno, message, *args):
+        level = LevelMap[levelno]
+        frame = inspect.currentframe()
+        caller_frame = frame.f_back.f_back
+        file = os.path.basename(caller_frame.f_code.co_filename)
+        line = caller_frame.f_lineno
+        func = caller_frame.f_code.co_name
+        msg = ucmlogger.format(message, args)
+        ucmlogger.log(level, file, func, line, msg)
+
+    def info(self, message: str, *args):
+        self.log(logging.INFO, message, *args)
+
+    def debug(self, message: str, *args):
+        self.log(logging.DEBUG, message, *args)
+
+    def warning(self, message: str, *args):
+        self.log(logging.WARNING, message, *args)
+
+    def error(self, message: str, *args):
+        self.log(logging.ERROR, message, *args)
+
+
+def init_logger(name: str = "UC", log: dict = None) -> Logger:
+    if log is None:
+        log = {"directory": "log", "max_files": 3, "max_size": 5}
+    return Logger(name, log)
 
 
 if __name__ == "__main__":

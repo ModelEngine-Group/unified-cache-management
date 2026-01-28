@@ -3,7 +3,7 @@
     "is_mla": false,
     "hash_weight_type": "random",
     "num_hidden_layers": 48,
-    "seq_len_threshhold": 2048,
+    "seq_len_threshhold": 4096,
     "chunk_size": 128,
     "chunk_repre_method": "max",
     "head_dim": 128,
@@ -120,7 +120,7 @@
     "hash_bits_qk_rope": null,
     "hash_weight_kv_lora": null,
     "hash_weight_qk_rope": null,
-    "vllm_hash_attention_topk": 2048,
+    "vllm_hash_attention_topk": 4096,
     "vllm_hash_attention_reduction_head_num": null,
     "vllm_hash_attention_rollback_layers": [
         0,

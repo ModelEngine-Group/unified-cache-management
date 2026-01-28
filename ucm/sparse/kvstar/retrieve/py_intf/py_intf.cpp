@@ -1,9 +1,8 @@
-#include <torch/extension.h>
-#include <vector>
 #include <c10/util/Optional.h>
-
 #include <pybind11/pybind11.h>
 #include <pybind11/stl.h>
+#include <torch/extension.h>
+#include <vector>
 #include "kvstar_retrieve/kvstar_retrieve.h"
 #include "retrieve_task/retrieve_task.h"
 
@@ -11,14 +10,10 @@ namespace py = pybind11;
 
 namespace KVStar {
 
-inline size_t AsyncRetrieveByCPU(
-        const torch::Tensor& queryGroup,
-        const torch::Tensor& blkRepre,
-        const py::object& dPrunedIndex,
-        int topK,
-        int reqId,
-        DeviceType deviceType
-) {
+inline size_t AsyncRetrieveByCPU(const torch::Tensor& queryGroup, const torch::Tensor& blkRepre,
+                                 const py::object& dPrunedIndex, int topK, int reqId,
+                                 DeviceType deviceType)
+{
     PlainTensor plainQuery, plainBlkRepre;
     std::optional<PlainTensor> plainPrunedIndex;
 
@@ -39,39 +34,34 @@ inline size_t AsyncRetrieveByCPU(
         plainPrunedIndex = p_index;
     }
 
-    RetrieveTask task(std::move(plainQuery), std::move(plainBlkRepre), std::move(plainPrunedIndex), topK, reqId, deviceType);
+    RetrieveTask task(std::move(plainQuery), std::move(plainBlkRepre), std::move(plainPrunedIndex),
+                      topK, reqId, deviceType);
 
     size_t taskId = 0;
 
-    auto status = Singleton<RetrieveTaskManager>::Instance()->SubmitSingleTask(std::move(task), taskId);
+    auto status =
+        Singleton<RetrieveTaskManager>::Instance()->SubmitSingleTask(std::move(task), taskId);
 
-    if (status.Failure()) {
-        KVSTAR_ERROR("Failed to submit task {}.", taskId);
-    }
+    if (status.Failure()) { UC_ERROR("Failed to submit task {}.", taskId); }
 
     return taskId;
 }
 
-py::object GetTaskResult(size_t taskId) {
+py::object GetTaskResult(size_t taskId)
+{
     std::shared_ptr<TaskResult> result;
     auto status = Singleton<RetrieveTaskManager>::Instance()->GetResult(taskId, result);
 
-    if (status.Failure()) {
-        return py::none();
-    }
+    if (status.Failure()) { return py::none(); }
 
     py::dict resultDict;
 
     TaskStatus taskStatus = result->status.load(std::memory_order_relaxed);
 
-    switch(taskStatus) {
-        case TaskStatus::PENDING:
-            resultDict["status"] = "PENDING";
-            break;
+    switch (taskStatus) {
+        case TaskStatus::PENDING: resultDict["status"] = "PENDING"; break;
 
-        case TaskStatus::RUNNING:
-            resultDict["status"] = "RUNNING";
-            break;
+        case TaskStatus::RUNNING: resultDict["status"] = "RUNNING"; break;
 
         case TaskStatus::SUCCESS:
             resultDict["status"] = "SUCCESS";
@@ -93,28 +83,20 @@ py::object GetTaskResult(size_t taskId) {
     return resultDict;
 }
 
-
-
-} // namespace KVStar
+}  // namespace KVStar
 
 PYBIND11_MODULE(kvstar_retrieve, module)
 {
     py::enum_<KVStar::DeviceType>(module, "DeviceType")
-    .value("CPU", KVStar::DeviceType::CPU)
-    .value("GPU", KVStar::DeviceType::GPU)
-    .export_values();
+        .value("CPU", KVStar::DeviceType::CPU)
+        .value("GPU", KVStar::DeviceType::GPU)
+        .export_values();
 
     py::class_<KVStar::SetupParam>(module, "SetupParam")
-        .def(py::init<const std::vector<int>&,
-                      const std::vector<std::pair<int, int>>&,
-                      const KVStar::DeviceType,
-                      const int,
-                      const int>(),
-             py::arg("cpuNumaIds"),
-             py::arg("bindInfo"),
-             py::arg("deviceType"),
-             py::arg("totalTpSize"),
-             py::arg("localRankId"))
+        .def(py::init<const std::vector<int>&, const std::vector<std::pair<int, int>>&,
+                      const KVStar::DeviceType, const int, const int>(),
+             py::arg("cpuNumaIds"), py::arg("bindInfo"), py::arg("deviceType"),
+             py::arg("totalTpSize"), py::arg("localRankId"))
         .def_readwrite("cpuNumaIds", &KVStar::SetupParam::cpuNumaIds)
         .def_readwrite("bindInfo", &KVStar::SetupParam::bindInfo)
         .def_readwrite("deviceType", &KVStar::SetupParam::deviceType)

@@ -209,6 +209,8 @@ vllm serve Qwen/Qwen2.5-14B-Instruct \
 
 **⚠️ Make sure to replace `"/workspace/unified-cache-management/examples/ucm_config_example.yaml"` with your actual config file path.**
 
+**⚠️ The log files of UCM module will be put under `log` directory of the path you start vllm service. To use a custom log path, set `export UCM_LOG_PATH=my_log_dir`.**
+
 
 If you see log as below:
 

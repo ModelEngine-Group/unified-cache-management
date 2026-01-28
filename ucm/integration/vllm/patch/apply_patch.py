@@ -114,7 +114,7 @@ def apply_all_patches() -> None:
         _patches_applied = True
         logger.info(f"All vLLM patches applied successfully for version {version}")
     except Exception as e:
-        logger.error(f"Failed to apply vLLM patches: {e}", exc_info=True)
+        logger.error(f"Failed to apply vLLM patches: {e}")
         raise
 
 
