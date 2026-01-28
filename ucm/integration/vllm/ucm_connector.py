@@ -92,7 +92,7 @@ class UCMDirectConnector(KVConnectorBase_V1):
         self.local_rank = (
             -1 if role == KVConnectorRole.SCHEDULER else get_world_group().local_rank
         )
-        self.global_rank = self._vllm_config.parallel_config.rank
+        self.tp_rank = self._vllm_config.parallel_config.rank
         self.block_size = self._vllm_config.cache_config.block_size
         self.is_mla = self._vllm_config.model_config.is_deepseek_mla
         self.is_dsa = False
@@ -128,13 +128,7 @@ class UCMDirectConnector(KVConnectorBase_V1):
         logger.info(f"self.launch_config: {self.launch_config}")
         self.connector_configs = self.launch_config.get("ucm_connectors", [])
         assert len(self.connector_configs) > 0, "no storage connector name in config."
-        # TODO: haven't support broadcast
-        self.load_only_first_rank = False
-        if self.load_only_first_rank:
-            if role == KVConnectorRole.WORKER:
-                self.group_coordinator = get_tp_group()
-                self.broadcast_fn = self.group_coordinator.broadcast
-                self.broadcast_stream = torch.cuda.Stream()
+
         self.chunk_size = 1
 
         if role == KVConnectorRole.SCHEDULER:
@@ -143,13 +137,13 @@ class UCMDirectConnector(KVConnectorBase_V1):
             # init scheduler-size connector
             self.store = self._create_store(None, None)
         else:
-            self.request_hasher = RequestHasher(vllm_config, self.global_rank)
+            self.request_hasher = RequestHasher(vllm_config, self.tp_rank)
 
         self.metrics_config = self.launch_config.get("metrics_config_path", "")
         if self.metrics_config:
             self.stats_logger = PrometheusStatsLogger(
                 vllm_config.model_config.served_model_name,
-                self.global_rank,
+                self.tp_rank,
                 self.metrics_config,
             )
 
@@ -483,25 +477,6 @@ class UCMDirectConnector(KVConnectorBase_V1):
 
         return block_addrs, rope_block_addrs
 
-    def _broadcast(self, dst_tensor_addr: list[torch.Tensor]):
-        rec_tensor: torch.Tensor = None
-        with torch.cuda.stream(self.broadcast_stream):
-            # TODO support broadcast when PP
-            if self.global_rank == 0:
-                tensor_to_broadcast = torch.stack(dst_tensor_addr, dim=0)
-                self.broadcast_fn(tensor_to_broadcast, 0)
-            else:
-                shape = (len(dst_tensor_addr),) + dst_tensor_addr[0].shape
-                # TODO create earlier
-                rec_tensor = torch.empty(
-                    shape, dtype=self.kv_cache_dtype, device=self.device
-                )
-                self.broadcast_fn(rec_tensor, 0)
-        self.broadcast_stream.synchronize()
-        if self.global_rank != 0 and rec_tensor is not None:
-            for i, tensor in enumerate(dst_tensor_addr):
-                tensor.copy_(rec_tensor[i])
-
     def start_load_kv(self, forward_context: "ForwardContext", **kwargs) -> None:
         metadata = self._get_connector_metadata()
         assert isinstance(metadata, UCMConnectorMetadata)
@@ -520,12 +495,12 @@ class UCMDirectConnector(KVConnectorBase_V1):
             num_loaded_request += 1
 
             ucm_block_ids, vllm_block_ids = request.load_block_ids
-            if self.global_rank != 0 and not self.is_mla and not self.is_dsa:
+            if self.tp_rank != 0 and not self.is_mla and not self.is_dsa:
                 for i, ucm_block_id in enumerate(ucm_block_ids):
                     ucm_block_ids[i] = self.request_hasher(ucm_block_id)
             total_tensors, rope_tensors = self._generate_task(vllm_block_ids)
             shard_indexs = [0] * len(ucm_block_ids)
-            if self.global_rank == 0 or not self.load_only_first_rank:
+            if self.tp_rank == 0:
                 try:
                     task = self.store.load_data(
                         ucm_block_ids, shard_indexs, total_tensors
@@ -546,7 +521,7 @@ class UCMDirectConnector(KVConnectorBase_V1):
 
         for request_id, tasks in request_to_task.items():
             # TODO error handling
-            if self.global_rank == 0 or not self.load_only_first_rank:
+            if self.tp_rank == 0:
                 try:
                     self.store.wait(tasks[0])
                     if len(tasks) > 1 and self.rope_store:
@@ -558,8 +533,7 @@ class UCMDirectConnector(KVConnectorBase_V1):
                     )
                 except IndexError as e:
                     logger.error(f"request {request_id} load kv cache index error. {e}")
-            if self.load_only_first_rank:
-                self._broadcast(req_broadcast_addr[request_id])
+
         load_end_time = time.perf_counter() * 1000
         load_speed = (
             num_loaded_block
@@ -592,7 +566,7 @@ class UCMDirectConnector(KVConnectorBase_V1):
 
     def wait_for_save(self) -> None:
         # TODO support PP
-        if (self.is_mla or self.is_dsa) and self.global_rank != 0:
+        if (self.is_mla or self.is_dsa) and self.tp_rank != 0:
             return
 
         metadata = self._get_connector_metadata()
@@ -611,7 +585,7 @@ class UCMDirectConnector(KVConnectorBase_V1):
             num_saved_request += 1
 
             ucm_block_ids, vllm_block_ids = request.dump_block_ids
-            if self.global_rank != 0:
+            if self.tp_rank != 0:
                 for i, ucm_block_id in enumerate(ucm_block_ids):
                     ucm_block_ids[i] = self.request_hasher(ucm_block_id)
             total_ucm_block_ids.extend(ucm_block_ids)
@@ -704,7 +678,7 @@ class UCMLayerWiseConnector(UCMDirectConnector):
                 continue
 
             ucm_block_ids, vllm_block_ids = request.load_block_ids
-            if self.global_rank != 0 and not self.is_mla and not self.is_dsa:
+            if self.tp_rank != 0 and not self.is_mla and not self.is_dsa:
                 for i, ucm_block_id in enumerate(ucm_block_ids):
                     ucm_block_ids[i] = self.request_hasher(ucm_block_id)
             try:
@@ -775,7 +749,7 @@ class UCMLayerWiseConnector(UCMDirectConnector):
         **kwargs,
     ) -> None:
         # TODO support PP
-        if (self.is_mla or self.is_dsa) and self.global_rank != 0:
+        if (self.is_mla or self.is_dsa) and self.tp_rank != 0:
             return
 
         metadata = self._get_connector_metadata()
@@ -789,7 +763,7 @@ class UCMLayerWiseConnector(UCMDirectConnector):
 
             self.is_save = True
             ucm_block_ids, vllm_block_ids = request.dump_block_ids
-            if self.global_rank != 0 and layer_id == 0:
+            if self.tp_rank != 0 and layer_id == 0:
                 for i, ucm_block_id in enumerate(ucm_block_ids):
                     ucm_block_ids[i] = self.request_hasher(ucm_block_id)
             total_ucm_block_ids.extend(ucm_block_ids)

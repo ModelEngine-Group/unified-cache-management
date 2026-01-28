@@ -14,8 +14,6 @@ ucm_connectors:
       storage_backends: "/mnt/test"
       io_direct: false
 
-load_only_first_rank: false
-
 # Enable UCM metrics so they can be monitored online via Grafana and Prometheus.
 # metrics_config_path: "/workspace/unified-cache-management/examples/metrics/metrics_configs.yaml"
 

@@ -104,7 +104,6 @@ class TestBasicOfflineInferenceSparse:
                     },
                 }
             ],
-            "load_only_first_rank": False,
         }
 
         sampling_params = SamplingParams(
