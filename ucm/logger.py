@@ -46,11 +46,6 @@ class Logger:
         ucmlogger.setup(directory, max_files, max_size)
         atexit.register(ucmlogger.flush)
 
-    def load_config(self, path: str):
-        with open(path, "r", encoding="utf-8") as f:
-            config = yaml.safe_load(f) or {}
-        return config
-
     def log(self, levelno, message, *args):
         level = LevelMap[levelno]
         frame = inspect.currentframe()
