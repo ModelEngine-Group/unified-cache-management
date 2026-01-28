@@ -124,7 +124,7 @@
           "expr": "rate(ucm:interval_lookup_hit_rates_sum{model_name=\"$model_name\"}[$__rate_interval])\n/\nrate(ucm:interval_lookup_hit_rates_count{model_name=\"$model_name\"}[$__rate_interval])",
           "hide": false,
           "instant": false,
-          "legendFormat": "Average",
+          "legendFormat": "worker-{{worker_id}}",
           "range": true,
           "refId": "A"
         }
