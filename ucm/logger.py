@@ -76,7 +76,6 @@ def init_logger(name: str = "UC", log: dict = None) -> Logger:
 
 
 if __name__ == "__main__":
-    os.environ["UNIFIED_CACHE_LOG_LEVEL"] = "DEBUG"
     logger = init_logger()
     logger.debug("debug message")
     logger.info("info message")
