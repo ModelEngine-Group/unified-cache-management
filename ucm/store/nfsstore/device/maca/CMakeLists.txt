@@ -16,5 +16,5 @@ target_include_directories(WCUDA::cudart INTERFACE
 	/opt/maca/include/mcr
 )
 
-target_link_libraries(storedevice PUBLIC infra_status WCUDA::cudart)
+target_link_libraries(storedevice PUBLIC infra_status infra_logger WCUDA::cudart)
 target_compile_options(storedevice PRIVATE -Wall -fPIC -std=c++17)
