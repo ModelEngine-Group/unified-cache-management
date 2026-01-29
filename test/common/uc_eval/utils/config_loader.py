@@ -194,6 +194,12 @@ class TaskFactory:
         client_kwargs = {}
         if data_type is DatasetType.MULTI_DIALOGUE:
             client_kwargs["enable_prefix_cache"] = perf_config.enable_prefix_cache
+        elif data_type is DatasetType.DOC_QA and eval_config:
+            if (
+                hasattr(eval_config, "prompt_split_ratio")
+                and eval_config.prompt_split_ratio is not None
+            ):
+                client_kwargs["prompt_split_ratio"] = eval_config.prompt_split_ratio
         return (
             cls._dataset[data_type](tokenizer_path),
             cls._client[data_type](model_config, stream, **client_kwargs),
