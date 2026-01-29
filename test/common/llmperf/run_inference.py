@@ -24,9 +24,10 @@ def run_test_cases(
     server_url,
     tokenizer_path,
     hit_rate,
+    TOTAL_COUNTER,
+    ROUND_COUNTER,
 ):
-    print(f"[INFO] Total {len(mean_input_tokens)} test cases to be executed")
-    all_summaries = []
+    print(f"[INFO] Total {TOTAL_COUNTER} test cases to be executed")
     failed_case = []
 
     # Clear proxy environment variables
@@ -53,7 +54,7 @@ def run_test_cases(
         start=1,
     ):
         # for i, case in enumerate(mean_input_tokens):
-        print(f"\n>>> Executing test case {i} <<<")
+        print(f"\n>>> Executing test case {ROUND_COUNTER} <<<")
         reset_prefill_cache(env, server_url)
         # Use a fixed random_seed for each test to control PC hit_rate
         random_seed = random.randint(1, 100000)
@@ -76,7 +77,7 @@ def run_test_cases(
                     random_seed=random_seed,
                     openai_api_base=server_url + "/v1",
                     tokenizer_path=tokenizer_path,
-                    user_metadata={"case_idx": i, "phase": "normal"},
+                    user_metadata={"case_idx": ROUND_COUNTER, "phase": "normal"},
                 )
             else:
                 print(
@@ -102,8 +103,11 @@ def run_test_cases(
                     random_seed=random_seed,
                     openai_api_base=server_url + "/v1",
                     tokenizer_path=tokenizer_path,
-                    user_metadata={"case_idx": i, "phase": "prefill"},
+                    user_metadata={"case_idx": ROUND_COUNTER, "phase": "prefill"},
                 )
+                import time
+
+                time.sleep(10)
                 reset_prefill_cache(env, server_url)
                 # Then run normal mode
                 print("[INFO] Prefill completed, switching to normal mode execution")
@@ -122,14 +126,13 @@ def run_test_cases(
                     random_seed=random_seed,
                     openai_api_base=server_url + "/v1",
                     tokenizer_path=tokenizer_path,
-                    user_metadata={"case_idx": i, "phase": "normal"},
+                    user_metadata={"case_idx": ROUND_COUNTER, "phase": "normal"},
                 )
-            all_summaries.append(summary)
         except Exception as e:
             print(f"[Warning] {e}")
-            failed_case.append(i)
+            failed_case.append(ROUND_COUNTER)
 
-    return all_summaries, failed_case
+    return summary, failed_case
 
 
 def inference_results(
@@ -139,6 +142,8 @@ def inference_results(
     concurrent_requests,
     additional_sampling_params,
     hit_rate,
+    TOTAL_COUNTER,
+    ROUND_COUNTER,
 ):
     config_file = Path(__file__).parent.parent.parent / "config.yaml"
     print("[INFO] Initialization complete, starting main process")
@@ -160,7 +165,7 @@ def inference_results(
         tokenizer_path = config.get("llm_connection", {}).get("tokenizer_path", "")
         print(f"[INFO] Created results directory: {timestamp_dir}")
 
-        all_summaries, failed_cases = run_test_cases(
+        summary, failed_cases = run_test_cases(
             llm_api,
             model,
             test_timeout_s,
@@ -175,11 +180,10 @@ def inference_results(
             server_url,
             tokenizer_path,
             hit_rate,
+            TOTAL_COUNTER,
+            ROUND_COUNTER,
         )
-        total = len(mean_input_tokens)
-        print(
-            f"\n[INFO] All tests completed! Success: {total - len(failed_cases)}/{total}"
-        )
+
         if failed_cases:
             print(f"[WARN] Failed case indices: {failed_cases}")
-    return all_summaries
+    return summary
