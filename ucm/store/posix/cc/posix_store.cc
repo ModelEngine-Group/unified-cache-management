@@ -63,8 +63,9 @@ private:
         if (config.deviceId < -1) {
             return Status::InvalidParam("invalid device({})", config.deviceId);
         }
-        if (config.streamNumber == 0) {
-            return Status::InvalidParam("invalid stream number({})", config.streamNumber);
+        if (config.dataTransConcurrency == 0 || config.lookupConcurrency == 0) {
+            return Status::InvalidParam("invalid concurrency({},{})", config.dataTransConcurrency,
+                                        config.lookupConcurrency);
         }
         if (config.deviceId == -1) { return Status::OK(); }
         if (config.tensorSize == 0 || config.shardSize < config.tensorSize ||
@@ -87,7 +88,8 @@ private:
         UC_INFO("Set {}::ShardSize to {}.", ns, config.shardSize);
         UC_INFO("Set {}::BlockSize to {}.", ns, config.blockSize);
         UC_INFO("Set {}::IoDirect to {}.", ns, config.ioDirect);
-        UC_INFO("Set {}::StreamNumber to {}.", ns, config.streamNumber);
+        UC_INFO("Set {}::DataTransConcurrency to {}.", ns, config.dataTransConcurrency);
+        UC_INFO("Set {}::LookupConcurrency to {}.", ns, config.lookupConcurrency);
         UC_INFO("Set {}::TimeoutMs to {}.", ns, config.timeoutMs);
         UC_INFO("Set {}::DataDirShardBytes to {}.", ns, config.dataDirShardBytes);
     }
@@ -104,7 +106,8 @@ Status PosixStore::Setup(const Detail::Dictionary& config)
     config.GetNumber("shard_size", param.shardSize);
     config.GetNumber("block_size", param.blockSize);
     config.Get("io_direct", param.ioDirect);
-    config.GetNumber("stream_number", param.streamNumber);
+    config.GetNumber("posix_data_trans_concurrency", param.dataTransConcurrency);
+    config.GetNumber("posix_lookup_concurrency", param.lookupConcurrency);
     config.GetNumber("timeout_ms", param.timeoutMs);
     config.GetNumber("data_dir_shard_bytes", param.dataDirShardBytes);
     try {

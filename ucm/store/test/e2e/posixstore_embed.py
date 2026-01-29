@@ -32,9 +32,9 @@ from ucm.store.pipeline.connector import UcmKVStoreBaseV1, UcmPipelineStore
 def setup(
     backends: list[str],
     block_size: int,
-    stream_number: int,
+    data_trans_concur: int,
+    lookup_concur: int,
     io_direct: bool,
-    io_async: bool,
     worker: bool,
 ) -> UcmKVStoreBaseV1:
     config = {}
@@ -43,9 +43,9 @@ def setup(
     config["tensor_size"] = block_size
     config["shard_size"] = block_size
     config["block_size"] = block_size
-    config["stream_number"] = stream_number
+    config["posix_data_trans_concurrency"] = data_trans_concur
+    config["posix_lookup_concurrency"] = lookup_concur
     config["io_direct"] = io_direct
-    config["io_async"] = io_async
     config["device_id"] = 0 if worker else -1
     return UcmPipelineStore(config)
 
@@ -62,11 +62,15 @@ def aligned_array(size, alignment=4096, dtype=np.uint8):
 def main():
     backends = ["./build/data"]
     block_size = 1048576
-    stream_number = 8
+    data_trans_concur = 8
+    lookup_concur = 8
     io_direct = True
-    io_async = False
-    worker = setup(backends, block_size, stream_number, io_direct, io_async, True)
-    scheduler = setup(backends, block_size, stream_number, io_direct, io_async, False)
+    worker = setup(
+        backends, block_size, data_trans_concur, lookup_concur, io_direct, True
+    )
+    scheduler = setup(
+        backends, block_size, data_trans_concur, lookup_concur, io_direct, False
+    )
     batch_number = 64
     batch_size = 1024
     data_size = block_size * batch_size

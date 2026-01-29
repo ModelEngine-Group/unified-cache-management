@@ -100,7 +100,6 @@ def main():
     config["waiting_queue_depth"] = 16
     config["running_queue_depth"] = 1024
     config["io_direct"] = True
-    config["stream_number"] = 16
     worker = UcmPipelineStore(config | {"device_id": device_id})
     scheduler = UcmPipelineStore(config)
     test_batch_number = 512
