@@ -95,15 +95,27 @@ private:
 
 Ds3fsStore::~Ds3fsStore() = default;
 
-Status Ds3fsStore::Setup(const Config& config)
+Status Ds3fsStore::Setup(const Detail::Dictionary& config)
 {
+    Config param;
+    config.Get("storage_backends", param.storageBackends);
+    config.Get("device_id", param.deviceId);
+    config.Get("tensor_size", param.tensorSize);
+    config.Get("shard_size", param.shardSize);
+    config.Get("block_size", param.blockSize);
+    config.Get("io_direct", param.ioDirect);
+    config.Get("stream_number", param.streamNumber);
+    config.Get("timeout_ms", param.timeoutMs);
+    config.Get("ior_entries", param.iorEntries);
+    config.Get("ior_depth", param.iorDepth);
+    config.Get("numa_id", param.numaId);
     try {
         impl_ = std::make_shared<Ds3fsStoreImpl>();
     } catch (const std::exception& e) {
         UC_ERROR("Failed({}) to make ds3fs store object.", e.what());
         return Status::Error(e.what());
     }
-    return impl_->Setup(config);
+    return impl_->Setup(param);
 }
 
 std::string Ds3fsStore::Readme() const { return "Ds3fsStore"; }
@@ -150,3 +162,5 @@ Status Ds3fsStore::Wait(Detail::TaskHandle taskId)
 }
 
 }  // namespace UC::Ds3fsStore
+
+extern "C" UC::StoreV1* MakeDs3fsStore() { return new UC::Ds3fsStore::Ds3fsStore(); }

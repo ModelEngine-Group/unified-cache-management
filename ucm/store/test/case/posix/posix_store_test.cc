@@ -32,25 +32,25 @@ TEST_F(UCPosixStoreTest, SetupWithInvalidParam)
 {
     using namespace UC::PosixStore;
     {
-        Config config;
+        UC::Detail::Dictionary config;
         PosixStore store;
         ASSERT_EQ(store.Setup(config), UC::Status::InvalidParam());
     }
     {
-        Config config;
-        config.storageBackends.push_back(this->Path());
-        config.deviceId = 0;
+        UC::Detail::Dictionary config;
+        config.Set("storage_backends", std::vector<std::string>{Path()});
+        config.SetNumber("device_id", 0);
         PosixStore store;
         ASSERT_EQ(store.Setup(config), UC::Status::InvalidParam());
     }
     {
-        Config config;
-        config.storageBackends.push_back(this->Path());
-        config.deviceId = 0;
-        config.tensorSize = 4096;
-        config.shardSize = config.tensorSize;
-        config.blockSize = config.shardSize;
-        config.streamNumber = 0;
+        UC::Detail::Dictionary config;
+        config.Set("storage_backends", std::vector<std::string>{Path()});
+        config.SetNumber("device_id", 0);
+        config.SetNumber("tensor_size", size_t(4096));
+        config.SetNumber("shard_size", size_t(4096));
+        config.SetNumber("block_size", size_t(4096));
+        config.SetNumber("stream_number", size_t(0));
         PosixStore store;
         ASSERT_EQ(store.Setup(config), UC::Status::InvalidParam());
     }
@@ -59,12 +59,13 @@ TEST_F(UCPosixStoreTest, SetupWithInvalidParam)
 TEST_F(UCPosixStoreTest, DumpThenLoad)
 {
     using namespace UC::PosixStore;
-    Config config;
-    config.deviceId = 0;
-    config.storageBackends.push_back(this->Path());
-    config.tensorSize = 32768;
-    config.shardSize = config.tensorSize;
-    config.blockSize = config.shardSize;
+    UC::Detail::Dictionary config;
+    config.SetNumber("device_id", 0);
+    config.Set("storage_backends", std::vector<std::string>{Path()});
+    constexpr size_t dataSize = 32768;
+    config.SetNumber("tensor_size", dataSize);
+    config.SetNumber("shard_size", dataSize);
+    config.SetNumber("block_size", dataSize);
     PosixStore store;
     auto s = store.Setup(config);
     ASSERT_EQ(s, UC::Status::OK());
@@ -73,7 +74,7 @@ TEST_F(UCPosixStoreTest, DumpThenLoad)
     auto founds = store.Lookup(&block, nBlocks);
     ASSERT_TRUE(founds.HasValue());
     ASSERT_EQ(founds.Value(), std::vector<uint8_t>{false});
-    UC::Test::Detail::DataGenerator data1{nBlocks, config.blockSize};
+    UC::Test::Detail::DataGenerator data1{nBlocks, dataSize};
     data1.GenerateRandom();
     UC::Detail::TaskDesc desc1;
     desc1.brief = "Dump";
@@ -85,7 +86,7 @@ TEST_F(UCPosixStoreTest, DumpThenLoad)
     founds = store.Lookup(&block, nBlocks);
     ASSERT_TRUE(founds.HasValue());
     ASSERT_EQ(founds.Value(), std::vector<uint8_t>{true});
-    UC::Test::Detail::DataGenerator data2{nBlocks, config.blockSize};
+    UC::Test::Detail::DataGenerator data2{nBlocks, dataSize};
     data2.Generate();
     UC::Detail::TaskDesc desc2;
     desc2.brief = "Load";
@@ -100,13 +101,14 @@ TEST_F(UCPosixStoreTest, DumpThenLoad)
 TEST_F(UCPosixStoreTest, DumpThenLoadWithIoDirect)
 {
     using namespace UC::PosixStore;
-    Config config;
-    config.deviceId = 0;
-    config.storageBackends.push_back(this->Path());
-    config.tensorSize = 32768;
-    config.shardSize = config.tensorSize;
-    config.blockSize = config.shardSize;
-    config.ioDirect = true;
+    UC::Detail::Dictionary config;
+    config.SetNumber("device_id", 0);
+    config.Set("storage_backends", std::vector<std::string>{Path()});
+    constexpr size_t dataSize = 32768;
+    config.SetNumber("tensor_size", dataSize);
+    config.SetNumber("shard_size", dataSize);
+    config.SetNumber("block_size", dataSize);
+    config.Set("io_direct", true);
     PosixStore store;
     auto s = store.Setup(config);
     ASSERT_EQ(s, UC::Status::OK());
@@ -115,10 +117,10 @@ TEST_F(UCPosixStoreTest, DumpThenLoadWithIoDirect)
     auto founds = store.Lookup(&block, nBlocks);
     ASSERT_TRUE(founds.HasValue());
     ASSERT_EQ(founds.Value(), std::vector<uint8_t>{false});
-    void *buffer1 = nullptr;
-    auto ret = posix_memalign(&buffer1, 4096, config.blockSize);
+    void* buffer1 = nullptr;
+    auto ret = posix_memalign(&buffer1, 4096, dataSize);
     ASSERT_EQ(ret, 0);
-    *(size_t *)buffer1 = 0xfffffffe;
+    *(size_t*)buffer1 = 0xfffffffe;
     UC::Detail::TaskDesc desc1;
     desc1.brief = "Dump";
     desc1.push_back(UC::Detail::Shard{block, 0, {buffer1}});
@@ -129,10 +131,10 @@ TEST_F(UCPosixStoreTest, DumpThenLoadWithIoDirect)
     founds = store.Lookup(&block, nBlocks);
     ASSERT_TRUE(founds.HasValue());
     ASSERT_EQ(founds.Value(), std::vector<uint8_t>{true});
-    void *buffer2 = nullptr;
-    ret = posix_memalign(&buffer2, 4096, config.blockSize);
+    void* buffer2 = nullptr;
+    ret = posix_memalign(&buffer2, 4096, dataSize);
     ASSERT_EQ(ret, 0);
-    *(size_t *)buffer2 = 0x00000001;
+    *(size_t*)buffer2 = 0x00000001;
     UC::Detail::TaskDesc desc2;
     desc2.brief = "Load";
     desc2.push_back(UC::Detail::Shard{block, 0, {buffer2}});
@@ -140,7 +142,7 @@ TEST_F(UCPosixStoreTest, DumpThenLoadWithIoDirect)
     ASSERT_TRUE(handle2.HasValue());
     s = store.Wait(handle2.Value());
     ASSERT_EQ(s, UC::Status::OK());
-    ASSERT_EQ(*(size_t *)buffer1, *(size_t *)buffer2);
+    ASSERT_EQ(*(size_t*)buffer1, *(size_t*)buffer2);
     free(buffer1);
     free(buffer2);
 }

@@ -12,7 +12,7 @@ option(BUILD_UNIT_TESTS "build all unit test suits." OFF)
 option(BUILD_NUMA "build numactl library." OFF)
 option(DOWNLOAD_DEPENDENCE "download dependence by cmake." ON)
 set(RUNTIME_ENVIRONMENT "simu" CACHE STRING "runtime: simu, ascend, musa or cuda.")
-set(LOGGER_BACKEND "spdlog" CACHE STRING "backend: spdlog or flux.")
+
 
 execute_process(COMMAND git rev-parse HEAD OUTPUT_VARIABLE UCM_COMMIT_ID OUTPUT_STRIP_TRAILING_WHITESPACE)
 add_compile_definitions(UCM_PROJECT_NAME="${PROJECT_NAME}")
@@ -20,7 +20,6 @@ add_compile_definitions(UCM_PROJECT_VERSION="${PROJECT_VERSION}")
 add_compile_definitions(UCM_COMMIT_ID="${UCM_COMMIT_ID}")
 add_compile_definitions(UCM_BUILD_TYPE="${CMAKE_BUILD_TYPE}")
 
-set(CMAKE_SKIP_RPATH TRUE)
 set(FLAGS_PUBLIC "-Wall -Werror -fPIC -Wl,-z,relro,-z,now")
 set(FLAGS_DEBUG "-O0 -g")
 set(FLAGS_RELEASE "-O3 -D_FORTIFY_SOURCE=2")

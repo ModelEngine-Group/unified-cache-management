@@ -149,7 +149,7 @@ You may directly edit the example file at `unified-cache-management/examples/ucm
 
 ### Feature 2:  Sparsity
 
-The sparse module was not compiled by default. To enable it, set the environment variable `export ENABLE_SPARSE=TRUE` and re-compile the code you built. And uncomment `ucm_sparse_config` code block in `unified-cache-management/examples/ucm_config_example.yaml`.
+The sparse module was not compiled by default. To enable it, set the environment variable `export ENABLE_SPARSE=TRUE` and re-compile the code you built. And uncomment `ucm_sparse_config` code block in `unified-cache-management/examples/ucm_config_example.yaml`. Additionally, if you want to run GSAOnDevice, you also need to set the environment variable `export VLLM_HASH_ATTENTION=1`.
 
 ## Step 3: Launching Inference
 
@@ -208,6 +208,8 @@ vllm serve Qwen/Qwen2.5-14B-Instruct \
 **⚠️ The parameter `--no-enable-prefix-caching` is for SSD performance testing, please remove it for production.**
 
 **⚠️ Make sure to replace `"/workspace/unified-cache-management/examples/ucm_config_example.yaml"` with your actual config file path.**
+
+**⚠️ The log files of UCM module will be put under `log` directory of the path you start vllm service. To use a custom log path, set `export UCM_LOG_PATH=my_log_dir`.**
 
 
 If you see log as below:

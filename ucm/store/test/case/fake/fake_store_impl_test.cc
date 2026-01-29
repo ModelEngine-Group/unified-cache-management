@@ -34,9 +34,9 @@ protected:
 TEST_F(UCFakeStoreImplTest, Lookup)
 {
     UC::FakeStore::FakeStore store;
-    UC::FakeStore::Config config;
-    config.uniqueId = rd.RandomString(10);
-    config.bufferNumber = 1024;
+    UC::Detail::Dictionary config;
+    config.Set("unique_id", rd.RandomString(10));
+    config.SetNumber("buffer_number", size_t(1024));
     ASSERT_TRUE(store.Setup(config).Success());
     std::vector<UC::Detail::BlockId> blocks(3);
     std::for_each(blocks.begin(), blocks.end(), [](auto& block) {

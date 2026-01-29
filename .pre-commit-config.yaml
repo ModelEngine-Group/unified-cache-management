@@ -3,6 +3,7 @@ repos:
     rev: v2.4.1
     hooks:
       - id: codespell
+        exclude: \.(jsonl|txt)$
         args: [
           '--skip', 'ucm/csrc/**,./ucm.egg-info/**,.github/**',
           '-L', 'CANN,cann,NNAL,nnal,ASCEND,ascend,EnQue,CopyIn'
@@ -22,6 +23,7 @@ repos:
     rev: v1.7.7
     hooks:
       - id: actionlint
+        exclude: \.(jsonl|txt)$
 default_stages:
   - pre-commit
   - manual

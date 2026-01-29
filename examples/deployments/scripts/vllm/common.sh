@@ -38,13 +38,13 @@ ensure_ifconfig_installed() {
 
     if command -v apt-get >/dev/null 2>&1; then
         echo "Detected apt-get (Debian/Ubuntu). Installing net-tools..."
-        sudo apt-get update && sudo apt-get install -y net-tools
+        apt-get update && apt-get install -y net-tools
     elif command -v yum >/dev/null 2>&1; then
         echo "Detected yum (RHEL/CentOS). Installing net-tools..."
-        sudo yum install -y net-tools
+        yum install -y net-tools
     elif command -v dnf >/dev/null 2>&1; then
         echo "Detected dnf (Fedora). Installing net-tools..."
-        sudo dnf install -y net-tools
+        dnf install -y net-tools
     else
         echo "ERROR: No supported package manager (apt/yum/dnf) found."
         echo "Please install 'net-tools' manually, 'ifconfig' is required to get network interface information."

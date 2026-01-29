@@ -30,7 +30,7 @@ set_node_env(){
     export NCCL_SOCKET_IFNAME="$IFACE"
     export GLOO_SOCKET_IFNAME="$IFACE"
     export TP_SOCKET_IFNAME="$IFACE"
-    export NUM_GPUS=$((tp_size / node_num))
+    export NUM_GPUS=$((tp_size * dp_size * pp_size / node_num))
 
     echo ""
     echo "===== ray startup configuration ======"

@@ -1,0 +1,78 @@
+name: 'Lint and Unit Tests'
+
+on:
+  workflow_call:
+
+jobs:
+  cpp-linter:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: cpp-linter/cpp-linter-action@main
+        id: linter
+        continue-on-error: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          style: file
+          tidy-checks: '-*'
+          files-changed-only: true
+          lines-changed-only: diff
+          format-review: false
+          version: 20
+
+      - name: Fail fast?!
+        if: steps.linter.outputs.checks-failed != 0
+        run: |
+          echo "some linter checks failed. ${{ steps.linter.outputs.checks-failed }}"
+          exit 1
+
+  py-linter:
+    runs-on: ubuntu-latest
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: "3.12"
+
+    - name: Add matchers for better error display
+      run: |
+        echo "::add-matcher::.github/workflows/matchers/actionlint.json"
+        echo "::add-matcher::.github/workflows/matchers/mypy.json"
+
+    - name: Run pre-commit checks on all files
+      uses: pre-commit/action@v3.0.1
+      env:
+        SHELLCHECK_OPTS: "--exclude=SC2046,SC2006,SC2086"
+      with:
+        extra_args: --all-files --hook-stage manual
+
+  cpp_gtest:
+    runs-on: ubuntu-latest
+    env:
+      BUILD_TYPE: Debug
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Install googletest
+      run: |
+        git clone https://github.com/google/googletest.git --depth=1 --branch=v1.17.0
+        cd googletest
+        mkdir build && cd build
+        cmake -DCMAKE_CXX_FLAGS="-fPIC" -DCMAKE_C_FLAGS="-fPIC" -DCMAKE_CXX_STANDARD=17 -DCMAKE_CXX_STANDARD_REQUIRED=True ..
+        sudo make install -j
+
+    - name: Configure CMake
+      run: cmake -B ${{github.workspace}}/build -DCMAKE_BUILD_TYPE=${{env.BUILD_TYPE}} -DBUILD_UCM_SPARSE=OFF -DBUILD_UNIT_TESTS=ON -DRUNTIME_ENVIRONMENT=simu
+
+    - name: Build
+      run: cmake --build ${{github.workspace}}/build --config ${{env.BUILD_TYPE}} -j
+
+    - name: Test
+      working-directory: ${{github.workspace}}/build
+      run: ctest -C ${{env.BUILD_TYPE}} --output-on-failure

@@ -25,7 +25,7 @@ start_server() {
     echo "pp_size                  = $pp_size"
     echo "enable_expert_parallel   = $enable_expert_parallel"
     echo "max_model_len            = $max_model_len"
-    echo "max_num_batched_tokens   = $max_num_batch_tokens"
+    echo "max_num_batched_tokens   = $max_num_batched_tokens"
     echo "max_num_seqs             = $max_num_seqs"
     echo "block_size               = $block_size"
     echo "gpu_memory_utilization   = $gpu_memory_utilization"
@@ -69,6 +69,10 @@ start_server() {
     fi
     
     # --- Boolean flags ---
+    if [[ "$distributed_executor_backend" == "ray" ]] && [[ "$dp_size" -gt 1 ]]; then 
+        CMD+=("--data-parallel-backend" "ray")
+        CMD+=("--data-parallel-size-local" "$((dp_size / node_num))");
+    fi
     if [[ "$async_scheduling" == "true" ]]; then CMD+=("--async-scheduling"); fi
     if [[ "$enable_expert_parallel" == "true" ]]; then CMD+=("--enable-expert-parallel"); fi
     if [[ "$enable_prefix_caching" == "false" ]]; then CMD+=("--no-enable-prefix-caching"); fi

@@ -1,6 +1,6 @@
-file(GLOB_RECURSE UCM_EMPTY_STORE_CPY_SOURCE_FILES "./cpy/*.cc")
-pybind11_add_module(ucmemptystore ${UCM_EMPTY_STORE_CPY_SOURCE_FILES})
-target_link_libraries(ucmemptystore PRIVATE storeintf)
-
+file(GLOB_RECURSE UCM_EMPTY_STORE_CC_SOURCE_FILES "./cc/*.cc")
+add_library(emptystore SHARED ${UCM_EMPTY_STORE_CC_SOURCE_FILES})
+target_include_directories(emptystore PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/cc)
+target_link_libraries(emptystore PUBLIC storeintf)
 file(RELATIVE_PATH INSTALL_REL_PATH ${CMAKE_SOURCE_DIR} ${CMAKE_CURRENT_SOURCE_DIR})
-install(TARGETS ucmemptystore LIBRARY DESTINATION ${INSTALL_REL_PATH} COMPONENT ucm)
+install(TARGETS emptystore LIBRARY DESTINATION ${INSTALL_REL_PATH} COMPONENT ucm)

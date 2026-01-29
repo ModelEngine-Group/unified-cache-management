@@ -51,7 +51,7 @@ private:
     Detail::TaskHandle finishedBackendTaskHandle_{0};
     TaskIdSet* failureSet_{nullptr};
     TransBuffer* buffer_{nullptr};
-    StoreV1* backend_{nullptr};
+    std::shared_ptr<StoreV1> backend_{nullptr};
     SpscRingQueue<TaskPair> waiting_;
     SpscRingQueue<DumpCtx> dumping_;
     std::thread dispatcher_;

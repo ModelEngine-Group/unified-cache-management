@@ -1,0 +1,9 @@
+name: 'Push Commit Checks'
+
+on:
+  push:
+    branches: [ "**" ] # ** matches all branches, while * matches only top-level branches without '/'
+
+jobs:
+  lint-and-unit-tests:
+    uses: ./.github/workflows/lint-and-test.yml

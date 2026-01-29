@@ -33,13 +33,13 @@ namespace UC::CacheStore {
 
 class BufferManager {
     std::unique_ptr<TransBuffer> buffer_{nullptr};
-    StoreV1* backend_{nullptr};
+    std::shared_ptr<StoreV1> backend_{nullptr};
 
     template <auto LookupFunc>
     auto LookupThrough(const Detail::BlockId* blocks, size_t num)
     {
         StopWatch sw;
-        auto res = (backend_->*LookupFunc)(blocks, num);
+        auto res = (backend_.get()->*LookupFunc)(blocks, num);
         if (!res) [[unlikely]] { return decltype(res)(res.Error()); }
         UC_DEBUG("Cache lookup({}) in backend costs {:.3f}ms.", num, sw.Elapsed().count() * 1e3);
         return res;
@@ -48,7 +48,7 @@ class BufferManager {
 public:
     Status Setup(const Config& config)
     {
-        backend_ = static_cast<StoreV1*>((void*)config.storeBackend);
+        backend_ = config.storeBackend;
         if (config.deviceId == -1 && !config.shareBufferEnable) { return Status::OK(); }
         try {
             buffer_ = std::make_unique<TransBuffer>();

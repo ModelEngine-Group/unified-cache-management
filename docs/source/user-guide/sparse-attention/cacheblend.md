@@ -67,7 +67,6 @@ ktc = KVTransferConfig(
                     },
                 }
             ],
-            "load_only_first_rank": False,
             "ucm_sparse_config": {
                 "Blend": {
                     "chunk_end_token_id": chunk_end_token_id,

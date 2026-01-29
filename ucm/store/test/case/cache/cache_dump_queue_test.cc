@@ -51,7 +51,7 @@ TEST_F(UCCacheDumpQueueTest, DumpOneBlock)
     }));
     UC::HashSet<UC::Detail::TaskHandle> failureSet;
     Config config;
-    config.storeBackend = (uintptr_t)(void*)&backend;
+    config.storeBackend = std::shared_ptr<UC::StoreV1>(&backend, [](auto) {});
     config.tensorSize = 32768;
     config.shardSize = config.tensorSize;
     config.blockSize = config.shardSize;
@@ -87,7 +87,7 @@ TEST_F(UCCacheDumpQueueTest, DumpBlockWhileBackendSubmitFailed)
     EXPECT_CALL(backend, Dump).WillOnce(testing::Return(UC::Status::Error()));
     UC::HashSet<UC::Detail::TaskHandle> failureSet;
     Config config;
-    config.storeBackend = (uintptr_t)(void*)&backend;
+    config.storeBackend = std::shared_ptr<UC::StoreV1>(&backend, [](auto) {});
     config.tensorSize = 32768;
     config.shardSize = config.tensorSize;
     config.blockSize = config.shardSize;

@@ -6,4 +6,4 @@ set_target_properties(Ascend::ascendcl PROPERTIES
 )
 
 add_library(storedevice STATIC ascend_device.cc)
-target_link_libraries(storedevice PUBLIC infra_status Ascend::ascendcl)
+target_link_libraries(storedevice PUBLIC infra_status infra_logger Ascend::ascendcl)

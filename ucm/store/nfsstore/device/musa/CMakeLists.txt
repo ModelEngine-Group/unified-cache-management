@@ -6,4 +6,4 @@ set_target_properties(Musa::musart PROPERTIES
 )
 
 add_library(storedevice STATIC musa_device.cc)
-target_link_libraries(storedevice PUBLIC infra_status Musa::musart)
+target_link_libraries(storedevice PUBLIC infra_status infra_logger Musa::musart)

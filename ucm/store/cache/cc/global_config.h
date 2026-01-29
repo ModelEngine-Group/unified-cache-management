@@ -24,14 +24,13 @@
 #ifndef UNIFIEDCACHE_CACHE_STORE_CC_GLOBAL_CONFIG_H
 #define UNIFIEDCACHE_CACHE_STORE_CC_GLOBAL_CONFIG_H
 
-#include <cstddef>
-#include <cstdint>
-#include <string>
+#include <memory>
+#include "ucmstore_v1.h"
 
 namespace UC::CacheStore {
 
 struct Config {
-    uintptr_t storeBackend{};
+    std::shared_ptr<StoreV1> storeBackend{};
     std::string uniqueId{};
     int32_t deviceId{-1};
     size_t tensorSize{0};

@@ -72,8 +72,6 @@ ucm_connectors:
     ucm_connector_config:
       store_pipeline: "Cache|Posix"
       storage_backends: "/mnt/test"
-
-load_only_first_rank: false
 ```
 
 ### Required Parameters
@@ -127,11 +125,6 @@ load_only_first_rank: false
 
 * **timeout_ms** *(optional, default: 30000)*  
   Timeout in milliseconds for external interfaces.
-
-### Must-be-Set Parameters
-
-* **load_only_first_rank** (must be `false`):  
-  This feature is currently disabled.
 
 
 ## Launching Inference

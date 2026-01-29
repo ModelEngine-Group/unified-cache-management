@@ -96,11 +96,10 @@ def build_llm_with_uc(module_path: str, name: str, model: str):
                     "ucm_connector_name": "UcmNfsStore",
                     "ucm_connector_config": {
                         "storage_backends": data_dir,
-                        "kv_block_size": 33554432,
+                        "use_direct": False,
                     },
                 }
             ],
-            "load_only_first_rank": False,
             "ucm_sparse_config": {
                 "Blend": {
                     "chunk_end_token_id": chunk_end_token_id,
@@ -111,7 +110,6 @@ def build_llm_with_uc(module_path: str, name: str, model: str):
                     },
                 }
             },
-            "use_layerwise": True,
         },
     )
 
@@ -261,10 +259,11 @@ def main():
 
         print(f"Baseline generated text: {baseline_gen_text!r}")
         print(f"Baseline generated cost time: {baseline_time:.2f} seconds")
-        print(f"Blend generated text: {blend_gen_text!r}")
-        print(f"Blend generated cost time: {blend_time:.2f} seconds")
         print(f"Prefix Cache generated text: {pc_gen_text!r}")
         print(f"Prefix Cache generated cost time: {pc_time:.2f} seconds")
+        print(f"Blend generated text: {blend_gen_text!r}")
+        print(f"Blend generated cost time: {blend_time:.2f} seconds")
+
         print(f"Question:{dataset_row['input']}")
         print(f"Golden answer:{dataset_row["answers"]}")
 

@@ -95,15 +95,25 @@ private:
 
 PosixStore::PosixStore::~PosixStore() = default;
 
-Status PosixStore::PosixStore::Setup(const Config& config)
+Status PosixStore::Setup(const Detail::Dictionary& config)
 {
+    Config param;
+    config.Get("storage_backends", param.storageBackends);
+    config.GetNumber("device_id", param.deviceId);
+    config.GetNumber("tensor_size", param.tensorSize);
+    config.GetNumber("shard_size", param.shardSize);
+    config.GetNumber("block_size", param.blockSize);
+    config.Get("io_direct", param.ioDirect);
+    config.GetNumber("stream_number", param.streamNumber);
+    config.GetNumber("timeout_ms", param.timeoutMs);
+    config.GetNumber("data_dir_shard_bytes", param.dataDirShardBytes);
     try {
         impl_ = std::make_shared<PosixStoreImpl>();
     } catch (const std::exception& e) {
         UC_ERROR("Failed({}) to make posix store object.", e.what());
         return Status::Error(e.what());
     }
-    return impl_->Setup(config);
+    return impl_->Setup(param);
 }
 
 std::string PosixStore::Readme() const { return "PosixStore"; }
@@ -160,3 +170,5 @@ Status PosixStore::PosixStore::Wait(Detail::TaskHandle taskId)
 }
 
 }  // namespace UC::PosixStore
+
+extern "C" UC::StoreV1* MakePosixStore() { return new UC::PosixStore::PosixStore(); }

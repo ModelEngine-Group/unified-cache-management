@@ -1,0 +1,148 @@
+name: 'Pull Request Gate'
+
+on:
+  pull_request:
+    branches: [ "dev*", "main", "*release", "feature*" ]
+
+jobs:
+  pre-check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      
+      - id: fetch_base_and_pr_branches
+        env:
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+        run: |
+          git fetch origin ${{ github.base_ref }}
+
+          if [ "${{ github.event.pull_request.head.repo.full_name }}" != "${{ github.repository }}" ]; then
+            echo "PR is from a fork, adding remote."
+            git remote add fork ${{ github.event.pull_request.head.repo.clone_url }}
+            git fetch fork $HEAD_REF
+            HEAD_BRANCH_NAME=fork/$HEAD_REF
+            echo "HEAD_BRANCH_NAME=$HEAD_BRANCH_NAME" >> $GITHUB_OUTPUT
+          else
+            git fetch origin $HEAD_REF
+            HEAD_BRANCH_NAME=origin/$HEAD_REF
+            echo "HEAD_BRANCH_NAME=$HEAD_BRANCH_NAME" >> $GITHUB_OUTPUT
+          fi
+
+      # protect the workflows dir, only allow specific users to modify
+      - id: permission-check
+        env:
+          ACTOR: ${{ github.actor }}
+        run: |
+          CHANGED_FILES=$(git diff --name-only origin/${{ github.base_ref }}...${{ steps.fetch_base_and_pr_branches.outputs.HEAD_BRANCH_NAME }})
+          echo "CHANGED_FILES=$CHANGED_FILES"
+
+          if ! echo "$CHANGED_FILES" | grep -q '^\.github/workflows/'; then
+            echo "No .github/workflows changes, allow."
+            exit 0
+          fi
+
+          ALLOWED_USERS=("dante159753" "mag1c-h")
+          
+          echo ".github changes detected, check if user is allowed..."
+          ACTOR="${{ github.actor }}"
+          echo "PR author: $ACTOR"
+
+          for u in "${ALLOWED_USERS[@]}"; do
+            if [[ "$ACTOR" == "$u" ]]; then
+              echo "Authorized user, allowing change."
+              exit 0
+            fi
+          done
+
+          echo "::error:: Only privileged users may modify .github/workflows/"
+          exit 1
+
+      - id: uptodate-check
+        run: |
+
+          if git merge-base --is-ancestor "origin/${{ github.base_ref }}" "${{ steps.fetch_base_and_pr_branches.outputs.HEAD_BRANCH_NAME }}"; then
+            echo "PR branch is up-to-date with target branch, continue workflow."
+          else
+            echo "::error::PR branch is OUT-OF-DATE with target branch, stop workflow, please update your branch and try again."
+            exit 1
+          fi
+
+  lint-and-unit-tests:
+    needs: pre-check
+    uses: ./.github/workflows/lint-and-test.yml
+
+  test-e2e-pc-gpu:
+    runs-on: gpu
+    needs: lint-and-unit-tests
+    env:
+      BUILD_TYPE: Release
+    permissions:
+      checks: write
+      pull-requests: write
+    steps:
+    - name: Clean repo
+      run: |
+        if [ -d "${{github.workspace}}" ]; then
+          cd ${{github.workspace}}
+          rm -rf ./*
+          rm -rf .[!.]*
+        fi
+    - uses: actions/checkout@v4
+    - name: Build
+      run: |
+        cd ${{github.workspace}}
+        export PLATFORM=cuda
+        pip install -v -e . --no-build-isolation
+    - name: Test E2E
+      run: |
+        cd ${{github.workspace}}
+        cd test
+        pip install -r requirements.txt
+        python3 -m pytest -x --stage=1 --feature=offline_inference --junitxml=offline-inference.xml
+    - name: Upload pytest results
+      uses: EnricoMi/publish-unit-test-result-action/linux@v2
+      if: (!cancelled())
+      with:
+        files: |
+          ${{github.workspace}}/test/offline-inference.xml
+        check_name: Prefix cache test results
+
+  test-e2e-sparse-gpu:
+    runs-on: gpu
+    needs: lint-and-unit-tests
+    env:
+      BUILD_TYPE: Release
+    permissions:
+      checks: write
+      pull-requests: write
+    steps:
+    - name: Clean repo
+      run: |
+        if [ -d "${{github.workspace}}" ]; then
+          cd ${{github.workspace}}
+          rm -rf ./*
+          rm -rf .[!.]*
+        fi
+    - uses: actions/checkout@v4
+    - name: Build
+      run: |
+        cd ${{github.workspace}}
+        export PLATFORM=cuda
+        export ENABLE_SPARSE=TRUE
+        pip install -v -e . --no-build-isolation
+    - name: Test E2E
+      run: |
+        cd ${{github.workspace}}
+        cd test
+        pip install -r requirements.txt
+        python3 -m pytest -x --stage=1 --feature=offline_inference_sparse --junitxml=offline-inference-sparse.xml
+    - name: Upload pytest results
+      uses: EnricoMi/publish-unit-test-result-action/linux@v2
+      if: (!cancelled())
+      with:
+        files: |
+          ${{github.workspace}}/test/offline-inference-sparse.xml
+        check_name: Sparse attention test results
+

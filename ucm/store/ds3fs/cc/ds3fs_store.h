@@ -25,7 +25,6 @@
 #define UNIFIEDCACHE_STORE_CC_DS3FS_STORE_H
 
 #include <memory>
-#include "global_config.h"
 #include "ucmstore_v1.h"
 
 namespace UC::Ds3fsStore {
@@ -34,7 +33,7 @@ class Ds3fsStoreImpl;
 class Ds3fsStore : public StoreV1 {
 public:
     ~Ds3fsStore() override;
-    Status Setup(const Config& config);
+    Status Setup(const Detail::Dictionary& config) override;
     std::string Readme() const override;
     Expected<std::vector<uint8_t>> Lookup(const Detail::BlockId* blocks, size_t num) override;
     void Prefetch(const Detail::BlockId* blocks, size_t num) override;

@@ -24,38 +24,25 @@
 #ifndef UNIFIEDCACHE_INFRA_LOGGER_H
 #define UNIFIEDCACHE_INFRA_LOGGER_H
 
-#include <cstddef>
-#include <fmt/format.h>
-#include <string>
-
+#include "cc/spdlog_logger.h"
 namespace UC::Logger {
 
-enum class Level { DEBUG, INFO, WARN, ERROR };
-struct SourceLocation {
-    const char* file = "";
-    const char* func = "";
-    const int32_t line = 0;
-};
-class ILogger {
-public:
-    virtual ~ILogger() = default;
-    template <typename... Args>
-    void Log(Level&& lv, SourceLocation&& loc, fmt::format_string<Args...> fmt, Args&&... args)
-    {
-        this->Log(std::move(lv), std::move(loc), fmt::format(fmt, std::forward<Args>(args)...));
-    }
+void Log(Level&& lv, std::string file, std::string func, int line, std::string&& msg);
+template <typename... Args>
+void Log(Level lv, const SourceLocation& loc, fmt::format_string<Args...> fmt, Args&&... args)
+{
+    std::string msg = fmt::format(fmt, std::forward<Args>(args)...);
+    Log(std::forward<Level>(lv), std::string(loc.file), std::string(loc.func), loc.line,
+        std::move(msg));
+}
 
-protected:
-    virtual void Log(Level&& lv, SourceLocation&& loc, std::string&& msg) = 0;
-};
+void Log(Level&& lv, std::string file, std::string func, int line, std::string&& msg);
+void Setup(const std::string& path, int max_files, int max_size);
+void Flush();
 
-ILogger* Make();
-
-} // namespace UC::Logger
-
+}  // namespace UC::Logger
 #define UC_SOURCE_LOCATION {__FILE__, __FUNCTION__, __LINE__}
-#define UC_LOG(lv, fmt, ...)                                                                       \
-    UC::Logger::Make()->Log(lv, UC_SOURCE_LOCATION, FMT_STRING(fmt), ##__VA_ARGS__)
+#define UC_LOG(lv, fmt, ...) UC::Logger::Log(lv, UC_SOURCE_LOCATION, FMT_STRING(fmt), ##__VA_ARGS__)
 #define UC_DEBUG(fmt, ...) UC_LOG(UC::Logger::Level::DEBUG, fmt, ##__VA_ARGS__)
 #define UC_INFO(fmt, ...) UC_LOG(UC::Logger::Level::INFO, fmt, ##__VA_ARGS__)
 #define UC_WARN(fmt, ...) UC_LOG(UC::Logger::Level::WARN, fmt, ##__VA_ARGS__)

@@ -14,8 +14,6 @@ from vllm.v1.request import Request
 
 from ucm.integration.vllm.ucm_connector import (
     RequestDispatchMeta,
-    RequestHasher,
-    RequestMeta,
     UCMConnectorMetadata,
     UCMDirectConnector,
 )
@@ -41,7 +39,7 @@ class ChunkMetaData:
     cached_start_position: int
 
     vllm_blk_ids: List[int] = field(default_factory=list)
-    chunk_blks_hash: List[str] = field(default_factory=list)
+    chunk_blks_hash: List[bytes] = field(default_factory=list)
     store_hits: List[bool] = field(default_factory=list)
 
     @property
@@ -65,7 +63,7 @@ class ChunkMetaData:
         return list(itertools.compress(self.vllm_blk_ids, self.store_hits))
 
     @property
-    def hits_chunk_blks_hash(self) -> List[str]:
+    def hits_chunk_blks_hash(self) -> List[bytes]:
         return list(itertools.compress(self.chunk_blks_hash, self.store_hits))
 
     def merge_chunk(self, temp_chunk_meta: Self) -> None:
@@ -102,7 +100,7 @@ class BlendStage(Enum):
 
 @dataclass
 class BlendRequestMeta:
-    ucm_block_hashs: list[str] = field(default_factory=list)
+    ucm_block_hashs: list[bytes] = field(default_factory=list)
     # hbm pc is not supported
     hbm_hit_block_num: int = 0
     # ucm pc is supported
@@ -138,35 +136,15 @@ class UCMBlendConnector(UCMDirectConnector):
         else:
             raise "UCMBlendConnector init failed, please check your config"
 
-        self.ucm_chunk_end_hash: int = self.request_hasher("UCM_CHUNK_END_HASH")
-        self.ucm_chunk_continue_hash: int = self.request_hasher(
-            "UCM_CHUNK_CONTINUE_HASH"
-        )
         self.requests_blend_meta: dict[str, BlendRequestMeta] = {}
         self.cos_sin_cache: torch.Tensor = None
 
         # if chunk cache hits less than min_blend_threshold, no need to cache blend
         self.min_blend_threshold = 16
 
-    def _generate_hash(
-        self, block_size: int, token_ids: list[int], parent_block_hash_value: int
-    ) -> list[str]:
-        ret = []
-        for start in range(0, len(token_ids), block_size):
-            end = start + block_size
-            block_token_ids = token_ids[start:end]
-            # Do not hash the block if it is not full.
-            if len(block_token_ids) < block_size:
-                break
-
-            block_token_ids_tuple = tuple(block_token_ids)
-            hash_value = self.request_hasher(
-                (parent_block_hash_value, block_token_ids_tuple)
-            )
-            parent_block_hash_value = hash_value
-            ret.append(str(hash_value))
-
-        return ret
+        # post process delta rope meta
+        self.delta_rope_vllm_ids: torch.Tensor = None
+        self.delta_rope_positions: torch.Tensor = None
 
     def _process_req(self, all_token_ids: List[int]):
         """
@@ -177,8 +155,8 @@ class UCMBlendConnector(UCMDirectConnector):
         finally, if there are quite many chunk block-hits, we do cache blend to get TTFT-promot
         """
         chunks_meta = []
-        prefix_block_hashes = self._generate_hash(
-            self.block_size, all_token_ids, RequestHasher._SEED_HASH
+        prefix_block_hashes = self.generate_hash(
+            self.block_size, all_token_ids, self._seed
         )
         if (
             all_token_ids[-1] == self.chunk_end_token_id
@@ -203,8 +181,8 @@ class UCMBlendConnector(UCMDirectConnector):
             # but this will bring lots of modification to engine.
             if all_token_ids[end_token_idx] == self.chunk_end_token_id:
                 chunk_token_ids = all_token_ids[start_token_dix : end_token_idx + 1]
-                chunk_blks_hash = self._generate_hash(
-                    self.block_size, chunk_token_ids, RequestHasher._SEED_HASH
+                chunk_blks_hash = self.generate_hash(
+                    self.block_size, chunk_token_ids, self._seed
                 )
 
                 chunk_blks_len = end_blk_idx - start_blk_idx + 1
@@ -371,7 +349,7 @@ class UCMBlendConnector(UCMDirectConnector):
     ) -> tuple[int, bool]:
 
         # current not support HBM prefix cache, cause the blended cached have a ground view of all chunks
-        # so they can not apply to other req
+        # so they can not be applied to other req
         assert num_computed_tokens == 0
         all_token_ids = request.all_token_ids
 
@@ -488,21 +466,34 @@ class UCMBlendConnector(UCMDirectConnector):
 
         return UCMBlendConnectorMetadata(requests_dispatch_meta)
 
-    def wait_for_layer_load(self, layer_name: str) -> None:
-        metadata = self._get_connector_metadata()
-        assert isinstance(metadata, UCMBlendConnectorMetadata)
-
+    def bind_connector_metadata(self, connector_metadata: KVConnectorMetadata) -> None:
+        """
+        Blend need build post process meta for loaded kv cache
+        """
+        super().bind_connector_metadata(connector_metadata)
         all_hits_vllm_ids = []
         positions = []
-        k_cache = self.kv_caches[layer_name][0]
-        for request_id, request in metadata.request_meta.items():
+        for request_id, request in connector_metadata.request_meta.items():
             for chunk_meta in request.chunks_meta:
                 all_hits_vllm_ids.extend(chunk_meta.hits_vllm_blk_ids)
                 positions.extend(
                     [chunk_meta.position_offset] * len(chunk_meta.hits_vllm_blk_ids)
                 )
         if all_hits_vllm_ids:
-            vllm_ids = torch.tensor(all_hits_vllm_ids, device=k_cache.device)
-            positions = torch.tensor(positions, device=k_cache.device)
-            self._post_process_chunk_cache(k_cache, vllm_ids, positions)
-        pass
+            self.delta_rope_vllm_ids = torch.tensor(
+                all_hits_vllm_ids, device=self.device
+            )
+            self.delta_rope_positions = torch.tensor(positions, device=self.device)
+
+    def clear_connector_metadata(self) -> None:
+        """Clear the post process meta"""
+        super().clear_connector_metadata()
+        self.delta_rope_vllm_ids = None
+        self.delta_rope_positions = None
+
+    def wait_for_layer_load(self, layer_name: str) -> None:
+        if self.delta_rope_vllm_ids is not None:
+            k_cache = self.kv_caches[layer_name][0]
+            self._post_process_chunk_cache(
+                k_cache, self.delta_rope_vllm_ids, self.delta_rope_positions
+            )

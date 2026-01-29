@@ -38,7 +38,7 @@ Status LoadQueue::Setup(const Config& config, TaskIdSet* failureSet, TransBuffer
 {
     failureSet_ = failureSet;
     buffer_ = buffer;
-    backend_ = static_cast<StoreV1*>((void*)config.storeBackend);
+    backend_ = config.storeBackend;
     waiting_.Setup(config.waitingQueueDepth);
     running_.Setup(config.runningQueueDepth);
     holder_.reserve(1024);

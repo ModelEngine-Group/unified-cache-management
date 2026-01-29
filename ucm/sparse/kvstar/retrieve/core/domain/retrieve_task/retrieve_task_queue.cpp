@@ -42,8 +42,8 @@ void RetrieveTaskQueue::Worker(const int numaId, const int bindCoreId,
     }
 #endif
 
-    KVSTAR_DEBUG("Bind current thread {} to numa {} core {} and set memory affinity success.",
-                 thread, numaId, bindCoreId);
+    UC_DEBUG("Bind current thread {} to numa {} core {} and set memory affinity success.", thread,
+             numaId, bindCoreId);
     RetrieveTaskRunner runner;
 
     started.set_value(Status::OK());
@@ -64,13 +64,12 @@ void RetrieveTaskQueue::Worker(const int numaId, const int bindCoreId,
 
         if (!_failureSet->Exist(workItem.task.allocTaskId)) {
             if ((status = runner.Run(workItem.task, *workItem.result)).Failure()) {
-                KVSTAR_ERROR("Failed({}) to run retrieve task({}).", status,
-                             workItem.task.allocTaskId);
+                UC_ERROR("Failed({}) to run retrieve task({}).", status.Underlying(),
+                         workItem.task.allocTaskId);
                 this->_failureSet->Insert(workItem.task.allocTaskId);
                 workItem.result->status = TaskStatus::FAILURE;
             } else {
-                KVSTAR_DEBUG("Process current task success, task id: {}.",
-                             workItem.task.allocTaskId);
+                UC_DEBUG("Process current task success, task id: {}.", workItem.task.allocTaskId);
                 workItem.result->status = TaskStatus::SUCCESS;
             }
         }
@@ -101,4 +100,4 @@ void RetrieveTaskQueue::Push(WorkItem&& item)
     this->_cv.notify_one();
 }
 
-} // namespace KVStar
+}  // namespace KVStar

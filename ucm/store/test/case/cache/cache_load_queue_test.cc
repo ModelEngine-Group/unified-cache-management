@@ -46,7 +46,7 @@ TEST_F(UCCacheLoadQueueTest, LoadSameBlockTwice)
     EXPECT_CALL(backend, Wait).WillOnce(testing::Return(UC::Status::OK()));
     UC::HashSet<UC::Detail::TaskHandle> failureSet;
     Config config;
-    config.storeBackend = (uintptr_t)(void*)&backend;
+    config.storeBackend = std::shared_ptr<UC::StoreV1>(&backend, [](auto) {});
     config.tensorSize = 32768;
     config.shardSize = config.tensorSize;
     config.blockSize = config.shardSize;
@@ -87,7 +87,7 @@ TEST_F(UCCacheLoadQueueTest, LoadWhileBackendSubmitFailed)
     EXPECT_CALL(backend, Load).WillOnce(testing::Return(UC::Status::Error()));
     UC::HashSet<UC::Detail::TaskHandle> failureSet;
     Config config;
-    config.storeBackend = (uintptr_t)(void*)&backend;
+    config.storeBackend = std::shared_ptr<UC::StoreV1>(&backend, [](auto) {});
     config.tensorSize = 32768;
     config.shardSize = config.tensorSize;
     config.blockSize = config.shardSize;
@@ -124,7 +124,7 @@ TEST_F(UCCacheLoadQueueTest, LoadWhileBackendWaitFailed)
     EXPECT_CALL(backend, Wait).WillOnce(testing::Return(UC::Status::Error()));
     UC::HashSet<UC::Detail::TaskHandle> failureSet;
     Config config;
-    config.storeBackend = (uintptr_t)(void*)&backend;
+    config.storeBackend = std::shared_ptr<UC::StoreV1>(&backend, [](auto) {});
     config.tensorSize = 32768;
     config.shardSize = config.tensorSize;
     config.blockSize = config.shardSize;

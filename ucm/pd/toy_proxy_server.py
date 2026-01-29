@@ -262,7 +262,7 @@ async def _handle_completions(api: str, request: Request):
             decode_client_info = get_next_client(request.app, "decode")
 
             logger.debug(
-                "PD-DISAGG: Prefill=%s:%d, Decode=%s:%d",
+                "PD-DISAGG: Prefill={}:{}, Decode={}:{}",
                 prefill_client_info["host"],
                 prefill_client_info["port"],
                 decode_client_info["host"],
@@ -282,7 +282,7 @@ async def _handle_completions(api: str, request: Request):
             worker_client_info = get_next_client(request.app, "worker")
 
             logger.debug(
-                "PD-MIXED: Forwarding to %s:%d",
+                "PD-MIXED: Forwarding to {}:{}",
                 worker_client_info["host"],
                 worker_client_info["port"],
             )
