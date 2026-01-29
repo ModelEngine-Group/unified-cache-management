@@ -39,7 +39,7 @@ CacheBlend reduces TTFT by 2.2 ~ 3.3× and increases throughput by 2.8 ~ 5× und
 ### Installation
 
 Blend is part of the UCM Sparse Attention module. For installation instructions, please refer to the [UCM's top-level README](https://github.com/ModelEngine-Group/unified-cache-management). Once UCM is installed, Blend is naturally supported by running the following example python scripts.
-
+Currently, Blend only supports CUDA GPUs due to missing kernel implementations on other backends.
 ```bash
 export ENABLE_SPARSE=TRUE
 export DATA_DIR=/home/data/kv_cache
@@ -50,7 +50,7 @@ python <ucm-repo>/examples/offline_inference_blend.py
 
 ### Basic Usage
 Similar to UCM's `offline_inference_esa.py` examples. We only need to specify `ucm_sparse_method` to be `Blend` and specify meta config, as shown below.
-
+You can refer to the offline_inference_blend.py example to get started.
 ```python
 ...
 ktc = KVTransferConfig(
@@ -63,7 +63,7 @@ ktc = KVTransferConfig(
                     "ucm_connector_name": "UcmNfsStore",
                     "ucm_connector_config": {
                         "storage_backends": data_dir,
-                        "kv_block_size": 33554432,
+                        "use_direct": False,
                     },
                 }
             ],
@@ -78,7 +78,6 @@ ktc = KVTransferConfig(
                     },
                 }
             },
-            "use_layerwise": True,
         },
     )
 ...
