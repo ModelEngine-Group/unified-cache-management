@@ -101,7 +101,7 @@ sync_perf_cases = [
             output_tokens=[1000, 1000],
             benchmark_mode="default-perf",
             kv_hit_type="HBM",
-            epoch_num=2,
+            epoch_num=5,
         ),
         id="benchmark-complete-recalculate-default-perf",
     ),

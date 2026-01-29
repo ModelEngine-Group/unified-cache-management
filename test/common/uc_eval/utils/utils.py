@@ -171,7 +171,7 @@ def _get_level_from_env() -> int:
 # the global dictionary to store all the logger instances
 _logger_instances: Dict[str, LoggerHandler] = {}
 _DEFAULT_LOG_LEVEL = _get_level_from_env()
-_LOGGER_FILE_PATH = Path(current_dir).parent.joinpath("uc_log", "log.txt")
+_LOGGER_FILE_PATH = Path(current_dir).parent.joinpath("uc_log", "log.log")
 
 def get_logger(
     name: str = "evals", level: int = logging.INFO, log_file: str = None

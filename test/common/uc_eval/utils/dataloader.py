@@ -147,7 +147,7 @@ class MultiTurnDialogueDataset(BaseDataset):
         """
         Load a JSON file containing multi-turn dialogue dataset paths.
         :param file_path: JSON file listing multi-turn dialogue dataset paths to traverse.
-        the multi-turn dataset format: {"kimi": [{"conversion": [{"role": "user", "content": "xxx"}, ...], "qa": [{"question": "xxx", "answer": "xxx"}, ...]}]}
+        the multi-turn dataset format: {"kimi": [{"conversion": [{"from": "user", "value": "xxx"}, ...], "qa": [{"question": "xxx", "answer": "xxx"}, ...]}]}
         """
         cases = []
         # the path of multiturndialog.json

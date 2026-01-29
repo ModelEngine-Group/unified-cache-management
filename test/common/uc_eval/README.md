@@ -1,11 +1,75 @@
 # 结合pytest的UC-Eval使用
 
-## uc-eval性能测试
+## 前置准备
 
-- 运行文件：test/suites/E2E/test_uc_performance.py
-- 配置文件：test/config.yaml
-  - enable_clear_hbm：清理HBM的接口，MindIE中无此类接口，必须设置为false
-  - max_seq_length：模型的maxSeqLen，在测试时如果输入长度大于该数据，会按照input_ids[:max_seq_length//2] + input_ids[-max_seq_length//2:]对数据进行截取
+### 数据集准备
+
+**文档问答**数据集：
+
+| 数据集       | Hugging Face 链接                                            |
+| ------------ | ------------------------------------------------------------ |
+| AIME2025     | [opencompass/AIME2025 · Datasets at Hugging Face](https://huggingface.co/datasets/opencompass/AIME2025) |
+| LongBench    | [zai-org/LongBench · Datasets at Hugging Face](https://huggingface.co/datasets/zai-org/LongBench) |
+| LongBench v2 | [zai-org/LongBench-v2 · Datasets at Hugging Face](https://huggingface.co/datasets/zai-org/LongBench-v2) |
+
+**多轮对话**数据集：
+
+| 数据集                       | Hugging Face 链接                                            |
+| ---------------------------- | ------------------------------------------------------------ |
+| ShartGPT                     | [anon8231489123/ShareGPT_Vicuna_unfiltered · Datasets at Hugging Face](https://huggingface.co/datasets/anon8231489123/ShareGPT_Vicuna_unfiltered) |
+| ShartGPT-Chinese-English-90K | [shareAI/ShareGPT-Chinese-English-90k · Datasets at Hugging Face](https://huggingface.co/datasets/shareAI/ShareGPT-Chinese-English-90k) |
+
+- 多轮对话数据集格式参照如下：
+
+```json
+{
+  "sharegpt": [
+    {
+      "conversations": [
+        {
+          "from": "human",
+          "value": "Write a definition of \"photoshop\"."
+        },
+        {
+          "from": "gpt",
+          "value": "Photoshop is a software application developed by Adobe that enables users to manipulate digital images by providing a variety of tools and features to alter, enhance, and edit photos. It allows users to adjust the color balance, contrast, and brightness of images, remove backgrounds, add or remove elements from images, and perform numerous other image manipulation tasks. Photoshop is widely used by graphic designers, photographers, and digital artists for creating and enhancing images for a variety of purposes, including print and online media."
+        }
+    ]
+}]}
+```
+
+**注意**：
+
+- 顶层键名（如 `"sharegpt"`）可以自定义，但内部结构必须保持一致
+- `"conversations"` 字段名不可修改
+- 对话必须采用 `"from"` 和 `"value"` 格式
+
+### stopwords文件
+
+- 用途：在计算f1-score时使用
+- **下载地址**：[GitHub - goto456/stopwords: 中文常用停用词表（哈工大停用词表、百度停用词表等）](https://github.com/goto456/stopwords)
+- **放置位置**：以 `cn_stopwords.txt` 文件为例，下载后将其放置在 `test/common/uc_eval/utils` 目录下，并重命名为 `stopwords.txt`
+
+## 日志配置
+
+- **默认日志路径**：`test/common/uc_eval/uc_log`
+- **日志级别设置**：通过环境变量 `UC_LOG_LEVEL` 控制
+
+```shell
+# 设置 DEBUG 级别日志
+export UC_LOG_LEVEL=DEBUG
+
+# 设置 INFO 级别日志（默认）
+export UC_LOG_LEVEL=INFO
+```
+
+## 性能测试
+
+### 基础配置
+
+- **运行文件**：`test/suites/E2E/test_uc_performance.py`
+- **配置文件**：`test/config.yaml`
+- `config.yaml` 配置说明：
 
 ```yaml
 models:
@@ -17,30 +81,65 @@ models:
   max_seq_length: 128000
 ```
 
+**重要参数说明**：
+
+- `enable_clear_hbm`：是否启用 HBM 清理接口。MindIE 模型无此接口，必须设为 `false`
+- `max_seq_length`：模型最大序列长度。输入超过此长度时，会按 `input_ids[:max_seq_length//2] + input_ids[-max_seq_length//2:]` 截断
+
 ### 虚拟数据性能测试
 
-- 运行：**python -m pytest --feature=sync_perf_test**
-- 运行完后，所有性能测试数据保存在：**uc_eval/results/reports/{benchmark_mode}/synthetic_latency.xlsx**
-- 配置如下：
+- **运行命令**：
 
-|        参数         |                             含义                             |
-| :-----------------: | :----------------------------------------------------------: |
-|      data_type      |                   运行的数据形式，无需修改                   |
-| enable_prefix_cache |        测试时是否开启prefix-cache，开启后才会存在命中        |
-|    parallel_num     |                          请求并发数                          |
-|    prompt_tokens    |                    每个并发下输入长度列表                    |
-|    output_tokens    |       每个并发下输出长度列表，和prompt_tokens一一对应        |
-|  prefix_cache_num   |               命中率，和prompt_tokens一一对应                |
-|   benchmark_mode    |       性能统计方式，包含default-perf和stable-perf两种        |
-|     kv_hit_type     | 存在命中率情况下kvcache具体命中HBM还是DISK，需要和config.yaml文件中models的enable_clear_hbm一起配置 |
-|      epoch_num      | 在性能评估中对epoch_num次数据取平均，以1并发8K输入为例，会分别统计5次1并发8K的性能数据，对其取平均，防止性能波动 |
+```python
+python -m pytest --feature=sync_perf_test
+```
 
-- 不同benchmark_mode的区别，以2并发下8K的请求输入为例：
-  - **default-perf**模式：发送2条8K的请求，并统计2条请求的性能
-  - **stable-perf**模式：stable-perf表示稳态性能统计，在stable-perf模式下则会发送**2*5条**8K的请求，统计10条请求中**并发数稳定在2时**的请求性能，仅对synthetic数据存在该模式
-- **kv_hit_type**使用：
-  - HBM命中的情况下，直接将enable_clear_hbm设置为false，并且设置命中率为非0值即可
-  - DISK命中的情况下，针对vllm模型，可以将enable_clear_hbm设置为True，针对MindIE模型，enable_clear_hbm需要设置为False，并进行两次服务拉起和两次请求发送，第二次性能结果即为DISK命中的性能
+- **结果保存位置**：所有性能测试数据保存在：`uc_eval/results/reports/{benchmark_mode}/synthetic_latency.xlsx`
+- **参数配置说明**：
+
+| 参数                  | 含义                     | 示例值                              |
+| :-------------------- | :----------------------- | :---------------------------------- |
+| `data_type`           | 数据类型（固定值）       | `"synthetic"`                       |
+| `enable_prefix_cache` | 是否开启前缀缓存         | `true`/`false`                      |
+| `parallel_num`        | 请求并发数列表           | `[1, 4, 8]`                         |
+| `prompt_tokens`       | 输入长度列表（tokens）   | `[4096, 8192]`                      |
+| `output_tokens`       | 输出长度列表（tokens）   | `[1024, 1024]`                      |
+| `prefix_cache_num`    | 缓存命中率列表（0-1）    | `[0.8, 0.8]`                        |
+| `benchmark_mode`      | 性能统计模式             | `"default-perf"` 或 `"stable-perf"` |
+| `kv_hit_type`         | KV缓存命中类型           | `"HBM"` 或 `"DISK"`                 |
+| `epoch_num`           | 重复测试次数（取平均值） | `1、5`等                            |
+
+**性能统计模式详解：**
+
+- **default-perf 模式**
+
+  - **说明**：直接统计请求的性能数据
+
+  - **示例**：2并发8K请求 → 发送2条8K请求，统计这2条请求的性能
+
+- **stable-perf 模式**
+
+  - **说明**：统计稳态性能，仅虚拟数据支持
+
+  - **示例**：2并发8K请求 → 发送2×5=10条8K请求，统计并发稳定在2时的性能
+
+  - **优势**：消除性能波动，获得更稳定的性能数据
+
+**KV缓存命中配置**：
+
+- **HBM命中**
+
+  - 设置config.yaml中`enable_clear_hbm: false`
+  - 设置 `kv_hit_type: "HBM"`
+  - 设置合适的命中率 `prefix_cache_num`
+
+- **DISK命中**
+
+  - **vLLM模型**：`enable_clear_hbm: true`，进行服务重启
+
+  - **MindIE模型**：`enable_clear_hbm: false`，需要两次服务拉起和请求发送
+
+**示例代码：**
 
 ```python
 sync_perf_cases = [
@@ -88,17 +187,22 @@ def test_sync_perf(
 
 ### 多轮对话性能测试
 
-- 运行：**python -m pytest --feature=dialogue_perf_test**
-- 运行完后，每轮对话的详细性能及整体性能数据保存在：**uc_eval/results/reports/default-perf/multi_turn_dialogue_latency.xlsx**
-- 配置如下：
-  - **dataset_file_path**：多轮对话数据集中multiturndialog.json所在路径，可以是绝对路径及相对路径，相对路径是从uc_eval下的路径开始寻找
+- **运行命令**：
+
+```python
+python -m pytest --feature=dialogue_perf_test
+```
+
+- **结果保存位置**：所有性能测试数据保存在：`uc_eval/results/reports/default-perf/multi_turn_dialogue_latency.xlsx`
+- **参数配置说明**：
+  - **dataset_file_path**：多轮对话数据集中multiturndialog.json所在路径，支持绝对路径及相对路径
 
 ```python
 multiturn_dialogue_perf_cases = [
     pytest.param(
         PerfConfig(
             data_type="multi_turn_dialogue",
-            dataset_file_path="uc_eval/datasets/multi_turn_dialogues/multiturndialog.json",
+            dataset_file_path="datasets/multi_turn_dialogues/multiturndialog.json",
             enable_prefix_cache=False,
             parallel_num=1,
             benchmark_mode="default-perf",
@@ -121,51 +225,41 @@ def test_multiturn_dialogue_perf(
 ```
 
 - multiturndialog.json格式如下：
-  - 该文件记录了在多轮对话中将会遍历的多轮对话数据集路径，其中sharegpt_changed表示在multiturndialog.json同级目录下存在名为sharegpt_changed的文件夹，对应的list中为多轮对话数据集的文件名
 
 ```json
 {
-    "sharegpt_changed": [
+    "demo": [
         "demo.json"
     ],
-    "memorybank": [
-
-    ]
+    "sharrgpt":[
+        
+    ] 
 }
 ```
 
-- demo.json格式应参照：
-
-```json
-{
-  "sharegpt": [
-    {
-      "conversations": [
-        {
-          "role": "human",
-          "content": "Write a definition of \"photoshop\"."
-        },
-        {
-          "role": "gpt",
-          "content": "Photoshop is a software application developed by Adobe that enables users to manipulate digital images by providing a variety of tools and features to alter, enhance, and edit photos. It allows users to adjust the color balance, contrast, and brightness of images, remove backgrounds, add or remove elements from images, and perform numerous other image manipulation tasks. Photoshop is widely used by graphic designers, photographers, and digital artists for creating and enhancing images for a variety of purposes, including print and online media."
-        }
-    ]
-}]}
-```
+- 说明：
+  - 键名（如 `"demo"`）表示数据集文件夹名称
+  - 值列表包含该文件夹下的数据文件名称
+  - 相对路径从 `uc_eval` 目录开始计算
 
 ### 文档问答性能测试
 
-- 运行：**python -m pytest --feature=qa_perf_test**
-- 运行完后，每篇文档的详细性能及整体性能数据会保存在：**uc_eval/results/reports/default-perf/doc_qa_latency.xlsx**
-- 配置如下：
-  - dataset_file_path：文档问答数据集所在路径
+- **运行命令**：
+
+```python
+python -m pytest --feature=qa_perf_test
+```
+
+- **结果保存位置**：所有性能测试数据保存在：`uc_eval/results/reports/default-perf/doc_qa_latency.xlsx`
+- **参数配置说明**：
+  - **dataset_file_path**：文档问答数据集所在路径
 
 ```python
 doc_qa_perf_cases = [
     pytest.param(
         PerfConfig(
             data_type="doc_qa",
-            dataset_file_path="uc_eval/datasets/doc_qa/demo.jsonl",
+            dataset_file_path="datasets/doc_qa/demo.jsonl",
             enable_prefix_cache=False,
             parallel_num=1,
             benchmark_mode="default-perf",
@@ -187,10 +281,13 @@ def test_doc_qa_perf(
     return {"_name": request.node.callspec.id, "_data": result}
 ```
 
-## uc-eval精度测试
+## 精度测试
 
-- 运行文件：test/suites/E2E/test_evaluator.py
-- 配置文件：test/config.yaml，payload配置中需要包含max_tokens等配置
+### 基础配置
+
+- **运行文件**：`test/suites/E2E/test_uc_performance.py`
+- **配置文件**：`test/config.yaml`
+- `config.yaml` 配置说明：
 
 ```yaml
 models:
@@ -202,24 +299,31 @@ models:
   max_seq_length: 128000
 ```
 
+- 注意：精度测试需要在 `payload` 中配置生成参数（`max_tokens`、`ignore_eos`、`temperature` 等）
+
 ### 文档问答性能测试
 
-- 运行：**python -m pytest --feature=qa_eval_test**
-- 运行完后，每篇文档的详细回复结果及匹配情况会记录在：**uc_eval/results/reports/evaluate/doc_qa_latency.xlsx**
-- 配置如下：
+- **运行命令**：
 
-| 参数                | 含义                                                         |
-| ------------------- | ------------------------------------------------------------ |
-| data_type           | 运行的数据形式，无需修改                                     |
-| dataset_file_path   | 文档问答数据集所在路径，需要运行多个文件时，在cases中配置多个用例即可 |
-| enable_prefix_cache | 测试时是否开启prefix-cache，开启后会先进行一次预热           |
-| parallel_num        | 请求并发数                                                   |
-| benchmark_mode      | 精度统计方式                                                 |
-| metrics             | 性能测试评估指标，目前包含三种，可根据需要自定义配置         |
-| eval_class          | 进行精度测试时采用的匹配策略，包含四种，分别是完全匹配Match，包含Includes，模糊匹配FuzzyMatch，以及模板匹配MatchPatterns |
-| select_data_class   | 从数据集中挑选数据，以{"domain": ["Single-Document QA"]}为例，会从数据中按照domain挑选Single-Document QA的数据进行测试，为空时不会进行数据筛选 |
+```python
+python -m pytest --feature=qa_eval_test
+```
 
-- 实际运行时的参考配置：
+- **结果保存位置**：所有性能测试数据保存在：`uc_eval/results/reports/evaluate/doc_qa_latency.xlsx`
+- **参数配置说明**：
+
+| 参数                  | 含义               | 示例值                                           |
+| :-------------------- | :----------------- | :----------------------------------------------- |
+| `data_type`           | 数据类型（固定值） | `"doc_qa"`                                       |
+| `dataset_file_path`   | 文档问答数据集路径 | `"datasets/doc_qa/demo.jsonl"`                   |
+| `enable_prefix_cache` | 是否开启前缀缓存   | `true`/`false`                                   |
+| `parallel_num`        | 请求并发数         | `1`                                              |
+| `benchmark_mode`      | 精度统计模式       | `"evaluate"`                                     |
+| `metrics`             | 评估指标列表       | `["accuracy", "bootstrap-accuracy", "f1-score"]` |
+| `eval_class`          | 答案匹配策略       | `"common.uc_eval.utils.metric:FuzzyMatch"`       |
+| `select_data_class`   | 数据筛选条件       | `{"domain": ["Single-Document QA"]}`             |
+
+- 实际运行配置示例：
 
 ```python
 doc_qa_eval_cases = [ 
@@ -267,21 +371,21 @@ def test_doc_qa_perf(
     return {"_name": request.node.callspec.id, "_data": result}
 ```
 
-- 不同eval_class的区别：
-  - 路径：test/common/uc_eval/utils/metric.py
-  - **common.uc_eval.utils.metric:Match**：用例的answers和模型回复保持完全一致才认为匹配成功 
-  - **common.uc_eval.utils.metric:Includes**：模型输出包含了answers中的内容认为匹配成功
-  - **common.uc_eval.utils.metric:FuzzyMatch**：默认使用substring模式。对于substring模式，模型输出包含answers或者answers中包含模型输出下认为匹配成功，jaccard模式下answers和模型输出达到一定相似性（默认0.8）认为匹配成功
-  - **common.uc_eval.utils.metric:MatchPatterns**：根据提供的模板进行答案提取后，在进行匹配匹配，下面详细介绍
+- 不同**匹配策略（eval_class）**区别如下，其路径：test/common/uc_eval/utils/metric.py
 
-- MatchPatterns方法介绍：
-  - **场景**：longbench v2类似数据集，文档问答需要回答具体选择A/B/C/D
-  - **模板文件**：test/common/uc_eval/utils/prompt_config.py，其中**doc_qa_prompt**为非多项选择的prompt，**multi_answer_prompt**为多项选择文档的prompt，**match_patterns**为精度计算时从中提取答案，与数据集中answer进行对比的模板
-  - doc_qa_prompt和multi_answer_prompt中**{}**包裹的标签需要能和数据集中的标签相对应，比如longbench和longbench v2中问题对应的标签分别为input和question，prompt中Question中也填入这两个标签
-  - **multi_answer_prompt**介绍：以longbench v2数据集为例，在测试时其prompt可为其数据集中的0shot对应的内容，或0shot_cot与0shot_cot_ans的组合，为后者时，将两个prompt均存在multi_answer_prompt列表中，进行请求发送时，会先发送0shot_cot对应的请求，然后发送0shot_cot_ans的请求，并以后者的输出去计算精度等性能
+| 策略         | 类名            | 匹配规则                                                     |
+| :----------- | :-------------- | :----------------------------------------------------------- |
+| **完全匹配** | `Match`         | 模型输出必须与参考答案完全一致                               |
+| **包含匹配** | `Includes`      | 模型输出包含参考答案内容即匹配                               |
+| **模糊匹配** | `FuzzyMatch`    | 支持两种模式： 1. `substring`：双向包含匹配 2. `jaccard`：相似度 > 0.8 匹配 |
+| **模板匹配** | `MatchPatterns` | 根据正则表达式模板提取答案后匹配                             |
+
+- **MatchPatterns**方法介绍：
+  - **适用场景**：longbench v2等需要从 A/B/C/D 中选择正确答案的数据集
+  - **模板文件**：test/common/uc_eval/utils/prompt_config.py
 
 ```python
-# Q&A prompt for document QA – replace the {} placeholders with actual content from the dataset when used.
+# 非多项选择题提示模板
 doc_qa_prompt = ["""
     Please read the following text and answer the questions below.\n
     Text: {context}\n
@@ -289,6 +393,7 @@ doc_qa_prompt = ["""
     Instructions: Answer based ONLY on the information in the text above
 """]
 
+# 多项选择题提示模板
 multi_answer_prompt = ["""
     Please read the following text and answer the questions below.\n
     Text: {context}\n
@@ -298,6 +403,7 @@ multi_answer_prompt = ["""
     Format your response as follows: "The correct answer is (insert answer here)'
 """]
 
+# 答案提取正则表达式模板
 match_patterns = [
     r'The correct answer is \(([A-D])\)',
     r'The correct answer is ([A-D])',
@@ -306,16 +412,13 @@ match_patterns = [
 ]
 ```
 
-## 日志配置
+- **prompt_config模板使用说明**：
+  - `{}` 中的标签必须与数据集中的字段名对应
+  - LongBench 和 LongBench v2 的问题字段名不同（分别为 `input` 和 `question`），需在模板中正确使用
+  - `multi_answer_prompt` 可以包含多个提示模板（如 CoT 推理过程），框架会按顺序发送请求
 
-- 日志默认保存在**test/common/uc_eval/uc_log**路径下
-- 可以通过在命令行配置**UC_LOG_LEVEL**去设置日志级别
-
-```shell
-# DEBUG日志
-export UC_LOG_LEVEL=DEBUG
-
-# INFO级别日志
-export UC_LOG_LEVEL=INFO
-```
-
+- 采用MatchPatterns模式时，多项选择题处理流程：
+  - 使用 `multi_answer_prompt` 中的模板构造提示
+  - 发送请求获取模型回复
+  - 使用 `match_patterns` 中的正则表达式提取答案（A/B/C/D）
+  - 与数据集的参考答案进行比对，获取精度

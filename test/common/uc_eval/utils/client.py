@@ -414,7 +414,7 @@ class MultiDialogClient(BaseClient):
         conversion = dialog["conversations"]
         turns = self._convert_conversation_2_turns(conversion, 2)
         for i, turn in enumerate(turns):
-            in_content, reply = turn[0]["content"], turn[1]["content"]
+            in_content, reply = turn[0]["value"], turn[1]["value"]
             # Update payload, then send request
             prompt = self._update_request_body(history, in_content)
             record: RequestRecord = self.send_request(prompt, max_tokens)
