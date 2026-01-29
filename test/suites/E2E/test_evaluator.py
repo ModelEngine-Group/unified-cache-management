@@ -19,19 +19,33 @@ doc_qa_eval_cases = [
     pytest.param(
         EvalConfig(
             data_type="doc_qa",
-            dataset_file_path="common/uc_eval/datasets/doc_qa/demo.jsonl",
+            dataset_file_path="datasets/doc_qa/demo_2.json",
             enable_prefix_cache=False,
             parallel_num=1,
             benchmark_mode="evaluate",
             metrics=["accuracy", "bootstrap-accuracy", "f1-score"],
-            eval_class="common.uc_eval.utils.metric:Includes",
+            eval_class="common.uc_eval.utils.metric:MatchPatterns",
+            select_data_class={"domain": ["Single-Document QA"]}
+        ),
+        id="doc-qa-complete-recalculate-evaluate",
+    ),
+    
+    pytest.param(
+        EvalConfig(
+            data_type="doc_qa",
+            dataset_file_path="datasets/doc_qa/demo.jsonl",
+            enable_prefix_cache=False,
+            parallel_num=1,
+            benchmark_mode="evaluate",
+            metrics=["accuracy", "bootstrap-accuracy", "f1-score"],
+            eval_class="common.uc_eval.utils.metric:MatchPatterns",
         ),
         id="doc-qa-complete-recalculate-evaluate",
     )
 ]
 
 
-@pytest.mark.feature("eval_test")
+@pytest.mark.feature("qa_eval_test")
 @pytest.mark.stage(2)
 @pytest.mark.parametrize("eval_config", doc_qa_eval_cases)
 @export_vars

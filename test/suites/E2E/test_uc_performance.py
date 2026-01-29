@@ -108,6 +108,8 @@ sync_perf_cases = [
             prompt_tokens=[4000, 8000],
             output_tokens=[1000, 1000],
             benchmark_mode="default-perf",
+            kv_hit_type="HBM",
+            epoch_num=2,
         ),
         id="benchmark-complete-recalculate-default-perf",
     ),
@@ -120,13 +122,15 @@ sync_perf_cases = [
             output_tokens=[1000, 1000],
             prefix_cache_num=[0.8, 0.8],
             benchmark_mode="stable-perf",
+            kv_hit_type="HBM",
+            epoch_num=5,
         ),
         id="benchmark-prefix-cache-stable-perf",
     ),
 ]
 
 
-@pytest.mark.feature("perf_test")
+@pytest.mark.feature("sync_perf_test")
 @pytest.mark.stage(2)
 @pytest.mark.parametrize("perf_config", sync_perf_cases)
 @export_vars
@@ -143,7 +147,7 @@ multiturn_dialogue_perf_cases = [
     pytest.param(
         PerfConfig(
             data_type="multi_turn_dialogue",
-            dataset_file_path="common/uc_eval/datasets/multi_turn_dialogues/multiturndialog.json",
+            dataset_file_path="datasets/multi_turn_dialogues/multiturndialog.json",
             enable_prefix_cache=False,
             parallel_num=1,
             benchmark_mode="default-perf",
@@ -153,7 +157,7 @@ multiturn_dialogue_perf_cases = [
 ]
 
 
-@pytest.mark.feature("perf_test")
+@pytest.mark.feature("dialogue_perf_test")
 @pytest.mark.stage(2)
 @pytest.mark.parametrize("perf_config", multiturn_dialogue_perf_cases)
 @export_vars
@@ -170,7 +174,7 @@ doc_qa_perf_cases = [
     pytest.param(
         PerfConfig(
             data_type="doc_qa",
-            dataset_file_path="common/uc_eval/datasets/doc_qa/demo.jsonl",
+            dataset_file_path="datasets/doc_qa/demo.jsonl",
             enable_prefix_cache=False,
             parallel_num=1,
             benchmark_mode="default-perf",
@@ -180,7 +184,7 @@ doc_qa_perf_cases = [
 ]
 
 
-@pytest.mark.feature("perf_test")
+@pytest.mark.feature("qa_perf_test")
 @pytest.mark.stage(2)
 @pytest.mark.parametrize("perf_config", doc_qa_perf_cases)
 @export_vars

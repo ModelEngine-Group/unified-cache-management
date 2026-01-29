@@ -12,6 +12,7 @@ from common.uc_eval.utils.data_class import (
 )
 from common.uc_eval.utils.utils import get_logger
 from tqdm import tqdm
+from typing_extensions import override
 
 logger = get_logger()
 MS_SCALE = 1000
@@ -64,6 +65,10 @@ class BenchmarkBase(ABC):
     @abstractmethod
     def perf_show(self, records: Any, parallel_num: int = 1):
         raise NotImplementedError
+
+    @override
+    def average_latency_statistics(self, records: List[LatencyStatistics]):
+        pass
 
 
 class EvaluatorBenchmark(BenchmarkBase):
@@ -118,6 +123,8 @@ class PerformanceBenchmark(BenchmarkBase):
         """
         if len(record_list) == 0:
             logger.warning(f"there is no request_id in the record_list, please check")
+        
+        logger.debug(f"All records: {record_list}")
         latency = LatencyStatistics()
         record_dict = self.result_to_column_dict(record_list)
 
@@ -274,3 +281,25 @@ class PerformanceBenchmark(BenchmarkBase):
             raise ValueError("cannot find stable stage, please check your settings")
         logger.info(f"stable request id list: {stable_stage_requests=}")
         return stable_stage_requests
+
+    def average_latency_statistics(self, latency_list: List[LatencyStatistics]):
+        average_latency = LatencyStatistics()
+
+        if not latency_list:
+            return average_latency
+
+        keys = average_latency.to_dict().keys()
+        for key in keys:
+            if key == "metric_dict":
+                continue
+
+            values = []
+            for latency in latency_list:
+                value = getattr(latency, key)
+                if value != -1:
+                    values.append(value)
+
+            if values:
+                setattr(average_latency, key, sum(values) / len(values))
+
+        return average_latency

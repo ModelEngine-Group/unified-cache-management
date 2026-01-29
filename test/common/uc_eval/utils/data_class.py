@@ -23,6 +23,15 @@ class BenchmarkModeType(str, Enum):
     DEFAULT_PERF = "default-perf"
 
 
+class KvcacheHitType(str, Enum):
+    """
+    The type of kvcache hit
+    """
+
+    HBM = "HBM"
+    DISK = "DISK"
+
+
 @dataclass
 class ModelConfig:
     ip_ports: str = ""
@@ -30,6 +39,7 @@ class ModelConfig:
     served_model_name: str = ""
     enable_clear_hbm: bool = False
     payload: Dict[str, Any] = field(default_factory=dict)
+    max_seq_length: int = 128000
 
 
 @dataclass
@@ -41,6 +51,7 @@ class EvalConfig:
     benchmark_mode: str = "evaluate"
     metrics: Optional[List[str]] = field(default_factory=list)
     eval_class: Optional[str] = None
+    select_data_class: Dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -53,6 +64,9 @@ class PerfConfig:
     output_tokens: List[int] = field(default_factory=list)
     prefix_cache_num: List[float] = field(default_factory=list)
     benchmark_mode: str = ""
+    kv_hit_type: str = KvcacheHitType.HBM
+    # The number of runs per prompt token
+    epoch_num: int = 1
 
 
 @dataclass
