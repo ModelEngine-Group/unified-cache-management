@@ -67,6 +67,9 @@ private:
             return Status::InvalidParam("invalid concurrency({},{})", config.dataTransConcurrency,
                                         config.lookupConcurrency);
         }
+        if (config.dataDirShardBytes > 5) {
+            return Status::InvalidParam("invalid shard bytes({})", config.dataDirShardBytes);
+        }
         if (config.deviceId == -1) { return Status::OK(); }
         if (config.tensorSize == 0 || config.shardSize < config.tensorSize ||
             config.blockSize < config.shardSize || config.shardSize % config.tensorSize != 0 ||
