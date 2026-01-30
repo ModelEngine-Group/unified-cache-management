@@ -44,6 +44,7 @@ public:
         void* addr_;
 
     public:
+        bool Shared() const noexcept { return shared_; }
         Status Ready4Read();
         uintptr_t GetData();
 
