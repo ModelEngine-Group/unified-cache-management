@@ -18,7 +18,6 @@ from ucm.integration.vllm.ucm_connector import (
     UCMDirectConnector,
 )
 from ucm.logger import init_logger
-from ucm.shared.metrics import ucmmonitor
 from ucm.sparse.blend.blockwise_rope import block_wise_rope_forward
 
 if TYPE_CHECKING:
