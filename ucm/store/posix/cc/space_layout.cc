@@ -30,11 +30,30 @@
 namespace UC::PosixStore {
 
 static const std::string DATA_ROOT = "data";
-static const std::string TEMP_ROOT = ".temp";
+static const std::string ACTIVATED_FILE_EXTENSION = ".tmp";
 
 inline std::string DataFileName(const Detail::BlockId& blockId)
 {
     return fmt::format("{:02x}", fmt::join(blockId, ""));
+}
+
+std::vector<std::string> GenerateHexStrings(const size_t n)
+{
+    if (n == 0) [[unlikely]] { return {}; }
+    size_t nCombinations = 1ULL << (n * 4);
+    std::vector<std::string> result;
+    result.reserve(nCombinations);
+    constexpr char hexChars[] = "0123456789abcdef";
+    for (size_t i = 0; i < nCombinations; ++i) {
+        std::string s(n, '0');
+        auto temp = i;
+        for (int j = n - 1; j >= 0; --j) {
+            s[j] = hexChars[temp & 0xF];
+            temp >>= 4;
+        }
+        result.push_back(s);
+    }
+    return result;
 }
 
 Status SpaceLayout::Setup(const Config& config)
@@ -52,23 +71,18 @@ std::string SpaceLayout::DataFilePath(const Detail::BlockId& blockId, bool activ
 {
     const auto& backend = StorageBackend(blockId);
     const auto& file = DataFileName(blockId);
-    const auto& shard = activated ? TEMP_ROOT : (dataDirShard_ ? FileShardName(file) : DATA_ROOT);
-    return fmt::format("{}{}/{}", backend, shard, file);
+    const auto& shard = dataDirShard_ ? FileShardName(file) : DATA_ROOT;
+    if (!activated) { return fmt::format("{}{}/{}", backend, shard, file); }
+    return fmt::format("{}{}/{}{}", backend, shard, file, ACTIVATED_FILE_EXTENSION);
 }
 
 Status SpaceLayout::CommitFile(const Detail::BlockId& blockId, bool success) const
 {
-    const auto& backend = StorageBackend(blockId);
-    const auto& file = DataFileName(blockId);
-    const auto& activated = fmt::format("{}{}/{}", backend, TEMP_ROOT, file);
+    const auto& activated = DataFilePath(blockId, true);
     auto s = Status::OK();
     if (success) {
-        const auto& shard = dataDirShard_ ? FileShardName(file) : DATA_ROOT;
-        const auto& archived = fmt::format("{}{}/{}", backend, shard, file);
-        if (dataDirShard_) { s = PosixFile{backend + shard}.MkDir(); }
-        if (s == Status::OK() || s == Status::DuplicateKey()) {
-            s = PosixFile{activated}.Rename(archived);
-        }
+        const auto& archived = DataFilePath(blockId, false);
+        s = PosixFile{activated}.Rename(archived);
     }
     if (!success || s.Failure()) { PosixFile{activated}.Remove(); }
     return s;
@@ -76,9 +90,8 @@ Status SpaceLayout::CommitFile(const Detail::BlockId& blockId, bool success) con
 
 std::vector<std::string> SpaceLayout::RelativeRoots() const
 {
-    std::vector<std::string> roots{TEMP_ROOT};
-    if (!dataDirShard_) { roots.push_back(DATA_ROOT); }
-    return roots;
+    if (dataDirShard_) { return GenerateHexStrings(dataDirShardBytes_); }
+    return {DATA_ROOT};
 }
 
 Status SpaceLayout::AddStorageBackend(const std::string& path)
