@@ -35,11 +35,11 @@ Status TransQueue::Setup(const Config& config, TaskIdSet* failureSet, const Spac
     shardSize_ = config.shardSize;
     nShardPerBlock_ = config.blockSize / config.shardSize;
     ioDirect_ = config.ioDirect;
-    auto success = pool_.SetNWorker(config.streamNumber)
+    auto success = pool_.SetNWorker(config.dataTransConcurrency)
                        .SetWorkerFn([this](auto& ios, auto&) { Worker(ios); })
                        .Run();
     if (!success) [[unlikely]] {
-        return Status::Error(fmt::format("workers({}) start failed", config.streamNumber));
+        return Status::Error(fmt::format("workers({}) start failed", config.dataTransConcurrency));
     }
     return Status::OK();
 }

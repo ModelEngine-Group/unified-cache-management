@@ -50,7 +50,7 @@ TEST_F(UCPosixStoreTest, SetupWithInvalidParam)
         config.tensorSize = 4096;
         config.shardSize = config.tensorSize;
         config.blockSize = config.shardSize;
-        config.streamNumber = 0;
+        config.dataTransConcurrency = 0;
         PosixStore store;
         ASSERT_EQ(store.Setup(config), UC::Status::InvalidParam());
     }

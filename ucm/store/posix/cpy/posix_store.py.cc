@@ -42,7 +42,8 @@ PYBIND11_MODULE(ucmposixstore, module)
     config.def_readwrite("shardSize", &Config::shardSize);
     config.def_readwrite("blockSize", &Config::blockSize);
     config.def_readwrite("ioDirect", &Config::ioDirect);
-    config.def_readwrite("streamNumber", &Config::streamNumber);
+    config.def_readwrite("dataTransConcurrency", &Config::dataTransConcurrency);
+    config.def_readwrite("lookupConcurrency", &Config::lookupConcurrency);
     config.def_readwrite("timeoutMs", &Config::timeoutMs);
     config.def_readwrite("dataDirShardBytes", &Config::dataDirShardBytes);
     store.def(py::init<>());

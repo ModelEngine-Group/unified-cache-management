@@ -48,7 +48,8 @@ class UcmPosixStore(UcmKVStoreBaseV1):
             "shard_size": "shardSize",
             "block_size": "blockSize",
             "io_direct": "ioDirect",
-            "stream_number": "streamNumber",
+            "posix_data_trans_concurrency": "dataTransConcurrency",
+            "posix_lookup_concurrency": "lookupConcurrency",
             "timeout_ms": "timeoutMs",
             "data_dir_shard_bytes": "dataDirShardBytes",
         }
@@ -154,7 +155,7 @@ if __name__ == "__main__":
     config["shard_size"] = block_size
     config["block_size"] = block_size
     config["io_direct"] = True
-    config["stream_number"] = 16
+    config["posix_data_trans_concurrency"] = 16
     store = UcmPosixStore(config)
     block_num = 1024
     block_ids = [secrets.token_bytes(16) for _ in range(block_num)]

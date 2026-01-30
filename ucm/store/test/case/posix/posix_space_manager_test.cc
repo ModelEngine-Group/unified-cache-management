@@ -72,7 +72,7 @@ TEST_F(UCPosixSpaceManagerTest, DataFilePath)
     ASSERT_EQ(s, UC::Status::OK());
     auto blockId = UC::Test::Detail::TypesHelper::MakeBlockId("a1b2c3d4e5f6789012345678901234ab");
     auto activated = spaceMgr.GetLayout()->DataFilePath(blockId, true);
-    ASSERT_EQ(activated, fmt::format("{}.temp/{:02x}", this->Path(), fmt::join(blockId, "")));
+    ASSERT_EQ(activated, fmt::format("{}data/{:02x}.tmp", this->Path(), fmt::join(blockId, "")));
     ASSERT_EQ(PosixFile{activated}.Access(PosixFile::AccessMode::EXIST), UC::Status::NotFound());
     ASSERT_EQ(PosixFile{activated}.Open(PosixFile::OpenFlag::CREATE), UC::Status::OK());
     ASSERT_EQ(PosixFile{activated}.Access(PosixFile::AccessMode::EXIST), UC::Status::OK());
@@ -95,8 +95,10 @@ TEST_F(UCPosixSpaceManagerTest, ShardFilePath)
     auto s = spaceMgr.Setup(config);
     ASSERT_EQ(s, UC::Status::OK());
     auto blockId = UC::Test::Detail::TypesHelper::MakeBlockIdRandomly();
+    const auto& file = fmt::format("{:02x}", fmt::join(blockId, ""));
+    const auto& shard = file.substr(0, config.dataDirShardBytes);
     auto activated = spaceMgr.GetLayout()->DataFilePath(blockId, true);
-    ASSERT_EQ(activated, fmt::format("{}.temp/{:02x}", this->Path(), fmt::join(blockId, "")));
+    ASSERT_EQ(activated, fmt::format("{}{}/{}.tmp", this->Path(), shard, file));
     ASSERT_EQ(PosixFile{activated}.Access(PosixFile::AccessMode::EXIST), UC::Status::NotFound());
     ASSERT_EQ(PosixFile{activated}.Open(PosixFile::OpenFlag::CREATE), UC::Status::OK());
     ASSERT_EQ(PosixFile{activated}.Access(PosixFile::AccessMode::EXIST), UC::Status::OK());
@@ -105,8 +107,6 @@ TEST_F(UCPosixSpaceManagerTest, ShardFilePath)
     ASSERT_EQ(spaceMgr.Lookup(&blockId, 1).Value(), std::vector<uint8_t>{true});
     ASSERT_EQ(PosixFile{activated}.Access(PosixFile::AccessMode::EXIST), UC::Status::NotFound());
     auto archived = spaceMgr.GetLayout()->DataFilePath(blockId, false);
-    const auto& file = fmt::format("{:02x}", fmt::join(blockId, ""));
-    const auto& shard = file.substr(0, config.dataDirShardBytes);
     ASSERT_EQ(archived, fmt::format("{}{}/{}", this->Path(), shard, file));
     ASSERT_EQ(PosixFile{archived}.Access(PosixFile::AccessMode::EXIST), UC::Status::OK());
 }

@@ -35,7 +35,7 @@ Status SpaceManager::Setup(const Config& config)
         lookupSrv_.SetWorkerFn([this](LookupContext& ctx, auto&) { OnLookup(ctx); })
             .SetWorkerTimeoutFn([this](LookupContext& ctx, auto) { OnLookupTimeout(ctx); },
                                 config.timeoutMs)
-            .SetNWorker(config.streamNumber)
+            .SetNWorker(config.lookupConcurrency)
             .Run();
     if (!success) [[unlikely]] { return Status::Error("failed to run lookup service thread pool"); }
     return Status::OK();
