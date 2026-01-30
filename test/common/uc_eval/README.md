@@ -108,6 +108,7 @@ python -m pytest --feature=sync_perf_test
 | `benchmark_mode`      | 性能统计模式             | `"default-perf"` 或 `"stable-perf"` |
 | `kv_hit_type`         | KV缓存命中类型           | `"HBM"` 或 `"DISK"`                 |
 | `epoch_num`           | 重复测试次数（取平均值） | `1、5`等                            |
+| `test_name`           | 存储在表中的唯一标识符   | `"no gsa and enable prefix cache"`  |
 
 **性能统计模式详解：**
 
@@ -153,8 +154,8 @@ sync_perf_cases = [
             benchmark_mode="default-perf",
             kv_hit_type="HBM",
             epoch_num=5,
+            test_name="no gsa and no prefix cache"
         ),
-        id="benchmark-complete-recalculate-default-perf",
     ),
     pytest.param(
         PerfConfig(
@@ -167,22 +168,23 @@ sync_perf_cases = [
             benchmark_mode="stable-perf",
             kv_hit_type="HBM",
             epoch_num=5,
+            test_name="no gsa and enable prefix cache"
         ),
-        id="benchmark-prefix-cache-stable-perf",
     ),
 ]
+
 
 @pytest.mark.feature("sync_perf_test")
 @pytest.mark.stage(2)
 @pytest.mark.parametrize("perf_config", sync_perf_cases)
 @export_vars
 def test_sync_perf(
-    perf_config: PerfConfig, model_config: ModelConfig, request: pytest.FixtureRequest
+    perf_config: PerfConfig, model_config: ModelConfig
 ):
     file_save_path = config_instance.get_config("reports").get("base_dir")
     task = SyntheticPerfTask(model_config, perf_config, file_save_path)
     result = task.run()
-    return {"_name": request.node.callspec.id, "_proj": result}
+    return {"_name": perf_config.test_name, "_proj": result}
 ```
 
 ### 多轮对话性能测试
@@ -206,22 +208,23 @@ multiturn_dialogue_perf_cases = [
             enable_prefix_cache=False,
             parallel_num=1,
             benchmark_mode="default-perf",
+            test_name="shartgpt and no prefix cache"
         ),
-        id="multiturn-dialogue-complete-recalculate-default-perf",
     )
 ]
+
 
 @pytest.mark.feature("dialogue_perf_test")
 @pytest.mark.stage(2)
 @pytest.mark.parametrize("perf_config", multiturn_dialogue_perf_cases)
 @export_vars
 def test_multiturn_dialogue_perf(
-    perf_config: PerfConfig, model_config: ModelConfig, request: pytest.FixtureRequest
+    perf_config: PerfConfig, model_config: ModelConfig
 ):
     file_save_path = config_instance.get_config("reports").get("base_dir")
     task = MultiTurnDialogPerfTask(model_config, perf_config, file_save_path)
     result = task.run()
-    return {"_name": request.node.callspec.id, "_data": result}
+    return {"_name": perf_config.test_name, "_data": result}
 ```
 
 - multiturndialog.json格式如下：
@@ -263,22 +266,23 @@ doc_qa_perf_cases = [
             enable_prefix_cache=False,
             parallel_num=1,
             benchmark_mode="default-perf",
+            test_name="longbench and no prefix cache"
         ),
-        id="doc-qa-complete-recalculate-default-perf",
     )
 ]
+
 
 @pytest.mark.feature("qa_perf_test")
 @pytest.mark.stage(2)
 @pytest.mark.parametrize("perf_config", doc_qa_perf_cases)
 @export_vars
 def test_doc_qa_perf(
-    perf_config: PerfConfig, model_config: ModelConfig, request: pytest.FixtureRequest
+    perf_config: PerfConfig, model_config: ModelConfig
 ):
     file_save_path = config_instance.get_config("reports").get("base_dir")
     task = DocQaPerfTask(model_config, perf_config, file_save_path)
     result = task.run()
-    return {"_name": request.node.callspec.id, "_data": result}
+    return {"_name": perf_config.test_name, "_data": result}
 ```
 
 ## 精度测试
@@ -312,21 +316,22 @@ python -m pytest --feature=qa_eval_test
 - **结果保存位置**：所有性能测试数据保存在：`uc_eval/results/reports/evaluate/doc_qa_latency.xlsx`
 - **参数配置说明**：
 
-| 参数                  | 含义               | 示例值                                           |
-| :-------------------- | :----------------- | :----------------------------------------------- |
-| `data_type`           | 数据类型（固定值） | `"doc_qa"`                                       |
-| `dataset_file_path`   | 文档问答数据集路径 | `"datasets/doc_qa/demo.jsonl"`                   |
-| `enable_prefix_cache` | 是否开启前缀缓存   | `true`/`false`                                   |
-| `parallel_num`        | 请求并发数         | `1`                                              |
-| `benchmark_mode`      | 精度统计模式       | `"evaluate"`                                     |
-| `metrics`             | 评估指标列表       | `["accuracy", "bootstrap-accuracy", "f1-score"]` |
-| `eval_class`          | 答案匹配策略       | `"common.uc_eval.utils.metric:FuzzyMatch"`       |
-| `select_data_class`   | 数据筛选条件       | `{"domain": ["Single-Document QA"]}`             |
+| 参数                  | 含义                   | 示例值                                           |
+| :-------------------- | :--------------------- | :----------------------------------------------- |
+| `data_type`           | 数据类型（固定值）     | `"doc_qa"`                                       |
+| `dataset_file_path`   | 文档问答数据集路径     | `"datasets/doc_qa/demo.jsonl"`                   |
+| `enable_prefix_cache` | 是否开启前缀缓存       | `true`/`false`                                   |
+| `parallel_num`        | 请求并发数             | `1`                                              |
+| `benchmark_mode`      | 精度统计模式           | `"evaluate"`                                     |
+| `metrics`             | 评估指标列表           | `["accuracy", "bootstrap-accuracy", "f1-score"]` |
+| `eval_class`          | 答案匹配策略           | `"common.uc_eval.utils.metric:FuzzyMatch"`       |
+| `select_data_class`   | 数据筛选条件           | `{"domain": ["Single-Document QA"]}`             |
+| `test_name`           | 存储在表中的唯一标识符 | `"no gsa and enable prefix cache"`               |
 
 - 实际运行配置示例：
 
 ```python
-doc_qa_eval_cases = [ 
+doc_qa_eval_cases = [
     # longbench v2参考配置
     pytest.param(
         EvalConfig(
@@ -337,12 +342,11 @@ doc_qa_eval_cases = [
             benchmark_mode="evaluate",
             metrics=["accuracy", "bootstrap-accuracy", "f1-score"],
             eval_class="common.uc_eval.utils.metric:MatchPatterns",
-            select_data_class={"domain": ["Single-Document QA"], "difficulty": []}
+            select_data_class={"domain": ["Single-Document QA"]},
+            test_name="longbench and no prefix cache"
         ),
-        id="doc-qa-complete-recalculate-evaluate",
-    )
-    
-    # longbench v1参考配置
+    ),
+    # longbench参考配置
     pytest.param(
         EvalConfig(
             data_type="doc_qa",
@@ -352,9 +356,9 @@ doc_qa_eval_cases = [
             benchmark_mode="evaluate",
             metrics=["accuracy", "bootstrap-accuracy", "f1-score"],
             eval_class="common.uc_eval.utils.metric:FuzzyMatch",
+            test_name="longbench v2 and no prefix cache"
         ),
-        id="doc-qa-complete-recalculate-evaluate",
-    )
+    ),
 ]
 
 
@@ -363,12 +367,12 @@ doc_qa_eval_cases = [
 @pytest.mark.parametrize("eval_config", doc_qa_eval_cases)
 @export_vars
 def test_doc_qa_perf(
-    eval_config: EvalConfig, model_config: ModelConfig, request: pytest.FixtureRequest
+    eval_config: EvalConfig, model_config: ModelConfig
 ):
     file_save_path = config_instance.get_config("reports").get("base_dir")
     task = DocQaEvalTask(model_config, eval_config, file_save_path)
     result = task.run()
-    return {"_name": request.node.callspec.id, "_data": result}
+    return {"_name": eval_config.test_name, "_data": result}
 ```
 
 - 不同**匹配策略（eval_class）**区别如下，其路径：test/common/uc_eval/utils/metric.py
