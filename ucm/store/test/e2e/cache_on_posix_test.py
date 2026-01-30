@@ -53,10 +53,19 @@ def e2e_test(
     request_size: int,
     device_id: int,
 ):
+    # make block id randomly
     chunk_block_ids = [secrets.token_bytes(16) for _ in range(request_size)]
+    # fully lookup at 0% hit
+    tp = time.perf_counter()
     founds = scheduler.lookup(chunk_block_ids)
+    cost_fully_lookup1 = time.perf_counter() - tp
     assert not any(founds)
-    assert scheduler.lookup_on_prefix(chunk_block_ids) == -1
+    # prefix lookup at 0% hit
+    tp = time.perf_counter()
+    found_idx = scheduler.lookup_on_prefix(chunk_block_ids)
+    cost_prefix_lookup1 = time.perf_counter() - tp
+    assert found_idx == -1
+    # make tensor randomly
     shard_indexes = [0 for _ in range(request_size)]
     src_tensors = [
         [
@@ -69,15 +78,43 @@ def e2e_test(
         ]
         for _ in range(request_size)
     ]
+    # dump data to store
+    tp = time.perf_counter()
     task = worker.dump(chunk_block_ids, shard_indexes, src_tensors)
     worker.wait(task)
+    cost_dump = time.perf_counter() - tp
+    # fully lookup at 100% hit
+    tp = time.perf_counter()
     founds = scheduler.lookup(chunk_block_ids)
+    cost_fully_lookup2 = time.perf_counter() - tp
     assert all(founds)
-    assert scheduler.lookup_on_prefix(chunk_block_ids) + 1 == request_size
+    # prefix lookup at 100% hit
+    tp = time.perf_counter()
+    found_idx = scheduler.lookup_on_prefix(chunk_block_ids)
+    cost_prefix_lookup2 = time.perf_counter() - tp
+    assert found_idx + 1 == request_size
+    # make tensor buffer for fetching
     dst_tensors = [[torch.empty_like(t) for t in row] for row in src_tensors]
+    # fetch data from store
+    tp = time.perf_counter()
     task = worker.load(chunk_block_ids, shard_indexes, dst_tensors)
     worker.wait(task)
+    cost_load = time.perf_counter() - tp
+    # compare data
     cmp_and_print_diff(src_tensors, dst_tensors)
+    # show cost
+    data_size = tensor_size * layer_size * chunk_size * request_size
+    bw_dump = data_size / cost_dump
+    bw_load = data_size / cost_load
+    print(
+        f"[{tensor_size}-{layer_size}-{chunk_size}-{request_size}] "
+        f"fully_lookup1={cost_fully_lookup1 * 1e3:.3f}ms, "
+        f"prefix_lookup1={cost_prefix_lookup1 * 1e3:.3f}ms, "
+        f"fully_lookup2={cost_fully_lookup2 * 1e3:.3f}ms, "
+        f"prefix_lookup2={cost_prefix_lookup2 * 1e3:.3f}ms, "
+        f"dump={cost_dump * 1e3:.3f}ms, load={cost_load * 1e3:.3f}ms, "
+        f"bw_dump={bw_dump / 1e9:.3f}GB/s, bw_load={bw_load / 1e9:.3f}GB/s."
+    )
 
 
 def main():
@@ -100,7 +137,8 @@ def main():
     config["waiting_queue_depth"] = 16
     config["running_queue_depth"] = 1024
     config["io_direct"] = True
-    config["stream_number"] = 16
+    config["posix_data_trans_concurrency"] = 32
+    config["posix_lookup_concurrency"] = 32
     worker = UcmPipelineStore(config | {"device_id": device_id})
     scheduler = UcmPipelineStore(config)
     test_batch_number = 512
@@ -118,5 +156,5 @@ def main():
 
 
 if __name__ == "__main__":
-    os.environ["UC_LOGGER_LEVEL"] = "debug"
+    os.environ["UC_LOGGER_LEVEL"] = "info"
     main()

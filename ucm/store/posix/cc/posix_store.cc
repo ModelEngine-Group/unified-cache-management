@@ -63,8 +63,12 @@ private:
         if (config.deviceId < -1) {
             return Status::InvalidParam("invalid device({})", config.deviceId);
         }
-        if (config.streamNumber == 0) {
-            return Status::InvalidParam("invalid stream number({})", config.streamNumber);
+        if (config.dataTransConcurrency == 0 || config.lookupConcurrency == 0) {
+            return Status::InvalidParam("invalid concurrency({},{})", config.dataTransConcurrency,
+                                        config.lookupConcurrency);
+        }
+        if (config.dataDirShardBytes > 5) {
+            return Status::InvalidParam("invalid shard bytes({})", config.dataDirShardBytes);
         }
         if (config.deviceId == -1) { return Status::OK(); }
         if (config.tensorSize == 0 || config.shardSize < config.tensorSize ||
@@ -87,7 +91,8 @@ private:
         UC_INFO("Set {}::ShardSize to {}.", ns, config.shardSize);
         UC_INFO("Set {}::BlockSize to {}.", ns, config.blockSize);
         UC_INFO("Set {}::IoDirect to {}.", ns, config.ioDirect);
-        UC_INFO("Set {}::StreamNumber to {}.", ns, config.streamNumber);
+        UC_INFO("Set {}::DataTransConcurrency to {}.", ns, config.dataTransConcurrency);
+        UC_INFO("Set {}::LookupConcurrency to {}.", ns, config.lookupConcurrency);
         UC_INFO("Set {}::TimeoutMs to {}.", ns, config.timeoutMs);
         UC_INFO("Set {}::DataDirShardBytes to {}.", ns, config.dataDirShardBytes);
     }
