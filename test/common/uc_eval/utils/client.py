@@ -121,18 +121,20 @@ class BaseClient:
         """
         update request payload
         """
-        # If the length of input_ids is greater than max_seq_length, we need to split it
-        input_ids = self.tokenizer.encode(prompt)
-        if len(input_ids) > self.max_seq_length:
-            input_ids = input_ids[:self.max_seq_length//2] + input_ids[-self.max_seq_length//2:]
-            prompt = self.tokenizer.decode(input_ids)
-            
         payload = copy.deepcopy(self.payload)
         payload.update({"model": self.served_model_name})
         # If payload already has default max_tokens, the input max_tokens will be set to 0
         if max_tokens > 0:
             payload.update({"max_tokens": max_tokens})
         if isinstance(prompt, str):
+            # If the length of input_ids is greater than max_seq_length, we need to split it
+            input_ids = self.tokenizer.encode(prompt)
+            if len(input_ids) > self.max_seq_length:
+                input_ids = (
+                    input_ids[: self.max_seq_length // 2]
+                    + input_ids[-self.max_seq_length // 2 :]
+                )
+                prompt = self.tokenizer.decode(input_ids)
             message = [{"role": "user", "content": prompt}]
         if isinstance(prompt, list):
             # Multi-turn conversation - prompt already contains full message history.
@@ -503,19 +505,14 @@ class DocQaClient(BaseClient):
     ) -> RequestRecord:
         case_name, prompt_list, question, answer = case
         all_record = RequestRecord()
-        all_record.case_name = case_name
-        all_record.question = question
-        all_record.expected_output = answer
         for i, prompt in enumerate(prompt_list):
             record: RequestRecord = self.send_request(prompt, max_tokens)
             if i == 0:
-                all_record.request_id = record.request_id
-                all_record.input_data = record.input_data
-                all_record.input_tokens = record.input_tokens
-                all_record.start_time = record.start_time
-                all_record.end_time = record.end_time
-                all_record.req_cost = record.req_cost
-            elif i == len(prompt_list) - 1:
+                all_record = record
+                all_record.case_name = case_name
+                all_record.question = question
+                all_record.expected_output = answer
+            if i == len(prompt_list) - 1:
                 all_record.output_data = record.output_data
                 all_record.output_tokens = record.output_tokens
         return all_record

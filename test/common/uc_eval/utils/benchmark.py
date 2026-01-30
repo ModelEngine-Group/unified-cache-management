@@ -123,7 +123,7 @@ class PerformanceBenchmark(BenchmarkBase):
         """
         if len(record_list) == 0:
             logger.warning(f"there is no request_id in the record_list, please check")
-        
+
         logger.debug(f"All records: {record_list}")
         latency = LatencyStatistics()
         record_dict = self.result_to_column_dict(record_list)

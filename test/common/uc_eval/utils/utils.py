@@ -1,8 +1,8 @@
-import re
 import logging
 import logging.handlers
 import math
 import os
+import re
 import sys
 import time
 from pathlib import Path
@@ -53,8 +53,8 @@ class PathUtil(object):
 
 
 class FileUtil(object):
-    
-    _ILLEGAL_CHARS = re.compile(r'[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]')
+
+    _ILLEGAL_CHARS = re.compile(r"[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]")
     _MAX_CELL_LEN = 32768
 
     @staticmethod
@@ -62,17 +62,18 @@ class FileUtil(object):
         """
         Iterate over every cell, remove illegal control characters, and truncate if too long.
         """
+
         def _clean_cell(cell):
             if isinstance(cell, str):
-                cell = FileUtil._ILLEGAL_CHARS.sub('', cell)
+                cell = FileUtil._ILLEGAL_CHARS.sub("", cell)
                 if len(cell) > FileUtil._MAX_CELL_LEN:
-                    cell = cell[: FileUtil._MAX_CELL_LEN - 3] + '...'
+                    cell = cell[: FileUtil._MAX_CELL_LEN - 3] + "..."
             return cell
 
         for col in df.columns:
             df[col] = df[col].map(_clean_cell)
         return df
-    
+
     @staticmethod
     def save_excel(
         file_path: Path,
@@ -173,6 +174,7 @@ _logger_instances: Dict[str, LoggerHandler] = {}
 _DEFAULT_LOG_LEVEL = _get_level_from_env()
 _LOGGER_FILE_PATH = Path(current_dir).parent.joinpath("uc_log", "log.log")
 
+
 def get_logger(
     name: str = "evals", level: int = logging.INFO, log_file: str = None
 ) -> logging.Logger:
@@ -186,7 +188,7 @@ def get_logger(
     log_file = log_file or _LOGGER_FILE_PATH
     if not log_file.parent.exists():
         log_file.parent.mkdir(parents=True, exist_ok=True)
-    
+
     # create a new logger instance
     logger = LoggerHandler(name, level, log_file)
     _logger_instances[name] = logger

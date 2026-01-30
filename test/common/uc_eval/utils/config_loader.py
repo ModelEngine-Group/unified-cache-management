@@ -198,7 +198,7 @@ class TaskFactory:
             client_kwargs["enable_clear_hbm"] = model_config.enable_clear_hbm
         elif data_type == DatasetType.SYNTHETIC:
             client_kwargs["max_parallel"] = max(perf_config.parallel_num)
-        elif data_type == DatasetType.DOC_QA:
+        elif eval_config and data_type == DatasetType.DOC_QA:
             eval_kwargs["select_data_class"] = eval_config.select_data_class
         return (
             cls._dataset[data_type](tokenizer_path, **eval_kwargs),

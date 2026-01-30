@@ -54,15 +54,17 @@ class MetricClass(ABC):
             metric_dict[metric] = metric_function(self.record_list)
 
         return metric_dict
-    
-    def get_expected_and_real_output(self, record: Union[RequestRecord, MultiTurnDialogRecord]):
+
+    def get_expected_and_real_output(
+        self, record: Union[RequestRecord, MultiTurnDialogRecord]
+    ):
         expected_output = record.expected_output
         real_output = self.del_chain_of_thought(record.output_data)
         if isinstance(expected_output, tuple):
             expected_output = list(expected_output)
         elif not isinstance(expected_output, list):
             expected_output = [expected_output]
-        
+
         return expected_output, real_output
 
     def get_normalize_text(self, record: Union[RequestRecord, MultiTurnDialogRecord]):
@@ -96,7 +98,7 @@ class MetricClass(ABC):
         end_escaped = re.escape(think_end_tokens)
         reason_data = re.compile(rf"{start_escaped}(.*?){end_escaped}", re.DOTALL)
         return reason_data.sub("", output_data).strip()
-    
+
     @abstractmethod
     def match(
         self,
@@ -252,6 +254,7 @@ class FuzzyMatch(MetricClass):
             union = len(set_exp | set_real)
             return (inter / union) >= threshold
 
+
 class MatchPatterns(MetricClass):
     def __init__(self, record_list: List[RequestRecord | MultiTurnDialogRecord]):
         super().__init__(record_list)
@@ -271,13 +274,13 @@ class MatchPatterns(MetricClass):
             return True
 
         return False
-    
+
     def get_answer_from_match_patterns(self, real_output: str):
         """
         Get the answer through comparing match_patterns and output
         """
         from common.uc_eval.utils.prompt_config import match_patterns
-                
+
         for pattern in match_patterns:
             match = re.search(pattern, real_output)
             if match:

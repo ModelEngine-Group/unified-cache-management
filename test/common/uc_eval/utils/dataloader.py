@@ -1,9 +1,9 @@
 import json
 import random
+import re
 import time
 from abc import ABC, abstractmethod
 from typing import Any, Dict, List, Union
-import re
 
 import numpy as np
 from common.uc_eval.utils.data_class import SynthericParams
@@ -16,11 +16,7 @@ EPOCH_NUM = 10
 
 
 class BaseDataset(ABC):
-    def __init__(
-        self,
-        tokenizer_path: str = None,
-        **kwargs
-    ):
+    def __init__(self, tokenizer_path: str = None, **kwargs):
         tokenizer_path = PathUtil.get_datasets_dir_path(tokenizer_path)
         self.tokenizer: PreTrainedTokenizer = AutoTokenizer.from_pretrained(
             tokenizer_path
@@ -29,7 +25,7 @@ class BaseDataset(ABC):
     @abstractmethod
     def prepare_data(self, param: Any):
         raise NotImplementedError
-    
+
     def load_json_file(self, file_path):
         try:
             with open(file_path, "r", encoding="utf-8") as f:
@@ -44,7 +40,7 @@ class BaseDataset(ABC):
         except Exception as e:
             logger.error(f"Unexpected error while loading JSON file {file_path}: {e}")
             raise ValueError(f"Failed to load JSON file {file_path}: {e}")
-    
+
     def load_jsonl_data(self, file_path):
         try:
             data = []
@@ -62,7 +58,6 @@ class BaseDataset(ABC):
         except Exception as e:
             logger.error(f"Unexpected error while loading JSONL file {file_path}: {e}")
             raise ValueError(f"Failed to load JSONL file {file_path}: {e}")
-
 
 
 class SyntheticDataset(BaseDataset):
@@ -202,21 +197,24 @@ class DocQADataset(BaseDataset):
             data_list = self.load_jsonl_data(file_path)
         elif file_path.suffix.lower() == ".json":
             data_list = self.load_json_file(file_path)
-        
+
         cases_list = []
         for data in data_list:
             extracted_data = []
             if "choice_A" in data.keys():
-                extracted_data = self._get_multiple_choice_content(data, self.select_data_class)
+                extracted_data = self._get_multiple_choice_content(
+                    data, self.select_data_class
+                )
             else:
                 extracted_data = self._get_single_answer_content(data)
             if extracted_data:
-                cases_list.append(extracted_data) 
+                cases_list.append(extracted_data)
 
         return cases_list
 
-
-    def _get_single_answer_content(self, json_lines, select_data_class: Dict[str, Any] = {}):
+    def _get_single_answer_content(
+        self, json_lines, select_data_class: Dict[str, Any] = {}
+    ):
         """
         对于非选择题，而是直接给出答案的题目，从json_lines中获取prompt, answer, question, case_name等参数
         """
@@ -226,8 +224,10 @@ class DocQADataset(BaseDataset):
         answer = json_lines.get("answers", None)
         dataset = json_lines.get("dataset", None)
         _id = json_lines.get("_id", None)
-        
-        is_match = self.match_dataset_with_select_data_class(json_lines, select_data_class) 
+
+        is_match = self.match_dataset_with_select_data_class(
+            json_lines, select_data_class
+        )
         if not is_match:
             return []
 
@@ -235,10 +235,12 @@ class DocQADataset(BaseDataset):
         for item in doc_qa_prompt:
             prompt = self.get_prompt_from_json_lines(json_lines, item)
             prompt_list.append(prompt)
-            
+
         return [f"{dataset}-{_id}", prompt_list, question, answer]
 
-    def _get_multiple_choice_content(self, json_lines, select_data_class: Dict[str, Any] = {}):
+    def _get_multiple_choice_content(
+        self, json_lines, select_data_class: Dict[str, Any] = {}
+    ):
         """
         对于多选题，需要区分每个选项，再提取answer, question的基础上，还需要提取choice_A等关键字，然后才拼接为prompt
         """
@@ -250,38 +252,42 @@ class DocQADataset(BaseDataset):
         difficulty = json_lines.get("difficulty", None)
         _id = json_lines.get("_id", None)
 
-        is_match = self.match_dataset_with_select_data_class(json_lines, select_data_class) 
+        is_match = self.match_dataset_with_select_data_class(
+            json_lines, select_data_class
+        )
         if not is_match:
             return []
-        
+
         format_list = [domain, difficulty, _id]
         for i, item in enumerate(format_list):
-            format_list[i] = re.sub(r'\s+', '-', item.strip())
-        case_name = re.sub(r'-+', '-', f"{'-'.join(format_list)}")
-        
+            format_list[i] = re.sub(r"\s+", "-", item.strip())
+        case_name = re.sub(r"-+", "-", f"{'-'.join(format_list)}")
+
         prompt_list = []
         for item in multi_answer_prompt:
             prompt = self.get_prompt_from_json_lines(json_lines, item)
             prompt_list.append(prompt)
-            
+
         return [case_name, prompt_list, question, answer]
-    
+
     def get_prompt_from_json_lines(self, json_lines, prompt_template):
         """
         从json_lines中获取prompt
         """
-        keys = re.findall(r'\{(\w+)\}', prompt_template)
+        keys = re.findall(r"\{(\w+)\}", prompt_template)
         mapping = {key: json_lines.get(key, None).strip() for key in keys}
         return prompt_template.format(**mapping)
-    
-    def match_dataset_with_select_data_class(self, json_lines, select_data_class: Dict[str, Any] = {}):
+
+    def match_dataset_with_select_data_class(
+        self, json_lines, select_data_class: Dict[str, Any] = {}
+    ):
         """
         判断数据集是否满足指定的数据集要求
-        
+
         """
         if not select_data_class:
             return True
-        
+
         for item in select_data_class:
             data = json_lines.get(item, None)
             select_data = select_data_class.get(item)

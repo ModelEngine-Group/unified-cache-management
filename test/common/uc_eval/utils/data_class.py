@@ -52,6 +52,8 @@ class EvalConfig:
     metrics: Optional[List[str]] = field(default_factory=list)
     eval_class: Optional[str] = None
     select_data_class: Dict[str, Any] = field(default_factory=dict)
+    # the case name in excel
+    test_name: str = "Default"
 
 
 @dataclass
@@ -67,6 +69,8 @@ class PerfConfig:
     kv_hit_type: str = KvcacheHitType.HBM
     # The number of runs per prompt token
     epoch_num: int = 1
+    # the case name in excel
+    test_name: str = "Default"
 
 
 @dataclass

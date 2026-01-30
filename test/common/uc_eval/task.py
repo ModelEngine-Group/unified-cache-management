@@ -21,6 +21,7 @@ BAD_COMPLETION_TOKENS_THR = 20
 logger = get_logger()
 PERF_CSV_HEADER = [
     "Test Time",
+    "Test Name",
     "Total Cases",
     "Parallel Num",
     "Prefix Cache",
@@ -41,8 +42,8 @@ PERF_CSV_HEADER = [
 
 SYNC_PERF_CSV_HEADER = [
     "Test Time",
-    "Parallel Num",
-    "Epoch Num",
+    "Test Name",
+    "Total Cases Num",
     "Input Tokens",
     "Output Tokens",
     "Parallel Num",
@@ -65,10 +66,11 @@ SYNC_PERF_CSV_HEADER = [
 
 CASE_PERF_CSV_HEADER = [
     "Test Time",
+    "Test Name",
     "Prefix Cache",
     "Total Cases",
     "Current Case",
-    "Case Name",
+    "Case ID",
     "Input Tokens",
     "Output Tokens",
     "Latency(ms)",
@@ -78,10 +80,11 @@ CASE_PERF_CSV_HEADER = [
 
 CASE_EVAL_CSV_HEADER = [
     "Test Time",
+    "Test Name",
     "Prefix Cache",
     "Total Cases",
     "Current Case",
-    "Case Name",
+    "Case ID",
     "Input Tokens",
     "Output Tokens",
     "Input Text",
@@ -112,6 +115,7 @@ class BaseTask(ABC):
         self.parallel_num = common_config.parallel_num
         self.enable_prefix_cache = common_config.enable_prefix_cache
         self.benchmark_mode = common_config.benchmark_mode
+        self.test_name = common_config.test_name
         self.enable_clear_hbm = model_config.enable_clear_hbm
         self.save_to_excel = save_to_excel
         self.file_save_path = PathUtil.get_datasets_dir_path(file_save_path).joinpath(
@@ -157,6 +161,7 @@ class BaseTask(ABC):
         logger.info(f"There are {case_len} cases to save to the database.")
         data_dict = {
             "current_time": self.current_time,
+            "test_name": self.test_name,
             "total_case_num": case_len,
             "parallel_num": self.parallel_num,
             "enable_prefix_cache": self.enable_prefix_cache,
@@ -175,7 +180,7 @@ class BaseTask(ABC):
         self, records: List[RequestRecord | MultiTurnDialogRecord]
     ):
         save_data = []
-        common_columns = [self.current_time, self.enable_prefix_cache]
+        common_columns = [self.current_time, self.test_name, self.enable_prefix_cache]
         for idx, record in enumerate(records):
             if isinstance(record, MultiTurnDialogRecord):
                 columns = common_columns + [record.total_turns, record.turn_id]
@@ -201,7 +206,7 @@ class BaseTask(ABC):
         self, records: List[RequestRecord | MultiTurnDialogRecord], match_cls: str
     ):
         save_data = []
-        common_columns = [self.current_time, self.enable_prefix_cache]
+        common_columns = [self.current_time, self.test_name, self.enable_prefix_cache]
         for idx, record in enumerate(records):
             if isinstance(record, MultiTurnDialogRecord):
                 columns = common_columns + [record.total_turns, record.turn_id]
@@ -280,7 +285,7 @@ class SyntheticPerfTask(BaseTask):
                             self.prompt_seed
                         ] * syntheric_params.parallel_num
                     logger.info(
-                        f"Performance benchmark running with: epoch: {ep}, enable prefix cache: ({self.enable_prefix_cache}), {syntheric_params=}"
+                        f"Performance benchmark running with: epoch: {ep}, enable prefix cache: {self.enable_prefix_cache}, actual_parallel_num:{parallel_num}, {syntheric_params=}"
                     )
                     need_prepare_kvcache = (
                         self.kv_hit_type == KvcacheHitType.DISK
@@ -318,15 +323,15 @@ class SyntheticPerfTask(BaseTask):
                     all_output_tokens.extend(record.output_tokens for record in records)
 
                 # Get the average latency
-                average_latency_statistics: LatencyStatistics = self.benchmark.average_latency_statistics(
-                    all_latency_statistics
+                average_latency_statistics: LatencyStatistics = (
+                    self.benchmark.average_latency_statistics(all_latency_statistics)
                 )
 
                 # Make sure to store the data after each test is completed, to prevent data loss after a request fails
                 data_dict = {
                     "current_time": self.current_time,
-                    "total_case_num": syntheric_params.parallel_num,
-                    "epoch_num": self.epoch,
+                    "test_name": self.test_name,
+                    "total_case_num": syntheric_params.parallel_num * self.epoch,
                     "input_tokens": self.prompt_tokens[idx],
                     "output_tokens": sum(all_output_tokens) / len(all_output_tokens),
                     "parallel_num": parallel_num,
@@ -429,7 +434,7 @@ class DocQaEvalTask(BaseTask):
             self.client.handle_requests_with_pool(
                 cases_list, self.parallel_num, BAD_COMPLETION_TOKENS_THR
             )
-        
+
         if self.enable_clear_hbm:
             self.client.clear_hbm()
 

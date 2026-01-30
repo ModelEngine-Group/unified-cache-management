@@ -1,4 +1,3 @@
-import dataclasses
 import os
 
 import pytest
@@ -102,8 +101,22 @@ sync_perf_cases = [
             benchmark_mode="default-perf",
             kv_hit_type="HBM",
             epoch_num=5,
+            test_name="no gsa and no prefix cache",
         ),
-        id="benchmark-complete-recalculate-default-perf",
+    ),
+    pytest.param(
+        PerfConfig(
+            data_type="synthetic",
+            enable_prefix_cache=True,
+            parallel_num=[1, 4, 8],
+            prompt_tokens=[4000, 8000],
+            output_tokens=[1000, 1000],
+            prefix_cache_num=[0.8, 0.8],
+            benchmark_mode="default-perf",
+            kv_hit_type="HBM",  # HBM or DISK
+            epoch_num=5,
+            test_name="no gsa and enable prefix cache",
+        ),
     ),
     pytest.param(
         PerfConfig(
@@ -116,8 +129,8 @@ sync_perf_cases = [
             benchmark_mode="stable-perf",
             kv_hit_type="HBM",
             epoch_num=5,
+            test_name="no gsa and enable prefix cache and stable perf",
         ),
-        id="benchmark-prefix-cache-stable-perf",
     ),
 ]
 
@@ -126,13 +139,11 @@ sync_perf_cases = [
 @pytest.mark.stage(2)
 @pytest.mark.parametrize("perf_config", sync_perf_cases)
 @export_vars
-def test_sync_perf(
-    perf_config: PerfConfig, model_config: ModelConfig, request: pytest.FixtureRequest
-):
+def test_sync_perf(perf_config: PerfConfig, model_config: ModelConfig):
     file_save_path = config_instance.get_config("reports").get("base_dir")
     task = SyntheticPerfTask(model_config, perf_config, file_save_path)
     result = task.run()
-    return {"_name": request.node.callspec.id, "_proj": result}
+    return {"_name": perf_config.test_name, "_proj": result}
 
 
 multiturn_dialogue_perf_cases = [
@@ -143,8 +154,8 @@ multiturn_dialogue_perf_cases = [
             enable_prefix_cache=False,
             parallel_num=1,
             benchmark_mode="default-perf",
+            test_name="shartgpt and no prefix cache",
         ),
-        id="multiturn-dialogue-complete-recalculate-default-perf",
     )
 ]
 
@@ -153,13 +164,11 @@ multiturn_dialogue_perf_cases = [
 @pytest.mark.stage(2)
 @pytest.mark.parametrize("perf_config", multiturn_dialogue_perf_cases)
 @export_vars
-def test_multiturn_dialogue_perf(
-    perf_config: PerfConfig, model_config: ModelConfig, request: pytest.FixtureRequest
-):
+def test_multiturn_dialogue_perf(perf_config: PerfConfig, model_config: ModelConfig):
     file_save_path = config_instance.get_config("reports").get("base_dir")
     task = MultiTurnDialogPerfTask(model_config, perf_config, file_save_path)
     result = task.run()
-    return {"_name": request.node.callspec.id, "_data": result}
+    return {"_name": perf_config.test_name, "_data": result}
 
 
 doc_qa_perf_cases = [
@@ -170,8 +179,8 @@ doc_qa_perf_cases = [
             enable_prefix_cache=False,
             parallel_num=1,
             benchmark_mode="default-perf",
+            test_name="longbench and no prefix cache",
         ),
-        id="doc-qa-complete-recalculate-default-perf",
     )
 ]
 
@@ -180,10 +189,8 @@ doc_qa_perf_cases = [
 @pytest.mark.stage(2)
 @pytest.mark.parametrize("perf_config", doc_qa_perf_cases)
 @export_vars
-def test_doc_qa_perf(
-    perf_config: PerfConfig, model_config: ModelConfig, request: pytest.FixtureRequest
-):
+def test_doc_qa_perf(perf_config: PerfConfig, model_config: ModelConfig):
     file_save_path = config_instance.get_config("reports").get("base_dir")
     task = DocQaPerfTask(model_config, perf_config, file_save_path)
     result = task.run()
-    return {"_name": request.node.callspec.id, "_data": result}
+    return {"_name": perf_config.test_name, "_data": result}
