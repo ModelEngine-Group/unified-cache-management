@@ -62,8 +62,13 @@ std::shared_ptr<spdlog::logger> Logger::Make()
         sinks.push_back(file_sink);
         this->logger_ = std::make_shared<spdlog::logger>(name, sinks.begin(), sinks.end());
         this->logger_->set_pattern("[%Y-%m-%d %H:%M:%S.%f][%n][%^%L%$] %v [%P,%t][%s:%#,%!]");
-        auto level = spdlog::details::os::getenv(envLevel.c_str());
-        if (!level.empty()) { spdlog::cfg::helpers::load_levels(level); }
+        auto level_str = spdlog::details::os::getenv(envLevel.c_str());
+        if (!level_str.empty()) {
+            auto level = spdlog::level::from_str(level_str);
+            if (level != spdlog::level::off || level_str == "off") {
+                this->logger_->set_level(level);
+            }
+        }
         spdlog::register_logger(this->logger_);
         return this->logger_;
     } catch (...) {
