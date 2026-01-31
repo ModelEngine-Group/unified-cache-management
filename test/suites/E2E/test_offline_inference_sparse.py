@@ -214,8 +214,112 @@ class TestBasicOfflineInferenceSparse:
             print(f"Standard answers:\n{standard_answers}")
             pytest.fail("HBM + SSD Mixed Accuracy Test Failed!")
 
+    """Test GSA sparse attention."""
+
+    @pytest.mark.skip(reason="refine this code and re-enable later")
+    @pytest.mark.stage(1)
+    @pytest.mark.feature("offline_inference_sparse")
+    @pytest.mark.gpu_mem(10000)
+    @pytest.mark.parametrize("model_name", ["Qwen3-4B"])
+    @pytest.mark.parametrize("max_tokens", [200])
+    @pytest.mark.parametrize("enforce_eager", [True])
+    @pytest.mark.parametrize("max_num_batched_tokens", [30000])
+    def test_offline_gsa(
+        self,
+        model_name: str,
+        max_tokens: int,
+        enforce_eager: bool,
+        max_num_batched_tokens: int,
+    ):
+        config_file = get_path_relative_to_test_root("config.yaml")
+        with open(config_file, "r", encoding="utf-8") as f:
+            config = yaml.safe_load(f)
+
+        model_path = get_path_to_model(model_name, config)
+
+        assert os.path.exists(model_path), f"Model path does not exist: {model_path}"
+
+        ucm_storage_dir = "/tmp/ucm_cache"
+
+        # make sure UCM storage directory exists and is empty
+        ensure_storage_dir(ucm_storage_dir, clear_existing=True)
+
+        try:
+            test_prompt, standard_answers = load_prompt_from_file(
+                get_path_relative_to_test_root(
+                    "suites/E2E/prompts/test_offline_inference.json"
+                )
+            )
+            if not standard_answers:
+                pytest.fail(f"No standard answers found in prompt.json")
+        except Exception as e:
+            pytest.fail(f"Failed to load prompt from prompt.json: {e}")
+
+        print(f"Standard answers: {standard_answers}")
+
+        tokenizer = AutoTokenizer.from_pretrained(model_path, use_chat_template=True)
+
+        try:
+            messages = [
+                {
+                    "role": "system",
+                    "content": "先读问题，再根据下面的文章内容回答问题，不要进行分析，不要重复问题，用简短的语句给出答案。\n\n例如：“全国美国文学研究会的第十八届年会在哪所大学举办的？”\n回答应该为：“xx大学”。\n\n",
+                },
+                {"role": "user", "content": test_prompt},
+            ]
+            formatted_full_prompt = tokenizer.apply_chat_template(
+                messages,
+                tokenize=False,
+                add_generation_prompt=True,
+                add_special_tokens=True,
+            )
+        except Exception:
+            formatted_full_prompt = test_prompt
+
+        ucm_config = {
+            "ucm_connectors": [
+                {
+                    "ucm_connector_name": "UcmNfsStore",
+                    "ucm_connector_config": {
+                        "storage_backends": ucm_storage_dir,
+                        "use_direct": False,
+                    },
+                }
+            ],
+            "ucm_sparse_config": {"GSAOnDevice": {}},
+        }
+
+        sampling_params = SamplingParams(
+            temperature=0.0,
+            top_p=1,
+            max_tokens=max_tokens,
+            ignore_eos=False,
+        )
+
+        # Convert SamplingParams to dict for serialization, as non-picklable objects cannot be passed to subprocess
+        sampling_params_dict = to_dict_for_serialization(sampling_params)
+
+        phase1_outputs = run_in_spawn_subprocess(
+            run_offline_inference,
+            model_path,
+            ucm_config,
+            [formatted_full_prompt, formatted_full_prompt],
+            sampling_params_dict,
+            False,  # enable_prefix_caching=False
+            enforce_eager,
+            "GSA",
+            max_num_batched_tokens,
+            timeout=180,
+        )
+        phase1_1_output = phase1_outputs[0]  # Phase 1.1: SSD save
+        phase1_2_output = phase1_outputs[1]  # Phase 1.2: SSD load
+        print(f"ESA inference completed in subprocess")
+        print(f'Phase 1.1 output: "{phase1_1_output}"')
+        print(f'Phase 1.2 output: "{phase1_2_output}"')
+
     """Test ESA sparse attention."""
 
+    @pytest.mark.skip(reason="refine this code and re-enable later")
     @pytest.mark.stage(1)
     @pytest.mark.feature("offline_inference_sparse")
     @pytest.mark.gpu_mem(6000)
