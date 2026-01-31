@@ -142,10 +142,10 @@ void TransShareQueue::HandleReadyTask(Status s, BlockTask& task, Trans::Stream& 
     if (s.Success()) {
         auto host = (void*)task.reader->GetData();
         auto device = (void**)task.shards.data();
-        auto status = stream.HostToDeviceAsync(host, device, this->ioSize_, task.shards.size());
-        if (status.Failure()) [[unlikely]] {
-            UC_ERROR("Failed({}) to copy data from host to device.", status.ToString());
-            s = Status::Error();
+        s = stream.HostToDeviceAsync(host, device, this->ioSize_, task.shards.size());
+        if (s.Success()) { s = stream.Synchronized(); }
+        if (s.Failure()) [[unlikely]] {
+            UC_ERROR("Failed({}) to copy data from host to device.", s.ToString());
         }
     }
     if (s.Failure()) { this->failureSet_->Insert(task.owner); }

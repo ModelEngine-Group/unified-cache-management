@@ -315,9 +315,8 @@ std::shared_ptr<ShareBuffer::Reader> ShareBuffer::MakeLocalReader(const std::str
         return nullptr;
     }
     try {
-        return std::shared_ptr<Reader>(
-            new Reader{block, path, blockSize_, ioDirect_, false, addr.get()},
-            [addr = std::move(addr)](Reader* reader) { delete reader; });
+        auto reader = new Reader{block, path, blockSize_, ioDirect_, false, addr.get()};
+        return std::shared_ptr<Reader>(reader, [addr](Reader* reader) { delete reader; });
     } catch (const std::exception& e) {
         UC_ERROR("Failed({}) to create reader.", e.what());
         return nullptr;
