@@ -1,0 +1,478 @@
+From de6002da3f694496e6d527e22665a4bfebe6042c Mon Sep 17 00:00:00 2001
+From: fenghao <fenghao78@huawei.com>
+Date: Sat, 31 Jan 2026 01:13:17 -0800
+Subject: [PATCH] [Patch] UCM patch for vllm 0.11.0 with load failure
+
+---
+ .../kv_transfer/kv_connector/utils.py         |   3 +
+ .../kv_transfer/kv_connector/v1/base.py       |  20 ++
+ vllm/v1/core/block_pool.py                    |   2 +-
+ vllm/v1/core/sched/output.py                  |   2 +
+ vllm/v1/core/sched/scheduler.py               | 195 ++++++++++++++++--
+ vllm/v1/core/single_type_kv_cache_manager.py  |   3 +
+ vllm/v1/outputs.py                            |   5 +-
+ vllm/v1/worker/gpu_model_runner.py            |  14 +-
+ vllm/v1/worker/gpu_worker.py                  |   3 +-
+ .../worker/kv_connector_model_runner_mixin.py |   1 +
+ 10 files changed, 230 insertions(+), 18 deletions(-)
+
+diff --git a/vllm/distributed/kv_transfer/kv_connector/utils.py b/vllm/distributed/kv_transfer/kv_connector/utils.py
+index efa4c9abf..4bef1bd23 100644
+--- a/vllm/distributed/kv_transfer/kv_connector/utils.py
++++ b/vllm/distributed/kv_transfer/kv_connector/utils.py
+@@ -143,6 +143,7 @@ class KVOutputAggregator:
+         finished_sending = set[str]()
+         finished_recving = set[str]()
+         aggregated_kv_connector_stats = None
++        invalid_block_ids = set[int]()
+         for model_runner_output in outputs:
+             output = model_runner_output.kv_connector_output
+             if not output:
+@@ -164,6 +165,7 @@ class KVOutputAggregator:
+                                       type(kv_connector_stats))
+                     aggregated_kv_connector_stats = \
+                         aggregated_kv_connector_stats.aggregate(kv_connector_stats)
++            invalid_block_ids |= output.invalid_block_ids
+
+         # select output of the worker specified by output_rank
+         output = outputs[output_rank]
+@@ -172,6 +174,7 @@ class KVOutputAggregator:
+             finished_sending=finished_sending or None,
+             finished_recving=finished_recving or None,
+             kv_connector_stats=aggregated_kv_connector_stats or None,
++            invalid_block_ids=invalid_block_ids,
+         )
+
+         return output
+diff --git a/vllm/distributed/kv_transfer/kv_connector/v1/base.py b/vllm/distributed/kv_transfer/kv_connector/v1/base.py
+index 184d0a62f..0d71e4cc1 100644
+--- a/vllm/distributed/kv_transfer/kv_connector/v1/base.py
++++ b/vllm/distributed/kv_transfer/kv_connector/v1/base.py
+@@ -229,6 +229,26 @@ class KVConnectorBase_V1(ABC):
+         """
+         return None, None
+
++    def get_block_ids_with_load_errors(self) -> set[int]:
++        """
++        Get the set of block IDs that failed to load.
++
++        Returns:
++            Set of block IDs that encountered load errors.
++            Empty set if no load errors occurred.
++
++        Notes:
++            - Applies to both sync- and async-loading requests.
++            - Async loading: failed blocks may be reported in any forward pass
++              up to and including the pass where the request ID is returned by
++              `get_finished()`. Even if failures occur, the request must still
++              be reported via `get_finished()`, and the failed block IDs must
++              appear here no later than that same pass.
++            - Sync loading: failed blocks should be reported in the forward
++              pass in which they are detected.
++        """
++        return set()
++
+     def shutdown(self):
+         """
+         Shutdown the connector. This is called when the worker process
+diff --git a/vllm/v1/core/block_pool.py b/vllm/v1/core/block_pool.py
+index 3cc738304..617a724a1 100644
+--- a/vllm/v1/core/block_pool.py
++++ b/vllm/v1/core/block_pool.py
+@@ -211,7 +211,7 @@ class BlockPool:
+             block_size: Number of tokens in each block.
+             kv_cache_group_id: The id of the KV cache group.
+         """
+-        if num_cached_blocks == num_full_blocks:
++        if num_cached_blocks >= num_full_blocks:
+             return
+         new_full_blocks = blocks[num_cached_blocks:num_full_blocks]
+         assert len(request.block_hashes) >= num_full_blocks
+diff --git a/vllm/v1/core/sched/output.py b/vllm/v1/core/sched/output.py
+index 209fc2a44..6874e713a 100644
+--- a/vllm/v1/core/sched/output.py
++++ b/vllm/v1/core/sched/output.py
+@@ -101,6 +101,7 @@ class CachedRequestData:
+     new_token_ids: list[list[int]]
+     new_block_ids: list[Optional[tuple[list[int], ...]]]
+     num_computed_tokens: list[int]
++    num_output_tokens: list[int]
+
+     @property
+     def num_reqs(self) -> int:
+@@ -114,6 +115,7 @@ class CachedRequestData:
+             new_token_ids=[],
+             new_block_ids=[],
+             num_computed_tokens=[],
++            num_output_tokens=[],
+         )
+
+
+diff --git a/vllm/v1/core/sched/scheduler.py b/vllm/v1/core/sched/scheduler.py
+index 2b2cd63c2..ed560bfb1 100644
+--- a/vllm/v1/core/sched/scheduler.py
++++ b/vllm/v1/core/sched/scheduler.py
+@@ -133,6 +133,7 @@ class Scheduler(SchedulerInterface):
+
+         # KV Connector: requests in process of async KV loading or recving
+         self.finished_recving_kv_req_ids: set[str] = set()
++        self.failed_recving_kv_req_ids: set[str] = set()
+
+         # Encoder-related.
+         # Calculate encoder cache size if applicable
+@@ -669,6 +670,7 @@ class Scheduler(SchedulerInterface):
+         new_token_ids: list[list[int]] = []
+         new_block_ids: list[Optional[tuple[list[int], ...]]] = []
+         num_computed_tokens: list[int] = []
++        num_output_tokens: list[int] = []
+
+         use_connector = self.connector is not None
+         for req in itertools.chain(running_reqs, resumed_reqs):
+@@ -693,6 +695,7 @@ class Scheduler(SchedulerInterface):
+             new_block_ids.append(
+                 req_to_new_blocks[req_id].get_block_ids(allow_none=True))
+             num_computed_tokens.append(req.num_computed_tokens)
++            num_output_tokens.append(len(req.output_token_ids))
+         # Because resumed_reqs is usually empty, it is more efficient to do
+         # in-place appending so that we don't need to allocate a new list.
+         resumed_from_preemption = [False] * len(running_reqs)
+@@ -704,6 +707,7 @@ class Scheduler(SchedulerInterface):
+             new_token_ids=new_token_ids,
+             new_block_ids=new_block_ids,
+             num_computed_tokens=num_computed_tokens,
++            num_output_tokens=num_output_tokens,
+         )
+
+     def _try_schedule_encoder_inputs(
+@@ -875,6 +879,15 @@ class Scheduler(SchedulerInterface):
+         spec_decoding_stats: Optional[SpecDecodingStats] = None
+         kv_connector_stats = (kv_connector_output.kv_connector_stats
+                               if kv_connector_output else None)
++
++        failed_kv_load_req_ids = None
++        if kv_connector_output and kv_connector_output.invalid_block_ids:
++            # These blocks contain externally computed tokens that failed to
++            # load. Identify affected requests and adjust their computed token
++            # count to trigger recomputation of the invalid blocks.
++            failed_kv_load_req_ids = self._handle_invalid_blocks(
++                kv_connector_output.invalid_block_ids
++            )
+
+         # NOTE(woosuk): As len(num_scheduled_tokens) can be up to 1K or more,
+         # the below loop can be a performance bottleneck. We should do our best
+@@ -883,6 +896,9 @@ class Scheduler(SchedulerInterface):
+         stopped_preempted_reqs: set[Request] = set()
+         for req_id, num_tokens_scheduled in num_scheduled_tokens.items():
+             assert num_tokens_scheduled > 0
++            if failed_kv_load_req_ids and req_id in failed_kv_load_req_ids:
++                # Skip requests that were recovered from KV load failure
++                continue
+             request = self.requests.get(req_id)
+             if request is None:
+                 # The request is already finished. This can happen if the
+@@ -905,7 +921,10 @@ class Scheduler(SchedulerInterface):
+                 # tokens and rejections. If some tokens are rejected,
+                 # num_computed_tokens is decreased by the number of rejected
+                 # tokens.
+-                request.num_computed_tokens -= num_rejected
++                if request.num_computed_tokens > 0:
++                    request.num_computed_tokens -= num_rejected
++                if request.num_output_placeholders > 0:
++                    request.num_output_placeholders -= num_rejected
+                 spec_decoding_stats = self.make_spec_decoding_stats(
+                     spec_decoding_stats,
+                     num_draft_tokens=num_draft_tokens,
+@@ -1250,18 +1269,31 @@ class Scheduler(SchedulerInterface):
+         if request.request_id not in self.finished_recving_kv_req_ids:
+             return False
+
+-        # Now that the blocks are ready, actually cache them.
+-        (block_ids, ) = self.kv_cache_manager.get_block_ids(request.request_id)
+-        num_computed_tokens = len(block_ids) * self.block_size
+-        # Handle the case where num request tokens less than one block.
+-        num_computed_tokens = min(num_computed_tokens, request.num_tokens)
+-        if num_computed_tokens == request.num_tokens:
+-            num_computed_tokens -= 1
+-        # This will cache the blocks iff caching is enabled.
+-        self.kv_cache_manager.cache_blocks(request, num_computed_tokens)
++        if request.request_id in self.failed_recving_kv_req_ids:
++            # Request had KV load failures; num_computed_tokens was already
++            # updated in _update_requests_with_invalid_blocks
++            if request.num_computed_tokens:
++                # Cache any valid computed tokens.
++                self.kv_cache_manager.cache_blocks(request, request.num_computed_tokens)
++            else:
++                # No valid computed tokens, release allocated blocks.
++                # There may be a local cache hit on retry.
++                self.kv_cache_manager.free(request)
+
+-        # Update the request state for scheduling.
+-        request.num_computed_tokens = num_computed_tokens
++            self.failed_recving_kv_req_ids.remove(request.request_id)
++        else:
++            # Now that the blocks are ready, actually cache them.
++            (block_ids,) = self.kv_cache_manager.get_block_ids(request.request_id)
++            num_computed_tokens = len(block_ids) * self.block_size
++            # Handle the case where num request tokens less than one block.
++            num_computed_tokens = min(num_computed_tokens, request.num_tokens)
++            if num_computed_tokens == request.num_tokens:
++                num_computed_tokens -= 1
++            # This will cache the blocks iff caching is enabled.
++            self.kv_cache_manager.cache_blocks(request, num_computed_tokens)
++
++            # Update the request state for scheduling.
++            request.num_computed_tokens = num_computed_tokens
+
+         # Return that we are ready.
+         self.finished_recving_kv_req_ids.remove(request.request_id)
+@@ -1294,3 +1326,142 @@ class Scheduler(SchedulerInterface):
+                     "but the request is already freed.", req_id)
+             else:
+                 self._free_blocks(self.requests[req_id])
++
++    def _update_requests_with_invalid_blocks(
++        self, requests: Iterable[Request], invalid_block_ids: set[int]
++    ) -> tuple[set[str], int]:
++        """
++        Identify and update requests affected by invalid KV cache blocks.
++
++        This method scans the given requests, detects those with invalid blocks
++        and adjusts their `num_computed_tokens` to the longest valid prefix.
++        For observability, it also accumulates the total number of tokens that
++        will need to be recomputed across all affected requests.
++
++        Args:
++            requests: The set of requests to scan for invalid blocks.
++            invalid_block_ids: IDs of invalid blocks.
++
++        Returns:
++            tuple:
++                - affected_req_ids (set[str]): IDs of requests impacted by
++                invalid blocks.
++                - total_affected_tokens (int): Total number of tokens that must
++                be recomputed across all affected requests (for observability).
++        """
++        affected_req_ids: set[str] = set()
++        total_affected_tokens = 0
++        # If a block is invalid and shared by multiple requests in the batch,
++        # these requests must be rescheduled, but only the first will recompute
++        # it. This set tracks blocks already marked for recomputation.
++        marked_invalid_block_ids: set[int] = set()
++        for request in requests:
++            is_affected = False
++            marked_invalid_block = False
++            req_id = request.request_id
++            # TODO (davidb): add support for hybrid memory allocator
++            (req_block_ids,) = self.kv_cache_manager.get_block_ids(req_id)
++            # We iterate only over blocks that may contain externally computed
++            # tokens
++            if request.status == RequestStatus.WAITING_FOR_REMOTE_KVS:
++                # Async loading. If num_computed_tokens is set it implies we
++                # already processed some block failures for it in a prior step
++                req_num_computed_tokens = (
++                    request.num_computed_tokens
++                    if req_id in self.failed_recving_kv_req_ids
++                    else len(req_block_ids) * self.block_size
++                )
++            else:
++                # Sync loading. num_computed_tokens includes new tokens
++                req_num_computed_tokens = request.num_cached_tokens
++
++            req_num_computed_blocks = (
++                req_num_computed_tokens + self.block_size - 1
++            ) // self.block_size
++            for idx, block_id in zip(range(req_num_computed_blocks), req_block_ids):
++                if block_id not in invalid_block_ids:
++                    continue
++
++                is_affected = True
++
++                if block_id in marked_invalid_block_ids:
++                    # This invalid block is shared with a previous request
++                    # and was already marked for recomputation.
++                    # This means this request can still consider this block
++                    # as computed when rescheduled.
++                    # Currently this only applies to sync loading; Async
++                    # loading does not yet support block sharing
++                    continue
++
++                marked_invalid_block_ids.add(block_id)
++
++                if marked_invalid_block:
++                    # This request has already marked an invalid block for
++                    # recomputation and updated its num_computed_tokens.
++                    continue
++
++                marked_invalid_block = True
++                # Truncate the computed tokens at the first failed block
++                request.num_computed_tokens = idx * self.block_size
++                total_affected_tokens += (
++                    req_num_computed_tokens - request.num_computed_tokens
++                )
++
++            if is_affected:
++                if not marked_invalid_block:
++                    # All invalid blocks of this request are shared with
++                    # previous requests and will be recomputed by them.
++                    # Revert to considering only cached tokens as computed.
++                    # Currently this only applies to sync loading; Async
++                    # loading does not yet support block sharing
++                    total_affected_tokens += (
++                        request.num_computed_tokens - request.num_cached_tokens
++                    )
++                    request.num_computed_tokens = request.num_cached_tokens
++
++                affected_req_ids.add(request.request_id)
++
++        return affected_req_ids, total_affected_tokens
++
++    def _handle_invalid_blocks(self, invalid_block_ids: set[int]) -> set[str]:
++        total_requests_to_reschedule = 0
++        total_tokens_to_reschedule = 0
++
++        # --- Handle async KV loads (WAITING_FOR_REMOTE_KVS) ---
++        async_load_reqs = (
++            req
++            for req in self.waiting
++            if req.status == RequestStatus.WAITING_FOR_REMOTE_KVS
++        )
++        async_affected_req_ids, num_tokens_to_reschedule = (
++            self._update_requests_with_invalid_blocks(
++                async_load_reqs, invalid_block_ids
++            )
++        )
++
++        total_requests_to_reschedule += len(async_affected_req_ids)
++        total_tokens_to_reschedule += num_tokens_to_reschedule
++
++        # Mark requests with async KV load failures; they will be rescheduled
++        # once loading completes.
++        self.failed_recving_kv_req_ids |= async_affected_req_ids
++
++        # --- Handle sync KV loads (running requests) ---
++        sync_affected_req_ids, num_tokens_to_reschedule = (
++            self._update_requests_with_invalid_blocks(self.running, invalid_block_ids)
++        )
++
++        total_requests_to_reschedule += len(sync_affected_req_ids)
++        total_tokens_to_reschedule += num_tokens_to_reschedule
++
++        if total_requests_to_reschedule:
++            logger.warning(
++                "Recovered from KV load failure: "
++                "%d request(s) rescheduled (%d tokens affected).",
++                total_requests_to_reschedule,
++                total_tokens_to_reschedule,
++            )
++
++        # Return the IDs of affected running requests to skip in
++        # update_from_output.
++        return sync_affected_req_ids
+diff --git a/vllm/v1/core/single_type_kv_cache_manager.py b/vllm/v1/core/single_type_kv_cache_manager.py
+index e889f7804..4ecd9c815 100644
+--- a/vllm/v1/core/single_type_kv_cache_manager.py
++++ b/vllm/v1/core/single_type_kv_cache_manager.py
+@@ -142,6 +142,9 @@ class SingleTypeKVCacheManager(ABC):
+         num_cached_blocks = self.num_cached_block[request.request_id]
+         num_full_blocks = num_tokens // self.block_size
+
++        if num_cached_blocks >= num_full_blocks:
++            return
++
+         self.block_pool.cache_full_blocks(
+             request=request,
+             blocks=self.req_to_blocks[request.request_id],
+diff --git a/vllm/v1/outputs.py b/vllm/v1/outputs.py
+index 01f3676ab..efc16b8b6 100644
+--- a/vllm/v1/outputs.py
++++ b/vllm/v1/outputs.py
+@@ -2,7 +2,7 @@
+ # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
+
+ from abc import ABC, abstractmethod
+-from dataclasses import dataclass
++from dataclasses import dataclass, field
+ from typing import TYPE_CHECKING, NamedTuple, Optional, Union
+
+ import torch
+@@ -87,10 +87,11 @@ class KVConnectorOutput:
+     finished_sending: Optional[set[str]] = None
+     finished_recving: Optional[set[str]] = None
+     kv_connector_stats: Optional["KVConnectorStats"] = None
++    invalid_block_ids: set[int] = field(default_factory=set)
+
+     def is_empty(self):
+         return (not self.finished_sending and not self.finished_recving
+-                and not self.kv_connector_stats)
++                and not self.kv_connector_stats and not self.invalid_block_ids)
+
+
+ # ModelRunnerOutput is serialized and sent to the scheduler process.
+diff --git a/vllm/v1/worker/gpu_model_runner.py b/vllm/v1/worker/gpu_model_runner.py
+index a438c7777..1518b0827 100644
+--- a/vllm/v1/worker/gpu_model_runner.py
++++ b/vllm/v1/worker/gpu_model_runner.py
+@@ -616,6 +616,8 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
+             num_computed_tokens = req_data.num_computed_tokens[i]
+             new_block_ids = req_data.new_block_ids[i]
+             resumed_from_preemption = req_data.resumed_from_preemption[i]
++            num_output_tokens = req_data.num_output_tokens[i]
++            req_index = self.input_batch.req_id_to_index.get(req_id)
+
+             # Update the cached states.
+             req_state.num_computed_tokens = num_computed_tokens
+@@ -635,6 +637,17 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
+                 elif num_new_tokens > 0:
+                     req_state.output_token_ids.extend(
+                         new_token_ids[-num_new_tokens:])
++            elif num_output_tokens < len(req_state.output_token_ids):
++                # Some output tokens were discarded due to a sync-KV-load
++                # failure. Align the cached state.
++                del req_state.output_token_ids[num_output_tokens:]
++                if req_index is not None:
++                    end_idx = (
++                        self.input_batch.num_prompt_tokens[req_index]
++                        + num_output_tokens
++                    )
++                    self.input_batch.num_tokens[req_index] = end_idx
++                    self.input_batch.num_tokens_no_spec[req_index] = end_idx
+
+             # Update the block IDs.
+             if not resumed_from_preemption:
+@@ -649,7 +662,6 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
+                 # Replace the existing block IDs with the new ones.
+                 req_state.block_ids = new_block_ids
+
+-            req_index = self.input_batch.req_id_to_index.get(req_id)
+             if req_index is None:
+                 # The request is not in the persistent batch.
+                 # The request was either preempted and resumed later, or was not
+diff --git a/vllm/v1/worker/gpu_worker.py b/vllm/v1/worker/gpu_worker.py
+index 8c75e8914..a135a594a 100644
+--- a/vllm/v1/worker/gpu_worker.py
++++ b/vllm/v1/worker/gpu_worker.py
+@@ -464,8 +464,7 @@ class Worker(WorkerBase):
+
+         # In case of PP with kv transfer, we need to pass through the
+         # kv_connector_output
+-        if (not kv_connector_output.finished_sending
+-                and not kv_connector_output.finished_recving):
++        if kv_connector_output.is_empty():
+             return EMPTY_MODEL_RUNNER_OUTPUT
+
+         output = copy.copy(EMPTY_MODEL_RUNNER_OUTPUT)
+diff --git a/vllm/v1/worker/kv_connector_model_runner_mixin.py b/vllm/v1/worker/kv_connector_model_runner_mixin.py
+index 7eaff924e..956bb0145 100644
+--- a/vllm/v1/worker/kv_connector_model_runner_mixin.py
++++ b/vllm/v1/worker/kv_connector_model_runner_mixin.py
+@@ -120,6 +120,7 @@ class KVConnectorModelRunnerMixin:
+
+             output.finished_sending, output.finished_recving = (
+                 kv_connector.get_finished(scheduler_output.finished_req_ids))
++            output.invalid_block_ids = kv_connector.get_block_ids_with_load_errors()
+
+             output.kv_connector_stats = KVConnectorModelRunnerMixin.\
+             get_kv_connector_stats()
+--
+2.34.1
+
