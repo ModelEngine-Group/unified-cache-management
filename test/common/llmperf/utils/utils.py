@@ -8,9 +8,13 @@ import subprocess
 import time
 from typing import Any, Dict, Tuple
 
+from common.config_utils import config_utils
 from transformers import LlamaTokenizerFast
 
 RESULTS_VERSION = "2025-10-30"
+enable_clear_hbm = config_utils.get_nested_config(
+    "llm_connection.enable_clear_hbm", True
+)
 
 
 class LLMPerfResults:
@@ -143,15 +147,25 @@ def flatten_dict(d, parent_key="", sep="_"):
     return dict(items)
 
 
-def reset_prefill_cache(env, server_url):
+def reset_prefill_cache(env, server_url, llm_type):
     """
     prefix cache / HBM
     Param：
         env
         server_url
     """
-    reset_url = f"{server_url}/reset_prefix_cache"
+    if not enable_clear_hbm:
+        return
+
+    if llm_type == "vllm":
+        reset_url = f"{server_url}/reset_prefix_cache"
+    elif llm_type == "sglang":
+        reset_url = f"{server_url}/flush_cache"
+    else:
+        raise ValueError(f"Invalid llm_type: {llm_type}")
+
     print(f"[INFO] Resetting prefix cache: {reset_url}")
+
     try:
         result = subprocess.run(
             ["curl", "-X", "POST", reset_url, "-s", "-f"],
