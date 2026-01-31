@@ -4,3 +4,4 @@ self-hosted-runner:
     - default
     - gpu
     - npu
+    - gpu-test-in-docker
