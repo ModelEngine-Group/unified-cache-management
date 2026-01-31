@@ -25,12 +25,14 @@ models:
 
 # LLM Connection Configuration
 llm_connection:
-  model: ""
-  server_url: ""
-  tokenizer_path: ""
-  stream: true    # stream output
-  ignore_eos: true    # Ignore the returned terminator
-  timeout: 180    # request time out
+  model: "Qwen3-32B"
+  server_url: "http://141.111.32.70:8244"
+  tokenizer_path: "/mnt/model/Qwen3-32B"
+  llm_type: "vllm"    # vllm/sglang/mindie
+  enable_clear_hbm: true   # HBM clear enable, default true
+  stream: true    # stream output, default true
+  ignore_eos: true    # Ignore the returned terminator, default true
+  timeout: 180    # request time out, default 180
   extra_info: "vllm_qwen3-32b_pc-gsa"  # extra info, Used to mark different service pull-up parameters
 
 # Environment Pre-Check Configuration
