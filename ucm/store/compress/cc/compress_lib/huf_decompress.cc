@@ -1333,9 +1333,9 @@ size_t HUF_decompress_float_fixRatio_internal_bf16 (void* dst, size_t dstSize, c
     if (dstSize == 0) return ERROR(dstSize_tooSmall);
 
     // 解析元数据
-    uint32_t count      = ((const uint32_t*)cSrc)[1];  // 元数据1: 浮点数总量
-    uint32_t count_full = ((const uint32_t*)cSrc)[2];  // 元数据2: 全精度尾数的浮点数的数量
-    uint32_t e_len      = ((const uint32_t*)cSrc)[3];  // 元数据3: 尾数的偏移量，用该变量可以定位到尾数的起始存放地址
+    uint32_t count      = (((const uint32_t*)cSrc)[1]) & 0x00FFFFFF;  // 元数据1: 浮点数总量
+    uint32_t count_full = ((const uint32_t*)cSrc)[2];                 // 元数据2: 全精度尾数的浮点数的数量
+    uint32_t e_len      = ((const uint32_t*)cSrc)[3];                 // 元数据3: 尾数的偏移量，用该变量可以定位到尾数的起始存放地址
 
     // 计算输入buffer上的的一些区域的起始指针
     const uint8_t* ip_e     = (const BYTE*)cSrc + 16;                 // 起始指针: huffman表, 跳过16byte元数据
@@ -1395,7 +1395,7 @@ size_t HUF_decompress_float_fixRatio (void* dst, size_t dstSize, const void* cSr
     if (cSrcSize <= 16) {
         return 0;   // srcbuffer不够大, 连元数据都放不下，报错
     }
-    DataType dt = (DataType)(((const uint16_t*)cSrc)[0] >> 24);
+    DataType dt = (DataType)(((const uint32_t*)cSrc)[0] >> 24);
     if  (p_dataType) {
         *p_dataType = dt;
     }
