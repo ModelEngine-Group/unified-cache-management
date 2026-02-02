@@ -38,9 +38,10 @@ struct Config {
     size_t blockSize{0};
     size_t bufferNumber{16384};
     bool shareBufferEnable{false};
-    size_t waitingQueueDepth{1024};
+    size_t waitingQueueDepth{8192};
     size_t runningQueueDepth{32768};
     size_t timeoutMs{30000};
+    size_t streamNumber{4};
 };
 
 }  // namespace UC::CacheStore

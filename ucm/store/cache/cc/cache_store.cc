@@ -81,6 +81,9 @@ private:
             return Status::InvalidParam("invalid queue depth({},{})", config.waitingQueueDepth,
                                         config.runningQueueDepth);
         }
+        if (config.streamNumber < 1 || config.streamNumber > 32) {
+            return Status::InvalidParam("invalid stream number({})", config.streamNumber);
+        }
         return Status::OK();
     }
     void ShowConfig(const Config& config)
@@ -100,6 +103,7 @@ private:
         UC_INFO("Set {}::WaitingQueueDepth to {}.", ns, config.waitingQueueDepth);
         UC_INFO("Set {}::RunningQueueDepth to {}.", ns, config.runningQueueDepth);
         UC_INFO("Set {}::TimeoutMs to {}.", ns, config.timeoutMs);
+        UC_INFO("Set {}::StreamNumber to {}.", ns, config.streamNumber);
     }
 };
 
@@ -119,6 +123,7 @@ Status CacheStore::Setup(const Detail::Dictionary& config)
     config.GetNumber("waiting_queue_depth", param.waitingQueueDepth);
     config.GetNumber("running_queue_depth", param.runningQueueDepth);
     config.GetNumber("timeout_ms", param.timeoutMs);
+    config.GetNumber("cache_stream_number", param.streamNumber);
     try {
         impl_ = std::make_shared<CacheStoreImpl>();
     } catch (const std::exception& e) {
