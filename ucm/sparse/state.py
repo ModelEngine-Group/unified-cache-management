@@ -6,17 +6,16 @@ similar to KV connector pattern. It allows the scheduler and worker to access
 the same UCM sparse agent across different processes.
 """
 
-from typing import TYPE_CHECKING, Optional
+from typing import Optional
 
 import torch
+from vllm.config import VllmConfig
+from vllm.forward_context import ForwardContext
 
 from ucm.logger import init_logger
 from ucm.sparse.base import UcmSparseBase, UcmSparseRole
 from ucm.sparse.factory import UcmSparseFactory
 from ucm.utils import Config
-
-if TYPE_CHECKING:
-    from vllm.config import VllmConfig
 
 logger = init_logger(__name__)
 
@@ -107,3 +106,61 @@ def maybe_execute_sparse_ffn_finished(
         return hidden_states, residual
     ucm_spare = get_ucm_sparse()
     return ucm_spare.ffn_finished(hidden_states, residual)
+
+
+def maybe_execute_sparse_attention_begin(
+    query: torch.Tensor,
+    key: torch.Tensor,
+    value: torch.Tensor,
+    layer_name: str,
+    forward_context: ForwardContext,
+    output: Optional[torch.Tensor] = None,
+    phase: Optional[str] = None,
+    k_hash: Optional[torch.Tensor] = None,
+    decode_ql_nope: Optional[torch.Tensor] = None,
+    decode_q_pe: Optional[torch.Tensor] = None,
+):
+    if not has_ucm_sparse():
+        return query, key, value, output
+
+    ucm_sparse = get_ucm_sparse()
+
+    attn_metadata = forward_context.attn_metadata
+    if attn_metadata is None:
+        return query, key, value, output
+
+    return ucm_sparse.attention_begin(
+        query,
+        key,
+        value,
+        layer_name,
+        forward_context,
+        output,
+        phase,
+        k_hash,
+        decode_ql_nope,
+        decode_q_pe,
+    )
+
+
+def maybe_execute_sparse_attention_finished(
+    query: torch.Tensor,
+    key: torch.Tensor,
+    value: torch.Tensor,
+    attn_output: torch.Tensor,
+    layer_name: str,
+    forward_context: ForwardContext,
+    phase: Optional[str] = None,
+):
+    if not has_ucm_sparse():
+        return
+
+    ucm_sparse = get_ucm_sparse()
+
+    attn_metadata = forward_context.attn_metadata
+    if attn_metadata is None:
+        return
+
+    ucm_sparse.attention_finished(
+        query, key, value, attn_output, layer_name, forward_context, phase
+    )
