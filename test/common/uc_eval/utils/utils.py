@@ -2,6 +2,7 @@ import logging
 import logging.handlers
 import math
 import os
+import re
 import sys
 import time
 from pathlib import Path
@@ -25,14 +26,15 @@ class PathUtil(object):
 
     @staticmethod
     def get_root_dir_path() -> Path:
-        root_path = Path(current_dir).parent.parent
+        root_path = Path(current_dir).parent
         return root_path
 
     @staticmethod
     def get_other_dir_path(other: str) -> Path:
         root_path = PathUtil.get_root_dir_path()
         other_path = Path.joinpath(root_path, other)
-        other_path.mkdir(parents=True, exist_ok=True)
+        if not other_path.is_file():
+            other_path.mkdir(parents=True, exist_ok=True)
         return other_path
 
     @staticmethod
@@ -51,6 +53,27 @@ class PathUtil(object):
 
 
 class FileUtil(object):
+
+    _ILLEGAL_CHARS = re.compile(r"[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]")
+    _MAX_CELL_LEN = 32768
+
+    @staticmethod
+    def _sanitize_df(df: pd.DataFrame) -> pd.DataFrame:
+        """
+        Iterate over every cell, remove illegal control characters, and truncate if too long.
+        """
+
+        def _clean_cell(cell):
+            if isinstance(cell, str):
+                cell = FileUtil._ILLEGAL_CHARS.sub("", cell)
+                if len(cell) > FileUtil._MAX_CELL_LEN:
+                    cell = cell[: FileUtil._MAX_CELL_LEN - 3] + "..."
+            return cell
+
+        for col in df.columns:
+            df[col] = df[col].map(_clean_cell)
+        return df
+
     @staticmethod
     def save_excel(
         file_path: Path,
@@ -66,6 +89,7 @@ class FileUtil(object):
             if headers
             else pd.DataFrame(data=data)
         )
+        df = FileUtil._sanitize_df(df)
         file_path.parent.mkdir(parents=True, exist_ok=True)
         if file_path.exists():
             with pd.ExcelWriter(
@@ -136,15 +160,33 @@ class LoggerHandler(logging.Logger):
             handler.setLevel(level)
 
 
+def _get_level_from_env() -> int:
+    """
+    Get the log level from environment variable
+    """
+    level = os.environ.get("UC_LOG_LEVEL", "INFO")
+    level = level.upper()
+    return getattr(logging, level, logging.INFO)
+
+
 # the global dictionary to store all the logger instances
 _logger_instances: Dict[str, LoggerHandler] = {}
+_DEFAULT_LOG_LEVEL = _get_level_from_env()
+_LOGGER_FILE_PATH = Path(current_dir).parent.joinpath("uc_log", "log.log")
 
 
 def get_logger(
     name: str = "evals", level: int = logging.INFO, log_file: str = None
 ) -> logging.Logger:
+    level = _DEFAULT_LOG_LEVEL or level
     if name in _logger_instances:
-        return _logger_instances[name]
+        log = _logger_instances[name]
+        log.setLevel(level)
+        return log
+
+    log_file = log_file or _LOGGER_FILE_PATH
+    if not log_file.parent.exists():
+        log_file.parent.mkdir(parents=True, exist_ok=True)
 
     # create a new logger instance
     logger = LoggerHandler(name, level, log_file)
