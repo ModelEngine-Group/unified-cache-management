@@ -1,3 +1,4 @@
+import hashlib
 import json
 import logging
 import random
@@ -9,6 +10,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 import pandas as pd
+from common.llm_connection.token_counter import HuggingFaceTokenizer
 from common.llmperf.utils import common_metrics
 from common.llmperf.utils.models import RequestConfig
 from common.llmperf.utils.openai_chat_completions_client import (
@@ -20,6 +22,28 @@ from common.llmperf.utils.utils import (
     sample_random_positive_int,
 )
 from transformers import AutoTokenizer
+
+
+def generate_fixed_token_prompt(
+    tokenizer_tool: str,
+    mean_tokens: int,
+    stddev_tokens: int,
+    seed: int,
+) -> Tuple[str, int]:
+    """
+    Generate a prompt with an exact (or near-exact) number of tokens
+    using token-id sampling instead of text concatenation.
+    """
+    num_tokens = sample_random_positive_int(mean_tokens, stddev_tokens)
+
+    text = tokenizer_tool.get_some_tokens(
+        num_tokens=num_tokens,
+        seed=seed,
+    )
+
+    actual_tokens = tokenizer_tool.count_tokens(text, include_special=True)
+    print(hashlib.sha256(text.encode("utf-8")).hexdigest())
+    return text, actual_tokens
 
 
 def get_token_throughput_latencies(
@@ -61,6 +85,7 @@ def get_token_throughput_latencies(
 
     print(f"Using tokenizer:{tokenizer_path}")
     tokenizer = AutoTokenizer.from_pretrained(tokenizer_path)
+    tok_tool = HuggingFaceTokenizer(tokenizer_path)
     get_token_length = lambda text: len(tokenizer.encode(text))
 
     if not additional_sampling_params:
@@ -75,10 +100,11 @@ def get_token_throughput_latencies(
             )
             num_output_tokens_list.append(num_output)
             prompts.append(
-                randomly_sample_sonnet_lines_prompt(
-                    prompt_tokens_mean=mean_input_tokens,
-                    prompt_tokens_stddev=stddev_input_tokens,
-                    tokenizer=tokenizer,
+                generate_fixed_token_prompt(
+                    tokenizer_tool=tok_tool,
+                    mean_tokens=mean_input_tokens,
+                    stddev_tokens=stddev_input_tokens,
+                    seed=(random_seed + i) if random_seed is not None else None,
                 )
             )
         start_time = time.monotonic()
@@ -91,7 +117,6 @@ def get_token_throughput_latencies(
         with ThreadPoolExecutor(max_workers=concurrent_requests) as executor:
             for idx in range(max_num_completed_requests):
                 sampling = {"max_tokens": num_output_tokens_list[idx]}
-                sampling.update(additional_sampling_params)
                 cfg = RequestConfig(
                     model=model,
                     prompt=prompts[idx],
@@ -147,7 +172,6 @@ def get_token_throughput_latencies(
         "mean_output_tokens": mean_output_tokens,
         "stddev_output_tokens": stddev_output_tokens,
         "concurrent_requests": concurrent_requests,
-        "additional_sampling_params": additional_sampling_params,
     }
 
     metadata["results"] = ret
@@ -296,7 +320,6 @@ def run_token_benchmark(
     stddev_input_tokens: int,
     mean_output_tokens: int,
     stddev_output_tokens: int,
-    additional_sampling_params: str,
     results_dir: str,
     random_seed: int,
     openai_api_base: str,
@@ -315,7 +338,6 @@ def run_token_benchmark(
         stddev_input_tokens: The standard deviation of the number of tokens to send in the prompt for the request.
         mean_output_tokens: The mean number of tokens to generate per request.
         stddev_output_tokens: The standard deviation of the number of tokens to generate per request.
-        additional_sampling_params: Additional sampling parameters to send with the request.
             For more information see the LLM APIs documentation for the completions.
         results_dir: The directory to save the results to.
         user_metadata: Additional metadata to include in the results.
@@ -337,7 +359,6 @@ def run_token_benchmark(
             mean_output_tokens=mean_output_tokens,
             stddev_output_tokens=stddev_output_tokens,
             concurrent_requests=concurrent_requests,
-            additional_sampling_params=json.loads(additional_sampling_params),
             random_seed=random_seed,
             openai_api_base=openai_api_base,
             tokenizer_path=tokenizer_path,
