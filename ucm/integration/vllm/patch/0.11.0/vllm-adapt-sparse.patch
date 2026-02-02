@@ -1,7 +1,7 @@
-From 689b24211e2f30c5e30af7f6b3f56ebc7273aabc Mon Sep 17 00:00:00 2001
+From f6ed6d979885a599cb8641c4b46d106ee80f7759 Mon Sep 17 00:00:00 2001
 From: AooooooA-C <chenaozhu@outlook.com>
 Date: Mon, 19 Jan 2026 23:03:08 -0800
-Subject: [PATCH] apply sparse method patches
+Subject: [PATCH 1/2] apply sparse method patches
 
 ---
  vllm/attention/layer.py                    | 63 +++++++++++++++
@@ -19,7 +19,7 @@ Subject: [PATCH] apply sparse method patches
  12 files changed, 318 insertions(+), 14 deletions(-)
 
 diff --git a/vllm/attention/layer.py b/vllm/attention/layer.py
-index 79879b680..23124edea 100644
+index 79879b680..c5324e47e 100644
 --- a/vllm/attention/layer.py
 +++ b/vllm/attention/layer.py
 @@ -3,6 +3,7 @@
@@ -241,7 +241,7 @@ index c536b0f60..38a28fd1f 100644
              return IntermediateTensors({
                  "hidden_states": hidden_states,
 diff --git a/vllm/v1/attention/backends/mla/common.py b/vllm/v1/attention/backends/mla/common.py
-index 963f1c5ab..c6c8af5d2 100755
+index 963f1c5ab..71f147ba1 100755
 --- a/vllm/v1/attention/backends/mla/common.py
 +++ b/vllm/v1/attention/backends/mla/common.py
 @@ -194,6 +194,7 @@ from typing import Generic, Optional, TypeVar, Union
@@ -861,6 +861,118 @@ index 8c75e8914..c3e9e781f 100644
  
      ensure_kv_transfer_initialized(vllm_config)
 +    ensure_ucm_sparse_initialized(vllm_config)
+-- 
+2.34.1
+
+
+From dd79760faf6eb162b5ab39486678675e079b4b60 Mon Sep 17 00:00:00 2001
+From: Qiong Wu <wq674452797@gmail.com>
+Date: Sat, 31 Jan 2026 16:06:09 +0800
+Subject: [PATCH 2/2] update sparse patch for vllm
+
+---
+ vllm/attention/layer.py                  | 51 ++----------------------
+ vllm/v1/attention/backends/mla/common.py |  5 ++-
+ vllm/v1/core/kv_cache_coordinator.py     |  2 +-
+ 3 files changed, 8 insertions(+), 50 deletions(-)
+
+diff --git a/vllm/attention/layer.py b/vllm/attention/layer.py
+index c5324e47e..17924dd15 100644
+--- a/vllm/attention/layer.py
++++ b/vllm/attention/layer.py
+@@ -31,7 +31,9 @@ from vllm.model_executor.models.vision import get_vit_attn_backend
+ from vllm.platforms import _Backend, current_platform
+ from vllm.utils import GiB_bytes, direct_register_custom_op
+ 
+-from ucm.sparse.state import get_ucm_sparse, has_ucm_sparse
++from ucm.sparse.state import (maybe_execute_sparse_attention_begin,
++                              maybe_execute_sparse_attention_finished)
++
+ 
+ logger = init_logger(__name__)
+ USE_XFORMERS_OPS = None
+@@ -660,49 +662,4 @@ direct_register_custom_op(
+     mutates_args=["output", "output_block_scale"],
+     fake_impl=unified_attention_with_output_fake,
+     tags=tag_cudagraph_unsafe,
+-)
+-
+-def maybe_execute_sparse_attention_begin(
+-        query: torch.Tensor,
+-        key: torch.Tensor,
+-        value: torch.Tensor,
+-        layer_name: str,
+-        forward_context: ForwardContext,
+-        output: Optional[torch.Tensor] = None,
+-        phase: Optional[str] = None,
+-        k_hash: Optional[torch.Tensor] = None,
+-        decode_ql_nope: Optional[torch.Tensor] = None,
+-        decode_q_pe: Optional[torch.Tensor] = None,
+-):
+-    if not has_ucm_sparse():
+-        return query, key, value, output
+-
+-    ucm_sparse = get_ucm_sparse()
+-
+-    attn_metadata = forward_context.attn_metadata
+-    if attn_metadata is None:
+-        return query, key, value, output
+-
+-    return ucm_sparse.attention_begin(
+-        query, key, value, layer_name, forward_context, output, phase, k_hash, decode_ql_nope, decode_q_pe
+-    )
+-
+-def maybe_execute_sparse_attention_finished(
+-        query: torch.Tensor,
+-        key: torch.Tensor,
+-        value: torch.Tensor,
+-        attn_output: torch.Tensor,
+-        layer_name: str,
+-        forward_context: ForwardContext,
+-        phase: Optional[str] = None,
+-):
+-    if not has_ucm_sparse():
+-        return
+-
+-    ucm_sparse = get_ucm_sparse()
+-
+-    attn_metadata = forward_context.attn_metadata
+-    if attn_metadata is None:
+-        return
+-
+-    ucm_sparse.attention_finished(query, key, value, attn_output, layer_name, forward_context, phase)
+\ No newline at end of file
++)
+\ No newline at end of file
+diff --git a/vllm/v1/attention/backends/mla/common.py b/vllm/v1/attention/backends/mla/common.py
+index 71f147ba1..4afd65376 100755
+--- a/vllm/v1/attention/backends/mla/common.py
++++ b/vllm/v1/attention/backends/mla/common.py
+@@ -222,8 +222,9 @@ from vllm.v1.attention.backends.utils import (AttentionMetadataBuilder,
+ from vllm.v1.kv_cache_interface import AttentionSpec
+ 
+ from vllm.forward_context import ForwardContext, get_forward_context
+-from vllm.attention.layer import (maybe_execute_sparse_attention_begin,
+-                                  maybe_execute_sparse_attention_finished)
++
++from ucm.sparse.state import (maybe_execute_sparse_attention_begin,
++                              maybe_execute_sparse_attention_finished)
+ 
+ try:
+     from vllm.vllm_flash_attn import flash_attn_varlen_func
+diff --git a/vllm/v1/core/kv_cache_coordinator.py b/vllm/v1/core/kv_cache_coordinator.py
+index 86771060c..f2bac0202 100644
+--- a/vllm/v1/core/kv_cache_coordinator.py
++++ b/vllm/v1/core/kv_cache_coordinator.py
+@@ -47,7 +47,7 @@ class KVCacheCoordinator(ABC):
+     def get_num_blocks_to_allocate(self, request_id: str, num_tokens: int,
+                                    new_computed_blocks: tuple[
+                                        list[KVCacheBlock], ...],
+-                                   num_encoder_tokens: int) -> int:
++                                   num_encoder_tokens: int = 0) -> int:
+         """
+         Get the number of blocks needed to be allocated for the request.
+ 
 -- 
 2.34.1
 

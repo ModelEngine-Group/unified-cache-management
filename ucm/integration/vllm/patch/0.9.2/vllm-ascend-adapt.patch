@@ -1,7 +1,7 @@
-From 93d2b945ec463d1f0b71d177aa9d6a0933e45746 Mon Sep 17 00:00:00 2001
+From c2c110eae94cda5f8955ee3ca2c348f8db42b561 Mon Sep 17 00:00:00 2001
 From: wenxinwang <wangwenxin21@huawei.com>
 Date: Tue, 23 Dec 2025 19:21:33 -0800
-Subject: [PATCH 1/5] sparse patch for vllm-ascend
+Subject: [PATCH 1/6] sparse patch for vllm-ascend
 
 ---
  vllm_ascend/attention/attention_v1.py | 80 ++++++++++++++++++++++
@@ -11,7 +11,7 @@ Subject: [PATCH 1/5] sparse patch for vllm-ascend
  4 files changed, 201 insertions(+), 16 deletions(-)
 
 diff --git a/vllm_ascend/attention/attention_v1.py b/vllm_ascend/attention/attention_v1.py
-index 7d7f488f..ea982244 100644
+index 7d7f488..ea98224 100644
 --- a/vllm_ascend/attention/attention_v1.py
 +++ b/vllm_ascend/attention/attention_v1.py
 @@ -24,6 +24,9 @@ import torch_npu
@@ -129,7 +129,7 @@ index 7d7f488f..ea982244 100644
  def unified_attention_with_output_fake(
      query: torch.Tensor,
 diff --git a/vllm_ascend/attention/mla_v1.py b/vllm_ascend/attention/mla_v1.py
-index f50fe56e..ae8f50bf 100644
+index f50fe56..ae8f50b 100644
 --- a/vllm_ascend/attention/mla_v1.py
 +++ b/vllm_ascend/attention/mla_v1.py
 @@ -13,10 +13,12 @@ from vllm.distributed import get_tensor_model_parallel_world_size
@@ -185,7 +185,7 @@ index f50fe56e..ae8f50bf 100644
  
          return output_padded
 diff --git a/vllm_ascend/worker/model_runner_v1.py b/vllm_ascend/worker/model_runner_v1.py
-index eabcdbcc..782b9a3b 100644
+index eabcdbc..782b9a3 100644
 --- a/vllm_ascend/worker/model_runner_v1.py
 +++ b/vllm_ascend/worker/model_runner_v1.py
 @@ -39,7 +39,10 @@ from vllm.config import CompilationLevel, VllmConfig
@@ -386,7 +386,7 @@ index eabcdbcc..782b9a3b 100644
 +        ucm_sparse.request_finished_in_worker(request_id)
 \ No newline at end of file
 diff --git a/vllm_ascend/worker/worker_v1.py b/vllm_ascend/worker/worker_v1.py
-index df03d508..5d5d9b5a 100644
+index df03d50..5d5d9b5 100644
 --- a/vllm_ascend/worker/worker_v1.py
 +++ b/vllm_ascend/worker/worker_v1.py
 @@ -17,6 +17,7 @@
@@ -461,17 +461,17 @@ index df03d508..5d5d9b5a 100644
 2.34.1
 
 
-From 35eb0e1c84ef9786a0c77561e3298002167c88c3 Mon Sep 17 00:00:00 2001
+From d27dbb12f5a22e2cc7fecd1b2d3f5d47f72ae4cb Mon Sep 17 00:00:00 2001
 From: ldeng <ldeng.sjtu@gmail.com>
 Date: Mon, 29 Dec 2025 17:59:28 +0800
-Subject: [PATCH 2/5] update attention_v1 for kvcomp in NPU
+Subject: [PATCH 2/6] update attention_v1 for kvcomp in NPU
 
 ---
  vllm_ascend/attention/attention_v1.py | 59 +++++++++++++++++++--------
  1 file changed, 43 insertions(+), 16 deletions(-)
 
 diff --git a/vllm_ascend/attention/attention_v1.py b/vllm_ascend/attention/attention_v1.py
-index ea982244..b924d8ea 100644
+index ea98224..b924d8e 100644
 --- a/vllm_ascend/attention/attention_v1.py
 +++ b/vllm_ascend/attention/attention_v1.py
 @@ -37,7 +37,7 @@ from vllm_ascend.utils import (ACL_FORMAT_FRACTAL_NZ, aligned_16, is_310p,
@@ -622,10 +622,10 @@ index ea982244..b924d8ea 100644
 2.34.1
 
 
-From 5c81688c4b5af2a474ac14c24e7c10abd7f9e4d2 Mon Sep 17 00:00:00 2001
+From 4167098c7f1c89c3c18b84bdcbdc879832e687b4 Mon Sep 17 00:00:00 2001
 From: ldeng <ldeng.sjtu@gmail.com>
 Date: Mon, 29 Dec 2025 18:04:02 +0800
-Subject: [PATCH 3/5] call initialize_kv_hash_cache_tensors_npu to allocate
+Subject: [PATCH 3/6] call initialize_kv_hash_cache_tensors_npu to allocate
  hashk cache in NPUModelRunner when VLLM_HASH_ATTENTION is enabled for KVComp
 
 ---
@@ -633,7 +633,7 @@ Subject: [PATCH 3/5] call initialize_kv_hash_cache_tensors_npu to allocate
  1 file changed, 5 insertions(+)
 
 diff --git a/vllm_ascend/worker/model_runner_v1.py b/vllm_ascend/worker/model_runner_v1.py
-index 782b9a3b..766316e1 100644
+index 782b9a3..766316e 100644
 --- a/vllm_ascend/worker/model_runner_v1.py
 +++ b/vllm_ascend/worker/model_runner_v1.py
 @@ -1993,6 +1993,11 @@ class NPUModelRunner(LoRAModelRunnerMixin):
@@ -652,17 +652,17 @@ index 782b9a3b..766316e1 100644
 2.34.1
 
 
-From 9d61017d7f144e4d8125b6cacb9dce39d5da45fc Mon Sep 17 00:00:00 2001
+From 68101432526d0a27fac8d1092aaca750b383dacd Mon Sep 17 00:00:00 2001
 From: ldeng <ldeng.sjtu@gmail.com>
 Date: Mon, 29 Dec 2025 18:04:50 +0800
-Subject: [PATCH 4/5] uncomment connector
+Subject: [PATCH 4/6] uncomment connector
 
 ---
  vllm_ascend/attention/attention_v1.py | 4 ++--
  1 file changed, 2 insertions(+), 2 deletions(-)
 
 diff --git a/vllm_ascend/attention/attention_v1.py b/vllm_ascend/attention/attention_v1.py
-index b924d8ea..ece7d173 100644
+index b924d8e..ece7d17 100644
 --- a/vllm_ascend/attention/attention_v1.py
 +++ b/vllm_ascend/attention/attention_v1.py
 @@ -468,7 +468,7 @@ def unified_ascend_attention_with_output(
@@ -687,17 +687,17 @@ index b924d8ea..ece7d173 100644
 2.34.1
 
 
-From 34cb655d94fc08f7853d6fd0fe95b78df978096b Mon Sep 17 00:00:00 2001
+From b1338d11c7dc16a42b679ebae94c88f611c563e8 Mon Sep 17 00:00:00 2001
 From: Clarence-1103 <indirashi@163.com>
 Date: Tue, 6 Jan 2026 19:31:40 -0800
-Subject: [PATCH 5/5] [bugfix] register_kv_caches
+Subject: [PATCH 5/6] register_kv_caches
 
 ---
  vllm_ascend/worker/model_runner_v1.py | 3 +++
  1 file changed, 3 insertions(+)
 
 diff --git a/vllm_ascend/worker/model_runner_v1.py b/vllm_ascend/worker/model_runner_v1.py
-index 766316e1..04b0f4e2 100644
+index 766316e..04b0f4e 100644
 --- a/vllm_ascend/worker/model_runner_v1.py
 +++ b/vllm_ascend/worker/model_runner_v1.py
 @@ -2003,6 +2003,9 @@ class NPUModelRunner(LoRAModelRunnerMixin):
@@ -710,6 +710,50 @@ index 766316e1..04b0f4e2 100644
      def get_kv_cache_spec(self) -> dict[str, KVCacheSpec]:
          """
          Generates the KVCacheSpec by parsing the kv cache format from each
+-- 
+2.34.1
+
+
+From a517ae85600c6ee13b3031b1474bed8348219121 Mon Sep 17 00:00:00 2001
+From: Qiong Wu <wq674452797@gmail.com>
+Date: Sat, 31 Jan 2026 15:52:07 +0800
+Subject: [PATCH 6/6] update sparse patch for vllm-ascend
+
+---
+ vllm_ascend/attention/mla_v1.py | 6 +++---
+ 1 file changed, 3 insertions(+), 3 deletions(-)
+
+diff --git a/vllm_ascend/attention/mla_v1.py b/vllm_ascend/attention/mla_v1.py
+index ae8f50b..0ee999b 100644
+--- a/vllm_ascend/attention/mla_v1.py
++++ b/vllm_ascend/attention/mla_v1.py
+@@ -1196,7 +1196,7 @@ class AscendMLAImpl(MLAAttentionImpl):
+             # otherwise it may affect the accuracy
+             # TODO: use an elegant way to overlap
+             wait_for_kv_layer_from_connector(layer.layer_name)
+-            prefill_q, _, _, _ =  maybe_execute_sparse_attention_begin(prefill_q, prefill_k_c_normed, k_pe, layer.layer_name, forward_context, output=output, phase="prefill")
++            prefill_q, _, _, _ =  maybe_execute_sparse_attention_begin(prefill_q, prefill_k_c_normed, prefill_k_pe, layer.layer_name, forward_context, output=output, phase="prefill")
+             output_prefill = self._forward_prefill(prefill_q,
+                                                    prefill_k_c_normed,
+                                                    prefill_k_pe, kv_cache,
+@@ -1212,7 +1212,7 @@ class AscendMLAImpl(MLAAttentionImpl):
+             maybe_save_kv_layer_to_connector(layer.layer_name, kv_cache)
+         if has_decode:
+             wait_for_kv_layer_from_connector(layer.layer_name)
+-            _, _, _, _ = maybe_execute_sparse_attention_begin(torch.cat([decode_ql_nope, decode_q_pe],dim=-1), decode_k_nope, k_pe, layer.layer_name, forward_context, output=output, phase="decode")
++            _, _, _, _ = maybe_execute_sparse_attention_begin(torch.cat([decode_ql_nope, decode_q_pe],dim=-1), decode_k_nope, decode_k_pe, layer.layer_name, forward_context, output=output, phase="decode")
+             if self.running_in_graph:
+                 return self._forward_decode(decode_ql_nope, decode_q_pe,
+                                             decode_k_nope, decode_k_pe,
+@@ -1231,7 +1231,7 @@ class AscendMLAImpl(MLAAttentionImpl):
+                     current_ms_metadata.after_comm_event.record()
+             else:
+                 output[:num_decode_tokens] = output_decode
+-            maybe_execute_sparse_attention_finished(torch.cat([decode_ql_nope, decode_q_pe],dim=-1), decode_ql_nope, decode_q_pe, output[:num_decode_tokens], layer.layer_name, forward_context, "decode")
++            maybe_execute_sparse_attention_finished(torch.cat([decode_ql_nope, decode_q_pe],dim=-1), decode_k_nope, decode_k_pe, output[:num_decode_tokens], layer.layer_name, forward_context, "decode")
+             maybe_save_kv_layer_to_connector(layer.layer_name, kv_cache)
+ 
+         return output_padded
 -- 
 2.34.1
 
