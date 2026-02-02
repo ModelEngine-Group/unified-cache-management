@@ -17,11 +17,12 @@ database:
   password: "123456"
 
 models:
-  ip_ports: ""
-  tokenizer_path: ""
-  served_model_name: ""
-  payload: ''
+  ip_ports: "0.0.0.0:10035"
+  tokenizer_path: "/home/models/Qwen3-32B"
+  served_model_name: "vllm_cpu_offload"
+  payload: '{"temperature":0, "max_tokens":1024, "ignore_eos":false}'
   enable_clear_hbm: false
+  max_seq_length: 18500
 
 # LLM Connection Configuration
 llm_connection:

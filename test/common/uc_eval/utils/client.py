@@ -76,17 +76,24 @@ class BaseClient:
         self.tokenizer: PreTrainedTokenizer = AutoTokenizer.from_pretrained(
             tokenizer_path
         )
-        self.session = requests.Session()
+        self.max_paralleml_num = kwargs.get("max_parallel_num", 10)
+        self.session = self.create_session(self.max_paralleml_num)
+        self.max_seq_length = config.max_seq_length
         self.payload = config.payload
         self.stream = stream
         if self.stream:
             self.payload.update(
                 {"stream": True, "ignore_eos": True, "temperature": 0.0}
             )
-        else:
-            self.payload.update(
-                {"stream": False, "ignore_eos": False, "temperature": 0.0}
-            )
+
+    def create_session(self, max_parallel_num: int):
+        session = requests.Session()
+        adapter = requests.adapters.HTTPAdapter(
+            pool_maxsize=max_parallel_num if max_parallel_num >= 10 else 10
+        )
+        session.mount("http://", adapter)
+        session.mount("https://", adapter)
+        return session
 
     def handle_requests_with_pool(
         self, prompt_list: List, parallel_num: int, max_tokens: int
@@ -120,6 +127,14 @@ class BaseClient:
         if max_tokens > 0:
             payload.update({"max_tokens": max_tokens})
         if isinstance(prompt, str):
+            # If the length of input_ids is greater than max_seq_length, we need to split it
+            input_ids = self.tokenizer.encode(prompt)
+            if len(input_ids) > self.max_seq_length:
+                input_ids = (
+                    input_ids[: self.max_seq_length // 2]
+                    + input_ids[-self.max_seq_length // 2 :]
+                )
+                prompt = self.tokenizer.decode(input_ids)
             message = [{"role": "user", "content": prompt}]
         if isinstance(prompt, list):
             # Multi-turn conversation - prompt already contains full message history.
@@ -157,7 +172,7 @@ class BaseClient:
             record.output_tokens = len(self.tokenizer.tokenize(record.output_data))
             record.tbt_list = record.tbt_list[2:] if record.tbt_list else []
             record.tbt_latency = (
-                sum(record.tbt_list) / len(record.tbt_list) if record.tbt_list else 0
+                sum(record.tbt_list) / record.output_tokens if record.tbt_list else 0
             )
 
         return records[0] if single_record is not None else records
@@ -209,54 +224,57 @@ class BaseClient:
             timeout_finish_reason = False
             cur_time = last_time = time.perf_counter()
             record.start_time = last_time
-            response = self._requset(payload)
-            for chunk in response.iter_content(chunk_size=CHUNK_SIZE):
-                all_chunks.append(chunk)
-                if len(chunk.strip()) == 0:
-                    continue
-                last_chunk = chunk
-                cur_time = time.perf_counter()
-                time_diff = cur_time - last_time
-                if first_token:
-                    record.prefill_latency = time_diff
-                    first_token = False
-                else:
-                    record.tbt_list.append(time_diff)
-                last_time = cur_time
-                chunk_output = chunk[5:].strip().decode("utf-8")
+            with self.session.post(
+                self.url, headers=HEADERS, json=payload, stream=self.stream
+            ) as response:
+                for chunk in response.iter_content(chunk_size=CHUNK_SIZE):
+                    cur_time = time.perf_counter()
+                    all_chunks.append(chunk)
+                    if len(chunk.strip()) == 0:
+                        continue
+                    last_chunk = chunk
+                    time_diff = cur_time - last_time
+                    if first_token:
+                        record.prefill_latency = time_diff
+                        first_token = False
+                    else:
+                        record.tbt_list.append(time_diff)
+                    last_time = cur_time
+                    # Decode the chunk after removing the leading "data:" prefix
+                    chunk_output = chunk[5:].strip().decode("utf-8")
 
-                # when the MindIE engine side timeout, it will return timeout information
-                if chunk.startswith(b"Engine callback timeout"):
-                    self._print_request_info(
-                        request_id=record.request_id,
-                        chunk=chunk,
-                        content=record.output_data,
-                        all_chunks=all_chunks,
-                        payload=payload,
-                        msg="Engine callback timeout",
+                    # when the MindIE engine side timeout, it will return timeout information
+                    if chunk.startswith(b"Engine callback timeout"):
+                        self._print_request_info(
+                            request_id=record.request_id,
+                            chunk=chunk,
+                            content=record.output_data,
+                            all_chunks=all_chunks,
+                            payload=payload,
+                            msg="Engine callback timeout",
+                        )
+                        record.output_data = "TIMEOUT"
+                        return record
+                    if "[DONE]" in chunk_output:
+                        logger.debug(f"Finished chunk: {chunk_output=}")
+                        continue
+                    output = self._get_message_from_stream_response(
+                        json.loads(chunk_output)
                     )
-                    record.output_data = "TIMEOUT"
-                    return record
-                if "[DONE]" in chunk_output:
-                    logger.debug(f"Finished chunk: {chunk_output=}")
-                    continue
-                output = self._get_message_from_stream_response(
-                    json.loads(chunk_output)
-                )
-                if record.request_id == "":
-                    record.request_id = json.loads(chunk_output).get(
-                        "id", "request_id not found"
-                    )
-                record.output_data += output
+                    if record.request_id == "":
+                        record.request_id = json.loads(chunk_output).get(
+                            "id", "request_id not found"
+                        )
+                    record.output_data += output
 
-                # when the uc-vllm request timeout, finish_reason == "length" and the final output is empty
-                finish_reason = (
-                    json.loads(chunk_output)
-                    .get("choices", [])[0]
-                    .get("finish_reason", "")
-                )
-                if finish_reason == "length":
-                    timeout_finish_reason = True
+                    # when the uc-vllm request timeout, finish_reason == "length" and the final output is empty
+                    finish_reason = (
+                        json.loads(chunk_output)
+                        .get("choices", [])[0]
+                        .get("finish_reason", "")
+                    )
+                    if finish_reason == "length":
+                        timeout_finish_reason = True
 
             # handle the last chunk
             if last_chunk.startswith(b"data:"):
@@ -375,6 +393,7 @@ class MultiDialogClient(BaseClient):
         super().__init__(config, stream, **kwargs)
         self.uuid = uuid.uuid4().hex
         self.enable_prefix_cache = kwargs.get("enable_prefix_cache", False)
+        self.enable_clear_hbm = kwargs.get("enable_clear_hbm", False)
 
     @override
     def handle_requests_with_pool(
@@ -398,12 +417,16 @@ class MultiDialogClient(BaseClient):
         conversion = dialog["conversations"]
         turns = self._convert_conversation_2_turns(conversion, 2)
         for i, turn in enumerate(turns):
-            in_content, reply = turn[0]["content"], turn[1]["content"]
+            in_content, reply = turn[0]["value"], turn[1]["value"]
             # Update payload, then send request
             prompt = self._update_request_body(history, in_content)
             record: RequestRecord = self.send_request(prompt, max_tokens)
             record.case_name = case_name
             history = self._update_history(history, in_content, reply)
+
+            if self.enable_clear_hbm:
+                self.clear_hbm()
+
             multi_turn_record: MultiTurnDialogRecord = (
                 self._update_multi_turn_request_record(record, len(turns), i)
             )
@@ -481,10 +504,16 @@ class DocQaClient(BaseClient):
     def send_qa_request(
         self, case: Union[str, str, str, str], max_tokens: int = -1
     ) -> RequestRecord:
-        case_name, context, question, answer = case
-        prompt = context + question
-        record: RequestRecord = self.send_request(prompt, max_tokens)
-        record.case_name = case_name
-        record.question = question
-        record.expected_output = answer
-        return record
+        case_name, prompt_list, question, answer = case
+        all_record = RequestRecord()
+        for i, prompt in enumerate(prompt_list):
+            record: RequestRecord = self.send_request(prompt, max_tokens)
+            if i == 0:
+                all_record = record
+                all_record.case_name = case_name
+                all_record.question = question
+                all_record.expected_output = answer
+            if i == len(prompt_list) - 1:
+                all_record.output_data = record.output_data
+                all_record.output_tokens = record.output_tokens
+        return all_record

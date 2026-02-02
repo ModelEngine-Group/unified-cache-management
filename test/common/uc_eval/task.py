@@ -6,6 +6,7 @@ from common.uc_eval.utils.config_loader import ConfigLoader, TaskFactory
 from common.uc_eval.utils.data_class import (
     BenchmarkModeType,
     EvalConfig,
+    KvcacheHitType,
     LatencyStatistics,
     ModelConfig,
     MultiTurnDialogRecord,
@@ -20,6 +21,7 @@ BAD_COMPLETION_TOKENS_THR = 20
 logger = get_logger()
 PERF_CSV_HEADER = [
     "Test Time",
+    "Test Name",
     "Total Cases",
     "Parallel Num",
     "Prefix Cache",
@@ -40,7 +42,8 @@ PERF_CSV_HEADER = [
 
 SYNC_PERF_CSV_HEADER = [
     "Test Time",
-    "Parallel Num",
+    "Test Name",
+    "Total Cases Num",
     "Input Tokens",
     "Output Tokens",
     "Parallel Num",
@@ -63,10 +66,11 @@ SYNC_PERF_CSV_HEADER = [
 
 CASE_PERF_CSV_HEADER = [
     "Test Time",
+    "Test Name",
     "Prefix Cache",
     "Total Cases",
     "Current Case",
-    "Case Name",
+    "Case ID",
     "Input Tokens",
     "Output Tokens",
     "Latency(ms)",
@@ -76,10 +80,11 @@ CASE_PERF_CSV_HEADER = [
 
 CASE_EVAL_CSV_HEADER = [
     "Test Time",
+    "Test Name",
     "Prefix Cache",
     "Total Cases",
     "Current Case",
-    "Case Name",
+    "Case ID",
     "Input Tokens",
     "Output Tokens",
     "Input Text",
@@ -110,6 +115,8 @@ class BaseTask(ABC):
         self.parallel_num = common_config.parallel_num
         self.enable_prefix_cache = common_config.enable_prefix_cache
         self.benchmark_mode = common_config.benchmark_mode
+        self.test_name = common_config.test_name
+        self.enable_clear_hbm = model_config.enable_clear_hbm
         self.save_to_excel = save_to_excel
         self.file_save_path = PathUtil.get_datasets_dir_path(file_save_path).joinpath(
             self.benchmark_mode, f"{self.data_type}_latency.xlsx"
@@ -148,12 +155,17 @@ class BaseTask(ABC):
             FileUtil.save_excel(
                 self.file_save_path, [data], PERF_CSV_HEADER, "Overall Performance"
             )
+        elif self.eval_config:
+            logger.info(
+                f"For the test case named {self.test_name}, the result is: {data_dict}"
+            )
         return data_dict
 
     def update_single_record(self, record: LatencyStatistics, case_len: int):
         logger.info(f"There are {case_len} cases to save to the database.")
         data_dict = {
             "current_time": self.current_time,
+            "test_name": self.test_name,
             "total_case_num": case_len,
             "parallel_num": self.parallel_num,
             "enable_prefix_cache": self.enable_prefix_cache,
@@ -172,7 +184,7 @@ class BaseTask(ABC):
         self, records: List[RequestRecord | MultiTurnDialogRecord]
     ):
         save_data = []
-        common_columns = [self.current_time, self.enable_prefix_cache]
+        common_columns = [self.current_time, self.test_name, self.enable_prefix_cache]
         for idx, record in enumerate(records):
             if isinstance(record, MultiTurnDialogRecord):
                 columns = common_columns + [record.total_turns, record.turn_id]
@@ -198,7 +210,7 @@ class BaseTask(ABC):
         self, records: List[RequestRecord | MultiTurnDialogRecord], match_cls: str
     ):
         save_data = []
-        common_columns = [self.current_time, self.enable_prefix_cache]
+        common_columns = [self.current_time, self.test_name, self.enable_prefix_cache]
         for idx, record in enumerate(records):
             if isinstance(record, MultiTurnDialogRecord):
                 columns = common_columns + [record.total_turns, record.turn_id]
@@ -237,13 +249,15 @@ class SyntheticPerfTask(BaseTask):
             perf_config=perf_config,
             file_save_path=file_save_path,
         )
-        self.enable_clear_hbm = model_config.enable_clear_hbm
         self.prompt_tokens = perf_config.prompt_tokens
         self.output_tokens = perf_config.output_tokens
         self.prefix_cache_num = perf_config.prefix_cache_num
         self.prompt_seed = 0 if self.enable_prefix_cache else -1
         self.stable_perf = self.benchmark_mode == BenchmarkModeType.STABLE_PREF
         self.stable_rate = stable_rate
+
+        self.kv_hit_type = perf_config.kv_hit_type
+        self.epoch = perf_config.epoch_num
 
     def process(self):
         result = []
@@ -253,65 +267,88 @@ class SyntheticPerfTask(BaseTask):
                 syntheric_params.parallel_num = parallel_num
                 if self.stable_perf:
                     syntheric_params.parallel_num *= self.stable_rate
-                if self.enable_prefix_cache:
-                    syntheric_params.seeds = [
-                        self.prompt_seed + i
-                        for i in range(syntheric_params.parallel_num)
-                    ]
-                    self.prompt_seed += syntheric_params.parallel_num
-                else:
-                    syntheric_params.seeds = [
-                        self.prompt_seed
-                    ] * syntheric_params.parallel_num
+
                 syntheric_params.prompt_tokens = self.prompt_tokens[idx]
                 syntheric_params.prefix_cache_tokens = (
                     int(self.prefix_cache_num[idx] * syntheric_params.prompt_tokens)
                     if self.enable_prefix_cache
                     else 0
                 )
-                logger.info(
-                    f"Performance benchmark running with: enable prefix cache: ({self.enable_prefix_cache}), {syntheric_params=}"
-                )
-                if self.enable_prefix_cache and self.prefix_cache_num[idx] > 0:
-                    logger.info(f"Begin build kvcache...")
-                    input_data = self.dataset.prepare_data(syntheric_params)
-                    self.client.handle_requests_with_pool(
-                        input_data, parallel_num, BAD_COMPLETION_TOKENS_THR
-                    )
+                all_latency_statistics = []
+                all_output_tokens = []
+                for ep in range(self.epoch):
+                    if self.enable_prefix_cache:
+                        syntheric_params.seeds = [
+                            self.prompt_seed + i
+                            for i in range(syntheric_params.parallel_num)
+                        ]
+                        self.prompt_seed += syntheric_params.parallel_num
+                    else:
+                        syntheric_params.seeds = [
+                            self.prompt_seed
+                        ] * syntheric_params.parallel_num
                     logger.info(
-                        "To ensure thal all kvcache is offload2ssd, sleep for 10 seconds"
+                        f"Performance benchmark running with: epoch: {ep}, enable prefix cache: {self.enable_prefix_cache}, actual_parallel_num:{parallel_num}, {syntheric_params=}"
                     )
-                    time.sleep(10)
+                    need_prepare_kvcache = (
+                        self.kv_hit_type == KvcacheHitType.DISK
+                        and self.enable_clear_hbm
+                    ) or self.kv_hit_type == KvcacheHitType.HBM
+                    if (
+                        need_prepare_kvcache
+                        and self.enable_prefix_cache
+                        and self.prefix_cache_num[idx] > 0
+                    ):
+                        logger.info(f"Begin build kvcache...")
+                        input_data = self.dataset.prepare_data(syntheric_params)
+                        self.client.handle_requests_with_pool(
+                            input_data, parallel_num, BAD_COMPLETION_TOKENS_THR
+                        )
+                        logger.info(
+                            "To ensure thal all kvcache is offload2ssd, sleep for 10 seconds"
+                        )
+                        time.sleep(10)
 
-                if self.enable_clear_hbm:
-                    self.client.clear_hbm()
+                    if self.enable_clear_hbm:
+                        self.client.clear_hbm()
 
-                logger.info(f"Begin post cases...")
-                input_data = self.dataset.prepare_data(syntheric_params)
-                records: List[RequestRecord] = self.client.handle_requests_with_pool(
-                    input_data, parallel_num, self.output_tokens[idx]
+                    logger.info(f"Begin post cases...")
+                    input_data = self.dataset.prepare_data(syntheric_params)
+                    records: List[RequestRecord] = (
+                        self.client.handle_requests_with_pool(
+                            input_data, parallel_num, self.output_tokens[idx]
+                        )
+                    )
+                    latency_statistics: LatencyStatistics = self.benchmark.perf_show(
+                        records, parallel_num
+                    )
+                    all_latency_statistics.append(latency_statistics)
+                    all_output_tokens.extend(record.output_tokens for record in records)
+
+                # Get the average latency
+                average_latency_statistics: LatencyStatistics = (
+                    self.benchmark.average_latency_statistics(all_latency_statistics)
                 )
-                latency_statistics: LatencyStatistics = self.benchmark.perf_show(
-                    records, parallel_num
-                )
+
                 # Make sure to store the data after each test is completed, to prevent data loss after a request fails
                 data_dict = {
                     "current_time": self.current_time,
-                    "total_case_num": syntheric_params.parallel_num,
+                    "test_name": self.test_name,
+                    "total_case_num": syntheric_params.parallel_num * self.epoch,
                     "input_tokens": self.prompt_tokens[idx],
-                    "output_tokens": self.output_tokens[idx],
+                    "output_tokens": sum(all_output_tokens) / len(all_output_tokens),
                     "parallel_num": parallel_num,
                     "enable_prefix_cache": self.enable_prefix_cache,
                     "prefix_cache_num": (
                         self.prefix_cache_num[idx] if self.enable_prefix_cache else 0
                     ),
                 }
-                latency_dict = latency_statistics.to_dict()
+                latency_dict = average_latency_statistics.to_dict()
                 data_dict.update(dict(list(latency_dict.items())[:-1]))
                 data = data_dict.values()
                 if self.save_to_excel:
                     logger.info(
-                        f"Begin save latency data to excel, file name: {self.file_save_path}"
+                        f"Begin save latency data to excel, file name: {self.file_save_path}\n"
                     )
                     FileUtil.save_excel(
                         self.file_save_path,
@@ -368,6 +405,9 @@ class DocQaPerfTask(BaseTask):
                 cases_list, self.parallel_num, BAD_COMPLETION_TOKENS_THR
             )
 
+        if self.enable_clear_hbm:
+            self.client.clear_hbm()
+
         logger.info("Begin post cases...")
         records: List[RequestRecord] = self.client.handle_requests_with_pool(
             cases_list, self.parallel_num, self.max_tokens
@@ -397,6 +437,9 @@ class DocQaEvalTask(BaseTask):
             self.client.handle_requests_with_pool(
                 cases_list, self.parallel_num, BAD_COMPLETION_TOKENS_THR
             )
+
+        if self.enable_clear_hbm:
+            self.client.clear_hbm()
 
         logger.info("Begin post cases...")
         records: List[RequestRecord] = self.client.handle_requests_with_pool(
