@@ -48,6 +48,18 @@ std::unique_ptr<Stream> Device::MakeStream()
     return nullptr;
 }
 
+std::shared_ptr<Stream> Device::MakeSharedStream()
+{
+    std::shared_ptr<Stream> stream = nullptr;
+    try {
+        stream = std::make_shared<AscendStream>();
+    } catch (...) {
+        return nullptr;
+    }
+    if (stream->Setup().Success()) { return stream; }
+    return nullptr;
+}
+
 std::unique_ptr<Stream> Device::MakeSMStream() { return nullptr; }
 
 std::unique_ptr<Buffer> Device::MakeBuffer()

@@ -23,7 +23,6 @@
  * */
 #include "load_queue.h"
 #include "logger/logger.h"
-#include "trans/device.h"
 
 namespace UC::CacheStore {
 
@@ -45,8 +44,9 @@ Status LoadQueue::Setup(const Config& config, TaskIdSet* failureSet, TransBuffer
     dispatcher_ = std::thread{&LoadQueue::DispatchStage, this};
     std::promise<Status> started;
     auto fut = started.get_future();
-    transfer_ = std::thread{&LoadQueue::TransferStage, this, config.deviceId, config.tensorSize,
-                            std::ref(started)};
+    transfer_ = std::thread{&LoadQueue::TransferStage, this,
+                            config.deviceId,           config.tensorSize,
+                            config.streamNumber,       std::ref(started)};
     return fut.get();
 }
 
@@ -110,26 +110,17 @@ void LoadQueue::DispatchOneTask(TaskPair&& pair)
              (tpWait - tp) * 1e3, (tpMakeBuffer - tpWait) * 1e3, (tpBackend - tpMakeBuffer) * 1e3);
 }
 
-void LoadQueue::TransferStage(int32_t deviceId, size_t tensorSize, std::promise<Status>& started)
+void LoadQueue::TransferStage(int32_t deviceId, size_t tensorSize, size_t streamNumber,
+                              std::promise<Status>& started)
 {
-    Trans::Device device;
-    auto s = device.Setup(deviceId);
-    if (s.Failure()) [[unlikely]] {
-        UC_ERROR("Failed({}) to setup device({}).", s, deviceId);
-        started.set_value(s);
-        return;
-    }
-    auto stream = device.MakeStream();
-    if (!stream) [[unlikely]] {
-        UC_ERROR("Failed to make stream on device({}).", deviceId);
-        started.set_value(Status::Error());
-        return;
-    }
-    started.set_value(Status::OK());
-    running_.ConsumerLoop(stop_, &LoadQueue::TransferOneTask, this, stream.get(), tensorSize);
+    CopyStream stream;
+    auto s = stream.Setup(deviceId, streamNumber);
+    started.set_value(s);
+    if (s.Failure()) [[unlikely]] { return; }
+    running_.ConsumerLoop(stop_, &LoadQueue::TransferOneTask, this, stream, tensorSize);
 }
 
-void LoadQueue::TransferOneTask(Trans::Stream* stream, size_t tensorSize, ShardTask&& task)
+void LoadQueue::TransferOneTask(CopyStream& stream, size_t tensorSize, ShardTask&& task)
 {
     if (failureSet_->Contains(task.taskHandle)) {
         if (task.waiter) { task.waiter->Done(); }
@@ -139,8 +130,8 @@ void LoadQueue::TransferOneTask(Trans::Stream* stream, size_t tensorSize, ShardT
     do {
         s = WaitBackendTaskReady(task);
         if (s.Failure()) [[unlikely]] { break; }
-        s = stream->HostToDeviceAsync(task.bufferHandle.Data(), task.shard.addrs.data(), tensorSize,
-                                      task.shard.addrs.size());
+        s = stream.NextStream()->HostToDeviceAsync(
+            task.bufferHandle.Data(), task.shard.addrs.data(), tensorSize, task.shard.addrs.size());
         if (s.Failure()) [[unlikely]] {
             UC_ERROR("Failed({}) to do H2D({}) batch({}) async.", s, tensorSize,
                      task.shard.addrs.size());
@@ -150,7 +141,7 @@ void LoadQueue::TransferOneTask(Trans::Stream* stream, size_t tensorSize, ShardT
             holder_.push_back(std::move(task));
             return;
         }
-        s = stream->Synchronized();
+        s = stream.Synchronize();
         holder_.clear();
         if (s.Failure()) [[unlikely]] {
             UC_ERROR("Failed({}) to sync on stream.", s);

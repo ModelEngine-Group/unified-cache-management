@@ -23,7 +23,6 @@
  * */
 #include "dump_queue.h"
 #include "logger/logger.h"
-#include "trans/device.h"
 
 namespace UC::CacheStore {
 
@@ -44,8 +43,9 @@ Status DumpQueue::Setup(const Config& config, TaskIdSet* failureSet, TransBuffer
     dumper_ = std::thread{&DumpQueue::BackendDumpStage, this};
     std::promise<Status> started;
     auto fut = started.get_future();
-    dispatcher_ = std::thread{&DumpQueue::DispatchStage, this, config.deviceId, config.tensorSize,
-                              std::ref(started)};
+    dispatcher_ = std::thread{&DumpQueue::DispatchStage, this,
+                              config.deviceId,           config.tensorSize,
+                              config.streamNumber,       std::ref(started)};
     return fut.get();
 }
 
@@ -59,26 +59,17 @@ void DumpQueue::Submit(TaskPtr task, WaiterPtr waiter)
     waiter->Done();
 }
 
-void DumpQueue::DispatchStage(int32_t deviceId, size_t tensorSize, std::promise<Status>& started)
+void DumpQueue::DispatchStage(int32_t deviceId, size_t tensorSize, size_t streamNumber,
+                              std::promise<Status>& started)
 {
-    Trans::Device device;
-    auto s = device.Setup(deviceId);
-    if (s.Failure()) [[unlikely]] {
-        UC_ERROR("Failed({}) to setup device({}).", s, deviceId);
-        started.set_value(s);
-        return;
-    }
-    auto stream = device.MakeStream();
-    if (!stream) [[unlikely]] {
-        UC_ERROR("Failed to make stream on device({}).", deviceId);
-        started.set_value(Status::Error());
-        return;
-    }
-    started.set_value(Status::OK());
-    waiting_.ConsumerLoop(stop_, &DumpQueue::DispatchOneTask, this, stream.get(), tensorSize);
+    CopyStream stream;
+    auto s = stream.Setup(deviceId, streamNumber);
+    started.set_value(s);
+    if (s.Failure()) [[unlikely]] { return; }
+    waiting_.ConsumerLoop(stop_, &DumpQueue::DispatchOneTask, this, stream, tensorSize);
 }
 
-void DumpQueue::DispatchOneTask(Trans::Stream* stream, size_t tensorSize, TaskPair&& pair)
+void DumpQueue::DispatchOneTask(CopyStream& stream, size_t tensorSize, TaskPair&& pair)
 {
     auto& task = pair.first;
     auto& waiter = pair.second;
@@ -91,7 +82,7 @@ void DumpQueue::DispatchOneTask(Trans::Stream* stream, size_t tensorSize, TaskPa
     waiter->Done();
 }
 
-Status DumpQueue::DumpOneTask(Trans::Stream* stream, size_t tensorSize, TaskPtr task)
+Status DumpQueue::DumpOneTask(CopyStream& stream, size_t tensorSize, TaskPtr task)
 {
     auto tp = NowTime::Now();
     Detail::TaskDesc backendTaskDesc;
@@ -104,8 +95,8 @@ Status DumpQueue::DumpOneTask(Trans::Stream* stream, size_t tensorSize, TaskPtr 
         auto handle = buffer_->Get(shard.owner, shard.index);
         if (!handle.Owner()) { continue; }
         if (!handle.Ready()) {
-            auto s = stream->DeviceToHostAsync(shard.addrs.data(), handle.Data(), tensorSize,
-                                               shard.addrs.size());
+            auto s = stream.NextStream()->DeviceToHostAsync(shard.addrs.data(), handle.Data(),
+                                                            tensorSize, shard.addrs.size());
             if (s.Failure()) [[unlikely]] {
                 UC_ERROR("Failed({}) to do D2H({}) batch({}) async.", s, tensorSize,
                          shard.addrs.size());
@@ -117,7 +108,7 @@ Status DumpQueue::DumpOneTask(Trans::Stream* stream, size_t tensorSize, TaskPtr 
     }
     auto tpMakeBuffer = NowTime::Now();
     if (backendTaskDesc.empty()) { return Status::OK(); }
-    auto s = stream->Synchronized();
+    auto s = stream.Synchronize();
     if (s.Failure()) [[unlikely]] {
         UC_ERROR("Failed({}) to sync on stream.", s);
         return s;

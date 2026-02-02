@@ -58,6 +58,18 @@ std::unique_ptr<Stream> Device::MakeStream()
     return nullptr;
 }
 
+std::shared_ptr<Stream> Device::MakeSharedStream()
+{
+    std::shared_ptr<Stream> stream = nullptr;
+    try {
+        stream = std::make_shared<CudaStream>();
+    } catch (...) {
+        return nullptr;
+    }
+    if (stream->Setup().Success()) { return stream; }
+    return nullptr;
+}
+
 std::unique_ptr<Stream> Device::MakeSMStream()
 {
     std::unique_ptr<Stream> stream = nullptr;
