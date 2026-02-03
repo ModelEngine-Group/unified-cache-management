@@ -60,3 +60,8 @@ results/
 backup/
 $null
 *__pycache__/
+
+# build output files and installed files in csrc/ascend/
+csrc/ascend/output/
+csrc/ascend/build/
+csrc/ascend/_ucm_ops_custom/
