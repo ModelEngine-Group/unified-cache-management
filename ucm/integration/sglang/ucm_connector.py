@@ -228,6 +228,9 @@ class SglangUcmConnector:
         return [True] * len(keys)
 
     def exists(self, key: str) -> bool:
+        if self.is_mla and self.tp_rank != 0:
+            return True
+
         result = self.store.lookup(self._encode_keys([key]))
         return result[0] == 1
 
