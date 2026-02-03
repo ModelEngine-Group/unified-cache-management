@@ -264,3 +264,15 @@ def test_check_bandwidth():
     assert (
         bandwidth["fetch"] < 0.85 * EXPECTED_FETCH_BANDWIDTH
     ), f"Fetch bandwidth too high: {bandwidth['fetch']} GB/s"
+
+
+@pytest.mark.stage(1)
+@pytest.mark.platform("npu")
+@pytest.mark.feature("test_apply_mlnx_qos")
+def test_remote_mlnx_qos():
+    """
+    远程配置宿主机流控 QoS 配置
+    """
+    qos_result = run_mlnx_qos()
+    print(qos_result)
+    assert qos_result["global_status"] is True
