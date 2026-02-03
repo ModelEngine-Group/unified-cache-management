@@ -11,10 +11,11 @@ COPY . /workspace/unified-cache-management
 RUN pip config set global.index-url ${PIP_INDEX_URL}
 
 RUN export PLATFORM="cuda" ENABLE_SPARSE=false && \
-     pip install -v -e /workspace/unified-cache-management --no-build-isolation
+    pip install -v -e /workspace/unified-cache-management --no-build-isolation
 
 # Apply patch for SGLang
 RUN cd $(pip show sglang | grep Location | awk '{print $2}') \
+    && cd .. \
     && git apply /workspace/unified-cache-management/ucm/integration/sglang/patch/0.5.5/sglang-adapt.patch
 
 ENTRYPOINT ["/bin/bash"]
