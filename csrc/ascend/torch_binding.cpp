@@ -10,6 +10,7 @@
 #include "acl/acl.h"
 #include "acl/acl_rt.h"
 #include "utils.h"
+#include "aclnn_torch_adapter/op_api_common.h"
 
 #include <c10/core/Device.h>
 #include <c10/util/Exception.h>

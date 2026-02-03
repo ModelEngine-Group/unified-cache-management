@@ -65,3 +65,5 @@ $null
 csrc/ascend/output/
 csrc/ascend/build/
 csrc/ascend/_ucm_ops_custom/
+csrc/ascend/ucm_custom_ops.egg-info/
+csrc/ascend/dist/
