@@ -78,7 +78,7 @@ def get_vllm_version() -> Optional[str]:
 
 def get_supported_versions() -> list[str]:
     """Get list of supported vLLM versions."""
-    return ["0.9.2"]
+    return ["0.9.2", "0.11.0"]
 
 
 def apply_all_patches() -> None:
@@ -105,6 +105,8 @@ def apply_all_patches() -> None:
                 _apply_patches_rerope()
             case "0.9.2":
                 _apply_patches_v092()
+            case "0.11.0":
+                _apply_patches_v0110_load_failure()
             case _:
                 logger.warning(
                     f"Unsupported vLLM version: {version} to apply UCM patches. "
@@ -114,7 +116,7 @@ def apply_all_patches() -> None:
         _patches_applied = True
         logger.info(f"All vLLM patches applied successfully for version {version}")
     except Exception as e:
-        logger.error(f"Failed to apply vLLM patches: {e}")
+        logger.error(f"Failed to apply vLLM patches: {e}", exc_info=True)
         raise
 
 
@@ -134,6 +136,13 @@ def _apply_patches_rerope() -> None:
     from .patch_funcs.v092.vllm_rerope_patch import _apply_rerope_adapt_patches
 
     _apply_rerope_adapt_patches()
+
+
+def _apply_patches_v0110_load_failure() -> None:
+    """Apply load-failure recovery patches for vLLM 0.11.0."""
+    from .patch_funcs.v0110.load_failure_patch import _apply_load_failure_patches
+
+    _apply_load_failure_patches()
 
 
 def install_import_hook() -> None:
