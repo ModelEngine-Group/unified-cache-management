@@ -389,7 +389,10 @@ class GSAOnDevice(UcmSparseBase):
                     self.batch_size_for_hamming = len(attn_metadata.seq_lens)
                     # only get decode_mask_npu when slice_enabled is False
                     self.decode_mask_npu = (attn_metadata.query_lens_device == 1) & (
-                        attn_metadata.seq_lens_device >= self.seq_len_threshhold
+                        attn_metadata.seq_lens_device[
+                            : attn_metadata.query_lens_device.numel()
+                        ]
+                        >= self.seq_len_threshhold
                     )
                 self.topk_for_hamming = self.topk_for_hamming_full[
                     : self.batch_size_for_hamming
@@ -732,7 +735,9 @@ class GSAOnDevice(UcmSparseBase):
         from ucm.sparse.gsa_on_device.hamming_topk import update_seq_lens
 
         # self.decode_mask is on cpu in vllm-asencd under NPU device
-        self.decode_mask = (query_lens == 1) & (seq_lens >= self.seq_len_threshhold)
+        self.decode_mask = (query_lens == 1) & (
+            seq_lens[: query_lens.numel()] >= self.seq_len_threshhold
+        )
         # self.decode_mask = self.decode_mask.pin_memory()
 
         self.num_decode_requests = self.decode_mask.sum().item()
@@ -754,7 +759,9 @@ class GSAOnDevice(UcmSparseBase):
                 block_size=self.block_size,
             )
             # (ldeng) set the seq_lens for the non-decode requests to the original seq_lens
-            self.topk_seq_lens_qwen[~self.decode_mask] = seq_lens[~self.decode_mask]
+            self.topk_seq_lens_qwen[: query_lens.numel()][~self.decode_mask] = seq_lens[
+                : query_lens.numel()
+            ][~self.decode_mask]
 
     def rebuild_prefix_cache_info_for_req(
         self,
