@@ -67,7 +67,7 @@ at::Tensor npu_reshape_and_cache_bnsd(const at::Tensor& hashq,
     return hashkCacheOut;
 }
 
-} // namespace vllm_ascend
+} // namespace ucm
 
 TORCH_LIBRARY_EXPAND(CONCAT(_C, _ucm), ops)
 {
@@ -79,10 +79,10 @@ TORCH_LIBRARY_EXPAND(CONCAT(_C, _ucm), ops)
         "                      int? max_seq_len=None, int? sink=None, int? recent=None, int? support_offload=None,"
         "                      Tensor? key_block_table=None, Tensor? mask=None, Tensor? indices=None) -> Tensor"
     );
-    ops.impl("npu_hamming_dist_top_k", torch::kPrivateUse1, &vllm_ascend::npu_hamming_dist_top_k);
+    ops.impl("npu_hamming_dist_top_k", torch::kPrivateUse1, &ucm::npu_hamming_dist_top_k);
     
     ops.def(
         "npu_reshape_and_cache_bnsd(Tensor q, Tensor k_comp, Tensor slot_mapping, Tensor seq_len, Tensor k_out) -> Tensor"
     );
-    ops.impl("npu_reshape_and_cache_bnsd", torch::kPrivateUse1, &vllm_ascend::npu_reshape_and_cache_bnsd);
+    ops.impl("npu_reshape_and_cache_bnsd", torch::kPrivateUse1, &ucm::npu_reshape_and_cache_bnsd);
 }

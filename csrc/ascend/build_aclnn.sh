@@ -115,3 +115,21 @@ bash build.sh -n "$CUSTOM_OPS" -c "$SOC_ARG"
 mkdir -p $ROOT_DIR/_ucm_ops_custom
 ./output/*.run --install-path=$ROOT_DIR/_ucm_ops_custom
 #./output/*.run
+
+
+# install ucm_custom_ops python package
+cd $ROOT_DIR
+
+# clean build and dist directories
+rm -rf build/*
+rm -rf dist/*
+
+# uninstall ucm_custom_ops python package
+pip3 uninstall ucm_custom_ops -y
+
+# build ucm_custom_ops python package
+python3 setup_wheel.py build bdist_wheel
+
+# install ucm_custom_ops python package
+cd $ROOT_DIR/dist
+pip3 install ucm_custom_ops*.whl --force-reinstall
