@@ -19,12 +19,14 @@ USE_NINJA = os.getenv('USE_NINJA') == '1'
 source_files = [
     os.path.join(BASE_DIR, "torch_binding.cpp"),
     os.path.join(BASE_DIR, "torch_binding_meta.cpp"),
+    os.path.join(BASE_DIR, "aclnn_torch_adapter/NPUBridge.cpp"),
+    os.path.join(BASE_DIR, "aclnn_torch_adapter/NPUStorageImpl.cpp"),
 ]
 
 # build extension
 exts = [
     NpuExtension(
-        name="ucm_custom_ops_lib",
+        name="ucm_custom_ops",
         sources=source_files,
         extra_compile_args = [
             '-I' + os.path.join(PYTORCH_NPU_INSTALL_PATH, "include/third_party/acl/inc"),
