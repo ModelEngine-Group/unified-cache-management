@@ -87,3 +87,7 @@ TORCH_LIBRARY_EXPAND(CONCAT(_C, _ucm), ops)
     );
     ops.impl("npu_reshape_and_cache_bnsd", torch::kPrivateUse1, &ucm::npu_reshape_and_cache_bnsd);
 }
+
+// Export PyInit_ucm_custom_ops so "import ucm_custom_ops" works and the TORCH_LIBRARY
+// static initializer above runs, registering torch.ops._C_ucm.
+REGISTER_EXTENSION(ucm_custom_ops)
