@@ -109,6 +109,7 @@ class UnifiedCacheStoreConfig:
             )
 
         cfg = dict(ucm_cfg)
+        cfg["store_pipeline"] = "Posix"
         cfg["storage_backends"] = [
             path for path in cfg["storage_backends"].split(":") if path
         ]
