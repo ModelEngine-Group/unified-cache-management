@@ -69,7 +69,7 @@ class TestCustomReshapeAndCacheBnsd(TestCase):
 
         print(hashk_op_org)
 
-        out_put = ucm-custom-ops.npu_reshape_and_cache_bnsd(hashk_op, hashk_cache_op, slot_mapping_op, seq_lens_op, hashk_cache_op)
+        out_put = torch.ops._C_ucm.npu_reshape_and_cache_bnsd(hashk_op, hashk_cache_op, slot_mapping_op, seq_lens_op, hashk_cache_op)
         print(f'out_put = {out_put.shape}')
 
         # verify
