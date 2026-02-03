@@ -11,6 +11,8 @@ from torchair import logger
 from vllm_ascend.utils import enable_custom_op
 logger.setLevel(logging.DEBUG)
 
+import ucm_custom_ops
+
 torch._logging.set_logs(graph_code=True)
 
 DEVICE_ID = 0
@@ -127,7 +129,7 @@ class TestCustomHammingDistTopK(TestCase):
         print(f'acl graph npu_out = {npu_out}')
 
         print("test hamming eager.....")
-        output_eager = torch.ops._C_ascend.npu_hamming_dist_top_k(qhash.to(npu), khash.to(npu), None, top_k.to(npu), seqlen.to(npu), chunk_size.to(npu), max_seq_len, sink, recent, support_offload, block_table.to(npu), mask.to(npu), indices.to(npu))
+        output_eager = torch.ops._C_ucm.npu_hamming_dist_top_k(qhash.to(npu), khash.to(npu), None, top_k.to(npu), seqlen.to(npu), chunk_size.to(npu), max_seq_len, sink, recent, support_offload, block_table.to(npu), mask.to(npu), indices.to(npu))
         print(f'eager npu_out = {output_eager}')
 
 if __name__ == "__main__":

@@ -16,6 +16,8 @@ torch._logging.set_logs(output_code=True,graph_code=True)
 from vllm_ascend.utils import enable_custom_op
 enable_custom_op()
 
+import ucm_custom_ops
+
 torch.set_printoptions(profile="full")
 # torch.set_printoptions(
 #     precision=4,    # 小数位数
@@ -122,7 +124,7 @@ class TestCustomHammingDistTopK(TestCase):
         torch.npu.set_device(device_id)
         npu = f'npu:{device_id}'
         mask = torch.tensor([True, True, False, False, False])
-        output_op = torch.ops._C_ascend.npu_hamming_dist_top_k(qhash.to(npu), khash.to(npu), khash_rope_pad.to(npu), top_k.to(npu), seqlen.to(npu), chunk_size.to(npu), max_seq_len, sink, recent, None, block_table.to(npu), mask.to(npu), indices.to(npu))
+        output_op = torch.ops._C_ucm.npu_hamming_dist_top_k(qhash.to(npu), khash.to(npu), khash_rope_pad.to(npu), top_k.to(npu), seqlen.to(npu), chunk_size.to(npu), max_seq_len, sink, recent, None, block_table.to(npu), mask.to(npu), indices.to(npu))
         #print(f'output_op shape: {output_op.shape}')  # torch.Size([2, 1, 512])
         print(f'output_op: {output_op}')  # torch.int32
         print(f'test_hamming_dist_top_k_mla_eager end')
@@ -234,7 +236,7 @@ class TestCustomHammingDistTopK(TestCase):
 
             def forward(self, qhash, khash, khash_rope, top_k, seqlen, chunk_size, max_seq_len, sink, recent, support_offload, block_table, mask, indices):
 
-                out1 = torch.ops._C_ascend.npu_hamming_dist_top_k(qhash, khash, khash_rope, top_k, seqlen, chunk_size, max_seq_len, sink, recent, support_offload, block_table, mask, indices)
+                out1 = torch.ops._C_ucm.npu_hamming_dist_top_k(qhash, khash, khash_rope, top_k, seqlen, chunk_size, max_seq_len, sink, recent, support_offload, block_table, mask, indices)
 
                 return out1
         
