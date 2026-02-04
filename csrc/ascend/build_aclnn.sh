@@ -136,5 +136,5 @@ for pattern in "ASCEND_CUSTOM_OPP_PATH" "LD_LIBRARY_PATH"; do
 done
 
 # install ucm_custom_ops python package
-echo "installing ucm_custom_ops python package. This may take a while, please wait...)"
+echo "installing ucm_custom_ops python package. This may take a while, please wait ..."
 bash install_python_package.sh
