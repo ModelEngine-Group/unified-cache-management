@@ -62,8 +62,8 @@ $null
 *__pycache__/
 
 # build output files and installed files in csrc/ascend/
-csrc/ascend/output/
-csrc/ascend/build/
-csrc/ascend/_ucm_custom_ops/
-csrc/ascend/ucm_custom_ops.egg-info/
-csrc/ascend/dist/
+ucm/sparse/gsa_on_device/csrc/ascend/output/
+ucm/sparse/gsa_on_device/csrc/ascend/build/
+ucm/sparse/gsa_on_device/csrc/ascend/_ucm_custom_ops/
+ucm/sparse/gsa_on_device/csrc/ascend/ucm_custom_ops.egg-info/
+ucm/sparse/gsa_on_device/csrc/ascend/dist/
