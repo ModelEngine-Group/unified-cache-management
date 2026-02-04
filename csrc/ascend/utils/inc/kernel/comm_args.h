@@ -1,3 +1,6 @@
+// from vllm-ascend, see
+// https://github.com/vllm-project/vllm-ascend/blob/main/csrc/utils/inc/kernel/comm_args.h
+
 #ifndef COMM_ARGS_H
 #define COMM_ARGS_H
 #include <cstdint>

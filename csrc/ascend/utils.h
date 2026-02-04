@@ -1,3 +1,6 @@
+// from vllm-ascend, see
+// https://github.com/vllm-project/vllm-ascend/blob/main/csrc/utils.h
+
 #pragma once
 
 //#include "kernels/types.h"

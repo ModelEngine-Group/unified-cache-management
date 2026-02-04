@@ -1,3 +1,6 @@
+// from vllm-ascend, see
+// https://github.com/vllm-project/vllm-ascend/blob/main/csrc/utils/inc/kernel/data_copy.h
+
 #ifndef CAM_DATACOPY_GM2GM_H
 #define CAM_DATACOPY_GM2GM_H
 #include <type_traits>

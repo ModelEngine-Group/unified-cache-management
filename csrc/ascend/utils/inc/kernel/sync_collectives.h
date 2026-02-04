@@ -1,3 +1,6 @@
+// from vllm-ascend, see
+// https://github.com/vllm-project/vllm-ascend/blob/main/csrc/utils/inc/kernel/sync_collectives.h
+
 #ifndef SYNC_COLLECTIVES_H
 #define SYNC_COLLECTIVES_H
 
