@@ -41,9 +41,9 @@ start_server() {
             echo "ERROR: ucm_config_yaml_path not set but ucm_enable=true" >&2
             exit 1
         }
-        LOG_FILE="vllm_ucm.log"
+        LOG_FILE="${vllm_log_path}/vllm_ucm.log"
     else
-        LOG_FILE="vllm.log"
+        LOG_FILE="${vllm_log_path}/vllm.log"
     fi
 
     echo ""
@@ -72,6 +72,7 @@ start_server() {
     echo "enable_prefix_caching    = $enable_prefix_caching"
     echo "async_scheduling         = $async_scheduling"
     echo "graph_mode               = $graph_mode"
+    echo "use_layerwise            = $use_layerwise"
     if [[ "$ucm_enable" == "true" ]]; then
         echo "ucm_config_file          = $ucm_config_yaml_path"
     fi
@@ -138,7 +139,10 @@ start_server() {
             \"kv_connector\":\"UCMConnector\",
             \"kv_connector_module_path\":\"ucm.integration.vllm.ucm_connector\",
             \"kv_role\":\"kv_both\",
-            \"kv_connector_extra_config\":{\"UCM_CONFIG_FILE\":\"$ucm_config_yaml_path\"}
+            \"kv_connector_extra_config\":{
+                \"use_layerwise\":$use_layerwise,
+                \"UCM_CONFIG_FILE\":\"$ucm_config_yaml_path\"
+            }
         }"
         CMD+=("--kv-transfer-config" "$KV_CONFIG_JSON")
     fi
