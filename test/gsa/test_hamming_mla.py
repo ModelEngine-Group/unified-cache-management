@@ -124,7 +124,7 @@ class TestCustomHammingDistTopK(TestCase):
         torch.npu.set_device(device_id)
         npu = f'npu:{device_id}'
         mask = torch.tensor([True, True, False, False, False])
-        output_op = torch.ops._C_ucm.npu_hamming_dist_top_k(qhash.to(npu), khash.to(npu), khash_rope_pad.to(npu), top_k.to(npu), seqlen.to(npu), chunk_size.to(npu), max_seq_len, sink, recent, None, block_table.to(npu), mask.to(npu), indices.to(npu))
+        output_op = torch.ops._C_ucm.npu_hamming_dist_top_k(qhash.to(npu), khash_nope.to(npu), khash_rope_pad.to(npu), top_k.to(npu), seqlen.to(npu), chunk_size.to(npu), max_seq_len, sink, recent, None, block_table.to(npu), mask.to(npu), indices.to(npu))
         #print(f'output_op shape: {output_op.shape}')  # torch.Size([2, 1, 512])
         print(f'output_op: {output_op}')  # torch.int32
         print(f'test_hamming_dist_top_k_mla_eager end')
@@ -225,7 +225,7 @@ class TestCustomHammingDistTopK(TestCase):
 
         print(f'=======================op_hamming=======================')
 
-        device_id = 3
+        device_id = 0
         torch.npu.set_device(device_id)
         npu = f'npu:{device_id}'
 
