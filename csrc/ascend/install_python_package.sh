@@ -17,9 +17,6 @@ mkdir -p build dist
 rm -rf build/*
 rm -rf dist/*
 
-# uninstall ucm_custom_ops python package
-pip3 uninstall ucm_custom_ops -y
-
 # build ucm_custom_ops python package
 python3 setup_wheel.py build bdist_wheel
 

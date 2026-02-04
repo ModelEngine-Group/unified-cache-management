@@ -106,12 +106,35 @@ fi
 
 
 # build custom ops
+cd $ROOT_DIR
+echo "current directory: $PWD, begin to build custom ops (ascendc version)..."
 rm -rf build output
 echo "building custom ops $CUSTOM_OPS for $SOC_VERSION"
 bash build.sh -n "$CUSTOM_OPS" -c "$SOC_ARG"
 
-# install custom ops to _ucm_ops_custom
-mkdir -p $ROOT_DIR/_ucm_ops_custom
-./output/*.run --install-path=$ROOT_DIR/_ucm_ops_custom
+# install custom ops inside csrc/ascend, the path is $ROOT_DIR/_ucm_custom_ops
+echo "installing custom ops in $ROOT_DIR/_ucm_custom_ops"
+mkdir -p $ROOT_DIR/_ucm_custom_ops
+./output/*.run --install-path=$ROOT_DIR/_ucm_custom_ops
+
+# install custom_ops in the default path which is /usr/local/Ascend/latest/opp/vendors
+# echo "installing custom ops in /usr/local/Ascend/latest/opp/vendors"
 #./output/*.run
 
+# update environment variables ASCEND_CUSTOM_OPP_PATH and LD_LIBRARY_PATH
+# such that the compiled ascend custom ops can be used in the current shell
+set_env_path=$ROOT_DIR/_ucm_custom_ops/vendors/ucm/bin/set_env.bash
+source $set_env_path
+
+# update environment variables ASCEND_CUSTOM_OPP_PATH and LD_LIBRARY_PATH in ~/.bashrc
+# such that the compiled ascend custom ops can be used in the future shells (add at most once)
+for pattern in "ASCEND_CUSTOM_OPP_PATH" "LD_LIBRARY_PATH"; do
+  line=$(grep "$pattern" "$set_env_path")
+  if [ -n "$line" ] && ! grep -Fqx "$line" ~/.bashrc 2>/dev/null; then
+    echo "$line" >> ~/.bashrc
+  fi
+done
+
+# install ucm_custom_ops python package
+echo "installing ucm_custom_ops python package. This may take a while, please wait...)"
+bash install_python_package.sh

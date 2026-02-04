@@ -9,7 +9,7 @@
 
 cmake_minimum_required(VERSION 3.16)
 
-project(ucm_ops_custom)
+project(ucm_custom_ops)
 
 option(BUILD_OPEN_PROJECT         "Build open ascend ops project."  ON)
 option(ENABLE_CCACHE              "Enable ccache capability"        ON)

@@ -107,7 +107,7 @@ class TestCustomHammingDistTopK(TestCase):
 
             def forward(self, qhash, khash, khash_rope, top_k, seqlen, chunk_size, max_seq_len, sink, recent, support_offload, block_table, mask, indices):
 
-                out1 = torch.ops._C_ascend.npu_hamming_dist_top_k(qhash, khash, None, top_k, seqlen, chunk_size, max_seq_len, sink, recent, support_offload, block_table, mask, indices)
+                out1 = torch.ops._C_ucm.npu_hamming_dist_top_k(qhash, khash, None, top_k, seqlen, chunk_size, max_seq_len, sink, recent, support_offload, block_table, mask, indices)
 
                 return out1
         

@@ -64,6 +64,6 @@ $null
 # build output files and installed files in csrc/ascend/
 csrc/ascend/output/
 csrc/ascend/build/
-csrc/ascend/_ucm_ops_custom/
+csrc/ascend/_ucm_custom_ops/
 csrc/ascend/ucm_custom_ops.egg-info/
 csrc/ascend/dist/
