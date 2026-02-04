@@ -93,16 +93,23 @@ class CMakeBuild(build_ext):
 
         for ext in self.extensions:
             self.build_cmake(ext)
-        
+
         if enable_sparse() and PLATFORM == "ascend":
             try:
-                print("Running bash ucm/sparse/gsa_on_device/csrc/ascend/build_aclnn.sh to compiling NPU custom ops for UCM...")
-                subprocess.check_call(["bash", "ucm/sparse/gsa_on_device/csrc/ascend/build_aclnn.sh"])
-                print("ucm/sparse/gsa_on_device/csrc/ascend/buid_aclnn.sh executed successfully!")
+                print(
+                    "Running bash ucm/sparse/gsa_on_device/csrc/ascend/build_aclnn.sh to compiling NPU custom ops for UCM..."
+                )
+                subprocess.check_call(
+                    ["bash", "ucm/sparse/gsa_on_device/csrc/ascend/build_aclnn.sh"]
+                )
+                print(
+                    "ucm/sparse/gsa_on_device/csrc/ascend/buid_aclnn.sh executed successfully!"
+                )
             except subprocess.CalledProcessError as e:
-                print(f"Error running ucm/sparse/gsa_on_device/csrc/ascend/build_aclnn.sh: {e}")
+                print(
+                    f"Error running ucm/sparse/gsa_on_device/csrc/ascend/build_aclnn.sh: {e}"
+                )
                 raise SystemExit(e.returncode)
-
 
     def build_cmake(self, ext: CMakeExtension):
         build_dir = os.path.abspath(self.build_temp)

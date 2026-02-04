@@ -1,10 +1,12 @@
-import os
 import glob
+import os
+
 import torch
 import torch_npu
-from setuptools import setup, find_packages
+from setuptools import find_packages, setup
 from torch.utils.cpp_extension import BuildExtension
 from torch_npu.utils.cpp_extension import NpuExtension
+
 # get torch_npu install path
 PYTORCH_NPU_INSTALL_PATH = os.path.dirname(os.path.abspath(torch_npu.__file__))
 
@@ -12,7 +14,7 @@ PYTORCH_NPU_INSTALL_PATH = os.path.dirname(os.path.abspath(torch_npu.__file__))
 BASE_DIR = os.path.dirname(os.path.realpath(__file__))
 
 # get use ninja
-USE_NINJA = os.getenv('USE_NINJA') == '1'
+USE_NINJA = os.getenv("USE_NINJA") == "1"
 
 
 # get source files
@@ -28,8 +30,9 @@ exts = [
     NpuExtension(
         name="ucm_custom_ops",
         sources=source_files,
-        extra_compile_args = [
-            '-I' + os.path.join(PYTORCH_NPU_INSTALL_PATH, "include/third_party/acl/inc"),
+        extra_compile_args=[
+            "-I"
+            + os.path.join(PYTORCH_NPU_INSTALL_PATH, "include/third_party/acl/inc"),
         ],
     )
 ]
@@ -37,8 +40,8 @@ exts = [
 
 setup(
     name="ucm_custom_ops",
-    version='1.1',
-    keywords='ucm_custom_ops',
+    version="1.1",
+    keywords="ucm_custom_ops",
     ext_modules=exts,
     packages=find_packages(),
     cmdclass={"build_ext": BuildExtension.with_options(use_ninja=USE_NINJA)},
