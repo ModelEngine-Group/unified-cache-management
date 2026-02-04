@@ -54,7 +54,7 @@ TEST_F(UCCacheTransManagerTest, DumpThenLoad)
     config.shardSize = config.tensorSize;
     config.blockSize = config.shardSize;
     config.deviceId = 0;
-    config.bufferNumber = 2048;
+    config.bufferCapacity = config.shardSize * 1024;
     config.uniqueId = rd.RandomString(10);
     config.shareBufferEnable = true;
     TransBuffer buffer;
@@ -110,7 +110,7 @@ TEST_F(UCCacheTransManagerTest, DumpThenLoadWithLayerWise)
     config.shardSize = shardSize;
     config.blockSize = blockSize;
     config.deviceId = 0;
-    config.bufferNumber = 2048;
+    config.bufferCapacity = shardSize * 1024;
     config.uniqueId = rd.RandomString(10);
     config.shareBufferEnable = true;
     config.timeoutMs = 10 * 60 * 1000;
@@ -178,7 +178,7 @@ TEST_F(UCCacheTransManagerTest, DumpThenLoadWithLayerAndChunk)
     config.shardSize = shardSize;
     config.blockSize = blockSize;
     config.deviceId = 0;
-    config.bufferNumber = 2048;
+    config.bufferCapacity = shardSize * 1024;
     config.uniqueId = rd.RandomString(10);
     config.shareBufferEnable = true;
     config.timeoutMs = 10 * 60 * 1000;

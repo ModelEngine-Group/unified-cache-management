@@ -51,6 +51,7 @@ public:
     {
         if (handle_ != -1) { close(handle_); }
     }
+    const std::string& ShmName() { return name_; }
     Status ShmOpen(const uint32_t flags)
     {
         static constexpr auto NewFilePerm = (S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH);
