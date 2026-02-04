@@ -106,7 +106,7 @@ def apply_all_patches() -> None:
             case "0.9.2":
                 _apply_patches_v092()
             case "0.11.0":
-                _apply_patches_v0110_load_failure()
+                _apply_patches_v0110()
             case _:
                 logger.warning(
                     f"Unsupported vLLM version: {version} to apply UCM patches. "
@@ -116,7 +116,7 @@ def apply_all_patches() -> None:
         _patches_applied = True
         logger.info(f"All vLLM patches applied successfully for version {version}")
     except Exception as e:
-        logger.error(f"Failed to apply vLLM patches: {e}", exc_info=True)
+        logger.error(f"Failed to apply vLLM patches: {e}\n")
         raise
 
 
@@ -138,11 +138,16 @@ def _apply_patches_rerope() -> None:
     _apply_rerope_adapt_patches()
 
 
-def _apply_patches_v0110_load_failure() -> None:
-    """Apply load-failure recovery patches for vLLM 0.11.0."""
-    from .patch_funcs.v0110.load_failure_patch import _apply_load_failure_patches
+def _apply_patches_v0110() -> None:
+    """Apply all patches for vLLM 0.11.0."""
+    from .patch_funcs.v0110.vllm_patch import _apply_vllm_patches
 
-    _apply_load_failure_patches()
+    _apply_vllm_patches()
+
+    if _patch_ascend():
+        from .patch_funcs.v0110.vllm_ascend_patch import _apply_ascend_patches
+
+        _apply_ascend_patches()
 
 
 def install_import_hook() -> None:

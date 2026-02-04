@@ -56,7 +56,7 @@ try:
 
     # Only auto-apply load-failure patch for vLLM 0.11.0; do not trigger 0.9.2 patches.
     if get_vllm_version() == "0.11.0":
-        ensure_patches_applied()
+       ensure_patches_applied()
 except Exception as e:
     # Don't fail if patches can't be applied - might be running in environment without vLLM
     import warnings
