@@ -138,7 +138,7 @@ Status CacheStore::Setup(const Detail::Dictionary& config)
     if (tensorSize != 0) {
         param.tensorSizes.assign(param.shardSize / tensorSize, tensorSize);
     } else {
-        config.Get("tensor_size_list", param.tensorSizes);
+        config.GetNumbers("tensor_size_list", param.tensorSizes);
     }
     config.GetNumber("block_size", param.blockSize);
     if (param.shardSize > 0) { param.waitingQueueDepth *= (param.blockSize / param.shardSize); }
