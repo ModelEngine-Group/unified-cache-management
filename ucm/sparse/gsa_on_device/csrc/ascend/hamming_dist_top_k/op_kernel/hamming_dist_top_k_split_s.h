@@ -14,18 +14,6 @@
 
 namespace AscendC {
 
-constexpr int32_t DOUBLE_BUFFER_NUM = 2;
-constexpr uint32_t MAX_SELECT_AND_CAST_COUNT = 254;
-constexpr uint32_t RESET_NUM = 0U;
-constexpr uint32_t COMPRESS_RATE = 8;
-constexpr uint32_t VECTOR_CUBE_RATIO = 2;
-constexpr uint32_t INT4B_TYPE_SIZE_DIV_RATE = 2;
-constexpr uint64_t CAST_MASK = 128;
-constexpr uint32_t MAX_BATCH_SIZE = 150;
-constexpr uint32_t MAX_CHUNK_SIZE = 16;
-constexpr uint32_t MIN_CHUNK_SIZE = 1;
-constexpr uint32_t CHUNK_TOPK_MIN_SEQ_LEN = 32;
-
 class HammingDistTopKSplitSKernel {
 public:
     __aicore__ inline HammingDistTopKSplitSKernel() {}

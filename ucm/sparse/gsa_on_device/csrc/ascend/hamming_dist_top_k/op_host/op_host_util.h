@@ -9,6 +9,11 @@
 #include <memory>
 #include <type_traits>
 #include <utility>
+#include <limits>   
+#include <cstdint>  
+#include <vector>   
+#include <string>   
+#include <map>  
 
 namespace ops {
 
