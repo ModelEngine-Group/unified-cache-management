@@ -30,6 +30,7 @@ def cuda_hamming_topk(
     assert topk_token % block_size == 0
     assert recent_token > 0 and topk_token > (sink_token + recent_token)
     max_seqlen = block_size * block_table.shape[1]
+    reduce_kvhead = (not is_mla) and (k_hash.size(2) > 1)
     output = hamming.hamming_score(
         k_hash,
         q_hash,
@@ -38,24 +39,18 @@ def cuda_hamming_topk(
         max_seqlen,
         sink_token,
         recent_token,
+        reduce_kvhead,
     )
 
-    k_blocks = topk_token // block_size
-    B, Hk, S = output.shape
-    num_blocks = S // block_size
+    block_output = torch.min(
+        output.view(output.shape[0], output.shape[-1] // block_size, block_size), dim=-1
+    )[0]
 
-    # block_output: [B, Hk, num_blocks]
-    block_output = output.view(B, Hk, num_blocks, block_size).amin(dim=-1)
+    ind = torch.topk(block_output, k=(topk_token // block_size), dim=-1, largest=False)[
+        1
+    ]
+    ind = torch.sort(ind, dim=-1, descending=False)[0]
 
-    if is_mla:
-        block_score = block_output[:, 0, :]
-        ind = torch.topk(block_score, k=k_blocks, dim=-1, largest=False).indices
-        ind = ind.sort(dim=-1).values
-        return torch.gather(block_table, dim=-1, index=ind)
-
-    block_score = block_output.amin(dim=1)  # [B, num_blocks]
-    ind = torch.topk(block_score, k=k_blocks, dim=-1, largest=False).indices
-    ind = ind.sort(dim=-1).values
     return torch.gather(block_table, dim=-1, index=ind)
 
 
