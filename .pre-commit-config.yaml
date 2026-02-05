@@ -5,7 +5,7 @@ repos:
       - id: codespell
         exclude: \.(jsonl|txt)$
         args: [
-          '--skip', 'ucm/csrc/**,./ucm.egg-info/**,.github/**',
+          '--skip', 'ucm/csrc/**,./ucm.egg-info/**,.github/**',./ucm/sparse/gsa_on_device/csrc/**,
           '-L', 'CANN,cann,NNAL,nnal,ASCEND,ascend,EnQue,CopyIn'
         ]
   - repo: https://github.com/psf/black
