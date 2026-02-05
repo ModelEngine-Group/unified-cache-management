@@ -38,15 +38,16 @@ Status LoadQueue::Setup(const Config& config, TaskIdSet* failureSet, TransBuffer
     failureSet_ = failureSet;
     buffer_ = buffer;
     backend_ = config.storeBackend;
+    deviceId_ = config.deviceId;
+    tensorSizes_ = config.tensorSizes;
+    streamNumber_ = config.streamNumber;
     waiting_.Setup(config.waitingQueueDepth);
     running_.Setup(config.runningQueueDepth);
     holder_.reserve(1024);
     dispatcher_ = std::thread{&LoadQueue::DispatchStage, this};
     std::promise<Status> started;
     auto fut = started.get_future();
-    transfer_ = std::thread{&LoadQueue::TransferStage, this,
-                            config.deviceId,           config.tensorSize,
-                            config.streamNumber,       std::ref(started)};
+    transfer_ = std::thread{&LoadQueue::TransferStage, this, std::ref(started)};
     return fut.get();
 }
 
@@ -110,17 +111,16 @@ void LoadQueue::DispatchOneTask(TaskPair&& pair)
              (tpWait - tp) * 1e3, (tpMakeBuffer - tpWait) * 1e3, (tpBackend - tpMakeBuffer) * 1e3);
 }
 
-void LoadQueue::TransferStage(int32_t deviceId, size_t tensorSize, size_t streamNumber,
-                              std::promise<Status>& started)
+void LoadQueue::TransferStage(std::promise<Status>& started)
 {
     CopyStream stream;
-    auto s = stream.Setup(deviceId, streamNumber);
+    auto s = stream.Setup(deviceId_, streamNumber_);
     started.set_value(s);
     if (s.Failure()) [[unlikely]] { return; }
-    running_.ConsumerLoop(stop_, &LoadQueue::TransferOneTask, this, stream, tensorSize);
+    running_.ConsumerLoop(stop_, &LoadQueue::TransferOneTask, this, stream);
 }
 
-void LoadQueue::TransferOneTask(CopyStream& stream, size_t tensorSize, ShardTask&& task)
+void LoadQueue::TransferOneTask(CopyStream& stream, ShardTask&& task)
 {
     if (failureSet_->Contains(task.taskHandle)) {
         if (task.waiter) { task.waiter->Done(); }
@@ -130,13 +130,9 @@ void LoadQueue::TransferOneTask(CopyStream& stream, size_t tensorSize, ShardTask
     do {
         s = WaitBackendTaskReady(task);
         if (s.Failure()) [[unlikely]] { break; }
-        s = stream.NextStream()->HostToDeviceAsync(
-            task.bufferHandle.Data(), task.shard.addrs.data(), tensorSize, task.shard.addrs.size());
-        if (s.Failure()) [[unlikely]] {
-            UC_ERROR("Failed({}) to do H2D({}) batch({}) async.", s, tensorSize,
-                     task.shard.addrs.size());
-            break;
-        }
+        s = HostToDeviceScatterAsync(stream.NextStream(), task.bufferHandle.Data(),
+                                     task.shard.addrs.data());
+        if (s.Failure()) [[unlikely]] { break; }
         if (!task.waiter) {
             holder_.push_back(std::move(task));
             return;
@@ -171,6 +167,24 @@ Status LoadQueue::WaitBackendTaskReady(ShardTask& task)
         }
     }
     task.bufferHandle.MarkReady();
+    return Status::OK();
+}
+
+Status LoadQueue::HostToDeviceScatterAsync(std::shared_ptr<Trans::Stream> stream, void* host,
+                                           void** device)
+{
+    const auto number = tensorSizes_.size();
+    for (size_t i = 0, offset = 0; i < number; i++) {
+        auto pHost = (void*)(((int8_t*)host) + offset);
+        auto pDevice = device[i];
+        auto size = tensorSizes_[i];
+        auto s = stream->HostToDeviceAsync(pHost, pDevice, size);
+        if (s.Failure()) [[unlikely]] {
+            UC_ERROR("Failed({}) to do H2D({}) batch({}/{}) async.", s, size, i, number);
+            return s;
+        }
+        offset += size;
+    }
     return Status::OK();
 }
 
