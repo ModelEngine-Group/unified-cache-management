@@ -74,8 +74,10 @@ private:
             return Status::InvalidParam("invalid size({},{},{})", config.tensorSize,
                                         config.shardSize, config.blockSize);
         }
-        if (config.bufferNumber < 1024) {
-            return Status::InvalidParam("too small buffer number({})", config.bufferNumber);
+        auto bufferNumber = config.bufferCapacity / config.shardSize;
+        if (bufferNumber < 1024) {
+            return Status::InvalidParam("too small buffer({}) on shard({})", config.bufferCapacity,
+                                        config.shardSize);
         }
         if (config.waitingQueueDepth <= 1 || config.runningQueueDepth <= 1) {
             return Status::InvalidParam("invalid queue depth({},{})", config.waitingQueueDepth,
@@ -98,7 +100,7 @@ private:
         UC_INFO("Set {}::TensorSize to {}.", ns, config.tensorSize);
         UC_INFO("Set {}::ShardSize to {}.", ns, config.shardSize);
         UC_INFO("Set {}::BlockSize to {}.", ns, config.blockSize);
-        UC_INFO("Set {}::BufferNumber to {}.", ns, config.bufferNumber);
+        UC_INFO("Set {}::BufferCapacity to {}GB.", ns, config.bufferCapacity >> 30);
         UC_INFO("Set {}::ShareBufferEnable to {}.", ns, config.shareBufferEnable);
         UC_INFO("Set {}::WaitingQueueDepth to {}.", ns, config.waitingQueueDepth);
         UC_INFO("Set {}::RunningQueueDepth to {}.", ns, config.runningQueueDepth);
@@ -118,8 +120,12 @@ Status CacheStore::Setup(const Detail::Dictionary& config)
     config.GetNumber("tensor_size", param.tensorSize);
     config.GetNumber("shard_size", param.shardSize);
     config.GetNumber("block_size", param.blockSize);
-    config.GetNumber("buffer_number", param.bufferNumber);
+    if (param.shardSize > 0) { param.waitingQueueDepth *= (param.blockSize / param.shardSize); }
     config.Get("share_buffer_enable", param.shareBufferEnable);
+    if (!param.shareBufferEnable) { param.bufferCapacity /= 8; }
+    size_t bufferCapacityGb = 0;
+    config.GetNumber("cache_buffer_capacity_gb", bufferCapacityGb);
+    if (bufferCapacityGb != 0) { param.bufferCapacity = bufferCapacityGb << 30; }
     config.GetNumber("waiting_queue_depth", param.waitingQueueDepth);
     config.GetNumber("running_queue_depth", param.runningQueueDepth);
     config.GetNumber("timeout_ms", param.timeoutMs);
