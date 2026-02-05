@@ -27,4 +27,4 @@ static ge::graphStatus InferDataTypeHammingDistTopK(gert::InferDataTypeContext *
 IMPL_OP_INFERSHAPE(HammingDistTopK)
     .InferShape(InferShapeHammingDistTopK)
     .InferDataType(InferDataTypeHammingDistTopK);
-} // namespace ops
+}  // namespace ops

@@ -28,4 +28,4 @@ static ge::graphStatus InferDataTypeReshapeAndCacheBnsd(gert::InferDataTypeConte
 IMPL_OP_INFERSHAPE(ReshapeAndCacheBnsd)
     .InferShape(InferShapeReshapeAndCacheBnsd)
     .InferDataType(InferDataTypeReshapeAndCacheBnsd);
-} // namespace ops
+}  // namespace ops

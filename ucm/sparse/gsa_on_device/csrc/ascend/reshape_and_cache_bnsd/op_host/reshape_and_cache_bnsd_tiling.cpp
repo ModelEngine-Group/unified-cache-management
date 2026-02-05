@@ -4,7 +4,7 @@
 #include "tiling/platform/platform_ascendc.h"
 
 namespace optiling {
-static ge::graphStatus TilingFunc(gert::TilingContext* context)
+static ge::graphStatus TilingFunc(gert::TilingContext *context)
 {
     auto ascendcPlatform = platform_ascendc::PlatformAscendC(context->GetPlatformInfo());
 
@@ -36,14 +36,15 @@ static ge::graphStatus TilingFunc(gert::TilingContext* context)
     tiling.set_batchSeqLen(batchSeqLen);
     tiling.set_batch(batch);
     tiling.set_numCore(numCore);
-    
+
     context->SetTilingKey(0);
     context->SetBlockDim(numCore);
 
-    size_t *workspaces = context->GetWorkspaceSizes(1); // get second variable
-    workspaces[0] = 16 * 1024 * 1024;  
+    size_t *workspaces = context->GetWorkspaceSizes(1);  // get second variable
+    workspaces[0] = 16 * 1024 * 1024;
 
-    tiling.SaveToBuffer(context->GetRawTilingData()->GetData(), context->GetRawTilingData()->GetCapacity());
+    tiling.SaveToBuffer(context->GetRawTilingData()->GetData(),
+                        context->GetRawTilingData()->GetCapacity());
     context->GetRawTilingData()->SetDataSize(tiling.GetDataSize());
     return ge::GRAPH_SUCCESS;
 }
@@ -53,8 +54,7 @@ static ge::graphStatus TilingPrepareForReshapeAndCacheBnsd(gert::TilingParseCont
     return ge::GRAPH_SUCCESS;
 }
 
-
 IMPL_OP_OPTILING(ReshapeAndCacheBnsd)
     .Tiling(TilingFunc)
     .TilingParse<reshapeAndCacheBnsdCompileInfo>(TilingPrepareForReshapeAndCacheBnsd);
-}
+}  // namespace optiling

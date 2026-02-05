@@ -21,7 +21,7 @@ public:
     void SetMatmulTilingRope();
 
     void SetTopKTiling();
-    
+
     void PrintTilingData();
     void PrintTilingDataRope();
 
@@ -44,5 +44,5 @@ public:
     uint32_t KEY_ROPE_INPUT_INDEX = 7;
     uint32_t KEY_BLOCK_TABLE_INPUT_INDEX = 5;
 };
-}
+}  // namespace optiling
 #endif

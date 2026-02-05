@@ -34,18 +34,10 @@ public:
             .DataType({ge::DT_INT32})
             .Format({ge::FORMAT_ND})
             .UnknownShapeFormat({ge::FORMAT_ND});
-        this->Attr("max_seq_len")
-            .AttrType(OPTIONAL)
-            .Int(0);
-        this->Attr("sink")
-            .AttrType(OPTIONAL)
-            .Int(0);
-        this->Attr("recent")
-            .AttrType(OPTIONAL)
-            .Int(0);
-        this->Attr("support_offload")
-            .AttrType(OPTIONAL)
-            .Int(0);
+        this->Attr("max_seq_len").AttrType(OPTIONAL).Int(0);
+        this->Attr("sink").AttrType(OPTIONAL).Int(0);
+        this->Attr("recent").AttrType(OPTIONAL).Int(0);
+        this->Attr("support_offload").AttrType(OPTIONAL).Int(0);
         this->Input("key_block_table")
             .ParamType(OPTIONAL)
             .DataType({ge::DT_INT32})
@@ -84,9 +76,8 @@ public:
 
         this->AICore().AddConfig("ascend910_93", aicore_config);
         this->AICore().AddConfig("ascend910b", aicore_config);
-
     }
 };
 
 OP_ADD(HammingDistTopK);
-}
+}  // namespace ops

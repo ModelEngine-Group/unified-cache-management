@@ -2,10 +2,11 @@
  * Copyright (c) 2023-2024 Huawei Technologies Co., Ltd.
  * This file is a part of the CANN Open Software.
  * Licensed under CANN Open Software License Agreement Version 1.0 (the "License").
- * Please refer to the License for details. You may not use this file except in compliance with the License.
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND, EITHER EXPRESS OR IMPLIED,
- * INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
- * See LICENSE in the root of the software repository for the full text of the License.
+ * Please refer to the License for details. You may not use this file except in compliance with the
+ * License. THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND, EITHER
+ * EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS
+ * FOR A PARTICULAR PURPOSE. See LICENSE in the root of the software repository for the full text of
+ * the License.
  */
 
 // SPDX-License-Identifier: Apache-2.0
@@ -20,9 +21,9 @@
 
 #pragma once
 
-#include <sstream>
 #include <exe_graph/runtime/tiling_context.h>
 #include <graph/utils/type_utils.h>
+#include <sstream>
 #include <tiling/platform/platform_ascendc.h>
 #include "log/ops_log.h"
 
@@ -60,9 +61,7 @@ class TilingBaseClass {
 public:
     TilingBaseClass() = default;
 
-    explicit TilingBaseClass(gert::TilingContext *context) : context_(context)
-    {
-    }
+    explicit TilingBaseClass(gert::TilingContext *context) : context_(context) {}
 
     virtual ~TilingBaseClass() = default;
 
@@ -73,42 +72,25 @@ public:
     ge::graphStatus DoTiling()
     {
         auto ret = GetShapeAttrsInfo();
-        if (ret != ge::GRAPH_SUCCESS) {
-            return ret;
-        }
+        if (ret != ge::GRAPH_SUCCESS) { return ret; }
         ret = GetPlatformInfo();
-        if (ret != ge::GRAPH_SUCCESS) {
-            return ret;
-        }
-        if (!IsCapable()) {
-            return ge::GRAPH_PARAM_INVALID;
-        }
+        if (ret != ge::GRAPH_SUCCESS) { return ret; }
+        if (!IsCapable()) { return ge::GRAPH_PARAM_INVALID; }
         ret = DoOpTiling();
-        if (ret != ge::GRAPH_SUCCESS) {
-            return ret;
-        }
+        if (ret != ge::GRAPH_SUCCESS) { return ret; }
         ret = DoLibApiTiling();
-        if (ret != ge::GRAPH_SUCCESS) {
-            return ret;
-        }
+        if (ret != ge::GRAPH_SUCCESS) { return ret; }
         ret = GetWorkspaceSize();
-        if (ret != ge::GRAPH_SUCCESS) {
-            return ret;
-        }
+        if (ret != ge::GRAPH_SUCCESS) { return ret; }
         ret = PostTiling();
-        if (ret != ge::GRAPH_SUCCESS) {
-            return ret;
-        }
+        if (ret != ge::GRAPH_SUCCESS) { return ret; }
         context_->SetTilingKey(GetTilingKey());
         DumpTilingInfo();
         return ge::GRAPH_SUCCESS;
     }
 
     // 更新 context
-    virtual void Reset(gert::TilingContext *context)
-    {
-        context_ = context;
-    }
+    virtual void Reset(gert::TilingContext *context) { context_ = context; }
 
 protected:
     virtual bool IsCapable() = 0;
@@ -130,17 +112,15 @@ protected:
     virtual void DumpTilingInfo()
     {
         int32_t enable = AlogCheckDebugLevel(static_cast<int32_t>(OP), DLOG_DEBUG);
-        if (enable != 1) {
-            return;
-        }
+        if (enable != 1) { return; }
         auto buf = (uint32_t *)context_->GetRawTilingData()->GetData();
         auto bufLen = context_->GetRawTilingData()->GetDataSize();
         std::ostringstream oss;
-        oss << "Start to dump tiling info. tilingkey:" << GetTilingKey() << ", tiling data size:" << bufLen
-            << ", content:";
+        oss << "Start to dump tiling info. tilingkey:" << GetTilingKey()
+            << ", tiling data size:" << bufLen << ", content:";
         for (size_t i = 0; i < bufLen / sizeof(uint32_t); i++) {
             oss << *(buf + i) << ",";
-            if (oss.str().length() > 640) { // Split according to 640 to avoid truncation
+            if (oss.str().length() > 640) {  // Split according to 640 to avoid truncation
                 OPS_LOG_D(context_, "%s", oss.str().c_str());
                 oss.str("");
             }
@@ -151,21 +131,18 @@ protected:
     static uint32_t CalcTschBlockDim(uint32_t sliceNum, uint32_t aicCoreNum, uint32_t aivCoreNum)
     {
         uint32_t ration;
-        if (aicCoreNum == 0 || aivCoreNum == 0 || aicCoreNum > aivCoreNum) {
-            return sliceNum;
-        }
+        if (aicCoreNum == 0 || aivCoreNum == 0 || aicCoreNum > aivCoreNum) { return sliceNum; }
         ration = aivCoreNum / aicCoreNum;
         return (sliceNum + (ration - 1)) / ration;
     }
 
-    template <typename T> [[nodiscard]] std::string GetShapeDebugStr(const T &shape) const
+    template <typename T>
+    [[nodiscard]] std::string GetShapeDebugStr(const T &shape) const
     {
         std::ostringstream oss;
         oss << "[";
         if (shape.GetDimNum() > 0) {
-            for (size_t i = 0; i < shape.GetDimNum() - 1; ++i) {
-                oss << shape.GetDim(i) << ", ";
-            }
+            for (size_t i = 0; i < shape.GetDimNum() - 1; ++i) { oss << shape.GetDim(i) << ", "; }
             oss << shape.GetDim(shape.GetDimNum() - 1);
         }
         oss << "]";
@@ -175,9 +152,7 @@ protected:
     [[nodiscard]] std::string GetTensorDebugStr(const gert::StorageShape *shape,
                                                 const gert::CompileTimeTensorDesc *tensor)
     {
-        if (shape == nullptr || tensor == nullptr) {
-            return "nil ";
-        }
+        if (shape == nullptr || tensor == nullptr) { return "nil "; }
         std::ostringstream oss;
         oss << "(dtype: " << ge::TypeUtils::DataTypeToSerialString(tensor->GetDataType()) << "),";
         oss << "(shape:" << GetShapeDebugStr(shape->GetStorageShape()) << "),";
@@ -186,7 +161,8 @@ protected:
             << ge::TypeUtils::FormatToSerialString(
                    static_cast<ge::Format>(ge::GetPrimaryFormat(tensor->GetStorageFormat())))
             << "),";
-        oss << "(ori_format: " << ge::TypeUtils::FormatToSerialString(tensor->GetOriginFormat()) << ") ";
+        oss << "(ori_format: " << ge::TypeUtils::FormatToSerialString(tensor->GetOriginFormat())
+            << ") ";
         return oss.str();
     }
 
@@ -212,9 +188,7 @@ protected:
         auto data = reinterpret_cast<const int32_t *>(rawTilingData->GetData());
         size_t len = rawTilingDataSize / sizeof(int32_t);
         std::ostringstream oss;
-        for (size_t i = 0; i < len; i++) {
-            oss << data[i] << ", ";
-        }
+        for (size_t i = 0; i < len; i++) { oss << data[i] << ", "; }
         return oss.str();
     }
 
@@ -227,4 +201,4 @@ protected:
     AiCoreParams aicoreParams_{0, 0, 0, 0, 0, 0, 0};
 };
 
-} // namespace optiling
+}  // namespace optiling

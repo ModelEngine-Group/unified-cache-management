@@ -1,7 +1,6 @@
 #ifndef HAMMING_DIST_TOP_K_H
 #define HAMMING_DIST_TOP_K_H
 
-
 #include "hamming_dist_top_k_tiling.h"
 #include "register/op_def_registry.h"
 #include "tiling/platform/platform_ascendc.h"
@@ -28,7 +27,8 @@ public:
     bool continFlag_ = false;
     uint32_t seqLen_ = 1;
 
-    HammingDistTopKTiling(gert::TilingContext *context) : context_(context) {
+    HammingDistTopKTiling(gert::TilingContext *context) : context_(context)
+    {
         InitAttrParam();
         uint32_t dimNum = GetOutShape(0).GetDimNum();
         maxK = GetOutShape(0).GetDim(dimNum - 1);
@@ -64,7 +64,8 @@ public:
     const gert::Shape GetOutShape(const size_t index);
 
     // 初始化sink和recent
-    const void InitAttrParam() {
+    const void InitAttrParam()
+    {
         uint32_t sink = GetInputAttrData(1);
         uint32_t recent = GetInputAttrData(2);
         uint32_t supportOffload = GetInputAttrData(3);
@@ -87,7 +88,6 @@ public:
     uint32_t COMPRESSED_RATE = 8;
 };
 
-
-}
+}  // namespace optiling
 
 #endif

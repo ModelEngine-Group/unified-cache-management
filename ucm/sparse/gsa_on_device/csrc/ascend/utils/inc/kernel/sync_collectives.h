@@ -23,7 +23,8 @@ class SyncCollectives {
 public:
     __aicore__ inline SyncCollectives() {}
 
-    __aicore__ inline void Init(int rank, int rankSize, GM_ADDR *shareAddrs, TBuf<QuePosition::VECCALC> &tBuf)
+    __aicore__ inline void Init(int rank, int rankSize, GM_ADDR* shareAddrs,
+                                TBuf<QuePosition::VECCALC>& tBuf)
     {
         this->rank = rank;
         this->rankSize = rankSize;
@@ -32,10 +33,12 @@ public:
         this->blockNum = GetBlockNum();
         // Length of a single indicator segment
         segmentCount = GetBlockNum() * FLAG_UNIT_INT_NUM;
-        // Initialize the intra-card/inter-card synchronization address corresponding to the current core.
+        // Initialize the intra-card/inter-card synchronization address corresponding to the current
+        // core.
         localSyncAddr = (__gm__ int64_t*)(shareAddrs[rank]);
         basicSyncAddr = (__gm__ int64_t*)(shareAddrs[rank]) + GetBlockIdx() * FLAG_UNIT_INT_NUM;
-        blockOuterSyncAddr = (__gm__ int64_t*)(shareAddrs[rank]) + segmentCount + GetBlockIdx() * FLAG_UNIT_INT_NUM;
+        blockOuterSyncAddr =
+            (__gm__ int64_t*)(shareAddrs[rank]) + segmentCount + GetBlockIdx() * FLAG_UNIT_INT_NUM;
         this->tBuf = tBuf;
     }
 
@@ -46,12 +49,17 @@ public:
     }
 
     /**
-     * @brief Set the flag for the specified eventID of the designated card, with the value being a combination of magic and value.
-     * @param magic The operator batch, which will be combined into the high 32 bits of the flag value to be set.
-     * @param value The specific value to be set, which will be the low 32 bits of the flag value to be set.
-     * @param eventID Physically, it is an offset from the shared memory base address (requires scaling, not an absolute value).
-     * @param rank This rank is the rankId corresponding to the peerMems array in the CommArgs structure, not a global or local id.
-     *              (Local is not applicable in the 91093 scenario, and global is not applicable in the 910B multi-machine scenario.)
+     * @brief Set the flag for the specified eventID of the designated card, with the value being a
+     * combination of magic and value.
+     * @param magic The operator batch, which will be combined into the high 32 bits of the flag
+     * value to be set.
+     * @param value The specific value to be set, which will be the low 32 bits of the flag value to
+     * be set.
+     * @param eventID Physically, it is an offset from the shared memory base address (requires
+     * scaling, not an absolute value).
+     * @param rank This rank is the rankId corresponding to the peerMems array in the CommArgs
+     * structure, not a global or local id. (Local is not applicable in the 91093 scenario, and
+     * global is not applicable in the 910B multi-machine scenario.)
      */
     __aicore__ inline void SetSyncFlag(int32_t magic, int32_t value, int32_t eventID, int32_t rank)
     {
@@ -80,13 +88,15 @@ public:
     __aicore__ inline void WaitSyncFlag(int32_t magic, int32_t value, int32_t eventID, int32_t rank)
     {
         int64_t v = MergeMagicWithValue(magic, value);
-        WaitOneRankPartFlag((__gm__ int64_t*)(shareAddrs[rank]) + eventID * FLAG_UNIT_INT_NUM, 1, v);
+        WaitOneRankPartFlag((__gm__ int64_t*)(shareAddrs[rank]) + eventID * FLAG_UNIT_INT_NUM, 1,
+                            v);
     }
 
     __aicore__ inline void WaitSyncFlag(int32_t magic, int32_t value, int32_t eventID)
     {
         int64_t v = MergeMagicWithValue(magic, value);
-        WaitOneRankPartFlag((__gm__ int64_t*)(shareAddrs[this->rank]) + eventID * FLAG_UNIT_INT_NUM, 1, v);
+        WaitOneRankPartFlag((__gm__ int64_t*)(shareAddrs[this->rank]) + eventID * FLAG_UNIT_INT_NUM,
+                            1, v);
     }
 
     /**
@@ -94,10 +104,12 @@ public:
      *        a value composed of the combination of magic and value.<br>
      *        Note: [eventID, eventID + flagNum)
      */
-    __aicore__ inline void WaitSyncFlag(int32_t magic, int32_t value, int32_t eventID, int32_t rank, int64_t flagNum)
+    __aicore__ inline void WaitSyncFlag(int32_t magic, int32_t value, int32_t eventID, int32_t rank,
+                                        int64_t flagNum)
     {
         int64_t v = MergeMagicWithValue(magic, value);
-        WaitOneRankPartFlag((__gm__ int64_t*)(shareAddrs[rank]) + eventID * FLAG_UNIT_INT_NUM, flagNum, v);
+        WaitOneRankPartFlag((__gm__ int64_t*)(shareAddrs[rank]) + eventID * FLAG_UNIT_INT_NUM,
+                            flagNum, v);
     }
 
     // Set inner-card synchronization flag (memory A)
@@ -107,17 +119,20 @@ public:
         SetFlag(basicSyncAddr, value);
     }
 
-    __aicore__ inline void SetInnerFlag(int32_t magic, int32_t eventID, int64_t setRank, int64_t setBlock)
+    __aicore__ inline void SetInnerFlag(int32_t magic, int32_t eventID, int64_t setRank,
+                                        int64_t setBlock)
     {
         int64_t value = MergeMagicWithValue(magic, eventID);
         SetFlag((__gm__ int64_t*)(shareAddrs[setRank]) + setBlock * FLAG_UNIT_INT_NUM, value);
     }
 
     // Wait for a single inner-card synchronization flag (memory A)
-    __aicore__ inline void WaitInnerFlag(int32_t magic, int32_t eventID, int64_t waitRank, int64_t waitBlock)
+    __aicore__ inline void WaitInnerFlag(int32_t magic, int32_t eventID, int64_t waitRank,
+                                         int64_t waitBlock)
     {
         int64_t value = MergeMagicWithValue(magic, eventID);
-        WaitOneRankPartFlag((__gm__ int64_t*)(shareAddrs[waitRank]) + waitBlock * FLAG_UNIT_INT_NUM, 1, value);
+        WaitOneRankPartFlag((__gm__ int64_t*)(shareAddrs[waitRank]) + waitBlock * FLAG_UNIT_INT_NUM,
+                            1, value);
     }
 
     // Wait for all inner-card synchronization flags within the entire rank (memory A)
@@ -141,7 +156,8 @@ public:
         SetFlag(blockOuterSyncAddr, value);
     }
 
-    __aicore__ inline void SetOuterFlag(int32_t magic, int32_t eventID, int64_t setRank, int64_t setBlock)
+    __aicore__ inline void SetOuterFlag(int32_t magic, int32_t eventID, int64_t setRank,
+                                        int64_t setBlock)
     {
         __gm__ int64_t* flagAddr = GetOuterFlagAddr(setRank, setBlock);
         int64_t value = MergeMagicWithValue(magic, eventID);
@@ -149,7 +165,8 @@ public:
     }
 
     // Wait for a single inter-card synchronization flag (memory B)
-    __aicore__ inline void WaitOuterFlag(int32_t magic, int32_t eventID, int64_t waitRank, int64_t waitBlock)
+    __aicore__ inline void WaitOuterFlag(int32_t magic, int32_t eventID, int64_t waitRank,
+                                         int64_t waitBlock)
     {
         int64_t value = MergeMagicWithValue(magic, eventID);
         __gm__ int64_t* flagAddr = GetOuterFlagAddr(waitRank, waitBlock);
@@ -165,43 +182,50 @@ public:
         WaitOneRankPartFlag(flagAddr, blockNum, value);
     }
 
-    // Wait for flagNum inter-card synchronization flags starting from startBlock for all ranks (memory B)
-    __aicore__ inline void WaitAllRankPartOuterFlag(int32_t magic, int32_t eventID, int64_t startBlock, int64_t flagNum)
+    // Wait for flagNum inter-card synchronization flags starting from startBlock for all ranks
+    // (memory B)
+    __aicore__ inline void WaitAllRankPartOuterFlag(int32_t magic, int32_t eventID,
+                                                    int64_t startBlock, int64_t flagNum)
     {
         int64_t value = MergeMagicWithValue(magic, eventID);
         __gm__ int64_t* flagAddr;
         int waitRank;
         for (auto r = 0; r < rankSize; ++r) {
-            waitRank = (rank + r) % rankSize;  // Offset reading of rank flags to prevent performance impact from concurrent copying by multiple cores
+            waitRank =
+                (rank + r) % rankSize;  // Offset reading of rank flags to prevent performance
+                                        // impact from concurrent copying by multiple cores
             flagAddr = GetOuterFlagAddr(waitRank, startBlock);
             WaitOneRankPartFlag(flagAddr, flagNum, value);
         }
     }
 
-    // Check flagNum inter-card synchronization flags starting from startBlock for all ranks (memory B)
-    __aicore__ inline bool CheckAllRankPartOuterFlag(int32_t magic, int32_t eventID, int64_t startBlock,
-        int64_t flagNum)
+    // Check flagNum inter-card synchronization flags starting from startBlock for all ranks (memory
+    // B)
+    __aicore__ inline bool CheckAllRankPartOuterFlag(int32_t magic, int32_t eventID,
+                                                     int64_t startBlock, int64_t flagNum)
     {
         int64_t value = MergeMagicWithValue(magic, eventID);
         __gm__ int64_t* flagAddr;
         int waitRank;
         for (auto r = 0; r < rankSize; ++r) {
-            waitRank = (rank + r) % rankSize;  // Offset reading of rank flags to prevent performance impact from concurrent copying by multiple cores
+            waitRank =
+                (rank + r) % rankSize;  // Offset reading of rank flags to prevent performance
+                                        // impact from concurrent copying by multiple cores
             flagAddr = GetOuterFlagAddr(waitRank, startBlock);
-            if (!CheckOneRankPartFlag(flagAddr, flagNum, value)) {
-                return false;
-            }
+            if (!CheckOneRankPartFlag(flagAddr, flagNum, value)) { return false; }
         }
         return true;
     }
 
-    // Wait for all inter-card synchronization flags for all ranks, full rank synchronization (memory B)
+    // Wait for all inter-card synchronization flags for all ranks, full rank synchronization
+    // (memory B)
     __aicore__ inline void WaitAllRankOuterFlag(int32_t magic, int32_t eventID)
     {
         WaitAllRankPartOuterFlag(magic, eventID, 0, blockNum);
     }
 
-    // Check all inter-card synchronization flags for all ranks, full rank synchronization (memory B)
+    // Check all inter-card synchronization flags for all ranks, full rank synchronization (memory
+    // B)
     __aicore__ inline bool CheckAllRankOuterFlag(int32_t magic, int32_t eventID)
     {
         return CheckAllRankPartOuterFlag(magic, eventID, 0, blockNum);
@@ -249,8 +273,9 @@ public:
     }
 
     // Get multiple consecutive synchronization flags within a single card
-    __aicore__ inline void WaitOneRankPartOuterFlag(int32_t magic, int32_t eventID, int64_t waitRank,
-                                                    int64_t startBlock, int64_t flagNum)
+    __aicore__ inline void WaitOneRankPartOuterFlag(int32_t magic, int32_t eventID,
+                                                    int64_t waitRank, int64_t startBlock,
+                                                    int64_t flagNum)
     {
         int64_t value = MergeMagicWithValue(magic, eventID);
         __gm__ int64_t* flagAddr;
@@ -266,29 +291,37 @@ public:
 
     __aicore__ inline int64_t GetOuterFlag(int64_t waitRank, int64_t waitBlock)
     {
-        return GetFlag((__gm__ int64_t*)(shareAddrs[waitRank]) + segmentCount + waitBlock * FLAG_UNIT_INT_NUM);
+        return GetFlag((__gm__ int64_t*)(shareAddrs[waitRank]) + segmentCount +
+                       waitBlock * FLAG_UNIT_INT_NUM);
     }
 
-    // In the rank Chunk Flag area, return success if the destRank chunk Flag value is 0, otherwise fail
-    __aicore__ inline int64_t GetChunkFlag(int64_t rank, int64_t destRank, int64_t magic, int64_t timeout)
+    // In the rank Chunk Flag area, return success if the destRank chunk Flag value is 0, otherwise
+    // fail
+    __aicore__ inline int64_t GetChunkFlag(int64_t rank, int64_t destRank, int64_t magic,
+                                           int64_t timeout)
     {
         int64_t value = MergeMagicWithValue(magic, 0);
-        int64_t status = GetChunkFlagValue((__gm__ int64_t*)(shareAddrs[rank]) +
-                                            IPC_CHUNK_FLAG + destRank * FLAG_UNIT_INT_NUM, value, timeout);
+        int64_t status = GetChunkFlagValue(
+            (__gm__ int64_t*)(shareAddrs[rank]) + IPC_CHUNK_FLAG + destRank * FLAG_UNIT_INT_NUM,
+            value, timeout);
         return status;
     }
 
     // Set the destRank chunk Flag value in the rank Chunk Flag area to value
-    __aicore__ inline void SetChunkFlag(int64_t rank, int64_t destRank, int64_t magic, int64_t eventId)
+    __aicore__ inline void SetChunkFlag(int64_t rank, int64_t destRank, int64_t magic,
+                                        int64_t eventId)
     {
         int64_t value = MergeMagicWithValue(magic, eventId);
-        SetFlag((__gm__ int64_t*)(shareAddrs[rank]) + IPC_CHUNK_FLAG + destRank * FLAG_UNIT_INT_NUM, value);
+        SetFlag((__gm__ int64_t*)(shareAddrs[rank]) + IPC_CHUNK_FLAG + destRank * FLAG_UNIT_INT_NUM,
+                value);
     }
 
-    __aicore__ inline int64_t GetChunkRecvLen(int64_t rank, int64_t destRank, int64_t magic, int64_t timeout)
+    __aicore__ inline int64_t GetChunkRecvLen(int64_t rank, int64_t destRank, int64_t magic,
+                                              int64_t timeout)
     {
-        int64_t len = GetChunkFlagValue((__gm__ int64_t*)(shareAddrs[rank]) + IPC_CHUNK_FLAG +
-                                        destRank * FLAG_UNIT_INT_NUM, 0, timeout, true, magic);
+        int64_t len = GetChunkFlagValue(
+            (__gm__ int64_t*)(shareAddrs[rank]) + IPC_CHUNK_FLAG + destRank * FLAG_UNIT_INT_NUM, 0,
+            timeout, true, magic);
         return len;
     }
 
@@ -296,7 +329,8 @@ private:
     __aicore__ inline int64_t MergeMagicWithValue(int32_t magic, int32_t value)
     {
         // Merge magic as the high bits and eventID as the low bits into a value for comparison
-        return (static_cast<int64_t>(static_cast<uint32_t>(magic)) << MAGIC_OFFSET) | static_cast<int64_t>(value);
+        return (static_cast<int64_t>(static_cast<uint32_t>(magic)) << MAGIC_OFFSET) |
+               static_cast<int64_t>(value);
     }
 
     __aicore__ inline __gm__ int64_t* GetInnerFlagAddr(int64_t flagRank, int64_t flagBlock)
@@ -306,15 +340,18 @@ private:
 
     __aicore__ inline __gm__ int64_t* GetOuterFlagAddr(int64_t flagRank, int64_t flagBlock)
     {
-        return (__gm__ int64_t*)(shareAddrs[flagRank]) + segmentCount + flagBlock * FLAG_UNIT_INT_NUM;
+        return (__gm__ int64_t*)(shareAddrs[flagRank]) + segmentCount +
+               flagBlock * FLAG_UNIT_INT_NUM;
     }
 
     // Wait for a part of synchronization flags within a rank
-    __aicore__ inline void WaitOneRankPartFlag(__gm__ int64_t* waitAddr, int64_t flagNum, int64_t checkValue)
+    __aicore__ inline void WaitOneRankPartFlag(__gm__ int64_t* waitAddr, int64_t flagNum,
+                                               int64_t checkValue)
     {
         GlobalTensor<int64_t> globalWait;
         globalWait.SetGlobalBuffer(waitAddr, flagNum * FLAG_UNIT_INT_NUM);
-        LocalTensor<int64_t> localWait = tBuf.GetWithOffset<int64_t>(flagNum * FLAG_UNIT_INT_NUM, 0);
+        LocalTensor<int64_t> localWait =
+            tBuf.GetWithOffset<int64_t>(flagNum * FLAG_UNIT_INT_NUM, 0);
         bool isSync = true;
         int64_t checkedFlagNum = 0;
         do {
@@ -346,11 +383,13 @@ private:
     }
 
     // Check partial synchronization flags within a rank, copy only once
-    __aicore__ inline bool CheckOneRankPartFlag(__gm__ int64_t* waitAddr, int64_t flagNum, int64_t checkValue)
+    __aicore__ inline bool CheckOneRankPartFlag(__gm__ int64_t* waitAddr, int64_t flagNum,
+                                                int64_t checkValue)
     {
         GlobalTensor<int64_t> globalWait;
         globalWait.SetGlobalBuffer(waitAddr, flagNum * FLAG_UNIT_INT_NUM);
-        LocalTensor<int64_t> localWait = tBuf.GetWithOffset<int64_t>(flagNum * FLAG_UNIT_INT_NUM, 0);
+        LocalTensor<int64_t> localWait =
+            tBuf.GetWithOffset<int64_t>(flagNum * FLAG_UNIT_INT_NUM, 0);
         // Copy global synchronization flags to local
         DataCopy(localWait, globalWait, flagNum * FLAG_UNIT_INT_NUM);
         AscendC::SetFlag<HardEvent::MTE2_S>(EVENT_ID0);
@@ -368,8 +407,9 @@ private:
         return isSync;
     }
 
-    __aicore__ inline int64_t GetChunkFlagValue(__gm__ int64_t* waitAddr, int64_t checkValue, int64_t timeout,
-                                                bool checkNonZero = false, int64_t magic = 0)
+    __aicore__ inline int64_t GetChunkFlagValue(__gm__ int64_t* waitAddr, int64_t checkValue,
+                                                int64_t timeout, bool checkNonZero = false,
+                                                int64_t magic = 0)
     {
         GlobalTensor<int64_t> globalWait;
         globalWait.SetGlobalBuffer(waitAddr, FLAG_UNIT_INT_NUM);
@@ -389,22 +429,22 @@ private:
             v = localWait.GetValue(0);
             if (checkNonZero) {
                 // Non-zero check mode
-                if (((v & MAGIC_MASK) == (static_cast<int64_t>(magic) << MAGIC_OFFSET)) && (v & 0xFFFFFFFF)) {
+                if (((v & MAGIC_MASK) == (static_cast<int64_t>(magic) << MAGIC_OFFSET)) &&
+                    (v & 0xFFFFFFFF)) {
                     return v & 0xFFFFFFFF;  // Return lower 32 bits when non-zero
                 }
             } else {
                 // Exact value check mode
-                if (v == checkValue) {
-                    return WAIT_SUCCESS;
-                }
+                if (v == checkValue) { return WAIT_SUCCESS; }
             }
 
             isSync = false;
             waitTimes++;
 
-            if (timeout > INT64_MAX / MAX_WAIT_ROUND_UNIT || waitTimes >= (timeout * MAX_WAIT_ROUND_UNIT)) {
+            if (timeout > INT64_MAX / MAX_WAIT_ROUND_UNIT ||
+                waitTimes >= (timeout * MAX_WAIT_ROUND_UNIT)) {
                 isSync = true;
-                return v; // Return the read flag value
+                return v;  // Return the read flag value
             }
         } while (!isSync);
 
@@ -420,12 +460,12 @@ private:
     int rankSize;
     int blockIdx;
     int blockNum;
-    GM_ADDR *shareAddrs;
+    GM_ADDR* shareAddrs;
     int64_t segmentCount;  // Length of a single sync flag segment (count in int64_t)
     __gm__ int64_t* localSyncAddr;
-    __gm__ int64_t* basicSyncAddr;  // Intra-card sync flag address for the current block
+    __gm__ int64_t* basicSyncAddr;       // Intra-card sync flag address for the current block
     __gm__ int64_t* blockOuterSyncAddr;  // Inter-card sync flag address for the current block
     TBuf<QuePosition::VECCALC> tBuf;
 };
 
-#endif // SYNC_COLLECTIVES_H
+#endif  // SYNC_COLLECTIVES_H

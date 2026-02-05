@@ -5,14 +5,14 @@
 // #include "context_util.h"
 #include "register/op_impl_registry.h"
 
-
 namespace optiling {
-static ge::graphStatus TilingPrepareForHammingDistTopK(gert::TilingParseContext *context)
+static ge::graphStatus TilingPrepareForHammingDistTopK(gert::TilingParseContext* context)
 {
     return ge::GRAPH_SUCCESS;
 }
 
-static ge::graphStatus TilingFunc(gert::TilingContext* context) {
+static ge::graphStatus TilingFunc(gert::TilingContext* context)
+{
     ge::graphStatus ret;
     HammingDistTopKSplitSTiling hammingDistTopKSplitSTiling(context);
     hammingDistTopKSplitSTiling.GetShapeAttrsInfo();
@@ -28,7 +28,7 @@ static ge::graphStatus TilingFunc(gert::TilingContext* context) {
         // hammingDistTopKSplitSTiling.PrintTilingDataRope();
         return ge::GRAPH_SUCCESS;
     }
-    
+
     HammingDistTopKTiling hammingDistTopKTiling(context);
     hammingDistTopKTiling.GetShapeAttrsInfo();
     hammingDistTopKTiling.GetPlatformInfo();
@@ -44,4 +44,4 @@ static ge::graphStatus TilingFunc(gert::TilingContext* context) {
 IMPL_OP_OPTILING(HammingDistTopK)
     .Tiling(TilingFunc)
     .TilingParse<HammingDistTopKCompileInfo>(TilingPrepareForHammingDistTopK);
-}
+}  // namespace optiling

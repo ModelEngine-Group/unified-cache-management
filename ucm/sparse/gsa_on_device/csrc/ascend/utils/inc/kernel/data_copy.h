@@ -15,20 +15,13 @@ template <typename T>
 FORCE_INLINE_AICORE void SetAtomicOpType(int op)
 {
     switch (op) {
-        case ADD:
-            AscendC::SetAtomicAdd<T>();
-            break;
+        case ADD: AscendC::SetAtomicAdd<T>(); break;
         case MUL:
             // Ignore setting the atomic register when performing mul
             break;
-        case MAX:
-            AscendC::SetAtomicMax<T>();
-            break;
-        case MIN:
-            AscendC::SetAtomicMin<T>();
-            break;
-        default:
-            AscendC::SetAtomicNone();
+        case MAX: AscendC::SetAtomicMax<T>(); break;
+        case MIN: AscendC::SetAtomicMin<T>(); break;
+        default: AscendC::SetAtomicNone();
     }
 }
 
@@ -57,7 +50,7 @@ FORCE_INLINE_AICORE void CpGM2UB(__ubuf__ T *ubAddr, __gm__ T *gmAddr, uint32_t 
     DataCopyPad(ubTensor, gmTensor, dataCopyParams, padParams);
 }
 
-template<typename T>
+template <typename T>
 FORCE_INLINE_AICORE void CopyUB2UB(__ubuf__ T *dst, __ubuf__ T *src, const uint32_t calCount)
 {
     LocalTensor<T> srcTensor;
@@ -70,4 +63,4 @@ FORCE_INLINE_AICORE void CopyUB2UB(__ubuf__ T *dst, __ubuf__ T *src, const uint3
     DataCopy(dstTensor, srcTensor, calCount);
 }
 
-#endif // CAM_DATACOPY_GM2GM_H
+#endif  // CAM_DATACOPY_GM2GM_H

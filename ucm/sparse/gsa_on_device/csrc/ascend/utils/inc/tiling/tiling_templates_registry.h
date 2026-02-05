@@ -2,10 +2,11 @@
  * Copyright (c) 2023-2024 Huawei Technologies Co., Ltd.
  * This file is a part of the CANN Open Software.
  * Licensed under CANN Open Software License Agreement Version 1.0 (the "License").
- * Please refer to the License for details. You may not use this file except in compliance with the License.
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND, EITHER EXPRESS OR IMPLIED,
- * INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
- * See LICENSE in the root of the software repository for the full text of the License.
+ * Please refer to the License for details. You may not use this file except in compliance with the
+ * License. THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND, EITHER
+ * EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS
+ * FOR A PARTICULAR PURPOSE. See LICENSE in the root of the software repository for the full text of
+ * the License.
  */
 
 // SPDX-License-Identifier: Apache-2.0
@@ -20,17 +21,18 @@
 
 #pragma once
 
-#include <map>
-#include <string>
-#include <memory>
 #include <exe_graph/runtime/tiling_context.h>
-#include "tiling/tiling_base.h"
-#include "log/ops_log.h"
+#include <map>
+#include <memory>
+#include <string>
 #include "error/ops_error.h"
+#include "log/ops_log.h"
+#include "tiling/tiling_base.h"
 
 namespace optiling {
 
-template <typename T> std::unique_ptr<TilingBaseClass> TILING_CLASS(gert::TilingContext *context)
+template <typename T>
+std::unique_ptr<TilingBaseClass> TILING_CLASS(gert::TilingContext *context)
 {
     return std::unique_ptr<T>(new (std::nothrow) T(context));
 }
@@ -39,25 +41,22 @@ using TilingClassCase = std::unique_ptr<TilingBaseClass> (*)(gert::TilingContext
 
 class TilingCases {
 public:
-    explicit TilingCases(std::string op_type) : op_type_(std::move(op_type))
-    {
-    }
+    explicit TilingCases(std::string op_type) : op_type_(std::move(op_type)) {}
 
-    template <typename T> void AddTiling(int32_t priority)
+    template <typename T>
+    void AddTiling(int32_t priority)
     {
         OPS_ERR_IF(cases_.find(priority) != cases_.end(),
-                   OPS_REPORT_VECTOR_INNER_ERR(op_type_, "There are duplicate registrations."), return);
+                   OPS_REPORT_VECTOR_INNER_ERR(op_type_, "There are duplicate registrations."),
+                   return);
         cases_[priority] = TILING_CLASS<T>;
-        OPS_ERR_IF(
-            cases_[priority] == nullptr,
-            OPS_REPORT_VECTOR_INNER_ERR(op_type_, "Register op tiling func failed, please check the class name."),
-            return);
+        OPS_ERR_IF(cases_[priority] == nullptr,
+                   OPS_REPORT_VECTOR_INNER_ERR(
+                       op_type_, "Register op tiling func failed, please check the class name."),
+                   return);
     }
 
-    const std::map<int32_t, TilingClassCase> &GetTilingCases()
-    {
-        return cases_;
-    }
+    const std::map<int32_t, TilingClassCase> &GetTilingCases() { return cases_; }
 
 private:
     std::map<int32_t, TilingClassCase> cases_;
@@ -81,10 +80,12 @@ public:
     std::shared_ptr<TilingCases> RegisterOp(const std::string &op_type)
     {
         if (registry_map_.find(op_type) == registry_map_.end()) {
-            registry_map_[op_type] = std::shared_ptr<TilingCases>(new (std::nothrow) TilingCases(op_type));
+            registry_map_[op_type] =
+                std::shared_ptr<TilingCases>(new (std::nothrow) TilingCases(op_type));
         }
         OPS_ERR_IF(registry_map_[op_type] == nullptr,
-                   OPS_REPORT_VECTOR_INNER_ERR(op_type, "Register tiling func failed, please check the class name."),
+                   OPS_REPORT_VECTOR_INNER_ERR(
+                       op_type, "Register tiling func failed, please check the class name."),
                    return nullptr);
         return registry_map_[op_type];
     }
@@ -93,7 +94,8 @@ public:
     {
         const char *op_type = context->GetNodeType();
         auto tilingTemplateRegistryMap = GetTilingTemplates(op_type);
-        for (auto it = tilingTemplateRegistryMap.begin(); it != tilingTemplateRegistryMap.end(); ++it) {
+        for (auto it = tilingTemplateRegistryMap.begin(); it != tilingTemplateRegistryMap.end();
+             ++it) {
             auto tilingTemplate = it->second(context);
             if (tilingTemplate != nullptr) {
                 ge::graphStatus status = tilingTemplate->DoTiling();
@@ -108,7 +110,8 @@ public:
         return ge::GRAPH_FAILED;
     }
 
-    ge::graphStatus DoTilingImpl(gert::TilingContext *context, const std::vector<int32_t> &priorities)
+    ge::graphStatus DoTilingImpl(gert::TilingContext *context,
+                                 const std::vector<int32_t> &priorities)
     {
         const char *op_type = context->GetNodeType();
         auto tilingTemplateRegistryMap = GetTilingTemplates(op_type);
@@ -129,28 +132,29 @@ public:
     const std::map<int32_t, TilingClassCase> &GetTilingTemplates(const std::string &op_type)
     {
         OPS_ERR_IF(registry_map_.find(op_type) == registry_map_.end(),
-                   OPS_REPORT_VECTOR_INNER_ERR(op_type, "Get op tiling func failed, please check the op name."),
+                   OPS_REPORT_VECTOR_INNER_ERR(
+                       op_type, "Get op tiling func failed, please check the op name."),
                    return empty_tiling_case_);
         return registry_map_[op_type]->GetTilingCases();
     }
 
 private:
     std::map<std::string, std::shared_ptr<TilingCases>> registry_map_;
-    const std::map<int32_t, TilingClassCase> empty_tiling_case_ {};
+    const std::map<int32_t, TilingClassCase> empty_tiling_case_{};
 };
 
 class Register {
 public:
-    explicit Register(std::string op_type) : op_type_(std::move(op_type))
-    {
-    }
+    explicit Register(std::string op_type) : op_type_(std::move(op_type)) {}
 
-    template <typename T> Register &tiling(int32_t priority)
+    template <typename T>
+    Register &tiling(int32_t priority)
     {
         auto tilingCases = TilingRegistry::GetInstance().RegisterOp(op_type_);
-        OPS_ERR_IF(tilingCases == nullptr,
-                   OPS_REPORT_VECTOR_INNER_ERR(op_type_, "Register op tiling failed, please the op name."),
-                   return *this);
+        OPS_ERR_IF(
+            tilingCases == nullptr,
+            OPS_REPORT_VECTOR_INNER_ERR(op_type_, "Register op tiling failed, please the op name."),
+            return *this);
         tilingCases->AddTiling<T>(priority);
         return *this;
     }
@@ -161,7 +165,8 @@ private:
 
 // op_type: 算子名称， class_name: 注册的 tiling 类,
 // priority: tiling 类的优先级, 越小表示优先级越高, 即被选中的概率越大
-#define REGISTER_TILING_TEMPLATE(op_type, class_name, priority)                                                        \
-    static Register VAR_UNUSED##op_type_##class_name##priority_register = Register(op_type).tiling<class_name>(priority)
+#define REGISTER_TILING_TEMPLATE(op_type, class_name, priority)           \
+    static Register VAR_UNUSED##op_type_##class_name##priority_register = \
+        Register(op_type).tiling<class_name>(priority)
 
-} // namespace optiling
+}  // namespace optiling
