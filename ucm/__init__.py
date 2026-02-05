@@ -46,3 +46,22 @@ from ucm.logger import init_logger
 
 _ucm_logger = init_logger("UC", _log_config)
 _ucm_logger.info(f"Logger initialized successfully")
+
+
+try:
+    from ucm.integration.vllm.patch.apply_patch import (
+        ensure_patches_applied,
+        get_vllm_version,
+    )
+
+    # Only auto-apply load-failure patch for vLLM 0.11.0; do not trigger 0.9.2 patches.
+    if get_vllm_version() == "0.11.0":
+        ensure_patches_applied()
+except Exception as e:
+    # Don't fail if patches can't be applied - might be running in environment without vLLM
+    import warnings
+
+    warnings.warn(
+        f"Failed to apply vLLM patches: {e}. "
+        f"If you're using vLLM, ensure it's installed and patches are compatible."
+    )
