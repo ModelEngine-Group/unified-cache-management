@@ -103,14 +103,13 @@ __aicore__ inline T Max(const T a, const T b)
 }
 
 template <typename T>
-__aicore__ inline void SelectCustom(const LocalTensor<T> &dstLocal,
-                                    const LocalTensor<uint8_t> &keyCompressed,
-                                    const LocalTensor<T> &src0Local, uint8_t repeatTimes)
+__aicore__ inline void SelectCustom(const LocalTensor<T>& dstLocal,
+                                    const LocalTensor<uint8_t>& keyCompressed,
+                                    const LocalTensor<T>& src0Local, uint8_t repeatTimes)
 {
-    AscendC::BinaryRepeatParams repeatParams = {
-        1, 1, 1, 8,
-        0, 8};  // {dstBlkStride, src0BlkStride, src1BlkStride, dstRepStride, src0RepStride,
-                // src1RepStride} src0重复使用，repeat stride设置为0。
+    // {dstBlkStride, src0BlkStride, src1BlkStride, dstRepStride, src0RepStride, src1RepStride}
+    // src0重复使用，repeat stride设置为0。
+    AscendC::BinaryRepeatParams repeatParams = {1, 1, 1, 8, 0, 8};
     uint64_t mask = MAX_FP16_PROCESS_NUM;
     // DumpTensor(keyCompressed, 123, 256);
     // DumpTensor(src0Local, 124, 256);
@@ -120,11 +119,11 @@ __aicore__ inline void SelectCustom(const LocalTensor<T> &dstLocal,
 }
 
 template <typename T>
-__aicore__ inline void TopKCustom(const LocalTensor<T> &dstValueLocal,
-                                  const LocalTensor<int32_t> &dstIndexLocal,
-                                  const LocalTensor<T> &srcValueLocal,
-                                  const LocalTensor<int32_t> &srcIndexLocal, const int32_t k,
-                                  const HammingDistTopKTilingData &tiling, uint32_t n)
+__aicore__ inline void TopKCustom(const LocalTensor<T>& dstValueLocal,
+                                  const LocalTensor<int32_t>& dstIndexLocal,
+                                  const LocalTensor<T>& srcValueLocal,
+                                  const LocalTensor<int32_t>& srcIndexLocal, const int32_t k,
+                                  const HammingDistTopKTilingData& tiling, uint32_t n)
 {
     LocalTensor<bool> finishLocal;
     AscendC::TopKInfo topkInfo;
@@ -136,9 +135,9 @@ __aicore__ inline void TopKCustom(const LocalTensor<T> &dstValueLocal,
                                                           k, tiling.topkTiling, topkInfo, true);
 }
 
-__aicore__ inline void ReduceMaxCustom(const GlobalTensor<half> &inputGm,
-                                       const LocalTensor<half> &reduceInputLocal,
-                                       const LocalTensor<half> &reduceOutputLocal,
+__aicore__ inline void ReduceMaxCustom(const GlobalTensor<half>& inputGm,
+                                       const LocalTensor<half>& reduceInputLocal,
+                                       const LocalTensor<half>& reduceOutputLocal,
                                        const uint16_t chunkNum, const uint8_t chunkSize)
 {
     uint32_t dataBlockNum =
@@ -277,11 +276,11 @@ __aicore__ inline void ReduceMaxCustom(const GlobalTensor<half> &inputGm,
     }
 }
 
-__aicore__ inline void SortInt32AscendingUB(LocalTensor<int32_t> &buf, uint32_t len)
+__aicore__ inline void SortInt32AscendingUB(LocalTensor<int32_t>& buf, uint32_t len)
 {
     if ASCEND_IS_AIC { return; }
     if (len <= 1) { return; }
-    __ubuf__ int32_t *data = reinterpret_cast<__ubuf__ int32_t *>(buf.GetPhyAddr());
+    __ubuf__ int32_t* data = reinterpret_cast<__ubuf__ int32_t*>(buf.GetPhyAddr());
     for (uint32_t i = 1; i < len; ++i) {
         int32_t key = data[i];
         int32_t j = static_cast<int32_t>(i) - 1;
@@ -295,11 +294,11 @@ __aicore__ inline void SortInt32AscendingUB(LocalTensor<int32_t> &buf, uint32_t 
 
 __aicore__ inline void WriteBlockTableFromTopK(
     uint32_t curBatchIdx,
-    LocalTensor<int32_t> &topKIndexUb,  // UB: TopK得到的chunk索引（长度≥curKScalar）
-    LocalTensor<int32_t> &blockIdUb,    // UB: 由调用方分配的临时缓冲（长度≥curKScalar）
+    LocalTensor<int32_t>& topKIndexUb,  // UB: TopK得到的chunk索引（长度≥curKScalar）
+    LocalTensor<int32_t>& blockIdUb,    // UB: 由调用方分配的临时缓冲（长度≥curKScalar）
     uint32_t curKScalar,
     uint64_t outGmOffset,  // 写回GM(indices)的偏移
-    LocalTensor<int32_t> &tableBlockTensor, const GlobalTensor<int32_t> &indicesGm,
+    LocalTensor<int32_t>& tableBlockTensor, const GlobalTensor<int32_t>& indicesGm,
     bool isContinuousBatch,
     uint32_t blockCount  // 每个batch的块数（按tileN1或固定BLOCK_SIZE计算）
 )
@@ -316,9 +315,9 @@ __aicore__ inline void WriteBlockTableFromTopK(
     // DumpTensor(topKIndexUb, 251, topKIndexUb.GetSize());
 
     // 直接用标量方式在UB里读写
-    __ubuf__ const int32_t *in_ptr =
-        reinterpret_cast<__ubuf__ const int32_t *>(topKIndexUb.GetPhyAddr());
-    __ubuf__ int32_t *out_ptr = reinterpret_cast<__ubuf__ int32_t *>(blockIdUb.GetPhyAddr());
+    __ubuf__ const int32_t* in_ptr =
+        reinterpret_cast<__ubuf__ const int32_t*>(topKIndexUb.GetPhyAddr());
+    __ubuf__ int32_t* out_ptr = reinterpret_cast<__ubuf__ int32_t*>(blockIdUb.GetPhyAddr());
 
     for (uint32_t i = 0; i < curKScalar; ++i) {
         const int32_t idx = in_ptr[i];
@@ -339,7 +338,7 @@ __aicore__ inline void WriteBlockTableFromTopK(
 //  tensorSize should be less than topKValueInTensor.GetSize()
 //  copyLen is the total number of elements that should be set to be MAX_HALF_VALUE, starting from
 //  the actual tail
-__aicore__ inline void FillMaxValueFromTail(LocalTensor<half> &topKValueInTensor,
+__aicore__ inline void FillMaxValueFromTail(LocalTensor<half>& topKValueInTensor,
                                             uint32_t tensorSize, uint32_t copyLen,
                                             uint32_t curChunkSize)
 {
