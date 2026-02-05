@@ -22,11 +22,9 @@
  * SOFTWARE.
  * */
 #include "cache_store.h"
-#include <shared_mutex>
+#include <numeric>
 #include "buffer_manager.h"
-#include "load_queue.h"
 #include "logger/logger.h"
-#include "template/hashset.h"
 #include "trans_manager.h"
 
 namespace UC::CacheStore {
@@ -38,7 +36,7 @@ public:
     TransManager transMgr;
 
 public:
-    Status Setup(const Config& config)
+    Status Setup(Config& config)
     {
         auto s = CheckConfig(config);
         if (s.Failure()) [[unlikely]] {
@@ -60,7 +58,27 @@ public:
     }
 
 private:
-    Status CheckConfig(const Config& config)
+    static Status CheckSizeConfig(Config& config)
+    {
+        if (config.tensorSize == 0 && config.tensorSizes.empty()) {
+            return Status::InvalidParam("invalid tensor size");
+        }
+        if (config.shardSize == 0) { return Status::InvalidParam("invalid shard size"); }
+        if (config.blockSize == 0) { return Status::InvalidParam("invalid block size"); }
+        if (config.tensorSizes.empty()) {
+            const auto nTensor = config.shardSize / config.tensorSize;
+            config.tensorSizes.assign(nTensor, config.tensorSize);
+        }
+        if (std::accumulate(config.tensorSizes.begin(), config.tensorSizes.end(), size_t(0)) !=
+            config.shardSize) {
+            return Status::InvalidParam("invalid shard size({})", config.shardSize);
+        }
+        if (config.blockSize % config.shardSize != 0) {
+            return Status::InvalidParam("invalid block size({})", config.blockSize);
+        }
+        return Status::OK();
+    }
+    static Status CheckConfig(Config& config)
     {
         if (!config.storeBackend) { return Status::InvalidParam("invalid store backend"); }
         if (config.deviceId < -1) {
@@ -68,12 +86,8 @@ private:
         }
         if (config.uniqueId.empty()) { return Status::InvalidParam("invalid unique id"); }
         if (config.deviceId == -1) { return Status::OK(); }
-        if (config.tensorSize == 0 || config.shardSize < config.tensorSize ||
-            config.blockSize < config.shardSize || config.shardSize % config.tensorSize != 0 ||
-            config.blockSize % config.shardSize != 0) {
-            return Status::InvalidParam("invalid size({},{},{})", config.tensorSize,
-                                        config.shardSize, config.blockSize);
-        }
+        auto s = CheckSizeConfig(config);
+        if (s.Failure()) { return s; }
         auto bufferNumber = config.bufferCapacity / config.shardSize;
         if (bufferNumber < 1024) {
             return Status::InvalidParam("too small buffer({}) on shard({})", config.bufferCapacity,
@@ -88,7 +102,7 @@ private:
         }
         return Status::OK();
     }
-    void ShowConfig(const Config& config)
+    static void ShowConfig(const Config& config)
     {
         constexpr const char* ns = "CacheStore";
         std::string buildType = UCM_BUILD_TYPE;
@@ -97,7 +111,12 @@ private:
         UC_INFO("Set {}::StoreBackend to {}.", ns, config.storeBackend->Readme());
         UC_INFO("Set {}::UniqueId to {}.", ns, config.uniqueId);
         UC_INFO("Set {}::DeviceId to {}.", ns, config.deviceId);
-        UC_INFO("Set {}::TensorSize to {}.", ns, config.tensorSize);
+        if (config.tensorSize > 0) {
+            UC_INFO("Set {}::TensorSizes to {}(*{}).", ns, config.tensorSize,
+                    config.shardSize / config.tensorSize);
+        } else {
+            UC_INFO("Set {}::TensorSizes to {}.", ns, config.tensorSizes);
+        }
         UC_INFO("Set {}::ShardSize to {}.", ns, config.shardSize);
         UC_INFO("Set {}::BlockSize to {}.", ns, config.blockSize);
         UC_INFO("Set {}::BufferCapacity to {}GB.", ns, config.bufferCapacity >> 30);
@@ -118,6 +137,7 @@ Status CacheStore::Setup(const Detail::Dictionary& config)
     config.Get("unique_id", param.uniqueId);
     config.GetNumber("device_id", param.deviceId);
     config.GetNumber("tensor_size", param.tensorSize);
+    config.Get("tensor_size_list", param.tensorSizes);
     config.GetNumber("shard_size", param.shardSize);
     config.GetNumber("block_size", param.blockSize);
     if (param.shardSize > 0) { param.waitingQueueDepth *= (param.blockSize / param.shardSize); }
