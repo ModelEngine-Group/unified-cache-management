@@ -99,7 +99,7 @@ uint64_t HammingDistTopKTiling::GetTilingKey() { return 1; }
 
 ge::graphStatus HammingDistTopKTiling::GetWorkspaceSize()
 {
-    uint64_t *workspaces = context_->GetWorkspaceSizes(1);
+    uint64_t* workspaces = context_->GetWorkspaceSizes(1);
     uint64_t sysWorkspaceSize = WORKSIZE;
     /* usrWorkspaceSize = workspace for Select + workspace for Topk */
     uint64_t usrWorkspaceSize =
@@ -215,7 +215,7 @@ void HammingDistTopKTiling::SetTopKTiling()
 
 void HammingDistTopKTiling::PrintTilingData()
 {
-    optiling::TCubeTiling &tiling = tilingData_.matmulTiling;
+    optiling::TCubeTiling& tiling = tilingData_.matmulTiling;
     std::stringstream ss;
     ss << "\n batch: " << tilingData_.params.get_batch()
        << "\n head: " << tilingData_.params.get_head()
@@ -239,7 +239,7 @@ void HammingDistTopKTiling::PrintTilingData()
 
 void HammingDistTopKTiling::PrintTilingDataRope()
 {
-    optiling::TCubeTiling &tiling = tilingData_.matmulTilingRope;
+    optiling::TCubeTiling& tiling = tilingData_.matmulTilingRope;
     std::stringstream ss;
     ss << "\n batch: " << tilingData_.params.get_batch()
        << "\n head: " << tilingData_.params.get_head()
@@ -274,7 +274,7 @@ const gert::Shape HammingDistTopKTiling::GetOutShape(const size_t index)
 const uint32_t HammingDistTopKTiling::GetInputAttrData(const size_t index)
 {
     if (auto attrPtr = context_->GetAttrs()) {
-        const int64_t *p = attrPtr->GetInt(index);
+        const int64_t* p = attrPtr->GetInt(index);
         if (p != nullptr) { return static_cast<uint32_t>(*p); }
     }
     return 0;

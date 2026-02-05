@@ -26,32 +26,32 @@ FORCE_INLINE_AICORE void SetAtomicOpType(int op)
 }
 
 template <typename T>
-FORCE_INLINE_AICORE void CpUB2GM(__gm__ T *gmAddr, __ubuf__ T *ubAddr, uint32_t size)
+FORCE_INLINE_AICORE void CpUB2GM(__gm__ T* gmAddr, __ubuf__ T* ubAddr, uint32_t size)
 {
     LocalTensor<uint8_t> ubTensor;
     GlobalTensor<uint8_t> gmTensor;
     DataCopyExtParams dataCopyParams(1, size, 0, 0, 0);
     ubTensor.address_.logicPos = static_cast<uint8_t>(TPosition::VECIN);
     ubTensor.address_.bufferAddr = reinterpret_cast<uint64_t>(ubAddr);
-    gmTensor.SetGlobalBuffer(reinterpret_cast<__gm__ uint8_t *>(gmAddr));
+    gmTensor.SetGlobalBuffer(reinterpret_cast<__gm__ uint8_t*>(gmAddr));
     DataCopyPad(gmTensor, ubTensor, dataCopyParams);
 }
 
 template <typename T>
-FORCE_INLINE_AICORE void CpGM2UB(__ubuf__ T *ubAddr, __gm__ T *gmAddr, uint32_t size)
+FORCE_INLINE_AICORE void CpGM2UB(__ubuf__ T* ubAddr, __gm__ T* gmAddr, uint32_t size)
 {
     LocalTensor<uint8_t> ubTensor;
     GlobalTensor<uint8_t> gmTensor;
     DataCopyExtParams dataCopyParams(1, size, 0, 0, 0);
     ubTensor.address_.logicPos = static_cast<uint8_t>(TPosition::VECIN);
     ubTensor.address_.bufferAddr = reinterpret_cast<uint64_t>(ubAddr);
-    gmTensor.SetGlobalBuffer(reinterpret_cast<__gm__ uint8_t *>(gmAddr));
+    gmTensor.SetGlobalBuffer(reinterpret_cast<__gm__ uint8_t*>(gmAddr));
     DataCopyPadExtParams<uint8_t> padParams;
     DataCopyPad(ubTensor, gmTensor, dataCopyParams, padParams);
 }
 
 template <typename T>
-FORCE_INLINE_AICORE void CopyUB2UB(__ubuf__ T *dst, __ubuf__ T *src, const uint32_t calCount)
+FORCE_INLINE_AICORE void CopyUB2UB(__ubuf__ T* dst, __ubuf__ T* src, const uint32_t calCount)
 {
     LocalTensor<T> srcTensor;
     LocalTensor<T> dstTensor;

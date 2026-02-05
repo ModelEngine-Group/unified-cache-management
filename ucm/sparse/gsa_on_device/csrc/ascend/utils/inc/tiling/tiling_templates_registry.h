@@ -32,12 +32,12 @@
 namespace optiling {
 
 template <typename T>
-std::unique_ptr<TilingBaseClass> TILING_CLASS(gert::TilingContext *context)
+std::unique_ptr<TilingBaseClass> TILING_CLASS(gert::TilingContext* context)
 {
     return std::unique_ptr<T>(new (std::nothrow) T(context));
 }
 
-using TilingClassCase = std::unique_ptr<TilingBaseClass> (*)(gert::TilingContext *);
+using TilingClassCase = std::unique_ptr<TilingBaseClass> (*)(gert::TilingContext*);
 
 class TilingCases {
 public:
@@ -56,7 +56,7 @@ public:
                    return);
     }
 
-    const std::map<int32_t, TilingClassCase> &GetTilingCases() { return cases_; }
+    const std::map<int32_t, TilingClassCase>& GetTilingCases() { return cases_; }
 
 private:
     std::map<int32_t, TilingClassCase> cases_;
@@ -68,16 +68,16 @@ public:
     TilingRegistry() = default;
 
 #ifdef ASCENDC_OP_TEST
-    static TilingRegistry &GetInstance();
+    static TilingRegistry& GetInstance();
 #else
-    static TilingRegistry &GetInstance()
+    static TilingRegistry& GetInstance()
     {
         static TilingRegistry registry_impl_;
         return registry_impl_;
     }
 #endif
 
-    std::shared_ptr<TilingCases> RegisterOp(const std::string &op_type)
+    std::shared_ptr<TilingCases> RegisterOp(const std::string& op_type)
     {
         if (registry_map_.find(op_type) == registry_map_.end()) {
             registry_map_[op_type] =
@@ -90,9 +90,9 @@ public:
         return registry_map_[op_type];
     }
 
-    ge::graphStatus DoTilingImpl(gert::TilingContext *context)
+    ge::graphStatus DoTilingImpl(gert::TilingContext* context)
     {
-        const char *op_type = context->GetNodeType();
+        const char* op_type = context->GetNodeType();
         auto tilingTemplateRegistryMap = GetTilingTemplates(op_type);
         for (auto it = tilingTemplateRegistryMap.begin(); it != tilingTemplateRegistryMap.end();
              ++it) {
@@ -110,10 +110,10 @@ public:
         return ge::GRAPH_FAILED;
     }
 
-    ge::graphStatus DoTilingImpl(gert::TilingContext *context,
-                                 const std::vector<int32_t> &priorities)
+    ge::graphStatus DoTilingImpl(gert::TilingContext* context,
+                                 const std::vector<int32_t>& priorities)
     {
-        const char *op_type = context->GetNodeType();
+        const char* op_type = context->GetNodeType();
         auto tilingTemplateRegistryMap = GetTilingTemplates(op_type);
         for (auto priorityId : priorities) {
             auto templateFunc = tilingTemplateRegistryMap[priorityId](context);
@@ -129,7 +129,7 @@ public:
         return ge::GRAPH_FAILED;
     }
 
-    const std::map<int32_t, TilingClassCase> &GetTilingTemplates(const std::string &op_type)
+    const std::map<int32_t, TilingClassCase>& GetTilingTemplates(const std::string& op_type)
     {
         OPS_ERR_IF(registry_map_.find(op_type) == registry_map_.end(),
                    OPS_REPORT_VECTOR_INNER_ERR(
@@ -148,7 +148,7 @@ public:
     explicit Register(std::string op_type) : op_type_(std::move(op_type)) {}
 
     template <typename T>
-    Register &tiling(int32_t priority)
+    Register& tiling(int32_t priority)
     {
         auto tilingCases = TilingRegistry::GetInstance().RegisterOp(op_type_);
         OPS_ERR_IF(

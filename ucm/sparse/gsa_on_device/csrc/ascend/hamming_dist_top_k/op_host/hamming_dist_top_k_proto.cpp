@@ -9,15 +9,15 @@
 using namespace ge;
 
 namespace ops {
-static ge::graphStatus InferShapeHammingDistTopK(gert::InferShapeContext *context)
+static ge::graphStatus InferShapeHammingDistTopK(gert::InferShapeContext* context)
 {
-    gert::Shape *outShape = context->GetOutputShape(0);
-    const gert::Shape *inputShape = context->GetInputShape(6);
+    gert::Shape* outShape = context->GetOutputShape(0);
+    const gert::Shape* inputShape = context->GetInputShape(6);
     *outShape = *inputShape;
     return ge::GRAPH_SUCCESS;
 }
 
-static ge::graphStatus InferDataTypeHammingDistTopK(gert::InferDataTypeContext *context)
+static ge::graphStatus InferDataTypeHammingDistTopK(gert::InferDataTypeContext* context)
 {
     ge::DataType outputType = context->GetInputDataType(ge::DT_INT32);
     context->SetOutputDataType(0, outputType);

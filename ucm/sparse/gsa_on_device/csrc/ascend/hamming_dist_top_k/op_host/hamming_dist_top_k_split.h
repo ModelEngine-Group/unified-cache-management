@@ -9,7 +9,7 @@
 namespace optiling {
 class HammingDistTopKSplitSTiling : public HammingDistTopKTiling {
 public:
-    HammingDistTopKSplitSTiling(gert::TilingContext *context) : HammingDistTopKTiling(context) {}
+    HammingDistTopKSplitSTiling(gert::TilingContext* context) : HammingDistTopKTiling(context) {}
 
     bool IsCapable();
 

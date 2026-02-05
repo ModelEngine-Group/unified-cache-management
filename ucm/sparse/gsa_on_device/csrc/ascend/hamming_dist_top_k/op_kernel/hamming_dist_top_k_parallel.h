@@ -14,12 +14,12 @@ public:
     __aicore__ inline void Init(GM_ADDR query, GM_ADDR keyCompressed, GM_ADDR keyCompressedRope,
                                 GM_ADDR k, GM_ADDR seqLen, GM_ADDR chunkSize, GM_ADDR keyBlockTable,
                                 GM_ADDR mask, GM_ADDR indices, GM_ADDR workSpace,
-                                const HammingDistTopKTilingData &tilingData, TPipe *pipe)
+                                const HammingDistTopKTilingData& tilingData, TPipe* pipe)
     {
-        const TCubeTiling &tiling = tilingData.matmulTiling;
-        const TCubeTiling &tilingRope = tilingData.matmulTilingRope;
-        const TopkTiling &topkTiling = tilingData.topkTiling;
-        const HammingDistTopKTilingParams &tilingParam = tilingData.params;
+        const TCubeTiling& tiling = tilingData.matmulTiling;
+        const TCubeTiling& tilingRope = tilingData.matmulTilingRope;
+        const TopkTiling& topkTiling = tilingData.topkTiling;
+        const HammingDistTopKTilingParams& tilingParam = tilingData.params;
         pipe_ = pipe;
         tilingData_ = tilingData;
         InitTilingParams(tiling, tilingRope, topkTiling, tilingParam);
@@ -75,8 +75,8 @@ public:
     }
 
 protected:
-    __aicore__ inline int32_t GetCurSeqLen(const GlobalTensor<int32_t> &seqLenGm_,
-                                           const GlobalTensor<int32_t> &chunkSizeGm_,
+    __aicore__ inline int32_t GetCurSeqLen(const GlobalTensor<int32_t>& seqLenGm_,
+                                           const GlobalTensor<int32_t>& chunkSizeGm_,
                                            uint32_t realCurBatch)
     {
         int32_t curSeqLen = seqLenGm_.GetValue(realCurBatch);
@@ -328,9 +328,9 @@ protected:
     }
 
     __aicore__ inline void UnpackKeyCompressedWithBigDim(uint32_t selectRepeatedTimes,
-                                                         LocalTensor<half> &selectTensor,
-                                                         LocalTensor<half> &constTensor,
-                                                         LocalTensor<uint8_t> &keyCompressed,
+                                                         LocalTensor<half>& selectTensor,
+                                                         LocalTensor<half>& constTensor,
+                                                         LocalTensor<uint8_t>& keyCompressed,
                                                          uint64_t keyGmOffset)
     {
         uint32_t keySelectCycleCount =
@@ -367,8 +367,8 @@ protected:
     }
 
     __aicore__ inline void UnpackKeyCompressedWithLittleDim(
-        LocalTensor<half> &selectTensor, LocalTensor<half> &constTensor,
-        const LocalTensor<uint8_t> &keyCompressed, uint32_t dimension, uint64_t keyGmOffset,
+        LocalTensor<half>& selectTensor, LocalTensor<half>& constTensor,
+        const LocalTensor<uint8_t>& keyCompressed, uint32_t dimension, uint64_t keyGmOffset,
         uint32_t repeateadTimes)
     {
         SelectCustom<half>(selectTensor, keyCompressed, constTensor,
@@ -398,7 +398,7 @@ protected:
         mm_.SetOrgShape(param_.M, seqLen, param_.ka);
         mm_.SetSingleShape(param_.M, seqLen, param_.ka);
         float tmp = 1;
-        uint64_t ans = static_cast<uint64_t>(*reinterpret_cast<int32_t *>(&tmp));
+        uint64_t ans = static_cast<uint64_t>(*reinterpret_cast<int32_t*>(&tmp));
         mm_.SetQuantScalar(ans);
 
         uint32_t realBatchIdx = curCoreBatchStartIdx_ + batchIdx;
@@ -774,7 +774,7 @@ protected:
     GlobalTensor<half> matmulGm_;
     GlobalTensor<int4b_t> qUnpackGm_;
 
-    TPipe *pipe_;
+    TPipe* pipe_;
     TQue<TPosition::VECIN, 1> keyCompressedInQueue_;
     TQue<TPosition::VECOUT, 1> keyUnpackedOutQueue_;
     TQue<TPosition::VECIN, 1> topKInValueQueue_;
@@ -836,10 +836,10 @@ protected:
         if (blockIndex >= param_.preCoreNum) { curCoreBatchStartIdx_ += param_.preCoreNum; }
     }
 
-    __aicore__ inline void InitTilingParams(const TCubeTiling &tiling,
-                                            const TCubeTiling &tilingRope,
-                                            const TopkTiling &topkTiling,
-                                            const HammingDistTopKTilingParams &tilingParam)
+    __aicore__ inline void InitTilingParams(const TCubeTiling& tiling,
+                                            const TCubeTiling& tilingRope,
+                                            const TopkTiling& topkTiling,
+                                            const HammingDistTopKTilingParams& tilingParam)
     {
         // tiling data for select
         param_.usedCoreNum = tilingParam.usedCoreNum;
@@ -889,22 +889,22 @@ protected:
                                              GM_ADDR chunkSize, GM_ADDR keyBlockTable, GM_ADDR mask,
                                              GM_ADDR indices, GM_ADDR workSpace)
     {
-        queryGm_.SetGlobalBuffer(reinterpret_cast<__gm__ uint8_t *>(query));
-        keyGm_.SetGlobalBuffer(reinterpret_cast<__gm__ uint8_t *>(keyCompressed));
-        keyRopeGm_.SetGlobalBuffer(reinterpret_cast<__gm__ uint8_t *>(keyCompressedRope));
-        kGm_.SetGlobalBuffer(reinterpret_cast<__gm__ int32_t *>(k));
-        seqLenGm_.SetGlobalBuffer(reinterpret_cast<__gm__ int32_t *>(seqLen));
-        chunkSizeGm_.SetGlobalBuffer(reinterpret_cast<__gm__ int32_t *>(chunkSize));
-        keyBlockTableGm_.SetGlobalBuffer(reinterpret_cast<__gm__ int32_t *>(keyBlockTable));
-        maskGm_.SetGlobalBuffer(reinterpret_cast<__gm__ bool *>(mask));
+        queryGm_.SetGlobalBuffer(reinterpret_cast<__gm__ uint8_t*>(query));
+        keyGm_.SetGlobalBuffer(reinterpret_cast<__gm__ uint8_t*>(keyCompressed));
+        keyRopeGm_.SetGlobalBuffer(reinterpret_cast<__gm__ uint8_t*>(keyCompressedRope));
+        kGm_.SetGlobalBuffer(reinterpret_cast<__gm__ int32_t*>(k));
+        seqLenGm_.SetGlobalBuffer(reinterpret_cast<__gm__ int32_t*>(seqLen));
+        chunkSizeGm_.SetGlobalBuffer(reinterpret_cast<__gm__ int32_t*>(chunkSize));
+        keyBlockTableGm_.SetGlobalBuffer(reinterpret_cast<__gm__ int32_t*>(keyBlockTable));
+        maskGm_.SetGlobalBuffer(reinterpret_cast<__gm__ bool*>(mask));
         supportMask_ = maskGm_.GetPhyAddr() != nullptr;
-        indicesGm_.SetGlobalBuffer(reinterpret_cast<__gm__ int32_t *>(indices));
-        unpackGm_.SetGlobalBuffer(reinterpret_cast<__gm__ int4b_t *>(workSpace));
+        indicesGm_.SetGlobalBuffer(reinterpret_cast<__gm__ int32_t*>(indices));
+        unpackGm_.SetGlobalBuffer(reinterpret_cast<__gm__ int4b_t*>(workSpace));
         kRopeUnpackGm_.SetGlobalBuffer(
-            reinterpret_cast<__gm__ int4b_t *>(workSpace + param_.kNopeUnpackGmOffset));
+            reinterpret_cast<__gm__ int4b_t*>(workSpace + param_.kNopeUnpackGmOffset));
         qUnpackGm_.SetGlobalBuffer(
-            reinterpret_cast<__gm__ int4b_t *>(workSpace + param_.qUnpackGmOffset));
-        matmulGm_.SetGlobalBuffer(reinterpret_cast<__gm__ half *>(workSpace + param_.mmGmOffset));
+            reinterpret_cast<__gm__ int4b_t*>(workSpace + param_.qUnpackGmOffset));
+        matmulGm_.SetGlobalBuffer(reinterpret_cast<__gm__ half*>(workSpace + param_.mmGmOffset));
     }
 
     __aicore__ inline void InitLocalBuffersForUnpackKey()
@@ -962,7 +962,7 @@ protected:
     }
 
     __aicore__ inline void WriteBlockTableFromTopK(uint32_t curBatchIdx,
-                                                   LocalTensor<int32_t> &topKIndexUb,
+                                                   LocalTensor<int32_t>& topKIndexUb,
                                                    uint32_t curKScalar, uint64_t outGmOffset)
     {
         if ASCEND_IS_AIC { return; }

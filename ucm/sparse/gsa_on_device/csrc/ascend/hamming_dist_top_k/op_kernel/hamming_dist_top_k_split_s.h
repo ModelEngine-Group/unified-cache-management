@@ -32,12 +32,12 @@ public:
     __aicore__ inline void Init(GM_ADDR query, GM_ADDR keyCompressed, GM_ADDR keyCompressedRope,
                                 GM_ADDR k, GM_ADDR seqLen, GM_ADDR chunkSize, GM_ADDR keyBlockTable,
                                 GM_ADDR mask, GM_ADDR indices, GM_ADDR workSpace,
-                                const HammingDistTopKTilingData &tilingData, TPipe *que)
+                                const HammingDistTopKTilingData& tilingData, TPipe* que)
     {
-        const TCubeTiling &tiling = tilingData.matmulTiling;
-        const TCubeTiling &tilingRope = tilingData.matmulTilingRope;
-        const TopkTiling &topkTiling = tilingData.topkTiling;
-        const HammingDistTopKTilingParams &tilingParam = tilingData.params;
+        const TCubeTiling& tiling = tilingData.matmulTiling;
+        const TCubeTiling& tilingRope = tilingData.matmulTilingRope;
+        const TopkTiling& topkTiling = tilingData.topkTiling;
+        const HammingDistTopKTilingParams& tilingParam = tilingData.params;
         pipe_ = que;
         tilingData_ = tilingData;
         InitTilingParams(tiling, tilingRope, topkTiling, tilingParam);
@@ -171,9 +171,9 @@ protected:
 
     __aicore__ inline void DataCopyInForKeyCompressed(bool useCopyPad, uint32_t copySeqLen,
                                                       uint32_t compressedDimension,
-                                                      LocalTensor<uint8_t> &keyCompressedLocal,
+                                                      LocalTensor<uint8_t>& keyCompressedLocal,
                                                       uint64_t keyGmOffset,
-                                                      GlobalTensor<uint8_t> &keyCompressedGm)
+                                                      GlobalTensor<uint8_t>& keyCompressedGm)
     {
         if ASCEND_IS_AIC { return; }
         if (useCopyPad) {
@@ -190,7 +190,7 @@ protected:
     }
 
     __aicore__ inline void DataCopyOutForKeyUnpacked(uint32_t copySeqLen,
-                                                     LocalTensor<int4b_t> &keyUnpackedLocal,
+                                                     LocalTensor<int4b_t>& keyUnpackedLocal,
                                                      uint64_t keyGmOffset)
     {
         if ASCEND_IS_AIC { return; }
@@ -348,7 +348,7 @@ protected:
         mm_.SetSingleShape(param_.M, curCoreDealSize,
                            param_.ka);  // 单核计算形状=(M, N, Ka/Kb)=(1, 8192, 512)
         float tmp = 1;
-        uint64_t ans = static_cast<uint64_t>(*reinterpret_cast<int32_t *>(&tmp));
+        uint64_t ans = static_cast<uint64_t>(*reinterpret_cast<int32_t*>(&tmp));
         mm_.SetQuantScalar(ans);
         mmOffsetA_ = batchIdx * 1 * param_.head * (param_.ka + param_.rope_ka) +
                      curHeadIdx * (param_.ka + param_.rope_ka);
@@ -786,8 +786,8 @@ protected:
 
     __aicore__ inline void DataCopyFromUBToGM(bool isApproxiTopK, uint32_t copyLen,
                                               uint32_t topkResultOffset,
-                                              const LocalTensor<half> &topKValueTensor,
-                                              const LocalTensor<int32_t> &topKIdexTensor)
+                                              const LocalTensor<half>& topKValueTensor,
+                                              const LocalTensor<int32_t>& topKIdexTensor)
     {
         if ASCEND_IS_AIC { return; }
         // copyLen的最大值为TileN2=4k，不会导致转换越界
@@ -806,7 +806,7 @@ protected:
     }
 
     __aicore__ inline void TopKInExhaustionMode(uint32_t curVectorTopKDealSize, uint32_t curKScalar,
-                                                const LocalTensor<half> &topKValueInTensor,
+                                                const LocalTensor<half>& topKValueInTensor,
                                                 uint32_t topkResultOffset,
                                                 uint32_t startIdxInCurWholeSeq, bool isApproxiTopK)
     {
@@ -892,7 +892,7 @@ protected:
         topKIndexInnerOutQueue_.FreeTensor(topKIdexInnerOutTensor);
     }
 
-    __aicore__ inline void FillMinValue(uint32_t copyLen, LocalTensor<half> &topKValueInTensor)
+    __aicore__ inline void FillMinValue(uint32_t copyLen, LocalTensor<half>& topKValueInTensor)
     {
         if ASCEND_IS_AIC { return; }
         uint32_t copyLenFloorAligned = copyLen / BLOCK_CUBE * BLOCK_CUBE;
@@ -903,8 +903,8 @@ protected:
     }
 
     template <typename T>
-    __aicore__ inline void DataCopyInUB(uint32_t curDealSeqLen, const LocalTensor<T> &topKToTensor,
-                                        const LocalTensor<T> &topKFromTensor,
+    __aicore__ inline void DataCopyInUB(uint32_t curDealSeqLen, const LocalTensor<T>& topKToTensor,
+                                        const LocalTensor<T>& topKFromTensor,
                                         uint32_t maxProcessNum)
     {
         if ASCEND_IS_AIC { return; }
@@ -1016,7 +1016,7 @@ protected:
         }
     }
 
-    __aicore__ inline void ReMappingBlockTableIndices(LocalTensor<int32_t> &topKIndexOutTensor,
+    __aicore__ inline void ReMappingBlockTableIndices(LocalTensor<int32_t>& topKIndexOutTensor,
                                                       uint32_t curBatchIdx, uint32_t curKScalar,
                                                       uint64_t outGmOffset)
     {
@@ -1035,7 +1035,7 @@ protected:
         WriteBlockTableFromTopK(curBatchIdx, topKIndexOutTensor, curKScalar, outGmOffset);
     }
 
-    __aicore__ inline void CustomSort(LocalTensor<int32_t> &topKIndexOutTensor, uint32_t len)
+    __aicore__ inline void CustomSort(LocalTensor<int32_t>& topKIndexOutTensor, uint32_t len)
     {
         if ASCEND_IS_AIC { return; }
         if (len <= 1) { return; }
@@ -1077,9 +1077,9 @@ protected:
 
         // 映射block table
         // 直接用标量方式在UB里读写
-        __ubuf__ const float *in_ptr =
-            reinterpret_cast<__ubuf__ const float *>(sortedTopKIndexTensor.GetPhyAddr());
-        __ubuf__ int32_t *out_ptr = reinterpret_cast<__ubuf__ int32_t *>(blockIdUb.GetPhyAddr());
+        __ubuf__ const float* in_ptr =
+            reinterpret_cast<__ubuf__ const float*>(sortedTopKIndexTensor.GetPhyAddr());
+        __ubuf__ int32_t* out_ptr = reinterpret_cast<__ubuf__ int32_t*>(blockIdUb.GetPhyAddr());
 
         LocalTensor<int32_t> tableBlockTensor = tableBlockBuf_.template Get<int32_t>();
         DataCopyParams copyParams{1, static_cast<uint16_t>(param_.blockCount * sizeof(int32_t)), 0,
@@ -1124,8 +1124,8 @@ protected:
                                                      uint64_t topKResultGmOffset,
                                                      uint32_t blockTail, uint32_t blockTile,
                                                      uint32_t curKScalar,
-                                                     LocalTensor<half> &topKValueOutTensor,
-                                                     LocalTensor<int32_t> &topKIndexOutTensor)
+                                                     LocalTensor<half>& topKValueOutTensor,
+                                                     LocalTensor<int32_t>& topKIndexOutTensor)
     {
         if ASCEND_IS_AIC { return; }
         for (uint32_t loop = 0; loop < topKBlockNum; loop++) {
@@ -1189,7 +1189,7 @@ protected:
 
     __aicore__ inline void GenerateTopKValueTensor(uint32_t copyLen, uint32_t blockTile,
                                                    uint64_t topkGmOffset, uint32_t curK,
-                                                   LocalTensor<half> &topKInValueTensor)
+                                                   LocalTensor<half>& topKInValueTensor)
     {
         if ASCEND_IS_AIC { return; }
         uint32_t copyLenAligned =
@@ -1215,7 +1215,7 @@ protected:
 
     __aicore__ inline void GenerateTopKIndexTensor(uint32_t copyLen, uint32_t blockTile,
                                                    uint64_t topkGmOffset, uint32_t curK,
-                                                   LocalTensor<int32_t> &topKInIndexTensor)
+                                                   LocalTensor<int32_t>& topKInIndexTensor)
     {
         if ASCEND_IS_AIC { return; }
         // copyLen的最大值为TileN2=4k，不会引入转换越界
@@ -1298,7 +1298,7 @@ protected:
     GlobalTensor<half> topkValueGm_;
     GlobalTensor<int32_t> topkIdxGm_;
 
-    TPipe *pipe_;
+    TPipe* pipe_;
     TQue<QuePosition::VECIN, DOUBLE_BUFFER_NUM> keyCompressedInBuf_;
     TQue<QuePosition::VECOUT, DOUBLE_BUFFER_NUM> keyUnpackedOutBuf_;
     TQue<TPosition::VECIN, DOUBLE_BUFFER_NUM> chunkReduceMaxValueInQueue_;
@@ -1359,10 +1359,10 @@ protected:
         index_ = RESET_NUM;
     }
 
-    __aicore__ inline void InitTilingParams(const TCubeTiling &tiling,
-                                            const TCubeTiling &tilingRope,
-                                            const TopkTiling &topkTiling,
-                                            const HammingDistTopKTilingParams &tilingParam)
+    __aicore__ inline void InitTilingParams(const TCubeTiling& tiling,
+                                            const TCubeTiling& tilingRope,
+                                            const TopkTiling& topkTiling,
+                                            const HammingDistTopKTilingParams& tilingParam)
     {
         // tiling data for select
         param_.batch = tilingParam.batch;
@@ -1418,18 +1418,18 @@ protected:
                                              GM_ADDR chunkSize, GM_ADDR keyBlockTable, GM_ADDR mask,
                                              GM_ADDR indices, GM_ADDR workSpace)
     {
-        queryGm_.SetGlobalBuffer(reinterpret_cast<__gm__ uint8_t *>(query));
-        keyCompressedGm_.SetGlobalBuffer(reinterpret_cast<__gm__ uint8_t *>(keyCompressed));
-        keyCompressedRopeGm_.SetGlobalBuffer(reinterpret_cast<__gm__ uint8_t *>(keyCompressedRope));
-        kGm_.SetGlobalBuffer(reinterpret_cast<__gm__ int32_t *>(k));
-        seqLenGm_.SetGlobalBuffer(reinterpret_cast<__gm__ int32_t *>(seqLen));
-        chunkSizeGm_.SetGlobalBuffer(reinterpret_cast<__gm__ int32_t *>(chunkSize));
-        keyBlockTableGm_.SetGlobalBuffer(reinterpret_cast<__gm__ int32_t *>(keyBlockTable));
-        maskGm_.SetGlobalBuffer(reinterpret_cast<__gm__ bool *>(mask));
+        queryGm_.SetGlobalBuffer(reinterpret_cast<__gm__ uint8_t*>(query));
+        keyCompressedGm_.SetGlobalBuffer(reinterpret_cast<__gm__ uint8_t*>(keyCompressed));
+        keyCompressedRopeGm_.SetGlobalBuffer(reinterpret_cast<__gm__ uint8_t*>(keyCompressedRope));
+        kGm_.SetGlobalBuffer(reinterpret_cast<__gm__ int32_t*>(k));
+        seqLenGm_.SetGlobalBuffer(reinterpret_cast<__gm__ int32_t*>(seqLen));
+        chunkSizeGm_.SetGlobalBuffer(reinterpret_cast<__gm__ int32_t*>(chunkSize));
+        keyBlockTableGm_.SetGlobalBuffer(reinterpret_cast<__gm__ int32_t*>(keyBlockTable));
+        maskGm_.SetGlobalBuffer(reinterpret_cast<__gm__ bool*>(mask));
         supportMask_ = maskGm_.GetPhyAddr() != nullptr;
         isChunkTopK_ = chunkSizeGm_.GetPhyAddr() != nullptr;
         isContinuousBatch_ = keyBlockTableGm_.GetPhyAddr() != nullptr;
-        indicesGm_.SetGlobalBuffer(reinterpret_cast<__gm__ int32_t *>(indices));
+        indicesGm_.SetGlobalBuffer(reinterpret_cast<__gm__ int32_t*>(indices));
 
         uint32_t unpackResultWorkspaceOffset = 0;
         uint32_t kNopeUnpackResultWorkspaceOffset =
@@ -1444,17 +1444,17 @@ protected:
             topkIdxResultWorkspaceOffset + param_.topKIdexSize * 4;
 
         unpackGm_.SetGlobalBuffer(
-            reinterpret_cast<__gm__ int4b_t *>(workSpace + unpackResultWorkspaceOffset));
+            reinterpret_cast<__gm__ int4b_t*>(workSpace + unpackResultWorkspaceOffset));
         kRopeUnpackGm_.SetGlobalBuffer(
-            reinterpret_cast<__gm__ int4b_t *>(workSpace + kNopeUnpackResultWorkspaceOffset));
+            reinterpret_cast<__gm__ int4b_t*>(workSpace + kNopeUnpackResultWorkspaceOffset));
         matmulGm_.SetGlobalBuffer(
-            reinterpret_cast<__gm__ half *>(workSpace + matmulResultWorkspaceOffset));
+            reinterpret_cast<__gm__ half*>(workSpace + matmulResultWorkspaceOffset));
         topkValueGm_.SetGlobalBuffer(
-            reinterpret_cast<__gm__ half *>(workSpace + topkValueResultWorkspaceOffset));
+            reinterpret_cast<__gm__ half*>(workSpace + topkValueResultWorkspaceOffset));
         topkIdxGm_.SetGlobalBuffer(
-            reinterpret_cast<__gm__ int32_t *>(workSpace + topkIdxResultWorkspaceOffset));
+            reinterpret_cast<__gm__ int32_t*>(workSpace + topkIdxResultWorkspaceOffset));
         qUnpackGm_.SetGlobalBuffer(
-            reinterpret_cast<__gm__ int4b_t *>(workSpace + queryUnpackResultWorkspaceOffset));
+            reinterpret_cast<__gm__ int4b_t*>(workSpace + queryUnpackResultWorkspaceOffset));
     }
 
     __aicore__ inline void InitLocalBuffersForUnpackQ()
@@ -1510,7 +1510,7 @@ protected:
     }
 
     __aicore__ inline void WriteBlockTableFromTopK(uint32_t curBatchIdx,
-                                                   LocalTensor<int32_t> &topKIndexUb,
+                                                   LocalTensor<int32_t>& topKIndexUb,
                                                    uint32_t curKScalar, uint64_t outGmOffset)
     {
         if ASCEND_IS_AIC { return; }

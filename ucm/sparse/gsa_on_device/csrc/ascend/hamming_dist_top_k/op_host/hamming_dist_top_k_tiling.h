@@ -71,7 +71,7 @@ struct HammingDistTopKMatmulInfo {
     int64_t outDtype = 0L;
     uint32_t libApiWorkSpaceSize = 0U;
     uint64_t bf16ExtreWorkSpaceSize = 0UL;
-    const char *opName = nullptr;
+    const char* opName = nullptr;
     ge::Format aFormat = ge::FORMAT_ND;
     ge::Format bFormat = ge::FORMAT_ND;
     ge::Format cFormat = ge::FORMAT_ND;

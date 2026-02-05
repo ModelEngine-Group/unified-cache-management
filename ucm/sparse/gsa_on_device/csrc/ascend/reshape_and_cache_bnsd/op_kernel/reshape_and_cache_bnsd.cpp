@@ -25,11 +25,11 @@ public:
         AscendC::TPipe pipe;
         pipe.InitBuffer(ubBuf_, RoundUp(blockSize_ * headDim_, ALGIN));
         tmpTensor_ = ubBuf_.Get<uint8_t>();
-        keyInGm_.SetGlobalBuffer((__gm__ uint8_t *)keyIn);
-        keyCacheInGm_.SetGlobalBuffer((__gm__ uint8_t *)keyCacheIn);
-        slotMappingGm_.SetGlobalBuffer((__gm__ int32_t *)slotMapping);
-        seqLenGm_.SetGlobalBuffer((__gm__ int32_t *)seqLen);
-        keyCacheOutGm_.SetGlobalBuffer((__gm__ uint8_t *)keyCacheOut);
+        keyInGm_.SetGlobalBuffer((__gm__ uint8_t*)keyIn);
+        keyCacheInGm_.SetGlobalBuffer((__gm__ uint8_t*)keyCacheIn);
+        slotMappingGm_.SetGlobalBuffer((__gm__ int32_t*)slotMapping);
+        seqLenGm_.SetGlobalBuffer((__gm__ int32_t*)seqLen);
+        keyCacheOutGm_.SetGlobalBuffer((__gm__ uint8_t*)keyCacheOut);
     }
 
     __aicore__ inline void Process()
@@ -229,17 +229,17 @@ private:
     uint32_t headDim_{0};
 };
 
-inline __aicore__ void InitTilingData(const __gm__ uint8_t *p_tilingdata,
-                                      ReshapeAndCacheBNSDTilingData *tilingdata)
+inline __aicore__ void InitTilingData(const __gm__ uint8_t* p_tilingdata,
+                                      ReshapeAndCacheBNSDTilingData* tilingdata)
 {
-    tilingdata->numTokens = (*(const __gm__ uint32_t *)(p_tilingdata + 0));
-    tilingdata->headDim = (*(const __gm__ uint32_t *)(p_tilingdata + 4));
-    tilingdata->numBlocks = (*(const __gm__ uint32_t *)(p_tilingdata + 8));
-    tilingdata->numHeads = (*(const __gm__ uint32_t *)(p_tilingdata + 12));
-    tilingdata->blockSize = (*(const __gm__ uint32_t *)(p_tilingdata + 16));
-    tilingdata->batchSeqLen = (*(const __gm__ uint32_t *)(p_tilingdata + 20));
-    tilingdata->batch = (*(const __gm__ uint32_t *)(p_tilingdata + 24));
-    tilingdata->numCore = (*(const __gm__ uint32_t *)(p_tilingdata + 28));
+    tilingdata->numTokens = (*(const __gm__ uint32_t*)(p_tilingdata + 0));
+    tilingdata->headDim = (*(const __gm__ uint32_t*)(p_tilingdata + 4));
+    tilingdata->numBlocks = (*(const __gm__ uint32_t*)(p_tilingdata + 8));
+    tilingdata->numHeads = (*(const __gm__ uint32_t*)(p_tilingdata + 12));
+    tilingdata->blockSize = (*(const __gm__ uint32_t*)(p_tilingdata + 16));
+    tilingdata->batchSeqLen = (*(const __gm__ uint32_t*)(p_tilingdata + 20));
+    tilingdata->batch = (*(const __gm__ uint32_t*)(p_tilingdata + 24));
+    tilingdata->numCore = (*(const __gm__ uint32_t*)(p_tilingdata + 28));
 
     // YF_LOG("numTokens: %d\n", tilingdata->numTokens);
     // YF_LOG("headDim: %d\n", tilingdata->headDim);

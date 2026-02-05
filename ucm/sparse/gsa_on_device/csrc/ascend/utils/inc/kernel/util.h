@@ -86,7 +86,7 @@ __aicore__ inline T1 Min(T1 a, T2 b)
     return (a > b) ? (b) : (a);
 }
 
-__aicore__ inline void BoolCopyIn(LocalTensor<uint8_t> &dstTensor, GlobalTensor<uint8_t> &srcTensor,
+__aicore__ inline void BoolCopyIn(LocalTensor<uint8_t>& dstTensor, GlobalTensor<uint8_t>& srcTensor,
                                   int64_t srcOffset, uint32_t s1Size, uint32_t s2Size,
                                   int64_t totalS2Size, int64_t alignedSize = blockBytes)
 {
@@ -118,8 +118,8 @@ __aicore__ inline void BoolCopyIn(LocalTensor<uint8_t> &dstTensor, GlobalTensor<
     }
 }
 
-__aicore__ inline void Bit2Int8CopyIn(LocalTensor<uint8_t> &dstTensor,
-                                      GlobalTensor<uint8_t> &srcTensor, int64_t srcOffset,
+__aicore__ inline void Bit2Int8CopyIn(LocalTensor<uint8_t>& dstTensor,
+                                      GlobalTensor<uint8_t>& srcTensor, int64_t srcOffset,
                                       uint32_t batchSize, uint32_t s1BaseSize, uint32_t s2BaseSize,
                                       int64_t s2TotalSize, int64_t alignedSize = blockBytes)
 {

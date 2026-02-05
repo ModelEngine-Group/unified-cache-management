@@ -27,9 +27,9 @@
 
 namespace optiling {
 
-inline void GetDataCopyTransposeTiling(const ge::Shape &dstShape, const ge::Shape &srcShape,
+inline void GetDataCopyTransposeTiling(const ge::Shape& dstShape, const ge::Shape& srcShape,
                                        const uint32_t typeSize,
-                                       optiling::CopyTransposeTiling &tiling)
+                                       optiling::CopyTransposeTiling& tiling)
 {
     std::vector<int64_t> dstShapeInfo = dstShape.GetDims();
     std::vector<int64_t> srcShapeInfo = srcShape.GetDims();

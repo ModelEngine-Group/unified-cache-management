@@ -44,7 +44,7 @@ bool HammingDistTopKSplitSTiling::IsCapable()
 
 ge::graphStatus HammingDistTopKSplitSTiling::GetWorkspaceSize()
 {
-    uint64_t *workspaces = context_->GetWorkspaceSizes(1);
+    uint64_t* workspaces = context_->GetWorkspaceSizes(1);
     uint64_t sysWorkspaceSize = WORKSIZE;
     // usrWorkspaceSize = workspace for Select + workspace for Topk
     uint64_t usrWorkspaceSize =
@@ -176,7 +176,7 @@ void HammingDistTopKSplitSTiling::SetTopKTiling()
 
 void HammingDistTopKSplitSTiling::PrintTilingData()
 {
-    optiling::TCubeTiling &tiling = tilingData_.matmulTiling;
+    optiling::TCubeTiling& tiling = tilingData_.matmulTiling;
     std::stringstream ss;
     ss << "\n usedCoreNum: " << coreNum_ << " M: " << tiling.get_M() << " N: " << tiling.get_N()
        << "\n Ka: " << tiling.get_Ka() << " Kb: " << tiling.get_Kb()
@@ -193,7 +193,7 @@ void HammingDistTopKSplitSTiling::PrintTilingData()
 
 void HammingDistTopKSplitSTiling::PrintTilingDataRope()
 {
-    optiling::TCubeTiling &tiling = tilingData_.matmulTilingRope;
+    optiling::TCubeTiling& tiling = tilingData_.matmulTilingRope;
     std::stringstream ss;
     ss << "\n usedCoreNum: " << coreNum_ << " M: " << tiling.get_M() << " N: " << tiling.get_N()
        << "\n Ka: " << tiling.get_Ka() << " Kb: " << tiling.get_Kb()

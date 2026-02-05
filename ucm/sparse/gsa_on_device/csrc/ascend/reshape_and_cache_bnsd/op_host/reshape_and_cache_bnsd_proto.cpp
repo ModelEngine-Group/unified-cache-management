@@ -10,15 +10,15 @@
 using namespace ge;
 
 namespace ops {
-static ge::graphStatus InferShapeReshapeAndCacheBnsd(gert::InferShapeContext *context)
+static ge::graphStatus InferShapeReshapeAndCacheBnsd(gert::InferShapeContext* context)
 {
-    gert::Shape *outShape = context->GetOutputShape(0);
-    const gert::Shape *inputShape = context->GetInputShape(1);
+    gert::Shape* outShape = context->GetOutputShape(0);
+    const gert::Shape* inputShape = context->GetInputShape(1);
     *outShape = *inputShape;
     return ge::GRAPH_SUCCESS;
 }
 
-static ge::graphStatus InferDataTypeReshapeAndCacheBnsd(gert::InferDataTypeContext *context)
+static ge::graphStatus InferDataTypeReshapeAndCacheBnsd(gert::InferDataTypeContext* context)
 {
     const auto inputDataType = context->GetInputDataType(1);
     context->SetOutputDataType(0, inputDataType);

@@ -44,30 +44,30 @@ public:
 
     static inline uint64_t GetTid() { return static_cast<uint64_t>(syscall(__NR_gettid)); }
 
-    static inline const char *GetStr(const std::string &str) { return str.c_str(); }
+    static inline const char* GetStr(const std::string& str) { return str.c_str(); }
 
-    static inline const char *GetStr(const char *str) { return str; }
+    static inline const char* GetStr(const char* str) { return str; }
 
-    static inline const std::string &GetOpInfo(const std::string &str) { return str; }
+    static inline const std::string& GetOpInfo(const std::string& str) { return str; }
 
-    static inline const char *GetOpInfo(const char *str) { return str; }
+    static inline const char* GetOpInfo(const char* str) { return str; }
 
-    static inline std::string GetOpInfo(const gert::TilingContext *context)
+    static inline std::string GetOpInfo(const gert::TilingContext* context)
     {
         return GetOpInfoFromContext(context);
     }
 
-    static inline std::string GetOpInfo(const gert::TilingParseContext *context)
+    static inline std::string GetOpInfo(const gert::TilingParseContext* context)
     {
         return GetOpInfoFromContext(context);
     }
 
-    static inline std::string GetOpInfo(const gert::InferShapeContext *context)
+    static inline std::string GetOpInfo(const gert::InferShapeContext* context)
     {
         return GetOpInfoFromContext(context);
     }
 
-    static inline std::string GetOpInfo(const gert::InferDataTypeContext *context)
+    static inline std::string GetOpInfo(const gert::InferDataTypeContext* context)
     {
         return GetOpInfoFromContext(context);
     }
@@ -87,7 +87,7 @@ private:
 }  // namespace utils
 
 template <typename T>
-std::string Shape2String(const T &shape)
+std::string Shape2String(const T& shape)
 {
     std::ostringstream oss;
     oss << "[";
@@ -158,8 +158,8 @@ std::string Shape2String(const T &shape)
             OPS_LOG_STUB(OP, (LEVEL), (OPS_DESC), "%s", msgbufxyz);                              \
             break;                                                                               \
         }                                                                                        \
-        char *msgchunkbegin = msgbufxyz;                                                         \
-        char *msgchunkend = nullptr;                                                             \
+        char* msgchunkbegin = msgbufxyz;                                                         \
+        char* msgchunkend = nullptr;                                                             \
         while (msgchunkbegin < msgbufxyz + msglength) {                                          \
             if (msgchunkbegin[0] == '\n') {                                                      \
                 OPS_LOG_STUB(OP, (LEVEL), (OPS_DESC), "");                                       \

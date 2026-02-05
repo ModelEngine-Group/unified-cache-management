@@ -4,7 +4,7 @@
 #include "tiling/platform/platform_ascendc.h"
 
 namespace optiling {
-static ge::graphStatus TilingFunc(gert::TilingContext *context)
+static ge::graphStatus TilingFunc(gert::TilingContext* context)
 {
     auto ascendcPlatform = platform_ascendc::PlatformAscendC(context->GetPlatformInfo());
 
@@ -40,7 +40,7 @@ static ge::graphStatus TilingFunc(gert::TilingContext *context)
     context->SetTilingKey(0);
     context->SetBlockDim(numCore);
 
-    size_t *workspaces = context->GetWorkspaceSizes(1);  // get second variable
+    size_t* workspaces = context->GetWorkspaceSizes(1);  // get second variable
     workspaces[0] = 16 * 1024 * 1024;
 
     tiling.SaveToBuffer(context->GetRawTilingData()->GetData(),
@@ -49,7 +49,7 @@ static ge::graphStatus TilingFunc(gert::TilingContext *context)
     return ge::GRAPH_SUCCESS;
 }
 
-static ge::graphStatus TilingPrepareForReshapeAndCacheBnsd(gert::TilingParseContext *context)
+static ge::graphStatus TilingPrepareForReshapeAndCacheBnsd(gert::TilingParseContext* context)
 {
     return ge::GRAPH_SUCCESS;
 }

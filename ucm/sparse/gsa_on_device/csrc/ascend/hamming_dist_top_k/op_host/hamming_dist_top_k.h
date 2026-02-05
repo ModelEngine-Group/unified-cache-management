@@ -9,7 +9,7 @@ namespace optiling {
 class HammingDistTopKTiling {
 public:
     // from parent class
-    gert::TilingContext *context_ = nullptr;
+    gert::TilingContext* context_ = nullptr;
     std::unique_ptr<platform_ascendc::PlatformAscendC> ascendcPlatform_{nullptr};
     uint32_t blockDim_{0};
     uint64_t workspaceSize_{0};
@@ -20,14 +20,14 @@ public:
     HammingDistTopKMatmulInfo inputParams_;
     uint32_t libApiWorkSpaceSize_ = 0;
     uint32_t coreNum_ = 1;
-    const char *opName_ = "";
+    const char* opName_ = "";
     int32_t dtypeByte_ = 2; /* 2: size of float16 */
     HammingDistTopKTilingData tilingData_;
     bool compileInfoInit_ = false;
     bool continFlag_ = false;
     uint32_t seqLen_ = 1;
 
-    HammingDistTopKTiling(gert::TilingContext *context) : context_(context)
+    HammingDistTopKTiling(gert::TilingContext* context) : context_(context)
     {
         InitAttrParam();
         uint32_t dimNum = GetOutShape(0).GetDimNum();

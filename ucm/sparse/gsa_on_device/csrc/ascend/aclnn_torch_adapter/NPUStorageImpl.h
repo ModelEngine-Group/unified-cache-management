@@ -39,7 +39,7 @@ public:
 
 struct NPUStorageImpl : public c10::StorageImpl {
     explicit NPUStorageImpl(use_byte_size_t use_byte_size, size_t size_bytes, at::DataPtr data_ptr,
-                            at::Allocator *allocator, bool resizable);
+                            at::Allocator* allocator, bool resizable);
     ~NPUStorageImpl() override = default;
 
     void release_resources() override;
@@ -52,7 +52,7 @@ struct NPUStorageImpl : public c10::StorageImpl {
 c10::intrusive_ptr<c10::StorageImpl> make_npu_storage_impl(c10::StorageImpl::use_byte_size_t,
                                                            c10::SymInt size_bytes,
                                                            c10::DataPtr data_ptr,
-                                                           c10::Allocator *allocator,
+                                                           c10::Allocator* allocator,
                                                            bool resizable);
 
 }  // namespace vllm_ascend
