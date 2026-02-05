@@ -6,14 +6,14 @@
 #ifndef CANN_OPS_BUILT_IN_OP_UTIL_H_
 #define CANN_OPS_BUILT_IN_OP_UTIL_H_
 
+#include <cstdint>
+#include <limits>
+#include <map>
 #include <memory>
+#include <string>
 #include <type_traits>
 #include <utility>
-#include <limits>   
-#include <cstdint>  
-#include <vector>   
-#include <string>   
-#include <map>  
+#include <vector>
 
 namespace ops {
 
