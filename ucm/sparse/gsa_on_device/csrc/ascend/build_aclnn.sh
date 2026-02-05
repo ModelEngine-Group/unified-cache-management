@@ -1,5 +1,10 @@
 #!/bin/bash
 
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: Copyright contributors to the vllm-ascend project
+# Modified from 
+# https://github.com/vllm-project/vllm-ascend/blob/main/csrc/build_aclnn.sh
+
 ROOT_DIR=$(dirname $(readlink -f ${BASH_SOURCE[0]}))
 
 echo "ROOT_DIR: $ROOT_DIR"

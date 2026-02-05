@@ -1,3 +1,8 @@
+// SPDX-License-Identifier: Apache-2.0
+// SPDX-FileCopyrightText: Copyright contributors to the vllm-ascend project
+// Modified from 
+// https://github.com/vllm-project/vllm-ascend/blob/main/csrc/torch_binding_meta.cpp
+
 #include <torch/extension.h>
 #include <torch/library.h>
 #include <torch/version.h>

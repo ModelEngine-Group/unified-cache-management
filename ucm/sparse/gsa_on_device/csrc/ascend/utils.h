@@ -1,4 +1,6 @@
-// from vllm-ascend, see
+// SPDX-License-Identifier: Apache-2.0
+// SPDX-FileCopyrightText: Copyright contributors to the vllm-ascend project
+// Modified from 
 // https://github.com/vllm-project/vllm-ascend/blob/main/csrc/utils.h
 
 #pragma once

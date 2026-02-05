@@ -1,4 +1,6 @@
-// from vllm-ascend, see
+// SPDX-License-Identifier: Apache-2.0
+// SPDX-FileCopyrightText: Copyright contributors to the vllm-ascend project
+// Adapted from
 // https://github.com/vllm-project/vllm-ascend/blob/main/csrc/utils/inc/kernel/data_copy.h
 
 #ifndef CAM_DATACOPY_GM2GM_H

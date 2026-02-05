@@ -8,6 +8,11 @@
 # See LICENSE in the root of the software repository for the full text of the License.
 # ======================================================================================================================
 
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: Copyright contributors to the vllm-ascend project
+# Modified from 
+# https://github.com/vllm-project/vllm-ascend/blob/main/csrc/build.sh
+
 set -e
 
 CURRENT_DIR=$(dirname $(readlink -f ${BASH_SOURCE[0]}))
