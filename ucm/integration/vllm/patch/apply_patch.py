@@ -35,8 +35,6 @@ logger = init_logger(__name__)
 
 import os
 
-PLATFORM = os.getenv("PLATFORM")
-
 vllm_use_rerope = os.getenv("VLLM_USE_REROPE", "0").lower() in (
     "1",
     "true",
@@ -46,7 +44,41 @@ vllm_use_rerope = os.getenv("VLLM_USE_REROPE", "0").lower() in (
 
 
 def _patch_ascend() -> bool:
-    return PLATFORM == "ascend"
+    return os.getenv("PLATFORM") == "ascend"
+
+
+def get_vllm_ascend_version() -> Optional[str]:
+    """Detect vllm_ascend version if installed.
+
+    Note: keep it simple and robust (no hard import required).
+    """
+
+    def _norm(v: Optional[str]) -> Optional[str]:
+        if not v:
+            return None
+        v = str(v).strip()
+        # common suffixes: 0.11.0+xxx / 0.11.0.post1
+        v = v.split("+", 1)[0]
+        v = v.split(".post", 1)[0]
+        return v
+
+    try:
+        from importlib.metadata import PackageNotFoundError, version
+
+        try:
+            return _norm(version("vllm-ascend"))
+        except PackageNotFoundError:
+            return None
+    except Exception:
+        pass
+
+    try:
+        import importlib
+
+        mod = importlib.import_module("vllm_ascend")
+        return _norm(getattr(mod, "__version__", None))
+    except Exception:
+        return None
 
 
 # Track if patches have been applied
@@ -78,7 +110,7 @@ def get_vllm_version() -> Optional[str]:
 
 def get_supported_versions() -> list[str]:
     """Get list of supported vLLM versions."""
-    return ["0.9.2"]
+    return ["0.9.2", "0.11.0"]
 
 
 def apply_all_patches() -> None:
@@ -105,6 +137,8 @@ def apply_all_patches() -> None:
                 _apply_patches_rerope()
             case "0.9.2":
                 _apply_patches_v092()
+            case "0.11.0":
+                _apply_patches_v0110()
             case _:
                 logger.warning(
                     f"Unsupported vLLM version: {version} to apply UCM patches. "
@@ -114,7 +148,7 @@ def apply_all_patches() -> None:
         _patches_applied = True
         logger.info(f"All vLLM patches applied successfully for version {version}")
     except Exception as e:
-        logger.error(f"Failed to apply vLLM patches: {e}")
+        logger.error(f"Failed to apply vLLM patches: {e}\n")
         raise
 
 
@@ -134,6 +168,18 @@ def _apply_patches_rerope() -> None:
     from .patch_funcs.v092.vllm_rerope_patch import _apply_rerope_adapt_patches
 
     _apply_rerope_adapt_patches()
+
+
+def _apply_patches_v0110() -> None:
+    """Apply all patches for vLLM 0.11.0."""
+    from .patch_funcs.v0110.vllm_patch import _apply_vllm_patches
+
+    _apply_vllm_patches()
+
+    if get_vllm_ascend_version() == "0.11.0":
+        from .patch_funcs.v0110.vllm_ascend_patch import _apply_ascend_patches
+
+        _apply_ascend_patches()
 
 
 def install_import_hook() -> None:
