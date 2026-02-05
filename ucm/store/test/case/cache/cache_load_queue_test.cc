@@ -47,8 +47,9 @@ TEST_F(UCCacheLoadQueueTest, LoadSameBlockTwice)
     UC::HashSet<UC::Detail::TaskHandle> failureSet;
     Config config;
     config.storeBackend = std::shared_ptr<UC::StoreV1>(&backend, [](auto) {});
-    config.tensorSize = 32768;
-    config.shardSize = config.tensorSize;
+    size_t tensorSize = 32768;
+    config.tensorSizes = {tensorSize};
+    config.shardSize = tensorSize;
     config.blockSize = config.shardSize;
     config.deviceId = 0;
     config.bufferCapacity = config.shardSize * 1024;
@@ -88,8 +89,9 @@ TEST_F(UCCacheLoadQueueTest, LoadWhileBackendSubmitFailed)
     UC::HashSet<UC::Detail::TaskHandle> failureSet;
     Config config;
     config.storeBackend = std::shared_ptr<UC::StoreV1>(&backend, [](auto) {});
-    config.tensorSize = 32768;
-    config.shardSize = config.tensorSize;
+    size_t tensorSize = 32768;
+    config.tensorSizes = {tensorSize};
+    config.shardSize = tensorSize;
     config.blockSize = config.shardSize;
     config.deviceId = 0;
     config.bufferCapacity = config.shardSize * 1024;
@@ -125,8 +127,9 @@ TEST_F(UCCacheLoadQueueTest, LoadWhileBackendWaitFailed)
     UC::HashSet<UC::Detail::TaskHandle> failureSet;
     Config config;
     config.storeBackend = std::shared_ptr<UC::StoreV1>(&backend, [](auto) {});
-    config.tensorSize = 32768;
-    config.shardSize = config.tensorSize;
+    size_t tensorSize = 32768;
+    config.tensorSizes = {tensorSize};
+    config.shardSize = tensorSize;
     config.blockSize = config.shardSize;
     config.deviceId = 0;
     config.bufferCapacity = config.shardSize * 1024;

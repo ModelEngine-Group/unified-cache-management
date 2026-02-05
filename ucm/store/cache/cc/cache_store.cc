@@ -36,7 +36,7 @@ public:
     TransManager transMgr;
 
 public:
-    Status Setup(Config& config)
+    Status Setup(const Config& config)
     {
         auto s = CheckConfig(config);
         if (s.Failure()) [[unlikely]] {
@@ -58,17 +58,11 @@ public:
     }
 
 private:
-    static Status CheckSizeConfig(Config& config)
+    Status CheckSizeConfig(const Config& config)
     {
-        if (config.tensorSize == 0 && config.tensorSizes.empty()) {
-            return Status::InvalidParam("invalid tensor size");
-        }
+        if (config.tensorSizes.empty()) { return Status::InvalidParam("invalid tensor size"); }
         if (config.shardSize == 0) { return Status::InvalidParam("invalid shard size"); }
         if (config.blockSize == 0) { return Status::InvalidParam("invalid block size"); }
-        if (config.tensorSizes.empty()) {
-            const auto nTensor = config.shardSize / config.tensorSize;
-            config.tensorSizes.assign(nTensor, config.tensorSize);
-        }
         if (std::accumulate(config.tensorSizes.begin(), config.tensorSizes.end(), size_t(0)) !=
             config.shardSize) {
             return Status::InvalidParam("invalid shard size({})", config.shardSize);
@@ -78,7 +72,7 @@ private:
         }
         return Status::OK();
     }
-    static Status CheckConfig(Config& config)
+    Status CheckConfig(const Config& config)
     {
         if (!config.storeBackend) { return Status::InvalidParam("invalid store backend"); }
         if (config.deviceId < -1) {
@@ -102,7 +96,7 @@ private:
         }
         return Status::OK();
     }
-    static void ShowConfig(const Config& config)
+    void ShowConfig(const Config& config)
     {
         constexpr const char* ns = "CacheStore";
         std::string buildType = UCM_BUILD_TYPE;
@@ -111,11 +105,13 @@ private:
         UC_INFO("Set {}::StoreBackend to {}.", ns, config.storeBackend->Readme());
         UC_INFO("Set {}::UniqueId to {}.", ns, config.uniqueId);
         UC_INFO("Set {}::DeviceId to {}.", ns, config.deviceId);
-        if (config.tensorSize > 0) {
-            UC_INFO("Set {}::TensorSizes to {}(*{}).", ns, config.tensorSize,
-                    config.shardSize / config.tensorSize);
+        const auto& v = config.tensorSizes;
+        if (v.empty()) {
+            UC_INFO("Set {}::TensorSizes to [].", ns);
+        } else if (std::all_of(v.begin(), v.end(), [&](auto d) { return d == v[0]; })) {
+            UC_INFO("Set {}::TensorSizes to {}(*{}).", ns, v[0], v.size());
         } else {
-            UC_INFO("Set {}::TensorSizes to {}.", ns, config.tensorSizes);
+            UC_INFO("Set {}::TensorSizes to {}.", ns, v);
         }
         UC_INFO("Set {}::ShardSize to {}.", ns, config.shardSize);
         UC_INFO("Set {}::BlockSize to {}.", ns, config.blockSize);
@@ -136,9 +132,14 @@ Status CacheStore::Setup(const Detail::Dictionary& config)
     config.Get("store_backend", param.storeBackend);
     config.Get("unique_id", param.uniqueId);
     config.GetNumber("device_id", param.deviceId);
-    config.GetNumber("tensor_size", param.tensorSize);
-    config.Get("tensor_size_list", param.tensorSizes);
+    size_t tensorSize = 0;
+    config.GetNumber("tensor_size", tensorSize);
     config.GetNumber("shard_size", param.shardSize);
+    if (tensorSize != 0) {
+        param.tensorSizes.assign(param.shardSize / tensorSize, tensorSize);
+    } else {
+        config.Get("tensor_size_list", param.tensorSizes);
+    }
     config.GetNumber("block_size", param.blockSize);
     if (param.shardSize > 0) { param.waitingQueueDepth *= (param.blockSize / param.shardSize); }
     config.Get("share_buffer_enable", param.shareBufferEnable);

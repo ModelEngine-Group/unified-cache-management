@@ -33,7 +33,6 @@ struct Config {
     std::shared_ptr<StoreV1> storeBackend{};
     std::string uniqueId{};
     int32_t deviceId{-1};
-    size_t tensorSize{0};
     std::vector<size_t> tensorSizes{};
     size_t shardSize{0};
     size_t blockSize{0};
