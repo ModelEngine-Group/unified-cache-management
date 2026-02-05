@@ -92,8 +92,10 @@ class LocalBufferStrategy : public BufferStrategy {
     std::shared_ptr<void> data_;
 
 public:
-    Status Setup(const std::string& uuid, int32_t deviceId, size_t nodeSize, size_t nNode) override
+    Status Setup(const std::string& uuid, int32_t deviceId, size_t nodeSize,
+                 size_t totalSize) override
     {
+        auto nNode = totalSize / nodeSize;
         try {
             meta_ = std::make_unique<BufferMetaNode[]>(nNode);
         } catch (const std::exception& e) {
@@ -173,6 +175,7 @@ protected:
     struct BufferHeader {
         std::atomic<size_t> magic;
         ShareLock lock;
+        size_t nNode;
         size_t freeHead;
         size_t buckets[nHashTableBucket];
         ShareMutex bucketLocks[nHashTableBucket];
@@ -184,10 +187,10 @@ protected:
     std::byte* data_{nullptr};
     std::byte* dataOnDevice_{nullptr};
     std::string shmName_;
-    size_t nodeSize_;
-    size_t nNode_;
+    size_t nodeSize_{0};
+    size_t nNode_{0};
     void* addrress_{nullptr};
-    size_t totalSize_;
+    size_t totalSize_{0};
 
     size_t MetaOffset() const noexcept { return sizeof(BufferHeader) + sizeof(ShareLock) * nNode_; }
     size_t DataOffset() const noexcept
@@ -197,12 +200,12 @@ protected:
         return (size + pageSize - 1) & ~(pageSize - 1);
     }
     size_t DataSize() const noexcept { return nodeSize_ * nNode_; }
-    const std::string& ShmPrefix() const noexcept
+    static const std::string& ShmPrefix() noexcept
     {
         static std::string prefix{"uc_shm_cache_"};
         return prefix;
     }
-    void CleanUpShmFileExceptMe()
+    static void CleanUpShmFileExceptMe(const std::string& me)
     {
         namespace fs = std::filesystem;
         std::string_view prefix = ShmPrefix();
@@ -214,7 +217,7 @@ protected:
             const auto& path = entry.path();
             const auto& name = path.filename().string();
             if (!entry.is_regular_file() || name.compare(0, prefix.size(), prefix) != 0 ||
-                name == shmName_) {
+                name == me) {
                 continue;
             }
             try {
@@ -225,30 +228,45 @@ protected:
             }
         }
     }
-    Status MmapShmFile(PosixShm& shmFile, bool needTrunc = true)
+    static Status MmapShmFile(PosixShm& shmFile, const size_t size, void*& addr,
+                              bool needTrunc = true)
     {
         auto s = Status::OK();
         if (needTrunc) {
-            s = shmFile.Truncate(totalSize_);
+            s = shmFile.Truncate(size);
             if (s.Failure()) [[unlikely]] {
-                UC_ERROR("Failed({}) to truncate file({}) with size({}).", s, shmName_, totalSize_);
+                UC_ERROR("Failed({}) to trunc file({}) with size({}).", s, shmFile.ShmName(), size);
                 return s;
             }
         }
-        s = shmFile.MMap(addrress_, totalSize_, true, true, true);
+        s = shmFile.MMap(addr, size, true, true, true);
         if (s.Failure()) [[unlikely]] {
-            UC_ERROR("Failed({}) to mmap file({}) with size({}).", s, shmName_, totalSize_);
+            UC_ERROR("Failed({}) to mmap file({}) with size({}).", s, shmFile.ShmName(), size);
             return s;
         }
-        header_ = (BufferHeader*)addrress_;
+        return Status::OK();
+    }
+    static Status WaitShmHeaderReady(BufferHeader* header)
+    {
+        constexpr auto retryInterval = std::chrono::milliseconds(100);
+        constexpr auto maxTryTime = 100;
+        auto tryTime = 0;
+        do {
+            if (header->magic == sharedBufferMagic) { break; }
+            if (tryTime > maxTryTime) { return Status::Retry(); }
+            std::this_thread::sleep_for(retryInterval);
+            tryTime++;
+        } while (true);
         return Status::OK();
     }
     Status InitShmBuffer(PosixShm& shmFile)
     {
-        auto s = MmapShmFile(shmFile);
+        auto s = MmapShmFile(shmFile, totalSize_, addrress_);
         if (s.Failure()) [[unlikely]] { return s; }
+        header_ = static_cast<BufferHeader*>(addrress_);
         meta_ = (BufferMetaNode*)(static_cast<std::byte*>(addrress_) + MetaOffset());
         header_->lock.Init();
+        header_->nNode = nNode_;
         header_->freeHead = 0;
         for (size_t i = 0; i < nHashTableBucket; i++) {
             header_->buckets[i] = invalidIndex;
@@ -265,23 +283,17 @@ protected:
     {
         auto s = shmFile.ShmOpen(PosixShm::OpenFlag::READ_WRITE);
         if (s.Failure()) {
-            UC_ERROR("Failed({}) to open file({}).", s, shmName_);
+            UC_ERROR("Failed({}) to open file({}).", s, shmFile.ShmName());
             return s;
         }
-        s = MmapShmFile(shmFile, false);
+        s = MmapShmFile(shmFile, totalSize_, addrress_, false);
         if (s.Failure()) [[unlikely]] { return s; }
-        constexpr auto retryInterval = std::chrono::milliseconds(100);
-        constexpr auto maxTryTime = 100;
-        auto tryTime = 0;
-        do {
-            if (header_->magic == sharedBufferMagic) { break; }
-            if (tryTime > maxTryTime) {
-                UC_ERROR("Shm file({}) not ready.", shmName_);
-                return Status::Retry();
-            }
-            std::this_thread::sleep_for(retryInterval);
-            tryTime++;
-        } while (true);
+        header_ = static_cast<BufferHeader*>(addrress_);
+        s = WaitShmHeaderReady(header_);
+        if (s.Failure()) [[unlikely]] {
+            UC_ERROR("Shm file({}) not ready.", shmFile.ShmName());
+            return s;
+        }
         meta_ = (BufferMetaNode*)(static_cast<std::byte*>(addrress_) + MetaOffset());
         return Status::OK();
     }
@@ -310,12 +322,13 @@ public:
         if (addrress_) { PosixShm::MUnmap(addrress_, totalSize_); }
         PosixShm{shmName_}.ShmUnlink();
     }
-    Status Setup(const std::string& uuid, int32_t deviceId, size_t nodeSize, size_t nNode) override
+    Status Setup(const std::string& uuid, int32_t deviceId, size_t nodeSize,
+                 size_t totalSize) override
     {
         shmName_ = ShmPrefix() + uuid;
         nodeSize_ = nodeSize;
-        nNode_ = nNode;
-        CleanUpShmFileExceptMe();
+        nNode_ = totalSize / nodeSize;
+        CleanUpShmFileExceptMe(shmName_);
         PosixShm shmFile{shmName_};
         const auto dataOffset = DataOffset();
         totalSize_ = dataOffset + DataSize();
@@ -352,15 +365,34 @@ public:
 
 class SharedBufferWatcherStrategy : public SharedBufferStrategy {
 public:
-    Status Setup(const std::string& uuid, int32_t deviceId, size_t nodeSize, size_t nNode) override
+    Status Setup(const std::string& uuid, int32_t deviceId, size_t, size_t) override
     {
         shmName_ = ShmPrefix() + uuid;
-        nodeSize_ = nodeSize;
-        nNode_ = nNode;
-        totalSize_ = DataOffset();
-        CleanUpShmFileExceptMe();
+        CleanUpShmFileExceptMe(shmName_);
         PosixShm shmFile{shmName_};
-        return LoadShmBuffer(shmFile);
+        auto s = shmFile.ShmOpen(PosixShm::OpenFlag::READ_WRITE);
+        if (s.Failure()) {
+            UC_ERROR("Failed({}) to open file({}).", s, shmFile.ShmName());
+            return s;
+        }
+        void* addr = nullptr;
+        auto size = sizeof(BufferHeader);
+        s = MmapShmFile(shmFile, size, addr, false);
+        if (s.Failure()) [[unlikely]] { return s; }
+        auto header = static_cast<BufferHeader*>(addr);
+        s = WaitShmHeaderReady(header);
+        if (s.Failure()) [[unlikely]] {
+            UC_ERROR("Shm file({}) not ready.", shmFile.ShmName());
+            return s;
+        }
+        nNode_ = header->nNode;
+        shmFile.MUnmap(addr, size);
+        totalSize_ = DataOffset();
+        s = MmapShmFile(shmFile, totalSize_, addrress_, false);
+        if (s.Failure()) [[unlikely]] { return s; }
+        header_ = static_cast<BufferHeader*>(addrress_);
+        meta_ = (BufferMetaNode*)(static_cast<std::byte*>(addrress_) + MetaOffset());
+        return Status::OK();
     }
     void* DataAt(size_t iNode) override { return nullptr; }
 };
@@ -379,7 +411,7 @@ Status TransBuffer::Setup(const Config& config)
         return Status::Error(fmt::format("failed({}) to make buffer strategy", e.what()));
     }
     return strategy_->Setup(config.uniqueId, config.deviceId, config.shardSize,
-                            config.bufferNumber);
+                            config.bufferCapacity);
 }
 
 TransBuffer::Handle TransBuffer::Get(const Detail::BlockId& blockId, size_t shardIdx)

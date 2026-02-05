@@ -53,7 +53,7 @@ TEST_F(UCCacheBufferManagerTest, Lookup)
     config.shardSize = config.tensorSize;
     config.blockSize = config.shardSize;
     config.deviceId = 0;
-    config.bufferNumber = 1024;
+    config.bufferCapacity = config.shardSize * 1024;
     config.uniqueId = rd.RandomString(10);
     config.shareBufferEnable = true;
     ASSERT_TRUE(bufferMgr.Setup(config).Success());

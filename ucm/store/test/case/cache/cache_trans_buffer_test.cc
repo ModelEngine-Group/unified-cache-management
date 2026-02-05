@@ -39,7 +39,7 @@ TEST_P(UCCacheTransBufferTest, GetFirstNode)
     UC::CacheStore::Config config;
     config.uniqueId = rd.RandomString(10);
     config.shardSize = 32768;
-    config.bufferNumber = 32768;
+    config.bufferCapacity = config.shardSize * 32768;
     config.shareBufferEnable = GetParam();
     config.deviceId = 0;
     auto s = transBuffer.Setup(config);
@@ -68,7 +68,7 @@ TEST_P(UCCacheTransBufferTest, InsertDifferentDataRepeatedly)
     UC::CacheStore::Config config;
     config.uniqueId = rd.RandomString(10);
     config.shardSize = 4096;
-    config.bufferNumber = nBlock * nShard;
+    config.bufferCapacity = nBlock * nShard * config.shardSize;
     config.shareBufferEnable = GetParam();
     config.deviceId = 0;
     auto s = transBuffer.Setup(config);
