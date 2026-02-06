@@ -722,7 +722,7 @@ class GSAOnDevice(UcmSparseBase):
                         decode_q_pe,
                         k_hash,
                     )
-                else
+                else:
                     self.update_decode_topk_mla_npu(
                         is_rollback_layer,
                         is_skip_hash_layer,
