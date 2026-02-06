@@ -771,10 +771,11 @@ class GSAOnDevice(UcmSparseBase):
                 if not is_rollback_layer:
                     attn_metadata.decode.block_table = self.ori_block_table_decode
                     attn_metadata.decode.seq_lens = self.ori_seq_lens_decode
-                    attn_metadata.decode.tile_scheduler_metadata = (
-                        self.origin_tile_scheduler_metadata
-                    )
-                    attn_metadata.decode.num_splits = self.origin_num_splits
+                    if self.is_cuda: # only for MLA in CUDA
+                        attn_metadata.decode.tile_scheduler_metadata = (
+                            self.origin_tile_scheduler_metadata
+                        )
+                        attn_metadata.decode.num_splits = self.origin_num_splits
         else:  # 判断req decode阶段
             if self.has_decode:
                 if self.is_cuda:
