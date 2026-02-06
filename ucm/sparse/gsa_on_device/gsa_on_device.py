@@ -477,7 +477,7 @@ class GSAOnDevice(UcmSparseBase):
             k_hash,
         )
 
-    def update_decode_topk_mla(
+    def update_decode_topk_mla_cuda(
         self,
         is_rollback_layer,
         is_skip_hash_layer,
@@ -525,6 +525,79 @@ class GSAOnDevice(UcmSparseBase):
             attn_metadata.decode.seq_lens = seq_lens
             attn_metadata.decode.tile_scheduler_metadata = tile_scheduler_metadata
             attn_metadata.decode.num_splits = num_splits
+    
+    def update_decode_topk_mla_npu(
+        self,
+        is_rollback_layer,
+        is_skip_hash_layer,
+        attn_metadata,
+        decode_ql_nope,
+        decode_q_pe,
+        k_hash,
+    ):
+        if not self.is_tensor_computed:
+            topk_device = cdiv(
+                attn_metadata.decode.seq_lens_device, self.block_size
+            ).to(dtype=torch.int32)
+            self.topk_device = torch.clamp(
+                topk_device,
+                min = 1,
+                max = self.hash_topk_tokens
+            )
+            self.is_tensor_computed = True
+
+        if not is_rollback_layer:
+            if is_skip_hash_layer:
+                attn_metadata.decode.block_table = self.topk_block_table
+            else:
+                khash_nope_cache, khash_rope_cache = k_hash
+                # q_nope = decode_ql_nope
+                # q_pe = decode_q_pe
+                batch_size = attn_metadata.num_decodes
+                # max_seq_len = attn_metadata.decode.max_seq_len
+                # chunk_sizes_for_hamming = self.chunk_sizes_for_hamming_full[:batch_size]
+                # self.topk_device
+                # indices
+                qhash_nope = self.hash_encoder_nope.compute_hash(decode_ql_nope)
+                print(f"qhash_nope={qhash_nope.shape}")
+                qhash_rope = self.hash_encoder_rope.compute_hash(decode_q_pe)
+                print(f"qhash_rope={qhash_rope.shape}")
+                qhash = torch.cat([qhash_nope, qhash_rope], dim=-1).contiguous()
+                print(f"qhash={qhash.shape}")
+                qhash_zeros = torch.zeros(
+                    qhash_rope.shape,
+                    dtype=qhash_rope.dtype,
+                    device=self.device
+                )
+                print(f"qhash_zeros={qhash_zeros.shape}")
+                qhash_pad = torch.cat(
+                    (qhash, qhash_zeros),
+                    dim=2
+                ).unsqueeze(2).contiguous()
+                print(f"qhash_pad={qhash_pad.shape}")
+                print(f"khash_nope_cache={khash_nope_cache.shape}")
+                print(f"khash_rope_cache={khash_rope_cache.shape}")
+
+                new_block_table = torch.ops._C_ucm.npu_hamming_dist_top_k(
+                    qhash_pad,
+                    khash_nope_cache,
+                    khash_rope_cache,
+                    self.topk_device,
+                    attn_metadata.decode.seq_lens_device,
+                    self.chunk_sizes_for_hamming_full[:batch_size],
+                    attn_metadata.decode.max_seq_lens,
+                    self.hamming_keep_chunks_head,
+                    self.hamming_keep_chunks_tail,
+                    0, # not support offload
+                    self.ori_block_table_decode[:batch_size],
+                    None, # mask for batch skip
+                    self.hamming_output[:batch_size]
+                )
+                attn_metadata.decode.block_table = new_block_table[:,0,:]
+
+            self.topk_block_table = attn_metadata.decode.block_table
+            attn_metadata.decode.seq_lens = self.new_seq_lens
+
 
     def update_decode_topk_gqa_cuda(self, query, k_hash, attn_metadata):
         if self.decode_only:
@@ -640,14 +713,24 @@ class GSAOnDevice(UcmSparseBase):
                     self.cache_k_hash_gqa_npu(key, k_hash, attn_metadata)
         if self.is_mla:
             if phase == "decode":
-                self.update_decode_topk_mla(
-                    is_rollback_layer,
-                    is_skip_hash_layer,
-                    attn_metadata,
-                    decode_ql_nope,
-                    decode_q_pe,
-                    k_hash,
-                )
+                if self.is_cuda:
+                    self.update_decode_topk_mla_cuda(
+                        is_rollback_layer,
+                        is_skip_hash_layer,
+                        attn_metadata,
+                        decode_ql_nope,
+                        decode_q_pe,
+                        k_hash,
+                    )
+                else
+                    self.update_decode_topk_mla_npu(
+                        is_rollback_layer,
+                        is_skip_hash_layer,
+                        attn_metadata,
+                        decode_ql_nope,
+                        decode_q_pe,
+                        k_hash,
+                    )
         else:  # GQA
             if self.has_decode:  # 有decode阶段的req
                 if not is_rollback_layer:
