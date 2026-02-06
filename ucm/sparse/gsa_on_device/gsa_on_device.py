@@ -910,6 +910,18 @@ class GSAOnDevice(UcmSparseBase):
 
         from ucm.sparse.gsa_on_device.hamming_topk import update_seq_lens
 
+        self.ori_seq_lens_decode = seq_lens.clone()
+        self.ori_block_table_decode = block_table.clone()
+
+        if self.is_mla:
+            self.new_seq_lens = update_seq_lens(
+                seq_lens,
+                topk_token=self.hash_topk_tokens,
+                block_size=self.block_size,
+            )
+            # no need for later variables in MLA
+            return
+
         # self.decode_mask is on cpu in vllm-asencd under NPU device
         self.decode_mask = (query_lens == 1) & (
             seq_lens[: query_lens.numel()] >= self.seq_len_threshhold
@@ -924,8 +936,7 @@ class GSAOnDevice(UcmSparseBase):
         else:
             self.slice_enabled = False
 
-        self.ori_seq_lens_decode = seq_lens.clone()
-        self.ori_block_table_decode = block_table.clone()
+        
 
         if self.decode_mask.any():
             # self.decode_mask_npu = self.decode_mask.to(self.device, non_blocking=True)
