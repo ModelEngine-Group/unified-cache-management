@@ -116,6 +116,7 @@ def get_supported_versions() -> list[str]:
 def apply_all_patches() -> None:
     """Apply all vLLM patches based on detected version."""
     global _patches_applied
+    version: Optional[str] = None
     if _patches_applied:
         return
 
@@ -144,10 +145,32 @@ def apply_all_patches() -> None:
                     f"Unsupported vLLM version: {version} to apply UCM patches. "
                     f"Supported versions: {', '.join(supported_versions)}."
                 )
+                raise ValueError(
+                    f"Unsupported vLLM version: {version} to apply UCM patches."
+                )
 
         _patches_applied = True
         logger.info(f"All vLLM patches applied successfully for version {version}")
     except Exception as e:
+        if version == "0.11.0":
+            # Full rollback: always try to restore all monkey-patched symbols.
+            try:
+                from .patch_funcs.v0110.vllm_patch import _rollback_vllm_patches
+
+                _rollback_vllm_patches()
+            except Exception as rollback_err:
+                logger.warning(f"Failed to rollback vLLM patches: {rollback_err}")
+            try:
+                from .patch_funcs.v0110.vllm_ascend_patch import (
+                    _rollback_ascend_patches,
+                )
+
+                _rollback_ascend_patches()
+            except Exception as rollback_err:
+                logger.warning(
+                    f"Failed to rollback vLLM-Ascend patches: {rollback_err}"
+                )
+        _patches_applied = False
         logger.error(f"Failed to apply vLLM patches: {e}\n")
         raise
 
