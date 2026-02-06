@@ -818,31 +818,78 @@ class GSAOnDevice(UcmSparseBase):
         print(
             f"[NPU GSAOnDevice Debug] initialize_kv_hash_cache_tensors_npu: allocating hashk cache for GSAOnDevice in NPU"
         )
-        for layer_name, kv_cache in kv_caches.items():
-            is_rollback_layer, is_skip_hash_layer = self.get_layer_state(layer_name)
-            k_cache_shape = kv_cache[0].shape
-            print(
-                f"[NPU GSAOnDevice Debug] layer_name: {layer_name}, is_rollback_layer={is_rollback_layer}, is_skip_hash_layer={is_skip_hash_layer}, k_cache_shape: {k_cache_shape}"
-            )
-            khash_cache_shape = (
-                k_cache_shape[0],
-                k_cache_shape[2],
-                k_cache_shape[1],
-                self.hash_encoder.hash_bits // 8,
-            )
-            if not is_rollback_layer and not is_skip_hash_layer:
-                khash_cache = torch.empty(
-                    khash_cache_shape, dtype=torch.uint8, device=device
-                )
+        if self.is_mla:
+            for layer_name, kv_cache in kv_caches.items():
+                is_rollback_layer, is_skip_hash_layer = self.get_layer_state(layer_name)
+                kv_cache_nope_shape = kv_cache[0].shape
+                kv_cache_rope_shape = kv_cache[1].shape
                 print(
-                    f"[NPU GSAOnDevice Debug] layer_name: {layer_name}, khash_cache_shape: {khash_cache_shape}"
+                    f"[NPU GSAOnDevice Debug] layer_name: {layer_name}, is_rollback_layer={is_rollback_layer}, is_skip_hash_layer={is_skip_hash_layer},kv_cache_nope_shape: {kv_cache_nope_shape}, kv_cache_rope_shape:{kv_cache_rope_shape}"
                 )
-            else:
-                khash_cache = None
+                # self.hash_encoder_nope = HashEncoder(
+                #     input_dim=kv_cache_nope_shape[3],
+                #     hash_bits=kv_cache_nope_shape[3],
+                #     dtype=torch.float16,
+                #     device=device,
+                # )
+                # self.hash_encoder_rope = HashEncoder(
+                #     input_dim=kv_cache_rope_shape[3],
+                #     hash_bits=kv_cache_rope_shape[3],
+                #     dtype=torch.float16,
+                #     device=device,
+                # )
+                khash_nope_shape = (
+                    kv_cache_nope_shape[0],
+                    kv_cache_nope_shape[2],
+                    kv_cache_nope_shape[1],
+                    self.hash_encoder_nope.hash_bits // 8,
+                )
+                khash_rope_shape = (
+                    kv_cache_rope_shape[0],
+                    kv_cache_rope_shape[2],
+                    kv_cache_rope_shape[1],
+                    self.hash_encoder_rope.hash_bits // 8,
+                )
+                if not is_rollback_layer and not is_skip_hash_layer:
+                    khash_nope_cache = torch.empty(
+                        khash_nope_shape, dtype=torch.uint8, device=device
+                    )
+                    khash_rope_cache = torch.empty(
+                        khash_rope_shape, dtype=torch.uint8, device=device
+                    )
+                    khash_cache = (khash_nope_cache, khash_rope_cache)
+                else:
+                    khash_cache = None
+                    print(
+                        f"[NPU GSAOnDevice Debug] layer_name: {layer_name}, khash_cache is None"
+                    )
+                kv_caches[layer_name] = (kv_cache, khash_cache)
+        else: # GQA
+            for layer_name, kv_cache in kv_caches.items():
+                is_rollback_layer, is_skip_hash_layer = self.get_layer_state(layer_name)
+                k_cache_shape = kv_cache[0].shape
                 print(
-                    f"[NPU GSAOnDevice Debug] layer_name: {layer_name}, khash_cache is None"
+                    f"[NPU GSAOnDevice Debug] layer_name: {layer_name}, is_rollback_layer={is_rollback_layer}, is_skip_hash_layer={is_skip_hash_layer}, k_cache_shape: {k_cache_shape}"
                 )
-            kv_caches[layer_name] = (kv_cache, khash_cache)
+                khash_cache_shape = (
+                    k_cache_shape[0],
+                    k_cache_shape[2],
+                    k_cache_shape[1],
+                    self.hash_encoder.hash_bits // 8,
+                )
+                if not is_rollback_layer and not is_skip_hash_layer:
+                    khash_cache = torch.empty(
+                        khash_cache_shape, dtype=torch.uint8, device=device
+                    )
+                    print(
+                        f"[NPU GSAOnDevice Debug] layer_name: {layer_name}, khash_cache_shape: {khash_cache_shape}"
+                    )
+                else:
+                    khash_cache = None
+                    print(
+                        f"[NPU GSAOnDevice Debug] layer_name: {layer_name}, khash_cache is None"
+                    )
+                kv_caches[layer_name] = (kv_cache, khash_cache)
 
     def build_decode_hash(self, seq_lens):
         from ucm.sparse.gsa_on_device.hamming_topk import update_seq_lens
