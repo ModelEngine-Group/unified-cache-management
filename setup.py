@@ -154,16 +154,59 @@ class CMakeBuild(build_ext):
         )
 
 
+def inject_pth():
+    if not ("-e" in sys.argv or "develop" in sys.argv or "editable_wheel" in sys.argv):
+        return
+
+    import site
+
+    pth_name = "ucm_patch.pth"
+    source = os.path.abspath(pth_name)
+
+    if not os.path.exists(source):
+        print(f"Error: {pth_name} not found in root directory.")
+        return
+
+    try:
+        try:
+            site_packages = site.getsitepackages()[0]
+        except AttributeError:
+            from distutils.sysconfig import get_python_lib
+
+            site_packages = get_python_lib()
+
+        target = os.path.join(site_packages, pth_name)
+
+        if not os.path.exists(target):
+            if sys.platform == "win32":
+                import shutil
+
+                shutil.copy(source, target)
+            else:
+                os.symlink(source, target)
+            print("Injection successful.")
+
+    except Exception as e:
+        print(f"\033[93mWarning: Failed to inject .pth for editable mode: {e}\033[0m")
+
+
 setup(
     name="uc-manager",
     version="0.3.0",
     description="Unified Cache Management",
     author="Unified Cache Team",
-    packages=find_packages(),
+    packages=find_packages() + [""],
+    package_dir={"": "."},
     python_requires=">=3.10",
+    install_requires="wrapt>=2.1.0",
     ext_modules=[CMakeExtension(name="ucm", source_dir=ROOT_DIR)],
     cmdclass={"build_ext": CMakeBuild},
     zip_safe=False,
     include_package_data=False,
-    package_data={"ucm": ["sparse/gsa_on_device/configs/**/*.json"]},
+    package_data={
+        "ucm": ["sparse/gsa_on_device/configs/**/*.json"],
+        "": ["ucm_patch.pth"],
+    },
 )
+if any(arg in sys.argv for arg in ["-e", "develop", "editable_wheel"]):
+    inject_pth()
