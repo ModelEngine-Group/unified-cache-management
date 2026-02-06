@@ -234,11 +234,13 @@ class GSAOnDevice(UcmSparseBase):
                     self.decode_mask = None
                     self.decode_mask_npu = None
                     self.is_tensor_computed = False
+                else: # for MLA in NPU
+                    self.khash_zeros_full = None
 
                 # for both MLA and GQA
                 self.hamming_keep_chunks_head = 1
                 self.hamming_keep_chunks_tail = 4
-
+                
                 self.chunk_sizes_for_hamming_full = torch.full(
                     [self.max_batch_size],
                     fill_value=self.block_size,
