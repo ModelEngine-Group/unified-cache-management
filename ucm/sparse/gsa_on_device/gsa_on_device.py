@@ -353,6 +353,51 @@ class GSAOnDevice(UcmSparseBase):
         )
         return is_rollback_layer, is_skip_hash_layer
 
+    def cache_k_hash_mla_cuda(self, nope, rope, k_hash, attn_metadata):
+        k_c_normed_hash, k_pe_hash = self.hash_code(nope=nope, rope=rope)
+        ops.concat_and_cache_mla(
+            k_c_normed_hash,
+            k_pe_hash.squeeze(1),
+            k_hash,
+            attn_metadata.slot_mapping.flatten(),
+            kv_cache_dtype="auto",
+            scale=self._k_scale,
+        )
+
+    def cache_k_hash_mla_npu(self, nope, rope, k_hash, attn_metadata):
+        num_actual_tokens = attn_metadata.num_actual_tokens
+        khash_nope_cache, khash_rope_cache = k_hash
+        khash_nope = self.hash_encoder_nope.compute_hash(nope[:num_actual_tokens])
+        khash_rope = self.hash_encoder_rope.compute_hash(rope[:num_actual_tokens])
+        khash_nope_new = khash_nope.transpose(0,1).reshape(-1, khash_nope.shape[-1]).contiguous()
+        khash_rope_new = khash_rope.transpose(0,1).reshape(-1, khash_rope.shape[-1]).contiguous()
+        if self.khash_zeros_full == None or self.khash_zeros_full.numel() < khash_rope_new.numel():
+            self.khash_zeros_full = torch.zeros(
+                khash_rope_new.shape, 
+                dtype=khash_rope_new.dtype,
+            ).to(device=self.device, non_blocking=True)
+        khash_zeros = self.khash_zeros_full[:khash_rope_new.shape[0]]
+        khash_rope_new_pad = torch.cat(
+            (khash_rope_new, khash_zeros),
+            dim=-1
+        ).contiguous()
+        torch.ops._C_ucm.npu_reshape_and_cache_bnsd(
+            khash_nope_new,
+            khash_nope_cache,
+            attn_metadata.slot_mapping,
+            attn_metadata.num_prefill_tokens_device,  # need to modify attention_v1.py in vllm-asecnd
+            khash_nope_cache,
+        )
+        torch.ops._C_ucm.npu_reshape_and_cache_bnsd(
+            khash_rope_new_pad,
+            khash_rope_cache,
+            attn_metadata.slot_mapping,
+            attn_metadata.num_prefill_tokens_device,  # need to modify attention_v1.py in vllm-asecnd
+            khash_rope_cache,
+        )
+        return
+
+
     def cache_k_hash_gqa_cuda(
         self, key, attn_metadata, k_hash, forward_context, layer_name
     ):
@@ -581,15 +626,10 @@ class GSAOnDevice(UcmSparseBase):
 
         if not is_rollback_layer and not is_skip_hash_layer:
             if self.is_mla:
-                k_c_normed_hash, k_pe_hash = self.hash_code(nope=key, rope=value)
-                ops.concat_and_cache_mla(
-                    k_c_normed_hash,
-                    k_pe_hash.squeeze(1),
-                    k_hash,
-                    attn_metadata.slot_mapping.flatten(),
-                    kv_cache_dtype="auto",
-                    scale=self._k_scale,
-                )
+                if self.is_cuda:
+                    self.cache_k_hash_mla_cuda(nope=key, rope=value, k_hash=k_hash, attn_metadata=attn_metadata)
+                else:  # NPU
+                    self.cache_k_hash_mla_npu(nope=key, rope=value, k_hash=k_hash, attn_metadata=attn_metadata)
                 # external_pc_hit need fix
             else:  # GQA
                 if self.is_cuda:
