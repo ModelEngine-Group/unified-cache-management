@@ -73,6 +73,28 @@ jobs:
     needs: pre-check
     uses: ./.github/workflows/lint-and-test.yml
 
+  test-build-npu:
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      
+      - name: Build Image
+        run: |
+          docker build -t ucm-npu:latest docker/Dockerfile-NPU-0.11.0
+
+  test-build-npu-sparse:
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      
+      - name: Build Image
+        run: |
+          docker build --build-arg ENABLE_SPARSE=true -t ucm-npu-sparse:latest docker/Dockerfile-NPU-0.11.0
+
   test-e2e-pc-gpu:
     runs-on: ["gpu-test-in-docker"]
     needs: lint-and-unit-tests
