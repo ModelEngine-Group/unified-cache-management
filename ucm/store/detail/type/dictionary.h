@@ -24,9 +24,11 @@
 #ifndef UNIFIEDCACHE_STORE_DETAIL_TYPE_DICTIONARY_H
 #define UNIFIEDCACHE_STORE_DETAIL_TYPE_DICTIONARY_H
 
+#include <algorithm>
 #include <any>
 #include <string>
 #include <unordered_map>
+#include <vector>
 
 namespace UC::Detail {
 
@@ -60,6 +62,13 @@ public:
     void GetNumber(const std::string& key, T& target) const
     {
         if (Contains(key)) { target = static_cast<T>(Get<ssize_t>(key)); }
+    }
+    template <typename T>
+    void GetNumbers(const std::string& key, std::vector<T>& target) const
+    {
+        if (!Contains(key)) { return; }
+        const auto& v = Get<std::vector<ssize_t>>(key);
+        std::for_each(v.begin(), v.end(), [&](auto d) { target.push_back(static_cast<T>(d)); });
     }
 };
 

@@ -22,11 +22,9 @@
  * SOFTWARE.
  * */
 #include "cache_store.h"
-#include <shared_mutex>
+#include <numeric>
 #include "buffer_manager.h"
-#include "load_queue.h"
 #include "logger/logger.h"
-#include "template/hashset.h"
 #include "trans_manager.h"
 
 namespace UC::CacheStore {
@@ -60,6 +58,20 @@ public:
     }
 
 private:
+    Status CheckSizeConfig(const Config& config)
+    {
+        if (config.tensorSizes.empty()) { return Status::InvalidParam("invalid tensor size"); }
+        if (config.shardSize == 0) { return Status::InvalidParam("invalid shard size"); }
+        if (config.blockSize == 0) { return Status::InvalidParam("invalid block size"); }
+        if (std::accumulate(config.tensorSizes.begin(), config.tensorSizes.end(), size_t(0)) !=
+            config.shardSize) {
+            return Status::InvalidParam("invalid shard size({})", config.shardSize);
+        }
+        if (config.blockSize % config.shardSize != 0) {
+            return Status::InvalidParam("invalid block size({})", config.blockSize);
+        }
+        return Status::OK();
+    }
     Status CheckConfig(const Config& config)
     {
         if (!config.storeBackend) { return Status::InvalidParam("invalid store backend"); }
@@ -68,12 +80,8 @@ private:
         }
         if (config.uniqueId.empty()) { return Status::InvalidParam("invalid unique id"); }
         if (config.deviceId == -1) { return Status::OK(); }
-        if (config.tensorSize == 0 || config.shardSize < config.tensorSize ||
-            config.blockSize < config.shardSize || config.shardSize % config.tensorSize != 0 ||
-            config.blockSize % config.shardSize != 0) {
-            return Status::InvalidParam("invalid size({},{},{})", config.tensorSize,
-                                        config.shardSize, config.blockSize);
-        }
+        auto s = CheckSizeConfig(config);
+        if (s.Failure()) { return s; }
         auto bufferNumber = config.bufferCapacity / config.shardSize;
         if (bufferNumber < 1024) {
             return Status::InvalidParam("too small buffer({}) on shard({})", config.bufferCapacity,
@@ -97,7 +105,14 @@ private:
         UC_INFO("Set {}::StoreBackend to {}.", ns, config.storeBackend->Readme());
         UC_INFO("Set {}::UniqueId to {}.", ns, config.uniqueId);
         UC_INFO("Set {}::DeviceId to {}.", ns, config.deviceId);
-        UC_INFO("Set {}::TensorSize to {}.", ns, config.tensorSize);
+        const auto& v = config.tensorSizes;
+        if (v.empty()) {
+            UC_INFO("Set {}::TensorSizes to [].", ns);
+        } else if (std::all_of(v.begin(), v.end(), [&](auto d) { return d == v[0]; })) {
+            UC_INFO("Set {}::TensorSizes to {}(*{}).", ns, v[0], v.size());
+        } else {
+            UC_INFO("Set {}::TensorSizes to {}.", ns, v);
+        }
         UC_INFO("Set {}::ShardSize to {}.", ns, config.shardSize);
         UC_INFO("Set {}::BlockSize to {}.", ns, config.blockSize);
         UC_INFO("Set {}::BufferCapacity to {}GB.", ns, config.bufferCapacity >> 30);
@@ -117,8 +132,14 @@ Status CacheStore::Setup(const Detail::Dictionary& config)
     config.Get("store_backend", param.storeBackend);
     config.Get("unique_id", param.uniqueId);
     config.GetNumber("device_id", param.deviceId);
-    config.GetNumber("tensor_size", param.tensorSize);
+    size_t tensorSize = 0;
+    config.GetNumber("tensor_size", tensorSize);
     config.GetNumber("shard_size", param.shardSize);
+    if (tensorSize != 0) {
+        param.tensorSizes.assign(param.shardSize / tensorSize, tensorSize);
+    } else {
+        config.GetNumbers("tensor_size_list", param.tensorSizes);
+    }
     config.GetNumber("block_size", param.blockSize);
     if (param.shardSize > 0) { param.waitingQueueDepth *= (param.blockSize / param.shardSize); }
     config.Get("share_buffer_enable", param.shareBufferEnable);
