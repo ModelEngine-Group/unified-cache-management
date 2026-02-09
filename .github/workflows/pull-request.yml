@@ -87,8 +87,31 @@ jobs:
         uses: docker/build-push-action@v5
         with:
           context: .
-          file: ./docker/Dockerfile-NPU-0.11.0
+          file: ./docker/Dockerfile-NPU
+          build-args: "ENABLE_SPARSE=false"
           tags: ucm-npu:latest
+          push: false
+          load: false
+          cache-from: type=gha,scope=npu
+          cache-to: type=gha,mode=max,scope=npu
+
+  test-build-npu-sparse:
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build Image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ./docker/Dockerfile-NPU
+          build-args: "ENABLE_SPARSE=true"
+          tags: ucm-npu-sparse:latest
           push: false
           load: false
           cache-from: type=gha,scope=npu
@@ -133,8 +156,9 @@ jobs:
         sudo -E docker build --network=host \
           --build-arg http_proxy="${http_proxy:-}" \
           --build-arg https_proxy="${https_proxy:-}" \
+          --build-arg ENABLE_SPARSE=false \
           -t ucm-e2etest-gpu-pc:${{ steps.version.outputs.version }} \
-          -f ./docker/Dockerfile-GPU-0.9.2 ./
+          -f ./docker/Dockerfile-GPU ./
     - name: Test E2E in Docker
       run: |
         sudo chmod -R 777 /workspace/test_results/
@@ -202,8 +226,9 @@ jobs:
         sudo -E docker build --network=host \
           --build-arg http_proxy="${http_proxy:-}" \
           --build-arg https_proxy="${https_proxy:-}" \
+          --build-arg ENABLE_SPARSE=true \
           -t ucm-e2etest-gpu-sparse:${{ steps.version.outputs.version }} \
-          -f ./docker/Dockerfile-GPU-0.9.2 ./
+          -f ./docker/Dockerfile-GPU ./
     - name: Test E2E in Docker
       run: |
         sudo chmod -R 777 /workspace/test_results/
