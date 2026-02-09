@@ -420,7 +420,7 @@ class GSAOnDevice(UcmSparseBase):
             .reshape(-1, k_hash_compute.shape[-1])
             .contiguous()
         )
-        ucm_custom_ops.reshape_and_cache_bnsd(
+        torch.ops._C_ucm.npu_reshape_and_cache_bnsd(
             k_hash_compute,
             k_hash,
             attn_metadata.slot_mapping,
@@ -526,9 +526,10 @@ class GSAOnDevice(UcmSparseBase):
             q_decode = query.index_select(0, q_start[:-1])
         q_hash = self.hash_encoder.compute_hash(q_decode).unsqueeze(2).contiguous()
 
-        ucm_custom_ops.hamming_dist_top_k(
+        torch.ops._C_ucm.npu_hamming_dist_top_k(
             q_hash,
             k_hash,
+            None,
             self.topk_for_hamming,
             self.seq_lens_for_hamming,
             self.chunk_sizes_for_hamming,
