@@ -561,25 +561,36 @@ class GSAOnDevice(UcmSparseBase):
                 # self.topk_device
                 # indices
                 qhash_nope = self.hash_encoder_nope.compute_hash(decode_ql_nope)
-                print(f"qhash_nope={qhash_nope.shape}")
+                #print(f"qhash_nope={qhash_nope.shape}")
                 qhash_rope = self.hash_encoder_rope.compute_hash(decode_q_pe)
-                print(f"qhash_rope={qhash_rope.shape}")
+                #print(f"qhash_rope={qhash_rope.shape}")
                 qhash = torch.cat([qhash_nope, qhash_rope], dim=-1).contiguous()
-                print(f"qhash={qhash.shape}")
+                #print(f"qhash={qhash.shape}")
                 qhash_zeros = torch.zeros(
                     qhash_rope.shape,
                     dtype=qhash_rope.dtype,
                     device=self.device
                 )
-                print(f"qhash_zeros={qhash_zeros.shape}")
+                #print(f"qhash_zeros={qhash_zeros.shape}")
                 qhash_pad = torch.cat(
                     (qhash, qhash_zeros),
                     dim=2
                 ).unsqueeze(2).contiguous()
-                print(f"qhash_pad={qhash_pad.shape}")
-                print(f"khash_nope_cache={khash_nope_cache.shape}")
-                print(f"khash_rope_cache={khash_rope_cache.shape}")
-
+                
+                if torch.distributed.get_rank() == 0 and True:
+                    print(f"=======================op_hamming=======================")
+                    torch.set_printoptions(profile="full")
+                    print(f"qhash_pad={qhash_pad.shape}")
+                    print(f"khash_nope_cache={khash_nope_cache.shape}")
+                    print(f"khash_rope_cache={khash_rope_cache.shape}")
+                    print(f"self.topk_device={self.topk_device}")
+                    print(f"attn_metadata.decode.seq_lens_device={attn_metadata.decode.seq_lens_device}")
+                    print(f"self.chunk_sizes_for_hamming_full[:batch_size]={self.chunk_sizes_for_hamming_full[:batch_size]}")
+                    print(f"attn_metadata.decode.max_seq_lens={attn_metadata.decode.max_seq_lens}")
+                    print(f"self.hamming_keep_chunks_head={self.hamming_keep_chunks_head}")
+                    print(f"self.hamming_keep_chunks_tail={self.hamming_keep_chunks_tail}")
+                    print(f"self.ori_block_table_decode[:batch_size]={self.ori_block_table_decode[:batch_size]}")
+                    #print(f"self.hamming_output[:batch_size]={self.hamming_output[:batch_size]}")
                 new_block_table = torch.ops._C_ucm.npu_hamming_dist_top_k(
                     qhash_pad,
                     khash_nope_cache,
@@ -596,10 +607,18 @@ class GSAOnDevice(UcmSparseBase):
                     self.hamming_output[:batch_size]
                 )
                 attn_metadata.decode.block_table = new_block_table[:,0,:]
-
+                if torch.distributed.get_rank() == 0 and True:
+                    print(f"=======================attn_metadata.decode.block_table=======================")
+                    print(f"attn_metadata.decode.block_table.shape={attn_metadata.decode.block_table.shape}")
+                    print(f"attn_metadata.decode.block_table={attn_metadata.decode.block_table[:,:self.topk_device.max()]}")
+ 
             self.topk_block_table = attn_metadata.decode.block_table
             attn_metadata.decode.seq_lens = self.new_seq_lens
             attn_metadata.decode.seq_lens_list = self.new_seq_lens_list
+            if torch.distributed.get_rank() == 0 and True:
+                print(f"=======================attn_metadata.decode.seq_lens=======================")
+                print(f"attn_metadata.decode.seq_lens={attn_metadata.decode.seq_lens}")
+                print(f"attn_metadata.decode.seq_lens_list={attn_metadata.decode.seq_lens_list}")
 
 
     def update_decode_topk_gqa_cuda(self, query, k_hash, attn_metadata):
