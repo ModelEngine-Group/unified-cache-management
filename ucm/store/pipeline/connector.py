@@ -76,9 +76,8 @@ class UcmPipelineStore(UcmKVStoreBaseV1):
 
     def lookup(self, block_ids: List[bytes]) -> List[bool]:
         flat = np.frombuffer(b"".join(block_ids), dtype=np.uint8)
-        idx = self.store_.LookupOnPrefix(flat)
-        n = len(block_ids)
-        return [i <= idx for i in range(n)]
+        res = self.store_.Lookup(flat)
+        return np.frombuffer(res, dtype=bool)
 
     def lookup_on_prefix(self, block_ids: List[bytes]) -> int:
         flat = np.frombuffer(b"".join(block_ids), dtype=np.uint8)

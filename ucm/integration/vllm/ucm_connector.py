@@ -306,15 +306,10 @@ class UCMDirectConnector(KVConnectorBase_V1):
         if not external_block_ids:
             return 0, False
         try:
-            lookup_results = self.store.lookup(external_block_ids)
+            external_hit_blocks = self.store.lookup_on_prefix(external_block_ids) + 1
         except RuntimeError as e:
-            lookup_results = []
+            external_hit_blocks = 0
             logger.error(f"request {request.request_id} look up error. {e}")
-        external_hit_blocks = 0
-        for i, hit in enumerate(lookup_results):
-            if not hit:
-                break
-            external_hit_blocks += 1
         logger.info(
             f"request_id: {request.request_id}, "
             f"total_blocks_num: {len(ucm_block_ids)}, "
