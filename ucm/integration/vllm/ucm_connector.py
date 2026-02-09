@@ -1,5 +1,6 @@
 import copy
 import hashlib
+import math
 import os
 import pickle
 import time
@@ -57,6 +58,86 @@ class RequestDispatchMeta:
     dump_block_ids: tuple[list[bytes], list[int]]
 
 
+class KVCacheLayout:
+    def __init__(self, kvcaches, use_layerwise: bool) -> None:
+        # each row is a layer, each column is a tensor_size/ptr in the layer (e.g., k, v, rope, k_index)
+        self.base_ptrs: np.ndarray  # (n_layers, n_ptrs）
+        self.tensor_size_lists: np.ndarray  # (n_layers, n_tensor_sizes)
+        self.use_layerwise = use_layerwise
+        self._build_layout(kvcaches)
+
+    def _build_layout(self, kvcaches):
+        raw_ptr_rows = []
+        stride_rows = []
+
+        for _, kv_layer in kvcaches.items():
+            ptrs = []
+            strides = []
+
+            def handle_tensor(t: torch.Tensor, size_dims):
+                ptrs.append(t[0].data_ptr())
+
+                stride = math.prod([t.shape[i] for i in size_dims]) * t.element_size()
+                strides.append(stride)
+
+            if isinstance(kv_layer, torch.Tensor):
+                if kv_layer.dim() == 5:
+                    # [2, num_blocks, block_size, num_head, head_dim]
+                    handle_tensor(kv_layer[0], (-3, -2, -1))
+                    handle_tensor(kv_layer[1], (-3, -2, -1))
+                elif kv_layer.dim() == 3:
+                    # [num_blocks, block_size, head_dim]
+                    handle_tensor(kv_layer, (-2, -1))
+                else:
+                    raise ValueError(
+                        f"Unsupported kv cache tensor shape: {kv_layer.shape}"
+                    )
+            elif isinstance(kv_layer, Tuple):
+                # vllm_ascend >= 0.10.0, ([num_blocks, block_size, num_head, head_dim], ...)
+                for tensor in kv_layer:
+                    handle_tensor(tensor, (-3, -2, -1))
+            else:
+                raise TypeError(f"Unsupported kv cache type: {type(kv_layer)}")
+
+            raw_ptr_rows.append(ptrs)
+            stride_rows.append(strides)
+
+        self.base_ptrs = np.asarray(raw_ptr_rows, dtype=np.uint64)
+        self.tensor_size_lists = np.asarray(stride_rows, dtype=np.uint64)
+
+        logger.info(
+            f"base_ptrs: {self.base_ptrs.shape}, tensor_size_lists: {self.tensor_size_lists.shape}"
+        )
+
+    def extract_block_addrs(self, vllm_block_ids: List[int]) -> np.ndarray:
+        vllm_block_ids_np = np.array(vllm_block_ids, np.uint64)
+        block_addrs = (
+            vllm_block_ids_np[:, None, None] * self.tensor_size_lists[None, :, :]
+            + self.base_ptrs[None, :, :]
+        )  # (num_blocks, n_layers, n_ptrs)
+        return block_addrs
+
+    @property
+    def tensor_size_list(self) -> list[int]:
+        return (
+            self.tensor_size_lists.reshape(-1).tolist()
+            if not self.use_layerwise
+            else self.tensor_size_lists[0].tolist()
+        )
+
+    @property
+    def shard_size(self) -> int:
+        return int(
+            self.tensor_size_lists.sum()
+            if not self.use_layerwise
+            else self.tensor_size_lists[0].sum()
+        )
+
+    @property
+    def block_size(self) -> int:
+        return int(self.tensor_size_lists.sum())
+
+
 @dataclass
 class UCMConnectorMetadata(KVConnectorMetadata):
     request_meta: dict[str, RequestDispatchMeta] = field(default_factory=dict)
@@ -95,12 +176,14 @@ class UCMDirectConnector(KVConnectorBase_V1):
         self.tp_rank = self._vllm_config.parallel_config.rank
         self.block_size = self._vllm_config.cache_config.block_size
         self.is_mla = self._vllm_config.model_config.is_deepseek_mla
-        self.is_dsa = False
         self.num_layers = self._vllm_config.model_config.get_num_layers(
             self._vllm_config.parallel_config
         )
         self.tp_size = self._vllm_config.parallel_config.tensor_parallel_size
         self.kv_cache_dtype: torch.dtype = None
+        logger.info(
+            f"is_mla: {self.is_mla}, num_layers: {self.num_layers}, tp_size: {self.tp_size}"
+        )
 
         if current_platform.is_cuda_alike():
             logger.info("CUDA device is available.")
@@ -129,13 +212,14 @@ class UCMDirectConnector(KVConnectorBase_V1):
         self.connector_configs = self.launch_config.get("ucm_connectors", [])
         assert len(self.connector_configs) > 0, "no storage connector name in config."
 
-        self.chunk_size = 1
+        self.chunk_size = self.block_size
+        self.blocks_per_chunk = self.chunk_size // self.block_size
 
         if role == KVConnectorRole.SCHEDULER:
             self.request_hasher = RequestHasher(vllm_config, 0)
             self._seed = self.request_hasher("UCM_HASH_SEED")
             # init scheduler-size connector
-            self.store = self._create_store(None, None)
+            self.store = self._create_store(None)
         else:
             self.request_hasher = RequestHasher(vllm_config, self.tp_rank)
 
@@ -185,10 +269,7 @@ class UCMDirectConnector(KVConnectorBase_V1):
         return ret
 
     def _create_store(
-        self,
-        tensor_size: Optional[int],
-        chunk_block_size: Optional[int],
-        is_rope: bool = False,
+        self, kv_cache_layout: Optional[KVCacheLayout]
     ) -> UcmKVStoreBaseV1:
         if len(self.connector_configs) != 1:
             raise RuntimeError(
@@ -199,31 +280,25 @@ class UCMDirectConnector(KVConnectorBase_V1):
 
         name = self.connector_configs[0]["ucm_connector_name"]
         config = copy.deepcopy(self.connector_configs[0]["ucm_connector_config"])
-        shared_data = self.is_dsa or self.is_mla
-        config.setdefault("share_buffer_enable", shared_data)
+        config.setdefault("share_buffer_enable", self.is_mla)
         if "storage_backends" in config:
             config["storage_backends"] = self._generate_storage_backends(
-                config["storage_backends"], is_rope
+                config["storage_backends"]
             )
-        config["unique_id"] = f"{self.engine_id}_rope" if is_rope else self.engine_id
+        config["unique_id"] = f"{self.engine_id}"
         if self._role == KVConnectorRole.WORKER:
             config["device_id"] = self.local_rank
-            config["tensor_size"] = tensor_size
-            config["shard_size"] = (
-                chunk_block_size
-                if not self.use_layerwise
-                else tensor_size * self.chunk_size
+            config["tensor_size_list"] = (
+                kv_cache_layout.tensor_size_list * self.blocks_per_chunk
             )
-            config["block_size"] = chunk_block_size
-            config["local_rank_size"] = self.tp_size if shared_data else 1
+            config["shard_size"] = kv_cache_layout.shard_size * self.blocks_per_chunk
+            config["block_size"] = kv_cache_layout.block_size * self.blocks_per_chunk
+            config["local_rank_size"] = self.tp_size if self.is_mla else 1
         logger.info(f"create {name} with config: {config}")
         return UcmConnectorFactoryV1.create_connector(name, config)
 
-    def _generate_storage_backends(
-        self, storage_backends: str, is_rope: bool = False
-    ) -> List[str]:
-        subdir = "rope" if is_rope else "kv"
-        backends = [os.path.join(path, subdir) for path in storage_backends.split(":")]
+    def _generate_storage_backends(self, storage_backends: str) -> List[str]:
+        backends = [os.path.join(path, "kv") for path in storage_backends.split(":")]
         os.makedirs(backends[0], exist_ok=True)
         return backends
 
@@ -240,55 +315,18 @@ class UCMDirectConnector(KVConnectorBase_V1):
         if isinstance(sample_kv_layer, torch.Tensor):
             logger.info(f"kv cache shape {sample_kv_layer.shape}")
         elif isinstance(sample_kv_layer, Tuple):
-            # Since vllm_ascend >= 0.10.0, the MLA model's tensor shape has changed to Tuple
-            # [(num_blocks, block_size, num_kv_heads, nope_dim/rope_dim)]
-            # Currently, we treat it as GQA, dump rope_dim to a separate directory and use is_dsa to mark it
+            # vllm_ascend >= 0.10.0 uses Tuple for kvcaches
             for i, tensor in enumerate(sample_kv_layer):
                 logger.info(f"kv cache shape {i}: {tensor.shape}")
-            if self.is_mla:
-                self.is_mla = False
-                self.is_dsa = True
-        logger.info(f"use mla: {self.is_mla}, use dsa: {self.is_dsa}")
 
-        # Initialize KV cache base addresses
-        k_ptrs, v_ptrs = [], []
-        self.k_base_ptrs: np.ndarray
-        self.v_base_ptrs: Optional[np.ndarray] = None
-        for _, kv_layer in self.kv_caches.items():
-            if len(sample_kv_layer) == 2:
-                k_ptrs.append(kv_layer[0].data_ptr())
-                v_ptrs.append(kv_layer[1].data_ptr())
-            else:
-                k_ptrs.append(kv_layer.data_ptr())
-        self.k_base_ptrs = np.array(k_ptrs, dtype=np.uint64)
-        self.v_base_ptrs = np.array(v_ptrs, dtype=np.uint64) if v_ptrs else None
+        self.kv_cache_layout = KVCacheLayout(self.kv_caches, self.use_layerwise)
+        self.block_data_size = self.kv_cache_layout.block_size
 
-        # init work-side connector
-        tensor_size = (
-            sample_kv_layer[0][0].numel() * sample_kv_layer[0][0].element_size()
-            if not self.is_mla
-            else sample_kv_layer[0].numel() * sample_kv_layer[0].element_size()
-        )
-        chunk_block_size = (
-            tensor_size
-            * self.num_layers
-            * self.chunk_size
-            * (1 if self.is_mla or self.is_dsa else 2)
-        )
-        self.block_stride = tensor_size
+        self.layer_name_to_id = {
+            name: self._extract_layer_index(name) for name in self.kv_caches.keys()
+        }
 
-        self.block_data_size = chunk_block_size
-        self.store = self._create_store(tensor_size, chunk_block_size)
-        if self.is_dsa:
-            rope_tensor_size = (
-                sample_kv_layer[1][0].numel() * sample_kv_layer[1][0].element_size()
-            )
-            rope_chunk_block_size = rope_tensor_size * self.num_layers * self.chunk_size
-            self.rope_store = self._create_store(
-                rope_tensor_size, rope_chunk_block_size, True
-            )
-            self.rope_block_stride = rope_tensor_size
-            self.block_data_size += rope_chunk_block_size
+        self.store = self._create_store(self.kv_cache_layout)
 
     def get_num_new_matched_tokens(
         self,
@@ -451,41 +489,11 @@ class UCMDirectConnector(KVConnectorBase_V1):
                 return int(chunk)
         return None
 
-    def _generate_task(
-        self, vllm_block_ids: List[int]
-    ) -> Tuple[np.ndarray, np.ndarray]:
-        block_addrs, rope_block_addrs = None, None
-        vllm_block_ids_np = np.array(vllm_block_ids, np.uint64)
-        k_addrs = (
-            vllm_block_ids_np[:, None] * self.block_stride + self.k_base_ptrs[None, :]
-        )
-        num_blocks, num_layers = k_addrs.shape
-        if self.v_base_ptrs is None:
-            block_addrs = k_addrs
-        elif self.is_dsa:
-            v_addrs = (
-                vllm_block_ids_np[:, None] * self.rope_block_stride
-                + self.v_base_ptrs[None, :]
-            )
-            block_addrs = k_addrs
-            rope_block_addrs = v_addrs
-        else:
-            v_addrs = (
-                vllm_block_ids_np[:, None] * self.block_stride
-                + self.v_base_ptrs[None, :]
-            )
-            block_addrs = np.empty((num_blocks, num_layers * 2), dtype=np.uint64)
-            block_addrs[:, :num_layers] = k_addrs
-            block_addrs[:, num_layers:] = v_addrs
-
-        return block_addrs, rope_block_addrs
-
     def start_load_kv(self, forward_context: "ForwardContext", **kwargs) -> None:
         metadata = self._get_connector_metadata()
         assert isinstance(metadata, UCMConnectorMetadata)
 
-        request_to_task: dict[str, Optional[List[Task]]] = {}
-        req_broadcast_addr = {}
+        request_to_task: dict[str, Task] = {}
         is_load = False
         num_loaded_block = 0
         num_loaded_request = 0
@@ -498,38 +506,29 @@ class UCMDirectConnector(KVConnectorBase_V1):
             num_loaded_request += 1
 
             ucm_block_ids, vllm_block_ids = request.load_block_ids
-            if self.tp_rank != 0 and not self.is_mla and not self.is_dsa:
+            if self.tp_rank != 0 and not self.is_mla:
                 for i, ucm_block_id in enumerate(ucm_block_ids):
                     ucm_block_ids[i] = self.request_hasher(ucm_block_id)
-            total_tensors, rope_tensors = self._generate_task(vllm_block_ids)
+            total_ptrs = self.kv_cache_layout.extract_block_addrs(vllm_block_ids)
+            total_ptrs = total_ptrs.reshape(total_ptrs.shape[0], -1)
             shard_indexs = [0] * len(ucm_block_ids)
             try:
-                task = self.store.load_data(ucm_block_ids, shard_indexs, total_tensors)
-                request_to_task[request_id] = [task]
-                if rope_tensors is not None and self.rope_store:
-                    rope_task = self.rope_store.load_data(
-                        ucm_block_ids, shard_indexs, rope_tensors
-                    )
-                    request_to_task[request_id].append(rope_task)
+                task = self.store.load_data(ucm_block_ids, shard_indexs, total_ptrs)
+                request_to_task[request_id] = task
             except RuntimeError as e:
-                logger.error(f"request {request_id} load data error. {e}")
+                logger.error(f"request {request_id} submit load task error. {e}")
                 self._invalid_block_ids.update(
                     metadata.request_meta[request_id].load_block_ids[1]
                 )
 
-        for request_id, tasks in request_to_task.items():
-            # TODO error handling
+        for request_id, task in request_to_task.items():
             try:
-                self.store.wait(tasks[0])
-                if len(tasks) > 1 and self.rope_store:
-                    self.rope_store.wait(tasks[1])
+                self.store.wait(task)
             except RuntimeError as e:
-                logger.error(f"request {request_id} load kv cache failed. {e}")
+                logger.error(f"request {request_id} wait load task error. {e}")
                 self._invalid_block_ids.update(
                     metadata.request_meta[request_id].load_block_ids[1]
                 )
-            except IndexError as e:
-                logger.error(f"request {request_id} load kv cache index error. {e}")
 
         load_end_time = time.perf_counter() * 1000
         load_speed = (
@@ -563,7 +562,7 @@ class UCMDirectConnector(KVConnectorBase_V1):
 
     def wait_for_save(self) -> None:
         # TODO support PP
-        if (self.is_mla or self.is_dsa) and self.tp_rank != 0:
+        if self.is_mla and self.tp_rank != 0:
             return
 
         metadata = self._get_connector_metadata()
@@ -589,27 +588,22 @@ class UCMDirectConnector(KVConnectorBase_V1):
             total_vllm_block_ids.extend(vllm_block_ids)
 
         if is_save:
-            total_tensors, rope_tensors = self._generate_task(total_vllm_block_ids)
+            total_ptrs = self.kv_cache_layout.extract_block_addrs(total_vllm_block_ids)
+            total_ptrs = total_ptrs.reshape(total_ptrs.shape[0], -1)
             shard_indexs = [0] * len(total_ucm_block_ids)
             try:
                 self.synchronize()
                 save_start_time = time.perf_counter() * 1000
                 task = self.store.dump_data(
-                    total_ucm_block_ids, shard_indexs, total_tensors
+                    total_ucm_block_ids, shard_indexs, total_ptrs
                 )
                 dump_tasks.append(task)
-                if rope_tensors is not None and self.rope_store:
-                    rope_task = self.rope_store.dump_data(
-                        total_ucm_block_ids, shard_indexs, rope_tensors
-                    )
-                    dump_tasks.append(rope_task)
             except RuntimeError as e:
                 logger.error(f"dump kv cache failed. {e}")
 
             try:
-                self.store.wait(dump_tasks[0]) if dump_tasks else None
-                if len(dump_tasks) > 1 and self.rope_store:
-                    self.rope_store.wait(dump_tasks[1])
+                for task in dump_tasks:
+                    self.store.wait(task)
                 save_end_time = time.perf_counter() * 1000
             except RuntimeError as e:
                 logger.error(f"wait for dump kv cache failed.{e}")
@@ -657,17 +651,14 @@ class UCMLayerWiseConnector(UCMDirectConnector):
 
     def __init__(self, vllm_config: "VllmConfig", role: KVConnectorRole):
         super().__init__(vllm_config, role)
-        # [k_task, k_task, ...] for mla
-        # [k_task, v_task/rope_task, k_task, vtask/rope_task, ...] for dsa or gqa
-        self.load_tasks: dict[str, list[Task]] = defaultdict(list)
-        self.dump_tasks: list[Task] = []
+        self.load_tasks: dict[str, dict[str, Task]] = defaultdict(dict)
+        self.dump_tasks: dict[str, Task] = {}
         self.use_layerwise = True
         self.is_save = False
         logger.info("Init UCMLayerWiseConnector.")
 
     def start_load_kv(self, forward_context: "ForwardContext", **kwargs) -> None:
         metadata = self._get_connector_metadata()
-        assert isinstance(metadata, UCMConnectorMetadata)
         self.load_tasks.clear()
 
         for request_id, request in metadata.request_meta.items():
@@ -675,68 +666,35 @@ class UCMLayerWiseConnector(UCMDirectConnector):
                 continue
 
             ucm_block_ids, vllm_block_ids = request.load_block_ids
-            if self.tp_rank != 0 and not self.is_mla and not self.is_dsa:
+            if self.tp_rank != 0 and not self.is_mla:
                 for i, ucm_block_id in enumerate(ucm_block_ids):
                     ucm_block_ids[i] = self.request_hasher(ucm_block_id)
             try:
-                for i in range(self.num_layers):
-                    shard_indexs = [i] * len(ucm_block_ids)
-                    vllm_block_ids_np = np.array(vllm_block_ids, np.uint64)
-                    k_block_ptrs = (
-                        vllm_block_ids_np * self.block_stride + self.k_base_ptrs[i]
-                    )
-                    task = self.store.load_data(
-                        ucm_block_ids, shard_indexs, k_block_ptrs[:, None]
-                    )
-                    self.load_tasks[request_id].append(task)
-                    if self.v_base_ptrs is not None:
-                        if self.is_dsa:
-                            v_block_ptrs = (
-                                vllm_block_ids_np * self.rope_block_stride
-                                + self.v_base_ptrs[i]
-                            )
-                            task = self.rope_store.load_data(
-                                ucm_block_ids, shard_indexs, v_block_ptrs[:, None]
-                            )
-                        else:
-                            v_shard_indexs = [i + self.num_layers] * len(ucm_block_ids)
-                            v_block_ptrs = (
-                                vllm_block_ids_np * self.block_stride
-                                + self.v_base_ptrs[i]
-                            )
-                            task = self.store.load_data(
-                                ucm_block_ids, v_shard_indexs, v_block_ptrs[:, None]
-                            )
-                        self.load_tasks[request_id].append(task)
+                total_ptrs = self.kv_cache_layout.extract_block_addrs(vllm_block_ids)
+                for layer_name in self.kv_caches:
+                    layer_id = self.layer_name_to_id[layer_name]
+                    shard_indexs = [layer_id] * len(ucm_block_ids)
+                    layer_ptrs = np.ascontiguousarray(total_ptrs[:, layer_id, :])
+                    task = self.store.load_data(ucm_block_ids, shard_indexs, layer_ptrs)
+                    self.load_tasks[request_id][layer_name] = task
             except RuntimeError as e:
-                logger.error(f"request {request_id} load data error. {e}")
+                logger.error(f"request {request_id} submit load task error. {e}")
                 self._invalid_block_ids.update(
                     metadata.request_meta[request_id].load_block_ids[1]
                 )
-                self.load_tasks.pop(request_id, None)
 
     def wait_for_layer_load(self, layer_name: str) -> None:
         metadata = self._get_connector_metadata()
-        assert isinstance(metadata, UCMConnectorMetadata)
 
-        layer_id = self._extract_layer_index(layer_name)
         for request_id, tasks in self.load_tasks.items():
             try:
-                if self.is_mla:
-                    self.store.wait(tasks[layer_id])
-                elif self.is_dsa:
-                    self.store.wait(tasks[layer_id * 2])
-                    self.rope_store.wait(tasks[layer_id * 2 + 1])
-                else:
-                    self.store.wait(tasks[layer_id * 2])
-                    self.store.wait(tasks[layer_id * 2 + 1])
+                if layer_name in tasks:
+                    self.store.wait(tasks[layer_name])
             except RuntimeError as e:
-                logger.error(f"request {request_id} load kv cache failed. {e}")
+                logger.error(f"request {request_id} wait load failed. {e}")
                 self._invalid_block_ids.update(
                     metadata.request_meta[request_id].load_block_ids[1]
                 )
-            except IndexError as e:
-                logger.error(f"request {request_id} load kv cache index error. {e}")
 
     def save_kv_layer(
         self,
@@ -746,14 +704,13 @@ class UCMLayerWiseConnector(UCMDirectConnector):
         **kwargs,
     ) -> None:
         # TODO support PP
-        if (self.is_mla or self.is_dsa) and self.tp_rank != 0:
+        if self.is_mla and self.tp_rank != 0:
             return
 
         metadata = self._get_connector_metadata()
-        assert isinstance(metadata, UCMConnectorMetadata)
 
-        layer_id = self._extract_layer_index(layer_name)
         total_ucm_block_ids, total_vllm_block_ids = [], []
+        layer_id = self.layer_name_to_id[layer_name]
         for _, request in metadata.request_meta.items():
             if len(request.dump_block_ids[0]) == 0:
                 continue
@@ -767,57 +724,27 @@ class UCMLayerWiseConnector(UCMDirectConnector):
             total_vllm_block_ids.extend(vllm_block_ids)
 
         if self.is_save:
+            total_ptrs = self.kv_cache_layout.extract_block_addrs(total_vllm_block_ids)
             shard_indexs = [layer_id] * len(total_ucm_block_ids)
             try:
-                vllm_block_ids_np = np.array(total_vllm_block_ids, np.uint64)
-                k_block_ptrs = (
-                    vllm_block_ids_np * self.block_stride + self.k_base_ptrs[layer_id]
-                )
+                layer_ptrs = np.ascontiguousarray(total_ptrs[:, layer_id, :])
                 self.synchronize()
                 task = self.store.dump_data(
-                    total_ucm_block_ids, shard_indexs, k_block_ptrs[:, None]
+                    total_ucm_block_ids, shard_indexs, layer_ptrs
                 )
-                self.dump_tasks.append(task)
-                if self.v_base_ptrs is not None:
-                    if self.is_dsa:
-                        v_block_ptrs = (
-                            vllm_block_ids_np * self.rope_block_stride
-                            + self.v_base_ptrs[layer_id]
-                        )
-                        task = self.rope_store.dump_data(
-                            total_ucm_block_ids, shard_indexs, v_block_ptrs[:, None]
-                        )
-                    else:
-                        v_shard_indexs = [layer_id + self.num_layers] * len(
-                            total_ucm_block_ids
-                        )
-                        v_block_ptrs = (
-                            vllm_block_ids_np * self.block_stride
-                            + self.v_base_ptrs[layer_id]
-                        )
-                        task = self.store.dump_data(
-                            total_ucm_block_ids, v_shard_indexs, v_block_ptrs[:, None]
-                        )
-                    self.dump_tasks.append(task)
+                self.dump_tasks[layer_name] = task
             except RuntimeError as e:
-                logger.error(f"dump kv cache failed. {e}")
+                logger.error(f"submit dump task failed. {e}")
 
     def wait_for_save(self) -> None:
         if not self.is_save:
             return
         try:
-            for i in range(self.num_layers):
-                idx = i if self.is_mla else i * 2
-                self.store.wait(self.dump_tasks[idx])
-                if self.v_base_ptrs is not None:
-                    if self.is_dsa:
-                        self.rope_store.wait(self.dump_tasks[idx + 1])
-                    else:
-                        self.store.wait(self.dump_tasks[idx + 1])
+            for layer_name in self.kv_caches:
+                if layer_name in self.dump_tasks:
+                    self.store.wait(self.dump_tasks[layer_name])
         except RuntimeError as e:
             logger.error(f"wait for dump kv cache failed. {e}")
-        except IndexError as e:
-            logger.error(f"wait for dump kv cache index error. {e}")
         self.dump_tasks.clear()
         self.is_save = False
 
