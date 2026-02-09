@@ -233,11 +233,11 @@ class GSAOnDevice(UcmSparseBase):
                 if not self.is_mla: # for GQA
                     self.decode_mask = None
                     self.decode_mask_npu = None
-                    self.is_tensor_computed = False
                 else: # for MLA in NPU
                     self.khash_zeros_full = None
 
                 # for both MLA and GQA
+                self.is_tensor_computed = False
                 self.hamming_keep_chunks_head = 1
                 self.hamming_keep_chunks_tail = 4
                 
@@ -544,7 +544,7 @@ class GSAOnDevice(UcmSparseBase):
             self.topk_device = torch.clamp(
                 topk_device,
                 min = 1,
-                max = self.hash_topk_tokens
+                max = self.hash_topk_tokens // self.block_size
             )
             self.is_tensor_computed = True
 
@@ -599,6 +599,7 @@ class GSAOnDevice(UcmSparseBase):
 
             self.topk_block_table = attn_metadata.decode.block_table
             attn_metadata.decode.seq_lens = self.new_seq_lens
+            attn_metadata.decode.seq_lens_list = self.new_seq_lens_list
 
 
     def update_decode_topk_gqa_cuda(self, query, k_hash, attn_metadata):
@@ -778,6 +779,8 @@ class GSAOnDevice(UcmSparseBase):
                             self.origin_tile_scheduler_metadata
                         )
                         attn_metadata.decode.num_splits = self.origin_num_splits
+                    else: # only for MLA in NPU
+                        attn_metadata.decode.seq_lens_list = self.ori_seq_lens_list
         else:  # 判断req decode阶段
             if self.has_decode:
                 if self.is_cuda:
@@ -921,6 +924,8 @@ class GSAOnDevice(UcmSparseBase):
                 topk_token=self.hash_topk_tokens,
                 block_size=self.block_size,
             )
+            self.ori_seq_lens_list = seq_lens.tolist()
+            self.new_seq_lens_list = self.new_seq_lens.tolist()
             # no need for later variables in MLA
             return
 
