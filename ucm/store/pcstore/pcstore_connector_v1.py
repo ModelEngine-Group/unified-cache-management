@@ -45,6 +45,13 @@ class UcmPcStoreV1(UcmKVStoreBaseV1):
         block_size = config.get("block_size", 0)
         transfer_enable = True if config.get("device_id", -1) >= 0 else False
         param = ucmpcstore.PcStore.Config(storage_backends, block_size, transfer_enable)
+        if "tensor_size_list" in config:
+            tensor_size_list = config["tensor_size_list"]
+            if not isinstance(tensor_size_list, list) or not tensor_size_list:
+                raise RuntimeError("tensor_size_list must be a non-empty list.")
+            if not all(x == tensor_size_list[0] for x in tensor_size_list):
+                raise RuntimeError("PcStore does not support different tensor sizes.")
+            config["tensor_size"] = tensor_size_list[0]
         key_mapping = {
             "unique_id": "uniqueId",
             "io_direct": "transferIoDirect",
