@@ -26,10 +26,10 @@
 
 #include <future>
 #include <thread>
+#include "copy_stream.h"
 #include "template/hashset.h"
 #include "template/spsc_ring_queue.h"
 #include "thread/latch.h"
-#include "trans/stream.h"
 #include "trans_buffer.h"
 #include "trans_task.h"
 #include "ucmstore_v1.h"
@@ -55,6 +55,9 @@ private:
     TaskIdSet* failureSet_{nullptr};
     TransBuffer* buffer_{nullptr};
     std::shared_ptr<StoreV1> backend_{nullptr};
+    int32_t deviceId_{-1};
+    std::vector<size_t> tensorSizes_{};
+    size_t streamNumber_{1};
     SpscRingQueue<TaskPair> waiting_;
     SpscRingQueue<ShardTask> running_;
     std::thread dispatcher_;
@@ -69,9 +72,11 @@ public:
 private:
     void DispatchStage();
     void DispatchOneTask(TaskPair&& pair);
-    void TransferStage(int32_t deviceId, size_t tensorSize, std::promise<Status>& started);
-    void TransferOneTask(Trans::Stream* stream, size_t tensorSize, ShardTask&& task);
+    void TransferStage(std::promise<Status>& started);
+    void TransferOneTask(CopyStream& stream, ShardTask&& task);
     Status WaitBackendTaskReady(ShardTask& task);
+    Status HostToDeviceScatterAsync(std::shared_ptr<Trans::Stream> stream, void* host,
+                                    void** device);
 };
 
 }  // namespace UC::CacheStore

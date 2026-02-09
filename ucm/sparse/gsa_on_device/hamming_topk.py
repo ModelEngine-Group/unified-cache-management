@@ -4,7 +4,6 @@ if hasattr(torch, "cuda") and torch.cuda.is_available():
     from ucm.sparse.gsa_on_device.ham_dist import hamming
 
 
-@torch.compile()
 def update_seq_lens(seq_lens, topk_token, block_size):
     drop_block_num = (
         (seq_lens - topk_token).clip(min=0) + block_size - 1

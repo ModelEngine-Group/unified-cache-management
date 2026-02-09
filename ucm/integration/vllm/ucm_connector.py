@@ -306,15 +306,10 @@ class UCMDirectConnector(KVConnectorBase_V1):
         if not external_block_ids:
             return 0, False
         try:
-            lookup_results = self.store.lookup(external_block_ids)
+            external_hit_blocks = self.store.lookup_on_prefix(external_block_ids) + 1
         except RuntimeError as e:
-            lookup_results = []
+            external_hit_blocks = 0
             logger.error(f"request {request.request_id} look up error. {e}")
-        external_hit_blocks = 0
-        for i, hit in enumerate(lookup_results):
-            if not hit:
-                break
-            external_hit_blocks += 1
         logger.info(
             f"request_id: {request.request_id}, "
             f"total_blocks_num: {len(ucm_block_ids)}, "
@@ -508,39 +503,33 @@ class UCMDirectConnector(KVConnectorBase_V1):
                     ucm_block_ids[i] = self.request_hasher(ucm_block_id)
             total_tensors, rope_tensors = self._generate_task(vllm_block_ids)
             shard_indexs = [0] * len(ucm_block_ids)
-            if self.tp_rank == 0:
-                try:
-                    task = self.store.load_data(
-                        ucm_block_ids, shard_indexs, total_tensors
+            try:
+                task = self.store.load_data(ucm_block_ids, shard_indexs, total_tensors)
+                request_to_task[request_id] = [task]
+                if rope_tensors is not None and self.rope_store:
+                    rope_task = self.rope_store.load_data(
+                        ucm_block_ids, shard_indexs, rope_tensors
                     )
-                    request_to_task[request_id] = [task]
-                    if rope_tensors is not None and self.rope_store:
-                        rope_task = self.rope_store.load_data(
-                            ucm_block_ids, shard_indexs, rope_tensors
-                        )
-                        request_to_task[request_id].append(rope_task)
-                except RuntimeError as e:
-                    logger.error(f"request {request_id} load data error. {e}")
-                    self._invalid_block_ids.update(
-                        metadata.request_meta[request_id].load_block_ids[1]
-                    )
-            else:
-                request_to_task[request_id] = None
+                    request_to_task[request_id].append(rope_task)
+            except RuntimeError as e:
+                logger.error(f"request {request_id} load data error. {e}")
+                self._invalid_block_ids.update(
+                    metadata.request_meta[request_id].load_block_ids[1]
+                )
 
         for request_id, tasks in request_to_task.items():
             # TODO error handling
-            if self.tp_rank == 0:
-                try:
-                    self.store.wait(tasks[0])
-                    if len(tasks) > 1 and self.rope_store:
-                        self.rope_store.wait(tasks[1])
-                except RuntimeError as e:
-                    logger.error(f"request {request_id} load kv cache failed. {e}")
-                    self._invalid_block_ids.update(
-                        metadata.request_meta[request_id].load_block_ids[1]
-                    )
-                except IndexError as e:
-                    logger.error(f"request {request_id} load kv cache index error. {e}")
+            try:
+                self.store.wait(tasks[0])
+                if len(tasks) > 1 and self.rope_store:
+                    self.rope_store.wait(tasks[1])
+            except RuntimeError as e:
+                logger.error(f"request {request_id} load kv cache failed. {e}")
+                self._invalid_block_ids.update(
+                    metadata.request_meta[request_id].load_block_ids[1]
+                )
+            except IndexError as e:
+                logger.error(f"request {request_id} load kv cache index error. {e}")
 
         load_end_time = time.perf_counter() * 1000
         load_speed = (

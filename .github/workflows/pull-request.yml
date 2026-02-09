@@ -72,28 +72,27 @@ jobs:
   lint-and-unit-tests:
     needs: pre-check
     uses: ./.github/workflows/lint-and-test.yml
-
+  
   test-build-npu:
     runs-on: ubuntu-24.04-arm
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      
-      - name: Build Image
-        run: |
-          docker build -t ucm-npu:latest docker/Dockerfile-NPU-0.11.0
 
-  test-build-npu-sparse:
-    runs-on: ubuntu-24.04-arm
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-      
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
       - name: Build Image
-        run: |
-          docker build --build-arg ENABLE_SPARSE=true -t ucm-npu-sparse:latest docker/Dockerfile-NPU-0.11.0
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ./docker/Dockerfile-NPU-0.11.0
+          tags: ucm-npu:latest
+          push: false
+          load: false
+          cache-from: type=gha,scope=npu
+          cache-to: type=gha,mode=max,scope=npu
 
   test-e2e-pc-gpu:
     runs-on: ["gpu-test-in-docker"]
@@ -135,7 +134,7 @@ jobs:
           --build-arg http_proxy="${http_proxy:-}" \
           --build-arg https_proxy="${https_proxy:-}" \
           -t ucm-e2etest-gpu-pc:${{ steps.version.outputs.version }} \
-          -f ./docker/Dockerfile-onlyPC ./
+          -f ./docker/Dockerfile-GPU-0.9.2 ./
     - name: Test E2E in Docker
       run: |
         sudo chmod -R 777 /workspace/test_results/
@@ -204,7 +203,7 @@ jobs:
           --build-arg http_proxy="${http_proxy:-}" \
           --build-arg https_proxy="${https_proxy:-}" \
           -t ucm-e2etest-gpu-sparse:${{ steps.version.outputs.version }} \
-          -f ./docker/Dockerfile ./
+          -f ./docker/Dockerfile-GPU-0.9.2 ./
     - name: Test E2E in Docker
       run: |
         sudo chmod -R 777 /workspace/test_results/

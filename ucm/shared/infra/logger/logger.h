@@ -24,7 +24,11 @@
 #ifndef UNIFIEDCACHE_INFRA_LOGGER_H
 #define UNIFIEDCACHE_INFRA_LOGGER_H
 
+#include <fmt/chrono.h>
+#include <fmt/format.h>
+#include <fmt/ranges.h>
 #include "cc/spdlog_logger.h"
+
 namespace UC::Logger {
 
 void Log(Level&& lv, std::string file, std::string func, int line, std::string&& msg);

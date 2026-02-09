@@ -97,9 +97,11 @@ class UcmPcStoreV1(UcmKVStoreBaseV1):
             An index representing the maximum index of blocks found in storage,
             returns -1 if none are found.
         """
-        raise NotImplementedError(
-            "Method(lookup_on_prefix) not yet implemented in this version"
-        )
+        res = self.lookup(block_ids)
+        for i, result in enumerate(res):
+            if not result:
+                return i - 1
+        return len(res) - 1
 
     def prefetch(self, block_ids: List[bytes]) -> None:
         """Asynchronously prefetch blocks into high-speed cache.

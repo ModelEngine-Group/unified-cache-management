@@ -33,14 +33,15 @@ struct Config {
     std::shared_ptr<StoreV1> storeBackend{};
     std::string uniqueId{};
     int32_t deviceId{-1};
-    size_t tensorSize{0};
+    std::vector<size_t> tensorSizes{};
     size_t shardSize{0};
     size_t blockSize{0};
-    size_t bufferNumber{16384};
-    bool shareBufferEnable{false};
-    size_t waitingQueueDepth{1024};
-    size_t runningQueueDepth{32768};
+    size_t bufferCapacity{256ULL << 30};
+    bool shareBufferEnable{true};
+    size_t waitingQueueDepth{8192};
+    size_t runningQueueDepth{524288};
     size_t timeoutMs{30000};
+    size_t streamNumber{4};
 };
 
 }  // namespace UC::CacheStore

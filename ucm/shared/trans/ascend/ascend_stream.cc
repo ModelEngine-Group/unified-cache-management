@@ -41,7 +41,8 @@ AscendStream::~AscendStream()
 
 Status AscendStream::Setup()
 {
-    auto ret = aclrtCreateStream(&stream_);
+    auto ret =
+        aclrtCreateStreamWithConfig(&stream_, 0, ACL_STREAM_FAST_LAUNCH | ACL_STREAM_FAST_SYNC);
     if (ret != ACL_SUCCESS) [[unlikely]] { return Status{ret, std::to_string(ret)}; }
     cbThread_ = std::thread([this] {
         while (!this->stop_) { (void)aclrtProcessReport(10); }

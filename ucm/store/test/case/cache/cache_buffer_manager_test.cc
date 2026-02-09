@@ -49,11 +49,12 @@ TEST_F(UCCacheBufferManagerTest, Lookup)
     UC::CacheStore::Config config;
     config.storeBackend = std::shared_ptr<UC::StoreV1>(&backend, [](auto) {});
     config.deviceId = 0;
-    config.tensorSize = 4096;
-    config.shardSize = config.tensorSize;
+    size_t tensorSize = 4096;
+    config.tensorSizes = {4096};
+    config.shardSize = tensorSize;
     config.blockSize = config.shardSize;
     config.deviceId = 0;
-    config.bufferNumber = 1024;
+    config.bufferCapacity = config.shardSize * 1024;
     config.uniqueId = rd.RandomString(10);
     config.shareBufferEnable = true;
     ASSERT_TRUE(bufferMgr.Setup(config).Success());

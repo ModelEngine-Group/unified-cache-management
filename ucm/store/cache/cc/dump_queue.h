@@ -26,10 +26,10 @@
 
 #include <future>
 #include <thread>
+#include "copy_stream.h"
 #include "template/hashset.h"
 #include "template/spsc_ring_queue.h"
 #include "thread/latch.h"
-#include "trans/stream.h"
 #include "trans_buffer.h"
 #include "trans_task.h"
 #include "ucmstore_v1.h"
@@ -52,6 +52,9 @@ private:
     TaskIdSet* failureSet_{nullptr};
     TransBuffer* buffer_{nullptr};
     std::shared_ptr<StoreV1> backend_{nullptr};
+    int32_t deviceId_{-1};
+    std::vector<size_t> tensorSizes_{};
+    size_t streamNumber_{1};
     SpscRingQueue<TaskPair> waiting_;
     SpscRingQueue<DumpCtx> dumping_;
     std::thread dispatcher_;
@@ -63,9 +66,11 @@ public:
     void Submit(TaskPtr task, WaiterPtr waiter);
 
 private:
-    void DispatchStage(int32_t deviceId, size_t tensorSize, std::promise<Status>& started);
-    void DispatchOneTask(Trans::Stream* stream, size_t tensorSize, TaskPair&& pair);
-    Status DumpOneTask(Trans::Stream* stream, size_t tensorSize, TaskPtr task);
+    void DispatchStage(std::promise<Status>& started);
+    void DispatchOneTask(CopyStream& stream, TaskPair&& pair);
+    Status DumpOneTask(CopyStream& stream, TaskPtr task);
+    Status DeviceToHostGatherAsync(std::shared_ptr<Trans::Stream> stream, void** device,
+                                   void* host);
     void BackendDumpStage();
 };
 

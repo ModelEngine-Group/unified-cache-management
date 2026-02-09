@@ -1,7 +1,7 @@
 From a5aed06c6159473c30b31a2f0915d29b516c52c7 Mon Sep 17 00:00:00 2001
 From: AooooooA-C <chenaozhu@outlook.com>
 Date: Tue, 20 Jan 2026 01:22:14 -0800
-Subject: [PATCH 1/2] apply sparse method patches
+Subject: [PATCH 1/3] apply sparse method patches
 
 ---
  vllm_ascend/attention/attention_v1.py | 49 +++++++++++++++++-
@@ -374,7 +374,7 @@ index b6b60081..dffa2e19 100644
 From e7d7451a8ffbf010b8d3561ae6383754529b74c5 Mon Sep 17 00:00:00 2001
 From: Qiong Wu <wq674452797@gmail.com>
 Date: Mon, 2 Feb 2026 10:50:32 +0800
-Subject: [PATCH 2/2] update sparse patch for vllm-ascend
+Subject: [PATCH 2/3] update sparse patch for vllm-ascend
 
 ---
  vllm_ascend/attention/attention_v1.py | 42 +++------------------------
@@ -538,6 +538,169 @@ index 5a3159f8..abfd6aba 100644
                                                     attn_state=attn_state)
          self.attn_state = attn_state  # type: ignore
  
+-- 
+2.34.1
+
+
+From 4752c77cedae6fe56ff50b0d59858e19e1026b98 Mon Sep 17 00:00:00 2001
+From: Qiong Wu <wq674452797@gmail.com>
+Date: Mon, 2 Feb 2026 14:38:46 +0800
+Subject: [PATCH 3/3] patch for gsa on device (GQA)
+
+---
+ vllm_ascend/attention/attention_v1.py | 43 ++++++++++++++++++++-------
+ vllm_ascend/worker/model_runner_v1.py |  7 +++++
+ 2 files changed, 40 insertions(+), 10 deletions(-)
+
+diff --git a/vllm_ascend/attention/attention_v1.py b/vllm_ascend/attention/attention_v1.py
+index 9b9af65c..a295d3af 100644
+--- a/vllm_ascend/attention/attention_v1.py
++++ b/vllm_ascend/attention/attention_v1.py
+@@ -15,6 +15,7 @@
+ # This file is a part of the vllm-ascend project.
+ #
+ 
++import os
+ from dataclasses import dataclass
+ from enum import Enum
+ from typing import ClassVar, List, Optional, Tuple, Type
+@@ -42,7 +43,9 @@ from vllm_ascend.utils import (ACL_FORMAT_FRACTAL_NZ, aligned_16, is_310p,
+ 
+ from ..utils import weak_ref_tensors
+ 
+-from ucm.sparse.state import (maybe_execute_sparse_attention_begin,
++from ucm.sparse.state import (has_ucm_sparse,
++                              get_ucm_sparse,
++                              maybe_execute_sparse_attention_begin,
+                               maybe_execute_sparse_attention_finished)
+ 
+ 
+@@ -148,11 +151,13 @@ class AscendMetadata:
+     # should simplified these parameters once attention schema in vLLM-Ascend
+     # is unified.
+     seq_lens: torch.Tensor = None
++    seq_lens_device: torch.Tensor = None  # (ldeng) added for gsa on device
+     seq_lens_list: List[int] = None  # type: ignore
+     actual_seq_lengths_q: List[int] = None  # type: ignore
+ 
+     query_start_loc: torch.Tensor = None
+     query_lens: torch.Tensor = None
++    query_lens_device: torch.Tensor = None  # (ldeng) added for gsa on device
+     # Maximum query length in the batch (None for decoding).
+     max_query_len: Optional[int] = None
+ 
+@@ -242,8 +247,8 @@ class AscendAttentionMetadataBuilder:
+                              device=query_start_loc_cpu.device)
+             ])
+ 
+-        query_start_loc = query_start_loc_cpu.to(self.device,
+-                                                 non_blocking=True)
++        query_start_loc = query_start_loc_cpu.pin_memory().to(self.device,
++                                                              non_blocking=True)
+ 
+         if is_310p():
+             if attn_state == AscendAttentionState.PrefillNoCache:
+@@ -255,12 +260,23 @@ class AscendAttentionMetadataBuilder:
+                 attn_mask = torch_npu.npu_format_cast(mask_nz.contiguous(),
+                                                       ACL_FORMAT_FRACTAL_NZ)
+ 
++        seq_lens_device = None
++        query_lens_device = None
++        if has_ucm_sparse():
++            ucm_sparse = get_ucm_sparse()
++            if os.getenv("VLLM_HASH_ATTENTION", "0") == "1":
++                seq_lens_device = seq_lens.pin_memory().to(self.device, non_blocking=True)
++                query_lens_device = query_lens.pin_memory().to(self.device, non_blocking=True)
++                ucm_sparse.build_decode_attention_meta_npu(query_lens, seq_lens, block_table)
++
+         attn_metadata = AscendMetadata(
+             num_actual_tokens=num_actual_tokens,
+             block_tables=block_table,
+             query_start_loc=query_start_loc,
+             query_lens=query_lens,
++            query_lens_device=query_lens_device,
+             seq_lens=seq_lens,
++            seq_lens_device=seq_lens_device,
+             seq_lens_list=seq_lens.tolist(),
+             max_query_len=common_attn_metadata.max_query_len,
+             actual_seq_lengths_q=query_start_loc_cpu[1:].tolist(),
+@@ -583,8 +599,12 @@ class AscendAttentionBackendImpl(AttentionImpl):
+             shape = [batch_size * seq_len, num_heads, head_size]
+         """
+         num_tokens = query.shape[0]
++
++        if isinstance(kv_cache, tuple) and isinstance(kv_cache[0], tuple):
++            kv_cache = kv_cache[0]
+         use_kv_cache_int8 = len(
+             kv_cache) > 0 and kv_cache[0].dtype == torch.int8
++
+         if output is None:
+             output = torch.empty(num_tokens,
+                                  self.num_heads,
+@@ -692,10 +712,13 @@ def unified_ascend_attention_with_output(
+     self = forward_context.no_compile_layers[layer_name]
+     kv_cache = self.kv_cache[forward_context.virtual_engine]
+ 
+-    if not self.use_mla:
+-        maybe_execute_sparse_attention_begin(query, key, value,
+-                                             layer_name,
+-                                             forward_context)
++    # In NPU, during dummy_run, kv_cache could be a empty tensor, so we need to check the length of kv_cache
++    if os.getenv("VLLM_HASH_ATTENTION", "0") == "1" and len(kv_cache) > 0:
++        kv_cache, k_hash = kv_cache
++    else:
++        k_hash = None
++    if attn_metadata is not None:
++        maybe_execute_sparse_attention_begin(query, key, value, layer_name, forward_context, output, k_hash=k_hash)
+ 
+     self.impl.forward(self,
+                       query,
+@@ -705,10 +728,10 @@ def unified_ascend_attention_with_output(
+                       attn_metadata,
+                       output,
+                       trace_flag=False)
+-    if not self.use_mla:
++    if attn_metadata is not None:
+         maybe_execute_sparse_attention_finished(query, key, value,
+-                                             output, layer_name,
+-                                             forward_context)
++                                                output, layer_name,
++                                                forward_context)
+ 
+     maybe_save_kv_layer_to_connector(layer_name, kv_cache)
+     return
+diff --git a/vllm_ascend/worker/model_runner_v1.py b/vllm_ascend/worker/model_runner_v1.py
+index abfd6aba..60c24135 100644
+--- a/vllm_ascend/worker/model_runner_v1.py
++++ b/vllm_ascend/worker/model_runner_v1.py
+@@ -17,6 +17,7 @@
+ # Adapted from vllm-project/vllm/vllm/worker/gpu_model_runner.py
+ #
+ 
++import os
+ import copy
+ import gc
+ import itertools
+@@ -2882,6 +2883,7 @@ class NPUModelRunner(LoRAModelRunnerMixin):
+                         alignment)[:k_allocate_shape].view(k_cache_shape)
+ 
+                 kv_caches[layer_name] = (nope_cache, rope_cache, k_cache)
++
+         bind_kv_cache(kv_caches,
+                       self.compilation_config.static_forward_context,
+                       self.kv_caches)
+@@ -3139,6 +3141,11 @@ class NPUModelRunner(LoRAModelRunnerMixin):
+                 else:
+                     raise ValueError("Unknown KV cache spec type.")
+ 
++        if has_ucm_sparse():
++            ucm_sparse = get_ucm_sparse()
++            if os.getenv("VLLM_HASH_ATTENTION", "0") == "1":
++                ucm_sparse.initialize_kv_hash_cache_tensors_npu(kv_caches, self.device)
++
+         bind_kv_cache(kv_caches,
+                       self.compilation_config.static_forward_context,
+                       self.kv_caches)
 -- 
 2.34.1
 
