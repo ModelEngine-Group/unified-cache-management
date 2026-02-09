@@ -1,1 +1,1 @@
-import sys, os; exec("if os.environ.get('ENABLE_UCM_PATCH', '').lower() in ('1', 'true'):\n    try:\n        from ucm.integration.vllm.patch.boot_patch import install_hook\n        install_hook()\n    except Exception:\n        pass")
+import sys, os; exec("try:\n    from ucm.integration.vllm.patch.boot_patch import install_hook\n    install_hook()\nexcept Exception:\n    pass")
