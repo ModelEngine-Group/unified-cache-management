@@ -105,6 +105,7 @@ public:
         this->nWorker_ = nWorker;
         return *this;
     }
+    size_t NWorker() const { return this->nWorker_; }
     bool Run()
     {
         if (this->nWorker_ == 0) { return false; }

@@ -38,6 +38,17 @@ Status SpaceManager::Setup(const Config& config)
             .SetNWorker(config.lookupConcurrency)
             .Run();
     if (!success) [[unlikely]] { return Status::Error("failed to run lookup service thread pool"); }
+    auto prefixSuccess =
+        prefixLookupSrv_
+            .SetWorkerFn([this](PrefixLookupContext& ctx, auto&) { OnLookupPrefix(ctx); })
+            .SetWorkerTimeoutFn(
+                [this](PrefixLookupContext& ctx, auto) { OnLookupPrefixTimeout(ctx); },
+                config.timeoutMs)
+            .SetNWorker(config.lookupConcurrency)
+            .Run();
+    if (!prefixSuccess) [[unlikely]] {
+        return Status::Error("failed to run prefix lookup service thread pool");
+    }
     return Status::OK();
 }
 
@@ -65,9 +76,36 @@ Expected<std::vector<uint8_t>> SpaceManager::Lookup(const Detail::BlockId* block
 
 Expected<ssize_t> SpaceManager::LookupOnPrefix(const Detail::BlockId* blocks, size_t num)
 {
-    ssize_t index = -1;
-    for (size_t i = 0; i < num && Lookup(blocks + i); i++) { index = static_cast<ssize_t>(i); }
-    return index;
+    if (num == 0) { return static_cast<ssize_t>(-1); }
+
+    std::shared_ptr<std::atomic<ssize_t>> firstFail;
+    std::shared_ptr<std::atomic<int32_t>> status;
+    std::shared_ptr<Latch> waiter;
+
+    const auto ok = Status::OK().Underlying();
+
+    try {
+        firstFail = std::make_shared<std::atomic<ssize_t>>(static_cast<ssize_t>(num));
+        status = std::make_shared<std::atomic<int32_t>>(ok);
+        waiter = std::make_shared<Latch>();
+    } catch (const std::exception& e) {
+        UC_ERROR("Failed({}) to allocate prefix lookup context.", e.what());
+        return Status::OutOfMemory();
+    }
+
+    const size_t nWorker = prefixLookupSrv_.NWorker();
+    waiter->Set(nWorker);
+
+    for (size_t begin = 0; begin < nWorker; begin++) {
+        prefixLookupSrv_.Push({blocks, begin, num, nWorker, firstFail, status, waiter});
+    }
+
+    waiter->Wait();
+
+    auto s = status->load();
+    if (s != ok) [[unlikely]] { return Status{s, "failed to lookup some blocks"}; }
+
+    return firstFail->load() - 1;
 }
 
 uint8_t SpaceManager::Lookup(const Detail::BlockId* block)
@@ -99,4 +137,33 @@ void SpaceManager::OnLookupTimeout(LookupContext& ctx)
     ctx.waiter->Done();
 }
 
+void SpaceManager::OnLookupPrefix(PrefixLookupContext& ctx)
+{
+    for (size_t i = ctx.begin; i < ctx.end; i += ctx.nWorker) {
+        if (ctx.status->load() != Status::OK().Underlying()) { break; }
+
+        auto curFail = ctx.firstFail->load();
+        if (curFail >= 0 && static_cast<size_t>(curFail) < i) { break; }
+
+        if (!Lookup(ctx.blocks + i)) {
+            ssize_t cur = ctx.firstFail->load();
+            while (static_cast<ssize_t>(i) < cur) {
+                if (ctx.firstFail->compare_exchange_weak(cur, static_cast<ssize_t>(i),
+                                                         std::memory_order_acq_rel)) {
+                    break;
+                }
+            }
+            break;
+        }
+    }
+    ctx.waiter->Done();
+}
+
+void SpaceManager::OnLookupPrefixTimeout(PrefixLookupContext& ctx)
+{
+    auto ok = Status::OK().Underlying();
+    auto timeout = Status::Timeout().Underlying();
+    ctx.status->compare_exchange_weak(ok, timeout, std::memory_order_acq_rel);
+    ctx.waiter->Done();
+}
 }  // namespace UC::PosixStore

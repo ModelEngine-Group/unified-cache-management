@@ -39,10 +39,20 @@ class SpaceManager {
         std::shared_ptr<std::atomic<int32_t>> status;
         std::shared_ptr<Latch> waiter;
     };
+    struct PrefixLookupContext {
+        const Detail::BlockId* blocks;
+        size_t begin;
+        size_t end;
+        size_t nWorker;
+        std::shared_ptr<std::atomic<ssize_t>> firstFail;
+        std::shared_ptr<std::atomic<int32_t>> status;
+        std::shared_ptr<Latch> waiter;
+    };
 
 private:
     SpaceLayout layout_;
     ThreadPool<LookupContext> lookupSrv_;
+    ThreadPool<PrefixLookupContext> prefixLookupSrv_;
 
 public:
     Status Setup(const Config& config);
@@ -53,7 +63,9 @@ public:
 private:
     uint8_t Lookup(const Detail::BlockId* block);
     void OnLookup(LookupContext& ctx);
+    void OnLookupPrefix(PrefixLookupContext& ctx);
     void OnLookupTimeout(LookupContext& ctx);
+    void OnLookupPrefixTimeout(PrefixLookupContext& ctx);
 };
 
 }  // namespace UC::PosixStore
