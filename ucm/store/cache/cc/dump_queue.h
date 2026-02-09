@@ -42,6 +42,7 @@ class DumpQueue {
     using TaskPair = std::pair<TaskPtr, WaiterPtr>;
     using TaskIdSet = HashSet<Detail::TaskHandle>;
     struct DumpCtx {
+        Detail::TaskHandle taskHandle;
         Detail::TaskHandle backendTaskHandle;
         std::vector<TransBuffer::Handle> bufferHandles;
     };

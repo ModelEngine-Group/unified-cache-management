@@ -98,7 +98,7 @@ void LoadQueue::DispatchOneTask(TaskPair&& pair)
     if (!backendTaskDesc.empty()) {
         auto res = backend_->Load(std::move(backendTaskDesc));
         if (!res) [[unlikely]] {
-            UC_ERROR("Failed({}) to submit load task to backend.", res.Error());
+            UC_ERROR("Failed({}) to submit load task({}) to backend.", res.Error(), task->id);
             failureSet_->Insert(task->id);
             waiter->Done();
             return;
@@ -132,7 +132,10 @@ void LoadQueue::TransferOneTask(CopyStream& stream, ShardTask&& task)
         if (s.Failure()) [[unlikely]] { break; }
         s = HostToDeviceScatterAsync(stream.NextStream(), task.bufferHandle.Data(),
                                      task.shard.addrs.data());
-        if (s.Failure()) [[unlikely]] { break; }
+        if (s.Failure()) [[unlikely]] {
+            UC_ERROR("Failed({}) to do H2D batch async for task({}).", s, task.taskHandle);
+            break;
+        }
         if (!task.waiter) {
             holder_.push_back(std::move(task));
             return;
@@ -140,7 +143,7 @@ void LoadQueue::TransferOneTask(CopyStream& stream, ShardTask&& task)
         s = stream.Synchronize();
         holder_.clear();
         if (s.Failure()) [[unlikely]] {
-            UC_ERROR("Failed({}) to sync on stream.", s);
+            UC_ERROR("Failed({}) to sync on stream for task({}).", s, task.taskHandle);
             break;
         }
     } while (0);
@@ -162,7 +165,8 @@ Status LoadQueue::WaitBackendTaskReady(ShardTask& task)
         auto s = backend_->Wait(task.backendTaskHandle);
         finishedBackendTaskHandle_ = task.backendTaskHandle;
         if (s.Failure()) [[unlikely]] {
-            UC_ERROR("Failed({}) to wait backend task({}).", s, task.backendTaskHandle);
+            UC_ERROR("Failed({}) to wait backend({}) for task({}).", s, task.backendTaskHandle,
+                     task.taskHandle);
             return s;
         }
     }
