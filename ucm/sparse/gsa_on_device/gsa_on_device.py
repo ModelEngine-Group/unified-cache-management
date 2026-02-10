@@ -577,7 +577,7 @@ class GSAOnDevice(UcmSparseBase):
                     dim=2
                 ).unsqueeze(2).contiguous()
                 
-                if torch.distributed.get_rank() == 0 and True:
+                if torch.distributed.get_rank() == 0 and False:
                     print(f"=======================op_hamming=======================")
                     torch.set_printoptions(profile="full")
                     print(f"qhash_pad={qhash_pad.shape}")
@@ -607,7 +607,7 @@ class GSAOnDevice(UcmSparseBase):
                     self.hamming_output[:batch_size]
                 )
                 attn_metadata.decode.block_table = new_block_table[:,0,:]
-                if torch.distributed.get_rank() == 0 and True:
+                if torch.distributed.get_rank() == 0 and False:
                     print(f"=======================attn_metadata.decode.block_table=======================")
                     print(f"attn_metadata.decode.block_table.shape={attn_metadata.decode.block_table.shape}")
                     print(f"attn_metadata.decode.block_table={attn_metadata.decode.block_table[:,:self.topk_device.max()]}")
@@ -615,7 +615,7 @@ class GSAOnDevice(UcmSparseBase):
             self.topk_block_table = attn_metadata.decode.block_table
             attn_metadata.decode.seq_lens = self.new_seq_lens
             attn_metadata.decode.seq_lens_list = self.new_seq_lens_list
-            if torch.distributed.get_rank() == 0 and True:
+            if torch.distributed.get_rank() == 0 and False:
                 print(f"=======================attn_metadata.decode.seq_lens=======================")
                 print(f"attn_metadata.decode.seq_lens={attn_metadata.decode.seq_lens}")
                 print(f"attn_metadata.decode.seq_lens_list={attn_metadata.decode.seq_lens_list}")
