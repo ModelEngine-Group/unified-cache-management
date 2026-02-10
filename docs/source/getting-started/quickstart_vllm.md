@@ -31,13 +31,17 @@ docker run --rm \
 ```
 
 #### Build image from source
-Download the pre-built `vllm/vllm-openai:v0.9.2` docker image and build unified-cache-management docker image by commands below:
- ```bash
- # Build docker image using source code, replace <branch_or_tag_name> with the branch or tag name needed
- git clone --depth 1 --branch <branch_or_tag_name> https://github.com/ModelEngine-Group/unified-cache-management.git
- cd unified-cache-management
- docker build -t ucm-vllm:latest -f ./docker/Dockerfile ./
- ```
+Use following command to build ucm with VLLM(v0.11.0), the sparse attention is enabled by default
+```bash
+git clone --depth 1 --branch <branch_or_tag_name> https://github.com/ModelEngine-Group/unified-cache-management.git
+cd unified-cache-management
+docker build -t ucm-vllm:latest -f ./docker/Dockerfile-GPU ./
+```
+
+If you don't need sparse attention, pass `--build-arg ENABLE_SPARSE=true` to disable it:
+```bash
+docker build --build-arg ENABLE_SPARSE=true -t ucm-vllm:latest -f ./docker/Dockerfile-GPU ./
+```
 
 
 ### Option 2: Build from source

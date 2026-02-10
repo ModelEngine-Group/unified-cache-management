@@ -58,20 +58,23 @@ pip install uc-manager
 > **Note:** If installing via `pip install`, you need to manually add the `config.yaml` file, similar to `unified-cache-management/examples/ucm_config_example.yaml`, because PyPI packages do not include YAML files.
 
 ### Option 3: Setup from docker
-Download the pre-built `vllm-ascend` docker image and build unified-cache-management docker image by commands below:
- ```bash
- # Build docker image using source code, replace <branch_or_tag_name> with the branch or tag name needed
- git clone --depth 1 --branch <branch_or_tag_name> https://github.com/ModelEngine-Group/unified-cache-management.git
- cd unified-cache-management
- docker build -t ucm-vllm:latest -f ./docker/Dockerfile-NPU ./
- ```
-vllm-ascend provides two variants: **Ubuntu** and **openEuler**.  
-The `Dockerfile-NPU` uses the **openEuler** variant by default.
+Use following command to build ucm with VLLM-Ascend(v0.11.0), the sparse attention is enabled by default
+```bash
+docker build -t ucm-vllm:latest -f ./docker/Dockerfile-NPU ./
+```
 
-If you want to use the **Ubuntu** variant, please remove the `-openeuler` suffix and use the following image instead:
+If you don't need sparse attention, pass `--build-arg ENABLE_SPARSE=true` to disable it:
+```bash
+docker build --build-arg ENABLE_SPARSE=true -t ucm-vllm:latest -f ./docker/Dockerfile-NPU ./
+```
+
+vllm-ascend provides two variants: **Ubuntu** and **openEuler**.  
+The `Dockerfile-NPU` uses the **Ubuntu** variant by default.
+
+If you want to use the **openEuler** variant, please add the `-openeuler` suffix and use the following image instead:
 
 ```text
-quay.io/ascend/vllm-ascend:v0.9.2rc1
+quay.io/ascend/vllm-ascend:v0.11.0-openeuler
 ```
 Then run your container using following command. You can add or remove Docker parameters as needed.
 ```bash
