@@ -181,9 +181,6 @@ class UCMDirectConnector(KVConnectorBase_V1):
         )
         self.tp_size = self._vllm_config.parallel_config.tensor_parallel_size
         self.kv_cache_dtype: torch.dtype = None
-        logger.info(
-            f"is_mla: {self.is_mla}, num_layers: {self.num_layers}, tp_size: {self.tp_size}"
-        )
 
         if current_platform.is_cuda_alike():
             logger.info("CUDA device is available.")
@@ -282,9 +279,8 @@ class UCMDirectConnector(KVConnectorBase_V1):
         config = copy.deepcopy(self.connector_configs[0]["ucm_connector_config"])
         config.setdefault("share_buffer_enable", self.is_mla)
         if "storage_backends" in config:
-            config["storage_backends"] = self._generate_storage_backends(
-                config["storage_backends"]
-            )
+            backends = [path for path in config["storage_backends"].split(":")]
+            config["storage_backends"] = backends
         config["unique_id"] = f"{self.engine_id}"
         if self._role == KVConnectorRole.WORKER:
             config["device_id"] = self.local_rank
@@ -296,11 +292,6 @@ class UCMDirectConnector(KVConnectorBase_V1):
             config["local_rank_size"] = self.tp_size if self.is_mla else 1
         logger.info(f"create {name} with config: {config}")
         return UcmConnectorFactoryV1.create_connector(name, config)
-
-    def _generate_storage_backends(self, storage_backends: str) -> List[str]:
-        backends = [os.path.join(path, "kv") for path in storage_backends.split(":")]
-        os.makedirs(backends[0], exist_ok=True)
-        return backends
 
     def register_kv_caches(self, kv_caches: dict[str, torch.Tensor]):
         if has_ucm_sparse() and os.getenv("VLLM_HASH_ATTENTION") == "1":
