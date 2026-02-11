@@ -90,6 +90,7 @@ Status DumpQueue::DumpOneTask(CopyStream& stream, TaskPtr task)
     const auto nShard = task->desc.size();
     UC_DEBUG("Try to dump ({}) shards.", nShard);
     DumpCtx dumpCtx;
+    dumpCtx.taskHandle = task->id;
     for (size_t i = 0; i < nShard; i++) {
         auto& shard = task->desc[i];
         auto handle = buffer_->Get(shard.owner, shard.index);
@@ -97,7 +98,10 @@ Status DumpQueue::DumpOneTask(CopyStream& stream, TaskPtr task)
         if (!handle.Ready()) {
             auto s =
                 DeviceToHostGatherAsync(stream.NextStream(), shard.addrs.data(), handle.Data());
-            if (s.Failure()) [[unlikely]] { return s; }
+            if (s.Failure()) [[unlikely]] {
+                UC_ERROR("Failed({}) to do D2H batch async for task({}).", s, task->id);
+                return s;
+            }
         }
         backendTaskDesc.push_back(Detail::Shard{shard.owner, shard.index, {handle.Data()}});
         dumpCtx.bufferHandles.push_back(std::move(handle));
@@ -106,14 +110,14 @@ Status DumpQueue::DumpOneTask(CopyStream& stream, TaskPtr task)
     if (backendTaskDesc.empty()) { return Status::OK(); }
     auto s = stream.Synchronize();
     if (s.Failure()) [[unlikely]] {
-        UC_ERROR("Failed({}) to sync on stream.", s);
+        UC_ERROR("Failed({}) to sync on stream for task({}).", s, task->id);
         return s;
     }
     auto tpSyncStream = NowTime::Now();
     for (auto& handle : dumpCtx.bufferHandles) { handle.MarkReady(); }
     auto res = backend_->Dump(std::move(backendTaskDesc));
     if (!res) [[unlikely]] {
-        UC_ERROR("Failed({}) to submit dump task to backend.", res.Error());
+        UC_ERROR("Failed({}) to submit dump task({}) to backend.", res.Error(), task->id);
         return res.Error();
     }
     dumpCtx.backendTaskHandle = res.Value();
@@ -150,7 +154,8 @@ void DumpQueue::BackendDumpStage()
             auto s = backend_->Wait(task.backendTaskHandle);
             finishedBackendTaskHandle_ = task.backendTaskHandle;
             if (s.Failure()) {
-                UC_ERROR("Failed({}) to wait backend task({}).", s, task.backendTaskHandle);
+                UC_ERROR("Failed({}) to wait backend({}) for task({}).", s, task.backendTaskHandle,
+                         task.taskHandle);
                 return;
             }
         }
