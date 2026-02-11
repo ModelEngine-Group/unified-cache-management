@@ -41,14 +41,14 @@ class TransQueue {
 private:
     struct IoUnit {
         Detail::TaskHandle owner;
-        TransTask::Type type;
         Detail::Shard shard;
         std::shared_ptr<Latch> waiter;
         bool firstIo{false};
     };
     TaskIdSet* failureSet_;
     const SpaceLayout* layout_;
-    ThreadPool<IoUnit> pool_;
+    ThreadPool<IoUnit> loadPool_;
+    ThreadPool<IoUnit> dumpPool_;
     size_t ioSize_;
     size_t shardSize_;
     size_t nShardPerBlock_;
@@ -59,7 +59,8 @@ public:
     void Push(TaskPtr task, WaiterPtr waiter);
 
 private:
-    void Worker(IoUnit& ios);
+    void LoadWorker(IoUnit& ios);
+    void DumpWorker(IoUnit& ios);
     Status H2S(IoUnit& ios);
     Status S2H(IoUnit& ios);
 };

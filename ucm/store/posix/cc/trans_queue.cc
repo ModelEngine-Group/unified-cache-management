@@ -35,9 +35,15 @@ Status TransQueue::Setup(const Config& config, TaskIdSet* failureSet, const Spac
     shardSize_ = config.shardSize;
     nShardPerBlock_ = config.blockSize / config.shardSize;
     ioDirect_ = config.ioDirect;
-    auto success = pool_.SetNWorker(config.dataTransConcurrency)
-                       .SetWorkerFn([this](auto& ios, auto&) { Worker(ios); })
+    auto success = loadPool_.SetNWorker(config.dataTransConcurrency)
+                       .SetWorkerFn([this](auto& ios, auto&) { LoadWorker(ios); })
                        .Run();
+    if (!success) [[unlikely]] {
+        return Status::Error(fmt::format("workers({}) start failed", config.dataTransConcurrency));
+    }
+    success = dumpPool_.SetNWorker(config.dataTransConcurrency)
+                  .SetWorkerFn([this](auto& ios, auto&) { DumpWorker(ios); })
+                  .Run();
     if (!success) [[unlikely]] {
         return Status::Error(fmt::format("workers({}) start failed", config.dataTransConcurrency));
     }
@@ -49,30 +55,44 @@ void TransQueue::Push(TaskPtr task, WaiterPtr waiter)
     waiter->Set(task->desc.size());
     std::list<IoUnit> ios;
     for (auto&& shard : task->desc) {
-        ios.emplace_back<IoUnit>({task->id, task->type, std::move(shard), waiter});
+        ios.emplace_back<IoUnit>({task->id, std::move(shard), waiter});
     }
     ios.front().firstIo = true;
-    pool_.Push(ios);
+    if (task->type == TransTask::Type::DUMP) {
+        dumpPool_.Push(ios);
+    } else {
+        loadPool_.Push(ios);
+    }
 }
 
-void TransQueue::Worker(IoUnit& ios)
+void TransQueue::LoadWorker(IoUnit& ios)
 {
     if (ios.firstIo) {
         auto wait = NowTime::Now() - ios.waiter->startTp;
-        UC_DEBUG("Posix task({}) start running, wait {:.3f}ms.", ios.owner, wait * 1e3);
+        UC_DEBUG("Posix load task({}) start running, wait {:.3f}ms.", ios.owner, wait * 1e3);
     }
     if (failureSet_->Contains(ios.owner)) {
         ios.waiter->Done();
         return;
     }
-    auto s = Status::OK();
-    if (ios.type == TransTask::Type::DUMP) {
-        s = H2S(ios);
-        if (ios.shard.index + 1 == nShardPerBlock_) {
-            layout_->CommitFile(ios.shard.owner, s.Success());
-        }
-    } else {
-        s = S2H(ios);
+    auto s = S2H(ios);
+    if (s.Failure()) [[unlikely]] { failureSet_->Insert(ios.owner); }
+    ios.waiter->Done();
+}
+
+void TransQueue::DumpWorker(IoUnit& ios)
+{
+    if (ios.firstIo) {
+        auto wait = NowTime::Now() - ios.waiter->startTp;
+        UC_DEBUG("Posix dump task({}) start running, wait {:.3f}ms.", ios.owner, wait * 1e3);
+    }
+    if (failureSet_->Contains(ios.owner)) {
+        ios.waiter->Done();
+        return;
+    }
+    auto s = H2S(ios);
+    if (ios.shard.index + 1 == nShardPerBlock_) {
+        layout_->CommitFile(ios.shard.owner, s.Success());
     }
     if (s.Failure()) [[unlikely]] { failureSet_->Insert(ios.owner); }
     ios.waiter->Done();
