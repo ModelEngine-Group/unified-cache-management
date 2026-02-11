@@ -106,7 +106,9 @@ ge::graphStatus HammingDistTopKTiling::GetWorkspaceSize()
         ops::CeilDiv(static_cast<uint64_t>(tilingData_.params.get_reducedBatch()) *
                          tilingData_.params.get_maxSeqLen() * tilingData_.params.get_dimension() *
                          sizeof(int8_t),
-                     static_cast<uint64_t>(2))*2 + // 2: 1/2, size of int4;  (ldeng 0209) increase workspace by 2 for vllm-ascend framework with --cce-auto-sync=on option
+                     static_cast<uint64_t>(2)) *
+            2 +  // 2: 1/2, size of int4;  (ldeng 0209) increase workspace by 2 for vllm-ascend
+                 // framework with --cce-auto-sync=on option
         ops::CeilDiv(static_cast<uint64_t>(tilingData_.params.get_reducedBatch()) *
                          tilingData_.params.get_dimension() * sizeof(int8_t),
                      static_cast<uint64_t>(2)) +
