@@ -36,14 +36,15 @@ start_server() {
     # vLLM parameters 
     [[ -z "$model" ]] && { echo "ERROR: model not set in config.properties" >&2; exit 1; }
 
+    LOG_TIMESTAMP="$(date +%Y%m%d_%H%M%S)"
     if [[ "$ucm_enable" == "true" ]]; then
         [[ -z "$ucm_config_yaml_path" ]] && {
             echo "ERROR: ucm_config_yaml_path not set but ucm_enable=true" >&2
             exit 1
         }
-        LOG_FILE="${vllm_log_path}/vllm_ucm.log"
+        LOG_FILE="${vllm_log_path}/vllm_ucm_${LOG_TIMESTAMP}.log"
     else
-        LOG_FILE="${vllm_log_path}/vllm.log"
+        LOG_FILE="${vllm_log_path}/vllm_${LOG_TIMESTAMP}.log"
     fi
 
     echo ""
