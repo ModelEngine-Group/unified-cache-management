@@ -235,12 +235,6 @@ class GSAOnDevice(UcmSparseBase):
                 device=self.device,
             )
 
-            self._zero_block_table = torch.zeros(
-                (self.max_batch_size, max_block_per_seq),
-                dtype=torch.int32,
-                device=self.device,
-            )
-
             self.init_for_pc()
 
             self.head_dim = vllm_config.model_config.get_head_size()
@@ -525,27 +519,11 @@ class GSAOnDevice(UcmSparseBase):
             self.new_seq_lens[: self.num_reqs] = self.topk_seq_lens_qwen
             attn_metadata.seq_lens = self.new_seq_lens
         else:
-            self.new_block_table.narrow(1, 0, topk).index_copy_(
-                0,
-                self.decode_req_ids,
-                block_table_decode.narrow(1, 0, topk).index_select(
-                    0, self.decode_req_ids
-                ),
-            )
+            self.new_block_table[self.decode_req_ids, :topk] = block_table_decode[
+                self.decode_req_ids, :topk
+            ]
+            self.new_block_table[self.decode_req_ids, topk:] = 0
 
-            # ---- decode 行的 [topk:] 清零 ----
-            tail = self.new_block_table.shape[1] - topk
-            if tail > 0:
-                self.new_block_table.narrow(1, topk, tail).index_copy_(
-                    0,
-                    self.decode_req_ids,
-                    self._zero_block_table.narrow(1, 0, tail).index_select(
-                        0, self.decode_req_ids
-                    ),
-                )
-
-                # self.new_block_table[self.decode_req_ids, :topk] = block_table_decode[self.decode_req_ids]
-                # self.new_block_table[self.decode_req_ids, topk:] = 0
             attn_metadata.block_table = self.new_block_table
 
             # update seq_lens
