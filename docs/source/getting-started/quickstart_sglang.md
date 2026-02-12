@@ -110,7 +110,7 @@ Download the pre-built `lmsysorg/sglang:v0.5.5.post3` docker image and build uni
 UCM configuration is passed to SGLang via `--hicache-storage-backend-extra-config` in JSON format:
 
 ```bash
-HICACHE_CONFIG='{"kv_connector_extra_config":{"ucm_connector_name":"UcmNfsStore","ucm_connector_config":{"storage_backends":"/mnt/test"}}}'
+HICACHE_CONFIG='{"kv_connector_extra_config":{"ucm_connector_name":"UcmPipelineStore","ucm_connector_config":{"storage_backends":"/mnt/test"}}}'
 ```
 
 Note: Replace `/mnt/test` with your actual storage directory.
@@ -133,7 +133,7 @@ SGLang already provides an offline batch inference example. No UCM-specific code
 
 ```bash
 # Prefix cache config (reuse from Step 2)
-HICACHE_CONFIG='{"kv_connector_extra_config":{"ucm_connector_name":"UcmNfsStore","ucm_connector_config":{"storage_backends":"/mnt/test"}}}'
+HICACHE_CONFIG='{"kv_connector_extra_config":{"ucm_connector_name":"UcmPipelineStore","ucm_connector_config":{"storage_backends":"/mnt/test"}}}'
 
 python3 /path/to/sglang/examples/runtime/engine/offline_batch_inference.py \
   --model-path Qwen/Qwen2.5-14B-Instruct \
@@ -161,7 +161,7 @@ To start the SGLang server with the Qwen/Qwen2.5-14B-Instruct model, run:
 
 ```bash
 # Prefix cache config (reuse from Step 2)
-HICACHE_CONFIG='{"kv_connector_extra_config":{"ucm_connector_name":"UcmNfsStore","ucm_connector_config":{"storage_backends":"/mnt/test"}}}'
+HICACHE_CONFIG='{"kv_connector_extra_config":{"ucm_connector_name":"UcmPipelineStore","ucm_connector_config":{"storage_backends":"/mnt/test"}}}'
 
 python3 -m sglang.launch_server \
   --model-path Qwen/Qwen2.5-14B-Instruct \
