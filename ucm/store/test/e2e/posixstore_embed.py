@@ -20,9 +20,11 @@
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 # SOFTWARE.
 #
+import mmap
 import os
 import secrets
 import time
+from abc import ABC, abstractmethod
 
 import numpy as np
 
@@ -50,16 +52,53 @@ def setup(
     return UcmPipelineStore(config)
 
 
-def aligned_array(size, alignment=4096, dtype=np.uint8):
-    extra = alignment
-    buf = np.empty(size + extra, dtype=dtype)
-    address = buf.ctypes.data
-    offset = (alignment - (address % alignment)) % alignment
-    aligned_view = buf[offset : offset + size]
-    return aligned_view
+class AlignedPinnedArray(np.ndarray):
+    def __new__(cls, input_array, handle=None):
+        obj = np.asarray(input_array).view(cls)
+        obj._handle = handle
+        return obj
+
+    def __array_finalize__(self, obj):
+        if obj is None:
+            return
+        self._handle = getattr(obj, "_handle", None)
+
+
+class BaseMemoryManager(ABC):
+    @abstractmethod
+    def make_array(self, size, alignment=4096, dtype=np.uint8) -> AlignedPinnedArray:
+        pass
+
+    def release_array(self, array: AlignedPinnedArray) -> None:
+        if hasattr(array, "_handle"):
+            self._perform_release(array._handle)
+            array._handle = None
+        else:
+            print("Warning: No handle found for release.")
+
+    @abstractmethod
+    def _perform_release(self, handle) -> None:
+        pass
+
+
+class CPUMemoryManager(BaseMemoryManager):
+    def make_array(self, size, alignment=4096, dtype=np.uint8) -> AlignedPinnedArray:
+        itemsize = np.dtype(dtype).itemsize
+        total_bytes = size * itemsize
+        mm = mmap.mmap(-1, total_bytes + alignment)
+        raw_array = np.frombuffer(mm, dtype=np.uint8, count=total_bytes + alignment)
+        raw_ptr = raw_array.__array_interface__["data"][0]
+        aligned_addr = (raw_ptr + alignment - 1) & ~(alignment - 1)
+        offset = aligned_addr - raw_ptr
+        array = raw_array[offset : offset + total_bytes].view(dtype=dtype)
+        return AlignedPinnedArray(array, handle=mm)
+
+    def _perform_release(self, handle) -> None:
+        del handle
 
 
 def main():
+    mem_mgr = CPUMemoryManager()
     backends = ["./build/data"]
     block_size = 1048576
     data_trans_concur = 8
@@ -74,8 +113,8 @@ def main():
     batch_number = 64
     batch_size = 1024
     data_size = block_size * batch_size
-    raw_data1 = [aligned_array(block_size) for _ in range(batch_size)]
-    raw_data2 = [aligned_array(block_size) for _ in range(batch_size)]
+    raw_data1 = [mem_mgr.make_array(block_size) for _ in range(batch_size)]
+    raw_data2 = [mem_mgr.make_array(block_size) for _ in range(batch_size)]
     data1 = [[d.ctypes.data] for d in raw_data1]
     data2 = [[d.ctypes.data] for d in raw_data2]
     for idx in range(batch_number):
