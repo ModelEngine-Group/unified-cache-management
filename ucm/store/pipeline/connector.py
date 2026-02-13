@@ -154,68 +154,27 @@ class UcmPipelineStore(UcmKVStoreBaseV1):
         return self.store_.Wait(task.task_id)
 
     def check(self, task: Task) -> bool:
-<<<<<<< HEAD
-        return self.store_.Check(task.task_id)
-=======
         return self._backend.check(task)
 
-
-def _cache_posix_pipeline_builder(
-    config: Dict[str, object], store: List[UcmKVStoreBaseV1]
-) -> None:
-    from ucm.store.cache.connector import UcmCacheStore
-    from ucm.store.posix.connector import UcmPosixStore
-
-    posix_config = copy.deepcopy(config)
-    if config.get("device_id", -1) >= 0:
-        posix_config |= {"tensor_size": config["shard_size"]}
-    posix_store = UcmPosixStore(posix_config)
-    store.append(posix_store)
-    cache_config = copy.deepcopy(config) | {"store_backend": posix_store.cc_store()}
-    cache_store = UcmCacheStore(cache_config)
-    store.append(cache_store)
-
 def _build_cache_compress_posix_pipeline(
-    config: Dict[str, object], store: List[UcmKVStoreBaseV1]
+    config: Dict[str, object], pipeline: ucmpipelinestore.PipelineStore
 ) -> None:
-    from ucm.store.cache.connector import UcmCacheStore
-    from ucm.store.posix.connector import UcmPosixStore
-    from ucm.store.compress.connector import UcmCompressor
-
+    store_dir = Path(__file__).resolve().parent.parent
     posix_config = copy.deepcopy(config)
-    if int(config["device_id"]) >= 0:
-        posix_config["shard_size"] = (posix_config["shard_size"] * posix_config["compress_ratio"] // 32) // 4096 * 4096
-        posix_config["tensor_size"] = posix_config["shard_size"]
-        posix_config["block_size"] = posix_config["shard_size"]
-        
-    posix_store = UcmPosixStore(posix_config)
-    store.append(posix_store)
-
-    # TODO add compressor
-    compressor_config = copy.deepcopy(config) | {"store_backend": posix_store.cc_store()}
-    compressor = UcmCompressor(compressor_config)
-    store.append(compressor)
     
-    # compress end
-    cache_config = copy.deepcopy(config) | {"store_backend": compressor.cc_store()}
-    cache_store = UcmCacheStore(cache_config)
-    store.append(cache_store)
-
-
-def _cache_empty_pipeline_builder(
-    config: Dict[str, object], store: List[UcmKVStoreBaseV1]
-) -> None:
-    from ucm.store.cache.connector import UcmCacheStore
-    from ucm.store.empty.connector import UcmEmptyStore
-
-    empty_config = copy.deepcopy(config)
-    empty_store = UcmEmptyStore(empty_config)
-    store.append(empty_store)
-    cache_config = copy.deepcopy(config) | {"store_backend": empty_store.cc_store()}
-    cache_store = UcmCacheStore(cache_config)
-    store.append(cache_store)
->>>>>>> dab5c8d (modefied pipeline)
-
+    if config.get("device_id") >= 0:
+        if (posix_config["block_size"] % posix_config["shard_size"]) != 0:
+            print(f'_build_cache_compress_posix_pipeline: error paraments {posix_config["block_size"]} {posix_config["shard_size"]}')
+            return
+        layers = posix_config["block_size"] // posix_config["shard_size"]
+        posix_config["shard_size"] = (posix_config["shard_size"] * posix_config["compress_ratio"] // 32) // 4096 * 4096
+        posix_config["tensor_size"] = int(posix_config["shard_size"])
+        posix_config["block_size"] = int(posix_config["shard_size"] * layers)
+    
+    
+    pipeline.Stack("Posix", str(store_dir / "posix/libposixstore.so"), posix_config)
+    pipeline.Stack("Compress", str(store_dir / "compress/libcompressor.so"), config)
+    pipeline.Stack("Cache", str(store_dir / "cache/libcachestore.so"), config)
 
 def _cache_ds3fs_pipeline_builder(
     config: Dict[str, object], pipeline: ucmpipelinestore.PipelineStore
@@ -269,12 +228,9 @@ def _posix_pipeline_builder(
 
 
 UcmPipelineStoreBuilder.register("Cache|Ds3fs", _cache_ds3fs_pipeline_builder)
-<<<<<<< HEAD
 UcmPipelineStoreBuilder.register("Cache|Empty", _cache_empty_pipeline_builder)
 UcmPipelineStoreBuilder.register("Cache|Posix", _cache_posix_pipeline_builder)
 UcmPipelineStoreBuilder.register("Empty", _empty_pipeline_builder)
 UcmPipelineStoreBuilder.register("Fake", _fake_pipeline_builder)
 UcmPipelineStoreBuilder.register("Posix", _posix_pipeline_builder)
-=======
 UcmPipelineStoreBuilder.register("Cache|Compress|Posix", _build_cache_compress_posix_pipeline)
->>>>>>> dab5c8d (modefied pipeline)

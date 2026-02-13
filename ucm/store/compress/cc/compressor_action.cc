@@ -13,13 +13,20 @@ CompressorAction::~CompressorAction()
 
 Status CompressorAction::Setup(const Config& config) 
 {
-    backend_ = static_cast<StoreV1*>((void*)config.storeBackend);
+    backend_ = config.storeBackend;
     shardSize_ = config.shardSize;
     switch (config.compressRatio) {
+        case 32: ratio = R1; break;
+        case 24: ratio = R133; break;
         case 23: ratio = R139; break;
         case 22: ratio = R145; break;
         case 21: ratio = R152; break;
         default: return Status::InvalidParam("invalid compressRatio({})", config.compressRatio);
+    }
+
+    switch (config.dataType) {
+        case 0: dataType = DT_BF16; break;
+        default: return Status::InvalidParam("invalid compress dataType({})", config.dataType);
     }
     
     // init thread pool
@@ -36,7 +43,7 @@ Status CompressorAction::Setup(const Config& config)
 void CompressorAction::Push(TaskPtr task, WaiterPtr waiter)
 {
     UC_DEBUG("task {}, push size is {}", task->id, task->desc.size());
-    waiter->Set(task->desc.size());
+    waiter->Set(1);
     if (task->type == TransTask::Type::DUMP) {
         dump_pool_.Push(CompressTask {
             task,
@@ -63,7 +70,7 @@ void CompressorAction::Compress_Load(CompressTask& ct)
         backend_->Wait(result.Value());
     }
 
-    size_t totalDecompBytes = 0;             // 总解压字节数（日志用）
+    size_t totalDecompBytes = 0;
 
     size_t srcSize = (shardSize_ * (size_t)ratio / 32) / 4096 * 4096;;
     size_t decompBufSize = shardSize_;
@@ -73,7 +80,13 @@ void CompressorAction::Compress_Load(CompressTask& ct)
         uint8_t* src = static_cast<uint8_t*>(s.addrs[0]);
         UC_DEBUG("Decompress start... s.addrs {}  s.addrs.size {}", s.addrs[0], s.addrs.size());
 
-        size_t decompBytes = HUF_decompress_float_fixRatio(decompBuf, decompBufSize, src, srcSize, NULL);
+        size_t decompBytes = 0;
+        if (ratio == R1) {
+            memcpy(decompBuf, src, srcSize);
+            decompBytes = srcSize;
+        } else {
+            decompBytes = HUF_decompress_float_fixRatio(decompBuf, decompBufSize, src, srcSize, NULL);
+        }
 
         memcpy(s.addrs[0], decompBuf, decompBytes);
 
@@ -112,20 +125,26 @@ void CompressorAction::Compress_Dump(CompressTask& ct)
     Detail::TaskDesc backendDesc;
     backendDesc.brief = ct.task->desc.brief;
     std::vector<void*> blockToFree;
-    std::unique_ptr<MemoryPool> dump_memoryPool_ = std::make_unique<MemoryPool>(shardSize_, ct.task->desc.size());
+    std::unique_ptr<MemoryPool> dump_memoryPool_ = std::make_unique<MemoryPool>(compBufSize, ct.task->desc.size());
     if (!dump_memoryPool_) {
         UC_DEBUG("Out of memory: failed to allocate {} B", shardSize_ * ct.task->desc.size());
         Status::NoSpace();
     }
 
     for (const UC::Detail::Shard& s : desc) {
-        UC_DEBUG("Shard index: {}  Compress start...", s.index);
+        UC_DEBUG("Task id: {} Shard index: {}  Compress start...", ct.task->id, s.index);
 
         uint8_t* compBuf = static_cast<uint8_t*>(dump_memoryPool_->allocate());
         uint16_t* src = static_cast<uint16_t*>(s.addrs[0]);
 
-        size_t compBytes = HUF_compress_float_fixRatio (compBuf, compBufSize, src, srcSize, ratio, DT_BF16);
-
+        size_t compBytes = 0;
+        if (ratio == R1) {
+            memcpy(compBuf, src, srcSize);
+            compBytes = srcSize;
+        } else {
+            compBytes = HUF_compress_float_fixRatio (compBuf, compBufSize, src, srcSize, ratio, DT_BF16);
+        }
+        
         std::vector<void*> _addrs{static_cast<void*>(compBuf)};
 
         backendDesc.push_back(Detail::Shard {

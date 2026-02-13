@@ -8,7 +8,7 @@ namespace UC::Compressor {
 
 class CompressorImpl {
 public:
-    StoreV1* backend{nullptr};
+    std::shared_ptr<StoreV1> backend{nullptr};
     bool transEnable{false};
     TransManager transMgr;
 
@@ -20,7 +20,7 @@ public:
             UC_ERROR("Failed to check config params: {}.", s);
             return s;
         }
-        backend = static_cast<StoreV1*>((void*)config.storeBackend);
+        backend = config.storeBackend;
         transEnable = config.deviceId >= 0;
         if (transEnable) {
             s = transMgr.Setup(config);
@@ -38,9 +38,6 @@ private:
             return Status::InvalidParam("invalid device({})", config.deviceId);
         }
 
-        if (config.compressRatio != 23 && config.compressRatio != 22 && config.compressRatio != 21) {
-            return Status::InvalidParam("invalid compressRatio({})", config.compressRatio);
-        }
         // TODO 参数校验
         return Status::OK();
     }
@@ -57,15 +54,28 @@ private:
 
 Compressor::~Compressor() = default;
 
-Status Compressor::Setup(const Config& config)
+Status Compressor::Setup(const Detail::Dictionary& config)
 {
+    Config param;
+    config.Get("store_backend", param.storeBackend);
+    config.Get("unique_id", param.uniqueId);
+    config.GetNumber("device_id", param.deviceId);
+    config.GetNumber("tensor_size", param.tensorSize);
+    config.GetNumber("shard_size", param.shardSize);
+    config.GetNumber("block_size", param.blockSize);
+    config.GetNumber("layer_size", param.layerSize);
+    config.GetNumber("compress_ratio", param.compressRatio);
+    config.GetNumber("data_type", param.dataType);
+    config.GetNumber("timeout_ms", param.timeoutMs);
+    config.GetNumber("stream_number", param.streamNumber);
+
     try {
         impl_ = std::make_shared<CompressorImpl>();
     } catch (const std::exception& e) {
         UC_ERROR("Failed({}) to make Compressor impl object.", e.what());
         return Status::Error(e.what());
     }
-    return impl_->Setup(config);
+    return impl_->Setup(param);
 }
 
 std::string Compressor::Readme() const { return "Compressor"; }
@@ -121,3 +131,5 @@ Status Compressor::Wait(Detail::TaskHandle taskId)
 }
   
 }
+
+extern "C" UC::StoreV1* MakeCompressStore() { return new UC::Compressor::Compressor();}
