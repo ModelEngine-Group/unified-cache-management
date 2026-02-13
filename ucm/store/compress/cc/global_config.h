@@ -27,11 +27,12 @@
 #include <cstddef>
 #include <cstdint>
 #include <string>
+#include "ucmstore_v1.h"
 
 namespace UC::Compressor {
 
 struct Config {
-    uintptr_t storeBackend{};
+    std::shared_ptr<StoreV1> storeBackend;
     std::string uniqueId{};
     int32_t deviceId{-1};
     size_t tensorSize{0};
@@ -39,7 +40,8 @@ struct Config {
     size_t blockSize{0};
     size_t layerSize{0};
     size_t timeoutMs{30000};
-    int32_t compressRatio{22};
+    int32_t compressRatio{32};
+    int32_t dataType{100};
     size_t streamNumber{8};
 };
 
