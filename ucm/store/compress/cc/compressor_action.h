@@ -19,9 +19,10 @@ class CompressorAction {
     using WaiterPtr = std::shared_ptr<Latch>;
 
 private:
-    StoreV1* backend_{nullptr};
+    std::shared_ptr<StoreV1> backend_{nullptr};
     size_t shardSize_{0};
     FixedRatio ratio{R145};
+    DataType dataType{DT_INVALID};
     
     struct CompressTask {
         std::shared_ptr<TransTask> task;
