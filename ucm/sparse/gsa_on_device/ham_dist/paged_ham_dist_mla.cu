@@ -188,35 +188,35 @@ __global__ void HammingScoreContiKernel(void* __restrict__ keys_ptr,
   // if reduce_kvhead
   if constexpr (REDUCE_KVHEAD) {
       if (tid < BLOCK_M) {
-      int m_id = tid;
-      int pos = block_start_m + m_id;
+        int m_id = tid;
+        int pos = block_start_m + m_id;
 
-      bool is_sink_or_recent =
-          (pos < SINK) ||
-          ((pos >= (actual_seq_len - RECENT)) && (pos < actual_seq_len));
-      bool is_inf = (pos >= actual_seq_len);
+        bool is_sink_or_recent =
+            (pos < SINK) ||
+            ((pos >= (actual_seq_len - RECENT)) && (pos < actual_seq_len));
+        bool is_inf = (pos >= actual_seq_len);
 
-      if (m_id < left_m) {
-        half min_sum = half(INFINITY);
+        if (m_id < left_m) {
+          half min_sum = half(INFINITY);
 
-        #pragma unroll
-        for (int kv = 0; kv < NumKVHead; ++kv) {
-          half sum = half(0.f);
           #pragma unroll
-          for (int h = 0; h < NumChunk; ++h) {
-            sum += (half)smem_popc[(m_id * NumKVHead + kv) * NumChunk + h];
+          for (int kv = 0; kv < NumKVHead; ++kv) {
+            half sum = half(0.f);
+            #pragma unroll
+            for (int h = 0; h < NumChunk; ++h) {
+              sum += (half)smem_popc[(m_id * NumKVHead + kv) * NumChunk + h];
+            }
+            // min over kv heads
+            min_sum = __hlt(sum, min_sum) ? sum : min_sum;
           }
-          // min over kv heads
-          min_sum = __hlt(sum, min_sum) ? sum : min_sum;
+
+          half outv = is_inf ? half(INFINITY)
+                            : (is_sink_or_recent ? half(0.f) : min_sum);
+
+          // output layout: [B, SEQ]
+          half* o_ptr = (half*)output_ptr + batch_id * 1 * SEQ;
+          o_ptr[pos] = outv;
         }
-
-        half outv = is_inf ? half(INFINITY)
-                          : (is_sink_or_recent ? half(0.f) : min_sum);
-
-        // output layout: [B, SEQ]
-        half* o_ptr = (half*)output_ptr + batch_id * 1 * SEQ;
-        o_ptr[pos] = outv;
-      }
     }
   } else {
       if (tid < NumKVHead * BLOCK_M) {
