@@ -1,5 +1,6 @@
-import hamming
 import torch
+
+from ucm.sparse.gsa_on_device.csrc.cuda.ham_dist import hamming
 
 torch.cuda.set_device(1)
 torch.manual_seed(42)
