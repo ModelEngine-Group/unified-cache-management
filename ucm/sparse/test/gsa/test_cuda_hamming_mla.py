@@ -1,5 +1,6 @@
-import hamming
 import torch
+
+from ucm.sparse.gsa_on_device.csrc.cuda.ham_dist import hamming
 
 torch.cuda.set_device(0)
 torch.manual_seed(42)
@@ -36,7 +37,7 @@ for i, n in enumerate(num_blocks_per_seq):
 block_table = block_table.cuda()
 print(f"block_table: {block_table}")
 
-key = torch.randn(num_blocks, hk, block_size, hd // 32).to(torch.float32)
+key = torch.randn(num_blocks, block_size, hk, hd // 32).to(torch.float32)
 query = torch.randn(b, sq, h, hd // 32).to(torch.float32)
 key = key.view(torch.int32).cuda()
 query = query.view(torch.int32).cuda()
@@ -46,7 +47,7 @@ print(f"query.shape: {query.shape}, query.dtype: {query.dtype}")
 print(f"=========================op_hamming=========================")
 
 output = hamming.hamming_score(
-    key, query, block_table, seqlen, max_seqlen, sink, recent
+    key, query, block_table, seqlen, max_seqlen, sink, recent, False
 )
 
 print(f"output shape: {output.shape}, dtype: {output.dtype}")
