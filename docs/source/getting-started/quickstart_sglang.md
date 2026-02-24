@@ -60,7 +60,7 @@ Download the pre-built `lmsysorg/sglang:v0.5.5.post3` docker image and build uni
         --name <name_of_your_container> \
         -it lmsysorg/sglang:v0.5.5.post3
     ```
-    Refer to [Set up using docker](https://docs.sglang.io/get_started/install.html#method-3-using-docker) for more information to run your own SGLang container.
+    Refer to [Using docker](https://docs.sglang.io/get_started/install.html#method-3-using-docker) for more information to run your own SGLang container.
 
 2. Build from source code
 
