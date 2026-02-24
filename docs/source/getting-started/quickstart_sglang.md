@@ -82,7 +82,7 @@ Download the pre-built `lmsysorg/sglang:v0.5.5.post3` docker image and build uni
     ```bash
     cd <path_to_sglang>
     ```
-    Then apply the SGLang pathc:
+    Then apply the SGLang patch:
 
     ```bash
     git apply unified-cache-management/ucm/integration/sglang/sglang-adapt.patch
