@@ -7,7 +7,7 @@ if(DOWNLOAD_DEPENDENCE)
     set(DEP_ZLIB_TAG v1.3.1)
     set(DEP_ZLIB_GIT_URLS
         https://github.com/madler/zlib.git
-        https://gitcode.com/GitHub_Trending/sp/ZLIB.git
+        https://gitcode.com/gh_mirrors/zl/zlib.git
     )
     include(helper.cmake)
     find_reachable_git_url(REACHABLE_URL DEP_ZLIB_GIT_URLS)
