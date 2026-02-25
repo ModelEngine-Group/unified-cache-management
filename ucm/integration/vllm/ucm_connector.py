@@ -746,6 +746,115 @@ class UCMLayerWiseConnector(UCMDirectConnector):
         self.is_save = False
 
 
+class UCMCPConnector(UCMLayerWiseConnector):
+    def __init__(self, vllm_config: "VllmConfig", role: KVConnectorRole):
+        super().__init__(vllm_config, role)
+        # [k_task, k_task, ...] for mla
+        # [k_task, v_task/rope_task, k_task, vtask/rope_task, ...] for dsa or gqa
+        self.use_layerwise = (
+            self._vllm_config.kv_transfer_config.kv_connector_extra_config.get(
+                "use_layerwise", False
+            )
+        )
+        try:
+            from vllm.distributed import get_dcp_group, get_pcp_group
+        except ImportError as e:
+            raise ImportError(
+                "Please check if the current vLLM version supports DCP and PCP features."
+            ) from e
+
+        try:
+            self.pcp_world_size = get_pcp_group().world_size
+            self.pcp_rank = (
+                get_pcp_group().rank_in_group if self.pcp_world_size > 1 else 0
+            )
+            self.dcp_world_size = get_dcp_group().world_size
+            self.dcp_rank = get_dcp_group().rank_in_group
+        except AssertionError:
+            # DCP might not be initialized in testing
+            self.dcp_world_size = 1
+            self.dcp_rank = 0
+            self.pcp_world_size = 1
+            self.pcp_rank = 0
+        self.cp_world_size = self.pcp_world_size * self.dcp_world_size
+        self.current_rank = self.dcp_world_size * self.pcp_rank + self.dcp_rank
+        old_tp_size = vllm_config.parallel_config.tensor_parallel_size
+        logger.info(
+            f"pcp_world_size: {self.pcp_world_size}, pcp_rank: {self.pcp_rank}, dcp_world_size: {self.dcp_world_size}, dcp_rank: {self.dcp_rank}, old_tp_size: {old_tp_size}"
+        )
+
+        self.tp_rank %= self.tp_size
+        self.tp_rank //= self.dcp_world_size
+        if not self.is_mla:
+            vllm_config.parallel_config.tensor_parallel_size //= self.dcp_world_size
+
+        if role == KVConnectorRole.SCHEDULER:
+            self.request_hasher = RequestHasher(vllm_config, 0)
+            self._seed = self.request_hasher("UCM_HASH_SEED")
+            # init scheduler-size connector
+            self.store = self._create_store(None)
+        else:
+            self.request_hasher = RequestHasher(vllm_config, self.tp_rank)
+        vllm_config.parallel_config.tensor_parallel_size = old_tp_size
+        logger.info("Init UCMCPConnector.")
+
+    def bind_connector_metadata(self, connector_metadata: KVConnectorMetadata) -> None:
+        """Set the connector metadata from the scheduler.
+
+        This function should be called by the model runner every time
+        before the model execution. The metadata will be used for runtime
+        KV cache loading and saving.
+
+        Args:
+            connector_metadata (dict): the connector metadata.
+        """
+        for _, request in connector_metadata.request_meta.items():
+            if len(request.load_block_ids[0]) > 0:
+                ucm_block_ids, vllm_block_ids = request.load_block_ids
+                if self.cp_world_size > 1:
+                    ucm_block_ids = ucm_block_ids[
+                        self.current_rank :: self.cp_world_size
+                    ]
+                current_loaded_block = len(ucm_block_ids)
+                vllm_block_ids = vllm_block_ids[:current_loaded_block]
+                request.load_block_ids = (ucm_block_ids, vllm_block_ids)
+
+            if len(request.dump_block_ids[0]) > 0:
+                ucm_block_ids, vllm_block_ids = request.dump_block_ids
+                if self.cp_world_size > 1:
+                    ucm_block_ids = ucm_block_ids[
+                        self.current_rank :: self.cp_world_size
+                    ]
+                current_dumped_block = len(ucm_block_ids)
+                vllm_block_ids = vllm_block_ids[:current_dumped_block]
+                request.dump_block_ids = (ucm_block_ids, vllm_block_ids)
+        super().bind_connector_metadata(connector_metadata)
+
+    def start_load_kv(self, forward_context, **kwargs):
+        if self.use_layerwise:
+            super().start_load_kv(forward_context, **kwargs)
+        else:
+            super(UCMLayerWiseConnector, self).start_load_kv(forward_context, **kwargs)
+
+    def wait_for_layer_load(self, layer_name: str) -> None:
+        if self.use_layerwise:
+            super().wait_for_layer_load(layer_name)
+        else:
+            pass
+
+    def save_kv_layer(self, layer_name, kv_layer, attn_metadata, **kwargs):
+        if self.use_layerwise:
+            super().save_kv_layer(layer_name, kv_layer, attn_metadata, **kwargs)
+        else:
+            pass
+
+    def wait_for_save(self):
+        if self.use_layerwise:
+            super().wait_for_save()
+        else:
+            super(UCMLayerWiseConnector, self).wait_for_save()
+
+
 class UCMPDConnector(UCMDirectConnector):
     """
     This Connector means overlap (especially for Decode Instance):
@@ -830,6 +939,16 @@ class UCMConnector(KVConnectorBase_V1):
             in self._vllm_config.kv_transfer_config.kv_connector_extra_config
         ):
             self.connector = UCMMockConnector(vllm_config, role)
+        elif (
+            hasattr(self._vllm_config.parallel_config, "prefill_context_parallel_size")
+            and hasattr(
+                self._vllm_config.parallel_config, "decode_context_parallel_size"
+            )
+            and self._vllm_config.parallel_config.prefill_context_parallel_size
+            * self._vllm_config.parallel_config.decode_context_parallel_size
+            > 1
+        ):
+            self.connector = UCMCPConnector(vllm_config, role)
         elif (
             self._vllm_config.kv_transfer_config is not None
             and self._vllm_config.kv_transfer_config.kv_connector_extra_config.get(
