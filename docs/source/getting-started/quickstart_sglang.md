@@ -35,7 +35,7 @@ Download the pre-built `lmsysorg/sglang:v0.5.5.post3` docker image and build uni
  # Build docker image using source code, replace <branch_or_tag_name> with the branch or tag name needed
  git clone --depth 1 --branch <branch_or_tag_name> https://github.com/ModelEngine-Group/unified-cache-management.git
  cd unified-cache-management
- docker build -t ucm-sglang:latest -f ./docker/sglang.dockerfile ./
+ docker build -t ucm-sglang:latest -f ./docker/Dockerfile.sglang_gpu ./
  ```
 
 
