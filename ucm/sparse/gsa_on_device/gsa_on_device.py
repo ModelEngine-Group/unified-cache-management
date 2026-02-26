@@ -254,78 +254,78 @@ class GSAOnDevice(UcmSparseBase):
             self.has_decode = False
             self.decode_only = False
 
-            if not self.is_cuda:  # NPU only variables
-                if not self.is_mla:  # for GQA
-                    self.decode_mask = None
-                    self.decode_mask_npu = None
-                else:  # for MLA in NPU
-                    self.khash_zeros_full = None
+        if not self.is_cuda:  # NPU only variables
+            if not self.is_mla:  # for GQA
+                self.decode_mask = None
+                self.decode_mask_npu = None
+            else:  # for MLA in NPU
+                self.khash_zeros_full = None
 
-                # for both MLA and GQA
-                self.is_tensor_computed = False
-                self.hamming_keep_chunks_head = 1
-                self.hamming_keep_chunks_tail = 4
+            # for both MLA and GQA
+            self.is_tensor_computed = False
+            self.hamming_keep_chunks_head = 1
+            self.hamming_keep_chunks_tail = 4
 
-                self.chunk_sizes_for_hamming_full = torch.full(
-                    [self.max_batch_size],
-                    fill_value=self.block_size,
-                    dtype=torch.int32,
-                    device=self.device,
-                )
-                self.topk_for_hamming_full = torch.full(
-                    [self.max_batch_size],
-                    fill_value=self.hash_topk_tokens // self.block_size,
-                    dtype=torch.int32,
-                    device=self.device,
-                )
-                self.topk_for_hamming_full_cpu = torch.full(
-                    [self.max_batch_size],
-                    fill_value=self.hash_topk_tokens // self.block_size,
-                    dtype=torch.int32,
-                    device="cpu",
-                )
-                self.seq_lens_for_hamming = torch.zeros(
-                    [self.max_batch_size], dtype=torch.int32, device=self.device
-                )
-                self.hamming_output = torch.zeros(
-                    [
-                        self.max_batch_size,
-                        self.num_key_heads,
-                        cdiv(vllm_config.model_config.max_model_len, self.block_size),
-                    ],
-                    dtype=torch.int32,
-                    device=self.device,
-                )
-                self.chunk_sizes_for_hamming_full = torch.full(
-                    [self.max_batch_size],
-                    fill_value=self.block_size,
-                    dtype=torch.int32,
-                    device=self.device,
-                )
-                self.topk_for_hamming_full = torch.full(
-                    [self.max_batch_size],
-                    fill_value=self.hash_topk_tokens // self.block_size,
-                    dtype=torch.int32,
-                    device=self.device,
-                )
-                self.topk_for_hamming_full_cpu = torch.full(
-                    [self.max_batch_size],
-                    fill_value=self.hash_topk_tokens // self.block_size,
-                    dtype=torch.int32,
-                    device="cpu",
-                )
-                self.seq_lens_for_hamming = torch.zeros(
-                    [self.max_batch_size], dtype=torch.int32, device=self.device
-                )
-                self.hamming_output = torch.zeros(
-                    [
-                        self.max_batch_size,
-                        self.num_key_heads,
-                        cdiv(vllm_config.model_config.max_model_len, self.block_size),
-                    ],
-                    dtype=torch.int32,
-                    device=self.device,
-                )
+            self.chunk_sizes_for_hamming_full = torch.full(
+                [self.max_batch_size],
+                fill_value=self.block_size,
+                dtype=torch.int32,
+                device=self.device,
+            )
+            self.topk_for_hamming_full = torch.full(
+                [self.max_batch_size],
+                fill_value=self.hash_topk_tokens // self.block_size,
+                dtype=torch.int32,
+                device=self.device,
+            )
+            self.topk_for_hamming_full_cpu = torch.full(
+                [self.max_batch_size],
+                fill_value=self.hash_topk_tokens // self.block_size,
+                dtype=torch.int32,
+                device="cpu",
+            )
+            self.seq_lens_for_hamming = torch.zeros(
+                [self.max_batch_size], dtype=torch.int32, device=self.device
+            )
+            self.hamming_output = torch.zeros(
+                [
+                    self.max_batch_size,
+                    self.num_key_heads,
+                    cdiv(vllm_config.model_config.max_model_len, self.block_size),
+                ],
+                dtype=torch.int32,
+                device=self.device,
+            )
+            self.chunk_sizes_for_hamming_full = torch.full(
+                [self.max_batch_size],
+                fill_value=self.block_size,
+                dtype=torch.int32,
+                device=self.device,
+            )
+            self.topk_for_hamming_full = torch.full(
+                [self.max_batch_size],
+                fill_value=self.hash_topk_tokens // self.block_size,
+                dtype=torch.int32,
+                device=self.device,
+            )
+            self.topk_for_hamming_full_cpu = torch.full(
+                [self.max_batch_size],
+                fill_value=self.hash_topk_tokens // self.block_size,
+                dtype=torch.int32,
+                device="cpu",
+            )
+            self.seq_lens_for_hamming = torch.zeros(
+                [self.max_batch_size], dtype=torch.int32, device=self.device
+            )
+            self.hamming_output = torch.zeros(
+                [
+                    self.max_batch_size,
+                    self.num_key_heads,
+                    cdiv(vllm_config.model_config.max_model_len, self.block_size),
+                ],
+                dtype=torch.int32,
+                device=self.device,
+            )
 
     def init_for_pc(self):
         # for pc hit
