@@ -18,7 +18,7 @@ ucm_connectors:
 # metrics_config_path: "/workspace/unified-cache-management/examples/metrics/metrics_configs.yaml"
 
 # Sparse attention configuration
-# Format 1: Dictionary format (for methods like ESA, KvComp)
+# Format 1: Dictionary format (for methods like ESA, GSAOnDevice)
 # ucm_sparse_config:
 #   ESA:
 #     init_window_sz: 1

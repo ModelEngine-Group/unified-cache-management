@@ -1,0 +1,228 @@
+﻿diff --git a/python/sglang/srt/managers/cache_controller.py b/python/sglang/srt/managers/cache_controller.py
+index b5c4aa172..33428e7ac 100644
+--- a/python/sglang/srt/managers/cache_controller.py
++++ b/python/sglang/srt/managers/cache_controller.py
+@@ -268,8 +268,11 @@ class HiCacheController:
+         if storage_backend is not None:
+             self.storage_backend_type = storage_backend
+             from sglang.srt.mem_cache.hicache_storage import get_hash_str
+-
+-            self.get_hash_str = get_hash_str
++            from sglang.srt.mem_cache.storage.unifiedcache.unifiedcache_store import uc_get_hash_str
++            if self.storage_backend_type in ["unifiedcache"]:
++                self.get_hash_str = uc_get_hash_str
++            else:
++                self.get_hash_str = get_hash_str
+             self.storage_config = self._generate_storage_config(
+                 model_name, storage_backend_extra_config
+             )
+@@ -315,7 +318,7 @@ class HiCacheController:
+             self.page_get_func = self._generic_page_get
+             self.page_set_func = self._generic_page_set
+ 
+-            if self.storage_backend_type in ["hf3fs", "mooncake", "eic"]:
++            if self.storage_backend_type in ["hf3fs", "mooncake", "eic", "unifiedcache"]:
+                 self.page_get_func = self._page_get_zero_copy
+                 self.page_set_func = self._page_set_zero_copy
+ 
+diff --git a/python/sglang/srt/mem_cache/storage/backend_factory.py b/python/sglang/srt/mem_cache/storage/backend_factory.py
+index 4b195c863..4a414a195 100644
+--- a/python/sglang/srt/mem_cache/storage/backend_factory.py
++++ b/python/sglang/srt/mem_cache/storage/backend_factory.py
+@@ -183,6 +183,8 @@ class StorageBackendFactory:
+             return backend_class.from_env_config(bytes_per_page, dtype, storage_config)
+         elif backend_name == "eic":
+             return backend_class(storage_config, mem_pool_host)
++        elif backend_name == "unifiedcache":
++            return backend_class(storage_config, mem_pool_host)
+         else:
+             raise ValueError(f"Unknown built-in backend: {backend_name}")
+ 
+@@ -221,3 +223,9 @@ StorageBackendFactory.register_backend(
+     "sglang.srt.mem_cache.storage.eic.eic_storage",
+     "EICStorage",
+ )
++
++StorageBackendFactory.register_backend(
++    "unifiedcache",
++    "sglang.srt.mem_cache.storage.unifiedcache.unifiedcache_store",
++    "UnifiedCacheStore",
++)
+diff --git a/python/sglang/srt/mem_cache/storage/unifiedcache/__init__.py b/python/sglang/srt/mem_cache/storage/unifiedcache/__init__.py
+new file mode 100644
+index 000000000..e69de29bb
+diff --git a/python/sglang/srt/mem_cache/storage/unifiedcache/unifiedcache_example.yaml b/python/sglang/srt/mem_cache/storage/unifiedcache/unifiedcache_example.yaml
+new file mode 100644
+index 000000000..db9bc6157
+--- /dev/null
++++ b/python/sglang/srt/mem_cache/storage/unifiedcache/unifiedcache_example.yaml
+@@ -0,0 +1,4 @@
++kv_connector_extra_config:
++  ucm_connector_name: UcmPosixStore
++  ucm_connector_config:
++    storage_backends: /mnt/test
+diff --git a/python/sglang/srt/mem_cache/storage/unifiedcache/unifiedcache_store.py b/python/sglang/srt/mem_cache/storage/unifiedcache/unifiedcache_store.py
+new file mode 100644
+index 000000000..10c95c5f2
+--- /dev/null
++++ b/python/sglang/srt/mem_cache/storage/unifiedcache/unifiedcache_store.py
+@@ -0,0 +1,142 @@
++import logging
++from typing import Any, List, Optional
++
++import torch
++
++from ucm.integration.sglang.ucm_connector import (
++    SglangUcmConnector,
++    uc_get_hash_str as _uc_get_hash_str,
++)
++
++from sglang.srt.mem_cache.hicache_storage import (
++    HiCacheStorage,
++    HiCacheStorageConfig,
++    HiCacheStorageExtraInfo,
++)
++from sglang.srt.mem_cache.memory_pool_host import HostKVCache
++
++logger = logging.getLogger(__name__)
++
++
++def uc_get_hash_str(token_ids: List[int], prior_hash: str = None) -> str:
++    return _uc_get_hash_str(token_ids, prior_hash)
++
++
++class UnifiedCacheStore(HiCacheStorage):
++    def __init__(
++        self,
++        storage_config: HiCacheStorageConfig = None,
++        mem_pool_host: HostKVCache = None,
++    ):
++        try:
++            assert mem_pool_host is not None
++            logger.info(
++                "UnifiedCacheStore expects hicache mem layout 'page_first'; current layout=%s",
++                mem_pool_host.layout,
++            )
++            assert mem_pool_host.layout == "page_first"
++            self.connector = SglangUcmConnector.from_hicache(
++                storage_config, mem_pool_host
++            )
++            self.store = self.connector.store
++        except ValueError as e:
++            logger.error(f"Invalid UnifiedCacheStoreConfig: {e}")
++            raise
++        except Exception:
++            logger.error("Unexpected error while loading UnifiedCacheStoreConfig")
++            raise
++
++    def register_uc_hasher(self) -> None:
++        self.connector.register_uc_hasher()
++
++    def register_mem_pool_host(self, mem_pool_host: HostKVCache):
++        super().register_mem_pool_host(mem_pool_host)
++
++    def batch_get_v1(
++        self,
++        keys: List[str],
++        host_indices: torch.Tensor,
++        extra_info: Optional[HiCacheStorageExtraInfo] = None,
++    ) -> List[bool]:
++        return self.connector.batch_get_v1(keys, host_indices, extra_info)
++
++    def batch_set_v1(
++        self,
++        keys: List[str],
++        host_indices: torch.Tensor,
++        extra_info: Optional[HiCacheStorageExtraInfo] = None,
++    ) -> List[bool]:
++        return self.connector.batch_set_v1(keys, host_indices, extra_info)
++
++    def get(
++        self,
++        key: str,
++        target_location: Optional[Any] = None,
++        target_sizes: Optional[Any] = None,
++    ) -> torch.Tensor | None:
++        """
++        Retrieve the value associated with the given key.
++        Returns None if the key does not exist.
++        """
++        pass
++
++    def batch_get(
++        self,
++        keys: List[str],
++        target_locations: Optional[Any] = None,
++        target_sizes: Optional[Any] = None,
++    ) -> List[torch.Tensor | None] | int:
++        """
++        Retrieve values for multiple keys.
++        Returns a list of tensors or None for each key.
++        """
++        pass
++
++    def set(
++        self,
++        key: str,
++        value: Optional[Any] = None,
++        target_location: Optional[Any] = None,
++        target_sizes: Optional[Any] = None,
++    ) -> bool:
++        """
++        Store the value associated with the given key.
++        Returns True if the operation was successful, False otherwise.
++        """
++        pass
++
++    def batch_set(
++        self,
++        keys: List[str],
++        values: Optional[Any] = None,
++        target_locations: Optional[Any] = None,
++        target_sizes: Optional[Any] = None,
++    ) -> bool:
++        """
++        Store multiple key-value pairs.
++        Returns True if all operations were successful, False otherwise.
++        """
++        pass
++
++    def exists(self, key: str) -> bool:
++        """
++        Check if the key exists in the storage.
++        Returns True if the key exists, False otherwise.
++        """
++        return self.connector.exists(key)
++
++    def batch_exists(
++        self, keys: List[str], extra_info: Optional[HiCacheStorageExtraInfo] = None
++    ) -> int:
++        """
++        Check if the keys exist in the storage.
++        return the number of consecutive existing keys from the start.
++        Can be overridden by subclasses for more efficient implementation.
++        """
++        return self.connector.batch_exists(keys, extra_info)
++
++    def clear(self) -> bool:
++        pass
++
++    def get_stats(self):
++        return None
+diff --git a/python/sglang/srt/server_args.py b/python/sglang/srt/server_args.py
+index 681a929d7..757d278ec 100644
+--- a/python/sglang/srt/server_args.py
++++ b/python/sglang/srt/server_args.py
+@@ -3015,10 +3015,10 @@ class ServerArgs:
+         parser.add_argument(
+             "--hicache-storage-backend",
+             type=str,
+-            choices=["file", "mooncake", "hf3fs", "nixl", "aibrix", "dynamic", "eic"],
++            choices=["file", "mooncake", "hf3fs", "nixl", "aibrix", "dynamic", "eic", "unifiedcache"],
+             default=ServerArgs.hicache_storage_backend,
+             help="The storage backend for hierarchical KV cache. "
+-            "Built-in backends: file, mooncake, hf3fs, nixl, aibrix. "
++            "Built-in backends: file, mooncake, hf3fs, nixl, aibrix, unifiedcache. "
+             "For dynamic backend, use --hicache-storage-backend-extra-config to specify: "
+             "backend_name (custom name), module_path (Python module path), class_name (backend class name).",
+         )

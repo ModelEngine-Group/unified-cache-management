@@ -156,82 +156,103 @@ class GSAOnDevice(UcmSparseBase):
             <= vllm_config.model_config.max_model_len
         ), "vllm_hash_attention_topk must be less than max_model_len"
 
-        if role == UcmSparseRole.WORKER:
-            if self.is_cuda:  # cuda only variables
-                if not vllm_config.model_config.enforce_eager:
-                    device_properties = torch.cuda.get_device_properties(self.device)
-                    num_sms = device_properties.multi_processor_count
-                    self.cg_buf_topk_tile_scheduler_metadata = torch.zeros(
-                        (num_sms, 8),
-                        device=self.device,
-                        dtype=torch.int32,
-                    )
-                    self.cg_buf_topk_num_splits = torch.empty(
-                        (vllm_config.scheduler_config.max_num_seqs + 1),
-                        device=self.device,
-                        dtype=torch.int32,
-                    )
+        if role != UcmSparseRole.WORKER:
+            return
 
-            self.ori_seq_lens_decode = None
-            self.ori_block_table_decode = None
-            self.origin_tile_scheduler_metadata = None  # for MLA
-            self.origin_num_splits = None  # for MLA
+        if self.is_cuda:  # cuda only variables
+            if not vllm_config.model_config.enforce_eager:
+                device_properties = torch.cuda.get_device_properties(self.device)
+                num_sms = device_properties.multi_processor_count
+                self.cg_buf_topk_tile_scheduler_metadata = torch.zeros(
+                    (num_sms, 8),
+                    device=self.device,
+                    dtype=torch.int32,
+                )
+                self.cg_buf_topk_num_splits = torch.empty(
+                    (vllm_config.scheduler_config.max_num_seqs + 1),
+                    device=self.device,
+                    dtype=torch.int32,
+                )
+                self.cg_buf_topk_seq_lens = torch.empty(
+                    (vllm_config.scheduler_config.max_num_seqs + 1),
+                    device=self.device,
+                    dtype=torch.int32,
+                )
 
-            # for GQA
-            self.topk_block_table = None
-            self.topk_seq_lens = None
-            self.topk_seq_lens_qwen = None
-            self.has_pc_hit = False
+        self.ori_seq_lens_decode = None
+        self.ori_block_table_decode = None
+        self.origin_tile_scheduler_metadata = None  # for MLA
+        self.origin_num_splits = None  # for MLA
 
-            self.is_prefill_flag: dict[str, bool] = dict()
+        # for GQA
+        self.topk_block_table = None
+        self.topk_seq_lens = None
+        self.topk_seq_lens_qwen = None
+        self.has_pc_hit = False
+
+        self.is_prefill_flag: dict[str, bool] = dict()
 
             self._k_scale = torch.tensor(1.0, dtype=torch.float32)
 
             # for both MLA and GQA
             self.max_batch_size = vllm_config.scheduler_config.max_num_seqs
 
-            if self.is_mla:
-                logger.info("GSAOnDevice initialized with MLA model config")
-                self.hash_reduction_head_num = (
-                    self.gsa_on_device_config.vllm_hash_attention_reduction_head_num
-                )
-                self.kv_lora_rank = getattr(
-                    vllm_config.model_config.hf_text_config, "kv_lora_rank", None
-                )
-                self.qk_rope_head_dim = getattr(
-                    vllm_config.model_config.hf_text_config, "qk_rope_head_dim", None
-                )
-                self.hash_encoder_nope = HashEncoder(
-                    input_dim=self.kv_lora_rank,
-                    hash_bits=self.kv_lora_rank,
-                    dtype=vllm_config.model_config.dtype,
-                    device=self.device,
-                )
+        if self.is_mla:
+            logger.info("GSAOnDevice initialized with MLA model config")
+            self.hash_reduction_head_num = (
+                self.gsa_on_device_config.vllm_hash_attention_reduction_head_num
+            )
+            self.kv_lora_rank = getattr(
+                vllm_config.model_config.hf_text_config, "kv_lora_rank", None
+            )
+            self.qk_rope_head_dim = getattr(
+                vllm_config.model_config.hf_text_config, "qk_rope_head_dim", None
+            )
+            self.hash_encoder_nope = HashEncoder(
+                input_dim=self.kv_lora_rank,
+                hash_bits=self.kv_lora_rank,
+                dtype=vllm_config.model_config.dtype,
+                device=self.device,
+            )
 
-                self.hash_encoder_rope = HashEncoder(
-                    input_dim=self.qk_rope_head_dim,
-                    hash_bits=self.qk_rope_head_dim,
-                    dtype=vllm_config.model_config.dtype,
-                    device=self.device,
-                )
-            else:  # for GQA
-                logger.info("GSAOnDevice initialized with non-MLA model config")
-                self.max_num_tokens = vllm_config.model_config.max_model_len
-                self.decode_req_ids_buf = self._make_buffer(
-                    self.max_batch_size, dtype=torch.int64
-                )
+            self.hash_encoder_rope = HashEncoder(
+                input_dim=self.qk_rope_head_dim,
+                hash_bits=self.qk_rope_head_dim,
+                dtype=vllm_config.model_config.dtype,
+                device=self.device,
+            )
+        else:  # for GQA
+            logger.info("GSAOnDevice initialized with non-MLA model config")
+            self.max_batch_size = vllm_config.scheduler_config.max_num_seqs
+            self.max_num_tokens = vllm_config.model_config.max_model_len
+            self.decode_req_ids_buf = self._make_buffer(
+                self.max_batch_size, dtype=torch.int64
+            )
 
-                self.init_for_pc()
+            max_block_per_seq = cdiv(self.max_num_tokens, self.block_size)
 
-                self.head_dim = vllm_config.model_config.get_head_size()
-                self.hash_encoder = HashEncoder(
-                    input_dim=self.head_dim,
-                    hash_bits=self.head_dim,
-                    dtype=vllm_config.model_config.dtype,
-                    device=self.device,
-                )
-                self.has_decode = False
-                self.decode_only = False
+            self.full_block_table = torch.zeros(
+                (self.max_batch_size, max_block_per_seq),
+                dtype=torch.int32,
+                device=self.device,
+            )
+            self.full_seq_lens = torch.zeros(
+                (self.max_batch_size,),
+                dtype=torch.int32,
+                device=self.device,
+            )
+
+            self.init_for_pc()
+
+            self.head_dim = vllm_config.model_config.get_head_size()
+            self.hash_encoder = HashEncoder(
+                input_dim=self.head_dim,
+                hash_bits=self.head_dim,
+                dtype=vllm_config.model_config.dtype,
+                device=self.device,
+            )
+            self.has_decode = False
+            self.decode_only = False
 
             if not self.is_cuda:  # NPU only variables
                 if not self.is_mla:  # for GQA
@@ -245,6 +266,36 @@ class GSAOnDevice(UcmSparseBase):
                 self.hamming_keep_chunks_head = 1
                 self.hamming_keep_chunks_tail = 4
 
+                self.chunk_sizes_for_hamming_full = torch.full(
+                    [self.max_batch_size],
+                    fill_value=self.block_size,
+                    dtype=torch.int32,
+                    device=self.device,
+                )
+                self.topk_for_hamming_full = torch.full(
+                    [self.max_batch_size],
+                    fill_value=self.hash_topk_tokens // self.block_size,
+                    dtype=torch.int32,
+                    device=self.device,
+                )
+                self.topk_for_hamming_full_cpu = torch.full(
+                    [self.max_batch_size],
+                    fill_value=self.hash_topk_tokens // self.block_size,
+                    dtype=torch.int32,
+                    device="cpu",
+                )
+                self.seq_lens_for_hamming = torch.zeros(
+                    [self.max_batch_size], dtype=torch.int32, device=self.device
+                )
+                self.hamming_output = torch.zeros(
+                    [
+                        self.max_batch_size,
+                        self.num_key_heads,
+                        cdiv(vllm_config.model_config.max_model_len, self.block_size),
+                    ],
+                    dtype=torch.int32,
+                    device=self.device,
+                )
                 self.chunk_sizes_for_hamming_full = torch.full(
                     [self.max_batch_size],
                     fill_value=self.block_size,
@@ -536,6 +587,7 @@ class GSAOnDevice(UcmSparseBase):
             attn_metadata.decode.tile_scheduler_metadata = tile_scheduler_metadata
             attn_metadata.decode.num_splits = num_splits
 
+    
     def update_decode_topk_mla_npu(
         self,
         is_rollback_layer,
@@ -593,18 +645,15 @@ class GSAOnDevice(UcmSparseBase):
             attn_metadata.decode.seq_lens = self.new_seq_lens
             attn_metadata.decode.seq_lens_list = self.new_seq_lens_list
 
+   
     def update_decode_topk_gqa_cuda(self, query, k_hash, attn_metadata):
-        if self.decode_only:
-            q_decode = query[: self.num_reqs]
-        else:
-            q_decode = query.index_select(0, self.decode_req_ids)
-        q_hash = self.hash_code(query=q_decode)
+        q_hash = self.hash_code(query=query[: self.num_reqs])
 
         block_table_decode = cuda_hamming_topk(
             q_hash.unsqueeze(1),
             k_hash,
-            self.block_table_decode,
-            self.seq_len_decode,
+            attn_metadata.block_table,
+            attn_metadata.seq_lens,
             topk_token=self.hash_topk_tokens,
             sink_token=64,
             recent_token=512,
@@ -621,13 +670,16 @@ class GSAOnDevice(UcmSparseBase):
             self.new_seq_lens[: self.num_reqs] = self.topk_seq_lens_qwen
             attn_metadata.seq_lens = self.new_seq_lens
         else:
-            self.new_block_table[self.decode_req_ids, :topk] = block_table_decode
+            self.new_block_table[self.decode_req_ids, :topk] = block_table_decode[
+                self.decode_req_ids, :topk
+            ]
             self.new_block_table[self.decode_req_ids, topk:] = 0
+
             attn_metadata.block_table = self.new_block_table
 
             # update seq_lens
             self.new_seq_lens.index_copy_(
-                0, self.decode_req_ids, self.topk_seq_lens_qwen
+                0, self.decode_req_ids, self.topk_seq_lens_qwen[self.decode_req_ids]
             )
             attn_metadata.seq_lens = self.new_seq_lens
         # topk for skip layer
@@ -792,11 +844,13 @@ class GSAOnDevice(UcmSparseBase):
                         attn_metadata.decode.seq_lens_list = self.ori_seq_lens_list
         else:  # 判断req decode阶段
             if self.has_decode:
-                if self.is_cuda:
-                    attn_metadata.block_table = self.ori_block_table_decode
-                else:
-                    attn_metadata.block_tables = self.ori_block_table_decode
-                attn_metadata.seq_lens = self.ori_seq_lens_decode
+                is_rollback_layer, is_skip_hash_layer = self.get_layer_state(layer_name)
+                if not is_rollback_layer:
+                    if self.is_cuda:
+                        attn_metadata.block_table = self.ori_block_table_decode
+                    else:
+                        attn_metadata.block_tables = self.ori_block_table_decode
+                    attn_metadata.seq_lens = self.ori_seq_lens_decode
 
     def request_begin(self, request_id: ReqType, prompt_token_ids: List[int]):
         pass
@@ -1038,7 +1092,7 @@ class GSAOnDevice(UcmSparseBase):
                 )
 
                 # when prompt length < topk_tokens Skip sparse!
-                if req.num_prompt_tokens < self.hash_topk_tokens:
+                if req.num_prompt_tokens < self.seq_len_threshhold:
                     continue
 
                 if is_decode:
@@ -1091,31 +1145,20 @@ class GSAOnDevice(UcmSparseBase):
             # build sparse meta for cuda
             if self.has_decode and self.is_cuda:
                 # for roll_back recode the full seqlens & block_table
-                self.ori_seq_lens_decode = attn_metadata.seq_lens.clone()
-                self.ori_block_table_decode = attn_metadata.block_table.clone()
+                self.full_seq_lens[: self.num_reqs].copy_(attn_metadata.seq_lens, True)
+                self.full_block_table[: self.num_reqs].copy_(
+                    attn_metadata.block_table, True
+                )
 
-                if self.decode_only:
-                    decode_seq_lens = self.ori_seq_lens_decode[: self.num_reqs]
-                    self.block_table_decode = self.ori_block_table_decode[
-                        : self.num_reqs
-                    ]
-                    self.seq_len_decode = self.ori_seq_lens_decode[: self.num_reqs]
-                else:
+                self.ori_seq_lens_decode = self.full_seq_lens[: self.num_reqs]
+                self.ori_block_table_decode = self.full_block_table[: self.num_reqs]
+
+                if not self.decode_only:
                     self.decode_req_ids_buf.copy_to_gpu(num_decodes)
                     self.decode_req_ids = self.decode_req_ids_buf.gpu[:num_decodes]
-                    decode_seq_lens = attn_metadata.seq_lens.index_select(
-                        0, self.decode_req_ids
-                    )
-
-                    self.block_table_decode = attn_metadata.block_table.index_select(
-                        0, self.decode_req_ids
-                    )
-                    self.seq_len_decode = attn_metadata.seq_lens.index_select(
-                        0, self.decode_req_ids
-                    )
 
                 self.topk_seq_lens_qwen = update_seq_lens(
-                    decode_seq_lens,
+                    attn_metadata.seq_lens,
                     topk_token=self.hash_topk_tokens,
                     block_size=self.block_size,
                 )
@@ -1130,7 +1173,14 @@ class GSAOnDevice(UcmSparseBase):
                 ]
                 self.prefix_block_ids = self.prefix_block_ids_buf[:all_prefix_blocks]
 
-    def maybe_init_cudagraph_buffers_for_topk(self, n, tile_scheduler_metadata):
+    def maybe_init_cudagraph_buffers_for_topk(
+        self,
+        n,
+        tile_scheduler_metadata,
+        topk_tile_scheduler_metadata,
+        topk_num_splits,
+        topk_seq_lens,
+    ):
         sm_parts = tile_scheduler_metadata.size(0)
         topk_tile_scheduler_metadata_view = self.cg_buf_topk_tile_scheduler_metadata[
             :sm_parts
@@ -1142,7 +1192,11 @@ class GSAOnDevice(UcmSparseBase):
         topk_num_splits_view.copy_(topk_num_splits)
         self.cg_buf_topk_num_splits[n:].fill_(topk_num_splits[-1])
         topk_num_splits = topk_num_splits_view
-        return topk_tile_scheduler_metadata, topk_num_splits
+
+        topk_seq_lens_view = self.cg_buf_topk_seq_lens[: topk_seq_lens.size(0)]
+        topk_seq_lens_view.copy_(topk_seq_lens)
+        topk_seq_lens = topk_seq_lens_view
+        return topk_tile_scheduler_metadata, topk_num_splits, topk_seq_lens
 
     def _free_cached_request(self, request_id: Union[int, str]) -> None:
         if request_id not in self.is_prefill_flag:

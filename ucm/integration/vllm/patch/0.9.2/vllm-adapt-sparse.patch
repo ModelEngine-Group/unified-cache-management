@@ -1,7 +1,7 @@
-From 857bc2830fb294d893ca5fac50eff48e10aaddf2 Mon Sep 17 00:00:00 2001
+From 6895341c5f7ee00d87bf9f6d261ad65c573e6c99 Mon Sep 17 00:00:00 2001
 From: wenxinwang <wangwenxin21@huawei.com>
 Date: Wed, 21 Jan 2026 00:53:52 -0800
-Subject: [PATCH] update for gsaondevice + sparse + cache blend
+Subject: [PATCH 1/2] update for gsaondevice + sparse + cache blend
 
 ---
  vllm/attention/layer.py                    | 63 +++++++++++++++-
@@ -823,6 +823,32 @@ index 9e7e44d06..d49099346 100644
  
  
  def _check_if_gpu_supports_dtype(torch_dtype: torch.dtype):
+-- 
+2.34.1
+
+
+From b8be7898bf49838f11c5f9e1a4687e1ff0b1367a Mon Sep 17 00:00:00 2001
+From: wenxinwang <wangwenxin21@huawei.com>
+Date: Wed, 4 Feb 2026 18:25:53 -0800
+Subject: [PATCH 2/2] [bugfix] gsa graph patch
+
+---
+ vllm/v1/attention/backends/mla/flashmla.py | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/vllm/v1/attention/backends/mla/flashmla.py b/vllm/v1/attention/backends/mla/flashmla.py
+index 4d74e9d5b..c3a3d4230 100644
+--- a/vllm/v1/attention/backends/mla/flashmla.py
++++ b/vllm/v1/attention/backends/mla/flashmla.py
+@@ -110,7 +110,7 @@ class FlashMLAMetadataBuilder(MLACommonMetadataBuilder[FlashMLAMetadata]):
+                 num_splits_view.copy_(num_splits)
+                 self.cg_buf_num_splits[n:].fill_(0)  # fill the rest with 0s
+                 num_splits = num_splits_view
+-                topk_tile_scheduler_metadata, topk_num_splits = ucm_sparse.maybe_init_cudagraph_buffers_for_topk(n, tile_scheduler_metadata)
++                topk_tile_scheduler_metadata, topk_num_splits, topk_seq_lens = ucm_sparse.maybe_init_cudagraph_buffers_for_topk(n, tile_scheduler_metadata, topk_tile_scheduler_metadata, topk_num_splits, topk_seq_lens)
+ 
+         return FlashMLADecodeMetadata(
+             block_table=block_table_tensor,
 -- 
 2.34.1
 
