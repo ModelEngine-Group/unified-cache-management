@@ -192,10 +192,10 @@ class GSAOnDevice(UcmSparseBase):
 
         self.is_prefill_flag: dict[str, bool] = dict()
 
-            self._k_scale = torch.tensor(1.0, dtype=torch.float32)
+        self._k_scale = torch.tensor(1.0, dtype=torch.float32)
 
-            # for both MLA and GQA
-            self.max_batch_size = vllm_config.scheduler_config.max_num_seqs
+        # for both MLA and GQA
+        self.max_batch_size = vllm_config.scheduler_config.max_num_seqs
 
         if self.is_mla:
             logger.info("GSAOnDevice initialized with MLA model config")
