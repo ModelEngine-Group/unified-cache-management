@@ -139,11 +139,6 @@ class GSAOnDevice(UcmSparseBase):
         )
 
         self.seq_len_threshhold = self.gsa_on_device_config.seq_len_threshhold
-        print(f"self.hash_rollback_layers={self.hash_rollback_layers}")
-        print(
-            f"self.compute_hamming_layers={[i for i, value in enumerate(self.hash_skip_layers) if value == False]}"
-        )
-        print(f"self.hash_topk_tokens={self.hash_topk_tokens}")
         assert (
             self.seq_len_threshhold
             >= self.gsa_on_device_config.vllm_hash_attention_topk
@@ -881,17 +876,11 @@ class GSAOnDevice(UcmSparseBase):
             kv_caches[layer_name] = (kv_cache, khash_cache)
 
     def initialize_kv_hash_cache_tensors_npu(self, kv_caches, device):
-        print(
-            f"[NPU GSAOnDevice Debug] initialize_kv_hash_cache_tensors_npu: allocating hashk cache for GSAOnDevice in NPU"
-        )
         if self.is_mla:
             for layer_name, kv_cache in kv_caches.items():
                 is_rollback_layer, is_skip_hash_layer = self.get_layer_state(layer_name)
                 kv_cache_nope_shape = kv_cache[0].shape
                 kv_cache_rope_shape = kv_cache[1].shape
-                print(
-                    f"[NPU GSAOnDevice Debug] layer_name: {layer_name}, is_rollback_layer={is_rollback_layer}, is_skip_hash_layer={is_skip_hash_layer},kv_cache_nope_shape: {kv_cache_nope_shape}, kv_cache_rope_shape:{kv_cache_rope_shape}"
-                )
                 khash_nope_shape = (
                     kv_cache_nope_shape[0],
                     kv_cache_nope_shape[2],
@@ -916,17 +905,11 @@ class GSAOnDevice(UcmSparseBase):
                     khash_cache = (khash_nope_cache, khash_rope_cache)
                 else:
                     khash_cache = None
-                    print(
-                        f"[NPU GSAOnDevice Debug] layer_name: {layer_name}, khash_cache is None"
-                    )
                 kv_caches[layer_name] = (kv_cache, khash_cache)
         else:  # GQA
             for layer_name, kv_cache in kv_caches.items():
                 is_rollback_layer, is_skip_hash_layer = self.get_layer_state(layer_name)
                 k_cache_shape = kv_cache[0].shape
-                print(
-                    f"[NPU GSAOnDevice Debug] layer_name: {layer_name}, is_rollback_layer={is_rollback_layer}, is_skip_hash_layer={is_skip_hash_layer}, k_cache_shape: {k_cache_shape}"
-                )
                 khash_cache_shape = (
                     k_cache_shape[0],
                     k_cache_shape[2],
@@ -937,14 +920,8 @@ class GSAOnDevice(UcmSparseBase):
                     khash_cache = torch.empty(
                         khash_cache_shape, dtype=torch.uint8, device=device
                     )
-                    print(
-                        f"[NPU GSAOnDevice Debug] layer_name: {layer_name}, khash_cache_shape: {khash_cache_shape}"
-                    )
                 else:
                     khash_cache = None
-                    print(
-                        f"[NPU GSAOnDevice Debug] layer_name: {layer_name}, khash_cache is None"
-                    )
                 kv_caches[layer_name] = (kv_cache, khash_cache)
 
     def build_decode_hash(self, seq_lens):
