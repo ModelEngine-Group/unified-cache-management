@@ -587,7 +587,6 @@ class GSAOnDevice(UcmSparseBase):
             attn_metadata.decode.tile_scheduler_metadata = tile_scheduler_metadata
             attn_metadata.decode.num_splits = num_splits
 
-    
     def update_decode_topk_mla_npu(
         self,
         is_rollback_layer,
@@ -645,7 +644,6 @@ class GSAOnDevice(UcmSparseBase):
             attn_metadata.decode.seq_lens = self.new_seq_lens
             attn_metadata.decode.seq_lens_list = self.new_seq_lens_list
 
-   
     def update_decode_topk_gqa_cuda(self, query, k_hash, attn_metadata):
         q_hash = self.hash_code(query=query[: self.num_reqs])
 
