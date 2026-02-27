@@ -1,7 +1,7 @@
-From a5aed06c6159473c30b31a2f0915d29b516c52c7 Mon Sep 17 00:00:00 2001
+From 87f9a9dc88791c2cfdb7f27663dc930e2c89414c Mon Sep 17 00:00:00 2001
 From: AooooooA-C <chenaozhu@outlook.com>
 Date: Tue, 20 Jan 2026 01:22:14 -0800
-Subject: [PATCH 1/3] apply sparse method patches
+Subject: [PATCH 1/4] apply sparse method patches
 
 ---
  vllm_ascend/attention/attention_v1.py | 49 +++++++++++++++++-
@@ -12,7 +12,7 @@ Subject: [PATCH 1/3] apply sparse method patches
  5 files changed, 142 insertions(+), 8 deletions(-)
 
 diff --git a/vllm_ascend/attention/attention_v1.py b/vllm_ascend/attention/attention_v1.py
-index 26caa47f..6b5c98e3 100644
+index 7c5e247e..030bafa2 100644
 --- a/vllm_ascend/attention/attention_v1.py
 +++ b/vllm_ascend/attention/attention_v1.py
 @@ -41,7 +41,7 @@ from vllm_ascend.utils import (ACL_FORMAT_FRACTAL_NZ, aligned_16, is_310p,
@@ -24,7 +24,7 @@ index 26caa47f..6b5c98e3 100644
  
  class AscendAttentionBackend(AttentionBackend):
      accept_output_buffer: bool = True
-@@ -688,6 +688,12 @@ def unified_ascend_attention_with_output(
+@@ -696,6 +696,12 @@ def unified_ascend_attention_with_output(
          attn_metadata = attn_metadata[layer_name]
      self = forward_context.no_compile_layers[layer_name]
      kv_cache = self.kv_cache[forward_context.virtual_engine]
@@ -37,7 +37,7 @@ index 26caa47f..6b5c98e3 100644
      self.impl.forward(self,
                        query,
                        key,
-@@ -696,6 +702,11 @@ def unified_ascend_attention_with_output(
+@@ -704,6 +710,11 @@ def unified_ascend_attention_with_output(
                        attn_metadata,
                        output,
                        trace_flag=False)
@@ -49,7 +49,7 @@ index 26caa47f..6b5c98e3 100644
      maybe_save_kv_layer_to_connector(layer_name, kv_cache)
      return
  
-@@ -709,6 +720,42 @@ def unified_attention_with_output_fake(
+@@ -717,6 +728,42 @@ def unified_attention_with_output_fake(
  ) -> None:
      return
  
@@ -93,7 +93,7 @@ index 26caa47f..6b5c98e3 100644
  direct_register_custom_op(
      op_name="unified_ascend_attention_with_output",
 diff --git a/vllm_ascend/attention/mla_v1.py b/vllm_ascend/attention/mla_v1.py
-index 4044126d..d971ce38 100644
+index c38a8c98..36085b54 100644
 --- a/vllm_ascend/attention/mla_v1.py
 +++ b/vllm_ascend/attention/mla_v1.py
 @@ -2,6 +2,7 @@ from dataclasses import dataclass
@@ -112,7 +112,7 @@ index 4044126d..d971ce38 100644
  
  from vllm_ascend import envs
  from vllm_ascend.ascend_config import get_ascend_config
-@@ -1250,6 +1252,11 @@ class AscendMLAImpl(MLAAttentionImpl):
+@@ -1253,6 +1255,11 @@ class AscendMLAImpl(MLAAttentionImpl):
                                     dtype=hidden_states.dtype,
                                     device=hidden_states.device)
  
@@ -124,7 +124,7 @@ index 4044126d..d971ce38 100644
          # MLA Preprocess
          forward_context = get_forward_context()
          if (self.enable_mlapo and
-@@ -1263,6 +1270,8 @@ class AscendMLAImpl(MLAAttentionImpl):
+@@ -1266,6 +1273,8 @@ class AscendMLAImpl(MLAAttentionImpl):
  
          if decode_preprocess_res is not None:
              # MLA Preprocess for decoding
@@ -133,7 +133,7 @@ index 4044126d..d971ce38 100644
              output_decode = self._forward_decode(decode_preprocess_res.ql_nope,
                                                   decode_preprocess_res.q_pe,
                                                   decode_preprocess_res.k_nope,
-@@ -1276,11 +1285,13 @@ class AscendMLAImpl(MLAAttentionImpl):
+@@ -1279,11 +1288,13 @@ class AscendMLAImpl(MLAAttentionImpl):
                      current_ms_metadata.after_comm_event.record()
              else:
                  o_proj_input[:num_decode_tokens] = output_decode
@@ -147,7 +147,7 @@ index 4044126d..d971ce38 100644
              output_prefill = self._forward_prefill(
                  prefill_preprocess_res.q_nope, prefill_preprocess_res.q_pe,
                  prefill_preprocess_res.k_nope, prefill_preprocess_res.k_pe,
-@@ -1293,6 +1304,7 @@ class AscendMLAImpl(MLAAttentionImpl):
+@@ -1296,6 +1307,7 @@ class AscendMLAImpl(MLAAttentionImpl):
              else:
                  o_proj_input[
                      num_decode_tokens:num_actual_tokens] = output_prefill
@@ -187,10 +187,10 @@ index 307eb831..e1ea6d03 100644
          for i, block_table in enumerate(self.block_tables):
              block_table.add_row(block_ids[i], row_idx)
 diff --git a/vllm_ascend/worker/model_runner_v1.py b/vllm_ascend/worker/model_runner_v1.py
-index 9d135c91..5a3159f8 100644
+index 4c3afed7..c77b6a1d 100644
 --- a/vllm_ascend/worker/model_runner_v1.py
 +++ b/vllm_ascend/worker/model_runner_v1.py
-@@ -134,6 +134,9 @@ from vllm_ascend.utils import (ACL_FORMAT_FRACTAL_ND, ACL_FORMAT_FRACTAL_NZ,
+@@ -135,6 +135,9 @@ from vllm_ascend.utils import (ACL_FORMAT_FRACTAL_ND, ACL_FORMAT_FRACTAL_NZ,
                                 is_enable_nz, is_moe_model, lmhead_tp_enable)
  from vllm_ascend.worker.npu_input_batch import CachedRequestState, InputBatch
  
@@ -200,7 +200,7 @@ index 9d135c91..5a3159f8 100644
  if TYPE_CHECKING:
      import xgrammar as xgr  # type: ignore[import-untyped]
      from vllm.v1.core.sched.output import SchedulerOutput
-@@ -593,7 +596,9 @@ class NPUModelRunner(LoRAModelRunnerMixin):
+@@ -602,7 +605,9 @@ class NPUModelRunner(LoRAModelRunnerMixin):
  
      def _update_states(self, scheduler_output: "SchedulerOutput") -> None:
          # Remove finished requests from the cached states.
@@ -210,7 +210,7 @@ index 9d135c91..5a3159f8 100644
              self.requests.pop(req_id, None)
  
          # Remove the finished requests from the persistent batch.
-@@ -667,11 +672,13 @@ class NPUModelRunner(LoRAModelRunnerMixin):
+@@ -676,11 +681,13 @@ class NPUModelRunner(LoRAModelRunnerMixin):
          # Update the states of the running/resumed requests.
          is_last_rank = get_pp_group().is_last_rank
          req_data = scheduler_output.scheduled_cached_reqs
@@ -224,7 +224,7 @@ index 9d135c91..5a3159f8 100644
  
              # Update the cached states.
              req_state.num_computed_tokens = num_computed_tokens
-@@ -693,17 +700,16 @@ class NPUModelRunner(LoRAModelRunnerMixin):
+@@ -702,17 +709,16 @@ class NPUModelRunner(LoRAModelRunnerMixin):
                          new_token_ids[-num_new_tokens:])
  
              # Update the block IDs.
@@ -247,7 +247,7 @@ index 9d135c91..5a3159f8 100644
  
              req_index = self.input_batch.req_id_to_index.get(req_id)
              if req_index is None:
-@@ -716,6 +722,10 @@ class NPUModelRunner(LoRAModelRunnerMixin):
+@@ -725,6 +731,10 @@ class NPUModelRunner(LoRAModelRunnerMixin):
              # Update the persistent batch.
              self.input_batch.num_computed_tokens_cpu[req_index] = (
                  num_computed_tokens)
@@ -258,7 +258,7 @@ index 9d135c91..5a3159f8 100644
              if new_block_ids is not None:
                  self.input_batch.block_table.append_row(
                      new_block_ids, req_index)
-@@ -1311,10 +1321,19 @@ class NPUModelRunner(LoRAModelRunnerMixin):
+@@ -1337,10 +1347,19 @@ class NPUModelRunner(LoRAModelRunnerMixin):
                             torch.from_numpy(token_indices),
                             out=self.input_ids_cpu[:total_num_scheduled_tokens])
  
@@ -279,7 +279,7 @@ index 9d135c91..5a3159f8 100644
          self.input_batch.block_table.commit_slot_mapping(
              total_num_scheduled_tokens)
  
-@@ -1345,6 +1364,13 @@ class NPUModelRunner(LoRAModelRunnerMixin):
+@@ -1371,6 +1390,13 @@ class NPUModelRunner(LoRAModelRunnerMixin):
          positions_cpu = self.positions_cpu[:num_input_tokens]
          positions = self.positions[:num_input_tokens]
          seq_lens_cpu = self.seq_lens_cpu[:num_reqs]
@@ -293,7 +293,7 @@ index 9d135c91..5a3159f8 100644
          attn_state = self._build_attn_state(num_reqs, num_scheduled_tokens,
                                              num_valid_tokens)
          self.attn_mask = self._make_attention_mask(seq_lens=seq_lens_cpu,
-@@ -1943,12 +1969,15 @@ class NPUModelRunner(LoRAModelRunnerMixin):
+@@ -1977,12 +2003,15 @@ class NPUModelRunner(LoRAModelRunnerMixin):
                      model_instance=self.model,
                      weight_prefetch_method=self.weight_prefetch_method):
                  self.maybe_setup_kv_connector(scheduler_output)
@@ -309,7 +309,7 @@ index 9d135c91..5a3159f8 100644
              finished_sending, finished_recving = self.get_finished_kv_transfer(
                  scheduler_output)
  
-@@ -2233,6 +2262,36 @@ class NPUModelRunner(LoRAModelRunnerMixin):
+@@ -2267,6 +2296,36 @@ class NPUModelRunner(LoRAModelRunnerMixin):
          if has_kv_transfer_group():
              get_kv_transfer_group().wait_for_save()
  
@@ -347,7 +347,7 @@ index 9d135c91..5a3159f8 100644
      def get_finished_kv_transfer(
          scheduler_output: "SchedulerOutput",
 diff --git a/vllm_ascend/worker/worker_v1.py b/vllm_ascend/worker/worker_v1.py
-index b6b60081..dffa2e19 100644
+index 0816f269..04a7979c 100644
 --- a/vllm_ascend/worker/worker_v1.py
 +++ b/vllm_ascend/worker/worker_v1.py
 @@ -53,6 +53,8 @@ from vllm_ascend.utils import (init_ascend_soc_version, is_enable_nz,
@@ -371,10 +371,10 @@ index b6b60081..dffa2e19 100644
 2.34.1
 
 
-From e7d7451a8ffbf010b8d3561ae6383754529b74c5 Mon Sep 17 00:00:00 2001
+From e3e512dbcb49c81a6c551781b3788dd28ae5e860 Mon Sep 17 00:00:00 2001
 From: Qiong Wu <wq674452797@gmail.com>
 Date: Mon, 2 Feb 2026 10:50:32 +0800
-Subject: [PATCH 2/3] update sparse patch for vllm-ascend
+Subject: [PATCH 2/4] update sparse patch for vllm-ascend
 
 ---
  vllm_ascend/attention/attention_v1.py | 42 +++------------------------
@@ -383,7 +383,7 @@ Subject: [PATCH 2/3] update sparse patch for vllm-ascend
  3 files changed, 39 insertions(+), 44 deletions(-)
 
 diff --git a/vllm_ascend/attention/attention_v1.py b/vllm_ascend/attention/attention_v1.py
-index 6b5c98e3..9b9af65c 100644
+index 030bafa2..a5d7ef8c 100644
 --- a/vllm_ascend/attention/attention_v1.py
 +++ b/vllm_ascend/attention/attention_v1.py
 @@ -41,7 +41,10 @@ from vllm_ascend.utils import (ACL_FORMAT_FRACTAL_NZ, aligned_16, is_310p,
@@ -398,7 +398,7 @@ index 6b5c98e3..9b9af65c 100644
  
  class AscendAttentionBackend(AttentionBackend):
      accept_output_buffer: bool = True
-@@ -720,43 +723,6 @@ def unified_attention_with_output_fake(
+@@ -728,43 +731,6 @@ def unified_attention_with_output_fake(
  ) -> None:
      return
  
@@ -443,7 +443,7 @@ index 6b5c98e3..9b9af65c 100644
      op_name="unified_ascend_attention_with_output",
      op_func=unified_ascend_attention_with_output,
 diff --git a/vllm_ascend/attention/mla_v1.py b/vllm_ascend/attention/mla_v1.py
-index d971ce38..6d5b56d3 100644
+index 36085b54..d24cf36d 100644
 --- a/vllm_ascend/attention/mla_v1.py
 +++ b/vllm_ascend/attention/mla_v1.py
 @@ -17,7 +17,6 @@ from vllm.model_executor.layers.linear import (LinearBase,
@@ -464,7 +464,7 @@ index d971ce38..6d5b56d3 100644
  if TYPE_CHECKING:
      from vllm.v1.core.sched.output import SchedulerOutput
  
-@@ -1270,7 +1272,16 @@ class AscendMLAImpl(MLAAttentionImpl):
+@@ -1273,7 +1275,16 @@ class AscendMLAImpl(MLAAttentionImpl):
  
          if decode_preprocess_res is not None:
              # MLA Preprocess for decoding
@@ -482,7 +482,7 @@ index d971ce38..6d5b56d3 100644
  
              output_decode = self._forward_decode(decode_preprocess_res.ql_nope,
                                                   decode_preprocess_res.q_pe,
-@@ -1285,13 +1296,25 @@ class AscendMLAImpl(MLAAttentionImpl):
+@@ -1288,13 +1299,25 @@ class AscendMLAImpl(MLAAttentionImpl):
                      current_ms_metadata.after_comm_event.record()
              else:
                  o_proj_input[:num_decode_tokens] = output_decode
@@ -510,7 +510,7 @@ index d971ce38..6d5b56d3 100644
              output_prefill = self._forward_prefill(
                  prefill_preprocess_res.q_nope, prefill_preprocess_res.q_pe,
                  prefill_preprocess_res.k_nope, prefill_preprocess_res.k_pe,
-@@ -1304,7 +1327,13 @@ class AscendMLAImpl(MLAAttentionImpl):
+@@ -1307,7 +1330,13 @@ class AscendMLAImpl(MLAAttentionImpl):
              else:
                  o_proj_input[
                      num_decode_tokens:num_actual_tokens] = output_prefill
@@ -526,10 +526,10 @@ index d971ce38..6d5b56d3 100644
          current_ms_metadata = get_multistream_comm_context()
          MAX_O_PROJ_PREFETCH_SIZE = 16 * 1024 * 1024
 diff --git a/vllm_ascend/worker/model_runner_v1.py b/vllm_ascend/worker/model_runner_v1.py
-index 5a3159f8..abfd6aba 100644
+index c77b6a1d..838007f0 100644
 --- a/vllm_ascend/worker/model_runner_v1.py
 +++ b/vllm_ascend/worker/model_runner_v1.py
-@@ -1374,7 +1374,7 @@ class NPUModelRunner(LoRAModelRunnerMixin):
+@@ -1400,7 +1400,7 @@ class NPUModelRunner(LoRAModelRunnerMixin):
          attn_state = self._build_attn_state(num_reqs, num_scheduled_tokens,
                                              num_valid_tokens)
          self.attn_mask = self._make_attention_mask(seq_lens=seq_lens_cpu,
@@ -542,10 +542,10 @@ index 5a3159f8..abfd6aba 100644
 2.34.1
 
 
-From 4752c77cedae6fe56ff50b0d59858e19e1026b98 Mon Sep 17 00:00:00 2001
+From 3e15bf505f41f6aa74f0ebb9ba70a339752913e1 Mon Sep 17 00:00:00 2001
 From: Qiong Wu <wq674452797@gmail.com>
 Date: Mon, 2 Feb 2026 14:38:46 +0800
-Subject: [PATCH 3/3] patch for gsa on device (GQA)
+Subject: [PATCH 3/4] patch for gsa on device (GQA)
 
 ---
  vllm_ascend/attention/attention_v1.py | 43 ++++++++++++++++++++-------
@@ -553,7 +553,7 @@ Subject: [PATCH 3/3] patch for gsa on device (GQA)
  2 files changed, 40 insertions(+), 10 deletions(-)
 
 diff --git a/vllm_ascend/attention/attention_v1.py b/vllm_ascend/attention/attention_v1.py
-index 9b9af65c..a295d3af 100644
+index a5d7ef8c..f686d202 100644
 --- a/vllm_ascend/attention/attention_v1.py
 +++ b/vllm_ascend/attention/attention_v1.py
 @@ -15,6 +15,7 @@
@@ -589,7 +589,7 @@ index 9b9af65c..a295d3af 100644
      # Maximum query length in the batch (None for decoding).
      max_query_len: Optional[int] = None
  
-@@ -242,8 +247,8 @@ class AscendAttentionMetadataBuilder:
+@@ -250,8 +255,8 @@ class AscendAttentionMetadataBuilder:
                               device=query_start_loc_cpu.device)
              ])
  
@@ -600,7 +600,7 @@ index 9b9af65c..a295d3af 100644
  
          if is_310p():
              if attn_state == AscendAttentionState.PrefillNoCache:
-@@ -255,12 +260,23 @@ class AscendAttentionMetadataBuilder:
+@@ -263,12 +268,23 @@ class AscendAttentionMetadataBuilder:
                  attn_mask = torch_npu.npu_format_cast(mask_nz.contiguous(),
                                                        ACL_FORMAT_FRACTAL_NZ)
  
@@ -624,7 +624,7 @@ index 9b9af65c..a295d3af 100644
              seq_lens_list=seq_lens.tolist(),
              max_query_len=common_attn_metadata.max_query_len,
              actual_seq_lengths_q=query_start_loc_cpu[1:].tolist(),
-@@ -583,8 +599,12 @@ class AscendAttentionBackendImpl(AttentionImpl):
+@@ -591,8 +607,12 @@ class AscendAttentionBackendImpl(AttentionImpl):
              shape = [batch_size * seq_len, num_heads, head_size]
          """
          num_tokens = query.shape[0]
@@ -637,7 +637,7 @@ index 9b9af65c..a295d3af 100644
          if output is None:
              output = torch.empty(num_tokens,
                                   self.num_heads,
-@@ -692,10 +712,13 @@ def unified_ascend_attention_with_output(
+@@ -700,10 +720,13 @@ def unified_ascend_attention_with_output(
      self = forward_context.no_compile_layers[layer_name]
      kv_cache = self.kv_cache[forward_context.virtual_engine]
  
@@ -655,7 +655,7 @@ index 9b9af65c..a295d3af 100644
  
      self.impl.forward(self,
                        query,
-@@ -705,10 +728,10 @@ def unified_ascend_attention_with_output(
+@@ -713,10 +736,10 @@ def unified_ascend_attention_with_output(
                        attn_metadata,
                        output,
                        trace_flag=False)
@@ -670,7 +670,7 @@ index 9b9af65c..a295d3af 100644
      maybe_save_kv_layer_to_connector(layer_name, kv_cache)
      return
 diff --git a/vllm_ascend/worker/model_runner_v1.py b/vllm_ascend/worker/model_runner_v1.py
-index abfd6aba..60c24135 100644
+index 838007f0..a629aef2 100644
 --- a/vllm_ascend/worker/model_runner_v1.py
 +++ b/vllm_ascend/worker/model_runner_v1.py
 @@ -17,6 +17,7 @@
@@ -681,7 +681,7 @@ index abfd6aba..60c24135 100644
  import copy
  import gc
  import itertools
-@@ -2882,6 +2883,7 @@ class NPUModelRunner(LoRAModelRunnerMixin):
+@@ -2921,6 +2922,7 @@ class NPUModelRunner(LoRAModelRunnerMixin):
                          alignment)[:k_allocate_shape].view(k_cache_shape)
  
                  kv_caches[layer_name] = (nope_cache, rope_cache, k_cache)
@@ -689,7 +689,7 @@ index abfd6aba..60c24135 100644
          bind_kv_cache(kv_caches,
                        self.compilation_config.static_forward_context,
                        self.kv_caches)
-@@ -3139,6 +3141,11 @@ class NPUModelRunner(LoRAModelRunnerMixin):
+@@ -3178,6 +3180,11 @@ class NPUModelRunner(LoRAModelRunnerMixin):
                  else:
                      raise ValueError("Unknown KV cache spec type.")
  
@@ -701,6 +701,152 @@ index abfd6aba..60c24135 100644
          bind_kv_cache(kv_caches,
                        self.compilation_config.static_forward_context,
                        self.kv_caches)
+-- 
+2.34.1
+
+
+From c9e618369836ab0f1017841d8eed9240f88333f9 Mon Sep 17 00:00:00 2001
+From: Qiong Wu <wq674452797@gmail.com>
+Date: Thu, 5 Feb 2026 14:52:12 +0800
+Subject: [PATCH 4/4] patch for gsa on device (MLA)
+
+---
+ vllm_ascend/attention/mla_v1.py       | 37 ++++++++++++++++++++++++---
+ vllm_ascend/worker/model_runner_v1.py |  9 ++++---
+ 2 files changed, 39 insertions(+), 7 deletions(-)
+
+diff --git a/vllm_ascend/attention/mla_v1.py b/vllm_ascend/attention/mla_v1.py
+index d24cf36d..d589f8fe 100644
+--- a/vllm_ascend/attention/mla_v1.py
++++ b/vllm_ascend/attention/mla_v1.py
+@@ -37,7 +37,9 @@ from vllm_ascend.utils import (ACL_FORMAT_FRACTAL_ND, ACL_FORMAT_FRACTAL_NZ,
+                                is_enable_nz, weak_ref_tensors)
+ from vllm_ascend.worker.npu_input_batch import InputBatch
+ 
+-from ucm.sparse.state import (maybe_execute_sparse_attention_begin,
++from ucm.sparse.state import (has_ucm_sparse,
++                              get_ucm_sparse,
++                              maybe_execute_sparse_attention_begin,
+                               maybe_execute_sparse_attention_finished)
+ 
+ if TYPE_CHECKING:
+@@ -113,6 +115,7 @@ class AscendMLADecodeMetadata:
+     attn_mask: Optional[torch.Tensor] = None
+     sin: torch.Tensor = None
+     cos: torch.Tensor = None
++    seq_lens_device: torch.Tensor = None
+ 
+ 
+ @dataclass
+@@ -156,6 +159,10 @@ class AscendMLAMetadata:
+     prefill: Optional[AscendMLAPrefillMetadata] = None
+     enable_dbo_across_dp: bool = False
+ 
++    slot_mapping_cpu: torch.Tensor = None
++    num_prefill_tokens_device: torch.Tensor = None
++    num_decode_tokens_device: torch.Tensor = None
++
+     def __post_init__(self):
+         pass
+         # supported_head_sizes = AscendMLABackend.get_supported_head_sizes()
+@@ -453,6 +460,21 @@ class AscendMLAMetadataBuilder:
+                     sin=sin[:num_decode_tokens, ...],
+                     cos=cos[:num_decode_tokens, ...])
+ 
++        seq_lens_device = None
++        slot_mapping_cpu = None
++        num_prefill_tokens_device = None
++        num_decode_tokens_device = None
++        if has_ucm_sparse():
++            ucm_sparse = get_ucm_sparse()
++            if os.getenv("VLLM_HASH_ATTENTION", "0") == "1":
++                slot_mapping_cpu = slot_mapping.to(device="cpu")
++                num_decode_tokens_device = torch.tensor([num_decode_tokens], dtype=torch.int32).to(device=self.device, non_blocking=True)
++                num_prefill_tokens_device = torch.tensor([num_prefill_tokens], dtype=torch.int32).to(device=self.device, non_blocking=True)
++                if decode_metadata is not None:
++                    seq_lens_device = decode_metadata.seq_lens.to(device=self.device, non_blocking=True)
++                    decode_metadata.seq_lens_device = seq_lens_device
++                    ucm_sparse.build_decode_attention_meta_npu(query_lens, seq_lens, block_table)
++
+         return self.metadata_cls(  # type: ignore
+             num_input_tokens=common_attn_metadata.num_input_tokens,
+             num_actual_tokens=num_actual_tokens,
+@@ -470,6 +492,9 @@ class AscendMLAMetadataBuilder:
+             block_tables=block_table,
+             seq_lens=seq_lens,
+             enable_dbo_across_dp=common_attn_metadata.enable_dbo_across_dp,
++            slot_mapping_cpu=slot_mapping_cpu,
++            num_prefill_tokens_device=num_prefill_tokens_device,
++            num_decode_tokens_device=num_decode_tokens_device
+         )
+ 
+     def build_for_graph_capture(
+@@ -509,6 +534,8 @@ class PrefillMLAPreprocessResult(NamedTuple):
+     k_nope: Optional[torch.Tensor] = None
+     k_pe: Optional[torch.Tensor] = None
+     value: Optional[torch.Tensor] = None
++    origin_k_nope: Optional[torch.Tensor] = None
++    origin_k_pe: Optional[torch.Tensor] = None
+ 
+ 
+ class AscendMLAImpl(MLAAttentionImpl):
+@@ -1217,6 +1244,8 @@ class AscendMLAImpl(MLAAttentionImpl):
+             prefill_q_pe = self.rope_single(prefill_q_pe, cos, sin)
+             prefill_k_pe, prefill_k_c_normed = self.exec_kv_prefill(
+                 prefill_kv_no_split, cos, sin, kv_cache, prefill_slots)
++            origin_prefill_k_pe = prefill_k_pe
++            origin_prefill_k_nope = prefill_k_c_normed
+             prefill_k_pe = prefill_k_pe.view(prefill_q_c.shape[0],
+                                              self.num_kv_heads, -1)
+             prefill_k_nope, prefill_value = self.kv_b_proj(
+@@ -1228,7 +1257,7 @@ class AscendMLAImpl(MLAAttentionImpl):
+                 (*prefill_k_nope.shape[:-1], -1))
+             prefill_preprocess_res = PrefillMLAPreprocessResult(
+                 prefill_q_nope, prefill_q_pe, prefill_k_nope, prefill_k_pe,
+-                prefill_value)
++                prefill_value, origin_prefill_k_nope, origin_prefill_k_pe)
+         return decode_preprocess_res, prefill_preprocess_res
+ 
+     def forward(
+@@ -1312,8 +1341,8 @@ class AscendMLAImpl(MLAAttentionImpl):
+             # otherwise it may affect the accuracy
+             # TODO: use an elegant way to overlap
+             query, key, value, sp_out = maybe_execute_sparse_attention_begin(torch.cat([prefill_preprocess_res.q_nope, prefill_preprocess_res.q_pe], dim=-1),
+-                                                                             prefill_preprocess_res.k_nope,
+-                                                                             prefill_preprocess_res.k_pe,
++                                                                             prefill_preprocess_res.origin_k_nope,
++                                                                             prefill_preprocess_res.origin_k_pe,
+                                                                              layer_name,
+                                                                              forward_context,
+                                                                              phase="prefill",
+diff --git a/vllm_ascend/worker/model_runner_v1.py b/vllm_ascend/worker/model_runner_v1.py
+index a629aef2..876a6a16 100644
+--- a/vllm_ascend/worker/model_runner_v1.py
++++ b/vllm_ascend/worker/model_runner_v1.py
+@@ -3008,6 +3008,10 @@ class NPUModelRunner(LoRAModelRunnerMixin):
+                         alignment)[:rope_allocate_shape].view(rope_cache_shape)
+                 kv_caches[layer_name] = (nope_cache, rope_cache)
+ 
++        if has_ucm_sparse() and os.getenv("VLLM_HASH_ATTENTION", "0") == "1":
++            ucm_sparse = get_ucm_sparse()
++            ucm_sparse.initialize_kv_hash_cache_tensors_npu(kv_caches, self.device)
++
+         bind_kv_cache(kv_caches,
+                       self.compilation_config.static_forward_context,
+                       self.kv_caches)
+@@ -3180,10 +3184,9 @@ class NPUModelRunner(LoRAModelRunnerMixin):
+                 else:
+                     raise ValueError("Unknown KV cache spec type.")
+ 
+-        if has_ucm_sparse():
++        if has_ucm_sparse() and os.getenv("VLLM_HASH_ATTENTION", "0") == "1":
+             ucm_sparse = get_ucm_sparse()
+-            if os.getenv("VLLM_HASH_ATTENTION", "0") == "1":
+-                ucm_sparse.initialize_kv_hash_cache_tensors_npu(kv_caches, self.device)
++            ucm_sparse.initialize_kv_hash_cache_tensors_npu(kv_caches, self.device)
+ 
+         bind_kv_cache(kv_caches,
+                       self.compilation_config.static_forward_context,
 -- 
 2.34.1
 
