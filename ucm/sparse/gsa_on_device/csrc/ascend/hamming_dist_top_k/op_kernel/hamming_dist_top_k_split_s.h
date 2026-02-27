@@ -1070,9 +1070,11 @@ protected:
         __ubuf__ int32_t* out_ptr = reinterpret_cast<__ubuf__ int32_t*>(blockIdUb.GetPhyAddr());
 
         LocalTensor<int32_t> tableBlockTensor = tableBlockBuf_.template Get<int32_t>();
-        DataCopyParams copyParams{1, static_cast<uint16_t>(param_.blockCount * sizeof(int32_t)), 0,
-                                  0};
-        DataCopy(tableBlockTensor, keyBlockTableGm_[curBatchIdx * param_.blockCount], copyParams);
+        DataCopyExtParams copyInParams{
+            1, static_cast<uint32_t>(param_.blockCount * sizeof(int32_t)), 0, 0, 0};
+        DataCopyPadExtParams<int32_t> copyInPadParams{false, 0, 0, 0};
+        DataCopyPad(tableBlockTensor, keyBlockTableGm_[curBatchIdx * param_.blockCount],
+                    copyInParams, copyInPadParams);
 
         for (uint32_t i = 0; i < curKScalar; ++i) {
             const int32_t idx = static_cast<int32_t>(in_ptr[i]);
@@ -1095,9 +1097,11 @@ protected:
     {
         // 找到当前batch对应的tableblock
         LocalTensor<int32_t> tableBlockTensor = tableBlockBuf_.template Get<int32_t>();
-        DataCopyParams copyParams{1, static_cast<uint16_t>(param_.blockCount * sizeof(int32_t)), 0,
-                                  0};
-        DataCopy(tableBlockTensor, keyBlockTableGm_[curBatchIdx * param_.blockCount], copyParams);
+        DataCopyExtParams copyInParams{
+            1, static_cast<uint32_t>(param_.blockCount * sizeof(int32_t)), 0, 0, 0};
+        DataCopyPadExtParams<int32_t> copyInPadParams{false, 0, 0, 0};
+        DataCopyPad(tableBlockTensor, keyBlockTableGm_[curBatchIdx * param_.blockCount],
+                    copyInParams, copyInPadParams);
         // DumpTensor(tableBlockTensor, 921, 64);
         SetFlag<HardEvent::MTE2_MTE3>(0);
         WaitFlag<HardEvent::MTE2_MTE3>(0);

@@ -139,7 +139,6 @@ class GSAOnDevice(UcmSparseBase):
         )
 
         self.seq_len_threshhold = self.gsa_on_device_config.seq_len_threshhold
-
         assert (
             self.seq_len_threshhold
             >= self.gsa_on_device_config.vllm_hash_attention_topk
@@ -189,6 +188,9 @@ class GSAOnDevice(UcmSparseBase):
         self.is_prefill_flag: dict[str, bool] = dict()
 
         self._k_scale = torch.tensor(1.0, dtype=torch.float32)
+
+        # for both MLA and GQA
+        self.max_batch_size = vllm_config.scheduler_config.max_num_seqs
 
         if self.is_mla:
             logger.info("GSAOnDevice initialized with MLA model config")
@@ -247,44 +249,78 @@ class GSAOnDevice(UcmSparseBase):
             self.has_decode = False
             self.decode_only = False
 
-            if not self.is_cuda:  # NPU only variables
+        if not self.is_cuda:  # NPU only variables
+            if not self.is_mla:  # for GQA
                 self.decode_mask = None
                 self.decode_mask_npu = None
-                self.is_tensor_computed = False
+            else:  # for MLA in NPU
+                self.khash_zeros_full = None
 
-                self.hamming_keep_chunks_head = 1
-                self.hamming_keep_chunks_tail = 4
+            # for both MLA and GQA
+            self.is_tensor_computed = False
+            self.hamming_keep_chunks_head = 1
+            self.hamming_keep_chunks_tail = 4
 
-                self.chunk_sizes_for_hamming_full = torch.full(
-                    [self.max_batch_size],
-                    fill_value=self.block_size,
-                    dtype=torch.int32,
-                    device=self.device,
-                )
-                self.topk_for_hamming_full = torch.full(
-                    [self.max_batch_size],
-                    fill_value=self.hash_topk_tokens // self.block_size,
-                    dtype=torch.int32,
-                    device=self.device,
-                )
-                self.topk_for_hamming_full_cpu = torch.full(
-                    [self.max_batch_size],
-                    fill_value=self.hash_topk_tokens // self.block_size,
-                    dtype=torch.int32,
-                    device="cpu",
-                )
-                self.seq_lens_for_hamming = torch.zeros(
-                    [self.max_batch_size], dtype=torch.int32, device=self.device
-                )
-                self.hamming_output = torch.zeros(
-                    [
-                        self.max_batch_size,
-                        self.num_key_heads,
-                        cdiv(vllm_config.model_config.max_model_len, self.block_size),
-                    ],
-                    dtype=torch.int32,
-                    device=self.device,
-                )
+            self.chunk_sizes_for_hamming_full = torch.full(
+                [self.max_batch_size],
+                fill_value=self.block_size,
+                dtype=torch.int32,
+                device=self.device,
+            )
+            self.topk_for_hamming_full = torch.full(
+                [self.max_batch_size],
+                fill_value=self.hash_topk_tokens // self.block_size,
+                dtype=torch.int32,
+                device=self.device,
+            )
+            self.topk_for_hamming_full_cpu = torch.full(
+                [self.max_batch_size],
+                fill_value=self.hash_topk_tokens // self.block_size,
+                dtype=torch.int32,
+                device="cpu",
+            )
+            self.seq_lens_for_hamming = torch.zeros(
+                [self.max_batch_size], dtype=torch.int32, device=self.device
+            )
+            self.hamming_output = torch.zeros(
+                [
+                    self.max_batch_size,
+                    self.num_key_heads,
+                    cdiv(vllm_config.model_config.max_model_len, self.block_size),
+                ],
+                dtype=torch.int32,
+                device=self.device,
+            )
+            self.chunk_sizes_for_hamming_full = torch.full(
+                [self.max_batch_size],
+                fill_value=self.block_size,
+                dtype=torch.int32,
+                device=self.device,
+            )
+            self.topk_for_hamming_full = torch.full(
+                [self.max_batch_size],
+                fill_value=self.hash_topk_tokens // self.block_size,
+                dtype=torch.int32,
+                device=self.device,
+            )
+            self.topk_for_hamming_full_cpu = torch.full(
+                [self.max_batch_size],
+                fill_value=self.hash_topk_tokens // self.block_size,
+                dtype=torch.int32,
+                device="cpu",
+            )
+            self.seq_lens_for_hamming = torch.zeros(
+                [self.max_batch_size], dtype=torch.int32, device=self.device
+            )
+            self.hamming_output = torch.zeros(
+                [
+                    self.max_batch_size,
+                    self.num_key_heads,
+                    cdiv(vllm_config.model_config.max_model_len, self.block_size),
+                ],
+                dtype=torch.int32,
+                device=self.device,
+            )
 
     def init_for_pc(self):
         # for pc hit
@@ -367,6 +403,57 @@ class GSAOnDevice(UcmSparseBase):
         )
         return is_rollback_layer, is_skip_hash_layer
 
+    def cache_k_hash_mla_cuda(self, nope, rope, k_hash, attn_metadata):
+        k_c_normed_hash, k_pe_hash = self.hash_code(nope=nope, rope=rope)
+        ops.concat_and_cache_mla(
+            k_c_normed_hash,
+            k_pe_hash.squeeze(1),
+            k_hash,
+            attn_metadata.slot_mapping.flatten(),
+            kv_cache_dtype="auto",
+            scale=self._k_scale,
+        )
+
+    def cache_k_hash_mla_npu(self, nope, rope, k_hash, slot_mapping, num_tokens_device):
+        khash_nope_cache, khash_rope_cache = k_hash
+        khash_nope = self.hash_encoder_nope.compute_hash(nope)
+        khash_rope = self.hash_encoder_rope.compute_hash(rope)
+        khash_nope_new = (
+            khash_nope.transpose(0, 1).reshape(-1, khash_nope.shape[-1]).contiguous()
+        )
+        khash_rope_new = (
+            khash_rope.transpose(0, 1).reshape(-1, khash_rope.shape[-1]).contiguous()
+        )
+
+        # we add the if statement toavoid reallocating khash_zeros_full multiple times, which could be expensive
+        if (
+            self.khash_zeros_full == None
+            or self.khash_zeros_full.numel() < khash_rope_new.numel()
+        ):
+            self.khash_zeros_full = torch.zeros_like(khash_rope_new)
+
+        khash_zeros = self.khash_zeros_full[: khash_rope_new.shape[0]]
+
+        # padding for efficient data copy in NPU
+        khash_rope_new_pad = torch.cat(
+            (khash_rope_new, khash_zeros), dim=-1
+        ).contiguous()
+
+        torch.ops._C_ucm.npu_reshape_and_cache_bnsd(
+            khash_nope_new,
+            khash_nope_cache,
+            slot_mapping,
+            num_tokens_device,
+            khash_nope_cache,
+        )
+        torch.ops._C_ucm.npu_reshape_and_cache_bnsd(
+            khash_rope_new_pad,
+            khash_rope_cache,
+            slot_mapping,
+            num_tokens_device,
+            khash_rope_cache,
+        )
+
     def cache_k_hash_gqa_cuda(
         self, key, attn_metadata, k_hash, forward_context, layer_name
     ):
@@ -446,7 +533,7 @@ class GSAOnDevice(UcmSparseBase):
             k_hash,
         )
 
-    def update_decode_topk_mla(
+    def update_decode_topk_mla_cuda(
         self,
         is_rollback_layer,
         is_skip_hash_layer,
@@ -494,6 +581,63 @@ class GSAOnDevice(UcmSparseBase):
             attn_metadata.decode.seq_lens = seq_lens
             attn_metadata.decode.tile_scheduler_metadata = tile_scheduler_metadata
             attn_metadata.decode.num_splits = num_splits
+
+    def update_decode_topk_mla_npu(
+        self,
+        is_rollback_layer,
+        is_skip_hash_layer,
+        attn_metadata,
+        decode_ql_nope,
+        decode_q_pe,
+        k_hash,
+    ):
+        if not self.is_tensor_computed:
+            topk_device = cdiv(
+                attn_metadata.decode.seq_lens_device, self.block_size
+            ).to(dtype=torch.int32)
+            self.topk_device = torch.clamp(
+                topk_device, min=1, max=self.hash_topk_tokens // self.block_size
+            )
+            self.is_tensor_computed = True
+
+        if not is_rollback_layer:
+            if is_skip_hash_layer:
+                attn_metadata.decode.block_table = self.topk_block_table
+            else:
+                khash_nope_cache, khash_rope_cache = k_hash
+                # q_nope = decode_ql_nope
+                # q_pe = decode_q_pe
+                batch_size = attn_metadata.num_decodes
+
+                qhash_nope = self.hash_encoder_nope.compute_hash(decode_ql_nope)
+                qhash_rope = self.hash_encoder_rope.compute_hash(decode_q_pe)
+                qhash_zeros = torch.zeros_like(qhash_rope)
+                qhash_pad = (
+                    torch.cat((qhash_nope, qhash_rope, qhash_zeros), dim=-1)
+                    .unsqueeze(2)
+                    .contiguous()
+                )
+
+                new_block_table = torch.ops._C_ucm.npu_hamming_dist_top_k(
+                    qhash_pad,
+                    khash_nope_cache,
+                    khash_rope_cache,  # already padded
+                    self.topk_device,
+                    attn_metadata.decode.seq_lens_device,
+                    self.chunk_sizes_for_hamming_full[:batch_size],
+                    attn_metadata.decode.max_seq_lens,
+                    self.hamming_keep_chunks_head,
+                    self.hamming_keep_chunks_tail,
+                    0,  # not support offload
+                    self.ori_block_table_decode[:batch_size],
+                    None,  # mask for batch skip
+                    self.hamming_output[:batch_size],
+                )
+                attn_metadata.decode.block_table = new_block_table[:, 0, :]
+
+            self.topk_block_table = attn_metadata.decode.block_table
+            attn_metadata.decode.seq_lens = self.new_seq_lens
+            attn_metadata.decode.seq_lens_list = self.new_seq_lens_list
 
     def update_decode_topk_gqa_cuda(self, query, k_hash, attn_metadata):
         q_hash = self.hash_code(query=query[: self.num_reqs])
@@ -594,15 +738,28 @@ class GSAOnDevice(UcmSparseBase):
 
         if not is_rollback_layer and not is_skip_hash_layer:
             if self.is_mla:
-                k_c_normed_hash, k_pe_hash = self.hash_code(nope=key, rope=value)
-                ops.concat_and_cache_mla(
-                    k_c_normed_hash,
-                    k_pe_hash.squeeze(1),
-                    k_hash,
-                    attn_metadata.slot_mapping.flatten(),
-                    kv_cache_dtype="auto",
-                    scale=self._k_scale,
-                )
+                if self.is_cuda:
+                    self.cache_k_hash_mla_cuda(
+                        nope=key, rope=value, k_hash=k_hash, attn_metadata=attn_metadata
+                    )
+                else:  # NPU
+                    if phase == "decode":
+                        slot_mapping = attn_metadata.slot_mapping[
+                            : attn_metadata.num_decode_tokens
+                        ]
+                        num_tokens_device = attn_metadata.num_decode_tokens_device
+                    else:
+                        slot_mapping = attn_metadata.slot_mapping[
+                            attn_metadata.num_decode_tokens : attn_metadata.num_actual_tokens
+                        ]
+                        num_tokens_device = attn_metadata.num_prefill_tokens_device
+                    self.cache_k_hash_mla_npu(
+                        nope=key,
+                        rope=value,
+                        k_hash=k_hash,
+                        slot_mapping=slot_mapping,
+                        num_tokens_device=num_tokens_device,
+                    )
                 # external_pc_hit need fix
             else:  # GQA
                 if self.is_cuda:
@@ -613,14 +770,24 @@ class GSAOnDevice(UcmSparseBase):
                     self.cache_k_hash_gqa_npu(key, k_hash, attn_metadata)
         if self.is_mla:
             if phase == "decode":
-                self.update_decode_topk_mla(
-                    is_rollback_layer,
-                    is_skip_hash_layer,
-                    attn_metadata,
-                    decode_ql_nope,
-                    decode_q_pe,
-                    k_hash,
-                )
+                if self.is_cuda:
+                    self.update_decode_topk_mla_cuda(
+                        is_rollback_layer,
+                        is_skip_hash_layer,
+                        attn_metadata,
+                        decode_ql_nope,
+                        decode_q_pe,
+                        k_hash,
+                    )
+                else:
+                    self.update_decode_topk_mla_npu(
+                        is_rollback_layer,
+                        is_skip_hash_layer,
+                        attn_metadata,
+                        decode_ql_nope,
+                        decode_q_pe,
+                        k_hash,
+                    )
         else:  # GQA
             if self.has_decode:  # 有decode阶段的req
                 if not is_rollback_layer:
@@ -661,10 +828,13 @@ class GSAOnDevice(UcmSparseBase):
                 if not is_rollback_layer:
                     attn_metadata.decode.block_table = self.ori_block_table_decode
                     attn_metadata.decode.seq_lens = self.ori_seq_lens_decode
-                    attn_metadata.decode.tile_scheduler_metadata = (
-                        self.origin_tile_scheduler_metadata
-                    )
-                    attn_metadata.decode.num_splits = self.origin_num_splits
+                    if self.is_cuda:  # only for MLA in CUDA
+                        attn_metadata.decode.tile_scheduler_metadata = (
+                            self.origin_tile_scheduler_metadata
+                        )
+                        attn_metadata.decode.num_splits = self.origin_num_splits
+                    else:  # only for MLA in NPU
+                        attn_metadata.decode.seq_lens_list = self.ori_seq_lens_list
         else:  # 判断req decode阶段
             if self.has_decode:
                 is_rollback_layer, is_skip_hash_layer = self.get_layer_state(layer_name)
@@ -706,34 +876,53 @@ class GSAOnDevice(UcmSparseBase):
             kv_caches[layer_name] = (kv_cache, khash_cache)
 
     def initialize_kv_hash_cache_tensors_npu(self, kv_caches, device):
-        print(
-            f"[NPU GSAOnDevice Debug] initialize_kv_hash_cache_tensors_npu: allocating hashk cache for GSAOnDevice in NPU"
-        )
-        for layer_name, kv_cache in kv_caches.items():
-            is_rollback_layer, is_skip_hash_layer = self.get_layer_state(layer_name)
-            k_cache_shape = kv_cache[0].shape
-            print(
-                f"[NPU GSAOnDevice Debug] layer_name: {layer_name}, is_rollback_layer={is_rollback_layer}, is_skip_hash_layer={is_skip_hash_layer}, k_cache_shape: {k_cache_shape}"
-            )
-            khash_cache_shape = (
-                k_cache_shape[0],
-                k_cache_shape[2],
-                k_cache_shape[1],
-                self.hash_encoder.hash_bits // 8,
-            )
-            if not is_rollback_layer and not is_skip_hash_layer:
-                khash_cache = torch.empty(
-                    khash_cache_shape, dtype=torch.uint8, device=device
+        if self.is_mla:
+            for layer_name, kv_cache in kv_caches.items():
+                is_rollback_layer, is_skip_hash_layer = self.get_layer_state(layer_name)
+                kv_cache_nope_shape = kv_cache[0].shape
+                kv_cache_rope_shape = kv_cache[1].shape
+                khash_nope_shape = (
+                    kv_cache_nope_shape[0],
+                    kv_cache_nope_shape[2],
+                    kv_cache_nope_shape[1],
+                    self.hash_encoder_nope.hash_bits // 8,
                 )
-                print(
-                    f"[NPU GSAOnDevice Debug] layer_name: {layer_name}, khash_cache_shape: {khash_cache_shape}"
+                khash_rope_shape = (
+                    kv_cache_rope_shape[0],
+                    kv_cache_rope_shape[2],
+                    kv_cache_rope_shape[1],
+                    self.hash_encoder_rope.hash_bits
+                    // 8
+                    * 2,  # *2 due to padding for efficient data copy in NPU
                 )
-            else:
-                khash_cache = None
-                print(
-                    f"[NPU GSAOnDevice Debug] layer_name: {layer_name}, khash_cache is None"
+                if not is_rollback_layer and not is_skip_hash_layer:
+                    khash_nope_cache = torch.empty(
+                        khash_nope_shape, dtype=torch.uint8, device=device
+                    )
+                    khash_rope_cache = torch.empty(
+                        khash_rope_shape, dtype=torch.uint8, device=device
+                    )
+                    khash_cache = (khash_nope_cache, khash_rope_cache)
+                else:
+                    khash_cache = None
+                kv_caches[layer_name] = (kv_cache, khash_cache)
+        else:  # GQA
+            for layer_name, kv_cache in kv_caches.items():
+                is_rollback_layer, is_skip_hash_layer = self.get_layer_state(layer_name)
+                k_cache_shape = kv_cache[0].shape
+                khash_cache_shape = (
+                    k_cache_shape[0],
+                    k_cache_shape[2],
+                    k_cache_shape[1],
+                    self.hash_encoder.hash_bits // 8,
                 )
-            kv_caches[layer_name] = (kv_cache, khash_cache)
+                if not is_rollback_layer and not is_skip_hash_layer:
+                    khash_cache = torch.empty(
+                        khash_cache_shape, dtype=torch.uint8, device=device
+                    )
+                else:
+                    khash_cache = None
+                kv_caches[layer_name] = (kv_cache, khash_cache)
 
     def build_decode_hash(self, seq_lens):
         from ucm.sparse.gsa_on_device.hamming_topk import update_seq_lens
@@ -754,6 +943,20 @@ class GSAOnDevice(UcmSparseBase):
 
         from ucm.sparse.gsa_on_device.hamming_topk import update_seq_lens
 
+        self.ori_seq_lens_decode = seq_lens.clone()
+        self.ori_block_table_decode = block_table.clone()
+
+        if self.is_mla:
+            self.new_seq_lens = update_seq_lens(
+                seq_lens,
+                topk_token=self.hash_topk_tokens,
+                block_size=self.block_size,
+            )
+            self.ori_seq_lens_list = seq_lens.tolist()  # TODO: tolist() is not needed
+            self.new_seq_lens_list = self.new_seq_lens.tolist()
+            # no need for later variables in MLA
+            return
+
         # self.decode_mask is on cpu in vllm-asencd under NPU device
         self.decode_mask = (query_lens == 1) & (
             seq_lens[: query_lens.numel()] >= self.seq_len_threshhold
@@ -767,9 +970,6 @@ class GSAOnDevice(UcmSparseBase):
             )
         else:
             self.slice_enabled = False
-
-        self.ori_seq_lens_decode = seq_lens.clone()
-        self.ori_block_table_decode = block_table.clone()
 
         if self.decode_mask.any():
             # self.decode_mask_npu = self.decode_mask.to(self.device, non_blocking=True)
