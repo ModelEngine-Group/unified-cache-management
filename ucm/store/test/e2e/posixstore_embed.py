@@ -48,6 +48,7 @@ def setup(
     config["posix_lookup_concurrency"] = lookup_concur
     config["io_direct"] = io_direct
     config["device_id"] = 0 if worker else -1
+    config["posix_use_io_uring"] = True if worker else False
     return UcmPipelineStore(config)
 
 
@@ -64,7 +65,7 @@ def make_array(size, alignment=4096, dtype=np.uint8) -> np.ndarray:
 
 
 def main():
-    backends = ["./build/data"]
+    backends = ["/home/share/qyh-test"]
     block_size = 1048576
     data_trans_concur = 8
     lookup_concur = 8

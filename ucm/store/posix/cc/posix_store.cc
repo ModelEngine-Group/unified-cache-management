@@ -91,6 +91,7 @@ private:
         UC_INFO("Set {}::ShardSize to {}.", ns, config.shardSize);
         UC_INFO("Set {}::BlockSize to {}.", ns, config.blockSize);
         UC_INFO("Set {}::IoDirect to {}.", ns, config.ioDirect);
+        UC_INFO("Set {}::UseIoUring to {}.", ns, config.useIoUring);
         UC_INFO("Set {}::DataTransConcurrency to {}.", ns, config.dataTransConcurrency);
         UC_INFO("Set {}::LookupConcurrency to {}.", ns, config.lookupConcurrency);
         UC_INFO("Set {}::TimeoutMs to {}.", ns, config.timeoutMs);
@@ -109,6 +110,7 @@ Status PosixStore::Setup(const Detail::Dictionary& config)
     config.GetNumber("shard_size", param.shardSize);
     config.GetNumber("block_size", param.blockSize);
     config.Get("io_direct", param.ioDirect);
+    config.Get("posix_use_io_uring", param.useIoUring);
     config.GetNumber("posix_data_trans_concurrency", param.dataTransConcurrency);
     config.GetNumber("posix_lookup_concurrency", param.lookupConcurrency);
     config.GetNumber("timeout_ms", param.timeoutMs);

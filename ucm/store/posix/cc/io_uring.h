@@ -20,27 +20,45 @@
  * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
- * */
-#ifndef UNIFIEDCACHE_POSIX_STORE_CC_GLOBAL_CONFIG_H
-#define UNIFIEDCACHE_POSIX_STORE_CC_GLOBAL_CONFIG_H
+ */
+#ifndef UNIFIEDCACHE_POSIX_STORE_CC_IO_URING_H
+#define UNIFIEDCACHE_POSIX_STORE_CC_IO_URING_H
 
-#include <string>
+#include <fcntl.h>
+#include <liburing.h>
+#include <sys/stat.h>
+#include <unistd.h>
 #include <vector>
+#include "status/status.h"
 
 namespace UC::PosixStore {
 
-struct Config {
-    std::vector<std::string> storageBackends{};
-    int32_t deviceId{-1};
-    size_t tensorSize{0};
-    size_t shardSize{0};
-    size_t blockSize{0};
-    bool ioDirect{false};
-    bool useIoUring{false};
-    size_t dataTransConcurrency{8};
-    size_t lookupConcurrency{8};
-    size_t timeoutMs{30000};
-    size_t dataDirShardBytes{3};
+class IoUringTask {
+public:
+    int32_t fd{-1};
+    void* addr{nullptr};
+    size_t size{0};
+    off64_t offset{0};
+};
+
+class IoUringContext {
+public:
+    IoUringContext() = default;
+    ~IoUringContext() { Destroy(); }
+
+    IoUringContext(const IoUringContext&) = delete;
+    IoUringContext& operator=(const IoUringContext&) = delete;
+
+    Status Init(int32_t ringEntries = 256);
+    void Destroy();
+
+    Status H2SBatch(std::vector<IoUringTask>& tasks);
+
+    Status S2HBatch(std::vector<IoUringTask>& tasks);
+
+private:
+    struct io_uring ring_{};
+    size_t ringEntries_{0};
 };
 
 }  // namespace UC::PosixStore
