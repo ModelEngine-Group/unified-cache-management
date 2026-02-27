@@ -217,8 +217,7 @@ class GSAOnDevice(UcmSparseBase):
                 device=self.device,
             )
         else:  # for GQA
-            logger.info("GSAOnDevice initialized with non-MLA model config")
-            self.max_batch_size = vllm_config.scheduler_config.max_num_seqs
+            logger.info("GSAOnDevice initialized with GQA model config")
             self.max_num_tokens = vllm_config.model_config.max_model_len
             self.decode_req_ids_buf = self._make_buffer(
                 self.max_batch_size, dtype=torch.int64
