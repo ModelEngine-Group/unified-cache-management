@@ -24,23 +24,10 @@
 #ifndef UNIFIEDCACHE_POSIX_STORE_CC_IO_URING_H
 #define UNIFIEDCACHE_POSIX_STORE_CC_IO_URING_H
 
-#include <fcntl.h>
 #include <liburing.h>
-#include <cstdint>
-#include <sys/stat.h>
-#include <unistd.h>
-#include <vector>
 #include "status/status.h"
 
 namespace UC::PosixStore {
-
-class IoUringTask {
-public:
-    int32_t fd{-1};
-    void* addr{nullptr};
-    size_t size{0};
-    off64_t offset{0};
-};
 
 class IoUringContext {
 public:
@@ -56,11 +43,6 @@ public:
     Status Init(int32_t ringEntries = 1024);
     void Destroy();
 
-    Status H2SBatch(std::vector<IoUringTask>& tasks);
-
-    Status S2HBatch(std::vector<IoUringTask>& tasks);
-
-    struct io_uring* Ring() { return &ring_; }
     struct io_uring_sqe* GetSqe() { return io_uring_get_sqe(&ring_); }
     int Submit() { return io_uring_submit(&ring_); }
     int WaitCqe(struct io_uring_cqe** cqe, size_t timeoutMs)
@@ -76,7 +58,6 @@ public:
 private:
     struct io_uring ring_{};
     bool initialized_{false};
-    size_t ringEntries_{0};
 };
 
 }  // namespace UC::PosixStore
