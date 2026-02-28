@@ -99,6 +99,10 @@ ucm_connectors:
 * **io_direct** (optional, default: `false`):  
   Whether to enable direct I/O.
 
+* **posix_use_io_uring** *(optional, default: `false`)*  
+  Whether to use io_uring for Posix Store data transfer. Recommended for layerwise loading/unloading
+  with many small IOs. Requires `liburing` to be installed.
+
 * **stream_number** *(optional, default: 8)*  
   Number of threads used for data transfer between the Host and Storage.
 

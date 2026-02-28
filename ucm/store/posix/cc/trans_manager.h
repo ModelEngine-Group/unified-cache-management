@@ -24,16 +24,20 @@
 #ifndef UNIFIEDCACHE_POSIX_STORE_CC_TRANS_MANAGER_H
 #define UNIFIEDCACHE_POSIX_STORE_CC_TRANS_MANAGER_H
 
-#include "async_trans_queue.h"
 #include "logger/logger.h"
 #include "template/task_wrapper.h"
 #include "trans_queue.h"
+#if UCM_HAS_LIBURING
+#include "async_trans_queue.h"
+#endif
 
 namespace UC::PosixStore {
 
 class TransManager : public Detail::TaskWrapper<TransTask, Detail::TaskHandle> {
     TransQueue queue_;
+#if UCM_HAS_LIBURING
     AsyncTransQueue asyncQueue_;
+#endif
     bool useIoUring_{false};
     size_t shardSize_;
 
@@ -43,10 +47,18 @@ public:
         timeoutMs_ = config.timeoutMs;
         shardSize_ = config.shardSize;
         useIoUring_ = config.useIoUring;
+#if UCM_HAS_LIBURING
         if (useIoUring_) {
             return asyncQueue_.Setup(config, &failureSet_, layout);
         }
         return queue_.Setup(config, &failureSet_, layout);
+#else
+        if (useIoUring_) {
+            return Status::Error(
+                "posix_use_io_uring is enabled but liburing is unavailable at build time");
+        }
+        return queue_.Setup(config, &failureSet_, layout);
+#endif
     }
 
 protected:
@@ -64,7 +76,11 @@ protected:
                      cost * 1e3);
         });
         if (useIoUring_) {
+#if UCM_HAS_LIBURING
             asyncQueue_.Push(t, w);
+#else
+            queue_.Push(t, w);
+#endif
         } else {
             queue_.Push(t, w);
         }

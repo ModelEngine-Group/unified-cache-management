@@ -26,6 +26,7 @@
 
 #include <fcntl.h>
 #include <liburing.h>
+#include <cstdint>
 #include <sys/stat.h>
 #include <unistd.h>
 #include <vector>
@@ -43,7 +44,10 @@ public:
 
 class IoUringContext {
 public:
-    IoUringContext() = default;
+    IoUringContext()
+    {
+        ring_.ring_fd = -1;
+    }
     ~IoUringContext() { Destroy(); }
 
     IoUringContext(const IoUringContext&) = delete;
@@ -56,8 +60,22 @@ public:
 
     Status S2HBatch(std::vector<IoUringTask>& tasks);
 
+    struct io_uring* Ring() { return &ring_; }
+    struct io_uring_sqe* GetSqe() { return io_uring_get_sqe(&ring_); }
+    int Submit() { return io_uring_submit(&ring_); }
+    int WaitCqe(struct io_uring_cqe** cqe, size_t timeoutMs)
+    {
+        if (timeoutMs == 0) { return io_uring_wait_cqe(&ring_, cqe); }
+        __kernel_timespec timeout{};
+        timeout.tv_sec = timeoutMs / 1000;
+        timeout.tv_nsec = static_cast<long>(timeoutMs % 1000) * 1000 * 1000;
+        return io_uring_wait_cqe_timeout(&ring_, cqe, &timeout);
+    }
+    void CqeSeen(struct io_uring_cqe* cqe) { io_uring_cqe_seen(&ring_, cqe); }
+
 private:
     struct io_uring ring_{};
+    bool initialized_{false};
     size_t ringEntries_{0};
 };
 

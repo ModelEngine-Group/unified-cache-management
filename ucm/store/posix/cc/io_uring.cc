@@ -30,20 +30,23 @@ namespace UC::PosixStore {
 
 Status IoUringContext::Init(int32_t ringEntries)
 {
+    if (initialized_) { return Status::OK(); }
     ringEntries_ = ringEntries;
     int ret = io_uring_queue_init(ringEntries_, &ring_, 0);
     if (ret < 0) {
         return Status::OsApiError(fmt::format("io_uring_queue_init failed: {}", strerror(-ret)));
     }
+    initialized_ = true;
     return Status::OK();
 }
 
 void IoUringContext::Destroy()
 {
-    if (ring_.ring_fd >= 0) {
-        io_uring_queue_exit(&ring_);
-        ring_.ring_fd = -1;
-    }
+    if (!initialized_) { return; }
+    io_uring_queue_exit(&ring_);
+    ring_ = {};
+    ring_.ring_fd = -1;
+    initialized_ = false;
 }
 
 static Status SubmitAndWaitBatch(struct io_uring* ring, size_t submitted)
