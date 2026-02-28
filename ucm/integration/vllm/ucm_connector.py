@@ -511,6 +511,7 @@ class UCMDirectConnector(KVConnectorBase_V1):
                 self._invalid_block_ids.update(
                     metadata.request_meta[request_id].load_block_ids[1]
                 )
+                num_loaded_block -= len(request.load_block_ids[0])
 
         for request_id, task in request_to_task.items():
             try:
@@ -519,6 +520,9 @@ class UCMDirectConnector(KVConnectorBase_V1):
                 logger.error(f"request {request_id} wait load task error. {e}")
                 self._invalid_block_ids.update(
                     metadata.request_meta[request_id].load_block_ids[1]
+                )
+                num_loaded_block -= len(
+                    metadata.request_meta[request_id].load_block_ids[0]
                 )
 
         load_end_time = time.perf_counter() * 1000
@@ -591,6 +595,7 @@ class UCMDirectConnector(KVConnectorBase_V1):
                 dump_tasks.append(task)
             except RuntimeError as e:
                 logger.error(f"dump kv cache failed. {e}")
+                return
 
             try:
                 for task in dump_tasks:
@@ -598,6 +603,7 @@ class UCMDirectConnector(KVConnectorBase_V1):
                 save_end_time = time.perf_counter() * 1000
             except RuntimeError as e:
                 logger.error(f"wait for dump kv cache failed.{e}")
+                return
 
             save_speed = (
                 num_saved_block
