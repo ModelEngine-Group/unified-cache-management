@@ -1,9 +1,18 @@
 import dataclasses
 import functools
+import importlib
 from collections.abc import Mapping
 from typing import Any, Dict, List
 
-from common.db_utils import write_to_db
+
+def _write_result(table_name: str, data: Dict[str, Any]) -> bool:
+    from common.config_utils import config_utils as config_instance
+
+    for item in config_instance.get_config("results", []):
+        if isinstance(item, dict) and item:
+            backend_name = next(iter(item.keys()))  # 取第一个键
+            mod = importlib.import_module(f"common.capture_results.{backend_name}")
+            mod.write_results(table_name, data)
 
 
 def _align_and_split(name: str, data: Dict[str, Any]) -> List[Dict[str, Any]]:
@@ -40,7 +49,7 @@ def post_process(table_name: str, **kwargs) -> List[Dict[str, Any]]:
         name = kwargs.get("_name", table_name)
         results = _align_and_split(name, kwargs["_data"])
         for result in results:
-            write_to_db(name, result)
+            _write_result(name, result)
         return results
     return []
 
@@ -84,7 +93,7 @@ def proj_process(table_name: str, **kwargs) -> List[Dict[str, Any]]:
     for result in raw_results:
         try:
             dict_result = _to_dict(result)
-            write_to_db(name, dict_result)
+            _write_result(name, dict_result)
             processed_results.append(dict_result)
         except Exception as e:
             raise ValueError(f"Failed to process item in _proj: {e}") from e
@@ -118,4 +127,9 @@ def capture():
 
 # quick test
 if __name__ == "__main__":
-    print("capture():      ", capture())
+    import sys
+    from pathlib import Path
+
+    PRJ_ROOT = Path(__file__).resolve().parent.parent
+    sys.path.insert(0, str(PRJ_ROOT))
+    _write_result("capture", {"ttft": 0.6, "tpot": 0.8})
