@@ -53,7 +53,7 @@ public:
     IoUringContext(const IoUringContext&) = delete;
     IoUringContext& operator=(const IoUringContext&) = delete;
 
-    Status Init(int32_t ringEntries = 256);
+    Status Init(int32_t ringEntries = 1024);
     void Destroy();
 
     Status H2SBatch(std::vector<IoUringTask>& tasks);
