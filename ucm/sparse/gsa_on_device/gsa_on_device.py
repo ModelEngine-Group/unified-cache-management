@@ -217,8 +217,7 @@ class GSAOnDevice(UcmSparseBase):
                 device=self.device,
             )
         else:  # for GQA
-            logger.info("GSAOnDevice initialized with non-MLA model config")
-            self.max_batch_size = vllm_config.scheduler_config.max_num_seqs
+            logger.info("GSAOnDevice initialized with GQA model config")
             self.max_num_tokens = vllm_config.model_config.max_model_len
             self.decode_req_ids_buf = self._make_buffer(
                 self.max_batch_size, dtype=torch.int64
@@ -490,8 +489,10 @@ class GSAOnDevice(UcmSparseBase):
                     # if slice_enabled, the batch_size_for_hamming is the number of decode requests
                     self.batch_size_for_hamming = self.num_decode_requests
                 else:
-                    # if not slice_enabled, the batch_size_for_hamming is the number of all requests
-                    self.batch_size_for_hamming = len(attn_metadata.seq_lens)
+                    # if not slice_enabled, the batch_size_for_hamming is the number of all requests;
+                    # seq_lens is padded while query_lens is not in vllm-ascend 0.11.0;
+                    # so we need to use query_lens to get the number of all requests
+                    self.batch_size_for_hamming = len(attn_metadata.query_lens)
                     # only get decode_mask_npu when slice_enabled is False
                     self.decode_mask_npu = (attn_metadata.query_lens_device == 1) & (
                         attn_metadata.seq_lens_device[
