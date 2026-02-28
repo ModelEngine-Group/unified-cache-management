@@ -8,7 +8,6 @@
 
 | 数据集       | Hugging Face 链接                                            |
 | ------------ | ------------------------------------------------------------ |
-| AIME2025     | [opencompass/AIME2025 · Datasets at Hugging Face](https://huggingface.co/datasets/opencompass/AIME2025) |
 | LongBench    | [zai-org/LongBench · Datasets at Hugging Face](https://huggingface.co/datasets/zai-org/LongBench) |
 | LongBench v2 | [zai-org/LongBench-v2 · Datasets at Hugging Face](https://huggingface.co/datasets/zai-org/LongBench-v2) |
 
@@ -19,7 +18,12 @@
 | ShartGPT                     | [anon8231489123/ShareGPT_Vicuna_unfiltered · Datasets at Hugging Face](https://huggingface.co/datasets/anon8231489123/ShareGPT_Vicuna_unfiltered) |
 | ShartGPT-Chinese-English-90K | [shareAI/ShareGPT-Chinese-English-90k · Datasets at Hugging Face](https://huggingface.co/datasets/shareAI/ShareGPT-Chinese-English-90k) |
 
-- 多轮对话数据集格式参照如下：
+多轮对话数据集格式可参照如下两种形式：
+
+- 格式1：
+  - 顶层键名（如 `"sharegpt"`）可以自定义，但内部结构必须保持一致
+  - `"conversations"` 字段名不可修改
+  - 对话必须采用 `"from"` 和 `"value"` 格式
 
 ```json
 {
@@ -38,11 +42,35 @@
 }]}
 ```
 
-**注意**：
+- 格式2：
 
-- 顶层键名（如 `"sharegpt"`）可以自定义，但内部结构必须保持一致
-- `"conversations"` 字段名不可修改
-- 对话必须采用 `"from"` 和 `"value"` 格式
+```json
+[
+    {
+        "id": "dsOTKpn_0",
+        "conversations": [
+            {
+                "from": "human",
+                "value": "Why does `dir` command in DOS see the \"<.<\" argument as \"\\*.\\*\"?"
+            },
+            {
+                "from": "human",
+                "value": "I said `dir \"<.<\"` , it only has one dot but it is the same as `dir \"\\*.\\*\"`"
+            }
+        ]
+    },
+    {
+        "id": "60493",
+        "conversations": [
+            {
+                "from": "human",
+                "value": "我想用TypeScript编写一个程序，提供辅助函数以生成G代码绘图（Marlin）。我已经在我的3D打印机上添加了笔座，并希望将其用作笔绘图仪。该库应提供类似使用p5.js的体验，但它不是在画布上绘制形状，而是在G代码中产生文本输出。"
+            }
+        ],
+        "lang": "en"
+    }
+]
+```
 
 ### stopwords文件
 
@@ -232,15 +260,15 @@ def test_multiturn_dialogue_perf(
     "demo": [
         "demo.json"
     ],
-    "sharrgpt":[
-        
-    ] 
+    "sharegpt": [
+        "demo.json"
+    ]
 }
 ```
 
 - 说明：
   - 键名（如 `"demo"`）表示数据集文件夹名称
-  - 值列表包含该文件夹下的数据文件名称
+  - 值列表表示该文件夹下的数据文件名称
 
 ### 文档问答性能测试
 
@@ -309,7 +337,7 @@ models:
 python -m pytest --feature=qa_eval_test
 ```
 
-- **结果保存位置**：所有性能测试数据保存在：`uc_eval/results/reports/evaluate/doc_qa_latency.xlsx`
+- **结果保存位置**：所有性能测试数据保存在：`uc_eval/results/reports/evaluate/doc_qa_latency.xlsx`，同时，在evaluate目录下会生成一个以日期命名的文件夹，其中包含数据集和模型回复等信息
 - **参数配置说明**：
 
 | 参数                  | 含义                   | 示例值                                           |
@@ -339,7 +367,7 @@ doc_qa_eval_cases = [
             metrics=["accuracy", "bootstrap-accuracy", "f1-score"],
             eval_class="common.uc_eval.utils.metric:MatchPatterns",
             select_data_class={"domain": ["Single-Document QA"]},
-            test_name="longbench and no prefix cache"
+            test_name="longbench v2 and no prefix cache"
         ),
     ),
     # longbench参考配置
@@ -350,9 +378,9 @@ doc_qa_eval_cases = [
             enable_prefix_cache=False,
             parallel_num=1,
             benchmark_mode="evaluate",
-            metrics=["accuracy", "bootstrap-accuracy", "f1-score"],
+            metrics=["f1-score"],
             eval_class="common.uc_eval.utils.metric:FuzzyMatch",
-            test_name="longbench v2 and no prefix cache"
+            test_name="longbench and no prefix cache"
         ),
     ),
 ]
@@ -385,31 +413,44 @@ def test_doc_qa_perf(
   - **模板文件**：test/common/uc_eval/utils/prompt_config.py
 
 ```python
-# 非多项选择题提示模板
-doc_qa_prompt = ["""
-    Please read the following text and answer the questions below.\n
-    Text: {context}\n
-    Question: {input}
-    Instructions: Answer based ONLY on the information in the text above
-"""]
+# 文档问答数据集的语言，决定后续的分词方式，以及后续prompt具体使用中文还是英文. 具体使用时首先会读取数据集中是否存在language这个键，如果不存在才使用该配置
+# 可选值包含三个: en, zh, None
+DEFAULT_LANGUAGE = "None"
+
+# 文档问答提示模板，在使用时会将{}占位符替换为数据集中键值对应的内容，包含英文prompt和中文prompt两种形式
+Q&A prompt for document QA – replace the {} placeholders with actual content from the dataset when used.
+doc_qa_prompt_zh = [
+    """
+    阅读以下文字并用中文简短回答：\n\n{context}\n\n现在请基于上面的文章回答下面的问题，只告诉我答案，不要输出任何其他字词。\n\n问题：{input}\n回答：
+    """
+]
+
+doc_qa_prompt_en = [
+    """
+    Read the following text and answer briefly.\n\n{context}\n\nNow, answer the following question based on the above text, only give me the answer and do not output any other words.\n\nQuestion: {input}\nAnswer:
+    """
+]
 
 # 多项选择题提示模板
-multi_answer_prompt = ["""
+multi_answer_prompt = [
+    """
     Please read the following text and answer the questions below.\n
     Text: {context}\n
     What is the correct answer to this question: {question}\n
     Choices: \n (A) {choice_A} \n (B) {choice_B} \n (C) {choice_C} \n (D) {choice_D} \n 
     Let's think step by step. Based on the above, what is the single, most likely answer choice?\n
     Format your response as follows: "The correct answer is (insert answer here)'
-"""]
+"""
+]
 
 # 答案提取正则表达式模板
 match_patterns = [
-    r'The correct answer is \(([A-D])\)',
-    r'The correct answer is ([A-D])',
-    r'The \(([A-D])\) is the correct answer',
-    r'The ([A-D]) is the correct answer'
+    r"The correct answer is \(([A-D])\)",
+    r"The correct answer is ([A-D])",
+    r"The \(([A-D])\) is the correct answer",
+    r"The ([A-D]) is the correct answer",
 ]
+
 ```
 
 - **prompt_config模板使用说明**：
@@ -421,4 +462,4 @@ match_patterns = [
   - 使用 `multi_answer_prompt` 中的模板构造提示
   - 发送请求获取模型回复
   - 使用 `match_patterns` 中的正则表达式提取答案（A/B/C/D）
-  - 与数据集的参考答案进行比对，获取精度
+  - 与数据集的参考答案进行比对，获取精度或者F1-score

@@ -1,3 +1,4 @@
+import dataclasses
 import os
 
 import pytest

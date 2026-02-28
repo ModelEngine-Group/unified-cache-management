@@ -76,7 +76,7 @@ class BaseClient:
         self.tokenizer: PreTrainedTokenizer = AutoTokenizer.from_pretrained(
             tokenizer_path
         )
-        self.max_paralleml_num = kwargs.get("max_parallel_num", 10)
+        self.max_paralleml_num = kwargs.get("max_parallel", 10)
         self.session = self.create_session(self.max_paralleml_num)
         self.max_seq_length = config.max_seq_length
         self.payload = config.payload
@@ -130,6 +130,9 @@ class BaseClient:
             # If the length of input_ids is greater than max_seq_length, we need to split it
             input_ids = self.tokenizer.encode(prompt)
             if len(input_ids) > self.max_seq_length:
+                logger.warning(
+                    f"The length of input tokens {len(input_ids)} is greater than max_seq_length {self.max_seq_length}, we need to split it"
+                )
                 input_ids = (
                     input_ids[: self.max_seq_length // 2]
                     + input_ids[-self.max_seq_length // 2 :]
@@ -169,7 +172,6 @@ class BaseClient:
 
         for record in records:
             record.input_tokens = len(self.tokenizer.tokenize(record.input_data))
-            record.output_tokens = len(self.tokenizer.tokenize(record.output_data))
             record.tbt_list = record.tbt_list[2:] if record.tbt_list else []
             record.tbt_latency = (
                 sum(record.tbt_list) / record.output_tokens if record.tbt_list else 0
@@ -202,6 +204,7 @@ class BaseClient:
 
         record.request_id = request_id
         record.output_data = output
+        record.output_tokens = result.get("usage", {}).get("completion_tokens", -1)
         record.is_success = True
         record.end_time = time.time()
         record.req_cost = record.end_time - record.start_time
@@ -212,7 +215,7 @@ class BaseClient:
         output = ""
         if message.get("content", "") is not None:
             output += message.get("content", "")
-        elif message.get("reasoning_content", "") is not None:
+        if message.get("reasoning_content", "") is not None:
             output += message.get("reasoning_content", "")
         return output
 
@@ -319,6 +322,7 @@ class BaseClient:
         record.is_success = True
         record.end_time = time.perf_counter()
         record.req_cost = record.end_time - record.start_time
+        record.output_tokens = payload.get("max_tokens", -1)
         logger.debug(f"{record.request_id} finished, cost: {record.req_cost:.2f}s")
         return record
 
@@ -327,7 +331,7 @@ class BaseClient:
         output = ""
         if message.get("content", "") is not None:
             output += message.get("content", "")
-        elif message.get("reasoning_content", "") is not None:
+        if message.get("reasoning_content", "") is not None:
             output += message.get("reasoning_content", "")
         return output
 
