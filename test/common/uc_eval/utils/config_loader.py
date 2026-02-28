@@ -201,7 +201,7 @@ class TaskFactory:
         if data_type == DatasetType.SYNTHETIC:
             client_kwargs["max_parallel"] = max(perf_config.parallel_num)
         else:
-            client_kwargs["parallel_num"] = (
+            client_kwargs["max_parallel"] = (
                 perf_config.parallel_num if perf_config else eval_config.parallel_num
             )
         return (
