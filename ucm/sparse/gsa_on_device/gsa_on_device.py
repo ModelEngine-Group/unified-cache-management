@@ -102,6 +102,7 @@ class GSAOnDevice(UcmSparseBase):
         super().__init__(vllm_config, role)
         self.rank = vllm_config.parallel_config.rank
         self.is_mla = vllm_config.model_config.is_deepseek_mla
+        self.gsa_enabled = False
 
         if vllm_config.device_config.device_type == "cuda":
             self.is_cuda = True
@@ -138,11 +139,20 @@ class GSAOnDevice(UcmSparseBase):
             self.gsa_on_device_config.vllm_hash_attention_skip_layers
         )
 
-        self.seq_len_threshhold = self.gsa_on_device_config.seq_len_threshhold
+        if self.is_cuda:
+            self.seq_len_threshold = self.gsa_on_device_config.gpu_seq_len_threshold
+            self.concurrency_threshold = (
+                self.gsa_on_device_config.gpu_concurrency_threshold
+            )
+        else:
+            self.seq_len_threshold = self.gsa_on_device_config.npu_seq_len_threshold
+            self.concurrency_threshold = (
+                self.gsa_on_device_config.npu_concurrency_threshold
+            )
+
         assert (
-            self.seq_len_threshhold
-            >= self.gsa_on_device_config.vllm_hash_attention_topk
-        ), "seq_len_threshhold must be larger than or equal to vllm_hash_attention_topk"
+            self.seq_len_threshold >= self.gsa_on_device_config.vllm_hash_attention_topk
+        ), "seq_len_threshold must be larger than or equal to vllm_hash_attention_topk"
         assert (
             self.gsa_on_device_config.vllm_hash_attention_topk % self.block_size == 0
         ), "vllm_hash_attention_topk must be divisible by block_size"
@@ -498,7 +508,7 @@ class GSAOnDevice(UcmSparseBase):
                         attn_metadata.seq_lens_device[
                             : attn_metadata.query_lens_device.numel()
                         ]
-                        >= self.seq_len_threshhold
+                        >= self.seq_len_threshold
                     )
                 self.topk_for_hamming = self.topk_for_hamming_full[
                     : self.batch_size_for_hamming
@@ -733,6 +743,8 @@ class GSAOnDevice(UcmSparseBase):
         decode_ql_nope: Optional[torch.Tensor] = None,
         decode_q_pe: Optional[torch.Tensor] = None,
     ):
+        if not self.gsa_enabled:
+            return query, key, value, output
         attn_metadata = self.get_layer_attn_metadata(forward_context, layer_name)
         # TODO: Should mark MTP layer as rollback layer
         is_rollback_layer, is_skip_hash_layer = self.get_layer_state(layer_name)
@@ -821,6 +833,8 @@ class GSAOnDevice(UcmSparseBase):
         forward_context: ForwardContext,
         phase: Optional[str] = None,
     ) -> None:
+        if not self.gsa_enabled:
+            return
         attn_metadata = self.get_layer_attn_metadata(forward_context, layer_name)
         if self.is_mla:
             if phase == "decode":
@@ -858,6 +872,7 @@ class GSAOnDevice(UcmSparseBase):
 
     def execute_begin(self, scheduler_output: SchedulerOutput):
         self.is_tensor_computed = False
+        self.gsa_enabled = False
 
     def estimate_num_slots_sparsed(self, request: Request) -> int:
         return INVALID_SLOT
@@ -960,7 +975,7 @@ class GSAOnDevice(UcmSparseBase):
 
         # self.decode_mask is on cpu in vllm-asencd under NPU device
         self.decode_mask = (query_lens == 1) & (
-            seq_lens[: query_lens.numel()] >= self.seq_len_threshhold
+            seq_lens[: query_lens.numel()] >= self.seq_len_threshold
         )
         # self.decode_mask = self.decode_mask.pin_memory()
 
@@ -1029,6 +1044,20 @@ class GSAOnDevice(UcmSparseBase):
     ) -> UcmSparseMetadata:
         from ucm.sparse.gsa_on_device.hamming_topk import update_seq_lens
 
+        self.num_reqs = len(scheduler_output.num_scheduled_tokens)
+
+        if isinstance(attn_metadata, dict):
+            attn_metadata = next(iter(attn_metadata.values()))
+
+        seq_lens = attn_metadata.seq_lens
+        num_long_reqs = int(
+            (seq_lens[: self.num_reqs] >= self.seq_len_threshold).sum().item()
+        )
+        self.gsa_enabled = num_long_reqs >= self.concurrency_threshold
+
+        if not self.gsa_enabled:
+            return
+
         if not self.is_mla:
             self.has_decode = False
             self.decode_only = False
@@ -1040,15 +1069,11 @@ class GSAOnDevice(UcmSparseBase):
             all_prefix_tokens = 0
             all_prefix_blocks = 0
 
-            if isinstance(attn_metadata, dict):
-                attn_metadata = next(iter(attn_metadata.values()))
-
             compute_q_lens = (
                 attn_metadata.query_start_loc[1:] - attn_metadata.query_start_loc[:-1]
             )
             self.decode_req_ids_buf.clear()
 
-            self.num_reqs = len(scheduler_output.num_scheduled_tokens)
             for (
                 req_id,
                 num_scheduled_tokens,
@@ -1068,7 +1093,7 @@ class GSAOnDevice(UcmSparseBase):
                 )
 
                 # when prompt length < topk_tokens Skip sparse!
-                if req.num_prompt_tokens < self.seq_len_threshhold:
+                if req.num_prompt_tokens < self.seq_len_threshold:
                     continue
 
                 if is_decode:
