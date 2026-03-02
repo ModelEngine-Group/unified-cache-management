@@ -5,13 +5,10 @@ import sys
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
 
-# Setup logging
 logger = logging.getLogger(__name__)
-
 
 # Global state
 _backup_path: Optional[Path] = None
-_test_build_id: Optional[str] = None
 
 
 def _get_backup_config() -> Dict[str, Any]:

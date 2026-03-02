@@ -5,27 +5,38 @@ from collections.abc import Mapping
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List
 
-_build_id = None
+_test_items = None
+_test_id = None
 UTC8 = timezone(timedelta(hours=8))
 
 
-def set_build_id(build_id: str):
-    global _build_id
-    _build_id = build_id
+def set_test_info(test_id: str, test_items: str):
+    global _test_items
+    _test_items = test_items
+    global _test_id
+    _test_id = test_id
 
 
-def get_build_id() -> str:
-    if _build_id is None:
-        raise RuntimeError("build_id Not initialized")
-    return _build_id
+def get_test_id() -> str:
+    if _test_id is None:
+        raise RuntimeError("test_id Not initialized")
+    return _test_id
+
+
+def get_test_items() -> str:
+    if _test_items is None:
+        raise RuntimeError("test_items Not initialized")
+    return _test_items
 
 
 def _write_result(table_name: str, data: Dict[str, Any]) -> bool:
     from common.config_utils import config_utils as config_instance
 
-    build_id = get_build_id()
+    test_id = get_test_id()
+    test_items = get_test_items()
     native_time = datetime.now(UTC8).replace(tzinfo=None)
-    data["build_id"] = build_id
+    data["test_id"] = test_id
+    data["test_items"] = test_items
     data["create_at"] = native_time
     for item in config_instance.get_config("results", []):
         if isinstance(item, dict) and item:

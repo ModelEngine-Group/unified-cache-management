@@ -1,17 +1,19 @@
 from __future__ import annotations
 
 import dataclasses
+import datetime
 import datetime as dt
 import logging
 import os
 import platform as pf
 import random
 import sys
+import uuid
 from pathlib import Path
 
 import pynvml
 import pytest
-from common.capture_utils import export_vars, set_build_id
+from common.capture_utils import export_vars, set_test_info
 from common.config_utils import config_utils as config_instance
 from common.uc_eval.utils.data_class import ModelConfig
 
@@ -100,7 +102,7 @@ def _setup_html_report(config: pytest.Config, report_dir: Path) -> None:
 
 
 # ---------------- Build ID & Session Init ----------------
-def _generate_build_id(config: pytest.Config) -> str:
+def _generate_build_info(config: pytest.Config) -> str:
     ts = dt.datetime.now().strftime("%Y-%m-%d_%H:%M:%S")
     cli_parts = []
     markers = [m.split(":", 1)[0].strip() for m in config.getini("markers")]
@@ -123,9 +125,9 @@ def pytest_configure(config: pytest.Config) -> None:
     _setup_html_report(config, report_dir)
 
     # Generate and register build ID into DB
-    build_id = _generate_build_id(config)
-    config._build_id = build_id
-    set_build_id(build_id)
+    test_items = _generate_build_info(config)
+    test_id = str(uuid.uuid4())
+    set_test_info(test_id, test_items)
 
 
 def pytest_sessionstart(session):
