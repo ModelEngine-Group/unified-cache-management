@@ -26,6 +26,7 @@
 
 #include <atomic>
 #include <memory>
+#include <mutex>
 #include <sys/uio.h>
 #include <thread>
 #include <vector>
@@ -51,11 +52,7 @@ private:
         Detail::TaskHandle owner;
         Detail::Shard shard;
         std::shared_ptr<Latch> waiter;
-    };
-    struct IoTask {
-        Detail::TaskHandle owner;
-        std::vector<Detail::Shard> shards;
-        std::shared_ptr<Latch> waiter;
+        bool firstIo{false};
     };
     struct IoUnitCtx {
         IoUnit unit;
@@ -71,8 +68,10 @@ private:
     const SpaceLayout* layout_;
     IoUringContext loadRing_;
     IoUringContext dumpRing_;
-    ThreadPool<IoTask, IoUringContext*> loadSubmitterPool_;
-    ThreadPool<IoTask, IoUringContext*> dumpSubmitterPool_;
+    ThreadPool<IoUnit, IoUringContext*> loadSubmitterPool_;
+    ThreadPool<IoUnit, IoUringContext*> dumpSubmitterPool_;
+    std::mutex loadSqMtx_;
+    std::mutex dumpSqMtx_;
     std::thread loadReaperThread_;
     std::thread dumpReaperThread_;
     std::atomic<bool> stop_{false};
@@ -88,9 +87,8 @@ public:
     void Push(TaskPtr task, WaiterPtr waiter);
 
 private:
-    void LoadSubmitter(IoTask& task, IoUringContext* ring);
-    void DumpSubmitter(IoTask& task, IoUringContext* ring);
-    void SubmitTask(IoTask& task, IoUringContext* ring, bool isDump);
+    void LoadSubmitter(IoUnit& unit, IoUringContext* ring);
+    void DumpSubmitter(IoUnit& unit, IoUringContext* ring);
     void LoadReaperLoop();
     void DumpReaperLoop();
 };
