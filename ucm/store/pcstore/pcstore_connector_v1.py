@@ -211,6 +211,7 @@ class UcmPcStoreV1(UcmKVStoreBaseV1):
         block_ids: List[bytes],
         shard_index: List[int],
         src_addr: List[List[int]] | np.ndarray,
+        prerequisite_handle: int = 0,
     ) -> Task:
         """Low-level dump: copy KV data from device pointers.
 

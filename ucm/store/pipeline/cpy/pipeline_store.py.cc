@@ -82,7 +82,8 @@ PYBIND11_MODULE(ucmpipelinestore, m)
     s.def("Load", &PipelineStorePy::Load, py::arg("ids").noconvert(),
           py::arg("indexes").noconvert(), py::arg("addrs").noconvert());
     s.def("Dump", &PipelineStorePy::Dump, py::arg("ids").noconvert(),
-          py::arg("indexes").noconvert(), py::arg("addrs").noconvert());
+          py::arg("indexes").noconvert(), py::arg("addrs").noconvert(),
+          py::arg("prerequisite_handle") = 0);
     s.def("Check", &PipelineStorePy::Check);
     s.def("Wait", &PipelineStorePy::Wait);
 }
