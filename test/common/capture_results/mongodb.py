@@ -2,40 +2,12 @@ import logging
 import time
 from typing import Any, Dict, Optional
 
-
-class DbDeps:
-    _instance = None
-
-    def __new__(cls):
-        if cls._instance is None:
-            cls._instance = super().__new__(cls)
-            cls._instance._initialized = False
-        return cls._instance
-
-    def __init__(self):
-        if self._initialized:
-            return
-
-        # PyMongo imports
-        from pymongo import MongoClient
-        from pymongo.errors import (
-            ConnectionFailure,
-            OperationFailure,
-            ServerSelectionTimeoutError,
-        )
-
-        self.MongoClient = MongoClient
-        self.ConnectionFailure = ConnectionFailure
-        self.OperationFailure = OperationFailure
-        self.ServerSelectionTimeoutError = ServerSelectionTimeoutError
-
-
-depsObj = DbDeps()
-
-
-def getDbDeps():
-    return depsObj
-
+from pymongo import MongoClient
+from pymongo.errors import (
+    ConnectionFailure,
+    OperationFailure,
+    ServerSelectionTimeoutError,
+)
 
 # Database Configuration
 logger = logging.getLogger(__name__)
@@ -99,10 +71,10 @@ def write_results(
     logger.debug("Record to insert: %s", record)
 
     for attempt in range(max_retries + 1):
-        client: Optional[getDbDeps().MongoClient] = None
+        client: Optional[MongoClient] = None
         try:
             # 1. Establish connection
-            client = getDbDeps().MongoClient(
+            client = MongoClient(
                 host=config.get("host"),
                 port=config.get("port"),
                 username=config.get("user"),
@@ -127,9 +99,9 @@ def write_results(
             return True
 
         except (
-            getDbDeps().ConnectionFailure,
-            getDbDeps().ServerSelectionTimeoutError,
-            getDbDeps().OperationFailure,
+            ConnectionFailure,
+            ServerSelectionTimeoutError,
+            OperationFailure,
             Exception,
         ) as e:
             logger.error(

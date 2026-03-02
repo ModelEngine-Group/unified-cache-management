@@ -2,68 +2,22 @@ import logging
 import time
 from typing import Any, Dict, Optional, Type
 
+from peewee import (
+    AutoField,
+    BooleanField,
+    DateTimeField,
+    DoubleField,
+    Field,
+    Model,
+    TextField,
+)
+from playhouse.migrate import PostgresqlMigrator, migrate
+from playhouse.postgres_ext import BinaryJSONField, PostgresqlDatabase
+
 logger = logging.getLogger(__name__)
-
-# ============================================================================
-# Lazy Dependency Loader
-# ============================================================================
-
-
-class DbDeps:
-    _instance = None
-
-    def __new__(cls):
-        if cls._instance is None:
-            cls._instance = super().__new__(cls)
-            cls._instance._initialized = False
-        return cls._instance
-
-    def __init__(self):
-        if self._initialized:
-            return
-
-        from peewee import (
-            AutoField,
-            BooleanField,
-            DateTimeField,
-            DoubleField,
-            Field,
-            Model,
-            TextField,
-        )
-        from playhouse.migrate import PostgresqlMigrator, migrate
-        from playhouse.postgres_ext import BinaryJSONField, PostgresqlDatabase
-
-        self.AutoField = AutoField
-        self.BooleanField = BooleanField
-        self.DateTimeField = DateTimeField
-        self.DoubleField = DoubleField
-        self.Field = Field
-        self.Model = Model
-        self.TextField = TextField
-        self.BinaryJSONField = BinaryJSONField
-        self.PostgresqlDatabase = PostgresqlDatabase
-        self.PostgresqlMigrator = PostgresqlMigrator
-        self.migrate = migrate
-
-        self._initialized = True
-
-
-deps = DbDeps()
-
-
-# ============================================================================
-# Global State
-# ============================================================================
-
 _db_config: Optional[Dict[str, Any]] = None
 _db_instance = None
 _schema_checked_tables = set()
-
-
-# ============================================================================
-# Config
-# ============================================================================
 
 
 def _get_pg_config() -> Dict[str, Any]:
@@ -100,7 +54,7 @@ def _get_db():
     global _db_instance
     if _db_instance is None:
         conf = _get_pg_config()
-        _db_instance = deps.PostgresqlDatabase(
+        _db_instance = PostgresqlDatabase(
             database=conf["dbname"],
             host=conf["host"],
             port=conf["port"],
@@ -115,18 +69,18 @@ def _get_db():
 # ============================================================================
 
 
-def _infer_field(value: Any) -> deps.Field:
+def _infer_field(value: Any) -> Field:
     if value is None:
-        return deps.TextField(null=True)
+        return TextField(null=True)
     if isinstance(value, bool):
-        return deps.BooleanField(null=True)
+        return BooleanField(null=True)
     if isinstance(value, (int, float)):
-        return deps.DoubleField(null=True)
+        return DoubleField(null=True)
     if hasattr(value, "isoformat"):
-        return deps.DateTimeField(null=True)
+        return DateTimeField(null=True)
     if isinstance(value, (dict, list)):
-        return deps.BinaryJSONField(null=True)
-    return deps.TextField(null=True)
+        return BinaryJSONField(null=True)
+    return TextField(null=True)
 
 
 def _get_existing_columns(db, table_name: str):
@@ -148,7 +102,7 @@ def _ensure_schema(db, table_name: str, record: Dict[str, Any]):
         logger.info("Creating table '%s'", table_name)
 
         fields = {
-            "id": deps.AutoField(),
+            "id": AutoField(),
         }
 
         for k, v in record.items():
@@ -158,7 +112,7 @@ def _ensure_schema(db, table_name: str, record: Dict[str, Any]):
 
         ModelCls = type(
             table_name.capitalize(),
-            (deps.Model,),
+            (Model,),
             {
                 **fields,
                 "__module__": __name__,
@@ -183,20 +137,20 @@ def _ensure_schema(db, table_name: str, record: Dict[str, Any]):
 
     logger.info("Adding columns to '%s': %s", table_name, list(missing.keys()))
 
-    migrator = deps.PostgresqlMigrator(db)
+    migrator = PostgresqlMigrator(db)
 
     operations = [
         migrator.add_column(table_name, k, _infer_field(v)) for k, v in missing.items()
     ]
 
     with db.atomic():
-        deps.migrate(*operations)
+        migrate(*operations)
 
 
 def _create_model(db, table_name: str, record: Dict[str, Any]):
 
     fields = {
-        "id": deps.AutoField(),
+        "id": AutoField(),
     }
 
     for k, v in record.items():
@@ -206,7 +160,7 @@ def _create_model(db, table_name: str, record: Dict[str, Any]):
 
     return type(
         table_name.capitalize(),
-        (deps.Model,),
+        (Model,),
         {
             **fields,
             "__module__": __name__,
@@ -283,7 +237,7 @@ if __name__ == "__main__":
         test_data = {
             "status": "false",
             "input": 4000,
-            "tpot": 0.25,
+            "acc": 0.25,
             "e2e": 0.6,
             "metrics": {"latency": 0.05, "success": True},
             "tags": ["api", "v1"],
@@ -292,5 +246,4 @@ if __name__ == "__main__":
         write_results("test_db", test_data)
         print("Test data: %s", test_data)
         result = write_results("test_db", test_data)
-
         print("\nFinal result: %s" % ("SUCCESS" if result else "FAILED"))
