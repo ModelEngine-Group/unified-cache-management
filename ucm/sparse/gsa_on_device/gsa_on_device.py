@@ -102,7 +102,7 @@ class GSAOnDevice(UcmSparseBase):
         super().__init__(vllm_config, role)
         self.rank = vllm_config.parallel_config.rank
         self.is_mla = vllm_config.model_config.is_deepseek_mla
-        self.open_gsa = False
+        self.gsa_enabled = False
 
         if vllm_config.device_config.device_type == "cuda":
             self.is_cuda = True
@@ -743,7 +743,7 @@ class GSAOnDevice(UcmSparseBase):
         decode_ql_nope: Optional[torch.Tensor] = None,
         decode_q_pe: Optional[torch.Tensor] = None,
     ):
-        if not self.open_gsa:
+        if not self.gsa_enabled:
             return query, key, value, output
         attn_metadata = self.get_layer_attn_metadata(forward_context, layer_name)
         # TODO: Should mark MTP layer as rollback layer
@@ -833,7 +833,7 @@ class GSAOnDevice(UcmSparseBase):
         forward_context: ForwardContext,
         phase: Optional[str] = None,
     ) -> None:
-        if not self.open_gsa:
+        if not self.gsa_enabled:
             return
         attn_metadata = self.get_layer_attn_metadata(forward_context, layer_name)
         if self.is_mla:
@@ -872,7 +872,7 @@ class GSAOnDevice(UcmSparseBase):
 
     def execute_begin(self, scheduler_output: SchedulerOutput):
         self.is_tensor_computed = False
-        self.open_gsa = False
+        self.gsa_enabled = False
 
     def estimate_num_slots_sparsed(self, request: Request) -> int:
         return INVALID_SLOT
@@ -1050,14 +1050,12 @@ class GSAOnDevice(UcmSparseBase):
             attn_metadata = next(iter(attn_metadata.values()))
 
         seq_lens = attn_metadata.seq_lens
-
-        has_long_seq = bool(
-            (seq_lens[: self.num_reqs] >= self.seq_len_threshold).any().item()
+        num_long_reqs = int(
+            (seq_lens[: self.num_reqs] >= self.seq_len_threshold).sum().item()
         )
-        enough_concurrency = self.num_reqs >= self.concurrency_threshold
+        self.gsa_enabled = num_long_reqs >= self.concurrency_threshold
 
-        self.open_gsa = has_long_seq and enough_concurrency
-        if not self.open_gsa:
+        if not self.gsa_enabled:
             return
 
         if not self.is_mla:
