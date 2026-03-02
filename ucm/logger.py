@@ -75,6 +75,24 @@ def init_logger(name: str = "UC", log: dict = None) -> Logger:
     return Logger(name, log)
 
 
+def _get_log_config():
+    """Get log configuration from environment variables or CLI arguments."""
+    log_path = os.getenv("UCM_LOG_PATH", "log")
+    try:
+        log_max_files = int(os.getenv("UCM_LOG_MAX_FILES", "10"))
+    except (ValueError, TypeError):
+        log_max_files = 10
+    try:
+        log_max_size = int(os.getenv("UCM_LOG_MAX_SIZE", "5"))
+    except (ValueError, TypeError):
+        log_max_size = 5
+    return {"directory": log_path, "max_files": log_max_files, "max_size": log_max_size}
+
+
+_log_config = _get_log_config()
+init_logger("ucm", _log_config)
+
+
 if __name__ == "__main__":
     logger = init_logger()
     logger.debug("debug message")

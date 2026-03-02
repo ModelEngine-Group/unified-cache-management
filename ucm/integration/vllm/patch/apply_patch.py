@@ -42,6 +42,13 @@ vllm_use_rerope = os.getenv("VLLM_USE_REROPE", "0").lower() in (
     "on",
 )
 
+ENABLE_SPARSE = os.getenv("ENABLE_SPARSE", "0").lower() in (
+    "1",
+    "true",
+    "yes",
+    "on",
+)
+
 
 def _patch_ascend() -> bool:
     return os.getenv("PLATFORM") == "ascend"
@@ -132,14 +139,18 @@ def apply_all_patches() -> None:
                 f"Supported versions: {', '.join(supported_versions)}. "
             )
 
+        # Apply common patch here
+
         # Apply version-specific patches
         match version:
-            case "0.9.2" if vllm_use_rerope:
-                _apply_patches_rerope()
-            case "0.9.2":
-                _apply_patches_v092()
+            # case "0.9.2" if vllm_use_rerope:
+            #     _apply_patches_rerope()
+            # case "0.9.2":
+            #     _apply_patches_v092()
             case "0.11.0":
                 _apply_patches_v0110()
+            # case "0.11.0" if ENABLE_SPARSE:
+            #     import ucm.integration.vllm.patch.v0110.sparse_patch
             case _:
                 logger.warning(
                     f"Unsupported vLLM version: {version} to apply UCM patches. "
