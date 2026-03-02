@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import dataclasses
 import datetime as dt
-import importlib
 import logging
 import os
 import platform as pf
@@ -12,7 +11,7 @@ from pathlib import Path
 
 import pynvml
 import pytest
-from common.capture_utils import export_vars
+from common.capture_utils import export_vars, set_build_id
 from common.config_utils import config_utils as config_instance
 from common.uc_eval.utils.data_class import ModelConfig
 
@@ -126,12 +125,7 @@ def pytest_configure(config: pytest.Config) -> None:
     # Generate and register build ID into DB
     build_id = _generate_build_id(config)
     config._build_id = build_id
-
-    for item in config_instance.get_config("results", []):
-        if isinstance(item, dict) and item:
-            backend_name = next(iter(item.keys()))
-            mod = importlib.import_module(f"common.capture_results.{backend_name}")
-            mod.set_build_id(build_id)
+    set_build_id(build_id)
 
 
 def pytest_sessionstart(session):
@@ -239,21 +233,14 @@ def pytest_sessionfinish(session, exitstatus):
         logger.warning(f"No JSONL files found in {backup_dir}, skipping conversion")
         return
 
-    logger.info(
-        f"Starting JSONL to CSV conversion for {len(jsonl_files)} files in {backup_dir}"
-    )
-
     success_count = 0
     for jsonl_file in jsonl_files:
         try:
             from common.capture_results.localFile import jsonl_to_csv
 
             csv_file = jsonl_to_csv(jsonl_file, flatten=True)
-            logger.info(f"Converted: {jsonl_file.name} → {csv_file.name}")
+            logger.debug(f"Converted: {jsonl_file.name} → {csv_file.name}")
             success_count += 1
         except Exception as e:
             logger.error(f"Failed to convert {jsonl_file.name}: {e}", exc_info=True)
-
-    logger.info(
-        f"Conversion complete: {success_count}/{len(jsonl_files)} files converted"
-    )
+    logger.info(f"Converted {success_count} JSONL files to CSV")

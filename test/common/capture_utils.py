@@ -2,15 +2,34 @@ import dataclasses
 import functools
 import importlib
 from collections.abc import Mapping
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List
+
+_build_id = None
+UTC8 = timezone(timedelta(hours=8))
+
+
+def set_build_id(build_id: str):
+    global _build_id
+    _build_id = build_id
+
+
+def get_build_id() -> str:
+    if _build_id is None:
+        raise RuntimeError("build_id Not initialized")
+    return _build_id
 
 
 def _write_result(table_name: str, data: Dict[str, Any]) -> bool:
     from common.config_utils import config_utils as config_instance
 
+    build_id = get_build_id()
+    native_time = datetime.now(UTC8).replace(tzinfo=None)
+    data["build_id"] = build_id
+    data["create_at"] = native_time
     for item in config_instance.get_config("results", []):
         if isinstance(item, dict) and item:
-            backend_name = next(iter(item.keys()))  # 取第一个键
+            backend_name = next(iter(item.keys()))
             mod = importlib.import_module(f"common.capture_results.{backend_name}")
             mod.write_results(table_name, data)
 

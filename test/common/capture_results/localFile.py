@@ -2,15 +2,12 @@ import csv
 import json
 import logging
 import sys
-from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
 
 # Setup logging
 logger = logging.getLogger(__name__)
 
-# Constants
-UTC_8_TIMEZONE = timezone(timedelta(hours=8))
 
 # Global state
 _backup_path: Optional[Path] = None
@@ -56,7 +53,6 @@ def _initialize_backup_path() -> Path:
 
     try:
         _backup_path.mkdir(parents=True, exist_ok=True)
-        logger.info(f"Backup directory set to: {_backup_path}")
     except OSError as e:
         logger.error(f"Failed to create backup directory {_backup_path}: {e}")
         # Fallback to current working directory
@@ -64,29 +60,6 @@ def _initialize_backup_path() -> Path:
         _backup_path.mkdir(parents=True, exist_ok=True)
 
     return _backup_path
-
-
-def set_build_id(build_id: str) -> None:
-    _set_test_build_id(build_id)
-    logger.info(f"Build ID set to: {build_id}")
-
-
-def _set_test_build_id(build_id: Optional[str] = None) -> None:
-    global _test_build_id
-    if build_id:
-        _test_build_id = build_id
-    else:
-        # Generate build ID based on UTC+8 time
-        ts = datetime.now(UTC_8_TIMEZONE)
-        _test_build_id = f"build_{ts.strftime('%Y%m%d_%H%M%S')}"
-    logger.debug(f"Test build ID set to: {_test_build_id}")
-
-
-def _get_test_build_id() -> str:
-    global _test_build_id
-    if _test_build_id is None:
-        _set_test_build_id()
-    return _test_build_id
 
 
 def _write_to_jsonl(table_name: str, data: Dict[str, Any]) -> bool:
@@ -100,13 +73,6 @@ def _write_to_jsonl(table_name: str, data: Dict[str, Any]) -> bool:
 
     try:
         record = data.copy()
-
-        # Generate timestamps in UTC+8
-        ts = datetime.now(UTC_8_TIMEZONE)
-        record.setdefault("id", ts.strftime("%Y%m%d%H%M%S%f"))
-        record.setdefault("created_at", ts.isoformat())
-        record.setdefault("test_build_id", _get_test_build_id())
-
         with file_path.open("a", encoding="utf-8") as f:
             json.dump(record, f, ensure_ascii=False, default=str)
             f.write("\n")
@@ -185,12 +151,8 @@ def _flatten_dict(
 
 
 if __name__ == "__main__":
-    set_build_id("demo")
     PRJ_ROOT = Path(__file__).resolve().parent.parent.parent
     sys.path.insert(0, str(PRJ_ROOT))
-
     write_results("test_results", {"a": 4, "b": "hello"})
-    write_results("test_results", {"a": 5, "b": "world"})
-    write_results("test_results", {"a": 6, "b": "!"})
-
+    write_results("test_results", {"a": 4, "b": '{"a": 4, "b": "hello"}'})
     jsonl_to_csv("results/test_results.jsonl")
