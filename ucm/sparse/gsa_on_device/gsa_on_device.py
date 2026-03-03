@@ -681,7 +681,7 @@ class GSAOnDevice(UcmSparseBase):
         self.topk_seq_lens = attn_metadata.seq_lens
 
     def update_decode_topk_gqa_npu(self, query, k_hash, attn_metadata):
-        q_start = attn_metadata.query_start_loc[:self.batch_size_for_hamming+1]
+        q_start = attn_metadata.query_start_loc[: self.batch_size_for_hamming + 1]
         if self.slice_enabled:
             q_decode = query[: self.batch_size_for_hamming]
         else:
