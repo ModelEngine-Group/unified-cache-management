@@ -45,6 +45,10 @@ public:
 
     struct io_uring_sqe* GetSqe() { return io_uring_get_sqe(&ring_); }
     int Submit() { return io_uring_submit(&ring_); }
+    unsigned PeekBatchCqe(struct io_uring_cqe** cqes, unsigned count)
+    {
+        return io_uring_peek_batch_cqe(&ring_, cqes, count);
+    }
     int WaitCqe(struct io_uring_cqe** cqe, size_t timeoutMs)
     {
         if (timeoutMs == 0) { return io_uring_wait_cqe(&ring_, cqe); }
@@ -53,6 +57,7 @@ public:
         timeout.tv_nsec = static_cast<long>(timeoutMs % 1000) * 1000 * 1000;
         return io_uring_wait_cqe_timeout(&ring_, cqe, &timeout);
     }
+    void CqAdvance(unsigned nr) { io_uring_cq_advance(&ring_, nr); }
     void CqeSeen(struct io_uring_cqe* cqe) { io_uring_cqe_seen(&ring_, cqe); }
 
 private:

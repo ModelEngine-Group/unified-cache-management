@@ -122,7 +122,7 @@ def main():
     layer_size = 64
     chunk_size = 4
     request_size = chunk_size * 16
-    storage_backends = ["."]
+    storage_backends = ["/home/share/qyh-test"]
     device_id = 1
     chunk_block_size = tensor_size * layer_size * chunk_size
     config = {}
@@ -134,10 +134,11 @@ def main():
     config["shard_size"] = chunk_block_size
     config["block_size"] = chunk_block_size
     config["share_buffer_enable"] = True
-    config["waiting_queue_depth"] = 16
-    config["running_queue_depth"] = 1024
+    # config["waiting_queue_depth"] = 16
+    # config["running_queue_depth"] = 1024
+    config["cache_buffer_capacity_gb"] = 64
     config["io_direct"] = True
-    config["posix_data_trans_concurrency"] = 32
+    config["posix_data_trans_concurrency"] = 1024
     config["posix_lookup_concurrency"] = 32
     worker = UcmPipelineStore(config | {"device_id": device_id})
     scheduler = UcmPipelineStore(config)

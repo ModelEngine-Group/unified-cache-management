@@ -27,6 +27,11 @@
 #include <cerrno>
 
 namespace UC::PosixStore {
+namespace {
+constexpr int32_t kRingEntries = 4096;
+constexpr size_t kSubmitBatchSize = 512;
+constexpr unsigned kMaxBatchCqe = 256;
+}
 
 AsyncTransQueue::~AsyncTransQueue()
 {
@@ -46,9 +51,9 @@ Status AsyncTransQueue::Setup(const Config& config, TaskIdSet* failureSet,
     waitCqeTimeoutMs_ = config.timeoutMs;
     ioDirect_ = config.ioDirect;
 
-    auto s = loadRing_.Init();
+    auto s = loadRing_.Init(kRingEntries);
     if (s.Failure()) [[unlikely]] { return s; }
-    s = dumpRing_.Init();
+    s = dumpRing_.Init(kRingEntries);
     if (s.Failure()) [[unlikely]] { return s; }
 
     auto success = loadSubmitterPool_.SetNWorker(config.dataTransConcurrency)
@@ -82,130 +87,151 @@ void AsyncTransQueue::Push(TaskPtr task, WaiterPtr waiter)
     const size_t nShard = task->desc.size();
     waiter->Set(nShard);
     if (nShard == 0) [[unlikely]] { return; }
-    std::list<IoUnit> units;
+    IoTask ioTask{task->id, {}, waiter, true};
+    ioTask.shards.reserve(nShard);
     for (auto&& shard : task->desc) {
-        units.emplace_back(IoUnit{task->id, std::move(shard), waiter});
+        ioTask.shards.emplace_back(std::move(shard));
     }
-    units.front().firstIo = true;
     if (task->type == TransTask::Type::DUMP) {
-        dumpSubmitterPool_.Push(units);
+        dumpSubmitterPool_.Push(std::move(ioTask));
     } else {
-        loadSubmitterPool_.Push(units);
+        loadSubmitterPool_.Push(std::move(ioTask));
     }
 }
 
-void AsyncTransQueue::LoadSubmitter(IoUnit& unit, IoUringContext* ring)
+void AsyncTransQueue::SubmitTask(IoTask& task, IoUringContext* ring, bool isDump)
 {
-    if (unit.firstIo) {
-        auto wait = NowTime::Now() - unit.waiter->startTp;
-        UC_DEBUG("IoUring load task({}) start running, wait {:.3f}ms.", unit.owner, wait * 1e3);
+    if (task.firstIo) {
+        auto wait = NowTime::Now() - task.waiter->startTp;
+        UC_DEBUG("IoUring {} task({}) start running, wait {:.3f}ms.", isDump ? "dump" : "load",
+                 task.owner, wait * 1e3);
     }
-    if (failureSet_->Contains(unit.owner)) {
-        unit.waiter->Done();
+    if (failureSet_->Contains(task.owner)) {
+        for (size_t i = 0; i < task.shards.size(); ++i) {
+            task.waiter->Done();
+        }
         return;
     }
 
-    const auto& path = layout_->DataFilePath(unit.shard.owner, false);
-    bool isLast = unit.shard.index + 1 == nShardPerBlock_;
-    auto* ctx = new IoUnitCtx{std::move(unit), failureSet_, layout_, 0, isLast, {}, nullptr};
-    ctx->file = std::make_unique<PosixFile>(path);
-    auto flags = PosixFile::OpenFlag::READ_ONLY;
-    if (ioDirect_) { flags |= PosixFile::OpenFlag::DIRECT; }
-    auto s = ctx->file->Open(flags);
-    if (s.Failure()) [[unlikely]] {
-        UC_ERROR("Failed({}) to open file({}) with flags({}).", s, path, flags);
-        failureSet_->Insert(ctx->unit.owner);
-        ctx->unit.waiter->Done();
-        delete ctx;
-        return;
+    std::vector<IoUnitCtx*> preparedCtxs;
+    preparedCtxs.reserve(task.shards.size());
+    auto doneRemaining = [&](size_t startIdx) {
+        for (size_t j = startIdx; j < task.shards.size(); ++j) {
+            task.waiter->Done();
+        }
+    };
+    auto failAndCleanup = [&](size_t begin, size_t end) {
+        failureSet_->Insert(task.owner);
+        for (size_t i = begin; i < end; ++i) {
+            preparedCtxs[i]->unit.waiter->Done();
+            delete preparedCtxs[i];
+        }
+    };
+
+    for (size_t i = 0; i < task.shards.size(); ++i) {
+        if (failureSet_->Contains(task.owner)) {
+            failAndCleanup(0, preparedCtxs.size());
+            doneRemaining(i);
+            return;
+        }
+        auto* ctx = new IoUnitCtx{
+            IoUnit{task.owner, std::move(task.shards[i]), task.waiter}, failureSet_, layout_, 0,
+            false, {}, nullptr};
+        ctx->isLastShardOfBlock = ctx->unit.shard.index + 1 == nShardPerBlock_;
+        const auto& path = layout_->DataFilePath(ctx->unit.shard.owner, isDump);
+        ctx->file = std::make_unique<PosixFile>(path);
+        auto flags = isDump ? PosixFile::OpenFlag::CREATE | PosixFile::OpenFlag::WRITE_ONLY
+                            : PosixFile::OpenFlag::READ_ONLY;
+        if (ioDirect_) { flags |= PosixFile::OpenFlag::DIRECT; }
+        auto s = ctx->file->Open(flags);
+        if (s.Failure()) [[unlikely]] {
+            UC_ERROR("Failed({}) to open file({}) with flags({}).", s, path, flags);
+            failureSet_->Insert(ctx->unit.owner);
+            ctx->unit.waiter->Done();
+            delete ctx;
+            failAndCleanup(0, preparedCtxs.size());
+            doneRemaining(i + 1);
+            return;
+        }
+        ctx->iov.resize(ctx->unit.shard.addrs.size());
+        for (size_t j = 0; j < ctx->unit.shard.addrs.size(); ++j) {
+            ctx->iov[j] = {ctx->unit.shard.addrs[j], ioSize_};
+        }
+        ctx->expectedBytes = ioSize_ * ctx->unit.shard.addrs.size();
+        preparedCtxs.push_back(ctx);
     }
 
-    ctx->iov.resize(ctx->unit.shard.addrs.size());
-    for (size_t i = 0; i < ctx->unit.shard.addrs.size(); ++i) {
-        ctx->iov[i] = {ctx->unit.shard.addrs[i], ioSize_};
-    }
-    ctx->expectedBytes = ioSize_ * ctx->unit.shard.addrs.size();
+    if (preparedCtxs.empty()) { return; }
 
-    {
-        std::unique_lock<std::mutex> lk(loadSqMtx_);
-        struct io_uring_sqe* sqe = ring->GetSqe();
+    auto& sqMtx = isDump ? dumpSqMtx_ : loadSqMtx_;
+    std::unique_lock<std::mutex> lk(sqMtx);
+    auto flushRange = [&](size_t begin, size_t end) -> bool {
+        if (begin >= end) { return true; }
+        size_t submitted = 0;
+        const size_t nPending = end - begin;
+        while (submitted < nPending) {
+            int ret = ring->Submit();
+            if (ret == -EINTR) { continue; }
+            if (ret <= 0) {
+                failAndCleanup(begin + submitted, end);
+                return false;
+            }
+            submitted += static_cast<size_t>(ret);
+        }
+        return true;
+    };
+
+    size_t rangeBegin = 0;
+    for (size_t i = 0; i < preparedCtxs.size(); ++i) {
+        auto* ctx = preparedCtxs[i];
+        auto* sqe = ring->GetSqe();
         if (!sqe) [[unlikely]] {
-            failureSet_->Insert(ctx->unit.owner);
-            ctx->unit.waiter->Done();
-            delete ctx;
-            return;
+            if (!flushRange(rangeBegin, i)) {
+                failAndCleanup(i, preparedCtxs.size());
+                return;
+            }
+            rangeBegin = i;
+            sqe = ring->GetSqe();
+            if (!sqe) [[unlikely]] {
+                failAndCleanup(i, preparedCtxs.size());
+                return;
+            }
         }
-        io_uring_prep_readv(sqe, ctx->file->Handle(), ctx->iov.data(),
-                            static_cast<size_t>(ctx->iov.size()),
-                            static_cast<off64_t>(shardSize_ * ctx->unit.shard.index));
+        if (isDump) {
+            io_uring_prep_writev(sqe, ctx->file->Handle(), ctx->iov.data(),
+                                 static_cast<size_t>(ctx->iov.size()),
+                                 static_cast<off64_t>(shardSize_ * ctx->unit.shard.index));
+        } else {
+            io_uring_prep_readv(sqe, ctx->file->Handle(), ctx->iov.data(),
+                                static_cast<size_t>(ctx->iov.size()),
+                                static_cast<off64_t>(shardSize_ * ctx->unit.shard.index));
+        }
         io_uring_sqe_set_data(sqe, ctx);
-        int ret = ring->Submit();
-        if (ret < 1) [[unlikely]] {
-            failureSet_->Insert(ctx->unit.owner);
-            ctx->unit.waiter->Done();
-            delete ctx;
-            return;
+
+        if (i + 1 - rangeBegin >= kSubmitBatchSize) {
+            if (!flushRange(rangeBegin, i + 1)) {
+                failAndCleanup(i + 1, preparedCtxs.size());
+                return;
+            }
+            rangeBegin = i + 1;
         }
     }
+    (void)flushRange(rangeBegin, preparedCtxs.size());
 }
 
-void AsyncTransQueue::DumpSubmitter(IoUnit& unit, IoUringContext* ring)
+void AsyncTransQueue::LoadSubmitter(IoTask& task, IoUringContext* ring)
 {
-    if (unit.firstIo) {
-        auto wait = NowTime::Now() - unit.waiter->startTp;
-        UC_DEBUG("IoUring dump task({}) start running, wait {:.3f}ms.", unit.owner, wait * 1e3);
-    }
-    if (failureSet_->Contains(unit.owner)) {
-        unit.waiter->Done();
-        return;
-    }
+    SubmitTask(task, ring, false);
+}
 
-    const auto& path = layout_->DataFilePath(unit.shard.owner, true);
-    bool isLast = unit.shard.index + 1 == nShardPerBlock_;
-    auto* ctx = new IoUnitCtx{std::move(unit), failureSet_, layout_, 0, isLast, {}, nullptr};
-    ctx->file = std::make_unique<PosixFile>(path);
-    auto flags = PosixFile::OpenFlag::CREATE | PosixFile::OpenFlag::WRITE_ONLY;
-    if (ioDirect_) { flags |= PosixFile::OpenFlag::DIRECT; }
-    auto s = ctx->file->Open(flags);
-    if (s.Failure()) [[unlikely]] {
-        UC_ERROR("Failed({}) to open file({}) with flags({}).", s, path, flags);
-        failureSet_->Insert(ctx->unit.owner);
-        ctx->unit.waiter->Done();
-        delete ctx;
-        return;
-    }
-
-    ctx->iov.resize(ctx->unit.shard.addrs.size());
-    for (size_t i = 0; i < ctx->unit.shard.addrs.size(); ++i) {
-        ctx->iov[i] = {ctx->unit.shard.addrs[i], ioSize_};
-    }
-    ctx->expectedBytes = ioSize_ * ctx->unit.shard.addrs.size();
-
-    {
-        std::unique_lock<std::mutex> lk(dumpSqMtx_);
-        struct io_uring_sqe* sqe = ring->GetSqe();
-        if (!sqe) [[unlikely]] {
-            failureSet_->Insert(ctx->unit.owner);
-            ctx->unit.waiter->Done();
-            delete ctx;
-            return;
-        }
-        io_uring_prep_writev(sqe, ctx->file->Handle(), ctx->iov.data(),
-                             static_cast<size_t>(ctx->iov.size()),
-                             static_cast<off64_t>(shardSize_ * ctx->unit.shard.index));
-        io_uring_sqe_set_data(sqe, ctx);
-        int ret = ring->Submit();
-        if (ret < 1) [[unlikely]] {
-            failureSet_->Insert(ctx->unit.owner);
-            ctx->unit.waiter->Done();
-            delete ctx;
-            return;
-        }
-    }
+void AsyncTransQueue::DumpSubmitter(IoTask& task, IoUringContext* ring)
+{
+    SubmitTask(task, ring, true);
 }
 
 void AsyncTransQueue::LoadReaperLoop()
 {
+    io_uring_cqe* cqes[kMaxBatchCqe];
     while (!stop_.load(std::memory_order_relaxed)) {
         struct io_uring_cqe* cqe = nullptr;
         int ret = loadRing_.WaitCqe(&cqe, waitCqeTimeoutMs_);
@@ -214,20 +240,29 @@ void AsyncTransQueue::LoadReaperLoop()
             UC_ERROR("io_uring wait cqe failed, ret={}", ret);
             continue;
         }
-        auto* ctx = static_cast<IoUnitCtx*>(io_uring_cqe_get_data(cqe));
-        if (ctx) {
-            if (cqe->res < 0 || static_cast<size_t>(cqe->res) != ctx->expectedBytes) {
-                ctx->failureSet->Insert(ctx->unit.owner);
-            }
-            ctx->unit.waiter->Done();
-            delete ctx;
+
+        unsigned nCqe = loadRing_.PeekBatchCqe(cqes, kMaxBatchCqe);
+        if (nCqe == 0) {
+            cqes[0] = cqe;
+            nCqe = 1;
         }
-        loadRing_.CqeSeen(cqe);
+        for (unsigned i = 0; i < nCqe; ++i) {
+            auto* ctx = static_cast<IoUnitCtx*>(io_uring_cqe_get_data(cqes[i]));
+            if (ctx) {
+                if (cqes[i]->res < 0 || static_cast<size_t>(cqes[i]->res) != ctx->expectedBytes) {
+                    ctx->failureSet->Insert(ctx->unit.owner);
+                }
+                ctx->unit.waiter->Done();
+                delete ctx;
+            }
+        }
+        loadRing_.CqAdvance(nCqe);
     }
 }
 
 void AsyncTransQueue::DumpReaperLoop()
 {
+    io_uring_cqe* cqes[kMaxBatchCqe];
     while (!stop_.load(std::memory_order_relaxed)) {
         struct io_uring_cqe* cqe = nullptr;
         int ret = dumpRing_.WaitCqe(&cqe, waitCqeTimeoutMs_);
@@ -236,16 +271,26 @@ void AsyncTransQueue::DumpReaperLoop()
             UC_ERROR("io_uring wait cqe failed, ret={}", ret);
             continue;
         }
-        auto* ctx = static_cast<IoUnitCtx*>(io_uring_cqe_get_data(cqe));
-        if (ctx) {
-            const bool success =
-                cqe->res >= 0 && static_cast<size_t>(cqe->res) == ctx->expectedBytes;
-            if (!success) { ctx->failureSet->Insert(ctx->unit.owner); }
-            if (ctx->isLastShardOfBlock) { layout_->CommitFile(ctx->unit.shard.owner, success); }
-            ctx->unit.waiter->Done();
-            delete ctx;
+
+        unsigned nCqe = dumpRing_.PeekBatchCqe(cqes, kMaxBatchCqe);
+        if (nCqe == 0) {
+            cqes[0] = cqe;
+            nCqe = 1;
         }
-        dumpRing_.CqeSeen(cqe);
+        for (unsigned i = 0; i < nCqe; ++i) {
+            auto* ctx = static_cast<IoUnitCtx*>(io_uring_cqe_get_data(cqes[i]));
+            if (ctx) {
+                const bool success =
+                    cqes[i]->res >= 0 && static_cast<size_t>(cqes[i]->res) == ctx->expectedBytes;
+                if (!success) { ctx->failureSet->Insert(ctx->unit.owner); }
+                if (ctx->isLastShardOfBlock) {
+                    layout_->CommitFile(ctx->unit.shard.owner, success);
+                }
+                ctx->unit.waiter->Done();
+                delete ctx;
+            }
+        }
+        dumpRing_.CqAdvance(nCqe);
     }
 }
 
