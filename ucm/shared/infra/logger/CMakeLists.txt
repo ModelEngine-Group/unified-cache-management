@@ -1,4 +1,4 @@
-file(GLOB UCMINFRA_LOGGER_CC_FILES 
+file(GLOB UCMINFRA_LOGGER_CC_FILES
     "./cc/*.cc"
     "./*.cc"
 )
@@ -14,7 +14,7 @@ pybind11_add_module(ucmlogger ${UCMINFRA_LOGGER_CPY_FILES})
 target_link_libraries(ucmlogger PRIVATE infra_logger pybind11::module)
 
 file(RELATIVE_PATH UCMINFRA_INSTALL_REL_PATH
-     ${CMAKE_SOURCE_DIR}
+     ${UCM_ROOT_DIR}
      ${CMAKE_CURRENT_SOURCE_DIR}/..
 )
 install(TARGETS ucmlogger

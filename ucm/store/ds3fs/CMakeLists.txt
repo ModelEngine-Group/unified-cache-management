@@ -10,7 +10,7 @@ if(HF3FS_USRBIO_INCLUDE_DIR AND HF3FS_USRBIO_LIBRARY)
     target_link_libraries(ds3fsstore PRIVATE ${HF3FS_USRBIO_LIBRARY})
     target_link_libraries(ds3fsstore PUBLIC storeintf infra_logger)
 
-    file(RELATIVE_PATH INSTALL_REL_PATH ${CMAKE_SOURCE_DIR} ${CMAKE_CURRENT_SOURCE_DIR})
+    file(RELATIVE_PATH INSTALL_REL_PATH ${UCM_ROOT_DIR} ${CMAKE_CURRENT_SOURCE_DIR})
     install(TARGETS ds3fsstore LIBRARY DESTINATION ${INSTALL_REL_PATH} COMPONENT ucm)
 else()
     message(STATUS "ds3fsstore: Skipping build - required HF3FS dependencies not found")
