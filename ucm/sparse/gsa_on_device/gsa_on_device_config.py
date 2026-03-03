@@ -47,8 +47,15 @@ class GSAOnDeviceConfig:
 
     num_hidden_layers: int = 36
 
+    # GPU-specific thresholds
     # the minimal seq_len to trigger GSAOnDevice
-    seq_len_threshhold: int = 2048
+    gpu_seq_len_threshold: int = 2048
+    # the minimal concurrency to trigger GSAOnDevice
+    gpu_concurrency_threshold: int = 4
+
+    # NPU-specific thresholds
+    npu_seq_len_threshold: int = 2048
+    npu_concurrency_threshold: int = 4
 
     # any value divisible by 128
     chunk_size: int = 128
@@ -95,7 +102,7 @@ class GSAOnDeviceConfig:
         model_name: str,
         hash_weight_type: str,
         num_hidden_layers: int,
-        seq_len_threshhold: int,
+        seq_len_threshold: int,
         chunk_size: int,
         chunk_repre_method: str,
         head_dim: int,
@@ -114,7 +121,7 @@ class GSAOnDeviceConfig:
         self.hash_weight_type = hash_weight_type
 
         self.num_hidden_layers = num_hidden_layers
-        self.seq_len_threshhold = seq_len_threshhold
+        self.seq_len_threshold = seq_len_threshold
 
         if chunk_size % 128 != 0:
             raise ValueError(
@@ -160,7 +167,7 @@ class GSAOnDeviceConfig:
         model_name: str,
         hash_weight_type: str,
         num_hidden_layers: int,
-        seq_len_threshhold: int,
+        seq_len_threshold: int,
         chunk_size: int,
         chunk_repre_method: str,
         kv_lora_rank: int,
@@ -180,7 +187,7 @@ class GSAOnDeviceConfig:
         self.hash_weight_type = hash_weight_type
 
         self.num_hidden_layers = num_hidden_layers
-        self.seq_len_threshhold = seq_len_threshhold
+        self.seq_len_threshold = seq_len_threshold
         if chunk_size % 128 != 0:
             raise ValueError(
                 f"chunk_size should be divisible by 128, but got {chunk_size}"

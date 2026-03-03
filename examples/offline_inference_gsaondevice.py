@@ -70,10 +70,10 @@ def build_llm_with_uc(module_path: str, name: str, model: str):
         kv_connector_extra_config={
             "ucm_connectors": [
                 {
-                    "ucm_connector_name": "UcmNfsStore",
+                    "ucm_connector_name": "UcmPipelineStore",
                     "ucm_connector_config": {
-                        "storage_backends": data_dir,
-                        "use_direct": False,
+                        "store_pipeline": "Empty",
+                        "share_buffer_enable": True,
                     },
                 }
             ],

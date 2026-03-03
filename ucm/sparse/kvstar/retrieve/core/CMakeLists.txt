@@ -15,7 +15,7 @@ endif()
 target_include_directories(kvstar_retrieve.core PUBLIC
         "." "api" "domain" "infra"
         ${NUMA_INSTALL_DIR}/include
-        ${CMAKE_SOURCE_DIR}/ucm/shared/infra
+        ${UCM_ROOT_DIR}/ucm/shared/infra
 )
 
 target_link_libraries(kvstar_retrieve.core PUBLIC
