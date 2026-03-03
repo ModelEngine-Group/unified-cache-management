@@ -1,6 +1,7 @@
 import dataclasses
 import functools
 import importlib
+import os
 from collections.abc import Mapping
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List
@@ -38,6 +39,7 @@ def _write_result(table_name: str, data: Dict[str, Any]) -> bool:
     data["test_id"] = test_id
     data["test_items"] = test_items
     data["create_at"] = native_time
+    data["extra_info"] = os.environ.get("EXTRA_INFO", "")
     for item in config_instance.get_config("results", []):
         if isinstance(item, dict) and item:
             backend_name = next(iter(item.keys()))
