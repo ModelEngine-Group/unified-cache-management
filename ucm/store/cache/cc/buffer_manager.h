@@ -71,16 +71,21 @@ public:
 
 private:
     void Lookup(const Detail::BlockId* blocks, size_t num, std::vector<uint8_t>& results,
-                std::vector<Detail::BlockId>& missBlk, std::vector<size_t>& missIdx)
+                std::vector<Detail::BlockId>& missBlk, std::vector<size_t>& missIdx,
+                std::vector<Detail::BlockId>& hitBlk)
     {
         results.reserve(num);
         missBlk.reserve(num);
         missIdx.reserve(num);
+        hitBlk.reserve(num);
         StopWatch sw;
         for (size_t i = 0; i < num; ++i) {
             uint8_t hit = buffer_->Exist(blocks[i], 0);
             results.push_back(hit);
-            if (hit) { continue; }
+            if (hit) {
+                hitBlk.push_back(blocks[i]);
+                continue;
+            }
             missBlk.push_back(blocks[i]);
             missIdx.push_back(i);
         }
@@ -91,7 +96,9 @@ private:
         std::vector<uint8_t> results;
         std::vector<Detail::BlockId> missBlk;
         std::vector<size_t> missIdx;
-        Lookup(blocks, num, results, missBlk, missIdx);
+        std::vector<Detail::BlockId> hitBlk;
+        Lookup(blocks, num, results, missBlk, missIdx, hitBlk);
+        if (!hitBlk.empty()) { backend_->NotifyAccess(hitBlk.data(), hitBlk.size()); }
         if (missBlk.empty()) { return results; }
         StopWatch sw;
         auto res = backend_->Lookup(missBlk.data(), missBlk.size());
@@ -107,7 +114,9 @@ private:
         std::vector<uint8_t> results;
         std::vector<Detail::BlockId> missBlk;
         std::vector<size_t> missIdx;
-        Lookup(blocks, num, results, missBlk, missIdx);
+        std::vector<Detail::BlockId> hitBlk;
+        Lookup(blocks, num, results, missBlk, missIdx, hitBlk);
+        if (!hitBlk.empty()) { backend_->NotifyAccess(hitBlk.data(), hitBlk.size()); }
         if (missBlk.empty()) { return static_cast<ssize_t>(num) - 1; }
         StopWatch sw;
         auto res = backend_->LookupOnPrefix(missBlk.data(), missBlk.size());

@@ -24,6 +24,7 @@
 #include "space_layout.h"
 #include <algorithm>
 #include <fmt/ranges.h>
+#include <unistd.h>
 #include "logger/logger.h"
 #include "posix_file.h"
 
@@ -142,6 +143,20 @@ std::string SpaceLayout::StorageBackend(const Detail::BlockId& blockId) const
     if (number == 1) { return storageBackends_.front(); }
     static Detail::BlockIdHasher hasher;
     return storageBackends_[hasher(blockId) % number];
+}
+
+std::string SpaceLayout::PropertyFilePath() const
+{
+    if (storageBackends_.empty()) { return ""; }
+    char hostname[256] = {};
+    gethostname(hostname, sizeof(hostname));
+    return fmt::format("{}uc_capacity.{}", storageBackends_.front(), hostname);
+}
+
+std::string SpaceLayout::CapacityDir() const
+{
+    if (storageBackends_.empty()) { return ""; }
+    return storageBackends_.front();
 }
 
 }  // namespace UC::PosixStore

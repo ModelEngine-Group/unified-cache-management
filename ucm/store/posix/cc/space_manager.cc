@@ -27,8 +27,9 @@
 
 namespace UC::PosixStore {
 
-Status SpaceManager::Setup(const Config& config)
+Status SpaceManager::Setup(const Config& config, HotnessTracker* hotnessTracker)
 {
+    hotnessTracker_ = hotnessTracker;
     auto s = layout_.Setup(config);
     if (s.Failure()) [[unlikely]] { return s; }
     auto success =
@@ -125,7 +126,11 @@ uint8_t SpaceManager::Lookup(const Detail::BlockId* block)
 void SpaceManager::OnLookup(LookupContext& ctx)
 {
     const auto ok = Status::OK().Underlying();
-    if (ctx.status->load() == ok) { (*ctx.founds)[ctx.index] = Lookup(&ctx.block); }
+    if (ctx.status->load() == ok) {
+        auto found = Lookup(&ctx.block);
+        (*ctx.founds)[ctx.index] = found;
+        if (found && hotnessTracker_) { hotnessTracker_->Touch(ctx.block); }
+    }
     ctx.waiter->Done();
 }
 
@@ -155,6 +160,7 @@ void SpaceManager::OnLookupPrefix(PrefixLookupContext& ctx)
             }
             break;
         }
+        if (hotnessTracker_) { hotnessTracker_->Touch(ctx.blocks[i]); }
     }
     ctx.waiter->Done();
 }

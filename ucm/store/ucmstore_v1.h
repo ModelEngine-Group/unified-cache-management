@@ -147,6 +147,25 @@ public:
      */
     virtual Status Wait(Detail::TaskHandle taskId) = 0;
 
+    /**
+     * @brief Notify the store that the given blocks have been accessed.
+     *
+     * Used by upper-layer caches to propagate access information to the
+     * underlying store so that hotness / recency metadata stays accurate
+     * even when the access was served from cache without reaching the
+     * backend Lookup path.
+     *
+     * Default implementation does nothing.
+     *
+     * @param blocks Array of block identifiers that were accessed.
+     * @param num    Number of block identifiers.
+     */
+    virtual void NotifyAccess(const Detail::BlockId* blocks, size_t num)
+    {
+        (void)blocks;
+        (void)num;
+    }
+
 protected:
     /**
      * @brief Protected default constructor.

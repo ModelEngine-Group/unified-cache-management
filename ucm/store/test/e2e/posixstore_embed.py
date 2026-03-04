@@ -43,6 +43,7 @@ def setup(
     config = {}
     config["store_pipeline"] = "Posix"
     config["storage_backends"] = backends
+    config["unique_id"] = "test_gc_dp0"
     config["tensor_size"] = block_size
     config["shard_size"] = block_size
     config["block_size"] = block_size
@@ -50,6 +51,15 @@ def setup(
     config["posix_lookup_concurrency"] = lookup_concur
     config["io_direct"] = io_direct
     config["device_id"] = 0 if worker else -1
+
+    # GC配置
+    config["posix_storage_gc_enable"] = True
+    config["posix_storage_capacity_gb"] = 100
+    config["gc_trigger_threshold_ratio"] = 0.7
+    config["gc_recycle_percent"] = 0.1
+    config["gc_concurrency"] = 16
+    config["hotness_interval"] = 10
+
     return UcmConnectorFactoryV1.create_connector(class_name, config, module_path)
 
 

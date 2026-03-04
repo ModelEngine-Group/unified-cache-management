@@ -139,9 +139,15 @@ def main():
     config["io_direct"] = True
     config["posix_data_trans_concurrency"] = 32
     config["posix_lookup_concurrency"] = 32
+    test_batch_number = 512
+    config["posix_storage_gc_enable"] = True
+    config["posix_storage_capacity_gb"] = 100
+    config["gc_trigger_threshold_ratio"] = 0.7
+    config["gc_recycle_percent"] = 0.1
+    config["gc_concurrency"] = 16
+    config["hotness_interval"] = 10
     worker = UcmPipelineStore(config | {"device_id": device_id})
     scheduler = UcmPipelineStore(config)
-    test_batch_number = 512
     for _ in range(test_batch_number):
         e2e_test(
             worker,

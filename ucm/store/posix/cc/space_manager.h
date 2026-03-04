@@ -25,6 +25,7 @@
 #define UNIFIEDCACHE_POSIX_STORE_CC_SPACE_MANAGER_H
 
 #include "global_config.h"
+#include "hotness_tracker.h"
 #include "space_layout.h"
 #include "thread/latch.h"
 #include "thread/thread_pool.h"
@@ -53,9 +54,10 @@ private:
     SpaceLayout layout_;
     ThreadPool<LookupContext> lookupSrv_;
     ThreadPool<PrefixLookupContext> prefixLookupSrv_;
+    HotnessTracker* hotnessTracker_{nullptr};
 
 public:
-    Status Setup(const Config& config);
+    Status Setup(const Config& config, HotnessTracker* hotnessTracker = nullptr);
     Expected<std::vector<uint8_t>> Lookup(const Detail::BlockId* blocks, size_t num);
     Expected<ssize_t> LookupOnPrefix(const Detail::BlockId* blocks, size_t num);
     const SpaceLayout* GetLayout() const { return &layout_; }

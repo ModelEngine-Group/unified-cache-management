@@ -43,6 +43,12 @@ public:
     Expected<bool> Check(Detail::TaskHandle taskId) override;
     Status Wait(Detail::TaskHandle taskId) override;
 
+    void NotifyAccess(const Detail::BlockId* blocks, size_t num) override;
+
+    void TriggerGC();
+    Expected<size_t> ExecuteGC();
+    bool IsGCRunning() const;
+
 private:
     std::shared_ptr<PosixStoreImpl> impl_;
 };
