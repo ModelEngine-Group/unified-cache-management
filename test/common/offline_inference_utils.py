@@ -28,25 +28,17 @@ USAGE EXAMPLE:
 import contextlib
 import gc
 import json
+import logging
 import multiprocessing
 import os
 import time
 from dataclasses import asdict
 from functools import wraps
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, Dict, List, Optional, Tuple
 
-import torch
 from common.capture_utils import export_vars
-from transformers import AutoTokenizer
-from vllm import LLM, SamplingParams
-from vllm.config import KVTransferConfig
-from vllm.distributed import cleanup_dist_env_and_memory
-from vllm.engine.arg_utils import EngineArgs
-
-from ucm.logger import init_logger
-
-logger = init_logger(__name__)
 
 
 def _run_subprocess_wrapper(func, args, kwargs, result_queue, error_queue):
@@ -139,7 +131,7 @@ def to_dict_for_serialization(obj: Any) -> Dict[str, Any]:
             "_data": data,
         }
     except Exception as e:
-        logger.warning(f"Serialization failed for {type(obj)}: {e}")
+        logging.warning(f"Serialization failed for {type(obj)}: {e}")
         raise
 
 
@@ -170,7 +162,7 @@ def from_dict_for_serialization(serialized: Dict[str, Any]) -> Any:
         # Reconstruct object
         return cls(**obj_data)
     except Exception as e:
-        logger.warning(f"Deserialization failed for {type_str}: {e}")
+        logging.warning(f"Deserialization failed for {type_str}: {e}")
         raise
 
 
@@ -188,6 +180,8 @@ def ensure_storage_dir(storage_path: str, clear_existing: bool = False):
 
 
 def cleanup_gpu_memory():
+    import torch
+
     """Clean up GPU/NPU memory."""
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
@@ -206,6 +200,11 @@ def build_llm_with_uc(
     max_num_batched_tokens: int = 2047,
     **llm_kwargs,
 ):
+    from vllm import LLM
+    from vllm.config import KVTransferConfig
+    from vllm.distributed import cleanup_dist_env_and_memory
+    from vllm.engine.arg_utils import EngineArgs
+
     module_path = "ucm.integration.vllm.ucm_connector"
     name = "UCMConnector"
 
@@ -240,7 +239,7 @@ def build_llm_with_uc(
     try:
         yield llm
     finally:
-        logger.info("LLM engine is exiting")
+        logging.info("LLM engine is exiting")
         del llm
         cleanup_dist_env_and_memory(shutdown_ray=False)
 
@@ -276,7 +275,7 @@ def run_offline_inference(
     sampling_params = from_dict_for_serialization(sampling_params_dict)
 
     gpu_memory_utilization = float(os.getenv("E2E_TEST_GPU_MEMORY_UTILIZATION", "0.1"))
-    logger.info(
+    logging.info(
         "run offline inference with gpu memory utilization: %.4f",
         gpu_memory_utilization,
     )
@@ -294,13 +293,13 @@ def run_offline_inference(
         generated_texts = [output.outputs[0].text for output in outputs]
 
         if phase_description:
-            logger.info(f"{phase_description} completed")
+            logging.info(f"{phase_description} completed")
 
         return generated_texts
 
 
 def split_prompt_by_tokens(
-    prompt: str, tokenizer: AutoTokenizer, split_ratio: float = 0.5
+    prompt: str, tokenizer: Any, split_ratio: float = 0.5
 ) -> Tuple[str, str]:
     tokens = tokenizer.encode(prompt)
     split_idx = int(len(tokens) * split_ratio)
@@ -373,3 +372,15 @@ def load_prompt_from_file(prompt_file: Optional[Path] = None) -> Tuple[str, List
         answers = [answers] if answers else []
 
     return full_prompt, answers
+
+
+def get_platform_specific_module():
+    from transformers import AutoTokenizer
+    from vllm import SamplingParams
+
+    # 创建一个命名空间对象
+    modules = SimpleNamespace()
+    modules.AutoTokenizer = AutoTokenizer
+    modules.SamplingParams = SamplingParams
+
+    return modules

@@ -47,8 +47,13 @@ class UcmConnectorFactoryV1:
         cls._registry[name] = loader
 
     @classmethod
-    def create_connector(cls, connector_name: str, config: dict) -> UcmKVStoreBaseV1:
-        if connector_name in cls._registry:
+    def create_connector(
+        cls, connector_name: str, config: dict, module_path: str = None
+    ) -> UcmKVStoreBaseV1:
+        if module_path:
+            module = importlib.import_module(module_path)
+            connector_cls = getattr(module, connector_name)
+        elif connector_name in cls._registry:
             connector_cls = cls._registry[connector_name]()
         else:
             raise ValueError(f"Unsupported connector type: {connector_name}")

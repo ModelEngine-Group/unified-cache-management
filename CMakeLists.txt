@@ -11,6 +11,7 @@ option(BUILD_UCM_STORE "build ucm store module." ON)
 option(BUILD_UCM_SPARSE "build ucm sparse module." OFF)
 option(BUILD_UNIT_TESTS "build all unit test suits." OFF)
 option(BUILD_NUMA "build numactl library." OFF)
+option(ASCEND_SUPPORTS_REGISTER_PIN "enable Ascend register pin optimization (requires CANN >= 8.5)" OFF)
 option(DOWNLOAD_DEPENDENCE "download dependence by cmake." ON)
 set(RUNTIME_ENVIRONMENT "simu" CACHE STRING "runtime: simu, ascend, musa or cuda.")
 
