@@ -91,22 +91,20 @@ Status DumpQueue::DumpOneTask(CopyStream& stream, TaskPtr task)
     UC_DEBUG("Try to dump ({}) shards.", nShard);
     DumpCtx dumpCtx;
     dumpCtx.taskHandle = task->id;
+    if (task->desc.prerequisiteHandle != 0) {
+        auto s = stream.WaitEvent(reinterpret_cast<void*>(task->desc.prerequisiteHandle));
+        if (s.Failure()) [[unlikely]] {
+            UC_ERROR("Failed({}) to wait prerequisite event for dump task({}).", s, task->id);
+            return s;
+        }
+    }
     for (size_t i = 0; i < nShard; i++) {
         auto& shard = task->desc[i];
         auto handle = buffer_->Get(shard.owner, shard.index);
         if (!handle.Owner()) { continue; }
         if (!handle.Ready()) {
-            auto cacheStream = stream.NextStream();
-            if (i == 0 && task->desc.prerequisiteHandle != 0) {
-                auto s =
-                    cacheStream->WaitEvent(reinterpret_cast<void*>(task->desc.prerequisiteHandle));
-                if (s.Failure()) [[unlikely]] {
-                    UC_ERROR("Failed({}) to wait prerequisite event for dump task({}).", s,
-                             task->id);
-                    return s;
-                }
-            }
-            auto s = DeviceToHostGatherAsync(cacheStream, shard.addrs.data(), handle.Data());
+            auto s =
+                DeviceToHostGatherAsync(stream.NextStream(), shard.addrs.data(), handle.Data());
             if (s.Failure()) [[unlikely]] {
                 UC_ERROR("Failed({}) to do D2H batch async for task({}).", s, task->id);
                 return s;
