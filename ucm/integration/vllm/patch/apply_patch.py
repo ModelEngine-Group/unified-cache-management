@@ -48,6 +48,7 @@ ENABLE_SPARSE = os.getenv("ENABLE_SPARSE", "0").lower() in (
     "yes",
     "on",
 )
+ENABLE_UCM_PATCH = os.environ.get("ENABLE_UCM_PATCH", "").lower() in ("1", "true")
 
 
 def _patch_ascend() -> bool:
@@ -128,6 +129,11 @@ def apply_all_patches() -> None:
         return
 
     try:
+        from ucm.integration.vllm.patch.logger_patch import patch_logger
+
+        if not ENABLE_UCM_PATCH:
+            return
+
         version = get_vllm_version()
         if version is None:
             raise ValueError("Could not detect vLLM version")

@@ -21,3 +21,5 @@
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 # SOFTWARE.
 #
+
+from ucm.integration.vllm.patch.logger_patch import patch_logger
