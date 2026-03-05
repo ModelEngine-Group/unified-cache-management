@@ -52,12 +52,8 @@ public:
     virtual Status Synchronized() = 0;
 
     /** Wait for compute-stream event before D2H. Event ptr is platform-specific
-     * (cudaEvent_t or aclrtEvent). No-op when event is nullptr. */
-    virtual Status WaitEvent(void* event)
-    {
-        (void)event;
-        return Status::OK();
-    }
+     * (cudaEvent_t or aclrtEvent). */
+    virtual Status WaitEvent(void* event) = 0;
 };
 
 }  // namespace UC::Trans
