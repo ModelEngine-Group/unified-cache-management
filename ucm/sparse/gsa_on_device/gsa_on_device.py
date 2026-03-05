@@ -525,6 +525,7 @@ class GSAOnDevice(UcmSparseBase):
                 self.block_table_decode = self.ori_block_table_decode[
                     : self.batch_size_for_hamming
                 ]
+                self.new_block_tables = attn_metadata.block_tables
                 self.is_tensor_computed = True
 
         k_hash_compute = self.hash_encoder.compute_hash(key)
@@ -715,17 +716,12 @@ class GSAOnDevice(UcmSparseBase):
         )
         new_seq_lens = self.topk_seq_lens_qwen
         attn_metadata.seq_lens = new_seq_lens
-        if (
-            self.slice_enabled
-            and attn_metadata.attn_state != AscendAttentionState.DecodeOnly
-        ):
-            new_block_tables = attn_metadata.block_tables.clone()
-            new_block_tables[: self.batch_size_for_hamming] = self.hamming_output[
-                : self.batch_size_for_hamming, 0, :
-            ]
-        else:
-            new_block_tables = self.hamming_output[: self.batch_size_for_hamming, 0, :]
-        attn_metadata.block_tables = new_block_tables
+
+        self.new_block_tables[: self.batch_size_for_hamming] = self.hamming_output[
+            : self.batch_size_for_hamming, 0, :
+        ]
+
+        attn_metadata.block_tables = self.new_block_tables
         # topk for skip layer
         self.topk_block_table = attn_metadata.block_tables
         self.topk_seq_lens = attn_metadata.seq_lens
