@@ -208,6 +208,7 @@ class UCMDirectConnector(KVConnectorBase_V1):
         self.launch_config = ucm_config.get_config()
         logger.info(f"self.launch_config: {self.launch_config}")
         self.connector_configs = self.launch_config.get("ucm_connectors", [])
+        self.enable_event_sync = self.launch_config.get("enable_event_sync", False)
         assert len(self.connector_configs) > 0, "no storage connector name in config."
 
         self.chunk_size = self.block_size
@@ -545,6 +546,16 @@ class UCMDirectConnector(KVConnectorBase_V1):
     def wait_for_layer_load(self, layer_name: str) -> None:
         pass
 
+    def _get_dump_event_handle(self) -> int:
+        if not self.enable_event_sync:
+            self.device.synchronize()
+            return 0
+
+        event_handle = self.device.get_event_handle()
+        if event_handle == 0:
+            self.device.synchronize()
+        return event_handle
+
     def save_kv_layer(
         self,
         layer_name: str,
@@ -586,9 +597,7 @@ class UCMDirectConnector(KVConnectorBase_V1):
             total_ptrs = total_ptrs.reshape(total_ptrs.shape[0], -1)
             shard_indexs = [0] * len(total_ucm_block_ids)
             try:
-                event_handle = self.device.get_event_handle()
-                if event_handle == 0:
-                    self.device.synchronize()
+                event_handle = self._get_dump_event_handle()
                 save_start_time = time.perf_counter() * 1000
                 task = self.store.dump_data(
                     total_ucm_block_ids, shard_indexs, total_ptrs, event_handle
@@ -726,9 +735,7 @@ class UCMLayerWiseConnector(UCMDirectConnector):
             shard_indexs = [layer_id] * len(total_ucm_block_ids)
             try:
                 layer_ptrs = np.ascontiguousarray(total_ptrs[:, layer_id, :])
-                event_handle = self.device.get_event_handle()
-                if event_handle == 0:
-                    self.device.synchronize()
+                event_handle = self._get_dump_event_handle()
                 task = self.store.dump_data(
                     total_ucm_block_ids, shard_indexs, layer_ptrs, event_handle
                 )
@@ -747,7 +754,8 @@ class UCMLayerWiseConnector(UCMDirectConnector):
             logger.error(f"wait for dump kv cache failed. {e}")
         self.dump_tasks.clear()
         self.is_save = False
-        self.device.destroy_event_handles()
+        if self.enable_event_sync:
+            self.device.destroy_event_handles()
 
 
 class UCMCPConnector(UCMLayerWiseConnector):
