@@ -783,10 +783,12 @@ class GSAOnDevice(UcmSparseBase):
                     )
                 else:  # NPU
                     self.cache_k_hash_gqa_npu(key, k_hash, attn_metadata)
+
+        if not self.gsa_enabled:
+            return query, key, value, output
+
         if self.is_mla:
             if phase == "decode":
-                if not self.gsa_enabled:
-                    return query, key, value, output
                 if self.is_cuda:
                     self.update_decode_topk_mla_cuda(
                         is_rollback_layer,
@@ -806,7 +808,6 @@ class GSAOnDevice(UcmSparseBase):
                         k_hash,
                     )
         else:  # GQA
-            # when gsa is disabled self.has_decode = False
             if self.has_decode:  # 有decode阶段的req
                 if not is_rollback_layer:
                     if is_skip_hash_layer:
@@ -1043,8 +1044,8 @@ class GSAOnDevice(UcmSparseBase):
         else:
             return attn_metadata.block_tables[req_row_id]
 
-    def get_seq_lens(self, attn_metadata, is_mla, is_cuda):
-        if not is_mla:
+    def get_seq_lens(self, attn_metadata):
+        if not self.is_mla:
             return getattr(attn_metadata, "seq_lens", None)
 
         attn_metadata_decode = getattr(attn_metadata, "decode", None)
@@ -1055,7 +1056,7 @@ class GSAOnDevice(UcmSparseBase):
         if attn_metadata_prefill is None:
             return None
 
-        if is_cuda:
+        if self.is_cuda:
             chunked = getattr(attn_metadata_prefill, "chunked_context", None)
             if chunked is not None:
                 return getattr(chunked, "seq_lens", None)
@@ -1080,7 +1081,7 @@ class GSAOnDevice(UcmSparseBase):
 
         self.has_decode = False
         self.gsa_enabled = False
-        seq_lens = self.get_seq_lens(attn_metadata, self.is_mla, self.is_cuda)
+        seq_lens = self.get_seq_lens(attn_metadata)
 
         if seq_lens is None:
             return
