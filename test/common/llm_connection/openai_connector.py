@@ -254,6 +254,22 @@ class OpenAIConn(LLMConnection):
         except Exception as e:
             raise self._wrap_exception(e)
 
+    # ---------------- health ----------------
+
+    def health_check(self) -> bool:
+        """Return True if the server's /health endpoint responds with 200."""
+        try:
+            r = self._client.get("/health")
+            return r.status_code == 200
+        except Exception:
+            return False
+
+    def list_models(self) -> list:
+        """Return list of model IDs available on the server via /models."""
+        r = self._client.get("/models")
+        r.raise_for_status()
+        return [m["id"] for m in r.json().get("data", [])]
+
     # ---------------- lifecycle ----------------
 
     def close(self):

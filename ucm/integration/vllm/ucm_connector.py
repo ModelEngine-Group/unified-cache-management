@@ -21,6 +21,7 @@ from vllm.distributed.parallel_state import get_tp_group, get_world_group
 from vllm.platforms import current_platform
 from vllm.v1.core.sched.output import SchedulerOutput
 
+from ucm.integration.vllm.device import create_device
 from ucm.logger import init_logger
 from ucm.observability import PrometheusStatsLogger
 from ucm.shared.metrics import ucmmetrics
@@ -207,6 +208,7 @@ class UCMDirectConnector(KVConnectorBase_V1):
         self.launch_config = ucm_config.get_config()
         logger.info(f"self.launch_config: {self.launch_config}")
         self.connector_configs = self.launch_config.get("ucm_connectors", [])
+        self.enable_event_sync = self.launch_config.get("enable_event_sync", False)
         assert len(self.connector_configs) > 0, "no storage connector name in config."
 
         self.chunk_size = self.block_size
@@ -235,12 +237,6 @@ class UCMDirectConnector(KVConnectorBase_V1):
             logger.info(
                 f"metrics_config_path: {self.metrics_config}, set worker_id: {worker_id}"
             )
-
-        self.synchronize = lambda: (
-            torch.cuda.current_stream().synchronize()
-            if current_platform.is_cuda_alike()
-            else torch.npu.current_stream().synchronize()
-        )
 
         # invlalid block ids due to load errors
         self._invalid_block_ids: set[int] = set()
@@ -319,6 +315,9 @@ class UCMDirectConnector(KVConnectorBase_V1):
         }
 
         self.store = self._create_store(self.kv_cache_layout)
+        self.device = create_device()
+        if self.device is None:
+            raise RuntimeError(f"Unsupported device platform for UCMDirectConnector.")
 
     def get_num_new_matched_tokens(
         self,
@@ -547,6 +546,16 @@ class UCMDirectConnector(KVConnectorBase_V1):
     def wait_for_layer_load(self, layer_name: str) -> None:
         pass
 
+    def _get_dump_event_handle(self) -> int:
+        if not self.enable_event_sync:
+            self.device.synchronize()
+            return 0
+
+        event_handle = self.device.get_event_handle()
+        if event_handle == 0:
+            self.device.synchronize()
+        return event_handle
+
     def save_kv_layer(
         self,
         layer_name: str,
@@ -588,10 +597,10 @@ class UCMDirectConnector(KVConnectorBase_V1):
             total_ptrs = total_ptrs.reshape(total_ptrs.shape[0], -1)
             shard_indexs = [0] * len(total_ucm_block_ids)
             try:
-                self.synchronize()
+                event_handle = self._get_dump_event_handle()
                 save_start_time = time.perf_counter() * 1000
                 task = self.store.dump_data(
-                    total_ucm_block_ids, shard_indexs, total_ptrs
+                    total_ucm_block_ids, shard_indexs, total_ptrs, event_handle
                 )
                 dump_tasks.append(task)
             except RuntimeError as e:
@@ -726,9 +735,9 @@ class UCMLayerWiseConnector(UCMDirectConnector):
             shard_indexs = [layer_id] * len(total_ucm_block_ids)
             try:
                 layer_ptrs = np.ascontiguousarray(total_ptrs[:, layer_id, :])
-                self.synchronize()
+                event_handle = self._get_dump_event_handle()
                 task = self.store.dump_data(
-                    total_ucm_block_ids, shard_indexs, layer_ptrs
+                    total_ucm_block_ids, shard_indexs, layer_ptrs, event_handle
                 )
                 self.dump_tasks[layer_name] = task
             except RuntimeError as e:
@@ -745,6 +754,8 @@ class UCMLayerWiseConnector(UCMDirectConnector):
             logger.error(f"wait for dump kv cache failed. {e}")
         self.dump_tasks.clear()
         self.is_save = False
+        if self.enable_event_sync:
+            self.device.destroy_event_handles()
 
 
 class UCMCPConnector(UCMLayerWiseConnector):

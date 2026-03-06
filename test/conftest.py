@@ -163,46 +163,96 @@ def pytest_runtest_logreport(report):
     write_to_db("test_case_info", test_result)
 
 
+# GPU lock files are stored on the host-mounted shared directory so all runners
+# on the same machine coordinate through the same set of lock files.
+GPU_LOCK_DIR = os.environ.get("GPU_LOCK_DIR", "/workspace/test_results/gpu_locks")
+
+
 def get_free_gpu(required_memory_mb):
+    """Find a free GPU and acquire an exclusive file lock on it.
+
+    Returns (gpu_id, free_mb, utilization, lock_file) on success, or
+    (None, 0, 0, None) when no suitable GPU is available.
+    The caller is responsible for releasing the lock by calling
+    fcntl.flock(lock_file, fcntl.LOCK_UN) and closing lock_file.
+    """
+    import fcntl
+
+    mem_needed_with_buffer = int(required_memory_mb * 1.3)  # add buffer to avoid OOM
+
+    def try_acquire_lock(gpu_index, free_mb, total_bytes):
+        """Try to acquire flock for gpu_index. Returns lock_file on success, None on failure."""
+        lock_path = os.path.join(GPU_LOCK_DIR, f"gpu_{gpu_index}.lock")
+        lock_file = open(lock_path, "w")
+        try:
+            fcntl.flock(lock_file, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            lock_file.close()
+            return None
+        utilization = required_memory_mb * (1024**2) / total_bytes if total_bytes else 0
+        return lock_file, free_mb, utilization
+
     try:
-        mem_needed_with_buffer = int(
-            required_memory_mb * 1.3
-        )  # add buffer to avoid OOM
         pynvml.nvmlInit()
         device_count = pynvml.nvmlDeviceGetCount()
         device_indices = list(range(device_count))
         random.shuffle(device_indices)
-        for i in device_indices:  # random order to reduce collisions
+
+        # Collect memory info for all GPUs
+        gpu_infos = []
+        for i in device_indices:
             handle = pynvml.nvmlDeviceGetHandleByIndex(i)
             info = pynvml.nvmlDeviceGetMemoryInfo(handle)
-            free_in_mb = info.free / 1024**2
-            if free_in_mb >= mem_needed_with_buffer:
-                utilization = (
-                    required_memory_mb * (1024**2) / info.total if info.total else 0
-                )
-                return i, free_in_mb, utilization
+            free_mb = info.free / 1024**2
+            used_ratio = info.used / info.total if info.total else 1.0
+            gpu_infos.append((i, free_mb, info.total, used_ratio))
+
+        # Pass 1: prefer idle GPUs (used memory < 5%)
+        for i, free_mb, total, used_ratio in gpu_infos:
+            if used_ratio >= 0.05:
+                continue
+            result = try_acquire_lock(i, free_mb, total)
+            if result:
+                lock_file, free_mb, utilization = result
+                return i, free_mb, utilization, lock_file
+
+        # Pass 2: fall back to any GPU with enough free memory
+        for i, free_mb, total, _ in gpu_infos:
+            if free_mb < mem_needed_with_buffer:
+                continue
+            result = try_acquire_lock(i, free_mb, total)
+            if result:
+                lock_file, free_mb, utilization = result
+                return i, free_mb, utilization, lock_file
     finally:
         pynvml.nvmlShutdown()
-    return None, 0, 0
+    return None, 0, 0, None
 
 
 @pytest.fixture(autouse=True)
 def setup_gpu_resource(request):
+    import fcntl
+
     marker = request.node.get_closest_marker("gpu_mem")
-    if marker:
-        mem_needed = marker.args[0]
-        gpu_id, free_in_mb, gpu_utilization = get_free_gpu(mem_needed)
-        if gpu_id is not None:
-            print(
-                f"Allocating GPU {gpu_id} with {free_in_mb}MB free memory, gpu utilization for test {gpu_utilization:.4%}"
-            )
-            os.environ["CUDA_VISIBLE_DEVICES"] = str(gpu_id)
-            if gpu_utilization:
-                os.environ["E2E_TEST_GPU_MEMORY_UTILIZATION"] = str(gpu_utilization)
-        else:
-            pytest.fail(
-                f"No GPU with {mem_needed}MB(+30% buffer) free memory available"
-            )
+    if not marker:
+        return
+
+    mem_needed = marker.args[0]
+    gpu_id, free_in_mb, gpu_utilization, lock_file = get_free_gpu(mem_needed)
+    if gpu_id is None:
+        pytest.fail(f"No GPU with {mem_needed}MB(+30% buffer) free memory available")
+
+    print(
+        f"Allocating GPU {gpu_id} with {free_in_mb}MB free memory, gpu utilization for test {gpu_utilization:.4%}"
+    )
+    os.environ["CUDA_VISIBLE_DEVICES"] = str(gpu_id)
+    if gpu_utilization:
+        os.environ["E2E_TEST_GPU_MEMORY_UTILIZATION"] = str(gpu_utilization)
+
+    yield  # test runs here while the lock is held
+
+    fcntl.flock(lock_file, fcntl.LOCK_UN)
+    lock_file.close()
 
 
 @pytest.fixture(scope="session")
