@@ -99,10 +99,11 @@ public:
         throw std::runtime_error{res.Error().ToString()};
     }
     TaskHandle Dump(const pybind11::buffer& ids, const pybind11::buffer& indexes,
-                    const pybind11::buffer& addrs)
+                    const pybind11::buffer& addrs, uintptr_t prerequisite_handle = 0)
     {
         auto desc = MakeTaskDesc(ids, indexes, addrs);
         desc.brief = "Dump";
+        desc.prerequisiteHandle = prerequisite_handle;
         auto res = StoreBase()->Dump(desc);
         if (res) { return res.Value(); }
         throw std::runtime_error{res.Error().ToString()};

@@ -155,4 +155,12 @@ Status Trans::CudaStream::Synchronized()
     return Status::OK();
 }
 
-} // namespace UC::Trans
+Status Trans::CudaStream::WaitEvent(void* event)
+{
+    if (event == nullptr) { return Status::OK(); }
+    auto ret = cudaStreamWaitEvent(stream_, static_cast<cudaEvent_t>(event), 0);
+    if (ret != cudaSuccess) [[unlikely]] { return Status{ret, cudaGetErrorString(ret)}; }
+    return Status::OK();
+}
+
+}  // namespace UC::Trans
