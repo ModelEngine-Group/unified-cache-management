@@ -28,7 +28,7 @@
 #include <spdlog/spdlog.h>
 namespace UC::Logger {
 
-enum class Level { DEBUG, INFO, WARN, ERROR };
+enum class Level { DEBUG, INFO, WARN, ERROR, CRITICAL };
 struct SourceLocation {
     const char* file = "";
     const char* func = "";
@@ -65,6 +65,8 @@ public:
         static Logger inst;
         return inst;
     }
+
+    bool IsEnabledFor(Level lv);
 
 private:
     std::shared_ptr<spdlog::logger> Make();

@@ -35,7 +35,8 @@
 namespace UC::Logger {
 
 static spdlog::level::level_enum SpdLevels[] = {spdlog::level::debug, spdlog::level::info,
-                                                spdlog::level::warn, spdlog::level::err};
+                                                spdlog::level::warn, spdlog::level::err,
+                                                spdlog::level::critical};
 
 void Logger::Log(Level&& lv, SourceLocation&& loc, std::string&& msg)
 {
@@ -88,6 +89,13 @@ void Logger::Flush()
 {
     std::lock_guard<std::mutex> lg(this->mutex_);
     if (this->logger_) { this->logger_->flush(); }
+}
+
+bool Logger::IsEnabledFor(Level lv)
+{
+    auto level = SpdLevels[fmt::underlying(lv)];
+    if (this->logger_) { return this->logger_->should_log(level); }
+    return false;
 }
 
 }  // namespace UC::Logger

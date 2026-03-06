@@ -5,14 +5,15 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+set(UCM_ROOT_DIR ${CMAKE_CURRENT_SOURCE_DIR})
 
 option(BUILD_UCM_STORE "build ucm store module." ON)
 option(BUILD_UCM_SPARSE "build ucm sparse module." OFF)
 option(BUILD_UNIT_TESTS "build all unit test suits." OFF)
 option(BUILD_NUMA "build numactl library." OFF)
+option(ASCEND_SUPPORTS_REGISTER_PIN "enable Ascend register pin optimization (requires CANN >= 8.5)" OFF)
 option(DOWNLOAD_DEPENDENCE "download dependence by cmake." ON)
 set(RUNTIME_ENVIRONMENT "simu" CACHE STRING "runtime: simu, ascend, musa or cuda.")
-
 
 execute_process(COMMAND git rev-parse HEAD OUTPUT_VARIABLE UCM_COMMIT_ID OUTPUT_STRIP_TRAILING_WHITESPACE)
 add_compile_definitions(UCM_PROJECT_NAME="${PROJECT_NAME}")

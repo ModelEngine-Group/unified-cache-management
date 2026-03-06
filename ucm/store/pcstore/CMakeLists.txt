@@ -11,7 +11,7 @@ pybind11_add_module(ucmpcstore ${UCMSTORE_PC_CPY_SOURCE_FILES})
 target_link_libraries(ucmpcstore PRIVATE pcstore)
 
 file(RELATIVE_PATH INSTALL_REL_PATH
-     ${CMAKE_SOURCE_DIR}
+     ${UCM_ROOT_DIR}
      ${CMAKE_CURRENT_SOURCE_DIR}
 )
 install(TARGETS ucmpcstore LIBRARY DESTINATION ${INSTALL_REL_PATH} COMPONENT ucm)

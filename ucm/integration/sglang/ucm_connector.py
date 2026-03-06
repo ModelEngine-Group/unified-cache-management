@@ -69,6 +69,7 @@ def _load_extra_config_from_yaml_env() -> Optional[Dict[str, Any]]:
 
 @dataclass
 class UnifiedCacheStoreConfig:
+    module_path: str
     name: str
     config: Dict[str, Any]
 
@@ -98,6 +99,7 @@ class UnifiedCacheStoreConfig:
 
         ucm_cfg = kvc.get("ucm_connector_config")
         name = kvc.get("ucm_connector_name")
+        module_path = kvc.get("ucm_connector_module_path")
         if ucm_cfg is None:
             raise ValueError(
                 "Missing config: kv_connector_extra_config['ucm_connector_config']"
@@ -118,7 +120,7 @@ class UnifiedCacheStoreConfig:
         cfg["block_size"] = block_size
         cfg["stream_number"] = 8
 
-        return UnifiedCacheStoreConfig(name=name, config=cfg)
+        return UnifiedCacheStoreConfig(module_path=module_path, name=name, config=cfg)
 
 
 class SglangUcmConnector:
@@ -155,7 +157,7 @@ class SglangUcmConnector:
             storage_config, mem_pool_host
         )
         store = UcmConnectorFactoryV1.create_connector(
-            ucm_store_config.name, ucm_store_config.config
+            ucm_store_config.name, ucm_store_config.config, ucm_store_config.module_path
         )
         return cls(
             store,

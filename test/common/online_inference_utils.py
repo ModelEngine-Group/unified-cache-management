@@ -434,7 +434,6 @@ class VLLMServerManager:
         gpu_memory_utilization: float = 0.9,
         additional_args: Optional[List[str]] = None,
         startup_timeout: float = 300.0,
-        log_level: str = "info",
     ):
         """Initialize the VLLMServerManager.
 
@@ -451,7 +450,6 @@ class VLLMServerManager:
             gpu_memory_utilization: GPU memory utilization fraction
             additional_args: Additional arguments to pass to vllm serve
             startup_timeout: Timeout in seconds for server startup
-            log_level: vLLM log level (debug, info, warning, error)
         """
         self.model_path = model_path
         self.port = port
@@ -462,7 +460,6 @@ class VLLMServerManager:
         self.gpu_memory_utilization = gpu_memory_utilization
         self.additional_args = additional_args or []
         self.startup_timeout = startup_timeout
-        self.log_level = log_level
 
         self._process: Optional[subprocess.Popen] = None
         self._url = f"http://{host}:{port}"
@@ -517,8 +514,6 @@ class VLLMServerManager:
             str(self.max_model_len),
             "--gpu-memory-utilization",
             str(self.gpu_memory_utilization),
-            "--log-level",
-            self.log_level,
         ]
 
         # Add UCM kv-transfer-config

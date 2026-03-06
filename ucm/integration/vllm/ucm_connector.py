@@ -276,6 +276,7 @@ class UCMDirectConnector(KVConnectorBase_V1):
             )
 
         name = self.connector_configs[0]["ucm_connector_name"]
+        module_path = self.connector_configs[0].get("ucm_connector_module_path", None)
         config = copy.deepcopy(self.connector_configs[0]["ucm_connector_config"])
         config.setdefault("share_buffer_enable", self.is_mla)
         if "storage_backends" in config:
@@ -291,7 +292,7 @@ class UCMDirectConnector(KVConnectorBase_V1):
             config["block_size"] = kv_cache_layout.block_size * self.blocks_per_chunk
             config["local_rank_size"] = self.tp_size if self.is_mla else 1
         logger.info(f"create {name} with config: {config}")
-        return UcmConnectorFactoryV1.create_connector(name, config)
+        return UcmConnectorFactoryV1.create_connector(name, config, module_path)
 
     def register_kv_caches(self, kv_caches: dict[str, torch.Tensor]):
         if has_ucm_sparse() and os.getenv("VLLM_HASH_ATTENTION") == "1":

@@ -9,6 +9,9 @@ add_library(trans STATIC
     ascend_buffer.cc
     ascend_stream.cc
 )
+if(ASCEND_SUPPORTS_REGISTER_PIN)
+    target_compile_definitions(trans PRIVATE ASCEND_SUPPORTS_REGISTER_PIN=1)
+endif()
 target_link_libraries(trans PUBLIC
     fmt
     Ascend::ascendcl

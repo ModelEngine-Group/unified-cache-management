@@ -24,7 +24,7 @@ set(INCLUDE_DIRS
     ${PYTORCH_PATH}/include/torch/csrc/api/include
     ${PYTORCH_PATH}/include
     ${CMAKE_CURRENT_SOURCE_DIR}/include
-    ${CMAKE_SOURCE_DIR}/ucm/store
+    ${UCM_ROOT_DIR}/ucm/store
 )
 
 set(LIBRARY_DIRS
@@ -105,7 +105,7 @@ if(OpenMP_CXX_FOUND)
 endif()
 
 file(RELATIVE_PATH INSTALL_REL_PATH
-     ${CMAKE_SOURCE_DIR}
+     ${UCM_ROOT_DIR}
      ${CMAKE_CURRENT_SOURCE_DIR}
 )
 install(TARGETS gsa_prefetch LIBRARY DESTINATION ${INSTALL_REL_PATH} COMPONENT ucm)
