@@ -50,9 +50,6 @@ public:
 
     virtual Status AppendCallback(std::function<void(bool)> cb) = 0;
     virtual Status Synchronized() = 0;
-
-    /** Wait for compute-stream event before D2H. Event ptr is platform-specific
-     * (cudaEvent_t or aclrtEvent). */
     virtual Status WaitEvent(void* event) = 0;
 };
 
