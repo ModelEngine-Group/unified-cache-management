@@ -201,6 +201,11 @@ class GSAOnDevice(UcmSparseBase):
 
         # for both MLA and GQA
         self.max_batch_size = vllm_config.scheduler_config.max_num_seqs
+        self.decode_req_ids_buf = self._make_buffer(
+            self.max_batch_size, dtype=torch.int64
+        )
+        self.max_num_tokens = vllm_config.model_config.max_model_len
+        self.init_for_pc()
 
         if self.is_mla:
             logger.info("GSAOnDevice initialized with MLA model config")
@@ -228,10 +233,6 @@ class GSAOnDevice(UcmSparseBase):
             )
         else:  # for GQA
             logger.info("GSAOnDevice initialized with GQA model config")
-            self.max_num_tokens = vllm_config.model_config.max_model_len
-            self.decode_req_ids_buf = self._make_buffer(
-                self.max_batch_size, dtype=torch.int64
-            )
 
             max_block_per_seq = cdiv(self.max_num_tokens, self.block_size)
 
@@ -245,8 +246,6 @@ class GSAOnDevice(UcmSparseBase):
                 dtype=torch.int32,
                 device=self.device,
             )
-
-            self.init_for_pc()
 
             self.head_dim = vllm_config.model_config.get_head_size()
             self.hash_encoder = HashEncoder(
@@ -412,7 +411,9 @@ class GSAOnDevice(UcmSparseBase):
         )
         return is_rollback_layer, is_skip_hash_layer
 
-    def cache_k_hash_mla_cuda(self, nope, rope, k_hash, attn_metadata):
+    def cache_k_hash_mla_cuda(
+        self, nope, rope, k_hash, attn_metadata, forward_context, layer_name
+    ):
         k_c_normed_hash, k_pe_hash = self.hash_code(nope=nope, rope=rope)
         ops.concat_and_cache_mla(
             k_c_normed_hash,
@@ -422,6 +423,24 @@ class GSAOnDevice(UcmSparseBase):
             kv_cache_dtype="auto",
             scale=self._k_scale,
         )
+        if self.has_pc_hit:
+            ## kvcache -> nope + rope
+            attn = forward_context.no_compile_layers[layer_name]
+            kv_cache = attn.kv_cache[forward_context.virtual_engine]
+
+            k_cache = kv_cache[0][self.prefix_block_ids]
+            k_c_normed, k_pe = torch.split(k_cache, [512, 64], dim=-1)
+            k_c_normed = k_c_normed.reshape(-1, k_c_normed.shape[2])
+            k_pe = k_pe.reshape(-1, k_pe.shape[2])
+            k_c_normed_hash, k_pe_hash = self.hash_code(nope=k_c_normed, rope=k_pe)
+            ops.concat_and_cache_mla(
+                k_c_normed_hash,
+                k_pe_hash,
+                k_hash,
+                self.prefix_slot_mapping.flatten(),
+                kv_cache_dtype="auto",
+                scale=self._k_scale,
+            )
 
     def cache_k_hash_mla_npu(self, nope, rope, k_hash, slot_mapping, num_tokens_device):
         khash_nope_cache, khash_rope_cache = k_hash
@@ -722,6 +741,7 @@ class GSAOnDevice(UcmSparseBase):
         ]
 
         attn_metadata.block_tables = self.new_block_tables
+
         # topk for skip layer
         self.topk_block_table = attn_metadata.block_tables
         self.topk_seq_lens = attn_metadata.seq_lens
@@ -751,7 +771,12 @@ class GSAOnDevice(UcmSparseBase):
             if self.is_mla:
                 if self.is_cuda:
                     self.cache_k_hash_mla_cuda(
-                        nope=key, rope=value, k_hash=k_hash, attn_metadata=attn_metadata
+                        nope=key,
+                        rope=value,
+                        k_hash=k_hash,
+                        attn_metadata=attn_metadata,
+                        forward_context=forward_context,
+                        layer_name=layer_name,
                     )
                 else:  # NPU
                     if phase == "decode":
@@ -1034,8 +1059,11 @@ class GSAOnDevice(UcmSparseBase):
             prefix_slot_mapping,
         )
 
-    def get_block_table_row(self, attn_metadata, req_row_id):
+    def get_block_table_row(self, attn_metadata, req_row_id, prefill_row_id):
         if self.is_cuda:
+            if self.is_mla:
+                attn_metadata_prefill = getattr(attn_metadata, "prefill", None)
+                return attn_metadata_prefill.block_table[prefill_row_id]
             return attn_metadata.block_table[req_row_id]
         else:
             return attn_metadata.block_tables[req_row_id]
@@ -1065,10 +1093,32 @@ class GSAOnDevice(UcmSparseBase):
 
         return getattr(attn_metadata_prefill, "seq_lens", None)  # NPU
 
+    def prepare_cuda_decode_sparse_meta(self, attn_metadata, num_decodes):
+        from ucm.sparse.gsa_on_device.hamming_topk import update_seq_lens
+
+        # for roll_back recode the full seqlens & block_table
+        self.full_seq_lens[: self.num_reqs].copy_(attn_metadata.seq_lens, True)
+        self.full_block_table[: self.num_reqs].copy_(attn_metadata.block_table, True)
+
+        self.ori_seq_lens_decode = self.full_seq_lens[: self.num_reqs]
+        self.ori_block_table_decode = self.full_block_table[: self.num_reqs]
+
+        if not self.decode_only:
+            self.decode_req_ids_buf.copy_to_gpu(num_decodes)
+            self.decode_req_ids = self.decode_req_ids_buf.gpu[:num_decodes]
+
+        self.topk_seq_lens_qwen = update_seq_lens(
+            attn_metadata.seq_lens,
+            topk_token=self.hash_topk_tokens,
+            block_size=self.block_size,
+        )
+
+        self.new_block_table = attn_metadata.block_table
+        self.new_seq_lens = attn_metadata.seq_lens
+
     def build_sparse_meta(
         self, scheduler_output, requests, input_batch, attn_metadata
     ) -> UcmSparseMetadata:
-        from ucm.sparse.gsa_on_device.hamming_topk import update_seq_lens
 
         self.num_reqs = len(scheduler_output.num_scheduled_tokens)
 
@@ -1090,125 +1140,104 @@ class GSAOnDevice(UcmSparseBase):
         num_long_reqs = int(
             (seq_lens[: self.num_reqs] >= self.seq_len_threshold).sum().item()
         )
+
         self.gsa_enabled = num_long_reqs >= self.concurrency_threshold
 
-        if not self.gsa_enabled:
+        self.decode_only = False
+        self.has_pc_hit = False
+
+        num_decodes = 0
+        # for pc
+        num_pc_hit = 0
+        all_prefix_tokens = 0
+        all_prefix_blocks = 0
+
+        compute_q_lens = (
+            attn_metadata.query_start_loc[1:] - attn_metadata.query_start_loc[:-1]
+        )
+        self.decode_req_ids_buf.clear()
+
+        prefill_row_id = 0
+        for (
+            req_id,
+            num_scheduled_tokens,
+        ) in scheduler_output.num_scheduled_tokens.items():
+            req = requests[req_id]
+            # req_state: is_decode  is_first_prefil is_prefill is_last_chunk
+            is_decode = (
+                req_id in self.is_prefill_flag and not self.is_prefill_flag[req_id]
+            )
+            is_first_prefil = (
+                req_id not in self.is_prefill_flag
+            )  # first prefill when chunkprefill
+            is_prefill = is_first_prefil or self.is_prefill_flag[req_id]
+            is_last_chunk = is_prefill and (
+                req.num_computed_tokens + num_scheduled_tokens >= req.num_prompt_tokens
+            )
+
+            # when prompt length < topk_tokens Skip sparse!
+            # if req.num_prompt_tokens < self.seq_len_threshold:
+            #     continue
+
+            if is_decode:
+                self.decode_req_ids_buf.np[num_decodes] = input_batch.req_id_to_index[
+                    req_id
+                ]
+                num_decodes += 1
+
+            if is_first_prefil:
+                self.is_prefill_flag[req_id] = True
+                # num_prompt_tokens -> store pc -> rebuild slotmapping
+                req_row_id = input_batch.req_id_to_index[req_id]
+                ext_tokens = int(
+                    scheduler_output.num_external_computed_tokens_per_req.get(req_id, 0)
+                )
+
+                if ext_tokens > 0:
+                    block_table_row = self.get_block_table_row(
+                        attn_metadata, req_row_id, prefill_row_id
+                    )
+                    prefill_row_id += 1
+                    (
+                        num_prefix_tokens,
+                        num_prefix_blocks,
+                        prefix_block_ids,
+                        prefix_slot_mapping,
+                    ) = self.rebuild_prefix_cache_info_for_req(
+                        block_table_row=block_table_row,
+                        num_prompt_tokens=req.num_prompt_tokens,
+                        qlen=compute_q_lens[req_row_id],
+                        block_size=self.block_size,
+                    )
+
+                    self.prefix_slot_mapping_buf[
+                        all_prefix_tokens : all_prefix_tokens + num_prefix_tokens
+                    ] = prefix_slot_mapping
+                    self.prefix_block_ids_buf[
+                        all_prefix_blocks : all_prefix_blocks + num_prefix_blocks
+                    ] = prefix_block_ids
+
+                    all_prefix_tokens += num_prefix_tokens
+                    all_prefix_blocks += num_prefix_blocks
+                    num_pc_hit += 1
+
+            if is_last_chunk:
+                self.is_prefill_flag[req_id] = False
+
+        self.has_pc_hit = num_pc_hit > 0
+        if self.has_pc_hit:
+            self.prefix_slot_mapping = self.prefix_slot_mapping_buf[:all_prefix_tokens]
+            self.prefix_block_ids = self.prefix_block_ids_buf[:all_prefix_blocks]
+
+        if self.is_mla or not self.gsa_enabled:
             return
 
-        if not self.is_mla:
-            self.decode_only = False
-            self.has_pc_hit = False
-
-            num_decodes = 0
-            # for pc
-            num_pc_hit = 0
-            all_prefix_tokens = 0
-            all_prefix_blocks = 0
-
-            compute_q_lens = (
-                attn_metadata.query_start_loc[1:] - attn_metadata.query_start_loc[:-1]
-            )
-            self.decode_req_ids_buf.clear()
-
-            for (
-                req_id,
-                num_scheduled_tokens,
-            ) in scheduler_output.num_scheduled_tokens.items():
-                req = requests[req_id]
-                # req_state: is_decode  is_first_prefil is_prefill is_last_chunk
-                is_decode = (
-                    req_id in self.is_prefill_flag and not self.is_prefill_flag[req_id]
-                )
-                is_first_prefil = (
-                    req_id not in self.is_prefill_flag
-                )  # first prefill when chunkprefill
-                is_prefill = is_first_prefil or self.is_prefill_flag[req_id]
-                is_last_chunk = is_prefill and (
-                    req.num_computed_tokens + num_scheduled_tokens
-                    >= req.num_prompt_tokens
-                )
-
-                # when prompt length < topk_tokens Skip sparse!
-                if req.num_prompt_tokens < self.seq_len_threshold:
-                    continue
-
-                if is_decode:
-                    self.decode_req_ids_buf.np[num_decodes] = (
-                        input_batch.req_id_to_index[req_id]
-                    )
-                    num_decodes += 1
-
-                if is_first_prefil:
-                    self.is_prefill_flag[req_id] = True
-                    # num_prompt_tokens -> store pc -> rebuild slotmapping
-                    req_row_id = input_batch.req_id_to_index[req_id]
-                    ext_tokens = int(
-                        scheduler_output.num_external_computed_tokens_per_req.get(
-                            req_id, 0
-                        )
-                    )
-                    if ext_tokens > 0:
-                        block_table_row = self.get_block_table_row(
-                            attn_metadata, req_row_id
-                        )
-                        (
-                            num_prefix_tokens,
-                            num_prefix_blocks,
-                            prefix_block_ids,
-                            prefix_slot_mapping,
-                        ) = self.rebuild_prefix_cache_info_for_req(
-                            block_table_row=block_table_row,
-                            num_prompt_tokens=req.num_prompt_tokens,
-                            qlen=compute_q_lens[req_row_id],
-                            block_size=self.block_size,
-                        )
-
-                        self.prefix_slot_mapping_buf[
-                            all_prefix_tokens : all_prefix_tokens + num_prefix_tokens
-                        ] = prefix_slot_mapping
-                        self.prefix_block_ids_buf[
-                            all_prefix_blocks : all_prefix_blocks + num_prefix_blocks
-                        ] = prefix_block_ids
-
-                        all_prefix_tokens += num_prefix_tokens
-                        all_prefix_blocks += num_prefix_blocks
-                        num_pc_hit += 1
-
-                if is_last_chunk:
-                    self.is_prefill_flag[req_id] = False
-
-            self.has_decode = num_decodes > 0
-            self.decode_only = self.has_decode and (num_decodes == self.num_reqs)
-            # build sparse meta for cuda
-            if self.has_decode and self.is_cuda:
-                # for roll_back recode the full seqlens & block_table
-                self.full_seq_lens[: self.num_reqs].copy_(attn_metadata.seq_lens, True)
-                self.full_block_table[: self.num_reqs].copy_(
-                    attn_metadata.block_table, True
-                )
-
-                self.ori_seq_lens_decode = self.full_seq_lens[: self.num_reqs]
-                self.ori_block_table_decode = self.full_block_table[: self.num_reqs]
-
-                if not self.decode_only:
-                    self.decode_req_ids_buf.copy_to_gpu(num_decodes)
-                    self.decode_req_ids = self.decode_req_ids_buf.gpu[:num_decodes]
-
-                self.topk_seq_lens_qwen = update_seq_lens(
-                    attn_metadata.seq_lens,
-                    topk_token=self.hash_topk_tokens,
-                    block_size=self.block_size,
-                )
-
-                self.new_block_table = attn_metadata.block_table
-                self.new_seq_lens = attn_metadata.seq_lens
-
-            self.has_pc_hit = num_pc_hit > 0
-            if self.has_pc_hit:
-                self.prefix_slot_mapping = self.prefix_slot_mapping_buf[
-                    :all_prefix_tokens
-                ]
-                self.prefix_block_ids = self.prefix_block_ids_buf[:all_prefix_blocks]
+        # Build decode sparse metadata for CUDA GQA only.
+        self.has_decode = num_decodes > 0
+        self.decode_only = self.has_decode and (num_decodes == self.num_reqs)
+        # build sparse meta for cuda
+        if self.has_decode and self.is_cuda:
+            self.prepare_cuda_decode_sparse_meta(attn_metadata, num_decodes)
 
     def maybe_init_cudagraph_buffers_for_topk(
         self,
