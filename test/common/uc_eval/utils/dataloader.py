@@ -237,7 +237,7 @@ class DocQADataset(BaseDataset):
         """
         For multiple-choice questions, after extracting "answer" and "question", also extract keys like "choice_A" to distinguish each option before building the prompt.
         """
-        from common.uc_eval.utils.prompt_config import multi_answer_prompt
+        from common.uc_eval.utils.prompt_config import COT_KEY, multi_answer_prompt
 
         question = json_lines.get("question") or json_lines.get("input")
         answer = json_lines.get("answers") or json_lines.get("answer")
@@ -254,8 +254,10 @@ class DocQADataset(BaseDataset):
 
         prompt_list = []
         for item in multi_answer_prompt:
-            prompt = self.get_prompt_from_json_lines(json_lines, item)
-            prompt_list.append(prompt)
+            prompt, cot_string = self.get_prompt_from_json_lines(
+                json_lines, item, COT_KEY
+            )
+            prompt_list.append([prompt, cot_string])
 
         return [_id, prompt_list, question, answer]
 
@@ -268,20 +270,38 @@ class DocQADataset(BaseDataset):
         language = json_lines.get("language") or DEFAULT_LANGUAGE
         return language or "None"
 
-    def get_prompt_from_json_lines(self, json_lines, prompt_template):
+    def get_prompt_from_json_lines(self, json_lines, prompt_template, cot_key="COT"):
         """
         Get the json data from prompt template
         """
-        keys = re.findall(r"\{(\w+)\}", prompt_template)
+        keys = list(re.finditer(r"\{([^}]+)\}", prompt_template))
         mapping = {}
-        for key in keys:
-            value = json_lines.get(key, None)
-            if value is None:
-                logger.error(f"Missing key {key} in json data")
-                mapping[key] = ""
+        cot_identifier = None
+
+        for i, match in enumerate(keys):
+            key = match.group(1)
+            if isinstance(key, str) and key.upper() == cot_key:
+                if i == 0:
+                    start_pos = 0
+                else:
+                    start_pos = keys[i - 1].end()
+
+                end_pos = match.end()
+                cot_identifier = prompt_template[start_pos:end_pos]
+
             else:
-                mapping[key] = value.strip()
-        return prompt_template.format(**mapping)
+                value = json_lines.get(key)
+                if value is None:
+                    logger.error(f"Missing key {key} in json lines")
+                    mapping[key] = ""
+                else:
+                    mapping[key] = str(value).strip()
+
+        filled_prompt = prompt_template
+        for key, value in mapping.items():
+            filled_prompt = filled_prompt.replace(f"{{{key}}}", value)
+
+        return filled_prompt, cot_identifier
 
     def match_dataset_with_select_data_class(
         self, json_lines, select_data_class: Dict[str, Any] = {}

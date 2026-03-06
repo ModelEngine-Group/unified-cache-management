@@ -14,6 +14,7 @@ doc_qa_prompt_en = [
     """
 ]
 
+COT_KEY = "COT"
 multi_answer_prompt = [
     """
     Please read the following text and answer the questions below.\n
@@ -25,9 +26,15 @@ multi_answer_prompt = [
 """
 ]
 
-match_patterns = [
+match_patterns_longbench_v2 = [
     r"The correct answer is \(([A-D])\)",
     r"The correct answer is ([A-D])",
     r"The \(([A-D])\) is the correct answer",
     r"The ([A-D]) is the correct answer",
 ]
+
+match_patterns_gsm8k = [
+    r"(?i)answer:?\s*(-?[€£¥$]?\d[\d,]*(?:\/\d+|\.\d+)?)(%?)",
+    r"(?i)The answer is (-?[€£¥$]?\d[\d,]*(?:\/\d+|\.\d+)?)(%?)",
+]
+

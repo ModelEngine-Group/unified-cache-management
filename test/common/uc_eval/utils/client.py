@@ -36,9 +36,7 @@ def _excute_with_pool(
         logger.error(
             f"The number of requests: {len(tasks)} is less than parallel_num: {parallel_num}, please check..."
         )
-        raise ValueError(
-            f"The number of requests: {len(tasks)} is less than parallel_num: {parallel_num}, please check..."
-        )
+
     logger.info(f"Start to send {len(tasks)} requests to server...")
     with ThreadPoolExecutor(max_workers=parallel_num) as executor:
         futures = [executor.submit(task_func, task) for task in tasks]
@@ -508,16 +506,28 @@ class DocQaClient(BaseClient):
     def send_qa_request(
         self, case: Union[str, str, str, str], max_tokens: int = -1
     ) -> RequestRecord:
+        from common.uc_eval.utils.prompt_config import COT_KEY
+
         case_name, prompt_list, question, answer = case
         all_record = RequestRecord()
-        for i, prompt in enumerate(prompt_list):
+        response = None
+        for i, (prompt, cot_string) in enumerate(prompt_list):
+            if cot_string:
+                cot_response = cot_string.replace(COT_KEY, response)
+                prompt = prompt.replace(cot_string, cot_response)
             record: RequestRecord = self.send_request(prompt, max_tokens)
             if i == 0:
                 all_record = record
                 all_record.case_name = case_name
                 all_record.question = question
                 all_record.expected_output = answer
+            if i != len(prompt_list) - 1:
+                response = record.output_data
             if i == len(prompt_list) - 1:
                 all_record.output_data = record.output_data
                 all_record.output_tokens = record.output_tokens
+
+        logger.debug(
+            f"case name: {all_record.case_name}, request id: {all_record.request_id}, output data: {all_record.output_data}"
+        )
         return all_record

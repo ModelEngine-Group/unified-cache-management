@@ -6,8 +6,9 @@
 
 **文档问答**数据集：
 
-| 数据集       | Hugging Face 链接                                            |
+| 数据集       | 链接                                                         |
 | ------------ | ------------------------------------------------------------ |
+| gsm8k        | [http://opencompass.oss-cn-shanghai.aliyuncs.com/datasets/data/gsm8k.zip](http://opencompass.oss-cn-shanghai.aliyuncs.com/datasets/data/gsm8k.zip) |
 | LongBench    | [zai-org/LongBench · Datasets at Hugging Face](https://huggingface.co/datasets/zai-org/LongBench) |
 | LongBench v2 | [zai-org/LongBench-v2 · Datasets at Hugging Face](https://huggingface.co/datasets/zai-org/LongBench-v2) |
 
@@ -309,6 +310,17 @@ def test_doc_qa_perf(
     return {"_name": perf_config.test_name, "_data": result}
 ```
 
+### 性能测试核心指标解读
+
+| 指标              | 说明                                                         |
+| ----------------- | ------------------------------------------------------------ |
+| `Total Latench`   | 所有请求处理时间，统计第一条请求开始的时间到最后一条请求结束的时间 |
+| `E2E TPS`         | 端到端每秒生成的token数，计算公式：`输出tokens数 / 所有请求耗时`，也即output_tokens * parallel_num / total_latency，稳态测试时计算公式为`位于稳态的请求条数 * output_tokens / total_latency` |
+| `Per Request TPS` | 对于每条请求而言，每秒生成的token数，计算公式：`mean(单条请求输出tokens数 / 单条请求处理耗时)` |
+| `TTFT`            | Time to First Token，反应prefill阶段耗时                     |
+| `TBT`             | Time Between Token，decode阶段相邻两个token输出时间的时间间隔 |
+| `TPOT`            | Time Per Output Tokens，所有token生成时间间隔的平均值，计算公式：`decode时间 / 输出tokens数` |
+
 ## 精度测试
 
 ### 基础配置
@@ -401,12 +413,13 @@ def test_doc_qa_perf(
 
 - 不同**匹配策略（eval_class）**区别如下，其路径：test/common/uc_eval/utils/metric.py
 
-| 策略         | 类名            | 匹配规则                                                     |
-| :----------- | :-------------- | :----------------------------------------------------------- |
-| **完全匹配** | `Match`         | 模型输出必须与参考答案完全一致                               |
-| **包含匹配** | `Includes`      | 模型输出包含参考答案内容即匹配                               |
-| **模糊匹配** | `FuzzyMatch`    | 支持两种模式： 1. `substring`：双向包含匹配 2. `jaccard`：相似度 > 0.8 匹配 |
-| **模板匹配** | `MatchPatterns` | 根据正则表达式模板提取答案后匹配                             |
+| 策略                | 类名                 | 匹配规则                                                     |
+| :------------------ | :------------------- | :----------------------------------------------------------- |
+| **完全匹配**        | `Match`              | 模型输出必须与参考答案完全一致                               |
+| **包含匹配**        | `Includes`           | 模型输出包含参考答案内容即匹配                               |
+| **模糊匹配**        | `FuzzyMatch`         | 支持两种模式： 1. `substring`：双向包含匹配 2. `jaccard`：相似度 > 0.8 匹配 |
+| **模板匹配**        | `MatchPatterns`      | 根据正则表达式模板提取答案后匹配                             |
+| **模板匹配之gsm8k** | `GSM8KMatchPatterns` | 根据正则表达式模板从gsm8k数据集中提取答案进行匹配            |
 
 - **MatchPatterns**方法介绍：
   - **适用场景**：longbench v2等需要从 A/B/C/D 中选择正确答案的数据集
@@ -432,6 +445,7 @@ doc_qa_prompt_en = [
 ]
 
 # 多项选择题提示模板
+COT_KEY = "COT"
 multi_answer_prompt = [
     """
     Please read the following text and answer the questions below.\n
@@ -444,19 +458,23 @@ multi_answer_prompt = [
 ]
 
 # 答案提取正则表达式模板
-match_patterns = [
+match_patterns_longbench_v2 = [
     r"The correct answer is \(([A-D])\)",
     r"The correct answer is ([A-D])",
     r"The \(([A-D])\) is the correct answer",
     r"The ([A-D]) is the correct answer",
 ]
 
+match_patterns_gsm8k = [
+    r"(?i)answer:?\s*(-?[€£¥$]?\d[\d,]*(?:\/\d+|\.\d+)?)(%?)",
+    r"(?i)The answer is (-?[€£¥$]?\d[\d,]*(?:\/\d+|\.\d+)?)(%?)",
+]
 ```
 
 - **prompt_config模板使用说明**：
   - `{}` 中的标签必须与数据集中的字段名对应
   - LongBench 和 LongBench v2 的问题字段名不同（分别为 `input` 和 `question`），需在模板中正确使用
-  - `multi_answer_prompt` 可以包含多个提示模板（如 CoT 推理过程），框架会按顺序发送请求
+  - `multi_answer_prompt` 可以包含多个提示模板（如 COT 推理过程），框架会按顺序发送请求，在使用COT推理时，需要在第一次的prompt中加入第一次prompt的response，COT_KEY表示在multi_answer_prompt中response对应的键，在获取到第一次response后，会将prompt中的COT_KEY替换为实际的response
 
 - 采用MatchPatterns模式时，多项选择题处理流程：
   - 使用 `multi_answer_prompt` 中的模板构造提示

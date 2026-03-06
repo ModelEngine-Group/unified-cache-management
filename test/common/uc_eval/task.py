@@ -1,3 +1,4 @@
+import os
 import re
 import time
 from abc import ABC, abstractmethod
@@ -460,12 +461,13 @@ class DocQaEvalTask(BaseTask):
         )
 
         self.save_eval_cases_excel(match_record_list, self.eval_cls)
-        self.save_eval_cases_jsonl(
+        save_result = self.save_eval_cases_jsonl(
             match_record_list,
             self.dataset_file_path,
             self.jsonl_save_path,
         )
-        self.trans_jsonl_to_excel()
+        if save_result:
+            self.trans_jsonl_to_excel()
 
         return metric_result, len(records)
 
@@ -484,7 +486,7 @@ class DocQaEvalTask(BaseTask):
             data_list = json_loader.load_json_file(file_path)
 
         if not data_list[0].get("_id", None):
-            return
+            return False
 
         save_data_list = []
         id_to_data = {data["_id"]: data for data in data_list}
@@ -499,6 +501,7 @@ class DocQaEvalTask(BaseTask):
                 save_data_list.append(data)
 
         json_loader.save_jsonl_file(save_path, save_data_list)
+        return True
 
     def trans_jsonl_to_excel(self):
         try:
