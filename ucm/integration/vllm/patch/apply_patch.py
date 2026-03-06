@@ -148,17 +148,16 @@ def apply_all_patches() -> None:
         # Apply common patch here
 
         # Apply vllm/vllm-ascendversion-specific patches
+        # vllm patches
         match version:
             # case "0.9.2" if vllm_use_rerope:
             #     _apply_patches_rerope()
             # case "0.9.2":
             #     _apply_patches_v092()
             case "0.11.0":
-                # pc_patch_v0110
                 import ucm.integration.vllm.patch.v0110.vllm.pc_patch
-
-                if ENABLE_SPARSE:
-                    import ucm.integration.vllm.patch.v0110.vllm.sparse_patch
+                # if ENABLE_SPARSE:
+                #     import ucm.integration.vllm.patch.v0110.vllm.sparse_patch
             case _:
                 logger.warning(
                     f"Unsupported vLLM version: {version} to apply UCM patches. "
@@ -168,13 +167,13 @@ def apply_all_patches() -> None:
                     f"Unsupported vLLM version: {version} to apply UCM patches."
                 )
 
+        # vllm_ascend patches
         ascend_version = get_vllm_ascend_version()
         match ascend_version:
             case None:
                 pass
             case "0.11.0":
                 import ucm.integration.vllm.patch.v0110.vllm_ascend.pc_ascend_patch
-
                 # add sparse patch for vllm_ascend
             case _:
                 logger.warning(f"Unsupported vLLM-Ascend version: {ascend_version}")
