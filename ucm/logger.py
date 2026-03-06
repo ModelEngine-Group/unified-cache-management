@@ -106,7 +106,7 @@ class Logger(logging.Logger):
             return msg % args
         return msg
 
-    def log(self, levelno, message, *args, exc_info=None):
+    def log(self, levelno, message, *args, exc_info=None, scope=None):
         level = LevelMap[levelno]
         frame = inspect.currentframe()
         caller_frame = frame.f_back.f_back
@@ -141,6 +141,10 @@ class Logger(logging.Logger):
     @lru_cache
     def warning_once(self, message: str, *args: Hashable, **kwargs: Hashable):
         self.log(logging.WARNING, message, *args, **kwargs)
+
+    @lru_cache
+    def debug_once(self, message: str, *args: Hashable, **kwargs: Hashable):
+        self.log(logging.DEBUG, message, *args, **kwargs)
 
 
 def init_logger(name: str = "UC") -> Logger:
