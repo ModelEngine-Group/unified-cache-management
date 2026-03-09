@@ -14,7 +14,7 @@ logger = init_logger(__name__)
 def patch_attention_v1(mod):
     logger.debug(f"Patched {mod} called")
 
-    from ucm.integration.vllm.patch.v0110.ascend.attention import attention_v1
+    from ucm.integration.vllm.patch.v0110.vllm_ascend.sparse.attention import attention_v1
 
     patch_dataclass_fields(mod.AscendMetadata,
         attention_v1.AscendMetadata)
@@ -31,7 +31,7 @@ def patch_attention_v1(mod):
 def patch_mla_v1(mod):
     logger.debug(f"Patched {mod} called")
 
-    from ucm.integration.vllm.patch.v0110.ascend.attention import mla_v1
+    from ucm.integration.vllm.patch.v0110.vllm_ascend.sparse.attention import mla_v1
 
     patch_dataclass_fields(mod.AscendMLADecodeMetadata, 
         mla_v1.AscendMLADecodeMetadata)
@@ -50,7 +50,7 @@ def patch_mla_v1(mod):
 def patch_block_table(mod):
     logger.debug(f"Patched {mod} called")
 
-    from ucm.integration.vllm.patch.v0110.ascend.worker import block_table
+    from ucm.integration.vllm.patch.v0110.vllm_ascend.sparse.worker import block_table
 
     patch_or_inject(mod.BlockTable,
         "reset_now", block_table.BlockTable.reset_row)
@@ -61,7 +61,7 @@ def patch_block_table(mod):
 def patch_model_runner_v1(mod):
     logger.debug(f"Patched {mod} called")
 
-    from ucm.integration.vllm.patch.v0110.ascend.worker import model_runner_v1
+    from ucm.integration.vllm.patch.v0110.vllm_ascend.sparse.worker import model_runner_v1
 
     patch_or_inject(mod.NPUModelRunner,
         "_update_states", model_runner_v1.NPUModelRunner._update_states)
@@ -92,7 +92,7 @@ def patch_model_runner_v1(mod):
 def patch_worker_v1(mod):
     logger.debug(f"Patched {mod} called")
 
-    from ucm.integration.vllm.patch.v0110.ascend.worker import worker_v1
+    from ucm.integration.vllm.patch.v0110.vllm_ascend.sparse.worker import worker_v1
 
     patch_or_inject(mod.NPUWorker,
         "_init_worker_distributed_environment",
