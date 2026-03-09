@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import itertools
 from collections import defaultdict
 from collections.abc import Iterable
 from typing import Any, Optional, Union
@@ -356,8 +357,6 @@ class Scheduler(SchedulerInterface):
         num_computed_tokens: list[int] = []
         num_output_tokens: list[int] = []
 
-        import itertools
-
         use_connector = self.connector is not None
         for req in itertools.chain(running_reqs, resumed_reqs):
             req_id = req.request_id
@@ -414,7 +413,6 @@ class Scheduler(SchedulerInterface):
         kv_connector_output = model_runner_output.kv_connector_output
 
         outputs: dict[int, list[EngineCoreOutput]] = defaultdict(list)
-        from vllm.v1.spec_decode.metrics import SpecDecodingStats
 
         spec_decoding_stats: Optional[SpecDecodingStats] = None
         kv_connector_stats = (
