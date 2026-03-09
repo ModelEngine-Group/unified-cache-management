@@ -24,7 +24,7 @@
 #ifndef UNIFIEDCACHE_POSIX_STORE_CC_IO_ENGINE_AIO_H
 #define UNIFIEDCACHE_POSIX_STORE_CC_IO_ENGINE_AIO_H
 
-#include "aio_engine.h"
+#include "aio_impl.h"
 #include "block_operator.h"
 #include "logger/logger.h"
 #include "template/task_wrapper.h"
@@ -37,7 +37,7 @@ class IoEngineAio : public Detail::TaskWrapper<TransTask, Detail::TaskHandle> {
     size_t nShardPerBlock_;
     const SpaceLayout* layout_;
     BlockOperator blockOperator_;
-    AioEngine aio_;
+    AioImpl aio_;
 
 public:
     Status Setup(const Config& config, const SpaceLayout* layout)
@@ -57,7 +57,7 @@ private:
     }
     template <bool dump>
     void OnIoCallback(const Detail::TaskHandle& tid, WaiterPtr w, int32_t fd, bool last,
-                      const Detail::BlockId& id, const AioEngine::Result& result)
+                      const Detail::BlockId& id, const AioImpl::Result& result)
     {
         if (result.error != 0) {
             UC_ERROR("Failed({}) to do io on block({}).", result.error, id);
@@ -91,12 +91,12 @@ private:
             handleFailure(0, result.fd);
             return;
         }
-        AioEngine::Io io;
+        AioImpl::Io io;
         io.fd = result.fd;
         io.offset = shard.index * shardSize_;
         io.length = shardSize_;
         io.buffer = shard.addrs.front();
-        io.callback = [this, tid, w, fd = result.fd, last, id](AioEngine::Result ioResult) {
+        io.callback = [this, tid, w, fd = result.fd, last, id](AioImpl::Result ioResult) {
             OnIoCallback<dump>(tid, w, fd, last, id, ioResult);
         };
         auto status = dump ? aio_.WriteAsync(std::move(io)) : aio_.ReadAsync(std::move(io));

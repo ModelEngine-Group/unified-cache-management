@@ -21,14 +21,58 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  * */
-#include "aio_engine.h"
+#include "aio_impl.h"
 #include <sys/epoll.h>
 #include <sys/eventfd.h>
+#include <sys/syscall.h>
+#include <unistd.h>
 #include "logger/logger.h"
 
 namespace UC::PosixStore {
 
-AioEngine::~AioEngine()
+static inline int32_t AioSetup(int32_t nEvents, aio_context_t* pCtx)
+{
+    return syscall(SYS_io_setup, nEvents, pCtx);
+}
+static inline int32_t AioGetEvents(aio_context_t ctx, int64_t minNr, int64_t maxNr,
+                                   io_event* events, timespec* timeout)
+{
+    return syscall(SYS_io_getevents, ctx, minNr, maxNr, events, timeout);
+}
+static inline int32_t AioSubmit(aio_context_t ctx, int64_t nr, iocb** ios)
+{
+    return syscall(SYS_io_submit, ctx, nr, ios);
+}
+static inline int32_t AioDestroy(aio_context_t ctx) { return syscall(SYS_io_destroy, ctx); }
+static inline void AioPrepareRead(struct iocb* iocb, int32_t fd, void* buf, size_t count,
+                                  size_t offset)
+{
+    memset(iocb, 0, sizeof(*iocb));
+    iocb->aio_fildes = fd;
+    iocb->aio_lio_opcode = 0; /* IO_CMD_PREAD */
+    iocb->aio_reqprio = 0;
+    iocb->aio_buf = reinterpret_cast<uintptr_t>(buf);
+    iocb->aio_nbytes = count;
+    iocb->aio_offset = offset;
+}
+static inline void AioPrepareWrite(struct iocb* iocb, int32_t fd, void* buf, size_t count,
+                                   size_t offset)
+{
+    memset(iocb, 0, sizeof(*iocb));
+    iocb->aio_fildes = fd;
+    iocb->aio_lio_opcode = 1; /* IO_CMD_PWRITE */
+    iocb->aio_reqprio = 0;
+    iocb->aio_buf = reinterpret_cast<uintptr_t>(buf);
+    iocb->aio_nbytes = count;
+    iocb->aio_offset = offset;
+}
+static inline void AioSetEventFd(struct iocb* iocb, int32_t eventfd)
+{
+    iocb->aio_flags |= (1 << 0) /* IOCB_FLAG_RESFD */;
+    iocb->aio_resfd = eventfd;
+}
+
+AioImpl::~AioImpl()
 {
     stop_ = true;
     if (eventThread_.joinable()) {
@@ -39,14 +83,14 @@ AioEngine::~AioEngine()
     }
     if (epollFd_ >= 0) { close(epollFd_); }
     if (eventFd_ >= 0) { close(eventFd_); }
-    if (ctx_) { io_destroy(ctx_); }
+    if (ctx_) { AioDestroy(ctx_); }
 }
 
-Status AioEngine::Setup()
+Status AioImpl::Setup()
 {
-    auto ret = io_setup(queueDepth_, &ctx_);
+    auto ret = AioSetup(queueDepth_, &ctx_);
     if (ret != 0) {
-        UC_ERROR("Failed({}) to call io_setup.", ret);
+        UC_ERROR("Failed({}) to call AioSetup.", ret);
         return Status::Error(std::to_string(ret));
     }
     eventFd_ = eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC);
@@ -74,12 +118,12 @@ Status AioEngine::Setup()
     return Status::OK();
 }
 
-Status AioEngine::ReadAsync(Io&& io)
+Status AioImpl::ReadAsync(Io&& io)
 {
     auto cb = std::make_unique<struct iocb>();
     auto data = std::make_unique<Callback>(std::move(io.callback));
-    io_prep_pread(cb.get(), io.fd, io.buffer, io.length, io.offset);
-    cb->data = static_cast<void*>(data.get());
+    AioPrepareRead(cb.get(), io.fd, io.buffer, io.length, io.offset);
+    cb->aio_data = (uintptr_t)(void*)data.get();
     auto status = SubmitIo(cb.get());
     if (status.Failure()) {
         UC_ERROR("Failed({}) to submit read io.", status);
@@ -89,12 +133,12 @@ Status AioEngine::ReadAsync(Io&& io)
     return Status::OK();
 }
 
-Status AioEngine::WriteAsync(Io&& io)
+Status AioImpl::WriteAsync(Io&& io)
 {
     auto cb = std::make_unique<struct iocb>();
     auto data = std::make_unique<Callback>(std::move(io.callback));
-    io_prep_pwrite(cb.get(), io.fd, io.buffer, io.length, io.offset);
-    cb->data = static_cast<void*>(data.get());
+    AioPrepareWrite(cb.get(), io.fd, io.buffer, io.length, io.offset);
+    cb->aio_data = (uintptr_t)(void*)data.get();
     auto status = SubmitIo(cb.get());
     if (status.Failure()) {
         UC_ERROR("Failed({}) to submit write io.", status);
@@ -105,7 +149,7 @@ Status AioEngine::WriteAsync(Io&& io)
     return Status::OK();
 }
 
-void AioEngine::CompletionLoop()
+void AioImpl::CompletionLoop()
 {
     std::vector<epoll_event> epollEvents(128);
     std::vector<io_event> aioEvents(batchCompleteSize);
@@ -122,13 +166,13 @@ void AioEngine::CompletionLoop()
     }
 }
 
-void AioEngine::HarvestCompletions(std::vector<io_event>& events)
+void AioImpl::HarvestCompletions(std::vector<io_event>& events)
 {
     auto batchSize = static_cast<int>(events.size());
     while (!stop_) {
-        auto num = io_getevents(ctx_, 1, batchSize, events.data(), nullptr);
+        auto num = AioGetEvents(ctx_, 1, batchSize, events.data(), nullptr);
         for (auto i = 0; i < num; i++) {
-            auto cb = static_cast<Callback*>(events[i].data);
+            auto cb = (Callback*)(void*)events[i].data;
             if (!cb) { continue; }
             Result res;
             if (events[i].res >= 0) {
@@ -145,18 +189,19 @@ void AioEngine::HarvestCompletions(std::vector<io_event>& events)
     }
 }
 
-Status AioEngine::SubmitIo(iocb* cb)
+Status AioImpl::SubmitIo(iocb* cb)
 {
-    io_set_eventfd(cb, eventFd_);
+    AioSetEventFd(cb, eventFd_);
     auto ret = 0;
     for (;;) {
-        ret = io_submit(ctx_, 1, &cb);
+        ret = AioSubmit(ctx_, 1, &cb);
+        auto eno = errno;
         if (ret == 1) { return Status::OK(); }
-        if (ret == -EAGAIN) {
+        if (eno == EAGAIN) {
             std::this_thread::yield();
             continue;
         }
-        return Status::Error(std::string(strerror(-ret)));
+        return Status::Error(std::string(strerror(eno)));
     }
 }
 
