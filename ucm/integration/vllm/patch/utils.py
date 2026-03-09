@@ -5,7 +5,7 @@ from collections import defaultdict
 
 import wrapt
 
-from ucm.logger import init_logger
+from vllm.logger import init_logger
 
 logger = init_logger(__name__)
 
