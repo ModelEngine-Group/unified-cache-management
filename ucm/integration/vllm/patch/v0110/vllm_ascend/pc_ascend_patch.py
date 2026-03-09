@@ -53,3 +53,11 @@ def patch_worker_npu_worker(mod):
         "execute_model",
         npu_worker.NPUWorker.execute_model,
     )
+
+
+@when_imported("vllm_ascend.compilation.acl_graph")
+def patch_ascend_acl_worker(mod):
+    logger.debug(f"Patched {mod} called")
+    from ucm.integration.vllm.patch.v0110.vllm_ascend.pc.compilation import acl_graph
+
+    patch_or_inject(mod, "update_attn_params", acl_graph.update_attn_params)

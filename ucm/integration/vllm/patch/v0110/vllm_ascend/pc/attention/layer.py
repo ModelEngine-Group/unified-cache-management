@@ -1,11 +1,12 @@
-def wait_for_kv_layer_from_connector(layer_name: str):
-    from vllm.distributed.kv_transfer import (
-        get_kv_transfer_group,
-        has_kv_transfer_group,
-        is_v1_kv_transfer_group,
-    )
-    from vllm.forward_context import ForwardContext, get_forward_context
+from vllm.distributed.kv_transfer import (
+    get_kv_transfer_group,
+    has_kv_transfer_group,
+    is_v1_kv_transfer_group,
+)
+from vllm.forward_context import ForwardContext, get_forward_context
 
+
+def wait_for_kv_layer_from_connector(layer_name: str):
     if not has_kv_transfer_group() or not is_v1_kv_transfer_group():
         return
 
@@ -28,13 +29,6 @@ def maybe_save_kv_layer_to_connector(
     layer_name: str,
     kv_cache_layer: "list[object]",
 ) -> None:
-    from vllm.distributed.kv_transfer import (
-        get_kv_transfer_group,
-        has_kv_transfer_group,
-        is_v1_kv_transfer_group,
-    )
-    from vllm.forward_context import ForwardContext, get_forward_context
-
     if not has_kv_transfer_group() or not is_v1_kv_transfer_group():
         return
 
