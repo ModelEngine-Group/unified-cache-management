@@ -157,6 +157,12 @@ Status SimuStream::AppendCallback(std::function<void(bool)> cb)
     return Status::OK();
 }
 
+Status SimuStream::WaitEvent(void* event)
+{
+    (void)event;
+    return Status::OK();
+}
+
 Status SimuStream::Synchronized()
 {
     std::mutex mutex;

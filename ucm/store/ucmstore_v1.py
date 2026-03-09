@@ -165,6 +165,7 @@ class UcmKVStoreBaseV1(ABC):
         block_ids: List[bytes],
         shard_index: List[int],
         src_addr: List[List[int]] | np.ndarray,
+        prerequisite_handle: int = 0,
     ) -> Task:
         """Low-level dump: copy KV data from device pointers.
 
@@ -172,6 +173,8 @@ class UcmKVStoreBaseV1(ABC):
             block_ids: Block hashes to store.
             shard_index: Shard index for each block.
             src_addr: Double-list of ``int`` pointers to device buffers.
+            prerequisite_handle: Optional event handle for Python-C++ stream sync.
+                When non-zero, cache stream waits for this event before D2H.
 
         Returns:
             A ``Task`` handle for the asynchronous copy.

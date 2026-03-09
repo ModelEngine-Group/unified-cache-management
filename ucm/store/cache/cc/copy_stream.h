@@ -65,6 +65,17 @@ public:
         streamIndex_ = (streamIndex_ + 1) % streamNumber_;
         return stream;
     }
+    Status WaitEvent(void* event) noexcept
+    {
+        auto status = Status::OK();
+        for (auto& stream : streams_) {
+            auto s = stream->WaitEvent(event);
+            if (s.Success()) { continue; }
+            UC_ERROR("Failed({}) to wait event on stream on device({}).", s, deviceId_);
+            if (status.Success()) { status = s; }
+        }
+        return status;
+    }
     Status Synchronize() noexcept
     {
         auto status = Status::OK();

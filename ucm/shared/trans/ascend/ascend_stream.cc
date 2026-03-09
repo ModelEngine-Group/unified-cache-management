@@ -175,4 +175,12 @@ Status AscendStream::Synchronized()
     return Status{ret, std::to_string(ret)};
 }
 
-} // namespace UC::Trans
+Status AscendStream::WaitEvent(void* event)
+{
+    if (event == nullptr) { return Status::OK(); }
+    auto ret = aclrtStreamWaitEvent(stream_, static_cast<aclrtEvent>(event));
+    if (ret != ACL_SUCCESS) [[unlikely]] { return Status{ret, std::to_string(ret)}; }
+    return Status::OK();
+}
+
+}  // namespace UC::Trans
