@@ -151,14 +151,16 @@ vllm serve Qwen/Qwen2.5-14B-Instruct \
     "kv_connector_extra_config": {"UCM_CONFIG_FILE": "/vllm-workspace/unified-cache-management/examples/ucm_config_example.yaml"}
 }'
 ```
-You can also use the Layerwise Connector by adding `"use_layerwise": true` to the `kv_connector_extra_config`.
+You can also use the Layerwise Connector by adding `"use_layerwise": true` in the `UCM_CONFIG_FILE`.
 for example:
 
-```bash
-"kv_connector_extra_config": {
-  "use_layerwise": true,
-  "UCM_CONFIG_FILE": "/home/qiuyuhao1/unified-cache-management/examples/ucm_config_example.yaml"
-}
+```yaml
+ucm_connectors:
+  - ucm_connector_name: "UcmPipelineStore"
+    ucm_connector_config:
+      store_pipeline: "Cache|Posix"
+      storage_backends: "/mnt/test"
+use_layerwise: true
 ```
 
 **⚠️ Make sure to replace `"/vllm-workspace/unified-cache-management/examples/ucm_config_example.yaml"` with your actual config file path.**
