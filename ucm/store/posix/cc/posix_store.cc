@@ -162,7 +162,7 @@ void PosixStore::PosixStore::Prefetch(const Detail::BlockId* blocks, size_t num)
 Expected<Detail::TaskHandle> PosixStore::PosixStore::Load(Detail::TaskDesc task)
 {
     if (!impl_->transEnable) { return Status::Error("transfer is not enable"); }
-    auto res = impl_->transMgr.Submit({TransTask::Type::LOAD, std::move(task)});
+    auto res = impl_->transMgr.GetIoEngine()->Submit({TransTask::Type::LOAD, std::move(task)});
     if (!res) [[unlikely]] {
         UC_ERROR("Failed({}) to submit load task({}).", res.Error(), task.brief);
     }
@@ -172,7 +172,7 @@ Expected<Detail::TaskHandle> PosixStore::PosixStore::Load(Detail::TaskDesc task)
 Expected<Detail::TaskHandle> PosixStore::PosixStore::Dump(Detail::TaskDesc task)
 {
     if (!impl_->transEnable) { return Status::Error("transfer is not enable"); }
-    auto res = impl_->transMgr.Submit({TransTask::Type::DUMP, std::move(task)});
+    auto res = impl_->transMgr.GetIoEngine()->Submit({TransTask::Type::DUMP, std::move(task)});
     if (!res) [[unlikely]] {
         UC_ERROR("Failed({}) to submit dump task({}).", res.Error(), task.brief);
     }
@@ -181,14 +181,14 @@ Expected<Detail::TaskHandle> PosixStore::PosixStore::Dump(Detail::TaskDesc task)
 
 Expected<bool> PosixStore::PosixStore::Check(Detail::TaskHandle taskId)
 {
-    auto res = impl_->transMgr.Check(taskId);
+    auto res = impl_->transMgr.GetIoEngine()->Check(taskId);
     if (!res) [[unlikely]] { UC_ERROR("Failed({}) to check task({}).", res.Error(), taskId); }
     return res;
 }
 
 Status PosixStore::PosixStore::Wait(Detail::TaskHandle taskId)
 {
-    auto s = impl_->transMgr.Wait(taskId);
+    auto s = impl_->transMgr.GetIoEngine()->Wait(taskId);
     if (s.Failure()) [[unlikely]] { UC_ERROR("Failed({}) to wait task({}).", s, taskId); }
     return s;
 }
