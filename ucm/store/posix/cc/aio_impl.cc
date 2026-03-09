@@ -120,11 +120,11 @@ Status AioImpl::Setup()
 
 Status AioImpl::ReadAsync(Io&& io)
 {
-    auto cb = std::make_unique<struct iocb>();
+    struct iocb cb;
     auto data = std::make_unique<Callback>(std::move(io.callback));
-    AioPrepareRead(cb.get(), io.fd, io.buffer, io.length, io.offset);
-    cb->aio_data = (uintptr_t)(void*)data.get();
-    auto status = SubmitIo(cb.get());
+    AioPrepareRead(&cb, io.fd, io.buffer, io.length, io.offset);
+    cb.aio_data = (uintptr_t)(void*)data.get();
+    auto status = SubmitIo(&cb);
     if (status.Failure()) {
         UC_ERROR("Failed({}) to submit read io.", status);
         return status;
@@ -135,17 +135,16 @@ Status AioImpl::ReadAsync(Io&& io)
 
 Status AioImpl::WriteAsync(Io&& io)
 {
-    auto cb = std::make_unique<struct iocb>();
+    struct iocb cb;
     auto data = std::make_unique<Callback>(std::move(io.callback));
-    AioPrepareWrite(cb.get(), io.fd, io.buffer, io.length, io.offset);
-    cb->aio_data = (uintptr_t)(void*)data.get();
-    auto status = SubmitIo(cb.get());
+    AioPrepareWrite(&cb, io.fd, io.buffer, io.length, io.offset);
+    cb.aio_data = (uintptr_t)(void*)data.get();
+    auto status = SubmitIo(&cb);
     if (status.Failure()) {
         UC_ERROR("Failed({}) to submit write io.", status);
         return status;
     }
     data.release();
-    cb.release();
     return Status::OK();
 }
 
