@@ -35,9 +35,12 @@ struct Config {
     size_t tensorSize{0};
     size_t shardSize{0};
     size_t blockSize{0};
+    std::string ioEngine{"aio"};  // "aio", "psync"
     bool ioDirect{false};
-    size_t dataTransConcurrency{8};
-    size_t lookupConcurrency{8};
+    size_t dataTransConcurrency{128};
+    size_t lookupConcurrency{16};
+    size_t openConcurrency{32};
+    size_t commitConcurrency{4};
     size_t timeoutMs{30000};
     size_t dataDirShardBytes{3};
 };
