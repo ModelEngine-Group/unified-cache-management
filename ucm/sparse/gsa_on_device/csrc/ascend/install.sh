@@ -28,6 +28,9 @@ fi
 # install custom_ops in the default path /usr/local/Ascend/latest/opp/vendors
 echo "Installing custom ops in /usr/local/Ascend/latest/opp/vendors"
 cd $RUN_FILE_DIR
+if [ ! -x UCM-custom_ops*.run ]; then
+    chmod +x UCM-custom_ops*.run
+fi
 ./UCM-custom_ops*.run
 
 # update environment variables LD_LIBRARY_PATH
@@ -38,8 +41,10 @@ if [ ! -f "$env_file" ]; then
 fi
 
 if [ -n "$line" ] && ! grep -Fqx "$line" ~/.bashrc 2>/dev/null; then
-    echo "$line" >> "$env_file"
     echo "$line" >> ~/.bashrc
+fi
+if [ -n "$line" ] && ! grep -Fqx "$line" "$env_file" 2>/dev/null; then
+    echo "$line" >> "$env_file"
 fi
 source "$env_file"
 
