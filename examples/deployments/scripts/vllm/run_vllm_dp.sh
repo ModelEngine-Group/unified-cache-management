@@ -18,22 +18,29 @@ start_server() {
         export TARGET_IP="$worker_ip"
     fi
 
-    IFACE=$(get_interface_by_ip "$TARGET_IP")
+    export HCCL_IF_IP="$TARGET_IP"
+    echo "UC_SKIP_IFACE_AUTO_DETECT = ${UC_SKIP_IFACE_AUTO_DETECT:-false}"
 
-    if [[ -z "$IFACE" ]]; then
-        echo ""
-        echo "ERROR: Could not find interface with IP $TARGET_IP via ifconfig. Falling back to 'eth0'."
-        IFACE="eth0"
+    if [[ "${UC_SKIP_IFACE_AUTO_DETECT}" == "true" ]]; then
+        echo "Skipping IFACE auto-detection because nodeTopologyConfig is active."
+        IFACE="${HCCL_SOCKET_IFNAME:-${GLOO_SOCKET_IFNAME:-${TP_SOCKET_IFNAME:-}}}"
     else
-        echo "✅ Detected interface: $IFACE (bound to IP $TARGET_IP)"
+        IFACE=$(get_interface_by_ip "$TARGET_IP")
+
+        if [[ -z "$IFACE" ]]; then
+            echo ""
+            echo "ERROR: Could not find interface with IP $TARGET_IP via ifconfig. Falling back to 'eth0'."
+            IFACE="eth0"
+        else
+            echo "✅ Detected interface: $IFACE (bound to IP $TARGET_IP)"
+        fi
+
+        export HCCL_SOCKET_IFNAME="$IFACE"
+        export GLOO_SOCKET_IFNAME="$IFACE"
+        export TP_SOCKET_IFNAME="$IFACE"
     fi
 
-    export HCCL_IF_IP="$TARGET_IP"
-    export HCCL_SOCKET_IFNAME="$IFACE"
-    export GLOO_SOCKET_IFNAME="$IFACE"
-    export TP_SOCKET_IFNAME="$IFACE"
-
-    # vLLM parameters 
+    # vLLM parameters
     [[ -z "$model" ]] && { echo "ERROR: model not set in config.properties" >&2; exit 1; }
 
     LOG_TIMESTAMP="$(date +%Y%m%d_%H%M%S)"
