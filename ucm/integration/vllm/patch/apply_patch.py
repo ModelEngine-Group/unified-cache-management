@@ -26,7 +26,6 @@ Monkey patching module for vLLM to apply UCM patches automatically.
 This replaces the need for manual `git apply` commands.
 """
 
-import sys
 from typing import Optional
 
 from ucm.logger import init_logger
@@ -35,13 +34,6 @@ logger = init_logger(__name__)
 
 import os
 
-vllm_use_rerope = os.getenv("VLLM_USE_REROPE", "0").lower() in (
-    "1",
-    "true",
-    "yes",
-    "on",
-)
-
 ENABLE_SPARSE = os.getenv("ENABLE_SPARSE", "0").lower() in (
     "1",
     "true",
@@ -49,10 +41,6 @@ ENABLE_SPARSE = os.getenv("ENABLE_SPARSE", "0").lower() in (
     "on",
 )
 ENABLE_UCM_PATCH = os.environ.get("ENABLE_UCM_PATCH", "").lower() in ("1", "true")
-
-
-def _patch_ascend() -> bool:
-    return os.getenv("PLATFORM") == "ascend"
 
 
 def get_vllm_ascend_version() -> Optional[str]:
@@ -89,11 +77,7 @@ def get_vllm_ascend_version() -> Optional[str]:
         return None
 
 
-# Track if patches have been applied
-_patches_applied = False
-_import_hook_installed = False
 _vllm_version: Optional[str] = None
-_vllm_import_hook = None
 
 
 def get_vllm_version() -> Optional[str]:
@@ -118,15 +102,12 @@ def get_vllm_version() -> Optional[str]:
 
 def get_supported_versions() -> list[str]:
     """Get list of supported vLLM versions."""
-    return ["0.9.2", "0.11.0"]
+    return ["0.11.0"]
 
 
 def apply_all_patches() -> None:
     """Apply all vLLM patches based on detected version."""
-    global _patches_applied
     version: Optional[str] = None
-    if _patches_applied:
-        return
 
     try:
         from ucm.integration.vllm.patch.logger_patch import patch_logger
@@ -150,10 +131,6 @@ def apply_all_patches() -> None:
         # Apply vllm/vllm-ascendversion-specific patches
         # vllm patches
         match version:
-            # case "0.9.2" if vllm_use_rerope:
-            #     _apply_patches_rerope()
-            # case "0.9.2":
-            #     _apply_patches_v092()
             case "0.11.0":
                 import ucm.integration.vllm.patch.v0110.vllm.pc_patch
 
@@ -184,113 +161,8 @@ def apply_all_patches() -> None:
                 logger.warning(f"Unsupported vLLM-Ascend version: {ascend_version}")
                 raise ValueError(f"Unsupported vLLM-Ascend version: {ascend_version}")
 
-        _patches_applied = True
         logger.info(f"All vLLM patches applied successfully for version {version}")
 
     except Exception as e:
-        if version == "0.11.0":
-            # Full rollback: always try to restore all monkey-patched symbols.
-            try:
-                from .patch_funcs.v0110.vllm_patch import _rollback_vllm_patches
-
-                _rollback_vllm_patches()
-            except Exception as rollback_err:
-                logger.warning(f"Failed to rollback vLLM patches: {rollback_err}")
-            try:
-                from .patch_funcs.v0110.vllm_ascend_patch import (
-                    _rollback_ascend_patches,
-                )
-
-                _rollback_ascend_patches()
-            except Exception as rollback_err:
-                logger.warning(
-                    f"Failed to rollback vLLM-Ascend patches: {rollback_err}"
-                )
-        _patches_applied = False
         logger.error(f"Failed to apply vLLM patches: {e}\n")
         raise
-
-
-def _apply_patches_v092() -> None:
-    """Apply patches for vLLM 0.9.2."""
-    from .patch_funcs.v092.vllm_patch import _apply_sparse_adapt
-
-    _apply_sparse_adapt()  # apply vllm-sparse-adapt.patch
-    if _patch_ascend():
-        from .patch_funcs.v092.vllm_ascend_patch import _apply_ascend_patch
-
-        _apply_ascend_patch()  # apply vllm-ascend-adapt.patch
-
-
-def _apply_patches_rerope() -> None:
-    """Apply patches for vLLM 0.9.2 for triton rerope"""
-    from .patch_funcs.v092.vllm_rerope_patch import _apply_rerope_adapt_patches
-
-    _apply_rerope_adapt_patches()
-
-
-def _apply_patches_v0110() -> None:
-    """Apply all patches for vLLM 0.11.0."""
-    from .patch_funcs.v0110.vllm_patch import _apply_vllm_patches
-
-    _apply_vllm_patches()
-
-    if get_vllm_ascend_version() == "0.11.0":
-        from .patch_funcs.v0110.vllm_ascend_patch import _apply_ascend_patches
-
-        _apply_ascend_patches()
-
-
-def install_import_hook() -> None:
-    """Install an import hook to automatically apply patches when vLLM is imported."""
-    global _import_hook_installed, _vllm_import_hook
-
-    if _import_hook_installed:
-        return
-
-    try:
-        # Check if vLLM is already imported
-        if "vllm" in sys.modules:
-            # vLLM already imported, apply patches immediately
-            apply_all_patches()
-            _import_hook_installed = True
-        else:
-            # Install import hook by wrapping the builtin __import__ function
-            # This intercepts all imports and applies patches when vLLM is imported
-            import builtins
-
-            original_import = builtins.__import__
-
-            def import_hook(name, globals=None, locals=None, fromlist=(), level=0):
-                # Call original import
-                module = original_import(name, globals, locals, fromlist, level)
-
-                # If the main vLLM module is being imported, apply patches
-                # We only check for 'vllm' (not submodules) to avoid multiple patch attempts
-                if name == "vllm" and not _patches_applied:
-                    try:
-                        apply_all_patches()
-                    except Exception as e:
-                        logger.warning(f"Failed to apply patches during import: {e}")
-
-                return module
-
-            # Replace builtin __import__
-            builtins.__import__ = import_hook
-            _vllm_import_hook = import_hook
-            _import_hook_installed = True
-            logger.debug("Import hook installed to intercept vLLM imports")
-
-    except Exception as e:
-        logger.warning(f"Failed to install import hook: {e}")
-
-
-def ensure_patches_applied() -> None:
-    """Ensure patches are applied, installing import hook if needed."""
-    if not _patches_applied:
-        # Try to apply patches immediately
-        try:
-            apply_all_patches()
-        except Exception:
-            # If it fails (vLLM not imported yet), install hook
-            install_import_hook()
