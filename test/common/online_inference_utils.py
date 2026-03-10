@@ -41,47 +41,11 @@ import shlex
 import subprocess
 import sys
 import time
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
 
 import requests
 
 logger = logging.getLogger(__name__)
-
-
-def load_prompt_from_file(prompt_file: str) -> Tuple[str, List[str]]:
-    """Load prompt and answers from JSON file (LongBench format).
-
-    This is a re-export from offline_inference_utils for convenience.
-
-    Args:
-        prompt_file: Path to the prompt JSON file
-
-    Returns:
-        Tuple of (combined_prompt_string, answers_list)
-    """
-    from common.offline_inference_utils import load_prompt_from_file as _load
-
-    return _load(prompt_file)
-
-
-def split_prompt_by_tokens(
-    prompt: str, tokenizer, split_ratio: float = 0.5
-) -> Tuple[str, str]:
-    """Split a prompt into two parts by token ratio.
-
-    This is a re-export from offline_inference_utils for convenience.
-
-    Args:
-        prompt: The prompt to split
-        tokenizer: Tokenizer to use for splitting
-        split_ratio: Ratio to split (0.5 = split in half)
-
-    Returns:
-        Tuple of (first_part, second_part)
-    """
-    from common.offline_inference_utils import split_prompt_by_tokens as _split
-
-    return _split(prompt, tokenizer, split_ratio)
 
 
 class VLLMServerManager:

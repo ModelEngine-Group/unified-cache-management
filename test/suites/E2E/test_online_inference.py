@@ -18,15 +18,15 @@ from typing import List
 
 import pytest
 import yaml
-from common.llm_connection.LLMBase import LLMRequest
-from common.llm_connection.openai_connector import OpenAIConn
-from common.llm_connection.token_counter import HuggingFaceTokenizer
-from common.offline_inference_utils import ensure_storage_dir
-from common.online_inference_utils import (
-    VLLMServerManager,
+from common.common_inference_utils import (
+    ensure_storage_dir,
     load_prompt_from_file,
     split_prompt_by_tokens,
 )
+from common.llm_connection.LLMBase import LLMRequest
+from common.llm_connection.openai_connector import OpenAIConn
+from common.llm_connection.token_counter import HuggingFaceTokenizer
+from common.online_inference_utils import VLLMServerManager
 from common.path_utils import get_path_relative_to_test_root, get_path_to_model
 
 

@@ -264,13 +264,18 @@ class OpenAIConn(LLMConnection):
         """Return True if the server's /health endpoint responds with 200."""
         try:
             r = self._raw_client.get("/health")
+            if r.status_code != 200:
+                logger.error(
+                    f"Health check failed with status code: {r.status_code}, body: {r.text}"
+                )
             return r.status_code == 200
-        except Exception:
+        except Exception as e:
+            logger.error(f"Health check failed: {type(e).__name__}: {e}")
             return False
 
     def list_models(self) -> list:
         """Return list of model IDs available on the server via /models."""
-        r = self._raw_client.get("/models")
+        r = self._client.get("/models")
         r.raise_for_status()
         return [m["id"] for m in r.json().get("data", [])]
 
