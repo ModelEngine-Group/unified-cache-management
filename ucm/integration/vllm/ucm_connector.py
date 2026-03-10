@@ -221,7 +221,7 @@ class UCMDirectConnector(KVConnectorBase_V1):
             self.store = self._create_store(None)
         else:
             if self.is_mla:
-                self.request_hasher = RequestHasher(vllm_config, (self.tp_rank//self.tp_size)*self.tp_size)
+                self.request_hasher = RequestHasher(vllm_config, self.tp_rank//self.tp_size)
             else:
                 self.request_hasher = RequestHasher(vllm_config, self.tp_rank)
 
@@ -508,7 +508,7 @@ class UCMDirectConnector(KVConnectorBase_V1):
             num_loaded_request += 1
 
             ucm_block_ids, vllm_block_ids = request.load_block_ids
-            if self.tp_rank != 0 :
+            if self.tp_rank//self.tp_size != 0 :
                 for i, ucm_block_id in enumerate(ucm_block_ids):
                     ucm_block_ids[i] = self.request_hasher(ucm_block_id)
             total_ptrs = self.kv_cache_layout.extract_block_addrs(vllm_block_ids)
@@ -597,7 +597,7 @@ class UCMDirectConnector(KVConnectorBase_V1):
             num_saved_request += 1
 
             ucm_block_ids, vllm_block_ids = request.dump_block_ids
-            if self.tp_rank != 0:
+            if self.tp_rank//self.tp_size != 0:
                 for i, ucm_block_id in enumerate(ucm_block_ids):
                     ucm_block_ids[i] = self.request_hasher(ucm_block_id)
             total_ucm_block_ids.extend(ucm_block_ids)
@@ -684,7 +684,7 @@ class UCMLayerWiseConnector(UCMDirectConnector):
                 continue
 
             ucm_block_ids, vllm_block_ids = request.load_block_ids
-            if self.tp_rank != 0 :
+            if self.tp_rank//self.tp_size != 0 :
                 for i, ucm_block_id in enumerate(ucm_block_ids):
                     ucm_block_ids[i] = self.request_hasher(ucm_block_id)
             try:
@@ -742,7 +742,7 @@ class UCMLayerWiseConnector(UCMDirectConnector):
 
             self.is_save = True
             ucm_block_ids, vllm_block_ids = request.dump_block_ids
-            if self.tp_rank != 0 and local_layer_id == 0:
+            if self.tp_rank//self.tp_size != 0 and local_layer_id == 0:
                 for i, ucm_block_id in enumerate(ucm_block_ids):
                     ucm_block_ids[i] = self.request_hasher(ucm_block_id)
             total_ucm_block_ids.extend(ucm_block_ids)
