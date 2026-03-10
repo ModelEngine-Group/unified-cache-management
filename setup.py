@@ -51,7 +51,7 @@ def print_platform_warning():
 {RED}{'=' * 80}
 {BOLD}⚠️  WARNING: PLATFORM environment variable is not set! ⚠️{RESET}
 {RED}{'=' * 80}{RESET}
-{YELLOW}Please set PLATFORM to one of: cuda, ascend, musa, maca{RESET}
+{YELLOW}Please set PLATFORM to one of: cuda, ascend, ascend-a3, musa, maca{RESET}
 Example:
   {BOLD}export PLATFORM=cuda{RESET}    # For CUDA platform
 {YELLOW}In CI scenarios only, you don't need to specify PLATFORM. If it's not a CI scenario, please uninstall and then reinstall with PLATFORM specified.{RESET}
@@ -66,8 +66,16 @@ if not PLATFORM:
     atexit.register(print_platform_warning)
 
 
+def is_ascend() -> bool:
+    return PLATFORM is not None and PLATFORM.startswith("ascend")
+
+
 def enable_sparse() -> bool:
     return ENABLE_SPARSE is not None and ENABLE_SPARSE.lower() == "true"
+
+
+def is_only_build_mode() -> bool:
+    return "bdist_wheel" in sys.argv
 
 
 def is_editable_mode() -> bool:
@@ -94,21 +102,21 @@ class CMakeBuild(build_ext):
         for ext in self.extensions:
             self.build_cmake(ext)
 
-        if enable_sparse() and PLATFORM == "ascend":
+        if enable_sparse() and is_ascend():
+            gsa_build_script = "ucm/sparse/gsa_on_device/csrc/ascend/build.sh"
+            args = []
+            if PLATFORM == "ascend-a3":
+                args.append("a3")
+            if not is_only_build_mode():
+                args.append("install")
             try:
                 print(
-                    "Running bash ucm/sparse/gsa_on_device/csrc/ascend/build_aclnn.sh to compiling NPU custom ops for UCM..."
+                    f"Running {gsa_build_script} to compiling NPU custom ops for UCM..."
                 )
-                subprocess.check_call(
-                    ["bash", "ucm/sparse/gsa_on_device/csrc/ascend/build_aclnn.sh"]
-                )
-                print(
-                    "ucm/sparse/gsa_on_device/csrc/ascend/buid_aclnn.sh executed successfully!"
-                )
+                subprocess.check_call(["bash", gsa_build_script] + args)
+                print(f"{gsa_build_script} executed successfully!")
             except subprocess.CalledProcessError as e:
-                print(
-                    f"Error running ucm/sparse/gsa_on_device/csrc/ascend/build_aclnn.sh: {e}"
-                )
+                print("Error running {gsa_build_script}: {e}")
                 raise SystemExit(e.returncode)
 
     def build_cmake(self, ext: CMakeExtension):
@@ -129,7 +137,7 @@ class CMakeBuild(build_ext):
         match PLATFORM:
             case "cuda":
                 cmake_args += ["-DRUNTIME_ENVIRONMENT=cuda"]
-            case "ascend":
+            case "ascend" | "ascend-a3":
                 cmake_args += ["-DRUNTIME_ENVIRONMENT=ascend"]
             case "musa":
                 cmake_args += ["-DRUNTIME_ENVIRONMENT=musa"]
