@@ -31,13 +31,6 @@ Status SpaceManager::Setup(const Config& config)
 {
     auto s = layout_.Setup(config);
     if (s.Failure()) [[unlikely]] { return s; }
-    auto success =
-        lookupSrv_.SetWorkerFn([this](LookupContext& ctx, auto&) { OnLookup(ctx); })
-            .SetWorkerTimeoutFn([this](LookupContext& ctx, auto) { OnLookupTimeout(ctx); },
-                                config.timeoutMs)
-            .SetNWorker(config.lookupConcurrency)
-            .Run();
-    if (!success) [[unlikely]] { return Status::Error("failed to run lookup service thread pool"); }
     auto prefixSuccess =
         prefixLookupSrv_
             .SetWorkerFn([this](PrefixLookupContext& ctx, auto&) { OnLookupPrefix(ctx); })
@@ -54,24 +47,12 @@ Status SpaceManager::Setup(const Config& config)
 
 Expected<std::vector<uint8_t>> SpaceManager::Lookup(const Detail::BlockId* blocks, size_t num)
 {
-    std::shared_ptr<std::vector<uint8_t>> founds;
-    std::shared_ptr<std::atomic<int32_t>> status;
-    std::shared_ptr<Latch> waiter;
-    const auto ok = Status::OK().Underlying();
-    try {
-        founds = std::make_shared<std::vector<uint8_t>>(num, 0);
-        status = std::make_shared<std::atomic<int32_t>>(ok);
-        waiter = std::make_shared<Latch>();
-    } catch (const std::exception& e) {
-        UC_ERROR("Failed({}) to allocate memory for lookup context.", e.what());
-        return Status::OutOfMemory();
-    }
-    waiter->Set(num);
-    for (size_t i = 0; i < num; i++) { lookupSrv_.Push({blocks[i], i, founds, status, waiter}); }
-    waiter->Wait();
-    auto s = status->load();
-    if (s != ok) [[unlikely]] { return Status{s, "failed to lookup some blocks"}; }
-    return std::move(*founds);
+    std::vector<uint8_t> results(num, false);
+    auto res = LookupOnPrefix(blocks, num);
+    if (!res) [[unlikely]] { return res.Error(); }
+    const auto index = res.Value();
+    for (ssize_t i = 0; i <= index; ++i) { results[i] = true; }
+    return results;
 }
 
 Expected<ssize_t> SpaceManager::LookupOnPrefix(const Detail::BlockId* blocks, size_t num)
@@ -120,21 +101,6 @@ uint8_t SpaceManager::Lookup(const Detail::BlockId* block)
         return false;
     }
     return true;
-}
-
-void SpaceManager::OnLookup(LookupContext& ctx)
-{
-    const auto ok = Status::OK().Underlying();
-    if (ctx.status->load() == ok) { (*ctx.founds)[ctx.index] = Lookup(&ctx.block); }
-    ctx.waiter->Done();
-}
-
-void SpaceManager::OnLookupTimeout(LookupContext& ctx)
-{
-    auto ok = Status::OK().Underlying();
-    auto timeout = Status::Timeout().Underlying();
-    ctx.status->compare_exchange_weak(ok, timeout, std::memory_order_acq_rel);
-    ctx.waiter->Done();
 }
 
 void SpaceManager::OnLookupPrefix(PrefixLookupContext& ctx)
