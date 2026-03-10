@@ -332,11 +332,18 @@ class GSAOnDevice(UcmSparseBase):
 
     def init_for_pc(self):
         # for pc hit
-        self.prefix_slot_mapping_buf = torch.empty(
-            self.max_num_tokens * self.max_batch_size,
-            device=self.device,
-            dtype=torch.int64,
-        )
+        if self.is_cuda:
+            self.prefix_slot_mapping_buf = torch.empty(
+                self.max_num_tokens * self.max_batch_size,
+                device=self.device,
+                dtype=torch.int64,
+            )
+        else:
+            self.prefix_slot_mapping_buf = torch.empty(
+                self.max_num_tokens * self.max_batch_size,
+                device=self.device,
+                dtype=torch.int32,
+            )
         self.prefix_block_ids_buf = torch.empty(
             cdiv(self.max_num_tokens * self.max_batch_size, self.block_size),
             device=self.device,
@@ -442,7 +449,16 @@ class GSAOnDevice(UcmSparseBase):
                 scale=self._k_scale,
             )
 
-    def cache_k_hash_mla_npu(self, nope, rope, k_hash, slot_mapping, num_tokens_device):
+    def cache_k_hash_mla_npu(
+        self,
+        nope,
+        rope,
+        k_hash,
+        slot_mapping,
+        num_tokens_device,
+        forward_context,
+        layer_name,
+    ):
         khash_nope_cache, khash_rope_cache = k_hash
         khash_nope = self.hash_encoder_nope.compute_hash(nope)
         khash_rope = self.hash_encoder_rope.compute_hash(rope)
@@ -482,6 +498,64 @@ class GSAOnDevice(UcmSparseBase):
             khash_rope_cache,
         )
 
+        if self.has_pc_hit:
+            ## kvcache -> nope + rope
+            attn = forward_context.no_compile_layers[layer_name]
+            (nope_cache, rope_cache), khash_cache = attn.kv_cache[
+                forward_context.virtual_engine
+            ]
+
+            k_nope_cache = (
+                nope_cache[self.prefix_block_ids]
+                .reshape(-1, nope_cache.shape[2], nope_cache.shape[3])
+                .unsqueeze(1)
+            )
+            k_rope_cache = (
+                rope_cache[self.prefix_block_ids]
+                .reshape(-1, rope_cache.shape[2], rope_cache.shape[3])
+                .unsqueeze(1)
+            )
+
+            khash_nope = self.hash_encoder_nope.compute_hash(k_nope_cache)
+            khash_rope = self.hash_encoder_rope.compute_hash(k_rope_cache)
+
+            khash_nope_new = (
+                khash_nope.transpose(0, 1)
+                .reshape(-1, khash_nope.shape[-1])
+                .contiguous()
+            )
+            khash_rope_new = (
+                khash_rope.transpose(0, 1)
+                .reshape(-1, khash_rope.shape[-1])
+                .contiguous()
+            )
+            if (
+                self.khash_zeros_full == None
+                or self.khash_zeros_full.numel() < khash_rope_new.numel()
+            ):
+                self.khash_zeros_full = torch.zeros_like(khash_rope_new)
+
+            khash_zeros = self.khash_zeros_full[: khash_rope_new.shape[0]]
+
+            khash_rope_new_pad = torch.cat(
+                (khash_rope_new, khash_zeros), dim=-1
+            ).contiguous()
+
+            torch.ops._C_ucm.npu_reshape_and_cache_bnsd(
+                khash_nope_new,
+                khash_nope_cache,
+                self.prefix_slot_mapping.flatten(),
+                self.prefix_token_len,
+                khash_nope_cache,
+            )
+            torch.ops._C_ucm.npu_reshape_and_cache_bnsd(
+                khash_rope_new_pad,
+                khash_rope_cache,
+                self.prefix_slot_mapping.flatten(),
+                self.prefix_token_len,
+                khash_rope_cache,
+            )
+
     def cache_k_hash_gqa_cuda(
         self, key, attn_metadata, k_hash, forward_context, layer_name
     ):
@@ -511,7 +585,9 @@ class GSAOnDevice(UcmSparseBase):
                 block_size=self.block_size,
             )
 
-    def cache_k_hash_gqa_npu(self, key, k_hash, attn_metadata):
+    def cache_k_hash_gqa_npu(
+        self, key, k_hash, attn_metadata, forward_context, layer_name
+    ):
         if not self.is_tensor_computed:
             if self.decode_mask.any():  # with at least one decode request
                 if self.slice_enabled:
@@ -563,6 +639,27 @@ class GSAOnDevice(UcmSparseBase):
             attn_metadata.query_lens_device,  # need to modify attention_v1.py in vllm-asecnd
             k_hash,
         )
+        if self.has_pc_hit:
+            ## 重新捞取所有token的key
+            attn = forward_context.no_compile_layers[layer_name]
+            kv_cache = attn.kv_cache[forward_context.virtual_engine]
+
+            k_cache = kv_cache[0][0][self.prefix_block_ids]
+            k_cache = k_cache.reshape(-1, k_cache.shape[2], k_cache.shape[3])
+            prefix_k_hash_compute = self.hash_encoder.compute_hash(k_cache)
+
+            prefix_k_hash_compute = (
+                prefix_k_hash_compute.transpose(0, 1)
+                .reshape(-1, prefix_k_hash_compute.shape[-1])
+                .contiguous()
+            )
+            torch.ops._C_ucm.npu_reshape_and_cache_bnsd(
+                prefix_k_hash_compute,
+                k_hash,
+                self.prefix_slot_mapping.flatten(),
+                self.prefix_token_len,
+                k_hash,
+            )
 
     def update_decode_topk_mla_cuda(
         self,
@@ -795,6 +892,8 @@ class GSAOnDevice(UcmSparseBase):
                         k_hash=k_hash,
                         slot_mapping=slot_mapping,
                         num_tokens_device=num_tokens_device,
+                        forward_context=forward_context,
+                        layer_name=layer_name,
                     )
                 # external_pc_hit need fix
             else:  # GQA
@@ -803,7 +902,9 @@ class GSAOnDevice(UcmSparseBase):
                         key, attn_metadata, k_hash, forward_context, layer_name
                     )
                 else:  # NPU
-                    self.cache_k_hash_gqa_npu(key, k_hash, attn_metadata)
+                    self.cache_k_hash_gqa_npu(
+                        key, k_hash, attn_metadata, forward_context, layer_name
+                    )
 
         if not self.gsa_enabled:
             return query, key, value, output
@@ -1066,6 +1167,9 @@ class GSAOnDevice(UcmSparseBase):
                 return attn_metadata_prefill.block_table[prefill_row_id]
             return attn_metadata.block_table[req_row_id]
         else:
+            if self.is_mla:
+                attn_metadata_prefill = getattr(attn_metadata, "prefill", None)
+                return attn_metadata_prefill.block_table[prefill_row_id]
             return attn_metadata.block_tables[req_row_id]
 
     def get_seq_lens(self, attn_metadata):
@@ -1158,6 +1262,7 @@ class GSAOnDevice(UcmSparseBase):
         self.decode_req_ids_buf.clear()
 
         prefill_row_id = 0
+        prefix_token_len_list = []
         for (
             req_id,
             num_scheduled_tokens,
@@ -1216,6 +1321,7 @@ class GSAOnDevice(UcmSparseBase):
                     self.prefix_block_ids_buf[
                         all_prefix_blocks : all_prefix_blocks + num_prefix_blocks
                     ] = prefix_block_ids
+                    prefix_token_len_list.append(num_prefix_tokens)
 
                     all_prefix_tokens += num_prefix_tokens
                     all_prefix_blocks += num_prefix_blocks
@@ -1228,6 +1334,9 @@ class GSAOnDevice(UcmSparseBase):
         if self.has_pc_hit:
             self.prefix_slot_mapping = self.prefix_slot_mapping_buf[:all_prefix_tokens]
             self.prefix_block_ids = self.prefix_block_ids_buf[:all_prefix_blocks]
+            self.prefix_token_len = torch.tensor(
+                prefix_token_len_list, device=self.device
+            )
 
         if self.is_mla or not self.gsa_enabled:
             return
