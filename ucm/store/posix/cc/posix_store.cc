@@ -21,40 +21,102 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  * */
-#include "posix_store.h"
 #include <fmt/ranges.h>
 #include "logger/logger.h"
 #include "space_manager.h"
 #include "trans_manager.h"
+#include "ucmstore_v1.h"
 
 namespace UC::PosixStore {
 
-class PosixStoreImpl {
-public:
-    SpaceManager spaceMgr;
-    TransManager transMgr;
-    bool transEnable{false};
+class PosixStore : public StoreV1 {
+    SpaceManager spaceMgr_;
+    TransManager transMgr_;
+    bool transEnable_{false};
 
 public:
-    Status Setup(const Config& config)
+    Status Setup(const Detail::Dictionary& inConfig) override
     {
+        auto config = ParseConfig(inConfig);
         auto s = CheckConfig(config);
         if (s.Failure()) [[unlikely]] {
             UC_ERROR("Failed to check config params: {}.", s);
             return s;
         }
-        s = spaceMgr.Setup(config);
+        s = spaceMgr_.Setup(config);
         if (s.Failure()) [[unlikely]] { return s; }
-        transEnable = config.deviceId >= 0;
-        if (transEnable) {
-            s = transMgr.Setup(config, spaceMgr.GetLayout());
+        transEnable_ = config.deviceId >= 0;
+        if (transEnable_) {
+            s = transMgr_.Setup(config, spaceMgr_.GetLayout());
             if (s.Failure()) [[unlikely]] { return s; }
         }
         ShowConfig(config);
         return Status::OK();
     }
+    std::string Readme() const override { return "PosixStore"; }
+    Expected<std::vector<uint8_t>> Lookup(const Detail::BlockId* blocks, size_t num) override
+    {
+        auto res = spaceMgr_.Lookup(blocks, num);
+        if (!res) [[unlikely]] { UC_ERROR("Failed({}) to lookup blocks({}).", res.Error(), num); }
+        return res;
+    }
+    Expected<ssize_t> LookupOnPrefix(const Detail::BlockId* blocks, size_t num) override
+    {
+        auto res = spaceMgr_.LookupOnPrefix(blocks, num);
+        if (!res) [[unlikely]] { UC_ERROR("Failed({}) to lookup blocks({}).", res.Error(), num); }
+        return res;
+    }
+    void Prefetch(const Detail::BlockId* blocks, size_t num) override {}
+    Expected<Detail::TaskHandle> Load(Detail::TaskDesc task) override
+    {
+        if (!transEnable_) { return Status::Error("transfer is not enable"); }
+        auto res = transMgr_.GetIoEngine()->Submit({TransTask::Type::LOAD, std::move(task)});
+        if (!res) [[unlikely]] {
+            UC_ERROR("Failed({}) to submit load task({}).", res.Error(), task.brief);
+        }
+        return res;
+    }
+    Expected<Detail::TaskHandle> Dump(Detail::TaskDesc task) override
+    {
+        if (!transEnable_) { return Status::Error("transfer is not enable"); }
+        auto res = transMgr_.GetIoEngine()->Submit({TransTask::Type::DUMP, std::move(task)});
+        if (!res) [[unlikely]] {
+            UC_ERROR("Failed({}) to submit dump task({}).", res.Error(), task.brief);
+        }
+        return res;
+    }
+    Expected<bool> Check(Detail::TaskHandle taskId) override
+    {
+        auto res = transMgr_.GetIoEngine()->Check(taskId);
+        if (!res) [[unlikely]] { UC_ERROR("Failed({}) to check task({}).", res.Error(), taskId); }
+        return res;
+    }
+    Status Wait(Detail::TaskHandle taskId) override
+    {
+        auto s = transMgr_.GetIoEngine()->Wait(taskId);
+        if (s.Failure()) [[unlikely]] { UC_ERROR("Failed({}) to wait task({}).", s, taskId); }
+        return s;
+    }
 
 private:
+    Config ParseConfig(const Detail::Dictionary& inConfig)
+    {
+        Config config;
+        inConfig.Get("storage_backends", config.storageBackends);
+        inConfig.GetNumber("device_id", config.deviceId);
+        inConfig.GetNumber("tensor_size", config.tensorSize);
+        inConfig.GetNumber("shard_size", config.shardSize);
+        inConfig.GetNumber("block_size", config.blockSize);
+        inConfig.Get("posix_io_engine", config.ioEngine);
+        inConfig.Get("io_direct", config.ioDirect);
+        inConfig.GetNumber("posix_data_trans_concurrency", config.dataTransConcurrency);
+        inConfig.GetNumber("posix_lookup_concurrency", config.lookupConcurrency);
+        inConfig.GetNumber("posix_open_concurrency", config.openConcurrency);
+        inConfig.GetNumber("posix_commit_concurrency", config.commitConcurrency);
+        inConfig.GetNumber("timeout_ms", config.timeoutMs);
+        inConfig.GetNumber("data_dir_shard_bytes", config.dataDirShardBytes);
+        return config;
+    }
     Status CheckConfig(const Config& config)
     {
         if (config.storageBackends.empty()) {
@@ -112,86 +174,6 @@ private:
         UC_INFO("Set {}::DataDirShardBytes to {}.", ns, config.dataDirShardBytes);
     }
 };
-
-PosixStore::PosixStore::~PosixStore() = default;
-
-Status PosixStore::Setup(const Detail::Dictionary& config)
-{
-    Config param;
-    config.Get("storage_backends", param.storageBackends);
-    config.GetNumber("device_id", param.deviceId);
-    config.GetNumber("tensor_size", param.tensorSize);
-    config.GetNumber("shard_size", param.shardSize);
-    config.GetNumber("block_size", param.blockSize);
-    config.Get("posix_io_engine", param.ioEngine);
-    config.Get("io_direct", param.ioDirect);
-    config.GetNumber("posix_data_trans_concurrency", param.dataTransConcurrency);
-    config.GetNumber("posix_lookup_concurrency", param.lookupConcurrency);
-    config.GetNumber("posix_open_concurrency", param.openConcurrency);
-    config.GetNumber("posix_commit_concurrency", param.commitConcurrency);
-    config.GetNumber("timeout_ms", param.timeoutMs);
-    config.GetNumber("data_dir_shard_bytes", param.dataDirShardBytes);
-    try {
-        impl_ = std::make_shared<PosixStoreImpl>();
-    } catch (const std::exception& e) {
-        UC_ERROR("Failed({}) to make posix store object.", e.what());
-        return Status::Error(e.what());
-    }
-    return impl_->Setup(param);
-}
-
-std::string PosixStore::Readme() const { return "PosixStore"; }
-
-Expected<std::vector<uint8_t>> PosixStore::PosixStore::Lookup(const Detail::BlockId* blocks,
-                                                              size_t num)
-{
-    auto res = impl_->spaceMgr.Lookup(blocks, num);
-    if (!res) [[unlikely]] { UC_ERROR("Failed({}) to lookup blocks({}).", res.Error(), num); }
-    return res;
-}
-
-Expected<ssize_t> PosixStore::LookupOnPrefix(const Detail::BlockId* blocks, size_t num)
-{
-    auto res = impl_->spaceMgr.LookupOnPrefix(blocks, num);
-    if (!res) [[unlikely]] { UC_ERROR("Failed({}) to lookup blocks({}).", res.Error(), num); }
-    return res;
-}
-
-void PosixStore::PosixStore::Prefetch(const Detail::BlockId* blocks, size_t num) {}
-
-Expected<Detail::TaskHandle> PosixStore::PosixStore::Load(Detail::TaskDesc task)
-{
-    if (!impl_->transEnable) { return Status::Error("transfer is not enable"); }
-    auto res = impl_->transMgr.GetIoEngine()->Submit({TransTask::Type::LOAD, std::move(task)});
-    if (!res) [[unlikely]] {
-        UC_ERROR("Failed({}) to submit load task({}).", res.Error(), task.brief);
-    }
-    return res;
-}
-
-Expected<Detail::TaskHandle> PosixStore::PosixStore::Dump(Detail::TaskDesc task)
-{
-    if (!impl_->transEnable) { return Status::Error("transfer is not enable"); }
-    auto res = impl_->transMgr.GetIoEngine()->Submit({TransTask::Type::DUMP, std::move(task)});
-    if (!res) [[unlikely]] {
-        UC_ERROR("Failed({}) to submit dump task({}).", res.Error(), task.brief);
-    }
-    return res;
-}
-
-Expected<bool> PosixStore::PosixStore::Check(Detail::TaskHandle taskId)
-{
-    auto res = impl_->transMgr.GetIoEngine()->Check(taskId);
-    if (!res) [[unlikely]] { UC_ERROR("Failed({}) to check task({}).", res.Error(), taskId); }
-    return res;
-}
-
-Status PosixStore::PosixStore::Wait(Detail::TaskHandle taskId)
-{
-    auto s = impl_->transMgr.GetIoEngine()->Wait(taskId);
-    if (s.Failure()) [[unlikely]] { UC_ERROR("Failed({}) to wait task({}).", s, taskId); }
-    return s;
-}
 
 }  // namespace UC::PosixStore
 
