@@ -21,7 +21,7 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  * */
-#include "posix/cc/posix_store.h"
+#include "posix/cc/posix_store.cc"
 #include "detail/data_generator.h"
 #include "detail/path_base.h"
 #include "detail/types_helper.h"
