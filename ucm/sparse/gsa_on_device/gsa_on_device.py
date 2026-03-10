@@ -572,8 +572,8 @@ class GSAOnDevice(UcmSparseBase):
                     attn_metadata.decode.block_table,
                     attn_metadata.decode.seq_lens,
                     topk_token=topk_token,
-                    sink_token=64,
-                    recent_token=512,
+                    sink_token=self.block_size,
+                    recent_token=self.block_size * 4,
                     is_mla=self.is_mla,
                 )
                 attn_metadata.decode.topk_block_table = block_table
@@ -660,8 +660,8 @@ class GSAOnDevice(UcmSparseBase):
             attn_metadata.block_table,
             attn_metadata.seq_lens,
             topk_token=self.hash_topk_tokens,
-            sink_token=64,
-            recent_token=512,
+            sink_token=self.block_size,
+            recent_token=self.block_size * 4,
             is_mla=self.is_mla,
         )
         # update topk_block_table
