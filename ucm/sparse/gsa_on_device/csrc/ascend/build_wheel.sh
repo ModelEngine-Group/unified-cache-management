@@ -19,7 +19,3 @@ rm -rf dist/*
 
 # build ucm_custom_ops python package
 python3 setup_wheel.py build bdist_wheel
-
-# install ucm_custom_ops python package
-cd $ROOT_DIR/dist
-pip3 install ucm_custom_ops*.whl --force-reinstall
