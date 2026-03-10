@@ -1,0 +1,7 @@
+{
+    "backend": "unifiedcache",
+    "storage_backends": ["/path/to/kvcache"],
+
+    "mindie_config_path": "/usr/local/Ascend/mindie/latest/mindie-service/conf/config.json",
+    "block_elem_size" : 2
+}
