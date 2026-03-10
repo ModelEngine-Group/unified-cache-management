@@ -46,6 +46,7 @@ def setup(
     config["tensor_size"] = block_size
     config["shard_size"] = block_size
     config["block_size"] = block_size
+    config["posix_io_engine"] = "psync"
     config["posix_data_trans_concurrency"] = data_trans_concur
     config["posix_lookup_concurrency"] = lookup_concur
     config["io_direct"] = io_direct
