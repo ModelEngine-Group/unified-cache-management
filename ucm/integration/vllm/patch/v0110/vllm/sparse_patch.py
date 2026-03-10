@@ -15,7 +15,7 @@ logger = init_logger(__name__)
 def patch_attention_layer(mod):
     logger.debug(f"Patched {mod} called")
 
-    from ucm.integration.vllm.patch.v0110.sparse.attention import layer
+    from ucm.integration.vllm.patch.v0110.vllm.sparse.attention import layer
 
     torch.ops.vllm.unified_attention_with_output = PatchOpProxy(
         torch.ops.vllm.unified_attention_with_output,
@@ -34,7 +34,7 @@ def patch_attention_layer(mod):
 def patch_llama_model(mod):
     logger.debug(f"Patched {mod} called")
 
-    from ucm.integration.vllm.patch.v0110.sparse.model_executor.models import llama
+    from ucm.integration.vllm.patch.v0110.vllm.sparse.model_executor.models import llama
 
     patch_or_inject(mod.LlamaDecoderLayer, "forward", llama.LlamaDecoderLayer.forward)
     patch_or_inject(mod.LlamaModel, "forward", llama.LlamaModel.forward)
@@ -44,7 +44,7 @@ def patch_llama_model(mod):
 def patch_qwen2_model(mod):
     logger.debug(f"Patched {mod} called")
 
-    from ucm.integration.vllm.patch.v0110.sparse.model_executor.models import qwen2
+    from ucm.integration.vllm.patch.v0110.vllm.sparse.model_executor.models import qwen2
 
     patch_or_inject(mod.Qwen2DecoderLayer, "forward", qwen2.Qwen2DecoderLayer.forward)
     patch_or_inject(mod.Qwen2Model, "forward", qwen2.Qwen2Model.forward)
@@ -54,7 +54,9 @@ def patch_qwen2_model(mod):
 def patch_common_attention_backend(mod):
     logger.debug(f"Patched {mod} called")
 
-    from ucm.integration.vllm.patch.v0110.sparse.v1.attention.backends.mla import common
+    from ucm.integration.vllm.patch.v0110.vllm.sparse.v1.attention.backends.mla import (
+        common,
+    )
 
     patch_or_inject(mod.MLACommonImpl, "forward", common.MLACommonImpl.forward)
 
@@ -63,7 +65,7 @@ def patch_common_attention_backend(mod):
 def patch_flashmla_attention_backend(mod):
     logger.debug(f"Patched {mod} called")
 
-    from ucm.integration.vllm.patch.v0110.sparse.v1.attention.backends.mla import (
+    from ucm.integration.vllm.patch.v0110.vllm.sparse.v1.attention.backends.mla import (
         flashmla,
     )
 
@@ -83,7 +85,9 @@ def patch_flashmla_attention_backend(mod):
 def patch_kv_cache_coordinator(mod):
     logger.debug(f"Patched {mod} called")
 
-    from ucm.integration.vllm.patch.v0110.sparse.v1.core import kv_cache_coordinator
+    from ucm.integration.vllm.patch.v0110.vllm.sparse.v1.core import (
+        kv_cache_coordinator,
+    )
 
     patch_or_inject(
         mod.KVCacheCoordinator,
@@ -96,7 +100,7 @@ def patch_kv_cache_coordinator(mod):
 def patch_kv_cache_manager(mod):
     logger.debug(f"Patched {mod} called")
 
-    from ucm.integration.vllm.patch.v0110.sparse.v1.core import kv_cache_manager
+    from ucm.integration.vllm.patch.v0110.vllm.sparse.v1.core import kv_cache_manager
 
     patch_or_inject(
         mod.KVCacheManager,
@@ -109,7 +113,7 @@ def patch_kv_cache_manager(mod):
 def patch_kv_cache_utils(mod):
     logger.debug(f"Patched {mod} called")
 
-    from ucm.integration.vllm.patch.v0110.sparse.v1.core import kv_cache_utils
+    from ucm.integration.vllm.patch.v0110.vllm.sparse.v1.core import kv_cache_utils
 
     patch_or_inject(
         mod,
@@ -122,7 +126,7 @@ def patch_kv_cache_utils(mod):
 def patch_scheduler_output(mod):
     logger.debug(f"Patched {mod} called")
 
-    from ucm.integration.vllm.patch.v0110.sparse.v1.core.sched import output
+    from ucm.integration.vllm.patch.v0110.vllm.sparse.v1.core.sched import output
 
     patch_dataclass_fields(
         mod.SchedulerOutput,
@@ -134,7 +138,7 @@ def patch_scheduler_output(mod):
 def patch_worker_block_table(mod):
     logger.debug(f"Patched {mod} called")
 
-    from ucm.integration.vllm.patch.v0110.sparse.v1.worker import block_table
+    from ucm.integration.vllm.patch.v0110.vllm.sparse.v1.worker import block_table
 
     patch_or_inject(mod.BlockTable, "append_row", block_table.BlockTable.append_row)
     patch_or_inject(
@@ -148,7 +152,7 @@ def patch_worker_block_table(mod):
 def patch_worker_gpu_worker(mod):
     logger.debug(f"Patched {mod} called")
 
-    from ucm.integration.vllm.patch.v0110.sparse.v1.worker import gpu_worker
+    from ucm.integration.vllm.patch.v0110.vllm.sparse.v1.worker import gpu_worker
 
     patch_or_inject(
         mod,
@@ -161,7 +165,7 @@ def patch_worker_gpu_worker(mod):
 def patch_worker_gpu_model_runner(mod):
     logger.debug(f"Patched {mod} called")
 
-    from ucm.integration.vllm.patch.v0110.sparse.v1.worker import gpu_model_runner
+    from ucm.integration.vllm.patch.v0110.vllm.sparse.v1.worker import gpu_model_runner
 
     patch_or_inject(
         mod.GPUModelRunner,
@@ -209,7 +213,7 @@ def patch_worker_gpu_model_runner(mod):
 def patch_core_sched_scheduler(mod):
     logger.debug(f"Patched {mod} called")
 
-    from ucm.integration.vllm.patch.v0110.sparse.v1.core.sched import scheduler
+    from ucm.integration.vllm.patch.v0110.vllm.sparse.v1.core.sched import scheduler
 
     patch_or_inject(mod.Scheduler, "__init__", scheduler.Scheduler.__init__)
     patch_or_inject(mod.Scheduler, "schedule", scheduler.Scheduler.schedule)

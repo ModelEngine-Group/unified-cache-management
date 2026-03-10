@@ -162,6 +162,8 @@ class TestBasicOnlineInference:
             )
             assert client.health_check()
 
+            print(f"server models: {client.list_models()}")
+
             # Phase 1.1: Send full prompt -> KV cache saved to SSD
             phase1_1_output = client.chat(
                 LLMRequest(
@@ -195,6 +197,8 @@ class TestBasicOnlineInference:
                 model=served_model_name,
             )
             assert client.health_check()
+
+            print(f"server models: {client.list_models()}")
 
             # Phase 2.1: Send partial prompt -> warm HBM prefix cache
             phase2_partial_output = client.chat(

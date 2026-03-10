@@ -6,11 +6,6 @@ from dataclasses import dataclass, field
 from typing import Any, AsyncIterator, Dict, Iterator, Optional
 
 import httpx
-
-# from pathlib import Path
-# import sys
-# PRJ_ROOT = Path(__file__).resolve().parent.parent.parent
-# sys.path.insert(0, str(PRJ_ROOT))
 from common.llm_connection.LLMBase import (
     LLMConnection,
     LLMRequest,
@@ -84,9 +79,11 @@ class OpenAIConn(LLMConnection):
 
     _client: httpx.Client = field(init=False, repr=False)
     _aclient: httpx.AsyncClient = field(init=False, repr=False)
+    _raw_client: httpx.Client = field(init=False, repr=False)
 
     def __post_init__(self):
         self.base_url = self.base_url.rstrip("/")
+        self._base_url_raw = self.base_url.rstrip("/v1")
         if not self.base_url.endswith("/v1"):
             self.base_url += "/v1"
 
@@ -108,6 +105,13 @@ class OpenAIConn(LLMConnection):
         )
         self._aclient = httpx.AsyncClient(
             base_url=self.base_url,
+            headers=headers,
+            timeout=self.timeout,
+            limits=limits,
+        )
+        # Client for non-v1 endpoints (e.g., /health, /models)
+        self._raw_client = httpx.Client(
+            base_url=self._base_url_raw,
             headers=headers,
             timeout=self.timeout,
             limits=limits,
@@ -259,14 +263,14 @@ class OpenAIConn(LLMConnection):
     def health_check(self) -> bool:
         """Return True if the server's /health endpoint responds with 200."""
         try:
-            r = self._client.get("/health")
+            r = self._raw_client.get("/health")
             return r.status_code == 200
         except Exception:
             return False
 
     def list_models(self) -> list:
         """Return list of model IDs available on the server via /models."""
-        r = self._client.get("/models")
+        r = self._raw_client.get("/models")
         r.raise_for_status()
         return [m["id"] for m in r.json().get("data", [])]
 
@@ -274,6 +278,7 @@ class OpenAIConn(LLMConnection):
 
     def close(self):
         self._client.close()
+        self._raw_client.close()
 
     async def aclose(self):
         await self._aclient.aclose()
