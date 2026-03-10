@@ -352,6 +352,11 @@ class GSAOnDevice(UcmSparseBase):
         self.token_idx_buf = torch.arange(
             self.max_num_tokens, device=self.device, dtype=torch.int64
         )
+        self.prefix_token_len_full = torch.zeros(
+            (self.max_batch_size,),
+            dtype=torch.int32,
+            device=self.device,
+        )
 
     def _make_buffer(
         self, *size: Union[int, torch.SymInt], dtype: torch.dtype, numpy: bool = True
@@ -1001,6 +1006,13 @@ class GSAOnDevice(UcmSparseBase):
     def execute_begin(self, scheduler_output: SchedulerOutput):
         self.is_tensor_computed = False
 
+    def execute_finished(self, logits_indices: torch.Tensor):
+        self.has_decode = False
+        self.gsa_enabled = False
+        self.decode_only = False
+        self.has_pc_hit = False
+        return logits_indices
+
     def estimate_num_slots_sparsed(self, request: Request) -> int:
         return INVALID_SLOT
 
@@ -1229,8 +1241,6 @@ class GSAOnDevice(UcmSparseBase):
         if isinstance(attn_metadata, dict):
             attn_metadata = next(iter(attn_metadata.values()))
 
-        self.has_decode = False
-        self.gsa_enabled = False
         seq_lens = self.get_seq_lens(attn_metadata)
 
         if seq_lens is None:
@@ -1247,9 +1257,6 @@ class GSAOnDevice(UcmSparseBase):
 
         self.gsa_enabled = num_long_reqs >= self.concurrency_threshold
 
-        self.decode_only = False
-        self.has_pc_hit = False
-
         num_decodes = 0
         # for pc
         num_pc_hit = 0
@@ -1262,7 +1269,6 @@ class GSAOnDevice(UcmSparseBase):
         self.decode_req_ids_buf.clear()
 
         prefill_row_id = 0
-        prefix_token_len_list = []
         for (
             req_id,
             num_scheduled_tokens,
@@ -1302,7 +1308,7 @@ class GSAOnDevice(UcmSparseBase):
                     block_table_row = self.get_block_table_row(
                         attn_metadata, req_row_id, prefill_row_id
                     )
-                    prefill_row_id += 1
+
                     (
                         num_prefix_tokens,
                         num_prefix_blocks,
@@ -1321,11 +1327,12 @@ class GSAOnDevice(UcmSparseBase):
                     self.prefix_block_ids_buf[
                         all_prefix_blocks : all_prefix_blocks + num_prefix_blocks
                     ] = prefix_block_ids
-                    prefix_token_len_list.append(num_prefix_tokens)
+                    self.prefix_token_len_full[num_pc_hit] = num_prefix_tokens
 
                     all_prefix_tokens += num_prefix_tokens
                     all_prefix_blocks += num_prefix_blocks
                     num_pc_hit += 1
+                    prefill_row_id += 1
 
             if is_last_chunk:
                 self.is_prefill_flag[req_id] = False
@@ -1334,9 +1341,8 @@ class GSAOnDevice(UcmSparseBase):
         if self.has_pc_hit:
             self.prefix_slot_mapping = self.prefix_slot_mapping_buf[:all_prefix_tokens]
             self.prefix_block_ids = self.prefix_block_ids_buf[:all_prefix_blocks]
-            self.prefix_token_len = torch.tensor(
-                prefix_token_len_list, device=self.device
-            )
+            if not self.is_cuda:
+                self.prefix_token_len = self.prefix_token_len_full[:num_pc_hit]
 
         if self.is_mla or not self.gsa_enabled:
             return
