@@ -4,7 +4,6 @@ import sys
 from collections import defaultdict
 
 import wrapt
-
 from vllm.logger import init_logger
 
 logger = init_logger(__name__)
