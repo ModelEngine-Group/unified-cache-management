@@ -344,6 +344,11 @@ class GSAOnDevice(UcmSparseBase):
                 device=self.device,
                 dtype=torch.int32,
             )
+            self.prefix_token_len_full = torch.zeros(
+                (self.max_batch_size,),
+                dtype=torch.int32,
+                device=self.device,
+            )
         self.prefix_block_ids_buf = torch.empty(
             cdiv(self.max_num_tokens * self.max_batch_size, self.block_size),
             device=self.device,
@@ -351,11 +356,6 @@ class GSAOnDevice(UcmSparseBase):
         )
         self.token_idx_buf = torch.arange(
             self.max_num_tokens, device=self.device, dtype=torch.int64
-        )
-        self.prefix_token_len_full = torch.zeros(
-            (self.max_batch_size,),
-            dtype=torch.int32,
-            device=self.device,
         )
 
     def _make_buffer(
@@ -1327,7 +1327,8 @@ class GSAOnDevice(UcmSparseBase):
                     self.prefix_block_ids_buf[
                         all_prefix_blocks : all_prefix_blocks + num_prefix_blocks
                     ] = prefix_block_ids
-                    self.prefix_token_len_full[num_pc_hit] = num_prefix_tokens
+                    if not self.is_cuda:
+                        self.prefix_token_len_full[num_pc_hit] = num_prefix_tokens
 
                     all_prefix_tokens += num_prefix_tokens
                     all_prefix_blocks += num_prefix_blocks
