@@ -49,18 +49,18 @@ TEST_F(UCPosixTransManagerTest, TransBlock)
     UC::Detail::TaskDesc desc1;
     desc1.brief = "Dump";
     desc1.push_back(UC::Detail::Shard{block, 0, {data1.Buffer()}});
-    auto handle1 = transMgr.Submit({TransTask::Type::DUMP, desc1});
+    auto handle1 = transMgr.GetIoEngine()->Submit({TransTask::Type::DUMP, desc1});
     ASSERT_TRUE(handle1.HasValue());
-    s = transMgr.Wait(handle1.Value());
+    s = transMgr.GetIoEngine()->Wait(handle1.Value());
     ASSERT_EQ(s, UC::Status::OK());
     UC::Test::Detail::DataGenerator data2{nBlocks, config.blockSize};
     data2.Generate();
     UC::Detail::TaskDesc desc2;
     desc2.brief = "Load";
     desc2.push_back(UC::Detail::Shard{block, 0, {data2.Buffer()}});
-    auto handle2 = transMgr.Submit({TransTask::Type::LOAD, desc2});
+    auto handle2 = transMgr.GetIoEngine()->Submit({TransTask::Type::LOAD, desc2});
     ASSERT_TRUE(handle2.HasValue());
-    s = transMgr.Wait(handle2.Value());
+    s = transMgr.GetIoEngine()->Wait(handle2.Value());
     ASSERT_EQ(s, UC::Status::OK());
     ASSERT_EQ(data1.Compare(data2), 0);
 }
@@ -89,9 +89,9 @@ TEST_F(UCPosixTransManagerTest, TransBlockLayerWise)
         d.GenerateRandom();
         desc1.push_back(UC::Detail::Shard{block, i, {d.Buffer()}});
     }
-    auto handle1 = transMgr.Submit({TransTask::Type::DUMP, desc1});
+    auto handle1 = transMgr.GetIoEngine()->Submit({TransTask::Type::DUMP, desc1});
     ASSERT_TRUE(handle1.HasValue());
-    s = transMgr.Wait(handle1.Value());
+    s = transMgr.GetIoEngine()->Wait(handle1.Value());
     ASSERT_EQ(s, UC::Status::OK());
     auto data2 = UC::Test::Detail::TypesHelper::MakeArray<UC::Test::Detail::DataGenerator, nShards>(
         size_t(1), config.tensorSize);
@@ -102,9 +102,9 @@ TEST_F(UCPosixTransManagerTest, TransBlockLayerWise)
         d.Generate();
         desc2.push_back(UC::Detail::Shard{block, i, {d.Buffer()}});
     }
-    auto handle2 = transMgr.Submit({TransTask::Type::LOAD, desc2});
+    auto handle2 = transMgr.GetIoEngine()->Submit({TransTask::Type::LOAD, desc2});
     ASSERT_TRUE(handle2.HasValue());
-    s = transMgr.Wait(handle2.Value());
+    s = transMgr.GetIoEngine()->Wait(handle2.Value());
     ASSERT_EQ(s, UC::Status::OK());
     for (size_t i = 0; i < nShards; i++) { ASSERT_EQ(data1[i].Compare(data2[i]), 0); }
 }

@@ -63,9 +63,8 @@ private:
         if (config.deviceId < -1) {
             return Status::InvalidParam("invalid device({})", config.deviceId);
         }
-        if (config.dataTransConcurrency == 0 || config.lookupConcurrency == 0) {
-            return Status::InvalidParam("invalid concurrency({},{})", config.dataTransConcurrency,
-                                        config.lookupConcurrency);
+        if (config.lookupConcurrency == 0) {
+            return Status::InvalidParam("invalid lookup concurrency({})", config.lookupConcurrency);
         }
         if (config.dataDirShardBytes > 5) {
             return Status::InvalidParam("invalid shard bytes({})", config.dataDirShardBytes);
@@ -76,6 +75,19 @@ private:
             config.blockSize % config.shardSize != 0) {
             return Status::InvalidParam("invalid size({},{},{})", config.tensorSize,
                                         config.shardSize, config.blockSize);
+        }
+        if (config.ioEngine == "aio") {
+            if (config.openConcurrency == 0 || config.commitConcurrency == 0) {
+                return Status::InvalidParam("invalid aio concurrency({},{})",
+                                            config.openConcurrency, config.commitConcurrency);
+            }
+        } else if (config.ioEngine == "psync") {
+            if (config.dataTransConcurrency == 0) {
+                return Status::InvalidParam("invalid psync concurrency({})",
+                                            config.dataTransConcurrency);
+            }
+        } else {
+            return Status::InvalidParam("invalid io engine({})", config.ioEngine);
         }
         return Status::OK();
     }
@@ -90,9 +102,12 @@ private:
         UC_INFO("Set {}::TensorSize to {}.", ns, config.tensorSize);
         UC_INFO("Set {}::ShardSize to {}.", ns, config.shardSize);
         UC_INFO("Set {}::BlockSize to {}.", ns, config.blockSize);
+        UC_INFO("Set {}::IoEngine to {}.", ns, config.ioEngine);
         UC_INFO("Set {}::IoDirect to {}.", ns, config.ioDirect);
         UC_INFO("Set {}::DataTransConcurrency to {}.", ns, config.dataTransConcurrency);
         UC_INFO("Set {}::LookupConcurrency to {}.", ns, config.lookupConcurrency);
+        UC_INFO("Set {}::OpenConcurrency to {}.", ns, config.openConcurrency);
+        UC_INFO("Set {}::CommitConcurrency to {}.", ns, config.commitConcurrency);
         UC_INFO("Set {}::TimeoutMs to {}.", ns, config.timeoutMs);
         UC_INFO("Set {}::DataDirShardBytes to {}.", ns, config.dataDirShardBytes);
     }
@@ -108,9 +123,12 @@ Status PosixStore::Setup(const Detail::Dictionary& config)
     config.GetNumber("tensor_size", param.tensorSize);
     config.GetNumber("shard_size", param.shardSize);
     config.GetNumber("block_size", param.blockSize);
+    config.Get("posix_io_engine", param.ioEngine);
     config.Get("io_direct", param.ioDirect);
     config.GetNumber("posix_data_trans_concurrency", param.dataTransConcurrency);
     config.GetNumber("posix_lookup_concurrency", param.lookupConcurrency);
+    config.GetNumber("posix_open_concurrency", param.openConcurrency);
+    config.GetNumber("posix_commit_concurrency", param.commitConcurrency);
     config.GetNumber("timeout_ms", param.timeoutMs);
     config.GetNumber("data_dir_shard_bytes", param.dataDirShardBytes);
     try {
@@ -144,7 +162,7 @@ void PosixStore::PosixStore::Prefetch(const Detail::BlockId* blocks, size_t num)
 Expected<Detail::TaskHandle> PosixStore::PosixStore::Load(Detail::TaskDesc task)
 {
     if (!impl_->transEnable) { return Status::Error("transfer is not enable"); }
-    auto res = impl_->transMgr.Submit({TransTask::Type::LOAD, std::move(task)});
+    auto res = impl_->transMgr.GetIoEngine()->Submit({TransTask::Type::LOAD, std::move(task)});
     if (!res) [[unlikely]] {
         UC_ERROR("Failed({}) to submit load task({}).", res.Error(), task.brief);
     }
@@ -154,7 +172,7 @@ Expected<Detail::TaskHandle> PosixStore::PosixStore::Load(Detail::TaskDesc task)
 Expected<Detail::TaskHandle> PosixStore::PosixStore::Dump(Detail::TaskDesc task)
 {
     if (!impl_->transEnable) { return Status::Error("transfer is not enable"); }
-    auto res = impl_->transMgr.Submit({TransTask::Type::DUMP, std::move(task)});
+    auto res = impl_->transMgr.GetIoEngine()->Submit({TransTask::Type::DUMP, std::move(task)});
     if (!res) [[unlikely]] {
         UC_ERROR("Failed({}) to submit dump task({}).", res.Error(), task.brief);
     }
@@ -163,14 +181,14 @@ Expected<Detail::TaskHandle> PosixStore::PosixStore::Dump(Detail::TaskDesc task)
 
 Expected<bool> PosixStore::PosixStore::Check(Detail::TaskHandle taskId)
 {
-    auto res = impl_->transMgr.Check(taskId);
+    auto res = impl_->transMgr.GetIoEngine()->Check(taskId);
     if (!res) [[unlikely]] { UC_ERROR("Failed({}) to check task({}).", res.Error(), taskId); }
     return res;
 }
 
 Status PosixStore::PosixStore::Wait(Detail::TaskHandle taskId)
 {
-    auto s = impl_->transMgr.Wait(taskId);
+    auto s = impl_->transMgr.GetIoEngine()->Wait(taskId);
     if (s.Failure()) [[unlikely]] { UC_ERROR("Failed({}) to wait task({}).", s, taskId); }
     return s;
 }

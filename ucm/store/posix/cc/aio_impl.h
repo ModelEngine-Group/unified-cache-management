@@ -21,28 +21,50 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  * */
-#ifndef UNIFIEDCACHE_POSIX_STORE_CC_GLOBAL_CONFIG_H
-#define UNIFIEDCACHE_POSIX_STORE_CC_GLOBAL_CONFIG_H
+#ifndef UNIFIEDCACHE_POSIX_STORE_CC_AIO_IMPL_H
+#define UNIFIEDCACHE_POSIX_STORE_CC_AIO_IMPL_H
 
-#include <string>
-#include <vector>
+#include <atomic>
+#include <functional>
+#include <linux/aio_abi.h>
+#include <thread>
+#include "status/status.h"
 
 namespace UC::PosixStore {
 
-struct Config {
-    std::vector<std::string> storageBackends{};
-    int32_t deviceId{-1};
-    size_t tensorSize{0};
-    size_t shardSize{0};
-    size_t blockSize{0};
-    std::string ioEngine{"psync"};  // "aio", "psync"
-    bool ioDirect{false};
-    size_t dataTransConcurrency{128};
-    size_t lookupConcurrency{16};
-    size_t openConcurrency{32};
-    size_t commitConcurrency{4};
-    size_t timeoutMs{30000};
-    size_t dataDirShardBytes{3};
+class AioImpl {
+public:
+    struct Result {
+        ssize_t nBytes;
+        int32_t error;
+    };
+    using Callback = std::function<void(Result)>;
+    struct Io {
+        int32_t fd;
+        uint64_t offset;
+        uint32_t length;
+        void* buffer;
+        Callback callback;
+    };
+
+    ~AioImpl();
+    Status Setup();
+    Status ReadAsync(Io&& io);
+    Status WriteAsync(Io&& io);
+
+private:
+    void CompletionLoop();
+    void HarvestCompletions(std::vector<io_event>& events);
+    Status SubmitIo(struct iocb* cb);
+
+    size_t queueDepth_{4096};
+    size_t epollTimeoutMs{10};
+    size_t batchCompleteSize{512};
+    aio_context_t ctx_{0};
+    int32_t eventFd_{-1};
+    int32_t epollFd_{-1};
+    std::atomic_bool stop_{false};
+    std::thread eventThread_;
 };
 
 }  // namespace UC::PosixStore

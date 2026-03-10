@@ -21,28 +21,43 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  * */
-#ifndef UNIFIEDCACHE_POSIX_STORE_CC_GLOBAL_CONFIG_H
-#define UNIFIEDCACHE_POSIX_STORE_CC_GLOBAL_CONFIG_H
+#ifndef UNIFIEDCACHE_POSIX_STORE_CC_IO_ENGINE_PSYNC_H
+#define UNIFIEDCACHE_POSIX_STORE_CC_IO_ENGINE_PSYNC_H
 
-#include <string>
-#include <vector>
+#include "logger/logger.h"
+#include "template/task_wrapper.h"
+#include "trans_queue.h"
 
 namespace UC::PosixStore {
 
-struct Config {
-    std::vector<std::string> storageBackends{};
-    int32_t deviceId{-1};
-    size_t tensorSize{0};
-    size_t shardSize{0};
-    size_t blockSize{0};
-    std::string ioEngine{"psync"};  // "aio", "psync"
-    bool ioDirect{false};
-    size_t dataTransConcurrency{128};
-    size_t lookupConcurrency{16};
-    size_t openConcurrency{32};
-    size_t commitConcurrency{4};
-    size_t timeoutMs{30000};
-    size_t dataDirShardBytes{3};
+class IoEnginePsync : public Detail::TaskWrapper<TransTask, Detail::TaskHandle> {
+    TransQueue queue_;
+    size_t shardSize_;
+
+public:
+    Status Setup(const Config& config, const SpaceLayout* layout)
+    {
+        timeoutMs_ = config.timeoutMs;
+        shardSize_ = config.shardSize;
+        return queue_.Setup(config, &failureSet_, layout);
+    }
+
+protected:
+    void Dispatch(TaskPtr t, WaiterPtr w) override
+    {
+        const auto id = t->id;
+        const auto& brief = t->desc.brief;
+        const auto num = t->desc.size();
+        const auto size = shardSize_ * num;
+        const auto tp = w->startTp;
+        UC_DEBUG("Posix task({},{},{},{}) dispatching.", id, brief, num, size);
+        w->SetEpilog([id, brief = std::move(brief), num, size, tp] {
+            auto cost = NowTime::Now() - tp;
+            UC_DEBUG("Posix task({},{},{},{}) finished, cost {:.3f}ms.", id, brief, num, size,
+                     cost * 1e3);
+        });
+        queue_.Push(t, w);
+    }
 };
 
 }  // namespace UC::PosixStore
