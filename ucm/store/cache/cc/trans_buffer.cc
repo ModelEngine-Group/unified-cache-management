@@ -23,6 +23,7 @@
  * */
 #include "trans_buffer.h"
 #include <atomic>
+#include <chrono>
 #include <filesystem>
 #include <thread>
 #include <unistd.h>
@@ -35,6 +36,7 @@ namespace UC::CacheStore {
 
 static constexpr size_t nHashTableBucket = 16411;
 static constexpr auto invalidIndex = std::numeric_limits<size_t>::max();
+static constexpr auto monitorInterval = std::chrono::seconds(5);
 
 static inline size_t Hash(const Detail::BlockId& blockId, size_t shard)
 {
@@ -69,6 +71,7 @@ public:
     virtual ~BufferStrategy() = default;
     virtual Status Setup(const std::string& uuid, int32_t deviceId, size_t nodeSize,
                          size_t nNode) = 0;
+    virtual size_t NodeCount() const = 0;
     virtual void BucketLock(size_t iBucket) = 0;
     virtual bool BucketTryLock(size_t iBucket) = 0;
     virtual void BucketUnlock(size_t iBucket) = 0;
@@ -130,6 +133,7 @@ public:
     void BucketUnlock(size_t iBucket) override {}
     void NodeLock(size_t iNode) override {}
     void NodeUnlock(size_t iNode) override {}
+    size_t NodeCount() const override { return header_.nNode; }
     size_t& FirstAt(size_t iBucket) override { return header_.buckets[iBucket]; }
     size_t FetchNode() override
     {
@@ -350,6 +354,7 @@ public:
     void BucketUnlock(size_t iBucket) override { header_->bucketLocks[iBucket].Unlock(); }
     void NodeLock(size_t iNode) override { header_->nodeLocks[iNode].Lock(); }
     void NodeUnlock(size_t iNode) override { header_->nodeLocks[iNode].Unlock(); }
+    size_t NodeCount() const override { return nNode_; }
     size_t& FirstAt(size_t iBucket) override { return header_->buckets[iBucket]; }
     size_t FetchNode() override
     {
@@ -399,6 +404,7 @@ public:
 
 Status TransBuffer::Setup(const Config& config)
 {
+    StopMonitorThread();
     try {
         if (!config.shareBufferEnable) {
             strategy_ = std::make_shared<LocalBufferStrategy>();
@@ -410,9 +416,13 @@ Status TransBuffer::Setup(const Config& config)
     } catch (const std::exception& e) {
         return Status::Error(fmt::format("failed({}) to make buffer strategy", e.what()));
     }
-    return strategy_->Setup(config.uniqueId, config.deviceId, config.shardSize,
-                            config.bufferCapacity);
+    auto s = strategy_->Setup(config.uniqueId, config.deviceId, config.shardSize, config.bufferCapacity);
+    if (s.Failure()) [[unlikely]] { return s; }
+    StartMonitorThread();
+    return Status::OK();
 }
+
+TransBuffer::~TransBuffer() { StopMonitorThread(); }
 
 TransBuffer::Handle TransBuffer::Get(const Detail::BlockId& blockId, size_t shardIdx)
 {
@@ -503,6 +513,48 @@ size_t TransBuffer::Alloc(const Detail::BlockId& blockId, size_t shardIdx, size_
         meta->ready = false;
         strategy_->NodeUnlock(iNode);
         return iNode;
+    }
+}
+
+TransBuffer::RefStats TransBuffer::CollectRefStats()
+{
+    RefStats stats;
+    if (!strategy_) { return stats; }
+    stats.totalNodes = strategy_->NodeCount();
+    for (size_t i = 0; i < stats.totalNodes; i++) {
+        auto ref = strategy_->MetaAt(i)->reference;
+        if (ref == 0) {
+            ++stats.freeNodes;
+        } else {
+            ++stats.busyNodes;
+        }
+    }
+    return stats;
+}
+
+void TransBuffer::StartMonitorThread()
+{
+    if (monitor_.joinable()) { return; }
+    monitorStop_.store(false, std::memory_order_release);
+    monitor_ = std::thread(&TransBuffer::MonitorLoop, this);
+}
+
+void TransBuffer::StopMonitorThread()
+{
+    monitorStop_.store(true, std::memory_order_release);
+    if (monitor_.joinable()) { monitor_.join(); }
+}
+
+void TransBuffer::MonitorLoop()
+{
+    while (!monitorStop_.load(std::memory_order_acquire)) {
+        const auto stats = CollectRefStats();
+        UC_INFO("TransBuffer monitor: free_nodes={}, busy_nodes={}, total_nodes={}.", stats.freeNodes,
+                stats.busyNodes, stats.totalNodes);
+        for (int i = 0; i < 50; ++i) {
+            if (monitorStop_.load(std::memory_order_acquire)) { return; }
+            std::this_thread::sleep_for(monitorInterval / 50);
+        }
     }
 }
 

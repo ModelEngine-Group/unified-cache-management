@@ -24,8 +24,10 @@
 #ifndef UNIFIEDCACHE_CACHE_STORE_CC_TRANS_BUFFER_H
 #define UNIFIEDCACHE_CACHE_STORE_CC_TRANS_BUFFER_H
 
+#include <atomic>
 #include <limits>
 #include <memory>
+#include <thread>
 #include "global_config.h"
 #include "status/status.h"
 #include "type/types.h"
@@ -38,6 +40,8 @@ class TransBuffer {
     using Index = std::size_t;
     static constexpr Index npos = std::numeric_limits<Index>::max();
     std::shared_ptr<BufferStrategy> strategy_{nullptr};
+    std::atomic_bool monitorStop_{true};
+    std::thread monitor_;
 
 public:
     class Handle {
@@ -97,11 +101,21 @@ public:
     };
 
 public:
+    ~TransBuffer();
     Status Setup(const Config& config);
     Handle Get(const Detail::BlockId& blockId, size_t shardIdx);
     bool Exist(const Detail::BlockId& blockId, size_t shardIdx);
 
 private:
+    struct RefStats {
+        size_t freeNodes{0};
+        size_t busyNodes{0};
+        size_t totalNodes{0};
+    };
+    void StartMonitorThread();
+    void StopMonitorThread();
+    void MonitorLoop();
+    RefStats CollectRefStats();
     bool ExistAt(size_t iBucket, const Detail::BlockId& blockId, size_t shardIdx);
     size_t FindAt(size_t iBucket, const Detail::BlockId& blockId, size_t shardIdx, bool& owner);
     size_t Alloc(const Detail::BlockId& blockId, size_t shardIdx, size_t iBucket);
