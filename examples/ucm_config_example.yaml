@@ -19,17 +19,7 @@ enable_event_sync: false
 # metrics_config_path: "/workspace/unified-cache-management/examples/metrics/metrics_configs.yaml"
 
 # Sparse attention configuration
-# Format 1: Dictionary format (for methods like ESA, GSAOnDevice)
 # ucm_sparse_config:
-#   ESA:
-#     init_window_sz: 1
-#     local_window_sz: 2
-#     min_blocks: 4
-#     sparse_ratio: 0.3
-#     retrieval_stride: 5
-  # Or for GSA:
-  # GSA: {}
-  # Or for GSAOnDevice:
   # GSAOnDevice: {}
 
 

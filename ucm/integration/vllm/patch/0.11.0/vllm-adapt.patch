@@ -1,7 +1,7 @@
 From 59753e5c7540b19f6c3a00657fa1778ea0b91456 Mon Sep 17 00:00:00 2001
 From: AooooooA-C <chenaozhu@outlook.com>
 Date: Mon, 19 Jan 2026 23:03:08 -0800
-Subject: [PATCH 1/4] apply sparse method patches
+Subject: [PATCH 1/5] apply sparse method patches
 
 ---
  vllm/attention/layer.py                    | 63 +++++++++++++++
@@ -868,7 +868,7 @@ index 8c75e8914..c3e9e781f 100644
 From 00851072c976618360065741a71b5fd8b96913ce Mon Sep 17 00:00:00 2001
 From: wangxin <1848802892@qq.com>
 Date: Wed, 28 Jan 2026 01:59:05 -0800
-Subject: [PATCH 2/4] feature rerope for vllm0110
+Subject: [PATCH 2/5] feature rerope for vllm0110
 
 apply sparse method patches
 ---
@@ -1685,7 +1685,7 @@ index d7c6a8e0a..d7bb0eec8 100644
 From 86f048a2a4db9f36a69636270b5d126ccc9d0270 Mon Sep 17 00:00:00 2001
 From: Qiong Wu <wq674452797@gmail.com>
 Date: Sat, 31 Jan 2026 16:02:31 +0800
-Subject: [PATCH 3/4] update sparse patch for vllm
+Subject: [PATCH 3/5] update sparse patch for vllm
 
 ---
  vllm/attention/layer.py                  | 51 ++----------------------
@@ -1797,7 +1797,7 @@ index 86771060c..f2bac0202 100644
 From e23062750e26810f2f558facc10c4777526dafb0 Mon Sep 17 00:00:00 2001
 From: wenxinwang <wangwenxin21@huawei.com>
 Date: Wed, 4 Feb 2026 18:42:00 -0800
-Subject: [PATCH 4/4] [bugfix] gsa graph patch
+Subject: [PATCH 4/5] [bugfix] gsa graph patch
 
 ---
  vllm/v1/attention/backends/flash_attn.py   |  7 ------
@@ -1899,6 +1899,35 @@ index dca14b5d3..41c90ffd1 100644
          kv_cache_tensors = []
          for i in range(group_size):
              shared_by = []
+-- 
+2.34.1
+
+
+From 9c9d4822d139a62fd9c639ba92ec6dd2d9a8f023 Mon Sep 17 00:00:00 2001
+From: wenxinwang <wangwenxin21@huawei.com>
+Date: Tue, 10 Mar 2026 06:24:39 -0700
+Subject: [PATCH 5/5] [bugfix] Fix CUDA full graph for DeepSeek implementation
+
+---
+ vllm/v1/attention/backends/mla/flashmla.py | 5 ++++-
+ 1 file changed, 4 insertions(+), 1 deletion(-)
+
+diff --git a/vllm/v1/attention/backends/mla/flashmla.py b/vllm/v1/attention/backends/mla/flashmla.py
+index 5d603abbf..34ed8b8ad 100644
+--- a/vllm/v1/attention/backends/mla/flashmla.py
++++ b/vllm/v1/attention/backends/mla/flashmla.py
+@@ -137,7 +137,10 @@ class FlashMLAMetadataBuilder(MLACommonMetadataBuilder[FlashMLAMetadata]):
+             #  it needs to monotonically increasing by 1)
+             self.cg_buf_num_splits[n:].fill_(num_splits[-1])
+             num_splits = num_splits_view
+-            topk_tile_scheduler_metadata, topk_num_splits, topk_seq_lens = ucm_sparse.maybe_init_cudagraph_buffers_for_topk(n, tile_scheduler_metadata, topk_tile_scheduler_metadata, topk_num_splits, topk_seq_lens)
++            if has_ucm_sparse():
++                ucm_sparse = get_ucm_sparse()
++                if os.getenv("VLLM_HASH_ATTENTION") == "1":
++                    topk_tile_scheduler_metadata, topk_num_splits, topk_seq_lens = ucm_sparse.maybe_init_cudagraph_buffers_for_topk(n, tile_scheduler_metadata, topk_tile_scheduler_metadata, topk_num_splits, topk_seq_lens)
+ 
+         return FlashMLADecodeMetadata(
+             block_table=block_table_tensor,
 -- 
 2.34.1
 
