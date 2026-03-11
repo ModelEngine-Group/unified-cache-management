@@ -39,11 +39,17 @@ class TestBasicOnlineInference:
     @pytest.mark.parametrize("model_name", ["Qwen2.5-1.5B-Instruct"])
     @pytest.mark.parametrize("max_tokens", [200])
     @pytest.mark.parametrize("prompt_split_ratio", [0.5])
+    @pytest.mark.parametrize("ucm_connector_name", ["UcmNfsStore", "UcmPipelineStore"])
+    @pytest.mark.parametrize("use_layerwise", [True, False])
+    @pytest.mark.parametrize("max_num_batched_tokens", [2047])
     def test_online_accuracy_hbm_ssd_mixed(
         self,
         model_name: str,
         max_tokens: int,
         prompt_split_ratio: float,
+        ucm_connector_name: str,
+        use_layerwise: bool,
+        max_num_batched_tokens: int,
     ):
         """Test HBM + SSD mixed hit accuracy via online inference.
 
@@ -57,6 +63,9 @@ class TestBasicOnlineInference:
             model_name: Name of model (used to determine tokenizer path)
             max_tokens: Maximum tokens to generate
             prompt_split_ratio: Ratio to split prompt for Phase 2 (0.5 = split in half)
+            ucm_connector_name: Name of UCM store.
+            use_layerwise: Whether to use layerwise mode.
+            max_num_batched_tokens: Maximum number of batched tokens.
         """
         # Load configuration
         config_file = get_path_relative_to_test_root("config.yaml")
@@ -111,15 +120,25 @@ class TestBasicOnlineInference:
 
         # Build UCM config
         ucm_config = {
+            "use_layerwise": (
+                use_layerwise if ucm_connector_name != "UcmNfsStore" else False
+            ),
             "ucm_connectors": [
                 {
-                    "ucm_connector_name": "UcmNfsStore",
+                    "ucm_connector_name": ucm_connector_name,
                     "ucm_connector_config": {
+                        "store_pipeline": "Cache|Posix",
                         "storage_backends": ucm_storage_dir,
                         "use_direct": False,
+                        "cache_buffer_capacity_gb": 32,
                     },
                 }
             ],
+            **(
+                {"enable_event_sync": False}
+                if ucm_connector_name == "UcmNfsStore"
+                else {}
+            ),
         }
 
         # Common VLLMServerManager kwargs
@@ -128,6 +147,7 @@ class TestBasicOnlineInference:
             port=8000,
             ucm_config=ucm_config,
             max_model_len=12000,
+            max_num_batched_tokens=max_num_batched_tokens,
             served_model_name=served_model_name,
         )
 
@@ -146,6 +166,8 @@ class TestBasicOnlineInference:
         print(f"Full prompt length: {len(test_prompt)} chars")
         print(f"Max tokens: {max_tokens}")
         print(f"Prompt split ratio: {prompt_split_ratio}")
+        print(f"UCM connector: {ucm_connector_name}, use_layerwise: {use_layerwise}")
+        print(f"Max num batched tokens: {max_num_batched_tokens}")
 
         # ===== Phase 1: Disable HBM PC, save KV cache to SSD and load (baseline) =====
         print(f"\n===== Phase 1: Save KV Cache to SSD And Load (Baseline) =====")

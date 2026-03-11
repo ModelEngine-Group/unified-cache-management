@@ -113,10 +113,12 @@ class TestBasicOnlineInference:
         ucm_config = {
             "ucm_connectors": [
                 {
-                    "ucm_connector_name": "UcmNfsStore",
+                    "ucm_connector_name": "UcmPipelineStore",
                     "ucm_connector_config": {
+                        "store_pipeline": "Cache|Posix",
                         "storage_backends": ucm_storage_dir,
                         "use_direct": False,
+                        "cache_buffer_capacity_gb": 32,
                     },
                 }
             ],
@@ -128,6 +130,7 @@ class TestBasicOnlineInference:
             port=8000,
             ucm_config=ucm_config,
             max_model_len=12000,
+            max_num_batched_tokens=2047,
             served_model_name=served_model_name,
         )
 

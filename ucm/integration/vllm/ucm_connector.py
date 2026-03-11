@@ -208,7 +208,7 @@ class UCMDirectConnector(KVConnectorBase_V1):
         self.launch_config = ucm_config.get_config()
         logger.info(f"self.launch_config: {self.launch_config}")
         self.connector_configs = self.launch_config.get("ucm_connectors", [])
-        self.enable_event_sync = self.launch_config.get("enable_event_sync", False)
+        self.enable_event_sync = self.launch_config.get("enable_event_sync", True)
         assert len(self.connector_configs) > 0, "no storage connector name in config."
 
         self.chunk_size = self.block_size

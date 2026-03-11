@@ -84,6 +84,7 @@ class VLLMServerManager:
         ucm_config: Optional[Dict[str, Any]] = None,
         enable_prefix_caching: bool = False,
         max_model_len: int = 12000,
+        max_num_batched_tokens: Optional[int] = None,
         additional_args: Optional[List[str]] = None,
         startup_timeout: float = 300.0,
         served_model_name: str = "",
@@ -100,6 +101,7 @@ class VLLMServerManager:
                              "ucm_connector_config": {"storage_backends": ["/tmp/ucm_cache"]}}]
             enable_prefix_caching: Whether to enable vLLM prefix caching (HBM cache)
             max_model_len: Maximum model context length
+            max_num_batched_tokens: Maximum number of batched tokens (default: 2047)
             additional_args: Additional arguments to pass to vllm serve
             startup_timeout: Timeout in seconds for server startup
             served_model_name: Optional model name to expose via the API (defaults to model_path)
@@ -119,6 +121,7 @@ class VLLMServerManager:
         self.ucm_config = ucm_config or {}
         self.enable_prefix_caching = enable_prefix_caching
         self.max_model_len = max_model_len
+        self.max_num_batched_tokens = max_num_batched_tokens
         self.gpu_memory_utilization = gpu_memory_utilization
         self.additional_args = additional_args or []
         self.startup_timeout = startup_timeout
@@ -135,16 +138,14 @@ class VLLMServerManager:
     def _build_kv_transfer_config(self) -> Dict[str, Any]:
         """Build the kv-transfer-config for UCM.
 
-        The ucm_connectors configuration should be provided by the caller
-        via the ucm_config parameter with the key "ucm_connectors".
+        The full ucm_config is passed as kv_connector_extra_config (mirrors offline
+        inference), including ucm_connectors, use_layerwise, enable_event_sync, etc.
         """
         kv_config = {
             "kv_connector": "UCMConnector",
             "kv_connector_module_path": "ucm.integration.vllm.ucm_connector",
             "kv_role": "kv_both",
-            "kv_connector_extra_config": {
-                "ucm_connectors": self.ucm_config.get("ucm_connectors", [])
-            },
+            "kv_connector_extra_config": self.ucm_config,
         }
         return kv_config
 
@@ -172,6 +173,12 @@ class VLLMServerManager:
         # Add prefix caching if enabled
         if self.enable_prefix_caching:
             cmd.append("--enable-prefix-caching")
+
+        # Add max_num_batched_tokens if specified
+        if self.max_num_batched_tokens is not None:
+            cmd.extend(
+                ["--max-num-batched-tokens", str(self.max_num_batched_tokens)]
+            )
 
         # Add served model name if specified
         if self.served_model_name:
