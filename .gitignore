@@ -60,6 +60,7 @@ results/
 backup/
 $null
 *__pycache__/
+.claude
 
 # build output files and installed files in csrc/ascend/
 ucm/sparse/gsa_on_device/csrc/ascend/output/
