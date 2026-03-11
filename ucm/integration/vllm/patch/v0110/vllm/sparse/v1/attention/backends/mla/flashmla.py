@@ -75,16 +75,18 @@ class FlashMLAMetadataBuilder(MLACommonMetadataBuilder[FlashMLAMetadata]):
             #  it needs to monotonically increasing by 1)
             self.cg_buf_num_splits[n:].fill_(num_splits[-1])
             num_splits = num_splits_view
-            topk_tile_scheduler_metadata, topk_num_splits, topk_seq_lens = (
-                ucm_sparse.maybe_init_cudagraph_buffers_for_topk(
-                    n,
-                    tile_scheduler_metadata,
-                    topk_tile_scheduler_metadata,
-                    topk_num_splits,
-                    topk_seq_lens,
-                )
-            )
-
+            if has_ucm_sparse():
+                if os.getenv("VLLM_HASH_ATTENTION") == "1":
+                    ucm_sparse = get_ucm_sparse()
+                    topk_tile_scheduler_metadata, topk_num_splits, topk_seq_lens = (
+                        ucm_sparse.maybe_init_cudagraph_buffers_for_topk(
+                            n,
+                            tile_scheduler_metadata,
+                            topk_tile_scheduler_metadata,
+                            topk_num_splits,
+                            topk_seq_lens,
+                        )
+                    )
         return FlashMLADecodeMetadata(
             block_table=block_table_tensor,
             seq_lens=seq_lens_device,
