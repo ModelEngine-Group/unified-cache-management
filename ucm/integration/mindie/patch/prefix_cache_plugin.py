@@ -19,7 +19,7 @@
 import threading
 import queue
 import numpy as np
-
+from mindie_llm.text_generator.mempool.uc_utils import KVPtrComputer
 from .prefix_cache_preprocess import PrefixCachePreprocess
 from ..plugin import Plugin
 from ..plugin_manager import MemPoolType
@@ -27,6 +27,7 @@ from ....modeling.backend_type import BackendType
 from ....utils.env import ENV
 from ....utils.log.logging import logger, print_log
 
+import uc_hash_ext
 UPDATE_INTERVAL = 2 * 60
 
 HASH_SHIFT_LEFT = 6
@@ -116,6 +117,8 @@ class PrefixCachePlugin(Plugin):
             if self.m_store is None:
                 self.mempool_type = MemPoolType.DISABLED
         if self.mempool_type != MemPoolType.DISABLED:
+            self.kvptr_computer = KVPtrComputer(self.generator_backend.cache_pool.npu_cache)
+            self._init_prefix_key_cache()
             logger.info("Init mem pool successfully.")
         if self.mempool_type == MemPoolType.ASYNC_WRITE:
             self.put_input_queue = queue.Queue()
@@ -250,18 +253,22 @@ class PrefixCachePlugin(Plugin):
         seed = hash_combine(seed, EXTRA_HASH)
         return seed
 
-    def get_prefix_keys(self, hash_value):
-        prefix_keys = ""
+    def _init_prefix_key_cache(self):
         if self.scp_size > 1:
-            prefix_keys = str(hash_value) + "_" + str(self.scp_rank) + "_" + str(self.scp_size) + "_" + self.model_name
+            self._prefix_key_suffix = f"_{self.scp_rank}_{self.scp_size}_{self.model_name}"
         else:
-            prefix_keys = str(hash_value) + "_" + str(self.tp_rank) + "_" + str(self.tp_size) + "_" + self.model_name
+            self._prefix_key_suffix = f"_{self.tp_rank}_{self.tp_size}_{self.model_name}"
 
-        return prefix_keys
+    def get_prefix_keys(self, hash_value):
+        return str(hash_value) + self._prefix_key_suffix
 
     def get_prefix_kvcache_from_mempool(self, input_metadata):
         if self.mempool_type == MemPoolType.DISABLED:
             return
+
+        attn_dp_rank = self.generator_backend.mapping.attn_dp.rank
+        max_block_size = input_metadata.max_block_size
+        batch_block_tables = input_metadata.batch_block_tables
         computed_blocks = input_metadata.computed_blocks
         remote_computed_blocks = input_metadata.remote_computed_blocks
         if computed_blocks is None:
@@ -275,51 +282,50 @@ class PrefixCachePlugin(Plugin):
             remote_computed_blocks = np.sum(remote_computed_blocks, axis=1)     # shape: [batch_size]
 
         batch_input_ids_offset = 0  # 每个请求的input ids开始索引
-        prefix_keys = []        # shape： [all_requests_kyes_num]
-        kvcache_tensors = []    # shape： [all_requests_kyes_num, layers_num, 2]
+        prefix_keys = []        # shape： [all_requests_kyes_num] 
+        req_block_ids = []
         for i in range(input_metadata.batch_size):
-            if input_metadata.batch_dp_rank_ids[i] != self.generator_backend.mapping.attn_dp.rank:
-                batch_input_ids_offset += input_metadata.batch_seq_len[i]
+            seq_len = int(input_metadata.batch_seq_len[i])
+            if input_metadata.batch_dp_rank_ids[i] != attn_dp_rank:
+                batch_input_ids_offset += seq_len
                 continue
-            prefix_hash_value = INVALID_HASH_VALUE
-            request_input_ids_offset = 0
-            scp_rank = 0
-            scp_rank_block_idx = 0
-            for _ in range(computed_blocks[i]):
-                computed_block_tokens = input_metadata.input_ids[batch_input_ids_offset + request_input_ids_offset:\
-                                    batch_input_ids_offset + request_input_ids_offset + input_metadata.max_block_size]
-                prefix_hash_value = self.hash_block(prefix_hash_value, computed_block_tokens)
-                request_input_ids_offset += input_metadata.max_block_size
-                scp_rank = (scp_rank + 1) % self.scp_size
-            for req_computed_blocks_id in range(computed_blocks[i], remote_computed_blocks[i]):
-                block_token_ids = input_metadata.input_ids[batch_input_ids_offset + request_input_ids_offset:\
-                                    batch_input_ids_offset + request_input_ids_offset + input_metadata.max_block_size]
-                prefix_hash_value = self.hash_block(prefix_hash_value, block_token_ids)
-                request_input_ids_offset += input_metadata.max_block_size
-                if scp_rank != self.scp_rank:
-                    scp_rank = (scp_rank + 1) % self.scp_size
-                    continue
-                prefix_keys.append(self.get_prefix_keys(prefix_hash_value))
+            full_blocks = (seq_len - 1) // max_block_size if max_block_size != 0 else 0
+            if full_blocks <= 0:
+                batch_input_ids_offset += seq_len
+                continue
 
-                if self.scp_size > 1:
-                    req_blocks_id = input_metadata.batch_block_tables[i, scp_rank_block_idx]
-                else:
-                    req_blocks_id = input_metadata.batch_block_tables[i, req_computed_blocks_id]
-                one_block_kvcache_tensors = []
-                for layer_id in range(self.num_put_layers):
-                    k_cache = self.generator_backend.cache_pool.npu_cache[layer_id][0][req_blocks_id]
-                    v_cache = self.generator_backend.cache_pool.npu_cache[layer_id][1][req_blocks_id]
+            computed = int(computed_blocks[i])
+            remote_computed = int(remote_computed_blocks[i])
+            if remote_computed <= computed or computed >= full_blocks:
+                batch_input_ids_offset += seq_len
+                continue
+            remote_computed = min(remote_computed, full_blocks)
+            start = batch_input_ids_offset
+            flat = input_metadata.input_ids[start : start + remote_computed * max_block_size]
+            prefix_hashes = uc_hash_ext.hash_prefix(INVALID_HASH_VALUE, flat, max_block_size, 0, remote_computed)
 
-                    one_block_kvcache_tensors.append([k_cache, v_cache])
+            # computed blocks: scp_rank = computed % scp_size
+            # [computed, remote_computed):   scp_rank = (scp_rank + 1) % scp_size
+            if self.scp_size > 1:
+                # get first block which belong to current scp_rank
+                first = computed + ((self.scp_rank - (computed % self.scp_size)) % self.scp_size)
+                local_idx = 0 
+                for b in range(first, remote_computed, self.scp_size):
+                    prefix_keys.append(self.get_prefix_keys(prefix_hashes[b]))
+                    req_block_ids.append(int(batch_block_tables[i, local_idx]))
+                    local_idx += 1
+            else:
+                for b in range(computed, remote_computed):
+                    prefix_keys.append(self.get_prefix_keys(prefix_hashes[b]))
+                    req_block_ids.append(int(batch_block_tables[i, b]))
 
-                kvcache_tensors.append(one_block_kvcache_tensors)
-                scp_rank = (scp_rank + 1) % self.scp_size
-                scp_rank_block_idx += 1
-            batch_input_ids_offset += input_metadata.batch_seq_len[i]
+            batch_input_ids_offset += seq_len
+        
+        if not prefix_keys:
+            return
 
-        if len(prefix_keys) > 0:
-            # 调用mempool get api接口，刷新有前缀复用block的kvcache
-            self.m_store.get(prefix_keys, kvcache_tensors)
+        kvcache_tensors = self.kvptr_computer.ptrs_for_blocks_np(req_block_ids)
+        self.m_store.get(prefix_keys, kvcache_tensors)
 
     def async_put_prefix_kvcache_to_mempool(self, input_metadata, cache_ids):
         if self.mempool_type == MemPoolType.DISABLED or not input_metadata.is_prefill:
@@ -345,11 +351,16 @@ class PrefixCachePlugin(Plugin):
         if self.mempool_type == MemPoolType.DISABLED or not input_metadata.is_prefill or \
             sum(input_metadata.batch_dp_rank_ids == self.generator_backend.mapping.attn_dp.rank) <= 0:
             return
+
+        attn_dp_rank = self.generator_backend.mapping.attn_dp.rank
+        batch_dp_rank_ids = input_metadata.batch_dp_rank_ids
+        if sum(batch_dp_rank_ids == attn_dp_rank) <= 0:
+            return
+
         batch_input_ids = self.infer_context.get_all_input_ids(cache_ids)
         batch_seq_lens = self.infer_context.get_seq_lens(cache_ids)
         remote_computed_blocks = input_metadata.remote_computed_blocks
         if remote_computed_blocks is None:
-            remote_computed_blocks = np.zeros(input_metadata.batch_size, dtype=np.int64)
             if self.scp_size > 1:
                 remote_computed_blocks = np.zeros((input_metadata.batch_size, self.scp_size), dtype=np.int64)
             else:
@@ -358,51 +369,44 @@ class PrefixCachePlugin(Plugin):
         if self.scp_size > 1:
             remote_computed_blocks = np.sum(remote_computed_blocks, axis=1)     # shape: [batch_size]
 
+        max_block_size = input_metadata.max_block_size
+        batch_block_tables = input_metadata.batch_block_tables
         prefix_keys = []        # shape： [all_requests_kyes_num]
-        kvcache_tensors = []    # shape： [all_requests_kyes_num, layers_num, 2]
+        req_block_ids = []
         for i in range(input_metadata.batch_size):
-            if (batch_seq_lens[i] - 1) < input_metadata.max_block_size != 0 or \
-                input_metadata.batch_dp_rank_ids[i] != self.generator_backend.mapping.attn_dp.rank:
+            if batch_dp_rank_ids[i] != attn_dp_rank:
                 continue
-            prefix_hash_value = INVALID_HASH_VALUE
-            request_input_ids_offset = 0
-            computed_blocks = remote_computed_blocks[i]
-            req_full_blocks_num = (batch_seq_lens[i] - 1) // input_metadata.max_block_size
-            scp_rank = 0
-            scp_rank_block_idx = 0
-            for _ in range(computed_blocks):
-                computed_block_tokens = batch_input_ids[i, request_input_ids_offset:\
-                                                            request_input_ids_offset + input_metadata.max_block_size]
-                prefix_hash_value = self.hash_block(prefix_hash_value, computed_block_tokens)
-                request_input_ids_offset += input_metadata.max_block_size
-                scp_rank = (scp_rank + 1) % self.scp_size
-            for req_uncomputed_blocks_id in range(computed_blocks, req_full_blocks_num):
-                block_token_ids = batch_input_ids[i, request_input_ids_offset:\
-                                                            request_input_ids_offset + input_metadata.max_block_size]
-                prefix_hash_value = self.hash_block(prefix_hash_value, block_token_ids)
-                request_input_ids_offset += input_metadata.max_block_size
-                if scp_rank != self.scp_rank:
-                    scp_rank = (scp_rank + 1) % self.scp_size
-                    continue
-                prefix_keys.append(self.get_prefix_keys(prefix_hash_value))
 
-                if self.scp_size > 1:
-                    req_blocks_id = input_metadata.batch_block_tables[i, scp_rank_block_idx]
-                else:
-                    req_blocks_id = input_metadata.batch_block_tables[i, req_uncomputed_blocks_id]
-                one_block_kvcache_tensors = []
-                for layer_id in range(self.num_put_layers):
-                    k_cache = self.generator_backend.cache_pool.npu_cache[layer_id][0][req_blocks_id]
-                    v_cache = self.generator_backend.cache_pool.npu_cache[layer_id][1][req_blocks_id]
-                    one_block_kvcache_tensors.append([k_cache, v_cache])
+            seq_len = int(batch_seq_lens[i])
+            if (max_block_size != 0) and ((seq_len - 1) < max_block_size):
+                continue
 
-                kvcache_tensors.append(one_block_kvcache_tensors)
-                scp_rank = (scp_rank + 1) % self.scp_size
-                scp_rank_block_idx += 1
+            full_blocks = (seq_len - 1) // max_block_size
+            if full_blocks <= 0:
+                continue
 
-        if len(prefix_keys) > 0:
-            # 调用mempool put api接口，将新计算的kvcache传到mempool
-            self.m_store.put(prefix_keys, kvcache_tensors)
+            computed = int(remote_computed_blocks[i])
+            if computed >= full_blocks:
+                continue
+            
+            flat = batch_input_ids[i, : full_blocks * max_block_size]
+            prefix_hashes = uc_hash_ext.hash_prefix(INVALID_HASH_VALUE, flat, max_block_size, 0, full_blocks)
+            if self.scp_size > 1:
+                first = computed + ((self.scp_rank - (computed % self.scp_size)) % self.scp_size)
+                local_idx = 0
+                for b in range(first, full_blocks, self.scp_size):
+                    prefix_keys.append(self.get_prefix_keys(prefix_hashes[b]))
+                    req_block_ids.append(int(batch_block_tables[i, local_idx]))
+                    local_idx += 1
+            else:
+                for b in range(computed, full_blocks):
+                    prefix_keys.append(self.get_prefix_keys(prefix_hashes[b]))
+                    req_block_ids.append(int(batch_block_tables[i, b]))
+            
+        if not prefix_keys:
+            return
+        kvcache_tensors = self.kvptr_computer.ptrs_for_blocks_np(np.asarray(req_block_ids, dtype=np.intp))
+        self.m_store.put(prefix_keys, kvcache_tensors)
 
     def _put_prefix_kvcache_thread(self):
         import torch
