@@ -101,7 +101,7 @@ def get_vllm_version() -> Optional[str]:
 
 
 def get_supported_versions() -> list[str]:
-    """Get list of supported vLLM versions."""
+    """Get patch-required vLLM versions."""
     return ["0.11.0"]
 
 
@@ -122,8 +122,8 @@ def apply_all_patches() -> None:
         supported_versions = get_supported_versions()
         if version not in supported_versions:
             logger.warning(
-                f"vLLM version {version} is not explicitly supported to apply UCM patches. "
-                f"Supported versions: {', '.join(supported_versions)}. "
+                f"vLLM version {version} detected. No patch application needed for this version. "
+                f"Versions applicable for UCM patches: {', '.join(supported_versions)}. "
             )
 
         # Apply common patch here
@@ -138,7 +138,6 @@ def apply_all_patches() -> None:
                     import ucm.integration.vllm.patch.v0110.vllm.sparse_patch
 
 
-
         # vllm_ascend patches
         ascend_version = get_vllm_ascend_version()
         match ascend_version:
@@ -149,7 +148,6 @@ def apply_all_patches() -> None:
 
                 if ENABLE_SPARSE:
                     import ucm.integration.vllm.patch.v0110.vllm_ascend.sparse_ascend_patch
-
 
 
         logger.info(f"All vLLM patches applied successfully for version {version}")
