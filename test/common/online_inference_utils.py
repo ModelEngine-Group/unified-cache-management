@@ -176,9 +176,7 @@ class VLLMServerManager:
 
         # Add max_num_batched_tokens if specified
         if self.max_num_batched_tokens is not None:
-            cmd.extend(
-                ["--max-num-batched-tokens", str(self.max_num_batched_tokens)]
-            )
+            cmd.extend(["--max-num-batched-tokens", str(self.max_num_batched_tokens)])
 
         # Add served model name if specified
         if self.served_model_name:
