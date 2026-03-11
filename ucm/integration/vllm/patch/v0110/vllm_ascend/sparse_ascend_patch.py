@@ -30,8 +30,13 @@ def patch_attention_v1(mod):
         "forward",
         attention_v1.AscendAttentionBackendImpl.forward,
     )
-    torch.ops.vllm.unified_attention_with_output = PatchOpProxy(
+    torch.ops.vllm.unified_ascend_attention_with_output = PatchOpProxy(
         torch.ops.vllm.unified_ascend_attention_with_output,
+        attention_v1.unified_ascend_attention_with_output,
+    )
+    patch_or_inject(
+        mod,
+        "unified_ascend_attention_with_output",
         attention_v1.unified_ascend_attention_with_output,
     )
 

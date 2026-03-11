@@ -7,8 +7,8 @@ from torch import nn
 from vllm.attention.backends.abstract import MLAAttentionImpl
 from vllm.forward_context import get_forward_context
 from vllm.utils import cdiv, round_down
-from vllm_ascend.attention.attention_v1 import (
-    AscendAttentionState,
+from vllm_ascend.attention.attention_v1 import AscendAttentionState
+from vllm_ascend.attention.mla_v1 import (
     AscendMLAPrefillMetadata,
     DecodeMLAPreprocessResult,
     M,
