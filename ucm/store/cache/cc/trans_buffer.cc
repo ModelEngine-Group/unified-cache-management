@@ -36,7 +36,7 @@ namespace UC::CacheStore {
 
 static constexpr size_t nHashTableBucket = 16411;
 static constexpr auto invalidIndex = std::numeric_limits<size_t>::max();
-static constexpr auto monitorInterval = std::chrono::seconds(5);
+static constexpr auto monitorInterval = std::chrono::seconds(60);
 
 static inline size_t Hash(const Detail::BlockId& blockId, size_t shard)
 {
