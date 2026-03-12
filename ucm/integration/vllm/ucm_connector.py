@@ -220,10 +220,9 @@ class UCMDirectConnector(KVConnectorBase_V1):
             # init scheduler-size connector
             self.store = self._create_store(None)
         else:
-            if self.is_mla:
-                self.request_hasher = RequestHasher(vllm_config, self.tp_rank//self.tp_size)
-            else:
-                self.request_hasher = RequestHasher(vllm_config, self.tp_rank)
+            self.request_hasher = RequestHasher(
+                vllm_config, self.tp_rank % self.tp_size
+            )
 
         self.metrics_config = self.launch_config.get("metrics_config_path", "")
         if self.metrics_config:
@@ -309,7 +308,7 @@ class UCMDirectConnector(KVConnectorBase_V1):
             # vllm_ascend >= 0.10.0 uses Tuple for kvcaches
             for i, tensor in enumerate(sample_kv_layer):
                 logger.info(f"kv cache shape {i}: {tensor.shape}")
-
+        self.first_layer_id = self._extract_layer_index(next(iter(self.kv_caches)))
         self.kv_cache_layout = KVCacheLayout(self.kv_caches, self.use_layerwise)
         self.block_data_size = self.kv_cache_layout.block_size
 
@@ -508,12 +507,12 @@ class UCMDirectConnector(KVConnectorBase_V1):
             num_loaded_request += 1
 
             ucm_block_ids, vllm_block_ids = request.load_block_ids
-            if self.tp_rank//self.tp_size != 0 :
+            if self.tp_rank % self.tp_size != 0 and not self.is_mla:
                 for i, ucm_block_id in enumerate(ucm_block_ids):
                     ucm_block_ids[i] = self.request_hasher(ucm_block_id)
             total_ptrs = self.kv_cache_layout.extract_block_addrs(vllm_block_ids)
             total_ptrs = total_ptrs.reshape(total_ptrs.shape[0], -1)
-            shard_indexs = [0] * len(ucm_block_ids)
+            shard_indexs = [self.first_layer_id] * len(ucm_block_ids)
             try:
                 task = self.store.load_data(ucm_block_ids, shard_indexs, total_ptrs)
                 request_to_task[request_id] = task
@@ -578,7 +577,7 @@ class UCMDirectConnector(KVConnectorBase_V1):
 
     def wait_for_save(self) -> None:
         # TODO support PP
-        if self.is_mla and self.tp_rank%self.tp_size != 0:
+        if self.is_mla and self.tp_rank % self.tp_size != 0:
             return
 
         metadata = self._get_connector_metadata()
@@ -597,7 +596,7 @@ class UCMDirectConnector(KVConnectorBase_V1):
             num_saved_request += 1
 
             ucm_block_ids, vllm_block_ids = request.dump_block_ids
-            if self.tp_rank//self.tp_size != 0:
+            if self.tp_rank % self.tp_size != 0:
                 for i, ucm_block_id in enumerate(ucm_block_ids):
                     ucm_block_ids[i] = self.request_hasher(ucm_block_id)
             total_ucm_block_ids.extend(ucm_block_ids)
@@ -606,7 +605,7 @@ class UCMDirectConnector(KVConnectorBase_V1):
         if is_save:
             total_ptrs = self.kv_cache_layout.extract_block_addrs(total_vllm_block_ids)
             total_ptrs = total_ptrs.reshape(total_ptrs.shape[0], -1)
-            shard_indexs = [0] * len(total_ucm_block_ids)
+            shard_indexs = [self.first_layer_id] * len(total_ucm_block_ids)
             try:
                 event_handle = self._get_dump_event_handle()
                 save_start_time = time.perf_counter() * 1000
@@ -684,17 +683,15 @@ class UCMLayerWiseConnector(UCMDirectConnector):
                 continue
 
             ucm_block_ids, vllm_block_ids = request.load_block_ids
-            if self.tp_rank//self.tp_size != 0 :
+            if self.tp_rank % self.tp_size != 0 and not self.is_mla:
                 for i, ucm_block_id in enumerate(ucm_block_ids):
                     ucm_block_ids[i] = self.request_hasher(ucm_block_id)
             try:
                 total_ptrs = self.kv_cache_layout.extract_block_addrs(vllm_block_ids)
-                first_key = next(iter(self.kv_caches))
-                bias_layer_id = self.layer_name_to_id[first_key]
 
                 for layer_name in self.kv_caches:
                     layer_id = self.layer_name_to_id[layer_name]
-                    local_layer_id = layer_id - bias_layer_id
+                    local_layer_id = layer_id - self.first_layer_id
                     shard_indexs = [layer_id] * len(ucm_block_ids)
                     layer_ptrs = np.ascontiguousarray(total_ptrs[:, local_layer_id, :])
                     task = self.store.load_data(ucm_block_ids, shard_indexs, layer_ptrs)
@@ -726,23 +723,21 @@ class UCMLayerWiseConnector(UCMDirectConnector):
         **kwargs,
     ) -> None:
         # TODO support PP
-        if self.is_mla and self.tp_rank%self.tp_size != 0:
+        if self.is_mla and self.tp_rank % self.tp_size != 0:
             return
 
         metadata = self._get_connector_metadata()
 
         total_ucm_block_ids, total_vllm_block_ids = [], []
         layer_id = self.layer_name_to_id[layer_name]
-        first_key = next(iter(self.kv_caches))
-        bias_layer_id = self.layer_name_to_id[first_key]
-        local_layer_id = layer_id - bias_layer_id
+        local_layer_id = layer_id - self.first_layer_id
         for _, request in metadata.request_meta.items():
             if len(request.dump_block_ids[0]) == 0:
                 continue
 
             self.is_save = True
             ucm_block_ids, vllm_block_ids = request.dump_block_ids
-            if self.tp_rank//self.tp_size != 0 and local_layer_id == 0:
+            if self.tp_rank % self.tp_size != 0 and layer_id == 0:
                 for i, ucm_block_id in enumerate(ucm_block_ids):
                     ucm_block_ids[i] = self.request_hasher(ucm_block_id)
             total_ucm_block_ids.extend(ucm_block_ids)
@@ -827,7 +822,9 @@ class UCMCPConnector(UCMLayerWiseConnector):
             self.store = self._create_store(None)
         else:
             if self.is_mla:
-                self.request_hasher = RequestHasher(vllm_config, self.tp_rank//self.tp_size)
+                self.request_hasher = RequestHasher(
+                    vllm_config, self.tp_rank // self.tp_size
+                )
             else:
                 self.request_hasher = RequestHasher(vllm_config, self.tp_rank)
         vllm_config.parallel_config.tensor_parallel_size = old_tp_size
