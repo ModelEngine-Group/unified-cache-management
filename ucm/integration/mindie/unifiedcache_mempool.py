@@ -350,6 +350,57 @@ class UnifiedCacheMempool(MemPool):
             # current mindie do not handle exception
             return False
 
+    @uc_timeit("batch_exist")
+    def batch_exist(self, keys: List[str]) -> List[bool]:
+        """
+        Check whether current req's blocks are in store in batch way, and return the result in order.
+        keys are ordered differently for different parallel strategy, for example:
+            DPTP:  blk0tp0 blk0tp1 blk0tp2 blk0tp3 ... blk1tp0 blk1tp1 blk1tp2 blk1tp3 ...
+            CPSP:  blk0 blk1 blk2 blk3 ...
+        """
+        if not isinstance(keys, list):
+            logger.error(
+                f"[UC][batch_exist] keys type should be List[str], got {type(keys)}"
+            )
+            return [False]
+
+        n = len(keys)
+        assert n > 0, f"[UC][batch_exist] keys list is empty"
+
+        if self.bypass_exists:
+            return [False] * n
+
+        try:
+            if self.uc_config.is_mla and self.uc_config.scp_size == 1:
+                tp_size = self.uc_config.tp_size
+
+                if tp_size <= 0 or n % tp_size != 0:
+                    logger.error(f"[UC][batch_exist] invalid tp_size: {tp_size}")
+                    return [False] * n
+
+                # NOTE: keys layout MUST BE: blk0tp0 blk0tp1 ... blk1tp0 blk1tp1 ...
+                block_tp0_keys = keys[::tp_size]
+
+                hash_keys = [str_to_md5_bytes(k) for k in block_tp0_keys]
+                found_idx = self.uc_store.lookup_on_prefix(hash_keys)
+
+                num_blocks = len(block_tp0_keys)
+                num_hit_blocks = found_idx + 1
+                return [
+                    block_idx < num_hit_blocks
+                    for block_idx in range(num_blocks)
+                    for _ in range(tp_size)
+                ]
+
+            hash_keys = [str_to_md5_bytes(k) for k in keys]
+            found_idx = self.uc_store.lookup_on_prefix(hash_keys)
+
+        except RuntimeError as e:
+            logger.error(f"[UC][batch_exist] lookup exception: {e}")
+            return [False] * n
+
+        return [True] * (found_idx + 1) + [False] * (n - found_idx - 1)
+
     @uc_timeit("put")
     def put(
         self, keys: Union[str, List[str]], tensors: Union[torch.Tensor, List], **kwargs
