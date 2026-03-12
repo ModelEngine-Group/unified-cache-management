@@ -561,7 +561,6 @@ class UCMDirectConnector(KVConnectorBase_V1):
         event_handle = self.device.get_event_handle()
         if event_handle == 0:
             self.device.synchronize()
-        logger.info(f"get event handle: {event_handle}")
         return event_handle
 
     def save_kv_layer(
@@ -711,7 +710,7 @@ class UCMLayerWiseConnector(UCMDirectConnector):
             try:
                 self.store.wait(task)
             except RuntimeError as e:
-                logger.error(f"request {request_id} wait load failed. {e}")
+                logger.error(f"request {request_id} wait {layer_name} load failed. {e}")
                 self._invalid_block_ids.update(
                     metadata.request_meta[request_id].load_block_ids[1]
                 )
