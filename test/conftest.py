@@ -235,6 +235,8 @@ def setup_gpu_resource(request):
 
     marker = request.node.get_closest_marker("gpu_mem")
     if not marker:
+        # No gpu_mem marker, skip GPU resource setup
+        yield
         return
 
     mem_needed = marker.args[0]
