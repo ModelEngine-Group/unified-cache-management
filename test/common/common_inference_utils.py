@@ -85,38 +85,43 @@ def load_prompt_from_file(prompt_file: Optional[Path] = None) -> Tuple[str, List
         raise FileNotFoundError(f"Prompt file not found: {prompt_file}")
 
     with open(prompt_file, "r", encoding="utf-8") as f:
-        content = f.read().strip()
+        content = f.readlines()
+    full_prompts = []
+    full_answers = []
 
-    try:
-        data = json.loads(content)
-    except json.JSONDecodeError as e:
-        raise ValueError(f"Invalid JSON format in {prompt_file}: {e}")
+    for i in range(len(content)):
+        try:
+            data = json.loads(content[i])
+        except json.JSONDecodeError as e:
+            raise ValueError(f"Invalid JSON format in {prompt_file}: {e}")
 
-    if isinstance(data, list):
-        if len(data) == 0:
-            raise ValueError(f"Empty list in {prompt_file}")
-        data = data[0]
+        if isinstance(data, list):
+            if len(data) == 0:
+                raise ValueError(f"Empty list in {prompt_file}")
+            data = data[0]
 
-    input_text = data.get("input", "")
-    context_text = data.get("context", "")
+        input_text = data.get("input", "")
+        context_text = data.get("context", "")
 
-    # LongBench standard format: context (long document) + input (question)
-    # Combine context and input to form the full prompt
-    if context_text and input_text:
-        full_prompt = f"{context_text}\n\n{input_text}"
-    elif context_text:
-        full_prompt = context_text
-    elif input_text:
-        full_prompt = input_text
-    else:
-        raise ValueError(f"No input or context found in {prompt_file}")
+        # LongBench standard format: context (long document) + input (question)
+        # Combine context and input to form the full prompt
+        if context_text and input_text:
+            full_prompt = f"阅读以下文字并用中文简短回答：\n\n{context_text}\n\n现在请基于上面的文章回答下面的问题，只告诉我答案，不要输出任何其他字词。\n\n问题：{input_text}\n回答："
+        elif context_text:
+            full_prompt = context_text
+        elif input_text:
+            full_prompt = input_text
+        else:
+            raise ValueError(f"No input or context found in {prompt_file}")
 
-    # Extract answers
-    answers = data.get("answers", [])
-    if not isinstance(answers, list):
-        answers = [answers] if answers else []
-
-    return full_prompt, answers
+        # Extract answers
+        answers = data.get("answers", [])
+        
+        if not isinstance(answers, list):
+            answers = [answers] if answers else []
+        full_prompts.append(full_prompt)
+        full_answers.extend(answers)
+    return full_prompts, full_answers
 
 
 def to_dict_for_serialization(obj: Any) -> Dict[str, Any]:
