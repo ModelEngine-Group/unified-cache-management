@@ -737,7 +737,7 @@ class UCMLayerWiseConnector(UCMDirectConnector):
 
             self.is_save = True
             ucm_block_ids, vllm_block_ids = request.dump_block_ids
-            if self.tp_rank % self.tp_size != 0 and layer_id == 0:
+            if self.tp_rank % self.tp_size != 0 and local_layer_id == 0:
                 for i, ucm_block_id in enumerate(ucm_block_ids):
                     ucm_block_ids[i] = self.request_hasher(ucm_block_id)
             total_ucm_block_ids.extend(ucm_block_ids)
@@ -821,12 +821,7 @@ class UCMCPConnector(UCMLayerWiseConnector):
             # init scheduler-size connector
             self.store = self._create_store(None)
         else:
-            if self.is_mla:
-                self.request_hasher = RequestHasher(
-                    vllm_config, self.tp_rank // self.tp_size
-                )
-            else:
-                self.request_hasher = RequestHasher(vllm_config, self.tp_rank)
+            self.request_hasher = RequestHasher(vllm_config, self.tp_rank)
         vllm_config.parallel_config.tensor_parallel_size = old_tp_size
         self.hash_block_size = self.block_size
         self.block_size *= self.cp_world_size
