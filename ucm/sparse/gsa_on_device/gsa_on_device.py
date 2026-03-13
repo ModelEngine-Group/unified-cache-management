@@ -628,7 +628,8 @@ class GSAOnDevice(UcmSparseBase):
                 self.new_block_tables = attn_metadata.block_tables
                 self.is_tensor_computed = True
 
-        k_hash_compute = self.hash_encoder.compute_hash(key)
+        key_for_gsa = key[:attn_metadata.num_actual_tokens]
+        k_hash_compute = self.hash_encoder.compute_hash(key_for_gsa)
         # assert (
         #     k_hash_compute.shape[0] == attn_metadata.slot_mapping.numel()
         # ), f"shape mismatch: k_hash_compute.shape[0]={k_hash_compute.shape[0]} != attn_metadata.slot_mapping.numel()={attn_metadata.slot_mapping.numel()}"
