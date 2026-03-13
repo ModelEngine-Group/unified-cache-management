@@ -183,6 +183,3 @@ histograms:
     buckets: [1, 5, 10, 20, 50, 100, 200, 500, 1000]
   # ... other metric configurations
 ```
-
----
-
