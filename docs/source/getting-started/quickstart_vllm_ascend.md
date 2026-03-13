@@ -83,16 +83,16 @@ pip install uc-manager
 ### Option 3: Setup from docker
 Use following command to build ucm with VLLM-Ascend(v0.11.0), the sparse attention is enabled by default
 ```bash
-docker build -t ucm-vllm:latest -f ./docker/Dockerfile-NPU ./
+docker build -t ucm-vllm:latest -f ./docker/Dockerfile.vllm_npu ./
 ```
 
 If you don't need sparse attention, pass `--build-arg ENABLE_SPARSE=true` to disable it:
 ```bash
-docker build --build-arg ENABLE_SPARSE=true -t ucm-vllm:latest -f ./docker/Dockerfile-NPU ./
+docker build --build-arg ENABLE_SPARSE=true -t ucm-vllm:latest -f ./docker/Dockerfile.vllm_npu ./
 ```
 
 vllm-ascend provides two variants: **Ubuntu** and **openEuler**.  
-The `Dockerfile-NPU` uses the **Ubuntu** variant by default.
+The `Dockerfile.vllm_npu` uses the **Ubuntu** variant by default.
 
 If you want to use the **openEuler** variant, please add the `-openeuler` suffix and use the following image instead:
 

@@ -1,0 +1,23 @@
+# Set to other image if needed
+ARG BASE_IMAGE="quay.io/ascend/vllm-ascend:v0.11.0"
+
+FROM ${BASE_IMAGE}
+
+ARG PIP_INDEX_URL="https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple"
+ARG ENABLE_SPARSE=true
+
+# Apply the UCM monkey patch for vllm & vllm_ascend
+ENV ENABLE_UCM_PATCH=1
+
+WORKDIR /workspace
+
+# Install unified-cache-management
+COPY . /workspace/unified-cache-management
+
+RUN pip config set global.index-url ${PIP_INDEX_URL}
+
+RUN export PLATFORM="ascend" ENABLE_SPARSE=$ENABLE_SPARSE && \
+    export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:/usr/local/Ascend/ascend-toolkit/latest/`uname -i`-linux/devlib && \
+    pip install -v -e /workspace/unified-cache-management --no-build-isolation
+
+CMD ["/bin/bash"]
