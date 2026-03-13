@@ -1,9 +1,50 @@
 import dataclasses
 import functools
+import importlib
+import os
 from collections.abc import Mapping
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List
 
-from common.db_utils import write_to_db
+_test_items = None
+_test_id = None
+UTC8 = timezone(timedelta(hours=8))
+
+
+def set_test_info(test_id: str, test_items: str):
+    global _test_items
+    _test_items = test_items
+    global _test_id
+    _test_id = test_id
+
+
+def get_test_id() -> str:
+    if _test_id is None:
+        raise RuntimeError("test_id Not initialized")
+    return _test_id
+
+
+def get_test_items() -> str:
+    if _test_items is None:
+        raise RuntimeError("test_items Not initialized")
+    return _test_items
+
+
+def _write_result(table_name: str, data: Dict[str, Any]) -> bool:
+    from common.config_utils import config_utils as config_instance
+
+    test_id = get_test_id()
+    test_items = get_test_items()
+    native_time = datetime.now(UTC8).replace(tzinfo=None)
+    data["test_id"] = test_id
+    data["test_items"] = test_items
+    data["create_at"] = native_time
+    data["extra_info"] = os.environ.get("EXTRA_INFO", "")
+    for item in config_instance.get_config("results", []):
+        if isinstance(item, dict) and item:
+            backend_name = next(iter(item.keys()))
+            mod = importlib.import_module(f"common.capture_results.{backend_name}")
+            mod.write_results(table_name, data)
 
 
 def _align_and_split(name: str, data: Dict[str, Any]) -> List[Dict[str, Any]]:
@@ -40,7 +81,7 @@ def post_process(table_name: str, **kwargs) -> List[Dict[str, Any]]:
         name = kwargs.get("_name", table_name)
         results = _align_and_split(name, kwargs["_data"])
         for result in results:
-            write_to_db(name, result)
+            _write_result(name, result)
         return results
     return []
 
@@ -84,7 +125,7 @@ def proj_process(table_name: str, **kwargs) -> List[Dict[str, Any]]:
     for result in raw_results:
         try:
             dict_result = _to_dict(result)
-            write_to_db(name, dict_result)
+            _write_result(name, dict_result)
             processed_results.append(dict_result)
         except Exception as e:
             raise ValueError(f"Failed to process item in _proj: {e}") from e
@@ -118,4 +159,9 @@ def capture():
 
 # quick test
 if __name__ == "__main__":
-    print("capture():      ", capture())
+    import sys
+    from pathlib import Path
+
+    PRJ_ROOT = Path(__file__).resolve().parent.parent
+    sys.path.insert(0, str(PRJ_ROOT))
+    _write_result("capture", {"ttft": 0.6, "tpot": 0.8})
