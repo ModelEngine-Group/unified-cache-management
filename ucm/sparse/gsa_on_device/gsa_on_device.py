@@ -838,6 +838,7 @@ class GSAOnDevice(UcmSparseBase):
         )
         new_seq_lens = self.topk_seq_lens_qwen
         attn_metadata.seq_lens = new_seq_lens
+        attn_metadata.seq_lens_list = new_seq_lens.tolist()
 
         self.new_block_tables[: self.batch_size_for_hamming] = self.hamming_output[
             : self.batch_size_for_hamming, 0, :
@@ -945,6 +946,7 @@ class GSAOnDevice(UcmSparseBase):
                         else:
                             attn_metadata.block_tables = self.topk_block_table
                         attn_metadata.seq_lens = self.topk_seq_lens
+                        attn_metadata.seq_lens_list = self.topk_seq_lens.tolist()
                     else:
                         if self.is_cuda:
                             self.update_decode_topk_gqa_cuda(
@@ -993,6 +995,7 @@ class GSAOnDevice(UcmSparseBase):
                     else:
                         attn_metadata.block_tables = self.ori_block_table_decode
                     attn_metadata.seq_lens = self.ori_seq_lens_decode
+                    attn_metadata.seq_lens_list = self.ori_seq_lens_decode.tolist()
 
     def request_begin(self, request_id: ReqType, prompt_token_ids: List[int]):
         pass
