@@ -31,18 +31,17 @@
 
 namespace UC::Logger {
 
-void Log(Level&& lv, std::string file, std::string func, int line, std::string&& msg);
+void Log(Level lv, std::string file, std::string func, int line, std::string msg);
+
 template <typename... Args>
 void Log(Level lv, const SourceLocation& loc, fmt::format_string<Args...> fmt, Args&&... args)
 {
     std::string msg = fmt::format(fmt, std::forward<Args>(args)...);
-    Log(std::forward<Level>(lv), std::string(loc.file), std::string(loc.func), loc.line,
-        std::move(msg));
+    Log(lv, std::string(loc.file), std::string(loc.func), loc.line, std::move(msg));
 }
-
-void Log(Level&& lv, std::string file, std::string func, int line, std::string&& msg);
 void Setup(const std::string& path, int max_files, int max_size);
 void Flush();
+bool isEnabledFor(Level lv);
 
 }  // namespace UC::Logger
 #define UC_SOURCE_LOCATION {__FILE__, __FUNCTION__, __LINE__}

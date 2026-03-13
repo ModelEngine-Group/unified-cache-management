@@ -27,7 +27,7 @@ import time
 
 import numpy as np
 
-from ucm.store.pipeline.connector import UcmKVStoreBaseV1, UcmPipelineStore
+from ucm.store.factory_v1 import UcmConnectorFactoryV1, UcmKVStoreBaseV1
 
 
 def setup(
@@ -38,17 +38,20 @@ def setup(
     io_direct: bool,
     worker: bool,
 ) -> UcmKVStoreBaseV1:
+    module_path = "ucm.store.pipeline.connector"
+    class_name = "UcmPipelineStore"
     config = {}
     config["store_pipeline"] = "Posix"
     config["storage_backends"] = backends
     config["tensor_size"] = block_size
     config["shard_size"] = block_size
     config["block_size"] = block_size
+    config["posix_io_engine"] = "psync"
     config["posix_data_trans_concurrency"] = data_trans_concur
     config["posix_lookup_concurrency"] = lookup_concur
     config["io_direct"] = io_direct
     config["device_id"] = 0 if worker else -1
-    return UcmPipelineStore(config)
+    return UcmConnectorFactoryV1.create_connector(class_name, config, module_path)
 
 
 def make_array(size, alignment=4096, dtype=np.uint8) -> np.ndarray:

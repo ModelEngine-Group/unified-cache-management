@@ -3,17 +3,18 @@ from pathlib import Path
 
 import pytest
 import yaml
-from common.offline_inference_utils import (
+from common.common_inference_utils import (
     ensure_storage_dir,
+    get_platform_specific_module,
     load_prompt_from_file,
-    run_in_spawn_subprocess,
-    run_offline_inference,
     split_prompt_by_tokens,
     to_dict_for_serialization,
 )
+from common.offline_inference_utils import (
+    run_in_spawn_subprocess,
+    run_offline_inference,
+)
 from common.path_utils import get_path_relative_to_test_root, get_path_to_model
-from transformers import AutoTokenizer
-from vllm import LLM, SamplingParams
 
 
 class TestBasicOfflineInferenceSparse:
@@ -71,7 +72,9 @@ class TestBasicOfflineInferenceSparse:
         except Exception as e:
             pytest.fail(f"Failed to load prompt from prompt.json: {e}")
 
-        tokenizer = AutoTokenizer.from_pretrained(model_path, use_chat_template=True)
+        tokenizer = get_platform_specific_module().AutoTokenizer.from_pretrained(
+            model_path, use_chat_template=True
+        )
 
         try:
             messages = [
@@ -106,7 +109,7 @@ class TestBasicOfflineInferenceSparse:
             ],
         }
 
-        sampling_params = SamplingParams(
+        sampling_params = get_platform_specific_module().SamplingParams(
             temperature=0.0,
             top_p=1,
             max_tokens=max_tokens,
@@ -257,7 +260,9 @@ class TestBasicOfflineInferenceSparse:
 
         print(f"Standard answers: {standard_answers}")
 
-        tokenizer = AutoTokenizer.from_pretrained(model_path, use_chat_template=True)
+        tokenizer = get_platform_specific_module().AutoTokenizer.from_pretrained(
+            model_path, use_chat_template=True
+        )
 
         try:
             messages = [
@@ -289,7 +294,7 @@ class TestBasicOfflineInferenceSparse:
             "ucm_sparse_config": {"GSAOnDevice": {}},
         }
 
-        sampling_params = SamplingParams(
+        sampling_params = get_platform_specific_module().SamplingParams(
             temperature=0.0,
             top_p=1,
             max_tokens=max_tokens,
@@ -360,7 +365,9 @@ class TestBasicOfflineInferenceSparse:
 
         print(f"Standard answers: {standard_answers}")
 
-        tokenizer = AutoTokenizer.from_pretrained(model_path, use_chat_template=True)
+        tokenizer = get_platform_specific_module().AutoTokenizer.from_pretrained(
+            model_path, use_chat_template=True
+        )
 
         try:
             messages = [
@@ -400,7 +407,7 @@ class TestBasicOfflineInferenceSparse:
             },
         }
 
-        sampling_params = SamplingParams(
+        sampling_params = get_platform_specific_module().SamplingParams(
             temperature=0.0,
             top_p=1,
             max_tokens=max_tokens,

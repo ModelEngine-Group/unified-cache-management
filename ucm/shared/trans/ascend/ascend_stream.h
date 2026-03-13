@@ -57,8 +57,9 @@ public:
 
     Status AppendCallback(std::function<void(bool)> cb) override;
     Status Synchronized() override;
+    Status WaitEvent(void* event) override;
 };
 
-} // namespace UC::Trans
+}  // namespace UC::Trans
 
 #endif

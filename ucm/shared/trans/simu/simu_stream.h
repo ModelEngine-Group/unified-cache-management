@@ -62,6 +62,7 @@ public:
     Status HostToDeviceAsync(void* host, void* device[], size_t size, size_t number) override;
 
     Status AppendCallback(std::function<void(bool)> cb) override;
+    Status WaitEvent(void* event) override;
     Status Synchronized() override;
 };
 

@@ -24,7 +24,7 @@
 #include <gtest/gtest.h>
 #include "detail/random.h"
 #include "detail/types_helper.h"
-#include "fake/cc/fake_store.h"
+#include "fake/cc/fake_store.cc"
 
 class UCFakeStoreImplTest : public testing::Test {
 protected:
