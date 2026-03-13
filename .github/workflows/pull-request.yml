@@ -164,6 +164,7 @@ jobs:
         sudo chmod -R 777 /workspace/test_results/
         sudo docker run --rm \
           --gpus all \
+          --ipc=host \
           -v /home/models:/home/models \
           -v /home/yanzhao/pipeline_results:/workspace/test_results \
           ucm-e2etest-online-inference:${{ steps.version.outputs.version }} \
@@ -231,6 +232,7 @@ jobs:
         sudo chmod -R 777 /workspace/test_results/
         sudo docker run --rm \
           --gpus all \
+          --ipc=host \
           -v /home/models:/home/models \
           -v /home/yanzhao/pipeline_results:/workspace/test_results \
           ucm-e2etest-gpu-sparse:${{ steps.version.outputs.version }} \
