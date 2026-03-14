@@ -54,18 +54,28 @@ pytest_demo/
 
 2. **(Optional) Configure Database**
 
-   Edit the database section in `config.yaml`:
-
-   ```yaml
-   database:
-     enabled: true                     # Enable database result storage (set to false to save to local directory)
-     backup: "results/"
-     host: "127.0.0.1"
-     port: 5432
-     name: "ucm_test"
-     user: "postgres"
-     password: "123456"
-   ```
+   Edit the relevant sections in `config.yaml` regarding test result saving:
+    ```yaml
+    results:
+      - localFile: # Save the storage results to a local file. The default formats are jsonl and csv.
+          path: "./results"
+    #  - postgresql:
+    #      host: "localhost"
+    #      port: 5432
+    #      dbname: "ucm_test"
+    #      user: "postgres"
+    #      password: "123456"
+    #      retry: 3
+    #  - mongodb:
+    #      host: "127.0.0.1"
+    #      port: 27017
+    #      dbname: "myapp"
+    #      user: "root"
+    #      password: "123456"
+    #      authSource: "admin"
+    #      retry: 3
+    ```
+  Currently, it supports the configuration of three storage backend types: localFile, postgresql, and mongodb. It allows for the simultaneous configuration of one or multiple types. 
 
 3. **Run Tests**
 
