@@ -87,7 +87,35 @@ class LocalBufferStrategy : public BufferStrategy {
         size_t nodeSize;
         size_t nNode;
     };
+    struct LocalMutex {
+        pthread_mutex_t mutex;
+        ~LocalMutex() { pthread_mutex_destroy(&mutex); }
+        void Init()
+        {
+            pthread_mutexattr_t attr;
+            pthread_mutexattr_init(&attr);
+            pthread_mutexattr_setpshared(&attr, PTHREAD_PROCESS_PRIVATE);
+            pthread_mutexattr_setrobust(&attr, PTHREAD_MUTEX_ROBUST);
+            pthread_mutexattr_settype(&attr, PTHREAD_MUTEX_ADAPTIVE_NP);
+            pthread_mutex_init(&mutex, &attr);
+            pthread_mutexattr_destroy(&attr);
+        }
+        void Lock() { pthread_mutex_lock(&mutex); }
+        bool TryLock() { return pthread_mutex_trylock(&mutex) == 0; }
+        void Unlock() { pthread_mutex_unlock(&mutex); }
+    };
+    struct LocalLock {
+        pthread_spinlock_t lock;
+        ~LocalLock() { pthread_spin_destroy(&lock); }
+        void Init() { pthread_spin_init(&lock, PTHREAD_PROCESS_PRIVATE); }
+        void Lock() { pthread_spin_lock(&lock); }
+        bool TryLock() { return pthread_spin_trylock(&lock) == 0; }
+        void Unlock() { pthread_spin_unlock(&lock); }
+    };
+
     BufferHeader header_;
+    LocalMutex bucketLocks_[nHashTableBucket];
+    std::unique_ptr<LocalLock[]> nodeLocks_;
     std::unique_ptr<BufferMetaNode[]> meta_;
     std::shared_ptr<void> data_;
 
@@ -97,7 +125,10 @@ public:
     {
         auto nNode = totalSize / nodeSize;
         try {
+            nodeLocks_ = std::make_unique<LocalLock[]>(nNode);
             meta_ = std::make_unique<BufferMetaNode[]>(nNode);
+            for (size_t i = 0; i < nHashTableBucket; i++) { bucketLocks_[i].Init(); }
+            for (size_t i = 0; i < nNode; i++) { nodeLocks_[i].Init(); }
         } catch (const std::exception& e) {
             UC_ERROR("Failed({}) to alloc buffer.", e.what());
             return Status::Error(e.what());
@@ -125,11 +156,11 @@ public:
         header_.nNode = nNode;
         return Status::OK();
     }
-    void BucketLock(size_t iBucket) override {}
-    bool BucketTryLock(size_t iBucket) override { return true; }
-    void BucketUnlock(size_t iBucket) override {}
-    void NodeLock(size_t iNode) override {}
-    void NodeUnlock(size_t iNode) override {}
+    void BucketLock(size_t iBucket) override { bucketLocks_[iBucket].Lock(); }
+    bool BucketTryLock(size_t iBucket) override { return bucketLocks_[iBucket].TryLock(); }
+    void BucketUnlock(size_t iBucket) override { bucketLocks_[iBucket].Unlock(); }
+    void NodeLock(size_t iNode) override { nodeLocks_[iNode].Lock(); }
+    void NodeUnlock(size_t iNode) override { nodeLocks_[iNode].Unlock(); }
     size_t& FirstAt(size_t iBucket) override { return header_.buckets[iBucket]; }
     size_t FetchNode() override
     {
