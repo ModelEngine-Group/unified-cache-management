@@ -153,6 +153,10 @@ def init_logger(name: str = "UC") -> Logger:
     return Logger(name)
 
 
+def current_formatter_type(lgr):
+    return None
+
+
 if __name__ == "__main__":
     logger = init_logger()
     logger.debug("debug message")
