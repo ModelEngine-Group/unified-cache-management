@@ -28,6 +28,7 @@
 #include <algorithm>
 #include <cstdint>
 #include <functional>
+#include <utility>
 
 namespace UC {
 
@@ -36,7 +37,6 @@ class TopNHeap {
 public:
     using ValueType = T;
     using SizeType = uint32_t;
-    using ConstRef = const T&;
 
 private:
     using IndexType = uint32_t;
@@ -49,8 +49,9 @@ private:
 public:
     explicit TopNHeap(const SizeType capacity) noexcept(
         std::is_nothrow_default_constructible_v<Compare>)
-    : capacity_{capacity} {
-        val_.resize(capacity);
+        : capacity_{capacity}
+    {
+        val_.reserve(capacity);
         idx_.resize(capacity);
     }
     TopNHeap(const TopNHeap&) = delete;
@@ -58,14 +59,34 @@ public:
     TopNHeap& operator=(const TopNHeap&) = delete;
     TopNHeap& operator=(const TopNHeap&&) = delete;
     ~TopNHeap() { Clear(); }
-    
+
     SizeType Size() const noexcept { return size_; }
     SizeType Capacity() const noexcept { return capacity_; }
     bool Empty() const noexcept { return size_ == 0; }
 
-    void Push(ConstRef value) noexcept {
+    void Push(const ValueType& value) { PushImpl(value); }
+    void Push(ValueType&& value) { PushImpl(std::move(value)); }
+    const ValueType& Top() const noexcept { return val_[idx_.front()]; }
+    void Pop() noexcept
+    {
+        idx_[0] = idx_[--size_];
+        if (size_) { SiftDown(0); }
+    }
+    void Clear() noexcept { size_ = 0; }
+
+private:
+    static IndexType Parent(IndexType i) noexcept { return (i - 1) / 2; }
+    static IndexType Left(IndexType i) noexcept { return 2 * i + 1; }
+    static IndexType Right(IndexType i) noexcept { return 2 * i + 2; }
+    void PushImpl(const ValueType& value)
+    {
+        if (capacity_ == 0) { return; }
         if (size_ < capacity_) {
-            val_[size_] = value;
+            if (size_ < val_.size()) {
+                val_[size_] = value;
+            } else {
+                val_.emplace_back(value);
+            }
             idx_[size_] = size_;
             SiftUp(size_);
             size_++;
@@ -76,17 +97,27 @@ public:
             SiftDown(0);
         }
     }
-    ConstRef Top() const noexcept { return val_[idx_.front()]; }
-    void Pop() noexcept {
-        idx_[0] = idx_[--size_];
-        if (size_) { SiftDown(0); }
+    void PushImpl(ValueType&& value)
+    {
+        if (capacity_ == 0) { return; }
+        if (size_ < capacity_) {
+            if (size_ < val_.size()) {
+                val_[size_] = std::move(value);
+            } else {
+                val_.emplace_back(std::move(value));
+            }
+            idx_[size_] = size_;
+            SiftUp(size_);
+            size_++;
+            return;
+        }
+        if (cmp_(val_[idx_.front()], value)) {
+            val_[idx_.front()] = std::move(value);
+            SiftDown(0);
+        }
     }
-    void Clear() noexcept { size_ = 0; }
-private:
-    static IndexType Parent(IndexType i) noexcept { return (i - 1) / 2; }
-    static IndexType Left(IndexType i) noexcept { return 2 * i + 1; }
-    static IndexType Right(IndexType i) noexcept { return 2 * i + 2; }
-    void SiftUp(IndexType i) noexcept {
+    void SiftUp(IndexType i) noexcept
+    {
         auto pos = i;
         while (pos > 0) {
             auto p = Parent(pos);
@@ -95,7 +126,8 @@ private:
             pos = p;
         }
     }
-    void SiftDown(IndexType i) noexcept {
+    void SiftDown(IndexType i) noexcept
+    {
         auto pos = i;
         for (;;) {
             auto l = Left(pos);
@@ -116,6 +148,6 @@ public:
     TopNFixedHeap() : TopNHeap<T, Compare>{N} {}
 };
 
-} // namespace UC
+}  // namespace UC
 
 #endif

@@ -30,6 +30,8 @@ from common.llm_connection.token_counter import HuggingFaceTokenizer
 from common.online_inference_utils import VLLMServerManager
 from common.path_utils import get_path_relative_to_test_root, get_path_to_model
 
+os.environ["ENABLE_UCM_PATCH"] = "1"
+
 
 class TestBasicOnlineInference:
     """Test basic online inference functionality."""
