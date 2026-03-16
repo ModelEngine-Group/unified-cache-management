@@ -116,7 +116,7 @@ def load_prompt_from_file(prompt_file: Optional[Path] = None) -> Tuple[str, List
 
         # Extract answers
         answers = data.get("answers", [])
-        
+
         if not isinstance(answers, list):
             answers = [answers] if answers else []
         full_prompts.append(full_prompt)
