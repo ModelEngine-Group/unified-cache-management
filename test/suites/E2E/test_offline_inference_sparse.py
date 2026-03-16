@@ -327,7 +327,6 @@ class TestBasicOfflineInferenceSparse:
 
     """Test ESA sparse attention."""
 
-    @pytest.mark.skip(reason="refine this code and re-enable later")
     @pytest.mark.stage(1)
     @pytest.mark.feature("offline_inference_sparse")
     @pytest.mark.gpu_mem(6000)
