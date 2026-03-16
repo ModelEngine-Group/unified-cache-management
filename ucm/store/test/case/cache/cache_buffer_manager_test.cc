@@ -47,7 +47,7 @@ TEST_F(UCCacheBufferManagerTest, Lookup)
     UC::Test::Detail::Random rd;
     UC::CacheStore::BufferManager bufferMgr;
     UC::CacheStore::Config config;
-    config.storeBackend = std::shared_ptr<UC::StoreV1>(&backend, [](auto) {});
+    config.storeBackend = &backend;
     config.deviceId = 0;
     size_t tensorSize = 4096;
     config.tensorSizes = {4096};
