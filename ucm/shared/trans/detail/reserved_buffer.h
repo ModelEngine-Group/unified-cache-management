@@ -25,14 +25,14 @@
 #define UNIFIEDCACHE_TRANS_RESERVED_BUFFER_H
 
 #include <fmt/format.h>
-#include "indexer.h"
+#include "infra/thread/index_pool.h"
 #include "trans/buffer.h"
 
 namespace UC::Trans {
 
 class ReservedBuffer : public Buffer {
     struct {
-        Indexer indexer;
+        ::UC::IndexPool indexer;
         std::shared_ptr<void> buffers;
         size_t size;
     } hostBuffers_, deviceBuffers_;
