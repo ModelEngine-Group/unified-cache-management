@@ -38,30 +38,40 @@ template <class Key, class Hash = std::hash<Key>, size_t ShardBits = 10>
 class HashSet {
     static_assert(ShardBits <= 10, "ShardBits too large");
     static constexpr size_t Shards = size_t{1} << ShardBits;
+    enum class SlotState : uint8_t { Empty, Occupied, Deleted };
+    struct Slot {
+        std::optional<Key> key;
+        SlotState state = SlotState::Empty;
+    };
     struct alignas(64) Shard {
         mutable std::shared_mutex mtx;
-        std::vector<std::optional<Key>> keys;
+        std::vector<Slot> keys;
         size_t used = 0;
+        size_t tombstones = 0;
     };
     std::array<Shard, Shards> shards_;
     Hash hash_;
     std::atomic<size_t> size_{0};
     static size_t ShardIndex(size_t h) noexcept { return h & (Shards - 1); }
     static size_t Probe(size_t idx, size_t cap) noexcept { return (idx + 1) & (cap - 1); }
-    static bool IsEmpty(const std::optional<Key>& slot) noexcept { return !slot.has_value(); }
+    static bool IsEmpty(const Slot& slot) noexcept { return slot.state == SlotState::Empty; }
+    static bool IsOccupied(const Slot& slot) noexcept { return slot.state == SlotState::Occupied; }
+    static bool IsDeleted(const Slot& slot) noexcept { return slot.state == SlotState::Deleted; }
     void RehashShard(Shard& s)
     {
-        std::vector<std::optional<Key>> old = std::move(s.keys);
+        std::vector<Slot> old = std::move(s.keys);
         size_t new_cap = (old.empty() ? 8 : old.size() * 2);
-        s.keys.assign(new_cap, std::optional<Key>{});
+        s.keys.assign(new_cap, Slot{});
         s.used = 0;
-        for (const auto& opt : old) {
-            if (!opt.has_value()) { continue; }
-            const Key& k = *opt;
+        s.tombstones = 0;
+        for (const auto& slot : old) {
+            if (!IsOccupied(slot)) { continue; }
+            const Key& k = *slot.key;
             size_t h = hash_(k);
             size_t idx = (h >> ShardBits) & (new_cap - 1);
             while (!IsEmpty(s.keys[idx])) { idx = Probe(idx, new_cap); }
-            s.keys[idx].emplace(k);
+            s.keys[idx].key.emplace(k);
+            s.keys[idx].state = SlotState::Occupied;
             ++s.used;
         }
     }
@@ -72,7 +82,7 @@ public:
         size_t h = hash_(key);
         auto& s = shards_[ShardIndex(h)];
         std::unique_lock lg(s.mtx);
-        if (s.used * 4 >= s.keys.size() * 3) [[unlikely]] { RehashShard(s); }
+        if ((s.used + s.tombstones) * 4 >= s.keys.size() * 3) [[unlikely]] { RehashShard(s); }
         size_t cap = s.keys.size();
         if (cap == 0) {
             RehashShard(s);
@@ -80,18 +90,39 @@ public:
         }
         size_t idx = (h >> ShardBits) & (cap - 1);
         size_t start = idx;
+        size_t first_deleted = cap;
         do {
-            if (s.keys[idx].has_value() && *s.keys[idx] == key) { return; }
+            if (IsOccupied(s.keys[idx]) && *s.keys[idx].key == key) { return; }
+            if (IsDeleted(s.keys[idx]) && first_deleted == cap) { first_deleted = idx; }
             if (IsEmpty(s.keys[idx])) {
-                s.keys[idx].emplace(key);
+                size_t target = (first_deleted != cap) ? first_deleted : idx;
+                auto& slot = s.keys[target];
+                if (IsDeleted(slot)) { --s.tombstones; }
+                slot.key.emplace(key);
+                slot.state = SlotState::Occupied;
                 ++s.used;
                 ++size_;
                 return;
             }
             idx = Probe(idx, cap);
         } while (idx != start);
+        if (first_deleted != cap) {
+            auto& slot = s.keys[first_deleted];
+            --s.tombstones;
+            slot.key.emplace(key);
+            slot.state = SlotState::Occupied;
+            ++s.used;
+            ++size_;
+            return;
+        }
         RehashShard(s);
-        Insert(key);
+        cap = s.keys.size();
+        idx = (h >> ShardBits) & (cap - 1);
+        while (!IsEmpty(s.keys[idx])) { idx = Probe(idx, cap); }
+        s.keys[idx].key.emplace(key);
+        s.keys[idx].state = SlotState::Occupied;
+        ++s.used;
+        ++size_;
     }
     bool Contains(const Key& key) const
     {
@@ -104,7 +135,7 @@ public:
         size_t start = idx;
         do {
             if (IsEmpty(s.keys[idx])) { break; }
-            if (*s.keys[idx] == key) { return true; }
+            if (IsOccupied(s.keys[idx]) && *s.keys[idx].key == key) { return true; }
             idx = Probe(idx, cap);
         } while (idx != start);
         return false;
@@ -120,9 +151,11 @@ public:
         size_t start = idx;
         do {
             if (IsEmpty(s.keys[idx])) { break; }
-            if (*s.keys[idx] == key) {
-                s.keys[idx].reset();
+            if (IsOccupied(s.keys[idx]) && *s.keys[idx].key == key) {
+                s.keys[idx].key.reset();
+                s.keys[idx].state = SlotState::Deleted;
                 --s.used;
+                ++s.tombstones;
                 --size_;
                 return;
             }
