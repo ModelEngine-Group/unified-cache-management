@@ -20,8 +20,3 @@ RUN export PLATFORM="cuda" ENABLE_SPARSE=$ENABLE_SPARSE && \
      pip install -v -e /workspace/unified-cache-management --no-build-isolation
 
 ENTRYPOINT ["/bin/bash"]
-
-
-Dockerfile.vllm_gpu
-
-Dockerfile.vllm_npu
