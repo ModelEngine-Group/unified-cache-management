@@ -19,9 +19,6 @@ from common.offline_inference_utils import (
 )
 from common.path_utils import get_path_relative_to_test_root, get_path_to_model
 
-os.environ["ENABLE_UCM_PATCH"] = "1"
-os.environ["ENABLE_SPARSE"] = "1"
-
 
 class TestBasicOfflineInferenceSparse:
     """Test basic offline inference functionality."""

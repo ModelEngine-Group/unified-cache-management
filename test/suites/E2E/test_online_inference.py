@@ -30,8 +30,6 @@ from common.llm_connection.token_counter import HuggingFaceTokenizer
 from common.online_inference_utils import VLLMServerManager
 from common.path_utils import get_path_relative_to_test_root, get_path_to_model
 
-os.environ["ENABLE_UCM_PATCH"] = "1"
-
 
 class TestBasicOnlineInference:
     """Test basic online inference functionality."""
@@ -74,8 +72,6 @@ class TestBasicOnlineInference:
         config_file = get_path_relative_to_test_root("config.yaml")
         with open(config_file, "r", encoding="utf-8") as f:
             config = yaml.safe_load(f)
-
-        os.environ["ENABLE_UCM_PATCH"] = "1"
 
         ucm_storage_dir = "/tmp/ucm_cache"
         ensure_storage_dir(ucm_storage_dir, clear_existing=True)
