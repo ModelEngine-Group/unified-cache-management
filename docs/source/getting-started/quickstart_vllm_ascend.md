@@ -23,8 +23,29 @@ pip install -v -e . --no-build-isolation
 cd ..
 ```
 
+>**Note:** For the Atlas A3 series, the `PLATFORM` variable should be set to `ascend-a3`.
+
 2、Apply vLLM and vLLM-Ascend Integration Patches (Required)
 To enable Unified Cache Management (UCM) integration, you need to apply patches to both vLLM and vLLM-Ascend source trees.
+
+#### Option A: Monkey Patch (Recommended)
+
+This method enables UCM features dynamically at runtime via environment variables, requiring no source code modifications.
+
+1. Enable Monkey Patch:
+```bash
+export ENABLE_UCM_PATCH=1
+```
+>**Note:** Enabling ENABLE_UCM_PATCH is required to use the Prefix Caching feature with UCM.
+
+2. Enable Sparse Attention (Optional):
+```bash
+export ENABLE_SPARSE=1
+```
+
+#### Option B: Manual Git Patch (Legacy/Alternative)
+
+If you prefer modifying the source code directly, follow these steps:
 
 **Step 1:** Apply the vLLM Patch
 
@@ -32,7 +53,8 @@ First, apply the standard vLLM integration patch in the vLLM source directory:
     
 ```bash
 cd <path_to_vllm>
-git apply unified-cache-management/ucm/integration/vllm/patch/0.9.2/vllm-adapt.patch
+# Replace <vLLM_VERSION> with 0.9.2 or 0.11.0
+git apply <patch_to_ucm>/ucm/integration/vllm/patch/<vLLM_VERSION>/vllm-adapt.patch
 ```
     
 **Step 2:** Apply the vLLM-Ascend Patch
@@ -41,10 +63,11 @@ Then, switch to the vLLM-Ascend source directory and apply the Ascend-specific p
 
 ```bash
 cd <path_to_vllm_ascend>
-git apply unified-cache-management/ucm/integration/vllm/patch/0.9.2/vllm-ascend-adapt.patch
+# Replace <vLLM_VERSION> with 0.9.2 or 0.11.0
+git apply <patch_to_ucm>/ucm/integration/vllm/patch/<vLLM_VERSION>/vllm-ascend-adapt.patch
 ```
 
-**Note:**
+>**Note:**
     The ReRoPE algorithm is not supported on Ascend at the moment.
     Only the standard UCM integration is applicable for vLLM-Ascend.
 
@@ -116,7 +139,7 @@ You may directly edit the example file at `unified-cache-management/examples/ucm
 
 ### Feature 2:  Sparsity
 
-The sparse module was not compiled by default. To enable it, set the environment variable `export ENABLE_SPARSE=TRUE` and re-compile the code you built. And uncomment `ucm_sparse_config` code block in `unified-cache-management/examples/ucm_config_example.yaml`. Additionally, if you want to run GSAOnDevice, you also need to set the environment variable `export VLLM_HASH_ATTENTION=1`.
+The sparse module was not compiled by default. To enable it, set the environment variable `export ENABLE_SPARSE=TRUE` and re-compile the code you built. And uncomment `ucm_sparse_config` code block in `unified-cache-management/examples/ucm_config_example.yaml`. Additionally, if you want to run GSA, you also need to set the environment variable `export VLLM_HASH_ATTENTION=1`.
 
 ## Step 3: Launching Inference
 
