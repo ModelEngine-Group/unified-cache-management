@@ -236,8 +236,6 @@ class TestBasicOfflineInferenceSparse:
         enforce_eager: bool,
         max_num_batched_tokens: int,
     ):
-        os.environ["VLLM_USE_V1"] = "1"
-        os.environ["PYTHONHASHSEED"] = "123456"
         os.environ["ENABLE_SPARSE"] = "true"
         os.environ["VLLM_HASH_ATTENTION"] = "1"
 
@@ -366,9 +364,8 @@ class TestBasicOfflineInferenceSparse:
             print(f"Standard answers:\n{standard_answers}")
             pytest.fail("GsaOnDevice Test Failed!")
 
-    # @pytest.mark.skip(reason="refine this code and re-enable later")
     @pytest.mark.stage(1)
-    @pytest.mark.feature("offline_inference_sparse")
+    @pytest.mark.feature("online_inference_sparse")
     @pytest.mark.gpu_mem(30000)
     @pytest.mark.parametrize("model_name", ["Qwen3-4B"])
     @pytest.mark.parametrize("max_tokens", [2048])
@@ -381,6 +378,9 @@ class TestBasicOfflineInferenceSparse:
         enforce_eager: bool,
         max_num_batched_tokens: int,
     ):
+        os.environ["ENABLE_SPARSE"] = "true"
+        os.environ["VLLM_HASH_ATTENTION"] = "1"
+
         config_file = get_path_relative_to_test_root("config.yaml")
         with open(config_file, "r", encoding="utf-8") as f:
             config = yaml.safe_load(f)

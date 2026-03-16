@@ -59,6 +59,9 @@ class TestBasicOnlineInference:
             max_tokens: Maximum tokens to generate
             prompt_split_ratio: Ratio to split prompt for Phase 2 (0.5 = split in half)
         """
+        os.environ["ENABLE_SPARSE"] = "false"
+        os.environ["VLLM_HASH_ATTENTION"] = "0"
+
         # Load configuration
         config_file = get_path_relative_to_test_root("config.yaml")
         with open(config_file, "r", encoding="utf-8") as f:
