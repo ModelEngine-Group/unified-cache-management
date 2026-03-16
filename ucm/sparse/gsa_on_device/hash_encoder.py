@@ -22,6 +22,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 """
 
+import os
 import torch
 
 if hasattr(torch, "npu") and torch.npu.is_available():
@@ -312,11 +313,22 @@ class HashEncoder:
 
         self._init_hash_weights()
 
+
         if self.device.type == "cuda" or self.device.type == "cpu":
             self._init_bit_masks()
 
     def _init_hash_weights(self):
         # Step 1: 随机高斯矩阵
+        seed_str = os.getenv("GSA_HASH_ENCODER_SEED")
+        if seed_str is not None and seed_str.strip() != "":
+            seed = int(seed_str)
+            torch.manual_seed(seed)
+            if self.device.type == "cuda":
+                torch.cuda.manual_seed(seed)
+                torch.cuda.manual_seed_all(seed)
+            if self.device.type == "npu":
+                torch_npu.npu.manual_seed(seed)
+                torch_npu.npu.manual_seed_all(seed)
         random_weights = torch.normal(
             mean=0,
             std=2,
