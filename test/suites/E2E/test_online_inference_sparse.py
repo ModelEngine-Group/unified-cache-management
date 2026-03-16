@@ -14,6 +14,7 @@ Test flow mirrors test_offline_inference.py:
            then full prompt (hits HBM + SSD) -> verify accuracy
 """
 
+import os
 from typing import List
 
 import pytest
@@ -28,6 +29,9 @@ from common.llm_connection.openai_connector import OpenAIConn
 from common.llm_connection.token_counter import HuggingFaceTokenizer
 from common.online_inference_utils import VLLMServerManager
 from common.path_utils import get_path_relative_to_test_root, get_path_to_model
+
+os.environ["ENABLE_UCM_PATCH"] = "1"
+os.environ["ENABLE_SPARSE"] = "1"
 
 
 class TestBasicOnlineInference:
@@ -113,10 +117,12 @@ class TestBasicOnlineInference:
         ucm_config = {
             "ucm_connectors": [
                 {
-                    "ucm_connector_name": "UcmNfsStore",
+                    "ucm_connector_name": "UcmPipelineStore",
                     "ucm_connector_config": {
+                        "store_pipeline": "Cache|Posix",
                         "storage_backends": ucm_storage_dir,
                         "use_direct": False,
+                        "cache_buffer_capacity_gb": 32,
                     },
                 }
             ],
@@ -128,6 +134,7 @@ class TestBasicOnlineInference:
             port=8000,
             ucm_config=ucm_config,
             max_model_len=12000,
+            max_num_batched_tokens=2047,
             served_model_name=served_model_name,
         )
 

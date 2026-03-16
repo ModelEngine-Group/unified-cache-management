@@ -628,7 +628,8 @@ class GSAOnDevice(UcmSparseBase):
                 self.new_block_tables = attn_metadata.block_tables
                 self.is_tensor_computed = True
 
-        k_hash_compute = self.hash_encoder.compute_hash(key)
+        key_for_gsa = key[: attn_metadata.num_actual_tokens]
+        k_hash_compute = self.hash_encoder.compute_hash(key_for_gsa)
         # assert (
         #     k_hash_compute.shape[0] == attn_metadata.slot_mapping.numel()
         # ), f"shape mismatch: k_hash_compute.shape[0]={k_hash_compute.shape[0]} != attn_metadata.slot_mapping.numel()={attn_metadata.slot_mapping.numel()}"
@@ -693,8 +694,8 @@ class GSAOnDevice(UcmSparseBase):
                     attn_metadata.decode.block_table,
                     attn_metadata.decode.seq_lens,
                     topk_token=topk_token,
-                    sink_token=64,
-                    recent_token=512,
+                    sink_token=self.block_size,
+                    recent_token=self.block_size * 4,
                     is_mla=self.is_mla,
                 )
                 attn_metadata.decode.topk_block_table = block_table
@@ -781,8 +782,8 @@ class GSAOnDevice(UcmSparseBase):
             attn_metadata.block_table,
             attn_metadata.seq_lens,
             topk_token=self.hash_topk_tokens,
-            sink_token=64,
-            recent_token=512,
+            sink_token=self.block_size,
+            recent_token=self.block_size * 4,
             is_mla=self.is_mla,
         )
         # update topk_block_table
@@ -837,6 +838,7 @@ class GSAOnDevice(UcmSparseBase):
         )
         new_seq_lens = self.topk_seq_lens_qwen
         attn_metadata.seq_lens = new_seq_lens
+        attn_metadata.seq_lens_list = new_seq_lens.tolist()
 
         self.new_block_tables[: self.batch_size_for_hamming] = self.hamming_output[
             : self.batch_size_for_hamming, 0, :
@@ -944,6 +946,7 @@ class GSAOnDevice(UcmSparseBase):
                         else:
                             attn_metadata.block_tables = self.topk_block_table
                         attn_metadata.seq_lens = self.topk_seq_lens
+                        attn_metadata.seq_lens_list = self.topk_seq_lens.tolist()
                     else:
                         if self.is_cuda:
                             self.update_decode_topk_gqa_cuda(
@@ -992,6 +995,7 @@ class GSAOnDevice(UcmSparseBase):
                     else:
                         attn_metadata.block_tables = self.ori_block_table_decode
                     attn_metadata.seq_lens = self.ori_seq_lens_decode
+                    attn_metadata.seq_lens_list = self.ori_seq_lens_decode.tolist()
 
     def request_begin(self, request_id: ReqType, prompt_token_ids: List[int]):
         pass

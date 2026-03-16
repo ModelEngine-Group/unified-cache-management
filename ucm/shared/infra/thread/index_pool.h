@@ -38,7 +38,6 @@ public:
 
 private:
     struct Node {
-        Index idx;
         Index next;
     };
     struct Pointer {
@@ -52,10 +51,7 @@ public:
     {
         this->capacity_ = capacity;
         this->nodes_.resize(capacity + 1);
-        for (Index slot = 1; slot <= capacity; slot++) {
-            this->nodes_[slot].idx = slot - 1;
-            this->nodes_[slot].next = slot + 1;
-        }
+        for (Index slot = 1; slot <= capacity; ++slot) { this->nodes_[slot].next = slot + 1; }
         this->nodes_[capacity].next = 0;
         this->pointer_.store({1, 0});
     }
@@ -68,7 +64,7 @@ public:
             Pointer desired{next, ptr.ver + 1};
             if (this->pointer_.compare_exchange_weak(ptr, desired, std::memory_order_release,
                                                      std::memory_order_relaxed)) {
-                return this->nodes_[ptr.slot].idx;
+                return ptr.slot - 1;
             }
         }
     }
@@ -93,6 +89,6 @@ private:
     alignas(64) std::atomic<Pointer> pointer_;
 };
 
-} // namespace UC
+}  // namespace UC
 
 #endif
