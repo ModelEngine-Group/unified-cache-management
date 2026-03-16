@@ -10,8 +10,8 @@ from common.common_inference_utils import (
     get_platform_specific_module,
     load_prompt_from_file,
     load_prompt_list_from_file,
+    serialize_sample_params,
     split_prompt_by_tokens,
-    to_dict_for_serialization,
 )
 from common.offline_inference_utils import (
     run_in_spawn_subprocess,
@@ -138,7 +138,7 @@ class TestBasicOfflineInferenceSparse:
         print(f"\n===== Phase 1: Save KV Cache to SSD And Load (Baseline) =====")
 
         # Convert SamplingParams to dict for serialization, as non-picklable objects cannot be passed to subprocess
-        sampling_params_dict = to_dict_for_serialization(sampling_params)
+        sampling_params_dict = serialize_sample_params(sampling_params)
 
         phase1_outputs = run_in_spawn_subprocess(
             run_offline_inference,
@@ -306,7 +306,7 @@ class TestBasicOfflineInferenceSparse:
         )
 
         # Convert SamplingParams to dict for serialization, as non-picklable objects cannot be passed to subprocess
-        sampling_params_dict = to_dict_for_serialization(sampling_params)
+        sampling_params_dict = serialize_sample_params(sampling_params)
         print(f"sampling_params_dict: {sampling_params_dict}")
         phase_sparse_output = run_in_spawn_subprocess(
             run_offline_inference,
@@ -446,7 +446,7 @@ class TestBasicOfflineInferenceSparse:
         )
 
         # Convert SamplingParams to dict for serialization, as non-picklable objects cannot be passed to subprocess
-        sampling_params_dict = to_dict_for_serialization(sampling_params)
+        sampling_params_dict = serialize_sample_params(sampling_params)
         phase_sparse_output = run_in_spawn_subprocess(
             run_offline_inference,
             model_path,
@@ -617,7 +617,7 @@ class TestBasicOfflineInferenceSparse:
         )
 
         # Convert SamplingParams to dict for serialization, as non-picklable objects cannot be passed to subprocess
-        sampling_params_dict = to_dict_for_serialization(sampling_params)
+        sampling_params_dict = serialize_sample_params(sampling_params)
 
         phase1_outputs = run_in_spawn_subprocess(
             run_offline_inference,

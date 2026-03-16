@@ -36,7 +36,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from common.common_inference_utils import (
-    from_dict_for_serialization,
+    deserialize_sample_params,
 )
 
 
@@ -192,7 +192,7 @@ def run_offline_inference(
     Returns:
         List of generated outputs
     """
-    sampling_params = from_dict_for_serialization(sampling_params_dict)
+    sampling_params = deserialize_sample_params(sampling_params_dict)
 
     gpu_memory_utilization = float(os.getenv("E2E_TEST_GPU_MEMORY_UTILIZATION", "0.1"))
     logging.info(

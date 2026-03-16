@@ -190,6 +190,23 @@ def load_prompt_list_from_file(
     return full_prompts, full_answers
 
 
+def serialize_sample_params(params: str) -> Any:
+    import msgspec
+
+    json_bytes = msgspec.json.encode(params)
+    json_str = json_bytes.decode("utf-8")
+    return json_str
+
+
+def deserialize_sample_params(json_str: str) -> Any:
+    import msgspec
+
+    json_bytes = json_str.encode("utf-8")
+    return msgspec.json.decode(
+        json_bytes, type=get_platform_specific_module().SamplingParams
+    )
+
+
 def to_dict_for_serialization(obj: Any) -> Dict[str, Any]:
     """Convert any object to dict for subprocess serialization.
 
