@@ -9,6 +9,7 @@ from common.common_inference_utils import (
     ensure_storage_dir,
     get_platform_specific_module,
     load_prompt_from_file,
+    load_prompt_list_from_file,
     split_prompt_by_tokens,
     to_dict_for_serialization,
 )
@@ -225,9 +226,8 @@ class TestBasicOfflineInferenceSparse:
 
     """Test GSA sparse attention."""
 
-    # @pytest.mark.skip(reason="refine this code and re-enable later")
     @pytest.mark.stage(1)
-    @pytest.mark.feature("offline_inference_sparse")
+    @pytest.mark.feature("online_inference_sparse")
     @pytest.mark.gpu_mem(70000)
     @pytest.mark.parametrize("model_name", ["DeepSeek-V2-Lite-Chat"])
     @pytest.mark.parametrize("max_tokens", [200])
@@ -249,7 +249,7 @@ class TestBasicOfflineInferenceSparse:
         assert os.path.exists(model_path), f"Model path does not exist: {model_path}"
 
         try:
-            test_prompts, standard_answers = load_prompt_from_file(
+            test_prompts, standard_answers = load_prompt_list_from_file(
                 get_path_relative_to_test_root(
                     "suites/E2E/prompts/test_offline_gsaondevice_inference.json"
                 )
@@ -388,7 +388,7 @@ class TestBasicOfflineInferenceSparse:
         assert os.path.exists(model_path), f"Model path does not exist: {model_path}"
 
         try:
-            test_prompts, standard_answers = load_prompt_from_file(
+            test_prompts, standard_answers = load_prompt_list_from_file(
                 get_path_relative_to_test_root(
                     "suites/E2E/prompts/test_offline_gsaondevice_inference.json"
                 )

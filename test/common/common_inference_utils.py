@@ -85,6 +85,72 @@ def load_prompt_from_file(prompt_file: Optional[Path] = None) -> Tuple[str, List
         raise FileNotFoundError(f"Prompt file not found: {prompt_file}")
 
     with open(prompt_file, "r", encoding="utf-8") as f:
+        content = f.read().strip()
+
+    try:
+        data = json.loads(content)
+    except json.JSONDecodeError as e:
+        raise ValueError(f"Invalid JSON format in {prompt_file}: {e}")
+
+    if isinstance(data, list):
+        if len(data) == 0:
+            raise ValueError(f"Empty list in {prompt_file}")
+        data = data[0]
+
+    input_text = data.get("input", "")
+    context_text = data.get("context", "")
+
+    # LongBench standard format: context (long document) + input (question)
+    # Combine context and input to form the full prompt
+    if context_text and input_text:
+        full_prompt = f"{context_text}\n\n{input_text}"
+    elif context_text:
+        full_prompt = context_text
+    elif input_text:
+        full_prompt = input_text
+    else:
+        raise ValueError(f"No input or context found in {prompt_file}")
+
+    # Extract answers
+    answers = data.get("answers", [])
+    if not isinstance(answers, list):
+        answers = [answers] if answers else []
+
+    return full_prompt, answers
+
+
+def load_prompt_list_from_file(
+    prompt_file: Optional[Path] = None,
+) -> Tuple[str, List[str]]:
+    """Load prompt and answers from JSON file (LongBench format).
+
+    LongBench format structure:
+    {
+        "input": "任务输入/问题",
+        "context": "长上下文/文档",
+        "answers": ["答案列表"],
+        "length": 总长度,
+        "dataset": "数据集名称",
+        "language": "语言",
+        ...
+    }
+    For LongBench, the typical format is:
+    - context: 长文档/上下文（放在前面）
+    - input: 问题/查询（放在后面）
+    - Combined format: context + "\n\n" + input
+
+    Args:
+        prompt_file: Path to the prompt JSON file. If None, uses default path.
+
+    Returns:
+        Tuple of (combined_prompt_string, answers_list).
+        - combined_prompt_string: Combined prompt (context + input)
+        - answers_list: List of standard answers from the file
+    """
+    if not prompt_file.exists():
+        raise FileNotFoundError(f"Prompt file not found: {prompt_file}")
+
+    with open(prompt_file, "r", encoding="utf-8") as f:
         content = f.readlines()
     full_prompts = []
     full_answers = []
