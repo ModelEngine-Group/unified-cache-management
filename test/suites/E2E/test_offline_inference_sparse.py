@@ -307,7 +307,7 @@ class TestBasicOfflineInferenceSparse:
 
         # Convert SamplingParams to dict for serialization, as non-picklable objects cannot be passed to subprocess
         sampling_params_dict = to_dict_for_serialization(sampling_params)
-        print.info(f"sampling_params_dict: {sampling_params_dict}")
+        print(f"sampling_params_dict: {sampling_params_dict}")
         phase_sparse_output = run_in_spawn_subprocess(
             run_offline_inference,
             model_path,

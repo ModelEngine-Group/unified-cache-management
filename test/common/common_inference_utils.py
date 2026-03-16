@@ -197,6 +197,7 @@ def to_dict_for_serialization(obj: Any) -> Dict[str, Any]:
     - dataclass objects
     - regular objects with __dict__
     - vLLM SamplingParams and other custom classes
+    - msgspec.Struct objects (e.g., vllm.SamplingParams)
 
     Args:
         obj: Object to serialize (dataclass, SamplingParams, etc.)
@@ -211,9 +212,17 @@ def to_dict_for_serialization(obj: Any) -> Dict[str, Any]:
         # Try dataclass first
         if is_dataclass(obj) and not isinstance(obj, type):
             data = asdict(obj)
+            logging.info(f"Serialized {type(obj)} as dataclass, got {len(data)} fields")
         # Try __dict__ for regular objects
         elif hasattr(obj, "__dict__"):
             data = obj.__dict__.copy()
+            logging.info(f"Serialized {type(obj)} via __dict__, got {len(data)} fields")
+        # Try msgspec.Struct (e.g., vllm.SamplingParams)
+        elif hasattr(obj, "asdict"):
+            data = obj.asdict()
+            logging.info(
+                f"Serialized {type(obj)} via msgspec asdict(), got {len(data)} fields"
+            )
         else:
             raise ValueError(f"Cannot serialize object of type {type(obj)}")
 
