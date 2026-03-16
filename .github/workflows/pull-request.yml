@@ -187,7 +187,6 @@ jobs:
 
   test-e2e-sparse-gpu:
     runs-on: ["gpu-test-in-docker"]
-    needs: lint-and-unit-tests
     permissions:
       checks: write
       pull-requests: write
