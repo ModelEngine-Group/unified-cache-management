@@ -23,7 +23,6 @@ from common.path_utils import get_path_relative_to_test_root, get_path_to_model
 class TestBasicOfflineInferenceSparse:
     """Test basic offline inference functionality."""
 
-    @pytest.mark.skip(reason="refine this code and re-enable later")
     @pytest.mark.stage(1)
     @pytest.mark.feature("offline_inference_sparse")
     @pytest.mark.gpu_mem(6000)
@@ -237,6 +236,11 @@ class TestBasicOfflineInferenceSparse:
         enforce_eager: bool,
         max_num_batched_tokens: int,
     ):
+        os.environ["VLLM_USE_V1"] = "1"
+        os.environ["PYTHONHASHSEED"] = "123456"
+        os.environ["ENABLE_SPARSE"] = "true"
+        os.environ["VLLM_HASH_ATTENTION"] = "1"
+
         config_file = get_path_relative_to_test_root("config.yaml")
         with open(config_file, "r", encoding="utf-8") as f:
             config = yaml.safe_load(f)
