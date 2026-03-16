@@ -74,3 +74,21 @@ TEST_F(UCHashSetTest, StringKey)
     hs.Remove("hello");
     EXPECT_FALSE(hs.Contains("hello"));
 }
+
+TEST_F(UCHashSetTest, RemoveKeepsProbeChainIntact)
+{
+    struct BadHash {
+        size_t operator()(int) const noexcept { return 0; }
+    };
+
+    UC::HashSet<int, BadHash, 0> hs;
+    hs.Insert(1);
+    hs.Insert(2);
+    hs.Insert(3);
+
+    hs.Remove(2);
+
+    EXPECT_TRUE(hs.Contains(1));
+    EXPECT_FALSE(hs.Contains(2));
+    EXPECT_TRUE(hs.Contains(3));
+}

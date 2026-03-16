@@ -21,9 +21,11 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  * */
+#include <list>
+#include <pybind11/pybind11.h>
+#include <pybind11/stl.h>
 #include "config_parser.h"
 #include "library_loader.h"
-#include "template/store_binder.h"
 #include "ucmstore_v1.h"
 
 namespace py = pybind11;
@@ -31,35 +33,140 @@ namespace py = pybind11;
 namespace UC::PipelineStore {
 
 class PipelineStore {
-    std::shared_ptr<StoreV1> back_{nullptr};
-
-public:
-    const std::shared_ptr<StoreV1>& GetBack() const { return back_; }
-    void SetBack(std::shared_ptr<StoreV1> store) { back_ = std::move(store); }
-    uintptr_t RawPtr() const { return (uintptr_t)(void*)back_.get(); }
-    StoreV1* operator->() const { return back_.get(); }
-    StoreV1& operator*() const { return *back_; }
-};
-
-class PipelineStorePy : public Detail::StoreBinder<PipelineStore> {
     using StoreLoader = LibraryLoader<StoreV1>;
+    template <typename T>
+    struct BufferArrayView {
+        const T* data;
+        size_t num;
+        BufferArrayView(const pybind11::buffer& buffer)
+        {
+            const auto info = buffer.request(false);
+            data = static_cast<const T*>(info.ptr);
+            const auto scale = sizeof(T) / info.itemsize;
+            num = static_cast<size_t>(info.shape[0]) / scale;
+        }
+        const T* operator[](size_t i) const noexcept { return data + i; }
+    };
+    template <typename T>
+    struct Buffer2DArrayView {
+        const T* data;
+        size_t rows, cols;
+        Buffer2DArrayView(const pybind11::buffer& buffer)
+        {
+            const auto info = buffer.request(false);
+            data = static_cast<const T*>(info.ptr);
+            const auto scale = sizeof(T) / info.itemsize;
+            rows = static_cast<size_t>(info.shape[0]) / scale;
+            cols = static_cast<size_t>(info.shape[1]) / scale;
+        }
+        const T* operator[](size_t r) const noexcept { return data + r * cols; }
+    };
+
     std::list<StoreLoader> loaders_;
     std::list<std::shared_ptr<StoreV1>> stores_;
 
+    StoreV1* StoreBack() const { return !stores_.empty() ? stores_.back().get() : nullptr; }
+    static void ThrowIfFailed(const Status& s)
+    {
+        if (s.Failure()) [[unlikely]] { throw std::runtime_error{s.ToString()}; }
+    }
+    static Detail::TaskDesc MakeTaskDesc(const pybind11::buffer& ids,
+                                         const pybind11::buffer& indexes,
+                                         const pybind11::buffer& addrs)
+    {
+        BufferArrayView<Detail::BlockId> idArr{ids};
+        BufferArrayView<size_t> idxArr{indexes};
+        Buffer2DArrayView<void*> addrArr{addrs};
+        if (idArr.num != idxArr.num || idArr.num != addrArr.rows) {
+            ThrowIfFailed(
+                Status::InvalidParam("invalid dim: {},{},{}", idArr.num, idxArr.num, addrArr.rows));
+        }
+        Detail::TaskDesc desc;
+        desc.reserve(idArr.num);
+        for (size_t i = 0; i < idArr.num; i++) {
+            Detail::Shard shard;
+            shard.owner = *idArr[i];
+            shard.index = *idxArr[i];
+            shard.addrs.assign(addrArr[i], addrArr[i] + addrArr.cols);
+            desc.push_back(std::move(shard));
+        }
+        return desc;
+    }
+
 public:
+    ~PipelineStore()
+    {
+        while (!stores_.empty()) { stores_.pop_back(); }
+    }
     void Stack(const std::string& name, const std::string& path, const py::dict& dict)
     {
         Detail::Dictionary config;
         ThrowIfFailed(ConfigParser::Parse(config, dict));
-        config.Set<std::shared_ptr<StoreV1>>("store_backend", StoreBase().GetBack());
+        config.Set<StoreV1*>("store_backend", StoreBack());
         StoreLoader loader{path, "Make" + name + "Store"};
         ThrowIfFailed(loader.LoadLibrary());
         auto store = loader.CreateObject();
         if (!store) { throw std::runtime_error{"failed to create store(" + name + ")"}; }
         ThrowIfFailed(store->Setup(config));
         loaders_.push_back(std::move(loader));
-        stores_.push_back(store);
-        StoreBase().SetBack(std::move(store));
+        stores_.push_back(std::move(store));
+    }
+    uintptr_t Self() const { return (uintptr_t)(void*)StoreBack(); }
+    pybind11::bytes Lookup(const pybind11::buffer& ids)
+    {
+        BufferArrayView<Detail::BlockId> idArr{ids};
+        auto res = StoreBack()->Lookup(idArr.data, idArr.num);
+        if (res) {
+            auto& v = res.Value();
+            return pybind11::bytes(reinterpret_cast<const char*>(v.data()), v.size());
+        }
+        throw std::runtime_error{res.Error().ToString()};
+    }
+    ssize_t LookupOnPrefix(const pybind11::buffer& ids)
+    {
+        BufferArrayView<Detail::BlockId> idArr{ids};
+        auto res = StoreBack()->LookupOnPrefix(idArr.data, idArr.num);
+        if (res) { return res.Value(); }
+        throw std::runtime_error{res.Error().ToString()};
+    }
+    void Prefetch(const pybind11::buffer& ids)
+    {
+        BufferArrayView<Detail::BlockId> idArr{ids};
+        StoreBack()->Prefetch(idArr.data, idArr.num);
+    }
+    Detail::TaskHandle Load(const pybind11::buffer& ids, const pybind11::buffer& indexes,
+                            const pybind11::buffer& addrs)
+    {
+        auto desc = MakeTaskDesc(ids, indexes, addrs);
+        desc.brief = "Load";
+        auto res = StoreBack()->Load(std::move(desc));
+        if (res) { return res.Value(); }
+        throw std::runtime_error{res.Error().ToString()};
+    }
+    Detail::TaskHandle Dump(const pybind11::buffer& ids, const pybind11::buffer& indexes,
+                            const pybind11::buffer& addrs, uintptr_t prerequisite_handle = 0)
+    {
+        auto desc = MakeTaskDesc(ids, indexes, addrs);
+        desc.brief = "Dump";
+        desc.prerequisiteHandle = prerequisite_handle;
+        auto res = StoreBack()->Dump(desc);
+        if (res) { return res.Value(); }
+        throw std::runtime_error{res.Error().ToString()};
+    }
+    bool Check(Detail::TaskHandle taskId)
+    {
+        auto res = StoreBack()->Check(taskId);
+        if (res) { return res.Value(); }
+        throw std::runtime_error{res.Error().ToString()};
+    }
+    void Wait(Detail::TaskHandle taskId)
+    {
+        auto status = Status::OK();
+        {
+            pybind11::gil_scoped_release release;
+            status = StoreBack()->Wait(taskId);
+        }
+        ThrowIfFailed(status);
     }
 };
 
@@ -72,18 +179,17 @@ PYBIND11_MODULE(ucmpipelinestore, m)
     m.attr("version") = UCM_PROJECT_VERSION;
     m.attr("commit_id") = UCM_COMMIT_ID;
     m.attr("build_type") = UCM_BUILD_TYPE;
-    auto s = py::class_<PipelineStorePy, std::unique_ptr<PipelineStorePy>>(m, "PipelineStore");
+    auto s = py::class_<PipelineStore, std::unique_ptr<PipelineStore>>(m, "PipelineStore");
     s.def(py::init<>());
-    s.def("Stack", &PipelineStorePy::Stack);
-    s.def("Self", &PipelineStorePy::Self);
-    s.def("Lookup", &PipelineStorePy::Lookup, py::arg("ids").noconvert());
-    s.def("LookupOnPrefix", &PipelineStorePy::LookupOnPrefix, py::arg("ids").noconvert());
-    s.def("Prefetch", &PipelineStorePy::Prefetch, py::arg("ids").noconvert());
-    s.def("Load", &PipelineStorePy::Load, py::arg("ids").noconvert(),
-          py::arg("indexes").noconvert(), py::arg("addrs").noconvert());
-    s.def("Dump", &PipelineStorePy::Dump, py::arg("ids").noconvert(),
-          py::arg("indexes").noconvert(), py::arg("addrs").noconvert(),
-          py::arg("prerequisite_handle") = 0);
-    s.def("Check", &PipelineStorePy::Check);
-    s.def("Wait", &PipelineStorePy::Wait);
+    s.def("Stack", &PipelineStore::Stack);
+    s.def("Self", &PipelineStore::Self);
+    s.def("Lookup", &PipelineStore::Lookup, py::arg("ids").noconvert());
+    s.def("LookupOnPrefix", &PipelineStore::LookupOnPrefix, py::arg("ids").noconvert());
+    s.def("Prefetch", &PipelineStore::Prefetch, py::arg("ids").noconvert());
+    s.def("Load", &PipelineStore::Load, py::arg("ids").noconvert(), py::arg("indexes").noconvert(),
+          py::arg("addrs").noconvert());
+    s.def("Dump", &PipelineStore::Dump, py::arg("ids").noconvert(), py::arg("indexes").noconvert(),
+          py::arg("addrs").noconvert(), py::arg("prerequisite_handle") = 0);
+    s.def("Check", &PipelineStore::Check);
+    s.def("Wait", &PipelineStore::Wait);
 }
