@@ -54,7 +54,7 @@ private:
     Detail::TaskHandle finishedBackendTaskHandle_{0};
     TaskIdSet* failureSet_{nullptr};
     TransBuffer* buffer_{nullptr};
-    std::shared_ptr<StoreV1> backend_{nullptr};
+    StoreV1* backend_{nullptr};
     int32_t deviceId_{-1};
     std::vector<size_t> tensorSizes_{};
     size_t streamNumber_{1};

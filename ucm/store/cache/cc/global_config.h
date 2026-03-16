@@ -30,7 +30,7 @@
 namespace UC::CacheStore {
 
 struct Config {
-    std::shared_ptr<StoreV1> storeBackend{};
+    StoreV1* storeBackend{};
     std::string uniqueId{};
     int32_t deviceId{-1};
     std::vector<size_t> tensorSizes{};

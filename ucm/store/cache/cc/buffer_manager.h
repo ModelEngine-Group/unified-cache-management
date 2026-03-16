@@ -33,13 +33,13 @@ namespace UC::CacheStore {
 
 class BufferManager {
     std::unique_ptr<TransBuffer> buffer_{nullptr};
-    std::shared_ptr<StoreV1> backend_{nullptr};
+    StoreV1* backend_{nullptr};
 
     template <auto LookupFunc>
     auto LookupThrough(const Detail::BlockId* blocks, size_t num)
     {
         StopWatch sw;
-        auto res = (backend_.get()->*LookupFunc)(blocks, num);
+        auto res = (backend_->*LookupFunc)(blocks, num);
         if (!res) [[unlikely]] { return decltype(res)(res.Error()); }
         UC_DEBUG("Cache lookup({}) in backend costs {:.3f}ms.", num, sw.Elapsed().count() * 1e3);
         return res;
