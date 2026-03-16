@@ -33,6 +33,17 @@ from setuptools.command.build_ext import build_ext
 ROOT_DIR = os.path.abspath(os.path.dirname(__file__))
 PLATFORM = os.getenv("PLATFORM")
 ENABLE_SPARSE = os.getenv("ENABLE_SPARSE")
+ENABLE_MINDIE = os.getenv("UCM_ENABLE_MINDIE", "0") not in ("", "0", "false", "False")
+
+Pybind11Extension = None
+if ENABLE_MINDIE:
+    try:
+        from pybind11.setup_helpers import Pybind11Extension
+    except ImportError as exc:
+        raise RuntimeError(
+            "UCM_ENABLE_MINDIE=1 requires pybind11 to build uc_hash_ext. "
+            "Please install pybind11 (e.g., pip install pybind11) and retry."
+        ) from exc
 
 
 _warning_printed = False
@@ -96,11 +107,24 @@ class CMakeExtension(Extension):
 
 class CMakeBuild(build_ext):
     def run(self):
+        cmake_exts = [ext for ext in self.extensions if isinstance(ext, CMakeExtension)]
+        other_exts = [
+            ext for ext in self.extensions if not isinstance(ext, CMakeExtension)
+        ]
+
         build_dir = os.path.abspath(self.build_temp)
         os.makedirs(build_dir, exist_ok=True)
 
-        for ext in self.extensions:
+        for ext in cmake_exts:
             self.build_cmake(ext)
+
+        if other_exts:
+            original_exts = self.extensions
+            try:
+                self.extensions = other_exts
+                super().run()
+            finally:
+                self.extensions = original_exts
 
         if enable_sparse() and is_ascend():
             gsa_build_script = "ucm/sparse/gsa_on_device/csrc/ascend/build.sh"
@@ -203,16 +227,37 @@ setup(
     version="0.4.0",
     description="Unified Cache Management",
     author="Unified Cache Team",
-    packages=find_packages() + [""],
+    packages=[
+        pkg
+        for pkg in (find_packages() + [""])
+        if ENABLE_MINDIE or not pkg.startswith("ucm.integration.mindie")
+    ],
     package_dir={"": "."},
     python_requires=">=3.10",
     install_requires=["wrapt==1.17.2"],
-    ext_modules=[CMakeExtension(name="ucm", source_dir=ROOT_DIR)],
+    ext_modules=[
+        ext
+        for ext in [
+            CMakeExtension(name="ucm", source_dir=ROOT_DIR),
+            (
+                Pybind11Extension(
+                    "uc_hash_ext",
+                    ["ucm/integration/mindie/hash_mindie/uc_hash_ext.cpp"],
+                    cxx_std=17,
+                    extra_compile_args=["-O3", "-march=native"],
+                )
+                if ENABLE_MINDIE and Pybind11Extension
+                else None
+            ),
+        ]
+        if ext is not None
+    ],
     cmdclass={"build_ext": CMakeBuild},
     zip_safe=False,
     include_package_data=False,
     package_data={
         "ucm": ["sparse/gsa_on_device/configs/**/*.json"],
+        **({"ucm.integration.mindie": ["ucm_config.json"]} if ENABLE_MINDIE else {}),
         "": ["ucm_patch.pth"],
     },
 )
