@@ -108,7 +108,6 @@ def get_supported_versions() -> list[str]:
 def apply_all_patches() -> None:
     """Apply all vLLM patches based on detected version."""
     version: Optional[str] = None
-
     try:
         from ucm.integration.vllm.patch.logger_patch import patch_logger
 
@@ -122,13 +121,11 @@ def apply_all_patches() -> None:
         supported_versions = get_supported_versions()
         if version not in supported_versions:
             logger.warning(
-                f"vLLM version {version} detected. No patch application needed for this version. "
-                f"Versions applicable for UCM patches: {', '.join(supported_versions)}. "
+                f"No version-specific vLLM patches available for vLLM {version}. "
+                f"Versions applicable for UCM patches: {', '.join(supported_versions)}."
             )
 
-        # Apply common patch here
-
-        # Apply vllm/vllm-ascendversion-specific patches
+        # Apply vllm/vllm-ascend version-specific patches
         # vllm patches
         match version:
             case "0.11.0":
@@ -136,21 +133,21 @@ def apply_all_patches() -> None:
 
                 if ENABLE_SPARSE:
                     import ucm.integration.vllm.patch.v0110.vllm.sparse_patch
-
+            case _:
+                pass
 
         # vllm_ascend patches
         ascend_version = get_vllm_ascend_version()
         match ascend_version:
-            case None:
-                pass
             case "0.11.0":
                 import ucm.integration.vllm.patch.v0110.vllm_ascend.pc_ascend_patch
 
                 if ENABLE_SPARSE:
                     import ucm.integration.vllm.patch.v0110.vllm_ascend.sparse_ascend_patch
+            case _:
+                pass
 
-
-        logger.info(f"All vLLM patches applied successfully for version {version}")
+        logger.info("UCM patch initialization completed!")
 
     except Exception as e:
         logger.error(f"Failed to apply vLLM patches: {e}\n")
