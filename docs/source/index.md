@@ -55,6 +55,7 @@ getting-started/kv_cache_calculator
 :::{toctree}
 :caption: User Guide
 :maxdepth: 1
+user-guide/support-matrix/support_matrix
 user-guide/prefix-cache/index
 user-guide/sparse-attention/index
 user-guide/pd-disaggregation/index
