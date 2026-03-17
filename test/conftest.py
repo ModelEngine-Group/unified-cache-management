@@ -1,22 +1,26 @@
 from __future__ import annotations
 
 import dataclasses
+import datetime
 import datetime as dt
+import logging
 import os
 import platform as pf
 import random
 import sys
+import uuid
 from pathlib import Path
 
 import pynvml
 import pytest
+from common.capture_utils import export_vars, set_test_info
 from common.config_utils import config_utils as config_instance
-from common.db_utils import database_connection, write_to_db
 from common.uc_eval.utils.data_class import ModelConfig
 
 # ---------------- Constants ----------------
 PRJ_ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(PRJ_ROOT))
+logger = logging.getLogger(__name__)
 
 
 # ---------------- CLI Options ----------------
@@ -98,7 +102,7 @@ def _setup_html_report(config: pytest.Config, report_dir: Path) -> None:
 
 
 # ---------------- Build ID & Session Init ----------------
-def _generate_build_id(config: pytest.Config) -> str:
+def _generate_build_info(config: pytest.Config) -> str:
     ts = dt.datetime.now().strftime("%Y-%m-%d_%H:%M:%S")
     cli_parts = []
     markers = [m.split(":", 1)[0].strip() for m in config.getini("markers")]
@@ -106,8 +110,8 @@ def _generate_build_id(config: pytest.Config) -> str:
         val = config.getoption(opt, "")
         if val:
             cli_parts.append(f"{opt}={val}")
-    args_part = "_".join(cli_parts) if cli_parts else "all_cases"
-    return f"pytest_{ts}_{args_part}"
+    args_part = " ".join(f"_--{p}" for p in cli_parts) if cli_parts else "all_cases"
+    return f"pytest{args_part}"
 
 
 # ---------------- Pytest Hooks ----------------
@@ -121,9 +125,9 @@ def pytest_configure(config: pytest.Config) -> None:
     _setup_html_report(config, report_dir)
 
     # Generate and register build ID into DB
-    build_id = _generate_build_id(config)
-    config._build_id = build_id
-    database_connection(build_id)
+    test_items = _generate_build_info(config)
+    test_id = str(uuid.uuid4())
+    set_test_info(test_id, test_items)
 
 
 def pytest_sessionstart(session):
@@ -146,6 +150,7 @@ def pytest_sessionfinish(session, exitstatus):
 # ---------------- Fixtures ----------------
 
 
+@export_vars
 def pytest_runtest_logreport(report):
     """
     Called after each test phase. We only care about 'call' (the actual test).
@@ -160,7 +165,7 @@ def pytest_runtest_logreport(report):
         # "duration": report.duration,
         "error": str(report.longrepr) if report.failed else None,
     }
-    write_to_db("test_case_info", test_result)
+    return {"_name": "test_case_info", "_data": test_result}
 
 
 # GPU lock files are stored on the host-mounted shared directory so all runners
@@ -235,6 +240,8 @@ def setup_gpu_resource(request):
 
     marker = request.node.get_closest_marker("gpu_mem")
     if not marker:
+        # No gpu_mem marker, skip GPU resource setup
+        yield
         return
 
     mem_needed = marker.args[0]
@@ -261,3 +268,33 @@ def model_config() -> ModelConfig:
     field_names = [field.name for field in dataclasses.fields(ModelConfig)]
     kwargs = {k: v for k, v in cfg.items() if k in field_names and v is not None}
     return ModelConfig(**kwargs)
+
+
+# ---------------- Session Finish Hook ----------------
+
+
+def pytest_sessionfinish(session, exitstatus):
+
+    backup_dir = config_instance.get_nested_config("database.backup") or "results/"
+    backup_dir = Path(backup_dir).resolve()
+
+    if not backup_dir.exists():
+        logger.warning(f"Backup directory not found: {backup_dir}, skipping conversion")
+        return
+
+    jsonl_files = list(backup_dir.glob("*.jsonl"))
+    if not jsonl_files:
+        logger.warning(f"No JSONL files found in {backup_dir}, skipping conversion")
+        return
+
+    success_count = 0
+    for jsonl_file in jsonl_files:
+        try:
+            from common.capture_results.localFile import jsonl_to_csv
+
+            csv_file = jsonl_to_csv(jsonl_file, flatten=True)
+            logger.debug(f"Converted: {jsonl_file.name} → {csv_file.name}")
+            success_count += 1
+        except Exception as e:
+            logger.error(f"Failed to convert {jsonl_file.name}: {e}", exc_info=True)
+    logger.info(f"Converted {success_count} JSONL files to CSV")

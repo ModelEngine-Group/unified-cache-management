@@ -1,151 +1,225 @@
-# 🌟 GSA: Geometric Sparse Attention for Efficient Inference of LLMs
+# GSA: Hash-Aware Top-k Attention for Scalable Large Model Inference
+
 <div align="center">
 
-<!-- ![GSA Scheme](../../../images/GSA_overview.png) -->
+![GSA Scheme](../../_static/images/kvcomp_scheme.jpg)
 
- <img src="../../_static/images/GSA_overview.png" width="700px">   <!-- 宽度 400 像素 -->
- <br>
+**🚀 Hash-Aware Sparse Attention Algorithm | 📄 ACL 2025 Paper | ⚡ NPU/GPU Hardware-Efficient**
+
+[![Paper](https://img.shields.io/badge/Paper-ACL%202025-blue)](../../_static/paper/kvcomp-ACL-2025-paper.pdf)
 [![License](https://img.shields.io/badge/License-MIT-green.svg)](https://github.com/ModelEngine-Group/unified-cache-management/blob/main/LICENSE)
 [![Python](https://img.shields.io/badge/Python-3.10+-blue.svg)](https://python.org)
+
 </div>
 
-## 🔍 Overview
+## 🌟 What is GSA (HATA)?
 
-GSA (Geometric Sparse Attention) simultaneously tackles the high computational complexity of long sequences and the concurrency limitations imposed by the HBM capacity wall. UCM GSA aims to develop a sparse framework compatible with mainstream inference engines, incorporating sparse representation algorithms, offloading and prefetching mechanisms, and collaborative XPU-CPU execution.
+**GSA** (Geometry Sparse Attention) is a groundbreaking sparse attention algorithm that revolutionizes large language model inference through **Hash-Aware Top-k Attention**. Published at ACL 2025, our method achieves unprecedented efficiency by intelligently selecting the most relevant kv cache blocks using trainable hash-based similarity computation.
 
+### 🎯 Key Innovations
 
-## 🎯 Key Innovations
+- **🔍 Hash-Aware Similarity**: Uses trainable hash functions to compute attention relevance, which is significantly faster than exact attention score $QK$ computation 
+- **⚡ Hardware-Efficient**: Optimized for both CUDA and NPU architectures with specialized kernels
+- **🎛️ Adaptive Sparsity**: Layer-wise sparsity ratios that adapt to model characteristics
+- **🔄 Dynamic Retrieval**: Real-time **query-aware** block selection based on query-key similarity
+- **💾 Memory-Efficient**: Dramatically reduces KV cache HBM peak usage by leveraing UCM's offloading capability
 
-- Representation-based Sparse Selection✅: To reduce the complexity of sparsity selection, we introduce a lightweight Sparsity Selector that pre-computes per-block representational scores during the Prefill phase and reuses them for zero-overhead top-k pruning in the Decode phase.
+### 🔥 Key Results
+- **3-5x speedup** in attention computation for long sequences
+- **Minimal accuracy loss** (< 2%) on downstream tasks
+- **Scalable to 128K+ context lengths** with linear complexity
 
-
-- Cross-hardware Support✅: To ensure cross-platform portability of GSA across heterogeneous accelerators (e.g., NVIDIA GPUs and Huawei Ascend NPUs), we introduce a Top-K offloading engine that asynchronously offloads attention queries (Q) to CPU memory for decoupled sparse selection computations.
-
-- Efficient KV Transition⌛: We have designed a PrefetchEngine to orchestrate KV-cache offloading and prefetching, incorporating three key components: (1) sparse-block metadata management, (2) asynchronous prefetch worker threads, and (3) adaptive prefetch algorithms.
-
-- Request-level Sparse Strategy（Not yet supported ❎）: We plan to design a sparse-policy module that, for every incoming request, perform a fast distribution estimation and then decides the optimal sparsification strategy.
-
-- P+D Multi-stage Sparsity（Not yet supported ❎）: We plan to introduce layer-wise sparsification in the pre-fill stage to reduce TTFT for workloads with short decode lengths.
-
-
-## 🔥 Key Results
-In both performance and accuracy evaluations, we deployed the DeepSeek-R1-Distill-Qwen-32B model on two H20 GPUs.
 ## 🏆 Performance Highlights
-### End-to-End Performance with 80 % Prefix-Cache Hit Ratio
-Below are the end-to-end throughput results for inference scenarios without KVCache offloading. PC Baseline refers to the full attention method with an 80% prefix cache hit rate. The GSA method sparsifies each input request to 6K tokens, and in the experiments, each request generates 4K tokens of output.
 
 <div align="center">
 
- <img src="../../_static/images/GSA-E2E-non-offload-throughput.png" width="400px">   <!-- 宽度 400 像素 -->
+### End-to-End Performance
+![End-to-End Performance](../../_static/images/kvcomp_end_to_end_performance.jpg)
 
-
-</div>
-
-### End-to-End Performance with 80 % Prefix-Cache Hit Ratio (HBM-bound scenario)
-Below are the end-to-end results of boosting inference concurrency through KV-Cache off-loading and prefetching under HBM-bound workloads; please note that this feature is not yet fully supported in the current open-source release, and we will make it available as soon as possible.
-
-<div align="center">
-
- <img src="../../_static/images/GSA-E2E-offload-throughput.png" width="400px">   <!-- 宽度 400 像素 -->
-
+### Single Layer Performance  
+![Single Layer Performance](../../_static/images/kvcomp_single_layer_performance.jpg)
 
 </div>
-
 
 ## 📈 Accuracy Benchmarks
-### Inference Accuracy with Various Tasks
-As shown in the table below, we evaluated full attention and the GSA algorithm across multiple datasets for single-document QA, multi-document QA, and summarization tasks. The GSA method employs a mean-based block representation along with q-offloaded CPU top-k computation. In this experiment, we select requests longer than 4k from the datasets and set the sparsification ratio to 30%.
 
 
-<table style="margin: auto; border-collapse: collapse; border-top: 2px solid black; border-bottom: 2px solid black;">
-  <thead>
-    <tr>
-      <th style="border-bottom: 1px solid black; padding: 4px 10px;">Dataset</th>
-      <th style="border-bottom: 1px solid black; padding: 4px 10px;">NarrativeQA</th>
-      <th style="border-bottom: 1px solid black; padding: 4px 10px;">MFQA_ZH</th>
-      <th style="border-bottom: 1px solid black; padding: 4px 10px;">HotpotQA</th>
-      <th style="border-bottom: 1px solid black; padding: 4px 10px;">DuReader_ZH</th>
-      <th style="border-bottom: 1px solid black; padding: 4px 10px;">GovReport</th>
-      <th style="border-bottom: 1px solid black; padding: 4px 10px;">VCSUM_ZH</th>
-      <th style="border-bottom: 1px solid black; padding: 4px 10px;">Average</th>
-    </tr>
-  </thead>
-  <tbody>
-    <tr><td style="padding: 4px 10px;">Full Attention</td><td style="padding: 4px 10px;">23.01</td><td style="padding: 4px 10px;">54.97</td><td style="padding: 4px 10px;">39.8</td><td style="padding: 4px 10px;">24.86</td><td style="padding: 4px 10px;">24.45</td><td style="padding: 4px 10px;">15.13</td><td style="padding: 4px 10px;">30.37</td></tr>
-    <tr><td style="padding: 4px 10px;">GSA(Mean)</td><td style="padding: 4px 10px;">
-     22.42</td><td style="padding: 4px 10px;">52.95</td><td style="padding: 4px 10px;">36.99</td><td style="padding: 4px 10px;">24.32</td><td style="padding: 4px 10px;">23.28</td><td style="padding: 4px 10px;">14.4</td><td style="padding: 4px 10px;">29.06</td></tr>
-  </tbody>
-</table>
+<div align="center">
+
+### LongBench Evaluation
+![LongBench Results](../../_static/images/kvcomp_longbench.jpg)
+
+</div>
 
 
-## 🚦 Quick Start
 
-### Basic Usage
-Similar to UCM's `offline_inference_esa.py` examples. We only need to specify `ucm_sparse_method` to be `GSA` as shown below.
+## 🧠 How It Works
 
+### Core Algorithm
+
+GSA operates through a sophisticated three-stage process:
+
+1. **🔐 Hash Encoding**: Convert attention keys and queries into compact hash codes
+2. **🎯 Similarity Computation**: Use efficient hash-based similarity to identify relevant blocks  
+3. **📦 Selective Loading**: Load only the top-k most relevant KV blocks for attention
 
 ```python
-...
-ktc = KVTransferConfig(
-    kv_connector=name,
-    kv_connector_module_path="ucm.integration.vllm.ucm_connector",
-    kv_role="kv_both",
-    kv_connector_extra_config={
-        "ucm_connector_name": "UcmNfsStore",
-        "ucm_connector_config": {
-            "storage_backends": kv_store_path,
-            "transferStreamNumber":16
-        },
-        "ucm_sparse_config": {
-            "GSA": {}
-        }
-    }
-)
-...
+# Simplified algorithm flow
+def gsa_attention(query, key_cache, top_k_ratio):
+    # 1. Hash encoding
+    hash_query = hash_encoder.compute_hash(query)
+    hash_keys = hash_encoder.compute_hash(key_cache)
+    
+    # 2. Similarity computation  
+    scores = hamming_score(hash_query, hash_keys)
+    
+    # 3. Top-k selection
+    topk_blocks = torch.topk(scores, int(len(key_cache) * top_k_ratio))
+    
+    # 4. Selective attention
+    return attention(query, key_cache[topk_blocks], value_cache[topk_blocks])
 ```
 
-Thus, an example command for launching the online LLM service is as follows:
 
-```shell
+### 🏗️ Architecture
+
+The algorithm maintains three critical windows:
+- **Initial Window**: First few blocks (always loaded)
+- **Sparse Window**: Top-k selected blocks (dynamically chosen)
+- **Local Window**: Recent blocks (always loaded)
+
+This design ensures both **efficiency** and **accuracy** by preserving essential context while sparsifying the middle range.
+
+## 🚀 Quick Start
+
+### Offline Inference
+
+GSA is part of the UCM Sparse Attention module. For installation instructions, please refer to the [UCM's top-level README](https://github.com/ModelEngine-Group/unified-cache-management). Once UCM is installed, GSA is naturally supported by running the following example python scripts.
+
+```bash
+export ENABLE_UCM_PATCH=TRUE
+python examples/offline_inference_gsaondevice.py
+```
+
+### Online Inference
+```bash
+export VLLM_USE_V1=1
 export ENABLE_SPARSE=TRUE
+export ENABLE_UCM_PATCH=1
+export VLLM_HASH_ATTENTION=1
+export PYTHONHASHSEED=123456
 
-vllm serve /home/models/DeepSeek-R1-Distill-Qwen-32B \
---served-model-name DeepSeek-R1-Distill-Qwen-32B \
---max-model-len 131000 \
---tensor-parallel-size 2 \
---gpu_memory_utilization 0.87 \
+vllm serve <path_to_Qwen3-32B> \
+--served-model-name Qwen3-32B \
+--tensor-parallel-size 8 \
+--gpu_memory_utilization 0.85 \
+--block_size 128 \
+--distributed-executor-backend mp \
 --trust-remote-code \
---port 8090 \
---block-size 128 \
+--port 8234 \
 --no-enable-prefix-caching \
+--compilation-config \
+'{
+"cudagraph_mode": "PIECEWISE"
+}' \
 --kv-transfer-config \
 '{
-    "kv_connector": name,
-    "kv_connector_module_path": "ucm.integration.vllm.ucm_connector",
-    "kv_role": "kv_both",
-    "kv_connector_extra_config": {
-        "ucm_connector_name": "UcmNfsStore",
-        "ucm_connector_config": {
-            "storage_backends": kv_store_path,
-            "transferStreamNumber":16
-        },
-        "ucm_sparse_config": {
-            "GSA": {}
+"kv_connector": "UCMConnector",
+"kv_role": "kv_both",
+"kv_connector_module_path": "ucm.integration.vllm.ucm_connector",
+"kv_connector_extra_config": {
+    "ucm_connectors": [
+        {
+            "ucm_connector_name": "UcmPipelineStore",
+            "ucm_connector_config": {
+                "store_pipeline": "Empty",
+                "share_buffer_enable": true
+            }
         }
-    }
-}'
+    ],
+    "ucm_sparse_config": {"GSAOnDevice": {}}
+}
+}'  > Qwen3-32B_TP8_GSAonDevice.log 2>&1 &
 ```
 
+### Configuration
+GSA needs a json configuration file. We have already included several configs in `configs` folder, including Deepseek-R1-AWQ, Deepseek-v2-lite, Qwen3-4B, Qwen3-32B, Qwen3-Coder-30B-A3B and QwQ-32B.
+
+```text
+{
+    "model_name": "Qwen/Qwen3-4B",
+    "is_mla": false,
+    "hash_weight_type": "random",
+    "num_hidden_layers": 36,
+    "gpu_seq_len_threshold": 2048,
+    "gpu_concurrency_threshold": 4,
+    "npu_seq_len_threshold": 2048,
+    "npu_concurrency_threshold": 4,
+    "chunk_size": 128,
+    "chunk_repre_method": "max",
+    "head_dim": 128,
+    "hash_bits": 128,
+    "top_k_ratio_per_layer": [1, 1, 0.3, 0.3, 0.3, 0.3, 0.3, 0.3, 0.3, 0.3, 0.3, 0.3, 0.3, 0.3, 0.3, 0.3, 0.3, 0.3, 0.3, 0.3, 0.3, 0.3, 0.3, 0.3, 0.3, 0.3, 0.3, 0.3, 0.3, 0.3, 0.3, 0.3, 0.3, 1, 1, 1],
+    "top_k_index_reuse": [-1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1],
+    "must_select_blocks": [0, -2, -1],
+    "hash_weight": null,
+    "kv_lora_rank": null,
+    "qk_rope_head_dim": null,
+    "hash_bits_kv_lora": null,
+    "hash_bits_qk_rope": null,
+    "hash_weight_kv_lora": null,
+    "hash_weight_qk_rope": null
+}
+```
 
 ## 📊 Supported Models
 
-| Model | Size | Support |
-|-------|------|-----------|
-| Qwen3-14B | 14B | ✅ |
-|DeepSeek-R1-Distill-Qwen-14B|14B|✅|
-| Qwen3-32B | 32B | ✅ |
-| QwQ-32B | 32B | ✅ |
-|DeepSeek-R1-Distill-Qwen-32B|32B|✅|
+| Model | Size | Hash Bits | Top-k Ratio | Performance Gain |
+|-------|------|-----------|-------------|------------------|
+| Qwen3-4B | 4B | 128 | 0.3 | xx |
+| Qwen3-32B | 32B | 128 | 0.3 | xx |
+| QwQ-32B | 32B | 128 | 0.3 | xx |
+| DeepSeek-R1 | 671B | 512+64 | 0.3 | xx |
+
+## 🔧 Advanced Features
+
+
+### Custom Hash Weights
+```python
+# Use pre-trained hash weights
+config.set_hash_weight(custom_hash_weights)
+```
+
+### Hardware Optimization
+- **CUDA**: Optimized kernels with bit-packing, hamming score, and top-k selection
+- **NPU**: Native `npu_sign_bits_pack` operations, optimized fused kernels for hamming_dist_top_k and kv_select.
+- **CPU**: SIMD-optimized implementations
+
+
+
+
+## 🎓 Citation
+
+If you use GSA in your research, please cite our ACL 2025 paper:
+
+```bibtex
+@inproceedings{kvcomp2025,
+  title={HATA: Trainable and Hardware-Efficient Hash-Aware Top-k Attention for Scalable Large Model Inference},
+  author={[Ping Gong, Jiawei Yi, Shengnan Wang, Juncheng Zhang, Zewen Jin, Ouxiang Zhou, Ruibo Liu, Guanbin Xu, Youhui Bai, Bowen Ye, Kun Yuan, Tong Yang, Gong Zhang, Renhai Chen, Feng Wu, Cheng Li]},
+  booktitle={Proceedings of ACL 2025},
+  year={2025}
+}
+```
 
 ## 🤝 Contributing
-We welcome contributions! Please see our [Contributing Guide](../../developer-guide/contribute.md) for details.
+
+We welcome contributions! Please see the **How to contribute** section of **Developer Guide** for details.
+
+
+---
+
+<div align="center">
+
+**🌟 Star [UCM](https://github.com/ModelEngine-Group/unified-cache-management) repository if you find GSA useful!**
+
+</div>
