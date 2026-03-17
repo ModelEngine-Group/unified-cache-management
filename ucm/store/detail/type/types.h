@@ -30,7 +30,7 @@
 
 namespace UC::Detail {
 
-using BlockId = std::array<std::byte, 16>; /* 16-byte block hash */
+using BlockId = std::array<std::byte, 20>; /* 20-byte block hash */
 using TaskHandle = std::size_t;            /* Opaque task token (0 = invalid) */
 
 /**
