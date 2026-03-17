@@ -1,8 +1,9 @@
 # Feature and Model Support Matrix
 
-This page provides an overview of the supported models and features in UCM (Unified Cache Manager).
+This page provides an overview of UCM (Unified Cache Manager) compatibility across different models and inference frameworks.
+Use this matrix as a compatibility reference for model selection, deployment, and feature validation.
 
-## Legend
+## Legend 🧭
 
 | Symbol | Description |
 |--------|-------------|
@@ -10,12 +11,15 @@ This page provides an overview of the supported models and features in UCM (Unif
 | ❌ | Not supported |
 | 🟡 | Not tested or verified |
 
-## Model Support and Feature Compatibility
+## Model Support and Feature Compatibility 🧩
 
 ### Prefix Cache Support
 
-| Model | vLLM（main） | vLLM-Ascend (main) | SGLang |
-|-------|:-----------------:|:-----------:|:------:|
+This section presents prefix cache support for each model across the supported inference frameworks.
+This information serves as a reference for evaluating framework compatibility in deployments that require prefix cache.
+
+| Model | vLLM (main) | vLLM-Ascend (main) | SGLang(≥v0.5.5) |
+|-------|:-----------:|:------------------:|:------:|
 | DeepSeek V3.2 | ✅ | ✅ | 🟡 |
 | DeepSeek R1 | ✅ | ✅ | ✅ |
 | DeepSeek V3/3.1 | ✅ | ✅ | ✅ |
@@ -29,24 +33,25 @@ This page provides an overview of the supported models and features in UCM (Unif
 | GLM-4.x | ✅ | ✅ | 🟡 |
 | MiniMax-M2.5 | ✅ | ✅ | ✅ |
 
+> **Note**: The table lists a selected set of representative models.
+> See [**Prefix Cache**](../prefix-cache/index.md) for more details.
 
-### Sparse Attention Support
+### Inference Enhancement Features
 
-| Model | GsaOnDevice<br>vLLM 0.11.0 | CacheBlend<br>vLLM v0.9.2 | ReRoPE<br>vLLM 0.11.0 |
-|-------|:-------------------------:|:-------------------------:|:---------------------:|
+This section presents support information for inference enhancement features, including Sparse Attention, ReRoPE, and CacheBlend, across the listed models and framework versions.
+
+| Model | GsaOnDevice<br>vLLM / vLLM-Ascend 0.11.0 | ReRoPE<br>vLLM 0.11.0 | CacheBlend<br>vLLM 0.9.2 |
+|-------|:-------------------------:|:------------------------:|:---------------------:|
 | DeepSeek V3.2 | ✅ | ✅ | ✅ |
 | DeepSeek R1 | ✅ | ✅ | ✅ |
 | DeepSeek V3/3.1 | ✅ | ✅ | ✅ |
 | Qwen3 | ✅ | ✅ | ✅ |
 | Qwen2.5 | ✅ | ✅ | ✅ |
 
-> **Note**: vLLM-Ascend currently only supports GsaOnDevice.
+> **Note**: See [**Sparse Attention**](../sparse-attention/index.md) and [**ReRoPE**](../rerope/rerope.md) for more details.
 
+## Notes and Limitations 📌
 
-
-## Notes
-
-
-
-> **Note**
-> This support matrix is continuously updated. For the latest information, please refer to the GitHub issues and pull requests.
+- This matrix is provided as a compatibility reference for the configurations listed on this page.
+- Actual behavior may vary depending on hardware, runtime settings, backend changes, and model variants.
+- This support matrix is continuously updated. **For the latest information, please refer to the GitHub issues and pull requests.**
