@@ -68,6 +68,7 @@ class TestBasicOnlineInference:
             use_layerwise: Whether to use layerwise mode.
             max_num_batched_tokens: Maximum number of batched tokens.
         """
+        os.environ["ENABLE_UCM_PATCH"] = "1"
         # Load configuration
         config_file = get_path_relative_to_test_root("config.yaml")
         with open(config_file, "r", encoding="utf-8") as f:
