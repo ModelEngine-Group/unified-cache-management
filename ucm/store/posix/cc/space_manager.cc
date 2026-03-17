@@ -75,11 +75,10 @@ Expected<ssize_t> SpaceManager::LookupOnPrefix(const Detail::BlockId* blocks, si
     }
 
     const size_t nWorker = prefixLookupSrv_.NWorker();
-    const size_t nTask = std::min(num, nWorker);
-    waiter->Set(nTask);
+    waiter->Set(nWorker);
 
-    for (size_t begin = 0; begin < nTask; begin++) {
-        prefixLookupSrv_.Push({blocks, begin, num, nTask, firstFail, status, waiter});
+    for (size_t begin = 0; begin < nWorker; begin++) {
+        prefixLookupSrv_.Push({blocks, begin, num, nWorker, firstFail, status, waiter});
     }
 
     waiter->Wait();
@@ -131,5 +130,6 @@ void SpaceManager::OnLookupPrefixTimeout(PrefixLookupContext& ctx)
     auto ok = Status::OK().Underlying();
     auto timeout = Status::Timeout().Underlying();
     ctx.status->compare_exchange_weak(ok, timeout, std::memory_order_acq_rel);
+    ctx.waiter->Done();
 }
 }  // namespace UC::PosixStore

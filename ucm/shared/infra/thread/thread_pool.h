@@ -53,15 +53,12 @@ class ThreadPool {
         bool StopRequested() const noexcept { return this->flag_->load(std::memory_order_relaxed); }
     };
 
-    enum class WorkerState { Idle, Running, TimeoutRequested, Exited };
-
     struct Worker {
         ssize_t tid;
         std::thread th;
         StopToken stop;
         std::weak_ptr<Task> current;
         std::atomic<std::chrono::steady_clock::time_point> tp{};
-        std::atomic<WorkerState> state{WorkerState::Idle};
     };
 
 public:
@@ -72,10 +69,9 @@ public:
     {
         {
             std::lock_guard<std::mutex> lock(this->taskMtx_);
-            this->stop_.store(true, std::memory_order_relaxed);
+            this->stop_ = true;
             this->cv_.notify_all();
         }
-        for (auto& worker : this->workers_) { worker->stop.RequestStop(); }
         if (this->monitor_.joinable()) { this->monitor_.join(); }
         for (auto& worker : this->workers_) {
             if (worker->th.joinable()) { worker->th.join(); }
@@ -164,68 +160,49 @@ private:
             {
                 std::unique_lock<std::mutex> lock(this->taskMtx_);
                 this->cv_.wait(lock, [this, worker] {
-                    return this->stop_.load(std::memory_order_relaxed) ||
-                           worker->stop.StopRequested() || !this->taskQ_.empty();
+                    return this->stop_ || worker->stop.StopRequested() || !this->taskQ_.empty();
                 });
-                if (this->stop_.load(std::memory_order_relaxed) || worker->stop.StopRequested()) {
-                    break;
-                }
+                if (this->stop_ || worker->stop.StopRequested()) { break; }
                 if (this->taskQ_.empty()) { continue; }
                 task = std::make_shared<Task>(std::move(this->taskQ_.front()));
                 this->taskQ_.pop_front();
             }
             worker->current = task;
             worker->tp.store(std::chrono::steady_clock::now(), std::memory_order_relaxed);
-            worker->state.store(WorkerState::Running, std::memory_order_relaxed);
             this->fn_(*task, args);
+            if (worker->stop.StopRequested()) { break; }
             worker->current.reset();
             worker->tp.store({}, std::memory_order_relaxed);
-            if (worker->stop.StopRequested()) { break; }
-            worker->state.store(WorkerState::Idle, std::memory_order_relaxed);
         }
-        worker->state.store(WorkerState::Exited, std::memory_order_relaxed);
         if (this->exitFn_) { this->exitFn_(args); }
     }
 
     void MonitorLoop()
     {
         const auto interval = std::chrono::milliseconds(this->intervalMs_);
-        while (!this->stop_.load(std::memory_order_relaxed)) {
+        while (!this->stop_) {
             std::this_thread::sleep_for(interval);
-            this->MonitorTimeouts();
-            size_t nWorker = this->CleanupExitedWorkers();
+            size_t nWorker = this->Monitor();
             for (size_t i = nWorker; i < this->nWorker_; i++) { (void)this->AddOneWorker(); }
         }
     }
 
-    void MonitorTimeouts()
+    size_t Monitor()
     {
         using namespace std::chrono;
         const auto timeout = milliseconds(this->timeoutMs_);
-        for (auto& worker : this->workers_) {
-            auto tp = worker->tp.load(std::memory_order_relaxed);
-            auto task = worker->current.lock();
-            auto now = steady_clock::now();
-            if (!task || tp == steady_clock::time_point{}) { continue; }
-            auto state = worker->state.load(std::memory_order_relaxed);
-            if (state != WorkerState::Running) { continue; }
-            if (now - tp <= timeout) { continue; }
-            worker->state.store(WorkerState::TimeoutRequested, std::memory_order_relaxed);
-            if (this->timeoutFn_) { this->timeoutFn_(*task, worker->tid); }
-            worker->stop.RequestStop();
-        }
-    }
-
-    size_t CleanupExitedWorkers()
-    {
         for (auto it = this->workers_.begin(); it != this->workers_.end();) {
-            auto state = (*it)->state.load(std::memory_order_relaxed);
-            if (state == WorkerState::Exited) {
-                if ((*it)->th.joinable()) { (*it)->th.join(); }
+            auto tp = (*it)->tp.load(std::memory_order_relaxed);
+            auto task = (*it)->current.lock();
+            auto now = steady_clock::now();
+            if (task && tp != steady_clock::time_point{} && now - tp > timeout) {
+                if (this->timeoutFn_) { this->timeoutFn_(*task, (*it)->tid); }
+                (*it)->stop.RequestStop();
+                if ((*it)->th.joinable()) { (*it)->th.detach(); }
                 it = this->workers_.erase(it);
-                continue;
+            } else {
+                it++;
             }
-            ++it;
         }
         return this->workers_.size();
     }
@@ -238,7 +215,7 @@ private:
     size_t timeoutMs_{0};
     size_t intervalMs_{0};
     size_t nWorker_{0};
-    std::atomic<bool> stop_{false};
+    bool stop_{false};
     std::vector<std::shared_ptr<Worker>> workers_;
     std::thread monitor_;
     std::mutex taskMtx_;
