@@ -128,6 +128,10 @@ start_server() {
         SPECULATIVE_CONFIG='{"model":"'"$speculative_decode_model"'", "num_speculative_tokens": "'"$num_speculative_tokens"'", "method":"'"$speculative_decode_method"'"}'
         CMD+=("--speculative-config" "$SPECULATIVE_CONFIG")
     fi
+    if [[ "$enable_rope_scaling" == "true" ]]; then
+        ROPE_SCALING_CONFIG='{"rope_type": "'"$rope_type"'", "factor": '"$factor"', "original_max_position_embeddings": '"$original_max_position_embeddings"'}'
+        CMD+=("--rope-scaling" "$ROPE_SCALING_CONFIG")
+    fi
 
     ADDITIONAL_CONFIG="{"
     SEP=""

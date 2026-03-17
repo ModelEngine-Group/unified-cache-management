@@ -58,20 +58,26 @@ The experiment is based on a hybrid Transformer-GAU (Gated Attention Unit) model
 
 ### Installation
 
-For installation instructions, please refer to the UCM's top-level README. Once UCM is installed, ReRoPE is naturally supported by running the following example python scripts.
+For installation instructions, please refer to the UCM's top-level README. Once UCM is installed, ReRoPE is naturally supported by running the following example scripts.
 
-```python
+```bash
+cd <path_to_your_vllm>
+# Replace <version> with 0.9.2 or 0.11.0
+git apply <path_to_ucm>/ucm/integration/vllm/patch/<version>/vllm-adapt-rerope.patch
 export VLLM_ATTENTION_BACKEND=TRITON_ATTN_VLLM_V1
 export VLLM_USE_REROPE=true
+export ENABLE_UCM_PATCH=0
 export DATA_DIR=/home/data/kv_cache
 export MODEL_PATH=/home/models/Qwen2.5-14B-Instruct
 export REROPE_WINDOW=32768
 export TRAINING_LENGTH=32768
-
+cd <path_to_ucm>
 python examples/offline_inference_rerope.py
 ```
 
-Note. REROPE_WINDOW and TRAINING_LENGTH are generally set to the model's pre-training length. For vLLM version 0.11.0, set VLLM_ATTENTION_BACKEND to TRITON_ATTN.
+>Note: 
+- `REROPE_WINDOW` and `TRAINING_LENGTH` are generally set to the model's pre-training length.
+- For vLLM version 0.11.0, set `VLLM_ATTENTION_BACKEND` to `TRITON_ATTN`.
 
 ### Basic Usage
 

@@ -51,20 +51,30 @@ pytest_demo/
    pip install -r requirements.txt
    ```
 
-2. **（可选）配置数据库**
+2. **配置测试结构保存方式**
 
-   编辑 `config.yaml` 中的数据库配置段落：
-
-   ```yaml
-   database:
-     enabled: true                     # 启用数据库结果存储（设为 false 则落盘保存至配置目录）
-     backup: "results/"
-     host: "127.0.0.1"
-     port: 5432
-     name: "ucm_test"
-     user: "postgres"
-     password: "123456"
-   ```
+   编辑 `config.yaml` 中的测试结果保存相关内容段落：
+    ```yaml
+    results:
+      - localFile: # Save the storage results to a local file. The default formats are jsonl and csv.
+          path: "./results"
+    #  - postgresql:
+    #      host: "localhost"
+    #      port: 5432
+    #      dbname: "ucm_test"
+    #      user: "postgres"
+    #      password: "123456"
+    #      retry: 3
+    #  - mongodb:
+    #      host: "127.0.0.1"
+    #      port: 27017
+    #      dbname: "myapp"
+    #      user: "root"
+    #      password: "123456"
+    #      authSource: "admin"
+    #      retry: 3
+    ```
+目前支持配置localFile、postgresql、mongodb三种存储后端形式，支持一种或多种同时配置。
 
 3. **执行测试**
 

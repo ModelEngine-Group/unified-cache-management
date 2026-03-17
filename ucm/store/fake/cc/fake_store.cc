@@ -21,26 +21,25 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  * */
-#include "fake_store.h"
 #include <algorithm>
 #include <atomic>
 #include "logger/logger.h"
 #include "meta_manager.h"
 #include "time/stopwatch.h"
+#include "ucmstore_v1.h"
 
 namespace UC::FakeStore {
 
-class FakeStoreImpl {
+class FakeStore : public StoreV1 {
     MetaManager metaMgr_;
 
 public:
-    static Detail::TaskHandle NextId() noexcept
+    Status Setup(const Detail::Dictionary& inConfig) override
     {
-        static std::atomic<Detail::TaskHandle> idSeed{1};
-        return idSeed.fetch_add(1, std::memory_order_relaxed);
-    };
-    Status Setup(const Config& config)
-    {
+        Config config;
+        inConfig.Get("unique_id", config.uniqueId);
+        inConfig.GetNumber("buffer_number", config.bufferNumber);
+        inConfig.Get("share_buffer_enable", config.shareBufferEnable);
         auto s = CheckConfig(config);
         if (s.Failure()) [[unlikely]] {
             UC_ERROR("Failed to check config params: {}.", s);
@@ -51,8 +50,8 @@ public:
         ShowConfig(config);
         return Status::OK();
     }
-    std::string Readme() const { return "FakeStore"; }
-    Expected<std::vector<uint8_t>> Lookup(const Detail::BlockId* blocks, size_t num)
+    std::string Readme() const override { return "FakeStore"; }
+    Expected<std::vector<uint8_t>> Lookup(const Detail::BlockId* blocks, size_t num) override
     {
         std::vector<uint8_t> founds(num);
         StopWatch sw;
@@ -61,7 +60,7 @@ public:
         UC_DEBUG("Fake lookup({}) costs {:.3f}ms.", num, sw.Elapsed().count() * 1e3);
         return founds;
     }
-    Expected<ssize_t> LookupOnPrefix(const Detail::BlockId* blocks, size_t num)
+    Expected<ssize_t> LookupOnPrefix(const Detail::BlockId* blocks, size_t num) override
     {
         ssize_t index = -1;
         StopWatch sw;
@@ -71,7 +70,9 @@ public:
         UC_DEBUG("Fake Lookup({}/{}) costs {:.3f}ms.", index, num, sw.Elapsed().count() * 1e3);
         return index;
     }
-    Expected<Detail::TaskHandle> Dump(Detail::TaskDesc task)
+    void Prefetch(const Detail::BlockId* blocks, size_t num) override {}
+    Expected<Detail::TaskHandle> Load(Detail::TaskDesc task) override { return NextId(); }
+    Expected<Detail::TaskHandle> Dump(Detail::TaskDesc task) override
     {
         StopWatch sw;
         std::for_each(task.begin(), task.end(),
@@ -79,8 +80,15 @@ public:
         UC_DEBUG("Fake dump({}) costs {:.3f}ms.", task.size(), sw.Elapsed().count() * 1e3);
         return NextId();
     }
+    Expected<bool> Check(Detail::TaskHandle taskId) override { return true; }
+    Status Wait(Detail::TaskHandle taskId) override { return Status::OK(); }
 
 private:
+    static Detail::TaskHandle NextId() noexcept
+    {
+        static std::atomic<Detail::TaskHandle> idSeed{1};
+        return idSeed.fetch_add(1, std::memory_order_relaxed);
+    };
     Status CheckConfig(const Config& config)
     {
         if (config.uniqueId.empty()) { return Status::InvalidParam("invalid unique id"); }
@@ -101,40 +109,6 @@ private:
         UC_INFO("Set {}::ShareBufferEnable to {}.", ns, config.shareBufferEnable);
     }
 };
-
-Status FakeStore::Setup(const Detail::Dictionary& config)
-{
-    Config param;
-    config.Get("unique_id", param.uniqueId);
-    config.GetNumber("buffer_number", param.bufferNumber);
-    config.Get("share_buffer_enable", param.shareBufferEnable);
-    try {
-        impl_ = std::make_shared<FakeStoreImpl>();
-    } catch (const std::exception& e) {
-        UC_ERROR("Failed({}) to make FakeStore object.", e.what());
-        return Status::Error(e.what());
-    }
-    return impl_->Setup(param);
-}
-
-std::string FakeStore::Readme() const { return impl_->Readme(); }
-
-Expected<std::vector<uint8_t>> FakeStore::Lookup(const Detail::BlockId* blocks, size_t num)
-{
-    return impl_->Lookup(blocks, num);
-}
-
-Expected<ssize_t> FakeStore::LookupOnPrefix(const Detail::BlockId* blocks, size_t num)
-{
-    return impl_->LookupOnPrefix(blocks, num);
-}
-
-Expected<Detail::TaskHandle> FakeStore::Load(Detail::TaskDesc task)
-{
-    return FakeStoreImpl::NextId();
-}
-
-Expected<Detail::TaskHandle> FakeStore::Dump(Detail::TaskDesc task) { return impl_->Dump(task); }
 
 }  // namespace UC::FakeStore
 

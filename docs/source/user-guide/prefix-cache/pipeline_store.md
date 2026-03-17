@@ -1,4 +1,4 @@
-# PipelineStore
+# 🌟 PipelineStore
 
 **PipelineStore** is a composite store built by **chaining multiple Store implementations** together to form a data transfer pipeline.  
 
