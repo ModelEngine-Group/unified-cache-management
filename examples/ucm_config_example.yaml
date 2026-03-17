@@ -8,28 +8,23 @@
 # for backward compatibility.
 
 # Connector name (e.g., "UcmNfsStore", "UcmPipelineStore")
+# Default cache_buffer_capacity_gb for CacheStore is 256GB.When use models like MLA you should make sure that /dev/shm has enough space, or you can set this parameter to a smaller value.
+# One important detail is that when multiple DP instances run on the same node, each of them creates its own CacheStore.
 ucm_connectors:
-  - ucm_connector_name: "UcmNfsStore"
+  - ucm_connector_name: "UcmPipelineStore"
     ucm_connector_config:
+      store_pipeline: "Cache|Posix"
       storage_backends: "/mnt/test"
       io_direct: false
+      # cache_buffer_capacity_gb: 256
 
-enable_event_sync: false
+# When you use UcmNfsStore, you should set enable_event_sync to false.
+enable_event_sync: true
 # Enable UCM metrics so they can be monitored online via Grafana and Prometheus.
 # metrics_config_path: "/workspace/unified-cache-management/examples/metrics/metrics_configs.yaml"
 
 # Sparse attention configuration
-# Format 1: Dictionary format (for methods like ESA, GSAOnDevice)
 # ucm_sparse_config:
-#   ESA:
-#     init_window_sz: 1
-#     local_window_sz: 2
-#     min_blocks: 4
-#     sparse_ratio: 0.3
-#     retrieval_stride: 5
-  # Or for GSA:
-  # GSA: {}
-  # Or for GSAOnDevice:
   # GSAOnDevice: {}
 
 

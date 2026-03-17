@@ -207,7 +207,7 @@ class UCMDirectConnector(KVConnectorBase_V1):
         self.engine_id = vllm_config.kv_transfer_config.engine_id
         self.launch_config = ucm_config.get_config()
         self.connector_configs = self.launch_config.get("ucm_connectors", [])
-        self.enable_event_sync = self.launch_config.get("enable_event_sync", False)
+        self.enable_event_sync = self.launch_config.get("enable_event_sync", True)
         assert len(self.connector_configs) > 0, "no storage connector name in config."
 
         self.chunk_size = self.block_size
@@ -445,11 +445,19 @@ class UCMDirectConnector(KVConnectorBase_V1):
                     new_block_ids = []
                     if scheduled_cached_reqs.new_block_ids[i] != None:
                         new_block_ids = scheduled_cached_reqs.new_block_ids[i][0]
+                    if hasattr(scheduled_cached_reqs, "resumed_from_preemption"):
+                        resumed_from_preemption = (
+                            scheduled_cached_reqs.resumed_from_preemption[i]
+                        )
+                    else:
+                        resumed_from_preemption = (
+                            request_id in scheduled_cached_reqs.resumed_req_ids
+                        )
                     requests_dispatch_meta[request_id] = self._generate_dispatch_meta(
                         req_meta,
                         scheduler_output.num_scheduled_tokens[request_id],
                         new_block_ids,
-                        scheduled_cached_reqs.resumed_from_preemption[i],
+                        resumed_from_preemption,
                     )
         else:
             for request in scheduled_cached_reqs:

@@ -21,7 +21,6 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  * */
-#include "cache_store.h"
 #include <numeric>
 #include "buffer_manager.h"
 #include "logger/logger.h"
@@ -29,35 +28,106 @@
 
 namespace UC::CacheStore {
 
-class CacheStoreImpl {
-public:
-    BufferManager bufferMgr;
-    bool transEnable{false};
-    TransManager transMgr;
+class CacheStore : public StoreV1 {
+    BufferManager bufferMgr_;
+    bool transEnable_{false};
+    TransManager transMgr_;
 
 public:
-    Status Setup(const Config& config)
+    Status Setup(const Detail::Dictionary& inConfig) override
     {
+        auto config = ParseConfig(inConfig);
         auto s = CheckConfig(config);
         if (s.Failure()) [[unlikely]] {
             UC_ERROR("Failed to check config params: {}.", s);
             return s;
         }
-        s = bufferMgr.Setup(config);
+        s = bufferMgr_.Setup(config);
         if (s.Failure()) [[unlikely]] {
             UC_ERROR("Failed({}) to setup buffer manager.", s);
             return s;
         }
-        transEnable = config.deviceId >= 0;
-        if (transEnable) {
-            s = transMgr.Setup(config, bufferMgr.GetTransBuffer());
+        transEnable_ = config.deviceId >= 0;
+        if (transEnable_) {
+            s = transMgr_.Setup(config, bufferMgr_.GetTransBuffer());
             if (s.Failure()) [[unlikely]] { return s; }
         }
         ShowConfig(config);
         return Status::OK();
     }
+    std::string Readme() const override { return "CacheStore"; }
+    Expected<std::vector<uint8_t>> Lookup(const Detail::BlockId* blocks, size_t num) override
+    {
+        auto res = bufferMgr_.Lookup(blocks, num);
+        if (!res) [[unlikely]] { UC_ERROR("Failed({}) to lookup blocks({}).", res.Error(), num); }
+        return res;
+    }
+    Expected<ssize_t> LookupOnPrefix(const Detail::BlockId* blocks, size_t num) override
+    {
+        auto res = bufferMgr_.LookupOnPrefix(blocks, num);
+        if (!res) [[unlikely]] { UC_ERROR("Failed({}) to lookup blocks({}).", res.Error(), num); }
+        return res;
+    }
+    void Prefetch(const Detail::BlockId* blocks, size_t num) override {}
+    Expected<Detail::TaskHandle> Load(Detail::TaskDesc task) override
+    {
+        if (!transEnable_) { return Status::Error("transfer is not enable"); }
+        auto res = transMgr_.Submit({TransTask::Type::LOAD, std::move(task)});
+        if (!res) [[unlikely]] {
+            UC_ERROR("Failed({}) to submit load task({}).", res.Error(), task.brief);
+        }
+        return res;
+    }
+    Expected<Detail::TaskHandle> Dump(Detail::TaskDesc task) override
+    {
+        if (!transEnable_) { return Status::Error("transfer is not enable"); }
+        auto res = transMgr_.Submit({TransTask::Type::DUMP, std::move(task)});
+        if (!res) [[unlikely]] {
+            UC_ERROR("Failed({}) to submit dump task({}).", res.Error(), task.brief);
+        }
+        return res;
+    }
+    Expected<bool> Check(Detail::TaskHandle taskId) override
+    {
+        auto res = transMgr_.Check(taskId);
+        if (!res) [[unlikely]] { UC_ERROR("Failed({}) to check task({}).", res.Error(), taskId); }
+        return res;
+    }
+    Status Wait(Detail::TaskHandle taskId) override
+    {
+        auto s = transMgr_.Wait(taskId);
+        if (s.Failure()) [[unlikely]] { UC_ERROR("Failed({}) to wait task({}).", s, taskId); }
+        return s;
+    }
 
 private:
+    Config ParseConfig(const Detail::Dictionary& config)
+    {
+        Config param;
+        config.Get("store_backend", param.storeBackend);
+        config.Get("unique_id", param.uniqueId);
+        config.GetNumber("device_id", param.deviceId);
+        size_t tensorSize = 0;
+        config.GetNumber("tensor_size", tensorSize);
+        config.GetNumber("shard_size", param.shardSize);
+        if (tensorSize != 0) {
+            param.tensorSizes.assign(param.shardSize / tensorSize, tensorSize);
+        } else {
+            config.GetNumbers("tensor_size_list", param.tensorSizes);
+        }
+        config.GetNumber("block_size", param.blockSize);
+        if (param.shardSize > 0) { param.waitingQueueDepth *= (param.blockSize / param.shardSize); }
+        config.Get("share_buffer_enable", param.shareBufferEnable);
+        if (!param.shareBufferEnable) { param.bufferCapacity /= 8; }
+        size_t bufferCapacityGb = 0;
+        config.GetNumber("cache_buffer_capacity_gb", bufferCapacityGb);
+        if (bufferCapacityGb != 0) { param.bufferCapacity = bufferCapacityGb << 30; }
+        config.GetNumber("waiting_queue_depth", param.waitingQueueDepth);
+        config.GetNumber("running_queue_depth", param.runningQueueDepth);
+        config.GetNumber("timeout_ms", param.timeoutMs);
+        config.GetNumber("cache_stream_number", param.streamNumber);
+        return param;
+    }
     Status CheckSizeConfig(const Config& config)
     {
         if (config.tensorSizes.empty()) { return Status::InvalidParam("invalid tensor size"); }
@@ -123,94 +193,6 @@ private:
         UC_INFO("Set {}::StreamNumber to {}.", ns, config.streamNumber);
     }
 };
-
-CacheStore::~CacheStore() = default;
-
-Status CacheStore::Setup(const Detail::Dictionary& config)
-{
-    Config param;
-    config.Get("store_backend", param.storeBackend);
-    config.Get("unique_id", param.uniqueId);
-    config.GetNumber("device_id", param.deviceId);
-    size_t tensorSize = 0;
-    config.GetNumber("tensor_size", tensorSize);
-    config.GetNumber("shard_size", param.shardSize);
-    if (tensorSize != 0) {
-        param.tensorSizes.assign(param.shardSize / tensorSize, tensorSize);
-    } else {
-        config.GetNumbers("tensor_size_list", param.tensorSizes);
-    }
-    config.GetNumber("block_size", param.blockSize);
-    if (param.shardSize > 0) { param.waitingQueueDepth *= (param.blockSize / param.shardSize); }
-    config.Get("share_buffer_enable", param.shareBufferEnable);
-    if (!param.shareBufferEnable) { param.bufferCapacity /= 8; }
-    size_t bufferCapacityGb = 0;
-    config.GetNumber("cache_buffer_capacity_gb", bufferCapacityGb);
-    if (bufferCapacityGb != 0) { param.bufferCapacity = bufferCapacityGb << 30; }
-    config.GetNumber("waiting_queue_depth", param.waitingQueueDepth);
-    config.GetNumber("running_queue_depth", param.runningQueueDepth);
-    config.GetNumber("timeout_ms", param.timeoutMs);
-    config.GetNumber("cache_stream_number", param.streamNumber);
-    try {
-        impl_ = std::make_shared<CacheStoreImpl>();
-    } catch (const std::exception& e) {
-        UC_ERROR("Failed({}) to make cache store object.", e.what());
-        return Status::Error(e.what());
-    }
-    return impl_->Setup(param);
-}
-
-std::string CacheStore::Readme() const { return "CacheStore"; }
-
-Expected<std::vector<uint8_t>> CacheStore::Lookup(const Detail::BlockId* blocks, size_t num)
-{
-    auto res = impl_->bufferMgr.Lookup(blocks, num);
-    if (!res) [[unlikely]] { UC_ERROR("Failed({}) to lookup blocks({}).", res.Error(), num); }
-    return res;
-}
-
-Expected<ssize_t> CacheStore::LookupOnPrefix(const Detail::BlockId* blocks, size_t num)
-{
-    auto res = impl_->bufferMgr.LookupOnPrefix(blocks, num);
-    if (!res) [[unlikely]] { UC_ERROR("Failed({}) to lookup blocks({}).", res.Error(), num); }
-    return res;
-}
-
-void CacheStore::Prefetch(const Detail::BlockId*, size_t) {}
-
-Expected<Detail::TaskHandle> CacheStore::Load(Detail::TaskDesc task)
-{
-    if (!impl_->transEnable) { return Status::Error("transfer is not enable"); }
-    auto res = impl_->transMgr.Submit({TransTask::Type::LOAD, std::move(task)});
-    if (!res) [[unlikely]] {
-        UC_ERROR("Failed({}) to submit load task({}).", res.Error(), task.brief);
-    }
-    return res;
-}
-
-Expected<Detail::TaskHandle> CacheStore::Dump(Detail::TaskDesc task)
-{
-    if (!impl_->transEnable) { return Status::Error("transfer is not enable"); }
-    auto res = impl_->transMgr.Submit({TransTask::Type::DUMP, std::move(task)});
-    if (!res) [[unlikely]] {
-        UC_ERROR("Failed({}) to submit dump task({}).", res.Error(), task.brief);
-    }
-    return res;
-}
-
-Expected<bool> CacheStore::Check(Detail::TaskHandle taskId)
-{
-    auto res = impl_->transMgr.Check(taskId);
-    if (!res) [[unlikely]] { UC_ERROR("Failed({}) to check task({}).", res.Error(), taskId); }
-    return res;
-}
-
-Status CacheStore::Wait(Detail::TaskHandle taskId)
-{
-    auto s = impl_->transMgr.Wait(taskId);
-    if (s.Failure()) [[unlikely]] { UC_ERROR("Failed({}) to wait task({}).", s, taskId); }
-    return s;
-}
 
 }  // namespace UC::CacheStore
 

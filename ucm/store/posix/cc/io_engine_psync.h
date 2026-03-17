@@ -21,30 +21,43 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  * */
-#ifndef UNIFIEDCACHE_STORE_CC_POSIX_STORE_H
-#define UNIFIEDCACHE_STORE_CC_POSIX_STORE_H
+#ifndef UNIFIEDCACHE_POSIX_STORE_CC_IO_ENGINE_PSYNC_H
+#define UNIFIEDCACHE_POSIX_STORE_CC_IO_ENGINE_PSYNC_H
 
-#include <memory>
-#include "ucmstore_v1.h"
+#include "logger/logger.h"
+#include "template/task_wrapper.h"
+#include "trans_queue.h"
 
 namespace UC::PosixStore {
 
-class PosixStoreImpl;
-class PosixStore : public StoreV1 {
-public:
-    ~PosixStore() override;
-    Status Setup(const Detail::Dictionary& config) override;
-    std::string Readme() const override;
-    Expected<std::vector<uint8_t>> Lookup(const Detail::BlockId* blocks, size_t num) override;
-    Expected<ssize_t> LookupOnPrefix(const Detail::BlockId* blocks, size_t num) override;
-    void Prefetch(const Detail::BlockId* blocks, size_t num) override;
-    Expected<Detail::TaskHandle> Load(Detail::TaskDesc task) override;
-    Expected<Detail::TaskHandle> Dump(Detail::TaskDesc task) override;
-    Expected<bool> Check(Detail::TaskHandle taskId) override;
-    Status Wait(Detail::TaskHandle taskId) override;
+class IoEnginePsync : public Detail::TaskWrapper<TransTask, Detail::TaskHandle> {
+    TransQueue queue_;
+    size_t shardSize_;
 
-private:
-    std::shared_ptr<PosixStoreImpl> impl_;
+public:
+    Status Setup(const Config& config, const SpaceLayout* layout)
+    {
+        timeoutMs_ = config.timeoutMs;
+        shardSize_ = config.shardSize;
+        return queue_.Setup(config, &failureSet_, layout);
+    }
+
+protected:
+    void Dispatch(TaskPtr t, WaiterPtr w) override
+    {
+        const auto id = t->id;
+        const auto& brief = t->desc.brief;
+        const auto num = t->desc.size();
+        const auto size = shardSize_ * num;
+        const auto tp = w->startTp;
+        UC_DEBUG("Posix task({},{},{},{}) dispatching.", id, brief, num, size);
+        w->SetEpilog([id, brief = std::move(brief), num, size, tp] {
+            auto cost = NowTime::Now() - tp;
+            UC_DEBUG("Posix task({},{},{},{}) finished, cost {:.3f}ms.", id, brief, num, size,
+                     cost * 1e3);
+        });
+        queue_.Push(t, w);
+    }
 };
 
 }  // namespace UC::PosixStore

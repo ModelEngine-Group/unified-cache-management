@@ -139,15 +139,6 @@ def patch_dataclass_fields(
     return target_cls
 
 
-def _get_replace_wrapper(new_func):
-    def wrapper(wrapped, instance, args, kwargs):
-        if instance is not None:
-            return new_func(instance, *args, **kwargs)
-        return new_func(*args, **kwargs)
-
-    return wrapper
-
-
 def patch_or_inject(target_obj, func_name, replacement_func):
     """
     A general-purpose utility to modify objects or modules.
@@ -155,9 +146,7 @@ def patch_or_inject(target_obj, func_name, replacement_func):
     if it doesn't exist, it injects it.
     """
     if hasattr(target_obj, func_name):
-        wrapt.wrap_function_wrapper(
-            target_obj, func_name, _get_replace_wrapper(replacement_func)
-        )
+        setattr(target_obj, func_name, replacement_func)
         logger.debug(
             f"Wrapped: {getattr(target_obj, '__name__', 'module')}.{func_name}"
         )

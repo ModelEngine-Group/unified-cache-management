@@ -49,7 +49,7 @@ TEST_F(UCCacheTransManagerTest, DumpThenLoad)
         return UC::Status::OK();
     }));
     Config config;
-    config.storeBackend = std::shared_ptr<UC::StoreV1>(&backend, [](auto) {});
+    config.storeBackend = &backend;
     size_t tensorSize = 32768;
     config.tensorSizes = {tensorSize};
     config.shardSize = tensorSize;
@@ -106,7 +106,7 @@ TEST_F(UCCacheTransManagerTest, DumpThenLoadWithLayerWise)
         return UC::Status::OK();
     }));
     Config config;
-    config.storeBackend = std::shared_ptr<UC::StoreV1>(&backend, [](auto) {});
+    config.storeBackend = &backend;
     config.tensorSizes = {tensorSize};
     config.shardSize = shardSize;
     config.blockSize = blockSize;
@@ -174,7 +174,7 @@ TEST_F(UCCacheTransManagerTest, DumpThenLoadWithLayerAndChunk)
         return UC::Status::OK();
     }));
     Config config;
-    config.storeBackend = std::shared_ptr<UC::StoreV1>(&backend, [](auto) {});
+    config.storeBackend = &backend;
     config.tensorSizes.assign(chunkNumber, tensorSize);
     config.shardSize = shardSize;
     config.blockSize = blockSize;
@@ -256,7 +256,7 @@ TEST_F(UCCacheTransManagerTest, DumpThenLoadWithVariableLengthIo)
         return UC::Status::OK();
     }));
     Config config;
-    config.storeBackend = std::shared_ptr<UC::StoreV1>(&backend, [](auto) {});
+    config.storeBackend = &backend;
     config.tensorSizes = {tensorSize1, tensorSize2};
     config.shardSize = shardSize;
     config.blockSize = blockSize;

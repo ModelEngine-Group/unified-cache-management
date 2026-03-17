@@ -11,4 +11,5 @@ $null
 .*
 *.log
 start.bat
+*demo.py
 !.gitignore

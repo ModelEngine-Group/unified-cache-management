@@ -32,14 +32,9 @@ A typical sparse attention algorithm works like this:
 - By fine-grained task scheduling, retrieval and loading can be executed asynchronously and overlap with the model execution. Therefore, benefited from less computational load and fewer memory accesses, no overhead is introduced by UCMSparse and generation speed is boosted.
 
 
-See `ESA` for more details.
-
 :::{toctree}
 :maxdepth: 1
 :caption: Index
-esa
 gsa
-kvcomp
-kvstar
 cacheblend
 :::

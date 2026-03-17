@@ -3,16 +3,20 @@ from pathlib import Path
 
 import pytest
 import yaml
-from common.offline_inference_utils import (
+from common.common_inference_utils import (
     ensure_storage_dir,
     get_platform_specific_module,
     load_prompt_from_file,
-    run_in_spawn_subprocess,
-    run_offline_inference,
     split_prompt_by_tokens,
     to_dict_for_serialization,
 )
+from common.offline_inference_utils import (
+    run_in_spawn_subprocess,
+    run_offline_inference,
+)
 from common.path_utils import get_path_relative_to_test_root, get_path_to_model
+
+os.environ["ENABLE_UCM_PATCH"] = "1"
 
 
 class TestBasicOfflineInference:

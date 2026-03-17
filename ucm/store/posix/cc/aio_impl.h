@@ -21,32 +21,52 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  * */
-#ifndef UNIFIEDCACHE_STORE_CC_CACHE_STORE_H
-#define UNIFIEDCACHE_STORE_CC_CACHE_STORE_H
+#ifndef UNIFIEDCACHE_POSIX_STORE_CC_AIO_IMPL_H
+#define UNIFIEDCACHE_POSIX_STORE_CC_AIO_IMPL_H
 
-#include <memory>
-#include "ucmstore_v1.h"
+#include <atomic>
+#include <functional>
+#include <linux/aio_abi.h>
+#include <thread>
+#include "status/status.h"
 
-namespace UC::CacheStore {
+namespace UC::PosixStore {
 
-class CacheStoreImpl;
-class CacheStore : public StoreV1 {
+class AioImpl {
 public:
-    ~CacheStore() override;
-    Status Setup(const Detail::Dictionary& config) override;
-    std::string Readme() const override;
-    Expected<std::vector<uint8_t>> Lookup(const Detail::BlockId* blocks, size_t num) override;
-    Expected<ssize_t> LookupOnPrefix(const Detail::BlockId* blocks, size_t num) override;
-    void Prefetch(const Detail::BlockId* blocks, size_t num) override;
-    Expected<Detail::TaskHandle> Load(Detail::TaskDesc task) override;
-    Expected<Detail::TaskHandle> Dump(Detail::TaskDesc task) override;
-    Expected<bool> Check(Detail::TaskHandle taskId) override;
-    Status Wait(Detail::TaskHandle taskId) override;
+    struct Result {
+        ssize_t nBytes;
+        int32_t error;
+    };
+    using Callback = std::function<void(Result)>;
+    struct Io {
+        int32_t fd;
+        uint64_t offset;
+        uint32_t length;
+        void* buffer;
+        Callback callback;
+    };
+
+    ~AioImpl();
+    Status Setup();
+    Status ReadAsync(Io&& io);
+    Status WriteAsync(Io&& io);
 
 private:
-    std::shared_ptr<CacheStoreImpl> impl_;
+    void CompletionLoop();
+    void HarvestCompletions(std::vector<io_event>& events);
+    Status SubmitIo(struct iocb* cb);
+
+    size_t queueDepth_{4096};
+    size_t epollTimeoutMs{10};
+    size_t batchCompleteSize{512};
+    aio_context_t ctx_{0};
+    int32_t eventFd_{-1};
+    int32_t epollFd_{-1};
+    std::atomic_bool stop_{false};
+    std::thread eventThread_;
 };
 
-}  // namespace UC::CacheStore
+}  // namespace UC::PosixStore
 
 #endif

@@ -21,7 +21,7 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  * */
-#include "posix/cc/posix_store.h"
+#include "posix/cc/posix_store.cc"
 #include "detail/data_generator.h"
 #include "detail/path_base.h"
 #include "detail/types_helper.h"
@@ -50,6 +50,7 @@ TEST_F(UCPosixStoreTest, SetupWithInvalidParam)
         config.SetNumber("tensor_size", size_t(4096));
         config.SetNumber("shard_size", size_t(4096));
         config.SetNumber("block_size", size_t(4096));
+        config.Set("posix_io_engine", std::string("psync"));
         config.SetNumber("posix_data_trans_concurrency", size_t(0));
         PosixStore store;
         ASSERT_EQ(store.Setup(config), UC::Status::InvalidParam());

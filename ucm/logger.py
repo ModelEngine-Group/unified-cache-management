@@ -50,7 +50,6 @@ def add_log_methods(cls):
         "debug": logging.DEBUG,
         "warning": logging.WARNING,
         "error": logging.ERROR,
-        "exception": logging.ERROR,
         "critical": logging.CRITICAL,
     }
 
@@ -122,12 +121,12 @@ class Logger(logging.Logger):
     @staticmethod
     def format_exception(e):
         if isinstance(e, BaseException):
-            ei = (type(e), e, e.__traceback__)
-        else:
-            ei = sys.exc_info()
+            e = (type(e), e, e.__traceback__)
+        elif not isinstance(e, tuple):
+            e = sys.exc_info()
         sio = io.StringIO()
-        tb = ei[2]
-        traceback.print_exception(ei[0], ei[1], tb, None, sio)
+        tb = e[2]
+        traceback.print_exception(e[0], e[1], tb, None, sio)
         s = sio.getvalue()
         sio.close()
         if s[-1:] == "\n":
@@ -146,9 +145,16 @@ class Logger(logging.Logger):
     def debug_once(self, message: str, *args: Hashable, **kwargs: Hashable):
         self.log(logging.DEBUG, message, *args, **kwargs)
 
+    def exception(self, message: str, *args: Hashable, **kwargs: Hashable):
+        self.log(logging.ERROR, message, *args, **kwargs, exc_info=True)
+
 
 def init_logger(name: str = "UC") -> Logger:
     return Logger(name)
+
+
+def current_formatter_type(lgr):
+    return None
 
 
 if __name__ == "__main__":
