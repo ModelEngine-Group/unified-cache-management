@@ -43,7 +43,7 @@ jobs:
             exit 0
           fi
 
-          ALLOWED_USERS=("dante159753" "mag1c-h")
+          ALLOWED_USERS=("dante159753" "mag1c-h" "yuanzhg078")
           
           echo ".github changes detected, check if user is allowed..."
           ACTOR="${{ github.actor }}"
@@ -87,7 +87,7 @@ jobs:
         uses: docker/build-push-action@v5
         with:
           context: .
-          file: ./docker/Dockerfile-NPU
+          file: ./docker/Dockerfile.vllm_npu
           build-args: "ENABLE_SPARSE=false"
           tags: ucm-npu:latest
           push: false
@@ -109,7 +109,7 @@ jobs:
         uses: docker/build-push-action@v5
         with:
           context: .
-          file: ./docker/Dockerfile-NPU
+          file: ./docker/Dockerfile.vllm_npu
           build-args: "ENABLE_SPARSE=true"
           tags: ucm-npu-sparse:latest
           push: false
@@ -158,7 +158,7 @@ jobs:
           --build-arg https_proxy="${https_proxy:-}" \
           --build-arg ENABLE_SPARSE=false \
           -t ucm-e2etest-online-inference:${{ steps.version.outputs.version }} \
-          -f ./docker/Dockerfile-GPU ./
+          -f ./docker/Dockerfile.vllm_gpu ./
     - name: Test E2E Online Inference in Docker
       run: |
         sudo chmod -R 777 /workspace/test_results/
@@ -226,7 +226,7 @@ jobs:
           --build-arg https_proxy="${https_proxy:-}" \
           --build-arg ENABLE_SPARSE=true \
           -t ucm-e2etest-gpu-sparse:${{ steps.version.outputs.version }} \
-          -f ./docker/Dockerfile-GPU ./
+          -f ./docker/Dockerfile.vllm_gpu ./
     - name: Test E2E in Docker
       run: |
         sudo chmod -R 777 /workspace/test_results/
