@@ -36,19 +36,20 @@ if perf_test_case_str:
                     break
             if valid:
                 perf_scenarios = result
-                print(f"成功从环境变量加载配置: {perf_scenarios}")
+                print(f"Successfully loaded configuration from environment variable: {perf_scenarios}")
             else:
-                print("环境变量格式无效，使用默认配置")
+                print("Environment variable format is invalid, using default configuration")
         else:
-            print("环境变量解析结果为空或非列表，使用默认配置")
-
+            print("Parsed result is empty or not a list, using default configuration")
     except json.JSONDecodeError as e:
-        print(f"JSON 解析失败: {e}，使用默认配置")
+        print(f"JSON parsing failed: {e}, using default configuration")
     except Exception as e:
-        print(f"解析异常: {e}，使用默认配置")
+        print(f"Unexpected parsing error: {e}, using default configuration")
 else:
-    print("未设置 PERF_TEST_CASE 环境变量，使用默认配置")
-print(f"最终 perf_scenarios: {perf_scenarios}")
+    print("PERF_TEST_CASE environment variable is not set, using default configuration")
+
+print(f"Final perf_scenarios: {perf_scenarios}")
+
 
 scenario_ids = [f"in_{s[0]}-out_{s[1]}-con_{s[3]}" for s in perf_scenarios]
 TOTAL_COUNTER = len(perf_scenarios)

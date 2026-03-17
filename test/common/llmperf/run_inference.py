@@ -111,13 +111,13 @@ def run_test_cases(
         time.sleep(2)
 
         # ---------- prefill_2 ----------
-        prefill1_args = dict(args)
-        prefill1_args["mean_input"] = prefill_input
-        prefill1_args["mean_output"] = 2
+        prefill2_args = dict(args)
+        prefill2_args["mean_input"] = prefill_input
+        prefill2_args["mean_output"] = 2
 
         run_request(
             phase="prefill_2",
-            **prefill1_args,
+            **prefill2_args,
         )
 
         reset_prefill_cache(env, server_url, llm_type)
