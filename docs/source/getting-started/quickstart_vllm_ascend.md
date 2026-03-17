@@ -86,9 +86,9 @@ Use following command to build ucm with VLLM-Ascend(v0.11.0), the sparse attenti
 docker build -t ucm-vllm:latest -f ./docker/Dockerfile.vllm_npu ./
 ```
 
-If you don't need sparse attention, pass `--build-arg ENABLE_SPARSE=true` to disable it:
+If you don't need sparse attention, pass `--build-arg ENABLE_SPARSE=false` to disable it:
 ```bash
-docker build --build-arg ENABLE_SPARSE=true -t ucm-vllm:latest -f ./docker/Dockerfile.vllm_npu ./
+docker build --build-arg ENABLE_SPARSE=false -t ucm-vllm:latest -f ./docker/Dockerfile.vllm_npu ./
 ```
 
 vllm-ascend provides two variants: **Ubuntu** and **openEuler**.  
