@@ -7,6 +7,7 @@ PyYAML>=6.0
 #database
 peewee>=3.14.5
 psycopg2-binary>=2.8
+pymongo>=4.0.0
 #llmperf
 requests>=2.10.0
 pandas>=2.3.0

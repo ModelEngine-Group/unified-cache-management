@@ -18,20 +18,27 @@ start_server() {
         export TARGET_IP="$worker_ip"
     fi
 
-    IFACE=$(get_interface_by_ip "$TARGET_IP")
-
-    if [[ -z "$IFACE" ]]; then
-        echo ""
-        echo "ERROR: Could not find interface with IP $TARGET_IP via ifconfig. Falling back to 'eth0'."
-        IFACE="eth0"
-    else
-        echo "✅ Detected interface: $IFACE (bound to IP $TARGET_IP)"
-    fi
-
     export HCCL_IF_IP="$TARGET_IP"
-    export HCCL_SOCKET_IFNAME="$IFACE"
-    export GLOO_SOCKET_IFNAME="$IFACE"
-    export TP_SOCKET_IFNAME="$IFACE"
+    echo "UC_SKIP_IFACE_AUTO_DETECT = ${UC_SKIP_IFACE_AUTO_DETECT:-false}"
+
+    if [[ "${UC_SKIP_IFACE_AUTO_DETECT}" == "true" ]]; then
+        echo "Skipping IFACE auto-detection because nodeTopologyConfig is active."
+        IFACE="${HCCL_SOCKET_IFNAME:-${GLOO_SOCKET_IFNAME:-${TP_SOCKET_IFNAME:-}}}"
+    else
+        IFACE=$(get_interface_by_ip "$TARGET_IP")
+
+        if [[ -z "$IFACE" ]]; then
+            echo ""
+            echo "ERROR: Could not find interface with IP $TARGET_IP via ifconfig. Falling back to 'eth0'."
+            IFACE="eth0"
+        else
+            echo "✅ Detected interface: $IFACE (bound to IP $TARGET_IP)"
+        fi
+
+        export HCCL_SOCKET_IFNAME="$IFACE"
+        export GLOO_SOCKET_IFNAME="$IFACE"
+        export TP_SOCKET_IFNAME="$IFACE"
+    fi
 
     # vLLM parameters 
     [[ -z "$model" ]] && { echo "ERROR: model not set in config.properties" >&2; exit 1; }
@@ -120,6 +127,10 @@ start_server() {
     if [[ "$enable_speculative_decoding" == "true" ]]; then
         SPECULATIVE_CONFIG='{"model":"'"$speculative_decode_model"'", "num_speculative_tokens": "'"$num_speculative_tokens"'", "method":"'"$speculative_decode_method"'"}'
         CMD+=("--speculative-config" "$SPECULATIVE_CONFIG")
+    fi
+    if [[ "$enable_rope_scaling" == "true" ]]; then
+        ROPE_SCALING_CONFIG='{"rope_type": "'"$rope_type"'", "factor": '"$factor"', "original_max_position_embeddings": '"$original_max_position_embeddings"'}'
+        CMD+=("--rope-scaling" "$ROPE_SCALING_CONFIG")
     fi
 
     ADDITIONAL_CONFIG="{"

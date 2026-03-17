@@ -18,7 +18,7 @@ class VllmPatchLoader(Loader):
 
             apply_all_patches()
         except Exception as e:
-            print(f"[UCM] Patch application failed: {e}", file=sys.stderr)
+            raise
 
 
 class VllmImportTrigger(MetaPathFinder):
