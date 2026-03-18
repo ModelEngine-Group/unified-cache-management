@@ -9,6 +9,8 @@ fi
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/common.sh"
 
+ensure_ifconfig_installed  
+
 set_node_env(){
     if [[ "$NODE" == "0" ]]; then
         export TARGET_IP="$master_ip"
@@ -25,11 +27,18 @@ set_node_env(){
     else
         echo "✅ Detected interface: $IFACE (bound to IP $TARGET_IP)"
     fi
+    export VLLM_HOST_IP="$TARGET_IP"
 
-    export HCCL_IF_IP="$TARGET_IP"
+    # For Cuda
+    export NCCL_IB_DISABLE=1
     export NCCL_SOCKET_IFNAME="$IFACE"
+
+    # For Ascend
+    export HCCL_IF_IP="$TARGET_IP"
+    export HCCL_SOCKET_IFNAME=$IFACE
     export GLOO_SOCKET_IFNAME="$IFACE"
     export TP_SOCKET_IFNAME="$IFACE"
+
     export NUM_GPUS=$((tp_size * dp_size * pp_size / node_num))
 
     echo ""

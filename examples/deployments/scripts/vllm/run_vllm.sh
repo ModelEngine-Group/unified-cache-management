@@ -78,6 +78,7 @@ start_server() {
     if [[ "$async_scheduling" == "true" ]]; then CMD+=("--async-scheduling"); fi
     if [[ "$enable_expert_parallel" == "true" ]]; then CMD+=("--enable-expert-parallel"); fi
     if [[ "$enable_prefix_caching" == "false" ]]; then CMD+=("--no-enable-prefix-caching"); fi
+    if [[ "$enforce_eager" == "true" ]]; then CMD+=("--enforce-eager"); fi
 
     # --- Advanced configs (JSON) ---
     if [[ "$enable_speculative_decoding" == "true" ]]; then
@@ -115,10 +116,17 @@ start_server() {
         CMD+=("--kv-transfer-config" "$KV_CONFIG_JSON")
     fi
 
-    echo "Executing command: ${CMD[*]}"
-    echo ""
-
-    "${CMD[@]}" 2>&1 | tee "$LOG_FILE"
+    {
+        echo ""
+        echo "===== vLLM Server Starting ====="
+        echo "Time: $(date '+%Y-%m-%d %H:%M:%S')"
+        echo "Executing command:"
+        echo "${CMD[*]}" 
+        echo "================================"
+        echo ""
+        
+        "${CMD[@]}"
+    } 2>&1 | tee "$LOG_FILE"
 }
 
 load_config
