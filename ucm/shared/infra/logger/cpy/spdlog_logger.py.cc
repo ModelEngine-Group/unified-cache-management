@@ -32,11 +32,19 @@ void LogWrapper(Level lv, std::string file, std::string func, int line, std::str
     Log(std::move(lv), std::move(file), std::move(func), line, std::move(msg));
 }
 
+void RateLimitLogWrapper(Level lv, std::string file, std::string func, int line, std::string msg,
+                         std::string ori_msg)
+{
+    LogRateLimit(std::move(lv), std::move(file), std::move(func), line, std::move(msg),
+                 std::string_view(ori_msg));
+}
+
 PYBIND11_MODULE(ucmlogger, m)
 {
     m.def("setup", &Setup);
     m.def("flush", &Flush);
     m.def("log", &LogWrapper);
+    m.def("log_rate_limit", &RateLimitLogWrapper);
     m.def("isEnabledFor", &isEnabledFor);
     py::enum_<Level>(m, "Level")
         .value("DEBUG", Level::DEBUG)
