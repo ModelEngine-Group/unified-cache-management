@@ -88,6 +88,7 @@ class VLLMServerManager:
         additional_args: Optional[List[str]] = None,
         startup_timeout: float = 300.0,
         served_model_name: str = "",
+        pipeline_parallel_size: int = 1,
     ):
         """Initialize the VLLMServerManager.
 
@@ -105,6 +106,7 @@ class VLLMServerManager:
             additional_args: Additional arguments to pass to vllm serve
             startup_timeout: Timeout in seconds for server startup
             served_model_name: Optional model name to expose via the API (defaults to model_path)
+            pipeline_parallel_size: Pipeline parallel size (default: 1)
         """
 
         gpu_memory_utilization = float(
@@ -126,6 +128,7 @@ class VLLMServerManager:
         self.additional_args = additional_args or []
         self.startup_timeout = startup_timeout
         self.served_model_name = served_model_name
+        self.pipeline_parallel_size = pipeline_parallel_size
 
         self._process: Optional[subprocess.Popen] = None
         self._url = f"http://{host}:{port}"
@@ -163,6 +166,8 @@ class VLLMServerManager:
             str(self.max_model_len),
             "--gpu-memory-utilization",
             str(self.gpu_memory_utilization),
+            "--pipeline-parallel-size",
+            str(self.pipeline_parallel_size),
         ]
 
         # Add UCM kv-transfer-config

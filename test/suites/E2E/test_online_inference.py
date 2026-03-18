@@ -45,6 +45,7 @@ class TestBasicOnlineInference:
     @pytest.mark.parametrize("ucm_connector_name", ["UcmNfsStore", "UcmPipelineStore"])
     @pytest.mark.parametrize("use_layerwise", [True, False])
     @pytest.mark.parametrize("max_num_batched_tokens", [2047])
+    @pytest.mark.parametrize("pp_size", [1, 2])
     def test_online_accuracy_hbm_ssd_mixed(
         self,
         model_name: str,
@@ -53,6 +54,7 @@ class TestBasicOnlineInference:
         ucm_connector_name: str,
         use_layerwise: bool,
         max_num_batched_tokens: int,
+        pp_size: int,
     ):
         """Test HBM + SSD mixed hit accuracy via online inference.
 
@@ -71,6 +73,12 @@ class TestBasicOnlineInference:
             max_num_batched_tokens: Maximum number of batched tokens.
         """
         # Load configuration
+        if use_layerwise is True and ucm_connector_name == "UcmNfsStore":
+            pytest.skip("Skipping: UcmNfsStore does NOT support use_layerwise=True")
+        if use_layerwise is False and pp_size > 1:
+            pytest.skip(
+                "Skipping: Pipeline parallelism does NOT support use_layerwise=False"
+            )
         config_file = get_path_relative_to_test_root("config.yaml")
         with open(config_file, "r", encoding="utf-8") as f:
             config = yaml.safe_load(f)
@@ -152,6 +160,7 @@ class TestBasicOnlineInference:
             max_model_len=12000,
             max_num_batched_tokens=max_num_batched_tokens,
             served_model_name=served_model_name,
+            pipeline_parallel_size=pp_size,
         )
 
         # Prepare messages
@@ -171,6 +180,7 @@ class TestBasicOnlineInference:
         print(f"Prompt split ratio: {prompt_split_ratio}")
         print(f"UCM connector: {ucm_connector_name}, use_layerwise: {use_layerwise}")
         print(f"Max num batched tokens: {max_num_batched_tokens}")
+        print(f"Pipeline parallel size: {pp_size}")
 
         # ===== Phase 1: Disable HBM PC, save KV cache to SSD and load (baseline) =====
         print(f"\n===== Phase 1: Save KV Cache to SSD And Load (Baseline) =====")
