@@ -59,9 +59,8 @@ class TestBasicOnlineInference:
             max_tokens: Maximum tokens to generate
             prompt_split_ratio: Ratio to split prompt for Phase 2 (0.5 = split in half)
         """
-        os.environ["ENABLE_SPARSE"] = "false"
+        os.environ["ENABLE_SPARSE"] = "0"
         os.environ["VLLM_HASH_ATTENTION"] = "0"
-
         # Load configuration
         config_file = get_path_relative_to_test_root("config.yaml")
         with open(config_file, "r", encoding="utf-8") as f:
@@ -286,6 +285,9 @@ class TestBasicOnlineInference:
         Starts vLLM with GSA sparse config, sends full prompt twice,
         verifies SSD save/load works.
         """
+        os.environ["ENABLE_SPARSE"] = "1"
+        os.environ["VLLM_HASH_ATTENTION"] = "1"
+
         config_file = get_path_relative_to_test_root("config.yaml")
         with open(config_file, "r", encoding="utf-8") as f:
             config = yaml.safe_load(f)

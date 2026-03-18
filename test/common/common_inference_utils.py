@@ -122,29 +122,10 @@ def load_prompt_from_file(prompt_file: Optional[Path] = None) -> Tuple[str, List
 def load_prompt_list_from_file(
     prompt_file: Optional[Path] = None,
 ) -> Tuple[str, List[str]]:
-    """Load prompt and answers from JSON file (LongBench format).
-
-    LongBench format structure:
-    {
-        "input": "任务输入/问题",
-        "context": "长上下文/文档",
-        "answers": ["答案列表"],
-        "length": 总长度,
-        "dataset": "数据集名称",
-        "language": "语言",
-        ...
-    }
-    For LongBench, the typical format is:
-    - context: 长文档/上下文（放在前面）
-    - input: 问题/查询（放在后面）
-    - Combined format: context + "\n\n" + input
-
-    Args:
-        prompt_file: Path to the prompt JSON file. If None, uses default path.
-
+    """
     Returns:
-        Tuple of (combined_prompt_string, answers_list).
-        - combined_prompt_string: Combined prompt (context + input)
+        Tuple of (combined_prompt_string_list, answers_list).
+        - combined_prompt_string_list: Combined prompt (context + input)
         - answers_list: List of standard answers from the file
     """
     if not prompt_file.exists():
@@ -169,8 +150,6 @@ def load_prompt_list_from_file(
         input_text = data.get("input", "")
         context_text = data.get("context", "")
 
-        # LongBench standard format: context (long document) + input (question)
-        # Combine context and input to form the full prompt
         if context_text and input_text:
             full_prompt = f"阅读以下文字并用中文简短回答：\n\n{context_text}\n\n现在请基于上面的文章回答下面的问题，只告诉我答案，不要输出任何其他字词。\n\n问题：{input_text}\n回答："
         elif context_text:
@@ -180,7 +159,6 @@ def load_prompt_list_from_file(
         else:
             raise ValueError(f"No input or context found in {prompt_file}")
 
-        # Extract answers
         answers = data.get("answers", [])
 
         if not isinstance(answers, list):

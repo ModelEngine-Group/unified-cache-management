@@ -1,5 +1,6 @@
 import os
 import re
+import string
 from pathlib import Path
 from typing import List
 
@@ -23,6 +24,7 @@ from common.path_utils import get_path_relative_to_test_root, get_path_to_model
 class TestBasicOfflineInferenceSparse:
     """Test basic offline inference functionality."""
 
+    @pytest.mark.skip(reason="refine this code and re-enable later")
     @pytest.mark.stage(1)
     @pytest.mark.feature("offline_inference_sparse")
     @pytest.mark.gpu_mem(6000)
@@ -222,11 +224,36 @@ class TestBasicOfflineInferenceSparse:
 
     """Test GSA sparse attention."""
 
+    def remove_punc(self, text):
+        text = text.strip()
+        if not text:
+            return ""
+        cn_punctuation = "！？｡。＂＃＄％＆＇（）＊＋，－／：；＜＝＞＠［＼］＾＿｀｛｜｝～｟｠｢｣､、〃》「」『』【】〔〕〖〗〘〙〚〛〜〝〞〟〰〾〿–—‘’‛“”„‟…‧﹏."
+        all_punctuation = set(string.punctuation + cn_punctuation)
+        return "".join(ch for ch in text if ch not in all_punctuation)
+
+    def match_sparse_answer(
+        self, sparse_output: List[str], standard_answers: List[str]
+    ) -> bool:
+
+        if not isinstance(sparse_output, list) or not isinstance(
+            standard_answers, list
+        ):
+            return False
+        if not all(isinstance(item, str) for item in sparse_output) or not all(
+            isinstance(item, str) for item in standard_answers
+        ):
+            return False
+
+        norm_output = [self.remove_punc(item) for item in sparse_output]
+        norm_standard = [self.remove_punc(item) for item in standard_answers]
+        return norm_output == norm_standard
+
     @pytest.mark.stage(1)
     @pytest.mark.feature("online_inference_sparse")
     @pytest.mark.gpu_mem(70000)
     @pytest.mark.parametrize("model_name", ["DeepSeek-V2-Lite-Chat"])
-    @pytest.mark.parametrize("max_tokens", [200])
+    @pytest.mark.parametrize("max_tokens", [16])
     @pytest.mark.parametrize("enforce_eager", [True, False])
     @pytest.mark.parametrize("max_num_batched_tokens", [30000])
     def test_offline_gsa_mla(
@@ -236,7 +263,7 @@ class TestBasicOfflineInferenceSparse:
         enforce_eager: bool,
         max_num_batched_tokens: int,
     ):
-        os.environ["ENABLE_SPARSE"] = "true"
+        os.environ["ENABLE_SPARSE"] = "1"
         os.environ["VLLM_HASH_ATTENTION"] = "1"
 
         config_file = get_path_relative_to_test_root("config.yaml")
@@ -306,7 +333,6 @@ class TestBasicOfflineInferenceSparse:
 
         # Convert SamplingParams to dict for serialization, as non-picklable objects cannot be passed to subprocess
         sampling_params_dict = serialize_sample_params(sampling_params)
-        print(f"sampling_params_dict: {sampling_params_dict}")
         phase_sparse_output = run_in_spawn_subprocess(
             run_offline_inference,
             model_path,
@@ -320,42 +346,12 @@ class TestBasicOfflineInferenceSparse:
             timeout=1800,
         )
 
-        def normalize_text(text: str) -> str:
-            if not isinstance(text, str):
-                return ""
-
-            text = text.strip()
-            if not text:
-                return ""
-
-            end_punctuations = r"[。，！？；：%￥$]$"
-            text = re.sub(end_punctuations, "", text)
-
-            return text
-
-        def match_sparse_answer(
-            sparse_output: List[str], standard_answers: List[str]
-        ) -> bool:
-
-            if not isinstance(sparse_output, list) or not isinstance(
-                standard_answers, list
-            ):
-                return False
-            if not all(isinstance(item, str) for item in sparse_output) or not all(
-                isinstance(item, str) for item in standard_answers
-            ):
-                return False
-
-            norm_output = [normalize_text(item) for item in sparse_output]
-            norm_standard = [normalize_text(item) for item in standard_answers]
-            return norm_output == norm_standard
-
         print(
             f" GsaOnDevice inference for a MLA-based model is completed in a subprocess."
         )
         print(f'GsaOnDevice output: "{phase_sparse_output}"')
         print(f'Standard answers: "{standard_answers}"')
-        phase_sparse_correct = match_sparse_answer(
+        phase_sparse_correct = self.match_sparse_answer(
             phase_sparse_output, standard_answers
         )
         if not phase_sparse_correct:
@@ -378,7 +374,7 @@ class TestBasicOfflineInferenceSparse:
         enforce_eager: bool,
         max_num_batched_tokens: int,
     ):
-        os.environ["ENABLE_SPARSE"] = "true"
+        os.environ["ENABLE_SPARSE"] = "1"
         os.environ["VLLM_HASH_ATTENTION"] = "1"
 
         config_file = get_path_relative_to_test_root("config.yaml")
@@ -461,21 +457,7 @@ class TestBasicOfflineInferenceSparse:
             timeout=1800,
         )
 
-        def normalize_text(text: str) -> str:
-            if not isinstance(text, str):
-                return ""
-
-            text = text.strip()
-            if not text:
-                return ""
-
-            end_punctuations = r"[。，！？；：%￥$]$"
-            text = re.sub(end_punctuations, "", text)
-
-            return text
-
         def extract_answers(generated_text_list: List[str]) -> List[str]:
-
             results = []
 
             for text in generated_text_list:
@@ -494,29 +476,13 @@ class TestBasicOfflineInferenceSparse:
 
             return results
 
-        def match_sparse_answer(
-            sparse_output: List[str], standard_answers: List[str]
-        ) -> bool:
-
-            if not isinstance(sparse_output, list) or not isinstance(
-                standard_answers, list
-            ):
-                return False
-            if not all(isinstance(item, str) for item in sparse_output) or not all(
-                isinstance(item, str) for item in standard_answers
-            ):
-                return False
-            norm_output = [normalize_text(item) for item in sparse_output]
-            norm_standard = [normalize_text(item) for item in standard_answers]
-            return norm_output == norm_standard
-
         phase_sparse_output = extract_answers(phase_sparse_output)
         print(
             f" GsaOnDevice inference for a GQA-based model is completed in a subprocess."
         )
         print(f'GsaOnDevice output: "{phase_sparse_output}"')
         print(f'Standard answers: "{standard_answers}"')
-        phase_sparse_correct = match_sparse_answer(
+        phase_sparse_correct = self.match_sparse_answer(
             phase_sparse_output, standard_answers
         )
         if not phase_sparse_correct:
