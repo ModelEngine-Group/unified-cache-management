@@ -10,6 +10,8 @@ fi
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/common.sh"
 
+ensure_ifconfig_installed
+
 start_server() {
     # Ascend environment variables
     if [[ "$NODE" == "0" ]]; then
@@ -65,8 +67,8 @@ start_server() {
     echo "tp_size                  = $tp_size"
     echo "dp_size                  = $dp_size"
     echo "pp_size                  = $pp_size"
-    echo "dp_size_local            = $dp_size_local"
-    echo "dp_start_rank            = $((dp_size_local * NODE))"
+    echo "dp_size_local            = $((dp_size / node_num))"
+    echo "dp_start_rank            = $((dp_size / node_num * NODE))"
     echo "dp_address               = $master_ip"
     echo "enable_expert_parallel   = $enable_expert_parallel"
     echo "max_model_len            = $max_model_len"
@@ -93,8 +95,8 @@ start_server() {
         --max-model-len "$max_model_len"
         --tensor-parallel-size "$tp_size"
         --data-parallel-size "$dp_size"
-        --data-parallel-size-local "$dp_size_local"
-        --data-parallel-start-rank "$((dp_size_local * NODE))"
+        --data-parallel-size-local "$((dp_size / node_num))"
+        --data-parallel-start-rank "$((dp_size / node_num * NODE))"
         --data-parallel-address "$master_ip"
         --data-parallel-rpc-port "$dp_rpc_port"
         --pipeline-parallel-size "$pp_size"
@@ -122,6 +124,7 @@ start_server() {
     if [[ "$async_scheduling" == "true" ]]; then CMD+=("--async-scheduling"); fi
     if [[ "$enable_expert_parallel" == "true" ]]; then CMD+=("--enable-expert-parallel"); fi
     if [[ "$enable_prefix_caching" == "false" ]]; then CMD+=("--no-enable-prefix-caching"); fi
+    if [[ "$enforce_eager" == "true" ]]; then CMD+=("--enforce-eager"); fi
 
     # --- Advanced configs (JSON) ---
     if [[ "$enable_speculative_decoding" == "true" ]]; then
@@ -159,10 +162,17 @@ start_server() {
         CMD+=("--kv-transfer-config" "$KV_CONFIG_JSON")
     fi
 
-    echo "Executing command: ${CMD[*]}"
-    echo ""
-
-    "${CMD[@]}" 2>&1 | tee "$LOG_FILE"
+    {
+        echo ""
+        echo "===== vLLM Server Starting ====="
+        echo "Time: $(date '+%Y-%m-%d %H:%M:%S')"
+        echo "Executing command:"
+        echo "${CMD[*]}" 
+        echo "================================"
+        echo ""
+        
+        "${CMD[@]}"
+    } 2>&1 | tee "$LOG_FILE"
 }
 
 load_config
