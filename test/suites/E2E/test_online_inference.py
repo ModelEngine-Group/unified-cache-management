@@ -75,8 +75,6 @@ class TestBasicOnlineInference:
         with open(config_file, "r", encoding="utf-8") as f:
             config = yaml.safe_load(f)
 
-        os.environ["ENABLE_UCM_PATCH"] = "1"
-
         ucm_storage_dir = "/tmp/ucm_cache"
         ensure_storage_dir(ucm_storage_dir, clear_existing=True)
 
