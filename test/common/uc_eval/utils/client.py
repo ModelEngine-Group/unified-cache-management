@@ -36,9 +36,7 @@ def _excute_with_pool(
         logger.error(
             f"The number of requests: {len(tasks)} is less than parallel_num: {parallel_num}, please check..."
         )
-        raise ValueError(
-            f"The number of requests: {len(tasks)} is less than parallel_num: {parallel_num}, please check..."
-        )
+
     logger.info(f"Start to send {len(tasks)} requests to server...")
     with ThreadPoolExecutor(max_workers=parallel_num) as executor:
         futures = [executor.submit(task_func, task) for task in tasks]
@@ -76,7 +74,7 @@ class BaseClient:
         self.tokenizer: PreTrainedTokenizer = AutoTokenizer.from_pretrained(
             tokenizer_path
         )
-        self.max_paralleml_num = kwargs.get("max_parallel_num", 10)
+        self.max_paralleml_num = kwargs.get("max_parallel", 10)
         self.session = self.create_session(self.max_paralleml_num)
         self.max_seq_length = config.max_seq_length
         self.payload = config.payload
@@ -130,6 +128,9 @@ class BaseClient:
             # If the length of input_ids is greater than max_seq_length, we need to split it
             input_ids = self.tokenizer.encode(prompt)
             if len(input_ids) > self.max_seq_length:
+                logger.warning(
+                    f"The length of input tokens {len(input_ids)} is greater than max_seq_length {self.max_seq_length}, we need to split it"
+                )
                 input_ids = (
                     input_ids[: self.max_seq_length // 2]
                     + input_ids[-self.max_seq_length // 2 :]
@@ -169,7 +170,6 @@ class BaseClient:
 
         for record in records:
             record.input_tokens = len(self.tokenizer.tokenize(record.input_data))
-            record.output_tokens = len(self.tokenizer.tokenize(record.output_data))
             record.tbt_list = record.tbt_list[2:] if record.tbt_list else []
             record.tbt_latency = (
                 sum(record.tbt_list) / record.output_tokens if record.tbt_list else 0
@@ -202,6 +202,7 @@ class BaseClient:
 
         record.request_id = request_id
         record.output_data = output
+        record.output_tokens = result.get("usage", {}).get("completion_tokens", -1)
         record.is_success = True
         record.end_time = time.time()
         record.req_cost = record.end_time - record.start_time
@@ -212,7 +213,7 @@ class BaseClient:
         output = ""
         if message.get("content", "") is not None:
             output += message.get("content", "")
-        elif message.get("reasoning_content", "") is not None:
+        if message.get("reasoning_content", "") is not None:
             output += message.get("reasoning_content", "")
         return output
 
@@ -319,6 +320,7 @@ class BaseClient:
         record.is_success = True
         record.end_time = time.perf_counter()
         record.req_cost = record.end_time - record.start_time
+        record.output_tokens = payload.get("max_tokens", -1)
         logger.debug(f"{record.request_id} finished, cost: {record.req_cost:.2f}s")
         return record
 
@@ -327,7 +329,7 @@ class BaseClient:
         output = ""
         if message.get("content", "") is not None:
             output += message.get("content", "")
-        elif message.get("reasoning_content", "") is not None:
+        if message.get("reasoning_content", "") is not None:
             output += message.get("reasoning_content", "")
         return output
 
@@ -504,16 +506,28 @@ class DocQaClient(BaseClient):
     def send_qa_request(
         self, case: Union[str, str, str, str], max_tokens: int = -1
     ) -> RequestRecord:
+        from common.uc_eval.utils.prompt_config import COT_KEY
+
         case_name, prompt_list, question, answer = case
         all_record = RequestRecord()
-        for i, prompt in enumerate(prompt_list):
+        response = None
+        for i, (prompt, cot_string) in enumerate(prompt_list):
+            if cot_string:
+                cot_response = cot_string.replace(COT_KEY, response)
+                prompt = prompt.replace(cot_string, cot_response)
             record: RequestRecord = self.send_request(prompt, max_tokens)
             if i == 0:
                 all_record = record
                 all_record.case_name = case_name
                 all_record.question = question
                 all_record.expected_output = answer
+            if i != len(prompt_list) - 1:
+                response = record.output_data
             if i == len(prompt_list) - 1:
                 all_record.output_data = record.output_data
                 all_record.output_tokens = record.output_tokens
+
+        logger.debug(
+            f"case name: {all_record.case_name}, request id: {all_record.request_id}, output data: {all_record.output_data}"
+        )
         return all_record

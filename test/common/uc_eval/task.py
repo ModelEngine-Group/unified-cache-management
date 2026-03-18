@@ -1,5 +1,8 @@
+import os
+import re
 import time
 from abc import ABC, abstractmethod
+from pathlib import Path
 from typing import Any, Dict, List, Union
 
 from common.uc_eval.utils.config_loader import ConfigLoader, TaskFactory
@@ -14,7 +17,14 @@ from common.uc_eval.utils.data_class import (
     RequestRecord,
     SynthericParams,
 )
-from common.uc_eval.utils.utils import FileUtil, PathUtil, get_current_time, get_logger
+from common.uc_eval.utils.utils import (
+    FileUtil,
+    JsonAndJsonlLoader,
+    JsonlDataToExcel,
+    PathUtil,
+    get_current_time,
+    get_logger,
+)
 
 MS_SCALE = 1000
 BAD_COMPLETION_TOKENS_THR = 20
@@ -157,12 +167,12 @@ class BaseTask(ABC):
             )
         elif self.eval_config:
             logger.info(
-                f"For the test case named {self.test_name}, the result is: {data_dict}"
+                f"For the test case named {self.test_name}, the result is: {data_dict}\n"
             )
         return data_dict
 
     def update_single_record(self, record: LatencyStatistics, case_len: int):
-        logger.info(f"There are {case_len} cases to save to the database.")
+        logger.info(f"There are {case_len} cases will be stored in the database.")
         data_dict = {
             "current_time": self.current_time,
             "test_name": self.test_name,
@@ -429,6 +439,7 @@ class DocQaEvalTask(BaseTask):
         self.dataset_file_path = eval_config.dataset_file_path
         self.max_tokens = model_config.payload.get("max_tokens")
         self.eval_cls = eval_config.eval_class
+        self.jsonl_save_path = self.get_jsonl_save_path()
 
     def process(self):
         cases_list = self.dataset.prepare_data(self.dataset_file_path)
@@ -448,5 +459,67 @@ class DocQaEvalTask(BaseTask):
         metric_result, match_record_list = self.benchmark.perf_show(
             records, self.parallel_num
         )
+
         self.save_eval_cases_excel(match_record_list, self.eval_cls)
+        save_result = self.save_eval_cases_jsonl(
+            match_record_list,
+            self.dataset_file_path,
+            self.jsonl_save_path,
+        )
+        if save_result:
+            self.trans_jsonl_to_excel()
+
         return metric_result, len(records)
+
+    def save_eval_cases_jsonl(
+        self,
+        match_record_list: List[RequestRecord],
+        data_path: str | Path,
+        save_path: str | Path,
+    ):
+        json_loader = JsonAndJsonlLoader(logger)
+        file_path = PathUtil.get_datasets_dir_path(data_path)
+        data_list = []
+        if file_path.suffix.lower() == ".jsonl":
+            data_list = json_loader.load_jsonl_data(file_path)
+        elif file_path.suffix.lower() == ".json":
+            data_list = json_loader.load_json_file(file_path)
+
+        if not data_list[0].get("_id", None):
+            return False
+
+        save_data_list = []
+        id_to_data = {data["_id"]: data for data in data_list}
+        for match_record in match_record_list:
+            id = match_record.case_name
+            if id in id_to_data:
+                data = id_to_data[id]
+                data.pop("context", None)
+                data["model_real_output"] = match_record.output_data
+                if "accuracy" in self.eval_config.metrics:
+                    data["is_match"] = match_record.is_match
+                save_data_list.append(data)
+
+        json_loader.save_jsonl_file(save_path, save_data_list)
+        return True
+
+    def trans_jsonl_to_excel(self):
+        try:
+            jsonl_to_excel = JsonlDataToExcel(logger, self.jsonl_save_path)
+            if "accuracy" in self.eval_config.metrics:
+                jsonl_to_excel.trans_jsonl_to_excel()
+        except Exception as e:
+            logger.error(f"Transform jsonl to excel error: {e}")
+
+    def get_jsonl_save_path(self):
+        """
+        Delete the saitize characters in the file name to ensure the validity of the file name
+        """
+        illegal_characters = r'[\\/:*?"<>|\s]+'
+        current_time = re.sub(illegal_characters, "-", get_current_time()).strip("-")
+        test_name = re.sub(illegal_characters, "-", self.test_name).strip("-")
+        jsonl_save_path = PathUtil.get_datasets_dir_path(
+            self.file_save_path
+        ).parent.joinpath(current_time, f"{test_name}.jsonl")
+
+        return jsonl_save_path

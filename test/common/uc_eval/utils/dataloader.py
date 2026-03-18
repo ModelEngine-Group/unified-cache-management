@@ -7,7 +7,7 @@ from typing import Any, Dict, List, Union
 
 import numpy as np
 from common.uc_eval.utils.data_class import SynthericParams
-from common.uc_eval.utils.utils import PathUtil, get_logger
+from common.uc_eval.utils.utils import JsonAndJsonlLoader, PathUtil, get_logger
 from tqdm import tqdm
 from transformers import AutoTokenizer, PreTrainedTokenizer
 
@@ -21,43 +21,11 @@ class BaseDataset(ABC):
         self.tokenizer: PreTrainedTokenizer = AutoTokenizer.from_pretrained(
             tokenizer_path
         )
+        self.json_loader = JsonAndJsonlLoader(logger)
 
     @abstractmethod
     def prepare_data(self, param: Any):
         raise NotImplementedError
-
-    def load_json_file(self, file_path):
-        try:
-            with open(file_path, "r", encoding="utf-8") as f:
-                data = json.load(f)
-            return data
-        except FileNotFoundError:
-            logger.error(f"JSON file not found: {file_path}")
-            raise FileNotFoundError(f"JSON file not found: {file_path}")
-        except json.JSONDecodeError as e:
-            logger.error(f"JSON decode error in file {file_path}: {e}")
-            raise ValueError(f"Invalid JSON format in file {file_path}: {e}")
-        except Exception as e:
-            logger.error(f"Unexpected error while loading JSON file {file_path}: {e}")
-            raise ValueError(f"Failed to load JSON file {file_path}: {e}")
-
-    def load_jsonl_data(self, file_path):
-        try:
-            data = []
-            with open(file_path, "r", encoding="utf-8") as f:
-                for line in f:
-                    json_line = json.loads(line)
-                    data.append(json_line)
-            return data
-        except FileNotFoundError:
-            logger.error(f"JSONL file not found: {file_path}")
-            raise FileNotFoundError(f"JSONL file not found: {file_path}")
-        except json.JSONDecodeError as e:
-            logger.error(f"JSONL decode error in file {file_path}: {e}")
-            raise ValueError(f"Invalid JSONL format in file {file_path}: {e}")
-        except Exception as e:
-            logger.error(f"Unexpected error while loading JSONL file {file_path}: {e}")
-            raise ValueError(f"Failed to load JSONL file {file_path}: {e}")
 
 
 class SyntheticDataset(BaseDataset):
@@ -147,15 +115,22 @@ class MultiTurnDialogueDataset(BaseDataset):
         cases = []
         # the path of multiturndialog.json
         json_path = PathUtil.get_datasets_dir_path(dataset_file_path)
-        mtd_data: dict = self.load_json_file(json_path)
+        mtd_data: dict = self.json_loader.load_json_file(json_path)
         for dataset_name, files_list in mtd_data.items():
             for file_name in files_list:
                 case_path = PathUtil.get_dirname(json_path).joinpath(
                     dataset_name, file_name
                 )
                 if case_path.exists():
-                    dialogues = self.load_json_file(case_path)
-                    cases.extend(self.process_single_case_file(dialogues))
+                    dialogues = self.json_loader.load_json_file(case_path)
+                    if isinstance(dialogues, Dict):
+                        cases.extend(self.process_single_case_file(dialogues))
+                    elif isinstance(dialogues, List):
+                        cases.extend(self.process_multi_case_file(dialogues))
+                    else:
+                        logger.warning(
+                            f" The dialogue format is invalid. Please check and retry."
+                        )
                 else:
                     logger.warning(
                         f"JSON file {case_path} does not exist, please check the file path"
@@ -166,9 +141,10 @@ class MultiTurnDialogueDataset(BaseDataset):
             )
         return cases
 
-    def process_single_case_file(self, dialogues: dict) -> List[List[Union[str, Dict]]]:
+    def process_single_case_file(self, dialogues: Dict) -> List[List[Union[str, Dict]]]:
         cases = []
         for dialogue_name, dialogue_data in dialogues.items():
+            logger.info(f"There are  {len(dialogue_data)} dialogue cases.")
             for i, dialog in enumerate(dialogue_data):
                 dialog_tokens = len(
                     self.tokenizer.tokenize(str(dialog["conversations"]))
@@ -177,6 +153,19 @@ class MultiTurnDialogueDataset(BaseDataset):
                     f"Current dialogue {dialogue_name}-{i} token count: {dialog_tokens}"
                 )
                 cases.append([f"{dialogue_name}-{i}", dialog])
+
+        return cases
+
+    def process_multi_case_file(self, dialogues: List) -> List[List[Union[str, Dict]]]:
+        cases = []
+        logger.info(f"There are  {len(dialogues)} dialogue cases.")
+        for conv in dialogues:
+            case_name = conv["id"]
+            conversations = conv["conversations"]
+            dialog_tokens = len(self.tokenizer.tokenize(str(conversations)))
+            logger.info(f"Current dialogue {case_name} token count: {dialog_tokens}")
+            cases.append([case_name, conv])
+
         return cases
 
 
@@ -194,9 +183,9 @@ class DocQADataset(BaseDataset):
         file_path = PathUtil.get_datasets_dir_path(file_path)
         data_list = []
         if file_path.suffix.lower() == ".jsonl":
-            data_list = self.load_jsonl_data(file_path)
+            data_list = self.json_loader.load_jsonl_data(file_path)
         elif file_path.suffix.lower() == ".json":
-            data_list = self.load_json_file(file_path)
+            data_list = self.json_loader.load_json_file(file_path)
 
         cases_list = []
         for data in data_list:
@@ -218,12 +207,15 @@ class DocQADataset(BaseDataset):
         """
         Get the prompt, answer, question, case_name parameters from json data
         """
-        from common.uc_eval.utils.prompt_config import doc_qa_prompt
+        from common.uc_eval.utils.prompt_config import (
+            doc_qa_prompt_en,
+            doc_qa_prompt_zh,
+        )
 
-        question = json_lines.get("input", None)
-        answer = json_lines.get("answers", None)
-        dataset = json_lines.get("dataset", None)
+        question = json_lines.get("question") or json_lines.get("input")
+        answer = json_lines.get("answers") or json_lines.get("answer")
         _id = json_lines.get("_id", None)
+        language = self.resolve_language(json_lines)
 
         is_match = self.match_dataset_with_select_data_class(
             json_lines, select_data_class
@@ -232,11 +224,12 @@ class DocQADataset(BaseDataset):
             return []
 
         prompt_list = []
-        for item in doc_qa_prompt:
+        prompt_tmp = doc_qa_prompt_zh if language == "zh" else doc_qa_prompt_en
+        for item in prompt_tmp:
             prompt = self.get_prompt_from_json_lines(json_lines, item)
             prompt_list.append(prompt)
 
-        return [f"{dataset}-{_id}", prompt_list, question, answer]
+        return [_id, prompt_list, question, answer]
 
     def _get_multiple_choice_content(
         self, json_lines, select_data_class: Dict[str, Any] = {}
@@ -244,13 +237,14 @@ class DocQADataset(BaseDataset):
         """
         For multiple-choice questions, after extracting "answer" and "question", also extract keys like "choice_A" to distinguish each option before building the prompt.
         """
-        from common.uc_eval.utils.prompt_config import multi_answer_prompt
+        from common.uc_eval.utils.prompt_config import COT_KEY, multi_answer_prompt
 
-        question = json_lines.get("question", None)
-        answer = json_lines.get("answer", None)
+        question = json_lines.get("question") or json_lines.get("input")
+        answer = json_lines.get("answers") or json_lines.get("answer")
         domain = json_lines.get("domain", None)
         difficulty = json_lines.get("difficulty", None)
         _id = json_lines.get("_id", None)
+        language = self.resolve_language(json_lines)
 
         is_match = self.match_dataset_with_select_data_class(
             json_lines, select_data_class
@@ -258,25 +252,56 @@ class DocQADataset(BaseDataset):
         if not is_match:
             return []
 
-        format_list = [domain, difficulty, _id]
-        for i, item in enumerate(format_list):
-            format_list[i] = re.sub(r"\s+", "-", item.strip())
-        case_name = re.sub(r"-+", "-", f"{'-'.join(format_list)}")
-
         prompt_list = []
         for item in multi_answer_prompt:
-            prompt = self.get_prompt_from_json_lines(json_lines, item)
-            prompt_list.append(prompt)
+            prompt, cot_string = self.get_prompt_from_json_lines(
+                json_lines, item, COT_KEY
+            )
+            prompt_list.append([prompt, cot_string])
 
-        return [case_name, prompt_list, question, answer]
+        return [_id, prompt_list, question, answer]
 
-    def get_prompt_from_json_lines(self, json_lines, prompt_template):
+    def resolve_language(self, json_lines) -> str:
+        """
+        Extract language identifier from data, use default configuration if not specified
+        """
+        from common.uc_eval.utils.prompt_config import DEFAULT_LANGUAGE
+
+        language = json_lines.get("language") or DEFAULT_LANGUAGE
+        return language or "None"
+
+    def get_prompt_from_json_lines(self, json_lines, prompt_template, cot_key="COT"):
         """
         Get the json data from prompt template
         """
-        keys = re.findall(r"\{(\w+)\}", prompt_template)
-        mapping = {key: json_lines.get(key, None).strip() for key in keys}
-        return prompt_template.format(**mapping)
+        keys = list(re.finditer(r"\{([^}]+)\}", prompt_template))
+        mapping = {}
+        cot_identifier = None
+
+        for i, match in enumerate(keys):
+            key = match.group(1)
+            if isinstance(key, str) and key.upper() == cot_key:
+                if i == 0:
+                    start_pos = 0
+                else:
+                    start_pos = keys[i - 1].end()
+
+                end_pos = match.end()
+                cot_identifier = prompt_template[start_pos:end_pos]
+
+            else:
+                value = json_lines.get(key)
+                if value is None:
+                    logger.error(f"Missing key {key} in json lines")
+                    mapping[key] = ""
+                else:
+                    mapping[key] = str(value).strip()
+
+        filled_prompt = prompt_template
+        for key, value in mapping.items():
+            filled_prompt = filled_prompt.replace(f"{{{key}}}", value)
+
+        return filled_prompt, cot_identifier
 
     def match_dataset_with_select_data_class(
         self, json_lines, select_data_class: Dict[str, Any] = {}

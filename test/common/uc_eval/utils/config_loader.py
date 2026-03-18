@@ -196,10 +196,14 @@ class TaskFactory:
         if data_type == DatasetType.MULTI_DIALOGUE:
             client_kwargs["enable_prefix_cache"] = perf_config.enable_prefix_cache
             client_kwargs["enable_clear_hbm"] = model_config.enable_clear_hbm
-        elif data_type == DatasetType.SYNTHETIC:
-            client_kwargs["max_parallel"] = max(perf_config.parallel_num)
         elif eval_config and data_type == DatasetType.DOC_QA:
             eval_kwargs["select_data_class"] = eval_config.select_data_class
+        if data_type == DatasetType.SYNTHETIC:
+            client_kwargs["max_parallel"] = max(perf_config.parallel_num)
+        else:
+            client_kwargs["max_parallel"] = (
+                perf_config.parallel_num if perf_config else eval_config.parallel_num
+            )
         return (
             cls._dataset[data_type](tokenizer_path, **eval_kwargs),
             cls._client[data_type](model_config, stream, **client_kwargs),
