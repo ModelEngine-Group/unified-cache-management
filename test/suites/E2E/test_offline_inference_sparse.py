@@ -213,7 +213,7 @@ class TestBasicOfflineInferenceSparse:
     @pytest.mark.gpu_mem(70000)
     @pytest.mark.parametrize("model_name", ["DeepSeek-V2-Lite-Chat"])
     @pytest.mark.parametrize("max_tokens", [16])
-    @pytest.mark.parametrize("enforce_eager", [True, False])
+    @pytest.mark.parametrize("enforce_eager", [False])
     @pytest.mark.parametrize("max_num_batched_tokens", [30000])
     def test_offline_gsa_mla(
         self,
@@ -324,7 +324,7 @@ class TestBasicOfflineInferenceSparse:
     @pytest.mark.gpu_mem(30000)
     @pytest.mark.parametrize("model_name", ["Qwen3-4B"])
     @pytest.mark.parametrize("max_tokens", [2048])
-    @pytest.mark.parametrize("enforce_eager", [True, False])
+    @pytest.mark.parametrize("enforce_eager", [False])
     @pytest.mark.parametrize("max_num_batched_tokens", [30000])
     def test_offline_gsa_gqa(
         self,

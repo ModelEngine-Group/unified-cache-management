@@ -21,15 +21,18 @@ import pytest
 import yaml
 from common.common_inference_utils import (
     ensure_storage_dir,
+    extract_answers,
     load_prompt_from_file,
+    load_prompt_list_from_file,
     match_any_answer,
+    match_sparse_answer,
     normalize_text,
     split_prompt_by_tokens,
 )
 from common.llm_connection.LLMBase import LLMRequest
 from common.llm_connection.openai_connector import OpenAIConn
 from common.llm_connection.token_counter import HuggingFaceTokenizer
-from common.online_inference_utils import VLLMServerManager
+from common.online_inference_utils import VLLMServerManager, batch_chat
 from common.path_utils import get_path_relative_to_test_root, get_path_to_model
 
 
@@ -255,22 +258,21 @@ class TestBasicOnlineInference:
 
         print("\n===== All Tests Passed! =====")
 
-    @pytest.mark.skip(reason="refine this code and re-enable later")
     @pytest.mark.stage(1)
-    @pytest.mark.gpu_mem(10000)
+    @pytest.mark.gpu_mem(70000)
     @pytest.mark.feature("online_inference_sparse")
-    @pytest.mark.parametrize("model_name", ["Qwen3-4B"])
-    @pytest.mark.parametrize("max_tokens", [200])
-    def test_online_gsa(
+    @pytest.mark.parametrize("model_name", ["DeepSeek-V2-Lite-Chat"])
+    @pytest.mark.parametrize("max_tokens", [16])
+    def test_online_gsa_mla(
         self,
         model_name: str,
         max_tokens: int,
     ):
-        """Test GSA sparse attention via online inference.
+        """Test GSA sparse attention via online inference for MLA-based model.
 
-        Mirrors test_offline_inference_sparse.py::test_offline_gsa.
-        Starts vLLM with GSA sparse config, sends full prompt twice,
-        verifies SSD save/load works.
+        Mirrors test_offline_inference_sparse.py::test_offline_gsa_mla.
+        Loads prompts from test_offline_gsaondevice_inference.json,
+        sends them in parallel using batch_chat, verifies using match_sparse_answer.
         """
         os.environ["ENABLE_SPARSE"] = "1"
         os.environ["VLLM_HASH_ATTENTION"] = "1"
@@ -279,38 +281,190 @@ class TestBasicOnlineInference:
         with open(config_file, "r", encoding="utf-8") as f:
             config = yaml.safe_load(f)
 
-        ucm_storage_dir = "/tmp/ucm_cache"
-        ensure_storage_dir(ucm_storage_dir, clear_existing=True)
-
-        served_model_name = model_name
-        tokenizer_path = f"/home/models/{model_name}"
         model_path = get_path_to_model(model_name, config)
+        tokenizer_path = f"/home/models/{model_name}"
+        served_model_name = model_name
 
-        test_prompt, _ = load_prompt_from_file(
-            get_path_relative_to_test_root(
-                "suites/E2E/prompts/test_offline_inference.json"
+        # Load prompts and answers (same as test_offline_gsa_mla)
+        try:
+            test_prompts, standard_answers = load_prompt_list_from_file(
+                get_path_relative_to_test_root(
+                    "suites/E2E/prompts/test_offline_gsaondevice_inference.json"
+                )
             )
-        )
+            if not standard_answers:
+                pytest.fail(f"No standard answers found in prompt.json")
+        except Exception as e:
+            pytest.fail(f"Failed to load prompt from prompt.json: {e}")
 
-        system_content = "先读问题，再根据下面的文章内容回答问题，不要进行分析，不要重复问题，用简短的语句给出答案。\n\n例如：\u201c全国美国文学研究会的第十八届年会在哪所大学举办的？\u201d\n回答应该为：\u201cxx大学\u201d。\n\n"
+        print(f"Standard answers: {standard_answers}")
 
+        tokenizer = HuggingFaceTokenizer(tokenizer_path)
+
+        # Format prompts with tokenizer (same as test_offline_gsa_mla)
+        formatted_prompts = []
+        for test_prompt in test_prompts:
+            try:
+                messages = [
+                    {
+                        "role": "system",
+                        "content": "先读问题，再根据下面的文章内容回答问题，不要进行分析，不要重复问题，用简短的语句给出答案。\n\n例如：\u201c全国美国文学研究会的第十八届年会在哪所大学举办的？\u201d\n回答应该为：\u201cxx大学\u201d。\n\n",
+                    },
+                    {"role": "user", "content": test_prompt},
+                ]
+                formatted_prompt = tokenizer.apply_chat_template(
+                    messages,
+                    tokenize=False,
+                    add_generation_prompt=True,
+                    add_special_tokens=True,
+                )
+            except Exception:
+                formatted_prompt = test_prompt
+            formatted_prompts.append(formatted_prompt)
+
+        # UCM config with UcmPipelineStore (same as test_offline_gsa_mla)
         ucm_config = {
             "ucm_connectors": [
                 {
-                    "ucm_connector_name": "UcmNfsStore",
+                    "ucm_connector_name": "UcmPipelineStore",
                     "ucm_connector_config": {
-                        "storage_backends": ucm_storage_dir,
-                        "use_direct": False,
+                        "store_pipeline": "Empty",
+                        "share_buffer_enable": True,
                     },
                 }
             ],
             "ucm_sparse_config": {"GSAOnDevice": {}},
         }
 
-        phase1_messages = [
-            {"role": "system", "content": system_content},
-            {"role": "user", "content": test_prompt},
-        ]
+        print(f"\n===== Online GSA MLA Sparse Test =====")
+        print(f"Model: {model_path}")
+        print(f"Starting vLLM server with GSA sparse config")
+
+        with VLLMServerManager(
+            model_path=model_path,
+            port=8000,
+            ucm_config=ucm_config,
+            max_model_len=70000,
+            served_model_name=served_model_name,
+            enable_prefix_caching=False,
+        ) as server:
+            client = OpenAIConn(
+                base_url=server.url,
+                tokenizer=tokenizer,
+                model=served_model_name,
+            )
+            assert client.health_check()
+
+            print(f"server models: {client.list_models()}")
+
+            # Create LLMRequest list
+            requests = [
+                LLMRequest(
+                    messages=[{"role": "user", "content": prompt}],
+                    max_tokens=max_tokens,
+                    temperature=0.0,
+                )
+                for prompt in formatted_prompts
+            ]
+
+            # Send requests in parallel using batch_chat
+            responses = batch_chat(client, requests)
+            outputs = [resp.text for resp in responses]
+
+            print(f"GSA MLA online inference completed.")
+            print(f'GSA MLA output: "{outputs}"')
+            print(f'Standard answers: "{standard_answers}"')
+
+            # Verify (same as test_offline_gsa_mla)
+            phase_sparse_correct = match_sparse_answer(outputs, standard_answers)
+
+            if not phase_sparse_correct:
+                print(f"Incorrect answer in GSA MLA online inference output!")
+                print(f"GSA MLA output:\n{outputs}")
+                print(f"Standard answers:\n{standard_answers}")
+                pytest.fail("GSA MLA Online Test Failed!")
+
+            client.close()
+
+        print("GSA MLA online inference completed.")
+
+    @pytest.mark.stage(1)
+    @pytest.mark.gpu_mem(30000)
+    @pytest.mark.feature("online_inference_sparse")
+    @pytest.mark.parametrize("model_name", ["Qwen3-4B"])
+    @pytest.mark.parametrize("max_tokens", [2048])
+    def test_online_gsa_gqa(
+        self,
+        model_name: str,
+        max_tokens: int,
+    ):
+        """Test GSA sparse attention via online inference.
+
+        Mirrors test_offline_inference_sparse.py::test_offline_gsa_gqa.
+        Loads prompts from test_offline_gsaondevice_inference.json,
+        sends them in parallel using batch_chat, verifies using match_sparse_answer.
+        """
+        os.environ["ENABLE_SPARSE"] = "1"
+        os.environ["VLLM_HASH_ATTENTION"] = "1"
+
+        config_file = get_path_relative_to_test_root("config.yaml")
+        with open(config_file, "r", encoding="utf-8") as f:
+            config = yaml.safe_load(f)
+
+        model_path = get_path_to_model(model_name, config)
+        tokenizer_path = f"/home/models/{model_name}"
+        served_model_name = model_name
+
+        # Load prompts and answers (same as test_offline_gsa_gqa)
+        try:
+            test_prompts, standard_answers = load_prompt_list_from_file(
+                get_path_relative_to_test_root(
+                    "suites/E2E/prompts/test_offline_gsaondevice_inference.json"
+                )
+            )
+            if not standard_answers:
+                pytest.fail(f"No standard answers found in prompt.json")
+        except Exception as e:
+            pytest.fail(f"Failed to load prompt from prompt.json: {e}")
+
+        print(f"Standard answers: {standard_answers}")
+
+        tokenizer = HuggingFaceTokenizer(tokenizer_path)
+
+        # Format prompts with tokenizer (same as test_offline_gsa_gqa)
+        formatted_prompts = []
+        for test_prompt in test_prompts:
+            try:
+                messages = [
+                    {
+                        "role": "system",
+                        "content": "先读问题，再根据下面的文章内容回答问题，不要进行分析，不要重复问题，用简短的语句给出答案。\n\n例如：\u201c全国美国文学研究会的第十八届年会在哪所大学举办的？\u201d\n回答应该为：\u201cxx大学\u201d。\n\n",
+                    },
+                    {"role": "user", "content": test_prompt},
+                ]
+                formatted_prompt = tokenizer.apply_chat_template(
+                    messages,
+                    tokenize=False,
+                    add_generation_prompt=True,
+                    add_special_tokens=True,
+                )
+            except Exception:
+                formatted_prompt = test_prompt
+            formatted_prompts.append(formatted_prompt)
+
+        # UCM config with UcmPipelineStore (same as test_offline_gsa_gqa)
+        ucm_config = {
+            "ucm_connectors": [
+                {
+                    "ucm_connector_name": "UcmPipelineStore",
+                    "ucm_connector_config": {
+                        "store_pipeline": "Empty",
+                        "share_buffer_enable": True,
+                    },
+                }
+            ],
+            "ucm_sparse_config": {"GSAOnDevice": {}},
+        }
 
         print(f"\n===== Online GSA Sparse Test =====")
         print(f"Model: {model_path}")
@@ -320,34 +474,47 @@ class TestBasicOnlineInference:
             model_path=model_path,
             port=8000,
             ucm_config=ucm_config,
-            max_model_len=12000,
+            max_model_len=30000,
             served_model_name=served_model_name,
             enable_prefix_caching=False,
         ) as server:
             client = OpenAIConn(
                 base_url=server.url,
-                tokenizer=HuggingFaceTokenizer(tokenizer_path),
+                tokenizer=tokenizer,
                 model=served_model_name,
             )
             assert client.health_check()
 
             print(f"server models: {client.list_models()}")
 
-            # Phase 1.1: SSD save
-            phase1_1_output = client.chat(
+            # Create LLMRequest list
+            requests = [
                 LLMRequest(
-                    messages=phase1_messages, max_tokens=max_tokens, temperature=0.0
+                    messages=[{"role": "user", "content": prompt}],
+                    max_tokens=max_tokens,
+                    temperature=0.0,
                 )
-            ).text
-            print(f'Phase 1.1 output: "{phase1_1_output}"')
+                for prompt in formatted_prompts
+            ]
 
-            # Phase 1.2: SSD load
-            phase1_2_output = client.chat(
-                LLMRequest(
-                    messages=phase1_messages, max_tokens=max_tokens, temperature=0.0
-                )
-            ).text
-            print(f'Phase 1.2 output: "{phase1_2_output}"')
+            # Send requests in parallel using batch_chat
+            responses = batch_chat(client, requests)
+            outputs = [resp.text for resp in responses]
+
+            print(f"GSA online inference completed.")
+            print(f'GSA output: "{outputs}"')
+            print(f'Standard answers: "{standard_answers}"')
+
+            # Extract answers and verify (same as test_offline_gsa_gqa)
+            outputs = extract_answers(outputs)
+            phase_sparse_correct = match_sparse_answer(outputs, standard_answers)
+
+            if not phase_sparse_correct:
+                print(f"Incorrect answer in GSA online inference output!")
+                print(f"GSA output:\n{outputs}")
+                print(f"Standard answers:\n{standard_answers}")
+                pytest.fail("GSA Online Test Failed!")
+
             client.close()
 
-        print("GSA inference completed.")
+        print("GSA online inference completed.")
