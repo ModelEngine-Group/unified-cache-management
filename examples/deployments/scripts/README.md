@@ -65,7 +65,6 @@ For a two-node deployment, follow these steps:
 
 step1 Modify `config.properties`
 - Set `master_ip` and `worker_ip`
-- Set `dp_size_local` to the number of DP per node
 - `Ray Configuration` can be ignored, as it is not used in the current scenario.
 - Adjust other vLLM parameters as needed
 
