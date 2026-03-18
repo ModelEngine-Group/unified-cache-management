@@ -200,7 +200,7 @@ def inject_pth():
 
 setup(
     name="uc-manager",
-    version="0.3.0",
+    version="0.4.0",
     description="Unified Cache Management",
     author="Unified Cache Team",
     packages=find_packages() + [""],
