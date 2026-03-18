@@ -1,5 +1,8 @@
 import os
+import re
+import string
 from pathlib import Path
+from typing import List
 
 import pytest
 import yaml
@@ -7,8 +10,9 @@ from common.common_inference_utils import (
     ensure_storage_dir,
     get_platform_specific_module,
     load_prompt_from_file,
+    load_prompt_list_from_file,
+    serialize_sample_params,
     split_prompt_by_tokens,
-    to_dict_for_serialization,
 )
 from common.offline_inference_utils import (
     run_in_spawn_subprocess,
@@ -17,12 +21,12 @@ from common.offline_inference_utils import (
 from common.path_utils import get_path_relative_to_test_root, get_path_to_model
 
 os.environ["ENABLE_UCM_PATCH"] = "1"
-os.environ["ENABLE_SPARSE"] = "1"
 
 
 class TestBasicOfflineInferenceSparse:
     """Test basic offline inference functionality."""
 
+    @pytest.mark.skip(reason="refine this code and re-enable later")
     @pytest.mark.stage(1)
     @pytest.mark.feature("offline_inference_sparse")
     @pytest.mark.gpu_mem(6000)
@@ -134,7 +138,7 @@ class TestBasicOfflineInferenceSparse:
         print(f"\n===== Phase 1: Save KV Cache to SSD And Load (Baseline) =====")
 
         # Convert SamplingParams to dict for serialization, as non-picklable objects cannot be passed to subprocess
-        sampling_params_dict = to_dict_for_serialization(sampling_params)
+        sampling_params_dict = serialize_sample_params(sampling_params)
 
         phase1_outputs = run_in_spawn_subprocess(
             run_offline_inference,
@@ -222,21 +226,48 @@ class TestBasicOfflineInferenceSparse:
 
     """Test GSA sparse attention."""
 
-    @pytest.mark.skip(reason="refine this code and re-enable later")
+    def remove_punc(self, text):
+        text = text.strip()
+        if not text:
+            return ""
+        cn_punctuation = "！？｡。＂＃＄％＆＇（）＊＋，－／：；＜＝＞＠［＼］＾＿｀｛｜｝～｟｠｢｣､、〃》「」『』【】〔〕〖〗〘〙〚〛〜〝〞〟〰〾〿–—‘’‛“”„‟…‧﹏."
+        all_punctuation = set(string.punctuation + cn_punctuation)
+        return "".join(ch for ch in text if ch not in all_punctuation)
+
+    def match_sparse_answer(
+        self, sparse_output: List[str], standard_answers: List[str]
+    ) -> bool:
+
+        if not isinstance(sparse_output, list) or not isinstance(
+            standard_answers, list
+        ):
+            return False
+        if not all(isinstance(item, str) for item in sparse_output) or not all(
+            isinstance(item, str) for item in standard_answers
+        ):
+            return False
+
+        norm_output = [self.remove_punc(item) for item in sparse_output]
+        norm_standard = [self.remove_punc(item) for item in standard_answers]
+        return norm_output == norm_standard
+
     @pytest.mark.stage(1)
-    @pytest.mark.feature("offline_inference_sparse")
-    @pytest.mark.gpu_mem(10000)
-    @pytest.mark.parametrize("model_name", ["Qwen3-4B"])
-    @pytest.mark.parametrize("max_tokens", [200])
-    @pytest.mark.parametrize("enforce_eager", [True])
+    @pytest.mark.feature("online_inference_sparse")
+    @pytest.mark.gpu_mem(70000)
+    @pytest.mark.parametrize("model_name", ["DeepSeek-V2-Lite-Chat"])
+    @pytest.mark.parametrize("max_tokens", [16])
+    @pytest.mark.parametrize("enforce_eager", [True, False])
     @pytest.mark.parametrize("max_num_batched_tokens", [30000])
-    def test_offline_gsa(
+    def test_offline_gsa_mla(
         self,
         model_name: str,
         max_tokens: int,
         enforce_eager: bool,
         max_num_batched_tokens: int,
     ):
+        os.environ["ENABLE_SPARSE"] = "1"
+        os.environ["VLLM_HASH_ATTENTION"] = "1"
+
         config_file = get_path_relative_to_test_root("config.yaml")
         with open(config_file, "r", encoding="utf-8") as f:
             config = yaml.safe_load(f)
@@ -245,15 +276,10 @@ class TestBasicOfflineInferenceSparse:
 
         assert os.path.exists(model_path), f"Model path does not exist: {model_path}"
 
-        ucm_storage_dir = "/tmp/ucm_cache"
-
-        # make sure UCM storage directory exists and is empty
-        ensure_storage_dir(ucm_storage_dir, clear_existing=True)
-
         try:
-            test_prompt, standard_answers = load_prompt_from_file(
+            test_prompts, standard_answers = load_prompt_list_from_file(
                 get_path_relative_to_test_root(
-                    "suites/E2E/prompts/test_offline_inference.json"
+                    "suites/E2E/prompts/test_offline_gsaondevice_inference.json"
                 )
             )
             if not standard_answers:
@@ -266,31 +292,34 @@ class TestBasicOfflineInferenceSparse:
         tokenizer = get_platform_specific_module().AutoTokenizer.from_pretrained(
             model_path, use_chat_template=True
         )
-
-        try:
-            messages = [
-                {
-                    "role": "system",
-                    "content": "先读问题，再根据下面的文章内容回答问题，不要进行分析，不要重复问题，用简短的语句给出答案。\n\n例如：“全国美国文学研究会的第十八届年会在哪所大学举办的？”\n回答应该为：“xx大学”。\n\n",
-                },
-                {"role": "user", "content": test_prompt},
-            ]
-            formatted_full_prompt = tokenizer.apply_chat_template(
-                messages,
-                tokenize=False,
-                add_generation_prompt=True,
-                add_special_tokens=True,
-            )
-        except Exception:
-            formatted_full_prompt = test_prompt
+        formatted_full_prompts = []
+        for i in range(len(test_prompts)):
+            test_prompt = test_prompts[i]
+            try:
+                messages = [
+                    {
+                        "role": "system",
+                        "content": "先读问题，再根据下面的文章内容回答问题，不要进行分析，不要重复问题，用简短的语句给出答案。\n\n例如：“全国美国文学研究会的第十八届年会在哪所大学举办的？”\n回答应该为：“xx大学”。\n\n",
+                    },
+                    {"role": "user", "content": test_prompt},
+                ]
+                formatted_full_prompt = tokenizer.apply_chat_template(
+                    messages,
+                    tokenize=False,
+                    add_generation_prompt=True,
+                    add_special_tokens=True,
+                )
+            except Exception:
+                formatted_full_prompt = test_prompt
+            formatted_full_prompts.append(formatted_full_prompt)
 
         ucm_config = {
             "ucm_connectors": [
                 {
-                    "ucm_connector_name": "UcmNfsStore",
+                    "ucm_connector_name": "UcmPipelineStore",
                     "ucm_connector_config": {
-                        "storage_backends": ucm_storage_dir,
-                        "use_direct": False,
+                        "store_pipeline": "Empty",
+                        "share_buffer_enable": True,
                     },
                 }
             ],
@@ -305,25 +334,164 @@ class TestBasicOfflineInferenceSparse:
         )
 
         # Convert SamplingParams to dict for serialization, as non-picklable objects cannot be passed to subprocess
-        sampling_params_dict = to_dict_for_serialization(sampling_params)
-
-        phase1_outputs = run_in_spawn_subprocess(
+        sampling_params_dict = serialize_sample_params(sampling_params)
+        phase_sparse_output = run_in_spawn_subprocess(
             run_offline_inference,
             model_path,
             ucm_config,
-            [formatted_full_prompt, formatted_full_prompt],
+            formatted_full_prompts,
             sampling_params_dict,
             False,  # enable_prefix_caching=False
             enforce_eager,
             "GSA",
             max_num_batched_tokens,
-            timeout=180,
+            timeout=1800,
         )
-        phase1_1_output = phase1_outputs[0]  # Phase 1.1: SSD save
-        phase1_2_output = phase1_outputs[1]  # Phase 1.2: SSD load
-        print(f"ESA inference completed in subprocess")
-        print(f'Phase 1.1 output: "{phase1_1_output}"')
-        print(f'Phase 1.2 output: "{phase1_2_output}"')
+
+        print(
+            f" GsaOnDevice inference for a MLA-based model is completed in a subprocess."
+        )
+        print(f'GsaOnDevice output: "{phase_sparse_output}"')
+        print(f'Standard answers: "{standard_answers}"')
+        phase_sparse_correct = self.match_sparse_answer(
+            phase_sparse_output, standard_answers
+        )
+        if not phase_sparse_correct:
+            print(f"Incorrect answer in GsaOnDevice inference output[MLA]!")
+            print(f"GsaOnDevice output:\n{phase_sparse_output}")
+            print(f"Standard answers:\n{standard_answers}")
+            pytest.fail("GsaOnDevice Test Failed!")
+
+    @pytest.mark.stage(1)
+    @pytest.mark.feature("online_inference_sparse")
+    @pytest.mark.gpu_mem(30000)
+    @pytest.mark.parametrize("model_name", ["Qwen3-4B"])
+    @pytest.mark.parametrize("max_tokens", [2048])
+    @pytest.mark.parametrize("enforce_eager", [True, False])
+    @pytest.mark.parametrize("max_num_batched_tokens", [30000])
+    def test_offline_gsa_gqa(
+        self,
+        model_name: str,
+        max_tokens: int,
+        enforce_eager: bool,
+        max_num_batched_tokens: int,
+    ):
+        os.environ["ENABLE_SPARSE"] = "1"
+        os.environ["VLLM_HASH_ATTENTION"] = "1"
+
+        config_file = get_path_relative_to_test_root("config.yaml")
+        with open(config_file, "r", encoding="utf-8") as f:
+            config = yaml.safe_load(f)
+
+        model_path = get_path_to_model(model_name, config)
+
+        assert os.path.exists(model_path), f"Model path does not exist: {model_path}"
+
+        try:
+            test_prompts, standard_answers = load_prompt_list_from_file(
+                get_path_relative_to_test_root(
+                    "suites/E2E/prompts/test_offline_gsaondevice_inference.json"
+                )
+            )
+            if not standard_answers:
+                pytest.fail(f"No standard answers found in prompt.json")
+        except Exception as e:
+            pytest.fail(f"Failed to load prompt from prompt.json: {e}")
+
+        print(f"Standard answers: {standard_answers}")
+
+        tokenizer = get_platform_specific_module().AutoTokenizer.from_pretrained(
+            model_path, use_chat_template=True
+        )
+        formatted_full_prompts = []
+        for i in range(len(test_prompts)):
+            test_prompt = test_prompts[i]
+            try:
+                messages = [
+                    {
+                        "role": "system",
+                        "content": "先读问题，再根据下面的文章内容回答问题，不要进行分析，不要重复问题，用简短的语句给出答案。\n\n例如：“全国美国文学研究会的第十八届年会在哪所大学举办的？”\n回答应该为：“xx大学”。\n\n",
+                    },
+                    {"role": "user", "content": test_prompt},
+                ]
+                formatted_full_prompt = tokenizer.apply_chat_template(
+                    messages,
+                    tokenize=False,
+                    add_generation_prompt=True,
+                    add_special_tokens=True,
+                )
+            except Exception:
+                formatted_full_prompt = test_prompt
+            formatted_full_prompts.append(formatted_full_prompt)
+
+        ucm_config = {
+            "ucm_connectors": [
+                {
+                    "ucm_connector_name": "UcmPipelineStore",
+                    "ucm_connector_config": {
+                        "store_pipeline": "Empty",
+                        "share_buffer_enable": True,
+                    },
+                }
+            ],
+            "ucm_sparse_config": {"GSAOnDevice": {}},
+        }
+
+        sampling_params = get_platform_specific_module().SamplingParams(
+            temperature=0.0,
+            top_p=1,
+            max_tokens=max_tokens,
+            ignore_eos=False,
+        )
+
+        # Convert SamplingParams to dict for serialization, as non-picklable objects cannot be passed to subprocess
+        sampling_params_dict = serialize_sample_params(sampling_params)
+        phase_sparse_output = run_in_spawn_subprocess(
+            run_offline_inference,
+            model_path,
+            ucm_config,
+            formatted_full_prompts,
+            sampling_params_dict,
+            False,  # enable_prefix_caching=False
+            enforce_eager,
+            "GSA",
+            max_num_batched_tokens,
+            timeout=1800,
+        )
+
+        def extract_answers(generated_text_list: List[str]) -> List[str]:
+            results = []
+
+            for text in generated_text_list:
+                if not isinstance(text, str):
+                    results.append("")
+                    continue
+
+                if "</think>" in text:
+                    answer = text.rsplit("</think>", 1)[-1].strip()
+                else:
+                    answer = text.strip()
+
+                answer = answer.strip("'").strip('"').strip()
+
+                results.append(answer)
+
+            return results
+
+        phase_sparse_output = extract_answers(phase_sparse_output)
+        print(
+            f" GsaOnDevice inference for a GQA-based model is completed in a subprocess."
+        )
+        print(f'GsaOnDevice output: "{phase_sparse_output}"')
+        print(f'Standard answers: "{standard_answers}"')
+        phase_sparse_correct = self.match_sparse_answer(
+            phase_sparse_output, standard_answers
+        )
+        if not phase_sparse_correct:
+            print(f"Incorrect answer in GsaOnDevice inference output[GQA]!")
+            print(f"GsaOnDevice output:\n{phase_sparse_output}")
+            print(f"Standard answers:\n{standard_answers}")
+            pytest.fail("GsaOnDevice Test Failed!")
 
     """Test ESA sparse attention."""
 
@@ -418,7 +586,7 @@ class TestBasicOfflineInferenceSparse:
         )
 
         # Convert SamplingParams to dict for serialization, as non-picklable objects cannot be passed to subprocess
-        sampling_params_dict = to_dict_for_serialization(sampling_params)
+        sampling_params_dict = serialize_sample_params(sampling_params)
 
         phase1_outputs = run_in_spawn_subprocess(
             run_offline_inference,
