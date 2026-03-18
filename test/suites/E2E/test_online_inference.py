@@ -22,6 +22,8 @@ import yaml
 from common.common_inference_utils import (
     ensure_storage_dir,
     load_prompt_from_file,
+    match_any_answer,
+    normalize_text,
     split_prompt_by_tokens,
 )
 from common.llm_connection.LLMBase import LLMRequest
@@ -247,21 +249,6 @@ class TestBasicOnlineInference:
 
         # ===== Accuracy Test Results =====
         print(f"\n[INFO] ===== Accuracy Test Results =====")
-
-        def normalize_text(text: str) -> str:
-            text = text.replace("\uff0c", ",")
-            text = text.replace("\u3002", ".")
-            text = text.replace("\uff01", "!")
-            text = text.replace("\uff1f", "?")
-            text = text.replace("\uff1a", ":")
-            text = text.replace("\uff1b", ";")
-            return text.strip()
-
-        def match_any_answer(output: str, answers: List[str]) -> bool:
-            for answer in answers:
-                if normalize_text(output) == normalize_text(answer):
-                    return True
-            return False
 
         # Phase 1 accuracy check
         phase1_correct = match_any_answer(
