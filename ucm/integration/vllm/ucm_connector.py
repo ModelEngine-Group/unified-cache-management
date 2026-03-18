@@ -60,11 +60,20 @@ class RequestDispatchMeta:
 
 
 class KVCacheLayout:
-    def __init__(self, kvcaches, use_layerwise: bool) -> None:
+    def __init__(
+        self, kvcaches, use_layerwise: bool, vllm_config: "VllmConfig"
+    ) -> None:
         # each row is a layer, each column is a tensor_size/ptr in the layer (e.g., k, v, rope, k_index)
         self.base_ptrs: np.ndarray  # (n_layers, n_ptrs）
         self.tensor_size_lists: np.ndarray  # (n_layers, n_tensor_sizes)
         self.use_layerwise = use_layerwise
+        self.vllm_config = vllm_config
+        self.pp_size = self.vllm_config.parallel_config.pipeline_parallel_size
+        self.num_hidden_layers = getattr(
+            self.vllm_config.model_config.hf_text_config, "num_hidden_layers", 0
+        )
+        if self.pp_size > 1 and self.num_hidden_layers <= 0:
+            raise ValueError("num_hidden_layers must be > 0 when pp_size > 1")
         self._build_layout(kvcaches)
 
     def _build_layout(self, kvcaches):
@@ -136,6 +145,8 @@ class KVCacheLayout:
 
     @property
     def block_size(self) -> int:
+        if self.pp_size > 1:
+            return int(self.tensor_size_lists[0].sum() * self.num_hidden_layers)
         return int(self.tensor_size_lists.sum())
 
 
@@ -308,13 +319,15 @@ class UCMDirectConnector(KVConnectorBase_V1):
             # vllm_ascend >= 0.10.0 uses Tuple for kvcaches
             for i, tensor in enumerate(sample_kv_layer):
                 logger.info(f"kv cache shape {i}: {tensor.shape}")
-        self.first_layer_id = self._extract_layer_index(next(iter(self.kv_caches)))
-        self.kv_cache_layout = KVCacheLayout(self.kv_caches, self.use_layerwise)
+        self.kv_cache_layout = KVCacheLayout(
+            self.kv_caches, self.use_layerwise, self._vllm_config
+        )
         self.block_data_size = self.kv_cache_layout.block_size
 
         self.layer_name_to_id = {
             name: self._extract_layer_index(name) for name in self.kv_caches.keys()
         }
+        self.first_layer_id = next(iter(self.layer_name_to_id.values()))
 
         self.store = self._create_store(self.kv_cache_layout)
         self.device = create_device()
@@ -507,12 +520,12 @@ class UCMDirectConnector(KVConnectorBase_V1):
             num_loaded_request += 1
 
             ucm_block_ids, vllm_block_ids = request.load_block_ids
-            if self.tp_rank % self.tp_size != 0 and not self.is_mla:
+            if self.tp_rank != 0 and not self.is_mla:
                 for i, ucm_block_id in enumerate(ucm_block_ids):
                     ucm_block_ids[i] = self.request_hasher(ucm_block_id)
             total_ptrs = self.kv_cache_layout.extract_block_addrs(vllm_block_ids)
             total_ptrs = total_ptrs.reshape(total_ptrs.shape[0], -1)
-            shard_indexs = [self.first_layer_id] * len(ucm_block_ids)
+            shard_indexs = [0] * len(ucm_block_ids)
             try:
                 task = self.store.load_data(ucm_block_ids, shard_indexs, total_ptrs)
                 request_to_task[request_id] = task
@@ -577,7 +590,7 @@ class UCMDirectConnector(KVConnectorBase_V1):
 
     def wait_for_save(self) -> None:
         # TODO support PP
-        if self.is_mla and self.tp_rank % self.tp_size != 0:
+        if self.is_mla and self.tp_rank != 0:
             return
 
         metadata = self._get_connector_metadata()
@@ -596,7 +609,7 @@ class UCMDirectConnector(KVConnectorBase_V1):
             num_saved_request += 1
 
             ucm_block_ids, vllm_block_ids = request.dump_block_ids
-            if self.tp_rank % self.tp_size != 0:
+            if self.tp_rank != 0:
                 for i, ucm_block_id in enumerate(ucm_block_ids):
                     ucm_block_ids[i] = self.request_hasher(ucm_block_id)
             total_ucm_block_ids.extend(ucm_block_ids)
@@ -605,7 +618,7 @@ class UCMDirectConnector(KVConnectorBase_V1):
         if is_save:
             total_ptrs = self.kv_cache_layout.extract_block_addrs(total_vllm_block_ids)
             total_ptrs = total_ptrs.reshape(total_ptrs.shape[0], -1)
-            shard_indexs = [self.first_layer_id] * len(total_ucm_block_ids)
+            shard_indexs = [0] * len(total_ucm_block_ids)
             try:
                 event_handle = self._get_dump_event_handle()
                 save_start_time = time.perf_counter() * 1000
@@ -1042,6 +1055,16 @@ class UCMConnector(KVConnectorBase_V1):
         super().__init__(vllm_config=vllm_config, role=role)
         self.connector: KVConnectorBase_V1
         # TODO new conn by config
+        use_layerwise = (
+            self._vllm_config.kv_transfer_config.kv_connector_extra_config.get(
+                "use_layerwise", False
+            )
+        )
+        pp_enabled = self._vllm_config.parallel_config.pipeline_parallel_size > 1
+        if pp_enabled and not use_layerwise:
+            raise RuntimeError(
+                "Pipeline parallelism is not supported in UCMDirectConnector, please set use_layerwise=True."
+            )
         if (
             self._vllm_config.kv_transfer_config is not None
             and "hit_ratio"
