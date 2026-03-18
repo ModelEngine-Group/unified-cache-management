@@ -18,7 +18,7 @@ Use this matrix as a compatibility reference for model selection, deployment, an
 This section presents prefix cache support for each model across the supported inference frameworks.
 This information serves as a reference for evaluating framework compatibility in deployments that require prefix cache.
 
-| Model | vLLM (main) | vLLM-Ascend (main) | SGLang(≥v0.5.5) |
+| Model | vLLM<br>(v0.11.0-v0.16.0) | vLLM-Ascend<br>(v0.11.0-v0.16.0rc1) | SGLang<br>(≥v0.5.5) |
 |-------|:-----------:|:------------------:|:------:|
 | DeepSeek V3.2 | ✅ | ✅ | 🟡 |
 | DeepSeek R1 | ✅ | ✅ | ✅ |
