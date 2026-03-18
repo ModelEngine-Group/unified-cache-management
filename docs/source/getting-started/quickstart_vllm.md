@@ -35,12 +35,12 @@ Use following command to build ucm with VLLM(v0.11.0), the sparse attention is e
 ```bash
 git clone --depth 1 --branch <branch_or_tag_name> https://github.com/ModelEngine-Group/unified-cache-management.git
 cd unified-cache-management
-docker build -t ucm-vllm:latest -f ./docker/Dockerfile-GPU ./
+docker build -t ucm-vllm:latest -f ./docker/Dockerfile.vllm_gpu ./
 ```
 
 If you don't need sparse attention, pass `--build-arg ENABLE_SPARSE=false` to disable it:
 ```bash
-docker build --build-arg ENABLE_SPARSE=false -t ucm-vllm:latest -f ./docker/Dockerfile-GPU ./
+docker build --build-arg ENABLE_SPARSE=false -t ucm-vllm:latest -f ./docker/Dockerfile.vllm_gpu ./
 ```
 
 
