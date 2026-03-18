@@ -2,7 +2,7 @@
 This document describes how to install unified-cache-management with SGLang on cuda platform.
 
 ## Prerequisites
-- SGLang >= 0.5,5, device=cuda
+- SGLang >= 0.5.5, device=cuda
 
 ## Step 1: UCM Installation
 

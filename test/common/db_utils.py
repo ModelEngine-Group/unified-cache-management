@@ -1,26 +1,28 @@
 import json
 import logging
-import threading
-from datetime import datetime
+import math
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from peewee import AutoField, DateTimeField, Model, TextField
-from playhouse.reflection import Introspector
-
-# Lazy imports for database components
+# 延迟导入
 peewee = None
 PostgresqlDatabase = None
 Model = None
 AutoField = None
 DateTimeField = None
 TextField = None
+IntegerField = None
+FloatField = None
+BooleanField = None
+PostgresqlMigrator = None
+migrate = None
+Introspector = None
 
 logger = logging.getLogger("db_handler")
 logger.setLevel(logging.DEBUG)
 
 if not logger.handlers:
-    # Basic config only once
     handler = logging.StreamHandler()
     formatter = logging.Formatter(
         "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
@@ -28,86 +30,80 @@ if not logger.handlers:
     handler.setFormatter(formatter)
     logger.addHandler(handler)
 
-# Global state
-_db_instance = None
-_db_lock = threading.Lock()
+# 全局状态
 _test_build_id: Optional[str] = None
 _backup_path: Optional[Path] = None
-_db_enabled: bool = False
+
+# 定义 UTC+8 时区
+TZ_UTC8 = timezone(timedelta(hours=8))
 
 
 def _ensure_peewee_imported():
-    """Import peewee components only when DB is enabled."""
+    """延迟导入 peewee 组件"""
     global peewee, PostgresqlDatabase, Model, AutoField, DateTimeField, TextField
+    global IntegerField, FloatField, BooleanField, PostgresqlMigrator, migrate, Introspector
+
     if peewee is None:
         import peewee
         from peewee import AutoField as _AF
+        from peewee import BooleanField as _BF
         from peewee import DateTimeField as _DTF
+        from peewee import FloatField as _FF
+        from peewee import IntegerField as _IF
         from peewee import Model as _Model
         from peewee import PostgresqlDatabase as _PGDB
         from peewee import TextField as _TF
+        from playhouse.migrate import PostgresqlMigrator as _PGM
+        from playhouse.migrate import migrate as _MIG
+        from playhouse.reflection import Introspector as _Intro
 
+        peewee = peewee
         PostgresqlDatabase = _PGDB
         Model = _Model
         AutoField = _AF
         DateTimeField = _DTF
         TextField = _TF
-
-
-def _get_db():
-    """Return a singleton PostgresqlDatabase instance if enabled."""
-    global _db_instance, _backup_path, _db_enabled
-
-    if _db_instance is not None:
-        return _db_instance
-
-    with _db_lock:
-        if _db_instance is not None:
-            return _db_instance
-
-        db_config = _get_db_config()
-        _db_enabled = db_config.get("enabled", False)
-
-        backup_str = db_config.get("backup", "results/")
-        _backup_path = Path(backup_str).resolve()
-        _backup_path.mkdir(parents=True, exist_ok=True)
-        logger.info(f"Backup directory set to: {_backup_path}")
-
-        if not _db_enabled:
-            return None
-
-        # Only import peewee when enabled
-        _ensure_peewee_imported()
-
-        try:
-            _db_instance = PostgresqlDatabase(
-                db_config.get("name", "test_db"),
-                user=db_config.get("user", "postgres"),
-                password=db_config.get("password", ""),
-                host=db_config.get("host", "localhost"),
-                port=db_config.get("port", 5432),
-            )
-            logger.info(
-                f"PostgreSQL database instance created for: {_db_instance.database}"
-            )
-        except Exception as e:
-            logger.error(f"Failed to create PostgreSQL database instance: {e}")
-            _db_instance = None
-
-    return _db_instance
+        IntegerField = _IF
+        FloatField = _FF
+        BooleanField = _BF
+        PostgresqlMigrator = _PGM
+        migrate = _MIG
+        Introspector = _Intro
 
 
 def _get_db_config():
-    """Wrapper to get config without early peewee dependency."""
     from common.config_utils import config_utils as config_instance
 
     return config_instance.get_config("database", {})
 
 
+def _create_db_instance():
+    """
+    工厂方法：每次调用都创建一个新的数据库实例。
+    不再维护全局单例，由调用者管理生命周期。
+    """
+    _ensure_peewee_imported()
+    db_config = _get_db_config()
+
+    if not db_config.get("enabled", False):
+        return None
+
+    try:
+        return PostgresqlDatabase(
+            db_config.get("name", "test_db"),
+            user=db_config.get("user", "postgres"),
+            password=db_config.get("password", ""),
+            host=db_config.get("host", "localhost"),
+            port=db_config.get("port", 5432),
+        )
+    except Exception as e:
+        logger.error(f"Failed to create DB instance: {e}")
+        return None
+
+
 def _set_test_build_id(build_id: Optional[str] = None) -> None:
     global _test_build_id
     _test_build_id = build_id or "default_build_id"
-    logger.debug(f"Test build ID set to: {_test_build_id}")
 
 
 def _get_test_build_id() -> str:
@@ -117,94 +113,153 @@ def _get_test_build_id() -> str:
     return _test_build_id
 
 
-def _backup_to_file(table_name: str, data: Dict[str, Any]) -> None:
-    if not _backup_path:
-        logger.warning("Backup path is not set. Skipping backup.")
-        return
+def _init_backup_path():
+    """初始化备份路径"""
+    global _backup_path
+    if _backup_path is None:
+        db_config = _get_db_config()
+        backup_str = db_config.get("backup", "results/")
+        _backup_path = Path(backup_str).resolve()
+        _backup_path.mkdir(parents=True, exist_ok=True)
 
+
+def _backup_to_file(table_name: str, data: Dict[str, Any]) -> None:
+    _init_backup_path()
     file_path = _backup_path / f"{table_name}.jsonl"
     try:
-        file_path.parent.mkdir(parents=True, exist_ok=True)
         with file_path.open("a", encoding="utf-8") as f:
-            json.dump(data, f, ensure_ascii=False)
+            json.dump(data, f, ensure_ascii=False, default=str)
             f.write("\n")
         logger.info(f"Data backed up to {file_path}")
     except Exception as e:
-        logger.error(f"Failed to write backup file {file_path}: {e}")
+        logger.error(f"Backup failed: {e}")
+
+
+def _clean_value(value: Any) -> Any:
+    if isinstance(value, float):
+        if math.isnan(value) or math.isinf(value):
+            return None
+    return value
+
+
+def _infer_field_type(value: Any):
+    _ensure_peewee_imported()
+    if value is None:
+        return TextField(null=True)
+    if isinstance(value, bool):
+        return BooleanField(null=True)
+    if isinstance(value, int):
+        return IntegerField(null=True)
+    if isinstance(value, float):
+        return FloatField(null=True)
+    return TextField(null=True)
 
 
 def write_to_db(table_name: str, data: Dict[str, Any]) -> bool:
-    # Always add build ID
+    # 1. 数据预处理
     data["test_build_id"] = _get_test_build_id()
+    clean_data = {k: _clean_value(v) for k, v in data.items()}
 
-    # Early exit if DB disabled
     db_config = _get_db_config()
     if not db_config.get("enabled", False):
-        _backup_to_file(table_name, data)
+        _backup_to_file(table_name, clean_data)
         return False
 
-    # Load DB and peewee only when needed
-    db = _get_db()
+    # 2. 创建新连接实例
+    db = _create_db_instance()
     if db is None:
-        _backup_to_file(table_name, data)
+        _backup_to_file(table_name, clean_data)
         return False
-
-    _ensure_peewee_imported()
 
     try:
-        # Check if table exists
-        table_exists = db.table_exists(table_name)
+        # 3. 使用上下文管理器自动管理连接
+        # 进入 with 块时自动 connect，退出时自动 close
+        with db:
+            _ensure_peewee_imported()
 
-        # Get or create dynamic model
-        columns = db.get_columns(table_name) if table_exists else []
-        col_names = {col.name for col in columns} if table_exists else set()
+            # 检查并同步 Schema
+            if not db.table_exists(table_name):
+                _create_table_with_data(db, table_name, clean_data)
+            else:
+                _sync_table_schema(db, table_name, clean_data)
 
-        # Ensure required fields are present
-        all_fields = {"id", "created_at", "test_build_id"}
-        all_fields.update(data.keys())
+            # 动态模型构建
+            DynamicModel = _get_dynamic_model(db, table_name, clean_data)
 
-        # Build field definitions
-        fields = {
-            "id": AutoField(),
-            "created_at": DateTimeField(default=datetime.utcnow),
-            "test_build_id": TextField(null=True),
-        }
+            model_fields = set(DynamicModel._meta.fields.keys())
+            insert_data = {k: v for k, v in clean_data.items() if k in model_fields}
 
-        # Add TextField for all other data keys (including future ones)
-        for key in data.keys():
-            if key not in fields:
-                fields[key] = TextField(null=True)
-
-        # Define dynamic model
-        Meta = type("Meta", (), {"database": db, "table_name": table_name})
-
-        attrs = {"Meta": Meta, **fields}
-        DynamicModel = type(f"{table_name.capitalize()}DynamicModel", (Model,), attrs)
-
-        # Create table if not exists
-        if not table_exists:
-            db.create_tables([DynamicModel], safe=True)
-            logger.info(
-                f"Table '{table_name}' created with id, created_at, test_build_id, and dynamic fields."
-            )
-
-        # Prepare data for insert (only include fields that exist in model)
-        model_fields = set(fields.keys())
-        filtered_data = {k: v for k, v in data.items() if k in model_fields}
-
-        # Insert
-        with db.atomic():
-            DynamicModel.insert(filtered_data).execute()
-
-        logger.info(f"Successfully inserted data into table '{table_name}'.")
-        return True
+            # 插入数据
+            DynamicModel.insert(insert_data).execute()
+            logger.info(f"Inserted data into '{table_name}'")
+            return True
 
     except Exception as e:
-        logger.error(
-            f"Error during DB write for table '{table_name}': {e}", exc_info=True
-        )
-        _backup_to_file(table_name, data)
+        logger.error(f"DB write failed for '{table_name}': {e}", exc_info=True)
+        _backup_to_file(table_name, clean_data)
         return False
+    # 此处不需要 finally: db.close()，因为 'with db' 已经处理了关闭
+
+
+def _create_table_with_data(db, table_name: str, data: Dict[str, Any]):
+    """创建新表"""
+    attrs = {
+        "id": AutoField(),
+        "created_at": DateTimeField(default=lambda: datetime.now(TZ_UTC8)),
+        "test_build_id": TextField(null=True, index=True),
+    }
+
+    for key, value in data.items():
+        if key in attrs:
+            continue
+        attrs[key] = _infer_field_type(value)
+
+    Meta = type("Meta", (), {"database": db, "table_name": table_name})
+    attrs["Meta"] = Meta
+
+    DynamicModel = type(f"{table_name.capitalize()}Model", (Model,), attrs)
+    db.create_tables([DynamicModel], safe=True)
+    logger.info(f"Table '{table_name}' created.")
+
+
+def _sync_table_schema(db, table_name: str, data: Dict[str, Any]):
+    """自动迁移：增加新列"""
+    columns = db.get_columns(table_name)
+    existing_cols = {col.name for col in columns}
+
+    migrator = PostgresqlMigrator(db)
+
+    for key, value in data.items():
+        if key not in existing_cols:
+            field_type = _infer_field_type(value)
+            logger.info(f"Schema migration: Adding column '{key}' to '{table_name}'")
+            try:
+                migrate(migrator.add_column(table_name, key, field_type))
+            except Exception as e:
+                logger.error(f"Migration failed for column '{key}': {e}")
+
+
+def _get_dynamic_model(db, table_name: str, data: Dict[str, Any]):
+    """构建动态模型用于插入"""
+    columns = db.get_columns(table_name)
+
+    fields = {
+        "id": AutoField(),
+        "created_at": DateTimeField(default=lambda: datetime.now(TZ_UTC8)),
+    }
+
+    for col in columns:
+        if col.name in ["id", "created_at"]:
+            continue
+        # 优先使用传入数据的类型推断，否则默认Text
+        if col.name in data:
+            fields[col.name] = _infer_field_type(data[col.name])
+        else:
+            fields[col.name] = TextField(null=True)
+
+    Meta = type("Meta", (), {"database": db, "table_name": table_name})
+    attrs = {"Meta": Meta, **fields}
+    return type(f"{table_name.capitalize()}DynamicModel", (Model,), attrs)
 
 
 def read_from_db(
@@ -212,71 +267,63 @@ def read_from_db(
 ) -> List[Dict[str, Any]]:
     db_config = _get_db_config()
     if not db_config.get("enabled", False):
-        logger.warning("Database disabled. Skipping read.")
         return []
 
-    db = _get_db()
+    db = _create_db_instance()
     if db is None:
-        logger.error("Failed to connect to database.")
         return []
 
     _ensure_peewee_imported()
 
     try:
-        introspector = Introspector.from_database(db)
-        DynamicModel = introspector.generate_models(table_names=[table_name]).get(
-            table_name
-        )
+        with db:
+            if not db.table_exists(table_name):
+                return []
 
-        if DynamicModel is None:
-            logger.warning(f"Table '{table_name}' not found in database.")
-            return []
+            introspector = Introspector.from_database(db)
+            DynamicModel = introspector.generate_models(table_names=[table_name]).get(
+                table_name
+            )
 
-        query = DynamicModel.select()
+            if DynamicModel is None:
+                return []
 
-        if filters:
-            for key, value in filters.items():
-                if hasattr(DynamicModel, key):
-                    field = getattr(DynamicModel, key)
-                    query = query.where(field == value)
-                else:
-                    logger.warning(
-                        f"Filter key '{key}' does not exist in table '{table_name}'. Skipped."
-                    )
+            query = DynamicModel.select()
 
-        query = query.order_by(DynamicModel.created_at.desc()).limit(limit)
+            if filters:
+                for key, value in filters.items():
+                    if hasattr(DynamicModel, key):
+                        query = query.where(getattr(DynamicModel, key) == value)
 
-        results = []
-        for row in query:
-            results.append(row.__data__)
-        return results
+            query = query.order_by(DynamicModel.created_at.desc()).limit(limit)
+            return [row.__data__ for row in query]
 
     except Exception as e:
-        logger.error(f"Error reading from table '{table_name}': {e}")
+        logger.error(f"Read from DB failed: {e}")
         return []
 
 
 def database_connection(build_id: str) -> None:
+    """
+    初始化测试构建ID，并测试数据库连通性。
+    此时不再保留长连接。
+    """
     logger.info(f"Setting test build ID: {build_id}")
     _set_test_build_id(build_id)
 
     db_config = _get_db_config()
     if not db_config.get("enabled", False):
-        logger.info("Database connection skipped because enabled=false.")
+        logger.info("Database disabled.")
         return
 
-    db = _get_db()
+    # 测试连接
+    db = _create_db_instance()
     if db is None:
-        logger.error("No database instance available.")
+        logger.error("Database config invalid.")
         return
 
-    logger.info(f"Attempting connection to database: {db.database}")
     try:
-        db.connect(reuse_if_open=True)
-        logger.info("PostgreSQL connection successful.")
+        with db:
+            logger.info(f"Database connection test successful: {db.database}")
     except Exception as e:
-        logger.error(f"PostgreSQL connection failed: {e}", exc_info=True)
-    finally:
-        if not db.is_closed():
-            db.close()
-            logger.debug("Database connection closed.")
+        logger.error(f"Database connection test failed: {e}")

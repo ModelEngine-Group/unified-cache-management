@@ -35,12 +35,12 @@ Use following command to build ucm with VLLM(v0.11.0), the sparse attention is e
 ```bash
 git clone --depth 1 --branch <branch_or_tag_name> https://github.com/ModelEngine-Group/unified-cache-management.git
 cd unified-cache-management
-docker build -t ucm-vllm:latest -f ./docker/Dockerfile-GPU ./
+docker build -t ucm-vllm:latest -f ./docker/Dockerfile.vllm_gpu ./
 ```
 
-If you don't need sparse attention, pass `--build-arg ENABLE_SPARSE=true` to disable it:
+If you don't need sparse attention, pass `--build-arg ENABLE_SPARSE=false` to disable it:
 ```bash
-docker build --build-arg ENABLE_SPARSE=true -t ucm-vllm:latest -f ./docker/Dockerfile-GPU ./
+docker build --build-arg ENABLE_SPARSE=false -t ucm-vllm:latest -f ./docker/Dockerfile.vllm_gpu ./
 ```
 
 
@@ -51,7 +51,7 @@ docker build --build-arg ENABLE_SPARSE=true -t ucm-vllm:latest -f ./docker/Docke
     > Note: v0.11.0 is newly supported (replace the tag with v0.11.0 if needed).
 
     ```bash
-    docker pull vllm/vllm-openai:v0.9.2
+    docker pull vllm/vllm-openai:v0.11.0
     ```
     Use the following command to run your own container:
     ```bash
@@ -68,7 +68,7 @@ docker build --build-arg ENABLE_SPARSE=true -t ucm-vllm:latest -f ./docker/Docke
     ```
     Refer to [Set up using docker](https://docs.vllm.ai/en/latest/getting_started/installation/gpu.html#set-up-using-docker) for more information to run your own vLLM container.
 
-2. Build from source code
+2. Build From Source Code
 
     Follow commands below to install unified-cache-management:
 
@@ -84,36 +84,67 @@ docker build --build-arg ENABLE_SPARSE=true -t ucm-vllm:latest -f ./docker/Docke
 
 3. Apply vLLM Integration Patches (Required)
 
-    To enable Unified Cache Management (UCM) integration with vLLM, you must **manually apply the corresponding vLLM patch**.
+    To integrate UCM with vLLM, you can choose between a dynamic **monkey patch** (recommended) and a manual **git patch**.
 
-    You may directly navigate to the vLLM source directory:
+    >**Recommendation**: We highly recommend the Monkey Patch approach for its non-invasive nature and ease of use.
+
+    #### Option A: Monkey Patch (Recommended)
+
+    This method enables UCM features dynamically at runtime via environment variables, requiring no source code modifications.
+    
+
+    1. Enable Monkey Patch:
+    ```bash
+    export ENABLE_UCM_PATCH=1
+    ```
+
+    2. Enable Sparse Attention (Optional):
+    ```bash
+    export ENABLE_SPARSE=1
+    ```
+
+    **Note:**
+    - Monkey patch is only available for vLLM 0.11.0.
+    - Enabling ENABLE_UCM_PATCH is required to use the Prefix Caching feature with UCM.
+    - ReRoPE support is currently only available via the Git Patch method.
+
+    #### Option B: Manual Git Patch (Legacy/Alternative)
+
+    If you prefer modifying the source code directly, follow these steps:
+    
+    ##### 1. Navigate to the vLLM source directory:
     ```bash
     cd <path_to_vllm>
     ```
-    Apply the patch that matches your development needs:
-
-    #### vLLM 0.11.0 
-
-    Note: v0.11.0 only requires the sparse attention patch.
-
-    ```bash
-    git apply unified-cache-management/ucm/integration/vllm/patch/0.11.0/vllm-adapt-sparse.patch
-    ```
-
-    #### vLLM 0.9.2 
+    ##### 2. Apply the patch that corresponds to your vLLM version and requirements:
+    
+    ###### vLLM 0.9.2
     - Full UCM integration (recommended):
     ```bash
-    git apply unified-cache-management/ucm/integration/vllm/patch/0.9.2/vllm-adapt.patch
+    git apply <path_to_ucm>/ucm/integration/vllm/patch/0.9.2/vllm-adapt.patch
     ```
 
     - Sparse attention only:
     ```bash
-    git apply unified-cache-management/ucm/integration/vllm/patch/0.9.2/vllm-adapt-sparse.patch
+    git apply <path_to_ucm>/ucm/integration/vllm/patch/0.9.2/vllm-adapt-sparse.patch
     ```
 
     - ReRoPE support only:
     ```bash
-    git apply unified-cache-management/ucm/integration/vllm/patch/0.9.2/vllm-adapt-rerope.patch
+    git apply <path_to_ucm>/ucm/integration/vllm/patch/0.9.2/vllm-adapt-rerope.patch
+    ```
+
+    ###### vLLM 0.11.0 
+
+    v0.11.0 only requires the sparse attention patch:
+
+    ```bash
+    git apply <path_to_ucm>/ucm/integration/vllm/patch/0.11.0/vllm-adapt-sparse.patch
+    ```
+
+    - ReRoPE support only (optional):
+    ```bash
+    git apply <path_to_ucm>/ucm/integration/vllm/patch/0.11.0/vllm-adapt-rerope.patch
     ```
 
     Choose the patch according to your development needs.
@@ -153,7 +184,7 @@ You may directly edit the example file at `unified-cache-management/examples/ucm
 
 ### Feature 2:  Sparsity
 
-The sparse module was not compiled by default. To enable it, set the environment variable `export ENABLE_SPARSE=TRUE` and re-compile the code you built. And uncomment `ucm_sparse_config` code block in `unified-cache-management/examples/ucm_config_example.yaml`. Additionally, if you want to run GSAOnDevice, you also need to set the environment variable `export VLLM_HASH_ATTENTION=1`.
+The sparse module was not compiled by default. To enable it, set the environment variable `export ENABLE_SPARSE=TRUE` and re-compile the code you built. And uncomment `ucm_sparse_config` code block in `unified-cache-management/examples/ucm_config_example.yaml`.
 
 ## Step 3: Launching Inference
 
