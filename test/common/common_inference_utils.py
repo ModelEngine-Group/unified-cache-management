@@ -119,6 +119,72 @@ def load_prompt_from_file(prompt_file: Optional[Path] = None) -> Tuple[str, List
     return full_prompt, answers
 
 
+def load_prompt_list_from_file(
+    prompt_file: Optional[Path] = None,
+) -> Tuple[str, List[str]]:
+    """
+    Returns:
+        Tuple of (combined_prompt_string_list, answers_list).
+        - combined_prompt_string_list: Combined prompt (context + input)
+        - answers_list: List of standard answers from the file
+    """
+    if not prompt_file.exists():
+        raise FileNotFoundError(f"Prompt file not found: {prompt_file}")
+
+    with open(prompt_file, "r", encoding="utf-8") as f:
+        content = f.readlines()
+    full_prompts = []
+    full_answers = []
+
+    for i in range(len(content)):
+        try:
+            data = json.loads(content[i])
+        except json.JSONDecodeError as e:
+            raise ValueError(f"Invalid JSON format in {prompt_file}: {e}")
+
+        if isinstance(data, list):
+            if len(data) == 0:
+                raise ValueError(f"Empty list in {prompt_file}")
+            data = data[0]
+
+        input_text = data.get("input", "")
+        context_text = data.get("context", "")
+
+        if context_text and input_text:
+            full_prompt = f"阅读以下文字并用中文简短回答：\n\n{context_text}\n\n现在请基于上面的文章回答下面的问题，只告诉我答案，不要输出任何其他字词。\n\n问题：{input_text}\n回答："
+        elif context_text:
+            full_prompt = context_text
+        elif input_text:
+            full_prompt = input_text
+        else:
+            raise ValueError(f"No input or context found in {prompt_file}")
+
+        answers = data.get("answers", [])
+
+        if not isinstance(answers, list):
+            answers = [answers] if answers else []
+        full_prompts.append(full_prompt)
+        full_answers.extend(answers)
+    return full_prompts, full_answers
+
+
+def serialize_sample_params(params: str) -> Any:
+    import msgspec
+
+    json_bytes = msgspec.json.encode(params)
+    json_str = json_bytes.decode("utf-8")
+    return json_str
+
+
+def deserialize_sample_params(json_str: str) -> Any:
+    import msgspec
+
+    json_bytes = json_str.encode("utf-8")
+    return msgspec.json.decode(
+        json_bytes, type=get_platform_specific_module().SamplingParams
+    )
+
+
 def to_dict_for_serialization(obj: Any) -> Dict[str, Any]:
     """Convert any object to dict for subprocess serialization.
 
