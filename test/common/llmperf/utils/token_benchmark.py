@@ -34,10 +34,8 @@ def generate_fixed_token_prompt(
     Generate a prompt with an exact (or near-exact) number of tokens
     using token-id sampling instead of text concatenation.
     """
-    num_tokens = sample_random_positive_int(mean_tokens, stddev_tokens)
-
     text = tokenizer_tool.get_some_tokens(
-        num_tokens=num_tokens,
+        num_tokens=mean_tokens,
         seed=seed,
     )
 
