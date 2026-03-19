@@ -279,6 +279,20 @@ class OpenAIConn(LLMConnection):
         r.raise_for_status()
         return [m["id"] for m in r.json().get("data", [])]
 
+    def clear_hbm(self) -> bool:
+        """Clear HBM cache via POST request to reset_prefix_cache endpoint."""
+        import time
+
+        try:
+            r = self._raw_client.post("/reset_prefix_cache", json={}, timeout=30)
+            r.raise_for_status()
+            logger.info("Clear HBM success")
+            time.sleep(5)
+            return True
+        except Exception as e:
+            logger.warning(f"Clear HBM failed: {e}")
+            return False
+
     # ---------------- lifecycle ----------------
 
     def close(self):
