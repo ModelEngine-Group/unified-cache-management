@@ -22,6 +22,8 @@ import yaml
 from common.common_inference_utils import (
     ensure_storage_dir,
     load_prompt_from_file,
+    match_any_answer,
+    normalize_text,
     split_prompt_by_tokens,
 )
 from common.llm_connection.LLMBase import LLMRequest
@@ -29,8 +31,6 @@ from common.llm_connection.openai_connector import OpenAIConn
 from common.llm_connection.token_counter import HuggingFaceTokenizer
 from common.online_inference_utils import VLLMServerManager
 from common.path_utils import get_path_relative_to_test_root, get_path_to_model
-
-os.environ["ENABLE_UCM_PATCH"] = "1"
 
 
 class TestBasicOnlineInference:
@@ -70,6 +70,7 @@ class TestBasicOnlineInference:
             use_layerwise: Whether to use layerwise mode.
             max_num_batched_tokens: Maximum number of batched tokens.
         """
+        os.environ["ENABLE_UCM_PATCH"] = "1"
         # Load configuration
         config_file = get_path_relative_to_test_root("config.yaml")
         with open(config_file, "r", encoding="utf-8") as f:
@@ -248,21 +249,6 @@ class TestBasicOnlineInference:
 
         # ===== Accuracy Test Results =====
         print(f"\n[INFO] ===== Accuracy Test Results =====")
-
-        def normalize_text(text: str) -> str:
-            text = text.replace("\uff0c", ",")
-            text = text.replace("\u3002", ".")
-            text = text.replace("\uff01", "!")
-            text = text.replace("\uff1f", "?")
-            text = text.replace("\uff1a", ":")
-            text = text.replace("\uff1b", ";")
-            return text.strip()
-
-        def match_any_answer(output: str, answers: List[str]) -> bool:
-            for answer in answers:
-                if normalize_text(output) == normalize_text(answer):
-                    return True
-            return False
 
         # Phase 1 accuracy check
         phase1_correct = match_any_answer(

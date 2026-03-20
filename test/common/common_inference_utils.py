@@ -192,6 +192,7 @@ def to_dict_for_serialization(obj: Any) -> Dict[str, Any]:
     - dataclass objects
     - regular objects with __dict__
     - vLLM SamplingParams and other custom classes
+    - msgspec.Struct objects (e.g., vllm.SamplingParams)
 
     Args:
         obj: Object to serialize (dataclass, SamplingParams, etc.)
@@ -206,9 +207,17 @@ def to_dict_for_serialization(obj: Any) -> Dict[str, Any]:
         # Try dataclass first
         if is_dataclass(obj) and not isinstance(obj, type):
             data = asdict(obj)
+            logging.info(f"Serialized {type(obj)} as dataclass, got {len(data)} fields")
         # Try __dict__ for regular objects
         elif hasattr(obj, "__dict__"):
             data = obj.__dict__.copy()
+            logging.info(f"Serialized {type(obj)} via __dict__, got {len(data)} fields")
+        # Try msgspec.Struct (e.g., vllm.SamplingParams)
+        elif hasattr(obj, "asdict"):
+            data = obj.asdict()
+            logging.info(
+                f"Serialized {type(obj)} via msgspec asdict(), got {len(data)} fields"
+            )
         else:
             raise ValueError(f"Cannot serialize object of type {type(obj)}")
 
@@ -271,3 +280,112 @@ def get_platform_specific_module():
     modules.SamplingParams = SamplingParams
 
     return modules
+
+
+def normalize_text(text: str) -> str:
+    """Normalize text for comparison by replacing similar punctuation.
+
+    Replaces Chinese punctuation with English equivalents.
+
+    Args:
+        text: Text to normalize
+
+    Returns:
+        Normalized text
+    """
+    text = text.strip()
+    text = text.replace("，", ",")
+    text = text.replace("。", ".")
+    text = text.replace("！", "!")
+    text = text.replace("？", "?")
+    text = text.replace("：", ":")
+    text = text.replace("；", ";")
+    return text.strip()
+
+
+def match_any_answer(output: str, answers: List[str]) -> bool:
+    """Check if output matches any of the standard answers.
+
+    Args:
+        output: Generated output text
+        answers: List of acceptable answers
+
+    Returns:
+        True if output matches any answer
+    """
+    for answer in answers:
+        if normalize_text(output) == normalize_text(answer):
+            return True
+    return False
+
+
+def remove_punc(text: str) -> str:
+    """Remove punctuation from text for comparison.
+
+    Args:
+        text: Text to remove punctuation from
+
+    Returns:
+        Text without punctuation
+    """
+    import string
+
+    text = text.strip()
+    if not text:
+        return ""
+    cn_punctuation = (
+        "！？｡。＂＃＄％＆＇（）＊＋，－／：；＜＝＞［＼］＾＿｀｛｜｝～｟｠｢｣､、〃》「」『』【】〔〕〖〗〘〙〚〛〜〝〞〟〰〾〿–—''‛"
+        "„‟…‧﹏."
+    )
+    all_punctuation = set(string.punctuation + cn_punctuation)
+    return "".join(ch for ch in text if ch not in all_punctuation)
+
+
+def match_sparse_answer(sparse_output: List[str], standard_answers: List[str]) -> bool:
+    """Check if sparse output matches standard answers after removing punctuation.
+
+    Args:
+        sparse_output: List of generated outputs
+        standard_answers: List of expected answers
+
+    Returns:
+        True if outputs match after normalization
+    """
+    if not isinstance(sparse_output, list) or not isinstance(standard_answers, list):
+        return False
+    if not all(isinstance(item, str) for item in sparse_output) or not all(
+        isinstance(item, str) for item in standard_answers
+    ):
+        return False
+
+    norm_output = [remove_punc(item) for item in sparse_output]
+    norm_standard = [remove_punc(item) for item in standard_answers]
+    return norm_output == norm_standard
+
+
+def extract_answers(generated_text_list: List[str]) -> List[str]:
+    """Extract answers from generated text by removing thinking tags.
+
+    Args:
+        generated_text_list: List of generated texts
+
+    Returns:
+        List of extracted answers
+    """
+    results = []
+
+    for text in generated_text_list:
+        if not isinstance(text, str):
+            results.append("")
+            continue
+
+        if "</think>" in text:
+            answer = text.rsplit("</think>", 1)[-1].strip()
+        else:
+            answer = text.strip()
+
+        answer = answer.strip("'").strip('"').strip()
+
+        results.append(answer)
+
+    return results

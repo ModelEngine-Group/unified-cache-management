@@ -41,9 +41,11 @@ import shlex
 import subprocess
 import sys
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any, Dict, List, Optional
 
 import requests
+from common.llm_connection.LLMBase import LLMRequest, LLMResponse
 
 logger = logging.getLogger(__name__)
 
@@ -285,3 +287,62 @@ class VLLMServerManager:
     def __exit__(self, exc_type, exc_val, exc_tb) -> None:
         """Context manager exit."""
         self.stop()
+
+
+def batch_chat(
+    client: "LLMConnection",
+    requests: List[LLMRequest],
+    max_workers: Optional[int] = None,
+) -> List[LLMResponse]:
+    """Send multiple requests to the LLM server in parallel and return all responses.
+
+    This function sends multiple requests concurrently using a thread pool,
+    waits for all requests to complete, and returns the results in the same order as the input requests.
+
+    Args:
+        client: An LLM client that implements the LLMConnection protocol (e.g., OpenAIConn)
+        requests: List of LLMRequest objects to send
+        max_workers: Maximum number of worker threads (default: number of requests)
+
+    Returns:
+        List of LLMResponse objects in the same order as input requests
+
+    Example:
+        from common.llm_connection.openai_connector import OpenAIConn
+        from common.llm_connection.LLMRequest import LLMRequest
+
+        client = OpenAIConn(base_url="http://localhost:8000", model="qwen")
+        requests = [
+            LLMRequest(messages=[{"role": "user", "content": "Hello"}], max_tokens=100),
+            LLMRequest(messages=[{"role": "user", "content": "Hi"}], max_tokens=100),
+        ]
+        responses = batch_chat(client, requests)
+        for resp in responses:
+            print(resp.text)
+    """
+    if not requests:
+        return []
+
+    if max_workers is None:
+        max_workers = len(requests)
+
+    results: List[Optional[LLMResponse]] = [None] * len(requests)
+
+    def _send_request(index: int, request: LLMRequest) -> tuple[int, LLMResponse]:
+        """Send a single request and return the index with response."""
+        response = client.chat(request)
+        return index, response
+
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        # Submit all requests
+        future_to_index = {
+            executor.submit(_send_request, i, req): i for i, req in enumerate(requests)
+        }
+
+        # Collect results as they complete
+        for future in as_completed(future_to_index):
+            index, response = future.result()
+            results[index] = response
+
+    # Ensure all results are filled (should not happen if no exception)
+    return [resp for resp in results if resp is not None]
