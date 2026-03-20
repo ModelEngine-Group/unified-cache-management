@@ -29,8 +29,8 @@ This information serves as a reference for evaluating framework compatibility in
 | Qwen3-Moe | ✅ | ✅ | ✅ |
 | Qwen3-Next | ❌ | ❌ | ❌ |
 | Qwen2.5 | ✅ | ✅ | ✅ |
-| GLM-5 | ✅ | ❌ | 🟡 |
-| GLM-4.x | ✅ | ✅ | 🟡 |
+| GLM-5 | ❌ | ✅ | 🟡 |
+| GLM-4.x | 🟡 | 🟡 | 🟡 |
 | MiniMax-M2.5 | ✅ | ✅ | ✅ |
 
 > **Note**: The table lists a selected set of representative models.
