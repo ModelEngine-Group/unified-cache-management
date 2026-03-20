@@ -7,6 +7,7 @@ ext_modules = [
         ["uc_hash_ext.cpp"],
         cxx_std=17,
         extra_compile_args=["-O3", "-march=native"],
+        extra_link_args=["-Wl,-z,relro,-z,now", "-Wl,-s"],
     )
 ]
 
