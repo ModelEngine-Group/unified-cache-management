@@ -206,7 +206,6 @@ setup(
     packages=find_packages() + [""],
     package_dir={"": "."},
     python_requires=">=3.10",
-    install_requires=["wrapt==1.17.2"],
     ext_modules=[CMakeExtension(name="ucm", source_dir=ROOT_DIR)],
     cmdclass={"build_ext": CMakeBuild},
     zip_safe=False,

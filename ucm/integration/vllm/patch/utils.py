@@ -3,8 +3,6 @@ import importlib.util
 import sys
 from collections import defaultdict
 
-import wrapt
-
 from ucm.logger import init_logger
 
 logger = init_logger(__name__)
@@ -59,14 +57,16 @@ class HookingFinder(importlib.abc.MetaPathFinder):
             sys.path_importer_cache.clear()
 
 
-class PatchOpProxy(wrapt.ObjectProxy):
+class PatchOpProxy:
     """
     Specifically designed for patching PyTorch operators (torch.ops).
     This is tailored for operators registered via vLLM's 'direct_register_custom_op'.
     """
 
+    __slots__ = ("_self_wrapped", "_self_impl", "_self_fake_impl")
+
     def __init__(self, wrapped, impl, fake_impl=None):
-        super(PatchOpProxy, self).__init__(wrapped)
+        self._self_wrapped = wrapped
         self._self_impl = impl
         self._self_fake_impl = fake_impl or getattr(wrapped, "fake_impl", None)
 
@@ -76,6 +76,15 @@ class PatchOpProxy(wrapt.ObjectProxy):
     @property
     def fake_impl(self):
         return self._self_fake_impl
+
+    def __getattr__(self, name):
+        return getattr(self._self_wrapped, name)
+
+    def __repr__(self):
+        return repr(self._self_wrapped)
+
+    def __dir__(self):
+        return dir(self._self_wrapped)
 
 
 _FINDER = HookingFinder()
