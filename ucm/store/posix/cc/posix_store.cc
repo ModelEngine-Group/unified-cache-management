@@ -43,14 +43,17 @@ public:
             UC_ERROR("Failed to check config params: {}.", s);
             return s;
         }
+        transEnable_ = config.deviceId >= 0;
+
+        ShowConfig(config);
+
         s = spaceMgr_.Setup(config);
         if (s.Failure()) [[unlikely]] { return s; }
-        transEnable_ = config.deviceId >= 0;
+
         if (transEnable_) {
             s = transMgr_.Setup(config, spaceMgr_.GetLayout());
             if (s.Failure()) [[unlikely]] { return s; }
         }
-        ShowConfig(config);
         return Status::OK();
     }
     std::string Readme() const override { return "PosixStore"; }
@@ -115,6 +118,15 @@ private:
         inConfig.GetNumber("posix_commit_concurrency", config.commitConcurrency);
         inConfig.GetNumber("timeout_ms", config.timeoutMs);
         inConfig.GetNumber("data_dir_shard_bytes", config.dataDirShardBytes);
+        inConfig.Get("posix_gc_enable", config.posixGcEnable);
+        inConfig.Get("posix_gc_recycle_percent", config.posixGcRecyclePercent);
+        inConfig.GetNumber("posix_gc_concurrency", config.posixGcConcurrency);
+        inConfig.GetNumber("posix_gc_check_interval_sec", config.posixGcCheckIntervalSec);
+        inConfig.GetNumber("posix_capacity_gb", config.posixCapacityGb);
+        inConfig.Get("posix_gc_trigger_threshold_ratio", config.posixGcTriggerThresholdRatio);
+        inConfig.GetNumber("posix_gc_max_recycle_count_per_shard",
+                           config.posixGcMaxRecycleCountPerShard);
+        inConfig.Get("posix_gc_shard_sample_ratio", config.posixGcShardSampleRatio);
         return config;
     }
     Status CheckConfig(const Config& config)
