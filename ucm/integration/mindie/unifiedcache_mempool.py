@@ -453,7 +453,7 @@ class UnifiedCacheMempool(MemPool):
         """
         # bypass uc
         if self.bypass_get:
-            return
+            return LOAD_OK
 
         if self.uc_config.is_mla and self.uc_config.scp_size == 1:
             keys, _ = self._get_tp_rank_0_hash_key(keys)
