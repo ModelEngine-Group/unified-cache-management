@@ -35,6 +35,7 @@
 #include <thread>
 #include <unistd.h>
 #include <vector>
+#include "cpu_affinity.h"
 
 namespace UC {
 
@@ -105,6 +106,11 @@ public:
         this->nWorker_ = nWorker;
         return *this;
     }
+    ThreadPool& SetCpuAffinity(std::vector<ssize_t> cores)
+    {
+        cpuAffinityCores_ = std::move(cores);
+        return *this;
+    }
     size_t NWorker() const { return this->nWorker_; }
     bool Run()
     {
@@ -155,6 +161,7 @@ private:
         auto success = true;
         if (this->initFn_) { success = this->initFn_(args); }
         prom.set_value(success);
+        CpuAffinity::SetCpuAffinity4CurrentThread(cpuAffinityCores_);
         while (success) {
             std::shared_ptr<Task> task = nullptr;
             {
@@ -179,6 +186,7 @@ private:
 
     void MonitorLoop()
     {
+        CpuAffinity::SetCpuAffinity4CurrentThread(cpuAffinityCores_);
         const auto interval = std::chrono::milliseconds(this->intervalMs_);
         while (!this->stop_) {
             std::this_thread::sleep_for(interval);
@@ -215,6 +223,7 @@ private:
     size_t timeoutMs_{0};
     size_t intervalMs_{0};
     size_t nWorker_{0};
+    std::vector<ssize_t> cpuAffinityCores_{};
     bool stop_{false};
     std::vector<std::shared_ptr<Worker>> workers_;
     std::thread monitor_;
