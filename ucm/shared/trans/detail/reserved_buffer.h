@@ -73,6 +73,11 @@ public:
         return this->MakeDeviceBuffer(size);
     }
 
+    std::shared_ptr<void> MakeHostBuffer4DirectIo(size_t size) override
+    {
+        return this->MakeHostBuffer(size);
+    }
+
     Status MakeHostBuffers(size_t size, size_t number) override
     {
         auto totalSize = size * number;
@@ -94,6 +99,6 @@ public:
     }
 };
 
-} // namespace UC::Trans
+}  // namespace UC::Trans
 
 #endif
