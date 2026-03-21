@@ -19,27 +19,30 @@ Clone the repository and install UCM with MindIE-LLM support enabled:
 ```bash
 git clone --depth 1 https://github.com/ModelEngine-Group/unified-cache-management.git
 cd unified-cache-management
-pip install -v --no-cache-dir pybind11
 export PLATFORM=ascend
 export UCM_ENABLE_MINDIE=1
+export UCM_CXX11_ABI=1  # Or 0. This must match the target MindIE/PyTorch ABI.
 pip install -v -e . --no-build-isolation
 cd ..
-````
+```
 
 > **Note:** Packages built without `UCM_ENABLE_MINDIE=1` do **not** contain MindIE-LLM integration code.
+>
+> **ABI requirement:** When `UCM_ENABLE_MINDIE=1`, you must also set `UCM_CXX11_ABI=0` or `1`. The value must match the target MindIE/PyTorch ABI.
 
 ### Option 2: Build from Docker
 
 Use the provided MindIE-LLM Dockerfile (Ascend base, MindIE-LLM 2.3.0):
 
 ```bash
-docker build -t ucm-mindie:latest -f ./docker/Dockerfile-MINDIE ./
+docker build -t ucm-mindie:latest -f ./docker/Dockerfile.mindie_llm ./
 ```
 
 This Dockerfile:
 
 * uses `swr.cn-south-1.myhuaweicloud.com/ascendhub/mindie:2.3.0-800I-A2-py311-openeuler24.03-lts`
 * sets `UCM_ENABLE_MINDIE=1`
+* sets `UCM_CXX11_ABI` (default `1`, override with `--build-arg UCM_CXX11_ABI=0|1` to match your target environment)
 * installs UCM with MindIE-LLM support
 * applies the patch during image build
 
@@ -110,6 +113,7 @@ After startup, inspect the MindIE-LLM logs to confirm that the `unifiedcache` ba
 ### MindIE-LLM code is not patched
 
 * Confirm that `UCM_ENABLE_MINDIE=1` was set before installation.
+* Confirm that `UCM_CXX11_ABI=0` or `1` was set correctly before installation.
 * Reinstall UCM.
 * Verify that `mindie_llm` is already installed.
 
@@ -122,5 +126,3 @@ After startup, inspect the MindIE-LLM logs to confirm that the `unifiedcache` ba
 
 * Recheck `BackendConfig.kvPoolConfig`.
 * Inspect MindIE-LLM startup logs.
-
-```

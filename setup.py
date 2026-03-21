@@ -35,17 +35,22 @@ PLATFORM = os.getenv("PLATFORM")
 ENABLE_SPARSE = os.getenv("ENABLE_SPARSE")
 ENABLE_MINDIE = os.getenv("UCM_ENABLE_MINDIE", "0") not in ("", "0", "false", "False")
 
-Pybind11Extension = None
-if ENABLE_MINDIE:
-    try:
-        from pybind11.setup_helpers import Pybind11Extension
-    except ImportError as exc:
+
+def get_abi_flag_from_env() -> str:
+    v = os.environ.get("UCM_CXX11_ABI")
+    if v is None:
         raise RuntimeError(
-            "UCM_ENABLE_MINDIE=1 requires pybind11 to build uc_hash_ext. "
-            "Please install pybind11 (e.g., pip install pybind11) and retry."
-        ) from exc
+            "You must set env UCM_CXX11_ABI=0 or 1 to build with MindIE.\n"
+            "Example:\n"
+            "  UCM_ENABLE_MINDIE=1 UCM_CXX11_ABI=0 python -m build -w\n"
+            "  UCM_ENABLE_MINDIE=1 UCM_CXX11_ABI=1 python -m build -w"
+        )
+    if v not in ("0", "1"):
+        raise RuntimeError(f"Invalid UCM_CXX11_ABI={v}, expected 0 or 1")
+    return v
 
 
+UCM_CXX11_ABI = get_abi_flag_from_env() if ENABLE_MINDIE else None
 _warning_printed = False
 
 
@@ -155,6 +160,10 @@ class CMakeBuild(build_ext):
             f"-DCMAKE_INSTALL_PREFIX={install_dir}",
         ]
 
+        if ENABLE_MINDIE:
+            cmake_args += ["-DBUILD_UCM_MINDIE=ON"]
+            cmake_args += [f"-DUCM_CXX11_ABI={UCM_CXX11_ABI}"]
+
         if enable_sparse():
             cmake_args += ["-DBUILD_UCM_SPARSE=ON"]
 
@@ -235,23 +244,7 @@ setup(
     package_dir={"": "."},
     python_requires=">=3.10",
     install_requires=["wrapt==1.17.2"],
-    ext_modules=[
-        ext
-        for ext in [
-            CMakeExtension(name="ucm", source_dir=ROOT_DIR),
-            (
-                Pybind11Extension(
-                    "uc_hash_ext",
-                    ["ucm/integration/mindie/hash_mindie/uc_hash_ext.cpp"],
-                    cxx_std=17,
-                    extra_compile_args=["-O3", "-march=native"],
-                )
-                if ENABLE_MINDIE and Pybind11Extension
-                else None
-            ),
-        ]
-        if ext is not None
-    ],
+    ext_modules=[CMakeExtension(name="ucm", source_dir=ROOT_DIR)],
     cmdclass={"build_ext": CMakeBuild},
     zip_safe=False,
     include_package_data=False,

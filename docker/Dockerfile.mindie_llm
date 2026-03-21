@@ -5,6 +5,7 @@ FROM ${BASE_IMAGE}
 
 ARG PIP_INDEX_URL="https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple"
 ARG UCM_ENABLE_MINDIE=1
+ARG UCM_CXX11_ABI=1
 
 WORKDIR /workspace
 
@@ -14,10 +15,10 @@ COPY . /workspace/unified-cache-management
 RUN pip config set global.index-url ${PIP_INDEX_URL}
 
 ENV PLATFORM=ascend \
-    UCM_ENABLE_MINDIE=${UCM_ENABLE_MINDIE}
+    UCM_ENABLE_MINDIE=${UCM_ENABLE_MINDIE} \
+    UCM_CXX11_ABI=${UCM_CXX11_ABI}
 
-RUN pip install -v --no-cache-dir pybind11 \
-    && pip install -v -e /workspace/unified-cache-management --no-build-isolation
+RUN pip install -v -e /workspace/unified-cache-management --no-build-isolation
 
 # Apply patch for MindIE
 RUN UCM_ENABLE_MINDIE=${UCM_ENABLE_MINDIE} python -c "import ucm.integration.mindie.patch.boot_patch as bp; bp.apply_patch(); print('[UCM][MindIE] patch applied (or already in place).')"

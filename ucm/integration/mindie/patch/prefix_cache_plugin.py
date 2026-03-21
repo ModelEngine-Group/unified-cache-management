@@ -27,7 +27,8 @@ from ....modeling.backend_type import BackendType
 from ....utils.env import ENV
 from ....utils.log.logging import logger, print_log
 
-import uc_hash_ext
+from ucm.integration.mindie import uc_hash_ext
+
 UPDATE_INTERVAL = 2 * 60
 
 HASH_SHIFT_LEFT = 6

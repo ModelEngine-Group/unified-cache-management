@@ -2,7 +2,8 @@ import random
 import time
 
 import numpy as np
-import uc_hash_ext
+
+from ucm.integration.mindie import uc_hash_ext
 
 HASH_SHIFT_LEFT = 6
 HASH_SHIFT_RIGHT = 2
