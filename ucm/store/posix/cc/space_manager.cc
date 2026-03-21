@@ -29,8 +29,19 @@ namespace UC::PosixStore {
 
 Status SpaceManager::Setup(const Config& config)
 {
+    gcEnable_ = config.posixGcEnable;
+
     auto s = layout_.Setup(config);
     if (s.Failure()) [[unlikely]] { return s; }
+
+    if (gcEnable_) {
+        s = hotnessTracker_.Setup(&layout_);
+        if (s.Failure()) [[unlikely]] {
+            UC_ERROR("Failed to setup HotnessTracker: {}.", s);
+            return s;
+        }
+    }
+
     auto prefixSuccess =
         prefixLookupSrv_
             .SetWorkerFn([this](PrefixLookupContext& ctx, auto&) { OnLookupPrefix(ctx); })
@@ -42,7 +53,57 @@ Status SpaceManager::Setup(const Config& config)
     if (!prefixSuccess) [[unlikely]] {
         return Status::Error("failed to run prefix lookup service thread pool");
     }
+
+    if (gcEnable_) { return SetupGC(config); }
+
     return Status::OK();
+}
+
+Status SpaceManager::SetupGC(const Config& config)
+{
+    size_t maxFileCount = 0;
+
+    if (config.posixCapacityGb > 0) {
+        size_t storageCapacityBytes = config.posixCapacityGb * 1024ULL * 1024ULL * 1024ULL;
+        maxFileCount = storageCapacityBytes / config.blockSize;
+        auto shards = layout_.RelativeRoots();
+        size_t totalShards = shards.size();
+        if (totalShards > 0) {
+            size_t thresholdFilesPerShard = static_cast<size_t>(
+                maxFileCount / totalShards * config.posixGcTriggerThresholdRatio);
+            size_t recycleNum =
+                static_cast<size_t>(thresholdFilesPerShard * config.posixGcRecyclePercent);
+
+            if (recycleNum == 0) {
+                size_t minFilesPerShard =
+                    static_cast<size_t>(1.0 / (config.posixGcTriggerThresholdRatio *
+                                               config.posixGcRecyclePercent)) +
+                    1;
+                size_t minCapacityBytes = minFilesPerShard * totalShards * config.blockSize;
+                size_t minCapacityGb = (minCapacityBytes + 1024ULL * 1024ULL * 1024ULL - 1) /
+                                       (1024ULL * 1024ULL * 1024ULL);
+                return Status::InvalidParam(
+                    "posix_capacity_gb({}) is too small, GC cannot recycle any files. "
+                    "Minimum recommended: {}GB",
+                    config.posixCapacityGb, minCapacityGb);
+            }
+
+            UC_INFO("GC enabled: capacityGb={}, thresholdFilesPerShard={}", config.posixCapacityGb,
+                    thresholdFilesPerShard);
+        }
+    }
+
+    ShardGCConfig gcConfig{
+        config.posixGcRecyclePercent,
+        config.posixGcConcurrency,
+        maxFileCount,
+        config.posixGcTriggerThresholdRatio,
+        config.posixGcCheckIntervalSec,
+        config.posixGcMaxRecycleCountPerShard,
+        config.posixGcShardSampleRatio,
+    };
+
+    return gcMgr_.Setup(&layout_, gcConfig);
 }
 
 Expected<std::vector<uint8_t>> SpaceManager::Lookup(const Detail::BlockId* blocks, size_t num)
@@ -89,9 +150,9 @@ Expected<ssize_t> SpaceManager::LookupOnPrefix(const Detail::BlockId* blocks, si
     return firstFail->load() - 1;
 }
 
-uint8_t SpaceManager::Lookup(const Detail::BlockId* block)
+uint8_t SpaceManager::Lookup(const Detail::BlockId& block)
 {
-    const auto& path = layout_.DataFilePath(*block, false);
+    const auto& path = layout_.DataFilePath(block, false);
     PosixFile file{path};
     constexpr auto mode =
         PosixFile::AccessMode::EXIST | PosixFile::AccessMode::READ | PosixFile::AccessMode::WRITE;
@@ -111,7 +172,7 @@ void SpaceManager::OnLookupPrefix(PrefixLookupContext& ctx)
         auto curFail = ctx.firstFail->load();
         if (curFail >= 0 && static_cast<size_t>(curFail) < i) { break; }
 
-        if (!Lookup(ctx.blocks + i)) {
+        if (!Lookup(ctx.blocks[i])) {
             ssize_t cur = ctx.firstFail->load();
             while (static_cast<ssize_t>(i) < cur) {
                 if (ctx.firstFail->compare_exchange_weak(cur, static_cast<ssize_t>(i),
@@ -121,6 +182,7 @@ void SpaceManager::OnLookupPrefix(PrefixLookupContext& ctx)
             }
             break;
         }
+        if (gcEnable_) { hotnessTracker_.Touch(ctx.blocks[i]); }
     }
     ctx.waiter->Done();
 }

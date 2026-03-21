@@ -25,6 +25,8 @@
 #define UNIFIEDCACHE_POSIX_STORE_CC_SPACE_MANAGER_H
 
 #include "global_config.h"
+#include "hotness_tracker.h"
+#include "shard_gc.h"
 #include "space_layout.h"
 #include "thread/latch.h"
 #include "thread/thread_pool.h"
@@ -45,6 +47,9 @@ class SpaceManager {
 private:
     SpaceLayout layout_;
     ThreadPool<PrefixLookupContext> prefixLookupSrv_;
+    HotnessTracker hotnessTracker_;
+    ShardGarbageCollector gcMgr_;
+    bool gcEnable_{false};
 
 public:
     Status Setup(const Config& config);
@@ -53,9 +58,10 @@ public:
     const SpaceLayout* GetLayout() const { return &layout_; }
 
 private:
-    uint8_t Lookup(const Detail::BlockId* block);
+    uint8_t Lookup(const Detail::BlockId& block);
     void OnLookupPrefix(PrefixLookupContext& ctx);
     void OnLookupPrefixTimeout(PrefixLookupContext& ctx);
+    Status SetupGC(const Config& config);
 };
 
 }  // namespace UC::PosixStore

@@ -193,6 +193,11 @@ class UCMDirectConnector(KVConnectorBase_V1):
         )
         self.tp_size = self._vllm_config.parallel_config.tensor_parallel_size
         self.kv_cache_dtype: torch.dtype = None
+        self.num_head = vllm_config.model_config.get_num_kv_heads(
+            vllm_config.parallel_config
+        )
+        self.head_size = vllm_config.model_config.get_head_size()
+        self.element_size = vllm_config.model_config.dtype.itemsize
 
         if current_platform.is_cuda_alike():
             logger.info("CUDA device is available.")
@@ -300,6 +305,20 @@ class UCMDirectConnector(KVConnectorBase_V1):
             config["shard_size"] = kv_cache_layout.shard_size * self.blocks_per_chunk
             config["block_size"] = kv_cache_layout.block_size * self.blocks_per_chunk
             config["local_rank_size"] = self.tp_size if self.is_mla else 1
+        else:
+            config_base = self.block_size * self.element_size * self.head_size
+            config["block_size"] = (
+                config_base
+                * self.num_layers
+                * (1 if self.is_mla else self.num_head * 2)
+                * self.blocks_per_chunk
+            )
+        # GC only enabled for Scheduler with data_parallel_rank == 0
+        if config.get("posix_gc_enable", False):
+            dp_rank = self._vllm_config.parallel_config.data_parallel_rank
+            if self._role == KVConnectorRole.WORKER or dp_rank != 0:
+                config["posix_gc_enable"] = False
+
         logger.info(f"create {name} with config: {config}")
         return UcmConnectorFactoryV1.create_connector(name, config, module_path)
 

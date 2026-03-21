@@ -23,14 +23,32 @@
  * */
 #include "space_layout.h"
 #include <algorithm>
+#include <cstring>
+#include <dirent.h>
 #include <fmt/ranges.h>
+#include <random>
+#include <sys/stat.h>
+#include <unistd.h>
 #include "logger/logger.h"
 #include "posix_file.h"
+#include "template/topn_heap.h"
 
 namespace UC::PosixStore {
 
 static const std::string DATA_ROOT = "data";
 static const std::string ACTIVATED_FILE_EXTENSION = ".tmp";
+
+struct FileInfo {
+    Detail::BlockId blockId;
+    time_t mtime;
+};
+
+struct MtimeComparator {
+    bool operator()(const FileInfo& lhs, const FileInfo& rhs) const
+    {
+        return lhs.mtime < rhs.mtime;
+    }
+};
 
 inline std::string DataFileName(const Detail::BlockId& blockId)
 {
@@ -142,6 +160,102 @@ std::string SpaceLayout::StorageBackend(const Detail::BlockId& blockId) const
     if (number == 1) { return storageBackends_.front(); }
     static Detail::BlockIdHasher hasher;
     return storageBackends_[hasher(blockId) % number];
+}
+
+static Detail::BlockId HexToBlockId(const char* hexStr)
+{
+    Detail::BlockId blockId;
+    for (size_t i = 0; i < 16; ++i) {
+        uint8_t high = static_cast<uint8_t>(hexStr[i * 2]);
+        uint8_t low = static_cast<uint8_t>(hexStr[i * 2 + 1]);
+
+        high = (high <= '9') ? (high - '0') : (high - 'a' + 10);
+        low = (low <= '9') ? (low - '0') : (low - 'a' + 10);
+
+        blockId[i] = static_cast<std::byte>((high << 4) | low);
+    }
+    return blockId;
+}
+
+std::vector<std::string> SpaceLayout::SampleShards(double sampleRatio) const
+{
+    auto shards = RelativeRoots();
+    if (shards.empty()) { return {}; }
+
+    size_t sampleCount =
+        std::max(static_cast<size_t>(1), static_cast<size_t>(shards.size() * sampleRatio));
+
+    std::random_device rd;
+    std::mt19937 gen(rd());
+    std::shuffle(shards.begin(), shards.end(), gen);
+    shards.resize(sampleCount);
+
+    return shards;
+}
+
+size_t SpaceLayout::CountFilesInShard(const std::string& shard) const
+{
+    std::string shardPath = storageBackends_.front();
+    if (shardPath.back() != '/') { shardPath += '/'; }
+    shardPath += shard;
+
+    DIR* dir = opendir(shardPath.c_str());
+    if (!dir) { return 0; }
+
+    size_t count = 0;
+    struct dirent* entry;
+    while ((entry = readdir(dir)) != nullptr) {
+        if (entry->d_name[0] == '.') { continue; }
+        if (strstr(entry->d_name, ACTIVATED_FILE_EXTENSION.c_str()) != nullptr) { continue; }
+        ++count;
+    }
+    closedir(dir);
+
+    return count;
+}
+
+std::vector<Detail::BlockId> SpaceLayout::GetOldestFiles(const std::string& shard,
+                                                         double recyclePercent,
+                                                         size_t maxRecycleCount) const
+{
+    std::string shardPath = storageBackends_.front();
+    if (shardPath.back() != '/') { shardPath += '/'; }
+    shardPath += shard;
+
+    DIR* dir = opendir(shardPath.c_str());
+    if (!dir) { return {}; }
+
+    auto heap = std::make_unique<TopNHeap<FileInfo, MtimeComparator>>(maxRecycleCount);
+    size_t totalFiles = 0;
+
+    struct dirent* entry;
+    while ((entry = readdir(dir)) != nullptr) {
+        if (entry->d_name[0] == '.') { continue; }
+        if (strstr(entry->d_name, ACTIVATED_FILE_EXTENSION.c_str()) != nullptr) { continue; }
+        std::string filePath = shardPath + "/" + entry->d_name;
+        struct stat st;
+        if (stat(filePath.c_str(), &st) != 0) { continue; }
+        if (!S_ISREG(st.st_mode)) { continue; }
+        heap->Push({HexToBlockId(entry->d_name), st.st_mtime});
+        ++totalFiles;
+        if (totalFiles >= maxRecycleCount) { break; }
+    }
+    closedir(dir);
+
+    if (totalFiles == 0) { return {}; }
+
+    size_t recycleNum = static_cast<size_t>(totalFiles * recyclePercent);
+    if (recycleNum == 0) { return {}; }
+    recycleNum = std::min(recycleNum, maxRecycleCount);
+
+    std::vector<Detail::BlockId> result;
+    result.reserve(recycleNum);
+    while (!heap->Empty() && result.size() < recycleNum) {
+        result.push_back(heap->Top().blockId);
+        heap->Pop();
+    }
+
+    return result;
 }
 
 }  // namespace UC::PosixStore
