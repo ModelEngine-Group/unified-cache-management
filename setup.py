@@ -35,6 +35,28 @@ PLATFORM = os.getenv("PLATFORM")
 ENABLE_SPARSE = os.getenv("ENABLE_SPARSE")
 ENABLE_MINDIE = os.getenv("UCM_ENABLE_MINDIE", "0") not in ("", "0", "false", "False")
 
+
+def get_abi_flag_from_env() -> str:
+    v = os.environ.get("UCM_CXX11_ABI")
+    if v is None:
+        raise RuntimeError(
+            "You must set env UCM_CXX11_ABI=0 or 1 to build with MindIE.\n"
+            "Example:\n"
+            "  UCM_ENABLE_MINDIE=1 UCM_CXX11_ABI=0 python -m build -w\n"
+            "  UCM_ENABLE_MINDIE=1 UCM_CXX11_ABI=1 python -m build -w"
+        )
+    if v not in ("0", "1"):
+        raise RuntimeError(f"Invalid UCM_CXX11_ABI={v}, expected 0 or 1")
+    return v
+
+
+MINDIE_ABI_DEFINE = (
+    f"-D_GLIBCXX_USE_CXX11_ABI={get_abi_flag_from_env()}"
+    if ENABLE_MINDIE is not None
+    else None
+)
+
+
 Pybind11Extension = None
 if ENABLE_MINDIE:
     try:
@@ -155,6 +177,9 @@ class CMakeBuild(build_ext):
             f"-DCMAKE_INSTALL_PREFIX={install_dir}",
         ]
 
+        if ENABLE_MINDIE:
+            cmake_args += [f"-DCMAKE_CXX_FLAGS={MINDIE_ABI_DEFINE}"]
+
         if enable_sparse():
             cmake_args += ["-DBUILD_UCM_SPARSE=ON"]
 
@@ -244,7 +269,7 @@ setup(
                     "uc_hash_ext",
                     ["ucm/integration/mindie/hash_mindie/uc_hash_ext.cpp"],
                     cxx_std=17,
-                    extra_compile_args=["-O3", "-march=native"],
+                    extra_compile_args=["-O3", "-march=native", MINDIE_ABI_DEFINE],
                 )
                 if ENABLE_MINDIE and Pybind11Extension
                 else None
