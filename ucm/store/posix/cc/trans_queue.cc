@@ -38,25 +38,24 @@ Status TransQueue::Setup(const Config& config, TaskIdSet* failureSet, const Spac
     auto success =
         loadPool_.SetNWorker(config.dataTransConcurrency)
             .SetWorkerFn([this](auto& ios, auto&) { LoadWorker(ios); })
-            .SetWorkerTimeoutFn([this](IoUnit& ios, ssize_t tid) { OnIoUnitTimeout(ios, tid); },
+            .SetWorkerTimeoutFn([this](IoUnit& ios, ssize_t tid) { OnIoUnitTimeout(ios); },
                                 config.timeoutMs)
             .Run();
     if (!success) [[unlikely]] {
         return Status::Error(fmt::format("workers({}) start failed", config.dataTransConcurrency));
     }
-    success =
-        dumpPool_.SetNWorker(config.dataTransConcurrency)
-            .SetWorkerFn([this](auto& ios, auto&) { DumpWorker(ios); })
-            .SetWorkerTimeoutFn([this](IoUnit& ios, ssize_t tid) { OnIoUnitTimeout(ios, tid); },
-                                config.timeoutMs)
-            .Run();
+    success = dumpPool_.SetNWorker(config.dataTransConcurrency)
+                  .SetWorkerFn([this](auto& ios, auto&) { DumpWorker(ios); })
+                  .SetWorkerTimeoutFn([this](IoUnit& ios, ssize_t tid) { OnIoUnitTimeout(ios); },
+                                      config.timeoutMs)
+                  .Run();
     if (!success) [[unlikely]] {
         return Status::Error(fmt::format("workers({}) start failed", config.dataTransConcurrency));
     }
     return Status::OK();
 }
 
-void TransQueue::OnIoUnitTimeout(IoUnit& ios, ssize_t tid)
+void TransQueue::OnIoUnitTimeout(IoUnit& ios)
 {
     if (!failureSet_->Contains(ios.owner)) { failureSet_->Insert(ios.owner); }
     ios.waiter->Done();
