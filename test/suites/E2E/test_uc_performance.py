@@ -1,3 +1,4 @@
+import json
 import os
 
 import pytest
@@ -16,6 +17,44 @@ perf_scenarios = [
     (1000, 1024, 8, 8, 0, 0),
     (4000, 500, 1, 1, 0, 0),
 ]
+
+perf_test_case_str = os.getenv("PERF_TEST_CASE")
+if perf_test_case_str:
+    try:
+        parsed = json.loads(perf_test_case_str)
+        if isinstance(parsed, list) and len(parsed) > 0:
+            valid = True
+            result = []
+            for item in parsed:
+                if not isinstance(item, (list, tuple)) or len(item) != 6:
+                    valid = False
+                    break
+                try:
+                    result.append(tuple(int(x) for x in item))
+                except (ValueError, TypeError):
+                    valid = False
+                    break
+            if valid:
+                perf_scenarios = result
+                print(
+                    f"Successfully loaded configuration from environment variable: {perf_scenarios}"
+                )
+            else:
+                print(
+                    "Environment variable format is invalid, using default configuration"
+                )
+        else:
+            print("Parsed result is empty or not a list, using default configuration")
+    except json.JSONDecodeError as e:
+        print(f"JSON parsing failed: {e}, using default configuration")
+    except Exception as e:
+        print(f"Unexpected parsing error: {e}, using default configuration")
+else:
+    print("PERF_TEST_CASE environment variable is not set, using default configuration")
+
+print(f"Final perf_scenarios: {perf_scenarios}")
+
+
 scenario_ids = [f"in_{s[0]}-out_{s[1]}-con_{s[3]}" for s in perf_scenarios]
 TOTAL_COUNTER = len(perf_scenarios)
 ROUND_COUNTER = 1
@@ -53,48 +92,22 @@ def test_performance(in_tokens, out_tokens, max_req, concurrent, random_seed, hi
         "concurrent": concurrent,
         "sum_requests": max_req,
         "hit_rate": hit_rate,
-        "ttft_mean": results.get("ttft_s", {}).get("mean"),
-        "tpot_mean": results.get("inter_token_latency_s", {}).get("mean"),
-        "total_throughput": summary.get("total_throughput"),
-        "e2e_mean": results.get("end_to_end_latency_s", {}).get("mean"),
-        "extra_info": os.getenv("TEST_EXTRA_INFO")
-        or config_instance.get_nested_config("llm_connection.extra_info"),
         "mean_input_tokens": summary.get("mean_input_tokens"),
         "mean_output_tokens": summary.get("mean_output_tokens"),
-        # Latency ITL
-        "itl_p50": results.get("inter_token_latency_s", {})
-        .get("quantiles", {})
-        .get("p50"),
-        "itl_p90": results.get("inter_token_latency_s", {})
-        .get("quantiles", {})
-        .get("p90"),
-        "itl_p99": results.get("inter_token_latency_s", {})
-        .get("quantiles", {})
-        .get("p99"),
-        # TTFT
-        "ttft_p50": results.get("ttft_s", {}).get("quantiles", {}).get("p50"),
-        "ttft_p90": results.get("ttft_s", {}).get("quantiles", {}).get("p90"),
-        "ttft_p99": results.get("ttft_s", {}).get("quantiles", {}).get("p99"),
-        # End to End
-        "e2e_p50": results.get("end_to_end_latency_s", {})
-        .get("quantiles", {})
-        .get("p50"),
-        "e2e_p90": results.get("end_to_end_latency_s", {})
-        .get("quantiles", {})
-        .get("p90"),
-        "e2e_p99": results.get("end_to_end_latency_s", {})
-        .get("quantiles", {})
-        .get("p99"),
-        # Throughput & Stats
-        "num_completed_requests": summary.get("num_completed_requests"),
-        "elapsed_time": summary.get("elapsed_time"),
+        "ttft_mean_s": results.get("ttft_s", {}).get("mean"),
+        "tpot_mean_s": results.get("inter_token_latency_s", {}).get("mean"),
+        "e2e_mean_s": results.get("end_to_end_latency_s", {}).get("mean"),
+        "elapsed_time_s": summary.get("elapsed_time"),
+        "total_throughput": summary.get("total_throughput"),
         "incremental_throughput": summary.get("incremental_throughput"),
+        "extra_info": os.getenv("TEST_EXTRA_INFO")
+        or config_instance.get_nested_config("llm_connection.extra_info"),
     }
 
     for key, val in metrics.items():
         assert val is not None, f"Metric '{key}' is missing"
 
-    return {"_name": "llmperf", "_proj": metrics}
+    return {"_name": "llmperf_result", "_proj": metrics}
 
 
 @pytest.fixture(scope="session")

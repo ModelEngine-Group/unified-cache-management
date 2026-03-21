@@ -238,28 +238,66 @@ def get_free_gpu(required_memory_mb):
 def setup_gpu_resource(request):
     import fcntl
 
-    marker = request.node.get_closest_marker("gpu_mem")
-    if not marker:
-        # No gpu_mem marker, skip GPU resource setup
+    gpu_mem_marker = request.node.get_closest_marker("gpu_mem")
+    gpu_count_marker = request.node.get_closest_marker("gpu_count")
+
+    if not gpu_mem_marker and not gpu_count_marker:
+        # No GPU markers, skip GPU resource setup
         yield
         return
 
-    mem_needed = marker.args[0]
-    gpu_id, free_in_mb, gpu_utilization, lock_file = get_free_gpu(mem_needed)
-    if gpu_id is None:
-        pytest.fail(f"No GPU with {mem_needed}MB(+30% buffer) free memory available")
+    if gpu_count_marker:
+        # Handle gpu_count marker - allocate multiple GPUs
+        gpu_count = gpu_count_marker.args[0]
+        mem_needed = gpu_mem_marker.args[0] if gpu_mem_marker else 0
+        allocated_gpus = []
+        lock_files = []
 
-    print(
-        f"Allocating GPU {gpu_id} with {free_in_mb}MB free memory, gpu utilization for test {gpu_utilization:.4%}"
-    )
-    os.environ["CUDA_VISIBLE_DEVICES"] = str(gpu_id)
-    if gpu_utilization:
-        os.environ["E2E_TEST_GPU_MEMORY_UTILIZATION"] = str(gpu_utilization)
+        try:
+            for i in range(gpu_count):
+                gpu_id, free_in_mb, gpu_utilization, lock_file = get_free_gpu(
+                    mem_needed
+                )
+                if gpu_id is None:
+                    pytest.fail(
+                        f"Failed to {f'allocate GPU with {mem_needed}MB(+30% buffer) free memory' if mem_needed else 'allocate GPU'} {i + 1}/{gpu_count}"
+                    )
 
-    yield  # test runs here while the lock is held
+                allocated_gpus.append(gpu_id)
+                lock_files.append(lock_file)
+                print(
+                    f"Allocating GPU {gpu_id} (slot {i + 1}/{gpu_count}) with {free_in_mb}MB free memory"
+                )
 
-    fcntl.flock(lock_file, fcntl.LOCK_UN)
-    lock_file.close()
+            os.environ["CUDA_VISIBLE_DEVICES"] = ",".join(map(str, allocated_gpus))
+            print(f"Allocated GPUs: {allocated_gpus}")
+
+            yield  # test runs here while locks are held
+
+        finally:
+            for lock_file in lock_files:
+                fcntl.flock(lock_file, fcntl.LOCK_UN)
+                lock_file.close()
+    else:
+        # Handle gpu_mem marker - allocate single GPU with memory requirement
+        mem_needed = gpu_mem_marker.args[0]
+        gpu_id, free_in_mb, gpu_utilization, lock_file = get_free_gpu(mem_needed)
+        if gpu_id is None:
+            pytest.fail(
+                f"No GPU with {mem_needed}MB(+30% buffer) free memory available"
+            )
+
+        print(
+            f"Allocating GPU {gpu_id} with {free_in_mb}MB free memory, gpu utilization for test {gpu_utilization:.4%}"
+        )
+        os.environ["CUDA_VISIBLE_DEVICES"] = str(gpu_id)
+        if gpu_utilization:
+            os.environ["E2E_TEST_GPU_MEMORY_UTILIZATION"] = str(gpu_utilization)
+
+        yield  # test runs here while the lock is held
+
+        fcntl.flock(lock_file, fcntl.LOCK_UN)
+        lock_file.close()
 
 
 @pytest.fixture(scope="session")
@@ -274,7 +312,6 @@ def model_config() -> ModelConfig:
 
 
 def pytest_sessionfinish(session, exitstatus):
-
     backup_dir = config_instance.get_nested_config("database.backup") or "results/"
     backup_dir = Path(backup_dir).resolve()
 

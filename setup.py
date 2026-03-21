@@ -200,13 +200,13 @@ def inject_pth():
 
 setup(
     name="uc-manager",
-    version="0.3.0",
+    version="0.4.0",
     description="Unified Cache Management",
     author="Unified Cache Team",
     packages=find_packages() + [""],
     package_dir={"": "."},
     python_requires=">=3.10",
-    install_requires=["wrapt==2.0.1"],
+    install_requires=["wrapt==1.17.2"],
     ext_modules=[CMakeExtension(name="ucm", source_dir=ROOT_DIR)],
     cmdclass={"build_ext": CMakeBuild},
     zip_safe=False,
