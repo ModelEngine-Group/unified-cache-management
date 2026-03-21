@@ -61,6 +61,7 @@ public:
 private:
     void LoadWorker(IoUnit& ios);
     void DumpWorker(IoUnit& ios);
+    void OnIoUnitTimeout(IoUnit& ios, ssize_t tid);
     Status H2S(IoUnit& ios);
     Status S2H(IoUnit& ios);
 };
