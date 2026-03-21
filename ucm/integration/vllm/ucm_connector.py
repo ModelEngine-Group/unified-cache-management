@@ -354,7 +354,7 @@ class UCMDirectConnector(KVConnectorBase_V1):
         except RuntimeError as e:
             external_hit_blocks = 0
             logger.error(f"request {request.request_id} look up error. {e}")
-        logger.info(
+        logger.info_once(
             f"request_id: {request.request_id}, "
             f"total_blocks_num: {len(ucm_block_ids)}, "
             f"hit hbm: {hbm_hit_block_num}, "

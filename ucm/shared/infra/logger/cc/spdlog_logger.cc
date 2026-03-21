@@ -31,9 +31,8 @@
 #include <spdlog/spdlog.h>
 #include "compress_rotate_file_sink.h"
 #include "logger.h"
-
 namespace UC::Logger {
-
+constexpr uint64_t LIMIT_THRESHOLD_MS = 60000;
 static spdlog::level::level_enum SpdLevels[] = {spdlog::level::debug, spdlog::level::info,
                                                 spdlog::level::warn, spdlog::level::err,
                                                 spdlog::level::critical};
@@ -43,6 +42,33 @@ void Logger::Log(Level&& lv, SourceLocation&& loc, std::string&& msg)
     auto level = SpdLevels[fmt::underlying(lv)];
     this->logger_ = this->Make();
     this->logger_->log(spdlog::source_loc{loc.file, loc.line, loc.func}, level, std::move(msg));
+}
+
+inline uint64_t get_current_time_ms()
+{
+    auto now = std::chrono::steady_clock::now();
+    auto ms = std::chrono::time_point_cast<std::chrono::milliseconds>(now);
+    return ms.time_since_epoch().count();
+}
+
+bool Logger::FilterCallSite(const char* file, int line, std::string_view ori_fmt)
+{
+    uint64_t now = get_current_time_ms();
+    const std::string_view fv(file ? file : "");
+    std::hash<std::string_view> h;
+    size_t x = h(fv);
+    x ^= static_cast<size_t>(line) + 0x9e3779b97f4a7c15ULL + (x << 12) + (x >> 4);
+    x ^= h(ori_fmt) + 0x9e3779b97f4a7c15ULL + (x << 12) + (x >> 4);
+    const size_t slot_idx = x % HASH_SLOT_NUM;
+    std::atomic<uint64_t>& last_time = hash_slots_[slot_idx].last_time;
+    uint64_t last = last_time.load(std::memory_order_relaxed);
+    for (;;) {
+        if (now - last <= LIMIT_THRESHOLD_MS) { return false; }
+        if (last_time.compare_exchange_weak(last, now, std::memory_order_relaxed,
+                                            std::memory_order_relaxed)) {
+            return true;
+        }
+    }
 }
 
 std::shared_ptr<spdlog::logger> Logger::Make()

@@ -105,7 +105,7 @@ class Logger(logging.Logger):
             return msg % args
         return msg
 
-    def log(self, levelno, message, *args, exc_info=None, scope=None):
+    def log(self, levelno, message, *args, exc_info=None, scope=None, rate_limit=False):
         level = LevelMap[levelno]
         frame = inspect.currentframe()
         caller_frame = frame.f_back.f_back
@@ -116,6 +116,9 @@ class Logger(logging.Logger):
         if exc_info:
             exc_text = self.format_exception(exc_info)
             msg = msg + "\n" + exc_text
+        if rate_limit:
+            ucmlogger.log_rate_limit(level, file, func, line, msg, message)
+            return
         ucmlogger.log(level, file, func, line, msg)
 
     @staticmethod
@@ -147,6 +150,15 @@ class Logger(logging.Logger):
 
     def exception(self, message: str, *args: Hashable, **kwargs: Hashable):
         self.log(logging.ERROR, message, *args, **kwargs, exc_info=True)
+
+    def info_limit(self, message: str, *args, **kwargs):
+        self.log(logging.INFO, message, *args, **kwargs, rate_limit=True)
+
+    def warning_limit(self, message: str, *args, **kwargs):
+        self.log(logging.WARNING, message, *args, **kwargs, rate_limit=True)
+
+    def debug_limit(self, message: str, *args, **kwargs):
+        self.log(logging.DEBUG, message, *args, **kwargs, rate_limit=True)
 
 
 def init_logger(name: str = "UC") -> Logger:
