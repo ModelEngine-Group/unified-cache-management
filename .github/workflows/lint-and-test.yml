@@ -59,14 +59,6 @@ jobs:
     steps:
     - uses: actions/checkout@v4
 
-    - name: Install googletest
-      run: |
-        git clone https://github.com/google/googletest.git --depth=1 --branch=v1.17.0
-        cd googletest
-        mkdir build && cd build
-        cmake -DCMAKE_CXX_FLAGS="-fPIC" -DCMAKE_C_FLAGS="-fPIC" -DCMAKE_CXX_STANDARD=17 -DCMAKE_CXX_STANDARD_REQUIRED=True ..
-        sudo make install -j
-
     - name: Configure CMake
       run: cmake -B ${{github.workspace}}/build -DCMAKE_BUILD_TYPE=${{env.BUILD_TYPE}} -DBUILD_UCM_SPARSE=OFF -DBUILD_UNIT_TESTS=ON -DRUNTIME_ENVIRONMENT=simu
 
