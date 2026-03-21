@@ -58,6 +58,7 @@ private:
     int32_t deviceId_{-1};
     std::vector<size_t> tensorSizes_{};
     size_t streamNumber_{1};
+    std::vector<ssize_t> cpuAffinityCores_{};
     SpscRingQueue<TaskPair> waiting_;
     SpscRingQueue<ShardTask> running_;
     std::thread dispatcher_;

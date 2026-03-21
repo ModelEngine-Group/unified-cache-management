@@ -23,6 +23,7 @@
  * */
 #include "dump_queue.h"
 #include "logger/logger.h"
+#include "thread/cpu_affinity.h"
 
 namespace UC::CacheStore {
 
@@ -41,6 +42,7 @@ Status DumpQueue::Setup(const Config& config, TaskIdSet* failureSet, TransBuffer
     deviceId_ = config.deviceId;
     tensorSizes_ = config.tensorSizes;
     streamNumber_ = config.streamNumber;
+    cpuAffinityCores_ = config.cpuAffinityCores;
     waiting_.Setup(config.waitingQueueDepth);
     dumping_.Setup(config.runningQueueDepth);
     dumper_ = std::thread{&DumpQueue::BackendDumpStage, this};
@@ -66,6 +68,8 @@ void DumpQueue::DispatchStage(std::promise<Status>& started)
     auto s = stream.Setup(deviceId_, streamNumber_);
     started.set_value(s);
     if (s.Failure()) [[unlikely]] { return; }
+    s = CpuAffinity::SetCpuAffinity4CurrentThread(cpuAffinityCores_);
+    if (!cpuAffinityCores_.empty() && s.Failure()) { UC_WARN("Failed({}) to set affinity.", s); }
     waiting_.ConsumerLoop(stop_, &DumpQueue::DispatchOneTask, this, stream);
 }
 
@@ -156,6 +160,8 @@ Status DumpQueue::DeviceToHostGatherAsync(std::shared_ptr<Trans::Stream> stream,
 
 void DumpQueue::BackendDumpStage()
 {
+    auto s = CpuAffinity::SetCpuAffinity4CurrentThread(cpuAffinityCores_);
+    if (!cpuAffinityCores_.empty() && s.Failure()) { UC_WARN("Failed({}) to set affinity.", s); }
     dumping_.ConsumerLoop(stop_, [this](auto&& task) {
         if (task.backendTaskHandle > finishedBackendTaskHandle_) {
             auto s = backend_->Wait(task.backendTaskHandle);
