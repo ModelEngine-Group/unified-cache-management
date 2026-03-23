@@ -119,17 +119,57 @@ public:
         }
         return true;
     }
-    void Push(std::list<Task>& tasks) noexcept
+    void Push(std::list<Task>& tasks)
     {
         std::unique_lock<std::mutex> lock(this->taskMtx_);
+        if (drain_) {
+            taskPending_.splice(taskPending_.end(), tasks);
+            return;
+        }
         this->taskQ_.splice(this->taskQ_.end(), tasks);
         this->cv_.notify_all();
     }
-    void Push(Task&& task) noexcept
+    void Push(Task&& task)
     {
         std::unique_lock<std::mutex> lock(this->taskMtx_);
+        if (drain_) {
+            taskPending_.push_back(std::move(task));
+            return;
+        }
         this->taskQ_.push_back(std::move(task));
         this->cv_.notify_one();
+    }
+    void TraverseWaitQueue(std::function<bool(Task&)> filter, std::function<void(Task&)> visitor,
+                           std::function<bool(Task&)> earlyStopper)
+    {
+        if (!filter || !visitor) { return; }
+        std::list<Task> snapshot;
+        {
+            std::lock_guard<std::mutex> lock(taskMtx_);
+            if (drain_.exchange(true)) { return; }
+            snapshot.swap(taskQ_);
+        }
+        auto CleanUp = [this, &snapshot] {
+            std::lock_guard<std::mutex> lock(taskMtx_);
+            if (!snapshot.empty()) taskQ_.splice(taskQ_.end(), snapshot);
+            if (!taskPending_.empty()) taskQ_.splice(taskQ_.end(), taskPending_);
+            drain_.store(false);
+            cv_.notify_all();
+        };
+        struct Guard {
+            std::function<void()> f;
+            ~Guard() { f(); }
+        } guard{CleanUp};
+        auto it = snapshot.begin();
+        while (it != snapshot.end()) {
+            if (earlyStopper && earlyStopper(*it)) { break; }
+            if (filter(*it)) {
+                visitor(*it);
+                it = snapshot.erase(it);
+                continue;
+            }
+            ++it;
+        }
     }
 
 private:
@@ -216,6 +256,8 @@ private:
     size_t intervalMs_{0};
     size_t nWorker_{0};
     bool stop_{false};
+    std::atomic_bool drain_{false};
+    std::list<Task> taskPending_;
     std::vector<std::shared_ptr<Worker>> workers_;
     std::thread monitor_;
     std::mutex taskMtx_;

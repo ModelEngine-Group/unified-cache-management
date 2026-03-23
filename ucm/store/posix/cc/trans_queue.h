@@ -57,10 +57,12 @@ private:
 public:
     Status Setup(const Config& config, TaskIdSet* failureSet, const SpaceLayout* layout);
     void Push(TaskPtr task, WaiterPtr waiter);
+    void Cancel(TaskPtr task);
 
 private:
     void LoadWorker(IoUnit& ios);
     void DumpWorker(IoUnit& ios);
+    void OnIoUnitTimeout(IoUnit& ios);
     Status H2S(IoUnit& ios);
     Status S2H(IoUnit& ios);
 };

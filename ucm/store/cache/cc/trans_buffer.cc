@@ -65,10 +65,21 @@ struct BufferMetaNode {
 };
 
 class BufferStrategy {
+protected:
+    struct BaseConfig {
+        int32_t deviceId{-1};
+        size_t nodeSize{0};
+        size_t totalSize{0};
+    };
+    BaseConfig base_;
+
 public:
+    BufferStrategy(int32_t deviceId, size_t nodeSize, size_t totalSize)
+        : base_({deviceId, nodeSize, totalSize})
+    {
+    }
     virtual ~BufferStrategy() = default;
-    virtual Status Setup(const std::string& uuid, int32_t deviceId, size_t nodeSize,
-                         size_t nNode) = 0;
+    virtual Status Setup() = 0;
     virtual void BucketLock(size_t iBucket) = 0;
     virtual bool BucketTryLock(size_t iBucket) = 0;
     virtual void BucketUnlock(size_t iBucket) = 0;
@@ -113,6 +124,7 @@ class LocalBufferStrategy : public BufferStrategy {
         void Unlock() { pthread_spin_unlock(&lock); }
     };
 
+    bool ioDirect_{false};
     BufferHeader header_;
     LocalMutex bucketLocks_[nHashTableBucket];
     std::unique_ptr<LocalLock[]> nodeLocks_;
@@ -120,9 +132,15 @@ class LocalBufferStrategy : public BufferStrategy {
     std::shared_ptr<void> data_;
 
 public:
-    Status Setup(const std::string& uuid, int32_t deviceId, size_t nodeSize,
-                 size_t totalSize) override
+    LocalBufferStrategy(int32_t deviceId, size_t nodeSize, size_t totalSize, bool ioDirect)
+        : BufferStrategy(deviceId, nodeSize, totalSize), ioDirect_(ioDirect)
     {
+    }
+    Status Setup() override
+    {
+        const auto deviceId = base_.deviceId;
+        const auto totalSize = base_.totalSize;
+        const auto nodeSize = base_.nodeSize;
         auto nNode = totalSize / nodeSize;
         try {
             nodeLocks_ = std::make_unique<LocalLock[]>(nNode);
@@ -144,7 +162,8 @@ public:
             UC_ERROR("Failed to make buffer on device({}).", deviceId);
             return Status::Error();
         }
-        data_ = buffer->MakeHostBuffer(nodeSize * nNode);
+        data_ = ioDirect_ ? buffer->MakeHostBuffer4DirectIo(nodeSize * nNode)
+                          : buffer->MakeHostBuffer(nodeSize * nNode);
         if (!data_) [[unlikely]] {
             UC_ERROR("Failed to make pinned({}) for device({}).", nodeSize * nNode, deviceId);
             return Status::OutOfMemory();
@@ -217,6 +236,7 @@ protected:
     BufferMetaNode* meta_{nullptr};
     std::byte* data_{nullptr};
     std::byte* dataOnDevice_{nullptr};
+    const std::string& uuid_;
     std::string shmName_;
     size_t nodeSize_{0};
     size_t nNode_{0};
@@ -347,15 +367,23 @@ protected:
     }
 
 public:
+    SharedBufferStrategy(const std::string& uuid, int32_t deviceId, size_t nodeSize,
+                         size_t totalSize)
+        : BufferStrategy(deviceId, nodeSize, totalSize), uuid_(uuid)
+    {
+    }
     ~SharedBufferStrategy() override
     {
         if (data_) { Trans::Buffer::UnregisterHostBuffer(data_); }
         if (addrress_) { PosixShm::MUnmap(addrress_, totalSize_); }
         PosixShm{shmName_}.ShmUnlink();
     }
-    Status Setup(const std::string& uuid, int32_t deviceId, size_t nodeSize,
-                 size_t totalSize) override
+    Status Setup() override
     {
+        const auto& uuid = uuid_;
+        const auto deviceId = base_.deviceId;
+        const auto nodeSize = base_.nodeSize;
+        const auto totalSize = base_.totalSize;
         shmName_ = ShmPrefix() + uuid;
         nodeSize_ = nodeSize;
         nNode_ = totalSize / nodeSize;
@@ -396,9 +424,10 @@ public:
 
 class SharedBufferWatcherStrategy : public SharedBufferStrategy {
 public:
-    Status Setup(const std::string& uuid, int32_t deviceId, size_t, size_t) override
+    SharedBufferWatcherStrategy(const std::string& uuid) : SharedBufferStrategy(uuid, -1, 0, 0) {}
+    Status Setup() override
     {
-        shmName_ = ShmPrefix() + uuid;
+        shmName_ = ShmPrefix() + uuid_;
         CleanUpShmFileExceptMe(shmName_);
         PosixShm shmFile{shmName_};
         auto s = shmFile.ShmOpen(PosixShm::OpenFlag::READ_WRITE);
@@ -432,17 +461,18 @@ Status TransBuffer::Setup(const Config& config)
 {
     try {
         if (!config.shareBufferEnable) {
-            strategy_ = std::make_shared<LocalBufferStrategy>();
+            strategy_ = std::make_shared<LocalBufferStrategy>(
+                config.deviceId, config.shardSize, config.bufferCapacity, config.ioDirect);
         } else if (config.deviceId >= 0) {
-            strategy_ = std::make_shared<SharedBufferStrategy>();
+            strategy_ = std::make_shared<SharedBufferStrategy>(
+                config.uniqueId, config.deviceId, config.shardSize, config.bufferCapacity);
         } else {
-            strategy_ = std::make_shared<SharedBufferWatcherStrategy>();
+            strategy_ = std::make_shared<SharedBufferWatcherStrategy>(config.uniqueId);
         }
     } catch (const std::exception& e) {
         return Status::Error(fmt::format("failed({}) to make buffer strategy", e.what()));
     }
-    return strategy_->Setup(config.uniqueId, config.deviceId, config.shardSize,
-                            config.bufferCapacity);
+    return strategy_->Setup();
 }
 
 TransBuffer::Handle TransBuffer::Get(const Detail::BlockId& blockId, size_t shardIdx)

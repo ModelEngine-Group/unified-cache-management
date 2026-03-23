@@ -35,19 +35,30 @@ Status TransQueue::Setup(const Config& config, TaskIdSet* failureSet, const Spac
     shardSize_ = config.shardSize;
     nShardPerBlock_ = config.blockSize / config.shardSize;
     ioDirect_ = config.ioDirect;
-    auto success = loadPool_.SetNWorker(config.dataTransConcurrency)
-                       .SetWorkerFn([this](auto& ios, auto&) { LoadWorker(ios); })
-                       .Run();
+    auto success =
+        loadPool_.SetNWorker(config.dataTransConcurrency)
+            .SetWorkerFn([this](auto& ios, auto&) { LoadWorker(ios); })
+            .SetWorkerTimeoutFn([this](IoUnit& ios, ssize_t tid) { OnIoUnitTimeout(ios); },
+                                config.timeoutMs)
+            .Run();
     if (!success) [[unlikely]] {
         return Status::Error(fmt::format("workers({}) start failed", config.dataTransConcurrency));
     }
     success = dumpPool_.SetNWorker(config.dataTransConcurrency)
                   .SetWorkerFn([this](auto& ios, auto&) { DumpWorker(ios); })
+                  .SetWorkerTimeoutFn([this](IoUnit& ios, ssize_t tid) { OnIoUnitTimeout(ios); },
+                                      config.timeoutMs)
                   .Run();
     if (!success) [[unlikely]] {
         return Status::Error(fmt::format("workers({}) start failed", config.dataTransConcurrency));
     }
     return Status::OK();
+}
+
+void TransQueue::OnIoUnitTimeout(IoUnit& ios)
+{
+    if (!failureSet_->Contains(ios.owner)) { failureSet_->Insert(ios.owner); }
+    ios.waiter->Done();
 }
 
 void TransQueue::Push(TaskPtr task, WaiterPtr waiter)
@@ -63,6 +74,15 @@ void TransQueue::Push(TaskPtr task, WaiterPtr waiter)
     } else {
         loadPool_.Push(ios);
     }
+}
+
+void TransQueue::Cancel(TaskPtr task)
+{
+    auto& pool = task->type == TransTask::Type::DUMP ? dumpPool_ : loadPool_;
+    const auto tid = task->id;
+    pool.TraverseWaitQueue([tid](IoUnit& ios) { return ios.owner == tid; },
+                           [this](IoUnit& ios) { OnIoUnitTimeout(ios); },
+                           [tid](IoUnit& ios) { return ios.owner > tid; });
 }
 
 void TransQueue::LoadWorker(IoUnit& ios)

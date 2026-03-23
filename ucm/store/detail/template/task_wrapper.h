@@ -26,6 +26,7 @@
 
 #include <shared_mutex>
 #include <unordered_map>
+#include "logger/logger.h"
 #include "status/status.h"
 #include "template/hashset.h"
 #include "thread/latch.h"
@@ -45,6 +46,7 @@ protected:
     TaskSet tasks_{};
     std::shared_mutex mutex_{};
     virtual void Dispatch(TaskPtr t, WaiterPtr w) = 0;
+    virtual void Cancel(TaskPtr t) {}
 
 public:
     Expected<TaskHandle> Submit(Task task)
@@ -90,7 +92,11 @@ public:
         auto finished = w->WaitFor(timeoutMs_);
         if (!finished) [[unlikely]] {
             failureSet_.Insert(taskId);
-            w->Wait();
+            Cancel(t);
+            constexpr size_t drainSliceMs = 2000;
+            while (!w->WaitForDuration(drainSliceMs)) {
+                UC_WARN("Task({}) has not finished after ({}) ms.", taskId, drainSliceMs);
+            }
             failureSet_.Remove(taskId);
             return Status::Timeout();
         }

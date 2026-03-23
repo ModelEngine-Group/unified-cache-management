@@ -36,6 +36,7 @@ struct Config {
     std::vector<size_t> tensorSizes{};
     size_t shardSize{0};
     size_t blockSize{0};
+    bool ioDirect{false};
     size_t bufferCapacity{256ULL << 30};
     bool shareBufferEnable{true};
     size_t waitingQueueDepth{8192};
