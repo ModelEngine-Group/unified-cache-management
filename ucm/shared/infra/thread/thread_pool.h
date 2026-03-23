@@ -139,7 +139,8 @@ public:
         this->taskQ_.push_back(std::move(task));
         this->cv_.notify_one();
     }
-    void VisitWaitQueue(std::function<bool(Task&)> filter, std::function<void(Task&)> visitor)
+    void VisitWaitQueue(std::function<bool(Task&)> filter, std::function<void(Task&)> visitor,
+                        std::function<bool(Task&)> earlyStopper)
     {
         std::list<Task> batch;
         std::list<Task> snapshot;
@@ -148,26 +149,29 @@ public:
             if (drain_.exchange(true)) { return; }
             snapshot.swap(taskQ_);
         }
-        auto Push2Q = [this](std::list<Task>& tasks) {
+        auto CleanUp = [&] {
             std::lock_guard<std::mutex> lock(taskMtx_);
-            taskQ_.splice(taskQ_.end(), tasks);
+            if (!batch.empty()) { taskQ_.splice(taskQ_.end(), batch); }
+            if (!snapshot.empty()) taskQ_.splice(taskQ_.end(), snapshot);
+            if (!taskPending_.empty()) taskQ_.splice(taskQ_.end(), taskPending_);
+            drain_.store(false);
             cv_.notify_all();
         };
+        struct Guard {
+            std::function<void()> f;
+            ~Guard() { f(); }
+        } guard{CleanUp};
         auto it = snapshot.begin();
         while (it != snapshot.end()) {
             auto current = it++;
+            if (earlyStopper(*current)) { break; }
             if (filter(*current)) { visitor(*current); }
             batch.splice(batch.end(), snapshot, current);
-            if (batch.size() == nWorker_) { Push2Q(batch); }
-        }
-        if (!batch.empty()) { Push2Q(batch); }
-        {
-            std::lock_guard<std::mutex> lock(taskMtx_);
-            if (!taskPending_.empty()) {
-                taskQ_.splice(taskQ_.end(), taskPending_);
+            if (batch.size() == nWorker_) {
+                std::lock_guard<std::mutex> lock(taskMtx_);
+                taskQ_.splice(taskQ_.end(), batch);
                 cv_.notify_all();
             }
-            drain_.store(false);
         }
     }
 
