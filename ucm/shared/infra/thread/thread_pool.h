@@ -119,15 +119,23 @@ public:
         }
         return true;
     }
-    void Push(std::list<Task>& tasks) noexcept
+    void Push(std::list<Task>& tasks)
     {
         std::unique_lock<std::mutex> lock(this->taskMtx_);
+        if (drain_) {
+            taskPending_.splice(taskPending_.end(), tasks);
+            return;
+        }
         this->taskQ_.splice(this->taskQ_.end(), tasks);
         this->cv_.notify_all();
     }
-    void Push(Task&& task) noexcept
+    void Push(Task&& task)
     {
         std::unique_lock<std::mutex> lock(this->taskMtx_);
+        if (drain_) {
+            taskPending_.push_back(std::move(task));
+            return;
+        }
         this->taskQ_.push_back(std::move(task));
         this->cv_.notify_one();
     }
@@ -137,16 +145,30 @@ public:
         std::list<Task> snapshot;
         {
             std::lock_guard<std::mutex> lock(taskMtx_);
+            if (drain_.exchange(true)) { return; }
             snapshot.swap(taskQ_);
         }
+        auto Push2Q = [this](std::list<Task>& tasks) {
+            std::lock_guard<std::mutex> lock(taskMtx_);
+            taskQ_.splice(taskQ_.end(), tasks);
+            cv_.notify_all();
+        };
         auto it = snapshot.begin();
         while (it != snapshot.end()) {
             auto current = it++;
             if (filter(*current)) { visitor(*current); }
             batch.splice(batch.end(), snapshot, current);
-            if (batch.size() == nWorker_) { Push(batch); }
+            if (batch.size() == nWorker_) { Push2Q(batch); }
         }
-        if (!batch.empty()) { Push(batch); }
+        if (!batch.empty()) { Push2Q(batch); }
+        {
+            std::lock_guard<std::mutex> lock(taskMtx_);
+            if (!taskPending_.empty()) {
+                taskQ_.splice(taskQ_.end(), taskPending_);
+                cv_.notify_all();
+            }
+            drain_.store(false);
+        }
     }
 
 private:
@@ -233,6 +255,8 @@ private:
     size_t intervalMs_{0};
     size_t nWorker_{0};
     bool stop_{false};
+    std::atomic_bool drain_{false};
+    std::list<Task> taskPending_;
     std::vector<std::shared_ptr<Worker>> workers_;
     std::thread monitor_;
     std::mutex taskMtx_;
