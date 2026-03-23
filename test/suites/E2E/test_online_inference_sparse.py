@@ -142,7 +142,7 @@ class TestBasicOnlineInference:
         tokenizer_path = f"/home/models/{model_name}"
         served_model_name = model_name
 
-        # Load prompts and answers (same as test_offline_gsa_mla)
+        # Load prompts and answers
         try:
             test_prompts, standard_answers = load_prompt_list_from_file(
                 get_path_relative_to_test_root(
@@ -158,28 +158,22 @@ class TestBasicOnlineInference:
 
         tokenizer = HuggingFaceTokenizer(tokenizer_path)
 
-        # Format prompts with tokenizer (same as test_offline_gsa_mla)
-        formatted_prompts = []
-        for test_prompt in test_prompts:
-            try:
-                messages = [
-                    {
-                        "role": "system",
-                        "content": "先读问题，再根据下面的文章内容回答问题，不要进行分析，不要重复问题，用简短的语句给出答案。\n\n例如：\u201c全国美国文学研究会的第十八届年会在哪所大学举办的？\u201d\n回答应该为：\u201cxx大学\u201d。\n\n",
-                    },
-                    {"role": "user", "content": test_prompt},
-                ]
-                formatted_prompt = tokenizer.apply_chat_template(
-                    messages,
-                    tokenize=False,
-                    add_generation_prompt=True,
-                    add_special_tokens=True,
-                )
-            except Exception:
-                formatted_prompt = test_prompt
-            formatted_prompts.append(formatted_prompt)
+        system_content = "先读问题，再根据下面的文章内容回答问题，不要进行分析，不要重复问题，用简短的语句给出答案。\n\n例如：\u201c全国美国文学研究会的第十八届年会在哪所大学举办的？\u201d\n回答应该为：\u201cxx大学\u201d。\n\n"
 
-        # UCM config with UcmPipelineStore (same as test_offline_gsa_mla)
+        # Create LLMRequest list
+        requests = [
+            LLMRequest(
+                messages=[
+                    {"role": "system", "content": system_content},
+                    {"role": "user", "content": prompt},
+                ],
+                max_tokens=max_tokens,
+                temperature=0.0,
+            )
+            for prompt in test_prompts
+        ]
+
+        # UCM config with UcmPipelineStore
         ucm_config = {
             "ucm_connectors": [
                 {
@@ -214,16 +208,6 @@ class TestBasicOnlineInference:
 
             print(f"server models: {client.list_models()}")
 
-            # Create LLMRequest list
-            requests = [
-                LLMRequest(
-                    messages=[{"role": "user", "content": prompt}],
-                    max_tokens=max_tokens,
-                    temperature=0.0,
-                )
-                for prompt in formatted_prompts
-            ]
-
             # Send requests in parallel using batch_chat
             responses = batch_chat(client, requests)
             outputs = [resp.text for resp in responses]
@@ -232,7 +216,7 @@ class TestBasicOnlineInference:
             print(f'GSA MLA output: "{outputs}"')
             print(f'Standard answers: "{standard_answers}"')
 
-            # Verify (same as test_offline_gsa_mla)
+            # Verify
             phase_sparse_correct = match_sparse_answer(outputs, standard_answers)
 
             if not phase_sparse_correct:
@@ -272,7 +256,7 @@ class TestBasicOnlineInference:
         tokenizer_path = f"/home/models/{model_name}"
         served_model_name = model_name
 
-        # Load prompts and answers (same as test_offline_gsa_gqa)
+        # Load prompts and answers
         try:
             test_prompts, standard_answers = load_prompt_list_from_file(
                 get_path_relative_to_test_root(
@@ -288,28 +272,7 @@ class TestBasicOnlineInference:
 
         tokenizer = HuggingFaceTokenizer(tokenizer_path)
 
-        # Format prompts with tokenizer (same as test_offline_gsa_gqa)
-        formatted_prompts = []
-        for test_prompt in test_prompts:
-            try:
-                messages = [
-                    {
-                        "role": "system",
-                        "content": "先读问题，再根据下面的文章内容回答问题，不要进行分析，不要重复问题，用简短的语句给出答案。\n\n例如：\u201c全国美国文学研究会的第十八届年会在哪所大学举办的？\u201d\n回答应该为：\u201cxx大学\u201d。\n\n",
-                    },
-                    {"role": "user", "content": test_prompt},
-                ]
-                formatted_prompt = tokenizer.apply_chat_template(
-                    messages,
-                    tokenize=False,
-                    add_generation_prompt=True,
-                    add_special_tokens=True,
-                )
-            except Exception:
-                formatted_prompt = test_prompt
-            formatted_prompts.append(formatted_prompt)
-
-        # UCM config with UcmPipelineStore (same as test_offline_gsa_gqa)
+        # UCM config with UcmPipelineStore
         ucm_config = {
             "ucm_connectors": [
                 {
@@ -347,11 +310,11 @@ class TestBasicOnlineInference:
             # Create LLMRequest list
             requests = [
                 LLMRequest(
-                    messages=[{"role": "user", "content": prompt}],
+                    messages=prompt,
                     max_tokens=max_tokens,
                     temperature=0.0,
                 )
-                for prompt in formatted_prompts
+                for prompt in test_prompts
             ]
 
             # Send requests in parallel using batch_chat
@@ -362,7 +325,7 @@ class TestBasicOnlineInference:
             print(f'GSA output: "{outputs}"')
             print(f'Standard answers: "{standard_answers}"')
 
-            # Extract answers and verify (same as test_offline_gsa_gqa)
+            # Extract answers and verify
             outputs = extract_answers(outputs)
             phase_sparse_correct = match_sparse_answer(outputs, standard_answers)
 

@@ -295,7 +295,7 @@ class VLLMServerManager:
 
 
 def batch_chat(
-    client: "LLMConnection",
+    client,
     requests: List[LLMRequest],
     max_workers: Optional[int] = None,
 ) -> List[LLMResponse]:
@@ -417,28 +417,14 @@ def hbm_ssd_mixed_test(
 
     tokenizer = AutoTokenizer.from_pretrained(tokenizer_path, use_chat_template=True)
 
-    # Format prompt with chat template
-    system_content = "先读问题，再根据下面的文章内容回答问题，不要进行分析，不要重复问题，用简短的语句给出答案。\n\n例如：\u201c全国美国文学研究会的第十八届年会在哪所大学举办的？\u201d\n回答应该为：\u201cxx大学\u201d。\n\n"
-    try:
-        messages = [
-            {"role": "system", "content": system_content},
-            {"role": "user", "content": test_prompt},
-        ]
-        formatted_full_prompt = tokenizer.apply_chat_template(
-            messages,
-            tokenize=False,
-            add_generation_prompt=True,
-            add_special_tokens=True,
-        )
-    except Exception:
-        formatted_full_prompt = test_prompt
-
     # Split prompt for Phase
     prompt_first_part, _ = split_prompt_by_tokens(
-        formatted_full_prompt, tokenizer, split_ratio=prompt_split_ratio
+        test_prompt, tokenizer, split_ratio=prompt_split_ratio
     )
 
     # Prepare messages
+    system_content = "先读问题，再根据下面的文章内容回答问题，不要进行分析，不要重复问题，用简短的语句给出答案。\n\n例如：\u201c全国美国文学研究会的第十八届年会在哪所大学举办的？\u201d\n回答应该为：\u201cxx大学\u201d。\n\n"
+
     phase1_messages = [
         {"role": "system", "content": system_content},
         {"role": "user", "content": test_prompt},

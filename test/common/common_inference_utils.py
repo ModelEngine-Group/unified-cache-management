@@ -151,7 +151,7 @@ def load_prompt_list_from_file(
         context_text = data.get("context", "")
 
         if context_text and input_text:
-            full_prompt = f"阅读以下文字并用中文简短回答：\n\n{context_text}\n\n现在请基于上面的文章回答下面的问题，只告诉我答案，不要输出任何其他字词。\n\n问题：{input_text}\n回答："
+            full_prompt = f"{context_text}\n\n{input_text}"
         elif context_text:
             full_prompt = context_text
         elif input_text:
