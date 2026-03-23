@@ -41,9 +41,11 @@ import shlex
 import subprocess
 import sys
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any, Dict, List, Optional
 
 import requests
+from common.llm_connection.LLMBase import LLMRequest, LLMResponse
 
 logger = logging.getLogger(__name__)
 
@@ -292,6 +294,65 @@ class VLLMServerManager:
         self.stop()
 
 
+def batch_chat(
+    client,
+    requests: List[LLMRequest],
+    max_workers: Optional[int] = None,
+) -> List[LLMResponse]:
+    """Send multiple requests to the LLM server in parallel and return all responses.
+
+    This function sends multiple requests concurrently using a thread pool,
+    waits for all requests to complete, and returns the results in the same order as the input requests.
+
+    Args:
+        client: An LLM client that implements the LLMConnection protocol (e.g., OpenAIConn)
+        requests: List of LLMRequest objects to send
+        max_workers: Maximum number of worker threads (default: number of requests)
+
+    Returns:
+        List of LLMResponse objects in the same order as input requests
+
+    Example:
+        from common.llm_connection.openai_connector import OpenAIConn
+        from common.llm_connection.LLMRequest import LLMRequest
+
+        client = OpenAIConn(base_url="http://localhost:8000", model="qwen")
+        requests = [
+            LLMRequest(messages=[{"role": "user", "content": "Hello"}], max_tokens=100),
+            LLMRequest(messages=[{"role": "user", "content": "Hi"}], max_tokens=100),
+        ]
+        responses = batch_chat(client, requests)
+        for resp in responses:
+            print(resp.text)
+    """
+    if not requests:
+        return []
+
+    if max_workers is None:
+        max_workers = len(requests)
+
+    results: List[Optional[LLMResponse]] = [None] * len(requests)
+
+    def _send_request(index: int, request: LLMRequest) -> tuple[int, LLMResponse]:
+        """Send a single request and return the index with response."""
+        response = client.chat(request)
+        return index, response
+
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        # Submit all requests
+        future_to_index = {
+            executor.submit(_send_request, i, req): i for i, req in enumerate(requests)
+        }
+
+        # Collect results as they complete
+        for future in as_completed(future_to_index):
+            index, response = future.result()
+            results[index] = response
+
+    # Ensure all results are filled (should not happen if no exception)
+    return [resp for resp in results if resp is not None]
+
+
 def hbm_ssd_mixed_test(
     model_name: str,
     tokenizer_path: str,
@@ -356,28 +417,14 @@ def hbm_ssd_mixed_test(
 
     tokenizer = AutoTokenizer.from_pretrained(tokenizer_path, use_chat_template=True)
 
-    # Format prompt with chat template
-    system_content = "先读问题，再根据下面的文章内容回答问题，不要进行分析，不要重复问题，用简短的语句给出答案。\n\n例如：\u201c全国美国文学研究会的第十八届年会在哪所大学举办的？\u201d\n回答应该为：\u201cxx大学\u201d。\n\n"
-    try:
-        messages = [
-            {"role": "system", "content": system_content},
-            {"role": "user", "content": test_prompt},
-        ]
-        formatted_full_prompt = tokenizer.apply_chat_template(
-            messages,
-            tokenize=False,
-            add_generation_prompt=True,
-            add_special_tokens=True,
-        )
-    except Exception:
-        formatted_full_prompt = test_prompt
-
     # Split prompt for Phase
     prompt_first_part, _ = split_prompt_by_tokens(
-        formatted_full_prompt, tokenizer, split_ratio=prompt_split_ratio
+        test_prompt, tokenizer, split_ratio=prompt_split_ratio
     )
 
     # Prepare messages
+    system_content = "先读问题，再根据下面的文章内容回答问题，不要进行分析，不要重复问题，用简短的语句给出答案。\n\n例如：\u201c全国美国文学研究会的第十八届年会在哪所大学举办的？\u201d\n回答应该为：\u201cxx大学\u201d。\n\n"
+
     phase1_messages = [
         {"role": "system", "content": system_content},
         {"role": "user", "content": test_prompt},

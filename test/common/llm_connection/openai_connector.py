@@ -172,6 +172,7 @@ class OpenAIConn(LLMConnection):
 
     def chat(self, req: LLMRequest, **kwargs) -> LLMResponse:
         body = self._make_body(req)
+        print("send request with body: ", body)
         try:
             r = self._client.post("/chat/completions", json=body)
             r.raise_for_status()
