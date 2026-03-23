@@ -33,8 +33,24 @@ from setuptools.command.build_ext import build_ext
 ROOT_DIR = os.path.abspath(os.path.dirname(__file__))
 PLATFORM = os.getenv("PLATFORM")
 ENABLE_SPARSE = os.getenv("ENABLE_SPARSE")
+ENABLE_MINDIE = os.getenv("UCM_ENABLE_MINDIE", "0") not in ("", "0", "false", "False")
 
 
+def get_abi_flag_from_env() -> str:
+    v = os.environ.get("UCM_CXX11_ABI")
+    if v is None:
+        raise RuntimeError(
+            "You must set env UCM_CXX11_ABI=0 or 1 to build with MindIE.\n"
+            "Example:\n"
+            "  UCM_ENABLE_MINDIE=1 UCM_CXX11_ABI=0 python -m build -w\n"
+            "  UCM_ENABLE_MINDIE=1 UCM_CXX11_ABI=1 python -m build -w"
+        )
+    if v not in ("0", "1"):
+        raise RuntimeError(f"Invalid UCM_CXX11_ABI={v}, expected 0 or 1")
+    return v
+
+
+UCM_CXX11_ABI = get_abi_flag_from_env() if ENABLE_MINDIE else None
 _warning_printed = False
 
 
@@ -96,11 +112,24 @@ class CMakeExtension(Extension):
 
 class CMakeBuild(build_ext):
     def run(self):
+        cmake_exts = [ext for ext in self.extensions if isinstance(ext, CMakeExtension)]
+        other_exts = [
+            ext for ext in self.extensions if not isinstance(ext, CMakeExtension)
+        ]
+
         build_dir = os.path.abspath(self.build_temp)
         os.makedirs(build_dir, exist_ok=True)
 
-        for ext in self.extensions:
+        for ext in cmake_exts:
             self.build_cmake(ext)
+
+        if other_exts:
+            original_exts = self.extensions
+            try:
+                self.extensions = other_exts
+                super().run()
+            finally:
+                self.extensions = original_exts
 
         if enable_sparse() and is_ascend():
             gsa_build_script = "ucm/sparse/gsa_on_device/csrc/ascend/build.sh"
@@ -130,6 +159,10 @@ class CMakeBuild(build_ext):
             f"-DPYTHON_EXECUTABLE={sys.executable}",
             f"-DCMAKE_INSTALL_PREFIX={install_dir}",
         ]
+
+        if ENABLE_MINDIE:
+            cmake_args += ["-DBUILD_UCM_MINDIE=ON"]
+            cmake_args += [f"-DUCM_CXX11_ABI={UCM_CXX11_ABI}"]
 
         if enable_sparse():
             cmake_args += ["-DBUILD_UCM_SPARSE=ON"]
@@ -203,7 +236,11 @@ setup(
     version="0.4.0",
     description="Unified Cache Management",
     author="Unified Cache Team",
-    packages=find_packages() + [""],
+    packages=[
+        pkg
+        for pkg in (find_packages() + [""])
+        if ENABLE_MINDIE or not pkg.startswith("ucm.integration.mindie")
+    ],
     package_dir={"": "."},
     python_requires=">=3.10",
     install_requires=["wrapt==1.17.2"],
@@ -213,6 +250,7 @@ setup(
     include_package_data=False,
     package_data={
         "ucm": ["sparse/gsa_on_device/configs/**/*.json"],
+        **({"ucm.integration.mindie": ["ucm_config.json"]} if ENABLE_MINDIE else {}),
         "": ["ucm_patch.pth"],
     },
 )
