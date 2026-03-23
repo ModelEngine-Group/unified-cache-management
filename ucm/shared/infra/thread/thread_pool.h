@@ -149,17 +149,7 @@ public:
             if (drain_.exchange(true)) { return; }
             snapshot.swap(taskQ_);
         }
-        auto CleanUp = [this, &snapshot] {
-            std::lock_guard<std::mutex> lock(taskMtx_);
-            if (!snapshot.empty()) taskQ_.splice(taskQ_.end(), snapshot);
-            if (!taskPending_.empty()) taskQ_.splice(taskQ_.end(), taskPending_);
-            drain_.store(false);
-            cv_.notify_all();
-        };
-        struct Guard {
-            std::function<void()> f;
-            ~Guard() { f(); }
-        } guard{CleanUp};
+        size_t processed = 0;
         auto it = snapshot.begin();
         while (it != snapshot.end()) {
             if (earlyStopper && earlyStopper(*it)) { break; }
@@ -169,7 +159,19 @@ public:
                 continue;
             }
             ++it;
+            ++processed;
+            if (processed == nWorker_) {
+                std::lock_guard<std::mutex> lock(taskMtx_);
+                taskQ_.splice(taskQ_.end(), snapshot, snapshot.begin(), it);
+                cv_.notify_all();
+                processed = 0;
+            }
         }
+        std::lock_guard<std::mutex> lock(taskMtx_);
+        if (!snapshot.empty()) { taskQ_.splice(taskQ_.end(), snapshot); }
+        if (!taskPending_.empty()) { taskQ_.splice(taskQ_.end(), taskPending_); }
+        drain_.store(false);
+        cv_.notify_all();
     }
 
 private:
