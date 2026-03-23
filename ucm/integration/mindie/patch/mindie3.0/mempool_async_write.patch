@@ -1,0 +1,2104 @@
+diff --git a/docs/zh/user_guide/feature/kv_cache_pool.md b/docs/zh/user_guide/feature/kv_cache_pool.md
+index df6646056..328b217c4 100644
+--- a/docs/zh/user_guide/feature/kv_cache_pool.md
++++ b/docs/zh/user_guide/feature/kv_cache_pool.md
+@@ -21,7 +21,7 @@
+ 
+ |配置项|取值类型|取值范围|配置说明|
+ |--|--|--|--|
+-|kvPoolConfig|std::string|{"backend"："*kv_pool_backend_name*", <br>"configPath":"*/path/to/your/config/file*"}|backend为指定的KV Cache池化后端。<ul><li>设置为“”，表示关闭KV Cache池化。</li><li>设置为对应池化后端的名称，表示开启KV Cache池化。</li></ul><br>configPath为传入池化后端所需的配置文件路径。|
++|kvPoolConfig| std::string, bool | {"backend"："*kv_pool_backend_name*", <br>"configPath":"*/path/to/your/config/file*", <br>"asyncWrite":false} | backend为指定的KV Cache池化后端。<ul><li>设置为“”，表示关闭KV Cache池化。</li><li>设置为对应池化后端的名称，表示开启KV Cache池化。</li></ul><br>configPath为传入池化后端所需的配置文件路径。<br><br>asyncWrite为KV Cache池化异步写的开关。<ul><li>不设置或设置为false，表示关闭KV Cache的异步写，即使用同步写。</li><li>设置为true表示打开KV Cache的异步写。</li></ul> |
+ 
+ 
+ ## 执行推理
+@@ -92,7 +92,7 @@
+             },
+     ```
+ 
+-3. 拉起池化后端对应的中心化服务Master Service，具体安装和拉起命令，请参考[KV Cache池化使用指导](../../../../mindie_llm/text_generator/mempool/README.md)。
++3. 拉起池化后端对应的中心化服务Master Service，具体安装和拉起命令，请参考[KV Cache池化使用指导](mempool.md)。
+ 4. 启动服务。
+ 
+     ```bash
+diff --git a/mindie_llm/text_generator/mempool/README.md b/docs/zh/user_guide/feature/mempool.md
+similarity index 84%
+rename from mindie_llm/text_generator/mempool/README.md
+rename to docs/zh/user_guide/feature/mempool.md
+index fa13aea88..2415ff16c 100644
+--- a/mindie_llm/text_generator/mempool/README.md
++++ b/docs/zh/user_guide/feature/mempool.md
+@@ -8,11 +8,16 @@ KV Cache池化特性依赖于Prefix Cache特性。此外，通过在MindIE的con
+ ```
+ "kvPoolConfig" : {"backend":"", "configPath":""}
+ ```
++或者
++```
++"kvPoolConfig" : {"backend":"", "configPath":"", "asyncWrite": true}
++```
+ 配置说明：
+ - `backend`：指定使用的池化后端。
+ - `configPath`：池化后端所需要的配置文件路径。
++- `asyncWrite`：是否开启池化异步写，值为true或false。若不设该字段，则默认为false，即同步写。
+ 
+-在开启Prefix Cache特性的前提下，当配置了上述两个字段后，则开启KV Cache池化特性。不同的池化后端需要自行安装。
++在开启Prefix Cache特性的前提下，当配置了上述字段后，则开启KV Cache池化特性。不同的池化后端需要自行安装。
+ 
+ ## 已支持的池化后端
+ #### Mooncake
+@@ -90,6 +95,15 @@ export ASCEND_BUFFER_POOL=4:8
+ 
+ </details>
+ 
++## 限制与约束
++
++异步写特性当前仅支持Qwen稠密模型（非MOE）和DeepSeek模型（V3/V3.1/R1）。当异步写特性开启时，支持与以下特性叠加组合，叠加其他特性或模型可能导致不可预期的报错：
++- Qwen稠密：异步调度、Prefix Cache、Function Call、思考解析、Yarn
++- DeepSeek V3/V3.1/R1：异步推理、Prefix Cache、Context Parallel、Sequence Parallel
++
++已确定不支持与以下特性叠加：
++- SplitFuse、Micro Batch、Multi-Lora
++
+ ## 声明
+ 
+ - 本代码仓提到的不同池化后端仅作为示例，仅供您用于非商业目的。如您使用这些池化后端完成示例，请您特别注意应遵守对应池化后端的License，如您因使用池化后端而产生侵权纠纷，华为不承担任何责任。
+diff --git a/examples/atb_models/atb_framework/core/base/event_manager.cpp b/examples/atb_models/atb_framework/core/base/event_manager.cpp
+index 0642c0078..79cb3e92e 100644
+--- a/examples/atb_models/atb_framework/core/base/event_manager.cpp
++++ b/examples/atb_models/atb_framework/core/base/event_manager.cpp
+@@ -74,6 +74,13 @@ EventManager::~EventManager()
+         }
+     }
+     ATB_SPEED_LOG_DEBUG("EventManager destroyed.");
++    for (auto& eventsTuple : eventsForExternal_) {
++        auto& eventsForExtel = std::get<1>(eventsTuple.second);
++        for (auto& eventE : eventsForExtel) {
++            DestroyEvent(eventE);
++        }
++    }
++    ATB_SPEED_LOG_DEBUG("EventManager destroyed.");
+ }
+ 
+ void EventManager::SetWaitOperationTimeout(uint32_t timeout)
+@@ -219,4 +226,76 @@ atb::Status EventManager::WaitEvent(atb::Operation*& op, EventAction eventAction
+     return EventInternal(eventAction, EventType::WAIT, op, pipeKey);
+ }
+ 
++EventManagerStatus EventManager::CheckPipeKey(const std::string &pipeKey)
++{
++    if (eventsForExternal_.find(pipeKey) == eventsForExternal_.end()) {
++        if (eventQueues_.find(pipeKey) == eventQueues_.end()) {
++            ATB_SPEED_LOG_DEBUG("Event for external error: no such pipekey" << pipeKey);
++            return EM_INVALID_ACTION;
++        }
++        std::vector<aclrtEvent> queue;
++        while (!eventQueues_[pipeKey].empty()) {
++            queue.push_back(eventQueues_[pipeKey].front());
++            eventQueues_[pipeKey].pop();
++        }
++        aclrtStream subStream;
++        aclError ret = aclrtCreateStream(&subStream);
++        if (ret != ACL_ERROR_NONE) {
++            ATB_SPEED_LOG_ERROR("Failed to create aclrtStream: " << ret);
++            return EM_INVALID_ACTION;
++        }
++        ret = aclrtSetStreamFailureMode(subStream, ACL_STOP_ON_FAILURE);
++        if (ret != 0) {
++            ATB_SPEED_LOG_ERROR("Failed to aclrtSetStreamFailureMode: " << ret);
++            return EM_INVALID_ACTION;
++        }
++        eventsForExternal_[pipeKey] = std::make_tuple(0, queue, subStream);
++    }
++    return EM_SUCCESS;
++}
++
++EventManagerStatus EventManager::RecordEvent(const std::string &pipeKey)
++{
++    auto rt = CheckPipeKey(pipeKey);
++    if (rt != EM_SUCCESS) {
++        return rt;
++    }
++    auto& currentEventIdx = std::get<0>(eventsForExternal_[pipeKey]);
++    auto& eventsForExtel = std::get<1>(eventsForExternal_[pipeKey]);
++    auto& stream = std::get<2>(eventsForExternal_[pipeKey]);
++    aclError ret = aclrtRecordEvent(eventsForExtel[currentEventIdx], stream);
++    currentEventIdx = (currentEventIdx + 1) % eventsForExtel.size();
++    if (ret != ACL_SUCCESS) {
++        ATB_SPEED_LOG_ERROR("aclrtRecordEvent fail, ret: " << ret);
++        return EM_INVALID_ACTION;
++    }
++    return EM_SUCCESS;
++}
++
++EventManagerStatus EventManager::WaitEvent(const std::string &pipeKey)
++{
++    auto rt = CheckPipeKey(pipeKey);
++    if (rt != EM_SUCCESS) {
++        return rt;
++    }
++    auto& currentEventIdx = std::get<0>(eventsForExternal_[pipeKey]);
++    auto& eventsForExtel = std::get<1>(eventsForExternal_[pipeKey]);
++    auto& stream = std::get<2>(eventsForExternal_[pipeKey]);
++    aclError ret = aclrtStreamWaitEvent(stream, eventsForExtel[currentEventIdx]);
++    if (ret != ACL_SUCCESS) {
++        ATB_SPEED_LOG_ERROR("aclrtWaitEvent fail, ret: " << ret);
++        return EM_INVALID_ACTION;
++    }
++    ret = aclrtResetEvent(eventsForExtel[currentEventIdx], stream);
++    if (ret != ACL_SUCCESS) {
++        ATB_SPEED_LOG_ERROR("aclrtResetEvent fail, ret: " << ret);
++        return EM_INVALID_ACTION;
++    }
++    if (aclrtSynchronizeStream(stream) != 0) {
++        ATB_SPEED_LOG_ERROR("EventManager::WaitEvent: aclrtSynchronizeStream fail");
++        return EM_INVALID_ACTION;
++    }
++    currentEventIdx = (currentEventIdx + 1) % eventsForExtel.size();
++    return EM_SUCCESS;
++}
+ }  // namespace atb_speed
+\ No newline at end of file
+diff --git a/examples/atb_models/atb_framework/core/include/atb_speed/base/event_manager.h b/examples/atb_models/atb_framework/core/include/atb_speed/base/event_manager.h
+index 4d657d4d1..1010c7002 100644
+--- a/examples/atb_models/atb_framework/core/include/atb_speed/base/event_manager.h
++++ b/examples/atb_models/atb_framework/core/include/atb_speed/base/event_manager.h
+@@ -13,7 +13,6 @@
+ #ifndef ATB_SPEED_EVENT_MANAGER_H
+ #define ATB_SPEED_EVENT_MANAGER_H
+ 
+-#include <acl/acl.h>
+ #include <atb/context.h>
+ #include <atb/operation.h>
+ #include <atb/atb_infer.h>
+@@ -96,6 +95,22 @@ public:
+      */
+     atb::Status WaitEvent(atb::Operation*& op, EventAction eventAction, const std::string &pipeKey = "default");
+ 
++    /**
++     * @brief 在多流场景下，用于图外部与图内部的流间同步，取pipe中的current event record一次，current event指向下一个event，循环event队列。
++     在同一张图里RecordEvent和WaitEvent只能使用同一个pipekey，否则会有时序问题。
++     * @param pipeKey 事件管道的标识符（默认为 "default"）
++     * @return 返回操作的状态码（atb::Status）
++     */
++    EventManagerStatus RecordEvent(const std::string &pipeKey = "default");
++
++    /**
++     * @brief 在多流场景下，用于图外部与图内部的流间同步，取pipe中的current event wait一次然后sync一次，current event指向下一个event，循环event队列。
++     在同一张图里RecordEvent和WaitEvent只能使用同一个pipekey，否则会有时序问题。
++     * @param pipeKey 事件管道的标识符（默认为 "default"）
++     * @return 返回操作的状态码（atb::Status）
++     */
++    EventManagerStatus WaitEvent(const std::string &pipeKey = "default");
++
+ private:
+     // 构造和析构函数设为 private，确保单例模式
+     // 设置 ACL 的操作等待超时时间，默认 180 秒
+@@ -145,6 +160,8 @@ private:
+                               EventType eventType,
+                               atb::Operation*& op,
+                               const std::string &pipeKey);
++    
++    EventManagerStatus CheckPipeKey(const std::string &pipeKey);
+ 
+ private:
+     // 条件变量，用于在事件队列为空时阻塞等待，并在有新事件入队时通知等待线程
+@@ -152,6 +169,8 @@ private:
+     // 事件队列：仅用于对外提供 push/pop 接口
+     std::map<std::string, std::queue<aclrtEvent>> eventQueues_;
+     std::map<std::string, std::queue<std::pair<atb::Operation*, atb::common::EventParam>>> opsWithoutEvent_;
++    // 用于图外部与图内部的流间同步
++    std::map<std::string, std::tuple<int, std::vector<aclrtEvent>, aclrtStream>> eventsForExternal_;
+     // 保护 eventQueue_ 的互斥锁
+     std::mutex queueMutex_;
+     // 记录当前队列中 event 的数量
+diff --git a/examples/atb_models/atb_framework/models/base/model/decoder_model.cpp b/examples/atb_models/atb_framework/models/base/model/decoder_model.cpp
+index 72bec9ce7..2f8aa6d5a 100644
+--- a/examples/atb_models/atb_framework/models/base/model/decoder_model.cpp
++++ b/examples/atb_models/atb_framework/models/base/model/decoder_model.cpp
+@@ -18,6 +18,7 @@
+ 
+ #include "models/base/model/decoder_model.h"
+ #include "models/base/layer/decoder_layer.h"
++#include "models/base/param/model_param.h"
+ #include "operations/aclnn/ops/split_with_size_operation.h"
+ #include "operations/fusion/infer_shape_functions.h"
+ 
+@@ -725,6 +726,7 @@ atb::Status DecoderModel::AddLayer()
+ 
+         uint32_t nodeCount = graph_.nodes.size();
+         this->AddSingleLayer(trueLayerId);
++        RecordEventBeforePrefixCacheSave();
+         for (uint32_t index = nodeCount; index < graph_.nodes.size(); index++) {
+             if (GetSingleton<common::DapManager>().GetRole() == common::DapRole::SUCCESSOR) {
+                 CHECK_OPERATION_STATUS_RETURN(SetNodeStreamId(graph_.nodes.at(index), 1));
+@@ -740,6 +742,22 @@ atb::Status DecoderModel::AddLayer()
+     return atb::NO_ERROR;
+ }
+ 
++atb::Status DecoderModel::RecordEventBeforePrefixCacheSave()
++{
++    if (param.memPoolType == atb_speed::base::MemPoolType::ASYNC_WRITE && param.isPrefill) {
++        atb::Operation *op = nullptr;
++        atb_speed::Model::Node recordSaveNode;
++        CHECK_OPERATION_STATUS_RETURN(atb_speed::EventManager::GetInstance().RecordEvent(
++            op, atb_speed::EventAction::PUSH, param.memPoolEventPipeKey));
++        recordSaveNode.inTensors = {};
++        recordSaveNode.outTensors = {};
++        recordSaveNode.operation.reset(op);
++        graph_.nodes.push_back(recordSaveNode);
++        ATB_SPEED_LOG_DEBUG("[Events] [PUSH] [RECORD] will be pushed to the graph later");
++    }
++    return atb::NO_ERROR;
++}
++
+ atb::Status DecoderModel::AddSingleLayer(uint32_t layerId)
+ {
+     atb::Operation *op = nullptr;
+diff --git a/examples/atb_models/atb_framework/models/base/model/decoder_model.h b/examples/atb_models/atb_framework/models/base/model/decoder_model.h
+index 8e4b698f8..238115b34 100644
+--- a/examples/atb_models/atb_framework/models/base/model/decoder_model.h
++++ b/examples/atb_models/atb_framework/models/base/model/decoder_model.h
+@@ -261,6 +261,8 @@ private:
+     std::map<uint32_t, uint32_t> CopyMapWithSuffix(std::map<std::string, uint32_t>& tensorMap) const;
+     std::map<atb::Tensor *, atb::Tensor *> precederToSuccessorTensorMap = {};
+     void ReplaceDapTensors(std::vector<atb::Tensor *>& tensors);
++    atb::Status WaitEventAfterPrefixCacheLoad();
++    atb::Status RecordEventBeforePrefixCacheSave();
+ };
+ 
+ }  // namespace base
+diff --git a/examples/atb_models/atb_framework/models/base/param/model_param.cpp b/examples/atb_models/atb_framework/models/base/param/model_param.cpp
+index 1ba428af0..e02d5ca75 100644
+--- a/examples/atb_models/atb_framework/models/base/param/model_param.cpp
++++ b/examples/atb_models/atb_framework/models/base/param/model_param.cpp
+@@ -86,6 +86,12 @@ void ModelParam::ParseParam(const nlohmann::json &paramJson)
+     if (paramJson.contains("enableFlashComm")) {
+         this->enableFlashComm = paramJson["enableFlashComm"].get<bool>();
+     }
++    if (paramJson.contains("memPoolType")) {
++        this->memPoolType = FetchJsonParam<MemPoolType>(paramJson, "memPoolType");
++    }
++    if (paramJson.contains("pipeKey")) {
++        this->memPoolEventPipeKey = FetchJsonParam<std::string>(paramJson, "pipeKey");
++    }
+     ParseNormParam(paramJson);
+     ParseAttentionParam(paramJson);
+     ParseMlpParam(paramJson);
+diff --git a/examples/atb_models/atb_framework/models/base/param/model_param.h b/examples/atb_models/atb_framework/models/base/param/model_param.h
+index 05c262bb9..7e01d2256 100644
+--- a/examples/atb_models/atb_framework/models/base/param/model_param.h
++++ b/examples/atb_models/atb_framework/models/base/param/model_param.h
+@@ -24,6 +24,12 @@ const int LWD_EDGE_LAST = 2;
+ namespace atb_speed {
+ namespace base {
+ 
++enum MemPoolType {
++    DISABLED = 0,
++    SYNC_WRITE = 1,
++    ASYNC_WRITE = 2
++};
++
+ /// Parse string to `nlohmann::json`
+ /// \param param parameters in JSON string format passed from the Python side
+ /// \return parameters in `nlohmann::json` format
+@@ -83,6 +89,9 @@ public:
+     bool reuseEmbedTable = false;
+     bool outputEmbedTable = false;
+ 
++    MemPoolType memPoolType = MemPoolType::DISABLED;
++    // When `mempool_type` is ASYNC_WRITE, a event pipeKey is set for async layer-wise prefix cache transfer.
++    std::string memPoolEventPipeKey = "default";
+     std::string backend = "hccl";
+     std::string tpDomain = "";
+     std::string rankTableFile = "";
+diff --git a/examples/atb_models/atb_framework/pytorch/adapter/event/event.cpp b/examples/atb_models/atb_framework/pytorch/adapter/event/event.cpp
+new file mode 100644
+index 000000000..e2cca4705
+--- /dev/null
++++ b/examples/atb_models/atb_framework/pytorch/adapter/event/event.cpp
+@@ -0,0 +1,24 @@
++/*
++ * Copyright (c) Huawei Technologies Co., Ltd. 2025. All rights reserved.
++ *
++ * Licensed under the Apache License, Version 2.0 (the "License");
++ * you may not use this file except in compliance with the License.
++ * You may obtain a copy of the License at
++ *
++ * http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License.
++ */
++
++#include "event.h"
++
++namespace atb_speed {
++
++void Event::Record(const std::string& pipeKey) { EventManager::GetInstance().RecordEvent(pipeKey); }
++void Event::Wait(const std::string& pipeKey) { EventManager::GetInstance().WaitEvent(pipeKey); }
++
++} // namespace atb_speed
+\ No newline at end of file
+diff --git a/examples/atb_models/atb_framework/pytorch/adapter/event/event.h b/examples/atb_models/atb_framework/pytorch/adapter/event/event.h
+new file mode 100644
+index 000000000..27df111ab
+--- /dev/null
++++ b/examples/atb_models/atb_framework/pytorch/adapter/event/event.h
+@@ -0,0 +1,32 @@
++/*
++ * Copyright (c) Huawei Technologies Co., Ltd. 2025. All rights reserved.
++ *
++ * Licensed under the Apache License, Version 2.0 (the "License");
++ * you may not use this file except in compliance with the License.
++ * You may obtain a copy of the License at
++ *
++ * http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License.
++ */
++#ifndef ATB_SPEED_UTILS_EVENT_H
++#define ATB_SPEED_UTILS_EVENT_H
++
++#include <torch/torch.h>
++#include <torch_npu/csrc/framework/OpCommand.h>
++#include <torch/custom_class.h>
++#include <torch/script.h>
++#include "atb_speed/base/event_manager.h"
++
++namespace atb_speed {
++class Event : public torch::CustomClassHolder {
++public:
++    static void Record(const std::string& pipeKey);
++    static void Wait(const std::string& pipeKey);
++};
++} // namespace atb_speed
++#endif
+\ No newline at end of file
+diff --git a/examples/atb_models/atb_framework/pytorch/adapter/model/model_torch.cpp b/examples/atb_models/atb_framework/pytorch/adapter/model/model_torch.cpp
+index e7b79db6c..3d08ccb76 100644
+--- a/examples/atb_models/atb_framework/pytorch/adapter/model/model_torch.cpp
++++ b/examples/atb_models/atb_framework/pytorch/adapter/model/model_torch.cpp
+@@ -27,6 +27,7 @@
+ #include "pytorch/adapter/workspace/workspace.h"
+ #include "atb_speed/utils/model_factory.h"
+ #include "pytorch/adapter/context/context.h"
++#include "pytorch/adapter/event/event.h"
+ 
+ namespace atb_speed {
+ static std::mutex g_taskQueueLock;
+@@ -343,5 +344,9 @@ TORCH_LIBRARY(ModelTorch, m)
+         .def_static("enable_cache_workspace", &Context::EnableCacheWorkspace)
+         .def_static("disable_cache_workspace", &Context::DisableCacheWorkspace)
+         .def_static("resume_hccl_comm", &Context::ResumeHcclComm);
++
++    m.class_<Event>("Event")
++        .def_static("record", &Event::Record)
++        .def_static("wait", &Event::Wait);
+ }
+ }
+diff --git a/examples/atb_models/atb_llm/models/base/flash_causal_lm.py b/examples/atb_models/atb_llm/models/base/flash_causal_lm.py
+index 01d4deda4..d94c3f416 100644
+--- a/examples/atb_models/atb_llm/models/base/flash_causal_lm.py
++++ b/examples/atb_models/atb_llm/models/base/flash_causal_lm.py
+@@ -19,6 +19,7 @@ from transformers.configuration_utils import PretrainedConfig
+ 
+ from atb_llm.utils.eplb_expert_data_collect import EplbExpertDataCollect
+ from atb_llm.utils.moe_utils import EPLBType
++from mindie_llm.text_generator.plugins.plugin_manager import MemPoolType
+ from .model_utils import BaseModel
+ from ...models import InferenceMode
+ from ...utils.env import ENV
+@@ -93,7 +94,7 @@ class FlashForCausalLM(BaseModel):
+             self.layerwise = LayerWiseAttr(edge_start_layer_count, edge_end_layer_count, split_type)
+          
+         self.inference_mode = kwargs.get("inference_mode")
+-
++        self.mempool_type: MemPoolType = kwargs.get('mempool_type', MemPoolType.DISABLED)
+         self.num_attention_heads = config.num_attention_heads
+         if hasattr(config, 'num_key_value_heads'):
+             self.num_key_value_heads = config.num_key_value_heads
+@@ -620,3 +621,9 @@ class FlashForCausalLM(BaseModel):
+         logits = self.execute_dap_ascend_operator(
+             all_inputs, json.dumps(acl_param_dict), is_prefill[0])
+         return logits
++
++    def wait_model_event(self, event_pipe_key: str):
++        torch.classes.ModelTorch.Event.wait(event_pipe_key)
++
++    def record_model_event(self, event_pipe_key: str):
++        torch.classes.ModelTorch.Event.record(event_pipe_key)
+diff --git a/examples/atb_models/atb_llm/models/base/graph_manager/__init__.py b/examples/atb_models/atb_llm/models/base/graph_manager/__init__.py
+index ddc81194a..622bd7a1f 100644
+--- a/examples/atb_models/atb_llm/models/base/graph_manager/__init__.py
++++ b/examples/atb_models/atb_llm/models/base/graph_manager/__init__.py
+@@ -16,6 +16,7 @@ from atb_llm.models.base.graph_manager.single_lora_graph_wrapper import SingleLo
+ from atb_llm.models.base.graph_manager.multi_lora_graph_wrapper import MultiLoraGraphWrapper
+ from atb_llm.models.base.graph_manager.speculate_graph_wrapper import SpeculateGraphWrapper
+ from atb_llm.models.base.graph_manager.splitfuse_graph_wrapper import SplitFuseGraphWrapper
++from atb_llm.models.base.graph_manager.mem_pool_graph_wrapper import MemPoolGraphWrapper
+ from atb_llm.models.base.graph_manager.layerwise_decode_graph_wrapper import get_layerwise_decode_graph
+ from atb_llm.models.base.graph_manager.layerwise_prefill_graph_wrapper import get_layerwise_prefill_graph
+ from atb_llm.models.base.graph_manager.layerwise_combined_graph_wrapper import LayerwiseCombinedATBGraphWrapper
+\ No newline at end of file
+diff --git a/examples/atb_models/atb_llm/models/base/graph_manager/compatible_matrix.py b/examples/atb_models/atb_llm/models/base/graph_manager/compatible_matrix.py
+index 48ffd7572..02c2e990d 100644
+--- a/examples/atb_models/atb_llm/models/base/graph_manager/compatible_matrix.py
++++ b/examples/atb_models/atb_llm/models/base/graph_manager/compatible_matrix.py
+@@ -21,11 +21,11 @@ class FeatureType(str, Enum):
+     FLASHCOMM = "flashcomm"
+     SPECULATE = "speculate"
+     SPLITFUSE = "splitfuse"
+-
++    MOONCAKE = "mempool"
+ 
+ COMPATIBLE_MATRIX: dict[FeatureType, list[FeatureType]] = {
+     FeatureType.PREFILL: [FeatureType.SINGLE_LORA, FeatureType.MULTI_LORA, FeatureType.FLASHCOMM, \
+-        FeatureType.DAP, FeatureType.SPLITFUSE],
++        FeatureType.DAP, FeatureType.SPLITFUSE, FeatureType.MOONCAKE],
+     FeatureType.DECODE: [FeatureType.SINGLE_LORA, FeatureType.MULTI_LORA, FeatureType.SPECULATE],
+     FeatureType.SINGLE_LORA: [FeatureType.PREFILL, FeatureType.DECODE, FeatureType.SPLITFUSE, FeatureType.FLASHCOMM],
+     FeatureType.MULTI_LORA: [FeatureType.PREFILL, FeatureType.DECODE, FeatureType.SPLITFUSE, FeatureType.FLASHCOMM],
+@@ -37,4 +37,5 @@ COMPATIBLE_MATRIX: dict[FeatureType, list[FeatureType]] = {
+         FeatureType.LAYERWISE_PREFILL, FeatureType.SINGLE_LORA, FeatureType.MULTI_LORA],
+     FeatureType.LAYERWISE_PREFILL: [FeatureType.SPLITFUSE],
+     FeatureType.LAYERWISE_DECODE: [],
++    FeatureType.MOONCAKE: [FeatureType.PREFILL],
+ }
+\ No newline at end of file
+diff --git a/examples/atb_models/atb_llm/models/base/graph_manager/mem_pool_graph_wrapper.py b/examples/atb_models/atb_llm/models/base/graph_manager/mem_pool_graph_wrapper.py
+new file mode 100644
+index 000000000..63bb1578f
+--- /dev/null
++++ b/examples/atb_models/atb_llm/models/base/graph_manager/mem_pool_graph_wrapper.py
+@@ -0,0 +1,27 @@
++# Copyright (c) Huawei Technologies Co., Ltd. 2025. All rights reserved.
++# MindIE is licensed under Mulan PSL v2.
++# You can use this software according to the terms and conditions of the Mulan PSL v2.
++# You may obtain a copy of Mulan PSL v2 at:
++#          http://license.coscl.org.cn/MulanPSL2
++# THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
++# EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
++# MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
++# See the Mulan PSL v2 for more details.
++from atb_llm.models.base.graph_manager.graph_wrapper import ATBGraphWrapper
++from atb_llm.models.base.graph_manager.compatible_matrix import FeatureType
++from atb_llm.models.base.flash_causal_lm import FlashForCausalLM
++from atb_llm.runner.model_runner import generate_mem_pool_event_key
++from mindie_llm.text_generator.plugins.plugin_manager import MemPoolType
++
++
++class MemPoolGraphWrapper(ATBGraphWrapper):
++    pipe_key: str = generate_mem_pool_event_key(only_save_kv=True)
++
++    def __init__(self):
++        super().__init__()
++        self.feature_name = FeatureType.MOONCAKE
++        self.feature_params = {"memPoolType": int(MemPoolType.ASYNC_WRITE), "pipeKey": self.pipe_key}
++
++    def activate(self, context: FlashForCausalLM, runtime_params, **kwargs) -> bool:
++        mempool_type = kwargs.get("mempool_type", MemPoolType.DISABLED)
++        return mempool_type == MemPoolType.ASYNC_WRITE
+diff --git a/examples/atb_models/atb_llm/models/base/graph_manager/splitfuse_graph_wrapper.py b/examples/atb_models/atb_llm/models/base/graph_manager/splitfuse_graph_wrapper.py
+index 2ce0e187f..c0462065b 100644
+--- a/examples/atb_models/atb_llm/models/base/graph_manager/splitfuse_graph_wrapper.py
++++ b/examples/atb_models/atb_llm/models/base/graph_manager/splitfuse_graph_wrapper.py
+@@ -10,20 +10,22 @@
+ from atb_llm.models.base.graph_manager.graph_wrapper import ATBGraphWrapper
+ from atb_llm.models.base.graph_manager.compatible_matrix import FeatureType
+ from atb_llm.models.base.flash_causal_lm import FlashForCausalLM
++from atb_llm.runner.model_runner import generate_mem_pool_event_key
+ 
+ 
+ class SplitFuseGraphWrapper(ATBGraphWrapper):
+     "ATBGraphWrapper class for prefixcache and splitfuse"
++    pipe_key: str = generate_mem_pool_event_key(only_save_kv=False)
++
+     def __init__(self):
+         super().__init__()
+-
+         self.feature_name = FeatureType.SPLITFUSE
+-        self.feature_params = {"enableSplitFuse": True, "isPrefill": True}
+-    
++        self.feature_params = {"enableSplitFuse": True, "isPrefill": True, "pipekey": self.pipe_key}
++
+     def activate(self, context: FlashForCausalLM, runtime_params, **kwargs) -> bool:
+         pa_enable = False if context.inference_mode is None else context.inference_mode.enable_prefill_pa
+         q_lens = "\"qLen\"" in runtime_params
+         is_prefill = kwargs.get("is_prefill", False)
+         if q_lens and is_prefill and pa_enable:
+             return True
+-        return False
+\ No newline at end of file
++        return False
+diff --git a/examples/atb_models/atb_llm/models/deepseekv2/flash_causal_deepseekv2.py b/examples/atb_models/atb_llm/models/deepseekv2/flash_causal_deepseekv2.py
+index dfa6646e7..bfe26bf01 100644
+--- a/examples/atb_models/atb_llm/models/deepseekv2/flash_causal_deepseekv2.py
++++ b/examples/atb_models/atb_llm/models/deepseekv2/flash_causal_deepseekv2.py
+@@ -42,6 +42,7 @@ from atb_llm.utils.weights import ProcessGroupType
+ from atb_llm.utils.log import print_log
+ from atb_llm.utils import file_utils
+ from atb_llm.utils.eplb_expert_data_collect import EplbExpertDataCollect
++from mindie_llm.text_generator.plugins.plugin_manager import MemPoolType
+ from ...models import InferenceMode
+ 
+ try:
+@@ -79,6 +80,12 @@ KVCACHE_QUANT_LAYERS = "kvcacheQuantLayers"
+ MOE_PACK_QUANT_TYPE = "moePackQuantType"
+ ALLTOALL_LONG_SEQLEN_THRESHOLD = 65536
+ MAX_ALLTOALL_BUFF_SCALE = 3
++WARMUP_IS_END = "warmup_is_end"
++
++
++# 直接引用model_runner中的同名实现会导致循环调用和拉起卡死, 故本文件中直接引用这里
++def generate_mem_pool_event_key(only_save_kv: bool) -> str:
++    return "only_save_kv" if only_save_kv else "both_save_kv"
+ 
+ 
+ class MaskType(int, Enum):
+@@ -599,14 +606,22 @@ class FlashDeepseekv2ForCausalLM(FlashForCausalLM):
+ 
+     def init_ascend_operations(self, config: DeepseekV2Config):
+         if not self.layerwise_disaggregated:
+-            self.acl_encoder_operation = torch.classes.ModelTorch.ModelTorch(CPP_DEEPSEEKV2_MODEL_CLASS_NAME)
++            if self.mempool_type == MemPoolType.ASYNC_WRITE:
++                self.acl_encoder_operation_prefixcache_mempool = \
++                    torch.classes.ModelTorch.ModelTorch(CPP_DEEPSEEKV2_MODEL_CLASS_NAME)
++            else:
++                self.acl_encoder_operation = torch.classes.ModelTorch.ModelTorch(CPP_DEEPSEEKV2_MODEL_CLASS_NAME)
+             logger.info(f"when init_ascend_operations, self.prefix_cache_enable is : {self.prefix_cache_enable}")
+             if self.prefix_cache_enable:
+                 self.acl_encoder_operation_prefixcache = \
+                     torch.classes.ModelTorch.ModelTorch(CPP_DEEPSEEKV2_MODEL_CLASS_NAME)
+             if self.num_speculative_tokens:
+-                self.acl_encoder_operation_mtp = torch.classes.ModelTorch.ModelTorch(
+-                    CPP_DEEPSEEKV2_MTP_MODEL_CLASS_NAME)
++                if self.mempool_type == MemPoolType.ASYNC_WRITE:
++                    self.acl_encoder_operation_prefixcache_mempool_mtp = \
++                        torch.classes.ModelTorch.ModelTorch(CPP_DEEPSEEKV2_MTP_MODEL_CLASS_NAME)
++                else:
++                    self.acl_encoder_operation_mtp = torch.classes.ModelTorch.ModelTorch(
++                        CPP_DEEPSEEKV2_MTP_MODEL_CLASS_NAME)
+                 if self.prefix_cache_enable:
+                     self.acl_encoder_operation_prefixcache_mtp = \
+                         torch.classes.ModelTorch.ModelTorch(CPP_DEEPSEEKV2_MTP_MODEL_CLASS_NAME)
+@@ -1095,9 +1110,15 @@ class FlashDeepseekv2ForCausalLM(FlashForCausalLM):
+                         "enableLcocTp": self.enable_lcoc_tp,
+                         "enableFusedMLA": self.enable_fused_mla,
+                         }
++        encoder_param_mempool = {**encoder_param,
++                                 "memPoolType": int(self.mempool_type),
++                                 "pipeKey": generate_mem_pool_event_key(only_save_kv=True),
++                                 }
+         encoder_param_prefixcache = {**encoder_param,
+-                         "enablePrefixCache": self.prefix_cache_enable,                         
+-                         }
++                                     "enablePrefixCache": self.prefix_cache_enable,
++                                     "memPoolType": int(self.mempool_type),
++                                     "pipeKey": generate_mem_pool_event_key(only_save_kv=False),
++                                     }
+         decoder_param = {**coder_param, "isPrefill": False, "supportLcoc": False,
+                         "expertParallelDegree": self.ep_level \
+                             if self.ep_level != ExpertParallelDegree.MIX_EP \
+@@ -1120,6 +1141,9 @@ class FlashDeepseekv2ForCausalLM(FlashForCausalLM):
+                         self.acl_encoder_operation.set_format_to_nz(weight_id)
+                         if self.enable_atlas_gmm_fused:
+                             self.acl_encoder_operation.set_format_to_nz(weight_id + 6)
++            if self.mempool_type == MemPoolType.ASYNC_WRITE:
++                self.acl_encoder_operation_prefixcache_mempool.set_param(json.dumps({**encoder_param_mempool}))
++                self.acl_encoder_operation_prefixcache_mempool.set_weight(self.ascend_weight)
+             if self.prefix_cache_enable:
+                 self.acl_encoder_operation_prefixcache.set_param(json.dumps({**encoder_param_prefixcache}))
+                 self.acl_encoder_operation_prefixcache.set_weight(self.ascend_weight)
+@@ -1257,9 +1281,21 @@ class FlashDeepseekv2ForCausalLM(FlashForCausalLM):
+                         self.acl_decoder_operation_mtp.set_format_to_nz(weight_id)
+                         if self.enable_atlas_gmm_fused:
+                             self.acl_decoder_operation_mtp.set_format_to_nz(weight_id + 6)
+-                    
++            if self.mempool_type == MemPoolType.ASYNC_WRITE:
++                encoder_param_mempool_mtp = {
++                    **encoder_param_mtp,
++                    "memPoolType": int(self.mempool_type),
++                    "pipeKey": generate_mem_pool_event_key(only_save_kv=True)
++                }
++                self.acl_encoder_operation_prefixcache_mempool_mtp.set_param(json.dumps({**encoder_param_mempool_mtp}))
++                self.acl_encoder_operation_prefixcache_mempool_mtp.set_weight(self.ascend_weight_mtp)
+             if self.prefix_cache_enable:
+-                encoder_param_mtp = {**encoder_param_mtp, "enablePrefixCache": self.prefix_cache_enable}
++                encoder_param_mtp = {
++                    **encoder_param_mtp,
++                    "enablePrefixCache": self.prefix_cache_enable,
++                    "memPoolType": int(self.mempool_type),
++                    "pipeKey": generate_mem_pool_event_key(only_save_kv=False)
++                }
+                 self.acl_encoder_operation_prefixcache_mtp.set_param(json.dumps({**encoder_param_mtp}))
+                 self.acl_encoder_operation_prefixcache_mtp.set_weight(self.ascend_weight_mtp)
+ 
+@@ -1663,7 +1699,7 @@ class FlashDeepseekv2ForCausalLM(FlashForCausalLM):
+         perf_time_start = 0
+         if ENV.benchmark_enable:
+             import time
+-            torch.npu.synchronize()
++            torch.npu.current_stream().synchronize()
+             perf_time_start = time.time()
+         self.expert_array = self.placeholder
+ 
+@@ -1958,6 +1994,9 @@ class FlashDeepseekv2ForCausalLM(FlashForCausalLM):
+         if not self.num_speculative_tokens:
+             if is_prefill and self.prefix_cache_enable and self.has_prefixcache:
+                 if not self.layerwise_disaggregated:
++                    # skip event for warmup
++                    warmup_is_end = kwargs.get(WARMUP_IS_END, True)
++                    self.acl_encoder_operation_prefixcache.skip_event(not warmup_is_end)
+                     acl_model_out = self.acl_encoder_operation_prefixcache.execute(acl_inputs, acl_param)
+                 else:
+                     if split_part == LwdLayerStatus.EDGE_START_LAYER:
+@@ -1967,7 +2006,11 @@ class FlashDeepseekv2ForCausalLM(FlashForCausalLM):
+                     else:
+                         acl_model_out = self.acl_tail_encoder_operation_prefixcache.execute(acl_inputs, acl_param)
+                     self.has_prefixcache = False
+-                
++            elif is_prefill and self.mempool_type == MemPoolType.ASYNC_WRITE and not self.layerwise_disaggregated:
++                # skip event for warmup
++                warmup_is_end = kwargs.get(WARMUP_IS_END, True)
++                self.acl_encoder_operation_prefixcache_mempool.skip_event(not warmup_is_end)
++                acl_model_out = self.acl_encoder_operation_prefixcache_mempool.execute(acl_inputs, acl_param)
+             elif is_prefill:
+                 if self.layerwise_disaggregated:
+                     if split_part == LwdLayerStatus.EDGE_START_LAYER:
+@@ -2000,12 +2043,24 @@ class FlashDeepseekv2ForCausalLM(FlashForCausalLM):
+         if is_mtp:
+             encoder_operation = self.acl_encoder_operation_mtp
+             decoder_operation = self.acl_decoder_operation_mtp
++            if self.mempool_type == MemPoolType.ASYNC_WRITE:
++                warmup_is_end = kwargs.get(WARMUP_IS_END, True)
++                self.acl_encoder_operation_prefixcache_mempool_mtp.skip_event(not warmup_is_end)
++                encoder_operation = self.acl_encoder_operation_prefixcache_mempool_mtp
+             if self.has_prefixcache:
++                warmup_is_end = kwargs.get(WARMUP_IS_END, True)
++                self.acl_encoder_operation_prefixcache_mtp.skip_event(not warmup_is_end)
+                 encoder_operation = self.acl_encoder_operation_prefixcache_mtp
+         else:
+             encoder_operation = self.acl_encoder_operation
+             decoder_operation = self.acl_decoder_operation
++            if self.mempool_type == MemPoolType.ASYNC_WRITE:
++                warmup_is_end = kwargs.get(WARMUP_IS_END, True)
++                self.acl_encoder_operation_prefixcache_mempool.skip_event(not warmup_is_end)
++                encoder_operation = self.acl_encoder_operation_prefixcache_mempool
+             if self.has_prefixcache:
++                warmup_is_end = kwargs.get(WARMUP_IS_END, True)
++                self.acl_encoder_operation_prefixcache.skip_event(not warmup_is_end)
+                 encoder_operation = self.acl_encoder_operation_prefixcache
+ 
+         if is_prefill:
+@@ -2171,7 +2226,7 @@ class FlashDeepseekv2ForCausalLM(FlashForCausalLM):
+         llm_hidden_states = (hidden_states[0][lm_head_indices[0]], hidden_states[1][lm_head_indices[1]])
+ 
+         # logits 是一个tuple，里面是两个logits，logits是一个两维NPU tensor [ntokens, vocabSize]
+-        torch.npu.synchronize()
++        torch.npu.current_stream().synchronize()
+         logits_mtp, hidden_states_mtp = logits, hidden_states
+         for mtp_idx in range(self.num_speculative_tokens):
+             self.acl_dap_operation_mtp.set_kv_cache(self.mtp_k_caches[mtp_idx: mtp_idx + 1],
+@@ -2474,7 +2529,8 @@ class FlashDeepseekv2ForCausalLM(FlashForCausalLM):
+             span_end(prof, True)
+ 
+             prof = span_start("operatorExecute", True)
+-            logits = self.execute_ascend_operator(acl_inputs, acl_param, is_prefill)
++            logits = self.execute_ascend_operator(acl_inputs, acl_param, is_prefill,
++                                                  warmup_is_end=kwargs.get(WARMUP_IS_END, True))
+             if not is_prefill and self.mapping.has_attn_cp():
+                 # During the CP decode stage, each CP domain receives the same token as input,
+                 # resulting in the same output token. As a result, duplicates exist in the aggregated next_token.
+@@ -2522,13 +2578,18 @@ class FlashDeepseekv2ForCausalLM(FlashForCausalLM):
+                 input_ids, position_ids, is_prefill, kv_cache,
+                 block_tables, slots, input_lengths, max_seq_len,
+                 lm_head_indices, **kwargs)
+-            logits, hidden_states = self.execute_ascend_operator(acl_inputs, acl_param, is_prefill)
++            logits, hidden_states = self.execute_ascend_operator(acl_inputs, acl_param, is_prefill,
++                                                                 warmup_is_end=kwargs.get(WARMUP_IS_END, True))
+             llm_logits, llm_hidden_states = logits, hidden_states[lm_head_indices]
+             q_lens = kwargs.get(Q_LENS, None)
+             logits_mtp, hidden_states_mtp = logits, hidden_states
+             acl_inputs_mtp, acl_param_mtp = acl_inputs, acl_param
+-            self.acl_encoder_operation_mtp.set_kv_cache(self.mtp_k_caches[0: 1],
+-                                                        self.mtp_v_caches[0: 1])
++            if self.acl_encoder_operation_mtp is not None:
++                self.acl_encoder_operation_mtp.set_kv_cache(self.mtp_k_caches[0: 1],
++                                                            self.mtp_v_caches[0: 1])
++            if self.mempool_type == MemPoolType.ASYNC_WRITE:
++                self.acl_encoder_operation_prefixcache_mempool_mtp.set_kv_cache(self.mtp_k_caches[0: 1],
++                                                                                self.mtp_v_caches[0: 1])
+             if self.prefix_cache_enable:
+                 self.acl_encoder_operation_prefixcache_mtp.set_kv_cache(self.mtp_k_caches[0: 1], 
+                                                                         self.mtp_v_caches[0: 1])
+@@ -2543,11 +2604,12 @@ class FlashDeepseekv2ForCausalLM(FlashForCausalLM):
+                 acl_inputs_mtp, acl_param_mtp = \
+                     self.update_mtp_inputs(logits_mtp, hidden_states_mtp, input_lengths,
+                                            acl_inputs_mtp, acl_param_mtp, 0, kwargs)
+-            torch.npu.synchronize()
++            torch.npu.current_stream().synchronize()
+             
+             acl_inputs_mtp = self.add_local_tp_mtp_inputs(acl_inputs_mtp)
+             logits_mtp, hidden_states_mtp = \
+-                self.execute_ascend_operator(acl_inputs_mtp, acl_param_mtp, is_prefill, is_mtp=True)
++                self.execute_ascend_operator(acl_inputs_mtp, acl_param_mtp, is_prefill, is_mtp=True,
++                                             warmup_is_end=kwargs.get(WARMUP_IS_END, True))
+ 
+             if self.distributed_enable:
+                 llm_logits = self.select_logits(llm_logits, **kwargs)
+@@ -2903,6 +2965,9 @@ class FlashDeepseekv2ForCausalLM(FlashForCausalLM):
+                     if self.acl_dap_operation is not None:
+                         self.acl_dap_operation.set_kv_cache(k_caches[:-1],
+                                                             v_caches[:-1])
++                    if self.mempool_type == MemPoolType.ASYNC_WRITE:
++                        self.acl_encoder_operation_prefixcache_mempool.set_kv_cache(k_caches[:-1],
++                                                                                    v_caches[:-1])
+                     if self.prefix_cache_enable:
+                         self.acl_encoder_operation_prefixcache.set_kv_cache(k_caches[:-1], 
+                                                                             v_caches[:-1])
+@@ -2911,6 +2976,8 @@ class FlashDeepseekv2ForCausalLM(FlashForCausalLM):
+                 else:
+                     if self.acl_encoder_operation is not None:
+                         self.acl_encoder_operation.set_kv_cache(k_caches, v_caches)
++                    if self.mempool_type == MemPoolType.ASYNC_WRITE:
++                        self.acl_encoder_operation_prefixcache_mempool.set_kv_cache(k_caches, v_caches)
+                     if self.acl_decoder_operation is not None:
+                         self.acl_decoder_operation.set_kv_cache(k_caches, v_caches)
+                     if self.acl_dap_operation is not None:
+diff --git a/examples/atb_models/atb_llm/models/qwen2/flash_causal_qwen2.py b/examples/atb_models/atb_llm/models/qwen2/flash_causal_qwen2.py
+index 9c39d38cb..131492af1 100644
+--- a/examples/atb_models/atb_llm/models/qwen2/flash_causal_qwen2.py
++++ b/examples/atb_models/atb_llm/models/qwen2/flash_causal_qwen2.py
+@@ -18,12 +18,13 @@ import torch_npu
+ from atb_llm.utils.data.layer_adapter import ParallelLMHead
+ from atb_llm.utils.data.quant_method_adapter import LinearMethodSupportAtbGraph
+ from mindie_llm.runtime.layers.custom_layer import CustomLayer
++from mindie_llm.text_generator.plugins.plugin_manager import MemPoolType
+ from .modeling_qwen2 import FlashQwenModel
+ from .modeling_qwen2_refactor import Qwen2Model
+ from ..base.flash_causal_lm import FlashForCausalLM, DistributedType, LwdLayerStatus
+ from ..base.graph_manager import ATBGraphManager, DapGraphWrapper, SpeculateGraphWrapper, \
+     SplitFuseGraphWrapper, SingleLoraGraphWrapper, MultiLoraGraphWrapper, FlashCommGraphWrapper, \
+-    get_layerwise_decode_graph, get_layerwise_prefill_graph
++    MemPoolGraphWrapper, get_layerwise_decode_graph, get_layerwise_prefill_graph
+ from ..base.graph_manager.layerwise_combined_graph_wrapper import LayerwiseCombinedATBGraphWrapper
+ from ..base.inputs_modifier.flash_comm_modifier import FlashCommModifier
+ from ..base.inputs_modifier.long_seq_modifier import LongSeqModifier
+@@ -182,7 +183,7 @@ class FlashQwen2ForCausalLM(FlashForCausalLM):
+         # 若开启,则冒烟测试卡50ms数据需重新调整(layer多一个输出,内存占用变大)
+         self.enable_intra_layer_add_norm = False
+         self.enable_inter_layer_add_norm = False
+-        self.enable_swiglu_quant = not self.soc_info.need_nz
++        self.enable_swiglu_quant = not (self.soc_info.need_nz or self.mempool_type == MemPoolType.ASYNC_WRITE)
+         # Multi engines management
+         if self.layerwise_disaggregated:
+             prefill_graph = get_layerwise_prefill_graph(self.config, self.layerwise)
+@@ -227,7 +228,9 @@ class FlashQwen2ForCausalLM(FlashForCausalLM):
+             if self.config.use_qk_norm:
+                 weight_wrapper.register_model_norm(layer.attn.q_norm)  # q_norm
+                 weight_wrapper.register_model_norm(layer.attn.k_norm)  # k_norm
+-            if self.enable_intra_layer_add_norm or self.enable_inter_layer_add_norm:
++            # not support mempool asyncWrite + add_norm
++            if self.mempool_type != MemPoolType.ASYNC_WRITE and \
++                (self.enable_intra_layer_add_norm or self.enable_inter_layer_add_norm):
+                 weight_wrapper.register_layer_addrmsnormquant(layer, attn_wrapper, mlp_wrapper, self.quantize)
+             if self.soc_info.need_nz and self.adapter_manager is None:
+                 del layer.attn
+@@ -373,7 +376,9 @@ class FlashQwen2ForCausalLM(FlashForCausalLM):
+             if self.config.use_qk_norm:
+                 weight_wrapper.register_model_norm(layer.attn.q_norm)  # q_norm
+                 weight_wrapper.register_model_norm(layer.attn.k_norm)  # k_norm
+-            if self.enable_intra_layer_add_norm or self.enable_inter_layer_add_norm:
++            # not support mempool asyncWrite + add_norm
++            if self.mempool_type != MemPoolType.ASYNC_WRITE and \
++                (self.enable_intra_layer_add_norm or self.enable_inter_layer_add_norm):
+                 weight_wrapper.register_layer_addrmsnormquant(layer, attn_wrapper, mlp_wrapper, self.quantize)
+             if self.soc_info.need_nz and self.adapter_manager is None:
+                 del layer.attn
+@@ -485,8 +490,10 @@ class FlashQwen2ForCausalLM(FlashForCausalLM):
+             LINEAR_HAS_BIAS: linear_has_bias * self.config.num_hidden_layers 
+                                     if not self.layerwise_disaggregated else None,
+             "matmulBackend": OpBackend.ACLNN if self.aclnn_matmul_backend else OpBackend.ATB,
+-            "enableIntraLayerAddNorm": self.enable_intra_layer_add_norm,
+-            "enableInterLayerAddNorm": self.enable_inter_layer_add_norm,
++            "enableIntraLayerAddNorm": self.enable_intra_layer_add_norm and \
++                                        self.mempool_type != MemPoolType.ASYNC_WRITE,
++            "enableInterLayerAddNorm": self.enable_inter_layer_add_norm and \
++                                        self.mempool_type != MemPoolType.ASYNC_WRITE,
+             "enableGreedySearchOpt": self.enable_greedy_search_opt,
+             "enableOmniAttention": self.omni_attention_enable,
+             "enableQScale": (self.config.transformers_version == "4.43.1" or
+@@ -520,6 +527,16 @@ class FlashQwen2ForCausalLM(FlashForCausalLM):
+         }
+ 
+         if not self.layerwise_disaggregated:
++            #Mooncake池化与lora、dap、flashcomm不适配
++            if self.adapter_manager is not None and self.mempool_type == MemPoolType.ASYNC_WRITE:
++                raise ValueError("Feature composition not supported: If lora is activated, "
++                                 "mempool_type must be DISABLED or SYNC_WRITE.")
++            if self.enable_dap and self.mempool_type == MemPoolType.ASYNC_WRITE:
++                raise ValueError("Feature composition not supported: If dap is activated, "
++                                 "mempool_type must be DISABLED or SYNC_WRITE.")
++            if self.mempool_type == MemPoolType.ASYNC_WRITE:
++                self.flash_comm_modifier.enable_flash_comm = False
++
+             if self.adapter_manager is not None:
+                 self.graph_manager.register_graph(MultiLoraGraphWrapper())
+                 self.graph_manager.register_graph(SingleLoraGraphWrapper())
+@@ -536,6 +553,10 @@ class FlashQwen2ForCausalLM(FlashForCausalLM):
+             if self.flash_comm_modifier.enable_flash_comm:
+                 self.graph_manager.register_graph(FlashCommGraphWrapper())
+ 
++            #Mooncake池化
++            if self.mempool_type == MemPoolType.ASYNC_WRITE and self.warmup_is_end:
++                self.graph_manager.register_graph(MemPoolGraphWrapper())
++
+             specified_params = {"decode": decoder_param}
+             specified_weight = {"decode": self.decode_weight}
+             self.graph_manager.set_param(CPP_QWEN_MODEL_CLASS_NAME, encoder_param, specified_params)
+@@ -735,8 +756,8 @@ class FlashQwen2ForCausalLM(FlashForCausalLM):
+                                 is_prefill, **kwargs):
+         exe_stage = kwargs.get("layerwise_disaggregated_exe_stage", None)
+         acl_model_out = self.graph_manager.select_and_execute(
+-            self, acl_inputs, acl_param, is_prefill=is_prefill, layerwise_disaggregated_exe_stage=exe_stage
+-        )     
++            self, acl_inputs, acl_param, is_prefill=is_prefill, layerwise_disaggregated_exe_stage=exe_stage,
++            mempool_type=self.mempool_type)
+         try:
+             acl_model_out = self.layerwise_modifier.process_out(acl_model_out, is_prefill=is_prefill, **kwargs)
+             acl_hidden_state = acl_model_out[0]
+@@ -855,6 +876,7 @@ class FlashQwen2ForCausalLM(FlashForCausalLM):
+         Returns:
+             torch.Tensor: Output logits.
+         """
++        self.warmup_is_end = kwargs.get("warmup_is_end", True)
+         if not self.weight_initialized:
+             self.get_adapter_ids(**kwargs)
+             from mindie_llm.runtime.utils.torch_utils import set_default_torch_dtype
+diff --git a/examples/atb_models/atb_llm/runner/model_runner.py b/examples/atb_models/atb_llm/runner/model_runner.py
+index 33ed8a256..4ca1ee5eb 100644
+--- a/examples/atb_models/atb_llm/runner/model_runner.py
++++ b/examples/atb_models/atb_llm/runner/model_runner.py
+@@ -23,6 +23,7 @@ import atb_llm.nn.distributed as dist
+ from atb_llm.nn.network_manager import get_default_net
+ from atb_llm.nn.tensor import Tensor
+ from atb_llm.nn.functional import gather, split
++from mindie_llm.text_generator.plugins.plugin_manager import MemPoolType
+ 
+ from ..models import get_model
+ from ..models.base.config import LoraModelConfig
+@@ -78,6 +79,11 @@ class TruncationSide(int, Enum):
+     RIGHT = -1
+ 
+ 
++# 专用于mempool异步分层传输特性的event pipe_key
++def generate_mem_pool_event_key(only_save_kv: bool) -> str:
++    return "only_save_kv" if only_save_kv else "both_save_kv"
++
++
+ class ModelRunner:
+     """
+     Class for running model.
+@@ -167,6 +173,7 @@ class ModelRunner:
+             except Exception:
+                 print_log(rank, logger.info, "deserialized unknow error")
+ 
++        self.mempool_type = kwargs.get('mempool_type', MemPoolType.DISABLED)
+         load_atb_speed()
+ 
+         if ENV.bind_cpu:
+@@ -221,7 +228,7 @@ class ModelRunner:
+         )
+         self.enable_nz = self.llm_config.llm.kv_cache_options.enable_nz
+         self.truncation_method = getattr(self.llm_config.models, "truncation", TruncationSide.RIGHT)
+-        
++
+         if self.dtype not in [torch.float16, torch.bfloat16]:
+             error_msg = "`torch_dtype` is only supported for type `float16` and" \
+                 " `bfloat16`, loaded from config.json -> torch_dtype. " \
+@@ -312,6 +319,10 @@ class ModelRunner:
+     def resume_hccl_comm(cls):
+         torch.classes.ModelTorch.Context.resume_hccl_comm()
+ 
++    @classmethod
++    def wait_event(cls, pipe_key: str):
++        torch.classes.ModelTorch.Event.wait(pipe_key)
++
+     def load_weights(self, **kwargs):
+         """Load weights from file."""
+         enable_v3 = False
+@@ -360,9 +371,11 @@ class ModelRunner:
+                     with self.device:
+                         self.init_model(self.config, weights,
+                                         quant_config=mindie_llm_config_v2.quant_config,
+-                                        prealloc_weight_mem_on_npu=True)
++                                        prealloc_weight_mem_on_npu=True,
++                                        mempool_type=self.mempool_type)
+             else:
+-                self.init_model(self.config if not enable_v3 else mindie_llm_config, weights)
++                self.init_model(self.config if not enable_v3 else mindie_llm_config, weights,
++                                mempool_type=self.mempool_type)
+                 
+         except TypeError as e:
+             logger.warning(
+@@ -943,7 +956,7 @@ class ModelRunner:
+ 
+     def reset_execution_status(self):
+         self.dummy_operation.reset_execution_status()
+-        
++
+     def _is_quantization_supported(self):
+         """Check if current quantization configuration is supported"""
+         return (
+diff --git a/examples/atb_models/tests/pythontest/atb_llm/models/base/graph_manager/test_graph_wrapper.py b/examples/atb_models/tests/pythontest/atb_llm/models/base/graph_manager/test_graph_wrapper.py
+index 5ce279164..fe3eef368 100644
+--- a/examples/atb_models/tests/pythontest/atb_llm/models/base/graph_manager/test_graph_wrapper.py
++++ b/examples/atb_models/tests/pythontest/atb_llm/models/base/graph_manager/test_graph_wrapper.py
+@@ -22,6 +22,8 @@ from atb_llm.models.base.graph_manager.single_lora_graph_wrapper import SingleLo
+ from atb_llm.models.base.graph_manager.multi_lora_graph_wrapper import MultiLoraGraphWrapper
+ from atb_llm.models.base.graph_manager.speculate_graph_wrapper import SpeculateGraphWrapper
+ from atb_llm.models.base.graph_manager.splitfuse_graph_wrapper import SplitFuseGraphWrapper
++from atb_llm.models.base.graph_manager.mem_pool_graph_wrapper import MemPoolGraphWrapper
++from mindie_llm.text_generator.plugins.plugin_manager import MemPoolType
+ from tests.pythontest.atb_llm.models.base.graph_manager.test_graph_manager import MockATBGraphWrapper
+ 
+ 
+@@ -121,4 +123,11 @@ class TestATBGraphWrapper(unittest.TestCase):
+         self.assertFalse(graph_wrapper.activate(mock_context, json.dumps({"seqLen": 19}), is_prefill=True))
+         
+         mock_context.inference_mode = None
+-        self.assertFalse(graph_wrapper.activate(mock_context, json.dumps({"qLen": 17}), is_prefill=True))
+\ No newline at end of file
++        self.assertFalse(graph_wrapper.activate(mock_context, json.dumps({"qLen": 17}), is_prefill=True))
++
++    def test_mem_pool(self):
++        graph_wrapper = MemPoolGraphWrapper()
++        mock_context = MagicMock()
++        self.assertTrue(graph_wrapper.activate(mock_context, {}, mempool_type=MemPoolType.ASYNC_WRITE))
++        self.assertFalse(graph_wrapper.activate(mock_context, {}, mempool_type=MemPoolType.DISABLED))
++        self.assertFalse(graph_wrapper.activate(mock_context, {}, mempool_type=MemPoolType.SYNC_WRITE))
+\ No newline at end of file
+diff --git a/examples/atb_models/tests/pythontest/atb_llm/models/base/graph_manager/test_mempool_combined_graph_wrapper.py b/examples/atb_models/tests/pythontest/atb_llm/models/base/graph_manager/test_mempool_combined_graph_wrapper.py
+new file mode 100644
+index 000000000..f8a9f1ee4
+--- /dev/null
++++ b/examples/atb_models/tests/pythontest/atb_llm/models/base/graph_manager/test_mempool_combined_graph_wrapper.py
+@@ -0,0 +1,174 @@
++# Copyright (c) Huawei Technologies Co., Ltd. 2025. All rights reserved.
++# MindIE is licensed under Mulan PSL v2.
++# You can use this software according to the terms and conditions of the Mulan PSL v2.
++# You may obtain a copy of Mulan PSL v2 at:
++#          http://license.coscl.org.cn/MulanPSL2
++# THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
++# EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
++# MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
++# See the Mulan PSL v2 for more details.
++
++import unittest
++from unittest.mock import MagicMock, patch
++
++import json
++import torch
++
++from atb_llm.models.qwen2.config_qwen2 import Qwen2Config
++from atb_llm.models.qwen2.flash_causal_qwen2 import FlashQwen2ForCausalLM
++from atb_llm.utils.mapping import Mapping
++from atb_llm.utils.quantize.pack_type import TransposeType
++
++from mindie_llm.runtime.utils.distributed import set_parallel_info_manager
++from mindie_llm.text_generator.plugins.plugin_manager import MemPoolType
++from tests.pythontest.atb_llm.models.base.mock_class import MockTorchClasses
++
++
++LOAD_ATB_SPEED = "atb_llm.models.base.flash_causal_lm.load_atb_speed"
++FLASH_QWEN2 = "atb_llm.models.qwen2.flash_causal_qwen2"
++
++
++class TestMempoolCombinedATBGraphWrapper(unittest.TestCase):
++    def setUp(self) -> None:
++        self.torch_classes = MockTorchClasses()
++        torch.classes = self.torch_classes
++
++        self.config = Qwen2Config(
++            model_type="qwen2",
++            hidden_size=1024,
++            max_position_embeddings=1024,
++            num_attention_heads=16,
++            num_key_value_heads=4,
++            num_hidden_layers=28,
++            rms_norm_eps=1e-6,
++            torch_dtype=torch.float16,
++            vocab_size=125696,
++            tie_word_embeddings=False,
++        )
++
++        self.weights = MagicMock()
++        self.weights.device = torch.device("npu")
++        self.weights.dtype = torch.float16
++        self.weights.mapping = Mapping(world_size=2, rank=0)
++        self.weights.mapping.attn_tp.rank = 1
++        self.weights.process_group = MagicMock()
++        self.weights.process_group.rank.return_value = 0
++        self.weights.process_group.size.return_value = 2
++        self.weights.quant_desc = None
++
++        # Create mock parallel info
++        self.mock_parallel_info = MagicMock()
++        self.mock_parallel_info.rank = 0
++        self.mock_parallel_info.group_size = 2
++        self.mock_parallel_info.process_group = None
++
++        # Create mock parallel info manager
++        self.mock_parallel_info_manager = MagicMock()
++        self.mock_parallel_info_manager.world_size = 2
++        self.mock_parallel_info_manager.word_embed_tp = self.mock_parallel_info
++        self.mock_parallel_info_manager.attn_tp = self.mock_parallel_info
++        self.mock_parallel_info_manager.lm_head_tp = self.mock_parallel_info
++
++        # Set the global parallel info manager
++        set_parallel_info_manager(self.mock_parallel_info_manager)
++
++    def tearDown(self):
++        """Clean up after tests."""
++        set_parallel_info_manager(None)
++
++    @patch(f"{LOAD_ATB_SPEED}")
++    @patch(f"{FLASH_QWEN2}.FlashQwenModel", return_value=MagicMock())
++    @patch(f"{FLASH_QWEN2}.Qwen2Model", return_value=MagicMock())
++    @patch(f"{FLASH_QWEN2}.load_column_multi")
++    @patch(f"{FLASH_QWEN2}.TensorHead")
++    def test_init(
++            self,
++            mock_tensor_head,
++            mock_load_column_multi,
++            mock_new_qwen_model,
++            mock_qwen_model,
++            _mock_init_so
++    ) -> None:
++        FlashQwen2ForCausalLM(self.config, self.weights, prealloc_weight_mem_on_npu=True)
++        mock_new_qwen_model.assert_called_once_with(
++            self.config, "model", quant_config=None
++        )
++
++        self.config.quantize = "w8a8sc"
++        FlashQwen2ForCausalLM(self.config, self.weights)
++        mock_tensor_head.load_weight.assert_called_once_with(
++            self.config,
++            prefix="lm_head",
++            weights=self.weights,
++            is_norm=False,
++        )
++
++        self.config.quantize = ""
++        self.config.tie_word_embeddings = True
++        FlashQwen2ForCausalLM(self.config, self.weights)
++        mock_load_column_multi.assert_called_with(
++            self.config,
++            prefixes=["model.embed_tokens"],
++            weights=self.weights,
++            head_size=1,
++            lm_head=True
++        )
++
++    @patch(f"{LOAD_ATB_SPEED}")
++    @patch(f"{FLASH_QWEN2}.FlashQwenModel", return_value=MagicMock())
++    @patch(f"{FLASH_QWEN2}.load_column_multi")
++    @patch(f"{FLASH_QWEN2}.WeightWrapper")
++    def test_init_ascend_weight(
++        self, mock_weight_wrapper, _mock_load_column_multi, _mock_qwen_model, _mock_init_so):
++        mock_weight_wrapper_ins = mock_weight_wrapper.return_value
++        mock_weight_wrapper_ins.register_embedding = MagicMock()
++        mock_weight_wrapper_ins.register_layer = MagicMock()
++        mock_weight_wrapper_ins.register_model_norm = MagicMock()
++        mock_weight_wrapper_ins.register_model_lmhead = MagicMock()
++        mock_weight_wrapper_ins.weights = []
++        mock_weight_wrapper_ins.linear_type = {}
++        mock_weight_wrapper_ins.pack_quant_type = {}
++        mock_weight_wrapper_ins.linear_transpose_types = {}
++        mock_weight_wrapper_ins.linear_descs = []
++
++        # prefill_splitfuse
++        ins = FlashQwen2ForCausalLM(self.config, self.weights, prealloc_weight_mem_on_npu=True)
++        ins.lm_head.get_weight_transpose_type()[0] = TransposeType.NOT_TRANSPOSE
++        ins.prefix_cache_enable = True
++        ins.mempool_type = MemPoolType.ASYNC_WRITE
++        ins.init_ascend_weight()
++        mock_context = MagicMock()
++        mock_context.inference_mode = MagicMock()
++        mock_context.inference_mode.enable_prefill_pa = True
++        selected_graph = None
++        for graph in ins.graph_manager._graph_list:
++            if graph.activate(mock_context, json.dumps({"qLen": 9}), is_prefill=True, mempool_type=MemPoolType.ASYNC_WRITE):
++                selected_graph = graph
++                break
++        self.assertEqual(selected_graph.feature_name, "prefill_splitfuse")
++
++        # prefill_mempool
++        ins = FlashQwen2ForCausalLM(self.config, self.weights, prealloc_weight_mem_on_npu=True)
++        ins.lm_head.get_weight_transpose_type()[0] = TransposeType.NOT_TRANSPOSE
++        ins.mempool_type = MemPoolType.ASYNC_WRITE
++        ins.init_ascend_weight()
++        mock_context = MagicMock()
++        selected_graph = None
++        for graph in ins.graph_manager._graph_list:
++            if graph.activate(mock_context, {}, is_prefill=True, mempool_type=MemPoolType.ASYNC_WRITE):
++                selected_graph = graph
++                break
++        self.assertEqual(selected_graph.feature_name, "prefill_mempool")
++
++        # base_prefill
++        ins = FlashQwen2ForCausalLM(self.config, self.weights, prealloc_weight_mem_on_npu=True)
++        ins.lm_head.get_weight_transpose_type()[0] = TransposeType.NOT_TRANSPOSE
++        ins.mempool_type = MemPoolType.SYNC_WRITE
++        ins.init_ascend_weight()
++        mock_context = MagicMock()
++        selected_graph = None
++        for graph in ins.graph_manager._graph_list:
++            if graph.activate(mock_context, {}, is_prefill=True, mempool_type=MemPoolType.SYNC_WRITE):
++                selected_graph = graph
++                break
++        self.assertEqual(str(selected_graph.feature_name), "FeatureType.PREFILL")
+diff --git a/examples/atb_models/tests/run_all_tests.sh b/examples/atb_models/tests/run_all_tests.sh
+index eef32645e..7e0b06bf9 100644
+--- a/examples/atb_models/tests/run_all_tests.sh
++++ b/examples/atb_models/tests/run_all_tests.sh
+@@ -157,7 +157,7 @@ function fn_build_coverage()
+     cd $GCOV_DIR
+     $LCOV_PATH -c -d $CACHE_DIR -o $GCOV_INFO_DIR/cover.info --rc lcov_branch_coverage=1 >> $GCOV_DIR/log.txt --rc lcov_excl_br_line='ATB_SPEED_LOG_*'
+     $LCOV_PATH -a $GCOV_INFO_DIR/init.info -a $GCOV_INFO_DIR/cover.info -o $GCOV_INFO_DIR/total.info --rc lcov_branch_coverage=1 >> $GCOV_DIR/log.txt
+-    $LCOV_PATH --remove $GCOV_INFO_DIR/total.info '*/third_party/*' '*torch/*' '*c10/*' '*ATen/*' '*/c++/7*' '*tests/*' '*/include/utils/*' '*/utils/log/*' '*tools/*' '/usr/*' '*ascend-transformer-boost/*' '*qkv_linear_split*' '*dequant_bias_operation*' '*w8a8_operation*' '*linear*' '*model.cpp*' '*/moe/layer/decoder_layer*' '*/moe/model/decoder_model*' '*/sparse_moe*' '*/obfuscation_setup_operation.cpp' '*/obfuscation_calculate_operation.cpp' '*/deepseekv2/*' '*/glm/*' '*/mapping*' '*/fusion/moe/ep/*' '*add_rms_norm_*' '*check_util.cpp*' '*/base/layer/decoder_layer*' '*base/param/model_param*' '*base/param/param*' '*/concat_operation.cpp' '*mlp*' '*/qwen/*/moe_decoder*' '*/core/base/context_factory.cpp' '*/fusion_attention.cpp' '*/rotary_pos_emb_operation.cpp' '*/attn_v3_operation.cpp' '*/self_attention.cpp' '*/operations/aclrt/ops/aclrt_cmo_async.cpp' '*/operations/aclnn/core/acl_nn_operation.cpp' '*/len_operation.cpp' '*/repeat_operation.cpp' '*/inplacemasked_filltensor_operation.cpp' '*/decoder_model_edge.cpp' '*edge*' '*/operations/aclnn/core/acl_nn_global_cache.cpp' '*/operations/aclnn/ops/*' '*/operations/aclnn/utils/*' '*/fusion/utils.cpp' -o $GCOV_INFO_DIR/final.info --rc lcov_branch_coverage=1 >> $GCOV_DIR/log.txt
++    $LCOV_PATH --remove $GCOV_INFO_DIR/total.info '*/third_party/*' '*torch/*' '*c10/*' '*ATen/*' '*/c++/7*' '*tests/*' '*/include/utils/*' '*/utils/log/*' '*tools/*' '/usr/*' '*ascend-transformer-boost/*' '*qkv_linear_split*' '*dequant_bias_operation*' '*w8a8_operation*' '*linear*' '*model.cpp*' '*/moe/layer/decoder_layer*' '*/moe/model/decoder_model*' '*/sparse_moe*' '*/obfuscation_setup_operation.cpp' '*/obfuscation_calculate_operation.cpp' '*/deepseekv2/*' '*/glm/*' '*/mapping*' '*/fusion/moe/ep/*' '*add_rms_norm_*' '*check_util.cpp*' '*/base/layer/decoder_layer*' '*base/param/model_param*' '*base/param/param*' '*/concat_operation.cpp' '*mlp*' '*/qwen/*/moe_decoder*' '*/core/base/context_factory.cpp' '*/fusion_attention.cpp' '*/rotary_pos_emb_operation.cpp' '*/attn_v3_operation.cpp' '*/self_attention.cpp' '*/operations/aclrt/ops/aclrt_cmo_async.cpp' '*/operations/aclnn/core/acl_nn_operation.cpp' '*/len_operation.cpp' '*/repeat_operation.cpp' '*/inplacemasked_filltensor_operation.cpp' '*/decoder_model_edge.cpp' '*edge*' '*/operations/aclnn/core/acl_nn_global_cache.cpp' '*/operations/aclnn/ops/*' '*/operations/aclnn/utils/*' '*/fusion/utils.cpp' '*event_manager.cpp*' -o $GCOV_INFO_DIR/final.info --rc lcov_branch_coverage=1 >> $GCOV_DIR/log.txt
+     $GENHTML_PATH --rc lcov_branch_coverage=1 -o cover_result $GCOV_INFO_DIR/final.info -o cover_result >> $GCOV_DIR/log.txt
+     tail -n 4 $GCOV_DIR/log.txt
+     cd $OUTPUT_DIR
+diff --git a/examples/atb_models/tests/unittest/core/event_manager_test.cpp b/examples/atb_models/tests/unittest/core/event_manager_test.cpp
+index cf396caa5..28f0e2cb3 100644
+--- a/examples/atb_models/tests/unittest/core/event_manager_test.cpp
++++ b/examples/atb_models/tests/unittest/core/event_manager_test.cpp
+@@ -334,4 +334,43 @@ TEST(EventManager, RecordEventInvalidActionTest)
+     EXPECT_EQ(op, nullptr);
+ }
+ 
++// 测试CheckPipeKey函数
++TEST(EventManager, CheckPipeKeyTest)
++{
++    EventManager& manager = EventManager::GetInstance();
++    const std::string pipeKey = "test_pipe_1";
++    aclrtStream subStream;
++    std::vector<aclrtEvent> queue;
++    manager.eventsForExternal_[pipeKey] = std::make_tuple(0, queue, subStream);
++    EXPECT_EQ(manager.CheckPipeKey(pipeKey), EM_SUCCESS);
++    aclrtEvent event = nullptr;
++    manager.CreateAndPushEvent(event, pipeKey);
++    EXPECT_EQ(manager.CheckPipeKey(pipeKey), EM_SUCCESS);
++    EXPECT_TRUE(manager.eventsForExternal_.count(pipeKey) > 0);
++    
++    // 验证数据结构是否正确初始化
++    auto& tuple = manager.eventsForExternal_[pipeKey];
++    const std::string pipeKey2 = "test_pipe_2";
++    EXPECT_EQ(manager.CheckPipeKey(pipeKey2), EM_INVALID_ACTION);
++}
++
++// 测试RecordEvent函数
++TEST(EventManager, RecordEventTest) {
++    EventManager& manager = EventManager::GetInstance();
++    const std::string pipeKey = "record_normal";
++    aclrtEvent event = nullptr;
++    manager.CreateAndPushEvent(event, pipeKey);
++    EXPECT_EQ(manager.RecordEvent(pipeKey), EM_SUCCESS);
++}
++
++// 测试RecordEvent函数
++TEST(EventManager, WaitEventTest) {
++    EventManager& manager = EventManager::GetInstance();
++    const std::string pipeKey = "wait_normal";
++    aclrtEvent event = nullptr;
++    manager.CreateAndPushEvent(event, pipeKey);
++    EXPECT_EQ(manager.RecordEvent(pipeKey), EM_SUCCESS);
++    EXPECT_EQ(manager.WaitEvent(pipeKey), EM_SUCCESS);
++}
++
+ } // namespace atb_speed
+\ No newline at end of file
+diff --git a/mindie_llm/modeling/model_wrapper/atb/atb_model_wrapper.py b/mindie_llm/modeling/model_wrapper/atb/atb_model_wrapper.py
+index 3b7f42914..0588e47c6 100644
+--- a/mindie_llm/modeling/model_wrapper/atb/atb_model_wrapper.py
++++ b/mindie_llm/modeling/model_wrapper/atb/atb_model_wrapper.py
+@@ -14,13 +14,14 @@ import torch
+ import numpy as np
+ 
+ from atb_llm.models import InferenceMode
+-from atb_llm.runner.model_runner import ModelRunner
++from atb_llm.runner.model_runner import ModelRunner, generate_mem_pool_event_key
+ from atb_llm.utils.env import ENV
+ from atb_llm.utils.eplb_expert_data_collect import EplbExpertDataCollect
+ from atb_llm.utils.moe_utils import EPLBType, save_eplb_data
+ from ..model_info import ModelInfo
+ from ..wrapper import ModelWrapper
+ from ....utils.log.logging import logger
++from ....text_generator.plugins.plugin_manager import MemPoolType
+ 
+ ASCEND_310B = 240
+ 
+@@ -83,7 +84,8 @@ class ATBModelWrapper(ModelWrapper):
+             tls_crl_path=kwargs.get("interNodeTlsCrlPath", ""),
+             tls_crl_files=kwargs.get("interNodeTlsCrlFiles", ""),
+             batch_p_num=2 if kwargs.get('lwdNextPHeadPrior', False) else 1,
+-            lwd_comm_args=kwargs.get('lwd_comm_args', None)
++            lwd_comm_args=kwargs.get('lwd_comm_args', None),
++            mempool_type=kwargs.get('mempool_type', MemPoolType.DISABLED)
+         )
+         self.config = self.model_runner.config
+         self.config_dict = self.model_runner.config_dict
+@@ -438,4 +440,7 @@ class ATBModelWrapper(ModelWrapper):
+         return context
+ 
+     def resume_hccl_comm(self):
+-        self.model_runner.resume_hccl_comm()
+\ No newline at end of file
++        self.model_runner.resume_hccl_comm()
++
++    def generate_mem_pool_event_key(self, only_save_kv: bool) -> str:
++        return generate_mem_pool_event_key(only_save_kv)
+\ No newline at end of file
+diff --git a/mindie_llm/text_generator/adapter/generator_backend.py b/mindie_llm/text_generator/adapter/generator_backend.py
+index 74c229fbb..b93ee9067 100644
+--- a/mindie_llm/text_generator/adapter/generator_backend.py
++++ b/mindie_llm/text_generator/adapter/generator_backend.py
+@@ -21,6 +21,7 @@ from ...modeling.model_wrapper import get_model_wrapper
+ from ...utils.decorators.time_decorator import timer
+ from ...utils.tensor import op
+ from ...utils.validation import parse_config, ParseType, MODEL_CONFIG_KEY_TYPE
++from ...text_generator.plugins.plugin_manager import MemPoolType
+ 
+ MAX_WORLD_SIZE = 1048576
+ MAX_KEY_LENGTH = 256
+@@ -42,7 +43,7 @@ class GeneratorBackend:
+         backend_type = parse_config(model_config, 'backend_type', required=True)
+         num_threads = parse_config(model_config, 'num_threads', parse_type=ParseType.TO_INT, default_value=8)
+         self.npu_device_id = parse_config(model_config, 'npu_device_id', required=True, parse_type=ParseType.TO_INT)
+-        local_rank = parse_config(model_config, 'local_rank', required=True, parse_type=ParseType.TO_INT)
++        self.local_rank = parse_config(model_config, 'local_rank', required=True, parse_type=ParseType.TO_INT)
+         self.rank = parse_config(model_config, 'rank', required=True, parse_type=ParseType.TO_INT)
+         self.world_size = parse_config(model_config, 'world_size', required=True, parse_type=ParseType.TO_INT)
+         self.trust_remote_code = parse_config(model_config, 'trust_remote_code', required=True,
+@@ -61,6 +62,8 @@ class GeneratorBackend:
+                                         parse_type=ParseType.TO_STR, default_value='')
+         self.kv_pool_config_path = parse_config(model_config, 'kv_pool_config_path', required=False, 
+                                         parse_type=ParseType.TO_STR, default_value='')
++        self.kv_pool_async_write = parse_config(model_config, 'kv_pool_async_write', required=False,
++                                        parse_type=ParseType.TO_BOOL, default_value=False)
+ 
+         if self.world_size < 1 or self.world_size > MAX_WORLD_SIZE:
+             raise ValueError("World size should be in the range of 1 to 1048576.")
+@@ -79,7 +82,7 @@ class GeneratorBackend:
+             model_config, 'num_lccl_comm_shards', parse_type=ParseType.TO_INT, default_value=1)
+         lccl_comm_shard_id = parse_config(
+             model_config, 'lccl_comm_shard_id', parse_type=ParseType.TO_INT, default_value=0)
+-        if local_rank < 0 or local_rank >= self.world_size:
++        if self.local_rank < 0 or self.local_rank >= self.world_size:
+             raise ValueError("Local rank should be in the range of 0 to world_size - 1.")
+         max_loras = parse_config(model_config, 'max_loras', required=False, parse_type=ParseType.TO_INT, default_value=0)
+         max_lora_rank = parse_config(model_config, 'max_lora_rank', required=False, parse_type=ParseType.TO_INT, default_value=0)
+@@ -99,7 +102,7 @@ class GeneratorBackend:
+         model_config["rank"] = self.rank
+         model_config["world_size"] = self.world_size
+         model_config['npu_device_id'] = self.npu_device_id
+-        model_config['local_rank'] = local_rank
++        model_config['local_rank'] = self.local_rank
+         model_config['dp'] = dp
+         model_config['tp'] = tp
+         model_config['attn_inner_sp'] = attn_inner_sp
+@@ -116,6 +119,11 @@ class GeneratorBackend:
+         model_config['max_lora_rank'] = max_lora_rank
+         model_config['sampler_config'] = sampler_config
+         model_config['lwdNextPHeadPrior'] = lwd_next_p_head_prior
++        if bool(self.kv_pool_config_path) and bool(self.kv_pool_backend):
++            model_config['mempool_type'] = \
++                MemPoolType.ASYNC_WRITE if self.kv_pool_async_write else MemPoolType.SYNC_WRITE
++        else:
++            model_config['mempool_type'] = MemPoolType.DISABLED
+ 
+         self.backend_type = backend_type
+         self.model_wrapper = get_model_wrapper(model_config, backend_type)
+diff --git a/mindie_llm/text_generator/adapter/generator_torch.py b/mindie_llm/text_generator/adapter/generator_torch.py
+index a012bf903..fc370855e 100644
+--- a/mindie_llm/text_generator/adapter/generator_torch.py
++++ b/mindie_llm/text_generator/adapter/generator_torch.py
+@@ -243,6 +243,11 @@ class GeneratorTorch(GeneratorBackend):
+         return logits
+ 
+     def update_cache_policy(self, kvcache_settings, sepd_worker=None):
++        if hasattr(self, 'cache_pool') and self.cache_pool is not None:
++            del self.cache_pool
++            torch.npu.empty_cache()
++            gc.collect()
++
+         self.cache_pool = KVCachePool(kvcache_settings, self.device, enable_kv_pool=self.enable_kv_pool)
+         self.cache_pool.allocate_cpu_kvcache()
+         self.cache_pool.allocate_npu_kvcache()
+diff --git a/mindie_llm/text_generator/adapter/torch_utils/kvcache_pool.py b/mindie_llm/text_generator/adapter/torch_utils/kvcache_pool.py
+index 01c1e069b..d72a5828e 100644
+--- a/mindie_llm/text_generator/adapter/torch_utils/kvcache_pool.py
++++ b/mindie_llm/text_generator/adapter/torch_utils/kvcache_pool.py
+@@ -87,6 +87,11 @@ class KVCachePool:
+ 
+     def allocate_npu_kvcache(self):
+         self.npu_cache.clear()
++        self.npu_blocks_addrs.clear()
++        self.k_blocks_addrs.clear()
++        self.v_blocks_addrs.clear()
++        self.k_blocks_quant_addrs.clear()
++        self.index_blocks_addrs.clear()
+         if self.kvcache_settings.num_npu_blocks < 0:
+             message = (
+                 "Num_npu_blocks must be non-negative.\n"
+diff --git a/mindie_llm/text_generator/generator.py b/mindie_llm/text_generator/generator.py
+index a22bd91bd..0b4a4d779 100644
+--- a/mindie_llm/text_generator/generator.py
++++ b/mindie_llm/text_generator/generator.py
+@@ -244,6 +244,8 @@ class Generator(PDInterface):
+         self.world_size = parse_config(model_config, 'world_size', required=True, parse_type=ParseType.TO_INT)
+         self.local_rank = parse_config(model_config, 'local_rank', required=True, parse_type=ParseType.TO_INT)
+         self.npu_device_id = parse_config(model_config, 'npu_device_id', required=True, parse_type=ParseType.TO_INT)
++        kv_pool_async_write = parse_config(model_config, 'kv_pool_async_write', required=False,
++                                        parse_type=ParseType.TO_BOOL, default_value=False)
+ 
+         async_inference_key = 'async_inference'
+         model_config[async_inference_key] = ENV.async_inference
+@@ -253,6 +255,9 @@ class Generator(PDInterface):
+             validator.check_async_inference_and_plugin_type(True, plugin_config.get("plugin_type"))
+         model_config['splitfuse_enabled'] = self.is_mix_model
+ 
++        if kv_pool_async_write and "splitfuse" in model_config.get("plugin_params", ""):
++            raise ValueError("Async mempool does not support plugin_type: splitfuse!")
++
+         self.layerwise_disaggregated = parse_config(model_config, 'layerwiseDisaggregated', required=False,
+             parse_type=ParseType.TO_BOOL, default_value=False)
+         self.layerwise_disaggregated_role_type = parse_config(model_config, 'layerwiseDisaggregatedRoleType',
+@@ -365,7 +370,8 @@ class Generator(PDInterface):
+         
+         # NOTE: Warmup async inference will lead to lower mtp acceptance rate with unknown reason,
+         # so we disable async inference here.
+-        with self._temporarily_disable(async_inference=self.async_inference):
++        with self._temporarily_disable(async_inference=self.async_inference, 
++                                       mem_pool=self.generator_backend.kv_pool_backend):
+             block_mem_size_gb = gb(calc_block_mem(self.model_info, self.block_size, self.num_speculative_tokens))
+             print_log(self.rank, logger.info,
+                     f'One block during warmup needs npu memory(GiB): {block_mem_size_gb}')
+@@ -790,20 +796,25 @@ class Generator(PDInterface):
+         return ret_dict
+ 
+     @contextmanager
+-    def _temporarily_disable(self, dap: bool = False, async_inference: bool = False):
++    def _temporarily_disable(self, dap: bool = False, async_inference: bool = False, mem_pool: str = ""):
+         origin_enable_dap = self.generator_backend.enable_dap
+         origin_async_inference = self.async_inference
++        origin_mem_pool = self.generator_backend.kv_pool_backend
+         try:
+             if dap:
+                 self.generator_backend.enable_dap = False
+             if async_inference and not self.backend_type == "torch":
+                 self.async_inference = False
++            if len(mem_pool) != 0:
++                self.generator_backend.kv_pool_backend = ""
+             yield
+         finally:
+             if dap:
+                 self.generator_backend.enable_dap = origin_enable_dap
+             if async_inference:
+                 self.async_inference = origin_async_inference
++            if len(mem_pool) != 0:
++                self.generator_backend.kv_pool_backend = origin_mem_pool
+ 
+     def _init_plugin_manager(
+         self,
+diff --git a/mindie_llm/text_generator/plugins/plugin_manager.py b/mindie_llm/text_generator/plugins/plugin_manager.py
+index 9f803ce2a..466852749 100644
+--- a/mindie_llm/text_generator/plugins/plugin_manager.py
++++ b/mindie_llm/text_generator/plugins/plugin_manager.py
+@@ -13,8 +13,10 @@ from __future__ import annotations
+ import importlib
+ import queue
+ import threading
++import time
+ import copy
+ from dataclasses import fields
++from enum import IntEnum
+ from typing import Iterable, Optional, Any, TYPE_CHECKING
+ 
+ import numpy as np
+@@ -51,6 +53,12 @@ LAUNCH_DONE_TIMEOUT = 1
+ MEM_DETECT_INTERVAL = 1000
+ 
+ 
++class MemPoolType(IntEnum):
++    DISABLED = 0
++    SYNC_WRITE = 1
++    ASYNC_WRITE = 2
++
++
+ class PluginManager:
+     def __init__(
+         self,
+@@ -95,6 +103,8 @@ class PluginManager:
+         self.is_inference_pause = False
+         self.mem_det_trigger_counter = 0
+         self.error_code_collected_in_async = None
++        self.mempool_type = MemPoolType.DISABLED
++        self.warmup_is_end = True
+         # 结构化输出管理器 (延迟初始化)
+         self._structured_output_manager: Optional[Any] = None
+         self._structured_output_enabled = kwargs.get('enable_structured_output', True)
+@@ -134,7 +144,7 @@ class PluginManager:
+                 host_array = field_value.cpu().numpy()
+                 setattr(new_instance, field.name, host_array)
+         return new_instance
+-        
++
+     def clear_cache(
+         self,
+         sequence_ids: Iterable[int],
+@@ -165,10 +175,21 @@ class PluginManager:
+                 **self.kwargs,
+             )
+             setattr(self, plugin, plugin_tmp)
+-        
++        if "prefix_cache" in self.plugin_list:
++            self.mempool_type = self.prefix_cache.mempool_type
++
+         # 初始化结构化输出管理器
+         self._init_structured_output_manager()
+ 
++    def wait_put_finish(self, input_metadata):
++        if "prefix_cache" in self.plugin_list and input_metadata.is_prefill:
++            logger.info("Waiting save to finished")
++            start_t, timeout_t = time.time(), self.prefix_cache.save_timeout
++            if self.prefix_cache.save_event.wait(timeout=timeout_t):
++                logger.info(f"Save finished in {(time.time() - start_t)*1000:.1f} ms")
++            else:
++                logger.error(f"[TIMEOUT] Save unfinished after {timeout_t} seconds. Exit")
++
+     def mem_det_trigger_counter_acc(self):
+         if self.mem_det_trigger_counter < MEM_DETECT_INTERVAL:
+             self.mem_det_trigger_counter = self.mem_det_trigger_counter + 1
+@@ -187,6 +208,9 @@ class PluginManager:
+                 model_inputs, input_metadata, sampling_metadata, cache_ids)
+             self.plugin_data_param.q_len = qlen if qlen is not None else self.plugin_data_param.q_len
+             self.plugin_data_param.mask = mask if mask is not None else self.plugin_data_param.mask
++            if not warmup and "prefix_cache" in self.plugin_list and \
++                self.prefix_cache.mempool_type == MemPoolType.ASYNC_WRITE:
++                self.prefix_cache.async_put_prefix_kvcache_to_mempool(input_metadata, cache_ids)
+             span_end(prof)
+             self.watcher.watch_npu_mem(self.rank, f'After preprocess', 
+                                        trigger_count=self.mem_det_trigger_counter)
+@@ -196,18 +220,23 @@ class PluginManager:
+             span_attr(prof, "blocks", count_block(input_metadata.block_tables))
+             if hasattr(self.model_wrapper, "mapping"):
+                 span_attr(prof, "dp_rank", str(self.model_wrapper.mapping.attn_dp.rank))
+-                
++
+             if ENV.framework_backend == BackendType.ATB:
+                 self.model_wrapper.model_runner.clear_internal_tensors()
++                forward_extra_kwargs = {}
++                if warmup:
++                    forward_extra_kwargs["warmup_is_end"] = False
+                 if (self.plugin_list and "mtp" not in self.plugin_list) or self.is_mix_model:
+                     result = self.generator_backend.forward(model_inputs, q_lens=self.plugin_data_param.q_len,
+-                                                            attn_mask=self.plugin_data_param.mask)  # q_len spec_mask
++                                                            attn_mask=self.plugin_data_param.mask,
++                                                            **forward_extra_kwargs)  # q_len spec_mask
+                 # old graph forward
+                 else:
+                     result = self.generator_backend.forward(model_inputs, q_lens=self.plugin_data_param.q_len,
+                                                             spec_mask=self.plugin_data_param.mask,
+                                                             sub_model_inputs=self.plugin_data_param.mtp_model_inputs,
+-                                                            hidden_states=self.plugin_data_param.hidden_states)
++                                                            hidden_states=self.plugin_data_param.hidden_states,
++                                                            **forward_extra_kwargs)
+             else:
+                 result = self.generator_backend.forward(model_inputs, q_lens=self.plugin_data_param.q_len,
+                                                         spec_mask=self.plugin_data_param.mask)  # q_len spec_mask
+@@ -227,7 +256,10 @@ class PluginManager:
+             self.watcher.watch_npu_mem(self.rank, f'After sample', trigger_count=self.mem_det_trigger_counter)
+             logger.info("sample end", extra={"handler_ids": HandlerType.TOKEN})
+             prof = span_start("postprocess")
+-            self.put_prefix_kvcache_to_mempool(input_metadata, cache_ids)
++            if self.mempool_type == MemPoolType.SYNC_WRITE:
++                self.put_prefix_kvcache_to_mempool(input_metadata, cache_ids)
++            elif not warmup and self.mempool_type == MemPoolType.ASYNC_WRITE:
++                self.wait_put_finish(input_metadata)
+             generation_output = self.postprocess(
+                 cache_ids, input_metadata, result, sampling_metadata, sampling_output)
+             generation_output.trace_ids = trace_ids
+@@ -279,6 +311,13 @@ class PluginManager:
+                     sub_model_inputs=self.plugin_data_param.mtp_model_inputs,
+                     hidden_states=self.plugin_data_param.hidden_states
+                 )
++            
++            self.warmup_is_end = True
++            if warmup:
++                if model_kwargs is None:
++                    model_kwargs = {}
++                model_kwargs["warmup_is_end"] = False
++                self.warmup_is_end = False
+ 
+             if self.generator_backend.dp > 1:
+                 cur_dp_rank_id_per_token_mask = model_input.dp_rank_ids == self.generator_backend.mapping.attn_dp.rank
+@@ -319,6 +358,10 @@ class PluginManager:
+             self.generator_backend.synchronize()
+             span_end(prof)
+ 
++            if not warmup and "prefix_cache" in self.plugin_list and \
++                self.prefix_cache.mempool_type == MemPoolType.ASYNC_WRITE:
++                self.prefix_cache.async_put_prefix_kvcache_to_mempool(input_metadata, cache_ids)
++
+             prof = span_start("put_into_input_queue")
+             self.input_queue.put(model_input_wrapper)
+             span_end(prof)
+@@ -423,7 +466,7 @@ class PluginManager:
+                     )
+                     if bitmask is not None:
+                         sampling_metadata.guided_bitmask = bitmask
+-        
++
+         if sampling_metadata is not None and ENV.model_runner_exp and not sampling_metadata.is_prefill:
+             for plugin in self.plugin_list:
+                 plugin_instance = getattr(self, plugin, None)
+@@ -450,7 +493,7 @@ class PluginManager:
+ 
+         if not self.async_inference:
+             self.plugin_verify_manager(sampling_output, cache_ids, result)
+-        
++
+         # 更新结构化输出 FSM 状态（直接调用 StructuredOutputManager）
+         if self._structured_output_manager is not None and sampling_metadata is not None:
+             all_sequence_ids = sampling_metadata.all_sequence_ids
+@@ -619,18 +662,22 @@ class PluginManager:
+                 if not self.is_inference_pause:
+                     model_input_wrapper.postprocess_done.wait()
+ 
+-                prof = span_start("verify")	 
++                prof = span_start("verify")
+                 self.plugin_verify_manager(
+                     sampling_output, model_input_wrapper.cache_ids, model_output.original_result)
+                 span_end(prof)
+ 
+-                prof = span_start("put_prefix_kvcache_to_mempool")
+-                if model_input_wrapper.cache_ids is not None and not model_input_wrapper.input_metadata.is_dummy_batch:
+-                    self.put_prefix_kvcache_to_mempool(
+-                        model_input_wrapper.input_metadata, 
+-                        model_input_wrapper.cache_ids
+-                    )
+-                span_end(prof)
++                if self.mempool_type == MemPoolType.SYNC_WRITE:
++                    prof = span_start("put_prefix_kvcache_to_mempool")
++                    if (
++                        model_input_wrapper.cache_ids is not None
++                        and not model_input_wrapper.input_metadata.is_dummy_batch
++                    ):
++                        self.put_prefix_kvcache_to_mempool(
++                            model_input_wrapper.input_metadata, model_input_wrapper.cache_ids)
++                    span_end(prof)
++                elif self.warmup_is_end and self.mempool_type == MemPoolType.ASYNC_WRITE:
++                    self.wait_put_finish(model_input_wrapper.input_metadata)
+ 
+                 launch_done = threading.Event()
+                 model_output_wrapper = ModelOutputWrapper(
+diff --git a/mindie_llm/text_generator/plugins/prefix_cache/prefix_cache_plugin.py b/mindie_llm/text_generator/plugins/prefix_cache/prefix_cache_plugin.py
+index e22c88847..6eedc4142 100644
+--- a/mindie_llm/text_generator/plugins/prefix_cache/prefix_cache_plugin.py
++++ b/mindie_llm/text_generator/plugins/prefix_cache/prefix_cache_plugin.py
+@@ -7,10 +7,13 @@
+ # EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
+ # MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
+ # See the Mulan PSL v2 for more details.
++import threading
++import queue
+ import numpy as np
+ 
+ from .prefix_cache_preprocess import PrefixCachePreprocess
+ from ..plugin import Plugin
++from ..plugin_manager import MemPoolType
+ from ....modeling.backend_type import BackendType
+ from ....utils.env import ENV
+ from ....utils.log.logging import logger, print_log
+@@ -63,6 +66,7 @@ class PrefixCachePlugin(Plugin):
+         self.tp_size = 1
+         self.tp_rank = 0
+         self.rank = generator_backend.rank
++        self.device_id = self.generator_backend.npu_device_id
+         if hasattr(self.model_wrapper, "mapping"):
+             if self.model_wrapper.mapping.attn_tp.group_size > 1:
+                 self.tp_size = self.model_wrapper.mapping.attn_tp.group_size
+@@ -86,25 +90,37 @@ class PrefixCachePlugin(Plugin):
+             self.is_300i = self.model_wrapper.model_runner.soc_info.is_300i()
+ 
+         ## for kvcache pool
++        self.mempool_type = MemPoolType.DISABLED
++        self.num_put_layers = self.kvcache_settings.num_layers
+         if len(self.generator_backend.kv_pool_backend) != 0 and len(self.generator_backend.kv_pool_config_path) != 0:
++            self.mempool_type = \
++                MemPoolType.ASYNC_WRITE if self.generator_backend.kv_pool_async_write else MemPoolType.SYNC_WRITE
+             from mindie_llm.text_generator.mempool import MemPool
+             self.m_store = MemPool.create_pool(
+                 backend=self.generator_backend.kv_pool_backend,
+                 config_path=self.generator_backend.kv_pool_config_path,
+                 role=MEM_POOL_ROLE_KEY,
+-                device_id=self.model_wrapper.device.index,
++                device_id=self.device_id,
+                 kv_caches=self.generator_backend.cache_pool.npu_cache
+             )
+-            self.enable_mem_pool = self.m_store is not None
+-            if self.enable_mem_pool:
+-                logger.info("Init mem pool successfully!!!")
+-        else:
+-            self.enable_mem_pool = False
++            if self.m_store is None:
++                self.mempool_type = MemPoolType.DISABLED
++        if self.mempool_type != MemPoolType.DISABLED:
++            logger.info("Init mem pool successfully.")
++        if self.mempool_type == MemPoolType.ASYNC_WRITE:
++            self.put_input_queue = queue.Queue()
++            self.put_task_queue = queue.Queue()
++            self.put_prefix_kvcache_thread = threading.Thread(target=self._put_prefix_kvcache_thread, daemon=True)
++            self.put_prefix_kvcache_thread.start()
++            self.save_event = threading.Event()
++            self.save_event.set()  # True
++            self.save_timeout = 10  # 落盘等待时限,10s
++            logger.info("Create prefix cache async save threads successfully.")
+ 
+         self.is_300i = False
+         if self.generator_backend.backend_type == BackendType.ATB:
+             self.is_300i = self.model_wrapper.model_runner.soc_info.is_300i()
+-        logger.info("Prefix Cache Plugin initialized successfully!!!")
++        logger.info("Create prefix cache plugin successfully.")
+ 
+     @staticmethod
+     def enable_local_prefixcache(input_metadata):
+@@ -234,7 +250,7 @@ class PrefixCachePlugin(Plugin):
+         return prefix_keys
+ 
+     def get_prefix_kvcache_from_mempool(self, input_metadata):
+-        if not self.enable_mem_pool:
++        if self.mempool_type == MemPoolType.DISABLED:
+             return
+         computed_blocks = input_metadata.computed_blocks
+         remote_computed_blocks = input_metadata.remote_computed_blocks
+@@ -249,8 +265,8 @@ class PrefixCachePlugin(Plugin):
+             remote_computed_blocks = np.sum(remote_computed_blocks, axis=1)     # shape: [batch_size]
+ 
+         batch_input_ids_offset = 0  # 每个请求的input ids开始索引
+-        prefix_keys = []        # shape： [all_requests_kyes_num] 
+-        kvcache_tensors = []    # shape： [all_requests_kyes_num, layers_num, 2] 
++        prefix_keys = []        # shape： [all_requests_kyes_num]
++        kvcache_tensors = []    # shape： [all_requests_kyes_num, layers_num, 2]
+         for i in range(input_metadata.batch_size):
+             if input_metadata.batch_dp_rank_ids[i] != self.generator_backend.mapping.attn_dp.rank:
+                 batch_input_ids_offset += input_metadata.batch_seq_len[i]
+@@ -280,7 +296,7 @@ class PrefixCachePlugin(Plugin):
+                 else:
+                     req_blocks_id = input_metadata.batch_block_tables[i, req_computed_blocks_id]
+                 one_block_kvcache_tensors = []
+-                for layer_id in range(self.kvcache_settings.num_layers):
++                for layer_id in range(self.num_put_layers):
+                     k_cache = self.generator_backend.cache_pool.npu_cache[layer_id][0][req_blocks_id]
+                     v_cache = self.generator_backend.cache_pool.npu_cache[layer_id][1][req_blocks_id]
+ 
+@@ -295,8 +311,28 @@ class PrefixCachePlugin(Plugin):
+             # 调用mempool get api接口，刷新有前缀复用block的kvcache
+             self.m_store.get(prefix_keys, kvcache_tensors)
+ 
++    def async_put_prefix_kvcache_to_mempool(self, input_metadata, cache_ids):
++        if self.mempool_type == MemPoolType.DISABLED or not input_metadata.is_prefill:
++            return
++        self.put_input_queue.put((input_metadata, cache_ids))
++
++    def put_prefix_kvcache_put_task_queue(self, input_metadata, cache_ids):
++        only_save_kv = False
++        remote_computed_blocks = input_metadata.remote_computed_blocks
++        if remote_computed_blocks is None:
++            only_save_kv = True
++        elif self.scp_size == 1:
++            attn_dp_rank = self.generator_backend.mapping.attn_dp.rank
++            cur_dp_remote_blocks_hits = 0
++            for batch_dp_rank_id, num_computed_blocks in zip(input_metadata.batch_dp_rank_ids, remote_computed_blocks):
++                if attn_dp_rank == batch_dp_rank_id:
++                    cur_dp_remote_blocks_hits += num_computed_blocks
++            only_save_kv = cur_dp_remote_blocks_hits == 0
++        for layer_id in range(self.num_put_layers):
++            self.put_task_queue.put((layer_id == 0, layer_id == (self.num_put_layers - 1), only_save_kv))
++
+     def put_prefix_kvcache_to_mempool(self, input_metadata, cache_ids):
+-        if not self.enable_mem_pool or not input_metadata.is_prefill or \
++        if self.mempool_type == MemPoolType.DISABLED or not input_metadata.is_prefill or \
+             sum(input_metadata.batch_dp_rank_ids == self.generator_backend.mapping.attn_dp.rank) <= 0:
+             return
+         batch_input_ids = self.infer_context.get_all_input_ids(cache_ids)
+@@ -335,7 +371,7 @@ class PrefixCachePlugin(Plugin):
+                                                             request_input_ids_offset + input_metadata.max_block_size]
+                 prefix_hash_value = self.hash_block(prefix_hash_value, block_token_ids)
+                 request_input_ids_offset += input_metadata.max_block_size
+-                if scp_rank != self.scp_rank: 
++                if scp_rank != self.scp_rank:
+                     scp_rank = (scp_rank + 1) % self.scp_size
+                     continue
+                 prefix_keys.append(self.get_prefix_keys(prefix_hash_value))
+@@ -345,7 +381,7 @@ class PrefixCachePlugin(Plugin):
+                 else:
+                     req_blocks_id = input_metadata.batch_block_tables[i, req_uncomputed_blocks_id]
+                 one_block_kvcache_tensors = []
+-                for layer_id in range(self.kvcache_settings.num_layers):
++                for layer_id in range(self.num_put_layers):
+                     k_cache = self.generator_backend.cache_pool.npu_cache[layer_id][0][req_blocks_id]
+                     v_cache = self.generator_backend.cache_pool.npu_cache[layer_id][1][req_blocks_id]
+                     one_block_kvcache_tensors.append([k_cache, v_cache])
+@@ -358,6 +394,25 @@ class PrefixCachePlugin(Plugin):
+             # 调用mempool put api接口，将新计算的kvcache传到mempool
+             self.m_store.put(prefix_keys, kvcache_tensors)
+ 
++    def _put_prefix_kvcache_thread(self):
++        import torch
++        torch.npu.set_device(f"npu:{self.device_id}")
++        stream = torch.npu.Stream()
++        torch.npu.set_stream(stream)
++        logger.info("Create _put_prefix_kvcache_thread")
++        while True:
++            input_metadata, cache_ids = self.put_input_queue.get()
++            self.put_prefix_kvcache_put_task_queue(input_metadata, cache_ids)
++            while not self.put_task_queue.empty():
++                is_first, is_last, only_save_kv = self.put_task_queue.get()
++                if is_first:
++                    self.save_event.clear()  # False
++                pipe_key = self.model_wrapper.generate_mem_pool_event_key(only_save_kv)
++                self.model_wrapper.model_runner.wait_event(pipe_key)
++                if is_last:
++                    self.put_prefix_kvcache_to_mempool(input_metadata, cache_ids)
++                    self.save_event.set()  # True
++
+ 
+ class AttentionMask:
+     def __init__(self, atten_mask):
+diff --git a/src/config_manager/backend_config.cpp b/src/config_manager/backend_config.cpp
+index 240986155..a2ae4970d 100644
+--- a/src/config_manager/backend_config.cpp
++++ b/src/config_manager/backend_config.cpp
+@@ -43,6 +43,7 @@ void BackendConfigManager::InitKvPoolConfigFromJson(Json &backendConfigData)
+ {
+     std::string backend{};
+     std::string configPath{};
++    bool asyncWrite = false;
+     if (backendConfigData.contains("kvPoolConfig")) {
+         Json& kvPoolConfig = backendConfigData["kvPoolConfig"];
+         if (kvPoolConfig.contains("backend")) {
+@@ -51,9 +52,13 @@ void BackendConfigManager::InitKvPoolConfigFromJson(Json &backendConfigData)
+         if (kvPoolConfig.contains("configPath")) {
+             configPath = kvPoolConfig["configPath"];
+         }
++        if (kvPoolConfig.contains("asyncWrite")) {
++            asyncWrite = kvPoolConfig["asyncWrite"];
++        }
+     }
+     backendConfig_.kvPoolConfig.backend = backend;
+     backendConfig_.kvPoolConfig.configPath = configPath;
++    backendConfig_.kvPoolConfig.asyncWrite = asyncWrite;
+ }
+ 
+ bool BackendConfigManager::InitTlsConfigFromJson(Json &backendConfigData)
+diff --git a/src/include/config/config_info.h b/src/include/config/config_info.h
+index 655b96281..fcc93219c 100644
+--- a/src/include/config/config_info.h
++++ b/src/include/config/config_info.h
+@@ -37,6 +37,7 @@ enum class WorkFlowType : uint32_t {
+ struct KvPoolConfig {
+     std::string backend;
+     std::string configPath;
++    bool asyncWrite;
+ };
+ 
+ struct ServerConfig {
+diff --git a/src/llm_manager_v2/impl/llm_manager_impl.cpp b/src/llm_manager_v2/impl/llm_manager_impl.cpp
+index d4519da97..8234a9e13 100644
+--- a/src/llm_manager_v2/impl/llm_manager_impl.cpp
++++ b/src/llm_manager_v2/impl/llm_manager_impl.cpp
+@@ -936,7 +936,8 @@ static void LLMSetModelConfig(std::map<std::string, std::string> &modelConfig, c
+     modelConfig["max_prefill_batch_size"] = std::to_string(engineConfig.maxPrefillBatchSize);
+     modelConfig["kv_pool_backend"] = engineConfig.kvPoolConfig.backend;
+     modelConfig["kv_pool_config_path"] = engineConfig.kvPoolConfig.configPath;
+-   
++    modelConfig["kv_pool_async_write"] = engineConfig.kvPoolConfig.asyncWrite ? "true" : "false";
++
+     std::string npuIds;
+     if (!modelParam.npuDeviceIds.empty()) {
+         for (auto &item : modelParam.npuDeviceIds) {
+@@ -969,9 +970,7 @@ static void LLMSetModelConfig(std::map<std::string, std::string> &modelConfig, c
+     modelConfig["threadNum"] = (modelConfig["asyncBatchscheduler"] == "true") ? "2" : "1";
+ 
+     auto &configManager = mindie_llm::ConfigManager::GetInstance();
+-    if (configManager.IslayerwiseDisaggregated()) {
+-        LLMSetLayerwiseDisaggregatedModelConfig(modelConfig, engineConfig);
+-    }
++    if (configManager.IslayerwiseDisaggregated()) LLMSetLayerwiseDisaggregatedModelConfig(modelConfig, engineConfig);
+ }
+ 
+ static void InitPolicyConfig(SchedulerConfig &schedulerConfig, const EngineConfig &engineConfig)
+diff --git a/tests/pythontest/npu/text_generator/test_plugins/test_plugin_manager.py b/tests/pythontest/npu/text_generator/test_plugins/test_plugin_manager.py
+index 5a81253ae..016971710 100644
+--- a/tests/pythontest/npu/text_generator/test_plugins/test_plugin_manager.py
++++ b/tests/pythontest/npu/text_generator/test_plugins/test_plugin_manager.py
+@@ -1345,6 +1345,9 @@ class TestPluginManagerFillInModelResultExp(unittest.TestCase):
+         }
+ 
+         model_input_wrapper.model_inputs = Mock()
++        model_input_wrapper.model_inputs.input_ids = torch.zeros(3, dtype=torch.long)
++        model_input_wrapper.model_inputs.position_ids = torch.zeros(3, dtype=torch.long)
++        model_input_wrapper.model_inputs.input_lengths = torch.tensor([1, 1, 1])
+         model_input_wrapper.model_inputs.context_length = np.array([1, 2, 3], dtype=np.int32)
+         model_input_wrapper.model_inputs.max_seq_len = 3
+         model_input_wrapper.model_inputs.forward_context = Mock()
+diff --git a/tests/pythontest/npu/text_generator/test_plugins/test_prefix_cache_plugin.py b/tests/pythontest/npu/text_generator/test_plugins/test_prefix_cache_plugin.py
+index bddcfcbaa..adcfbb458 100644
+--- a/tests/pythontest/npu/text_generator/test_plugins/test_prefix_cache_plugin.py
++++ b/tests/pythontest/npu/text_generator/test_plugins/test_prefix_cache_plugin.py
+@@ -39,10 +39,14 @@ class TestPrefixCahcePlugin(unittest.TestCase):
+     @classmethod
+     def setUpClass(cls):
+         sys.modules['_libatb_torch'] = MagicMock()
++        mock_cpu_handler = SimpleNamespace()
++        mock_cpu_handler._PostProcessingManager = MagicMock()
++        sys.modules['_cpu_logits_handler'] = mock_cpu_handler
+ 
+     @classmethod
+     def tearDownClass(cls):
+         del sys.modules['_libatb_torch']
++        del sys.modules['_cpu_logits_handler']
+ 
+     def setUp(self):
+         self.model_config = {
+@@ -70,6 +74,15 @@ class TestPrefixCahcePlugin(unittest.TestCase):
+         plugin_dict = {'plugin_params': PLUGIN_PARAMS}
+         self.model_config.update(plugin_dict)
+ 
++        if hasattr(self, 'model_config') and self.model_config:
++            # 创建一个模拟的 generator_backend
++            self.generator_backend = MagicMock()
++            self.generator_backend.mapping = MagicMock()
++            self.generator_backend.mapping.attn_dp = MagicMock()
++            self.generator_backend.mapping.attn_dp.rank = np.array([1])
++            self.generator_backend.rank = int(self.model_config['rank'])
++            self.generator_backend.local_rank = int(self.model_config['local_rank'])
++
+         fake_parallel_info = FakeParallelInfo(
+             dp=int(self.model_config['dp']),
+             tp=int(self.model_config['tp']),
+@@ -77,6 +90,7 @@ class TestPrefixCahcePlugin(unittest.TestCase):
+             cp=int(self.model_config['cp'])
+         )
+         self.fake_model_runner = FakeModelRunner(parallel_info=fake_parallel_info)
++        return super().setUp()
+ 
+     @patch('torch.npu.synchronize', return_value=None)
+     @patch('atb_llm.runner.model_runner.ModelRunner')
+@@ -111,7 +125,7 @@ class TestPrefixCahcePlugin(unittest.TestCase):
+ 
+         self.model_config['kv_pool_backend'] = "mooncake"
+         self.model_config['kv_pool_config_path'] = "a.json"
+-        
++
+         generator = Generator(self.model_config)
+ 
+         prefix_cache_plugin = generator.plugin_manager
+@@ -122,8 +136,8 @@ class TestPrefixCahcePlugin(unittest.TestCase):
+         mock_kv_block_num = [1] * 100
+         prefix_cache_plugin.generator_backend.cache_pool.npu_cache = [(mock_kv_block_num, mock_kv_block_num)] * 100
+         gen_len = 2
+-        req = Request.request_from_token(input1, 
+-                                         sampling_params=greedy_param, 
++        req = Request.request_from_token(input1,
++                                         sampling_params=greedy_param,
+                                          generation_params=GenerationParams(max_new_tokens=gen_len))
+         meta_data = InputMetadata.from_requests([req], block_tables, True)
+         meta_data.block_tables = block_tables
+@@ -132,11 +146,11 @@ class TestPrefixCahcePlugin(unittest.TestCase):
+         meta_data.sp_tokens = np.array([128, 72]).reshape(1, -1)
+         # 无复用，使用fa算子做prefill
+         generation_output = prefix_cache_plugin.generate_token(meta_data)
+-        
++
+         # 有复用，使用qlen > 1 的 pa算子做prefill
+         remote_computed_blocks = np.ones(CP, dtype=np.int64).reshape(1, -1)
+         remote_computed_blocks[0, 1] = 0
+-        
++
+         # 都在本地命中
+         meta_data.computed_blocks = np.zeros(CP, dtype=np.int64).reshape(1, -1)
+         meta_data.computed_blocks[0, 1] = 1
+@@ -168,6 +182,161 @@ class TestPrefixCahcePlugin(unittest.TestCase):
+                 break
+         self.assertEqual(check_greedy, 1)
+ 
++    def test_async_put_prefix_kvcache_to_mempool_function(self):
++        def side_effect_initialize_distributed(rank, npu_id, world_size):
++            return torch.device("cpu")
++
++        def side_effect_forward(model_inputs, **kwargs):
++            if model_inputs.is_prefill:
++                token_num = model_inputs.prefill_head_indices.shape[0]
++            else:
++                token_num = model_inputs.input_ids.shape[0]
++            logits = torch.zeros(token_num, 10)
++            return logits
++
++        with patch.object(GeneratorTorch, 'forward') as mock_forward, \
++             patch('atb_llm.utils.dist.initialize_distributed') as mock_initialize_distributed, \
++             patch('atb_llm.runner.model_runner.ModelRunner', return_value=self.fake_model_runner) as _, \
++             patch('mindie_llm.text_generator.utils.kvcache_settings.NPUSocInfo.support_nz', return_value=True) as _, \
++             patch('mindie_llm.text_generator.utils.kvcache_settings.KVCacheSettings') as mock_kvcache_settings_class, \
++             patch('torch.npu.synchronize', return_value=None) as _, \
++             patch('torch.npu.set_device', return_value=None) as _, \
++             patch('torch.npu.set_stream', return_value=None) as _, \
++             patch('torch.npu.Stream', return_value=MagicMock()) as mock_stream, \
++             patch('mindie_llm.text_generator.adapter.generator_torch.GeneratorTorch._get_obfuscation_func', \
++                    return_value=None) as _:
++
++            mock_initialize_distributed.side_effect = side_effect_initialize_distributed
++            mock_forward.side_effect = side_effect_forward
++            mock_kvcache_settings = MagicMock(dtype=None)
++            mock_kvcache_settings_class.return_value = mock_kvcache_settings
++            self.model_config['kv_pool_backend'] = "mooncake"
++            self.model_config['kv_pool_config_path'] = "a.json"
++            self.model_config['kv_pool_async_write'] = "true"
++            generator = Generator(self.model_config)
++
++            prefix_cache_plugin = generator.plugin_manager
++
++            # 创建测试输入元数据
++            mock_metadata = MagicMock()
++            mock_metadata.is_prefill = True
++            mock_metadata.computed_blocks = np.array([[1, 0]])
++            mock_metadata.remote_computed_blocks = np.array([[1, 0]])
++
++            # 创建测试 cache_ids
++            cache_ids = [0]
++
++            # 测试 async_put_prefix_kvcache_to_mempool
++            prefix_cache_plugin.prefix_cache.async_put_prefix_kvcache_to_mempool(mock_metadata, cache_ids)
++
++            # 测试 put_prefix_kvcache_put_task_queue
++            mock_metadata.batch_dp_rank_ids = [0]
++            mock_metadata.remote_computed_blocks = np.array([1])
++            prefix_cache_plugin.prefix_cache.put_prefix_kvcache_put_task_queue(mock_metadata, cache_ids)
++
++            # 参数构建
++            mock_metadata.batch_dp_rank_ids = np.array([0, 1])
++            mock_metadata.remote_computed_blocks = np.array([[1, 1]])
++            mock_metadata.batch_size = 1
++            mock_metadata.batch_seq_len = [128]
++            mock_metadata.max_block_size = 128
++            mock_metadata.batch_block_tables = np.array([[[0, 1]]])
++            prefix_cache_plugin.infer_context = MagicMock()
++            prefix_cache_plugin.infer_context.get_all_input_ids.return_value = np.array([[1, 2, 3, 4, 5] * 256])
++            prefix_cache_plugin.infer_context.get_seq_lens.return_value = [128]
++            mock_kv_block_num = [1] * 100
++            prefix_cache_plugin.generator_backend.cache_pool.npu_cache = [(mock_kv_block_num, mock_kv_block_num)] * 100
++
++            # 测试 put_prefix_kvcache_to_mempool
++            prefix_cache_plugin.put_prefix_kvcache_to_mempool(mock_metadata, cache_ids)
++
++    def test_get_prefix_kvcache_from_mempool(self):
++        from mindie_llm.text_generator.plugins.plugin_manager import MemPoolType
++        from mindie_llm.text_generator.plugins.prefix_cache.prefix_cache_plugin import PrefixCachePlugin
++
++        plugin = PrefixCachePlugin.__new__(PrefixCachePlugin)
++        plugin.mempool_type = MemPoolType.SYNC_WRITE
++        plugin.scp_size = 2
++        plugin.scp_rank = 0
++        plugin.num_put_layers = 61
++        plugin.generator_backend = self.generator_backend
++        plugin.model_name = "llama"
++
++        metadata = SimpleNamespace(
++            is_prefill=True,
++            computed_blocks=None,
++            remote_computed_blocks=np.array([[0]]),
++            batch_size=1,
++            batch_dp_rank_ids=[0],
++            batch_seq_len=[10],
++            input_ids=np.array([1, 2, 3, 4, 5]),
++            max_block_size=128,
++            batch_block_tables=np.array([[0, 1]]).reshape(1, 1, -1),
++            block_tables=np.array([[0, 1]]).reshape(1, 1, -1)
++        )
++
++        plugin.get_prefix_kvcache_from_mempool(metadata)
++
++    def test_hash_and_prefix_key(self):
++        from mindie_llm.text_generator.plugins.prefix_cache.prefix_cache_plugin import (
++            cpp_style_hash, hash_combine, PrefixCachePlugin
++        )
++
++        self.assertEqual(cpp_style_hash(123), 123)
++        self.assertNotEqual(cpp_style_hash("abc"), 0)
++
++        seed = hash_combine(0, 10)
++        self.assertNotEqual(seed, 0)
++
++        plugin = PrefixCachePlugin.__new__(PrefixCachePlugin)
++        plugin.scp_size = 1
++        plugin.tp_rank = 0
++        plugin.tp_size = 1
++        plugin.model_name = "llama"
++
++        hash_val = plugin.hash_block(0, [1, 2, 3, 4])
++        self.assertNotEqual(hash_val, 0)
++
++        key = plugin.get_prefix_keys(hash_val)
++        self.assertIn("llama", key)
++
++    def test_enable_prefixcache_flags(self):
++        from mindie_llm.text_generator.plugins.prefix_cache.prefix_cache_plugin import PrefixCachePlugin
++
++        meta = SimpleNamespace(
++            is_prefill=True,
++            computed_blocks=np.array([1]),
++            remote_computed_blocks=np.array([1])
++        )
++
++        self.assertTrue(PrefixCachePlugin.enable_local_prefixcache(meta))
++        self.assertTrue(PrefixCachePlugin.enable_remmote_prefixcache(meta))
++
++        meta.computed_blocks = None
++        self.assertFalse(PrefixCachePlugin.enable_local_prefixcache(meta))
++
++    def test_attention_mask(self):
++        from mindie_llm.text_generator.plugins.prefix_cache.prefix_cache_plugin import AttentionMask as PluginAttentionMask
++
++        am = PluginAttentionMask(None)
++
++        am.atten_mask_cache = am.get_attn_mask(4)
++        self.assertEqual(am.atten_mask_cache.shape, (4, 4))
++
++        am._seq_len_cache = 4
++        am.update_attn_cache(5)
++        self.assertEqual(am.atten_mask_cache.shape, (5, 5))
++
++    def _get_tensor_slid_effect(self, tensor_name):
++        tensor_shape = self.tensor_names.get(tensor_name).get("shape")
++        tensor_dtype = self.tensor_names.get(tensor_name).get("dtype")
++        return torch.rand(tensor_shape, dtype=tensor_dtype)
++
++    def _get_slice_slid_effect(self, tensor_name):
++        tensor = self._get_tensor_slid_effect(tensor_name)
++        tensor.get_shape = tensor.size
++        return tensor
++
+ 
+ if __name__ == "__main__":
+     unittest.main()
+\ No newline at end of file
