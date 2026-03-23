@@ -76,6 +76,15 @@ void TransQueue::Push(TaskPtr task, WaiterPtr waiter)
     }
 }
 
+void TransQueue::Cancel(TaskPtr task)
+{
+    auto& pool = task->type == TransTask::Type::DUMP ? dumpPool_ : loadPool_;
+    const auto tid = task->id;
+    pool.TraverseWaitQueue([tid](IoUnit& ios) { return ios.owner == tid; },
+                           [this](IoUnit& ios) { OnIoUnitTimeout(ios); },
+                           [tid](IoUnit& ios) { return ios.owner > tid; });
+}
+
 void TransQueue::LoadWorker(IoUnit& ios)
 {
     if (ios.firstIo) {
