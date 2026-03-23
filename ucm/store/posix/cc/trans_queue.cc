@@ -76,6 +76,13 @@ void TransQueue::Push(TaskPtr task, WaiterPtr waiter)
     }
 }
 
+void TransQueue::Cancel(TaskPtr task)
+{
+    auto& pool = task->type == TransTask::Type::DUMP ? dumpPool_ : loadPool_;
+    pool.VisitWaitQueue([tid = task->id](IoUnit& ios) { return ios.owner == tid; },
+                        [this](IoUnit& ios) { OnIoUnitTimeout(ios); });
+}
+
 void TransQueue::LoadWorker(IoUnit& ios)
 {
     if (ios.firstIo) {

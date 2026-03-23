@@ -131,6 +131,23 @@ public:
         this->taskQ_.push_back(std::move(task));
         this->cv_.notify_one();
     }
+    void VisitWaitQueue(std::function<bool(Task&)> filter, std::function<void(Task&)> visitor)
+    {
+        std::list<Task> batch;
+        std::list<Task> snapshot;
+        {
+            std::lock_guard<std::mutex> lock(taskMtx_);
+            snapshot.swap(taskQ_);
+        }
+        auto it = snapshot.begin();
+        while (it != snapshot.end()) {
+            auto current = it++;
+            if (filter(*current)) { visitor(*current); }
+            batch.splice(batch.end(), snapshot, current);
+            if (batch.size() == nWorker_) { Push(batch); }
+        }
+        if (!batch.empty()) { Push(batch); }
+    }
 
 private:
     bool AddOneWorker()

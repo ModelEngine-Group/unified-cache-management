@@ -57,6 +57,7 @@ private:
 public:
     Status Setup(const Config& config, TaskIdSet* failureSet, const SpaceLayout* layout);
     void Push(TaskPtr task, WaiterPtr waiter);
+    void Cancel(TaskPtr task);
 
 private:
     void LoadWorker(IoUnit& ios);
