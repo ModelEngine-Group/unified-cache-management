@@ -53,6 +53,7 @@ private:
     size_t shardSize_;
     size_t nShardPerBlock_;
     bool ioDirect_;
+    size_t timeoutMs_;
 
 public:
     Status Setup(const Config& config, TaskIdSet* failureSet, const SpaceLayout* layout);
