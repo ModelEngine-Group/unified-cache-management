@@ -13,8 +13,6 @@ from common.common_inference_utils import (
     load_prompt_list_from_file,
     match_any_answer,
     match_sparse_answer,
-    normalize_text,
-    remove_punc,
     serialize_sample_params,
     split_prompt_by_tokens,
 )

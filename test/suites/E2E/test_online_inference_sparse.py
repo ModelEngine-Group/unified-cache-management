@@ -20,14 +20,9 @@ from typing import List
 import pytest
 import yaml
 from common.common_inference_utils import (
-    ensure_storage_dir,
     extract_answers,
-    load_prompt_from_file,
     load_prompt_list_from_file,
-    match_any_answer,
     match_sparse_answer,
-    normalize_text,
-    split_prompt_by_tokens,
 )
 from common.llm_connection.LLMBase import LLMRequest
 from common.llm_connection.openai_connector import OpenAIConn
