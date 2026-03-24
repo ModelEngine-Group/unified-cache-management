@@ -356,9 +356,6 @@ class UCMDirectConnector(KVConnectorBase_V1):
                     if local_rank < len(dev_list):
                         device_id = dev_list[local_rank]
 
-                if hasattr(self, "npu_to_numa"):
-                    numa_node = self.npu_to_numa.get(device_id)
-
                 # fallback: rank -> numa
                 if numa_node is None:
                     node_base = "/sys/devices/system/node"
