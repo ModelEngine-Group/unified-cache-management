@@ -8,7 +8,6 @@ from common.common_inference_utils import (
     get_platform_specific_module,
     load_prompt_from_file,
     match_any_answer,
-    normalize_text,
     serialize_sample_params,
     split_prompt_by_tokens,
 )

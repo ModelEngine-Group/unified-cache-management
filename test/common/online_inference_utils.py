@@ -45,6 +45,9 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any, Dict, List, Optional
 
 import requests
+from common.common_inference_utils import (
+    match_any_answer,
+)
 from common.llm_connection.LLMBase import LLMRequest, LLMResponse
 
 logger = logging.getLogger(__name__)
@@ -510,21 +513,6 @@ def hbm_ssd_mixed_test(
 
     # ===== Accuracy Test Results =====
     print(f"\n[INFO] ===== Accuracy Test Results =====")
-
-    def normalize_text(text: str) -> str:
-        text = text.replace("\uff0c", ",")
-        text = text.replace("\u3002", ".")
-        text = text.replace("\uff01", "!")
-        text = text.replace("\uff1f", "?")
-        text = text.replace("\uff1a", ":")
-        text = text.replace("\uff1b", ";")
-        return text.strip()
-
-    def match_any_answer(output: str, answers: List[str]) -> bool:
-        for answer in answers:
-            if normalize_text(output) == normalize_text(answer):
-                return True
-        return False
 
     # Phase accuracy check
     phase1_correct = match_any_answer(
