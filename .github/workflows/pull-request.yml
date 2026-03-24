@@ -74,6 +74,7 @@ jobs:
     uses: ./.github/workflows/lint-and-test.yml
   
   test-build-npu:
+    timeout-minutes: 15
     runs-on: ubuntu-24.04-arm
     steps:
       - uses: actions/checkout@v4
@@ -96,6 +97,7 @@ jobs:
           cache-to: type=gha,mode=max,scope=npu
 
   test-build-npu-sparse:
+    timeout-minutes: 15
     runs-on: ubuntu-24.04-arm
     steps:
       - uses: actions/checkout@v4
@@ -118,6 +120,7 @@ jobs:
           cache-to: type=gha,mode=max,scope=npu
 
   test-e2e-pc-gpu:
+    timeout-minutes: 25
     runs-on: ["gpu-test-in-docker"]
     needs: lint-and-unit-tests
     permissions:
@@ -186,6 +189,7 @@ jobs:
         sudo rm -f /workspace/test_results/${{ steps.version.outputs.version }}-online-inference.xml || true
 
   test-e2e-sparse-gpu:
+    timeout-minutes: 25
     runs-on: ["gpu-test-in-docker"]
     needs: lint-and-unit-tests
     permissions:
