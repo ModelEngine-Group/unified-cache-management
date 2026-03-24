@@ -3,7 +3,6 @@ import hashlib
 import math
 import os
 import pickle
-import subprocess
 import time
 from collections import defaultdict
 from dataclasses import dataclass, field
@@ -385,7 +384,7 @@ class UCMDirectConnector(KVConnectorBase_V1):
                         else:
                             seg = [int(part)]
 
-                        mid = len(seg) // 2
+                        mid = max(1, len(seg) // 2)
                         worker_cores.extend(seg[:mid])
                         store_cores.extend(seg[mid:])
 
@@ -399,9 +398,9 @@ class UCMDirectConnector(KVConnectorBase_V1):
             try:
                 cores = sorted(os.sched_getaffinity(0))
             except Exception:
-                cores = list(range(os.cpu_count()))
+                cores = list(range(os.cpu_count() or 1))
 
-            mid = len(cores) // 2
+            mid = max(1, len(cores) // 2)
             worker_cores = cores[:mid]
             store_cores = cores[mid:]
 
