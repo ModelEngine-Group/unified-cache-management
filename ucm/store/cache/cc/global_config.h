@@ -37,6 +37,7 @@ struct Config {
     size_t shardSize{0};
     size_t blockSize{0};
     bool ioDirect{false};
+    std::vector<ssize_t> cpuAffinityCores{};
     size_t bufferCapacity{256ULL << 30};
     bool shareBufferEnable{true};
     size_t waitingQueueDepth{8192};

@@ -21,31 +21,36 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  * */
-#ifndef UNIFIEDCACHE_POSIX_STORE_CC_GLOBAL_CONFIG_H
-#define UNIFIEDCACHE_POSIX_STORE_CC_GLOBAL_CONFIG_H
+#ifndef UNIFIEDCACHE_INFRA_CPU_AFFINITY_H
+#define UNIFIEDCACHE_INFRA_CPU_AFFINITY_H
 
-#include <string>
+#include <cerrno>
+#include <sched.h>
+#include <thread>
 #include <vector>
+#include "status/status.h"
 
-namespace UC::PosixStore {
+namespace UC {
 
-struct Config {
-    std::vector<std::string> storageBackends{};
-    int32_t deviceId{-1};
-    size_t tensorSize{0};
-    size_t shardSize{0};
-    size_t blockSize{0};
-    std::string ioEngine{"psync"};  // "aio", "psync"
-    bool ioDirect{false};
-    std::vector<ssize_t> cpuAffinityCores{};
-    size_t dataTransConcurrency{128};
-    size_t lookupConcurrency{16};
-    size_t openConcurrency{32};
-    size_t commitConcurrency{4};
-    size_t timeoutMs{30000};
-    size_t dataDirShardBytes{3};
+class CpuAffinity {
+public:
+    static Status SetCpuAffinity4CurrentThread(const cpu_set_t& mask)
+    {
+        if (CPU_COUNT(&mask) == 0) { return Status::InvalidParam(); }
+        auto ret = sched_setaffinity(0, sizeof(mask), &mask);
+        if (ret != 0) { return Status::Error(std::to_string(errno)); }
+        std::this_thread::yield();
+        return Status::OK();
+    }
+    static Status SetCpuAffinity4CurrentThread(const std::vector<ssize_t> cores)
+    {
+        cpu_set_t mask;
+        CPU_ZERO(&mask);
+        for (const auto core : cores) { CPU_SET(core, &mask); }
+        return SetCpuAffinity4CurrentThread(mask);
+    }
 };
 
-}  // namespace UC::PosixStore
+}  // namespace UC
 
-#endif
+#endif  // UNIFIEDCACHE_INFRA_CPU_AFFINITY_H

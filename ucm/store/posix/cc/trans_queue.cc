@@ -41,6 +41,7 @@ Status TransQueue::Setup(const Config& config, TaskIdSet* failureSet, const Spac
             .SetWorkerFn([this](auto& ios, auto&) { LoadWorker(ios); })
             .SetWorkerTimeoutFn([this](IoUnit& ios, ssize_t tid) { OnIoUnitTimeout(ios); },
                                 config.timeoutMs)
+            .SetCpuAffinity(config.cpuAffinityCores)
             .Run();
     if (!success) [[unlikely]] {
         return Status::Error(fmt::format("workers({}) start failed", config.dataTransConcurrency));
@@ -49,6 +50,7 @@ Status TransQueue::Setup(const Config& config, TaskIdSet* failureSet, const Spac
                   .SetWorkerFn([this](auto& ios, auto&) { DumpWorker(ios); })
                   .SetWorkerTimeoutFn([this](IoUnit& ios, ssize_t tid) { OnIoUnitTimeout(ios); },
                                       config.timeoutMs)
+                  .SetCpuAffinity(config.cpuAffinityCores)
                   .Run();
     if (!success) [[unlikely]] {
         return Status::Error(fmt::format("workers({}) start failed", config.dataTransConcurrency));
