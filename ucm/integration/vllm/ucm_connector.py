@@ -307,7 +307,7 @@ class UCMDirectConnector(KVConnectorBase_V1):
         logger.info(f"create {name} with config: {config}")
         return UcmConnectorFactoryV1.create_connector(name, config, module_path)
 
-    def split_worker_and_store_cores(self, local_rank, is_cuda: bool):
+    def split_worker_and_store_cores(self, local_rank):
         """
         Split CPU cores into worker/store groups based on NUMA locality.
         Strategy:
@@ -326,7 +326,7 @@ class UCMDirectConnector(KVConnectorBase_V1):
             # =========================
             # CUDA path
             # =========================
-            if is_cuda:
+            if current_platform.is_cuda_alike():
                 prop = torch.cuda.get_device_properties(local_rank)
                 pci_bus_id = (
                     f"{prop.pci_domain_id:04x}:"
@@ -440,11 +440,9 @@ class UCMDirectConnector(KVConnectorBase_V1):
         }
         self.first_layer_id = next(iter(self.layer_name_to_id.values()))
 
-        is_cuda = self._vllm_config.device_config.device_type == "cuda"
-
         enable_affinity = os.getenv("VLLM_CPU_AFFINITY") == "1"
         worker_cores, store_cores = (
-            self.split_worker_and_store_cores(self.local_rank, is_cuda)
+            self.split_worker_and_store_cores(self.local_rank)
             if enable_affinity
             else (None, None)
         )
