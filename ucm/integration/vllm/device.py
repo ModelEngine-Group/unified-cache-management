@@ -45,69 +45,6 @@ class Device(ABC):
         """
         pass
 
-    def _fallback_cpu_affinity(self, local_rank: int) -> Optional[str]:
-        """
-        Fallback path for both CUDA and NPU:
-        split current allowed CPUs by local_rank within visible devices.
-        """
-        try:
-            cores = sorted(os.sched_getaffinity(0))
-            if not cores:
-                return None
-
-            if current_platform.is_cuda_alike():
-                visible = os.environ.get("CUDA_VISIBLE_DEVICES")
-                total_devices = (
-                    len([x.strip() for x in visible.split(",") if x.strip()])
-                    if visible
-                    else torch.cuda.device_count()
-                )
-                dev_name = "cuda"
-            elif current_platform.device_type == "npu":
-                visible = os.environ.get("ASCEND_RT_VISIBLE_DEVICES") or os.environ.get(
-                    "ASCEND_VISIBLE_DEVICES"
-                )
-                total_devices = (
-                    len([x.strip() for x in visible.split(",") if x.strip()])
-                    if visible
-                    else torch.npu.device_count()
-                )
-                dev_name = "npu"
-            else:
-                return None
-
-            if total_devices <= 0 or local_rank < 0 or local_rank >= total_devices:
-                logger.warning(
-                    f"[CPU Affinity] invalid fallback split: "
-                    f"{dev_name} local_rank={local_rank}, total_devices={total_devices}"
-                )
-                return None
-
-            base = len(cores) // total_devices
-            extra = len(cores) % total_devices
-
-            start = local_rank * base + min(local_rank, extra)
-            length = base + (1 if local_rank < extra else 0)
-            sliced = cores[start : start + length]
-
-            if not sliced:
-                return None
-
-            parts = []
-            s = e = sliced[0]
-            for c in sliced[1:]:
-                if c == e + 1:
-                    e = c
-                else:
-                    parts.append(f"{s}-{e}" if s != e else str(s))
-                    s = e = c
-            parts.append(f"{s}-{e}" if s != e else str(s))
-            return ",".join(parts)
-
-        except Exception as e:
-            logger.error(f"fallback cpu affinity failed: {e}")
-            return None
-
     def split_cores(self, local_rank: int) -> Tuple[List[int], List[int]]:
         """
         Shared split logic for both CUDA and NPU.
@@ -203,17 +140,57 @@ class CudaDevice(Device):
                     if os.path.exists(cpu_list_path):
                         with open(cpu_list_path) as f:
                             return f.read().strip()
-
         except Exception as e:
             logger.warning(f"get cuda cpu affinity from numa failed: {e}")
 
-        cpu_affinity = self._fallback_cpu_affinity(local_rank)
-        if cpu_affinity:
+        try:
+            cores = sorted(os.sched_getaffinity(0))
+            if not cores:
+                return None
+
+            visible = os.environ.get("CUDA_VISIBLE_DEVICES")
+            total_devices = (
+                len([x.strip() for x in visible.split(",") if x.strip()])
+                if visible
+                else torch.cuda.device_count()
+            )
+
+            if total_devices <= 0 or local_rank < 0 or local_rank >= total_devices:
+                logger.warning(
+                    f"[CPU Affinity] invalid cuda fallback split: "
+                    f"local_rank={local_rank}, total_devices={total_devices}"
+                )
+                return None
+
+            base = len(cores) // total_devices
+            extra = len(cores) % total_devices
+            start = local_rank * base + min(local_rank, extra)
+            length = base + (1 if local_rank < extra else 0)
+            sliced = cores[start : start + length]
+
+            if not sliced:
+                return None
+
+            parts = []
+            s = e = sliced[0]
+            for c in sliced[1:]:
+                if c == e + 1:
+                    e = c
+                else:
+                    parts.append(f"{s}-{e}" if s != e else str(s))
+                    s = e = c
+            parts.append(f"{s}-{e}" if s != e else str(s))
+
+            cpu_affinity = ",".join(parts)
             logger.warning(
                 f"[CPU Affinity] fallback to sliced allowed CPUs for cuda rank={local_rank}: "
                 f"{cpu_affinity}"
             )
-        return cpu_affinity
+            return cpu_affinity
+
+        except Exception as e:
+            logger.error(f"get cuda cpu affinity fallback failed: {e}")
+            return None
 
 
 class NpuDevice(Device):
@@ -293,13 +270,56 @@ class NpuDevice(Device):
         except Exception as e:
             logger.warning(f"get npu cpu affinity from topo failed: {e}")
 
-        cpu_affinity = self._fallback_cpu_affinity(local_rank)
-        if cpu_affinity:
+        try:
+            cores = sorted(os.sched_getaffinity(0))
+            if not cores:
+                return None
+
+            visible = os.environ.get("ASCEND_RT_VISIBLE_DEVICES") or os.environ.get(
+                "ASCEND_VISIBLE_DEVICES"
+            )
+            total_devices = (
+                len([x.strip() for x in visible.split(",") if x.strip()])
+                if visible
+                else torch.npu.device_count()
+            )
+
+            if total_devices <= 0 or local_rank < 0 or local_rank >= total_devices:
+                logger.warning(
+                    f"[CPU Affinity] invalid npu fallback split: "
+                    f"local_rank={local_rank}, total_devices={total_devices}"
+                )
+                return None
+
+            base = len(cores) // total_devices
+            extra = len(cores) % total_devices
+            start = local_rank * base + min(local_rank, extra)
+            length = base + (1 if local_rank < extra else 0)
+            sliced = cores[start : start + length]
+
+            if not sliced:
+                return None
+
+            parts = []
+            s = e = sliced[0]
+            for c in sliced[1:]:
+                if c == e + 1:
+                    e = c
+                else:
+                    parts.append(f"{s}-{e}" if s != e else str(s))
+                    s = e = c
+            parts.append(f"{s}-{e}" if s != e else str(s))
+
+            cpu_affinity = ",".join(parts)
             logger.warning(
                 f"[CPU Affinity] fallback to sliced allowed CPUs for npu rank={local_rank}: "
                 f"{cpu_affinity}"
             )
-        return cpu_affinity
+            return cpu_affinity
+
+        except Exception as e:
+            logger.error(f"get npu cpu affinity fallback failed: {e}")
+            return None
 
 
 def create_device() -> Optional[Device]:
