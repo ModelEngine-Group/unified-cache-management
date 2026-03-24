@@ -109,6 +109,7 @@ private:
         inConfig.GetNumber("block_size", config.blockSize);
         inConfig.Get("posix_io_engine", config.ioEngine);
         inConfig.Get("io_direct", config.ioDirect);
+        inConfig.Get("cpu_affinity_cores", config.cpuAffinityCores);
         inConfig.GetNumber("posix_data_trans_concurrency", config.dataTransConcurrency);
         inConfig.GetNumber("posix_lookup_concurrency", config.lookupConcurrency);
         inConfig.GetNumber("posix_open_concurrency", config.openConcurrency);
@@ -130,6 +131,11 @@ private:
         }
         if (config.dataDirShardBytes > 5) {
             return Status::InvalidParam("invalid shard bytes({})", config.dataDirShardBytes);
+        }
+        for (const auto core : config.cpuAffinityCores) {
+            if (core < 0 || core >= CPU_SETSIZE) {
+                return Status::InvalidParam("invalid cpu core({})", core);
+            }
         }
         if (config.deviceId == -1) { return Status::OK(); }
         if (config.tensorSize == 0 || config.shardSize < config.tensorSize ||
@@ -166,6 +172,7 @@ private:
         UC_INFO("Set {}::BlockSize to {}.", ns, config.blockSize);
         UC_INFO("Set {}::IoEngine to {}.", ns, config.ioEngine);
         UC_INFO("Set {}::IoDirect to {}.", ns, config.ioDirect);
+        UC_INFO("Set {}::CpuAffinityCores to {}.", ns, config.cpuAffinityCores);
         UC_INFO("Set {}::DataTransConcurrency to {}.", ns, config.dataTransConcurrency);
         UC_INFO("Set {}::LookupConcurrency to {}.", ns, config.lookupConcurrency);
         UC_INFO("Set {}::OpenConcurrency to {}.", ns, config.openConcurrency);

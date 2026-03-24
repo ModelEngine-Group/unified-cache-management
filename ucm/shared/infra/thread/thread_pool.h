@@ -35,6 +35,7 @@
 #include <thread>
 #include <unistd.h>
 #include <vector>
+#include "cpu_affinity.h"
 
 namespace UC {
 
@@ -105,6 +106,11 @@ public:
         this->nWorker_ = nWorker;
         return *this;
     }
+    ThreadPool& SetCpuAffinity(std::vector<ssize_t> cores)
+    {
+        cpuAffinityCores_ = std::move(cores);
+        return *this;
+    }
     size_t NWorker() const { return this->nWorker_; }
     bool Run()
     {
@@ -149,17 +155,7 @@ public:
             if (drain_.exchange(true)) { return; }
             snapshot.swap(taskQ_);
         }
-        auto CleanUp = [this, &snapshot] {
-            std::lock_guard<std::mutex> lock(taskMtx_);
-            if (!snapshot.empty()) taskQ_.splice(taskQ_.end(), snapshot);
-            if (!taskPending_.empty()) taskQ_.splice(taskQ_.end(), taskPending_);
-            drain_.store(false);
-            cv_.notify_all();
-        };
-        struct Guard {
-            std::function<void()> f;
-            ~Guard() { f(); }
-        } guard{CleanUp};
+        size_t processed = 0;
         auto it = snapshot.begin();
         while (it != snapshot.end()) {
             if (earlyStopper && earlyStopper(*it)) { break; }
@@ -169,7 +165,19 @@ public:
                 continue;
             }
             ++it;
+            ++processed;
+            if (processed == nWorker_) {
+                std::lock_guard<std::mutex> lock(taskMtx_);
+                taskQ_.splice(taskQ_.end(), snapshot, snapshot.begin(), it);
+                cv_.notify_all();
+                processed = 0;
+            }
         }
+        std::lock_guard<std::mutex> lock(taskMtx_);
+        if (!snapshot.empty()) { taskQ_.splice(taskQ_.end(), snapshot); }
+        if (!taskPending_.empty()) { taskQ_.splice(taskQ_.end(), taskPending_); }
+        drain_.store(false);
+        cv_.notify_all();
     }
 
 private:
@@ -195,6 +203,9 @@ private:
         auto success = true;
         if (this->initFn_) { success = this->initFn_(args); }
         prom.set_value(success);
+        if (!cpuAffinityCores_.empty()) {
+            CpuAffinity::SetCpuAffinity4CurrentThread(cpuAffinityCores_);
+        }
         while (success) {
             std::shared_ptr<Task> task = nullptr;
             {
@@ -219,6 +230,9 @@ private:
 
     void MonitorLoop()
     {
+        if (!cpuAffinityCores_.empty()) {
+            CpuAffinity::SetCpuAffinity4CurrentThread(cpuAffinityCores_);
+        }
         const auto interval = std::chrono::milliseconds(this->intervalMs_);
         while (!this->stop_) {
             std::this_thread::sleep_for(interval);
@@ -255,6 +269,7 @@ private:
     size_t timeoutMs_{0};
     size_t intervalMs_{0};
     size_t nWorker_{0};
+    std::vector<ssize_t> cpuAffinityCores_{};
     bool stop_{false};
     std::atomic_bool drain_{false};
     std::list<Task> taskPending_;

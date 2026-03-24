@@ -60,6 +60,12 @@ public:
         if (this->counter_ == 0) { return; }
         this->cv_.wait(lk, [this] { return this->counter_ == 0; });
     }
+    bool IsTimeout(size_t timeoutMs) noexcept
+    {
+        using namespace std::chrono;
+        auto elapsed = duration_cast<milliseconds>(duration<double>(NowTime::Now() - startTp));
+        return elapsed >= milliseconds(timeoutMs);
+    }
     bool WaitFor(size_t timeoutMs) noexcept
     {
         if (timeoutMs == 0) {

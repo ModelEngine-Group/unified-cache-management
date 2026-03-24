@@ -165,15 +165,13 @@ class TestBasicOnlineInference:
             LLMRequest(
                 messages=[
                     {"role": "system", "content": system_content},
-                    # user content里强调下，有的模型不太遵循system content
-                    {"role": "user", "content": system_content + prompt},
+                    {"role": "user", "content": prompt},
                 ],
                 max_tokens=max_tokens,
                 temperature=0.0,
             )
             for prompt in test_prompts
         ]
-        print("requests: ", requests)
 
         # UCM config with UcmPipelineStore
         ucm_config = {
@@ -281,16 +279,13 @@ class TestBasicOnlineInference:
             LLMRequest(
                 messages=[
                     {"role": "system", "content": system_content},
-                    # user content里强调下，有的模型不太遵循system content
-                    {"role": "user", "content": system_content + prompt},
+                    {"role": "user", "content": prompt},
                 ],
                 max_tokens=max_tokens,
                 temperature=0.0,
             )
             for prompt in test_prompts
         ]
-
-        print("requests: ", requests)
 
         # UCM config with UcmPipelineStore
         ucm_config = {
