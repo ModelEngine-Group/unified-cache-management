@@ -3,6 +3,7 @@ import hashlib
 import math
 import os
 import pickle
+import subprocess
 import time
 from collections import defaultdict
 from dataclasses import dataclass, field
@@ -275,7 +276,9 @@ class UCMDirectConnector(KVConnectorBase_V1):
         return ret
 
     def _create_store(
-        self, kv_cache_layout: Optional[KVCacheLayout]
+        self,
+        kv_cache_layout: Optional[KVCacheLayout],
+        cpu_affinity_cores: Optional[list[int]] = None,
     ) -> UcmKVStoreBaseV1:
         if len(self.connector_configs) != 1:
             raise RuntimeError(
@@ -300,8 +303,120 @@ class UCMDirectConnector(KVConnectorBase_V1):
             config["shard_size"] = kv_cache_layout.shard_size * self.blocks_per_chunk
             config["block_size"] = kv_cache_layout.block_size * self.blocks_per_chunk
             config["local_rank_size"] = self.tp_size if self.is_mla else 1
+            if cpu_affinity_cores:
+                config["cpu_affinity_cores"] = list(cpu_affinity_cores)
         logger.info(f"create {name} with config: {config}")
         return UcmConnectorFactoryV1.create_connector(name, config, module_path)
+
+    def split_worker_and_store_cores(self, local_rank, is_cuda: bool):
+        """
+        Split CPU cores into worker/store groups based on NUMA locality.
+        Strategy:
+            CUDA:
+                GPU -> PCI -> NUMA
+            NPU:
+                rank/device_id -> NUMA (fallback if PCI not available)
+            Then:
+                NUMA -> cpulist -> split per segment
+        """
+
+        worker_cores, store_cores = [], []
+        pci_bus_id, numa_node = None, None
+
+        try:
+            # =========================
+            # CUDA path
+            # =========================
+            if is_cuda:
+                prop = torch.cuda.get_device_properties(local_rank)
+                pci_bus_id = (
+                    f"{prop.pci_domain_id:04x}:"
+                    f"{prop.pci_bus_id:02x}:"
+                    f"{prop.pci_device_id:02x}.0"
+                )
+
+                numa_path = f"/sys/bus/pci/devices/{pci_bus_id}/numa_node"
+                if os.path.exists(numa_path):
+                    with open(numa_path) as f:
+                        numa_node = int(f.read().strip())
+                    if numa_node < 0:
+                        numa_node = None
+
+            # =========================
+            # NPU path (Ascend)
+            # =========================
+            else:
+                visible = os.environ.get("ASCEND_RT_VISIBLE_DEVICES") or os.environ.get(
+                    "ASCEND_VISIBLE_DEVICES"
+                )
+
+                device_id = local_rank
+                if visible:
+                    dev_list = [int(x.strip()) for x in visible.split(",") if x.strip()]
+                    if local_rank < len(dev_list):
+                        device_id = dev_list[local_rank]
+
+                if hasattr(self, "npu_to_numa"):
+                    numa_node = self.npu_to_numa.get(device_id)
+
+                # fallback: rank -> numa
+                if numa_node is None:
+                    node_base = "/sys/devices/system/node"
+                    if os.path.exists(node_base):
+                        nodes = sorted(
+                            int(n[4:])
+                            for n in os.listdir(node_base)
+                            if n.startswith("node") and n[4:].isdigit()
+                        )
+                        if nodes:
+                            numa_node = nodes[device_id % len(nodes)]
+
+            # =========================
+            # NUMA -> CPU cores
+            # =========================
+            if numa_node is not None:
+                cpu_list_path = f"/sys/devices/system/node/node{numa_node}/cpulist"
+                if os.path.exists(cpu_list_path):
+                    with open(cpu_list_path) as f:
+                        cpu_list_str = f.read().strip()
+
+                    # Split each cpulist segment (e.g. "0-43,88-131") evenly to preserve locality.
+                    for part in cpu_list_str.split(","):
+                        if "-" in part:
+                            a, b = map(int, part.split("-"))
+                            seg = list(range(a, b + 1))
+                        else:
+                            seg = [int(part)]
+
+                        mid = len(seg) // 2
+                        worker_cores.extend(seg[:mid])
+                        store_cores.extend(seg[mid:])
+
+        except Exception as e:
+            logger.warning(f"[CPU Affinity] NUMA detect failed: {e}")
+
+        # =========================
+        # fallback
+        # =========================
+        if not worker_cores:
+            try:
+                cores = sorted(os.sched_getaffinity(0))
+            except Exception:
+                cores = list(range(os.cpu_count()))
+
+            mid = len(cores) // 2
+            worker_cores = cores[:mid]
+            store_cores = cores[mid:]
+
+            logger.warning(f"[CPU Affinity] fallback cores={cores}")
+
+        logger.info(
+            f"[CPU Affinity] rank={local_rank}, numa={numa_node}, pci={pci_bus_id}\n"
+            f"[worker_cores] ={worker_cores}\n"
+            f"[store_cores] ={store_cores}"
+        )
+
+        return worker_cores, store_cores
 
     def register_kv_caches(self, kv_caches: dict[str, torch.Tensor]):
         if has_ucm_sparse() and os.getenv("VLLM_HASH_ATTENTION") == "1":
@@ -329,8 +444,25 @@ class UCMDirectConnector(KVConnectorBase_V1):
         }
         self.first_layer_id = next(iter(self.layer_name_to_id.values()))
 
-        self.store = self._create_store(self.kv_cache_layout)
+        is_cuda = self._vllm_config.device_config.device_type == "cuda"
+
+        enable_affinity = os.getenv("VLLM_CPU_AFFINITY") == "1"
+        worker_cores, store_cores = (
+            self.split_worker_and_store_cores(self.local_rank, is_cuda)
+            if enable_affinity
+            else (None, None)
+        )
+
+        self.store = self._create_store(self.kv_cache_layout, store_cores)
         self.device = create_device()
+
+        if worker_cores:
+            try:
+                os.sched_setaffinity(0, worker_cores)
+                logger.info(f"[VLLM CPU Affinity] Worker bound to cores {worker_cores}")
+            except Exception as e:
+                logger.warning(f"Failed to bind worker: {e}")
+
         if self.device is None:
             raise RuntimeError(f"Unsupported device platform for UCMDirectConnector.")
 
