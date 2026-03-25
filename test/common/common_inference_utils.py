@@ -185,75 +185,6 @@ def deserialize_sample_params(json_str: str) -> Any:
     )
 
 
-def to_dict_for_serialization(obj: Any) -> Dict[str, Any]:
-    """Convert any object to dict for subprocess serialization.
-
-    Supports:
-    - dataclass objects
-    - regular objects with __dict__
-    - vLLM SamplingParams and other custom classes
-
-    Args:
-        obj: Object to serialize (dataclass, SamplingParams, etc.)
-
-    Returns:
-        Dict with _type and _data fields for reconstruction
-    """
-    import logging
-    from dataclasses import asdict, is_dataclass
-
-    try:
-        # Try dataclass first
-        if is_dataclass(obj) and not isinstance(obj, type):
-            data = asdict(obj)
-        # Try __dict__ for regular objects
-        elif hasattr(obj, "__dict__"):
-            data = obj.__dict__.copy()
-        else:
-            raise ValueError(f"Cannot serialize object of type {type(obj)}")
-
-        return {
-            "_type": f"{obj.__class__.__module__}.{obj.__class__.__name__}",
-            "_data": data,
-        }
-    except Exception as e:
-        logging.warning(f"Serialization failed for {type(obj)}: {e}")
-        raise
-
-
-def from_dict_for_serialization(serialized: Dict[str, Any]) -> Any:
-    """Recreate object from serialized dict.
-
-    Args:
-        serialized: Dict created by to_dict_for_serialization()
-
-    Returns:
-        Reconstructed object instance
-    """
-    import logging
-
-    if "_type" not in serialized:
-        # Not a serialized object, return as-is
-        return serialized
-
-    type_str = serialized["_type"]
-    obj_data = serialized.get("_data", {})
-
-    try:
-        # Parse module and class name
-        import importlib
-
-        module_name, class_name = type_str.rsplit(".", 1)
-        module = importlib.import_module(module_name)
-        cls = getattr(module, class_name)
-
-        # Reconstruct object
-        return cls(**obj_data)
-    except Exception as e:
-        logging.warning(f"Deserialization failed for {type_str}: {e}")
-        raise
-
-
 def get_platform_specific_module():
     """Get platform-specific modules for inference.
 
@@ -271,3 +202,91 @@ def get_platform_specific_module():
     modules.SamplingParams = SamplingParams
 
     return modules
+
+
+def match_any_answer(output: str, answers: List[str]) -> bool:
+    """Check if output matches any of the standard answers.
+
+    Args:
+        output: Generated output text
+        answers: List of acceptable answers
+
+    Returns:
+        True if output matches any answer
+    """
+    for answer in answers:
+        if remove_punc(output) == remove_punc(answer):
+            return True
+    return False
+
+
+def remove_punc(text: str) -> str:
+    """Remove punctuation from text for comparison.
+
+    Args:
+        text: Text to remove punctuation from
+
+    Returns:
+        Text without punctuation
+    """
+    import string
+
+    text = text.strip()
+    if not text:
+        return ""
+    cn_punctuation = (
+        "！？｡。＂＃＄％＆＇（）＊＋，－／：；＜＝＞［＼］＾＿｀｛｜｝～｟｠｢｣､、〃》「」『』【】〔〕〖〗〘〙〚〛〜〝〞〟〰〾〿–—''‛"
+        "„‟…‧﹏."
+    )
+    all_punctuation = set(string.punctuation + cn_punctuation)
+    return "".join(ch for ch in text if ch not in all_punctuation)
+
+
+def match_sparse_answer(sparse_output: List[str], standard_answers: List[str]) -> bool:
+    """Check if sparse output matches standard answers after removing punctuation.
+
+    Args:
+        sparse_output: List of generated outputs
+        standard_answers: List of expected answers
+
+    Returns:
+        True if outputs match after normalization
+    """
+    if not isinstance(sparse_output, list) or not isinstance(standard_answers, list):
+        return False
+    if not all(isinstance(item, str) for item in sparse_output) or not all(
+        isinstance(item, str) for item in standard_answers
+    ):
+        return False
+
+    norm_output = [remove_punc(item) for item in sparse_output]
+    norm_standard = [remove_punc(item) for item in standard_answers]
+    return norm_output == norm_standard
+
+
+def extract_answers(generated_text_list: List[str]) -> List[str]:
+    """Extract answers from generated text by removing thinking tags.
+
+    Args:
+        generated_text_list: List of generated texts
+
+    Returns:
+        List of extracted answers
+    """
+    results = []
+
+    for text in generated_text_list:
+        if not isinstance(text, str):
+            results.append("")
+            continue
+
+        if "</think>" in text:
+            answer = text.rsplit("</think>", 1)[-1].strip()
+        else:
+            answer = text.strip()
+
+        answer = answer.strip("'").strip('"').strip()
+
+        results.append(answer)
+
+    return results

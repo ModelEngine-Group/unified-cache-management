@@ -1,6 +1,5 @@
 import os
 import re
-import string
 from pathlib import Path
 from typing import List
 
@@ -8,9 +7,12 @@ import pytest
 import yaml
 from common.common_inference_utils import (
     ensure_storage_dir,
+    extract_answers,
     get_platform_specific_module,
     load_prompt_from_file,
     load_prompt_list_from_file,
+    match_any_answer,
+    match_sparse_answer,
     serialize_sample_params,
     split_prompt_by_tokens,
 )
@@ -20,13 +22,11 @@ from common.offline_inference_utils import (
 )
 from common.path_utils import get_path_relative_to_test_root, get_path_to_model
 
-os.environ["ENABLE_UCM_PATCH"] = "1"
-
 
 class TestBasicOfflineInferenceSparse:
     """Test basic offline inference functionality."""
 
-    @pytest.mark.skip(reason="refine this code and re-enable later")
+    @pytest.mark.skip(reason="covered by online test")
     @pytest.mark.stage(1)
     @pytest.mark.feature("offline_inference_sparse")
     @pytest.mark.gpu_mem(6000)
@@ -181,26 +181,6 @@ class TestBasicOfflineInferenceSparse:
         print(f"[INFO] Phase 2.2 output: {phase2_full_output}")
 
         print(f"\n[INFO] ===== Accuracy Test Results =====")
-
-        # Note: Small numerical precision differences in KV cache loading can cause
-        # punctuation token selection differences (e.g., full-width vs half-width comma)
-        def normalize_text(text: str) -> str:
-            """Normalize text for comparison by replacing similar punctuation."""
-            text = text.replace("，", ",")
-            text = text.replace("。", ".")
-            text = text.replace("！", "!")
-            text = text.replace("？", "?")
-            text = text.replace("：", ":")
-            text = text.replace("；", ";")
-            return text.strip()
-
-        def match_any_answer(output: str, answers: list[str]) -> bool:
-            """Check if output matches any of the standard answers."""
-            for answer in answers:
-                if normalize_text(output) == normalize_text(answer):
-                    return True
-            return False
-
         # Compare Phase 1.1 vs Phase 1.2 (SSD load accuracy)
         phase1_correct = match_any_answer(
             phase1_1_output, standard_answers
@@ -226,33 +206,8 @@ class TestBasicOfflineInferenceSparse:
 
     """Test GSA sparse attention."""
 
-    def remove_punc(self, text):
-        text = text.strip()
-        if not text:
-            return ""
-        cn_punctuation = "！？｡。＂＃＄％＆＇（）＊＋，－／：；＜＝＞＠［＼］＾＿｀｛｜｝～｟｠｢｣､、〃》「」『』【】〔〕〖〗〘〙〚〛〜〝〞〟〰〾〿–—‘’‛“”„‟…‧﹏."
-        all_punctuation = set(string.punctuation + cn_punctuation)
-        return "".join(ch for ch in text if ch not in all_punctuation)
-
-    def match_sparse_answer(
-        self, sparse_output: List[str], standard_answers: List[str]
-    ) -> bool:
-
-        if not isinstance(sparse_output, list) or not isinstance(
-            standard_answers, list
-        ):
-            return False
-        if not all(isinstance(item, str) for item in sparse_output) or not all(
-            isinstance(item, str) for item in standard_answers
-        ):
-            return False
-
-        norm_output = [self.remove_punc(item) for item in sparse_output]
-        norm_standard = [self.remove_punc(item) for item in standard_answers]
-        return norm_output == norm_standard
-
     @pytest.mark.stage(1)
-    @pytest.mark.feature("online_inference_sparse")
+    @pytest.mark.feature("offline_inference_sparse")
     @pytest.mark.gpu_mem(70000)
     @pytest.mark.parametrize("model_name", ["DeepSeek-V2-Lite-Chat"])
     @pytest.mark.parametrize("max_tokens", [16])
@@ -353,7 +308,7 @@ class TestBasicOfflineInferenceSparse:
         )
         print(f'GsaOnDevice output: "{phase_sparse_output}"')
         print(f'Standard answers: "{standard_answers}"')
-        phase_sparse_correct = self.match_sparse_answer(
+        phase_sparse_correct = match_sparse_answer(
             phase_sparse_output, standard_answers
         )
         if not phase_sparse_correct:
@@ -363,7 +318,7 @@ class TestBasicOfflineInferenceSparse:
             pytest.fail("GsaOnDevice Test Failed!")
 
     @pytest.mark.stage(1)
-    @pytest.mark.feature("online_inference_sparse")
+    @pytest.mark.feature("offline_inference_sparse")
     @pytest.mark.gpu_mem(30000)
     @pytest.mark.parametrize("model_name", ["Qwen3-4B"])
     @pytest.mark.parametrize("max_tokens", [2048])
@@ -459,32 +414,13 @@ class TestBasicOfflineInferenceSparse:
             timeout=1800,
         )
 
-        def extract_answers(generated_text_list: List[str]) -> List[str]:
-            results = []
-
-            for text in generated_text_list:
-                if not isinstance(text, str):
-                    results.append("")
-                    continue
-
-                if "</think>" in text:
-                    answer = text.rsplit("</think>", 1)[-1].strip()
-                else:
-                    answer = text.strip()
-
-                answer = answer.strip("'").strip('"').strip()
-
-                results.append(answer)
-
-            return results
-
         phase_sparse_output = extract_answers(phase_sparse_output)
         print(
             f" GsaOnDevice inference for a GQA-based model is completed in a subprocess."
         )
         print(f'GsaOnDevice output: "{phase_sparse_output}"')
         print(f'Standard answers: "{standard_answers}"')
-        phase_sparse_correct = self.match_sparse_answer(
+        phase_sparse_correct = match_sparse_answer(
             phase_sparse_output, standard_answers
         )
         if not phase_sparse_correct:
@@ -492,116 +428,3 @@ class TestBasicOfflineInferenceSparse:
             print(f"GsaOnDevice output:\n{phase_sparse_output}")
             print(f"Standard answers:\n{standard_answers}")
             pytest.fail("GsaOnDevice Test Failed!")
-
-    """Test ESA sparse attention."""
-
-    @pytest.mark.skip(reason="refine this code and re-enable later")
-    @pytest.mark.stage(1)
-    @pytest.mark.feature("offline_inference_sparse")
-    @pytest.mark.gpu_mem(6000)
-    @pytest.mark.parametrize("model_name", ["Qwen2.5-1.5B-Instruct"])
-    @pytest.mark.parametrize("max_tokens", [200])
-    @pytest.mark.parametrize("enforce_eager", [False])
-    @pytest.mark.parametrize("max_num_batched_tokens", [2047])
-    def test_offline_esa(
-        self,
-        model_name: str,
-        max_tokens: int,
-        enforce_eager: bool,
-        max_num_batched_tokens: int,
-    ):
-        config_file = get_path_relative_to_test_root("config.yaml")
-        with open(config_file, "r", encoding="utf-8") as f:
-            config = yaml.safe_load(f)
-
-        model_path = get_path_to_model(model_name, config)
-
-        assert os.path.exists(model_path), f"Model path does not exist: {model_path}"
-
-        ucm_storage_dir = "/tmp/ucm_cache"
-
-        # make sure UCM storage directory exists and is empty
-        ensure_storage_dir(ucm_storage_dir, clear_existing=True)
-
-        try:
-            test_prompt, standard_answers = load_prompt_from_file(
-                get_path_relative_to_test_root(
-                    "suites/E2E/prompts/test_offline_inference.json"
-                )
-            )
-            if not standard_answers:
-                pytest.fail(f"No standard answers found in prompt.json")
-        except Exception as e:
-            pytest.fail(f"Failed to load prompt from prompt.json: {e}")
-
-        print(f"Standard answers: {standard_answers}")
-
-        tokenizer = get_platform_specific_module().AutoTokenizer.from_pretrained(
-            model_path, use_chat_template=True
-        )
-
-        try:
-            messages = [
-                {
-                    "role": "system",
-                    "content": "先读问题，再根据下面的文章内容回答问题，不要进行分析，不要重复问题，用简短的语句给出答案。\n\n例如：“全国美国文学研究会的第十八届年会在哪所大学举办的？”\n回答应该为：“xx大学”。\n\n",
-                },
-                {"role": "user", "content": test_prompt},
-            ]
-            formatted_full_prompt = tokenizer.apply_chat_template(
-                messages,
-                tokenize=False,
-                add_generation_prompt=True,
-                add_special_tokens=True,
-            )
-        except Exception:
-            formatted_full_prompt = test_prompt
-
-        ucm_config = {
-            "ucm_connectors": [
-                {
-                    "ucm_connector_name": "UcmNfsStore",
-                    "ucm_connector_config": {
-                        "storage_backends": ucm_storage_dir,
-                        "use_direct": False,
-                    },
-                }
-            ],
-            "ucm_sparse_config": {
-                "ESA": {
-                    "init_window_sz": 1,
-                    "local_window_sz": 2,
-                    "min_blocks": 4,
-                    "sparse_ratio": 0.3,
-                    "retrieval_stride": 5,
-                }
-            },
-        }
-
-        sampling_params = get_platform_specific_module().SamplingParams(
-            temperature=0.0,
-            top_p=1,
-            max_tokens=max_tokens,
-            ignore_eos=False,
-        )
-
-        # Convert SamplingParams to dict for serialization, as non-picklable objects cannot be passed to subprocess
-        sampling_params_dict = serialize_sample_params(sampling_params)
-
-        phase1_outputs = run_in_spawn_subprocess(
-            run_offline_inference,
-            model_path,
-            ucm_config,
-            [formatted_full_prompt, formatted_full_prompt],
-            sampling_params_dict,
-            False,  # enable_prefix_caching=False
-            enforce_eager,
-            "ESA",
-            max_num_batched_tokens,
-            timeout=180,
-        )
-        phase1_1_output = phase1_outputs[0]  # Phase 1.1: SSD save
-        phase1_2_output = phase1_outputs[1]  # Phase 1.2: SSD load
-        print(f"ESA inference completed in subprocess")
-        print(f'Phase 1.1 output: "{phase1_1_output}"')
-        print(f'Phase 1.2 output: "{phase1_2_output}"')
