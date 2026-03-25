@@ -49,7 +49,6 @@ Paper list:
 getting-started/quickstart_vllm
 getting-started/quickstart_vllm_ascend
 getting-started/quickstart_sglang
-getting-started/quickstart_mindie_llm
 getting-started/kv_cache_calculator
 :::
 
