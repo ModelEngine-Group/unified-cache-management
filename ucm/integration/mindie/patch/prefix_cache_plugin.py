@@ -60,13 +60,12 @@ def hash_combine(seed, token_id):
 
 
 class PrefixCachePlugin(Plugin):
-    def __init__(self, generator_backend, kvcache_settings, infer_context, output_filter, plugin_data_param, **kwargs):
+    def __init__(self, generator_backend, kvcache_settings, infer_context, plugin_data_param, **kwargs):
         super().__init__()
         self.generator_backend = generator_backend
         self.model_wrapper = self.generator_backend.model_wrapper
         self.kvcache_settings = kvcache_settings
         self.infer_context = infer_context
-        self.output_filter = output_filter
         self.plugin_data_param = plugin_data_param
         self.model_name = self.generator_backend.model_name
         self.sp_size = self.infer_context.spcp_parallel_info.sp_size
@@ -180,10 +179,10 @@ class PrefixCachePlugin(Plugin):
                       f'#batchsize: {batch_size}, '
                       f'#batched-tokens: {input_metadata.total_seq_num}, '
                       f'#local cached-tokens: {local_matched_token_num}, '
-                      f'#local cache hit rate: {round(local_cache_hit_rate, 3)}%, '
+                      f'#local cached hit rate: {round(local_cache_hit_rate, 3)}%, '
                       f'#remote cached-tokens: {remote_matched_token_num}, '
-                      f'#remote cache hit rate: {round(remote_cache_hit_rate, 3)}%, '
-                      f'#cache hit rate: {round(local_cache_hit_rate + remote_cache_hit_rate, 3)}%')
+                      f'#remote cached hit rate: {round(remote_cache_hit_rate, 3)}%, '
+                      f'#cached hit rate: {round(local_cache_hit_rate + remote_cache_hit_rate, 3)}%')
             print_log(self.rank, logger.info, f'Prefix Cache Global Reporter: '
                       f'#total prefill tokens: {self.total_token_num}, '
                       f'#total local matched tokens: {self.total_local_matched_token_num}, '
