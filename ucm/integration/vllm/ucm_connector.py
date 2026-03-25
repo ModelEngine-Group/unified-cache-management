@@ -275,7 +275,9 @@ class UCMDirectConnector(KVConnectorBase_V1):
         return ret
 
     def _create_store(
-        self, kv_cache_layout: Optional[KVCacheLayout]
+        self,
+        kv_cache_layout: Optional[KVCacheLayout],
+        cpu_affinity_cores: Optional[list[int]] = None,
     ) -> UcmKVStoreBaseV1:
         if len(self.connector_configs) != 1:
             raise RuntimeError(
@@ -300,6 +302,8 @@ class UCMDirectConnector(KVConnectorBase_V1):
             config["shard_size"] = kv_cache_layout.shard_size * self.blocks_per_chunk
             config["block_size"] = kv_cache_layout.block_size * self.blocks_per_chunk
             config["local_rank_size"] = self.tp_size if self.is_mla else 1
+            if cpu_affinity_cores:
+                config["cpu_affinity_cores"] = list(cpu_affinity_cores)
         logger.info(f"create {name} with config: {config}")
         return UcmConnectorFactoryV1.create_connector(name, config, module_path)
 
@@ -329,8 +333,24 @@ class UCMDirectConnector(KVConnectorBase_V1):
         }
         self.first_layer_id = next(iter(self.layer_name_to_id.values()))
 
-        self.store = self._create_store(self.kv_cache_layout)
         self.device = create_device()
+
+        enable_affinity = os.getenv("VLLM_CPU_AFFINITY") == "1"
+        worker_cores, store_cores = (
+            self.device.split_cores(self.local_rank)
+            if enable_affinity
+            else (None, None)
+        )
+
+        self.store = self._create_store(self.kv_cache_layout, store_cores)
+
+        if worker_cores:
+            try:
+                os.sched_setaffinity(0, worker_cores)
+                logger.info(f"[VLLM CPU Affinity] Worker bound to cores {worker_cores}")
+            except Exception as e:
+                logger.warning(f"Failed to bind worker: {e}")
+
         if self.device is None:
             raise RuntimeError(f"Unsupported device platform for UCMDirectConnector.")
 
