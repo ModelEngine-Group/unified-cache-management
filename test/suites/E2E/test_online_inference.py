@@ -22,8 +22,6 @@ import yaml
 from common.online_inference_utils import hbm_ssd_mixed_test
 from common.path_utils import get_path_relative_to_test_root, get_path_to_model
 
-os.environ["ENABLE_UCM_PATCH"] = "1"
-
 
 class TestBasicOnlineInference:
     """Test basic online inference functionality."""
