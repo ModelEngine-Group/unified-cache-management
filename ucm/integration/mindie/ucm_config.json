@@ -3,5 +3,13 @@
     "storage_backends": ["/path/to/kvcache"],
 
     "mindie_config_path": "/usr/local/Ascend/mindie/latest/mindie-service/conf/config.json",
-    "block_elem_size" : 2
+    "block_elem_size" : 2,
+    "kvcs_instance_name": "default_instance",
+    "kvcs_store_id": 0,
+    "kvcs_tls_enable": false,
+    "kvcs_ucm_over_tcp_ip_list": "127.0.0.1",
+    "kvcs_block_size": 128,
+    "kvcs_sliding_window_size": 100,
+    "kvcs_failure_rate_threshold": 10,
+    "kvcs_consecutive_fail_limit": 5
 }
