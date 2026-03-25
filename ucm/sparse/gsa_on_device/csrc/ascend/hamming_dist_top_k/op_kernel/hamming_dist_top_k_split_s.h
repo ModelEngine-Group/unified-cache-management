@@ -1509,9 +1509,11 @@ protected:
 
         LocalTensor<int32_t> blockIdUb = topKIndexInnerInQueue_.AllocTensor<int32_t>();
         LocalTensor<int32_t> tableBlockTensor = tableBlockBuf_.template Get<int32_t>();
-        DataCopyParams copyParams{1, static_cast<uint16_t>(param_.blockCount * sizeof(int32_t)), 0,
-                                  0};
-        DataCopy(tableBlockTensor, keyBlockTableGm_[curBatchIdx * param_.blockCount], copyParams);
+        DataCopyExtParams copyParams{1, static_cast<uint16_t>(param_.blockCount * sizeof(int32_t)), 0, 0,
+            0};
+        DataCopyPadExtParams<int32_t> copyPadParams{false, 0, 0, 0};
+        DataCopyPad(tableBlockTensor, keyBlockTableGm_[curBatchIdx * param_.blockCount], copyParams,
+        copyPadParams);
 
         ::AscendC::WriteBlockTableFromTopK(curBatchIdx, topKIndexUb, blockIdUb, curKScalar,
                                            outGmOffset, tableBlockTensor, indicesGm_,
