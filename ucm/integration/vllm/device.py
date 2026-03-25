@@ -23,33 +23,6 @@ from ucm.logger import init_logger
 logger = init_logger(__name__)
 
 
-def execute_command(cmd_list):
-    with subprocess.Popen(
-        cmd_list, shell=False, stdout=subprocess.PIPE, stderr=subprocess.PIPE
-    ) as p:
-        out, err = p.communicate(timeout=1000)
-    res = out.decode()
-    return res
-
-
-@dataclass
-class DeviceInfo:
-    _info_line: str = ""
-    npu_id: int = 0
-    chip_id: int = 0
-    chip_logic_id: Union[int, str] = 0
-    chip_name: str = ""
-
-    def __post_init__(self):
-        self.npu_id, self.chip_id, self.chip_logic_id, self.chip_name = (
-            self._info_line.strip().split(None, 3)
-        )
-        self.npu_id = int(self.npu_id)
-        self.chip_id = int(self.chip_id)
-        if self.chip_logic_id.isnumeric():
-            self.chip_logic_id = int(self.chip_logic_id)
-
-
 class Device(ABC):
     def __init__(self):
         self.events = []
@@ -223,6 +196,28 @@ class CudaDevice(Device):
 
 
 class NpuDevice(Device):
+    @dataclass
+    class NpuDeviceInfo:
+        npu_id: int
+        chip_id: int
+        chip_logic_id: Union[int, str]
+        chip_name: str
+        pcie_info: Optional[str] = None
+        numa_id: Optional[int] = None
+
+        @classmethod
+        def from_info_line(cls, line: str) -> "NpuDevice.NpuDeviceInfo":
+            npu_id, chip_id, chip_logic_id, chip_name = line.strip().split(None, 3)
+            chip_logic_id = (
+                int(chip_logic_id) if chip_logic_id.isnumeric() else chip_logic_id
+            )
+            return cls(
+                npu_id=int(npu_id),
+                chip_id=int(chip_id),
+                chip_logic_id=chip_logic_id,
+                chip_name=chip_name,
+            )
+
     def __init__(self):
         super().__init__()
 
@@ -262,132 +257,173 @@ class NpuDevice(Device):
                 logger.error(f"destroy npu event failed. {e}")
         self.events.clear()
 
-    def _get_device_id(self, local_rank: int) -> int:
+    def _execute_command(self, cmd_list: List[str]) -> str:
+        try:
+            with subprocess.Popen(
+                cmd_list,
+                shell=False,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            ) as p:
+                out, err = p.communicate(timeout=1000)
+
+            if p.returncode != 0:
+                raise RuntimeError(
+                    f"command failed: {cmd_list}, returncode={p.returncode}, "
+                    f"stderr={err.decode(errors='ignore')}"
+                )
+            return out.decode(errors="ignore")
+        except subprocess.TimeoutExpired:
+            p.kill()
+            p.communicate()
+            raise RuntimeError(f"command timeout: {cmd_list}")
+
+    def _get_visible_device_list_from_env(self) -> Optional[List[int]]:
         visible = os.environ.get("ASCEND_RT_VISIBLE_DEVICES") or os.environ.get(
             "ASCEND_VISIBLE_DEVICES"
         )
         if not visible:
+            return None
+        return [int(x.strip()) for x in visible.split(",") if x.strip()]
+
+    def _get_device_id(self, local_rank: int) -> int:
+        dev_list = self._get_visible_device_list_from_env()
+        if not dev_list:
             return local_rank
 
-        dev_list = [int(x.strip()) for x in visible.split(",") if x.strip()]
-        return dev_list[local_rank] if local_rank < len(dev_list) else local_rank
+        if local_rank < len(dev_list):
+            return dev_list[local_rank]
+
+        logger.warning(
+            f"[CPU Affinity] local_rank={local_rank} is out of visible NPU range: "
+            f"{dev_list}, fallback to local_rank itself."
+        )
+        return local_rank
 
     def _get_visible_devices(self) -> List[int]:
-        visible = os.environ.get("ASCEND_RT_VISIBLE_DEVICES") or os.environ.get(
-            "ASCEND_VISIBLE_DEVICES"
-        )
+        visible = self._get_visible_device_list_from_env()
         if visible:
-            return [int(x.strip()) for x in visible.split(",") if x.strip()]
+            return visible
 
         try:
             return sorted(list(self._get_device_map_info().keys()))
         except Exception:
             return list(range(torch.npu.device_count()))
 
-    def _get_device_map_info(self) -> Dict[int, DeviceInfo]:
-        device_map_info = {}
-        device_map = execute_command(["npu-smi", "info", "-m"]).strip().split("\n")[1:]
+    def _get_device_map_info(self) -> Dict[int, "NpuDevice.NpuDeviceInfo"]:
+        device_map_info: Dict[int, NpuDevice.NpuDeviceInfo] = {}
+        device_map = (
+            self._execute_command(["npu-smi", "info", "-m"]).strip().split("\n")[1:]
+        )
+
         for line in device_map:
             line = line.strip()
             if not line:
                 continue
             try:
-                device_info = DeviceInfo(line)
-                if isinstance(device_info.chip_logic_id, int):
-                    device_map_info[device_info.chip_logic_id] = device_info
+                topo = self.NpuDeviceInfo.from_info_line(line)
+                if isinstance(topo.chip_logic_id, int):
+                    device_map_info[topo.chip_logic_id] = topo
             except (ValueError, IndexError):
                 continue
+
         return device_map_info
 
     def _get_pcie_info(
-        self, devices: List[int], keyword: str = "PCIeBusInfo"
-    ) -> Dict[int, str]:
-        device_map_info = self._get_device_map_info()
-        device_pcie_tbl = {}
+        self, device_map_info: Dict[int, "NpuDevice.NpuDeviceInfo"]
+    ) -> None:
+        keyword = "PCIeBusInfo"
 
-        for device in devices:
-            device_info = device_map_info.get(device)
-            if not device_info:
-                warn_msg = (
-                    f"cannot get device info for device {device}, "
-                    f"skipping PCIe binding for this device."
+        for device_id, topo in device_map_info.items():
+            topo.pcie_info = None
+
+            try:
+                pcie_info = (
+                    self._execute_command(
+                        [
+                            "npu-smi",
+                            "info",
+                            "-t",
+                            "board",
+                            "-i",
+                            f"{topo.npu_id}",
+                            "-c",
+                            f"{topo.chip_id}",
+                        ]
+                    )
+                    .strip()
+                    .split("\n")
                 )
-                logger.warning(warn_msg)
-                raise RuntimeError(warn_msg)
 
-            pcie_info = (
-                execute_command(
-                    [
-                        "npu-smi",
-                        "info",
-                        "-t",
-                        "board",
-                        "-i",
-                        f"{device_info.npu_id}",
-                        "-c",
-                        f"{device_info.chip_id}",
-                    ]
+                for line_raw in pcie_info:
+                    # Normalize spaces to handle variants like:
+                    # "PCIe Bus Info : 0000:C1:00.0"
+                    # vs "PCIeBusInfo:0000:C1:00.0"
+                    line = "".join(line_raw.split())
+
+                    if line.startswith(keyword):
+                        topo.pcie_info = line[len(keyword) + 1 :].upper()
+                        break
+
+                if topo.pcie_info is None:
+                    logger.warning(
+                        f"[CPU Affinity] cannot find {keyword} for NPU device {device_id} "
+                        f"(npu_id={topo.npu_id}, chip_id={topo.chip_id})"
+                    )
+
+            except Exception as e:
+                logger.warning(
+                    f"[CPU Affinity] failed to get PCIe info for NPU device {device_id} "
+                    f"(npu_id={topo.npu_id}, chip_id={topo.chip_id}): {e}"
                 )
-                .strip()
-                .split("\n")
-            )
-
-            for line_raw in pcie_info:
-                line = "".join(line_raw.split())
-                if line.startswith(keyword):
-                    device_pcie_tbl[device] = line[len(keyword) + 1 :]
-                    break
-
-        return device_pcie_tbl
 
     def _get_numa_info(
-        self, pcie_tbl: Dict[int, str]
-    ) -> Tuple[Dict[int, int], Dict[int, List[int]]]:
-        device_numa_tbl: Dict[int, int] = {}
-        numa_devices_tbl: Dict[int, List[int]] = {}
+        self, device_map_info: Dict[int, "NpuDevice.NpuDeviceInfo"]
+    ) -> None:
+        for device_id, topo in device_map_info.items():
+            if not topo.pcie_info:
+                continue
 
-        for device, pcie_no in pcie_tbl.items():
-            # 1. try sysfs first
-            numa_path = f"/sys/bus/pci/devices/{pcie_no}/numa_node"
+            pcie_bdf = topo.pcie_info.lower()
+            numa_path = f"/sys/bus/pci/devices/{pcie_bdf}/numa_node"
+
+            # 1. sysfs
             try:
                 if os.path.exists(numa_path):
                     with open(numa_path) as f:
                         numa_id = int(f.read().strip())
                     if numa_id >= 0:
-                        device_numa_tbl[device] = numa_id
-                        numa_devices_tbl.setdefault(numa_id, []).append(device)
+                        topo.numa_id = numa_id
                         continue
             except Exception as e:
                 logger.warning(
-                    f"[NUMA] failed to read sysfs NUMA node for device {device}, PCI {pcie_no}: {e}"
+                    f"[NUMA] failed to read sysfs NUMA node for device {device_id}, "
+                    f"PCI {topo.pcie_info}: {e}"
                 )
 
-            # 2. optional lspci fallback
+            # 2. lspci fallback
             try:
-                out = execute_command(["/usr/bin/lspci", "-s", pcie_no, "-vvv"])
+                out = self._execute_command(
+                    ["/usr/bin/lspci", "-s", topo.pcie_info, "-vvv"]
+                )
                 m = re.search(r"NUMA\s*node\s*:\s*(\d+)", out, re.IGNORECASE)
                 if m:
-                    numa_id = int(m.group(1))
-                    device_numa_tbl[device] = numa_id
-                    numa_devices_tbl.setdefault(numa_id, []).append(device)
-                    continue
+                    topo.numa_id = int(m.group(1))
             except Exception:
                 pass
 
-        return device_numa_tbl, numa_devices_tbl
-
     def _get_numa_info_v2(
-        self, devices: List[int], keyword: str = "NUMAnode(s)"
-    ) -> Tuple[Dict[int, int], Dict[int, List[int]]]:
+        self, device_map_info: Dict[int, "NpuDevice.NpuDeviceInfo"], devices: List[int]
+    ) -> None:
         """
         Fallback when real NPU->NUMA mapping is unavailable:
         distribute visible devices evenly across NUMA nodes.
         """
         numa_nodes = 1
-        numa_info = execute_command(["lscpu"]).split("\n")
+        numa_info = self._execute_command(["lscpu"]).split("\n")
         for line_raw in numa_info:
             line = "".join(line_raw.split())
-            if keyword not in line:
+            if "NUMAnode(s)" not in line:
                 continue
             try:
                 numa_nodes = int(line.split(":")[-1])
@@ -403,52 +439,38 @@ class NpuDevice(Device):
         ends = list(accumulate(device_count_per_numa_list))
         starts = [0] + ends[:-1]
 
-        numa_devices_tbl = {
-            ind: devices[start:end]
-            for ind, (start, end) in enumerate(zip(starts, ends))
-        }
+        for numa_id, (start, end) in enumerate(zip(starts, ends)):
+            for device_id in devices[start:end]:
+                if device_id in device_map_info:
+                    device_map_info[device_id].numa_id = numa_id
 
-        device_numa_tbl = {
-            device: numa
-            for numa, _devices in numa_devices_tbl.items()
-            for device in _devices
-        }
-
-        return device_numa_tbl, numa_devices_tbl
-
-    def _get_cpu_info(
-        self, numa_ids: List[int], keyword1: str = "NUMAnode", keyword2: str = "CPU(s)"
-    ) -> Dict[int, List[int]]:
+    def _get_cpu_info(self, numa_ids: List[int]) -> Dict[int, List[int]]:
         cpu_idx_tbl: Dict[int, List[int]] = {}
-        numa_keywords = [f"{keyword1}{idx}{keyword2}" for idx in numa_ids]
-        cpu_info = execute_command(["lscpu"]).split("\n")
+        cpu_info = self._execute_command(["lscpu"]).split("\n")
 
         for line_raw in cpu_info:
-            line = "".join(line_raw.split())
-            if not any(line.startswith(word) for word in numa_keywords):
+            m = re.match(r"NUMA node(\d+) CPU\(s\):\s*(.*)", line_raw)
+            if not m:
                 continue
 
-            split_info = line.split(":")
-            cpu_id_ranges = split_info[-1].split(",")
+            numa_id = int(m.group(1))
+            if numa_id not in numa_ids:
+                continue
 
+            cpu_id_ranges = m.group(2).split(",")
             ranges: List[int] = []
             for range_str in cpu_id_ranges:
-                endpoints = range_str.split("-")
-                if len(endpoints) == 2:
-                    start, end = map(int, endpoints)
+                range_str = range_str.strip()
+                if not range_str:
+                    continue
+                if "-" in range_str:
+                    start, end = map(int, range_str.split("-", 1))
                     if start > end:
                         start, end = end, start
                     ranges.extend(range(start, end + 1))
-                elif len(endpoints) == 1 and endpoints[0] != "":
-                    ranges.append(int(endpoints[0]))
                 else:
-                    warn_msg = (
-                        "cannot obtain CPU range for NUMA while executing `lscpu`."
-                    )
-                    logger.warning(warn_msg)
-                    raise RuntimeError(warn_msg)
+                    ranges.append(int(range_str))
 
-            numa_id = int(split_info[0].replace(keyword1, "").replace(keyword2, ""))
             cpu_idx_tbl[numa_id] = ranges
 
         return cpu_idx_tbl
@@ -476,14 +498,8 @@ class NpuDevice(Device):
             if not cores:
                 return None
 
-            visible = os.environ.get("ASCEND_RT_VISIBLE_DEVICES") or os.environ.get(
-                "ASCEND_VISIBLE_DEVICES"
-            )
-            total_devices = (
-                len([x.strip() for x in visible.split(",") if x.strip()])
-                if visible
-                else torch.npu.device_count()
-            )
+            visible = self._get_visible_device_list_from_env()
+            total_devices = len(visible) if visible else torch.npu.device_count()
 
             if total_devices <= 0 or local_rank < 0 or local_rank >= total_devices:
                 logger.warning(
@@ -522,28 +538,45 @@ class NpuDevice(Device):
 
         try:
             devices = self._get_visible_devices()
-
+            device_map_info = self._get_device_map_info()
+            if not device_map_info:
+                logger.warning(
+                    "[CPU Affinity] empty NPU device info map, fallback to sliced allowed CPUs."
+                )
+                return self._fallback_cpu_affinity(local_rank)
             # NPU -> PCIe
-            device_pcie_tbl = self._get_pcie_info(devices)
-
+            self._get_pcie_info(device_map_info)
             # PCIe -> NUMA
-            device_numa_tbl, numa_devices_tbl = self._get_numa_info(device_pcie_tbl)
-            if not device_numa_tbl or not numa_devices_tbl:
+            self._get_numa_info(device_map_info)
+
+            if not any(
+                device_map_info[d].numa_id is not None
+                for d in devices
+                if d in device_map_info
+            ):
                 logger.warning(
                     "[CPU Affinity] failed to get real NPU->NUMA mapping, "
                     "fallback to evenly distributed NUMA mapping."
                 )
-                device_numa_tbl, numa_devices_tbl = self._get_numa_info_v2(devices)
+                self._get_numa_info_v2(device_map_info, devices)
 
-            numa_id = device_numa_tbl.get(device_id)
-            if numa_id is None:
+            topo = device_map_info.get(device_id)
+            if topo is None or topo.numa_id is None:
                 logger.warning(
                     f"[CPU Affinity] cannot find NUMA node for NPU device {device_id}"
                 )
                 return self._fallback_cpu_affinity(local_rank)
 
+            numa_id = topo.numa_id
+            all_numa_ids = sorted(
+                {
+                    device_map_info[d].numa_id
+                    for d in devices
+                    if d in device_map_info and device_map_info[d].numa_id is not None
+                }
+            )
             # NUMA -> CPU list
-            cpu_idx_tbl = self._get_cpu_info(list(numa_devices_tbl.keys()))
+            cpu_idx_tbl = self._get_cpu_info(all_numa_ids)
             cores = cpu_idx_tbl.get(numa_id)
             if not cores:
                 logger.warning(
@@ -553,7 +586,8 @@ class NpuDevice(Device):
 
             cpu_affinity = self._to_cpulist_str(cores)
             logger.info(
-                f"[CPU Affinity] NPU device={device_id}, numa_id={numa_id}, "
+                f"[CPU Affinity] NPU device={device_id}, "
+                f"pcie_info={topo.pcie_info}, numa_id={numa_id}, "
                 f"cpu_affinity={cpu_affinity}"
             )
             return cpu_affinity
