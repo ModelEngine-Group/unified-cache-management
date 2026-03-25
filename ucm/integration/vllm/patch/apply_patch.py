@@ -129,9 +129,11 @@ def apply_all_patches() -> None:
         # vllm patches
         match version:
             case "0.11.0":
+                logger.info("UCM patching vllm for pc...")
                 import ucm.integration.vllm.patch.v0110.vllm.pc_patch
 
                 if ENABLE_SPARSE:
+                    logger.info("UCM patching vllm for sparse...")
                     import ucm.integration.vllm.patch.v0110.vllm.sparse_patch
             case _:
                 pass
@@ -140,9 +142,11 @@ def apply_all_patches() -> None:
         ascend_version = get_vllm_ascend_version()
         match ascend_version:
             case "0.11.0":
+                logger.info("UCM patching vllm-ascend for pc...")
                 import ucm.integration.vllm.patch.v0110.vllm_ascend.pc_ascend_patch
 
                 if ENABLE_SPARSE:
+                    logger.info("UCM patching vllm-ascend for sparse...")
                     import ucm.integration.vllm.patch.v0110.vllm_ascend.sparse_ascend_patch
             case _:
                 pass
