@@ -7,11 +7,6 @@ from dataclasses import asdict
 
 from transformers import AutoTokenizer
 
-# Third Party
-from vllm import LLM, SamplingParams
-from vllm.config import KVTransferConfig
-from vllm.engine.arg_utils import EngineArgs
-
 from ucm.logger import init_logger
 
 logger = init_logger(__name__)
@@ -59,6 +54,14 @@ def setup_environment_variables():
             sys.exit(1)
 
     tokenizer = AutoTokenizer.from_pretrained(model, use_chat_template=True)
+
+
+# ENABLE_SPARSE must be set before import vllm to make sure monkey patch works
+setup_environment_variables()
+# Third Party
+from vllm import LLM, SamplingParams
+from vllm.config import KVTransferConfig
+from vllm.engine.arg_utils import EngineArgs
 
 
 @contextlib.contextmanager
@@ -124,7 +127,6 @@ def print_output(
 def main():
     module_path = "ucm.integration.vllm.ucm_connector"
     name = "UCMConnector"
-    setup_environment_variables()
 
     def get_prompt(prompt):
         messages = [
