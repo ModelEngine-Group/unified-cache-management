@@ -38,6 +38,7 @@ Status SpaceManager::Setup(const Config& config)
                 [this](PrefixLookupContext& ctx, auto) { OnLookupPrefixTimeout(ctx); },
                 config.timeoutMs)
             .SetNWorker(config.lookupConcurrency)
+            .SetCpuAffinity(config.cpuAffinityCores)
             .Run();
     if (!prefixSuccess) [[unlikely]] {
         return Status::Error("failed to run prefix lookup service thread pool");

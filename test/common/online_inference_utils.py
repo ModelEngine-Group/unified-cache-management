@@ -41,9 +41,14 @@ import shlex
 import subprocess
 import sys
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any, Dict, List, Optional
 
 import requests
+from common.common_inference_utils import (
+    match_any_answer,
+)
+from common.llm_connection.LLMBase import LLMRequest, LLMResponse
 
 logger = logging.getLogger(__name__)
 
@@ -88,6 +93,7 @@ class VLLMServerManager:
         additional_args: Optional[List[str]] = None,
         startup_timeout: float = 300.0,
         served_model_name: str = "",
+        pipeline_parallel_size: int = 1,
     ):
         """Initialize the VLLMServerManager.
 
@@ -105,6 +111,7 @@ class VLLMServerManager:
             additional_args: Additional arguments to pass to vllm serve
             startup_timeout: Timeout in seconds for server startup
             served_model_name: Optional model name to expose via the API (defaults to model_path)
+            pipeline_parallel_size: Pipeline parallel size (default: 1)
         """
 
         gpu_memory_utilization = float(
@@ -126,6 +133,7 @@ class VLLMServerManager:
         self.additional_args = additional_args or []
         self.startup_timeout = startup_timeout
         self.served_model_name = served_model_name
+        self.pipeline_parallel_size = pipeline_parallel_size
 
         self._process: Optional[subprocess.Popen] = None
         self._url = f"http://{host}:{port}"
@@ -163,6 +171,8 @@ class VLLMServerManager:
             str(self.max_model_len),
             "--gpu-memory-utilization",
             str(self.gpu_memory_utilization),
+            "--pipeline-parallel-size",
+            str(self.pipeline_parallel_size),
         ]
 
         # Add UCM kv-transfer-config
@@ -285,3 +295,247 @@ class VLLMServerManager:
     def __exit__(self, exc_type, exc_val, exc_tb) -> None:
         """Context manager exit."""
         self.stop()
+
+
+def batch_chat(
+    client,
+    requests: List[LLMRequest],
+    max_workers: Optional[int] = None,
+) -> List[LLMResponse]:
+    """Send multiple requests to the LLM server in parallel and return all responses.
+
+    This function sends multiple requests concurrently using a thread pool,
+    waits for all requests to complete, and returns the results in the same order as the input requests.
+
+    Args:
+        client: An LLM client that implements the LLMConnection protocol (e.g., OpenAIConn)
+        requests: List of LLMRequest objects to send
+        max_workers: Maximum number of worker threads (default: number of requests)
+
+    Returns:
+        List of LLMResponse objects in the same order as input requests
+
+    Example:
+        from common.llm_connection.openai_connector import OpenAIConn
+        from common.llm_connection.LLMRequest import LLMRequest
+
+        client = OpenAIConn(base_url="http://localhost:8000", model="qwen")
+        requests = [
+            LLMRequest(messages=[{"role": "user", "content": "Hello"}], max_tokens=100),
+            LLMRequest(messages=[{"role": "user", "content": "Hi"}], max_tokens=100),
+        ]
+        responses = batch_chat(client, requests)
+        for resp in responses:
+            print(resp.text)
+    """
+    if not requests:
+        return []
+
+    if max_workers is None:
+        max_workers = len(requests)
+
+    results: List[Optional[LLMResponse]] = [None] * len(requests)
+
+    def _send_request(index: int, request: LLMRequest) -> tuple[int, LLMResponse]:
+        """Send a single request and return the index with response."""
+        response = client.chat(request)
+        return index, response
+
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        # Submit all requests
+        future_to_index = {
+            executor.submit(_send_request, i, req): i for i, req in enumerate(requests)
+        }
+
+        # Collect results as they complete
+        for future in as_completed(future_to_index):
+            index, response = future.result()
+            results[index] = response
+
+    for i, req in enumerate(requests):
+        if req is None:
+            raise RuntimeError(f"Request {i} failed to complete")
+
+    return results
+
+
+def hbm_ssd_mixed_test(
+    model_name: str,
+    tokenizer_path: str,
+    max_tokens: int,
+    prompt_split_ratio: float,
+    ucm_config: Dict[str, Any],
+    vllm_server_startup_args: Dict[str, Any],
+) -> None:
+    """Test HBM + SSD mixed hit accuracy via online inference.
+
+    This function implements  2-phasekt test flow:
+    1. Phase: Start vLLM (prefix caching OFF), send full prompt twice
+       -> KV cache saved to SSD, then loaded from SSD
+    2. Phase: Start vLLM (prefix caching ON), send partial prompt (warm HBM),
+       then send full prompt (hits both HBM and SSD) -> verify accuracy
+
+    Args:
+        model_name: Name of model (used for served_model_name and model_path lookup)
+        tokenizer_path: Path to tokenizer for prompt processing
+        max_tokens: Maximum tokens to generate
+        prompt_split_ratio: Ratio to split prompt for Phase (0.5 = split in half)
+        ucm_config: UCM connector configuration
+        vllm_server_startup_args: All kwargs for VLLMServerManager initialization
+    """
+    import os
+    from typing import List
+
+    import pytest
+    import yaml
+    from common.common_inference_utils import (
+        ensure_storage_dir,
+        load_prompt_from_file,
+        split_prompt_by_tokens,
+    )
+    from common.llm_connection.LLMBase import LLMRequest
+    from common.llm_connection.openai_connector import OpenAIConn
+    from common.llm_connection.token_counter import HuggingFaceTokenizer
+    from common.path_utils import get_path_relative_to_test_root, get_path_to_model
+
+    # Load configuration
+    config_file = get_path_relative_to_test_root("config.yaml")
+    with open(config_file, "r", encoding="utf-8") as f:
+        config = yaml.safe_load(f)
+
+    ucm_storage_dir = "/tmp/ucm_cache"
+    ensure_storage_dir(ucm_storage_dir, clear_existing=True)
+
+    served_model_name = model_name
+    model_path = get_path_to_model(model_name, config)
+
+    # Load test prompt and standard answers
+    test_prompt, standard_answers = load_prompt_from_file(
+        get_path_relative_to_test_root("suites/E2E/prompts/test_offline_inference.json")
+    )
+    if not standard_answers:
+        pytest.fail("No standard answers found in prompt.json")
+
+    print(f"Standard answers: {standard_answers}")
+
+    # Initialize tokenizer for prompt splitting
+    from transformers import AutoTokenizer
+
+    tokenizer = AutoTokenizer.from_pretrained(tokenizer_path, use_chat_template=True)
+
+    # Split prompt for Phase
+    prompt_first_part, _ = split_prompt_by_tokens(
+        test_prompt, tokenizer, split_ratio=prompt_split_ratio
+    )
+
+    # Prepare messages
+    system_content = "先读问题，再根据下面的文章内容回答问题，不要进行分析，不要重复问题，用简短的语句给出答案。\n\n例如：\u201c全国美国文学研究会的第十八届年会在哪所大学举办的？\u201d\n回答应该为：\u201cxx大学\u201d。\n\n"
+
+    phase1_messages = [
+        {"role": "system", "content": system_content},
+        {"role": "user", "content": test_prompt},
+    ]
+    phase2_partial_messages = [
+        {"role": "system", "content": system_content},
+        {"role": "user", "content": prompt_first_part},
+    ]
+
+    print(f"\n===== Online HBM + SSD Mixed Accuracy Test =====")
+    print(f"Model: {model_path}")
+    print(f"Full prompt length: {len(test_prompt)} chars")
+    print(f"Max tokens: {max_tokens}")
+    print(f"Prompt split ratio: {prompt_split_ratio}")
+
+    # ===== Phase: Disable HBM PC, save KV cache to SSD and load (baseline) =====
+    print(f"\n===== Phase: Save KV Cache to SSD And Load (Baseline) =====")
+    print(f"Starting vLLM server with enable_prefix_caching=False")
+
+    with VLLMServerManager(
+        **vllm_server_startup_args,
+        enable_prefix_caching=False,
+    ) as server:
+        client = OpenAIConn(
+            base_url=server.url,
+            tokenizer=HuggingFaceTokenizer(tokenizer_path),
+            model=served_model_name,
+        )
+        assert client.health_check()
+
+        print(f"server models: {client.list_models()}")
+
+        # Phase.1: Send full prompt -> KV cache saved to SSD
+        phase1_1_output = client.chat(
+            LLMRequest(messages=phase1_messages, max_tokens=max_tokens, temperature=0.0)
+        ).text
+        print(f'Phase.1 output: "{phase1_1_output}"')
+
+        # Phase.2: Send same prompt again -> KV cache loaded from SSD
+        phase1_2_output = client.chat(
+            LLMRequest(messages=phase1_messages, max_tokens=max_tokens, temperature=0.0)
+        ).text
+        print(f'Phase.2 output: "{phase1_2_output}"')
+        client.close()
+
+    print("Phase vLLM server stopped.")
+
+    # ===== Phase: Enable HBM PC, test HBM + SSD mixed hit =====
+    print(f"\n===== Phase: HBM + SSD Mixed Hit Test =====")
+    print(f"Starting vLLM server with enable_prefix_caching=True")
+
+    with VLLMServerManager(
+        **vllm_server_startup_args,
+        enable_prefix_caching=True,
+    ) as server:
+        client = OpenAIConn(
+            base_url=server.url,
+            tokenizer=HuggingFaceTokenizer(tokenizer_path),
+            model=served_model_name,
+        )
+        assert client.health_check()
+
+        print(f"server models: {client.list_models()}")
+
+        # Phase.1: Send partial prompt -> warm HBM prefix cache
+        phase2_partial_output = client.chat(
+            LLMRequest(
+                messages=phase2_partial_messages,
+                max_tokens=max_tokens,
+                temperature=0.0,
+            )
+        ).text
+        print(f"[INFO] Phase.1 output (partial prompt): {phase2_partial_output}")
+
+        # Phase.2: Send full prompt -> hits HBM (prefix) + SSD (suffix)
+        phase2_full_output = client.chat(
+            LLMRequest(messages=phase1_messages, max_tokens=max_tokens, temperature=0.0)
+        ).text
+        print(f"[INFO] Phase.2 output (full prompt): {phase2_full_output}")
+        client.close()
+
+    print("Phase vLLM server stopped.")
+
+    # ===== Accuracy Test Results =====
+    print(f"\n[INFO] ===== Accuracy Test Results =====")
+
+    # Phase accuracy check
+    phase1_correct = match_any_answer(
+        phase1_1_output, standard_answers
+    ) and match_any_answer(phase1_2_output, standard_answers)
+    if not phase1_correct:
+        print(f"\n===== Phase: SSD Load Accuracy Test (Exact Match) =====")
+        print(f"Incorrect answer in Phase.1 (SSD save) or Phase.2 (SSD load)!")
+        print(f"Phase.1 output:\n{phase1_1_output}")
+        print(f"Phase.2 output:\n{phase1_2_output}")
+        print(f"Standard answers:\n{standard_answers}")
+        pytest.fail("SSD Load Accuracy Test Failed!")
+
+    # Phase accuracy check
+    phase2_correct = match_any_answer(phase2_full_output, standard_answers)
+    if not phase2_correct:
+        print(f"\n===== Phase: HBM + SSD Mixed Accuracy Test (Exact Match) =====")
+        print(f"Incorrect answer in Phase.2 (HBM + SSD mixed)!")
+        print(f"Phase.2 output:\n{phase2_full_output}")
+        print(f"Standard answers:\n{standard_answers}")
+        pytest.fail("HBM + SSD Mixed Accuracy Test Failed!")
+
+    print("\n===== All Tests Passed! =====")

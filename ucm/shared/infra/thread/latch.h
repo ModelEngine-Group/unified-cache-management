@@ -60,6 +60,12 @@ public:
         if (this->counter_ == 0) { return; }
         this->cv_.wait(lk, [this] { return this->counter_ == 0; });
     }
+    bool IsTimeout(size_t timeoutMs) noexcept
+    {
+        using namespace std::chrono;
+        auto elapsed = duration_cast<milliseconds>(duration<double>(NowTime::Now() - startTp));
+        return elapsed >= milliseconds(timeoutMs);
+    }
     bool WaitFor(size_t timeoutMs) noexcept
     {
         if (timeoutMs == 0) {
@@ -74,6 +80,13 @@ public:
         if (timeMs <= elapsedMs) { return false; }
         auto remainMs = timeMs - elapsedMs;
         return this->cv_.wait_for(lk, remainMs, [this] { return this->counter_ == 0; });
+    }
+    bool WaitForDuration(size_t timeoutMs) noexcept
+    {
+        std::unique_lock<std::mutex> lk(this->mutex_);
+        if (this->counter_ == 0) { return true; }
+        return this->cv_.wait_for(lk, std::chrono::milliseconds(timeoutMs),
+                                  [this] { return this->counter_ == 0; });
     }
     bool Check() noexcept { return this->counter_ == 0; }
 

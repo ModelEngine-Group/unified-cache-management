@@ -58,6 +58,7 @@ protected:
         });
         queue_.Push(t, w);
     }
+    void Cancel(TaskPtr t) override { queue_.Cancel(t); }
 };
 
 }  // namespace UC::PosixStore

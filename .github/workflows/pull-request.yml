@@ -253,3 +253,71 @@ jobs:
       run: |
         sudo rm -f /workspace/test_results/${{ steps.version.outputs.version }}-online-inference-sparse.xml || true
 
+  test-e2e-sparse-offline-gpu:
+    runs-on: ["gpu-test-in-docker"]
+    needs: lint-and-unit-tests
+    permissions:
+      checks: write
+      pull-requests: write
+    steps:
+    - name: Clean repo
+      run: |
+        if [ -d "${{github.workspace}}" ]; then
+          cd ${{github.workspace}}
+          rm -rf ./*
+          rm -rf .[!.]*
+        fi
+    - uses: actions/checkout@v4
+    - name: Install Docker CLI
+      run: |
+        if ! command -v docker &> /dev/null; then
+          echo "Docker CLI not found, installing..."
+          sudo apt-get update
+          sudo apt-get install -y docker.io
+        else
+          echo "Docker CLI already installed"
+        fi
+    - name: Generate Docker Image Version
+      id: version
+      run: |
+        DATE=$(date +%Y%m%d)
+        SHORT_SHA=$(echo '${{ github.sha }}' | cut -c1-7)
+        REF_NAME=$(echo '${{ github.ref_name }}' | tr '/' '-')
+        VERSION="${REF_NAME}-${DATE}-${{ github.run_number }}-${SHORT_SHA}"
+        echo "version=${VERSION}" >> $GITHUB_OUTPUT
+        echo "Docker image version: ${VERSION}"
+    - name: Build
+      run: |
+        cd ${{github.workspace}}
+        sudo -E docker build --network=host \
+          --build-arg http_proxy="${http_proxy:-}" \
+          --build-arg https_proxy="${https_proxy:-}" \
+          --build-arg ENABLE_SPARSE=true \
+          -t ucm-e2etest-gpu-sparse:${{ steps.version.outputs.version }} \
+          -f ./docker/Dockerfile.vllm_gpu ./
+    - name: Test E2E in Docker
+      run: |
+        sudo chmod -R 777 /workspace/test_results/
+        sudo docker run --rm \
+          --gpus all \
+          --ipc=host \
+          -v /home/models:/home/models \
+          -v /home/yanzhao/pipeline_results:/workspace/test_results \
+          ucm-e2etest-gpu-sparse:${{ steps.version.outputs.version }} \
+          -c "cd /workspace/unified-cache-management/test && pip install -r requirements.txt && python3 -m pytest -x --stage=1 --feature=offline_inference_sparse --junitxml=/workspace/test_results/${{ steps.version.outputs.version }}-offline-inference-sparse.xml"
+    - name: Upload pytest results
+      uses: EnricoMi/publish-unit-test-result-action/linux@v2
+      if: (!cancelled())
+      with:
+        files: |
+          /workspace/test_results/${{ steps.version.outputs.version }}-offline-inference-sparse.xml
+        check_name: Sparse attention test results
+    - name: Cleanup Docker Image
+      if: always()
+      run: |
+        sudo docker rmi ucm-e2etest-gpu-sparse:${{ steps.version.outputs.version }} || true
+    - name: Cleanup Test Results
+      if: always()
+      run: |
+        sudo rm -f /workspace/test_results/${{ steps.version.outputs.version }}-offline-inference-sparse.xml || true
+

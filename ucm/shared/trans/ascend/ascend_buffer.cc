@@ -23,8 +23,90 @@
  * */
 #include "ascend_buffer.h"
 #include <acl/acl.h>
+#include <sys/mman.h>
+#include "logger/logger.h"
 
 namespace UC::Trans {
+
+class HostHugePages : public std::enable_shared_from_this<HostHugePages> {
+    struct ConstructorKey {};
+    static constexpr auto HUGE_PAGE_SIZE = 2UL << 20;
+    static constexpr auto GIGANTIC_PAGE_SIZE = 1UL << 30;
+    static constexpr auto HUGE_PAGE_FLAG = 21 << MAP_HUGE_SHIFT;
+    static constexpr auto GIGANTIC_PAGE_FLAG = 30 << MAP_HUGE_SHIFT;
+    size_t size_;
+    void* buffer_;
+
+    static void* MMapWithTLB(size_t& size, bool useGiganticPages)
+    {
+        const auto pageSize = useGiganticPages ? GIGANTIC_PAGE_SIZE : HUGE_PAGE_SIZE;
+        const auto alignedSize = (size + pageSize - 1) / pageSize * pageSize;
+        const auto pageFlag = useGiganticPages ? GIGANTIC_PAGE_FLAG : HUGE_PAGE_FLAG;
+        const auto prot = PROT_WRITE | PROT_READ;
+        const auto flags = MAP_PRIVATE | MAP_ANONYMOUS | MAP_HUGETLB | pageFlag;
+        void* ptr = mmap(nullptr, alignedSize, prot, flags, -1, 0);
+        if (ptr == MAP_FAILED) {
+            UC_WARN("Mmap({}) with TLB({}) return: {}.", alignedSize, pageSize, errno);
+            return ptr;
+        }
+        size = alignedSize;
+        return ptr;
+    }
+    static void* MMapWithAdvice(size_t& size)
+    {
+        const auto pageSize = HUGE_PAGE_SIZE;
+        const auto alignedSize = (size + pageSize - 1) / pageSize * pageSize;
+        const auto prot = PROT_WRITE | PROT_READ;
+        const auto flags = MAP_PRIVATE | MAP_ANONYMOUS;
+        void* ptr = mmap(nullptr, alignedSize, prot, flags, -1, 0);
+        if (ptr == MAP_FAILED) {
+            UC_WARN("Mmap({}) with advice({}) return: {}.", alignedSize, pageSize, errno);
+            return ptr;
+        }
+        madvise(ptr, alignedSize, MADV_HUGEPAGE);
+        size = alignedSize;
+        return ptr;
+    }
+
+public:
+    HostHugePages(size_t size, ConstructorKey) : size_(size), buffer_(MAP_FAILED) {}
+    static std::shared_ptr<HostHugePages> Create(size_t size)
+    {
+        return std::make_shared<HostHugePages>(size, ConstructorKey{});
+    }
+    ~HostHugePages()
+    {
+        if (buffer_ == MAP_FAILED) { return; }
+        Buffer::UnregisterHostBuffer(buffer_);
+        munlock(buffer_, size_);
+        munmap(buffer_, size_);
+    }
+    std::shared_ptr<void> Data()
+    {
+        if (buffer_ != MAP_FAILED) {
+            return std::shared_ptr<void>(buffer_, [self = shared_from_this()](auto) {});
+        }
+        const auto useGiganticPages = size_ >= GIGANTIC_PAGE_SIZE;
+        buffer_ = MMapWithTLB(size_, useGiganticPages);
+        if (buffer_ == MAP_FAILED && useGiganticPages) { buffer_ = MMapWithTLB(size_, false); }
+        if (buffer_ == MAP_FAILED) { buffer_ = MMapWithAdvice(size_); }
+        if (buffer_ == MAP_FAILED) {
+            UC_ERROR("Failed to make host buffer({}).", size_);
+            return nullptr;
+        }
+        std::memset(buffer_, 0, size_);
+        mlock(buffer_, size_);
+        auto s = Buffer::RegisterHostBuffer(buffer_, size_);
+        if (s.Failure()) {
+            UC_ERROR("Failed({}) to register buffer({}).", s, size_);
+            munlock(buffer_, size_);
+            munmap(buffer_, size_);
+            buffer_ = MAP_FAILED;
+            return nullptr;
+        }
+        return std::shared_ptr<void>(buffer_, [self = shared_from_this()](auto) {});
+    }
+};
 
 std::shared_ptr<void> Trans::AscendBuffer::MakeDeviceBuffer(size_t size)
 {
@@ -40,6 +122,15 @@ std::shared_ptr<void> Trans::AscendBuffer::MakeHostBuffer(size_t size)
     auto ret = aclrtMallocHost(&host, size);
     if (ret == ACL_SUCCESS) { return std::shared_ptr<void>(host, aclrtFreeHost); }
     return nullptr;
+}
+
+std::shared_ptr<void> Trans::AscendBuffer::MakeHostBuffer4DirectIo(size_t size)
+{
+    try {
+        return HostHugePages::Create(size)->Data();
+    } catch (...) {
+        return nullptr;
+    }
 }
 
 Status Buffer::RegisterHostBuffer(void* host, size_t size, void** pDevice)
@@ -59,4 +150,4 @@ Status Buffer::RegisterHostBuffer(void* host, size_t size, void** pDevice)
 
 void Buffer::UnregisterHostBuffer(void* host) { aclrtHostUnregister(host); }
 
-} // namespace UC::Trans
+}  // namespace UC::Trans

@@ -200,6 +200,8 @@ def run_offline_inference(
         gpu_memory_utilization,
     )
 
+    logging.info(f"Running offline inference with sampling_params: {sampling_params}")
+
     with build_llm_with_uc(
         model_path=model_path,
         ucm_config=ucm_config,

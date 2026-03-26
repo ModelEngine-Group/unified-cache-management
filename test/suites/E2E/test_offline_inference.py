@@ -7,6 +7,7 @@ from common.common_inference_utils import (
     ensure_storage_dir,
     get_platform_specific_module,
     load_prompt_from_file,
+    match_any_answer,
     serialize_sample_params,
     split_prompt_by_tokens,
 )
@@ -16,12 +17,11 @@ from common.offline_inference_utils import (
 )
 from common.path_utils import get_path_relative_to_test_root, get_path_to_model
 
-os.environ["ENABLE_UCM_PATCH"] = "1"
-
 
 class TestBasicOfflineInference:
     """Test basic offline inference functionality."""
 
+    @pytest.mark.skip(reason="covered by online test")
     @pytest.mark.stage(1)
     @pytest.mark.feature("offline_inference")
     @pytest.mark.gpu_mem(6000)
@@ -189,25 +189,6 @@ class TestBasicOfflineInference:
         print(f"[INFO] Phase 2.2 output: {phase2_full_output}")
 
         print(f"\n[INFO] ===== Accuracy Test Results =====")
-
-        # Note: Small numerical precision differences in KV cache loading can cause
-        # punctuation token selection differences (e.g., full-width vs half-width comma)
-        def normalize_text(text: str) -> str:
-            """Normalize text for comparison by replacing similar punctuation."""
-            text = text.replace("，", ",")
-            text = text.replace("。", ".")
-            text = text.replace("！", "!")
-            text = text.replace("？", "?")
-            text = text.replace("：", ":")
-            text = text.replace("；", ";")
-            return text.strip()
-
-        def match_any_answer(output: str, answers: list[str]) -> bool:
-            """Check if output matches any of the standard answers."""
-            for answer in answers:
-                if normalize_text(output) == normalize_text(answer):
-                    return True
-            return False
 
         # Compare Phase 1.1 vs Phase 1.2 (SSD load accuracy)
         phase1_correct = match_any_answer(
