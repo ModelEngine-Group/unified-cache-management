@@ -559,6 +559,15 @@ class NpuDevice(Device):
         }
         return node_to_socket, socket_to_nodes_sorted
 
+    def _merge_cpulist_parts(self, cpulist_parts: List[str]) -> Optional[str]:
+        """
+        Join multiple cpulist parts without merging adjacent ranges.
+        Example:
+          ["64-94", "95-127"] -> "64-94,95-127"
+        """
+        parts = [p.strip() for p in cpulist_parts if p and p.strip()]
+        return ",".join(parts) if parts else None
+
     def get_cpu_affinity(self, local_rank: int) -> Optional[str]:
         """
         NPU path:
@@ -617,19 +626,23 @@ class NpuDevice(Device):
 
             # Collect all CPUs on the local socket
             cpu_idx_tbl = self._get_cpu_info(local_numa_ids)
-            cores: List[int] = []
+            cpulist_parts: List[str] = []
             for nid in local_numa_ids:
-                cores.extend(cpu_idx_tbl.get(nid, []))
-            cores = sorted(set(cores))
+                nid_cores = cpu_idx_tbl.get(nid, [])
+                if not nid_cores:
+                    continue
+                nid_cpulist = self._to_cpulist_str(nid_cores)
+                if nid_cpulist:
+                    cpulist_parts.append(nid_cpulist)
 
-            if not cores:
+            if not cpulist_parts:
                 logger.warning(
                     f"[CPU Affinity] cannot find CPU list for local socket NUMA nodes "
                     f"{local_numa_ids}"
                 )
                 return self._fallback_cpu_affinity(local_rank)
 
-            cpu_affinity = self._to_cpulist_str(cores)
+            cpu_affinity = self._merge_cpulist_parts(cpulist_parts)
             logger.info(
                 f"[CPU Affinity] NPU device={device_id}, "
                 f"pcie_info={topo.pcie_info}, numa_id={numa_id}, "
