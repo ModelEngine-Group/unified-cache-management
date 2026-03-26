@@ -1011,13 +1011,14 @@ protected:
         if ASCEND_IS_AIC { return; }
 
         // topK小于32，不使用内部API排序
-        if (curKScalar < 32) { useInnerSort = false; }
+        // (TODO) do not enable inner sort for now as 910B3 has bug
+        // if (curKScalar < 32) { useInnerSort = false; }
 
-        if (useInnerSort) {
-            CustomSort(topKIndexOutTensor, curKScalar);
-            SelectBlockTableFromTopK(curBatchIdx, curKScalar, outGmOffset);
-            return;
-        }
+        // if (useInnerSort) {
+        //     CustomSort(topKIndexOutTensor, curKScalar);
+        //     SelectBlockTableFromTopK(curBatchIdx, curKScalar, outGmOffset);
+        //     return;
+        // }
 
         // 将 TopK 的“chunk索引”映射成 block_id，并写回 GM(indices)
         WriteBlockTableFromTopK(curBatchIdx, topKIndexOutTensor, curKScalar, outGmOffset);
