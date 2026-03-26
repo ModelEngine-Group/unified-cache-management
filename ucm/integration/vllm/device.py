@@ -528,11 +528,46 @@ class NpuDevice(Device):
             logger.error(f"get npu cpu affinity fallback failed: {e}")
             return None
 
+    def _get_node_socket_map(self) -> Tuple[Dict[int, int], Dict[int, List[int]]]:
+        """
+        Parse `lscpu -e=cpu,node,socket` and return:
+          - node_to_socket: {numa_node: socket_id}
+          - socket_to_nodes: {socket_id: [numa_node0, numa_node1, ...]}
+        """
+        node_to_socket: Dict[int, int] = {}
+        socket_to_nodes: Dict[int, set] = {}
+
+        out = self._execute_command(["lscpu", "-e=cpu,node,socket"]).splitlines()
+        for line in out:
+            parts = line.split()
+            if len(parts) != 3:
+                continue
+            if parts[0].upper() == "CPU":
+                continue
+
+            _, node_str, socket_str = parts
+            if not (node_str.isdigit() and socket_str.isdigit()):
+                continue
+
+            node = int(node_str)
+            socket = int(socket_str)
+            node_to_socket[node] = socket
+            socket_to_nodes.setdefault(socket, set()).add(node)
+
+        socket_to_nodes_sorted: Dict[int, List[int]] = {
+            s: sorted(nodes) for s, nodes in socket_to_nodes.items()
+        }
+        return node_to_socket, socket_to_nodes_sorted
+
     def get_cpu_affinity(self, local_rank: int) -> Optional[str]:
         """
         NPU path:
-        1. NPU -> PCIe -> NUMA -> cpulist
-        2. fallback: split current allowed CPUs by local_rank
+        1. NPU -> PCIe -> NUMA
+        2. NUMA -> socket
+        3. socket -> all NUMA nodes on the same socket
+        4. all local NUMA nodes -> merged cpulist
+
+        Return CPU affinity as all CPUs on the device-local socket.
         """
         device_id = self._get_device_id(local_rank)
 
@@ -568,19 +603,29 @@ class NpuDevice(Device):
                 return self._fallback_cpu_affinity(local_rank)
 
             numa_id = topo.numa_id
-            all_numa_ids = sorted(
-                {
-                    device_map_info[d].numa_id
-                    for d in devices
-                    if d in device_map_info and device_map_info[d].numa_id is not None
-                }
-            )
-            # NUMA -> CPU list
-            cpu_idx_tbl = self._get_cpu_info(all_numa_ids)
-            cores = cpu_idx_tbl.get(numa_id)
+
+            # NUMA -> socket -> all NUMA nodes on the same socket
+            node_to_socket, socket_to_nodes = self._get_node_socket_map()
+            if numa_id not in node_to_socket:
+                logger.warning(
+                    f"[CPU Affinity] cannot map NUMA node {numa_id} to socket"
+                )
+                return self._fallback_cpu_affinity(local_rank)
+
+            socket = node_to_socket[numa_id]
+            local_numa_ids = sorted(socket_to_nodes.get(socket, [numa_id]))
+
+            # Collect all CPUs on the local socket
+            cpu_idx_tbl = self._get_cpu_info(local_numa_ids)
+            cores: List[int] = []
+            for nid in local_numa_ids:
+                cores.extend(cpu_idx_tbl.get(nid, []))
+            cores = sorted(set(cores))
+
             if not cores:
                 logger.warning(
-                    f"[CPU Affinity] cannot find CPU list for NUMA node {numa_id}"
+                    f"[CPU Affinity] cannot find CPU list for local socket NUMA nodes "
+                    f"{local_numa_ids}"
                 )
                 return self._fallback_cpu_affinity(local_rank)
 
@@ -588,6 +633,7 @@ class NpuDevice(Device):
             logger.info(
                 f"[CPU Affinity] NPU device={device_id}, "
                 f"pcie_info={topo.pcie_info}, numa_id={numa_id}, "
+                f"socket={socket}, local_numa_ids={local_numa_ids}, "
                 f"cpu_affinity={cpu_affinity}"
             )
             return cpu_affinity
