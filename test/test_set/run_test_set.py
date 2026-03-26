@@ -155,6 +155,7 @@ def build_pipeline_params(
         VLLM_COMMAND_MASTER=server_cfg.get("master_start_command", ""),
         VLLM_COMMAND_WORKER=server_cfg.get("slave_start_command", ""),
         UCM_CONFIG_YAML=server_cfg.get("ucm_config", ""),
+        USE_LAYERWISE=server_cfg.get("use_layerwise", "false"),
         API_MODEL_NAME=pytest_cfg.get("api_model_name", ""),
         MODEL_FOLDER_NAME=pytest_cfg.get("api_model_name", ""),
         TEST_PARAMS=pytest_cfg.get("test_params", ""),
