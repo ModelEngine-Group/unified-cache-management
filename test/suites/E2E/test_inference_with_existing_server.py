@@ -20,9 +20,8 @@ from typing import List
 import pytest
 import yaml
 from common.common_inference_utils import (
-    ensure_storage_dir,
     load_prompt_from_file,
-    split_prompt_by_tokens,
+    match_any_answer,
 )
 from common.llm_connection.LLMBase import LLMRequest
 from common.llm_connection.openai_connector import OpenAIConn
@@ -35,37 +34,13 @@ class TestBasicOnlineInference:
 
     @pytest.mark.stage(1)
     @pytest.mark.feature("fvt_test")
-    @pytest.mark.parametrize("model_name", ["Qwen2.5-1.5B-Instruct"])
     @pytest.mark.parametrize("max_tokens", [200])
     @pytest.mark.parametrize("prompt_split_ratio", [0.5])
-    @pytest.mark.parametrize("ucm_connector_name", ["UcmNfsStore", "UcmPipelineStore"])
-    @pytest.mark.parametrize("use_layerwise", [True, False])
-    @pytest.mark.parametrize("max_num_batched_tokens", [2047])
     def test_online_accuracy_hbm_ssd_mixed(
         self,
-        model_name: str,
         max_tokens: int,
         prompt_split_ratio: float,
-        ucm_connector_name: str,
-        use_layerwise: bool,
-        max_num_batched_tokens: int,
     ):
-        """Test HBM + SSD mixed hit accuracy via online inference.
-
-        Mirrors test_offline_inference.py flow:
-        1. Phase 1: Start vLLM (prefix caching OFF), send full prompt twice
-           -> KV cache saved to SSD, then loaded from SSD
-        2. Phase 2: Start vLLM (prefix caching ON), send partial prompt (warm HBM),
-           then send full prompt (hits both HBM and SSD) -> verify accuracy
-
-        Args:
-            model_name: Name of model (used to determine tokenizer path)
-            max_tokens: Maximum tokens to generate
-            prompt_split_ratio: Ratio to split prompt for Phase 2 (0.5 = split in half)
-            ucm_connector_name: Name of UCM store.
-            use_layerwise: Whether to use layerwise mode.
-            max_num_batched_tokens: Maximum number of batched tokens.
-        """
         # Load configuration
         config_file = get_path_relative_to_test_root("config.yaml")
         with open(config_file, "r", encoding="utf-8") as f:
@@ -78,12 +53,6 @@ class TestBasicOnlineInference:
         if not server_url:
             pytest.fail("server_url not found in config.yaml")
 
-        ucm_storage_dir = "/tmp/ucm_cache"
-        ensure_storage_dir(ucm_storage_dir, clear_existing=True)
-
-        served_model_name = model_name
-        model_path = get_path_to_model(model_name, config)
-
         # Load test prompt and standard answers
         test_prompt, standard_answers = load_prompt_from_file(
             get_path_relative_to_test_root(
@@ -95,34 +64,10 @@ class TestBasicOnlineInference:
 
         print(f"Standard answers: {standard_answers}")
 
-        # Initialize tokenizer for prompt splitting
-        from transformers import AutoTokenizer
-
-        tokenizer = AutoTokenizer.from_pretrained(
-            tokenizer_path, use_chat_template=True
-        )
-
-        # Format prompt with chat template
-        system_content = "先读问题，再根据下面的文章内容回答问题，不要进行分析，不要重复问题，用简短的语句给出答案。\n\n例如：\u201c全国美国文学研究会的第十八届年会在哪所大学举办的？\u201d\n回答应该为：\u201cxx大学\u201d。\n\n"
-        try:
-            messages = [
-                {"role": "system", "content": system_content},
-                {"role": "user", "content": test_prompt},
-            ]
-            formatted_full_prompt = tokenizer.apply_chat_template(
-                messages,
-                tokenize=False,
-                add_generation_prompt=True,
-                add_special_tokens=True,
-            )
-        except Exception:
-            formatted_full_prompt = test_prompt
-
         # Split prompt for Phase 2
-        prompt_first_part, _ = split_prompt_by_tokens(
-            formatted_full_prompt, tokenizer, split_ratio=prompt_split_ratio
-        )
+        prompt_first_part, _ = test_prompt[: int(len(test_prompt) * prompt_split_ratio)]
 
+        system_content = "先读问题，再根据下面的文章内容回答问题，不要进行分析，不要重复问题，用简短的语句给出答案。\n\n例如：\u201c全国美国文学研究会的第十八届年会在哪所大学举办的？\u201d\n回答应该为：\u201cxx大学\u201d。\n\n"
         # Prepare messages
         phase1_messages = [
             {"role": "system", "content": system_content},
@@ -134,13 +79,10 @@ class TestBasicOnlineInference:
         ]
 
         print(f"\n===== Online HBM + SSD Mixed Accuracy Test =====")
-        print(f"Model: {model_path}")
         print(f"Server URL: {server_url}")
         print(f"Full prompt length: {len(test_prompt)} chars")
         print(f"Max tokens: {max_tokens}")
         print(f"Prompt split ratio: {prompt_split_ratio}")
-        print(f"UCM connector: {ucm_connector_name}, use_layerwise: {use_layerwise}")
-        print(f"Max num batched tokens: {max_num_batched_tokens}")
 
         # Connect to existing server
         client = OpenAIConn(
@@ -213,21 +155,6 @@ class TestBasicOnlineInference:
 
         # ===== Accuracy Test Results =====
         print(f"\n[INFO] ===== Accuracy Test Results =====")
-
-        def normalize_text(text: str) -> str:
-            text = text.replace("\uff0c", ",")
-            text = text.replace("\u3002", ".")
-            text = text.replace("\uff01", "!")
-            text = text.replace("\uff1f", "?")
-            text = text.replace("\uff1a", ":")
-            text = text.replace("\uff1b", ";")
-            return text.strip()
-
-        def match_any_answer(output: str, answers: List[str]) -> bool:
-            for answer in answers:
-                if normalize_text(output) == normalize_text(answer):
-                    return True
-            return False
 
         # Phase 1 accuracy check
         phase1_correct = match_any_answer(

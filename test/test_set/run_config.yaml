@@ -1,0 +1,33 @@
+# Run Configuration
+# All parameters can be configured here or via command line
+# Command line arguments have higher priority than this file
+
+# Jenkins connection settings
+jenkins:
+  url: "https://your-jenkins.com"
+  username: "admin"
+  api_token: "your-api-token"
+  job_name: "your-folder/your-pipeline"
+  branch: "jenkins-dev-yhq"
+
+# Harbor registry settings (used when resolving image from package_name)
+harbor:
+  url: "https://registry.dev.huawei.com"
+  auth_token: ""
+  project: "ai-dailybuild"
+
+# Test set config file (relative to working directory or absolute path)
+# Can be overridden with --test-set-config or -c
+test_set_config: "test_set_config/test_set.yaml"
+
+# whether to execute tests in parallel
+parallel: true
+
+# build to run test against, give either package_name or override_image
+test_build:
+  package_name: 20260326-cmc
+  # if override_image is given, package_name will take no effect
+  override_image:
+    sglang_gpu: abc.io/sglang_gpu:v1
+    vllm_gpu: abc.io/vllm_gpu:v1
+    vllm_npu: abc.io/vllm_npu:v1

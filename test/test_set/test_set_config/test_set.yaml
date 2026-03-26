@@ -1,0 +1,135 @@
+test_sets:
+  - name: online_inference_pc_nfs_store
+    platform: vllm_npu
+
+    server_start_config:
+      gpu_count: 1
+      node_count: 1
+      server_port: 9527
+      master_start_command: |
+        vllm serve /models/Qwen3-1.7B 
+        --served-model-name Qwen3-1.7B
+        --block-size 128
+        --tensor-parallel-size 1
+        --data-parallel-size 1
+        --gpu-memory-utilization 0.87
+        --trust-remote-code
+      ucm_config: |
+        ucm_connectors:
+          - ucm_connector_name: "UcmNfsStore"
+            ucm_connector_config:
+              store_pipeline: "Cache|Posix"
+              storage_backends: "/mnt/kvcache-local"
+              io_direct: false
+              cache_buffer_capacity_gb: 32
+
+        # When you use UcmNfsStore, you should set enable_event_sync to false.
+        enable_event_sync: false
+      environment:
+        - ENABLE_UCM_PATCH: "1"
+
+    pytest_config:
+      api_model_name: Qwen3-1.7B
+      test_params: "--feature=fvt_test"
+
+  - name: online_inference_pc_pipeline_store
+    platform: vllm_npu
+
+    server_start_config:
+      gpu_count: 1
+      node_count: 1
+      server_port: 9527
+      master_start_command: |
+        vllm serve /models/Qwen3-1.7B 
+        --served-model-name Qwen3-1.7B
+        --block-size 128
+        --tensor-parallel-size 1
+        --data-parallel-size 1
+        --gpu-memory-utilization 0.87
+        --trust-remote-code
+      ucm_config: |
+        ucm_connectors:
+          - ucm_connector_name: "UcmPipelineStore"
+            ucm_connector_config:
+              store_pipeline: "Cache|Posix"
+              storage_backends: "/mnt/kvcache-local"
+              io_direct: false
+              cache_buffer_capacity_gb: 32
+
+        # When you use UcmNfsStore, you should set enable_event_sync to false.
+        enable_event_sync: true
+      environment:
+        - ENABLE_UCM_PATCH: "1"
+
+    pytest_config:
+      api_model_name: Qwen3-1.7B
+      test_params: "--feature=fvt_test"
+
+  - name: online_inference_pc_layerwise
+    platform: vllm_npu
+
+    server_start_config:
+      gpu_count: 1
+      node_count: 1
+      server_port: 9527
+      master_start_command: |
+        vllm serve /models/Qwen3-1.7B 
+        --served-model-name Qwen3-1.7B
+        --block-size 128
+        --tensor-parallel-size 1
+        --data-parallel-size 1
+        --gpu-memory-utilization 0.87
+        --trust-remote-code
+      ucm_config: |
+        ucm_connectors:
+          - ucm_connector_name: "UcmPipelineStore"
+            ucm_connector_config:
+              store_pipeline: "Cache|Posix"
+              storage_backends: "/mnt/kvcache-local"
+              io_direct: false
+              cache_buffer_capacity_gb: 32
+
+        # When you use UcmNfsStore, you should set enable_event_sync to false.
+        enable_event_sync: true
+      use_layerwise: true
+      environment:
+        - ENABLE_UCM_PATCH: "1"
+
+    pytest_config:
+      api_model_name: Qwen3-1.7B
+      test_params: "--feature=fvt_test"
+
+  - name: online_inference_pc_pp
+    platform: vllm_npu
+
+    server_start_config:
+      gpu_count: 2
+      node_count: 1
+      server_port: 9527
+      master_start_command: |
+        vllm serve /models/Qwen3-1.7B 
+        --served-model-name Qwen3-1.7B
+        --block-size 128
+        --tensor-parallel-size 1
+        --data-parallel-size 1
+        --pipeline-parallel-size 2
+        --gpu-memory-utilization 0.87
+        --trust-remote-code
+      ucm_config: |
+        ucm_connectors:
+          - ucm_connector_name: "UcmPipelineStore"
+            ucm_connector_config:
+              store_pipeline: "Cache|Posix"
+              storage_backends: "/mnt/kvcache-local"
+              io_direct: false
+              cache_buffer_capacity_gb: 32
+
+        # When you use UcmNfsStore, you should set enable_event_sync to false.
+        enable_event_sync: true
+      use_layerwise: true
+      environment:
+        - ENABLE_UCM_PATCH: "1"
+
+    pytest_config:
+      api_model_name: Qwen3-1.7B
+      test_params: "--feature=fvt_test"
