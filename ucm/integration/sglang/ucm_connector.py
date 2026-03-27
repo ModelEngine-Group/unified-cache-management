@@ -4,9 +4,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
-import numpy as np
 import torch
-import xxhash
 import yaml
 from sglang.srt.distributed.parallel_state import get_world_group
 
@@ -20,32 +18,6 @@ if TYPE_CHECKING:
     from sglang.srt.mem_cache.memory_pool_host import HostKVCache
 
 logger = logging.getLogger(__name__)
-
-UCM_META_BYTES: bytes | None = None
-UCM_SEED_HASH = "UCM_HASH_SEED"
-
-
-def uc_get_hash_str(token_ids: List[int], prior_hash: str = None) -> str:
-    if UCM_META_BYTES is None:
-        raise RuntimeError(
-            "UCM_META_BYTES is None, do not use uc_get_hash_str before register_uc_hasher"
-        )
-
-    hasher = xxhash.xxh64()
-    hasher.update(UCM_META_BYTES)
-
-    if prior_hash is None:
-        prior_hash = UCM_SEED_HASH
-    hasher.update(prior_hash.encode("utf-8"))
-
-    for t in token_ids:
-        if isinstance(t, tuple):
-            for elem in t:
-                hasher.update(elem.to_bytes(4, byteorder="little", signed=False))
-        else:
-            hasher.update(t.to_bytes(4, byteorder="little", signed=False))
-
-    return hasher.hexdigest()
 
 
 def _load_extra_config_from_yaml_env() -> Optional[Dict[str, Any]]:
@@ -77,10 +49,12 @@ class UnifiedCacheStoreConfig:
     def load_from_config(
         storage_config: "HiCacheStorageConfig", mem_pool_host: "HostKVCache"
     ) -> "UnifiedCacheStoreConfig":
-        extra = getattr(storage_config, "extra_config", None)
-        if extra is None:
-            extra = _load_extra_config_from_yaml_env()
-        if extra is None:
+        extra = dict(getattr(storage_config, "extra_config", None) or {})
+        if "kv_connector_extra_config" not in extra:
+            yaml_extra = _load_extra_config_from_yaml_env()
+            if yaml_extra is not None:
+                extra.update(yaml_extra)
+        if not extra:
             raise ValueError(
                 "Missing extra_config: storage_config.extra_config is None and "
                 "UNIFIEDCACHE_CONFIG_FILE is not set or cannot be loaded"
@@ -142,8 +116,7 @@ class SglangUcmConnector:
         self.cache_nums = 1 if self.is_mla else 2
         self.tp_rank = storage_config.tp_rank
         self.tp_size = storage_config.tp_size
-
-        self.register_uc_hasher()
+        self.config_suffix = self._build_config_suffix()
 
     @classmethod
     def from_hicache(
@@ -166,24 +139,30 @@ class SglangUcmConnector:
             ucm_store_config.config["storage_backends"],
         )
 
-    def register_uc_hasher(self) -> None:
-        global UCM_META_BYTES
-
-        if self.is_mla:
-            meta = f"{self.model}"
-        else:
-            meta = f"{self.model}:{self.tp_size}:{self.dtype}:{self.tp_rank}"
-        UCM_META_BYTES = meta.encode("utf-8")
-
     def _encode_keys(self, keys: List[str]) -> List[bytes]:
         return [key.encode("utf-8") for key in keys]
 
+    def _build_config_suffix(self) -> str:
+        model_name = "-".join(self.model.split("/")) if self.model else ""
+        if self.is_mla:
+            return f"_{model_name}"
+        return f"_{model_name}_{self.tp_rank}_{self.tp_size}"
+
+    def _get_physical_key(self, logical_key: str) -> str:
+        return logical_key + self.config_suffix
+
+    def _get_physical_keys(self, logical_keys: List[str]) -> List[str]:
+        return [self._get_physical_key(key) for key in logical_keys]
+
     def _generate_task(
         self,
-        keys: List[str],
+        physical_keys: List[str],
         host_indices: torch.Tensor,
     ):
-        key_list = self._encode_keys(keys)
+        if not physical_keys:
+            return [], [], []
+
+        key_list = self._encode_keys(physical_keys)
         shard_index_list = [0] * len(key_list)
         ptr_list, _ = self.mem_pool_host.get_page_buffer_meta(host_indices)
 
@@ -200,7 +179,12 @@ class SglangUcmConnector:
         host_indices: torch.Tensor,
         extra_info: Optional["HiCacheStorageExtraInfo"] = None,
     ) -> List[bool]:
-        key_list, shard_index_list, ptr_list = self._generate_task(keys, host_indices)
+        if not keys:
+            return []
+
+        key_list, shard_index_list, ptr_list = self._generate_task(
+            self._get_physical_keys(keys), host_indices
+        )
 
         task = self.store.load_data(key_list, shard_index_list, ptr_list)
         try:
@@ -217,7 +201,12 @@ class SglangUcmConnector:
         host_indices: torch.Tensor,
         extra_info: Optional["HiCacheStorageExtraInfo"] = None,
     ) -> List[bool]:
-        key_list, shard_index_list, ptr_list = self._generate_task(keys, host_indices)
+        if not keys:
+            return []
+
+        key_list, shard_index_list, ptr_list = self._generate_task(
+            self._get_physical_keys(keys), host_indices
+        )
 
         task = self.store.dump_data(key_list, shard_index_list, ptr_list)
         try:
@@ -232,16 +221,19 @@ class SglangUcmConnector:
         if self.is_mla and self.tp_rank != 0:
             return True
 
-        result = self.store.lookup(self._encode_keys([key]))
+        result = self.store.lookup(self._encode_keys([self._get_physical_key(key)]))
         return result[0] == 1
 
     def batch_exists(
         self, keys: List[str], extra_info: Optional["HiCacheStorageExtraInfo"] = None
     ) -> int:
+        if not keys:
+            return 0
         if self.is_mla and self.tp_rank != 0:
             return len(keys)
 
-        return self.store.lookup_on_prefix(self._encode_keys(keys)) + 1
+        physical_keys = self._get_physical_keys(keys)
+        return self.store.lookup_on_prefix(self._encode_keys(physical_keys)) + 1
 
     def get_stats(self):
         return None
