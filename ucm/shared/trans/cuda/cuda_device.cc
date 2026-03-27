@@ -22,7 +22,6 @@
  * SOFTWARE.
  * */
 #include <cuda_runtime.h>
-#include <nvml.h>
 #include "cuda_buffer.h"
 #include "cuda_sm_stream.h"
 #include "cuda_stream.h"
