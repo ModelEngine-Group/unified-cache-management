@@ -81,8 +81,6 @@ def get_image_url(platform: str, filter_string: str, harbor_cfg: dict) -> str:
 
     artifacts = response.json()
 
-    print(f"Found {len(artifacts)} artifacts for {platform}: {artifacts}")
-
     image_urls = []
     registry_host = harbor_url.replace("https://", "").replace("http://", "")
 
@@ -403,15 +401,18 @@ def main():
         params = build_pipeline_params(ts, jenkins_platform, override_image_url)
         jobs.append((ts["name"], jenkins_platform, params))
 
-    # --dry-run: print parameters and exit
+    # Print parameters for all tests
+    print(f"{len(jobs)} test(s) configured:\n")
+    for name, platform, params in jobs:
+        print(f"--- {name} (platform: {platform}) ---")
+        for k, v in asdict(params).items():
+            display_v = v if len(str(v)) <= 80 else str(v)[:77] + "..."
+            print(f"  {k}: {display_v}")
+        print()
+
+    # --dry-run: exit after printing
     if args.dry_run:
-        print(f"Dry run: {len(jobs)} test(s) would be triggered\n")
-        for name, platform, params in jobs:
-            print(f"--- {name} (platform: {platform}) ---")
-            for k, v in asdict(params).items():
-                display_v = v if len(str(v)) <= 80 else str(v)[:77] + "..."
-                print(f"  {k}: {display_v}")
-            print()
+        print("Dry run complete, no builds triggered.")
         return
 
     # Validate Jenkins config
