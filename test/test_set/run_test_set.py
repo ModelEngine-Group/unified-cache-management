@@ -81,6 +81,8 @@ def get_image_url(platform: str, filter_string: str, harbor_cfg: dict) -> str:
 
     artifacts = response.json()
 
+    print(f"Found {len(artifacts)} artifacts for {platform}: {artifacts}")
+
     image_urls = []
     registry_host = harbor_url.replace("https://", "").replace("http://", "")
 
