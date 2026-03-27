@@ -469,6 +469,7 @@ class JenkinsPipelineClient:
         poll_interval: float = 15.0,
         timeout: float = 43200.0,  # 12 hours (matches pipeline timeout)
         stream_log: bool = False,
+        shutdown_event=None,
     ) -> BuildInfo:
         """
         Block until the build finishes and return the final ``BuildInfo``.
@@ -481,6 +482,8 @@ class JenkinsPipelineClient:
             Maximum wait time in seconds.
         stream_log : bool
             If ``True``, stream console output to stdout while waiting.
+        shutdown_event : threading.Event, optional
+            If provided and set, the wait loop exits early.
 
         Returns
         -------
@@ -491,11 +494,18 @@ class JenkinsPipelineClient:
         ------
         TimeoutError
             If the build hasn't finished within *timeout* seconds.
+        InterruptedError
+            If *shutdown_event* was set during the wait.
         """
         start = time.time()
         log_offset = 0
 
         while time.time() - start < timeout:
+            if shutdown_event and shutdown_event.is_set():
+                raise InterruptedError(
+                    f"Build #{build_number} wait interrupted by shutdown."
+                )
+
             status = self.get_build_status(build_number)
 
             if stream_log:
@@ -509,7 +519,11 @@ class JenkinsPipelineClient:
                     log_offset = int(resp.headers.get("X-Text-Size", log_offset))
 
             if status not in (BuildStatus.BUILDING, BuildStatus.QUEUED):
-                return self.get_build_info(build_number)
+                info = self.get_build_info(build_number)
+                # Jenkins duration 可能为 0（刚完成还未更新），用本地计时兜底
+                if info.duration_ms == 0:
+                    info.duration_ms = int((time.time() - start) * 1000)
+                return info
 
             elapsed = int(time.time() - start)
             if not stream_log:
@@ -517,7 +531,12 @@ class JenkinsPipelineClient:
                     f"⏳ Build #{build_number} still {status.value} "
                     f"({elapsed}s elapsed)…"
                 )
-            time.sleep(poll_interval)
+
+            # 用 shutdown_event.wait 代替 time.sleep，可被信号即时唤醒
+            if shutdown_event:
+                shutdown_event.wait(timeout=poll_interval)
+            else:
+                time.sleep(poll_interval)
 
         raise TimeoutError(f"Build #{build_number} did not complete within {timeout}s.")
 

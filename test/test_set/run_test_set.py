@@ -15,7 +15,9 @@ Usage:
 
 import argparse
 import os
+import signal
 import sys
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import asdict
@@ -432,6 +434,19 @@ def main():
         branch=jenkins_cfg.get("branch", ""),
     )
 
+    # -- Graceful shutdown on Ctrl+C --
+    shutdown_event = threading.Event()
+
+    def _sigint_handler(signum, frame):
+        if shutdown_event.is_set():
+            # 第二次 Ctrl+C，强制退出
+            print("\nForce quit.")
+            os._exit(1)
+        print("\n\nCtrl+C received, shutting down...")
+        shutdown_event.set()
+
+    signal.signal(signal.SIGINT, _sigint_handler)
+
     # Trigger builds
     print(f"Triggering {len(jobs)} test(s)...\n")
     triggered: List[Tuple[str, str, int]] = []
@@ -465,12 +480,18 @@ def main():
                     for name, plat, params in jobs
                 }
                 for future in as_completed(futures):
+                    if shutdown_event.is_set():
+                        break
                     triggered.append(future.result())
         else:
             for name, plat, params in jobs:
+                if shutdown_event.is_set():
+                    break
                 triggered.append(trigger_one(name, plat, params))
     except Exception as e:
         print(f"\nError during triggering: {e}")
+
+    if shutdown_event.is_set():
         abort_all(triggered)
         sys.exit(1)
 
@@ -487,7 +508,7 @@ def main():
     def wait_one(
         name: str, platform: str, build_number: int
     ) -> Tuple[str, str, BuildInfo]:
-        info = client.wait_for_completion(build_number)
+        info = client.wait_for_completion(build_number, shutdown_event=shutdown_event)
         return (name, platform, info)
 
     try:
@@ -498,20 +519,22 @@ def main():
                     for name, plat, bnum in triggered
                 }
                 for future in as_completed(futures):
+                    if shutdown_event.is_set():
+                        break
                     result = future.result()
                     print(f"  Completed: {result[0]} → {result[2].status.value}")
                     results.append(result)
         else:
             for name, plat, bnum in triggered:
+                if shutdown_event.is_set():
+                    break
                 result = wait_one(name, plat, bnum)
                 print(f"  Completed: {result[0]} → {result[2].status.value}")
                 results.append(result)
-    except KeyboardInterrupt:
-        print("\n\nInterrupted by user.")
-        abort_all(triggered)
-        sys.exit(1)
     except Exception as e:
         print(f"\nError during execution: {e}")
+
+    if shutdown_event.is_set():
         abort_all(triggered)
         sys.exit(1)
 
