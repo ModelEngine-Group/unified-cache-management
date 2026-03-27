@@ -1,3 +1,4 @@
+import hashlib
 import logging
 import os
 from dataclasses import dataclass
@@ -140,7 +141,7 @@ class SglangUcmConnector:
         )
 
     def _encode_keys(self, keys: List[str]) -> List[bytes]:
-        return [key.encode("utf-8") for key in keys]
+        return [hashlib.md5(key.encode("utf-8")).digest() for key in keys]
 
     def _build_config_suffix(self) -> str:
         model_name = "-".join(self.model.split("/")) if self.model else ""
