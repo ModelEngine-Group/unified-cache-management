@@ -443,17 +443,36 @@ def main():
         build_number = client.trigger(params)
         return (name, platform, build_number)
 
-    if parallel and len(jobs) > 1:
-        with ThreadPoolExecutor(max_workers=len(jobs)) as executor:
-            futures = {
-                executor.submit(trigger_one, name, plat, params): name
-                for name, plat, params in jobs
-            }
-            for future in as_completed(futures):
-                triggered.append(future.result())
-    else:
-        for name, plat, params in jobs:
-            triggered.append(trigger_one(name, plat, params))
+    def abort_all(triggered_builds: List[Tuple[str, str, int]]):
+        """中止所有已触发的构建。"""
+        if not triggered_builds:
+            return
+        print(f"\nAborting {len(triggered_builds)} triggered build(s)...")
+        for name, plat, bnum in triggered_builds:
+            try:
+                if client.abort_build(bnum):
+                    print(f"  Aborted: {name} (#{bnum})")
+                else:
+                    print(f"  Failed to abort: {name} (#{bnum})")
+            except Exception as e:
+                print(f"  Error aborting {name} (#{bnum}): {e}")
+
+    try:
+        if parallel and len(jobs) > 1:
+            with ThreadPoolExecutor(max_workers=len(jobs)) as executor:
+                futures = {
+                    executor.submit(trigger_one, name, plat, params): name
+                    for name, plat, params in jobs
+                }
+                for future in as_completed(futures):
+                    triggered.append(future.result())
+        else:
+            for name, plat, params in jobs:
+                triggered.append(trigger_one(name, plat, params))
+    except Exception as e:
+        print(f"\nError during triggering: {e}")
+        abort_all(triggered)
+        sys.exit(1)
 
     # --no-wait: print build numbers and exit
     if args.no_wait:
@@ -471,21 +490,30 @@ def main():
         info = client.wait_for_completion(build_number)
         return (name, platform, info)
 
-    if parallel and len(triggered) > 1:
-        with ThreadPoolExecutor(max_workers=len(triggered)) as executor:
-            futures = {
-                executor.submit(wait_one, name, plat, bnum): name
-                for name, plat, bnum in triggered
-            }
-            for future in as_completed(futures):
-                result = future.result()
+    try:
+        if parallel and len(triggered) > 1:
+            with ThreadPoolExecutor(max_workers=len(triggered)) as executor:
+                futures = {
+                    executor.submit(wait_one, name, plat, bnum): name
+                    for name, plat, bnum in triggered
+                }
+                for future in as_completed(futures):
+                    result = future.result()
+                    print(f"  Completed: {result[0]} → {result[2].status.value}")
+                    results.append(result)
+        else:
+            for name, plat, bnum in triggered:
+                result = wait_one(name, plat, bnum)
                 print(f"  Completed: {result[0]} → {result[2].status.value}")
                 results.append(result)
-    else:
-        for name, plat, bnum in triggered:
-            result = wait_one(name, plat, bnum)
-            print(f"  Completed: {result[0]} → {result[2].status.value}")
-            results.append(result)
+    except KeyboardInterrupt:
+        print("\n\nInterrupted by user.")
+        abort_all(triggered)
+        sys.exit(1)
+    except Exception as e:
+        print(f"\nError during execution: {e}")
+        abort_all(triggered)
+        sys.exit(1)
 
     # Print summary
     failed_count = print_results(results)

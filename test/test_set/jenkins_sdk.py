@@ -266,8 +266,9 @@ class JenkinsPipelineClient:
 
         resp = self._session.post(url, data=form_data)
         if resp.status_code not in (200, 201, 302):
+            msg = self._extract_error_message(resp)
             raise BuildTriggerError(
-                f"Failed to trigger build: HTTP {resp.status_code}\n{resp.text}"
+                f"Failed to trigger build: HTTP {resp.status_code}: {msg}"
             )
 
         # Jenkins returns the queue item URL in the Location header
@@ -410,7 +411,7 @@ class JenkinsPipelineClient:
             f"/logText/progressiveText?start={start_offset}"
         )
         resp = self._session.get(url)
-        resp.raise_for_status()
+        self._raise_for_status(resp)
         return resp.text
 
     def stream_console_log(
@@ -441,7 +442,7 @@ class JenkinsPipelineClient:
                 f"/logText/progressiveText?start={offset}"
             )
             resp = self._session.get(url)
-            resp.raise_for_status()
+            self._raise_for_status(resp)
 
             text = resp.text
             new_offset = int(resp.headers.get("X-Text-Size", offset))
@@ -566,7 +567,7 @@ class JenkinsPipelineClient:
             print(f"⬇️  Downloading {art['fileName']} → {dest}")
 
             resp = self._session.get(url, stream=True)
-            resp.raise_for_status()
+            self._raise_for_status(resp)
             with open(dest, "wb") as f:
                 for chunk in resp.iter_content(chunk_size=8192):
                     f.write(chunk)
@@ -609,9 +610,49 @@ class JenkinsPipelineClient:
     # ------------------------------------------------------------------
     # Internals
     # ------------------------------------------------------------------
+    @staticmethod
+    def _extract_error_message(resp: requests.Response) -> str:
+        """从 Jenkins 响应中提取可读的错误信息，避免输出大段 HTML。"""
+        # 尝试解析 JSON 错误
+        try:
+            data = resp.json()
+            if "message" in data:
+                return data["message"]
+            return json.dumps(data, ensure_ascii=False, indent=2)
+        except (ValueError, KeyError):
+            pass
+
+        text = resp.text or ""
+        content_type = resp.headers.get("Content-Type", "")
+
+        # HTML 响应：提取 <title> 或 <h1>/<h2> 中的文本
+        if "html" in content_type or text.lstrip().startswith(("<", "<!DOCTYPE")):
+            # 尝试提取 title
+            m = re.search(r"<title[^>]*>(.*?)</title>", text, re.IGNORECASE | re.DOTALL)
+            if m:
+                return re.sub(r"\s+", " ", m.group(1)).strip()
+            # 尝试提取 h1/h2
+            m = re.search(r"<h[12][^>]*>(.*?)</h[12]>", text, re.IGNORECASE | re.DOTALL)
+            if m:
+                return re.sub(r"<[^>]+>", "", m.group(1)).strip()
+            # 兜底：去掉所有 HTML 标签，取前 200 字符
+            plain = re.sub(r"<[^>]+>", " ", text)
+            plain = re.sub(r"\s+", " ", plain).strip()
+            return plain[:200] if plain else f"HTTP {resp.status_code}"
+
+        # 纯文本，截断
+        return text[:500] if text else f"HTTP {resp.status_code}"
+
+    def _raise_for_status(self, resp: requests.Response) -> None:
+        """替代 resp.raise_for_status()，提供可读的错误信息。"""
+        if resp.ok:
+            return
+        msg = self._extract_error_message(resp)
+        raise JenkinsPipelineError(f"HTTP {resp.status_code}: {msg}")
+
     def _get_json(self, url: str) -> dict:
         resp = self._session.get(url)
-        resp.raise_for_status()
+        self._raise_for_status(resp)
         return resp.json()
 
     def _get_stages(self, build_number: int) -> List[Dict[str, Any]]:
