@@ -398,7 +398,7 @@ def main():
             sys.exit(1)
 
         override_image_url = get_override_image(
-            platform, override_images, package_name, harbor_cfg
+            jenkins_platform, override_images, package_name, harbor_cfg
         )
         params = build_pipeline_params(ts, jenkins_platform, override_image_url)
         jobs.append((ts["name"], jenkins_platform, params))
