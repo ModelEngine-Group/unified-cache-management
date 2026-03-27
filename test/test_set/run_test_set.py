@@ -427,7 +427,7 @@ def main():
         username=jenkins_cfg["username"],
         api_token=jenkins_cfg["api_token"],
         job_name=jenkins_cfg["job_name"],
-        branch=jenkins_cfg.get("branch", "jenkins-dev-yhq"),
+        branch=jenkins_cfg.get("branch", ""),
     )
 
     # Trigger builds

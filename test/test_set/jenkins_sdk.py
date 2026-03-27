@@ -143,7 +143,10 @@ class BuildNotFoundError(JenkinsPipelineError):
 
 class JenkinsPipelineClient:
     """
-    High-level client to interact with the UCM vLLM Jenkins Multibranch Pipeline.
+    High-level client to interact with a Jenkins Pipeline.
+
+    Supports both **Multibranch Pipeline** (when ``branch`` is provided) and
+    **regular Pipeline** (when ``branch`` is omitted or empty).
 
     Parameters
     ----------
@@ -154,10 +157,11 @@ class JenkinsPipelineClient:
     api_token : str
         Jenkins API token (generate from *User → Configure → API Token*).
     job_name : str
-        Full *folder/job* path of the **Multibranch Pipeline** item,
+        Full *folder/job* path of the Pipeline item,
         e.g. ``"my-folder/UCM-Integration-Pipeline-MB"``.
-    branch : str
-        Git branch that maps to a pipeline run, e.g. ``"jenkins-dev-yhq"``.
+    branch : str, optional
+        Git branch for Multibranch Pipeline, e.g. ``"jenkins-dev-yhq"``.
+        If empty or ``None``, the client uses regular pipeline URL pattern.
     verify_ssl : bool
         Whether to verify TLS certificates (default ``True``).
     """
@@ -171,14 +175,14 @@ class JenkinsPipelineClient:
         username: str,
         api_token: str,
         job_name: str,
-        branch: str = "jenkins-dev-yhq",
+        branch: str = "",
         verify_ssl: bool = True,
     ):
         self.jenkins_url = jenkins_url.rstrip("/")
         self.username = username
         self.api_token = api_token
         self.job_name = job_name
-        self.branch = branch
+        self.branch = branch or ""
         self.verify_ssl = verify_ssl
 
         self._session = requests.Session()
@@ -190,12 +194,17 @@ class JenkinsPipelineClient:
             }
         )
 
-        # Pre-compute the base URL for this branch job
-        encoded_branch = urllib.parse.quote(self.branch, safe="")
-        # Multibranch pipeline URL pattern:
-        #   <jenkins>/job/<folder>/job/<pipeline>/job/<branch>/
+        # Pre-compute the base URL for this job
         job_path = "/job/".join(self.job_name.split("/"))
-        self._branch_job_url = f"{self.jenkins_url}/job/{job_path}/job/{encoded_branch}"
+        if self.branch:
+            # Multibranch pipeline URL pattern:
+            #   <jenkins>/job/<folder>/job/<pipeline>/job/<branch>/
+            encoded_branch = urllib.parse.quote(self.branch, safe="")
+            self._job_url = f"{self.jenkins_url}/job/{job_path}/job/{encoded_branch}"
+        else:
+            # Regular pipeline URL pattern:
+            #   <jenkins>/job/<folder>/job/<pipeline>/
+            self._job_url = f"{self.jenkins_url}/job/{job_path}"
 
     # ------------------------------------------------------------------
     # Public API – Trigger
@@ -250,7 +259,7 @@ class JenkinsPipelineClient:
         jenkins_params = params.to_jenkins_params()
 
         # Jenkins expects: buildWithParameters?json=...  OR  form-encoded params
-        url = f"{self._branch_job_url}/buildWithParameters"
+        url = f"{self._job_url}/buildWithParameters"
 
         # Use form-encoded parameters (simpler, works with all Jenkins versions)
         form_data = {p["name"]: p["value"] for p in jenkins_params}
@@ -298,11 +307,11 @@ class JenkinsPipelineClient:
     # ------------------------------------------------------------------
     def get_build_url(self, build_number: int) -> str:
         """Return the human-readable URL for a build."""
-        return f"{self._branch_job_url}/{build_number}/"
+        return f"{self._job_url}/{build_number}/"
 
     def get_console_url(self, build_number: int) -> str:
         """Return the URL to the console (log) output page."""
-        return f"{self._branch_job_url}/{build_number}/console"
+        return f"{self._job_url}/{build_number}/console"
 
     def get_build_status(self, build_number: int) -> BuildStatus:
         """
@@ -311,7 +320,7 @@ class JenkinsPipelineClient:
         While the build is running, ``result`` is ``None`` in the API response,
         so we return ``BuildStatus.BUILDING``.
         """
-        data = self._get_json(f"{self._branch_job_url}/{build_number}/api/json")
+        data = self._get_json(f"{self._job_url}/{build_number}/api/json")
         result = data.get("result")
         if result is None:
             if data.get("building"):
@@ -327,7 +336,7 @@ class JenkinsPipelineClient:
         Retrieve comprehensive information about a build.
         """
         data = self._get_json(
-            f"{self._branch_job_url}/{build_number}/api/json"
+            f"{self._job_url}/{build_number}/api/json"
             "?tree=number,url,result,building,duration,timestamp,"
             "description,actions[parameters[name,value]],"
             "artifacts[relativePath,fileName]"
@@ -357,8 +366,7 @@ class JenkinsPipelineClient:
                 "fileName": a["fileName"],
                 "relativePath": a["relativePath"],
                 "downloadUrl": (
-                    f"{self._branch_job_url}/{build_number}"
-                    f"/artifact/{a['relativePath']}"
+                    f"{self._job_url}/{build_number}" f"/artifact/{a['relativePath']}"
                 ),
             }
             for a in data.get("artifacts", [])
@@ -398,7 +406,7 @@ class JenkinsPipelineClient:
             Byte offset to start reading from (useful for incremental reads).
         """
         url = (
-            f"{self._branch_job_url}/{build_number}"
+            f"{self._job_url}/{build_number}"
             f"/logText/progressiveText?start={start_offset}"
         )
         resp = self._session.get(url)
@@ -429,7 +437,7 @@ class JenkinsPipelineClient:
         offset = 0
         while True:
             url = (
-                f"{self._branch_job_url}/{build_number}"
+                f"{self._job_url}/{build_number}"
                 f"/logText/progressiveText?start={offset}"
             )
             resp = self._session.get(url)
@@ -491,7 +499,7 @@ class JenkinsPipelineClient:
 
             if stream_log:
                 url = (
-                    f"{self._branch_job_url}/{build_number}"
+                    f"{self._job_url}/{build_number}"
                     f"/logText/progressiveText?start={log_offset}"
                 )
                 resp = self._session.get(url)
@@ -577,7 +585,7 @@ class JenkinsPipelineClient:
 
         Returns ``True`` if the abort request was accepted.
         """
-        url = f"{self._branch_job_url}/{build_number}/stop"
+        url = f"{self._job_url}/{build_number}/stop"
         resp = self._session.post(url)
         return resp.status_code in (200, 302)
 
@@ -586,14 +594,14 @@ class JenkinsPipelineClient:
     # ------------------------------------------------------------------
     def get_last_build_number(self) -> Optional[int]:
         """Return the latest build number, or ``None``."""
-        data = self._get_json(f"{self._branch_job_url}/api/json?tree=lastBuild[number]")
+        data = self._get_json(f"{self._job_url}/api/json?tree=lastBuild[number]")
         lb = data.get("lastBuild")
         return lb["number"] if lb else None
 
     def get_last_n_builds(self, n: int = 10) -> List[BuildInfo]:
         """Return ``BuildInfo`` for the last *n* builds."""
         data = self._get_json(
-            f"{self._branch_job_url}/api/json" f"?tree=builds[number]{{0,{n}}}"
+            f"{self._job_url}/api/json" f"?tree=builds[number]{{0,{n}}}"
         )
         builds = data.get("builds", [])
         return [self.get_build_info(b["number"]) for b in builds]
@@ -612,9 +620,7 @@ class JenkinsPipelineClient:
         Endpoint: ``<build>/wfapi/describe``
         """
         try:
-            data = self._get_json(
-                f"{self._branch_job_url}/{build_number}/wfapi/describe"
-            )
+            data = self._get_json(f"{self._job_url}/{build_number}/wfapi/describe")
             return [
                 {
                     "name": s.get("name"),
@@ -633,7 +639,7 @@ class JenkinsPipelineClient:
         """
         try:
             data = self._get_json(
-                f"{self._branch_job_url}/{build_number}" "/injectedEnvVars/api/json"
+                f"{self._job_url}/{build_number}" "/injectedEnvVars/api/json"
             )
             return data.get("envMap", {})
         except Exception:
@@ -643,5 +649,5 @@ class JenkinsPipelineClient:
         return (
             f"JenkinsPipelineClient("
             f"job={self.job_name!r}, branch={self.branch!r}, "
-            f"url={self._branch_job_url!r})"
+            f"url={self._job_url!r})"
         )
