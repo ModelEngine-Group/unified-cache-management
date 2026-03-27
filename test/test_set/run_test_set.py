@@ -92,7 +92,7 @@ def get_image_url(platform: str, filter_string: str, harbor_cfg: dict) -> str:
                 if tag_name:
                     tag_name = str(tag_name)
                     if not filter_string or filter_string.lower() in tag_name.lower():
-                        full_url = f"{registry_host}/{project}/{platform}:{tag_name}"
+                        full_url = f"{registry_host}/{project}/{repo}:{tag_name}"
                         image_urls.append(full_url)
 
     if not image_urls:
