@@ -406,8 +406,7 @@ def main():
     for name, platform, params in jobs:
         print(f"--- {name} (platform: {platform}) ---")
         for k, v in asdict(params).items():
-            display_v = v if len(str(v)) <= 80 else str(v)[:77] + "..."
-            print(f"  {k}: {display_v}")
+            print(f"  {k}: {v}")
         print()
 
     # --dry-run: exit after printing
