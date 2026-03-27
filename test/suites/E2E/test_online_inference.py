@@ -22,12 +22,19 @@ import yaml
 from common.online_inference_utils import hbm_ssd_mixed_test
 from common.path_utils import get_path_relative_to_test_root, get_path_to_model
 
+os.environ["ENABLE_UCM_PATCH"] = "1"
+
+# These online E2E cases start a fresh vLLM instance with UCM enabled and a
+# relatively large max_model_len, so the previous 6 GB hint translated to an
+# unrealistically small --gpu-memory-utilization (~6%) on H20 GPUs.
+ONLINE_INFERENCE_GPU_MEM_MB = 60000
+
 
 class TestBasicOnlineInference:
     """Test basic online inference functionality."""
 
     @pytest.mark.stage(1)
-    @pytest.mark.gpu_mem(6000)
+    @pytest.mark.gpu_mem(ONLINE_INFERENCE_GPU_MEM_MB)
     @pytest.mark.feature("online_inference")
     @pytest.mark.parametrize("model_name", ["Qwen2.5-1.5B-Instruct"])
     @pytest.mark.parametrize("max_tokens", [200])
@@ -116,7 +123,7 @@ class TestBasicOnlineInference:
         )
 
     @pytest.mark.stage(1)
-    @pytest.mark.gpu_mem(6000)
+    @pytest.mark.gpu_mem(ONLINE_INFERENCE_GPU_MEM_MB)
     @pytest.mark.gpu_count(2)
     @pytest.mark.feature("online_inference")
     @pytest.mark.parametrize("model_name", ["Qwen2.5-1.5B-Instruct"])
@@ -192,6 +199,79 @@ class TestBasicOnlineInference:
             max_num_batched_tokens=max_num_batched_tokens,
             served_model_name=served_model_name,
             pipeline_parallel_size=2,
+        )
+
+        hbm_ssd_mixed_test(
+            model_name,
+            tokenizer_path,
+            max_tokens,
+            prompt_split_ratio,
+            ucm_config,
+            vllm_server_startup_args,
+        )
+
+    @pytest.mark.stage(1)
+    @pytest.mark.gpu_mem(ONLINE_INFERENCE_GPU_MEM_MB)
+    @pytest.mark.gpu_count(2)
+    @pytest.mark.feature("online_inference")
+    @pytest.mark.parametrize("model_name", ["Qwen2.5-1.5B-Instruct"])
+    @pytest.mark.parametrize("max_tokens", [200])
+    @pytest.mark.parametrize("prompt_split_ratio", [0.5])
+    @pytest.mark.parametrize("ucm_connector_name", ["UcmPipelineStore"])
+    @pytest.mark.parametrize("use_layerwise", [True])
+    @pytest.mark.parametrize("max_num_batched_tokens", [2047])
+    def test_online_accuracy_hbm_ssd_mixed_tp(
+        self,
+        model_name: str,
+        max_tokens: int,
+        prompt_split_ratio: float,
+        ucm_connector_name: str,
+        use_layerwise: bool,
+        max_num_batched_tokens: int,
+    ):
+        """Test HBM + SSD mixed hit accuracy via online inference with tensor parallel."""
+        # Load configuration
+        config_file = get_path_relative_to_test_root("config.yaml")
+        with open(config_file, "r", encoding="utf-8") as f:
+            config = yaml.safe_load(f)
+
+        ucm_storage_dir = "/tmp/ucm_cache"
+        served_model_name = model_name
+        tokenizer_path = f"/home/models/{model_name}"
+        model_path = get_path_to_model(model_name, config)
+
+        # Build UCM config
+        ucm_config = {
+            "use_layerwise": (
+                use_layerwise if ucm_connector_name != "UcmNfsStore" else False
+            ),
+            "ucm_connectors": [
+                {
+                    "ucm_connector_name": ucm_connector_name,
+                    "ucm_connector_config": {
+                        "store_pipeline": "Cache|Posix",
+                        "storage_backends": ucm_storage_dir,
+                        "use_direct": False,
+                        "cache_buffer_capacity_gb": 32,
+                    },
+                }
+            ],
+            **(
+                {"enable_event_sync": False}
+                if ucm_connector_name == "UcmNfsStore"
+                else {}
+            ),
+        }
+
+        # Build vllm_server_startup_args with tensor parallel size
+        vllm_server_startup_args = dict(
+            model_path=model_path,
+            port=8000,
+            ucm_config=ucm_config,
+            max_model_len=12000,
+            max_num_batched_tokens=max_num_batched_tokens,
+            served_model_name=served_model_name,
+            tensor_parallel_size=2,
         )
 
         hbm_ssd_mixed_test(
