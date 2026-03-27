@@ -65,7 +65,7 @@ class TestBasicOnlineInference:
         print(f"Standard answers: {standard_answers}")
 
         # Split prompt for Phase 2
-        prompt_first_part, _ = test_prompt[: int(len(test_prompt) * prompt_split_ratio)]
+        prompt_first_part = test_prompt[: int(len(test_prompt) * prompt_split_ratio)]
 
         system_content = "先读问题，再根据下面的文章内容回答问题，不要进行分析，不要重复问题，用简短的语句给出答案。\n\n例如：\u201c全国美国文学研究会的第十八届年会在哪所大学举办的？\u201d\n回答应该为：\u201cxx大学\u201d。\n\n"
         # Prepare messages
