@@ -119,6 +119,8 @@ class SglangUcmConnector:
         self.tp_size = storage_config.tp_size
         self.config_suffix = self._build_config_suffix()
 
+        self._encoded_key_cache: Dict[str, bytes] = {}
+
     @classmethod
     def from_hicache(
         cls,
@@ -140,8 +142,15 @@ class SglangUcmConnector:
             ucm_store_config.config["storage_backends"],
         )
 
+    def _encode_key(self, key: str) -> bytes:
+        block_id = self._encoded_key_cache.get(key)
+        if block_id is None:
+            block_id = hashlib.md5(key.encode("utf-8")).digest()
+            self._encoded_key_cache[key] = block_id
+        return block_id
+
     def _encode_keys(self, keys: List[str]) -> List[bytes]:
-        return [hashlib.md5(key.encode("utf-8")).digest() for key in keys]
+        return [self._encode_key(key) for key in keys]
 
     def _build_config_suffix(self) -> str:
         model_name = "-".join(self.model.split("/")) if self.model else ""
