@@ -708,6 +708,7 @@ class UCMLayerWiseConnector(UCMDirectConnector):
         self.need_load = False
         self.dump_total_ptrs: np.ndarray | None = None
         self.request_data: list[tuple[str, list, np.ndarray]] = []
+        self._failure_req_ids: set[str] = set()
         logger.info("Init UCMLayerWiseConnector.")
 
     def _submit_request_load_tasks_for_layer(
@@ -717,6 +718,8 @@ class UCMLayerWiseConnector(UCMDirectConnector):
         metadata: "UCMConnectorMetadata",
     ) -> None:
         for request_id, ucm_block_ids, total_ptrs in self.request_data:
+            if request_id in self._failure_req_ids:
+                continue
             try:
                 shard_indexs = [layer_id] * len(ucm_block_ids)
                 layer_ptrs = total_ptrs[local_row]
@@ -727,11 +730,13 @@ class UCMLayerWiseConnector(UCMDirectConnector):
                 self._invalid_block_ids.update(
                     metadata.request_meta[request_id].load_block_ids[1]
                 )
+                self._failure_req_ids.add(request_id)
 
     def start_load_kv(self, forward_context: "ForwardContext", **kwargs) -> None:
         metadata = self._get_connector_metadata()
         self.load_tasks.clear()
         self.request_data.clear()
+        self._failure_req_ids.clear()
         self.need_load = False
 
         for request_id, request in metadata.request_meta.items():
@@ -765,6 +770,7 @@ class UCMLayerWiseConnector(UCMDirectConnector):
                 self._invalid_block_ids.update(
                     metadata.request_meta[request_id].load_block_ids[1]
                 )
+                self._failure_req_ids.add(request_id)
 
         next_layer_id = current_layer_id + 1
         if next_layer_id not in self.layer_ids:
