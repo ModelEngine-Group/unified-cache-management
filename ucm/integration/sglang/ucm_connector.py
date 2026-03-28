@@ -117,8 +117,8 @@ class SglangUcmConnector:
         self.cache_nums = 1 if self.is_mla else 2
         self.tp_rank = storage_config.tp_rank
         self.tp_size = storage_config.tp_size
-        self.config_suffix = self._build_config_suffix()
 
+        self.config_suffix = self._build_config_suffix()
         self._encoded_key_cache: Dict[str, bytes] = {}
 
     @classmethod
@@ -166,14 +166,13 @@ class SglangUcmConnector:
 
     def _generate_task(
         self,
-        physical_keys: List[str],
+        encoded_keys: List[bytes],
         host_indices: torch.Tensor,
     ):
-        if not physical_keys:
+        if not encoded_keys:
             return [], [], []
 
-        key_list = self._encode_keys(physical_keys)
-        shard_index_list = [0] * len(key_list)
+        shard_index_list = [0] * len(encoded_keys)
         ptr_list, _ = self.mem_pool_host.get_page_buffer_meta(host_indices)
 
         if not self.is_mla:
@@ -181,7 +180,7 @@ class SglangUcmConnector:
         else:
             ptr_list = [[p] for p in ptr_list]
 
-        return key_list, shard_index_list, ptr_list
+        return encoded_keys, shard_index_list, ptr_list
 
     def batch_get_v1(
         self,
@@ -192,8 +191,9 @@ class SglangUcmConnector:
         if not keys:
             return []
 
+        encoded_keys = self._encode_keys(self._get_physical_keys(keys))
         key_list, shard_index_list, ptr_list = self._generate_task(
-            self._get_physical_keys(keys), host_indices
+            encoded_keys, host_indices
         )
 
         task = self.store.load_data(key_list, shard_index_list, ptr_list)
@@ -214,8 +214,9 @@ class SglangUcmConnector:
         if not keys:
             return []
 
+        encoded_keys = self._encode_keys(self._get_physical_keys(keys))
         key_list, shard_index_list, ptr_list = self._generate_task(
-            self._get_physical_keys(keys), host_indices
+            encoded_keys, host_indices
         )
 
         task = self.store.dump_data(key_list, shard_index_list, ptr_list)
@@ -242,8 +243,7 @@ class SglangUcmConnector:
         if self.is_mla and self.tp_rank != 0:
             return len(keys)
 
-        physical_keys = self._get_physical_keys(keys)
-        return self.store.lookup_on_prefix(self._encode_keys(physical_keys)) + 1
+        return self.store.lookup_on_prefix(self._encode_keys(self._get_physical_keys(keys))) + 1
 
     def get_stats(self):
         return None
