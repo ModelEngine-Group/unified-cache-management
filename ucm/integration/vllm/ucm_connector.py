@@ -18,6 +18,7 @@ from vllm.distributed.kv_transfer.kv_connector.v1.base import (
     KVConnectorRole,
 )
 from vllm.distributed.parallel_state import get_tp_group, get_world_group
+from vllm.model_executor.models.utils import extract_layer_index
 from vllm.platforms import current_platform
 from vllm.v1.core.sched.output import SchedulerOutput
 
@@ -336,12 +337,10 @@ class UCMDirectConnector(KVConnectorBase_V1):
         self.block_data_size = self.kv_cache_layout.block_size
 
         self.layer_name_to_id = {
-            name: self._extract_layer_index(name) for name in self.kv_caches.keys()
+            name: extract_layer_index(name) for name in self.kv_caches.keys()
         }
-        self.layer_id_to_name = {
-            layer_id: name for name, layer_id in self.layer_name_to_id.items()
-        }
-        self.first_layer_id = next(iter(self.layer_name_to_id.values()))
+        self.layer_ids = sorted(set(self.layer_name_to_id.values()))
+        self.first_layer_id = self.layer_ids[0]
 
         self.device = create_device()
 
@@ -523,16 +522,6 @@ class UCMDirectConnector(KVConnectorBase_V1):
 
         return UCMConnectorMetadata(requests_dispatch_meta)
 
-    @staticmethod
-    def _extract_layer_index(layer_name: str) -> Optional[int]:
-        """
-        Extract the layer index from the layer name.
-        """
-        for chunk in layer_name.split("."):
-            if chunk.isdigit():
-                return int(chunk)
-        return None
-
     def start_load_kv(self, forward_context: "ForwardContext", **kwargs) -> None:
         metadata = self._get_connector_metadata()
         assert isinstance(metadata, UCMConnectorMetadata)
@@ -711,8 +700,8 @@ class UCMLayerWiseConnector(UCMDirectConnector):
 
     def __init__(self, vllm_config: "VllmConfig", role: KVConnectorRole):
         super().__init__(vllm_config, role)
-        # {layer_name: {request_id: Task}}
-        self.load_tasks: dict[str, dict[str, Task]] = defaultdict(dict)
+        # {layer_id: {request_id: Task}}
+        self.load_tasks: dict[int, dict[str, Task]] = defaultdict(dict)
         self.dump_tasks: dict[str, Task] = {}
         self.use_layerwise = True
         self.is_save = False
@@ -723,7 +712,6 @@ class UCMLayerWiseConnector(UCMDirectConnector):
 
     def _submit_request_load_tasks_for_layer(
         self,
-        layer_name: str,
         layer_id: int,
         local_row: int,
         metadata: "UCMConnectorMetadata",
@@ -733,7 +721,7 @@ class UCMLayerWiseConnector(UCMDirectConnector):
                 shard_indexs = [layer_id] * len(ucm_block_ids)
                 layer_ptrs = total_ptrs[local_row]
                 task = self.store.load_data(ucm_block_ids, shard_indexs, layer_ptrs)
-                self.load_tasks[layer_name][request_id] = task
+                self.load_tasks[layer_id][request_id] = task
             except RuntimeError as e:
                 logger.error(f"request {request_id} submit load task error. {e}")
                 self._invalid_block_ids.update(
@@ -761,17 +749,15 @@ class UCMLayerWiseConnector(UCMDirectConnector):
             self.request_data.append((request_id, ucm_block_ids, total_ptrs))
 
         if self.need_load:
-            first_layer_name = self.layer_id_to_name.get(self.first_layer_id)
-            self._submit_request_load_tasks_for_layer(
-                first_layer_name, self.first_layer_id, 0, metadata
-            )
+            self._submit_request_load_tasks_for_layer(self.first_layer_id, 0, metadata)
 
     def wait_for_layer_load(self, layer_name: str) -> None:
         if not self.need_load:
             return
         metadata = self._get_connector_metadata()
+        current_layer_id = self.layer_name_to_id[layer_name]
 
-        for request_id, task in self.load_tasks.get(layer_name, {}).items():
+        for request_id, task in self.load_tasks.get(current_layer_id, {}).items():
             try:
                 self.store.wait(task)
             except RuntimeError as e:
@@ -780,14 +766,13 @@ class UCMLayerWiseConnector(UCMDirectConnector):
                     metadata.request_meta[request_id].load_block_ids[1]
                 )
 
-        next_layer_id = self.layer_name_to_id.get(layer_name) + 1
-        if next_layer_id not in self.layer_id_to_name:
+        next_layer_id = current_layer_id + 1
+        if next_layer_id not in self.layer_ids:
             return
-        next_layer_name = self.layer_id_to_name.get(next_layer_id)
         next_local_row = next_layer_id - self.first_layer_id
 
         self._submit_request_load_tasks_for_layer(
-            next_layer_name, next_layer_id, next_local_row, metadata
+            next_layer_id, next_local_row, metadata
         )
 
     def save_kv_layer(
