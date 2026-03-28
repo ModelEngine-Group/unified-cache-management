@@ -214,9 +214,10 @@ def match_any_answer(output: str, answers: List[str]) -> bool:
     Returns:
         True if output matches any answer
     """
-    normalized_output = extract_answers([output])[0]
+    output_no_think = extract_answers([output])[0]
+    print(f"output without think: {output_no_think}")
     for answer in answers:
-        if remove_punc(normalized_output) == remove_punc(answer):
+        if remove_punc(output_no_think) == remove_punc(answer):
             return True
     return False
 

@@ -280,13 +280,28 @@ class OpenAIConn(LLMConnection):
         return [m["id"] for m in r.json().get("data", [])]
 
     def clear_hbm(self) -> bool:
-        """Clear HBM cache via POST request to reset_prefix_cache endpoint."""
+        """Clear HBM cache. Try new API first, fall back to legacy pause API."""
         import time
 
+        # 新版本 vLLM: /reset_prefix_cache
         try:
             r = self._raw_client.post("/reset_prefix_cache", json={}, timeout=30)
             r.raise_for_status()
-            logger.info("Clear HBM success")
+            logger.info("Clear HBM success (reset_prefix_cache)")
+            time.sleep(5)
+            return True
+        except Exception as e:
+            logger.info(f"reset_prefix_cache not available: {e}, trying pause API")
+
+        # 旧版本 vLLM: /pause
+        try:
+            r = self._raw_client.post(
+                "/pause",
+                params={"wait_for_inflight_requests": "false", "clear_cache": "true"},
+                timeout=30,
+            )
+            r.raise_for_status()
+            logger.info("Clear HBM success (pause)")
             time.sleep(5)
             return True
         except Exception as e:

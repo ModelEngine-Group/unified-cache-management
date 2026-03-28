@@ -20,6 +20,7 @@ from typing import List
 import pytest
 import yaml
 from common.common_inference_utils import (
+    extract_answers,
     load_prompt_from_file,
     match_any_answer,
 )
