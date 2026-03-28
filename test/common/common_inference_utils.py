@@ -214,8 +214,9 @@ def match_any_answer(output: str, answers: List[str]) -> bool:
     Returns:
         True if output matches any answer
     """
+    normalized_output = extract_answers([output])[0]
     for answer in answers:
-        if remove_punc(extract_answers(output)) == remove_punc(answer):
+        if remove_punc(normalized_output) == remove_punc(answer):
             return True
     return False
 
