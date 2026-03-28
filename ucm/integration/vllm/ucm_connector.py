@@ -225,7 +225,6 @@ class UCMDirectConnector(KVConnectorBase_V1):
         ucm_config = Config(vllm_config.kv_transfer_config)
         self.engine_id = vllm_config.kv_transfer_config.engine_id
         self.launch_config = ucm_config.get_config()
-        logger.info(f"self.launch_config: {self.launch_config}")
         self.connector_configs = self.launch_config.get("ucm_connectors", [])
         self.enable_event_sync = self.launch_config.get("enable_event_sync", True)
         assert len(self.connector_configs) > 0, "no storage connector name in config."
@@ -844,11 +843,7 @@ class UCMLayerWiseConnector(UCMDirectConnector):
 class UCMCPConnector(UCMLayerWiseConnector):
     def __init__(self, vllm_config: "VllmConfig", role: KVConnectorRole):
         super().__init__(vllm_config, role)
-        self.use_layerwise = (
-            self._vllm_config.kv_transfer_config.kv_connector_extra_config.get(
-                "use_layerwise", False
-            )
-        )
+        self.use_layerwise = self.launch_config.get("use_layerwise", False)
 
         try:
             from vllm.distributed import get_dcp_group, get_pcp_group
@@ -1111,22 +1106,21 @@ class UCMConnector(KVConnectorBase_V1):
     def __init__(self, vllm_config: "VllmConfig", role: KVConnectorRole):
         super().__init__(vllm_config=vllm_config, role=role)
         self.connector: KVConnectorBase_V1
-        # TODO new conn by config
+        ucm_config = Config(vllm_config.kv_transfer_config)
+        self.launch_config = ucm_config.get_config()
+        logger.info(f"self.launch_config: {self.launch_config}")
+
         use_layerwise = (
-            self._vllm_config.kv_transfer_config.kv_connector_extra_config.get(
-                "use_layerwise", False
-            )
+            self.launch_config.get("use_layerwise", False)
+            if self.launch_config is not None
+            else False
         )
         pp_enabled = self._vllm_config.parallel_config.pipeline_parallel_size > 1
         if pp_enabled and not use_layerwise:
             raise RuntimeError(
                 "Pipeline parallelism is not supported in UCMDirectConnector, please set use_layerwise=True."
             )
-        if (
-            self._vllm_config.kv_transfer_config is not None
-            and "hit_ratio"
-            in self._vllm_config.kv_transfer_config.kv_connector_extra_config
-        ):
+        if self.launch_config is not None and "hit_ratio" in self.launch_config:
             self.connector = UCMMockConnector(vllm_config, role)
         elif (
             hasattr(self._vllm_config.parallel_config, "prefill_context_parallel_size")
@@ -1138,12 +1132,7 @@ class UCMConnector(KVConnectorBase_V1):
             > 1
         ):
             self.connector = UCMCPConnector(vllm_config, role)
-        elif (
-            self._vllm_config.kv_transfer_config is not None
-            and self._vllm_config.kv_transfer_config.kv_connector_extra_config.get(
-                "use_layerwise", False
-            )
-        ):
+        elif use_layerwise:
             self.connector = UCMLayerWiseConnector(vllm_config, role)
         else:
             self.connector = UCMDirectConnector(vllm_config, role)
