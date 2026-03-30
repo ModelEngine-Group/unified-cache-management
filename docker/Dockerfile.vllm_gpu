@@ -1,22 +1,24 @@
 # Set to other image if needed
-ARG BASE_IMAGE="vllm/vllm-openai:v0.11.0"
+ARG BASE_IMAGE="vllm/vllm-openai:v0.17.0"
 
 FROM ${BASE_IMAGE}
 
 ARG PIP_INDEX_URL="https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple"
-ARG ENABLE_SPARSE=true
-
-# Apply the UCM monkey patch for vllm
-ENV ENABLE_UCM_PATCH=1
 
 WORKDIR /workspace
+
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends git && \
+    rm -rf /var/lib/apt/lists/*
+
+RUN pip install --no-cache-dir cmake
 
 # Install unified-cache-management
 COPY . /workspace/unified-cache-management
 
 RUN pip config set global.index-url ${PIP_INDEX_URL}
 
-RUN export PLATFORM="cuda" ENABLE_SPARSE=$ENABLE_SPARSE && \
-     pip install -v -e /workspace/unified-cache-management --no-build-isolation
+RUN export PLATFORM="cuda" && \
+    pip install -v -e /workspace/unified-cache-management --no-build-isolation
 
 ENTRYPOINT ["/bin/bash"]
