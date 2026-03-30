@@ -2,6 +2,7 @@ import json
 import os
 
 import pytest
+import requests
 from common.capture_utils import export_vars
 from common.config_utils import config_utils as config_instance
 from common.llmperf.run_inference import inference_results
@@ -58,6 +59,24 @@ print(f"Final perf_scenarios: {perf_scenarios}")
 scenario_ids = [f"in_{s[0]}-out_{s[1]}-con_{s[3]}" for s in perf_scenarios]
 TOTAL_COUNTER = len(perf_scenarios)
 ROUND_COUNTER = 1
+ENABLE_PROFILING = os.getenv("ENABLE_PROFILING", "").lower() == "true"
+
+
+def _send_profile_request(action: str) -> bool:
+    """Send profiling request to vLLM server with blocking wait.
+
+    Args:
+        action: 'start' or 'stop'
+    """
+    server_url = config_instance.get_nested_config("llm_connection.server_url", "")
+    if not server_url:
+        raise RuntimeError("server_url not configured, cannot start profiling")
+
+    url = f"{server_url}/{action}_profile"
+    print(f"[INFO] Waiting For Profiler to {action}")
+    resp = requests.post(url, timeout=1200)
+    resp.raise_for_status()
+    print(f"[INFO] Profiler {action}ed successfully")
 
 
 @pytest.mark.stage(2)
@@ -71,16 +90,25 @@ ROUND_COUNTER = 1
 def test_performance(in_tokens, out_tokens, max_req, concurrent, random_seed, hit_rate):
     global TOTAL_COUNTER
     global ROUND_COUNTER
-    summary = inference_results(
-        [in_tokens],
-        [out_tokens],
-        [max_req],
-        [concurrent],
-        [random_seed],
-        [hit_rate],
-        TOTAL_COUNTER,
-        ROUND_COUNTER,
-    )
+
+    if ENABLE_PROFILING:
+        _send_profile_request("start")
+
+    try:
+        summary = inference_results(
+            [in_tokens],
+            [out_tokens],
+            [max_req],
+            [concurrent],
+            [random_seed],
+            [hit_rate],
+            TOTAL_COUNTER,
+            ROUND_COUNTER,
+        )
+    finally:
+        if ENABLE_PROFILING:
+            _send_profile_request("stop")
+
     ROUND_COUNTER += 1
     results = summary.get("results", {})
 
