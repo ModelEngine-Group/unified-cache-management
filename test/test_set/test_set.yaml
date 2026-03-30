@@ -26,6 +26,7 @@ test_sets:
         # When you use UcmNfsStore, you should set enable_event_sync to false.
         enable_event_sync: false
       environment:
+        - VLLM_SERVER_DEV_MODE: "1"
         - ENABLE_UCM_PATCH: "1"
 
     pytest_config:
@@ -59,6 +60,7 @@ test_sets:
         # When you use UcmNfsStore, you should set enable_event_sync to false.
         enable_event_sync: true
       environment:
+        - VLLM_SERVER_DEV_MODE: "1"
         - ENABLE_UCM_PATCH: "1"
 
     pytest_config:
@@ -93,6 +95,7 @@ test_sets:
         enable_event_sync: true
       use_layerwise: "true"
       environment:
+        - VLLM_SERVER_DEV_MODE: "1"
         - ENABLE_UCM_PATCH: "1"
 
     pytest_config:
@@ -128,6 +131,7 @@ test_sets:
         enable_event_sync: true
       use_layerwise: "true"
       environment:
+        - VLLM_SERVER_DEV_MODE: "1"
         - ENABLE_UCM_PATCH: "1"
 
     pytest_config:
@@ -161,6 +165,7 @@ test_sets:
         enable_event_sync: true
       use_layerwise: "true"
       environment:
+        - VLLM_SERVER_DEV_MODE: "1"
         - ENABLE_UCM_PATCH: "1"
 
     pytest_config:
@@ -193,6 +198,7 @@ test_sets:
         ucm_sparse_config:
           GSAOnDevice: {}
       environment:
+        - VLLM_SERVER_DEV_MODE: "1"
         - ENABLE_SPARSE: "1"
         - VLLM_HASH_ATTENTION: "1"
         - ENABLE_UCM_PATCH: "1"
@@ -227,6 +233,7 @@ test_sets:
         ucm_sparse_config:
           GSAOnDevice: {}
       environment:
+        - VLLM_SERVER_DEV_MODE: "1"
         - ENABLE_SPARSE: "1"
         - VLLM_HASH_ATTENTION: "1"
         - ENABLE_UCM_PATCH: "1"
