@@ -82,8 +82,8 @@ please refer to [Quick Start for vLLM](https://ucm.readthedocs.io/en/latest/gett
 
 | **Branch** |     Status | vLLM version |
 |-----------:|-----------:|-------------:|
-|       main | Maintained |       v0.11.0 |
-|    develop | Maintained |       v0.11.0 |
+|       main | Maintained |       v0.17.0 |
+|    develop | Maintained |       v0.17.0 |
 
 ---
 
