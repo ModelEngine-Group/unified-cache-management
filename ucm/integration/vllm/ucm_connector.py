@@ -18,6 +18,7 @@ from vllm.distributed.kv_transfer.kv_connector.v1.base import (
     KVConnectorRole,
 )
 from vllm.distributed.parallel_state import get_tp_group, get_world_group
+from vllm.distributed.utils import get_pp_indices
 from vllm.model_executor.models.utils import extract_layer_index
 from vllm.platforms import current_platform
 from vllm.v1.core.sched.output import SchedulerOutput
@@ -73,15 +74,25 @@ class KVCacheLayout:
         self.num_hidden_layers = getattr(
             self.vllm_config.model_config.hf_text_config, "num_hidden_layers", 0
         )
+        self.pp_rank = (
+            self.vllm_config.parallel_config.rank
+            // self.vllm_config.parallel_config.tensor_parallel_size
+        ) % self.vllm_config.parallel_config.pipeline_parallel_size
+        start, end = get_pp_indices(self.num_hidden_layers, self.pp_rank, self.pp_size)
+        self.local_num_hidden_layers = end - start
         if self.pp_size > 1 and self.num_hidden_layers <= 0:
             raise ValueError("num_hidden_layers must be > 0 when pp_size > 1")
+        self.layer_name_to_id = {
+            name: extract_layer_index(name) for name in kvcaches.keys()
+        }
+        self.first_layer_id = next(iter(self.layer_name_to_id.values()))
         self._build_layout(kvcaches)
 
     def _build_layout(self, kvcaches):
-        raw_ptr_rows = []
-        stride_rows = []
+        raw_ptr_rows = [[] for _ in range(self.local_num_hidden_layers)]
+        stride_rows = [[] for _ in range(self.local_num_hidden_layers)]
 
-        for _, kv_layer in kvcaches.items():
+        for layer_name, kv_layer in kvcaches.items():
             ptrs = []
             strides = []
 
@@ -110,8 +121,9 @@ class KVCacheLayout:
             else:
                 raise TypeError(f"Unsupported kv cache type: {type(kv_layer)}")
 
-            raw_ptr_rows.append(ptrs)
-            stride_rows.append(strides)
+            local_layer_id = self.layer_name_to_id[layer_name] - self.first_layer_id
+            raw_ptr_rows[local_layer_id].extend(ptrs)
+            stride_rows[local_layer_id].extend(strides)
 
         self.base_ptrs = np.asarray(raw_ptr_rows, dtype=np.uint64)
         self.tensor_size_lists = np.asarray(stride_rows, dtype=np.uint64)
@@ -334,10 +346,7 @@ class UCMDirectConnector(KVConnectorBase_V1):
             self.kv_caches, self.use_layerwise, self._vllm_config
         )
         self.block_data_size = self.kv_cache_layout.block_size
-
-        self.layer_name_to_id = {
-            name: extract_layer_index(name) for name in self.kv_caches.keys()
-        }
+        self.layer_name_to_id = self.kv_cache_layout.layer_name_to_id
         self.layer_ids = sorted(set(self.layer_name_to_id.values()))
         self.first_layer_id = self.layer_ids[0]
 
