@@ -18,6 +18,5 @@ target_link_directories(trans PUBLIC ${CUDA_ROOT}/lib64)
 target_link_libraries(trans PUBLIC
     fmt
     cudart
-    nvidia-ml
     kernel
 )

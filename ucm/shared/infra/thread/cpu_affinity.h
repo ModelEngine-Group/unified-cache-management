@@ -21,36 +21,36 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  * */
-#include <pybind11/pybind11.h>
-#include "logger.h"
+#ifndef UNIFIEDCACHE_INFRA_CPU_AFFINITY_H
+#define UNIFIEDCACHE_INFRA_CPU_AFFINITY_H
 
-namespace py = pybind11;
-namespace UC::Logger {
+#include <cerrno>
+#include <sched.h>
+#include <thread>
+#include <vector>
+#include "status/status.h"
 
-void LogWrapper(Level lv, std::string file, std::string func, int line, std::string msg)
-{
-    Log(std::move(lv), std::move(file), std::move(func), line, std::move(msg));
-}
+namespace UC {
 
-void RateLimitLogWrapper(Level lv, std::string file, std::string func, int line, std::string msg)
-{
-    LogRateLimit(std::move(lv), std::move(file), std::move(func), line, std::move(msg));
-}
+class CpuAffinity {
+public:
+    static Status SetCpuAffinity4CurrentThread(const cpu_set_t& mask)
+    {
+        if (CPU_COUNT(&mask) == 0) { return Status::InvalidParam(); }
+        auto ret = sched_setaffinity(0, sizeof(mask), &mask);
+        if (ret != 0) { return Status::Error(std::to_string(errno)); }
+        std::this_thread::yield();
+        return Status::OK();
+    }
+    static Status SetCpuAffinity4CurrentThread(const std::vector<ssize_t> cores)
+    {
+        cpu_set_t mask;
+        CPU_ZERO(&mask);
+        for (const auto core : cores) { CPU_SET(core, &mask); }
+        return SetCpuAffinity4CurrentThread(mask);
+    }
+};
 
-PYBIND11_MODULE(ucmlogger, m)
-{
-    m.def("setup", &Setup);
-    m.def("flush", &Flush);
-    m.def("log", &LogWrapper);
-    m.def("log_rate_limit", &RateLimitLogWrapper);
-    m.def("isEnabledFor", &isEnabledFor);
-    py::enum_<Level>(m, "Level")
-        .value("DEBUG", Level::DEBUG)
-        .value("INFO", Level::INFO)
-        .value("WARNING", Level::WARN)
-        .value("ERROR", Level::ERROR)
-        .value("CRITICAL", Level::CRITICAL)
-        .value("FATAL", Level::CRITICAL);
-}
+}  // namespace UC
 
-}  // namespace UC::Logger
+#endif  // UNIFIEDCACHE_INFRA_CPU_AFFINITY_H

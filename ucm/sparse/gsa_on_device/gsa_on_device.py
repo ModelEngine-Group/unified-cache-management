@@ -564,10 +564,9 @@ class GSAOnDevice(UcmSparseBase):
     def cache_k_hash_gqa_cuda(
         self, key, attn_metadata, k_hash, forward_context, layer_name
     ):
-        k_hash_compute = self.hash_encoder.compute_hash(key).view(torch.bfloat16)
         valid_k_hash_token = attn_metadata.slot_mapping.flatten().numel()
-        reshape_and_cache_khash_triton(
-            k_hash_compute[:valid_k_hash_token],
+        self.hash_encoder.compute_hash_and_cache(
+            key[:valid_k_hash_token],
             attn_metadata.slot_mapping.flatten(),
             k_hash,
             block_size=self.block_size,
@@ -579,12 +578,10 @@ class GSAOnDevice(UcmSparseBase):
 
             k_cache = kv_cache[0][0][self.prefix_block_ids]
             k_cache = k_cache.reshape(-1, k_cache.shape[2], k_cache.shape[3])
-            prefix_k_hash_compute = self.hash_encoder.compute_hash(k_cache).view(
-                torch.bfloat16
-            )
             prefix_valid_k_hash_token = self.prefix_slot_mapping.flatten().numel()
-            reshape_and_cache_khash_triton(
-                prefix_k_hash_compute[:prefix_valid_k_hash_token],
+
+            self.hash_encoder.compute_hash_and_cache(
+                k_cache[:prefix_valid_k_hash_token],
                 self.prefix_slot_mapping.flatten(),
                 k_hash,
                 block_size=self.block_size,
@@ -945,8 +942,8 @@ class GSAOnDevice(UcmSparseBase):
                             attn_metadata.block_table = self.topk_block_table
                         else:
                             attn_metadata.block_tables = self.topk_block_table
+                            attn_metadata.seq_lens_list = self.topk_seq_lens.tolist()
                         attn_metadata.seq_lens = self.topk_seq_lens
-                        attn_metadata.seq_lens_list = self.topk_seq_lens.tolist()
                     else:
                         if self.is_cuda:
                             self.update_decode_topk_gqa_cuda(
@@ -994,8 +991,8 @@ class GSAOnDevice(UcmSparseBase):
                         attn_metadata.block_table = self.ori_block_table_decode
                     else:
                         attn_metadata.block_tables = self.ori_block_table_decode
+                        attn_metadata.seq_lens_list = self.ori_seq_lens_decode.tolist()
                     attn_metadata.seq_lens = self.ori_seq_lens_decode
-                    attn_metadata.seq_lens_list = self.ori_seq_lens_decode.tolist()
 
     def request_begin(self, request_id: ReqType, prompt_token_ids: List[int]):
         pass

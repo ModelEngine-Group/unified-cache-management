@@ -23,11 +23,17 @@
  * */
 #ifndef UNIFIEDCACHE_INFRA_LOGGER_SPDLOG_LOGGER_H
 #define UNIFIEDCACHE_INFRA_LOGGER_SPDLOG_LOGGER_H
+#include <array>
+#include <atomic>
+#include <chrono>
 #include <csignal>
 #include <cstdlib>
+#include <mutex>
 #include <spdlog/spdlog.h>
 namespace UC::Logger {
 
+constexpr size_t HASH_SLOT_NUM = 512;
+constexpr size_t HASH_CHAIN_LEN = 4;
 enum class Level { DEBUG, INFO, WARN, ERROR, CRITICAL };
 struct SourceLocation {
     const char* file = "";
@@ -68,7 +74,20 @@ public:
 
     bool IsEnabledFor(Level lv);
 
+    bool FilterCallSite(const char* file, int line);
+
 private:
+    struct ChainEntryData {
+        std::atomic<uint64_t> key_hash{0};
+        std::atomic<uint64_t> rate_limit_state{0};
+    };
+
+    struct SlotData {
+        std::array<ChainEntryData, HASH_CHAIN_LEN> chain_entries;
+    };
+
+    std::array<SlotData, HASH_SLOT_NUM> hash_slots_;
+
     std::shared_ptr<spdlog::logger> Make();
     std::string path_{"log"};
     int max_files_{3};

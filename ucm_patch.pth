@@ -1,1 +1,1 @@
-import sys, os; exec("try:\n    from ucm.integration.vllm.patch.boot_patch import install_hook\n    install_hook()\nexcept Exception:\n    pass")
+import sys, os; exec("try:\n    from ucm.integration.vllm.patch.boot_patch import install_hook as _vllm_hook\n    _vllm_hook()\nexcept Exception:\n    pass\ntry:\n    from ucm.integration.mindie.patch.boot_patch import install_hook as _mindie_hook\n    _mindie_hook()\nexcept Exception:\n    pass")
