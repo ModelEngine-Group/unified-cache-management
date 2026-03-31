@@ -18,7 +18,7 @@ Use this matrix as a compatibility reference for model selection, deployment, an
 This section presents prefix cache support for each model across the supported inference frameworks.
 This information serves as a reference for evaluating framework compatibility in deployments that require prefix cache.
 
-| Model | vLLM<br>(main) | vLLM-Ascend<br>(main) | SGLang<br>(main) |
+| Model | vLLM<br>(v0.17.0) | vLLM-Ascend<br>(v0.17.0rc1) | SGLang<br>(v0.5.9) |
 |-------|:-----------:|:------------------:|:------:|
 | DeepSeek V3.2 | ✅ | ✅ | ✅ |
 | DeepSeek R1 | ✅ | ✅ | ✅ |
@@ -34,6 +34,7 @@ This information serves as a reference for evaluating framework compatibility in
 | Kimi-K2.5 | ❌ | ❌ | ❌ |
 
 > **Note**: The table lists a selected set of representative models.
+> The framework versions shown in the table indicate the latest adapted versions.
 > See [**Prefix Cache**](../prefix-cache/index.md) for more details.
 
 ### Inference Enhancement Features
