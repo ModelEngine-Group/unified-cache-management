@@ -136,10 +136,13 @@ def load_test_sets(test_set_config_path: str, base_dir: str) -> List[dict]:
 # Build PipelineParameters from test_set config
 # ---------------------------------------------------------------------------
 def _build_env_prefix(environment: list) -> str:
-    """将 environment 列表转为 inline 环境变量前缀。
+    """将 environment 列表转为 env 命令前缀。
 
     environment 格式: [{"KEY": "value"}, ...]
-    输出格式: 'KEY="value" KEY2="value2" '（直接拼在命令前面）
+    输出格式: 'env KEY="value" KEY2="value2" '
+
+    使用 env 命令而非 export 或 inline 赋值，因为最终执行形式为
+    eval "exec __command__"，env 可以正确地在 exec 下设置环境变量。
     """
     if not environment:
         return ""
@@ -150,7 +153,7 @@ def _build_env_prefix(environment: list) -> str:
                 parts.append(f'{key}="{value}"')
     if not parts:
         return ""
-    return " ".join(parts) + " "
+    return "env " + " ".join(parts) + " "
 
 
 def build_pipeline_params(
