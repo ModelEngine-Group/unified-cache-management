@@ -111,7 +111,7 @@ jobs:
         uses: docker/build-push-action@v5
         with:
           context: .
-          file: ./docker/Dockerfile.vllm_npu
+          file: ./docker/Dockerfile.vllm_npu_v0110
           build-args: "ENABLE_SPARSE=true"
           tags: ucm-npu-sparse:latest
           push: false
@@ -230,7 +230,7 @@ jobs:
           --build-arg https_proxy="${https_proxy:-}" \
           --build-arg ENABLE_SPARSE=true \
           -t ucm-e2etest-gpu-sparse:${{ steps.version.outputs.version }} \
-          -f ./docker/Dockerfile.vllm_gpu ./
+          -f ./docker/Dockerfile.vllm_gpu_v0110 ./
     - name: Test E2E in Docker
       run: |
         sudo chmod -R 777 /workspace/test_results/
@@ -298,7 +298,7 @@ jobs:
           --build-arg https_proxy="${https_proxy:-}" \
           --build-arg ENABLE_SPARSE=true \
           -t ucm-e2etest-gpu-sparse:${{ steps.version.outputs.version }} \
-          -f ./docker/Dockerfile.vllm_gpu ./
+          -f ./docker/Dockerfile.vllm_gpu_v0110 ./
     - name: Test E2E in Docker
       run: |
         sudo chmod -R 777 /workspace/test_results/

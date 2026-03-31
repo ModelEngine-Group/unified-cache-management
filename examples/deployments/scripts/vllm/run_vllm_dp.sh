@@ -82,7 +82,6 @@ start_server() {
     echo "enable_prefix_caching    = $enable_prefix_caching"
     echo "async_scheduling         = $async_scheduling"
     echo "graph_mode               = $graph_mode"
-    echo "use_layerwise            = $use_layerwise"
     if [[ "$ucm_enable" == "true" ]]; then
         echo "ucm_config_file          = $ucm_config_yaml_path"
     fi
@@ -155,7 +154,6 @@ start_server() {
             \"kv_connector_module_path\":\"ucm.integration.vllm.ucm_connector\",
             \"kv_role\":\"kv_both\",
             \"kv_connector_extra_config\":{
-                \"use_layerwise\":$use_layerwise,
                 \"UCM_CONFIG_FILE\":\"$ucm_config_yaml_path\"
             }
         }"
