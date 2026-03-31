@@ -135,6 +135,24 @@ def load_test_sets(test_set_config_path: str, base_dir: str) -> List[dict]:
 # ---------------------------------------------------------------------------
 # Build PipelineParameters from test_set config
 # ---------------------------------------------------------------------------
+def _build_env_prefix(environment: list) -> str:
+    """将 environment 列表转为 inline 环境变量前缀。
+
+    environment 格式: [{"KEY": "value"}, ...]
+    输出格式: 'KEY="value" KEY2="value2" '（直接拼在命令前面）
+    """
+    if not environment:
+        return ""
+    parts = []
+    for item in environment:
+        if isinstance(item, dict):
+            for key, value in item.items():
+                parts.append(f'{key}="{value}"')
+    if not parts:
+        return ""
+    return " ".join(parts) + " "
+
+
 def build_pipeline_params(
     test_set: dict,
     jenkins_platform: str,
@@ -147,6 +165,10 @@ def build_pipeline_params(
     node_count = server_cfg.get("node_count", 1)
     deploy_mode = "multi" if node_count > 1 else "single"
 
+    env_prefix = _build_env_prefix(server_cfg.get("environment", []))
+    master_cmd = server_cfg.get("master_start_command", "")
+    worker_cmd = server_cfg.get("slave_start_command", "")
+
     return PipelineParameters(
         BUILD_NAME=test_set.get("name", ""),
         PLATFORM=jenkins_platform,
@@ -154,8 +176,8 @@ def build_pipeline_params(
         GPU_COUNT=str(server_cfg.get("gpu_count", "1")),
         DEPLOY_MODE=deploy_mode,
         SERVER_PORT=str(server_cfg.get("server_port", "9527")),
-        VLLM_COMMAND_MASTER=server_cfg.get("master_start_command", ""),
-        VLLM_COMMAND_WORKER=server_cfg.get("slave_start_command", ""),
+        VLLM_COMMAND_MASTER=env_prefix + master_cmd if master_cmd else "",
+        VLLM_COMMAND_WORKER=env_prefix + worker_cmd if worker_cmd else "",
         UCM_CONFIG_YAML=server_cfg.get("ucm_config", ""),
         API_MODEL_NAME=pytest_cfg.get("api_model_name", ""),
         MODEL_FOLDER_NAME=pytest_cfg.get("api_model_name", ""),

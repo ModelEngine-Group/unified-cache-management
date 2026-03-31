@@ -17,7 +17,7 @@ harbor:
 
 # Test set config file (relative to working directory or absolute path)
 # Can be overridden with --test-set-config or -c
-test_set_config: "test_set_config/test_set.yaml"
+test_set_config: "test_set.yaml"
 
 # whether to execute tests in parallel
 parallel: true
