@@ -18,6 +18,8 @@ from vllm.distributed.kv_transfer.kv_connector.v1.base import (
     KVConnectorRole,
 )
 from vllm.distributed.parallel_state import get_tp_group, get_world_group
+from vllm.distributed.utils import get_pp_indices
+from vllm.model_executor.models.utils import extract_layer_index
 from vllm.platforms import current_platform
 from vllm.v1.core.sched.output import SchedulerOutput
 
@@ -72,15 +74,25 @@ class KVCacheLayout:
         self.num_hidden_layers = getattr(
             self.vllm_config.model_config.hf_text_config, "num_hidden_layers", 0
         )
+        self.pp_rank = (
+            self.vllm_config.parallel_config.rank
+            // self.vllm_config.parallel_config.tensor_parallel_size
+        ) % self.vllm_config.parallel_config.pipeline_parallel_size
+        start, end = get_pp_indices(self.num_hidden_layers, self.pp_rank, self.pp_size)
+        self.local_num_hidden_layers = end - start
         if self.pp_size > 1 and self.num_hidden_layers <= 0:
             raise ValueError("num_hidden_layers must be > 0 when pp_size > 1")
+        self.layer_name_to_id = {
+            name: extract_layer_index(name) for name in kvcaches.keys()
+        }
+        self.first_layer_id = next(iter(self.layer_name_to_id.values()))
         self._build_layout(kvcaches)
 
     def _build_layout(self, kvcaches):
-        raw_ptr_rows = []
-        stride_rows = []
+        raw_ptr_rows = [[] for _ in range(self.local_num_hidden_layers)]
+        stride_rows = [[] for _ in range(self.local_num_hidden_layers)]
 
-        for _, kv_layer in kvcaches.items():
+        for layer_name, kv_layer in kvcaches.items():
             ptrs = []
             strides = []
 
@@ -109,8 +121,9 @@ class KVCacheLayout:
             else:
                 raise TypeError(f"Unsupported kv cache type: {type(kv_layer)}")
 
-            raw_ptr_rows.append(ptrs)
-            stride_rows.append(strides)
+            local_layer_id = self.layer_name_to_id[layer_name] - self.first_layer_id
+            raw_ptr_rows[local_layer_id].extend(ptrs)
+            stride_rows[local_layer_id].extend(strides)
 
         self.base_ptrs = np.asarray(raw_ptr_rows, dtype=np.uint64)
         self.tensor_size_lists = np.asarray(stride_rows, dtype=np.uint64)
@@ -119,13 +132,20 @@ class KVCacheLayout:
             f"base_ptrs: {self.base_ptrs.shape}, tensor_size_lists: {self.tensor_size_lists.shape}"
         )
 
-    def extract_block_addrs(self, vllm_block_ids: List[int]) -> np.ndarray:
+    def extract_block_addrs(
+        self, vllm_block_ids: List[int], layer_first: bool = False
+    ) -> np.ndarray:
         vllm_block_ids_np = np.array(vllm_block_ids, np.uint64)
-        block_addrs = (
+        if layer_first:
+            # (n_layers, num_blocks, n_ptrs)
+            return (
+                self.tensor_size_lists[:, None, :] * vllm_block_ids_np[None, :, None]
+                + self.base_ptrs[:, None, :]
+            )
+        return (
             vllm_block_ids_np[:, None, None] * self.tensor_size_lists[None, :, :]
             + self.base_ptrs[None, :, :]
         )  # (num_blocks, n_layers, n_ptrs)
-        return block_addrs
 
     @property
     def tensor_size_list(self) -> list[int]:
@@ -222,7 +242,6 @@ class UCMDirectConnector(KVConnectorBase_V1):
         ucm_config = Config(vllm_config.kv_transfer_config)
         self.engine_id = vllm_config.kv_transfer_config.engine_id
         self.launch_config = ucm_config.get_config()
-        logger.info(f"self.launch_config: {self.launch_config}")
         self.connector_configs = self.launch_config.get("ucm_connectors", [])
         self.enable_event_sync = self.launch_config.get("enable_event_sync", True)
         assert len(self.connector_configs) > 0, "no storage connector name in config."
@@ -345,11 +364,9 @@ class UCMDirectConnector(KVConnectorBase_V1):
             self.kv_caches, self.use_layerwise, self._vllm_config
         )
         self.block_data_size = self.kv_cache_layout.block_size
-
-        self.layer_name_to_id = {
-            name: self._extract_layer_index(name) for name in self.kv_caches.keys()
-        }
-        self.first_layer_id = next(iter(self.layer_name_to_id.values()))
+        self.layer_name_to_id = self.kv_cache_layout.layer_name_to_id
+        self.layer_ids = sorted(set(self.layer_name_to_id.values()))
+        self.first_layer_id = self.layer_ids[0]
 
         self.device = create_device()
 
@@ -392,7 +409,7 @@ class UCMDirectConnector(KVConnectorBase_V1):
         except RuntimeError as e:
             external_hit_blocks = 0
             logger.error(f"request {request.request_id} look up error. {e}")
-        logger.info(
+        logger.info_once(
             f"request_id: {request.request_id}, "
             f"total_blocks_num: {len(ucm_block_ids)}, "
             f"hit hbm: {hbm_hit_block_num}, "
@@ -530,16 +547,6 @@ class UCMDirectConnector(KVConnectorBase_V1):
             self.requests_meta.pop(request_id, None)
 
         return UCMConnectorMetadata(requests_dispatch_meta)
-
-    @staticmethod
-    def _extract_layer_index(layer_name: str) -> Optional[int]:
-        """
-        Extract the layer index from the layer name.
-        """
-        for chunk in layer_name.split("."):
-            if chunk.isdigit():
-                return int(chunk)
-        return None
 
     def start_load_kv(self, forward_context: "ForwardContext", **kwargs) -> None:
         metadata = self._get_connector_metadata()
@@ -719,52 +726,86 @@ class UCMLayerWiseConnector(UCMDirectConnector):
 
     def __init__(self, vllm_config: "VllmConfig", role: KVConnectorRole):
         super().__init__(vllm_config, role)
-        self.load_tasks: dict[str, dict[str, Task]] = defaultdict(dict)
+        # {layer_id: {request_id: Task}}
+        self.load_tasks: dict[int, dict[str, Task]] = defaultdict(dict)
         self.dump_tasks: dict[str, Task] = {}
         self.use_layerwise = True
         self.is_save = False
+        self.need_load = False
+        self.dump_total_ptrs: np.ndarray | None = None
+        self.request_data: list[tuple[str, list, np.ndarray]] = []
+        self._failure_req_ids: set[str] = set()
         logger.info("Init UCMLayerWiseConnector.")
 
-    def start_load_kv(self, forward_context: "ForwardContext", **kwargs) -> None:
-        metadata = self._get_connector_metadata()
-        self.load_tasks.clear()
-
-        for request_id, request in metadata.request_meta.items():
-            if len(request.load_block_ids[0]) == 0:
+    def _submit_request_load_tasks_for_layer(
+        self,
+        layer_id: int,
+        local_row: int,
+        metadata: "UCMConnectorMetadata",
+    ) -> None:
+        for request_id, ucm_block_ids, total_ptrs in self.request_data:
+            if request_id in self._failure_req_ids:
                 continue
-
-            ucm_block_ids, vllm_block_ids = request.load_block_ids
-            if self.tp_rank % self.tp_size != 0 and not self.is_mla:
-                for i, ucm_block_id in enumerate(ucm_block_ids):
-                    ucm_block_ids[i] = self.request_hasher(ucm_block_id)
             try:
-                total_ptrs = self.kv_cache_layout.extract_block_addrs(vllm_block_ids)
-
-                for layer_name in self.kv_caches:
-                    layer_id = self.layer_name_to_id[layer_name]
-                    local_layer_id = layer_id - self.first_layer_id
-                    shard_indexs = [layer_id] * len(ucm_block_ids)
-                    layer_ptrs = np.ascontiguousarray(total_ptrs[:, local_layer_id, :])
-                    task = self.store.load_data(ucm_block_ids, shard_indexs, layer_ptrs)
-                    self.load_tasks[request_id][layer_name] = task
+                shard_indexs = [layer_id] * len(ucm_block_ids)
+                layer_ptrs = total_ptrs[local_row]
+                task = self.store.load_data(ucm_block_ids, shard_indexs, layer_ptrs)
+                self.load_tasks[layer_id][request_id] = task
             except RuntimeError as e:
                 logger.error(f"request {request_id} submit load task error. {e}")
                 self._invalid_block_ids.update(
                     metadata.request_meta[request_id].load_block_ids[1]
                 )
+                self._failure_req_ids.add(request_id)
+
+    def start_load_kv(self, forward_context: "ForwardContext", **kwargs) -> None:
+        metadata = self._get_connector_metadata()
+        self.load_tasks.clear()
+        self.request_data.clear()
+        self._failure_req_ids.clear()
+        self.need_load = False
+
+        for request_id, request in metadata.request_meta.items():
+            if len(request.load_block_ids[0]) == 0:
+                continue
+
+            self.need_load = True
+            ucm_block_ids, vllm_block_ids = request.load_block_ids
+            if self.tp_rank % self.tp_size != 0 and not self.is_mla:
+                for i, ucm_block_id in enumerate(ucm_block_ids):
+                    ucm_block_ids[i] = self.request_hasher(ucm_block_id)
+            total_ptrs = self.kv_cache_layout.extract_block_addrs(
+                vllm_block_ids, layer_first=True
+            )
+            self.request_data.append((request_id, ucm_block_ids, total_ptrs))
+
+        if self.need_load:
+            self._submit_request_load_tasks_for_layer(self.first_layer_id, 0, metadata)
 
     def wait_for_layer_load(self, layer_name: str) -> None:
+        if not self.need_load:
+            return
         metadata = self._get_connector_metadata()
+        current_layer_id = self.layer_name_to_id[layer_name]
 
-        for request_id, tasks in self.load_tasks.items():
+        for request_id, task in self.load_tasks.get(current_layer_id, {}).items():
             try:
-                if layer_name in tasks:
-                    self.store.wait(tasks[layer_name])
+                self.store.wait(task)
             except RuntimeError as e:
-                logger.error(f"request {request_id} wait load failed. {e}")
+                logger.error(f"request {request_id} wait {layer_name} load failed. {e}")
                 self._invalid_block_ids.update(
                     metadata.request_meta[request_id].load_block_ids[1]
                 )
+                self._failure_req_ids.add(request_id)
+
+        next_layer_id = current_layer_id + 1
+        if next_layer_id not in self.layer_ids:
+            return
+        next_local_row = next_layer_id - self.first_layer_id
+
+        self._submit_request_load_tasks_for_layer(
+            next_layer_id, next_local_row, metadata
+        )
 
     def save_kv_layer(
         self,
@@ -795,10 +836,13 @@ class UCMLayerWiseConnector(UCMDirectConnector):
             total_vllm_block_ids.extend(vllm_block_ids)
 
         if self.is_save:
-            total_ptrs = self.kv_cache_layout.extract_block_addrs(total_vllm_block_ids)
+            if self.dump_total_ptrs is None:
+                self.dump_total_ptrs = self.kv_cache_layout.extract_block_addrs(
+                    total_vllm_block_ids, layer_first=True
+                )
             shard_indexs = [layer_id] * len(total_ucm_block_ids)
             try:
-                layer_ptrs = np.ascontiguousarray(total_ptrs[:, local_layer_id, :])
+                layer_ptrs = np.ascontiguousarray(self.dump_total_ptrs[local_layer_id])
                 event_handle = self._get_dump_event_handle()
                 task = self.store.dump_data(
                     total_ucm_block_ids, shard_indexs, layer_ptrs, event_handle
@@ -818,6 +862,7 @@ class UCMLayerWiseConnector(UCMDirectConnector):
             logger.error(f"wait for dump kv cache failed. {e}")
         self.dump_tasks.clear()
         self.is_save = False
+        self.dump_total_ptrs = None
         if self.enable_event_sync:
             self.device.destroy_event_handles()
 
@@ -825,11 +870,7 @@ class UCMLayerWiseConnector(UCMDirectConnector):
 class UCMCPConnector(UCMLayerWiseConnector):
     def __init__(self, vllm_config: "VllmConfig", role: KVConnectorRole):
         super().__init__(vllm_config, role)
-        self.use_layerwise = (
-            self._vllm_config.kv_transfer_config.kv_connector_extra_config.get(
-                "use_layerwise", False
-            )
-        )
+        self.use_layerwise = self.launch_config.get("use_layerwise", False)
 
         try:
             from vllm.distributed import get_dcp_group, get_pcp_group
@@ -1092,22 +1133,21 @@ class UCMConnector(KVConnectorBase_V1):
     def __init__(self, vllm_config: "VllmConfig", role: KVConnectorRole):
         super().__init__(vllm_config=vllm_config, role=role)
         self.connector: KVConnectorBase_V1
-        # TODO new conn by config
+        ucm_config = Config(vllm_config.kv_transfer_config)
+        self.launch_config = ucm_config.get_config()
+        logger.info(f"self.launch_config: {self.launch_config}")
+
         use_layerwise = (
-            self._vllm_config.kv_transfer_config.kv_connector_extra_config.get(
-                "use_layerwise", False
-            )
+            self.launch_config.get("use_layerwise", False)
+            if self.launch_config is not None
+            else False
         )
         pp_enabled = self._vllm_config.parallel_config.pipeline_parallel_size > 1
         if pp_enabled and not use_layerwise:
             raise RuntimeError(
                 "Pipeline parallelism is not supported in UCMDirectConnector, please set use_layerwise=True."
             )
-        if (
-            self._vllm_config.kv_transfer_config is not None
-            and "hit_ratio"
-            in self._vllm_config.kv_transfer_config.kv_connector_extra_config
-        ):
+        if self.launch_config is not None and "hit_ratio" in self.launch_config:
             self.connector = UCMMockConnector(vllm_config, role)
         elif (
             hasattr(self._vllm_config.parallel_config, "prefill_context_parallel_size")
@@ -1119,12 +1159,7 @@ class UCMConnector(KVConnectorBase_V1):
             > 1
         ):
             self.connector = UCMCPConnector(vllm_config, role)
-        elif (
-            self._vllm_config.kv_transfer_config is not None
-            and self._vllm_config.kv_transfer_config.kv_connector_extra_config.get(
-                "use_layerwise", False
-            )
-        ):
+        elif use_layerwise:
             self.connector = UCMLayerWiseConnector(vllm_config, role)
         else:
             self.connector = UCMDirectConnector(vllm_config, role)

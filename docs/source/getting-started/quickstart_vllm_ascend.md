@@ -81,14 +81,14 @@ pip install uc-manager
 > **Note:** If installing via `pip install`, you need to manually add the `config.yaml` file, similar to `unified-cache-management/examples/ucm_config_example.yaml`, because PyPI packages do not include YAML files.
 
 ### Option 3: Setup from docker
-Use following command to build ucm with VLLM-Ascend(v0.11.0), the sparse attention is enabled by default
+Use following command to build UCM with vLLM-Ascend(v0.17.0rc1):
 ```bash
 docker build -t ucm-vllm:latest -f ./docker/Dockerfile.vllm_npu ./
 ```
 
-If you don't need sparse attention, pass `--build-arg ENABLE_SPARSE=false` to disable it:
+If you need sparse attention, build the dedicated image with vLLM-Ascend(v0.11.0), where sparse attention is enabled by default. If you don't need it, set `ENABLE_SPARSE=false` during build:
 ```bash
-docker build --build-arg ENABLE_SPARSE=false -t ucm-vllm:latest -f ./docker/Dockerfile.vllm_npu ./
+docker build -t ucm-vllm-sparse:latest -f ./docker/Dockerfile.vllm_npu.v0110 ./
 ```
 
 vllm-ascend provides two variants: **Ubuntu** and **openEuler**.  

@@ -85,7 +85,7 @@ class VLLMServerManager:
         self,
         model_path: str,
         port: int = 8000,
-        host: str = "0.0.0.0",
+        host: str = "127.0.0.1",
         ucm_config: Optional[Dict[str, Any]] = None,
         enable_prefix_caching: bool = False,
         max_model_len: int = 12000,
@@ -94,6 +94,7 @@ class VLLMServerManager:
         startup_timeout: float = 300.0,
         served_model_name: str = "",
         pipeline_parallel_size: int = 1,
+        tensor_parallel_size: int = 1,
     ):
         """Initialize the VLLMServerManager.
 
@@ -112,6 +113,7 @@ class VLLMServerManager:
             startup_timeout: Timeout in seconds for server startup
             served_model_name: Optional model name to expose via the API (defaults to model_path)
             pipeline_parallel_size: Pipeline parallel size (default: 1)
+            tensor_parallel_size: Tensor parallel size (default: 1)
         """
 
         gpu_memory_utilization = float(
@@ -134,6 +136,7 @@ class VLLMServerManager:
         self.startup_timeout = startup_timeout
         self.served_model_name = served_model_name
         self.pipeline_parallel_size = pipeline_parallel_size
+        self.tensor_parallel_size = tensor_parallel_size
 
         self._process: Optional[subprocess.Popen] = None
         self._url = f"http://{host}:{port}"
@@ -173,6 +176,8 @@ class VLLMServerManager:
             str(self.gpu_memory_utilization),
             "--pipeline-parallel-size",
             str(self.pipeline_parallel_size),
+            "--tensor-parallel-size",
+            str(self.tensor_parallel_size),
         ]
 
         # Add UCM kv-transfer-config

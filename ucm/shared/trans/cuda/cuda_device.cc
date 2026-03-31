@@ -22,7 +22,6 @@
  * SOFTWARE.
  * */
 #include <cuda_runtime.h>
-#include <nvml.h>
 #include "cuda_buffer.h"
 #include "cuda_sm_stream.h"
 #include "cuda_stream.h"
@@ -30,19 +29,10 @@
 
 namespace UC::Trans {
 
-static void SetCpuAffinity(int32_t deviceId)
-{
-    nvmlDevice_t device;
-    auto ret = nvmlDeviceGetHandleByIndex(deviceId, &device);
-    if (ret != NVML_SUCCESS) { return; }
-    nvmlDeviceSetCpuAffinity(device);
-}
-
 Status Device::Setup(int32_t deviceId)
 {
     auto ret = cudaSetDevice(deviceId);
     if (ret != cudaSuccess) { return Status{ret, cudaGetErrorString(ret)}; }
-    SetCpuAffinity(deviceId);
     return Status::OK();
 }
 
