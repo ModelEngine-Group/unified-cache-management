@@ -116,6 +116,15 @@ private:
         inConfig.GetNumber("posix_commit_concurrency", config.commitConcurrency);
         inConfig.GetNumber("timeout_ms", config.timeoutMs);
         inConfig.GetNumber("data_dir_shard_bytes", config.dataDirShardBytes);
+        inConfig.Get("posix_gc_enable", config.posixGcEnable);
+        inConfig.Get("posix_gc_recycle_percent", config.posixGcRecyclePercent);
+        inConfig.GetNumber("posix_gc_concurrency", config.posixGcConcurrency);
+        inConfig.GetNumber("posix_gc_check_interval_sec", config.posixGcCheckIntervalSec);
+        inConfig.GetNumber("posix_capacity_gb", config.posixCapacityGb);
+        inConfig.Get("posix_gc_trigger_threshold_ratio", config.posixGcTriggerThresholdRatio);
+        inConfig.GetNumber("posix_gc_max_recycle_count_per_shard",
+                           config.posixGcMaxRecycleCountPerShard);
+        inConfig.Get("posix_gc_shard_sample_ratio", config.posixGcShardSampleRatio);
         return config;
     }
     Status CheckConfig(const Config& config)
@@ -157,6 +166,33 @@ private:
         } else {
             return Status::InvalidParam("invalid io engine({})", config.ioEngine);
         }
+        if (config.posixGcEnable && config.posixCapacityGb > 0) {
+            if (config.posixGcRecyclePercent <= 0 || config.posixGcRecyclePercent > 1.0) {
+                return Status::InvalidParam("invalid gc recycle percent({})",
+                                            config.posixGcRecyclePercent);
+            }
+            if (config.posixGcConcurrency == 0) {
+                return Status::InvalidParam("invalid gc concurrency({})",
+                                            config.posixGcConcurrency);
+            }
+            if (config.posixGcCheckIntervalSec == 0) {
+                return Status::InvalidParam("invalid gc check interval({})",
+                                            config.posixGcCheckIntervalSec);
+            }
+            if (config.posixGcTriggerThresholdRatio <= 0 ||
+                config.posixGcTriggerThresholdRatio > 1.0) {
+                return Status::InvalidParam("invalid gc trigger threshold ratio({})",
+                                            config.posixGcTriggerThresholdRatio);
+            }
+            if (config.posixGcMaxRecycleCountPerShard == 0) {
+                return Status::InvalidParam("invalid gc max recycle count per shard({})",
+                                            config.posixGcMaxRecycleCountPerShard);
+            }
+            if (config.posixGcShardSampleRatio <= 0 || config.posixGcShardSampleRatio > 1.0) {
+                return Status::InvalidParam("invalid gc shard sample ratio({})",
+                                            config.posixGcShardSampleRatio);
+            }
+        }
         return Status::OK();
     }
     void ShowConfig(const Config& config)
@@ -179,6 +215,18 @@ private:
         UC_INFO("Set {}::CommitConcurrency to {}.", ns, config.commitConcurrency);
         UC_INFO("Set {}::TimeoutMs to {}.", ns, config.timeoutMs);
         UC_INFO("Set {}::DataDirShardBytes to {}.", ns, config.dataDirShardBytes);
+        if (config.posixGcEnable && config.posixCapacityGb > 0) {
+            UC_INFO("Set {}::PosixGcEnable to {}.", ns, config.posixGcEnable);
+            UC_INFO("Set {}::PosixCapacityGb to {}.", ns, config.posixCapacityGb);
+            UC_INFO("Set {}::PosixGcRecyclePercent to {}.", ns, config.posixGcRecyclePercent);
+            UC_INFO("Set {}::PosixGcConcurrency to {}.", ns, config.posixGcConcurrency);
+            UC_INFO("Set {}::PosixGcCheckIntervalSec to {}.", ns, config.posixGcCheckIntervalSec);
+            UC_INFO("Set {}::PosixGcTriggerThresholdRatio to {}.", ns,
+                    config.posixGcTriggerThresholdRatio);
+            UC_INFO("Set {}::PosixGcMaxRecycleCountPerShard to {}.", ns,
+                    config.posixGcMaxRecycleCountPerShard);
+            UC_INFO("Set {}::PosixGcShardSampleRatio to {}.", ns, config.posixGcShardSampleRatio);
+        }
     }
 };
 

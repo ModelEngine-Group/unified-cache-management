@@ -21,37 +21,34 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  * */
-#ifndef UNIFIEDCACHE_POSIX_STORE_CC_GLOBAL_CONFIG_H
-#define UNIFIEDCACHE_POSIX_STORE_CC_GLOBAL_CONFIG_H
+#ifndef UNIFIEDCACHE_POSIX_STORE_CC_HOTNESS_TRACKER_H
+#define UNIFIEDCACHE_POSIX_STORE_CC_HOTNESS_TRACKER_H
 
-#include <string>
-#include <vector>
+#include <atomic>
+#include <deque>
+#include <mutex>
+#include <thread>
+#include "space_layout.h"
+#include "type/types.h"
 
 namespace UC::PosixStore {
 
-struct Config {
-    std::vector<std::string> storageBackends{};
-    int32_t deviceId{-1};
-    size_t tensorSize{0};
-    size_t shardSize{0};
-    size_t blockSize{0};
-    std::string ioEngine{"psync"};  // "aio", "psync"
-    bool ioDirect{false};
-    std::vector<ssize_t> cpuAffinityCores{};
-    size_t dataTransConcurrency{128};
-    size_t lookupConcurrency{16};
-    size_t openConcurrency{32};
-    size_t commitConcurrency{4};
-    size_t timeoutMs{30000};
-    size_t dataDirShardBytes{3};
-    bool posixGcEnable{true};
-    double posixGcRecyclePercent{0.1};
-    size_t posixGcConcurrency{16};
-    size_t posixGcCheckIntervalSec{30};
-    size_t posixCapacityGb{0};
-    double posixGcTriggerThresholdRatio{0.7};
-    size_t posixGcMaxRecycleCountPerShard{1000};
-    double posixGcShardSampleRatio{0.1};
+class HotnessTracker {
+public:
+    HotnessTracker() = default;
+    HotnessTracker(const HotnessTracker&) = delete;
+    HotnessTracker& operator=(const HotnessTracker&) = delete;
+    ~HotnessTracker();
+    Status Setup(const SpaceLayout* layout);
+    void Touch(const Detail::BlockId& blockId);
+
+private:
+    void UtimeWorkerLoop();
+    const SpaceLayout* layout_{nullptr};
+    std::deque<Detail::BlockId> produceQueue_;
+    std::mutex queueMtx_;
+    std::atomic<bool> stop_{false};
+    std::thread utimeWorker_;
 };
 
 }  // namespace UC::PosixStore
