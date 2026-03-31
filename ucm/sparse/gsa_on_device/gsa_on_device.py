@@ -1173,17 +1173,40 @@ class GSAOnDevice(UcmSparseBase):
             prefix_slot_mapping,
         )
 
-    def get_block_table_row(self, attn_metadata, req_row_id, prefill_row_id):
-        if self.is_cuda:
-            if self.is_mla:
-                attn_metadata_prefill = getattr(attn_metadata, "prefill", None)
-                return attn_metadata_prefill.block_table[prefill_row_id]
-            return attn_metadata.block_table[req_row_id]
-        else:
-            if self.is_mla:
-                attn_metadata_prefill = getattr(attn_metadata, "prefill", None)
-                return attn_metadata_prefill.block_table[prefill_row_id]
+    def get_block_table_row(self, attn_metadata, req_row_id, qlen):
+        if not self.is_mla:
+            if self.is_cuda:
+                return attn_metadata.block_table[req_row_id]
             return attn_metadata.block_tables[req_row_id]
+
+        attn_metadata_decode = getattr(attn_metadata, "decode", None)
+        attn_metadata_prefill = getattr(attn_metadata, "prefill", None)
+        num_decode_rows = (
+            int(attn_metadata_decode.block_table.size(0))
+            if attn_metadata_decode is not None
+            else 0
+        )
+
+        if (
+            qlen == 1
+            and attn_metadata_decode is not None
+            and req_row_id < num_decode_rows
+        ):
+            return attn_metadata_decode.block_table[req_row_id]
+
+        if attn_metadata_prefill is not None:
+            local_prefill_row_id = req_row_id - num_decode_rows
+            num_prefill_rows = int(attn_metadata_prefill.block_table.size(0))
+            if 0 <= local_prefill_row_id < num_prefill_rows:
+                return attn_metadata_prefill.block_table[local_prefill_row_id]
+
+        raise RuntimeError(
+            f"Failed to resolve MLA block_table row for request: "
+            f"req_row_id={req_row_id}, qlen={qlen}, "
+            f"num_decode_rows={num_decode_rows}, "
+            f"has_decode={attn_metadata_decode is not None}, "
+            f"has_prefill={attn_metadata_prefill is not None}"
+        )
 
     def get_seq_lens(self, attn_metadata):
         if not self.is_mla:
@@ -1269,7 +1292,6 @@ class GSAOnDevice(UcmSparseBase):
         )
         self.decode_req_ids_buf.clear()
 
-        prefill_row_id = 0
         for (
             req_id,
             num_scheduled_tokens,
@@ -1301,13 +1323,15 @@ class GSAOnDevice(UcmSparseBase):
                 self.is_prefill_flag[req_id] = True
                 # num_prompt_tokens -> store pc -> rebuild slotmapping
                 req_row_id = input_batch.req_id_to_index[req_id]
+
+                cur_qlen = compute_q_lens[req_row_id]
                 ext_tokens = int(
                     scheduler_output.num_external_computed_tokens_per_req.get(req_id, 0)
                 )
 
                 if ext_tokens > 0:
                     block_table_row = self.get_block_table_row(
-                        attn_metadata, req_row_id, prefill_row_id
+                        attn_metadata, req_row_id, cur_qlen
                     )
 
                     (
@@ -1334,7 +1358,6 @@ class GSAOnDevice(UcmSparseBase):
                     all_prefix_tokens += num_prefix_tokens
                     all_prefix_blocks += num_prefix_blocks
                     num_pc_hit += 1
-                    prefill_row_id += 1
 
             if is_last_chunk:
                 self.is_prefill_flag[req_id] = False
