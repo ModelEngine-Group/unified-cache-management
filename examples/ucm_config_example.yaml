@@ -17,6 +17,7 @@ ucm_connectors:
       storage_backends: "/mnt/test"
       io_direct: false
       # cache_buffer_capacity_gb: 256
+      # posix_capacity_gb: 1024
 
 # When you use UcmNfsStore, you should set enable_event_sync to false.
 enable_event_sync: true
