@@ -1,10 +1,8 @@
-from collections import OrderedDict
 import hashlib
 import logging
 import os
 from dataclasses import dataclass
 from pathlib import Path
-from threading import RLock
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 import torch
@@ -101,15 +99,12 @@ class UnifiedCacheStoreConfig:
 
 
 class SglangUcmConnector:
-    _DEFAULT_ENCODED_KEY_CACHE_SIZE = 100000
-
     def __init__(
         self,
         store,
         mem_pool_host: "HostKVCache",
         storage_config: "HiCacheStorageConfig",
         storage_backends: List[str],
-        encoded_key_cache_size: int = _DEFAULT_ENCODED_KEY_CACHE_SIZE,
     ):
         self.store = store
         self.mem_pool_host = mem_pool_host
@@ -124,9 +119,6 @@ class SglangUcmConnector:
         self.tp_size = storage_config.tp_size
 
         self.config_suffix = self._build_config_suffix()
-        self._encoded_key_cache_max_size = max(1, encoded_key_cache_size)
-        self._encoded_key_cache: OrderedDict[str, bytes] = OrderedDict()
-        self._encoded_key_cache_lock = RLock()
 
     @classmethod
     def from_hicache(
@@ -150,18 +142,7 @@ class SglangUcmConnector:
         )
 
     def _encode_key(self, key: str) -> bytes:
-        with self._encoded_key_cache_lock:
-            block_id = self._encoded_key_cache.get(key)
-            if block_id is not None:
-                self._encoded_key_cache.move_to_end(key)
-                return block_id
-
-            block_id = hashlib.md5(key.encode("utf-8")).digest()
-            self._encoded_key_cache[key] = block_id
-            self._encoded_key_cache.move_to_end(key)
-            if len(self._encoded_key_cache) > self._encoded_key_cache_max_size:
-                self._encoded_key_cache.popitem(last=False)
-            return block_id
+        return hashlib.md5(key.encode("utf-8")).digest()
 
     def _encode_keys(self, keys: List[str]) -> List[bytes]:
         return [self._encode_key(key) for key in keys]
