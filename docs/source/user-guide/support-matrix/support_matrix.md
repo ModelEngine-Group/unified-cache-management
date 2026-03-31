@@ -25,14 +25,13 @@ This information serves as a reference for evaluating framework compatibility in
 | DeepSeek V3/3.1 | ✅ | ✅ | ✅ |
 | Qwen3.5 | ❌ | ❌ | ❌ |
 | Qwen3 | ✅ | ✅ | ✅ |
-| Qwen3-Coder | ✅ | ✅ | ✅ |
 | Qwen3-Moe | ✅ | ✅ | ✅ |
 | Qwen3-Next | ❌ | ❌ | ❌ |
 | Qwen2.5 | ✅ | ✅ | ✅ |
 | GLM-5 | ✅ | ✅ | ❌ |
 | GLM-4.x | ✅ | ✅ | ✅ |
 | MiniMax-M2.5 | ✅ | ✅ | ✅ |
-| Kimi-K2.5 | 🟡 | 🟡 | 🟡 |
+| Kimi-K2.5 | ❌ | ❌ | ❌ |
 
 > **Note**: The table lists a selected set of representative models.
 > See [**Prefix Cache**](../prefix-cache/index.md) for more details.
