@@ -49,6 +49,7 @@ private:
     ThreadPool<PrefixLookupContext> prefixLookupSrv_;
     HotnessTracker hotnessTracker_;
     ShardGarbageCollector gcMgr_;
+    bool hotnessTrackerEnable_{false};
     bool gcEnable_{false};
 
 public:

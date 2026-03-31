@@ -116,6 +116,7 @@ private:
         inConfig.GetNumber("posix_commit_concurrency", config.commitConcurrency);
         inConfig.GetNumber("timeout_ms", config.timeoutMs);
         inConfig.GetNumber("data_dir_shard_bytes", config.dataDirShardBytes);
+        inConfig.Get("posix_hotness_tracker_enable", config.posixHotnessTrackerEnable);
         inConfig.Get("posix_gc_enable", config.posixGcEnable);
         inConfig.Get("posix_gc_recycle_percent", config.posixGcRecyclePercent);
         inConfig.GetNumber("posix_gc_concurrency", config.posixGcConcurrency);

@@ -336,10 +336,11 @@ class UCMDirectConnector(KVConnectorBase_V1):
                 * (1 if self.is_mla else self.num_head * 2)
                 * self.blocks_per_chunk
             )
-        # GC only enabled for Scheduler with data_parallel_rank == 0
-        dp_rank = self._vllm_config.parallel_config.data_parallel_rank
-        if self._role == KVConnectorRole.WORKER or dp_rank != 0:
-            config["posix_gc_enable"] = False
+        dp_rank = self._vllm_config.parallel_config.rank
+        config["posix_hotness_tracker_enable"] = self._role != KVConnectorRole.WORKER
+        config["posix_gc_enable"] = (
+            self._role != KVConnectorRole.WORKER and dp_rank == 0
+        )
 
         logger.info(f"create {name} with config: {config}")
         return UcmConnectorFactoryV1.create_connector(name, config, module_path)

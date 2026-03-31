@@ -44,13 +44,14 @@ struct Config {
     size_t commitConcurrency{4};
     size_t timeoutMs{30000};
     size_t dataDirShardBytes{3};
+    bool posixHotnessTrackerEnable{true};
     bool posixGcEnable{true};
     double posixGcRecyclePercent{0.1};
     size_t posixGcConcurrency{16};
     size_t posixGcCheckIntervalSec{30};
     size_t posixCapacityGb{0};
     double posixGcTriggerThresholdRatio{0.7};
-    size_t posixGcMaxRecycleCountPerShard{1000};
+    size_t posixGcMaxRecycleCountPerShard{5000};
     double posixGcShardSampleRatio{0.1};
 };
 

@@ -29,12 +29,15 @@ namespace UC::PosixStore {
 
 Status SpaceManager::Setup(const Config& config)
 {
+    hotnessTrackerEnable_ = config.posixHotnessTrackerEnable && config.posixCapacityGb > 0;
     gcEnable_ = config.posixGcEnable && config.posixCapacityGb > 0;
     auto s = layout_.Setup(config);
     if (s.Failure()) [[unlikely]] { return s; }
-    if (gcEnable_) {
+    if (hotnessTrackerEnable_) {
         s = hotnessTracker_.Setup(&layout_);
         if (s.Failure()) [[unlikely]] { return s; }
+    }
+    if (gcEnable_) {
         s = gcMgr_.Setup(&layout_, config);
         if (s.Failure()) [[unlikely]] { return s; }
     }
@@ -129,7 +132,7 @@ void SpaceManager::OnLookupPrefix(PrefixLookupContext& ctx)
             }
             break;
         }
-        if (gcEnable_) { hotnessTracker_.Touch(*(ctx.blocks + i)); }
+        if (hotnessTrackerEnable_) { hotnessTracker_.Touch(*(ctx.blocks + i)); }
     }
     ctx.waiter->Done();
 }
