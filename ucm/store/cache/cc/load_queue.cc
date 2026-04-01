@@ -82,42 +82,34 @@ void LoadQueue::DispatchOneTask(TaskPair&& pair)
     }
     auto tp = waiter->startTp;
     auto tpWait = NowTime::Now();
-    Detail::TaskDesc backendTaskDesc;
-    backendTaskDesc.brief = "Backend2Cache";
     const auto nShard = task->desc.size();
-    UC_DEBUG("Try to load ({}) shards.", nShard);
-    std::vector<size_t> backendTaskIndex;
-    backendTaskIndex.reserve(nShard);
-    std::vector<ShardTask> shardTasks(nShard);
     for (size_t i = 0; i < nShard; i++) {
         auto& shard = task->desc[i];
-        auto& shardTask = shardTasks[i];
+        ShardTask shardTask;
         shardTask.bufferHandle = buffer_->Get(shard.owner, shard.index);
         shardTask.backendTaskHandle = 0;
         if (shardTask.bufferHandle.Owner() && !shardTask.bufferHandle.Ready()) {
-            backendTaskDesc.push_back(
-                Detail::Shard{shard.owner, shard.index, {shardTask.bufferHandle.Data()}});
-            backendTaskIndex.emplace_back(i);
+            Detail::TaskDesc backendTask{
+                Detail::Shard{shard.owner, shard.index, {shardTask.bufferHandle.Data()}}
+            };
+            backendTask.brief = "Backend2Cache";
+            auto res = backend_->Load(std::move(backendTask));
+            if (!res) [[unlikely]] {
+                UC_ERROR("Failed({}) to submit load task({}) to backend.", res.Error(), task->id);
+                failureSet_->Insert(task->id);
+                waiter->Done();
+                return;
+            }
+            shardTask.backendTaskHandle = res.Value();
         }
         shardTask.taskHandle = task->id;
         shardTask.shard = std::move(shard);
         shardTask.waiter = (i + 1 < nShard) ? nullptr : waiter;
+        running_.Push(std::move(shardTask));
     }
-    auto tpMakeBuffer = NowTime::Now();
-    if (!backendTaskDesc.empty()) {
-        auto res = backend_->Load(std::move(backendTaskDesc));
-        if (!res) [[unlikely]] {
-            UC_ERROR("Failed({}) to submit load task({}) to backend.", res.Error(), task->id);
-            failureSet_->Insert(task->id);
-            waiter->Done();
-            return;
-        }
-        for (const auto& i : backendTaskIndex) { shardTasks[i].backendTaskHandle = res.Value(); }
-    }
-    for (size_t i = 0; i < nShard; i++) { running_.Push(std::move(shardTasks[i])); }
-    auto tpBackend = NowTime::Now();
-    UC_DEBUG("Cache task({}) wait={:.3f}ms, mk_buf={:.3f}ms, back={:.3f}ms.", task->id,
-             (tpWait - tp) * 1e3, (tpMakeBuffer - tpWait) * 1e3, (tpBackend - tpMakeBuffer) * 1e3);
+    auto tpDispatch = NowTime::Now();
+    UC_DEBUG("Cache task({}) dispatch shards({}), wait={:.3f}ms, cost={:.3f}ms.", task->id, nShard,
+             (tpWait - tp) * 1e3, (tpDispatch - tpWait) * 1e3);
 }
 
 void LoadQueue::TransferStage(std::promise<Status>& started)
@@ -166,24 +158,20 @@ void LoadQueue::TransferOneTask(CopyStream& stream, ShardTask&& task)
 
 Status LoadQueue::WaitBackendTaskReady(ShardTask& task)
 {
-    if (task.bufferHandle.Ready()) { return Status::OK(); }
-    if (!task.bufferHandle.Owner()) {
-        for (;;) {
-            if (failureSet_->Contains(task.taskHandle)) { return Status::Error(); }
-            if (task.bufferHandle.Ready()) { return Status::OK(); }
-            std::this_thread::yield();
-        }
-    }
-    if (task.backendTaskHandle > finishedBackendTaskHandle_) {
+    if (task.backendTaskHandle != 0) {
         auto s = backend_->Wait(task.backendTaskHandle);
-        finishedBackendTaskHandle_ = task.backendTaskHandle;
         if (s.Failure()) [[unlikely]] {
             UC_ERROR("Failed({}) to wait backend({}) for task({}).", s, task.backendTaskHandle,
                      task.taskHandle);
             return s;
         }
+        task.bufferHandle.MarkReady();
+        return Status::OK();
     }
-    task.bufferHandle.MarkReady();
+    while (!task.bufferHandle.Ready()) {
+        if (failureSet_->Contains(task.taskHandle)) { return Status::Error(); }
+        std::this_thread::yield();
+    }
     return Status::OK();
 }
 
