@@ -50,7 +50,7 @@ struct Config {
     size_t posixGcCheckIntervalSec{30};
     size_t posixCapacityGb{0};
     double posixGcTriggerThresholdRatio{0.7};
-    size_t posixGcMaxRecycleCountPerShard{1000};
+    size_t posixGcMaxRecycleCountPerShard{50000};
     double posixGcShardSampleRatio{0.1};
 };
 
