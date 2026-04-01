@@ -21,46 +21,57 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  * */
-#ifndef UNIFIEDCACHE_POSIX_STORE_CC_SPACE_MANAGER_H
-#define UNIFIEDCACHE_POSIX_STORE_CC_SPACE_MANAGER_H
+#ifndef UNIFIEDCACHE_POSIX_STORE_CC_SHARD_GC_H
+#define UNIFIEDCACHE_POSIX_STORE_CC_SHARD_GC_H
 
+#include <atomic>
+#include <condition_variable>
+#include <memory>
+#include <mutex>
+#include <string>
+#include <thread>
+#include <tuple>
+#include <vector>
 #include "global_config.h"
-#include "hotness_tracker.h"
-#include "shard_gc.h"
 #include "space_layout.h"
+#include "status/status.h"
 #include "thread/latch.h"
 #include "thread/thread_pool.h"
 
 namespace UC::PosixStore {
 
-class SpaceManager {
-    struct PrefixLookupContext {
-        const Detail::BlockId* blocks;
-        size_t begin;
-        size_t end;
-        size_t nWorker;
-        std::shared_ptr<std::atomic<ssize_t>> firstFail;
-        std::shared_ptr<std::atomic<int32_t>> status;
-        std::shared_ptr<Latch> waiter;
-    };
+struct ShardTaskContext {
+    enum class Type { GC, SAMPLE };
+    Type type;
+    std::string shard;
+    std::shared_ptr<Latch> waiter;
+    std::atomic<size_t>* sampledFiles{nullptr};
+    std::atomic<bool>* gcLimited{nullptr};
+};
 
-private:
-    SpaceLayout layout_;
-    ThreadPool<PrefixLookupContext> prefixLookupSrv_;
-    HotnessTracker hotnessTracker_;
-    ShardGarbageCollector gcMgr_;
-    bool gcEnable_{false};
-
+class ShardGarbageCollector {
 public:
-    Status Setup(const Config& config);
-    Expected<std::vector<uint8_t>> Lookup(const Detail::BlockId* blocks, size_t num);
-    Expected<ssize_t> LookupOnPrefix(const Detail::BlockId* blocks, size_t num);
-    const SpaceLayout* GetLayout() const { return &layout_; }
+    ShardGarbageCollector() = default;
+    ShardGarbageCollector(const ShardGarbageCollector&) = delete;
+    ShardGarbageCollector& operator=(const ShardGarbageCollector&) = delete;
+    ~ShardGarbageCollector();
+    Status Setup(const SpaceLayout* layout, const Config& config);
 
 private:
-    uint8_t Lookup(const Detail::BlockId* block);
-    void OnLookupPrefix(PrefixLookupContext& ctx);
-    void OnLookupPrefixTimeout(PrefixLookupContext& ctx);
+    Status ValidateAndInitCapacity();
+    bool Execute();
+    std::tuple<bool, size_t, size_t> ShouldTrigger();
+    void ProcessTask(ShardTaskContext& ctx);
+    void GCCheckLoop();
+    void StopBackgroundCheck();
+    const SpaceLayout* layout_{nullptr};
+    Config config_;
+    size_t maxFileCount_{0};
+    ThreadPool<ShardTaskContext> gcPool_;
+    std::thread gcCheckWorker_;
+    std::mutex gcCheckMtx_;
+    std::condition_variable gcCheckCv_;
+    std::atomic<bool> stop_{false};
 };
 
 }  // namespace UC::PosixStore

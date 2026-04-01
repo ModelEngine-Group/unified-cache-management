@@ -18,6 +18,7 @@ from vllm.distributed.kv_transfer.kv_connector.v1.base import (
     KVConnectorRole,
 )
 from vllm.distributed.parallel_state import get_tp_group, get_world_group
+from vllm.distributed.utils import get_pp_indices
 from vllm.model_executor.models.utils import extract_layer_index
 from vllm.platforms import current_platform
 from vllm.v1.core.sched.output import SchedulerOutput
@@ -73,15 +74,25 @@ class KVCacheLayout:
         self.num_hidden_layers = getattr(
             self.vllm_config.model_config.hf_text_config, "num_hidden_layers", 0
         )
+        self.pp_rank = (
+            self.vllm_config.parallel_config.rank
+            // self.vllm_config.parallel_config.tensor_parallel_size
+        ) % self.vllm_config.parallel_config.pipeline_parallel_size
+        start, end = get_pp_indices(self.num_hidden_layers, self.pp_rank, self.pp_size)
+        self.local_num_hidden_layers = end - start
         if self.pp_size > 1 and self.num_hidden_layers <= 0:
             raise ValueError("num_hidden_layers must be > 0 when pp_size > 1")
+        self.layer_name_to_id = {
+            name: extract_layer_index(name) for name in kvcaches.keys()
+        }
+        self.first_layer_id = next(iter(self.layer_name_to_id.values()))
         self._build_layout(kvcaches)
 
     def _build_layout(self, kvcaches):
-        raw_ptr_rows = []
-        stride_rows = []
+        raw_ptr_rows = [[] for _ in range(self.local_num_hidden_layers)]
+        stride_rows = [[] for _ in range(self.local_num_hidden_layers)]
 
-        for _, kv_layer in kvcaches.items():
+        for layer_name, kv_layer in kvcaches.items():
             ptrs = []
             strides = []
 
@@ -110,8 +121,9 @@ class KVCacheLayout:
             else:
                 raise TypeError(f"Unsupported kv cache type: {type(kv_layer)}")
 
-            raw_ptr_rows.append(ptrs)
-            stride_rows.append(strides)
+            local_layer_id = self.layer_name_to_id[layer_name] - self.first_layer_id
+            raw_ptr_rows[local_layer_id].extend(ptrs)
+            stride_rows[local_layer_id].extend(strides)
 
         self.base_ptrs = np.asarray(raw_ptr_rows, dtype=np.uint64)
         self.tensor_size_lists = np.asarray(stride_rows, dtype=np.uint64)
@@ -201,6 +213,11 @@ class UCMDirectConnector(KVConnectorBase_V1):
         )
         self.tp_size = self._vllm_config.parallel_config.tensor_parallel_size
         self.kv_cache_dtype: torch.dtype = None
+        self.num_head = vllm_config.model_config.get_num_kv_heads(
+            vllm_config.parallel_config
+        )
+        self.head_size = vllm_config.model_config.get_head_size()
+        self.element_size = vllm_config.model_config.dtype.itemsize
 
         if current_platform.is_cuda_alike():
             logger.info("CUDA device is available.")
@@ -225,7 +242,6 @@ class UCMDirectConnector(KVConnectorBase_V1):
         ucm_config = Config(vllm_config.kv_transfer_config)
         self.engine_id = vllm_config.kv_transfer_config.engine_id
         self.launch_config = ucm_config.get_config()
-        logger.info(f"self.launch_config: {self.launch_config}")
         self.connector_configs = self.launch_config.get("ucm_connectors", [])
         self.enable_event_sync = self.launch_config.get("enable_event_sync", True)
         assert len(self.connector_configs) > 0, "no storage connector name in config."
@@ -312,6 +328,19 @@ class UCMDirectConnector(KVConnectorBase_V1):
             config["local_rank_size"] = self.tp_size if self.is_mla else 1
             if cpu_affinity_cores:
                 config["cpu_affinity_cores"] = list(cpu_affinity_cores)
+        else:
+            config_base = self.block_size * self.element_size * self.head_size
+            config["block_size"] = (
+                config_base
+                * self.num_layers
+                * (1 if self.is_mla else self.num_head * 2)
+                * self.blocks_per_chunk
+            )
+        # GC only enabled for Scheduler with data_parallel_rank == 0
+        dp_rank = self._vllm_config.parallel_config.data_parallel_rank
+        if self._role == KVConnectorRole.WORKER or dp_rank != 0:
+            config["posix_gc_enable"] = False
+
         logger.info(f"create {name} with config: {config}")
         return UcmConnectorFactoryV1.create_connector(name, config, module_path)
 
@@ -335,10 +364,7 @@ class UCMDirectConnector(KVConnectorBase_V1):
             self.kv_caches, self.use_layerwise, self._vllm_config
         )
         self.block_data_size = self.kv_cache_layout.block_size
-
-        self.layer_name_to_id = {
-            name: extract_layer_index(name) for name in self.kv_caches.keys()
-        }
+        self.layer_name_to_id = self.kv_cache_layout.layer_name_to_id
         self.layer_ids = sorted(set(self.layer_name_to_id.values()))
         self.first_layer_id = self.layer_ids[0]
 
@@ -844,11 +870,7 @@ class UCMLayerWiseConnector(UCMDirectConnector):
 class UCMCPConnector(UCMLayerWiseConnector):
     def __init__(self, vllm_config: "VllmConfig", role: KVConnectorRole):
         super().__init__(vllm_config, role)
-        self.use_layerwise = (
-            self._vllm_config.kv_transfer_config.kv_connector_extra_config.get(
-                "use_layerwise", False
-            )
-        )
+        self.use_layerwise = self.launch_config.get("use_layerwise", False)
 
         try:
             from vllm.distributed import get_dcp_group, get_pcp_group
@@ -1111,22 +1133,21 @@ class UCMConnector(KVConnectorBase_V1):
     def __init__(self, vllm_config: "VllmConfig", role: KVConnectorRole):
         super().__init__(vllm_config=vllm_config, role=role)
         self.connector: KVConnectorBase_V1
-        # TODO new conn by config
+        ucm_config = Config(vllm_config.kv_transfer_config)
+        self.launch_config = ucm_config.get_config()
+        logger.info(f"self.launch_config: {self.launch_config}")
+
         use_layerwise = (
-            self._vllm_config.kv_transfer_config.kv_connector_extra_config.get(
-                "use_layerwise", False
-            )
+            self.launch_config.get("use_layerwise", False)
+            if self.launch_config is not None
+            else False
         )
         pp_enabled = self._vllm_config.parallel_config.pipeline_parallel_size > 1
         if pp_enabled and not use_layerwise:
             raise RuntimeError(
                 "Pipeline parallelism is not supported in UCMDirectConnector, please set use_layerwise=True."
             )
-        if (
-            self._vllm_config.kv_transfer_config is not None
-            and "hit_ratio"
-            in self._vllm_config.kv_transfer_config.kv_connector_extra_config
-        ):
+        if self.launch_config is not None and "hit_ratio" in self.launch_config:
             self.connector = UCMMockConnector(vllm_config, role)
         elif (
             hasattr(self._vllm_config.parallel_config, "prefill_context_parallel_size")
@@ -1138,12 +1159,7 @@ class UCMConnector(KVConnectorBase_V1):
             > 1
         ):
             self.connector = UCMCPConnector(vllm_config, role)
-        elif (
-            self._vllm_config.kv_transfer_config is not None
-            and self._vllm_config.kv_transfer_config.kv_connector_extra_config.get(
-                "use_layerwise", False
-            )
-        ):
+        elif use_layerwise:
             self.connector = UCMLayerWiseConnector(vllm_config, role)
         else:
             self.connector = UCMDirectConnector(vllm_config, role)

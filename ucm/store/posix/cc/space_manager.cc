@@ -29,8 +29,15 @@ namespace UC::PosixStore {
 
 Status SpaceManager::Setup(const Config& config)
 {
+    gcEnable_ = config.posixGcEnable && config.posixCapacityGb > 0;
     auto s = layout_.Setup(config);
     if (s.Failure()) [[unlikely]] { return s; }
+    if (gcEnable_) {
+        s = hotnessTracker_.Setup(&layout_);
+        if (s.Failure()) [[unlikely]] { return s; }
+        s = gcMgr_.Setup(&layout_, config);
+        if (s.Failure()) [[unlikely]] { return s; }
+    }
     auto prefixSuccess =
         prefixLookupSrv_
             .SetWorkerFn([this](PrefixLookupContext& ctx, auto&) { OnLookupPrefix(ctx); })
@@ -122,6 +129,7 @@ void SpaceManager::OnLookupPrefix(PrefixLookupContext& ctx)
             }
             break;
         }
+        if (gcEnable_) { hotnessTracker_.Touch(*(ctx.blocks + i)); }
     }
     ctx.waiter->Done();
 }

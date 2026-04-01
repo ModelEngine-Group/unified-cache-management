@@ -15,7 +15,6 @@ We offer 3 options to install UCM.
 ```bash
 docker pull unifiedcachemanager/ucm:latest
 ```
-
 Then run your container using following command.
 ```bash
 # Use `--ipc=host` to make sure the shared memory is large enough.
@@ -31,16 +30,18 @@ docker run --rm \
 ```
 
 #### Build image from source
-Use following command to build ucm with VLLM(v0.11.0), the sparse attention is enabled by default
 ```bash
 git clone --depth 1 --branch <branch_or_tag_name> https://github.com/ModelEngine-Group/unified-cache-management.git
 cd unified-cache-management
+```
+Use following command to build UCM with vLLM(v0.17.0):
+```bash
 docker build -t ucm-vllm:latest -f ./docker/Dockerfile.vllm_gpu ./
 ```
 
-If you don't need sparse attention, pass `--build-arg ENABLE_SPARSE=false` to disable it:
+If you need sparse attention, build the dedicated image with vLLM(v0.11.0), where sparse attention is enabled by default. If you don't need it, set `ENABLE_SPARSE=false` during build:
 ```bash
-docker build --build-arg ENABLE_SPARSE=false -t ucm-vllm:latest -f ./docker/Dockerfile.vllm_gpu ./
+docker build -t ucm-vllm-sparse:latest -f ./docker/Dockerfile.vllm_gpu_v0110 ./
 ```
 
 
@@ -82,9 +83,9 @@ docker build --build-arg ENABLE_SPARSE=false -t ucm-vllm:latest -f ./docker/Dock
     pip install -v -e . --no-build-isolation
     ```
 
-3. Apply vLLM Integration Patches (Required)
+3. Apply vLLM Integration Patches (Not required for versions > 0.11.0)
 
-    To integrate UCM with vLLM, you can choose between a dynamic **monkey patch** (recommended) and a manual **git patch**.
+    To integrate UCM with vLLM 0.11.0, you can choose between a dynamic **monkey patch** (recommended) and a manual **git patch**.
 
     >**Recommendation**: We highly recommend the Monkey Patch approach for its non-invasive nature and ease of use.
 
@@ -105,7 +106,7 @@ docker build --build-arg ENABLE_SPARSE=false -t ucm-vllm:latest -f ./docker/Dock
 
     **Note:**
     - Monkey patch is only available for vLLM 0.11.0.
-    - Enabling ENABLE_UCM_PATCH is required to use the Prefix Caching feature with UCM.
+    - Enabling ENABLE_UCM_PATCH is required to use the Prefix Caching feature with UCM on vLLM 0.11.0.
     - ReRoPE support is currently only available via the Git Patch method.
 
     #### Option B: Manual Git Patch (Legacy/Alternative)
