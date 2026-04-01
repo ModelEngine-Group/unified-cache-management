@@ -2,15 +2,14 @@ import logging
 from typing import Any, List, Optional
 
 import torch
-
-from ucm.integration.sglang.ucm_connector import SglangUcmConnector
-
 from sglang.srt.mem_cache.hicache_storage import (
     HiCacheStorage,
     HiCacheStorageConfig,
     HiCacheStorageExtraInfo,
 )
 from sglang.srt.mem_cache.memory_pool_host import HostKVCache
+
+from ucm.integration.sglang.ucm_connector import SglangUcmConnector
 
 logger = logging.getLogger(__name__)
 
