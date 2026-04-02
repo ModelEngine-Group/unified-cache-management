@@ -25,7 +25,7 @@ cd ..
 
 >**Note:** For the Atlas A3 series, the `PLATFORM` variable should be set to `ascend-a3`.
 
-2、Apply vLLM and vLLM-Ascend Integration Patches (Required)
+2、Apply vLLM and vLLM-Ascend Integration Patches (Not required for versions >= v0.17.0rc1)
 To enable Unified Cache Management (UCM) integration, you need to apply patches to both vLLM and vLLM-Ascend source trees.
 
 #### Option A: Monkey Patch (Recommended)
@@ -38,7 +38,7 @@ export ENABLE_UCM_PATCH=1
 ```
 >**Note:** Enabling ENABLE_UCM_PATCH is required to use the Prefix Caching feature with UCM.
 
-2. Enable Sparse Attention (Optional):
+2. Enable Sparse Attention (supported on v0.11.0):
 ```bash
 export ENABLE_SPARSE=1
 ```
