@@ -14,8 +14,4 @@ RUN export PLATFORM="cuda" \
     && export ENABLE_SPARSE=false \
     && pip install -v -e /workspace/unified-cache-management --no-build-isolation
 
-# Apply patch for SGLang
-RUN cd /sgl-workspace/sglang \
-    && git apply /workspace/unified-cache-management/ucm/integration/sglang/patch/0.5.5/sglang-adapt.patch
-
 ENTRYPOINT ["/bin/bash"]
