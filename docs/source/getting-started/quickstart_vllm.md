@@ -49,10 +49,9 @@ docker build -t ucm-vllm-sparse:latest -f ./docker/Dockerfile.vllm_gpu_v0110 ./
 1. Prepare vLLM Environment
 
     For the sake of environment isolation and simplicity, we recommend preparing the vLLM environment by pulling the official, pre-built vLLM Docker image.
-    > Note: v0.11.0 is newly supported (replace the tag with v0.11.0 if needed).
 
     ```bash
-    docker pull vllm/vllm-openai:v0.11.0
+    docker pull vllm/vllm-openai:<vllm_version>
     ```
     Use the following command to run your own container:
     ```bash
@@ -65,7 +64,7 @@ docker build -t ucm-vllm-sparse:latest -f ./docker/Dockerfile.vllm_gpu_v0110 ./
         -v <path_to_your_storage>:/home/storage \
         --entrypoint /bin/bash \
         --name <name_of_your_container> \
-        -it vllm/vllm-openai:v0.9.2
+        -it vllm/vllm-openai:<vllm_version>
     ```
     Refer to [Set up using docker](https://docs.vllm.ai/en/latest/getting_started/installation/gpu.html#set-up-using-docker) for more information to run your own vLLM container.
 
