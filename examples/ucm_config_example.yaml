@@ -24,6 +24,8 @@ enable_event_sync: true
 # Enable UCM metrics so they can be monitored online via Grafana and Prometheus.
 # metrics_config_path: "/workspace/unified-cache-management/examples/metrics/metrics_configs.yaml"
 
+chunk_size: 256
+
 # Sparse attention configuration
 # ucm_sparse_config:
   # GSAOnDevice: {}
