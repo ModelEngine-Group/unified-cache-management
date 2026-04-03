@@ -32,11 +32,15 @@ cd ..
 
 ### Option 2: Build from Docker
 
+#### Build image from source
+
 Use the provided MindIE-LLM Dockerfile (Ascend base, MindIE-LLM 2.3.0):
 
 ```bash
-docker build -t ucm-mindie:latest -f ./docker/Dockerfile.mindie_llm ./
+docker build -t ucm-mindie:latest -f ./docker/Dockerfile.ucm-mindie-ascend.a2-v2 ./
 ```
+
+The Dockerfile automatically invokes the build script (`scripts/build_mindie.sh`) to compile the wheel, installs from the built package, and applies the MindIE patch.
 
 This Dockerfile:
 
@@ -45,6 +49,15 @@ This Dockerfile:
 * sets `UCM_CXX11_ABI` (default `1`, override with `--build-arg UCM_CXX11_ABI=0|1` to match your target environment)
 * installs UCM with MindIE-LLM support
 * applies the patch during image build
+
+#### Build image from pre-built package
+
+If you have a pre-built tar package (e.g. from CI), extract it and build the image in `package` mode:
+```bash
+mkdir -p /tmp/ucm-pkg && tar xzf AI-Storage-Kit_*.tar.gz -C /tmp/ucm-pkg
+docker build --build-arg INSTALL_MODE=package \
+  -t ucm-mindie:latest -f /tmp/ucm-pkg/docker/Dockerfile.ucm-mindie-ascend.a2-v2 /tmp/ucm-pkg
+```
 
 ## Step 2: Prepare the UCM configuration
 

@@ -70,12 +70,13 @@ protected:
         int32_t deviceId{-1};
         size_t nodeSize{0};
         size_t totalSize{0};
+        size_t reservedNumber{0};
     };
     BaseConfig base_;
 
 public:
-    BufferStrategy(int32_t deviceId, size_t nodeSize, size_t totalSize)
-        : base_({deviceId, nodeSize, totalSize})
+    BufferStrategy(int32_t deviceId, size_t nodeSize, size_t totalSize, size_t reservedNumber)
+        : base_({deviceId, nodeSize, totalSize, reservedNumber})
     {
     }
     virtual ~BufferStrategy() = default;
@@ -86,7 +87,7 @@ public:
     virtual void NodeLock(size_t iNode) = 0;
     virtual void NodeUnlock(size_t iNode) = 0;
     virtual size_t& FirstAt(size_t iBucket) = 0;
-    virtual size_t FetchNode() = 0;
+    virtual size_t FetchNode(bool allowReserved) = 0;
     virtual void* DataAt(size_t iNode) = 0;
     virtual BufferMetaNode* MetaAt(size_t iNode) = 0;
 };
@@ -132,8 +133,9 @@ class LocalBufferStrategy : public BufferStrategy {
     std::shared_ptr<void> data_;
 
 public:
-    LocalBufferStrategy(int32_t deviceId, size_t nodeSize, size_t totalSize, bool ioDirect)
-        : BufferStrategy(deviceId, nodeSize, totalSize), ioDirect_(ioDirect)
+    LocalBufferStrategy(int32_t deviceId, size_t nodeSize, size_t totalSize, size_t reservedNumber,
+                        bool ioDirect)
+        : BufferStrategy(deviceId, nodeSize, totalSize, reservedNumber), ioDirect_(ioDirect)
     {
     }
     Status Setup() override
@@ -181,10 +183,11 @@ public:
     void NodeLock(size_t iNode) override { nodeLocks_[iNode].Lock(); }
     void NodeUnlock(size_t iNode) override { nodeLocks_[iNode].Unlock(); }
     size_t& FirstAt(size_t iBucket) override { return header_.buckets[iBucket]; }
-    size_t FetchNode() override
+    size_t FetchNode(bool allowReserved) override
     {
-        auto head = header_.freeHead++;
-        if (header_.freeHead == header_.nNode) { header_.freeHead = 0; }
+        const auto limit = header_.nNode - (allowReserved ? 0 : base_.reservedNumber);
+        const auto head = header_.freeHead;
+        header_.freeHead = (head + 1 == limit) ? 0 : (head + 1);
         return head;
     }
     void* DataAt(size_t iNode) override
@@ -368,8 +371,8 @@ protected:
 
 public:
     SharedBufferStrategy(const std::string& uuid, int32_t deviceId, size_t nodeSize,
-                         size_t totalSize)
-        : BufferStrategy(deviceId, nodeSize, totalSize), uuid_(uuid)
+                         size_t totalSize, size_t reservedNumber)
+        : BufferStrategy(deviceId, nodeSize, totalSize, reservedNumber), uuid_(uuid)
     {
     }
     ~SharedBufferStrategy() override
@@ -410,11 +413,12 @@ public:
     void NodeLock(size_t iNode) override { header_->nodeLocks[iNode].Lock(); }
     void NodeUnlock(size_t iNode) override { header_->nodeLocks[iNode].Unlock(); }
     size_t& FirstAt(size_t iBucket) override { return header_->buckets[iBucket]; }
-    size_t FetchNode() override
+    size_t FetchNode(bool allowReserved) override
     {
+        const auto limit = header_->nNode - (allowReserved ? 0 : base_.reservedNumber);
         header_->lock.Lock();
-        auto iNode = header_->freeHead++;
-        if (header_->freeHead == nNode_) { header_->freeHead = 0; }
+        const auto iNode = header_->freeHead;
+        header_->freeHead = (iNode + 1 == limit) ? 0 : (iNode + 1);
         header_->lock.Unlock();
         return iNode;
     }
@@ -424,7 +428,9 @@ public:
 
 class SharedBufferWatcherStrategy : public SharedBufferStrategy {
 public:
-    SharedBufferWatcherStrategy(const std::string& uuid) : SharedBufferStrategy(uuid, -1, 0, 0) {}
+    SharedBufferWatcherStrategy(const std::string& uuid) : SharedBufferStrategy(uuid, -1, 0, 0, 0)
+    {
+    }
     Status Setup() override
     {
         shmName_ = ShmPrefix() + uuid_;
@@ -462,10 +468,12 @@ Status TransBuffer::Setup(const Config& config)
     try {
         if (!config.shareBufferEnable) {
             strategy_ = std::make_shared<LocalBufferStrategy>(
-                config.deviceId, config.shardSize, config.bufferCapacity, config.ioDirect);
+                config.deviceId, config.shardSize, config.bufferCapacity,
+                config.loadExclusiveBufferNumber, config.ioDirect);
         } else if (config.deviceId >= 0) {
             strategy_ = std::make_shared<SharedBufferStrategy>(
-                config.uniqueId, config.deviceId, config.shardSize, config.bufferCapacity);
+                config.uniqueId, config.deviceId, config.shardSize, config.bufferCapacity,
+                config.loadExclusiveBufferNumber);
         } else {
             strategy_ = std::make_shared<SharedBufferWatcherStrategy>(config.uniqueId);
         }
@@ -475,7 +483,8 @@ Status TransBuffer::Setup(const Config& config)
     return strategy_->Setup();
 }
 
-TransBuffer::Handle TransBuffer::Get(const Detail::BlockId& blockId, size_t shardIdx)
+TransBuffer::Handle TransBuffer::Get(const Detail::BlockId& blockId, size_t shardIdx,
+                                     bool allowReserved)
 {
     auto iBucket = Hash(blockId, shardIdx);
     bool owner = false;
@@ -485,7 +494,7 @@ TransBuffer::Handle TransBuffer::Get(const Detail::BlockId& blockId, size_t shar
         strategy_->BucketUnlock(iBucket);
         return Handle{this, iNode, owner};
     }
-    iNode = Alloc(blockId, shardIdx, iBucket);
+    iNode = Alloc(blockId, shardIdx, iBucket, allowReserved);
     strategy_->BucketUnlock(iBucket);
     return Handle(this, iNode, true);
 }
@@ -536,10 +545,11 @@ size_t TransBuffer::FindAt(size_t iBucket, const Detail::BlockId& blockId, size_
     return iNode;
 }
 
-size_t TransBuffer::Alloc(const Detail::BlockId& blockId, size_t shardIdx, size_t iBucket)
+size_t TransBuffer::Alloc(const Detail::BlockId& blockId, size_t shardIdx, size_t iBucket,
+                          bool allowReserved)
 {
     for (;;) {
-        auto iNode = strategy_->FetchNode();
+        auto iNode = strategy_->FetchNode(allowReserved);
         auto meta = strategy_->MetaAt(iNode);
         strategy_->NodeLock(iNode);
         if (meta->reference > 0) {

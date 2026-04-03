@@ -36,12 +36,23 @@ cd unified-cache-management
 ```
 Use following command to build UCM with vLLM(v0.17.0):
 ```bash
-docker build -t ucm-vllm:latest -f ./docker/Dockerfile.vllm_gpu ./
+docker build -t ucm-vllm:latest -f ./docker/Dockerfile.ucm-vllm-cuda-v0.17.0 ./
 ```
 
-If you need sparse attention, build the dedicated image with vLLM(v0.11.0), where sparse attention is enabled by default. If you don't need it, set `ENABLE_SPARSE=false` during build:
+For vLLM(v0.11.0) with sparse attention support:
 ```bash
-docker build -t ucm-vllm-sparse:latest -f ./docker/Dockerfile.vllm_gpu_v0110 ./
+docker build -t ucm-vllm-sparse:latest -f ./docker/Dockerfile.ucm-vllm-cuda-v0.11.0 ./
+```
+
+The Dockerfile automatically invokes the build script (`scripts/build_cuda.sh`) to compile the wheel and installs from the built package.
+
+#### Build image from pre-built package
+
+If you have a pre-built tar package (e.g. from CI), extract it and build the image in `package` mode:
+```bash
+mkdir -p /tmp/ucm-pkg && tar xzf AI-Storage-Kit_*.tar.gz -C /tmp/ucm-pkg
+docker build --build-arg INSTALL_MODE=package \
+  -t ucm-vllm:latest -f /tmp/ucm-pkg/docker/Dockerfile.ucm-vllm-cuda-v0.17.0 /tmp/ucm-pkg
 ```
 
 

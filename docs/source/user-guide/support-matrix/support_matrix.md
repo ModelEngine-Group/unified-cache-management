@@ -50,6 +50,19 @@ This section presents support information for inference enhancement features, in
 
 > **Note**: See [**Sparse Attention**](../sparse-attention/index.md) and [**ReRoPE**](../rerope/rerope.md) for more details.
 
+## Supported Compute Platforms and Devices
+
+This section presents the currently supported compute platforms and devices.
+
+| Compute Platform | Vendor | Device |
+|:----------------:|:------:|:------:|
+| CANN | Ascend | 910C, 910B |
+| CUDA | NVIDIA | H100, H20, L40, L20 |
+| MUSA | Mthreads | S5000 |
+| MACA | MetaX | C500 |
+
+> **Note**: The table shows only selected platforms.
+
 ## Notes and Limitations 📌
 
 - This matrix is provided as a compatibility reference for the configurations listed on this page.
