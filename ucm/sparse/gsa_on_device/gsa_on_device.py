@@ -6,7 +6,14 @@ import torch
 
 if hasattr(torch, "npu") and torch.npu.is_available():
     import torch_npu
-    import ucm_custom_ops
+    try:
+        import ucm_custom_ops
+    except ModuleNotFoundError as e:
+        raise ModuleNotFoundError(
+            "ucm_custom_ops is not installed. "
+            "Please build and install it by running: "
+            "bash ucm/sparse/gsa_on_device/csrc/ascend/build.sh install"
+        ) from e
     from vllm_ascend.attention.attention_v1 import AscendAttentionState
 
 from vllm import _custom_ops as ops
