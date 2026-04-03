@@ -42,6 +42,7 @@ TEST_P(UCCacheTransBufferTest, GetFirstNode)
     config.bufferCapacity = config.shardSize * 32768;
     config.shareBufferEnable = GetParam();
     config.deviceId = 0;
+    config.loadExclusiveBufferNumber = 0;
     auto s = transBuffer.Setup(config);
     ASSERT_EQ(s, UC::Status::OK());
     auto blockId = UC::Test::Detail::TypesHelper::MakeBlockId("a1b2c3d4e5f6789012345678901234ab");
@@ -59,6 +60,44 @@ TEST_P(UCCacheTransBufferTest, GetFirstNode)
     ASSERT_TRUE(handle2.Ready());
 }
 
+TEST_P(UCCacheTransBufferTest, GetReservedNode)
+{
+    UC::CacheStore::TransBuffer transBuffer;
+    UC::CacheStore::Config config;
+    config.uniqueId = rd.RandomString(10);
+    config.shardSize = 32768;
+    config.loadExclusiveBufferNumber = 16;
+    config.bufferCapacity = config.shardSize * (config.loadExclusiveBufferNumber + 1);
+    config.shareBufferEnable = GetParam();
+    config.deviceId = 0;
+    auto s = transBuffer.Setup(config);
+    ASSERT_EQ(s, UC::Status::OK());
+    auto blockId1 = UC::Test::Detail::TypesHelper::MakeBlockId("a1b2c3d4e5f6789012345678901234ab");
+    auto blockId2 = UC::Test::Detail::TypesHelper::MakeBlockId("a2b2c3d4e5f6789012345678901234ab");
+    constexpr size_t shardIdx = 0;
+    void* ptr = nullptr;
+    {
+        auto handle1 = transBuffer.Get(blockId1, shardIdx);
+        ASSERT_TRUE(handle1);
+        ptr = handle1.Data();
+    }
+    {
+        auto handle2 = transBuffer.Get(blockId2, shardIdx);
+        ASSERT_TRUE(handle2);
+        ASSERT_EQ(ptr, handle2.Data());
+    }
+    {
+        auto handle1 = transBuffer.Get(blockId1, shardIdx, true);
+        ASSERT_TRUE(handle1);
+        ptr = handle1.Data();
+    }
+    {
+        auto handle2 = transBuffer.Get(blockId2, shardIdx, true);
+        ASSERT_TRUE(handle2);
+        ASSERT_NE(ptr, handle2.Data());
+    }
+}
+
 TEST_P(UCCacheTransBufferTest, InsertDifferentDataRepeatedly)
 {
     constexpr size_t nBatch = 2;
@@ -71,6 +110,7 @@ TEST_P(UCCacheTransBufferTest, InsertDifferentDataRepeatedly)
     config.bufferCapacity = nBlock * nShard * config.shardSize;
     config.shareBufferEnable = GetParam();
     config.deviceId = 0;
+    config.loadExclusiveBufferNumber = 0;
     auto s = transBuffer.Setup(config);
     ASSERT_EQ(s, UC::Status::OK());
     for (size_t iBatch = 0; iBatch < nBatch; iBatch++) {

@@ -128,6 +128,7 @@ private:
         config.GetNumber("running_queue_depth", param.runningQueueDepth);
         config.GetNumber("timeout_ms", param.timeoutMs);
         config.GetNumber("cache_stream_number", param.streamNumber);
+        config.GetNumber("cache_load_exclusive_buffer_number", param.loadExclusiveBufferNumber);
         return param;
     }
     Status CheckSizeConfig(const Config& config)
@@ -160,7 +161,7 @@ private:
         auto s = CheckSizeConfig(config);
         if (s.Failure()) { return s; }
         auto bufferNumber = config.bufferCapacity / config.shardSize;
-        if (bufferNumber < 1024) {
+        if (bufferNumber < 1024 || bufferNumber < config.loadExclusiveBufferNumber * 2) {
             return Status::InvalidParam("too small buffer({}) on shard({})", config.bufferCapacity,
                                         config.shardSize);
         }
