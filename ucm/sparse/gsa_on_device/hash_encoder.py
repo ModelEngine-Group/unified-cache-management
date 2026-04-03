@@ -269,9 +269,9 @@ if hasattr(torch, "cuda") and torch.cuda.is_available():
         k_cache_ptr,
         T,
         H,
-        K,
-        N_BITS,
-        N_BYTES,
+        K: tl.constexpr,
+        N_BITS: tl.constexpr,
+        N_BYTES: tl.constexpr,
         stride_xt,
         stride_xh,
         stride_xk,
@@ -355,6 +355,119 @@ if hasattr(torch, "cuda") and torch.cuda.is_available():
         )
         tl.store(out_ptrs, packed, mask=out_mask)
 
+    @triton.jit
+    def fused_hash_and_cache_mla_kernel(
+        x_nope_ptr,
+        x_rope_ptr,
+        code_nope_ptr,
+        code_rope_ptr,
+        pack_w_ptr,
+        slot_ptr,
+        k_cache_ptr,
+        T,
+        K_nope: tl.constexpr,
+        K_rope: tl.constexpr,
+        N_BITS_NOPE: tl.constexpr,
+        N_BITS_ROPE: tl.constexpr,
+        nope_hash_bytes: tl.constexpr,
+        stride_xt_nope,
+        stride_xk_nope,
+        stride_xt_rope,
+        stride_xk_rope,
+        stride_codek_nope,
+        stride_coden_nope,
+        stride_codek_rope,
+        stride_coden_rope,
+        stride_packw,
+        stride_cb,
+        stride_cs,
+        stride_cw,
+        block_size: tl.constexpr,
+        cache_num_slots: tl.constexpr,
+        BLOCK_M: tl.constexpr,
+        BLOCK_K: tl.constexpr,
+        BLOCK_N: tl.constexpr,
+    ):
+        pid_m = tl.program_id(0)
+        pid_n = tl.program_id(1)
+
+        if pid_m * BLOCK_M >= T:
+            return
+
+        blocks_for_nope = N_BITS_NOPE // BLOCK_N
+        is_nope = pid_n < blocks_for_nope
+
+        if is_nope:
+            K = K_nope
+            N_BITS = N_BITS_NOPE
+            x_ptr = x_nope_ptr
+            code_ptr = code_nope_ptr
+            stride_xt = stride_xt_nope
+            stride_xk = stride_xk_nope
+            stride_codek = stride_codek_nope
+            stride_coden = stride_coden_nope
+            byte_offset_base = 0
+            rel_pid_n = pid_n
+        else:
+            K = K_rope
+            N_BITS = N_BITS_ROPE
+            x_ptr = x_rope_ptr
+            code_ptr = code_rope_ptr
+            stride_xt = stride_xt_rope
+            stride_xk = stride_xk_rope
+            stride_codek = stride_codek_rope
+            stride_coden = stride_coden_rope
+            byte_offset_base = nope_hash_bytes
+            rel_pid_n = pid_n - blocks_for_nope
+
+        offs_m = pid_m * BLOCK_M + tl.arange(0, BLOCK_M)
+        offs_n = rel_pid_n * BLOCK_N + tl.arange(0, BLOCK_N)
+        offs_k = tl.arange(0, BLOCK_K)
+
+        m_mask = offs_m < T
+        n_mask = offs_n < N_BITS
+        acc = tl.zeros((BLOCK_M, BLOCK_N), dtype=tl.float32)
+
+        for _ in range(0, tl.cdiv(K, BLOCK_K)):
+            k_mask = offs_k < K
+            x_ptrs = x_ptr + offs_m[:, None] * stride_xt + offs_k[None, :] * stride_xk
+            x = tl.load(x_ptrs, mask=m_mask[:, None] & k_mask[None, :], other=0.0)
+
+            code_ptrs = (
+                code_ptr
+                + offs_k[:, None] * stride_codek
+                + offs_n[None, :] * stride_coden
+            )
+            code = tl.load(code_ptrs, mask=k_mask[:, None] & n_mask[None, :], other=0.0)
+
+            acc += tl.dot(x, code)
+            offs_k += BLOCK_K
+
+        bits = (acc > 0).to(tl.uint8)
+        bits_2d = tl.reshape(bits, (BLOCK_M, BLOCK_N // 8, 8))
+        pack_w = tl.load(pack_w_ptr + tl.arange(0, 8) * stride_packw)
+        packed = tl.sum(bits_2d * pack_w[None, None, :], axis=-1).to(tl.uint8)
+
+        offs_byte = rel_pid_n * (BLOCK_N // 8) + tl.arange(0, BLOCK_N // 8)
+        slot = tl.load(slot_ptr + offs_m, mask=m_mask, other=-1)
+
+        valid_slot = (slot >= 0) & (slot < cache_num_slots)
+        valid_row = m_mask & valid_slot
+        valid_byte = offs_byte[None, :] < (N_BITS // 8)
+        out_mask = valid_row[:, None] & valid_byte
+
+        safe_slot = tl.where(valid_row, slot, tl.zeros((BLOCK_M,), dtype=tl.int64))
+        b = (safe_slot // block_size)[:, None]
+        s = (safe_slot % block_size)[:, None]
+
+        out_ptrs = (
+            k_cache_ptr
+            + b * stride_cb
+            + s * stride_cs
+            + (byte_offset_base + offs_byte[None, :]) * stride_cw
+        )
+        tl.store(out_ptrs, packed, mask=out_mask)
+
 
 @torch.compile()
 def torch_hash_code(x, code, pack_weight):
@@ -377,7 +490,14 @@ class HashEncoder:
     """
 
     def __init__(
-        self, input_dim: int, hash_bits: int, dtype: torch.dtype, device: torch.device
+        self,
+        input_dim: int,
+        hash_bits: int,
+        dtype: torch.dtype,
+        device: torch.device,
+        input_dim_rope: int = 0,
+        hash_bits_rope: int = 0,
+        is_mla: bool = False,
     ) -> None:
         self.input_dim = input_dim
 
@@ -391,6 +511,7 @@ class HashEncoder:
 
         self.dtype = dtype
         self.device = device
+        self.is_mla = is_mla
 
         if self.device.type == "npu":
             if dtype not in [torch.float16, torch.float32, torch.float64]:
@@ -400,23 +521,40 @@ class HashEncoder:
                 logger.warning("automatically using  float16 for hash_weights now")
                 self.dtype = torch.float16
 
-        if self.device.type == "cuda" and dtype == torch.bfloat16:
-            logger.warning("geqrf_cuda not implemented for BFloat16")
-            logger.warning("automatically using  float32 for hash_weights now")
-            self.dtype = torch.float32
+        # if self.device.type == "cuda" and dtype == torch.bfloat16:
+        #     logger.warning("geqrf_cuda not implemented for BFloat16")
+        #     logger.warning("automatically using  float32 for hash_weights now")
+        #     self.dtype = torch.float32
 
-        self._init_hash_weights()
+        self.hash_weights = self._init_hash_weights(self.input_dim, self.hash_bits)
 
         if self.device.type == "cuda" or self.device.type == "cpu":
             self._init_bit_masks()
 
-    def _init_hash_weights(self):
+        if self.is_mla:
+            self.input_dim_rope = input_dim_rope
+            self.hash_bits_rope = hash_bits_rope
+            if hash_bits_rope % 8 != 0:
+                raise ValueError("hash_bits_rope must be a multiple of 8")
+            self.hash_numbers_rope = hash_bits_rope // 8
+            self.hash_weights_rope = self._init_hash_weights(
+                self.input_dim_rope, self.hash_bits_rope
+            )
+        else:
+            self.hash_numbers_rope = 0
+        self.hash_numbers_total = self.hash_numbers + self.hash_numbers_rope
+
+    def _init_hash_weights(self, input_dim, hash_bits):
         # Step 1: 随机高斯矩阵
         random_weights = torch.normal(
             mean=0,
             std=2,
-            size=(self.input_dim, self.hash_bits),
-            dtype=self.dtype,
+            size=(input_dim, hash_bits),
+            dtype=(
+                torch.float32
+                if (self.device.type == "cuda" and self.dtype == torch.bfloat16)
+                else self.dtype
+            ),
             device=self.device,
         )
         # Step 2: QR分解
@@ -424,7 +562,10 @@ class HashEncoder:
 
         # Step 3: 调整符号，保证Haar 分布
         d = torch.sign(torch.diag(R))
-        self.hash_weights = Q * d
+        hash_weights = Q * d
+        if self.device.type == "cuda" and self.dtype == torch.bfloat16:
+            hash_weights = hash_weights.to(self.dtype)
+        return hash_weights
 
     def set_hash_weight(self, hash_weights: torch.Tensor) -> None:
         if hash_weights.shape != (self.input_dim, self.hash_bits):
@@ -447,7 +588,7 @@ class HashEncoder:
             2, torch.arange(8, dtype=torch.uint8, device=self.device)
         )
 
-    def compute_hash(self, x: torch.Tensor) -> torch.Tensor:
+    def compute_hash(self, x: torch.Tensor, is_rope: bool = False) -> torch.Tensor:
         """
         Compute the hash code for input tensor x.
         Args:
@@ -456,9 +597,13 @@ class HashEncoder:
             A tensor of shape (..., hash_numbers=hash_bits // 8) representing the hash codes.
             Each element is a uint8 number representing 8 bits of the hash code.
         """
-        if x.shape[-1] != self.input_dim:
+        input_dim = self.input_dim_rope if is_rope else self.input_dim
+        hash_weights = self.hash_weights_rope if is_rope else self.hash_weights
+        hash_numbers = self.hash_numbers_rope if is_rope else self.hash_numbers
+
+        if x.shape[-1] != input_dim:
             raise ValueError(
-                f"x must be of shape (..., {self.input_dim}), but got {x.shape}"
+                f"x must be of shape (..., {input_dim}), but got {x.shape}"
             )
         if x.device != self.device:
             raise ValueError(
@@ -470,14 +615,14 @@ class HashEncoder:
         orig_shape = x.shape[:-1]
 
         # [N, input_dim], e.g., N = s1*s2*s3
-        x_flat = x.reshape(-1, self.input_dim)
+        x_flat = x.reshape(-1, input_dim)
 
         if x_flat.dtype != self.dtype:
             x_flat = x_flat.to(self.dtype)
 
         if self.device.type == "npu":
             # [N, hash_bits]
-            xW = torch.matmul(x_flat, self.hash_weights)
+            xW = torch.matmul(x_flat, hash_weights)
             # [N * hash_bits]
             xW_flat = xW.view(-1)
             # [N*hash_numbers], where hash_numbers = hash_bits // 8
@@ -485,14 +630,14 @@ class HashEncoder:
 
         elif self.device.type == "cuda":
             packed_codes_flat = triton_hash_code(
-                x_flat, self.hash_weights, self.bit_masks
+                x_flat, hash_weights, self.bit_masks
             ).view(
                 -1
             )  # [N * hash_numbers]
 
         elif self.device.type == "cpu":
             packed_codes_flat = torch_hash_code(
-                x_flat, self.hash_weights, self.bit_masks
+                x_flat, hash_weights, self.bit_masks
             ).view(
                 -1
             )  # [N * hash_numbers]
@@ -501,7 +646,7 @@ class HashEncoder:
             raise ValueError(f"Unsupported device type: {self.device.type}")
 
         # e.g., [s1, s2, s3, hash_numbers]
-        out_shape = orig_shape + (self.hash_numbers,)
+        out_shape = orig_shape + (hash_numbers,)
         packed_codes = packed_codes_flat.view(out_shape)
 
         return packed_codes
@@ -514,30 +659,30 @@ class HashEncoder:
             内部 view 成 uint8 后变成 [B, BS, H, hash_numbers]
         """
         if cache.dtype == torch.uint8:
-            if cache.shape[-1] != self.hash_numbers:
+            if cache.shape[-1] != self.hash_numbers_total:
                 raise ValueError(
                     f"uint8 cache last dim mismatch: got {cache.shape[-1]}, "
-                    f"expected {self.hash_numbers}"
+                    f"expected {self.hash_numbers_total}"
                 )
             return cache
 
         if cache.dtype == torch.bfloat16:
-            if self.hash_numbers % 2 != 0:
+            if self.hash_numbers_total % 2 != 0:
                 raise ValueError(
-                    f"for bfloat16 cache, hash_numbers must be even, got {self.hash_numbers}"
+                    f"for bfloat16 cache, hash_numbers must be even, got {self.hash_numbers_total}"
                 )
-            if cache.shape[-1] != self.hash_numbers // 2:
+            if cache.shape[-1] != self.hash_numbers_total // 2:
                 raise ValueError(
                     f"bfloat16 cache last dim mismatch: got {cache.shape[-1]}, "
-                    f"expected {self.hash_numbers // 2}"
+                    f"expected {self.hash_numbers_total // 2}"
                 )
 
             cache_u8 = cache.view(torch.uint8)
 
-            if cache_u8.shape[-1] != self.hash_numbers:
+            if cache_u8.shape[-1] != self.hash_numbers_total:
                 raise ValueError(
                     f"reinterpret bf16->u8 failed: got last dim {cache_u8.shape[-1]}, "
-                    f"expected {self.hash_numbers}"
+                    f"expected {self.hash_numbers_total}"
                 )
             return cache_u8
 
@@ -650,6 +795,77 @@ class HashEncoder:
             stride_cb=stride_cb,
             stride_cs=stride_cs,
             stride_ch=stride_ch,
+            stride_cw=stride_cw,
+            block_size=block_size,
+            cache_num_slots=cache_num_slots,
+            BLOCK_M=BLOCK_M,
+            BLOCK_K=BLOCK_K,
+            BLOCK_N=BLOCK_N,
+            num_warps=num_warps,
+        )
+
+        return k_hash_cache
+
+    def compute_hash_and_cache_mla(
+        self,
+        x: torch.Tensor,  # [T, 1, K_nope]
+        x_rope: torch.Tensor,  # [T, 1, K_rope]
+        slot_mapping: torch.Tensor,  # [T]
+        k_hash_cache: torch.Tensor,  # [B, BS, 1, N], uint8 or bf16
+        block_size: int = 128,
+        BLOCK_M: int = 64,
+        BLOCK_K: int = 64,
+        BLOCK_N: int = 64,
+        num_warps: int = 4,
+    ):
+        T, K = x.shape
+        _, K_rope = x_rope.shape
+        B, _, _ = k_hash_cache.shape
+
+        k_hash_cache_u8 = self._reinterpret_cache_as_u8(k_hash_cache)
+
+        if x.dtype != self.dtype:
+            x = x.to(self.dtype)
+        if x_rope.dtype != self.dtype:
+            x_rope = x_rope.to(self.dtype)
+
+        cache_num_slots = B * block_size
+
+        stride_xt, stride_xk = x.stride()
+        stride_xt_rope, stride_xk_rope = x_rope.stride()
+        stride_codek, stride_coden = self.hash_weights.stride()
+        stride_codek_rope, stride_coden_rope = self.hash_weights_rope.stride()
+        (stride_packw,) = self.bit_masks.stride()
+        stride_cb, stride_cs, stride_cw = k_hash_cache_u8.stride()
+
+        total_hash_bits = self.hash_bits + self.hash_bits_rope
+        grid = (triton.cdiv(T, BLOCK_M), triton.cdiv(total_hash_bits, BLOCK_N))
+
+        fused_hash_and_cache_mla_kernel[grid](
+            x_nope_ptr=x,
+            x_rope_ptr=x_rope,
+            code_nope_ptr=self.hash_weights,
+            code_rope_ptr=self.hash_weights_rope,
+            pack_w_ptr=self.bit_masks,
+            slot_ptr=slot_mapping,
+            k_cache_ptr=k_hash_cache_u8,
+            T=T,
+            K_nope=K,
+            K_rope=K_rope,
+            N_BITS_NOPE=self.hash_bits,
+            N_BITS_ROPE=self.hash_bits_rope,
+            nope_hash_bytes=self.hash_numbers,
+            stride_xt_nope=stride_xt,
+            stride_xk_nope=stride_xk,
+            stride_xt_rope=stride_xt_rope,
+            stride_xk_rope=stride_xk_rope,
+            stride_codek_nope=stride_codek,
+            stride_coden_nope=stride_coden,
+            stride_codek_rope=stride_codek_rope,
+            stride_coden_rope=stride_coden_rope,
+            stride_packw=stride_packw,
+            stride_cb=stride_cb,
+            stride_cs=stride_cs,
             stride_cw=stride_cw,
             block_size=block_size,
             cache_num_slots=cache_num_slots,

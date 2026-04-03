@@ -218,6 +218,15 @@ class GSAOnDevice(UcmSparseBase):
             self.qk_rope_head_dim = getattr(
                 vllm_config.model_config.hf_text_config, "qk_rope_head_dim", None
             )
+            self.hash_encoder = HashEncoder(
+                input_dim=self.kv_lora_rank,
+                hash_bits=self.kv_lora_rank,
+                dtype=vllm_config.model_config.dtype,
+                device=self.device,
+                input_dim_rope=self.qk_rope_head_dim,
+                hash_bits_rope=self.qk_rope_head_dim,
+                is_mla=True,
+            )
             self.hash_encoder_nope = HashEncoder(
                 input_dim=self.kv_lora_rank,
                 hash_bits=self.kv_lora_rank,
@@ -426,14 +435,12 @@ class GSAOnDevice(UcmSparseBase):
     def cache_k_hash_mla_cuda(
         self, nope, rope, k_hash, attn_metadata, forward_context, layer_name
     ):
-        k_c_normed_hash, k_pe_hash = self.hash_code(nope=nope, rope=rope)
-        ops.concat_and_cache_mla(
-            k_c_normed_hash,
-            k_pe_hash.squeeze(1),
-            k_hash,
-            attn_metadata.slot_mapping.flatten(),
-            kv_cache_dtype="auto",
-            scale=self._k_scale,
+        self.hash_encoder.compute_hash_and_cache_mla(
+            x=nope,
+            x_rope=rope.squeeze(1),
+            slot_mapping=attn_metadata.slot_mapping.flatten(),
+            k_hash_cache=k_hash,
+            block_size=self.block_size,
         )
         if self.has_pc_hit:
             ## kvcache -> nope + rope
@@ -444,14 +451,13 @@ class GSAOnDevice(UcmSparseBase):
             k_c_normed, k_pe = torch.split(k_cache, [512, 64], dim=-1)
             k_c_normed = k_c_normed.reshape(-1, k_c_normed.shape[2])
             k_pe = k_pe.reshape(-1, k_pe.shape[2])
-            k_c_normed_hash, k_pe_hash = self.hash_code(nope=k_c_normed, rope=k_pe)
-            ops.concat_and_cache_mla(
-                k_c_normed_hash,
-                k_pe_hash,
-                k_hash,
-                self.prefix_slot_mapping.flatten(),
-                kv_cache_dtype="auto",
-                scale=self._k_scale,
+
+            self.hash_encoder.compute_hash_and_cache_mla(
+                x=k_c_normed,
+                x_rope=k_pe,
+                slot_mapping=self.prefix_slot_mapping.flatten(),
+                k_hash_cache=k_hash,
+                block_size=self.block_size,
             )
 
     def cache_k_hash_mla_npu(
