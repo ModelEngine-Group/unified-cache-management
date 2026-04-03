@@ -96,6 +96,7 @@ class TestBasicOnlineInference:
                 if ucm_connector_name == "UcmNfsStore"
                 else {}
             ),
+            "chunk_size": 256,
         }
 
         # Build vllm_server_startup_args
@@ -183,6 +184,7 @@ class TestBasicOnlineInference:
                 if ucm_connector_name == "UcmNfsStore"
                 else {}
             ),
+            "chunk_size": 256,
         }
 
         # Build vllm_server_startup_args with pipeline parallel size
@@ -256,6 +258,7 @@ class TestBasicOnlineInference:
                 if ucm_connector_name == "UcmNfsStore"
                 else {}
             ),
+            "chunk_size": 256,
         }
 
         # Build vllm_server_startup_args with tensor parallel size
