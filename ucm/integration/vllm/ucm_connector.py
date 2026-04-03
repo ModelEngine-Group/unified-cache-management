@@ -63,12 +63,12 @@ class RequestDispatchMeta:
 
 class KVCacheLayout:
     def __init__(
-        self, kvcaches, use_layerwise: bool, vllm_config: "VllmConfig"
+        self, kvcaches, launch_config: dict, vllm_config: "VllmConfig"
     ) -> None:
         # each row is a layer, each column is a tensor_size/ptr in the layer (e.g., k, v, rope, k_index)
         self.base_ptrs: np.ndarray  # (n_layers, n_ptrs）
         self.tensor_size_lists: np.ndarray  # (n_layers, n_tensor_sizes)
-        self.use_layerwise = use_layerwise
+        self.use_layerwise = launch_config.get("use_layerwise", False)
         self.vllm_config = vllm_config
         self.pp_size = self.vllm_config.parallel_config.pipeline_parallel_size
         self.num_hidden_layers = getattr(
@@ -246,7 +246,10 @@ class UCMDirectConnector(KVConnectorBase_V1):
         self.enable_event_sync = self.launch_config.get("enable_event_sync", True)
         assert len(self.connector_configs) > 0, "no storage connector name in config."
 
-        self.chunk_size = self.block_size
+        self.chunk_size = self.launch_config.get("chunk_size", self.block_size)
+        assert (
+            self.chunk_size % self.block_size == 0
+        ), "chunk_size must be divisible by block_size"
         self.blocks_per_chunk = self.chunk_size // self.block_size
 
         if role == KVConnectorRole.SCHEDULER:
@@ -361,7 +364,7 @@ class UCMDirectConnector(KVConnectorBase_V1):
             for i, tensor in enumerate(sample_kv_layer):
                 logger.info(f"kv cache shape {i}: {tensor.shape}")
         self.kv_cache_layout = KVCacheLayout(
-            self.kv_caches, self.use_layerwise, self._vllm_config
+            self.kv_caches, self.launch_config, self._vllm_config
         )
         self.block_data_size = self.kv_cache_layout.block_size
         self.layer_name_to_id = self.kv_cache_layout.layer_name_to_id
@@ -395,10 +398,10 @@ class UCMDirectConnector(KVConnectorBase_V1):
         num_computed_tokens: int,
     ) -> tuple[int, bool]:
         assert num_computed_tokens % self.block_size == 0
-        hbm_hit_block_num = num_computed_tokens // self.block_size
+        hbm_hit_block_num = num_computed_tokens // self.chunk_size
 
         ucm_block_ids = self.generate_hash(
-            self.block_size, request.all_token_ids, self._seed
+            self.chunk_size, request.all_token_ids, self._seed
         )
 
         external_block_ids = ucm_block_ids[hbm_hit_block_num:]
@@ -422,12 +425,15 @@ class UCMDirectConnector(KVConnectorBase_V1):
 
         total_hit_block_num = hbm_hit_block_num + external_hit_blocks
 
-        external_hit_tokens = external_hit_blocks * self.block_size
+        external_hit_tokens = 0
+        if external_hit_blocks > 0:
+            remainder = num_computed_tokens % self.chunk_size
+            external_hit_tokens = external_hit_blocks * self.chunk_size - remainder
 
         # When all the tokens are cached in ssd or hbm,
         # we need to recompute the last token. This if condition will be removed
         # once vLLM scheduler provides a better solution in the future.
-        num_total_hit_tokens = total_hit_block_num * self.block_size
+        num_total_hit_tokens = external_hit_tokens + num_computed_tokens
         if num_total_hit_tokens == request.num_tokens:
             external_hit_tokens -= 1
 
@@ -474,13 +480,19 @@ class UCMDirectConnector(KVConnectorBase_V1):
         dump_ucm_block_ids, dump_vllm_block_ids = [], []
         if need_load:
             load_ucm_block_ids = ucm_block_ids[hbm_hit_block_num:total_hit_block_num]
-            load_vllm_block_ids = vllm_block_ids[hbm_hit_block_num:total_hit_block_num]
+            load_vllm_block_ids = vllm_block_ids[
+                hbm_hit_block_num
+                * self.blocks_per_chunk : total_hit_block_num
+                * self.blocks_per_chunk
+            ]
 
         if req_meta.token_processed < req_meta.num_token_ids:
-            start_idx = req_meta.token_processed // self.block_size
-            end_idx = (req_meta.token_processed + new_tokens) // self.block_size
+            start_idx = req_meta.token_processed // self.chunk_size
+            end_idx = (req_meta.token_processed + new_tokens) // self.chunk_size
             dump_ucm_block_ids = ucm_block_ids[start_idx:end_idx]
-            dump_vllm_block_ids = req_meta.vllm_block_ids[start_idx:end_idx]
+            dump_vllm_block_ids = req_meta.vllm_block_ids[
+                start_idx * self.blocks_per_chunk : end_idx * self.blocks_per_chunk
+            ]
             req_meta.token_processed += new_tokens
 
         return RequestDispatchMeta(
@@ -569,7 +581,10 @@ class UCMDirectConnector(KVConnectorBase_V1):
                 for i, ucm_block_id in enumerate(ucm_block_ids):
                     ucm_block_ids[i] = self.request_hasher(ucm_block_id)
             total_ptrs = self.kv_cache_layout.extract_block_addrs(vllm_block_ids)
-            total_ptrs = total_ptrs.reshape(total_ptrs.shape[0], -1)
+            total_ptrs = total_ptrs.reshape(
+                total_ptrs.shape[0] // self.blocks_per_chunk, -1
+            )
+            assert total_ptrs.shape[0] == len(ucm_block_ids)
             shard_indexs = [0] * len(ucm_block_ids)
             try:
                 task = self.store.load_data(ucm_block_ids, shard_indexs, total_ptrs)
@@ -662,7 +677,10 @@ class UCMDirectConnector(KVConnectorBase_V1):
 
         if is_save:
             total_ptrs = self.kv_cache_layout.extract_block_addrs(total_vllm_block_ids)
-            total_ptrs = total_ptrs.reshape(total_ptrs.shape[0], -1)
+            total_ptrs = total_ptrs.reshape(
+                total_ptrs.shape[0] // self.blocks_per_chunk, -1
+            )
+            assert total_ptrs.shape[0] == len(total_ucm_block_ids)
             shard_indexs = [0] * len(total_ucm_block_ids)
             try:
                 event_handle = self._get_dump_event_handle()
@@ -777,6 +795,14 @@ class UCMLayerWiseConnector(UCMDirectConnector):
             total_ptrs = self.kv_cache_layout.extract_block_addrs(
                 vllm_block_ids, layer_first=True
             )
+            # (n_layers, num_blocks, n_ptrs) -> (n_layers, num_blocks//bpc, bpc*n_ptrs)
+            n_layers, n_blocks, n_ptrs = total_ptrs.shape
+            total_ptrs = total_ptrs.reshape(
+                n_layers,
+                n_blocks // self.blocks_per_chunk,
+                self.blocks_per_chunk * n_ptrs,
+            )
+            assert total_ptrs.shape[1] == len(ucm_block_ids)
             self.request_data.append((request_id, ucm_block_ids, total_ptrs))
 
         if self.need_load:
@@ -840,6 +866,14 @@ class UCMLayerWiseConnector(UCMDirectConnector):
                 self.dump_total_ptrs = self.kv_cache_layout.extract_block_addrs(
                     total_vllm_block_ids, layer_first=True
                 )
+                # (n_layers, num_blocks, n_ptrs) -> (n_layers, num_blocks//bpc, bpc*n_ptrs)
+                n_layers, n_blocks, n_ptrs = self.dump_total_ptrs.shape
+                self.dump_total_ptrs = self.dump_total_ptrs.reshape(
+                    n_layers,
+                    n_blocks // self.blocks_per_chunk,
+                    self.blocks_per_chunk * n_ptrs,
+                )
+                assert self.dump_total_ptrs.shape[1] == len(total_ucm_block_ids)
             shard_indexs = [layer_id] * len(total_ucm_block_ids)
             try:
                 layer_ptrs = np.ascontiguousarray(self.dump_total_ptrs[local_layer_id])
