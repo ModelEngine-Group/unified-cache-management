@@ -1127,18 +1127,8 @@
                     "num_hidden_layers": 126,
                     "num_key_value_heads": 8
                 },
-                // GLM Models (Zhipu AI)
-                "zai-org/GLM-4.5":{
-                    "hidden_size": 6144,
-                    "num_attention_heads": 64,
-                    "num_hidden_layers": 78,
-                    "num_key_value_heads": 64,
-                    "kv_lora_rank": 512,
-                    "qk_rope_head_dim": 64
-                },
-
                 // =====================================================
-                // Additional 2025 Mainstream Models
+                // Additional 2026 Mainstream Models
                 // =====================================================
 
                 // DeepSeek V3.2 (MLA)
@@ -1152,6 +1142,20 @@
                 },
 
                 // GLM Series
+                "zai-org/GLM-4.5":{
+                    "hidden_size": 5120,
+                    "num_attention_heads": 96,
+                    "num_hidden_layers": 92,
+                    "num_key_value_heads": 8,
+                    "head_dim": 128
+                },
+                "zai-org/GLM-4.5-Air": {
+                    "hidden_size": 4096,
+                    "num_attention_heads": 96,
+                    "num_hidden_layers": 46,
+                    "num_key_value_heads": 8,
+                    "head_dim": 128
+                },
                 "zai-org/GLM-4.7": {
                     "hidden_size": 5120,
                     "num_attention_heads": 96,
@@ -1160,25 +1164,18 @@
                     "head_dim": 128
                 },
                 "zai-org/GLM-4.7-Flash": {
-                    "hidden_size": 5120,
-                    "num_attention_heads": 96,
+                    "hidden_size": 2048,
+                    "num_attention_heads": 20,
                     "num_hidden_layers": 47,
-                    "num_key_value_heads": 8,
+                    "num_key_value_heads": 20,
                     "kv_lora_rank": 512,
                     "qk_rope_head_dim": 64
                 },
-                "zai-org/GLM-4.5-Air": {
-                    "hidden_size": 5120,
-                    "num_attention_heads": 40,
-                    "num_hidden_layers": 46,
-                    "num_key_value_heads": 8,
-                    "head_dim": 128
-                },
                 "zai-org/GLM-5": {
-                    "hidden_size": 7168,
-                    "num_attention_heads": 128,
+                    "hidden_size": 6144,
+                    "num_attention_heads": 64,
                     "num_hidden_layers": 78,
-                    "num_key_value_heads": 128,
+                    "num_key_value_heads": 64,
                     "kv_lora_rank": 512,
                     "qk_rope_head_dim": 64
                 },
@@ -1208,54 +1205,33 @@
 
                 // Qwen3 Series (GQA with explicit head_dim, some Hybrid)
                 "Qwen/Qwen3.5-397B-A17B": {
-                    "hidden_size": 5120,
-                    "num_attention_heads": 80,
-                    "num_hidden_layers": 94,
-                    "num_key_value_heads": 2,
-                    "head_dim": 128
-                },
-                "Qwen/Qwen3-235B-A22B": {
                     "hidden_size": 4096,
-                    "num_attention_heads": 64,
-                    "num_hidden_layers": 94,
-                    "num_key_value_heads": 4,
-                    "head_dim": 128
+                    "num_attention_heads": 32,
+                    "num_hidden_layers": 60,
+                    "num_key_value_heads": 2,
+                    "head_dim": 256
                 },
                 "Qwen/Qwen3.5-122B-A10B": {
-                    "hidden_size": 5120,
-                    "num_attention_heads": 80,
-                    "num_hidden_layers": 94,
+                    "hidden_size": 3072,
+                    "num_attention_heads": 32,
+                    "num_hidden_layers": 48,
                     "num_key_value_heads": 2,
-                    "head_dim": 128
+                    "head_dim": 256
+                },
+                "Qwen/Qwen3.5-35B-A3B": {
+                    "hidden_size": 2048,
+                    "num_attention_heads": 16,
+                    "num_hidden_layers": 40,
+                    "num_key_value_heads": 2,
+                    "head_dim": 256
                 },
                 "Qwen/Qwen3.5-27B": {
                     "hidden_size": 5120,
                     "num_attention_heads": 40,
                     "num_hidden_layers": 64,
                     "num_key_value_heads": 4,
-                    "head_dim": 128
+                    "head_dim": 256
                 },
-
-                // Gemma4 Series (Hybrid + Sliding Window + Multimodal)
-                "google/gemma-4-31B": {
-                    "hidden_size": 2816,
-                    "num_attention_heads": 16,
-                    "num_hidden_layers": 30,
-                    "num_key_value_heads": 8,
-                    "head_dim": 256,
-                    "sliding_window": 1024,
-                    "attention_layer_count": 6
-                },
-                "google/gemma-4-26B-A4B-it": {
-                    "hidden_size": 2816,
-                    "num_attention_heads": 16,
-                    "num_hidden_layers": 30,
-                    "num_key_value_heads": 8,
-                    "head_dim": 256,
-                    "sliding_window": 1024,
-                    "attention_layer_count": 6
-                },
-
                 // Kimi Series (MLA + Multimodal)
                 "moonshot/Kimi-K2.5": {
                     "hidden_size": 7168,
@@ -1272,37 +1248,6 @@
                     "num_key_value_heads": 64,
                     "kv_lora_rank": 512,
                     "qk_rope_head_dim": 64
-                },
-
-                // MiMo Series (Hybrid + Sliding Window)
-                "mimo/MiMo-V2-Flash": {
-                    "hidden_size": 4096,
-                    "num_attention_heads": 64,
-                    "num_hidden_layers": 48,
-                    "num_key_value_heads": 4,
-                    "head_dim": 192,
-                    "sliding_window": 128,
-                    "attention_layer_count": 39
-                },
-
-                // GPT-OSS Series (Hybrid + Sliding)
-                "openai/gpt-oss-20b": {
-                    "hidden_size": 5120,
-                    "num_attention_heads": 40,
-                    "num_hidden_layers": 48,
-                    "num_key_value_heads": 8,
-                    "head_dim": 128,
-                    "sliding_window": 128,
-                    "attention_layer_count": 24
-                },
-                "openai/gpt-oss-120b": {
-                    "hidden_size": 6144,
-                    "num_attention_heads": 64,
-                    "num_hidden_layers": 72,
-                    "num_key_value_heads": 8,
-                    "head_dim": 96,
-                    "sliding_window": 128,
-                    "attention_layer_count": 36
                 }
             };
         }
