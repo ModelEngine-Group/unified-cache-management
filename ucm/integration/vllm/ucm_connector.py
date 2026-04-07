@@ -783,6 +783,8 @@ class UCMLayerWiseConnector(UCMDirectConnector):
             self._submit_request_load_tasks_for_layer(self.first_layer_id, 0, metadata)
 
     def wait_for_layer_load(self, layer_name: str) -> None:
+        if not self._connector_metadata:
+            return
         if not self.need_load:
             return
         metadata = self._get_connector_metadata()
@@ -814,7 +816,8 @@ class UCMLayerWiseConnector(UCMDirectConnector):
         attn_metadata: "AttentionMetadata",
         **kwargs,
     ) -> None:
-        # TODO support PP
+        if not self._connector_metadata:
+            return
         if self.is_mla and self.tp_rank % self.tp_size != 0:
             return
 
