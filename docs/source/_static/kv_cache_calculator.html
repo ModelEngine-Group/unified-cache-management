@@ -1,4 +1,10 @@
-  <!-- KV Cache Calculator - Optimized for Sphinx Integration -->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>KV Cache Calculator</title>
+    <!-- KV Cache Calculator - Optimized for Sphinx Integration -->
     <style>
         /* CSS Variables for Theme Support - fully compatible with Sphinx themes */
         :root {
@@ -671,7 +677,7 @@
                 <div class="formula-card">
                     <div class="formula-header">
                         <span>🔹</span>
-                        <span>Standard Transformer (Llama, Mistral, GLM, MiniMax, etc.)</span>
+                        <span>Standard Transformer (Llama, Mistral,etc.)</span>
                     </div>
                     <div class="formula-content">
                         <div class="formula-main">
@@ -722,7 +728,7 @@
                 <div class="formula-card">
                     <div class="formula-header">
                         <span>🔸</span>
-                        <span>MLA (DeepSeek V3/R1, Kimi K2)</span>
+                        <span>MLA (DeepSeek V3/R1, Kimi K2, GLM-5, etc.)</span>
                     </div>
                     <div class="formula-content">
                         <div class="formula-main">
@@ -755,17 +761,83 @@
                             </div>
                             <div class="formula-step">
                                 <span class="formula-step-label">Models:</span>
-                                <span class="formula-step-value">DeepSeek V3/R1/V3.1/V3.2, Kimi K2</span>
+                                <span class="formula-step-value">DeepSeek V3/R1/V3.1/V3.2, Kimi K2, GLM-5</span>
                             </div>
                         </div>
                     </div>
                 </div>
 
-                <!-- Qwen3 Formula -->
+                <!-- Sliding Window Formula -->
                 <div class="formula-card">
                     <div class="formula-header">
                         <span>🔹</span>
-                        <span>Qwen3 (GQA with explicit head_dim)</span>
+                        <span>Sliding Window (MiMo-V2-Flash, Gemma4)</span>
+                    </div>
+                    <div class="formula-content">
+                        <div class="formula-main">
+                            Single-GPU KV Cache = 2 × layers × window_size × batch × kv_heads × head_dim / tp × dtype_size
+                        </div>
+                        <div class="formula-breakdown">
+                            <div class="formula-step">
+                                <span class="formula-step-label">Key Feature:</span>
+                                <span class="formula-step-value">Only caches KV within the sliding window</span>
+                            </div>
+                            <div class="formula-step">
+                                <span class="formula-step-label">window_size:</span>
+                                <span class="formula-step-value">Fixed window size (e.g., 128, 1024)</span>
+                            </div>
+                            <div class="formula-step">
+                                <span class="formula-step-label">tokens:</span>
+                                <span class="formula-step-value">Replaced by window_size in calculation</span>
+                            </div>
+                            <div class="formula-step">
+                                <span class="formula-step-label">Memory:</span>
+                                <span class="formula-step-value">Independent of sequence length beyond window</span>
+                            </div>
+                            <div class="formula-step">
+                                <span class="formula-step-label">Models:</span>
+                                <span class="formula-step-value">MiMo-V2-Flash, Gemma4, GPT-OSS</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Hybrid Formula -->
+                <div class="formula-card">
+                    <div class="formula-header">
+                        <span>🔹</span>
+                        <span>Hybrid - Attention + SSM (Qwen3.5, MiMo)</span>
+                    </div>
+                    <div class="formula-content">
+                        <div class="formula-main">
+                            Single-GPU KV Cache = 2 × attention_layers × tokens × batch × kv_heads × head_dim / tp × dtype_size
+                        </div>
+                        <div class="formula-breakdown">
+                            <div class="formula-step">
+                                <span class="formula-step-label">Key Feature:</span>
+                                <span class="formula-step-value">Only Attention layers contribute to KV cache</span>
+                            </div>
+                            <div class="formula-step">
+                                <span class="formula-step-label">attention_layers:</span>
+                                <span class="formula-step-value">Number of layers using Attention (excludes SSM layers)</span>
+                            </div>
+                            <div class="formula-step">
+                                <span class="formula-step-label">SSM Layers:</span>
+                                <span class="formula-step-value">Mamba, RWKV, etc. have no KV cache</span>
+                            </div>
+                            <div class="formula-step">
+                                <span class="formula-step-label">Models:</span>
+                                <span class="formula-step-value">Qwen3.5-27B/122B/397B, MiMo-V2-Flash</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- GQA with explicit head_dim -->
+                <div class="formula-card">
+                    <div class="formula-header">
+                        <span>🔹</span>
+                        <span>GQA (with explicit head_dim(Qwen3, GLM-4,7, etc.))</span>
                     </div>
                     <div class="formula-content">
                         <div class="formula-main">
@@ -789,12 +861,8 @@
                                 <span class="formula-step-value">Data parallelism (does NOT affect single-GPU KV cache)</span>
                             </div>
                             <div class="formula-step">
-                                <span class="formula-step-label">Difference:</span>
-                                <span class="formula-step-value">Uses explicit head_dim instead of hidden_size</span>
-                            </div>
-                            <div class="formula-step">
                                 <span class="formula-step-label">Models:</span>
-                                <span class="formula-step-value">Qwen3-32B/235B-A22B/480B-A35B, etc.</span>
+                                <span class="formula-step-value">Qwen3-32B/235B-A22B/480B-A35B, GLM-4.7</span>
                             </div>
                         </div>
                     </div>
@@ -804,7 +872,7 @@
                 <div class="formula-card" style="border-left-color: var(--accent-warning);">
                     <div class="formula-header">
                         <span>🔍</span>
-                        <span>How to Identify Model Type</span>
+                        <span>How to Identify Model Type from Config</span>
                     </div>
                     <div class="formula-content">
                         <div class="formula-breakdown">
@@ -813,12 +881,28 @@
                                 <span class="formula-step-value">Check for <code>kv_lora_rank</code> and <code>qk_rope_head_dim</code> in config</span>
                             </div>
                             <div class="formula-step">
-                                <span class="formula-step-label">Qwen3:</span>
-                                <span class="formula-step-value">Check for <code>head_dim</code> in config (but not MLA)</span>
+                                <span class="formula-step-label">Sliding Window:</span>
+                                <span class="formula-step-value">Check for <code>sliding_window</code> field</span>
                             </div>
                             <div class="formula-step">
-                                <span class="formula-step-label">Standard:</span>
-                                <span class="formula-step-value">Only has <code>hidden_size</code>, <code>num_attention_heads</code>, <code>num_key_value_heads</code></span>
+                                <span class="formula-step-label">Hybrid:</span>
+                                <span class="formula-step-value">Check for <code>attention_layer_count</code> or <code>layer_types</code></span>
+                            </div>
+                            <div class="formula-step">
+                                <span class="formula-step-label">GQA:</span>
+                                <span class="formula-step-value">kv_heads < attn_heads and > 1</span>
+                            </div>
+                            <div class="formula-step">
+                                <span class="formula-step-label">MQA:</span>
+                                <span class="formula-step-value">kv_heads = 1</span>
+                            </div>
+                            <div class="formula-step">
+                                <span class="formula-step-label">MHA:</span>
+                                <span class="formula-step-value">kv_heads = attn_heads</span>
+                            </div>
+                            <div class="formula-step">
+                                <span class="formula-step-label">Multimodal:</span>
+                                <span class="formula-step-value">Check for <code>text_config</code> nested structure</span>
                             </div>
                         </div>
                     </div>
@@ -988,14 +1072,6 @@
                     "kv_lora_rank": 512,
                     "qk_rope_head_dim": 64
                 },
-                "deepseek-ai/DeepSeek-V3.2": {
-                    "hidden_size": 7168,
-                    "num_attention_heads": 128,
-                    "num_hidden_layers": 61,
-                    "num_key_value_heads": 128,
-                    "kv_lora_rank": 512,
-                    "qk_rope_head_dim": 64
-                },
 
                 // Qwen3 Models (2025)
                 "Qwen/Qwen3-32B": {
@@ -1060,22 +1136,128 @@
                     "kv_lora_rank": 512,
                     "qk_rope_head_dim": 64
                 },
-                "zai-org/GLM-4.7":{
+
+                // =====================================================
+                // Additional 2025 Mainstream Models
+                // =====================================================
+
+                // DeepSeek V3.2 (MLA)
+                "deepseek-ai/DeepSeek-V3.2": {
+                    "hidden_size": 7168,
+                    "num_attention_heads": 128,
+                    "num_hidden_layers": 61,
+                    "num_key_value_heads": 128,
+                    "kv_lora_rank": 512,
+                    "qk_rope_head_dim": 64
+                },
+
+                // GLM Series
+                "zai-org/GLM-4.7": {
                     "hidden_size": 5120,
                     "num_attention_heads": 96,
                     "num_hidden_layers": 92,
                     "num_key_value_heads": 8,
                     "head_dim": 128
                 },
-                "zai-org/GLM-4.6":{
+                "zai-org/GLM-4.7-Flash": {
                     "hidden_size": 5120,
                     "num_attention_heads": 96,
-                    "num_hidden_layers": 92,
+                    "num_hidden_layers": 47,
+                    "num_key_value_heads": 8,
+                    "kv_lora_rank": 512,
+                    "qk_rope_head_dim": 64
+                },
+                "zai-org/GLM-4.5-Air": {
+                    "hidden_size": 5120,
+                    "num_attention_heads": 40,
+                    "num_hidden_layers": 46,
                     "num_key_value_heads": 8,
                     "head_dim": 128
                 },
-                // Kimi Models (Moonshot AI)
-                "moonshotai/Kimi-K2-Instruct-0905": {
+                "zai-org/GLM-5": {
+                    "hidden_size": 7168,
+                    "num_attention_heads": 128,
+                    "num_hidden_layers": 78,
+                    "num_key_value_heads": 128,
+                    "kv_lora_rank": 512,
+                    "qk_rope_head_dim": 64
+                },
+
+                // MiniMax Series (GQA + MoE)
+                "minimax/MiniMax-M2.5": {
+                    "hidden_size": 3072,
+                    "num_attention_heads": 48,
+                    "num_hidden_layers": 62,
+                    "num_key_value_heads": 8,
+                    "head_dim": 128
+                },
+                "minimax/MiniMax-M2.1": {
+                    "hidden_size": 3072,
+                    "num_attention_heads": 48,
+                    "num_hidden_layers": 62,
+                    "num_key_value_heads": 8,
+                    "head_dim": 128
+                },
+                "minimax/MiniMax-M2": {
+                    "hidden_size": 3072,
+                    "num_attention_heads": 48,
+                    "num_hidden_layers": 62,
+                    "num_key_value_heads": 8,
+                    "head_dim": 128
+                },
+
+                // Qwen3 Series (GQA with explicit head_dim, some Hybrid)
+                "Qwen/Qwen3.5-397B-A17B": {
+                    "hidden_size": 5120,
+                    "num_attention_heads": 80,
+                    "num_hidden_layers": 94,
+                    "num_key_value_heads": 2,
+                    "head_dim": 128
+                },
+                "Qwen/Qwen3-235B-A22B": {
+                    "hidden_size": 4096,
+                    "num_attention_heads": 64,
+                    "num_hidden_layers": 94,
+                    "num_key_value_heads": 4,
+                    "head_dim": 128
+                },
+                "Qwen/Qwen3.5-122B-A10B": {
+                    "hidden_size": 5120,
+                    "num_attention_heads": 80,
+                    "num_hidden_layers": 94,
+                    "num_key_value_heads": 2,
+                    "head_dim": 128
+                },
+                "Qwen/Qwen3.5-27B": {
+                    "hidden_size": 5120,
+                    "num_attention_heads": 40,
+                    "num_hidden_layers": 64,
+                    "num_key_value_heads": 4,
+                    "head_dim": 128
+                },
+
+                // Gemma4 Series (Hybrid + Sliding Window + Multimodal)
+                "google/gemma-4-31B": {
+                    "hidden_size": 2816,
+                    "num_attention_heads": 16,
+                    "num_hidden_layers": 30,
+                    "num_key_value_heads": 8,
+                    "head_dim": 256,
+                    "sliding_window": 1024,
+                    "attention_layer_count": 6
+                },
+                "google/gemma-4-26B-A4B-it": {
+                    "hidden_size": 2816,
+                    "num_attention_heads": 16,
+                    "num_hidden_layers": 30,
+                    "num_key_value_heads": 8,
+                    "head_dim": 256,
+                    "sliding_window": 1024,
+                    "attention_layer_count": 6
+                },
+
+                // Kimi Series (MLA + Multimodal)
+                "moonshot/Kimi-K2.5": {
                     "hidden_size": 7168,
                     "num_attention_heads": 64,
                     "num_hidden_layers": 61,
@@ -1083,14 +1265,45 @@
                     "kv_lora_rank": 512,
                     "qk_rope_head_dim": 64
                 },
-                // MiniMax Models
-                "MiniMaxAI/MiniMax-M2.5": {
-                    "hidden_size": 3072,
-                    "num_attention_heads": 48,
-                    "num_hidden_layers": 62,
-                    "num_key_value_heads": 8,
-                    "head_dim": 128
+                "moonshot/Kimi-K2": {
+                    "hidden_size": 7168,
+                    "num_attention_heads": 64,
+                    "num_hidden_layers": 61,
+                    "num_key_value_heads": 64,
+                    "kv_lora_rank": 512,
+                    "qk_rope_head_dim": 64
                 },
+
+                // MiMo Series (Hybrid + Sliding Window)
+                "mimo/MiMo-V2-Flash": {
+                    "hidden_size": 4096,
+                    "num_attention_heads": 64,
+                    "num_hidden_layers": 48,
+                    "num_key_value_heads": 4,
+                    "head_dim": 192,
+                    "sliding_window": 128,
+                    "attention_layer_count": 39
+                },
+
+                // GPT-OSS Series (Hybrid + Sliding)
+                "openai/gpt-oss-20b": {
+                    "hidden_size": 5120,
+                    "num_attention_heads": 40,
+                    "num_hidden_layers": 48,
+                    "num_key_value_heads": 8,
+                    "head_dim": 128,
+                    "sliding_window": 128,
+                    "attention_layer_count": 24
+                },
+                "openai/gpt-oss-120b": {
+                    "hidden_size": 6144,
+                    "num_attention_heads": 64,
+                    "num_hidden_layers": 72,
+                    "num_key_value_heads": 8,
+                    "head_dim": 96,
+                    "sliding_window": 128,
+                    "attention_layer_count": 36
+                }
             };
         }
 
@@ -1370,14 +1583,19 @@
                 }
 
                 // Transform to our format
+                // For multimodal models, check text_config first
+                const sourceConfig = configData.text_config || configData;
+
                 const transformedConfig = {
-                    hidden_size: configData.hidden_size,
-                    num_attention_heads: configData.num_attention_heads,
-                    num_hidden_layers: configData.num_hidden_layers,
-                    num_key_value_heads: configData.num_key_value_heads,
-                    kv_lora_rank: configData.kv_lora_rank,
-                    qk_rope_head_dim: configData.qk_rope_head_dim,
-                    head_dim: configData.head_dim,
+                    hidden_size: sourceConfig.hidden_size,
+                    num_attention_heads: sourceConfig.num_attention_heads,
+                    num_hidden_layers: sourceConfig.num_hidden_layers,
+                    num_key_value_heads: sourceConfig.num_key_value_heads,
+                    kv_lora_rank: sourceConfig.kv_lora_rank,
+                    qk_rope_head_dim: sourceConfig.qk_rope_head_dim,
+                    head_dim: sourceConfig.head_dim,
+                    sliding_window: sourceConfig.sliding_window,
+                    attention_layer_count: sourceConfig.attention_layer_count,
                     _modelName: fetchedModelIdentifier  // Store model identifier
                 };
 
@@ -1387,6 +1605,8 @@
                         delete transformedConfig[key];
                     }
                 });
+
+                console.log('Transformed config:', transformedConfig);
 
                 return transformedConfig;
 
@@ -1622,24 +1842,42 @@
             let hidden_size, num_attention_heads, num_hidden_layers, num_key_value_heads;
             let kv_lora_rank, qk_rope_head_dim; // for MLA models
             let head_dim;
+            let sliding_window;
+            let attention_layer_count; // for Hybrid models
 
             // Detect model type based on configuration parameters
+            // Priority: MLA > Sliding Window > Hybrid > Standard
+
             // MLA (Multi-head Latent Attention): has kv_lora_rank and qk_rope_head_dim
-            // Used by: DeepSeek V3/R1, Kimi K2
             const isMLAModel = config.kv_lora_rank && config.qk_rope_head_dim;
 
+            // Sliding Window Attention: has sliding_window field
+            const hasSlidingWindow = config.sliding_window || config.sliding_window_size;
+
+            // Hybrid Architecture (Attention + SSM): has attention_layer_count
+            const isHybridModel = config.attention_layer_count !== undefined;
+
             // Qwen3 architecture: has explicit head_dim
-            // Used by: Qwen3 series
             const isQwen3Model = config.head_dim && !isMLAModel;
 
             // Standard Transformer / GQA
-            // Used by: Llama, Mistral, GLM, MiniMax, etc.
-            const isStandardModel = !isMLAModel && !isQwen3Model;
+            const isStandardModel = !isMLAModel && !hasSlidingWindow && !isHybridModel && !isQwen3Model;
 
             if (isMLAModel) {
                 // MLA architecture (DeepSeek, Kimi K2)
                 ({ hidden_size, num_attention_heads, num_hidden_layers, num_key_value_heads, kv_lora_rank, qk_rope_head_dim } = config);
                 console.log('Detected MLA architecture for:', modelName);
+            } else if (hasSlidingWindow || isHybridModel) {
+                // Sliding Window or Hybrid architecture
+                ({ hidden_size, num_attention_heads, num_hidden_layers, num_key_value_heads, head_dim, sliding_window, attention_layer_count } = config);
+                sliding_window = sliding_window || config.sliding_window_size;
+                if (hasSlidingWindow && isHybridModel) {
+                    console.log('Detected Hybrid + Sliding Window architecture for:', modelName);
+                } else if (hasSlidingWindow) {
+                    console.log('Detected Sliding Window architecture for:', modelName);
+                } else {
+                    console.log('Detected Hybrid architecture for:', modelName);
+                }
             } else if (isQwen3Model) {
                 // Qwen3 architecture with explicit head_dim
                 ({ hidden_size, num_attention_heads, num_hidden_layers, num_key_value_heads, head_dim } = config);
@@ -1685,6 +1923,15 @@
             if (isMLAModel) {
                 // MLA: Compressed KV per token (per GPU after TP division)
                 elementsPerToken = num_hidden_layers * batchSize * (kv_lora_rank + qk_rope_head_dim) / tp;
+            } else if (hasSlidingWindow) {
+                // Sliding Window: limited by window size
+                const window = sliding_window;
+                const attnLayers = isHybridModel ? (attention_layer_count || num_hidden_layers) : num_hidden_layers;
+                elementsPerToken = 2 * attnLayers * batchSize * (num_key_value_heads || num_attention_heads) * (head_dim || (hidden_size / num_attention_heads)) / tp;
+            } else if (isHybridModel) {
+                // Hybrid: Only Attention layers contribute
+                const attnLayers = attention_layer_count || num_hidden_layers;
+                elementsPerToken = 2 * attnLayers * batchSize * (num_key_value_heads || num_attention_heads) * (head_dim || (hidden_size / num_attention_heads)) / tp;
             } else if (isQwen3Model) {
                 // GQA with explicit head_dim per token (per GPU after TP division)
                 elementsPerToken = 2 * num_hidden_layers * batchSize * num_key_value_heads * head_dim / tp;
@@ -1706,12 +1953,26 @@
             // - So the cluster can handle: single_gpu_tokens * TP
             // - But since elementsPerToken already divided by TP, maxTokens is already the cluster-wide value
             const totalMemoryBytes = gpuMemoryGB * (1024 ** 3);
-            const maxTokens = Math.floor(totalMemoryBytes / (elementsPerToken * dtypeSize));
+            let maxTokens;
+
+            // For sliding window models, max tokens is limited by window size
+            if (hasSlidingWindow) {
+                maxTokens = sliding_window || sliding_window_size;
+            } else {
+                maxTokens = Math.floor(totalMemoryBytes / (elementsPerToken * dtypeSize));
+            }
 
             // Create formula based on model type
             let formula;
             if (isMLAModel) {
                 formula = `${num_hidden_layers} × ${batchSize} × (${kv_lora_rank} + ${qk_rope_head_dim}) ÷ ${tp} × ${dtypeSize} bytes`;
+            } else if (hasSlidingWindow) {
+                const window = sliding_window;
+                const attnLayers = isHybridModel ? (attention_layer_count || num_hidden_layers) : num_hidden_layers;
+                formula = `2 × ${attnLayers} × ${window} × ${batchSize} × ${num_key_value_heads || num_attention_heads} × ${head_dim || (hidden_size / num_attention_heads)} ÷ ${tp} × ${dtypeSize} bytes`;
+            } else if (isHybridModel) {
+                const attnLayers = attention_layer_count || num_hidden_layers;
+                formula = `2 × ${attnLayers} × ${batchSize} × ${num_key_value_heads || num_attention_heads} × ${head_dim || (hidden_size / num_attention_heads)} ÷ ${tp} × ${dtypeSize} bytes`;
             } else if (isQwen3Model) {
                 formula = `2 × ${num_hidden_layers} × ${batchSize} × ${num_key_value_heads} × ${head_dim} ÷ ${tp} × ${dtypeSize} bytes`;
             } else {
@@ -1730,8 +1991,33 @@
             if (isMLAModel) {
                 displayConfig.kv_lora_rank = kv_lora_rank;
                 displayConfig.qk_rope_head_dim = qk_rope_head_dim;
+            } else if (hasSlidingWindow || isHybridModel || isQwen3Model) {
+                if (head_dim) displayConfig.head_dim = head_dim;
+                if (sliding_window) displayConfig.sliding_window = sliding_window;
+                if (attention_layer_count) displayConfig.attention_layer_count = attention_layer_count;
+            }
+
+            // Determine architecture type for display
+            let architectureType = 'Standard Transformer';
+            if (isMLAModel) {
+                architectureType = 'MLA (Multi-head Latent Attention)';
+            } else if (hasSlidingWindow && isHybridModel) {
+                architectureType = 'Hybrid + Sliding Window';
+            } else if (hasSlidingWindow) {
+                architectureType = 'Sliding Window Attention';
+            } else if (isHybridModel) {
+                architectureType = 'Hybrid (Attention + SSM)';
             } else if (isQwen3Model) {
-                displayConfig.head_dim = head_dim;
+                architectureType = 'GQA (with explicit head_dim)';
+            } else {
+                const kvHeads = num_key_value_heads || num_attention_heads;
+                if (kvHeads === num_attention_heads) {
+                    architectureType = 'MHA (Multi-Head Attention)';
+                } else if (kvHeads === 1) {
+                    architectureType = 'MQA (Multi-Query Attention)';
+                } else {
+                    architectureType = 'GQA (Grouped-Query Attention)';
+                }
             }
 
             return {
@@ -1750,7 +2036,8 @@
                 formula,
                 modelSizeGB,
                 modelParams,
-                perTokenMemoryMB: (elementsPerToken * dtypeSize) / (1024 ** 2)
+                perTokenMemoryMB: (elementsPerToken * dtypeSize) / (1024 ** 2),
+                architectureType  // Add architecture type for display
             };
         }
 
@@ -1770,13 +2057,8 @@
             const config = result.config;
             const kvHeads = config.num_key_value_heads || config.num_attention_heads;
 
-            // Determine model type
-            let modelTypeText = 'Standard Transformer';
-            if (config.kv_lora_rank && config.qk_rope_head_dim) {
-                modelTypeText = 'MLA (Multi-head Latent Attention)';
-            } else if (config.head_dim && !config.kv_lora_rank) {
-                modelTypeText = 'Qwen3 (GQA with explicit head_dim)';
-            }
+            // Use the architecture type from calculateMaxTokensForMemory
+            const modelTypeText = result.architectureType || 'Standard Transformer';
 
             resultsContainer.innerHTML = `
                 <div class="result-display" style="text-align: center; margin-bottom: 1rem;">
@@ -1926,11 +2208,23 @@
             let hidden_size, num_attention_heads, num_hidden_layers, num_key_value_heads;
             let kv_lora_rank, qk_rope_head_dim; // for MLA models
             let head_dim;
+            let sliding_window;
+            let attention_layer_count; // for Hybrid models
 
             // Detect model type based on configuration parameters
+            // Priority: MLA > Sliding Window > Hybrid > Standard
+
             // MLA (Multi-head Latent Attention): has kv_lora_rank and qk_rope_head_dim
-            // Used by: DeepSeek V3/R1, Kimi K2
+            // Used by: DeepSeek V3/R1/V3.2, Kimi K2, GLM-5, GLM-4.7-Flash
             const isMLAModel = config.kv_lora_rank && config.qk_rope_head_dim;
+
+            // Sliding Window Attention: has sliding_window field
+            // Used by: MiMo-V2-Flash, Gemma4, GPT-OSS
+            const hasSlidingWindow = config.sliding_window || config.sliding_window_size;
+
+            // Hybrid Architecture (Attention + SSM): has attention_layer_count
+            // Used by: Qwen3.5 series, MiMo, Gemma4
+            const isHybridModel = config.attention_layer_count !== undefined;
 
             // Qwen3 architecture: has explicit head_dim
             // Used by: Qwen3 series
@@ -1938,12 +2232,23 @@
 
             // Standard Transformer / GQA
             // Used by: Llama, Mistral, GLM, MiniMax, etc.
-            const isStandardModel = !isMLAModel && !isQwen3Model;
+            const isStandardModel = !isMLAModel && !hasSlidingWindow && !isHybridModel && !isQwen3Model;
 
             if (isMLAModel) {
                 // MLA architecture (DeepSeek, Kimi K2)
                 ({ hidden_size, num_attention_heads, num_hidden_layers, num_key_value_heads, kv_lora_rank, qk_rope_head_dim } = config);
                 console.log('Detected MLA architecture for:', modelName);
+            } else if (hasSlidingWindow || isHybridModel) {
+                // Sliding Window or Hybrid architecture
+                ({ hidden_size, num_attention_heads, num_hidden_layers, num_key_value_heads, head_dim, sliding_window, attention_layer_count } = config);
+                sliding_window = sliding_window || config.sliding_window_size;
+                if (hasSlidingWindow && isHybridModel) {
+                    console.log('Detected Hybrid + Sliding Window architecture for:', modelName);
+                } else if (hasSlidingWindow) {
+                    console.log('Detected Sliding Window architecture for:', modelName);
+                } else {
+                    console.log('Detected Hybrid architecture for:', modelName);
+                }
             } else if (isQwen3Model) {
                 // Qwen3 architecture with explicit head_dim
                 ({ hidden_size, num_attention_heads, num_hidden_layers, num_key_value_heads, head_dim } = config);
@@ -2002,16 +2307,41 @@
             //    Single GPU KV cache = 2 * layers * tokens * batch * kv_heads * head_dim / tp * dtype_size
             //    - Similar to standard but uses explicit head_dim instead of hidden_size
             //    - head_dim = hidden_size / num_attention_heads
+            //
+            // 4. Sliding Window (e.g., MiMo-V2-Flash, Gemma4):
+            //    Single GPU KV cache = 2 * layers * window_size * batch * kv_heads * head_dim / tp * dtype_size
+            //    - Only caches KV within the sliding window
+            //    - Memory is independent of sequence length beyond window size
+            //
+            // 5. Hybrid (Attention + SSM, e.g., Qwen3.5, MiMo):
+            //    Single GPU KV cache = 2 * attention_layers * tokens * batch * kv_heads * head_dim / tp * dtype_size
+            //    - Only Attention layers contribute to KV cache
+            //    - SSM layers (Mamba, RWKV, etc.) have no KV cache
 
             let totalElements;
             let formula;
             let elementsPerToken;
+            let effectiveTokens = tokens;
 
             if (isMLAModel) {
                 // MLA: Compressed KV representation (single GPU)
                 elementsPerToken = num_hidden_layers * (kv_lora_rank + qk_rope_head_dim) / tp;
                 totalElements = elementsPerToken * tokens * batchSize;
                 formula = `${num_hidden_layers} × ${tokens} × ${batchSize} × (${kv_lora_rank} + ${qk_rope_head_dim}) ÷ ${tp} × ${dtypeSize} bytes`;
+            } else if (hasSlidingWindow) {
+                // Sliding Window: KV cache limited to window size
+                const window = sliding_window;
+                effectiveTokens = Math.min(tokens, window);
+                const attnLayers = isHybridModel ? (attention_layer_count || num_hidden_layers) : num_hidden_layers;
+                elementsPerToken = 2 * attnLayers * (num_key_value_heads || num_attention_heads) * (head_dim || hidden_size / num_attention_heads) / tp;
+                totalElements = elementsPerToken * effectiveTokens * batchSize;
+                formula = `2 × ${attnLayers} × ${window} × ${batchSize} × ${num_key_value_heads || num_attention_heads} × ${head_dim || (hidden_size / num_attention_heads)} ÷ ${tp} × ${dtypeSize} bytes`;
+            } else if (isHybridModel) {
+                // Hybrid: Only Attention layers contribute
+                const attnLayers = attention_layer_count || num_hidden_layers;
+                elementsPerToken = 2 * attnLayers * (num_key_value_heads || num_attention_heads) * (head_dim || hidden_size / num_attention_heads) / tp;
+                totalElements = elementsPerToken * tokens * batchSize;
+                formula = `2 × ${attnLayers} × ${tokens} × ${batchSize} × ${num_key_value_heads || num_attention_heads} × ${head_dim || (hidden_size / num_attention_heads)} ÷ ${tp} × ${dtypeSize} bytes`;
             } else if (isQwen3Model) {
                 // GQA with explicit head_dim (single GPU)
                 elementsPerToken = 2 * num_hidden_layers * num_key_value_heads * head_dim / tp;
@@ -2056,14 +2386,43 @@
                 elements_per_token: elementsPerToken
             };
 
+            // Determine architecture type for display
+            let architectureType = 'Standard Transformer';
             if (isMLAModel) {
+                architectureType = 'MLA (Multi-head Latent Attention)';
                 details.hidden_size = hidden_size;
                 details.num_attention_heads = num_attention_heads;
                 details.num_hidden_layers = num_hidden_layers;
                 details.num_key_value_heads = num_key_value_heads;
                 details.kv_lora_rank = kv_lora_rank;
                 details.qk_rope_head_dim = qk_rope_head_dim;
+            } else if (hasSlidingWindow && isHybridModel) {
+                architectureType = 'Hybrid + Sliding Window';
+                details.hidden_size = hidden_size;
+                details.num_attention_heads = num_attention_heads;
+                details.num_hidden_layers = num_hidden_layers;
+                details.num_key_value_heads = num_key_value_heads;
+                details.head_dim = head_dim || (hidden_size / num_attention_heads);
+                details.sliding_window = sliding_window;
+                details.attention_layer_count = attention_layer_count;
+            } else if (hasSlidingWindow) {
+                architectureType = 'Sliding Window Attention';
+                details.hidden_size = hidden_size;
+                details.num_attention_heads = num_attention_heads;
+                details.num_hidden_layers = num_hidden_layers;
+                details.num_key_value_heads = num_key_value_heads;
+                details.head_dim = head_dim || (hidden_size / num_attention_heads);
+                details.sliding_window = sliding_window;
+            } else if (isHybridModel) {
+                architectureType = 'Hybrid (Attention + SSM)';
+                details.hidden_size = hidden_size;
+                details.num_attention_heads = num_attention_heads;
+                details.num_hidden_layers = num_hidden_layers;
+                details.num_key_value_heads = num_key_value_heads;
+                details.head_dim = head_dim || (hidden_size / num_attention_heads);
+                details.attention_layer_count = attention_layer_count;
             } else if (isQwen3Model) {
+                architectureType = 'GQA (with explicit head_dim)';
                 details.hidden_size = hidden_size;
                 details.num_attention_heads = num_attention_heads;
                 details.num_hidden_layers = num_hidden_layers;
@@ -2071,6 +2430,14 @@
                 details.head_dim = head_dim;
             } else {
                 const kvHeads = num_key_value_heads || num_attention_heads;
+                // Determine if GQA or MHA
+                if (kvHeads === num_attention_heads) {
+                    architectureType = 'MHA (Multi-Head Attention)';
+                } else if (kvHeads === 1) {
+                    architectureType = 'MQA (Multi-Query Attention)';
+                } else {
+                    architectureType = 'GQA (Grouped-Query Attention)';
+                }
                 details.hidden_size = hidden_size;
                 details.num_attention_heads = num_attention_heads;
                 details.num_hidden_layers = num_hidden_layers;
@@ -2096,7 +2463,8 @@
                 totalBytes,
                 config,
                 formula,
-                details
+                details,
+                architectureType  // Add architecture type for display
             };
         }
 
@@ -2145,13 +2513,8 @@
             const config = result.config;
             const kvHeads = config.num_key_value_heads || config.num_attention_heads;
 
-            // Determine model type for formula display
-            let modelTypeText = 'Standard Transformer';
-            if (config.kv_lora_rank && config.qk_rope_head_dim) {
-                modelTypeText = 'MLA (Multi-head Latent Attention)';
-            } else if (config.head_dim && !config.kv_lora_rank) {
-                modelTypeText = 'Qwen3 (GQA with explicit head_dim)';
-            }
+            // Use the architecture type from performCalculation
+            const modelTypeText = result.architectureType || 'Standard Transformer';
 
             resultsContainer.innerHTML = `
                 <div class="result-display" style="text-align: center; margin-bottom: 1rem;">
@@ -2441,3 +2804,5 @@
             // Toast notifications don't need escape key handling
         }
     </script>
+</body>
+</html>
