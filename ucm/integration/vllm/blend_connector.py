@@ -18,6 +18,7 @@ from ucm.integration.vllm.ucm_connector import (
     UCMDirectConnector,
 )
 from ucm.logger import init_logger
+from ucm.shared.metrics import ucmmetrics
 from ucm.sparse.blend.blockwise_rope import block_wise_rope_forward
 
 if TYPE_CHECKING:
@@ -380,8 +381,7 @@ class UCMBlendConnector(UCMDirectConnector):
             f"first chunk prefix hit: {pc_hit_blocks}, "
             f"chunks cache total hit: {chunk_hit_blocks}, "
         )
-        self.monitor.update_stats(
-            "ConnStats",
+        ucmmetrics.update_stats(
             {"interval_lookup_hit_rates": chunk_hit_blocks / max_blk_num},
         )
 
@@ -461,6 +461,7 @@ class UCMBlendConnector(UCMDirectConnector):
         # clear finished request
         for request_id in scheduler_output.finished_req_ids:
             self.requests_meta.pop(request_id, None)
+            self.requests_blend_meta.pop(request_id, None)
 
         return UCMBlendConnectorMetadata(requests_dispatch_meta)
 
