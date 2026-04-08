@@ -262,7 +262,7 @@ class UCMDirectConnector(KVConnectorBase_V1):
         self.metrics_config = self.launch_config.get("metrics_config_path", "")
         if self.metrics_config:
             worker_id = (
-                get_world_group().rank
+                f"{self.engine_id}_{get_world_group().rank}"
                 if role == KVConnectorRole.WORKER
                 else self.engine_id
             )
