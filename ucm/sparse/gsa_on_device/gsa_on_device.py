@@ -1465,11 +1465,7 @@ class GSAOnDevice(UcmSparseBase):
         if not self.gsa_enabled:
             return batch_descriptor
 
-        mixed_with_decode = self.has_decode and not self.decode_only
-        mla_decode_pc_hit = self.is_mla and self.has_pc_hit and self.decode_only
-        pure_prefill = not self.has_decode
-
-        if mixed_with_decode or mla_decode_pc_hit or pure_prefill:
+        if self.has_pc_hit or not self.decode_only:
             return batch_descriptor
 
         gsa_bd = GsaBatchDescriptor(
