@@ -16,9 +16,7 @@ from vllm.config import CUDAGraphMode, VllmConfig
 from vllm.distributed.parallel_state import is_global_first_rank
 from vllm.forward_context import BatchDescriptor, ForwardContext
 from vllm.utils import cdiv
-from vllm.v1.attention.backends.mla.common import MLACommonMetadata
 from vllm.v1.core.sched.output import SchedulerOutput
-from vllm.v1.cudagraph_dispatcher import CudagraphDispatcher
 from vllm.v1.request import Request, RequestStatus
 
 from ucm.logger import init_logger

@@ -1449,67 +1449,6 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
         logit_indices = np.cumsum(num_scheduled_tokens) - 1
         return hidden_states, hidden_states[logit_indices]
 
-    def _capture_cudagraphs(
-        self,
-        compilation_cases: list[int],
-        cudagraph_runtime_mode: CUDAGraphMode,
-        uniform_decode: bool,
-    ):
-        assert (
-            cudagraph_runtime_mode != CUDAGraphMode.NONE
-            and cudagraph_runtime_mode in [CUDAGraphMode.FULL, CUDAGraphMode.PIECEWISE]
-        )
-
-        if is_global_first_rank():
-            compilation_cases = tqdm(
-                compilation_cases,
-                disable=not self.load_config.use_tqdm_on_load,
-                desc="Capturing CUDA graphs ({}, {})".format(
-                    "decode" if uniform_decode else "mixed prefill-decode",
-                    cudagraph_runtime_mode.name,
-                ),
-            )
-
-        for num_tokens in compilation_cases:
-            allow_microbatching = (
-                self.parallel_config.enable_dbo
-                and cudagraph_runtime_mode == CUDAGraphMode.FULL
-                and uniform_decode
-                and check_ubatch_thresholds(
-                    config=self.vllm_config.parallel_config,
-                    num_tokens=num_tokens,
-                    uniform_decode=uniform_decode,
-                )
-            )
-
-            for _ in range(self.compilation_config.cudagraph_num_of_warmups):
-                force_attention = cudagraph_runtime_mode == CUDAGraphMode.FULL
-                self._dummy_run(
-                    num_tokens,
-                    cudagraph_runtime_mode=CUDAGraphMode.NONE,
-                    force_attention=force_attention,
-                    uniform_decode=uniform_decode,
-                    allow_microbatching=allow_microbatching,
-                    skip_eplb=True,
-                    remove_lora=False,
-                )
-            self._dummy_run(
-                num_tokens,
-                cudagraph_runtime_mode=cudagraph_runtime_mode,
-                uniform_decode=uniform_decode,
-                allow_microbatching=allow_microbatching,
-                skip_eplb=True,
-                remove_lora=False,
-            )
-        self.maybe_remove_all_loras(self.lora_config)
-
-        # Extension point: delegate extra graph captures to UCM sparse plugin.
-        if has_ucm_sparse() and os.getenv("VLLM_HASH_ATTENTION") == "1":
-            ucm_sparse = get_ucm_sparse()
-            ucm_sparse.maybe_capture_extra_cudagraphs(
-                self, compilation_cases, cudagraph_runtime_mode, uniform_decode
-            )
-
     def initialize_kv_cache_tensors(
         self, kv_cache_config: KVCacheConfig
     ) -> dict[str, torch.Tensor]:
