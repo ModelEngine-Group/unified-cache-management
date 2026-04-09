@@ -73,8 +73,8 @@ jobs:
     needs: pre-check
     uses: ./.github/workflows/lint-and-test.yml
   
-  test-build-npu:
-    timeout-minutes: 15
+  test-build-vllm-ascend:
+    timeout-minutes: 25
     runs-on: ubuntu-24.04-arm
     steps:
       - uses: actions/checkout@v4
@@ -88,16 +88,17 @@ jobs:
         uses: docker/build-push-action@v5
         with:
           context: .
-          file: ./docker/Dockerfile.vllm_npu
-          build-args: "ENABLE_SPARSE=false"
+          file: ./docker/Dockerfile.ucm-vllm-ascend.a2-v0.17.0
+          build-args: |
+            PIP_INDEX_URL=https://pypi.org/simple
           tags: ucm-npu:latest
           push: false
           load: false
           cache-from: type=gha,scope=npu
           cache-to: type=gha,mode=max,scope=npu
 
-  test-build-npu-sparse:
-    timeout-minutes: 15
+  test-build-vllm-ascend-sparse:
+    timeout-minutes: 25
     runs-on: ubuntu-24.04-arm
     steps:
       - uses: actions/checkout@v4
@@ -111,9 +112,58 @@ jobs:
         uses: docker/build-push-action@v5
         with:
           context: .
-          file: ./docker/Dockerfile.vllm_npu_v0110
-          build-args: "ENABLE_SPARSE=true"
+          file: ./docker/Dockerfile.ucm-vllm-ascend.a2-v0.11.0
+          build-args: |
+            PIP_INDEX_URL=https://pypi.org/simple
           tags: ucm-npu-sparse:latest
+          push: false
+          load: false
+          cache-from: type=gha,scope=npu
+          cache-to: type=gha,mode=max,scope=npu
+
+  test-build-sglang:
+    timeout-minutes: 25
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build Image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ./docker/Dockerfile.ucm-sglang-cuda-v0.5.5
+          build-args: |
+            PIP_INDEX_URL=https://pypi.org/simple
+          tags: ucm-sglang:latest
+          push: false
+          load: false
+          cache-from: type=gha,scope=gpu
+          cache-to: type=gha,mode=max,scope=gpu
+
+  test-build-mindie:
+    timeout-minutes: 25
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build Image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ./docker/Dockerfile.ucm-mindie-ascend.a2-v2
+          build-args: |
+            PIP_INDEX_URL=https://pypi.org/simple
+          tags: ucm-mindie:latest
           push: false
           load: false
           cache-from: type=gha,scope=npu
@@ -159,9 +209,10 @@ jobs:
         sudo -E docker build --network=host \
           --build-arg http_proxy="${http_proxy:-}" \
           --build-arg https_proxy="${https_proxy:-}" \
-          --build-arg ENABLE_SPARSE=false \
+          --build-arg no_proxy="repo.huaweicloud.com,${no_proxy:-}" \
+          --build-arg PIP_INDEX_URL=https://repo.huaweicloud.com/repository/pypi/simple \
           -t ucm-e2etest-online-inference:${{ steps.version.outputs.version }} \
-          -f ./docker/Dockerfile.vllm_gpu ./
+          -f ./docker/Dockerfile.ucm-vllm-cuda-v0.17.0 ./
     - name: Test E2E Online Inference in Docker
       run: |
         sudo chmod -R 777 /workspace/test_results/
@@ -228,9 +279,10 @@ jobs:
         sudo -E docker build --network=host \
           --build-arg http_proxy="${http_proxy:-}" \
           --build-arg https_proxy="${https_proxy:-}" \
-          --build-arg ENABLE_SPARSE=true \
+          --build-arg no_proxy="repo.huaweicloud.com,${no_proxy:-}" \
+          --build-arg PIP_INDEX_URL=https://repo.huaweicloud.com/repository/pypi/simple \
           -t ucm-e2etest-gpu-sparse:${{ steps.version.outputs.version }} \
-          -f ./docker/Dockerfile.vllm_gpu_v0110 ./
+          -f ./docker/Dockerfile.ucm-vllm-cuda-v0.11.0 ./
     - name: Test E2E in Docker
       run: |
         sudo chmod -R 777 /workspace/test_results/
@@ -296,9 +348,10 @@ jobs:
         sudo -E docker build --network=host \
           --build-arg http_proxy="${http_proxy:-}" \
           --build-arg https_proxy="${https_proxy:-}" \
-          --build-arg ENABLE_SPARSE=true \
+          --build-arg no_proxy="repo.huaweicloud.com,${no_proxy:-}" \
+          --build-arg PIP_INDEX_URL=https://repo.huaweicloud.com/repository/pypi/simple \
           -t ucm-e2etest-gpu-sparse:${{ steps.version.outputs.version }} \
-          -f ./docker/Dockerfile.vllm_gpu_v0110 ./
+          -f ./docker/Dockerfile.ucm-vllm-cuda-v0.11.0 ./
     - name: Test E2E in Docker
       run: |
         sudo chmod -R 777 /workspace/test_results/

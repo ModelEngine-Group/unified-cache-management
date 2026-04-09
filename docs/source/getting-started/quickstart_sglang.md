@@ -35,8 +35,19 @@ Download the pre-built `lmsysorg/sglang:v0.5.5.post3` docker image and build uni
  # Build docker image using source code, replace <branch_or_tag_name> with the branch or tag name needed
  git clone --depth 1 --branch <branch_or_tag_name> https://github.com/ModelEngine-Group/unified-cache-management.git
  cd unified-cache-management
- docker build -t ucm-sglang:latest -f ./docker/Dockerfile.sglang_gpu ./
+ docker build -t ucm-sglang:latest -f ./docker/Dockerfile.ucm-sglang-cuda-v0.5.5 ./
  ```
+
+The Dockerfile automatically invokes the build script (`scripts/build_sglang.sh`) to compile the wheel, installs from the built package, and applies the SGLang integration patch.
+
+#### Build image from pre-built package
+
+If you have a pre-built tar package (e.g. from CI), extract it and build the image in `package` mode:
+```bash
+mkdir -p /tmp/ucm-pkg && tar xzf AI-Storage-Kit_*.tar.gz -C /tmp/ucm-pkg
+docker build --build-arg INSTALL_MODE=package \
+  -t ucm-sglang:latest -f /tmp/ucm-pkg/docker/Dockerfile.ucm-sglang-cuda-v0.5.5 /tmp/ucm-pkg
+```
 
 
 ### Option 2: Build from source
