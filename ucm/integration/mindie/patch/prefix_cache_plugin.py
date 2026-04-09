@@ -93,8 +93,6 @@ class PrefixCachePlugin(Plugin):
         self.total_local_matched_token_num = 0
         self.total_remote_matched_token_num = 0
 
-        ## for mindspore
-        self.attention_mask = AttentionMask(None)
         self.model_name = self.generator_backend.model_name
         self.is_300i = False
         if self.generator_backend.backend_type == BackendType.ATB:
@@ -205,12 +203,8 @@ class PrefixCachePlugin(Plugin):
                 q_lens_list = [1] * batch_size
 
             kv_dtype = self.kvcache_settings.dtype
-            if self.generator_backend.backend_type == BackendType.MS:
-                if model_inputs.query_length is None:
-                    return q_lens_list, [[0]] * batch_size
-                seq_len = model_inputs.max_seq_len
-                atten_mask = self.attention_mask.get_attn_mask(seq_len)
-            elif self.is_300i: # In 300I, the construction of mask is different from A2 and A3
+
+            if self.is_300i: # In 300I, the construction of mask is different from A2 and A3
                 kv_device = self.model_wrapper.device
                 atten_mask = self.model_wrapper.model_runner.attn_mask.get_attn_mask(model_inputs.max_seq_len,
                                                                                     kv_dtype, kv_device)
@@ -225,17 +219,17 @@ class PrefixCachePlugin(Plugin):
                 start = model_inputs.context_length[i] - q_lens_list[i]
                 end = model_inputs.context_length[i]
                 req_mask_list.append(atten_mask[start:end])
-            if self.generator_backend.backend_type == BackendType.MS:
-                attention_mask = np.concatenate(req_mask_list, axis=0)
-            else:
-                import torch
-                attention_mask = torch.cat(req_mask_list, 0)
+            import torch
+            attention_mask = torch.cat(req_mask_list, 0)
         return q_lens_list, attention_mask
 
     def sample_preprocess(self, logits, result, sampling_metadata, input_metadata):
         return logits
 
     def plugin_verify(self, sampling_output, cache_ids, result):
+        pass
+
+    def plugin_verify_exp(self, sampling_output, cache_ids, result):
         pass
 
     def plugin_cache_update(self, cache_ids, sampling_output, la_cache_input, is_prefill=False):
@@ -426,22 +420,3 @@ class PrefixCachePlugin(Plugin):
                 if is_last:
                     self.put_prefix_kvcache_to_mempool(input_metadata, cache_ids)
                     self.save_event.set()  # True
-
-
-class AttentionMask:
-    def __init__(self, atten_mask):
-        self._seq_len_cache = 0
-        self.atten_mask_cache = atten_mask
-
-    def update_attn_cache(self, seq_len):
-        if seq_len > self._seq_len_cache:
-            self._seq_len_cache = seq_len
-            bias_cache = np.tril(np.ones((seq_len, seq_len), dtype=np.bool_))
-            bias_cache = ~bias_cache
-            mask_value = np.finfo(np.float32).min
-            atten_mask = np.ma.masked_array(np.zeros((seq_len, seq_len)), mask=bias_cache).filled(mask_value)
-            self.atten_mask_cache = atten_mask
-
-    def get_attn_mask(self, max_s: int):
-        self.update_attn_cache(max_s)
-        return self.atten_mask_cache[:max_s, :max_s]
