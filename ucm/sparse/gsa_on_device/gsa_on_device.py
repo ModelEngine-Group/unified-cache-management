@@ -38,6 +38,7 @@ if hasattr(torch, "cuda") and torch.cuda.is_available():
     from ucm.sparse.gsa_on_device.hash_encoder import reshape_and_cache_khash_triton
 
 from ucm.sparse.gsa_on_device.gsa_on_device_config import GSAOnDeviceConfig
+from ucm.sparse.gsa_on_device.hamming_topk import update_seq_lens
 from ucm.sparse.gsa_on_device.hash_encoder import HashEncoder
 from ucm.utils import Config
 
@@ -1036,7 +1037,6 @@ class GSAOnDevice(UcmSparseBase):
         """Set up all internal GSA state required before a GSA-on graph
         capture _dummy_run.
         """
-        from ucm.sparse.gsa_on_device.hamming_topk import update_seq_lens
 
         if isinstance(attn_metadata, dict):
             attn_metadata = next(iter(attn_metadata.values()))
@@ -1053,14 +1053,6 @@ class GSAOnDevice(UcmSparseBase):
         self.has_decode = True
         self.decode_only = True
         self.has_pc_hit = False
-
-        # ── ori (full-table) buffers: use dummy large seq_lens ────────────
-        if not self.gsa_enabled:
-            logger.info(
-                "[gsaondevice-cg] sparse capture disabled: num_reqs={self.num_reqs} threshold={self.seq_len_threshold} "
-                "concurrency_threshold={self.concurrency_threshold} seq_lens={seq_lens[: self.num_reqs]}"
-            )
-            return False
 
         self.prepare_cuda_decode_sparse_meta(attn_metadata, self.num_reqs)
 
@@ -1153,8 +1145,6 @@ class GSAOnDevice(UcmSparseBase):
                 kv_caches[layer_name] = (kv_cache, khash_cache)
 
     def build_decode_attention_meta_npu(self, query_lens, seq_lens, block_table):
-
-        from ucm.sparse.gsa_on_device.hamming_topk import update_seq_lens
 
         self.ori_seq_lens_decode = seq_lens.clone()
         self.ori_block_table_decode = block_table.clone()
@@ -1291,8 +1281,6 @@ class GSAOnDevice(UcmSparseBase):
         return getattr(attn_metadata_prefill, "seq_lens", None)  # NPU
 
     def prepare_cuda_decode_sparse_meta(self, attn_metadata, num_decodes):
-        from ucm.sparse.gsa_on_device.hamming_topk import update_seq_lens
-
         if self.is_mla:
             attn_metadata_decode = getattr(attn_metadata, "decode", None)
             if attn_metadata_decode is not None:
@@ -1477,7 +1465,11 @@ class GSAOnDevice(UcmSparseBase):
         if not self.gsa_enabled:
             return batch_descriptor
 
-        if self.is_mla and self.has_pc_hit and self.decode_only:
+        mixed_with_decode = self.has_decode and not self.decode_only
+        mla_decode_pc_hit = self.is_mla and self.has_pc_hit and self.decode_only
+        pure_prefill = not self.has_decode
+
+        if mixed_with_decode or mla_decode_pc_hit or pure_prefill:
             return batch_descriptor
 
         gsa_bd = GsaBatchDescriptor(
@@ -1486,13 +1478,8 @@ class GSAOnDevice(UcmSparseBase):
             gsa_enabled=True,
         )
         full_keys = cudagraph_dispatcher.cudagraph_keys[CUDAGraphMode.FULL]
-        pw_keys = cudagraph_dispatcher.cudagraph_keys[CUDAGraphMode.PIECEWISE]
 
-        if (
-            gsa_bd in full_keys
-            or gsa_bd.non_uniform in full_keys
-            or gsa_bd.non_uniform in pw_keys
-        ):
+        if gsa_bd in full_keys:
             return gsa_bd
 
         return batch_descriptor
@@ -1508,12 +1495,11 @@ class GSAOnDevice(UcmSparseBase):
         1. MLA + decode-only + gsa_enabled: no GSA-on graph → stale state.
         2. MLA + decode-only + has_pc_hit: CUDAGraphMode.NONE + ori batch_descriptor.
         """
-        if self.is_mla and cudagraph_runtime_mode == CUDAGraphMode.FULL:
-            if self.has_pc_hit:
-                cudagraph_runtime_mode = CUDAGraphMode.NONE
-                batch_descriptor = BatchDescriptor(
-                    num_tokens=num_input_tokens, uniform_decode=uniform_decode
-                )
+        if cudagraph_runtime_mode == CUDAGraphMode.FULL and self.has_pc_hit:
+            cudagraph_runtime_mode = CUDAGraphMode.NONE
+            batch_descriptor = BatchDescriptor(
+                num_tokens=num_input_tokens, uniform_decode=uniform_decode
+            )
 
         return cudagraph_runtime_mode, batch_descriptor
 
