@@ -90,7 +90,7 @@ class FakeHistogram(FakeMetric):
 
 
 class FakeThread:
-    def __init__(self, target):
+    def __init__(self, target, daemon=None):
         self.target = target
         self.started = False
         self.joined = False
@@ -1312,7 +1312,7 @@ def test_multiproc_logger_respects_consumer_switch():
     )
     logger = observability.PrometheusStatsLogger("model-a", "worker-0", "unused.yaml")
 
-    assert not hasattr(logger, "thread")
+    assert logger.thread is None
     assert FakeCounter.created == {}
 
 

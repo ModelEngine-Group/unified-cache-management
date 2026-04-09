@@ -55,6 +55,12 @@ class PrometheusStatsLogger:
         Load metrics config from YAML file (config_path),
         register metrics using prometheus_client, and start a thread to get updated metrics.
         """
+        # Always initialize the worker thread attribute so that shutdown()
+        # and __del__() are safe even when metric registration is skipped
+        # via one of the early-returns below.
+        self.thread = None
+        self.is_running = False
+
         if _metric_mappings:
             logger.warning("Metrics are already registered, skipping re-registration.")
             return
@@ -89,9 +95,10 @@ class PrometheusStatsLogger:
         # Initialize metrics based on config
         self._init_metrics_from_config()
 
-        # Start thread to update metrics
+        # Start daemon thread to update metrics so it won't block
+        # process exit if shutdown() is not explicitly called.
         self.is_running = True
-        self.thread = threading.Thread(target=self.update_stats_loop)
+        self.thread = threading.Thread(target=self.update_stats_loop, daemon=True)
         self.thread.start()
 
     def _register_metrics_by_type(self, metric_type):
@@ -209,7 +216,8 @@ class PrometheusStatsLogger:
 
     def shutdown(self):
         self.is_running = False
-        self.thread.join()
+        if self.thread is not None:
+            self.thread.join()
 
     def __del__(self):
         try:
