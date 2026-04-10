@@ -48,3 +48,15 @@ histogram:
   - name: "interval_lookup_hit_rates"
     documentation: "Hit rates of ucm lookup requests"
     buckets: [0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0]
+    - name: "posix_load_duration"
+    documentation: "Time to load from posix store (ms)"
+    buckets: [0, 50, 100, 150, 200, 250, 300, 350, 400, 550, 600, 750, 800, 850, 900, 950, 1000]
+  - name: "posix_load_speed"
+    documentation: "Speed of loading from posix store (GB/s)"
+    buckets: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 50, 60, 70, 80, 90, 100]
+  - name: "posix_dump_duration"
+    documentation: "Time to dump to posix store (ms)"
+    buckets: [0, 50, 100, 150, 200, 250, 300, 350, 400, 550, 600, 750, 800, 850, 900, 950, 1000]
+  - name: "posix_dump_speed"
+    documentation: "Speed of dumping to posix store (GB/s)"
+    buckets: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 50, 60, 70, 80, 90, 100]

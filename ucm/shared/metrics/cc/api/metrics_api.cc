@@ -22,6 +22,7 @@
  * SOFTWARE.
  * */
 #include "metrics_api.h"
+#include <iostream>
 namespace UC::Metrics {
 
 void SetUp(size_t maxVectorLen) { Metrics::GetInstance().SetUp(maxVectorLen); }
@@ -34,6 +35,7 @@ void CreateStats(const std::string& name, const std::string& type)
 void UpdateStats(const std::string& name, double value)
 {
     Metrics::GetInstance().UpdateStats(name, value);
+    std::cout << "地址：" << static_cast<void*>(&Metrics::GetInstance()) << ",名字: " << name << std::endl;
 }
 
 void UpdateStats(const std::unordered_map<std::string, double>& values)

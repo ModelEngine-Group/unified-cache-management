@@ -25,6 +25,7 @@
 #define UNIFIEDCACHE_POSIX_STORE_CC_IO_ENGINE_PSYNC_H
 
 #include "logger/logger.h"
+#include "metrics_api.h"
 #include "template/task_wrapper.h"
 #include "trans_queue.h"
 
@@ -51,11 +52,24 @@ protected:
         const auto size = shardSize_ * num;
         const auto tp = w->startTp;
         UC_DEBUG("Posix task({},{},{},{}) dispatching.", id, brief, num, size);
-        w->SetEpilog([id, brief = std::move(brief), num, size, tp] {
-            auto cost = NowTime::Now() - tp;
-            UC_DEBUG("Posix task({},{},{},{}) finished, cost {:.3f}ms.", id, brief, num, size,
-                     cost * 1e3);
-        });
+        w->SetEpilog([id, brief = std::move(brief), num, size, tp, type = t->type] {
+                auto cost = NowTime::Now() - tp;
+                auto durationMs = cost * 1e3;
+                double speedGBs = (size / (1024.0 * 1024.0 * 1024.0)) / (durationMs / 1000.0);
+                if (type == TransTask::Type::DUMP) {
+                    UC::Metrics::UpdateStats("posix_dump_duration", durationMs);
+                    UC::Metrics::UpdateStats("posix_dump_speed", speedGBs);
+                    UC_INFO("Posix task({},{},{},{}) finished, cost {:.3f}ms.", id, brief, num, size,
+                        durationMs);
+                } else {
+                    UC::Metrics::UpdateStats("posix_load_duration", durationMs);
+                    UC::Metrics::UpdateStats("posix_load_speed", speedGBs);
+                    UC_INFO("Posix task({},{},{},{}) finished, cost {:.3f}ms.", id, brief, num, size,
+                        durationMs);
+                }
+                UC_DEBUG("Posix task({},{},{},{}) finished, cost {:.3f}ms.", id, brief, num, size,
+                        durationMs);
+            });
         queue_.Push(t, w);
     }
     void Cancel(TaskPtr t) override { queue_.Cancel(t); }

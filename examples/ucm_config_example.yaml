@@ -14,7 +14,7 @@ ucm_connectors:
   - ucm_connector_name: "UcmPipelineStore"
     ucm_connector_config:
       store_pipeline: "Cache|Posix"
-      storage_backends: "/mnt/test"
+      storage_backends: "/home/fh/fh-data"
       io_direct: false
       # cache_buffer_capacity_gb: 256
       # posix_capacity_gb: 1024
@@ -22,7 +22,7 @@ ucm_connectors:
 # When you use UcmNfsStore, you should set enable_event_sync to false.
 enable_event_sync: true
 # Enable UCM metrics so they can be monitored online via Grafana and Prometheus.
-# metrics_config_path: "/workspace/unified-cache-management/examples/metrics/metrics_configs.yaml"
+metrics_config_path: "/home/fh/metrics/unified-cache-management/examples/metrics/metrics_configs.yaml"
 
 # Sparse attention configuration
 # ucm_sparse_config:
