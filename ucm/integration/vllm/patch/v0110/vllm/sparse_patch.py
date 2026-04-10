@@ -61,26 +61,6 @@ def patch_common_attention_backend(mod):
     patch_or_inject(mod.MLACommonImpl, "forward", common.MLACommonImpl.forward)
 
 
-@when_imported("vllm.v1.attention.backends.mla.flashmla")
-def patch_flashmla_attention_backend(mod):
-    logger.debug(f"Patched {mod} called")
-
-    from ucm.integration.vllm.patch.v0110.vllm.sparse.v1.attention.backends.mla import (
-        flashmla,
-    )
-
-    patch_dataclass_fields(
-        mod.FlashMLADecodeMetadata,
-        flashmla.FlashMLADecodeMetadata,
-    )
-
-    patch_or_inject(
-        mod.FlashMLAMetadataBuilder,
-        "_build_decode",
-        flashmla.FlashMLAMetadataBuilder._build_decode,
-    )
-
-
 @when_imported("vllm.v1.core.kv_cache_coordinator")
 def patch_kv_cache_coordinator(mod):
     logger.debug(f"Patched {mod} called")
@@ -184,6 +164,11 @@ def patch_worker_gpu_model_runner(mod):
     )
     patch_or_inject(
         mod.GPUModelRunner,
+        "maybe_execute_ucm_sparse_build_sparse_meta",
+        gpu_model_runner.GPUModelRunner.maybe_execute_ucm_sparse_build_sparse_meta,
+    )
+    patch_or_inject(
+        mod.GPUModelRunner,
         "maybe_execute_ucm_sparse_begin",
         gpu_model_runner.GPUModelRunner.maybe_execute_ucm_sparse_begin,
     )
@@ -194,6 +179,11 @@ def patch_worker_gpu_model_runner(mod):
     )
     patch_or_inject(
         mod.GPUModelRunner,
+        "_make_gsa_batch_descriptor",
+        gpu_model_runner.GPUModelRunner._make_gsa_batch_descriptor,
+    )
+    patch_or_inject(
+        mod.GPUModelRunner,
         "ucm_sparse_request_finished_in_worker",
         gpu_model_runner.GPUModelRunner.ucm_sparse_request_finished_in_worker,
     )
@@ -201,6 +191,16 @@ def patch_worker_gpu_model_runner(mod):
         mod.GPUModelRunner,
         "ucm_sparse_update_states",
         gpu_model_runner.GPUModelRunner.ucm_sparse_update_states,
+    )
+    patch_or_inject(
+        mod.GPUModelRunner,
+        "_capture_cudagraphs",
+        gpu_model_runner.GPUModelRunner._capture_cudagraphs,
+    )
+    patch_or_inject(
+        mod.GPUModelRunner,
+        "_dummy_run",
+        gpu_model_runner.GPUModelRunner._dummy_run,
     )
     patch_or_inject(
         mod.GPUModelRunner,
