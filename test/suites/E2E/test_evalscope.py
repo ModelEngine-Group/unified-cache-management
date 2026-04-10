@@ -1,10 +1,9 @@
 import os
-import pytest
+
 import evalscope
-
-from common.evalscope_utils import EvalScopeRunner
+import pytest
 from common.config_utils import config_utils as config_instance
-
+from common.evalscope_utils import EvalScopeRunner
 
 # ---------- Default Var Value ----------
 DEFAULT_DATASET_ROOT = ""
@@ -15,8 +14,12 @@ DEFAULT_NEEDLE_MAX = 32000
 
 
 def _build_general_task_config(
-    model: str, api_url: str, api_key: str,
-    datasets: list, dataset_root: str, output_dir: str
+    model: str,
+    api_url: str,
+    api_key: str,
+    datasets: list,
+    dataset_root: str,
+    output_dir: str,
 ) -> evalscope.config.TaskConfig:
     """Build a general evaluation task configuration"""
     dataset_args = {}
@@ -34,8 +37,12 @@ def _build_general_task_config(
 
 
 def _build_needle_task_config(
-    model: str, api_url: str, api_key: str,
-    tokenizer_path: str, dataset_root: str, output_dir: str
+    model: str,
+    api_url: str,
+    api_key: str,
+    tokenizer_path: str,
+    dataset_root: str,
+    output_dir: str,
 ) -> evalscope.config.TaskConfig:
     """Constructing the task configuration for finding a needle in a haystack"""
     needle_min = int(os.getenv("SCOPE_NEEDLE_MIN", DEFAULT_NEEDLE_MIN))
