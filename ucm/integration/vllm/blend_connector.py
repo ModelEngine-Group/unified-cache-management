@@ -240,21 +240,34 @@ class UCMBlendConnector(UCMDirectConnector):
         if not req_stage.is_blend_cache():
             return pc_hit_blocks, chunk_hit_blocks
 
-        # then perform chunk cache lookup
-        chunk_lookup_results = self.store.lookup(req_chunks_hashes[pc_hit_blocks:])
-        chunk_hit_blocks = sum(chunk_lookup_results)
+        # Lookup ALL chunk hashes independently in chunk-hash space.
+        # Note: prefix_block_hashes use chained hashing (each hash depends on
+        # all previous blocks), while req_chunks_hashes use independent per-chunk
+        # hashing. These are fundamentally different hash spaces, so we must not
+        # skip chunk lookups based on prefix cache hit count or merge results
+        # from the two spaces.
+        all_chunk_lookup = self.store.lookup(req_chunks_hashes)
+        chunk_hit_blocks = sum(all_chunk_lookup)
 
-        chunk_lookup_results = pc_lookup_results[:pc_hit_blocks] + chunk_lookup_results
-        # for cache blend
-        for i, chunk_meta in enumerate(req_chunks_meta):
-            chunk_meta.store_hits = chunk_lookup_results[
-                chunk_meta.start_blk_idx : chunk_meta.end_blk_idx
+        # Assign store_hits using chunk-relative offset instead of global
+        # block indices. Each chunk's store_hits must come from its own
+        # position within the chunk-hash lookup results.
+        chunk_offset = 0
+        for chunk_meta in req_chunks_meta:
+            chunk_meta.store_hits = all_chunk_lookup[
+                chunk_offset : chunk_offset + chunk_meta.chunk_blks_len
             ]
-        first_chunk_meta = req_chunks_meta[0]
-        first_chunk_meta.update_meta_partial_pc(pc_hit_blocks, self.block_size)
-        # remove total pc hit chunk
-        if first_chunk_meta.chunk_tokens_len == 0:
-            req_chunks_meta.pop(0)
+            chunk_offset += chunk_meta.chunk_blks_len
+
+        # Handle partial prefix cache overlap with the first chunk:
+        # blocks covered by prefix cache are loaded via the prefix path,
+        # so trim them from the first chunk's metadata.
+        if req_chunks_meta:
+            first_chunk_meta = req_chunks_meta[0]
+            first_chunk_meta.update_meta_partial_pc(pc_hit_blocks, self.block_size)
+            # remove chunk if entirely covered by prefix cache
+            if first_chunk_meta.chunk_tokens_len == 0:
+                req_chunks_meta.pop(0)
 
         return pc_hit_blocks, chunk_hit_blocks
 
