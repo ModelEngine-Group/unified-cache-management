@@ -22,7 +22,7 @@ ucm_connectors:
 # When you use UcmNfsStore, you should set enable_event_sync to false.
 enable_event_sync: true
 # Enable UCM metrics so they can be monitored online via Grafana and Prometheus.
-metrics_config_path: "/home/fh/metrics/unified-cache-management/examples/metrics/metrics_configs.yaml"
+metrics_config_path: "/home/fh/metrics/unified-cache-management-fh/examples/metrics/metrics_configs.yaml"
 
 # Sparse attention configuration
 # ucm_sparse_config:
@@ -30,6 +30,6 @@ metrics_config_path: "/home/fh/metrics/unified-cache-management/examples/metrics
 
 
 # Whether to use layerwise loading/saving (optional, default: True for UCMConnector)
-# use_layerwise: true
+use_layerwise: true
 # hit_ratio: 0.9
 

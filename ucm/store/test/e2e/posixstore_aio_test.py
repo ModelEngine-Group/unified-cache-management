@@ -30,12 +30,12 @@ import numpy as np
 from ucm.store.factory_v1 import UcmConnectorFactoryV1, UcmKVStoreBaseV1
 
 worker_number = 1
-shard_size = 8 * 1024 * 1024
+shard_size = 1 * 1024 * 1024
 shard_number = 1
 block_number = 64
 dump_epoch_number = 32
 load_epoch_number = 32
-storage_backends = ["./build/data"]
+storage_backends = ["/home/fh/fh-data"]
 
 
 def create_worker(device_id: int) -> UcmKVStoreBaseV1:

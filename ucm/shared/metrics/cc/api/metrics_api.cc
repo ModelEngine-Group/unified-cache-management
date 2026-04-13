@@ -30,12 +30,13 @@ void SetUp(size_t maxVectorLen) { Metrics::GetInstance().SetUp(maxVectorLen); }
 void CreateStats(const std::string& name, const std::string& type)
 {
     Metrics::GetInstance().CreateStats(name, type);
+    std::cout << "Create地址: " << static_cast<void*>(&Metrics::GetInstance()) << ",名字: " << name << std::endl;
 }
 
 void UpdateStats(const std::string& name, double value)
 {
     Metrics::GetInstance().UpdateStats(name, value);
-    std::cout << "地址：" << static_cast<void*>(&Metrics::GetInstance()) << ",名字: " << name << std::endl;
+    std::cout << "地址: " << static_cast<void*>(&Metrics::GetInstance()) << ",名字: " << name << std::endl;
 }
 
 void UpdateStats(const std::unordered_map<std::string, double>& values)
