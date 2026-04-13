@@ -48,7 +48,7 @@ histogram:
   - name: "interval_lookup_hit_rates"
     documentation: "Hit rates of ucm lookup requests"
     buckets: [0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0]
-    - name: "posix_load_duration"
+  - name: "posix_load_duration"
     documentation: "Time to load from posix store (ms)"
     buckets: [0, 50, 100, 150, 200, 250, 300, 350, 400, 550, 600, 750, 800, 850, 900, 950, 1000]
   - name: "posix_load_speed"
