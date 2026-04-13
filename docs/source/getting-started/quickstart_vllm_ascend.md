@@ -25,7 +25,7 @@ cd ..
 
 >**Note:** For the Atlas A3 series, the `PLATFORM` variable should be set to `ascend-a3`.
 
-2、Apply vLLM and vLLM-Ascend Integration Patches (Required)
+2、Apply vLLM and vLLM-Ascend Integration Patches (Not required for versions >= v0.17.0rc1)
 To enable Unified Cache Management (UCM) integration, you need to apply patches to both vLLM and vLLM-Ascend source trees.
 
 #### Option A: Monkey Patch (Recommended)
@@ -38,7 +38,7 @@ export ENABLE_UCM_PATCH=1
 ```
 >**Note:** Enabling ENABLE_UCM_PATCH is required to use the Prefix Caching feature with UCM.
 
-2. Enable Sparse Attention (Optional):
+2. Enable Sparse Attention (supported on v0.11.0):
 ```bash
 export ENABLE_SPARSE=1
 ```
@@ -81,20 +81,33 @@ pip install uc-manager
 > **Note:** If installing via `pip install`, you need to manually add the `config.yaml` file, similar to `unified-cache-management/examples/ucm_config_example.yaml`, because PyPI packages do not include YAML files.
 
 ### Option 3: Setup from docker
-Use following command to build ucm with VLLM-Ascend(v0.11.0), the sparse attention is enabled by default
+
+#### Build image from source
+Use following command to build UCM with vLLM-Ascend(v0.17.0rc1):
 ```bash
-docker build -t ucm-vllm:latest -f ./docker/Dockerfile.vllm_npu ./
+docker build -t ucm-vllm:latest -f ./docker/Dockerfile.ucm-vllm-ascend.a2-v0.17.0 ./
 ```
 
-If you don't need sparse attention, pass `--build-arg ENABLE_SPARSE=false` to disable it:
+For vLLM-Ascend(v0.11.0) with sparse attention support:
 ```bash
-docker build --build-arg ENABLE_SPARSE=false -t ucm-vllm:latest -f ./docker/Dockerfile.vllm_npu ./
+docker build -t ucm-vllm-sparse:latest -f ./docker/Dockerfile.ucm-vllm-ascend.a2-v0.11.0 ./
 ```
 
-vllm-ascend provides two variants: **Ubuntu** and **openEuler**.  
-The `Dockerfile.vllm_npu` uses the **Ubuntu** variant by default.
+The Dockerfile automatically invokes the build script (`scripts/build_ascend.sh`) to compile the wheel and installs from the built package.
 
-If you want to use the **openEuler** variant, please add the `-openeuler` suffix and use the following image instead:
+#### Build image from pre-built package
+
+If you have a pre-built tar package (e.g. from CI), extract it and build the image in `package` mode:
+```bash
+mkdir -p /tmp/ucm-pkg && tar xzf AI-Storage-Kit_*.tar.gz -C /tmp/ucm-pkg
+docker build --build-arg INSTALL_MODE=package \
+  -t ucm-vllm:latest -f /tmp/ucm-pkg/docker/Dockerfile.ucm-vllm-ascend.a2-v0.17.0 /tmp/ucm-pkg
+```
+
+vllm-ascend provides two variants: **Ubuntu** and **openEuler**.
+The `Dockerfile.ucm-vllm-ascend.a2-v0.17.0` uses the **Ubuntu** variant by default.
+
+If you want to use the **openEuler** variant, override the base image with `--build-arg IMAGE_NAME_VERSION`:
 
 ```text
 quay.io/ascend/vllm-ascend:v0.11.0-openeuler

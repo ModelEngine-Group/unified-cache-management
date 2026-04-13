@@ -36,6 +36,10 @@ from ucm.shared.metrics import ucmmetrics
 
 logger = init_logger(__name__)
 
+# Store metric mapping: metric_name -> Union[Counter, Gauge, Histogram]
+# This mapping will be used in update_stats to dynamically log metrics
+_metric_mappings: dict[str, Union[Counter, Gauge, Histogram]] = {}
+
 
 class PrometheusStatsLogger:
 
@@ -62,6 +66,9 @@ class PrometheusStatsLogger:
         Load metrics config from YAML file (config_path),
         register metrics using prometheus_client, and start a thread to get updated metrics.
         """
+        if _metric_mappings:
+            logger.warning("Metrics are already registered, skipping re-registration.")
+            return
         # Load metrics config
         self.config = self._load_config(config_path)
         self.log_interval = self.config.get("log_interval", 10)
@@ -117,16 +124,12 @@ class PrometheusStatsLogger:
                 **{k: v for k, v in cfg.items() if k in default_kwargs},
             }
 
-            self.metric_mappings[name] = metric_cls(**metric_kwargs)
+            _metric_mappings[name] = metric_cls(**metric_kwargs)
 
     def _init_metrics_from_config(self):
         """Initialize metrics based on config"""
         # Get metric name prefix from config (e.g., "ucm:")
         self.metric_prefix = self.config.get("metric_prefix", "ucm:")
-
-        # Store metric mapping: metric_name -> Union[Counter, Gauge, Histogram]
-        # This mapping will be used in update_stats to dynamically log metrics
-        self.metric_mappings: dict[str, Union[Counter, Gauge, Histogram]] = {}
 
         for metric_type in self.metric_type_config.keys():
             self._register_metrics_by_type(metric_type)
@@ -149,11 +152,11 @@ class PrometheusStatsLogger:
         and update values via the specified function (update_func).
         """
         for stat_name, value in stats.items():
-            if stat_name not in self.metric_mappings:
+            if stat_name not in _metric_mappings:
                 logger.error(f"Metric {stat_name} not found")
                 continue
 
-            metric = self.metric_mappings[stat_name]
+            metric = _metric_mappings[stat_name]
             try:
                 metric_with_labels = metric.labels(**self.labels)
                 update_func(metric_with_labels, value)

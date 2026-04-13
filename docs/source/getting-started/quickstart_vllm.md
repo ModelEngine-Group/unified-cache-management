@@ -15,7 +15,6 @@ We offer 3 options to install UCM.
 ```bash
 docker pull unifiedcachemanager/ucm:latest
 ```
-
 Then run your container using following command.
 ```bash
 # Use `--ipc=host` to make sure the shared memory is large enough.
@@ -31,16 +30,29 @@ docker run --rm \
 ```
 
 #### Build image from source
-Use following command to build ucm with VLLM(v0.11.0), the sparse attention is enabled by default
 ```bash
 git clone --depth 1 --branch <branch_or_tag_name> https://github.com/ModelEngine-Group/unified-cache-management.git
 cd unified-cache-management
-docker build -t ucm-vllm:latest -f ./docker/Dockerfile.vllm_gpu ./
+```
+Use following command to build UCM with vLLM(v0.17.0):
+```bash
+docker build -t ucm-vllm:latest -f ./docker/Dockerfile.ucm-vllm-cuda-v0.17.0 ./
 ```
 
-If you don't need sparse attention, pass `--build-arg ENABLE_SPARSE=false` to disable it:
+For vLLM(v0.11.0) with sparse attention support:
 ```bash
-docker build --build-arg ENABLE_SPARSE=false -t ucm-vllm:latest -f ./docker/Dockerfile.vllm_gpu ./
+docker build -t ucm-vllm-sparse:latest -f ./docker/Dockerfile.ucm-vllm-cuda-v0.11.0 ./
+```
+
+The Dockerfile automatically invokes the build script (`scripts/build_cuda.sh`) to compile the wheel and installs from the built package.
+
+#### Build image from pre-built package
+
+If you have a pre-built tar package (e.g. from CI), extract it and build the image in `package` mode:
+```bash
+mkdir -p /tmp/ucm-pkg && tar xzf AI-Storage-Kit_*.tar.gz -C /tmp/ucm-pkg
+docker build --build-arg INSTALL_MODE=package \
+  -t ucm-vllm:latest -f /tmp/ucm-pkg/docker/Dockerfile.ucm-vllm-cuda-v0.17.0 /tmp/ucm-pkg
 ```
 
 
@@ -48,10 +60,9 @@ docker build --build-arg ENABLE_SPARSE=false -t ucm-vllm:latest -f ./docker/Dock
 1. Prepare vLLM Environment
 
     For the sake of environment isolation and simplicity, we recommend preparing the vLLM environment by pulling the official, pre-built vLLM Docker image.
-    > Note: v0.11.0 is newly supported (replace the tag with v0.11.0 if needed).
 
     ```bash
-    docker pull vllm/vllm-openai:v0.11.0
+    docker pull vllm/vllm-openai:<vllm_version>
     ```
     Use the following command to run your own container:
     ```bash
@@ -64,7 +75,7 @@ docker build --build-arg ENABLE_SPARSE=false -t ucm-vllm:latest -f ./docker/Dock
         -v <path_to_your_storage>:/home/storage \
         --entrypoint /bin/bash \
         --name <name_of_your_container> \
-        -it vllm/vllm-openai:v0.9.2
+        -it vllm/vllm-openai:<vllm_version>
     ```
     Refer to [Set up using docker](https://docs.vllm.ai/en/latest/getting_started/installation/gpu.html#set-up-using-docker) for more information to run your own vLLM container.
 
@@ -82,9 +93,9 @@ docker build --build-arg ENABLE_SPARSE=false -t ucm-vllm:latest -f ./docker/Dock
     pip install -v -e . --no-build-isolation
     ```
 
-3. Apply vLLM Integration Patches (Required)
+3. Apply vLLM Integration Patches (Not required for versions > 0.11.0)
 
-    To integrate UCM with vLLM, you can choose between a dynamic **monkey patch** (recommended) and a manual **git patch**.
+    To integrate UCM with vLLM 0.11.0, you can choose between a dynamic **monkey patch** (recommended) and a manual **git patch**.
 
     >**Recommendation**: We highly recommend the Monkey Patch approach for its non-invasive nature and ease of use.
 
@@ -105,7 +116,7 @@ docker build --build-arg ENABLE_SPARSE=false -t ucm-vllm:latest -f ./docker/Dock
 
     **Note:**
     - Monkey patch is only available for vLLM 0.11.0.
-    - Enabling ENABLE_UCM_PATCH is required to use the Prefix Caching feature with UCM.
+    - Enabling ENABLE_UCM_PATCH is required to use the Prefix Caching feature with UCM on vLLM 0.11.0.
     - ReRoPE support is currently only available via the Git Patch method.
 
     #### Option B: Manual Git Patch (Legacy/Alternative)

@@ -24,17 +24,12 @@ from common.path_utils import get_path_relative_to_test_root, get_path_to_model
 
 os.environ["ENABLE_UCM_PATCH"] = "1"
 
-# These online E2E cases start a fresh vLLM instance with UCM enabled and a
-# relatively large max_model_len, so the previous 6 GB hint translated to an
-# unrealistically small --gpu-memory-utilization (~6%) on H20 GPUs.
-ONLINE_INFERENCE_GPU_MEM_MB = 60000
-
 
 class TestBasicOnlineInference:
     """Test basic online inference functionality."""
 
     @pytest.mark.stage(1)
-    @pytest.mark.gpu_mem(ONLINE_INFERENCE_GPU_MEM_MB)
+    @pytest.mark.gpu_mem(6000)
     @pytest.mark.feature("online_inference")
     @pytest.mark.parametrize("model_name", ["Qwen2.5-1.5B-Instruct"])
     @pytest.mark.parametrize("max_tokens", [200])
@@ -123,7 +118,7 @@ class TestBasicOnlineInference:
         )
 
     @pytest.mark.stage(1)
-    @pytest.mark.gpu_mem(ONLINE_INFERENCE_GPU_MEM_MB)
+    @pytest.mark.gpu_mem(6000)
     @pytest.mark.gpu_count(2)
     @pytest.mark.feature("online_inference")
     @pytest.mark.parametrize("model_name", ["Qwen2.5-1.5B-Instruct"])
@@ -211,7 +206,7 @@ class TestBasicOnlineInference:
         )
 
     @pytest.mark.stage(1)
-    @pytest.mark.gpu_mem(ONLINE_INFERENCE_GPU_MEM_MB)
+    @pytest.mark.gpu_mem(6000)
     @pytest.mark.gpu_count(2)
     @pytest.mark.feature("online_inference")
     @pytest.mark.parametrize("model_name", ["Qwen2.5-1.5B-Instruct"])

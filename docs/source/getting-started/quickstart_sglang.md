@@ -2,7 +2,7 @@
 This document describes how to install unified-cache-management with SGLang on cuda platform.
 
 ## Prerequisites
-- SGLang >= 0.5.5, device=cuda
+- SGLang >= v0.5.9, device=cuda
 
 ## Step 1: UCM Installation
 
@@ -30,13 +30,24 @@ docker run --rm \
 ```
 
 #### Build image from source
-Download the pre-built `lmsysorg/sglang:v0.5.5.post3` docker image and build unified-cache-management docker image by commands below:
+Download the pre-built `lmsysorg/sglang:v0.5.9` docker image and build unified-cache-management docker image by commands below:
  ```bash
  # Build docker image using source code, replace <branch_or_tag_name> with the branch or tag name needed
  git clone --depth 1 --branch <branch_or_tag_name> https://github.com/ModelEngine-Group/unified-cache-management.git
  cd unified-cache-management
- docker build -t ucm-sglang:latest -f ./docker/Dockerfile.sglang_gpu ./
+ docker build -t ucm-sglang:latest -f ./docker/Dockerfile.ucm-sglang-cuda-v0.5.5 ./
  ```
+
+The Dockerfile automatically invokes the build script (`scripts/build_sglang.sh`) to compile the wheel, installs from the built package, and applies the SGLang integration patch.
+
+#### Build image from pre-built package
+
+If you have a pre-built tar package (e.g. from CI), extract it and build the image in `package` mode:
+```bash
+mkdir -p /tmp/ucm-pkg && tar xzf AI-Storage-Kit_*.tar.gz -C /tmp/ucm-pkg
+docker build --build-arg INSTALL_MODE=package \
+  -t ucm-sglang:latest -f /tmp/ucm-pkg/docker/Dockerfile.ucm-sglang-cuda-v0.5.5 /tmp/ucm-pkg
+```
 
 
 ### Option 2: Build from source
@@ -45,7 +56,7 @@ Download the pre-built `lmsysorg/sglang:v0.5.5.post3` docker image and build uni
     For the sake of environment isolation and simplicity, we recommend preparing the SGLang environment by pulling the official, pre-built SGLang Docker image.
 
     ```bash
-    docker pull lmsysorg/sglang:v0.5.5.post3
+    docker pull lmsysorg/sglang:v0.5.9
     ```
     Use the following command to run your own container:
     ```bash
@@ -58,7 +69,7 @@ Download the pre-built `lmsysorg/sglang:v0.5.5.post3` docker image and build uni
         -v <path_to_your_storage>:/home/storage \
         --entrypoint /bin/bash \
         --name <name_of_your_container> \
-        -it lmsysorg/sglang:v0.5.5.post3
+        -it lmsysorg/sglang:v0.5.9
     ```
     Refer to [Using docker](https://docs.sglang.io/get_started/install.html#method-3-using-docker) for more information to run your own SGLang container.
 
@@ -74,20 +85,6 @@ Download the pre-built `lmsysorg/sglang:v0.5.5.post3` docker image and build uni
     pip install -v -e . --no-build-isolation
     ```
 
-3. Apply SGLang Integration Patches (Required)
-
-    To enable Unified Cache Management (UCM) integration with SGLang, you must **manually apply the corresponding SGLang patch**.
-
-    You may directly navigate to the SGLang source directory, which is usually located under `/sgl-workspace`:
-    ```bash
-    cd <path_to_sglang>
-    ```
-    Then apply the SGLang patch:
-
-    ```bash
-    git apply unified-cache-management/ucm/integration/sglang/patch/0.5.5/sglang-adapt.patch
-    ```
-
 
 ### Option 3: Install by pip
 1. Prepare SGLang Environment
@@ -101,8 +98,6 @@ Download the pre-built `lmsysorg/sglang:v0.5.5.post3` docker image and build uni
     export PLATFORM=cuda
     pip install uc-manager
     ```
-> **Note:** If installing via `pip install`, you need to manually add the `config.yaml` file, similar to `unified-cache-management/examples/ucm_config_example.yaml`, because PyPI packages do not include YAML files.
-
 ## Step 2: Configuration
 
 ### Feature : Prefix Caching
@@ -110,19 +105,21 @@ Download the pre-built `lmsysorg/sglang:v0.5.5.post3` docker image and build uni
 UCM configuration is passed to SGLang via `--hicache-storage-backend-extra-config` in JSON format:
 
 ```bash
-HICACHE_CONFIG='{"kv_connector_extra_config":{"ucm_connector_name":"UcmPipelineStore","ucm_connector_config":{"storage_backends":"/mnt/test"}}}'
+HICACHE_CONFIG='{
+  "backend_name":"unifiedcache",
+  "module_path":"ucm.integration.sglang.unifiedcache_store",
+  "class_name":"UnifiedCacheStore",
+  "interface_v1":1,
+  "kv_connector_extra_config":{
+    "ucm_connector_name":"UcmPipelineStore",
+    "ucm_connector_config":{
+      "storage_backends":"/mnt/test"
+    }
+  }
+}'
 ```
 
 Note: Replace `/mnt/test` with your actual storage directory.
-
-Alternatively, you can use a YAML file to provide the same configuration. A ready example is available at:
-`sglang/python/sglang/srt/mem_cache/storage/unifiedcache/unifiedcache_example.yaml`.
-When using YAML, set `UNIFIEDCACHE_CONFIG_FILE` to the YAML path and omit
-`--hicache-storage-backend-extra-config`.
-
-```bash
-export UNIFIEDCACHE_CONFIG_FILE=/path/to/sglang/python/sglang/srt/mem_cache/storage/unifiedcache/unifiedcache_example.yaml
-```
 
 ## Step 3: Launching Inference
 
@@ -133,7 +130,18 @@ SGLang already provides an offline batch inference example. No UCM-specific code
 
 ```bash
 # Prefix cache config (reuse from Step 2)
-HICACHE_CONFIG='{"kv_connector_extra_config":{"ucm_connector_name":"UcmPipelineStore","ucm_connector_config":{"storage_backends":"/mnt/test"}}}'
+HICACHE_CONFIG='{
+  "backend_name":"unifiedcache",
+  "module_path":"ucm.integration.sglang.unifiedcache_store",
+  "class_name":"UnifiedCacheStore",
+  "interface_v1":1,
+  "kv_connector_extra_config":{
+    "ucm_connector_name":"UcmPipelineStore",
+    "ucm_connector_config":{
+      "storage_backends":"/mnt/test"
+    }
+  }
+}'
 
 python3 /path/to/sglang/examples/runtime/engine/offline_batch_inference.py \
   --model-path Qwen/Qwen2.5-14B-Instruct \
@@ -143,7 +151,7 @@ python3 /path/to/sglang/examples/runtime/engine/offline_batch_inference.py \
   --enable-hierarchical-cache \
   --hicache-mem-layout page_first \
   --hicache-write-policy write_through \
-  --hicache-storage-backend unifiedcache \
+  --hicache-storage-backend dynamic \
   --hicache-storage-prefetch-policy wait_complete \
   --hicache-storage-backend-extra-config "$HICACHE_CONFIG"
 ```
@@ -161,7 +169,18 @@ To start the SGLang server with the Qwen/Qwen2.5-14B-Instruct model, run:
 
 ```bash
 # Prefix cache config (reuse from Step 2)
-HICACHE_CONFIG='{"kv_connector_extra_config":{"ucm_connector_name":"UcmPipelineStore","ucm_connector_config":{"storage_backends":"/mnt/test"}}}'
+HICACHE_CONFIG='{
+  "backend_name":"unifiedcache",
+  "module_path":"ucm.integration.sglang.unifiedcache_store",
+  "class_name":"UnifiedCacheStore",
+  "interface_v1":1,
+  "kv_connector_extra_config":{
+    "ucm_connector_name":"UcmPipelineStore",
+    "ucm_connector_config":{
+      "storage_backends":"/mnt/test"
+    }
+  }
+}'
 
 python3 -m sglang.launch_server \
   --model-path Qwen/Qwen2.5-14B-Instruct \
@@ -172,7 +191,7 @@ python3 -m sglang.launch_server \
   --enable-hierarchical-cache \
   --hicache-mem-layout page_first \
   --hicache-write-policy write_through \
-  --hicache-storage-backend unifiedcache \
+  --hicache-storage-backend dynamic \
   --hicache-storage-prefetch-policy wait_complete \
   --hicache-storage-backend-extra-config "$HICACHE_CONFIG"
 ```

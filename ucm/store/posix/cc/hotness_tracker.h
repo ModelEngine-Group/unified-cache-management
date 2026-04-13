@@ -21,47 +21,34 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  * */
-#ifndef UNIFIEDCACHE_POSIX_STORE_CC_SPACE_MANAGER_H
-#define UNIFIEDCACHE_POSIX_STORE_CC_SPACE_MANAGER_H
+#ifndef UNIFIEDCACHE_POSIX_STORE_CC_HOTNESS_TRACKER_H
+#define UNIFIEDCACHE_POSIX_STORE_CC_HOTNESS_TRACKER_H
 
-#include "global_config.h"
-#include "hotness_tracker.h"
-#include "shard_gc.h"
+#include <atomic>
+#include <deque>
+#include <mutex>
+#include <thread>
 #include "space_layout.h"
-#include "thread/latch.h"
-#include "thread/thread_pool.h"
+#include "type/types.h"
 
 namespace UC::PosixStore {
 
-class SpaceManager {
-    struct PrefixLookupContext {
-        const Detail::BlockId* blocks;
-        size_t begin;
-        size_t end;
-        size_t nWorker;
-        std::shared_ptr<std::atomic<ssize_t>> firstFail;
-        std::shared_ptr<std::atomic<int32_t>> status;
-        std::shared_ptr<Latch> waiter;
-    };
-
-private:
-    SpaceLayout layout_;
-    ThreadPool<PrefixLookupContext> prefixLookupSrv_;
-    HotnessTracker hotnessTracker_;
-    ShardGarbageCollector gcMgr_;
-    bool hotnessTrackerEnable_{false};
-    bool gcEnable_{false};
-
+class HotnessTracker {
 public:
-    Status Setup(const Config& config);
-    Expected<std::vector<uint8_t>> Lookup(const Detail::BlockId* blocks, size_t num);
-    Expected<ssize_t> LookupOnPrefix(const Detail::BlockId* blocks, size_t num);
-    const SpaceLayout* GetLayout() const { return &layout_; }
+    HotnessTracker() = default;
+    HotnessTracker(const HotnessTracker&) = delete;
+    HotnessTracker& operator=(const HotnessTracker&) = delete;
+    ~HotnessTracker();
+    Status Setup(const SpaceLayout* layout);
+    void Touch(const Detail::BlockId& blockId);
 
 private:
-    uint8_t Lookup(const Detail::BlockId* block);
-    void OnLookupPrefix(PrefixLookupContext& ctx);
-    void OnLookupPrefixTimeout(PrefixLookupContext& ctx);
+    void UtimeWorkerLoop();
+    const SpaceLayout* layout_{nullptr};
+    std::deque<Detail::BlockId> produceQueue_;
+    std::mutex queueMtx_;
+    std::atomic<bool> stop_{false};
+    std::thread utimeWorker_;
 };
 
 }  // namespace UC::PosixStore

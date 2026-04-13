@@ -51,7 +51,6 @@ class LoadQueue {
 
 private:
     alignas(64) std::atomic_bool stop_{false};
-    Detail::TaskHandle finishedBackendTaskHandle_{0};
     TaskIdSet* failureSet_{nullptr};
     TransBuffer* buffer_{nullptr};
     StoreV1* backend_{nullptr};

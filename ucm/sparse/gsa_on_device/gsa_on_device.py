@@ -1,8 +1,9 @@
 from importlib import resources
 from pathlib import Path
-from typing import Dict, List, Optional, Union
+from typing import Any, Dict, List, NamedTuple, Optional, Union
 
 import torch
+from tqdm import tqdm
 
 if hasattr(torch, "npu") and torch.npu.is_available():
     import torch_npu
@@ -11,10 +12,10 @@ if hasattr(torch, "npu") and torch.npu.is_available():
 
 from vllm import _custom_ops as ops
 from vllm.attention.ops.flashmla import get_mla_metadata
-from vllm.config import VllmConfig
-from vllm.forward_context import ForwardContext
+from vllm.config import CUDAGraphMode, VllmConfig
+from vllm.distributed.parallel_state import is_global_first_rank
+from vllm.forward_context import BatchDescriptor, ForwardContext
 from vllm.utils import cdiv
-from vllm.v1.attention.backends.mla.common import MLACommonMetadata
 from vllm.v1.core.sched.output import SchedulerOutput
 from vllm.v1.request import Request, RequestStatus
 
@@ -35,12 +36,29 @@ if hasattr(torch, "cuda") and torch.cuda.is_available():
     from ucm.sparse.gsa_on_device.hash_encoder import reshape_and_cache_khash_triton
 
 from ucm.sparse.gsa_on_device.gsa_on_device_config import GSAOnDeviceConfig
+from ucm.sparse.gsa_on_device.hamming_topk import update_seq_lens
 from ucm.sparse.gsa_on_device.hash_encoder import HashEncoder
 from ucm.utils import Config
 
 logger = init_logger(__name__)
 
 ReqType = Union[str, int]
+
+
+class GsaBatchDescriptor(NamedTuple):
+    """BatchDescriptor variant that keys cudagraphs by GSA on/off mode."""
+
+    num_tokens: int
+    uniform_decode: bool = False
+    gsa_enabled: bool = False
+
+    @property
+    def non_uniform(self) -> "GsaBatchDescriptor":
+        return GsaBatchDescriptor(
+            self.num_tokens,
+            uniform_decode=False,
+            gsa_enabled=self.gsa_enabled,
+        )
 
 
 def gsa_on_device_config_path_for_model(vllm_config) -> str:
@@ -164,8 +182,10 @@ class GSAOnDevice(UcmSparseBase):
         if role != UcmSparseRole.WORKER:
             return
 
+        self.use_graph = False
         if self.is_cuda:  # cuda only variables
             if not vllm_config.model_config.enforce_eager:
+                self.use_graph = True
                 device_properties = torch.cuda.get_device_properties(self.device)
                 num_sms = device_properties.multi_processor_count
                 self.cg_buf_topk_tile_scheduler_metadata = torch.zeros(
@@ -194,6 +214,11 @@ class GSAOnDevice(UcmSparseBase):
         self.topk_seq_lens = None
         self.topk_seq_lens_qwen = None
         self.has_pc_hit = False
+
+        # for MLA
+        self.topk_seq_lens_mla = None
+        self.topk_tile_scheduler_metadata = None
+        self.topk_num_splits = None
 
         self.is_prefill_flag: dict[str, bool] = dict()
 
@@ -242,6 +267,12 @@ class GSAOnDevice(UcmSparseBase):
                 device=self.device,
             )
             self.full_seq_lens = torch.zeros(
+                (self.max_batch_size,),
+                dtype=torch.int32,
+                device=self.device,
+            )
+
+            self.cg_buf_topk_seq_lens_qwen = torch.zeros(
                 (self.max_batch_size,),
                 dtype=torch.int32,
                 device=self.device,
@@ -675,8 +706,7 @@ class GSAOnDevice(UcmSparseBase):
     ):
         if not is_rollback_layer:
             if is_skip_hash_layer:
-                assert attn_metadata.decode.topk_block_table is not None
-                block_table = attn_metadata.decode.topk_block_table
+                block_table = self.topk_block_table
             else:
                 q_nope_hash, q_rope_hash = self.hash_code(
                     nope=decode_ql_nope,
@@ -695,11 +725,11 @@ class GSAOnDevice(UcmSparseBase):
                     recent_token=self.block_size * 4,
                     is_mla=self.is_mla,
                 )
-                attn_metadata.decode.topk_block_table = block_table
+                self.topk_block_table = block_table
 
-            seq_lens = attn_metadata.decode.topk_seq_lens
-            tile_scheduler_metadata = attn_metadata.decode.topk_tile_scheduler_metadata
-            num_splits = attn_metadata.decode.topk_num_splits
+            seq_lens = self.topk_seq_lens_mla
+            tile_scheduler_metadata = self.topk_tile_scheduler_metadata
+            num_splits = self.topk_num_splits
 
             self.ori_block_table_decode = attn_metadata.decode.block_table
             self.ori_seq_lens_decode = attn_metadata.decode.seq_lens
@@ -994,6 +1024,38 @@ class GSAOnDevice(UcmSparseBase):
                         attn_metadata.seq_lens_list = self.ori_seq_lens_decode.tolist()
                     attn_metadata.seq_lens = self.ori_seq_lens_decode
 
+    def reset_gsa_capture_state(self) -> None:
+        """Reset GSA flags after a capture (warmup or real) _dummy_run."""
+        self.gsa_enabled = False
+        self.has_decode = False
+        self.decode_only = False
+        self.has_pc_hit = False
+
+    def build_dummy_sparse_meta(self, attn_metadata) -> bool:
+        """Set up all internal GSA state required before a GSA-on graph
+        capture _dummy_run.
+        """
+
+        if isinstance(attn_metadata, dict):
+            attn_metadata = next(iter(attn_metadata.values()))
+
+        seq_lens = self.get_seq_lens(attn_metadata)
+        if seq_lens is None:
+            logger.info("[gsaondevice-cg] skip sparse capture prep: seq_lens is None")
+            return False
+
+        self.num_reqs = seq_lens.size(0)
+
+        # ── flags checked by attention_begin ──────────────────────────────
+        self.gsa_enabled = True
+        self.has_decode = True
+        self.decode_only = True
+        self.has_pc_hit = False
+
+        self.prepare_cuda_decode_sparse_meta(attn_metadata, self.num_reqs)
+
+        return True
+
     def request_begin(self, request_id: ReqType, prompt_token_ids: List[int]):
         pass
 
@@ -1080,24 +1142,7 @@ class GSAOnDevice(UcmSparseBase):
                     khash_cache = None
                 kv_caches[layer_name] = (kv_cache, khash_cache)
 
-    def build_decode_hash(self, seq_lens):
-        from ucm.sparse.gsa_on_device.hamming_topk import update_seq_lens
-
-        topk_seq_lens = update_seq_lens(
-            seq_lens,
-            topk_token=self.hash_topk_tokens,
-            block_size=self.block_size,
-        )
-        topk_tile_scheduler_metadata, topk_num_splits = get_mla_metadata(
-            topk_seq_lens,
-            self.num_q_heads,
-            1,
-        )
-        return topk_seq_lens, topk_tile_scheduler_metadata, topk_num_splits
-
     def build_decode_attention_meta_npu(self, query_lens, seq_lens, block_table):
-
-        from ucm.sparse.gsa_on_device.hamming_topk import update_seq_lens
 
         self.ori_seq_lens_decode = seq_lens.clone()
         self.ori_block_table_decode = block_table.clone()
@@ -1173,17 +1218,40 @@ class GSAOnDevice(UcmSparseBase):
             prefix_slot_mapping,
         )
 
-    def get_block_table_row(self, attn_metadata, req_row_id, prefill_row_id):
-        if self.is_cuda:
-            if self.is_mla:
-                attn_metadata_prefill = getattr(attn_metadata, "prefill", None)
-                return attn_metadata_prefill.block_table[prefill_row_id]
-            return attn_metadata.block_table[req_row_id]
-        else:
-            if self.is_mla:
-                attn_metadata_prefill = getattr(attn_metadata, "prefill", None)
-                return attn_metadata_prefill.block_table[prefill_row_id]
+    def get_block_table_row(self, attn_metadata, req_row_id, qlen):
+        if not self.is_mla:
+            if self.is_cuda:
+                return attn_metadata.block_table[req_row_id]
             return attn_metadata.block_tables[req_row_id]
+
+        attn_metadata_decode = getattr(attn_metadata, "decode", None)
+        attn_metadata_prefill = getattr(attn_metadata, "prefill", None)
+        num_decode_rows = (
+            int(attn_metadata_decode.block_table.size(0))
+            if attn_metadata_decode is not None
+            else 0
+        )
+
+        if (
+            qlen == 1
+            and attn_metadata_decode is not None
+            and req_row_id < num_decode_rows
+        ):
+            return attn_metadata_decode.block_table[req_row_id]
+
+        if attn_metadata_prefill is not None:
+            local_prefill_row_id = req_row_id - num_decode_rows
+            num_prefill_rows = int(attn_metadata_prefill.block_table.size(0))
+            if 0 <= local_prefill_row_id < num_prefill_rows:
+                return attn_metadata_prefill.block_table[local_prefill_row_id]
+
+        raise RuntimeError(
+            f"Failed to resolve MLA block_table row for request: "
+            f"req_row_id={req_row_id}, qlen={qlen}, "
+            f"num_decode_rows={num_decode_rows}, "
+            f"has_decode={attn_metadata_decode is not None}, "
+            f"has_prefill={attn_metadata_prefill is not None}"
+        )
 
     def get_seq_lens(self, attn_metadata):
         if not self.is_mla:
@@ -1211,27 +1279,57 @@ class GSAOnDevice(UcmSparseBase):
         return getattr(attn_metadata_prefill, "seq_lens", None)  # NPU
 
     def prepare_cuda_decode_sparse_meta(self, attn_metadata, num_decodes):
-        from ucm.sparse.gsa_on_device.hamming_topk import update_seq_lens
+        if self.is_mla:
+            attn_metadata_decode = getattr(attn_metadata, "decode", None)
+            if attn_metadata_decode is not None:
+                self.topk_seq_lens_mla = update_seq_lens(
+                    attn_metadata.decode.seq_lens,
+                    topk_token=self.hash_topk_tokens,
+                    block_size=self.block_size,
+                )
+                self.topk_tile_scheduler_metadata, self.topk_num_splits = (
+                    get_mla_metadata(
+                        self.topk_seq_lens_mla,
+                        self.num_q_heads,
+                        1,
+                    )
+                )
+                if self.use_graph:
+                    (
+                        self.topk_tile_scheduler_metadata,
+                        self.topk_num_splits,
+                        self.topk_seq_lens_mla,
+                    ) = self.maybe_init_cudagraph_buffers_for_topk(
+                        attn_metadata_decode.num_splits.size(0),
+                        attn_metadata_decode.tile_scheduler_metadata,
+                        self.topk_tile_scheduler_metadata,
+                        self.topk_num_splits,
+                        self.topk_seq_lens_mla,
+                    )
+        else:
+            # for roll_back recode the full seqlens & block_table
+            self.full_seq_lens[: self.num_reqs].copy_(attn_metadata.seq_lens, True)
+            self.full_block_table[: self.num_reqs].copy_(
+                attn_metadata.block_table, True
+            )
 
-        # for roll_back recode the full seqlens & block_table
-        self.full_seq_lens[: self.num_reqs].copy_(attn_metadata.seq_lens, True)
-        self.full_block_table[: self.num_reqs].copy_(attn_metadata.block_table, True)
+            self.ori_seq_lens_decode = self.full_seq_lens[: self.num_reqs]
+            self.ori_block_table_decode = self.full_block_table[: self.num_reqs]
 
-        self.ori_seq_lens_decode = self.full_seq_lens[: self.num_reqs]
-        self.ori_block_table_decode = self.full_block_table[: self.num_reqs]
+            if not self.decode_only:
+                self.decode_req_ids_buf.copy_to_gpu(num_decodes)
+                self.decode_req_ids = self.decode_req_ids_buf.gpu[:num_decodes]
 
-        if not self.decode_only:
-            self.decode_req_ids_buf.copy_to_gpu(num_decodes)
-            self.decode_req_ids = self.decode_req_ids_buf.gpu[:num_decodes]
+            _topk = update_seq_lens(
+                attn_metadata.seq_lens,
+                topk_token=self.hash_topk_tokens,
+                block_size=self.block_size,
+            )
+            self.cg_buf_topk_seq_lens_qwen[: self.num_reqs].copy_(_topk)
+            self.topk_seq_lens_qwen = self.cg_buf_topk_seq_lens_qwen[: self.num_reqs]
 
-        self.topk_seq_lens_qwen = update_seq_lens(
-            attn_metadata.seq_lens,
-            topk_token=self.hash_topk_tokens,
-            block_size=self.block_size,
-        )
-
-        self.new_block_table = attn_metadata.block_table
-        self.new_seq_lens = attn_metadata.seq_lens
+            self.new_block_table = attn_metadata.block_table
+            self.new_seq_lens = attn_metadata.seq_lens
 
     def build_sparse_meta(
         self, scheduler_output, requests, input_batch, attn_metadata
@@ -1269,7 +1367,6 @@ class GSAOnDevice(UcmSparseBase):
         )
         self.decode_req_ids_buf.clear()
 
-        prefill_row_id = 0
         for (
             req_id,
             num_scheduled_tokens,
@@ -1301,13 +1398,15 @@ class GSAOnDevice(UcmSparseBase):
                 self.is_prefill_flag[req_id] = True
                 # num_prompt_tokens -> store pc -> rebuild slotmapping
                 req_row_id = input_batch.req_id_to_index[req_id]
+
+                cur_qlen = compute_q_lens[req_row_id]
                 ext_tokens = int(
                     scheduler_output.num_external_computed_tokens_per_req.get(req_id, 0)
                 )
 
                 if ext_tokens > 0:
                     block_table_row = self.get_block_table_row(
-                        attn_metadata, req_row_id, prefill_row_id
+                        attn_metadata, req_row_id, cur_qlen
                     )
 
                     (
@@ -1334,7 +1433,6 @@ class GSAOnDevice(UcmSparseBase):
                     all_prefix_tokens += num_prefix_tokens
                     all_prefix_blocks += num_prefix_blocks
                     num_pc_hit += 1
-                    prefill_row_id += 1
 
             if is_last_chunk:
                 self.is_prefill_flag[req_id] = False
@@ -1346,7 +1444,7 @@ class GSAOnDevice(UcmSparseBase):
             if not self.is_cuda:
                 self.prefix_token_len = self.prefix_token_len_full[:num_pc_hit]
 
-        if self.is_mla or not self.gsa_enabled:
+        if not self.gsa_enabled:
             return
 
         # Build decode sparse metadata for CUDA GQA only.
@@ -1355,6 +1453,122 @@ class GSAOnDevice(UcmSparseBase):
         # build sparse meta for cuda
         if self.has_decode and self.is_cuda:
             self.prepare_cuda_decode_sparse_meta(attn_metadata, num_decodes)
+
+    def resolve_batch_descriptor(
+        self,
+        batch_descriptor: BatchDescriptor,
+        cudagraph_dispatcher: Any,
+    ) -> BatchDescriptor:
+        """Return a GSA-specific batch descriptor when a matching graph exists."""
+        if not self.gsa_enabled:
+            return batch_descriptor
+
+        if self.has_pc_hit or not self.decode_only:
+            return batch_descriptor
+
+        gsa_bd = GsaBatchDescriptor(
+            batch_descriptor.num_tokens,
+            batch_descriptor.uniform_decode,
+            gsa_enabled=True,
+        )
+        full_keys = cudagraph_dispatcher.cudagraph_keys[CUDAGraphMode.FULL]
+
+        if gsa_bd in full_keys:
+            return gsa_bd
+
+        return batch_descriptor
+
+    def adjust_cudagraph_runtime_mode(
+        self,
+        cudagraph_runtime_mode: CUDAGraphMode,
+        batch_descriptor: BatchDescriptor,
+        num_input_tokens: int,
+        uniform_decode: bool,
+    ) -> tuple[CUDAGraphMode, BatchDescriptor]:
+        """Apply GSA fallbacks after dispatch to avoid invalid MLA graph replay:
+        1. MLA + decode-only + gsa_enabled: no GSA-on graph → stale state.
+        2. MLA + decode-only + has_pc_hit: CUDAGraphMode.NONE + ori batch_descriptor.
+        """
+        if cudagraph_runtime_mode == CUDAGraphMode.FULL and self.has_pc_hit:
+            cudagraph_runtime_mode = CUDAGraphMode.NONE
+            batch_descriptor = BatchDescriptor(
+                num_tokens=num_input_tokens, uniform_decode=uniform_decode
+            )
+
+        return cudagraph_runtime_mode, batch_descriptor
+
+    def maybe_capture_extra_cudagraphs(
+        self,
+        runner: Any,
+        compilation_cases: list[int],
+        cudagraph_runtime_mode: CUDAGraphMode,
+        uniform_decode: bool,
+    ) -> None:
+        """Capture the extra GSA-on full graphs on top of the base graphs."""
+        is_gsa_full = uniform_decode and cudagraph_runtime_mode == CUDAGraphMode.FULL
+        if not is_gsa_full:
+            return
+
+        cg_mode = CUDAGraphMode.FULL
+        gsa_cases = compilation_cases
+        if is_global_first_rank():
+            gsa_cases = tqdm(
+                compilation_cases,
+                disable=not runner.load_config.use_tqdm_on_load,
+                desc="Capturing CUDA graphs ({}, {})".format(
+                    "GSA-enabled decode", cudagraph_runtime_mode.name
+                ),
+            )
+
+        for num_tokens in gsa_cases:
+            gsa_bd = GsaBatchDescriptor(
+                num_tokens,
+                uniform_decode=True,
+                gsa_enabled=True,
+            )
+            if gsa_bd not in runner.cudagraph_dispatcher.cudagraph_keys[cg_mode]:
+                runner.cudagraph_dispatcher.add_cudagraph_key(cg_mode, gsa_bd)
+
+            orig_dispatch = runner.cudagraph_dispatcher.dispatch
+
+            def _patched(bd, _target=gsa_bd, _orig=orig_dispatch):
+                if (
+                    bd.num_tokens == _target.num_tokens
+                    and bd.uniform_decode == _target.uniform_decode
+                ):
+                    return cg_mode, _target
+                return _orig(bd)
+
+            runner.cudagraph_dispatcher.dispatch = _patched
+            try:
+                # if not self.prepare_gsa_capture_state(
+                #     num_tokens, runner.uniform_decode_query_len
+                # ):
+                #     continue
+
+                for _ in range(runner.compilation_config.cudagraph_num_of_warmups):
+                    runner._dummy_run(
+                        num_tokens,
+                        cudagraph_runtime_mode=CUDAGraphMode.NONE,
+                        force_attention=True,
+                        force_ucm_attention=True,
+                        uniform_decode=True,
+                        skip_eplb=True,
+                        remove_lora=False,
+                    )
+                runner._dummy_run(
+                    num_tokens,
+                    cudagraph_runtime_mode=cg_mode,
+                    force_ucm_attention=True,
+                    uniform_decode=True,
+                    skip_eplb=True,
+                    remove_lora=False,
+                )
+            finally:
+                runner.cudagraph_dispatcher.dispatch = orig_dispatch
+                self.reset_gsa_capture_state()
+
+        runner.maybe_remove_all_loras(runner.lora_config)
 
     def maybe_init_cudagraph_buffers_for_topk(
         self,

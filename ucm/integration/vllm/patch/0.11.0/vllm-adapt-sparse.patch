@@ -1,7 +1,7 @@
-From ce508dea471e7dd240e8bfaaaa6a29dfc73d53fc Mon Sep 17 00:00:00 2001
+From a578315c8be2222ee2da9c10b561ff7338b7e176 Mon Sep 17 00:00:00 2001
 From: AooooooA-C <chenaozhu@outlook.com>
 Date: Mon, 19 Jan 2026 23:03:08 -0800
-Subject: [PATCH 1/4] apply sparse method patches
+Subject: [PATCH 1/5] apply sparse method patches
 
 ---
  vllm/attention/layer.py                    | 63 +++++++++++++++
@@ -865,10 +865,10 @@ index 8c75e8914..c3e9e781f 100644
 2.34.1
 
 
-From d9eed9606eb5bffcb14ef0c66a1697f5f4cc8319 Mon Sep 17 00:00:00 2001
+From 4953412fbaa2a48a0f5eb66ed6c10d9ae1d99bc1 Mon Sep 17 00:00:00 2001
 From: Qiong Wu <wq674452797@gmail.com>
 Date: Sat, 31 Jan 2026 16:06:09 +0800
-Subject: [PATCH 2/4] update sparse patch for vllm
+Subject: [PATCH 2/5] update sparse patch for vllm
 
 ---
  vllm/attention/layer.py                  | 51 ++----------------------
@@ -977,10 +977,10 @@ index 86771060c..f2bac0202 100644
 2.34.1
 
 
-From 5175c05806154fbdf09af0d1f135fafd01367d5c Mon Sep 17 00:00:00 2001
+From 65203c2eb0c47cdec6055df5863863d275c7fd86 Mon Sep 17 00:00:00 2001
 From: wenxinwang <wangwenxin21@huawei.com>
 Date: Wed, 4 Feb 2026 18:14:49 -0800
-Subject: [PATCH 3/4] [bugfix] gsa graph patch
+Subject: [PATCH 3/5] gsa graph patch
 
 ---
  vllm/v1/attention/backends/mla/flashmla.py |  2 +-
@@ -1048,10 +1048,10 @@ index dca14b5d3..964f8f0a4 100644
 2.34.1
 
 
-From f635d244b74f308d55d703aa2e05684ec0db7c3e Mon Sep 17 00:00:00 2001
+From 394785634fbc83bc72a04e3e7bf6f45524a47800 Mon Sep 17 00:00:00 2001
 From: wenxinwang <wangwenxin21@huawei.com>
 Date: Tue, 10 Mar 2026 06:10:44 -0700
-Subject: [PATCH 4/4] [bugfix] Fix CUDA full graph for DeepSeek implementation
+Subject: [PATCH 4/5] Fix CUDA full graph for DeepSeek implementation
 
 ---
  vllm/v1/attention/backends/mla/flashmla.py | 5 ++++-
@@ -1073,6 +1073,198 @@ index c4f4cf847..8f77eaea6 100644
  
          return FlashMLADecodeMetadata(
              block_table=block_table_tensor,
+-- 
+2.34.1
+
+
+From c249d8f246ce78ceb8ff9be37191d8fd6027efe3 Mon Sep 17 00:00:00 2001
+From: wenxinwang <wangwenxin21@huawei.com>
+Date: Wed, 8 Apr 2026 18:46:42 -0700
+Subject: [PATCH 5/5] cuda full graph for gsa
+
+---
+ vllm/v1/attention/backends/mla/flashmla.py | 23 +---------
+ vllm/v1/worker/gpu_model_runner.py         | 50 ++++++++++++++++++++--
+ 2 files changed, 47 insertions(+), 26 deletions(-)
+
+diff --git a/vllm/v1/attention/backends/mla/flashmla.py b/vllm/v1/attention/backends/mla/flashmla.py
+index 8f77eaea6..2dd5cf751 100644
+--- a/vllm/v1/attention/backends/mla/flashmla.py
++++ b/vllm/v1/attention/backends/mla/flashmla.py
+@@ -5,7 +5,6 @@ from dataclasses import dataclass
+ from typing import ClassVar, Optional, Union
+ 
+ import torch
+-import os
+ 
+ from vllm.attention.backends.abstract import AttentionLayer, AttentionType
+ from vllm.attention.ops.flashmla import (flash_mla_with_kvcache,
+@@ -21,8 +20,6 @@ from vllm.v1.attention.backends.mla.common import (MLACommonBackend,
+ from vllm.v1.attention.backends.utils import AttentionCGSupport
+ from vllm.v1.kv_cache_interface import AttentionSpec
+ 
+-from ucm.sparse.state import get_ucm_sparse, has_ucm_sparse
+-
+ logger = init_logger(__name__)
+ 
+ 
+@@ -49,10 +46,6 @@ class FlashMLABackend(MLACommonBackend):
+ class FlashMLADecodeMetadata(MLACommonDecodeMetadata):
+     tile_scheduler_metadata: torch.Tensor
+     num_splits: torch.Tensor
+-    topk_seq_lens: torch.Tensor
+-    topk_tile_scheduler_metadata: torch.Tensor
+-    topk_num_splits: torch.Tensor
+-    topk_block_table: torch.Tensor = None
+ 
+ 
+ @dataclass
+@@ -103,13 +96,6 @@ class FlashMLAMetadataBuilder(MLACommonMetadataBuilder[FlashMLAMetadata]):
+             self.num_q_heads,
+             1, # MQA for the decode path
+         )
+-        topk_seq_lens = None
+-        topk_tile_scheduler_metadata = None
+-        topk_num_splits = None
+-        if has_ucm_sparse():
+-            ucm_sparse = get_ucm_sparse()
+-            if os.getenv("VLLM_HASH_ATTENTION") == "1":
+-                topk_seq_lens, topk_tile_scheduler_metadata, topk_num_splits = ucm_sparse.build_decode_hash(seq_lens_device)
+ 
+         # TODO: we can disambiguate between decode and mixed-prefill decode here
+         # so we can only use the persistent buffer if a cudagraph is actually
+@@ -137,19 +123,12 @@ class FlashMLAMetadataBuilder(MLACommonMetadataBuilder[FlashMLAMetadata]):
+             #  it needs to monotonically increasing by 1)
+             self.cg_buf_num_splits[n:].fill_(num_splits[-1])
+             num_splits = num_splits_view
+-            if has_ucm_sparse():
+-                ucm_sparse = get_ucm_sparse()
+-                if os.getenv("VLLM_HASH_ATTENTION") == "1":
+-                    topk_tile_scheduler_metadata, topk_num_splits, topk_seq_lens  = ucm_sparse.maybe_init_cudagraph_buffers_for_topk(n, tile_scheduler_metadata, topk_tile_scheduler_metadata, topk_num_splits, topk_seq_lens)
+ 
+         return FlashMLADecodeMetadata(
+             block_table=block_table_tensor,
+             seq_lens=seq_lens_device,
+             tile_scheduler_metadata=tile_scheduler_metadata,
+             num_splits=num_splits,
+-            topk_seq_lens=topk_seq_lens,
+-            topk_tile_scheduler_metadata=topk_tile_scheduler_metadata,
+-            topk_num_splits=topk_num_splits,
+         )
+ 
+ 
+@@ -221,4 +200,4 @@ class FlashMLAImpl(MLACommonImpl[FlashMLAMetadata]):
+             descale_k=layer._k_scale.reshape(1),
+         )
+ 
+-        return o, lse
++        return o, lse
+\ No newline at end of file
+diff --git a/vllm/v1/worker/gpu_model_runner.py b/vllm/v1/worker/gpu_model_runner.py
+index d7c6a8e0a..0da4921a3 100644
+--- a/vllm/v1/worker/gpu_model_runner.py
++++ b/vllm/v1/worker/gpu_model_runner.py
+@@ -2304,10 +2304,21 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
+                               == self.uniform_decode_query_len) and (
+                                   num_scheduled_tokens
+                                   == self.input_batch.num_reqs * max_query_len)
++            self.maybe_execute_ucm_sparse_build_sparse_meta(scheduler_output, attn_metadata)
+             batch_descriptor = BatchDescriptor(num_tokens=num_input_tokens,
+                                                uniform_decode=uniform_decode)
+-            cudagraph_runtime_mode, batch_descriptor = \
+-                self.cudagraph_dispatcher.dispatch(batch_descriptor)
++            gsa_batch_descriptor = self._make_gsa_batch_descriptor(batch_descriptor)
++            cudagraph_runtime_mode, batch_descriptor = (
++                self.cudagraph_dispatcher.dispatch(gsa_batch_descriptor)
++            )
++            if has_ucm_sparse() and os.getenv("VLLM_HASH_ATTENTION") == "1":
++                ucm_sparse = get_ucm_sparse()
++                cudagraph_runtime_mode, batch_descriptor = ucm_sparse.adjust_cudagraph_runtime_mode(
++                        cudagraph_runtime_mode,
++                        batch_descriptor,
++                        num_input_tokens,
++                        uniform_decode,
++                    )
+ 
+         # This is currently to get around the assert in the DPMetadata
+         # where it wants `num_tokens_across_dp` to align with `num_tokens`
+@@ -2621,6 +2632,12 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
+             )
+         return draft_token_ids
+ 
++    def maybe_execute_ucm_sparse_build_sparse_meta(self, scheduler_output: "SchedulerOutput", attn_metadata: CommonAttentionMetadata):
++        if not has_ucm_sparse():
++            return
++        ucm_sparse = get_ucm_sparse()
++        ucm_sparse.build_sparse_meta(scheduler_output, self.requests, self.input_batch, attn_metadata)
++        
+     def maybe_execute_ucm_sparse_begin(self, scheduler_output: "SchedulerOutput", attn_metadata: CommonAttentionMetadata):
+         if not has_ucm_sparse():
+             return
+@@ -2630,7 +2647,6 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
+             if callable(uc_setup_model):
+                 uc_setup_model(self.model)
+         ucm_sparse = get_ucm_sparse()
+-        ucm_sparse.build_sparse_meta(scheduler_output, self.requests, self.input_batch, attn_metadata)
+         ucm_sparse.execute_begin(scheduler_output)
+ 
+     def maybe_execute_ucm_sparse_finished(self, logits_indices):
+@@ -2638,7 +2654,17 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
+             return logits_indices
+         ucm_sparse = get_ucm_sparse()
+         return ucm_sparse.execute_finished(logits_indices)
+-
++    
++    def _make_gsa_batch_descriptor(
++        self, bd: BatchDescriptor
++    ) -> BatchDescriptor:
++        #  Return GsaBatchDescriptor when GSA is active and graph is pre-registered.
++        if not has_ucm_sparse() or os.getenv("VLLM_HASH_ATTENTION") != "1":
++            return bd
++        ucm_sparse = get_ucm_sparse()
++        return ucm_sparse.resolve_batch_descriptor(bd, self.cudagraph_dispatcher)
++        
++    
+     def ucm_sparse_request_finished_in_worker(self, request_id: str | int):
+         if not has_ucm_sparse():
+             return
+@@ -2966,6 +2992,7 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
+         num_tokens: int,
+         cudagraph_runtime_mode: Optional[CUDAGraphMode] = None,
+         force_attention: bool = False,
++        force_ucm_attention: bool = False,
+         uniform_decode: bool = False,
+         allow_microbatching: bool = True,
+         skip_eplb: bool = False,
+@@ -3216,6 +3243,11 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
+                     cudagraph_runtime_mode=cudagraph_runtime_mode,
+                     batch_descriptor=batch_descriptor,
+                     ubatch_slices=ubatch_slices):
++                if force_ucm_attention:
++                    if not has_ucm_sparse():
++                        return
++                    ucm_sparse = get_ucm_sparse()
++                    ucm_sparse.build_dummy_sparse_meta(attn_metadata)
+                 outputs = self.model(
+                     input_ids=input_ids,
+                     positions=positions,
+@@ -3601,6 +3633,16 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
+                             skip_eplb=True,
+                             remove_lora=False)
+         self.maybe_remove_all_loras(self.lora_config)
++    
++        # ------------------------------------------------------------------
++        # GSA-on graph capture
++        # ------------------------------------------------------------------
++        if has_ucm_sparse() and os.getenv("VLLM_HASH_ATTENTION") == "1":
++            ucm_sparse = get_ucm_sparse()
++            ucm_sparse.maybe_capture_extra_cudagraphs(
++                    self, compilation_cases, cudagraph_runtime_mode, uniform_decode
++                )
++
+ 
+     def initialize_attn_backend(self, kv_cache_config: KVCacheConfig) -> None:
+         """
 -- 
 2.34.1
 

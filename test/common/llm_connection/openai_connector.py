@@ -283,7 +283,7 @@ class OpenAIConn(LLMConnection):
         """Clear HBM cache. Try new API first, fall back to legacy pause API."""
         import time
 
-        # 新版本 vLLM: /reset_prefix_cache
+        # supported from vLLM v0.14.0: /reset_prefix_cache, and should set env VLLM_SERVER_DEV_MODE=1 to enable it
         try:
             r = self._raw_client.post("/reset_prefix_cache", json={}, timeout=30)
             r.raise_for_status()
@@ -293,7 +293,7 @@ class OpenAIConn(LLMConnection):
         except Exception as e:
             logger.info(f"reset_prefix_cache not available: {e}, trying pause API")
 
-        # 旧版本 vLLM: /pause
+        # supported from vLLM v0.13.0: /pause
         try:
             r = self._raw_client.post(
                 "/pause",
