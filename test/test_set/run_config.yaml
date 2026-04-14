@@ -27,6 +27,6 @@ test_build:
   package_name: 20260326-cmc
   # if override_image is given, package_name will take no effect
   override_image:
-    sglang_gpu: abc.io/sglang_gpu:v1
-    vllm_gpu: abc.io/vllm_gpu:v1
-    vllm_npu: abc.io/vllm_npu:v1
+    ucm-sglang-cuda-v0.5.5: abc.io/sglang:v1
+    ucm-vllm-cuda-v0.17.0: abc.io/vllm-cuda:v1
+    ucm-vllm-ascend.a2-v0.17.0: abc.io/vllm-ascend:v1

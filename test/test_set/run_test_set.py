@@ -34,15 +34,27 @@ from jenkins_sdk import (
     PipelineParameters,
 )
 
+
 # ---------------------------------------------------------------------------
-# Platform mapping: Docker suffix (test_set) → Jenkins PLATFORM
+# Platform extraction: Dockerfile suffix → Jenkins PLATFORM
 # ---------------------------------------------------------------------------
-PLATFORM_MAP: Dict[str, str] = {
-    "vllm_gpu": "vllm-cuda",
-    "vllm_npu": "vllm-ascend",
-    "mindie_llm": "mindie",
-    "sglang_gpu": "sglang-cuda",
-}
+def extract_jenkins_platform(platform: str) -> str:
+    """从 Dockerfile 后缀中提取 Jenkins PLATFORM 值。
+
+    platform 格式: ucm-<engine>-<platform>-<version>
+    例如:
+        'ucm-vllm-ascend.a2-v0.17.0' → 'ascend.a2'
+        'ucm-vllm-cuda-v0.11.0'      → 'cuda'
+        'ucm-sglang-cuda-v0.5.5'     → 'cuda'
+        'ucm-mindie-ascend.a2-v2'    → 'ascend.a2'
+    """
+    parts = platform.split("-", 3)
+    if len(parts) >= 3:
+        return parts[2]
+    raise ValueError(
+        f"Cannot extract Jenkins platform from '{platform}', "
+        f"expected format: ucm-<engine>-<platform>-<version>"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -54,14 +66,15 @@ def get_image_url(platform: str, filter_string: str, harbor_cfg: dict) -> str:
     """从 Harbor 查询匹配的镜像 URL。
 
     Args:
-        platform: Docker 后缀形式的平台名
+        platform: Dockerfile 后缀，同时也是 Harbor repo 名称
+                  (e.g., ucm-vllm-ascend.a2-v0.17.0)
         filter_string: 用于过滤 tag 的字符串（大小写不敏感包含匹配）
         harbor_cfg: Harbor 配置字典，包含 url, auth_token, project
     """
     harbor_url = harbor_cfg["url"]
     auth_token = harbor_cfg["auth_token"]
     project = harbor_cfg["project"]
-    repo = "ucm-" + platform
+    repo = platform
 
     api_url = (
         f"{harbor_url}/api/v2.0/projects/{project}/repositories/{repo}"
@@ -175,16 +188,16 @@ def build_pipeline_params(
     return PipelineParameters(
         BUILD_NAME=test_set.get("name", ""),
         PLATFORM=jenkins_platform,
-        OVERRIDE_IMAGE=override_image_url,
+        FULL_IMAGE_URL=override_image_url,
         GPU_COUNT=str(server_cfg.get("gpu_count", "1")),
         DEPLOY_MODE=deploy_mode,
-        SERVER_PORT=str(server_cfg.get("server_port", "9527")),
         VLLM_COMMAND_MASTER=env_prefix + master_cmd if master_cmd else "",
         VLLM_COMMAND_WORKER=env_prefix + worker_cmd if worker_cmd else "",
         UCM_CONFIG_YAML=server_cfg.get("ucm_config", ""),
-        API_MODEL_NAME=pytest_cfg.get("api_model_name", ""),
-        MODEL_FOLDER_NAME=pytest_cfg.get("api_model_name", ""),
         TEST_PARAMS=pytest_cfg.get("test_params", ""),
+        ENABLE_PROFILING=str(test_set.get("enable_profiling", "false")),
+        EXTRA_INFO=test_set.get("extra_info", ""),
+        ENV_VARS=test_set.get("env_vars", ""),
     )
 
 
@@ -377,7 +390,10 @@ def main():
         print("Available test sets:")
         for ts in test_sets:
             platform = ts.get("platform", "unknown")
-            jenkins_plat = PLATFORM_MAP.get(platform, f"UNKNOWN({platform})")
+            try:
+                jenkins_plat = extract_jenkins_platform(platform)
+            except ValueError:
+                jenkins_plat = "UNKNOWN"
             print(f"  - {ts['name']}  (platform: {platform} → {jenkins_plat})")
         return
 
@@ -420,17 +436,17 @@ def main():
     jobs: List[Tuple[str, str, PipelineParameters]] = []
     for ts in test_sets:
         platform = ts.get("platform", "")
-        jenkins_platform = PLATFORM_MAP.get(platform)
-        if jenkins_platform is None:
-            print(f"Error: unknown platform '{platform}' in test set '{ts['name']}'")
-            print(f"Known platforms: {', '.join(PLATFORM_MAP.keys())}")
+        try:
+            jenkins_platform = extract_jenkins_platform(platform)
+        except ValueError as e:
+            print(f"Error: {e} in test set '{ts['name']}'")
             sys.exit(1)
 
         override_image_url = get_override_image(
-            jenkins_platform, override_images, package_name, harbor_cfg
+            platform, override_images, package_name, harbor_cfg
         )
         params = build_pipeline_params(ts, jenkins_platform, override_image_url)
-        jobs.append((ts["name"], jenkins_platform, params))
+        jobs.append((ts["name"], platform, params))
 
     # Print parameters for all tests
     print(f"{len(jobs)} test(s) configured:\n")

@@ -10,9 +10,8 @@ Usage:
     )
     
     build_number = client.trigger(
-        platform="vllm-ascend",
-        image_tag="some-tag",
-        model_folder_name="Qwen3-1.7B"
+        PLATFORM="ascend.a2",
+        FULL_IMAGE_URL="registry.example.com/project/ucm-vllm-ascend.a2-v0.17.0:latest"
     )
     
     client.wait_for_completion(build_number)
@@ -52,45 +51,25 @@ class PipelineParameters:
 
     # ── General ──────────────────────────────────────────────
     BUILD_NAME: str = ""
-    PLATFORM: str = "vllm-ascend"  # vllm-ascend | vllm-cuda | mindie
-    IMAGE_BUILD_TYPE: str = "黄区日构建"  # 黄区日构建 | 蓝区日构建 | 蓝区手动构建
-    ImageTag: str = ""
-    OVERRIDE_IMAGE: str = ""  # 完整镜像地址，优先级高于 ImageTag
+    PLATFORM: str = "auto"  # auto | cuda | ascend.a2
+    FULL_IMAGE_URL: str = ""  # 完整镜像地址
 
     # ── Environment / Node ───────────────────────────────────
     GPU_COUNT: str = "1"
     DEPLOY_MODE: str = "single"  # single | multi
 
     # ── vLLM ─────────────────────────────────────────────────
-    SERVER_PORT: str = "9527"
-    VLLM_COMMAND_MASTER: str = (
-        "vllm serve /home/models/Qwen3-1.7B\n"
-        "--served-model-name Qwen3-1.7B\n"
-        "--block-size 128\n"
-        "--tensor-parallel-size 1\n"
-        "--data-parallel-size 1\n"
-        "--gpu-memory-utilization 0.87\n"
-        "--trust-remote-code\n"
-    )
-    VLLM_COMMAND_WORKER: str = (
-        "vllm serve /home/models/Qwen3-1.7B\n"
-        "--served-model-name Qwen3-1.7B\n"
-        "--block-size 128\n"
-        "--tensor-parallel-size 1\n"
-        "--data-parallel-size 1\n"
-        "--gpu-memory-utilization 0.87\n"
-        "--trust-remote-code\n"
-    )
+    VLLM_COMMAND_MASTER: str = ""
+    VLLM_COMMAND_WORKER: str = ""
 
     # ── UCM ──────────────────────────────────────────────────
-    ENABLE_UCM: str = "True"  # True | False
     UCM_CONFIG_YAML: str = ""
 
     # ── Test ─────────────────────────────────────────────────
-    API_MODEL_NAME: str = "Qwen3-1.7B"
-    MODEL_FOLDER_NAME: str = "Qwen3-1.7B"
-    PERF_TEST_CASE: str = "[[80, 10, 8, 8, 0, 80]]"
-    TEST_PARAMS: str = "--feature=uc_performance_test --continue-on-collection-errors"
+    TEST_PARAMS: str = ""
+    ENABLE_PROFILING: str = "false"  # false | true
+    EXTRA_INFO: str = ""
+    ENV_VARS: str = ""  # 额外环境变量，每行一个，格式: KEY=value
 
     def to_jenkins_params(self) -> List[Dict[str, str]]:
         """Convert to the JSON list that Jenkins' REST API expects."""
