@@ -49,9 +49,9 @@ git clone https://www.modelscope.cn/datasets/AI-ModelScope/Needle-in-a-Haystack-
 ### General Parameters
 
 | Environment Variable | Default | Description |
-|----------------------|---------|-------------|
+|---------------------|---------|-------------|
 | `SCOPE_DATASET_ROOT` | | Root directory where datasets are stored |
-| `SCOPE_TREST_LIST` | `aime24,gsm8k` (example) | Comma-separated list of datasets to evaluate |
+| `SCOPE_TEST_LIST` | `aime24,gsm8k` (example) | Comma-separated list of datasets to evaluate |
 
 ### Needle In A Haystack Specific Parameters
 

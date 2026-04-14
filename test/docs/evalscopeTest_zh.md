@@ -51,7 +51,7 @@ git clone https://www.modelscope.cn/datasets/AI-ModelScope/Needle-in-a-Haystack-
 | 环境变量 | 默认值 | 说明 |
 |----------|------|------|
 | `SCOPE_DATASET_ROOT` |  | 数据集存放根目录 |
-| `SCOPE_TREST_LIST` | `aime24,gsm8k`（示例） | 待评测数据集列表，逗号分隔 |
+| `SCOPE_TEST_LIST` | `aime24,gsm8k`（示例） | 待评测数据集列表，逗号分隔 |
 
 ### 大海捞针专用参数
 
