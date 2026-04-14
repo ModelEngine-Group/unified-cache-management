@@ -33,3 +33,7 @@ enable_event_sync: true
 # use_layerwise: true
 # hit_ratio: 0.9
 
+# Whether to record requests' traces (optional, default: False)
+# When enable_record_traces set to true, logs per-request traces (timestamp, input_length, output_length, hash_ids)
+# Each hash_id takes 32 bytes. Enable only when needed with proper UCM_LOG_MAX_FILES and UCM_LOG_MAX_SIZE.
+enable_record_traces: false
