@@ -9,7 +9,7 @@ import sys
 import time
 from collections import defaultdict
 from datetime import datetime
-from typing import Optional
+from typing import Optional, Union
 
 import aiohttp
 import pandas
@@ -33,7 +33,7 @@ from vllm.benchmarks.datasets import (
     SonnetDataset,
     VisionArenaDataset,
 )
-from vllm.benchmarks.endpoint_request_func import (
+from vllm.benchmarks.lib.endpoint_request_func import (
     ASYNC_REQUEST_FUNCS,
     RequestFuncInput,
 )
@@ -78,20 +78,26 @@ class TraceReplayDataset(BenchmarkDataset):
         self.prompts_file_name = (
             f"{trace_directory_name}/{trace_file_name}_dataset.jsonl"
         )
-        self.hash_to_tokens: dict[int, list[int]] = {}
+        self.hash_to_tokens: dict[Union[int, str], list[int]] = {}
 
     def generate_prompt(
-        self, hash_ids: list[int], target_length: int, tokenizer
+        self, hash_ids: list[Union[int, str]], target_length: int, tokenizer
     ) -> str:
         DEFAULT_BLOCK_SIZE = 512
         vocab_size = tokenizer.vocab_size
 
+        def hash_str_to_num(s: str) -> int:
+            return int(s, 16) if isinstance(s, str) else s
+
+        # Convert all hash_ids to numeric
+        hash_ids_numeric = [hash_str_to_num(h) for h in hash_ids]
+
         # Use hash_ids to influence token generation
-        base_offset = hash_ids[0] if hash_ids else 0
+        base_offset = hash_ids_numeric[0] if hash_ids_numeric else 0
 
         token_ids = []
 
-        for i, value in enumerate(hash_ids):
+        for i, value in enumerate(hash_ids_numeric):
             if value in self.hash_to_tokens:
                 token_ids.extend(self.hash_to_tokens[value])
             elif (i + 1) * DEFAULT_BLOCK_SIZE <= target_length:
@@ -101,8 +107,10 @@ class TraceReplayDataset(BenchmarkDataset):
                         base_offset
                         + token_idx
                         + sum(
-                            hash_ids[
-                                token_idx % len(hash_ids) : token_idx % len(hash_ids)
+                            hash_ids_numeric[
+                                token_idx
+                                % len(hash_ids_numeric) : token_idx
+                                % len(hash_ids_numeric)
                                 + 3
                             ]
                         )
@@ -488,7 +496,7 @@ async def replay_trace_by_time(
     use_session = tuple(map(int, vllm.__version__.split(".")[:3])) >= (0, 10, 1)
     session = None
     if use_session:
-        session = vllm.aiohttp.ClientSession(
+        session = aiohttp.ClientSession(
             base_url=base_url,
             trust_env=True,
             timeout=aiohttp.ClientTimeout(total=6 * 60 * 60),
@@ -554,8 +562,9 @@ async def replay_trace_by_time(
                 request_func_input=req_input, session=session, pbar=pbar
             )
 
+    first_req_time, _ = sorted(req_groups.items())[0]
     for sec, reqs in sorted(req_groups.items()):
-        delay = sec - (time.perf_counter() - start_time)
+        delay = sec - first_req_time - (time.perf_counter() - start_time)
         delay = max(0, delay)
 
         async def send_group(r=reqs, d=delay):
@@ -598,7 +607,11 @@ async def replay_trace_by_time(
         if args.metric_percentiles
         else [50, 90]
     )
-    goodput = {k: float(v) for item in args.goodput for k, v in [item.split(":", 1)]}
+    goodput = (
+        {k: float(v) for item in args.goodput for k, v in [item.split(":", 1)]}
+        if args.goodput
+        else None
+    )
 
     benchmark_duration = time.perf_counter() - start_time
     metrics, actual_output_lens = calculate_metrics(
