@@ -10,14 +10,13 @@ from typing import TYPE_CHECKING, List, Optional, Tuple
 
 import numpy as np
 import torch
-import vllm.envs as envs
 from vllm.config import VllmConfig
 from vllm.distributed.kv_transfer.kv_connector.v1.base import (
     KVConnectorBase_V1,
     KVConnectorMetadata,
     KVConnectorRole,
 )
-from vllm.distributed.parallel_state import get_tp_group, get_world_group
+from vllm.distributed.parallel_state import get_world_group
 from vllm.distributed.utils import get_pp_indices
 from vllm.model_executor.models.utils import extract_layer_index
 from vllm.platforms import current_platform
@@ -244,6 +243,9 @@ class UCMDirectConnector(KVConnectorBase_V1):
         self.launch_config = ucm_config.get_config()
         self.connector_configs = self.launch_config.get("ucm_connectors", [])
         self.enable_event_sync = self.launch_config.get("enable_event_sync", True)
+        self.enable_record_traces = self.launch_config.get(
+            "enable_record_traces", False
+        )
         assert len(self.connector_configs) > 0, "no storage connector name in config."
 
         self.chunk_size = self.block_size
@@ -409,6 +411,16 @@ class UCMDirectConnector(KVConnectorBase_V1):
         except RuntimeError as e:
             external_hit_blocks = 0
             logger.error(f"request {request.request_id} look up error. {e}")
+
+        if self.enable_record_traces and request.request_id not in self.requests_meta:
+            hex_ucm_block_ids = [id.hex() for id in ucm_block_ids]
+            logger.info_once(
+                f"timestamp: {time.perf_counter()}, "
+                f"input_length: {request.num_tokens}, "
+                f"output_length: {request.max_tokens}, "
+                f"ucm_block_ids: {hex_ucm_block_ids}"
+            )
+
         logger.info_once(
             f"request_id: {request.request_id}, "
             f"total_blocks_num: {len(ucm_block_ids)}, "
@@ -943,6 +955,16 @@ class UCMCPConnector(UCMLayerWiseConnector):
         except RuntimeError as e:
             external_hit_blocks = 0
             logger.error(f"request {request.request_id} look up error. {e}")
+
+        if self.enable_record_traces and request.request_id not in self.requests_meta:
+            hex_ucm_block_ids = [id.hex() for id in ucm_block_ids]
+            logger.info_once(
+                f"timestamp: {time.perf_counter()}, "
+                f"input_length: {request.num_tokens}, "
+                f"output_length: {request.max_tokens}, "
+                f"ucm_block_ids: {hex_ucm_block_ids}"
+            )
+
         logger.info(
             f"request_id: {request.request_id}, "
             f"total_blocks_num: {len(ucm_block_ids)}, "
