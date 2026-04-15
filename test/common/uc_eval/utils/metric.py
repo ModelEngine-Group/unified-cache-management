@@ -11,7 +11,7 @@ import numpy as np
 from common.uc_eval.utils.data_class import MultiTurnDialogRecord, RequestRecord
 from common.config_utils import config_utils as config_instance
 
-stopwords_path = Path(config_instance.get_nested_config("dataset.stopwords"))
+stopwords_path = Path(config_instance.get_nested_config("dataset.stopwords", "/mnt/private/dataset/uc-eval/cn_stopwords.txt"))
 STOPWORDS: List[str] = [
     line.strip() for line in stopwords_path.open("r", encoding="utf-8").readlines()
 ]

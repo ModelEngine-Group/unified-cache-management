@@ -13,7 +13,7 @@ from common.uc_eval.utils.data_class import EvalConfig, ModelConfig
 
 # Global test configuration constants
 DATA_FILE_PATH = config_instance.get_nested_config(
-    "dataset.multifieldqa_zh", 
+    "dataset.multifieldqa_zh", "/mnt/private/dataset/uc-eval/multifieldqa_zh.jsonl"
 )
 MEAN_INPUT_TOKENS = 8000
 MEAN_OUTPUT_TOKENS = 200
