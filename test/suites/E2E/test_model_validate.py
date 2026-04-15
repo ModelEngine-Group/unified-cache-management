@@ -12,7 +12,9 @@ from common.uc_eval.task import DocQaEvalTask
 from common.uc_eval.utils.data_class import EvalConfig, ModelConfig
 
 # Global test configuration constants
-DATA_FILE_PATH = "utils/multifieldqa_zh.jsonl"
+DATA_FILE_PATH = config_instance.get_nested_config(
+    "dataset.multifieldqa_zh", 
+)
 MEAN_INPUT_TOKENS = 8000
 MEAN_OUTPUT_TOKENS = 200
 MAX_NUM_COMPLETED_REQUESTS = 8

@@ -48,7 +48,7 @@
 
 - 用途：在计算f1-score时使用
 - **下载地址**：[GitHub - goto456/stopwords: 中文常用停用词表（哈工大停用词表、百度停用词表等）](https://github.com/goto456/stopwords)
-- **放置位置**：以 `cn_stopwords.txt` 文件为例，下载后将其放置在 `test/common/uc_eval/utils` 目录下，并重命名为 `stopwords.txt`
+- **配置文件路径**：以 `cn_stopwords.txt` 文件为例，修改配置文件 `test/config.yaml` 中的 `dataset.stopwords` 配置项
 
 ## 日志配置
 
