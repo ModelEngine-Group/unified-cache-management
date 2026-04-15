@@ -84,6 +84,7 @@ function delete_redundant_files() {
     rm -rf deployments/
     rm -rf docker/
     rm -f ucm_config.yaml
+    rm -f metrics_configs.yaml
 }
 
 function collect_artifacts()
@@ -93,6 +94,7 @@ function collect_artifacts()
     cp -r "${KVCACHE_PROJECT_ROOT}/docker" .
     cp -r "${KVCACHE_PROJECT_ROOT}/examples/deployments" .
     cp -r "${KVCACHE_PROJECT_ROOT}/examples/ucm_config_example.yaml" ucm_config.yaml
+    cp -r "${KVCACHE_PROJECT_ROOT}/examples/metrics/metrics_configs.yaml" metrics_configs.yaml
     cp -r "${KVCACHE_PROJECT_ROOT}/test" .
 }
 

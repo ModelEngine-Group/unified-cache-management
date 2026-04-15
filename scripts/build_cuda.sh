@@ -77,6 +77,7 @@ function delete_redundant_files() {
     rm -rf deployments/
     rm -rf docker/
     rm -f ucm_config.yaml
+    rm -f metrics_configs.yaml
     rm -f *.patch
 }
 
@@ -87,6 +88,7 @@ function collect_artifacts()
     cp -r "${KVCACHE_PROJECT_ROOT}/docker" .
     cp -r "${KVCACHE_PROJECT_ROOT}/examples/deployments" .
     cp -r "${KVCACHE_PROJECT_ROOT}/examples/ucm_config_example.yaml" ucm_config.yaml
+    cp -r "${KVCACHE_PROJECT_ROOT}/examples/metrics/metrics_configs.yaml" metrics_configs.yaml
     cp -r "${KVCACHE_PROJECT_ROOT}/test" .
     cp "${KVCACHE_PROJECT_ROOT}/ucm/integration/vllm/patch/0.11.0/vllm-adapt-sparse.patch" .
     cp "${KVCACHE_PROJECT_ROOT}/ucm/integration/sglang/patch/0.5.5/sglang-adapt.patch" .
