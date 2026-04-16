@@ -8,7 +8,7 @@ namespace UC::Compressor {
 
 class CompressorImpl {
 public:
-    std::shared_ptr<StoreV1> backend{nullptr};
+    StoreV1* backend{nullptr};
     bool transEnable{false};
     TransManager transMgr;
 
