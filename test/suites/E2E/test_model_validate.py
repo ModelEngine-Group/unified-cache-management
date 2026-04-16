@@ -12,7 +12,9 @@ from common.uc_eval.task import DocQaEvalTask
 from common.uc_eval.utils.data_class import EvalConfig, ModelConfig
 
 # Global test configuration constants
-DATA_FILE_PATH = "common/uc_eval/utils/multifieldqa_zh.jsonl"
+DATA_FILE_PATH = config_instance.get_nested_config(
+    "dataset.data_file", "/mnt/private/dataset/uc-eval/multifieldqa_zh.jsonl"
+)
 MEAN_INPUT_TOKENS = 8000
 MEAN_OUTPUT_TOKENS = 200
 MAX_NUM_COMPLETED_REQUESTS = 8
@@ -111,15 +113,21 @@ class TestModelValidator:
 
     def _run_perf_test(self, hit_rates: List[int]) -> List[Dict[str, Any]]:
         """Run inference under specified cache hit rates and extract performance metrics."""
-        n = len(hit_rates)
-        all_summaries = inference_results(
-            mean_input_tokens=[MEAN_INPUT_TOKENS] * n,
-            mean_output_tokens=[MEAN_OUTPUT_TOKENS] * n,
-            max_num_completed_requests=[MAX_NUM_COMPLETED_REQUESTS] * n,
-            concurrent_requests=[CONCURRENT_REQUESTS] * n,
-            additional_sampling_params=[ADDITIONAL_SAMPLING_PARAMS] * n,
-            hit_rate=hit_rates,
-        )
+        # `inference_results` executes one scenario per call in current implementation.
+        all_summaries: List[Dict[str, Any]] = []
+        total_counter = len(hit_rates)
+        for round_counter, hr in enumerate(hit_rates, start=1):
+            summary = inference_results(
+                mean_input_tokens=[MEAN_INPUT_TOKENS],
+                mean_output_tokens=[MEAN_OUTPUT_TOKENS],
+                max_num_completed_requests=[MAX_NUM_COMPLETED_REQUESTS],
+                concurrent_requests=[CONCURRENT_REQUESTS],
+                random_seed=[0],
+                hit_rate=[hr],
+                TOTAL_COUNTER=total_counter,
+                ROUND_COUNTER=round_counter,
+            )
+            all_summaries.append(summary)
         return self._extract_perf_metrics(all_summaries, hit_rates)
 
     def _fetch_naive_result(self) -> Optional[Dict[str, Any]]:

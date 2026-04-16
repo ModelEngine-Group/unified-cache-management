@@ -190,6 +190,7 @@ def run_test_cases(
         except Exception as e:
             print(f"[Warning] Case {ROUND_COUNTER} failed: {e}")
             failed_case.append(ROUND_COUNTER)
+            raise e
 
     return summary, failed_case
 

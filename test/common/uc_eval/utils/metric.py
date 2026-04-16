@@ -8,9 +8,14 @@ from typing import Callable, List, Optional, Union
 
 import jieba
 import numpy as np
+from common.config_utils import config_utils as config_instance
 from common.uc_eval.utils.data_class import MultiTurnDialogRecord, RequestRecord
 
-stopwords_path = Path(__file__).parent.joinpath("stopwords.txt")
+stopwords_path = Path(
+    config_instance.get_nested_config(
+        "dataset.stopwords", "/mnt/private/dataset/uc-eval/cn_stopwords.txt"
+    )
+)
 STOPWORDS: List[str] = [
     line.strip() for line in stopwords_path.open("r", encoding="utf-8").readlines()
 ]

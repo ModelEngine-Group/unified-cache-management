@@ -46,6 +46,10 @@ llm_connection:
   timeout: 180    # request time out, default 180
   extra_info: "vllm_qwen3-32b_pc-gsa"  # extra info, Used to mark different service pull-up parameters
 
+dataset:
+  data_file: "/mnt/private/dataset/uc-eval/multifieldqa_zh.jsonl"
+  stopwords: "/mnt/private/dataset/uc-eval/cn_stopwords.txt"
+
 # Environment Pre-Check Configuration
 Env_preCheck:
   master_ip: 192.168.0.1

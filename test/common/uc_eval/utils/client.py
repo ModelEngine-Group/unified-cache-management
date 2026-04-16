@@ -96,7 +96,7 @@ class BaseClient:
         return session
 
     def handle_requests_with_pool(
-        self, prompt_list: List, parallel_num: int, max_tokens: int
+        self, prompt_list: List, parallel_num: int, max_tokens: Optional[int]
     ) -> List[RequestRecord]:
         return _excute_with_pool(
             task_func=lambda prompt: self.send_request(prompt, max_tokens),
@@ -117,14 +117,14 @@ class BaseClient:
             record = self.do_request(payload, record)
         return record
 
-    def _update_payload(self, prompt, max_tokens) -> Dict:
+    def _update_payload(self, prompt, max_tokens: Optional[int]) -> Dict:
         """
         update request payload
         """
         payload = copy.deepcopy(self.payload)
         payload.update({"model": self.served_model_name})
-        # If payload already has default max_tokens, the input max_tokens will be set to 0
-        if max_tokens > 0:
+        # `max_tokens` may be None when payload does not define this key.
+        if max_tokens is not None and max_tokens > 0:
             payload.update({"max_tokens": max_tokens})
         if isinstance(prompt, str):
             # If the length of input_ids is greater than max_seq_length, we need to split it
