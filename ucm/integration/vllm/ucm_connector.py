@@ -88,8 +88,10 @@ class KVCacheLayout:
         self._build_layout(kvcaches)
 
     def _build_layout(self, kvcaches):
-        raw_ptr_rows = [[] for _ in range(self.local_num_hidden_layers)]
-        stride_rows = [[] for _ in range(self.local_num_hidden_layers)]
+
+        num_rows = len(set(self.layer_name_to_id.values()))
+        raw_ptr_rows = [[] for _ in range(num_rows)]
+        stride_rows = [[] for _ in range(num_rows)]
 
         for layer_name, kv_layer in kvcaches.items():
             ptrs = []
