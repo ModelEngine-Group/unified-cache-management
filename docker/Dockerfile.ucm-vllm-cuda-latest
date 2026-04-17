@@ -17,14 +17,12 @@ RUN pip config set global.index-url ${PIP_INDEX_URL}
 
 # Build or link package
 RUN if [ "${INSTALL_MODE}" != "package" ]; then \
-        if [ -d /etc/apt/sources.list.d ] ; then \
-            rm -f /etc/apt/sources.list.d/* \
-        fi && \
-        if [ -n "${APT_MIRROR}" ]; then \
+        [ -d /etc/apt/sources.list.d ] && rm -f /etc/apt/sources.list.d/* ; \
+        [ -n "${APT_MIRROR}" ] && { \
             sed -i "s|http://.*archive.ubuntu.com|http://${APT_MIRROR}|g" /etc/apt/sources.list && \
             sed -i "s|http://.*security.ubuntu.com|http://${APT_MIRROR}|g" /etc/apt/sources.list && \
-            sed -i "s|http://.*ports.ubuntu.com|http://${APT_MIRROR}|g" /etc/apt/sources.list; \
-        fi && \
+            sed -i "s|http://.*ports.ubuntu.com|http://${APT_MIRROR}|g" /etc/apt/sources.list ; \
+        } ; \
         apt-get update && \
         apt-get install -y --no-install-recommends git && \
         rm -rf /var/lib/apt/lists/* && \
