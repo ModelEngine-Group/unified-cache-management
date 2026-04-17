@@ -53,9 +53,10 @@ def get_vllm_ascend_version() -> Optional[str]:
         if not v:
             return None
         v = str(v).strip()
-        # common suffixes: 0.11.0+xxx / 0.11.0.post1
+        # common suffixes: 0.11.0+xxx / 0.11.0.post1 / 0.11.0rc1
         v = v.split("+", 1)[0]
         v = v.split(".post", 1)[0]
+        v = v.split("rc", 1)[0]
         return v
 
     try:
@@ -102,7 +103,7 @@ def get_vllm_version() -> Optional[str]:
 
 def get_supported_versions() -> list[str]:
     """Get patch-required vLLM versions."""
-    return ["0.11.0"]
+    return ["0.11.0", "0.18.0"]
 
 
 def apply_all_patches() -> None:
@@ -148,6 +149,9 @@ def apply_all_patches() -> None:
                 if ENABLE_SPARSE:
                     logger.info("UCM patching vllm-ascend for sparse...")
                     import ucm.integration.vllm.patch.v0110.vllm_ascend.sparse_ascend_patch
+            case "0.18.0":
+                logger.info("UCM patching vllm-ascend for pc...")
+                import ucm.integration.vllm.patch.v0180.vllm_ascend.pc_ascend_patch
             case _:
                 pass
 
