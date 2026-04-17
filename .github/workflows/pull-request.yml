@@ -209,8 +209,9 @@ jobs:
         sudo -E docker build --network=host \
           --build-arg http_proxy="${http_proxy:-}" \
           --build-arg https_proxy="${https_proxy:-}" \
-          --build-arg no_proxy="repo.huaweicloud.com,${no_proxy:-}" \
+          --build-arg no_proxy="tools.huawei.com,repo.huaweicloud.com,${no_proxy:-}" \
           --build-arg PIP_INDEX_URL=https://repo.huaweicloud.com/repository/pypi/simple \
+          --build-arg APT_MIRROR=mirrors.tools.huawei.com \
           -t ucm-e2etest-online-inference:${{ steps.version.outputs.version }} \
           -f ./docker/Dockerfile.ucm-vllm-cuda-v0.17.0 ./
     - name: Test E2E Online Inference in Docker
