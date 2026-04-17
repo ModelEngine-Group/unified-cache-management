@@ -47,6 +47,17 @@ docker compose up -d
 - 输入框粘贴 PromQL → Execute 生成图表
 - 点击 **Download CSV** 导出原始数据（Excel 分析）
 
+## 数据使用
+提供了`export_metrics.py`, 可导出所有数据为 CSV 文件并进行图表绘制。
+```bash
+# 导出前2小时，步长5s的所有数据并输出到metrics_output文件夹
+python export_metrics.py \
+    --vm-url http://141.111.33.118:8428 \
+    --duration 2h \
+    --step 5 \
+    --output ./metrics_output
+```
+
 ## 数据持久化
 
 数据保存在 `./data` 目录，可直接打包带走：

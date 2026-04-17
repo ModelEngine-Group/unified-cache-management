@@ -51,6 +51,17 @@ docker compose up -d
 - Paste PromQL queries into the input box → Click **Execute** to generate charts
 - Click **Download CSV** to export raw data for Excel analysis
 
+## Data Usage
+The `export_metrics.py` script is provided, which can export all data as CSV files and generate charts.
+```bash
+# Export 2 hours with 5s granularity to specific folder
+python export_metrics.py \
+    --vm-url http://141.111.33.118:8428 \
+    --duration 2h \
+    --step 5 \
+    --output ./metrics_output
+```
+
 ## Data Persistence
 
 Metrics are stored in `./data` directory and can be archived for offline analysis:
