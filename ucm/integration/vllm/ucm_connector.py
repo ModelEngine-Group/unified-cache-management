@@ -279,6 +279,9 @@ class UCMDirectConnector(KVConnectorBase_V1):
 
         # invlalid block ids due to load errors
         self._invalid_block_ids: set[int] = set()
+        self.cp_world_size = 1
+        self.hash_block_size = self.block_size
+        self.block_size *= self.cp_world_size
 
     def generate_hash(
         self, block_size: int, token_ids: List[int], parent_block_hash_value: bytes
@@ -400,14 +403,15 @@ class UCMDirectConnector(KVConnectorBase_V1):
         hbm_hit_block_num = num_computed_tokens // self.block_size
 
         ucm_block_ids = self.generate_hash(
-            self.block_size, request.all_token_ids, self._seed
+            self.hash_block_size, request.all_token_ids, self._seed
         )
 
-        external_block_ids = ucm_block_ids[hbm_hit_block_num:]
+        external_block_ids = ucm_block_ids[hbm_hit_block_num * self.cp_world_size :]
         if not external_block_ids:
             return 0, False
         try:
             external_hit_blocks = self.store.lookup_on_prefix(external_block_ids) + 1
+            external_hit_blocks //= self.cp_world_size
         except RuntimeError as e:
             external_hit_blocks = 0
             logger.error(f"request {request.request_id} look up error. {e}")
@@ -424,12 +428,16 @@ class UCMDirectConnector(KVConnectorBase_V1):
         logger.info_once(
             f"request_id: {request.request_id}, "
             f"total_blocks_num: {len(ucm_block_ids)}, "
-            f"hit hbm: {hbm_hit_block_num}, "
-            f"hit external: {external_hit_blocks}"
+            f"hit hbm: {hbm_hit_block_num * self.cp_world_size}, "
+            f"hit external: {external_hit_blocks * self.cp_world_size}"
         )
         if self.metrics_config:
             ucmmetrics.update_stats(
-                {"interval_lookup_hit_rates": external_hit_blocks / len(ucm_block_ids)},
+                {
+                    "interval_lookup_hit_rates": external_hit_blocks
+                    * self.cp_world_size
+                    / len(ucm_block_ids)
+                },
             )
 
         total_hit_block_num = hbm_hit_block_num + external_hit_blocks
@@ -485,13 +493,19 @@ class UCMDirectConnector(KVConnectorBase_V1):
         load_ucm_block_ids, load_vllm_block_ids = [], []
         dump_ucm_block_ids, dump_vllm_block_ids = [], []
         if need_load:
-            load_ucm_block_ids = ucm_block_ids[hbm_hit_block_num:total_hit_block_num]
+            load_ucm_block_ids = ucm_block_ids[
+                hbm_hit_block_num
+                * self.cp_world_size : total_hit_block_num
+                * self.cp_world_size
+            ]
             load_vllm_block_ids = vllm_block_ids[hbm_hit_block_num:total_hit_block_num]
 
         if req_meta.token_processed < req_meta.num_token_ids:
             start_idx = req_meta.token_processed // self.block_size
             end_idx = (req_meta.token_processed + new_tokens) // self.block_size
-            dump_ucm_block_ids = ucm_block_ids[start_idx:end_idx]
+            dump_ucm_block_ids = ucm_block_ids[
+                start_idx * self.cp_world_size : end_idx * self.cp_world_size
+            ]
             dump_vllm_block_ids = req_meta.vllm_block_ids[start_idx:end_idx]
             req_meta.token_processed += new_tokens
 
@@ -930,115 +944,8 @@ class UCMCPConnector(UCMLayerWiseConnector):
         else:
             self.request_hasher = RequestHasher(vllm_config, self.tp_rank)
         vllm_config.parallel_config.tensor_parallel_size = old_tp_size
-        self.hash_block_size = self.block_size
         self.block_size *= self.cp_world_size
         logger.info("Init UCMCPConnector.")
-
-    def get_num_new_matched_tokens(
-        self,
-        request: "Request",
-        num_computed_tokens: int,
-    ) -> tuple[int, bool]:
-        assert num_computed_tokens % self.block_size == 0
-        hbm_hit_block_num = num_computed_tokens // self.block_size
-
-        ucm_block_ids = self.generate_hash(
-            self.hash_block_size, request.all_token_ids, self._seed
-        )
-
-        external_block_ids = ucm_block_ids[hbm_hit_block_num * self.cp_world_size :]
-        if not external_block_ids:
-            return 0, False
-        try:
-            external_hit_blocks = self.store.lookup_on_prefix(external_block_ids) + 1
-            external_hit_blocks //= self.cp_world_size
-        except RuntimeError as e:
-            external_hit_blocks = 0
-            logger.error(f"request {request.request_id} look up error. {e}")
-
-        if self.enable_record_traces and request.request_id not in self.requests_meta:
-            hex_ucm_block_ids = [id.hex() for id in ucm_block_ids]
-            logger.info_once(
-                f"timestamp: {time.perf_counter()}, "
-                f"input_length: {request.num_tokens}, "
-                f"output_length: {request.max_tokens}, "
-                f"ucm_block_ids: {hex_ucm_block_ids}"
-            )
-
-        logger.info(
-            f"request_id: {request.request_id}, "
-            f"total_blocks_num: {len(ucm_block_ids)}, "
-            f"hit hbm: {hbm_hit_block_num * self.cp_world_size}, "
-            f"hit external: {external_hit_blocks * self.cp_world_size}"
-        )
-        if self.metrics_config:
-            ucmmetrics.update_stats(
-                {
-                    "interval_lookup_hit_rates": external_hit_blocks
-                    * self.cp_world_size
-                    / len(ucm_block_ids)
-                },
-            )
-
-        total_hit_block_num = hbm_hit_block_num + external_hit_blocks
-
-        external_hit_tokens = external_hit_blocks * self.block_size
-
-        # When all the tokens are cached in ssd or hbm,
-        # we need to recompute the last token. This if condition will be removed
-        # once vLLM scheduler provides a better solution in the future.
-        num_total_hit_tokens = total_hit_block_num * self.block_size
-        if num_total_hit_tokens == request.num_tokens:
-            external_hit_tokens -= 1
-
-        self.requests_meta[request.request_id] = RequestMeta(
-            ucm_block_ids=ucm_block_ids,
-            hbm_hit_block_num=hbm_hit_block_num,
-            total_hit_block_num=total_hit_block_num,
-            num_token_ids=len(request.all_token_ids),
-            token_processed=num_total_hit_tokens,
-        )
-
-        return external_hit_tokens, False
-
-    def _generate_dispatch_meta(
-        self,
-        req_meta: RequestMeta,
-        new_tokens: int,
-        vllm_block_ids: list[int],
-        need_load: bool = True,
-    ) -> RequestDispatchMeta:
-        # Since the block_size on the scheduler side is multiplied by cp_world_size,
-        # while the block_size on the UCM side remains unchanged,
-        # the selected ucm_blocks need to be expanded by a factor of cp_world_size.
-        hbm_hit_block_num = req_meta.hbm_hit_block_num
-        total_hit_block_num = req_meta.total_hit_block_num
-        ucm_block_ids = req_meta.ucm_block_ids
-        req_meta.vllm_block_ids.extend(vllm_block_ids)
-
-        load_ucm_block_ids, load_vllm_block_ids = [], []
-        dump_ucm_block_ids, dump_vllm_block_ids = [], []
-        if need_load:
-            load_ucm_block_ids = ucm_block_ids[
-                hbm_hit_block_num
-                * self.cp_world_size : total_hit_block_num
-                * self.cp_world_size
-            ]
-            load_vllm_block_ids = vllm_block_ids[hbm_hit_block_num:total_hit_block_num]
-
-        if req_meta.token_processed < req_meta.num_token_ids:
-            start_idx = req_meta.token_processed // self.block_size
-            end_idx = (req_meta.token_processed + new_tokens) // self.block_size
-            dump_ucm_block_ids = ucm_block_ids[
-                start_idx * self.cp_world_size : end_idx * self.cp_world_size
-            ]
-            dump_vllm_block_ids = req_meta.vllm_block_ids[start_idx:end_idx]
-            req_meta.token_processed += new_tokens
-
-        return RequestDispatchMeta(
-            (load_ucm_block_ids, load_vllm_block_ids),
-            (dump_ucm_block_ids, dump_vllm_block_ids),
-        )
 
     def bind_connector_metadata(self, connector_metadata: KVConnectorMetadata) -> None:
         # When DCP/PCP features are enabled,
@@ -1154,6 +1061,49 @@ class UCMMockConnector(UCMDirectConnector):
         return expect_hit_block_num * self.block_size, False
 
 
+class UCMLiteConnector(UCMDirectConnector):
+    def __init__(self, vllm_config, role):
+        vllm_config.kv_transfer_config.kv_connector_extra_config = {
+            "ucm_connectors": [
+                {
+                    "ucm_connector_name": "UcmPipelineStore",
+                    "ucm_connector_config": {
+                        "store_pipeline": "Fake",
+                        "share_buffer_enable": True,
+                        "buffer_number": 244032232,
+                    },
+                }
+            ]
+        }
+        super().__init__(vllm_config, role)
+        self.total_block_nums = 0
+        self.total_hit_block_nums = 0
+        logger.info("Init UCMLiteConnector.")
+
+    def get_num_new_matched_tokens(self, request, num_computed_tokens):
+        super().get_num_new_matched_tokens(request, num_computed_tokens)
+
+        external_hit_blocks = 0
+        req_blocks_num = len(request.all_token_ids) // self.hash_block_size
+        if req_blocks_num < 1:
+            return 0, False
+        self.total_block_nums += req_blocks_num
+        if request.request_id in self.requests_meta:
+            request_meta = self.requests_meta[request.request_id]
+            external_hit_blocks = (
+                request_meta.total_hit_block_num - request_meta.hbm_hit_block_num
+            )
+
+            request_meta.total_hit_block_num = request_meta.hbm_hit_block_num
+        self.total_hit_block_nums += external_hit_blocks
+
+        logger.info(
+            f"req external hit rate: {(external_hit_blocks / req_blocks_num):.2f}, "
+            f"total external hit rate: {(self.total_hit_block_nums / self.total_block_nums):.2f}"
+        )
+        return 0, False
+
+
 class UCMConnector(KVConnectorBase_V1):
     def __init__(self, vllm_config: "VllmConfig", role: KVConnectorRole):
         super().__init__(vllm_config=vllm_config, role=role)
@@ -1167,14 +1117,24 @@ class UCMConnector(KVConnectorBase_V1):
             if self.launch_config is not None
             else False
         )
+
         pp_enabled = self._vllm_config.parallel_config.pipeline_parallel_size > 1
         if pp_enabled and not use_layerwise:
             raise RuntimeError(
                 "Pipeline parallelism is not supported in UCMDirectConnector, please set use_layerwise=True."
             )
-        if self.launch_config is not None and "hit_ratio" in self.launch_config:
-            self.connector = UCMMockConnector(vllm_config, role)
-        elif (
+
+        use_lite = (
+            self.launch_config.get("use_lite", False)
+            if self.launch_config is not None
+            else False
+        )
+
+        use_ratio_rate = (
+            self.launch_config is not None and "hit_ratio" in self.launch_config
+        )
+
+        use_cp_parallel = (
             hasattr(self._vllm_config.parallel_config, "prefill_context_parallel_size")
             and hasattr(
                 self._vllm_config.parallel_config, "decode_context_parallel_size"
@@ -1182,7 +1142,13 @@ class UCMConnector(KVConnectorBase_V1):
             and self._vllm_config.parallel_config.prefill_context_parallel_size
             * self._vllm_config.parallel_config.decode_context_parallel_size
             > 1
-        ):
+        )
+
+        if use_lite:
+            self.connector = UCMLiteConnector(vllm_config, role)
+        elif use_ratio_rate:
+            self.connector = UCMMockConnector(vllm_config, role)
+        elif use_cp_parallel:
             self.connector = UCMCPConnector(vllm_config, role)
         elif use_layerwise:
             self.connector = UCMLayerWiseConnector(vllm_config, role)
