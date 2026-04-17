@@ -17,6 +17,9 @@ RUN pip config set global.index-url ${PIP_INDEX_URL}
 
 # Build or link package
 RUN if [ "${INSTALL_MODE}" != "package" ]; then \
+        if [ -d /etc/apt/sources.list.d ] ; then \
+            rm -f /etc/apt/sources.list.d/* \
+        fi && \
         if [ -n "${APT_MIRROR}" ]; then \
             sed -i "s|http://.*archive.ubuntu.com|http://${APT_MIRROR}|g" /etc/apt/sources.list && \
             sed -i "s|http://.*security.ubuntu.com|http://${APT_MIRROR}|g" /etc/apt/sources.list && \
