@@ -186,9 +186,7 @@ public:
     size_t FetchNode(bool allowReserved) override
     {
         const auto limit = header_.nNode - (allowReserved ? 0 : base_.reservedNumber);
-        if (header_.freeHead >= limit) {
-            header_.freeHead = 0;
-        }
+        if (header_.freeHead >= limit) { header_.freeHead = 0; }
         return header_.freeHead++;
     }
     void* DataAt(size_t iNode) override
@@ -418,9 +416,7 @@ public:
     {
         const auto limit = header_->nNode - (allowReserved ? 0 : base_.reservedNumber);
         header_->lock.Lock();
-        if (header_->freeHead >= limit) {
-            header_->freeHead = 0;
-        }
+        if (header_->freeHead >= limit) { header_->freeHead = 0; }
         const auto iNode = header_->freeHead++;
         header_->lock.Unlock();
         return iNode;
