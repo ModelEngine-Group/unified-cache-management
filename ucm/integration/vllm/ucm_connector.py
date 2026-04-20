@@ -277,7 +277,11 @@ class UCMDirectConnector(KVConnectorBase_V1):
                 f"metrics_config_path: {self.metrics_config}, set worker_id: {worker_id}"
             )
 
-        # invlalid block ids due to load errors
+        self.persist_token_threshold = self.launch_config.get(
+            "persist_token_threshold", 0
+        )
+
+        # invalid block ids due to load errors
         self._invalid_block_ids: set[int] = set()
         self.cp_world_size = 1
         self.hash_block_size = self.block_size
@@ -406,6 +410,27 @@ class UCMDirectConnector(KVConnectorBase_V1):
             self.hash_block_size, request.all_token_ids, self._seed
         )
 
+        if (
+            self.enable_record_traces
+            and request.request_id not in self.requests_meta
+            and len(ucm_block_ids) > 0
+        ):
+            hex_ucm_block_ids = [id.hex() for id in ucm_block_ids]
+            logger.info_once(
+                f"timestamp: {time.perf_counter()}, "
+                f"input_length: {request.num_tokens}, "
+                f"output_length: {request.max_tokens}, "
+                f"ucm_block_ids: {hex_ucm_block_ids}"
+            )
+
+        # Skip persistence if token count is below the threshold
+        if self.persist_token_threshold > request.num_tokens:
+            logger.info_once(
+                f"Skip persistence: req {request.request_id}, "
+                f"input tokens ({request.num_tokens}) < threshold ({self.persist_token_threshold})."
+            )
+            return 0, False
+
         external_block_ids = ucm_block_ids[hbm_hit_block_num * self.cp_world_size :]
         if not external_block_ids:
             return 0, False
@@ -415,15 +440,6 @@ class UCMDirectConnector(KVConnectorBase_V1):
         except RuntimeError as e:
             external_hit_blocks = 0
             logger.error(f"request {request.request_id} look up error. {e}")
-
-        if self.enable_record_traces and request.request_id not in self.requests_meta:
-            hex_ucm_block_ids = [id.hex() for id in ucm_block_ids]
-            logger.info_once(
-                f"timestamp: {time.perf_counter()}, "
-                f"input_length: {request.num_tokens}, "
-                f"output_length: {request.max_tokens}, "
-                f"ucm_block_ids: {hex_ucm_block_ids}"
-            )
 
         logger.info_once(
             f"request_id: {request.request_id}, "
@@ -1063,6 +1079,10 @@ class UCMMockConnector(UCMDirectConnector):
 
 class UCMLiteConnector(UCMDirectConnector):
     def __init__(self, vllm_config, role):
+        ucm_config = Config(vllm_config.kv_transfer_config)
+        launch_config = ucm_config.get_config()
+        enable_record_traces = launch_config.get("enable_record_traces", False)
+        persist_token_threshold = launch_config.get("persist_token_threshold", 0)
         vllm_config.kv_transfer_config.kv_connector_extra_config = {
             "ucm_connectors": [
                 {
@@ -1073,7 +1093,9 @@ class UCMLiteConnector(UCMDirectConnector):
                         "buffer_number": 244032232,
                     },
                 }
-            ]
+            ],
+            "enable_record_traces": enable_record_traces,
+            "persist_token_threshold": persist_token_threshold,
         }
         super().__init__(vllm_config, role)
         self.total_block_nums = 0

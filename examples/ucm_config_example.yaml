@@ -42,3 +42,7 @@ enable_record_traces: false
 # UCM Lite Connector is used with Fake Store to skip actual KV dump and load operations, only for request hit ratio statistics. 
 # It is suggested to collect hit ratio statistics and confirm with relevant project members whether to adopt UCM.
 use_lite: false
+
+# Minimum token threshold for KV persistence.
+# Requests with fewer tokens skip KV load and dump operations.
+persist_token_threshold: 0
