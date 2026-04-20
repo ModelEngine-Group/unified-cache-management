@@ -1096,6 +1096,7 @@ class UCMLiteConnector(UCMDirectConnector):
             ],
             "enable_record_traces": enable_record_traces,
             "persist_token_threshold": persist_token_threshold,
+            "use_lite": True,
         }
         super().__init__(vllm_config, role)
         self.total_block_nums = 0
