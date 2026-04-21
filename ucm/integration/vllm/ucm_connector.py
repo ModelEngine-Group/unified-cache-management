@@ -335,6 +335,12 @@ class UCMDirectConnector(KVConnectorBase_V1):
             config["shard_size"] = kv_cache_layout.shard_size * self.blocks_per_chunk
             config["block_size"] = kv_cache_layout.block_size * self.blocks_per_chunk
             config["local_rank_size"] = self.tp_size if self.is_mla else 1
+            register_buffer_ptrs, register_buffer_sizes = (
+                self._build_register_buffer_regions()
+            )
+            if register_buffer_ptrs:
+                config["register_buffer_ptrs"] = register_buffer_ptrs
+                config["register_buffer_sizes"] = register_buffer_sizes
             if cpu_affinity_cores:
                 config["cpu_affinity_cores"] = list(cpu_affinity_cores)
         else:
@@ -352,6 +358,28 @@ class UCMDirectConnector(KVConnectorBase_V1):
 
         logger.info(f"create {name} with config: {config}")
         return UcmConnectorFactoryV1.create_connector(name, config, module_path)
+
+    def _build_register_buffer_regions(self) -> tuple[list[int], list[int]]:
+        ptrs: list[int] = []
+        sizes: list[int] = []
+        for kv_layer in self.kv_caches.values():
+            for tensor in self._iter_register_buffer_tensors(kv_layer):
+                ptrs.append(int(tensor.data_ptr()))
+                sizes.append(int(tensor.numel() * tensor.element_size()))
+        return ptrs, sizes
+
+    def _iter_register_buffer_tensors(
+        self, kv_layer: torch.Tensor | Tuple[torch.Tensor, ...]
+    ) -> list[torch.Tensor]:
+        if isinstance(kv_layer, torch.Tensor):
+            if kv_layer.dim() == 5:
+                return [kv_layer[0], kv_layer[1]]
+            if kv_layer.dim() == 3:
+                return [kv_layer]
+            raise ValueError(f"Unsupported kv cache tensor shape: {kv_layer.shape}")
+        if isinstance(kv_layer, tuple):
+            return list(kv_layer)
+        raise TypeError(f"Unsupported kv cache type: {type(kv_layer)}")
 
     def register_kv_caches(self, kv_caches: dict[str, torch.Tensor]):
         if has_ucm_sparse() and os.getenv("VLLM_HASH_ATTENTION") == "1":

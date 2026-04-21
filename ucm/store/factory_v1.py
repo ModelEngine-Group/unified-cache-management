@@ -68,3 +68,8 @@ UcmConnectorFactoryV1.register_connector(
 UcmConnectorFactoryV1.register_connector(
     "UcmPipelineStore", "ucm.store.pipeline.connector", "UcmPipelineStore"
 )
+UcmConnectorFactoryV1.register_connector(
+    "UcmMooncakeStoreV1",
+    "ucm.store.mooncakestore.mooncake_connector",
+    "UcmMooncakeStoreV1",
+)
