@@ -1116,8 +1116,18 @@ class UCMLiteConnector(UCMDirectConnector):
             external_hit_blocks = (
                 request_meta.total_hit_block_num - request_meta.hbm_hit_block_num
             )
+            need_dump_blks = request_meta.ucm_block_ids[
+                request_meta.total_hit_block_num :
+            ]
+            shard_indexs = [0] * len(need_dump_blks)
+            total_ptrs = [[0]] * len(need_dump_blks)
+            try:
+                task = self.store.dump_data(need_dump_blks, shard_indexs, total_ptrs)
+                self.store.wait(task)
+            except RuntimeError as e:
+                logger.error(f"request {request.request_id} wait dump task error. {e}")
+            self.requests_meta[request.request_id] = RequestMeta()
 
-            request_meta.total_hit_block_num = request_meta.hbm_hit_block_num
         self.total_hit_block_nums += external_hit_blocks
 
         logger.info(
