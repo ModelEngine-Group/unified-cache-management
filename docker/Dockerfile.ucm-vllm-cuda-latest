@@ -9,10 +9,6 @@ ARG INSTALL_MODE="source"
 
 WORKDIR /workspace
 
-RUN apt-get update && \
-    apt-get install -y --no-install-recommends git && \
-    rm -rf /var/lib/apt/lists/*
-
 # Install unified-cache-management
 COPY . /workspace/unified-cache-management
 
@@ -20,6 +16,9 @@ RUN pip config set global.index-url ${PIP_INDEX_URL}
 
 # Build or link package
 RUN if [ "${INSTALL_MODE}" != "package" ]; then \
+        apt-get update && \
+        apt-get install -y --no-install-recommends git && \
+        rm -rf /var/lib/apt/lists/* && \
         pip install --no-cache-dir build cmake && \
         export WORKSPACE=/workspace SKIP_TAR=1 ENABLE_SPARSE=false && \
         bash /workspace/unified-cache-management/scripts/build_cuda.sh; \

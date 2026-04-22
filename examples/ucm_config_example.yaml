@@ -30,10 +30,19 @@ enable_event_sync: true
 
 
 # Whether to use layerwise loading/saving (optional, default: True for UCMConnector)
-# use_layerwise: true
+use_layerwise: true
 # hit_ratio: 0.9
 
 # Whether to record requests' traces (optional, default: False)
 # When enable_record_traces set to true, logs per-request traces (timestamp, input_length, output_length, hash_ids)
 # Each hash_id takes 32 bytes. Enable only when needed with proper UCM_LOG_MAX_FILES and UCM_LOG_MAX_SIZE.
 enable_record_traces: false
+
+# Whether to use UCM Lite Connector (optional, default: False)
+# UCM Lite Connector is used with Fake Store to skip actual KV dump and load operations, only for request hit ratio statistics. 
+# It is suggested to collect hit ratio statistics and confirm with relevant project members whether to adopt UCM.
+use_lite: false
+
+# Minimum token threshold for KV persistence.
+# Requests with fewer tokens skip KV load and dump operations.
+persist_token_threshold: 0
