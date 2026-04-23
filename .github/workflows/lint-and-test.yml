@@ -20,13 +20,14 @@ jobs:
           tidy-checks: '-*'
           files-changed-only: true
           lines-changed-only: diff
-          format-review: false
+          format-review: true
+          step-summary: true
           version: 20
 
       - name: Fail fast?!
         if: steps.linter.outputs.checks-failed != 0
         run: |
-          echo "some linter checks failed. ${{ steps.linter.outputs.checks-failed }}"
+          echo "::error::cpp-linter found ${{ steps.linter.outputs.checks-failed }} formatting issue(s). See the PR review comments or the job summary for details."
           exit 1
 
   py-linter:
