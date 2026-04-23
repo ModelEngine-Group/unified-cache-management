@@ -59,7 +59,7 @@ inline uint64_t GetCurrentTimeMs()
 bool Logger::FilterCallSite(const char* file, int line)
 {
     if (!rate_limit_enabled_) { return true; }
-    
+
     uint64_t now = GetCurrentTimeMs();
     const std::string_view fv(file);
     std::hash<std::string_view> h;
@@ -201,7 +201,8 @@ void Logger::LoadRateLimitConfig()
     if (!max_logs_str.empty()) {
         try {
             auto val = std::stoul(max_logs_str);
-            rate_limit_max_logs_ = static_cast<uint32_t>(std::min(val, static_cast<unsigned long>(kRateLimitCountMask)));
+            rate_limit_max_logs_ = static_cast<uint32_t>(
+                std::min(val, static_cast<unsigned long>(kRateLimitCountMask)));
         } catch (...) {
             rate_limit_max_logs_ = 3;
         }
