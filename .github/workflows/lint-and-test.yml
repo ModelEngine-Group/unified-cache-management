@@ -6,9 +6,6 @@ on:
 jobs:
   cpp-linter:
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      pull-requests: write
     steps:
       - uses: actions/checkout@v4
         with:
@@ -23,14 +20,28 @@ jobs:
           tidy-checks: '-*'
           files-changed-only: true
           lines-changed-only: diff
-          format-review: true
-          step-summary: true
+          format-review: false
           version: 20
+
+      - name: Show formatting diff
+        if: steps.linter.outputs.checks-failed != 0
+        run: |
+          echo "::group::clang-format diff details"
+          find . -type f \( -name '*.c' -o -name '*.cc' -o -name '*.cpp' -o -name '*.h' -o -name '*.hpp' \) \
+            -not -path './build/*' -not -path './.git/*' -not -path './third_party/*' | while read -r file; do
+            DIFF=$(diff -u "$file" <(/usr/bin/clang-format-20 -style=file "$file") || true)
+            if [ -n "$DIFF" ]; then
+              echo "::warning file=${file#./}::File does not conform to clang-format style"
+              echo "$DIFF"
+              echo ""
+            fi
+          done
+          echo "::endgroup::"
 
       - name: Fail fast?!
         if: steps.linter.outputs.checks-failed != 0
         run: |
-          echo "::error::cpp-linter found ${{ steps.linter.outputs.checks-failed }} formatting issue(s). See the PR review comments or the job summary for details."
+          echo "::error::cpp-linter found ${{ steps.linter.outputs.checks-failed }} formatting issue(s). See the diff above, PR review comments, or the job summary for details."
           exit 1
 
   py-linter:
