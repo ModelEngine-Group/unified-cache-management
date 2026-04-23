@@ -22,6 +22,25 @@
 # SOFTWARE.
 #
 
+"""
+UCM Logger Module
+
+Environment Variables for Rate Limiting:
+    UCM_LOG_RATE_LIMIT_ENABLE: Enable/disable rate limiting (default: true)
+                               Values: true/false/0/1/off/on
+    UCM_LOG_RATE_LIMIT_WINDOW_MS: Time window in milliseconds (default: 60000 = 60s)
+    UCM_LOG_RATE_LIMIT_MAX_LOGS: Max logs per window (default: 3, max: 3)
+
+Usage:
+    logger = init_logger()
+    
+    # Rate-limited logging (60s window, max 3 logs per location)
+    logger.info_limit("Processing request %s", req_id)
+    
+    # One-time logging (cached by lru_cache)
+    logger.info_once("Cache hit rate: %.2f", rate)
+"""
+
 import atexit
 import collections
 import inspect
