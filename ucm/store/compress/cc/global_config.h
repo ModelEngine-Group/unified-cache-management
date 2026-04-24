@@ -43,6 +43,7 @@ struct Config {
     int32_t compressRatio{32};
     int32_t dataType{100};
     size_t streamNumber{8};
+    size_t decompressThreadNum{6};
 };
 
 }  // namespace UC::Compressor

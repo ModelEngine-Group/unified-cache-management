@@ -57,11 +57,7 @@ protected:
             UC_DEBUG("Compress task({},{},{},{}) finished, cost {:.3f}ms.", id, brief, num, size,
                      cost * 1e3);
         });
-        if (t->type == TransTask::Type::DUMP) {
-            compress_action.Push(t, w);
-        } else {
-            compress_action.Compress_Load(t, w);
-        }
+        compress_action.Push(t, w);
     }
 };
 
