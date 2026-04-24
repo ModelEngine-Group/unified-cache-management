@@ -25,6 +25,7 @@
 #define UNIFIEDCACHE_CACHE_STORE_CC_BUFFER_MANAGER_H
 
 #include "logger/logger.h"
+#include "metrics_api.h"
 #include "time/stopwatch.h"
 #include "trans_buffer.h"
 #include "ucmstore_v1.h"
@@ -77,14 +78,26 @@ private:
         missBlk.reserve(num);
         missIdx.reserve(num);
         StopWatch sw;
+        size_t hitCount = 0;
         for (size_t i = 0; i < num; ++i) {
             uint8_t hit = buffer_->Exist(blocks[i], 0);
             results.push_back(hit);
-            if (hit) { continue; }
+            if (hit) {
+                hitCount++;
+                continue;
+            }
             missBlk.push_back(blocks[i]);
             missIdx.push_back(i);
         }
         UC_DEBUG("Cache lookup({}) costs {:.3f}ms.", num, sw.Elapsed().count() * 1e3);
+        UC::Metrics::UpdateStats("pipeline_cache_lookup_hit_blocks_total",
+                                 static_cast<double>(hitCount));
+        UC::Metrics::UpdateStats("pipeline_cache_lookup_miss_blocks_total",
+                                 static_cast<double>(num - hitCount));
+        if (num > 0) {
+            UC::Metrics::UpdateStats("pipeline_cache_lookup_hit_rate",
+                                     static_cast<double>(hitCount) / static_cast<double>(num));
+        }
     }
     Expected<std::vector<uint8_t>> LookupFast(const Detail::BlockId* blocks, size_t num)
     {

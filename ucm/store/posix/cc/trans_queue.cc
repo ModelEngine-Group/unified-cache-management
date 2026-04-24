@@ -23,6 +23,7 @@
  * */
 #include "trans_queue.h"
 #include "logger/logger.h"
+#include "metrics_api.h"
 #include "posix_file.h"
 
 namespace UC::PosixStore {
@@ -94,13 +95,23 @@ void TransQueue::LoadWorker(IoUnit& ios)
     if (ios.firstIo) {
         auto wait = NowTime::Now() - ios.waiter->startTp;
         UC_DEBUG("Posix load task({}) start running, wait {:.3f}ms.", ios.owner, wait * 1e3);
+        UC::Metrics::UpdateStats("pipeline_posix_load_wait_duration_ms", wait * 1e3);
     }
     if (failureSet_->Contains(ios.owner)) {
         ios.waiter->Done();
         return;
     }
+    auto tp = NowTime::Now();
     auto s = S2H(ios);
-    if (s.Failure()) [[unlikely]] { failureSet_->Insert(ios.owner); }
+    auto cost = NowTime::Now() - tp;
+    auto ioBytes = ios.shard.addrs.size() * ioSize_;
+    auto bwGbps = cost > 0 ? static_cast<double>(ioBytes) / cost / 1e9 : 0.0;
+    UC::Metrics::UpdateStats("pipeline_posix_s2h_duration_ms", cost * 1e3);
+    UC::Metrics::UpdateStats("pipeline_posix_s2h_bandwidth_gbps", bwGbps);
+    if (s.Failure()) [[unlikely]] {
+        failureSet_->Insert(ios.owner);
+        UC::Metrics::UpdateStats("pipeline_posix_load_failures_total", 1.0);
+    }
     ios.waiter->Done();
 }
 
@@ -109,16 +120,26 @@ void TransQueue::DumpWorker(IoUnit& ios)
     if (ios.firstIo) {
         auto wait = NowTime::Now() - ios.waiter->startTp;
         UC_DEBUG("Posix dump task({}) start running, wait {:.3f}ms.", ios.owner, wait * 1e3);
+        UC::Metrics::UpdateStats("pipeline_posix_dump_wait_duration_ms", wait * 1e3);
     }
     if (failureSet_->Contains(ios.owner)) {
         ios.waiter->Done();
         return;
     }
+    auto tp = NowTime::Now();
     auto s = H2S(ios);
+    auto cost = NowTime::Now() - tp;
+    auto ioBytes = ios.shard.addrs.size() * ioSize_;
+    auto bwGbps = cost > 0 ? static_cast<double>(ioBytes) / cost / 1e9 : 0.0;
+    UC::Metrics::UpdateStats("pipeline_posix_h2s_duration_ms", cost * 1e3);
+    UC::Metrics::UpdateStats("pipeline_posix_h2s_bandwidth_gbps", bwGbps);
     if (ios.shard.index + 1 == nShardPerBlock_) {
         layout_->CommitFile(ios.shard.owner, s.Success());
     }
-    if (s.Failure()) [[unlikely]] { failureSet_->Insert(ios.owner); }
+    if (s.Failure()) [[unlikely]] {
+        failureSet_->Insert(ios.owner);
+        UC::Metrics::UpdateStats("pipeline_posix_dump_failures_total", 1.0);
+    }
     ios.waiter->Done();
 }
 

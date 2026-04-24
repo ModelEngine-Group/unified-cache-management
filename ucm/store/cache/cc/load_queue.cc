@@ -23,6 +23,7 @@
  * */
 #include "load_queue.h"
 #include "logger/logger.h"
+#include "metrics_api.h"
 #include "thread/cpu_affinity.h"
 
 namespace UC::CacheStore {
@@ -83,6 +84,7 @@ void LoadQueue::DispatchOneTask(TaskPair&& pair)
     auto tp = waiter->startTp;
     auto tpWait = NowTime::Now();
     const auto nShard = task->desc.size();
+    size_t backendSubmitCount = 0;
     for (size_t i = 0; i < nShard; i++) {
         auto& shard = task->desc[i];
         ShardTask shardTask;
@@ -101,6 +103,7 @@ void LoadQueue::DispatchOneTask(TaskPair&& pair)
                 return;
             }
             shardTask.backendTaskHandle = res.Value();
+            backendSubmitCount++;
         }
         shardTask.taskHandle = task->id;
         shardTask.shard = std::move(shard);
@@ -110,6 +113,13 @@ void LoadQueue::DispatchOneTask(TaskPair&& pair)
     auto tpDispatch = NowTime::Now();
     UC_DEBUG("Cache task({}) dispatch shards({}), wait={:.3f}ms, cost={:.3f}ms.", task->id, nShard,
              (tpWait - tp) * 1e3, (tpDispatch - tpWait) * 1e3);
+    UC::Metrics::UpdateStats("pipeline_cache_load_wait_duration_ms", (tpWait - tp) * 1e3);
+    UC::Metrics::UpdateStats("pipeline_cache_load_dispatch_duration_ms",
+                             (tpDispatch - tpWait) * 1e3);
+    // Shards that had to descend to the backend (true cache miss at load time).
+    UC::Metrics::UpdateStats("pipeline_cache_load_backend_submit_shards_total",
+                             static_cast<double>(backendSubmitCount));
+    UC::Metrics::UpdateStats("pipeline_cache_load_shards_total", static_cast<double>(nShard));
 }
 
 void LoadQueue::TransferStage(std::promise<Status>& started)
@@ -132,9 +142,11 @@ void LoadQueue::TransferOneTask(CopyStream& stream, ShardTask&& task)
         return;
     }
     auto s = Status::OK();
+    auto tpBegin = NowTime::Now();
     do {
         s = WaitBackendTaskReady(task);
         if (s.Failure()) [[unlikely]] { break; }
+        auto tpBackendReady = NowTime::Now();
         s = HostToDeviceScatterAsync(stream.NextStream(), task.bufferHandle.Data(),
                                      task.shard.addrs.data());
         if (s.Failure()) [[unlikely]] {
@@ -143,6 +155,8 @@ void LoadQueue::TransferOneTask(CopyStream& stream, ShardTask&& task)
         }
         if (!task.waiter) {
             holder_.push_back(std::move(task));
+            UC::Metrics::UpdateStats("pipeline_cache_load_backend_wait_duration_ms",
+                                     (tpBackendReady - tpBegin) * 1e3);
             return;
         }
         s = stream.Synchronize();
@@ -151,6 +165,11 @@ void LoadQueue::TransferOneTask(CopyStream& stream, ShardTask&& task)
             UC_ERROR("Failed({}) to sync on stream for task({}).", s, task.taskHandle);
             break;
         }
+        auto tpEnd = NowTime::Now();
+        UC::Metrics::UpdateStats("pipeline_cache_load_backend_wait_duration_ms",
+                                 (tpBackendReady - tpBegin) * 1e3);
+        UC::Metrics::UpdateStats("pipeline_cache_h2d_duration_ms",
+                                 (tpEnd - tpBackendReady) * 1e3);
     } while (0);
     if (s.Failure()) [[unlikely]] { failureSet_->Insert(task.taskHandle); }
     if (task.waiter) { task.waiter->Done(); }
