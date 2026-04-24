@@ -834,7 +834,10 @@ class UCMLayerWiseConnector(UCMDirectConnector):
         metadata = self._get_connector_metadata()
         current_layer_id = self.layer_name_to_id[layer_name]
 
-        for request_id, task in self.load_tasks.get(current_layer_id, {}).items():
+        # Pop before wait so MTP / rollback paths that revisit the same layer_name
+        # do not call store.wait() again on already-completed handles.
+        layer_tasks = self.load_tasks.pop(current_layer_id, {})
+        for request_id, task in layer_tasks.items():
             try:
                 self.store.wait(task)
             except RuntimeError as e:
