@@ -66,6 +66,7 @@ Status Compressor::Setup(const Detail::Dictionary& config)
     config.GetNumber("layer_size", param.layerSize);
     config.GetNumber("compress_ratio", param.compressRatio);
     config.GetNumber("data_type", param.dataType);
+    config.GetNumber("decompress_thread_num", param.decompressThreadNum);
     config.GetNumber("timeout_ms", param.timeoutMs);
     config.GetNumber("stream_number", param.streamNumber);
 

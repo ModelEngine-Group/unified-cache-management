@@ -23,4 +23,12 @@ extern int TunstallDecompressBF16 (
     size_t         n_bf16
 );
 
+// In-place BF16 decompression.
+// Before: p_data[0:n_bf16] contains compressed bytes and p_data[0:n_bf16*2] is writable.
+// After : p_data[0:n_bf16*2] contains n_bf16 BF16 values.
+extern int TunstallDecompressBF16Inplace (
+    uint8_t *p_data,   // 可访问范围是 n_bf16*2 字节，解压前的数据占据 p_data[0:n_bf16] 字节，解压后占据 p_data[0:n_bf16*2] 字节
+    size_t   n_bf16
+);
+
 #endif // __TUNSTALL_BF16_H__
