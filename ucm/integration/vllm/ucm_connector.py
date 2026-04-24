@@ -17,7 +17,6 @@ from vllm.distributed.kv_transfer.kv_connector.v1.base import (
     KVConnectorRole,
 )
 from vllm.distributed.parallel_state import get_world_group
-from vllm.distributed.utils import get_pp_indices
 from vllm.model_executor.models.utils import extract_layer_index
 from vllm.platforms import current_platform
 from vllm.v1.core.sched.output import SchedulerOutput
@@ -73,12 +72,6 @@ class KVCacheLayout:
         self.num_hidden_layers = getattr(
             self.vllm_config.model_config.hf_text_config, "num_hidden_layers", 0
         )
-        self.pp_rank = (
-            self.vllm_config.parallel_config.rank
-            // self.vllm_config.parallel_config.tensor_parallel_size
-        ) % self.vllm_config.parallel_config.pipeline_parallel_size
-        start, end = get_pp_indices(self.num_hidden_layers, self.pp_rank, self.pp_size)
-        self.local_num_hidden_layers = end - start
         if self.pp_size > 1 and self.num_hidden_layers <= 0:
             raise ValueError("num_hidden_layers must be > 0 when pp_size > 1")
         self.layer_name_to_id = {
@@ -439,9 +432,11 @@ class UCMDirectConnector(KVConnectorBase_V1):
         try:
             external_hit_blocks = self.store.lookup_on_prefix(external_block_ids) + 1
             external_hit_blocks //= self.cp_world_size
-        except RuntimeError as e:
+        except Exception as e:
             external_hit_blocks = 0
-            logger.error(f"request {request.request_id} look up error. {e}")
+            logger.error(
+                f"request {request.request_id} look up error. {type(e).__name__}: {e}"
+            )
 
         logger.info_once(
             f"request_id: {request.request_id}, "
@@ -612,14 +607,16 @@ class UCMDirectConnector(KVConnectorBase_V1):
             if self.tp_rank != 0 and not self.is_mla:
                 for i, ucm_block_id in enumerate(ucm_block_ids):
                     ucm_block_ids[i] = self.request_hasher(ucm_block_id)
-            total_ptrs = self.kv_cache_layout.extract_block_addrs(vllm_block_ids)
-            total_ptrs = total_ptrs.reshape(total_ptrs.shape[0], -1)
-            shard_indexs = [0] * len(ucm_block_ids)
             try:
+                total_ptrs = self.kv_cache_layout.extract_block_addrs(vllm_block_ids)
+                total_ptrs = total_ptrs.reshape(total_ptrs.shape[0], -1)
+                shard_indexs = [0] * len(ucm_block_ids)
                 task = self.store.load_data(ucm_block_ids, shard_indexs, total_ptrs)
                 request_to_task[request_id] = task
-            except RuntimeError as e:
-                logger.error(f"request {request_id} submit load task error. {e}")
+            except Exception as e:
+                logger.error(
+                    f"request {request_id} submit load task error. {type(e).__name__}: {e}"
+                )
                 self._invalid_block_ids.update(
                     metadata.request_meta[request_id].load_block_ids[1]
                 )
@@ -628,8 +625,10 @@ class UCMDirectConnector(KVConnectorBase_V1):
         for request_id, task in request_to_task.items():
             try:
                 self.store.wait(task)
-            except RuntimeError as e:
-                logger.error(f"request {request_id} wait load task error. {e}")
+            except Exception as e:
+                logger.error(
+                    f"request {request_id} wait load task error. {type(e).__name__}: {e}"
+                )
                 self._invalid_block_ids.update(
                     metadata.request_meta[request_id].load_block_ids[1]
                 )
@@ -705,26 +704,28 @@ class UCMDirectConnector(KVConnectorBase_V1):
             total_vllm_block_ids.extend(vllm_block_ids)
 
         if is_save:
-            total_ptrs = self.kv_cache_layout.extract_block_addrs(total_vllm_block_ids)
-            total_ptrs = total_ptrs.reshape(total_ptrs.shape[0], -1)
-            shard_indexs = [0] * len(total_ucm_block_ids)
             try:
+                total_ptrs = self.kv_cache_layout.extract_block_addrs(
+                    total_vllm_block_ids
+                )
+                total_ptrs = total_ptrs.reshape(total_ptrs.shape[0], -1)
+                shard_indexs = [0] * len(total_ucm_block_ids)
                 event_handle = self._get_dump_event_handle()
                 save_start_time = time.perf_counter() * 1000
                 task = self.store.dump_data(
                     total_ucm_block_ids, shard_indexs, total_ptrs, event_handle
                 )
                 dump_tasks.append(task)
-            except RuntimeError as e:
-                logger.error(f"dump kv cache failed. {e}")
+            except Exception as e:
+                logger.error(f"dump kv cache failed. {type(e).__name__}: {e}")
                 return
 
             try:
                 for task in dump_tasks:
                     self.store.wait(task)
                 save_end_time = time.perf_counter() * 1000
-            except RuntimeError as e:
-                logger.error(f"wait for dump kv cache failed.{e}")
+            except Exception as e:
+                logger.error(f"wait for dump kv cache failed. {type(e).__name__}: {e}")
                 return
 
             save_speed = (
@@ -795,8 +796,10 @@ class UCMLayerWiseConnector(UCMDirectConnector):
                 layer_ptrs = total_ptrs[local_row]
                 task = self.store.load_data(ucm_block_ids, shard_indexs, layer_ptrs)
                 self.load_tasks[layer_id][request_id] = task
-            except RuntimeError as e:
-                logger.error(f"request {request_id} submit load task error. {e}")
+            except Exception as e:
+                logger.error(
+                    f"request {request_id} submit load task error. {type(e).__name__}: {e}"
+                )
                 self._invalid_block_ids.update(
                     metadata.request_meta[request_id].load_block_ids[1]
                 )
@@ -840,8 +843,10 @@ class UCMLayerWiseConnector(UCMDirectConnector):
         for request_id, task in layer_tasks.items():
             try:
                 self.store.wait(task)
-            except RuntimeError as e:
-                logger.error(f"request {request_id} wait {layer_name} load failed. {e}")
+            except Exception as e:
+                logger.error(
+                    f"request {request_id} wait {layer_name} load failed. {type(e).__name__}: {e}"
+                )
                 self._invalid_block_ids.update(
                     metadata.request_meta[request_id].load_block_ids[1]
                 )
@@ -898,8 +903,8 @@ class UCMLayerWiseConnector(UCMDirectConnector):
                     total_ucm_block_ids, shard_indexs, layer_ptrs, event_handle
                 )
                 self.dump_tasks[layer_name] = task
-            except RuntimeError as e:
-                logger.error(f"submit dump task failed. {e}")
+            except Exception as e:
+                logger.error(f"submit dump task failed. {type(e).__name__}: {e}")
 
     def wait_for_save(self) -> None:
         if not self.is_save:
@@ -908,8 +913,8 @@ class UCMLayerWiseConnector(UCMDirectConnector):
             for layer_name in self.kv_caches:
                 if layer_name in self.dump_tasks:
                     self.store.wait(self.dump_tasks[layer_name])
-        except RuntimeError as e:
-            logger.error(f"wait for dump kv cache failed. {e}")
+        except Exception as e:
+            logger.error(f"wait for dump kv cache failed. {type(e).__name__}: {e}")
         self.dump_tasks.clear()
         self.is_save = False
         self.dump_total_ptrs = None
@@ -1129,8 +1134,10 @@ class UCMLiteConnector(UCMDirectConnector):
             try:
                 task = self.store.dump_data(need_dump_blks, shard_indexs, total_ptrs)
                 self.store.wait(task)
-            except RuntimeError as e:
-                logger.error(f"request {request.request_id} wait dump task error. {e}")
+            except Exception as e:
+                logger.error(
+                    f"request {request.request_id} wait dump task error. {type(e).__name__}: {e}"
+                )
             self.requests_meta[request.request_id] = RequestMeta()
 
         self.total_hit_block_nums += external_hit_blocks
