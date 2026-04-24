@@ -168,8 +168,7 @@ void LoadQueue::TransferOneTask(CopyStream& stream, ShardTask&& task)
         auto tpEnd = NowTime::Now();
         UC::Metrics::UpdateStats("pipeline_cache_load_backend_wait_duration_ms",
                                  (tpBackendReady - tpBegin) * 1e3);
-        UC::Metrics::UpdateStats("pipeline_cache_h2d_duration_ms",
-                                 (tpEnd - tpBackendReady) * 1e3);
+        UC::Metrics::UpdateStats("pipeline_cache_h2d_duration_ms", (tpEnd - tpBackendReady) * 1e3);
     } while (0);
     if (s.Failure()) [[unlikely]] { failureSet_->Insert(task.taskHandle); }
     if (task.waiter) { task.waiter->Done(); }
