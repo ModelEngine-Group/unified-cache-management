@@ -1,7 +1,7 @@
+import time
 from copy import copy
 from typing import TYPE_CHECKING
 
-import time
 import torch
 from vllm.distributed.parallel_state import get_pp_group
 from vllm.logger import logger
@@ -148,9 +148,9 @@ class NPUModelRunner:
             prompt_logprobs_dict=prompt_logprobs_dict,
             kv_connector_output=kv_connector_output,
             pooler_output=[],
-            ec_connector_output=ec_connector_output
-            if self.supports_mm_inputs
-            else None,
+            ec_connector_output=(
+                ec_connector_output if self.supports_mm_inputs else None
+            ),
             cudagraph_stats=cudagraph_stats,
         )
         if self.ascend_config.profiling_chunk_config.enabled and hasattr(
