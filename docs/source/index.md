@@ -60,6 +60,7 @@ user-guide/prefix-cache/index
 user-guide/sparse-attention/index
 user-guide/pd-disaggregation/index
 user-guide/metrics/metrics
+user-guide/metrics/performance_analysis
 user-guide/rerope/rerope
 :::
 
