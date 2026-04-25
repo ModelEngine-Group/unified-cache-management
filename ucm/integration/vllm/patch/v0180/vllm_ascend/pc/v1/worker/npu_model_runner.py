@@ -1,4 +1,3 @@
-import time
 from copy import copy
 from typing import TYPE_CHECKING
 
@@ -27,15 +26,21 @@ class NPUModelRunner:
     @torch.inference_mode()
     def sample_tokens(
         self, grammar_output: "GrammarOutput | None"
-    ) -> "ModelRunnerOutput | AsyncModelRunnerOutput | IntermediateTensors":
+    ) -> ModelRunnerOutput | AsyncModelRunnerOutput | IntermediateTensors:
         kv_connector_output = self.kv_connector_output
         self.kv_connector_output = None
 
         if self.execute_model_state is None:
+            # Nothing to do (PP non-final rank case), output isn't used.
+            # receive sampled token ids from the last PP rank when using
+            # async scheduling + pipeline parallelism so downstream code
+            # (e.g., PCP input preparation) can access them.
             if self.use_async_scheduling and get_pp_group().world_size > 1:
                 self._pp_receive_prev_sampled_token_ids_to_input_batch()
             if not kv_connector_output:
                 return None  # noqa
+            # In case of PP with kv transfer, we need to pass through the
+            # kv_connector_output
             if kv_connector_output.is_empty():
                 return EMPTY_MODEL_RUNNER_OUTPUT
 
@@ -43,6 +48,7 @@ class NPUModelRunner:
             output.kv_connector_output = kv_connector_output
             return output
 
+        # Unpack ephemeral state.
         (
             scheduler_output,
             logits,
@@ -57,14 +63,16 @@ class NPUModelRunner:
             cudagraph_stats,
             batch_desc,
         ) = self.execute_model_state
+        # Clear ephemeral state.
         self.execute_model_state = None
 
+        # Apply structured output bitmasks if present.
         if grammar_output is not None:
+            # here we are different from gpu_model_runner,
+            # the apply_grammar_bitmask uses torch.compile to optimize this,ascend does not support it now
             logits_dtype = logits.dtype
             logits = logits.to("cpu").float()
-            apply_grammar_bitmask(
-                scheduler_output, grammar_output, self.input_batch, logits
-            )
+            apply_grammar_bitmask(scheduler_output, grammar_output, self.input_batch, logits)
             logits = logits.to(self.device).to(logits_dtype)
 
         with record_function_or_nullcontext("sample_token"):
@@ -76,8 +84,6 @@ class NPUModelRunner:
 
             assert self.sampling_done_event is not None
             self.sampling_done_event.record()
-
-        self.valid_sampled_token_count_gpu: torch.Tensor | None = None
 
         def propose_draft_token_ids(sampled_token_ids):
             assert spec_decode_common_attn_metadata is not None
@@ -116,15 +122,16 @@ class NPUModelRunner:
             if self.speculative_config:
                 use_padded_batch = (
                     self.speculative_config
-                    and (
-                        self.speculative_config.use_eagle()
-                        or self.speculative_config.uses_draft_model()
-                    )
+                    and (self.speculative_config.use_eagle() or self.speculative_config.uses_draft_model())
                     and not self.speculative_config.disable_padded_drafter_batch
                 )
                 if use_padded_batch:
+                    # EAGLE speculative decoding can use the GPU sampled tokens
+                    # as inputs, and does not need to wait for bookkeeping to finish.
                     propose_draft_token_ids(sampler_output.sampled_token_ids)
                 if self.speculative_config and not use_padded_batch:
+                    # ngram and other speculative decoding methods use the sampled
+                    # tokens on the CPU, so they are run after bookkeeping.
                     propose_draft_token_ids(valid_sampled_token_ids)
 
             # vLLM v0.18 defers KV connector finalization during target-model
@@ -148,18 +155,9 @@ class NPUModelRunner:
             prompt_logprobs_dict=prompt_logprobs_dict,
             kv_connector_output=kv_connector_output,
             pooler_output=[],
-            ec_connector_output=(
-                ec_connector_output if self.supports_mm_inputs else None
-            ),
+            ec_connector_output=ec_connector_output if self.supports_mm_inputs else None,
             cudagraph_stats=cudagraph_stats,
         )
-        if self.ascend_config.profiling_chunk_config.enabled and hasattr(
-            self, "_execution_start_time"
-        ):
-            self._sync_device()
-            model_runner_output.execution_time_ms = (
-                time.perf_counter() - self._execution_start_time
-            ) * 1000.0
 
         if self.dynamic_eplb:
             with record_function_or_nullcontext("EPLB update"):
@@ -176,20 +174,19 @@ class NPUModelRunner:
                 torch.npu.stream(global_stream()),
             ):
                 global_stream().wait_event(self.sampling_done_event)
-                self._update_states_after_model_execute(
-                    sampler_output.sampled_token_ids, scheduler_output
-                )
+                self._update_states_after_model_execute(sampler_output.sampled_token_ids, scheduler_output)
 
+        # In async scheduling + PP, broadcast sampled token ids from the
+        # last PP rank so other PP ranks can receive them without going
+        # through the scheduler/engine IPC path.
         if self.use_async_scheduling:
             pp = get_pp_group()
             if pp.world_size > 1 and pp.is_last_rank:
-                self._pp_broadcast_prev_sampled_token_ids(
-                    sampler_output.sampled_token_ids
-                )
+                self._pp_broadcast_prev_sampled_token_ids(sampler_output.sampled_token_ids)
 
         if not self.use_async_scheduling:
             return model_runner_output
-        async_output = AsyncGPUModelRunnerOutput(
+        return AsyncGPUModelRunnerOutput(
             model_runner_output=model_runner_output,
             sampled_token_ids=sampler_output.sampled_token_ids,
             logprobs_tensors=sampler_output.logprobs_tensors,
@@ -197,8 +194,3 @@ class NPUModelRunner:
             async_output_copy_stream=self.async_output_copy_stream,
             vocab_size=self.input_batch.vocab_size,
         )
-        self.input_batch.set_async_sampled_token_ids(
-            async_output.sampled_token_ids_cpu,
-            async_output.async_copy_ready_event,
-        )
-        return async_output
