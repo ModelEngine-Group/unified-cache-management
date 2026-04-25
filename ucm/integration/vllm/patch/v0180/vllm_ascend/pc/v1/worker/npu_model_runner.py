@@ -72,7 +72,9 @@ class NPUModelRunner:
             # the apply_grammar_bitmask uses torch.compile to optimize this,ascend does not support it now
             logits_dtype = logits.dtype
             logits = logits.to("cpu").float()
-            apply_grammar_bitmask(scheduler_output, grammar_output, self.input_batch, logits)
+            apply_grammar_bitmask(
+                scheduler_output, grammar_output, self.input_batch, logits
+            )
             logits = logits.to(self.device).to(logits_dtype)
 
         with record_function_or_nullcontext("sample_token"):
@@ -122,7 +124,10 @@ class NPUModelRunner:
             if self.speculative_config:
                 use_padded_batch = (
                     self.speculative_config
-                    and (self.speculative_config.use_eagle() or self.speculative_config.uses_draft_model())
+                    and (
+                        self.speculative_config.use_eagle()
+                        or self.speculative_config.uses_draft_model()
+                    )
                     and not self.speculative_config.disable_padded_drafter_batch
                 )
                 if use_padded_batch:
@@ -155,7 +160,9 @@ class NPUModelRunner:
             prompt_logprobs_dict=prompt_logprobs_dict,
             kv_connector_output=kv_connector_output,
             pooler_output=[],
-            ec_connector_output=ec_connector_output if self.supports_mm_inputs else None,
+            ec_connector_output=(
+                ec_connector_output if self.supports_mm_inputs else None
+            ),
             cudagraph_stats=cudagraph_stats,
         )
 
@@ -174,7 +181,9 @@ class NPUModelRunner:
                 torch.npu.stream(global_stream()),
             ):
                 global_stream().wait_event(self.sampling_done_event)
-                self._update_states_after_model_execute(sampler_output.sampled_token_ids, scheduler_output)
+                self._update_states_after_model_execute(
+                    sampler_output.sampled_token_ids, scheduler_output
+                )
 
         # In async scheduling + PP, broadcast sampled token ids from the
         # last PP rank so other PP ranks can receive them without going
@@ -182,7 +191,9 @@ class NPUModelRunner:
         if self.use_async_scheduling:
             pp = get_pp_group()
             if pp.world_size > 1 and pp.is_last_rank:
-                self._pp_broadcast_prev_sampled_token_ids(sampler_output.sampled_token_ids)
+                self._pp_broadcast_prev_sampled_token_ids(
+                    sampler_output.sampled_token_ids
+                )
 
         if not self.use_async_scheduling:
             return model_runner_output
