@@ -65,15 +65,13 @@ protected:
             UC_DEBUG("Cache task({},{},{},{}) finished, cost {:.3f}ms.", id, brief, num, size,
                      costMs);
             if (isLoad) {
-                UC::Metrics::UpdateStats("pipeline_cache_load_duration_ms", costMs);
-                UC::Metrics::UpdateStats("pipeline_cache_load_bandwidth_gbps", bwGbps);
-                UC::Metrics::UpdateStats("pipeline_cache_load_blocks_total",
-                                         static_cast<double>(num));
+                UC::Metrics::UpdateStats("cache_load_duration_ms", costMs);
+                UC::Metrics::UpdateStats("cache_load_bandwidth_gbps", bwGbps);
+                UC::Metrics::UpdateStats("cache_load_blocks_total", static_cast<double>(num));
             } else {
-                UC::Metrics::UpdateStats("pipeline_cache_dump_duration_ms", costMs);
-                UC::Metrics::UpdateStats("pipeline_cache_dump_bandwidth_gbps", bwGbps);
-                UC::Metrics::UpdateStats("pipeline_cache_dump_blocks_total",
-                                         static_cast<double>(num));
+                UC::Metrics::UpdateStats("cache_dump_duration_ms", costMs);
+                UC::Metrics::UpdateStats("cache_dump_bandwidth_gbps", bwGbps);
+                UC::Metrics::UpdateStats("cache_dump_blocks_total", static_cast<double>(num));
             }
         });
         if (t->type == TransTask::Type::LOAD) {

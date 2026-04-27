@@ -113,13 +113,12 @@ void LoadQueue::DispatchOneTask(TaskPair&& pair)
     auto tpDispatch = NowTime::Now();
     UC_DEBUG("Cache task({}) dispatch shards({}), wait={:.3f}ms, cost={:.3f}ms.", task->id, nShard,
              (tpWait - tp) * 1e3, (tpDispatch - tpWait) * 1e3);
-    UC::Metrics::UpdateStats("pipeline_cache_load_wait_duration_ms", (tpWait - tp) * 1e3);
-    UC::Metrics::UpdateStats("pipeline_cache_load_dispatch_duration_ms",
-                             (tpDispatch - tpWait) * 1e3);
+    UC::Metrics::UpdateStats("cache_load_wait_duration_ms", (tpWait - tp) * 1e3);
+    UC::Metrics::UpdateStats("cache_load_dispatch_duration_ms", (tpDispatch - tpWait) * 1e3);
     // Shards that had to descend to the backend (true cache miss at load time).
-    UC::Metrics::UpdateStats("pipeline_cache_load_backend_submit_shards_total",
+    UC::Metrics::UpdateStats("cache_load_backend_submit_shards_total",
                              static_cast<double>(backendSubmitCount));
-    UC::Metrics::UpdateStats("pipeline_cache_load_shards_total", static_cast<double>(nShard));
+    UC::Metrics::UpdateStats("cache_load_shards_total", static_cast<double>(nShard));
 }
 
 void LoadQueue::TransferStage(std::promise<Status>& started)
@@ -155,7 +154,7 @@ void LoadQueue::TransferOneTask(CopyStream& stream, ShardTask&& task)
         }
         if (!task.waiter) {
             holder_.push_back(std::move(task));
-            UC::Metrics::UpdateStats("pipeline_cache_load_backend_wait_duration_ms",
+            UC::Metrics::UpdateStats("cache_load_backend_wait_duration_ms",
                                      (tpBackendReady - tpBegin) * 1e3);
             return;
         }
@@ -166,9 +165,9 @@ void LoadQueue::TransferOneTask(CopyStream& stream, ShardTask&& task)
             break;
         }
         auto tpEnd = NowTime::Now();
-        UC::Metrics::UpdateStats("pipeline_cache_load_backend_wait_duration_ms",
+        UC::Metrics::UpdateStats("cache_load_backend_wait_duration_ms",
                                  (tpBackendReady - tpBegin) * 1e3);
-        UC::Metrics::UpdateStats("pipeline_cache_h2d_duration_ms", (tpEnd - tpBackendReady) * 1e3);
+        UC::Metrics::UpdateStats("cache_h2d_duration_ms", (tpEnd - tpBackendReady) * 1e3);
     } while (0);
     if (s.Failure()) [[unlikely]] { failureSet_->Insert(task.taskHandle); }
     if (task.waiter) { task.waiter->Done(); }

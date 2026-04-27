@@ -39,13 +39,13 @@ dominates is the first step in any diagnosis.
 ```mermaid
 flowchart TD
     A(["store.load_data"])
-    B["Cache waiting queue<br/><b>pipeline_cache_load_wait_duration_ms</b>"]
-    C["DispatchOneTask: buffer alloc + submit miss<br/><b>pipeline_cache_load_dispatch_duration_ms</b><br/>backend_submit_shards / shards = miss ratio"]
-    D["Posix waiting queue<br/><b>pipeline_posix_load_wait_duration_ms</b>"]
-    E["Posix S2H worker — read disk<br/><b>pipeline_posix_s2h_duration_ms</b><br/><b>pipeline_posix_s2h_bandwidth_gbps</b>"]
-    F["WaitBackendTaskReady<br/><b>pipeline_cache_load_backend_wait_duration_ms</b><br/>≈ posix wait + posix s2h"]
-    G["H2D copy + stream sync<br/><b>pipeline_cache_h2d_duration_ms</b>"]
-    H(["epilog fires<br/><b>pipeline_cache_load_duration_ms</b> (total)<br/><b>pipeline_cache_load_bandwidth_gbps</b>"])
+    B["Cache waiting queue<br/><b>cache_load_wait_duration_ms</b>"]
+    C["DispatchOneTask: buffer alloc + submit miss<br/><b>cache_load_dispatch_duration_ms</b><br/>backend_submit_shards / shards = miss ratio"]
+    D["Posix waiting queue<br/><b>posix_load_wait_duration_ms</b>"]
+    E["Posix S2H worker — read disk<br/><b>posix_s2h_duration_ms</b><br/><b>posix_s2h_bandwidth_gbps</b>"]
+    F["WaitBackendTaskReady<br/><b>cache_load_backend_wait_duration_ms</b><br/>≈ posix wait + posix s2h"]
+    G["H2D copy + stream sync<br/><b>cache_h2d_duration_ms</b>"]
+    H(["epilog fires<br/><b>cache_load_duration_ms</b> (total)<br/><b>cache_load_bandwidth_gbps</b>"])
     A --> B --> C --> D --> E --> F --> G --> H
     classDef posix fill:#fff4e6,stroke:#d97706
     classDef cache fill:#e6f4ff,stroke:#2563eb
@@ -67,7 +67,7 @@ flowchart LR
     class H done
 ```
 
-So `pipeline_cache_load_backend_wait_duration_ms` near zero means
+So `cache_load_backend_wait_duration_ms` near zero means
 either every load hit Cache, or the buffer happened to already be
 filled by a concurrent prefetch.
 
@@ -81,12 +81,12 @@ caller.
 ```mermaid
 flowchart TD
     A(["store.dump_data"])
-    B["Cache waiting queue<br/><b>pipeline_cache_dump_wait_duration_ms</b>"]
-    C["D2H + stream sync<br/><b>pipeline_cache_d2h_duration_ms</b>"]
-    D["backend_->Dump (submit only)<br/><b>pipeline_cache_dump_backend_submit_duration_ms</b>"]
-    E(["epilog fires — caller unblocks<br/><b>pipeline_cache_dump_duration_ms</b> (caller-felt)<br/><b>pipeline_cache_dump_bandwidth_gbps</b>"])
+    B["Cache waiting queue<br/><b>cache_dump_wait_duration_ms</b>"]
+    C["D2H + stream sync<br/><b>cache_d2h_duration_ms</b>"]
+    D["backend_->Dump (submit only)<br/><b>cache_dump_backend_submit_duration_ms</b>"]
+    E(["epilog fires — caller unblocks<br/><b>cache_dump_duration_ms</b> (caller-felt)<br/><b>cache_dump_bandwidth_gbps</b>"])
     F["BackendDumpStage thread (async)"]
-    G["Posix H2S worker — write disk<br/><b>pipeline_posix_h2s_duration_ms</b><br/><b>pipeline_posix_h2s_bandwidth_gbps</b>"]
+    G["Posix H2S worker — write disk<br/><b>posix_h2s_duration_ms</b><br/><b>posix_h2s_bandwidth_gbps</b>"]
     A --> B --> C --> D --> E
     D -. "enqueue (non-blocking)" .-> F --> G
     classDef cache fill:#e6f4ff,stroke:#2563eb
@@ -102,8 +102,8 @@ real disk write that runs in the background. They diverge sharply
 when the Cache buffer absorbs bursts and converge when the buffer
 saturates — see §3.4.
 
-The implication: **`pipeline_cache_dump_duration_ms` is what the user
-felt; `pipeline_posix_h2s_duration_ms` is what the disk did.** They
+The implication: **`cache_dump_duration_ms` is what the user
+felt; `posix_h2s_duration_ms` is what the disk did.** They
 can diverge by orders of magnitude when the Cache buffer is large
 enough to absorb bursts. If they begin to track each other closely it
 means the Cache buffer is full and back-pressure has propagated up to
@@ -118,14 +118,14 @@ first one that's red usually points to the actual bottleneck.
 
 | Rank | Metric | What it tells you |
 |------|--------|-------------------|
-| 1 | `ucm:pipeline_cache_lookup_hit_rate` (gauge) | Is the cache helping at all? |
+| 1 | `ucm:cache_lookup_hit_rate` (gauge) | Is the cache helping at all? |
 | 2 | `ucm:layerwise_wait_blocking_ms` (layerwise only) | Is the load/forward overlap working? |
-| 3 | `ucm:pipeline_cache_load_duration_ms` (avg or p99) | How slow are loads end-to-end? |
-| 4 | `ucm:pipeline_cache_load_backend_wait_duration_ms` | If load is slow: is it Posix's fault? |
-| 5 | `ucm:pipeline_posix_s2h_bandwidth_gbps` | If Posix is slow: is the disk the limit? |
-| 6 | `ucm:pipeline_posix_load_wait_duration_ms` | Or is it queueing on the worker pool? |
+| 3 | `ucm:cache_load_duration_ms` (avg or p99) | How slow are loads end-to-end? |
+| 4 | `ucm:cache_load_backend_wait_duration_ms` | If load is slow: is it Posix's fault? |
+| 5 | `ucm:posix_s2h_bandwidth_gbps` | If Posix is slow: is the disk the limit? |
+| 6 | `ucm:posix_load_wait_duration_ms` | Or is it queueing on the worker pool? |
 | 7 | `ucm:layerwise_save_tail_total_ms` | Is dump tail eating budget? |
-| 8 | `ucm:pipeline_cache_dump_duration_ms` vs `ucm:pipeline_posix_h2s_duration_ms` | Is the dump back-pressuring the caller? |
+| 8 | `ucm:cache_dump_duration_ms` vs `ucm:posix_h2s_duration_ms` | Is the dump back-pressuring the caller? |
 
 The rest are secondary signals used to confirm a hypothesis.
 
@@ -143,16 +143,16 @@ to your hardware.
 Recompute load is high.
 
 **Metric signature.**
-- `ucm:pipeline_cache_lookup_hit_rate` < 0.3
-- `rate(ucm:pipeline_cache_load_backend_submit_shards_total) /
-   rate(ucm:pipeline_cache_load_shards_total)` > 0.7
+- `ucm:cache_lookup_hit_rate` < 0.3
+- `rate(ucm:cache_load_backend_submit_shards_total) /
+   rate(ucm:cache_load_shards_total)` > 0.7
 - `ucm:interval_lookup_hit_rates` (legacy, end-to-end) also low
 
 **Likely causes.**
 1. Cache buffer is too small — blocks evicted before reuse.
 2. Workload diversity is too high — every prompt has unique prefixes.
 3. Dumps aren't reaching Posix in time, so subsequent loads can't find
-   the data — check `pipeline_posix_dump_failures_total` and the gap
+   the data — check `posix_dump_failures_total` and the gap
    between `cache_dump_duration_ms` and `posix_h2s_duration_ms`.
 
 **Tunables.**
@@ -166,15 +166,15 @@ Recompute load is high.
 **Symptoms.** Hit rate looks healthy but `load_duration` is high
 relative to your model's forward time.
 
-**Metric signature.** `pipeline_cache_load_duration_ms` is high.
+**Metric signature.** `cache_load_duration_ms` is high.
 Decompose by reading these in parallel:
 
 | Component metric | Normal | High means |
 |------------------|--------|------------|
-| `pipeline_cache_load_wait_duration_ms` | < 1 ms | Load queue is saturated; too many concurrent requests |
-| `pipeline_cache_load_dispatch_duration_ms` | < 1 ms | Dispatch is rarely the bottleneck; if high, suspect lock contention |
-| `pipeline_cache_load_backend_wait_duration_ms` | depends on hit rate | Cache misses going to Posix — see §3.3 |
-| `pipeline_cache_h2d_duration_ms` | bounded by PCIe bw | Rare; suspect device-side contention or wrong stream affinity |
+| `cache_load_wait_duration_ms` | < 1 ms | Load queue is saturated; too many concurrent requests |
+| `cache_load_dispatch_duration_ms` | < 1 ms | Dispatch is rarely the bottleneck; if high, suspect lock contention |
+| `cache_load_backend_wait_duration_ms` | depends on hit rate | Cache misses going to Posix — see §3.3 |
+| `cache_h2d_duration_ms` | bounded by PCIe bw | Rare; suspect device-side contention or wrong stream affinity |
 
 **Tunables.**
 - Wait high → `waiting_queue_depth` ↑ or reduce concurrency.
@@ -189,10 +189,10 @@ Decompose by reading these in parallel:
 chain.
 
 **Metric signature.**
-- `pipeline_cache_load_backend_wait_duration_ms` > `pipeline_cache_h2d_duration_ms`
-- `pipeline_posix_s2h_bandwidth_gbps` well below disk spec
+- `cache_load_backend_wait_duration_ms` > `cache_h2d_duration_ms`
+- `posix_s2h_bandwidth_gbps` well below disk spec
    (e.g. < 1 GB/s on an NVMe rated for 3 GB/s)
-- AND/OR `pipeline_posix_load_wait_duration_ms` high (queue buildup)
+- AND/OR `posix_load_wait_duration_ms` high (queue buildup)
 
 **Decision split:**
 
@@ -210,11 +210,11 @@ though the workload looks the same. New requests wait longer than
 expected.
 
 **Metric signature.** Two conditions together:
-- `ucm:pipeline_cache_dump_duration_ms` (caller-felt) starts climbing
-  toward `ucm:pipeline_posix_h2s_duration_ms` (disk-felt). When the
+- `ucm:cache_dump_duration_ms` (caller-felt) starts climbing
+  toward `ucm:posix_h2s_duration_ms` (disk-felt). When the
   Cache buffer is healthy these diverge sharply; when the buffer is
   saturated they converge.
-- `ucm:pipeline_posix_h2s_bandwidth_gbps` ≪ Cache dump rate
+- `ucm:posix_h2s_bandwidth_gbps` ≪ Cache dump rate
 
 **Likely cause.** The Posix tier cannot keep up with sustained dump
 throughput. Cache buffer fills, BackendDumpStage blocks, dispatch
@@ -239,7 +239,7 @@ between waits:
 |--------------------|--------------------------|-----------|
 | ≈ 0 | any | **Overlap working perfectly.** If you still want gains, the bottleneck is elsewhere (the forward pass itself). |
 | > 0, < `inter_wait_interval` | > 0 | Partial overlap — load is slightly slower than forward. Reduce load_duration (see §3.2-3.3) and gain will appear. |
-| ≈ `pipeline_cache_load_duration_ms` | small | **Pipeline degenerated to serial.** Forward is too fast to hide load. Likely you're decode-bound (one token per layer is fast, loads can't keep up) or Cache miss rate just spiked. |
+| ≈ `cache_load_duration_ms` | small | **Pipeline degenerated to serial.** Forward is too fast to hide load. Likely you're decode-bound (one token per layer is fast, loads can't keep up) or Cache miss rate just spiked. |
 | Large, growing | Stable | Backlog forming — submission is faster than completion. Check `next_layer_submit_ms` (should be < 1 ms; if not, store.load_data itself is slow). |
 
 **`stalled_layers_total` rate** is a coarser version of the same
@@ -252,7 +252,7 @@ into `wait_blocking_ms` distribution.
 
 **Metric signature.**
 - `layerwise_first_layer_submit_ms` is high (rare; usually fast)
-- OR `pipeline_cache_load_backend_wait_duration_ms` is high during
+- OR `cache_load_backend_wait_duration_ms` is high during
   the first batch (cold cache, first-layer load goes all the way to
   disk before forward can start)
 
@@ -297,7 +297,7 @@ spends a noticeable chunk in `wait_for_save`.
 **Metric signature.**
 - Legacy `ucm:save_duration` is a meaningful fraction of one
   iteration's wall time
-- `ucm:pipeline_cache_dump_duration_ms` ≈ `ucm:save_duration` (no
+- `ucm:cache_dump_duration_ms` ≈ `ucm:save_duration` (no
   surprise — both measure roughly the same thing here)
 - Posix h2s bandwidth healthy, h2s duration low → Cache D2H is the
   bottleneck, not disk
@@ -314,9 +314,9 @@ Some requests are 10× slower than others.
 
 **Metric signature.** Look at p99 vs avg of any duration metric — if
 avg is fine but p99 is enormous, the workers are stuck on something:
-- `pipeline_posix_load_wait_duration_ms` p99 → Posix workers blocked
+- `posix_load_wait_duration_ms` p99 → Posix workers blocked
    (slow disk IO, head-of-line blocking)
-- `pipeline_cache_load_wait_duration_ms` p99 → Cache dispatcher
+- `cache_load_wait_duration_ms` p99 → Cache dispatcher
    blocked (rare — usually means deadlock or buffer exhaustion)
 
 **Tunables.** Concurrency knobs (`*_concurrency` in config),
@@ -337,9 +337,9 @@ Where the analysis differs:
 | Question | Non-layerwise | Layerwise |
 |----------|---------------|-----------|
 | "Is the load fast enough?" | Compare `load_duration` to forward time | Compare `wait_blocking_ms` to 0 |
-| "What's the load latency?" | `load_duration` (= `start_load_kv` block) | `pipeline_cache_load_duration_ms` (per-layer task; sum × n_layers if you want total) |
+| "What's the load latency?" | `load_duration` (= `start_load_kv` block) | `cache_load_duration_ms` (per-layer task; sum × n_layers if you want total) |
 | "Are saves blocking forward?" | Yes by design — `save_duration` is on the critical path | Only the tail is — `save_tail_total_ms` |
-| "Where's TTFT going?" | Total load is on the critical path before forward | `layerwise_first_layer_submit_ms` + first layer's `pipeline_cache_load_*` chain |
+| "Where's TTFT going?" | Total load is on the critical path before forward | `layerwise_first_layer_submit_ms` + first layer's `cache_load_*` chain |
 | "Is the cache buffer big enough?" | Same indicator: hit rate, dump back-pressure (§3.4) |
 
 A useful rule of thumb: in **layerwise** mode the most informative
@@ -359,33 +359,33 @@ querying.
 historical analysis):**
 
 ```
-rate(ucm:pipeline_cache_lookup_hit_blocks_total{model_name="$model_name"}[5m])
+rate(ucm:cache_lookup_hit_blocks_total{model_name="$model_name"}[5m])
 /
 clamp_min(
-    rate(ucm:pipeline_cache_lookup_hit_blocks_total{model_name="$model_name"}[5m])
-  + rate(ucm:pipeline_cache_lookup_miss_blocks_total{model_name="$model_name"}[5m]),
+    rate(ucm:cache_lookup_hit_blocks_total{model_name="$model_name"}[5m])
+  + rate(ucm:cache_lookup_miss_blocks_total{model_name="$model_name"}[5m]),
   1)
 ```
 
 **Shard-level miss ratio at load time (descended to backend):**
 
 ```
-rate(ucm:pipeline_cache_load_backend_submit_shards_total{model_name="$model_name"}[5m])
+rate(ucm:cache_load_backend_submit_shards_total{model_name="$model_name"}[5m])
 /
-clamp_min(rate(ucm:pipeline_cache_load_shards_total{model_name="$model_name"}[5m]), 1)
+clamp_min(rate(ucm:cache_load_shards_total{model_name="$model_name"}[5m]), 1)
 ```
 
 **P99 load duration per stage (decomposition of the load chain):**
 
 ```
 histogram_quantile(0.99, sum by (le) (
-  rate(ucm:pipeline_cache_load_wait_duration_ms_bucket{model_name="$model_name"}[5m])))
+  rate(ucm:cache_load_wait_duration_ms_bucket{model_name="$model_name"}[5m])))
 
 histogram_quantile(0.99, sum by (le) (
-  rate(ucm:pipeline_cache_load_backend_wait_duration_ms_bucket{model_name="$model_name"}[5m])))
+  rate(ucm:cache_load_backend_wait_duration_ms_bucket{model_name="$model_name"}[5m])))
 
 histogram_quantile(0.99, sum by (le) (
-  rate(ucm:pipeline_cache_h2d_duration_ms_bucket{model_name="$model_name"}[5m])))
+  rate(ucm:cache_h2d_duration_ms_bucket{model_name="$model_name"}[5m])))
 ```
 
 Sum these for an approximation of total load p99 (they're correlated,
@@ -407,17 +407,17 @@ Close to 0 = great overlap. Close to 1 = serial.
 **Dump back-pressure ratio (caller-felt vs disk-felt):**
 
 ```
-rate(ucm:pipeline_cache_dump_duration_ms_sum{model_name="$model_name"}[5m])
+rate(ucm:cache_dump_duration_ms_sum{model_name="$model_name"}[5m])
 /
-rate(ucm:pipeline_cache_dump_duration_ms_count{model_name="$model_name"}[5m])
+rate(ucm:cache_dump_duration_ms_count{model_name="$model_name"}[5m])
 ```
 
 vs.
 
 ```
-rate(ucm:pipeline_posix_h2s_duration_ms_sum{model_name="$model_name"}[5m])
+rate(ucm:posix_h2s_duration_ms_sum{model_name="$model_name"}[5m])
 /
-rate(ucm:pipeline_posix_h2s_duration_ms_count{model_name="$model_name"}[5m])
+rate(ucm:posix_h2s_duration_ms_count{model_name="$model_name"}[5m])
 ```
 
 The first should be much smaller than the second. When they converge,
@@ -427,10 +427,10 @@ back-pressure has reached the caller (see §3.4).
 
 ```
 # average wait + IO per IO unit
-(rate(ucm:pipeline_posix_load_wait_duration_ms_sum{model_name="$model_name"}[5m])
- + rate(ucm:pipeline_posix_s2h_duration_ms_sum{model_name="$model_name"}[5m]))
+(rate(ucm:posix_load_wait_duration_ms_sum{model_name="$model_name"}[5m])
+ + rate(ucm:posix_s2h_duration_ms_sum{model_name="$model_name"}[5m]))
 /
-rate(ucm:pipeline_posix_s2h_duration_ms_count{model_name="$model_name"}[5m])
+rate(ucm:posix_s2h_duration_ms_count{model_name="$model_name"}[5m])
 ```
 
 If wait dominates IO, increase `posix_data_trans_concurrency`.

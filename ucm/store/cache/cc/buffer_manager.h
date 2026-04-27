@@ -90,12 +90,11 @@ private:
             missIdx.push_back(i);
         }
         UC_DEBUG("Cache lookup({}) costs {:.3f}ms.", num, sw.Elapsed().count() * 1e3);
-        UC::Metrics::UpdateStats("pipeline_cache_lookup_hit_blocks_total",
-                                 static_cast<double>(hitCount));
-        UC::Metrics::UpdateStats("pipeline_cache_lookup_miss_blocks_total",
+        UC::Metrics::UpdateStats("cache_lookup_hit_blocks_total", static_cast<double>(hitCount));
+        UC::Metrics::UpdateStats("cache_lookup_miss_blocks_total",
                                  static_cast<double>(num - hitCount));
         if (num > 0) {
-            UC::Metrics::UpdateStats("pipeline_cache_lookup_hit_rate",
+            UC::Metrics::UpdateStats("cache_lookup_hit_rate",
                                      static_cast<double>(hitCount) / static_cast<double>(num));
         }
     }

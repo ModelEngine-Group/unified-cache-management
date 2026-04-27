@@ -17,25 +17,25 @@ histogram_max_length: 10000  # Maximum length of the vector for each histogram m
 counter:
   # -- Pipeline Cache stage: lookup hit/miss breakdown ----------------------
   # Hit counters let Prometheus compute hit rate without losing precision:
-  #   rate(ucm:pipeline_cache_lookup_hit_blocks_total[5m])
+  #   rate(ucm:cache_lookup_hit_blocks_total[5m])
   #   / (rate(hit) + rate(miss))
-  - name: "pipeline_cache_lookup_hit_blocks_total"
+  - name: "cache_lookup_hit_blocks_total"
     documentation: "Number of lookup hits served by the Cache stage (no descent to backend)"
-  - name: "pipeline_cache_lookup_miss_blocks_total"
+  - name: "cache_lookup_miss_blocks_total"
     documentation: "Number of lookup misses at the Cache stage (had to query the backend)"
-  - name: "pipeline_cache_load_blocks_total"
+  - name: "cache_load_blocks_total"
     documentation: "Total blocks loaded by the Cache stage"
-  - name: "pipeline_cache_dump_blocks_total"
+  - name: "cache_dump_blocks_total"
     documentation: "Total blocks dumped by the Cache stage"
-  - name: "pipeline_cache_load_shards_total"
+  - name: "cache_load_shards_total"
     documentation: "Total shards dispatched by Cache load (num blocks * shards_per_block)"
-  - name: "pipeline_cache_load_backend_submit_shards_total"
+  - name: "cache_load_backend_submit_shards_total"
     documentation: "Shards that missed Cache buffer and descended to the backend on load"
 
   # -- Pipeline Posix stage: failure counters -------------------------------
-  - name: "pipeline_posix_load_failures_total"
+  - name: "posix_load_failures_total"
     documentation: "Number of Posix stage load (S2H) IO failures"
-  - name: "pipeline_posix_dump_failures_total"
+  - name: "posix_dump_failures_total"
     documentation: "Number of Posix stage dump (H2S) IO failures"
 
   # -- Layerwise stalls -----------------------------------------------------
@@ -44,7 +44,7 @@ counter:
 
 # Gauge metrics configuration
 gauge:
-  - name: "pipeline_cache_lookup_hit_rate"
+  - name: "cache_lookup_hit_rate"
     documentation: "Instantaneous Cache stage hit rate from the most recent lookup call"
     multiprocess_mode: "livemostrecent"
 
@@ -85,67 +85,67 @@ histogram:
   # These answer: "which tier in the Cache|Posix|Ds3fs stack is the bottleneck?"
   #
   # -- Cache stage (in-memory buffer on top of the stack) -------------------
-  - name: "pipeline_cache_load_duration_ms"
+  - name: "cache_load_duration_ms"
     documentation: "End-to-end Cache stage load task duration (ms)"
     buckets: [0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000]
-  - name: "pipeline_cache_dump_duration_ms"
+  - name: "cache_dump_duration_ms"
     documentation: "End-to-end Cache stage dump task duration (ms)"
     buckets: [0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000]
-  - name: "pipeline_cache_load_bandwidth_gbps"
+  - name: "cache_load_bandwidth_gbps"
     documentation: "Cache stage effective load bandwidth (GB/s)"
     buckets: [0.5, 1, 2, 4, 8, 12, 16, 24, 32, 48, 64, 96, 128, 192, 256]
-  - name: "pipeline_cache_dump_bandwidth_gbps"
+  - name: "cache_dump_bandwidth_gbps"
     documentation: "Cache stage effective dump bandwidth (GB/s)"
     buckets: [0.5, 1, 2, 4, 8, 12, 16, 24, 32, 48, 64, 96, 128, 192, 256]
-  - name: "pipeline_cache_load_wait_duration_ms"
+  - name: "cache_load_wait_duration_ms"
     documentation: "Time a Cache load task spent queued before dispatch (ms)"
     buckets: [0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 500]
-  - name: "pipeline_cache_dump_wait_duration_ms"
+  - name: "cache_dump_wait_duration_ms"
     documentation: "Time a Cache dump task spent queued before dispatch (ms)"
     buckets: [0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 500]
-  - name: "pipeline_cache_load_dispatch_duration_ms"
+  - name: "cache_load_dispatch_duration_ms"
     documentation: "Cache load dispatch cost: buffer allocation + backend submission (ms)"
     buckets: [0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 500]
-  - name: "pipeline_cache_load_backend_wait_duration_ms"
+  - name: "cache_load_backend_wait_duration_ms"
     documentation: "Cache load backend-wait: time waiting for lower tier to fill the buffer (ms)"
     buckets: [0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000]
-  - name: "pipeline_cache_h2d_duration_ms"
+  - name: "cache_h2d_duration_ms"
     documentation: "Cache load host-to-device copy duration on a sync'd stream (ms)"
     buckets: [0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500]
-  - name: "pipeline_cache_d2h_duration_ms"
+  - name: "cache_d2h_duration_ms"
     documentation: "Cache dump device-to-host copy duration incl. stream sync (ms)"
     buckets: [0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500]
-  - name: "pipeline_cache_dump_backend_submit_duration_ms"
+  - name: "cache_dump_backend_submit_duration_ms"
     documentation: "Cache dump backend submit time: passing buffers to lower tier (ms)"
     buckets: [0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 500]
 
   # -- Posix stage (disk tier) ---------------------------------------------
-  - name: "pipeline_posix_s2h_duration_ms"
+  - name: "posix_s2h_duration_ms"
     documentation: "Posix stage S2H (storage-to-host) duration for one shard's IO (ms)"
     buckets: [0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000]
-  - name: "pipeline_posix_h2s_duration_ms"
+  - name: "posix_h2s_duration_ms"
     documentation: "Posix stage H2S (host-to-storage) duration for one shard's IO (ms)"
     buckets: [0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000]
   # Bucket layout: typical Posix throughput sits in 1-12 GB/s, so this range
   # is sampled densely (0.5 GB/s steps for 1-4, 1 GB/s steps for 5-12) so
   # that p50/p90/p99 bandwidth is meaningfully resolved. Sub-1 GB/s coverage
   # is kept for detecting degraded paths; >12 GB/s is sparse for headroom.
-  - name: "pipeline_posix_s2h_bandwidth_gbps"
+  - name: "posix_s2h_bandwidth_gbps"
     documentation: "Posix stage read bandwidth (GB/s)"
     buckets: [0.05, 0.1, 0.2, 0.5,
               1, 1.5, 2, 2.5, 3, 3.5, 4,
               5, 6, 7, 8, 9, 10, 11, 12,
               14, 16, 20, 24, 32]
-  - name: "pipeline_posix_h2s_bandwidth_gbps"
+  - name: "posix_h2s_bandwidth_gbps"
     documentation: "Posix stage write bandwidth (GB/s)"
     buckets: [0.05, 0.1, 0.2, 0.5,
               1, 1.5, 2, 2.5, 3, 3.5, 4,
               5, 6, 7, 8, 9, 10, 11, 12,
               14, 16, 20, 24, 32]
-  - name: "pipeline_posix_load_wait_duration_ms"
+  - name: "posix_load_wait_duration_ms"
     documentation: "Time a Posix load IO spent queued before worker pickup (ms)"
     buckets: [0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 500]
-  - name: "pipeline_posix_dump_wait_duration_ms"
+  - name: "posix_dump_wait_duration_ms"
     documentation: "Time a Posix dump IO spent queued before worker pickup (ms)"
     buckets: [0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 500]
 
