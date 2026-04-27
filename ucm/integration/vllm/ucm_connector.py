@@ -340,7 +340,7 @@ class UCMDirectConnector(KVConnectorBase_V1):
                 * (1 if self.is_mla else self.num_head * 2)
                 * self.blocks_per_chunk
             )
-        dp_rank = self._vllm_config.parallel_config.rank
+        dp_rank = self._vllm_config.parallel_config.data_parallel_rank
         config["posix_gc_enable"] = (
             self._role != KVConnectorRole.WORKER and dp_rank == 0
         )
