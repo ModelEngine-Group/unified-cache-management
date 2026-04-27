@@ -402,7 +402,102 @@
           },
           "unit": "ms"
         },
-        "overrides": []
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": "^p50.*"
+            },
+            "properties": [
+              {
+                "id": "custom.lineStyle",
+                "value": {
+                  "fill": "solid"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": "^p90.*"
+            },
+            "properties": [
+              {
+                "id": "custom.lineStyle",
+                "value": {
+                  "fill": "dash",
+                  "dash": [
+                    12,
+                    6
+                  ]
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": "^p95.*"
+            },
+            "properties": [
+              {
+                "id": "custom.lineStyle",
+                "value": {
+                  "fill": "dash",
+                  "dash": [
+                    8,
+                    4
+                  ]
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": "^p99.*"
+            },
+            "properties": [
+              {
+                "id": "custom.lineStyle",
+                "value": {
+                  "fill": "dash",
+                  "dash": [
+                    4,
+                    4
+                  ]
+                }
+              },
+              {
+                "id": "custom.lineWidth",
+                "value": 2
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": "^avg.*"
+            },
+            "properties": [
+              {
+                "id": "custom.lineStyle",
+                "value": {
+                  "fill": "solid"
+                }
+              },
+              {
+                "id": "custom.lineWidth",
+                "value": 1
+              },
+              {
+                "id": "custom.fillOpacity",
+                "value": 5
+              }
+            ]
+          }
+        ]
       },
       "gridPos": {
         "h": 8,
@@ -413,14 +508,17 @@
       "id": 17,
       "options": {
         "legend": {
-          "calcs": [],
-          "displayMode": "list",
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ],
+          "displayMode": "table",
           "placement": "bottom",
           "showLegend": true
         },
         "tooltip": {
-          "mode": "single",
-          "sort": "none"
+          "mode": "multi",
+          "sort": "desc"
         }
       },
       "targets": [
@@ -430,12 +528,54 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "rate(ucm:load_duration_sum{model_name=\"$model_name\"}[$__rate_interval])\n/\nrate(ucm:load_duration_count{model_name=\"$model_name\"}[$__rate_interval])",
-          "hide": false,
-          "instant": false,
-          "legendFormat": "worker-{{worker_id}}",
+          "expr": "histogram_quantile(0.5, sum by (le, worker_id) (rate(ucm:load_duration_bucket{model_name=\"$model_name\"}[$__rate_interval])))",
+          "legendFormat": "p50 worker-{{worker_id}}",
           "range": true,
           "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "histogram_quantile(0.9, sum by (le, worker_id) (rate(ucm:load_duration_bucket{model_name=\"$model_name\"}[$__rate_interval])))",
+          "legendFormat": "p90 worker-{{worker_id}}",
+          "range": true,
+          "refId": "B"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "histogram_quantile(0.95, sum by (le, worker_id) (rate(ucm:load_duration_bucket{model_name=\"$model_name\"}[$__rate_interval])))",
+          "legendFormat": "p95 worker-{{worker_id}}",
+          "range": true,
+          "refId": "C"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "histogram_quantile(0.99, sum by (le, worker_id) (rate(ucm:load_duration_bucket{model_name=\"$model_name\"}[$__rate_interval])))",
+          "legendFormat": "p99 worker-{{worker_id}}",
+          "range": true,
+          "refId": "D"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "rate(ucm:load_duration_sum{model_name=\"$model_name\"}[$__rate_interval])\n/\nrate(ucm:load_duration_count{model_name=\"$model_name\"}[$__rate_interval])",
+          "legendFormat": "avg worker-{{worker_id}}",
+          "range": true,
+          "refId": "E"
         }
       ],
       "title": "Connector Load Duration",
@@ -505,7 +645,102 @@
           },
           "unit": "gb/s"
         },
-        "overrides": []
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": "^p50.*"
+            },
+            "properties": [
+              {
+                "id": "custom.lineStyle",
+                "value": {
+                  "fill": "solid"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": "^p90.*"
+            },
+            "properties": [
+              {
+                "id": "custom.lineStyle",
+                "value": {
+                  "fill": "dash",
+                  "dash": [
+                    12,
+                    6
+                  ]
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": "^p95.*"
+            },
+            "properties": [
+              {
+                "id": "custom.lineStyle",
+                "value": {
+                  "fill": "dash",
+                  "dash": [
+                    8,
+                    4
+                  ]
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": "^p99.*"
+            },
+            "properties": [
+              {
+                "id": "custom.lineStyle",
+                "value": {
+                  "fill": "dash",
+                  "dash": [
+                    4,
+                    4
+                  ]
+                }
+              },
+              {
+                "id": "custom.lineWidth",
+                "value": 2
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": "^avg.*"
+            },
+            "properties": [
+              {
+                "id": "custom.lineStyle",
+                "value": {
+                  "fill": "solid"
+                }
+              },
+              {
+                "id": "custom.lineWidth",
+                "value": 1
+              },
+              {
+                "id": "custom.fillOpacity",
+                "value": 5
+              }
+            ]
+          }
+        ]
       },
       "gridPos": {
         "h": 8,
@@ -516,14 +751,17 @@
       "id": 21,
       "options": {
         "legend": {
-          "calcs": [],
-          "displayMode": "list",
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ],
+          "displayMode": "table",
           "placement": "bottom",
           "showLegend": true
         },
         "tooltip": {
-          "mode": "single",
-          "sort": "none"
+          "mode": "multi",
+          "sort": "desc"
         }
       },
       "targets": [
@@ -533,12 +771,54 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "rate(ucm:load_speed_sum{model_name=\"$model_name\"}[$__rate_interval])\n/\nrate(ucm:load_speed_count{model_name=\"$model_name\"}[$__rate_interval])",
-          "hide": false,
-          "instant": false,
-          "legendFormat": "worker-{{worker_id}}",
+          "expr": "histogram_quantile(0.5, sum by (le, worker_id) (rate(ucm:load_speed_bucket{model_name=\"$model_name\"}[$__rate_interval])))",
+          "legendFormat": "p50 worker-{{worker_id}}",
           "range": true,
           "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "histogram_quantile(0.9, sum by (le, worker_id) (rate(ucm:load_speed_bucket{model_name=\"$model_name\"}[$__rate_interval])))",
+          "legendFormat": "p90 worker-{{worker_id}}",
+          "range": true,
+          "refId": "B"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "histogram_quantile(0.95, sum by (le, worker_id) (rate(ucm:load_speed_bucket{model_name=\"$model_name\"}[$__rate_interval])))",
+          "legendFormat": "p95 worker-{{worker_id}}",
+          "range": true,
+          "refId": "C"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "histogram_quantile(0.99, sum by (le, worker_id) (rate(ucm:load_speed_bucket{model_name=\"$model_name\"}[$__rate_interval])))",
+          "legendFormat": "p99 worker-{{worker_id}}",
+          "range": true,
+          "refId": "D"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "rate(ucm:load_speed_sum{model_name=\"$model_name\"}[$__rate_interval])\n/\nrate(ucm:load_speed_count{model_name=\"$model_name\"}[$__rate_interval])",
+          "legendFormat": "avg worker-{{worker_id}}",
+          "range": true,
+          "refId": "E"
         }
       ],
       "title": "Connector Load Speed",
@@ -814,7 +1094,102 @@
           },
           "unit": "ms"
         },
-        "overrides": []
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": "^p50.*"
+            },
+            "properties": [
+              {
+                "id": "custom.lineStyle",
+                "value": {
+                  "fill": "solid"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": "^p90.*"
+            },
+            "properties": [
+              {
+                "id": "custom.lineStyle",
+                "value": {
+                  "fill": "dash",
+                  "dash": [
+                    12,
+                    6
+                  ]
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": "^p95.*"
+            },
+            "properties": [
+              {
+                "id": "custom.lineStyle",
+                "value": {
+                  "fill": "dash",
+                  "dash": [
+                    8,
+                    4
+                  ]
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": "^p99.*"
+            },
+            "properties": [
+              {
+                "id": "custom.lineStyle",
+                "value": {
+                  "fill": "dash",
+                  "dash": [
+                    4,
+                    4
+                  ]
+                }
+              },
+              {
+                "id": "custom.lineWidth",
+                "value": 2
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": "^avg.*"
+            },
+            "properties": [
+              {
+                "id": "custom.lineStyle",
+                "value": {
+                  "fill": "solid"
+                }
+              },
+              {
+                "id": "custom.lineWidth",
+                "value": 1
+              },
+              {
+                "id": "custom.fillOpacity",
+                "value": 5
+              }
+            ]
+          }
+        ]
       },
       "gridPos": {
         "h": 8,
@@ -825,14 +1200,17 @@
       "id": 18,
       "options": {
         "legend": {
-          "calcs": [],
-          "displayMode": "list",
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ],
+          "displayMode": "table",
           "placement": "bottom",
           "showLegend": true
         },
         "tooltip": {
-          "mode": "single",
-          "sort": "none"
+          "mode": "multi",
+          "sort": "desc"
         }
       },
       "targets": [
@@ -842,12 +1220,54 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "rate(ucm:save_duration_sum{model_name=\"$model_name\"}[$__rate_interval])\n/\nrate(ucm:save_duration_count{model_name=\"$model_name\"}[$__rate_interval])",
-          "hide": false,
-          "instant": false,
-          "legendFormat": "worker-{{worker_id}}",
+          "expr": "histogram_quantile(0.5, sum by (le, worker_id) (rate(ucm:save_duration_bucket{model_name=\"$model_name\"}[$__rate_interval])))",
+          "legendFormat": "p50 worker-{{worker_id}}",
           "range": true,
           "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "histogram_quantile(0.9, sum by (le, worker_id) (rate(ucm:save_duration_bucket{model_name=\"$model_name\"}[$__rate_interval])))",
+          "legendFormat": "p90 worker-{{worker_id}}",
+          "range": true,
+          "refId": "B"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "histogram_quantile(0.95, sum by (le, worker_id) (rate(ucm:save_duration_bucket{model_name=\"$model_name\"}[$__rate_interval])))",
+          "legendFormat": "p95 worker-{{worker_id}}",
+          "range": true,
+          "refId": "C"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "histogram_quantile(0.99, sum by (le, worker_id) (rate(ucm:save_duration_bucket{model_name=\"$model_name\"}[$__rate_interval])))",
+          "legendFormat": "p99 worker-{{worker_id}}",
+          "range": true,
+          "refId": "D"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "rate(ucm:save_duration_sum{model_name=\"$model_name\"}[$__rate_interval])\n/\nrate(ucm:save_duration_count{model_name=\"$model_name\"}[$__rate_interval])",
+          "legendFormat": "avg worker-{{worker_id}}",
+          "range": true,
+          "refId": "E"
         }
       ],
       "title": "Connector Save Duration",
@@ -917,7 +1337,102 @@
           },
           "unit": "gb/s"
         },
-        "overrides": []
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": "^p50.*"
+            },
+            "properties": [
+              {
+                "id": "custom.lineStyle",
+                "value": {
+                  "fill": "solid"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": "^p90.*"
+            },
+            "properties": [
+              {
+                "id": "custom.lineStyle",
+                "value": {
+                  "fill": "dash",
+                  "dash": [
+                    12,
+                    6
+                  ]
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": "^p95.*"
+            },
+            "properties": [
+              {
+                "id": "custom.lineStyle",
+                "value": {
+                  "fill": "dash",
+                  "dash": [
+                    8,
+                    4
+                  ]
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": "^p99.*"
+            },
+            "properties": [
+              {
+                "id": "custom.lineStyle",
+                "value": {
+                  "fill": "dash",
+                  "dash": [
+                    4,
+                    4
+                  ]
+                }
+              },
+              {
+                "id": "custom.lineWidth",
+                "value": 2
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": "^avg.*"
+            },
+            "properties": [
+              {
+                "id": "custom.lineStyle",
+                "value": {
+                  "fill": "solid"
+                }
+              },
+              {
+                "id": "custom.lineWidth",
+                "value": 1
+              },
+              {
+                "id": "custom.fillOpacity",
+                "value": 5
+              }
+            ]
+          }
+        ]
       },
       "gridPos": {
         "h": 8,
@@ -928,14 +1443,17 @@
       "id": 22,
       "options": {
         "legend": {
-          "calcs": [],
-          "displayMode": "list",
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ],
+          "displayMode": "table",
           "placement": "bottom",
           "showLegend": true
         },
         "tooltip": {
-          "mode": "single",
-          "sort": "none"
+          "mode": "multi",
+          "sort": "desc"
         }
       },
       "targets": [
@@ -945,12 +1463,54 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "rate(ucm:save_speed_sum{model_name=\"$model_name\"}[$__rate_interval])\n/\nrate(ucm:save_speed_count{model_name=\"$model_name\"}[$__rate_interval])",
-          "hide": false,
-          "instant": false,
-          "legendFormat": "worker-{{worker_id}}",
+          "expr": "histogram_quantile(0.5, sum by (le, worker_id) (rate(ucm:save_speed_bucket{model_name=\"$model_name\"}[$__rate_interval])))",
+          "legendFormat": "p50 worker-{{worker_id}}",
           "range": true,
           "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "histogram_quantile(0.9, sum by (le, worker_id) (rate(ucm:save_speed_bucket{model_name=\"$model_name\"}[$__rate_interval])))",
+          "legendFormat": "p90 worker-{{worker_id}}",
+          "range": true,
+          "refId": "B"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "histogram_quantile(0.95, sum by (le, worker_id) (rate(ucm:save_speed_bucket{model_name=\"$model_name\"}[$__rate_interval])))",
+          "legendFormat": "p95 worker-{{worker_id}}",
+          "range": true,
+          "refId": "C"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "histogram_quantile(0.99, sum by (le, worker_id) (rate(ucm:save_speed_bucket{model_name=\"$model_name\"}[$__rate_interval])))",
+          "legendFormat": "p99 worker-{{worker_id}}",
+          "range": true,
+          "refId": "D"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "rate(ucm:save_speed_sum{model_name=\"$model_name\"}[$__rate_interval])\n/\nrate(ucm:save_speed_count{model_name=\"$model_name\"}[$__rate_interval])",
+          "legendFormat": "avg worker-{{worker_id}}",
+          "range": true,
+          "refId": "E"
         }
       ],
       "title": "Connector Save Speed",
@@ -5584,6 +6144,6 @@
   "timezone": "",
   "title": "vLLM - UnifiedCache Connector Monitoring",
   "uid": "b281712d-8bff-41ef-9f3f-71ad43c05e9b",
-  "version": 12,
+  "version": 13,
   "weekStart": ""
 }
