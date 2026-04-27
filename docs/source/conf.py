@@ -26,9 +26,14 @@ extensions = [
     "sphinx_design",
     "sphinx_togglebutton",
     "sphinx_substitution_extensions",
+    "sphinxcontrib.mermaid",
 ]
 
 myst_enable_extensions = ["colon_fence", "substitution"]
+# Treat ```mermaid fenced blocks as mermaid directives. This way the same
+# source renders both on GitHub (native mermaid support) and on Sphinx /
+# ReadTheDocs (via sphinxcontrib-mermaid).
+myst_fence_as_directive = ["mermaid"]
 
 # templates_path = ['_templates']
 exclude_patterns = []

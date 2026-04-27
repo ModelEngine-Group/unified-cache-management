@@ -15,67 +15,56 @@ document `ucm:` is the metric prefix; PromQL examples use the variable
 
 ## 1. Architecture and data flow
 
-### 1.1 The four storage tiers
+### 1.1 The storage tiers
 
-```
-   ┌────────────────────────────────────────────────────────────┐
-   │  vLLM Worker (forward pass)                                │
-   │   ─ start_load_kv / wait_for_layer_load / save_kv_layer ─  │
-   └────────────────────────────────────────────────────────────┘
-                       │ store.load_data / dump_data
-                       ▼
-   ┌────────────────────────────────────────────────────────────┐
-   │  CacheStore (in-memory tier, on host RAM)                  │
-   │    LoadQueue  ─►  H2D  ─►  Device                          │
-   │    DumpQueue  ◄─  D2H  ◄─  Device                          │
-   │      │ cache miss / dump backflush                         │
-   │      ▼                                                     │
-   │  PosixStore (disk tier, /tmp, NFS, /mnt/...)               │
-   │    TransQueue (worker pool)  ─►  S2H / H2S                 │
-   └────────────────────────────────────────────────────────────┘
+```mermaid
+flowchart TB
+    Worker["vLLM Worker (forward pass)<br/>start_load_kv • wait_for_layer_load • save_kv_layer"]
+    subgraph cache["CacheStore — in-memory tier (host RAM)"]
+        direction LR
+        LoadQ["LoadQueue → H2D → Device"]
+        DumpQ["DumpQueue ← D2H ← Device"]
+    end
+    Posix["PosixStore — disk tier (/tmp, NFS, /mnt/…)<br/>TransQueue worker pool: S2H / H2S"]
+    Worker -- "store.load_data / dump_data" --> cache
+    cache -- "cache miss (load) / async backflush (dump)" --> Posix
 ```
 
 ### 1.2 LOAD data flow (Cache miss case)
 
-When a load request descends from Python all the way to disk, four
-durations are captured separately. Knowing which one dominates is the
-first step in any diagnosis.
+When a load request descends from Python all the way to disk, every
+stage along the path emits its own duration metric. Knowing which one
+dominates is the first step in any diagnosis.
 
-```
- user calls store.load_data
-          │
-          ▼  ┐
- [waiting queue]                  pipeline_cache_load_wait_duration_ms
-          │  ┘
-          ▼  ┐
- DispatchOneTask                  pipeline_cache_load_dispatch_duration_ms
-   │ buffer alloc                 (also: backend_submit_shards_total
-   │ submit miss → Posix          /shards_total = miss ratio)
-          │  ┘
-          ▼
-   ┌── Posix ──────────────────┐
-   │ [posix waiting queue]     │  pipeline_posix_load_wait_duration_ms
-   │ S2H worker reads disk     │  pipeline_posix_s2h_duration_ms
-   │                           │  pipeline_posix_s2h_bandwidth_gbps
-   └────────────┬──────────────┘
-                ▼  ┐
- WaitBackendTaskReady             pipeline_cache_load_backend_wait_duration_ms
-                │  ┘              (≈ posix wait + posix s2h)
-                ▼  ┐
- H2D copy + stream sync           pipeline_cache_h2d_duration_ms
-                │  ┘
-                ▼
-       waiter->Done() ─► epilog fires:
-                                  pipeline_cache_load_duration_ms
-                                  pipeline_cache_load_bandwidth_gbps
-                                  pipeline_cache_load_blocks_total
+```mermaid
+flowchart TD
+    A(["store.load_data"])
+    B["Cache waiting queue<br/><b>pipeline_cache_load_wait_duration_ms</b>"]
+    C["DispatchOneTask: buffer alloc + submit miss<br/><b>pipeline_cache_load_dispatch_duration_ms</b><br/>backend_submit_shards / shards = miss ratio"]
+    D["Posix waiting queue<br/><b>pipeline_posix_load_wait_duration_ms</b>"]
+    E["Posix S2H worker — read disk<br/><b>pipeline_posix_s2h_duration_ms</b><br/><b>pipeline_posix_s2h_bandwidth_gbps</b>"]
+    F["WaitBackendTaskReady<br/><b>pipeline_cache_load_backend_wait_duration_ms</b><br/>≈ posix wait + posix s2h"]
+    G["H2D copy + stream sync<br/><b>pipeline_cache_h2d_duration_ms</b>"]
+    H(["epilog fires<br/><b>pipeline_cache_load_duration_ms</b> (total)<br/><b>pipeline_cache_load_bandwidth_gbps</b>"])
+    A --> B --> C --> D --> E --> F --> G --> H
+    classDef posix fill:#fff4e6,stroke:#d97706
+    classDef cache fill:#e6f4ff,stroke:#2563eb
+    classDef done fill:#dcfce7,stroke:#16a34a
+    class B,C,F,G cache
+    class D,E posix
+    class H done
 ```
 
 For a Cache **hit**, the chain is shorter — there is no backend wait,
 H2D runs straight from the in-memory buffer:
 
-```
- wait → dispatch → H2D → done
+```mermaid
+flowchart LR
+    A(["store.load_data"]) --> B["Cache wait"] --> C["Dispatch"] --> G["H2D"] --> H(["done"])
+    classDef cache fill:#e6f4ff,stroke:#2563eb
+    classDef done fill:#dcfce7,stroke:#16a34a
+    class B,C,G cache
+    class H done
 ```
 
 So `pipeline_cache_load_backend_wait_duration_ms` near zero means
@@ -89,30 +78,29 @@ as the Cache D2H copy and Posix submission complete. The actual disk
 write happens later in `BackendDumpStage` and does **not** block the
 caller.
 
+```mermaid
+flowchart TD
+    A(["store.dump_data"])
+    B["Cache waiting queue<br/><b>pipeline_cache_dump_wait_duration_ms</b>"]
+    C["D2H + stream sync<br/><b>pipeline_cache_d2h_duration_ms</b>"]
+    D["backend_->Dump (submit only)<br/><b>pipeline_cache_dump_backend_submit_duration_ms</b>"]
+    E(["epilog fires — caller unblocks<br/><b>pipeline_cache_dump_duration_ms</b> (caller-felt)<br/><b>pipeline_cache_dump_bandwidth_gbps</b>"])
+    F["BackendDumpStage thread (async)"]
+    G["Posix H2S worker — write disk<br/><b>pipeline_posix_h2s_duration_ms</b><br/><b>pipeline_posix_h2s_bandwidth_gbps</b>"]
+    A --> B --> C --> D --> E
+    D -. "enqueue (non-blocking)" .-> F --> G
+    classDef cache fill:#e6f4ff,stroke:#2563eb
+    classDef posix fill:#fff4e6,stroke:#d97706
+    classDef done fill:#dcfce7,stroke:#16a34a
+    class B,C,D cache
+    class F,G posix
+    class E done
 ```
- user calls store.dump_data
-          │
-          ▼  ┐
- [waiting queue]                  pipeline_cache_dump_wait_duration_ms
-          │  ┘
-          ▼  ┐
- D2H + stream sync                pipeline_cache_d2h_duration_ms
-          │  ┘
-          ▼  ┐
- backend_->Dump (submit only)     pipeline_cache_dump_backend_submit_duration_ms
-          │  ┘
-          ▼
- waiter->Done() ─► epilog fires:
-                                  pipeline_cache_dump_duration_ms
-                                  pipeline_cache_dump_bandwidth_gbps
-                                  pipeline_cache_dump_blocks_total
-          │
-          ▼  (asynchronous, in BackendDumpStage thread)
-   ┌── Posix ──────────────────┐
-   │ H2S worker writes disk    │  pipeline_posix_h2s_duration_ms
-   │                           │  pipeline_posix_h2s_bandwidth_gbps
-   └───────────────────────────┘
-```
+
+The solid path is what the caller waits for; the dashed path is the
+real disk write that runs in the background. They diverge sharply
+when the Cache buffer absorbs bursts and converge when the buffer
+saturates — see §3.4.
 
 The implication: **`pipeline_cache_dump_duration_ms` is what the user
 felt; `pipeline_posix_h2s_duration_ms` is what the disk did.** They
@@ -370,7 +358,7 @@ querying.
 **Cache hit rate (counter ratio, more accurate than the gauge for
 historical analysis):**
 
-```promql
+```
 rate(ucm:pipeline_cache_lookup_hit_blocks_total{model_name="$model_name"}[5m])
 /
 clamp_min(
@@ -381,7 +369,7 @@ clamp_min(
 
 **Shard-level miss ratio at load time (descended to backend):**
 
-```promql
+```
 rate(ucm:pipeline_cache_load_backend_submit_shards_total{model_name="$model_name"}[5m])
 /
 clamp_min(rate(ucm:pipeline_cache_load_shards_total{model_name="$model_name"}[5m]), 1)
@@ -389,7 +377,7 @@ clamp_min(rate(ucm:pipeline_cache_load_shards_total{model_name="$model_name"}[5m
 
 **P99 load duration per stage (decomposition of the load chain):**
 
-```promql
+```
 histogram_quantile(0.99, sum by (le) (
   rate(ucm:pipeline_cache_load_wait_duration_ms_bucket{model_name="$model_name"}[5m])))
 
@@ -406,7 +394,7 @@ so the sum overestimates — read trends, not absolute values).
 **Average overlap loss (how much of forward time is wasted waiting on
 loads):**
 
-```promql
+```
 rate(ucm:layerwise_wait_blocking_ms_sum{model_name="$model_name"}[5m])
 /
 clamp_min(
@@ -418,7 +406,7 @@ Close to 0 = great overlap. Close to 1 = serial.
 
 **Dump back-pressure ratio (caller-felt vs disk-felt):**
 
-```promql
+```
 rate(ucm:pipeline_cache_dump_duration_ms_sum{model_name="$model_name"}[5m])
 /
 rate(ucm:pipeline_cache_dump_duration_ms_count{model_name="$model_name"}[5m])
@@ -426,7 +414,7 @@ rate(ucm:pipeline_cache_dump_duration_ms_count{model_name="$model_name"}[5m])
 
 vs.
 
-```promql
+```
 rate(ucm:pipeline_posix_h2s_duration_ms_sum{model_name="$model_name"}[5m])
 /
 rate(ucm:pipeline_posix_h2s_duration_ms_count{model_name="$model_name"}[5m])
@@ -437,7 +425,7 @@ back-pressure has reached the caller (see §3.4).
 
 **Posix worker pool utilization proxy:**
 
-```promql
+```
 # average wait + IO per IO unit
 (rate(ucm:pipeline_posix_load_wait_duration_ms_sum{model_name="$model_name"}[5m])
  + rate(ucm:pipeline_posix_s2h_duration_ms_sum{model_name="$model_name"}[5m]))
