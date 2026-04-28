@@ -22,6 +22,7 @@
  * SOFTWARE.
  * */
 
+#include <algorithm>
 #include <chrono>
 #include <mutex>
 #include <spdlog/async.h>
@@ -32,8 +33,6 @@
 #include "compress_rotate_file_sink.h"
 #include "logger.h"
 namespace UC::Logger {
-constexpr uint64_t LIMIT_THRESHOLD_MS = 60000;
-constexpr uint32_t RATE_LIMIT_MAX_LOGS_PER_WINDOW = 3;
 constexpr uint32_t kRateLimitCountBits = 2;
 constexpr uint64_t kRateLimitCountMask = (1u << kRateLimitCountBits) - 1u;
 constexpr size_t kHashMixMagic = 0x9e3779b97f4a7c15ULL;
@@ -59,6 +58,8 @@ inline uint64_t GetCurrentTimeMs()
 
 bool Logger::FilterCallSite(const char* file, int line)
 {
+    if (!rate_limit_enabled_) { return true; }
+
     uint64_t now = GetCurrentTimeMs();
     const std::string_view fv(file);
     std::hash<std::string_view> h;
@@ -106,7 +107,7 @@ bool Logger::FilterCallSite(const char* file, int line)
     const uint64_t window_start = s >> kRateLimitCountBits;
     const uint32_t count = static_cast<uint32_t>(s & kRateLimitCountMask);
 
-    if (s == 0 || now - window_start > LIMIT_THRESHOLD_MS) {
+    if (s == 0 || now - window_start > rate_limit_window_ms_) {
         const uint64_t desired = (now << kRateLimitCountBits) | 1u;
         if (rate_state->compare_exchange_strong(s, desired, std::memory_order_relaxed,
                                                 std::memory_order_relaxed)) {
@@ -115,7 +116,7 @@ bool Logger::FilterCallSite(const char* file, int line)
         return false;
     }
 
-    if (count >= RATE_LIMIT_MAX_LOGS_PER_WINDOW) { return false; }
+    if (count >= rate_limit_max_logs_) { return false; }
     const uint64_t desired =
         (window_start << kRateLimitCountBits) | static_cast<uint64_t>(count + 1u);
     if (rate_state->compare_exchange_strong(s, desired, std::memory_order_relaxed,
@@ -176,6 +177,36 @@ bool Logger::IsEnabledFor(Level lv)
     auto level = SpdLevels[fmt::underlying(lv)];
     if (this->logger_) { return this->logger_->should_log(level); }
     return false;
+}
+
+void Logger::LoadRateLimitConfig()
+{
+    auto enable_str = spdlog::details::os::getenv("UCM_LOG_RATE_LIMIT_ENABLE");
+    if (!enable_str.empty()) {
+        std::string lower = enable_str;
+        std::transform(lower.begin(), lower.end(), lower.begin(), ::tolower);
+        rate_limit_enabled_ = (lower != "false" && lower != "0" && lower != "off");
+    }
+
+    auto window_str = spdlog::details::os::getenv("UCM_LOG_RATE_LIMIT_WINDOW_MS");
+    if (!window_str.empty()) {
+        try {
+            rate_limit_window_ms_ = std::stoull(window_str);
+        } catch (...) {
+            rate_limit_window_ms_ = 60000;
+        }
+    }
+
+    auto max_logs_str = spdlog::details::os::getenv("UCM_LOG_RATE_LIMIT_MAX_LOGS");
+    if (!max_logs_str.empty()) {
+        try {
+            auto val = std::stoul(max_logs_str);
+            rate_limit_max_logs_ = static_cast<uint32_t>(
+                std::min(val, static_cast<unsigned long>(kRateLimitCountMask)));
+        } catch (...) {
+            rate_limit_max_logs_ = 3;
+        }
+    }
 }
 
 }  // namespace UC::Logger
