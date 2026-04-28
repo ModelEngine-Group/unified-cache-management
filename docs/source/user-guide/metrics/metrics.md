@@ -136,17 +136,28 @@ Navigate to `http://<your-host>:3000`. Log in with the default username (`admin`
 
 3. Click **Save & Test**. You should see a green checkmark showing "Successfully queried the Prometheus API."
 
-#### Import Dashboard
+#### Import Dashboards
+
+The dashboard is split into three importable JSONs by functional module.
+Pick the ones relevant to your debugging question:
+
+| File | When to use |
+|------|-------------|
+| `examples/metrics/grafana_connector.json` | First stop. Top-level UCM activity — hit rate, per-batch sizes, end-to-end load/save durations and speeds. |
+| `examples/metrics/grafana_pipeline_store.json` | "Why is loading slow?" — Cache stage and Posix stage tier breakdown with per-stage durations, bandwidths, hit ratio. Includes collapsible distribution rows with heatmaps. |
+| `examples/metrics/grafana_layerwise.json` | Only for `use_layerwise=true` deployments. Wait-blocking overlap signal, stalls, TTFT contribution, save tail. |
+
+For each file you want:
 
 1. Navigate to `http://<your-host>:3000/dashboard/import`.
-
-2. Click **Upload JSON file**, then upload the `unified-cache-management/examples/metrics/grafana.json` file.
-
+2. Click **Upload JSON file** and select the file.
 3. Select the Prometheus data source configured earlier.
-
 4. Click **Import** to complete the import.
 
-You should now be able to see the UCM monitoring dashboard with real-time visualization of all 9 metrics.
+The dashboards share the `ucm` Grafana tag; once imported, each
+dashboard's header carries an "Other UCM dashboards" dropdown that
+auto-discovers the others by tag, so you can hop between them while
+preserving the time range and the `model_name` template variable.
 
 ## Available Metrics
 
