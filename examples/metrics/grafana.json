@@ -137,7 +137,7 @@
         "type": "prometheus",
         "uid": "${DS_PROMETHEUS}"
       },
-      "description": "Number of load requests each start_load_kv.",
+      "description": "How many start_load_kv calls have data to load, per second. Always defined when loads are happening; no 0/0 NaN gaps.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -194,7 +194,7 @@
               }
             ]
           },
-          "unit": ""
+          "unit": "ops"
         },
         "overrides": []
       },
@@ -207,14 +207,17 @@
       "id": 15,
       "options": {
         "legend": {
-          "calcs": [],
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ],
           "displayMode": "list",
           "placement": "bottom",
           "showLegend": true
         },
         "tooltip": {
-          "mode": "single",
-          "sort": "none"
+          "mode": "multi",
+          "sort": "desc"
         }
       },
       "targets": [
@@ -224,15 +227,13 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "rate(ucm:load_requests_num_sum{model_name=\"$model_name\"}[$__rate_interval])\n/\nrate(ucm:load_requests_num_count{model_name=\"$model_name\"}[$__rate_interval])",
-          "hide": false,
-          "instant": false,
+          "expr": "rate(ucm:load_requests_num_count{model_name=\"$model_name\"}[$__rate_interval])",
           "legendFormat": "worker-{{worker_id}}",
           "range": true,
           "refId": "A"
         }
       ],
-      "title": "Connector Load Requests Num",
+      "title": "Connector Load Requests Rate",
       "type": "timeseries"
     },
     {
@@ -240,7 +241,7 @@
         "type": "prometheus",
         "uid": "${DS_PROMETHEUS}"
       },
-      "description": "Number of load blocks each start_load_kv.",
+      "description": "Same event rate as Load Requests Rate (one observation per start_load_kv with is_load=True). Useful as a sanity check and for picking out worker-id outliers.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -297,7 +298,7 @@
               }
             ]
           },
-          "unit": ""
+          "unit": "ops"
         },
         "overrides": []
       },
@@ -310,14 +311,17 @@
       "id": 16,
       "options": {
         "legend": {
-          "calcs": [],
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ],
           "displayMode": "list",
           "placement": "bottom",
           "showLegend": true
         },
         "tooltip": {
-          "mode": "single",
-          "sort": "none"
+          "mode": "multi",
+          "sort": "desc"
         }
       },
       "targets": [
@@ -327,15 +331,13 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "rate(ucm:load_blocks_num_sum{model_name=\"$model_name\"}[$__rate_interval])\n/\nrate(ucm:load_blocks_num_count{model_name=\"$model_name\"}[$__rate_interval])",
-          "hide": false,
-          "instant": false,
+          "expr": "rate(ucm:load_blocks_num_count{model_name=\"$model_name\"}[$__rate_interval])",
           "legendFormat": "worker-{{worker_id}}",
           "range": true,
           "refId": "A"
         }
       ],
-      "title": "Connector Load Blocks Num",
+      "title": "Connector Load Blocks Rate",
       "type": "timeseries"
     },
     {
@@ -503,7 +505,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 8
+        "y": 16
       },
       "id": 17,
       "options": {
@@ -746,7 +748,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 8
+        "y": 16
       },
       "id": 21,
       "options": {
@@ -829,7 +831,7 @@
         "type": "prometheus",
         "uid": "${DS_PROMETHEUS}"
       },
-      "description": "Number of save requests each wait_for_save.",
+      "description": "How many wait_for_save calls have data to save, per second.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -886,7 +888,7 @@
               }
             ]
           },
-          "unit": ""
+          "unit": "ops"
         },
         "overrides": []
       },
@@ -894,19 +896,22 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 16
+        "y": 24
       },
       "id": 19,
       "options": {
         "legend": {
-          "calcs": [],
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ],
           "displayMode": "list",
           "placement": "bottom",
           "showLegend": true
         },
         "tooltip": {
-          "mode": "single",
-          "sort": "none"
+          "mode": "multi",
+          "sort": "desc"
         }
       },
       "targets": [
@@ -916,15 +921,13 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "rate(ucm:save_requests_num_sum{model_name=\"$model_name\"}[$__rate_interval])\n/\nrate(ucm:save_requests_num_count{model_name=\"$model_name\"}[$__rate_interval])",
-          "hide": false,
-          "instant": false,
+          "expr": "rate(ucm:save_requests_num_count{model_name=\"$model_name\"}[$__rate_interval])",
           "legendFormat": "worker-{{worker_id}}",
           "range": true,
           "refId": "A"
         }
       ],
-      "title": "Connector Save Requests Num",
+      "title": "Connector Save Requests Rate",
       "type": "timeseries"
     },
     {
@@ -932,7 +935,7 @@
         "type": "prometheus",
         "uid": "${DS_PROMETHEUS}"
       },
-      "description": "Number of save blocks each wait_for_save.",
+      "description": "Same event rate as Save Requests Rate.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -989,7 +992,7 @@
               }
             ]
           },
-          "unit": ""
+          "unit": "ops"
         },
         "overrides": []
       },
@@ -997,19 +1000,22 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 16
+        "y": 24
       },
       "id": 20,
       "options": {
         "legend": {
-          "calcs": [],
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ],
           "displayMode": "list",
           "placement": "bottom",
           "showLegend": true
         },
         "tooltip": {
-          "mode": "single",
-          "sort": "none"
+          "mode": "multi",
+          "sort": "desc"
         }
       },
       "targets": [
@@ -1019,15 +1025,13 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "rate(ucm:save_blocks_num_sum{model_name=\"$model_name\"}[$__rate_interval])\n/\nrate(ucm:save_blocks_num_count{model_name=\"$model_name\"}[$__rate_interval])",
-          "hide": false,
-          "instant": false,
+          "expr": "rate(ucm:save_blocks_num_count{model_name=\"$model_name\"}[$__rate_interval])",
           "legendFormat": "worker-{{worker_id}}",
           "range": true,
           "refId": "A"
         }
       ],
-      "title": "Connector Save Blocks Num",
+      "title": "Connector Save Blocks Rate",
       "type": "timeseries"
     },
     {
@@ -1195,7 +1199,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 24
+        "y": 40
       },
       "id": 18,
       "options": {
@@ -1438,7 +1442,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 24
+        "y": 40
       },
       "id": 22,
       "options": {
@@ -1586,7 +1590,7 @@
         "h": 8,
         "w": 24,
         "x": 0,
-        "y": 32
+        "y": 48
       },
       "id": 100,
       "options": {
@@ -1758,7 +1762,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 40
+        "y": 56
       },
       "id": 101,
       "options": {
@@ -1964,7 +1968,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 40
+        "y": 56
       },
       "id": 102,
       "options": {
@@ -2170,7 +2174,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 48
+        "y": 64
       },
       "id": 103,
       "options": {
@@ -2376,7 +2380,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 48
+        "y": 64
       },
       "id": 104,
       "options": {
@@ -2582,7 +2586,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 56
+        "y": 72
       },
       "id": 105,
       "options": {
@@ -2788,7 +2792,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 56
+        "y": 72
       },
       "id": 106,
       "options": {
@@ -2994,7 +2998,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 64
+        "y": 80
       },
       "id": 107,
       "options": {
@@ -3131,7 +3135,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 64
+        "y": 80
       },
       "id": 108,
       "options": {
@@ -3303,7 +3307,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 72
+        "y": 88
       },
       "id": 109,
       "options": {
@@ -3509,7 +3513,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 72
+        "y": 88
       },
       "id": 110,
       "options": {
@@ -3715,7 +3719,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 80
+        "y": 96
       },
       "id": 111,
       "options": {
@@ -3921,7 +3925,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 80
+        "y": 96
       },
       "id": 112,
       "options": {
@@ -4135,7 +4139,7 @@
         "h": 8,
         "w": 24,
         "x": 0,
-        "y": 88
+        "y": 104
       },
       "id": 113,
       "options": {
@@ -4341,7 +4345,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 96
+        "y": 112
       },
       "id": 114,
       "options": {
@@ -4470,7 +4474,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 96
+        "y": 112
       },
       "id": 115,
       "options": {
@@ -4642,7 +4646,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 104
+        "y": 120
       },
       "id": 116,
       "options": {
@@ -4856,7 +4860,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 104
+        "y": 120
       },
       "id": 117,
       "options": {
@@ -5062,7 +5066,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 112
+        "y": 128
       },
       "id": 118,
       "options": {
@@ -5268,7 +5272,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 112
+        "y": 128
       },
       "id": 119,
       "options": {
@@ -5348,7 +5352,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 120
+        "y": 136
       },
       "panels": [
         {
@@ -5364,7 +5368,7 @@
             "h": 8,
             "w": 12,
             "x": 0,
-            "y": 121
+            "y": 137
           },
           "targets": [
             {
@@ -5449,7 +5453,7 @@
             "h": 8,
             "w": 12,
             "x": 12,
-            "y": 121
+            "y": 137
           },
           "targets": [
             {
@@ -5534,7 +5538,7 @@
             "h": 8,
             "w": 12,
             "x": 0,
-            "y": 129
+            "y": 145
           },
           "targets": [
             {
@@ -5619,7 +5623,7 @@
             "h": 8,
             "w": 12,
             "x": 12,
-            "y": 129
+            "y": 145
           },
           "targets": [
             {
@@ -5704,7 +5708,7 @@
             "h": 8,
             "w": 24,
             "x": 0,
-            "y": 137
+            "y": 153
           },
           "targets": [
             {
@@ -6149,7 +6153,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 194
+        "y": 178
       },
       "panels": [
         {
@@ -6165,7 +6169,7 @@
             "h": 8,
             "w": 24,
             "x": 0,
-            "y": 195
+            "y": 179
           },
           "targets": [
             {
@@ -6238,6 +6242,830 @@
           "pluginVersion": "10.4.0"
         }
       ]
+    },
+    {
+      "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "id": 130,
+      "title": "Connector Load Requests Size Distribution",
+      "description": "p50 / p90 / p99 / avg number of requests per start_load_kv batch. Quiet windows naturally show no data.",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 8
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "histogram_quantile(0.5, sum by (le, worker_id) (rate(ucm:load_requests_num_bucket{model_name=\"$model_name\"}[$__rate_interval])))",
+          "legendFormat": "p50 worker-{{worker_id}}",
+          "range": true,
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "histogram_quantile(0.9, sum by (le, worker_id) (rate(ucm:load_requests_num_bucket{model_name=\"$model_name\"}[$__rate_interval])))",
+          "legendFormat": "p90 worker-{{worker_id}}",
+          "range": true,
+          "refId": "B"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "histogram_quantile(0.99, sum by (le, worker_id) (rate(ucm:load_requests_num_bucket{model_name=\"$model_name\"}[$__rate_interval])))",
+          "legendFormat": "p99 worker-{{worker_id}}",
+          "range": true,
+          "refId": "C"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "rate(ucm:load_requests_num_sum{model_name=\"$model_name\"}[$__rate_interval])\n/\nrate(ucm:load_requests_num_count{model_name=\"$model_name\"}[$__rate_interval])",
+          "legendFormat": "avg worker-{{worker_id}}",
+          "range": true,
+          "refId": "D"
+        }
+      ],
+      "options": {
+        "legend": {
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "barWidthFactor": 0.6,
+            "drawStyle": "line",
+            "fillOpacity": 0,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "auto",
+            "spanNulls": 60000,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": ""
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": "^p50.*"
+            },
+            "properties": [
+              {
+                "id": "custom.lineStyle",
+                "value": {
+                  "fill": "solid"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": "^p90.*"
+            },
+            "properties": [
+              {
+                "id": "custom.lineStyle",
+                "value": {
+                  "fill": "dash",
+                  "dash": [
+                    10,
+                    6
+                  ]
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": "^p99.*"
+            },
+            "properties": [
+              {
+                "id": "custom.lineStyle",
+                "value": {
+                  "fill": "dash",
+                  "dash": [
+                    4,
+                    4
+                  ]
+                }
+              },
+              {
+                "id": "custom.lineWidth",
+                "value": 2
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": "^avg.*"
+            },
+            "properties": [
+              {
+                "id": "custom.lineStyle",
+                "value": {
+                  "fill": "solid"
+                }
+              },
+              {
+                "id": "custom.lineWidth",
+                "value": 1
+              },
+              {
+                "id": "custom.fillOpacity",
+                "value": 5
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "id": 131,
+      "title": "Connector Load Blocks Size Distribution",
+      "description": "p50 / p90 / p99 / avg number of blocks per start_load_kv batch.",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 8
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "histogram_quantile(0.5, sum by (le, worker_id) (rate(ucm:load_blocks_num_bucket{model_name=\"$model_name\"}[$__rate_interval])))",
+          "legendFormat": "p50 worker-{{worker_id}}",
+          "range": true,
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "histogram_quantile(0.9, sum by (le, worker_id) (rate(ucm:load_blocks_num_bucket{model_name=\"$model_name\"}[$__rate_interval])))",
+          "legendFormat": "p90 worker-{{worker_id}}",
+          "range": true,
+          "refId": "B"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "histogram_quantile(0.99, sum by (le, worker_id) (rate(ucm:load_blocks_num_bucket{model_name=\"$model_name\"}[$__rate_interval])))",
+          "legendFormat": "p99 worker-{{worker_id}}",
+          "range": true,
+          "refId": "C"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "rate(ucm:load_blocks_num_sum{model_name=\"$model_name\"}[$__rate_interval])\n/\nrate(ucm:load_blocks_num_count{model_name=\"$model_name\"}[$__rate_interval])",
+          "legendFormat": "avg worker-{{worker_id}}",
+          "range": true,
+          "refId": "D"
+        }
+      ],
+      "options": {
+        "legend": {
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "barWidthFactor": 0.6,
+            "drawStyle": "line",
+            "fillOpacity": 0,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "auto",
+            "spanNulls": 60000,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": ""
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": "^p50.*"
+            },
+            "properties": [
+              {
+                "id": "custom.lineStyle",
+                "value": {
+                  "fill": "solid"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": "^p90.*"
+            },
+            "properties": [
+              {
+                "id": "custom.lineStyle",
+                "value": {
+                  "fill": "dash",
+                  "dash": [
+                    10,
+                    6
+                  ]
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": "^p99.*"
+            },
+            "properties": [
+              {
+                "id": "custom.lineStyle",
+                "value": {
+                  "fill": "dash",
+                  "dash": [
+                    4,
+                    4
+                  ]
+                }
+              },
+              {
+                "id": "custom.lineWidth",
+                "value": 2
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": "^avg.*"
+            },
+            "properties": [
+              {
+                "id": "custom.lineStyle",
+                "value": {
+                  "fill": "solid"
+                }
+              },
+              {
+                "id": "custom.lineWidth",
+                "value": 1
+              },
+              {
+                "id": "custom.fillOpacity",
+                "value": 5
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "id": 132,
+      "title": "Connector Save Requests Size Distribution",
+      "description": "p50 / p90 / p99 / avg number of requests per wait_for_save batch.",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 32
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "histogram_quantile(0.5, sum by (le, worker_id) (rate(ucm:save_requests_num_bucket{model_name=\"$model_name\"}[$__rate_interval])))",
+          "legendFormat": "p50 worker-{{worker_id}}",
+          "range": true,
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "histogram_quantile(0.9, sum by (le, worker_id) (rate(ucm:save_requests_num_bucket{model_name=\"$model_name\"}[$__rate_interval])))",
+          "legendFormat": "p90 worker-{{worker_id}}",
+          "range": true,
+          "refId": "B"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "histogram_quantile(0.99, sum by (le, worker_id) (rate(ucm:save_requests_num_bucket{model_name=\"$model_name\"}[$__rate_interval])))",
+          "legendFormat": "p99 worker-{{worker_id}}",
+          "range": true,
+          "refId": "C"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "rate(ucm:save_requests_num_sum{model_name=\"$model_name\"}[$__rate_interval])\n/\nrate(ucm:save_requests_num_count{model_name=\"$model_name\"}[$__rate_interval])",
+          "legendFormat": "avg worker-{{worker_id}}",
+          "range": true,
+          "refId": "D"
+        }
+      ],
+      "options": {
+        "legend": {
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "barWidthFactor": 0.6,
+            "drawStyle": "line",
+            "fillOpacity": 0,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "auto",
+            "spanNulls": 60000,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": ""
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": "^p50.*"
+            },
+            "properties": [
+              {
+                "id": "custom.lineStyle",
+                "value": {
+                  "fill": "solid"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": "^p90.*"
+            },
+            "properties": [
+              {
+                "id": "custom.lineStyle",
+                "value": {
+                  "fill": "dash",
+                  "dash": [
+                    10,
+                    6
+                  ]
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": "^p99.*"
+            },
+            "properties": [
+              {
+                "id": "custom.lineStyle",
+                "value": {
+                  "fill": "dash",
+                  "dash": [
+                    4,
+                    4
+                  ]
+                }
+              },
+              {
+                "id": "custom.lineWidth",
+                "value": 2
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": "^avg.*"
+            },
+            "properties": [
+              {
+                "id": "custom.lineStyle",
+                "value": {
+                  "fill": "solid"
+                }
+              },
+              {
+                "id": "custom.lineWidth",
+                "value": 1
+              },
+              {
+                "id": "custom.fillOpacity",
+                "value": 5
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "id": 133,
+      "title": "Connector Save Blocks Size Distribution",
+      "description": "p50 / p90 / p99 / avg number of blocks per wait_for_save batch.",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 32
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "histogram_quantile(0.5, sum by (le, worker_id) (rate(ucm:save_blocks_num_bucket{model_name=\"$model_name\"}[$__rate_interval])))",
+          "legendFormat": "p50 worker-{{worker_id}}",
+          "range": true,
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "histogram_quantile(0.9, sum by (le, worker_id) (rate(ucm:save_blocks_num_bucket{model_name=\"$model_name\"}[$__rate_interval])))",
+          "legendFormat": "p90 worker-{{worker_id}}",
+          "range": true,
+          "refId": "B"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "histogram_quantile(0.99, sum by (le, worker_id) (rate(ucm:save_blocks_num_bucket{model_name=\"$model_name\"}[$__rate_interval])))",
+          "legendFormat": "p99 worker-{{worker_id}}",
+          "range": true,
+          "refId": "C"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "rate(ucm:save_blocks_num_sum{model_name=\"$model_name\"}[$__rate_interval])\n/\nrate(ucm:save_blocks_num_count{model_name=\"$model_name\"}[$__rate_interval])",
+          "legendFormat": "avg worker-{{worker_id}}",
+          "range": true,
+          "refId": "D"
+        }
+      ],
+      "options": {
+        "legend": {
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "barWidthFactor": 0.6,
+            "drawStyle": "line",
+            "fillOpacity": 0,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "auto",
+            "spanNulls": 60000,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": ""
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": "^p50.*"
+            },
+            "properties": [
+              {
+                "id": "custom.lineStyle",
+                "value": {
+                  "fill": "solid"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": "^p90.*"
+            },
+            "properties": [
+              {
+                "id": "custom.lineStyle",
+                "value": {
+                  "fill": "dash",
+                  "dash": [
+                    10,
+                    6
+                  ]
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": "^p99.*"
+            },
+            "properties": [
+              {
+                "id": "custom.lineStyle",
+                "value": {
+                  "fill": "dash",
+                  "dash": [
+                    4,
+                    4
+                  ]
+                }
+              },
+              {
+                "id": "custom.lineWidth",
+                "value": 2
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": "^avg.*"
+            },
+            "properties": [
+              {
+                "id": "custom.lineStyle",
+                "value": {
+                  "fill": "solid"
+                }
+              },
+              {
+                "id": "custom.lineWidth",
+                "value": 1
+              },
+              {
+                "id": "custom.fillOpacity",
+                "value": 5
+              }
+            ]
+          }
+        ]
+      }
     }
   ],
   "refresh": "",
@@ -6301,6 +7129,6 @@
   "timezone": "",
   "title": "vLLM - UnifiedCache Connector Monitoring",
   "uid": "b281712d-8bff-41ef-9f3f-71ad43c05e9b",
-  "version": 15,
+  "version": 17,
   "weekStart": ""
 }
