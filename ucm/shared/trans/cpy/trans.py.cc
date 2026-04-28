@@ -188,5 +188,6 @@ PYBIND11_MODULE(ucmtrans, m)
     d.def(py::init<>());
     d.def("Setup", [](Device& self, int32_t deviceId) { ThrowIfFailed(self.Setup(deviceId)); });
     d.def("MakeStream", &Device::MakeStream);
+    d.def("MakeGdrStream", &Device::MakeGdrStream);
     d.def("MakeSMStream", &Device::MakeSMStream);
 }

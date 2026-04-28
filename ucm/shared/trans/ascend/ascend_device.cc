@@ -60,6 +60,8 @@ std::shared_ptr<Stream> Device::MakeSharedStream()
     return nullptr;
 }
 
+std::unique_ptr<Stream> Device::MakeGdrStream() { return nullptr; }
+
 std::unique_ptr<Stream> Device::MakeSMStream() { return nullptr; }
 
 std::unique_ptr<Buffer> Device::MakeBuffer()

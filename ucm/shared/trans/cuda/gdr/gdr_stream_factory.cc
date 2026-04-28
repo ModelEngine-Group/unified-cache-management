@@ -21,67 +21,26 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  * */
-#include <cuda_runtime.h>
-#include "cuda_buffer.h"
-#include "gdr/gdr_stream_factory.h"
-#include "cuda_sm_stream.h"
-#include "cuda_stream.h"
-#include "trans/device.h"
+#include "gdr_stream_factory.h"
+
+#if defined(UCM_ENABLE_GDR_STREAM)
+#include "gdr_stream.h"
+#endif
 
 namespace UC::Trans {
 
-Status Device::Setup(int32_t deviceId)
+std::unique_ptr<Stream> GdrStreamFactory::Make()
 {
-    auto ret = cudaSetDevice(deviceId);
-    if (ret != cudaSuccess) { return Status{ret, cudaGetErrorString(ret)}; }
-    return Status::OK();
-}
-
-std::unique_ptr<Stream> Device::MakeStream()
-{
+#if defined(UCM_ENABLE_GDR_STREAM)
     std::unique_ptr<Stream> stream = nullptr;
     try {
-        stream = std::make_unique<CudaStream>();
+        stream = std::make_unique<GdrStream>();
     } catch (...) {
         return nullptr;
     }
     if (stream->Setup().Success()) { return stream; }
+#endif
     return nullptr;
-}
-
-std::shared_ptr<Stream> Device::MakeSharedStream()
-{
-    std::shared_ptr<Stream> stream = nullptr;
-    try {
-        stream = std::make_shared<CudaStream>();
-    } catch (...) {
-        return nullptr;
-    }
-    if (stream->Setup().Success()) { return stream; }
-    return nullptr;
-}
-
-std::unique_ptr<Stream> Device::MakeGdrStream() { return GdrStreamFactory::Make(); }
-
-std::unique_ptr<Stream> Device::MakeSMStream()
-{
-    std::unique_ptr<Stream> stream = nullptr;
-    try {
-        stream = std::make_unique<CudaSmStream>();
-    } catch (...) {
-        return nullptr;
-    }
-    if (stream->Setup().Success()) { return stream; }
-    return nullptr;
-}
-
-std::unique_ptr<Buffer> Device::MakeBuffer()
-{
-    try {
-        return std::make_unique<CudaBuffer>();
-    } catch (...) {
-        return nullptr;
-    }
 }
 
 } // namespace UC::Trans

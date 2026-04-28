@@ -12,6 +12,8 @@ add_library(trans STATIC
     cuda_buffer.cc
     cuda_stream.cc
     cuda_sm_stream.cc
+    gdr/gdr_buffer_registry.cc
+    gdr/gdr_stream_factory.cc
 )
 target_include_directories(trans PUBLIC ${CUDA_ROOT}/include)
 target_link_directories(trans PUBLIC ${CUDA_ROOT}/lib64)
@@ -20,3 +22,19 @@ target_link_libraries(trans PUBLIC
     cudart
     kernel
 )
+if(UCM_ENABLE_GDR_STREAM)
+    find_library(IBVERBS_LIB NAMES ibverbs HINTS /usr/lib /usr/lib64 /usr/local/lib)
+    if(NOT IBVERBS_LIB)
+        message(FATAL_ERROR "libibverbs not found, cannot enable UCM_ENABLE_GDR_STREAM.")
+    endif()
+    find_package(Threads REQUIRED)
+    target_sources(trans PRIVATE
+        gdr/gdr_stream.cc
+        gdr/gdr_copy.cc
+    )
+    target_compile_definitions(trans PUBLIC UCM_ENABLE_GDR_STREAM=1)
+    target_link_libraries(trans PUBLIC
+        ${IBVERBS_LIB}
+        Threads::Threads
+    )
+endif()
