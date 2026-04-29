@@ -22,11 +22,10 @@ public:
 
 class GdrCopyLib {
 public:
-    static std::shared_ptr<GdrCopyChannel> Open(int gpuId, const std::string& nicName,
-                                                bool useOdp = false);
+    static std::shared_ptr<GdrCopyChannel> Open(int gpuId, const std::string& nicName);
     static void RegisterHostBuffer(void* host, size_t size);
     static void UnregisterHostBuffer(void* host);
-    static void RegisterDeviceBuffer(void* device, size_t size, int deviceId);
+    static void RegisterDeviceBuffer(void* device, size_t size);
     static void UnregisterDeviceBuffer(void* device);
 
 private:

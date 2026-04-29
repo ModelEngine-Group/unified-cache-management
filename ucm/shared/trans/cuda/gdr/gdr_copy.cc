@@ -158,10 +158,9 @@ void ClearRegisteredMrs(RegisteredMrTable& table, Fn&& fn)
 
 class GdrCopyChannelImpl : public GdrCopyChannel {
 public:
-    GdrCopyChannelImpl(int gpuId, std::string nicName, bool useOdp)
+    GdrCopyChannelImpl(int gpuId, std::string nicName)
         : gpuId_{gpuId},
-          nicName_{std::move(nicName)},
-          useOdp_{useOdp}
+          nicName_{std::move(nicName)}
     {
         try {
             const auto cudaRet = cudaSetDevice(gpuId_);
@@ -201,7 +200,7 @@ public:
                 RegisterHostBuffer(buffer.addr, buffer.size);
             }
             for (const auto& buffer : UC::Trans::DeviceBufferRegistry::Snapshot()) {
-                RegisterDeviceBuffer(buffer.addr, buffer.size, buffer.deviceId);
+                RegisterDeviceBuffer(buffer.addr, buffer.size);
             }
 
             struct ibv_device_attr deviceAttr {};
@@ -254,16 +253,14 @@ public:
         if (mr) { ibv_dereg_mr(mr); }
     }
 
-    void RegisterDeviceBuffer(uint64_t addr, size_t len, int deviceId)
+    void RegisterDeviceBuffer(uint64_t addr, size_t len)
     {
-        if (deviceId != gpuId_) { return; }
         std::lock_guard<std::mutex> lock{mutex_};
         RegisterDeviceBufferLocked(addr, len);
     }
 
-    void UnregisterDeviceBuffer(uint64_t addr, size_t len, int deviceId)
+    void UnregisterDeviceBuffer(uint64_t addr, size_t len)
     {
-        if (deviceId != gpuId_) { return; }
         std::lock_guard<std::mutex> lock{mutex_};
         auto* mr = ReleaseRegisteredMr(gpuMrs_, addr, len);
         if (mr) { ibv_dereg_mr(mr); }
@@ -394,14 +391,14 @@ private:
     {
         uint64_t mrAddr = addr;
         size_t mrLen = len;
-        if (UC::Trans::DeviceBufferRegistry::Resolve(reinterpret_cast<void*>(addr), len, gpuId_,
-                                                     &mrAddr, &mrLen)) {
+        if (UC::Trans::DeviceBufferRegistry::Resolve(reinterpret_cast<void*>(addr), len, &mrAddr,
+                                                     &mrLen)) {
             if (auto* mr = FindRegisteredMr(gpuMrs_, mrAddr, mrLen)) { return MrRef{mr, false}; }
             RegisterDeviceBufferLocked(mrAddr, mrLen);
             if (auto* mr = FindRegisteredMr(gpuMrs_, mrAddr, mrLen)) { return MrRef{mr, false}; }
         }
-        int flags = IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE | IBV_ACCESS_REMOTE_READ;
-        if (useOdp_) { flags |= IBV_ACCESS_ON_DEMAND; }
+        const int flags =
+            IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE | IBV_ACCESS_REMOTE_READ;
         auto* mr = ibv_reg_mr(pd_, reinterpret_cast<void*>(addr), len, flags);
         if (!mr) { throw std::runtime_error("ibv_reg_mr on GPU memory failed"); }
         return MrRef{mr, true};
@@ -435,8 +432,8 @@ private:
     void RegisterDeviceBufferLocked(uint64_t addr, size_t len)
     {
         if (FindRegisteredMr(gpuMrs_, addr, len)) { return; }
-        int flags = IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE | IBV_ACCESS_REMOTE_READ;
-        if (useOdp_) { flags |= IBV_ACCESS_ON_DEMAND; }
+        const int flags =
+            IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE | IBV_ACCESS_REMOTE_READ;
         auto* mr = ibv_reg_mr(pd_, reinterpret_cast<void*>(addr), len, flags);
         if (!mr) { throw std::runtime_error("ibv_reg_mr on GPU memory failed"); }
         gpuMrs_[MRKey{addr, len}] = mr;
@@ -510,7 +507,6 @@ private:
     RegisteredMrTable hostMrs_;
     int gpuId_{-1};
     std::string nicName_;
-    bool useOdp_{false};
     bool isRoce_{false};
     int maxInflightWr_{1};
     int inflightWr_{0};
@@ -539,11 +535,10 @@ void ForEachLiveChannel(Fn&& fn)
 
 }  // namespace
 
-std::shared_ptr<GdrCopyChannel> GdrCopyLib::Open(int gpuId, const std::string& nicName,
-                                                 bool useOdp)
+std::shared_ptr<GdrCopyChannel> GdrCopyLib::Open(int gpuId, const std::string& nicName)
 {
     if (nicName.empty()) { throw std::runtime_error("empty RDMA nic name"); }
-    auto channel = std::make_shared<GdrCopyChannelImpl>(gpuId, nicName, useOdp);
+    auto channel = std::make_shared<GdrCopyChannelImpl>(gpuId, nicName);
     {
         std::lock_guard<std::mutex> lock{gChannelMutex};
         gChannels.emplace_back(channel);
@@ -574,12 +569,12 @@ void GdrCopyLib::UnregisterHostBuffer(void* host)
     UC::Trans::HostBufferRegistry::Unregister(host);
 }
 
-void GdrCopyLib::RegisterDeviceBuffer(void* device, size_t size, int deviceId)
+void GdrCopyLib::RegisterDeviceBuffer(void* device, size_t size)
 {
-    UC::Trans::DeviceBufferRegistry::Register(device, size, deviceId);
-    ForEachLiveChannel([device, size, deviceId](GdrCopyChannelImpl& channel) {
+    UC::Trans::DeviceBufferRegistry::Register(device, size);
+    ForEachLiveChannel([device, size](GdrCopyChannelImpl& channel) {
         try {
-            channel.RegisterDeviceBuffer(reinterpret_cast<uint64_t>(device), size, deviceId);
+            channel.RegisterDeviceBuffer(reinterpret_cast<uint64_t>(device), size);
         } catch (...) {
         }
     });
@@ -591,7 +586,7 @@ void GdrCopyLib::UnregisterDeviceBuffer(void* device)
     const bool found = UC::Trans::DeviceBufferRegistry::Lookup(device, &info);
     if (found) {
         ForEachLiveChannel([&info](GdrCopyChannelImpl& channel) {
-            channel.UnregisterDeviceBuffer(info.addr, info.size, info.deviceId);
+            channel.UnregisterDeviceBuffer(info.addr, info.size);
         });
     }
     UC::Trans::DeviceBufferRegistry::Unregister(device);

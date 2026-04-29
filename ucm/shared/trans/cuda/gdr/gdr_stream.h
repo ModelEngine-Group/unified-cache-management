@@ -2,13 +2,18 @@
 #define UNIFIEDCACHE_TRANS_GDR_STREAM_H
 
 #include <cstddef>
+#include <condition_variable>
 #include <cstdint>
 #include <deque>
 #include <functional>
+#include <map>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <string>
+#include <thread>
 #include <unordered_map>
+#include <unordered_set>
 
 #include <cuda_runtime_api.h>
 #include "gdr_copy.h"
@@ -41,37 +46,62 @@ public:
     Status WaitEvent(void* event) override;
 
 private:
-    struct BarrierOp {
-        uint64_t seq;
-        cudaEvent_t event;
+    // Says if a queued operation is a wait or a copy.
+    enum class OperationType {
+        Wait,  // Wait for a CUDA event before later work can run.
+        Copy,  // Send one GDR copy.
     };
 
-    struct DeferredCopy {
-        uint64_t seq;
-        void* dst;
-        const void* src;
-        size_t size;
-        GdrCopyKind kind;
+    // One item in the stream queue. The caller adds it, SchedulerLoop() handles it in order.
+    struct Operation {
+        OperationType type;
+        uint64_t operationId;      // Order number for this stream item.
+        cudaEvent_t event{nullptr};  // Event to wait for when this is a wait.
+        void* dst;                 // Copy destination when this is a copy.
+        const void* src;           // Copy source when this is a copy.
+        size_t size;               // Bytes to copy when this is a copy.
+        GdrCopyKind kind;          // Copy direction when this is a copy.
+    };
+
+    enum class SubmitResult {
+        Submitted,  // This copy was accepted, so the scheduler can move on.
+        Waiting,   // The send queue is full, so the scheduler should wait for a completion.
+        Error,     // Submit failed, so the stream must stop with an error.
     };
 
     Status SubmitAsync(void* dst, const void* src, size_t size, GdrCopyKind kind);
-    Status AdvanceLocked(uint64_t targetSeq);
-    Status PollOneCompletionLocked();
-    bool HasPendingBarrierLocked(uint64_t targetSeq) const;
-    bool HasDeferredCopyLocked(uint64_t targetSeq) const;
-    bool HasInflightLocked(uint64_t targetSeq) const;
-    bool HasOutstandingLocked(uint64_t targetSeq) const;
-    void ClearPendingLocked();
+    void SchedulerLoop();
+    void CompletionLoop();
+    SubmitResult SubmitCopyOperationFromQueue(const Operation& op);
+    void MarkOperationCompleted(uint64_t operationId);
+    void MarkOperationFailed(uint64_t operationId, Status status);
+    void StopWithAsyncError(const char* source, Status status);
+    bool HasAsyncError() const;
+    bool IsIdle() const;
+    Status AsyncError() const;
+    std::optional<Status> TakeCompletedOperationError();
 
 private:
     std::shared_ptr<GdrCopyChannel> channel_{nullptr};
+    std::thread schedulerThread_;  // Runs waits and sends copies in stream order.
+    std::thread completionThread_;  // Polls the GDR completion queue for sent copies.
+    
     std::mutex mutex_;
-    std::deque<BarrierOp> pendingBarriers_;
-    std::deque<DeferredCopy> deferredCopies_;
-    std::unordered_map<uint64_t, uint64_t> inflightReqSeq_;
-    uint64_t nextSeq_{1};
+    std::condition_variable cv_;  // Wakes waiting threads when stream state changes.
+    std::deque<Operation> operationsQueue_;  // Waits and copies queued by the caller.
+    std::unordered_map<uint64_t, uint64_t> inflightRequestOperations_;  // Submitted GDR copies that are still running.
+    std::unordered_set<uint64_t> completedOperations_;  // Finished operations waiting for earlier ones to finish too.
+    std::map<uint64_t, Status> failedOperations_;  // Per-operation failures that do not stop the whole stream.
+    std::optional<Status> asyncError_;  // First fatal async error that stops the whole stream.
+
+    uint64_t nextOperationId_{1}; 
+    uint64_t lastCompletedOperationId_{0};
+    int32_t deviceId_{-1};
     std::string nicName_{"mlx5_0"};
-    bool useOdp_{false};
+    bool stopRequested_{false};  // Tells background threads to exit after current work ends or fails.
+    bool schedulerReady_{false};  // Scheduler thread has started.
+    bool completionThreadReady_{false};  // Completion thread has started.
+    bool schedulerWaitingOnEvent_{false};  // Scheduler thread is blocked in cudaEventSynchronize.
 };
 
 }  // namespace UC::Trans

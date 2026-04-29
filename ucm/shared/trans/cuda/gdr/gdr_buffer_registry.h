@@ -47,25 +47,23 @@ public:
 struct DeviceBufferInfo {
     uint64_t addr;
     size_t size;
-    int deviceId;
 };
 
 class DeviceBufferRegistry {
 public:
-    static void Register(void* device, size_t size, int deviceId);
+    static void Register(void* device, size_t size);
     static bool Lookup(const void* device, DeviceBufferInfo* info);
     static void Unregister(void* device);
-    static bool Resolve(const void* device, size_t size, int deviceId, uint64_t* base,
-                        size_t* totalSize);
+    static bool Resolve(const void* device, size_t size, uint64_t* base, size_t* totalSize);
     static std::vector<DeviceBufferInfo> Snapshot();
 };
 
-class GdrBufferHooks {
+class GdrMrBuffer {
 public:
-    static void RegisterHostBuffer(void* host, size_t size);
-    static void UnregisterHostBuffer(void* host);
-    static void RegisterDeviceBuffer(void* device, size_t size);
-    static void UnregisterDeviceBuffer(void* device);
+    static void GdrRegisterHostBuffer(void* host, size_t size);
+    static void GdrUnregisterHostBuffer(void* host);
+    static void GdrRegisterDeviceBuffer(void* device, size_t size);
+    static void GdrUnregisterDeviceBuffer(void* device);
 };
 
 }  // namespace UC::Trans

@@ -27,8 +27,6 @@
 #include <mutex>
 
 #if defined(UCM_ENABLE_GDR_STREAM)
-#include <cuda_runtime.h>
-
 #include "gdr_copy.h"
 #endif
 
@@ -102,12 +100,12 @@ std::vector<HostBufferInfo> HostBufferRegistry::Snapshot()
     return buffers;
 }
 
-void DeviceBufferRegistry::Register(void* device, size_t size, int deviceId)
+void DeviceBufferRegistry::Register(void* device, size_t size)
 {
-    if (!device || size == 0 || deviceId < 0) { return; }
+    if (!device || size == 0) { return; }
     std::lock_guard<std::mutex> lock{gDeviceRegistryMutex};
     const auto addr = reinterpret_cast<uint64_t>(device);
-    gDeviceBuffers[addr] = {addr, size, deviceId};
+    gDeviceBuffers[addr] = {addr, size};
 }
 
 bool DeviceBufferRegistry::Lookup(const void* device, DeviceBufferInfo* info)
@@ -128,17 +126,17 @@ void DeviceBufferRegistry::Unregister(void* device)
     gDeviceBuffers.erase(reinterpret_cast<uint64_t>(device));
 }
 
-bool DeviceBufferRegistry::Resolve(const void* device, size_t size, int deviceId, uint64_t* base,
+bool DeviceBufferRegistry::Resolve(const void* device, size_t size, uint64_t* base,
                                    size_t* totalSize)
 {
-    if (!device || !base || !totalSize || deviceId < 0) { return false; }
+    if (!device || !base || !totalSize) { return false; }
     const auto addr = reinterpret_cast<uint64_t>(device);
     std::lock_guard<std::mutex> lock{gDeviceRegistryMutex};
     auto it = gDeviceBuffers.upper_bound(addr);
     if (it == gDeviceBuffers.begin()) { return false; }
     --it;
     const auto& info = it->second;
-    if (info.deviceId != deviceId || !InRange(info.addr, info.size, addr, size)) { return false; }
+    if (!InRange(info.addr, info.size, addr, size)) { return false; }
     *base = info.addr;
     *totalSize = info.size;
     return true;
@@ -156,7 +154,7 @@ std::vector<DeviceBufferInfo> DeviceBufferRegistry::Snapshot()
     return buffers;
 }
 
-void GdrBufferHooks::RegisterHostBuffer(void* host, size_t size)
+void GdrMrBuffer::GdrRegisterHostBuffer(void* host, size_t size)
 {
 #if defined(UCM_ENABLE_GDR_STREAM)
     GdrCopyLib::RegisterHostBuffer(host, size);
@@ -166,7 +164,7 @@ void GdrBufferHooks::RegisterHostBuffer(void* host, size_t size)
 #endif
 }
 
-void GdrBufferHooks::UnregisterHostBuffer(void* host)
+void GdrMrBuffer::GdrUnregisterHostBuffer(void* host)
 {
 #if defined(UCM_ENABLE_GDR_STREAM)
     GdrCopyLib::UnregisterHostBuffer(host);
@@ -175,19 +173,17 @@ void GdrBufferHooks::UnregisterHostBuffer(void* host)
 #endif
 }
 
-void GdrBufferHooks::RegisterDeviceBuffer(void* device, size_t size)
+void GdrMrBuffer::GdrRegisterDeviceBuffer(void* device, size_t size)
 {
 #if defined(UCM_ENABLE_GDR_STREAM)
-    int deviceId = -1;
-    if (cudaGetDevice(&deviceId) != cudaSuccess) { return; }
-    GdrCopyLib::RegisterDeviceBuffer(device, size, deviceId);
+    GdrCopyLib::RegisterDeviceBuffer(device, size);
 #else
     (void)device;
     (void)size;
 #endif
 }
 
-void GdrBufferHooks::UnregisterDeviceBuffer(void* device)
+void GdrMrBuffer::GdrUnregisterDeviceBuffer(void* device)
 {
 #if defined(UCM_ENABLE_GDR_STREAM)
     GdrCopyLib::UnregisterDeviceBuffer(device);

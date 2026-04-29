@@ -32,13 +32,13 @@ namespace {
 
 void ReleaseDeviceBuffer(void* device)
 {
-    GdrBufferHooks::UnregisterDeviceBuffer(device);
+    GdrMrBuffer::GdrUnregisterDeviceBuffer(device);
     (void)cudaFree(device);
 }
 
 void ReleaseHostBuffer(void* host)
 {
-    GdrBufferHooks::UnregisterHostBuffer(host);
+    GdrMrBuffer::GdrUnregisterHostBuffer(host);
     (void)cudaFreeHost(host);
 }
 
@@ -49,7 +49,7 @@ std::shared_ptr<void> CudaBuffer::MakeDeviceBuffer(size_t size)
     void* device = nullptr;
     auto ret = cudaMalloc(&device, size);
     if (ret == cudaSuccess) {
-        GdrBufferHooks::RegisterDeviceBuffer(device, size);
+        GdrMrBuffer::GdrRegisterDeviceBuffer(device, size);
         return std::shared_ptr<void>(device, ReleaseDeviceBuffer);
     }
     return nullptr;
@@ -60,7 +60,7 @@ std::shared_ptr<void> CudaBuffer::MakeHostBuffer(size_t size)
     void* host = nullptr;
     auto ret = cudaMallocHost(&host, size);
     if (ret == cudaSuccess) {
-        GdrBufferHooks::RegisterHostBuffer(host, size);
+        GdrMrBuffer::GdrRegisterHostBuffer(host, size);
         return std::shared_ptr<void>(host, ReleaseHostBuffer);
     }
     return nullptr;
@@ -70,11 +70,11 @@ Status Buffer::RegisterHostBuffer(void* host, size_t size, void** pDevice)
 {
     auto ret = cudaHostRegister(host, size, cudaHostRegisterDefault);
     if (ret != cudaSuccess) [[unlikely]] { return Status{ret, cudaGetErrorString(ret)}; }
-    GdrBufferHooks::RegisterHostBuffer(host, size);
+    GdrMrBuffer::GdrRegisterHostBuffer(host, size);
     if (pDevice) {
         ret = cudaHostGetDevicePointer(pDevice, host, 0);
         if (ret != cudaSuccess) [[unlikely]] {
-            GdrBufferHooks::UnregisterHostBuffer(host);
+            GdrMrBuffer::GdrUnregisterHostBuffer(host);
             (void)cudaHostUnregister(host);
             return Status{ret, cudaGetErrorString(ret)};
         }
@@ -84,7 +84,7 @@ Status Buffer::RegisterHostBuffer(void* host, size_t size, void** pDevice)
 
 void Buffer::UnregisterHostBuffer(void* host)
 {
-    GdrBufferHooks::UnregisterHostBuffer(host);
+    GdrMrBuffer::GdrUnregisterHostBuffer(host);
     (void)cudaHostUnregister(host);
 }
 
