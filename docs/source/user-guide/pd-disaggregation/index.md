@@ -118,8 +118,8 @@ that it may even sacrifice a certain degree of performance to preserve these cor
 
 :::{toctree}
 :maxdepth: 2
-1p1d.md
-xpyd.md
-npgd.md
+centralized_pd.md
+distributed_pd.md
+large_scale_ep.md
 :::
 
