@@ -24,6 +24,7 @@
 #ifndef UNIFIEDCACHE_CACHE_STORE_CC_GLOBAL_CONFIG_H
 #define UNIFIEDCACHE_CACHE_STORE_CC_GLOBAL_CONFIG_H
 
+#include <cstdint>
 #include <memory>
 #include "ucmstore_v1.h"
 
@@ -46,6 +47,8 @@ struct Config {
     size_t timeoutMs{30000};
     size_t streamNumber{4};
     bool cacheLoadBackendOnly{false};
+    std::vector<uintptr_t> gpuKvBufferAddrs{};
+    std::vector<size_t> gpuKvBufferSizes{};
 };
 
 }  // namespace UC::CacheStore

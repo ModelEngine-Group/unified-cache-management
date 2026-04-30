@@ -63,6 +63,8 @@ class UcmPcStoreV1(UcmKVStoreBaseV1):
             "timeout_ms": "transferTimeoutMs",
             "use_scatter_gather": "transferScatterGatherEnable",
             "shard_data_dir": "shardDataDir",
+            "gpu_kv_buffer_addrs": "gpuKvBufferAddrs",
+            "gpu_kv_buffer_sizes": "gpuKvBufferSizes",
         }
         for key, value in config.items():
             attr = key_mapping.get(key)

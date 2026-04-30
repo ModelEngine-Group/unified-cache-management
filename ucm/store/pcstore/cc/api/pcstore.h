@@ -24,6 +24,7 @@
 #ifndef UNIFIEDCACHE_PCSTORE_H
 #define UNIFIEDCACHE_PCSTORE_H
 
+#include <cstdint>
 #include "trans/trans_task.h"
 #include "ucmstore.h"
 
@@ -45,6 +46,8 @@ public:
         size_t transferTimeoutMs{30000};
         bool transferScatterGatherEnable{false};
         bool shardDataDir{true};
+        std::vector<uintptr_t> gpuKvBufferAddrs{};
+        std::vector<size_t> gpuKvBufferSizes{};
 
         Config(const std::vector<std::string>& storageBackends, const size_t kvcacheBlockSize,
                const bool transferEnable)

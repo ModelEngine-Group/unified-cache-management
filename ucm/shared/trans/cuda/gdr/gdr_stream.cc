@@ -1,6 +1,5 @@
 #include "gdr_stream.h"
 
-#include <chrono>
 #include <cerrno>
 #include <cstdlib>
 #include <string>
@@ -11,8 +10,6 @@
 #include "logger/logger.h"
 
 namespace {
-
-constexpr auto kCompletionPollInterval = std::chrono::milliseconds(1);
 
 std::string ParseStringEnv(const char* name, const char* defaultValue)
 {
@@ -35,13 +32,7 @@ GdrStream::~GdrStream()
     if (!channel_) { return; }
 
     (void)Synchronized();
-    {
-        std::lock_guard<std::mutex> lock{mutex_};
-        stopRequested_ = true;
-        cv_.notify_all();
-    }
-    if (schedulerThread_.joinable()) { schedulerThread_.join(); }
-    if (completionThread_.joinable()) { completionThread_.join(); }
+    ShutdownBackgroundThreads();
 }
 
 Status GdrStream::Setup()
@@ -63,13 +54,7 @@ Status GdrStream::Setup()
         schedulerThread_ = std::thread{&GdrStream::SchedulerLoop, this};
         completionThread_ = std::thread{&GdrStream::CompletionLoop, this};
     } catch (const std::exception& e) {
-        {
-            std::lock_guard<std::mutex> lock{mutex_};
-            stopRequested_ = true;
-            cv_.notify_all();
-        }
-        if (schedulerThread_.joinable()) { schedulerThread_.join(); }
-        if (completionThread_.joinable()) { completionThread_.join(); }
+        ShutdownBackgroundThreads();
         channel_.reset();
         return Status::Error(
             fmt::format("failed to start GDR scheduler/completion thread: {}", e.what()));
@@ -82,8 +67,7 @@ Status GdrStream::Setup()
     if (HasAsyncError()) {
         auto status = AsyncError();
         lock.unlock();
-        if (schedulerThread_.joinable()) { schedulerThread_.join(); }
-        if (completionThread_.joinable()) { completionThread_.join(); }
+        ShutdownBackgroundThreads();
         channel_.reset();
         return status;
     }
@@ -246,63 +230,66 @@ void GdrStream::SchedulerLoop()
     }
     if (startupStatus.Failure()) { return; }
 
-    // loop
     for (;;) {
-        Operation op{OperationType::Copy, 0, nullptr, nullptr, nullptr, 0,
-                     GdrMemcpyHostToDevice};
-        bool hasOp = false;
-        size_t inflightBefore = 0;
+        // wait until operation queue has something. 
         {
             std::unique_lock<std::mutex> lock{mutex_};
             cv_.wait(
                 lock,
                 [this] { return stopRequested_ || HasAsyncError() || !operationsQueue_.empty(); });
+        }
+        
+        // do until operation queue is empty.
+        for (;;) {
+            Operation op{OperationType::Copy, 0, nullptr, nullptr, nullptr, 0,
+                         GdrMemcpyHostToDevice};
+            size_t inflightBefore = 0;
+            {
+                std::lock_guard<std::mutex> lock{mutex_};
+                if (HasAsyncError() || stopRequested_) { return; }
+                if (operationsQueue_.empty()) { break; }
 
-            if (HasAsyncError()) { return; }
-            if (stopRequested_ && operationsQueue_.empty()) { return; }
-            if (!operationsQueue_.empty()) {
                 op = operationsQueue_.front();
-                hasOp = true;
                 inflightBefore = inflightRequestOperations_.size();
             }
-        }
 
-        if (!hasOp) { continue; }
-
-        if (op.type == OperationType::Wait) {
-            {
-                std::lock_guard<std::mutex> lock{mutex_};
-                schedulerWaitingOnEvent_ = true;
-            }
-            const auto waitRet = cudaEventSynchronize(op.event);
-            {
-                std::lock_guard<std::mutex> lock{mutex_};
-                schedulerWaitingOnEvent_ = false;
-                if (waitRet != cudaSuccess) {
-                    StopWithAsyncError(
-                        "cudaEventSynchronize", Status{waitRet, cudaGetErrorString(waitRet)});
-                    return;
+            if (op.type == OperationType::Wait) {
+                {
+                    std::lock_guard<std::mutex> lock{mutex_};
+                    schedulerWaitingOnEvent_ = true;
                 }
-                if (!operationsQueue_.empty()
-                    && operationsQueue_.front().operationId == op.operationId) {
-                    operationsQueue_.pop_front();
+                const auto waitRet = cudaEventSynchronize(op.event);
+                {
+                    std::lock_guard<std::mutex> lock{mutex_};
+                    schedulerWaitingOnEvent_ = false;
+                    if (waitRet != cudaSuccess) {
+                        StopWithAsyncError(
+                            "cudaEventSynchronize", Status{waitRet, cudaGetErrorString(waitRet)});
+                        return;
+                    }
+                    if (stopRequested_) { continue; }
+                    if (!operationsQueue_.empty()
+                        && operationsQueue_.front().operationId == op.operationId) {
+                        operationsQueue_.pop_front();
+                    }
+                    MarkOperationCompleted(op.operationId);
+                    cv_.notify_all();
                 }
-                MarkOperationCompleted(op.operationId);
-                cv_.notify_all();
+            } else {    // copy submit
+                const auto submitResult = SubmitCopyOperationFromQueue(op);
+                if (submitResult == SubmitResult::Submitted) {
+                    continue; 
+                } else if (submitResult == SubmitResult::Error) { 
+                    return; 
+                } else {    // SubmitResult::Waiting
+                    std::unique_lock<std::mutex> lock{mutex_};
+                    cv_.wait(lock, [this, inflightBefore] {
+                        return stopRequested_ || HasAsyncError()
+                            || inflightRequestOperations_.size() < inflightBefore;
+                    });
+                }
             }
-            continue;
         }
-
-        const auto submitResult = SubmitCopyOperationFromQueue(op);
-        if (submitResult == SubmitResult::Submitted) { continue; }
-        if (submitResult == SubmitResult::Error) { return; }
-
-        std::unique_lock<std::mutex> lock{mutex_};
-        cv_.wait_for(lock, kCompletionPollInterval, [this, inflightBefore] {
-            return stopRequested_ || HasAsyncError()
-                || inflightRequestOperations_.size() < inflightBefore;
-        });
-        if (HasAsyncError()) { return; }
     }
 }
 
@@ -346,43 +333,68 @@ void GdrStream::CompletionLoop()
     }
 
     for (;;) {
+        const auto waitRc = channel_->WaitForCompletionEvent();
         {
-            std::unique_lock<std::mutex> lock{mutex_};
-            cv_.wait(lock, [this] {
-                return stopRequested_ || HasAsyncError()
-                    || !inflightRequestOperations_.empty();
-            });
-
-            if (HasAsyncError()) { return; }
-            if (stopRequested_ && inflightRequestOperations_.empty()) { return; }
-        }
-
-        uint64_t reqId = 0;
-        const auto rc = channel_->PollCompletion(&reqId);
-        if (rc == 0) {
             std::lock_guard<std::mutex> lock{mutex_};
-            const auto it = inflightRequestOperations_.find(reqId);
-            if (it == inflightRequestOperations_.end()) {
-                const auto status =
-                    Status::OsApiError(fmt::format("unexpected GDR completion reqId({})", reqId));
-                StopWithAsyncError("PollCompletion reqId mismatch", status);
+            if (waitRc == -ECANCELED) {
+                if (HasAsyncError() || stopRequested_) { return; }
+            } else if (waitRc != 0) {
+                StopWithAsyncError("WaitForCompletionEvent",
+                                   MakeGdrStatus("WaitForCompletionEvent", waitRc));
+                return;
+            } else if (HasAsyncError() || stopRequested_) {
                 return;
             }
-            const uint64_t operationId = it->second;
-            inflightRequestOperations_.erase(it);
-            MarkOperationCompleted(operationId);
-            cv_.notify_all();
-            continue;
         }
-        if (rc == -EAGAIN) {
-            std::this_thread::sleep_for(kCompletionPollInterval);
-            continue;
-        }
+        if (waitRc == -ECANCELED) { continue; }
 
-        std::lock_guard<std::mutex> lock{mutex_};
-        StopWithAsyncError("PollCompletion", MakeGdrStatus("PollCompletion", rc));
-        return;
+        for (;;) {
+            uint64_t reqId = 0;
+            const auto pollResult = channel_->PollCompletion(&reqId);
+            if (pollResult == GdrCompletionPollResult::Completed) {
+                std::lock_guard<std::mutex> lock{mutex_};
+                if (HasAsyncError()) { return; }
+                const auto it = inflightRequestOperations_.find(reqId);
+                if (it == inflightRequestOperations_.end()) {
+                    const auto status = Status::OsApiError(
+                        fmt::format("unexpected GDR completion reqId({})", reqId));
+                    StopWithAsyncError("PollCompletion reqId mismatch", status);
+                    return;
+                }
+                const uint64_t operationId = it->second;
+                inflightRequestOperations_.erase(it);
+                MarkOperationCompleted(operationId);
+                cv_.notify_all();
+                continue;
+            }
+
+            if (pollResult == GdrCompletionPollResult::Empty) { break; }
+
+            if (pollResult == GdrCompletionPollResult::UnknownRequest) {
+                std::lock_guard<std::mutex> lock{mutex_};
+                const auto status =
+                    Status::OsApiError(fmt::format("unexpected GDR completion reqId({})", reqId));
+                StopWithAsyncError("PollCompletion", status);
+                return;
+            }
+
+            std::lock_guard<std::mutex> lock{mutex_};
+            StopWithAsyncError("PollCompletion", Status::OsApiError("PollCompletion failed"));
+            return;
+        }
     }
+}
+
+void GdrStream::ShutdownBackgroundThreads()
+{
+    {
+        std::lock_guard<std::mutex> lock{mutex_};
+        stopRequested_ = true;
+        cv_.notify_all();
+    }
+    if (channel_) { channel_->InterruptCompletionWait(); }
+    if (schedulerThread_.joinable()) { schedulerThread_.join(); }
+    if (completionThread_.joinable()) { completionThread_.join(); }
 }
 
 void GdrStream::MarkOperationCompleted(uint64_t operationId)
@@ -417,6 +429,7 @@ void GdrStream::StopWithAsyncError(const char* source, Status status)
     failedOperations_.clear();
     schedulerWaitingOnEvent_ = false;
     stopRequested_ = true;
+    if (channel_) { channel_->InterruptCompletionWait(); }
     cv_.notify_all();
 }
 

@@ -156,6 +156,8 @@ PYBIND11_MODULE(ucmpcstore, module)
     config.def_readwrite("transferScatterGatherEnable",
                          &UC::PcStorePy::Config::transferScatterGatherEnable);
     config.def_readwrite("shardDataDir", &UC::PcStorePy::Config::shardDataDir);
+    config.def_readwrite("gpuKvBufferAddrs", &UC::PcStorePy::Config::gpuKvBufferAddrs);
+    config.def_readwrite("gpuKvBufferSizes", &UC::PcStorePy::Config::gpuKvBufferSizes);
     store.def(py::init<>());
     store.def("CCStoreImpl", &UC::PcStorePy::CCStoreImpl);
     store.def("Setup", &UC::PcStorePy::SetupPy);

@@ -72,6 +72,7 @@ private:
     Status SubmitAsync(void* dst, const void* src, size_t size, GdrCopyKind kind);
     void SchedulerLoop();
     void CompletionLoop();
+    void ShutdownBackgroundThreads();
     SubmitResult SubmitCopyOperationFromQueue(const Operation& op);
     void MarkOperationCompleted(uint64_t operationId);
     void MarkOperationFailed(uint64_t operationId, Status status);

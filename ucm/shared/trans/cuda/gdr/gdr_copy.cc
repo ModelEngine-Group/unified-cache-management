@@ -5,8 +5,11 @@
 #include <cstring>
 #include <limits>
 #include <mutex>
+#include <poll.h>
+#include <sys/eventfd.h>
 #include <unordered_map>
 #include <unordered_set>
+#include <unistd.h>
 #include <utility>
 #include <stdexcept>
 #include <vector>
@@ -15,6 +18,7 @@
 #include <infiniband/verbs.h>
 
 #include "gdr_buffer_registry.h"
+#include "logger/logger.h"
 
 namespace {
 
@@ -199,8 +203,18 @@ public:
             for (const auto& buffer : UC::Trans::HostBufferRegistry::Snapshot()) {
                 RegisterHostBuffer(buffer.addr, buffer.size);
             }
+            std::vector<UC::Trans::DeviceBufferInfo> invalidGpuBuffers;
             for (const auto& buffer : UC::Trans::DeviceBufferRegistry::Snapshot()) {
-                RegisterDeviceBuffer(buffer.addr, buffer.size);
+                try {
+                    RegisterDeviceBuffer(buffer.addr, buffer.size);
+                } catch (const std::exception& e) {
+                    UC_WARN("Skip pre-registered device MR at addr(0x{:x}) size({}): {}.",
+                            buffer.addr, buffer.size, e.what());
+                    invalidGpuBuffers.push_back(buffer);
+                }
+            }
+            for (const auto& buffer : invalidGpuBuffers) {
+                UC::Trans::DeviceBufferRegistry::Unregister(reinterpret_cast<void*>(buffer.addr));
             }
 
             struct ibv_device_attr deviceAttr {};
@@ -208,10 +222,19 @@ public:
                 throw std::runtime_error("ibv_query_device failed");
             }
 
+            compChannel_ = ibv_create_comp_channel(ctx_);
+            if (!compChannel_) { throw std::runtime_error("ibv_create_comp_channel failed"); }
+
+            completionWakeupFd_ = eventfd(0, EFD_CLOEXEC | EFD_NONBLOCK);
+            if (completionWakeupFd_ < 0) { throw std::runtime_error("eventfd failed"); }
+
             const int cqDepth =
                 std::max(1, std::min(kTargetCqDepth, static_cast<int>(deviceAttr.max_cqe)));
-            cq_ = ibv_create_cq(ctx_, cqDepth, nullptr, nullptr, 0);
+            cq_ = ibv_create_cq(ctx_, cqDepth, nullptr, compChannel_, 0);
             if (!cq_) { throw std::runtime_error("ibv_create_cq failed"); }
+            if (ibv_req_notify_cq(cq_, 0) != 0) {
+                throw std::runtime_error("ibv_req_notify_cq failed");
+            }
 
             struct ibv_qp_init_attr initAttr {};
             initAttr.send_cq = cq_;
@@ -334,23 +357,72 @@ public:
         }
     }
 
-    int PollCompletion(uint64_t* reqId) override
+    GdrCompletionPollResult PollCompletion(uint64_t* reqId) override
     {
         std::lock_guard<std::mutex> lock{mutex_};
         struct ibv_wc wc {};
-        const int n = ibv_poll_cq(cq_, 1, &wc);
-        if (n < 0) { return -EIO; }
-        if (n == 0) { return -EAGAIN; }
-        if (wc.status != IBV_WC_SUCCESS) { return -EIO; }
+        const int polledCompletionCount = ibv_poll_cq(cq_, 1, &wc);
+        if (polledCompletionCount < 0) { return GdrCompletionPollResult::Error; }
+        if (polledCompletionCount == 0) { return GdrCompletionPollResult::Empty; }
+        if (wc.status != IBV_WC_SUCCESS) { return GdrCompletionPollResult::Error; }
 
         inflightWr_ = std::max(0, inflightWr_ - 1);
-        const auto it = pendingReqs_.find(wc.wr_id);
-        if (it == pendingReqs_.end()) { return -ENOENT; }
-
         if (reqId) { *reqId = wc.wr_id; }
+        const auto it = pendingReqs_.find(wc.wr_id);
+        if (it == pendingReqs_.end()) { return GdrCompletionPollResult::UnknownRequest; }
+
         CleanupReqFallbackMrs(wc.wr_id);
         pendingReqs_.erase(it);
-        return 0;
+        return GdrCompletionPollResult::Completed;
+    }
+
+    int WaitForCompletionEvent() override
+    {
+        struct pollfd fds[2] {};
+        fds[0].fd = compChannel_->fd;
+        fds[0].events = POLLIN;
+        fds[1].fd = completionWakeupFd_;
+        fds[1].events = POLLIN;
+
+        for (;;) {
+            const int rc = poll(fds, 2, -1);
+            if (rc < 0) {
+                if (errno == EINTR) { continue; }
+                return -EIO;
+            }
+
+            if (fds[1].revents & POLLIN) {
+                ClearCompletionWakeup();
+                return -ECANCELED;
+            }
+            if (fds[1].revents & (POLLERR | POLLNVAL)) { return -EIO; }
+
+            if (fds[0].revents & POLLIN) {
+                struct ibv_cq* eventCq = nullptr;
+                void* eventContext = nullptr;
+                if (ibv_get_cq_event(compChannel_, &eventCq, &eventContext) != 0) {
+                    return -EIO;
+                }
+                (void)eventContext;
+                if (!eventCq) { return -EIO; }
+                ibv_ack_cq_events(eventCq, 1);
+                if (eventCq != cq_) { return -EIO; }
+                if (ibv_req_notify_cq(cq_, 0) != 0) { return -EIO; }
+                return 0;
+            }
+            if (fds[0].revents & (POLLERR | POLLNVAL | POLLHUP)) { return -EIO; }
+        }
+    }
+
+    void InterruptCompletionWait() override
+    {
+        if (completionWakeupFd_ < 0) { return; }
+
+        const uint64_t wakeup = 1;
+        const auto bytes = write(completionWakeupFd_, &wakeup, sizeof(wakeup));
+        if (bytes < 0 && errno != EAGAIN) {
+            UC_WARN("failed to interrupt GDR completion wait: errno({})", errno);
+        }
     }
 
 private:
@@ -376,6 +448,14 @@ private:
         if (cq_) {
             ibv_destroy_cq(cq_);
             cq_ = nullptr;
+        }
+        if (compChannel_) {
+            ibv_destroy_comp_channel(compChannel_);
+            compChannel_ = nullptr;
+        }
+        if (completionWakeupFd_ >= 0) {
+            close(completionWakeupFd_);
+            completionWakeupFd_ = -1;
         }
         if (pd_) {
             ibv_dealloc_pd(pd_);
@@ -454,6 +534,19 @@ private:
         pendingReqMrs_.erase(it);
     }
 
+    void ClearCompletionWakeup()
+    {
+        if (completionWakeupFd_ < 0) { return; }
+
+        uint64_t wakeup = 0;
+        for (;;) {
+            const auto bytes = read(completionWakeupFd_, &wakeup, sizeof(wakeup));
+            if (bytes == static_cast<ssize_t>(sizeof(wakeup))) { continue; }
+            if (bytes < 0 && errno == EINTR) { continue; }
+            break;
+        }
+    }
+
     int PostWrite(uint64_t remoteAddr, uint32_t rkey, uint64_t localAddr, uint32_t lkey,
                   size_t bytes, uint64_t reqId)
     {
@@ -501,6 +594,7 @@ private:
 private:
     struct ibv_context* ctx_{nullptr};
     struct ibv_pd* pd_{nullptr};
+    struct ibv_comp_channel* compChannel_{nullptr};
     struct ibv_cq* cq_{nullptr};
     struct ibv_qp* qp_{nullptr};
     RegisteredMrTable gpuMrs_;
@@ -510,6 +604,7 @@ private:
     bool isRoce_{false};
     int maxInflightWr_{1};
     int inflightWr_{0};
+    int completionWakeupFd_{-1};
     uint64_t nextReqId_{1};
     std::unordered_set<uint64_t> pendingReqs_;
     std::unordered_map<uint64_t, std::vector<struct ibv_mr*>> pendingReqMrs_;
@@ -569,15 +664,40 @@ void GdrCopyLib::UnregisterHostBuffer(void* host)
     UC::Trans::HostBufferRegistry::Unregister(host);
 }
 
-void GdrCopyLib::RegisterDeviceBuffer(void* device, size_t size)
+UC::Status GdrCopyLib::RegisterDeviceBuffer(void* device, size_t size)
 {
+    if (!device || size == 0) {
+        return UC::Status::InvalidParam("invalid device buffer({},{})", fmt::ptr(device), size);
+    }
     UC::Trans::DeviceBufferRegistry::Register(device, size);
-    ForEachLiveChannel([device, size](GdrCopyChannelImpl& channel) {
-        try {
-            channel.RegisterDeviceBuffer(reinterpret_cast<uint64_t>(device), size);
-        } catch (...) {
+    UC::Status status = UC::Status::OK();
+    std::vector<std::shared_ptr<GdrCopyChannelImpl>> registeredChannels;
+    {
+        std::lock_guard<std::mutex> lock{gChannelMutex};
+        auto out = gChannels.begin();
+        for (auto it = gChannels.begin(); it != gChannels.end(); ++it) {
+            auto channel = it->lock();
+            if (!channel) { continue; }
+            try {
+                channel->RegisterDeviceBuffer(reinterpret_cast<uint64_t>(device), size);
+                registeredChannels.push_back(channel);
+            } catch (const std::exception& e) {
+                if (status.Success()) {
+                    status = UC::Status::OsApiError(
+                        fmt::format("failed to register device MR at addr(0x{:x}) size({}): {}",
+                                    reinterpret_cast<uint64_t>(device), size, e.what()));
+                }
+            }
+            *out++ = *it;
         }
-    });
+        gChannels.erase(out, gChannels.end());
+    }
+    if (status.Success()) { return status; }
+    for (auto& channel : registeredChannels) {
+        channel->UnregisterDeviceBuffer(reinterpret_cast<uint64_t>(device), size);
+    }
+    UC::Trans::DeviceBufferRegistry::Unregister(device);
+    return status;
 }
 
 void GdrCopyLib::UnregisterDeviceBuffer(void* device)

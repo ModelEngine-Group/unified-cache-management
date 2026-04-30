@@ -23,9 +23,11 @@
  * */
 #include "pcstore.h"
 #include <fmt/ranges.h>
+#include <memory>
 #include "logger/logger.h"
 #include "space/space_manager.h"
 #include "status/status.h"
+#include "trans/cuda/gdr/gdr_buffer_registry.h"
 #include "trans/trans_manager.h"
 
 namespace UC {
@@ -34,8 +36,18 @@ class PcStoreImpl : public PcStore {
 public:
     int32_t Setup(const Config& config)
     {
-        auto status = this->spaceMgr_.Setup(config.storageBackends, config.kvcacheBlockSize,
-                                            config.shardDataDir);
+        auto status = Trans::ScopedDeviceBufferRegistration::Validate(config.gpuKvBufferAddrs,
+                                                                      config.gpuKvBufferSizes);
+        if (status.Failure()) { return status.Underlying(); }
+        if (config.transferEnable && !config.gpuKvBufferAddrs.empty()) {
+            gpuKvBufferRegistrations_ =
+                std::make_unique<Trans::ScopedDeviceBufferRegistration>();
+            status = gpuKvBufferRegistrations_->Register(config.gpuKvBufferAddrs,
+                                                         config.gpuKvBufferSizes);
+            if (status.Failure()) { return status.Underlying(); }
+        }
+        status = this->spaceMgr_.Setup(config.storageBackends, config.kvcacheBlockSize,
+                                       config.shardDataDir);
         if (status.Failure()) { return status.Underlying(); }
         if (config.transferEnable) {
             if (config.uniqueId.empty()) {
@@ -100,11 +112,13 @@ private:
         UC_INFO("Set UC::TimeoutMs to {}.", config.transferTimeoutMs);
         UC_INFO("Set UC::ScatterGatherEnable to {}.", config.transferScatterGatherEnable);
         UC_INFO("Set UC::ShardDataDir to {}.", config.shardDataDir);
+        UC_INFO("Set UC::GpuKvBufferNumber to {}.", config.gpuKvBufferAddrs.size());
     }
 
 private:
     SpaceManager spaceMgr_;
     TransManager transMgr_;
+    std::unique_ptr<Trans::ScopedDeviceBufferRegistration> gpuKvBufferRegistrations_{nullptr};
 };
 
 int32_t PcStore::Setup(const Config& config)
