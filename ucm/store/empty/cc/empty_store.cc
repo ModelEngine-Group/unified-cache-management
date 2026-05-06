@@ -42,6 +42,7 @@ public:
     Expected<Detail::TaskHandle> Dump(Detail::TaskDesc task) { return NextId(); }
     Expected<bool> Check(Detail::TaskHandle taskId) { return true; }
     Status Wait(Detail::TaskHandle taskId) { return Status::OK(); }
+    Status RegisterMemory(void* base_addr, size_t total_size) { return Status::OK(); }
 
 private:
     static Detail::TaskHandle NextId() noexcept

@@ -382,6 +382,7 @@ class UCMDirectConnector(KVConnectorBase_V1):
         )
 
         self.store = self._create_store(self.kv_cache_layout, store_cores)
+        self._register_kv_cache_memory()
 
         if worker_cores:
             try:
@@ -392,6 +393,31 @@ class UCMDirectConnector(KVConnectorBase_V1):
 
         if self.device is None:
             raise RuntimeError(f"Unsupported device platform for UCMDirectConnector.")
+
+    def _register_kv_cache_memory(self):
+        for layer_name, kv_layer in self.kv_caches.items():
+            if isinstance(kv_layer, torch.Tensor):
+                if kv_layer.dim() == 5:
+                    num_blocks = kv_layer.shape[1]
+                    block_size = kv_layer[0].shape[1:].numel() * kv_layer.element_size()
+                    total_size = num_blocks * block_size
+                    self.store.register_memory(kv_layer[0].data_ptr(), total_size)
+                    self.store.register_memory(kv_layer[1].data_ptr(), total_size)
+                elif kv_layer.dim() == 3:
+                    num_blocks = kv_layer.shape[0]
+                    total_size = kv_layer.numel() * kv_layer.element_size()
+                    self.store.register_memory(kv_layer.data_ptr(), total_size)
+                else:
+                    raise ValueError(
+                        f"Unsupported kv cache tensor shape: {kv_layer.shape}"
+                    )
+            elif isinstance(kv_layer, Tuple):
+                for tensor in kv_layer:
+                    total_size = tensor.numel() * tensor.element_size()
+                    self.store.register_memory(tensor.data_ptr(), total_size)
+            else:
+                raise TypeError(f"Unsupported kv cache type: {type(kv_layer)}")
+        logger.info(f"Registered {len(self.kv_caches)} layers' kv cache memory")
 
     def get_num_new_matched_tokens(
         self,

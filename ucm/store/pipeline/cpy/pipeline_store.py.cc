@@ -168,6 +168,11 @@ public:
         }
         ThrowIfFailed(status);
     }
+    void RegisterMemory(uintptr_t base_addr, size_t total_size)
+    {
+        auto status = StoreBack()->RegisterMemory((void*)base_addr, total_size);
+        ThrowIfFailed(status);
+    }
 };
 
 }  // namespace UC::PipelineStore
@@ -192,4 +197,5 @@ PYBIND11_MODULE(ucmpipelinestore, m)
           py::arg("addrs").noconvert(), py::arg("prerequisite_handle") = 0);
     s.def("Check", &PipelineStore::Check);
     s.def("Wait", &PipelineStore::Wait);
+    s.def("RegisterMemory", &PipelineStore::RegisterMemory);
 }
