@@ -147,6 +147,15 @@ def get_token_throughput_latencies(
                         )
                     except ZeroDivisionError:
                         logging.error("Division by zero in throughput calculation.")
+                    e2e = metrics.get(common_metrics.E2E_LAT, 0.0)
+                    ttft = metrics.get(common_metrics.TTFT, 0.0)
+                    n_out = metrics.get(common_metrics.NUM_OUTPUT_TOKENS, 0)
+                    if n_out > 1:
+                        metrics[common_metrics.TPOT] = (e2e - ttft) / (n_out - 1)
+                    else:
+                        metrics[common_metrics.TPOT] = 0.0
+
+                    completed_requests.append(metrics)
 
                 completed_requests.append(metrics)
 
@@ -252,6 +261,7 @@ def metrics_summary(
         common_metrics.REQ_OUTPUT_THROUGHPUT,
         common_metrics.NUM_INPUT_TOKENS,
         common_metrics.NUM_OUTPUT_TOKENS,
+        common_metrics.TPOT,
     ]:
         print(key)
         ret[key] = {}

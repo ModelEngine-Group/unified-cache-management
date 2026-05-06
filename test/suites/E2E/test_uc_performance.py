@@ -123,7 +123,7 @@ def test_performance(in_tokens, out_tokens, max_req, concurrent, random_seed, hi
         "mean_input_tokens": summary.get("mean_input_tokens"),
         "mean_output_tokens": summary.get("mean_output_tokens"),
         "ttft_mean_s": results.get("ttft_s", {}).get("mean"),
-        "tpot_mean_s": results.get("inter_token_latency_s", {}).get("mean"),
+        "tpot_mean_s": results.get("tpot_s", {}).get("mean"),
         "e2e_mean_s": results.get("end_to_end_latency_s", {}).get("mean"),
         "elapsed_time_s": summary.get("elapsed_time"),
         "total_throughput": summary.get("total_throughput"),
