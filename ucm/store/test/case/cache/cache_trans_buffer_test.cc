@@ -60,6 +60,61 @@ TEST_P(UCCacheTransBufferTest, GetFirstNode)
     ASSERT_TRUE(handle2.Ready());
 }
 
+TEST_P(UCCacheTransBufferTest, BackendOnlyLoadReusesIdleCacheEntry)
+{
+    UC::CacheStore::TransBuffer transBuffer;
+    UC::CacheStore::Config config;
+    config.uniqueId = rd.RandomString(10);
+    config.shardSize = 32768;
+    config.bufferCapacity = config.shardSize * 32768;
+    config.shareBufferEnable = GetParam();
+    config.deviceId = 0;
+    config.loadExclusiveBufferNumber = 0;
+    config.cacheLoadBackendOnly = true;
+    auto s = transBuffer.Setup(config);
+    ASSERT_EQ(s, UC::Status::OK());
+    auto blockId = UC::Test::Detail::TypesHelper::MakeBlockId("a1b2c3d4e5f6789012345678901234ab");
+    constexpr size_t shardIdx = 0;
+    void* cachedAddr = nullptr;
+    {
+        auto handle1 = transBuffer.Get(blockId, shardIdx);
+        ASSERT_TRUE(handle1);
+        ASSERT_TRUE(handle1.Owner());
+        handle1.MarkReady();
+        cachedAddr = handle1.Data();
+    }
+
+    auto handle2 = transBuffer.Get(blockId, shardIdx, true);
+    ASSERT_TRUE(handle2);
+    ASSERT_TRUE(handle2.Owner());
+    ASSERT_FALSE(handle2.Ready());
+    ASSERT_EQ(cachedAddr, handle2.Data());
+}
+
+TEST_P(UCCacheTransBufferTest, BackendOnlyLoadCoalescesInFlightEntry)
+{
+    UC::CacheStore::TransBuffer transBuffer;
+    UC::CacheStore::Config config;
+    config.uniqueId = rd.RandomString(10);
+    config.shardSize = 32768;
+    config.bufferCapacity = config.shardSize * 32768;
+    config.shareBufferEnable = GetParam();
+    config.deviceId = 0;
+    config.loadExclusiveBufferNumber = 0;
+    config.cacheLoadBackendOnly = true;
+    auto s = transBuffer.Setup(config);
+    ASSERT_EQ(s, UC::Status::OK());
+    auto blockId = UC::Test::Detail::TypesHelper::MakeBlockId("a1b2c3d4e5f6789012345678901234ab");
+    constexpr size_t shardIdx = 0;
+    auto owner = transBuffer.Get(blockId, shardIdx, true);
+    ASSERT_TRUE(owner);
+    ASSERT_TRUE(owner.Owner());
+    auto waiter = transBuffer.Get(blockId, shardIdx, true);
+    ASSERT_TRUE(waiter);
+    ASSERT_FALSE(waiter.Owner());
+    ASSERT_EQ(owner.Data(), waiter.Data());
+}
+
 TEST_P(UCCacheTransBufferTest, GetReservedNode)
 {
     UC::CacheStore::TransBuffer transBuffer;

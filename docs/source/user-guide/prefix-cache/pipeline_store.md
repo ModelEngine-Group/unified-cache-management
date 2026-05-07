@@ -99,6 +99,9 @@ ucm_connectors:
 * **io_direct** (optional, default: `false`):  
   Whether to enable direct I/O.
 
+* **cache_load_backend_only** (optional, default: `false`):
+  Set to `true` to make lookup and load use the backend while keeping Cache Store Device-to-Host and Host-to-Device buffers.
+
 * **stream_number** *(optional, default: 8)*  
   Number of threads used for data transfer between the Host and Storage.
 

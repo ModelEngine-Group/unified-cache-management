@@ -38,6 +38,7 @@ class TransBuffer {
     using Index = std::size_t;
     static constexpr Index npos = std::numeric_limits<Index>::max();
     std::shared_ptr<BufferStrategy> strategy_{nullptr};
+    bool bypassHitOnReservedGet_{false};
 
 public:
     class Handle {
@@ -113,6 +114,7 @@ private:
     void Release(Index pos);
     bool Ready(Index pos);
     void MarkReady(Index pos);
+    void MarkNotReady(Index pos);
 };
 
 }  // namespace UC::CacheStore

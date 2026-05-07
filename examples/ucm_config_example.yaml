@@ -16,6 +16,8 @@ ucm_connectors:
       store_pipeline: "Cache|Posix"
       storage_backends: "/mnt/test"
       io_direct: false
+      # Force lookup/load to use the backend while keeping CacheStore D2H/H2D buffers.
+      # cache_load_backend_only: false
       # cache_buffer_capacity_gb: 256
       # posix_capacity_gb: 1024
 
