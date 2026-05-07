@@ -87,8 +87,7 @@ class KVCacheGroupLayout:
                         )
             else:
                 raise TypeError(
-                    f"Unsupported KV cache type for "
-                    f"{layer_name}: {type(kv_layer)}"
+                    f"Unsupported KV cache type for " f"{layer_name}: {type(kv_layer)}"
                 )
 
         if not ptrs:
@@ -109,7 +108,9 @@ class KVCacheGroupLayout:
             + self.base_ptrs[None, :]
         )
 
-    def extract_block_tensor_views(self, vllm_block_ids: list[int]) -> list[torch.Tensor]:
+    def extract_block_tensor_views(
+        self, vllm_block_ids: list[int]
+    ) -> list[torch.Tensor]:
         tensors: list[torch.Tensor] = []
 
         def add_views(tensor: torch.Tensor, block_id: int) -> None:
@@ -150,6 +151,7 @@ class KVCacheGroupLayout:
     def block_size(self) -> int:
         return self.shard_size
 
+
 KVCacheGroupRow = tuple[list[int], ...]
 KVCacheGroupRows = list[KVCacheGroupRow]
 
@@ -172,9 +174,7 @@ class FAWARequestDispatchMeta:
 
 @dataclass
 class UCMFAWAConnectorMetadata(KVConnectorMetadata):
-    request_meta: dict[str, FAWARequestDispatchMeta] = field(
-        default_factory=dict
-    )
+    request_meta: dict[str, FAWARequestDispatchMeta] = field(default_factory=dict)
 
 
 @dataclass
@@ -235,7 +235,9 @@ class UCMFAWAConnector(UCMDirectConnector):
         logger.info("Init UCM FAWA connector.")
 
     @classmethod
-    def can_handle_kv_cache_config(cls, kv_cache_config: Optional["KVCacheConfig"]) -> bool:
+    def can_handle_kv_cache_config(
+        cls, kv_cache_config: Optional["KVCacheConfig"]
+    ) -> bool:
         if kv_cache_config is None:
             return False
         fa_groups, window_groups = cls._partition_group_specs(
@@ -314,9 +316,7 @@ class UCMFAWAConnector(UCMDirectConnector):
         name, module_path, config = self._base_store_config(store_suffix)
         if self._role == KVConnectorRole.WORKER:
             if tensor_size_list is None:
-                raise RuntimeError(
-                    f"Worker FAWA {label} store needs tensor sizes."
-                )
+                raise RuntimeError(f"Worker FAWA {label} store needs tensor sizes.")
             config["device_id"] = self.local_rank
             config["tensor_size_list"] = tensor_size_list
             config["shard_size"] = int(sum(tensor_size_list))
@@ -343,7 +343,11 @@ class UCMFAWAConnector(UCMDirectConnector):
     @staticmethod
     def _group_specs(group_spec) -> tuple[object, ...]:
         nested_specs = getattr(group_spec.kv_cache_spec, "kv_cache_specs", None)
-        return tuple(nested_specs.values()) if nested_specs else (group_spec.kv_cache_spec,)
+        return (
+            tuple(nested_specs.values())
+            if nested_specs
+            else (group_spec.kv_cache_spec,)
+        )
 
     @staticmethod
     def _group_spec_items(group_spec) -> tuple[tuple[str, object], ...]:
@@ -367,7 +371,9 @@ class UCMFAWAConnector(UCMDirectConnector):
         return any(cls._spec_has_window(spec) for spec in cls._group_specs(group_spec))
 
     @classmethod
-    def _partition_group_specs(cls, group_specs) -> tuple[tuple[int, ...], tuple[int, ...]]:
+    def _partition_group_specs(
+        cls, group_specs
+    ) -> tuple[tuple[int, ...], tuple[int, ...]]:
         fa_group_ids: list[int] = []
         window_group_ids: list[int] = []
         for group_id, group_spec in enumerate(group_specs):
@@ -392,7 +398,9 @@ class UCMFAWAConnector(UCMDirectConnector):
     def _get_hash_block_size(self) -> int:
         assert self._kv_cache_config is not None
         fa_block_sizes = {
-            int(self._kv_cache_config.kv_cache_groups[group_id].kv_cache_spec.block_size)
+            int(
+                self._kv_cache_config.kv_cache_groups[group_id].kv_cache_spec.block_size
+            )
             for group_id in self.fa_group_ids
         }
         if len(fa_block_sizes) != 1:
@@ -445,8 +453,7 @@ class UCMFAWAConnector(UCMDirectConnector):
             return None
         if len(window_sizes) != 1:
             raise RuntimeError(
-                "FAWA KV cache group has mixed window sizes: "
-                f"{sorted(window_sizes)}"
+                "FAWA KV cache group has mixed window sizes: " f"{sorted(window_sizes)}"
             )
         return window_sizes.pop()
 
@@ -640,9 +647,7 @@ class UCMFAWAConnector(UCMDirectConnector):
             if layout is None:
                 continue
             repeat = (
-                1
-                if group_id in self.fa_group_ids
-                else self.group_tail_blocks[group_id]
+                1 if group_id in self.fa_group_ids else self.group_tail_blocks[group_id]
             )
             assert repeat is not None
             tensor_size_list.extend(layout.tensor_size_list * repeat)
@@ -651,7 +656,9 @@ class UCMFAWAConnector(UCMDirectConnector):
     def _fa_tensor_size_list(
         self, group_layouts: dict[int, KVCacheGroupLayout]
     ) -> list[int]:
-        tensor_size_list = self._store_tensor_size_list(group_layouts, self.fa_group_ids)
+        tensor_size_list = self._store_tensor_size_list(
+            group_layouts, self.fa_group_ids
+        )
         if not tensor_size_list:
             raise RuntimeError("Worker FA layout is empty.")
         return tensor_size_list
@@ -753,9 +760,7 @@ class UCMFAWAConnector(UCMDirectConnector):
                                 f"KV cache group {group_id} block "
                                 f"position {block_pos} needs a scratch target."
                             )
-                        row_parts.append(
-                            self._scratch_block_addrs(group_id, block_pos)
-                        )
+                        row_parts.append(self._scratch_block_addrs(group_id, block_pos))
                     else:
                         row_parts.append(
                             layout.extract_block_addrs([block_id]).reshape(-1)
@@ -931,30 +936,24 @@ class UCMFAWAConnector(UCMDirectConnector):
                 range(req_meta.hbm_hit_block_num, req_meta.total_hit_block_num)
             )
             load_keys = [
-                self._block_key(req_meta.ucm_block_ids[idx])
-                for idx in load_indices
+                self._block_key(req_meta.ucm_block_ids[idx]) for idx in load_indices
             ]
             load_group_block_ids = [
-                req_meta.group_block_ids[idx]
-                for idx in load_indices
+                req_meta.group_block_ids[idx] for idx in load_indices
             ]
 
         dump_keys: list[bytes] = []
         dump_group_block_ids: KVCacheGroupRows = []
         if req_meta.token_processed < req_meta.num_token_ids:
             start_block = req_meta.token_processed // self.hash_block_size
-            end_block = (
-                req_meta.token_processed + new_tokens
-            ) // self.hash_block_size
+            end_block = (req_meta.token_processed + new_tokens) // self.hash_block_size
             if end_block > start_block:
                 dump_indices = list(range(start_block, end_block))
                 dump_keys = [
-                    self._block_key(req_meta.ucm_block_ids[idx])
-                    for idx in dump_indices
+                    self._block_key(req_meta.ucm_block_ids[idx]) for idx in dump_indices
                 ]
                 dump_group_block_ids = [
-                    req_meta.group_block_ids[idx]
-                    for idx in dump_indices
+                    req_meta.group_block_ids[idx] for idx in dump_indices
                 ]
             req_meta.token_processed += new_tokens
 
@@ -976,7 +975,7 @@ class UCMFAWAConnector(UCMDirectConnector):
                     req_meta,
                     scheduler_output.num_scheduled_tokens[request.req_id],
                     True,
-        )
+                )
 
         cached = scheduler_output.scheduled_cached_reqs
         for request_id in cached.req_ids:
@@ -1148,7 +1147,4 @@ class UCMFAWAConnector(UCMDirectConnector):
             for dump_task in tasks:
                 self._wait_dump_task(dump_task)
         except Exception as e:
-            logger.error(
-                f"dump FAWA kv cache failed. {type(e).__name__}: {e}"
-            )
-
+            logger.error(f"dump FAWA kv cache failed. {type(e).__name__}: {e}")
