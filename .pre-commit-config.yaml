@@ -6,7 +6,7 @@ repos:
         exclude: \.(jsonl|txt)$
         args: [
           '--skip', 'ucm/csrc/**,ucm.egg-info/**,.github/**,ucm/sparse/gsa_on_device/csrc/**',
-          '-L', 'CANN,cann,NNAL,nnal,ASCEND,ascend,EnQue,CopyIn'
+          '-L', 'CANN,cann,NNAL,nnal,ASCEND,ascend,EnQue,CopyIn,Collet,DElt,re-use'
         ]
   - repo: https://github.com/psf/black
     rev: 24.4.2
