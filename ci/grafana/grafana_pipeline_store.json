@@ -38,7 +38,7 @@
           "type": "prometheus",
           "uid": "prometheus"
         },
-        "definition": "label_values(job)",
+        "definition": "label_values(vllm:num_requests_running, job)",
         "hide": 0,
         "includeAll": false,
         "label": "job",
@@ -46,7 +46,7 @@
         "name": "job",
         "options": [],
         "query": {
-          "query": "label_values(job)",
+          "query": "label_values(vllm:num_requests_running, job)",
           "refId": "StandardVariableQuery"
         },
         "refresh": 1,
