@@ -65,18 +65,18 @@
           "type": "prometheus",
           "uid": "prometheus"
         },
-        "definition": "label_values(model_name)",
-        "hide": 0,
+        "definition": "label_values(vllm:num_requests_running{job=\"$job\"}, model_name)",
+        "hide": 2,
         "includeAll": false,
         "label": "model_name",
         "multi": false,
         "name": "model_name",
         "options": [],
         "query": {
-          "query": "label_values(model_name)",
+          "query": "label_values(vllm:num_requests_running{job=\"$job\"}, model_name)",
           "refId": "StandardVariableQuery"
         },
-        "refresh": 1,
+        "refresh": 2,
         "regex": "",
         "skipUrlSync": false,
         "sort": 0,
