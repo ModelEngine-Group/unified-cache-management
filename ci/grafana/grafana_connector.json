@@ -66,7 +66,7 @@
           "uid": "prometheus"
         },
         "definition": "label_values(vllm:num_requests_running{job=\"$job\"}, model_name)",
-        "hide": 2,
+        "hide": 0,
         "includeAll": false,
         "label": "model_name",
         "multi": false,
