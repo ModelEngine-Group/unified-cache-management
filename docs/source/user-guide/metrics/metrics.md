@@ -159,6 +159,34 @@ dashboard's header carries an "Other UCM dashboards" dropdown that
 auto-discovers the others by tag, so you can hop between them while
 preserving the time range and the `model_name` template variable.
 
+#### CI Variants
+
+For CI environments where multiple test runs are scraped into a single
+Prometheus instance and distinguished by the `job` label, three matching
+CI-flavored dashboards are provided alongside the regular ones:
+
+| File | Mirrors |
+|------|---------|
+| `examples/metrics/grafana_connector_ci.json` | `grafana_connector.json` |
+| `examples/metrics/grafana_pipeline_store_ci.json` | `grafana_pipeline_store.json` |
+| `examples/metrics/grafana_layerwise_ci.json` | `grafana_layerwise.json` |
+
+The CI variants differ from the regular dashboards in three ways:
+
+1. The datasource selector at the top is gone — every panel binds to a
+   fixed Prometheus datasource with `uid: prometheus` (the conventional
+   uid for a provisioned Prometheus datasource).
+2. A `job` selector appears as the first dropdown at the top, sorted in
+   reverse alphabetical order. Switching it filters every panel below
+   to that job's series.
+3. Every PromQL query carries an extra `job="$job"` label matcher so
+   different CI environments scraped into the same Prometheus do not
+   overlap on the same panel.
+
+The CI dashboards carry the tag pair `ucm` + `ci`; the cross-dashboard
+"Other UCM CI dashboards" dropdown in their header only links between
+the CI set, so production and CI dashboards do not get tangled.
+
 ## Available Metrics
 
 UCM exposes various metrics to monitor its performance. The following table lists all available metrics organized by category:
