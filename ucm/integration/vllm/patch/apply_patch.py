@@ -136,6 +136,9 @@ def apply_all_patches() -> None:
                 if ENABLE_SPARSE:
                     logger.info("UCM patching vllm for sparse...")
                     import ucm.integration.vllm.patch.v0110.vllm.sparse_patch
+            case "0.18.0":
+                logger.info("UCM patching vllm for pc...")
+                import ucm.integration.vllm.patch.v0180.vllm.pc_patch
             case _:
                 pass
 
