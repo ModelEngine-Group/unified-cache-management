@@ -161,7 +161,15 @@ ucm_connectors:
       store_pipeline: "Cache|Posix"
       storage_backends: "/mnt/test"
 use_layerwise: true
+layerwise_load_ahead: 1
 ```
+
+`layerwise_load_ahead` controls how many local layers are submitted for KV load
+before inference reaches them. The default value `1` preserves the previous
+one-layer lookahead behavior. If layerwise load latency is higher than per-layer
+inference latency, try `2` or `4` to improve overlap. Larger values can increase
+Cache Store queue, host buffer, and H2D stream pressure, so tune this value with
+your model and storage backend.
 
 **⚠️ Make sure to replace `"/vllm-workspace/unified-cache-management/examples/ucm_config_example.yaml"` with your actual config file path.**
 

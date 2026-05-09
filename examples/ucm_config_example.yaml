@@ -31,6 +31,10 @@ enable_event_sync: true
 
 # Whether to use layerwise loading/saving (optional, default: True for UCMConnector)
 use_layerwise: true
+# Number of local layers to submit for layerwise KV load ahead of inference.
+# 1 preserves the default one-layer lookahead behavior. Try 2 or 4 when load
+# latency is higher than per-layer inference latency.
+layerwise_load_ahead: 1
 # hit_ratio: 0.9
 
 # Whether to record requests' traces (optional, default: False)
