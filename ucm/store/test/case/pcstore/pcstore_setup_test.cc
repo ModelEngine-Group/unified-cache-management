@@ -26,6 +26,7 @@
 #include <gtest/gtest.h>
 #include "pcstore.h"
 #include "detail/random.h"
+#include "status/status.h"
 
 class UCPcStoreSetupTest : public testing::Test {
 protected:
