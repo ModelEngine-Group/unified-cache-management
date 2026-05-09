@@ -116,7 +116,7 @@ TEST_F(UCGdrTransUnitTest, CopyDataWithGDR)
 TEST_F(UCGdrTransUnitTest, ResolveDeviceBufferRegistry)
 {
     char buffer[1024] {};
-    const auto* basePtr = static_cast<void*>(buffer);
+    auto* basePtr = static_cast<void*>(buffer);
     auto* offsetPtr = static_cast<void*>(buffer + 128);
     uint64_t resolvedBase = 0;
     size_t resolvedSize = 0;
