@@ -17,7 +17,7 @@
 #include <cuda_runtime.h>
 #include <infiniband/verbs.h>
 
-#include "gdr_buffer_registry.h"
+#include "gdr_mr_buffer.h"
 #include "logger/logger.h"
 
 namespace {
@@ -477,6 +477,8 @@ private:
             RegisterDeviceBufferLocked(mrAddr, mrLen);
             if (auto* mr = FindRegisteredMr(gpuMrs_, mrAddr, mrLen)) { return MrRef{mr, false}; }
         }
+        UC_WARN("GPU MR cache miss at addr(0x{:x}) size({}); fallback to per-transfer MR.",
+                addr, len);
         const int flags =
             IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE | IBV_ACCESS_REMOTE_READ;
         auto* mr = ibv_reg_mr(pd_, reinterpret_cast<void*>(addr), len, flags);
@@ -494,6 +496,8 @@ private:
             RegisterHostBufferLocked(mrAddr, mrLen);
             if (auto* mr = FindRegisteredMr(hostMrs_, mrAddr, mrLen)) { return MrRef{mr, false}; }
         }
+        UC_WARN("Host MR cache miss at addr(0x{:x}) size({}); fallback to per-transfer MR.",
+                addr, len);
         const int flags = IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE | IBV_ACCESS_REMOTE_READ;
         auto* mr = ibv_reg_mr(pd_, reinterpret_cast<void*>(addr), len, flags);
         if (!mr) { throw std::runtime_error("ibv_reg_mr on host memory failed"); }

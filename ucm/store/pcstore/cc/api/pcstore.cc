@@ -27,7 +27,7 @@
 #include "logger/logger.h"
 #include "space/space_manager.h"
 #include "status/status.h"
-#include "trans/cuda/gdr/gdr_buffer_registry.h"
+#include "trans/cuda/gdr/gdr_config.h"
 #include "trans/trans_manager.h"
 
 namespace UC {
@@ -36,12 +36,19 @@ class PcStoreImpl : public PcStore {
 public:
     int32_t Setup(const Config& config)
     {
-        auto status = Trans::ScopedDeviceBufferRegistration::Validate(config.gpuKvBufferAddrs,
-                                                                      config.gpuKvBufferSizes);
+        auto status = Trans::GdrKVBufferConfig::Validate(config.gpuKvBufferAddrs,
+                                                         config.gpuKvBufferSizes);
         if (status.Failure()) { return status.Underlying(); }
+        status = Trans::GdrNicConfig::ValidateDeviceNicNames(
+            config.gdrNicList, config.transferEnable ? config.transferDeviceId : -1);
+        if (status.Failure()) { return status.Underlying(); }
+        if (config.transferEnable && !config.gdrNicList.empty()) {
+            status = Trans::GdrNicConfig::SetDeviceNicNames(config.gdrNicList);
+            if (status.Failure()) { return status.Underlying(); }
+        }
         if (config.transferEnable && !config.gpuKvBufferAddrs.empty()) {
             gpuKvBufferRegistrations_ =
-                std::make_unique<Trans::ScopedDeviceBufferRegistration>();
+                std::make_unique<Trans::GdrKVBufferConfig>();
             status = gpuKvBufferRegistrations_->Register(config.gpuKvBufferAddrs,
                                                          config.gpuKvBufferSizes);
             if (status.Failure()) { return status.Underlying(); }
@@ -113,12 +120,13 @@ private:
         UC_INFO("Set UC::ScatterGatherEnable to {}.", config.transferScatterGatherEnable);
         UC_INFO("Set UC::ShardDataDir to {}.", config.shardDataDir);
         UC_INFO("Set UC::GpuKvBufferNumber to {}.", config.gpuKvBufferAddrs.size());
+        UC_INFO("Set UC::GdrNicList to {}.", config.gdrNicList);
     }
 
 private:
     SpaceManager spaceMgr_;
     TransManager transMgr_;
-    std::unique_ptr<Trans::ScopedDeviceBufferRegistration> gpuKvBufferRegistrations_{nullptr};
+    std::unique_ptr<Trans::GdrKVBufferConfig> gpuKvBufferRegistrations_{nullptr};
 };
 
 int32_t PcStore::Setup(const Config& config)

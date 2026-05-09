@@ -1,22 +1,16 @@
 #include "gdr_stream.h"
 
 #include <cerrno>
-#include <cstdlib>
 #include <string>
 #include <thread>
+#include <utility>
 
 #include <cuda_runtime.h>
 
+#include "gdr_config.h"
 #include "logger/logger.h"
 
 namespace {
-
-std::string ParseStringEnv(const char* name, const char* defaultValue)
-{
-    const auto* value = std::getenv(name);
-    if (!value || value[0] == '\0') { return defaultValue; }
-    return value;
-}
 
 UC::Status MakeGdrStatus(const char* op, int rc)
 {
@@ -37,10 +31,11 @@ GdrStream::~GdrStream()
 
 Status GdrStream::Setup()
 {
-    nicName_ = ParseStringEnv("UCM_GDR_NIC_NAME", "mlx5_0");
-
     const auto ret = cudaGetDevice(&deviceId_);
     if (ret != cudaSuccess) { return Status{ret, cudaGetErrorString(ret)}; }
+    auto nicName = GdrNicConfig::ResolveNicName(deviceId_);
+    if (!nicName) { return nicName.Error(); }
+    nicName_ = std::move(nicName).Value();
 
     try {
         channel_ = GdrCopyLib::Open(deviceId_, nicName_);

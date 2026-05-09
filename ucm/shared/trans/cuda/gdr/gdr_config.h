@@ -21,18 +21,44 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  * */
-#ifndef UNIFIEDCACHE_TRANS_CUDA_GDR_STREAM_FACTORY_H
-#define UNIFIEDCACHE_TRANS_CUDA_GDR_STREAM_FACTORY_H
+#ifndef UNIFIEDCACHE_TRANS_CUDA_GDR_CONFIG_H
+#define UNIFIEDCACHE_TRANS_CUDA_GDR_CONFIG_H
 
-#include <memory>
+#include <cstdint>
+#include <string>
+#include <vector>
 
-#include "trans/stream.h"
+#include "status/status.h"
 
 namespace UC::Trans {
 
-class GdrStreamFactory {
+class GdrNicConfig {
 public:
-    static std::unique_ptr<Stream> Make();
+    static Status SetDeviceNicNames(const std::vector<std::string>& nicNames);
+    static Status ValidateDeviceNicNames(const std::vector<std::string>& nicNames,
+                                         int32_t deviceId);
+    static Expected<std::string> ResolveNicName(int32_t deviceId);
+    static void ClearForTest();
+};
+
+class GdrKVBufferConfig {
+public:
+    GdrKVBufferConfig() = default;
+    GdrKVBufferConfig(const GdrKVBufferConfig&) = delete;
+    GdrKVBufferConfig& operator=(const GdrKVBufferConfig&) = delete;
+    GdrKVBufferConfig(GdrKVBufferConfig&&) = default;
+    GdrKVBufferConfig& operator=(GdrKVBufferConfig&&) = default;
+    ~GdrKVBufferConfig();
+
+    static Status Validate(const std::vector<uintptr_t>& addrs, const std::vector<size_t>& sizes);
+    Status Register(const std::vector<uintptr_t>& addrs, const std::vector<size_t>& sizes);
+
+private:
+    struct RegisteredBuffer {
+        uint64_t addr;
+        size_t size;
+    };
+    std::vector<RegisteredBuffer> buffers_;
 };
 
 }  // namespace UC::Trans

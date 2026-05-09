@@ -65,6 +65,7 @@ class UcmPcStoreV1(UcmKVStoreBaseV1):
             "shard_data_dir": "shardDataDir",
             "gpu_kv_buffer_addrs": "gpuKvBufferAddrs",
             "gpu_kv_buffer_sizes": "gpuKvBufferSizes",
+            "gdr_nic_list": "gdrNicList",
         }
         for key, value in config.items():
             attr = key_mapping.get(key)

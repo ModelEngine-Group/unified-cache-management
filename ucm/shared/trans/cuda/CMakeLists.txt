@@ -12,8 +12,8 @@ add_library(trans STATIC
     cuda_buffer.cc
     cuda_stream.cc
     cuda_sm_stream.cc
-    gdr/gdr_buffer_registry.cc
-    gdr/gdr_stream_factory.cc
+    gdr/gdr_mr_buffer.cc
+    gdr/gdr_config.cc
 )
 target_include_directories(trans PUBLIC ${CUDA_ROOT}/include)
 target_link_directories(trans PUBLIC ${CUDA_ROOT}/lib64)

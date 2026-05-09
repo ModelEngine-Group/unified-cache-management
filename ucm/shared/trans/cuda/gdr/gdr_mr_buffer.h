@@ -21,12 +21,13 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  * */
-#ifndef UNIFIEDCACHE_TRANS_CUDA_GDR_BUFFER_REGISTRY_H
-#define UNIFIEDCACHE_TRANS_CUDA_GDR_BUFFER_REGISTRY_H
+#ifndef UNIFIEDCACHE_TRANS_CUDA_GDR_MR_BUFFER_H
+#define UNIFIEDCACHE_TRANS_CUDA_GDR_MR_BUFFER_H
 
 #include <cstddef>
 #include <cstdint>
 #include <vector>
+
 #include "status/status.h"
 
 namespace UC::Trans {
@@ -65,22 +66,6 @@ public:
     static void GdrUnregisterHostBuffer(void* host);
     static Status GdrRegisterDeviceBuffer(void* device, size_t size);
     static void GdrUnregisterDeviceBuffer(void* device);
-};
-
-class ScopedDeviceBufferRegistration {
-public:
-    ScopedDeviceBufferRegistration() = default;
-    ScopedDeviceBufferRegistration(const ScopedDeviceBufferRegistration&) = delete;
-    ScopedDeviceBufferRegistration& operator=(const ScopedDeviceBufferRegistration&) = delete;
-    ScopedDeviceBufferRegistration(ScopedDeviceBufferRegistration&&) = default;
-    ScopedDeviceBufferRegistration& operator=(ScopedDeviceBufferRegistration&&) = default;
-    ~ScopedDeviceBufferRegistration();
-
-    static Status Validate(const std::vector<uintptr_t>& addrs, const std::vector<size_t>& sizes);
-    Status Register(const std::vector<uintptr_t>& addrs, const std::vector<size_t>& sizes);
-
-private:
-    std::vector<DeviceBufferInfo> buffers_;
 };
 
 }  // namespace UC::Trans

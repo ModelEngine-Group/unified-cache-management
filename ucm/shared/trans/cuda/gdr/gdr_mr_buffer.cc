@@ -21,11 +21,10 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  * */
-#include "gdr_buffer_registry.h"
+#include "gdr_mr_buffer.h"
 
 #include <map>
 #include <mutex>
-#include "logger/logger.h"
 
 #if defined(UCM_ENABLE_GDR_STREAM)
 #include "gdr_copy.h"
@@ -191,48 +190,6 @@ void GdrMrBuffer::GdrUnregisterDeviceBuffer(void* device)
 #else
     DeviceBufferRegistry::Unregister(device);
 #endif
-}
-
-ScopedDeviceBufferRegistration::~ScopedDeviceBufferRegistration()
-{
-    for (auto it = buffers_.rbegin(); it != buffers_.rend(); ++it) {
-        GdrMrBuffer::GdrUnregisterDeviceBuffer(reinterpret_cast<void*>(it->addr));
-    }
-}
-
-Status ScopedDeviceBufferRegistration::Validate(const std::vector<uintptr_t>& addrs,
-                                                const std::vector<size_t>& sizes)
-{
-    if (addrs.size() != sizes.size()) {
-        return Status::InvalidParam("mismatched GPU KV buffer ranges({},{})", addrs.size(),
-                                    sizes.size());
-    }
-    for (size_t i = 0; i < addrs.size(); ++i) {
-        if (addrs[i] == 0) {
-            return Status::InvalidParam("invalid GPU KV buffer address at index({})", i);
-        }
-        if (sizes[i] == 0) {
-            return Status::InvalidParam("invalid GPU KV buffer size at index({})", i);
-        }
-    }
-    return Status::OK();
-}
-
-Status ScopedDeviceBufferRegistration::Register(const std::vector<uintptr_t>& addrs,
-                                                const std::vector<size_t>& sizes)
-{
-    auto status = Validate(addrs, sizes);
-    if (status.Failure()) { return status; }
-    for (size_t i = 0; i < addrs.size(); ++i) {
-        auto s = GdrMrBuffer::GdrRegisterDeviceBuffer(reinterpret_cast<void*>(addrs[i]), sizes[i]);
-        if (s.Success()) {
-            buffers_.push_back({static_cast<uint64_t>(addrs[i]), sizes[i]});
-            continue;
-        }
-        UC_WARN("Failed({}) to pre-register GPU KV buffer at addr(0x{:x}) with size({}).", s,
-                addrs[i], sizes[i]);
-    }
-    return Status::OK();
 }
 
 }  // namespace UC::Trans

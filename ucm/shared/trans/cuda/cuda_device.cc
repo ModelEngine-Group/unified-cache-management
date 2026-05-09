@@ -23,10 +23,13 @@
  * */
 #include <cuda_runtime.h>
 #include "cuda_buffer.h"
-#include "gdr/gdr_stream_factory.h"
 #include "cuda_sm_stream.h"
 #include "cuda_stream.h"
 #include "trans/device.h"
+
+#if defined(UCM_ENABLE_GDR_STREAM)
+#include "gdr/gdr_stream.h"
+#endif
 
 namespace UC::Trans {
 
@@ -61,7 +64,19 @@ std::shared_ptr<Stream> Device::MakeSharedStream()
     return nullptr;
 }
 
-std::unique_ptr<Stream> Device::MakeGdrStream() { return GdrStreamFactory::Make(); }
+std::unique_ptr<Stream> Device::MakeGdrStream()
+{
+#if defined(UCM_ENABLE_GDR_STREAM)
+    std::unique_ptr<Stream> stream = nullptr;
+    try {
+        stream = std::make_unique<GdrStream>();
+    } catch (...) {
+        return nullptr;
+    }
+    if (stream->Setup().Success()) { return stream; }
+#endif
+    return nullptr;
+}
 
 std::unique_ptr<Stream> Device::MakeSMStream()
 {

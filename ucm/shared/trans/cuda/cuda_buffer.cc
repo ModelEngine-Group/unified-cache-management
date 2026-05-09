@@ -22,7 +22,7 @@
  * SOFTWARE.
  * */
 #include "cuda_buffer.h"
-#include "gdr/gdr_buffer_registry.h"
+#include "gdr/gdr_mr_buffer.h"
 
 #include <cuda_runtime.h>
 

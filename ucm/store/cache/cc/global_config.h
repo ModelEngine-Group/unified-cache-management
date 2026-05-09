@@ -49,6 +49,7 @@ struct Config {
     bool cacheLoadBackendOnly{false};
     std::vector<uintptr_t> gpuKvBufferAddrs{};
     std::vector<size_t> gpuKvBufferSizes{};
+    std::vector<std::string> gdrNicList{};
 };
 
 }  // namespace UC::CacheStore

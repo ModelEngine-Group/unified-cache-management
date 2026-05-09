@@ -57,6 +57,7 @@ class UcmPcStore(UcmKVStoreBase):
             param.transferScatterGatherEnable = config.get("use_scatter_gatter", False)
             param.gpuKvBufferAddrs = config.get("gpu_kv_buffer_addrs", [])
             param.gpuKvBufferSizes = config.get("gpu_kv_buffer_sizes", [])
+            param.gdrNicList = config.get("gdr_nic_list", [])
         ret = self.store.Setup(param)
         if ret != 0:
             msg = f"Failed to initialize ucmpcstore, errcode: {ret}."
