@@ -27,6 +27,7 @@
 #include "aio_impl.h"
 #include "block_operator.h"
 #include "logger/logger.h"
+#include "metrics_api.h"
 #include "template/task_wrapper.h"
 #include "trans_task.h"
 
@@ -51,17 +52,45 @@ public:
     }
 
 private:
+    template <bool dump>
+    static void UpdateWaitMetrics(double wait)
+    {
+        UC::Metrics::UpdateStats(dump ? "posix_dump_wait_duration_ms"
+                                      : "posix_load_wait_duration_ms",
+                                 wait * 1e3);
+    }
+    template <bool dump>
+    static void UpdateIoMetrics(double tp, size_t ioBytes)
+    {
+        auto cost = NowTime::Now() - tp;
+        auto bwGbps = cost > 0 ? static_cast<double>(ioBytes) / cost / 1e9 : 0.0;
+        UC::Metrics::UpdateStats(dump ? "posix_h2s_duration_ms"
+                                      : "posix_s2h_duration_ms",
+                                 cost * 1e3);
+        UC::Metrics::UpdateStats(dump ? "posix_h2s_bandwidth_gbps"
+                                      : "posix_s2h_bandwidth_gbps",
+                                 bwGbps);
+    }
+    template <bool dump>
+    static void UpdateFailureMetrics()
+    {
+        UC::Metrics::UpdateStats(dump ? "posix_dump_failures_total"
+                                      : "posix_load_failures_total",
+                                 1.0);
+    }
     void CommitBlock(Detail::BlockId id, bool success)
     {
         blockOperator_.Submit(BlockOperator::CommitTask{std::move(id), success});
     }
     template <bool dump>
     void OnIoCallback(const Detail::TaskHandle& tid, WaiterPtr w, int32_t fd, bool last,
-                      const Detail::BlockId& id, const AioImpl::Result& result)
+                      const Detail::BlockId& id, double tp, const AioImpl::Result& result)
     {
+        UpdateIoMetrics<dump>(tp, shardSize_);
         if (result.error != 0) {
             UC_ERROR("Failed({}) to do io on block({}).", result.error, id);
             failureSet_.Insert(tid);
+            UpdateFailureMetrics<dump>();
         }
         ::close(fd);
         if constexpr (dump) {
@@ -71,12 +100,16 @@ private:
     }
     template <bool dump>
     void OnOpenCallback(const Detail::TaskHandle& tid, WaiterPtr w, const Detail::Shard& shard,
-                        const BlockOperator::OpenResult& result)
+                        double tp, const BlockOperator::OpenResult& result)
     {
         const auto last = shard.index + 1 == nShardPerBlock_;
         const auto& id = shard.owner;
-        auto handleFailure = [&](int32_t error, int32_t fd) {
-            if (error != 0) { failureSet_.Insert(tid); }
+        auto handleFailure = [&](int32_t fd, bool recordMetrics) {
+            if (recordMetrics) {
+                failureSet_.Insert(tid);
+                UpdateIoMetrics<dump>(tp, shardSize_);
+                UpdateFailureMetrics<dump>();
+            }
             if (fd >= 0) { ::close(fd); }
             if constexpr (dump) {
                 if (last) { CommitBlock(id, false); }
@@ -85,22 +118,20 @@ private:
         };
         if (result.error != 0) {
             UC_ERROR("Failed({}) to do open on block({}).", result.error, shard.owner);
-            failureSet_.Insert(tid);
-        }
-        if (failureSet_.Contains(tid)) {
-            handleFailure(0, result.fd);
+            handleFailure(result.fd, true);
             return;
         }
+        if (failureSet_.Contains(tid)) { handleFailure(result.fd, false); return; }
         AioImpl::Io io;
         io.fd = result.fd;
         io.offset = shard.index * shardSize_;
         io.length = shardSize_;
         io.buffer = shard.addrs.front();
-        io.callback = [this, tid, w, fd = result.fd, last, id](AioImpl::Result ioResult) {
-            OnIoCallback<dump>(tid, w, fd, last, id, ioResult);
+        io.callback = [this, tid, w, fd = result.fd, last, id, tp](AioImpl::Result ioResult) {
+            OnIoCallback<dump>(tid, w, fd, last, id, tp, ioResult);
         };
         auto status = dump ? aio_.WriteAsync(std::move(io)) : aio_.ReadAsync(std::move(io));
-        if (status.Failure()) { handleFailure(-1, result.fd); }
+        if (status.Failure()) { handleFailure(result.fd, true); }
     }
     template <bool dump>
     void Dispatch(TaskPtr t, WaiterPtr w)
@@ -115,9 +146,11 @@ private:
             task.id = shard.owner;
             task.activated = dump;
             task.flags = flags;
+            const auto tp = NowTime::Now();
             task.callback = [this, tid = t->id, w,
-                             shard = std::ref(t->desc[i])](BlockOperator::OpenResult result) {
-                OnOpenCallback<dump>(tid, w, shard, result);
+                             shard = std::ref(t->desc[i]),
+                             tp](BlockOperator::OpenResult result) {
+                OnOpenCallback<dump>(tid, w, shard, tp, result);
             };
             tasks.push_back(std::move(task));
         }
@@ -131,14 +164,17 @@ private:
         const auto size = shardSize_ * num;
         const auto tp = w->startTp;
         UC_DEBUG("Posix task({},{},{},{}) dispatching.", id, brief, num, size);
+        const auto wait = NowTime::Now() - tp;
         w->SetEpilog([id, brief = std::move(brief), num, size, tp] {
             auto cost = NowTime::Now() - tp;
             UC_DEBUG("Posix task({},{},{},{}) finished, cost {:.3f}ms.", id, brief, num, size,
                      cost * 1e3);
         });
         if (t->type == TransTask::Type::DUMP) {
+            UpdateWaitMetrics<true>(wait);
             Dispatch<true>(t, w);
         } else {
+            UpdateWaitMetrics<false>(wait);
             Dispatch<false>(t, w);
         }
     }
