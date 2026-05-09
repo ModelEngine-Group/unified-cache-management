@@ -314,8 +314,12 @@ void GdrStream::SchedulerLoop()
 GdrStream::SubmitResult GdrStream::SubmitCopyOperationFromQueue(const Operation& op)
 {
     uint64_t reqId = 0;
-    const auto rc = channel_->GdrMemcpyAsync(op.dst, op.src, op.size, op.kind, &reqId);
     std::lock_guard<std::mutex> lock{mutex_};
+    if (HasAsyncError() || stopRequested_) { return SubmitResult::Error; }
+
+    // Keep the submit and reqId bookkeeping atomic from the stream's point of view.
+    // Fast completions can otherwise be polled before reqId is visible here.
+    const auto rc = channel_->GdrMemcpyAsync(op.dst, op.src, op.size, op.kind, &reqId);
     if (rc == 0) {
         if (!operationsQueue_.empty()
             && operationsQueue_.front().operationId == op.operationId) {
