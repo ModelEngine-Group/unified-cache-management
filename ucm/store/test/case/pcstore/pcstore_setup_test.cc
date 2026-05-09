@@ -24,7 +24,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <gtest/gtest.h>
-#include "api/pcstore.h"
+#include "pcstore.h"
 #include "detail/random.h"
 
 class UCPcStoreSetupTest : public testing::Test {
