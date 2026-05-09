@@ -41,32 +41,54 @@ namespace {
 
 struct Args {
     int32_t deviceId{0};
-    std::string nicName{};
+    std::string nicName{"mlx5_0"};
     std::string direction{"both"};
     size_t minSize{4 * 1024};
     size_t maxSize{64 * 1024 * 1024};
-    size_t targetBytes{512 * 1024 * 1024};
-    size_t minIters{8};
-    size_t maxIters{8192};
-    size_t fixedIters{0};
-    size_t warmup{2};
-    size_t repeats{5};
+    size_t sizeMultiplier{4};
+    size_t h2dWarmup{100};
+    size_t h2dIters{1000};
+    size_t d2hWarmup{100};
+    size_t d2hIters{1000};
 };
+
+struct DirectionBench {
+    std::string name;
+    bool h2d;
+    size_t warmup;
+    size_t iters;
+};
+
+struct Result {
+    size_t bytes;
+    size_t warmup;
+    size_t iters;
+    double totalUs;
+    double bwGBs;
+};
+
+double NowUs()
+{
+    using namespace std::chrono;
+    return duration_cast<nanoseconds>(high_resolution_clock::now().time_since_epoch()).count() /
+        1e3;
+}
 
 void PrintUsage(const char* prog)
 {
     std::cout << "Usage: " << prog << " [options]\n"
-              << "  --device-id N        CUDA visible device id, default 0\n"
-              << "  --nic-name NAME      Set UCM_GDR_NIC_NAME before opening GDR stream\n"
-              << "  --direction DIR      h2d, d2h, or both, default both\n"
-              << "  --min-size SIZE      Default 4KB\n"
-              << "  --max-size SIZE      Default 64MB\n"
-              << "  --target-bytes SIZE  Total bytes per size when --iters is not set, default 512MB\n"
-              << "  --min-iters N        Default 8\n"
-              << "  --max-iters N        Default 8192\n"
-              << "  --iters N            Fixed async copy count for each size\n"
-              << "  --warmup N           Default 2\n"
-              << "  --repeats N          Default 5\n";
+              << "  --device-id N          CUDA visible device id, default 0\n"
+              << "  --nic-name NAME        RDMA NIC name, default mlx5_0\n"
+              << "  --direction DIR        h2d, d2h, or both, default both\n"
+              << "  --min-size SIZE        Default 4KB\n"
+              << "  --max-size SIZE        Default 64MB\n"
+              << "  --size-multiplier N    Size sweep multiplier, default 4\n"
+              << "  --warmup N             Set both H2D and D2H warmup count, default 100\n"
+              << "  --iters N              Set both H2D and D2H measured issue count, default 1000\n"
+              << "  --h2d-warmup N         H2D warmup count\n"
+              << "  --h2d-iters N          H2D measured issue count\n"
+              << "  --d2h-warmup N         D2H warmup count\n"
+              << "  --d2h-iters N          D2H measured issue count\n";
 }
 
 std::string ToLower(std::string value)
@@ -89,6 +111,7 @@ size_t ParseSize(std::string value)
         }
     }
     if (number.empty()) { throw std::invalid_argument("invalid size: " + value); }
+
     double factor = 1.0;
     if (suffix.empty() || suffix == "b") {
         factor = 1.0;
@@ -104,11 +127,16 @@ size_t ParseSize(std::string value)
     return static_cast<size_t>(std::stod(number) * factor);
 }
 
-size_t ParseSizeT(const char* value)
+size_t ParseNonNegative(const char* value)
 {
-    const auto parsed = std::stoull(value);
+    return static_cast<size_t>(std::stoull(value));
+}
+
+size_t ParsePositive(const char* value)
+{
+    const size_t parsed = ParseNonNegative(value);
     if (parsed == 0) { throw std::invalid_argument("numeric argument must be > 0"); }
-    return static_cast<size_t>(parsed);
+    return parsed;
 }
 
 Args ParseArgs(int argc, char** argv)
@@ -133,18 +161,24 @@ Args ParseArgs(int argc, char** argv)
             args.minSize = ParseSize(next());
         } else if (key == "--max-size") {
             args.maxSize = ParseSize(next());
-        } else if (key == "--target-bytes") {
-            args.targetBytes = ParseSize(next());
-        } else if (key == "--min-iters") {
-            args.minIters = ParseSizeT(next());
-        } else if (key == "--max-iters") {
-            args.maxIters = ParseSizeT(next());
-        } else if (key == "--iters") {
-            args.fixedIters = ParseSizeT(next());
+        } else if (key == "--size-multiplier") {
+            args.sizeMultiplier = ParsePositive(next());
         } else if (key == "--warmup") {
-            args.warmup = ParseSizeT(next());
-        } else if (key == "--repeats") {
-            args.repeats = ParseSizeT(next());
+            const size_t warmup = ParseNonNegative(next());
+            args.h2dWarmup = warmup;
+            args.d2hWarmup = warmup;
+        } else if (key == "--iters") {
+            const size_t iters = ParsePositive(next());
+            args.h2dIters = iters;
+            args.d2hIters = iters;
+        } else if (key == "--h2d-warmup") {
+            args.h2dWarmup = ParseNonNegative(next());
+        } else if (key == "--h2d-iters") {
+            args.h2dIters = ParsePositive(next());
+        } else if (key == "--d2h-warmup") {
+            args.d2hWarmup = ParseNonNegative(next());
+        } else if (key == "--d2h-iters") {
+            args.d2hIters = ParsePositive(next());
         } else {
             throw std::invalid_argument("unknown argument: " + key);
         }
@@ -154,6 +188,9 @@ Args ParseArgs(int argc, char** argv)
     }
     if (args.minSize == 0 || args.maxSize < args.minSize) {
         throw std::invalid_argument("invalid size range");
+    }
+    if (args.sizeMultiplier < 2) {
+        throw std::invalid_argument("--size-multiplier must be >= 2");
     }
     return args;
 }
@@ -181,95 +218,73 @@ void CheckCuda(cudaError_t ret, const char* op)
     }
 }
 
-size_t ChooseIters(size_t size, const Args& args)
+std::vector<size_t> BuildSizes(const Args& args)
 {
-    if (args.fixedIters != 0) { return args.fixedIters; }
-    const size_t byTarget = (args.targetBytes + size - 1) / size;
-    return std::max(args.minIters, std::min(args.maxIters, byTarget));
-}
-
-std::vector<void*> MakeDevicePtrs(void* base, size_t size, size_t number)
-{
-    std::vector<void*> ptrs;
-    ptrs.reserve(number);
-    auto* bytes = static_cast<uint8_t*>(base);
-    for (size_t i = 0; i < number; ++i) { ptrs.push_back(bytes + i * size); }
-    return ptrs;
-}
-
-void IssueCopy(UC::Trans::Stream& stream, const std::string& direction, void* host,
-               std::vector<void*>& devicePtrs, size_t size)
-{
-    if (direction == "h2d") {
-        CheckStatus(stream.HostToDeviceAsync(host, devicePtrs.data(), size, devicePtrs.size()),
-                    "HostToDeviceAsync");
-        return;
+    std::vector<size_t> sizes;
+    for (size_t size = args.minSize; size <= args.maxSize; size *= args.sizeMultiplier) {
+        sizes.push_back(size);
+        if (size > args.maxSize / args.sizeMultiplier) { break; }
     }
-    CheckStatus(stream.DeviceToHostAsync(devicePtrs.data(), host, size, devicePtrs.size()),
-                "DeviceToHostAsync");
+    return sizes;
 }
 
-struct Result {
-    std::string direction;
-    size_t size;
-    size_t iters;
-    size_t totalBytes;
-    double bestMs;
-    double avgMs;
-    double bestGBs;
-    double avgGBs;
-};
-
-Result RunOne(UC::Trans::Device& device, UC::Trans::Stream& stream, const std::string& direction,
-              size_t size, size_t iters, const Args& args)
+void IssueOne(UC::Trans::Stream& stream, const DirectionBench& bench, void* host, void* device,
+              size_t bytes)
 {
-    const size_t totalBytes = size * iters;
-    auto buffer = device.MakeBuffer();
-    if (!buffer) { throw std::runtime_error("MakeBuffer returned nullptr"); }
-    auto host = buffer->MakeHostBuffer(totalBytes);
-    auto gpu = buffer->MakeDeviceBuffer(totalBytes);
-    if (!host || !gpu) { throw std::runtime_error("failed to allocate host/device buffer"); }
-
-    CheckCuda(cudaMemset(gpu.get(), 0, totalBytes), "cudaMemset");
-    std::vector<void*> devicePtrs = MakeDevicePtrs(gpu.get(), size, iters);
-
-    for (size_t i = 0; i < args.warmup; ++i) {
-        IssueCopy(stream, direction, host.get(), devicePtrs, size);
-        CheckStatus(stream.Synchronized(), "Synchronized(warmup)");
+    if (bench.h2d) {
+        CheckStatus(stream.HostToDeviceAsync(host, device, bytes), "HostToDeviceAsync");
+    } else {
+        CheckStatus(stream.DeviceToHostAsync(device, host, bytes), "DeviceToHostAsync");
     }
-
-    std::vector<double> elapsedMs;
-    elapsedMs.reserve(args.repeats);
-    for (size_t i = 0; i < args.repeats; ++i) {
-        const auto start = std::chrono::steady_clock::now();
-        IssueCopy(stream, direction, host.get(), devicePtrs, size);
-        CheckStatus(stream.Synchronized(), "Synchronized");
-        const auto end = std::chrono::steady_clock::now();
-        elapsedMs.push_back(std::chrono::duration<double, std::milli>(end - start).count());
-    }
-    const auto bestIt = std::min_element(elapsedMs.begin(), elapsedMs.end());
-    double sum = 0.0;
-    for (double value : elapsedMs) { sum += value; }
-    const double bestMs = *bestIt;
-    const double avgMs = sum / static_cast<double>(elapsedMs.size());
-    return Result{direction,
-                  size,
-                  iters,
-                  totalBytes,
-                  bestMs,
-                  avgMs,
-                  static_cast<double>(totalBytes) / (bestMs / 1000.0) / 1e9,
-                  static_cast<double>(totalBytes) / (avgMs / 1000.0) / 1e9};
 }
 
-void PrintResult(const Result& result)
+double RunBatch(UC::Trans::Stream& stream, const DirectionBench& bench, void* host, void* device,
+                size_t bytes, size_t count, bool measure)
 {
-    std::cout << std::setw(3) << result.direction << " " << std::setw(8)
-              << FormatSize(result.size) << " " << std::setw(8) << result.iters << " "
-              << std::setw(9) << FormatSize(result.totalBytes) << " " << std::setw(11)
-              << std::fixed << std::setprecision(3) << result.bestMs << " " << std::setw(11)
-              << result.avgMs << " " << std::setw(12) << result.bestGBs << " " << std::setw(12)
-              << result.avgGBs << "\n";
+    if (count == 0) { return 0.0; }
+
+    const double t0 = measure ? NowUs() : 0.0;
+    for (size_t i = 0; i < count; ++i) { IssueOne(stream, bench, host, device, bytes); }
+    CheckStatus(stream.Synchronized(), measure ? "Synchronized" : "Synchronized(warmup)");
+    if (!measure) { return 0.0; }
+    return NowUs() - t0;
+}
+
+Result RunOne(UC::Trans::Stream& stream, const DirectionBench& bench, void* host, void* device,
+              size_t bytes)
+{
+    RunBatch(stream, bench, host, device, bytes, bench.warmup, false);
+    const double totalUs = RunBatch(stream, bench, host, device, bytes, bench.iters, true);
+    const double totalBytes = static_cast<double>(bytes) * static_cast<double>(bench.iters);
+    const double bwGBs = totalUs > 0.0 ? (totalBytes / 1e9) / (totalUs / 1e6) : 0.0;
+    return Result{bytes, bench.warmup, bench.iters, totalUs, bwGBs};
+}
+
+void PrintTable(const DirectionBench& bench, const std::vector<Result>& results)
+{
+    std::cout << "\n--- " << bench.name << " GdrStream Bandwidth ---\n";
+    std::cout << "size          warmup     iters       total      time_us     GB/s\n";
+    std::cout << "------------  -------  --------  ----------  ----------  -------\n";
+    for (const auto& row : results) {
+        std::cout << std::left << std::setw(12) << FormatSize(row.bytes) << std::right
+                  << "  " << std::setw(7) << row.warmup << "  " << std::setw(8)
+                  << row.iters << "  " << std::setw(10)
+                  << FormatSize(row.bytes * row.iters) << "  " << std::setw(10)
+                  << std::fixed << std::setprecision(2) << row.totalUs << "  "
+                  << std::setw(7) << std::setprecision(2) << row.bwGBs << "\n";
+    }
+}
+
+std::vector<DirectionBench> BuildDirectionBenches(const Args& args)
+{
+    std::vector<DirectionBench> benches;
+    if (args.direction == "both" || args.direction == "h2d") {
+        benches.push_back(DirectionBench{"Host->Device", true, args.h2dWarmup, args.h2dIters});
+    }
+    if (args.direction == "both" || args.direction == "d2h") {
+        benches.push_back(DirectionBench{"Device->Host", false, args.d2hWarmup, args.d2hIters});
+    }
+    return benches;
 }
 
 }  // namespace
@@ -278,11 +293,13 @@ int main(int argc, char** argv)
 {
     try {
         const Args args = ParseArgs(argc, argv);
-        if (!args.nicName.empty()) {
-            if (setenv("UCM_GDR_NIC_NAME", args.nicName.c_str(), 1) != 0) {
-                throw std::runtime_error("failed to set UCM_GDR_NIC_NAME");
-            }
+        if (setenv("UCM_GDR_NIC_NAME", args.nicName.c_str(), 1) != 0) {
+            throw std::runtime_error("failed to set UCM_GDR_NIC_NAME");
         }
+
+        CheckCuda(cudaSetDevice(args.deviceId), "cudaSetDevice");
+        cudaDeviceProp prop{};
+        CheckCuda(cudaGetDeviceProperties(&prop, args.deviceId), "cudaGetDeviceProperties");
 
         UC::Trans::Device device;
         CheckStatus(device.Setup(args.deviceId), "Device::Setup");
@@ -292,22 +309,31 @@ int main(int argc, char** argv)
                 "MakeGdrStream returned nullptr; build with UCM_ENABLE_GDR_STREAM=ON");
         }
 
-        std::vector<std::string> directions;
-        if (args.direction == "both") {
-            directions = {"h2d", "d2h"};
-        } else {
-            directions = {args.direction};
-        }
+        const auto sizes = BuildSizes(args);
+        const auto benches = BuildDirectionBenches(args);
 
-        std::cout << "device: " << args.deviceId << ", nic: "
-                  << (args.nicName.empty() ? "<default>" : args.nicName) << "\n";
-        std::cout << "dir     size    iters     total     best_ms      avg_ms    best_GB/s     avg_GB/s\n";
-        for (size_t size = args.minSize; size <= args.maxSize; size *= 2) {
-            const size_t iters = ChooseIters(size, args);
-            for (const auto& direction : directions) {
-                PrintResult(RunOne(device, *stream, direction, size, iters, args));
+        auto buffer = device.MakeBuffer();
+        if (!buffer) { throw std::runtime_error("MakeBuffer returned nullptr"); }
+        auto host = buffer->MakeHostBuffer(args.maxSize);
+        auto gpu = buffer->MakeDeviceBuffer(args.maxSize);
+        if (!host || !gpu) { throw std::runtime_error("failed to allocate host/device buffer"); }
+        CheckCuda(cudaMemset(gpu.get(), 0, args.maxSize), "cudaMemset");
+
+        std::cout << "=================================================================\n";
+        std::cout << "  UCM GdrStream Bandwidth  --  GPU " << args.deviceId << "  NIC "
+                  << args.nicName << "\n";
+        std::cout << "=================================================================\n";
+        std::cout << "GPU: " << prop.name << "\n";
+        std::cout << "Mode: async issue batch + one stream synchronize\n";
+        std::cout << "Buffer MR window: " << FormatSize(args.maxSize) << "\n";
+
+        for (const auto& bench : benches) {
+            std::vector<Result> results;
+            results.reserve(sizes.size());
+            for (size_t bytes : sizes) {
+                results.push_back(RunOne(*stream, bench, host.get(), gpu.get(), bytes));
             }
-            if (size > args.maxSize / 2) { break; }
+            PrintTable(bench, results);
         }
         return 0;
     } catch (const std::exception& e) {
