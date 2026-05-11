@@ -159,6 +159,22 @@ dashboard's header carries an "Other UCM dashboards" dropdown that
 auto-discovers the others by tag, so you can hop between them while
 preserving the time range and the `model_name` template variable.
 
+### View toggle (Aggregated vs Per Worker)
+
+Each dashboard's header has a `View` selector with two values:
+
+- **Aggregated** (default): every panel collapses worker breakdown. A
+  timeseries panel shows a single line; a histogram-quantile panel
+  shows 4 lines (p50 / p90 / p99 / avg). Use this when you want to
+  see the service-level trend without per-worker noise.
+- **Per Worker**: panels split by `worker_id`. Each worker gets its
+  own line (or 4 quantile lines per worker for histogram panels).
+  Use this when you suspect a specific worker is misbehaving.
+
+Heatmap panels and panels grouped by other dimensions (e.g.
+`finished_reason`) ignore the toggle — their grouping is already
+aggregated over workers by design.
+
 ## Available Metrics
 
 UCM exposes various metrics to monitor its performance. The following table lists all available metrics organized by category:

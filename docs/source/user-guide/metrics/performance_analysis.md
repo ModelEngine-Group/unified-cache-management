@@ -122,7 +122,7 @@ first one that's red usually points to the actual bottleneck.
 | 2 | `ucm:layerwise_wait_blocking_ms` (layerwise only) | Is the load/forward overlap working? |
 | 3 | `ucm:cache_load_duration_ms` (avg or p99) | How slow are loads end-to-end? |
 | 4 | `ucm:cache_load_backend_wait_duration_ms` | If load is slow: is it Posix's fault? |
-| 5a | `rate(ucm:posix_s2h_bytes_total[5m]) / 1e9` (per worker) | If Posix is slow: is the disk actually saturated? |
+| 5a | `rate(ucm:posix_s2h_bytes_total[5m]) / 1e9` (aggregated) | If Posix is slow: is the disk actually saturated? |
 | 5b | `ucm:posix_s2h_bandwidth_gbps` (per shard) | If 5a is low: is each IO fast but the worker has gaps, or is each IO itself slow? |
 | 6 | `ucm:posix_load_wait_duration_ms` | Or is it queueing on the worker pool? |
 | 7 | `ucm:layerwise_save_tail_total_ms` | Is dump tail eating budget? |
@@ -191,7 +191,7 @@ chain.
 
 **Metric signature.**
 - `cache_load_backend_wait_duration_ms` > `cache_h2d_duration_ms`
-- `rate(ucm:posix_s2h_bytes_total[5m]) / 1e9` (per-worker actual GB/s)
+- `rate(ucm:posix_s2h_bytes_total[5m]) / 1e9` (aggregated actual GB/s)
   well below disk spec (e.g. < 1 GB/s on an NVMe rated for 3 GB/s)
 - AND/OR `posix_load_wait_duration_ms` high (queue buildup)
 
@@ -199,44 +199,44 @@ chain.
 
 | If … | Then root cause | Fix |
 |------|-----------------|-----|
-| Per-worker BW low, per-shard BW also low | Per-IO latency is bad — small IOs, no `O_DIRECT`, slow filesystem | Try `io_direct: true`, larger `tensor_size` / `shard_size` |
-| Per-worker BW low, per-shard BW high, wait low | IO is fast per call but the worker is mostly idle — upstream is not feeding it | Re-check §3.2 components; usually Cache D2H / H2D is the actual bottleneck |
-| Per-worker BW low, per-shard BW high, wait high | Workers can't drain fast enough (queue saturated, parallel IOs not enough) | `posix_data_trans_concurrency` ↑ |
-| Per-worker BW near disk spec, wait high | Burst arrival exceeds steady disk throughput | Add Cache capacity to absorb bursts; throttle inbound rate |
-| Per-worker BW near disk spec, wait low | Posix is fine; the issue is upstream | Re-check §3.2 components |
+| Aggregated BW low, per-shard BW also low | Per-IO latency is bad — small IOs, no `O_DIRECT`, slow filesystem | Try `io_direct: true`, larger `tensor_size` / `shard_size` |
+| Aggregated BW low, per-shard BW high, wait low | IO is fast per call but workers are mostly idle — upstream is not feeding them | Re-check §3.2 components; usually Cache D2H / H2D is the actual bottleneck |
+| Aggregated BW low, per-shard BW high, wait high | Workers can't drain fast enough (queue saturated, parallel IOs not enough) | `posix_data_trans_concurrency` ↑ |
+| Aggregated BW near disk spec, wait high | Burst arrival exceeds steady disk throughput | Add Cache capacity to absorb bursts; throttle inbound rate |
+| Aggregated BW near disk spec, wait low | Posix is fine; the issue is upstream | Re-check §3.2 components |
 
-> **What's the difference between (per shard) and (per worker)?**
+> **What's the difference between (per shard) and (aggregated)?**
 >
 > - **(per shard)** = `posix_*_bandwidth_gbps` histogram. Each sample is
 >   the throughput of one shard IO call (bytes / wall_time_of_that_call /
 >   1e9). Reflects **single-IO response speed** and **long-tail latency**.
 >   Multi-thread parallelism does **not** aggregate — 8 threads each at
 >   1 GB/s still show as 1 GB/s, not 8.
-> - **(per worker)** = `rate(posix_*_bytes_total[interval]) / 1e9`,
->   broken down by `worker_id`. Reflects **actual GB/s each worker
->   process is pushing through posix**. Multi-thread IO aggregates
->   naturally; idle gaps between IOs are included in the wall-clock
->   denominator.
+> - **(aggregated)** = `rate(posix_*_bytes_total[interval]) / 1e9`.
+>   Reflects **actual GB/s the service is pushing through posix**.
+>   Multi-thread IO aggregates naturally; idle gaps between IOs are
+>   included in the wall-clock denominator. Toggle the dashboard's
+>   `View` selector to "Per Worker" to break it down by `worker_id`.
 >
 > Diagnostic mapping:
-> - "Is the disk saturated / where is the worker bottleneck?" → **per worker**
-> - "Are there slow individual IOs / a long tail?" → **per shard** p99 / distribution
+> - "Is the disk saturated / where is the bottleneck?" → **(aggregated)**
+> - "Are there slow individual IOs / a long tail?" → **(per shard)** p99 / distribution
 
 The same dichotomy applies to the **Cache** stage bandwidth panels,
 with the per-event grain being a task instead of a single IO:
 
-> **Cache Bandwidth (per task) vs Cache Bandwidth (per worker)**
+> **Cache Bandwidth (per task) vs Cache Bandwidth (aggregated)**
 >
 > - **(per task)** = `cache_*_bandwidth_gbps` histogram. Each sample
 >   is one Cache stage task's throughput (`total_bytes_in_task /
 >   task_wall_time / 1e9`). One task = one `start_load_kv` /
 >   `wait_for_save` batch. Aggregates shards within a task; does NOT
 >   aggregate across concurrent tasks.
-> - **(per worker)** = `rate(cache_*_bytes_total[interval]) / 1e9`,
->   broken down by `worker_id`. Reflects **actual GB/s each worker
->   process is pushing through the Cache stage**. Concurrent tasks
->   aggregate; idle gaps between tasks land in the wall-clock
->   denominator.
+> - **(aggregated)** = `rate(cache_*_bytes_total[interval]) / 1e9`.
+>   Reflects **actual GB/s the service is pushing through the Cache
+>   stage**. Concurrent tasks aggregate; idle gaps between tasks land
+>   in the wall-clock denominator. Toggle the dashboard's `View`
+>   selector to "Per Worker" to break it down by `worker_id`.
 >
 > The diagnostic mapping mirrors posix: "Cache layer's actual
 > throughput / saturation" → **per worker**; "slow individual tasks
