@@ -100,7 +100,12 @@ ucm_connectors:
   Whether to enable direct I/O.
 
 * **cache_load_backend_only** (optional, default: `false`):
-  Set to `true` to make lookup and load use the backend while keeping Cache Store Device-to-Host and Host-to-Device buffers.
+  Set to `true` to make lookup and load bypass Cache Store hits and query/load from the backend store.
+  Cache Store is still kept in the pipeline as the transfer stage: dump still copies KV from device
+  to Cache Store's pinned host buffer before backend storage writes, and load still reads backend
+  data into that host buffer before copying it back to device. This is useful for backend
+  performance testing because it avoids in-memory cache hits without removing the D2H/H2D staging
+  path.
 
 * **stream_number** *(optional, default: 8)*  
   Number of threads used for data transfer between the Host and Storage.
