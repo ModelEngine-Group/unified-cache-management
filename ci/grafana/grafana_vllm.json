@@ -116,7 +116,7 @@
         "legend": {
           "calcs": [],
           "displayMode": "list",
-          "height": 240,
+          "maxHeight": "240px",
           "placement": "bottom",
           "showLegend": true
         },
@@ -282,7 +282,7 @@
         "legend": {
           "calcs": [],
           "displayMode": "list",
-          "height": 240,
+          "maxHeight": "240px",
           "placement": "bottom",
           "showLegend": true
         },
@@ -402,7 +402,7 @@
         "legend": {
           "calcs": [],
           "displayMode": "list",
-          "height": 240,
+          "maxHeight": "240px",
           "placement": "bottom",
           "showLegend": true
         },
@@ -569,7 +569,7 @@
         "legend": {
           "calcs": [],
           "displayMode": "list",
-          "height": 240,
+          "maxHeight": "240px",
           "placement": "bottom",
           "showLegend": true
         },
@@ -689,7 +689,7 @@
         "legend": {
           "calcs": [],
           "displayMode": "list",
-          "height": 240,
+          "maxHeight": "240px",
           "placement": "bottom",
           "showLegend": true
         },
@@ -856,7 +856,7 @@
         "legend": {
           "calcs": [],
           "displayMode": "list",
-          "height": 240,
+          "maxHeight": "240px",
           "placement": "bottom",
           "showLegend": true
         },
@@ -1137,7 +1137,7 @@
         "legend": {
           "calcs": [],
           "displayMode": "list",
-          "height": 240,
+          "maxHeight": "240px",
           "placement": "bottom",
           "showLegend": true
         },
@@ -1239,7 +1239,7 @@
         "legend": {
           "calcs": [],
           "displayMode": "list",
-          "height": 240,
+          "maxHeight": "240px",
           "placement": "bottom",
           "showLegend": true
         },
@@ -1340,7 +1340,7 @@
         "legend": {
           "calcs": [],
           "displayMode": "list",
-          "height": 240,
+          "maxHeight": "240px",
           "placement": "bottom",
           "showLegend": true
         },
@@ -1454,7 +1454,7 @@
         "legend": {
           "calcs": [],
           "displayMode": "list",
-          "height": 240,
+          "maxHeight": "240px",
           "placement": "bottom",
           "showLegend": true
         },
