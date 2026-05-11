@@ -142,6 +142,7 @@ private:
 
     std::atomic<uint64_t> nextOperationId_{1};
     std::atomic<uint64_t> lastCompletedOperationId_{0};
+    std::atomic<uint64_t> inflightCopies_{0};
     std::atomic<uint64_t> completionSignal_{0};  // Changes whenever the scheduler can retry submit.
     int32_t deviceId_{-1};
     std::string nicName_{"mlx5_0"};

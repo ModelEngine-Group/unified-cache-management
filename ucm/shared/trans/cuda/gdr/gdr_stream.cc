@@ -352,13 +352,7 @@ void GdrStream::SchedulerLoop()
                     if (submitResult == SubmitResult::Submitted) { break; }
                     if (submitResult == SubmitResult::Error) { return; }
 
-                    const auto signalBefore =
-                        completionSignal_.load(std::memory_order_acquire);
-                    std::unique_lock<std::mutex> lock{mutex_};
-                    cv_.wait(lock, [this, signalBefore] {
-                        return stopRequested_.load(std::memory_order_acquire) || HasAsyncError()
-                            || completionSignal_.load(std::memory_order_acquire) != signalBefore;
-                    });
+                    std::this_thread::yield();
                     if (stopRequested_.load(std::memory_order_acquire) || HasAsyncError()) {
                         return;
                     }
@@ -381,9 +375,13 @@ GdrStream::SubmitResult GdrStream::SubmitCopyOperationFromQueue(const Operation&
         return SubmitResult::Submitted;
     }
 
+    const auto oldInflight = inflightCopies_.fetch_add(1, std::memory_order_acq_rel);
+    if (oldInflight == 0) { channel_->InterruptCompletionWait(); }
+
     const auto rc =
         channel_->GdrMemcpyAsyncWithReqId(op.dst, op.src, op.size, op.kind, op.operationId);
     if (rc == 0) { return SubmitResult::Submitted; }
+    inflightCopies_.fetch_sub(1, std::memory_order_acq_rel);
     if (rc == -EAGAIN) { return SubmitResult::Waiting; }
 
     const auto status = MakeGdrStatus("GdrMemcpyAsyncWithReqId", rc);
@@ -400,7 +398,44 @@ void GdrStream::CompletionLoop()
     completionThreadReady_.store(true, std::memory_order_release);
     cv_.notify_all();
 
+    auto drainCompletions = [this](bool* madeProgress) {
+        for (;;) {
+            uint64_t reqId = 0;
+            const auto pollResult = channel_->PollCompletion(&reqId);
+            if (pollResult == GdrCompletionPollResult::Completed) {
+                if (HasAsyncError()) { return false; }
+                MarkOperationCompleted(reqId);
+                inflightCopies_.fetch_sub(1, std::memory_order_acq_rel);
+                completionSignal_.fetch_add(1, std::memory_order_acq_rel);
+                if (madeProgress) { *madeProgress = true; }
+                cv_.notify_all();
+                continue;
+            }
+
+            if (pollResult == GdrCompletionPollResult::Empty) { return true; }
+
+            if (pollResult == GdrCompletionPollResult::UnknownRequest) {
+                const auto status =
+                    Status::OsApiError(fmt::format("unexpected GDR completion reqId({})", reqId));
+                StopWithAsyncError("PollCompletion", status);
+                return false;
+            }
+
+            StopWithAsyncError("PollCompletion", Status::OsApiError("PollCompletion failed"));
+            return false;
+        }
+    };
+
     for (;;) {
+        bool madeProgress = false;
+        if (!drainCompletions(&madeProgress)) { return; }
+
+        if (HasAsyncError() || stopRequested_.load(std::memory_order_acquire)) { return; }
+        if (inflightCopies_.load(std::memory_order_acquire) != 0) {
+            if (!madeProgress) { std::this_thread::yield(); }
+            continue;
+        }
+
         const auto notifyRc = channel_->RequestCompletionNotification();
         if (notifyRc != 0) {
             StopWithAsyncError("RequestCompletionNotification",
@@ -408,31 +443,11 @@ void GdrStream::CompletionLoop()
             return;
         }
 
-        for (;;) {
-            uint64_t reqId = 0;
-            const auto pollResult = channel_->PollCompletion(&reqId);
-            if (pollResult == GdrCompletionPollResult::Completed) {
-                if (HasAsyncError()) { return; }
-                MarkOperationCompleted(reqId);
-                completionSignal_.fetch_add(1, std::memory_order_acq_rel);
-                cv_.notify_all();
-                continue;
-            }
-
-            if (pollResult == GdrCompletionPollResult::Empty) { break; }
-
-            if (pollResult == GdrCompletionPollResult::UnknownRequest) {
-                const auto status =
-                    Status::OsApiError(fmt::format("unexpected GDR completion reqId({})", reqId));
-                StopWithAsyncError("PollCompletion", status);
-                return;
-            }
-
-            StopWithAsyncError("PollCompletion", Status::OsApiError("PollCompletion failed"));
-            return;
-        }
-
+        bool postNotifyProgress = false;
+        if (!drainCompletions(&postNotifyProgress)) { return; }
+        if (postNotifyProgress) { continue; }
         if (HasAsyncError() || stopRequested_.load(std::memory_order_acquire)) { return; }
+        if (inflightCopies_.load(std::memory_order_acquire) != 0) { continue; }
 
         const auto waitRc = channel_->WaitForCompletionEvent();
         if (waitRc == -ECANCELED) {
@@ -507,6 +522,7 @@ void GdrStream::StopWithAsyncError(const char* source, Status status)
     ResetOperationRing();
     schedulerWaitingOnEvent_.store(false, std::memory_order_release);
     stopRequested_.store(true, std::memory_order_release);
+    inflightCopies_.store(0, std::memory_order_release);
     completionSignal_.fetch_add(1, std::memory_order_acq_rel);
     if (channel_) { channel_->InterruptCompletionWait(); }
     cv_.notify_all();

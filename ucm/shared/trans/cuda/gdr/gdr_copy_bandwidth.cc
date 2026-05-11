@@ -35,6 +35,7 @@
 #include <memory>
 #include <stdexcept>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include <cuda_runtime.h>
@@ -257,26 +258,8 @@ void DrainOneCompletion(GdrCopyChannel& channel, size_t& done)
             return;
         }
         if (poll == GdrCompletionPollResult::Empty) {
-            const int notifyRc = channel.RequestCompletionNotification();
-            if (notifyRc != 0) {
-                throw std::runtime_error("RequestCompletionNotification failed(" +
-                                         std::to_string(notifyRc) + ")");
-            }
-            const auto retryPoll = channel.PollCompletion(&reqId);
-            if (retryPoll == GdrCompletionPollResult::Completed) {
-                ++done;
-                return;
-            }
-            if (retryPoll == GdrCompletionPollResult::UnknownRequest) {
-                throw std::runtime_error("PollCompletion got an unknown request");
-            }
-            if (retryPoll == GdrCompletionPollResult::Error) {
-                throw std::runtime_error("PollCompletion failed");
-            }
-            const int waitRc = channel.WaitForCompletionEvent();
-            if (waitRc == 0 || waitRc == -ECANCELED) { continue; }
-            throw std::runtime_error("WaitForCompletionEvent failed(" +
-                                     std::to_string(waitRc) + ")");
+            std::this_thread::yield();
+            continue;
         }
         if (poll == GdrCompletionPollResult::UnknownRequest) {
             throw std::runtime_error("PollCompletion got an unknown request");
