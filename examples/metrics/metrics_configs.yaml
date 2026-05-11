@@ -32,6 +32,16 @@ counter:
   - name: "cache_load_backend_shards_total"
     documentation: "Shards that descended to the backend on load (true cache miss at the buffer-allocation stage; aka backend-load count)"
 
+  # -- Pipeline Cache stage: per-worker real throughput counters ------------
+  # Accumulated per completed Cache task with size = shardSize * num_shards.
+  # Use rate() / 1e9 to get actual GB/s the worker is moving through the
+  # Cache stage — aggregates across concurrent tasks and includes idle gaps,
+  # which the per-task cache_*_bandwidth_gbps histogram cannot reveal.
+  - name: "cache_load_bytes_total"
+    documentation: "Total bytes loaded through the Cache stage (per-task size summed)"
+  - name: "cache_dump_bytes_total"
+    documentation: "Total bytes dumped through the Cache stage (per-task size summed)"
+
   # -- Pipeline Posix stage: failure counters -------------------------------
   - name: "posix_load_failures_total"
     documentation: "Number of Posix stage load (S2H) IO failures"

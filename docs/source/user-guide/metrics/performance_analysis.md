@@ -222,6 +222,26 @@ chain.
 > - "Is the disk saturated / where is the worker bottleneck?" → **per worker**
 > - "Are there slow individual IOs / a long tail?" → **per shard** p99 / distribution
 
+The same dichotomy applies to the **Cache** stage bandwidth panels,
+with the per-event grain being a task instead of a single IO:
+
+> **Cache Bandwidth (per task) vs Cache Bandwidth (per worker)**
+>
+> - **(per task)** = `cache_*_bandwidth_gbps` histogram. Each sample
+>   is one Cache stage task's throughput (`total_bytes_in_task /
+>   task_wall_time / 1e9`). One task = one `start_load_kv` /
+>   `wait_for_save` batch. Aggregates shards within a task; does NOT
+>   aggregate across concurrent tasks.
+> - **(per worker)** = `rate(cache_*_bytes_total[interval]) / 1e9`,
+>   broken down by `worker_id`. Reflects **actual GB/s each worker
+>   process is pushing through the Cache stage**. Concurrent tasks
+>   aggregate; idle gaps between tasks land in the wall-clock
+>   denominator.
+>
+> The diagnostic mapping mirrors posix: "Cache layer's actual
+> throughput / saturation" → **per worker**; "slow individual tasks
+> / long tail" → **per task** p99 / distribution.
+
 ### 3.4 Dumps are silently overflowing (back-pressure)
 
 **Symptoms.** Loads start failing or hit rate drops over time even

@@ -68,10 +68,12 @@ protected:
                 UC::Metrics::UpdateStats("cache_load_duration_ms", costMs);
                 UC::Metrics::UpdateStats("cache_load_bandwidth_gbps", bwGbps);
                 UC::Metrics::UpdateStats("cache_load_blocks_total", static_cast<double>(num));
+                UC::Metrics::UpdateStats("cache_load_bytes_total", static_cast<double>(size));
             } else {
                 UC::Metrics::UpdateStats("cache_dump_duration_ms", costMs);
                 UC::Metrics::UpdateStats("cache_dump_bandwidth_gbps", bwGbps);
                 UC::Metrics::UpdateStats("cache_dump_blocks_total", static_cast<double>(num));
+                UC::Metrics::UpdateStats("cache_dump_bytes_total", static_cast<double>(size));
             }
         });
         if (t->type == TransTask::Type::LOAD) {

@@ -535,7 +535,7 @@
         "type": "prometheus",
         "uid": "prometheus"
       },
-      "description": "Average Cache load bandwidth. Series: p50 / p90 / p99 / avg, per worker.",
+      "description": "Average Cache load bandwidth. Series: p50 / p90 / p99 / avg, per worker. Per-task observed throughput, sampled once per Cache stage task (one task = one start_load_kv / wait_for_save batch). Aggregates shards within a task but NOT across concurrent tasks. Use the (per worker) panel below for actual per-worker throughput.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -733,7 +733,7 @@
           "refId": "D"
         }
       ],
-      "title": "Cache Load Bandwidth",
+      "title": "Cache Load Bandwidth (per task)",
       "type": "timeseries"
     },
     {
@@ -1359,7 +1359,7 @@
         "type": "prometheus",
         "uid": "prometheus"
       },
-      "description": "Average Cache dump bandwidth. Series: p50 / p90 / p99 / avg, per worker.",
+      "description": "Average Cache dump bandwidth. Series: p50 / p90 / p99 / avg, per worker. Per-task observed throughput, sampled once per Cache stage task (one task = one start_load_kv / wait_for_save batch). Aggregates shards within a task but NOT across concurrent tasks. Use the (per worker) panel below for actual per-worker throughput.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -1557,7 +1557,7 @@
           "refId": "D"
         }
       ],
-      "title": "Cache Dump Bandwidth",
+      "title": "Cache Dump Bandwidth (per task)",
       "type": "timeseries"
     },
     {
@@ -1771,6 +1771,198 @@
         "type": "prometheus",
         "uid": "prometheus"
       },
+      "description": "Wall-clock per-worker Cache load throughput in GB/s. Aggregates all concurrent Cache load tasks inside one worker process and includes idle gaps, so this is the real bytes/sec the worker is pulling through the Cache stage. Pair with (per task) above: high per-task with low per-worker means tasks are fast but sparse.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "barWidthFactor": 0.6,
+            "drawStyle": "line",
+            "fillOpacity": 0,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "auto",
+            "spanNulls": 60000,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "gbytes"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 40
+      },
+      "id": 27,
+      "options": {
+        "legend": {
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "rate(ucm:cache_load_bytes_total{model_name=\"$model_name\", job=\"$job\"}[$__rate_interval]) / 1e9",
+          "legendFormat": "worker-{{worker_id}}",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "title": "Cache Load Bandwidth (per worker)",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "description": "Wall-clock per-worker Cache dump throughput in GB/s. Aggregates all concurrent Cache dump tasks inside one worker process and includes idle gaps, so this is the real bytes/sec the worker is pushing through the Cache stage. Pair with (per task) above: high per-task with low per-worker means tasks are fast but sparse.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "barWidthFactor": 0.6,
+            "drawStyle": "line",
+            "fillOpacity": 0,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "auto",
+            "spanNulls": 60000,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "gbytes"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 40
+      },
+      "id": 28,
+      "options": {
+        "legend": {
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "rate(ucm:cache_dump_bytes_total{model_name=\"$model_name\", job=\"$job\"}[$__rate_interval]) / 1e9",
+          "legendFormat": "worker-{{worker_id}}",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "title": "Cache Dump Bandwidth (per worker)",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
       "description": "Posix-stage storage-to-host bandwidth (load direction). Series: p50 / p90 / p99 / avg, per worker. Per single-IO observed throughput, sampled once per shard transfer; does NOT aggregate across concurrent IO threads. Use the (per worker) panel below for actual disk throughput.",
       "fieldConfig": {
         "defaults": {
@@ -1905,7 +2097,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 40
+        "y": 48
       },
       "id": 10,
       "options": {
@@ -2111,7 +2303,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 40
+        "y": 48
       },
       "id": 11,
       "options": {
@@ -2240,7 +2432,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 48
+        "y": 56
       },
       "id": 25,
       "options": {
@@ -2336,7 +2528,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 48
+        "y": 56
       },
       "id": 26,
       "options": {
@@ -2509,7 +2701,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 56
+        "y": 64
       },
       "id": 12,
       "options": {
@@ -2715,7 +2907,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 56
+        "y": 64
       },
       "id": 13,
       "options": {
@@ -2795,7 +2987,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 64
+        "y": 72
       },
       "panels": [
         {
@@ -2811,7 +3003,7 @@
             "h": 8,
             "w": 12,
             "x": 0,
-            "y": 65
+            "y": 73
           },
           "targets": [
             {
@@ -2890,13 +3082,13 @@
             "uid": "prometheus"
           },
           "id": 16,
-          "title": "Cache / Load Bandwidth",
-          "description": "Effective Cache load bandwidth distribution. -- distribution shape over time, all workers aggregated.",
+          "title": "Cache / Load Bandwidth (per task)",
+          "description": "Effective Cache load bandwidth distribution. -- distribution shape over time, all workers aggregated. Per-task observed throughput, sampled once per Cache stage task (one task = one start_load_kv / wait_for_save batch). Aggregates shards within a task but NOT across concurrent tasks. Use the (per worker) panel below for actual per-worker throughput.",
           "gridPos": {
             "h": 8,
             "w": 12,
             "x": 12,
-            "y": 65
+            "y": 73
           },
           "targets": [
             {
@@ -2981,7 +3173,7 @@
             "h": 8,
             "w": 12,
             "x": 0,
-            "y": 73
+            "y": 81
           },
           "targets": [
             {
@@ -3060,13 +3252,13 @@
             "uid": "prometheus"
           },
           "id": 18,
-          "title": "Cache / Dump Bandwidth",
-          "description": "Effective Cache dump bandwidth distribution. -- distribution shape over time, all workers aggregated.",
+          "title": "Cache / Dump Bandwidth (per task)",
+          "description": "Effective Cache dump bandwidth distribution. -- distribution shape over time, all workers aggregated. Per-task observed throughput, sampled once per Cache stage task (one task = one start_load_kv / wait_for_save batch). Aggregates shards within a task but NOT across concurrent tasks. Use the (per worker) panel below for actual per-worker throughput.",
           "gridPos": {
             "h": 8,
             "w": 12,
             "x": 12,
-            "y": 73
+            "y": 81
           },
           "targets": [
             {
@@ -3151,7 +3343,7 @@
             "h": 8,
             "w": 24,
             "x": 0,
-            "y": 81
+            "y": 89
           },
           "targets": [
             {
@@ -3238,7 +3430,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 89
+        "y": 97
       },
       "panels": [
         {
@@ -3254,7 +3446,7 @@
             "h": 8,
             "w": 12,
             "x": 0,
-            "y": 90
+            "y": 98
           },
           "targets": [
             {
@@ -3339,7 +3531,7 @@
             "h": 8,
             "w": 12,
             "x": 12,
-            "y": 90
+            "y": 98
           },
           "targets": [
             {
@@ -3424,7 +3616,7 @@
             "h": 8,
             "w": 12,
             "x": 0,
-            "y": 98
+            "y": 106
           },
           "targets": [
             {
@@ -3509,7 +3701,7 @@
             "h": 8,
             "w": 12,
             "x": 12,
-            "y": 98
+            "y": 106
           },
           "targets": [
             {
