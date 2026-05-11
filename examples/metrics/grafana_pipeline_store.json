@@ -216,7 +216,7 @@
         "type": "prometheus",
         "uid": "${DS_PROMETHEUS}"
       },
-      "description": "Fraction of load shards that missed the Cache buffer and had to descend to the backend (shard-level miss rate at load time).",
+      "description": "Fraction of load shards that missed the Cache buffer and had to descend to the backend (shard-level miss rate at load time). Equals rate(cache_load_backend_shards_total) / rate(cache_load_shards_total).",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -303,7 +303,7 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "rate(ucm:cache_load_backend_submit_shards_total{model_name=\"$model_name\"}[$__rate_interval])\n/ clamp_min(\n  rate(ucm:cache_load_shards_total{model_name=\"$model_name\"}[$__rate_interval]), 1\n)",
+          "expr": "rate(ucm:cache_load_backend_shards_total{model_name=\"$model_name\"}[$__rate_interval])\n/ clamp_min(\n  rate(ucm:cache_load_shards_total{model_name=\"$model_name\"}[$__rate_interval]), 1\n)",
           "hide": false,
           "instant": false,
           "legendFormat": "worker-{{worker_id}}",
@@ -311,7 +311,7 @@
           "refId": "A"
         }
       ],
-      "title": "Cache Backend Submit Ratio (load)",
+      "title": "Cache Backend Load Ratio",
       "type": "timeseries"
     },
     {

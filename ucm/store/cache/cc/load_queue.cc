@@ -116,7 +116,7 @@ void LoadQueue::DispatchOneTask(TaskPair&& pair)
     UC::Metrics::UpdateStats("cache_load_wait_duration_ms", (tpWait - tp) * 1e3);
     UC::Metrics::UpdateStats("cache_load_dispatch_duration_ms", (tpDispatch - tpWait) * 1e3);
     // Shards that had to descend to the backend (true cache miss at load time).
-    UC::Metrics::UpdateStats("cache_load_backend_submit_shards_total",
+    UC::Metrics::UpdateStats("cache_load_backend_shards_total",
                              static_cast<double>(backendSubmitCount));
     UC::Metrics::UpdateStats("cache_load_shards_total", static_cast<double>(nShard));
 }

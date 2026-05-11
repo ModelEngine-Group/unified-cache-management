@@ -83,7 +83,7 @@ flowchart TD
     A(["store.dump_data"])
     B["Cache waiting queue<br/><b>cache_dump_wait_duration_ms</b>"]
     C["D2H + stream sync<br/><b>cache_d2h_duration_ms</b>"]
-    D["backend_->Dump (submit only)<br/><b>cache_dump_backend_submit_duration_ms</b>"]
+    D["backend_->Dump hand-off (sync)<br/><b>cache_dump_backend_duration_ms</b>"]
     E(["epilog fires — caller unblocks<br/><b>cache_dump_duration_ms</b> (caller-felt)<br/><b>cache_dump_bandwidth_gbps</b>"])
     F["BackendDumpStage thread (async)"]
     G["Posix H2S worker — write disk<br/><b>posix_h2s_duration_ms</b><br/><b>posix_h2s_bandwidth_gbps</b>"]
@@ -145,7 +145,7 @@ Recompute load is high.
 
 **Metric signature.**
 - `ucm:cache_lookup_hit_rate` < 0.3
-- `rate(ucm:cache_load_backend_submit_shards_total) /
+- `rate(ucm:cache_load_backend_shards_total) /
    rate(ucm:cache_load_shards_total)` > 0.7
 - `ucm:interval_lookup_hit_rates` (legacy, end-to-end) also low
 
@@ -389,7 +389,7 @@ clamp_min(
 **Shard-level miss ratio at load time (descended to backend):**
 
 ```
-rate(ucm:cache_load_backend_submit_shards_total{model_name="$model_name"}[5m])
+rate(ucm:cache_load_backend_shards_total{model_name="$model_name"}[5m])
 /
 clamp_min(rate(ucm:cache_load_shards_total{model_name="$model_name"}[5m]), 1)
 ```
