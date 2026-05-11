@@ -1,12 +1,13 @@
 import copy
 import hashlib
+import inspect
 import math
 import os
 import pickle
 import time
 from collections import defaultdict
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, List, Optional, Tuple
+from typing import TYPE_CHECKING, Any, List, Optional, Tuple
 
 import numpy as np
 import torch
@@ -38,6 +39,27 @@ if TYPE_CHECKING:
 from ucm.sparse.state import has_ucm_sparse
 
 logger = init_logger(__name__)
+
+
+def _init_kv_connector_base(
+    connector: KVConnectorBase_V1,
+    vllm_config: "VllmConfig",
+    role: KVConnectorRole,
+    kv_cache_config: Any = None,
+) -> None:
+    if "kv_cache_config" in inspect.signature(KVConnectorBase_V1.__init__).parameters:
+        KVConnectorBase_V1.__init__(
+            connector,
+            vllm_config=vllm_config,
+            role=role,
+            kv_cache_config=kv_cache_config,
+        )
+    else:
+        KVConnectorBase_V1.__init__(
+            connector,
+            vllm_config=vllm_config,
+            role=role,
+        )
 
 
 @dataclass
@@ -192,8 +214,13 @@ class UCMDirectConnector(KVConnectorBase_V1):
     load -> forward -> save
     """
 
-    def __init__(self, vllm_config: "VllmConfig", role: KVConnectorRole):
-        super().__init__(vllm_config=vllm_config, role=role)
+    def __init__(
+        self,
+        vllm_config: "VllmConfig",
+        role: KVConnectorRole,
+        kv_cache_config: Any = None,
+    ):
+        _init_kv_connector_base(self, vllm_config, role, kv_cache_config)
         self.use_layerwise = False
         self.kv_caches: dict[str, torch.Tensor] = {}
         self.local_rank = (
@@ -769,8 +796,13 @@ class UCMLayerWiseConnector(UCMDirectConnector):
                              load l2    -> forward l2 -> save l2
     """
 
-    def __init__(self, vllm_config: "VllmConfig", role: KVConnectorRole):
-        super().__init__(vllm_config, role)
+    def __init__(
+        self,
+        vllm_config: "VllmConfig",
+        role: KVConnectorRole,
+        kv_cache_config: Any = None,
+    ):
+        super().__init__(vllm_config, role, kv_cache_config)
         # {layer_id: {request_id: Task}}
         self.load_tasks: dict[int, dict[str, Task]] = defaultdict(dict)
         self.dump_tasks: dict[str, Task] = {}
@@ -923,8 +955,13 @@ class UCMLayerWiseConnector(UCMDirectConnector):
 
 
 class UCMCPConnector(UCMLayerWiseConnector):
-    def __init__(self, vllm_config: "VllmConfig", role: KVConnectorRole):
-        super().__init__(vllm_config, role)
+    def __init__(
+        self,
+        vllm_config: "VllmConfig",
+        role: KVConnectorRole,
+        kv_cache_config: Any = None,
+    ):
+        super().__init__(vllm_config, role, kv_cache_config)
         self.use_layerwise = self.launch_config.get("use_layerwise", False)
 
         try:
@@ -1021,8 +1058,13 @@ class UCMPDConnector(UCMDirectConnector):
     load req3               -> load req4
     """
 
-    def __init__(self, vllm_config: "VllmConfig", role: KVConnectorRole):
-        super().__init__(vllm_config, role)
+    def __init__(
+        self,
+        vllm_config: "VllmConfig",
+        role: KVConnectorRole,
+        kv_cache_config: Any = None,
+    ):
+        super().__init__(vllm_config, role, kv_cache_config)
 
     def get_num_new_matched_tokens(
         self,
@@ -1055,8 +1097,13 @@ class UCMMockConnector(UCMDirectConnector):
     will reduce hit_tokens under the hit_ratio you set.
     """
 
-    def __init__(self, vllm_config: "VllmConfig", role: KVConnectorRole):
-        super().__init__(vllm_config, role)
+    def __init__(
+        self,
+        vllm_config: "VllmConfig",
+        role: KVConnectorRole,
+        kv_cache_config: Any = None,
+    ):
+        super().__init__(vllm_config, role, kv_cache_config)
         self._hit_ratio = float(self.launch_config["hit_ratio"])
         logger.info(f"hit_ratio: {self._hit_ratio}")
 
@@ -1088,7 +1135,12 @@ class UCMMockConnector(UCMDirectConnector):
 
 
 class UCMLiteConnector(UCMDirectConnector):
-    def __init__(self, vllm_config, role):
+    def __init__(
+        self,
+        vllm_config,
+        role,
+        kv_cache_config: Any = None,
+    ):
         ucm_config = Config(vllm_config.kv_transfer_config)
         launch_config = ucm_config.get_config()
         enable_record_traces = launch_config.get("enable_record_traces", False)
@@ -1108,7 +1160,7 @@ class UCMLiteConnector(UCMDirectConnector):
             "persist_token_threshold": persist_token_threshold,
             "use_lite": True,
         }
-        super().__init__(vllm_config, role)
+        super().__init__(vllm_config, role, kv_cache_config)
         self.total_block_nums = 0
         self.total_hit_block_nums = 0
         logger.info("Init UCMLiteConnector.")
@@ -1150,8 +1202,13 @@ class UCMLiteConnector(UCMDirectConnector):
 
 
 class UCMConnector(KVConnectorBase_V1):
-    def __init__(self, vllm_config: "VllmConfig", role: KVConnectorRole):
-        super().__init__(vllm_config=vllm_config, role=role)
+    def __init__(
+        self,
+        vllm_config: "VllmConfig",
+        role: KVConnectorRole,
+        kv_cache_config: Any = None,
+    ):
+        _init_kv_connector_base(self, vllm_config, role, kv_cache_config)
         self.connector: KVConnectorBase_V1
         ucm_config = Config(vllm_config.kv_transfer_config)
         self.launch_config = ucm_config.get_config()
@@ -1190,15 +1247,15 @@ class UCMConnector(KVConnectorBase_V1):
         )
 
         if use_lite:
-            self.connector = UCMLiteConnector(vllm_config, role)
+            self.connector = UCMLiteConnector(vllm_config, role, kv_cache_config)
         elif use_ratio_rate:
-            self.connector = UCMMockConnector(vllm_config, role)
+            self.connector = UCMMockConnector(vllm_config, role, kv_cache_config)
         elif use_cp_parallel:
-            self.connector = UCMCPConnector(vllm_config, role)
+            self.connector = UCMCPConnector(vllm_config, role, kv_cache_config)
         elif use_layerwise:
-            self.connector = UCMLayerWiseConnector(vllm_config, role)
+            self.connector = UCMLayerWiseConnector(vllm_config, role, kv_cache_config)
         else:
-            self.connector = UCMDirectConnector(vllm_config, role)
+            self.connector = UCMDirectConnector(vllm_config, role, kv_cache_config)
 
     def get_num_new_matched_tokens(
         self,

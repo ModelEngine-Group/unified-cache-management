@@ -1,7 +1,7 @@
 import itertools
 from dataclasses import dataclass, field
 from enum import Enum, auto
-from typing import TYPE_CHECKING, List, Self, Tuple
+from typing import TYPE_CHECKING, Any, List, Self, Tuple
 
 import torch
 from vllm.config import VllmConfig
@@ -123,8 +123,13 @@ class UCMBlendConnector(UCMDirectConnector):
     This Connector process chunk hash and prefix cache
     """
 
-    def __init__(self, vllm_config: "VllmConfig", role: KVConnectorRole):
-        super().__init__(vllm_config, role)
+    def __init__(
+        self,
+        vllm_config: "VllmConfig",
+        role: KVConnectorRole,
+        kv_cache_config: Any = None,
+    ):
+        super().__init__(vllm_config, role, kv_cache_config)
         ucm_sparse_config = self.launch_config.get("ucm_sparse_config", [])
         self.blend_stage = BlendStage.BUILD_PREFIX_CACHE
         self.req2rag_load_chunks: dict[str, list[ChunkMetaData]] = {}

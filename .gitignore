@@ -45,6 +45,8 @@
 .vscode/**
 .idea/**
 .git/**
+AGENTS.md
+agents.md
 **/build/**
 **/output/**
 .venv/**
