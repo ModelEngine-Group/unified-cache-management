@@ -464,7 +464,7 @@ public:
 
 Status TransBuffer::Setup(const Config& config)
 {
-    bypassHitOnReservedGet_ = config.cacheLoadBackendOnly;
+    bypassHitOnLoad_ = config.cacheLoadBackendOnly;
     try {
         if (!config.shareBufferEnable) {
             strategy_ = std::make_shared<LocalBufferStrategy>(
@@ -484,14 +484,14 @@ Status TransBuffer::Setup(const Config& config)
 }
 
 TransBuffer::Handle TransBuffer::Get(const Detail::BlockId& blockId, size_t shardIdx,
-                                     bool allowReserved)
+                                     bool allowReserved, bool isLoad)
 {
     auto iBucket = Hash(blockId, shardIdx);
     bool owner = false;
     strategy_->BucketLock(iBucket);
     auto iNode = FindAt(iBucket, blockId, shardIdx, owner);
     if (iNode != invalidIndex) {
-        if (bypassHitOnReservedGet_ && allowReserved && owner && Ready(iNode)) {
+        if (bypassHitOnLoad_ && isLoad && owner && Ready(iNode)) {
             MarkNotReady(iNode);
         }
         strategy_->BucketUnlock(iBucket);

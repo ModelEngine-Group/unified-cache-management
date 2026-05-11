@@ -86,7 +86,8 @@ void LoadQueue::DispatchOneTask(TaskPair&& pair)
     for (size_t i = 0; i < nShard; i++) {
         auto& shard = task->desc[i];
         ShardTask shardTask;
-        shardTask.bufferHandle = buffer_->Get(shard.owner, shard.index, true);
+        shardTask.bufferHandle =
+            buffer_->Get(shard.owner, shard.index, /*allowReserved=*/true, /*isLoad=*/true);
         shardTask.backendTaskHandle = 0;
         if (shardTask.bufferHandle.Owner() && !shardTask.bufferHandle.Ready()) {
             Detail::TaskDesc backendTask{
