@@ -3033,7 +3033,7 @@
           },
           "id": 15,
           "title": "Cache / Load Duration",
-          "description": "End-to-end Cache load task duration distribution. Bimodal here often indicates a mix of Cache hits (fast) and misses descending to Posix. -- distribution shape over time, all workers aggregated.",
+          "description": "End-to-end Cache load task duration distribution. Bimodal here often indicates a mix of Cache hits (fast) and misses descending to Posix. Cell value is request rate from rate(bucket), not raw request count; all workers aggregated.",
           "gridPos": {
             "h": 8,
             "w": 12,
@@ -3064,7 +3064,7 @@
             },
             "rowsFrame": {
               "layout": "auto",
-              "value": "Bucket count"
+              "value": "Request rate"
             },
             "color": {
               "mode": "scheme",
@@ -3076,7 +3076,7 @@
             },
             "cellGap": 1,
             "cellValues": {
-              "unit": "short"
+              "unit": "suffix: req/s"
             },
             "filterValues": {
               "le": 1e-09
@@ -3118,7 +3118,7 @@
           },
           "id": 16,
           "title": "Cache / Load Bandwidth (per task)",
-          "description": "Effective Cache load bandwidth distribution. -- distribution shape over time, all workers aggregated. Per-task observed throughput, sampled once per Cache stage task (one task = one start_load_kv / wait_for_save batch). Aggregates shards within a task but NOT across concurrent tasks. Use the (per worker) panel below for actual per-worker throughput.",
+          "description": "Effective Cache load bandwidth distribution. Cell value is request rate from rate(bucket), not raw request count; all workers aggregated. Per-task observed throughput, sampled once per Cache stage task (one task = one start_load_kv / wait_for_save batch). Aggregates shards within a task but NOT across concurrent tasks. Use the (per worker) panel below for actual per-worker throughput.",
           "gridPos": {
             "h": 8,
             "w": 12,
@@ -3149,7 +3149,7 @@
             },
             "rowsFrame": {
               "layout": "auto",
-              "value": "Bucket count"
+              "value": "Request rate"
             },
             "color": {
               "mode": "scheme",
@@ -3161,7 +3161,7 @@
             },
             "cellGap": 1,
             "cellValues": {
-              "unit": "short"
+              "unit": "suffix: req/s"
             },
             "filterValues": {
               "le": 1e-09
@@ -3203,7 +3203,7 @@
           },
           "id": 17,
           "title": "Cache / Dump Duration",
-          "description": "Caller-felt Cache dump duration. Watch for convergence with Posix h2s duration -- back-pressure signal (see perf doc §3.4). -- distribution shape over time, all workers aggregated.",
+          "description": "Caller-felt Cache dump duration. Watch for convergence with Posix h2s duration -- back-pressure signal (see perf doc §3.4). Cell value is request rate from rate(bucket), not raw request count; all workers aggregated.",
           "gridPos": {
             "h": 8,
             "w": 12,
@@ -3234,7 +3234,7 @@
             },
             "rowsFrame": {
               "layout": "auto",
-              "value": "Bucket count"
+              "value": "Request rate"
             },
             "color": {
               "mode": "scheme",
@@ -3246,7 +3246,7 @@
             },
             "cellGap": 1,
             "cellValues": {
-              "unit": "short"
+              "unit": "suffix: req/s"
             },
             "filterValues": {
               "le": 1e-09
@@ -3288,7 +3288,7 @@
           },
           "id": 18,
           "title": "Cache / Dump Bandwidth (per task)",
-          "description": "Effective Cache dump bandwidth distribution. -- distribution shape over time, all workers aggregated. Per-task observed throughput, sampled once per Cache stage task (one task = one start_load_kv / wait_for_save batch). Aggregates shards within a task but NOT across concurrent tasks. Use the (per worker) panel below for actual per-worker throughput.",
+          "description": "Effective Cache dump bandwidth distribution. Cell value is request rate from rate(bucket), not raw request count; all workers aggregated. Per-task observed throughput, sampled once per Cache stage task (one task = one start_load_kv / wait_for_save batch). Aggregates shards within a task but NOT across concurrent tasks. Use the (per worker) panel below for actual per-worker throughput.",
           "gridPos": {
             "h": 8,
             "w": 12,
@@ -3319,7 +3319,7 @@
             },
             "rowsFrame": {
               "layout": "auto",
-              "value": "Bucket count"
+              "value": "Request rate"
             },
             "color": {
               "mode": "scheme",
@@ -3331,7 +3331,7 @@
             },
             "cellGap": 1,
             "cellValues": {
-              "unit": "short"
+              "unit": "suffix: req/s"
             },
             "filterValues": {
               "le": 1e-09
@@ -3373,7 +3373,7 @@
           },
           "id": 19,
           "title": "Cache / Load Backend Wait",
-          "description": "Time waiting for Posix to fill the buffer on a Cache miss. Spread and shift here drives total load latency. -- distribution shape over time, all workers aggregated.",
+          "description": "Time waiting for Posix to fill the buffer on a Cache miss. Spread and shift here drives total load latency. Cell value is request rate from rate(bucket), not raw request count; all workers aggregated.",
           "gridPos": {
             "h": 8,
             "w": 24,
@@ -3404,7 +3404,7 @@
             },
             "rowsFrame": {
               "layout": "auto",
-              "value": "Bucket count"
+              "value": "Request rate"
             },
             "color": {
               "mode": "scheme",
@@ -3416,7 +3416,7 @@
             },
             "cellGap": 1,
             "cellValues": {
-              "unit": "short"
+              "unit": "suffix: req/s"
             },
             "filterValues": {
               "le": 1e-09
@@ -3476,7 +3476,7 @@
           },
           "id": 21,
           "title": "Posix / S2H Duration",
-          "description": "Per-IO storage read latency distribution. Bimodal often = OS page cache hits vs cold reads. -- distribution shape over time, all workers aggregated.",
+          "description": "Per-IO storage read latency distribution. Bimodal often = OS page cache hits vs cold reads. Cell value is request rate from rate(bucket), not raw request count; all workers aggregated.",
           "gridPos": {
             "h": 8,
             "w": 12,
@@ -3507,7 +3507,7 @@
             },
             "rowsFrame": {
               "layout": "auto",
-              "value": "Bucket count"
+              "value": "Request rate"
             },
             "color": {
               "mode": "scheme",
@@ -3519,7 +3519,7 @@
             },
             "cellGap": 1,
             "cellValues": {
-              "unit": "short"
+              "unit": "suffix: req/s"
             },
             "filterValues": {
               "le": 1e-09
@@ -3561,7 +3561,7 @@
           },
           "id": 22,
           "title": "Posix / H2S Duration",
-          "description": "Per-IO storage write latency distribution. -- distribution shape over time, all workers aggregated.",
+          "description": "Per-IO storage write latency distribution. Cell value is request rate from rate(bucket), not raw request count; all workers aggregated.",
           "gridPos": {
             "h": 8,
             "w": 12,
@@ -3592,7 +3592,7 @@
             },
             "rowsFrame": {
               "layout": "auto",
-              "value": "Bucket count"
+              "value": "Request rate"
             },
             "color": {
               "mode": "scheme",
@@ -3604,7 +3604,7 @@
             },
             "cellGap": 1,
             "cellValues": {
-              "unit": "short"
+              "unit": "suffix: req/s"
             },
             "filterValues": {
               "le": 1e-09
@@ -3646,7 +3646,7 @@
           },
           "id": 23,
           "title": "Posix / S2H Bandwidth (per shard)",
-          "description": "Storage read bandwidth distribution. Buckets are dense in 1-12 GB/s to resolve the typical operating range. -- distribution shape over time, all workers aggregated. Per single-IO observed throughput, sampled once per shard transfer; does NOT aggregate across concurrent IO threads. Use the (per worker) panel below for actual disk throughput.",
+          "description": "Storage read bandwidth distribution. Buckets are dense in 1-12 GB/s to resolve the typical operating range. Cell value is request rate from rate(bucket), not raw request count; all workers aggregated. Per single-IO observed throughput, sampled once per shard transfer; does NOT aggregate across concurrent IO threads. Use the (per worker) panel below for actual disk throughput.",
           "gridPos": {
             "h": 8,
             "w": 12,
@@ -3677,7 +3677,7 @@
             },
             "rowsFrame": {
               "layout": "auto",
-              "value": "Bucket count"
+              "value": "Request rate"
             },
             "color": {
               "mode": "scheme",
@@ -3689,7 +3689,7 @@
             },
             "cellGap": 1,
             "cellValues": {
-              "unit": "short"
+              "unit": "suffix: req/s"
             },
             "filterValues": {
               "le": 1e-09
@@ -3731,7 +3731,7 @@
           },
           "id": 24,
           "title": "Posix / H2S Bandwidth (per shard)",
-          "description": "Storage write bandwidth distribution. Buckets dense in 1-12 GB/s. -- distribution shape over time, all workers aggregated. Per single-IO observed throughput, sampled once per shard transfer; does NOT aggregate across concurrent IO threads. Use the (per worker) panel below for actual disk throughput.",
+          "description": "Storage write bandwidth distribution. Buckets dense in 1-12 GB/s. Cell value is request rate from rate(bucket), not raw request count; all workers aggregated. Per single-IO observed throughput, sampled once per shard transfer; does NOT aggregate across concurrent IO threads. Use the (per worker) panel below for actual disk throughput.",
           "gridPos": {
             "h": 8,
             "w": 12,
@@ -3762,7 +3762,7 @@
             },
             "rowsFrame": {
               "layout": "auto",
-              "value": "Bucket count"
+              "value": "Request rate"
             },
             "color": {
               "mode": "scheme",
@@ -3774,7 +3774,7 @@
             },
             "cellGap": 1,
             "cellValues": {
-              "unit": "short"
+              "unit": "suffix: req/s"
             },
             "filterValues": {
               "le": 1e-09
