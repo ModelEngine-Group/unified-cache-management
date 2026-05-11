@@ -207,14 +207,18 @@ Status GdrStream::WaitEvent(void* event)
 {
     if (!channel_) { return Status::Error("GDR channel is not ready"); }
 
-    std::lock_guard<std::mutex> lock{mutex_};
-    if (HasAsyncError()) { return AsyncError(); }
-    if (!event) { return Status::OK(); }
+    bool shouldNotify = false;
+    {
+        std::lock_guard<std::mutex> lock{mutex_};
+        if (HasAsyncError()) { return AsyncError(); }
+        if (!event) { return Status::OK(); }
 
-    operationsQueue_.push_back(
-        Operation{OperationType::Wait, nextOperationId_++, static_cast<cudaEvent_t>(event),
-                  nullptr, nullptr, 0, GdrMemcpyHostToDevice});
-    cv_.notify_all();
+        shouldNotify = operationsQueue_.empty();
+        operationsQueue_.push_back(
+            Operation{OperationType::Wait, nextOperationId_++, static_cast<cudaEvent_t>(event),
+                      nullptr, nullptr, 0, GdrMemcpyHostToDevice});
+    }
+    if (shouldNotify) { cv_.notify_all(); }
     return Status::OK();
 }
 
@@ -223,12 +227,16 @@ Status GdrStream::SubmitAsync(void* dst, const void* src, size_t size, GdrCopyKi
 {
     if (!channel_) { return Status::Error("GDR channel is not ready"); }
 
-    std::lock_guard<std::mutex> lock{mutex_};
-    if (HasAsyncError()) { return AsyncError(); }
+    bool shouldNotify = false;
+    {
+        std::lock_guard<std::mutex> lock{mutex_};
+        if (HasAsyncError()) { return AsyncError(); }
 
-    operationsQueue_.push_back(
-        Operation{OperationType::Copy, nextOperationId_++, nullptr, dst, src, size, kind});
-    cv_.notify_all();
+        shouldNotify = operationsQueue_.empty();
+        operationsQueue_.push_back(
+            Operation{OperationType::Copy, nextOperationId_++, nullptr, dst, src, size, kind});
+    }
+    if (shouldNotify) { cv_.notify_all(); }
     return Status::OK();
 }
 
@@ -330,7 +338,7 @@ GdrStream::SubmitResult GdrStream::SubmitCopyOperationFromQueue(const Operation&
         } else {
             MarkOperationCompleted(op.operationId);
         }
-        cv_.notify_all();
+        if (reqId == 0) { cv_.notify_all(); }
         return SubmitResult::Submitted;
     }
     if (rc == -EAGAIN) { return SubmitResult::Waiting; }
@@ -422,6 +430,16 @@ void GdrStream::ShutdownBackgroundThreads()
 void GdrStream::MarkOperationCompleted(uint64_t operationId)
 {
     if (operationId <= lastCompletedOperationId_) { return; }
+
+    if (operationId == lastCompletedOperationId_ + 1) {
+        ++lastCompletedOperationId_;
+        while (true) {
+            const auto nextCompleted = completedOperations_.find(lastCompletedOperationId_ + 1);
+            if (nextCompleted == completedOperations_.end()) { return; }
+            completedOperations_.erase(nextCompleted);
+            ++lastCompletedOperationId_;
+        }
+    }
 
     completedOperations_.insert(operationId);
     while (true) {
