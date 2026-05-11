@@ -26,7 +26,6 @@
 
 #include <atomic>
 #include <cstddef>
-#include <condition_variable>
 #include <cstdint>
 #include <functional>
 #include <map>
@@ -73,8 +72,6 @@ private:
     static constexpr size_t kCompletionRingMask = kCompletionRingCapacity - 1;
     static constexpr size_t kSchedulerBatchSize = 128;
     static constexpr size_t kRingPushSpinCount = 10000;
-    static constexpr size_t kSchedulerIdleSpinCount = 10000;
-    static constexpr uint64_t kSchedulerIdleWaitUs = 50;
     static_assert((kOperationRingCapacity & kOperationRingMask) == 0,
                   "operation ring capacity must be a power of two");
     static_assert((kCompletionRingCapacity & kCompletionRingMask) == 0,
@@ -108,15 +105,14 @@ private:
     };
 
     Status SubmitAsync(void* dst, const void* src, size_t size, GdrCopyKind kind);
-    Status PushOperation(const Operation& op, bool* shouldNotify);
+    Status PushOperation(const Operation& op);
     size_t PopOperationBatch(Operation* out, size_t maxCount);
-    bool OperationRingEmpty() const;
     void ResetOperationRing();
     void SchedulerLoop();
     void CompletionLoop();
     void ShutdownBackgroundThreads();
     SubmitResult SubmitCopyOperationFromQueue(const Operation& op);
-    bool MarkOperationCompleted(uint64_t operationId);
+    void MarkOperationCompleted(uint64_t operationId);
     void AdvanceCompletedOperations();
     void MarkOperationFailed(uint64_t operationId, Status status);
     void StopWithAsyncError(const char* source, Status status);
@@ -130,7 +126,6 @@ private:
     std::thread completionThread_;  // Polls the GDR completion queue for sent copies.
 
     std::mutex mutex_;
-    std::condition_variable cv_;  // Wakes waiting threads when stream state changes.
     std::unique_ptr<Operation[]> operationRing_{
         std::make_unique<Operation[]>(kOperationRingCapacity)};
     std::atomic<uint64_t> operationRingHead_{0};
@@ -143,13 +138,9 @@ private:
 
     std::atomic<uint64_t> nextOperationId_{1};
     std::atomic<uint64_t> lastCompletedOperationId_{0};
-    std::atomic<uint64_t> completionSignal_{0};  // Changes whenever the scheduler can retry submit.
     int32_t deviceId_{-1};
     std::string nicName_{"mlx5_0"};
     std::atomic<bool> stopRequested_{false};  // Tells background threads to exit after current work ends or fails.
-    std::atomic<bool> schedulerReady_{false};  // Scheduler thread has started.
-    std::atomic<bool> completionThreadReady_{false};  // Completion thread has started.
-    std::atomic<bool> schedulerWaitingOnEvent_{false};  // Scheduler thread is blocked in cudaEventSynchronize.
 };
 
 }  // namespace UC::Trans

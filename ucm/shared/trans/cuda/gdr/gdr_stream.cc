@@ -25,10 +25,13 @@
 
 #include <algorithm>
 #include <cerrno>
-#include <chrono>
 #include <string>
 #include <thread>
 #include <utility>
+
+#if defined(__x86_64__) || defined(__i386__) || defined(_M_X64) || defined(_M_IX86)
+#include <immintrin.h>
+#endif
 
 #include <cuda_runtime.h>
 
@@ -40,6 +43,17 @@ namespace {
 UC::Status MakeGdrStatus(const char* op, int rc)
 {
     return UC::Status::OsApiError(fmt::format("{} failed({})", op, rc));
+}
+
+void CpuRelax()
+{
+#if defined(__x86_64__) || defined(__i386__) || defined(_M_X64) || defined(_M_IX86)
+    _mm_pause();
+#elif defined(__aarch64__) || defined(__arm__)
+    __asm__ __volatile__("yield" ::: "memory");
+#else
+    std::this_thread::yield();
+#endif
 }
 
 }  // namespace
@@ -63,8 +77,6 @@ Status GdrStream::Setup()
     nicName_ = std::move(nicName).Value();
 
     stopRequested_.store(false, std::memory_order_release);
-    schedulerReady_.store(false, std::memory_order_release);
-    completionThreadReady_.store(false, std::memory_order_release);
 
     try {
         channel_ = GdrCopyLib::Open(deviceId_, nicName_);
@@ -82,20 +94,6 @@ Status GdrStream::Setup()
         channel_.reset();
         return Status::Error(
             fmt::format("failed to start GDR scheduler/completion thread: {}", e.what()));
-    }
-
-    std::unique_lock<std::mutex> lock{mutex_};
-    cv_.wait(lock, [this] {
-        return HasAsyncError()
-            || (schedulerReady_.load(std::memory_order_acquire)
-                && completionThreadReady_.load(std::memory_order_acquire));
-    });
-    if (HasAsyncError()) {
-        auto status = AsyncErrorLocked();
-        lock.unlock();
-        ShutdownBackgroundThreads();
-        channel_.reset();
-        return status;
     }
 
     UC_INFO("Enable GDR stream on device({}) with nic({}).", deviceId_, nicName_);
@@ -205,11 +203,12 @@ Status GdrStream::Synchronized()
     const auto nextId = nextOperationId_.load(std::memory_order_acquire);
     const uint64_t targetOperationId = nextId == 0 ? 0 : nextId - 1;
 
-    std::unique_lock<std::mutex> lock{mutex_};
-    cv_.wait(lock, [this, targetOperationId] {
-        return HasAsyncError()
-            || lastCompletedOperationId_.load(std::memory_order_acquire) >= targetOperationId;
-    });
+    while (!HasAsyncError()
+           && lastCompletedOperationId_.load(std::memory_order_acquire) < targetOperationId) {
+        CpuRelax();
+    }
+
+    std::lock_guard<std::mutex> lock{mutex_};
     if (HasAsyncError()) { return AsyncErrorLocked(); }
     if (auto status = TakeCompletedOperationError(); status.has_value()) { return *status; }
     return Status::OK();
@@ -227,11 +226,9 @@ Status GdrStream::WaitEvent(void* event)
     const auto operationId = nextOperationId_.load(std::memory_order_relaxed);
     Operation op{OperationType::Wait, operationId, static_cast<cudaEvent_t>(event), nullptr,
                  nullptr, 0, GdrMemcpyHostToDevice};
-    bool shouldNotify = false;
-    auto status = PushOperation(op, &shouldNotify);
+    auto status = PushOperation(op);
     if (status.Failure()) { return status; }
     nextOperationId_.store(operationId + 1, std::memory_order_release);
-    if (shouldNotify) { cv_.notify_all(); }
     return Status::OK();
 }
 
@@ -245,15 +242,13 @@ Status GdrStream::SubmitAsync(void* dst, const void* src, size_t size, GdrCopyKi
 
     const auto operationId = nextOperationId_.load(std::memory_order_relaxed);
     Operation op{OperationType::Copy, operationId, nullptr, dst, src, size, kind};
-    bool shouldNotify = false;
-    auto status = PushOperation(op, &shouldNotify);
+    auto status = PushOperation(op);
     if (status.Failure()) { return status; }
     nextOperationId_.store(operationId + 1, std::memory_order_release);
-    if (shouldNotify) { cv_.notify_all(); }
     return Status::OK();
 }
 
-Status GdrStream::PushOperation(const Operation& op, bool* shouldNotify)
+Status GdrStream::PushOperation(const Operation& op)
 {
     for (size_t i = 0; i < kRingPushSpinCount; ++i) {
         if (stopRequested_.load(std::memory_order_acquire)) {
@@ -269,11 +264,9 @@ Status GdrStream::PushOperation(const Operation& op, bool* shouldNotify)
         if (tail - head < kOperationRingCapacity) {
             operationRing_[tail & kOperationRingMask] = op;
             operationRingTail_.store(tail + 1, std::memory_order_release);
-            // Notify is only a latency hint; the scheduler has a timed fallback for lost wakeups.
-            if (shouldNotify) { *shouldNotify = tail == head; }
             return Status::OK();
         }
-        std::this_thread::yield();
+        CpuRelax();
     }
     return Status::Error("GDR stream operation ring full");
 }
@@ -290,12 +283,6 @@ size_t GdrStream::PopOperationBatch(Operation* out, size_t maxCount)
     return static_cast<size_t>(count);
 }
 
-bool GdrStream::OperationRingEmpty() const
-{
-    return operationRingHead_.load(std::memory_order_acquire)
-        == operationRingTail_.load(std::memory_order_acquire);
-}
-
 void GdrStream::ResetOperationRing()
 {
     const auto tail = operationRingTail_.load(std::memory_order_acquire);
@@ -304,77 +291,48 @@ void GdrStream::ResetOperationRing()
 
 void GdrStream::SchedulerLoop()
 {
-    auto startupStatus = Status::OK();
     const auto ret = cudaSetDevice(deviceId_);
-    if (ret != cudaSuccess) { startupStatus = Status{ret, cudaGetErrorString(ret)}; }
-
-    schedulerReady_.store(true, std::memory_order_release);
-    cv_.notify_all();
-    if (startupStatus.Failure()) {
-        StopWithAsyncError("cudaSetDevice", startupStatus);
+    if (ret != cudaSuccess) {
+        StopWithAsyncError("cudaSetDevice", Status{ret, cudaGetErrorString(ret)});
         return;
     }
 
     Operation batch[kSchedulerBatchSize];
+    // Busy-poll the SPSC ring to keep producer submission lock-free and avoid lost wakeups.
     for (;;) {
-        for (size_t i = 0; i < kSchedulerIdleSpinCount && OperationRingEmpty(); ++i) {
-            if (stopRequested_.load(std::memory_order_acquire) || HasAsyncError()) { break; }
-            std::this_thread::yield();
-        }
         if (stopRequested_.load(std::memory_order_acquire) || HasAsyncError()) { return; }
-        if (OperationRingEmpty()) {
-            // Producer pushes without taking mutex_, so notify can race with this thread
-            // entering sleep. A short timed wait prevents lost wakeups from becoming hangs.
-            std::unique_lock<std::mutex> lock{mutex_};
-            cv_.wait_for(lock, std::chrono::microseconds(kSchedulerIdleWaitUs), [this] {
-                return stopRequested_.load(std::memory_order_acquire) || HasAsyncError()
-                    || !OperationRingEmpty();
-            });
+
+        const auto count = PopOperationBatch(batch, kSchedulerBatchSize);
+        if (count == 0) {
+            CpuRelax();
+            continue;
         }
-        if (stopRequested_.load(std::memory_order_acquire) || HasAsyncError()) { return; }
-        if (OperationRingEmpty()) { continue; }
 
-        for (;;) {
-            const auto count = PopOperationBatch(batch, kSchedulerBatchSize);
-            if (count == 0) { break; }
+        for (size_t i = 0; i < count; ++i) {
+            const auto& op = batch[i];
+            if (stopRequested_.load(std::memory_order_acquire) || HasAsyncError()) {
+                return;
+            }
 
-            for (size_t i = 0; i < count; ++i) {
-                const auto& op = batch[i];
+            if (op.type == OperationType::Wait) {
+                const auto waitRet = cudaEventSynchronize(op.event);
+                if (waitRet != cudaSuccess) {
+                    StopWithAsyncError("cudaEventSynchronize",
+                                       Status{waitRet, cudaGetErrorString(waitRet)});
+                    return;
+                }
+                MarkOperationCompleted(op.operationId);
+                continue;
+            }
+
+            for (;;) {
+                const auto submitResult = SubmitCopyOperationFromQueue(op);
+                if (submitResult == SubmitResult::Submitted) { break; }
+                if (submitResult == SubmitResult::Error) { return; }
                 if (stopRequested_.load(std::memory_order_acquire) || HasAsyncError()) {
                     return;
                 }
-
-                if (op.type == OperationType::Wait) {
-                    schedulerWaitingOnEvent_.store(true, std::memory_order_release);
-                    const auto waitRet = cudaEventSynchronize(op.event);
-                    schedulerWaitingOnEvent_.store(false, std::memory_order_release);
-                    if (waitRet != cudaSuccess) {
-                        StopWithAsyncError("cudaEventSynchronize",
-                                           Status{waitRet, cudaGetErrorString(waitRet)});
-                        return;
-                    }
-                    MarkOperationCompleted(op.operationId);
-                    completionSignal_.fetch_add(1, std::memory_order_acq_rel);
-                    cv_.notify_all();
-                    continue;
-                }
-
-                for (;;) {
-                    const auto submitResult = SubmitCopyOperationFromQueue(op);
-                    if (submitResult == SubmitResult::Submitted) { break; }
-                    if (submitResult == SubmitResult::Error) { return; }
-
-                    const auto signalBefore =
-                        completionSignal_.load(std::memory_order_acquire);
-                    std::unique_lock<std::mutex> lock{mutex_};
-                    cv_.wait(lock, [this, signalBefore] {
-                        return stopRequested_.load(std::memory_order_acquire) || HasAsyncError()
-                            || completionSignal_.load(std::memory_order_acquire) != signalBefore;
-                    });
-                    if (stopRequested_.load(std::memory_order_acquire) || HasAsyncError()) {
-                        return;
-                    }
-                }
+                CpuRelax();
             }
         }
     }
@@ -388,8 +346,6 @@ GdrStream::SubmitResult GdrStream::SubmitCopyOperationFromQueue(const Operation&
 
     if (op.size == 0) {
         MarkOperationCompleted(op.operationId);
-        completionSignal_.fetch_add(1, std::memory_order_acq_rel);
-        cv_.notify_all();
         return SubmitResult::Submitted;
     }
 
@@ -402,16 +358,11 @@ GdrStream::SubmitResult GdrStream::SubmitCopyOperationFromQueue(const Operation&
     UC_ERROR("GDR copy operation {} failed at GdrMemcpyAsyncWithReqId: {}", op.operationId,
              status);
     MarkOperationFailed(op.operationId, status);
-    completionSignal_.fetch_add(1, std::memory_order_acq_rel);
-    cv_.notify_all();
     return SubmitResult::Submitted;
 }
 
 void GdrStream::CompletionLoop()
 {
-    completionThreadReady_.store(true, std::memory_order_release);
-    cv_.notify_all();
-
     for (;;) {
         const auto notifyRc = channel_->RequestCompletionNotification();
         if (notifyRc != 0) {
@@ -426,8 +377,6 @@ void GdrStream::CompletionLoop()
             if (pollResult == GdrCompletionPollResult::Completed) {
                 if (HasAsyncError()) { return; }
                 MarkOperationCompleted(reqId);
-                completionSignal_.fetch_add(1, std::memory_order_acq_rel);
-                cv_.notify_all();
                 continue;
             }
 
@@ -462,23 +411,21 @@ void GdrStream::CompletionLoop()
 void GdrStream::ShutdownBackgroundThreads()
 {
     stopRequested_.store(true, std::memory_order_release);
-    cv_.notify_all();
     if (channel_) { channel_->InterruptCompletionWait(); }
     if (schedulerThread_.joinable()) { schedulerThread_.join(); }
     if (completionThread_.joinable()) { completionThread_.join(); }
 }
 
-bool GdrStream::MarkOperationCompleted(uint64_t operationId)
+void GdrStream::MarkOperationCompleted(uint64_t operationId)
 {
-    if (operationId == 0) { return false; }
+    if (operationId == 0) { return; }
 
     const auto completedBefore = lastCompletedOperationId_.load(std::memory_order_acquire);
-    if (operationId <= completedBefore) { return false; }
+    if (operationId <= completedBefore) { return; }
 
     completionSlots_[operationId & kCompletionRingMask].operationId.store(
         operationId, std::memory_order_release);
     AdvanceCompletedOperations();
-    return lastCompletedOperationId_.load(std::memory_order_acquire) != completedBefore;
 }
 
 void GdrStream::AdvanceCompletedOperations()
@@ -517,11 +464,8 @@ void GdrStream::StopWithAsyncError(const char* source, Status status)
     }
 
     ResetOperationRing();
-    schedulerWaitingOnEvent_.store(false, std::memory_order_release);
     stopRequested_.store(true, std::memory_order_release);
-    completionSignal_.fetch_add(1, std::memory_order_acq_rel);
     if (channel_) { channel_->InterruptCompletionWait(); }
-    cv_.notify_all();
 }
 
 bool GdrStream::HasAsyncError() const
