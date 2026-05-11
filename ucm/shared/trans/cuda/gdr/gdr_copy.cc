@@ -291,9 +291,6 @@ public:
                 std::max(1, std::min(kTargetCqDepth, static_cast<int>(deviceAttr.max_cqe)));
             cq_ = ibv_create_cq(ctx_, cqDepth, nullptr, compChannel_, 0);
             if (!cq_) { throw std::runtime_error("ibv_create_cq failed"); }
-            if (ibv_req_notify_cq(cq_, 0) != 0) {
-                throw std::runtime_error("ibv_req_notify_cq failed");
-            }
 
             struct ibv_qp_init_attr initAttr {};
             initAttr.send_cq = cq_;
@@ -392,6 +389,12 @@ public:
         return GdrCompletionPollResult::Completed;
     }
 
+    int RequestCompletionNotification() override
+    {
+        if (ibv_req_notify_cq(cq_, 0) != 0) { return -EIO; }
+        return 0;
+    }
+
     int WaitForCompletionEvent() override
     {
         struct pollfd fds[2] {};
@@ -423,7 +426,6 @@ public:
                 if (!eventCq) { return -EIO; }
                 ibv_ack_cq_events(eventCq, 1);
                 if (eventCq != cq_) { return -EIO; }
-                if (ibv_req_notify_cq(cq_, 0) != 0) { return -EIO; }
                 return 0;
             }
             if (fds[0].revents & (POLLERR | POLLNVAL | POLLHUP)) { return -EIO; }

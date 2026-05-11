@@ -401,17 +401,12 @@ void GdrStream::CompletionLoop()
     cv_.notify_all();
 
     for (;;) {
-        const auto waitRc = channel_->WaitForCompletionEvent();
-        if (waitRc == -ECANCELED) {
-            if (HasAsyncError() || stopRequested_.load(std::memory_order_acquire)) { return; }
-            continue;
-        }
-        if (waitRc != 0) {
-            StopWithAsyncError("WaitForCompletionEvent",
-                               MakeGdrStatus("WaitForCompletionEvent", waitRc));
+        const auto notifyRc = channel_->RequestCompletionNotification();
+        if (notifyRc != 0) {
+            StopWithAsyncError("RequestCompletionNotification",
+                               MakeGdrStatus("RequestCompletionNotification", notifyRc));
             return;
         }
-        if (HasAsyncError() || stopRequested_.load(std::memory_order_acquire)) { return; }
 
         for (;;) {
             uint64_t reqId = 0;
@@ -434,6 +429,19 @@ void GdrStream::CompletionLoop()
             }
 
             StopWithAsyncError("PollCompletion", Status::OsApiError("PollCompletion failed"));
+            return;
+        }
+
+        if (HasAsyncError() || stopRequested_.load(std::memory_order_acquire)) { return; }
+
+        const auto waitRc = channel_->WaitForCompletionEvent();
+        if (waitRc == -ECANCELED) {
+            if (HasAsyncError() || stopRequested_.load(std::memory_order_acquire)) { return; }
+            continue;
+        }
+        if (waitRc != 0) {
+            StopWithAsyncError("WaitForCompletionEvent",
+                               MakeGdrStatus("WaitForCompletionEvent", waitRc));
             return;
         }
     }
