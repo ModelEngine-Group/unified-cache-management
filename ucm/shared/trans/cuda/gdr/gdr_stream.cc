@@ -23,6 +23,7 @@
  * */
 #include "gdr_stream.h"
 
+#include <algorithm>
 #include <cerrno>
 #include <string>
 #include <thread>
@@ -60,6 +61,10 @@ Status GdrStream::Setup()
     if (!nicName) { return nicName.Error(); }
     nicName_ = std::move(nicName).Value();
 
+    stopRequested_.store(false, std::memory_order_release);
+    schedulerReady_.store(false, std::memory_order_release);
+    completionThreadReady_.store(false, std::memory_order_release);
+
     try {
         channel_ = GdrCopyLib::Open(deviceId_, nicName_);
     } catch (const std::exception& e) {
@@ -80,10 +85,12 @@ Status GdrStream::Setup()
 
     std::unique_lock<std::mutex> lock{mutex_};
     cv_.wait(lock, [this] {
-        return HasAsyncError() || (schedulerReady_ && completionThreadReady_);
+        return HasAsyncError()
+            || (schedulerReady_.load(std::memory_order_acquire)
+                && completionThreadReady_.load(std::memory_order_acquire));
     });
     if (HasAsyncError()) {
-        auto status = AsyncError();
+        auto status = AsyncErrorLocked();
         lock.unlock();
         ShutdownBackgroundThreads();
         channel_.reset();
@@ -190,129 +197,171 @@ Status GdrStream::AppendCallback(std::function<void(bool)> cb)
     return Status::OK();
 }
 
-// Wait until all queued work is done, or return an async error.
 Status GdrStream::Synchronized()
 {
     if (!channel_) { return Status::Error("GDR channel is not ready"); }
 
+    const auto nextId = nextOperationId_.load(std::memory_order_acquire);
+    const uint64_t targetOperationId = nextId == 0 ? 0 : nextId - 1;
+
     std::unique_lock<std::mutex> lock{mutex_};
-    cv_.wait(lock, [this] { return HasAsyncError() || IsIdle(); });
-    if (HasAsyncError()) { return AsyncError(); }
+    cv_.wait(lock, [this, targetOperationId] {
+        return HasAsyncError()
+            || lastCompletedOperationId_.load(std::memory_order_acquire) >= targetOperationId;
+    });
+    if (HasAsyncError()) { return AsyncErrorLocked(); }
     if (auto status = TakeCompletedOperationError(); status.has_value()) { return *status; }
     return Status::OK();
 }
 
-// Queue a wait. The scheduler thread will wait on the CUDA event later.
 Status GdrStream::WaitEvent(void* event)
 {
     if (!channel_) { return Status::Error("GDR channel is not ready"); }
-
-    bool shouldNotify = false;
-    {
+    if (HasAsyncError()) {
         std::lock_guard<std::mutex> lock{mutex_};
-        if (HasAsyncError()) { return AsyncError(); }
-        if (!event) { return Status::OK(); }
-
-        shouldNotify = operationsQueue_.empty();
-        operationsQueue_.push_back(
-            Operation{OperationType::Wait, nextOperationId_++, static_cast<cudaEvent_t>(event),
-                      nullptr, nullptr, 0, GdrMemcpyHostToDevice});
+        return AsyncErrorLocked();
     }
+    if (!event) { return Status::OK(); }
+
+    const auto operationId = nextOperationId_.load(std::memory_order_relaxed);
+    Operation op{OperationType::Wait, operationId, static_cast<cudaEvent_t>(event), nullptr,
+                 nullptr, 0, GdrMemcpyHostToDevice};
+    bool shouldNotify = false;
+    auto status = PushOperation(op, &shouldNotify);
+    if (status.Failure()) { return status; }
+    nextOperationId_.store(operationId + 1, std::memory_order_release);
     if (shouldNotify) { cv_.notify_all(); }
     return Status::OK();
 }
 
-// Queue one copy. The scheduler thread will send it later.
 Status GdrStream::SubmitAsync(void* dst, const void* src, size_t size, GdrCopyKind kind)
 {
     if (!channel_) { return Status::Error("GDR channel is not ready"); }
-
-    bool shouldNotify = false;
-    {
+    if (HasAsyncError()) {
         std::lock_guard<std::mutex> lock{mutex_};
-        if (HasAsyncError()) { return AsyncError(); }
-
-        shouldNotify = operationsQueue_.empty();
-        operationsQueue_.push_back(
-            Operation{OperationType::Copy, nextOperationId_++, nullptr, dst, src, size, kind});
+        return AsyncErrorLocked();
     }
+
+    const auto operationId = nextOperationId_.load(std::memory_order_relaxed);
+    Operation op{OperationType::Copy, operationId, nullptr, dst, src, size, kind};
+    bool shouldNotify = false;
+    auto status = PushOperation(op, &shouldNotify);
+    if (status.Failure()) { return status; }
+    nextOperationId_.store(operationId + 1, std::memory_order_release);
     if (shouldNotify) { cv_.notify_all(); }
     return Status::OK();
 }
 
-// Run waits and copies from the queue in stream order.
+Status GdrStream::PushOperation(const Operation& op, bool* shouldNotify)
+{
+    for (size_t i = 0; i < kRingPushSpinCount; ++i) {
+        if (stopRequested_.load(std::memory_order_acquire)) {
+            return Status::Error("GDR stream is stopping");
+        }
+        if (HasAsyncError()) {
+            std::lock_guard<std::mutex> lock{mutex_};
+            return AsyncErrorLocked();
+        }
+
+        const auto tail = operationRingTail_.load(std::memory_order_relaxed);
+        const auto head = operationRingHead_.load(std::memory_order_acquire);
+        if (tail - head < kOperationRingCapacity) {
+            operationRing_[tail & kOperationRingMask] = op;
+            operationRingTail_.store(tail + 1, std::memory_order_release);
+            if (shouldNotify) { *shouldNotify = tail == head; }
+            return Status::OK();
+        }
+        std::this_thread::yield();
+    }
+    return Status::Error("GDR stream operation ring full");
+}
+
+size_t GdrStream::PopOperationBatch(Operation* out, size_t maxCount)
+{
+    const auto head = operationRingHead_.load(std::memory_order_relaxed);
+    const auto tail = operationRingTail_.load(std::memory_order_acquire);
+    const auto count = std::min<uint64_t>(maxCount, tail - head);
+    for (uint64_t i = 0; i < count; ++i) {
+        out[i] = operationRing_[(head + i) & kOperationRingMask];
+    }
+    if (count != 0) { operationRingHead_.store(head + count, std::memory_order_release); }
+    return static_cast<size_t>(count);
+}
+
+bool GdrStream::OperationRingEmpty() const
+{
+    return operationRingHead_.load(std::memory_order_acquire)
+        == operationRingTail_.load(std::memory_order_acquire);
+}
+
+void GdrStream::ResetOperationRing()
+{
+    const auto tail = operationRingTail_.load(std::memory_order_acquire);
+    operationRingHead_.store(tail, std::memory_order_release);
+}
+
 void GdrStream::SchedulerLoop()
 {
-    // start up
     auto startupStatus = Status::OK();
     const auto ret = cudaSetDevice(deviceId_);
     if (ret != cudaSuccess) { startupStatus = Status{ret, cudaGetErrorString(ret)}; }
 
-    {
-        std::lock_guard<std::mutex> lock{mutex_};
-        schedulerReady_ = true;
-        if (startupStatus.Failure()) { StopWithAsyncError("cudaSetDevice", startupStatus); }
-        cv_.notify_all();
+    schedulerReady_.store(true, std::memory_order_release);
+    cv_.notify_all();
+    if (startupStatus.Failure()) {
+        StopWithAsyncError("cudaSetDevice", startupStatus);
+        return;
     }
-    if (startupStatus.Failure()) { return; }
 
+    Operation batch[kSchedulerBatchSize];
     for (;;) {
-        // wait until operation queue has something. 
         {
             std::unique_lock<std::mutex> lock{mutex_};
-            cv_.wait(
-                lock,
-                [this] { return stopRequested_ || HasAsyncError() || !operationsQueue_.empty(); });
+            cv_.wait(lock, [this] {
+                return stopRequested_.load(std::memory_order_acquire) || HasAsyncError()
+                    || !OperationRingEmpty();
+            });
         }
-        
-        // do until operation queue is empty.
+        if (stopRequested_.load(std::memory_order_acquire) || HasAsyncError()) { return; }
+
         for (;;) {
-            Operation op{OperationType::Copy, 0, nullptr, nullptr, nullptr, 0,
-                         GdrMemcpyHostToDevice};
-            size_t inflightBefore = 0;
-            {
-                std::lock_guard<std::mutex> lock{mutex_};
-                if (HasAsyncError() || stopRequested_) { return; }
-                if (operationsQueue_.empty()) { break; }
+            const auto count = PopOperationBatch(batch, kSchedulerBatchSize);
+            if (count == 0) { break; }
 
-                op = operationsQueue_.front();
-                inflightBefore = inflightRequestOperations_.size();
-            }
+            for (size_t i = 0; i < count; ++i) {
+                const auto& op = batch[i];
+                if (stopRequested_.load(std::memory_order_acquire) || HasAsyncError()) { return; }
 
-            if (op.type == OperationType::Wait) {
-                {
-                    std::lock_guard<std::mutex> lock{mutex_};
-                    schedulerWaitingOnEvent_ = true;
-                }
-                const auto waitRet = cudaEventSynchronize(op.event);
-                {
-                    std::lock_guard<std::mutex> lock{mutex_};
-                    schedulerWaitingOnEvent_ = false;
+                if (op.type == OperationType::Wait) {
+                    schedulerWaitingOnEvent_.store(true, std::memory_order_release);
+                    const auto waitRet = cudaEventSynchronize(op.event);
+                    schedulerWaitingOnEvent_.store(false, std::memory_order_release);
                     if (waitRet != cudaSuccess) {
-                        StopWithAsyncError(
-                            "cudaEventSynchronize", Status{waitRet, cudaGetErrorString(waitRet)});
+                        StopWithAsyncError("cudaEventSynchronize",
+                                           Status{waitRet, cudaGetErrorString(waitRet)});
                         return;
                     }
-                    if (stopRequested_) { continue; }
-                    if (!operationsQueue_.empty()
-                        && operationsQueue_.front().operationId == op.operationId) {
-                        operationsQueue_.pop_front();
-                    }
                     MarkOperationCompleted(op.operationId);
+                    completionSignal_.fetch_add(1, std::memory_order_acq_rel);
                     cv_.notify_all();
+                    continue;
                 }
-            } else {    // copy submit
-                const auto submitResult = SubmitCopyOperationFromQueue(op);
-                if (submitResult == SubmitResult::Submitted) {
-                    continue; 
-                } else if (submitResult == SubmitResult::Error) { 
-                    return; 
-                } else {    // SubmitResult::Waiting
+
+                for (;;) {
+                    const auto submitResult = SubmitCopyOperationFromQueue(op);
+                    if (submitResult == SubmitResult::Submitted) { break; }
+                    if (submitResult == SubmitResult::Error) { return; }
+
+                    const auto signalBefore =
+                        completionSignal_.load(std::memory_order_acquire);
                     std::unique_lock<std::mutex> lock{mutex_};
-                    cv_.wait(lock, [this, inflightBefore] {
-                        return stopRequested_ || HasAsyncError()
-                            || inflightRequestOperations_.size() < inflightBefore;
+                    cv_.wait(lock, [this, signalBefore] {
+                        return stopRequested_.load(std::memory_order_acquire) || HasAsyncError()
+                            || completionSignal_.load(std::memory_order_acquire) != signalBefore;
                     });
+                    if (stopRequested_.load(std::memory_order_acquire) || HasAsyncError()) {
+                        return;
+                    }
                 }
             }
         }
@@ -321,79 +370,56 @@ void GdrStream::SchedulerLoop()
 
 GdrStream::SubmitResult GdrStream::SubmitCopyOperationFromQueue(const Operation& op)
 {
-    uint64_t reqId = 0;
-    std::lock_guard<std::mutex> lock{mutex_};
-    if (HasAsyncError() || stopRequested_) { return SubmitResult::Error; }
+    if (HasAsyncError() || stopRequested_.load(std::memory_order_acquire)) {
+        return SubmitResult::Error;
+    }
 
-    // Keep the submit and reqId bookkeeping atomic from the stream's point of view.
-    // Fast completions can otherwise be polled before reqId is visible here.
-    const auto rc = channel_->GdrMemcpyAsync(op.dst, op.src, op.size, op.kind, &reqId);
-    if (rc == 0) {
-        if (!operationsQueue_.empty()
-            && operationsQueue_.front().operationId == op.operationId) {
-            operationsQueue_.pop_front();
-        }
-        if (reqId != 0) {
-            inflightRequestOperations_[reqId] = op.operationId;
-        } else {
-            MarkOperationCompleted(op.operationId);
-        }
-        if (reqId == 0) { cv_.notify_all(); }
+    if (op.size == 0) {
+        MarkOperationCompleted(op.operationId);
+        completionSignal_.fetch_add(1, std::memory_order_acq_rel);
+        cv_.notify_all();
         return SubmitResult::Submitted;
     }
+
+    const auto rc =
+        channel_->GdrMemcpyAsyncWithReqId(op.dst, op.src, op.size, op.kind, op.operationId);
+    if (rc == 0) { return SubmitResult::Submitted; }
     if (rc == -EAGAIN) { return SubmitResult::Waiting; }
 
-    const auto status = MakeGdrStatus("GdrMemcpyAsync", rc);
-    UC_ERROR("GDR copy operation {} failed at GdrMemcpyAsync: {}", op.operationId, status);
-    if (!operationsQueue_.empty() && operationsQueue_.front().operationId == op.operationId) {
-        operationsQueue_.pop_front();
-    }
+    const auto status = MakeGdrStatus("GdrMemcpyAsyncWithReqId", rc);
+    UC_ERROR("GDR copy operation {} failed at GdrMemcpyAsyncWithReqId: {}", op.operationId,
+             status);
     MarkOperationFailed(op.operationId, status);
+    completionSignal_.fetch_add(1, std::memory_order_acq_rel);
     cv_.notify_all();
     return SubmitResult::Submitted;
 }
 
-// Poll completions for sent GDR copies and mark them done.
 void GdrStream::CompletionLoop()
 {
-    {
-        std::lock_guard<std::mutex> lock{mutex_};
-        completionThreadReady_ = true;
-        cv_.notify_all();
-    }
+    completionThreadReady_.store(true, std::memory_order_release);
+    cv_.notify_all();
 
     for (;;) {
         const auto waitRc = channel_->WaitForCompletionEvent();
-        {
-            std::lock_guard<std::mutex> lock{mutex_};
-            if (waitRc == -ECANCELED) {
-                if (HasAsyncError() || stopRequested_) { return; }
-            } else if (waitRc != 0) {
-                StopWithAsyncError("WaitForCompletionEvent",
-                                   MakeGdrStatus("WaitForCompletionEvent", waitRc));
-                return;
-            } else if (HasAsyncError() || stopRequested_) {
-                return;
-            }
+        if (waitRc == -ECANCELED) {
+            if (HasAsyncError() || stopRequested_.load(std::memory_order_acquire)) { return; }
+            continue;
         }
-        if (waitRc == -ECANCELED) { continue; }
+        if (waitRc != 0) {
+            StopWithAsyncError("WaitForCompletionEvent",
+                               MakeGdrStatus("WaitForCompletionEvent", waitRc));
+            return;
+        }
+        if (HasAsyncError() || stopRequested_.load(std::memory_order_acquire)) { return; }
 
         for (;;) {
             uint64_t reqId = 0;
             const auto pollResult = channel_->PollCompletion(&reqId);
             if (pollResult == GdrCompletionPollResult::Completed) {
-                std::lock_guard<std::mutex> lock{mutex_};
                 if (HasAsyncError()) { return; }
-                const auto it = inflightRequestOperations_.find(reqId);
-                if (it == inflightRequestOperations_.end()) {
-                    const auto status = Status::OsApiError(
-                        fmt::format("unexpected GDR completion reqId({})", reqId));
-                    StopWithAsyncError("PollCompletion reqId mismatch", status);
-                    return;
-                }
-                const uint64_t operationId = it->second;
-                inflightRequestOperations_.erase(it);
-                MarkOperationCompleted(operationId);
+                MarkOperationCompleted(reqId);
+                completionSignal_.fetch_add(1, std::memory_order_acq_rel);
                 cv_.notify_all();
                 continue;
             }
@@ -401,14 +427,12 @@ void GdrStream::CompletionLoop()
             if (pollResult == GdrCompletionPollResult::Empty) { break; }
 
             if (pollResult == GdrCompletionPollResult::UnknownRequest) {
-                std::lock_guard<std::mutex> lock{mutex_};
                 const auto status =
                     Status::OsApiError(fmt::format("unexpected GDR completion reqId({})", reqId));
                 StopWithAsyncError("PollCompletion", status);
                 return;
             }
 
-            std::lock_guard<std::mutex> lock{mutex_};
             StopWithAsyncError("PollCompletion", Status::OsApiError("PollCompletion failed"));
             return;
         }
@@ -417,83 +441,95 @@ void GdrStream::CompletionLoop()
 
 void GdrStream::ShutdownBackgroundThreads()
 {
-    {
-        std::lock_guard<std::mutex> lock{mutex_};
-        stopRequested_ = true;
-        cv_.notify_all();
-    }
+    stopRequested_.store(true, std::memory_order_release);
+    cv_.notify_all();
     if (channel_) { channel_->InterruptCompletionWait(); }
     if (schedulerThread_.joinable()) { schedulerThread_.join(); }
     if (completionThread_.joinable()) { completionThread_.join(); }
 }
 
-void GdrStream::MarkOperationCompleted(uint64_t operationId)
+bool GdrStream::MarkOperationCompleted(uint64_t operationId)
 {
-    if (operationId <= lastCompletedOperationId_) { return; }
+    if (operationId == 0) { return false; }
 
-    if (operationId == lastCompletedOperationId_ + 1) {
-        ++lastCompletedOperationId_;
-        while (true) {
-            const auto nextCompleted = completedOperations_.find(lastCompletedOperationId_ + 1);
-            if (nextCompleted == completedOperations_.end()) { return; }
-            completedOperations_.erase(nextCompleted);
-            ++lastCompletedOperationId_;
+    const auto completedBefore = lastCompletedOperationId_.load(std::memory_order_acquire);
+    if (operationId <= completedBefore) { return false; }
+
+    completionSlots_[operationId & kCompletionRingMask].operationId.store(
+        operationId, std::memory_order_release);
+    AdvanceCompletedOperations();
+    return lastCompletedOperationId_.load(std::memory_order_acquire) != completedBefore;
+}
+
+void GdrStream::AdvanceCompletedOperations()
+{
+    for (;;) {
+        auto current = lastCompletedOperationId_.load(std::memory_order_acquire);
+        const auto next = current + 1;
+        auto& slot = completionSlots_[next & kCompletionRingMask];
+        if (slot.operationId.load(std::memory_order_acquire) != next) { return; }
+        if (lastCompletedOperationId_.compare_exchange_weak(
+                current, next, std::memory_order_acq_rel, std::memory_order_acquire)) {
+            slot.operationId.store(0, std::memory_order_release);
         }
-    }
-
-    completedOperations_.insert(operationId);
-    while (true) {
-        const auto nextCompleted = completedOperations_.find(lastCompletedOperationId_ + 1);
-        if (nextCompleted == completedOperations_.end()) { return; }
-        completedOperations_.erase(nextCompleted);
-        ++lastCompletedOperationId_;
     }
 }
 
 void GdrStream::MarkOperationFailed(uint64_t operationId, Status status)
 {
-    failedOperations_.emplace(operationId, std::move(status));
+    {
+        std::lock_guard<std::mutex> lock{mutex_};
+        failedOperations_.emplace(operationId, std::move(status));
+    }
     MarkOperationCompleted(operationId);
 }
 
 void GdrStream::StopWithAsyncError(const char* source, Status status)
 {
-    if (!asyncError_.has_value()) {
-        UC_ERROR("Async GDR stream error at {}: {}", source, status);
-        asyncError_.emplace(std::move(status));
+    {
+        std::lock_guard<std::mutex> lock{mutex_};
+        if (!asyncError_.has_value()) {
+            UC_ERROR("Async GDR stream error at {}: {}", source, status);
+            asyncError_.emplace(std::move(status));
+            asyncErrorSet_.store(true, std::memory_order_release);
+        }
+        failedOperations_.clear();
     }
 
-    operationsQueue_.clear();
-    inflightRequestOperations_.clear();
-    completedOperations_.clear();
-    failedOperations_.clear();
-    schedulerWaitingOnEvent_ = false;
-    stopRequested_ = true;
+    ResetOperationRing();
+    schedulerWaitingOnEvent_.store(false, std::memory_order_release);
+    stopRequested_.store(true, std::memory_order_release);
+    completionSignal_.fetch_add(1, std::memory_order_acq_rel);
     if (channel_) { channel_->InterruptCompletionWait(); }
     cv_.notify_all();
 }
 
 bool GdrStream::HasAsyncError() const
 {
-    return asyncError_.has_value();
+    return asyncErrorSet_.load(std::memory_order_acquire);
 }
 
 bool GdrStream::IsIdle() const
 {
-    return operationsQueue_.empty() && inflightRequestOperations_.empty()
-        && !schedulerWaitingOnEvent_;
+    const auto nextId = nextOperationId_.load(std::memory_order_acquire);
+    const uint64_t targetOperationId = nextId == 0 ? 0 : nextId - 1;
+    return lastCompletedOperationId_.load(std::memory_order_acquire) >= targetOperationId
+        && !schedulerWaitingOnEvent_.load(std::memory_order_acquire);
 }
 
-Status GdrStream::AsyncError() const
+Status GdrStream::AsyncErrorLocked() const
 {
-    return *asyncError_;
+    if (asyncError_.has_value()) { return *asyncError_; }
+    return Status::Error("GDR stream async error");
 }
 
 std::optional<Status> GdrStream::TakeCompletedOperationError()
 {
     if (failedOperations_.empty()) { return std::nullopt; }
     auto it = failedOperations_.begin();
-    if (it->first > lastCompletedOperationId_) { return std::nullopt; }
+    if (it->first > lastCompletedOperationId_.load(std::memory_order_acquire)) {
+        return std::nullopt;
+    }
 
     auto status = it->second;
     failedOperations_.erase(it);

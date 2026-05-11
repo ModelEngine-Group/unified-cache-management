@@ -24,6 +24,7 @@
 #include "gdr_copy.h"
 
 #include <algorithm>
+#include <atomic>
 #include <cerrno>
 #include <cstring>
 #include <limits>
@@ -31,7 +32,6 @@
 #include <poll.h>
 #include <sys/eventfd.h>
 #include <unordered_map>
-#include <unordered_set>
 #include <unistd.h>
 #include <utility>
 #include <stdexcept>
@@ -48,6 +48,10 @@ namespace {
 constexpr int kIbvPort = 1;
 constexpr int kTargetCqDepth = 4096;
 constexpr int kTargetSendWr = 4096;
+constexpr size_t kInflightRingCapacity = 8192;
+constexpr size_t kInflightRingMask = kInflightRingCapacity - 1;
+static_assert((kInflightRingCapacity & kInflightRingMask) == 0,
+              "inflight ring capacity must be a power of two");
 
 struct MRKey {
     uint64_t addr;
@@ -77,6 +81,12 @@ struct MRKeyHash {
 };
 
 using RegisteredMrTable = std::unordered_map<MRKey, struct ibv_mr*, MRKeyHash>;
+
+struct RegisteredMrRange {
+    uint64_t addr;
+    size_t len;
+    struct ibv_mr* mr;
+};
 
 struct MrRef {
     struct ibv_mr* mr{nullptr};
@@ -171,6 +181,32 @@ struct ibv_mr* ReleaseRegisteredMr(RegisteredMrTable& table, uint64_t addr, size
     auto* mr = it->second;
     table.erase(it);
     return mr;
+}
+
+bool RangeContains(uint64_t base, size_t totalSize, uint64_t addr, size_t len)
+{
+    if (addr < base) { return false; }
+    const auto offset = addr - base;
+    if (offset > totalSize) { return false; }
+    return len <= totalSize - offset;
+}
+
+struct ibv_mr* FindRegisteredMrRange(const std::vector<RegisteredMrRange>& ranges,
+                                     uint64_t addr, size_t len)
+{
+    for (const auto& range : ranges) {
+        if (RangeContains(range.addr, range.len, addr, len)) { return range.mr; }
+    }
+    return nullptr;
+}
+
+void EraseRegisteredMrRange(std::vector<RegisteredMrRange>& ranges, uint64_t addr, size_t len)
+{
+    ranges.erase(std::remove_if(ranges.begin(), ranges.end(),
+                                [addr, len](const RegisteredMrRange& range) {
+                                    return range.addr == addr && range.len == len;
+                                }),
+                 ranges.end());
 }
 
 template <class Fn>
@@ -295,6 +331,7 @@ public:
     void UnregisterHostBuffer(uint64_t addr, size_t len)
     {
         std::lock_guard<std::mutex> lock{mutex_};
+        EraseRegisteredMrRange(hostMrRanges_, addr, len);
         auto* mr = ReleaseRegisteredMr(hostMrs_, addr, len);
         if (mr) { ibv_dereg_mr(mr); }
     }
@@ -308,6 +345,7 @@ public:
     void UnregisterDeviceBuffer(uint64_t addr, size_t len)
     {
         std::lock_guard<std::mutex> lock{mutex_};
+        EraseRegisteredMrRange(gpuMrRanges_, addr, len);
         auto* mr = ReleaseRegisteredMr(gpuMrs_, addr, len);
         if (mr) { ibv_dereg_mr(mr); }
     }
@@ -316,63 +354,13 @@ public:
                        uint64_t* reqId) override
     {
         try {
-            if (!dst || !src) { return -EINVAL; }
             if (bytes == 0) {
                 if (reqId) { *reqId = 0; }
                 return 0;
             }
-            if (kind != GdrMemcpyHostToDevice && kind != GdrMemcpyDeviceToHost) {
-                return -EINVAL;
-            }
-            if (bytes > static_cast<size_t>(std::numeric_limits<uint32_t>::max())) { return -E2BIG; }
-
-            std::lock_guard<std::mutex> lock{mutex_};
-            if (inflightWr_ + 1 > maxInflightWr_) { return -EAGAIN; }
-
-            MrRef gpuMr{};
-            MrRef hostMr{};
-            try {
-                if (kind == GdrMemcpyHostToDevice) {
-                    gpuMr = GetGpuMr(reinterpret_cast<uint64_t>(dst), bytes);
-                    hostMr = GetHostMr(reinterpret_cast<uint64_t>(src), bytes);
-                } else {
-                    hostMr = GetHostMr(reinterpret_cast<uint64_t>(dst), bytes);
-                    gpuMr = GetGpuMr(reinterpret_cast<uint64_t>(src), bytes);
-                }
-            } catch (...) {
-                ReleaseOwnedMr(hostMr);
-                ReleaseOwnedMr(gpuMr);
-                throw;
-            }
-            if (!gpuMr.mr || !hostMr.mr) {
-                ReleaseOwnedMr(hostMr);
-                ReleaseOwnedMr(gpuMr);
-                return -EIO;
-            }
-
-            const uint64_t localReqId = nextReqId_++;
-            pendingReqs_.insert(localReqId);
-            inflightWr_ += 1;
-            if (hostMr.owned) { pendingReqMrs_[localReqId].push_back(hostMr.mr); }
-            if (gpuMr.owned) { pendingReqMrs_[localReqId].push_back(gpuMr.mr); }
-
-            int rc = 0;
-            if (kind == GdrMemcpyHostToDevice) {
-                rc = PostWrite(reinterpret_cast<uint64_t>(dst), gpuMr.mr->rkey,
-                               reinterpret_cast<uint64_t>(src), hostMr.mr->lkey, bytes,
-                               localReqId);
-            } else {
-                rc = PostRead(reinterpret_cast<uint64_t>(dst), hostMr.mr->lkey,
-                              reinterpret_cast<uint64_t>(src), gpuMr.mr->rkey, bytes,
-                              localReqId);
-            }
-            if (rc != 0) {
-                CleanupReqFallbackMrs(localReqId);
-                pendingReqs_.erase(localReqId);
-                inflightWr_ = std::max(0, inflightWr_ - 1);
-                return rc;
-            }
-
+            const uint64_t localReqId = nextReqId_.fetch_add(1, std::memory_order_relaxed);
+            const auto rc = GdrMemcpyAsyncWithReqId(dst, src, bytes, kind, localReqId);
+            if (rc != 0) { return rc; }
             if (reqId) { *reqId = localReqId; }
             return 0;
         } catch (...) {
@@ -380,22 +368,27 @@ public:
         }
     }
 
+    int GdrMemcpyAsyncWithReqId(void* dst, const void* src, size_t bytes, GdrCopyKind kind,
+                                uint64_t reqId) override
+    {
+        try {
+            return GdrMemcpyAsyncWithReqIdImpl(dst, src, bytes, kind, reqId);
+        } catch (...) {
+            return -EIO;
+        }
+    }
+
     GdrCompletionPollResult PollCompletion(uint64_t* reqId) override
     {
-        std::lock_guard<std::mutex> lock{mutex_};
         struct ibv_wc wc {};
         const int polledCompletionCount = ibv_poll_cq(cq_, 1, &wc);
         if (polledCompletionCount < 0) { return GdrCompletionPollResult::Error; }
         if (polledCompletionCount == 0) { return GdrCompletionPollResult::Empty; }
         if (wc.status != IBV_WC_SUCCESS) { return GdrCompletionPollResult::Error; }
 
-        inflightWr_ = std::max(0, inflightWr_ - 1);
         if (reqId) { *reqId = wc.wr_id; }
-        const auto it = pendingReqs_.find(wc.wr_id);
-        if (it == pendingReqs_.end()) { return GdrCompletionPollResult::UnknownRequest; }
-
-        CleanupReqFallbackMrs(wc.wr_id);
-        pendingReqs_.erase(it);
+        if (!ReleaseInflightSlot(wc.wr_id)) { return GdrCompletionPollResult::UnknownRequest; }
+        inflightWr_.fetch_sub(1, std::memory_order_acq_rel);
         return GdrCompletionPollResult::Completed;
     }
 
@@ -454,16 +447,15 @@ private:
         ClearRegisteredMrs(hostMrs_, [](struct ibv_mr* mr) {
             if (mr) { ibv_dereg_mr(mr); }
         });
+        hostMrRanges_.clear();
         ClearRegisteredMrs(gpuMrs_, [](struct ibv_mr* mr) {
             if (mr) { ibv_dereg_mr(mr); }
         });
-        for (auto& [reqId, mrs] : pendingReqMrs_) {
-            (void)reqId;
-            for (auto* mr : mrs) {
-                if (mr) { ibv_dereg_mr(mr); }
-            }
+        gpuMrRanges_.clear();
+        for (size_t i = 0; i < kInflightRingCapacity; ++i) {
+            ReleaseInflightFallbackMrs(inflightSlots_[i]);
+            inflightSlots_[i].reqId.store(0, std::memory_order_relaxed);
         }
-        pendingReqMrs_.clear();
         if (qp_) {
             ibv_destroy_qp(qp_);
             qp_ = nullptr;
@@ -534,6 +526,7 @@ private:
         auto* mr = ibv_reg_mr(pd_, reinterpret_cast<void*>(addr), len, flags);
         if (!mr) { throw std::runtime_error("ibv_reg_mr on host memory failed"); }
         hostMrs_[MRKey{addr, len}] = mr;
+        hostMrRanges_.push_back({addr, len, mr});
     }
 
     void RegisterDeviceBufferLocked(uint64_t addr, size_t len)
@@ -544,6 +537,110 @@ private:
         auto* mr = ibv_reg_mr(pd_, reinterpret_cast<void*>(addr), len, flags);
         if (!mr) { throw std::runtime_error("ibv_reg_mr on GPU memory failed"); }
         gpuMrs_[MRKey{addr, len}] = mr;
+        gpuMrRanges_.push_back({addr, len, mr});
+    }
+
+    bool TryGetRegisteredGpuMr(uint64_t addr, size_t len, MrRef* out)
+    {
+        auto* mr = FindRegisteredMrRange(gpuMrRanges_, addr, len);
+        if (!mr) { return false; }
+        *out = MrRef{mr, false};
+        return true;
+    }
+
+    bool TryGetRegisteredHostMr(uint64_t addr, size_t len, MrRef* out)
+    {
+        auto* mr = FindRegisteredMrRange(hostMrRanges_, addr, len);
+        if (!mr) { return false; }
+        *out = MrRef{mr, false};
+        return true;
+    }
+
+    int GdrMemcpyAsyncWithReqIdImpl(void* dst, const void* src, size_t bytes, GdrCopyKind kind,
+                                    uint64_t reqId)
+    {
+        if (!dst || !src) { return -EINVAL; }
+        if (bytes == 0) { return 0; }
+        if (reqId == 0) { return -EINVAL; }
+        if (kind != GdrMemcpyHostToDevice && kind != GdrMemcpyDeviceToHost) {
+            return -EINVAL;
+        }
+        if (bytes > static_cast<size_t>(std::numeric_limits<uint32_t>::max())) { return -E2BIG; }
+
+        MrRef gpuMr{};
+        MrRef hostMr{};
+        if (kind == GdrMemcpyHostToDevice) {
+            if (TryGetRegisteredGpuMr(reinterpret_cast<uint64_t>(dst), bytes, &gpuMr) &&
+                TryGetRegisteredHostMr(reinterpret_cast<uint64_t>(src), bytes, &hostMr)) {
+                return PostCopyWithInflightSlot(dst, src, bytes, kind, reqId, hostMr, gpuMr);
+            }
+        } else {
+            if (TryGetRegisteredHostMr(reinterpret_cast<uint64_t>(dst), bytes, &hostMr) &&
+                TryGetRegisteredGpuMr(reinterpret_cast<uint64_t>(src), bytes, &gpuMr)) {
+                return PostCopyWithInflightSlot(dst, src, bytes, kind, reqId, hostMr, gpuMr);
+            }
+        }
+
+        std::lock_guard<std::mutex> lock{mutex_};
+        try {
+            if (kind == GdrMemcpyHostToDevice) {
+                gpuMr = GetGpuMr(reinterpret_cast<uint64_t>(dst), bytes);
+                hostMr = GetHostMr(reinterpret_cast<uint64_t>(src), bytes);
+            } else {
+                hostMr = GetHostMr(reinterpret_cast<uint64_t>(dst), bytes);
+                gpuMr = GetGpuMr(reinterpret_cast<uint64_t>(src), bytes);
+            }
+        } catch (...) {
+            ReleaseOwnedMr(hostMr);
+            ReleaseOwnedMr(gpuMr);
+            throw;
+        }
+        return PostCopyWithInflightSlot(dst, src, bytes, kind, reqId, hostMr, gpuMr);
+    }
+
+    int PostCopyWithInflightSlot(void* dst, const void* src, size_t bytes, GdrCopyKind kind,
+                                 uint64_t reqId, MrRef hostMr, MrRef gpuMr)
+    {
+        if (!gpuMr.mr || !hostMr.mr) {
+            ReleaseOwnedMr(hostMr);
+            ReleaseOwnedMr(gpuMr);
+            return -EIO;
+        }
+
+        const int oldInflight = inflightWr_.fetch_add(1, std::memory_order_acq_rel);
+        if (oldInflight + 1 > maxInflightWr_) {
+            inflightWr_.fetch_sub(1, std::memory_order_acq_rel);
+            ReleaseOwnedMr(hostMr);
+            ReleaseOwnedMr(gpuMr);
+            return -EAGAIN;
+        }
+
+        auto& slot = inflightSlots_[reqId & kInflightRingMask];
+        if (slot.reqId.load(std::memory_order_acquire) != 0) {
+            inflightWr_.fetch_sub(1, std::memory_order_acq_rel);
+            ReleaseOwnedMr(hostMr);
+            ReleaseOwnedMr(gpuMr);
+            return -EAGAIN;
+        }
+        slot.fallbackHostMr = hostMr.owned ? hostMr.mr : nullptr;
+        slot.fallbackGpuMr = gpuMr.owned ? gpuMr.mr : nullptr;
+        slot.reqId.store(reqId, std::memory_order_release);
+
+        int rc = 0;
+        if (kind == GdrMemcpyHostToDevice) {
+            rc = PostWrite(reinterpret_cast<uint64_t>(dst), gpuMr.mr->rkey,
+                           reinterpret_cast<uint64_t>(src), hostMr.mr->lkey, bytes, reqId);
+        } else {
+            rc = PostRead(reinterpret_cast<uint64_t>(dst), hostMr.mr->lkey,
+                          reinterpret_cast<uint64_t>(src), gpuMr.mr->rkey, bytes, reqId);
+        }
+        if (rc != 0) {
+            ReleaseInflightFallbackMrs(slot);
+            slot.reqId.store(0, std::memory_order_release);
+            inflightWr_.fetch_sub(1, std::memory_order_acq_rel);
+            return rc;
+        }
+        return 0;
     }
 
     static void ReleaseOwnedMr(const MrRef& mr)
@@ -551,14 +648,31 @@ private:
         if (mr.owned && mr.mr) { ibv_dereg_mr(mr.mr); }
     }
 
-    void CleanupReqFallbackMrs(uint64_t reqId)
+    struct InflightSlot {
+        std::atomic<uint64_t> reqId{0};
+        struct ibv_mr* fallbackHostMr{nullptr};
+        struct ibv_mr* fallbackGpuMr{nullptr};
+    };
+
+    static void ReleaseInflightFallbackMrs(InflightSlot& slot)
     {
-        const auto it = pendingReqMrs_.find(reqId);
-        if (it == pendingReqMrs_.end()) { return; }
-        for (auto* mr : it->second) {
-            if (mr) { ibv_dereg_mr(mr); }
+        if (slot.fallbackHostMr) {
+            ibv_dereg_mr(slot.fallbackHostMr);
+            slot.fallbackHostMr = nullptr;
         }
-        pendingReqMrs_.erase(it);
+        if (slot.fallbackGpuMr) {
+            ibv_dereg_mr(slot.fallbackGpuMr);
+            slot.fallbackGpuMr = nullptr;
+        }
+    }
+
+    bool ReleaseInflightSlot(uint64_t reqId)
+    {
+        auto& slot = inflightSlots_[reqId & kInflightRingMask];
+        if (slot.reqId.load(std::memory_order_acquire) != reqId) { return false; }
+        ReleaseInflightFallbackMrs(slot);
+        slot.reqId.store(0, std::memory_order_release);
+        return true;
     }
 
     void ClearCompletionWakeup()
@@ -626,15 +740,16 @@ private:
     struct ibv_qp* qp_{nullptr};
     RegisteredMrTable gpuMrs_;
     RegisteredMrTable hostMrs_;
+    std::vector<RegisteredMrRange> gpuMrRanges_;
+    std::vector<RegisteredMrRange> hostMrRanges_;
     int gpuId_{-1};
     std::string nicName_;
     bool isRoce_{false};
     int maxInflightWr_{1};
-    int inflightWr_{0};
+    std::atomic<int> inflightWr_{0};
     int completionWakeupFd_{-1};
-    uint64_t nextReqId_{1};
-    std::unordered_set<uint64_t> pendingReqs_;
-    std::unordered_map<uint64_t, std::vector<struct ibv_mr*>> pendingReqMrs_;
+    std::atomic<uint64_t> nextReqId_{1};
+    InflightSlot inflightSlots_[kInflightRingCapacity];
     std::mutex mutex_;
 };
 
