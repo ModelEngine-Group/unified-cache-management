@@ -73,18 +73,8 @@ private:
     static constexpr size_t kCompletionRingMask = kCompletionRingCapacity - 1;
     static constexpr size_t kSchedulerBatchSize = 128;
     static constexpr size_t kRingPushSpinCount = 10000;
-    static constexpr uint32_t kSchedulerStateStarting = 0;
-    static constexpr uint32_t kSchedulerStateWaiting = 1;
-    static constexpr uint32_t kSchedulerStateDraining = 2;
-    static constexpr uint32_t kSchedulerStateWaitEvent = 3;
-    static constexpr uint32_t kSchedulerStateSubmitting = 4;
-    static constexpr uint32_t kSchedulerStateBackpressure = 5;
-    static constexpr uint32_t kSchedulerStateExiting = 6;
-    static constexpr uint32_t kCompletionStateStarting = 0;
-    static constexpr uint32_t kCompletionStateRequestNotify = 1;
-    static constexpr uint32_t kCompletionStatePolling = 2;
-    static constexpr uint32_t kCompletionStateWaitingEvent = 3;
-    static constexpr uint32_t kCompletionStateExiting = 4;
+    static constexpr size_t kSchedulerIdleSpinCount = 10000;
+    static constexpr uint64_t kSchedulerIdleWaitUs = 50;
     static_assert((kOperationRingCapacity & kOperationRingMask) == 0,
                   "operation ring capacity must be a power of two");
     static_assert((kCompletionRingCapacity & kCompletionRingMask) == 0,
@@ -131,10 +121,8 @@ private:
     void MarkOperationFailed(uint64_t operationId, Status status);
     void StopWithAsyncError(const char* source, Status status);
     bool HasAsyncError() const;
-    bool IsIdle() const;
     Status AsyncErrorLocked() const;
     std::optional<Status> TakeCompletedOperationError();
-    void DumpDebugState(const char* source, uint64_t targetOperationId) const;
 
 private:
     std::shared_ptr<GdrCopyChannel> channel_{nullptr};
@@ -156,18 +144,6 @@ private:
     std::atomic<uint64_t> nextOperationId_{1};
     std::atomic<uint64_t> lastCompletedOperationId_{0};
     std::atomic<uint64_t> completionSignal_{0};  // Changes whenever the scheduler can retry submit.
-    std::atomic<uint64_t> submittedCopies_{0};
-    std::atomic<uint64_t> completedCopies_{0};
-    std::atomic<uint64_t> eagainCount_{0};
-    std::atomic<uint64_t> submitFailureCount_{0};
-    std::atomic<uint64_t> completionEmptyPolls_{0};
-    std::atomic<uint64_t> completionWaits_{0};
-    std::atomic<uint64_t> completionWakeups_{0};
-    std::atomic<uint64_t> lastSchedulerOperationId_{0};
-    std::atomic<uint64_t> lastSubmittedOperationId_{0};
-    std::atomic<uint64_t> lastCompletionReqId_{0};
-    std::atomic<uint32_t> schedulerState_{kSchedulerStateStarting};
-    std::atomic<uint32_t> completionState_{kCompletionStateStarting};
     int32_t deviceId_{-1};
     std::string nicName_{"mlx5_0"};
     std::atomic<bool> stopRequested_{false};  // Tells background threads to exit after current work ends or fails.
