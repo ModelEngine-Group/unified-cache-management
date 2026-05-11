@@ -213,7 +213,7 @@
         "legend": {
           "calcs": [],
           "displayMode": "list",
-          "maxHeight": "240px",
+          "maxHeight": "50%",
           "placement": "bottom",
           "showLegend": true
         },
@@ -317,7 +317,7 @@
         "legend": {
           "calcs": [],
           "displayMode": "list",
-          "maxHeight": "240px",
+          "maxHeight": "50%",
           "placement": "bottom",
           "showLegend": true
         },
@@ -493,7 +493,7 @@
             "max"
           ],
           "displayMode": "table",
-          "maxHeight": "240px",
+          "maxHeight": "50%",
           "placement": "bottom",
           "showLegend": true
         },
@@ -700,7 +700,7 @@
             "max"
           ],
           "displayMode": "table",
-          "maxHeight": "240px",
+          "maxHeight": "50%",
           "placement": "bottom",
           "showLegend": true
         },
@@ -907,7 +907,7 @@
             "max"
           ],
           "displayMode": "table",
-          "maxHeight": "240px",
+          "maxHeight": "50%",
           "placement": "bottom",
           "showLegend": true
         },
@@ -1114,7 +1114,7 @@
             "max"
           ],
           "displayMode": "table",
-          "maxHeight": "240px",
+          "maxHeight": "50%",
           "placement": "bottom",
           "showLegend": true
         },
@@ -1321,7 +1321,7 @@
             "max"
           ],
           "displayMode": "table",
-          "maxHeight": "240px",
+          "maxHeight": "50%",
           "placement": "bottom",
           "showLegend": true
         },
@@ -1528,7 +1528,7 @@
             "max"
           ],
           "displayMode": "table",
-          "maxHeight": "240px",
+          "maxHeight": "50%",
           "placement": "bottom",
           "showLegend": true
         },
@@ -1735,7 +1735,7 @@
             "max"
           ],
           "displayMode": "table",
-          "maxHeight": "240px",
+          "maxHeight": "50%",
           "placement": "bottom",
           "showLegend": true
         },
@@ -1865,7 +1865,7 @@
             "max"
           ],
           "displayMode": "table",
-          "maxHeight": "240px",
+          "maxHeight": "50%",
           "placement": "bottom",
           "showLegend": true
         },
@@ -1962,7 +1962,7 @@
             "max"
           ],
           "displayMode": "table",
-          "maxHeight": "240px",
+          "maxHeight": "50%",
           "placement": "bottom",
           "showLegend": true
         },
@@ -2136,7 +2136,7 @@
             "max"
           ],
           "displayMode": "table",
-          "maxHeight": "240px",
+          "maxHeight": "50%",
           "placement": "bottom",
           "showLegend": true
         },
@@ -2343,7 +2343,7 @@
             "max"
           ],
           "displayMode": "table",
-          "maxHeight": "240px",
+          "maxHeight": "50%",
           "placement": "bottom",
           "showLegend": true
         },
@@ -2473,7 +2473,7 @@
             "max"
           ],
           "displayMode": "table",
-          "maxHeight": "240px",
+          "maxHeight": "50%",
           "placement": "bottom",
           "showLegend": true
         },
@@ -2570,7 +2570,7 @@
             "max"
           ],
           "displayMode": "table",
-          "maxHeight": "240px",
+          "maxHeight": "50%",
           "placement": "bottom",
           "showLegend": true
         },
@@ -2744,7 +2744,7 @@
             "max"
           ],
           "displayMode": "table",
-          "maxHeight": "240px",
+          "maxHeight": "50%",
           "placement": "bottom",
           "showLegend": true
         },
@@ -2951,7 +2951,7 @@
             "max"
           ],
           "displayMode": "table",
-          "maxHeight": "240px",
+          "maxHeight": "50%",
           "placement": "bottom",
           "showLegend": true
         },
