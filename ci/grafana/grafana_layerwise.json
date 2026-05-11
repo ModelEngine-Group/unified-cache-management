@@ -1524,7 +1524,7 @@
           },
           "id": 9,
           "title": "Layerwise / Wait Blocking",
-          "description": "Per-layer wait_for_layer_load blocking time. p99 near 0 = perfect overlap; p99 tracking load_duration = pipeline degenerated to serial. -- distribution shape over time, all workers aggregated.",
+          "description": "Per-layer wait_for_layer_load blocking time. p99 near 0 = perfect overlap; p99 tracking load_duration = pipeline degenerated to serial. Heatmap cell value is request rate from rate(bucket), not raw request count; all workers aggregated.",
           "gridPos": {
             "h": 8,
             "w": 24,
@@ -1555,7 +1555,7 @@
             },
             "rowsFrame": {
               "layout": "auto",
-              "value": "Bucket count"
+              "value": "Request rate"
             },
             "color": {
               "mode": "scheme",
@@ -1567,7 +1567,7 @@
             },
             "cellGap": 1,
             "cellValues": {
-              "unit": "short"
+              "unit": "suffix: req/s"
             },
             "filterValues": {
               "le": 1e-09
