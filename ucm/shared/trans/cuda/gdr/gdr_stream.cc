@@ -312,9 +312,19 @@ Status GdrStream::PushOperation(const Operation& op, bool* shouldNotify)
         const auto tail = operationRingTail_.load(std::memory_order_relaxed);
         const auto head = operationRingHead_.load(std::memory_order_acquire);
         if (tail - head < kOperationRingCapacity) {
+            if (tail == head) {
+                std::lock_guard<std::mutex> lock{mutex_};
+                const auto lockedTail = operationRingTail_.load(std::memory_order_relaxed);
+                const auto lockedHead = operationRingHead_.load(std::memory_order_acquire);
+                if (lockedTail - lockedHead >= kOperationRingCapacity) { continue; }
+                operationRing_[lockedTail & kOperationRingMask] = op;
+                operationRingTail_.store(lockedTail + 1, std::memory_order_release);
+                if (shouldNotify) { *shouldNotify = lockedTail == lockedHead; }
+                return Status::OK();
+            }
             operationRing_[tail & kOperationRingMask] = op;
             operationRingTail_.store(tail + 1, std::memory_order_release);
-            if (shouldNotify) { *shouldNotify = tail == head; }
+            if (shouldNotify) { *shouldNotify = false; }
             return Status::OK();
         }
         std::this_thread::yield();
