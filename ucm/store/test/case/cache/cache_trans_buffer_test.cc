@@ -84,7 +84,7 @@ TEST_P(UCCacheTransBufferTest, BackendOnlyLoadReusesIdleCacheEntry)
         cachedAddr = handle1.Data();
     }
 
-    auto handle2 = transBuffer.Get(blockId, shardIdx, /*allowReserved=*/true, /*isLoad=*/true);
+    auto handle2 = transBuffer.Get(blockId, shardIdx, true, true);
     ASSERT_TRUE(handle2);
     ASSERT_TRUE(handle2.Owner());
     ASSERT_FALSE(handle2.Ready());
@@ -113,7 +113,7 @@ TEST_P(UCCacheTransBufferTest, BackendOnlyReservedGetDoesNotBypassWithoutLoadFla
         handle1.MarkReady();
     }
 
-    auto handle2 = transBuffer.Get(blockId, shardIdx, /*allowReserved=*/true);
+    auto handle2 = transBuffer.Get(blockId, shardIdx, true);
     ASSERT_TRUE(handle2);
     ASSERT_TRUE(handle2.Owner());
     ASSERT_TRUE(handle2.Ready());
@@ -134,10 +134,10 @@ TEST_P(UCCacheTransBufferTest, BackendOnlyLoadCoalescesInFlightEntry)
     ASSERT_EQ(s, UC::Status::OK());
     auto blockId = UC::Test::Detail::TypesHelper::MakeBlockId("a1b2c3d4e5f6789012345678901234ab");
     constexpr size_t shardIdx = 0;
-    auto owner = transBuffer.Get(blockId, shardIdx, /*allowReserved=*/true, /*isLoad=*/true);
+    auto owner = transBuffer.Get(blockId, shardIdx, true, true);
     ASSERT_TRUE(owner);
     ASSERT_TRUE(owner.Owner());
-    auto waiter = transBuffer.Get(blockId, shardIdx, /*allowReserved=*/true, /*isLoad=*/true);
+    auto waiter = transBuffer.Get(blockId, shardIdx, true, true);
     ASSERT_TRUE(waiter);
     ASSERT_FALSE(waiter.Owner());
     ASSERT_EQ(owner.Data(), waiter.Data());

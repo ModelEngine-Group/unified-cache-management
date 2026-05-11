@@ -491,9 +491,7 @@ TransBuffer::Handle TransBuffer::Get(const Detail::BlockId& blockId, size_t shar
     strategy_->BucketLock(iBucket);
     auto iNode = FindAt(iBucket, blockId, shardIdx, owner);
     if (iNode != invalidIndex) {
-        if (bypassHitOnLoad_ && isLoad && owner && Ready(iNode)) {
-            MarkNotReady(iNode);
-        }
+        if (bypassHitOnLoad_ && isLoad && owner && Ready(iNode)) { MarkNotReady(iNode); }
         strategy_->BucketUnlock(iBucket);
         return Handle{this, iNode, owner};
     }
