@@ -86,7 +86,7 @@
         "current": {
           "selected": true,
           "text": "Aggregated",
-          "value": ""
+          "value": "model_name"
         },
         "hide": 0,
         "includeAll": false,
@@ -97,15 +97,15 @@
           {
             "selected": true,
             "text": "Aggregated",
-            "value": ""
+            "value": "model_name"
           },
           {
             "selected": false,
             "text": "Per Worker",
-            "value": ", worker_id"
+            "value": "model_name, worker_id"
           }
         ],
-        "query": "Aggregated : ,Per Worker : \\, worker_id",
+        "query": "Aggregated : model_name,Per Worker : model_name\\, worker_id",
         "queryValue": "",
         "skipUrlSync": false,
         "type": "custom"
@@ -319,7 +319,7 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "histogram_quantile(0.5, sum by (le, model_name${perWorker:raw}) (rate(ucm:layerwise_wait_blocking_ms_bucket{model_name=\"$model_name\", job=\"$job\"}[$__rate_interval])))",
+          "expr": "histogram_quantile(0.5, sum by (le, ${perWorker:raw}) (rate(ucm:layerwise_wait_blocking_ms_bucket{model_name=\"$model_name\", job=\"$job\"}[$__rate_interval])))",
           "legendFormat": "p50 {{worker_id}}",
           "range": true,
           "refId": "A"
@@ -330,7 +330,7 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "histogram_quantile(0.9, sum by (le, model_name${perWorker:raw}) (rate(ucm:layerwise_wait_blocking_ms_bucket{model_name=\"$model_name\", job=\"$job\"}[$__rate_interval])))",
+          "expr": "histogram_quantile(0.9, sum by (le, ${perWorker:raw}) (rate(ucm:layerwise_wait_blocking_ms_bucket{model_name=\"$model_name\", job=\"$job\"}[$__rate_interval])))",
           "legendFormat": "p90 {{worker_id}}",
           "range": true,
           "refId": "B"
@@ -341,7 +341,7 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "histogram_quantile(0.99, sum by (le, model_name${perWorker:raw}) (rate(ucm:layerwise_wait_blocking_ms_bucket{model_name=\"$model_name\", job=\"$job\"}[$__rate_interval])))",
+          "expr": "histogram_quantile(0.99, sum by (le, ${perWorker:raw}) (rate(ucm:layerwise_wait_blocking_ms_bucket{model_name=\"$model_name\", job=\"$job\"}[$__rate_interval])))",
           "legendFormat": "p99 {{worker_id}}",
           "range": true,
           "refId": "C"
@@ -352,7 +352,7 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "sum by (model_name${perWorker:raw}) (rate(ucm:layerwise_wait_blocking_ms_sum{model_name=\"$model_name\", job=\"$job\"}[$__rate_interval]))\n/\nsum by (model_name${perWorker:raw}) (rate(ucm:layerwise_wait_blocking_ms_count{model_name=\"$model_name\", job=\"$job\"}[$__rate_interval]))",
+          "expr": "sum by (${perWorker:raw}) (rate(ucm:layerwise_wait_blocking_ms_sum{model_name=\"$model_name\", job=\"$job\"}[$__rate_interval]))\n/\nsum by (${perWorker:raw}) (rate(ucm:layerwise_wait_blocking_ms_count{model_name=\"$model_name\", job=\"$job\"}[$__rate_interval]))",
           "legendFormat": "avg {{worker_id}}",
           "range": true,
           "refId": "D"
@@ -446,7 +446,7 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "sum by (model_name${perWorker:raw}) (rate(ucm:layerwise_stalled_layers_total{model_name=\"$model_name\", job=\"$job\"}[$__rate_interval]))",
+          "expr": "sum by (${perWorker:raw}) (rate(ucm:layerwise_stalled_layers_total{model_name=\"$model_name\", job=\"$job\"}[$__rate_interval]))",
           "hide": false,
           "instant": false,
           "legendFormat": "{{worker_id}}",
@@ -622,7 +622,7 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "histogram_quantile(0.5, sum by (le, model_name${perWorker:raw}) (rate(ucm:layerwise_inter_wait_interval_ms_bucket{model_name=\"$model_name\", job=\"$job\"}[$__rate_interval])))",
+          "expr": "histogram_quantile(0.5, sum by (le, ${perWorker:raw}) (rate(ucm:layerwise_inter_wait_interval_ms_bucket{model_name=\"$model_name\", job=\"$job\"}[$__rate_interval])))",
           "legendFormat": "p50 {{worker_id}}",
           "range": true,
           "refId": "A"
@@ -633,7 +633,7 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "histogram_quantile(0.9, sum by (le, model_name${perWorker:raw}) (rate(ucm:layerwise_inter_wait_interval_ms_bucket{model_name=\"$model_name\", job=\"$job\"}[$__rate_interval])))",
+          "expr": "histogram_quantile(0.9, sum by (le, ${perWorker:raw}) (rate(ucm:layerwise_inter_wait_interval_ms_bucket{model_name=\"$model_name\", job=\"$job\"}[$__rate_interval])))",
           "legendFormat": "p90 {{worker_id}}",
           "range": true,
           "refId": "B"
@@ -644,7 +644,7 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "histogram_quantile(0.99, sum by (le, model_name${perWorker:raw}) (rate(ucm:layerwise_inter_wait_interval_ms_bucket{model_name=\"$model_name\", job=\"$job\"}[$__rate_interval])))",
+          "expr": "histogram_quantile(0.99, sum by (le, ${perWorker:raw}) (rate(ucm:layerwise_inter_wait_interval_ms_bucket{model_name=\"$model_name\", job=\"$job\"}[$__rate_interval])))",
           "legendFormat": "p99 {{worker_id}}",
           "range": true,
           "refId": "C"
@@ -655,7 +655,7 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "sum by (model_name${perWorker:raw}) (rate(ucm:layerwise_inter_wait_interval_ms_sum{model_name=\"$model_name\", job=\"$job\"}[$__rate_interval]))\n/\nsum by (model_name${perWorker:raw}) (rate(ucm:layerwise_inter_wait_interval_ms_count{model_name=\"$model_name\", job=\"$job\"}[$__rate_interval]))",
+          "expr": "sum by (${perWorker:raw}) (rate(ucm:layerwise_inter_wait_interval_ms_sum{model_name=\"$model_name\", job=\"$job\"}[$__rate_interval]))\n/\nsum by (${perWorker:raw}) (rate(ucm:layerwise_inter_wait_interval_ms_count{model_name=\"$model_name\", job=\"$job\"}[$__rate_interval]))",
           "legendFormat": "avg {{worker_id}}",
           "range": true,
           "refId": "D"
@@ -829,7 +829,7 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "histogram_quantile(0.5, sum by (le, model_name${perWorker:raw}) (rate(ucm:layerwise_first_layer_submit_ms_bucket{model_name=\"$model_name\", job=\"$job\"}[$__rate_interval])))",
+          "expr": "histogram_quantile(0.5, sum by (le, ${perWorker:raw}) (rate(ucm:layerwise_first_layer_submit_ms_bucket{model_name=\"$model_name\", job=\"$job\"}[$__rate_interval])))",
           "legendFormat": "p50 {{worker_id}}",
           "range": true,
           "refId": "A"
@@ -840,7 +840,7 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "histogram_quantile(0.9, sum by (le, model_name${perWorker:raw}) (rate(ucm:layerwise_first_layer_submit_ms_bucket{model_name=\"$model_name\", job=\"$job\"}[$__rate_interval])))",
+          "expr": "histogram_quantile(0.9, sum by (le, ${perWorker:raw}) (rate(ucm:layerwise_first_layer_submit_ms_bucket{model_name=\"$model_name\", job=\"$job\"}[$__rate_interval])))",
           "legendFormat": "p90 {{worker_id}}",
           "range": true,
           "refId": "B"
@@ -851,7 +851,7 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "histogram_quantile(0.99, sum by (le, model_name${perWorker:raw}) (rate(ucm:layerwise_first_layer_submit_ms_bucket{model_name=\"$model_name\", job=\"$job\"}[$__rate_interval])))",
+          "expr": "histogram_quantile(0.99, sum by (le, ${perWorker:raw}) (rate(ucm:layerwise_first_layer_submit_ms_bucket{model_name=\"$model_name\", job=\"$job\"}[$__rate_interval])))",
           "legendFormat": "p99 {{worker_id}}",
           "range": true,
           "refId": "C"
@@ -862,7 +862,7 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "sum by (model_name${perWorker:raw}) (rate(ucm:layerwise_first_layer_submit_ms_sum{model_name=\"$model_name\", job=\"$job\"}[$__rate_interval]))\n/\nsum by (model_name${perWorker:raw}) (rate(ucm:layerwise_first_layer_submit_ms_count{model_name=\"$model_name\", job=\"$job\"}[$__rate_interval]))",
+          "expr": "sum by (${perWorker:raw}) (rate(ucm:layerwise_first_layer_submit_ms_sum{model_name=\"$model_name\", job=\"$job\"}[$__rate_interval]))\n/\nsum by (${perWorker:raw}) (rate(ucm:layerwise_first_layer_submit_ms_count{model_name=\"$model_name\", job=\"$job\"}[$__rate_interval]))",
           "legendFormat": "avg {{worker_id}}",
           "range": true,
           "refId": "D"
@@ -1036,7 +1036,7 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "histogram_quantile(0.5, sum by (le, model_name${perWorker:raw}) (rate(ucm:layerwise_next_layer_submit_ms_bucket{model_name=\"$model_name\", job=\"$job\"}[$__rate_interval])))",
+          "expr": "histogram_quantile(0.5, sum by (le, ${perWorker:raw}) (rate(ucm:layerwise_next_layer_submit_ms_bucket{model_name=\"$model_name\", job=\"$job\"}[$__rate_interval])))",
           "legendFormat": "p50 {{worker_id}}",
           "range": true,
           "refId": "A"
@@ -1047,7 +1047,7 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "histogram_quantile(0.9, sum by (le, model_name${perWorker:raw}) (rate(ucm:layerwise_next_layer_submit_ms_bucket{model_name=\"$model_name\", job=\"$job\"}[$__rate_interval])))",
+          "expr": "histogram_quantile(0.9, sum by (le, ${perWorker:raw}) (rate(ucm:layerwise_next_layer_submit_ms_bucket{model_name=\"$model_name\", job=\"$job\"}[$__rate_interval])))",
           "legendFormat": "p90 {{worker_id}}",
           "range": true,
           "refId": "B"
@@ -1058,7 +1058,7 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "histogram_quantile(0.99, sum by (le, model_name${perWorker:raw}) (rate(ucm:layerwise_next_layer_submit_ms_bucket{model_name=\"$model_name\", job=\"$job\"}[$__rate_interval])))",
+          "expr": "histogram_quantile(0.99, sum by (le, ${perWorker:raw}) (rate(ucm:layerwise_next_layer_submit_ms_bucket{model_name=\"$model_name\", job=\"$job\"}[$__rate_interval])))",
           "legendFormat": "p99 {{worker_id}}",
           "range": true,
           "refId": "C"
@@ -1069,7 +1069,7 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "sum by (model_name${perWorker:raw}) (rate(ucm:layerwise_next_layer_submit_ms_sum{model_name=\"$model_name\", job=\"$job\"}[$__rate_interval]))\n/\nsum by (model_name${perWorker:raw}) (rate(ucm:layerwise_next_layer_submit_ms_count{model_name=\"$model_name\", job=\"$job\"}[$__rate_interval]))",
+          "expr": "sum by (${perWorker:raw}) (rate(ucm:layerwise_next_layer_submit_ms_sum{model_name=\"$model_name\", job=\"$job\"}[$__rate_interval]))\n/\nsum by (${perWorker:raw}) (rate(ucm:layerwise_next_layer_submit_ms_count{model_name=\"$model_name\", job=\"$job\"}[$__rate_interval]))",
           "legendFormat": "avg {{worker_id}}",
           "range": true,
           "refId": "D"
@@ -1251,7 +1251,7 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "histogram_quantile(0.5, sum by (le, model_name${perWorker:raw}) (rate(ucm:layerwise_save_tail_total_ms_bucket{model_name=\"$model_name\", job=\"$job\"}[$__rate_interval])))",
+          "expr": "histogram_quantile(0.5, sum by (le, ${perWorker:raw}) (rate(ucm:layerwise_save_tail_total_ms_bucket{model_name=\"$model_name\", job=\"$job\"}[$__rate_interval])))",
           "legendFormat": "p50 {{worker_id}}",
           "range": true,
           "refId": "A"
@@ -1262,7 +1262,7 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "histogram_quantile(0.9, sum by (le, model_name${perWorker:raw}) (rate(ucm:layerwise_save_tail_total_ms_bucket{model_name=\"$model_name\", job=\"$job\"}[$__rate_interval])))",
+          "expr": "histogram_quantile(0.9, sum by (le, ${perWorker:raw}) (rate(ucm:layerwise_save_tail_total_ms_bucket{model_name=\"$model_name\", job=\"$job\"}[$__rate_interval])))",
           "legendFormat": "p90 {{worker_id}}",
           "range": true,
           "refId": "B"
@@ -1273,7 +1273,7 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "histogram_quantile(0.99, sum by (le, model_name${perWorker:raw}) (rate(ucm:layerwise_save_tail_total_ms_bucket{model_name=\"$model_name\", job=\"$job\"}[$__rate_interval])))",
+          "expr": "histogram_quantile(0.99, sum by (le, ${perWorker:raw}) (rate(ucm:layerwise_save_tail_total_ms_bucket{model_name=\"$model_name\", job=\"$job\"}[$__rate_interval])))",
           "legendFormat": "p99 {{worker_id}}",
           "range": true,
           "refId": "C"
@@ -1284,7 +1284,7 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "sum by (model_name${perWorker:raw}) (rate(ucm:layerwise_save_tail_total_ms_sum{model_name=\"$model_name\", job=\"$job\"}[$__rate_interval]))\n/\nsum by (model_name${perWorker:raw}) (rate(ucm:layerwise_save_tail_total_ms_count{model_name=\"$model_name\", job=\"$job\"}[$__rate_interval]))",
+          "expr": "sum by (${perWorker:raw}) (rate(ucm:layerwise_save_tail_total_ms_sum{model_name=\"$model_name\", job=\"$job\"}[$__rate_interval]))\n/\nsum by (${perWorker:raw}) (rate(ucm:layerwise_save_tail_total_ms_count{model_name=\"$model_name\", job=\"$job\"}[$__rate_interval]))",
           "legendFormat": "avg {{worker_id}}",
           "range": true,
           "refId": "D"
@@ -1458,7 +1458,7 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "histogram_quantile(0.5, sum by (le, model_name${perWorker:raw}) (rate(ucm:layerwise_save_per_layer_wait_ms_bucket{model_name=\"$model_name\", job=\"$job\"}[$__rate_interval])))",
+          "expr": "histogram_quantile(0.5, sum by (le, ${perWorker:raw}) (rate(ucm:layerwise_save_per_layer_wait_ms_bucket{model_name=\"$model_name\", job=\"$job\"}[$__rate_interval])))",
           "legendFormat": "p50 {{worker_id}}",
           "range": true,
           "refId": "A"
@@ -1469,7 +1469,7 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "histogram_quantile(0.9, sum by (le, model_name${perWorker:raw}) (rate(ucm:layerwise_save_per_layer_wait_ms_bucket{model_name=\"$model_name\", job=\"$job\"}[$__rate_interval])))",
+          "expr": "histogram_quantile(0.9, sum by (le, ${perWorker:raw}) (rate(ucm:layerwise_save_per_layer_wait_ms_bucket{model_name=\"$model_name\", job=\"$job\"}[$__rate_interval])))",
           "legendFormat": "p90 {{worker_id}}",
           "range": true,
           "refId": "B"
@@ -1480,7 +1480,7 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "histogram_quantile(0.99, sum by (le, model_name${perWorker:raw}) (rate(ucm:layerwise_save_per_layer_wait_ms_bucket{model_name=\"$model_name\", job=\"$job\"}[$__rate_interval])))",
+          "expr": "histogram_quantile(0.99, sum by (le, ${perWorker:raw}) (rate(ucm:layerwise_save_per_layer_wait_ms_bucket{model_name=\"$model_name\", job=\"$job\"}[$__rate_interval])))",
           "legendFormat": "p99 {{worker_id}}",
           "range": true,
           "refId": "C"
@@ -1491,7 +1491,7 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "sum by (model_name${perWorker:raw}) (rate(ucm:layerwise_save_per_layer_wait_ms_sum{model_name=\"$model_name\", job=\"$job\"}[$__rate_interval]))\n/\nsum by (model_name${perWorker:raw}) (rate(ucm:layerwise_save_per_layer_wait_ms_count{model_name=\"$model_name\", job=\"$job\"}[$__rate_interval]))",
+          "expr": "sum by (${perWorker:raw}) (rate(ucm:layerwise_save_per_layer_wait_ms_sum{model_name=\"$model_name\", job=\"$job\"}[$__rate_interval]))\n/\nsum by (${perWorker:raw}) (rate(ucm:layerwise_save_per_layer_wait_ms_count{model_name=\"$model_name\", job=\"$job\"}[$__rate_interval]))",
           "legendFormat": "avg {{worker_id}}",
           "range": true,
           "refId": "D"
