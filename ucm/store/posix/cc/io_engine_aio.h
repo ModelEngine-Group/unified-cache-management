@@ -91,6 +91,9 @@ private:
             UC_ERROR("Failed({}) to do io on block({}).", result.error, id);
             failureSet_.Insert(tid);
             UpdateFailureMetrics<dump>();
+        } else {
+            UC::Metrics::UpdateStats(dump ? "posix_h2s_bytes_total" : "posix_s2h_bytes_total",
+                                     static_cast<double>(shardSize_));
         }
         ::close(fd);
         if constexpr (dump) {

@@ -1761,7 +1761,7 @@
         "type": "prometheus",
         "uid": "${DS_PROMETHEUS}"
       },
-      "description": "Posix-stage storage-to-host bandwidth (load direction). Series: p50 / p90 / p99 / avg, per worker.",
+      "description": "Posix-stage storage-to-host bandwidth (load direction). Series: p50 / p90 / p99 / avg, per worker. Per single-IO observed throughput, sampled once per shard transfer; does NOT aggregate across concurrent IO threads. Use the (per worker) panel below for actual disk throughput.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -1959,7 +1959,7 @@
           "refId": "D"
         }
       ],
-      "title": "Posix S2H Bandwidth (read)",
+      "title": "Posix S2H Bandwidth (per shard)",
       "type": "timeseries"
     },
     {
@@ -1967,7 +1967,7 @@
         "type": "prometheus",
         "uid": "${DS_PROMETHEUS}"
       },
-      "description": "Posix-stage host-to-storage bandwidth (dump direction). Series: p50 / p90 / p99 / avg, per worker.",
+      "description": "Posix-stage host-to-storage bandwidth (dump direction). Series: p50 / p90 / p99 / avg, per worker. Per single-IO observed throughput, sampled once per shard transfer; does NOT aggregate across concurrent IO threads. Use the (per worker) panel below for actual disk throughput.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -2165,7 +2165,199 @@
           "refId": "D"
         }
       ],
-      "title": "Posix H2S Bandwidth (write)",
+      "title": "Posix H2S Bandwidth (per shard)",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "description": "Wall-clock per-worker load throughput in GB/s. Aggregates all concurrent IO threads inside one worker process and includes idle gaps, so this is the real bytes/sec the worker is pulling from posix. Pair with (per shard) above: if per-shard is high but per-worker is low, IO is fast but sparse — disk is not saturated.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "barWidthFactor": 0.6,
+            "drawStyle": "line",
+            "fillOpacity": 0,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "auto",
+            "spanNulls": 60000,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "gbytes"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 48
+      },
+      "id": 25,
+      "options": {
+        "legend": {
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "rate(ucm:posix_s2h_bytes_total{model_name=\"$model_name\"}[$__rate_interval]) / 1e9",
+          "legendFormat": "worker-{{worker_id}}",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "title": "Posix S2H Bandwidth (per worker)",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "description": "Wall-clock per-worker save throughput in GB/s. Aggregates all concurrent IO threads inside one worker process and includes idle gaps, so this is the real bytes/sec the worker is pushing to posix. Pair with (per shard) above: if per-shard is high but per-worker is low, IO is fast but sparse — disk is not saturated.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "barWidthFactor": 0.6,
+            "drawStyle": "line",
+            "fillOpacity": 0,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "auto",
+            "spanNulls": 60000,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "gbytes"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 48
+      },
+      "id": 26,
+      "options": {
+        "legend": {
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "rate(ucm:posix_h2s_bytes_total{model_name=\"$model_name\"}[$__rate_interval]) / 1e9",
+          "legendFormat": "worker-{{worker_id}}",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "title": "Posix H2S Bandwidth (per worker)",
       "type": "timeseries"
     },
     {
@@ -2307,7 +2499,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 48
+        "y": 56
       },
       "id": 12,
       "options": {
@@ -2513,7 +2705,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 48
+        "y": 56
       },
       "id": 13,
       "options": {
@@ -2593,7 +2785,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 56
+        "y": 64
       },
       "panels": [
         {
@@ -2609,7 +2801,7 @@
             "h": 8,
             "w": 12,
             "x": 0,
-            "y": 57
+            "y": 65
           },
           "targets": [
             {
@@ -2694,7 +2886,7 @@
             "h": 8,
             "w": 12,
             "x": 12,
-            "y": 57
+            "y": 65
           },
           "targets": [
             {
@@ -2779,7 +2971,7 @@
             "h": 8,
             "w": 12,
             "x": 0,
-            "y": 65
+            "y": 73
           },
           "targets": [
             {
@@ -2864,7 +3056,7 @@
             "h": 8,
             "w": 12,
             "x": 12,
-            "y": 65
+            "y": 73
           },
           "targets": [
             {
@@ -2949,7 +3141,7 @@
             "h": 8,
             "w": 24,
             "x": 0,
-            "y": 73
+            "y": 81
           },
           "targets": [
             {
@@ -3036,7 +3228,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 81
+        "y": 89
       },
       "panels": [
         {
@@ -3052,7 +3244,7 @@
             "h": 8,
             "w": 12,
             "x": 0,
-            "y": 82
+            "y": 90
           },
           "targets": [
             {
@@ -3137,7 +3329,7 @@
             "h": 8,
             "w": 12,
             "x": 12,
-            "y": 82
+            "y": 90
           },
           "targets": [
             {
@@ -3216,13 +3408,13 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "id": 23,
-          "title": "Posix / S2H Bandwidth",
-          "description": "Storage read bandwidth distribution. Buckets are dense in 1-12 GB/s to resolve the typical operating range. -- distribution shape over time, all workers aggregated.",
+          "title": "Posix / S2H Bandwidth (per shard)",
+          "description": "Storage read bandwidth distribution. Buckets are dense in 1-12 GB/s to resolve the typical operating range. -- distribution shape over time, all workers aggregated. Per single-IO observed throughput, sampled once per shard transfer; does NOT aggregate across concurrent IO threads. Use the (per worker) panel below for actual disk throughput.",
           "gridPos": {
             "h": 8,
             "w": 12,
             "x": 0,
-            "y": 90
+            "y": 98
           },
           "targets": [
             {
@@ -3301,13 +3493,13 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "id": 24,
-          "title": "Posix / H2S Bandwidth",
-          "description": "Storage write bandwidth distribution. Buckets dense in 1-12 GB/s. -- distribution shape over time, all workers aggregated.",
+          "title": "Posix / H2S Bandwidth (per shard)",
+          "description": "Storage write bandwidth distribution. Buckets dense in 1-12 GB/s. -- distribution shape over time, all workers aggregated. Per single-IO observed throughput, sampled once per shard transfer; does NOT aggregate across concurrent IO threads. Use the (per worker) panel below for actual disk throughput.",
           "gridPos": {
             "h": 8,
             "w": 12,
             "x": 12,
-            "y": 90
+            "y": 98
           },
           "targets": [
             {

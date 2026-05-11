@@ -111,6 +111,8 @@ void TransQueue::LoadWorker(IoUnit& ios)
     if (s.Failure()) [[unlikely]] {
         failureSet_->Insert(ios.owner);
         UC::Metrics::UpdateStats("posix_load_failures_total", 1.0);
+    } else {
+        UC::Metrics::UpdateStats("posix_s2h_bytes_total", static_cast<double>(ioBytes));
     }
     ios.waiter->Done();
 }
@@ -139,6 +141,8 @@ void TransQueue::DumpWorker(IoUnit& ios)
     if (s.Failure()) [[unlikely]] {
         failureSet_->Insert(ios.owner);
         UC::Metrics::UpdateStats("posix_dump_failures_total", 1.0);
+    } else {
+        UC::Metrics::UpdateStats("posix_h2s_bytes_total", static_cast<double>(ioBytes));
     }
     ios.waiter->Done();
 }

@@ -38,6 +38,16 @@ counter:
   - name: "posix_dump_failures_total"
     documentation: "Number of Posix stage dump (H2S) IO failures"
 
+  # -- Pipeline Posix stage: real per-worker throughput counters ------------
+  # Accumulated only on successful IOs (failed bytes do not count). Use
+  # rate() / 1e9 to get actual GB/s the worker is moving across the disk,
+  # which the per-shard *_bandwidth_gbps histogram cannot reveal because
+  # it does not aggregate concurrent IO threads or account for idle gaps.
+  - name: "posix_s2h_bytes_total"
+    documentation: "Total bytes transferred from posix storage to host buffer (load path, successful IOs only)"
+  - name: "posix_h2s_bytes_total"
+    documentation: "Total bytes transferred from host buffer to posix storage (dump path, successful IOs only)"
+
   # -- Layerwise stalls -----------------------------------------------------
   - name: "layerwise_stalled_layers_total"
     documentation: "Layers whose wait_for_layer_load blocked noticeably (> 1ms) - indicates poor overlap"
