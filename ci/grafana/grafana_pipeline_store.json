@@ -151,110 +151,6 @@
         "type": "prometheus",
         "uid": "prometheus"
       },
-      "description": "Cache-stage hit rate from counter ratio: hits / (hits + misses). If low, most loads are descending into the Posix tier.",
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "palette-classic"
-          },
-          "custom": {
-            "axisBorderShow": false,
-            "axisCenteredZero": false,
-            "axisColorMode": "text",
-            "axisLabel": "",
-            "axisPlacement": "auto",
-            "barAlignment": 0,
-            "barWidthFactor": 0.6,
-            "drawStyle": "line",
-            "fillOpacity": 0,
-            "gradientMode": "none",
-            "hideFrom": {
-              "legend": false,
-              "tooltip": false,
-              "viz": false
-            },
-            "insertNulls": false,
-            "lineInterpolation": "linear",
-            "lineWidth": 1,
-            "pointSize": 5,
-            "scaleDistribution": {
-              "type": "linear"
-            },
-            "showPoints": "auto",
-            "spanNulls": 60000,
-            "stacking": {
-              "group": "A",
-              "mode": "none"
-            },
-            "thresholdsStyle": {
-              "mode": "off"
-            }
-          },
-          "mappings": [],
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "red",
-                "value": null
-              },
-              {
-                "color": "yellow",
-                "value": 0.5
-              },
-              {
-                "color": "green",
-                "value": 0.8
-              }
-            ]
-          },
-          "unit": "percentunit"
-        },
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 8,
-        "w": 24,
-        "x": 0,
-        "y": 0
-      },
-      "id": 1,
-      "options": {
-        "legend": {
-          "calcs": [],
-          "displayMode": "list",
-          "maxHeight": "50%",
-          "placement": "bottom",
-          "showLegend": true
-        },
-        "tooltip": {
-          "mode": "single",
-          "sort": "none"
-        }
-      },
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "editorMode": "code",
-          "expr": "sum by (${perWorker:raw}) (rate(ucm:cache_lookup_hit_blocks_total{model_name=\"$model_name\", job=\"$job\"}[$__rate_interval]))\n/ clamp_min(\n  sum by (${perWorker:raw}) (rate(ucm:cache_lookup_hit_blocks_total{model_name=\"$model_name\", job=\"$job\"}[$__rate_interval]))\n  + sum by (${perWorker:raw}) (rate(ucm:cache_lookup_miss_blocks_total{model_name=\"$model_name\", job=\"$job\"}[$__rate_interval])),\n  1\n)",
-          "hide": false,
-          "instant": false,
-          "legendFormat": "{{worker_id}}",
-          "range": true,
-          "refId": "A"
-        }
-      ],
-      "title": "Cache Hit Rate",
-      "type": "timeseries"
-    },
-    {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus"
-      },
       "description": "Fraction of load shards that missed the Cache buffer and had to descend to the backend (shard-level miss rate at load time). Equals rate(cache_load_backend_shards_total) / rate(cache_load_shards_total).",
       "fieldConfig": {
         "defaults": {
@@ -320,7 +216,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 8
+        "y": 0
       },
       "id": 2,
       "options": {
@@ -493,7 +389,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 8
+        "y": 0
       },
       "id": 3,
       "options": {
@@ -700,7 +596,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 16
+        "y": 8
       },
       "id": 4,
       "options": {
@@ -907,7 +803,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 16
+        "y": 8
       },
       "id": 5,
       "options": {
@@ -1114,7 +1010,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 24
+        "y": 16
       },
       "id": 6,
       "options": {
@@ -1321,7 +1217,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 24
+        "y": 16
       },
       "id": 7,
       "options": {
@@ -1528,7 +1424,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 32
+        "y": 24
       },
       "id": 8,
       "options": {
@@ -1735,7 +1631,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 32
+        "y": 24
       },
       "id": 9,
       "options": {
@@ -1909,7 +1805,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 40
+        "y": 32
       },
       "id": 27,
       "options": {
@@ -2006,7 +1902,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 40
+        "y": 32
       },
       "id": 28,
       "options": {
@@ -2180,7 +2076,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 64
+        "y": 56
       },
       "id": 10,
       "options": {
@@ -2387,7 +2283,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 64
+        "y": 56
       },
       "id": 11,
       "options": {
@@ -2517,7 +2413,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 72
+        "y": 64
       },
       "id": 25,
       "options": {
@@ -2614,7 +2510,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 72
+        "y": 64
       },
       "id": 26,
       "options": {
@@ -2788,7 +2684,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 80
+        "y": 72
       },
       "id": 12,
       "options": {
@@ -2995,7 +2891,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 80
+        "y": 72
       },
       "id": 13,
       "options": {
@@ -3076,7 +2972,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 96
+        "y": 88
       },
       "panels": [
         {
@@ -3092,7 +2988,7 @@
             "h": 8,
             "w": 12,
             "x": 0,
-            "y": 97
+            "y": 89
           },
           "targets": [
             {
@@ -3177,7 +3073,7 @@
             "h": 8,
             "w": 12,
             "x": 12,
-            "y": 97
+            "y": 89
           },
           "targets": [
             {
@@ -3262,7 +3158,7 @@
             "h": 8,
             "w": 12,
             "x": 0,
-            "y": 105
+            "y": 97
           },
           "targets": [
             {
@@ -3347,7 +3243,7 @@
             "h": 8,
             "w": 12,
             "x": 12,
-            "y": 105
+            "y": 97
           },
           "targets": [
             {
@@ -3432,7 +3328,7 @@
             "h": 8,
             "w": 24,
             "x": 0,
-            "y": 113
+            "y": 105
           },
           "targets": [
             {
@@ -3519,7 +3415,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 121
+        "y": 113
       },
       "panels": [
         {
@@ -3535,7 +3431,7 @@
             "h": 8,
             "w": 12,
             "x": 0,
-            "y": 122
+            "y": 114
           },
           "targets": [
             {
@@ -3620,7 +3516,7 @@
             "h": 8,
             "w": 12,
             "x": 12,
-            "y": 122
+            "y": 114
           },
           "targets": [
             {
@@ -3705,7 +3601,7 @@
             "h": 8,
             "w": 12,
             "x": 0,
-            "y": 130
+            "y": 122
           },
           "targets": [
             {
@@ -3790,7 +3686,7 @@
             "h": 8,
             "w": 12,
             "x": 12,
-            "y": 130
+            "y": 122
           },
           "targets": [
             {
@@ -4003,7 +3899,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 48
+        "y": 40
       },
       "id": 29,
       "options": {
@@ -4210,7 +4106,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 48
+        "y": 40
       },
       "id": 30,
       "options": {
@@ -4417,7 +4313,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 56
+        "y": 48
       },
       "id": 34,
       "options": {
@@ -4624,7 +4520,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 88
+        "y": 80
       },
       "id": 31,
       "options": {
@@ -4831,7 +4727,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 88
+        "y": 80
       },
       "id": 32,
       "options": {
