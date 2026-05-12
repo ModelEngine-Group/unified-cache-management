@@ -34,6 +34,12 @@ ROOT_DIR = os.path.abspath(os.path.dirname(__file__))
 PLATFORM = os.getenv("PLATFORM")
 ENABLE_SPARSE = os.getenv("ENABLE_SPARSE")
 ENABLE_MINDIE = os.getenv("UCM_ENABLE_MINDIE", "0") not in ("", "0", "false", "False")
+ENABLE_GDR_STREAM = os.getenv("UCM_ENABLE_GDR_STREAM", "0") not in (
+    "",
+    "0",
+    "false",
+    "False",
+)
 
 
 def get_abi_flag_from_env() -> str:
@@ -166,6 +172,9 @@ class CMakeBuild(build_ext):
 
         if enable_sparse():
             cmake_args += ["-DBUILD_UCM_SPARSE=ON"]
+
+        if ENABLE_GDR_STREAM:
+            cmake_args += ["-DUCM_ENABLE_GDR_STREAM=ON"]
 
         match PLATFORM:
             case "cuda":
