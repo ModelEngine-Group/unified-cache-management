@@ -31,7 +31,6 @@
 #include <mutex>
 #include <poll.h>
 #include <sys/eventfd.h>
-#include <unordered_map>
 #include <unistd.h>
 #include <utility>
 #include <stdexcept>
@@ -52,35 +51,6 @@ constexpr size_t kInflightRingCapacity = 8192;
 constexpr size_t kInflightRingMask = kInflightRingCapacity - 1;
 static_assert((kInflightRingCapacity & kInflightRingMask) == 0,
               "inflight ring capacity must be a power of two");
-
-struct MRKey {
-    uint64_t addr;
-    size_t len;
-
-    bool operator==(const MRKey& other) const noexcept
-    {
-        return addr == other.addr && len == other.len;
-    }
-};
-
-struct MRKeyHash {
-    size_t operator()(const MRKey& key) const noexcept
-    {
-        size_t hash = 14695981039346656037ULL;
-        auto mix = [&hash](uint64_t value) {
-            for (int i = 0; i < 8; ++i) {
-                hash ^= (value & 0xff);
-                hash *= 1099511628211ULL;
-                value >>= 8;
-            }
-        };
-        mix(key.addr);
-        mix(static_cast<uint64_t>(key.len));
-        return hash;
-    }
-};
-
-using RegisteredMrTable = std::unordered_map<MRKey, struct ibv_mr*, MRKeyHash>;
 
 struct RegisteredMrRange {
     uint64_t addr;
@@ -167,22 +137,6 @@ void ConnectRcQp(struct ibv_qp* qp, const Endpoint& remote, bool isRoce)
     }
 }
 
-struct ibv_mr* FindRegisteredMr(RegisteredMrTable& table, uint64_t addr, size_t len)
-{
-    const auto it = table.find(MRKey{addr, len});
-    if (it == table.end()) { return nullptr; }
-    return it->second;
-}
-
-struct ibv_mr* ReleaseRegisteredMr(RegisteredMrTable& table, uint64_t addr, size_t len)
-{
-    const auto it = table.find(MRKey{addr, len});
-    if (it == table.end()) { return nullptr; }
-    auto* mr = it->second;
-    table.erase(it);
-    return mr;
-}
-
 bool RangeContains(uint64_t base, size_t totalSize, uint64_t addr, size_t len)
 {
     if (addr < base) { return false; }
@@ -200,23 +154,33 @@ struct ibv_mr* FindRegisteredMrRange(const std::vector<RegisteredMrRange>& range
     return nullptr;
 }
 
-void EraseRegisteredMrRange(std::vector<RegisteredMrRange>& ranges, uint64_t addr, size_t len)
+struct ibv_mr* FindRegisteredMrExact(const std::vector<RegisteredMrRange>& ranges, uint64_t addr,
+                                     size_t len)
 {
-    ranges.erase(std::remove_if(ranges.begin(), ranges.end(),
-                                [addr, len](const RegisteredMrRange& range) {
-                                    return range.addr == addr && range.len == len;
-                                }),
-                 ranges.end());
+    for (const auto& range : ranges) {
+        if (range.addr == addr && range.len == len) { return range.mr; }
+    }
+    return nullptr;
 }
 
-template <class Fn>
-void ClearRegisteredMrs(RegisteredMrTable& table, Fn&& fn)
+struct ibv_mr* ReleaseRegisteredMrExact(std::vector<RegisteredMrRange>& ranges, uint64_t addr,
+                                        size_t len)
 {
-    for (auto& [key, mr] : table) {
-        (void)key;
-        fn(mr);
+    for (auto it = ranges.begin(); it != ranges.end(); ++it) {
+        if (it->addr != addr || it->len != len) { continue; }
+        auto* mr = it->mr;
+        ranges.erase(it);
+        return mr;
     }
-    table.clear();
+    return nullptr;
+}
+
+void ClearRegisteredMrRanges(std::vector<RegisteredMrRange>& ranges)
+{
+    for (const auto& range : ranges) {
+        if (range.mr) { ibv_dereg_mr(range.mr); }
+    }
+    ranges.clear();
 }
 
 class GdrCopyChannelImpl : public GdrCopyChannel {
@@ -328,8 +292,7 @@ public:
     void UnregisterHostBuffer(uint64_t addr, size_t len)
     {
         std::lock_guard<std::mutex> lock{mutex_};
-        EraseRegisteredMrRange(hostMrRanges_, addr, len);
-        auto* mr = ReleaseRegisteredMr(hostMrs_, addr, len);
+        auto* mr = ReleaseRegisteredMrExact(hostMrRanges_, addr, len);
         if (mr) { ibv_dereg_mr(mr); }
     }
 
@@ -342,8 +305,7 @@ public:
     void UnregisterDeviceBuffer(uint64_t addr, size_t len)
     {
         std::lock_guard<std::mutex> lock{mutex_};
-        EraseRegisteredMrRange(gpuMrRanges_, addr, len);
-        auto* mr = ReleaseRegisteredMr(gpuMrs_, addr, len);
+        auto* mr = ReleaseRegisteredMrExact(gpuMrRanges_, addr, len);
         if (mr) { ibv_dereg_mr(mr); }
     }
 
@@ -446,14 +408,8 @@ public:
 private:
     void Cleanup() noexcept
     {
-        ClearRegisteredMrs(hostMrs_, [](struct ibv_mr* mr) {
-            if (mr) { ibv_dereg_mr(mr); }
-        });
-        hostMrRanges_.clear();
-        ClearRegisteredMrs(gpuMrs_, [](struct ibv_mr* mr) {
-            if (mr) { ibv_dereg_mr(mr); }
-        });
-        gpuMrRanges_.clear();
+        ClearRegisteredMrRanges(hostMrRanges_);
+        ClearRegisteredMrRanges(gpuMrRanges_);
         for (size_t i = 0; i < kInflightRingCapacity; ++i) {
             ReleaseInflightFallbackMrs(inflightSlots_[i]);
             inflightSlots_[i].reqId.store(0, std::memory_order_relaxed);
@@ -490,9 +446,13 @@ private:
         size_t mrLen = len;
         if (UC::Trans::DeviceBufferRegistry::Resolve(reinterpret_cast<void*>(addr), len, &mrAddr,
                                                      &mrLen)) {
-            if (auto* mr = FindRegisteredMr(gpuMrs_, mrAddr, mrLen)) { return MrRef{mr, false}; }
+            if (auto* mr = FindRegisteredMrExact(gpuMrRanges_, mrAddr, mrLen)) {
+                return MrRef{mr, false};
+            }
             RegisterDeviceBufferLocked(mrAddr, mrLen);
-            if (auto* mr = FindRegisteredMr(gpuMrs_, mrAddr, mrLen)) { return MrRef{mr, false}; }
+            if (auto* mr = FindRegisteredMrExact(gpuMrRanges_, mrAddr, mrLen)) {
+                return MrRef{mr, false};
+            }
         }
         UC_WARN("GPU MR cache miss at addr(0x{:x}) size({}); fallback to per-transfer MR.",
                 addr, len);
@@ -509,9 +469,13 @@ private:
         size_t mrLen = len;
         if (UC::Trans::HostBufferRegistry::Resolve(reinterpret_cast<void*>(addr), len, &mrAddr,
                                                    &mrLen)) {
-            if (auto* mr = FindRegisteredMr(hostMrs_, mrAddr, mrLen)) { return MrRef{mr, false}; }
+            if (auto* mr = FindRegisteredMrExact(hostMrRanges_, mrAddr, mrLen)) {
+                return MrRef{mr, false};
+            }
             RegisterHostBufferLocked(mrAddr, mrLen);
-            if (auto* mr = FindRegisteredMr(hostMrs_, mrAddr, mrLen)) { return MrRef{mr, false}; }
+            if (auto* mr = FindRegisteredMrExact(hostMrRanges_, mrAddr, mrLen)) {
+                return MrRef{mr, false};
+            }
         }
         UC_WARN("Host MR cache miss at addr(0x{:x}) size({}); fallback to per-transfer MR.",
                 addr, len);
@@ -523,22 +487,20 @@ private:
 
     void RegisterHostBufferLocked(uint64_t addr, size_t len)
     {
-        if (FindRegisteredMr(hostMrs_, addr, len)) { return; }
+        if (FindRegisteredMrExact(hostMrRanges_, addr, len)) { return; }
         const int flags = IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE | IBV_ACCESS_REMOTE_READ;
         auto* mr = ibv_reg_mr(pd_, reinterpret_cast<void*>(addr), len, flags);
         if (!mr) { throw std::runtime_error("ibv_reg_mr on host memory failed"); }
-        hostMrs_[MRKey{addr, len}] = mr;
         hostMrRanges_.push_back({addr, len, mr});
     }
 
     void RegisterDeviceBufferLocked(uint64_t addr, size_t len)
     {
-        if (FindRegisteredMr(gpuMrs_, addr, len)) { return; }
+        if (FindRegisteredMrExact(gpuMrRanges_, addr, len)) { return; }
         const int flags =
             IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE | IBV_ACCESS_REMOTE_READ;
         auto* mr = ibv_reg_mr(pd_, reinterpret_cast<void*>(addr), len, flags);
         if (!mr) { throw std::runtime_error("ibv_reg_mr on GPU memory failed"); }
-        gpuMrs_[MRKey{addr, len}] = mr;
         gpuMrRanges_.push_back({addr, len, mr});
     }
 
@@ -740,8 +702,6 @@ private:
     struct ibv_comp_channel* compChannel_{nullptr};
     struct ibv_cq* cq_{nullptr};
     struct ibv_qp* qp_{nullptr};
-    RegisteredMrTable gpuMrs_;
-    RegisteredMrTable hostMrs_;
     std::vector<RegisteredMrRange> gpuMrRanges_;
     std::vector<RegisteredMrRange> hostMrRanges_;
     int gpuId_{-1};
