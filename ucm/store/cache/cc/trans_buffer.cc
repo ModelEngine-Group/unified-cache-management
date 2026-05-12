@@ -27,7 +27,9 @@
 #include <thread>
 #include <unistd.h>
 #include "logger/logger.h"
+#include "metrics_api.h"
 #include "posix_shm.h"
+#include "time/now_time.h"
 #include "trans/buffer.h"
 #include "trans/device.h"
 
@@ -485,16 +487,24 @@ Status TransBuffer::Setup(const Config& config)
 TransBuffer::Handle TransBuffer::Get(const Detail::BlockId& blockId, size_t shardIdx,
                                      bool allowReserved)
 {
+    auto tp = NowTime::Now();
+    auto recordGetDuration = [&]() {
+        UC::Metrics::UpdateStats("cache_buffer_get_duration_ms", (NowTime::Now() - tp) * 1e3);
+    };
     auto iBucket = Hash(blockId, shardIdx);
     bool owner = false;
     strategy_->BucketLock(iBucket);
     auto iNode = FindAt(iBucket, blockId, shardIdx, owner);
     if (iNode != invalidIndex) {
         strategy_->BucketUnlock(iBucket);
+        recordGetDuration();
         return Handle{this, iNode, owner};
     }
-    iNode = Alloc(blockId, shardIdx, iBucket, allowReserved);
+    double allocSpinMs = 0.0;
+    iNode = Alloc(blockId, shardIdx, iBucket, allowReserved, &allocSpinMs);
     strategy_->BucketUnlock(iBucket);
+    UC::Metrics::UpdateStats("cache_buffer_alloc_spin_duration_ms", allocSpinMs);
+    recordGetDuration();
     return Handle(this, iNode, true);
 }
 
@@ -545,13 +555,18 @@ size_t TransBuffer::FindAt(size_t iBucket, const Detail::BlockId& blockId, size_
 }
 
 size_t TransBuffer::Alloc(const Detail::BlockId& blockId, size_t shardIdx, size_t iBucket,
-                          bool allowReserved)
+                          bool allowReserved, double* spinMs)
 {
+    auto spinStart = 0.0;
+    auto markRetry = [&]() {
+        if (spinStart == 0.0) { spinStart = NowTime::Now(); }
+    };
     for (;;) {
         auto iNode = strategy_->FetchNode(allowReserved);
         auto meta = strategy_->MetaAt(iNode);
         strategy_->NodeLock(iNode);
         if (meta->reference > 0) {
+            markRetry();
             strategy_->NodeUnlock(iNode);
             continue;
         }
@@ -559,6 +574,7 @@ size_t TransBuffer::Alloc(const Detail::BlockId& blockId, size_t shardIdx, size_
         if (oldBucket != iBucket) {
             if (oldBucket != invalidIndex) {
                 if (!strategy_->BucketTryLock(oldBucket)) {
+                    markRetry();
                     strategy_->NodeUnlock(iNode);
                     continue;
                 }
@@ -572,6 +588,7 @@ size_t TransBuffer::Alloc(const Detail::BlockId& blockId, size_t shardIdx, size_
         meta->shard = shardIdx;
         meta->ready = false;
         strategy_->NodeUnlock(iNode);
+        *spinMs = spinStart == 0.0 ? 0.0 : (NowTime::Now() - spinStart) * 1e3;
         return iNode;
     }
 }

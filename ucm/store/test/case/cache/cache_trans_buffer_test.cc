@@ -25,6 +25,7 @@
 #include "cache/cc/trans_buffer.h"
 #include "detail/random.h"
 #include "detail/types_helper.h"
+#include "metrics_api.h"
 
 class UCCacheTransBufferTest : public testing::TestWithParam<bool> {
 public:
@@ -96,6 +97,42 @@ TEST_P(UCCacheTransBufferTest, GetReservedNode)
         ASSERT_TRUE(handle2);
         ASSERT_NE(ptr, handle2.Data());
     }
+}
+
+TEST_P(UCCacheTransBufferTest, RecordsBufferTimingMetrics)
+{
+    UC::Metrics::SetUp(1000000);
+    UC::Metrics::CreateStats("cache_buffer_get_duration_ms", "histogram");
+    UC::Metrics::CreateStats("cache_buffer_alloc_spin_duration_ms", "histogram");
+
+    UC::CacheStore::TransBuffer transBuffer;
+    UC::CacheStore::Config config;
+    config.uniqueId = rd.RandomString(10);
+    config.shardSize = 32768;
+    config.bufferCapacity = config.shardSize * 32768;
+    config.shareBufferEnable = GetParam();
+    config.deviceId = 0;
+    config.loadExclusiveBufferNumber = 0;
+    auto s = transBuffer.Setup(config);
+    ASSERT_EQ(s, UC::Status::OK());
+
+    static_cast<void>(UC::Metrics::GetAllStatsAndClear());
+    auto blockId = UC::Test::Detail::TypesHelper::MakeBlockId("a1b2c3d4e5f6789012345678901234ab");
+    constexpr size_t shardIdx = 0;
+    auto handle1 = transBuffer.Get(blockId, shardIdx);
+    auto handle2 = transBuffer.Get(blockId, shardIdx);
+    ASSERT_TRUE(handle1);
+    ASSERT_TRUE(handle2);
+
+    auto stats = UC::Metrics::GetAllStatsAndClear();
+    const auto& histogram = std::get<2>(stats);
+    ASSERT_NE(histogram.find("cache_buffer_get_duration_ms"), histogram.end());
+    ASSERT_EQ(histogram.at("cache_buffer_get_duration_ms").size(), 2);
+    ASSERT_NE(histogram.find("cache_buffer_alloc_spin_duration_ms"), histogram.end());
+    ASSERT_EQ(histogram.at("cache_buffer_alloc_spin_duration_ms").size(), 1);
+    EXPECT_GE(histogram.at("cache_buffer_get_duration_ms")[0], 0.0);
+    EXPECT_GE(histogram.at("cache_buffer_get_duration_ms")[1], 0.0);
+    EXPECT_GE(histogram.at("cache_buffer_alloc_spin_duration_ms")[0], 0.0);
 }
 
 TEST_P(UCCacheTransBufferTest, InsertDifferentDataRepeatedly)
