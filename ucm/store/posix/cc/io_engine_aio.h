@@ -166,14 +166,18 @@ private:
         const auto num = t->desc.size();
         const auto size = shardSize_ * num;
         const auto tp = w->startTp;
+        const auto isDump = (t->type == TransTask::Type::DUMP);
         UC_DEBUG("Posix task({},{},{},{}) dispatching.", id, brief, num, size);
         const auto wait = NowTime::Now() - tp;
-        w->SetEpilog([id, brief = std::move(brief), num, size, tp] {
+        w->SetEpilog([id, brief = std::move(brief), num, size, tp, isDump] {
             auto cost = NowTime::Now() - tp;
             UC_DEBUG("Posix task({},{},{},{}) finished, cost {:.3f}ms.", id, brief, num, size,
                      cost * 1e3);
+            UC::Metrics::UpdateStats(
+                isDump ? "posix_dump_task_duration_ms" : "posix_load_task_duration_ms",
+                cost * 1e3);
         });
-        if (t->type == TransTask::Type::DUMP) {
+        if (isDump) {
             UpdateWaitMetrics<true>(wait);
             Dispatch<true>(t, w);
         } else {

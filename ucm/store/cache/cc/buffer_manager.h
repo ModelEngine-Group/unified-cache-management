@@ -43,6 +43,8 @@ class BufferManager {
         auto res = (backend_->*LookupFunc)(blocks, num);
         if (!res) [[unlikely]] { return decltype(res)(res.Error()); }
         UC_DEBUG("Cache lookup({}) in backend costs {:.3f}ms.", num, sw.Elapsed().count() * 1e3);
+        UC::Metrics::UpdateStats("cache_lookup_backend_duration_ms",
+                                 sw.Elapsed().count() * 1e3);
         return res;
     }
 
@@ -90,6 +92,7 @@ private:
             missIdx.push_back(i);
         }
         UC_DEBUG("Cache lookup({}) costs {:.3f}ms.", num, sw.Elapsed().count() * 1e3);
+        UC::Metrics::UpdateStats("cache_lookup_duration_ms", sw.Elapsed().count() * 1e3);
         UC::Metrics::UpdateStats("cache_lookup_hit_blocks_total", static_cast<double>(hitCount));
         UC::Metrics::UpdateStats("cache_lookup_miss_blocks_total",
                                  static_cast<double>(num - hitCount));
@@ -110,6 +113,8 @@ private:
         if (!res) [[unlikely]] { return res.Error(); }
         UC_DEBUG("Cache lookup({}/{}) in backend costs {:.3f}ms.", missBlk.size(), num,
                  sw.Elapsed().count() * 1e3);
+        UC::Metrics::UpdateStats("cache_lookup_backend_duration_ms",
+                                 sw.Elapsed().count() * 1e3);
         const auto& backendVec = res.Value();
         for (size_t i = 0; i < missIdx.size(); ++i) { results[missIdx[i]] = backendVec[i]; }
         return results;
@@ -126,6 +131,8 @@ private:
         if (!res) [[unlikely]] { return res.Error(); }
         UC_DEBUG("Cache lookup({}/{}) in backend costs {:.3f}ms.", missBlk.size(), num,
                  sw.Elapsed().count() * 1e3);
+        UC::Metrics::UpdateStats("cache_lookup_backend_duration_ms",
+                                 sw.Elapsed().count() * 1e3);
         const auto& result = res.Value();
         if (static_cast<size_t>(result + 1) == missIdx.size()) {
             return static_cast<ssize_t>(num) - 1;
