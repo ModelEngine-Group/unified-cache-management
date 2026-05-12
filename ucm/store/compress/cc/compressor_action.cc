@@ -37,7 +37,8 @@ Status CompressorAction::Setup(const Config& config)
         .SetWorkerFn([this](auto& ct, auto&) { Compress_Load(ct); })
         .Run();
 
-    UC_DEBUG("Compress Storage Load thread num: {}.", decompressThreadNum);
+    UC_DEBUG("Compressor Setup OK | load_threads: {}, shard_size: {} B", decompressThreadNum,
+             shardSize_);
 
     threadBuf_ = std::make_unique<uint8_t[]>(shardSize_);
     return Status::OK();
@@ -45,7 +46,9 @@ Status CompressorAction::Setup(const Config& config)
 
 void CompressorAction::Push(TaskPtr task, WaiterPtr waiter)
 {
-    UC_DEBUG("task {}, push size: {}", task->id, task->desc.size());
+    const char* type = (task->type == TransTask::Type::DUMP) ? "DUMP" : "LOAD";
+    UC_DEBUG("Task Pushed | id: {}, type: {}, shards: {}", task->id, type, task->desc.size());
+
     waiter->Set(1);
     if (task->type == TransTask::Type::DUMP) {
         dump_pool_.Push(CompressTask{task, waiter});
@@ -56,7 +59,7 @@ void CompressorAction::Push(TaskPtr task, WaiterPtr waiter)
 
 void CompressorAction::Compress_Load(CompressTask& ct)
 {
-    UC_DEBUG("COMPRESS LOAD START.");
+    UC_DEBUG("COMPRESS LOAD START | task_id: {}", ct.task->id);
     if (ratio == R1) {
         auto result = backend_->Load(std::move(ct.task->desc));
         backend_->Wait(result.Value());
@@ -65,28 +68,30 @@ void CompressorAction::Compress_Load(CompressTask& ct)
         if (result.Value() > 0) { backend_->Wait(result.Value()); }
 
         const auto& shards = ct.task->desc;
-        const size_t sz = shards.size();
-        UC_DEBUG("shards.size: {}", sz);
+        UC_DEBUG("COMPRESS LOAD | shards_count: {}", shards.size());
 
-        for (size_t i = 0; i < sz; ++i) {
+        for (size_t i = 0; i < shards.size(); ++i) {
             if (ratio == R200) {
                 size_t n_bf16 = shardSize_ >> 1;
                 int err = TunstallDecompressBF16Inplace(static_cast<uint8_t*>(shards[i].addrs[0]),
                                                         n_bf16);
                 if (err != 0) {
-                    UC_ERROR("Failed to decompress BF16 data for shard {}", shards[i].index);
+                    UC_ERROR("COMPRESS LOAD FAILED | shard: {}, error: {}", shards[i].index, err);
+                    continue;
                 }
+                UC_DEBUG("COMPRESS LOAD | shard: {}, done, decompressed_size: {}", shards[i].index,
+                         shardSize_);
             }
         }
     }
 
     ct.waiter->Done();
-    UC_DEBUG("COMPRESS LOAD END.");
+    UC_DEBUG("COMPRESS LOAD END | task_id: {}", ct.task->id);
 }
 
 void CompressorAction::Compress_Dump(CompressTask& ct)
 {
-    UC_DEBUG("COMPRESS DUMP STARTING.");
+    UC_DEBUG("COMPRESS DUMP START | task_id: {}", ct.task->id);
 
     if (ratio == R1) {
         const auto n = ct.task->desc.size();
@@ -94,7 +99,8 @@ void CompressorAction::Compress_Dump(CompressTask& ct)
     } else {
         const auto& desc = ct.task->desc;
         if (desc.empty()) {
-            UC_ERROR("COMPRESS DUMP desc is empty...");
+            UC_ERROR("COMPRESS DUMP FAILED | task_id: {}, desc is empty", ct.task->id);
+            ct.waiter->Done();
             return;
         }
 
@@ -107,12 +113,14 @@ void CompressorAction::Compress_Dump(CompressTask& ct)
         std::unique_ptr<MemoryPool> dump_memoryPool_ =
             std::make_unique<MemoryPool>(compBufSize, ct.task->desc.size());
         if (!dump_memoryPool_) {
-            UC_ERROR("Out of memory: failed to allocate {} B", shardSize_ * ct.task->desc.size());
+            UC_ERROR("COMPRESS DUMP OOM | task_id: {}, required: {} B", ct.task->id,
+                     shardSize_ * desc.size());
             Status::NoSpace();
         }
 
         for (const UC::Detail::Shard& s : desc) {
-            UC_DEBUG("Task id: {} Shard index: {}  Compress start...", ct.task->id, s.index);
+            UC_DEBUG("COMPRESS DUMP | task_id: {}, shard: {}, compressing...", ct.task->id,
+                     s.index);
 
             uint8_t* compBuf = static_cast<uint8_t*>(dump_memoryPool_->allocate());
             uint16_t* src = static_cast<uint16_t*>(s.addrs[0]);
@@ -120,19 +128,19 @@ void CompressorAction::Compress_Dump(CompressTask& ct)
             size_t compBytes = 0;
             if (ratio == R200) {
                 size_t n_bf16 = shardSize_ >> 1;
-                int err = TunstallCompressBF16(compBuf, (uint16_t*)src, n_bf16);
-                if (err != 0) { UC_ERROR("Failed to compress BF16 data for shard {}", s.index); }
+                int err = TunstallCompressBF16(compBuf, src, n_bf16);
+                if (err != 0) [[unlikely]] {
+                    UC_ERROR("COMPRESS DUMP FAILED | task_id: {}, shard: {}, error: {}",
+                             ct.task->id, s.index, err);
+                }
                 compBytes = n_bf16;
-            } else {
-                UC_ERROR("Unsupported ratio: {}", static_cast<int>(ratio));
-                return;
             }
 
             std::vector<void*> _addrs{static_cast<void*>(compBuf)};
 
             backendDesc.push_back(Detail::Shard{s.owner, s.index, _addrs});
 
-            UC_DEBUG("Shard index: {} compress end...  compBytes is {}", s.index, compBytes);
+            UC_DEBUG("COMPRESS DUMP | shard: {}, done, compressed_size: {}", s.index, compBytes);
             blockToFree.push_back(static_cast<void*>(compBuf));
         }
 
@@ -145,7 +153,7 @@ void CompressorAction::Compress_Dump(CompressTask& ct)
     }
 
     ct.waiter->Done();
-    UC_DEBUG("COMPRESS DUMP END.");
+    UC_DEBUG("COMPRESS DUMP END | task_id: {}", ct.task->id);
 }
 
 }  // namespace UC::Compressor

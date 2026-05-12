@@ -82,4 +82,5 @@ performance.
 pipeline_store
 nfs_store
 ds3fs_store
+compress_store
 :::
