@@ -162,7 +162,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "${DS_PROMETHEUS}"
+        "uid": "prometheus"
       },
       "description": "Stacked average Cache load phase duration. Segments map to detail panels: queue wait -> Cache Load/Dump Queue Wait Duration; dispatch -> Cache Load Dispatch Duration; backend wait -> Cache Load Backend Wait Duration; H2D -> Cache H2D Duration. Quantiles are intentionally not stacked because p50/p90/p99 are not additive.",
       "fieldConfig": {
@@ -244,7 +244,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "prometheus"
           },
           "editorMode": "code",
           "expr": "sum by (${perWorker:raw}) (rate(ucm:cache_load_queue_wait_duration_ms_sum{model_name=\"$model_name\", job=\"$job\"}[$__rate_interval]))\n/\nsum by (${perWorker:raw}) (rate(ucm:cache_load_queue_wait_duration_ms_count{model_name=\"$model_name\", job=\"$job\"}[$__rate_interval]))",
@@ -255,7 +255,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "prometheus"
           },
           "editorMode": "code",
           "expr": "sum by (${perWorker:raw}) (rate(ucm:cache_load_dispatch_duration_ms_sum{model_name=\"$model_name\", job=\"$job\"}[$__rate_interval]))\n/\nsum by (${perWorker:raw}) (rate(ucm:cache_load_dispatch_duration_ms_count{model_name=\"$model_name\", job=\"$job\"}[$__rate_interval]))",
@@ -266,7 +266,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "prometheus"
           },
           "editorMode": "code",
           "expr": "sum by (${perWorker:raw}) (rate(ucm:cache_load_backend_wait_duration_ms_sum{model_name=\"$model_name\", job=\"$job\"}[$__rate_interval]))\n/\nsum by (${perWorker:raw}) (rate(ucm:cache_load_backend_wait_duration_ms_count{model_name=\"$model_name\", job=\"$job\"}[$__rate_interval]))",
@@ -277,7 +277,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "prometheus"
           },
           "editorMode": "code",
           "expr": "sum by (${perWorker:raw}) (rate(ucm:cache_h2d_duration_ms_sum{model_name=\"$model_name\", job=\"$job\"}[$__rate_interval]))\n/\nsum by (${perWorker:raw}) (rate(ucm:cache_h2d_duration_ms_count{model_name=\"$model_name\", job=\"$job\"}[$__rate_interval]))",
@@ -292,7 +292,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "${DS_PROMETHEUS}"
+        "uid": "prometheus"
       },
       "description": "Stacked average Cache dump phase duration. Segments map to detail panels: queue wait -> Cache Load/Dump Queue Wait Duration; mkbuf and D2H -> Cache Dump MkBuf / D2H Duration; backend submit -> Cache Dump Backend Submit Duration. Backend submit is the synchronous backend_->Dump submit, not lower-tier disk write completion. Quantiles are intentionally not stacked because p50/p90/p99 are not additive.",
       "fieldConfig": {
@@ -374,7 +374,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "prometheus"
           },
           "editorMode": "code",
           "expr": "sum by (${perWorker:raw}) (rate(ucm:cache_dump_queue_wait_duration_ms_sum{model_name=\"$model_name\", job=\"$job\"}[$__rate_interval]))\n/\nsum by (${perWorker:raw}) (rate(ucm:cache_dump_queue_wait_duration_ms_count{model_name=\"$model_name\", job=\"$job\"}[$__rate_interval]))",
@@ -385,7 +385,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "prometheus"
           },
           "editorMode": "code",
           "expr": "sum by (${perWorker:raw}) (rate(ucm:cache_dump_mkbuf_duration_ms_sum{model_name=\"$model_name\", job=\"$job\"}[$__rate_interval]))\n/\nsum by (${perWorker:raw}) (rate(ucm:cache_dump_mkbuf_duration_ms_count{model_name=\"$model_name\", job=\"$job\"}[$__rate_interval]))",
@@ -396,7 +396,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "prometheus"
           },
           "editorMode": "code",
           "expr": "sum by (${perWorker:raw}) (rate(ucm:cache_d2h_duration_ms_sum{model_name=\"$model_name\", job=\"$job\"}[$__rate_interval]))\n/\nsum by (${perWorker:raw}) (rate(ucm:cache_d2h_duration_ms_count{model_name=\"$model_name\", job=\"$job\"}[$__rate_interval]))",
@@ -407,7 +407,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "prometheus"
           },
           "editorMode": "code",
           "expr": "sum by (${perWorker:raw}) (rate(ucm:cache_dump_backend_submit_duration_ms_sum{model_name=\"$model_name\", job=\"$job\"}[$__rate_interval]))\n/\nsum by (${perWorker:raw}) (rate(ucm:cache_dump_backend_submit_duration_ms_count{model_name=\"$model_name\", job=\"$job\"}[$__rate_interval]))",
@@ -3085,7 +3085,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "${DS_PROMETHEUS}"
+        "uid": "prometheus"
       },
       "description": "Cache load dispatch cost after worker pickup: buffer allocation/reuse plus backend submission for cache misses. Series: p50 / p90 / p99 / avg by selected view.",
       "fieldConfig": {
@@ -3244,7 +3244,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "prometheus"
           },
           "editorMode": "code",
           "expr": "histogram_quantile(0.5, sum by (le, ${perWorker:raw}) (rate(ucm:cache_load_dispatch_duration_ms_bucket{model_name=\"$model_name\", job=\"$job\"}[$__rate_interval])))",
@@ -3255,7 +3255,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "prometheus"
           },
           "editorMode": "code",
           "expr": "histogram_quantile(0.9, sum by (le, ${perWorker:raw}) (rate(ucm:cache_load_dispatch_duration_ms_bucket{model_name=\"$model_name\", job=\"$job\"}[$__rate_interval])))",
@@ -3266,7 +3266,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "prometheus"
           },
           "editorMode": "code",
           "expr": "histogram_quantile(0.99, sum by (le, ${perWorker:raw}) (rate(ucm:cache_load_dispatch_duration_ms_bucket{model_name=\"$model_name\", job=\"$job\"}[$__rate_interval])))",
@@ -3277,7 +3277,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "prometheus"
           },
           "editorMode": "code",
           "expr": "sum by (${perWorker:raw}) (rate(ucm:cache_load_dispatch_duration_ms_sum{model_name=\"$model_name\", job=\"$job\"}[$__rate_interval]))\n/\nsum by (${perWorker:raw}) (rate(ucm:cache_load_dispatch_duration_ms_count{model_name=\"$model_name\", job=\"$job\"}[$__rate_interval]))",
@@ -3292,7 +3292,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "${DS_PROMETHEUS}"
+        "uid": "prometheus"
       },
       "description": "Synchronous Cache dump backend submit duration around backend_->Dump(...). This is a submit cost only and does not include lower-tier disk write completion. Series: p50 / p90 / p99 / avg by selected view.",
       "fieldConfig": {
@@ -3451,7 +3451,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "prometheus"
           },
           "editorMode": "code",
           "expr": "histogram_quantile(0.5, sum by (le, ${perWorker:raw}) (rate(ucm:cache_dump_backend_submit_duration_ms_bucket{model_name=\"$model_name\", job=\"$job\"}[$__rate_interval])))",
@@ -3462,7 +3462,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "prometheus"
           },
           "editorMode": "code",
           "expr": "histogram_quantile(0.9, sum by (le, ${perWorker:raw}) (rate(ucm:cache_dump_backend_submit_duration_ms_bucket{model_name=\"$model_name\", job=\"$job\"}[$__rate_interval])))",
@@ -3473,7 +3473,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "prometheus"
           },
           "editorMode": "code",
           "expr": "histogram_quantile(0.99, sum by (le, ${perWorker:raw}) (rate(ucm:cache_dump_backend_submit_duration_ms_bucket{model_name=\"$model_name\", job=\"$job\"}[$__rate_interval])))",
@@ -3484,7 +3484,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "prometheus"
           },
           "editorMode": "code",
           "expr": "sum by (${perWorker:raw}) (rate(ucm:cache_dump_backend_submit_duration_ms_sum{model_name=\"$model_name\", job=\"$job\"}[$__rate_interval]))\n/\nsum by (${perWorker:raw}) (rate(ucm:cache_dump_backend_submit_duration_ms_count{model_name=\"$model_name\", job=\"$job\"}[$__rate_interval]))",
@@ -3955,7 +3955,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "${DS_PROMETHEUS}"
+        "uid": "prometheus"
       },
       "description": "Stacked average Posix load phase duration. Segments map to detail panels: queue wait -> Posix Load/Dump Queue Wait Duration; S2H -> Posix S2H Duration. This is a bottleneck scan, not an exact per-task trace, because Posix S2H is sampled per IO shard while task duration is sampled per task.",
       "fieldConfig": {
@@ -4037,7 +4037,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "prometheus"
           },
           "editorMode": "code",
           "expr": "sum by (${perWorker:raw}) (rate(ucm:posix_load_queue_wait_duration_ms_sum{model_name=\"$model_name\", job=\"$job\"}[$__rate_interval]))\n/\nsum by (${perWorker:raw}) (rate(ucm:posix_load_queue_wait_duration_ms_count{model_name=\"$model_name\", job=\"$job\"}[$__rate_interval]))",
@@ -4048,7 +4048,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "prometheus"
           },
           "editorMode": "code",
           "expr": "sum by (${perWorker:raw}) (rate(ucm:posix_s2h_duration_ms_sum{model_name=\"$model_name\", job=\"$job\"}[$__rate_interval]))\n/\nsum by (${perWorker:raw}) (rate(ucm:posix_s2h_duration_ms_count{model_name=\"$model_name\", job=\"$job\"}[$__rate_interval]))",
@@ -4063,7 +4063,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "${DS_PROMETHEUS}"
+        "uid": "prometheus"
       },
       "description": "Stacked average Posix dump phase duration. Segments map to detail panels: queue wait -> Posix Load/Dump Queue Wait Duration; H2S -> Posix H2S Duration. This is a bottleneck scan, not an exact per-task trace, because Posix H2S is sampled per IO shard while task duration is sampled per task.",
       "fieldConfig": {
@@ -4145,7 +4145,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "prometheus"
           },
           "editorMode": "code",
           "expr": "sum by (${perWorker:raw}) (rate(ucm:posix_dump_queue_wait_duration_ms_sum{model_name=\"$model_name\", job=\"$job\"}[$__rate_interval]))\n/\nsum by (${perWorker:raw}) (rate(ucm:posix_dump_queue_wait_duration_ms_count{model_name=\"$model_name\", job=\"$job\"}[$__rate_interval]))",
@@ -4156,7 +4156,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "prometheus"
           },
           "editorMode": "code",
           "expr": "sum by (${perWorker:raw}) (rate(ucm:posix_h2s_duration_ms_sum{model_name=\"$model_name\", job=\"$job\"}[$__rate_interval]))\n/\nsum by (${perWorker:raw}) (rate(ucm:posix_h2s_duration_ms_count{model_name=\"$model_name\", job=\"$job\"}[$__rate_interval]))",
