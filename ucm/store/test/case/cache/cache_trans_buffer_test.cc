@@ -102,7 +102,6 @@ TEST_P(UCCacheTransBufferTest, GetReservedNode)
 TEST_P(UCCacheTransBufferTest, RecordsBufferTimingMetrics)
 {
     UC::Metrics::SetUp(1000000);
-    UC::Metrics::CreateStats("cache_buffer_get_duration_ms", "histogram");
     UC::Metrics::CreateStats("cache_buffer_alloc_spin_duration_ms", "histogram");
 
     UC::CacheStore::TransBuffer transBuffer;
@@ -126,12 +125,8 @@ TEST_P(UCCacheTransBufferTest, RecordsBufferTimingMetrics)
 
     auto stats = UC::Metrics::GetAllStatsAndClear();
     const auto& histogram = std::get<2>(stats);
-    ASSERT_NE(histogram.find("cache_buffer_get_duration_ms"), histogram.end());
-    ASSERT_EQ(histogram.at("cache_buffer_get_duration_ms").size(), 2);
     ASSERT_NE(histogram.find("cache_buffer_alloc_spin_duration_ms"), histogram.end());
     ASSERT_EQ(histogram.at("cache_buffer_alloc_spin_duration_ms").size(), 1);
-    EXPECT_GE(histogram.at("cache_buffer_get_duration_ms")[0], 0.0);
-    EXPECT_GE(histogram.at("cache_buffer_get_duration_ms")[1], 0.0);
     EXPECT_GE(histogram.at("cache_buffer_alloc_spin_duration_ms")[0], 0.0);
 }
 

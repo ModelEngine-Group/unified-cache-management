@@ -125,9 +125,6 @@ histogram:
   - name: "cache_lookup_backend_duration_ms"
     documentation: "Backend lookup wall-clock time when descending due to no buffer or buffer miss (ms)"
     buckets: [0.05, 0.1, 0.2, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500]
-  - name: "cache_buffer_get_duration_ms"
-    documentation: "TransBuffer::Get wall-clock time: bucket lock + cache lookup + allocation when needed (ms)"
-    buckets: [0.01, 0.05, 0.1, 0.2, 0.5, 1, 2, 5, 10, 20, 50, 100]
   - name: "cache_buffer_alloc_spin_duration_ms"
     documentation: "TransBuffer::Alloc retry-loop spin time before a reusable buffer node is acquired (ms). Zero means no retry."
     buckets: [0, 0.01, 0.05, 0.1, 0.2, 0.5, 1, 2, 5, 10, 20, 50, 100]
