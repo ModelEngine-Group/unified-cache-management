@@ -37,10 +37,4 @@ if(UCM_ENABLE_GDR_STREAM)
         ${IBVERBS_LIB}
         Threads::Threads
     )
-
-    add_executable(gdr_stream_bandwidth gdr/gdr_stream_bandwidth.cc)
-    target_link_libraries(gdr_stream_bandwidth PRIVATE trans)
-
-    add_executable(gdr_copy_bandwidth gdr/gdr_copy_bandwidth.cc)
-    target_link_libraries(gdr_copy_bandwidth PRIVATE trans)
 endif()
