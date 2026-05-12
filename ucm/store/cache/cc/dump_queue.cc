@@ -42,6 +42,7 @@ Status DumpQueue::Setup(const Config& config, TaskIdSet* failureSet, TransBuffer
     deviceId_ = config.deviceId;
     tensorSizes_ = config.tensorSizes;
     streamNumber_ = config.streamNumber;
+    useGdr_ = config.useGdr;
     cpuAffinityCores_ = config.cpuAffinityCores;
     waiting_.Setup(config.waitingQueueDepth);
     dumping_.Setup(config.runningQueueDepth);
@@ -65,7 +66,7 @@ void DumpQueue::Submit(TaskPtr task, WaiterPtr waiter)
 void DumpQueue::DispatchStage(std::promise<Status>& started)
 {
     CopyStream stream;
-    auto s = stream.Setup(deviceId_, streamNumber_);
+    auto s = stream.Setup(deviceId_, streamNumber_, useGdr_);
     started.set_value(s);
     if (s.Failure()) [[unlikely]] { return; }
     if (!cpuAffinityCores_.empty()) {

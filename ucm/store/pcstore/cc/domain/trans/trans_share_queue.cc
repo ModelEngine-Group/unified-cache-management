@@ -42,11 +42,13 @@ TransShareQueue::~TransShareQueue()
 Status TransShareQueue::Setup(const int32_t deviceId, const size_t streamNumber,
                               const size_t blockSize, const size_t ioSize, const bool ioDirect,
                               const size_t bufferNumber, const SpaceLayout* layout,
-                              TaskSet* failureSet, const std::string& uniqueId)
+                              TaskSet* failureSet, const std::string& uniqueId,
+                              const bool useGdr)
 {
     this->deviceId_ = deviceId;
     this->streamNumber_ = streamNumber;
     this->ioSize_ = ioSize;
+    this->useGdr_ = useGdr;
     this->layout_ = layout;
     this->failureSet_ = failureSet;
     auto status = this->buffer_.Setup(blockSize, bufferNumber, ioDirect, uniqueId);
@@ -97,9 +99,10 @@ void TransShareQueue::WorkerLoop(std::promise<Status>& status)
         status.set_value(Status::Error());
         return;
     }
-    auto stream = device.MakeStream();
+    auto stream = useGdr_ ? device.MakeGdrStream() : device.MakeStream();
     if (!stream) {
-        UC_ERROR("Failed to create stream on device({}).", deviceId_);
+        UC_ERROR("Failed to create {} stream on device({}).", useGdr_ ? "GDR" : "CUDA",
+                 deviceId_);
         status.set_value(Status::Error());
         return;
     }

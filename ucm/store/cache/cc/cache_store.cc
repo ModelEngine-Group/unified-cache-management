@@ -154,6 +154,7 @@ private:
         config.GetNumbers("gpu_kv_buffer_addrs", param.gpuKvBufferAddrs);
         config.GetNumbers("gpu_kv_buffer_sizes", param.gpuKvBufferSizes);
         config.Get("gdr_nic_list", param.gdrNicList);
+        config.Get("use_gdr", param.useGdr);
         return param;
     }
     Status CheckSizeConfig(const Config& config)
@@ -237,6 +238,7 @@ private:
         UC_INFO("Set {}::LoadExclusiveBufferNumber to {}.", ns, config.loadExclusiveBufferNumber);
         UC_INFO("Set {}::GpuKvBufferNumber to {}.", ns, config.gpuKvBufferAddrs.size());
         UC_INFO("Set {}::GdrNicList to {}.", ns, config.gdrNicList);
+        UC_INFO("Set {}::UseGdr to {}.", ns, config.useGdr);
     }
 };
 

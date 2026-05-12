@@ -65,7 +65,8 @@ public:
                 config.transferLocalRankSize, config.transferDeviceId, config.transferStreamNumber,
                 config.kvcacheBlockSize, config.transferIoSize, config.transferIoDirect,
                 config.transferBufferNumber, this->spaceMgr_.GetSpaceLayout(),
-                config.transferTimeoutMs, config.transferScatterGatherEnable, config.uniqueId);
+                config.transferTimeoutMs, config.transferScatterGatherEnable,
+                config.transferUseGdr, config.uniqueId);
             if (status.Failure()) { return status.Underlying(); }
         }
         this->ShowConfig(config);
@@ -118,6 +119,7 @@ private:
         UC_INFO("Set UC::BufferNumber to {}.", config.transferBufferNumber);
         UC_INFO("Set UC::TimeoutMs to {}.", config.transferTimeoutMs);
         UC_INFO("Set UC::ScatterGatherEnable to {}.", config.transferScatterGatherEnable);
+        UC_INFO("Set UC::UseGdr to {}.", config.transferUseGdr);
         UC_INFO("Set UC::ShardDataDir to {}.", config.shardDataDir);
         UC_INFO("Set UC::GpuKvBufferNumber to {}.", config.gpuKvBufferAddrs.size());
         UC_INFO("Set UC::GdrNicList to {}.", config.gdrNicList);

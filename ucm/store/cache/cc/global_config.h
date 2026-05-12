@@ -50,6 +50,7 @@ struct Config {
     std::vector<uintptr_t> gpuKvBufferAddrs{};
     std::vector<size_t> gpuKvBufferSizes{};
     std::vector<std::string> gdrNicList{};
+    bool useGdr{false};
 };
 
 }  // namespace UC::CacheStore

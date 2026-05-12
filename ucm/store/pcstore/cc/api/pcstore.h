@@ -45,6 +45,7 @@ public:
         size_t transferBufferNumber{4096};
         size_t transferTimeoutMs{30000};
         bool transferScatterGatherEnable{false};
+        bool transferUseGdr{false};
         bool shardDataDir{true};
         std::vector<uintptr_t> gpuKvBufferAddrs{};
         std::vector<size_t> gpuKvBufferSizes{};

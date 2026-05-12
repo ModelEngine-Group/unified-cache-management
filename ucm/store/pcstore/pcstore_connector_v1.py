@@ -62,6 +62,7 @@ class UcmPcStoreV1(UcmKVStoreBaseV1):
             "buffer_number": "transferBufferNumber",
             "timeout_ms": "transferTimeoutMs",
             "use_scatter_gather": "transferScatterGatherEnable",
+            "use_gdr": "transferUseGdr",
             "shard_data_dir": "shardDataDir",
             "gpu_kv_buffer_addrs": "gpuKvBufferAddrs",
             "gpu_kv_buffer_sizes": "gpuKvBufferSizes",
