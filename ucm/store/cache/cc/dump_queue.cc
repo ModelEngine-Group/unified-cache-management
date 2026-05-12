@@ -82,7 +82,7 @@ void DumpQueue::DispatchOneTask(CopyStream& stream, TaskPair&& pair)
     auto& waiter = pair.second;
     auto wait = NowTime::Now() - waiter->startTp;
     UC_DEBUG("Cache task({}) start running, wait {:.3f}ms.", task->id, wait * 1e3);
-    UC::Metrics::UpdateStats("cache_dump_wait_duration_ms", wait * 1e3);
+    UC::Metrics::UpdateStats("cache_dump_queue_wait_duration_ms", wait * 1e3);
     if (!failureSet_->Contains(task->id)) {
         auto s = DumpOneTask(stream, task);
         if (s.Failure()) [[unlikely]] { failureSet_->Insert(task->id); }

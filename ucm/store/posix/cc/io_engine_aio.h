@@ -55,8 +55,8 @@ private:
     template <bool dump>
     static void UpdateWaitMetrics(double wait)
     {
-        UC::Metrics::UpdateStats(dump ? "posix_dump_wait_duration_ms"
-                                      : "posix_load_wait_duration_ms",
+        UC::Metrics::UpdateStats(dump ? "posix_dump_queue_wait_duration_ms"
+                                      : "posix_load_queue_wait_duration_ms",
                                  wait * 1e3);
     }
     template <bool dump>

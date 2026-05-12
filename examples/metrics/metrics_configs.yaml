@@ -140,11 +140,11 @@ histogram:
   - name: "cache_dump_bandwidth_gbps"
     documentation: "Cache stage effective dump bandwidth (GB/s)"
     buckets: [0.5, 1, 2, 4, 8, 12, 16, 24, 32, 48, 64, 96, 128, 192, 256]
-  - name: "cache_load_wait_duration_ms"
-    documentation: "Time a Cache load task spent queued before dispatch (ms)"
+  - name: "cache_load_queue_wait_duration_ms"
+    documentation: "Time a Cache load task spent queued before dispatch worker pickup (ms)"
     buckets: [0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 500]
-  - name: "cache_dump_wait_duration_ms"
-    documentation: "Time a Cache dump task spent queued before dispatch (ms)"
+  - name: "cache_dump_queue_wait_duration_ms"
+    documentation: "Time a Cache dump task spent queued before dispatch worker pickup (ms)"
     buckets: [0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 500]
   - name: "cache_load_dispatch_duration_ms"
     documentation: "Cache load dispatch cost: buffer allocation + backend submission (ms)"
@@ -194,10 +194,10 @@ histogram:
               1, 1.5, 2, 2.5, 3, 3.5, 4,
               5, 6, 7, 8, 9, 10, 11, 12,
               14, 16, 20, 24, 32]
-  - name: "posix_load_wait_duration_ms"
+  - name: "posix_load_queue_wait_duration_ms"
     documentation: "Time a Posix load IO spent queued before worker pickup (ms)"
     buckets: [0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 500]
-  - name: "posix_dump_wait_duration_ms"
+  - name: "posix_dump_queue_wait_duration_ms"
     documentation: "Time a Posix dump IO spent queued before worker pickup (ms)"
     buckets: [0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 500]
 
