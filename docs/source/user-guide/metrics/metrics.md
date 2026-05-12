@@ -185,12 +185,14 @@ UCM exposes various metrics to monitor its performance. The following table list
 | `ucm:load_requests_num` | Histogram | Number of requests loaded per `start_load_kv` call |
 | `ucm:load_blocks_num` | Histogram | Number of blocks loaded per `start_load_kv` call |
 | `ucm:load_duration` | Histogram | Time to load KV cache from UCM (milliseconds) |
-| `ucm:load_speed` | Histogram | Speed of loading from UCM (GB/s) |
+| `ucm:load_speed` | Histogram | Speed of loading from UCM (GB/s, per `start_load_kv` call) |
+| `ucm:load_bytes_total` | Counter | Total bytes loaded through the connector; use `rate() / 1e9` for true summed GB/s across workers |
 | **Save Operation Metrics** | | |
 | `ucm:save_requests_num` | Histogram | Number of requests saved per `wait_for_save` call |
 | `ucm:save_blocks_num` | Histogram | Number of blocks saved per `wait_for_save` call |
 | `ucm:save_duration` | Histogram | Time to save to UCM (milliseconds) |
-| `ucm:save_speed` | Histogram | Speed of saving to UCM (GB/s) |
+| `ucm:save_speed` | Histogram | Speed of saving to UCM (GB/s, per `wait_for_save` call) |
+| `ucm:save_bytes_total` | Counter | Total bytes saved through the connector; use `rate() / 1e9` for true summed GB/s across workers |
 | **Lookup Hit Rate Metrics** | | |
 | `ucm:interval_lookup_hit_rates` | Histogram | Hit rate of UCM lookup requests |
 

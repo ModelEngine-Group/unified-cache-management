@@ -242,6 +242,26 @@ with the per-event grain being a task instead of a single IO:
 > throughput / saturation" → **per worker**; "slow individual tasks
 > / long tail" → **per task** p99 / distribution.
 
+The same pattern repeats at the **Connector** layer (the topmost layer
+that vLLM calls directly):
+
+> **Connector Speed (per task) vs Connector Bandwidth (aggregated)**
+>
+> - **(per task)** = `load_speed` / `save_speed` histograms. Each
+>   sample is `total_bytes_in_call / duration_of_call / 1e9`, recorded
+>   once per `start_load_kv` / `wait_for_save` invocation. Reflects
+>   **typical single-call speed**; switching `View` to Aggregated pools
+>   observations across workers but the quantile is still per-call —
+>   **does NOT sum**.
+> - **(aggregated)** = `rate(load_bytes_total[interval]) / 1e9` (and
+>   the save variant). Reflects **actual GB/s the whole vLLM service
+>   is moving through UCM**. When `View=Aggregated` you see one summed
+>   line; `View=Per Worker` breaks it down by `worker_id` and the
+>   per-worker lines sum to the Aggregated value.
+>
+> If you want "summed throughput across workers" → **(aggregated)**;
+> if you want "how fast is a typical single call" → **(per task)**.
+
 ### 3.4 Dumps are silently overflowing (back-pressure)
 
 **Symptoms.** Loads start failing or hit rate drops over time even

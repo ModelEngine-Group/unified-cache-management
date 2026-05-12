@@ -58,6 +58,16 @@ counter:
   - name: "posix_h2s_bytes_total"
     documentation: "Total bytes transferred from host buffer to posix storage (dump path, successful IOs only)"
 
+  # -- Connector layer: per-worker real throughput counters ----------------
+  # The legacy load_speed / save_speed histograms sample per-call speed
+  # (a statistical distribution), so an aggregated quantile across workers
+  # is still ~per-call speed, not a sum. Use rate(*_bytes_total) / 1e9 to
+  # get the actual GB/s the whole vLLM service is moving through UCM.
+  - name: "load_bytes_total"
+    documentation: "Total bytes loaded through the UCM connector (summed across all start_load_kv calls)"
+  - name: "save_bytes_total"
+    documentation: "Total bytes saved through the UCM connector (summed across all wait_for_save calls)"
+
   # -- Layerwise stalls -----------------------------------------------------
   - name: "layerwise_stalled_layers_total"
     documentation: "Layers whose wait_for_layer_load blocked noticeably (> 1ms) - indicates poor overlap"

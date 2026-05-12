@@ -637,12 +637,9 @@ class UCMDirectConnector(KVConnectorBase_V1):
                 )
 
         load_end_time = time.perf_counter() * 1000
+        load_bytes = num_loaded_block * self.block_data_size
         load_speed = (
-            num_loaded_block
-            * self.block_data_size
-            / (load_end_time - load_start_time)
-            / 1024
-            / 1024
+            load_bytes / (load_end_time - load_start_time) / 1024 / 1024
         )  # GB/s
         if self.metrics_config and is_load:
             ucmmetrics.update_stats(
@@ -651,6 +648,7 @@ class UCMDirectConnector(KVConnectorBase_V1):
                     "load_blocks_num": num_loaded_block,
                     "load_duration": load_end_time - load_start_time,
                     "load_speed": load_speed,
+                    "load_bytes_total": load_bytes,
                 }
             )
 
@@ -728,12 +726,9 @@ class UCMDirectConnector(KVConnectorBase_V1):
                 logger.error(f"wait for dump kv cache failed. {type(e).__name__}: {e}")
                 return
 
+            save_bytes = num_saved_block * self.block_data_size
             save_speed = (
-                num_saved_block
-                * self.block_data_size
-                / (save_end_time - save_start_time)
-                / 1024
-                / 1024
+                save_bytes / (save_end_time - save_start_time) / 1024 / 1024
             )  # GB/s
             if self.metrics_config:
                 ucmmetrics.update_stats(
@@ -742,6 +737,7 @@ class UCMDirectConnector(KVConnectorBase_V1):
                         "save_blocks_num": num_saved_block,
                         "save_duration": save_end_time - save_start_time,
                         "save_speed": save_speed,
+                        "save_bytes_total": save_bytes,
                     },
                 )
 
