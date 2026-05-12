@@ -74,27 +74,28 @@ filled by a concurrent prefetch.
 ### 1.3 DUMP data flow
 
 Dump is asymmetric: from the user's perspective `wait` returns as soon
-as the Cache D2H copy and Posix submission complete. The actual disk
-write happens later in `BackendDumpStage` and does **not** block the
-caller.
+as the Cache mk_buf phase, D2H stream sync, and Posix submission
+complete. The actual disk write happens later in `BackendDumpStage`
+and does **not** block the caller.
 
 ```mermaid
 flowchart TD
     A(["store.dump_data"])
     B["Cache waiting queue<br/><b>cache_dump_wait_duration_ms</b>"]
-    C["D2H + stream sync<br/><b>cache_d2h_duration_ms</b>"]
-    D["backend_->Dump hand-off (sync)<br/><b>cache_dump_backend_duration_ms</b>"]
-    E(["epilog fires — caller unblocks<br/><b>cache_dump_duration_ms</b> (caller-felt)<br/><b>cache_dump_bandwidth_gbps</b>"])
+    C["mk_buf: prerequisite wait + buffer alloc + D2H async submit<br/><b>cache_dump_mkbuf_duration_ms</b>"]
+    D["D2H stream sync<br/><b>cache_d2h_duration_ms</b>"]
+    E["backend_->Dump hand-off (sync)<br/><b>cache_dump_backend_duration_ms</b>"]
+    H(["epilog fires — caller unblocks<br/><b>cache_dump_duration_ms</b> (caller-felt)<br/><b>cache_dump_bandwidth_gbps</b>"])
     F["BackendDumpStage thread (async)"]
     G["Posix H2S worker — write disk<br/><b>posix_h2s_duration_ms</b><br/><b>posix_h2s_bandwidth_gbps</b>"]
-    A --> B --> C --> D --> E
-    D -. "enqueue (non-blocking)" .-> F --> G
+    A --> B --> C --> D --> E --> H
+    E -. "enqueue (non-blocking)" .-> F --> G
     classDef cache fill:#e6f4ff,stroke:#2563eb
     classDef posix fill:#fff4e6,stroke:#d97706
     classDef done fill:#dcfce7,stroke:#16a34a
-    class B,C,D cache
+    class B,C,D,E cache
     class F,G posix
-    class E done
+    class H done
 ```
 
 The solid path is what the caller waits for; the dashed path is the
@@ -358,13 +359,16 @@ spends a noticeable chunk in `wait_for_save`.
   iteration's wall time
 - `ucm:cache_dump_duration_ms` ≈ `ucm:save_duration` (no
   surprise — both measure roughly the same thing here)
-- Posix h2s bandwidth healthy, h2s duration low → Cache D2H is the
-  bottleneck, not disk
+- Posix h2s bandwidth healthy, h2s duration low → Cache dump front-end
+  is the bottleneck, not disk; compare `cache_dump_mkbuf_duration_ms`
+  vs `cache_d2h_duration_ms` to distinguish buffer/submit time from
+  stream sync time
 - Posix h2s slow → disk is the bottleneck
 
-The split between Cache D2H vs Posix H2S tells you **whether to
-optimize the host→cache→disk pipeline at the device-copy stage or at
-the disk-write stage**. Those are very different fixes.
+The split between Cache mk_buf, Cache D2H stream sync, and Posix H2S
+tells you **whether to optimize the host/cache/disk pipeline at the
+buffer setup, device-copy sync, or disk-write stage**. Those are very
+different fixes.
 
 ### 3.9 Worker pool starvation (shared symptom)
 

@@ -144,7 +144,8 @@ Status DumpQueue::DumpOneTask(CopyStream& stream, TaskPtr task)
     UC_DEBUG("Cache task({}) mk_buf={:.3f}ms, sync={:.3f}ms, back={:.3f}ms.", task->id,
              (tpMakeBuffer - tp) * 1e3, (tpSyncStream - tpMakeBuffer) * 1e3,
              (tpEnd - tpSyncStream) * 1e3);
-    UC::Metrics::UpdateStats("cache_d2h_duration_ms", (tpSyncStream - tp) * 1e3);
+    UC::Metrics::UpdateStats("cache_dump_mkbuf_duration_ms", (tpMakeBuffer - tp) * 1e3);
+    UC::Metrics::UpdateStats("cache_d2h_duration_ms", (tpSyncStream - tpMakeBuffer) * 1e3);
     UC::Metrics::UpdateStats("cache_dump_backend_duration_ms", (tpEnd - tpSyncStream) * 1e3);
     return Status::OK();
 }

@@ -152,8 +152,11 @@ histogram:
   - name: "cache_h2d_duration_ms"
     documentation: "Cache load host-to-device copy duration on a sync'd stream (ms)"
     buckets: [0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500]
+  - name: "cache_dump_mkbuf_duration_ms"
+    documentation: "Cache dump mk_buf phase: prerequisite wait + buffer allocation/reuse + D2H async submit before stream sync (ms)"
+    buckets: [0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500]
   - name: "cache_d2h_duration_ms"
-    documentation: "Cache dump device-to-host copy duration incl. stream sync (ms)"
+    documentation: "Cache dump D2H stream sync phase after mk_buf; excludes buffer allocation and async submit (ms)"
     buckets: [0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500]
   - name: "cache_dump_backend_duration_ms"
     documentation: "Cache dump backend hand-off duration: synchronous time to pass buffers to the lower tier (ms). Does NOT include the lower tier's actual write time."
