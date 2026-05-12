@@ -161,8 +161,8 @@ histogram:
   - name: "cache_d2h_duration_ms"
     documentation: "Cache dump D2H stream sync phase after mk_buf; excludes buffer allocation and async submit (ms)"
     buckets: [0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500]
-  - name: "cache_dump_backend_duration_ms"
-    documentation: "Cache dump backend hand-off duration: synchronous time to pass buffers to the lower tier (ms). Does NOT include the lower tier's actual write time."
+  - name: "cache_dump_backend_submit_duration_ms"
+    documentation: "Cache dump backend submit duration: synchronous time to pass buffers to the lower tier (ms). Does NOT include the lower tier's actual write time."
     buckets: [0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 500]
 
   # -- Posix stage (disk tier) ---------------------------------------------

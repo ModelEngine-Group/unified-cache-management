@@ -39,9 +39,9 @@ dominates is the first step in any diagnosis.
 ```mermaid
 flowchart TD
     A(["store.load_data"])
-    B["Cache waiting queue<br/><b>cache_load_wait_duration_ms</b>"]
+    B["Cache waiting queue<br/><b>cache_load_queue_wait_duration_ms</b>"]
     C["DispatchOneTask: buffer alloc + submit miss<br/><b>cache_load_dispatch_duration_ms</b><br/>backend_submit_shards / shards = miss ratio"]
-    D["Posix waiting queue<br/><b>posix_load_wait_duration_ms</b>"]
+    D["Posix waiting queue<br/><b>posix_load_queue_wait_duration_ms</b>"]
     E["Posix S2H worker — read disk<br/><b>posix_s2h_duration_ms</b><br/><b>posix_s2h_bandwidth_gbps</b>"]
     F["WaitBackendTaskReady<br/><b>cache_load_backend_wait_duration_ms</b><br/>≈ posix wait + posix s2h"]
     G["H2D copy + stream sync<br/><b>cache_h2d_duration_ms</b>"]
@@ -81,10 +81,10 @@ and does **not** block the caller.
 ```mermaid
 flowchart TD
     A(["store.dump_data"])
-    B["Cache waiting queue<br/><b>cache_dump_wait_duration_ms</b>"]
+    B["Cache waiting queue<br/><b>cache_dump_queue_wait_duration_ms</b>"]
     C["mk_buf: prerequisite wait + buffer alloc + D2H async submit<br/><b>cache_dump_mkbuf_duration_ms</b>"]
     D["D2H stream sync<br/><b>cache_d2h_duration_ms</b>"]
-    E["backend_->Dump hand-off (sync)<br/><b>cache_dump_backend_duration_ms</b>"]
+    E["backend_->Dump submit (sync)<br/><b>cache_dump_backend_submit_duration_ms</b>"]
     H(["epilog fires — caller unblocks<br/><b>cache_dump_duration_ms</b> (caller-felt)<br/><b>cache_dump_bandwidth_gbps</b>"])
     F["BackendDumpStage thread (async)"]
     G["Posix H2S worker — write disk<br/><b>posix_h2s_duration_ms</b><br/><b>posix_h2s_bandwidth_gbps</b>"]
@@ -125,7 +125,7 @@ first one that's red usually points to the actual bottleneck.
 | 4 | `ucm:cache_load_backend_wait_duration_ms` | If load is slow: is it Posix's fault? |
 | 5a | `rate(ucm:posix_s2h_bytes_total[5m]) / 1e9` (aggregated) | If Posix is slow: is the disk actually saturated? |
 | 5b | `ucm:posix_s2h_bandwidth_gbps` (per shard) | If 5a is low: is each IO fast but the worker has gaps, or is each IO itself slow? |
-| 6 | `ucm:posix_load_wait_duration_ms` | Or is it queueing on the worker pool? |
+| 6 | `ucm:posix_load_queue_wait_duration_ms` | Or is it queueing on the worker pool? |
 | 7 | `ucm:layerwise_save_tail_total_ms` | Is dump tail eating budget? |
 | 8 | `ucm:cache_dump_duration_ms` vs `ucm:posix_h2s_duration_ms` | Is the dump back-pressuring the caller? |
 
@@ -173,7 +173,7 @@ Decompose by reading these in parallel:
 
 | Component metric | Normal | High means |
 |------------------|--------|------------|
-| `cache_load_wait_duration_ms` | < 1 ms | Load queue is saturated; too many concurrent requests |
+| `cache_load_queue_wait_duration_ms` | < 1 ms | Load queue is saturated; too many concurrent requests |
 | `cache_load_dispatch_duration_ms` | < 1 ms | Dispatch is rarely the bottleneck; if high, suspect lock contention |
 | `cache_load_backend_wait_duration_ms` | depends on hit rate | Cache misses going to Posix — see §3.3 |
 | `cache_h2d_duration_ms` | bounded by PCIe bw | Rare; suspect device-side contention or wrong stream affinity |
@@ -194,7 +194,7 @@ chain.
 - `cache_load_backend_wait_duration_ms` > `cache_h2d_duration_ms`
 - `rate(ucm:posix_s2h_bytes_total[5m]) / 1e9` (aggregated actual GB/s)
   well below disk spec (e.g. < 1 GB/s on an NVMe rated for 3 GB/s)
-- AND/OR `posix_load_wait_duration_ms` high (queue buildup)
+- AND/OR `posix_load_queue_wait_duration_ms` high (queue buildup)
 
 **Decision split:**
 
@@ -377,9 +377,9 @@ Some requests are 10× slower than others.
 
 **Metric signature.** Look at p99 vs avg of any duration metric — if
 avg is fine but p99 is enormous, the workers are stuck on something:
-- `posix_load_wait_duration_ms` p99 → Posix workers blocked
+- `posix_load_queue_wait_duration_ms` p99 → Posix workers blocked
    (slow disk IO, head-of-line blocking)
-- `cache_load_wait_duration_ms` p99 → Cache dispatcher
+- `cache_load_queue_wait_duration_ms` p99 → Cache dispatcher
    blocked (rare — usually means deadlock or buffer exhaustion)
 
 **Tunables.** Concurrency knobs (`*_concurrency` in config),
@@ -442,7 +442,7 @@ clamp_min(rate(ucm:cache_load_shards_total{model_name="$model_name"}[5m]), 1)
 
 ```
 histogram_quantile(0.99, sum by (le) (
-  rate(ucm:cache_load_wait_duration_ms_bucket{model_name="$model_name"}[5m])))
+  rate(ucm:cache_load_queue_wait_duration_ms_bucket{model_name="$model_name"}[5m])))
 
 histogram_quantile(0.99, sum by (le) (
   rate(ucm:cache_load_backend_wait_duration_ms_bucket{model_name="$model_name"}[5m])))
@@ -490,7 +490,7 @@ back-pressure has reached the caller (see §3.4).
 
 ```
 # average wait + IO per IO unit
-(rate(ucm:posix_load_wait_duration_ms_sum{model_name="$model_name"}[5m])
+(rate(ucm:posix_load_queue_wait_duration_ms_sum{model_name="$model_name"}[5m])
  + rate(ucm:posix_s2h_duration_ms_sum{model_name="$model_name"}[5m]))
 /
 rate(ucm:posix_s2h_duration_ms_count{model_name="$model_name"}[5m])

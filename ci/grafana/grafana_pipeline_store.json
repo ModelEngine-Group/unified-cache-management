@@ -120,7 +120,7 @@
   "timezone": "",
   "weekStart": "",
   "refresh": "",
-  "title": "vLLM - UCM Pipeline Store (CI)",
+  "title": "vLLM - UCM Cache / Posix Store (CI)",
   "uid": "ucm-pipeline-store-ci",
   "version": 1,
   "id": null,
@@ -129,7 +129,7 @@
     "pipeline-store",
     "ci"
   ],
-  "description": "UCM observability dashboard - pipeline-store module. Part of a set; the other UCM dashboards (tag: ucm) are linked from the header. CI variant: fixed datasource uid 'prometheus', `job` selector at the top to switch between CI environments.",
+  "description": "UCM observability dashboard - cache/posix store module. Part of a set; the other UCM dashboards (tag: ucm) are linked from the header. CI variant: fixed datasource uid 'prometheus', `job` selector at the top to switch between CI environments.",
   "links": [
     {
       "type": "dashboards",
@@ -146,6 +146,279 @@
     }
   ],
   "panels": [
+    {
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 0
+      },
+      "id": 37,
+      "panels": [],
+      "title": "Cache Store",
+      "type": "row"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "description": "Stacked average Cache load phase duration. Segments map to detail panels: queue wait -> Cache Load/Dump Queue Wait Duration; dispatch -> Cache Load Dispatch Duration; backend wait -> Cache Load Backend Wait Duration; H2D -> Cache H2D Duration. Quantiles are intentionally not stacked because p50/p90/p99 are not additive.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "barWidthFactor": 0.6,
+            "drawStyle": "line",
+            "fillOpacity": 45,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "auto",
+            "spanNulls": 60000,
+            "stacking": {
+              "group": "A",
+              "mode": "normal"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "ms"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 1
+      },
+      "id": 39,
+      "options": {
+        "legend": {
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ],
+          "displayMode": "table",
+          "maxHeight": "50%",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "sum by (${perWorker:raw}) (rate(ucm:cache_load_queue_wait_duration_ms_sum{model_name=\"$model_name\", job=\"$job\"}[$__rate_interval]))\n/\nsum by (${perWorker:raw}) (rate(ucm:cache_load_queue_wait_duration_ms_count{model_name=\"$model_name\", job=\"$job\"}[$__rate_interval]))",
+          "legendFormat": "queue wait {{worker_id}}",
+          "range": true,
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "sum by (${perWorker:raw}) (rate(ucm:cache_load_dispatch_duration_ms_sum{model_name=\"$model_name\", job=\"$job\"}[$__rate_interval]))\n/\nsum by (${perWorker:raw}) (rate(ucm:cache_load_dispatch_duration_ms_count{model_name=\"$model_name\", job=\"$job\"}[$__rate_interval]))",
+          "legendFormat": "dispatch {{worker_id}}",
+          "range": true,
+          "refId": "B"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "sum by (${perWorker:raw}) (rate(ucm:cache_load_backend_wait_duration_ms_sum{model_name=\"$model_name\", job=\"$job\"}[$__rate_interval]))\n/\nsum by (${perWorker:raw}) (rate(ucm:cache_load_backend_wait_duration_ms_count{model_name=\"$model_name\", job=\"$job\"}[$__rate_interval]))",
+          "legendFormat": "backend wait {{worker_id}}",
+          "range": true,
+          "refId": "C"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "sum by (${perWorker:raw}) (rate(ucm:cache_h2d_duration_ms_sum{model_name=\"$model_name\", job=\"$job\"}[$__rate_interval]))\n/\nsum by (${perWorker:raw}) (rate(ucm:cache_h2d_duration_ms_count{model_name=\"$model_name\", job=\"$job\"}[$__rate_interval]))",
+          "legendFormat": "H2D {{worker_id}}",
+          "range": true,
+          "refId": "D"
+        }
+      ],
+      "title": "Cache Load Avg Breakdown",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "description": "Stacked average Cache dump phase duration. Segments map to detail panels: queue wait -> Cache Load/Dump Queue Wait Duration; mkbuf and D2H -> Cache Dump MkBuf / D2H Duration; backend submit -> Cache Dump Backend Submit Duration. Backend submit is the synchronous backend_->Dump submit, not lower-tier disk write completion. Quantiles are intentionally not stacked because p50/p90/p99 are not additive.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "barWidthFactor": 0.6,
+            "drawStyle": "line",
+            "fillOpacity": 45,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "auto",
+            "spanNulls": 60000,
+            "stacking": {
+              "group": "A",
+              "mode": "normal"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "ms"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 1
+      },
+      "id": 40,
+      "options": {
+        "legend": {
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ],
+          "displayMode": "table",
+          "maxHeight": "50%",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "sum by (${perWorker:raw}) (rate(ucm:cache_dump_queue_wait_duration_ms_sum{model_name=\"$model_name\", job=\"$job\"}[$__rate_interval]))\n/\nsum by (${perWorker:raw}) (rate(ucm:cache_dump_queue_wait_duration_ms_count{model_name=\"$model_name\", job=\"$job\"}[$__rate_interval]))",
+          "legendFormat": "queue wait {{worker_id}}",
+          "range": true,
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "sum by (${perWorker:raw}) (rate(ucm:cache_dump_mkbuf_duration_ms_sum{model_name=\"$model_name\", job=\"$job\"}[$__rate_interval]))\n/\nsum by (${perWorker:raw}) (rate(ucm:cache_dump_mkbuf_duration_ms_count{model_name=\"$model_name\", job=\"$job\"}[$__rate_interval]))",
+          "legendFormat": "mkbuf {{worker_id}}",
+          "range": true,
+          "refId": "B"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "sum by (${perWorker:raw}) (rate(ucm:cache_d2h_duration_ms_sum{model_name=\"$model_name\", job=\"$job\"}[$__rate_interval]))\n/\nsum by (${perWorker:raw}) (rate(ucm:cache_d2h_duration_ms_count{model_name=\"$model_name\", job=\"$job\"}[$__rate_interval]))",
+          "legendFormat": "D2H {{worker_id}}",
+          "range": true,
+          "refId": "C"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "sum by (${perWorker:raw}) (rate(ucm:cache_dump_backend_submit_duration_ms_sum{model_name=\"$model_name\", job=\"$job\"}[$__rate_interval]))\n/\nsum by (${perWorker:raw}) (rate(ucm:cache_dump_backend_submit_duration_ms_count{model_name=\"$model_name\", job=\"$job\"}[$__rate_interval]))",
+          "legendFormat": "backend submit {{worker_id}}",
+          "range": true,
+          "refId": "D"
+        }
+      ],
+      "title": "Cache Dump Avg Breakdown",
+      "type": "timeseries"
+    },
     {
       "datasource": {
         "type": "prometheus",
@@ -216,7 +489,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 0
+        "y": 9
       },
       "id": 2,
       "options": {
@@ -389,7 +662,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 0
+        "y": 9
       },
       "id": 3,
       "options": {
@@ -454,7 +727,7 @@
           "refId": "D"
         }
       ],
-      "title": "Cache Load Duration",
+      "title": "Cache Load Total Duration",
       "type": "timeseries"
     },
     {
@@ -462,7 +735,7 @@
         "type": "prometheus",
         "uid": "prometheus"
       },
-      "description": "Average Cache load bandwidth. Series: p50 / p90 / p99 / avg, per worker. Per-task observed throughput, sampled once per Cache stage task (one task = one start_load_kv / wait_for_save batch). Aggregates shards within a task but NOT across concurrent tasks. Use the (per worker) panel below for actual per-worker throughput.",
+      "description": "Average Cache load bandwidth. Series: p50 / p90 / p99 / avg, per worker. Per-task observed throughput, sampled once per Cache stage task (one task = one start_load_kv / dump_data batch). Aggregates shards within a task but NOT across concurrent tasks. Use the (per worker) panel below for actual per-worker throughput.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -596,7 +869,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 8
+        "y": 17
       },
       "id": 4,
       "options": {
@@ -803,7 +1076,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 8
+        "y": 17
       },
       "id": 5,
       "options": {
@@ -868,7 +1141,7 @@
           "refId": "D"
         }
       ],
-      "title": "Cache Load Backend Wait",
+      "title": "Cache Load Backend Wait Duration",
       "type": "timeseries"
     },
     {
@@ -1010,7 +1283,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 16
+        "y": 25
       },
       "id": 6,
       "options": {
@@ -1217,7 +1490,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 16
+        "y": 25
       },
       "id": 7,
       "options": {
@@ -1282,7 +1555,7 @@
           "refId": "D"
         }
       ],
-      "title": "Cache Dump Duration",
+      "title": "Cache Dump Total Duration",
       "type": "timeseries"
     },
     {
@@ -1290,7 +1563,7 @@
         "type": "prometheus",
         "uid": "prometheus"
       },
-      "description": "Average Cache dump bandwidth. Series: p50 / p90 / p99 / avg, per worker. Per-task observed throughput, sampled once per Cache stage task (one task = one start_load_kv / wait_for_save batch). Aggregates shards within a task but NOT across concurrent tasks. Use the (per worker) panel below for actual per-worker throughput.",
+      "description": "Average Cache dump bandwidth. Series: p50 / p90 / p99 / avg, per worker. Per-task observed throughput, sampled once per Cache stage task (one task = one start_load_kv / dump_data batch). Aggregates shards within a task but NOT across concurrent tasks. Use the (per worker) panel below for actual per-worker throughput.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -1424,7 +1697,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 24
+        "y": 33
       },
       "id": 8,
       "options": {
@@ -1631,7 +1904,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 24
+        "y": 33
       },
       "id": 9,
       "options": {
@@ -1805,7 +2078,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 32
+        "y": 41
       },
       "id": 27,
       "options": {
@@ -1902,7 +2175,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 32
+        "y": 41
       },
       "id": 28,
       "options": {
@@ -1936,1829 +2209,6 @@
       ],
       "title": "Cache Dump Bandwidth (aggregated)",
       "type": "timeseries"
-    },
-    {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus"
-      },
-      "description": "Posix-stage storage-to-host bandwidth (load direction). Series: p50 / p90 / p99 / avg, per worker. Per single-IO observed throughput, sampled once per shard transfer; does NOT aggregate across concurrent IO threads. Use the (per worker) panel below for actual disk throughput.",
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "palette-classic"
-          },
-          "custom": {
-            "axisBorderShow": false,
-            "axisCenteredZero": false,
-            "axisColorMode": "text",
-            "axisLabel": "",
-            "axisPlacement": "auto",
-            "barAlignment": 0,
-            "barWidthFactor": 0.6,
-            "drawStyle": "line",
-            "fillOpacity": 0,
-            "gradientMode": "none",
-            "hideFrom": {
-              "legend": false,
-              "tooltip": false,
-              "viz": false
-            },
-            "insertNulls": false,
-            "lineInterpolation": "linear",
-            "lineWidth": 1,
-            "pointSize": 5,
-            "scaleDistribution": {
-              "type": "linear"
-            },
-            "showPoints": "auto",
-            "spanNulls": 60000,
-            "stacking": {
-              "group": "A",
-              "mode": "none"
-            },
-            "thresholdsStyle": {
-              "mode": "off"
-            }
-          },
-          "mappings": [],
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green",
-                "value": null
-              }
-            ]
-          },
-          "unit": "gbytes"
-        },
-        "overrides": [
-          {
-            "matcher": {
-              "id": "byRegexp",
-              "options": "^p50.*"
-            },
-            "properties": [
-              {
-                "id": "custom.lineStyle",
-                "value": {
-                  "fill": "solid"
-                }
-              }
-            ]
-          },
-          {
-            "matcher": {
-              "id": "byRegexp",
-              "options": "^p90.*"
-            },
-            "properties": [
-              {
-                "id": "custom.lineStyle",
-                "value": {
-                  "fill": "dash",
-                  "dash": [
-                    10,
-                    6
-                  ]
-                }
-              }
-            ]
-          },
-          {
-            "matcher": {
-              "id": "byRegexp",
-              "options": "^p99.*"
-            },
-            "properties": [
-              {
-                "id": "custom.lineStyle",
-                "value": {
-                  "fill": "dash",
-                  "dash": [
-                    4,
-                    4
-                  ]
-                }
-              },
-              {
-                "id": "custom.lineWidth",
-                "value": 2
-              }
-            ]
-          },
-          {
-            "matcher": {
-              "id": "byRegexp",
-              "options": "^avg.*"
-            },
-            "properties": [
-              {
-                "id": "custom.lineStyle",
-                "value": {
-                  "fill": "solid"
-                }
-              },
-              {
-                "id": "custom.lineWidth",
-                "value": 1
-              },
-              {
-                "id": "custom.fillOpacity",
-                "value": 5
-              }
-            ]
-          }
-        ]
-      },
-      "gridPos": {
-        "h": 8,
-        "w": 12,
-        "x": 0,
-        "y": 56
-      },
-      "id": 10,
-      "options": {
-        "legend": {
-          "calcs": [
-            "lastNotNull",
-            "max"
-          ],
-          "displayMode": "table",
-          "maxHeight": "50%",
-          "placement": "bottom",
-          "showLegend": true
-        },
-        "tooltip": {
-          "mode": "multi",
-          "sort": "desc"
-        }
-      },
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "editorMode": "code",
-          "expr": "histogram_quantile(0.5, sum by (le, ${perWorker:raw}) (rate(ucm:posix_s2h_bandwidth_gbps_bucket{model_name=\"$model_name\", job=\"$job\"}[$__rate_interval])))",
-          "legendFormat": "p50 {{worker_id}}",
-          "range": true,
-          "refId": "A"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "editorMode": "code",
-          "expr": "histogram_quantile(0.9, sum by (le, ${perWorker:raw}) (rate(ucm:posix_s2h_bandwidth_gbps_bucket{model_name=\"$model_name\", job=\"$job\"}[$__rate_interval])))",
-          "legendFormat": "p90 {{worker_id}}",
-          "range": true,
-          "refId": "B"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "editorMode": "code",
-          "expr": "histogram_quantile(0.99, sum by (le, ${perWorker:raw}) (rate(ucm:posix_s2h_bandwidth_gbps_bucket{model_name=\"$model_name\", job=\"$job\"}[$__rate_interval])))",
-          "legendFormat": "p99 {{worker_id}}",
-          "range": true,
-          "refId": "C"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "editorMode": "code",
-          "expr": "sum by (${perWorker:raw}) (rate(ucm:posix_s2h_bandwidth_gbps_sum{model_name=\"$model_name\", job=\"$job\"}[$__rate_interval]))\n/\nsum by (${perWorker:raw}) (rate(ucm:posix_s2h_bandwidth_gbps_count{model_name=\"$model_name\", job=\"$job\"}[$__rate_interval]))",
-          "legendFormat": "avg {{worker_id}}",
-          "range": true,
-          "refId": "D"
-        }
-      ],
-      "title": "Posix S2H Bandwidth (per shard)",
-      "type": "timeseries"
-    },
-    {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus"
-      },
-      "description": "Posix-stage host-to-storage bandwidth (dump direction). Series: p50 / p90 / p99 / avg, per worker. Per single-IO observed throughput, sampled once per shard transfer; does NOT aggregate across concurrent IO threads. Use the (per worker) panel below for actual disk throughput.",
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "palette-classic"
-          },
-          "custom": {
-            "axisBorderShow": false,
-            "axisCenteredZero": false,
-            "axisColorMode": "text",
-            "axisLabel": "",
-            "axisPlacement": "auto",
-            "barAlignment": 0,
-            "barWidthFactor": 0.6,
-            "drawStyle": "line",
-            "fillOpacity": 0,
-            "gradientMode": "none",
-            "hideFrom": {
-              "legend": false,
-              "tooltip": false,
-              "viz": false
-            },
-            "insertNulls": false,
-            "lineInterpolation": "linear",
-            "lineWidth": 1,
-            "pointSize": 5,
-            "scaleDistribution": {
-              "type": "linear"
-            },
-            "showPoints": "auto",
-            "spanNulls": 60000,
-            "stacking": {
-              "group": "A",
-              "mode": "none"
-            },
-            "thresholdsStyle": {
-              "mode": "off"
-            }
-          },
-          "mappings": [],
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green",
-                "value": null
-              }
-            ]
-          },
-          "unit": "gbytes"
-        },
-        "overrides": [
-          {
-            "matcher": {
-              "id": "byRegexp",
-              "options": "^p50.*"
-            },
-            "properties": [
-              {
-                "id": "custom.lineStyle",
-                "value": {
-                  "fill": "solid"
-                }
-              }
-            ]
-          },
-          {
-            "matcher": {
-              "id": "byRegexp",
-              "options": "^p90.*"
-            },
-            "properties": [
-              {
-                "id": "custom.lineStyle",
-                "value": {
-                  "fill": "dash",
-                  "dash": [
-                    10,
-                    6
-                  ]
-                }
-              }
-            ]
-          },
-          {
-            "matcher": {
-              "id": "byRegexp",
-              "options": "^p99.*"
-            },
-            "properties": [
-              {
-                "id": "custom.lineStyle",
-                "value": {
-                  "fill": "dash",
-                  "dash": [
-                    4,
-                    4
-                  ]
-                }
-              },
-              {
-                "id": "custom.lineWidth",
-                "value": 2
-              }
-            ]
-          },
-          {
-            "matcher": {
-              "id": "byRegexp",
-              "options": "^avg.*"
-            },
-            "properties": [
-              {
-                "id": "custom.lineStyle",
-                "value": {
-                  "fill": "solid"
-                }
-              },
-              {
-                "id": "custom.lineWidth",
-                "value": 1
-              },
-              {
-                "id": "custom.fillOpacity",
-                "value": 5
-              }
-            ]
-          }
-        ]
-      },
-      "gridPos": {
-        "h": 8,
-        "w": 12,
-        "x": 12,
-        "y": 56
-      },
-      "id": 11,
-      "options": {
-        "legend": {
-          "calcs": [
-            "lastNotNull",
-            "max"
-          ],
-          "displayMode": "table",
-          "maxHeight": "50%",
-          "placement": "bottom",
-          "showLegend": true
-        },
-        "tooltip": {
-          "mode": "multi",
-          "sort": "desc"
-        }
-      },
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "editorMode": "code",
-          "expr": "histogram_quantile(0.5, sum by (le, ${perWorker:raw}) (rate(ucm:posix_h2s_bandwidth_gbps_bucket{model_name=\"$model_name\", job=\"$job\"}[$__rate_interval])))",
-          "legendFormat": "p50 {{worker_id}}",
-          "range": true,
-          "refId": "A"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "editorMode": "code",
-          "expr": "histogram_quantile(0.9, sum by (le, ${perWorker:raw}) (rate(ucm:posix_h2s_bandwidth_gbps_bucket{model_name=\"$model_name\", job=\"$job\"}[$__rate_interval])))",
-          "legendFormat": "p90 {{worker_id}}",
-          "range": true,
-          "refId": "B"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "editorMode": "code",
-          "expr": "histogram_quantile(0.99, sum by (le, ${perWorker:raw}) (rate(ucm:posix_h2s_bandwidth_gbps_bucket{model_name=\"$model_name\", job=\"$job\"}[$__rate_interval])))",
-          "legendFormat": "p99 {{worker_id}}",
-          "range": true,
-          "refId": "C"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "editorMode": "code",
-          "expr": "sum by (${perWorker:raw}) (rate(ucm:posix_h2s_bandwidth_gbps_sum{model_name=\"$model_name\", job=\"$job\"}[$__rate_interval]))\n/\nsum by (${perWorker:raw}) (rate(ucm:posix_h2s_bandwidth_gbps_count{model_name=\"$model_name\", job=\"$job\"}[$__rate_interval]))",
-          "legendFormat": "avg {{worker_id}}",
-          "range": true,
-          "refId": "D"
-        }
-      ],
-      "title": "Posix H2S Bandwidth (per shard)",
-      "type": "timeseries"
-    },
-    {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus"
-      },
-      "description": "Wall-clock per-worker load throughput in GB/s. Aggregates all concurrent IO threads inside one worker process and includes idle gaps, so this is the real bytes/sec the worker is pulling from posix. Pair with (per shard) above: if per-shard is high but per-worker is low, IO is fast but sparse — disk is not saturated.",
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "palette-classic"
-          },
-          "custom": {
-            "axisBorderShow": false,
-            "axisCenteredZero": false,
-            "axisColorMode": "text",
-            "axisLabel": "",
-            "axisPlacement": "auto",
-            "barAlignment": 0,
-            "barWidthFactor": 0.6,
-            "drawStyle": "line",
-            "fillOpacity": 0,
-            "gradientMode": "none",
-            "hideFrom": {
-              "legend": false,
-              "tooltip": false,
-              "viz": false
-            },
-            "insertNulls": false,
-            "lineInterpolation": "linear",
-            "lineWidth": 1,
-            "pointSize": 5,
-            "scaleDistribution": {
-              "type": "linear"
-            },
-            "showPoints": "auto",
-            "spanNulls": 60000,
-            "stacking": {
-              "group": "A",
-              "mode": "none"
-            },
-            "thresholdsStyle": {
-              "mode": "off"
-            }
-          },
-          "mappings": [],
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green",
-                "value": null
-              }
-            ]
-          },
-          "unit": "gbytes"
-        },
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 8,
-        "w": 12,
-        "x": 0,
-        "y": 64
-      },
-      "id": 25,
-      "options": {
-        "legend": {
-          "calcs": [
-            "lastNotNull",
-            "max"
-          ],
-          "displayMode": "table",
-          "maxHeight": "50%",
-          "placement": "bottom",
-          "showLegend": true
-        },
-        "tooltip": {
-          "mode": "multi",
-          "sort": "desc"
-        }
-      },
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "editorMode": "code",
-          "expr": "sum by (${perWorker:raw}) (rate(ucm:posix_s2h_bytes_total{model_name=\"$model_name\", job=\"$job\"}[$__rate_interval])) / 1e9",
-          "legendFormat": "{{worker_id}}",
-          "range": true,
-          "refId": "A"
-        }
-      ],
-      "title": "Posix S2H Bandwidth (aggregated)",
-      "type": "timeseries"
-    },
-    {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus"
-      },
-      "description": "Wall-clock per-worker save throughput in GB/s. Aggregates all concurrent IO threads inside one worker process and includes idle gaps, so this is the real bytes/sec the worker is pushing to posix. Pair with (per shard) above: if per-shard is high but per-worker is low, IO is fast but sparse — disk is not saturated.",
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "palette-classic"
-          },
-          "custom": {
-            "axisBorderShow": false,
-            "axisCenteredZero": false,
-            "axisColorMode": "text",
-            "axisLabel": "",
-            "axisPlacement": "auto",
-            "barAlignment": 0,
-            "barWidthFactor": 0.6,
-            "drawStyle": "line",
-            "fillOpacity": 0,
-            "gradientMode": "none",
-            "hideFrom": {
-              "legend": false,
-              "tooltip": false,
-              "viz": false
-            },
-            "insertNulls": false,
-            "lineInterpolation": "linear",
-            "lineWidth": 1,
-            "pointSize": 5,
-            "scaleDistribution": {
-              "type": "linear"
-            },
-            "showPoints": "auto",
-            "spanNulls": 60000,
-            "stacking": {
-              "group": "A",
-              "mode": "none"
-            },
-            "thresholdsStyle": {
-              "mode": "off"
-            }
-          },
-          "mappings": [],
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green",
-                "value": null
-              }
-            ]
-          },
-          "unit": "gbytes"
-        },
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 8,
-        "w": 12,
-        "x": 12,
-        "y": 64
-      },
-      "id": 26,
-      "options": {
-        "legend": {
-          "calcs": [
-            "lastNotNull",
-            "max"
-          ],
-          "displayMode": "table",
-          "maxHeight": "50%",
-          "placement": "bottom",
-          "showLegend": true
-        },
-        "tooltip": {
-          "mode": "multi",
-          "sort": "desc"
-        }
-      },
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "editorMode": "code",
-          "expr": "sum by (${perWorker:raw}) (rate(ucm:posix_h2s_bytes_total{model_name=\"$model_name\", job=\"$job\"}[$__rate_interval])) / 1e9",
-          "legendFormat": "{{worker_id}}",
-          "range": true,
-          "refId": "A"
-        }
-      ],
-      "title": "Posix H2S Bandwidth (aggregated)",
-      "type": "timeseries"
-    },
-    {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus"
-      },
-      "description": "Posix-stage S2H per-IO duration. Represents disk read latency. Series: p50 / p90 / p99 / avg, per worker.",
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "palette-classic"
-          },
-          "custom": {
-            "axisBorderShow": false,
-            "axisCenteredZero": false,
-            "axisColorMode": "text",
-            "axisLabel": "",
-            "axisPlacement": "auto",
-            "barAlignment": 0,
-            "barWidthFactor": 0.6,
-            "drawStyle": "line",
-            "fillOpacity": 0,
-            "gradientMode": "none",
-            "hideFrom": {
-              "legend": false,
-              "tooltip": false,
-              "viz": false
-            },
-            "insertNulls": false,
-            "lineInterpolation": "linear",
-            "lineWidth": 1,
-            "pointSize": 5,
-            "scaleDistribution": {
-              "type": "linear"
-            },
-            "showPoints": "auto",
-            "spanNulls": 60000,
-            "stacking": {
-              "group": "A",
-              "mode": "none"
-            },
-            "thresholdsStyle": {
-              "mode": "off"
-            }
-          },
-          "mappings": [],
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green",
-                "value": null
-              }
-            ]
-          },
-          "unit": "ms"
-        },
-        "overrides": [
-          {
-            "matcher": {
-              "id": "byRegexp",
-              "options": "^p50.*"
-            },
-            "properties": [
-              {
-                "id": "custom.lineStyle",
-                "value": {
-                  "fill": "solid"
-                }
-              }
-            ]
-          },
-          {
-            "matcher": {
-              "id": "byRegexp",
-              "options": "^p90.*"
-            },
-            "properties": [
-              {
-                "id": "custom.lineStyle",
-                "value": {
-                  "fill": "dash",
-                  "dash": [
-                    10,
-                    6
-                  ]
-                }
-              }
-            ]
-          },
-          {
-            "matcher": {
-              "id": "byRegexp",
-              "options": "^p99.*"
-            },
-            "properties": [
-              {
-                "id": "custom.lineStyle",
-                "value": {
-                  "fill": "dash",
-                  "dash": [
-                    4,
-                    4
-                  ]
-                }
-              },
-              {
-                "id": "custom.lineWidth",
-                "value": 2
-              }
-            ]
-          },
-          {
-            "matcher": {
-              "id": "byRegexp",
-              "options": "^avg.*"
-            },
-            "properties": [
-              {
-                "id": "custom.lineStyle",
-                "value": {
-                  "fill": "solid"
-                }
-              },
-              {
-                "id": "custom.lineWidth",
-                "value": 1
-              },
-              {
-                "id": "custom.fillOpacity",
-                "value": 5
-              }
-            ]
-          }
-        ]
-      },
-      "gridPos": {
-        "h": 8,
-        "w": 12,
-        "x": 0,
-        "y": 72
-      },
-      "id": 12,
-      "options": {
-        "legend": {
-          "calcs": [
-            "lastNotNull",
-            "max"
-          ],
-          "displayMode": "table",
-          "maxHeight": "50%",
-          "placement": "bottom",
-          "showLegend": true
-        },
-        "tooltip": {
-          "mode": "multi",
-          "sort": "desc"
-        }
-      },
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "editorMode": "code",
-          "expr": "histogram_quantile(0.5, sum by (le, ${perWorker:raw}) (rate(ucm:posix_s2h_duration_ms_bucket{model_name=\"$model_name\", job=\"$job\"}[$__rate_interval])))",
-          "legendFormat": "p50 {{worker_id}}",
-          "range": true,
-          "refId": "A"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "editorMode": "code",
-          "expr": "histogram_quantile(0.9, sum by (le, ${perWorker:raw}) (rate(ucm:posix_s2h_duration_ms_bucket{model_name=\"$model_name\", job=\"$job\"}[$__rate_interval])))",
-          "legendFormat": "p90 {{worker_id}}",
-          "range": true,
-          "refId": "B"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "editorMode": "code",
-          "expr": "histogram_quantile(0.99, sum by (le, ${perWorker:raw}) (rate(ucm:posix_s2h_duration_ms_bucket{model_name=\"$model_name\", job=\"$job\"}[$__rate_interval])))",
-          "legendFormat": "p99 {{worker_id}}",
-          "range": true,
-          "refId": "C"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "editorMode": "code",
-          "expr": "sum by (${perWorker:raw}) (rate(ucm:posix_s2h_duration_ms_sum{model_name=\"$model_name\", job=\"$job\"}[$__rate_interval]))\n/\nsum by (${perWorker:raw}) (rate(ucm:posix_s2h_duration_ms_count{model_name=\"$model_name\", job=\"$job\"}[$__rate_interval]))",
-          "legendFormat": "avg {{worker_id}}",
-          "range": true,
-          "refId": "D"
-        }
-      ],
-      "title": "Posix S2H Duration",
-      "type": "timeseries"
-    },
-    {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus"
-      },
-      "description": "Posix-stage H2S per-IO duration. Represents disk write latency. Series: p50 / p90 / p99 / avg, per worker.",
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "palette-classic"
-          },
-          "custom": {
-            "axisBorderShow": false,
-            "axisCenteredZero": false,
-            "axisColorMode": "text",
-            "axisLabel": "",
-            "axisPlacement": "auto",
-            "barAlignment": 0,
-            "barWidthFactor": 0.6,
-            "drawStyle": "line",
-            "fillOpacity": 0,
-            "gradientMode": "none",
-            "hideFrom": {
-              "legend": false,
-              "tooltip": false,
-              "viz": false
-            },
-            "insertNulls": false,
-            "lineInterpolation": "linear",
-            "lineWidth": 1,
-            "pointSize": 5,
-            "scaleDistribution": {
-              "type": "linear"
-            },
-            "showPoints": "auto",
-            "spanNulls": 60000,
-            "stacking": {
-              "group": "A",
-              "mode": "none"
-            },
-            "thresholdsStyle": {
-              "mode": "off"
-            }
-          },
-          "mappings": [],
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green",
-                "value": null
-              }
-            ]
-          },
-          "unit": "ms"
-        },
-        "overrides": [
-          {
-            "matcher": {
-              "id": "byRegexp",
-              "options": "^p50.*"
-            },
-            "properties": [
-              {
-                "id": "custom.lineStyle",
-                "value": {
-                  "fill": "solid"
-                }
-              }
-            ]
-          },
-          {
-            "matcher": {
-              "id": "byRegexp",
-              "options": "^p90.*"
-            },
-            "properties": [
-              {
-                "id": "custom.lineStyle",
-                "value": {
-                  "fill": "dash",
-                  "dash": [
-                    10,
-                    6
-                  ]
-                }
-              }
-            ]
-          },
-          {
-            "matcher": {
-              "id": "byRegexp",
-              "options": "^p99.*"
-            },
-            "properties": [
-              {
-                "id": "custom.lineStyle",
-                "value": {
-                  "fill": "dash",
-                  "dash": [
-                    4,
-                    4
-                  ]
-                }
-              },
-              {
-                "id": "custom.lineWidth",
-                "value": 2
-              }
-            ]
-          },
-          {
-            "matcher": {
-              "id": "byRegexp",
-              "options": "^avg.*"
-            },
-            "properties": [
-              {
-                "id": "custom.lineStyle",
-                "value": {
-                  "fill": "solid"
-                }
-              },
-              {
-                "id": "custom.lineWidth",
-                "value": 1
-              },
-              {
-                "id": "custom.fillOpacity",
-                "value": 5
-              }
-            ]
-          }
-        ]
-      },
-      "gridPos": {
-        "h": 8,
-        "w": 12,
-        "x": 12,
-        "y": 72
-      },
-      "id": 13,
-      "options": {
-        "legend": {
-          "calcs": [
-            "lastNotNull",
-            "max"
-          ],
-          "displayMode": "table",
-          "maxHeight": "50%",
-          "placement": "bottom",
-          "showLegend": true
-        },
-        "tooltip": {
-          "mode": "multi",
-          "sort": "desc"
-        }
-      },
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "editorMode": "code",
-          "expr": "histogram_quantile(0.5, sum by (le, ${perWorker:raw}) (rate(ucm:posix_h2s_duration_ms_bucket{model_name=\"$model_name\", job=\"$job\"}[$__rate_interval])))",
-          "legendFormat": "p50 {{worker_id}}",
-          "range": true,
-          "refId": "A"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "editorMode": "code",
-          "expr": "histogram_quantile(0.9, sum by (le, ${perWorker:raw}) (rate(ucm:posix_h2s_duration_ms_bucket{model_name=\"$model_name\", job=\"$job\"}[$__rate_interval])))",
-          "legendFormat": "p90 {{worker_id}}",
-          "range": true,
-          "refId": "B"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "editorMode": "code",
-          "expr": "histogram_quantile(0.99, sum by (le, ${perWorker:raw}) (rate(ucm:posix_h2s_duration_ms_bucket{model_name=\"$model_name\", job=\"$job\"}[$__rate_interval])))",
-          "legendFormat": "p99 {{worker_id}}",
-          "range": true,
-          "refId": "C"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "editorMode": "code",
-          "expr": "sum by (${perWorker:raw}) (rate(ucm:posix_h2s_duration_ms_sum{model_name=\"$model_name\", job=\"$job\"}[$__rate_interval]))\n/\nsum by (${perWorker:raw}) (rate(ucm:posix_h2s_duration_ms_count{model_name=\"$model_name\", job=\"$job\"}[$__rate_interval]))",
-          "legendFormat": "avg {{worker_id}}",
-          "range": true,
-          "refId": "D"
-        }
-      ],
-      "title": "Posix H2S Duration",
-      "type": "timeseries"
-    },
-    {
-      "type": "row",
-      "collapsed": true,
-      "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus"
-      },
-      "id": 14,
-      "title": "Cache -- Distributions",
-      "gridPos": {
-        "h": 1,
-        "w": 24,
-        "x": 0,
-        "y": 96
-      },
-      "panels": [
-        {
-          "type": "heatmap",
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "id": 15,
-          "title": "Cache / Load Duration",
-          "description": "End-to-end Cache load task duration distribution. Bimodal here often indicates a mix of Cache hits (fast) and misses descending to Posix. Cell value is request rate from rate(bucket), not raw request count; all workers aggregated.",
-          "gridPos": {
-            "h": 8,
-            "w": 12,
-            "x": 0,
-            "y": 97
-          },
-          "targets": [
-            {
-              "datasource": {
-                "type": "prometheus",
-                "uid": "prometheus"
-              },
-              "editorMode": "code",
-              "expr": "sum by (le) (rate(ucm:cache_load_duration_ms_bucket{model_name=\"$model_name\", job=\"$job\"}[$__rate_interval]))",
-              "format": "heatmap",
-              "legendFormat": "{{le}}",
-              "range": true,
-              "refId": "A"
-            }
-          ],
-          "options": {
-            "calculate": false,
-            "yAxis": {
-              "axisPlacement": "left",
-              "unit": "ms",
-              "decimals": 0,
-              "reverse": false
-            },
-            "rowsFrame": {
-              "layout": "auto",
-              "value": "Request rate"
-            },
-            "color": {
-              "mode": "scheme",
-              "scheme": "Spectral",
-              "fill": "dark-orange",
-              "exponent": 0.5,
-              "steps": 64,
-              "reverse": false
-            },
-            "cellGap": 1,
-            "cellValues": {
-              "unit": "suffix: req/s"
-            },
-            "filterValues": {
-              "le": 1e-09
-            },
-            "tooltip": {
-              "show": true,
-              "yHistogram": true,
-              "mode": "single"
-            },
-            "legend": {
-              "show": true
-            },
-            "exemplars": {
-              "color": "rgba(255,0,255,0.7)"
-            }
-          },
-          "fieldConfig": {
-            "defaults": {
-              "custom": {
-                "scaleDistribution": {
-                  "type": "linear"
-                },
-                "hideFrom": {
-                  "legend": false,
-                  "tooltip": false,
-                  "viz": false
-                }
-              }
-            },
-            "overrides": []
-          },
-          "pluginVersion": "10.4.0"
-        },
-        {
-          "type": "heatmap",
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "id": 16,
-          "title": "Cache / Load Bandwidth (per task)",
-          "description": "Effective Cache load bandwidth distribution. Cell value is request rate from rate(bucket), not raw request count; all workers aggregated. Per-task observed throughput, sampled once per Cache stage task (one task = one start_load_kv / wait_for_save batch). Aggregates shards within a task but NOT across concurrent tasks. Use the (per worker) panel below for actual per-worker throughput.",
-          "gridPos": {
-            "h": 8,
-            "w": 12,
-            "x": 12,
-            "y": 97
-          },
-          "targets": [
-            {
-              "datasource": {
-                "type": "prometheus",
-                "uid": "prometheus"
-              },
-              "editorMode": "code",
-              "expr": "sum by (le) (rate(ucm:cache_load_bandwidth_gbps_bucket{model_name=\"$model_name\", job=\"$job\"}[$__rate_interval]))",
-              "format": "heatmap",
-              "legendFormat": "{{le}}",
-              "range": true,
-              "refId": "A"
-            }
-          ],
-          "options": {
-            "calculate": false,
-            "yAxis": {
-              "axisPlacement": "left",
-              "unit": "Bps",
-              "decimals": 0,
-              "reverse": false
-            },
-            "rowsFrame": {
-              "layout": "auto",
-              "value": "Request rate"
-            },
-            "color": {
-              "mode": "scheme",
-              "scheme": "Spectral",
-              "fill": "dark-orange",
-              "exponent": 0.5,
-              "steps": 64,
-              "reverse": false
-            },
-            "cellGap": 1,
-            "cellValues": {
-              "unit": "suffix: req/s"
-            },
-            "filterValues": {
-              "le": 1e-09
-            },
-            "tooltip": {
-              "show": true,
-              "yHistogram": true,
-              "mode": "single"
-            },
-            "legend": {
-              "show": true
-            },
-            "exemplars": {
-              "color": "rgba(255,0,255,0.7)"
-            }
-          },
-          "fieldConfig": {
-            "defaults": {
-              "custom": {
-                "scaleDistribution": {
-                  "type": "linear"
-                },
-                "hideFrom": {
-                  "legend": false,
-                  "tooltip": false,
-                  "viz": false
-                }
-              }
-            },
-            "overrides": []
-          },
-          "pluginVersion": "10.4.0"
-        },
-        {
-          "type": "heatmap",
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "id": 17,
-          "title": "Cache / Dump Duration",
-          "description": "Caller-felt Cache dump duration. Watch for convergence with Posix h2s duration -- back-pressure signal (see perf doc §3.4). Cell value is request rate from rate(bucket), not raw request count; all workers aggregated.",
-          "gridPos": {
-            "h": 8,
-            "w": 12,
-            "x": 0,
-            "y": 105
-          },
-          "targets": [
-            {
-              "datasource": {
-                "type": "prometheus",
-                "uid": "prometheus"
-              },
-              "editorMode": "code",
-              "expr": "sum by (le) (rate(ucm:cache_dump_duration_ms_bucket{model_name=\"$model_name\", job=\"$job\"}[$__rate_interval]))",
-              "format": "heatmap",
-              "legendFormat": "{{le}}",
-              "range": true,
-              "refId": "A"
-            }
-          ],
-          "options": {
-            "calculate": false,
-            "yAxis": {
-              "axisPlacement": "left",
-              "unit": "ms",
-              "decimals": 0,
-              "reverse": false
-            },
-            "rowsFrame": {
-              "layout": "auto",
-              "value": "Request rate"
-            },
-            "color": {
-              "mode": "scheme",
-              "scheme": "Spectral",
-              "fill": "dark-orange",
-              "exponent": 0.5,
-              "steps": 64,
-              "reverse": false
-            },
-            "cellGap": 1,
-            "cellValues": {
-              "unit": "suffix: req/s"
-            },
-            "filterValues": {
-              "le": 1e-09
-            },
-            "tooltip": {
-              "show": true,
-              "yHistogram": true,
-              "mode": "single"
-            },
-            "legend": {
-              "show": true
-            },
-            "exemplars": {
-              "color": "rgba(255,0,255,0.7)"
-            }
-          },
-          "fieldConfig": {
-            "defaults": {
-              "custom": {
-                "scaleDistribution": {
-                  "type": "linear"
-                },
-                "hideFrom": {
-                  "legend": false,
-                  "tooltip": false,
-                  "viz": false
-                }
-              }
-            },
-            "overrides": []
-          },
-          "pluginVersion": "10.4.0"
-        },
-        {
-          "type": "heatmap",
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "id": 18,
-          "title": "Cache / Dump Bandwidth (per task)",
-          "description": "Effective Cache dump bandwidth distribution. Cell value is request rate from rate(bucket), not raw request count; all workers aggregated. Per-task observed throughput, sampled once per Cache stage task (one task = one start_load_kv / wait_for_save batch). Aggregates shards within a task but NOT across concurrent tasks. Use the (per worker) panel below for actual per-worker throughput.",
-          "gridPos": {
-            "h": 8,
-            "w": 12,
-            "x": 12,
-            "y": 105
-          },
-          "targets": [
-            {
-              "datasource": {
-                "type": "prometheus",
-                "uid": "prometheus"
-              },
-              "editorMode": "code",
-              "expr": "sum by (le) (rate(ucm:cache_dump_bandwidth_gbps_bucket{model_name=\"$model_name\", job=\"$job\"}[$__rate_interval]))",
-              "format": "heatmap",
-              "legendFormat": "{{le}}",
-              "range": true,
-              "refId": "A"
-            }
-          ],
-          "options": {
-            "calculate": false,
-            "yAxis": {
-              "axisPlacement": "left",
-              "unit": "Bps",
-              "decimals": 0,
-              "reverse": false
-            },
-            "rowsFrame": {
-              "layout": "auto",
-              "value": "Request rate"
-            },
-            "color": {
-              "mode": "scheme",
-              "scheme": "Spectral",
-              "fill": "dark-orange",
-              "exponent": 0.5,
-              "steps": 64,
-              "reverse": false
-            },
-            "cellGap": 1,
-            "cellValues": {
-              "unit": "suffix: req/s"
-            },
-            "filterValues": {
-              "le": 1e-09
-            },
-            "tooltip": {
-              "show": true,
-              "yHistogram": true,
-              "mode": "single"
-            },
-            "legend": {
-              "show": true
-            },
-            "exemplars": {
-              "color": "rgba(255,0,255,0.7)"
-            }
-          },
-          "fieldConfig": {
-            "defaults": {
-              "custom": {
-                "scaleDistribution": {
-                  "type": "linear"
-                },
-                "hideFrom": {
-                  "legend": false,
-                  "tooltip": false,
-                  "viz": false
-                }
-              }
-            },
-            "overrides": []
-          },
-          "pluginVersion": "10.4.0"
-        },
-        {
-          "type": "heatmap",
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "id": 19,
-          "title": "Cache / Load Backend Wait",
-          "description": "Time waiting for Posix to fill the buffer on a Cache miss. Spread and shift here drives total load latency. Cell value is request rate from rate(bucket), not raw request count; all workers aggregated.",
-          "gridPos": {
-            "h": 8,
-            "w": 24,
-            "x": 0,
-            "y": 113
-          },
-          "targets": [
-            {
-              "datasource": {
-                "type": "prometheus",
-                "uid": "prometheus"
-              },
-              "editorMode": "code",
-              "expr": "sum by (le) (rate(ucm:cache_load_backend_wait_duration_ms_bucket{model_name=\"$model_name\", job=\"$job\"}[$__rate_interval]))",
-              "format": "heatmap",
-              "legendFormat": "{{le}}",
-              "range": true,
-              "refId": "A"
-            }
-          ],
-          "options": {
-            "calculate": false,
-            "yAxis": {
-              "axisPlacement": "left",
-              "unit": "ms",
-              "decimals": 0,
-              "reverse": false
-            },
-            "rowsFrame": {
-              "layout": "auto",
-              "value": "Request rate"
-            },
-            "color": {
-              "mode": "scheme",
-              "scheme": "Spectral",
-              "fill": "dark-orange",
-              "exponent": 0.5,
-              "steps": 64,
-              "reverse": false
-            },
-            "cellGap": 1,
-            "cellValues": {
-              "unit": "suffix: req/s"
-            },
-            "filterValues": {
-              "le": 1e-09
-            },
-            "tooltip": {
-              "show": true,
-              "yHistogram": true,
-              "mode": "single"
-            },
-            "legend": {
-              "show": true
-            },
-            "exemplars": {
-              "color": "rgba(255,0,255,0.7)"
-            }
-          },
-          "fieldConfig": {
-            "defaults": {
-              "custom": {
-                "scaleDistribution": {
-                  "type": "linear"
-                },
-                "hideFrom": {
-                  "legend": false,
-                  "tooltip": false,
-                  "viz": false
-                }
-              }
-            },
-            "overrides": []
-          },
-          "pluginVersion": "10.4.0"
-        }
-      ]
-    },
-    {
-      "type": "row",
-      "collapsed": true,
-      "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus"
-      },
-      "id": 20,
-      "title": "Posix -- Distributions",
-      "gridPos": {
-        "h": 1,
-        "w": 24,
-        "x": 0,
-        "y": 121
-      },
-      "panels": [
-        {
-          "type": "heatmap",
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "id": 21,
-          "title": "Posix / S2H Duration",
-          "description": "Per-IO storage read latency distribution. Bimodal often = OS page cache hits vs cold reads. Cell value is request rate from rate(bucket), not raw request count; all workers aggregated.",
-          "gridPos": {
-            "h": 8,
-            "w": 12,
-            "x": 0,
-            "y": 122
-          },
-          "targets": [
-            {
-              "datasource": {
-                "type": "prometheus",
-                "uid": "prometheus"
-              },
-              "editorMode": "code",
-              "expr": "sum by (le) (rate(ucm:posix_s2h_duration_ms_bucket{model_name=\"$model_name\", job=\"$job\"}[$__rate_interval]))",
-              "format": "heatmap",
-              "legendFormat": "{{le}}",
-              "range": true,
-              "refId": "A"
-            }
-          ],
-          "options": {
-            "calculate": false,
-            "yAxis": {
-              "axisPlacement": "left",
-              "unit": "ms",
-              "decimals": 0,
-              "reverse": false
-            },
-            "rowsFrame": {
-              "layout": "auto",
-              "value": "Request rate"
-            },
-            "color": {
-              "mode": "scheme",
-              "scheme": "Spectral",
-              "fill": "dark-orange",
-              "exponent": 0.5,
-              "steps": 64,
-              "reverse": false
-            },
-            "cellGap": 1,
-            "cellValues": {
-              "unit": "suffix: req/s"
-            },
-            "filterValues": {
-              "le": 1e-09
-            },
-            "tooltip": {
-              "show": true,
-              "yHistogram": true,
-              "mode": "single"
-            },
-            "legend": {
-              "show": true
-            },
-            "exemplars": {
-              "color": "rgba(255,0,255,0.7)"
-            }
-          },
-          "fieldConfig": {
-            "defaults": {
-              "custom": {
-                "scaleDistribution": {
-                  "type": "linear"
-                },
-                "hideFrom": {
-                  "legend": false,
-                  "tooltip": false,
-                  "viz": false
-                }
-              }
-            },
-            "overrides": []
-          },
-          "pluginVersion": "10.4.0"
-        },
-        {
-          "type": "heatmap",
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "id": 22,
-          "title": "Posix / H2S Duration",
-          "description": "Per-IO storage write latency distribution. Cell value is request rate from rate(bucket), not raw request count; all workers aggregated.",
-          "gridPos": {
-            "h": 8,
-            "w": 12,
-            "x": 12,
-            "y": 122
-          },
-          "targets": [
-            {
-              "datasource": {
-                "type": "prometheus",
-                "uid": "prometheus"
-              },
-              "editorMode": "code",
-              "expr": "sum by (le) (rate(ucm:posix_h2s_duration_ms_bucket{model_name=\"$model_name\", job=\"$job\"}[$__rate_interval]))",
-              "format": "heatmap",
-              "legendFormat": "{{le}}",
-              "range": true,
-              "refId": "A"
-            }
-          ],
-          "options": {
-            "calculate": false,
-            "yAxis": {
-              "axisPlacement": "left",
-              "unit": "ms",
-              "decimals": 0,
-              "reverse": false
-            },
-            "rowsFrame": {
-              "layout": "auto",
-              "value": "Request rate"
-            },
-            "color": {
-              "mode": "scheme",
-              "scheme": "Spectral",
-              "fill": "dark-orange",
-              "exponent": 0.5,
-              "steps": 64,
-              "reverse": false
-            },
-            "cellGap": 1,
-            "cellValues": {
-              "unit": "suffix: req/s"
-            },
-            "filterValues": {
-              "le": 1e-09
-            },
-            "tooltip": {
-              "show": true,
-              "yHistogram": true,
-              "mode": "single"
-            },
-            "legend": {
-              "show": true
-            },
-            "exemplars": {
-              "color": "rgba(255,0,255,0.7)"
-            }
-          },
-          "fieldConfig": {
-            "defaults": {
-              "custom": {
-                "scaleDistribution": {
-                  "type": "linear"
-                },
-                "hideFrom": {
-                  "legend": false,
-                  "tooltip": false,
-                  "viz": false
-                }
-              }
-            },
-            "overrides": []
-          },
-          "pluginVersion": "10.4.0"
-        },
-        {
-          "type": "heatmap",
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "id": 23,
-          "title": "Posix / S2H Bandwidth (per shard)",
-          "description": "Storage read bandwidth distribution. Buckets are dense in 1-12 GB/s to resolve the typical operating range. Cell value is request rate from rate(bucket), not raw request count; all workers aggregated. Per single-IO observed throughput, sampled once per shard transfer; does NOT aggregate across concurrent IO threads. Use the (per worker) panel below for actual disk throughput.",
-          "gridPos": {
-            "h": 8,
-            "w": 12,
-            "x": 0,
-            "y": 130
-          },
-          "targets": [
-            {
-              "datasource": {
-                "type": "prometheus",
-                "uid": "prometheus"
-              },
-              "editorMode": "code",
-              "expr": "sum by (le) (rate(ucm:posix_s2h_bandwidth_gbps_bucket{model_name=\"$model_name\", job=\"$job\"}[$__rate_interval]))",
-              "format": "heatmap",
-              "legendFormat": "{{le}}",
-              "range": true,
-              "refId": "A"
-            }
-          ],
-          "options": {
-            "calculate": false,
-            "yAxis": {
-              "axisPlacement": "left",
-              "unit": "Bps",
-              "decimals": 0,
-              "reverse": false
-            },
-            "rowsFrame": {
-              "layout": "auto",
-              "value": "Request rate"
-            },
-            "color": {
-              "mode": "scheme",
-              "scheme": "Spectral",
-              "fill": "dark-orange",
-              "exponent": 0.5,
-              "steps": 64,
-              "reverse": false
-            },
-            "cellGap": 1,
-            "cellValues": {
-              "unit": "suffix: req/s"
-            },
-            "filterValues": {
-              "le": 1e-09
-            },
-            "tooltip": {
-              "show": true,
-              "yHistogram": true,
-              "mode": "single"
-            },
-            "legend": {
-              "show": true
-            },
-            "exemplars": {
-              "color": "rgba(255,0,255,0.7)"
-            }
-          },
-          "fieldConfig": {
-            "defaults": {
-              "custom": {
-                "scaleDistribution": {
-                  "type": "linear"
-                },
-                "hideFrom": {
-                  "legend": false,
-                  "tooltip": false,
-                  "viz": false
-                }
-              }
-            },
-            "overrides": []
-          },
-          "pluginVersion": "10.4.0"
-        },
-        {
-          "type": "heatmap",
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "id": 24,
-          "title": "Posix / H2S Bandwidth (per shard)",
-          "description": "Storage write bandwidth distribution. Buckets dense in 1-12 GB/s. Cell value is request rate from rate(bucket), not raw request count; all workers aggregated. Per single-IO observed throughput, sampled once per shard transfer; does NOT aggregate across concurrent IO threads. Use the (per worker) panel below for actual disk throughput.",
-          "gridPos": {
-            "h": 8,
-            "w": 12,
-            "x": 12,
-            "y": 130
-          },
-          "targets": [
-            {
-              "datasource": {
-                "type": "prometheus",
-                "uid": "prometheus"
-              },
-              "editorMode": "code",
-              "expr": "sum by (le) (rate(ucm:posix_h2s_bandwidth_gbps_bucket{model_name=\"$model_name\", job=\"$job\"}[$__rate_interval]))",
-              "format": "heatmap",
-              "legendFormat": "{{le}}",
-              "range": true,
-              "refId": "A"
-            }
-          ],
-          "options": {
-            "calculate": false,
-            "yAxis": {
-              "axisPlacement": "left",
-              "unit": "Bps",
-              "decimals": 0,
-              "reverse": false
-            },
-            "rowsFrame": {
-              "layout": "auto",
-              "value": "Request rate"
-            },
-            "color": {
-              "mode": "scheme",
-              "scheme": "Spectral",
-              "fill": "dark-orange",
-              "exponent": 0.5,
-              "steps": 64,
-              "reverse": false
-            },
-            "cellGap": 1,
-            "cellValues": {
-              "unit": "suffix: req/s"
-            },
-            "filterValues": {
-              "le": 1e-09
-            },
-            "tooltip": {
-              "show": true,
-              "yHistogram": true,
-              "mode": "single"
-            },
-            "legend": {
-              "show": true
-            },
-            "exemplars": {
-              "color": "rgba(255,0,255,0.7)"
-            }
-          },
-          "fieldConfig": {
-            "defaults": {
-              "custom": {
-                "scaleDistribution": {
-                  "type": "linear"
-                },
-                "hideFrom": {
-                  "legend": false,
-                  "tooltip": false,
-                  "viz": false
-                }
-              }
-            },
-            "overrides": []
-          },
-          "pluginVersion": "10.4.0"
-        }
-      ]
     },
     {
       "datasource": {
@@ -3899,7 +2349,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 40
+        "y": 49
       },
       "id": 29,
       "options": {
@@ -4106,7 +2556,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 40
+        "y": 49
       },
       "id": 30,
       "options": {
@@ -4313,7 +2763,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 48
+        "y": 57
       },
       "id": 34,
       "options": {
@@ -4520,7 +2970,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 48
+        "y": 57
       },
       "id": 35,
       "options": {
@@ -4629,7 +3079,2115 @@
           "refId": "H"
         }
       ],
-      "title": "Cache Queue Wait Duration",
+      "title": "Cache Load/Dump Queue Wait Duration",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "description": "Cache load dispatch cost after worker pickup: buffer allocation/reuse plus backend submission for cache misses. Series: p50 / p90 / p99 / avg by selected view.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "barWidthFactor": 0.6,
+            "drawStyle": "line",
+            "fillOpacity": 0,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "auto",
+            "spanNulls": 60000,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "ms"
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": "^p50.*"
+            },
+            "properties": [
+              {
+                "id": "custom.lineStyle",
+                "value": {
+                  "fill": "solid"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": "^p90.*"
+            },
+            "properties": [
+              {
+                "id": "custom.lineStyle",
+                "value": {
+                  "fill": "dash",
+                  "dash": [
+                    10,
+                    6
+                  ]
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": "^p99.*"
+            },
+            "properties": [
+              {
+                "id": "custom.lineStyle",
+                "value": {
+                  "fill": "dash",
+                  "dash": [
+                    4,
+                    4
+                  ]
+                }
+              },
+              {
+                "id": "custom.lineWidth",
+                "value": 2
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": "^avg.*"
+            },
+            "properties": [
+              {
+                "id": "custom.lineStyle",
+                "value": {
+                  "fill": "solid"
+                }
+              },
+              {
+                "id": "custom.lineWidth",
+                "value": 1
+              },
+              {
+                "id": "custom.fillOpacity",
+                "value": 5
+              }
+            ]
+          }
+        ]
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 65
+      },
+      "id": 43,
+      "options": {
+        "legend": {
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ],
+          "displayMode": "table",
+          "maxHeight": "50%",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "histogram_quantile(0.5, sum by (le, ${perWorker:raw}) (rate(ucm:cache_load_dispatch_duration_ms_bucket{model_name=\"$model_name\", job=\"$job\"}[$__rate_interval])))",
+          "legendFormat": "p50 {{worker_id}}",
+          "range": true,
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "histogram_quantile(0.9, sum by (le, ${perWorker:raw}) (rate(ucm:cache_load_dispatch_duration_ms_bucket{model_name=\"$model_name\", job=\"$job\"}[$__rate_interval])))",
+          "legendFormat": "p90 {{worker_id}}",
+          "range": true,
+          "refId": "B"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "histogram_quantile(0.99, sum by (le, ${perWorker:raw}) (rate(ucm:cache_load_dispatch_duration_ms_bucket{model_name=\"$model_name\", job=\"$job\"}[$__rate_interval])))",
+          "legendFormat": "p99 {{worker_id}}",
+          "range": true,
+          "refId": "C"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "sum by (${perWorker:raw}) (rate(ucm:cache_load_dispatch_duration_ms_sum{model_name=\"$model_name\", job=\"$job\"}[$__rate_interval]))\n/\nsum by (${perWorker:raw}) (rate(ucm:cache_load_dispatch_duration_ms_count{model_name=\"$model_name\", job=\"$job\"}[$__rate_interval]))",
+          "legendFormat": "avg {{worker_id}}",
+          "range": true,
+          "refId": "D"
+        }
+      ],
+      "title": "Cache Load Dispatch Duration",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "description": "Synchronous Cache dump backend submit duration around backend_->Dump(...). This is a submit cost only and does not include lower-tier disk write completion. Series: p50 / p90 / p99 / avg by selected view.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "barWidthFactor": 0.6,
+            "drawStyle": "line",
+            "fillOpacity": 0,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "auto",
+            "spanNulls": 60000,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "ms"
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": "^p50.*"
+            },
+            "properties": [
+              {
+                "id": "custom.lineStyle",
+                "value": {
+                  "fill": "solid"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": "^p90.*"
+            },
+            "properties": [
+              {
+                "id": "custom.lineStyle",
+                "value": {
+                  "fill": "dash",
+                  "dash": [
+                    10,
+                    6
+                  ]
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": "^p99.*"
+            },
+            "properties": [
+              {
+                "id": "custom.lineStyle",
+                "value": {
+                  "fill": "dash",
+                  "dash": [
+                    4,
+                    4
+                  ]
+                }
+              },
+              {
+                "id": "custom.lineWidth",
+                "value": 2
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": "^avg.*"
+            },
+            "properties": [
+              {
+                "id": "custom.lineStyle",
+                "value": {
+                  "fill": "solid"
+                }
+              },
+              {
+                "id": "custom.lineWidth",
+                "value": 1
+              },
+              {
+                "id": "custom.fillOpacity",
+                "value": 5
+              }
+            ]
+          }
+        ]
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 65
+      },
+      "id": 44,
+      "options": {
+        "legend": {
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ],
+          "displayMode": "table",
+          "maxHeight": "50%",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "histogram_quantile(0.5, sum by (le, ${perWorker:raw}) (rate(ucm:cache_dump_backend_submit_duration_ms_bucket{model_name=\"$model_name\", job=\"$job\"}[$__rate_interval])))",
+          "legendFormat": "p50 {{worker_id}}",
+          "range": true,
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "histogram_quantile(0.9, sum by (le, ${perWorker:raw}) (rate(ucm:cache_dump_backend_submit_duration_ms_bucket{model_name=\"$model_name\", job=\"$job\"}[$__rate_interval])))",
+          "legendFormat": "p90 {{worker_id}}",
+          "range": true,
+          "refId": "B"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "histogram_quantile(0.99, sum by (le, ${perWorker:raw}) (rate(ucm:cache_dump_backend_submit_duration_ms_bucket{model_name=\"$model_name\", job=\"$job\"}[$__rate_interval])))",
+          "legendFormat": "p99 {{worker_id}}",
+          "range": true,
+          "refId": "C"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "sum by (${perWorker:raw}) (rate(ucm:cache_dump_backend_submit_duration_ms_sum{model_name=\"$model_name\", job=\"$job\"}[$__rate_interval]))\n/\nsum by (${perWorker:raw}) (rate(ucm:cache_dump_backend_submit_duration_ms_count{model_name=\"$model_name\", job=\"$job\"}[$__rate_interval]))",
+          "legendFormat": "avg {{worker_id}}",
+          "range": true,
+          "refId": "D"
+        }
+      ],
+      "title": "Cache Dump Backend Submit Duration",
+      "type": "timeseries"
+    },
+    {
+      "type": "row",
+      "collapsed": true,
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "id": 14,
+      "title": "Cache Store -- Distributions",
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 73
+      },
+      "panels": [
+        {
+          "type": "heatmap",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "id": 15,
+          "title": "Cache / Load Duration",
+          "description": "End-to-end Cache load task duration distribution. Bimodal here often indicates a mix of Cache hits (fast) and misses descending to Posix. Cell value is request rate from rate(bucket), not raw request count; all workers aggregated.",
+          "gridPos": {
+            "h": 8,
+            "w": 12,
+            "x": 0,
+            "y": 74
+          },
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              },
+              "editorMode": "code",
+              "expr": "sum by (le) (rate(ucm:cache_load_duration_ms_bucket{model_name=\"$model_name\", job=\"$job\"}[$__rate_interval]))",
+              "format": "heatmap",
+              "legendFormat": "{{le}}",
+              "range": true,
+              "refId": "A"
+            }
+          ],
+          "options": {
+            "calculate": false,
+            "yAxis": {
+              "axisPlacement": "left",
+              "unit": "ms",
+              "decimals": 0,
+              "reverse": false
+            },
+            "rowsFrame": {
+              "layout": "auto",
+              "value": "Request rate"
+            },
+            "color": {
+              "mode": "scheme",
+              "scheme": "Spectral",
+              "fill": "dark-orange",
+              "exponent": 0.5,
+              "steps": 64,
+              "reverse": false
+            },
+            "cellGap": 1,
+            "cellValues": {
+              "unit": "suffix: req/s"
+            },
+            "filterValues": {
+              "le": 1e-9
+            },
+            "tooltip": {
+              "show": true,
+              "yHistogram": true,
+              "mode": "single"
+            },
+            "legend": {
+              "show": true
+            },
+            "exemplars": {
+              "color": "rgba(255,0,255,0.7)"
+            }
+          },
+          "fieldConfig": {
+            "defaults": {
+              "custom": {
+                "scaleDistribution": {
+                  "type": "linear"
+                },
+                "hideFrom": {
+                  "legend": false,
+                  "tooltip": false,
+                  "viz": false
+                }
+              }
+            },
+            "overrides": []
+          },
+          "pluginVersion": "10.4.0"
+        },
+        {
+          "type": "heatmap",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "id": 16,
+          "title": "Cache / Load Bandwidth (per task)",
+          "description": "Effective Cache load bandwidth distribution. Cell value is request rate from rate(bucket), not raw request count; all workers aggregated. Per-task observed throughput, sampled once per Cache stage task (one task = one start_load_kv / dump_data batch). Aggregates shards within a task but NOT across concurrent tasks. Use the (per worker) panel below for actual per-worker throughput.",
+          "gridPos": {
+            "h": 8,
+            "w": 12,
+            "x": 12,
+            "y": 74
+          },
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              },
+              "editorMode": "code",
+              "expr": "sum by (le) (rate(ucm:cache_load_bandwidth_gbps_bucket{model_name=\"$model_name\", job=\"$job\"}[$__rate_interval]))",
+              "format": "heatmap",
+              "legendFormat": "{{le}}",
+              "range": true,
+              "refId": "A"
+            }
+          ],
+          "options": {
+            "calculate": false,
+            "yAxis": {
+              "axisPlacement": "left",
+              "unit": "Bps",
+              "decimals": 0,
+              "reverse": false
+            },
+            "rowsFrame": {
+              "layout": "auto",
+              "value": "Request rate"
+            },
+            "color": {
+              "mode": "scheme",
+              "scheme": "Spectral",
+              "fill": "dark-orange",
+              "exponent": 0.5,
+              "steps": 64,
+              "reverse": false
+            },
+            "cellGap": 1,
+            "cellValues": {
+              "unit": "suffix: req/s"
+            },
+            "filterValues": {
+              "le": 1e-9
+            },
+            "tooltip": {
+              "show": true,
+              "yHistogram": true,
+              "mode": "single"
+            },
+            "legend": {
+              "show": true
+            },
+            "exemplars": {
+              "color": "rgba(255,0,255,0.7)"
+            }
+          },
+          "fieldConfig": {
+            "defaults": {
+              "custom": {
+                "scaleDistribution": {
+                  "type": "linear"
+                },
+                "hideFrom": {
+                  "legend": false,
+                  "tooltip": false,
+                  "viz": false
+                }
+              }
+            },
+            "overrides": []
+          },
+          "pluginVersion": "10.4.0"
+        },
+        {
+          "type": "heatmap",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "id": 17,
+          "title": "Cache / Dump Duration",
+          "description": "Caller-felt Cache dump duration. Watch for convergence with Posix h2s duration -- back-pressure signal (see perf doc §3.4). Cell value is request rate from rate(bucket), not raw request count; all workers aggregated.",
+          "gridPos": {
+            "h": 8,
+            "w": 12,
+            "x": 0,
+            "y": 82
+          },
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              },
+              "editorMode": "code",
+              "expr": "sum by (le) (rate(ucm:cache_dump_duration_ms_bucket{model_name=\"$model_name\", job=\"$job\"}[$__rate_interval]))",
+              "format": "heatmap",
+              "legendFormat": "{{le}}",
+              "range": true,
+              "refId": "A"
+            }
+          ],
+          "options": {
+            "calculate": false,
+            "yAxis": {
+              "axisPlacement": "left",
+              "unit": "ms",
+              "decimals": 0,
+              "reverse": false
+            },
+            "rowsFrame": {
+              "layout": "auto",
+              "value": "Request rate"
+            },
+            "color": {
+              "mode": "scheme",
+              "scheme": "Spectral",
+              "fill": "dark-orange",
+              "exponent": 0.5,
+              "steps": 64,
+              "reverse": false
+            },
+            "cellGap": 1,
+            "cellValues": {
+              "unit": "suffix: req/s"
+            },
+            "filterValues": {
+              "le": 1e-9
+            },
+            "tooltip": {
+              "show": true,
+              "yHistogram": true,
+              "mode": "single"
+            },
+            "legend": {
+              "show": true
+            },
+            "exemplars": {
+              "color": "rgba(255,0,255,0.7)"
+            }
+          },
+          "fieldConfig": {
+            "defaults": {
+              "custom": {
+                "scaleDistribution": {
+                  "type": "linear"
+                },
+                "hideFrom": {
+                  "legend": false,
+                  "tooltip": false,
+                  "viz": false
+                }
+              }
+            },
+            "overrides": []
+          },
+          "pluginVersion": "10.4.0"
+        },
+        {
+          "type": "heatmap",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "id": 18,
+          "title": "Cache / Dump Bandwidth (per task)",
+          "description": "Effective Cache dump bandwidth distribution. Cell value is request rate from rate(bucket), not raw request count; all workers aggregated. Per-task observed throughput, sampled once per Cache stage task (one task = one start_load_kv / dump_data batch). Aggregates shards within a task but NOT across concurrent tasks. Use the (per worker) panel below for actual per-worker throughput.",
+          "gridPos": {
+            "h": 8,
+            "w": 12,
+            "x": 12,
+            "y": 82
+          },
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              },
+              "editorMode": "code",
+              "expr": "sum by (le) (rate(ucm:cache_dump_bandwidth_gbps_bucket{model_name=\"$model_name\", job=\"$job\"}[$__rate_interval]))",
+              "format": "heatmap",
+              "legendFormat": "{{le}}",
+              "range": true,
+              "refId": "A"
+            }
+          ],
+          "options": {
+            "calculate": false,
+            "yAxis": {
+              "axisPlacement": "left",
+              "unit": "Bps",
+              "decimals": 0,
+              "reverse": false
+            },
+            "rowsFrame": {
+              "layout": "auto",
+              "value": "Request rate"
+            },
+            "color": {
+              "mode": "scheme",
+              "scheme": "Spectral",
+              "fill": "dark-orange",
+              "exponent": 0.5,
+              "steps": 64,
+              "reverse": false
+            },
+            "cellGap": 1,
+            "cellValues": {
+              "unit": "suffix: req/s"
+            },
+            "filterValues": {
+              "le": 1e-9
+            },
+            "tooltip": {
+              "show": true,
+              "yHistogram": true,
+              "mode": "single"
+            },
+            "legend": {
+              "show": true
+            },
+            "exemplars": {
+              "color": "rgba(255,0,255,0.7)"
+            }
+          },
+          "fieldConfig": {
+            "defaults": {
+              "custom": {
+                "scaleDistribution": {
+                  "type": "linear"
+                },
+                "hideFrom": {
+                  "legend": false,
+                  "tooltip": false,
+                  "viz": false
+                }
+              }
+            },
+            "overrides": []
+          },
+          "pluginVersion": "10.4.0"
+        },
+        {
+          "type": "heatmap",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "id": 19,
+          "title": "Cache / Load Backend Wait",
+          "description": "Time waiting for Posix to fill the buffer on a Cache miss. Spread and shift here drives total load latency. Cell value is request rate from rate(bucket), not raw request count; all workers aggregated.",
+          "gridPos": {
+            "h": 8,
+            "w": 24,
+            "x": 0,
+            "y": 90
+          },
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              },
+              "editorMode": "code",
+              "expr": "sum by (le) (rate(ucm:cache_load_backend_wait_duration_ms_bucket{model_name=\"$model_name\", job=\"$job\"}[$__rate_interval]))",
+              "format": "heatmap",
+              "legendFormat": "{{le}}",
+              "range": true,
+              "refId": "A"
+            }
+          ],
+          "options": {
+            "calculate": false,
+            "yAxis": {
+              "axisPlacement": "left",
+              "unit": "ms",
+              "decimals": 0,
+              "reverse": false
+            },
+            "rowsFrame": {
+              "layout": "auto",
+              "value": "Request rate"
+            },
+            "color": {
+              "mode": "scheme",
+              "scheme": "Spectral",
+              "fill": "dark-orange",
+              "exponent": 0.5,
+              "steps": 64,
+              "reverse": false
+            },
+            "cellGap": 1,
+            "cellValues": {
+              "unit": "suffix: req/s"
+            },
+            "filterValues": {
+              "le": 1e-9
+            },
+            "tooltip": {
+              "show": true,
+              "yHistogram": true,
+              "mode": "single"
+            },
+            "legend": {
+              "show": true
+            },
+            "exemplars": {
+              "color": "rgba(255,0,255,0.7)"
+            }
+          },
+          "fieldConfig": {
+            "defaults": {
+              "custom": {
+                "scaleDistribution": {
+                  "type": "linear"
+                },
+                "hideFrom": {
+                  "legend": false,
+                  "tooltip": false,
+                  "viz": false
+                }
+              }
+            },
+            "overrides": []
+          },
+          "pluginVersion": "10.4.0"
+        }
+      ]
+    },
+    {
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 98
+      },
+      "id": 38,
+      "panels": [],
+      "title": "Posix Store",
+      "type": "row"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "description": "Stacked average Posix load phase duration. Segments map to detail panels: queue wait -> Posix Load/Dump Queue Wait Duration; S2H -> Posix S2H Duration. This is a bottleneck scan, not an exact per-task trace, because Posix S2H is sampled per IO shard while task duration is sampled per task.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "barWidthFactor": 0.6,
+            "drawStyle": "line",
+            "fillOpacity": 45,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "auto",
+            "spanNulls": 60000,
+            "stacking": {
+              "group": "A",
+              "mode": "normal"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "ms"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 99
+      },
+      "id": 41,
+      "options": {
+        "legend": {
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ],
+          "displayMode": "table",
+          "maxHeight": "50%",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "sum by (${perWorker:raw}) (rate(ucm:posix_load_queue_wait_duration_ms_sum{model_name=\"$model_name\", job=\"$job\"}[$__rate_interval]))\n/\nsum by (${perWorker:raw}) (rate(ucm:posix_load_queue_wait_duration_ms_count{model_name=\"$model_name\", job=\"$job\"}[$__rate_interval]))",
+          "legendFormat": "queue wait {{worker_id}}",
+          "range": true,
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "sum by (${perWorker:raw}) (rate(ucm:posix_s2h_duration_ms_sum{model_name=\"$model_name\", job=\"$job\"}[$__rate_interval]))\n/\nsum by (${perWorker:raw}) (rate(ucm:posix_s2h_duration_ms_count{model_name=\"$model_name\", job=\"$job\"}[$__rate_interval]))",
+          "legendFormat": "S2H {{worker_id}}",
+          "range": true,
+          "refId": "B"
+        }
+      ],
+      "title": "Posix Load Avg Breakdown",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "description": "Stacked average Posix dump phase duration. Segments map to detail panels: queue wait -> Posix Load/Dump Queue Wait Duration; H2S -> Posix H2S Duration. This is a bottleneck scan, not an exact per-task trace, because Posix H2S is sampled per IO shard while task duration is sampled per task.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "barWidthFactor": 0.6,
+            "drawStyle": "line",
+            "fillOpacity": 45,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "auto",
+            "spanNulls": 60000,
+            "stacking": {
+              "group": "A",
+              "mode": "normal"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "ms"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 99
+      },
+      "id": 42,
+      "options": {
+        "legend": {
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ],
+          "displayMode": "table",
+          "maxHeight": "50%",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "sum by (${perWorker:raw}) (rate(ucm:posix_dump_queue_wait_duration_ms_sum{model_name=\"$model_name\", job=\"$job\"}[$__rate_interval]))\n/\nsum by (${perWorker:raw}) (rate(ucm:posix_dump_queue_wait_duration_ms_count{model_name=\"$model_name\", job=\"$job\"}[$__rate_interval]))",
+          "legendFormat": "queue wait {{worker_id}}",
+          "range": true,
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "sum by (${perWorker:raw}) (rate(ucm:posix_h2s_duration_ms_sum{model_name=\"$model_name\", job=\"$job\"}[$__rate_interval]))\n/\nsum by (${perWorker:raw}) (rate(ucm:posix_h2s_duration_ms_count{model_name=\"$model_name\", job=\"$job\"}[$__rate_interval]))",
+          "legendFormat": "H2S {{worker_id}}",
+          "range": true,
+          "refId": "B"
+        }
+      ],
+      "title": "Posix Dump Avg Breakdown",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "description": "Posix-stage storage-to-host bandwidth (load direction). Series: p50 / p90 / p99 / avg, per worker. Per single-IO observed throughput, sampled once per shard transfer; does NOT aggregate across concurrent IO threads. Use the (per worker) panel below for actual disk throughput.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "barWidthFactor": 0.6,
+            "drawStyle": "line",
+            "fillOpacity": 0,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "auto",
+            "spanNulls": 60000,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "gbytes"
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": "^p50.*"
+            },
+            "properties": [
+              {
+                "id": "custom.lineStyle",
+                "value": {
+                  "fill": "solid"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": "^p90.*"
+            },
+            "properties": [
+              {
+                "id": "custom.lineStyle",
+                "value": {
+                  "fill": "dash",
+                  "dash": [
+                    10,
+                    6
+                  ]
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": "^p99.*"
+            },
+            "properties": [
+              {
+                "id": "custom.lineStyle",
+                "value": {
+                  "fill": "dash",
+                  "dash": [
+                    4,
+                    4
+                  ]
+                }
+              },
+              {
+                "id": "custom.lineWidth",
+                "value": 2
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": "^avg.*"
+            },
+            "properties": [
+              {
+                "id": "custom.lineStyle",
+                "value": {
+                  "fill": "solid"
+                }
+              },
+              {
+                "id": "custom.lineWidth",
+                "value": 1
+              },
+              {
+                "id": "custom.fillOpacity",
+                "value": 5
+              }
+            ]
+          }
+        ]
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 107
+      },
+      "id": 10,
+      "options": {
+        "legend": {
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ],
+          "displayMode": "table",
+          "maxHeight": "50%",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "histogram_quantile(0.5, sum by (le, ${perWorker:raw}) (rate(ucm:posix_s2h_bandwidth_gbps_bucket{model_name=\"$model_name\", job=\"$job\"}[$__rate_interval])))",
+          "legendFormat": "p50 {{worker_id}}",
+          "range": true,
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "histogram_quantile(0.9, sum by (le, ${perWorker:raw}) (rate(ucm:posix_s2h_bandwidth_gbps_bucket{model_name=\"$model_name\", job=\"$job\"}[$__rate_interval])))",
+          "legendFormat": "p90 {{worker_id}}",
+          "range": true,
+          "refId": "B"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "histogram_quantile(0.99, sum by (le, ${perWorker:raw}) (rate(ucm:posix_s2h_bandwidth_gbps_bucket{model_name=\"$model_name\", job=\"$job\"}[$__rate_interval])))",
+          "legendFormat": "p99 {{worker_id}}",
+          "range": true,
+          "refId": "C"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "sum by (${perWorker:raw}) (rate(ucm:posix_s2h_bandwidth_gbps_sum{model_name=\"$model_name\", job=\"$job\"}[$__rate_interval]))\n/\nsum by (${perWorker:raw}) (rate(ucm:posix_s2h_bandwidth_gbps_count{model_name=\"$model_name\", job=\"$job\"}[$__rate_interval]))",
+          "legendFormat": "avg {{worker_id}}",
+          "range": true,
+          "refId": "D"
+        }
+      ],
+      "title": "Posix S2H Bandwidth (per shard)",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "description": "Posix-stage host-to-storage bandwidth (dump direction). Series: p50 / p90 / p99 / avg, per worker. Per single-IO observed throughput, sampled once per shard transfer; does NOT aggregate across concurrent IO threads. Use the (per worker) panel below for actual disk throughput.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "barWidthFactor": 0.6,
+            "drawStyle": "line",
+            "fillOpacity": 0,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "auto",
+            "spanNulls": 60000,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "gbytes"
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": "^p50.*"
+            },
+            "properties": [
+              {
+                "id": "custom.lineStyle",
+                "value": {
+                  "fill": "solid"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": "^p90.*"
+            },
+            "properties": [
+              {
+                "id": "custom.lineStyle",
+                "value": {
+                  "fill": "dash",
+                  "dash": [
+                    10,
+                    6
+                  ]
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": "^p99.*"
+            },
+            "properties": [
+              {
+                "id": "custom.lineStyle",
+                "value": {
+                  "fill": "dash",
+                  "dash": [
+                    4,
+                    4
+                  ]
+                }
+              },
+              {
+                "id": "custom.lineWidth",
+                "value": 2
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": "^avg.*"
+            },
+            "properties": [
+              {
+                "id": "custom.lineStyle",
+                "value": {
+                  "fill": "solid"
+                }
+              },
+              {
+                "id": "custom.lineWidth",
+                "value": 1
+              },
+              {
+                "id": "custom.fillOpacity",
+                "value": 5
+              }
+            ]
+          }
+        ]
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 107
+      },
+      "id": 11,
+      "options": {
+        "legend": {
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ],
+          "displayMode": "table",
+          "maxHeight": "50%",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "histogram_quantile(0.5, sum by (le, ${perWorker:raw}) (rate(ucm:posix_h2s_bandwidth_gbps_bucket{model_name=\"$model_name\", job=\"$job\"}[$__rate_interval])))",
+          "legendFormat": "p50 {{worker_id}}",
+          "range": true,
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "histogram_quantile(0.9, sum by (le, ${perWorker:raw}) (rate(ucm:posix_h2s_bandwidth_gbps_bucket{model_name=\"$model_name\", job=\"$job\"}[$__rate_interval])))",
+          "legendFormat": "p90 {{worker_id}}",
+          "range": true,
+          "refId": "B"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "histogram_quantile(0.99, sum by (le, ${perWorker:raw}) (rate(ucm:posix_h2s_bandwidth_gbps_bucket{model_name=\"$model_name\", job=\"$job\"}[$__rate_interval])))",
+          "legendFormat": "p99 {{worker_id}}",
+          "range": true,
+          "refId": "C"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "sum by (${perWorker:raw}) (rate(ucm:posix_h2s_bandwidth_gbps_sum{model_name=\"$model_name\", job=\"$job\"}[$__rate_interval]))\n/\nsum by (${perWorker:raw}) (rate(ucm:posix_h2s_bandwidth_gbps_count{model_name=\"$model_name\", job=\"$job\"}[$__rate_interval]))",
+          "legendFormat": "avg {{worker_id}}",
+          "range": true,
+          "refId": "D"
+        }
+      ],
+      "title": "Posix H2S Bandwidth (per shard)",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "description": "Wall-clock per-worker load throughput in GB/s. Aggregates all concurrent IO threads inside one worker process and includes idle gaps, so this is the real bytes/sec the worker is pulling from posix. Pair with (per shard) above: if per-shard is high but per-worker is low, IO is fast but sparse — disk is not saturated.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "barWidthFactor": 0.6,
+            "drawStyle": "line",
+            "fillOpacity": 0,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "auto",
+            "spanNulls": 60000,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "gbytes"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 115
+      },
+      "id": 25,
+      "options": {
+        "legend": {
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ],
+          "displayMode": "table",
+          "maxHeight": "50%",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "sum by (${perWorker:raw}) (rate(ucm:posix_s2h_bytes_total{model_name=\"$model_name\", job=\"$job\"}[$__rate_interval])) / 1e9",
+          "legendFormat": "{{worker_id}}",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "title": "Posix S2H Bandwidth (aggregated)",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "description": "Wall-clock per-worker dump throughput in GB/s. Aggregates all concurrent IO threads inside one worker process and includes idle gaps, so this is the real bytes/sec the worker is pushing to posix. Pair with (per shard) above: if per-shard is high but per-worker is low, IO is fast but sparse — disk is not saturated.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "barWidthFactor": 0.6,
+            "drawStyle": "line",
+            "fillOpacity": 0,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "auto",
+            "spanNulls": 60000,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "gbytes"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 115
+      },
+      "id": 26,
+      "options": {
+        "legend": {
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ],
+          "displayMode": "table",
+          "maxHeight": "50%",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "sum by (${perWorker:raw}) (rate(ucm:posix_h2s_bytes_total{model_name=\"$model_name\", job=\"$job\"}[$__rate_interval])) / 1e9",
+          "legendFormat": "{{worker_id}}",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "title": "Posix H2S Bandwidth (aggregated)",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "description": "Posix-stage S2H per-IO duration. Represents disk read latency. Series: p50 / p90 / p99 / avg, per worker.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "barWidthFactor": 0.6,
+            "drawStyle": "line",
+            "fillOpacity": 0,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "auto",
+            "spanNulls": 60000,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "ms"
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": "^p50.*"
+            },
+            "properties": [
+              {
+                "id": "custom.lineStyle",
+                "value": {
+                  "fill": "solid"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": "^p90.*"
+            },
+            "properties": [
+              {
+                "id": "custom.lineStyle",
+                "value": {
+                  "fill": "dash",
+                  "dash": [
+                    10,
+                    6
+                  ]
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": "^p99.*"
+            },
+            "properties": [
+              {
+                "id": "custom.lineStyle",
+                "value": {
+                  "fill": "dash",
+                  "dash": [
+                    4,
+                    4
+                  ]
+                }
+              },
+              {
+                "id": "custom.lineWidth",
+                "value": 2
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": "^avg.*"
+            },
+            "properties": [
+              {
+                "id": "custom.lineStyle",
+                "value": {
+                  "fill": "solid"
+                }
+              },
+              {
+                "id": "custom.lineWidth",
+                "value": 1
+              },
+              {
+                "id": "custom.fillOpacity",
+                "value": 5
+              }
+            ]
+          }
+        ]
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 123
+      },
+      "id": 12,
+      "options": {
+        "legend": {
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ],
+          "displayMode": "table",
+          "maxHeight": "50%",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "histogram_quantile(0.5, sum by (le, ${perWorker:raw}) (rate(ucm:posix_s2h_duration_ms_bucket{model_name=\"$model_name\", job=\"$job\"}[$__rate_interval])))",
+          "legendFormat": "p50 {{worker_id}}",
+          "range": true,
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "histogram_quantile(0.9, sum by (le, ${perWorker:raw}) (rate(ucm:posix_s2h_duration_ms_bucket{model_name=\"$model_name\", job=\"$job\"}[$__rate_interval])))",
+          "legendFormat": "p90 {{worker_id}}",
+          "range": true,
+          "refId": "B"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "histogram_quantile(0.99, sum by (le, ${perWorker:raw}) (rate(ucm:posix_s2h_duration_ms_bucket{model_name=\"$model_name\", job=\"$job\"}[$__rate_interval])))",
+          "legendFormat": "p99 {{worker_id}}",
+          "range": true,
+          "refId": "C"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "sum by (${perWorker:raw}) (rate(ucm:posix_s2h_duration_ms_sum{model_name=\"$model_name\", job=\"$job\"}[$__rate_interval]))\n/\nsum by (${perWorker:raw}) (rate(ucm:posix_s2h_duration_ms_count{model_name=\"$model_name\", job=\"$job\"}[$__rate_interval]))",
+          "legendFormat": "avg {{worker_id}}",
+          "range": true,
+          "refId": "D"
+        }
+      ],
+      "title": "Posix S2H Duration",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "description": "Posix-stage H2S per-IO duration. Represents disk write latency. Series: p50 / p90 / p99 / avg, per worker.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "barWidthFactor": 0.6,
+            "drawStyle": "line",
+            "fillOpacity": 0,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "auto",
+            "spanNulls": 60000,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "ms"
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": "^p50.*"
+            },
+            "properties": [
+              {
+                "id": "custom.lineStyle",
+                "value": {
+                  "fill": "solid"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": "^p90.*"
+            },
+            "properties": [
+              {
+                "id": "custom.lineStyle",
+                "value": {
+                  "fill": "dash",
+                  "dash": [
+                    10,
+                    6
+                  ]
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": "^p99.*"
+            },
+            "properties": [
+              {
+                "id": "custom.lineStyle",
+                "value": {
+                  "fill": "dash",
+                  "dash": [
+                    4,
+                    4
+                  ]
+                }
+              },
+              {
+                "id": "custom.lineWidth",
+                "value": 2
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": "^avg.*"
+            },
+            "properties": [
+              {
+                "id": "custom.lineStyle",
+                "value": {
+                  "fill": "solid"
+                }
+              },
+              {
+                "id": "custom.lineWidth",
+                "value": 1
+              },
+              {
+                "id": "custom.fillOpacity",
+                "value": 5
+              }
+            ]
+          }
+        ]
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 123
+      },
+      "id": 13,
+      "options": {
+        "legend": {
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ],
+          "displayMode": "table",
+          "maxHeight": "50%",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "histogram_quantile(0.5, sum by (le, ${perWorker:raw}) (rate(ucm:posix_h2s_duration_ms_bucket{model_name=\"$model_name\", job=\"$job\"}[$__rate_interval])))",
+          "legendFormat": "p50 {{worker_id}}",
+          "range": true,
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "histogram_quantile(0.9, sum by (le, ${perWorker:raw}) (rate(ucm:posix_h2s_duration_ms_bucket{model_name=\"$model_name\", job=\"$job\"}[$__rate_interval])))",
+          "legendFormat": "p90 {{worker_id}}",
+          "range": true,
+          "refId": "B"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "histogram_quantile(0.99, sum by (le, ${perWorker:raw}) (rate(ucm:posix_h2s_duration_ms_bucket{model_name=\"$model_name\", job=\"$job\"}[$__rate_interval])))",
+          "legendFormat": "p99 {{worker_id}}",
+          "range": true,
+          "refId": "C"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "sum by (${perWorker:raw}) (rate(ucm:posix_h2s_duration_ms_sum{model_name=\"$model_name\", job=\"$job\"}[$__rate_interval]))\n/\nsum by (${perWorker:raw}) (rate(ucm:posix_h2s_duration_ms_count{model_name=\"$model_name\", job=\"$job\"}[$__rate_interval]))",
+          "legendFormat": "avg {{worker_id}}",
+          "range": true,
+          "refId": "D"
+        }
+      ],
+      "title": "Posix H2S Duration",
       "type": "timeseries"
     },
     {
@@ -4771,7 +5329,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 80
+        "y": 131
       },
       "id": 31,
       "options": {
@@ -4978,7 +5536,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 80
+        "y": 131
       },
       "id": 32,
       "options": {
@@ -5185,7 +5743,7 @@
         "h": 8,
         "w": 24,
         "x": 0,
-        "y": 88
+        "y": 139
       },
       "id": 36,
       "options": {
@@ -5294,8 +5852,366 @@
           "refId": "H"
         }
       ],
-      "title": "Posix Queue Wait Duration",
+      "title": "Posix Load/Dump Queue Wait Duration",
       "type": "timeseries"
+    },
+    {
+      "type": "row",
+      "collapsed": true,
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "id": 20,
+      "title": "Posix Store -- Distributions",
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 147
+      },
+      "panels": [
+        {
+          "type": "heatmap",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "id": 21,
+          "title": "Posix / S2H Duration",
+          "description": "Per-IO storage read latency distribution. Bimodal often = OS page cache hits vs cold reads. Cell value is request rate from rate(bucket), not raw request count; all workers aggregated.",
+          "gridPos": {
+            "h": 8,
+            "w": 12,
+            "x": 0,
+            "y": 148
+          },
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              },
+              "editorMode": "code",
+              "expr": "sum by (le) (rate(ucm:posix_s2h_duration_ms_bucket{model_name=\"$model_name\", job=\"$job\"}[$__rate_interval]))",
+              "format": "heatmap",
+              "legendFormat": "{{le}}",
+              "range": true,
+              "refId": "A"
+            }
+          ],
+          "options": {
+            "calculate": false,
+            "yAxis": {
+              "axisPlacement": "left",
+              "unit": "ms",
+              "decimals": 0,
+              "reverse": false
+            },
+            "rowsFrame": {
+              "layout": "auto",
+              "value": "Request rate"
+            },
+            "color": {
+              "mode": "scheme",
+              "scheme": "Spectral",
+              "fill": "dark-orange",
+              "exponent": 0.5,
+              "steps": 64,
+              "reverse": false
+            },
+            "cellGap": 1,
+            "cellValues": {
+              "unit": "suffix: req/s"
+            },
+            "filterValues": {
+              "le": 1e-9
+            },
+            "tooltip": {
+              "show": true,
+              "yHistogram": true,
+              "mode": "single"
+            },
+            "legend": {
+              "show": true
+            },
+            "exemplars": {
+              "color": "rgba(255,0,255,0.7)"
+            }
+          },
+          "fieldConfig": {
+            "defaults": {
+              "custom": {
+                "scaleDistribution": {
+                  "type": "linear"
+                },
+                "hideFrom": {
+                  "legend": false,
+                  "tooltip": false,
+                  "viz": false
+                }
+              }
+            },
+            "overrides": []
+          },
+          "pluginVersion": "10.4.0"
+        },
+        {
+          "type": "heatmap",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "id": 22,
+          "title": "Posix / H2S Duration",
+          "description": "Per-IO storage write latency distribution. Cell value is request rate from rate(bucket), not raw request count; all workers aggregated.",
+          "gridPos": {
+            "h": 8,
+            "w": 12,
+            "x": 12,
+            "y": 148
+          },
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              },
+              "editorMode": "code",
+              "expr": "sum by (le) (rate(ucm:posix_h2s_duration_ms_bucket{model_name=\"$model_name\", job=\"$job\"}[$__rate_interval]))",
+              "format": "heatmap",
+              "legendFormat": "{{le}}",
+              "range": true,
+              "refId": "A"
+            }
+          ],
+          "options": {
+            "calculate": false,
+            "yAxis": {
+              "axisPlacement": "left",
+              "unit": "ms",
+              "decimals": 0,
+              "reverse": false
+            },
+            "rowsFrame": {
+              "layout": "auto",
+              "value": "Request rate"
+            },
+            "color": {
+              "mode": "scheme",
+              "scheme": "Spectral",
+              "fill": "dark-orange",
+              "exponent": 0.5,
+              "steps": 64,
+              "reverse": false
+            },
+            "cellGap": 1,
+            "cellValues": {
+              "unit": "suffix: req/s"
+            },
+            "filterValues": {
+              "le": 1e-9
+            },
+            "tooltip": {
+              "show": true,
+              "yHistogram": true,
+              "mode": "single"
+            },
+            "legend": {
+              "show": true
+            },
+            "exemplars": {
+              "color": "rgba(255,0,255,0.7)"
+            }
+          },
+          "fieldConfig": {
+            "defaults": {
+              "custom": {
+                "scaleDistribution": {
+                  "type": "linear"
+                },
+                "hideFrom": {
+                  "legend": false,
+                  "tooltip": false,
+                  "viz": false
+                }
+              }
+            },
+            "overrides": []
+          },
+          "pluginVersion": "10.4.0"
+        },
+        {
+          "type": "heatmap",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "id": 23,
+          "title": "Posix / S2H Bandwidth (per shard)",
+          "description": "Storage read bandwidth distribution. Buckets are dense in 1-12 GB/s to resolve the typical operating range. Cell value is request rate from rate(bucket), not raw request count; all workers aggregated. Per single-IO observed throughput, sampled once per shard transfer; does NOT aggregate across concurrent IO threads. Use the (per worker) panel below for actual disk throughput.",
+          "gridPos": {
+            "h": 8,
+            "w": 12,
+            "x": 0,
+            "y": 156
+          },
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              },
+              "editorMode": "code",
+              "expr": "sum by (le) (rate(ucm:posix_s2h_bandwidth_gbps_bucket{model_name=\"$model_name\", job=\"$job\"}[$__rate_interval]))",
+              "format": "heatmap",
+              "legendFormat": "{{le}}",
+              "range": true,
+              "refId": "A"
+            }
+          ],
+          "options": {
+            "calculate": false,
+            "yAxis": {
+              "axisPlacement": "left",
+              "unit": "Bps",
+              "decimals": 0,
+              "reverse": false
+            },
+            "rowsFrame": {
+              "layout": "auto",
+              "value": "Request rate"
+            },
+            "color": {
+              "mode": "scheme",
+              "scheme": "Spectral",
+              "fill": "dark-orange",
+              "exponent": 0.5,
+              "steps": 64,
+              "reverse": false
+            },
+            "cellGap": 1,
+            "cellValues": {
+              "unit": "suffix: req/s"
+            },
+            "filterValues": {
+              "le": 1e-9
+            },
+            "tooltip": {
+              "show": true,
+              "yHistogram": true,
+              "mode": "single"
+            },
+            "legend": {
+              "show": true
+            },
+            "exemplars": {
+              "color": "rgba(255,0,255,0.7)"
+            }
+          },
+          "fieldConfig": {
+            "defaults": {
+              "custom": {
+                "scaleDistribution": {
+                  "type": "linear"
+                },
+                "hideFrom": {
+                  "legend": false,
+                  "tooltip": false,
+                  "viz": false
+                }
+              }
+            },
+            "overrides": []
+          },
+          "pluginVersion": "10.4.0"
+        },
+        {
+          "type": "heatmap",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "id": 24,
+          "title": "Posix / H2S Bandwidth (per shard)",
+          "description": "Storage write bandwidth distribution. Buckets dense in 1-12 GB/s. Cell value is request rate from rate(bucket), not raw request count; all workers aggregated. Per single-IO observed throughput, sampled once per shard transfer; does NOT aggregate across concurrent IO threads. Use the (per worker) panel below for actual disk throughput.",
+          "gridPos": {
+            "h": 8,
+            "w": 12,
+            "x": 12,
+            "y": 156
+          },
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              },
+              "editorMode": "code",
+              "expr": "sum by (le) (rate(ucm:posix_h2s_bandwidth_gbps_bucket{model_name=\"$model_name\", job=\"$job\"}[$__rate_interval]))",
+              "format": "heatmap",
+              "legendFormat": "{{le}}",
+              "range": true,
+              "refId": "A"
+            }
+          ],
+          "options": {
+            "calculate": false,
+            "yAxis": {
+              "axisPlacement": "left",
+              "unit": "Bps",
+              "decimals": 0,
+              "reverse": false
+            },
+            "rowsFrame": {
+              "layout": "auto",
+              "value": "Request rate"
+            },
+            "color": {
+              "mode": "scheme",
+              "scheme": "Spectral",
+              "fill": "dark-orange",
+              "exponent": 0.5,
+              "steps": 64,
+              "reverse": false
+            },
+            "cellGap": 1,
+            "cellValues": {
+              "unit": "suffix: req/s"
+            },
+            "filterValues": {
+              "le": 1e-9
+            },
+            "tooltip": {
+              "show": true,
+              "yHistogram": true,
+              "mode": "single"
+            },
+            "legend": {
+              "show": true
+            },
+            "exemplars": {
+              "color": "rgba(255,0,255,0.7)"
+            }
+          },
+          "fieldConfig": {
+            "defaults": {
+              "custom": {
+                "scaleDistribution": {
+                  "type": "linear"
+                },
+                "hideFrom": {
+                  "legend": false,
+                  "tooltip": false,
+                  "viz": false
+                }
+              }
+            },
+            "overrides": []
+          },
+          "pluginVersion": "10.4.0"
+        }
+      ]
     }
   ]
 }
