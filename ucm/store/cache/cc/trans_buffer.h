@@ -105,7 +105,7 @@ private:
     bool ExistAt(size_t iBucket, const Detail::BlockId& blockId, size_t shardIdx);
     size_t FindAt(size_t iBucket, const Detail::BlockId& blockId, size_t shardIdx, bool& owner);
     size_t Alloc(const Detail::BlockId& blockId, size_t shardIdx, size_t iBucket,
-                 bool allowReserved, double* spinMs);
+                 bool allowReserved = false);
     void MoveTo(size_t iBucket, size_t iNode);
     void Remove(size_t iBucket, size_t iNode);
     void* DataAt(Index pos);

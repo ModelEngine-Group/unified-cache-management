@@ -495,10 +495,8 @@ TransBuffer::Handle TransBuffer::Get(const Detail::BlockId& blockId, size_t shar
         strategy_->BucketUnlock(iBucket);
         return Handle{this, iNode, owner};
     }
-    double allocSpinMs = 0.0;
-    iNode = Alloc(blockId, shardIdx, iBucket, allowReserved, &allocSpinMs);
+    iNode = Alloc(blockId, shardIdx, iBucket, allowReserved);
     strategy_->BucketUnlock(iBucket);
-    UC::Metrics::UpdateStats("cache_buffer_alloc_spin_duration_ms", allocSpinMs);
     return Handle(this, iNode, true);
 }
 
@@ -549,7 +547,7 @@ size_t TransBuffer::FindAt(size_t iBucket, const Detail::BlockId& blockId, size_
 }
 
 size_t TransBuffer::Alloc(const Detail::BlockId& blockId, size_t shardIdx, size_t iBucket,
-                          bool allowReserved, double* spinMs)
+                          bool allowReserved)
 {
     auto spinStart = 0.0;
     auto markRetry = [&]() {
@@ -582,7 +580,8 @@ size_t TransBuffer::Alloc(const Detail::BlockId& blockId, size_t shardIdx, size_
         meta->shard = shardIdx;
         meta->ready = false;
         strategy_->NodeUnlock(iNode);
-        *spinMs = spinStart == 0.0 ? 0.0 : (NowTime::Now() - spinStart) * 1e3;
+        auto spinMs = spinStart == 0.0 ? 0.0 : (NowTime::Now() - spinStart) * 1e3;
+        UC::Metrics::UpdateStats("cache_buffer_alloc_spin_duration_ms", spinMs);
         return iNode;
     }
 }
