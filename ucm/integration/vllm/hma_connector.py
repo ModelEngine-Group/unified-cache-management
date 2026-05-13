@@ -656,7 +656,6 @@ class FAWALoadTask:
 
 @dataclass
 class FAWADumpTask:
-    request_ids: set[str]
     label: str
     store: UcmKVStoreBaseV1
     task: Task
@@ -700,7 +699,6 @@ class UCMFAWAConnector(UCMDirectConnector):
         self.fa_store: Optional[UcmKVStoreBaseV1] = None
         self.wa_store: Optional[UcmKVStoreBaseV1] = None
         self.requests_meta: dict[str, FAWARequestMeta] = {}
-        self._pending_dump_tasks_by_req: dict[str, list[FAWADumpTask]] = {}
         if role == KVConnectorRole.SCHEDULER:
             self.store = self._create_fa_store(None)
             self.fa_store = self.store
@@ -1725,15 +1723,7 @@ class UCMFAWAConnector(UCMDirectConnector):
         self,
         finished_req_ids: set[str],
     ) -> tuple[set[str] | None, set[str] | None]:
-        finished_sending: set[str] = set()
-        for req_id in list(finished_req_ids):
-            dump_tasks = self._pending_dump_tasks_by_req.pop(req_id, None)
-            if not dump_tasks:
-                continue
-            for dump_task in dump_tasks:
-                self._wait_dump_task(dump_task)
-            finished_sending.add(req_id)
-        return finished_sending or None, None
+        return None, None
 
     def build_connector_worker_meta(self) -> KVConnectorWorkerMetadata | None:
         return None
@@ -1743,14 +1733,8 @@ class UCMFAWAConnector(UCMDirectConnector):
         request: "Request",
         block_ids: tuple[list[int], ...],
     ) -> tuple[bool, dict[str, object] | None]:
-        req_meta = self.requests_meta.pop(request.request_id, None)
-        if req_meta is None:
-            return False, None
-        has_pending_dump = (
-            req_meta.store_block_cursor > req_meta.total_hit_block_num
-            and self._role == KVConnectorRole.SCHEDULER
-        )
-        return has_pending_dump, None
+        self.requests_meta.pop(request.request_id, None)
+        return False, None
 
     def _submit_load_task(
         self,
@@ -1818,7 +1802,6 @@ class UCMFAWAConnector(UCMDirectConnector):
 
     def _submit_dump_task(
         self,
-        request_ids: set[str],
         label: str,
         store: UcmKVStoreBaseV1,
         keys: list[bytes],
@@ -1828,7 +1811,6 @@ class UCMFAWAConnector(UCMDirectConnector):
         shard_indexs = [0] * len(keys)
         task = store.dump_data(keys, shard_indexs, ptrs, event_handle)
         return FAWADumpTask(
-            request_ids=request_ids,
             label=label,
             store=store,
             task=task,
@@ -1918,44 +1900,42 @@ class UCMFAWAConnector(UCMDirectConnector):
             if self.wa_store is None:
                 raise RuntimeError("WA store is not initialized.")
 
-            for request_id, request in metadata.request_meta.items():
-                keys, group_rows = request.dump_block_ids
-                if not keys:
+            for request in metadata.request_meta.values():
+                req_keys, req_group_rows = request.dump_block_ids
+                if not req_keys:
                     continue
 
-                request_ids = {request_id}
                 tasks: list[FAWADumpTask] = []
                 # Dump the same canonical keys to both stores with different rows.
                 fa_ptrs = self._extract_group_addrs(
-                    self._select_rows(group_rows, self.fa_group_ids),
+                    self._select_rows(req_group_rows, self.fa_group_ids),
                     self.fa_group_ids,
                 )
                 tasks.append(
                     self._submit_dump_task(
-                        request_ids,
                         "FA",
                         self.fa_store,
-                        keys,
+                        req_keys,
                         fa_ptrs,
                         event_handle,
                     )
                 )
                 window_ptrs = self._extract_group_addrs(
-                    self._select_rows(group_rows, self.window_group_ids),
+                    self._select_rows(req_group_rows, self.window_group_ids),
                     self.window_group_ids,
                     scratch_for_missing=True,
                 )
                 tasks.append(
                     self._submit_dump_task(
-                        request_ids,
                         "WA",
                         self.wa_store,
-                        keys,
+                        req_keys,
                         window_ptrs,
                         event_handle,
                     )
                 )
-                self._pending_dump_tasks_by_req.setdefault(request_id, []).extend(tasks)
+                for dump_task in tasks:
+                    self._wait_dump_task(dump_task)
         except Exception as e:
             logger.error(f"dump FAWA kv cache failed. {type(e).__name__}: {e}")
 
