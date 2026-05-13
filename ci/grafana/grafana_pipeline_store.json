@@ -109,6 +109,44 @@
         "queryValue": "",
         "skipUrlSync": false,
         "type": "custom"
+      },
+      {
+        "current": {
+          "selected": true,
+          "text": "1m",
+          "value": "1m"
+        },
+        "hide": 0,
+        "includeAll": false,
+        "label": "Breakdown Window",
+        "multi": false,
+        "name": "breakdownWindow",
+        "options": [
+          {
+            "selected": false,
+            "text": "30s",
+            "value": "30s"
+          },
+          {
+            "selected": true,
+            "text": "1m",
+            "value": "1m"
+          },
+          {
+            "selected": false,
+            "text": "2m",
+            "value": "2m"
+          },
+          {
+            "selected": false,
+            "text": "5m",
+            "value": "5m"
+          }
+        ],
+        "query": "30s,1m,2m,5m",
+        "queryValue": "",
+        "skipUrlSync": false,
+        "type": "custom"
       }
     ]
   },
@@ -268,7 +306,7 @@
         "type": "prometheus",
         "uid": "prometheus"
       },
-      "description": "Stacked average Cache load phase duration. Segments map to detail panels: queue wait -> Cache Load Queue Wait Duration; dispatch -> Cache Load Dispatch Duration; backend wait -> Cache Load Backend Wait Duration; H2D -> Cache H2D Duration. Quantiles are intentionally not stacked because p50/p90/p99 are not additive.",
+      "description": "Stacked average Cache load phase duration. Segments map to detail panels: queue wait -> Cache Load Queue Wait Duration; dispatch -> Cache Load Dispatch Duration; backend wait -> Cache Load Backend Wait Duration; H2D -> Cache H2D Duration. Quantiles are intentionally not stacked because p50/p90/p99 are not additive. Uses the Breakdown Window variable for rate smoothing so sparse phase updates do not alternate across adjacent time buckets.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -351,7 +389,7 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "sum by (${perWorker:raw}) (rate(ucm:cache_load_queue_wait_duration_ms_sum{model_name=\"$model_name\", job=\"$job\"}[$__rate_interval]))\n/\nsum by (${perWorker:raw}) (rate(ucm:cache_load_queue_wait_duration_ms_count{model_name=\"$model_name\", job=\"$job\"}[$__rate_interval]))",
+          "expr": "sum by (${perWorker:raw}) (rate(ucm:cache_load_queue_wait_duration_ms_sum{model_name=\"$model_name\", job=\"$job\"}[$breakdownWindow]))\n/\nsum by (${perWorker:raw}) (rate(ucm:cache_load_queue_wait_duration_ms_count{model_name=\"$model_name\", job=\"$job\"}[$breakdownWindow]))",
           "legendFormat": "queue wait {{worker_id}}",
           "range": true,
           "refId": "A"
@@ -362,7 +400,7 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "sum by (${perWorker:raw}) (rate(ucm:cache_load_dispatch_duration_ms_sum{model_name=\"$model_name\", job=\"$job\"}[$__rate_interval]))\n/\nsum by (${perWorker:raw}) (rate(ucm:cache_load_dispatch_duration_ms_count{model_name=\"$model_name\", job=\"$job\"}[$__rate_interval]))",
+          "expr": "sum by (${perWorker:raw}) (rate(ucm:cache_load_dispatch_duration_ms_sum{model_name=\"$model_name\", job=\"$job\"}[$breakdownWindow]))\n/\nsum by (${perWorker:raw}) (rate(ucm:cache_load_dispatch_duration_ms_count{model_name=\"$model_name\", job=\"$job\"}[$breakdownWindow]))",
           "legendFormat": "dispatch {{worker_id}}",
           "range": true,
           "refId": "B"
@@ -373,7 +411,7 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "sum by (${perWorker:raw}) (rate(ucm:cache_load_backend_wait_duration_ms_sum{model_name=\"$model_name\", job=\"$job\"}[$__rate_interval]))\n/\nsum by (${perWorker:raw}) (rate(ucm:cache_load_backend_wait_duration_ms_count{model_name=\"$model_name\", job=\"$job\"}[$__rate_interval]))",
+          "expr": "sum by (${perWorker:raw}) (rate(ucm:cache_load_backend_wait_duration_ms_sum{model_name=\"$model_name\", job=\"$job\"}[$breakdownWindow]))\n/\nsum by (${perWorker:raw}) (rate(ucm:cache_load_backend_wait_duration_ms_count{model_name=\"$model_name\", job=\"$job\"}[$breakdownWindow]))",
           "legendFormat": "backend wait {{worker_id}}",
           "range": true,
           "refId": "C"
@@ -384,7 +422,7 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "sum by (${perWorker:raw}) (rate(ucm:cache_h2d_duration_ms_sum{model_name=\"$model_name\", job=\"$job\"}[$__rate_interval]))\n/\nsum by (${perWorker:raw}) (rate(ucm:cache_h2d_duration_ms_count{model_name=\"$model_name\", job=\"$job\"}[$__rate_interval]))",
+          "expr": "sum by (${perWorker:raw}) (rate(ucm:cache_h2d_duration_ms_sum{model_name=\"$model_name\", job=\"$job\"}[$breakdownWindow]))\n/\nsum by (${perWorker:raw}) (rate(ucm:cache_h2d_duration_ms_count{model_name=\"$model_name\", job=\"$job\"}[$breakdownWindow]))",
           "legendFormat": "H2D {{worker_id}}",
           "range": true,
           "refId": "D"
@@ -398,7 +436,7 @@
         "type": "prometheus",
         "uid": "prometheus"
       },
-      "description": "Stacked average Cache dump phase duration. Segments map to detail panels: queue wait -> Cache Dump Queue Wait Duration; mkbuf and D2H -> Cache Dump MkBuf / D2H Duration; backend submit -> Cache Dump Backend Submit Duration. Backend submit is the synchronous backend_->Dump submit, not lower-tier disk write completion. Quantiles are intentionally not stacked because p50/p90/p99 are not additive.",
+      "description": "Stacked average Cache dump phase duration. Segments map to detail panels: queue wait -> Cache Dump Queue Wait Duration; mkbuf and D2H -> Cache Dump MkBuf / D2H Duration; backend submit -> Cache Dump Backend Submit Duration. Backend submit is the synchronous backend_->Dump submit, not lower-tier disk write completion. Quantiles are intentionally not stacked because p50/p90/p99 are not additive. Uses the Breakdown Window variable for rate smoothing so sparse phase updates do not alternate across adjacent time buckets.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -481,7 +519,7 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "sum by (${perWorker:raw}) (rate(ucm:cache_dump_queue_wait_duration_ms_sum{model_name=\"$model_name\", job=\"$job\"}[$__rate_interval]))\n/\nsum by (${perWorker:raw}) (rate(ucm:cache_dump_queue_wait_duration_ms_count{model_name=\"$model_name\", job=\"$job\"}[$__rate_interval]))",
+          "expr": "sum by (${perWorker:raw}) (rate(ucm:cache_dump_queue_wait_duration_ms_sum{model_name=\"$model_name\", job=\"$job\"}[$breakdownWindow]))\n/\nsum by (${perWorker:raw}) (rate(ucm:cache_dump_queue_wait_duration_ms_count{model_name=\"$model_name\", job=\"$job\"}[$breakdownWindow]))",
           "legendFormat": "queue wait {{worker_id}}",
           "range": true,
           "refId": "A"
@@ -492,7 +530,7 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "sum by (${perWorker:raw}) (rate(ucm:cache_dump_mkbuf_duration_ms_sum{model_name=\"$model_name\", job=\"$job\"}[$__rate_interval]))\n/\nsum by (${perWorker:raw}) (rate(ucm:cache_dump_mkbuf_duration_ms_count{model_name=\"$model_name\", job=\"$job\"}[$__rate_interval]))",
+          "expr": "sum by (${perWorker:raw}) (rate(ucm:cache_dump_mkbuf_duration_ms_sum{model_name=\"$model_name\", job=\"$job\"}[$breakdownWindow]))\n/\nsum by (${perWorker:raw}) (rate(ucm:cache_dump_mkbuf_duration_ms_count{model_name=\"$model_name\", job=\"$job\"}[$breakdownWindow]))",
           "legendFormat": "mkbuf {{worker_id}}",
           "range": true,
           "refId": "B"
@@ -503,7 +541,7 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "sum by (${perWorker:raw}) (rate(ucm:cache_d2h_duration_ms_sum{model_name=\"$model_name\", job=\"$job\"}[$__rate_interval]))\n/\nsum by (${perWorker:raw}) (rate(ucm:cache_d2h_duration_ms_count{model_name=\"$model_name\", job=\"$job\"}[$__rate_interval]))",
+          "expr": "sum by (${perWorker:raw}) (rate(ucm:cache_d2h_duration_ms_sum{model_name=\"$model_name\", job=\"$job\"}[$breakdownWindow]))\n/\nsum by (${perWorker:raw}) (rate(ucm:cache_d2h_duration_ms_count{model_name=\"$model_name\", job=\"$job\"}[$breakdownWindow]))",
           "legendFormat": "D2H {{worker_id}}",
           "range": true,
           "refId": "C"
@@ -514,7 +552,7 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "sum by (${perWorker:raw}) (rate(ucm:cache_dump_backend_submit_duration_ms_sum{model_name=\"$model_name\", job=\"$job\"}[$__rate_interval]))\n/\nsum by (${perWorker:raw}) (rate(ucm:cache_dump_backend_submit_duration_ms_count{model_name=\"$model_name\", job=\"$job\"}[$__rate_interval]))",
+          "expr": "sum by (${perWorker:raw}) (rate(ucm:cache_dump_backend_submit_duration_ms_sum{model_name=\"$model_name\", job=\"$job\"}[$breakdownWindow]))\n/\nsum by (${perWorker:raw}) (rate(ucm:cache_dump_backend_submit_duration_ms_count{model_name=\"$model_name\", job=\"$job\"}[$breakdownWindow]))",
           "legendFormat": "backend submit {{worker_id}}",
           "range": true,
           "refId": "D"
@@ -4120,7 +4158,7 @@
         "type": "prometheus",
         "uid": "prometheus"
       },
-      "description": "Stacked average Posix load phase duration. Segments map to detail panels: queue wait -> Posix Load Queue Wait Duration; S2H -> Posix S2H Duration. This is a bottleneck scan, not an exact per-task trace, because Posix S2H is sampled per IO shard while task duration is sampled per task.",
+      "description": "Stacked average Posix load phase duration. Segments map to detail panels: queue wait -> Posix Load Queue Wait Duration; S2H -> Posix S2H Duration. This is a bottleneck scan, not an exact per-task trace, because Posix S2H is sampled per IO shard while task duration is sampled per task. Uses the Breakdown Window variable for rate smoothing so sparse phase updates do not alternate across adjacent time buckets.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -4203,7 +4241,7 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "sum by (${perWorker:raw}) (rate(ucm:posix_load_queue_wait_duration_ms_sum{model_name=\"$model_name\", job=\"$job\"}[$__rate_interval]))\n/\nsum by (${perWorker:raw}) (rate(ucm:posix_load_queue_wait_duration_ms_count{model_name=\"$model_name\", job=\"$job\"}[$__rate_interval]))",
+          "expr": "sum by (${perWorker:raw}) (rate(ucm:posix_load_queue_wait_duration_ms_sum{model_name=\"$model_name\", job=\"$job\"}[$breakdownWindow]))\n/\nsum by (${perWorker:raw}) (rate(ucm:posix_load_queue_wait_duration_ms_count{model_name=\"$model_name\", job=\"$job\"}[$breakdownWindow]))",
           "legendFormat": "queue wait {{worker_id}}",
           "range": true,
           "refId": "A"
@@ -4214,7 +4252,7 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "sum by (${perWorker:raw}) (rate(ucm:posix_s2h_duration_ms_sum{model_name=\"$model_name\", job=\"$job\"}[$__rate_interval]))\n/\nsum by (${perWorker:raw}) (rate(ucm:posix_s2h_duration_ms_count{model_name=\"$model_name\", job=\"$job\"}[$__rate_interval]))",
+          "expr": "sum by (${perWorker:raw}) (rate(ucm:posix_s2h_duration_ms_sum{model_name=\"$model_name\", job=\"$job\"}[$breakdownWindow]))\n/\nsum by (${perWorker:raw}) (rate(ucm:posix_s2h_duration_ms_count{model_name=\"$model_name\", job=\"$job\"}[$breakdownWindow]))",
           "legendFormat": "S2H {{worker_id}}",
           "range": true,
           "refId": "B"
@@ -4228,7 +4266,7 @@
         "type": "prometheus",
         "uid": "prometheus"
       },
-      "description": "Stacked average Posix dump phase duration. Segments map to detail panels: queue wait -> Posix Dump Queue Wait Duration; H2S -> Posix H2S Duration. This is a bottleneck scan, not an exact per-task trace, because Posix H2S is sampled per IO shard while task duration is sampled per task.",
+      "description": "Stacked average Posix dump phase duration. Segments map to detail panels: queue wait -> Posix Dump Queue Wait Duration; H2S -> Posix H2S Duration. This is a bottleneck scan, not an exact per-task trace, because Posix H2S is sampled per IO shard while task duration is sampled per task. Uses the Breakdown Window variable for rate smoothing so sparse phase updates do not alternate across adjacent time buckets.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -4311,7 +4349,7 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "sum by (${perWorker:raw}) (rate(ucm:posix_dump_queue_wait_duration_ms_sum{model_name=\"$model_name\", job=\"$job\"}[$__rate_interval]))\n/\nsum by (${perWorker:raw}) (rate(ucm:posix_dump_queue_wait_duration_ms_count{model_name=\"$model_name\", job=\"$job\"}[$__rate_interval]))",
+          "expr": "sum by (${perWorker:raw}) (rate(ucm:posix_dump_queue_wait_duration_ms_sum{model_name=\"$model_name\", job=\"$job\"}[$breakdownWindow]))\n/\nsum by (${perWorker:raw}) (rate(ucm:posix_dump_queue_wait_duration_ms_count{model_name=\"$model_name\", job=\"$job\"}[$breakdownWindow]))",
           "legendFormat": "queue wait {{worker_id}}",
           "range": true,
           "refId": "A"
@@ -4322,7 +4360,7 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "sum by (${perWorker:raw}) (rate(ucm:posix_h2s_duration_ms_sum{model_name=\"$model_name\", job=\"$job\"}[$__rate_interval]))\n/\nsum by (${perWorker:raw}) (rate(ucm:posix_h2s_duration_ms_count{model_name=\"$model_name\", job=\"$job\"}[$__rate_interval]))",
+          "expr": "sum by (${perWorker:raw}) (rate(ucm:posix_h2s_duration_ms_sum{model_name=\"$model_name\", job=\"$job\"}[$breakdownWindow]))\n/\nsum by (${perWorker:raw}) (rate(ucm:posix_h2s_duration_ms_count{model_name=\"$model_name\", job=\"$job\"}[$breakdownWindow]))",
           "legendFormat": "H2S {{worker_id}}",
           "range": true,
           "refId": "B"
