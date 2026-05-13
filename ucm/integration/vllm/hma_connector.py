@@ -1745,8 +1745,8 @@ class UCMFAWAConnector(UCMDirectConnector):
         ptrs: np.ndarray,
         anchor_vllm_block_ids: set[int],
     ) -> FAWALoadTask:
-        shard_indexs = [0] * len(keys)
-        task = store.load_data(keys, shard_indexs, ptrs)
+        shard_indices = [0] * len(keys)
+        task = store.load_data(keys, shard_indices, ptrs)
         return FAWALoadTask(
             request_id=request_id,
             label=label,
@@ -1808,8 +1808,8 @@ class UCMFAWAConnector(UCMDirectConnector):
         ptrs: np.ndarray,
         event_handle,
     ) -> FAWADumpTask:
-        shard_indexs = [0] * len(keys)
-        task = store.dump_data(keys, shard_indexs, ptrs, event_handle)
+        shard_indices = [0] * len(keys)
+        task = store.dump_data(keys, shard_indices, ptrs, event_handle)
         return FAWADumpTask(
             label=label,
             store=store,
