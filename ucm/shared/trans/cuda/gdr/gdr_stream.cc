@@ -25,6 +25,7 @@
 
 #include <algorithm>
 #include <cerrno>
+#include <chrono>
 #include <string>
 #include <thread>
 #include <utility>
@@ -44,6 +45,9 @@ UC::Status MakeGdrStatus(const char* op, int rc)
 {
     return UC::Status::OsApiError(fmt::format("{} failed({})", op, rc));
 }
+
+constexpr size_t kSchedulerIdleSpinLimit = 16;
+constexpr auto kSchedulerIdleSleep = std::chrono::microseconds(100);
 
 void CpuRelax()
 {
@@ -298,15 +302,23 @@ void GdrStream::SchedulerLoop()
     }
 
     Operation batch[kSchedulerBatchSize];
-    // Busy-poll the SPSC ring to keep producer submission lock-free and avoid lost wakeups.
+    size_t idleSpinCount = 0;
+    // Poll the SPSC ring with short idle backoff to keep submission lock-free.
     for (;;) {
         if (stopRequested_.load(std::memory_order_acquire) || HasAsyncError()) { return; }
 
         const auto count = PopOperationBatch(batch, kSchedulerBatchSize);
         if (count == 0) {
-            CpuRelax();
+            if (++idleSpinCount < kSchedulerIdleSpinLimit) {
+                std::this_thread::yield();
+            } else {
+                if (stopRequested_.load(std::memory_order_acquire) || HasAsyncError()) { return; }
+                std::this_thread::sleep_for(kSchedulerIdleSleep);
+                idleSpinCount = 0;
+            }
             continue;
         }
+        idleSpinCount = 0;
 
         for (size_t i = 0; i < count; ++i) {
             const auto& op = batch[i];
