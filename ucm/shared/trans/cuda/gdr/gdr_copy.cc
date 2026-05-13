@@ -52,23 +52,6 @@ constexpr size_t kInflightRingMask = kInflightRingCapacity - 1;
 static_assert((kInflightRingCapacity & kInflightRingMask) == 0,
               "inflight ring capacity must be a power of two");
 
-const char* CopyKindName(GdrCopyKind kind)
-{
-    return kind == GdrMemcpyHostToDevice ? "H2D" : "D2H";
-}
-
-uint64_t HostAddr(void* dst, const void* src, GdrCopyKind kind)
-{
-    return kind == GdrMemcpyHostToDevice ? reinterpret_cast<uint64_t>(src)
-                                         : reinterpret_cast<uint64_t>(dst);
-}
-
-uint64_t GpuAddr(void* dst, const void* src, GdrCopyKind kind)
-{
-    return kind == GdrMemcpyHostToDevice ? reinterpret_cast<uint64_t>(dst)
-                                         : reinterpret_cast<uint64_t>(src);
-}
-
 struct RegisteredMrRange {
     uint64_t addr;
     size_t len;
@@ -365,7 +348,6 @@ public:
         if (reqId) { *reqId = wc.wr_id; }
         if (!ReleaseInflightSlot(wc.wr_id)) { return GdrCompletionPollResult::UnknownRequest; }
         inflightWr_.fetch_sub(1, std::memory_order_acq_rel);
-        UC_INFO("GDR copy complete reqId({}).", wc.wr_id);
         return GdrCompletionPollResult::Completed;
     }
 
@@ -622,10 +604,6 @@ private:
             inflightWr_.fetch_sub(1, std::memory_order_acq_rel);
             return rc;
         }
-        UC_INFO("GDR copy submit reqId({}) dir({}) host(0x{:x}) gpu(0x{:x}) size({}) "
-                "hostLkey({}) gpuRkey({}).",
-                reqId, CopyKindName(kind), HostAddr(dst, src, kind), GpuAddr(dst, src, kind),
-                bytes, hostMr.mr->lkey, gpuMr.mr->rkey);
         return 0;
     }
 
