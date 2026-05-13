@@ -45,6 +45,7 @@ struct Config {
     size_t runningQueueDepth{524288};
     size_t timeoutMs{30000};
     size_t streamNumber{4};
+    bool cacheLoadBackendOnly{false};
 };
 
 }  // namespace UC::CacheStore

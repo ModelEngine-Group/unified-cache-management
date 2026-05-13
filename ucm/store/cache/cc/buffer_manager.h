@@ -34,6 +34,7 @@ namespace UC::CacheStore {
 class BufferManager {
     std::unique_ptr<TransBuffer> buffer_{nullptr};
     StoreV1* backend_{nullptr};
+    bool loadBackendOnly_{false};
 
     template <auto LookupFunc>
     auto LookupThrough(const Detail::BlockId* blocks, size_t num)
@@ -49,7 +50,10 @@ public:
     Status Setup(const Config& config)
     {
         backend_ = config.storeBackend;
-        if (config.deviceId == -1 && !config.shareBufferEnable) { return Status::OK(); }
+        loadBackendOnly_ = config.cacheLoadBackendOnly;
+        if (config.deviceId == -1 && (!config.shareBufferEnable || loadBackendOnly_)) {
+            return Status::OK();
+        }
         try {
             buffer_ = std::make_unique<TransBuffer>();
         } catch (const std::exception& e) {
@@ -60,12 +64,14 @@ public:
     TransBuffer* GetTransBuffer() { return buffer_ ? buffer_.get() : nullptr; }
     Expected<std::vector<uint8_t>> Lookup(const Detail::BlockId* blocks, size_t num)
     {
-        if (!buffer_) { return LookupThrough<&StoreV1::Lookup>(blocks, num); }
+        if (!buffer_ || loadBackendOnly_) { return LookupThrough<&StoreV1::Lookup>(blocks, num); }
         return LookupFast(blocks, num);
     }
     Expected<ssize_t> LookupOnPrefix(const Detail::BlockId* blocks, size_t num)
     {
-        if (!buffer_) { return LookupThrough<&StoreV1::LookupOnPrefix>(blocks, num); }
+        if (!buffer_ || loadBackendOnly_) {
+            return LookupThrough<&StoreV1::LookupOnPrefix>(blocks, num);
+        }
         return LookupOnPrefixFast(blocks, num);
     }
 
