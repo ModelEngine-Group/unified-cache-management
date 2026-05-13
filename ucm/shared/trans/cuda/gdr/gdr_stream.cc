@@ -30,10 +30,6 @@
 #include <thread>
 #include <utility>
 
-#if defined(__x86_64__) || defined(__i386__) || defined(_M_X64) || defined(_M_IX86)
-#include <immintrin.h>
-#endif
-
 #include <cuda_runtime.h>
 
 #include "gdr_config.h"
@@ -44,20 +40,6 @@ namespace {
 UC::Status MakeGdrStatus(const char* op, int rc)
 {
     return UC::Status::OsApiError(fmt::format("{} failed({})", op, rc));
-}
-
-constexpr size_t kSchedulerIdleSpinLimit = 16;
-constexpr auto kSchedulerIdleSleep = std::chrono::microseconds(100);
-
-void CpuRelax()
-{
-#if defined(__x86_64__) || defined(__i386__) || defined(_M_X64) || defined(_M_IX86)
-    _mm_pause();
-#elif defined(__aarch64__) || defined(__arm__)
-    __asm__ __volatile__("yield" ::: "memory");
-#else
-    std::this_thread::yield();
-#endif
 }
 
 }  // namespace
@@ -209,7 +191,7 @@ Status GdrStream::Synchronized()
 
     while (!HasAsyncError()
            && lastCompletedOperationId_.load(std::memory_order_acquire) < targetOperationId) {
-        CpuRelax();
+        std::this_thread::yield();
     }
 
     std::lock_guard<std::mutex> lock{mutex_};
@@ -270,7 +252,7 @@ Status GdrStream::PushOperation(const Operation& op)
             operationRingTail_.store(tail + 1, std::memory_order_release);
             return Status::OK();
         }
-        CpuRelax();
+        std::this_thread::yield();
     }
     return Status::Error("GDR stream operation ring full");
 }
@@ -302,6 +284,8 @@ void GdrStream::SchedulerLoop()
     }
 
     Operation batch[kSchedulerBatchSize];
+    constexpr size_t kSchedulerIdleSpinLimit = 16;
+    constexpr auto kSchedulerIdleSleep = std::chrono::microseconds(100);
     size_t idleSpinCount = 0;
     // Poll the SPSC ring with short idle backoff to keep submission lock-free.
     for (;;) {
@@ -344,7 +328,7 @@ void GdrStream::SchedulerLoop()
                 if (stopRequested_.load(std::memory_order_acquire) || HasAsyncError()) {
                     return;
                 }
-                CpuRelax();
+                std::this_thread::yield();
             }
         }
     }
