@@ -2719,7 +2719,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 65
+        "y": 73
       },
       "id": 5,
       "options": {
@@ -2926,7 +2926,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 65
+        "y": 73
       },
       "id": 44,
       "options": {
@@ -2999,7 +2999,7 @@
         "type": "prometheus",
         "uid": "prometheus"
       },
-      "description": "Average Cache load bandwidth. Series: p50 / p90 / p99 / avg, per worker. Per-task observed throughput, sampled once per Cache stage task (one task = one start_load_kv / dump_data batch). Aggregates shards within a task but NOT across concurrent tasks. Use the (per worker) panel below for actual per-worker throughput.",
+      "description": "Average Cache H2D bandwidth during Cache load. Series: p50 / p90 / p99 / avg. Per-task observed host-to-device throughput, sampled once per Cache load task; aggregates shards within a task but NOT across concurrent tasks.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -3133,7 +3133,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 73
+        "y": 65
       },
       "id": 4,
       "options": {
@@ -3198,7 +3198,7 @@
           "refId": "D"
         }
       ],
-      "title": "Cache Load Bandwidth (per task)",
+      "title": "Cache H2D Bandwidth (per task)",
       "type": "timeseries"
     },
     {
@@ -3206,7 +3206,7 @@
         "type": "prometheus",
         "uid": "prometheus"
       },
-      "description": "Average Cache dump bandwidth. Series: p50 / p90 / p99 / avg, per worker. Per-task observed throughput, sampled once per Cache stage task (one task = one start_load_kv / dump_data batch). Aggregates shards within a task but NOT across concurrent tasks. Use the (per worker) panel below for actual per-worker throughput.",
+      "description": "Average Cache D2H bandwidth during Cache dump. Series: p50 / p90 / p99 / avg. Per-task observed device-to-host throughput, sampled once per Cache dump task; aggregates shards within a task but NOT across concurrent tasks.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -3340,7 +3340,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 73
+        "y": 65
       },
       "id": 8,
       "options": {
@@ -3405,7 +3405,7 @@
           "refId": "D"
         }
       ],
-      "title": "Cache Dump Bandwidth (per task)",
+      "title": "Cache Dump D2H Bandwidth (per task)",
       "type": "timeseries"
     },
     {
