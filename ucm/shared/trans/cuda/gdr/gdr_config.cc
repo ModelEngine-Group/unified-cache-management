@@ -25,77 +25,66 @@
 
 #include <cstddef>
 #include <cstdlib>
-#include <mutex>
+#include <string>
+#include <vector>
 
 #include "gdr_mr_buffer.h"
 #include "logger/logger.h"
 
 namespace {
 
-std::mutex gGdrNicConfigMutex;
-std::vector<std::string> gDeviceNicNames;
+constexpr const char* kDeviceGdrNicsEnv = "DEVICE_GDR_NICS";
+constexpr const char* kDefaultNicName = "mlx5_0";
 
-std::string ParseStringEnv(const char* name, const char* defaultValue)
+std::string Trim(std::string value)
 {
-    const auto* value = std::getenv(name);
-    if (!value || value[0] == '\0') { return defaultValue; }
-    return value;
+    const auto begin = value.find_first_not_of(" \t\r\n");
+    if (begin == std::string::npos) { return ""; }
+    const auto end = value.find_last_not_of(" \t\r\n");
+    return value.substr(begin, end - begin + 1);
+}
+
+std::vector<std::string> ParseNicList(const char* value)
+{
+    std::vector<std::string> nics;
+    std::string text{value};
+    size_t pos = 0;
+    while (pos <= text.size()) {
+        const auto next = text.find(',', pos);
+        const auto len = next == std::string::npos ? std::string::npos : next - pos;
+        nics.push_back(Trim(text.substr(pos, len)));
+        if (next == std::string::npos) { break; }
+        pos = next + 1;
+    }
+    return nics;
+}
+
+UC::Expected<std::string> ResolveFromNicList(const std::vector<std::string>& nicNames,
+                                             int32_t deviceId)
+{
+    for (size_t i = 0; i < nicNames.size(); ++i) {
+        if (nicNames[i].empty()) {
+            return UC::Status::InvalidParam("invalid GDR NIC name at index({})", i);
+        }
+    }
+    if (deviceId < 0 || static_cast<size_t>(deviceId) >= nicNames.size()) {
+        return UC::Status::InvalidParam("missing GDR NIC name for device({})", deviceId);
+    }
+    return std::string{nicNames[deviceId]};
 }
 
 }  // namespace
 
 namespace UC::Trans {
 
-Status GdrNicConfig::SetDeviceNicNames(const std::vector<std::string>& nicNames)
-{
-    if (nicNames.empty()) { return Status::OK(); }
-    auto status = ValidateDeviceNicNames(nicNames, -1);
-    if (status.Failure()) { return status; }
-
-    std::lock_guard<std::mutex> lock{gGdrNicConfigMutex};
-    if (gDeviceNicNames.empty()) {
-        gDeviceNicNames = nicNames;
-        return Status::OK();
-    }
-    if (gDeviceNicNames == nicNames) { return Status::OK(); }
-    return Status::InvalidParam("conflicting GDR NIC name mappings");
-}
-
-Status GdrNicConfig::ValidateDeviceNicNames(const std::vector<std::string>& nicNames,
-                                            int32_t deviceId)
-{
-    if (nicNames.empty()) { return Status::OK(); }
-    for (size_t i = 0; i < nicNames.size(); ++i) {
-        if (nicNames[i].empty()) {
-            return Status::InvalidParam("invalid GDR NIC name at index({})", i);
-        }
-    }
-    if (deviceId < 0) { return Status::OK(); }
-    if (static_cast<size_t>(deviceId) >= nicNames.size()) {
-        return Status::InvalidParam("missing GDR NIC name for device({})", deviceId);
-    }
-    return Status::OK();
-}
-
 Expected<std::string> GdrNicConfig::ResolveNicName(int32_t deviceId)
 {
-    std::lock_guard<std::mutex> lock{gGdrNicConfigMutex};
-    if (gDeviceNicNames.empty()) {
-        return std::string{ParseStringEnv("UCM_GDR_NIC_NAME", "mlx5_0")};
+    const auto* deviceGdrNics = std::getenv(kDeviceGdrNicsEnv);
+    if (deviceGdrNics && deviceGdrNics[0] != '\0') {
+        auto nicNames = ParseNicList(deviceGdrNics);
+        return ResolveFromNicList(nicNames, deviceId);
     }
-    if (deviceId < 0 || static_cast<size_t>(deviceId) >= gDeviceNicNames.size()) {
-        return Status::InvalidParam("missing GDR NIC name for device({})", deviceId);
-    }
-    if (gDeviceNicNames[deviceId].empty()) {
-        return Status::InvalidParam("invalid GDR NIC name for device({})", deviceId);
-    }
-    return std::string{gDeviceNicNames[deviceId]};
-}
-
-void GdrNicConfig::ClearForTest()
-{
-    std::lock_guard<std::mutex> lock{gGdrNicConfigMutex};
-    gDeviceNicNames.clear();
+    return std::string{kDefaultNicName};
 }
 
 GdrKVBufferConfig::~GdrKVBufferConfig()

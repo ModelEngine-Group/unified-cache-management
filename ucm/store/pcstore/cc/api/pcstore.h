@@ -49,7 +49,6 @@ public:
         bool shardDataDir{true};
         std::vector<uintptr_t> gpuKvBufferAddrs{};
         std::vector<size_t> gpuKvBufferSizes{};
-        std::vector<std::string> gdrNicList{};
 
         Config(const std::vector<std::string>& storageBackends, const size_t kvcacheBlockSize,
                const bool transferEnable)

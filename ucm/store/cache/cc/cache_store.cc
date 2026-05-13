@@ -46,13 +46,6 @@ public:
             UC_ERROR("Failed to check config params: {}.", s);
             return s;
         }
-        if (config.deviceId >= 0 && !config.gdrNicList.empty()) {
-            s = Trans::GdrNicConfig::SetDeviceNicNames(config.gdrNicList);
-            if (s.Failure()) [[unlikely]] {
-                UC_ERROR("Failed({}) to set GDR NIC names.", s);
-                return s;
-            }
-        }
         if (config.deviceId >= 0 && !config.gpuKvBufferAddrs.empty()) {
             gpuKvBufferRegistrations_ =
                 std::make_unique<Trans::GdrKVBufferConfig>();
@@ -153,7 +146,6 @@ private:
         config.GetNumber("cache_load_exclusive_buffer_number", param.loadExclusiveBufferNumber);
         config.GetNumbers("gpu_kv_buffer_addrs", param.gpuKvBufferAddrs);
         config.GetNumbers("gpu_kv_buffer_sizes", param.gpuKvBufferSizes);
-        config.Get("gdr_nic_list", param.gdrNicList);
         config.Get("use_gdr", param.useGdr);
         return param;
     }
@@ -181,10 +173,6 @@ private:
         auto s = Trans::GdrKVBufferConfig::Validate(config.gpuKvBufferAddrs,
                                                     config.gpuKvBufferSizes);
         if (s.Failure()) { return s; }
-        if (config.deviceId >= 0) {
-            s = Trans::GdrNicConfig::ValidateDeviceNicNames(config.gdrNicList, config.deviceId);
-            if (s.Failure()) { return s; }
-        }
         for (const auto core : config.cpuAffinityCores) {
             if (core < 0 || core >= CPU_SETSIZE) {
                 return Status::InvalidParam("invalid cpu core({})", core);
@@ -237,7 +225,6 @@ private:
         UC_INFO("Set {}::StreamNumber to {}.", ns, config.streamNumber);
         UC_INFO("Set {}::LoadExclusiveBufferNumber to {}.", ns, config.loadExclusiveBufferNumber);
         UC_INFO("Set {}::GpuKvBufferNumber to {}.", ns, config.gpuKvBufferAddrs.size());
-        UC_INFO("Set {}::GdrNicList to {}.", ns, config.gdrNicList);
         UC_INFO("Set {}::UseGdr to {}.", ns, config.useGdr);
     }
 };

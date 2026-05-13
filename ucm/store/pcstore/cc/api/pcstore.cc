@@ -39,13 +39,6 @@ public:
         auto status = Trans::GdrKVBufferConfig::Validate(config.gpuKvBufferAddrs,
                                                          config.gpuKvBufferSizes);
         if (status.Failure()) { return status.Underlying(); }
-        status = Trans::GdrNicConfig::ValidateDeviceNicNames(
-            config.gdrNicList, config.transferEnable ? config.transferDeviceId : -1);
-        if (status.Failure()) { return status.Underlying(); }
-        if (config.transferEnable && !config.gdrNicList.empty()) {
-            status = Trans::GdrNicConfig::SetDeviceNicNames(config.gdrNicList);
-            if (status.Failure()) { return status.Underlying(); }
-        }
         if (config.transferEnable && !config.gpuKvBufferAddrs.empty()) {
             gpuKvBufferRegistrations_ =
                 std::make_unique<Trans::GdrKVBufferConfig>();
@@ -122,7 +115,6 @@ private:
         UC_INFO("Set UC::UseGdr to {}.", config.transferUseGdr);
         UC_INFO("Set UC::ShardDataDir to {}.", config.shardDataDir);
         UC_INFO("Set UC::GpuKvBufferNumber to {}.", config.gpuKvBufferAddrs.size());
-        UC_INFO("Set UC::GdrNicList to {}.", config.gdrNicList);
     }
 
 private:

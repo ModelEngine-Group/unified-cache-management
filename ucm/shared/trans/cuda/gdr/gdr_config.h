@@ -34,11 +34,7 @@ namespace UC::Trans {
 
 class GdrNicConfig {
 public:
-    static Status SetDeviceNicNames(const std::vector<std::string>& nicNames);
-    static Status ValidateDeviceNicNames(const std::vector<std::string>& nicNames,
-                                         int32_t deviceId);
     static Expected<std::string> ResolveNicName(int32_t deviceId);
-    static void ClearForTest();
 };
 
 class GdrKVBufferConfig {
