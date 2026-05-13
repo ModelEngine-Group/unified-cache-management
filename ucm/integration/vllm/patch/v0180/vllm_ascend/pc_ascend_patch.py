@@ -42,3 +42,14 @@ def patch_worker_npu_model_runner(mod):
         "sample_tokens",
         npu_model_runner.NPUModelRunner.sample_tokens,
     )
+
+
+@when_imported("vllm_ascend.patch.platform.patch_mamba_config")
+def patch_platform_mamba_config(mod):
+    logger.debug(f"Patched {mod} called")
+
+    from ucm.integration.vllm.patch.v0180.vllm_ascend.pc.platform import (
+        patch_mamba_config,
+    )
+
+    patch_mamba_config.patch_hybrid_attention_mamba_model_config()
