@@ -32,7 +32,6 @@ if(UCM_ENABLE_GDR_STREAM)
         gdr/gdr_stream.cc
         gdr/gdr_copy.cc
     )
-    target_compile_definitions(trans PUBLIC UCM_ENABLE_GDR_STREAM=1)
     target_link_libraries(trans PUBLIC
         ${IBVERBS_LIB}
         Threads::Threads

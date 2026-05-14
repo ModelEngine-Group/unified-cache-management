@@ -27,7 +27,7 @@
 #include "cuda_stream.h"
 #include "trans/device.h"
 
-#if defined(UCM_ENABLE_GDR_STREAM)
+#if UCM_ENABLE_GDR_STREAM
 #include "gdr/gdr_stream.h"
 #endif
 
@@ -66,7 +66,7 @@ std::shared_ptr<Stream> Device::MakeSharedStream()
 
 std::unique_ptr<Stream> Device::MakeGdrStream()
 {
-#if defined(UCM_ENABLE_GDR_STREAM)
+#if UCM_ENABLE_GDR_STREAM
     std::unique_ptr<Stream> stream = nullptr;
     try {
         stream = std::make_unique<GdrStream>();

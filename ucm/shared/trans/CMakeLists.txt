@@ -10,6 +10,17 @@ endif()
 if(RUNTIME_ENVIRONMENT STREQUAL "simu")
     add_subdirectory(simu)
 endif()
+if(NOT RUNTIME_ENVIRONMENT STREQUAL "cuda")
+    target_sources(trans PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/cuda/gdr/gdr_mr_buffer.cc
+        ${CMAKE_CURRENT_SOURCE_DIR}/cuda/gdr/gdr_config.cc
+    )
+endif()
+if(RUNTIME_ENVIRONMENT STREQUAL "cuda" AND UCM_ENABLE_GDR_STREAM)
+    target_compile_definitions(trans PUBLIC UCM_ENABLE_GDR_STREAM=1)
+else()
+    target_compile_definitions(trans PUBLIC UCM_ENABLE_GDR_STREAM=0)
+endif()
 target_include_directories(trans PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/..)
 target_link_libraries(trans PUBLIC infra_status infra_logger)
 

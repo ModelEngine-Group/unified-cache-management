@@ -26,7 +26,7 @@
 #include <map>
 #include <mutex>
 
-#if defined(UCM_ENABLE_GDR_STREAM)
+#if UCM_ENABLE_GDR_STREAM
 #include "gdr_copy.h"
 #endif
 
@@ -156,7 +156,7 @@ std::vector<DeviceBufferInfo> DeviceBufferRegistry::Snapshot()
 
 void GdrMrBuffer::GdrRegisterHostBuffer(void* host, size_t size)
 {
-#if defined(UCM_ENABLE_GDR_STREAM)
+#if UCM_ENABLE_GDR_STREAM
     GdrCopyLib::RegisterHostBuffer(host, size);
 #else
     (void)host;
@@ -166,7 +166,7 @@ void GdrMrBuffer::GdrRegisterHostBuffer(void* host, size_t size)
 
 void GdrMrBuffer::GdrUnregisterHostBuffer(void* host)
 {
-#if defined(UCM_ENABLE_GDR_STREAM)
+#if UCM_ENABLE_GDR_STREAM
     GdrCopyLib::UnregisterHostBuffer(host);
 #else
     (void)host;
@@ -175,20 +175,21 @@ void GdrMrBuffer::GdrUnregisterHostBuffer(void* host)
 
 Status GdrMrBuffer::GdrRegisterDeviceBuffer(void* device, size_t size)
 {
-#if defined(UCM_ENABLE_GDR_STREAM)
+#if UCM_ENABLE_GDR_STREAM
     return GdrCopyLib::RegisterDeviceBuffer(device, size);
 #else
-    DeviceBufferRegistry::Register(device, size);
+    (void)device;
+    (void)size;
     return Status::OK();
 #endif
 }
 
 void GdrMrBuffer::GdrUnregisterDeviceBuffer(void* device)
 {
-#if defined(UCM_ENABLE_GDR_STREAM)
+#if UCM_ENABLE_GDR_STREAM
     GdrCopyLib::UnregisterDeviceBuffer(device);
 #else
-    DeviceBufferRegistry::Unregister(device);
+    (void)device;
 #endif
 }
 

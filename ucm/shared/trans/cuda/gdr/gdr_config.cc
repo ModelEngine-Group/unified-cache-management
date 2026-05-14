@@ -89,14 +89,17 @@ Expected<std::string> GdrNicConfig::ResolveNicName(int32_t deviceId)
 
 GdrKVBufferConfig::~GdrKVBufferConfig()
 {
+#if UCM_ENABLE_GDR_STREAM
     for (auto it = buffers_.rbegin(); it != buffers_.rend(); ++it) {
         GdrMrBuffer::GdrUnregisterDeviceBuffer(reinterpret_cast<void*>(it->addr));
     }
+#endif
 }
 
 Status GdrKVBufferConfig::Validate(const std::vector<uintptr_t>& addrs,
                                    const std::vector<size_t>& sizes)
 {
+#if UCM_ENABLE_GDR_STREAM
     if (addrs.size() != sizes.size()) {
         return Status::InvalidParam("mismatched GPU KV buffer ranges({},{})", addrs.size(),
                                     sizes.size());
@@ -110,11 +113,17 @@ Status GdrKVBufferConfig::Validate(const std::vector<uintptr_t>& addrs,
         }
     }
     return Status::OK();
+#else
+    (void)addrs;
+    (void)sizes;
+    return Status::OK();
+#endif
 }
 
 Status GdrKVBufferConfig::Register(const std::vector<uintptr_t>& addrs,
                                    const std::vector<size_t>& sizes)
 {
+#if UCM_ENABLE_GDR_STREAM
     auto status = Validate(addrs, sizes);
     if (status.Failure()) { return status; }
     for (size_t i = 0; i < addrs.size(); ++i) {
@@ -127,6 +136,11 @@ Status GdrKVBufferConfig::Register(const std::vector<uintptr_t>& addrs,
                 addrs[i], sizes[i]);
     }
     return Status::OK();
+#else
+    (void)addrs;
+    (void)sizes;
+    return Status::OK();
+#endif
 }
 
 }  // namespace UC::Trans
