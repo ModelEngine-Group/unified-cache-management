@@ -27,7 +27,6 @@
 #include <cstddef>
 #include <cstdint>
 #include <vector>
-
 #include "status/status.h"
 
 namespace UC::Trans {

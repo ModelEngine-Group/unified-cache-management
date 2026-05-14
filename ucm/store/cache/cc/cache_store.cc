@@ -34,8 +34,7 @@ class CacheStore : public StoreV1 {
     BufferManager bufferMgr_;
     bool transEnable_{false};
     TransManager transMgr_;
-    std::unique_ptr<Trans::GdrKVBufferConfig> gpuKvBufferRegistrations_{
-        nullptr};
+    std::unique_ptr<Trans::GdrKVBufferConfig> gpuKvBufferRegistrations_{nullptr};
 
 public:
     Status Setup(const Detail::Dictionary& inConfig) override
@@ -47,8 +46,7 @@ public:
             return s;
         }
         if (config.deviceId >= 0 && !config.gpuKvBufferAddrs.empty()) {
-            gpuKvBufferRegistrations_ =
-                std::make_unique<Trans::GdrKVBufferConfig>();
+            gpuKvBufferRegistrations_ = std::make_unique<Trans::GdrKVBufferConfig>();
             s = gpuKvBufferRegistrations_->Register(config.gpuKvBufferAddrs,
                                                     config.gpuKvBufferSizes);
             if (s.Failure()) [[unlikely]] {
@@ -170,8 +168,8 @@ private:
             return Status::InvalidParam("invalid device({})", config.deviceId);
         }
         if (config.uniqueId.empty()) { return Status::InvalidParam("invalid unique id"); }
-        auto s = Trans::GdrKVBufferConfig::Validate(config.gpuKvBufferAddrs,
-                                                    config.gpuKvBufferSizes);
+        auto s =
+            Trans::GdrKVBufferConfig::Validate(config.gpuKvBufferAddrs, config.gpuKvBufferSizes);
         if (s.Failure()) { return s; }
         for (const auto core : config.cpuAffinityCores) {
             if (core < 0 || core >= CPU_SETSIZE) {

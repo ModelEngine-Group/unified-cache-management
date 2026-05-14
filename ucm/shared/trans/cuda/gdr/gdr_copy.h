@@ -48,8 +48,8 @@ public:
 
     virtual int GdrMemcpyAsync(void* dst, const void* src, size_t bytes, GdrCopyKind kind,
                                uint64_t* reqId) = 0;
-    virtual int GdrMemcpyAsyncWithReqId(void* dst, const void* src, size_t bytes,
-                                        GdrCopyKind kind, uint64_t reqId) = 0;
+    virtual int GdrMemcpyAsyncWithReqId(void* dst, const void* src, size_t bytes, GdrCopyKind kind,
+                                        uint64_t reqId) = 0;
     virtual GdrCompletionPollResult PollCompletion(uint64_t* reqId) = 0;
     virtual int RequestCompletionNotification() = 0;
     virtual int WaitForCompletionEvent() = 0;

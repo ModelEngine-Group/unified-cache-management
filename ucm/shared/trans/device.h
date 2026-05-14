@@ -39,6 +39,6 @@ public:
     std::unique_ptr<Buffer> MakeBuffer();
 };
 
-} // namespace UC::Trans
+}  // namespace UC::Trans
 
 #endif

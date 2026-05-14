@@ -22,23 +22,20 @@
  * SOFTWARE.
  * */
 #include "gdr_copy.h"
-
 #include <algorithm>
 #include <atomic>
 #include <cerrno>
 #include <cstring>
+#include <cuda_runtime.h>
+#include <infiniband/verbs.h>
 #include <limits>
 #include <mutex>
 #include <poll.h>
+#include <stdexcept>
 #include <sys/eventfd.h>
 #include <unistd.h>
 #include <utility>
-#include <stdexcept>
 #include <vector>
-
-#include <cuda_runtime.h>
-#include <infiniband/verbs.h>
-
 #include "gdr_mr_buffer.h"
 #include "logger/logger.h"
 
@@ -72,7 +69,7 @@ struct Endpoint {
 Endpoint QueryEndpoint(struct ibv_qp* qp, struct ibv_context* ctx)
 {
     Endpoint endpoint{};
-    struct ibv_port_attr portAttr {};
+    struct ibv_port_attr portAttr{};
     (void)ibv_query_port(ctx, kIbvPort, &portAttr);
     endpoint.qpn = qp->qp_num;
     endpoint.lid = portAttr.lid;
@@ -83,19 +80,20 @@ Endpoint QueryEndpoint(struct ibv_qp* qp, struct ibv_context* ctx)
 void ConnectRcQp(struct ibv_qp* qp, const Endpoint& remote, bool isRoce)
 {
     {
-        struct ibv_qp_attr attr {};
+        struct ibv_qp_attr attr{};
         attr.qp_state = IBV_QPS_INIT;
         attr.pkey_index = 0;
         attr.port_num = kIbvPort;
         attr.qp_access_flags =
             IBV_ACCESS_REMOTE_WRITE | IBV_ACCESS_REMOTE_READ | IBV_ACCESS_LOCAL_WRITE;
-        if (ibv_modify_qp(qp, &attr, IBV_QP_STATE | IBV_QP_PKEY_INDEX | IBV_QP_PORT |
-                                        IBV_QP_ACCESS_FLAGS) != 0) {
+        if (ibv_modify_qp(qp, &attr,
+                          IBV_QP_STATE | IBV_QP_PKEY_INDEX | IBV_QP_PORT | IBV_QP_ACCESS_FLAGS) !=
+            0) {
             throw std::runtime_error("failed to move RC QP to INIT");
         }
     }
     {
-        struct ibv_qp_attr attr {};
+        struct ibv_qp_attr attr{};
         attr.qp_state = IBV_QPS_RTR;
         attr.path_mtu = IBV_MTU_4096;
         attr.dest_qp_num = remote.qpn;
@@ -114,24 +112,24 @@ void ConnectRcQp(struct ibv_qp* qp, const Endpoint& remote, bool isRoce)
         attr.ah_attr.sl = 0;
         attr.ah_attr.src_path_bits = 0;
         attr.ah_attr.port_num = kIbvPort;
-        if (ibv_modify_qp(qp, &attr, IBV_QP_STATE | IBV_QP_AV | IBV_QP_PATH_MTU |
-                                        IBV_QP_DEST_QPN | IBV_QP_RQ_PSN |
-                                        IBV_QP_MAX_DEST_RD_ATOMIC | IBV_QP_MIN_RNR_TIMER) !=
+        if (ibv_modify_qp(qp, &attr,
+                          IBV_QP_STATE | IBV_QP_AV | IBV_QP_PATH_MTU | IBV_QP_DEST_QPN |
+                              IBV_QP_RQ_PSN | IBV_QP_MAX_DEST_RD_ATOMIC | IBV_QP_MIN_RNR_TIMER) !=
             0) {
             throw std::runtime_error("failed to move RC QP to RTR");
         }
     }
     {
-        struct ibv_qp_attr attr {};
+        struct ibv_qp_attr attr{};
         attr.qp_state = IBV_QPS_RTS;
         attr.timeout = 14;
         attr.retry_cnt = 7;
         attr.rnr_retry = 7;
         attr.sq_psn = 0;
         attr.max_rd_atomic = 1;
-        if (ibv_modify_qp(qp, &attr, IBV_QP_STATE | IBV_QP_TIMEOUT | IBV_QP_RETRY_CNT |
-                                        IBV_QP_RNR_RETRY | IBV_QP_SQ_PSN |
-                                        IBV_QP_MAX_QP_RD_ATOMIC) != 0) {
+        if (ibv_modify_qp(qp, &attr,
+                          IBV_QP_STATE | IBV_QP_TIMEOUT | IBV_QP_RETRY_CNT | IBV_QP_RNR_RETRY |
+                              IBV_QP_SQ_PSN | IBV_QP_MAX_QP_RD_ATOMIC) != 0) {
             throw std::runtime_error("failed to move RC QP to RTS");
         }
     }
@@ -145,8 +143,8 @@ bool RangeContains(uint64_t base, size_t totalSize, uint64_t addr, size_t len)
     return len <= totalSize - offset;
 }
 
-struct ibv_mr* FindRegisteredMrRange(const std::vector<RegisteredMrRange>& ranges,
-                                     uint64_t addr, size_t len)
+struct ibv_mr* FindRegisteredMrRange(const std::vector<RegisteredMrRange>& ranges, uint64_t addr,
+                                     size_t len)
 {
     for (const auto& range : ranges) {
         if (RangeContains(range.addr, range.len, addr, len)) { return range.mr; }
@@ -185,9 +183,7 @@ void ClearRegisteredMrRanges(std::vector<RegisteredMrRange>& ranges)
 
 class GdrCopyChannelImpl : public GdrCopyChannel {
 public:
-    GdrCopyChannelImpl(int gpuId, std::string nicName)
-        : gpuId_{gpuId},
-          nicName_{std::move(nicName)}
+    GdrCopyChannelImpl(int gpuId, std::string nicName) : gpuId_{gpuId}, nicName_{std::move(nicName)}
     {
         try {
             const auto cudaRet = cudaSetDevice(gpuId_);
@@ -215,7 +211,7 @@ public:
             ibv_free_device_list(devices);
             if (!ctx_) { throw std::runtime_error("ibv_open_device failed"); }
 
-            struct ibv_port_attr portAttr {};
+            struct ibv_port_attr portAttr{};
             if (ibv_query_port(ctx_, kIbvPort, &portAttr) != 0) {
                 throw std::runtime_error("ibv_query_port failed");
             }
@@ -240,7 +236,7 @@ public:
                 UC::Trans::DeviceBufferRegistry::Unregister(reinterpret_cast<void*>(buffer.addr));
             }
 
-            struct ibv_device_attr deviceAttr {};
+            struct ibv_device_attr deviceAttr{};
             if (ibv_query_device(ctx_, &deviceAttr) != 0) {
                 throw std::runtime_error("ibv_query_device failed");
             }
@@ -256,13 +252,13 @@ public:
             cq_ = ibv_create_cq(ctx_, cqDepth, nullptr, compChannel_, 0);
             if (!cq_) { throw std::runtime_error("ibv_create_cq failed"); }
 
-            struct ibv_qp_init_attr initAttr {};
+            struct ibv_qp_init_attr initAttr{};
             initAttr.send_cq = cq_;
             initAttr.recv_cq = cq_;
-            initAttr.cap.max_send_wr = std::max(
-                1, std::min(kTargetSendWr, static_cast<int>(deviceAttr.max_qp_wr == 0
-                                                                ? kTargetSendWr
-                                                                : deviceAttr.max_qp_wr)));
+            initAttr.cap.max_send_wr =
+                std::max(1, std::min(kTargetSendWr, static_cast<int>(deviceAttr.max_qp_wr == 0
+                                                                         ? kTargetSendWr
+                                                                         : deviceAttr.max_qp_wr)));
             initAttr.cap.max_recv_wr = 1;
             initAttr.cap.max_send_sge = 1;
             initAttr.cap.max_recv_sge = 1;
@@ -339,7 +335,7 @@ public:
 
     GdrCompletionPollResult PollCompletion(uint64_t* reqId) override
     {
-        struct ibv_wc wc {};
+        struct ibv_wc wc{};
         const int polledCompletionCount = ibv_poll_cq(cq_, 1, &wc);
         if (polledCompletionCount < 0) { return GdrCompletionPollResult::Error; }
         if (polledCompletionCount == 0) { return GdrCompletionPollResult::Empty; }
@@ -359,7 +355,7 @@ public:
 
     int WaitForCompletionEvent() override
     {
-        struct pollfd fds[2] {};
+        struct pollfd fds[2]{};
         fds[0].fd = compChannel_->fd;
         fds[0].events = POLLIN;
         fds[1].fd = completionWakeupFd_;
@@ -381,9 +377,7 @@ public:
             if (fds[0].revents & POLLIN) {
                 struct ibv_cq* eventCq = nullptr;
                 void* eventContext = nullptr;
-                if (ibv_get_cq_event(compChannel_, &eventCq, &eventContext) != 0) {
-                    return -EIO;
-                }
+                if (ibv_get_cq_event(compChannel_, &eventCq, &eventContext) != 0) { return -EIO; }
                 (void)eventContext;
                 if (!eventCq) { return -EIO; }
                 ibv_ack_cq_events(eventCq, 1);
@@ -454,10 +448,9 @@ private:
                 return MrRef{mr, false};
             }
         }
-        UC_WARN("GPU MR cache miss at addr(0x{:x}) size({}); fallback to per-transfer MR.",
-                addr, len);
-        const int flags =
-            IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE | IBV_ACCESS_REMOTE_READ;
+        UC_WARN("GPU MR cache miss at addr(0x{:x}) size({}); fallback to per-transfer MR.", addr,
+                len);
+        const int flags = IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE | IBV_ACCESS_REMOTE_READ;
         auto* mr = ibv_reg_mr(pd_, reinterpret_cast<void*>(addr), len, flags);
         if (!mr) { throw std::runtime_error("ibv_reg_mr on GPU memory failed"); }
         return MrRef{mr, true};
@@ -477,8 +470,8 @@ private:
                 return MrRef{mr, false};
             }
         }
-        UC_WARN("Host MR cache miss at addr(0x{:x}) size({}); fallback to per-transfer MR.",
-                addr, len);
+        UC_WARN("Host MR cache miss at addr(0x{:x}) size({}); fallback to per-transfer MR.", addr,
+                len);
         const int flags = IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE | IBV_ACCESS_REMOTE_READ;
         auto* mr = ibv_reg_mr(pd_, reinterpret_cast<void*>(addr), len, flags);
         if (!mr) { throw std::runtime_error("ibv_reg_mr on host memory failed"); }
@@ -497,8 +490,7 @@ private:
     void RegisterDeviceBufferLocked(uint64_t addr, size_t len)
     {
         if (FindRegisteredMrExact(gpuMrRanges_, addr, len)) { return; }
-        const int flags =
-            IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE | IBV_ACCESS_REMOTE_READ;
+        const int flags = IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE | IBV_ACCESS_REMOTE_READ;
         auto* mr = ibv_reg_mr(pd_, reinterpret_cast<void*>(addr), len, flags);
         if (!mr) { throw std::runtime_error("ibv_reg_mr on GPU memory failed"); }
         gpuMrRanges_.push_back({addr, len, mr});
@@ -526,9 +518,7 @@ private:
         if (!dst || !src) { return -EINVAL; }
         if (bytes == 0) { return 0; }
         if (reqId == 0) { return -EINVAL; }
-        if (kind != GdrMemcpyHostToDevice && kind != GdrMemcpyDeviceToHost) {
-            return -EINVAL;
-        }
+        if (kind != GdrMemcpyHostToDevice && kind != GdrMemcpyDeviceToHost) { return -EINVAL; }
         if (bytes > static_cast<size_t>(std::numeric_limits<uint32_t>::max())) { return -E2BIG; }
 
         MrRef gpuMr{};
@@ -655,12 +645,12 @@ private:
     int PostWrite(uint64_t remoteAddr, uint32_t rkey, uint64_t localAddr, uint32_t lkey,
                   size_t bytes, uint64_t reqId)
     {
-        struct ibv_sge sge {};
+        struct ibv_sge sge{};
         sge.addr = localAddr;
         sge.length = static_cast<uint32_t>(bytes);
         sge.lkey = lkey;
 
-        struct ibv_send_wr wr {};
+        struct ibv_send_wr wr{};
         wr.wr_id = reqId;
         wr.opcode = IBV_WR_RDMA_WRITE;
         wr.sg_list = &sge;
@@ -677,12 +667,12 @@ private:
     int PostRead(uint64_t localAddr, uint32_t lkey, uint64_t remoteAddr, uint32_t rkey,
                  size_t bytes, uint64_t reqId)
     {
-        struct ibv_sge sge {};
+        struct ibv_sge sge{};
         sge.addr = localAddr;
         sge.length = static_cast<uint32_t>(bytes);
         sge.lkey = lkey;
 
-        struct ibv_send_wr wr {};
+        struct ibv_send_wr wr{};
         wr.wr_id = reqId;
         wr.opcode = IBV_WR_RDMA_READ;
         wr.sg_list = &sge;

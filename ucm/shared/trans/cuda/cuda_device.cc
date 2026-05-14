@@ -99,4 +99,4 @@ std::unique_ptr<Buffer> Device::MakeBuffer()
     }
 }
 
-} // namespace UC::Trans
+}  // namespace UC::Trans

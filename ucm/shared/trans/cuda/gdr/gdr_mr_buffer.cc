@@ -22,7 +22,6 @@
  * SOFTWARE.
  * */
 #include "gdr_mr_buffer.h"
-
 #include <map>
 #include <mutex>
 
@@ -94,9 +93,7 @@ std::vector<HostBufferInfo> HostBufferRegistry::Snapshot()
     std::lock_guard<std::mutex> lock{gHostRegistryMutex};
     std::vector<HostBufferInfo> buffers;
     buffers.reserve(gHostBuffers.size());
-    for (const auto& [addr, size] : gHostBuffers) {
-        buffers.push_back({addr, size});
-    }
+    for (const auto& [addr, size] : gHostBuffers) { buffers.push_back({addr, size}); }
     return buffers;
 }
 

@@ -36,12 +36,11 @@ class PcStoreImpl : public PcStore {
 public:
     int32_t Setup(const Config& config)
     {
-        auto status = Trans::GdrKVBufferConfig::Validate(config.gpuKvBufferAddrs,
-                                                         config.gpuKvBufferSizes);
+        auto status =
+            Trans::GdrKVBufferConfig::Validate(config.gpuKvBufferAddrs, config.gpuKvBufferSizes);
         if (status.Failure()) { return status.Underlying(); }
         if (config.transferEnable && !config.gpuKvBufferAddrs.empty()) {
-            gpuKvBufferRegistrations_ =
-                std::make_unique<Trans::GdrKVBufferConfig>();
+            gpuKvBufferRegistrations_ = std::make_unique<Trans::GdrKVBufferConfig>();
             status = gpuKvBufferRegistrations_->Register(config.gpuKvBufferAddrs,
                                                          config.gpuKvBufferSizes);
             if (status.Failure()) { return status.Underlying(); }
@@ -58,8 +57,8 @@ public:
                 config.transferLocalRankSize, config.transferDeviceId, config.transferStreamNumber,
                 config.kvcacheBlockSize, config.transferIoSize, config.transferIoDirect,
                 config.transferBufferNumber, this->spaceMgr_.GetSpaceLayout(),
-                config.transferTimeoutMs, config.transferScatterGatherEnable,
-                config.transferUseGdr, config.uniqueId);
+                config.transferTimeoutMs, config.transferScatterGatherEnable, config.transferUseGdr,
+                config.uniqueId);
             if (status.Failure()) { return status.Underlying(); }
         }
         this->ShowConfig(config);

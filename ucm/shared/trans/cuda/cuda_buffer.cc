@@ -22,9 +22,8 @@
  * SOFTWARE.
  * */
 #include "cuda_buffer.h"
-#include "gdr/gdr_mr_buffer.h"
-
 #include <cuda_runtime.h>
+#include "gdr/gdr_mr_buffer.h"
 
 namespace UC::Trans {
 
@@ -88,4 +87,4 @@ void Buffer::UnregisterHostBuffer(void* host)
     (void)cudaHostUnregister(host);
 }
 
-} // namespace UC::Trans
+}  // namespace UC::Trans

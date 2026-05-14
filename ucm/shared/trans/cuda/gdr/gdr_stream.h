@@ -27,6 +27,7 @@
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
+#include <cuda_runtime_api.h>
 #include <functional>
 #include <map>
 #include <memory>
@@ -34,8 +35,6 @@
 #include <optional>
 #include <string>
 #include <thread>
-
-#include <cuda_runtime_api.h>
 #include "gdr_copy.h"
 #include "trans/stream.h"
 
@@ -86,18 +85,18 @@ private:
     // One item in the stream queue. The caller adds it, SchedulerLoop() handles it in order.
     struct Operation {
         OperationType type;
-        uint64_t operationId;      // Order number for this stream item.
+        uint64_t operationId;        // Order number for this stream item.
         cudaEvent_t event{nullptr};  // Event to wait for when this is a wait.
-        void* dst;                 // Copy destination when this is a copy.
-        const void* src;           // Copy source when this is a copy.
-        size_t size;               // Bytes to copy when this is a copy.
-        GdrCopyKind kind;          // Copy direction when this is a copy.
+        void* dst;                   // Copy destination when this is a copy.
+        const void* src;             // Copy source when this is a copy.
+        size_t size;                 // Bytes to copy when this is a copy.
+        GdrCopyKind kind;            // Copy direction when this is a copy.
     };
 
     enum class SubmitResult {
         Submitted,  // This copy was accepted, so the scheduler can move on.
-        Waiting,   // The send queue is full, so the scheduler should wait for a completion.
-        Error,     // Submit failed, so the stream must stop with an error.
+        Waiting,    // The send queue is full, so the scheduler should wait for a completion.
+        Error,      // Submit failed, so the stream must stop with an error.
     };
 
     struct CompletionSlot {
@@ -122,7 +121,7 @@ private:
 
 private:
     std::shared_ptr<GdrCopyChannel> channel_{nullptr};
-    std::thread schedulerThread_;  // Runs waits and sends copies in stream order.
+    std::thread schedulerThread_;   // Runs waits and sends copies in stream order.
     std::thread completionThread_;  // Polls the GDR completion queue for sent copies.
 
     std::mutex mutex_;
@@ -140,7 +139,8 @@ private:
     std::atomic<uint64_t> lastCompletedOperationId_{0};
     int32_t deviceId_{-1};
     std::string nicName_{"mlx5_0"};
-    std::atomic<bool> stopRequested_{false};  // Tells background threads to exit after current work ends or fails.
+    std::atomic<bool> stopRequested_{
+        false};  // Tells background threads to exit after current work ends or fails.
 };
 
 }  // namespace UC::Trans

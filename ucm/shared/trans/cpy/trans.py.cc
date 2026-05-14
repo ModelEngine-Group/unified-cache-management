@@ -159,7 +159,7 @@ inline void HostToDeviceScatterAsync(Stream& self, Ptr src, py::object dst, size
     }
 }
 
-} // namespace UC::Trans
+}  // namespace UC::Trans
 
 PYBIND11_MODULE(ucmtrans, m)
 {

@@ -22,12 +22,10 @@
  * SOFTWARE.
  * */
 #include "gdr_config.h"
-
 #include <cstddef>
 #include <cstdlib>
 #include <string>
 #include <vector>
-
 #include "gdr_mr_buffer.h"
 #include "logger/logger.h"
 

@@ -22,16 +22,13 @@
  * SOFTWARE.
  * */
 #include "gdr_stream.h"
-
 #include <algorithm>
 #include <cerrno>
 #include <chrono>
+#include <cuda_runtime.h>
 #include <string>
 #include <thread>
 #include <utility>
-
-#include <cuda_runtime.h>
-
 #include "gdr_config.h"
 #include "logger/logger.h"
 
@@ -189,8 +186,8 @@ Status GdrStream::Synchronized()
     const auto nextId = nextOperationId_.load(std::memory_order_acquire);
     const uint64_t targetOperationId = nextId == 0 ? 0 : nextId - 1;
 
-    while (!HasAsyncError()
-           && lastCompletedOperationId_.load(std::memory_order_acquire) < targetOperationId) {
+    while (!HasAsyncError() &&
+           lastCompletedOperationId_.load(std::memory_order_acquire) < targetOperationId) {
         std::this_thread::yield();
     }
 
@@ -210,8 +207,9 @@ Status GdrStream::WaitEvent(void* event)
     if (!event) { return Status::OK(); }
 
     const auto operationId = nextOperationId_.load(std::memory_order_relaxed);
-    Operation op{OperationType::Wait, operationId, static_cast<cudaEvent_t>(event), nullptr,
-                 nullptr, 0, GdrMemcpyHostToDevice};
+    Operation op{
+        OperationType::Wait,  operationId, static_cast<cudaEvent_t>(event), nullptr, nullptr, 0,
+        GdrMemcpyHostToDevice};
     auto status = PushOperation(op);
     if (status.Failure()) { return status; }
     nextOperationId_.store(operationId + 1, std::memory_order_release);
@@ -306,9 +304,7 @@ void GdrStream::SchedulerLoop()
 
         for (size_t i = 0; i < count; ++i) {
             const auto& op = batch[i];
-            if (stopRequested_.load(std::memory_order_acquire) || HasAsyncError()) {
-                return;
-            }
+            if (stopRequested_.load(std::memory_order_acquire) || HasAsyncError()) { return; }
 
             if (op.type == OperationType::Wait) {
                 const auto waitRet = cudaEventSynchronize(op.event);
@@ -325,9 +321,7 @@ void GdrStream::SchedulerLoop()
                 const auto submitResult = SubmitCopyOperationFromQueue(op);
                 if (submitResult == SubmitResult::Submitted) { break; }
                 if (submitResult == SubmitResult::Error) { return; }
-                if (stopRequested_.load(std::memory_order_acquire) || HasAsyncError()) {
-                    return;
-                }
+                if (stopRequested_.load(std::memory_order_acquire) || HasAsyncError()) { return; }
                 std::this_thread::yield();
             }
         }
@@ -351,8 +345,7 @@ GdrStream::SubmitResult GdrStream::SubmitCopyOperationFromQueue(const Operation&
     if (rc == -EAGAIN) { return SubmitResult::Waiting; }
 
     const auto status = MakeGdrStatus("GdrMemcpyAsyncWithReqId", rc);
-    UC_ERROR("GDR copy operation {} failed at GdrMemcpyAsyncWithReqId: {}", op.operationId,
-             status);
+    UC_ERROR("GDR copy operation {} failed at GdrMemcpyAsyncWithReqId: {}", op.operationId, status);
     MarkOperationFailed(op.operationId, status);
     return SubmitResult::Submitted;
 }
@@ -464,10 +457,7 @@ void GdrStream::StopWithAsyncError(const char* source, Status status)
     if (channel_) { channel_->InterruptCompletionWait(); }
 }
 
-bool GdrStream::HasAsyncError() const
-{
-    return asyncErrorSet_.load(std::memory_order_acquire);
-}
+bool GdrStream::HasAsyncError() const { return asyncErrorSet_.load(std::memory_order_acquire); }
 
 Status GdrStream::AsyncErrorLocked() const
 {
