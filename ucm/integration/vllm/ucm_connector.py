@@ -22,7 +22,6 @@ from vllm.distributed.parallel_state import get_world_group
 from vllm.model_executor.models.utils import extract_layer_index
 from vllm.platforms import current_platform
 from vllm.v1.core.sched.output import SchedulerOutput
-from vllm.v1.outputs import KVConnectorOutput
 from vllm.v1.kv_cache_interface import (
     FullAttentionSpec,
     KVCacheConfig,
@@ -31,6 +30,7 @@ from vllm.v1.kv_cache_interface import (
     SlidingWindowSpec,
     UniformTypeKVCacheSpecs,
 )
+from vllm.v1.outputs import KVConnectorOutput
 
 from ucm.integration.vllm.device import create_device
 from ucm.logger import init_logger
@@ -110,8 +110,11 @@ class HMARequestMeta(RequestMeta):
       chain seed. ``group_ucm_block_ids[full_attn_group_id]`` equals the
       inherited ``ucm_block_ids``.
     - ``group_vllm_block_ids[gid]``: per-group VLLM physical block ids; this
-      is initialised as an empty list per group here and populated later by
-      the dispatch path (still a TODO for HMA dump/load).
+      is initialized as an empty list per group here, then filled from the
+      scheduler allocation snapshot by :meth:`UCMHMAConnector.update_state_after_alloc`
+      and maintained by :meth:`UCMHMAConnector._generate_hma_dispatch_meta`.
+      HMA dispatch later slices these per-group tables to build the flattened
+      load/dump pairs consumed by the inherited I/O path.
     """
 
     group_ucm_block_ids: list[list[bytes]] = field(default_factory=list)
@@ -730,9 +733,7 @@ class UCMDirectConnector(KVConnectorBase_V1):
                     num_loaded_block -= len(request.load_block_ids[0])
                     num_loaded_request -= 1
                     continue
-                num_loaded_block -= len(request.load_block_ids[0]) - len(
-                    ucm_block_ids
-                )
+                num_loaded_block -= len(request.load_block_ids[0]) - len(ucm_block_ids)
             if self.tp_rank != 0 and not self.is_mla:
                 for i, ucm_block_id in enumerate(ucm_block_ids):
                     ucm_block_ids[i] = self.request_hasher(ucm_block_id)
@@ -1857,13 +1858,11 @@ def _mamba_component_sizes(spec: MambaSpec) -> list[int]:
 
 def _attention_component_sizes(spec: KVCacheSpec) -> tuple[int, int]:
     assert isinstance(spec, FullAttentionSpec)
-    k_size = spec.block_size * spec.num_kv_heads * spec.head_size * _dtype_size(
-        spec.dtype
+    k_size = (
+        spec.block_size * spec.num_kv_heads * spec.head_size * _dtype_size(spec.dtype)
     )
     head_size_v = getattr(spec, "head_size_v", spec.head_size)
-    v_size = spec.block_size * spec.num_kv_heads * head_size_v * _dtype_size(
-        spec.dtype
-    )
+    v_size = spec.block_size * spec.num_kv_heads * head_size_v * _dtype_size(spec.dtype)
     return k_size, v_size
 
 

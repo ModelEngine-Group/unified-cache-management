@@ -45,9 +45,9 @@ def verify_and_update_config(cls, vllm_config) -> None:
         ssm_block_page_size,
         kernel_block_size * attn_single_token_k_page_size,
     )
-    assert attn_single_token_k_page_size * attn_block_size == ssm_block_page_size, (
-        "Cannot align ssm_page_size and attn_page_size."
-    )
+    assert (
+        attn_single_token_k_page_size * attn_block_size == ssm_block_page_size
+    ), "Cannot align ssm_page_size and attn_page_size."
 
     if cache_config.block_size is None or cache_config.block_size < attn_block_size:
         cache_config.block_size = attn_block_size
