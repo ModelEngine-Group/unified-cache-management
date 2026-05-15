@@ -136,17 +136,44 @@ Navigate to `http://<your-host>:3000`. Log in with the default username (`admin`
 
 3. Click **Save & Test**. You should see a green checkmark showing "Successfully queried the Prometheus API."
 
-#### Import Dashboard
+#### Import Dashboards
+
+The dashboard is split into three importable JSONs by functional module.
+Pick the ones relevant to your debugging question:
+
+| File | When to use |
+|------|-------------|
+| `examples/metrics/grafana_connector.json` | First stop. Top-level UCM activity — hit rate, per-batch sizes, end-to-end load/save durations and speeds. |
+| `examples/metrics/grafana_pipeline_store.json` | "Why is loading slow?" — Cache stage and Posix stage tier breakdown with per-stage durations, bandwidths, hit ratio. Includes collapsible distribution rows with heatmaps. |
+| `examples/metrics/grafana_layerwise.json` | Only for `use_layerwise=true` deployments. Wait-blocking overlap signal, stalls, TTFT contribution, save tail. |
+
+For each file you want:
 
 1. Navigate to `http://<your-host>:3000/dashboard/import`.
-
-2. Click **Upload JSON file**, then upload the `unified-cache-management/examples/metrics/grafana.json` file.
-
+2. Click **Upload JSON file** and select the file.
 3. Select the Prometheus data source configured earlier.
-
 4. Click **Import** to complete the import.
 
-You should now be able to see the UCM monitoring dashboard with real-time visualization of all 9 metrics.
+The dashboards share the `ucm` Grafana tag; once imported, each
+dashboard's header carries an "Other UCM dashboards" dropdown that
+auto-discovers the others by tag, so you can hop between them while
+preserving the time range and the `model_name` template variable.
+
+### View toggle (Aggregated vs Per Worker)
+
+Each dashboard's header has a `View` selector with two values:
+
+- **Aggregated** (default): every panel collapses worker breakdown. A
+  timeseries panel shows a single line; a histogram-quantile panel
+  shows 4 lines (p50 / p90 / p99 / avg). Use this when you want to
+  see the service-level trend without per-worker noise.
+- **Per Worker**: panels split by `worker_id`. Each worker gets its
+  own line (or 4 quantile lines per worker for histogram panels).
+  Use this when you suspect a specific worker is misbehaving.
+
+Heatmap panels and panels grouped by other dimensions (e.g.
+`finished_reason`) ignore the toggle — their grouping is already
+aggregated over workers by design.
 
 ## Available Metrics
 
@@ -158,14 +185,24 @@ UCM exposes various metrics to monitor its performance. The following table list
 | `ucm:load_requests_num` | Histogram | Number of requests loaded per `start_load_kv` call |
 | `ucm:load_blocks_num` | Histogram | Number of blocks loaded per `start_load_kv` call |
 | `ucm:load_duration` | Histogram | Time to load KV cache from UCM (milliseconds) |
-| `ucm:load_speed` | Histogram | Speed of loading from UCM (GB/s) |
+| `ucm:load_speed` | Histogram | Speed of loading from UCM (GB/s, per `start_load_kv` call) |
+| `ucm:load_bytes_total` | Counter | Total bytes loaded through the connector; use `rate() / 1e9` for true summed GB/s across workers |
 | **Save Operation Metrics** | | |
 | `ucm:save_requests_num` | Histogram | Number of requests saved per `wait_for_save` call |
 | `ucm:save_blocks_num` | Histogram | Number of blocks saved per `wait_for_save` call |
 | `ucm:save_duration` | Histogram | Time to save to UCM (milliseconds) |
-| `ucm:save_speed` | Histogram | Speed of saving to UCM (GB/s) |
+| `ucm:save_speed` | Histogram | Speed of saving to UCM (GB/s, per `wait_for_save` call) |
+| `ucm:save_bytes_total` | Counter | Total bytes saved through the connector; use `rate() / 1e9` for true summed GB/s across workers |
 | **Lookup Hit Rate Metrics** | | |
 | `ucm:interval_lookup_hit_rates` | Histogram | Hit rate of UCM lookup requests |
+| `ucm:cache_lookup_duration_ms` | Histogram | Cache buffer lookup wall-clock time per `Lookup` / `LookupOnPrefix` call (ms) |
+| `ucm:cache_lookup_backend_duration_ms` | Histogram | Backend lookup wall-clock time when descending due to no buffer or buffer miss (ms) |
+| **Cache Stage Shard Counters** | | |
+| `ucm:cache_dump_shards_total` | Counter | Total shards dispatched by Cache dump (mirror of `cache_load_shards_total`) |
+| `ucm:cache_dump_backend_shards_total` | Counter | Shards actually pushed to backend on dump (excludes `!handle.Owner()` skips in shared-buffer scenario) |
+| **Posix Stage Task-Level Duration** | | |
+| `ucm:posix_load_task_duration_ms` | Histogram | End-to-end Posix load task duration (ms) — compare with `cache_load_duration_ms` to isolate cache-layer overhead |
+| `ucm:posix_dump_task_duration_ms` | Histogram | End-to-end Posix dump task duration (ms) — compare with `cache_dump_duration_ms` to isolate cache-layer overhead |
 
 ## Prometheus Configuration
 

@@ -141,4 +141,11 @@ See more detailed example in [test case](https://github.com/ModelEngine-Group/un
 ## How to See New Metrics
 After completing the above two steps, developers can view the newly added metrics via the /metrics endpoint.
 
-Developers can also add a new panel in grafana.json to display the newly added metrics. Refer to [grafana example](https://github.com/ModelEngine-Group/unified-cache-management/tree/main/examples/metrics) for more information.
+Developers can also add a new panel to one of the module dashboards
+(`grafana_connector.json`, `grafana_pipeline_store.json`, or
+`grafana_layerwise.json`) under
+[`examples/metrics/`](https://github.com/ModelEngine-Group/unified-cache-management/tree/main/examples/metrics)
+to display the newly added metric. Pick the dashboard whose module
+matches the metric: connector-level metrics go into the connector
+dashboard, store-level (Cache/Posix) metrics into the pipeline-store
+dashboard, and layerwise overlap metrics into the layerwise dashboard.

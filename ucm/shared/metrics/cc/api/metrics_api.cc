@@ -36,13 +36,18 @@ void UpdateStats(const std::string& name, double value)
     Metrics::GetInstance().UpdateStats(name, value);
 }
 
+void UpdateStats(CachedMetric& metric, double value)
+{
+    Metrics::GetInstance().UpdateStats(metric, value);
+}
+
 void UpdateStats(const std::unordered_map<std::string, double>& values)
 {
     Metrics::GetInstance().UpdateStats(values);
 }
 
 std::tuple<std::unordered_map<std::string, double>, std::unordered_map<std::string, double>,
-           std::unordered_map<std::string, std::vector<double>>>
+           std::unordered_map<std::string, std::vector<double>>, uint64_t>
 GetAllStatsAndClear()
 {
     return Metrics::GetInstance().GetAllStatsAndClear();

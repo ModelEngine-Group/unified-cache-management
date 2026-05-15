@@ -27,6 +27,7 @@
 #include "dump_queue.h"
 #include "load_queue.h"
 #include "logger/logger.h"
+#include "metrics_api.h"
 #include "template/task_wrapper.h"
 #include "trans_task.h"
 
@@ -55,11 +56,29 @@ protected:
         const auto num = t->desc.size();
         const auto size = shardSize_ * num;
         const auto tp = w->startTp;
+        const auto isLoad = t->type == TransTask::Type::LOAD;
         UC_DEBUG("Cache task({},{},{},{}) dispatching.", id, brief, num, size);
-        w->SetEpilog([id, brief = std::move(brief), num, size, tp] {
+        w->SetEpilog([id, brief = std::move(brief), num, size, tp, isLoad] {
             auto cost = NowTime::Now() - tp;
+            auto costMs = cost * 1e3;
+            auto bwGbps = cost > 0 ? static_cast<double>(size) / cost / 1e9 : 0.0;
             UC_DEBUG("Cache task({},{},{},{}) finished, cost {:.3f}ms.", id, brief, num, size,
-                     cost * 1e3);
+                     costMs);
+            if (isLoad) {
+                UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("cache_load_duration_ms"), costMs);
+                UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("cache_load_bandwidth_gbps"), bwGbps);
+                UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("cache_load_blocks_total"),
+                                         static_cast<double>(num));
+                UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("cache_load_bytes_total"),
+                                         static_cast<double>(size));
+            } else {
+                UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("cache_dump_duration_ms"), costMs);
+                UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("cache_dump_bandwidth_gbps"), bwGbps);
+                UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("cache_dump_blocks_total"),
+                                         static_cast<double>(num));
+                UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("cache_dump_bytes_total"),
+                                         static_cast<double>(size));
+            }
         });
         if (t->type == TransTask::Type::LOAD) {
             loadQ_.Submit(t, w);

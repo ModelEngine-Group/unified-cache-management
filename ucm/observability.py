@@ -182,9 +182,14 @@ class PrometheusStatsLogger:
         Periodically update Prometheus metrics in a loop until stopped.
         """
         while self.is_running:
-            counter_stats, gauge_stats, histogram_stats = (
+            counter_stats, gauge_stats, histogram_stats, dropped_histogram_stats = (
                 ucmmetrics.get_all_stats_and_clear()
             )
+            if dropped_histogram_stats > 0:
+                logger.info(
+                    "Dropped %d histogram metric samples because histogram_max_length was reached.",
+                    dropped_histogram_stats,
+                )
             self.update_stats(counter_stats, gauge_stats, histogram_stats)
             time.sleep(self.log_interval)
 

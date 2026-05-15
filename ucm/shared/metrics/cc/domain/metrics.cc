@@ -36,80 +36,154 @@ void Metrics::CreateStats(const std::string& name, const std::string& type)
     }
     std::string typeUpper = type;
     std::transform(typeUpper.begin(), typeUpper.end(), typeUpper.begin(), ::toupper);
-    std::unique_lock<std::shared_mutex> lock(mutex_);
-    if (statsType_.count(name)) {
-        return;
+    MetricType metricType;
+    if (typeUpper == "COUNTER") {
+        metricType = MetricType::COUNTER;
+    } else if (typeUpper == "GAUGE") {
+        metricType = MetricType::GAUGE;
+    } else if (typeUpper == "HISTOGRAM") {
+        metricType = MetricType::HISTOGRAM;
     } else {
-        if (typeUpper == "COUNTER") {
-            statsType_[name] = MetricType::COUNTER;
-        } else if (typeUpper == "GAUGE") {
-            statsType_[name] = MetricType::GAUGE;
-        } else if (typeUpper == "HISTOGRAM") {
-            statsType_[name] = MetricType::HISTOGRAM;
-        } else {
-            return;
-        }
+        return;
     }
+    std::unique_lock<std::shared_mutex> lock(mutex_);
+    if (nameToId_.count(name)) { return; }
+    const auto id = static_cast<MetricId>(metrics_.size());
+    nameToId_[name] = id;
+    metrics_.push_back(MetricInfo{name, metricType});
+    registerEpoch_.fetch_add(1, std::memory_order_release);
 }
 
 void Metrics::UpdateStats(const std::string& name, double value)
 {
-    if (!isRegisteredThread_) {
-        std::unique_lock<std::shared_mutex> lock(mutex_);
-        buffers_.push_back({threadBuffer_});
-        isRegisteredThread_ = true;
+    if (!isInited_.load(std::memory_order_acquire)) { return; }
+    UpdateStats(ResolveMetricId(name), value);
+}
+
+void Metrics::UpdateStats(CachedMetric& metric, double value)
+{
+    UpdateStats(ResolveCachedMetric(metric), value);
+}
+
+void Metrics::UpdateStats(MetricId id, double value)
+{
+    if (!isInited_.load(std::memory_order_acquire) || id == INVALID_METRIC_ID ||
+        id >= metrics_.size()) {
+        return;
     }
-
-    auto it = statsType_.find(name);
-    if (it == statsType_.end()) { return; }
-
-    int writeIdx_ = threadBuffer_->writeIdx_.load(std::memory_order_acquire);
-    std::shared_lock<std::shared_mutex> lock(threadBuffer_->innerBufs_[writeIdx_].bufferMutex_);
-    auto& writeBuf = threadBuffer_->GetWriteBuffer(writeIdx_);
-
-    switch (it->second) {
-        case MetricType::COUNTER: writeBuf.counterStats_[name] += value; break;
-        case MetricType::GAUGE: writeBuf.gaugeStats_[name] = value; break;
-        case MetricType::HISTOGRAM:
-            if (writeBuf.histogramStats_[name].size() < maxVectorLen_) {
-                writeBuf.histogramStats_[name].push_back(value);
-            }
-            break;
-
-        default: break;
-    }
+    RegisterCurrentThread();
+    MetricBuffer::WriteGuard guard{*threadBuffer_};
+    UpdateBuffer(*threadBuffer_, guard.Index(), id, value);
 }
 
 void Metrics::UpdateStats(const std::unordered_map<std::string, double>& values)
 {
-    for (const auto& pair : values) { UpdateStats(pair.first, pair.second); }
+    if (!isInited_.load(std::memory_order_acquire) || values.empty()) { return; }
+
+    for (const auto& pair : values) { UpdateStats(ResolveMetricId(pair.first), pair.second); }
+}
+
+MetricId Metrics::ResolveMetricId(const std::string& name) const
+{
+    auto it = nameToId_.find(name);
+    return it == nameToId_.end() ? INVALID_METRIC_ID : it->second;
+}
+
+MetricId Metrics::ResolveMetricId(const char* name) const
+{
+    if (name == nullptr) { return INVALID_METRIC_ID; }
+    auto it = nameToId_.find(name);
+    return it == nameToId_.end() ? INVALID_METRIC_ID : it->second;
+}
+
+MetricId Metrics::ResolveCachedMetric(CachedMetric& metric) const
+{
+    auto id = metric.id.load(std::memory_order_acquire);
+    if (id != INVALID_METRIC_ID) { return id; }
+    if (!isInited_.load(std::memory_order_acquire)) { return INVALID_METRIC_ID; }
+    auto epoch = registerEpoch_.load(std::memory_order_acquire);
+    if (metric.seenEpoch.load(std::memory_order_acquire) == epoch) { return INVALID_METRIC_ID; }
+    id = ResolveMetricId(metric.name);
+    metric.id.store(id, std::memory_order_release);
+    metric.seenEpoch.store(epoch, std::memory_order_release);
+    return id;
+}
+
+void Metrics::RegisterCurrentThread()
+{
+    if (isRegisteredThread_) { return; }
+    std::unique_lock<std::shared_mutex> lock(mutex_);
+    buffers_.push_back({threadBuffer_});
+    isRegisteredThread_ = true;
+}
+
+void Metrics::UpdateBuffer(MetricBuffer& metricBuffer, int innerBufferIndex, MetricId id,
+                           double value)
+{
+    auto& buffer = metricBuffer.GetWriteBuffer(innerBufferIndex);
+    switch (metrics_[id].type) {
+        case MetricType::COUNTER: buffer.counterStats_[id] += value; break;
+        case MetricType::GAUGE: buffer.gaugeStats_[id] = value; break;
+        case MetricType::HISTOGRAM:
+            if (buffer.histogramStats_[id].size() < maxVectorLen_) {
+                buffer.histogramStats_[id].push_back(value);
+            } else {
+                metricBuffer.DropHistogramStats();
+            }
+            break;
+        default: break;
+    }
+}
+
+const std::string* Metrics::MetricName(MetricId id) const
+{
+    if (id == INVALID_METRIC_ID || id >= metrics_.size()) { return nullptr; }
+    return &metrics_[id].name;
 }
 
 std::tuple<std::unordered_map<std::string, double>, std::unordered_map<std::string, double>,
-           std::unordered_map<std::string, std::vector<double>>>
+           std::unordered_map<std::string, std::vector<double>>, uint64_t>
 Metrics::GetAllStatsAndClear()
 {
     std::unordered_map<std::string, double> totalCounter;
     std::unordered_map<std::string, double> totalGauge;
     std::unordered_map<std::string, std::vector<double>> totalHistogram;
+    std::vector<std::shared_ptr<MetricBuffer>> buffers;
+    uint64_t droppedHistogramStats = 0;
 
-    for (const auto& buf : buffers_) {
+    {
+        std::shared_lock<std::shared_mutex> lock(mutex_);
+        buffers.assign(buffers_.begin(), buffers_.end());
+    }
+
+    for (const auto& buf : buffers) {
         int oldIdx = buf->SwitchBuffer();
-        std::unique_lock<std::shared_mutex> lock(buf->innerBufs_[oldIdx].bufferMutex_);
+        buf->WaitNoActiveWriter(oldIdx);
+        droppedHistogramStats += buf->DroppedHistogramStats();
         auto& read_buf = buf->GetReadBuffer(oldIdx);
 
-        for (const auto& [name, value] : read_buf.counterStats_) { totalCounter[name] += value; }
+        for (const auto& [id, value] : read_buf.counterStats_) {
+            auto name = MetricName(id);
+            if (name) { totalCounter[*name] += value; }
+        }
 
-        for (const auto& [name, value] : read_buf.gaugeStats_) { totalGauge[name] = value; }
+        for (const auto& [id, value] : read_buf.gaugeStats_) {
+            auto name = MetricName(id);
+            if (name) { totalGauge[*name] = value; }
+        }
 
-        for (auto& [name, values] : read_buf.histogramStats_) {
-            totalHistogram[name].insert(totalHistogram[name].end(), values.begin(), values.end());
+        for (auto& [id, values] : read_buf.histogramStats_) {
+            auto name = MetricName(id);
+            if (name) {
+                totalHistogram[*name].insert(totalHistogram[*name].end(), values.begin(),
+                                             values.end());
+            }
         }
         buf->ClearReadBuffer(oldIdx);
     }
 
-    auto result =
-        std::make_tuple(std::move(totalCounter), std::move(totalGauge), std::move(totalHistogram));
+    auto result = std::make_tuple(std::move(totalCounter), std::move(totalGauge),
+                                  std::move(totalHistogram), droppedHistogramStats);
 
     return result;
 }

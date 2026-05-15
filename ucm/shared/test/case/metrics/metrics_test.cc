@@ -21,11 +21,13 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  * */
+#include <atomic>
 #include <chrono>
 #include <gtest/gtest.h>
 #include <iostream>
 #include <thread>
 #include <unistd.h>
+#include <vector>
 #include "metrics_api.h"
 
 using namespace UC::Metrics;
@@ -104,4 +106,153 @@ TEST_F(UCMetricsUT, UpdateMultipleStatsAndGet)
 
     ASSERT_NE(histogram_iter.find("stats3"), histogram_iter.end());
     ASSERT_EQ(histogram_iter.at("stats3")[1], 5.5);
+}
+
+TEST_F(UCMetricsUT, UpdateCachedMetricAndGet)
+{
+    GetAllStatsAndClear();
+
+    UpdateStats(NAME_TO_METRIC_ID("stats1"), 2.0);
+    UpdateStats(NAME_TO_METRIC_ID("stats1"), 3.0);
+    UpdateStats(NAME_TO_METRIC_ID("stats2"), 5.0);
+    UpdateStats(NAME_TO_METRIC_ID("stats3"), 7.0);
+
+    auto stats = GetAllStatsAndClear();
+    const auto& counter_iter = std::get<0>(stats);
+    const auto& gauge_iter = std::get<1>(stats);
+    const auto& histogram_iter = std::get<2>(stats);
+
+    ASSERT_NE(counter_iter.find("stats1"), counter_iter.end());
+    ASSERT_EQ(counter_iter.at("stats1"), 5.0);
+
+    ASSERT_NE(gauge_iter.find("stats2"), gauge_iter.end());
+    ASSERT_EQ(gauge_iter.at("stats2"), 5.0);
+
+    ASSERT_NE(histogram_iter.find("stats3"), histogram_iter.end());
+    ASSERT_EQ(histogram_iter.at("stats3")[0], 7.0);
+}
+
+TEST_F(UCMetricsUT, CachedMetricRetriesAfterLateRegistration)
+{
+    GetAllStatsAndClear();
+
+    CachedMetric metric{"late_epoch_stats"};
+    UpdateStats(metric, 1.0);
+    UpdateStats(metric, 3.0);
+
+    auto missStats = GetAllStatsAndClear();
+    const auto& miss_counter_iter = std::get<0>(missStats);
+
+    ASSERT_EQ(miss_counter_iter.find("late_epoch_stats"), miss_counter_iter.end());
+    ASSERT_EQ(metric.id.load(std::memory_order_acquire), INVALID_METRIC_ID);
+    ASSERT_NE(metric.seenEpoch.load(std::memory_order_acquire), 0);
+
+    CreateStats("late_epoch_stats", "counter");
+    ASSERT_EQ(metric.id.load(std::memory_order_acquire), INVALID_METRIC_ID);
+
+    UpdateStats(metric, 2.0);
+    ASSERT_NE(metric.id.load(std::memory_order_acquire), INVALID_METRIC_ID);
+
+    auto stats = GetAllStatsAndClear();
+    const auto& counter_iter = std::get<0>(stats);
+
+    ASSERT_NE(counter_iter.find("late_epoch_stats"), counter_iter.end());
+    ASSERT_EQ(counter_iter.at("late_epoch_stats"), 2.0);
+}
+
+TEST_F(UCMetricsUT, CachedMetricDoesNotMissResolveAgainWithoutRegistration)
+{
+    GetAllStatsAndClear();
+
+    CachedMetric metric{"missing_epoch_stats"};
+    UpdateStats(metric, 1.0);
+    auto seenEpoch = metric.seenEpoch.load(std::memory_order_acquire);
+    UpdateStats(metric, 2.0);
+
+    auto stats = GetAllStatsAndClear();
+    const auto& counter_iter = std::get<0>(stats);
+
+    ASSERT_EQ(counter_iter.find("missing_epoch_stats"), counter_iter.end());
+    ASSERT_EQ(metric.id.load(std::memory_order_acquire), INVALID_METRIC_ID);
+    ASSERT_EQ(metric.seenEpoch.load(std::memory_order_acquire), seenEpoch);
+
+    CreateStats("missing_epoch_stats", "counter");
+    UpdateStats(metric, 2.0);
+
+    stats = GetAllStatsAndClear();
+    const auto& counter_iter_after_register = std::get<0>(stats);
+
+    ASSERT_NE(counter_iter_after_register.find("missing_epoch_stats"),
+              counter_iter_after_register.end());
+    ASSERT_EQ(counter_iter_after_register.at("missing_epoch_stats"), 2.0);
+}
+
+TEST_F(UCMetricsUT, HistogramStopsAtMaxVectorLen)
+{
+    GetAllStatsAndClear();
+
+    CreateStats("bounded_histogram_stats", "histogram");
+    const auto droppedBefore = std::get<3>(GetAllStatsAndClear());
+    for (size_t i = 0; i < 1000001; ++i) {
+        UpdateStats(NAME_TO_METRIC_ID("bounded_histogram_stats"), static_cast<double>(i));
+    }
+
+    auto stats = GetAllStatsAndClear();
+    const auto& histogram_iter = std::get<2>(stats);
+    const auto droppedAfter = std::get<3>(stats);
+
+    ASSERT_NE(histogram_iter.find("bounded_histogram_stats"), histogram_iter.end());
+    ASSERT_EQ(histogram_iter.at("bounded_histogram_stats").size(), 1000000);
+    ASSERT_GT(droppedAfter, droppedBefore);
+}
+
+TEST_F(UCMetricsUT, ConcurrentUpdateAndCollect)
+{
+    GetAllStatsAndClear();
+
+    constexpr int numThreads = 8;
+    constexpr int updatesPerThread = 2000;
+    constexpr double expectedUpdates = numThreads * updatesPerThread;
+    std::atomic<int> ready{0};
+    std::atomic<int> finished{0};
+    std::atomic<bool> start{false};
+    std::vector<std::thread> threads;
+
+    for (int i = 0; i < numThreads; ++i) {
+        threads.emplace_back([&] {
+            ready.fetch_add(1, std::memory_order_release);
+            while (!start.load(std::memory_order_acquire)) { std::this_thread::yield(); }
+            for (int j = 0; j < updatesPerThread; ++j) {
+                UpdateStats("stats1", 1.0);
+                UpdateStats("stats3", static_cast<double>(j));
+            }
+            finished.fetch_add(1, std::memory_order_release);
+        });
+    }
+
+    while (ready.load(std::memory_order_acquire) < numThreads) { std::this_thread::yield(); }
+    start.store(true, std::memory_order_release);
+
+    double totalCounter = 0.0;
+    size_t totalHistogram = 0;
+    auto collect = [&] {
+        auto stats = GetAllStatsAndClear();
+        const auto& counters = std::get<0>(stats);
+        const auto& histograms = std::get<2>(stats);
+        auto counter = counters.find("stats1");
+        if (counter != counters.end()) { totalCounter += counter->second; }
+        auto histogram = histograms.find("stats3");
+        if (histogram != histograms.end()) { totalHistogram += histogram->second.size(); }
+    };
+
+    while (finished.load(std::memory_order_acquire) < numThreads) {
+        collect();
+        std::this_thread::yield();
+    }
+
+    for (auto& thread : threads) { thread.join(); }
+    collect();
+
+    ASSERT_EQ(totalCounter, expectedUpdates);
+    ASSERT_EQ(totalHistogram, static_cast<size_t>(expectedUpdates));
 }

@@ -50,13 +50,16 @@ def metrics_with_update_stats():
     ucmmetrics.create_stats("histogram_1", "histogram")
     ucmmetrics.update_stats("histogram_1", 1)
 
-    counters, gauges, histograms = ucmmetrics.get_all_stats_and_clear()
+    counters, gauges, histograms, dropped_histogram_stats = (
+        ucmmetrics.get_all_stats_and_clear()
+    )
     print(
         f"After clear then get counters: {counters}, gauges: {gauges}, histograms: {histograms}"
     )
     assert counters["counter_1"] == 1.2
     assert gauges["gauge_1"] == 2.2
     assert histograms["histogram_1"][-1] == 1.0
+    assert dropped_histogram_stats == 0
 
     ucmmetrics.update_stats(
         {
@@ -73,10 +76,13 @@ def metrics_with_update_stats():
             "histogram_1": 8,
         }
     )
-    counters, gauges, histograms = ucmmetrics.get_all_stats_and_clear()
+    counters, gauges, histograms, dropped_histogram_stats = (
+        ucmmetrics.get_all_stats_and_clear()
+    )
     assert counters["counter_1"] == 10.0
     assert gauges["gauge_1"] == 6.6
     assert len(histograms["histogram_1"]) == 2
+    assert dropped_histogram_stats == 0
     print(
         f"After clear then get counters: {counters}, gauges: {gauges}, histograms: {histograms}"
     )

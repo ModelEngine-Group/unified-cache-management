@@ -33,11 +33,20 @@ void CreateStats(const std::string& name, const std::string& type);
 
 void UpdateStats(const std::string& name, double value);
 
+void UpdateStats(CachedMetric& metric, double value);
+
 void UpdateStats(const std::unordered_map<std::string, double>& values);
 
 std::tuple<std::unordered_map<std::string, double>, std::unordered_map<std::string, double>,
-           std::unordered_map<std::string, std::vector<double>>>
+           std::unordered_map<std::string, std::vector<double>>, uint64_t>
 GetAllStatsAndClear();
 
 }  // namespace UC::Metrics
+
+#define NAME_TO_METRIC_ID(name)                          \
+    []() -> ::UC::Metrics::CachedMetric& {               \
+        static ::UC::Metrics::CachedMetric metric{name}; \
+        return metric;                                   \
+    }()
+
 #endif

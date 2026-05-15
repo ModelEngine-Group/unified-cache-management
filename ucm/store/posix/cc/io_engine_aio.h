@@ -27,6 +27,7 @@
 #include "aio_impl.h"
 #include "block_operator.h"
 #include "logger/logger.h"
+#include "metrics_api.h"
 #include "template/task_wrapper.h"
 #include "trans_task.h"
 
@@ -51,6 +52,13 @@ public:
     }
 
 private:
+    template <bool dump>
+    static void UpdateWaitMetrics(double wait)
+    {
+        static UC::Metrics::CachedMetric dumpQueueDuration{"posix_dump_queue_wait_duration_ms"};
+        static UC::Metrics::CachedMetric loadQueueDuration{"posix_load_queue_wait_duration_ms"};
+        UC::Metrics::UpdateStats(dump ? dumpQueueDuration : loadQueueDuration, wait * 1e3);
+    }
     void CommitBlock(Detail::BlockId id, bool success)
     {
         blockOperator_.Submit(BlockOperator::CommitTask{std::move(id), success});
@@ -75,8 +83,8 @@ private:
     {
         const auto last = shard.index + 1 == nShardPerBlock_;
         const auto& id = shard.owner;
-        auto handleFailure = [&](int32_t error, int32_t fd) {
-            if (error != 0) { failureSet_.Insert(tid); }
+        auto handleFailure = [&](int32_t fd) {
+            failureSet_.Insert(tid);
             if (fd >= 0) { ::close(fd); }
             if constexpr (dump) {
                 if (last) { CommitBlock(id, false); }
@@ -85,10 +93,15 @@ private:
         };
         if (result.error != 0) {
             UC_ERROR("Failed({}) to do open on block({}).", result.error, shard.owner);
-            failureSet_.Insert(tid);
+            handleFailure(result.fd);
+            return;
         }
         if (failureSet_.Contains(tid)) {
-            handleFailure(0, result.fd);
+            if (result.fd >= 0) { ::close(result.fd); }
+            if constexpr (dump) {
+                if (last) { CommitBlock(id, false); }
+            }
+            w->Done();
             return;
         }
         AioImpl::Io io;
@@ -100,7 +113,7 @@ private:
             OnIoCallback<dump>(tid, w, fd, last, id, ioResult);
         };
         auto status = dump ? aio_.WriteAsync(std::move(io)) : aio_.ReadAsync(std::move(io));
-        if (status.Failure()) { handleFailure(-1, result.fd); }
+        if (status.Failure()) { handleFailure(result.fd); }
     }
     template <bool dump>
     void Dispatch(TaskPtr t, WaiterPtr w)
@@ -130,15 +143,30 @@ private:
         const auto num = t->desc.size();
         const auto size = shardSize_ * num;
         const auto tp = w->startTp;
+        const auto isDump = (t->type == TransTask::Type::DUMP);
         UC_DEBUG("Posix task({},{},{},{}) dispatching.", id, brief, num, size);
-        w->SetEpilog([id, brief = std::move(brief), num, size, tp] {
+        const auto wait = NowTime::Now() - tp;
+        w->SetEpilog([id, brief = std::move(brief), num, size, tp, isDump] {
             auto cost = NowTime::Now() - tp;
+            auto costMs = cost * 1e3;
+            auto bwGbps = cost > 0 ? static_cast<double>(size) / cost / 1e9 : 0.0;
             UC_DEBUG("Posix task({},{},{},{}) finished, cost {:.3f}ms.", id, brief, num, size,
-                     cost * 1e3);
+                     costMs);
+            static UC::Metrics::CachedMetric loadDuration{"posix_load_task_duration_ms"};
+            static UC::Metrics::CachedMetric dumpDuration{"posix_dump_task_duration_ms"};
+            static UC::Metrics::CachedMetric loadBandwidth{"posix_s2h_bandwidth_gbps"};
+            static UC::Metrics::CachedMetric dumpBandwidth{"posix_h2s_bandwidth_gbps"};
+            static UC::Metrics::CachedMetric loadBytes{"posix_s2h_bytes_total"};
+            static UC::Metrics::CachedMetric dumpBytes{"posix_h2s_bytes_total"};
+            UC::Metrics::UpdateStats(isDump ? dumpDuration : loadDuration, costMs);
+            UC::Metrics::UpdateStats(isDump ? dumpBandwidth : loadBandwidth, bwGbps);
+            UC::Metrics::UpdateStats(isDump ? dumpBytes : loadBytes, static_cast<double>(size));
         });
-        if (t->type == TransTask::Type::DUMP) {
+        if (isDump) {
+            UpdateWaitMetrics<true>(wait);
             Dispatch<true>(t, w);
         } else {
+            UpdateWaitMetrics<false>(wait);
             Dispatch<false>(t, w);
         }
     }
