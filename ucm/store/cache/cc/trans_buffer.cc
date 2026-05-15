@@ -164,12 +164,17 @@ public:
             UC_ERROR("Failed to make buffer on device({}).", deviceId);
             return Status::Error();
         }
+        UC_DEBUG("Make cache local buffer start, device: {}, ioDirect: {}, nodeSize: {}, nNode: {}, totalSize: {}.",
+                 deviceId, ioDirect_, nodeSize, nNode, nodeSize * nNode);
         data_ = ioDirect_ ? buffer->MakeHostBuffer4DirectIo(nodeSize * nNode)
                           : buffer->MakeHostBuffer(nodeSize * nNode);
         if (!data_) [[unlikely]] {
-            UC_ERROR("Failed to make pinned({}) for device({}).", nodeSize * nNode, deviceId);
+            UC_ERROR("Failed to make pinned({}) for device({}), ioDirect: {}, nodeSize: {}, nNode: {}.",
+                     nodeSize * nNode, deviceId, ioDirect_, nodeSize, nNode);
             return Status::OutOfMemory();
         }
+        UC_DEBUG("Make cache local buffer success, device: {}, ioDirect: {}, totalSize: {}.",
+                 deviceId, ioDirect_, nodeSize * nNode);
         for (size_t i = 0; i < nHashTableBucket; i++) { header_.buckets[i] = invalidIndex; }
         for (size_t i = 0; i < nNode; i++) { meta_[i].Init(); }
         header_.freeHead = 0;
