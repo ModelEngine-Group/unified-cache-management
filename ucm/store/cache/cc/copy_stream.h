@@ -37,7 +37,7 @@ class CopyStream {
     std::vector<std::shared_ptr<Trans::Stream>> streams_;
 
 public:
-    Status Setup(const int32_t deviceId, const size_t streamNumber)
+    Status Setup(const int32_t deviceId, const size_t streamNumber, const bool useGdr)
     {
         Trans::Device device;
         auto s = device.Setup(deviceId);
@@ -47,7 +47,8 @@ public:
         }
         streams_.reserve(streamNumber);
         for (size_t i = 0; i < streamNumber; ++i) {
-            auto stream = device.MakeSharedStream();
+            std::shared_ptr<Trans::Stream> stream =
+                useGdr ? device.MakeGdrStream() : device.MakeSharedStream();
             if (!stream) [[unlikely]] {
                 UC_ERROR("Failed to make stream on device({}).", deviceId);
                 return Status::Error();

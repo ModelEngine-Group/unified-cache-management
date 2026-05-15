@@ -159,7 +159,7 @@ inline void HostToDeviceScatterAsync(Stream& self, Ptr src, py::object dst, size
     }
 }
 
-} // namespace UC::Trans
+}  // namespace UC::Trans
 
 PYBIND11_MODULE(ucmtrans, m)
 {
@@ -188,5 +188,6 @@ PYBIND11_MODULE(ucmtrans, m)
     d.def(py::init<>());
     d.def("Setup", [](Device& self, int32_t deviceId) { ThrowIfFailed(self.Setup(deviceId)); });
     d.def("MakeStream", &Device::MakeStream);
+    d.def("MakeGdrStream", &Device::MakeGdrStream);
     d.def("MakeSMStream", &Device::MakeSMStream);
 }

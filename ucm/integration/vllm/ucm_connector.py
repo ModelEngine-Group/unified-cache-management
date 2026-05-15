@@ -69,6 +69,7 @@ class KVCacheLayout:
     ) -> None:
         # each row is a layer, each column is a tensor_size/ptr in the layer (e.g., k, v, rope, k_index)
         self.base_ptrs: np.ndarray  # (n_layers, n_ptrs）
+        self.buffer_sizes: np.ndarray  # (n_layers, n_ptrs)
         self.tensor_size_lists: np.ndarray  # (n_layers, n_tensor_sizes)
         self.use_layerwise = use_layerwise
         self.vllm_config = vllm_config
@@ -89,16 +90,19 @@ class KVCacheLayout:
         num_rows = len(set(self.layer_name_to_id.values()))
         raw_ptr_rows = [[] for _ in range(num_rows)]
         stride_rows = [[] for _ in range(num_rows)]
+        buffer_size_rows = [[] for _ in range(num_rows)]
 
         for layer_name, kv_layer in kvcaches.items():
             ptrs = []
             strides = []
+            buffer_sizes = []
 
             def handle_tensor(t: torch.Tensor, size_dims):
                 ptrs.append(t[0].data_ptr())
 
                 stride = math.prod([t.shape[i] for i in size_dims]) * t.element_size()
                 strides.append(stride)
+                buffer_sizes.append(int(t.shape[0]) * stride)
 
             if isinstance(kv_layer, torch.Tensor):
                 if kv_layer.dim() == 5:
@@ -122,9 +126,11 @@ class KVCacheLayout:
             local_layer_id = self.layer_name_to_id[layer_name] - self.first_layer_id
             raw_ptr_rows[local_layer_id].extend(ptrs)
             stride_rows[local_layer_id].extend(strides)
+            buffer_size_rows[local_layer_id].extend(buffer_sizes)
 
         self.base_ptrs = np.asarray(raw_ptr_rows, dtype=np.uint64)
         self.tensor_size_lists = np.asarray(stride_rows, dtype=np.uint64)
+        self.buffer_sizes = np.asarray(buffer_size_rows, dtype=np.uint64)
 
         logger.info(
             f"base_ptrs: {self.base_ptrs.shape}, tensor_size_lists: {self.tensor_size_lists.shape}"
@@ -345,6 +351,20 @@ class UCMDirectConnector(KVConnectorBase_V1):
             config["shard_size"] = kv_cache_layout.shard_size * self.blocks_per_chunk
             config["block_size"] = kv_cache_layout.block_size * self.blocks_per_chunk
             config["local_rank_size"] = self.tp_size if self.is_mla else 1
+            buffer_addrs = kv_cache_layout.base_ptrs.reshape(-1).tolist()
+            buffer_sizes = kv_cache_layout.buffer_sizes.reshape(-1).tolist()
+            gpu_kv_buffer_set = set()
+            gpu_kv_buffer_addrs = []
+            gpu_kv_buffer_sizes = []
+            for addr, size in zip(buffer_addrs, buffer_sizes):
+                key = (int(addr), int(size))
+                if key in gpu_kv_buffer_set:
+                    continue
+                gpu_kv_buffer_set.add(key)
+                gpu_kv_buffer_addrs.append(key[0])
+                gpu_kv_buffer_sizes.append(key[1])
+            config["gpu_kv_buffer_addrs"] = gpu_kv_buffer_addrs
+            config["gpu_kv_buffer_sizes"] = gpu_kv_buffer_sizes
             if cpu_affinity_cores:
                 config["cpu_affinity_cores"] = list(cpu_affinity_cores)
         else:

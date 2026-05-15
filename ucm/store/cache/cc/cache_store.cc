@@ -21,9 +21,11 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  * */
+#include <memory>
 #include <numeric>
 #include "buffer_manager.h"
 #include "logger/logger.h"
+#include "trans/cuda/gdr/gdr_config.h"
 #include "trans_manager.h"
 
 namespace UC::CacheStore {
@@ -32,6 +34,7 @@ class CacheStore : public StoreV1 {
     BufferManager bufferMgr_;
     bool transEnable_{false};
     TransManager transMgr_;
+    std::unique_ptr<Trans::GdrKVBufferConfig> gpuKvBufferRegistrations_{nullptr};
 
 public:
     Status Setup(const Detail::Dictionary& inConfig) override
@@ -41,6 +44,15 @@ public:
         if (s.Failure()) [[unlikely]] {
             UC_ERROR("Failed to check config params: {}.", s);
             return s;
+        }
+        if (config.deviceId >= 0 && !config.gpuKvBufferAddrs.empty()) {
+            gpuKvBufferRegistrations_ = std::make_unique<Trans::GdrKVBufferConfig>();
+            s = gpuKvBufferRegistrations_->Register(config.gpuKvBufferAddrs,
+                                                    config.gpuKvBufferSizes);
+            if (s.Failure()) [[unlikely]] {
+                UC_ERROR("Failed({}) to register GPU KV buffers.", s);
+                return s;
+            }
         }
         s = bufferMgr_.Setup(config);
         if (s.Failure()) [[unlikely]] {
@@ -130,6 +142,9 @@ private:
         config.GetNumber("timeout_ms", param.timeoutMs);
         config.GetNumber("cache_stream_number", param.streamNumber);
         config.GetNumber("cache_load_exclusive_buffer_number", param.loadExclusiveBufferNumber);
+        config.GetNumbers("gpu_kv_buffer_addrs", param.gpuKvBufferAddrs);
+        config.GetNumbers("gpu_kv_buffer_sizes", param.gpuKvBufferSizes);
+        config.Get("use_gdr", param.useGdr);
         return param;
     }
     Status CheckSizeConfig(const Config& config)
@@ -153,13 +168,16 @@ private:
             return Status::InvalidParam("invalid device({})", config.deviceId);
         }
         if (config.uniqueId.empty()) { return Status::InvalidParam("invalid unique id"); }
+        auto s =
+            Trans::GdrKVBufferConfig::Validate(config.gpuKvBufferAddrs, config.gpuKvBufferSizes);
+        if (s.Failure()) { return s; }
         for (const auto core : config.cpuAffinityCores) {
             if (core < 0 || core >= CPU_SETSIZE) {
                 return Status::InvalidParam("invalid cpu core({})", core);
             }
         }
         if (config.deviceId == -1) { return Status::OK(); }
-        auto s = CheckSizeConfig(config);
+        s = CheckSizeConfig(config);
         if (s.Failure()) { return s; }
         auto bufferNumber = config.bufferCapacity / config.shardSize;
         if (bufferNumber < 1024 || bufferNumber < config.loadExclusiveBufferNumber * 2) {
@@ -204,6 +222,8 @@ private:
         UC_INFO("Set {}::TimeoutMs to {}.", ns, config.timeoutMs);
         UC_INFO("Set {}::StreamNumber to {}.", ns, config.streamNumber);
         UC_INFO("Set {}::LoadExclusiveBufferNumber to {}.", ns, config.loadExclusiveBufferNumber);
+        UC_INFO("Set {}::GpuKvBufferNumber to {}.", ns, config.gpuKvBufferAddrs.size());
+        UC_INFO("Set {}::UseGdr to {}.", ns, config.useGdr);
     }
 };
 

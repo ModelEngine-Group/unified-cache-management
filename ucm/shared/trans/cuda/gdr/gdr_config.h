@@ -1,7 +1,7 @@
 /**
  * MIT License
  *
- * Copyright (c) 2025 Huawei Technologies Co., Ltd. All rights reserved.
+ * Copyright (c) 2026 Huawei Technologies Co., Ltd. All rights reserved.
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -21,37 +21,41 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  * */
-#ifndef UNIFIEDCACHE_CACHE_STORE_CC_GLOBAL_CONFIG_H
-#define UNIFIEDCACHE_CACHE_STORE_CC_GLOBAL_CONFIG_H
+#ifndef UNIFIEDCACHE_TRANS_CUDA_GDR_CONFIG_H
+#define UNIFIEDCACHE_TRANS_CUDA_GDR_CONFIG_H
 
 #include <cstdint>
-#include <memory>
-#include "ucmstore_v1.h"
+#include <string>
+#include <vector>
+#include "status/status.h"
 
-namespace UC::CacheStore {
+namespace UC::Trans {
 
-struct Config {
-    StoreV1* storeBackend{};
-    std::string uniqueId{};
-    int32_t deviceId{-1};
-    std::vector<size_t> tensorSizes{};
-    size_t shardSize{0};
-    size_t blockSize{0};
-    bool ioDirect{false};
-    std::vector<ssize_t> cpuAffinityCores{};
-    size_t bufferCapacity{256ULL << 30};
-    size_t loadExclusiveBufferNumber{1024};
-    bool shareBufferEnable{true};
-    size_t waitingQueueDepth{8192};
-    size_t runningQueueDepth{524288};
-    size_t timeoutMs{30000};
-    size_t streamNumber{4};
-    bool cacheLoadBackendOnly{false};
-    std::vector<uintptr_t> gpuKvBufferAddrs{};
-    std::vector<size_t> gpuKvBufferSizes{};
-    bool useGdr{false};
+class GdrNicConfig {
+public:
+    static Expected<std::string> ResolveNicName(int32_t deviceId);
 };
 
-}  // namespace UC::CacheStore
+class GdrKVBufferConfig {
+public:
+    GdrKVBufferConfig() = default;
+    GdrKVBufferConfig(const GdrKVBufferConfig&) = delete;
+    GdrKVBufferConfig& operator=(const GdrKVBufferConfig&) = delete;
+    GdrKVBufferConfig(GdrKVBufferConfig&&) = default;
+    GdrKVBufferConfig& operator=(GdrKVBufferConfig&&) = default;
+    ~GdrKVBufferConfig();
+
+    static Status Validate(const std::vector<uintptr_t>& addrs, const std::vector<size_t>& sizes);
+    Status Register(const std::vector<uintptr_t>& addrs, const std::vector<size_t>& sizes);
+
+private:
+    struct RegisteredBuffer {
+        uint64_t addr;
+        size_t size;
+    };
+    std::vector<RegisteredBuffer> buffers_;
+};
+
+}  // namespace UC::Trans
 
 #endif

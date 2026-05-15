@@ -27,6 +27,10 @@
 #include "cuda_stream.h"
 #include "trans/device.h"
 
+#if UCM_ENABLE_GDR_STREAM
+#include "gdr/gdr_stream.h"
+#endif
+
 namespace UC::Trans {
 
 Status Device::Setup(int32_t deviceId)
@@ -60,6 +64,20 @@ std::shared_ptr<Stream> Device::MakeSharedStream()
     return nullptr;
 }
 
+std::unique_ptr<Stream> Device::MakeGdrStream()
+{
+#if UCM_ENABLE_GDR_STREAM
+    std::unique_ptr<Stream> stream = nullptr;
+    try {
+        stream = std::make_unique<GdrStream>();
+    } catch (...) {
+        return nullptr;
+    }
+    if (stream->Setup().Success()) { return stream; }
+#endif
+    return nullptr;
+}
+
 std::unique_ptr<Stream> Device::MakeSMStream()
 {
     std::unique_ptr<Stream> stream = nullptr;
@@ -81,4 +99,4 @@ std::unique_ptr<Buffer> Device::MakeBuffer()
     }
 }
 
-} // namespace UC::Trans
+}  // namespace UC::Trans

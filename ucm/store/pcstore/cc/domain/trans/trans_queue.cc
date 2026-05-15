@@ -90,7 +90,7 @@ void TransQueue::FileWorkerTimeout(BlockTask& task)
 Status TransQueue::Setup(const int32_t deviceId, const size_t streamNumber, const size_t blockSize,
                          const size_t ioSize, const bool ioDirect, const size_t bufferNumber,
                          const SpaceLayout* layout, TaskSet* failureSet_,
-                         const bool scatterGatherEnable, const size_t timeoutMs)
+                         const bool scatterGatherEnable, const bool useGdr, const size_t timeoutMs)
 {
     Trans::Device device;
     auto ts = device.Setup(deviceId);
@@ -99,9 +99,10 @@ Status TransQueue::Setup(const int32_t deviceId, const size_t streamNumber, cons
         return Status::Error();
     }
     buffer_ = device.MakeBuffer();
-    stream_ = device.MakeStream();
+    stream_ = useGdr ? device.MakeGdrStream() : device.MakeStream();
     if (!buffer_ || !stream_) {
-        UC_ERROR("Failed to make buffer and stream on device({}).", deviceId);
+        UC_ERROR("Failed to make buffer and {} stream on device({}).", useGdr ? "GDR" : "CUDA",
+                 deviceId);
         return Status::Error();
     }
     if (scatterGatherEnable) {
