@@ -897,6 +897,13 @@ class UCMDirectConnector(KVConnectorBase_V1):
         self._invalid_block_ids = set()
         return res
 
+    def request_finished_all_groups(
+        self,
+        request: "Request",
+        block_ids: tuple[list[int], ...],
+    ) -> tuple[bool, dict[str, object] | None]:
+        return False, None
+
 
 class UCMLayerWiseConnector(UCMDirectConnector):
     """
@@ -1062,13 +1069,6 @@ class UCMLayerWiseConnector(UCMDirectConnector):
         self.dump_total_ptrs = None
         if self.enable_event_sync:
             self.device.destroy_event_handles()
-
-    def request_finished_all_groups(
-        self,
-        request: "Request",
-        block_ids: tuple[list[int], ...],
-    ) -> tuple[bool, dict[str, Any] | None]:
-        return False, None
 
 
 class UCMCPConnector(UCMLayerWiseConnector):
@@ -1726,11 +1726,13 @@ class HMAKVCacheLayout(KVCacheLayout):
 
     def _build_layout(self, kvcaches):
         base_ptrs = []
+        buffer_size_rows = []
         tensor_size_lists = []
         block_stride_lists = []
 
         for raw_tensor in self.kv_cache_config.kv_cache_tensors:
             ptrs = []
+            buffer_sizes = []
             tensor_sizes = []
             block_strides = []
 
@@ -1745,10 +1747,12 @@ class HMAKVCacheLayout(KVCacheLayout):
                 kv_cache_spec = self.layer_name_to_kv_cache_spec[sample_layer_name][0]
                 if isinstance(kv_layer, torch.Tensor):
                     ptrs.append(kv_layer.data_ptr())
+                    buffer_sizes.append(raw_tensor.size)
                     tensor_sizes.append(kv_cache_spec.page_size_bytes)
                     block_strides.append(kv_cache_spec.page_size_bytes)
                 elif isinstance(kv_layer, (tuple, list)):
                     ptrs.append(kv_layer[0].data_ptr())
+                    buffer_sizes.append(raw_tensor.size)
                     tensor_sizes.append(kv_cache_spec.page_size_bytes)
                     block_strides.append(kv_cache_spec.page_size_bytes)
                 else:
@@ -1758,10 +1762,12 @@ class HMAKVCacheLayout(KVCacheLayout):
                 continue
 
             base_ptrs.append(ptrs)
+            buffer_size_rows.append(buffer_sizes)
             tensor_size_lists.append(tensor_sizes)
             block_stride_lists.append(block_strides)
 
         self.base_ptrs = np.asarray(base_ptrs, dtype=np.uint64)
+        self.buffer_sizes = np.asarray(buffer_size_rows, dtype=np.uint64)
         self.tensor_size_lists = np.asarray(tensor_size_lists, dtype=np.uint64)
         self.block_stride_lists = np.asarray(block_stride_lists, dtype=np.uint64)
 
@@ -1795,11 +1801,13 @@ class AscendDSV4Layout(HMAKVCacheLayout):
                     break
 
         base_ptrs = []
+        buffer_size_rows = []
         tensor_size_lists = []
         block_stride_lists = []
 
         for raw_tensor in self.kv_cache_config.kv_cache_tensors:
             ptrs = []
+            buffer_sizes = []
             tensor_sizes = []
             block_strides = []
             kv_size = raw_tensor.size - self.indexer_scale_size_bytes * self.num_blocks
@@ -1815,6 +1823,7 @@ class AscendDSV4Layout(HMAKVCacheLayout):
                 kv_cache_specs = self.layer_name_to_kv_cache_spec[sample_layer_name]
                 if isinstance(kv_layer, (tuple, list)):
                     ptrs.append(kv_layer[0].data_ptr())
+                    buffer_sizes.append(kv_size)
                     tensor_sizes.append(
                         kv_cache_specs[0].page_size_bytes
                         - self.indexer_scale_size_bytes
@@ -1824,6 +1833,7 @@ class AscendDSV4Layout(HMAKVCacheLayout):
                         - self.indexer_scale_size_bytes
                     )
                     ptrs.append(kv_layer[0].data_ptr() + kv_size)
+                    buffer_sizes.append(self.indexer_scale_size_bytes * self.num_blocks)
                     tensor_sizes.append(self.indexer_scale_size_bytes)
                     block_strides.append(self.indexer_scale_size_bytes)
                 else:
@@ -1833,10 +1843,12 @@ class AscendDSV4Layout(HMAKVCacheLayout):
                 continue
 
             base_ptrs.append(ptrs)
+            buffer_size_rows.append(buffer_sizes)
             tensor_size_lists.append(tensor_sizes)
             block_stride_lists.append(block_strides)
 
         self.base_ptrs = np.asarray(base_ptrs, dtype=np.uint64)
+        self.buffer_sizes = np.asarray(buffer_size_rows, dtype=np.uint64)
         self.tensor_size_lists = np.asarray(tensor_size_lists, dtype=np.uint64)
         self.block_stride_lists = np.asarray(block_stride_lists, dtype=np.uint64)
 
@@ -1910,6 +1922,7 @@ class HybridLinearAttentionLayout(HMAKVCacheLayout):
         raw_tensor,
         shared_ptrs: list[int],
         base_ptrs: list[list[int]],
+        buffer_size_rows: list[list[int]],
         tensor_size_lists: list[list[int]],
         block_stride_lists: list[list[int]],
     ) -> None:
@@ -1921,6 +1934,7 @@ class HybridLinearAttentionLayout(HMAKVCacheLayout):
         page_size = raw_tensor.size // self.num_blocks
         base = min(shared_ptrs)
         base_ptrs.append([base])
+        buffer_size_rows.append([raw_tensor.size])
         tensor_size_lists.append([page_size])
         block_stride_lists.append([page_size])
 
@@ -1931,6 +1945,7 @@ class HybridLinearAttentionLayout(HMAKVCacheLayout):
         mamba_specs: list[MambaSpec],
         attn_specs: list[FullAttentionSpec],
         base_ptrs: list[list[int]],
+        buffer_size_rows: list[list[int]],
         tensor_size_lists: list[list[int]],
         block_stride_lists: list[list[int]],
     ) -> None:
@@ -1944,6 +1959,7 @@ class HybridLinearAttentionLayout(HMAKVCacheLayout):
                 raw_tensor,
                 shared_ptrs,
                 base_ptrs,
+                buffer_size_rows,
                 tensor_size_lists,
                 block_stride_lists,
             )
@@ -1975,11 +1991,13 @@ class HybridLinearAttentionLayout(HMAKVCacheLayout):
         ]
         sizes = [conv_size, middle_size, tail_size]
         base_ptrs.append([base + offset for offset in offsets])
+        buffer_size_rows.append([size * self.num_blocks for size in sizes])
         tensor_size_lists.append(sizes)
         block_stride_lists.append(sizes)
 
     def _build_layout(self, kvcaches):
         base_ptrs = []
+        buffer_size_rows = []
         tensor_size_lists = []
         block_stride_lists = []
 
@@ -2004,6 +2022,7 @@ class HybridLinearAttentionLayout(HMAKVCacheLayout):
                     raw_tensor,
                     shared_ptrs,
                     base_ptrs,
+                    buffer_size_rows,
                     tensor_size_lists,
                     block_stride_lists,
                 )
@@ -2016,6 +2035,7 @@ class HybridLinearAttentionLayout(HMAKVCacheLayout):
                     mamba_specs,
                     attn_specs,
                     base_ptrs,
+                    buffer_size_rows,
                     tensor_size_lists,
                     block_stride_lists,
                 )
@@ -2024,11 +2044,13 @@ class HybridLinearAttentionLayout(HMAKVCacheLayout):
                     raw_tensor,
                     shared_ptrs,
                     base_ptrs,
+                    buffer_size_rows,
                     tensor_size_lists,
                     block_stride_lists,
                 )
 
         self.base_ptrs = np.asarray(base_ptrs, dtype=np.uint64)
+        self.buffer_sizes = np.asarray(buffer_size_rows, dtype=np.uint64)
         self.tensor_size_lists = np.asarray(tensor_size_lists, dtype=np.uint64)
         self.block_stride_lists = np.asarray(block_stride_lists, dtype=np.uint64)
 
@@ -2526,8 +2548,14 @@ class UCMHMAConnector(UCMDirectConnector, SupportsHMA):
 
 
 def use_hybrid_linear_attention_layout(
-    kv_cache_config: "KVCacheConfig",
+    kv_cache_config: Optional["KVCacheConfig"],
 ) -> bool:
+    # Scheduler-side connector construction may happen before vLLM has built
+    # the concrete KV cache config. In that phase there is no physical layout
+    # to inspect yet, so this connector specialization cannot be selected.
+    if kv_cache_config is None:
+        return False
+
     if current_platform.device_type != "npu" and not current_platform.is_cuda_alike():
         return False
 
@@ -2622,6 +2650,16 @@ class UCMConnector(KVConnectorBase_V1, SupportsHMA):
         use_fawa_store = UCMFAWAConnector.can_handle_kv_cache_config(
             kv_cache_config
         ) or UCMAscendFAWAConnector.can_handle_ascend_kv_cache_config(kv_cache_config)
+
+        use_hma = (
+            self._vllm_config.scheduler_config.disable_hybrid_kv_cache_manager is False
+            or os.getenv("USE_MULTI_GROUPS_KV_CACHE") == "1"
+        )
+
+        use_hybrid_linear_attention = use_hybrid_linear_attention_layout(
+            kv_cache_config
+        )
+
         if use_fawa_store:
             connector_cls = (
                 UCMAscendFAWAConnector
@@ -2633,18 +2671,6 @@ class UCMConnector(KVConnectorBase_V1, SupportsHMA):
             self.connector = connector_cls(vllm_config, role, kv_cache_config)
         elif use_lite:
             self.connector = UCMLiteConnector(vllm_config, role, kv_cache_config)
-
-        use_hma = (
-            self._vllm_config.scheduler_config.disable_hybrid_kv_cache_manager is False
-            or os.getenv("USE_MULTI_GROUPS_KV_CACHE") == "1"
-        )
-
-        use_hybrid_linear_attention = use_hybrid_linear_attention_layout(
-            kv_cache_config
-        )
-
-        if use_lite:
-            self.connector = UCMLiteConnector(vllm_config, role)
         elif use_ratio_rate:
             self.connector = UCMMockConnector(vllm_config, role, kv_cache_config)
         elif use_cp_parallel:
@@ -2833,10 +2859,3 @@ class UCMConnector(KVConnectorBase_V1, SupportsHMA):
             Empty set if no load errors occurred.
         """
         return self.connector.get_block_ids_with_load_errors()
-
-    def request_finished_all_groups(
-        self,
-        request: "Request",
-        block_ids: tuple[list[int], ...],
-    ) -> tuple[bool, dict[str, Any] | None]:
-        return self.connector.request_finished_all_groups(request, block_ids)
