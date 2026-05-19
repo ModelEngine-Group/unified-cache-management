@@ -30,14 +30,26 @@ namespace UC::Metrics {
 
 void bind_monitor(py::module_& m)
 {
-    m.def("set_up", &SetUp);
-    m.def("create_stats", &CreateStats);
+    m.def("set_up", &SetUp, py::arg("max_vector_len") = 0);
+    m.def("create_stats", &CreateStats, py::arg("name"), py::arg("type"),
+          py::arg("buckets") = std::vector<double>{});
     m.def("update_stats", py::overload_cast<const std::string&, double>(&UpdateStats));
     m.def("update_stats",
           py::overload_cast<const std::unordered_map<std::string, double>&>(&UpdateStats));
     m.def("get_all_stats_and_clear", []() {
-        py::gil_scoped_release releaseGil;
-        return GetAllStatsAndClear();
+        decltype(GetAllStatsAndClear()) stats;
+        {
+            py::gil_scoped_release releaseGil;
+            stats = GetAllStatsAndClear();
+        }
+        auto& counters = std::get<0>(stats);
+        auto& gauges = std::get<1>(stats);
+        auto& histograms = std::get<2>(stats);
+        py::dict histogramDict;
+        for (const auto& [name, histogram] : histograms) {
+            histogramDict[py::str(name)] = py::make_tuple(histogram.bucketCounts, histogram.sum);
+        }
+        return py::make_tuple(counters, gauges, histogramDict);
     });
 }
 

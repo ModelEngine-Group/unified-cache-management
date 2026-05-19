@@ -6,8 +6,6 @@ multiproc_dir: "/vllm-workspace"  # Directory for Prometheus multiprocess mode
 
 metric_prefix: "ucm:"
 
-histogram_max_length: 10000  # Maximum length of the vector for each histogram metric
-
 # ============================================================================
 # Common bucket aliases (for readability only - YAML doesn't inline these).
 # Durations are in ms, bandwidth in GB/s.

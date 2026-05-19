@@ -23,13 +23,26 @@
  * */
 #include "metrics.h"
 #include <algorithm>
+#include <limits>
 
 namespace UC::Metrics {
+namespace {
+std::vector<double> NormalizeBuckets(const std::vector<double>& buckets)
+{
+    auto normalized = buckets;
+    if (normalized.empty() || normalized.back() != std::numeric_limits<double>::infinity()) {
+        normalized.push_back(std::numeric_limits<double>::infinity());
+    }
+    return normalized;
+}
+}
+
 thread_local std::shared_ptr<MetricBuffer> Metrics::threadBuffer_ =
     std::make_shared<MetricBuffer>();
 thread_local bool Metrics::isRegisteredThread_ = false;
 
-void Metrics::CreateStats(const std::string& name, const std::string& type)
+void Metrics::CreateStats(const std::string& name, const std::string& type,
+                          const std::vector<double>& buckets)
 {
     if (!isInited_.load(std::memory_order_acquire)) {
         throw std::runtime_error("Please call SetUp() first!");
@@ -50,7 +63,11 @@ void Metrics::CreateStats(const std::string& name, const std::string& type)
     if (nameToId_.count(name)) { return; }
     const auto id = static_cast<MetricId>(metrics_.size());
     nameToId_[name] = id;
-    metrics_.push_back(MetricInfo{name, metricType});
+    metrics_.push_back(MetricInfo{
+        name,
+        metricType,
+        metricType == MetricType::HISTOGRAM ? NormalizeBuckets(buckets) : std::vector<double>{},
+    });
     registerEpoch_.fetch_add(1, std::memory_order_release);
 }
 
@@ -124,13 +141,17 @@ void Metrics::UpdateBuffer(MetricBuffer& metricBuffer, int innerBufferIndex, Met
     switch (metrics_[id].type) {
         case MetricType::COUNTER: buffer.counterStats_[id] += value; break;
         case MetricType::GAUGE: buffer.gaugeStats_[id] = value; break;
-        case MetricType::HISTOGRAM:
-            if (buffer.histogramStats_[id].size() < maxVectorLen_) {
-                buffer.histogramStats_[id].push_back(value);
-            } else {
-                metricBuffer.DropHistogramStats();
-            }
+        case MetricType::HISTOGRAM: {
+            const auto& buckets = metrics_[id].buckets;
+            if (buckets.empty()) { break; }
+            auto& histogram = buffer.histogramStats_[id];
+            if (histogram.bucketCounts.empty()) { histogram.bucketCounts.resize(buckets.size()); }
+            auto bucket = std::lower_bound(buckets.begin(), buckets.end(), value);
+            auto bucketIndex = static_cast<size_t>(bucket - buckets.begin());
+            histogram.bucketCounts[bucketIndex]++;
+            histogram.sum += value;
             break;
+        }
         default: break;
     }
 }
@@ -142,14 +163,13 @@ const std::string* Metrics::MetricName(MetricId id) const
 }
 
 std::tuple<std::unordered_map<std::string, double>, std::unordered_map<std::string, double>,
-           std::unordered_map<std::string, std::vector<double>>, uint64_t>
+           HistogramStatsMap>
 Metrics::GetAllStatsAndClear()
 {
     std::unordered_map<std::string, double> totalCounter;
     std::unordered_map<std::string, double> totalGauge;
-    std::unordered_map<std::string, std::vector<double>> totalHistogram;
+    HistogramStatsMap totalHistogram;
     std::vector<std::shared_ptr<MetricBuffer>> buffers;
-    uint64_t droppedHistogramStats = 0;
 
     {
         std::shared_lock<std::shared_mutex> lock(mutex_);
@@ -159,7 +179,6 @@ Metrics::GetAllStatsAndClear()
     for (const auto& buf : buffers) {
         int oldIdx = buf->SwitchBuffer();
         buf->WaitNoActiveWriter(oldIdx);
-        droppedHistogramStats += buf->DroppedHistogramStats();
         auto& read_buf = buf->GetReadBuffer(oldIdx);
 
         for (const auto& [id, value] : read_buf.counterStats_) {
@@ -172,18 +191,25 @@ Metrics::GetAllStatsAndClear()
             if (name) { totalGauge[*name] = value; }
         }
 
-        for (auto& [id, values] : read_buf.histogramStats_) {
+        for (auto& [id, histogram] : read_buf.histogramStats_) {
             auto name = MetricName(id);
             if (name) {
-                totalHistogram[*name].insert(totalHistogram[*name].end(), values.begin(),
-                                             values.end());
+                auto& total = totalHistogram[*name];
+                auto& totalBuckets = total.bucketCounts;
+                if (totalBuckets.size() < histogram.bucketCounts.size()) {
+                    totalBuckets.resize(histogram.bucketCounts.size());
+                }
+                for (size_t i = 0; i < histogram.bucketCounts.size(); ++i) {
+                    totalBuckets[i] += histogram.bucketCounts[i];
+                }
+                total.sum += histogram.sum;
             }
         }
         buf->ClearReadBuffer(oldIdx);
     }
 
     auto result = std::make_tuple(std::move(totalCounter), std::move(totalGauge),
-                                  std::move(totalHistogram), droppedHistogramStats);
+                                  std::move(totalHistogram));
 
     return result;
 }

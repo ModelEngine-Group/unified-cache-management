@@ -41,6 +41,11 @@
 namespace UC::Metrics {
 using MetricId = uint32_t;
 constexpr MetricId INVALID_METRIC_ID = std::numeric_limits<MetricId>::max();
+struct HistogramStat {
+    std::vector<uint64_t> bucketCounts;
+    double sum{0.0};
+};
+using HistogramStatsMap = std::unordered_map<std::string, HistogramStat>;
 
 struct CachedMetric {
     explicit CachedMetric(std::string metricName) : name{std::move(metricName)} {}
@@ -57,7 +62,7 @@ struct MetricBuffer {
     struct InnerBuffer {
         std::unordered_map<MetricId, double> counterStats_;
         std::unordered_map<MetricId, double> gaugeStats_;
-        std::unordered_map<MetricId, std::vector<double>> histogramStats_;
+        std::unordered_map<MetricId, HistogramStat> histogramStats_;
 
         void Clear()
         {
@@ -72,7 +77,6 @@ struct MetricBuffer {
     InnerBuffer innerBufs_[2];
     std::atomic<int> writeIdx_{0};
     std::atomic<int> activeWriteIdx_{NO_ACTIVE_WRITER};
-    std::atomic<uint64_t> droppedHistogramStats_{0};
 
     class WriteGuard {
     public:
@@ -121,13 +125,6 @@ struct MetricBuffer {
     const InnerBuffer& GetReadBuffer(int idx) const { return innerBufs_[idx]; }
 
     void ClearReadBuffer(int idx) { innerBufs_[idx].Clear(); }
-
-    void DropHistogramStats() { droppedHistogramStats_.fetch_add(1, std::memory_order_relaxed); }
-
-    uint64_t DroppedHistogramStats() const
-    {
-        return droppedHistogramStats_.load(std::memory_order_relaxed);
-    }
 };
 
 class Metrics {
@@ -138,20 +135,19 @@ public:
         return inst;
     }
 
-    void SetUp(size_t maxVectorLen)
+    void SetUp(size_t = 0)
     {
         std::unique_lock<std::shared_mutex> lock(mutex_);
         if (isInited_.load(std::memory_order_acquire)) { return; }
         bool expected = false;
-        if (isInited_.compare_exchange_strong(expected, true, std::memory_order_release,
-                                              std::memory_order_relaxed)) {
-            maxVectorLen_ = maxVectorLen;
-        }
+        isInited_.compare_exchange_strong(expected, true, std::memory_order_release,
+                                          std::memory_order_relaxed);
     }
 
     ~Metrics() = default;
 
-    void CreateStats(const std::string& name, const std::string& type);
+    void CreateStats(const std::string& name, const std::string& type,
+                     const std::vector<double>& buckets = {});
 
     void UpdateStats(const std::string& name, double value);
 
@@ -160,7 +156,7 @@ public:
     void UpdateStats(const std::unordered_map<std::string, double>& values);
 
     std::tuple<std::unordered_map<std::string, double>, std::unordered_map<std::string, double>,
-               std::unordered_map<std::string, std::vector<double>>, uint64_t>
+               HistogramStatsMap>
     GetAllStatsAndClear();
 
 private:
@@ -168,6 +164,7 @@ private:
     struct MetricInfo {
         std::string name;
         MetricType type;
+        std::vector<double> buckets;
     };
 
     std::shared_mutex mutex_;
@@ -182,7 +179,6 @@ private:
     Metrics& operator=(const Metrics&) = delete;
     std::atomic<bool> isInited_{false};
     std::atomic<uint64_t> registerEpoch_{1};
-    size_t maxVectorLen_{10000};
 
     MetricId ResolveMetricId(const std::string& name) const;
     MetricId ResolveMetricId(const char* name) const;

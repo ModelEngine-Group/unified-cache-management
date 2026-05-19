@@ -15,9 +15,7 @@ def _register_metrics_by_type(self, metric_type):
         for cfg in cfg_list:
             name = cfg.get("name")
             doc = cfg.get("documentation", "")
-            # Prometheus metric name with prefix
             prometheus_name = f"{self.metric_prefix}{name}"
-            ucmmetrics.create_stats(name, metric_type)
 
             metric_kwargs = {
                 "name": prometheus_name,
@@ -27,7 +25,10 @@ def _register_metrics_by_type(self, metric_type):
                 **{k: v for k, v in cfg.items() if k in default_kwargs},
             }
 
-            self.metric_mappings[name] = metric_cls(**metric_kwargs)
+            metric = metric_cls(**metric_kwargs)
+            self.metric_mappings[name] = metric
+            buckets = list(getattr(metric, "_upper_bounds", []))
+            ucmmetrics.create_stats(name, metric_type, buckets)
 ```
 
 Example of yaml below:
@@ -38,9 +39,7 @@ log_interval: 5  # Interval in seconds for logging metrics
 
 multiproc_dir: "/vllm-workspace"  # Directory for Prometheus multiprocess mode
 
-metric_prefix: "ucm:" 
-
-histogram_max_length: 10000  # Maximum length of the vector for each histogram metric
+metric_prefix: "ucm:"
 
 # Counter metrics configuration
 # counter:

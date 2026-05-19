@@ -25,12 +25,21 @@
 #include <chrono>
 #include <gtest/gtest.h>
 #include <iostream>
+#include <numeric>
 #include <thread>
 #include <unistd.h>
 #include <vector>
 #include "metrics_api.h"
 
 using namespace UC::Metrics;
+
+namespace {
+uint64_t HistogramCount(const HistogramStat& histogram)
+{
+    return std::accumulate(histogram.bucketCounts.begin(), histogram.bucketCounts.end(),
+                           uint64_t{0});
+}
+}
 
 class UCMetricsUT : public testing::Test {
 protected:
@@ -77,7 +86,8 @@ TEST_F(UCMetricsUT, UpdateSingleStatAndGet)
     ASSERT_EQ(gauge_iter.at("stats2"), 9.0);
 
     ASSERT_NE(histogram_iter.find("stats3"), histogram_iter.end());
-    ASSERT_EQ(histogram_iter.at("stats3")[0], 8.8);
+    ASSERT_EQ(HistogramCount(histogram_iter.at("stats3")), 1);
+    ASSERT_EQ(histogram_iter.at("stats3").sum, 8.8);
 }
 
 TEST_F(UCMetricsUT, UpdateMultipleStatsAndGet)
@@ -105,7 +115,8 @@ TEST_F(UCMetricsUT, UpdateMultipleStatsAndGet)
     ASSERT_EQ(gauge_iter.at("stats2"), 4.4);
 
     ASSERT_NE(histogram_iter.find("stats3"), histogram_iter.end());
-    ASSERT_EQ(histogram_iter.at("stats3")[1], 5.5);
+    ASSERT_EQ(HistogramCount(histogram_iter.at("stats3")), 2);
+    ASSERT_EQ(histogram_iter.at("stats3").sum, 10.5);
 }
 
 TEST_F(UCMetricsUT, UpdateCachedMetricAndGet)
@@ -129,7 +140,8 @@ TEST_F(UCMetricsUT, UpdateCachedMetricAndGet)
     ASSERT_EQ(gauge_iter.at("stats2"), 5.0);
 
     ASSERT_NE(histogram_iter.find("stats3"), histogram_iter.end());
-    ASSERT_EQ(histogram_iter.at("stats3")[0], 7.0);
+    ASSERT_EQ(HistogramCount(histogram_iter.at("stats3")), 1);
+    ASSERT_EQ(histogram_iter.at("stats3").sum, 7.0);
 }
 
 TEST_F(UCMetricsUT, CachedMetricRetriesAfterLateRegistration)
@@ -187,23 +199,33 @@ TEST_F(UCMetricsUT, CachedMetricDoesNotMissResolveAgainWithoutRegistration)
     ASSERT_EQ(counter_iter_after_register.at("missing_epoch_stats"), 2.0);
 }
 
-TEST_F(UCMetricsUT, HistogramStopsAtMaxVectorLen)
+TEST_F(UCMetricsUT, HistogramAggregatesConfiguredBuckets)
 {
     GetAllStatsAndClear();
 
-    CreateStats("bounded_histogram_stats", "histogram");
-    const auto droppedBefore = std::get<3>(GetAllStatsAndClear());
-    for (size_t i = 0; i < 1000001; ++i) {
-        UpdateStats(NAME_TO_METRIC_ID("bounded_histogram_stats"), static_cast<double>(i));
-    }
+    CreateStats("bucket_histogram_stats", "histogram", {1.0, 5.0});
+    GetAllStatsAndClear();
+
+    UpdateStats(NAME_TO_METRIC_ID("bucket_histogram_stats"), 0.5);
+    UpdateStats(NAME_TO_METRIC_ID("bucket_histogram_stats"), 3.0);
+    UpdateStats(NAME_TO_METRIC_ID("bucket_histogram_stats"), 10.0);
 
     auto stats = GetAllStatsAndClear();
     const auto& histogram_iter = std::get<2>(stats);
-    const auto droppedAfter = std::get<3>(stats);
 
-    ASSERT_NE(histogram_iter.find("bounded_histogram_stats"), histogram_iter.end());
-    ASSERT_EQ(histogram_iter.at("bounded_histogram_stats").size(), 1000000);
-    ASSERT_GT(droppedAfter, droppedBefore);
+    ASSERT_NE(histogram_iter.find("bucket_histogram_stats"), histogram_iter.end());
+    const auto& histogram = histogram_iter.at("bucket_histogram_stats");
+    const auto& bucketCounts = histogram.bucketCounts;
+    ASSERT_EQ(bucketCounts.size(), 3);
+    ASSERT_EQ(bucketCounts[0], 1);
+    ASSERT_EQ(bucketCounts[1], 1);
+    ASSERT_EQ(bucketCounts[2], 1);
+    ASSERT_EQ(histogram.sum, 13.5);
+
+    stats = GetAllStatsAndClear();
+    const auto& empty_histogram_iter = std::get<2>(stats);
+    ASSERT_EQ(empty_histogram_iter.find("bucket_histogram_stats"),
+              empty_histogram_iter.end());
 }
 
 TEST_F(UCMetricsUT, ConcurrentUpdateAndCollect)
@@ -242,7 +264,7 @@ TEST_F(UCMetricsUT, ConcurrentUpdateAndCollect)
         auto counter = counters.find("stats1");
         if (counter != counters.end()) { totalCounter += counter->second; }
         auto histogram = histograms.find("stats3");
-        if (histogram != histograms.end()) { totalHistogram += histogram->second.size(); }
+        if (histogram != histograms.end()) { totalHistogram += HistogramCount(histogram->second); }
     };
 
     while (finished.load(std::memory_order_acquire) < numThreads) {

@@ -27,9 +27,10 @@
 
 namespace UC::Metrics {
 
-void SetUp(size_t maxVectorLen);
+void SetUp(size_t = 0);
 
-void CreateStats(const std::string& name, const std::string& type);
+void CreateStats(const std::string& name, const std::string& type,
+                 const std::vector<double>& buckets = {});
 
 void UpdateStats(const std::string& name, double value);
 
@@ -38,7 +39,7 @@ void UpdateStats(CachedMetric& metric, double value);
 void UpdateStats(const std::unordered_map<std::string, double>& values);
 
 std::tuple<std::unordered_map<std::string, double>, std::unordered_map<std::string, double>,
-           std::unordered_map<std::string, std::vector<double>>, uint64_t>
+           HistogramStatsMap>
 GetAllStatsAndClear();
 
 }  // namespace UC::Metrics
