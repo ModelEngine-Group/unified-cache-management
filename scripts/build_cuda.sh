@@ -40,7 +40,7 @@ echo "Build version=$VERSION"
 function check_build_install()
 {
     cd ${KVCACHE_PROJECT_ROOT}
-    # pip3 install -r requirements.txt
+    pip3 install -r requirements.txt
     if [ $? -ne 0 ]; then
         echo "requirements installation failed, please check the network and environment configurations"
         exit 1

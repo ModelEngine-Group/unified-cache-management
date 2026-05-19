@@ -1,0 +1,29 @@
+# Set to other image if needed
+ARG IMAGE_SOURCE="quay.io/ascend"
+ARG IMAGE_NAME_VERSION="vllm-ascend:v0.18.0"
+
+FROM ${IMAGE_SOURCE}/${IMAGE_NAME_VERSION}
+
+ARG PIP_INDEX_URL="https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple"
+ARG INSTALL_MODE="source"
+
+WORKDIR /workspace
+
+# Install unified-cache-management
+COPY . /workspace/unified-cache-management
+
+RUN pip config set global.index-url ${PIP_INDEX_URL}
+
+# Build or link package
+RUN if [ "${INSTALL_MODE}" != "package" ]; then \
+        pip install --no-cache-dir build cmake && \
+        export WORKSPACE=/workspace SKIP_TAR=1 ENABLE_SPARSE=false && \
+        bash /workspace/unified-cache-management/scripts/build_ascend.sh; \
+    else \
+        ln -s /workspace/unified-cache-management /workspace/package; \
+    fi
+
+# Install UCM
+RUN pip install /workspace/package/uc_manager-*.whl
+
+CMD ["/bin/bash"]
