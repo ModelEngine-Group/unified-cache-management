@@ -155,8 +155,6 @@ def get_token_throughput_latencies(
                     else:
                         metrics[common_metrics.TPOT] = 0.0
 
-                    completed_requests.append(metrics)
-
                 completed_requests.append(metrics)
 
                 incremental_time_delay += metrics.get(
