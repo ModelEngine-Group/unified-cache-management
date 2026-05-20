@@ -39,7 +39,7 @@ uint64_t HistogramCount(const HistogramStat& histogram)
     return std::accumulate(histogram.bucketCounts.begin(), histogram.bucketCounts.end(),
                            uint64_t{0});
 }
-}
+}  // namespace
 
 class UCMetricsUT : public testing::Test {
 protected:
@@ -224,8 +224,7 @@ TEST_F(UCMetricsUT, HistogramAggregatesConfiguredBuckets)
 
     stats = GetAllStatsAndClear();
     const auto& empty_histogram_iter = std::get<2>(stats);
-    ASSERT_EQ(empty_histogram_iter.find("bucket_histogram_stats"),
-              empty_histogram_iter.end());
+    ASSERT_EQ(empty_histogram_iter.find("bucket_histogram_stats"), empty_histogram_iter.end());
 }
 
 TEST_F(UCMetricsUT, ConcurrentUpdateAndCollect)

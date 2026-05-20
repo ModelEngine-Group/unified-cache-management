@@ -35,7 +35,7 @@ std::vector<double> NormalizeBuckets(const std::vector<double>& buckets)
     }
     return normalized;
 }
-}
+}  // namespace
 
 thread_local std::shared_ptr<MetricBuffer> Metrics::threadBuffer_ =
     std::make_shared<MetricBuffer>();
@@ -208,8 +208,8 @@ Metrics::GetAllStatsAndClear()
         buf->ClearReadBuffer(oldIdx);
     }
 
-    auto result = std::make_tuple(std::move(totalCounter), std::move(totalGauge),
-                                  std::move(totalHistogram));
+    auto result =
+        std::make_tuple(std::move(totalCounter), std::move(totalGauge), std::move(totalHistogram));
 
     return result;
 }
