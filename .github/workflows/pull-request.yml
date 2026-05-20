@@ -101,7 +101,7 @@ jobs:
           cache-from: type=gha,scope=npu
           cache-to: type=gha,mode=max,scope=npu
 
-  test-build-vllm-ascend-sparse:
+  test-build-vllm-ascend-v0-20-2:
     timeout-minutes: 25
     runs-on: ubuntu-24.04-arm
     steps:
@@ -116,14 +116,38 @@ jobs:
         uses: docker/build-push-action@v5
         with:
           context: .
-          file: ./docker/Dockerfile.ucm-vllm-ascend.a2-v0.11.0
+          file: ./docker/Dockerfile.ucm-vllm-ascend.a2-v0.20.2
           build-args: |
             PIP_INDEX_URL=https://pypi.org/simple
-          tags: ucm-npu-sparse:latest
+          tags: ucm-npu-v0.20.2:latest
           push: false
           load: false
-          cache-from: type=gha,scope=npu
-          cache-to: type=gha,mode=max,scope=npu
+          cache-from: type=gha,scope=npu-v0.20.2
+          cache-to: type=gha,mode=max,scope=npu-v0.20.2
+
+  test-build-vllm-cuda-v0-20-2:
+    timeout-minutes: 25
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build Image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ./docker/Dockerfile.ucm-vllm-cuda-v0.20.2
+          build-args: |
+            PIP_INDEX_URL=https://pypi.org/simple
+          tags: ucm-gpu-v0.20.2:latest
+          push: false
+          load: false
+          cache-from: type=gha,scope=gpu-v0.20.2
+          cache-to: type=gha,mode=max,scope=gpu-v0.20.2
 
   test-build-sglang:
     timeout-minutes: 25
