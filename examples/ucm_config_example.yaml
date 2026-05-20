@@ -16,6 +16,7 @@ ucm_connectors:
       store_pipeline: "Cache|Posix"
       storage_backends: "/mnt/test"
       io_direct: false
+      # cache_use_hugepage: false
       # cache_buffer_capacity_gb: 256
       # posix_capacity_gb: 1024
 

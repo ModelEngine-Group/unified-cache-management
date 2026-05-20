@@ -99,6 +99,9 @@ ucm_connectors:
 * **io_direct** (optional, default: `false`):  
   Whether to enable direct I/O.
 
+* **cache_use_hugepage** (optional, default: `false`):
+  Whether CacheStore direct-I/O host buffer allocation may use huge pages. Set this to `true` only when the runtime environment has enough hugepage resources available.
+
 * **stream_number** *(optional, default: 8)*  
   Number of threads used for data transfer between the Host and Storage.
 

@@ -33,6 +33,12 @@ public:
 
 INSTANTIATE_TEST_CASE_P(SharedCondition, UCCacheTransBufferTest, ::testing::Values(false, true));
 
+TEST(UCCacheConfigTest, CacheUseHugePageDefaultDisabled)
+{
+    UC::CacheStore::Config config;
+    ASSERT_FALSE(config.cacheUseHugePage);
+}
+
 TEST_P(UCCacheTransBufferTest, GetFirstNode)
 {
     UC::CacheStore::TransBuffer transBuffer;

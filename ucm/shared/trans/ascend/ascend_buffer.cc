@@ -53,7 +53,7 @@ class HostHugePages : public std::enable_shared_from_this<HostHugePages> {
         size = alignedSize;
         return ptr;
     }
-    static void* MMapWithAdvice(size_t& size)
+    static void* MMapAnonymous(size_t& size, bool useHugePage)
     {
         const auto pageSize = HUGE_PAGE_SIZE;
         const auto alignedSize = (size + pageSize - 1) / pageSize * pageSize;
@@ -61,14 +61,15 @@ class HostHugePages : public std::enable_shared_from_this<HostHugePages> {
         const auto flags = MAP_PRIVATE | MAP_ANONYMOUS;
         void* ptr = mmap(nullptr, alignedSize, prot, flags, -1, 0);
         if (ptr == MAP_FAILED) {
-            UC_WARN("Mmap({}) with advice({}) return: {}.", alignedSize, pageSize, errno);
+            UC_WARN("Mmap({}) anonymous return: {}.", alignedSize, errno);
             return ptr;
         }
-        auto ret = madvise(ptr, alignedSize, MADV_HUGEPAGE);
+        auto ret = madvise(ptr, alignedSize, useHugePage ? MADV_HUGEPAGE : MADV_NOHUGEPAGE);
         if (ret != 0) {
-            UC_WARN("Madvise hugepage on mmap({}) return: {}.", alignedSize, errno);
+            UC_WARN("Madvise {} on mmap({}) return: {}.",
+                    useHugePage ? "hugepage" : "nohugepage", alignedSize, errno);
         } else {
-            UC_DEBUG("Mmap({}) with advice({}) success.", alignedSize, pageSize);
+            UC_DEBUG("Mmap({}) anonymous success, hugepage advice: {}.", alignedSize, useHugePage);
         }
         size = alignedSize;
         return ptr;
@@ -87,25 +88,27 @@ public:
         munlock(buffer_, size_);
         munmap(buffer_, size_);
     }
-    std::shared_ptr<void> Data()
+    std::shared_ptr<void> Data(bool useHugePage)
     {
         if (buffer_ != MAP_FAILED) {
             return std::shared_ptr<void>(buffer_, [self = shared_from_this()](auto) {});
         }
         const auto requestedSize = size_;
-        const auto useGiganticPages = size_ >= GIGANTIC_PAGE_SIZE;
-        UC_DEBUG("Make direct-io host buffer start, requested size: {}, use 1GiB hugepage: {}.",
-                 requestedSize, useGiganticPages);
-        buffer_ = MMapWithTLB(size_, useGiganticPages);
-        if (buffer_ == MAP_FAILED && useGiganticPages) {
-            UC_DEBUG("Fallback direct-io host buffer mmap from 1GiB hugepage to 2MiB hugepage, requested size: {}.",
-                     requestedSize);
-            buffer_ = MMapWithTLB(size_, false);
+        const auto useGiganticPages = useHugePage && size_ >= GIGANTIC_PAGE_SIZE;
+        UC_DEBUG("Make direct-io host buffer start, requested size: {}, use hugepage: {}, use 1GiB hugepage: {}.",
+                 requestedSize, useHugePage, useGiganticPages);
+        if (useHugePage) {
+            buffer_ = MMapWithTLB(size_, useGiganticPages);
+            if (buffer_ == MAP_FAILED && useGiganticPages) {
+                UC_DEBUG("Fallback direct-io host buffer mmap from 1GiB hugepage to 2MiB hugepage, requested size: {}.",
+                         requestedSize);
+                buffer_ = MMapWithTLB(size_, false);
+            }
         }
         if (buffer_ == MAP_FAILED) {
-            UC_DEBUG("Fallback direct-io host buffer mmap to anonymous mmap with hugepage advice, requested size: {}.",
-                     requestedSize);
-            buffer_ = MMapWithAdvice(size_);
+            UC_DEBUG("Make direct-io host buffer mmap with anonymous mmap, requested size: {}, use hugepage advice: {}.",
+                     requestedSize, useHugePage);
+            buffer_ = MMapAnonymous(size_, useHugePage);
         }
         if (buffer_ == MAP_FAILED) {
             UC_ERROR("Failed to make direct-io host buffer, requested size: {}, aligned size: {}.",
@@ -156,10 +159,10 @@ std::shared_ptr<void> Trans::AscendBuffer::MakeHostBuffer(size_t size)
     return nullptr;
 }
 
-std::shared_ptr<void> Trans::AscendBuffer::MakeHostBuffer4DirectIo(size_t size)
+std::shared_ptr<void> Trans::AscendBuffer::MakeHostBuffer4DirectIo(size_t size, bool useHugePage)
 {
     try {
-        return HostHugePages::Create(size)->Data();
+        return HostHugePages::Create(size)->Data(useHugePage);
     } catch (...) {
         UC_ERROR("Make direct-io host buffer failed with exception, size: {}.", size);
         return nullptr;

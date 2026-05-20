@@ -73,7 +73,7 @@ public:
         return this->MakeDeviceBuffer(size);
     }
 
-    std::shared_ptr<void> MakeHostBuffer4DirectIo(size_t size) override
+    std::shared_ptr<void> MakeHostBuffer4DirectIo(size_t size, bool = false) override
     {
         return this->MakeHostBuffer(size);
     }

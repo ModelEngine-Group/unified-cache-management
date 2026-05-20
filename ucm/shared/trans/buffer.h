@@ -38,7 +38,7 @@ public:
     virtual std::shared_ptr<void> GetDeviceBuffer(size_t size) = 0;
 
     virtual std::shared_ptr<void> MakeHostBuffer(size_t size) = 0;
-    virtual std::shared_ptr<void> MakeHostBuffer4DirectIo(size_t size) = 0;
+    virtual std::shared_ptr<void> MakeHostBuffer4DirectIo(size_t size, bool useHugePage = false) = 0;
     virtual Status MakeHostBuffers(size_t size, size_t number) = 0;
     virtual std::shared_ptr<void> GetHostBuffer(size_t size) = 0;
 
