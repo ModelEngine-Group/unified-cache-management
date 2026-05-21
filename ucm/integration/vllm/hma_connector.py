@@ -497,8 +497,11 @@ class UCMFAWAConnector(UCMDirectConnector):
                 raise RuntimeError(f"Worker FAWA {label} store needs tensor sizes.")
             config["device_id"] = self.local_rank
             config["tensor_size_list"] = tensor_size_list
-            config["shard_size"] = int(sum(tensor_size_list))
-            config["block_size"] = int(sum(tensor_size_list))
+            # for io_direct support, shard_size & block_size should be aligned with 4KB
+            aligned_size = 4096
+            padded_size = ((sum(tensor_size_list) + aligned_size - 1) // aligned_size) * aligned_size
+            config["shard_size"] = padded_size
+            config["block_size"] = padded_size 
             # MLA stores aggregate TP shards under one logical rank group.
             config["local_rank_size"] = self.tp_size if self.is_mla else 1
             if cpu_affinity_cores:
