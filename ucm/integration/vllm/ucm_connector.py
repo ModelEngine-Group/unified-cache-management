@@ -15,7 +15,6 @@ from vllm.distributed.kv_transfer.kv_connector.v1.base import (
     KVConnectorBase_V1,
     KVConnectorMetadata,
     KVConnectorRole,
-    KVConnectorWorkerMetadata,
     SupportsHMA,
 )
 from vllm.distributed.parallel_state import get_world_group
@@ -2822,7 +2821,7 @@ class UCMConnector(KVConnectorBase_V1, SupportsHMA):
     ) -> tuple[Optional[set[str]], Optional[set[str]]]:
         return self.connector.get_finished(finished_req_ids)
 
-    def build_connector_worker_meta(self) -> KVConnectorWorkerMetadata | None:
+    def build_connector_worker_meta(self):
         return self.connector.build_connector_worker_meta()
 
     def update_connector_output(self, connector_output: KVConnectorOutput):
