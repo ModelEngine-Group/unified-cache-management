@@ -610,10 +610,11 @@ class UCMFAWAConnector(UCMDirectConnector):
         # WA rows represent window boundary state, so they are not required to
         # form a prefix. Search only inside the FA-contiguous hit range and use
         # the latest boundary that exists.
-        window_hits = self.wa_store.lookup(external_keys[:fa_hit_blocks])
-        for hit_idx in range(len(window_hits) - 1, -1, -1):
-            if window_hits[hit_idx]:
-                return hit_idx + 1
+        for hit_blocks in range(fa_hit_blocks, -1, -1):
+            # TODO: Add Posix SpaceManager::LookupOnSuffix() for sparse WA boundary lookups, where only the latest existing key is needed.
+            key = external_keys[hit_blocks - 1]
+            if self.wa_store.lookup([key])[0]:
+                return hit_blocks
         return 0
 
     def get_num_new_matched_tokens(
