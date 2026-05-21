@@ -1062,13 +1062,14 @@ class UCMFAWAConnector(UCMDirectConnector):
             if self.wa_store is None:
                 raise RuntimeError("WA store is not initialized.")
 
-            total_keys: list[bytes] = []
+            fa_dump_keys: list[bytes] = []
+            wa_dump_keys: list[bytes] = []
             fa_ptr_rows: list[np.ndarray] = []
             wa_ptr_rows: list[np.ndarray] = []
             for request in metadata.request_meta.values():
                 if not request.dump_keys:
                     continue
-                total_keys.extend(request.dump_keys)
+                fa_dump_keys.extend(request.dump_keys)
                 fa_ptr_rows.append(
                     self._extract_fa_ptr(
                         request.dump_keys,
@@ -1077,6 +1078,7 @@ class UCMFAWAConnector(UCMDirectConnector):
                         request.dump_vllm_block_ids,
                     )
                 )
+                wa_dump_keys.extend(request.dump_keys[-1:])
                 wa_ptr_rows.append(
                     self._extract_wa_ptr(
                         request.dump_keys[-1:],
@@ -1084,7 +1086,7 @@ class UCMFAWAConnector(UCMDirectConnector):
                     )
                 )
 
-            if not total_keys:
+            if not fa_dump_keys:
                 return
 
             fa_ptrs = np.vstack(fa_ptr_rows)
@@ -1095,7 +1097,7 @@ class UCMFAWAConnector(UCMDirectConnector):
                 self._submit_dump_task(
                     "FA",
                     self.fa_store,
-                    total_keys,
+                    fa_dump_keys,
                     fa_ptrs,
                     event_handle,
                 )
@@ -1104,7 +1106,7 @@ class UCMFAWAConnector(UCMDirectConnector):
                 self._submit_dump_task(
                     "WA",
                     self.wa_store,
-                    total_keys,
+                    wa_dump_keys,
                     window_ptrs,
                     event_handle,
                 )
