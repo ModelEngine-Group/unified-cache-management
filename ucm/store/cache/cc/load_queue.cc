@@ -145,16 +145,21 @@ void LoadQueue::TransferOneTask(CopyStream& stream, ShardTask&& task)
     }
     auto s = Status::OK();
     do {
-        auto tpBackendWait = task.waiter ? NowTime::Now() : 0.0;
+        auto tpBackendWait = NowTime::Now();
         s = WaitBackendTaskReady(task);
         if (s.Failure()) [[unlikely]] { break; }
-        auto tpBackendReady = task.waiter ? NowTime::Now() : 0.0;
+        auto tpBackendReady = NowTime::Now();
         s = HostToDeviceScatterAsync(stream.NextStream(), task.bufferHandle.Data(),
                                      task.shard.addrs.data());
         if (s.Failure()) [[unlikely]] {
             UC_ERROR("Failed({}) to do H2D batch async for task({}).", s, task.taskHandle);
             break;
         }
+        auto tpH2dSubmitted = NowTime::Now();
+        UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("cache_shard_backend_wait_ms"),
+                                 (tpBackendReady - tpBackendWait) * 1e3);
+        UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("cache_shard_h2d_ms"),
+                                 (tpH2dSubmitted - tpBackendReady) * 1e3);
         if (!task.waiter) {
             holder_.push_back(std::move(task));
             return;
@@ -165,10 +170,6 @@ void LoadQueue::TransferOneTask(CopyStream& stream, ShardTask&& task)
             UC_ERROR("Failed({}) to sync on stream for task({}).", s, task.taskHandle);
             break;
         }
-        UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("cache_shard_backend_wait_ms"),
-                                 (tpBackendReady - tpBackendWait) * 1e3);
-        UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("cache_shard_h2d_sample_ms"),
-                                 (NowTime::Now() - tpBackendReady) * 1e3);
     } while (0);
     if (s.Failure()) [[unlikely]] { failureSet_->Insert(task.taskHandle); }
     if (task.waiter) { task.waiter->Done(); }

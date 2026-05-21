@@ -710,7 +710,7 @@
         "type": "prometheus",
         "uid": "prometheus"
       },
-      "description": "Stacked average Cache load task duration. Uses task-level queue wait and dispatch metrics; WaitBackendTask + H2D is calculated as cache_load_duration_ms avg minus queue wait avg minus dispatch avg. Final-shard sample metrics are shown in detail panels and are intentionally not stacked here. Uses a fixed 40s rate window for stability.",
+      "description": "Stacked average Cache load task duration. Uses task-level queue wait and dispatch metrics; WaitBackendTask + H2D is calculated as cache_load_duration_ms avg minus queue wait avg minus dispatch avg. Per-shard detail metrics are shown in detail panels and are intentionally not stacked here. Uses a fixed 40s rate window for stability.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -1992,7 +1992,7 @@
         "type": "prometheus",
         "uid": "prometheus"
       },
-      "description": "Final-shard sample for Cache load H2D submit plus stream sync after WaitBackendTaskReady. This is sampled once per Cache load task from the shard carrying the waiter; it is not a task-level duration and should not be stacked with total load, queue wait, or dispatch. Series: p50 / p90 / p99 / avg by selected view.",
+      "description": "Per-shard Cache load H2D async submit duration after WaitBackendTaskReady. This is recorded for each shard; it is not a task-level duration, does not include full task stream synchronization, and should not be stacked with total load, queue wait, or dispatch. Series: p50 / p90 / p99 / avg by selected view.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -2152,7 +2152,7 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "histogram_quantile(0.5, sum by (le, ${perWorker:raw}) (rate(ucm:cache_shard_h2d_sample_ms_bucket{model_name=\"$model_name\", job=\"$job\", worker_id=~\"$worker_id\"}[$__rate_interval])))",
+          "expr": "histogram_quantile(0.5, sum by (le, ${perWorker:raw}) (rate(ucm:cache_shard_h2d_ms_bucket{model_name=\"$model_name\", job=\"$job\", worker_id=~\"$worker_id\"}[$__rate_interval])))",
           "legendFormat": "p50 {{worker_id}}",
           "range": true,
           "refId": "A"
@@ -2163,7 +2163,7 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "histogram_quantile(0.9, sum by (le, ${perWorker:raw}) (rate(ucm:cache_shard_h2d_sample_ms_bucket{model_name=\"$model_name\", job=\"$job\", worker_id=~\"$worker_id\"}[$__rate_interval])))",
+          "expr": "histogram_quantile(0.9, sum by (le, ${perWorker:raw}) (rate(ucm:cache_shard_h2d_ms_bucket{model_name=\"$model_name\", job=\"$job\", worker_id=~\"$worker_id\"}[$__rate_interval])))",
           "legendFormat": "p90 {{worker_id}}",
           "range": true,
           "refId": "B"
@@ -2174,7 +2174,7 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "histogram_quantile(0.99, sum by (le, ${perWorker:raw}) (rate(ucm:cache_shard_h2d_sample_ms_bucket{model_name=\"$model_name\", job=\"$job\", worker_id=~\"$worker_id\"}[$__rate_interval])))",
+          "expr": "histogram_quantile(0.99, sum by (le, ${perWorker:raw}) (rate(ucm:cache_shard_h2d_ms_bucket{model_name=\"$model_name\", job=\"$job\", worker_id=~\"$worker_id\"}[$__rate_interval])))",
           "legendFormat": "p99 {{worker_id}}",
           "range": true,
           "refId": "C"
@@ -2185,13 +2185,13 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "sum by (${perWorker:raw}) (rate(ucm:cache_shard_h2d_sample_ms_sum{model_name=\"$model_name\", job=\"$job\", worker_id=~\"$worker_id\"}[$__rate_interval]))\n/\nsum by (${perWorker:raw}) (rate(ucm:cache_shard_h2d_sample_ms_count{model_name=\"$model_name\", job=\"$job\", worker_id=~\"$worker_id\"}[$__rate_interval]))",
+          "expr": "sum by (${perWorker:raw}) (rate(ucm:cache_shard_h2d_ms_sum{model_name=\"$model_name\", job=\"$job\", worker_id=~\"$worker_id\"}[$__rate_interval]))\n/\nsum by (${perWorker:raw}) (rate(ucm:cache_shard_h2d_ms_count{model_name=\"$model_name\", job=\"$job\", worker_id=~\"$worker_id\"}[$__rate_interval]))",
           "legendFormat": "avg {{worker_id}}",
           "range": true,
           "refId": "D"
         }
       ],
-      "title": "Cache Load Shard H2D Sample",
+      "title": "Cache Load Shard H2D Duration",
       "type": "timeseries"
     },
     {
@@ -2406,7 +2406,7 @@
         "type": "prometheus",
         "uid": "prometheus"
       },
-      "description": "Final-shard sample for Cache load WaitBackendTaskReady. For a miss this includes waiting for the backend load task; for a hit or shared buffer it captures readiness wait for that final shard. This is not a task-level duration and should not be stacked with total load, queue wait, or dispatch. Series: p50 / p90 / p99 / avg by selected view.",
+      "description": "Per-shard Cache load WaitBackendTaskReady duration. For a miss this includes waiting for the backend load task; for a hit or shared buffer it captures readiness wait for that shard. This is not a task-level duration and should not be stacked with total load, queue wait, or dispatch. Series: p50 / p90 / p99 / avg by selected view.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -2605,7 +2605,7 @@
           "refId": "D"
         }
       ],
-      "title": "Cache Load Shard Backend Wait Sample",
+      "title": "Cache Load Shard Backend Wait Duration",
       "type": "timeseries"
     },
     {

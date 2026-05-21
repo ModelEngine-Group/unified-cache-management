@@ -248,8 +248,8 @@ The default metrics configuration contains the following UCM metrics.
 | `ucm:cache_load_queue_wait_duration_ms` | Time a Cache load task spent queued before dispatch worker pickup. |
 | `ucm:cache_dump_queue_wait_duration_ms` | Time a Cache dump task spent queued before dispatch worker pickup. |
 | `ucm:cache_load_dispatch_duration_ms` | Cache load dispatch cost: buffer allocation plus backend submission. |
-| `ucm:cache_shard_backend_wait_ms` | Final Cache load shard sample for `WaitBackendTaskReady()` duration. |
-| `ucm:cache_shard_h2d_sample_ms` | Final Cache load shard sample for H2D submit plus stream sync duration. |
+| `ucm:cache_shard_backend_wait_ms` | Cache load per-shard `WaitBackendTaskReady()` duration. |
+| `ucm:cache_shard_h2d_ms` | Cache load per-shard H2D async submit duration. |
 | `ucm:cache_dump_mkbuf_duration_ms` | Cache dump mk_buf phase duration. |
 | `ucm:cache_d2h_duration_ms` | Cache dump D2H stream sync phase duration. |
 | `ucm:cache_dump_backend_submit_duration_ms` | Cache dump synchronous backend submit duration. |
