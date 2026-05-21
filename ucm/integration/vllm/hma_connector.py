@@ -152,11 +152,11 @@ class KVCacheGroupLayout:
             f"tensor_block_sizes={sorted(set(tensor_block_sizes))}"
         )
 
-    def extract_segment_addrs_batch(
+    def extract_addrs_with_offsets(
         self,
         block_ids: np.ndarray,
-        offsets: np.ndarray,
         group_token_block_size: int,
+        offsets: np.ndarray,
     ) -> np.ndarray:
 
         physical_token_offsets = (
@@ -169,6 +169,14 @@ class KVCacheGroupLayout:
             block_ids[:, None] * self.block_strides[None, :]
             + physical_token_offsets * self.tensor_token_strides[None, :]
             + self.base_ptrs[None, :]
+        ).astype(np.uint64, copy=False)
+
+    def extract_addrs(
+        self,
+        block_ids: np.ndarray,
+    ) -> np.ndarray:
+        return (
+            block_ids[:, None] * self.block_strides[None, :] + self.base_ptrs[None, :]
         ).astype(np.uint64, copy=False)
 
     def segment_tensor_size_list(
@@ -672,30 +680,24 @@ class UCMFAWAConnector(UCMDirectConnector):
         self,
         group_id: int,
         group_block_ids: list[int],
-        hash_start: int,
-        hash_end: int,
-        window_boundary_token_idx,
-        window_tail_only: bool,
+        window_boundary_token_idx: np.ndarray,
     ) -> list[int]:
-        if hash_end <= hash_start:
-            return []
+        is_window_group = group_id in self.window_group_ids
         group_meta = self.group_metas[group_id]
-        if window_tail_only:
+        if is_window_group:
             if not group_meta.tail_tokens:
                 return []
+            # current only care the last hash block's wa cache
             boundary_block_idx = (
-                window_boundary_token_idx // group_meta.token_block_size
-            )
-            tail_offsets = np.arange(group_meta.tail_blocks) - (
-                group_meta.tail_blocks - 1
-            )
-            selected_idx = boundary_block_idx[:, None] + tail_offsets[None, :]
-            selected_idx = selected_idx.reshape(-1)
-
-            return np.array(group_block_ids)[selected_idx].tolist()
+                window_boundary_token_idx[-1] // group_meta.token_block_size
+            ) + 1
+            return group_block_ids[
+                boundary_block_idx - group_meta.tail_blocks : boundary_block_idx
+            ]
         # for fa part, hash_block_size <= token_block_size, at most one block per hash block
-        selected_idx = window_boundary_token_idx // group_meta.token_block_size
-        return np.array(group_block_ids)[selected_idx].tolist()
+        return np.array(group_block_ids)[
+            window_boundary_token_idx // group_meta.token_block_size
+        ].tolist()
 
     def _generate_dispatch_meta(
         self,
@@ -738,19 +740,11 @@ class UCMFAWAConnector(UCMDirectConnector):
                 np.arange(load_start, load_end) * self.hash_block_size - 1
             )
             for group_id, group_block_ids in enumerate(all_group_block_ids):
-                is_window_group = group_id in self.window_group_ids
                 load_vllm_block_ids.append(
                     self._slice_group_block_ids(
                         group_id,
                         group_block_ids,
-                        load_end - 1 if is_window_group else load_start,
-                        load_end,
-                        (
-                            window_boundary_token_idx[-1:]
-                            if is_window_group
-                            else window_boundary_token_idx
-                        ),
-                        window_tail_only=is_window_group,
+                        window_boundary_token_idx,
                     )
                 )
 
@@ -772,10 +766,7 @@ class UCMFAWAConnector(UCMDirectConnector):
                     self._slice_group_block_ids(
                         group_id,
                         group_block_ids,
-                        dump_start,
-                        dump_end,
                         window_boundary_token_idx,
-                        window_tail_only=group_id in self.window_group_ids,
                     )
                 )
         req_meta.token_processed = computed_end_token
@@ -947,20 +938,6 @@ class UCMFAWAConnector(UCMDirectConnector):
         dump_task.store.wait(dump_task.task)
 
     def _extract_fa_ptr(self, store_keys, hash_start, hash_end, candidate_vllm_ids):
-        """
-        this function need to extract the data ptr, but for Ascend need to consider more
-        hash_start, hash_end is the range of the contiguous part needs to be load or dump
-        the relation of hash_start, hash_end and candidate_vllm_ids can refer _generate_dispatch_meta func
-        for each hash_block_idx, we can get the vllm block id and offset for each group's tensor
-        """
-        if not store_keys:
-            return np.empty((0, 0), dtype=np.uint64)
-        if len(store_keys) != hash_end - hash_start:
-            raise ValueError(
-                f"FA KV cache store key count {len(store_keys)} does not match "
-                f"hash range [{hash_start}, {hash_end})."
-            )
-
         all_ptrs = []
         for group_id in self.fa_group_ids:
             layout = self.group_layouts.get(group_id)
@@ -968,27 +945,22 @@ class UCMFAWAConnector(UCMDirectConnector):
                 continue
             meta = self.group_metas[group_id]
             block_ids = np.asarray(candidate_vllm_ids[group_id], dtype=np.uint64)
-            token_start = np.arange(hash_start, hash_end) * self.hash_block_size
-            token_offsets = token_start % meta.token_block_size
-            group_ptrs = layout.extract_segment_addrs_batch(
-                block_ids, token_offsets, meta.token_block_size
-            )
+            # current self.hash_block_size <= meta.token_block_size
+            if self.hash_block_size == meta.token_block_size:
+                # for gpu setting
+                group_ptrs = layout.extract_addrs(block_ids)
+            else:
+                # for npu setting
+                token_start = np.arange(hash_start, hash_end) * self.hash_block_size
+                token_offsets = token_start % meta.token_block_size
+                group_ptrs = layout.extract_addrs_with_offsets(
+                    block_ids, meta.token_block_size, token_offsets
+                )
             all_ptrs.append(group_ptrs)
 
         return np.concatenate(all_ptrs, axis=1)
 
-    def _extract_wa_ptr(self, store_keys, hash_start, hash_end, candidate_vllm_ids):
-        """
-        samilar as _extract_fa_ptr, but for Ascend need to consider more
-        """
-        if not store_keys:
-            return np.empty((0, 0), dtype=np.uint64)
-        if len(store_keys) != hash_end - hash_start:
-            raise ValueError(
-                f"WA KV cache store key count {len(store_keys)} does not match "
-                f"hash range [{hash_start}, {hash_end})."
-            )
-
+    def _extract_wa_ptr(self, store_keys, vllm_ids):
         all_ptrs = []
         for group_id in self.window_group_ids:
             layout = self.group_layouts.get(group_id)
@@ -998,18 +970,19 @@ class UCMFAWAConnector(UCMDirectConnector):
             if not meta.tail_tokens:
                 continue
 
-            block_ids = np.asarray(candidate_vllm_ids[group_id], dtype=np.uint64)
-            if meta.tail_blocks == 1:
+            block_ids = np.asarray(vllm_ids[group_id], dtype=np.uint64)
+            if meta.tail_blocks == 1 and meta.token_block_size > meta.tail_tokens:
                 token_offsets = np.ones_like(block_ids) * (
                     meta.token_block_size - meta.tail_tokens
                 )
+                group_ptrs = layout.extract_addrs_with_offsets(
+                    block_ids, meta.token_block_size, token_offsets
+                )
             else:
                 token_offsets = np.zeros_like(block_ids)
+                group_ptrs = layout.extract_addrs(block_ids)
+                group_ptrs = group_ptrs.reshape(len(store_keys), -1)
 
-            group_ptrs = layout.extract_segment_addrs_batch(
-                block_ids, token_offsets, meta.token_block_size
-            )
-            group_ptrs = group_ptrs.reshape(len(store_keys), -1)
             all_ptrs.append(group_ptrs)
 
         return np.concatenate(all_ptrs, axis=1)
@@ -1023,11 +996,7 @@ class UCMFAWAConnector(UCMDirectConnector):
         for request_id, request in metadata.request_meta.items():
             if not request.load_keys:
                 continue
-            fa_anchor_vllm_block_ids = {
-                block_id for block_id in request.load_vllm_block_ids[0] if block_id >= 0
-            }
-            wa_anchor_vllm_block_ids = set()
-            current_anchor_vllm_block_ids = fa_anchor_vllm_block_ids
+            group0_vllm_block_ids = set(request.load_vllm_block_ids[0])
             try:
                 if self.fa_store is None:
                     raise RuntimeError("FA store is not initialized.")
@@ -1048,18 +1017,14 @@ class UCMFAWAConnector(UCMDirectConnector):
                         self.fa_store,
                         request.load_keys,
                         fa_ptrs,
-                        fa_anchor_vllm_block_ids,
+                        group0_vllm_block_ids,
                     )
                 )
 
                 # WA groups only need the final matched boundary.
                 window_keys = request.load_keys[-1:]
-                wa_anchor_vllm_block_ids = {request.load_vllm_block_ids[0][-1]}
-                current_anchor_vllm_block_ids = wa_anchor_vllm_block_ids
                 window_ptrs = self._extract_wa_ptr(
                     window_keys,
-                    request.load_hash_end - 1,
-                    request.load_hash_end,
                     request.load_vllm_block_ids,
                 )
                 tasks.append(
@@ -1069,7 +1034,7 @@ class UCMFAWAConnector(UCMDirectConnector):
                         self.wa_store,
                         window_keys,
                         window_ptrs,
-                        wa_anchor_vllm_block_ids,
+                        group0_vllm_block_ids,
                     )
                 )
             except Exception as e:
@@ -1077,7 +1042,7 @@ class UCMFAWAConnector(UCMDirectConnector):
                     f"request {request_id} submit FAWA load task "
                     f"error. {type(e).__name__}: {e}"
                 )
-                self._invalid_block_ids.update(current_anchor_vllm_block_ids)
+                self._invalid_block_ids.update(group0_vllm_block_ids)
 
         for load_task in tasks:
             self._wait_load_task(load_task)
@@ -1114,9 +1079,7 @@ class UCMFAWAConnector(UCMDirectConnector):
                 )
                 wa_ptr_rows.append(
                     self._extract_wa_ptr(
-                        request.dump_keys,
-                        request.dump_hash_start,
-                        request.dump_hash_end,
+                        request.dump_keys[-1:],
                         request.dump_vllm_block_ids,
                     )
                 )
