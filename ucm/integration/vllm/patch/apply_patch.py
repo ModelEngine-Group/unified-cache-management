@@ -103,7 +103,7 @@ def get_vllm_version() -> Optional[str]:
 
 def get_supported_versions() -> list[str]:
     """Get patch-required vLLM versions."""
-    return ["0.11.0", "0.18.0"]
+    return ["0.11.0", "0.17.0", "0.18.0", "0.19.0"]
 
 
 def apply_all_patches() -> None:
@@ -155,6 +155,9 @@ def apply_all_patches() -> None:
             case "0.18.0":
                 logger.info("UCM patching vllm-ascend for pc...")
                 import ucm.integration.vllm.patch.v0180.vllm_ascend.pc_ascend_patch
+            case "0.17.0" | "0.19.0":
+                logger.info(f"UCM patching vllm-ascend {ascend_version} for pc...")
+                import ucm.integration.vllm.patch.v0180.vllm_ascend.ucm_connector_patch
             case _:
                 pass
 

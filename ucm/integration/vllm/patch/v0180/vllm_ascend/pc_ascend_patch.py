@@ -1,5 +1,6 @@
 import inspect
 
+import ucm.integration.vllm.patch.v0180.vllm_ascend.ucm_connector_patch  # noqa: F401
 from ucm.integration.vllm.patch.utils import (
     patch_or_inject,
     when_imported,
