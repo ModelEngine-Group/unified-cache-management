@@ -9,6 +9,11 @@ from ucm.logger import init_logger
 
 logger = init_logger(__name__)
 
+_SFA_V1_PATCH_BY_VERSION = {
+    "0.18.0rc1": "sfa_v1_rc1",
+    "0.18.0": "sfa_v1_0180",
+}
+
 
 def _npu_sample_tokens_has_spec_kv_finalize(npu_cls: type) -> bool:
     try:
@@ -20,11 +25,28 @@ def _npu_sample_tokens_has_spec_kv_finalize(npu_cls: type) -> bool:
 
 @when_imported("vllm_ascend.attention.sfa_v1")
 def patch_sfa_v1(mod):
-    logger.debug(f"Patched {mod} called")
+    from ucm.integration.vllm.patch.apply_patch import get_vllm_ascend_version_full
 
-    from ucm.integration.vllm.patch.v0180.vllm_ascend.pc.attention import sfa_v1
+    full_ver = get_vllm_ascend_version_full()
+    patch_name = _SFA_V1_PATCH_BY_VERSION.get(full_ver)
+    if patch_name is None:
+        logger.warning(
+            f"Skip sfa_v1 patch: unsupported vllm-ascend version {full_ver!r}, "
+            f"expected one of {list(_SFA_V1_PATCH_BY_VERSION)}"
+        )
+        return
 
-    patch_or_inject(mod.AscendSFAImpl, "forward", sfa_v1.AscendSFAImpl.forward)
+    logger.info(f"Patched {mod} with {patch_name} for vllm-ascend {full_ver}")
+    if patch_name == "sfa_v1_rc1":
+        from ucm.integration.vllm.patch.v0180.vllm_ascend.pc.attention import sfa_v1_rc1
+
+        forward = sfa_v1_rc1.AscendSFAImpl.forward
+    else:
+        from ucm.integration.vllm.patch.v0180.vllm_ascend.pc.attention import sfa_v1_0180
+
+        forward = sfa_v1_0180.AscendSFAImpl.forward
+
+    patch_or_inject(mod.AscendSFAImpl, "forward", forward)
 
 
 @when_imported("vllm_ascend.worker.model_runner_v1")
