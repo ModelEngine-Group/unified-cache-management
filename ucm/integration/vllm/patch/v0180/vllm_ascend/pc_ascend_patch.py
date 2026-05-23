@@ -42,7 +42,9 @@ def patch_sfa_v1(mod):
 
         forward = sfa_v1_rc1.AscendSFAImpl.forward
     else:
-        from ucm.integration.vllm.patch.v0180.vllm_ascend.pc.attention import sfa_v1_0180
+        from ucm.integration.vllm.patch.v0180.vllm_ascend.pc.attention import (
+            sfa_v1_0180,
+        )
 
         forward = sfa_v1_0180.AscendSFAImpl.forward
 
