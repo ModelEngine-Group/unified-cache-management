@@ -1903,6 +1903,41 @@ class HybridLinearAttentionLayout(HMAKVCacheLayout):
     with a full-page stride.
     """
 
+    def _finalize_layout_arrays(
+        self,
+        base_ptrs: list[list[int]],
+        buffer_size_rows: list[list[int]],
+        tensor_size_lists: list[list[int]],
+        block_stride_lists: list[list[int]],
+    ) -> None:
+        # MTP can add attention-only raw tensors next to hybrid attention+Mamba
+        # tensors.  Those rows naturally have a different number of physical
+        # slices, so keep the UCM schema flattened instead of forcing a
+        # rectangular layer-by-slice matrix.
+        self.base_ptrs = np.asarray(
+            [ptr for row in base_ptrs for ptr in row], dtype=np.uint64
+        )
+        self.buffer_sizes = np.asarray(
+            [size for row in buffer_size_rows for size in row], dtype=np.uint64
+        )
+        self.tensor_size_lists = np.asarray(
+            [size for row in tensor_size_lists for size in row], dtype=np.uint64
+        )
+        self.block_stride_lists = np.asarray(
+            [stride for row in block_stride_lists for stride in row], dtype=np.uint64
+        )
+
+    def extract_block_addrs(
+        self, vllm_block_ids: List[int], layer_first: bool = False
+    ) -> np.ndarray:
+        if layer_first:
+            raise ValueError("layer_first is not supported for flattened hybrid layout")
+        vllm_block_ids_np = np.asarray(vllm_block_ids, dtype=np.uint64)
+        return (
+            vllm_block_ids_np[:, None] * self.block_stride_lists[None, :]
+            + self.base_ptrs[None, :]
+        )
+
     def _collect_shared_tensor_info(
         self,
         raw_tensor,
@@ -2064,10 +2099,12 @@ class HybridLinearAttentionLayout(HMAKVCacheLayout):
             for layer_name in raw_tensor.shared_by:
                 self.layer_name_to_row[layer_name] = row_id
 
-        self.base_ptrs = np.asarray(base_ptrs, dtype=np.uint64)
-        self.buffer_sizes = np.asarray(buffer_size_rows, dtype=np.uint64)
-        self.tensor_size_lists = np.asarray(tensor_size_lists, dtype=np.uint64)
-        self.block_stride_lists = np.asarray(block_stride_lists, dtype=np.uint64)
+        self._finalize_layout_arrays(
+            base_ptrs,
+            buffer_size_rows,
+            tensor_size_lists,
+            block_stride_lists,
+        )
 
 
 class UCMHMAConnector(UCMDirectConnector, SupportsHMA):
