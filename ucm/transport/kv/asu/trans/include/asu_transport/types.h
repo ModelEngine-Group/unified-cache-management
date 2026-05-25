@@ -55,6 +55,7 @@ enum class StatusCode {
     UNSUPPORTED,
     IN_PROGRESS,
     INTERNAL_ERROR,
+    CANCELED,
 };
 
 struct Status {

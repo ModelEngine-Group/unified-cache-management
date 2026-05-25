@@ -23,7 +23,14 @@
  * */
 #pragma once
 
+#include <atomic>
+#include <memory>
+#include <mutex>
+#include <thread>
+#include <unordered_map>
 #include "asu_transport/asu_transport.h"
+#include "template/spsc_ring_queue.h"
+#include "transport_task_manager.h"
 
 namespace UC::ASU {
 
@@ -58,7 +65,23 @@ public:
     Status UnregisterRegions(const std::vector<MRHandle>& handles) override;
 
 private:
+    using TransportTaskContextPtr = std::shared_ptr<TransportTaskContext>;
+    Status SubmitAsync(std::unique_ptr<TransportTaskContext> ctx, TaskId& task_id);
+    void WorkerLoop();
+    void CompleteTask(const TransportTaskContextPtr& ctx);
+    void BuildResult(const TransportTaskContext& ctx, TaskResult& result);
+
     TransportConfig config_;
+
+    TransportTaskManager task_manager_;
+    // TODO: optimize spsc pattern or just submit to RDMA/UB directly ?
+    UC::SpscRingQueue<TransportTaskContextPtr> execute_queue_;
+    std::mutex producer_mu_;
+
+    std::thread worker_;
+    std::atomic_bool stop_{false};
+
+    std::unordered_map<MRHandle, MemoryRegion> registered_regions_;
 };
 
 }  // namespace UC::ASU

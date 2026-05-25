@@ -26,6 +26,7 @@
 #include <memory>
 #include <unordered_map>
 #include "asu_client/asu_client.h"
+#include "client_task_manager.h"
 
 namespace UC::ASU {
 
@@ -53,13 +54,26 @@ public:
 
 private:
     struct Router {
-        // TODO: 实现DHT和路由
+        std::vector<AsuId> asu_ids;
+
+        AsuId Pick(const CacheKey& key) const;
     };
     struct ViewSnapshot {
         std::shared_ptr<Router> router;
         std::unordered_map<AsuId, std::shared_ptr<AsuTransport>> transports;
     };
+
+    Status SubmitAsync(ClientOpType op_type, const std::vector<KVBuffer>& entries, TaskId& task_id);
+    using ClientTaskContextPtr = std::shared_ptr<ClientTaskContext>;
+
+    Status DispatchTask(const ClientTaskContextPtr& ctx);
+    bool PollTask(const ClientTaskContextPtr& ctx);
+    Status BuildResult(const ClientTaskContextPtr& ctx, TaskResult& result);
+
     TransportFactory transport_factory_;
+    AsuClientConfig config_;
+    std::shared_ptr<ViewSnapshot> view_;
+    ClientTaskManager task_manager_;
 };
 
 }  // namespace UC::ASU
