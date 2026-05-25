@@ -152,7 +152,7 @@ private:
         if (config.tensorSizes.empty()) { return Status::InvalidParam("invalid tensor size"); }
         if (config.shardSize == 0) { return Status::InvalidParam("invalid shard size"); }
         if (config.blockSize == 0) { return Status::InvalidParam("invalid block size"); }
-        if (std::accumulate(config.tensorSizes.begin(), config.tensorSizes.end(), size_t(0)) !=
+        if (std::accumulate(config.tensorSizes.begin(), config.tensorSizes.end(), size_t(0)) >
             config.shardSize) {
             return Status::InvalidParam("invalid shard size({})", config.shardSize);
         }

@@ -15,7 +15,6 @@ from vllm.distributed.kv_transfer.kv_connector.v1.base import (
     KVConnectorBase_V1,
     KVConnectorMetadata,
     KVConnectorRole,
-    KVConnectorWorkerMetadata,
     SupportsHMA,
 )
 from vllm.distributed.parallel_state import get_world_group
@@ -2681,15 +2680,6 @@ class UCMConnector(KVConnectorBase_V1, SupportsHMA):
             > 1
         )
 
-        from ucm.integration.vllm.hma_connector import (
-            UCMAscendFAWAConnector,
-            UCMFAWAConnector,
-        )
-
-        use_fawa_store = UCMFAWAConnector.can_handle_kv_cache_config(
-            kv_cache_config
-        ) or UCMAscendFAWAConnector.can_handle_ascend_kv_cache_config(kv_cache_config)
-
         use_hma = (
             self._vllm_config.scheduler_config.disable_hybrid_kv_cache_manager is False
             or os.getenv("USE_MULTI_GROUPS_KV_CACHE") == "1"
@@ -2699,15 +2689,10 @@ class UCMConnector(KVConnectorBase_V1, SupportsHMA):
             kv_cache_config
         )
 
-        if use_fawa_store:
-            connector_cls = (
-                UCMAscendFAWAConnector
-                if UCMAscendFAWAConnector.can_handle_ascend_kv_cache_config(
-                    kv_cache_config
-                )
-                else UCMFAWAConnector
-            )
-            self.connector = connector_cls(vllm_config, role, kv_cache_config)
+        from ucm.integration.vllm.hma_connector import UCMFAWAConnector
+
+        if UCMFAWAConnector.can_handle_kv_cache_config(kv_cache_config):
+            self.connector = UCMFAWAConnector(vllm_config, role, kv_cache_config)
         elif use_lite:
             self.connector = UCMLiteConnector(vllm_config, role, kv_cache_config)
         elif use_ratio_rate:
@@ -2875,7 +2860,7 @@ class UCMConnector(KVConnectorBase_V1, SupportsHMA):
     ) -> tuple[Optional[set[str]], Optional[set[str]]]:
         return self.connector.get_finished(finished_req_ids)
 
-    def build_connector_worker_meta(self) -> KVConnectorWorkerMetadata | None:
+    def build_connector_worker_meta(self):
         return self.connector.build_connector_worker_meta()
 
     def update_connector_output(self, connector_output: KVConnectorOutput):
