@@ -1,5 +1,6 @@
 import torch
 import torch_npu
+from vllm.distributed import get_tp_group
 from vllm_ascend.ascend_forward_context import _EXTRA_CTX
 from vllm_ascend.attention.attention_v1 import AscendAttentionState
 from vllm_ascend.attention.mla_v1 import (
@@ -177,7 +178,7 @@ class AscendSFAImpl:
                     _, o_proj_full_handle = all_gather_async(
                         self.o_proj_tp_weight,
                         get_tp_group(),
-                        output=AscendSFAImpl.o_proj_full_pool,
+                        output=type(self).o_proj_full_pool,
                     )
 
                 if kv_cache is not None:
