@@ -43,27 +43,19 @@ ENABLE_SPARSE = os.getenv("ENABLE_SPARSE", "0").lower() in (
 ENABLE_UCM_PATCH = os.environ.get("ENABLE_UCM_PATCH", "").lower() in ("1", "true")
 
 
-def get_vllm_ascend_version() -> Optional[str]:
-    """Detect vllm_ascend version if installed.
+def _read_vllm_ascend_version_raw() -> Optional[str]:
+    """Read vllm_ascend version string, stripping only build metadata (+xxx)."""
 
-    Note: keep it simple and robust (no hard import required).
-    """
-
-    def _norm(v: Optional[str]) -> Optional[str]:
+    def _strip_build(v: Optional[str]) -> Optional[str]:
         if not v:
             return None
-        v = str(v).strip()
-        # common suffixes: 0.11.0+xxx / 0.11.0.post1 / 0.11.0rc1
-        v = v.split("+", 1)[0]
-        v = v.split(".post", 1)[0]
-        v = v.split("rc", 1)[0]
-        return v
+        return str(v).strip().split("+", 1)[0]
 
     try:
         from importlib.metadata import PackageNotFoundError, version
 
         try:
-            return _norm(version("vllm-ascend"))
+            return _strip_build(version("vllm-ascend"))
         except PackageNotFoundError:
             return None
     except Exception:
@@ -73,9 +65,28 @@ def get_vllm_ascend_version() -> Optional[str]:
         import importlib
 
         mod = importlib.import_module("vllm_ascend")
-        return _norm(getattr(mod, "__version__", None))
+        return _strip_build(getattr(mod, "__version__", None))
     except Exception:
         return None
+
+
+def _norm_vllm_ascend_version(v: Optional[str]) -> Optional[str]:
+    if not v:
+        return None
+    # common suffixes: 0.11.0.post1 / 0.11.0rc1
+    v = v.split(".post", 1)[0]
+    v = v.split("rc", 1)[0]
+    return v
+
+
+def get_vllm_ascend_version_full() -> Optional[str]:
+    """Detect vllm_ascend version preserving rc/post suffixes (e.g. 0.18.0rc1)."""
+    return _read_vllm_ascend_version_raw()
+
+
+def get_vllm_ascend_version() -> Optional[str]:
+    """Detect normalized vllm_ascend version (e.g. 0.18.0rc1 -> 0.18.0)."""
+    return _norm_vllm_ascend_version(_read_vllm_ascend_version_raw())
 
 
 _vllm_version: Optional[str] = None
