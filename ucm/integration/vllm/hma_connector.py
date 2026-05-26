@@ -1165,9 +1165,10 @@ class UCMFAWAConnector(UCMDirectConnector):
                         )
                     wa_dump_ring_idx += 1
             else:
-                for request in metadata.request_meta.values():
+                for request_id, request in metadata.request_meta.items():
                     if not request.dump_keys:
                         continue
+                    dump_request_ids += (request_id,)
                     fa_dump_keys.extend(request.dump_keys)
                     fa_ptr_rows.append(
                         self._extract_fa_ptr(
@@ -1285,7 +1286,7 @@ class UCMFAWAConnector(UCMDirectConnector):
                     for dump_task in dump_tasks:
                         self._wait_dump_task(dump_task)
             for request_ids in finished_request_ids:
-                self.requests_meta.pop(request_ids, None)
+                self.tp_dump_tasks.pop(request_ids, None)
         except Exception as e:
             logger.error(f"Wait for dumping kv cache failed. {type(e).__name__}: {e}")
         return False, None
