@@ -22,7 +22,6 @@
  * SOFTWARE.
  * */
 #pragma once
-
 #include <cstdint>
 #include <functional>
 #include <memory>
@@ -34,12 +33,12 @@
 namespace UC::ASU {
 
 struct AsuClientConfig {
-    std::string client_id;
-    std::vector<std::string> view_service_addrs;
+    std::string clientId;
+    std::vector<std::string> viewServiceAddrs;
 
-    std::vector<TransportConfig> transport_configs;
+    std::vector<TransportConfig> transportConfigs;
 
-    std::uint64_t default_wait_timeout_ms{100};
+    std::uint64_t defaultWaitTimeoutMs{100};
     std::unordered_map<std::string, std::string> attrs;
 };
 
@@ -48,17 +47,18 @@ public:
     virtual ~AsuClient() = default;
 
     virtual Status Init(const AsuClientConfig& config) = 0;
+    virtual Status Init(const std::string& configPath) = 0;
     virtual Status Shutdown() = 0;
 
     virtual Status Query(const std::vector<CacheKey>& keys, const QueryOptions& options,
                          QueryResult& result) = 0;
 
-    virtual Status LoadAsync(const std::vector<KVBuffer>& entries, TaskId& task_id) = 0;
-    virtual Status StoreAsync(const std::vector<KVBuffer>& entries, TaskId& task_id) = 0;
-    virtual Status DeleteAsync(const std::vector<CacheKey>& keys, TaskId& task_id) = 0;
+    virtual Status LoadAsync(const std::vector<KVBuffer>& entries, TaskId& taskId) = 0;
+    virtual Status StoreAsync(const std::vector<KVBuffer>& entries, TaskId& taskId) = 0;
+    virtual Status DeleteAsync(const std::vector<CacheKey>& keys, TaskId& taskId) = 0;
 
-    virtual Status Check(TaskId task_id, TaskResult& result) = 0;
-    virtual Status Wait(TaskId task_id, std::uint64_t timeout_ms, TaskResult& result) = 0;
+    virtual Status Check(TaskId taskId, TaskResult& result) = 0;
+    virtual Status Wait(TaskId taskId, std::uint64_t timeoutMs, TaskResult& result) = 0;
 
     virtual Status RegisterRegions(const std::vector<MemoryRegion>& regions,
                                    std::vector<RegisterResult>& results) = 0;
