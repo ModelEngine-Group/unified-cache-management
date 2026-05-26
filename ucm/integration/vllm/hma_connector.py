@@ -1189,14 +1189,15 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
     ) -> tuple[set[str] | None, set[str] | None]:
         # Worker side method
         try:
-            finished_request_ids = []
-            for request_ids, dump_tasks in self.tp_dump_tasks.items():
-                if finished_req_ids.intersection(request_ids):
-                    finished_request_ids.append(request_ids)
-                    for dump_task in dump_tasks:
-                        self._wait_dump_task(dump_task)
-            for request_ids in finished_request_ids:
-                self.tp_dump_tasks.pop(request_ids, None)
+            if finished_req_ids:
+                finished_chunk_req_ids = []
+                for request_ids, dump_tasks in self.tp_dump_tasks.items():
+                    if finished_req_ids.intersection(request_ids):
+                        finished_chunk_req_ids.append(request_ids)
+                        for dump_task in dump_tasks:
+                            self._wait_dump_task(dump_task)
+                for request_ids in finished_chunk_req_ids:
+                    self.tp_dump_tasks.pop(request_ids, None)
         except Exception as e:
             logger.error(f"Wait for dumping kv cache failed. {type(e).__name__}: {e}")
         return None, None
