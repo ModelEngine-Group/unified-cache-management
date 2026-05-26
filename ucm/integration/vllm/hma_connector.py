@@ -9,6 +9,7 @@ import torch
 from vllm.distributed.kv_transfer.kv_connector.v1.base import (
     KVConnectorMetadata,
     KVConnectorRole,
+    SupportsHMA,
 )
 from vllm.model_executor.models.utils import extract_layer_index
 from vllm.v1.core.sched.output import SchedulerOutput
@@ -264,7 +265,7 @@ class FAWADumpTask:
     key_count: int
 
 
-class UCMFAWAConnector(UCMDirectConnector):
+class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
     """UCM connector for mixed full-attention and window KV cache groups.
 
     Full-attention groups are stored once per reusable prefix block and are
