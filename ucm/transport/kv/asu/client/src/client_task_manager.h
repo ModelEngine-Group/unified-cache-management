@@ -25,6 +25,8 @@
 
 #include <atomic>
 #include <condition_variable>
+#include <cstddef>
+#include <memory>
 #include <mutex>
 #include <vector>
 #include "asu_transport/types.h"
@@ -32,14 +34,19 @@
 
 namespace UC::ASU {
 
+// ViewSnapshot is owned by the client and captured by submitted tasks.
+struct ViewSnapshot;
+
 struct ClientSubTask {
-    AsuId asu_id;
-    TaskId trans_task_id{kInvalidTaskId};
+    AsuId asuId;
+    TaskId transTaskId{kInvalidTaskId};
+    bool completed{false};
+    bool failed{false};
 
     // TODO: optimize by zero-copy ?
     std::vector<KVBuffer> entries;
     std::vector<CacheKey> keys;
-    std::vector<std::size_t> original_indices;
+    std::vector<std::size_t> originalIndices;
 };
 
 enum class ClientTaskState {
@@ -57,15 +64,18 @@ enum class ClientOpType {
 };
 
 struct ClientTaskContext {
-    TaskId task_id{kInvalidTaskId};
-    ClientOpType op_type{ClientOpType::LOAD};
-    std::vector<ClientSubTask> sub_tasks;
-    std::vector<Status> entry_status;
+    TaskId taskId{kInvalidTaskId};
+    ClientOpType opType{ClientOpType::LOAD};
+    std::shared_ptr<ViewSnapshot> viewSnapshot;
+    std::vector<ClientSubTask> subTasks;
+    std::vector<Status> entryStatus;
 
     std::atomic<ClientTaskState> state{ClientTaskState::PENDING};
-    Status final_status{StatusCode::OK};
+    Status finalStatus{Status::OK()};
 
-    // TODO: event driven?
+    // TODO: move to transport completion-driven notification when transport exposes callbacks.
+    std::mutex waitMu;
+    std::condition_variable cv;
 
     bool Done() const
     {
