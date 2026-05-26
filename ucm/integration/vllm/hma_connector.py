@@ -16,6 +16,7 @@ from vllm.v1.core.sched.output import SchedulerOutput
 from ucm.integration.vllm.device import create_device
 from ucm.integration.vllm.ucm_connector import UCMDirectConnector
 from ucm.logger import init_logger
+from ucm.sparse.utils import round_up
 from ucm.store.factory_v1 import UcmConnectorFactoryV1
 from ucm.store.ucmstore_v1 import Task, UcmKVStoreBaseV1
 
@@ -31,6 +32,8 @@ logger = init_logger(__name__)
 
 @dataclass(frozen=True)
 class KVCacheGroupMeta:
+    """Logical storage shape for one vLLM KV-cache group."""
+
     group_id: int
     token_block_size: int
     tail_blocks: int
@@ -42,7 +45,7 @@ class KVCacheGroupLayout:
 
     The cache views belonging to one KV group are not necessarily contiguous by
     layer id, so this layout flattens all registered tensors in a deterministic
-    order.
+    order and records enough stride metadata to address arbitrary block rows.
     """
 
     def __init__(self, kvcaches: dict[str, torch.Tensor]) -> None:
@@ -60,6 +63,8 @@ class KVCacheGroupLayout:
         return (extract_layer_index(name), name)
 
     def _build_layout(self) -> None:
+        """Flatten registered KV tensors into store-compatible pointer rows."""
+
         ptrs: list[int] = []
         strides: list[int] = []
         tensor_token_strides: list[int] = []
@@ -97,8 +102,8 @@ class KVCacheGroupLayout:
                 handle_tensor(tensor[1], (-3, -2, -1), layer_name)
             elif tensor.dim() == 4:
                 if tensor.shape[1] == 2:
-                    # GPU kernels may register [num_blocks, 2, block_size, ...].
-                    # Split the K/V axis before reading the token dimension.
+                    # GPU kernels may register [num_blocks, 2, block_size, ...];
+                    # split the K/V axis before reading the token dimension.
                     handle_tensor(tensor[:, 0], (-2, -1), layer_name)
                     handle_tensor(tensor[:, 1], (-2, -1), layer_name)
                 else:
@@ -158,6 +163,7 @@ class KVCacheGroupLayout:
         group_token_block_size: int,
         offsets: np.ndarray,
     ) -> np.ndarray:
+        """Return per-view addresses for logical blocks with token offsets."""
 
         physical_token_offsets = (
             offsets[:, None]
@@ -175,6 +181,8 @@ class KVCacheGroupLayout:
         self,
         block_ids: np.ndarray,
     ) -> np.ndarray:
+        """Return per-view base addresses for complete tensor blocks."""
+
         return (
             block_ids[:, None] * self.block_strides[None, :] + self.base_ptrs[None, :]
         ).astype(np.uint64, copy=False)
@@ -184,6 +192,7 @@ class KVCacheGroupLayout:
         logical_tokens: int,
         group_token_block_size: int,
     ) -> list[int]:
+        """Return byte sizes for one logical segment across all tensor views."""
 
         tensor_tokens = (
             self.tensor_block_sizes * logical_tokens // group_token_block_size
@@ -202,6 +211,8 @@ class KVCacheGroupLayout:
 
 @dataclass
 class FAWARequestMeta:
+    """Scheduler-side state accumulated for one request."""
+
     ucm_block_ids: list[bytes] = field(default_factory=list)
     hbm_hit_block_num: int = 0
     total_hit_block_num: int = 0
@@ -212,6 +223,8 @@ class FAWARequestMeta:
 
 @dataclass
 class FAWARequestDispatchMeta:
+    """Per-step load and dump plan sent from scheduler to workers."""
+
     load_keys: list[bytes] = field(default_factory=list)
     load_hash_start: int = 0
     load_hash_end: int = 0
@@ -224,11 +237,15 @@ class FAWARequestDispatchMeta:
 
 @dataclass
 class UCMFAWAConnectorMetadata(KVConnectorMetadata):
+    """Connector metadata carrying FAWA dispatch plans for this step."""
+
     request_meta: dict[str, FAWARequestDispatchMeta] = field(default_factory=dict)
 
 
 @dataclass
 class FAWALoadTask:
+    """Outstanding FAWA load task plus scheduler-visible failure anchors."""
+
     request_id: str
     label: str
     store: UcmKVStoreBaseV1
@@ -239,6 +256,8 @@ class FAWALoadTask:
 
 @dataclass
 class FAWADumpTask:
+    """Outstanding FAWA dump task submitted to one backing store."""
+
     label: str
     store: UcmKVStoreBaseV1
     task: Task
@@ -277,6 +296,8 @@ class UCMFAWAConnector(UCMDirectConnector):
         self.fa_store: Optional[UcmKVStoreBaseV1] = None
         self.wa_store: Optional[UcmKVStoreBaseV1] = None
         self.requests_meta: dict[str, FAWARequestMeta] = {}
+        self.tp_dump_tasks: dict[tuple, list[FAWADumpTask]] = {}
+
         if role == KVConnectorRole.SCHEDULER:
             self.store = self._create_fa_store(None)
             self.fa_store = self.store
@@ -302,6 +323,8 @@ class UCMFAWAConnector(UCMDirectConnector):
     def can_handle_kv_cache_config(
         cls, kv_cache_config: Optional["KVCacheConfig"]
     ) -> bool:
+        """Return whether this connector supports the given hybrid KV layout."""
+
         if kv_cache_config is None:
             return False
 
@@ -315,7 +338,7 @@ class UCMFAWAConnector(UCMDirectConnector):
                 else group_spec.kv_cache_spec
             )
             spec_names.add(type(spec).__name__)
-        # current only support for DeepSeekV4
+        # GPU FAWA is currently selected for DeepSeek-V4 style MLA+SWA layouts.
         DS_V4_REQUIRED_SPECS = frozenset({"SlidingWindowMLASpec"})
         gpu_support = DS_V4_REQUIRED_SPECS.issubset(spec_names)
         if gpu_support:
@@ -326,6 +349,8 @@ class UCMFAWAConnector(UCMDirectConnector):
     def can_handle_ascend_kv_cache_config(
         cls, kv_cache_config: Optional["KVCacheConfig"]
     ) -> bool:
+        """Return whether the KV config matches the supported Ascend FAWA layout."""
+
         if kv_cache_config is None:
             return False
         kv_cache_groups = kv_cache_config.kv_cache_groups
@@ -347,6 +372,8 @@ class UCMFAWAConnector(UCMDirectConnector):
         return npu_support
 
     def _init_group_metas(self) -> None:
+        """Classify FA/WA groups and compute their logical segment sizes."""
+
         if self.can_handle_ascend_kv_cache_config(self._kv_cache_config):
             self.is_ascend_layout = True
             self.hash_block_size = self.ASCEND_DEFAULT_HASH_BLOCK_SIZE
@@ -362,7 +389,7 @@ class UCMFAWAConnector(UCMDirectConnector):
             raise "current only support DSV4"
         for group_id, group in enumerate(groups):
             kv_cache_spec = group.kv_cache_spec
-            # handle attention window cache
+            # Use the representative spec when vLLM wraps multiple layer specs.
             nested_specs = getattr(kv_cache_spec, "kv_cache_specs", None)
             spec = next(iter(nested_specs.values())) if nested_specs else kv_cache_spec
             window_size = getattr(spec, "sliding_window", None)
@@ -370,11 +397,12 @@ class UCMFAWAConnector(UCMDirectConnector):
             token_block_size = kv_cache_spec.block_size
 
             if self.is_ascend_layout:
-                # for ascend bug, wait for ascend fix
+                # Ascend compressed groups expose a logical block span scaled by
+                # the compression ratio.
                 token_block_size = kv_cache_spec.block_size * compress_ratio
 
             if window_size is None:
-                # hash_block_size must be an integral multiple of token_block_size.
+                # FA groups store one canonical hash block per row.
                 tail_tokens = self.hash_block_size
                 self.fa_group_ids.append(group_id)
             else:
@@ -382,10 +410,10 @@ class UCMFAWAConnector(UCMDirectConnector):
                 if type(spec).__name__ in ["SWAAttentionSpec"] or tensor_name.split(
                     "."
                 )[-1] in ["swa_cache"]:
-                    # for swa cache
+                    # SWA caches keep the full sliding-window tail.
                     tail_tokens = window_size
                 else:
-                    # for compressor state cache
+                    # Compressor state caches keep only the uncompressed tail.
                     layer_index = extract_layer_index(tensor_name)
                     tail_tokens = window_size - layer_compress_ratios[layer_index]
 
@@ -405,6 +433,8 @@ class UCMFAWAConnector(UCMDirectConnector):
         group_layouts: Optional[dict[int, KVCacheGroupLayout]],
         cpu_affinity_cores: Optional[list[int]] = None,
     ) -> UcmKVStoreBaseV1:
+        """Create the backing store used for full-attention rows."""
+
         tensor_size_list = None
         if self._role == KVConnectorRole.WORKER:
             if group_layouts is None:
@@ -425,6 +455,8 @@ class UCMFAWAConnector(UCMDirectConnector):
         group_layouts: Optional[dict[int, KVCacheGroupLayout]],
         cpu_affinity_cores: Optional[list[int]] = None,
     ) -> UcmKVStoreBaseV1:
+        """Create the backing store used for window-tail rows."""
+
         tensor_size_list = None
         if self._role == KVConnectorRole.WORKER:
             if group_layouts is None:
@@ -444,6 +476,8 @@ class UCMFAWAConnector(UCMDirectConnector):
         self,
         store_suffix: str,
     ) -> tuple[str, Optional[str], dict[str, object]]:
+        """Build a namespaced UCM store config for either FA or WA data."""
+
         if len(self.connector_configs) != 1:
             raise RuntimeError(
                 f"Expected exactly one connector config, "
@@ -474,6 +508,8 @@ class UCMFAWAConnector(UCMDirectConnector):
         config: dict[str, object],
         store_suffix: str,
     ) -> None:
+        """Place FA and WA store files in separate backend subdirectories."""
+
         backends = config.get("storage_backends")
         if not isinstance(backends, list):
             return
@@ -491,17 +527,17 @@ class UCMFAWAConnector(UCMDirectConnector):
         tensor_size_list: Optional[list[int]],
         cpu_affinity_cores: Optional[list[int]] = None,
     ) -> UcmKVStoreBaseV1:
+        """Instantiate one UCM store with worker tensor layout metadata."""
+
         name, module_path, config = self._base_store_config(store_suffix)
         if self._role == KVConnectorRole.WORKER:
             if tensor_size_list is None:
                 raise RuntimeError(f"Worker FAWA {label} store needs tensor sizes.")
             config["device_id"] = self.local_rank
             config["tensor_size_list"] = tensor_size_list
-            # for io_direct support, shard_size & block_size should be aligned with 4KB
+            # io_direct requires shard and block sizes to be 4KB aligned.
             aligned_size = 4096
-            padded_size = (
-                (sum(tensor_size_list) + aligned_size - 1) // aligned_size
-            ) * aligned_size
+            padded_size = round_up(sum(tensor_size_list), aligned_size)
             config["shard_size"] = padded_size
             config["block_size"] = padded_size
             # MLA stores aggregate TP shards under one logical rank group.
@@ -516,6 +552,8 @@ class UCMFAWAConnector(UCMDirectConnector):
 
     @staticmethod
     def _summarize_store_config(config: dict[str, object]) -> dict[str, object]:
+        """Return a log-friendly store config without dumping large size lists."""
+
         summary = dict(config)
         tensor_size_list = summary.pop("tensor_size_list", None)
         if tensor_size_list is not None:
@@ -525,6 +563,8 @@ class UCMFAWAConnector(UCMDirectConnector):
         return summary
 
     def register_kv_caches(self, kv_caches: dict[str, torch.Tensor]):
+        """Register worker KV tensors and create FA/WA stores with layouts."""
+
         self.kv_caches = kv_caches
         self.device = create_device()
 
@@ -536,7 +576,8 @@ class UCMFAWAConnector(UCMDirectConnector):
         )
 
         if self.is_ascend_layout:
-            # current for ascend, one layer_tensor_name per group_spec, multi tensors per layer_tensor_name
+            # Ascend may provide multiple tensors for the same layer name; each
+            # KV group consumes its slice in vllm-ascend registration order.
             next_tensor_index_by_layer: dict[str, int] = {}
             for group_id, group in enumerate(self._kv_cache_config.kv_cache_groups):
                 kv_cache_spec_name = type(group.kv_cache_spec).__name__
@@ -576,6 +617,8 @@ class UCMFAWAConnector(UCMDirectConnector):
         group_layouts: dict[int, KVCacheGroupLayout],
         group_ids: tuple[int, ...],
     ) -> list[int]:
+        """Build the per-tensor byte-size vector expected by UCM stores."""
+
         tensor_size_list: list[int] = []
         for group_id in group_ids:
             layout = group_layouts.get(group_id)
@@ -604,6 +647,8 @@ class UCMFAWAConnector(UCMDirectConnector):
         return tensor_size_list
 
     def _lookup_external_hit_blocks(self, external_keys: list[bytes]) -> int:
+        """Find the longest reusable prefix present in both FA and WA stores."""
+
         if self.fa_store is None:
             raise RuntimeError("FA store is not initialized.")
         if self.wa_store is None:
@@ -616,7 +661,8 @@ class UCMFAWAConnector(UCMDirectConnector):
         # form a prefix. Search only inside the FA-contiguous hit range and use
         # the latest boundary that exists.
         for hit_blocks in range(fa_hit_blocks, -1, -1):
-            # TODO: Add Posix SpaceManager::LookupOnSuffix() for sparse WA boundary lookups, where only the latest existing key is needed.
+            # TODO: Add Posix SpaceManager::LookupOnSuffix() for sparse WA
+            # boundary lookups, where only the latest existing key is needed.
             key = external_keys[hit_blocks - 1]
             if self.wa_store.lookup([key])[0]:
                 return hit_blocks
@@ -627,6 +673,13 @@ class UCMFAWAConnector(UCMDirectConnector):
         request: "Request",
         num_computed_tokens: int,
     ) -> tuple[int, bool]:
+        """Return additional prefix tokens reusable from external FAWA stores.
+
+        vLLM passes the local HBM hit length in `num_computed_tokens`. FAWA then
+        checks the FA store for a contiguous prefix and the WA store for the
+        latest usable window boundary inside that FA hit range.
+        """
+
         if num_computed_tokens % self.hash_block_size != 0:
             raise RuntimeError(
                 f"FAWA requires aligned computed tokens, got "
@@ -680,6 +733,12 @@ class UCMFAWAConnector(UCMDirectConnector):
         blocks: "KVCacheBlocks",
         num_external_tokens: int,
     ) -> None:
+        """No-op for current FAWA range metadata.
+
+        `build_connector_meta()` receives the allocated block ids from vLLM's
+        scheduled request metadata and accumulates them there.
+        """
+
         pass
 
     def _slice_group_block_ids(
@@ -688,19 +747,21 @@ class UCMFAWAConnector(UCMDirectConnector):
         group_block_ids: list[int],
         window_boundary_token_idx: np.ndarray,
     ) -> list[int]:
+        """Select the physical group blocks needed for FA or WA store rows."""
+
         is_window_group = group_id in self.window_group_ids
         group_meta = self.group_metas[group_id]
         if is_window_group:
             if not group_meta.tail_tokens:
                 return []
-            # current only care the last hash block's wa cache
+            # WA loads/dumps only the tail for the final boundary in the range.
             boundary_block_idx = (
                 window_boundary_token_idx[-1] // group_meta.token_block_size
             ) + 1
             return group_block_ids[
                 boundary_block_idx - group_meta.tail_blocks : boundary_block_idx
             ]
-        # for fa part, hash_block_size <= token_block_size, at most one block per hash block
+        # FA rows map each canonical hash block to its containing group block.
         return np.array(group_block_ids)[
             window_boundary_token_idx // group_meta.token_block_size
         ].tolist()
@@ -712,16 +773,17 @@ class UCMFAWAConnector(UCMDirectConnector):
         new_vllm_block_ids: tuple[list[int], ...],
         need_load: bool = True,
     ) -> FAWARequestDispatchMeta:
-        """
-        Request Blocks layout:
-        ----------------------------------------------------------------------------------------------------
-        | local_computed_block(HBM hit) | external_computed_block(external hit) | new_block(need to dump)  |
-        ----------------------------------------------------------------------------------------------------
-        |      hbm_hit_block_num        |                 LOAD                  |     new_blocks_num       |
-        ----------------------------------------------------------------------------------------------------
-        |                              total_hit_block_num                      |
-        ----------------------------------------------------------------------------------------------------
-        |                                         scheduled_block_num                                      |
+        """Build one request's worker-side load and dump plan.
+
+        Canonical hash blocks are split into:
+
+        - `[0, hbm_hit_block_num)`: already resident in local HBM.
+        - `[hbm_hit_block_num, total_hit_block_num)`: external hit to load.
+        - `[token_processed, token_processed + new_tokens)`: newly computed
+          tokens whose complete canonical blocks should be dumped.
+
+        `new_vllm_block_ids` is appended to the accumulated per-group block
+        rows before slicing FA/WA rows for this step.
         """
 
         if not req_meta.vllm_block_ids:
@@ -743,7 +805,7 @@ class UCMFAWAConnector(UCMDirectConnector):
             load_end = req_meta.total_hit_block_num
             load_block_keys = req_meta.ucm_block_ids[load_start:load_end]
             window_boundary_token_idx = (
-                np.arange(load_start, load_end) * self.hash_block_size - 1
+                np.arange(load_start + 1, load_end + 1) * self.hash_block_size - 1
             )
             for group_id, group_block_ids in enumerate(all_group_block_ids):
                 load_vllm_block_ids.append(
@@ -765,7 +827,7 @@ class UCMFAWAConnector(UCMDirectConnector):
         if dump_end > dump_start:
             dump_block_keys = req_meta.ucm_block_ids[dump_start:dump_end]
             window_boundary_token_idx = (
-                np.arange(dump_start, dump_end) * self.hash_block_size - 1
+                np.arange(dump_start + 1, dump_end + 1) * self.hash_block_size - 1
             )
             for group_id, group_block_ids in enumerate(all_group_block_ids):
                 dump_vllm_block_ids.append(
@@ -791,8 +853,16 @@ class UCMFAWAConnector(UCMDirectConnector):
     def build_connector_meta(
         self, scheduler_output: SchedulerOutput
     ) -> KVConnectorMetadata:
+        """Create FAWA metadata for the current scheduler step.
+
+        New requests provide full per-group block ids. Cached requests provide
+        only newly allocated block ids, or `None` when no new rows were
+        allocated in the step. Preemption resume replaces the accumulated block
+        rows before appending the resumed allocation.
+        """
+
         requests_dispatch_meta: dict[str, FAWARequestDispatchMeta] = {}
-        # for new request, we need to load and dump
+        # New requests may need both external-prefix load and new-block dump.
         for request in scheduler_output.scheduled_new_reqs:
             request_id, vllm_block_ids = request.req_id, request.block_ids
             req_meta = self.requests_meta.get(request_id)
@@ -835,20 +905,9 @@ class UCMFAWAConnector(UCMDirectConnector):
         return UCMFAWAConnectorMetadata(requests_dispatch_meta)
 
     def update_connector_output(self, connector_output) -> None:
+        """FAWA does not consume worker-to-scheduler metadata today."""
+
         return None
-
-    def get_finished(
-        self,
-        finished_req_ids: set[str],
-    ) -> tuple[set[str] | None, set[str] | None]:
-        return None, None
-
-    def request_finished_all_groups(
-        self,
-        request: "Request",
-        block_ids: tuple[list[int], ...],
-    ) -> tuple[bool, dict[str, object] | None]:
-        return False, None
 
     def _submit_load_task(
         self,
@@ -859,6 +918,8 @@ class UCMFAWAConnector(UCMDirectConnector):
         ptrs: np.ndarray,
         anchor_vllm_block_ids: set[int],
     ) -> FAWALoadTask:
+        """Submit one store load and retain block ids for failure reporting."""
+
         shard_indices = [0] * len(keys)
         task = store.load_data(keys, shard_indices, ptrs)
         return FAWALoadTask(
@@ -874,6 +935,8 @@ class UCMFAWAConnector(UCMDirectConnector):
         self,
         load_task: FAWALoadTask,
     ) -> None:
+        """Wait a load task and mark its anchor blocks invalid on failure."""
+
         try:
             load_task.store.wait(load_task.task)
         except Exception as e:
@@ -884,44 +947,19 @@ class UCMFAWAConnector(UCMDirectConnector):
             self._invalid_block_ids.update(load_task.anchor_vllm_block_ids)
 
     def get_block_ids_with_load_errors(self) -> set[int]:
-        """
-        Get vLLM block IDs that failed to load through FAWA stores.
+        """Return scheduler-visible vLLM block ids for failed FAWA loads.
+
+        The current scheduler invalid-block path matches ids against the first
+        KV-cache group's block list, so FAWA reports first-group anchor ids
+        rather than every group-specific FA/WA block id.
 
         Returns:
-            Set of vLLM/HMA block IDs that encountered load errors.
-            Empty set if no load errors occurred.
+            A set of first-group HMA block ids whose external KV load failed.
+            The set is cleared after each call.
         """
         res = self._invalid_block_ids
         self._invalid_block_ids = set()
         return res
-
-    @staticmethod
-    def _first_group_anchor_ids(
-        candidate_vllm_ids: tuple[list[int], ...],
-    ) -> set[int]:
-        if not candidate_vllm_ids:
-            return set()
-        return {block_id for block_id in candidate_vllm_ids[0] if block_id >= 0}
-
-    def _first_group_anchor_ids_for_hash_range(
-        self,
-        candidate_vllm_ids: tuple[list[int], ...],
-        hash_start: int,
-        hash_end: int,
-        candidate_hash_start: int,
-    ) -> set[int]:
-        if not candidate_vllm_ids or hash_end <= hash_start:
-            return set()
-        first_group_ids = candidate_vllm_ids[0]
-        start = hash_start - candidate_hash_start
-        end = hash_end - candidate_hash_start
-        if start < 0 or end > len(first_group_ids):
-            raise RuntimeError(
-                f"FAWA load anchor range [{hash_start}, {hash_end}) is outside "
-                f"candidate base={candidate_hash_start}, "
-                f"candidates={len(first_group_ids)}."
-            )
-        return {block_id for block_id in first_group_ids[start:end] if block_id >= 0}
 
     def _submit_dump_task(
         self,
@@ -931,6 +969,8 @@ class UCMFAWAConnector(UCMDirectConnector):
         ptrs: np.ndarray,
         event_handle,
     ) -> FAWADumpTask:
+        """Submit one store dump for FA or WA rows."""
+
         shard_indices = [0] * len(keys)
         task = store.dump_data(keys, shard_indices, ptrs, event_handle)
         return FAWADumpTask(
@@ -941,9 +981,13 @@ class UCMFAWAConnector(UCMDirectConnector):
         )
 
     def _wait_dump_task(self, dump_task: FAWADumpTask) -> None:
+        """Wait for a previously submitted FAWA dump task."""
+
         dump_task.store.wait(dump_task.task)
 
     def _extract_fa_ptr(self, store_keys, hash_start, hash_end, candidate_vllm_ids):
+        """Build store pointer rows for full-attention cache segments."""
+
         all_ptrs = []
         for group_id in self.fa_group_ids:
             layout = self.group_layouts.get(group_id)
@@ -951,12 +995,12 @@ class UCMFAWAConnector(UCMDirectConnector):
                 continue
             meta = self.group_metas[group_id]
             block_ids = np.asarray(candidate_vllm_ids[group_id], dtype=np.uint64)
-            # current self.hash_block_size <= meta.token_block_size
+            # GPU layouts usually use one tensor block per hash block. Ascend
+            # layouts may pack several canonical hash blocks in one tensor
+            # block, so the row starts at a token offset inside the block.
             if self.hash_block_size == meta.token_block_size:
-                # for gpu setting
                 group_ptrs = layout.extract_addrs(block_ids)
             else:
-                # for npu setting
                 token_start = np.arange(hash_start, hash_end) * self.hash_block_size
                 token_offsets = token_start % meta.token_block_size
                 group_ptrs = layout.extract_addrs_with_offsets(
@@ -967,6 +1011,8 @@ class UCMFAWAConnector(UCMDirectConnector):
         return np.concatenate(all_ptrs, axis=1)
 
     def _extract_wa_ptr(self, store_keys, vllm_ids):
+        """Build store pointer rows for window-attention tail segments."""
+
         all_ptrs = []
         for group_id in self.window_group_ids:
             layout = self.group_layouts.get(group_id)
@@ -978,6 +1024,8 @@ class UCMFAWAConnector(UCMDirectConnector):
 
             block_ids = np.asarray(vllm_ids[group_id], dtype=np.uint64)
             if meta.tail_blocks == 1 and meta.token_block_size > meta.tail_tokens:
+                # A short tail stored inside a larger group block starts near
+                # the end of the physical tensor block.
                 token_offsets = np.ones_like(block_ids) * (
                     meta.token_block_size - meta.tail_tokens
                 )
@@ -987,6 +1035,8 @@ class UCMFAWAConnector(UCMDirectConnector):
             else:
                 token_offsets = np.zeros_like(block_ids)
                 group_ptrs = layout.extract_addrs(block_ids)
+                # Multi-block WA tails are flattened into one store row per
+                # canonical boundary key.
                 group_ptrs = group_ptrs.reshape(len(store_keys), -1)
 
             all_ptrs.append(group_ptrs)
@@ -994,6 +1044,8 @@ class UCMFAWAConnector(UCMDirectConnector):
         return np.concatenate(all_ptrs, axis=1)
 
     def start_load_kv(self, forward_context: "ForwardContext", **kwargs) -> None:
+        """Load external-hit FA/WA rows into vLLM's paged KV buffers."""
+
         metadata = self._get_connector_metadata()
         if not isinstance(metadata, UCMFAWAConnectorMetadata):
             raise RuntimeError(f"Unexpected FAWA metadata type: {type(metadata)}")
@@ -1054,12 +1106,16 @@ class UCMFAWAConnector(UCMDirectConnector):
             self._wait_load_task(load_task)
 
     def wait_for_save(self) -> None:
+        """Submit dumps for newly computed FA/WA rows in this worker step.
+
+        FA rows are dumped for every completed canonical block assigned to this
+        TP rank. WA rows store only the latest boundary in each request's dump
+        range and are distributed across TP ranks by request order.
+        """
+
         metadata = self._get_connector_metadata()
         if not isinstance(metadata, UCMFAWAConnectorMetadata):
             raise RuntimeError(f"Unexpected FAWA metadata type: {type(metadata)}")
-
-        if self.tp_rank != 0:
-            return
 
         try:
             event_handle = self._get_dump_event_handle()
@@ -1072,52 +1128,164 @@ class UCMFAWAConnector(UCMDirectConnector):
             wa_dump_keys: list[bytes] = []
             fa_ptr_rows: list[np.ndarray] = []
             wa_ptr_rows: list[np.ndarray] = []
-            for request in metadata.request_meta.values():
-                if not request.dump_keys:
-                    continue
-                fa_dump_keys.extend(request.dump_keys)
-                fa_ptr_rows.append(
-                    self._extract_fa_ptr(
-                        request.dump_keys,
-                        request.dump_hash_start,
-                        request.dump_hash_end,
-                        request.dump_vllm_block_ids,
+            dump_request_ids: tuple[str] = ()
+            if self.tp_size > 1:
+                # Split FA rows by canonical block index and balance WA rows by
+                # assigning whole request boundaries round-robin across ranks.
+                wa_dump_ring_idx = 0
+                for request_id, request in metadata.request_meta.items():
+                    if not request.dump_keys:
+                        continue
+                    dump_request_ids += (request_id,)
+                    num_keys = len(request.dump_keys)
+                    tp_block_start = num_keys * self.tp_rank // self.tp_size
+                    tp_block_end = num_keys * (self.tp_rank + 1) // self.tp_size
+                    tp_dump_keys = request.dump_keys[tp_block_start:tp_block_end]
+                    if tp_dump_keys:
+                        tp_dump_vllm_block_ids = tuple(
+                            group_block_ids[tp_block_start:tp_block_end]
+                            for group_block_ids in request.dump_vllm_block_ids
+                        )
+                        fa_dump_keys.extend(tp_dump_keys)
+                        fa_ptr_rows.append(
+                            self._extract_fa_ptr(
+                                tp_dump_keys,
+                                request.dump_hash_start + tp_block_start,
+                                request.dump_hash_start + tp_block_end,
+                                tp_dump_vllm_block_ids,
+                            )
+                        )
+                    if wa_dump_ring_idx % self.tp_size == self.tp_rank:
+                        wa_dump_keys.extend(request.dump_keys[-1:])
+                        wa_ptr_rows.append(
+                            self._extract_wa_ptr(
+                                request.dump_keys[-1:],
+                                request.dump_vllm_block_ids,
+                            )
+                        )
+                    wa_dump_ring_idx += 1
+            else:
+                for request in metadata.request_meta.values():
+                    if not request.dump_keys:
+                        continue
+                    fa_dump_keys.extend(request.dump_keys)
+                    fa_ptr_rows.append(
+                        self._extract_fa_ptr(
+                            request.dump_keys,
+                            request.dump_hash_start,
+                            request.dump_hash_end,
+                            request.dump_vllm_block_ids,
+                        )
+                    )
+
+                    wa_dump_keys.extend(request.dump_keys[-1:])
+                    wa_ptr_rows.append(
+                        self._extract_wa_ptr(
+                            request.dump_keys[-1:],
+                            request.dump_vllm_block_ids,
+                        )
+                    )
+
+            if fa_dump_keys:
+                fa_ptrs = np.vstack(fa_ptr_rows)
+                if dump_request_ids not in self.tp_dump_tasks:
+                    self.tp_dump_tasks[dump_request_ids] = []
+                self.tp_dump_tasks[dump_request_ids].append(
+                    self._submit_dump_task(
+                        "FA",
+                        self.fa_store,
+                        fa_dump_keys,
+                        fa_ptrs,
+                        event_handle,
                     )
                 )
-                wa_dump_keys.extend(request.dump_keys[-1:])
-                wa_ptr_rows.append(
-                    self._extract_wa_ptr(
-                        request.dump_keys[-1:],
-                        request.dump_vllm_block_ids,
+            if wa_dump_keys:
+                window_ptrs = np.vstack(wa_ptr_rows)
+                if dump_request_ids not in self.tp_dump_tasks:
+                    self.tp_dump_tasks[dump_request_ids] = []
+                self.tp_dump_tasks[dump_request_ids].append(
+                    self._submit_dump_task(
+                        "WA",
+                        self.wa_store,
+                        wa_dump_keys,
+                        window_ptrs,
+                        event_handle,
                     )
                 )
-
-            if not fa_dump_keys:
-                return
-
-            fa_ptrs = np.vstack(fa_ptr_rows)
-            window_ptrs = np.vstack(wa_ptr_rows)
-            tasks: list[FAWADumpTask] = []
-
-            tasks.append(
-                self._submit_dump_task(
-                    "FA",
-                    self.fa_store,
-                    fa_dump_keys,
-                    fa_ptrs,
-                    event_handle,
-                )
-            )
-            tasks.append(
-                self._submit_dump_task(
-                    "WA",
-                    self.wa_store,
-                    wa_dump_keys,
-                    window_ptrs,
-                    event_handle,
-                )
-            )
-            for dump_task in tasks:
-                self._wait_dump_task(dump_task)
         except Exception as e:
             logger.error(f"dump FAWA kv cache failed. {type(e).__name__}: {e}")
+
+    def handle_preemptions(self, kv_connector_metadata: KVConnectorMetadata):
+        """Handle worker-side preemptions before HMA blocks are overwritten.
+
+        vLLM calls this when requests are preempted or their blocks may be
+        evicted. FAWA dump tasks read directly from vLLM's paged KV buffers, so
+        all pending dumps must complete before those buffers can be reused.
+
+        Args:
+            kv_connector_metadata: Connector metadata for the current step.
+                FAWA currently drains all tracked dump tasks and does not need
+                to inspect this metadata.
+        """
+        try:
+            for dump_tasks in self.tp_dump_tasks.values():
+                for dump_task in dump_tasks:
+                    self._wait_dump_task(dump_task)
+            self.tp_dump_tasks = {}
+        except Exception as e:
+            logger.error(f"Wait for dumping kv cache failed. {type(e).__name__}: {e}")
+
+    def get_finished(
+        self,
+        finished_req_ids: set[str],
+    ) -> tuple[set[str] | None, set[str] | None]:
+        """Report requests whose asynchronous KV transfers have completed.
+
+        vLLM passes request ids that have finished generation and expects the
+        connector to return completed saving/sending and loading/receiving ids
+        for transfers that outlive the request-finished callback.
+
+        FAWA does not use this polling path: dump tasks are waited by
+        `request_finished_all_groups()` or `handle_preemptions()`.
+
+        Returns:
+            `(None, None)` to indicate no completed async save/load ids are
+            reported through this interface.
+        """
+        return None, None
+
+    def request_finished_all_groups(
+        self,
+        request: "Request",
+        block_ids: tuple[list[int], ...],
+    ) -> tuple[bool, dict[str, object] | None]:
+        """Handle HMA request completion for all KV-cache groups.
+
+        vLLM calls this exactly once before freeing a finished request's blocks
+        for each KV-cache group. A connector may return `True` to take
+        ownership of freeing those blocks later via `get_finished()`.
+
+        FAWA waits any tracked dump tasks for this request here, but still
+        returns `False` so vLLM can free the HMA blocks immediately after this
+        callback. No transfer params are emitted.
+
+        Args:
+            request: The finished vLLM request.
+            block_ids: Per-KV-group block ids owned by the finished request.
+
+        Returns:
+            `(False, None)` because FAWA does not take asynchronous ownership
+            of the request's HMA blocks.
+        """
+        try:
+            finished_request_ids = []
+            for request_ids, dump_tasks in self.tp_dump_tasks.items():
+                if request.request_id in request_ids:
+                    finished_request_ids.append(request_ids)
+                    for dump_task in dump_tasks:
+                        self._wait_dump_task(dump_task)
+            for request_ids in finished_request_ids:
+                self.requests_meta.pop(request_ids, None)
+        except Exception as e:
+            logger.error(f"Wait for dumping kv cache failed. {type(e).__name__}: {e}")
+        return False, None
