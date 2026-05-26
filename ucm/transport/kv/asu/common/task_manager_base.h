@@ -36,56 +36,64 @@ namespace UC::ASU {
 template <typename Context, typename State>
 class TaskManagerBase {
 public:
-    TaskManagerBase(State initial_state, std::string task_name)
-        : initial_state_(initial_state), task_name_(std::move(task_name))
+    TaskManagerBase(State initialState, std::string taskName)
+        : initialState_(initialState), taskName_(std::move(taskName))
     {
     }
 
-    Status Submit(std::unique_ptr<Context> ctx, TaskId& task_id)
+    Status Submit(std::unique_ptr<Context> ctx, TaskId& taskId)
     {
         if (!ctx) {
-            task_id = kInvalidTaskId;
-            return Status::Error(StatusCode::INVALID_ARGUMENT,
-                                 task_name_ + " task context is null");
+            taskId = kInvalidTaskId;
+            return Status::Error(StatusCode::INVALID_ARGUMENT, taskName_ + " task context is null");
         }
 
-        auto shared_ctx = std::shared_ptr<Context>(std::move(ctx));
-        shared_ctx->state.store(initial_state_, std::memory_order_release);
+        auto sharedCtx = std::shared_ptr<Context>(std::move(ctx));
+        sharedCtx->state.store(initialState_, std::memory_order_release);
 
-        std::lock_guard<std::mutex> lock(mu_);
+        std::lock_guard<std::mutex> lock(mutex_);
         do {
-            task_id = next_task_id_.fetch_add(1, std::memory_order_relaxed);
-        } while (task_id == kInvalidTaskId || tasks_.find(task_id) != tasks_.end());
+            taskId = nextTaskId_.fetch_add(1, std::memory_order_relaxed);
+        } while (taskId == kInvalidTaskId || tasks_.find(taskId) != tasks_.end());
 
-        shared_ctx->task_id = task_id;
-        tasks_.emplace(task_id, std::move(shared_ctx));
+        sharedCtx->taskId = taskId;
+        tasks_.emplace(taskId, std::move(sharedCtx));
         return Status::OK();
     }
 
-    std::shared_ptr<Context> Get(TaskId task_id)
+    std::shared_ptr<Context> Get(TaskId taskId)
     {
-        std::lock_guard<std::mutex> lock(mu_);
-        auto iter = tasks_.find(task_id);
+        std::lock_guard<std::mutex> lock(mutex_);
+        auto iter = tasks_.find(taskId);
         if (iter == tasks_.end()) { return nullptr; }
         return iter->second;
     }
 
-    Status Remove(TaskId task_id)
+    std::vector<std::shared_ptr<Context>> GetAll()
     {
-        std::lock_guard<std::mutex> lock(mu_);
-        auto erased = tasks_.erase(task_id);
+        std::lock_guard<std::mutex> lock(mutex_);
+        std::vector<std::shared_ptr<Context>> tasks;
+        tasks.reserve(tasks_.size());
+        for (const auto& item : tasks_) { tasks.emplace_back(item.second); }
+        return tasks;
+    }
+
+    Status Remove(TaskId taskId)
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        auto erased = tasks_.erase(taskId);
         if (erased == 0) {
-            return Status::Error(StatusCode::TASK_NOT_FOUND, task_name_ + " task not found");
+            return Status::Error(StatusCode::TASK_NOT_FOUND, taskName_ + " task not found");
         }
         return Status::OK();
     }
 
 private:
-    State initial_state_;
-    std::string task_name_;
-    std::atomic<TaskId> next_task_id_{1};
+    State initialState_;
+    std::string taskName_;
+    std::atomic<TaskId> nextTaskId_{1};
     // TODO: consider using a lock-free structure !
-    std::mutex mu_;
+    std::mutex mutex_;
     std::unordered_map<TaskId, std::shared_ptr<Context>> tasks_;
 };
 

@@ -23,8 +23,11 @@
  * */
 #pragma once
 
+#include <cstdint>
 #include <memory>
+#include <string>
 #include <unordered_map>
+#include <vector>
 #include "asu_transport/types.h"
 
 namespace UC::ASU {
@@ -33,38 +36,38 @@ struct AsuEndpoint {
     std::string ip;
     std::uint16_t port{0};
     Protocol protocol{Protocol::ROCE};
-    std::int32_t numa_node{-1};
-    std::int32_t device_id{-1};
-    std::string hca_name;
-    std::uint8_t hca_port{1};
+    std::int32_t numaNode{-1};
+    std::int32_t deviceId{-1};
+    std::string hcaName;
+    std::uint8_t hcaPort{1};
     std::unordered_map<std::string, std::string> attrs;
 };
 
 struct TransportConfig {
     // TODO: 拆分Config，按逻辑模块细化
-    std::string asu_name;
-    AsuId asu_id{0};
+    std::string asuName;
+    AsuId asuId{0};
     std::vector<AsuEndpoint> endpoints;
 
-    std::uint32_t query_qp_num{1};
-    std::uint32_t load_qp_num{4};
-    std::uint32_t store_qp_num{2};
+    std::uint32_t queryQpNum{1};
+    std::uint32_t loadQpNum{4};
+    std::uint32_t storeQpNum{2};
 
-    std::uint32_t max_inflight_tasks{1024};
-    std::uint64_t max_inflight_bytes{1ULL << 30};
+    std::uint32_t maxInflightTasks{1024};
+    std::uint64_t maxInflightBytes{1ULL << 30};
 
-    std::uint32_t max_query_inflight{256};
-    std::uint32_t max_load_inflight{512};
-    std::uint32_t max_store_inflight{256};
+    std::uint32_t maxQueryInflight{256};
+    std::uint32_t maxLoadInflight{512};
+    std::uint32_t maxStoreInflight{256};
 
-    std::uint64_t query_timeout_ms{5};
-    std::uint64_t load_timeout_ms{100};
-    std::uint64_t store_timeout_ms{100};
+    std::uint64_t queryTimeoutMs{5};
+    std::uint64_t loadTimeoutMs{100};
+    std::uint64_t storeTimeoutMs{100};
 
-    bool enable_device_direct{true};
-    bool enable_host_fallback{false};
+    bool enableDeviceDirect{true};
+    bool enableHostFallback{false};
     bool preconnect{true};
-    bool bind_cq_poller{true};
+    bool bindCqPoller{true};
 
     std::unordered_map<std::string, std::string> attrs;
 };
@@ -74,22 +77,23 @@ public:
     virtual ~AsuTransport() = default;
 
     virtual Status Init(const TransportConfig& config) = 0;
+    virtual Status Init(const std::string& configPath) = 0;
     virtual Status Shutdown() = 0;
     virtual Status CheckHealth() = 0;
 
     virtual Status Query(const std::vector<CacheKey>& keys, const QueryOptions& options,
                          QueryResult& result) = 0;
     virtual Status QueryAsync(const std::vector<CacheKey>& keys, const QueryOptions& options,
-                              TaskId& task_id) = 0;
+                              TaskId& taskId) = 0;
 
-    virtual Status LoadAsync(const std::vector<KVBuffer>& entries, TaskId& task_id) = 0;
-    virtual Status StoreAsync(const std::vector<KVBuffer>& entries, TaskId& task_id) = 0;
-    virtual Status DeleteAsync(const std::vector<CacheKey>& keys, TaskId& task_id) = 0;
+    virtual Status LoadAsync(const std::vector<KVBuffer>& entries, TaskId& taskId) = 0;
+    virtual Status StoreAsync(const std::vector<KVBuffer>& entries, TaskId& taskId) = 0;
+    virtual Status DeleteAsync(const std::vector<CacheKey>& keys, TaskId& taskId) = 0;
 
     // Best-effort cancellation, does not interrupt underlying UB/RoCE IO
-    virtual Status Cancel(TaskId task_id) = 0;
-    virtual Status Check(TaskId task_id, TaskResult& result) = 0;
-    virtual Status Wait(TaskId task_id, std::uint64_t timeout_ms, TaskResult& result) = 0;
+    virtual Status Cancel(TaskId taskId) = 0;
+    virtual Status Check(TaskId taskId, TaskResult& result) = 0;
+    virtual Status Wait(TaskId taskId, std::uint64_t timeoutMs, TaskResult& result) = 0;
 
     virtual Status RegisterRegions(const std::vector<MemoryRegion>& regions,
                                    std::vector<RegisterResult>& results) = 0;
