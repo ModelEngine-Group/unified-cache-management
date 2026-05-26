@@ -387,7 +387,7 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
             None,
         )
         if layer_compress_ratios is None:
-            raise "current only support DSV4"
+            raise ValueError("current only support DSV4")
         for group_id, group in enumerate(groups):
             kv_cache_spec = group.kv_cache_spec
             # Use the representative spec when vLLM wraps multiple layer specs.
@@ -564,8 +564,6 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
         return summary
 
     def register_kv_caches(self, kv_caches: dict[str, torch.Tensor]):
-        """Register worker KV tensors and create FA/WA stores with layouts."""
-
         self.kv_caches = kv_caches
         self.device = create_device()
 
@@ -674,13 +672,6 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
         request: "Request",
         num_computed_tokens: int,
     ) -> tuple[int, bool]:
-        """Return additional prefix tokens reusable from external FAWA stores.
-
-        vLLM passes the local HBM hit length in `num_computed_tokens`. FAWA then
-        checks the FA store for a contiguous prefix and the WA store for the
-        latest usable window boundary inside that FA hit range.
-        """
-
         if num_computed_tokens % self.hash_block_size != 0:
             raise RuntimeError(
                 f"FAWA requires aligned computed tokens, got "
@@ -734,12 +725,6 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
         blocks: "KVCacheBlocks",
         num_external_tokens: int,
     ) -> None:
-        """No-op for current FAWA range metadata.
-
-        `build_connector_meta()` receives the allocated block ids from vLLM's
-        scheduled request metadata and accumulates them there.
-        """
-
         pass
 
     def _slice_group_block_ids(
@@ -854,14 +839,6 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
     def build_connector_meta(
         self, scheduler_output: SchedulerOutput
     ) -> KVConnectorMetadata:
-        """Create FAWA metadata for the current scheduler step.
-
-        New requests provide full per-group block ids. Cached requests provide
-        only newly allocated block ids, or `None` when no new rows were
-        allocated in the step. Preemption resume replaces the accumulated block
-        rows before appending the resumed allocation.
-        """
-
         requests_dispatch_meta: dict[str, FAWARequestDispatchMeta] = {}
         # New requests may need both external-prefix load and new-block dump.
         for request in scheduler_output.scheduled_new_reqs:
@@ -906,8 +883,6 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
         return UCMFAWAConnectorMetadata(requests_dispatch_meta)
 
     def update_connector_output(self, connector_output) -> None:
-        """FAWA does not consume worker-to-scheduler metadata today."""
-
         return None
 
     def _submit_load_task(
@@ -948,16 +923,6 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
             self._invalid_block_ids.update(load_task.anchor_vllm_block_ids)
 
     def get_block_ids_with_load_errors(self) -> set[int]:
-        """Return scheduler-visible vLLM block ids for failed FAWA loads.
-
-        The current scheduler invalid-block path matches ids against the first
-        KV-cache group's block list, so FAWA reports first-group anchor ids
-        rather than every group-specific FA/WA block id.
-
-        Returns:
-            A set of first-group HMA block ids whose external KV load failed.
-            The set is cleared after each call.
-        """
         res = self._invalid_block_ids
         self._invalid_block_ids = set()
         return res
@@ -1045,8 +1010,6 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
         return np.concatenate(all_ptrs, axis=1)
 
     def start_load_kv(self, forward_context: "ForwardContext", **kwargs) -> None:
-        """Load external-hit FA/WA rows into vLLM's paged KV buffers."""
-
         metadata = self._get_connector_metadata()
         if not isinstance(metadata, UCMFAWAConnectorMetadata):
             raise RuntimeError(f"Unexpected FAWA metadata type: {type(metadata)}")
@@ -1107,13 +1070,6 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
             self._wait_load_task(load_task)
 
     def wait_for_save(self) -> None:
-        """Submit dumps for newly computed FA/WA rows in this worker step.
-
-        FA rows are dumped for every completed canonical block assigned to this
-        TP rank. WA rows store only the latest boundary in each request's dump
-        range and are distributed across TP ranks by request order.
-        """
-
         metadata = self._get_connector_metadata()
         if not isinstance(metadata, UCMFAWAConnectorMetadata):
             raise RuntimeError(f"Unexpected FAWA metadata type: {type(metadata)}")
@@ -1218,17 +1174,7 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
             logger.error(f"dump FAWA kv cache failed. {type(e).__name__}: {e}")
 
     def handle_preemptions(self, kv_connector_metadata: KVConnectorMetadata):
-        """Handle worker-side preemptions before HMA blocks are overwritten.
-
-        vLLM calls this when requests are preempted or their blocks may be
-        evicted. FAWA dump tasks read directly from vLLM's paged KV buffers, so
-        all pending dumps must complete before those buffers can be reused.
-
-        Args:
-            kv_connector_metadata: Connector metadata for the current step.
-                FAWA currently drains all tracked dump tasks and does not need
-                to inspect this metadata.
-        """
+        # Worker side method
         try:
             for dump_tasks in self.tp_dump_tasks.values():
                 for dump_task in dump_tasks:
@@ -1241,48 +1187,11 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
         self,
         finished_req_ids: set[str],
     ) -> tuple[set[str] | None, set[str] | None]:
-        """Report requests whose asynchronous KV transfers have completed.
-
-        vLLM passes request ids that have finished generation and expects the
-        connector to return completed saving/sending and loading/receiving ids
-        for transfers that outlive the request-finished callback.
-
-        FAWA does not use this polling path: dump tasks are waited by
-        `request_finished_all_groups()` or `handle_preemptions()`.
-
-        Returns:
-            `(None, None)` to indicate no completed async save/load ids are
-            reported through this interface.
-        """
-        return None, None
-
-    def request_finished_all_groups(
-        self,
-        request: "Request",
-        block_ids: tuple[list[int], ...],
-    ) -> tuple[bool, dict[str, object] | None]:
-        """Handle HMA request completion for all KV-cache groups.
-
-        vLLM calls this exactly once before freeing a finished request's blocks
-        for each KV-cache group. A connector may return `True` to take
-        ownership of freeing those blocks later via `get_finished()`.
-
-        FAWA waits any tracked dump tasks for this request here, but still
-        returns `False` so vLLM can free the HMA blocks immediately after this
-        callback. No transfer params are emitted.
-
-        Args:
-            request: The finished vLLM request.
-            block_ids: Per-KV-group block ids owned by the finished request.
-
-        Returns:
-            `(False, None)` because FAWA does not take asynchronous ownership
-            of the request's HMA blocks.
-        """
+        # Worker side method
         try:
             finished_request_ids = []
             for request_ids, dump_tasks in self.tp_dump_tasks.items():
-                if request.request_id in request_ids:
+                if finished_req_ids.intersection(request_ids):
                     finished_request_ids.append(request_ids)
                     for dump_task in dump_tasks:
                         self._wait_dump_task(dump_task)
@@ -1290,4 +1199,12 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
                 self.tp_dump_tasks.pop(request_ids, None)
         except Exception as e:
             logger.error(f"Wait for dumping kv cache failed. {type(e).__name__}: {e}")
+        return None, None
+
+    def request_finished_all_groups(
+        self,
+        request: "Request",
+        block_ids: tuple[list[int], ...],
+    ) -> tuple[bool, dict[str, object] | None]:
+        # Scheduler side method
         return False, None
