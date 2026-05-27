@@ -32,10 +32,13 @@
 #include <unordered_map>
 #include <vector>
 #include "asu_transport/asu_transport.h"
+#include "connection_manager.h"
 #include "template/spsc_ring_queue.h"
 #include "transport_task_manager.h"
 
 namespace UC::ASU {
+
+using TransportTaskContextPtr = std::shared_ptr<TransportTaskContext>;
 
 class AsuTransportImpl final : public AsuTransport {
 public:
@@ -60,6 +63,11 @@ public:
     Status Check(TaskId taskId, TaskResult& result) override;
     Status Wait(TaskId taskId, std::uint64_t timeoutMs, TaskResult& result) override;
 
+    Status StubCheck(TaskId task_id,
+                     TaskResult& result);  // Stub for testing, remove after real implementation
+    Status StubWait(TaskId task_id, std::uint64_t timeout_ms,
+                    TaskResult& result);  // Stub for testing, remove after real implementation
+
     Status RegisterRegions(const std::vector<MemoryRegion>& regions,
                            std::vector<RegisterResult>& results) override;
 
@@ -68,15 +76,32 @@ public:
 
     Status UnregisterRegions(const std::vector<MRHandle>& handles) override;
 
+#ifdef ASU_BUILD_TESTS
+    friend class AsuSmokeTest_ConcurrentAll8InterfacesWithChannelRebuild_Test;
+    friend class AsuSmokeTest_SequentialChannelDrainAndRebuild_Test;
+    friend class AsuSmokeTest_DrainUnderHeavyConcurrentLoad_Test;
+    friend class AsuSmokeTest_ClientAsyncTasksCompleteEndToEnd_Test;
+    std::atomic<bool> useStubCompleteTask_{true};
+#endif
+
 private:
     using TransportTaskContextPtr = std::shared_ptr<TransportTaskContext>;
     Status SubmitAsync(std::unique_ptr<TransportTaskContext> ctx, TaskId& taskId);
     void WorkerLoop();
     void CompleteTask(const TransportTaskContextPtr& ctx);
+
+    // Stub for testing, remove after real implementation
+    Status StubSend(ConnectionChannel* channel, TransportTaskContext* ctx);
+    std::vector<ConnectionHandle> StubCreateConnection(const AsuEndpoint& endpoint,
+                                                       std::uint32_t qp_num);
+    std::vector<Status> StubDeleteConnections(const std::vector<ConnectionHandle>& handles);
+    void StubCompleteTask(const TransportTaskContextPtr& ctx);
+
     void BuildResult(const TransportTaskContext& ctx, TaskResult& result);
 
     TransportConfig config_;
 
+    ConnectionManager connManager_;
     TransportTaskManager taskManager_;
     // TODO: optimize spsc pattern or just submit to RDMA/UB directly ?
     UC::SpscRingQueue<TransportTaskContextPtr> executeQueue_;

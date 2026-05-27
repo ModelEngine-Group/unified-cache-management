@@ -28,6 +28,8 @@
 #include <thread>
 #include "asu_transport/asu_transport.h"
 #include "asu_transport/types.h"
+#include "connection_internal.h"
+#include "logger.h"
 #include "transport_config_parser.h"
 
 namespace UC::ASU {
@@ -44,13 +46,36 @@ Status AsuTransportImpl::Init(const std::string& configPath)
 
 Status AsuTransportImpl::Init(const TransportConfig& config)
 {
-    if (worker_.joinable()) { return Status::OK(); }
-
+    UC_DEBUG("AsuTransportImpl::Init start");
+    if (worker_.joinable()) {
+        UC_DEBUG("AsuTransportImpl::Init already initialized");
+        return Status::OK();
+    }
     config_ = config;
+
+    connManager_.SetConnectionOps(
+        [this](const AsuEndpoint& ep, std::uint32_t num) { return StubCreateConnection(ep, num); },
+        [this](const std::vector<ConnectionHandle>& handles) {
+            return StubDeleteConnections(handles);
+        });
+
+    std::uint32_t qp_num = config_.queryQpNum + config_.loadQpNum + config_.storeQpNum;
+    UC_DEBUG("AsuTransportImpl::Init endpoints={} qp_num={}", config_.endpoints.size(), qp_num);
+    for (const auto& ep : config_.endpoints) {
+        auto s = connManager_.AddGroup(ep, qp_num);
+        if (!s.ok()) {
+            UC_DEBUG("AsuTransportImpl::Init AddGroup FAILED: {}", s.message);
+            return s;
+        }
+    }
+
+    connManager_.StartRecoverLoop();
+
     auto queueDepth = std::max<std::size_t>(2, static_cast<std::size_t>(config_.maxInflightTasks));
     executeQueue_.Setup(queueDepth + 1);
     stop_.store(false, std::memory_order_release);
     worker_ = std::thread(&AsuTransportImpl::WorkerLoop, this);
+    UC_DEBUG("AsuTransportImpl::Init OK: queueDepth={}", queueDepth);
     return Status::OK();
 }
 
@@ -68,10 +93,13 @@ Status AsuTransportImpl::Shutdown()
     }
 
     stop_.store(true, std::memory_order_release);
+    UC_DEBUG("AsuTransportImpl::Shutdown stopping worker thread");
     if (worker_.joinable()) { worker_.join(); }
     for (const auto& ctx : taskManager_.GetAll()) {
         if (ctx != nullptr) { (void)taskManager_.Remove(ctx->taskId); }
     }
+    connManager_.Shutdown();
+    UC_DEBUG("AsuTransportImpl::Shutdown OK");
     return Status::OK();
 }
 
@@ -181,6 +209,77 @@ Status AsuTransportImpl::Wait(TaskId taskId, std::uint64_t timeoutMs, TaskResult
     return Status::OK();
 }
 
+Status AsuTransportImpl::StubCheck(
+    TaskId task_id, TaskResult& result)  // Stub for testing, remove after real implementation
+{
+    auto ctx = taskManager_.Get(task_id);
+    if (!ctx) {
+        UC_DEBUG("AsuTransportImpl::StubCheck task_id={} NOT FOUND", task_id);
+        return Status::Error(StatusCode::TASK_NOT_FOUND, "transport task not found");
+    }
+    std::unique_lock<std::mutex> lock(ctx->waitMu);
+    if (!ctx->StubDone()) {
+        UC_DEBUG("AsuTransportImpl::StubCheck task_id={} IN_PROGRESS", task_id);
+        result.status = Status::Error(StatusCode::IN_PROGRESS, "transport task in progress");
+        return Status::OK();
+    }
+    UC_DEBUG("AsuTransportImpl::StubCheck task_id={} DONE", task_id);
+    BuildResult(*ctx, result);
+    return Status::OK();
+}
+
+Status AsuTransportImpl::StubWait(
+    TaskId task_id, std::uint64_t timeout_ms,
+    TaskResult& result)  // Stub for testing, remove after real implementation
+{
+    UC_DEBUG("AsuTransportImpl::StubWait task_id={} timeout_ms={}", task_id, timeout_ms);
+    auto ctx = taskManager_.Get(task_id);
+    if (!ctx) {
+        UC_DEBUG("AsuTransportImpl::StubWait task_id={} NOT FOUND", task_id);
+        return Status::Error(StatusCode::TASK_NOT_FOUND, "transport task not found");
+    }
+
+    std::unique_lock<std::mutex> lock(ctx->waitMu);
+    const bool done = timeout_ms == 0
+                          ? (ctx->cv.wait(lock, [ctx] { return ctx->StubDone(); }), true)
+                          : ctx->cv.wait_for(lock, std::chrono::milliseconds(timeout_ms),
+                                             [ctx] { return ctx->StubDone(); });
+    if (!done) {
+        UC_DEBUG("AsuTransportImpl::StubWait task_id={} TIMEOUT", task_id);
+        auto prev_state =
+            ctx->state.exchange(TransportTaskState::FAILED, std::memory_order_acq_rel);
+        if (prev_state == TransportTaskState::INFLIGHT) {
+            auto* channel = ctx->channel.load(std::memory_order_acquire);
+            if (channel) {
+                UC_DEBUG(
+                    "AsuTransportImpl::StubWait timeout: prev_state=INFLIGHT, inflight-1 on "
+                    "ch_id={}",
+                    channel->GetChannelId());
+                channel->ReleaseInflight();
+            }
+            BuildResult(*ctx, result);
+            result.status =
+                Status::Error(StatusCode::RESULT_TIMEOUT, "transport task result timeout");
+            lock.unlock();
+            taskManager_.Remove(task_id);
+            return result.status;
+        }
+        UC_DEBUG(
+            "AsuTransportImpl::StubWait timeout: prev_state=PENDING, submit timeout (CompleteTask "
+            "will CAS undo)");
+        BuildResult(*ctx, result);
+        result.status = Status::Error(StatusCode::SUBMIT_TIMEOUT, "transport task submit timeout");
+        lock.unlock();
+        taskManager_.Remove(task_id);
+        return result.status;
+    }
+    UC_DEBUG("AsuTransportImpl::StubWait task_id={} DONE", task_id);
+    BuildResult(*ctx, result);
+    lock.unlock();
+    taskManager_.Remove(task_id);
+    return Status::OK();
+}
+
 Status AsuTransportImpl::RegisterRegions(const std::vector<MemoryRegion>& regions,
                                          std::vector<RegisterResult>& results)
 {
@@ -237,6 +336,7 @@ Status AsuTransportImpl::SubmitAsync(std::unique_ptr<TransportTaskContext> ctx, 
         taskId = kInvalidTaskId;
         return Status::Error(StatusCode::RESOURCE_BUSY, "transport task queue is full");
     }
+    UC_DEBUG("AsuTransportImpl::SubmitAsync OK: taskId={}", taskId);
     return Status::OK();
 }
 
@@ -244,8 +344,15 @@ void AsuTransportImpl::WorkerLoop()
 {
     executeQueue_.ConsumerLoop(stop_, [this](TransportTaskContextPtr ctx) {
         if (!ctx) { return; }
+#ifdef ASU_BUILD_TESTS
+        if (useStubCompleteTask_.load(std::memory_order_acquire)) {
+            StubCompleteTask(ctx);
+            return;
+        }
+#endif
         CompleteTask(ctx);
     });
+    UC_DEBUG("AsuTransportImpl::WorkerLoop stopped");
 }
 
 void AsuTransportImpl::CompleteTask(const TransportTaskContextPtr& ctx)
@@ -265,6 +372,10 @@ void AsuTransportImpl::CompleteTask(const TransportTaskContextPtr& ctx)
         ctx->cv.notify_all();
         return;
     }
+    if (ctx->state.load(std::memory_order_acquire) == TransportTaskState::CANCELED) {
+        ctx->cv.notify_all();
+        return;
+    }
     if (ctx->opType == TransportOpType::QUERY) {
         ctx->queryResult.exists.assign(ctx->keys.size, 0);
         ctx->queryResult.prefixHitKeys = 0;
@@ -274,12 +385,88 @@ void AsuTransportImpl::CompleteTask(const TransportTaskContextPtr& ctx)
     ctx->cv.notify_all();
 }
 
+void AsuTransportImpl::StubCompleteTask(const TransportTaskContextPtr& ctx)
+{
+    static constexpr int kMaxRetryAttempts = 2;
+    int retries = kMaxRetryAttempts;
+    ConnectionChannel* channel = connManager_.SelectConnection();
+    Status s;
+
+    while (retries-- > 0 && channel) {
+        if (ctx->state.load(std::memory_order_acquire) != TransportTaskState::PENDING) {
+            UC_DEBUG(
+                "AsuTransportImpl::CompleteTask task_id={} state!=PENDING (Wait timeout/Cancel), "
+                "undo inflight on ch_id={}",
+                ctx->taskId, channel->GetChannelId());
+            channel->ReleaseInflight();
+            return;
+        }
+        ctx->channel.store(channel, std::memory_order_release);
+        s = StubSend(channel, ctx.get());
+        if (s.ok()) {
+            TransportTaskState expected = TransportTaskState::PENDING;
+            if (!ctx->state.compare_exchange_strong(expected, TransportTaskState::INFLIGHT,
+                                                    std::memory_order_acq_rel)) {
+                UC_DEBUG(
+                    "AsuTransportImpl::CompleteTask task_id={} CAS PENDING->INFLIGHT failed "
+                    "(state={}), undo inflight on ch_id={}",
+                    ctx->taskId, static_cast<int>(expected), channel->GetChannelId());
+                channel->ReleaseInflight();
+                return;
+            }
+            UC_DEBUG("AsuTransportImpl::CompleteTask task_id={} Send OK + INFLIGHT on ch_id={}",
+                     ctx->taskId, channel->GetChannelId());
+            ctx->finalStatus = Status::OK();
+            ctx->cv.notify_all();
+            return;
+        }
+        UC_DEBUG(
+            "AsuTransportImpl::CompleteTask task_id={} Send FAILED on ch_id={} retries_left={}",
+            ctx->taskId, channel->GetChannelId(), retries);
+        channel->ReleaseInflight();
+        connManager_.ReportFailure(channel);
+        channel = connManager_.SelectConnection();
+    }
+
+    if (channel) { channel->ReleaseInflight(); }
+
+    UC_DEBUG("AsuTransportImpl::CompleteTask task_id={} no available channel, state->FAILED",
+             ctx->taskId);
+    std::lock_guard<std::mutex> lock(ctx->waitMu);
+    ctx->finalStatus = Status::Error(StatusCode::NO_ACTIVE_CONNECTION, "no available channel");
+    ctx->state.store(TransportTaskState::FAILED, std::memory_order_release);
+    ctx->cv.notify_all();
+}
+
 void AsuTransportImpl::BuildResult(const TransportTaskContext& ctx, TaskResult& result)
 {
     result.status = ctx.finalStatus;
     result.entryStatus = ctx.entryStatus;
     result.queryResult.reset();
     if (ctx.opType == TransportOpType::QUERY) { result.queryResult = ctx.queryResult; }
+}
+
+Status AsuTransportImpl::StubSend(ConnectionChannel* channel, TransportTaskContext* ctx)
+{
+    UC_DEBUG("AsuTransportImpl::StubSend ch_id={} state={}", channel->GetChannelId(),
+             static_cast<int>(channel->GetState()));
+    ctx->flagbufferStatus.store(1, std::memory_order_release);
+    UC_DEBUG("AsuTransportImpl::StubSend ch_id={} stub: flagbuffer->1, notify_all",
+             channel->GetChannelId());
+    return Status::OK();
+}
+
+std::vector<ConnectionHandle> AsuTransportImpl::StubCreateConnection(const AsuEndpoint& endpoint,
+                                                                     std::uint32_t qp_num)
+{
+    (void)endpoint;
+    return std::vector<ConnectionHandle>(qp_num, nullptr);
+}
+
+std::vector<Status> AsuTransportImpl::StubDeleteConnections(
+    const std::vector<ConnectionHandle>& handles)
+{
+    return std::vector<Status>(handles.size(), Status::OK());
 }
 
 std::unique_ptr<AsuTransport> CreateAsuTransport() { return std::make_unique<AsuTransportImpl>(); }

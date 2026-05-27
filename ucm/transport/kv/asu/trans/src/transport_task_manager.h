@@ -33,6 +33,8 @@
 
 namespace UC::ASU {
 
+class ConnectionChannel;
+
 enum class TransportOpType {
     QUERY = 0,
     LOAD = 1,
@@ -74,20 +76,22 @@ struct TransportTaskContext {
 
     std::vector<MRHandle> mrHandles;
 
+    std::atomic<std::uint32_t> flagbufferStatus{
+        0};  // tmp flag: 0-not ready, 1-flagbuffer set, 2-result ready
+    std::atomic<ConnectionChannel*> channel{nullptr};
+
     std::mutex waitMu;
     std::condition_variable cv;
 
-    bool Done() const
-    {
-        auto s = state.load(std::memory_order_acquire);
-        return s == TransportTaskState::COMPLETED || s == TransportTaskState::FAILED ||
-               s == TransportTaskState::CANCELED;
-    }
+    bool Done() const;
+    bool StubDone();  // Stub for testing, remove after real implementation
 };
 
 class TransportTaskManager : public TaskManagerBase<TransportTaskContext, TransportTaskState> {
 public:
     TransportTaskManager() : TaskManagerBase(TransportTaskState::PENDING, "transport") {}
+
+    void Shutdown();
 };
 
 }  // namespace UC::ASU
