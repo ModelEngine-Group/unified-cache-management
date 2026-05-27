@@ -24,10 +24,13 @@
 #pragma once
 
 #include <atomic>
+#include <cstdint>
 #include <memory>
 #include <mutex>
+#include <string>
 #include <thread>
 #include <unordered_map>
+#include <vector>
 #include "asu_transport/asu_transport.h"
 #include "template/spsc_ring_queue.h"
 #include "transport_task_manager.h"
@@ -40,6 +43,7 @@ public:
     ~AsuTransportImpl() override;
 
     Status Init(const TransportConfig& config) override;
+    Status Init(const std::string& configPath) override;
     Status Shutdown() override;
 
     Status CheckHealth() override;
@@ -47,14 +51,14 @@ public:
     Status Query(const std::vector<CacheKey>& keys, const QueryOptions& options,
                  QueryResult& result) override;
     Status QueryAsync(const std::vector<CacheKey>& keys, const QueryOptions& options,
-                      TaskId& task_id) override;
-    Status LoadAsync(const std::vector<KVBuffer>& entries, TaskId& task_id) override;
-    Status StoreAsync(const std::vector<KVBuffer>& entries, TaskId& task_id) override;
-    Status DeleteAsync(const std::vector<CacheKey>& keys, TaskId& task_id) override;
+                      TaskId& taskId) override;
+    Status LoadAsync(const std::vector<KVBuffer>& entries, TaskId& taskId) override;
+    Status StoreAsync(const std::vector<KVBuffer>& entries, TaskId& taskId) override;
+    Status DeleteAsync(const std::vector<CacheKey>& keys, TaskId& taskId) override;
 
-    Status Cancel(TaskId task_id) override;
-    Status Check(TaskId task_id, TaskResult& result) override;
-    Status Wait(TaskId task_id, std::uint64_t timeout_ms, TaskResult& result) override;
+    Status Cancel(TaskId taskId) override;
+    Status Check(TaskId taskId, TaskResult& result) override;
+    Status Wait(TaskId taskId, std::uint64_t timeoutMs, TaskResult& result) override;
 
     Status RegisterRegions(const std::vector<MemoryRegion>& regions,
                            std::vector<RegisterResult>& results) override;
@@ -66,22 +70,24 @@ public:
 
 private:
     using TransportTaskContextPtr = std::shared_ptr<TransportTaskContext>;
-    Status SubmitAsync(std::unique_ptr<TransportTaskContext> ctx, TaskId& task_id);
+    Status SubmitAsync(std::unique_ptr<TransportTaskContext> ctx, TaskId& taskId);
     void WorkerLoop();
     void CompleteTask(const TransportTaskContextPtr& ctx);
     void BuildResult(const TransportTaskContext& ctx, TaskResult& result);
 
     TransportConfig config_;
 
-    TransportTaskManager task_manager_;
+    TransportTaskManager taskManager_;
     // TODO: optimize spsc pattern or just submit to RDMA/UB directly ?
-    UC::SpscRingQueue<TransportTaskContextPtr> execute_queue_;
-    std::mutex producer_mu_;
+    UC::SpscRingQueue<TransportTaskContextPtr> executeQueue_;
+    std::mutex producerMu_;
 
     std::thread worker_;
     std::atomic_bool stop_{false};
 
-    std::unordered_map<MRHandle, MemoryRegion> registered_regions_;
+    std::mutex registeredRegionsMu_;
+    std::atomic<MRHandle> nextMrHandle_{1};
+    std::unordered_map<MRHandle, MemoryRegion> registeredRegions_;
 };
 
 }  // namespace UC::ASU

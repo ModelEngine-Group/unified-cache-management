@@ -81,12 +81,12 @@ enum class QueryMode {
 
 struct QueryOptions {
     QueryMode mode{QueryMode::PER_KEY};
-    std::uint64_t timeout_ms{0};
+    std::uint64_t timeoutMs{0};
 };
 
 struct QueryResult {
     std::vector<std::uint8_t> exists;
-    std::uint32_t prefix_hit_keys{0};
+    std::uint32_t prefixHitKeys{0};
 };
 
 enum class MemoryType {
@@ -96,11 +96,11 @@ enum class MemoryType {
 };
 
 struct MemoryRegion {  // 地址范围抽象
-    MemoryType memory_type{MemoryType::HOST};
+    MemoryType memoryType{MemoryType::HOST};
     std::uint64_t addr{0};
     std::uint64_t size{0};
-    std::int32_t device_id{-1};
-    std::int32_t numa_node{-1};
+    std::int32_t deviceId{-1};
+    std::int32_t numaNode{-1};
 };
 
 struct Buffer {  // 单个IO
@@ -127,8 +127,8 @@ struct RegisteredMemory {  // 用于绑定已注册的内存
 
 struct TaskResult {
     Status status;
-    std::vector<Status> entry_status;
-    std::optional<QueryResult> query_result;
+    std::vector<Status> entryStatus;
+    std::optional<QueryResult> queryResult;
 };
 
 }  // namespace UC::ASU

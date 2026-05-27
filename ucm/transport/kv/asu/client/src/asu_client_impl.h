@@ -24,56 +24,172 @@
 #pragma once
 
 #include <memory>
+#include <mutex>
+#include <string>
+#include <thread>
 #include <unordered_map>
+#include <vector>
 #include "asu_client/asu_client.h"
 #include "client_task_manager.h"
+#include "view_server.h"
+
+namespace UC::KV {
+class Router;
+}  // namespace UC::KV
 
 namespace UC::ASU {
 
+// ViewSnapshot is the immutable routing state used by foreground IO and submitted tasks.
+struct ViewSnapshot {
+    std::shared_ptr<UC::KV::Router> router;
+    std::vector<AsuId> asuIds;
+    GlobalView view;
+    std::unordered_map<AsuId, std::shared_ptr<AsuTransport>> transports;
+};
+
+class AsuClientImpl;
+
+// AsuClientImpl coordinates routing, transports, and aggregate task tracking.
 class AsuClientImpl final : public AsuClient {
 public:
-    explicit AsuClientImpl(TransportFactory factory);
+    // Builds a client with the provided transport factory.
+    explicit AsuClientImpl(TransportFactory transportFactory,
+                           ViewServerFactory viewServerFactory = nullptr);
+    // Shuts down the client during destruction.
     ~AsuClientImpl() override;
 
+    // Initializes routing and transport resources.
+    Status Init(const std::string& configPath) override;
+    // Initializes from an already parsed config; intended for internal tests and adapters.
     Status Init(const AsuClientConfig& config) override;
+    // Gracefully drains tracked client tasks and releases resources.
     Status Shutdown() override;
 
+    // Queries key existence and schedules background refresh on refreshable failures.
     Status Query(const std::vector<CacheKey>& keys, const QueryOptions& options,
                  QueryResult& result) override;
 
-    Status LoadAsync(const std::vector<KVBuffer>& entries, TaskId& task_id) override;
-    Status StoreAsync(const std::vector<KVBuffer>& entries, TaskId& task_id) override;
-    Status DeleteAsync(const std::vector<CacheKey>& keys, TaskId& task_id) override;
+    // Submits load operations to routed transports.
+    Status LoadAsync(const std::vector<KVBuffer>& entries, TaskId& taskId) override;
+    // Submits store operations to routed transports.
+    Status StoreAsync(const std::vector<KVBuffer>& entries, TaskId& taskId) override;
+    // Submits delete operations to routed transports.
+    Status DeleteAsync(const std::vector<CacheKey>& keys, TaskId& taskId) override;
 
-    Status Check(TaskId task_id, TaskResult& result) override;
-    Status Wait(TaskId task_id, std::uint64_t timeout_ms, TaskResult& result) override;
+    // Checks an aggregate task.
+    Status Check(TaskId taskId, TaskResult& result) override;
+    // Waits for an aggregate task.
+    Status Wait(TaskId taskId, std::uint64_t timeoutMs, TaskResult& result) override;
 
+    // Registers regions and remembers successful resources for future views.
     Status RegisterRegions(const std::vector<MemoryRegion>& regions,
                            std::vector<RegisterResult>& results) override;
+    // Unregisters regions and forgets successful resources.
     Status UnregisterRegions(const std::vector<MRHandle>& handles) override;
 
 private:
-    struct Router {
-        std::vector<AsuId> asu_ids;
-
-        AsuId Pick(const CacheKey& key) const;
-    };
-    struct ViewSnapshot {
-        std::shared_ptr<Router> router;
-        std::unordered_map<AsuId, std::shared_ptr<AsuTransport>> transports;
-    };
-
-    Status SubmitAsync(ClientOpType op_type, const std::vector<KVBuffer>& entries, TaskId& task_id);
     using ClientTaskContextPtr = std::shared_ptr<ClientTaskContext>;
 
-    Status DispatchTask(const ClientTaskContextPtr& ctx);
-    bool PollTask(const ClientTaskContextPtr& ctx);
-    Status BuildResult(const ClientTaskContextPtr& ctx, TaskResult& result);
+    // RegisteredResource keeps memory metadata that must be rebound after refresh.
+    struct RegisteredResource {
+        MemoryRegion region;
+        RegisterResult result;
+    };
 
-    TransportFactory transport_factory_;
+    // Submits one entry-based client task through the refresh-retry wrapper.
+    Status SubmitAsync(ClientOpType opType, const std::vector<KVBuffer>& entries, TaskId& taskId);
+    // Builds and dispatches one entry-based task attempt on the current snapshot.
+    Status SubmitAsyncOnce(ClientOpType opType, const std::vector<KVBuffer>& entries,
+                           TaskId& taskId, bool& needRefresh);
+    // Submits one key-based client task through the refresh-retry wrapper.
+    Status SubmitAsync(ClientOpType opType, const std::vector<CacheKey>& keys, TaskId& taskId);
+    // Builds and dispatches one key-based task attempt on the current snapshot.
+    Status SubmitAsyncOnce(ClientOpType opType, const std::vector<CacheKey>& keys, TaskId& taskId,
+                           bool& needRefresh);
+
+    // Sends each subtask to its routed transport and records transport task ids.
+    Status DispatchTask(const ClientTaskContextPtr& ctx);
+    // Polls transport subtasks and copies completed entry statuses back by original index.
+    bool PollTask(const ClientTaskContextPtr& ctx);
+    // Converts a client task context into the public task result shape.
+    Status BuildResult(const ClientTaskContextPtr& ctx, TaskResult& result);
+    // Waits for one client task context until completion or timeout.
+    Status WaitTaskContext(const ClientTaskContextPtr& ctx, std::uint64_t timeoutMs,
+                           TaskResult& result);
+
+    // Performs one query attempt on the current snapshot.
+    Status QueryOnce(const std::vector<CacheKey>& keys, const QueryOptions& options,
+                     QueryResult& result, bool& needRefresh);
+    // Performs one register operation on the current snapshot.
+    Status RegisterRegionsOnce(const std::vector<MemoryRegion>& regions,
+                               std::vector<RegisterResult>& results, bool& needRefresh);
+    // Performs one unregister operation on the current snapshot.
+    Status UnregisterRegionsOnce(const std::vector<MRHandle>& handles, bool& needRefresh);
+
+    // Builds a complete immutable snapshot for a view.
+    Status BuildSnapshot(const GlobalView& view, const std::shared_ptr<ViewSnapshot>& oldSnapshot,
+                         std::shared_ptr<ViewSnapshot>& snapshot);
+    // Creates and initializes a transport for one ASU.
+    Status BuildTransport(AsuId asuId, const AsuInfo& asuInfo,
+                          std::shared_ptr<AsuTransport>& transport);
+    // Binds remembered registered resources to a transport.
+    Status BindRegisteredResources(AsuId asuId, const std::shared_ptr<AsuTransport>& transport);
+    // Returns the current immutable snapshot if initialized.
+    std::shared_ptr<ViewSnapshot> GetSnapshot() const;
+
+    // Refreshes the view and publishes it if it is newer.
+    Status RefreshView();
+    // Starts a non-blocking refresh after a status indicates stale routing or transport state.
+    void RequestBackgroundRefresh();
+    // Waits for the background refresh worker to finish.
+    void JoinBackgroundRefresh();
+
+    // Shuts down transports owned by a snapshot.
+    Status ShutdownSnapshotTransports(const std::shared_ptr<ViewSnapshot>& snapshot);
+    // Waits for tracked client tasks before transport shutdown.
+    Status DrainTasksBeforeShutdown(std::uint64_t waitTimeoutMs);
+
+    // Marks whether a status suggests the published snapshot should be refreshed.
+    void MarkRefreshIfNeeded(const Status& status, bool& needRefresh) const;
+    // Extracts sorted ASU ids from a view.
+    static std::vector<AsuId> GetSortedAsuIds(const GlobalView& view);
+    // Parses client config from a file path supplied through the public interface.
+    static Status LoadConfig(const std::string& configPath, AsuClientConfig& config);
+    // Returns whether all child statuses are terminal.
+    static bool IsTaskComplete(const TaskResult& result);
+    // Returns whether one task status is terminal.
+    static bool IsTaskStatusComplete(const Status& status);
+    // Adds context to a status message.
+    static Status WithContext(Status status, const std::string& context);
+    // Builds the standard not-initialized status.
+    static Status NotInitialized();
+
+    // Tracks aggregate client tasks returned through public TaskId values.
+    ClientTaskManager taskManager_;
+    // Creates ASU transports; tests inject fake transports through this hook.
+    TransportFactory transportFactory_;
+    // Creates the external view server during Init.
+    ViewServerFactory viewServerFactory_;
+    // mutex_ protects background refresh state and resource/view caches.
+    mutable std::mutex mutex_;
+    // Tracks whether Init has published a usable snapshot.
+    bool initialized_{false};
+    // Prevents duplicate background refresh workers.
+    bool refreshInProgress_{false};
+    // Last accepted initialization config.
     AsuClientConfig config_;
-    std::shared_ptr<ViewSnapshot> view_;
-    ClientTaskManager task_manager_;
+    // Source for dynamic global views; may be backed by viewServiceAddrs.
+    std::shared_ptr<ViewServer> viewServer_;
+    // Transport configs indexed by ASU id for snapshot construction.
+    std::unordered_map<AsuId, TransportConfig> transportConfigs_;
+    // Resources registered on the current view and rebound to newly added transports.
+    std::vector<RegisteredResource> registeredResources_;
+    // Current immutable routing and transport snapshot.
+    std::shared_ptr<ViewSnapshot> snapshot_;
+    // Transports removed from the active snapshot but still needed by old tasks.
+    std::vector<std::shared_ptr<AsuTransport>> retiredTransports_;
+    // Worker used for non-blocking refresh requests.
+    std::thread refreshThread_;
 };
 
 }  // namespace UC::ASU

@@ -23,7 +23,7 @@
  * */
 #include <cstdint>
 #include <gtest/gtest.h>
-#include "asu_client/asu_client.h"
+#include "asu_client_impl.h"
 
 namespace UC::ASU {
 namespace {
@@ -31,22 +31,22 @@ namespace {
 AsuClientConfig MakeClientConfig()
 {
     AsuClientConfig config;
-    config.client_id = "asu-smoke-client";
-    config.default_wait_timeout_ms = 100;
+    config.clientId = "asu-smoke-client";
+    config.defaultWaitTimeoutMs = 100;
 
     TransportConfig first;
-    first.asu_name = "asu-smoke-0";
-    first.asu_id = 1001;
-    first.max_inflight_tasks = 64;
-    first.query_timeout_ms = 100;
+    first.asuName = "asu-smoke-0";
+    first.asuId = 1001;
+    first.maxInflightTasks = 64;
+    first.queryTimeoutMs = 100;
 
     TransportConfig second;
-    second.asu_name = "asu-smoke-1";
-    second.asu_id = 1002;
-    second.max_inflight_tasks = 64;
-    second.query_timeout_ms = 100;
+    second.asuName = "asu-smoke-1";
+    second.asuId = 1002;
+    second.maxInflightTasks = 64;
+    second.queryTimeoutMs = 100;
 
-    config.transport_configs = {first, second};
+    config.transportConfigs = {first, second};
     return config;
 }
 
@@ -54,7 +54,7 @@ std::vector<KVBuffer> MakeEntries(std::vector<std::uint8_t>& payload)
 {
     payload.assign(4096, 7);
     MemoryRegion region;
-    region.memory_type = MemoryType::HOST;
+    region.memoryType = MemoryType::HOST;
     region.addr = reinterpret_cast<std::uint64_t>(payload.data());
     region.size = payload.size();
 
@@ -69,19 +69,19 @@ std::vector<KVBuffer> MakeEntries(std::vector<std::uint8_t>& payload)
     };
 }
 
-void ExpectCompleted(AsuClient& client, TaskId task_id, std::size_t entry_count)
+void ExpectCompleted(AsuClient& client, TaskId taskId, std::size_t entryCount)
 {
-    TaskResult wait_result;
-    auto status = client.Wait(task_id, 500, wait_result);
+    TaskResult waitResult;
+    auto status = client.Wait(taskId, 500, waitResult);
     ASSERT_TRUE(status.ok()) << status.message;
-    ASSERT_TRUE(wait_result.status.ok()) << wait_result.status.message;
-    ASSERT_EQ(wait_result.entry_status.size(), entry_count);
-    for (const auto& entry_status : wait_result.entry_status) {
-        EXPECT_TRUE(entry_status.ok()) << entry_status.message;
+    ASSERT_TRUE(waitResult.status.ok()) << waitResult.status.message;
+    ASSERT_EQ(waitResult.entryStatus.size(), entryCount);
+    for (const auto& entryStatus : waitResult.entryStatus) {
+        EXPECT_TRUE(entryStatus.ok()) << entryStatus.message;
     }
 
-    TaskResult check_result;
-    status = client.Check(task_id, check_result);
+    TaskResult checkResult;
+    status = client.Check(taskId, checkResult);
     ASSERT_EQ(status.code, StatusCode::TASK_NOT_FOUND);
 }
 
@@ -98,30 +98,31 @@ TEST(AsuSmokeTest, ClientAsyncTasksCompleteEndToEnd)
     std::vector<std::uint8_t> payload;
     auto entries = MakeEntries(payload);
 
-    TaskId load_task_id{kInvalidTaskId};
-    status = client->LoadAsync(entries, load_task_id);
+    TaskId loadTaskId{kInvalidTaskId};
+    status = client->LoadAsync(entries, loadTaskId);
     ASSERT_TRUE(status.ok()) << status.message;
-    ASSERT_NE(load_task_id, kInvalidTaskId);
-    ExpectCompleted(*client, load_task_id, entries.size());
+    ASSERT_NE(loadTaskId, kInvalidTaskId);
+    ExpectCompleted(*client, loadTaskId, entries.size());
 
-    TaskId store_task_id{kInvalidTaskId};
-    status = client->StoreAsync(entries, store_task_id);
+    TaskId storeTaskId{kInvalidTaskId};
+    status = client->StoreAsync(entries, storeTaskId);
     ASSERT_TRUE(status.ok()) << status.message;
-    ASSERT_NE(store_task_id, kInvalidTaskId);
-    ExpectCompleted(*client, store_task_id, entries.size());
+    ASSERT_NE(storeTaskId, kInvalidTaskId);
+    ExpectCompleted(*client, storeTaskId, entries.size());
 
     std::vector<CacheKey> keys{"alpha", "beta", "gamma", "delta"};
-    QueryOptions query_options;
-    query_options.timeout_ms = 500;
-    QueryResult query_result;
-    status = client->Query(keys, query_options, query_result);
+    QueryOptions queryOptions;
+    queryOptions.timeoutMs = 500;
+    QueryResult queryResult;
+    status = client->Query(keys, queryOptions, queryResult);
     ASSERT_TRUE(status.ok()) << status.message;
-    ASSERT_EQ(query_result.exists.size(), keys.size());
+    ASSERT_EQ(queryResult.exists.size(), keys.size());
 
-    TaskId delete_task_id{kInvalidTaskId};
-    status = client->DeleteAsync(keys, delete_task_id);
-    ASSERT_EQ(status.code, StatusCode::UNSUPPORTED);
-    ASSERT_EQ(delete_task_id, kInvalidTaskId);
+    TaskId deleteTaskId{kInvalidTaskId};
+    status = client->DeleteAsync(keys, deleteTaskId);
+    ASSERT_TRUE(status.ok()) << status.message;
+    ASSERT_NE(deleteTaskId, kInvalidTaskId);
+    ExpectCompleted(*client, deleteTaskId, keys.size());
 
     status = client->Shutdown();
     ASSERT_TRUE(status.ok()) << status.message;
