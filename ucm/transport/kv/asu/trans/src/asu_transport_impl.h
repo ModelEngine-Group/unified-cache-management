@@ -32,10 +32,15 @@
 #include <unordered_map>
 #include <vector>
 #include "asu_transport/asu_transport.h"
+#include "completion_poller.h"
+#include "connection_manager.h"
 #include "template/spsc_ring_queue.h"
+#include "trans_provider.h"
 #include "transport_task_manager.h"
 
 namespace UC::ASU {
+
+using TransportTaskContextPtr = std::shared_ptr<TransportTaskContext>;
 
 class AsuTransportImpl final : public AsuTransport {
 public:
@@ -68,17 +73,24 @@ public:
 
     Status UnregisterRegions(const std::vector<MRHandle>& handles) override;
 
+#ifdef ASU_BUILD_TESTS
+    ConnectionManager& GetConnectionManager() { return *connManager_; }
+#endif
+
 private:
-    using TransportTaskContextPtr = std::shared_ptr<TransportTaskContext>;
     Status SubmitAsync(std::unique_ptr<TransportTaskContext> ctx, TaskId& taskId);
     void WorkerLoop();
     void CompleteTask(const TransportTaskContextPtr& ctx);
+
     void BuildResult(const TransportTaskContext& ctx, TaskResult& result);
+    std::uint64_t GetTimeoutMs(TransportOpType opType) const;
 
     TransportConfig config_;
 
+    std::unique_ptr<TransProvider> transProvider_;
+    std::unique_ptr<ConnectionManager> connManager_;
+    CompletionPoller completionPoller_;
     TransportTaskManager taskManager_;
-    // TODO: optimize spsc pattern or just submit to RDMA/UB directly ?
     UC::SpscRingQueue<TransportTaskContextPtr> executeQueue_;
     std::mutex producerMu_;
 
@@ -88,6 +100,12 @@ private:
     std::mutex registeredRegionsMu_;
     std::atomic<MRHandle> nextMrHandle_{1};
     std::unordered_map<MRHandle, MemoryRegion> registeredRegions_;
+
+    // flagBuffer 内存池管理
+    std::vector<uint32_t> flagBufferPool_;  // NPU 注册的内存池
+    std::vector<size_t> freeFlagSlots_;     // 空闲 slot 索引
+    std::mutex flagBufferMu_;               // 保护内存池分配
+    TransProvider::MemHandle flagBufferMemHandle_{nullptr};  // 内存注册句柄
 };
 
 }  // namespace UC::ASU

@@ -1,0 +1,276 @@
+/**
+ * MIT License
+ *
+ * Copyright (c) 2026 Huawei Technologies Co., Ltd. All rights reserved.
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining a copy
+ * of this software and associated documentation files (the "Software"), to deal
+ * in the Software without restriction, including without limitation the rights
+ * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+ * copies of the Software, and to permit persons to whom the Software is
+ * furnished to do so, subject to the following conditions:
+ *
+ * The above copyright notice and this permission notice shall be included in all
+ * copies or substantial portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+ * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+ * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+ * SOFTWARE.
+ * */
+#include <algorithm>
+#include <chrono>
+#include <cstdint>
+#include "connection_internal.h"
+#include "logger.h"
+
+namespace UC::ASU {
+
+ConnectionManager::ConnectionManager(CreateConnectionFunc create_fn)
+    : createFn_(std::move(create_fn))
+{
+}
+
+ConnectionManager::~ConnectionManager() { Shutdown(); }
+
+Status ConnectionManager::AddGroup(const AsuEndpoint& endpoint, std::uint32_t qp_num)
+{
+    if (shuttingDown_.load(std::memory_order_acquire)) {
+        return Status::Error(StatusCode::NOT_INITIALIZED, "connection manager shutting down");
+    }
+    UC_DEBUG("ConnectionManager::AddGroup endpoint={} qp_num={}", endpoint.ip, qp_num);
+    auto handles = createFn_(endpoint, qp_num);
+    if (handles.size() != qp_num) {
+        UC_DEBUG("ConnectionManager::AddGroup FAILED: got {} handles, expected {}", handles.size(),
+                 qp_num);
+        return Status::Error(StatusCode::CONNECTION_ERROR,
+                             "CreateConnection returned wrong number of handles");
+    }
+
+    {
+        std::unique_lock<std::shared_mutex> lock(structureMu_);
+        auto gid = static_cast<std::uint32_t>(groups_.size());
+        auto group = std::make_unique<ConnectionGroup>(gid, endpoint);
+        for (auto& handle : handles) { group->AddChannel(std::move(handle)); }
+        groups_.push_back(std::move(group));
+
+        for (const auto& channel : groups_.back()->GetChannels()) {
+            channelCache_.push_back(channel);
+        }
+    }
+    cacheDirty_.store(false, std::memory_order_release);
+    UC_DEBUG("ConnectionManager::AddGroup OK");
+    return Status::OK();
+}
+
+Status ConnectionManager::Shutdown()
+{
+    UC_DEBUG("ConnectionManager::Shutdown start");
+    shuttingDown_.store(true, std::memory_order_release);
+    StopRecoverLoop();
+    
+    // Clear channel containers first to release all channel references
+    // before destroying ConnectionGroup objects
+    channelCache_.clear();
+    {
+        std::unique_lock<std::shared_mutex> lock(drainMu_);
+        drainList_.clear();
+    }
+    
+    // Now safe to destroy ConnectionGroup objects
+    {
+        std::unique_lock<std::shared_mutex> lock(structureMu_);
+        groups_.clear();
+    }
+    
+    UC_DEBUG("ConnectionManager::Shutdown done");
+    return Status::OK();
+}
+
+std::shared_ptr<ConnectionChannel> ConnectionManager::SelectConnection()
+{
+    if (shuttingDown_.load(std::memory_order_acquire)) { return nullptr; }
+    auto policy = routingPolicy_;
+    auto channel =
+        policy == RoutingPolicy::LEAST_LOADED ? SelectByLeastLoaded() : SelectByRoundRobin();
+    if (channel) {
+        UC_DEBUG("ConnectionManager::SelectConnection policy={} ch_id={} group_id={} inflight={}",
+                 policy == RoutingPolicy::LEAST_LOADED ? "LEAST_LOADED" : "ROUND_ROBIN",
+                 channel->GetChannelId(), channel->GetGroup()->GetGroupId(),
+                 channel->GetInflightCount());
+    } else {
+        UC_DEBUG("ConnectionManager::SelectConnection policy={} NO available channel",
+                 policy == RoutingPolicy::LEAST_LOADED ? "LEAST_LOADED" : "ROUND_ROBIN");
+    }
+    return channel;
+}
+
+void ConnectionManager::SetRoutingPolicy(RoutingPolicy policy) { routingPolicy_ = policy; }
+
+void ConnectionManager::ReportFailure(const std::shared_ptr<ConnectionChannel>& channel)
+{
+    if (shuttingDown_.load(std::memory_order_acquire)) { return; }
+    auto old_count = channel->FetchAddErrorCount(1);
+    UC_DEBUG("ConnectionManager::ReportFailure ch_id={} group_id={} error_count={} threshold={}",
+             channel->GetChannelId(), channel->GetGroup()->GetGroupId(), old_count + 1,
+             kFailureThreshold);
+    if (old_count + 1 < kFailureThreshold) {
+        UC_DEBUG("ConnectionManager::ReportFailure below threshold, skip drain");
+        return;
+    }
+
+    if (!channel->MarkForDrain()) {
+        UC_DEBUG(
+            "ConnectionManager::ReportFailure MarkForDrain CAS failed (already draining/failed)");
+        return;
+    }
+
+    UC_DEBUG("ConnectionManager::ReportFailure MarkForDrain OK, ch_id={} state=DRAINING",
+             channel->GetChannelId());
+    cacheDirty_.store(true, std::memory_order_release);
+
+    {
+        std::unique_lock<std::shared_mutex> lock(drainMu_);
+        for (const auto& existing : drainList_) {
+            if (existing.get() == channel.get()) return;  // Already in drain list
+        }
+        drainList_.push_back(channel);
+    }
+}
+
+void ConnectionManager::StartRecoverLoop()
+{
+    UC_DEBUG("ConnectionManager::StartRecoverLoop start");
+    if (recoverWorker_.joinable()) { return; }
+    stopRecover_.store(false, std::memory_order_release);
+    recoverWorker_ = std::thread(&ConnectionManager::RecoverLoop, this);
+}
+
+void ConnectionManager::StopRecoverLoop()
+{
+    UC_DEBUG("ConnectionManager::StopRecoverLoop start");
+    stopRecover_.store(true, std::memory_order_release);
+    if (recoverWorker_.joinable()) { recoverWorker_.join(); }
+}
+
+void ConnectionManager::RecoverLoop()
+{
+    UC_DEBUG("ConnectionManager::RecoverLoop started");
+    while (!stopRecover_.load(std::memory_order_acquire)) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(kRecoverIntervalMs));
+        if (stopRecover_.load(std::memory_order_acquire)) { break; }
+
+        std::vector<std::shared_ptr<ConnectionChannel>> to_recover;
+        {
+            std::unique_lock<std::shared_mutex> lock(drainMu_);
+            to_recover.swap(drainList_);
+        }
+
+        for (auto& channel : to_recover) {
+            ConnectionGroup* grp = channel->GetGroup();
+            AsuEndpoint ep = grp->GetEndpoint();
+            std::uint32_t gid = grp->GetGroupId();
+
+            std::vector<ConnectionHandle> new_handles;
+            if (createFn_) { new_handles = createFn_(ep, 1); }
+
+            if (new_handles.empty()) {
+                UC_DEBUG(
+                    "ConnectionManager::RecoverLoop RebuildChannel FAILED, keep in drain_list for "
+                    "retry group_id={}",
+                    gid);
+                std::unique_lock<std::shared_mutex> lock(drainMu_);
+                drainList_.push_back(std::move(channel));
+                continue;
+            }
+
+            {
+                std::unique_lock<std::shared_mutex> lock(structureMu_);
+                grp->RemoveChannel(channel.get());
+                auto new_ch = grp->AddChannel(std::move(new_handles[0]));
+                UC_DEBUG(
+                    "ConnectionManager::RecoverLoop RebuildChannel OK: new_ch_id={} group_id={}",
+                    new_ch->GetChannelId(), gid);
+                cacheDirty_.store(true, std::memory_order_release);
+            }
+        }
+    }
+    UC_DEBUG("ConnectionManager::RecoverLoop stopped");
+}
+
+void ConnectionManager::RebuildChannelCache()
+{
+    if (!cacheDirty_.load(std::memory_order_acquire)) { return; }
+    std::shared_lock<std::shared_mutex> struct_lock(structureMu_);
+    std::vector<std::shared_ptr<ConnectionChannel>> new_cache;
+    for (const auto& g : groups_) {
+        for (const auto& channel : g->GetChannels()) {
+            if (channel->GetState() == ChannelState::ACTIVE) { new_cache.push_back(channel); }
+        }
+    }
+    channelCache_ = std::move(new_cache);
+    cacheDirty_.store(false, std::memory_order_release);
+}
+
+// No cache lock is added, so only one thread can call it and it cannot be used concurrently
+std::shared_ptr<ConnectionChannel> ConnectionManager::SelectByRoundRobin()
+{
+    if (cacheDirty_.load(std::memory_order_acquire)) { RebuildChannelCache(); }
+
+    if (channelCache_.empty()) return nullptr;
+
+    auto idx = rrIndex_.fetch_add(1, std::memory_order_relaxed);
+    std::size_t total = channelCache_.size();
+    std::size_t start = idx % total;
+
+    for (std::size_t i = 0; i < total; ++i) {
+        std::size_t pos = (start + i) % total;
+        const auto& channel = channelCache_[pos];
+        if (channel->GetState() == ChannelState::ACTIVE &&
+            channel->GetInflightCount() < kMaxInflightPerChannel) {
+            channel->IncrementInflight();
+            return channel;
+        }
+    }
+    return nullptr;
+}
+
+// No cache lock is added, so only one thread can call it and it cannot be used concurrently
+std::shared_ptr<ConnectionChannel> ConnectionManager::SelectByLeastLoaded()
+{
+    if (cacheDirty_.load(std::memory_order_acquire)) { RebuildChannelCache(); }
+
+    if (channelCache_.empty()) return nullptr;
+
+    std::shared_ptr<ConnectionChannel> selected;
+    std::uint32_t min_inflight = std::numeric_limits<std::uint32_t>::max();
+
+    for (const auto& channel : channelCache_) {
+        auto inflight = channel->GetInflightCount();
+        if (channel->GetState() == ChannelState::ACTIVE && inflight < kMaxInflightPerChannel &&
+            inflight < min_inflight) {
+            min_inflight = inflight;
+            selected = channel;
+            if (min_inflight == 0) break;
+        }
+    }
+
+    if (selected) { selected->IncrementInflight(); }
+    return selected;
+}
+
+std::int64_t ConnectionManager::TotalInflightCount()
+{
+    if (shuttingDown_.load(std::memory_order_acquire)) { return 0; }
+    std::int64_t sum = 0;
+    std::shared_lock<std::shared_mutex> lock(structureMu_);
+    for (const auto& group : groups_) {
+        for (const auto& channel : group->GetChannels()) { sum += channel->GetInflightCount(); }
+    }
+    return sum;
+}
+
+}  // namespace UC::ASU
