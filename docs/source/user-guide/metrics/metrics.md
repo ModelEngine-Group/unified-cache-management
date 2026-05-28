@@ -259,6 +259,7 @@ The default metrics configuration contains the following UCM metrics.
 | `ucm:posix_h2s_bandwidth_gbps` | Posix stage write bandwidth per task in GB/s. |
 | `ucm:posix_load_queue_wait_duration_ms` | Time a Posix load task spent queued before first worker pickup. |
 | `ucm:posix_dump_queue_wait_duration_ms` | Time a Posix dump task spent queued before first worker pickup. |
+| `ucm:layerwise_batch_total_ms` | Layerwise batch wall-clock time from `start_load_kv()` entry to `wait_for_save()` return. |
 | `ucm:layerwise_wait_blocking_ms` | Time `wait_for_layer_load()` blocked before returning. |
 | `ucm:layerwise_wait_tasks_count` | Number of per-request load tasks awaited in a single layer wait. |
 | `ucm:layerwise_inter_wait_interval_ms` | Interval between consecutive `wait_for_layer_load()` calls. |

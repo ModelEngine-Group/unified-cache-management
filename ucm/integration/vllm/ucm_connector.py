@@ -923,6 +923,7 @@ class UCMLayerWiseConnector(UCMDirectConnector):
         self.request_data: list[tuple[str, list, np.ndarray]] = []
         self._failure_req_ids: set[str] = set()
         self._layerwise_prev_wait_end: Optional[float] = None
+        self._layerwise_batch_start: Optional[float] = None
         logger.info("Init UCMLayerWiseConnector.")
 
     def _submit_request_load_tasks_for_layer(
@@ -949,6 +950,7 @@ class UCMLayerWiseConnector(UCMDirectConnector):
                 self._failure_req_ids.add(request_id)
 
     def start_load_kv(self, forward_context: "ForwardContext", **kwargs) -> None:
+        self._layerwise_batch_start = time.perf_counter()
         metadata = self._get_connector_metadata()
         self.load_tasks.clear()
         self.request_data.clear()
@@ -1089,6 +1091,11 @@ class UCMLayerWiseConnector(UCMDirectConnector):
 
     def wait_for_save(self) -> None:
         if not self.is_save:
+            total_end = time.perf_counter()
+            if self._layerwise_batch_start is not None:
+                batch_total_ms = (total_end - self._layerwise_batch_start) * 1000
+                ucmmetrics.update_stats({"layerwise_batch_total_ms": batch_total_ms})
+                self._layerwise_batch_start = None
             return
         total_start = time.perf_counter()
         try:
@@ -1099,9 +1106,13 @@ class UCMLayerWiseConnector(UCMDirectConnector):
         except Exception as e:
             logger.error(f"wait for dump kv cache failed. {type(e).__name__}: {e}")
         total_end = time.perf_counter()
-        ucmmetrics.update_stats(
-            {"layerwise_save_tail_total_ms": (total_end - total_start) * 1000}
-        )
+        stats = {"layerwise_save_tail_total_ms": (total_end - total_start) * 1000}
+        if self._layerwise_batch_start is not None:
+            stats["layerwise_batch_total_ms"] = (
+                total_end - self._layerwise_batch_start
+            ) * 1000
+            self._layerwise_batch_start = None
+        ucmmetrics.update_stats(stats)
         self.dump_tasks.clear()
         self.is_save = False
         self.dump_total_ptrs = None

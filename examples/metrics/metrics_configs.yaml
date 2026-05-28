@@ -186,6 +186,9 @@ histogram:
   # Primary signal: layerwise_wait_blocking_ms. If p99 is near 0, overlap is
   # perfect; if it tracks load_duration closely, loading is the bottleneck
   # and the layerwise design is degenerating into serial execution.
+  - name: "layerwise_batch_total_ms"
+    documentation: "Layerwise batch wall-clock time from start_load_kv entry to wait_for_save return (ms)"
+    buckets: [0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000, 10000]
   - name: "layerwise_wait_blocking_ms"
     documentation: "Time wait_for_layer_load blocked before returning (ms). Near 0 = good overlap."
     buckets: [0, 0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500]
