@@ -41,14 +41,17 @@ def patch_sfa_v1(mod):
         from ucm.integration.vllm.patch.v0180.vllm_ascend.pc.attention import sfa_v1_rc1
 
         forward = sfa_v1_rc1.AscendSFAImpl.forward
+        update_graph_params = sfa_v1_rc1.AscendSFAImpl.update_graph_params
     else:
         from ucm.integration.vllm.patch.v0180.vllm_ascend.pc.attention import (
             sfa_v1_0180,
         )
 
         forward = sfa_v1_0180.AscendSFAImpl.forward
+        update_graph_params = sfa_v1_0180.AscendSFAImpl.update_graph_params
 
     patch_or_inject(mod.AscendSFAImpl, "forward", forward)
+    patch_or_inject(mod.AscendSFAImpl, "update_graph_params", update_graph_params)
 
 
 @when_imported("vllm_ascend.worker.model_runner_v1")
