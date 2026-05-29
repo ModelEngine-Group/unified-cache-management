@@ -769,9 +769,9 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
                 continue
             buffer_addrs = layout.base_ptrs.reshape(-1).tolist()
             buffer_sizes = layout.buffer_sizes.reshape(-1).tolist()
-            assert len(buffer_addrs) == len(buffer_sizes), (
-                "KV cache buffer addresses and sizes must have the same length."
-            )
+            assert len(buffer_addrs) == len(
+                buffer_sizes
+            ), "KV cache buffer addresses and sizes must have the same length."
             for addr, size in zip(buffer_addrs, buffer_sizes):
                 key = (addr, size)
                 if key in gpu_kv_buffer_set:
