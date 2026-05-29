@@ -241,6 +241,7 @@ class UCMFAWAConnectorMetadata(KVConnectorMetadata):
     """Connector metadata carrying FAWA dispatch plans for this step."""
 
     request_meta: dict[str, FAWARequestDispatchMeta] = field(default_factory=dict)
+    preempted_req_ids: set[str] = field(default_factory=set)
 
 
 @dataclass
@@ -838,7 +839,7 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
 
     def build_connector_meta(
         self, scheduler_output: SchedulerOutput
-    ) -> KVConnectorMetadata:
+    ) -> UCMFAWAConnectorMetadata:
         requests_dispatch_meta: dict[str, FAWARequestDispatchMeta] = {}
         # New requests may need both external-prefix load and new-block dump.
         for request in scheduler_output.scheduled_new_reqs:
@@ -880,7 +881,8 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
         for request_id in scheduler_output.finished_req_ids:
             self.requests_meta.pop(request_id, None)
 
-        return UCMFAWAConnectorMetadata(requests_dispatch_meta)
+        preempted_req_ids = set(scheduler_output.preempted_req_ids or ())
+        return UCMFAWAConnectorMetadata(requests_dispatch_meta, preempted_req_ids)
 
     def update_connector_output(self, connector_output) -> None:
         return None
@@ -945,11 +947,6 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
             task=task,
             key_count=len(keys),
         )
-
-    def _wait_dump_task(self, dump_task: FAWADumpTask) -> None:
-        """Wait for a previously submitted FAWA dump task."""
-
-        dump_task.store.wait(dump_task.task)
 
     def _extract_fa_ptr(self, store_keys, hash_start, hash_end, candidate_vllm_ids):
         """Build store pointer rows for full-attention cache segments."""
@@ -1173,33 +1170,43 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
         except Exception as e:
             logger.error(f"dump FAWA kv cache failed. {type(e).__name__}: {e}")
 
-    def handle_preemptions(self, kv_connector_metadata: KVConnectorMetadata):
-        # Worker side method
-        try:
-            for dump_tasks in self.tp_dump_tasks.values():
+    def _drain_best_effort_dump_tasks(self, finished_req_ids: set[str]) -> None:
+        """Best-effort wait for FAWA dump tasks.
+
+        Dump failures only mean the external cache may miss later. They must not
+        block vLLM from releasing HBM blocks, so failed tasks are logged and then
+        removed from tracking.
+        """
+        if not finished_req_ids:
+            return
+
+        finished_chunk_req_ids = []
+        for request_ids, dump_tasks in self.tp_dump_tasks.items():
+            if finished_req_ids.intersection(request_ids):
+                finished_chunk_req_ids.append(request_ids)
                 for dump_task in dump_tasks:
-                    self._wait_dump_task(dump_task)
-            self.tp_dump_tasks = {}
-        except Exception as e:
-            logger.error(f"Wait for dumping kv cache failed. {type(e).__name__}: {e}")
+                    try:
+                        dump_task.store.wait(dump_task.task)
+                    except Exception as e:
+                        logger.error(
+                            "Best-effort FAWA dump task failed; external cache may miss. "
+                            f"label={dump_task.label}, keys={dump_task.key_count}, "
+                            f"{type(e).__name__}: {e}"
+                        )
+
+        for request_ids in finished_chunk_req_ids:
+            self.tp_dump_tasks.pop(request_ids, None)
+
+    def handle_preemptions(self, kv_connector_metadata: UCMFAWAConnectorMetadata):
+        # Worker side method
+        self._drain_best_effort_dump_tasks(kv_connector_metadata.preempted_req_ids)
 
     def get_finished(
         self,
         finished_req_ids: set[str],
     ) -> tuple[set[str] | None, set[str] | None]:
         # Worker side method
-        try:
-            if finished_req_ids:
-                finished_chunk_req_ids = []
-                for request_ids, dump_tasks in self.tp_dump_tasks.items():
-                    if finished_req_ids.intersection(request_ids):
-                        finished_chunk_req_ids.append(request_ids)
-                        for dump_task in dump_tasks:
-                            self._wait_dump_task(dump_task)
-                for request_ids in finished_chunk_req_ids:
-                    self.tp_dump_tasks.pop(request_ids, None)
-        except Exception as e:
-            logger.error(f"Wait for dumping kv cache failed. {type(e).__name__}: {e}")
+        self._drain_best_effort_dump_tasks(finished_req_ids)
         return finished_req_ids, None
 
     def request_finished_all_groups(
