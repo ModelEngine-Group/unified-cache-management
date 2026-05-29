@@ -299,6 +299,7 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
         self.wa_store: Optional[UcmKVStoreBaseV1] = None
         self.requests_meta: dict[str, FAWARequestMeta] = {}
         self.tp_dump_tasks: dict[tuple, list[FAWADumpTask]] = {}
+        self.tp_dump_handles: dict[tuple, int] = {}
 
         if role == KVConnectorRole.SCHEDULER:
             self.store = self._create_fa_store(None)
@@ -1140,7 +1141,9 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
                         )
                     )
             
-            event_handle = self._get_dump_event_handle()
+            if fa_dump_keys or wa_dump_keys:
+                event_handle = self._get_dump_event_handle()
+                self.tp_dump_handles[dump_request_ids] = event_handle
             if fa_dump_keys:
                 fa_ptrs = np.vstack(fa_ptr_rows)
                 if dump_request_ids not in self.tp_dump_tasks:
@@ -1167,8 +1170,6 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
                         event_handle,
                     )
                 )
-            if self.enable_event_sync:
-                self.device.destroy_event_handles()
         except Exception as e:
             logger.error(f"dump FAWA kv cache failed. {type(e).__name__}: {e}")
 
@@ -1198,6 +1199,9 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
 
         for request_ids in finished_chunk_req_ids:
             self.tp_dump_tasks.pop(request_ids, None)
+            handle = self.tp_dump_handles.pop(request_ids, None)
+            if handle is not None:
+                self.device.destroy_event_handle(handle)
 
     def handle_preemptions(self, kv_connector_metadata: UCMFAWAConnectorMetadata):
         # Worker side method
