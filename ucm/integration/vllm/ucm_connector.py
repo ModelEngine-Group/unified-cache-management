@@ -388,8 +388,6 @@ class UCMDirectConnector(KVConnectorBase_V1):
         self._invalid_block_ids: set[int] = set()
         self._async_dump_req_ids: set[str] = set()
         self._pending_dump_tasks: list[PendingDumpTask] = []
-        self._pending_dump_count_by_req: dict[str, int] = defaultdict(int)
-        self._delayed_finished_req_ids: set[str] = set()
         self.cp_world_size = 1
         self.hash_block_size = self.block_size
         self.block_size *= self.cp_world_size
@@ -828,7 +826,6 @@ class UCMDirectConnector(KVConnectorBase_V1):
             self.store.wait(pending_dump_task.task)
         finally:
             self._release_dump_event_handle(pending_dump_task)
-        self._mark_pending_dump_task_done(pending_dump_task)
 
     def _release_dump_event_handle(self, pending_dump_task: PendingDumpTask) -> None:
         if (
@@ -838,27 +835,6 @@ class UCMDirectConnector(KVConnectorBase_V1):
         ):
             self.device.destroy_event_handle(pending_dump_task.event_handle)
             pending_dump_task.event_handle = 0
-
-    def _mark_pending_dump_task_done(self, pending_dump_task: PendingDumpTask) -> None:
-        for request_id in pending_dump_task.request_ids:
-            pending_count = self._pending_dump_count_by_req.get(request_id, 0)
-            if pending_count <= 1:
-                self._pending_dump_count_by_req.pop(request_id, None)
-            else:
-                self._pending_dump_count_by_req[request_id] = pending_count - 1
-
-    def _poll_pending_dump_tasks(self) -> None:
-        remaining_tasks: list[PendingDumpTask] = []
-        for pending_dump_task in self._pending_dump_tasks:
-            try:
-                if self.store.check(pending_dump_task.task):
-                    self._wait_pending_dump_task(pending_dump_task)
-                else:
-                    remaining_tasks.append(pending_dump_task)
-            except Exception as e:
-                logger.error(f"check dump kv cache failed. {type(e).__name__}: {e}")
-                self._mark_pending_dump_task_done(pending_dump_task)
-        self._pending_dump_tasks = remaining_tasks
 
     def _flush_pending_dump_tasks(self, request_ids: Optional[set[str]] = None) -> None:
         pending_dump_tasks = self._pending_dump_tasks
@@ -874,7 +850,6 @@ class UCMDirectConnector(KVConnectorBase_V1):
                 self._wait_pending_dump_task(pending_dump_task)
             except Exception as e:
                 logger.error(f"wait for dump kv cache failed. {type(e).__name__}: {e}")
-                self._mark_pending_dump_task_done(pending_dump_task)
         self._pending_dump_tasks = remaining_tasks
 
     def handle_preemptions(self, kv_connector_metadata: KVConnectorMetadata):
@@ -947,8 +922,6 @@ class UCMDirectConnector(KVConnectorBase_V1):
                     event_handle=event_handle,
                 )
                 self._pending_dump_tasks.append(pending_dump_task)
-                for request_id in pending_dump_task.request_ids:
-                    self._pending_dump_count_by_req[request_id] += 1
 
     def clear_connector_metadata(self) -> None:
         super().clear_connector_metadata()
@@ -988,16 +961,7 @@ class UCMDirectConnector(KVConnectorBase_V1):
         self,
         finished_req_ids: set[str],
     ) -> tuple[Optional[set[str]], Optional[set[str]]]:
-        self._poll_pending_dump_tasks()
-
-        async_finished_req_ids = {
-            request_id
-            for request_id in finished_req_ids
-            if request_id in self._pending_dump_count_by_req
-            or request_id in self._delayed_finished_req_ids
-            or request_id in self._async_dump_req_ids
-        }
-        self._delayed_finished_req_ids.update(async_finished_req_ids)
+        async_finished_req_ids = finished_req_ids & self._async_dump_req_ids
 
         if async_finished_req_ids:
             remaining_tasks: list[PendingDumpTask] = []
@@ -1009,20 +973,13 @@ class UCMDirectConnector(KVConnectorBase_V1):
                         logger.error(
                             f"wait for dump kv cache failed. {type(e).__name__}: {e}"
                         )
-                        self._mark_pending_dump_task_done(pending_dump_task)
                 else:
                     remaining_tasks.append(pending_dump_task)
             self._pending_dump_tasks = remaining_tasks
 
-        finished_sending = {
-            request_id
-            for request_id in self._delayed_finished_req_ids
-            if request_id not in self._pending_dump_count_by_req
-        }
-        self._delayed_finished_req_ids.difference_update(finished_sending)
-        self._async_dump_req_ids.difference_update(finished_sending)
+        self._async_dump_req_ids.difference_update(async_finished_req_ids)
 
-        return finished_sending or None, None
+        return async_finished_req_ids or None, None
 
 
 class UCMLayerWiseConnector(UCMDirectConnector):
@@ -1181,8 +1138,6 @@ class UCMLayerWiseConnector(UCMDirectConnector):
                     event_handle=event_handle,
                 )
                 self._pending_dump_tasks.append(pending_dump_task)
-                for request_id in pending_dump_task.request_ids:
-                    self._pending_dump_count_by_req[request_id] += 1
             except Exception as e:
                 logger.error(f"submit dump task failed. {type(e).__name__}: {e}")
                 if self.enable_event_sync and event_handle and self.device is not None:
