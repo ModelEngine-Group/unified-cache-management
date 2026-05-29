@@ -1200,7 +1200,7 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
                     self.tp_dump_tasks.pop(request_ids, None)
         except Exception as e:
             logger.error(f"Wait for dumping kv cache failed. {type(e).__name__}: {e}")
-        return None, None
+        return finished_req_ids, None
 
     def request_finished_all_groups(
         self,
@@ -1208,4 +1208,4 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
         block_ids: tuple[list[int], ...],
     ) -> tuple[bool, dict[str, object] | None]:
         # Scheduler side method
-        return False, None
+        return True, None
