@@ -1072,7 +1072,6 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
             raise RuntimeError(f"Unexpected FAWA metadata type: {type(metadata)}")
 
         try:
-            event_handle = self._get_dump_event_handle()
             if self.fa_store is None:
                 raise RuntimeError("FA store is not initialized.")
             if self.wa_store is None:
@@ -1140,7 +1139,8 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
                             request.dump_vllm_block_ids,
                         )
                     )
-
+            
+            event_handle = self._get_dump_event_handle()
             if fa_dump_keys:
                 fa_ptrs = np.vstack(fa_ptr_rows)
                 if dump_request_ids not in self.tp_dump_tasks:
@@ -1167,6 +1167,8 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
                         event_handle,
                     )
                 )
+            if self.enable_event_sync:
+                self.device.destroy_event_handles()
         except Exception as e:
             logger.error(f"dump FAWA kv cache failed. {type(e).__name__}: {e}")
 
