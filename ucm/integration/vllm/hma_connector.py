@@ -110,6 +110,7 @@ class KVCacheGroupLayout:
             block_stride = t.stride(0) * t.element_size()
             strides.append(block_stride)
             tensor_size = math.prod([t.shape[i] for i in size_dims]) * t.element_size()
+            # GPU buffer sizes for GPUDirect RDMA registration in store.
             buffer_sizes.append(int(t.shape[0]) * block_stride)
             token_dim = 1
             tensor_block_size = int(t.shape[token_dim])
@@ -643,8 +644,20 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
             config["local_rank_size"] = self.tp_size if self.is_mla else 1
             if gpu_kv_buffer_config is not None:
                 gpu_kv_buffer_addrs, gpu_kv_buffer_sizes = gpu_kv_buffer_config
+                if not gpu_kv_buffer_addrs or not gpu_kv_buffer_sizes:
+                    raise RuntimeError(
+                        f"Worker FAWA {label} store needs non-empty GPU KV "
+                        "buffer addresses and sizes."
+                    )
                 config["gpu_kv_buffer_addrs"] = gpu_kv_buffer_addrs
                 config["gpu_kv_buffer_sizes"] = gpu_kv_buffer_sizes
+                logger.debug(
+                    f"register FAWA {label} GPU KV buffers: "
+                    f"count={len(gpu_kv_buffer_addrs)}, "
+                    f"bytes={sum(int(size) for size in gpu_kv_buffer_sizes)}, "
+                    f"addrs={gpu_kv_buffer_addrs}, "
+                    f"sizes={gpu_kv_buffer_sizes}"
+                )
             if cpu_affinity_cores:
                 config["cpu_affinity_cores"] = list(cpu_affinity_cores)
         else:
@@ -756,8 +769,11 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
                 continue
             buffer_addrs = layout.base_ptrs.reshape(-1).tolist()
             buffer_sizes = layout.buffer_sizes.reshape(-1).tolist()
+            assert len(buffer_addrs) == len(buffer_sizes), (
+                "KV cache buffer addresses and sizes must have the same length."
+            )
             for addr, size in zip(buffer_addrs, buffer_sizes):
-                key = (int(addr), int(size))
+                key = (addr, size)
                 if key in gpu_kv_buffer_set:
                     continue
                 gpu_kv_buffer_set.add(key)
