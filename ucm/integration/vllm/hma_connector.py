@@ -264,6 +264,7 @@ class FAWADumpTask:
     store: UcmKVStoreBaseV1
     task: Task
     key_count: int
+    event_handle: int
 
 
 class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
@@ -299,7 +300,6 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
         self.wa_store: Optional[UcmKVStoreBaseV1] = None
         self.requests_meta: dict[str, FAWARequestMeta] = {}
         self.tp_dump_tasks: dict[tuple, list[FAWADumpTask]] = {}
-        self.tp_dump_handles: dict[tuple, int] = {}
 
         if role == KVConnectorRole.SCHEDULER:
             self.store = self._create_fa_store(None)
@@ -936,7 +936,7 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
         store: UcmKVStoreBaseV1,
         keys: list[bytes],
         ptrs: np.ndarray,
-        event_handle,
+        event_handle: int,
     ) -> FAWADumpTask:
         """Submit one store dump for FA or WA rows."""
 
@@ -947,6 +947,7 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
             store=store,
             task=task,
             key_count=len(keys),
+            event_handle=event_handle,
         )
 
     def _extract_fa_ptr(self, store_keys, hash_start, hash_end, candidate_vllm_ids):
@@ -1072,67 +1073,43 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
         if not isinstance(metadata, UCMFAWAConnectorMetadata):
             raise RuntimeError(f"Unexpected FAWA metadata type: {type(metadata)}")
 
-        try:
-            if self.fa_store is None:
-                raise RuntimeError("FA store is not initialized.")
-            if self.wa_store is None:
-                raise RuntimeError("WA store is not initialized.")
+        if self.fa_store is None:
+            raise RuntimeError("FA store is not initialized.")
+        if self.wa_store is None:
+            raise RuntimeError("WA store is not initialized.")
 
-            fa_dump_keys: list[bytes] = []
-            wa_dump_keys: list[bytes] = []
-            fa_ptr_rows: list[np.ndarray] = []
-            wa_ptr_rows: list[np.ndarray] = []
-            dump_request_ids: tuple[str] = ()
-            if self.tp_size > 1:
-                # Split FA rows by canonical block index and balance WA rows by
-                # assigning whole request boundaries round-robin across ranks.
-                wa_dump_ring_idx = 0
-                for request_id, request in metadata.request_meta.items():
-                    if not request.dump_keys:
-                        continue
-                    dump_request_ids += (request_id,)
-                    num_keys = len(request.dump_keys)
-                    tp_block_start = num_keys * self.tp_rank // self.tp_size
-                    tp_block_end = num_keys * (self.tp_rank + 1) // self.tp_size
-                    tp_dump_keys = request.dump_keys[tp_block_start:tp_block_end]
-                    if tp_dump_keys:
-                        tp_dump_vllm_block_ids = tuple(
-                            group_block_ids[tp_block_start:tp_block_end]
-                            for group_block_ids in request.dump_vllm_block_ids
-                        )
-                        fa_dump_keys.extend(tp_dump_keys)
-                        fa_ptr_rows.append(
-                            self._extract_fa_ptr(
-                                tp_dump_keys,
-                                request.dump_hash_start + tp_block_start,
-                                request.dump_hash_start + tp_block_end,
-                                tp_dump_vllm_block_ids,
-                            )
-                        )
-                    if wa_dump_ring_idx % self.tp_size == self.tp_rank:
-                        wa_dump_keys.extend(request.dump_keys[-1:])
-                        wa_ptr_rows.append(
-                            self._extract_wa_ptr(
-                                request.dump_keys[-1:],
-                                request.dump_vllm_block_ids,
-                            )
-                        )
-                    wa_dump_ring_idx += 1
-            else:
-                for request_id, request in metadata.request_meta.items():
-                    if not request.dump_keys:
-                        continue
-                    dump_request_ids += (request_id,)
-                    fa_dump_keys.extend(request.dump_keys)
+        fa_dump_keys: list[bytes] = []
+        wa_dump_keys: list[bytes] = []
+        fa_ptr_rows: list[np.ndarray] = []
+        wa_ptr_rows: list[np.ndarray] = []
+        dump_request_ids: tuple[str] = ()
+        if self.tp_size > 1:
+            # Split FA rows by canonical block index and balance WA rows by
+            # assigning whole request boundaries round-robin across ranks.
+            wa_dump_ring_idx = 0
+            for request_id, request in metadata.request_meta.items():
+                if not request.dump_keys:
+                    continue
+                dump_request_ids += (request_id,)
+                num_keys = len(request.dump_keys)
+                tp_block_start = num_keys * self.tp_rank // self.tp_size
+                tp_block_end = num_keys * (self.tp_rank + 1) // self.tp_size
+                tp_dump_keys = request.dump_keys[tp_block_start:tp_block_end]
+                if tp_dump_keys:
+                    tp_dump_vllm_block_ids = tuple(
+                        group_block_ids[tp_block_start:tp_block_end]
+                        for group_block_ids in request.dump_vllm_block_ids
+                    )
+                    fa_dump_keys.extend(tp_dump_keys)
                     fa_ptr_rows.append(
                         self._extract_fa_ptr(
-                            request.dump_keys,
-                            request.dump_hash_start,
-                            request.dump_hash_end,
-                            request.dump_vllm_block_ids,
+                            tp_dump_keys,
+                            request.dump_hash_start + tp_block_start,
+                            request.dump_hash_start + tp_block_end,
+                            tp_dump_vllm_block_ids,
                         )
                     )
-
+                if wa_dump_ring_idx % self.tp_size == self.tp_rank:
                     wa_dump_keys.extend(request.dump_keys[-1:])
                     wa_ptr_rows.append(
                         self._extract_wa_ptr(
@@ -1140,14 +1117,36 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
                             request.dump_vllm_block_ids,
                         )
                     )
-            
-            if fa_dump_keys or wa_dump_keys:
-                event_handle = self._get_dump_event_handle()
-                self.tp_dump_handles[dump_request_ids] = event_handle
-            if fa_dump_keys:
-                fa_ptrs = np.vstack(fa_ptr_rows)
-                if dump_request_ids not in self.tp_dump_tasks:
-                    self.tp_dump_tasks[dump_request_ids] = []
+                wa_dump_ring_idx += 1
+        else:
+            for request_id, request in metadata.request_meta.items():
+                if not request.dump_keys:
+                    continue
+                dump_request_ids += (request_id,)
+                fa_dump_keys.extend(request.dump_keys)
+                fa_ptr_rows.append(
+                    self._extract_fa_ptr(
+                        request.dump_keys,
+                        request.dump_hash_start,
+                        request.dump_hash_end,
+                        request.dump_vllm_block_ids,
+                    )
+                )
+
+                wa_dump_keys.extend(request.dump_keys[-1:])
+                wa_ptr_rows.append(
+                    self._extract_wa_ptr(
+                        request.dump_keys[-1:],
+                        request.dump_vllm_block_ids,
+                    )
+                )
+
+        if fa_dump_keys:
+            event_handle = self._get_dump_event_handle()
+            fa_ptrs = np.vstack(fa_ptr_rows)
+            if dump_request_ids not in self.tp_dump_tasks:
+                self.tp_dump_tasks[dump_request_ids] = []
+            try:
                 self.tp_dump_tasks[dump_request_ids].append(
                     self._submit_dump_task(
                         "FA",
@@ -1157,10 +1156,15 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
                         event_handle,
                     )
                 )
-            if wa_dump_keys:
-                window_ptrs = np.vstack(wa_ptr_rows)
-                if dump_request_ids not in self.tp_dump_tasks:
-                    self.tp_dump_tasks[dump_request_ids] = []
+            except Exception as e:
+                self.device.destroy_event_handle(event_handle)
+                logger.error(f"dump FAWA kv cache failed. {type(e).__name__}: {e}")
+        if wa_dump_keys:
+            event_handle = self._get_dump_event_handle()
+            window_ptrs = np.vstack(wa_ptr_rows)
+            if dump_request_ids not in self.tp_dump_tasks:
+                self.tp_dump_tasks[dump_request_ids] = []
+            try:
                 self.tp_dump_tasks[dump_request_ids].append(
                     self._submit_dump_task(
                         "WA",
@@ -1170,8 +1174,9 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
                         event_handle,
                     )
                 )
-        except Exception as e:
-            logger.error(f"dump FAWA kv cache failed. {type(e).__name__}: {e}")
+            except Exception as e:
+                self.device.destroy_event_handle(event_handle)
+                logger.error(f"dump FAWA kv cache failed. {type(e).__name__}: {e}")
 
     def _drain_best_effort_dump_tasks(self, finished_req_ids: set[str]) -> None:
         """Best-effort wait for FAWA dump tasks.
@@ -1196,12 +1201,11 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
                             f"label={dump_task.label}, keys={dump_task.key_count}, "
                             f"{type(e).__name__}: {e}"
                         )
+                    finally:
+                        self.device.destroy_event_handle(dump_task.event_handle)
 
         for request_ids in finished_chunk_req_ids:
             self.tp_dump_tasks.pop(request_ids, None)
-            handle = self.tp_dump_handles.pop(request_ids, None)
-            if handle is not None:
-                self.device.destroy_event_handle(handle)
 
     def handle_preemptions(self, kv_connector_metadata: UCMFAWAConnectorMetadata):
         # Worker side method
