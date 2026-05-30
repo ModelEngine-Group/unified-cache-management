@@ -29,10 +29,9 @@
   "links": [
     {
       "type": "dashboards",
-      "title": "Other UCM CI dashboards",
+      "title": "Other UCM dashboards",
       "tags": [
-        "ucm",
-        "ci"
+        "ucm"
       ],
       "asDropdown": true,
       "includeVars": true,
