@@ -21,7 +21,7 @@
       }
     ]
   },
-  "description": "vLLM service-side observability — request latency, token throughput, scheduler/cache state. CI variant: fixed datasource uid 'prometheus', `job` selector at the top, model_name auto-derived from job.",
+  "description": "vLLM service-side observability: request latency, token throughput, scheduler state, and cache state.",
   "editable": true,
   "fiscalYearStartMonth": 0,
   "graphTooltip": 0,
@@ -46,7 +46,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "prometheus"
+        "uid": "${DS_PROMETHEUS}"
       },
       "description": "End to end request latency measured in seconds.",
       "fieldConfig": {
@@ -129,11 +129,11 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "prometheus"
+            "uid": "${DS_PROMETHEUS}"
           },
           "disableTextWrap": false,
           "editorMode": "builder",
-          "expr": "histogram_quantile(0.99, sum by(le) (rate(vllm:e2e_request_latency_seconds_bucket{model_name=\"$model_name\", job=\"$job\", instance=\"$instance\"}[$__rate_interval])))",
+          "expr": "histogram_quantile(0.99, sum by(le) (rate(vllm:e2e_request_latency_seconds_bucket{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\"}[$__rate_interval])))",
           "fullMetaSearch": false,
           "includeNullMetadata": false,
           "instant": false,
@@ -145,11 +145,11 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "prometheus"
+            "uid": "${DS_PROMETHEUS}"
           },
           "disableTextWrap": false,
           "editorMode": "builder",
-          "expr": "histogram_quantile(0.95, sum by(le) (rate(vllm:e2e_request_latency_seconds_bucket{model_name=\"$model_name\", job=\"$job\", instance=\"$instance\"}[$__rate_interval])))",
+          "expr": "histogram_quantile(0.95, sum by(le) (rate(vllm:e2e_request_latency_seconds_bucket{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\"}[$__rate_interval])))",
           "fullMetaSearch": false,
           "hide": false,
           "includeNullMetadata": false,
@@ -162,11 +162,11 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "prometheus"
+            "uid": "${DS_PROMETHEUS}"
           },
           "disableTextWrap": false,
           "editorMode": "builder",
-          "expr": "histogram_quantile(0.9, sum by(le) (rate(vllm:e2e_request_latency_seconds_bucket{model_name=\"$model_name\", job=\"$job\", instance=\"$instance\"}[$__rate_interval])))",
+          "expr": "histogram_quantile(0.9, sum by(le) (rate(vllm:e2e_request_latency_seconds_bucket{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\"}[$__rate_interval])))",
           "fullMetaSearch": false,
           "hide": false,
           "includeNullMetadata": false,
@@ -179,11 +179,11 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "prometheus"
+            "uid": "${DS_PROMETHEUS}"
           },
           "disableTextWrap": false,
           "editorMode": "builder",
-          "expr": "histogram_quantile(0.5, sum by(le) (rate(vllm:e2e_request_latency_seconds_bucket{model_name=\"$model_name\", job=\"$job\", instance=\"$instance\"}[$__rate_interval])))",
+          "expr": "histogram_quantile(0.5, sum by(le) (rate(vllm:e2e_request_latency_seconds_bucket{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\"}[$__rate_interval])))",
           "fullMetaSearch": false,
           "hide": false,
           "includeNullMetadata": false,
@@ -196,10 +196,10 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "prometheus"
+            "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "rate(vllm:e2e_request_latency_seconds_sum{model_name=\"$model_name\", job=\"$job\", instance=\"$instance\"}[$__rate_interval])\n/\nrate(vllm:e2e_request_latency_seconds_count{model_name=\"$model_name\", job=\"$job\", instance=\"$instance\"}[$__rate_interval])",
+          "expr": "rate(vllm:e2e_request_latency_seconds_sum{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\"}[$__rate_interval])\n/\nrate(vllm:e2e_request_latency_seconds_count{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\"}[$__rate_interval])",
           "hide": false,
           "instant": false,
           "legendFormat": "Average",
@@ -213,7 +213,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "prometheus"
+        "uid": "${DS_PROMETHEUS}"
       },
       "description": "Number of tokens processed per second",
       "fieldConfig": {
@@ -295,11 +295,11 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "prometheus"
+            "uid": "${DS_PROMETHEUS}"
           },
           "disableTextWrap": false,
           "editorMode": "builder",
-          "expr": "rate(vllm:prompt_tokens_total{model_name=\"$model_name\", job=\"$job\", instance=\"$instance\"}[$__rate_interval])",
+          "expr": "rate(vllm:prompt_tokens_total{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\"}[$__rate_interval])",
           "fullMetaSearch": false,
           "includeNullMetadata": false,
           "instant": false,
@@ -311,11 +311,11 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "prometheus"
+            "uid": "${DS_PROMETHEUS}"
           },
           "disableTextWrap": false,
           "editorMode": "builder",
-          "expr": "rate(vllm:generation_tokens_total{model_name=\"$model_name\", job=\"$job\", instance=\"$instance\"}[$__rate_interval])",
+          "expr": "rate(vllm:generation_tokens_total{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\"}[$__rate_interval])",
           "fullMetaSearch": false,
           "hide": false,
           "includeNullMetadata": false,
@@ -332,7 +332,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "prometheus"
+        "uid": "${DS_PROMETHEUS}"
       },
       "description": "Inter token latency in seconds.",
       "fieldConfig": {
@@ -415,11 +415,11 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "prometheus"
+            "uid": "${DS_PROMETHEUS}"
           },
           "disableTextWrap": false,
           "editorMode": "builder",
-          "expr": "histogram_quantile(0.99, sum by(le) (rate(vllm:inter_token_latency_seconds_bucket{model_name=\"$model_name\", job=\"$job\", instance=\"$instance\"}[$__rate_interval])))",
+          "expr": "histogram_quantile(0.99, sum by(le) (rate(vllm:inter_token_latency_seconds_bucket{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\"}[$__rate_interval])))",
           "fullMetaSearch": false,
           "includeNullMetadata": false,
           "instant": false,
@@ -431,11 +431,11 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "prometheus"
+            "uid": "${DS_PROMETHEUS}"
           },
           "disableTextWrap": false,
           "editorMode": "builder",
-          "expr": "histogram_quantile(0.95, sum by(le) (rate(vllm:inter_token_latency_seconds_bucket{model_name=\"$model_name\", job=\"$job\", instance=\"$instance\"}[$__rate_interval])))",
+          "expr": "histogram_quantile(0.95, sum by(le) (rate(vllm:inter_token_latency_seconds_bucket{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\"}[$__rate_interval])))",
           "fullMetaSearch": false,
           "hide": false,
           "includeNullMetadata": false,
@@ -448,11 +448,11 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "prometheus"
+            "uid": "${DS_PROMETHEUS}"
           },
           "disableTextWrap": false,
           "editorMode": "builder",
-          "expr": "histogram_quantile(0.9, sum by(le) (rate(vllm:inter_token_latency_seconds_bucket{model_name=\"$model_name\", job=\"$job\", instance=\"$instance\"}[$__rate_interval])))",
+          "expr": "histogram_quantile(0.9, sum by(le) (rate(vllm:inter_token_latency_seconds_bucket{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\"}[$__rate_interval])))",
           "fullMetaSearch": false,
           "hide": false,
           "includeNullMetadata": false,
@@ -465,11 +465,11 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "prometheus"
+            "uid": "${DS_PROMETHEUS}"
           },
           "disableTextWrap": false,
           "editorMode": "builder",
-          "expr": "histogram_quantile(0.5, sum by(le) (rate(vllm:inter_token_latency_seconds_bucket{model_name=\"$model_name\", job=\"$job\", instance=\"$instance\"}[$__rate_interval])))",
+          "expr": "histogram_quantile(0.5, sum by(le) (rate(vllm:inter_token_latency_seconds_bucket{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\"}[$__rate_interval])))",
           "fullMetaSearch": false,
           "hide": false,
           "includeNullMetadata": false,
@@ -482,10 +482,10 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "prometheus"
+            "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "rate(vllm:inter_token_latency_seconds_sum{model_name=\"$model_name\", job=\"$job\", instance=\"$instance\"}[$__rate_interval])\n/\nrate(vllm:inter_token_latency_seconds_count{model_name=\"$model_name\", job=\"$job\", instance=\"$instance\"}[$__rate_interval])",
+          "expr": "rate(vllm:inter_token_latency_seconds_sum{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\"}[$__rate_interval])\n/\nrate(vllm:inter_token_latency_seconds_count{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\"}[$__rate_interval])",
           "hide": false,
           "instant": false,
           "legendFormat": "Mean",
@@ -499,7 +499,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "prometheus"
+        "uid": "${DS_PROMETHEUS}"
       },
       "description": "Number of requests in RUNNING, WAITING, and SWAPPED state",
       "fieldConfig": {
@@ -582,11 +582,11 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "prometheus"
+            "uid": "${DS_PROMETHEUS}"
           },
           "disableTextWrap": false,
           "editorMode": "builder",
-          "expr": "vllm:num_requests_running{model_name=\"$model_name\", job=\"$job\", instance=\"$instance\"}",
+          "expr": "vllm:num_requests_running{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\"}",
           "fullMetaSearch": false,
           "includeNullMetadata": true,
           "instant": false,
@@ -598,11 +598,11 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "prometheus"
+            "uid": "${DS_PROMETHEUS}"
           },
           "disableTextWrap": false,
           "editorMode": "builder",
-          "expr": "vllm:num_requests_waiting{model_name=\"$model_name\", job=\"$job\", instance=\"$instance\"}",
+          "expr": "vllm:num_requests_waiting{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\"}",
           "fullMetaSearch": false,
           "hide": false,
           "includeNullMetadata": true,
@@ -619,7 +619,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "prometheus"
+        "uid": "${DS_PROMETHEUS}"
       },
       "description": "P50, P90, P95, and P99 TTFT latency in seconds.",
       "fieldConfig": {
@@ -702,11 +702,11 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "prometheus"
+            "uid": "${DS_PROMETHEUS}"
           },
           "disableTextWrap": false,
           "editorMode": "builder",
-          "expr": "histogram_quantile(0.99, sum by(le) (rate(vllm:time_to_first_token_seconds_bucket{model_name=\"$model_name\", job=\"$job\", instance=\"$instance\"}[$__rate_interval])))",
+          "expr": "histogram_quantile(0.99, sum by(le) (rate(vllm:time_to_first_token_seconds_bucket{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\"}[$__rate_interval])))",
           "fullMetaSearch": false,
           "hide": false,
           "includeNullMetadata": false,
@@ -719,11 +719,11 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "prometheus"
+            "uid": "${DS_PROMETHEUS}"
           },
           "disableTextWrap": false,
           "editorMode": "builder",
-          "expr": "histogram_quantile(0.95, sum by(le) (rate(vllm:time_to_first_token_seconds_bucket{model_name=\"$model_name\", job=\"$job\", instance=\"$instance\"}[$__rate_interval])))",
+          "expr": "histogram_quantile(0.95, sum by(le) (rate(vllm:time_to_first_token_seconds_bucket{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\"}[$__rate_interval])))",
           "fullMetaSearch": false,
           "includeNullMetadata": false,
           "instant": false,
@@ -735,11 +735,11 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "prometheus"
+            "uid": "${DS_PROMETHEUS}"
           },
           "disableTextWrap": false,
           "editorMode": "builder",
-          "expr": "histogram_quantile(0.9, sum by(le) (rate(vllm:time_to_first_token_seconds_bucket{model_name=\"$model_name\", job=\"$job\", instance=\"$instance\"}[$__rate_interval])))",
+          "expr": "histogram_quantile(0.9, sum by(le) (rate(vllm:time_to_first_token_seconds_bucket{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\"}[$__rate_interval])))",
           "fullMetaSearch": false,
           "hide": false,
           "includeNullMetadata": false,
@@ -752,11 +752,11 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "prometheus"
+            "uid": "${DS_PROMETHEUS}"
           },
           "disableTextWrap": false,
           "editorMode": "builder",
-          "expr": "histogram_quantile(0.5, sum by(le) (rate(vllm:time_to_first_token_seconds_bucket{model_name=\"$model_name\", job=\"$job\", instance=\"$instance\"}[$__rate_interval])))",
+          "expr": "histogram_quantile(0.5, sum by(le) (rate(vllm:time_to_first_token_seconds_bucket{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\"}[$__rate_interval])))",
           "fullMetaSearch": false,
           "hide": false,
           "includeNullMetadata": false,
@@ -769,10 +769,10 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "prometheus"
+            "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "rate(vllm:time_to_first_token_seconds_sum{model_name=\"$model_name\", job=\"$job\", instance=\"$instance\"}[$__rate_interval])\n/\nrate(vllm:time_to_first_token_seconds_count{model_name=\"$model_name\", job=\"$job\", instance=\"$instance\"}[$__rate_interval])",
+          "expr": "rate(vllm:time_to_first_token_seconds_sum{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\"}[$__rate_interval])\n/\nrate(vllm:time_to_first_token_seconds_count{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\"}[$__rate_interval])",
           "hide": false,
           "instant": false,
           "legendFormat": "Average",
@@ -786,7 +786,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "prometheus"
+        "uid": "${DS_PROMETHEUS}"
       },
       "description": "Percentage of used cache blocks by vLLM.",
       "fieldConfig": {
@@ -869,10 +869,10 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "prometheus"
+            "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "vllm:kv_cache_usage_perc{model_name=\"$model_name\", job=\"$job\", instance=\"$instance\"}",
+          "expr": "vllm:kv_cache_usage_perc{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\"}",
           "instant": false,
           "legendFormat": "GPU Cache Usage",
           "range": true,
@@ -885,7 +885,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "prometheus"
+        "uid": "${DS_PROMETHEUS}"
       },
       "description": "Heatmap of request prompt length",
       "fieldConfig": {
@@ -930,7 +930,7 @@
           "color": "rgba(255,0,255,0.7)"
         },
         "filterValues": {
-          "le": 1e-09
+          "le": 1e-9
         },
         "legend": {
           "show": true
@@ -956,11 +956,11 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "prometheus"
+            "uid": "${DS_PROMETHEUS}"
           },
           "disableTextWrap": false,
           "editorMode": "builder",
-          "expr": "sum by(le) (increase(vllm:request_prompt_tokens_bucket{model_name=\"$model_name\", job=\"$job\", instance=\"$instance\"}[$__rate_interval]))",
+          "expr": "sum by(le) (increase(vllm:request_prompt_tokens_bucket{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\"}[$__rate_interval]))",
           "format": "heatmap",
           "fullMetaSearch": false,
           "includeNullMetadata": true,
@@ -977,7 +977,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "prometheus"
+        "uid": "${DS_PROMETHEUS}"
       },
       "description": "Heatmap of request generation length",
       "fieldConfig": {
@@ -1022,7 +1022,7 @@
           "color": "rgba(255,0,255,0.7)"
         },
         "filterValues": {
-          "le": 1e-09
+          "le": 1e-9
         },
         "legend": {
           "show": true
@@ -1048,11 +1048,11 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "prometheus"
+            "uid": "${DS_PROMETHEUS}"
           },
           "disableTextWrap": false,
           "editorMode": "builder",
-          "expr": "sum by(le) (increase(vllm:request_generation_tokens_bucket{model_name=\"$model_name\", job=\"$job\", instance=\"$instance\"}[$__rate_interval]))",
+          "expr": "sum by(le) (increase(vllm:request_generation_tokens_bucket{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\"}[$__rate_interval]))",
           "format": "heatmap",
           "fullMetaSearch": false,
           "includeNullMetadata": true,
@@ -1069,7 +1069,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "prometheus"
+        "uid": "${DS_PROMETHEUS}"
       },
       "description": "Number of finished requests by their finish reason: either an EOS token was generated or the max sequence length was reached.",
       "fieldConfig": {
@@ -1150,11 +1150,11 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "prometheus"
+            "uid": "${DS_PROMETHEUS}"
           },
           "disableTextWrap": false,
           "editorMode": "builder",
-          "expr": "sum by(finished_reason) (increase(vllm:request_success_total{model_name=\"$model_name\", job=\"$job\", instance=\"$instance\"}[$__rate_interval]))",
+          "expr": "sum by(finished_reason) (increase(vllm:request_success_total{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\"}[$__rate_interval]))",
           "fullMetaSearch": false,
           "includeNullMetadata": true,
           "instant": false,
@@ -1172,7 +1172,7 @@
       "datasource": {
         "default": false,
         "type": "prometheus",
-        "uid": "prometheus"
+        "uid": "${DS_PROMETHEUS}"
       },
       "fieldConfig": {
         "defaults": {
@@ -1252,11 +1252,11 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "prometheus"
+            "uid": "${DS_PROMETHEUS}"
           },
           "disableTextWrap": false,
           "editorMode": "code",
-          "expr": "rate(vllm:request_queue_time_seconds_sum{model_name=\"$model_name\", job=\"$job\", instance=\"$instance\"}[$__rate_interval])",
+          "expr": "rate(vllm:request_queue_time_seconds_sum{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\"}[$__rate_interval])",
           "fullMetaSearch": false,
           "includeNullMetadata": true,
           "instant": false,
@@ -1273,7 +1273,7 @@
       "datasource": {
         "default": false,
         "type": "prometheus",
-        "uid": "prometheus"
+        "uid": "${DS_PROMETHEUS}"
       },
       "fieldConfig": {
         "defaults": {
@@ -1353,11 +1353,11 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "prometheus"
+            "uid": "${DS_PROMETHEUS}"
           },
           "disableTextWrap": false,
           "editorMode": "code",
-          "expr": "rate(vllm:request_prefill_time_seconds_sum{model_name=\"$model_name\", job=\"$job\", instance=\"$instance\"}[$__rate_interval])",
+          "expr": "rate(vllm:request_prefill_time_seconds_sum{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\"}[$__rate_interval])",
           "fullMetaSearch": false,
           "includeNullMetadata": true,
           "instant": false,
@@ -1369,10 +1369,10 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "prometheus"
+            "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "rate(vllm:request_decode_time_seconds_sum{model_name=\"$model_name\", job=\"$job\", instance=\"$instance\"}[$__rate_interval])",
+          "expr": "rate(vllm:request_decode_time_seconds_sum{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\"}[$__rate_interval])",
           "hide": false,
           "instant": false,
           "legendFormat": "Decode",
@@ -1387,7 +1387,7 @@
       "datasource": {
         "default": false,
         "type": "prometheus",
-        "uid": "prometheus"
+        "uid": "${DS_PROMETHEUS}"
       },
       "fieldConfig": {
         "defaults": {
@@ -1467,11 +1467,11 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "prometheus"
+            "uid": "${DS_PROMETHEUS}"
           },
           "disableTextWrap": false,
           "editorMode": "code",
-          "expr": "rate(vllm:request_max_num_generation_tokens_sum{model_name=\"$model_name\", job=\"$job\", instance=\"$instance\"}[$__rate_interval])",
+          "expr": "rate(vllm:request_max_num_generation_tokens_sum{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\"}[$__rate_interval])",
           "fullMetaSearch": false,
           "includeNullMetadata": true,
           "instant": false,
@@ -1489,24 +1489,42 @@
   "schemaVersion": 39,
   "tags": [
     "ucm",
-    "vllm",
-    "ci"
+    "vllm"
   ],
   "templating": {
     "list": [
       {
         "current": {
           "selected": false,
-          "text": "",
-          "value": ""
+          "text": "prometheus",
+          "value": "prometheus"
+        },
+        "hide": 0,
+        "includeAll": false,
+        "label": "datasource",
+        "multi": false,
+        "name": "DS_PROMETHEUS",
+        "options": [],
+        "query": "prometheus",
+        "queryValue": "",
+        "refresh": 1,
+        "regex": "",
+        "skipUrlSync": false,
+        "type": "datasource"
+      },
+      {
+        "current": {
+          "selected": true,
+          "text": "All",
+          "value": "$__all"
         },
         "datasource": {
           "type": "prometheus",
-          "uid": "prometheus"
+          "uid": "${DS_PROMETHEUS}"
         },
         "definition": "label_values(vllm:num_requests_running, job)",
         "hide": 0,
-        "includeAll": false,
+        "includeAll": true,
         "label": "job",
         "multi": false,
         "name": "job",
@@ -1519,7 +1537,8 @@
         "regex": "",
         "skipUrlSync": false,
         "sort": 2,
-        "type": "query"
+        "type": "query",
+        "allValue": ".*"
       },
       {
         "current": {
@@ -1529,9 +1548,9 @@
         },
         "datasource": {
           "type": "prometheus",
-          "uid": "prometheus"
+          "uid": "${DS_PROMETHEUS}"
         },
-        "definition": "label_values(vllm:num_requests_running{job=\"$job\"}, model_name)",
+        "definition": "label_values(vllm:num_requests_running{job=~\"$job\"}, model_name)",
         "hide": 0,
         "includeAll": false,
         "label": "model_name",
@@ -1539,7 +1558,7 @@
         "name": "model_name",
         "options": [],
         "query": {
-          "query": "label_values(vllm:num_requests_running{job=\"$job\"}, model_name)",
+          "query": "label_values(vllm:num_requests_running{job=~\"$job\"}, model_name)",
           "refId": "StandardVariableQuery"
         },
         "refresh": 2,
@@ -1556,9 +1575,9 @@
         },
         "datasource": {
           "type": "prometheus",
-          "uid": "prometheus"
+          "uid": "${DS_PROMETHEUS}"
         },
-        "definition": "label_values(vllm:num_requests_running{job=\"$job\", model_name=\"$model_name\"}, instance)",
+        "definition": "label_values(vllm:num_requests_running{job=~\"$job\", model_name=\"$model_name\"}, instance)",
         "hide": 0,
         "includeAll": false,
         "label": "instance",
@@ -1566,7 +1585,7 @@
         "name": "instance",
         "options": [],
         "query": {
-          "query": "label_values(vllm:num_requests_running{job=\"$job\", model_name=\"$model_name\"}, instance)",
+          "query": "label_values(vllm:num_requests_running{job=~\"$job\", model_name=\"$model_name\"}, instance)",
           "refId": "StandardVariableQuery"
         },
         "refresh": 2,
@@ -1583,8 +1602,8 @@
   },
   "timepicker": {},
   "timezone": "",
-  "title": "vLLM (CI)",
-  "uid": "vllm-overview-ci",
+  "title": "vLLM",
+  "uid": "vllm-overview",
   "version": 1,
   "weekStart": ""
 }

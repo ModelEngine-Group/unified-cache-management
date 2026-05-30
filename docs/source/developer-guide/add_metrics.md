@@ -101,9 +101,10 @@ its layer:
 | `examples/metrics/grafana_connector.json` | Connector-level metrics. |
 | `examples/metrics/grafana_pipeline_store.json` | Cache Store and Posix Store metrics. |
 | `examples/metrics/grafana_layerwise.json` | Layerwise connector metrics. |
+| `examples/metrics/grafana_vllm.json` | vLLM service-side metrics. |
 
-For CI dashboards, mirror the panel in the corresponding file under
-`ci/grafana/`.
+The dashboards use a `job` selector with regex matching, so the default **All**
+selection also works for metrics without a `job` label.
 
 ## Useful PromQL Patterns
 
