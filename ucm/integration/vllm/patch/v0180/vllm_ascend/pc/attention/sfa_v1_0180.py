@@ -21,6 +21,19 @@ from vllm_ascend.utils import get_weight_prefetch_method
 
 
 class AscendSFAImpl:
+    @staticmethod
+    def update_graph_params(
+        update_stream,
+        forward_context,
+        num_tokens,
+        vllm_config=None,
+        speculative_config=None,
+        num_dcp_pcp_tokens=None,
+        draft_attn_metadatas=None,
+    ):
+        # sfa does not need to update graph params
+        pass
+
     def forward(
         self,
         layer_name,
