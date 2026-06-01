@@ -2907,6 +2907,13 @@ class UCMConnector(KVConnectorBase_V1, SupportsHMA):
             return self.connector.request_finished(request, block_ids[0])
         return self.connector.request_finished(request, [])
 
+    def request_finished(
+        self,
+        request: "Request",
+        block_ids: list[int],
+    ) -> tuple[bool, dict[str, object] | None]:
+        return self.connector.request_finished(request, block_ids)
+
     def get_finished(
         self,
         finished_req_ids: set[str],
