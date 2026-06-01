@@ -1242,13 +1242,15 @@ class UCMLayerWiseConnector(UCMDirectConnector):
 
         submit_start = time.perf_counter()
         total_ucm_block_ids, total_vllm_block_ids = [], []
+        dump_request_ids: set[str] = set()
         layer_id = self.layer_name_to_id[layer_name]
         local_layer_id = layer_id - self.first_layer_id
-        for _, request in metadata.request_meta.items():
+        for request_id, request in metadata.request_meta.items():
             if len(request.dump_block_ids[0]) == 0:
                 continue
 
             self.is_save = True
+            dump_request_ids.add(request_id)
             ucm_block_ids, vllm_block_ids = request.dump_block_ids
             if self.tp_rank % self.tp_size != 0 and local_layer_id == 0:
                 for i, ucm_block_id in enumerate(ucm_block_ids):
@@ -1256,23 +1258,32 @@ class UCMLayerWiseConnector(UCMDirectConnector):
             total_ucm_block_ids.extend(ucm_block_ids)
             total_vllm_block_ids.extend(vllm_block_ids)
 
-        if self.is_save:
+        if dump_request_ids:
+            self._async_dump_req_ids.update(dump_request_ids)
             if self.dump_total_ptrs is None:
                 self.dump_total_ptrs = self.kv_cache_layout.extract_block_addrs(
                     total_vllm_block_ids, layer_first=True
                 )
             shard_indexs = [layer_id] * len(total_ucm_block_ids)
+            event_handle = 0
             try:
                 layer_ptrs = np.ascontiguousarray(self.dump_total_ptrs[local_layer_id])
                 event_handle = self._get_dump_event_handle()
                 task = self.store.dump_data(
                     total_ucm_block_ids, shard_indexs, layer_ptrs, event_handle
                 )
-                self.dump_tasks[layer_name] = task
-            except Exception as e:
-                logger.error(
-                    f"submit dump task for {layer_name} failed. {type(e).__name__}: {e}"
+                pending_dump_task = PendingDumpTask(
+                    task=task,
+                    request_ids=set(dump_request_ids),
+                    event_handle=event_handle,
                 )
+                self._pending_dump_tasks.append(pending_dump_task)
+                for request_id in pending_dump_task.request_ids:
+                    self._pending_dump_count_by_req[request_id] += 1
+            except Exception as e:
+                logger.error(f"submit dump task for {layer_name} failed. {type(e).__name__}: {e}")
+                if self.enable_event_sync and event_handle and self.device is not None:
+                    self.device.destroy_event_handle(event_handle)
         if self.is_save:
             submit_end = time.perf_counter()
             ucmmetrics.update_stats(
@@ -1280,34 +1291,16 @@ class UCMLayerWiseConnector(UCMDirectConnector):
             )
 
     def wait_for_save(self) -> None:
-        if not self.is_save:
-            total_end = time.perf_counter()
-            if self._layerwise_batch_start is not None:
-                batch_total_ms = (total_end - self._layerwise_batch_start) * 1000
-                ucmmetrics.update_stats({"layerwise_batch_total_ms": batch_total_ms})
-                self._layerwise_batch_start = None
-            return
-        total_start = time.perf_counter()
-        try:
-            for layer_name in self.kv_caches:
-                if layer_name not in self.dump_tasks:
-                    continue
-                self.store.wait(self.dump_tasks[layer_name])
-        except Exception as e:
-            logger.error(f"wait for dump kv cache failed. {type(e).__name__}: {e}")
-        total_end = time.perf_counter()
-        stats = {"layerwise_save_tail_total_ms": (total_end - total_start) * 1000}
-        if self._layerwise_batch_start is not None:
-            stats["layerwise_batch_total_ms"] = (
-                total_end - self._layerwise_batch_start
-            ) * 1000
-            self._layerwise_batch_start = None
-        ucmmetrics.update_stats(stats)
+        if self._connector_metadata:
+            metadata = self._get_connector_metadata()
+            self._async_dump_req_ids.update(
+                request_id
+                for request_id, request in metadata.request_meta.items()
+                if len(request.dump_block_ids[0]) > 0
+            )
         self.dump_tasks.clear()
         self.is_save = False
         self.dump_total_ptrs = None
-        if self.enable_event_sync:
-            self.device.destroy_event_handles()
 
 
 class UCMCPConnector(UCMLayerWiseConnector):
