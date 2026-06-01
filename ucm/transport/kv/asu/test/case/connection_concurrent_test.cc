@@ -140,7 +140,7 @@ TEST(ConnectionConcurrentTest, ConcurrentSubmitAndWait_MultipleTasks)
 
             if (s.ok() && tid != kInvalidTaskId) {
                 TaskResult result;
-                s = transport->StubWait(tid, 10000, result);
+                s = transport->Wait(tid, 10000, result);
                 if (s.ok() && result.status.ok()) { completed.fetch_add(1); }
             }
         });
@@ -156,7 +156,7 @@ TEST(ConnectionConcurrentTest, ConcurrentSubmitAndWait_MultipleTasks)
     ASSERT_NE(verify_tid, kInvalidTaskId);
 
     TaskResult verify_result;
-    s = transport->StubWait(verify_tid, 10000, verify_result);
+    s = transport->Wait(verify_tid, 10000, verify_result);
     ASSERT_TRUE(s.ok()) << s.message;
     ASSERT_TRUE(verify_result.status.ok()) << verify_result.status.message;
 
@@ -338,13 +338,13 @@ TEST(ConnectionConcurrentTest, ConcurrentAll8InterfacesWithChannelRebuild)
                 }
                 case 6: {
                     TaskResult result;
-                    auto s2 = transport->StubCheck(i + 2000, result);
+                    auto s2 = transport->Check(i + 2000, result);
                     if (s2.code == StatusCode::TASK_NOT_FOUND) { check_count.fetch_add(1); }
                     return;
                 }
                 case 7: {
                     TaskResult result;
-                    auto s2 = transport->StubWait(i + 3000, 100, result);
+                    auto s2 = transport->Wait(i + 3000, 100, result);
                     if (s2.code == StatusCode::TASK_NOT_FOUND) { wait_short_count.fetch_add(1); }
                     return;
                 }
@@ -352,7 +352,7 @@ TEST(ConnectionConcurrentTest, ConcurrentAll8InterfacesWithChannelRebuild)
 
             if (s.ok() && tid != kInvalidTaskId) {
                 TaskResult result;
-                s = transport->StubWait(tid, 10000, result);
+                s = transport->Wait(tid, 10000, result);
                 if (s.ok() && result.status.ok()) { async_ok.fetch_add(1); }
             }
         });
@@ -395,7 +395,7 @@ TEST(ConnectionConcurrentTest, ConcurrentAll8InterfacesWithChannelRebuild)
     TaskId verify_tid{kInvalidTaskId};
     ASSERT_TRUE(transport->LoadAsync(verify_entries, verify_tid).ok());
     TaskResult verify_result;
-    ASSERT_TRUE(transport->StubWait(verify_tid, 5000, verify_result).ok());
+    ASSERT_TRUE(transport->Wait(verify_tid, 5000, verify_result).ok());
 
     transport->Shutdown();
 }

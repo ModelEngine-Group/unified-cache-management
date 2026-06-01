@@ -28,6 +28,21 @@
 #include "logger.h"
 
 namespace UC::ASU {
+namespace {
+
+std::vector<ConnectionHandle> DefaultCreateConnection(const AsuEndpoint& endpoint,
+                                                      std::uint32_t qpNum)
+{
+    (void)endpoint;
+    return std::vector<ConnectionHandle>(qpNum, nullptr);
+}
+
+std::vector<Status> DefaultDeleteConnections(const std::vector<ConnectionHandle>& handles)
+{
+    return std::vector<Status>(handles.size(), Status::OK());
+}
+
+}  // namespace
 
 ConnectionManager::ConnectionManager() = default;
 
@@ -38,6 +53,13 @@ void ConnectionManager::SetConnectionOps(CreateConnectionFunc create_fn,
 {
     createFn_ = std::move(create_fn);
     deleteFn_ = std::move(delete_fn);
+    shuttingDown_.store(false, std::memory_order_release);
+}
+
+void ConnectionManager::PrepareForInit()
+{
+    shuttingDown_.store(false, std::memory_order_release);
+    stopRecover_.store(false, std::memory_order_release);
 }
 
 Status ConnectionManager::AddGroup(const AsuEndpoint& endpoint, std::uint32_t qp_num)
@@ -46,16 +68,24 @@ Status ConnectionManager::AddGroup(const AsuEndpoint& endpoint, std::uint32_t qp
         return Status::Error(StatusCode::NOT_INITIALIZED, "connection manager shutting down");
     }
     UC_DEBUG("ConnectionManager::AddGroup endpoint={} qp_num={}", endpoint.ip, qp_num);
-    if (!createFn_) { return Status::Error(StatusCode::NOT_INITIALIZED, "Connection ops not set"); }
-    auto handles = createFn_(endpoint, qp_num);
+    if (qp_num == 0) {
+        return Status::Error(StatusCode::INVALID_ARGUMENT, "qp_num must be greater than 0");
+    }
+    auto handles =
+        createFn_ ? createFn_(endpoint, qp_num) : DefaultCreateConnection(endpoint, qp_num);
     if (handles.size() != qp_num) {
         UC_DEBUG("ConnectionManager::AddGroup FAILED: got {} handles, expected {}", handles.size(),
                  qp_num);
+        if (!handles.empty()) {
+            auto statuses = deleteFn_ ? deleteFn_(handles) : DefaultDeleteConnections(handles);
+            (void)statuses;
+        }
         return Status::Error(StatusCode::CONNECTION_ERROR,
                              "CreateConnection returned wrong number of handles");
     }
 
     {
+        std::lock_guard<std::mutex> cacheLock(channelCacheMu_);
         std::unique_lock<std::shared_mutex> lock(structureMu_);
         auto gid = static_cast<std::uint32_t>(groups_.size());
         auto group = std::make_unique<ConnectionGroup>(gid, endpoint);
@@ -77,15 +107,21 @@ Status ConnectionManager::Shutdown()
     shuttingDown_.store(true, std::memory_order_release);
     StopRecoverLoop();
     {
+        std::lock_guard<std::mutex> cacheLock(channelCacheMu_);
         std::unique_lock<std::shared_mutex> lock(structureMu_);
         for (const auto& group : groups_) {
             for (const auto& channel : group->GetChannels()) {
-                if (channel->GetNativeQp() && deleteFn_) { deleteFn_({channel->GetNativeQp()}); }
+                if (channel->GetNativeQp()) {
+                    auto statuses = deleteFn_ ? deleteFn_({channel->GetNativeQp()})
+                                              : DefaultDeleteConnections({channel->GetNativeQp()});
+                    (void)statuses;
+                }
             }
         }
         groups_.clear();
+        channelCache_.clear();
+        cacheDirty_.store(false, std::memory_order_release);
     }
-    channelCache_.clear();
     {
         std::unique_lock<std::shared_mutex> lock(drainMu_);
         drainList_.clear();
@@ -116,6 +152,7 @@ void ConnectionManager::SetRoutingPolicy(RoutingPolicy policy) { routingPolicy_ 
 
 void ConnectionManager::ReportFailure(ConnectionChannel* channel)
 {
+    if (channel == nullptr) { return; }
     if (shuttingDown_.load(std::memory_order_acquire)) { return; }
     auto old_count = channel->FetchAddErrorCount(1);
     UC_DEBUG("ConnectionManager::ReportFailure ch_id={} group_id={} error_count={} threshold={}",
@@ -144,7 +181,7 @@ void ConnectionManager::ReportFailure(ConnectionChannel* channel)
     {
         std::unique_lock<std::shared_mutex> lock(drainMu_);
         for (auto* existing : drainList_) {
-            if (existing == channel) return;  // Already in drain list
+            if (existing == channel) { return; }
         }
         drainList_.push_back(channel);
     }
@@ -210,10 +247,13 @@ void ConnectionManager::RecoverLoop()
             UC_DEBUG("ConnectionManager::RecoverLoop FinishDrain ch_id={} state=FAILED", ch_id);
 
             // Phase 2: Perform blocking IO operations OUTSIDE the lock
-            if (old_qp && deleteFn_) { deleteFn_({old_qp}); }
+            if (old_qp) {
+                auto statuses =
+                    deleteFn_ ? deleteFn_({old_qp}) : DefaultDeleteConnections({old_qp});
+                (void)statuses;
+            }
 
-            std::vector<ConnectionHandle> new_handles;
-            if (createFn_) { new_handles = createFn_(ep, 1); }
+            auto new_handles = createFn_ ? createFn_(ep, 1) : DefaultCreateConnection(ep, 1);
 
             if (new_handles.empty()) {
                 UC_DEBUG(
@@ -230,6 +270,7 @@ void ConnectionManager::RecoverLoop()
             }
 
             {
+                std::lock_guard<std::mutex> cacheLock(channelCacheMu_);
                 std::unique_lock<std::shared_mutex> lock(structureMu_);
                 grp->RemoveChannel(channel);
                 auto* new_ch = grp->AddChannel(new_handles[0]);
@@ -257,12 +298,12 @@ void ConnectionManager::RebuildChannelCache()
     cacheDirty_.store(false, std::memory_order_release);
 }
 
-// No cache lock is added, so only one thread can call it and it cannot be used concurrently
 ConnectionChannel* ConnectionManager::SelectByRoundRobin()
 {
+    std::lock_guard<std::mutex> cacheLock(channelCacheMu_);
     if (cacheDirty_.load(std::memory_order_acquire)) { RebuildChannelCache(); }
 
-    if (channelCache_.empty()) return nullptr;
+    if (channelCache_.empty()) { return nullptr; }
 
     auto idx = rrIndex_.fetch_add(1, std::memory_order_relaxed);
     std::size_t total = channelCache_.size();
@@ -280,12 +321,12 @@ ConnectionChannel* ConnectionManager::SelectByRoundRobin()
     return nullptr;
 }
 
-// No cache lock is added, so only one thread can call it and it cannot be used concurrently
 ConnectionChannel* ConnectionManager::SelectByLeastLoaded()
 {
+    std::lock_guard<std::mutex> cacheLock(channelCacheMu_);
     if (cacheDirty_.load(std::memory_order_acquire)) { RebuildChannelCache(); }
 
-    if (channelCache_.empty()) return nullptr;
+    if (channelCache_.empty()) { return nullptr; }
 
     ConnectionChannel* selected = nullptr;
     std::uint32_t min_inflight = std::numeric_limits<std::uint32_t>::max();
