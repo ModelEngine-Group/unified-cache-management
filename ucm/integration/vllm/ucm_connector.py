@@ -323,6 +323,7 @@ class UCMDirectConnector(KVConnectorBase_V1):
         self.tp_rank = self._vllm_config.parallel_config.rank
         self.block_size = self._vllm_config.cache_config.block_size
         self.is_mla = self._vllm_config.model_config.is_deepseek_mla
+        self.use_mla = getattr(self._vllm_config.model_config, "use_mla", self.is_mla)
         self.num_layers = self._vllm_config.model_config.get_num_layers(
             self._vllm_config.parallel_config
         )
@@ -826,14 +827,67 @@ class UCMDirectConnector(KVConnectorBase_V1):
     def wait_for_layer_load(self, layer_name: str) -> None:
         pass
 
-    def _get_dump_event_handle(self) -> int:
+    def _get_reshape_cache_event(
+        self, layer_name: Optional[str], attn_metadata: Optional["AttentionMetadata"]
+    ) -> tuple[Optional[Any], str]:
+        if attn_metadata is None:
+            return None, "none"
+
+        if self.use_mla:
+            if not layer_name:
+                return None, "mla_missing_layer"
+            try:
+                layer_metadata = attn_metadata[layer_name]
+                event = getattr(layer_metadata, "reshape_cache_event", None)
+                if event is not None:
+                    return event, "mla_layer"
+            except (KeyError, TypeError, AttributeError):
+                pass
+            return None, "mla_missing"
+
+        event = getattr(attn_metadata, "reshape_cache_event", None)
+        if event is not None:
+            return event, "direct"
+        return None, "direct_missing"
+
+    def _get_dump_event_handle(
+        self,
+        layer_name: Optional[str] = None,
+        attn_metadata: Optional["AttentionMetadata"] = None,
+    ) -> int:
         if not self.enable_event_sync:
             self.device.synchronize()
+            logger.debug("dump event sync disabled; synchronized current stream.")
             return 0
+
+        reshape_cache_event, event_source = self._get_reshape_cache_event(
+            layer_name, attn_metadata
+        )
+        event_handle = (
+            self.device.get_event_handle_from_event(reshape_cache_event)
+            if reshape_cache_event is not None
+            else 0
+        )
+        if event_handle != 0:
+            logger.debug(
+                f"dump event handle from reshape_cache_event source={event_source}, "
+                f"layer_name={layer_name}, handle={event_handle}."
+            )
+            return event_handle
 
         event_handle = self.device.get_event_handle()
         if event_handle == 0:
             self.device.synchronize()
+            logger.debug(
+                f"dump event fallback synchronized current stream, "
+                f"reshape_event_source={event_source}, layer_name={layer_name}."
+            )
+        else:
+            logger.debug(
+                f"dump event handle from current stream fallback, "
+                f"reshape_event_source={event_source}, layer_name={layer_name}, "
+                f"handle={event_handle}."
+            )
         return event_handle
 
     def save_kv_layer(
@@ -1140,7 +1194,7 @@ class UCMLayerWiseConnector(UCMDirectConnector):
             shard_indexs = [layer_id] * len(total_ucm_block_ids)
             try:
                 layer_ptrs = np.ascontiguousarray(self.dump_total_ptrs[local_layer_id])
-                event_handle = self._get_dump_event_handle()
+                event_handle = self._get_dump_event_handle(layer_name, attn_metadata)
                 task = self.store.dump_data(
                     total_ucm_block_ids, shard_indexs, layer_ptrs, event_handle
                 )

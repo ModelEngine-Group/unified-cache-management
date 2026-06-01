@@ -13,7 +13,7 @@ import subprocess
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from itertools import accumulate
-from typing import Dict, List, Optional, Tuple, Union
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 import torch
 from vllm.platforms import current_platform
@@ -26,11 +26,15 @@ logger = init_logger(__name__)
 class Device(ABC):
     def __init__(self):
         self.events = {}
+        self.borrowed_events = []
 
     @abstractmethod
     def get_event_handle(self) -> int:
         """Return event handle for stream sync. 0 means no event (use synchronize instead)."""
         pass
+
+    def get_event_handle_from_event(self, event: Any) -> int:
+        return 0
 
     @abstractmethod
     def synchronize(self):
@@ -114,11 +118,23 @@ class CudaDevice(Device):
             logger.error(f"get cuda event handle failed. {e}")
             return 0
 
+    def get_event_handle_from_event(self, event: Any) -> int:
+        try:
+            handle = getattr(event, "cuda_event", None)
+            if handle is None or int(handle) == 0:
+                return 0
+            self.borrowed_events.append(event)
+            return int(handle)
+        except Exception as e:
+            logger.error(f"get cuda event handle from existing event failed. {e}")
+            return 0
+
     def synchronize(self):
         torch.cuda.current_stream().synchronize()
 
     def destroy_event_handles(self):
         self.events.clear()
+        self.borrowed_events.clear()
 
     def destroy_event_handle(self, handle: int):
         self.events.pop(handle, None)
@@ -248,6 +264,22 @@ class NpuDevice(Device):
             logger.error(f"get npu event handle failed. {e}")
             return 0
 
+    def get_event_handle_from_event(self, event: Any) -> int:
+        try:
+            handle = getattr(event, "npu_event", None)
+            if handle is None:
+                parameter = getattr(event, "_as_parameter_", None)
+                if callable(parameter):
+                    parameter = parameter()
+                handle = getattr(parameter, "value", None)
+            if handle is None or int(handle) == 0:
+                return 0
+            self.borrowed_events.append(event)
+            return int(handle)
+        except Exception as e:
+            logger.error(f"get npu event handle from existing event failed. {e}")
+            return 0
+
     def synchronize(self):
         torch.npu.current_stream().synchronize()
 
@@ -260,6 +292,7 @@ class NpuDevice(Device):
             except Exception as e:
                 logger.error(f"destroy npu event failed. {e}")
         self.events.clear()
+        self.borrowed_events.clear()
 
     def destroy_event_handle(self, handle: int):
         import acl
