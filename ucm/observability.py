@@ -73,9 +73,7 @@ class PrometheusStatsLogger:
         self.config = self._load_config(config_path)
         self.log_interval = self.config.get("log_interval", 10)
 
-        # Set up histogram max length
-        histogram_max_length = self.config.get("histogram_max_length", 10000)
-        ucmmetrics.set_up(histogram_max_length)
+        ucmmetrics.set_up()
 
         multiproc_dir = self.config.get("multiproc_dir", "/vllm-workspace")
         if "PROMETHEUS_MULTIPROC_DIR" not in os.environ:
@@ -112,9 +110,7 @@ class PrometheusStatsLogger:
         for cfg in cfg_list:
             name = cfg.get("name")
             doc = cfg.get("documentation", "")
-            # Prometheus metric name with prefix
             prometheus_name = f"{self.metric_prefix}{name}"
-            ucmmetrics.create_stats(name, metric_type)
 
             metric_kwargs = {
                 "name": prometheus_name,
@@ -124,7 +120,10 @@ class PrometheusStatsLogger:
                 **{k: v for k, v in cfg.items() if k in default_kwargs},
             }
 
-            _metric_mappings[name] = metric_cls(**metric_kwargs)
+            metric = metric_cls(**metric_kwargs)
+            _metric_mappings[name] = metric
+            buckets = list(getattr(metric, "_upper_bounds", []))
+            ucmmetrics.create_stats(name, metric_type, buckets)
 
     def _init_metrics_from_config(self):
         """Initialize metrics based on config"""
@@ -143,8 +142,24 @@ class PrometheusStatsLogger:
         metric.set(value)
 
     def _update_histogram(self, metric, value):
-        for data in value:
-            metric.observe(data)
+        bucket_counts, sum_delta = value
+        buckets = getattr(metric, "_buckets", None)
+        metric_sum = getattr(metric, "_sum", None)
+        if buckets is None or metric_sum is None:
+            logger.error("Histogram metric does not expose bucket storage")
+            return
+        if len(bucket_counts) != len(buckets):
+            logger.error(
+                "Histogram bucket count mismatch: got %d, expected %d",
+                len(bucket_counts),
+                len(buckets),
+            )
+            return
+        for bucket, count in zip(buckets, bucket_counts):
+            if count:
+                bucket.inc(count)
+        if sum_delta:
+            metric_sum.inc(sum_delta)
 
     def _update_with_func(self, update_func, stats: dict[str, Any], op_desc: str):
         """
@@ -172,7 +187,7 @@ class PrometheusStatsLogger:
         update_tasks = [
             (self._update_counter, counter_stats, "increment"),
             (self._update_gauge, gauge_stats, "set"),
-            (self._update_histogram, histogram_stats, "observe"),
+            (self._update_histogram, histogram_stats, "add histogram delta"),
         ]
         for update_func, stats, op_desc in update_tasks:
             self._update_with_func(update_func, stats, op_desc)

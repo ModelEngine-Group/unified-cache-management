@@ -24,16 +24,22 @@
 #include "metrics_api.h"
 namespace UC::Metrics {
 
-void SetUp(size_t maxVectorLen) { Metrics::GetInstance().SetUp(maxVectorLen); }
+void SetUp(size_t) { Metrics::GetInstance().SetUp(); }
 
-void CreateStats(const std::string& name, const std::string& type)
+void CreateStats(const std::string& name, const std::string& type,
+                 const std::vector<double>& buckets)
 {
-    Metrics::GetInstance().CreateStats(name, type);
+    Metrics::GetInstance().CreateStats(name, type, buckets);
 }
 
 void UpdateStats(const std::string& name, double value)
 {
     Metrics::GetInstance().UpdateStats(name, value);
+}
+
+void UpdateStats(CachedMetric& metric, double value)
+{
+    Metrics::GetInstance().UpdateStats(metric, value);
 }
 
 void UpdateStats(const std::unordered_map<std::string, double>& values)
@@ -42,7 +48,7 @@ void UpdateStats(const std::unordered_map<std::string, double>& values)
 }
 
 std::tuple<std::unordered_map<std::string, double>, std::unordered_map<std::string, double>,
-           std::unordered_map<std::string, std::vector<double>>>
+           HistogramStatsMap>
 GetAllStatsAndClear()
 {
     return Metrics::GetInstance().GetAllStatsAndClear();

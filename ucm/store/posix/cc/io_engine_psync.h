@@ -25,6 +25,7 @@
 #define UNIFIEDCACHE_POSIX_STORE_CC_IO_ENGINE_PSYNC_H
 
 #include "logger/logger.h"
+#include "metrics_api.h"
 #include "template/task_wrapper.h"
 #include "trans_queue.h"
 
@@ -50,11 +51,23 @@ protected:
         const auto num = t->desc.size();
         const auto size = shardSize_ * num;
         const auto tp = w->startTp;
+        const auto isDump = (t->type == TransTask::Type::DUMP);
         UC_DEBUG("Posix task({},{},{},{}) dispatching.", id, brief, num, size);
-        w->SetEpilog([id, brief = std::move(brief), num, size, tp] {
+        w->SetEpilog([id, brief = std::move(brief), num, size, tp, isDump] {
             auto cost = NowTime::Now() - tp;
+            auto costMs = cost * 1e3;
+            auto bwGbps = cost > 0 ? static_cast<double>(size) / cost / 1e9 : 0.0;
             UC_DEBUG("Posix task({},{},{},{}) finished, cost {:.3f}ms.", id, brief, num, size,
-                     cost * 1e3);
+                     costMs);
+            static UC::Metrics::CachedMetric loadDuration{"posix_load_task_duration_ms"};
+            static UC::Metrics::CachedMetric dumpDuration{"posix_dump_task_duration_ms"};
+            static UC::Metrics::CachedMetric loadBandwidth{"posix_s2h_bandwidth_gbps"};
+            static UC::Metrics::CachedMetric dumpBandwidth{"posix_h2s_bandwidth_gbps"};
+            static UC::Metrics::CachedMetric loadBytes{"posix_s2h_bytes_total"};
+            static UC::Metrics::CachedMetric dumpBytes{"posix_h2s_bytes_total"};
+            UC::Metrics::UpdateStats(isDump ? dumpDuration : loadDuration, costMs);
+            UC::Metrics::UpdateStats(isDump ? dumpBandwidth : loadBandwidth, bwGbps);
+            UC::Metrics::UpdateStats(isDump ? dumpBytes : loadBytes, static_cast<double>(size));
         });
         queue_.Push(t, w);
     }
