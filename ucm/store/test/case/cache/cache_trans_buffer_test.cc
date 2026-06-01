@@ -25,6 +25,7 @@
 #include "cache/cc/trans_buffer.h"
 #include "detail/random.h"
 #include "detail/types_helper.h"
+#include "metrics_api.h"
 
 class UCCacheTransBufferTest : public testing::TestWithParam<bool> {
 public:

@@ -356,8 +356,8 @@ class UCMDirectConnector(KVConnectorBase_V1):
                 vllm_config, self.tp_rank % self.tp_size
             )
 
-        self.metrics_config = self.launch_config.get("metrics_config_path", "")
-        if self.metrics_config:
+        metrics_config = self.launch_config.get("metrics_config_path", "")
+        if metrics_config:
             worker_id = (
                 f"{self.engine_id}_{get_world_group().rank}"
                 if role == KVConnectorRole.WORKER
@@ -366,10 +366,10 @@ class UCMDirectConnector(KVConnectorBase_V1):
             self.stats_logger = PrometheusStatsLogger(
                 vllm_config.model_config.served_model_name,
                 worker_id,
-                self.metrics_config,
+                metrics_config,
             )
             logger.info(
-                f"metrics_config_path: {self.metrics_config}, set worker_id: {worker_id}"
+                f"metrics_config_path: {metrics_config}, set worker_id: {worker_id}"
             )
 
         self.persist_token_threshold = self.launch_config.get(
@@ -561,14 +561,13 @@ class UCMDirectConnector(KVConnectorBase_V1):
             f"hit hbm: {hbm_hit_block_num * self.cp_world_size}, "
             f"hit external: {external_hit_blocks * self.cp_world_size}"
         )
-        if self.metrics_config:
-            ucmmetrics.update_stats(
-                {
-                    "interval_lookup_hit_rates": external_hit_blocks
-                    * self.cp_world_size
-                    / len(ucm_block_ids)
-                },
-            )
+        ucmmetrics.update_stats(
+            {
+                "interval_lookup_hit_rates": external_hit_blocks
+                * self.cp_world_size
+                / len(ucm_block_ids)
+            },
+        )
 
         total_hit_block_num = hbm_hit_block_num + external_hit_blocks
 
@@ -765,20 +764,18 @@ class UCMDirectConnector(KVConnectorBase_V1):
                 num_loaded_block -= request_to_load_blocks.get(request_id, 0)
 
         load_end_time = time.perf_counter() * 1000
+        load_bytes = num_loaded_block * self.block_data_size
         load_speed = (
-            num_loaded_block
-            * self.block_data_size
-            / (load_end_time - load_start_time)
-            / 1024
-            / 1024
+            load_bytes / (load_end_time - load_start_time) / 1024 / 1024
         )  # GB/s
-        if self.metrics_config and is_load:
+        if is_load:
             ucmmetrics.update_stats(
                 {
                     "load_requests_num": num_loaded_request,
                     "load_blocks_num": num_loaded_block,
                     "load_duration": load_end_time - load_start_time,
                     "load_speed": load_speed,
+                    "load_bytes_total": load_bytes,
                 }
             )
 
@@ -864,22 +861,19 @@ class UCMDirectConnector(KVConnectorBase_V1):
                 logger.error(f"wait for dump kv cache failed. {type(e).__name__}: {e}")
                 return
 
+            save_bytes = num_saved_block * self.block_data_size
             save_speed = (
-                num_saved_block
-                * self.block_data_size
-                / (save_end_time - save_start_time)
-                / 1024
-                / 1024
+                save_bytes / (save_end_time - save_start_time) / 1024 / 1024
             )  # GB/s
-            if self.metrics_config:
-                ucmmetrics.update_stats(
-                    {
-                        "save_requests_num": num_saved_request,
-                        "save_blocks_num": num_saved_block,
-                        "save_duration": save_end_time - save_start_time,
-                        "save_speed": save_speed,
-                    },
-                )
+            ucmmetrics.update_stats(
+                {
+                    "save_requests_num": num_saved_request,
+                    "save_blocks_num": num_saved_block,
+                    "save_duration": save_end_time - save_start_time,
+                    "save_speed": save_speed,
+                    "save_bytes_total": save_bytes,
+                },
+            )
 
     def clear_connector_metadata(self) -> None:
         super().clear_connector_metadata()
@@ -928,6 +922,8 @@ class UCMLayerWiseConnector(UCMDirectConnector):
         self.dump_total_ptrs: np.ndarray | None = None
         self.request_data: list[tuple[str, list, np.ndarray]] = []
         self._failure_req_ids: set[str] = set()
+        self._layerwise_prev_wait_end: Optional[float] = None
+        self._layerwise_batch_start: Optional[float] = None
         logger.info("Init UCMLayerWiseConnector.")
 
     def _submit_request_load_tasks_for_layer(
@@ -954,11 +950,13 @@ class UCMLayerWiseConnector(UCMDirectConnector):
                 self._failure_req_ids.add(request_id)
 
     def start_load_kv(self, forward_context: "ForwardContext", **kwargs) -> None:
+        self._layerwise_batch_start = time.perf_counter()
         metadata = self._get_connector_metadata()
         self.load_tasks.clear()
         self.request_data.clear()
         self._failure_req_ids.clear()
         self.need_load = False
+        self._layerwise_prev_wait_end = None
 
         for request_id, request in metadata.request_meta.items():
             if len(request.load_block_ids[0]) == 0:
@@ -975,7 +973,19 @@ class UCMLayerWiseConnector(UCMDirectConnector):
             self.request_data.append((request_id, ucm_block_ids, total_ptrs))
 
         if self.need_load:
+            first_submit_start = time.perf_counter()
             self._submit_request_load_tasks_for_layer(self.first_layer_id, 0, metadata)
+            first_submit_end = time.perf_counter()
+            n_reqs = len(self.request_data) - len(self._failure_req_ids)
+            ucmmetrics.update_stats(
+                {
+                    "layerwise_first_layer_submit_ms": (
+                        first_submit_end - first_submit_start
+                    )
+                    * 1000,
+                    "layerwise_first_layer_requests": float(n_reqs),
+                }
+            )
 
     def wait_for_layer_load(self, layer_name: str) -> None:
         if not self._connector_metadata:
@@ -985,9 +995,12 @@ class UCMLayerWiseConnector(UCMDirectConnector):
         metadata = self._get_connector_metadata()
         current_layer_id = self.layer_name_to_id[layer_name]
 
+        wait_start = time.perf_counter()
+
         # Pop before wait so MTP / rollback paths that revisit the same layer_name
         # do not call store.wait() again on already-completed handles.
         layer_tasks = self.load_tasks.pop(current_layer_id, {})
+        n_tasks = len(layer_tasks)
         for request_id, task in layer_tasks.items():
             try:
                 self.store.wait(task)
@@ -1000,14 +1013,30 @@ class UCMLayerWiseConnector(UCMDirectConnector):
                 )
                 self._failure_req_ids.add(request_id)
 
-        next_layer_id = current_layer_id + 1
-        if next_layer_id not in self.layer_ids:
-            return
-        next_local_row = next_layer_id - self.first_layer_id
+        wait_end = time.perf_counter()
 
-        self._submit_request_load_tasks_for_layer(
-            next_layer_id, next_local_row, metadata
-        )
+        next_layer_id = current_layer_id + 1
+        has_next = next_layer_id in self.layer_ids
+        if has_next:
+            next_local_row = next_layer_id - self.first_layer_id
+            self._submit_request_load_tasks_for_layer(
+                next_layer_id, next_local_row, metadata
+            )
+
+        blocking_ms = (wait_end - wait_start) * 1000
+        stats = {
+            "layerwise_wait_blocking_ms": blocking_ms,
+            "layerwise_wait_tasks_count": float(n_tasks),
+        }
+        if self._layerwise_prev_wait_end is not None:
+            stats["layerwise_inter_wait_interval_ms"] = (
+                wait_start - self._layerwise_prev_wait_end
+            ) * 1000
+        if has_next:
+            submit_end = time.perf_counter()
+            stats["layerwise_next_layer_submit_ms"] = (submit_end - wait_end) * 1000
+        ucmmetrics.update_stats(stats)
+        self._layerwise_prev_wait_end = wait_end
 
     def save_kv_layer(
         self,
@@ -1023,6 +1052,7 @@ class UCMLayerWiseConnector(UCMDirectConnector):
 
         metadata = self._get_connector_metadata()
 
+        submit_start = time.perf_counter()
         total_ucm_block_ids, total_vllm_block_ids = [], []
         layer_id = self.layer_name_to_id[layer_name]
         local_layer_id = layer_id - self.first_layer_id
@@ -1053,16 +1083,36 @@ class UCMLayerWiseConnector(UCMDirectConnector):
                 self.dump_tasks[layer_name] = task
             except Exception as e:
                 logger.error(f"submit dump task failed. {type(e).__name__}: {e}")
+        if self.is_save:
+            submit_end = time.perf_counter()
+            ucmmetrics.update_stats(
+                {"layerwise_save_submit_ms": (submit_end - submit_start) * 1000}
+            )
 
     def wait_for_save(self) -> None:
         if not self.is_save:
+            total_end = time.perf_counter()
+            if self._layerwise_batch_start is not None:
+                batch_total_ms = (total_end - self._layerwise_batch_start) * 1000
+                ucmmetrics.update_stats({"layerwise_batch_total_ms": batch_total_ms})
+                self._layerwise_batch_start = None
             return
+        total_start = time.perf_counter()
         try:
             for layer_name in self.kv_caches:
-                if layer_name in self.dump_tasks:
-                    self.store.wait(self.dump_tasks[layer_name])
+                if layer_name not in self.dump_tasks:
+                    continue
+                self.store.wait(self.dump_tasks[layer_name])
         except Exception as e:
             logger.error(f"wait for dump kv cache failed. {type(e).__name__}: {e}")
+        total_end = time.perf_counter()
+        stats = {"layerwise_save_tail_total_ms": (total_end - total_start) * 1000}
+        if self._layerwise_batch_start is not None:
+            stats["layerwise_batch_total_ms"] = (
+                total_end - self._layerwise_batch_start
+            ) * 1000
+            self._layerwise_batch_start = None
+        ucmmetrics.update_stats(stats)
         self.dump_tasks.clear()
         self.is_save = False
         self.dump_total_ptrs = None
@@ -2175,7 +2225,7 @@ class UCMHMAConnector(UCMDirectConnector, SupportsHMA):
             f"hit external: {external_hit_lcm_blocks}, "
             f"total_tokens: {len(request.all_token_ids)}"
         )
-        if self.metrics_config and len(primary_block_ids) > 0:
+        if len(primary_block_ids) > 0:
             ucmmetrics.update_stats(
                 {
                     "interval_lookup_hit_rates": external_hit_lcm_blocks

@@ -4,23 +4,75 @@ log_interval: 5  # Interval in seconds for logging metrics
 
 multiproc_dir: "/vllm-workspace"  # Directory for Prometheus multiprocess mode
 
-metric_prefix: "ucm:" 
+metric_prefix: "ucm:"
 
-histogram_max_length: 10000  # Maximum length of the vector for each histogram metric
+# ============================================================================
+# Common bucket aliases (for readability only - YAML doesn't inline these).
+# Durations are in ms, bandwidth in GB/s.
+# ============================================================================
 
 # Counter metrics configuration
-# counter:
-#   - name: "received_requests"
-#     documentation: "Total number of requests sent to ucm"
+counter:
+  # -- Pipeline Cache stage: lookup hit/miss breakdown ----------------------
+  # Hit counters let Prometheus compute hit rate without losing precision:
+  #   rate(ucm:cache_lookup_hit_blocks_total[5m])
+  #   / (rate(hit) + rate(miss))
+  - name: "cache_lookup_hit_blocks_total"
+    documentation: "Number of lookup hits served by the Cache stage (no descent to backend)"
+  - name: "cache_lookup_miss_blocks_total"
+    documentation: "Number of lookup misses at the Cache stage (had to query the backend)"
+  - name: "cache_load_blocks_total"
+    documentation: "Total blocks loaded by the Cache stage"
+  - name: "cache_dump_blocks_total"
+    documentation: "Total blocks dumped by the Cache stage"
+  - name: "cache_load_shards_total"
+    documentation: "Total shards dispatched by Cache load (num blocks * shards_per_block)"
+  - name: "cache_load_backend_shards_total"
+    documentation: "Shards that descended to the backend on load (true cache miss at the buffer-allocation stage; aka backend-load count)"
+  - name: "cache_dump_shards_total"
+    documentation: "Total shards dispatched by Cache dump (mirror of cache_load_shards_total)"
+  - name: "cache_dump_backend_shards_total"
+    documentation: "Shards actually pushed to backend on dump (excludes !handle.Owner() skips in shared-buffer scenario)"
+
+  # -- Pipeline Cache stage: per-worker real throughput counters ------------
+  # Accumulated per completed Cache task with size = shardSize * num_shards.
+  # Use rate() / 1e9 to get actual GB/s the worker is moving through the
+  # Cache stage — aggregates across concurrent tasks and includes idle gaps,
+  # which the per-task cache_*_bandwidth_gbps histogram cannot reveal.
+  - name: "cache_load_bytes_total"
+    documentation: "Total bytes loaded through the Cache stage (per-task size summed)"
+  - name: "cache_dump_bytes_total"
+    documentation: "Total bytes dumped through the Cache stage (per-task size summed)"
+
+  # -- Pipeline Posix stage: real per-worker throughput counters ------------
+  # Accumulated per completed Posix task. Use
+  # rate() / 1e9 to get actual GB/s the worker is moving across the disk,
+  # which the per-task *_bandwidth_gbps histogram cannot reveal because
+  # it does not aggregate concurrent IO threads or account for idle gaps.
+  - name: "posix_s2h_bytes_total"
+    documentation: "Total bytes transferred from posix storage to host buffer (load path, summed per completed task)"
+  - name: "posix_h2s_bytes_total"
+    documentation: "Total bytes transferred from host buffer to posix storage (dump path, summed per completed task)"
+
+  # -- Connector layer: per-worker real throughput counters ----------------
+  # The legacy load_speed / save_speed histograms sample per-call speed
+  # (a statistical distribution), so an aggregated quantile across workers
+  # is still ~per-call speed, not a sum. Use rate(*_bytes_total) / 1e9 to
+  # get the actual GB/s the whole vLLM service is moving through UCM.
+  - name: "load_bytes_total"
+    documentation: "Total bytes loaded through the UCM connector (summed across all start_load_kv calls)"
+  - name: "save_bytes_total"
+    documentation: "Total bytes saved through the UCM connector (summed across all wait_for_save calls)"
 
 # Gauge metrics configuration
-# gauge:
-#   - name: "lookup_hit_rate"
-#     documentation: "Hit rate of ucm lookup requests since last log"
-#     multiprocess_mode: "livemostrecent"
+gauge:
+  - name: "cache_lookup_hit_rate"
+    documentation: "Instantaneous Cache stage hit rate from the most recent lookup call"
+    multiprocess_mode: "livemostrecent"
 
 # Histogram metrics configuration
 histogram:
+  # -- Legacy end-to-end connector metrics ----------------------------------
   - name: "load_requests_num"
     documentation: "Number of requests loaded from ucm"
     buckets: [1, 5, 10, 20, 50, 100, 200, 500, 1000]
@@ -48,3 +100,116 @@ histogram:
   - name: "interval_lookup_hit_rates"
     documentation: "Hit rates of ucm lookup requests"
     buckets: [0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0]
+
+  # =========================================================================
+  # Pipeline Store — per-stage metrics
+  # =========================================================================
+  # These answer: "which tier in the Cache|Posix|Ds3fs stack is the bottleneck?"
+  #
+  # -- Cache stage (in-memory buffer on top of the stack) -------------------
+  - name: "cache_lookup_duration_ms"
+    documentation: "Cache buffer lookup wall-clock time per `Lookup` / `LookupOnPrefix` call (ms)"
+    buckets: [0.01, 0.05, 0.1, 0.2, 0.5, 1, 2, 5, 10, 20, 50, 100]
+  - name: "cache_lookup_backend_duration_ms"
+    documentation: "Backend lookup wall-clock time when descending due to no buffer or buffer miss (ms)"
+    buckets: [0.05, 0.1, 0.2, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500]
+  - name: "cache_load_duration_ms"
+    documentation: "End-to-end Cache stage load task duration (ms)"
+    buckets: [0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000]
+  - name: "cache_dump_duration_ms"
+    documentation: "End-to-end Cache stage dump task duration (ms)"
+    buckets: [0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000]
+  - name: "cache_load_bandwidth_gbps"
+    documentation: "Cache stage effective load bandwidth (GB/s)"
+    buckets: [0.5, 1, 2, 4, 8, 12, 16, 24, 32, 48, 64, 96, 128, 192, 256]
+  - name: "cache_dump_bandwidth_gbps"
+    documentation: "Cache stage effective dump bandwidth (GB/s)"
+    buckets: [0.5, 1, 2, 4, 8, 12, 16, 24, 32, 48, 64, 96, 128, 192, 256]
+  - name: "cache_load_queue_wait_duration_ms"
+    documentation: "Time a Cache load task spent queued before dispatch worker pickup (ms)"
+    buckets: [0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 500]
+  - name: "cache_dump_queue_wait_duration_ms"
+    documentation: "Time a Cache dump task spent queued before dispatch worker pickup (ms)"
+    buckets: [0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 500]
+  - name: "cache_load_dispatch_duration_ms"
+    documentation: "Cache load dispatch cost: buffer allocation + backend submission (ms)"
+    buckets: [0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 500]
+  - name: "cache_shard_backend_wait_ms"
+    documentation: "Cache load per-shard time spent in WaitBackendTaskReady before H2D submit (ms). This is not a task-level duration."
+    buckets: [0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500]
+  - name: "cache_shard_h2d_ms"
+    documentation: "Cache load per-shard H2D async submit duration after backend wait (ms). This is not a task-level duration and does not include full task stream synchronization."
+    buckets: [0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500]
+  - name: "cache_dump_mkbuf_duration_ms"
+    documentation: "Cache dump mk_buf phase: prerequisite wait + buffer allocation/reuse + D2H async submit before stream sync (ms)"
+    buckets: [0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500]
+  - name: "cache_d2h_duration_ms"
+    documentation: "Cache dump D2H stream sync phase after mk_buf; excludes buffer allocation and async submit (ms)"
+    buckets: [0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500]
+  - name: "cache_dump_backend_submit_duration_ms"
+    documentation: "Cache dump backend submit duration: synchronous time to pass buffers to the lower tier (ms). Does NOT include the lower tier's actual write time."
+    buckets: [0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 500]
+
+  # -- Posix stage (disk tier) ---------------------------------------------
+  - name: "posix_load_task_duration_ms"
+    documentation: "End-to-end Posix load task duration (ms): submit to last shard finished, task-level (compare with cache_load_duration_ms)"
+    buckets: [0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000]
+  - name: "posix_dump_task_duration_ms"
+    documentation: "End-to-end Posix dump task duration (ms): submit to last shard finished, task-level (compare with cache_dump_duration_ms)"
+    buckets: [0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000]
+  # Bucket layout: typical Posix throughput sits in 1-12 GB/s, so this range
+  # is sampled densely (0.5 GB/s steps for 1-4, 1 GB/s steps for 5-12) so
+  # that p50/p90/p99 bandwidth is meaningfully resolved. Sub-1 GB/s coverage
+  # is kept for detecting degraded paths; >12 GB/s is sparse for headroom.
+  - name: "posix_s2h_bandwidth_gbps"
+    documentation: "Posix stage read bandwidth per task (GB/s) = totalBytes / task_wallclock"
+    buckets: [0.05, 0.1, 0.2, 0.5,
+              1, 1.5, 2, 2.5, 3, 3.5, 4,
+              5, 6, 7, 8, 9, 10, 11, 12,
+              14, 16, 20, 24, 32]
+  - name: "posix_h2s_bandwidth_gbps"
+    documentation: "Posix stage write bandwidth per task (GB/s) = totalBytes / task_wallclock"
+    buckets: [0.05, 0.1, 0.2, 0.5,
+              1, 1.5, 2, 2.5, 3, 3.5, 4,
+              5, 6, 7, 8, 9, 10, 11, 12,
+              14, 16, 20, 24, 32]
+  - name: "posix_load_queue_wait_duration_ms"
+    documentation: "Time a Posix load task spent queued before first worker pickup (ms)"
+    buckets: [0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 500]
+  - name: "posix_dump_queue_wait_duration_ms"
+    documentation: "Time a Posix dump task spent queued before first worker pickup (ms)"
+    buckets: [0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 500]
+
+  # =========================================================================
+  # Layerwise Connector — overlap / pipelining health
+  # =========================================================================
+  # Primary signal: layerwise_wait_blocking_ms. If p99 is near 0, overlap is
+  # perfect; if it tracks load_duration closely, loading is the bottleneck
+  # and the layerwise design is degenerating into serial execution.
+  - name: "layerwise_batch_total_ms"
+    documentation: "Layerwise batch wall-clock time from start_load_kv entry to wait_for_save return (ms)"
+    buckets: [0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000, 10000]
+  - name: "layerwise_wait_blocking_ms"
+    documentation: "Time wait_for_layer_load blocked before returning (ms). Near 0 = good overlap."
+    buckets: [0, 0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500]
+  - name: "layerwise_wait_tasks_count"
+    documentation: "Number of per-request load tasks awaited in a single layer wait"
+    buckets: [0, 1, 2, 4, 8, 16, 32, 64]
+  - name: "layerwise_inter_wait_interval_ms"
+    documentation: "Interval between consecutive wait_for_layer_load calls (~forward time) (ms)"
+    buckets: [0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500]
+  - name: "layerwise_next_layer_submit_ms"
+    documentation: "Time to submit next layer's load tasks inside wait_for_layer_load (ms)"
+    buckets: [0.01, 0.05, 0.1, 0.5, 1, 2, 5, 10, 20, 50]
+  - name: "layerwise_first_layer_submit_ms"
+    documentation: "Time to submit first layer load tasks during start_load_kv - TTFT critical (ms)"
+    buckets: [0.05, 0.1, 0.5, 1, 2, 5, 10, 20, 50, 100]
+  - name: "layerwise_first_layer_requests"
+    documentation: "Number of requests whose first-layer load was submitted in start_load_kv"
+    buckets: [0, 1, 2, 4, 8, 16, 32, 64, 128]
+  - name: "layerwise_save_submit_ms"
+    documentation: "Time to submit one layer's dump task in save_kv_layer (ms)"
+    buckets: [0.01, 0.05, 0.1, 0.5, 1, 2, 5, 10, 20, 50]
+  - name: "layerwise_save_tail_total_ms"
+    documentation: "Total wait_for_save duration - unoverlappable dump tail at end of forward (ms)"
+    buckets: [0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000]

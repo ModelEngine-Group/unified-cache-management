@@ -23,6 +23,7 @@
  * */
 #include "dump_queue.h"
 #include "logger/logger.h"
+#include "metrics_api.h"
 #include "thread/cpu_affinity.h"
 
 namespace UC::CacheStore {
@@ -82,6 +83,7 @@ void DumpQueue::DispatchOneTask(CopyStream& stream, TaskPair&& pair)
     auto& waiter = pair.second;
     auto wait = NowTime::Now() - waiter->startTp;
     UC_DEBUG("Cache task({}) start running, wait {:.3f}ms.", task->id, wait * 1e3);
+    UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("cache_dump_queue_wait_duration_ms"), wait * 1e3);
     if (!failureSet_->Contains(task->id)) {
         auto s = DumpOneTask(stream, task);
         if (s.Failure()) [[unlikely]] { failureSet_->Insert(task->id); }
@@ -121,6 +123,10 @@ Status DumpQueue::DumpOneTask(CopyStream& stream, TaskPtr task)
         dumpCtx.bufferHandles.push_back(std::move(handle));
     }
     auto tpMakeBuffer = NowTime::Now();
+    UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("cache_dump_shards_total"),
+                             static_cast<double>(nShard));
+    UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("cache_dump_backend_shards_total"),
+                             static_cast<double>(backendTaskDesc.size()));
     if (backendTaskDesc.empty()) { return Status::OK(); }
     auto s = stream.Synchronize();
     if (s.Failure()) [[unlikely]] {
@@ -140,6 +146,12 @@ Status DumpQueue::DumpOneTask(CopyStream& stream, TaskPtr task)
     UC_DEBUG("Cache task({}) mk_buf={:.3f}ms, sync={:.3f}ms, back={:.3f}ms.", task->id,
              (tpMakeBuffer - tp) * 1e3, (tpSyncStream - tpMakeBuffer) * 1e3,
              (tpEnd - tpSyncStream) * 1e3);
+    UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("cache_dump_mkbuf_duration_ms"),
+                             (tpMakeBuffer - tp) * 1e3);
+    UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("cache_d2h_duration_ms"),
+                             (tpSyncStream - tpMakeBuffer) * 1e3);
+    UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("cache_dump_backend_submit_duration_ms"),
+                             (tpEnd - tpSyncStream) * 1e3);
     return Status::OK();
 }
 

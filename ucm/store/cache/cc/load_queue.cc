@@ -23,6 +23,7 @@
  * */
 #include "load_queue.h"
 #include "logger/logger.h"
+#include "metrics_api.h"
 #include "thread/cpu_affinity.h"
 
 namespace UC::CacheStore {
@@ -84,6 +85,7 @@ void LoadQueue::DispatchOneTask(TaskPair&& pair)
     auto tp = waiter->startTp;
     auto tpWait = NowTime::Now();
     const auto nShard = task->desc.size();
+    size_t backendSubmitCount = 0;
     for (size_t i = 0; i < nShard; i++) {
         auto& shard = task->desc[i];
         ShardTask shardTask;
@@ -102,6 +104,7 @@ void LoadQueue::DispatchOneTask(TaskPair&& pair)
                 return;
             }
             shardTask.backendTaskHandle = res.Value();
+            backendSubmitCount++;
         }
         shardTask.taskHandle = task->id;
         shardTask.shard = std::move(shard);
@@ -111,6 +114,14 @@ void LoadQueue::DispatchOneTask(TaskPair&& pair)
     auto tpDispatch = NowTime::Now();
     UC_DEBUG("Cache task({}) dispatch shards({}), wait={:.3f}ms, cost={:.3f}ms.", task->id, nShard,
              (tpWait - tp) * 1e3, (tpDispatch - tpWait) * 1e3);
+    UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("cache_load_queue_wait_duration_ms"),
+                             (tpWait - tp) * 1e3);
+    UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("cache_load_dispatch_duration_ms"),
+                             (tpDispatch - tpWait) * 1e3);
+    UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("cache_load_backend_shards_total"),
+                             static_cast<double>(backendSubmitCount));
+    UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("cache_load_shards_total"),
+                             static_cast<double>(nShard));
 }
 
 void LoadQueue::TransferStage(std::promise<Status>& started)
@@ -134,14 +145,21 @@ void LoadQueue::TransferOneTask(CopyStream& stream, ShardTask&& task)
     }
     auto s = Status::OK();
     do {
+        auto tpBackendWait = NowTime::Now();
         s = WaitBackendTaskReady(task);
         if (s.Failure()) [[unlikely]] { break; }
+        auto tpBackendReady = NowTime::Now();
         s = HostToDeviceScatterAsync(stream.NextStream(), task.bufferHandle.Data(),
                                      task.shard.addrs.data());
         if (s.Failure()) [[unlikely]] {
             UC_ERROR("Failed({}) to do H2D batch async for task({}).", s, task.taskHandle);
             break;
         }
+        auto tpH2dSubmitted = NowTime::Now();
+        UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("cache_shard_backend_wait_ms"),
+                                 (tpBackendReady - tpBackendWait) * 1e3);
+        UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("cache_shard_h2d_ms"),
+                                 (tpH2dSubmitted - tpBackendReady) * 1e3);
         if (!task.waiter) {
             holder_.push_back(std::move(task));
             return;

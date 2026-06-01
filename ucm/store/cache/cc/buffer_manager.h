@@ -25,6 +25,7 @@
 #define UNIFIEDCACHE_CACHE_STORE_CC_BUFFER_MANAGER_H
 
 #include "logger/logger.h"
+#include "metrics_api.h"
 #include "time/stopwatch.h"
 #include "trans_buffer.h"
 #include "ucmstore_v1.h"
@@ -43,6 +44,8 @@ class BufferManager {
         auto res = (backend_->*LookupFunc)(blocks, num);
         if (!res) [[unlikely]] { return decltype(res)(res.Error()); }
         UC_DEBUG("Cache lookup({}) in backend costs {:.3f}ms.", num, sw.Elapsed().count() * 1e3);
+        UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("cache_lookup_backend_duration_ms"),
+                                 sw.Elapsed().count() * 1e3);
         return res;
     }
 
@@ -83,14 +86,28 @@ private:
         missBlk.reserve(num);
         missIdx.reserve(num);
         StopWatch sw;
+        size_t hitCount = 0;
         for (size_t i = 0; i < num; ++i) {
             uint8_t hit = buffer_->Exist(blocks[i], 0);
             results.push_back(hit);
-            if (hit) { continue; }
+            if (hit) {
+                hitCount++;
+                continue;
+            }
             missBlk.push_back(blocks[i]);
             missIdx.push_back(i);
         }
         UC_DEBUG("Cache lookup({}) costs {:.3f}ms.", num, sw.Elapsed().count() * 1e3);
+        UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("cache_lookup_duration_ms"),
+                                 sw.Elapsed().count() * 1e3);
+        UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("cache_lookup_hit_blocks_total"),
+                                 static_cast<double>(hitCount));
+        UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("cache_lookup_miss_blocks_total"),
+                                 static_cast<double>(num - hitCount));
+        if (num > 0) {
+            UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("cache_lookup_hit_rate"),
+                                     static_cast<double>(hitCount) / static_cast<double>(num));
+        }
     }
     Expected<std::vector<uint8_t>> LookupFast(const Detail::BlockId* blocks, size_t num)
     {
@@ -104,6 +121,8 @@ private:
         if (!res) [[unlikely]] { return res.Error(); }
         UC_DEBUG("Cache lookup({}/{}) in backend costs {:.3f}ms.", missBlk.size(), num,
                  sw.Elapsed().count() * 1e3);
+        UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("cache_lookup_backend_duration_ms"),
+                                 sw.Elapsed().count() * 1e3);
         const auto& backendVec = res.Value();
         for (size_t i = 0; i < missIdx.size(); ++i) { results[missIdx[i]] = backendVec[i]; }
         return results;
@@ -120,6 +139,8 @@ private:
         if (!res) [[unlikely]] { return res.Error(); }
         UC_DEBUG("Cache lookup({}/{}) in backend costs {:.3f}ms.", missBlk.size(), num,
                  sw.Elapsed().count() * 1e3);
+        UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("cache_lookup_backend_duration_ms"),
+                                 sw.Elapsed().count() * 1e3);
         const auto& result = res.Value();
         if (static_cast<size_t>(result + 1) == missIdx.size()) {
             return static_cast<ssize_t>(num) - 1;

@@ -1,26 +1,50 @@
 # Observability
 
-UCM (Unified Cache Management) provides detailed metrics monitoring through Prometheus endpoints, allowing in-depth monitoring of cache performance and behavior. This document describes how to enable and configure observability from the embedded vLLM `/metrics` API endpoint.
+UCM exports metrics through the vLLM `/metrics` endpoint. The metrics are
+registered from `examples/metrics/metrics_configs.yaml`, accumulated inside UCM,
+and exposed through `prometheus_client` in Prometheus multiprocess mode.
 
----
+## How Metrics Flow
 
-## Quick Start Guide
+1. `metrics_configs.yaml` defines counters, gauges, and histograms.
+2. `PrometheusStatsLogger` creates matching `prometheus_client` metrics with
+   `model_name` and `worker_id` labels.
+3. Histogram bucket boundaries are taken from the Python Prometheus histogram
+   and registered into the C++ metrics library.
+4. UCM code calls `UpdateStats()` on the hot path.
+5. The C++ metrics library records counter, gauge, and histogram bucket deltas in
+   per-thread double buffers.
+6. Every `log_interval` seconds, the observability thread calls
+   `get_all_stats_and_clear()` and applies the deltas to `prometheus_client`.
+7. vLLM exposes the resulting cumulative Prometheus series through `/metrics`.
 
-### 1) On UCM Side
+Histograms are bucketed at update time. UCM no longer stores raw histogram
+sample vectors, so there is no `histogram_max_length` setting and no histogram
+sample dropping caused by a vector length cap. The `+Inf` bucket is added
+automatically when the metric is registered.
 
-First, set the `PROMETHEUS_MULTIPROC_DIR` environment variable.
+## Quick Start
+
+### 1. Configure UCM Metrics
+
+Set the Prometheus multiprocess directory before starting vLLM:
 
 ```bash
 export PROMETHEUS_MULTIPROC_DIR=/vllm-workspace
 ```
 
-Then, you should uncomment `metrics_config_path` in ucm's config.yaml—this path specifies which metrics need to be collected.
+In the UCM config file used by vLLM, set `metrics_config_path` to the metrics
+configuration file you want to use, for example:
 
-After completing the two steps above, you can start the service to collect metrics.
+```yaml
+metrics_config_path: "/vllm-workspace/unified-cache-management/examples/metrics/metrics_configs.yaml"
+```
+
+Then start vLLM with the UCM connector:
 
 ```bash
 export CUDA_VISIBLE_DEVICES=0
-vllm serve /home/models/Qwen2.5-14B-Instruct  \
+vllm serve /home/models/Qwen2.5-14B-Instruct \
     --max-model-len 5000 \
     --tensor-parallel-size 1 \
     --gpu_memory_utilization 0.87 \
@@ -43,7 +67,7 @@ vllm serve /home/models/Qwen2.5-14B-Instruct  \
     }'
 ```
 
-You can use the `vllm bench serve` command to run benchmarks:
+Run a benchmark if you want traffic for the metrics:
 
 ```bash
 vllm bench serve \
@@ -59,46 +83,43 @@ vllm bench serve \
     --ignore-eos
 ```
 
-Once the HTTP server is running, you can access the UCM metrics at the `/metrics` endpoint.
+Check that UCM metrics are present:
 
 ```bash
-curl http://$<vllm-worker-ip>:8000/metrics | grep ucm:
+curl http://<vllm-worker-ip>:8000/metrics | grep ucm:
 ```
 
-You will also find some `.db` files in the `$PROMETHEUS_MULTIPROC_DIR` directory, which are temporary files used by Prometheus.
+Prometheus multiprocess `.db` files should also appear in
+`$PROMETHEUS_MULTIPROC_DIR`.
 
-### 2) Start Prometheus and Grafana with Docker Compose
+### 2. Start Prometheus and Grafana
 
-#### Create Docker Compose Configuration Files
-
-First, create the `docker-compose.yaml` file:
+Create `docker-compose.yaml`:
 
 ```yaml
-# docker-compose.yaml
 version: "3"
 
 services:
   prometheus:
     image: prom/prometheus:latest
     extra_hosts:
-      - "host.docker.internal:host-gateway"     
+      - "host.docker.internal:host-gateway"
     ports:
-      - "9090:9090"   
+      - "9090:9090"
     volumes:
-      - ${PWD}/prometheus.yaml:/etc/prometheus/prometheus.yml 
+      - ${PWD}/prometheus.yaml:/etc/prometheus/prometheus.yml
 
   grafana:
     image: grafana/grafana:latest
     depends_on:
       - prometheus
     ports:
-      - "3000:3000" 
+      - "3000:3000"
 ```
 
-Then, create the `prometheus.yaml` configuration file:
+Create `prometheus.yaml`:
 
 ```yaml
-# prometheus.yaml
 global:
   scrape_interval: 5s
   evaluation_interval: 30s
@@ -107,79 +128,147 @@ scrape_configs:
   - job_name: vllm
     static_configs:
       - targets:
-          - 'host.docker.internal:8000'  
+          - "host.docker.internal:8000"
 ```
 
-**Note**: Make sure the port number in `prometheus.yaml` matches the port number used when starting the vLLM service.
-
-#### Start Services
-
-Run the following command in the directory containing `docker-compose.yaml` and `prometheus.yaml`:
+Make sure the target port matches the vLLM service port. Then start the stack:
 
 ```bash
 docker compose up
 ```
 
-This will start Prometheus and Grafana services.
+### 3. Import Grafana Dashboards
 
-### 3) Configure Grafana Dashboard
+Open `http://<your-host>:3000`, add a Prometheus data source pointing to
+`http://prometheus:9090`, then import the dashboard JSONs you need:
 
-#### Access Grafana
+| File | Use case |
+|------|----------|
+| `examples/metrics/grafana_connector.json` | Connector-level activity: hit rate, request/block sizes, end-to-end load/save durations and speeds. |
+| `examples/metrics/grafana_pipeline_store.json` | Cache Store and Posix Store diagnosis: task breakdowns, queue wait, transfer duration, bandwidth, backend load ratio. |
+| `examples/metrics/grafana_layerwise.json` | `use_layerwise=true` diagnosis: `wait_for_layer_load()` blocking, inter-call interval, submit diagnostics, `wait_for_save()` tail. |
+| `examples/metrics/grafana_vllm.json` | vLLM service-side request latency, token throughput, scheduler state, and cache state. |
 
-Navigate to `http://<your-host>:3000`. Log in with the default username (`admin`) and password (`admin`). You will be prompted to change the password on first login.
+The dashboards share the `ucm` Grafana tag. After importing them, the dashboard
+header contains an "Other UCM dashboards" dropdown that links between UCM
+dashboards while preserving the time range and `model_name` value.
 
-#### Add Prometheus Data Source
+## Dashboard Job, View, and Worker Selectors
 
-1. Navigate to `http://<your-host>:3000/connections/datasources/new` and select **Prometheus**.
+Each dashboard has a `job` selector. It defaults to **All** and uses regex
+matching, so dashboards also work for metrics that do not carry a `job` label.
 
-2. On the Prometheus configuration page, add the Prometheus server URL in the **Connection** section. For this Docker Compose setup, Grafana and Prometheus run in separate containers, but Docker creates DNS names for each container. You can directly use `http://prometheus:9090`.
+The UCM dashboards also have a `View` selector and a `worker_id` selector:
 
-3. Click **Save & Test**. You should see a green checkmark showing "Successfully queried the Prometheus API."
+- **Aggregated**: default service-level view. Worker labels are collapsed.
+- **Per Worker**: split panels by `worker_id` for worker-specific diagnosis.
+- **worker_id**: defaults to **All**. Select a specific worker ID to filter all
+  UCM panels to that worker only.
 
-#### Import Dashboard
+Heatmap panels and panels grouped by another dimension may ignore the `View`
+selector because their grouping is already defined by the panel. They still use
+the `worker_id` filter.
 
-1. Navigate to `http://<your-host>:3000/dashboard/import`.
+## Metrics Configuration
 
-2. Click **Upload JSON file**, then upload the `unified-cache-management/examples/metrics/grafana.json` file.
+Metrics are configured in `examples/metrics/metrics_configs.yaml`:
 
-3. Select the Prometheus data source configured earlier.
+```yaml
+log_interval: 5
+multiproc_dir: "/vllm-workspace"
+metric_prefix: "ucm:"
 
-4. Click **Import** to complete the import.
+counter:
+  - name: "cache_load_bytes_total"
+    documentation: "Total bytes loaded through the Cache stage"
 
-You should now be able to see the UCM monitoring dashboard with real-time visualization of all 9 metrics.
+gauge:
+  - name: "cache_lookup_hit_rate"
+    documentation: "Instantaneous Cache stage hit rate from the most recent lookup call"
+    multiprocess_mode: "livemostrecent"
+
+histogram:
+  - name: "cache_load_duration_ms"
+    documentation: "End-to-end Cache stage load task duration (ms)"
+    buckets: [0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000]
+```
+
+Metric names are exported with the configured prefix. For example,
+`cache_load_duration_ms` becomes `ucm:cache_load_duration_ms`. Prometheus also
+exports histogram helper series such as `_bucket`, `_sum`, and `_count`.
+
+Counter values are increments. Gauge values replace the current value.
+Histogram values are observations that are immediately assigned to configured
+buckets in the C++ metrics library.
 
 ## Available Metrics
 
-UCM exposes various metrics to monitor its performance. The following table lists all available metrics organized by category:
+The default metrics configuration contains the following UCM metrics.
 
-| Metric Name | Type | Description |
-|------------|------|-------------|
-| **Load Operation Metrics** | | |
-| `ucm:load_requests_num` | Histogram | Number of requests loaded per `start_load_kv` call |
-| `ucm:load_blocks_num` | Histogram | Number of blocks loaded per `start_load_kv` call |
-| `ucm:load_duration` | Histogram | Time to load KV cache from UCM (milliseconds) |
-| `ucm:load_speed` | Histogram | Speed of loading from UCM (GB/s) |
-| **Save Operation Metrics** | | |
-| `ucm:save_requests_num` | Histogram | Number of requests saved per `wait_for_save` call |
-| `ucm:save_blocks_num` | Histogram | Number of blocks saved per `wait_for_save` call |
-| `ucm:save_duration` | Histogram | Time to save to UCM (milliseconds) |
-| `ucm:save_speed` | Histogram | Speed of saving to UCM (GB/s) |
-| **Lookup Hit Rate Metrics** | | |
-| `ucm:interval_lookup_hit_rates` | Histogram | Hit rate of UCM lookup requests |
+### Counters
 
-## Prometheus Configuration
+| Metric | Description |
+|--------|-------------|
+| `ucm:cache_lookup_hit_blocks_total` | Number of lookup hits served by the Cache stage. |
+| `ucm:cache_lookup_miss_blocks_total` | Number of lookup misses at the Cache stage. |
+| `ucm:cache_load_blocks_total` | Total blocks loaded by the Cache stage. |
+| `ucm:cache_dump_blocks_total` | Total blocks dumped by the Cache stage. |
+| `ucm:cache_load_shards_total` | Total shards dispatched by Cache load. |
+| `ucm:cache_load_backend_shards_total` | Shards that descended to the backend on load. |
+| `ucm:cache_dump_shards_total` | Total shards dispatched by Cache dump. |
+| `ucm:cache_dump_backend_shards_total` | Shards actually pushed to backend on dump. |
+| `ucm:cache_load_bytes_total` | Total bytes loaded through the Cache stage. |
+| `ucm:cache_dump_bytes_total` | Total bytes dumped through the Cache stage. |
+| `ucm:posix_s2h_bytes_total` | Total bytes transferred from Posix storage to host buffer. |
+| `ucm:posix_h2s_bytes_total` | Total bytes transferred from host buffer to Posix storage. |
+| `ucm:load_bytes_total` | Total bytes loaded through the UCM connector. |
+| `ucm:save_bytes_total` | Total bytes saved through the UCM connector. |
 
-Metrics configuration is defined in the `unified-cache-management/examples/metrics/metrics_configs.yaml` file:
+### Gauges
 
-```yaml
-log_interval: 5  # Interval in seconds for logging metrics
+| Metric | Description |
+|--------|-------------|
+| `ucm:cache_lookup_hit_rate` | Instantaneous Cache stage hit rate from the most recent lookup call. |
 
-multiproc_dir: "/vllm-workspace"  # Prometheus directory
-metric_prefix: "ucm:"  # Metric name prefix
+### Histograms
 
-histograms:
-  - name: "load_requests_num"
-    documentation: "Number of requests loaded from ucm"
-    buckets: [1, 5, 10, 20, 50, 100, 200, 500, 1000]
-  # ... other metric configurations
-```
+| Metric | Description |
+|--------|-------------|
+| `ucm:load_requests_num` | Number of requests loaded from UCM. |
+| `ucm:load_blocks_num` | Number of blocks loaded from UCM. |
+| `ucm:load_duration` | Time to load from UCM in milliseconds. |
+| `ucm:load_speed` | Speed of loading from UCM in GB/s. |
+| `ucm:save_requests_num` | Number of requests saved to UCM. |
+| `ucm:save_blocks_num` | Number of blocks saved to UCM. |
+| `ucm:save_duration` | Time to save to UCM in milliseconds. |
+| `ucm:save_speed` | Speed of saving to UCM in GB/s. |
+| `ucm:interval_lookup_hit_rates` | Hit rates of UCM lookup requests. |
+| `ucm:cache_lookup_duration_ms` | Cache buffer lookup wall-clock time. |
+| `ucm:cache_lookup_backend_duration_ms` | Backend lookup wall-clock time when descending due to no buffer or buffer miss. |
+| `ucm:cache_load_duration_ms` | End-to-end Cache stage load task duration in milliseconds. |
+| `ucm:cache_dump_duration_ms` | End-to-end Cache stage dump task duration in milliseconds. |
+| `ucm:cache_load_bandwidth_gbps` | Cache stage effective load bandwidth in GB/s. |
+| `ucm:cache_dump_bandwidth_gbps` | Cache stage effective dump bandwidth in GB/s. |
+| `ucm:cache_load_queue_wait_duration_ms` | Time a Cache load task spent queued before dispatch worker pickup. |
+| `ucm:cache_dump_queue_wait_duration_ms` | Time a Cache dump task spent queued before dispatch worker pickup. |
+| `ucm:cache_load_dispatch_duration_ms` | Cache load dispatch cost: buffer allocation plus backend submission. |
+| `ucm:cache_shard_backend_wait_ms` | Cache load per-shard `WaitBackendTaskReady()` duration. |
+| `ucm:cache_shard_h2d_ms` | Cache load per-shard H2D async submit duration. |
+| `ucm:cache_dump_mkbuf_duration_ms` | Cache dump mk_buf phase duration. |
+| `ucm:cache_d2h_duration_ms` | Cache dump D2H stream sync phase duration. |
+| `ucm:cache_dump_backend_submit_duration_ms` | Cache dump synchronous backend submit duration. |
+| `ucm:posix_load_task_duration_ms` | End-to-end Posix load task duration. |
+| `ucm:posix_dump_task_duration_ms` | End-to-end Posix dump task duration. |
+| `ucm:posix_s2h_bandwidth_gbps` | Posix stage read bandwidth per task in GB/s. |
+| `ucm:posix_h2s_bandwidth_gbps` | Posix stage write bandwidth per task in GB/s. |
+| `ucm:posix_load_queue_wait_duration_ms` | Time a Posix load task spent queued before first worker pickup. |
+| `ucm:posix_dump_queue_wait_duration_ms` | Time a Posix dump task spent queued before first worker pickup. |
+| `ucm:layerwise_batch_total_ms` | Layerwise batch wall-clock time from `start_load_kv()` entry to `wait_for_save()` return. |
+| `ucm:layerwise_wait_blocking_ms` | Time `wait_for_layer_load()` blocked before returning. |
+| `ucm:layerwise_wait_tasks_count` | Number of per-request load tasks awaited in a single layer wait. |
+| `ucm:layerwise_inter_wait_interval_ms` | Interval between consecutive `wait_for_layer_load()` calls. |
+| `ucm:layerwise_next_layer_submit_ms` | Time to submit next layer's load tasks inside `wait_for_layer_load()`. |
+| `ucm:layerwise_first_layer_submit_ms` | Time to submit first layer load tasks during `start_load_kv`. |
+| `ucm:layerwise_first_layer_requests` | Number of requests whose first-layer load was submitted in `start_load_kv`. |
+| `ucm:layerwise_save_submit_ms` | Time to submit one layer's dump task in `save_kv_layer()`. |
+| `ucm:layerwise_save_tail_total_ms` | Total `wait_for_save()` duration. |

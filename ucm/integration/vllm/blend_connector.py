@@ -380,11 +380,10 @@ class UCMBlendConnector(UCMDirectConnector):
             f"first chunk prefix hit: {pc_hit_blocks}, "
             f"chunks cache total hit: {chunk_hit_blocks}, "
         )
-        if self.metrics_config:
-            self.monitor.update_stats(
-                "ConnStats",
-                {"interval_lookup_hit_rates": chunk_hit_blocks / max_blk_num},
-            )
+        self.monitor.update_stats(
+            "ConnStats",
+            {"interval_lookup_hit_rates": chunk_hit_blocks / max_blk_num},
+        )
 
         pc_hit_tokens = pc_hit_blocks * self.block_size
 
