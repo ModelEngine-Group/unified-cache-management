@@ -23,6 +23,7 @@
  * */
 #include "asu_client_impl.h"
 #include <algorithm>
+#include <cctype>
 #include <chrono>
 #include <functional>
 #include <limits>
@@ -47,6 +48,114 @@ std::vector<UC::KV::CacheKey> ExtractEntryKeys(const std::vector<KVBuffer>& entr
     keys.reserve(entries.size());
     for (const auto& entry : entries) { keys.emplace_back(entry.key); }
     return keys;
+}
+
+std::string NormalizeAttrValue(std::string value)
+{
+    std::replace(value.begin(), value.end(), '-', '_');
+    std::transform(value.begin(), value.end(), value.begin(),
+                   [](unsigned char ch) { return static_cast<char>(std::toupper(ch)); });
+    return value;
+}
+
+bool GetAttr(const std::unordered_map<std::string, std::string>& attrs, const std::string& key,
+             std::string& value)
+{
+    auto iter = attrs.find(key);
+    if (iter == attrs.end()) { return false; }
+    value = iter->second;
+    return true;
+}
+
+Status GetUint64Attr(const std::unordered_map<std::string, std::string>& attrs,
+                     const std::string& key, std::uint64_t& value)
+{
+    std::string text;
+    if (!GetAttr(attrs, key, text)) { return Status::OK(); }
+
+    try {
+        std::size_t parsed{0};
+        const auto parsedValue = std::stoull(text, &parsed, 0);
+        if (parsed != text.size()) {
+            return Status::Error(StatusCode::INVALID_ARGUMENT,
+                                 "invalid router config " + key + "=" + text);
+        }
+        value = parsedValue;
+        return Status::OK();
+    } catch (const std::exception&) {
+        return Status::Error(StatusCode::INVALID_ARGUMENT,
+                             "invalid router config " + key + "=" + text);
+    }
+}
+
+Status GetBoolAttr(const std::unordered_map<std::string, std::string>& attrs,
+                   const std::string& key, bool& value)
+{
+    std::string text;
+    if (!GetAttr(attrs, key, text)) { return Status::OK(); }
+
+    const auto normalized = NormalizeAttrValue(text);
+    if (normalized == "1" || normalized == "TRUE" || normalized == "ON" || normalized == "YES") {
+        value = true;
+        return Status::OK();
+    }
+    if (normalized == "0" || normalized == "FALSE" || normalized == "OFF" || normalized == "NO") {
+        value = false;
+        return Status::OK();
+    }
+    return Status::Error(StatusCode::INVALID_ARGUMENT, "invalid router config " + key + "=" + text);
+}
+
+UC::KV::HashTableType ParseHashTableType(const std::string& value, UC::KV::HashTableType fallback)
+{
+    const auto type = NormalizeAttrValue(value);
+    if (type == "RING_HASH" || type == "RING_HASH_FULL_SPREAD") {
+        return UC::KV::HashTableType::RING_HASH_FULL_SPREAD;
+    }
+    if (type == "MAGLEV" || type == "MAGLEV_FULL_SPREAD") {
+        return UC::KV::HashTableType::MAGLEV_FULL_SPREAD;
+    }
+    if (type == "CONTIGUOUS_BLOCK_AFFINITY") {
+        return UC::KV::HashTableType::CONTIGUOUS_BLOCK_AFFINITY;
+    }
+    if (type == "BATCH_TOPK_AFFINITY") { return UC::KV::HashTableType::BATCH_TOPK_AFFINITY; }
+    return fallback;
+}
+
+Status BuildHashTableConfig(const std::unordered_map<std::string, std::string>& attrs,
+                            UC::KV::HashTableConfig& config)
+{
+    config = UC::KV::HashTableConfig{};
+
+    std::string type;
+    if (GetAttr(attrs, "hash_table.type", type)) {
+        config.type = ParseHashTableType(type, config.type);
+    }
+
+    auto status =
+        GetUint64Attr(attrs, "ring_hash.virtual_node_count", config.ringHash.virtualNodeCount);
+    if (!status.ok()) { return status; }
+    status = GetUint64Attr(attrs, "maglev.table_size", config.maglev.tableSize);
+    if (!status.ok()) { return status; }
+    status = GetUint64Attr(attrs, "contiguous_block_affinity.block_count",
+                           config.contiguousBlockAffinity.blockCount);
+    if (!status.ok()) { return status; }
+    status = GetUint64Attr(attrs, "batch_topk_affinity.top_k", config.batchTopKAffinity.topK);
+    if (!status.ok()) { return status; }
+
+    std::string fullSpreadType;
+    if (GetAttr(attrs, "contiguous_block_affinity.full_spread_type", fullSpreadType)) {
+        config.contiguousBlockAffinity.fullSpreadType =
+            ParseHashTableType(fullSpreadType, config.contiguousBlockAffinity.fullSpreadType);
+    }
+
+    status = GetBoolAttr(attrs, "contiguous_block_affinity.dynamic_adjust_enabled",
+                         config.contiguousBlockAffinity.dynamicAdjustEnabled);
+    if (!status.ok()) { return status; }
+    status = GetBoolAttr(attrs, "batch_topk_affinity.dynamic_adjust_enabled",
+                         config.batchTopKAffinity.dynamicAdjustEnabled);
+    if (!status.ok()) { return status; }
+    return Status::OK();
 }
 
 AsuClientImpl::AsuClientImpl(TransportFactory transportFactory, ViewServerFactory viewServerFactory)
@@ -745,9 +854,12 @@ Status AsuClientImpl::BuildSnapshot(const GlobalView& view,
         nextSnapshot->transports.emplace(asuId, std::move(transport));
     }
 
+    UC::KV::HashTableConfig hashTableConfig;
+    auto status = BuildHashTableConfig(config_.attrs, hashTableConfig);
+    if (!status.ok()) { return status; }
+
     std::vector<UC::KV::NodeId> nodeIds(asuIds.begin(), asuIds.end());
-    nextSnapshot->router =
-        UC::KV::CreateRouter(nodeIds, UC::KV::HashFunction{}, UC::KV::HashTableConfig{});
+    nextSnapshot->router = UC::KV::CreateRouter(nodeIds, UC::KV::HashFunction{}, hashTableConfig);
     nextSnapshot->asuIds = std::move(asuIds);
     snapshot = std::move(nextSnapshot);
     return Status::OK();

@@ -509,6 +509,34 @@ TEST(AsuClientImplTest, Lifecycle_PublicInitLoadsClientConfigFile)
     }
 }
 
+TEST(AsuClientImplTest, Routing_UsesHashTableConfigFromClientConfigAttrs)
+{
+    auto state = std::make_shared<TestState>();
+    auto config = MakeConfig({10, 20});
+    config.attrs["hash_table.type"] = "CONTIGUOUS_BLOCK_AFFINITY";
+    config.attrs["contiguous_block_affinity.block_count"] = "2";
+    config.attrs["contiguous_block_affinity.full_spread_type"] = "RING_HASH";
+
+    auto keyForAsu10 = FindKeyForAsu({10, 20}, 10);
+    auto keyForAsu20 = FindKeyForAsu({10, 20}, 20);
+    ASSERT_FALSE(keyForAsu10.empty());
+    ASSERT_FALSE(keyForAsu20.empty());
+
+    auto client = CreateAsuClient(MakeFactory(state));
+    ASSERT_TRUE(client->Init(config).ok());
+
+    TaskId taskId = kInvalidTaskId;
+    auto status = client->StoreAsync(
+        {
+            KVBuffer{keyForAsu10, {}},
+            KVBuffer{keyForAsu20, {}}
+    },
+        taskId);
+
+    ASSERT_TRUE(status.ok()) << status.message;
+    EXPECT_EQ(state->storeCalls, std::vector<AsuId>({10}));
+}
+
 TEST(AsuClientImplTest, ViewServer_InitFailsWhenViewReferencesMissingTransportConfig)
 {
     auto state = std::make_shared<TestState>();

@@ -71,6 +71,9 @@ Status LoadAsuClientConfig(const std::string& configPath, AsuClientConfig& confi
             config.clientId = value;
         } else if (key == "viewServiceAddrs" || key == "view_service_addrs") {
             config.viewServiceAddrs = SplitConfigValue(value, ',');
+        } else if (key == "view.config_path" || key == "viewConfigPath" ||
+                   key == "view_config_path") {
+            config.attrs["view.config_path"] = value;
         } else if (key == "defaultWaitTimeoutMs" || key == "default_wait_timeout_ms") {
             config.defaultWaitTimeoutMs = ParseConfigUint64(value);
         } else if (key == "hashTable.type" || key == "hash_table.type") {
@@ -91,6 +94,21 @@ Status LoadAsuClientConfig(const std::string& configPath, AsuClientConfig& confi
             config.attrs["ring_hash.virtual_node_count"] = value;
         } else if (key == "hashTable.maglev.tableSize" || key == "maglev.table_size") {
             config.attrs["maglev.table_size"] = value;
+        } else if (key == "hashTable.contiguousBlockAffinity.blockCount" ||
+                   key == "contiguous_block_affinity.block_count") {
+            config.attrs["contiguous_block_affinity.block_count"] = value;
+        } else if (key == "hashTable.contiguousBlockAffinity.fullSpreadType" ||
+                   key == "contiguous_block_affinity.full_spread_type") {
+            config.attrs["contiguous_block_affinity.full_spread_type"] = value;
+        } else if (key == "hashTable.contiguousBlockAffinity.dynamicAdjustEnabled" ||
+                   key == "contiguous_block_affinity.dynamic_adjust_enabled") {
+            config.attrs["contiguous_block_affinity.dynamic_adjust_enabled"] = value;
+        } else if (key == "hashTable.batchTopKAffinity.topK" ||
+                   key == "batch_topk_affinity.top_k") {
+            config.attrs["batch_topk_affinity.top_k"] = value;
+        } else if (key == "hashTable.batchTopKAffinity.dynamicAdjustEnabled" ||
+                   key == "batch_topk_affinity.dynamic_adjust_enabled") {
+            config.attrs["batch_topk_affinity.dynamic_adjust_enabled"] = value;
         } else if (key == "transport.asuIds" || key == "asuIds" || key == "asu_ids") {
             for (const auto& asuIdText : SplitConfigValue(value, ',')) {
                 TransportConfig transportConfig;

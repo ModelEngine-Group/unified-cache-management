@@ -161,6 +161,10 @@ bool ViewServer::ShouldRefreshView(const TaskResult& result) const
 
 std::shared_ptr<ViewServer> CreateDefaultViewServer(const AsuClientConfig& config)
 {
+    auto viewConfigPath = config.attrs.find("view.config_path");
+    if (viewConfigPath != config.attrs.end() && !viewConfigPath->second.empty()) {
+        return std::make_shared<ConfigFileViewServer>(viewConfigPath->second);
+    }
     if (config.viewServiceAddrs.empty()) {
         return std::make_shared<ConfigBackedViewServer>(BuildConfigGlobalView(config));
     }
