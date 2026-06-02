@@ -40,7 +40,7 @@ TransportConfig MakeTransportConfig()
 void WaitAndVerifyOK(AsuTransport& transport, TaskId task_id, std::size_t entry_count)
 {
     TaskResult result;
-    auto s = transport.StubWait(task_id, 5000, result);
+    auto s = transport.Wait(task_id, 5000, result);
     ASSERT_TRUE(s.ok()) << s.message;
     ASSERT_TRUE(result.status.ok()) << result.status.message;
     ASSERT_EQ(result.entryStatus.size(), entry_count);
@@ -62,6 +62,22 @@ TEST(ConnectionTransportTest, InitShutdown_Lifecycle)
     s = transport->CheckHealth();
     EXPECT_TRUE(s.ok());
 
+    s = transport->Shutdown();
+    ASSERT_TRUE(s.ok()) << s.message;
+}
+
+TEST(ConnectionTransportTest, ShutdownThenInitAgain)
+{
+    auto transport = CreateAsuTransport();
+    auto config = MakeTransportConfig();
+
+    auto s = transport->Init(config);
+    ASSERT_TRUE(s.ok()) << s.message;
+    s = transport->Shutdown();
+    ASSERT_TRUE(s.ok()) << s.message;
+
+    s = transport->Init(config);
+    ASSERT_TRUE(s.ok()) << s.message;
     s = transport->Shutdown();
     ASSERT_TRUE(s.ok()) << s.message;
 }
@@ -98,7 +114,7 @@ TEST(ConnectionTransportTest, QueryAsyncAndWait_CompletesOK)
     ASSERT_NE(task_id, kInvalidTaskId);
 
     TaskResult result;
-    s = transport->StubWait(task_id, 5000, result);
+    s = transport->Wait(task_id, 5000, result);
     ASSERT_TRUE(s.ok()) << s.message;
     ASSERT_TRUE(result.status.ok()) << result.status.message;
     ASSERT_TRUE(result.queryResult.has_value());
@@ -119,19 +135,19 @@ TEST(ConnectionTransportTest, Check_InProgressThenDone)
     ASSERT_TRUE(transport->LoadAsync(entries, task_id).ok());
 
     TaskResult check_result;
-    auto s = transport->StubCheck(task_id, check_result);
+    auto s = transport->Check(task_id, check_result);
     ASSERT_TRUE(s.ok());
     if (check_result.status.code == StatusCode::IN_PROGRESS) {
-        s = transport->StubWait(task_id, 5000, check_result);
+        s = transport->Wait(task_id, 5000, check_result);
         ASSERT_TRUE(s.ok());
         ASSERT_TRUE(check_result.status.ok());
     } else {
         ASSERT_TRUE(check_result.status.ok());
-        s = transport->StubWait(task_id, 5000, check_result);
+        s = transport->Wait(task_id, 5000, check_result);
         ASSERT_TRUE(s.ok());
     }
 
-    s = transport->StubCheck(task_id, check_result);
+    s = transport->Check(task_id, check_result);
     EXPECT_EQ(s.code, StatusCode::TASK_NOT_FOUND);
 
     transport->Shutdown();
@@ -144,7 +160,7 @@ TEST(ConnectionTransportTest, Wait_TaskNotFound)
     ASSERT_TRUE(transport->Init(MakeTransportConfig()).ok());
 
     TaskResult result;
-    auto s = transport->StubWait(9999, 100, result);
+    auto s = transport->Wait(9999, 100, result);
     EXPECT_EQ(s.code, StatusCode::TASK_NOT_FOUND);
 
     transport->Shutdown();

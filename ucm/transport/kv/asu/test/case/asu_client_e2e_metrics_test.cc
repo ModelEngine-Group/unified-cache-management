@@ -451,13 +451,6 @@ public:
         return Check(taskId, result);
     }
 
-    Status StubCheck(TaskId taskId, TaskResult& result) override { return Check(taskId, result); }
-
-    Status StubWait(TaskId taskId, std::uint64_t timeoutMs, TaskResult& result) override
-    {
-        return Wait(taskId, timeoutMs, result);
-    }
-
     Status RegisterRegions(const std::vector<MemoryRegion>& regions,
                            std::vector<RegisterResult>& results) override
     {

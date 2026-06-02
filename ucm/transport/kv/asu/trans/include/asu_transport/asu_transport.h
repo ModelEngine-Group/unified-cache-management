@@ -95,13 +95,6 @@ public:
     virtual Status Check(TaskId taskId, TaskResult& result) = 0;
     virtual Status Wait(TaskId taskId, std::uint64_t timeoutMs, TaskResult& result) = 0;
 
-    virtual Status StubCheck(
-        TaskId task_id,
-        TaskResult& result) = 0;  // Stub for testing, remove after real implementation
-    virtual Status StubWait(
-        TaskId task_id, std::uint64_t timeout_ms,
-        TaskResult& result) = 0;  // Stub for testing, remove after real implementation
-
     virtual Status RegisterRegions(const std::vector<MemoryRegion>& regions,
                                    std::vector<RegisterResult>& results) = 0;
 

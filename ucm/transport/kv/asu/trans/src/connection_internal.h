@@ -30,7 +30,6 @@
 #include "asu_transport/asu_transport.h"
 #include "asu_transport/types.h"
 #include "connection_manager.h"
-#include "transport_task_manager.h"
 
 namespace UC::ASU {
 
@@ -58,7 +57,6 @@ public:
     void SetState(ChannelState s) { state.store(s, std::memory_order_release); }
     void SetInflightCount(std::uint32_t c) { inflightCount.store(c, std::memory_order_release); }
 
-    Status StubSend(TransportTaskContext* ctx);
     void IncrementInflight();
     void ReleaseInflight();
     bool BeginDrain();

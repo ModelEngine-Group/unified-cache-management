@@ -57,12 +57,12 @@ public:
         std::function<std::vector<Status>(const std::vector<ConnectionHandle>&)>;
 
     void SetConnectionOps(CreateConnectionFunc create_fn, DeleteConnectionsFunc delete_fn);
+    void PrepareForInit();
 
     Status AddGroup(const AsuEndpoint& endpoint, std::uint32_t qp_num);
     Status Shutdown();
 
-    ConnectionChannel*
-    SelectConnection();  // the current implementation does not support concurrent calls
+    ConnectionChannel* SelectConnection();
     void SetRoutingPolicy(RoutingPolicy policy);
     void ReportFailure(ConnectionChannel* channel);
 
@@ -75,9 +75,9 @@ private:
     std::vector<std::unique_ptr<ConnectionGroup>> groups_;
     std::shared_mutex structureMu_;  // shared_mutex allows concurrent reads
 
-    // Flat cache for fast channel selection (rebuilt on structure change)
-    // Only accessed by Worker thread — no lock needed
+    // Flat cache for fast channel selection, rebuilt on structure changes.
     std::vector<ConnectionChannel*> channelCache_;
+    std::mutex channelCacheMu_;
     std::atomic<bool> cacheDirty_{false};
 
     std::atomic<bool> shuttingDown_{false};

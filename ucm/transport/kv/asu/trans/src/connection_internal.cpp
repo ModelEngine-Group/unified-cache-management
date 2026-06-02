@@ -53,21 +53,20 @@ std::uint32_t ConnectionChannel::FetchAddErrorCount(std::uint32_t val)
     return errorCount.fetch_add(val, std::memory_order_relaxed);
 }
 
-Status ConnectionChannel::StubSend(TransportTaskContext* ctx)
-{
-    UC_DEBUG("ConnectionChannel::StubSend ch_id={} state={}", channelId,
-             static_cast<int>(state.load(std::memory_order_acquire)));
-    ctx->flagbufferStatus.store(1, std::memory_order_release);
-    UC_DEBUG("ConnectionChannel::StubSend ch_id={} stub: flagbuffer->1, notify_all", channelId);
-    return Status::OK();
-}
-
 void ConnectionChannel::IncrementInflight()
 {
     inflightCount.fetch_add(1, std::memory_order_acq_rel);
 }
 
-void ConnectionChannel::ReleaseInflight() { inflightCount.fetch_sub(1, std::memory_order_acq_rel); }
+void ConnectionChannel::ReleaseInflight()
+{
+    auto current = inflightCount.load(std::memory_order_acquire);
+    while (current > 0) {
+        if (inflightCount.compare_exchange_weak(current, current - 1, std::memory_order_acq_rel)) {
+            return;
+        }
+    }
+}
 
 bool ConnectionChannel::BeginDrain()
 {
