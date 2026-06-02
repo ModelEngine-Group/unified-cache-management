@@ -23,9 +23,11 @@
  * */
 #include "detail/ffts_engine.h"
 #include <algorithm>
+#include <cstddef>
 #include <cstring>
 #include <limits>
 #include <sstream>
+#include <type_traits>
 
 namespace UC::Transport::Ffts {
 // Visible within the current .cpp file
@@ -70,8 +72,17 @@ void FillSdmaContext(rtFftsPlusComCtx_t& storage, const CopyDesc& copy)
 {
     static_assert(sizeof(rtFftsPlusSdmaCtx_t) <= sizeof(rtFftsPlusComCtx_t),
                   "FFTS SDMA context must fit in common context storage");
+    static_assert(alignof(rtFftsPlusSdmaCtx_t) <= alignof(rtFftsPlusComCtx_t),
+                  "FFTS SDMA context alignment must fit common context storage");
+    static_assert(offsetof(rtFftsPlusComCtx_t, contextType) == offsetof(rtFftsPlusSdmaCtx_t, contextType),
+                  "FFTS common and SDMA context tags must have the same offset");
+    static_assert(std::is_same_v<decltype(rtFftsPlusComCtx_t{}.contextType),
+                                 decltype(rtFftsPlusSdmaCtx_t{}.contextType)>,
+                  "FFTS common and SDMA context tags must have the same type");
     std::memset(&storage, 0, sizeof(storage));
 
+    // Ascend FFTS Plus defines rtFftsPlusComCtx_t as fixed-size storage for
+    // tagged concrete contexts. The checks above pin the storage and tag ABI.
     auto& ctx = *reinterpret_cast<rtFftsPlusSdmaCtx_t*>(&storage);
     ctx.contextType = RT_CTX_TYPE_SDMA;
     ctx.threadDim = 1;
