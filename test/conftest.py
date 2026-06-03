@@ -245,12 +245,10 @@ def setup_gpu_resource(request):
         yield
         return
 
-    if os.getenv("UCM_E2E_ACCELERATOR", "").lower() == "ascend":
-        if not os.getenv("ASCEND_RT_VISIBLE_DEVICES"):
-            device_count = int(gpu_count_marker.args[0]) if gpu_count_marker else 1
-            os.environ["ASCEND_RT_VISIBLE_DEVICES"] = ",".join(
-                str(i) for i in range(device_count)
-            )
+    platform_marker = request.node.get_closest_marker("platform")
+    if platform_marker and any(
+        str(arg).lower() in ("npu", "ascend") for arg in platform_marker.args
+    ):
         yield
         return
 

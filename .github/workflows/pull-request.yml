@@ -204,20 +204,6 @@ jobs:
     permissions:
       checks: write
       pull-requests: write
-    env:
-      http_proxy: http://127.0.0.1:7890
-      https_proxy: http://127.0.0.1:7890
-      no_proxy: localhost,127.0.0.1,::1,repo.huaweicloud.com
-      GIT_HTTP_LOW_SPEED_LIMIT: "0"
-      GIT_HTTP_LOW_SPEED_TIME: "999999"
-      ASCEND_RT_VISIBLE_DEVICES: "0"
-      E2E_TEST_GPU_MEMORY_UTILIZATION: "0.2"
-      E2E_TEST_VLLM_ADDITIONAL_ARGS: "--enforce-eager"
-      UCM_E2E_CACHE_BUFFER_CAPACITY_GB: "2"
-      UCM_E2E_CONNECTOR_NAMES: UcmPipelineStore
-      UCM_E2E_USE_LAYERWISE_VALUES: "true"
-      UCM_E2E_ACCELERATOR: ascend
-      UCM_E2E_MODEL_NAME: Qwen3-0.6B
     steps:
       - name: Clean repo
         run: |
@@ -311,17 +297,9 @@ jobs:
             -e http_proxy="${http_proxy:-}" \
             -e https_proxy="${https_proxy:-}" \
             -e no_proxy="${no_proxy:-}" \
-            -e ASCEND_RT_VISIBLE_DEVICES="${ASCEND_RT_VISIBLE_DEVICES}" \
-            -e E2E_TEST_GPU_MEMORY_UTILIZATION="${E2E_TEST_GPU_MEMORY_UTILIZATION}" \
-            -e E2E_TEST_VLLM_ADDITIONAL_ARGS="${E2E_TEST_VLLM_ADDITIONAL_ARGS}" \
-            -e UCM_E2E_CACHE_BUFFER_CAPACITY_GB="${UCM_E2E_CACHE_BUFFER_CAPACITY_GB}" \
-            -e UCM_E2E_CONNECTOR_NAMES="${UCM_E2E_CONNECTOR_NAMES}" \
-            -e UCM_E2E_USE_LAYERWISE_VALUES="${UCM_E2E_USE_LAYERWISE_VALUES}" \
-            -e UCM_E2E_ACCELERATOR="${UCM_E2E_ACCELERATOR}" \
-            -e UCM_E2E_MODEL_NAME="${UCM_E2E_MODEL_NAME}" \
             --entrypoint /bin/bash \
             ucm-e2etest-pc-a2:${{ steps.version.outputs.version }} \
-            -lc "mkdir -p /workspace/test_results && cd /workspace/unified-cache-management/test && pip install -r requirements.txt && python3 -m pytest -x --stage=1 --feature=online_inference -k 'test_online_accuracy_hbm_ssd_mixed and not pp and not tp' --junitxml=/workspace/test_results/${RESULT_FILE}"
+            -lc "mkdir -p /workspace/test_results && cd /workspace/unified-cache-management/test && pip install -r requirements.txt && python3 -m pytest -x --stage=1 --feature=online_inference --platform=npu -k 'test_online_accuracy_hbm_ssd_mixed_a2_pc' --junitxml=/workspace/test_results/${RESULT_FILE}"
           TEST_RC=$?
           ${SUDO} docker cp "${CONTAINER_NAME}:/workspace/test_results/${RESULT_FILE}" "${RESULT_DIR}/${RESULT_FILE}" >/dev/null 2>&1 || true
           ${SUDO} docker rm -f "${CONTAINER_NAME}" >/dev/null 2>&1 || true
