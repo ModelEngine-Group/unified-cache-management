@@ -259,7 +259,7 @@ jobs:
             SUDO="sudo"
           fi
           cd ${{ github.workspace }}
-          ${SUDO} docker build --network=host \
+          ${SUDO} docker build \
             --build-arg http_proxy="${http_proxy:-}" \
             --build-arg https_proxy="${https_proxy:-}" \
             --build-arg no_proxy="repo.huaweicloud.com,${no_proxy:-}" \
