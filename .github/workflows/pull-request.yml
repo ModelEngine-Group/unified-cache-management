@@ -199,7 +199,7 @@ jobs:
 
   test-e2e-pc-a2:
     timeout-minutes: 20
-    runs-on: [self-hosted, npu, ubuntu-24.04-arm]
+    runs-on: [self-hosted, npu, a2]
     needs: lint-and-unit-tests
     permissions:
       checks: write
