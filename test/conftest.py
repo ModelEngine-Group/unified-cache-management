@@ -242,12 +242,19 @@ def setup_gpu_resource(request):
     gpu_count_marker = request.node.get_closest_marker("gpu_count")
 
     if not gpu_mem_marker and not gpu_count_marker:
-        # No GPU markers, skip GPU resource setup
+        yield
+        return
+
+    if os.getenv("UCM_E2E_ACCELERATOR", "").lower() == "ascend":
+        if not os.getenv("ASCEND_RT_VISIBLE_DEVICES"):
+            device_count = int(gpu_count_marker.args[0]) if gpu_count_marker else 1
+            os.environ["ASCEND_RT_VISIBLE_DEVICES"] = ",".join(
+                str(i) for i in range(device_count)
+            )
         yield
         return
 
     if gpu_count_marker:
-        # Handle gpu_count marker - allocate multiple GPUs
         gpu_count = gpu_count_marker.args[0]
         mem_needed = gpu_mem_marker.args[0] if gpu_mem_marker else 0
         allocated_gpus = []
@@ -279,7 +286,6 @@ def setup_gpu_resource(request):
                 fcntl.flock(lock_file, fcntl.LOCK_UN)
                 lock_file.close()
     else:
-        # Handle gpu_mem marker - allocate single GPU with memory requirement
         mem_needed = gpu_mem_marker.args[0]
         gpu_id, free_in_mb, gpu_utilization, lock_file = get_free_gpu(mem_needed)
         if gpu_id is None:

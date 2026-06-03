@@ -132,7 +132,10 @@ class VLLMServerManager:
         self.max_model_len = max_model_len
         self.max_num_batched_tokens = max_num_batched_tokens
         self.gpu_memory_utilization = gpu_memory_utilization
-        self.additional_args = additional_args or []
+        self.additional_args = list(additional_args or [])
+        extra_args = os.getenv("E2E_TEST_VLLM_ADDITIONAL_ARGS", "")
+        if extra_args:
+            self.additional_args.extend(shlex.split(extra_args))
         self.startup_timeout = startup_timeout
         self.served_model_name = served_model_name
         self.pipeline_parallel_size = pipeline_parallel_size
