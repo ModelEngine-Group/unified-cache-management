@@ -1,5 +1,7 @@
 # Copyright (c) 2026 Huawei Technologies Co., Ltd.
 
+option(BUILD_FFTS_BENCHMARKS "build FFTS transport benchmark executables." OFF)
+
 if(DEFINED ENV{ASCEND_HOME_PATH})
     set(Ascend_ROOT $ENV{ASCEND_HOME_PATH})
 elseif(DEFINED ENV{ASCEND_CUSTOM_PATH})
@@ -111,4 +113,8 @@ target_link_libraries(ucm_transport_ffts
 
 if(BUILD_UNIT_TESTS)
     add_subdirectory(test)
+endif()
+
+if(BUILD_FFTS_BENCHMARKS)
+    add_subdirectory(bench)
 endif()
