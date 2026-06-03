@@ -297,7 +297,6 @@ jobs:
           ${SUDO} docker rm -f "${CONTAINER_NAME}" >/dev/null 2>&1 || true
           set +e
           ${SUDO} docker run --name "${CONTAINER_NAME}" \
-            --network=host \
             --ipc=host \
             --device "${A2_E2E_HOST_DEVICE}:/dev/davinci0" \
             --device /dev/davinci_manager \
