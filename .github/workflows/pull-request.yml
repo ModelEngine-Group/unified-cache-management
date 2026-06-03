@@ -198,7 +198,7 @@ jobs:
           cache-to: type=gha,mode=max,scope=npu
 
   test-e2e-pc-a2:
-    timeout-minutes: 25
+    timeout-minutes: 20
     runs-on: [self-hosted, npu, ubuntu-24.04-arm]
     needs: lint-and-unit-tests
     permissions:
