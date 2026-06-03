@@ -305,25 +305,6 @@ jobs:
           ${SUDO} docker rm -f "${CONTAINER_NAME}" >/dev/null 2>&1 || true
           exit "${TEST_RC}"
 
-      - name: Check pytest results
-        id: pytest-results
-        if: ${{ always() && steps.version.outputs.version != '' }}
-        run: |
-          RESULT_FILE="${{ github.workspace }}/test_results/${{ steps.version.outputs.version }}-online-inference.xml"
-          if [ -f "${RESULT_FILE}" ]; then
-            echo "found=true" >> "${GITHUB_OUTPUT}"
-          else
-            echo "found=false" >> "${GITHUB_OUTPUT}"
-          fi
-
-      - name: Upload pytest results
-        uses: EnricoMi/publish-unit-test-result-action/linux@v2
-        if: ${{ always() && steps.pytest-results.outputs.found == 'true' }}
-        with:
-          files: |
-            ${{ github.workspace }}/test_results/${{ steps.version.outputs.version }}-online-inference.xml
-          check_name: Online inference test results
-
       - name: Cleanup Docker Image
         if: ${{ always() && steps.version.outputs.version != '' }}
         run: |
