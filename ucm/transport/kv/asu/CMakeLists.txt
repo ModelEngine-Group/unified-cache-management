@@ -1,3 +1,4 @@
+if(RUNTIME_ENVIRONMENT STREQUAL "ascend")
 file(GLOB ASU_TRANSPORT_SOURCES CONFIGURE_DEPENDS trans/src/*.cpp)
 add_library(asu_transport SHARED ${ASU_TRANSPORT_SOURCES})
 target_include_directories(asu_transport
@@ -43,4 +44,5 @@ if(BUILD_UNIT_TESTS)
         gtest_main gtest
     )
     gtest_discover_tests(asu.test)
+endif()
 endif()
