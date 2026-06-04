@@ -30,14 +30,9 @@ class TestBasicOnlineInference:
     @pytest.mark.stage(1)
     @pytest.mark.platform("npu")
     @pytest.mark.feature("online_inference")
-    def test_online_accuracy_hbm_ssd_mixed_a2_pc(self, monkeypatch):
-        self._run_a2_pc_hbm_ssd_mixed(monkeypatch, use_layerwise=True)
-
-    @pytest.mark.stage(1)
-    @pytest.mark.platform("npu")
-    @pytest.mark.feature("online_inference")
-    def test_online_accuracy_hbm_ssd_mixed_a2_pc_without_layerwise(self, monkeypatch):
-        self._run_a2_pc_hbm_ssd_mixed(monkeypatch, use_layerwise=False)
+    @pytest.mark.parametrize("use_layerwise", [True, False])
+    def test_online_accuracy_hbm_ssd_mixed_a2_pc(self, monkeypatch, use_layerwise):
+        self._run_a2_pc_hbm_ssd_mixed(monkeypatch, use_layerwise=use_layerwise)
 
     def _run_a2_pc_hbm_ssd_mixed(self, monkeypatch, use_layerwise: bool):
         model_name = "Qwen3-0.6B"
