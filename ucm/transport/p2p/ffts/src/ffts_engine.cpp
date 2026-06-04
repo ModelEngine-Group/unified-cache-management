@@ -53,9 +53,9 @@ Status RtStatus(rtError_t code, const char* call)
     return Status{static_cast<int32_t>(code), oss.str()};
 }
 
-uint32_t Low32(uint64_t value) { return static_cast<uint32_t>(value & 0xFFFFFFFFULL); }
+constexpr uint32_t Low32(uint64_t value) { return static_cast<uint32_t>(value & 0xFFFFFFFFULL); }
 
-uint32_t High32(uint64_t value) { return static_cast<uint32_t>((value >> 32U) & 0xFFFFFFFFULL); }
+constexpr uint32_t High32(uint64_t value) { return static_cast<uint32_t>((value >> 32U) & 0xFFFFFFFFULL); }
 
 uint32_t BuildSdmaMoveHeader()
 {
