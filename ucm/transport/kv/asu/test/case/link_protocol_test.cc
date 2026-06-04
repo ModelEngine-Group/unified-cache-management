@@ -21,10 +21,10 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  * */
+#include "link_protocol.h"
 #include <cstdint>
 #include <cstring>
 #include <gtest/gtest.h>
-#include "link_proto.h"
 
 namespace UC::ASU {
 namespace {

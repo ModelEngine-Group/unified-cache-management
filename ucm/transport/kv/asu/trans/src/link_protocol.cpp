@@ -21,7 +21,7 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  * */
-#include "link_proto.h"
+#include "link_protocol.h"
 #include <cstring>
 
 namespace UC::ASU {
