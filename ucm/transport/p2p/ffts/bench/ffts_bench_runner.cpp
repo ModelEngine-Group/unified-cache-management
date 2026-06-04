@@ -41,6 +41,14 @@ namespace UC::Transport::Ffts::Bench {
 namespace {
 constexpr size_t kOutputWidth = 14;
 
+std::string FormatBytes(size_t bytes)
+{
+    if (bytes % kGiB == 0) { return std::to_string(bytes / kGiB) + "G"; }
+    if (bytes % kMiB == 0) { return std::to_string(bytes / kMiB) + "M"; }
+    if (bytes % kKiB == 0) { return std::to_string(bytes / kKiB) + "K"; }
+    return std::to_string(bytes) + "B";
+}
+
 void FillPattern(std::vector<uint8_t>& data)
 {
     for (size_t i = 0; i < data.size(); ++i) {
@@ -150,7 +158,7 @@ void PrintResult(const std::string& scenario, const std::string& method, size_t 
     const auto avgUs = samples.Average();
     const auto gbps = avgUs == 0.0 ? 0.0 : (static_cast<double>(bytes) / (avgUs / 1'000'000.0)) / 1'000'000'000.0;
     std::cout << std::left << std::setw(10) << scenario << std::setw(10) << method << std::right
-              << std::setw(kOutputWidth) << bytes << std::setw(kOutputWidth) << chunkBytes
+              << std::setw(kOutputWidth) << FormatBytes(bytes) << std::setw(kOutputWidth) << FormatBytes(chunkBytes)
               << std::setw(kOutputWidth) << count << std::setw(kOutputWidth) << std::fixed
               << std::setprecision(2) << avgUs << std::setw(kOutputWidth) << samples.Min()
               << std::setw(kOutputWidth) << samples.Median() << std::setw(kOutputWidth) << gbps << '\n';
