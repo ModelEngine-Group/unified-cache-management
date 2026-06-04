@@ -45,6 +45,7 @@ class TestBasicOnlineInference:
         prompt_split_ratio = 0.5
         ucm_connector_name = "UcmPipelineStore"
         max_num_batched_tokens = 2047
+        cache_buffer_capacity_gb = 2 if use_layerwise else 32
 
         config_file = get_path_relative_to_test_root("config.yaml")
         with open(config_file, "r", encoding="utf-8") as f:
@@ -65,7 +66,7 @@ class TestBasicOnlineInference:
                         "store_pipeline": "Cache|Posix",
                         "storage_backends": ucm_storage_dir,
                         "use_direct": False,
-                        "cache_buffer_capacity_gb": 2,
+                        "cache_buffer_capacity_gb": cache_buffer_capacity_gb,
                     },
                 }
             ],
