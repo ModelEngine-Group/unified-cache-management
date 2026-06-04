@@ -31,11 +31,19 @@ class TestBasicOnlineInference:
     @pytest.mark.platform("npu")
     @pytest.mark.feature("online_inference")
     def test_online_accuracy_hbm_ssd_mixed_a2_pc(self, monkeypatch):
+        self._run_a2_pc_hbm_ssd_mixed(monkeypatch, use_layerwise=True)
+
+    @pytest.mark.stage(1)
+    @pytest.mark.platform("npu")
+    @pytest.mark.feature("online_inference")
+    def test_online_accuracy_hbm_ssd_mixed_a2_pc_without_layerwise(self, monkeypatch):
+        self._run_a2_pc_hbm_ssd_mixed(monkeypatch, use_layerwise=False)
+
+    def _run_a2_pc_hbm_ssd_mixed(self, monkeypatch, use_layerwise: bool):
         model_name = "Qwen3-0.6B"
         max_tokens = 200
         prompt_split_ratio = 0.5
         ucm_connector_name = "UcmPipelineStore"
-        use_layerwise = True
         max_num_batched_tokens = 2047
 
         config_file = get_path_relative_to_test_root("config.yaml")
