@@ -126,18 +126,18 @@ const formulaData = {
 // Formula Display Functions
 // ============================================================
 
-function getFormulaInfo(archType) {
+function getFormulaInfo(modelArch) {
     let archKey = 'Standard';
 
-    if (archType.isDSA) {
+    if (modelArch.isDSA) {
         archKey = 'DSA';
-    } else if (archType.isMLA) {
+    } else if (modelArch.isMLA) {
         archKey = 'MLA';
-    } else if (archType.isGQA) {
+    } else if (modelArch.isGQA) {
         archKey = 'GQA';
     } else {
-        const kvHeads = archType.kv_heads || archType.num_key_value_heads;
-        const attnHeads = archType.num_attention_heads;
+        const kvHeads = modelArch.kv_heads || modelArch.num_key_value_heads;
+        const attnHeads = modelArch.num_attention_heads;
         if (kvHeads === attnHeads) {
             archKey = 'MHA';
         } else if (kvHeads === 1) {
@@ -206,11 +206,11 @@ function updateFormulaReference(config) {
         return;
     }
 
-    const archType = detectArchitectureType(config);
-    archType.kv_heads = config.num_key_value_heads;
-    archType.num_attention_heads = config.num_attention_heads;
+    const modelArch = detectArchitectureType(config);
+    modelArch.kv_heads = config.num_key_value_heads;
+    modelArch.num_attention_heads = config.num_attention_heads;
 
-    const formulaInfo = getFormulaInfo(archType);
+    const formulaInfo = getFormulaInfo(modelArch);
     container.innerHTML = generateFormulaCard(formulaInfo);
 }
 
@@ -555,8 +555,8 @@ async function calculateKVCache() {
         }
 
         // Check if it's a hybrid model from Custom Model input
-        const archType = detectArchitectureType(config);
-        if (archType.isHybridModel && currentModelSource === 'custom') {
+        const modelArch = detectArchitectureType(config);
+        if (modelArch.isHybridModel && currentModelSource === 'custom') {
             showToast('warning', 'Hybrid Model Warning',
                 'This appears to be a Hybrid model (e.g., DeepSeek V4, Qwen Hybrid). The calculation result may not be accurate. For Hybrid models, please use the Hybrid Models tab.');
         }
@@ -586,24 +586,31 @@ function performCalculation(config, tokens, dtype, modelName) {
     const dtypeSizes = { 'float32': 4, 'float16': 2, 'bfloat16': 2, 'int8': 1 };
     const dtypeSize = dtypeSizes[dtype] || 2;
 
-    const archType = detectArchitectureType(config);
+    const modelArch = detectArchitectureType(config);
     const kvHeads = num_key_value_heads || num_attention_heads;
     const hdim = head_dim || (hidden_size / num_attention_heads);
 
     let totalElements;
     let formula;
 
-    if (archType.isDSA) {
+    if (modelArch.isDSA) {
         // DSA: MLA + Lightning Indexer
         const elementsPerToken = num_hidden_layers * (kv_lora_rank + qk_rope_head_dim + index_head_dim) / tp;
         totalElements = elementsPerToken * tokens * batchSize;
         formula = num_hidden_layers + ' × ' + tokens + ' × ' + batchSize + ' × (' + kv_lora_rank + ' + ' + qk_rope_head_dim + ' + ' + index_head_dim + ') ÷ ' + tp + ' × ' + dtypeSize + ' bytes';
-    } else if (archType.isMLA) {
+    } else if (modelArch.isMLA) {
         // MLA: no factor 2
         const elementsPerToken = num_hidden_layers * (kv_lora_rank + qk_rope_head_dim) / tp;
         totalElements = elementsPerToken * tokens * batchSize;
         formula = num_hidden_layers + ' × ' + tokens + ' × ' + batchSize + ' × (' + kv_lora_rank + ' + ' + qk_rope_head_dim + ') ÷ ' + tp + ' × ' + dtypeSize + ' bytes';
-    } else if (archType.isGQA) {
+    } else if (modelArch.isHybridModel) {
+        // Hybrid Model: use GQA-like calculation but show warning
+        // For hybrid models, use available head_dim or fallback to hidden_size calculation
+        const effectiveHdim = hdim || (hidden_size / num_attention_heads);
+        const elementsPerToken = 2 * num_hidden_layers * kvHeads * effectiveHdim / tp;
+        totalElements = elementsPerToken * tokens * batchSize;
+        formula = '2 × ' + num_hidden_layers + ' × ' + tokens + ' × ' + batchSize + ' × ' + kvHeads + ' × ' + effectiveHdim + ' ÷ ' + tp + ' × ' + dtypeSize + ' bytes (Hybrid - may not be accurate)';
+    } else if (modelArch.isGQA) {
         // GQA with explicit head_dim
         const elementsPerToken = 2 * num_hidden_layers * kvHeads * hdim / tp;
         totalElements = elementsPerToken * tokens * batchSize;
@@ -626,11 +633,11 @@ function performCalculation(config, tokens, dtype, modelName) {
 
     // Determine architecture type for display
     let architectureType;
-    if (archType.isDSA) {
+    if (modelArch.isDSA) {
         architectureType = 'DSA (DeepSeek Sparse Attention)';
-    } else if (archType.isMLA) {
+    } else if (modelArch.isMLA) {
         architectureType = 'MLA (Multi-head Latent Attention)';
-    } else if (archType.isHybridModel) {
+    } else if (modelArch.isHybridModel) {
         architectureType = 'Hybrid Model (Warning: result may not be accurate)';
     } else if (kvHeads === num_attention_heads) {
         architectureType = 'MHA (Multi-Head Attention)';
@@ -658,7 +665,7 @@ function performCalculation(config, tokens, dtype, modelName) {
         config,
         formula,
         architectureType,
-        showHybridWarning: archType.isHybridModel
+        showHybridWarning: modelArch.isHybridModel
     };
 }
 
@@ -718,20 +725,20 @@ function calculateMaxTokensForMemory(config, gpuMemoryGiB, dtype, modelName) {
     const dtypeSizes = { 'float32': 4, 'float16': 2, 'bfloat16': 2, 'int8': 1 };
     const dtypeSize = dtypeSizes[dtype] || 2;
 
-    const archType = detectArchitectureType(config);
+    const modelArch = detectArchitectureType(config);
     const kvHeads = num_key_value_heads || num_attention_heads;
     const hdim = head_dim || (hidden_size / num_attention_heads);
 
     let elementsPerToken;
     let formula;
 
-    if (archType.isDSA) {
+    if (modelArch.isDSA) {
         elementsPerToken = num_hidden_layers * (kv_lora_rank + qk_rope_head_dim + index_head_dim) / tp;
         formula = num_hidden_layers + ' × (' + kv_lora_rank + ' + ' + qk_rope_head_dim + ' + ' + index_head_dim + ') ÷ ' + tp + ' × ' + dtypeSize + ' bytes';
-    } else if (archType.isMLA) {
+    } else if (modelArch.isMLA) {
         elementsPerToken = num_hidden_layers * (kv_lora_rank + qk_rope_head_dim) / tp;
         formula = num_hidden_layers + ' × (' + kv_lora_rank + ' + ' + qk_rope_head_dim + ') ÷ ' + tp + ' × ' + dtypeSize + ' bytes';
-    } else if (archType.isGQA) {
+    } else if (modelArch.isGQA) {
         elementsPerToken = 2 * num_hidden_layers * kvHeads * hdim / tp;
         formula = '2 × ' + num_hidden_layers + ' × ' + kvHeads + ' × ' + hdim + ' ÷ ' + tp + ' × ' + dtypeSize + ' bytes';
     } else {
@@ -743,8 +750,9 @@ function calculateMaxTokensForMemory(config, gpuMemoryGiB, dtype, modelName) {
     const maxTokens = Math.floor(totalMemoryBytes / (elementsPerToken * dtypeSize));
 
     let architectureType;
-    if (archType.isDSA) architectureType = 'DSA';
-    else if (archType.isMLA) architectureType = 'MLA';
+    if (modelArch.isDSA) architectureType = 'DSA';
+    else if (modelArch.isMLA) architectureType = 'MLA';
+    else if (modelArch.isHybridModel) architectureType = 'Hybrid Model';
     else if (kvHeads === num_attention_heads) architectureType = 'MHA';
     else if (kvHeads === 1) architectureType = 'MQA';
     else architectureType = 'GQA';
@@ -760,6 +768,7 @@ function calculateMaxTokensForMemory(config, gpuMemoryGiB, dtype, modelName) {
         elementsPerToken,
         formula,
         architectureType,
+        isHybridModel: modelArch.isHybridModel,
         perTokenMemoryMiB: (elementsPerToken * dtypeSize) / Math.pow(1024, 2),
         config
     };
@@ -1234,6 +1243,7 @@ async function fetchModelConfigFromUrl(url) {
 
         const sourceConfig = configData.text_config || configData;
 
+        // Preserve all fields including hybrid model indicators
         const transformedConfig = {
             hidden_size: sourceConfig.hidden_size,
             num_attention_heads: sourceConfig.num_attention_heads,
@@ -1243,7 +1253,28 @@ async function fetchModelConfigFromUrl(url) {
             qk_rope_head_dim: sourceConfig.qk_rope_head_dim,
             head_dim: sourceConfig.head_dim,
             index_head_dim: sourceConfig.index_head_dim,
-            compress_ratios: sourceConfig.compress_ratios,
+            compress_ratios: sourceConfig.compress_ratios || configData.compress_ratios,
+            // Hybrid model indicators
+            hybrid_layer_pattern: sourceConfig.hybrid_layer_pattern || configData.hybrid_layer_pattern,
+            sliding_window: sourceConfig.sliding_window || configData.sliding_window,
+            sliding_window_size: sourceConfig.sliding_window_size || configData.sliding_window_size,
+            swa_num_key_value_heads: sourceConfig.swa_num_key_value_heads || configData.swa_num_key_value_heads,
+            swa_num_attention_heads: sourceConfig.swa_num_attention_heads || configData.swa_num_attention_heads,
+            swa_head_dim: sourceConfig.swa_head_dim || configData.swa_head_dim,
+            add_swa_attention_sink_bias: sourceConfig.add_swa_attention_sink_bias || configData.add_swa_attention_sink_bias,
+            layer_types: sourceConfig.layer_types,
+            linear_attention: sourceConfig.linear_attention,
+            linear_num_key_heads: sourceConfig.linear_num_key_heads,
+            linear_key_head_dim: sourceConfig.linear_key_head_dim,
+            global_head_dim: sourceConfig.global_head_dim,
+            num_global_key_value_heads: sourceConfig.num_global_key_value_heads,
+            window_attention: sourceConfig.window_attention || configData.window_attention,
+            attention_window: sourceConfig.attention_window || configData.attention_window,
+            mixed_attention: sourceConfig.mixed_attention || configData.mixed_attention,
+            sparse_attention: sourceConfig.sparse_attention || configData.sparse_attention,
+            full_attention_layers: sourceConfig.full_attention_layers || configData.full_attention_layers,
+            sliding_attention_layers: sourceConfig.sliding_attention_layers || configData.sliding_attention_layers,
+            linear_attention_layers: sourceConfig.linear_attention_layers || configData.linear_attention_layers,
             _modelName: modelIdentifier
         };
 
@@ -1379,11 +1410,29 @@ function displayMaxTokensResults(result) {
     const config = result.config;
     const kvHeads = config.num_key_value_heads || config.num_attention_heads;
 
+    // Show toast warning for hybrid models (same as KV Cache calculation)
+    if (result.isHybridModel) {
+        showToast('warning', 'Hybrid Model Warning',
+            'This appears to be a Hybrid model. The max tokens calculation may not be accurate. For Hybrid models, please use the Hybrid Models tab.');
+    }
+
     resultsContainer.innerHTML = `
         <div class="result-display" style="text-align: center; margin-bottom: 1rem;">
             <div class="result-value" style="font-size: 1.8rem; font-weight: 700; color: var(--accent-success);">${result.maxTokens.toLocaleString()}</div>
             <div class="result-label" style="font-size: 0.8rem; color: var(--text-secondary);">Max Tokens ${result.tp > 1 ? '(TP=' + result.tp + ')' : ''}</div>
         </div>
+
+        ${result.isHybridModel ? `
+        <div style="background: rgba(245, 158, 11, 0.1); border: 1px solid var(--accent-warning); border-radius: 8px; padding: 0.75rem; margin-bottom: 1rem;">
+            <div style="display: flex; align-items: center; gap: 0.5rem; margin-bottom: 0.25rem;">
+                <span style="font-size: 1rem;">⚠️</span>
+                <strong style="color: var(--accent-warning); font-size: 0.85rem;">Hybrid Model Warning</strong>
+            </div>
+            <div style="font-size: 0.75rem; color: var(--text-secondary); line-height: 1.4;">
+                This appears to be a Hybrid model. The max tokens calculation may not be accurate. Please use the Hybrid Models tab for accurate results.
+            </div>
+        </div>
+        ` : ''}
 
         <div class="metrics-row" style="display: flex; flex-wrap: wrap; gap: 0.75rem; margin-bottom: 1rem;">
             <div class="metric-item">
@@ -1392,7 +1441,7 @@ function displayMaxTokensResults(result) {
             </div>
             <div class="metric-item">
                 <span style="color: var(--text-secondary);">Type:</span>
-                <strong style="color: var(--text-primary); margin-left: 0.25rem;">${result.architectureType}</strong>
+                <strong style="color: var(--text-primary); margin-left: 0.25rem;">${result.isHybridModel ? 'Hybrid Model (Warning: result may not be accurate)' : result.architectureType}</strong>
             </div>
             <div class="metric-item">
                 <span style="color: var(--text-secondary);">GPU Memory:</span>
