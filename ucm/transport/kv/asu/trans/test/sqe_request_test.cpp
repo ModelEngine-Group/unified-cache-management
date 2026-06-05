@@ -33,10 +33,43 @@
 #undef private
 #include "buffer_manager.h"
 #include "kv_protocol.h"
+#include "trans_provider.h"
 
 namespace UC::ASU {
 
 namespace {
+
+class StubTransProvider : public TransProvider {
+public:
+    Status CreateConnection(const std::string&, const std::string&, uint32_t, uint32_t, uint32_t,
+                            std::vector<ConnectionHandle>&) override
+    {
+        return Status::OK();
+    }
+    std::vector<Status> DeleteConnections(const std::vector<ConnectionHandle>&) override
+    {
+        return {};
+    }
+    std::vector<Status> Send(const std::vector<SendIoBatch>&, uint32_t, uint32_t) override
+    {
+        return {};
+    }
+    Status RegisterMemory(ConnectionHandle, const std::vector<RegisterMemoryDesc>&,
+                          std::vector<MemHandle>&) override
+    {
+        return Status::OK();
+    }
+    std::vector<Status> UnregisterMemory(const std::vector<UnregisterMemoryDesc>&) override
+    {
+        return {};
+    }
+    Status AllocThread(uint32_t, const std::vector<uint32_t>&, std::vector<ThreadHandle>&) override
+    {
+        return Status::OK();
+    }
+    std::vector<Status> FreeThread(const std::vector<ThreadHandle>&) override { return {}; }
+    Status GetMemTokenId(MemHandle, uint32_t&) override { return Status::OK(); }
+};
 
 constexpr std::size_t kFlagBufferHeaderSize = 16;
 constexpr std::size_t kTestSendBufferSlotSize = 4096;
@@ -87,44 +120,46 @@ protected:
 
     void SetUp() override
     {
-        transport_.config_.attrs = DefaultAttrs();
-        transport_.nextRequestCid_.store(1, std::memory_order_relaxed);
-        auto status = transport_.flagBufferManager_.Init("test flag buffer", MemoryType::HOST,
-                                                         kFlagBufferSlotSize, kFlagBufferSlotNum);
+        transport_ = std::make_unique<AsuTransportImpl>();
+        transport_->SetTransProvider(std::make_unique<StubTransProvider>());
+        transport_->config_.attrs = DefaultAttrs();
+        transport_->nextRequestCid_.store(1, std::memory_order_relaxed);
+        auto status = transport_->flagBufferManager_.Init("test flag buffer", MemoryType::HOST,
+                                                          kFlagBufferSlotSize, kFlagBufferSlotNum);
         ASSERT_TRUE(status.ok()) << status.message;
-        status = transport_.sendBufferManager_.Init(
+        status = transport_->sendBufferManager_.Init(
             "test send buffer", MemoryType::HOST, kTestSendBufferSlotSize, kTestSendBufferSlotNum);
         ASSERT_TRUE(status.ok()) << status.message;
-        transport_.protocolManager_ = std::make_unique<ProtocolManager>();
+        transport_->protocolManager_ = std::make_unique<ProtocolManager>();
     }
 
-    AsuTransportImpl transport_;
+    std::unique_ptr<AsuTransportImpl> transport_;
 };
 
 TEST_F(SqeRequestTest, ValidateSqeRequestAttrsRejectsMalformedValues)
 {
-    transport_.config_.attrs = DefaultAttrs();
-    EXPECT_TRUE(transport_.ValidateSqeRequestAttrs().ok());
+    transport_->config_.attrs = DefaultAttrs();
+    EXPECT_TRUE(transport_->ValidateSqeRequestAttrs().ok());
 
     auto attrs = DefaultAttrs();
     attrs["dtype"] = "256";
-    transport_.config_.attrs = attrs;
-    EXPECT_EQ(transport_.ValidateSqeRequestAttrs().code, StatusCode::INVALID_ARGUMENT);
+    transport_->config_.attrs = attrs;
+    EXPECT_EQ(transport_->ValidateSqeRequestAttrs().code, StatusCode::INVALID_ARGUMENT);
 
     attrs = DefaultAttrs();
     attrs["lr"] = "maybe";
-    transport_.config_.attrs = attrs;
-    EXPECT_EQ(transport_.ValidateSqeRequestAttrs().code, StatusCode::INVALID_ARGUMENT);
+    transport_->config_.attrs = attrs;
+    EXPECT_EQ(transport_->ValidateSqeRequestAttrs().code, StatusCode::INVALID_ARGUMENT);
 
     attrs = DefaultAttrs();
     attrs.erase("kernel_count");
-    transport_.config_.attrs = attrs;
-    EXPECT_EQ(transport_.ValidateSqeRequestAttrs().code, StatusCode::INVALID_ARGUMENT);
+    transport_->config_.attrs = attrs;
+    EXPECT_EQ(transport_->ValidateSqeRequestAttrs().code, StatusCode::INVALID_ARGUMENT);
 
     attrs = DefaultAttrs();
     attrs["quiet_count"] = "0";
-    transport_.config_.attrs = attrs;
-    EXPECT_EQ(transport_.ValidateSqeRequestAttrs().code, StatusCode::INVALID_ARGUMENT);
+    transport_->config_.attrs = attrs;
+    EXPECT_EQ(transport_->ValidateSqeRequestAttrs().code, StatusCode::INVALID_ARGUMENT);
 }
 
 TEST_F(SqeRequestTest, SubmitBatchStoreAllocatesFlagBufferAndBuildsRequest)
@@ -134,10 +169,10 @@ TEST_F(SqeRequestTest, SubmitBatchStoreAllocatesFlagBufferAndBuildsRequest)
         BatchView<KVBuffer>{entries.data(), entries.size()}
     };
     TransportSubBatchContext subBatchContext;
-    transport_.nextRequestCid_.store(41, std::memory_order_relaxed);
+    transport_->nextRequestCid_.store(41, std::memory_order_relaxed);
 
-    const auto status = transport_.SubmitEntrySubBatchRequest(TransportOpType::BATCH_STORE,
-                                                              subBatch, subBatchContext);
+    const auto status = transport_->SubmitEntrySubBatchRequest(TransportOpType::BATCH_STORE,
+                                                               subBatch, subBatchContext);
 
     EXPECT_TRUE(status.ok()) << status.message;
     EXPECT_EQ(subBatchContext.flagBuffer.length, kFlagBufferHeaderSize + (entries.size() + 1) / 2);
@@ -157,10 +192,10 @@ TEST_F(SqeRequestTest, SubmitBatchRetrieveUsesRetrieveOpcodeAndRequest)
         BatchView<KVBuffer>{entries.data(), entries.size()}
     };
     TransportSubBatchContext subBatchContext;
-    transport_.nextRequestCid_.store(9, std::memory_order_relaxed);
+    transport_->nextRequestCid_.store(9, std::memory_order_relaxed);
 
-    const auto status = transport_.SubmitEntrySubBatchRequest(TransportOpType::BATCH_LOAD, subBatch,
-                                                              subBatchContext);
+    const auto status = transport_->SubmitEntrySubBatchRequest(TransportOpType::BATCH_LOAD,
+                                                               subBatch, subBatchContext);
 
     EXPECT_TRUE(status.ok()) << status.message;
     EXPECT_EQ(subBatchContext.opType, TransportOpType::BATCH_LOAD);
@@ -177,10 +212,10 @@ TEST_F(SqeRequestTest, SubmitDeleteCopiesKeysAndBuildsFlagBackedRequest)
         BatchView<CacheKey>{keys.data(), keys.size()}
     };
     TransportSubBatchContext subBatchContext;
-    transport_.nextRequestCid_.store(55, std::memory_order_relaxed);
+    transport_->nextRequestCid_.store(55, std::memory_order_relaxed);
 
     const auto status =
-        transport_.SubmitKeySubBatchRequest(TransportOpType::DELETE, subBatch, subBatchContext);
+        transport_->SubmitKeySubBatchRequest(TransportOpType::DELETE, subBatch, subBatchContext);
 
     EXPECT_TRUE(status.ok()) << status.message;
     EXPECT_EQ(subBatchContext.opType, TransportOpType::DELETE);
@@ -199,10 +234,10 @@ TEST_F(SqeRequestTest, SubmitExistReadsScAttribute)
         BatchView<CacheKey>{keys.data(), keys.size()}
     };
     TransportSubBatchContext subBatchContext;
-    transport_.nextRequestCid_.store(13, std::memory_order_relaxed);
+    transport_->nextRequestCid_.store(13, std::memory_order_relaxed);
 
     const auto status =
-        transport_.SubmitKeySubBatchRequest(TransportOpType::QUERY, subBatch, subBatchContext);
+        transport_->SubmitKeySubBatchRequest(TransportOpType::QUERY, subBatch, subBatchContext);
 
     EXPECT_TRUE(status.ok()) << status.message;
     EXPECT_EQ(subBatchContext.opType, TransportOpType::QUERY);
@@ -216,8 +251,8 @@ TEST_F(SqeRequestTest, SubmitExistDisablesSeekControlWhenScDisabled)
 {
     auto attrs = DefaultAttrs();
     attrs["sc"] = "false";
-    transport_.config_.attrs = attrs;
-    transport_.nextRequestCid_.store(13, std::memory_order_relaxed);
+    transport_->config_.attrs = attrs;
+    transport_->nextRequestCid_.store(13, std::memory_order_relaxed);
 
     std::vector<CacheKey> keys = {"k0"};
     IoScheduler::ScheduledKeyBatch subBatch{
@@ -226,7 +261,7 @@ TEST_F(SqeRequestTest, SubmitExistDisablesSeekControlWhenScDisabled)
     TransportSubBatchContext subBatchContext;
 
     const auto status =
-        transport_.SubmitKeySubBatchRequest(TransportOpType::QUERY, subBatch, subBatchContext);
+        transport_->SubmitKeySubBatchRequest(TransportOpType::QUERY, subBatch, subBatchContext);
 
     EXPECT_TRUE(status.ok()) << status.message;
     EXPECT_FALSE(subBatchContext.useSeekControl);
@@ -240,6 +275,7 @@ TEST_F(SqeRequestTest, AllocationFailureMarksWholeSubBatchFailed)
     };
     TransportSubBatchContext subBatchContext;
     AsuTransportImpl uninitializedFlagTransport;
+    uninitializedFlagTransport.SetTransProvider(std::make_unique<StubTransProvider>());
     uninitializedFlagTransport.config_.attrs = DefaultAttrs();
     uninitializedFlagTransport.nextRequestCid_.store(3, std::memory_order_relaxed);
     ASSERT_TRUE(uninitializedFlagTransport.sendBufferManager_
@@ -265,9 +301,9 @@ TEST_F(SqeRequestTest, AllocationFailureMarksWholeSubBatchFailed)
 TEST_F(SqeRequestTest, SubmitKeepAliveBuildsFlagBackedRequest)
 {
     TransportSubBatchContext subBatchContext;
-    transport_.nextRequestCid_.store(77, std::memory_order_relaxed);
+    transport_->nextRequestCid_.store(77, std::memory_order_relaxed);
 
-    const auto status = transport_.SubmitKeepAliveRequest(subBatchContext);
+    const auto status = transport_->SubmitKeepAliveRequest(subBatchContext);
 
     EXPECT_TRUE(status.ok()) << status.message;
     EXPECT_EQ(subBatchContext.cid, std::uint16_t{77});

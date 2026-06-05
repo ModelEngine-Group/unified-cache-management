@@ -30,12 +30,47 @@
 #undef private
 #include "buffer_manager.h"
 #include "connection_internal.h"
+#include "trans_provider.h"
 
 namespace UC::ASU {
 namespace {
 
 constexpr std::size_t kTestBufferSlotSize = 512;
 constexpr std::size_t kTestBufferSlotNum = 16;
+
+class StubTransProvider : public TransProvider {
+public:
+    Status CreateConnection(const std::string&, const std::string&, uint32_t, uint32_t qpNum,
+                            uint32_t, std::vector<ConnectionHandle>& handles) override
+    {
+        handles.clear();
+        handles.resize(qpNum, nullptr);
+        return Status::OK();
+    }
+    std::vector<Status> DeleteConnections(const std::vector<ConnectionHandle>& handles) override
+    {
+        return std::vector<Status>(handles.size(), Status::OK());
+    }
+    std::vector<Status> Send(const std::vector<SendIoBatch>&, uint32_t, uint32_t) override
+    {
+        return {};
+    }
+    Status RegisterMemory(ConnectionHandle, const std::vector<RegisterMemoryDesc>&,
+                          std::vector<MemHandle>&) override
+    {
+        return Status::OK();
+    }
+    std::vector<Status> UnregisterMemory(const std::vector<UnregisterMemoryDesc>&) override
+    {
+        return {};
+    }
+    Status AllocThread(uint32_t, const std::vector<uint32_t>&, std::vector<ThreadHandle>&) override
+    {
+        return Status::OK();
+    }
+    std::vector<Status> FreeThread(const std::vector<ThreadHandle>&) override { return {}; }
+    Status GetMemTokenId(MemHandle, uint32_t&) override { return Status::OK(); }
+};
 
 class TransportTaskCompletionTest : public ::testing::Test {
 protected:
@@ -53,15 +88,17 @@ protected:
 
     void SetUp() override
     {
-        auto status = transport_.sendBufferManager_.Init("test send buffer", MemoryType::HOST,
-                                                         kTestBufferSlotSize, kTestBufferSlotNum);
+        transport_ = std::make_unique<AsuTransportImpl>();
+        transport_->SetTransProvider(std::make_unique<StubTransProvider>());
+        auto status = transport_->sendBufferManager_.Init("test send buffer", MemoryType::HOST,
+                                                          kTestBufferSlotSize, kTestBufferSlotNum);
         ASSERT_TRUE(status.ok()) << status.message;
-        status = transport_.flagBufferManager_.Init("test flag buffer", MemoryType::HOST,
-                                                    kTestBufferSlotSize, kTestBufferSlotNum);
+        status = transport_->flagBufferManager_.Init("test flag buffer", MemoryType::HOST,
+                                                     kTestBufferSlotSize, kTestBufferSlotNum);
         ASSERT_TRUE(status.ok()) << status.message;
     }
 
-    AsuTransportImpl transport_;
+    std::unique_ptr<AsuTransportImpl> transport_;
 };
 
 TEST_F(TransportTaskCompletionTest, InitializeCountsAlreadyTerminalSubBatches)
@@ -84,8 +121,8 @@ TEST_F(TransportTaskCompletionTest, CompleteSubBatchOnlyCountsPendingSubBatchOnc
     TransportSubBatchContext subBatchContext;
     const auto status = Status::Error(StatusCode::IO_ERROR, "fake error");
 
-    transport_.CompleteSubBatch(ctx, subBatchContext, status);
-    transport_.CompleteSubBatch(ctx, subBatchContext, status);
+    transport_->CompleteSubBatch(ctx, subBatchContext, status);
+    transport_->CompleteSubBatch(ctx, subBatchContext, status);
 
     EXPECT_EQ(ctx.completedSubBatchCount, std::uint32_t{1});
     EXPECT_EQ(subBatchContext.state, TransportSubBatchState::COMPLETED);
@@ -95,10 +132,10 @@ TEST_F(TransportTaskCompletionTest, CompleteSubBatchOnlyCountsPendingSubBatchOnc
 TEST_F(TransportTaskCompletionTest, ReleaseSubBatchResourcesClearsAllocatedSlots)
 {
     TransportSubBatchContext subBatchContext;
-    ASSERT_TRUE(transport_.sendBufferManager_.Allocate(64, subBatchContext.sendSge).ok());
-    ASSERT_TRUE(transport_.flagBufferManager_.Allocate(64, subBatchContext.flagBuffer).ok());
+    ASSERT_TRUE(transport_->sendBufferManager_.Allocate(64, subBatchContext.sendSge).ok());
+    ASSERT_TRUE(transport_->flagBufferManager_.Allocate(64, subBatchContext.flagBuffer).ok());
 
-    transport_.ReleaseSubBatchResources(subBatchContext);
+    transport_->ReleaseSubBatchResources(subBatchContext);
 
     EXPECT_EQ(subBatchContext.sendSge.slot_index, UINT32_MAX);
     EXPECT_EQ(subBatchContext.flagBuffer.slot_index, UINT32_MAX);
@@ -111,10 +148,10 @@ TEST_F(TransportTaskCompletionTest, ReleaseSubBatchResourcesPreservesSubBatchSta
     TransportSubBatchContext subBatchContext;
     subBatchContext.state = TransportSubBatchState::COMPLETED;
     subBatchContext.status = Status::Error(StatusCode::IO_ERROR, "send failed");
-    ASSERT_TRUE(transport_.sendBufferManager_.Allocate(64, subBatchContext.sendSge).ok());
-    ASSERT_TRUE(transport_.flagBufferManager_.Allocate(64, subBatchContext.flagBuffer).ok());
+    ASSERT_TRUE(transport_->sendBufferManager_.Allocate(64, subBatchContext.sendSge).ok());
+    ASSERT_TRUE(transport_->flagBufferManager_.Allocate(64, subBatchContext.flagBuffer).ok());
 
-    transport_.ReleaseSubBatchResources(subBatchContext);
+    transport_->ReleaseSubBatchResources(subBatchContext);
 
     EXPECT_EQ(subBatchContext.state, TransportSubBatchState::COMPLETED);
     EXPECT_EQ(subBatchContext.status.code, StatusCode::IO_ERROR);
@@ -124,9 +161,9 @@ TEST_F(TransportTaskCompletionTest, ReleaseSubBatchResourcesClearsSlotsAfterFree
 {
     TransportSubBatchContext subBatchContext;
     subBatchContext.sendSge.slot_index = kTestBufferSlotNum;
-    ASSERT_TRUE(transport_.flagBufferManager_.Allocate(64, subBatchContext.flagBuffer).ok());
+    ASSERT_TRUE(transport_->flagBufferManager_.Allocate(64, subBatchContext.flagBuffer).ok());
 
-    transport_.ReleaseSubBatchResources(subBatchContext);
+    transport_->ReleaseSubBatchResources(subBatchContext);
 
     EXPECT_EQ(subBatchContext.sendSge.slot_index, UINT32_MAX);
     EXPECT_EQ(subBatchContext.flagBuffer.slot_index, UINT32_MAX);
@@ -134,19 +171,20 @@ TEST_F(TransportTaskCompletionTest, ReleaseSubBatchResourcesClearsSlotsAfterFree
 
 TEST_F(TransportTaskCompletionTest, ReleaseSubBatchResourcesReleasesChannelInflight)
 {
-    ConnectionManager connManager;
+    StubTransProvider provider;
+    ConnectionManager connManager(provider, "", 5000);
     ASSERT_TRUE(connManager.AddGroup(AsuEndpoint{}, 1).ok());
-    auto* channel = connManager.SelectConnection();
+    auto channel = connManager.SelectConnection();
     ASSERT_NE(channel, nullptr);
     ASSERT_EQ(channel->GetInflightCount(), std::uint32_t{1});
 
     TransportSubBatchContext subBatchContext;
     subBatchContext.channel = channel;
 
-    transport_.ReleaseSubBatchResources(subBatchContext);
+    transport_->ReleaseSubBatchResources(subBatchContext);
 
     EXPECT_EQ(channel->GetInflightCount(), std::uint32_t{0});
-    EXPECT_EQ(subBatchContext.channel, nullptr);
+    EXPECT_EQ(subBatchContext.channel.get(), nullptr);
 }
 
 TEST_F(TransportTaskCompletionTest, TryFinalizeEmptyTaskUsesExistingFinalStatus)

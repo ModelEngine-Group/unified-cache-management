@@ -29,23 +29,22 @@ namespace UC::ASU {
 
 // ─── ConnectionChannel ───
 
-ConnectionChannel::ConnectionChannel(std::uint32_t id, ConnectionGroup* grp, void* qp)
-    : channelId(id), group(grp), nativeQp(qp)
+ConnectionChannel::ConnectionChannel(std::uint32_t id, ConnectionGroup* grp,
+                                     TransProvider::ConnectionHandle handle,
+                                     TransProvider* provider)
+    : channelId(id), group(grp), handle_(handle), provider_(provider)
 {
     state.store(ChannelState::ACTIVE, std::memory_order_release);
     inflightCount.store(0, std::memory_order_release);
     errorCount.store(0, std::memory_order_release);
-    drainStartTime.store(0, std::memory_order_release);
 }
 
-void ConnectionChannel::SetDrainStartTime(std::uint64_t t)
+ConnectionChannel::~ConnectionChannel()
 {
-    drainStartTime.store(t, std::memory_order_release);
-}
-
-std::uint64_t ConnectionChannel::GetDrainStartTime() const
-{
-    return drainStartTime.load(std::memory_order_acquire);
+    if (handle_ && provider_) {
+        provider_->DeleteConnections({handle_});
+        handle_ = nullptr;
+    }
 }
 
 std::uint32_t ConnectionChannel::FetchAddErrorCount(std::uint32_t val)
@@ -68,26 +67,17 @@ void ConnectionChannel::ReleaseInflight()
     }
 }
 
-bool ConnectionChannel::BeginDrain()
+bool ConnectionChannel::MarkForDrain()
 {
     ChannelState expected = ChannelState::ACTIVE;
     if (!state.compare_exchange_strong(expected, ChannelState::DRAINING,
                                        std::memory_order_acq_rel)) {
-        UC_DEBUG("ConnectionChannel::BeginDrain CAS FAILED: current_state={} (expected ACTIVE=0)",
+        UC_DEBUG("ConnectionChannel::MarkForDrain CAS FAILED: current_state={} (expected ACTIVE=0)",
                  static_cast<int>(expected));
         return false;
     }
-    UC_DEBUG("ConnectionChannel::BeginDrain CAS OK: ch_id={} ACTIVE->DRAINING", channelId);
+    UC_DEBUG("ConnectionChannel::MarkForDrain CAS OK: ch_id={} ACTIVE->DRAINING", channelId);
     return true;
-}
-
-void ConnectionChannel::FinishDrain()
-{
-    UC_DEBUG("ConnectionChannel::FinishDrain ch_id={} nativeQp={}", channelId,
-             reinterpret_cast<std::uintptr_t>(nativeQp));
-    state.store(ChannelState::FAILED, std::memory_order_release);
-    nativeQp = nullptr;
-    UC_DEBUG("ConnectionChannel::FinishDrain ch_id={} state->FAILED", channelId);
 }
 
 // ─── ConnectionGroup ───
@@ -97,22 +87,22 @@ ConnectionGroup::ConnectionGroup(std::uint32_t id, const AsuEndpoint& ep)
 {
 }
 
-ConnectionChannel* ConnectionGroup::AddChannel(ConnectionHandle handle)
+std::shared_ptr<ConnectionChannel> ConnectionGroup::AddChannel(ConnectionHandle handle,
+                                                               TransProvider* provider)
 {
     auto id = nextChannelId_.fetch_add(1, std::memory_order_relaxed);
-    auto channel = std::make_unique<ConnectionChannel>(id, this, handle);
-    auto* raw = channel.get();
-    channels.push_back(std::move(channel));
+    auto channel = std::make_shared<ConnectionChannel>(id, this, handle, provider);
+    channels.push_back(channel);
     UC_DEBUG("ConnectionGroup::AddChannel groupId={} ch_id={} totalChannels={}", groupId,
-             raw->GetChannelId(), channels.size());
-    return raw;
+             channel->GetChannelId(), channels.size());
+    return channel;
 }
 
 void ConnectionGroup::RemoveChannel(ConnectionChannel* channel)
 {
     auto it = std::find_if(
         channels.begin(), channels.end(),
-        [channel](const std::unique_ptr<ConnectionChannel>& p) { return p.get() == channel; });
+        [channel](const std::shared_ptr<ConnectionChannel>& p) { return p.get() == channel; });
     if (it != channels.end()) {
         UC_DEBUG("ConnectionGroup::RemoveChannel groupId={} ch_id={} removed, totalChannels={}",
                  groupId, channel->GetChannelId(), channels.size() - 1);

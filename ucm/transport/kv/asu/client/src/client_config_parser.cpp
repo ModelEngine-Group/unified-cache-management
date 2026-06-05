@@ -29,6 +29,7 @@
 #include <utility>
 #include <vector>
 #include "asu_client/asu_client.h"
+#include "config_parser_common.h"
 #include "status_utils.h"
 #include "view_server.h"
 

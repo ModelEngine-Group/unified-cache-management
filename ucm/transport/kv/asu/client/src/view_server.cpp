@@ -26,6 +26,7 @@
 #include <fstream>
 #include <utility>
 #include "asu_client/asu_client.h"
+#include "config_parser_common.h"
 #include "status_utils.h"
 
 namespace UC::ASU {

@@ -21,6 +21,7 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  * */
+#include <acl/acl.h>
 #include <cstdint>
 #include <gtest/gtest.h>
 #include <unordered_map>
@@ -30,6 +31,7 @@
 #undef private
 #include "buffer_manager.h"
 #include "connection_internal.h"
+#include "trans_provider.h"
 
 namespace UC::ASU {
 namespace {
@@ -38,16 +40,74 @@ std::uint32_t g_kernelCount = 0;
 std::uint32_t g_quietCount = 0;
 std::vector<Status> g_sendStatuses;
 
-}  // namespace
+class StubTransProvider : public TransProvider {
+public:
+    Status CreateConnection(const std::string&, const std::string&, uint32_t, uint32_t qpNum,
+                            uint32_t, std::vector<ConnectionHandle>& handles) override
+    {
+        handles.clear();
+        handles.resize(qpNum, nullptr);
+        return Status::OK();
+    }
 
-std::vector<Status> Send(const std::vector<SendIoBatch>& ioBatches, std::uint32_t kernelCount,
-                         std::uint32_t quietCount)
-{
-    g_kernelCount = kernelCount;
-    g_quietCount = quietCount;
-    if (!g_sendStatuses.empty()) { return g_sendStatuses; }
-    return std::vector<Status>(ioBatches.size(), Status::OK());
-}
+    std::vector<Status> DeleteConnections(const std::vector<ConnectionHandle>& handles) override
+    {
+        return std::vector<Status>(handles.size(), Status::OK());
+    }
+
+    std::vector<Status> Send(const std::vector<TransProvider::SendIoBatch>& ioBatches,
+                             uint32_t kernelCount, uint32_t quietCount) override
+    {
+        g_kernelCount = kernelCount;
+        g_quietCount = quietCount;
+        if (!g_sendStatuses.empty()) { return g_sendStatuses; }
+        return std::vector<Status>(ioBatches.size(), Status::OK());
+    }
+
+    Status RegisterMemory(ConnectionHandle, const std::vector<RegisterMemoryDesc>&,
+                          std::vector<MemHandle>&) override
+    {
+        return Status::OK();
+    }
+
+    std::vector<Status> UnregisterMemory(const std::vector<UnregisterMemoryDesc>&) override
+    {
+        return {};
+    }
+
+    Status AllocThread(uint32_t, const std::vector<uint32_t>&, std::vector<ThreadHandle>&) override
+    {
+        return Status::OK();
+    }
+
+    std::vector<Status> FreeThread(const std::vector<ThreadHandle>&) override { return {}; }
+
+    Status GetMemTokenId(MemHandle, uint32_t&) override { return Status::OK(); }
+};
+
+class AsuSubmitFlowBufferTest : public ::testing::Test {
+protected:
+    static void SetUpTestSuite()
+    {
+        auto ret = aclInit(nullptr);
+        if (ret != ACL_SUCCESS && ret != ACL_ERROR_REPEAT_INITIALIZE) {
+            FAIL() << "aclInit failed: " << ret;
+        }
+        ASSERT_EQ(aclrtSetDevice(0), ACL_SUCCESS);
+    }
+
+    static void TearDownTestSuite() { aclrtResetDevice(0); }
+
+    void SetUp() override
+    {
+        transport_ = std::make_unique<AsuTransportImpl>();
+        transport_->SetTransProvider(std::make_unique<StubTransProvider>());
+    }
+
+    std::unique_ptr<AsuTransportImpl> transport_;
+};
+
+}  // namespace
 
 namespace {
 
@@ -58,14 +118,14 @@ TEST(AsuSubmitFlowTest, SendSubBatchBuffersReadsSendCountsFromAttrs)
     g_sendStatuses.clear();
 
     AsuTransportImpl transport;
+    transport.SetTransProvider(std::make_unique<StubTransProvider>());
     transport.config_.attrs = {
         {"kernel_count", "3"},
         {"quiet_count",  "7"},
     };
 
-    ScatterGatherEntry sge;
-    SendIoBatch ioBatch{nullptr, &sge};
-    std::vector<SendIoBatch> ioBatches = {ioBatch};
+    TransProvider::SendIoBatch ioBatch{nullptr, nullptr, nullptr, 0};
+    std::vector<TransProvider::SendIoBatch> ioBatches = {ioBatch};
     std::vector<std::size_t> subBatchIndexes = {0};
 
     std::vector<TransportSubBatchContext> subBatchContexts(1);
@@ -89,22 +149,23 @@ TEST(AsuSubmitFlowTest, SendSubBatchBuffersReportsSendFailures)
     };
 
     AsuTransportImpl transport;
+    transport.SetTransProvider(std::make_unique<StubTransProvider>());
     transport.config_.attrs = {
         {"kernel_count", "3"},
         {"quiet_count",  "7"},
     };
 
-    ASSERT_TRUE(transport.connManager_.AddGroup(AsuEndpoint{}, 1).ok());
-    auto* channel0 = transport.connManager_.SelectConnection();
-    auto* channel1 = transport.connManager_.SelectConnection();
+    transport.connManager_ =
+        std::make_unique<ConnectionManager>(*transport.transProvider_, "", 5000);
+    ASSERT_TRUE(transport.connManager_->AddGroup(AsuEndpoint{}, 1).ok());
+    auto channel0 = transport.connManager_->SelectConnection();
+    auto channel1 = transport.connManager_->SelectConnection();
     ASSERT_NE(channel0, nullptr);
     ASSERT_EQ(channel0, channel1);
 
-    ScatterGatherEntry sge0;
-    ScatterGatherEntry sge1;
-    std::vector<SendIoBatch> ioBatches = {
-        SendIoBatch{channel0->GetNativeQp(), &sge0},
-        SendIoBatch{channel1->GetNativeQp(), &sge1},
+    std::vector<TransProvider::SendIoBatch> ioBatches = {
+        TransProvider::SendIoBatch{channel0->GetConnection(), nullptr, nullptr, 0},
+        TransProvider::SendIoBatch{channel1->GetConnection(), nullptr, nullptr, 0},
     };
     std::vector<std::size_t> subBatchIndexes = {0, 1};
 
@@ -125,26 +186,25 @@ TEST(AsuSubmitFlowTest, SendSubBatchBuffersReportsSendFailures)
     g_sendStatuses.clear();
 }
 
-TEST(AsuSubmitFlowTest, BuildSubBatchSendBuffersReleasesPreFailedSubBatches)
+TEST_F(AsuSubmitFlowBufferTest, BuildSubBatchSendBuffersReleasesPreFailedSubBatches)
 {
-    AsuTransportImpl transport;
     ASSERT_TRUE(
-        transport.sendBufferManager_.Init("test send buffer", MemoryType::HOST, 4096, 1).ok());
+        transport_->sendBufferManager_.Init("test send buffer", MemoryType::HOST, 4096, 1).ok());
     ASSERT_TRUE(
-        transport.flagBufferManager_.Init("test flag buffer", MemoryType::HOST, 128, 1).ok());
+        transport_->flagBufferManager_.Init("test flag buffer", MemoryType::HOST, 128, 1).ok());
 
     std::vector<TransportSubBatchContext> subBatchContexts(1);
     auto& subBatchContext = subBatchContexts[0];
     subBatchContext.state = TransportSubBatchState::COMPLETED;
     subBatchContext.status = Status::Error(StatusCode::INVALID_ARGUMENT, "pre-send failure");
     subBatchContext.entryStatus.assign(1, subBatchContext.status);
-    ASSERT_TRUE(transport.sendBufferManager_.Allocate(64, subBatchContext.sendSge).ok());
-    ASSERT_TRUE(transport.flagBufferManager_.Allocate(64, subBatchContext.flagBuffer).ok());
+    ASSERT_TRUE(transport_->sendBufferManager_.Allocate(64, subBatchContext.sendSge).ok());
+    ASSERT_TRUE(transport_->flagBufferManager_.Allocate(64, subBatchContext.flagBuffer).ok());
 
-    std::vector<SendIoBatch> ioBatches;
+    std::vector<TransProvider::SendIoBatch> ioBatches;
     std::vector<std::size_t> subBatchIndexes;
     const auto status =
-        transport.BuildSubBatchSendBuffers(subBatchContexts, ioBatches, subBatchIndexes);
+        transport_->BuildSubBatchSendBuffers(subBatchContexts, ioBatches, subBatchIndexes);
 
     EXPECT_EQ(status.code, StatusCode::PARTIAL_FAILED);
     EXPECT_TRUE(ioBatches.empty());
@@ -155,16 +215,17 @@ TEST(AsuSubmitFlowTest, BuildSubBatchSendBuffersReleasesPreFailedSubBatches)
     EXPECT_EQ(subBatchContext.flagBuffer.addr, std::uint64_t{0});
 }
 
-TEST(AsuSubmitFlowTest, BuildSubBatchSendBuffersMarksMissingFlagBufferFailed)
+TEST_F(AsuSubmitFlowBufferTest, BuildSubBatchSendBuffersMarksMissingFlagBufferFailed)
 {
-    AsuTransportImpl transport;
     ASSERT_TRUE(
-        transport.sendBufferManager_.Init("test send buffer", MemoryType::HOST, 4096, 1).ok());
+        transport_->sendBufferManager_.Init("test send buffer", MemoryType::HOST, 4096, 1).ok());
     ASSERT_TRUE(
-        transport.flagBufferManager_.Init("test flag buffer", MemoryType::HOST, 128, 1).ok());
+        transport_->flagBufferManager_.Init("test flag buffer", MemoryType::HOST, 128, 1).ok());
 
-    ASSERT_TRUE(transport.connManager_.AddGroup(AsuEndpoint{}, 1).ok());
-    auto* channel = transport.connManager_.SelectConnection();
+    transport_->connManager_ =
+        std::make_unique<ConnectionManager>(*transport_->transProvider_, "", 5000);
+    ASSERT_TRUE(transport_->connManager_->AddGroup(AsuEndpoint{}, 1).ok());
+    auto channel = transport_->connManager_->SelectConnection();
     ASSERT_NE(channel, nullptr);
     EXPECT_EQ(channel->GetInflightCount(), std::uint32_t{1});
 
@@ -173,19 +234,19 @@ TEST(AsuSubmitFlowTest, BuildSubBatchSendBuffersMarksMissingFlagBufferFailed)
     subBatchContext.state = TransportSubBatchState::PENDING;
     subBatchContext.channel = channel;
     subBatchContext.entryStatus.assign(2, Status::OK());
-    ASSERT_TRUE(transport.sendBufferManager_.Allocate(64, subBatchContext.sendSge).ok());
+    ASSERT_TRUE(transport_->sendBufferManager_.Allocate(64, subBatchContext.sendSge).ok());
 
-    std::vector<SendIoBatch> ioBatches;
+    std::vector<TransProvider::SendIoBatch> ioBatches;
     std::vector<std::size_t> subBatchIndexes;
     const auto status =
-        transport.BuildSubBatchSendBuffers(subBatchContexts, ioBatches, subBatchIndexes);
+        transport_->BuildSubBatchSendBuffers(subBatchContexts, ioBatches, subBatchIndexes);
 
     EXPECT_EQ(status.code, StatusCode::NOT_INITIALIZED);
     EXPECT_TRUE(ioBatches.empty());
     EXPECT_TRUE(subBatchIndexes.empty());
     EXPECT_EQ(subBatchContext.state, TransportSubBatchState::COMPLETED);
     EXPECT_EQ(subBatchContext.status.code, StatusCode::NOT_INITIALIZED);
-    EXPECT_EQ(subBatchContext.channel, nullptr);
+    EXPECT_EQ(subBatchContext.channel.get(), nullptr);
     EXPECT_EQ(channel->GetInflightCount(), std::uint32_t{0});
     EXPECT_EQ(subBatchContext.sendSge.slot_index, UINT32_MAX);
     for (const auto& entryStatus : subBatchContext.entryStatus) {
@@ -198,16 +259,15 @@ TEST(AsuSubmitFlowTest, SendSubBatchBuffersFailsAllSentSubBatchesWhenStatusCount
     g_sendStatuses = {Status::OK()};
 
     AsuTransportImpl transport;
+    transport.SetTransProvider(std::make_unique<StubTransProvider>());
     transport.config_.attrs = {
         {"kernel_count", "3"},
         {"quiet_count",  "7"},
     };
 
-    ScatterGatherEntry sge0;
-    ScatterGatherEntry sge1;
-    std::vector<SendIoBatch> ioBatches = {
-        SendIoBatch{nullptr, &sge0},
-        SendIoBatch{nullptr, &sge1},
+    std::vector<TransProvider::SendIoBatch> ioBatches = {
+        TransProvider::SendIoBatch{nullptr, nullptr, nullptr, 0},
+        TransProvider::SendIoBatch{nullptr, nullptr, nullptr, 0},
     };
     std::vector<std::size_t> subBatchIndexes = {0, 1};
 

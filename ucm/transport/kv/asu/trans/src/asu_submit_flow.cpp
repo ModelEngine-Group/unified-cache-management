@@ -81,8 +81,8 @@ Status AsuTransportImpl::SubmitTaskRequests(const TransportTaskContext& ctx,
 }
 
 Status AsuTransportImpl::BuildSubBatchSendBuffers(
-    std::vector<TransportSubBatchContext>& subBatchContexts, std::vector<SendIoBatch>& ioBatches,
-    std::vector<std::size_t>& subBatchIndexes)
+    std::vector<TransportSubBatchContext>& subBatchContexts,
+    std::vector<TransProvider::SendIoBatch>& ioBatches, std::vector<std::size_t>& subBatchIndexes)
 {
     Status finalStatus = Status::OK();
     ioBatches.reserve(subBatchContexts.size());
@@ -109,7 +109,10 @@ Status AsuTransportImpl::BuildSubBatchSendBuffers(
         }
 
         ioBatches.push_back(
-            SendIoBatch{subBatchContext.channel->GetNativeQp(), &subBatchContext.sendSge});
+            TransProvider::SendIoBatch{subBatchContext.channel->GetConnection(),
+                                       reinterpret_cast<void*>(subBatchContext.sendSge.addr),
+                                       reinterpret_cast<void*>(subBatchContext.flagBuffer.addr),
+                                       subBatchContext.sendSge.length});
         subBatchIndexes.emplace_back(index);
     }
 
@@ -118,7 +121,8 @@ Status AsuTransportImpl::BuildSubBatchSendBuffers(
 
 Status AsuTransportImpl::SendSubBatchBuffers(
     std::vector<TransportSubBatchContext>& subBatchContexts,
-    const std::vector<SendIoBatch>& ioBatches, const std::vector<std::size_t>& subBatchIndexes)
+    const std::vector<TransProvider::SendIoBatch>& ioBatches,
+    const std::vector<std::size_t>& subBatchIndexes)
 {
     Status finalStatus = Status::OK();
     if (ioBatches.empty()) { return finalStatus; }
@@ -126,7 +130,7 @@ Status AsuTransportImpl::SendSubBatchBuffers(
     const auto kernelCount = GetSendCountAttr(config_.attrs, "kernel_count");
     const auto quietCount = GetSendCountAttr(config_.attrs, "quiet_count");
 
-    const auto sendStatuses = Send(ioBatches, kernelCount, quietCount);
+    const auto sendStatuses = transProvider_->Send(ioBatches, kernelCount, quietCount);
     if (sendStatuses.size() != ioBatches.size()) {
         const auto status = Status::Error(StatusCode::INTERNAL_ERROR,
                                           "transport send returned unexpected status count");
@@ -143,7 +147,7 @@ Status AsuTransportImpl::SendSubBatchBuffers(
         if (status.ok()) { continue; }
 
         SetSubBatchSendFailed(subBatchContext, status);
-        connManager_.ReportFailure(subBatchContext.channel);
+        connManager_->ReportFailure(subBatchContext.channel);
         if (finalStatus.ok()) { finalStatus = status; }
     }
     return finalStatus;

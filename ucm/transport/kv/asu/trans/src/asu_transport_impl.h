@@ -37,6 +37,7 @@
 #include "io_scheduler.h"
 #include "kv_protocol.h"
 #include "template/spsc_ring_queue.h"
+#include "trans_provider.h"
 #include "transport_task_manager.h"
 
 namespace UC::ASU {
@@ -89,7 +90,6 @@ public:
     Status UnregisterRegions(const std::vector<MRHandle>& handles) override;
 
 private:
-    using TransportTaskContextPtr = std::shared_ptr<TransportTaskContext>;
     std::uint16_t AllocateRequestCid();
     Status SubmitAsync(std::unique_ptr<TransportTaskContext> ctx, TaskId& taskId);
     void WorkerLoop();
@@ -99,10 +99,10 @@ private:
     Status SubmitTaskRequests(const TransportTaskContext& ctx,
                               std::vector<TransportSubBatchContext>& subBatchContexts);
     Status BuildSubBatchSendBuffers(std::vector<TransportSubBatchContext>& subBatchContexts,
-                                    std::vector<SendIoBatch>& ioBatches,
+                                    std::vector<TransProvider::SendIoBatch>& ioBatches,
                                     std::vector<std::size_t>& subBatchIndexes);
     Status SendSubBatchBuffers(std::vector<TransportSubBatchContext>& subBatchContexts,
-                               const std::vector<SendIoBatch>& ioBatches,
+                               const std::vector<TransProvider::SendIoBatch>& ioBatches,
                                const std::vector<std::size_t>& subBatchIndexes);
     Status ValidateSqeRequestAttrs();
     Status SubmitEntrySubBatchRequest(TransportOpType opType,
@@ -120,15 +120,17 @@ private:
     void PollTaskCompletions(const TransportTaskContextPtr& ctx);
     void BuildResult(const TransportTaskContext& ctx, TaskResult& result);
 
+    void SetTransProvider(std::unique_ptr<TransProvider> provider);
+
     TransportConfig config_;
     IoScheduler ioScheduler_;
     BufferManager sendBufferManager_;
     BufferManager flagBufferManager_;
     std::unique_ptr<ProtocolManager> protocolManager_;
 
-    ConnectionManager connManager_;
+    std::unique_ptr<TransProvider> transProvider_;
+    std::unique_ptr<ConnectionManager> connManager_;
     TransportTaskManager taskManager_;
-    // TODO: optimize spsc pattern or just submit to RDMA/UB directly ?
     UC::SpscRingQueue<TransportTaskContextPtr> executeQueue_;
     std::mutex producerMu_;
 

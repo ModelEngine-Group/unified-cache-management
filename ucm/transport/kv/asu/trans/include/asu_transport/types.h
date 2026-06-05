@@ -36,6 +36,8 @@ using MRHandle = std::uint64_t;
 using CacheKey = std::string;
 using AsuId = std::uint64_t;
 
+enum class TransProviderType { AICPU };
+
 constexpr TaskId kInvalidTaskId = 0;
 constexpr MRHandle kInvalidMRHandle = 0;
 
@@ -44,12 +46,9 @@ enum class StatusCode {
     INVALID_ARGUMENT,
     NOT_INITIALIZED,
     TIMEOUT,
-    SUBMIT_TIMEOUT,
-    RESULT_TIMEOUT,
     NOT_FOUND,
     PARTIAL_FAILED,
     CONNECTION_ERROR,
-    NO_ACTIVE_CONNECTION,
     IO_ERROR,
     BUFFER_NOT_REGISTERED,
     BUFFER_NOT_SUPPORTED,
