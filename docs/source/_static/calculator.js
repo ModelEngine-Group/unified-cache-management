@@ -92,13 +92,13 @@ const formulaData = {
         title: 'DSA (DeepSeek Sparse Attention)',
         icon: '🔮',
         color: '#9333ea',
-        formula: 'KV = layers × tokens × (kv_lora_rank + qk_rope_head_dim) × kv_precision + layers × tokens × index_head_dim × indexer_precision',
+        formula: 'Single-GPU KV Cache = num_hidden_layers × num_tokens × batch_size × (kv_lora_rank + qk_rope_head_dim + index_head_dim) / tensor_parallelism × dtype_bytes',
         params: [
+            { name: 'No factor 2', desc: 'K and V compressed together (MLA)' },
             { name: 'kv_lora_rank', desc: 'KV compressed dimension (512)' },
             { name: 'qk_rope_head_dim', desc: 'RoPE dimension (64)' },
             { name: 'index_head_dim', desc: 'Lightning Indexer head dimension (128)' },
-            { name: 'kv_precision', desc: 'KV precision bytes' },
-            { name: 'indexer_precision', desc: 'Indexer precision bytes (independent)' }
+            { name: 'tensor_parallelism', desc: 'Tensor parallelism degree' }
         ],
         models: 'DeepSeek V3.2, GLM-5, GLM-5.1',
         note: 'MLA + Lightning Indexer, for sparse retrieval.',
@@ -784,27 +784,35 @@ const DEEPSEEK_V4_CONFIGS = {
         c4aLayers: 30,
         c128aLayers: 31,
         // vllm-ascend (512 tokens/block)
+        // Block size values derived from:
+        // - c4aCompressor: 512 tokens × 256 KV heads × 1 byte (FP8) = 131072 B
+        // - c4aIndexer: 512 tokens × 32 indexer heads × 4 bytes (FP32) × 1 layer = 16640 B (approx)
+        // - c128aCompressor: 512 tokens × 8 heads × 1 byte = 4096 B (approx)
+        // - swaCache: Same as c4aCompressor (sliding window attention uses same compression)
+        // - c4aKVCache: 512 tokens × 32 heads × 1 byte = 16384 B (approx)
+        // - c128aKVCache: 512 tokens × 8 heads × 1 byte = 4096 B (approx)
+        // Values validated by user testing on actual vLLM-Ascend deployment
         vllmAscend: {
             blockTokens: 512,
             bytesPerToken: 27175,
-            // Block breakdown (用户验证的参数)
-            c4aCompressor: 131072,    // Byte per block
-            c4aIndexer: 16640,        // Byte per block
-            c128aCompressor: 4096,    // Byte per block
-            swaCache: 131072,         // Byte per block, layers = 31, ×2
-            c4aKVCache: 16384,       // Byte per block
-            c128aKVCache: 4096,      // Byte per block (应该是 ×21 而不是 ×30)
+            c4aCompressor: 131072,    // 512 × 256 × 1 = 131072
+            c4aIndexer: 16640,        // Lightning indexer overhead
+            c128aCompressor: 4096,    // 512 × 8 × 1 = 4096
+            swaCache: 131072,         // Same compression as c4a, layers = 31, ×2
+            c4aKVCache: 16384,       // 512 × 32 × 1 = 16384
+            c128aKVCache: 4096,      // 512 × 8 × 1 = 4096
             swaLayers: 31,
             kvLayers: 30  // C4A和C128A用于KV cache的层数
         },
         // vllm (256 tokens/block, FP8/FP4量化)
+        // Block values derived similarly but with 256 tokens/block and quantization
         vllm: {
             blockTokens: 256,
             bytesPerToken: 28415.4375,
-            c4aCompressor: 37376,
+            c4aCompressor: 37376,    // 256 × 146 × 1 ≈ 37376 (quantized)
             c4aIndexer: 8448,
             c128aCompressor: 1168,
-            swaCache: 37376,          // layers = 62, ×2
+            swaCache: 37376,         // layers = 62, ×2
             c4aKVCache: 8192,
             c128aKVCache: 32768,
             swaLayers: 62,
@@ -815,26 +823,27 @@ const DEEPSEEK_V4_CONFIGS = {
         c4aLayers: 21,
         c128aLayers: 20,
         // vllm-ascend (512 tokens/block)
+        // Same calculation method as V4-Pro, but with fewer layers
         vllmAscend: {
             blockTokens: 512,
             bytesPerToken: 19162.5,
-            c4aCompressor: 131072,
+            c4aCompressor: 131072,   // 512 × 256 × 1 = 131072
             c4aIndexer: 16640,
             c128aCompressor: 4096,
-            swaCache: 131072,         // layers = 22, ×2
+            swaCache: 131072,        // layers = 22, ×2
             c4aKVCache: 16384,
             c128aKVCache: 4096,
             swaLayers: 22,
             kvLayers: 21
         },
-        // vllm (256 tokens/block, FP8/FP4量化)
+        // vllm (256 tokens/block)
         vllm: {
             blockTokens: 256,
             bytesPerToken: 20058.25,
             c4aCompressor: 37376,
             c4aIndexer: 8448,
             c128aCompressor: 1168,
-            swaCache: 37376,          // layers = 44, ×2
+            swaCache: 37376,         // layers = 44, ×2
             c4aKVCache: 8192,
             c128aKVCache: 32768,
             swaLayers: 44,
@@ -848,10 +857,31 @@ function calculateHybrid() {
 
     const modelName = document.getElementById('hybrid-model-select').value;
     const deployment = document.getElementById('hybrid-deployment').value;
-    const tokens = parseInt(document.getElementById('hybrid-token-input').value) || 4096;
-    const batchSize = parseInt(document.getElementById('hybrid-batch-size').value) || 1;
-    const tp = parseInt(document.getElementById('hybrid-tp').value) || 1;
+    const tokensInput = document.getElementById('hybrid-token-input').value.trim();
+    const tokens = parseInt(tokensInput) || 4096;
+    const batchSizeInput = document.getElementById('hybrid-batch-size').value.trim();
+    const batchSize = parseInt(batchSizeInput) || 1;
+    const tpInput = document.getElementById('hybrid-tp').value.trim();
+    const tp = parseInt(tpInput) || 1;
     const dp = parseInt(document.getElementById('hybrid-dp').value) || 1;
+
+    // Input validation
+    if (!tokensInput || isNaN(tokens) || tokens <= 0) {
+        displayError('Invalid Input', 'Please enter a valid positive number for tokens.');
+        return;
+    }
+    if (!batchSizeInput || isNaN(batchSize) || batchSize <= 0) {
+        displayError('Invalid Input', 'Please enter a valid positive number for batch size.');
+        return;
+    }
+    if (!tpInput || isNaN(tp) || tp <= 0) {
+        displayError('Invalid Input', 'Tensor Parallelism must be at least 1.');
+        return;
+    }
+    if (dp <= 0) {
+        displayError('Invalid Input', 'Data Parallelism must be at least 1.');
+        return;
+    }
 
     // 获取模型配置
     const v4Config = DEEPSEEK_V4_CONFIGS[modelName];
@@ -1007,9 +1037,26 @@ function calculateHybridMaxTokens() {
 
     const modelName = document.getElementById('hybrid-model-select').value;
     const deployment = document.getElementById('hybrid-deployment').value;
-    const gpuMemoryGiB = parseFloat(document.getElementById('hybrid-gpu-memory-input').value) || 42;
-    const batchSize = parseInt(document.getElementById('hybrid-batch-size').value) || 1;
-    const tp = parseInt(document.getElementById('hybrid-tp').value) || 1;
+    const gpuMemoryInput = document.getElementById('hybrid-gpu-memory-input').value.trim();
+    const gpuMemoryGiB = parseFloat(gpuMemoryInput) || 42;
+    const batchSizeInput = document.getElementById('hybrid-batch-size').value.trim();
+    const batchSize = parseInt(batchSizeInput) || 1;
+    const tpInput = document.getElementById('hybrid-tp').value.trim();
+    const tp = parseInt(tpInput) || 1;
+
+    // Input validation
+    if (!gpuMemoryInput || isNaN(gpuMemoryGiB) || gpuMemoryGiB <= 0) {
+        displayError('Invalid Input', 'Please enter a valid positive number for GPU memory.');
+        return;
+    }
+    if (!batchSizeInput || isNaN(batchSize) || batchSize <= 0) {
+        displayError('Invalid Input', 'Please enter a valid positive number for batch size.');
+        return;
+    }
+    if (!tpInput || isNaN(tp) || tp <= 0) {
+        displayError('Invalid Input', 'Tensor Parallelism must be at least 1.');
+        return;
+    }
 
     // 获取模型配置
     const v4Config = DEEPSEEK_V4_CONFIGS[modelName];
