@@ -566,8 +566,7 @@ bool AsuClientImpl::PollTask(const ClientTaskContextPtr& ctx)
         ctx->finalStatus =
             anyFailed ? Status::Error(StatusCode::PARTIAL_FAILED, "client task partially failed")
                       : Status::OK();
-        ctx->state.store(anyFailed ? ClientTaskState::FAILED : ClientTaskState::COMPLETED,
-                         std::memory_order_release);
+        ctx->state.store(ClientTaskState::COMPLETED, std::memory_order_release);
         ctx->cv.notify_all();
         return true;
     }
@@ -664,8 +663,7 @@ Status AsuClientImpl::WaitTaskContext(const ClientTaskContextPtr& ctx, std::uint
             ctx->finalStatus = anyFailed ? Status::Error(StatusCode::PARTIAL_FAILED,
                                                          "client task partially failed")
                                          : Status::OK();
-            ctx->state.store(anyFailed ? ClientTaskState::FAILED : ClientTaskState::COMPLETED,
-                             std::memory_order_release);
+            ctx->state.store(ClientTaskState::COMPLETED, std::memory_order_release);
             ctx->cv.notify_all();
             break;
         }

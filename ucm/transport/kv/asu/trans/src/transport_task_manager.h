@@ -51,28 +51,26 @@ enum class TransportTaskState {
     PENDING = 0,
     INFLIGHT = 1,
     COMPLETED = 2,
-    FAILED = 3,
-    CANCELED = 4,
+    CANCELED = 3,
 };
 
 enum class TransportSubBatchState {
     PENDING = 0,
     COMPLETED = 1,
-    FAILED = 2,
 };
 
-constexpr std::size_t kAsuBatchLoadMaxIoNum = 110;
-constexpr std::size_t kAsuBatchStoreMaxIoNum = 110;
-constexpr std::size_t kAsuDeleteMaxIoNum = 254;
-constexpr std::size_t kAsuQueryMaxIoNum = 256;
+constexpr std::size_t kAsuBatchLoadMaxIoSize = 110;
+constexpr std::size_t kAsuBatchStoreMaxIoSize = 110;
+constexpr std::size_t kAsuDeleteMaxIoSize = 254;
+constexpr std::size_t kAsuQueryMaxIoSize = 256;
 
-inline std::size_t GetAsuMaxIoNum(TransportOpType opType)
+inline std::size_t GetAsuMaxIoSize(TransportOpType opType)
 {
     switch (opType) {
-        case TransportOpType::BATCH_LOAD: return kAsuBatchLoadMaxIoNum;
-        case TransportOpType::BATCH_STORE: return kAsuBatchStoreMaxIoNum;
-        case TransportOpType::DELETE: return kAsuDeleteMaxIoNum;
-        case TransportOpType::QUERY: return kAsuQueryMaxIoNum;
+        case TransportOpType::BATCH_LOAD: return kAsuBatchLoadMaxIoSize;
+        case TransportOpType::BATCH_STORE: return kAsuBatchStoreMaxIoSize;
+        case TransportOpType::DELETE: return kAsuDeleteMaxIoSize;
+        case TransportOpType::QUERY: return kAsuQueryMaxIoSize;
         default: return 0;
     }
 }
@@ -128,6 +126,8 @@ struct TransportTaskContext {
     std::condition_variable cv;
 
     bool Done() const;
+    void InitializeTerminalSubBatchCount();
+    void TryFinalizeFromSubBatches();
 };
 
 class TransportTaskManager : public TaskManagerBase<TransportTaskContext, TransportTaskState> {

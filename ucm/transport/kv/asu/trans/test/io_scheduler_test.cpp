@@ -59,14 +59,14 @@ TEST(IoSchedulerTest, SplitKeyBatchReturnsEmptyForEmptyInputOrZeroLimit)
     EXPECT_TRUE(scheduler.SplitForAsu(BatchView<CacheKey>{keys.data(), keys.size()}, 0).empty());
 }
 
-TEST(IoSchedulerTest, GetSqeBatchLimitMatchesOperationKind)
+TEST(IoSchedulerTest, GetSqeMaxIoSizeMatchesOperationKind)
 {
-    EXPECT_EQ(GetSqeBatchLimit(TransportOpType::LOAD), std::size_t{1});
-    EXPECT_EQ(GetSqeBatchLimit(TransportOpType::STORE), std::size_t{1});
-    EXPECT_EQ(GetSqeBatchLimit(TransportOpType::BATCH_LOAD), kAsuBatchLoadMaxIoNum);
-    EXPECT_EQ(GetSqeBatchLimit(TransportOpType::BATCH_STORE), kAsuBatchStoreMaxIoNum);
-    EXPECT_EQ(GetSqeBatchLimit(TransportOpType::DELETE), kAsuDeleteMaxIoNum);
-    EXPECT_EQ(GetSqeBatchLimit(TransportOpType::QUERY), kAsuQueryMaxIoNum);
+    EXPECT_EQ(GetSqeMaxIoSize(TransportOpType::LOAD), std::size_t{1});
+    EXPECT_EQ(GetSqeMaxIoSize(TransportOpType::STORE), std::size_t{1});
+    EXPECT_EQ(GetSqeMaxIoSize(TransportOpType::BATCH_LOAD), kAsuBatchLoadMaxIoSize);
+    EXPECT_EQ(GetSqeMaxIoSize(TransportOpType::BATCH_STORE), kAsuBatchStoreMaxIoSize);
+    EXPECT_EQ(GetSqeMaxIoSize(TransportOpType::DELETE), kAsuDeleteMaxIoSize);
+    EXPECT_EQ(GetSqeMaxIoSize(TransportOpType::QUERY), kAsuQueryMaxIoSize);
 }
 
 }  // namespace

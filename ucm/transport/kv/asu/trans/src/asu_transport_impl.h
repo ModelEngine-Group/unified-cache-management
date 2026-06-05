@@ -43,6 +43,20 @@ namespace UC::ASU {
 
 using TransportTaskContextPtr = std::shared_ptr<TransportTaskContext>;
 
+inline KvOpcode ToKvOpcode(TransportOpType opType)
+{
+    switch (opType) {
+        case TransportOpType::LOAD: return KvOpcode::Retrieve;
+        case TransportOpType::STORE: return KvOpcode::Store;
+        case TransportOpType::BATCH_LOAD: return KvOpcode::BatchRetrieve;
+        case TransportOpType::BATCH_STORE: return KvOpcode::BatchStore;
+        case TransportOpType::DELETE: return KvOpcode::Delete;
+        case TransportOpType::QUERY: return KvOpcode::Exist;
+        case TransportOpType::KEEP_ALIVE: return KvOpcode::KeepAlive;
+    }
+    return KvOpcode::KeepAlive;
+}
+
 class AsuTransportImpl final : public AsuTransport {
 public:
     AsuTransportImpl() = default;
@@ -80,8 +94,28 @@ private:
     Status SubmitAsync(std::unique_ptr<TransportTaskContext> ctx, TaskId& taskId);
     void WorkerLoop();
     void CompletionLoop();
-    void CompleteTask(const TransportTaskContextPtr& ctx);
+    void ProcessTask(const TransportTaskContextPtr& ctx);
     Status AssignSubBatchConnections(std::vector<TransportSubBatchContext>& subBatchContexts);
+    Status SubmitTaskRequests(const TransportTaskContext& ctx,
+                              std::vector<TransportSubBatchContext>& subBatchContexts);
+    Status BuildSubBatchSendBuffers(std::vector<TransportSubBatchContext>& subBatchContexts,
+                                    std::vector<SendIoBatch>& ioBatches,
+                                    std::vector<std::size_t>& subBatchIndexes);
+    Status SendSubBatchBuffers(std::vector<TransportSubBatchContext>& subBatchContexts,
+                               const std::vector<SendIoBatch>& ioBatches,
+                               const std::vector<std::size_t>& subBatchIndexes);
+    Status ValidateSqeRequestAttrs();
+    Status SubmitEntrySubBatchRequest(TransportOpType opType,
+                                      const IoScheduler::ScheduledIoBatch& subBatch,
+                                      TransportSubBatchContext& subBatchContext);
+    Status SubmitKeySubBatchRequest(TransportOpType opType,
+                                    const IoScheduler::ScheduledKeyBatch& subBatch,
+                                    TransportSubBatchContext& subBatchContext);
+    Status SubmitKeepAliveRequest(TransportSubBatchContext& subBatchContext);
+    void ReleaseSubBatchResources(TransportSubBatchContext& subBatchContext);
+    void ReleaseAllSubBatchResources(std::vector<TransportSubBatchContext>& subBatchContexts);
+    void CompleteSubBatch(TransportTaskContext& ctx, TransportSubBatchContext& subBatchContext,
+                          const Status& status);
 
     void PollTaskCompletions(const TransportTaskContextPtr& ctx);
     void BuildResult(const TransportTaskContext& ctx, TaskResult& result);

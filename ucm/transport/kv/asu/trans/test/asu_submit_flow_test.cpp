@@ -21,11 +21,13 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  * */
-#include "asu_submit_flow.h"
 #include <cstdint>
 #include <gtest/gtest.h>
 #include <unordered_map>
 #include <vector>
+#define private public
+#include "asu_transport_impl.h"
+#undef private
 #include "buffer_manager.h"
 #include "connection_internal.h"
 
@@ -55,7 +57,8 @@ TEST(AsuSubmitFlowTest, SendSubBatchBuffersReadsSendCountsFromAttrs)
     g_quietCount = 0;
     g_sendStatuses.clear();
 
-    std::unordered_map<std::string, std::string> attrs = {
+    AsuTransportImpl transport;
+    transport.config_.attrs = {
         {"kernel_count", "3"},
         {"quiet_count",  "7"},
     };
@@ -69,9 +72,7 @@ TEST(AsuSubmitFlowTest, SendSubBatchBuffersReadsSendCountsFromAttrs)
     subBatchContexts[0].state = TransportSubBatchState::PENDING;
     subBatchContexts[0].entryStatus.assign(1, Status::OK());
 
-    ConnectionManager connManager;
-    const auto status =
-        SendSubBatchBuffers(subBatchContexts, ioBatches, subBatchIndexes, attrs, connManager);
+    const auto status = transport.SendSubBatchBuffers(subBatchContexts, ioBatches, subBatchIndexes);
 
     EXPECT_TRUE(status.ok()) << status.message;
     EXPECT_EQ(g_kernelCount, std::uint32_t{3});
@@ -87,15 +88,15 @@ TEST(AsuSubmitFlowTest, SendSubBatchBuffersReportsSendFailures)
         Status::Error(StatusCode::CONNECTION_ERROR, "fake send failure"),
     };
 
-    std::unordered_map<std::string, std::string> attrs = {
+    AsuTransportImpl transport;
+    transport.config_.attrs = {
         {"kernel_count", "3"},
         {"quiet_count",  "7"},
     };
 
-    ConnectionManager connManager;
-    ASSERT_TRUE(connManager.AddGroup(AsuEndpoint{}, 1).ok());
-    auto* channel0 = connManager.SelectConnection();
-    auto* channel1 = connManager.SelectConnection();
+    ASSERT_TRUE(transport.connManager_.AddGroup(AsuEndpoint{}, 1).ok());
+    auto* channel0 = transport.connManager_.SelectConnection();
+    auto* channel1 = transport.connManager_.SelectConnection();
     ASSERT_NE(channel0, nullptr);
     ASSERT_EQ(channel0, channel1);
 
@@ -115,35 +116,35 @@ TEST(AsuSubmitFlowTest, SendSubBatchBuffersReportsSendFailures)
     subBatchContexts[1].channel = channel1;
     subBatchContexts[1].entryStatus.assign(1, Status::OK());
 
-    const auto status =
-        SendSubBatchBuffers(subBatchContexts, ioBatches, subBatchIndexes, attrs, connManager);
+    const auto status = transport.SendSubBatchBuffers(subBatchContexts, ioBatches, subBatchIndexes);
 
     EXPECT_EQ(status.code, StatusCode::CONNECTION_ERROR);
     EXPECT_EQ(channel0->GetState(), ChannelState::DRAINING);
-    EXPECT_EQ(subBatchContexts[0].state, TransportSubBatchState::FAILED);
-    EXPECT_EQ(subBatchContexts[1].state, TransportSubBatchState::FAILED);
+    EXPECT_EQ(subBatchContexts[0].state, TransportSubBatchState::COMPLETED);
+    EXPECT_EQ(subBatchContexts[1].state, TransportSubBatchState::COMPLETED);
     g_sendStatuses.clear();
 }
 
 TEST(AsuSubmitFlowTest, BuildSubBatchSendBuffersReleasesPreFailedSubBatches)
 {
-    BufferManager sendBufferManager;
-    BufferManager flagBufferManager;
-    ASSERT_TRUE(sendBufferManager.Init("test send buffer", MemoryType::HOST, 4096, 1).ok());
-    ASSERT_TRUE(flagBufferManager.Init("test flag buffer", MemoryType::HOST, 128, 1).ok());
+    AsuTransportImpl transport;
+    ASSERT_TRUE(
+        transport.sendBufferManager_.Init("test send buffer", MemoryType::HOST, 4096, 1).ok());
+    ASSERT_TRUE(
+        transport.flagBufferManager_.Init("test flag buffer", MemoryType::HOST, 128, 1).ok());
 
     std::vector<TransportSubBatchContext> subBatchContexts(1);
     auto& subBatchContext = subBatchContexts[0];
-    subBatchContext.state = TransportSubBatchState::FAILED;
+    subBatchContext.state = TransportSubBatchState::COMPLETED;
     subBatchContext.status = Status::Error(StatusCode::INVALID_ARGUMENT, "pre-send failure");
     subBatchContext.entryStatus.assign(1, subBatchContext.status);
-    ASSERT_TRUE(sendBufferManager.Allocate(64, subBatchContext.sendSge).ok());
-    ASSERT_TRUE(flagBufferManager.Allocate(64, subBatchContext.flagBuffer).ok());
+    ASSERT_TRUE(transport.sendBufferManager_.Allocate(64, subBatchContext.sendSge).ok());
+    ASSERT_TRUE(transport.flagBufferManager_.Allocate(64, subBatchContext.flagBuffer).ok());
 
     std::vector<SendIoBatch> ioBatches;
     std::vector<std::size_t> subBatchIndexes;
-    const auto status = BuildSubBatchSendBuffers(subBatchContexts, ioBatches, subBatchIndexes,
-                                                 sendBufferManager, flagBufferManager);
+    const auto status =
+        transport.BuildSubBatchSendBuffers(subBatchContexts, ioBatches, subBatchIndexes);
 
     EXPECT_EQ(status.code, StatusCode::PARTIAL_FAILED);
     EXPECT_TRUE(ioBatches.empty());
@@ -156,14 +157,14 @@ TEST(AsuSubmitFlowTest, BuildSubBatchSendBuffersReleasesPreFailedSubBatches)
 
 TEST(AsuSubmitFlowTest, BuildSubBatchSendBuffersMarksMissingFlagBufferFailed)
 {
-    BufferManager sendBufferManager;
-    BufferManager flagBufferManager;
-    ASSERT_TRUE(sendBufferManager.Init("test send buffer", MemoryType::HOST, 4096, 1).ok());
-    ASSERT_TRUE(flagBufferManager.Init("test flag buffer", MemoryType::HOST, 128, 1).ok());
+    AsuTransportImpl transport;
+    ASSERT_TRUE(
+        transport.sendBufferManager_.Init("test send buffer", MemoryType::HOST, 4096, 1).ok());
+    ASSERT_TRUE(
+        transport.flagBufferManager_.Init("test flag buffer", MemoryType::HOST, 128, 1).ok());
 
-    ConnectionManager connManager;
-    ASSERT_TRUE(connManager.AddGroup(AsuEndpoint{}, 1).ok());
-    auto* channel = connManager.SelectConnection();
+    ASSERT_TRUE(transport.connManager_.AddGroup(AsuEndpoint{}, 1).ok());
+    auto* channel = transport.connManager_.SelectConnection();
     ASSERT_NE(channel, nullptr);
     EXPECT_EQ(channel->GetInflightCount(), std::uint32_t{1});
 
@@ -172,17 +173,17 @@ TEST(AsuSubmitFlowTest, BuildSubBatchSendBuffersMarksMissingFlagBufferFailed)
     subBatchContext.state = TransportSubBatchState::PENDING;
     subBatchContext.channel = channel;
     subBatchContext.entryStatus.assign(2, Status::OK());
-    ASSERT_TRUE(sendBufferManager.Allocate(64, subBatchContext.sendSge).ok());
+    ASSERT_TRUE(transport.sendBufferManager_.Allocate(64, subBatchContext.sendSge).ok());
 
     std::vector<SendIoBatch> ioBatches;
     std::vector<std::size_t> subBatchIndexes;
-    const auto status = BuildSubBatchSendBuffers(subBatchContexts, ioBatches, subBatchIndexes,
-                                                 sendBufferManager, flagBufferManager);
+    const auto status =
+        transport.BuildSubBatchSendBuffers(subBatchContexts, ioBatches, subBatchIndexes);
 
     EXPECT_EQ(status.code, StatusCode::NOT_INITIALIZED);
     EXPECT_TRUE(ioBatches.empty());
     EXPECT_TRUE(subBatchIndexes.empty());
-    EXPECT_EQ(subBatchContext.state, TransportSubBatchState::FAILED);
+    EXPECT_EQ(subBatchContext.state, TransportSubBatchState::COMPLETED);
     EXPECT_EQ(subBatchContext.status.code, StatusCode::NOT_INITIALIZED);
     EXPECT_EQ(subBatchContext.channel, nullptr);
     EXPECT_EQ(channel->GetInflightCount(), std::uint32_t{0});
@@ -196,7 +197,8 @@ TEST(AsuSubmitFlowTest, SendSubBatchBuffersFailsAllSentSubBatchesWhenStatusCount
 {
     g_sendStatuses = {Status::OK()};
 
-    std::unordered_map<std::string, std::string> attrs = {
+    AsuTransportImpl transport;
+    transport.config_.attrs = {
         {"kernel_count", "3"},
         {"quiet_count",  "7"},
     };
@@ -215,15 +217,13 @@ TEST(AsuSubmitFlowTest, SendSubBatchBuffersFailsAllSentSubBatchesWhenStatusCount
     subBatchContexts[1].state = TransportSubBatchState::PENDING;
     subBatchContexts[1].entryStatus.assign(1, Status::OK());
 
-    ConnectionManager connManager;
-    const auto status =
-        SendSubBatchBuffers(subBatchContexts, ioBatches, subBatchIndexes, attrs, connManager);
+    const auto status = transport.SendSubBatchBuffers(subBatchContexts, ioBatches, subBatchIndexes);
 
     EXPECT_EQ(status.code, StatusCode::INTERNAL_ERROR);
-    EXPECT_EQ(subBatchContexts[0].state, TransportSubBatchState::FAILED);
+    EXPECT_EQ(subBatchContexts[0].state, TransportSubBatchState::COMPLETED);
     EXPECT_EQ(subBatchContexts[0].status.code, StatusCode::INTERNAL_ERROR);
     EXPECT_EQ(subBatchContexts[0].entryStatus[0].code, StatusCode::INTERNAL_ERROR);
-    EXPECT_EQ(subBatchContexts[1].state, TransportSubBatchState::FAILED);
+    EXPECT_EQ(subBatchContexts[1].state, TransportSubBatchState::COMPLETED);
     EXPECT_EQ(subBatchContexts[1].status.code, StatusCode::INTERNAL_ERROR);
     EXPECT_EQ(subBatchContexts[1].entryStatus[0].code, StatusCode::INTERNAL_ERROR);
     g_sendStatuses.clear();

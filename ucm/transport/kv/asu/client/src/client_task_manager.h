@@ -53,8 +53,7 @@ enum class ClientTaskState {
     PENDING = 0,
     INFLIGHT = 1,
     COMPLETED = 2,
-    FAILED = 3,
-    CANCELED = 4,
+    CANCELED = 3,
 };
 
 enum class ClientOpType {
@@ -80,8 +79,7 @@ struct ClientTaskContext {
     bool Done() const
     {
         auto s = state.load(std::memory_order_acquire);
-        return s == ClientTaskState::COMPLETED || s == ClientTaskState::FAILED ||
-               s == ClientTaskState::CANCELED;
+        return s == ClientTaskState::COMPLETED || s == ClientTaskState::CANCELED;
     }
 };
 

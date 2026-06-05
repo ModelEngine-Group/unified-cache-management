@@ -41,11 +41,11 @@ public:
     };
 
     std::vector<ScheduledIoBatch> SplitForAsu(const BatchView<KVBuffer>& entries,
-                                              std::size_t maxIoNum) const;
+                                              std::size_t maxIoSize) const;
     std::vector<ScheduledKeyBatch> SplitForAsu(const BatchView<CacheKey>& keys,
-                                               std::size_t maxIoNum) const;
+                                               std::size_t maxIoSize) const;
 };
 
-std::size_t GetSqeBatchLimit(TransportOpType opType);
+std::size_t GetSqeMaxIoSize(TransportOpType opType);
 
 }  // namespace UC::ASU
