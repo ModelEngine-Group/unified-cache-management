@@ -15,7 +15,6 @@ Test flow mirrors test_offline_inference.py:
 """
 
 import os
-from typing import List
 
 import pytest
 import yaml
@@ -27,6 +26,65 @@ os.environ["ENABLE_UCM_PATCH"] = "1"
 
 class TestBasicOnlineInference:
     """Test basic online inference functionality."""
+
+    @pytest.mark.stage(1)
+    @pytest.mark.platform("npu")
+    @pytest.mark.feature("online_inference")
+    @pytest.mark.parametrize("use_layerwise", [True, False])
+    def test_online_accuracy_hbm_ssd_mixed_a2_pc(self, monkeypatch, use_layerwise):
+        self._run_a2_pc_hbm_ssd_mixed(monkeypatch, use_layerwise=use_layerwise)
+
+    def _run_a2_pc_hbm_ssd_mixed(self, monkeypatch, use_layerwise: bool):
+        model_name = "Qwen3-0.6B"
+        max_tokens = 200
+        prompt_split_ratio = 0.5
+        ucm_connector_name = "UcmPipelineStore"
+        max_num_batched_tokens = 2047
+        cache_buffer_capacity_gb = 2 if use_layerwise else 32
+
+        config_file = get_path_relative_to_test_root("config.yaml")
+        with open(config_file, "r", encoding="utf-8") as f:
+            config = yaml.safe_load(f)
+
+        ucm_storage_dir = "/tmp/ucm_cache"
+        served_model_name = model_name
+        tokenizer_path = f"/home/models/{model_name}"
+        model_path = get_path_to_model(model_name, config)
+        monkeypatch.setenv("E2E_TEST_GPU_MEMORY_UTILIZATION", "0.2")
+
+        ucm_config = {
+            "use_layerwise": use_layerwise,
+            "ucm_connectors": [
+                {
+                    "ucm_connector_name": ucm_connector_name,
+                    "ucm_connector_config": {
+                        "store_pipeline": "Cache|Posix",
+                        "storage_backends": ucm_storage_dir,
+                        "use_direct": False,
+                        "cache_buffer_capacity_gb": cache_buffer_capacity_gb,
+                    },
+                }
+            ],
+        }
+
+        vllm_server_startup_args = dict(
+            model_path=model_path,
+            port=8000,
+            ucm_config=ucm_config,
+            max_model_len=12000,
+            max_num_batched_tokens=max_num_batched_tokens,
+            served_model_name=served_model_name,
+            additional_args=["--enforce-eager"],
+        )
+
+        hbm_ssd_mixed_test(
+            model_name,
+            tokenizer_path,
+            max_tokens,
+            prompt_split_ratio,
+            ucm_config,
+            vllm_server_startup_args,
+        )
 
     @pytest.mark.stage(1)
     @pytest.mark.gpu_mem(6000)
