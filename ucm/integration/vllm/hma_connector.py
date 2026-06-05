@@ -187,7 +187,7 @@ class KVCacheGroupLayout:
         logger.info(
             f"KV cache group layout: views={len(self.kvcaches)}, "
             f"ptrs={len(ptrs)}, "
-            f"buffer_bytes={int(self.buffer_sizes.sum())}, "
+            f"buffer_bytes={sum(int(size) for size in self.buffer_sizes)}, "
             f"tensor_block_sizes={sorted(set(tensor_block_sizes))}"
         )
 
@@ -766,6 +766,10 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
         for group_id in group_ids:
             layout = group_layouts.get(group_id)
             if layout is None:
+                logger.warning(
+                    f"Skip GPU KV buffer registration for group_id={group_id}: "
+                    "no KV cache layout was registered."
+                )
                 continue
             buffer_addrs = layout.base_ptrs.reshape(-1).tolist()
             buffer_sizes = layout.buffer_sizes.reshape(-1).tolist()
