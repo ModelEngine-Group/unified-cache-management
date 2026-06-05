@@ -99,7 +99,7 @@ jobs:
           push: false
           load: false
           cache-from: type=gha,scope=npu
-          cache-to: type=gha,mode=max,scope=npu
+          cache-to: type=gha,mode=max,scope=npu,ignore-error=true
 
   test-build-vllm-ascend-v0-20-2:
     timeout-minutes: 25
@@ -123,7 +123,7 @@ jobs:
           push: false
           load: false
           cache-from: type=gha,scope=npu-v0.20.2
-          cache-to: type=gha,mode=max,scope=npu-v0.20.2
+          cache-to: type=gha,mode=max,scope=npu-v0.20.2,ignore-error=true
 
   test-build-vllm-cuda-v0-20-2:
     timeout-minutes: 25
@@ -147,7 +147,7 @@ jobs:
           push: false
           load: false
           cache-from: type=gha,scope=gpu-v0.20.2
-          cache-to: type=gha,mode=max,scope=gpu-v0.20.2
+          cache-to: type=gha,mode=max,scope=gpu-v0.20.2,ignore-error=true
 
   test-build-sglang:
     timeout-minutes: 25
@@ -171,7 +171,7 @@ jobs:
           push: false
           load: false
           cache-from: type=gha,scope=gpu
-          cache-to: type=gha,mode=max,scope=gpu
+          cache-to: type=gha,mode=max,scope=gpu,ignore-error=true
 
   test-build-mindie:
     timeout-minutes: 25
@@ -195,4 +195,127 @@ jobs:
           push: false
           load: false
           cache-from: type=gha,scope=npu
-          cache-to: type=gha,mode=max,scope=npu
+          cache-to: type=gha,mode=max,scope=npu,ignore-error=true
+
+  test-e2e-pc-a2:
+    timeout-minutes: 20
+    runs-on: [self-hosted, npu, a2]
+    needs: lint-and-unit-tests
+    permissions:
+      checks: write
+      pull-requests: write
+    steps:
+      - name: Clean repo
+        run: |
+          if [ -d "${{ github.workspace }}" ]; then
+            cd ${{ github.workspace }}
+            rm -rf ./*
+            rm -rf .[!.]*
+          fi
+
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+          show-progress: false
+
+      - name: Install Docker CLI
+        run: |
+          SUDO=""
+          if [ "$(id -u)" -ne 0 ]; then
+            if command -v sudo &> /dev/null; then
+              SUDO="sudo"
+            else
+              echo "Docker CLI installation requires root or sudo"
+              exit 1
+            fi
+          fi
+          if ! command -v docker &> /dev/null; then
+            echo "Docker CLI not found, installing..."
+            ${SUDO} apt-get update
+            ${SUDO} apt-get install -y docker.io
+          else
+            echo "Docker CLI already installed"
+          fi
+          if ! ${SUDO} docker info >/dev/null 2>&1; then
+            echo "Docker daemon is not reachable from the runner."
+            echo "Mount /var/run/docker.sock into the runner container so this job can build and run test images on the host Docker daemon."
+            exit 1
+          fi
+
+      - name: Generate Docker Image Version
+        id: version
+        run: |
+          DATE=$(date +%Y%m%d)
+          SHORT_SHA=$(echo '${{ github.sha }}' | cut -c1-7)
+          REF_NAME=$(echo '${{ github.ref_name }}' | tr '/' '-')
+          VERSION="${REF_NAME}-${DATE}-${{ github.run_number }}-${SHORT_SHA}"
+          echo "version=${VERSION}" >> $GITHUB_OUTPUT
+          echo "Docker image version: ${VERSION}"
+
+      - name: Build
+        run: |
+          SUDO=""
+          if [ "$(id -u)" -ne 0 ] && command -v sudo &> /dev/null; then
+            SUDO="sudo"
+          fi
+          cd ${{ github.workspace }}
+          ${SUDO} docker build \
+            --build-arg http_proxy="${http_proxy:-}" \
+            --build-arg https_proxy="${https_proxy:-}" \
+            --build-arg no_proxy="repo.huaweicloud.com,${no_proxy:-}" \
+            --build-arg PIP_INDEX_URL=https://repo.huaweicloud.com/repository/pypi/simple \
+            -t ucm-e2etest-pc-a2:${{ steps.version.outputs.version }} \
+            -f ./docker/Dockerfile.ucm-vllm-ascend.a2-v0.18.0 ./
+
+      - name: Test E2E Online Inference in Docker
+        run: |
+          RESULT_DIR="${{ github.workspace }}/test_results"
+          RESULT_FILE="${{ steps.version.outputs.version }}-online-inference.xml"
+          CONTAINER_NAME="ucm-e2etest-pc-a2-${{ steps.version.outputs.version }}"
+          SUDO=""
+          if [ "$(id -u)" -ne 0 ] && command -v sudo &> /dev/null; then
+            SUDO="sudo"
+          fi
+          A2_E2E_HOST_DEVICE="${A2_E2E_HOST_DEVICE:-/dev/vdavinci212}"
+          echo "Using Ascend host device: ${A2_E2E_HOST_DEVICE}"
+          mkdir -p "${RESULT_DIR}"
+          rm -f "${RESULT_DIR}/${RESULT_FILE}"
+          ${SUDO} docker rm -f "${CONTAINER_NAME}" >/dev/null 2>&1 || true
+          set +e
+          ${SUDO} docker run --name "${CONTAINER_NAME}" \
+            --ipc=host \
+            --device "${A2_E2E_HOST_DEVICE}:/dev/davinci0" \
+            --device /dev/davinci_manager \
+            --device /dev/devmm_svm \
+            --device /dev/hisi_hdc \
+            -v /usr/local/dcmi:/usr/local/dcmi \
+            -v /usr/local/bin/npu-smi:/usr/local/bin/npu-smi \
+            -v /usr/local/Ascend/driver/lib64/:/usr/local/Ascend/driver/lib64/ \
+            -v /usr/local/Ascend/driver/version.info:/usr/local/Ascend/driver/version.info \
+            -v /etc/ascend_install.info:/etc/ascend_install.info \
+            -v /home/huangmy/models:/home/models:ro \
+            -e http_proxy="${http_proxy:-}" \
+            -e https_proxy="${https_proxy:-}" \
+            -e no_proxy="${no_proxy:-}" \
+            --entrypoint /bin/bash \
+            ucm-e2etest-pc-a2:${{ steps.version.outputs.version }} \
+            -lc "mkdir -p /workspace/test_results && cd /workspace/unified-cache-management/test && pip install -r requirements.txt && python3 -m pytest -x --stage=1 --feature=online_inference --platform=npu -k 'test_online_accuracy_hbm_ssd_mixed_a2_pc' --junitxml=/workspace/test_results/${RESULT_FILE}"
+          TEST_RC=$?
+          ${SUDO} docker cp "${CONTAINER_NAME}:/workspace/test_results/${RESULT_FILE}" "${RESULT_DIR}/${RESULT_FILE}" >/dev/null 2>&1 || true
+          ${SUDO} docker rm -f "${CONTAINER_NAME}" >/dev/null 2>&1 || true
+          exit "${TEST_RC}"
+
+      - name: Cleanup Docker Image
+        if: ${{ always() && steps.version.outputs.version != '' }}
+        run: |
+          SUDO=""
+          if [ "$(id -u)" -ne 0 ] && command -v sudo &> /dev/null; then
+            SUDO="sudo"
+          fi
+          ${SUDO} docker rm -f "ucm-e2etest-pc-a2-${{ steps.version.outputs.version }}" >/dev/null 2>&1 || true
+          ${SUDO} docker rmi ucm-e2etest-pc-a2:${{ steps.version.outputs.version }} || true
+
+      - name: Cleanup Test Results
+        if: ${{ always() && steps.version.outputs.version != '' }}
+        run: |
+          rm -f "${{ github.workspace }}/test_results/${{ steps.version.outputs.version }}-online-inference.xml" || true
