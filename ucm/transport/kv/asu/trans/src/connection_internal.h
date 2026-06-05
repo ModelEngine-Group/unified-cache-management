@@ -25,11 +25,13 @@
 
 #include <atomic>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <vector>
 #include "asu_transport/asu_transport.h"
 #include "asu_transport/types.h"
 #include "connection_manager.h"
+#include "trans_provider.h"
 
 namespace UC::ASU {
 
@@ -41,16 +43,18 @@ enum class ChannelState : std::uint8_t {
 
 class ConnectionChannel {
 public:
-    ConnectionChannel(std::uint32_t id, ConnectionGroup* grp, void* qp);
+    using DeleteConnectionFunc = std::function<void(ConnectionHandle)>;
+
+    ConnectionChannel(std::uint32_t id, ConnectionGroup* grp,
+                      TransProvider::ConnectionHandle handle, DeleteConnectionFunc delete_fn);
+    ~ConnectionChannel();
 
     std::uint32_t GetChannelId() const { return channelId; }
     ChannelState GetState() const { return state.load(std::memory_order_acquire); }
     std::uint32_t GetInflightCount() const { return inflightCount.load(std::memory_order_acquire); }
     ConnectionGroup* GetGroup() const { return group; }
-    void* GetNativeQp() const { return nativeQp; }
+    TransProvider::ConnectionHandle GetLink() const { return handle_; }
 
-    void SetDrainStartTime(std::uint64_t t);
-    std::uint64_t GetDrainStartTime() const;
     std::uint32_t FetchAddErrorCount(std::uint32_t val);
 
     // Test helper to set state directly
@@ -59,23 +63,21 @@ public:
 
     void IncrementInflight();
     void ReleaseInflight();
-    bool BeginDrain();
-    void FinishDrain();
+    bool MarkForDrain();
 
 private:
-    // Hot path - cache line aligned
+    // inflightCount: Maintained by upper-level users, it records the number of requests currently
+    // being processed on the channel
     alignas(64) std::atomic<std::uint32_t> inflightCount{0};
     alignas(64) std::atomic<ChannelState> state{ChannelState::ACTIVE};
 
     std::uint32_t channelId{0};
     ConnectionGroup* group{nullptr};
-    void* nativeQp{nullptr};
+    TransProvider::ConnectionHandle handle_{nullptr};
+    DeleteConnectionFunc deleteFn_;
 
     // Cold path
-    std::atomic<std::uint64_t> inflightBytes{0};
     std::atomic<std::uint32_t> errorCount{0};
-    std::atomic<std::uint64_t> lastErrorTime{0};
-    std::atomic<std::uint64_t> drainStartTime{0};
 };
 
 class ConnectionGroup {
@@ -84,16 +86,17 @@ public:
 
     std::uint32_t GetGroupId() const { return groupId; }
     const AsuEndpoint& GetEndpoint() const { return endpoint; }
-    const std::vector<std::unique_ptr<ConnectionChannel>>& GetChannels() const { return channels; }
+    const std::vector<std::shared_ptr<ConnectionChannel>>& GetChannels() const { return channels; }
 
-    ConnectionChannel* AddChannel(ConnectionHandle handle);
+    std::shared_ptr<ConnectionChannel> AddChannel(
+        ConnectionHandle handle, const ConnectionChannel::DeleteConnectionFunc& delete_fn);
     void RemoveChannel(ConnectionChannel* channel);
     bool HasActiveChannel() const;
 
 private:
     std::uint32_t groupId{0};
     AsuEndpoint endpoint;
-    std::vector<std::unique_ptr<ConnectionChannel>> channels;
+    std::vector<std::shared_ptr<ConnectionChannel>> channels;
     std::atomic<std::uint32_t> nextChannelId_{0};
 };
 

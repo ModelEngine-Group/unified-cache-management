@@ -134,9 +134,13 @@ TEST_F(TransportTaskCompletionTest, ReleaseSubBatchResourcesClearsSlotsAfterFree
 
 TEST_F(TransportTaskCompletionTest, ReleaseSubBatchResourcesReleasesChannelInflight)
 {
-    ConnectionManager connManager;
+    ConnectionManager connManager(
+        [](const AsuEndpoint&, std::uint32_t num) -> std::vector<ConnectionHandle> {
+            return std::vector<ConnectionHandle>(num, nullptr);
+        },
+        [](ConnectionHandle) {});
     ASSERT_TRUE(connManager.AddGroup(AsuEndpoint{}, 1).ok());
-    auto* channel = connManager.SelectConnection();
+    auto channel = connManager.SelectConnection();
     ASSERT_NE(channel, nullptr);
     ASSERT_EQ(channel->GetInflightCount(), std::uint32_t{1});
 
@@ -146,7 +150,7 @@ TEST_F(TransportTaskCompletionTest, ReleaseSubBatchResourcesReleasesChannelInfli
     transport_.ReleaseSubBatchResources(subBatchContext);
 
     EXPECT_EQ(channel->GetInflightCount(), std::uint32_t{0});
-    EXPECT_EQ(subBatchContext.channel, nullptr);
+    EXPECT_EQ(subBatchContext.channel.get(), nullptr);
 }
 
 TEST_F(TransportTaskCompletionTest, TryFinalizeEmptyTaskUsesExistingFinalStatus)

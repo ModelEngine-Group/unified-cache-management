@@ -17,9 +17,31 @@ find_path(ASU_ASCEND_INCLUDE_DIR
 if(NOT ASU_ASCEND_INCLUDE_DIR)
     message(FATAL_ERROR "Cannot find acl/acl.h under ASCEND_ROOT=${ASCEND_ROOT}")
 endif()
+
+if(NOT CANN_LIB_DIR)
+    if(DEFINED ENV{ASCEND_HOME_PATH})
+        set(CANN_LIB_DIR "$ENV{ASCEND_HOME_PATH}/lib64")
+        message(STATUS "Using CANN_LIB_DIR from ASCEND_HOME_PATH: ${CANN_LIB_DIR}")
+    elseif(DEFINED ENV{ASCEND_HOME})
+        set(CANN_LIB_DIR "$ENV{ASCEND_HOME}/lib64")
+        message(STATUS "Using CANN_LIB_DIR from ASCEND_HOME: ${CANN_LIB_DIR}")
+    else()
+        message(FATAL_ERROR 
+            "CANN library path not found. Please either:\n"
+            "  1. Source CANN environment: source /usr/local/Ascend/cann/set_env.sh\n"
+            "  2. Or set CANN_LIB_DIR explicitly: -DCANN_LIB_DIR=/path/to/cann/lib64"
+        )
+    endif()
+endif()
+
 file(GLOB ASU_COMMON_SOURCES CONFIGURE_DEPENDS common/*.cpp)
 file(GLOB ASU_TRANSPORT_SOURCES CONFIGURE_DEPENDS trans/src/*.cpp)
+file(GLOB LOGGER_SOURCES CONFIGURE_DEPENDS 
+    ${UCM_ROOT_DIR}/ucm/shared/infra/logger/*.cc
+    ${UCM_ROOT_DIR}/ucm/shared/infra/logger/cc/*.cc
+)
 list(APPEND ASU_TRANSPORT_SOURCES ${ASU_COMMON_SOURCES})
+list(APPEND ASU_TRANSPORT_SOURCES ${LOGGER_SOURCES})
 add_library(asu_transport SHARED ${ASU_TRANSPORT_SOURCES})
 target_include_directories(asu_transport
     PUBLIC
@@ -29,8 +51,13 @@ target_include_directories(asu_transport
         ${CMAKE_CURRENT_SOURCE_DIR}/common
         ${CMAKE_CURRENT_SOURCE_DIR}/trans/src
         ${UCM_ROOT_DIR}/ucm/shared/infra
+        ${UCM_ROOT_DIR}/ucm/shared/infra/logger
+        ${UCM_ROOT_DIR}/ucm/shared/infra/logger/cc
 )
-target_link_libraries(asu_transport PUBLIC infra_logger pthread)
+target_compile_definitions(asu_transport PRIVATE SPDLOG_FMT_EXTERNAL)
+target_link_libraries(asu_transport PUBLIC pthread fmt spdlog z)
+target_link_directories(asu_transport PRIVATE ${CANN_LIB_DIR})
+target_link_libraries(asu_transport PRIVATE hcomm ascendcl)
 
 target_link_libraries(asu_transport PUBLIC trans)
 
@@ -45,8 +72,19 @@ target_include_directories(asu_client
         ${CMAKE_CURRENT_SOURCE_DIR}/common
         ${CMAKE_CURRENT_SOURCE_DIR}/client/src
         ${UCM_ROOT_DIR}/ucm/shared/infra
+        ${UCM_ROOT_DIR}/ucm/transport/kv/common/include
 )
 target_link_libraries(asu_client PUBLIC asu_transport kv_common pthread)
+
+# Demo: aicpu_send_with_provider
+if(BUILD_PROVIDER_DEMO)
+    add_executable(aicpu_send_with_provider test/demo/aicpu_send_with_provider.cc)
+    target_include_directories(aicpu_send_with_provider PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/trans/src
+    )
+    target_link_directories(aicpu_send_with_provider PRIVATE ${CANN_LIB_DIR})
+    target_link_libraries(aicpu_send_with_provider PRIVATE asu_transport hcomm ascendcl c_sec)
+endif()
 
 if(BUILD_UNIT_TESTS)
     target_compile_definitions(asu_transport PRIVATE ASU_BUILD_TESTS)
@@ -64,6 +102,7 @@ if(BUILD_UNIT_TESTS)
         ${CMAKE_CURRENT_SOURCE_DIR}/trans/src
         ${UCM_ROOT_DIR}/ucm/shared/infra
     )
+    target_compile_options(asu.test PRIVATE -include ${CMAKE_CURRENT_SOURCE_DIR}/common/fmt_compat.h)
     target_link_libraries(asu.test PRIVATE
         asu_client
         gtest_main gtest

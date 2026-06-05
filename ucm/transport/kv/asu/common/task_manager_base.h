@@ -88,7 +88,7 @@ public:
         return Status::OK();
     }
 
-protected:
+private:
     State initialState_;
     std::string taskName_;
     std::atomic<TaskId> nextTaskId_{1};

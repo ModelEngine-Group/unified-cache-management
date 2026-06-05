@@ -27,6 +27,7 @@
 #include <condition_variable>
 #include <cstddef>
 #include <cstdint>
+#include <memory>
 #include <mutex>
 #include <string>
 #include <vector>
@@ -60,14 +61,10 @@ enum class TransportSubBatchState {
 };
 
 inline bool IsEntryBatchOp(TransportOpType opType)
-{
-    return opType == TransportOpType::BATCH_LOAD || opType == TransportOpType::BATCH_STORE;
-}
+{ return opType == TransportOpType::BATCH_LOAD || opType == TransportOpType::BATCH_STORE; }
 
 inline bool IsKeyBatchOp(TransportOpType opType)
-{
-    return opType == TransportOpType::DELETE || opType == TransportOpType::QUERY;
-}
+{ return opType == TransportOpType::DELETE || opType == TransportOpType::QUERY; }
 
 inline bool IsKeepAliveOp(TransportOpType opType) { return opType == TransportOpType::KEEP_ALIVE; }
 
@@ -85,7 +82,7 @@ struct TransportSubBatchContext {
     TransportOpType opType{TransportOpType::QUERY};
     TransportSubBatchState state{TransportSubBatchState::PENDING};
     Status status{Status::OK()};
-    ConnectionChannel* channel{nullptr};
+    std::shared_ptr<ConnectionChannel> channel;
     bool useSeekControl{false};
     ScatterGatherEntry sendSge;
     ScatterGatherEntry flagBuffer;
