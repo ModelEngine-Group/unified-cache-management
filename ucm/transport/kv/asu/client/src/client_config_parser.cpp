@@ -82,6 +82,16 @@ bool TryParseAsuInfoKey(const std::string& key, AsuId& asuId)
     return false;
 }
 
+bool TryGetTransportAttrKey(const std::string& key, std::string& attrKey)
+{
+    constexpr const char* kCamelPrefix = "transport.";
+    if (key.rfind(kCamelPrefix, 0) == 0) {
+        attrKey = key.substr(std::string{kCamelPrefix}.size());
+        return !attrKey.empty();
+    }
+    return false;
+}
+
 void SetEndpointAttr(AsuEndpoint& endpoint, const std::string& key, const std::string& value)
 {
     endpoint.attrs[key] = value;
@@ -156,6 +166,7 @@ Status LoadAsuClientConfig(const std::string& configPath, AsuClientConfig& confi
 
     config = AsuClientConfig{};
     std::unordered_map<AsuId, AsuInfo> asuInfos;
+    std::unordered_map<std::string, std::string> transportAttrs;
     std::string line;
     while (std::getline(configFile, line)) {
         line = Trim(line);
@@ -190,8 +201,7 @@ Status LoadAsuClientConfig(const std::string& configPath, AsuClientConfig& confi
             config.attrs["ring_hash.virtual_node_count"] = value;
         } else if (key == "hashTable.maglev.tableSize" || key == "maglev.table_size") {
             config.attrs["maglev.table_size"] = value;
-        } else if (key == "transport.asuIds" || key == "transport_asu_ids" || key == "asuIds" ||
-                   key == "asu_ids") {
+        } else if (key == "transport.asuIds" || key == "asuIds" || key == "asu_ids") {
             for (const auto& asuIdText : Split(value, ',')) {
                 TransportConfig transportConfig;
                 transportConfig.asuId = ParseUint64(asuIdText);
@@ -199,11 +209,18 @@ Status LoadAsuClientConfig(const std::string& configPath, AsuClientConfig& confi
             }
         } else {
             AsuId asuId{0};
-            if (TryParseAsuInfoKey(key, asuId)) { asuInfos[asuId] = ParseAsuInfo(value); }
+            std::string attrKey;
+            if (TryParseAsuInfoKey(key, asuId)) {
+                asuInfos[asuId] = ParseAsuInfo(value);
+            } else if (TryGetTransportAttrKey(key, attrKey)) {
+                transportAttrs[attrKey] = value;
+            }
         }
     }
 
     for (auto& transportConfig : config.transportConfigs) {
+        for (const auto& attr : transportAttrs) { transportConfig.attrs.emplace(attr); }
+
         auto iter = asuInfos.find(transportConfig.asuId);
         if (iter == asuInfos.end()) { continue; }
         ApplyAsuInfoToTransportConfig(iter->second, transportConfig);

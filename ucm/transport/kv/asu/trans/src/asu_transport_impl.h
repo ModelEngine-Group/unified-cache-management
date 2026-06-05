@@ -32,7 +32,10 @@
 #include <unordered_map>
 #include <vector>
 #include "asu_transport/asu_transport.h"
+#include "buffer_manager.h"
 #include "connection_manager.h"
+#include "io_scheduler.h"
+#include "kv_protocol.h"
 #include "template/spsc_ring_queue.h"
 #include "transport_task_manager.h"
 
@@ -73,13 +76,21 @@ public:
 
 private:
     using TransportTaskContextPtr = std::shared_ptr<TransportTaskContext>;
+    std::uint16_t AllocateRequestCid();
     Status SubmitAsync(std::unique_ptr<TransportTaskContext> ctx, TaskId& taskId);
     void WorkerLoop();
+    void CompletionLoop();
     void CompleteTask(const TransportTaskContextPtr& ctx);
+    Status AssignSubBatchConnections(std::vector<TransportSubBatchContext>& subBatchContexts);
 
+    void PollTaskCompletions(const TransportTaskContextPtr& ctx);
     void BuildResult(const TransportTaskContext& ctx, TaskResult& result);
 
     TransportConfig config_;
+    IoScheduler ioScheduler_;
+    BufferManager sendBufferManager_;
+    BufferManager flagBufferManager_;
+    std::unique_ptr<ProtocolManager> protocolManager_;
 
     ConnectionManager connManager_;
     TransportTaskManager taskManager_;
@@ -88,7 +99,9 @@ private:
     std::mutex producerMu_;
 
     std::thread worker_;
+    std::thread completionWorker_;
     std::atomic_bool stop_{false};
+    std::atomic<std::uint16_t> nextRequestCid_{1};
 
     std::mutex registeredRegionsMu_;
     std::atomic<MRHandle> nextMrHandle_{1};

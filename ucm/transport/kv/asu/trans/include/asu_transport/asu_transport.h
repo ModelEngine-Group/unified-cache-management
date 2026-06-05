@@ -69,6 +69,8 @@ struct TransportConfig {
     bool preconnect{true};
     bool bindCqPoller{true};
 
+    // Transport attrs loaded from config, including SQE request attrs
+    // (kv_ns_id, dtype, dspec, lr, sc) and send attrs (kernel_count, quiet_count).
     std::unordered_map<std::string, std::string> attrs;
 };
 
