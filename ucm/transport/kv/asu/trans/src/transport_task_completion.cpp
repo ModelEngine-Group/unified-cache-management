@@ -21,9 +21,10 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  * */
-#include "transport_task_completion.h"
+#include "asu_transport_impl.h"
 #include "buffer_manager.h"
 #include "connection_internal.h"
+#include "logger.h"
 
 namespace UC::ASU {
 
@@ -31,7 +32,7 @@ namespace {
 
 bool IsSubBatchTerminal(TransportSubBatchState state)
 {
-    return state == TransportSubBatchState::COMPLETED || state == TransportSubBatchState::FAILED;
+    return state == TransportSubBatchState::COMPLETED;
 }
 
 Status BuildTaskFinalStatus(const TransportTaskContext& ctx)
@@ -46,46 +47,37 @@ Status BuildTaskFinalStatus(const TransportTaskContext& ctx)
     return Status::OK();
 }
 
-TransportTaskState BuildTaskStateFromSubBatches(const TransportTaskContext& ctx)
-{
-    for (const auto& subBatchContext : ctx.subBatchContexts) {
-        if (subBatchContext.state == TransportSubBatchState::FAILED) {
-            return TransportTaskState::FAILED;
-        }
-    }
-    return TransportTaskState::COMPLETED;
-}
-
 }  // namespace
 
-void InitializeTerminalSubBatchCount(TransportTaskContext& ctx)
+void TransportTaskContext::InitializeTerminalSubBatchCount()
 {
     // At submit completion time, terminal sub-batches are usually submit/send failures.
-    ctx.completedSubBatchCount = 0;
-    for (const auto& subBatchContext : ctx.subBatchContexts) {
+    completedSubBatchCount = 0;
+    for (const auto& subBatchContext : subBatchContexts) {
         if (!IsSubBatchTerminal(subBatchContext.state)) { continue; }
 
-        ++ctx.completedSubBatchCount;
+        ++completedSubBatchCount;
     }
 }
 
-Status ReleaseSubBatchResources(TransportSubBatchContext& subBatchContext,
-                                BufferManager& sendBufferManager, BufferManager& flagBufferManager)
+void AsuTransportImpl::ReleaseSubBatchResources(TransportSubBatchContext& subBatchContext)
 {
-    Status finalStatus = Status::OK();
-
     if (subBatchContext.sendSge.slot_index != UINT32_MAX) {
-        auto status = sendBufferManager.Free(subBatchContext.sendSge.slot_index);
+        const auto slotIndex = subBatchContext.sendSge.slot_index;
+        auto status = sendBufferManager_.Free(slotIndex);
         if (!status.ok()) {
-            if (finalStatus.ok()) { finalStatus = status; }
+            UC_ERROR("Failed to release sub-batch send buffer slot({}): {}", slotIndex,
+                     status.message);
         }
         subBatchContext.sendSge = {};
     }
 
     if (subBatchContext.flagBuffer.slot_index != UINT32_MAX) {
-        auto status = flagBufferManager.Free(subBatchContext.flagBuffer.slot_index);
+        const auto slotIndex = subBatchContext.flagBuffer.slot_index;
+        auto status = flagBufferManager_.Free(slotIndex);
         if (!status.ok()) {
-            if (finalStatus.ok()) { finalStatus = status; }
+            UC_ERROR("Failed to release sub-batch flag buffer slot({}): {}", slotIndex,
+                     status.message);
         }
         subBatchContext.flagBuffer = {};
     }
@@ -94,54 +86,37 @@ Status ReleaseSubBatchResources(TransportSubBatchContext& subBatchContext,
         subBatchContext.channel->ReleaseInflight();
         subBatchContext.channel = nullptr;
     }
-
-    return finalStatus;
 }
 
-Status ReleaseAllSubBatchResources(std::vector<TransportSubBatchContext>& subBatchContexts,
-                                   BufferManager& sendBufferManager,
-                                   BufferManager& flagBufferManager)
+void AsuTransportImpl::ReleaseAllSubBatchResources(
+    std::vector<TransportSubBatchContext>& subBatchContexts)
 {
-    Status finalStatus = Status::OK();
-    for (auto& subBatchContext : subBatchContexts) {
-        const auto status =
-            ReleaseSubBatchResources(subBatchContext, sendBufferManager, flagBufferManager);
-        if (finalStatus.ok() && !status.ok()) { finalStatus = status; }
-    }
-    return finalStatus;
+    for (auto& subBatchContext : subBatchContexts) { ReleaseSubBatchResources(subBatchContext); }
 }
 
-void CompleteSubBatch(TransportTaskContext& ctx, TransportSubBatchContext& subBatchContext,
-                      TransportSubBatchState state, const Status& status,
-                      BufferManager& sendBufferManager, BufferManager& flagBufferManager)
+void AsuTransportImpl::CompleteSubBatch(TransportTaskContext& ctx,
+                                        TransportSubBatchContext& subBatchContext,
+                                        const Status& status)
 {
     if (subBatchContext.state != TransportSubBatchState::PENDING) { return; }
 
-    const auto releaseStatus =
-        ReleaseSubBatchResources(subBatchContext, sendBufferManager, flagBufferManager);
-    const auto completionStatus = status.ok() ? releaseStatus : status;
-    subBatchContext.state = (!completionStatus.ok() && state == TransportSubBatchState::COMPLETED)
-                                ? TransportSubBatchState::FAILED
-                                : state;
-    subBatchContext.status = completionStatus;
+    ReleaseSubBatchResources(subBatchContext);
+    subBatchContext.state = TransportSubBatchState::COMPLETED;
+    subBatchContext.status = status;
     ++ctx.completedSubBatchCount;
 }
 
-void TryFinalizeTaskFromSubBatches(TransportTaskContext& ctx)
+void TransportTaskContext::TryFinalizeFromSubBatches()
 {
-    if (ctx.subBatchContexts.empty()) {
-        ctx.state.store(
-            ctx.finalStatus.ok() ? TransportTaskState::COMPLETED : TransportTaskState::FAILED,
-            std::memory_order_release);
+    if (subBatchContexts.empty()) {
+        state.store(TransportTaskState::COMPLETED, std::memory_order_release);
         return;
     }
 
-    if (ctx.completedSubBatchCount != static_cast<std::uint32_t>(ctx.subBatchContexts.size())) {
-        return;
-    }
+    if (completedSubBatchCount != static_cast<std::uint32_t>(subBatchContexts.size())) { return; }
 
-    ctx.finalStatus = BuildTaskFinalStatus(ctx);
-    ctx.state.store(BuildTaskStateFromSubBatches(ctx), std::memory_order_release);
+    finalStatus = BuildTaskFinalStatus(*this);
+    state.store(TransportTaskState::COMPLETED, std::memory_order_release);
 }
 
 }  // namespace UC::ASU

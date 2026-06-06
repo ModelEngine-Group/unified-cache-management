@@ -23,6 +23,7 @@
  * */
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 #include <memory>
 #include <string>
@@ -69,6 +70,17 @@ struct TransportConfig {
     bool preconnect{true};
     bool bindCqPoller{true};
 
+    std::size_t sendBufferSlotSize{4096};
+    std::size_t sendBufferSlotNum{1};
+    std::size_t flagBufferSlotSize{128};
+    std::size_t flagBufferSlotNum{4096};
+    std::size_t asuBatchLoadIoNum{110};
+    std::size_t asuBatchStoreIoNum{110};
+    std::size_t asuDeleteIoNum{254};
+    std::size_t asuQueryIoNum{256};
+
+    // Transport attrs loaded from config, including SQE request attrs
+    // (kv_ns_id, dtype, dspec, lr, sc) and send attrs (kernel_count, quiet_count).
     std::unordered_map<std::string, std::string> attrs;
 };
 

@@ -51,31 +51,13 @@ enum class TransportTaskState {
     PENDING = 0,
     INFLIGHT = 1,
     COMPLETED = 2,
-    FAILED = 3,
-    CANCELED = 4,
+    CANCELED = 3,
 };
 
 enum class TransportSubBatchState {
     PENDING = 0,
     COMPLETED = 1,
-    FAILED = 2,
 };
-
-constexpr std::size_t kAsuBatchLoadMaxIoNum = 110;
-constexpr std::size_t kAsuBatchStoreMaxIoNum = 110;
-constexpr std::size_t kAsuDeleteMaxIoNum = 254;
-constexpr std::size_t kAsuQueryMaxIoNum = 256;
-
-inline std::size_t GetAsuMaxIoNum(TransportOpType opType)
-{
-    switch (opType) {
-        case TransportOpType::BATCH_LOAD: return kAsuBatchLoadMaxIoNum;
-        case TransportOpType::BATCH_STORE: return kAsuBatchStoreMaxIoNum;
-        case TransportOpType::DELETE: return kAsuDeleteMaxIoNum;
-        case TransportOpType::QUERY: return kAsuQueryMaxIoNum;
-        default: return 0;
-    }
-}
 
 inline bool IsEntryBatchOp(TransportOpType opType)
 {
@@ -86,6 +68,8 @@ inline bool IsKeyBatchOp(TransportOpType opType)
 {
     return opType == TransportOpType::DELETE || opType == TransportOpType::QUERY;
 }
+
+inline bool IsKeepAliveOp(TransportOpType opType) { return opType == TransportOpType::KEEP_ALIVE; }
 
 template <typename T>
 struct BatchView {
@@ -128,6 +112,8 @@ struct TransportTaskContext {
     std::condition_variable cv;
 
     bool Done() const;
+    void InitializeTerminalSubBatchCount();
+    void TryFinalizeFromSubBatches();
 };
 
 class TransportTaskManager : public TaskManagerBase<TransportTaskContext, TransportTaskState> {

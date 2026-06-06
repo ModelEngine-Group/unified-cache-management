@@ -32,13 +32,30 @@
 #include <unordered_map>
 #include <vector>
 #include "asu_transport/asu_transport.h"
+#include "buffer_manager.h"
 #include "connection_manager.h"
+#include "io_scheduler.h"
+#include "kv_protocol.h"
 #include "template/spsc_ring_queue.h"
 #include "transport_task_manager.h"
 
 namespace UC::ASU {
 
 using TransportTaskContextPtr = std::shared_ptr<TransportTaskContext>;
+
+inline KvOpcode ToKvOpcode(TransportOpType opType)
+{
+    switch (opType) {
+        case TransportOpType::LOAD: return KvOpcode::Retrieve;
+        case TransportOpType::STORE: return KvOpcode::Store;
+        case TransportOpType::BATCH_LOAD: return KvOpcode::BatchRetrieve;
+        case TransportOpType::BATCH_STORE: return KvOpcode::BatchStore;
+        case TransportOpType::DELETE: return KvOpcode::Delete;
+        case TransportOpType::QUERY: return KvOpcode::Exist;
+        case TransportOpType::KEEP_ALIVE: return KvOpcode::KeepAlive;
+    }
+    return KvOpcode::KeepAlive;
+}
 
 class AsuTransportImpl final : public AsuTransport {
 public:
@@ -73,13 +90,41 @@ public:
 
 private:
     using TransportTaskContextPtr = std::shared_ptr<TransportTaskContext>;
+    std::uint16_t AllocateRequestCid();
     Status SubmitAsync(std::unique_ptr<TransportTaskContext> ctx, TaskId& taskId);
     void WorkerLoop();
-    void CompleteTask(const TransportTaskContextPtr& ctx);
+    void CompletionLoop();
+    void ProcessTask(const TransportTaskContextPtr& ctx);
+    Status AssignSubBatchConnections(std::vector<TransportSubBatchContext>& subBatchContexts);
+    Status SubmitTaskRequests(const TransportTaskContext& ctx,
+                              std::vector<TransportSubBatchContext>& subBatchContexts);
+    Status BuildSubBatchSendBuffers(std::vector<TransportSubBatchContext>& subBatchContexts,
+                                    std::vector<SendIoBatch>& ioBatches,
+                                    std::vector<std::size_t>& subBatchIndexes);
+    Status SendSubBatchBuffers(std::vector<TransportSubBatchContext>& subBatchContexts,
+                               const std::vector<SendIoBatch>& ioBatches,
+                               const std::vector<std::size_t>& subBatchIndexes);
+    Status ValidateSqeRequestAttrs();
+    Status SubmitEntrySubBatchRequest(TransportOpType opType,
+                                      const IoScheduler::ScheduledIoBatch& subBatch,
+                                      TransportSubBatchContext& subBatchContext);
+    Status SubmitKeySubBatchRequest(TransportOpType opType,
+                                    const IoScheduler::ScheduledKeyBatch& subBatch,
+                                    TransportSubBatchContext& subBatchContext);
+    Status SubmitKeepAliveRequest(TransportSubBatchContext& subBatchContext);
+    void ReleaseSubBatchResources(TransportSubBatchContext& subBatchContext);
+    void ReleaseAllSubBatchResources(std::vector<TransportSubBatchContext>& subBatchContexts);
+    void CompleteSubBatch(TransportTaskContext& ctx, TransportSubBatchContext& subBatchContext,
+                          const Status& status);
 
+    void PollTaskCompletions(const TransportTaskContextPtr& ctx);
     void BuildResult(const TransportTaskContext& ctx, TaskResult& result);
 
     TransportConfig config_;
+    IoScheduler ioScheduler_;
+    BufferManager sendBufferManager_;
+    BufferManager flagBufferManager_;
+    std::unique_ptr<ProtocolManager> protocolManager_;
 
     ConnectionManager connManager_;
     TransportTaskManager taskManager_;
@@ -88,7 +133,9 @@ private:
     std::mutex producerMu_;
 
     std::thread worker_;
+    std::thread completionWorker_;
     std::atomic_bool stop_{false};
+    std::atomic<std::uint16_t> nextRequestCid_{1};
 
     std::mutex registeredRegionsMu_;
     std::atomic<MRHandle> nextMrHandle_{1};

@@ -23,25 +23,26 @@
  * */
 #pragma once
 
-#include "transport_task_manager.h"
+#include <cstdint>
+#include <string>
+#include <vector>
+#include "asu_transport/asu_transport.h"
 
 namespace UC::ASU {
 
-class BufferManager;
+std::string TrimConfigValue(const std::string& value);
+std::vector<std::string> SplitConfigValue(const std::string& value, char delimiter);
+std::uint64_t ParseConfigUint64(const std::string& value);
+Protocol ParseConfigProtocol(std::string value);
 
-void InitializeTerminalSubBatchCount(TransportTaskContext& ctx);
+bool ApplyTransportBufferConfigField(TransportConfig& config, const std::string& key,
+                                     const std::string& value);
+bool ApplyTransportIoNumConfigField(TransportConfig& config, const std::string& key,
+                                    const std::string& value);
+bool TryParseAsuInfoKey(const std::string& key, AsuId& asuId);
+bool TryGetTransportAttrKey(const std::string& key, std::string& attrKey);
 
-Status ReleaseSubBatchResources(TransportSubBatchContext& subBatchContext,
-                                BufferManager& sendBufferManager, BufferManager& flagBufferManager);
-
-Status ReleaseAllSubBatchResources(std::vector<TransportSubBatchContext>& subBatchContexts,
-                                   BufferManager& sendBufferManager,
-                                   BufferManager& flagBufferManager);
-
-void CompleteSubBatch(TransportTaskContext& ctx, TransportSubBatchContext& subBatchContext,
-                      TransportSubBatchState state, const Status& status,
-                      BufferManager& sendBufferManager, BufferManager& flagBufferManager);
-
-void TryFinalizeTaskFromSubBatches(TransportTaskContext& ctx);
+AsuEndpoint ParseTransportEndpoint(const std::string& value);
+AsuEndpoint ParseClientViewEndpoint(const std::string& value);
 
 }  // namespace UC::ASU

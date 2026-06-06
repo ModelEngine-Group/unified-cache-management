@@ -36,9 +36,11 @@ TEST(IoSchedulerTest, SplitEntryBatchPreservesOrderAndUsesViews)
         entries[index].key = "key_" + std::to_string(index);
     }
 
-    IoScheduler scheduler;
-    const auto batches =
-        scheduler.SplitForAsu(BatchView<KVBuffer>{entries.data(), entries.size()}, 2);
+    TransportConfig config;
+    config.asuBatchLoadIoNum = 2;
+    IoScheduler scheduler(config);
+    const auto batches = scheduler.SplitForAsu(BatchView<KVBuffer>{entries.data(), entries.size()},
+                                               TransportOpType::BATCH_LOAD);
 
     ASSERT_EQ(batches.size(), std::size_t{3});
     EXPECT_EQ(batches[0].entries.size, std::size_t{2});
@@ -52,21 +54,49 @@ TEST(IoSchedulerTest, SplitEntryBatchPreservesOrderAndUsesViews)
 
 TEST(IoSchedulerTest, SplitKeyBatchReturnsEmptyForEmptyInputOrZeroLimit)
 {
-    IoScheduler scheduler;
+    TransportConfig config;
+    config.asuQueryIoNum = 0;
+    IoScheduler scheduler(config);
     std::vector<CacheKey> keys = {"a", "b"};
 
-    EXPECT_TRUE(scheduler.SplitForAsu(BatchView<CacheKey>{keys.data(), 0}, 2).empty());
-    EXPECT_TRUE(scheduler.SplitForAsu(BatchView<CacheKey>{keys.data(), keys.size()}, 0).empty());
+    EXPECT_TRUE(scheduler.SplitForAsu(BatchView<CacheKey>{keys.data(), 0}, TransportOpType::DELETE)
+                    .empty());
+    EXPECT_TRUE(
+        scheduler.SplitForAsu(BatchView<CacheKey>{keys.data(), keys.size()}, TransportOpType::QUERY)
+            .empty());
 }
 
-TEST(IoSchedulerTest, GetSqeBatchLimitMatchesOperationKind)
+TEST(IoSchedulerTest, GetSqeIoNumMatchesOperationKind)
 {
-    EXPECT_EQ(GetSqeBatchLimit(TransportOpType::LOAD), std::size_t{1});
-    EXPECT_EQ(GetSqeBatchLimit(TransportOpType::STORE), std::size_t{1});
-    EXPECT_EQ(GetSqeBatchLimit(TransportOpType::BATCH_LOAD), kAsuBatchLoadMaxIoNum);
-    EXPECT_EQ(GetSqeBatchLimit(TransportOpType::BATCH_STORE), kAsuBatchStoreMaxIoNum);
-    EXPECT_EQ(GetSqeBatchLimit(TransportOpType::DELETE), kAsuDeleteMaxIoNum);
-    EXPECT_EQ(GetSqeBatchLimit(TransportOpType::QUERY), kAsuQueryMaxIoNum);
+    TransportConfig config;
+    config.asuBatchLoadIoNum = 3;
+    config.asuBatchStoreIoNum = 4;
+    config.asuDeleteIoNum = 5;
+    config.asuQueryIoNum = 6;
+    IoScheduler scheduler(config);
+
+    EXPECT_EQ(scheduler.GetSqeIoNum(TransportOpType::LOAD), std::size_t{1});
+    EXPECT_EQ(scheduler.GetSqeIoNum(TransportOpType::STORE), std::size_t{1});
+    EXPECT_EQ(scheduler.GetSqeIoNum(TransportOpType::BATCH_LOAD), std::size_t{3});
+    EXPECT_EQ(scheduler.GetSqeIoNum(TransportOpType::BATCH_STORE), std::size_t{4});
+    EXPECT_EQ(scheduler.GetSqeIoNum(TransportOpType::DELETE), std::size_t{5});
+    EXPECT_EQ(scheduler.GetSqeIoNum(TransportOpType::QUERY), std::size_t{6});
+}
+
+TEST(IoSchedulerTest, SplitByOperationUsesHeldConfig)
+{
+    TransportConfig config;
+    config.asuBatchLoadIoNum = 2;
+    IoScheduler scheduler(config);
+    std::vector<KVBuffer> entries(5);
+
+    const auto batches = scheduler.SplitForAsu(BatchView<KVBuffer>{entries.data(), entries.size()},
+                                               TransportOpType::BATCH_LOAD);
+
+    ASSERT_EQ(batches.size(), std::size_t{3});
+    EXPECT_EQ(batches[0].entries.size, std::size_t{2});
+    EXPECT_EQ(batches[1].entries.size, std::size_t{2});
+    EXPECT_EQ(batches[2].entries.size, std::size_t{1});
 }
 
 }  // namespace

@@ -26,13 +26,19 @@
 #include <chrono>
 #include <memory>
 #include <thread>
+#include <utility>
+#include "asu_response_status.h"
 #include "asu_transport/asu_transport.h"
-#include "asu_transport/types.h"
 #include "connection_internal.h"
+#include "connection_manager.h"
 #include "logger.h"
 #include "transport_config_parser.h"
 
 namespace UC::ASU {
+
+namespace {
+
+}  // namespace
 
 AsuTransportImpl::~AsuTransportImpl() { Shutdown(); }
 
@@ -52,6 +58,7 @@ Status AsuTransportImpl::Init(const TransportConfig& config)
         return Status::OK();
     }
     config_ = config;
+    ioScheduler_ = IoScheduler(config_);
 
     connManager_.PrepareForInit();
 
@@ -68,10 +75,23 @@ Status AsuTransportImpl::Init(const TransportConfig& config)
 
     connManager_.StartRecoverLoop();
 
+    auto status = ValidateSqeRequestAttrs();
+    if (!status.ok()) { return status; }
+
+    status = sendBufferManager_.Init("asu send buffer", MemoryType::HOST,
+                                     config_.sendBufferSlotSize, config_.sendBufferSlotNum);
+    if (!status.ok()) { return status; }
+
+    status = flagBufferManager_.Init("asu flag buffer", MemoryType::HOST,
+                                     config_.flagBufferSlotSize, config_.flagBufferSlotNum);
+    if (!status.ok()) { return status; }
+    protocolManager_ = std::make_unique<ProtocolManager>();
+
     auto queueDepth = std::max<std::size_t>(2, static_cast<std::size_t>(config_.maxInflightTasks));
     executeQueue_.Setup(queueDepth + 1);
     stop_.store(false, std::memory_order_release);
     worker_ = std::thread(&AsuTransportImpl::WorkerLoop, this);
+    completionWorker_ = std::thread(&AsuTransportImpl::CompletionLoop, this);
     UC_DEBUG("AsuTransportImpl::Init OK: queueDepth={}", queueDepth);
     return Status::OK();
 }
@@ -85,6 +105,7 @@ Status AsuTransportImpl::Shutdown()
         UC_DEBUG("AsuTransportImpl::Shutdown stopping worker thread");
         worker_.join();
     }
+    if (completionWorker_.joinable()) { completionWorker_.join(); }
     for (const auto& ctx : taskManager_.GetAll()) {
         if (ctx != nullptr) { (void)taskManager_.Remove(ctx->taskId); }
     }
@@ -95,7 +116,7 @@ Status AsuTransportImpl::Shutdown()
 
 Status AsuTransportImpl::CheckHealth()
 {
-    if (!worker_.joinable()) {
+    if (!worker_.joinable() || !completionWorker_.joinable()) {
         return Status::Error(StatusCode::NOT_INITIALIZED, "transport worker is not running");
     }
     return Status::OK();
@@ -130,7 +151,7 @@ Status AsuTransportImpl::QueryAsync(const std::vector<CacheKey>& keys, const Que
 Status AsuTransportImpl::LoadAsync(const std::vector<KVBuffer>& entries, TaskId& taskId)
 {
     auto ctx = std::make_unique<TransportTaskContext>();
-    ctx->opType = TransportOpType::LOAD;
+    ctx->opType = TransportOpType::BATCH_LOAD;
     ctx->entries = BatchView<KVBuffer>{entries.data(), entries.size()};
     ctx->entryStatus.assign(entries.size(), Status::OK());
     return SubmitAsync(std::move(ctx), taskId);
@@ -139,7 +160,7 @@ Status AsuTransportImpl::LoadAsync(const std::vector<KVBuffer>& entries, TaskId&
 Status AsuTransportImpl::StoreAsync(const std::vector<KVBuffer>& entries, TaskId& taskId)
 {
     auto ctx = std::make_unique<TransportTaskContext>();
-    ctx->opType = TransportOpType::STORE;
+    ctx->opType = TransportOpType::BATCH_STORE;
     ctx->entries = BatchView<KVBuffer>{entries.data(), entries.size()};
     ctx->entryStatus.assign(entries.size(), Status::OK());
     return SubmitAsync(std::move(ctx), taskId);
@@ -238,6 +259,13 @@ Status AsuTransportImpl::UnregisterRegions(const std::vector<MRHandle>& handles)
     return Status::OK();
 }
 
+std::uint16_t AsuTransportImpl::AllocateRequestCid()
+{
+    auto requestCid = nextRequestCid_.fetch_add(1, std::memory_order_relaxed);
+    if (requestCid == 0) { requestCid = nextRequestCid_.fetch_add(1, std::memory_order_relaxed); }
+    return requestCid;
+}
+
 Status AsuTransportImpl::SubmitAsync(std::unique_ptr<TransportTaskContext> ctx, TaskId& taskId)
 {
     if (!worker_.joinable()) {
@@ -268,14 +296,45 @@ void AsuTransportImpl::WorkerLoop()
 {
     executeQueue_.ConsumerLoop(stop_, [this](TransportTaskContextPtr ctx) {
         if (!ctx) { return; }
-        CompleteTask(ctx);
+        ProcessTask(ctx);
     });
     UC_DEBUG("AsuTransportImpl::WorkerLoop stopped");
 }
 
-void AsuTransportImpl::CompleteTask(const TransportTaskContextPtr& ctx)
+void AsuTransportImpl::CompletionLoop()
 {
-    // TODO: do REAL work here
+    while (!stop_.load(std::memory_order_acquire)) {
+        for (const auto& ctx : taskManager_.GetAll()) { PollTaskCompletions(ctx); }
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+}
+
+Status AsuTransportImpl::AssignSubBatchConnections(
+    std::vector<TransportSubBatchContext>& subBatchContexts)
+{
+    Status finalStatus = Status::OK();
+    for (auto& subBatchContext : subBatchContexts) {
+        if (!subBatchContext.status.ok()) { continue; }
+
+        auto* channel = connManager_.SelectConnection();
+        if (channel == nullptr) {
+            const auto status =
+                Status::Error(StatusCode::CONNECTION_ERROR, "no available connection channel");
+            std::fill(subBatchContext.entryStatus.begin(), subBatchContext.entryStatus.end(),
+                      status);
+            subBatchContext.state = TransportSubBatchState::COMPLETED;
+            subBatchContext.status = status;
+            if (finalStatus.ok()) { finalStatus = status; }
+            continue;
+        }
+
+        subBatchContext.channel = channel;
+    }
+    return finalStatus;
+}
+
+void AsuTransportImpl::ProcessTask(const TransportTaskContextPtr& ctx)
+{
     TransportTaskState expected = TransportTaskState::PENDING;
     if (!ctx->state.compare_exchange_strong(expected, TransportTaskState::INFLIGHT,
                                             std::memory_order_acq_rel)) {
@@ -285,30 +344,104 @@ void AsuTransportImpl::CompleteTask(const TransportTaskContextPtr& ctx)
         return;
     }
 
+    std::vector<TransportSubBatchContext> subBatchContexts;
+    auto finalStatus = SubmitTaskRequests(*ctx, subBatchContexts);
+    auto connectionStatus = AssignSubBatchConnections(subBatchContexts);
+    if (!connectionStatus.ok() && finalStatus.ok()) { finalStatus = connectionStatus; }
+
+    std::vector<SendIoBatch> ioBatches;
+    std::vector<std::size_t> subBatchIndexes;
+    auto buildStatus = BuildSubBatchSendBuffers(subBatchContexts, ioBatches, subBatchIndexes);
+    if (!buildStatus.ok() && finalStatus.ok()) { finalStatus = buildStatus; }
+
+    auto sendStatus = SendSubBatchBuffers(subBatchContexts, ioBatches, subBatchIndexes);
+    if (!sendStatus.ok() && finalStatus.ok()) { finalStatus = sendStatus; }
+
     std::lock_guard<std::mutex> lock(ctx->waitMu);
     if (ctx->state.load(std::memory_order_acquire) == TransportTaskState::CANCELED) {
+        ReleaseAllSubBatchResources(subBatchContexts);
         ctx->cv.notify_all();
         return;
     }
-    if (ctx->state.load(std::memory_order_acquire) == TransportTaskState::CANCELED) {
-        ctx->cv.notify_all();
+
+    if (!subBatchContexts.empty()) { ctx->subBatchContexts = std::move(subBatchContexts); }
+    ctx->finalStatus = finalStatus;
+    ctx->InitializeTerminalSubBatchCount();
+    ctx->TryFinalizeFromSubBatches();
+
+    for (auto& subBatchContext : ctx->subBatchContexts) {
+        if (subBatchContext.status.ok()) { continue; }
+        ReleaseSubBatchResources(subBatchContext);
+    }
+    if (ctx->Done()) { ctx->cv.notify_all(); }
+}
+
+void AsuTransportImpl::PollTaskCompletions(const TransportTaskContextPtr& ctx)
+{
+    if (!ctx || ctx->state.load(std::memory_order_acquire) != TransportTaskState::INFLIGHT) {
         return;
     }
-    if (ctx->opType == TransportOpType::QUERY) {
-        ctx->queryResult.exists.assign(ctx->keys.size, 0);
-        ctx->queryResult.prefixHitKeys = 0;
+
+    std::lock_guard<std::mutex> lock(ctx->waitMu);
+    if (ctx->subBatchContexts.empty()) { return; }
+
+    for (auto& subBatchContext : ctx->subBatchContexts) {
+        if (subBatchContext.state != TransportSubBatchState::PENDING) { continue; }
+
+        std::uint16_t completedCid = 0;
+        auto cidStatus = protocolManager_->PollResponseCid(
+            reinterpret_cast<void*>(subBatchContext.flagBuffer.addr), completedCid);
+        if (!cidStatus.ok()) { continue; }
+        if (completedCid == 0 || completedCid != subBatchContext.cid) { continue; }
+
+        KvResponse response;
+        const auto batchNumber = static_cast<std::uint16_t>(subBatchContext.entryStatus.size());
+        const auto unpackStatus = protocolManager_->UnpackResponse(
+            reinterpret_cast<void*>(subBatchContext.flagBuffer.addr),
+            ToKvOpcode(subBatchContext.opType), batchNumber, response);
+        if (!unpackStatus.ok()) {
+            std::fill(subBatchContext.entryStatus.begin(), subBatchContext.entryStatus.end(),
+                      unpackStatus);
+            CompleteSubBatch(*ctx, subBatchContext, unpackStatus);
+            continue;
+        }
+
+        subBatchContext.status = KvResponseStatusToSubBatchStatus(response.status);
+        FillEntryStatusFromCqeResult(response, subBatchContext);
+
+        if (subBatchContext.status.ok()) {
+            CompleteSubBatch(*ctx, subBatchContext, Status::OK());
+            continue;
+        }
+
+        if (subBatchContext.status.code == StatusCode::ASU_CQE_INTERNAL_ERROR ||
+            subBatchContext.status.code == StatusCode::ASU_CQE_IO_TIMEOUT) {
+            connManager_.ReportFailure(subBatchContext.channel);
+        }
+        CompleteSubBatch(*ctx, subBatchContext, subBatchContext.status);
     }
-    ctx->finalStatus = Status::OK();
-    ctx->state.store(TransportTaskState::COMPLETED, std::memory_order_release);
-    ctx->cv.notify_all();
+    ctx->TryFinalizeFromSubBatches();
+    if (ctx->Done()) { ctx->cv.notify_all(); }
 }
 
 void AsuTransportImpl::BuildResult(const TransportTaskContext& ctx, TaskResult& result)
 {
     result.status = ctx.finalStatus;
     result.entryStatus = ctx.entryStatus;
+    if (!ctx.subBatchContexts.empty()) {
+        std::size_t resultIndex = 0;
+        for (const auto& subBatchContext : ctx.subBatchContexts) {
+            for (const auto& status : subBatchContext.entryStatus) {
+                if (resultIndex >= result.entryStatus.size()) { break; }
+                result.entryStatus[resultIndex++] = status;
+            }
+        }
+    }
+
     result.queryResult.reset();
-    if (ctx.opType == TransportOpType::QUERY) { result.queryResult = ctx.queryResult; }
+    if (ctx.opType == TransportOpType::QUERY) {
+        result.queryResult = BuildQueryResultFromEntryStatus(result.entryStatus);
+    }
 }
 
 std::unique_ptr<AsuTransport> CreateAsuTransport() { return std::make_unique<AsuTransportImpl>(); }

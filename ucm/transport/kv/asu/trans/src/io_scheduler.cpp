@@ -28,58 +28,68 @@ namespace UC::ASU {
 
 namespace {
 
-std::size_t GetSubBatchCount(std::size_t total, std::size_t maxIoNum)
+std::size_t GetSubBatchCount(std::size_t total, std::size_t ioNum)
 {
-    if (total == 0 || maxIoNum == 0) { return 0; }
-    return 1 + (total - 1) / maxIoNum;
+    if (total == 0 || ioNum == 0) { return 0; }
+    return 1 + (total - 1) / ioNum;
+}
+
+template <typename Value, typename ScheduledBatch, typename SetView>
+std::vector<ScheduledBatch> SplitBatchView(const BatchView<Value>& view, std::size_t ioNum,
+                                           SetView setView)
+{
+    std::vector<ScheduledBatch> result;
+    if (view.empty() || ioNum == 0) { return result; }
+
+    const std::size_t subBatchCount = GetSubBatchCount(view.size, ioNum);
+    result.reserve(subBatchCount);
+
+    for (std::size_t offset = 0; offset < view.size; offset += ioNum) {
+        const std::size_t end = std::min(offset + ioNum, view.size);
+
+        auto& batch = result.emplace_back();
+        setView(batch, BatchView<Value>{view.data + offset, end - offset});
+    }
+
+    return result;
 }
 
 }  // namespace
 
-std::vector<IoScheduler::ScheduledIoBatch> IoScheduler::SplitForAsu(
-    const BatchView<KVBuffer>& entries, std::size_t maxIoNum) const
+IoScheduler::IoScheduler(const TransportConfig& config)
+    : batchLoadIoNum_(config.asuBatchLoadIoNum),
+      batchStoreIoNum_(config.asuBatchStoreIoNum),
+      deleteIoNum_(config.asuDeleteIoNum),
+      queryIoNum_(config.asuQueryIoNum)
 {
-    std::vector<ScheduledIoBatch> result;
-    if (entries.empty() || maxIoNum == 0) { return result; }
+}
 
-    const std::size_t subBatchCount = GetSubBatchCount(entries.size, maxIoNum);
-    result.reserve(subBatchCount);
-
-    for (std::size_t offset = 0; offset < entries.size; offset += maxIoNum) {
-        const std::size_t end = std::min(offset + maxIoNum, entries.size);
-
-        ScheduledIoBatch batch;
-        batch.entries = BatchView<KVBuffer>{entries.data + offset, end - offset};
-        result.push_back(batch);
-    }
-
-    return result;
+std::vector<IoScheduler::ScheduledIoBatch> IoScheduler::SplitForAsu(
+    const BatchView<KVBuffer>& entries, TransportOpType opType) const
+{
+    return SplitBatchView<KVBuffer, ScheduledIoBatch>(
+        entries, GetSqeIoNum(opType),
+        [](ScheduledIoBatch& batch, BatchView<KVBuffer> view) { batch.entries = view; });
 }
 
 std::vector<IoScheduler::ScheduledKeyBatch> IoScheduler::SplitForAsu(
-    const BatchView<CacheKey>& keys, std::size_t maxIoNum) const
+    const BatchView<CacheKey>& keys, TransportOpType opType) const
 {
-    std::vector<ScheduledKeyBatch> result;
-    if (keys.empty() || maxIoNum == 0) { return result; }
-
-    const std::size_t subBatchCount = GetSubBatchCount(keys.size, maxIoNum);
-    result.reserve(subBatchCount);
-
-    for (std::size_t offset = 0; offset < keys.size; offset += maxIoNum) {
-        const std::size_t end = std::min(offset + maxIoNum, keys.size);
-
-        ScheduledKeyBatch batch;
-        batch.keys = BatchView<CacheKey>{keys.data + offset, end - offset};
-        result.push_back(batch);
-    }
-
-    return result;
+    return SplitBatchView<CacheKey, ScheduledKeyBatch>(
+        keys, GetSqeIoNum(opType),
+        [](ScheduledKeyBatch& batch, BatchView<CacheKey> view) { batch.keys = view; });
 }
 
-std::size_t GetSqeBatchLimit(TransportOpType opType)
+std::size_t IoScheduler::GetSqeIoNum(TransportOpType opType) const
 {
     if (opType == TransportOpType::LOAD || opType == TransportOpType::STORE) { return 1; }
-    return GetAsuMaxIoNum(opType);
+    switch (opType) {
+        case TransportOpType::BATCH_LOAD: return batchLoadIoNum_;
+        case TransportOpType::BATCH_STORE: return batchStoreIoNum_;
+        case TransportOpType::DELETE: return deleteIoNum_;
+        case TransportOpType::QUERY: return queryIoNum_;
+        default: return 0;
+    }
 }
 
 }  // namespace UC::ASU
