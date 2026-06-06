@@ -23,7 +23,9 @@
  * */
 #pragma once
 
+#include <acl/acl.h>
 #include <atomic>
+#include <cstddef>
 #include <cstdint>
 #include <functional>
 #include <memory>
@@ -33,6 +35,7 @@
 #include <vector>
 #include "asu_transport/asu_transport.h"
 #include "asu_transport/types.h"
+#include "kv_protocol.h"
 
 namespace UC::ASU {
 
@@ -45,6 +48,7 @@ enum class RoutingPolicy : std::uint8_t {
 
 class ConnectionChannel;
 class ConnectionGroup;
+struct ScatterGatherEntry;
 
 class ConnectionManager {
 public:
@@ -103,5 +107,14 @@ private:
     ConnectionChannel* SelectByRoundRobin();
     ConnectionChannel* SelectByLeastLoaded();
 };
+
+struct SendIoBatch {
+    ConnectionHandle connectionHandle{nullptr};
+    const ScatterGatherEntry* sendSge{nullptr};
+    aclrtStream stream{nullptr};
+};
+
+std::vector<Status> Send(const std::vector<SendIoBatch>& ioBatches, std::uint32_t kernelCount,
+                         std::uint32_t quietCount);
 
 }  // namespace UC::ASU

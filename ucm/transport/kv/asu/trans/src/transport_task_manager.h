@@ -26,9 +26,13 @@
 #include <atomic>
 #include <condition_variable>
 #include <cstddef>
+#include <cstdint>
 #include <mutex>
+#include <string>
 #include <vector>
 #include "asu_transport/types.h"
+#include "buffer_manager.h"
+#include "connection_manager.h"
 #include "task_manager_base.h"
 
 namespace UC::ASU {
@@ -51,6 +55,38 @@ enum class TransportTaskState {
     CANCELED = 4,
 };
 
+enum class TransportSubBatchState {
+    PENDING = 0,
+    COMPLETED = 1,
+    FAILED = 2,
+};
+
+constexpr std::size_t kAsuBatchLoadMaxIoNum = 110;
+constexpr std::size_t kAsuBatchStoreMaxIoNum = 110;
+constexpr std::size_t kAsuDeleteMaxIoNum = 254;
+constexpr std::size_t kAsuQueryMaxIoNum = 256;
+
+inline std::size_t GetAsuMaxIoNum(TransportOpType opType)
+{
+    switch (opType) {
+        case TransportOpType::BATCH_LOAD: return kAsuBatchLoadMaxIoNum;
+        case TransportOpType::BATCH_STORE: return kAsuBatchStoreMaxIoNum;
+        case TransportOpType::DELETE: return kAsuDeleteMaxIoNum;
+        case TransportOpType::QUERY: return kAsuQueryMaxIoNum;
+        default: return 0;
+    }
+}
+
+inline bool IsEntryBatchOp(TransportOpType opType)
+{
+    return opType == TransportOpType::BATCH_LOAD || opType == TransportOpType::BATCH_STORE;
+}
+
+inline bool IsKeyBatchOp(TransportOpType opType)
+{
+    return opType == TransportOpType::DELETE || opType == TransportOpType::QUERY;
+}
+
 template <typename T>
 struct BatchView {
     const T* data{nullptr};
@@ -58,6 +94,18 @@ struct BatchView {
 
     const T& operator[](std::size_t i) const noexcept { return data[i]; }
     bool empty() const noexcept { return size == 0; }
+};
+
+struct TransportSubBatchContext {
+    std::uint16_t cid{0};
+    TransportOpType opType{TransportOpType::QUERY};
+    TransportSubBatchState state{TransportSubBatchState::PENDING};
+    Status status{Status::OK()};
+    ConnectionChannel* channel{nullptr};
+    bool useSeekControl{false};
+    ScatterGatherEntry sendSge;
+    ScatterGatherEntry flagBuffer;
+    std::vector<Status> entryStatus;
 };
 
 struct TransportTaskContext {
@@ -68,6 +116,8 @@ struct TransportTaskContext {
     QueryOptions queryOptions;
     QueryResult queryResult;
     std::vector<Status> entryStatus;
+    std::vector<TransportSubBatchContext> subBatchContexts;
+    std::uint32_t completedSubBatchCount{0};
 
     std::atomic<TransportTaskState> state{TransportTaskState::PENDING};
     Status finalStatus{Status::OK()};
