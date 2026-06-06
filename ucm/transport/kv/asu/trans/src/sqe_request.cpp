@@ -144,8 +144,8 @@ Status PackSubBatchRequest(ProtocolManager& protocolManager, BufferManager& send
     return status;
 }
 
-Status InitializeSubBatchSubmission(TransportOpType opType, std::size_t batchNum,
-                                    bool isSupported, const std::string& unsupportedMessage,
+Status InitializeSubBatchSubmission(TransportOpType opType, std::size_t batchNum, bool isSupported,
+                                    const std::string& unsupportedMessage,
                                     TransportSubBatchContext& subBatchContext, KvOpcode& opcode,
                                     bool& shouldSubmit)
 {
@@ -371,9 +371,9 @@ Status AsuTransportImpl::SubmitEntrySubBatchRequest(TransportOpType opType,
     const auto source = SubBatchRequestSource::FromEntries(subBatch.entries);
     KvOpcode opcode{};
     bool shouldSubmit = false;
-    auto status = InitializeSubBatchSubmission(opType, subBatch.entries.size,
-                                               IsEntryBatchOp(opType), kUnsupportedMessage,
-                                               subBatchContext, opcode, shouldSubmit);
+    auto status =
+        InitializeSubBatchSubmission(opType, subBatch.entries.size, IsEntryBatchOp(opType),
+                                     kUnsupportedMessage, subBatchContext, opcode, shouldSubmit);
     if (!status.ok() || !shouldSubmit) { return status; }
 
     status = PrepareSubBatchRequest(opType, AllocateRequestCid(), subBatch.entries.size,
@@ -394,9 +394,9 @@ Status AsuTransportImpl::SubmitKeySubBatchRequest(TransportOpType opType,
     const auto source = SubBatchRequestSource::FromKeys(subBatch.keys);
     KvOpcode opcode{};
     bool shouldSubmit = false;
-    auto status = InitializeSubBatchSubmission(opType, subBatch.keys.size, IsKeyBatchOp(opType),
-                                               kUnsupportedMessage, subBatchContext, opcode,
-                                               shouldSubmit);
+    auto status =
+        InitializeSubBatchSubmission(opType, subBatch.keys.size, IsKeyBatchOp(opType),
+                                     kUnsupportedMessage, subBatchContext, opcode, shouldSubmit);
     if (!status.ok() || !shouldSubmit) { return status; }
 
     status = PrepareSubBatchRequest(opType, AllocateRequestCid(), subBatch.keys.size,

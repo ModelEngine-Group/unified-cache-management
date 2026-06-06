@@ -121,15 +121,11 @@ Protocol ParseConfigProtocol(std::string value)
     return Protocol::TCP;
 }
 
-bool ApplyIoBufferConfigField(IoBufferConfig& config, const std::string& key,
-                              const std::string& value)
+bool ApplyTransportBufferConfigField(TransportConfig& config, const std::string& key,
+                                     const std::string& value)
 {
-    if (key == "completionPollIntervalMs" || key == "completion_poll_interval_ms" ||
-        key == "ioBuffer.completionPollIntervalMs" ||
-        key == "io_buffer.completion_poll_interval_ms") {
-        config.completionPollIntervalMs = ParseConfigUint64(value);
-    } else if (key == "sendBufferSlotSize" || key == "send_buffer_slot_size" ||
-               key == "ioBuffer.sendBufferSlotSize" || key == "io_buffer.send_buffer_slot_size") {
+    if (key == "sendBufferSlotSize" || key == "send_buffer_slot_size" ||
+        key == "ioBuffer.sendBufferSlotSize" || key == "io_buffer.send_buffer_slot_size") {
         config.sendBufferSlotSize = static_cast<std::size_t>(ParseConfigUint64(value));
     } else if (key == "sendBufferSlotNum" || key == "send_buffer_slot_num" ||
                key == "ioBuffer.sendBufferSlotNum" || key == "io_buffer.send_buffer_slot_num") {
@@ -140,6 +136,23 @@ bool ApplyIoBufferConfigField(IoBufferConfig& config, const std::string& key,
     } else if (key == "flagBufferSlotNum" || key == "flag_buffer_slot_num" ||
                key == "ioBuffer.flagBufferSlotNum" || key == "io_buffer.flag_buffer_slot_num") {
         config.flagBufferSlotNum = static_cast<std::size_t>(ParseConfigUint64(value));
+    } else {
+        return false;
+    }
+    return true;
+}
+
+bool ApplyTransportIoNumConfigField(TransportConfig& config, const std::string& key,
+                                    const std::string& value)
+{
+    if (key == "batchLoadIoNum" || key == "batch_load_io_num") {
+        config.asuBatchLoadIoNum = static_cast<std::size_t>(ParseConfigUint64(value));
+    } else if (key == "batchStoreIoNum" || key == "batch_store_io_num") {
+        config.asuBatchStoreIoNum = static_cast<std::size_t>(ParseConfigUint64(value));
+    } else if (key == "deleteIoNum" || key == "delete_io_num") {
+        config.asuDeleteIoNum = static_cast<std::size_t>(ParseConfigUint64(value));
+    } else if (key == "queryIoNum" || key == "query_io_num") {
+        config.asuQueryIoNum = static_cast<std::size_t>(ParseConfigUint64(value));
     } else {
         return false;
     }

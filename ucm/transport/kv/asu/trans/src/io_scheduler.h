@@ -26,12 +26,16 @@
 #include <cstddef>
 #include <cstdint>
 #include <vector>
+#include "asu_transport/asu_transport.h"
 #include "transport_task_manager.h"
 
 namespace UC::ASU {
 
 class IoScheduler {
 public:
+    IoScheduler() = default;
+    explicit IoScheduler(const TransportConfig& config);
+
     struct ScheduledIoBatch {
         BatchView<KVBuffer> entries;
     };
@@ -41,11 +45,16 @@ public:
     };
 
     std::vector<ScheduledIoBatch> SplitForAsu(const BatchView<KVBuffer>& entries,
-                                              std::size_t maxIoSize) const;
+                                              TransportOpType opType) const;
     std::vector<ScheduledKeyBatch> SplitForAsu(const BatchView<CacheKey>& keys,
-                                               std::size_t maxIoSize) const;
-};
+                                               TransportOpType opType) const;
+    std::size_t GetSqeIoNum(TransportOpType opType) const;
 
-std::size_t GetSqeMaxIoSize(TransportOpType opType);
+private:
+    std::size_t batchLoadIoNum_{110};
+    std::size_t batchStoreIoNum_{110};
+    std::size_t deleteIoNum_{254};
+    std::size_t queryIoNum_{256};
+};
 
 }  // namespace UC::ASU

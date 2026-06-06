@@ -35,8 +35,10 @@ std::vector<std::string> SplitConfigValue(const std::string& value, char delimit
 std::uint64_t ParseConfigUint64(const std::string& value);
 Protocol ParseConfigProtocol(std::string value);
 
-bool ApplyIoBufferConfigField(IoBufferConfig& config, const std::string& key,
-                              const std::string& value);
+bool ApplyTransportBufferConfigField(TransportConfig& config, const std::string& key,
+                                     const std::string& value);
+bool ApplyTransportIoNumConfigField(TransportConfig& config, const std::string& key,
+                                    const std::string& value);
 bool TryParseAsuInfoKey(const std::string& key, AsuId& asuId);
 bool TryGetTransportAttrKey(const std::string& key, std::string& attrKey);
 

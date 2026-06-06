@@ -27,6 +27,7 @@
 #include <fstream>
 #include <unordered_map>
 #include <utility>
+#include <vector>
 #include "asu_client/asu_client.h"
 #include "config_parser_common.h"
 #include "view_server.h"
@@ -55,8 +56,7 @@ Status LoadAsuClientConfig(const std::string& configPath, AsuClientConfig& confi
 
     config = AsuClientConfig{};
     std::unordered_map<AsuId, AsuInfo> asuInfos;
-    std::unordered_map<std::string, std::string> transportAttrs;
-    IoBufferConfig ioBufferConfig;
+    std::vector<std::pair<std::string, std::string>> transportFields;
     std::string line;
     while (std::getline(configFile, line)) {
         line = TrimConfigValue(line);
@@ -103,16 +103,21 @@ Status LoadAsuClientConfig(const std::string& configPath, AsuClientConfig& confi
             if (TryParseAsuInfoKey(key, asuId)) {
                 asuInfos[asuId] = ParseAsuInfo(value);
             } else if (TryGetTransportAttrKey(key, attrKey)) {
-                if (!ApplyIoBufferConfigField(ioBufferConfig, attrKey, value)) {
-                    transportAttrs[attrKey] = value;
-                }
+                transportFields.emplace_back(attrKey, value);
             }
         }
     }
 
     for (auto& transportConfig : config.transportConfigs) {
-        transportConfig.ioBuffer = ioBufferConfig;
-        for (const auto& attr : transportAttrs) { transportConfig.attrs.emplace(attr); }
+        for (const auto& field : transportFields) {
+            if (ApplyTransportBufferConfigField(transportConfig, field.first, field.second)) {
+                continue;
+            }
+            if (ApplyTransportIoNumConfigField(transportConfig, field.first, field.second)) {
+                continue;
+            }
+            transportConfig.attrs.emplace(field);
+        }
 
         auto iter = asuInfos.find(transportConfig.asuId);
         if (iter == asuInfos.end()) { continue; }

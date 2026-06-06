@@ -50,32 +50,30 @@ Status AsuTransportImpl::SubmitTaskRequests(const TransportTaskContext& ctx,
                                             std::vector<TransportSubBatchContext>& subBatchContexts)
 {
     Status finalStatus = Status::OK();
+
     if (IsEntryBatchOp(ctx.opType)) {
-        const auto subBatches = ioScheduler_.SplitForAsu(ctx.entries, GetSqeMaxIoSize(ctx.opType));
+        const auto subBatches = ioScheduler_.SplitForAsu(ctx.entries, ctx.opType);
         subBatchContexts.reserve(subBatches.size());
         for (const auto& subBatch : subBatches) {
-            TransportSubBatchContext subBatchContext;
+            auto& subBatchContext = subBatchContexts.emplace_back();
             auto status = SubmitEntrySubBatchRequest(ctx.opType, subBatch, subBatchContext);
             subBatchContext.status = status;
             if (!status.ok() && finalStatus.ok()) { finalStatus = status; }
-            subBatchContexts.push_back(std::move(subBatchContext));
         }
     } else if (IsKeyBatchOp(ctx.opType)) {
-        const auto subBatches = ioScheduler_.SplitForAsu(ctx.keys, GetSqeMaxIoSize(ctx.opType));
+        const auto subBatches = ioScheduler_.SplitForAsu(ctx.keys, ctx.opType);
         subBatchContexts.reserve(subBatches.size());
         for (const auto& subBatch : subBatches) {
-            TransportSubBatchContext subBatchContext;
+            auto& subBatchContext = subBatchContexts.emplace_back();
             auto status = SubmitKeySubBatchRequest(ctx.opType, subBatch, subBatchContext);
             subBatchContext.status = status;
             if (!status.ok() && finalStatus.ok()) { finalStatus = status; }
-            subBatchContexts.push_back(std::move(subBatchContext));
         }
-    } else if (ctx.opType == TransportOpType::KEEP_ALIVE) {
-        TransportSubBatchContext subBatchContext;
+    } else if (IsKeepAliveOp(ctx.opType)) {
+        auto& subBatchContext = subBatchContexts.emplace_back();
         auto status = SubmitKeepAliveRequest(subBatchContext);
         subBatchContext.status = status;
         if (!status.ok() && finalStatus.ok()) { finalStatus = status; }
-        subBatchContexts.push_back(std::move(subBatchContext));
     } else {
         finalStatus = Status::Error(StatusCode::UNSUPPORTED, "transport operation is unsupported");
     }
@@ -112,7 +110,7 @@ Status AsuTransportImpl::BuildSubBatchSendBuffers(
 
         ioBatches.push_back(
             SendIoBatch{subBatchContext.channel->GetNativeQp(), &subBatchContext.sendSge});
-        subBatchIndexes.push_back(index);
+        subBatchIndexes.emplace_back(index);
     }
 
     return finalStatus;

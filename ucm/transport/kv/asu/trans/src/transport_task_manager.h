@@ -59,22 +59,6 @@ enum class TransportSubBatchState {
     COMPLETED = 1,
 };
 
-constexpr std::size_t kAsuBatchLoadMaxIoSize = 110;
-constexpr std::size_t kAsuBatchStoreMaxIoSize = 110;
-constexpr std::size_t kAsuDeleteMaxIoSize = 254;
-constexpr std::size_t kAsuQueryMaxIoSize = 256;
-
-inline std::size_t GetAsuMaxIoSize(TransportOpType opType)
-{
-    switch (opType) {
-        case TransportOpType::BATCH_LOAD: return kAsuBatchLoadMaxIoSize;
-        case TransportOpType::BATCH_STORE: return kAsuBatchStoreMaxIoSize;
-        case TransportOpType::DELETE: return kAsuDeleteMaxIoSize;
-        case TransportOpType::QUERY: return kAsuQueryMaxIoSize;
-        default: return 0;
-    }
-}
-
 inline bool IsEntryBatchOp(TransportOpType opType)
 {
     return opType == TransportOpType::BATCH_LOAD || opType == TransportOpType::BATCH_STORE;
@@ -84,6 +68,8 @@ inline bool IsKeyBatchOp(TransportOpType opType)
 {
     return opType == TransportOpType::DELETE || opType == TransportOpType::QUERY;
 }
+
+inline bool IsKeepAliveOp(TransportOpType opType) { return opType == TransportOpType::KEEP_ALIVE; }
 
 template <typename T>
 struct BatchView {

@@ -66,7 +66,9 @@ Status LoadTransportConfig(const std::string& configPath, TransportConfig& confi
             config.maxInflightTasks = static_cast<std::uint32_t>(ParseConfigUint64(value));
         } else if (key == "maxInflightBytes" || key == "max_inflight_bytes") {
             config.maxInflightBytes = ParseConfigUint64(value);
-        } else if (ApplyIoBufferConfigField(config.ioBuffer, key, value)) {
+        } else if (ApplyTransportBufferConfigField(config, key, value)) {
+            continue;
+        } else if (ApplyTransportIoNumConfigField(config, key, value)) {
             continue;
         } else {
             config.attrs[key] = value;

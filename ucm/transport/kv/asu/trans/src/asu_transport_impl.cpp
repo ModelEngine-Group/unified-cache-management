@@ -58,6 +58,7 @@ Status AsuTransportImpl::Init(const TransportConfig& config)
         return Status::OK();
     }
     config_ = config;
+    ioScheduler_ = IoScheduler(config_);
 
     connManager_.PrepareForInit();
 
@@ -78,13 +79,11 @@ Status AsuTransportImpl::Init(const TransportConfig& config)
     if (!status.ok()) { return status; }
 
     status = sendBufferManager_.Init("asu send buffer", MemoryType::HOST,
-                                     config_.ioBuffer.sendBufferSlotSize,
-                                     config_.ioBuffer.sendBufferSlotNum);
+                                     config_.sendBufferSlotSize, config_.sendBufferSlotNum);
     if (!status.ok()) { return status; }
 
     status = flagBufferManager_.Init("asu flag buffer", MemoryType::HOST,
-                                     config_.ioBuffer.flagBufferSlotSize,
-                                     config_.ioBuffer.flagBufferSlotNum);
+                                     config_.flagBufferSlotSize, config_.flagBufferSlotNum);
     if (!status.ok()) { return status; }
     protocolManager_ = std::make_unique<ProtocolManager>();
 
@@ -306,8 +305,7 @@ void AsuTransportImpl::CompletionLoop()
 {
     while (!stop_.load(std::memory_order_acquire)) {
         for (const auto& ctx : taskManager_.GetAll()) { PollTaskCompletions(ctx); }
-        std::this_thread::sleep_for(
-            std::chrono::milliseconds(config_.ioBuffer.completionPollIntervalMs));
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
     }
 }
 

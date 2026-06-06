@@ -55,9 +55,9 @@ StatusCode CqeStatusCode(std::uint16_t rawStatus)
 
 Status ResultBufferEntryToStatus(TransportOpType opType, std::uint8_t rawResult)
 {
-    if (opType == TransportOpType::BATCH_STORE || opType == TransportOpType::BATCH_LOAD) {
-        if (rawResult == 0x00) { return Status::OK(); }
+    if (opType != TransportOpType::QUERY && rawResult == 0x00) { return Status::OK(); }
 
+    if (opType == TransportOpType::BATCH_STORE || opType == TransportOpType::BATCH_LOAD) {
         switch (EntryStatusCode(opType, rawResult)) {
             case StatusCode::ASU_ENTRY_RETRY_ADVISED:
                 return Status::Error(StatusCode::ASU_ENTRY_RETRY_ADVISED,
@@ -76,8 +76,6 @@ Status ResultBufferEntryToStatus(TransportOpType opType, std::uint8_t rawResult)
     }
 
     if (opType == TransportOpType::DELETE) {
-        if (rawResult == 0x00) { return Status::OK(); }
-
         switch (EntryStatusCode(opType, rawResult)) {
             case StatusCode::ASU_ENTRY_DELETE_FAILED:
                 return Status::Error(StatusCode::ASU_ENTRY_DELETE_FAILED, "delete failed");
@@ -99,9 +97,7 @@ Status ResultBufferEntryToStatus(TransportOpType opType, std::uint8_t rawResult)
         }
     }
 
-    return rawResult == 0 ? Status::OK()
-                          : Status::Error(StatusCode::IO_ERROR,
-                                          "entry CQE status is " + std::to_string(rawResult));
+    return Status::Error(StatusCode::IO_ERROR, "entry CQE status is " + std::to_string(rawResult));
 }
 
 }  // namespace
