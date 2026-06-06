@@ -903,10 +903,17 @@ class UCMDirectConnector(KVConnectorBase_V1):
                 logger.error(f"wait for dump kv cache failed. {type(e).__name__}: {e}")
         self._pending_dump_tasks = remaining_tasks
 
-    def handle_preemptions(self, kv_connector_metadata: KVConnectorMetadata):
+    def handle_preemptions(
+        self,
+        kv_connector_metadata: KVConnectorMetadata | set[str],
+    ) -> None:
         if self.use_layerwise:
             return
-        preempted_req_ids = getattr(kv_connector_metadata, "preempted_req_ids", None)
+        preempted_req_ids = (
+            kv_connector_metadata
+            if isinstance(kv_connector_metadata, set)
+            else getattr(kv_connector_metadata, "preempted_req_ids", None)
+        )
         if preempted_req_ids:
             self._flush_pending_dump_tasks(preempted_req_ids)
 
@@ -2755,16 +2762,6 @@ class UCMHMAConnector(UCMDirectConnector, SupportsHMA):
             requests_dispatch_meta,
             scheduler_output.preempted_req_ids or set(),
         )
-
-    def request_finished_all_groups(
-        self,
-        request: "Request",
-        block_ids: tuple[list[int], ...],
-    ) -> tuple[bool, dict[str, Any] | None]:
-        if block_ids:
-            return self.request_finished(request, block_ids[0])
-        return self.request_finished(request, [])
-
 
 def use_hybrid_linear_attention_layout(
     kv_cache_config: Optional["KVCacheConfig"],
