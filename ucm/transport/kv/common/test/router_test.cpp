@@ -51,7 +51,7 @@ std::vector<CacheKey> MakeKeys(std::size_t count)
 }
 
 std::unordered_map<CacheKey, NodeId> CaptureKeyRoutes(const std::vector<NodeId>& nodeIds,
-                                                      HashTableConfig config,
+                                                      RouterConfig config,
                                                       const std::vector<CacheKey>& keys)
 {
     auto router = CreateRouter(nodeIds, StableHash, config);
@@ -99,8 +99,8 @@ TEST(RouterTest, RingHashDistributionIsBalanced)
     constexpr double kMaxSkewRatio = 0.3;
 
     auto nodeIds = MakeNodeIds(kNodeCount);
-    HashTableConfig config;
-    config.type = HashTableType::RING_HASH;
+    RouterConfig config;
+    config.type = RouterType::RING_HASH;
     config.ringHash.virtualNodeCount = 256;
     auto router = CreateRouter(nodeIds, StableHash, config);
 
@@ -117,8 +117,8 @@ TEST(RouterTest, MaglevDistributionIsBalanced)
     constexpr double kMaxSkewRatio = 0.3;
 
     auto nodeIds = MakeNodeIds(kNodeCount);
-    HashTableConfig config;
-    config.type = HashTableType::MAGLEV;
+    RouterConfig config;
+    config.type = RouterType::MAGLEV;
     config.maglev.tableSize = 65537;
     auto router = CreateRouter(nodeIds, StableHash, config);
 
@@ -133,8 +133,8 @@ TEST(RouterTest, ContiguousBlockAffinityRoutesKKeysTogether)
     constexpr std::uint64_t kContiguousBlockCount = 3;
     constexpr std::size_t kKeyCount = 12;
 
-    HashTableConfig config;
-    config.type = HashTableType::CONTIGUOUS_BLOCK_AFFINITY;
+    RouterConfig config;
+    config.type = RouterType::CONTIGUOUS_BLOCK_AFFINITY;
     config.contiguousBlockAffinity.blockCount = kContiguousBlockCount;
     config.contiguousBlockAffinity.dynamicAdjustEnabled = true;
     auto keys = MakeKeys(kKeyCount);
@@ -159,15 +159,15 @@ TEST(RouterTest, ContiguousBlockAffinityUsesConfiguredFullSpreadType)
     constexpr std::size_t kKeyCount = 16;
 
     auto nodeIds = MakeNodeIds(8);
-    HashTableConfig config;
-    config.type = HashTableType::CONTIGUOUS_BLOCK_AFFINITY;
+    RouterConfig config;
+    config.type = RouterType::CONTIGUOUS_BLOCK_AFFINITY;
     config.contiguousBlockAffinity.blockCount = kContiguousBlockCount;
-    config.contiguousBlockAffinity.fullSpreadType = HashTableType::MAGLEV_FULL_SPREAD;
+    config.contiguousBlockAffinity.fullSpreadType = RouterType::MAGLEV_FULL_SPREAD;
     auto keys = MakeKeys(kKeyCount);
     auto routes = CaptureKeyRoutes(nodeIds, config, keys);
 
-    HashTableConfig maglevConfig = config;
-    maglevConfig.type = HashTableType::MAGLEV_FULL_SPREAD;
+    RouterConfig maglevConfig = config;
+    maglevConfig.type = RouterType::MAGLEV_FULL_SPREAD;
     auto maglevRouter = CreateRouter(nodeIds, StableHash, maglevConfig);
 
     for (std::size_t begin = 0; begin < keys.size(); begin += kContiguousBlockCount) {
@@ -189,8 +189,8 @@ TEST(RouterTest, BatchTopKAffinityLimitsTouchedNodes)
     constexpr std::size_t kKeyCount = 100;
     constexpr std::size_t kTopK = 3;
 
-    HashTableConfig config;
-    config.type = HashTableType::BATCH_TOPK_AFFINITY;
+    RouterConfig config;
+    config.type = RouterType::BATCH_TOPK_AFFINITY;
     config.batchTopKAffinity.topK = kTopK;
     config.batchTopKAffinity.dynamicAdjustEnabled = true;
     auto router = CreateRouter(MakeNodeIds(kNodeCount), StableHash, config);
@@ -205,10 +205,10 @@ TEST(RouterTest, BatchTopKAffinityLimitsTouchedNodes)
 
 TEST(RouterTest, ContiguousBlockAffinityRejectsNonFullSpreadType)
 {
-    HashTableConfig config;
-    config.type = HashTableType::CONTIGUOUS_BLOCK_AFFINITY;
+    RouterConfig config;
+    config.type = RouterType::CONTIGUOUS_BLOCK_AFFINITY;
     config.contiguousBlockAffinity.blockCount = 2;
-    config.contiguousBlockAffinity.fullSpreadType = HashTableType::BATCH_TOPK_AFFINITY;
+    config.contiguousBlockAffinity.fullSpreadType = RouterType::BATCH_TOPK_AFFINITY;
     auto router = CreateRouter(MakeNodeIds(8), StableHash, config);
 
     auto routes = router->RouteKeys(MakeKeys(8));
@@ -222,8 +222,8 @@ TEST(RouterTest, RingHashMigrationRatioIsBoundedWhenNodeIsAdded)
     constexpr std::size_t kKeyCount = 20000;
     constexpr double kMaxMigrationRatio = 0.15;
 
-    HashTableConfig config;
-    config.type = HashTableType::RING_HASH;
+    RouterConfig config;
+    config.type = RouterType::RING_HASH;
     config.ringHash.virtualNodeCount = 512;
     auto keys = MakeKeys(kKeyCount);
     auto oldRoutes = CaptureKeyRoutes(MakeNodeIds(kOldNodeCount), config, keys);
@@ -240,8 +240,8 @@ TEST(RouterTest, MaglevMigrationRatioIsBoundedWhenNodeIsAdded)
     constexpr std::size_t kKeyCount = 20000;
     constexpr double kMaxMigrationRatio = 0.15;
 
-    HashTableConfig config;
-    config.type = HashTableType::MAGLEV;
+    RouterConfig config;
+    config.type = RouterType::MAGLEV;
     config.maglev.tableSize = 65537;
     auto keys = MakeKeys(kKeyCount);
     auto oldRoutes = CaptureKeyRoutes(MakeNodeIds(kOldNodeCount), config, keys);

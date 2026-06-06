@@ -29,7 +29,7 @@
 #include <utility>
 #include <vector>
 #include "asu_client/asu_client.h"
-#include "logger/logger.h"
+#include "status_utils.h"
 #include "view_server.h"
 
 namespace UC::ASU {
@@ -51,8 +51,7 @@ Status LoadAsuClientConfig(const std::string& configPath, AsuClientConfig& confi
     std::ifstream configFile{configPath};
     if (!configFile.is_open()) {
         const auto message = "failed to open asu client config, path=" + configPath;
-        UC_ERROR("{}", message);
-        return Status::Error(StatusCode::NOT_FOUND, message);
+        return ASU_LOG_ERROR_STATUS(StatusCode::NOT_FOUND, message);
     }
 
     config = AsuClientConfig{};

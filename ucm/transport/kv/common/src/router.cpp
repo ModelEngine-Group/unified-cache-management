@@ -115,12 +115,12 @@ std::string BuildBatchKey(const std::vector<CacheKey>& keys)
 }
 
 std::shared_ptr<Router> CreateFullSpreadRouter(const std::vector<NodeId>& nodeIds,
-                                               HashFunction hash, HashTableConfig config)
+                                               HashFunction hash, RouterConfig config)
 {
     switch (config.type) {
-        case HashTableType::MAGLEV_FULL_SPREAD:
+        case RouterType::MAGLEV_FULL_SPREAD:
             return std::make_shared<MaglevRouter>(nodeIds, std::move(hash), config);
-        case HashTableType::RING_HASH_FULL_SPREAD:
+        case RouterType::RING_HASH_FULL_SPREAD:
             return std::make_shared<RingHashRouter>(nodeIds, std::move(hash), config);
         default: return nullptr;
     }
@@ -143,7 +143,7 @@ std::unordered_map<NodeId, std::vector<Router::EntryIndex>> Router::RouteKeys(
 }
 
 RingHashRouter::RingHashRouter(const std::vector<NodeId>& nodeIds, HashFunction hash,
-                               HashTableConfig config)
+                               RouterConfig config)
     : Router(std::move(hash)), config_(config)
 {
     Build(nodeIds);
@@ -179,7 +179,7 @@ NodeId RingHashRouter::RouteKey(const CacheKey& key) const
 }
 
 MaglevRouter::MaglevRouter(const std::vector<NodeId>& nodeIds, HashFunction hash,
-                           HashTableConfig config)
+                           RouterConfig config)
     : Router(std::move(hash)), config_(config)
 {
     Build(nodeIds);
@@ -231,8 +231,7 @@ NodeId MaglevRouter::RouteKey(const CacheKey& key) const
 }
 
 ContiguousBlockAffinityRouter::ContiguousBlockAffinityRouter(const std::vector<NodeId>& nodeIds,
-                                                             HashFunction hash,
-                                                             HashTableConfig config)
+                                                             HashFunction hash, RouterConfig config)
     : Router(hash), config_(config)
 {
     if (config_.contiguousBlockAffinity.blockCount == 0) {
@@ -271,7 +270,7 @@ NodeId ContiguousBlockAffinityRouter::RouteKey(const CacheKey& key) const
 }
 
 BatchTopKAffinityRouter::BatchTopKAffinityRouter(const std::vector<NodeId>& nodeIds,
-                                                 HashFunction hash, HashTableConfig config)
+                                                 HashFunction hash, RouterConfig config)
     : Router(std::move(hash)), config_(config), nodeIds_(NormalizeNodeIds(nodeIds))
 {
     if (config_.batchTopKAffinity.topK == 0) { config_.batchTopKAffinity.topK = 1; }
@@ -320,20 +319,20 @@ std::vector<NodeId> BatchTopKAffinityRouter::SelectCandidates(const CacheKey& ba
 }
 
 std::shared_ptr<Router> CreateRouter(const std::vector<NodeId>& nodeIds, HashFunction hash,
-                                     HashTableConfig config)
+                                     RouterConfig config)
 {
     switch (config.type) {
-        case HashTableType::MAGLEV_FULL_SPREAD:
+        case RouterType::MAGLEV_FULL_SPREAD:
             return CreateFullSpreadRouter(nodeIds, std::move(hash), config);
-        case HashTableType::CONTIGUOUS_BLOCK_AFFINITY:
+        case RouterType::CONTIGUOUS_BLOCK_AFFINITY:
             return std::make_shared<ContiguousBlockAffinityRouter>(nodeIds, std::move(hash),
                                                                    config);
-        case HashTableType::BATCH_TOPK_AFFINITY:
+        case RouterType::BATCH_TOPK_AFFINITY:
             return std::make_shared<BatchTopKAffinityRouter>(nodeIds, std::move(hash), config);
-        case HashTableType::RING_HASH_FULL_SPREAD:
+        case RouterType::RING_HASH_FULL_SPREAD:
             return CreateFullSpreadRouter(nodeIds, std::move(hash), config);
         default:
-            config.type = HashTableType::RING_HASH_FULL_SPREAD;
+            config.type = RouterType::RING_HASH_FULL_SPREAD;
             return CreateFullSpreadRouter(nodeIds, std::move(hash), config);
     }
 }

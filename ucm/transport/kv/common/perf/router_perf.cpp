@@ -47,7 +47,7 @@ std::uint64_t ElapsedNs(Clock::time_point start)
 }
 
 PerfResult RunPerf(const std::string& name, const std::vector<UC::KV::NodeId>& nodeIds,
-                   const std::vector<UC::KV::CacheKey>& keys, UC::KV::HashTableConfig config)
+                   const std::vector<UC::KV::CacheKey>& keys, UC::KV::RouterConfig config)
 {
     auto buildStart = Clock::now();
     auto router = UC::KV::CreateRouter(nodeIds, nullptr, config);
@@ -89,12 +89,12 @@ int main(int argc, char** argv)
     auto nodeIds = MakeNodeIds(nodeCount);
     auto keys = MakeKeys(keyCount);
 
-    UC::KV::HashTableConfig ringConfig;
-    ringConfig.type = UC::KV::HashTableType::RING_HASH_FULL_SPREAD;
+    UC::KV::RouterConfig ringConfig;
+    ringConfig.type = UC::KV::RouterType::RING_HASH_FULL_SPREAD;
     ringConfig.ringHash.virtualNodeCount = 256;
 
-    UC::KV::HashTableConfig maglevConfig;
-    maglevConfig.type = UC::KV::HashTableType::MAGLEV_FULL_SPREAD;
+    UC::KV::RouterConfig maglevConfig;
+    maglevConfig.type = UC::KV::RouterType::MAGLEV_FULL_SPREAD;
     maglevConfig.maglev.tableSize = 65537;
 
     std::cout << "router perf: nodes=" << nodeCount << " keys=" << keyCount << '\n';

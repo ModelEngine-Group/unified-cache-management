@@ -41,8 +41,8 @@ constexpr NodeId kInvalidNodeId = UINT64_MAX;
 constexpr std::uint64_t kDefaultVirtualNodeCount = 128;
 constexpr std::uint64_t kDefaultMaglevTableSize = 65537;
 
-// HashTableType selects the routing strategy implementation.
-enum class HashTableType {
+// RouterType selects the routing strategy implementation.
+enum class RouterType {
     RING_HASH_FULL_SPREAD = 0,
     MAGLEV_FULL_SPREAD = 1,
     CONTIGUOUS_BLOCK_AFFINITY = 2,
@@ -64,7 +64,7 @@ struct MaglevConfig {
 // ContiguousBlockAffinityConfig keeps each K-sized key range on the same node.
 struct ContiguousBlockAffinityConfig {
     std::uint64_t blockCount{1};
-    HashTableType fullSpreadType{HashTableType::RING_HASH_FULL_SPREAD};
+    RouterType fullSpreadType{RouterType::RING_HASH_FULL_SPREAD};
     bool dynamicAdjustEnabled{false};
 };
 
@@ -74,9 +74,9 @@ struct BatchTopKAffinityConfig {
     bool dynamicAdjustEnabled{false};
 };
 
-// HashTableConfig controls router construction and routing strategy parameters.
-struct HashTableConfig {
-    HashTableType type{HashTableType::RING_HASH_FULL_SPREAD};
+// RouterConfig controls router construction and routing strategy parameters.
+struct RouterConfig {
+    RouterType type{RouterType::RING_HASH_FULL_SPREAD};
     RingHashConfig ringHash;
     MaglevConfig maglev;
     ContiguousBlockAffinityConfig contiguousBlockAffinity;
@@ -107,7 +107,7 @@ protected:
 class RingHashRouter final : public Router {
 public:
     // Builds the ring from the provided node identifiers.
-    RingHashRouter(const std::vector<NodeId>& nodeIds, HashFunction hash, HashTableConfig config);
+    RingHashRouter(const std::vector<NodeId>& nodeIds, HashFunction hash, RouterConfig config);
 
 private:
     using RingNode = std::pair<std::uint64_t, NodeId>;
@@ -117,7 +117,7 @@ private:
     // Constructs the consistent-hash ring.
     void Build(const std::vector<NodeId>& nodeIds);
 
-    HashTableConfig config_;
+    RouterConfig config_;
     std::vector<RingNode> ring_;
 };
 
@@ -125,7 +125,7 @@ private:
 class MaglevRouter final : public Router {
 public:
     // Builds the Maglev table from the provided node identifiers.
-    MaglevRouter(const std::vector<NodeId>& nodeIds, HashFunction hash, HashTableConfig config);
+    MaglevRouter(const std::vector<NodeId>& nodeIds, HashFunction hash, RouterConfig config);
 
 private:
     // Returns the lookup-table owner for a cache key.
@@ -133,7 +133,7 @@ private:
     // Constructs the Maglev lookup table.
     void Build(const std::vector<NodeId>& nodeIds);
 
-    HashTableConfig config_;
+    RouterConfig config_;
     std::vector<NodeId> lookupTable_;
 };
 
@@ -142,7 +142,7 @@ class ContiguousBlockAffinityRouter final : public Router {
 public:
     // Builds a contiguous-block affinity strategy over a configured full-spread router.
     ContiguousBlockAffinityRouter(const std::vector<NodeId>& nodeIds, HashFunction hash,
-                                  HashTableConfig config);
+                                  RouterConfig config);
 
     // Routes keys by anchoring each K-sized range to its first key.
     std::unordered_map<NodeId, std::vector<EntryIndex>> RouteKeys(
@@ -152,7 +152,7 @@ private:
     // Returns the owner selected by the underlying full-spread router.
     NodeId RouteKey(const CacheKey& key) const override;
 
-    HashTableConfig config_;
+    RouterConfig config_;
     std::shared_ptr<Router> fullSpreadRouter_;
 };
 
@@ -161,7 +161,7 @@ class BatchTopKAffinityRouter final : public Router {
 public:
     // Builds a batch TopK affinity strategy over active node identifiers.
     BatchTopKAffinityRouter(const std::vector<NodeId>& nodeIds, HashFunction hash,
-                            HashTableConfig config);
+                            RouterConfig config);
 
     // Routes one RouteKeys call through a batch-specific TopK node candidate set.
     std::unordered_map<NodeId, std::vector<EntryIndex>> RouteKeys(
@@ -173,12 +173,12 @@ private:
     // Selects the TopK candidates for one batch fingerprint.
     std::vector<NodeId> SelectCandidates(const CacheKey& batchKey) const;
 
-    HashTableConfig config_;
+    RouterConfig config_;
     std::vector<NodeId> nodeIds_;
 };
 
-// Creates a router for the selected hash table configuration.
+// Creates a router for the selected routing strategy configuration.
 std::shared_ptr<Router> CreateRouter(const std::vector<NodeId>& nodeIds, HashFunction hash,
-                                     HashTableConfig config);
+                                     RouterConfig config);
 
 }  // namespace UC::KV

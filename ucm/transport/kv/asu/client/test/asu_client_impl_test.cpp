@@ -324,7 +324,7 @@ void ExpectSameAsuSet(std::vector<AsuId> actual, std::vector<AsuId> expected)
 CacheKey FindKeyForAsu(const std::vector<AsuId>& asuIds, AsuId targetAsuId)
 {
     std::vector<UC::KV::NodeId> nodeIds(asuIds.begin(), asuIds.end());
-    auto router = UC::KV::CreateRouter(nodeIds, UC::KV::HashFunction{}, UC::KV::HashTableConfig{});
+    auto router = UC::KV::CreateRouter(nodeIds, UC::KV::HashFunction{}, UC::KV::RouterConfig{});
     for (std::size_t index = 0; index < 10000; ++index) {
         auto key = "route-key-" + std::to_string(targetAsuId) + "-" + std::to_string(index);
         auto routes = router->RouteKeys({key});
@@ -509,7 +509,7 @@ TEST(AsuClientImplTest, Lifecycle_PublicInitLoadsClientConfigFile)
     }
 }
 
-TEST(AsuClientImplTest, Routing_UsesHashTableConfigFromClientConfigAttrs)
+TEST(AsuClientImplTest, Routing_UsesRouterConfigFromClientConfigAttrs)
 {
     auto state = std::make_shared<TestState>();
     auto config = MakeConfig({10, 20});
