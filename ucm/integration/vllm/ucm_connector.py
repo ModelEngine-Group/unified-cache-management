@@ -2763,6 +2763,7 @@ class UCMHMAConnector(UCMDirectConnector, SupportsHMA):
             scheduler_output.preempted_req_ids or set(),
         )
 
+
 def use_hybrid_linear_attention_layout(
     kv_cache_config: Optional["KVCacheConfig"],
 ) -> bool:
