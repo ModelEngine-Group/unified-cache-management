@@ -21,6 +21,7 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  * */
+#include "asu_store.h"
 #include <algorithm>
 #include <cstddef>
 #include <functional>
@@ -69,6 +70,14 @@ Status ConvertStatus(const AsuStatus& status)
     }
 }
 
+void LogAsuStatus(const char* operation, const AsuStatus& status)
+{
+    if (status.ok()) { return; }
+
+    UC_ERROR("ASU {} failed: code={}, message={}.", operation, static_cast<int>(status.code),
+             status.message);
+}
+
 UC::ASU::MemoryType ParseMemoryType(const std::string& memoryType)
 {
     if (memoryType == "host") { return UC::ASU::MemoryType::HOST; }
@@ -78,47 +87,6 @@ UC::ASU::MemoryType ParseMemoryType(const std::string& memoryType)
 }
 
 }  // namespace
-
-struct Config {
-    std::string mode{"client"};
-    std::string configPath;
-    std::string clientId{"ucm-asu-store"};
-    std::vector<std::string> viewServiceAddrs;
-    std::vector<ssize_t> asuIds;
-    std::vector<std::string> asuIps;
-    std::string asuNamePrefix{"asu"};
-    std::uint16_t asuPort{0};
-    std::uint64_t defaultWaitTimeoutMs{100};
-    std::uint64_t queryTimeoutMs{5};
-    std::uint64_t loadTimeoutMs{100};
-    std::uint64_t storeTimeoutMs{100};
-    std::uint64_t maxInflightTasks{1024};
-    std::uint64_t maxInflightBytes{1ULL << 30};
-    std::vector<std::size_t> tensorSizes;
-    std::size_t shardSize{0};
-    std::size_t blockSize{0};
-    std::int32_t deviceId{-1};
-    std::string memoryType;
-};
-
-class AsuBackend {
-public:
-    virtual ~AsuBackend() = default;
-    virtual AsuStatus Init(const Config& config) = 0;
-    virtual AsuStatus Init(const std::string& configPath) = 0;
-    virtual AsuStatus Shutdown() = 0;
-    virtual AsuStatus Query(const std::vector<UC::ASU::CacheKey>& keys,
-                            const UC::ASU::QueryOptions& options, UC::ASU::QueryResult& result) = 0;
-    virtual AsuStatus LoadAsync(const std::vector<UC::ASU::KVBuffer>& entries,
-                                UC::ASU::TaskId& taskId) = 0;
-    virtual AsuStatus StoreAsync(const std::vector<UC::ASU::KVBuffer>& entries,
-                                 UC::ASU::TaskId& taskId) = 0;
-    virtual AsuStatus DeleteAsync(const std::vector<UC::ASU::CacheKey>& keys,
-                                  UC::ASU::TaskId& taskId) = 0;
-    virtual AsuStatus Check(UC::ASU::TaskId taskId, UC::ASU::TaskResult& result) = 0;
-    virtual AsuStatus Wait(UC::ASU::TaskId taskId, std::uint64_t timeoutMs,
-                           UC::ASU::TaskResult& result) = 0;
-};
 
 UC::ASU::TransportConfig BuildTransportConfig(const Config& config, std::size_t index)
 {
@@ -324,7 +292,10 @@ public:
         auto keys = BuildBlockKeys(blocks, num);
         UC::ASU::QueryResult queryResult;
         auto status = backend_->Query(keys, options, queryResult);
-        if (!status.ok()) { return ConvertStatus(status); }
+        if (!status.ok()) {
+            LogAsuStatus("prefix query", status);
+            return ConvertStatus(status);
+        }
         if (queryResult.prefixHitKeys > keys.size()) {
             return Status::Error("ASU prefix hit keys out of range");
         }
@@ -353,7 +324,13 @@ public:
     {
         UC::ASU::TaskResult result;
         auto status = backend_->Check(static_cast<UC::ASU::TaskId>(taskId), result);
-        if (!status.ok()) { return ConvertStatus(status); }
+        if (!status.ok()) {
+            LogAsuStatus("check task", status);
+            return ConvertStatus(status);
+        }
+        if (!result.status.ok() && result.status.code != AsuStatusCode::IN_PROGRESS) {
+            LogAsuStatus("task result check", result.status);
+        }
         return result.status.code != AsuStatusCode::IN_PROGRESS;
     }
 
@@ -362,7 +339,11 @@ public:
         UC::ASU::TaskResult result;
         auto status = backend_->Wait(static_cast<UC::ASU::TaskId>(taskId),
                                      config_.defaultWaitTimeoutMs, result);
-        if (!status.ok()) { return ConvertStatus(status); }
+        if (!status.ok()) {
+            LogAsuStatus("wait task", status);
+            return ConvertStatus(status);
+        }
+        LogAsuStatus("task result wait", result.status);
         return ConvertStatus(result.status);
     }
 
@@ -465,7 +446,10 @@ private:
         auto keys = BuildBlockKeys(blocks, num);
         UC::ASU::QueryResult queryResult;
         auto status = backend_->Query(keys, options, queryResult);
-        if (!status.ok()) { return ConvertStatus(status); }
+        if (!status.ok()) {
+            LogAsuStatus("query blocks", status);
+            return ConvertStatus(status);
+        }
         if (queryResult.exists.size() != keys.size()) {
             return Status::Error("ASU query result size mismatch");
         }
@@ -492,7 +476,10 @@ private:
 
         UC::ASU::TaskId taskId = UC::ASU::kInvalidTaskId;
         auto status = ((*backend_).*submit)(entries.Value(), taskId);
-        if (!status.ok()) { return ConvertStatus(status); }
+        if (!status.ok()) {
+            LogAsuStatus("submit task", status);
+            return ConvertStatus(status);
+        }
         return static_cast<Detail::TaskHandle>(taskId);
     }
 
