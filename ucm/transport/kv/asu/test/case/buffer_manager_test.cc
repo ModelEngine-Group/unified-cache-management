@@ -124,7 +124,7 @@ TEST_F(BufferManagerTest, SingleAllocateAndFree)
     ASSERT_TRUE(status.ok()) << status.message;
     ASSERT_NE(sge.addr, 0);
     ASSERT_EQ(sge.length, 64);
-    ASSERT_EQ(sge.lkey, 0);
+    ASSERT_NE(sge.lkey, 0);
     ASSERT_NE(sge.slot_index, UINT32_MAX);
 
     auto* ptr = reinterpret_cast<void*>(sge.addr);

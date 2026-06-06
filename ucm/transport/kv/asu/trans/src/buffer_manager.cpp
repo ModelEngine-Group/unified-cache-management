@@ -99,7 +99,7 @@ Status BufferManager::Allocate(std::size_t size, ScatterGatherEntry& sge)
     void* addr = static_cast<char*>(memory_.get()) + idx * slot_size_;
     sge.addr = reinterpret_cast<std::uint64_t>(addr);
     sge.length = static_cast<std::uint32_t>(size);
-    sge.lkey = 0;
+    sge.lkey = static_cast<std::uint32_t>(idx + 1);
     sge.slot_index = idx;
     return Status::OK();
 }
