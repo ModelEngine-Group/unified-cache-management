@@ -1215,7 +1215,6 @@ class UCMLayerWiseConnector(UCMDirectConnector):
 
         submit_start = time.perf_counter()
         total_ucm_block_ids, total_vllm_block_ids = [], []
-        dump_request_ids: set[str] = set()
         layer_id = self.layer_name_to_id[layer_name]
         local_layer_id = layer_id - self.first_layer_id
         for request_id, request in metadata.request_meta.items():
@@ -1223,7 +1222,6 @@ class UCMLayerWiseConnector(UCMDirectConnector):
                 continue
 
             self.is_save = True
-            dump_request_ids.add(request_id)
             ucm_block_ids, vllm_block_ids = request.dump_block_ids
             if self.tp_rank % self.tp_size != 0 and local_layer_id == 0:
                 for i, ucm_block_id in enumerate(ucm_block_ids):
@@ -1231,7 +1229,7 @@ class UCMLayerWiseConnector(UCMDirectConnector):
             total_ucm_block_ids.extend(ucm_block_ids)
             total_vllm_block_ids.extend(vllm_block_ids)
 
-        if dump_request_ids:
+        if self.is_save:
             if self.dump_total_ptrs is None:
                 self.dump_total_ptrs = self.kv_cache_layout.extract_block_addrs(
                     total_vllm_block_ids, layer_first=True
@@ -1262,7 +1260,6 @@ class UCMLayerWiseConnector(UCMDirectConnector):
                 ucmmetrics.update_stats({"layerwise_batch_total_ms": batch_total_ms})
                 self._layerwise_batch_start = None
             return
-
         total_start = time.perf_counter()
         try:
             for layer_name in self.kv_caches:
@@ -1271,7 +1268,6 @@ class UCMLayerWiseConnector(UCMDirectConnector):
                 self.store.wait(self.dump_tasks[layer_name])
         except Exception as e:
             logger.error(f"wait for dump kv cache failed. {type(e).__name__}: {e}")
-
         total_end = time.perf_counter()
         stats = {"layerwise_save_tail_total_ms": (total_end - total_start) * 1000}
         if self._layerwise_batch_start is not None:
@@ -1280,7 +1276,6 @@ class UCMLayerWiseConnector(UCMDirectConnector):
             ) * 1000
             self._layerwise_batch_start = None
         ucmmetrics.update_stats(stats)
-
         self.dump_tasks.clear()
         self.is_save = False
         self.dump_total_ptrs = None
