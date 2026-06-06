@@ -753,13 +753,21 @@ class UCMDirectConnector(KVConnectorBase_V1):
         for request_id in scheduler_output.finished_req_ids:
             self.requests_meta.pop(request_id, None)
 
-        for request_id, dispatch_meta in requests_dispatch_meta.items():
-            if len(dispatch_meta.dump_block_ids[0]) > 0:
-                self._async_dump_req_ids.add(request_id)
+        self._track_async_dump_requests(requests_dispatch_meta)
 
         return UCMConnectorMetadata(
             requests_dispatch_meta,
             scheduler_output.preempted_req_ids or set(),
+        )
+
+    def _track_async_dump_requests(
+        self,
+        requests_dispatch_meta: dict[str, RequestDispatchMeta],
+    ) -> None:
+        self._async_dump_req_ids.update(
+            request_id
+            for request_id, dispatch_meta in requests_dispatch_meta.items()
+            if len(dispatch_meta.dump_block_ids[0]) > 0
         )
 
     def start_load_kv(self, forward_context: "ForwardContext", **kwargs) -> None:
@@ -2724,6 +2732,8 @@ class UCMHMAConnector(UCMDirectConnector, SupportsHMA):
         for request_id in scheduler_output.finished_req_ids:
             self.requests_meta.pop(request_id, None)
 
+        self._track_async_dump_requests(requests_dispatch_meta)
+
         return UCMConnectorMetadata(
             requests_dispatch_meta,
             scheduler_output.preempted_req_ids or set(),
@@ -2734,7 +2744,9 @@ class UCMHMAConnector(UCMDirectConnector, SupportsHMA):
         request: "Request",
         block_ids: tuple[list[int], ...],
     ) -> tuple[bool, dict[str, Any] | None]:
-        return False, None
+        if block_ids:
+            return self.request_finished(request, block_ids[0])
+        return self.request_finished(request, [])
 
 
 def use_hybrid_linear_attention_layout(
