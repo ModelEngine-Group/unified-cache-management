@@ -32,6 +32,7 @@
 #include "asu_transport/types.h"
 #include "client_config_parser.h"
 #include "kv_common/router.h"
+#include "logger/logger.h"
 
 namespace UC::ASU {
 
@@ -40,6 +41,12 @@ constexpr std::uint32_t kMaxShutdownDrainAttempts = 64;
 Status PartialFailed(const std::string& message)
 {
     return Status::Error(StatusCode::PARTIAL_FAILED, message);
+}
+
+Status LogErrorStatus(StatusCode code, const std::string& message)
+{
+    UC_ERROR("{}", message);
+    return Status::Error(code, message);
 }
 
 std::vector<UC::KV::CacheKey> ExtractEntryKeys(const std::vector<KVBuffer>& entries)
@@ -77,14 +84,14 @@ Status GetUint64Attr(const std::unordered_map<std::string, std::string>& attrs,
         std::size_t parsed{0};
         const auto parsedValue = std::stoull(text, &parsed, 0);
         if (parsed != text.size()) {
-            return Status::Error(StatusCode::INVALID_ARGUMENT,
-                                 "invalid router config " + key + "=" + text);
+            return LogErrorStatus(StatusCode::INVALID_ARGUMENT,
+                                  "invalid router config " + key + "=" + text);
         }
         value = parsedValue;
         return Status::OK();
     } catch (const std::exception&) {
-        return Status::Error(StatusCode::INVALID_ARGUMENT,
-                             "invalid router config " + key + "=" + text);
+        return LogErrorStatus(StatusCode::INVALID_ARGUMENT,
+                              "invalid router config " + key + "=" + text);
     }
 }
 
@@ -103,7 +110,8 @@ Status GetBoolAttr(const std::unordered_map<std::string, std::string>& attrs,
         value = false;
         return Status::OK();
     }
-    return Status::Error(StatusCode::INVALID_ARGUMENT, "invalid router config " + key + "=" + text);
+    return LogErrorStatus(StatusCode::INVALID_ARGUMENT,
+                          "invalid router config " + key + "=" + text);
 }
 
 UC::KV::HashTableType ParseHashTableType(const std::string& value, UC::KV::HashTableType fallback)
@@ -856,7 +864,10 @@ Status AsuClientImpl::BuildSnapshot(const GlobalView& view,
 
     UC::KV::HashTableConfig hashTableConfig;
     auto status = BuildHashTableConfig(config_.attrs, hashTableConfig);
-    if (!status.ok()) { return status; }
+    if (!status.ok()) {
+        UC_ERROR("BuildSnapshot build router config failed: {}", status.message);
+        return status;
+    }
 
     std::vector<UC::KV::NodeId> nodeIds(asuIds.begin(), asuIds.end());
     nextSnapshot->router = UC::KV::CreateRouter(nodeIds, UC::KV::HashFunction{}, hashTableConfig);

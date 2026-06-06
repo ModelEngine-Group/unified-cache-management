@@ -26,7 +26,7 @@
 #include <fstream>
 #include <utility>
 #include "asu_client/asu_client.h"
-#include "config_parser_common.h"
+#include "logger/logger.h"
 
 namespace UC::ASU {
 namespace {
@@ -57,8 +57,9 @@ public:
     {
         std::ifstream configFile{configPath_};
         if (!configFile.is_open()) {
-            return Status::Error(StatusCode::NOT_FOUND,
-                                 "failed to open global view config, path=" + configPath_);
+            const auto message = "failed to open global view config, path=" + configPath_;
+            UC_ERROR("{}", message);
+            return Status::Error(StatusCode::NOT_FOUND, message);
         }
 
         GlobalView nextView;
