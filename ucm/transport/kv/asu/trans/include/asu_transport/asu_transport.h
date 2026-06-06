@@ -43,6 +43,14 @@ struct AsuEndpoint {
     std::unordered_map<std::string, std::string> attrs;
 };
 
+struct IoBufferConfig {
+    std::uint64_t completionPollIntervalMs{1};
+    std::size_t sendBufferSlotSize{4096};
+    std::size_t sendBufferSlotNum{1};
+    std::size_t flagBufferSlotSize{128};
+    std::size_t flagBufferSlotNum{4096};
+};
+
 struct TransportConfig {
     // TODO: 拆分Config，按逻辑模块细化
     std::string asuName;
@@ -68,6 +76,8 @@ struct TransportConfig {
     bool enableHostFallback{false};
     bool preconnect{true};
     bool bindCqPoller{true};
+
+    IoBufferConfig ioBuffer;
 
     // Transport attrs loaded from config, including SQE request attrs
     // (kv_ns_id, dtype, dspec, lr, sc) and send attrs (kernel_count, quiet_count).

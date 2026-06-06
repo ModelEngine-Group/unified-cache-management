@@ -38,12 +38,6 @@ namespace UC::ASU {
 
 namespace {
 
-constexpr auto kCompletionPollInterval = std::chrono::milliseconds(1);
-constexpr std::size_t kSendBufferSlotSize = 4096;
-constexpr std::size_t kSendBufferSlotNum = 1;
-constexpr std::size_t kFlagBufferSlotSize = 128;
-constexpr std::size_t kFlagBufferSlotNum = 4096;
-
 }  // namespace
 
 AsuTransportImpl::~AsuTransportImpl() { Shutdown(); }
@@ -83,12 +77,14 @@ Status AsuTransportImpl::Init(const TransportConfig& config)
     auto status = ValidateSqeRequestAttrs();
     if (!status.ok()) { return status; }
 
-    status = sendBufferManager_.Init("asu send buffer", MemoryType::HOST, kSendBufferSlotSize,
-                                     kSendBufferSlotNum);
+    status = sendBufferManager_.Init("asu send buffer", MemoryType::HOST,
+                                     config_.ioBuffer.sendBufferSlotSize,
+                                     config_.ioBuffer.sendBufferSlotNum);
     if (!status.ok()) { return status; }
 
-    status = flagBufferManager_.Init("asu flag buffer", MemoryType::HOST, kFlagBufferSlotSize,
-                                     kFlagBufferSlotNum);
+    status = flagBufferManager_.Init("asu flag buffer", MemoryType::HOST,
+                                     config_.ioBuffer.flagBufferSlotSize,
+                                     config_.ioBuffer.flagBufferSlotNum);
     if (!status.ok()) { return status; }
     protocolManager_ = std::make_unique<ProtocolManager>();
 
@@ -310,7 +306,8 @@ void AsuTransportImpl::CompletionLoop()
 {
     while (!stop_.load(std::memory_order_acquire)) {
         for (const auto& ctx : taskManager_.GetAll()) { PollTaskCompletions(ctx); }
-        std::this_thread::sleep_for(kCompletionPollInterval);
+        std::this_thread::sleep_for(
+            std::chrono::milliseconds(config_.ioBuffer.completionPollIntervalMs));
     }
 }
 

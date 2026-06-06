@@ -475,6 +475,11 @@ TEST(AsuClientImplTest, Lifecycle_PublicInitLoadsClientConfigFile)
         ASSERT_TRUE(configFile.is_open());
         configFile << "clientId=file-init-test\n";
         configFile << "transport.asuIds=10,20\n";
+        configFile << "transport.completion_poll_interval_ms=7\n";
+        configFile << "transport.send_buffer_slot_size=8192\n";
+        configFile << "transport.send_buffer_slot_num=2\n";
+        configFile << "transport.flag_buffer_slot_size=256\n";
+        configFile << "transport.flag_buffer_slot_num=32\n";
         configFile << "asuInfo.20=protocol=roce,placement=device,port=6000,"
                    << "local.comm_id=192.168.1.20,local.phy_device_id=0\n";
     }
@@ -489,6 +494,13 @@ TEST(AsuClientImplTest, Lifecycle_PublicInitLoadsClientConfigFile)
     ASSERT_EQ(state->initConfigs[20].endpoints.size(), std::size_t{1});
     EXPECT_EQ(state->initConfigs[20].endpoints[0].ip, "192.168.1.20");
     EXPECT_EQ(state->initConfigs[20].endpoints[0].protocol, Protocol::ROCE);
+    for (auto asuId : {AsuId{10}, AsuId{20}}) {
+        EXPECT_EQ(state->initConfigs[asuId].ioBuffer.completionPollIntervalMs, std::uint64_t{7});
+        EXPECT_EQ(state->initConfigs[asuId].ioBuffer.sendBufferSlotSize, std::size_t{8192});
+        EXPECT_EQ(state->initConfigs[asuId].ioBuffer.sendBufferSlotNum, std::size_t{2});
+        EXPECT_EQ(state->initConfigs[asuId].ioBuffer.flagBufferSlotSize, std::size_t{256});
+        EXPECT_EQ(state->initConfigs[asuId].ioBuffer.flagBufferSlotNum, std::size_t{32});
+    }
 }
 
 TEST(AsuClientImplTest, ViewServer_InitFailsWhenViewReferencesMissingTransportConfig)

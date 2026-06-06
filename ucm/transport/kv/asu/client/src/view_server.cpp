@@ -23,47 +23,13 @@
  * */
 #include "view_server.h"
 #include <algorithm>
-#include <cctype>
 #include <fstream>
-#include <sstream>
 #include <utility>
 #include "asu_client/asu_client.h"
+#include "config_parser_common.h"
 
 namespace UC::ASU {
 namespace {
-
-std::string Trim(const std::string& value)
-{
-    const auto begin = value.find_first_not_of(" \t\r\n");
-    if (begin == std::string::npos) { return ""; }
-    const auto end = value.find_last_not_of(" \t\r\n");
-    return value.substr(begin, end - begin + 1);
-}
-
-std::vector<std::string> Split(const std::string& value, char delimiter)
-{
-    std::vector<std::string> parts;
-    std::stringstream stream{value};
-    std::string part;
-    while (std::getline(stream, part, delimiter)) {
-        part = Trim(part);
-        if (!part.empty()) { parts.emplace_back(std::move(part)); }
-    }
-    return parts;
-}
-
-std::uint64_t ParseUint64(const std::string& value) { return std::stoull(value, nullptr, 0); }
-
-Protocol ToTransportProtocol(const std::string& value)
-{
-    auto protocol = value;
-    std::transform(protocol.begin(), protocol.end(), protocol.begin(),
-                   [](unsigned char ch) { return static_cast<char>(std::toupper(ch)); });
-    if (protocol == "UB" || protocol == "UBOE") { return Protocol::UB; }
-    if (protocol == "ROCE") { return Protocol::ROCE; }
-    if (protocol == "TCP") { return Protocol::TCP; }
-    return Protocol::TCP;
-}
 
 AsuInfo ExtractAsuInfo(const TransportConfig& config)
 {
@@ -72,79 +38,11 @@ AsuInfo ExtractAsuInfo(const TransportConfig& config)
     return info;
 }
 
-bool TryParseAsuInfoKey(const std::string& key, AsuId& asuId)
-{
-    constexpr const char* kCamelPrefix = "asuInfo.";
-    constexpr const char* kSnakePrefix = "asu_info.";
-    if (key.rfind(kCamelPrefix, 0) == 0) {
-        asuId = std::stoull(key.substr(std::string{kCamelPrefix}.size()));
-        return true;
-    }
-    if (key.rfind(kSnakePrefix, 0) == 0) {
-        asuId = std::stoull(key.substr(std::string{kSnakePrefix}.size()));
-        return true;
-    }
-    return false;
-}
-
-void SetEndpointAttr(AsuEndpoint& endpoint, const std::string& key, const std::string& value)
-{
-    endpoint.attrs[key] = value;
-}
-
-AsuEndpoint ParseAsuEndpoint(const std::string& value)
-{
-    AsuEndpoint endpoint;
-    if (value.find('=') == std::string::npos) {
-        auto parts = Split(value, ':');
-        if (!parts.empty()) { endpoint.ip = parts[0]; }
-        if (parts.size() > 1) { endpoint.port = static_cast<std::uint16_t>(ParseUint64(parts[1])); }
-        if (parts.size() > 2) {
-            endpoint.protocol = ToTransportProtocol(parts[2]);
-            SetEndpointAttr(endpoint, "protocol", parts[2]);
-        }
-        return endpoint;
-    }
-
-    for (const auto& item : Split(value, ',')) {
-        const auto pos = item.find('=');
-        if (pos == std::string::npos) { continue; }
-
-        const auto key = Trim(item.substr(0, pos));
-        const auto fieldValue = Trim(item.substr(pos + 1));
-        if (key == "protocol") {
-            endpoint.protocol = ToTransportProtocol(fieldValue);
-            SetEndpointAttr(endpoint, "protocol", fieldValue);
-        } else if (key == "placement") {
-            SetEndpointAttr(endpoint, "placement", fieldValue);
-        } else if (key == "port") {
-            endpoint.port = static_cast<std::uint16_t>(ParseUint64(fieldValue));
-        } else if (key == "local.comm_id" || key == "localCommId") {
-            endpoint.ip = fieldValue;
-        } else if (key == "local.phy_device_id" || key == "localPhyDeviceId") {
-            endpoint.deviceId = static_cast<std::int32_t>(ParseUint64(fieldValue));
-        } else if (key == "tc") {
-            SetEndpointAttr(endpoint, "tc", fieldValue);
-        } else if (key == "sl") {
-            SetEndpointAttr(endpoint, "sl", fieldValue);
-        } else if (key == "send_size" || key == "sendSize") {
-            SetEndpointAttr(endpoint, "send_size", fieldValue);
-        } else if (key == "flag_size" || key == "flagSize") {
-            SetEndpointAttr(endpoint, "flag_size", fieldValue);
-        } else if (key == "remote_send_addr" || key == "remoteSendAddr") {
-            SetEndpointAttr(endpoint, "remote_send_addr", fieldValue);
-        } else if (key == "remote_flag_addr" || key == "remoteFlagAddr") {
-            SetEndpointAttr(endpoint, "remote_flag_addr", fieldValue);
-        }
-    }
-    return endpoint;
-}
-
 AsuInfo ParseAsuInfo(const std::string& value)
 {
     AsuInfo info;
-    for (const auto& endpointValue : Split(value, ';')) {
-        info.endpoints.emplace_back(ParseAsuEndpoint(endpointValue));
+    for (const auto& endpointValue : SplitConfigValue(value, ';')) {
+        info.endpoints.emplace_back(ParseClientViewEndpoint(endpointValue));
     }
     return info;
 }
@@ -166,26 +64,26 @@ public:
         GlobalView nextView;
         std::string line;
         while (std::getline(configFile, line)) {
-            line = Trim(line);
+            line = TrimConfigValue(line);
             if (line.empty() || line[0] == '#') { continue; }
 
             const auto pos = line.find('=');
             if (pos == std::string::npos) { continue; }
 
-            const auto key = Trim(line.substr(0, pos));
-            const auto value = Trim(line.substr(pos + 1));
+            const auto key = TrimConfigValue(line.substr(0, pos));
+            const auto value = TrimConfigValue(line.substr(pos + 1));
             if (key == "viewEpoch" || key == "view_epoch") {
-                nextView.viewEpoch = std::stoull(value);
+                nextView.viewEpoch = ParseConfigUint64(value);
             } else if (key == "viewId" || key == "view_id") {
-                nextView.viewId = std::stoull(value);
+                nextView.viewId = ParseConfigUint64(value);
             } else if (key == "createTimeMs" || key == "create_time_ms") {
-                nextView.createTimeMs = std::stoull(value);
+                nextView.createTimeMs = ParseConfigUint64(value);
             } else if (key == "expireTimeMs" || key == "expire_time_ms") {
-                nextView.expireTimeMs = std::stoull(value);
+                nextView.expireTimeMs = ParseConfigUint64(value);
             } else if (key == "asuIds" || key == "asu_ids") {
                 nextView.asuMap.clear();
-                for (const auto& asuId : Split(value, ',')) {
-                    nextView.asuMap.emplace(std::stoull(asuId), AsuInfo{});
+                for (const auto& asuId : SplitConfigValue(value, ',')) {
+                    nextView.asuMap.emplace(ParseConfigUint64(asuId), AsuInfo{});
                 }
             } else {
                 AsuId asuId{0};

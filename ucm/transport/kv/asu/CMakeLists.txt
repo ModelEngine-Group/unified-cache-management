@@ -17,8 +17,9 @@ find_path(ASU_ASCEND_INCLUDE_DIR
 if(NOT ASU_ASCEND_INCLUDE_DIR)
     message(FATAL_ERROR "Cannot find acl/acl.h under ASCEND_ROOT=${ASCEND_ROOT}")
 endif()
-
+file(GLOB ASU_COMMON_SOURCES CONFIGURE_DEPENDS common/*.cpp)
 file(GLOB ASU_TRANSPORT_SOURCES CONFIGURE_DEPENDS trans/src/*.cpp)
+list(APPEND ASU_TRANSPORT_SOURCES ${ASU_COMMON_SOURCES})
 add_library(asu_transport SHARED ${ASU_TRANSPORT_SOURCES})
 target_include_directories(asu_transport
     PUBLIC
