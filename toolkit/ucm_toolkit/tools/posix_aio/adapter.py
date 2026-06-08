@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 
 from ... import registry
@@ -35,7 +36,11 @@ class PosixAioTool(ToolAdapter):
         script = registry.resolve_repo_path(self.script_path or "")
         if not script.exists():
             raise ScriptNotFoundError(str(script))
-        return run_command([sys.executable, str(script), *tool_args])
+        env = os.environ.copy()
+        repo_root = str(registry.repo_root())
+        pythonpath = env.get("PYTHONPATH")
+        env["PYTHONPATH"] = repo_root if not pythonpath else os.pathsep.join([repo_root, pythonpath])
+        return run_command([sys.executable, str(script), *tool_args], env=env)
 
     def doctor(self, args: argparse.Namespace | None = None) -> int:
         """Inspect POSIX AIO script availability."""
