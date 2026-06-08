@@ -112,6 +112,27 @@ git subtree push --prefix=toolkit/src/dev-sandbox dev-sandbox <branch>
 
 如果从 `dev-sandbox` 源仓同步其他分支，将上面的 `main` 替换成对应分支名即可。
 
+常见维护流程有两种。
+
+从 `dev-sandbox` 源仓同步更新到主仓：
+
+```bash
+git fetch dev-sandbox
+git subtree pull --prefix=toolkit/src/dev-sandbox dev-sandbox main
+```
+
+这会把 `dev-sandbox/main` 的更新合并到主仓的 `toolkit/src/dev-sandbox` 目录。完成后按主仓正常流程提交并向主仓发起 PR。
+
+把主仓里对 subtree 源码的改动推回 `dev-sandbox` 源仓：
+
+```bash
+git subtree push --prefix=toolkit/src/dev-sandbox dev-sandbox <branch>
+```
+
+这会把主仓中 `toolkit/src/dev-sandbox` 目录的相关历史拆分出来，并推送到 `dev-sandbox` 远端的 `<branch>`。之后可以在 `dev-sandbox` 源仓中从该分支发起 PR。
+
+如果需要同时做双向同步，推荐顺序是先 `git subtree pull` 保持本地 subtree 最新，再修改 `toolkit/src/dev-sandbox` 并提交到主仓；这些改动若也需要回贡献给独立 `dev-sandbox` 仓，再执行 `git subtree push` 到源仓分支。
+
 ### 构建
 
 默认构建到：
