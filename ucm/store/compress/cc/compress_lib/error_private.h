@@ -80,8 +80,8 @@ ERR_STATIC unsigned ERR_isError(size_t code) { return (code > ERROR(maxCode)); }
 
 ERR_STATIC ERR_enum ERR_getErrorCode(size_t code)
 {
-    if (!ERR_isError(code)) return (ERR_enum)0;
-    return (ERR_enum)(0 - code);
+    if (!ERR_isError(code)) { return static_cast<ERR_enum>(0); }
+    return static_cast<ERR_enum>(0 - code);
 }
 
 /* check and forward error code */
