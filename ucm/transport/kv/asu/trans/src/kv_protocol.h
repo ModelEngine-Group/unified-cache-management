@@ -186,6 +186,8 @@ public:
     {
         return Status::Error(StatusCode::UNSUPPORTED, "CQE unpack not supported for this opcode");
     }
+
+    virtual Status VerifyPackedBuffer(const std::uint32_t* data, std::size_t length) const = 0;
 };
 
 class KvStoreProtocol : public KvProtocol {
@@ -195,6 +197,7 @@ public:
     {
         return kSqeDwordCount * sizeof(std::uint32_t);
     }
+    Status VerifyPackedBuffer(const std::uint32_t* data, std::size_t length) const override;
 
 private:
     Status ValidateRequest(const KvStoreRequest& r) const;
@@ -207,6 +210,7 @@ public:
     {
         return kSqeDwordCount * sizeof(std::uint32_t);
     }
+    Status VerifyPackedBuffer(const std::uint32_t* data, std::size_t length) const override;
 
 private:
     Status ValidateRequest(const KvRetrieveRequest& r) const;
@@ -218,6 +222,7 @@ public:
     std::size_t PackedSize(const SqeRequest& req) const override;
     Status UnpackCqe(const std::uint32_t* data, std::uint16_t batch_number,
                      KvResponse& out) const override;
+    Status VerifyPackedBuffer(const std::uint32_t* data, std::size_t length) const override;
 
 private:
     Status ValidateRequest(const KvBatchStoreRequest& r) const;
@@ -230,6 +235,7 @@ public:
     std::size_t PackedSize(const SqeRequest& req) const override;
     Status UnpackCqe(const std::uint32_t* data, std::uint16_t batch_number,
                      KvResponse& out) const override;
+    Status VerifyPackedBuffer(const std::uint32_t* data, std::size_t length) const override;
 
 private:
     Status ValidateRequest(const KvBatchRetrieveRequest& r) const;
@@ -242,6 +248,7 @@ public:
     std::size_t PackedSize(const SqeRequest& req) const override;
     Status UnpackCqe(const std::uint32_t* data, std::uint16_t batch_number,
                      KvResponse& out) const override;
+    Status VerifyPackedBuffer(const std::uint32_t* data, std::size_t length) const override;
 
 private:
     Status ValidateRequest(const KvDeleteRequest& r) const;
@@ -254,6 +261,7 @@ public:
     std::size_t PackedSize(const SqeRequest& req) const override;
     Status UnpackCqe(const std::uint32_t* data, std::uint16_t batch_number,
                      KvResponse& out) const override;
+    Status VerifyPackedBuffer(const std::uint32_t* data, std::size_t length) const override;
 
 private:
     Status ValidateRequest(const KvExistRequest& r) const;
@@ -267,6 +275,7 @@ public:
     {
         return kSqeDwordCount * sizeof(std::uint32_t);
     }
+    Status VerifyPackedBuffer(const std::uint32_t* data, std::size_t length) const override;
 
 private:
     Status ValidateRequest(const KvKeepAliveRequest& r) const;
@@ -285,6 +294,7 @@ public:
     Status UnpackResponse(const void* data_ptr, KvOpcode opcode, std::uint16_t batch_number,
                           KvResponse& out);
     Status PollResponseCid(const void* data_ptr, std::uint16_t& cid) const;
+    Status VerifyPackedBuffer(const void* data_ptr, std::size_t length);
 
 private:
     std::unordered_map<KvOpcode, std::unique_ptr<KvProtocol>> protocols_;
