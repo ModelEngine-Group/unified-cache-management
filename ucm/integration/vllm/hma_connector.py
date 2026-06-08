@@ -926,9 +926,7 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
             self._invalid_block_ids.update(load_task.anchor_vllm_block_ids)
 
     def get_block_ids_with_load_errors(self) -> set[int]:
-        res = self._invalid_block_ids
-        self._invalid_block_ids = set()
-        return res
+        return set()
 
     def _submit_dump_task(
         self,
