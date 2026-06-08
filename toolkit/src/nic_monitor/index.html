@@ -1,0 +1,554 @@
+
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>网络流量可视化监控</title>
+<script src="./vendor/echarts.min.js"></script>
+<script>window.addEventListener("error",function(e){if(String(e.filename||"").includes("echarts.min.js")){alert("本地 ECharts 加载失败，请确认 vendor/echarts.min.js 存在。");}});</script>
+<style>
+  :root { --bg:#0f1923; --card:#1a2a3a; --border:#2a3a4a; --text:#e0e6ed; --accent:#4fc3f7; --accent2:#f06292; --yellow:#ffd54f; --red:#ef5350; }
+  * { margin:0; padding:0; box-sizing:border-box; }
+  body { font-family:"Microsoft YaHei","Segoe UI",sans-serif; background:var(--bg); color:var(--text); min-height:100vh; }
+  .header { display:flex; align-items:center; justify-content:space-between; padding:14px 24px; background:var(--card); border-bottom:1px solid var(--border); }
+  .header h1 { font-size:17px; color:var(--accent); }
+  .header h1 span { color:var(--text); font-weight:400; margin-left:8px; font-size:13px; }
+  .upload-area { display:flex; align-items:center; gap:12px; }
+  .upload-btn { background:var(--accent); color:#000; border:none; padding:7px 16px; border-radius:6px; cursor:pointer; font-size:13px; font-weight:600; transition:opacity .2s; }
+  .upload-btn:hover { opacity:.85; }
+  .file-name { font-size:13px; color:var(--yellow); max-width:260px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  #drop-zone { display:none; position:fixed; inset:0; background:rgba(15,25,35,.92); z-index:999; align-items:center; justify-content:center; font-size:22px; color:var(--accent); border:4px dashed var(--accent); }
+  #drop-zone.active { display:flex; }
+  .stats-bar { display:flex; gap:8px; padding:10px 24px; background:var(--card); border-bottom:1px solid var(--border); overflow-x:auto; }
+  .stat-card { flex:0 0 auto; background:var(--bg); border:1px solid var(--border); border-radius:8px; padding:8px 14px; min-width:150px; }
+  .stat-card .label { font-size:11px; color:#8a9baa; }
+  .stat-card .value { font-size:15px; font-weight:600; margin-top:2px; }
+  .chart-grid { display:grid; grid-template-columns:1fr 1fr; gap:12px; padding:14px 24px; }
+  .chart-box { background:var(--card); border:1px solid var(--border); border-radius:10px; overflow:hidden; }
+  .chart-box.full { grid-column:1/-1; }
+  .chart-title { padding:10px 16px 0; font-size:13px; color:var(--accent); }
+  .chart-container { width:100%; height:360px; }
+  .chart-box.full .chart-container { height:400px; }
+  .welcome { display:flex; flex-direction:column; align-items:center; justify-content:center; padding:80px 20px; text-align:center; }
+  .welcome .icon { font-size:56px; color:var(--accent); margin-bottom:20px; opacity:.6; }
+  .welcome p { font-size:15px; color:#8a9baa; line-height:1.8; }
+  .welcome .hint { font-size:12px; color:var(--yellow); margin-top:16px; }
+  @media(max-width:900px) { .chart-grid { grid-template-columns:1fr; } }
+	  .filter-bar { display:none; padding:10px 24px; background:var(--card); border-bottom:1px solid var(--border); }
+	  .filter-bar.visible { display:flex; align-items:center; gap:16px; flex-wrap:wrap; }
+	  .filter-bar .filter-label { font-size:12px; color:#8a9baa; white-space:nowrap; }
+	  .filter-item { display:inline-flex; align-items:center; gap:5px; cursor:pointer; padding:4px 12px; border-radius:6px; border:1px solid var(--border); transition:all .15s; font-size:13px; user-select:none; }
+	  .filter-item:hover { border-color:var(--accent); }
+	  .filter-item.active { border-color:var(--accent); background:rgba(79,195,247,0.12); }
+	  .filter-item.inactive { opacity:.45; }
+	  .filter-dot { width:8px; height:8px; border-radius:50%; }
+	  .filter-all { font-size:12px; color:var(--accent); cursor:pointer; padding:4px 8px; }
+	  .filter-all:hover { text-decoration:underline; }
+</style>
+</head>
+<body>
+
+<div id="drop-zone">拖放 CSV 文件到此处</div>
+
+<div class="header">
+  <h1>网络流量可视化<span id="data-range"></span></h1>
+  <div class="upload-area">
+    <span class="file-name" id="file-name"></span>
+    <button class="upload-btn" onclick="document.getElementById('file-input').click()">加载 CSV</button>
+    <input type="file" id="file-input" accept=".csv" style="display:none">
+  </div>
+</div>
+
+<div class="stats-bar" id="stats-bar"></div>
+<div class="filter-bar" id="filter-bar">
+  <span class="filter-label">网卡筛选:</span>
+  <span class="filter-all" id="filter-all" onclick="toggleAll()">全选</span>
+  <span class="filter-all" id="filter-none" onclick="toggleNone()">全不选</span>
+  <div id="filter-items"></div>
+</div>
+
+<div id="main-content">
+  <div class="welcome" id="welcome">
+    <div class="icon">&#9678;</div>
+    <p>加载 net_monitor_pro.sh 生成的 CSV 数据文件<br>即可查看交互式网络流量图表</p>
+    <div class="hint">支持拖放文件 · 点击右上角按钮选择文件 · 数据仅在本地解析</div>
+  </div>
+  <div class="chart-grid" id="chart-grid" style="display:none">
+    <div class="chart-box full">
+      <div class="chart-title">网卡流量时序 (RX / TX)</div>
+      <div class="chart-container" id="chart-traffic"></div>
+    </div>
+    <div class="chart-box full">
+      <div class="chart-title">利用率时序 (%)</div>
+      <div class="chart-container" id="chart-util"></div>
+    </div>
+    <div class="chart-box">
+      <div class="chart-title">流量峰值 / 均值统计</div>
+      <div class="chart-container" id="chart-stats"></div>
+    </div>
+    <div class="chart-box">
+      <div class="chart-title">各网卡流量占比</div>
+      <div class="chart-container" id="chart-pie"></div>
+    </div>
+  </div>
+</div>
+
+<script>
+// ── 全局状态 ──────────────────────────────────────────────────
+
+let allRecords = [];
+let selectedIfaces = []; // 当前选中的网卡列表
+let charts = {};
+
+// ── 解析工具 ──────────────────────────────────────────────────
+
+const UNIT_BPS  = {'B/s':1,'KB/s':1024,'MB/s':1024**2,'GB/s':1024**3};
+const UNIT_MBPS = {'Gb/s':1000,'Mb/s':1};
+
+function parseRate(s) {
+  s = s.trim();
+  if (/^0/.test(s) && /B\/s/.test(s)) return 0;
+  const m = s.match(/([\d.]+)\s*(B\/s|KB\/s|MB\/s|GB\/s)/);
+  return m ? parseFloat(m[1]) * UNIT_BPS[m[2]] : 0;
+}
+
+function parseSpeed(s) {
+  s = s.trim();
+  if (s === '---' || s === 'N/A') return 0;
+  const m = s.match(/([\d.]+)\s*(Gb\/s|Mb\/s)/);
+  return m ? parseFloat(m[1]) * UNIT_MBPS[m[2]] : 0;
+}
+
+function parseUtil(s) {
+  s = s.trim();
+  if (s === 'N/A') return -1;
+  const m = s.match(/([\d.]+)%/);
+  return m ? parseFloat(m[1]) : -1;
+}
+
+function fmtBps(x) {
+  if (x >= 1024**3) return (x/1024**3).toFixed(2)+' GB/s';
+  if (x >= 1024**2) return (x/1024**2).toFixed(2)+' MB/s';
+  if (x >= 1024)    return (x/1024).toFixed(2)+' KB/s';
+  return x.toFixed(1)+' B/s';
+}
+
+function fmtBytes(x) {
+  if (x >= 1024**3) return (x/1024**3).toFixed(2)+' GB';
+  if (x >= 1024**2) return (x/1024**2).toFixed(2)+' MB';
+  if (x >= 1024)    return (x/1024).toFixed(2)+' KB';
+  return x.toFixed(0)+' B';
+}
+
+function fmtMbps(x) {
+  if (x >= 1000) return (x/1000).toFixed(1)+' Gb/s';
+  return x.toFixed(0)+' Mb/s';
+}
+
+// ── CSV 解析 ──────────────────────────────────────────────────
+
+function parseCSV(text) {
+  const lines = text.trim().split('\n');
+  const records = [];
+  for (let i = 1; i < lines.length; i++) {
+    const cols = lines[i].split(',');
+    if (cols.length < 7) continue;
+    records.push({
+      time:     cols[0].trim(),
+      iface:    cols[1].trim(),
+      driver:   cols[2].trim(),
+      rxRate:   parseRate(cols[3]),
+      txRate:   parseRate(cols[4]),
+      portMbps: parseSpeed(cols[5]),
+      util:     parseUtil(cols[6]),
+    });
+  }
+  return records;
+}
+
+// ── 数据聚合 ──────────────────────────────────────────────────
+
+function aggregate(records) {
+  const ifaces = [...new Set(records.map(r => r.iface))].sort();
+  const byIface = {};
+  for (const iface of ifaces) {
+    byIface[iface] = records.filter(r => r.iface === iface).sort((a,b) => a.time < b.time ? -1 : 1);
+  }
+  const times = [...new Set(records.map(r => r.time))].sort();
+  return { ifaces, byIface, times };
+}
+
+// ── 图表实例 ──────────────────────────────────────────────────
+
+function initCharts() {
+  charts.traffic = echarts.init(document.getElementById('chart-traffic'));
+  charts.util    = echarts.init(document.getElementById('chart-util'));
+  charts.stats   = echarts.init(document.getElementById('chart-stats'));
+  charts.pie     = echarts.init(document.getElementById('chart-pie'));
+  window.addEventListener('resize', () => Object.values(charts).forEach(c => c.resize()));
+}
+
+// ── 配色 ──────────────────────────────────────────────────────
+
+const COLORS = ['#4fc3f7','#f06292','#66bb6a','#ffd54f','#ab47bc','#ff7043','#26c6da','#ec407a'];
+
+// ── 工具函数 ──────────────────────────────────────────────────
+
+function avgIntervalSec(records) {
+  if (records.length < 4) return 1;
+  const iface = records[0].iface;
+  const sub = records.filter(r => r.iface === iface);
+  if (sub.length < 2) return 1;
+  const d0 = new Date(sub[0].time.replace(/-/g,'/')).getTime();
+  const d1 = new Date(sub[sub.length-1].time.replace(/-/g,'/')).getTime();
+  return (d1 - d0) / 1000 / (sub.length - 1);
+}
+
+function fmtDuration(t0, t1) {
+  const d0 = new Date(t0.replace(/-/g,'/')), d1 = new Date(t1.replace(/-/g,'/'));
+  const sec = Math.round((d1 - d0) / 1000);
+  if (sec >= 3600) return (sec/3600).toFixed(1) + ' 小时';
+  if (sec >= 60)   return (sec/60).toFixed(1) + ' 分钟';
+  return sec + ' 秒';
+}
+
+// ── 筛选 ──────────────────────────────────────────────────────
+
+function buildFilterBar(ifaces, byIface) {
+  const bar = document.getElementById('filter-bar');
+  bar.classList.add('visible');
+  const container = document.getElementById('filter-items');
+  container.innerHTML = '';
+  ifaces.forEach(function(iface, idx) {
+    const el = document.createElement('span');
+    el.className = 'filter-item active';
+    el.dataset.iface = iface;
+    const rxColor = COLORS[idx * 2 % COLORS.length];
+    el.innerHTML = '<span class="filter-dot" style="background:' + rxColor + '"></span>' + iface;
+    el.onclick = function() { toggleIface(iface); };
+    container.appendChild(el);
+  });
+}
+
+function toggleIface(iface) {
+  const idx = selectedIfaces.indexOf(iface);
+  if (idx >= 0) selectedIfaces.splice(idx, 1);
+  else selectedIfaces.push(iface);
+  updateFilterUI();
+  renderCharts(allRecords);
+}
+
+function toggleAll() {
+  const agg = aggregate(allRecords);
+  selectedIfaces = agg.ifaces.slice();
+  updateFilterUI();
+  renderCharts(allRecords);
+}
+
+function toggleNone() {
+  selectedIfaces = [];
+  updateFilterUI();
+  renderCharts(allRecords);
+}
+
+function updateFilterUI() {
+  document.querySelectorAll('#filter-items .filter-item').forEach(function(el) {
+    const iface = el.dataset.iface;
+    if (selectedIfaces.indexOf(iface) >= 0) {
+      el.classList.add('active');
+      el.classList.remove('inactive');
+    } else {
+      el.classList.remove('active');
+      el.classList.add('inactive');
+    }
+  });
+}
+
+// ── 渲染 ──────────────────────────────────────────────────────
+
+function render(records) {
+  allRecords = records;
+  const agg = aggregate(records);
+  selectedIfaces = agg.ifaces.slice();
+  buildFilterBar(agg.ifaces, agg.byIface);
+  renderCharts(records);
+}
+
+function renderCharts(records) {
+  const agg = aggregate(records);
+  const { byIface, times } = agg;
+  const ifaces = selectedIfaces;
+  const filteredRecords = records.filter(function(r) { return ifaces.indexOf(r.iface) >= 0; });
+  if (ifaces.length === 0) {
+    // 清空所有图表
+    Object.values(charts).forEach(function(c) { c.clear(); });
+    return;
+  }
+
+  // ─── 统计卡片 ───
+  const statsBar = document.getElementById('stats-bar');
+  statsBar.innerHTML = '';
+  const peakRx = Math.max(...filteredRecords.map(r => r.rxRate));
+  const peakTx = Math.max(...filteredRecords.map(r => r.txRate));
+  const peakIfaceRx = filteredRecords.find(r => r.rxRate === peakRx);
+  const peakIfaceTx = filteredRecords.find(r => r.txRate === peakTx);
+  const avgI = avgIntervalSec(records);
+
+  const cards = [
+    { label:'监控时长', value: fmtDuration(times[0], times[times.length-1]) },
+    { label:'当前筛选', value: ifaces.length + ' / ' + agg.ifaces.length + ' 块' },
+    { label:'RX 峰值', value: fmtBps(peakRx) + ' (' + (peakIfaceRx ? peakIfaceRx.iface : '') + ')' },
+    { label:'TX 峰值', value: fmtBps(peakTx) + ' (' + (peakIfaceTx ? peakIfaceTx.iface : '') + ')' },
+    { label:'RX 总量', value: fmtBytes(ifaces.reduce((s,i) => s + byIface[i].reduce((a,r) => a+r.rxRate,0), 0) * avgI) },
+    { label:'TX 总量', value: fmtBytes(ifaces.reduce((s,i) => s + byIface[i].reduce((a,r) => a+r.txRate,0), 0) * avgI) },
+  ];
+  cards.forEach(function(c) {
+    const div = document.createElement('div');
+    div.className = 'stat-card';
+    div.innerHTML = '<div class="label">' + c.label + '</div><div class="value">' + c.value + '</div>';
+    statsBar.appendChild(div);
+  });
+
+  // ─── 图1: 流量时序 ───
+  const allRates = filteredRecords.flatMap(r => [r.rxRate, r.txRate]).filter(v => v > 0);
+  const dataMax = allRates.length > 0 ? Math.max(...allRates) : 100;
+  const yMax = dataMax * 1.2;
+
+  const trafficSeries = [];
+  // 使用 agg.ifaces 的 idx 保证颜色一致, 但只为 selectedIfaces 生成数据
+  agg.ifaces.forEach(function(iface, globalIdx) {
+    const isSelected = ifaces.indexOf(iface) >= 0;
+    const sub = byIface[iface];
+    const portMbps = sub[0].portMbps;
+    const maxBps = portMbps * 125000;
+
+    trafficSeries.push({
+      name: iface + ' RX', type: 'line', symbol: 'none',
+      lineStyle: { width: 1.5 },
+      color: COLORS[globalIdx * 2 % COLORS.length],
+      data: isSelected ? sub.map(function(r) { return [r.time, r.rxRate]; }) : [],
+    });
+    trafficSeries.push({
+      name: iface + ' TX', type: 'line', symbol: 'none',
+      lineStyle: { width: 1.5, type: 'dashed' },
+      color: COLORS[(globalIdx * 2 + 1) % COLORS.length],
+      data: isSelected ? sub.map(function(r) { return [r.time, r.txRate]; }) : [],
+    });
+    if (maxBps > 0) {
+      trafficSeries.push({
+        name: iface + ' 上限(' + fmtMbps(portMbps) + ')', type: 'line', symbol: 'none',
+        lineStyle: { width: 0 }, color: '#ef5350',
+        data: [],
+        markLine: {
+          silent: true, symbol: 'none',
+          lineStyle: { type: 'dashed', color: '#ef5350', width: 1 },
+          label: { formatter: fmtMbps(portMbps), color: '#ef5350', fontSize: 10, position: 'insideEndTop' },
+          data: [{ yAxis: maxBps }],
+        },
+      });
+    }
+  });
+
+  charts.traffic.setOption({
+    tooltip: {
+      trigger: 'axis',
+      formatter(params) {
+        let t = params[0] && params[0].value ? params[0].value[0] : '';
+        let html = '<b>' + t + '</b><br>';
+        params.forEach(function(p) {
+          if (p.componentType === 'markLine') return;
+          if (p.seriesName.indexOf('上限') >= 0 && (!p.value || p.value[1] === undefined)) return;
+          html += p.marker + ' ' + p.seriesName + ': <b>' + fmtBps(p.value ? p.value[1] : 0) + '</b><br>';
+        });
+        return html;
+      }
+    },
+    legend: {
+      type: 'scroll', bottom: 0,
+      textStyle: { color: '#8a9baa', fontSize: 11 },
+      selected: agg.ifaces.reduce(function(obj, iface) {
+        // 未选中的网卡隐藏 RX/TX; 上限系列始终默认隐藏
+        obj[iface + ' RX'] = ifaces.indexOf(iface) >= 0;
+        obj[iface + ' TX'] = ifaces.indexOf(iface) >= 0;
+        obj[iface + ' 上限(' + fmtMbps(byIface[iface][0].portMbps) + ')'] = false;
+        return obj;
+      }, {}),
+    },
+    grid: { left: 80, right: 30, top: 30, bottom: 55 },
+    xAxis: { type: 'category', data: times, axisLabel: { color: '#8a9baa', fontSize: 11 }, axisLine: { lineStyle: { color: '#2a3a4a' } }, boundaryGap: false },
+    yAxis: { type: 'value', max: yMax, axisLabel: { color: '#8a9baa', formatter: function(v) { return fmtBps(v); } }, splitLine: { lineStyle: { color: '#1a2a3a' } } },
+    dataZoom: [
+      { type: 'inside', xAxisIndex: 0 },
+      { type: 'slider', xAxisIndex: 0, bottom: 10, height: 20, borderColor: '#2a3a4a', fillerColor: 'rgba(79,195,247,0.15)', textStyle: { color: '#8a9baa' } },
+    ],
+    series: trafficSeries,
+    animation: false,
+  }, true);
+
+  // ─── 图2: 利用率 ───
+  const utilSeries = [];
+  agg.ifaces.forEach(function(iface, globalIdx) {
+    const isSelected = ifaces.indexOf(iface) >= 0;
+    const sub = byIface[iface].filter(r => r.util >= 0);
+    if (sub.length === 0) return;
+    utilSeries.push({
+      name: iface, type: 'line', symbol: 'none',
+      lineStyle: { width: 1.8 },
+      color: COLORS[globalIdx % COLORS.length],
+      data: isSelected ? sub.map(r => [r.time, r.util]) : [],
+      markLine: {
+        silent: true, symbol: 'none',
+        data: [
+          { yAxis: 80, lineStyle: { color: '#ef5350', type: 'dashed', width: 1 }, label: { formatter: '80% 告警', color: '#ef5350', fontSize: 10 } },
+          { yAxis: 30, lineStyle: { color: '#ffd54f', type: 'dashed', width: 1 }, label: { formatter: '30% 警戒', color: '#ffd54f', fontSize: 10 } },
+        ],
+      },
+    });
+  });
+
+  const maxUtil = Math.max(5, ...filteredRecords.filter(r => r.util >= 0).map(r => r.util));
+  charts.util.setOption({
+    tooltip: {
+      trigger: 'axis',
+      formatter(params) {
+        let t = params[0] && params[0].value ? params[0].value[0] : '';
+        let html = '<b>' + t + '</b><br>';
+        params.forEach(function(p) {
+          if (p.componentType === 'markLine') return;
+          html += p.marker + ' ' + p.seriesName + ': <b>' + (p.value ? p.value[1] : 0) + '%</b><br>';
+        });
+        return html;
+      }
+    },
+    legend: {
+      type: 'scroll', bottom: 0, textStyle: { color: '#8a9baa', fontSize: 11 },
+      selected: agg.ifaces.reduce(function(obj, iface) {
+        obj[iface] = ifaces.indexOf(iface) >= 0;
+        return obj;
+      }, {}),
+    },
+    grid: { left: 60, right: 30, top: 30, bottom: 55 },
+    xAxis: { type: 'category', data: times, axisLabel: { color: '#8a9baa' }, axisLine: { lineStyle: { color: '#2a3a4a' } }, boundaryGap: false },
+    yAxis: { type: 'value', axisLabel: { color: '#8a9baa', formatter: function(v) { return v + '%'; } }, splitLine: { lineStyle: { color: '#1a2a3a' } }, max: Math.ceil(maxUtil * 1.15) },
+    dataZoom: [
+      { type: 'inside', xAxisIndex: 0 },
+      { type: 'slider', xAxisIndex: 0, bottom: 10, height: 20, borderColor: '#2a3a4a', fillerColor: 'rgba(79,195,247,0.15)', textStyle: { color: '#8a9baa' } },
+    ],
+    series: utilSeries,
+    animation: false,
+  }, true);
+
+  // ─── 图3: 峰值/均值柱状 ───
+  const statsData = ifaces.map(function(iface) {
+    const sub = byIface[iface];
+    return {
+      iface: iface,
+      rxPeak: Math.max(...sub.map(r => r.rxRate)),
+      rxAvg:  sub.reduce(function(s,r) { return s + r.rxRate; }, 0) / sub.length,
+      txPeak: Math.max(...sub.map(r => r.txRate)),
+      txAvg:  sub.reduce(function(s,r) { return s + r.txRate; }, 0) / sub.length,
+    };
+  });
+
+  charts.stats.setOption({
+    tooltip: {
+      trigger: 'axis',
+      formatter(params) {
+        let html = '<b>' + params[0].name + '</b><br>';
+        params.forEach(function(p) {
+          html += p.marker + ' ' + p.seriesName + ': <b>' + fmtBps(p.value) + '</b><br>';
+        });
+        return html;
+      },
+    },
+    legend: { bottom: 0, textStyle: { color: '#8a9baa', fontSize: 11 } },
+    grid: { left: 80, right: 20, top: 30, bottom: 40 },
+    xAxis: { type: 'category', data: statsData.map(function(d) { return d.iface; }), axisLabel: { color: '#8a9baa', fontSize: 10, rotate: 15 } },
+    yAxis: { type: 'value', axisLabel: { color: '#8a9baa', formatter: function(v) { return fmtBps(v); } }, splitLine: { lineStyle: { color: '#1a2a3a' } } },
+    series: [
+      { name: 'RX 峰值', type: 'bar', color: '#4fc3f7', barMaxWidth: 20, data: statsData.map(function(d) { return d.rxPeak; }) },
+      { name: 'RX 均值', type: 'bar', color: '#4fc3f7', barMaxWidth: 20, itemStyle: { opacity: 0.45 }, data: statsData.map(function(d) { return d.rxAvg; }) },
+      { name: 'TX 峰值', type: 'bar', color: '#f06292', barMaxWidth: 20, data: statsData.map(function(d) { return d.txPeak; }) },
+      { name: 'TX 均值', type: 'bar', color: '#f06292', barMaxWidth: 20, itemStyle: { opacity: 0.45 }, data: statsData.map(function(d) { return d.txAvg; }) },
+    ],
+  }, true);
+
+  // ─── 图4: 流量占比饼图 ───
+  const pieRxData = ifaces.map(function(iface) {
+    const globalIdx = agg.ifaces.indexOf(iface);
+    return {
+      name: iface + ' RX',
+      value: Math.round(byIface[iface].reduce(function(s,r) { return s + r.rxRate; }, 0) * avgI),
+      itemStyle: { color: COLORS[globalIdx * 2 % COLORS.length] },
+    };
+  });
+  const pieTxData = ifaces.map(function(iface) {
+    const globalIdx = agg.ifaces.indexOf(iface);
+    return {
+      name: iface + ' TX',
+      value: Math.round(byIface[iface].reduce(function(s,r) { return s + r.txRate; }, 0) * avgI),
+      itemStyle: { color: COLORS[(globalIdx * 2 + 1) % COLORS.length] },
+    };
+  });
+
+  charts.pie.setOption({
+    tooltip: { formatter: function(p) { return p.name + ': <b>' + fmtBytes(p.value) + '</b> (' + p.percent + '%)'; } },
+    series: [
+      {
+        type: 'pie', radius: ['0%', '42%'], center: ['50%', '50%'],
+        label: { color: '#8a9baa', formatter: '{b}\n{d}%' },
+        data: pieRxData, name: '接收',
+      },
+      {
+        type: 'pie', radius: ['55%', '78%'], center: ['50%', '50%'],
+        label: { color: '#8a9baa', formatter: '{b}\n{d}%' },
+        data: pieTxData, name: '发送',
+      },
+    ],
+  }, true);
+
+  // ─── 标题范围 ───
+  document.getElementById('data-range').textContent = times.length > 0
+    ? times[0] + ' ~ ' + times[times.length - 1]
+    : '';
+}
+
+// ── 文件加载 ──────────────────────────────────────────────────
+
+function loadFile(file) {
+  document.getElementById('file-name').textContent = file.name;
+  document.getElementById('welcome').style.display = 'none';
+  document.getElementById('chart-grid').style.display = 'grid';
+  var reader = new FileReader();
+  reader.onload = function(e) {
+    var recs = parseCSV(e.target.result);
+    if (!charts.traffic) initCharts();
+    render(recs);
+  };
+  reader.readAsText(file);
+}
+
+document.getElementById('file-input').addEventListener('change', function(e) {
+  if (e.target.files[0]) loadFile(e.target.files[0]);
+});
+
+// 拖放支持
+document.addEventListener('dragover', function(e) {
+  e.preventDefault();
+  document.getElementById('drop-zone').classList.add('active');
+});
+document.addEventListener('dragleave', function(e) {
+  if (!e.relatedTarget || e.relatedTarget === document.documentElement) {
+    document.getElementById('drop-zone').classList.remove('active');
+  }
+});
+document.addEventListener('drop', function(e) {
+  e.preventDefault();
+  document.getElementById('drop-zone').classList.remove('active');
+  const file = e.dataTransfer.files[0];
+  if (file && file.name.endsWith('.csv')) loadFile(file);
+});
+</script>
+</body>
+</html>

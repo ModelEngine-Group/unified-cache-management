@@ -1,0 +1,16 @@
+[build-system]
+requires = ["setuptools>=64", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ucm-toolkit"
+version = "0.1.0"
+description = "Unified CLI for UCM toolkit utilities."
+requires-python = ">=3.10"
+
+[project.scripts]
+ucm-toolkit = "ucm_toolkit.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["ucm_toolkit*"]
