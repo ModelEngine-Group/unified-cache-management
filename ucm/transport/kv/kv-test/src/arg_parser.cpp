@@ -206,6 +206,11 @@ Status ArgParser::Parse(int argc, char** argv, CommandOptions& options) const
                 return Status::Error(kExitInvalidArgument, "--check does not take a value");
             }
             options.check = true;
+        } else if (option == "--progress") {
+            if (hasInlineValue) {
+                return Status::Error(kExitInvalidArgument, "--progress does not take a value");
+            }
+            options.progress = true;
         } else if (option == "--configpath") {
             auto status = requireValue();
             if (!status.Ok()) { return status; }

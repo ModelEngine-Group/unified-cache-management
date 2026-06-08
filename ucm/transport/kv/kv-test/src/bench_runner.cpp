@@ -3,15 +3,21 @@
 #include <chrono>
 #include <cmath>
 #include <future>
+#include <iomanip>
+#include <iostream>
 #include <limits>
 #include <numeric>
-#include "kv_test/buffer_allocator.h"
+#include <sstream>
 
 namespace UC::KVTest {
 
 namespace {
 
 constexpr int kExitInvalidArgument = 1;
+
+struct BenchBufferSlot {
+    BufferSet buffers;
+};
 
 UC::ASU::MemoryRegion MakeHostRegion(std::vector<std::uint8_t>& buffer)
 {
@@ -45,6 +51,8 @@ struct OperationOutcome {
     std::size_t entryCount{0};
     std::uint64_t bytes{0};
 };
+
+using BenchBufferPool = std::vector<BenchBufferSlot>;
 
 std::uint64_t BenchEntryCount(const BenchConfig& bench, BenchOpType op)
 {
@@ -82,74 +90,91 @@ BenchLatencyStats BuildLatencyStats(const std::vector<double>& latenciesUs)
     return stats;
 }
 
-Status CheckBenchMemoryLimit(std::uint64_t keyCount, std::uint64_t ioSize,
+std::string FormatMiBPerSec(double bytesPerSec)
+{
+    std::ostringstream stream;
+    stream << std::fixed << std::setprecision(2) << (bytesPerSec / (1024.0 * 1024.0));
+    return stream.str();
+}
+
+std::string FormatUs(double latencyUs)
+{
+    std::ostringstream stream;
+    stream << std::fixed << std::setprecision(1) << latencyUs;
+    return stream.str();
+}
+
+void PrintProgressSample(const BenchRealtimeSample& sample, std::uint64_t operationsPerSec)
+{
+    std::cout << '[' << sample.timestampSec << "s] ops=" << operationsPerSec
+              << " entries/s=" << static_cast<std::uint64_t>(sample.iops)
+              << " bw=" << FormatMiBPerSec(sample.bandwidthBytesPerSec)
+              << "MiB/s avg=" << FormatUs(sample.avgLatencyUs) << "us"
+              << " err=" << sample.errorCount << '\n';
+}
+
+Status CheckBenchMemoryLimit(std::uint64_t entryCount, std::uint64_t ioSize,
                              std::uint64_t memoryMaxBytes)
 {
     if (memoryMaxBytes == 0) {
         return Status::Error(kExitInvalidArgument,
                              "limits.memory_max_bytes must be greater than zero");
     }
-    if (keyCount == 0 || ioSize == 0) { return Status::Success(); }
-    if (keyCount > std::numeric_limits<std::uint64_t>::max() / ioSize) {
-        return Status::Error(kExitInvalidArgument, "bench generated value bytes overflow uint64");
+    if (entryCount == 0 || ioSize == 0) { return Status::Success(); }
+    if (entryCount > std::numeric_limits<std::uint64_t>::max() / ioSize) {
+        return Status::Error(kExitInvalidArgument, "bench buffer pool bytes overflow uint64");
     }
 
-    const auto requiredBytes = keyCount * ioSize;
+    const auto requiredBytes = entryCount * ioSize;
     if (requiredBytes > memoryMaxBytes) {
-        return Status::Error(
-            kExitInvalidArgument,
-            "bench generated value bytes exceed limits.memory_max_bytes: required=" +
-                std::to_string(requiredBytes) + ", limit=" + std::to_string(memoryMaxBytes));
+        return Status::Error(kExitInvalidArgument,
+                             "bench buffer pool bytes exceed limits.memory_max_bytes: required=" +
+                                 std::to_string(requiredBytes) +
+                                 ", limit=" + std::to_string(memoryMaxBytes));
     }
     return Status::Success();
 }
 
-Status BuildBenchData(const KvTestConfig& config, std::uint64_t keyCount, GeneratedData& data)
+Status ValidateBenchBufferConfig(const BenchConfig& bench, std::uint64_t poolEntryCount,
+                                 std::uint64_t memoryMaxBytes)
 {
-    if (config.bench.ioSize == 0) {
+    if (bench.ioSize == 0) {
         return Status::Error(kExitInvalidArgument, "bench io_size must be greater than zero");
     }
-    if (keyCount > static_cast<std::uint64_t>(std::numeric_limits<std::size_t>::max())) {
-        return Status::Error(kExitInvalidArgument, "bench key count exceeds addressable memory");
+    if (poolEntryCount > static_cast<std::uint64_t>(std::numeric_limits<std::size_t>::max())) {
+        return Status::Error(kExitInvalidArgument,
+                             "bench buffer pool entry count exceeds addressable memory");
     }
-    if (config.bench.ioSize > static_cast<std::uint64_t>(std::numeric_limits<std::size_t>::max())) {
+    if (bench.ioSize > static_cast<std::uint64_t>(std::numeric_limits<std::size_t>::max())) {
         return Status::Error(kExitInvalidArgument, "bench io_size exceeds addressable memory");
     }
 
-    auto status = CheckBenchMemoryLimit(keyCount, config.bench.ioSize, config.memoryMaxBytes);
-    if (!status.Ok()) { return status; }
-
-    const std::string keyPrefix = config.keyPrefix.empty() ? "bench-key-" : config.keyPrefix;
-    data = GeneratedData{};
-    data.keys.reserve(static_cast<std::size_t>(keyCount));
-    data.values.reserve(static_cast<std::size_t>(keyCount));
-    for (std::uint64_t index = 0; index < keyCount; ++index) {
-        data.keys.emplace_back(keyPrefix + std::to_string(index));
-        auto& value = data.values.emplace_back(config.bench.ioSize);
-        for (std::uint64_t byteIndex = 0; byteIndex < config.bench.ioSize; ++byteIndex) {
-            value[byteIndex] = static_cast<std::uint8_t>((index + byteIndex + config.seed) & 0xFF);
-        }
-    }
-    return Status::Success();
+    return CheckBenchMemoryLimit(poolEntryCount, bench.ioSize, memoryMaxBytes);
 }
 
-BufferSet SliceBuffers(const BufferSet& source, std::size_t begin, std::size_t count)
+void FillStoreValue(std::vector<std::uint8_t>& value, std::uint64_t valueIndex, std::uint64_t seed)
 {
-    BufferSet slice;
-    const auto end = std::min(begin + count, source.entries.size());
-    slice.ownedBuffers.reserve(end - begin);
-    slice.regions.reserve(end - begin);
-    slice.entries.reserve(end - begin);
+    for (std::size_t byteIndex = 0; byteIndex < value.size(); ++byteIndex) {
+        value[byteIndex] = static_cast<std::uint8_t>((valueIndex + byteIndex + seed) & 0xFF);
+    }
+}
 
-    for (auto index = begin; index < end; ++index) {
-        slice.ownedBuffers.emplace_back(source.ownedBuffers[index]);
+BenchBufferPool BuildBenchBufferPool(const BenchConfig& bench, std::uint64_t entryCountPerOperation,
+                                     std::uint64_t seed)
+{
+    BenchBufferPool pool;
+    pool.resize(bench.concurrency);
+
+    for (std::size_t slotIndex = 0; slotIndex < pool.size(); ++slotIndex) {
+        auto& slot = pool[slotIndex];
+        auto& buffers = slot.buffers;
+        buffers.ownedBuffers.reserve(static_cast<std::size_t>(entryCountPerOperation));
+        for (std::uint64_t index = 0; index < entryCountPerOperation; ++index) {
+            auto& value = buffers.ownedBuffers.emplace_back(static_cast<std::size_t>(bench.ioSize));
+            FillStoreValue(value, slotIndex * entryCountPerOperation + index, seed);
+        }
     }
-    for (std::size_t index = 0; index < slice.ownedBuffers.size(); ++index) {
-        auto region = MakeHostRegion(slice.ownedBuffers[index]);
-        slice.regions.emplace_back(region);
-        slice.entries.emplace_back(MakeKvBuffer(source.entries[begin + index].key, region));
-    }
-    return slice;
+    return pool;
 }
 
 bool IsBenchReadOperation(BenchOpType op, std::uint64_t operationIndex, const BenchConfig& bench)
@@ -162,16 +187,36 @@ bool IsBenchReadOperation(BenchOpType op, std::uint64_t operationIndex, const Be
     return operationIndex % ratioTotal < bench.readRatio;
 }
 
+void PrepareBenchBuffers(BenchBufferSlot& slot, std::uint64_t begin, std::size_t entryCount,
+                         const std::string& keyPrefix)
+{
+    auto& buffers = slot.buffers;
+    buffers.regions.clear();
+    buffers.entries.clear();
+    buffers.registerResults.clear();
+    buffers.regions.reserve(entryCount);
+    buffers.entries.reserve(entryCount);
+
+    for (std::size_t index = 0; index < entryCount; ++index) {
+        const auto keyIndex = begin + index;
+        auto& value = buffers.ownedBuffers[index];
+        auto region = MakeHostRegion(value);
+        buffers.regions.emplace_back(region);
+        buffers.entries.emplace_back(MakeKvBuffer(keyPrefix + std::to_string(keyIndex), region));
+    }
+}
+
 Status ExecuteBenchOperation(BenchOpType requestedOp, const BenchConfig& bench,
-                             AsuClientRunner& clientRunner, const BufferSet& storeBuffers,
-                             const BufferSet& retrieveBuffers, std::size_t begin,
-                             std::size_t entryCount, std::uint64_t operationIndex,
+                             AsuClientRunner& clientRunner, BenchBufferSlot& slot,
+                             std::uint64_t begin, std::size_t entryCount,
+                             std::uint64_t operationIndex, const std::string& keyPrefix,
                              std::uint64_t timeoutMs, CommandResult& operationResult)
 {
     const bool isRead = IsBenchReadOperation(requestedOp, operationIndex, bench);
     const auto submitMode =
         entryCount > 1 ? SubmitMode::ALL_ENTRIES_IN_ONE_CALL : SubmitMode::SINGLE_ENTRY_PER_CALL;
-    auto buffers = SliceBuffers(isRead ? retrieveBuffers : storeBuffers, begin, entryCount);
+    PrepareBenchBuffers(slot, begin, entryCount, keyPrefix);
+    auto& buffers = slot.buffers;
 
     auto status = clientRunner.RegisterBuffers(buffers);
     if (!status.Ok()) { return status; }
@@ -188,7 +233,7 @@ using EntrySubmitMethod = UC::ASU::Status (UC::ASU::AsuClient::*)(
 
 }  // namespace
 
-Status BenchRunner::Run(const CommandOptions&, const KvTestConfig& config,
+Status BenchRunner::Run(const CommandOptions& options, const KvTestConfig& config,
                         AsuClientRunner& clientRunner, CommandResult& result) const
 {
     const auto& bench = config.bench;
@@ -215,22 +260,16 @@ Status BenchRunner::Run(const CommandOptions&, const KvTestConfig& config,
     }
 
     const auto entryCountPerOperation = BenchEntryCount(bench, bench.op);
+    const auto poolEntryCount = entryCountPerOperation * bench.concurrency;
     const auto keyCount = std::max<std::uint64_t>(
         config.count, std::max<std::uint64_t>(bench.concurrency * entryCountPerOperation * 16,
                                               entryCountPerOperation));
 
-    GeneratedData data;
-    auto status = BuildBenchData(config, keyCount, data);
+    auto status = ValidateBenchBufferConfig(bench, poolEntryCount, config.memoryMaxBytes);
     if (!status.Ok()) { return status; }
 
-    BufferAllocator allocator;
-    BufferSet storeBuffers;
-    status = allocator.BuildStoreBuffers(data, storeBuffers);
-    if (!status.Ok()) { return status; }
-
-    BufferSet retrieveBuffers;
-    status = allocator.BuildRetrieveBuffers(data, retrieveBuffers);
-    if (!status.Ok()) { return status; }
+    const std::string keyPrefix = config.keyPrefix.empty() ? "bench-key-" : config.keyPrefix;
+    auto bufferPool = BuildBenchBufferPool(bench, entryCountPerOperation, config.seed);
 
     using Clock = std::chrono::steady_clock;
     std::vector<double> measuredLatenciesUs;
@@ -253,6 +292,20 @@ Status BenchRunner::Run(const CommandOptions&, const KvTestConfig& config,
         double windowLatencyUs = 0.0;
         std::uint64_t currentSecond = 1;
 
+        auto emitProgressSample = [&](std::uint64_t operationsPerSec) {
+            BenchRealtimeSample sample;
+            sample.timestampSec = currentSecond;
+            sample.op = bench.op;
+            sample.bandwidthBytesPerSec = static_cast<double>(windowBytes);
+            sample.iops = static_cast<double>(windowEntryCount);
+            sample.avgLatencyUs = windowOperationCount == 0
+                                      ? 0.0
+                                      : windowLatencyUs / static_cast<double>(windowOperationCount);
+            sample.errorCount = windowErrors;
+            result.benchMetrics.realtimeSamples.emplace_back(sample);
+            if (options.progress) { PrintProgressSample(sample, operationsPerSec); }
+        };
+
         while (Clock::now() < phaseEnd) {
             std::vector<std::future<OperationOutcome>> futures;
             futures.reserve(bench.concurrency);
@@ -264,15 +317,17 @@ Status BenchRunner::Run(const CommandOptions&, const KvTestConfig& config,
                 const auto currentEntryCount = static_cast<std::size_t>(
                     std::min<std::uint64_t>(entryCountPerOperation, available));
                 const auto currentOperationIndex = operationIndex++;
+                auto* bufferSlot = &bufferPool[inFlight];
 
                 futures.emplace_back(std::async(
                     std::launch::async,
-                    [&, begin, currentEntryCount, currentOperationIndex]() -> OperationOutcome {
+                    [&, begin, currentEntryCount, currentOperationIndex,
+                     bufferSlot]() -> OperationOutcome {
                         CommandResult operationResult;
                         const auto operationStart = Clock::now();
                         auto opStatus = ExecuteBenchOperation(
-                            bench.op, bench, clientRunner, storeBuffers, retrieveBuffers, begin,
-                            currentEntryCount, currentOperationIndex,
+                            bench.op, bench, clientRunner, *bufferSlot, begin, currentEntryCount,
+                            currentOperationIndex, keyPrefix,
                             config.asuClientConfig.defaultWaitTimeoutMs, operationResult);
                         const auto operationEnd = Clock::now();
                         OperationOutcome outcome;
@@ -312,17 +367,7 @@ Status BenchRunner::Run(const CommandOptions&, const KvTestConfig& config,
                         .count() +
                     1;
                 if (static_cast<std::uint64_t>(elapsedSec) != currentSecond) {
-                    BenchRealtimeSample sample;
-                    sample.timestampSec = currentSecond;
-                    sample.op = bench.op;
-                    sample.bandwidthBytesPerSec = static_cast<double>(windowBytes);
-                    sample.iops = static_cast<double>(windowEntryCount);
-                    sample.avgLatencyUs =
-                        windowOperationCount == 0
-                            ? 0.0
-                            : windowLatencyUs / static_cast<double>(windowOperationCount);
-                    sample.errorCount = windowErrors;
-                    result.benchMetrics.realtimeSamples.emplace_back(sample);
+                    emitProgressSample(windowOperationCount);
 
                     currentSecond = static_cast<std::uint64_t>(elapsedSec);
                     windowOperationCount = 0;
@@ -335,16 +380,7 @@ Status BenchRunner::Run(const CommandOptions&, const KvTestConfig& config,
         }
 
         if (collectStats && (windowOperationCount != 0 || windowErrors != 0)) {
-            BenchRealtimeSample sample;
-            sample.timestampSec = currentSecond;
-            sample.op = bench.op;
-            sample.bandwidthBytesPerSec = static_cast<double>(windowBytes);
-            sample.iops = static_cast<double>(windowEntryCount);
-            sample.avgLatencyUs = windowOperationCount == 0
-                                      ? 0.0
-                                      : windowLatencyUs / static_cast<double>(windowOperationCount);
-            sample.errorCount = windowErrors;
-            result.benchMetrics.realtimeSamples.emplace_back(sample);
+            emitProgressSample(windowOperationCount);
         }
 
         return Status::Success();

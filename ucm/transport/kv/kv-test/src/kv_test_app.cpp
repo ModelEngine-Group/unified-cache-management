@@ -17,7 +17,9 @@ namespace {
 
 constexpr int kExitSuccess = 0;
 constexpr int kExitInvalidArgument = 1;
-
+constexpr const char* kAnsiGreen = "\033[32m";
+constexpr const char* kAnsiRed = "\033[31m";
+constexpr const char* kAnsiReset = "\033[0m";
 int ToExitCode(const Status& status) { return status.Ok() ? kExitSuccess : status.code; }
 
 std::filesystem::path PowerCycleMetadataPath(const KvTestConfig& config)
@@ -184,7 +186,8 @@ void PrintGeneralHelp()
         << "\n"
         << "Bench options:\n"
         << "  --op <op>, --bench-op <op>, --io-size <bytes>, --concurrency <n>,\n"
-        << "  --duration <sec>, --warmup <sec>, --read-ratio <n>, --write-ratio <n>\n\n"
+        << "  --duration <sec>, --warmup <sec>, --read-ratio <n>, --write-ratio <n>,\n"
+        << "  --progress               Print one benchmark progress line per second.\n\n"
         << "Examples:\n"
         << "  export KV_TEST_CONFIG=/abs/path/to/asu_kv_test.conf\n"
         << "  kv-test connect\n"
@@ -251,7 +254,7 @@ void PrintCommandHelp(CommandType command)
             std::cout << "Usage: kv-test bench [store|retrieve|batch-store|batch-retrieve|mix] "
                          "[--io-size <bytes>] [--concurrency <n>] [--duration <sec>]\n"
                       << "       kv-test bench --op <op> [--batch-size <n>] [--warmup <sec>] "
-                         "[--read-ratio <n>] [--write-ratio <n>]\n";
+                         "[--read-ratio <n>] [--write-ratio <n>] [--progress]\n";
             break;
         case CommandType::UNKNOWN:
         default: PrintGeneralHelp(); break;
@@ -273,7 +276,7 @@ void PrintVersion() { std::cout << "kv-test version " << LoadVersion() << '\n'; 
 
 void PrintFailure(const Status& status)
 {
-    std::cerr << "kv-test: failed";
+    std::cerr << kAnsiRed << "kv-test: failed" << kAnsiReset;
     if (!status.message.empty()) { std::cerr << ": " << status.message; }
     std::cerr << " (exit_code=" << ToExitCode(status) << ")\n";
 }
@@ -338,7 +341,7 @@ void PrintBenchSummary(const CommandOptions& options, const CommandResult& resul
 
 void PrintSuccess(const CommandOptions& options, const CommandResult& result)
 {
-    std::cout << "kv-test: succeeded"
+    std::cout << kAnsiGreen << "kv-test: succeeded" << kAnsiReset
               << "\ncommand=" << CommandTypeName(options.command)
               << "\nconfig=" << options.configPath << '\n';
     PrintExistSummary(options, result);
@@ -414,13 +417,20 @@ int KvTestApp::Run(int argc, char** argv)
     }
 
     if (options.command == CommandType::CONFIG_CHECK) {
-        std::cout << "kv-test: succeeded command=config check config=" << options.configPath
-                  << '\n';
+        std::cout << kAnsiGreen << "kv-test: succeeded" << kAnsiReset
+                  << " command=config check config=" << options.configPath << '\n';
         std::cout << "config: key_prefix=" << config.keyPrefix << " count=" << config.count
                   << " value_size=" << config.valueSize
                   << " timeout_ms=" << config.asuClientConfig.defaultWaitTimeoutMs
                   << " output=" << config.output.path << '\n';
         return kExitSuccess;
+    }
+
+    FakeBackendAclRuntime fakeBackendAclRuntime;
+    status = fakeBackendAclRuntime.MaybeSetUp(config);
+    if (!status.Ok()) {
+        PrintFailure(status);
+        return ToExitCode(status);
     }
 
     status = resultWriter_.Open(config.output);
@@ -494,9 +504,7 @@ Status KvTestApp::RunStoreLikeCommand(const CommandOptions& options, const KvTes
         return unregisterStatus;
     }
 
-    const SubmitMode submitMode = options.command == CommandType::STORE
-                                      ? SubmitMode::SINGLE_ENTRY_PER_CALL
-                                      : SubmitMode::ALL_ENTRIES_IN_ONE_CALL;
+    const SubmitMode submitMode = SubmitMode::ALL_ENTRIES_IN_ONE_CALL;
     status = clientRunner.Store(buffers, submitMode, options.timeoutMs, result);
 
     auto unregisterStatus = clientRunner.UnregisterBuffers(buffers);
@@ -551,9 +559,7 @@ Status KvTestApp::RunRetrieveLikeCommand(const CommandOptions& options, const Kv
         return unregisterStatus;
     }
 
-    const SubmitMode submitMode = options.command == CommandType::RETRIEVE
-                                      ? SubmitMode::SINGLE_ENTRY_PER_CALL
-                                      : SubmitMode::ALL_ENTRIES_IN_ONE_CALL;
+    const SubmitMode submitMode = SubmitMode::ALL_ENTRIES_IN_ONE_CALL;
     status = clientRunner.Retrieve(buffers, submitMode, options.timeoutMs, result);
     const bool checkResult = options.check || options.command == CommandType::POWER_CYCLE_VERIFY;
     if (status.Ok() && checkResult) {

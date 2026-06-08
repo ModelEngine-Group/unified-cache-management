@@ -16,8 +16,14 @@ against `asu_client`.
 `kv-test` is included only when ASU support is enabled:
 
 ```bash
-cmake -S . -B build-kv-test -DBUILD_UCM_ASU=ON
+cmake -S . -B build-kv-test -DBUILD_UCM_ASU=ON -DBUILD_UCM_STORE=OFF -DBUILD_UNIT_TESTS=OFF -DRUNTIME_ENVIRONMENT=ascend
 cmake --build build-kv-test --target kv-test
+```
+
+The same build can be started from any working directory with:
+
+```bash
+bash ucm/transport/kv/kv-test/build.sh
 ```
 
 The example environment script is:
@@ -325,6 +331,31 @@ Mode differences:
 | Backend | kv-test `LocalAsuTransport` | kv-test `MockSend` + local CQE completion |
 | Filesystem store layout | `<root>/asu-<asuId>/<hex-key>.bin` | `<root>/asu-<kv_ns_id>/<fnv64-key-hash>.bin` |
 | Validates real device communication | No | No |
+
+fake_backend smoke scripts live under:
+
+```text
+ucm/transport/kv/kv-test/scripts/
+```
+
+They can be run after `kv-test` is built and discoverable in `PATH`, or by
+setting `KV_TEST_BIN` to the executable path:
+
+```bash
+export KV_TEST_BIN=./build-kv-test/ucm/transport/kv/kv-test/kv-test
+bash ucm/transport/kv/kv-test/scripts/test_fake_backend_single_asu.sh
+bash ucm/transport/kv/kv-test/scripts/test_fake_backend_multi_asu.sh
+bash ucm/transport/kv/kv-test/scripts/test_fake_backend_protocol_results.sh
+```
+
+Each script keeps its generated config, command logs, fake store, trace files,
+and kv-test reports under:
+
+```text
+./kv-test-output/fake-backend-scripts/run-<timestamp>-<pid>/
+```
+
+Set `KV_TEST_SCRIPT_LOG_DIR` to place these artifacts elsewhere.
 
 ## Command behavior
 

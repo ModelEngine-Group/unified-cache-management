@@ -121,6 +121,7 @@ struct CommandOptions {
     bool singleKeyRequested{false};
     bool keyStartSet{false};
     bool keyEndSet{false};
+    bool progress{false};
     std::string outputPath;
 };
 

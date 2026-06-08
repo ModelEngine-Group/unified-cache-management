@@ -14,6 +14,7 @@ namespace {
 
 constexpr int kExitInvalidArgument = 1;
 constexpr const char* kConfigPathEnvVar = "KV_TEST_CONFIG";
+constexpr std::uint64_t kMaxBenchIoSizeBytes = 0xFFFFFF;
 
 std::string Trim(const std::string& value)
 {
@@ -245,18 +246,6 @@ Status KvTestConfigLoader::MergeCommandOptions(const CommandOptions& options,
     if (options.readRatio != 0) { config.bench.readRatio = options.readRatio; }
     if (options.writeRatio != 0) { config.bench.writeRatio = options.writeRatio; }
 
-    if (config.bench.batchSize > config.limits.batchStoreMax &&
-        (options.command == CommandType::BATCH_STORE ||
-         (options.command == CommandType::BENCH && config.bench.op == BenchOpType::BATCH_STORE))) {
-        return Status::Error(kExitInvalidArgument, "batch_size exceeds limits.batch_store_max");
-    }
-    if (config.bench.batchSize > config.limits.batchRetrieveMax &&
-        (options.command == CommandType::BATCH_RETRIEVE ||
-         (options.command == CommandType::BENCH &&
-          config.bench.op == BenchOpType::BATCH_RETRIEVE))) {
-        return Status::Error(kExitInvalidArgument, "batch_size exceeds limits.batch_retrieve_max");
-    }
-
     const bool hasExplicitKeys = !options.keys.empty() || !options.keysFile.empty() ||
                                  options.keyStartSet || options.keyEndSet;
     if (config.count != 0 && config.keyPrefix.empty() && !hasExplicitKeys) {
@@ -270,6 +259,10 @@ Status KvTestConfigLoader::MergeCommandOptions(const CommandOptions& options,
     }
     if (options.command == CommandType::BENCH && config.bench.ioSize == 0) {
         config.bench.ioSize = config.valueSize;
+    }
+    if (options.command == CommandType::BENCH && config.bench.ioSize > kMaxBenchIoSizeBytes) {
+        return Status::Error(kExitInvalidArgument,
+                             "bench.io_size exceeds protocol 24-bit length limit");
     }
 
     return Status::Success();
