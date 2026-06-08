@@ -332,21 +332,22 @@ MEM_STATIC U64 MEM_swap64(U64 in)
 
 MEM_STATIC size_t MEM_swapST(size_t in)
 {
-    if (MEM_32bits())
-        return (size_t)MEM_swap32((U32)in);
-    else
-        return (size_t)MEM_swap64((U64)in);
+    if (MEM_32bits()) {
+        return static_cast<size_t>(MEM_swap32(static_cast<U32>(in)));
+    } else {
+        return static_cast<size_t>(MEM_swap64(static_cast<U64>(in)));
+    }
 }
 
 /*=== Little endian r/w ===*/
 
 MEM_STATIC U16 MEM_readLE16(const void* memPtr)
 {
-    if (MEM_isLittleEndian())
+    if (MEM_isLittleEndian()) {
         return MEM_read16(memPtr);
-    else {
+    } else {
         const BYTE* p = (const BYTE*)memPtr;
-        return (U16)(p[0] + (p[1] << 8));
+        return static_cast<U16>(p[0] + (p[1] << 8));
     }
 }
 
@@ -356,8 +357,8 @@ MEM_STATIC void MEM_writeLE16(void* memPtr, U16 val)
         MEM_write16(memPtr, val);
     } else {
         BYTE* p = (BYTE*)memPtr;
-        p[0] = (BYTE)val;
-        p[1] = (BYTE)(val >> 8);
+        p[0] = static_cast<BYTE>(val);
+        p[1] = static_cast<BYTE>(val >> 8);
     }
 }
 
@@ -368,106 +369,118 @@ MEM_STATIC U32 MEM_readLE24(const void* memPtr)
 
 MEM_STATIC void MEM_writeLE24(void* memPtr, U32 val)
 {
-    MEM_writeLE16(memPtr, (U16)val);
-    ((BYTE*)memPtr)[2] = (BYTE)(val >> 16);
+    MEM_writeLE16(memPtr, static_cast<U16>(val));
+    ((BYTE*)memPtr)[2] = static_cast<BYTE>(val >> 16);
 }
 
 MEM_STATIC U32 MEM_readLE32(const void* memPtr)
 {
-    if (MEM_isLittleEndian())
+    if (MEM_isLittleEndian()) {
         return MEM_read32(memPtr);
-    else
+    } else {
         return MEM_swap32(MEM_read32(memPtr));
+    }
 }
 
 MEM_STATIC void MEM_writeLE32(void* memPtr, U32 val32)
 {
-    if (MEM_isLittleEndian())
+    if (MEM_isLittleEndian()) {
         MEM_write32(memPtr, val32);
-    else
+    } else {
         MEM_write32(memPtr, MEM_swap32(val32));
+    }
 }
 
 MEM_STATIC U64 MEM_readLE64(const void* memPtr)
 {
-    if (MEM_isLittleEndian())
+    if (MEM_isLittleEndian()) {
         return MEM_read64(memPtr);
-    else
+    } else {
         return MEM_swap64(MEM_read64(memPtr));
+    }
 }
 
 MEM_STATIC void MEM_writeLE64(void* memPtr, U64 val64)
 {
-    if (MEM_isLittleEndian())
+    if (MEM_isLittleEndian()) {
         MEM_write64(memPtr, val64);
-    else
+    } else {
         MEM_write64(memPtr, MEM_swap64(val64));
+    }
 }
 
 MEM_STATIC size_t MEM_readLEST(const void* memPtr)
 {
-    if (MEM_32bits())
-        return (size_t)MEM_readLE32(memPtr);
-    else
-        return (size_t)MEM_readLE64(memPtr);
+    if (MEM_32bits()) {
+        return static_cast<size_t>(MEM_readLE32(memPtr));
+    } else {
+        return static_cast<size_t>(MEM_readLE64(memPtr));
+    }
 }
 
 MEM_STATIC void MEM_writeLEST(void* memPtr, size_t val)
 {
-    if (MEM_32bits())
-        MEM_writeLE32(memPtr, (U32)val);
-    else
-        MEM_writeLE64(memPtr, (U64)val);
+    if (MEM_32bits()) {
+        MEM_writeLE32(memPtr, static_cast<U32>(val));
+    } else {
+        MEM_writeLE64(memPtr, static_cast<U64>(val));
+    }
 }
 
 /*=== Big endian r/w ===*/
 
 MEM_STATIC U32 MEM_readBE32(const void* memPtr)
 {
-    if (MEM_isLittleEndian())
+    if (MEM_isLittleEndian()) {
         return MEM_swap32(MEM_read32(memPtr));
-    else
+    } else {
         return MEM_read32(memPtr);
+    }
 }
 
 MEM_STATIC void MEM_writeBE32(void* memPtr, U32 val32)
 {
-    if (MEM_isLittleEndian())
+    if (MEM_isLittleEndian()) {
         MEM_write32(memPtr, MEM_swap32(val32));
-    else
+    } else {
         MEM_write32(memPtr, val32);
+    }
 }
 
 MEM_STATIC U64 MEM_readBE64(const void* memPtr)
 {
-    if (MEM_isLittleEndian())
+    if (MEM_isLittleEndian()) {
         return MEM_swap64(MEM_read64(memPtr));
-    else
+    } else {
         return MEM_read64(memPtr);
+    }
 }
 
 MEM_STATIC void MEM_writeBE64(void* memPtr, U64 val64)
 {
-    if (MEM_isLittleEndian())
+    if (MEM_isLittleEndian()) {
         MEM_write64(memPtr, MEM_swap64(val64));
-    else
+    } else {
         MEM_write64(memPtr, val64);
+    }
 }
 
 MEM_STATIC size_t MEM_readBEST(const void* memPtr)
 {
-    if (MEM_32bits())
-        return (size_t)MEM_readBE32(memPtr);
-    else
-        return (size_t)MEM_readBE64(memPtr);
+    if (MEM_32bits()) {
+        return static_cast<size_t>(MEM_readBE32(memPtr));
+    } else {
+        return static_cast<size_t>(MEM_readBE64(memPtr));
+    }
 }
 
 MEM_STATIC void MEM_writeBEST(void* memPtr, size_t val)
 {
-    if (MEM_32bits())
-        MEM_writeBE32(memPtr, (U32)val);
-    else
-        MEM_writeBE64(memPtr, (U64)val);
+    if (MEM_32bits()) {
+        MEM_writeBE32(memPtr, static_cast<U32>(val));
+    } else {
+        MEM_writeBE64(memPtr, static_cast<U64>(val));
+    }
 }
 
 #if defined(__cplusplus)
