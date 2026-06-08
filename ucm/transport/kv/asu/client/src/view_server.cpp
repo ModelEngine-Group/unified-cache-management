@@ -26,7 +26,7 @@
 #include <fstream>
 #include <utility>
 #include "asu_client/asu_client.h"
-#include "config_parser_common.h"
+#include "status_utils.h"
 
 namespace UC::ASU {
 namespace {
@@ -57,8 +57,8 @@ public:
     {
         std::ifstream configFile{configPath_};
         if (!configFile.is_open()) {
-            return Status::Error(StatusCode::NOT_FOUND,
-                                 "failed to open global view config, path=" + configPath_);
+            const auto message = "failed to open global view config, path=" + configPath_;
+            return ASU_LOG_ERROR_STATUS(StatusCode::NOT_FOUND, message);
         }
 
         GlobalView nextView;
@@ -161,6 +161,10 @@ bool ViewServer::ShouldRefreshView(const TaskResult& result) const
 
 std::shared_ptr<ViewServer> CreateDefaultViewServer(const AsuClientConfig& config)
 {
+    auto viewConfigPath = config.attrs.find("view.config_path");
+    if (viewConfigPath != config.attrs.end() && !viewConfigPath->second.empty()) {
+        return std::make_shared<ConfigFileViewServer>(viewConfigPath->second);
+    }
     if (config.viewServiceAddrs.empty()) {
         return std::make_shared<ConfigBackedViewServer>(BuildConfigGlobalView(config));
     }

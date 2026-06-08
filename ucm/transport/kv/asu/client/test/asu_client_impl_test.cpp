@@ -324,7 +324,7 @@ void ExpectSameAsuSet(std::vector<AsuId> actual, std::vector<AsuId> expected)
 CacheKey FindKeyForAsu(const std::vector<AsuId>& asuIds, AsuId targetAsuId)
 {
     std::vector<UC::KV::NodeId> nodeIds(asuIds.begin(), asuIds.end());
-    auto router = UC::KV::CreateRouter(nodeIds, UC::KV::HashFunction{}, UC::KV::HashTableConfig{});
+    auto router = UC::KV::CreateRouter(nodeIds, UC::KV::HashFunction{}, UC::KV::RouterConfig{});
     for (std::size_t index = 0; index < 10000; ++index) {
         auto key = "route-key-" + std::to_string(targetAsuId) + "-" + std::to_string(index);
         auto routes = router->RouteKeys({key});
@@ -507,6 +507,34 @@ TEST(AsuClientImplTest, Lifecycle_PublicInitLoadsClientConfigFile)
         EXPECT_EQ(state->initConfigs[asuId].asuDeleteIoNum, std::size_t{13});
         EXPECT_EQ(state->initConfigs[asuId].asuQueryIoNum, std::size_t{14});
     }
+}
+
+TEST(AsuClientImplTest, Routing_UsesRouterConfigFromClientConfigAttrs)
+{
+    auto state = std::make_shared<TestState>();
+    auto config = MakeConfig({10, 20});
+    config.attrs["hash_table.type"] = "CONTIGUOUS_BLOCK_AFFINITY";
+    config.attrs["contiguous_block_affinity.block_count"] = "2";
+    config.attrs["contiguous_block_affinity.full_spread_type"] = "RING_HASH";
+
+    auto keyForAsu10 = FindKeyForAsu({10, 20}, 10);
+    auto keyForAsu20 = FindKeyForAsu({10, 20}, 20);
+    ASSERT_FALSE(keyForAsu10.empty());
+    ASSERT_FALSE(keyForAsu20.empty());
+
+    auto client = CreateAsuClient(MakeFactory(state));
+    ASSERT_TRUE(client->Init(config).ok());
+
+    TaskId taskId = kInvalidTaskId;
+    auto status = client->StoreAsync(
+        {
+            KVBuffer{keyForAsu10, {}},
+            KVBuffer{keyForAsu20, {}}
+    },
+        taskId);
+
+    ASSERT_TRUE(status.ok()) << status.message;
+    EXPECT_EQ(state->storeCalls, std::vector<AsuId>({10}));
 }
 
 TEST(AsuClientImplTest, ViewServer_InitFailsWhenViewReferencesMissingTransportConfig)

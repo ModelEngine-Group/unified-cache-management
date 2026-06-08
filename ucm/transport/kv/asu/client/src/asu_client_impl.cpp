@@ -30,7 +30,9 @@
 #include <utility>
 #include "asu_transport/types.h"
 #include "client_config_parser.h"
+#include "client_router_config.h"
 #include "kv_common/router.h"
+#include "logger/logger.h"
 
 namespace UC::ASU {
 
@@ -745,9 +747,15 @@ Status AsuClientImpl::BuildSnapshot(const GlobalView& view,
         nextSnapshot->transports.emplace(asuId, std::move(transport));
     }
 
+    UC::KV::RouterConfig routerConfig;
+    auto status = BuildRouterConfigFromAttrs(config_.attrs, routerConfig);
+    if (!status.ok()) {
+        UC_ERROR("BuildSnapshot build router config failed: {}", status.message);
+        return status;
+    }
+
     std::vector<UC::KV::NodeId> nodeIds(asuIds.begin(), asuIds.end());
-    nextSnapshot->router =
-        UC::KV::CreateRouter(nodeIds, UC::KV::HashFunction{}, UC::KV::HashTableConfig{});
+    nextSnapshot->router = UC::KV::CreateRouter(nodeIds, UC::KV::HashFunction{}, routerConfig);
     nextSnapshot->asuIds = std::move(asuIds);
     snapshot = std::move(nextSnapshot);
     return Status::OK();
