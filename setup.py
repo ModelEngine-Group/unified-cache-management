@@ -35,6 +35,14 @@ PLATFORM = os.getenv("PLATFORM")
 ENABLE_SPARSE = os.getenv("ENABLE_SPARSE")
 ENABLE_MINDIE = os.getenv("UCM_ENABLE_MINDIE", "0") not in ("", "0", "false", "False")
 ENABLE_GDR = os.getenv("ENABLE_GDR", "0") not in ("", "0", "false", "False")
+ENABLE_ASCEND_IO_AGGREGATION = os.getenv(
+    "UCM_ENABLE_ASCEND_IO_AGGREGATION", "0"
+) not in (
+    "",
+    "0",
+    "false",
+    "False",
+)
 
 
 def get_abi_flag_from_env() -> str:
@@ -170,6 +178,10 @@ class CMakeBuild(build_ext):
 
         if ENABLE_GDR:
             cmake_args += ["-DUCM_ENABLE_GDR_STREAM=ON"]
+
+        cmake_args += [
+            f"-DUCM_ENABLE_ASCEND_IO_AGGREGATION={'ON' if ENABLE_ASCEND_IO_AGGREGATION else 'OFF'}"
+        ]
 
         match PLATFORM:
             case "cuda":

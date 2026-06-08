@@ -28,6 +28,10 @@
 #include "trans/cuda/gdr/gdr_config.h"
 #include "trans_manager.h"
 
+#ifndef UCM_ENABLE_ASCEND_IO_AGGREGATION
+#define UCM_ENABLE_ASCEND_IO_AGGREGATION 0
+#endif
+
 namespace UC::CacheStore {
 
 class CacheStore : public StoreV1 {
@@ -145,6 +149,7 @@ private:
         config.GetNumbers("gpu_kv_buffer_addrs", param.gpuKvBufferAddrs);
         config.GetNumbers("gpu_kv_buffer_sizes", param.gpuKvBufferSizes);
         config.Get("use_gdr", param.useGdr);
+        config.Get("cache_io_aggregation", param.cacheIOAggregation);
         return param;
     }
     Status CheckSizeConfig(const Config& config)
@@ -179,6 +184,15 @@ private:
         if (config.deviceId == -1) { return Status::OK(); }
         s = CheckSizeConfig(config);
         if (s.Failure()) { return s; }
+#if !UCM_ENABLE_ASCEND_IO_AGGREGATION
+        if (config.cacheIOAggregation) {
+            return Status::InvalidParam("Cache IO aggregation is not compiled");
+        }
+#endif
+        if (config.cacheIOAggregation &&
+            (config.ioAggregationPipelineDepth == 0 || config.ioAggregationMaxReadyLanes == 0)) {
+            return Status::InvalidParam("invalid Cache IO aggregation config");
+        }
         auto bufferNumber = config.bufferCapacity / config.shardSize;
         if (bufferNumber < 1024 || bufferNumber < config.loadExclusiveBufferNumber * 2) {
             return Status::InvalidParam("too small buffer({}) on shard({})", config.bufferCapacity,
@@ -221,6 +235,10 @@ private:
         UC_INFO("Set {}::RunningQueueDepth to {}.", ns, config.runningQueueDepth);
         UC_INFO("Set {}::TimeoutMs to {}.", ns, config.timeoutMs);
         UC_INFO("Set {}::StreamNumber to {}.", ns, config.streamNumber);
+        UC_INFO("Set {}::CacheIOAggregation to {}.", ns, config.cacheIOAggregation);
+        if (config.cacheIOAggregation) {
+            UC_INFO("Set {}::AggregationObject to CacheStoreShard.", ns);
+        }
         UC_INFO("Set {}::LoadExclusiveBufferNumber to {}.", ns, config.loadExclusiveBufferNumber);
         UC_INFO("Set {}::GpuKvBufferNumber to {}.", ns, config.gpuKvBufferAddrs.size());
         UC_INFO("Set {}::UseGdr to {}.", ns, config.useGdr);

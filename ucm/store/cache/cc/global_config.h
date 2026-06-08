@@ -26,6 +26,7 @@
 
 #include <cstdint>
 #include <memory>
+#include <string>
 #include "ucmstore_v1.h"
 
 namespace UC::CacheStore {
@@ -50,6 +51,9 @@ struct Config {
     std::vector<uintptr_t> gpuKvBufferAddrs{};
     std::vector<size_t> gpuKvBufferSizes{};
     bool useGdr{false};
+    bool cacheIOAggregation{false};
+    size_t ioAggregationPipelineDepth{2};
+    size_t ioAggregationMaxReadyLanes{8};
 };
 
 }  // namespace UC::CacheStore

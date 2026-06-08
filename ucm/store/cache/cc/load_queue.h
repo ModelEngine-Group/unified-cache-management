@@ -26,7 +26,7 @@
 
 #include <future>
 #include <thread>
-#include "copy_stream.h"
+#include "cache_io_executor.h"
 #include "template/hashset.h"
 #include "template/spsc_ring_queue.h"
 #include "thread/latch.h"
@@ -58,6 +58,9 @@ private:
     std::vector<size_t> tensorSizes_{};
     size_t streamNumber_{1};
     bool useGdr_{false};
+    bool cacheIOAggregation_{false};
+    size_t ioAggregationPipelineDepth_{2};
+    size_t ioAggregationMaxReadyLanes_{8};
     std::vector<ssize_t> cpuAffinityCores_{};
     SpscRingQueue<TaskPair> waiting_;
     SpscRingQueue<ShardTask> running_;
@@ -74,10 +77,8 @@ private:
     void DispatchStage();
     void DispatchOneTask(TaskPair&& pair);
     void TransferStage(std::promise<Status>& started);
-    void TransferOneTask(CopyStream& stream, ShardTask&& task);
+    void TransferOneTask(CacheIOExecutor& executor, ShardTask&& task);
     Status WaitBackendTaskReady(ShardTask& task);
-    Status HostToDeviceScatterAsync(std::shared_ptr<Trans::Stream> stream, void* host,
-                                    void** device);
 };
 
 }  // namespace UC::CacheStore

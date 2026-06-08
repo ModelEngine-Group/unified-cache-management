@@ -24,6 +24,11 @@ ucm_connectors:
       # and building UCM with ENABLE_GDR=1.
       use_gdr: false
 
+      # Enable Cache IO aggregation for Ascend small-IO CacheStore H2D and D2H copies.
+      # This aggregates one shard into one IO object to reduce many small transfers.
+      # This requires an Ascend runtime and building UCM with UCM_ENABLE_ASCEND_IO_AGGREGATION=1.
+      cache_io_aggregation: false
+
 # When you use UcmNfsStore, you should set enable_event_sync to false.
 enable_event_sync: true
 # Enable UCM metrics so they can be monitored online via Grafana and Prometheus.

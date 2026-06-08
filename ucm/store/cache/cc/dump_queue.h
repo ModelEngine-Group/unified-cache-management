@@ -26,7 +26,7 @@
 
 #include <future>
 #include <thread>
-#include "copy_stream.h"
+#include "cache_io_executor.h"
 #include "template/hashset.h"
 #include "template/spsc_ring_queue.h"
 #include "thread/latch.h"
@@ -57,6 +57,9 @@ private:
     std::vector<size_t> tensorSizes_{};
     size_t streamNumber_{1};
     bool useGdr_{false};
+    bool cacheIOAggregation_{false};
+    size_t ioAggregationPipelineDepth_{2};
+    size_t ioAggregationMaxReadyLanes_{8};
     std::vector<ssize_t> cpuAffinityCores_{};
     SpscRingQueue<TaskPair> waiting_;
     SpscRingQueue<DumpCtx> dumping_;
@@ -70,10 +73,8 @@ public:
 
 private:
     void DispatchStage(std::promise<Status>& started);
-    void DispatchOneTask(CopyStream& stream, TaskPair&& pair);
-    Status DumpOneTask(CopyStream& stream, TaskPtr task);
-    Status DeviceToHostGatherAsync(std::shared_ptr<Trans::Stream> stream, void** device,
-                                   void* host);
+    void DispatchOneTask(CacheIOExecutor& executor, TaskPair&& pair);
+    Status DumpOneTask(CacheIOExecutor& executor, TaskPtr task);
     void BackendDumpStage();
 };
 
