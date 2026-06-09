@@ -367,12 +367,8 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
                 else group_spec.kv_cache_spec
             )
             spec_names.add(type(spec).__name__)
-        ASCEND_REQUIRED_SPECS = frozenset(
-            {"Compress4AttentionSpec", "C4IndexerSpec", "Compress128AttentionSpec"}
-        )
-        npu_support = type(kv_cache_groups[0]).__name__.startswith(
-            "Ascend"
-        ) and ASCEND_REQUIRED_SPECS.issubset(spec_names)
+        ASCEND_REQUIRED_SPECS = frozenset({"AscendSlidingWindowMLASpec"})
+        npu_support = ASCEND_REQUIRED_SPECS.issubset(spec_names)
         return npu_support
 
     def _init_group_metas(self) -> None:
@@ -411,9 +407,7 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
                 self.fa_group_ids.append(group_id)
             else:
                 tensor_name = group.layer_names[0]
-                if type(spec).__name__ in ["SWAAttentionSpec"] or tensor_name.split(
-                    "."
-                )[-1] in ["swa_cache"]:
+                if tensor_name.split(".")[-1] in ["swa_cache"]:
                     # SWA caches keep the full sliding-window tail.
                     tail_tokens = window_size
                 else:
@@ -579,31 +573,14 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
             else (None, None)
         )
 
-        if self.is_ascend_layout:
-            # Ascend may provide multiple tensors for the same layer name; each
-            # KV group consumes its slice in vllm-ascend registration order.
-            next_tensor_index_by_layer: dict[str, int] = {}
-            for group_id, group in enumerate(self._kv_cache_config.kv_cache_groups):
-                kv_cache_spec_name = type(group.kv_cache_spec).__name__
-                group_caches: dict[str, torch.Tensor] = {}
-                for layer_name in group.layer_names:
-                    tensor_count = 2 if kv_cache_spec_name == "C4IndexerSpec" else 1
-                    start = next_tensor_index_by_layer.get(layer_name, 0)
-                    end = start + tensor_count
-                    next_tensor_index_by_layer[layer_name] = end
-                    group_caches[layer_name] = tuple(kv_caches[layer_name][start:end])
-
-                layout = KVCacheGroupLayout(group_caches)
-                self.group_layouts[group_id] = layout
-        else:
-            for group_id, group_spec in enumerate(
-                self._kv_cache_config.kv_cache_groups
-            ):
-                group_caches: dict[str, torch.Tensor] = {}
-                for layer_name in group_spec.layer_names:
-                    group_caches[layer_name] = kv_caches[layer_name]
-                layout = KVCacheGroupLayout(group_caches)
-                self.group_layouts[group_id] = layout
+        for group_id, group_spec in enumerate(
+            self._kv_cache_config.kv_cache_groups
+        ):
+            group_caches: dict[str, torch.Tensor] = {}
+            for layer_name in group_spec.layer_names:
+                group_caches[layer_name] = tuple(kv_caches[layer_name])
+            layout = KVCacheGroupLayout(group_caches)
+            self.group_layouts[group_id] = layout
 
         self.store = self._create_fa_store(self.group_layouts, store_cores)
         self.fa_store = self.store
