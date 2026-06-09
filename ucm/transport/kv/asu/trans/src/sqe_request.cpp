@@ -33,6 +33,7 @@
 #include "buffer_manager.h"
 #include "connection_manager.h"
 #include "kv_protocol.h"
+#include "logger.h"
 
 namespace UC::ASU {
 
@@ -68,17 +69,29 @@ T GetTransportConfigAttr(const std::unordered_map<std::string, std::string>& att
     }
 }
 
-std::size_t GetFlagBufferSize(std::size_t batchNum)
+std::size_t GetFlagBufferSize(KvOpcode opcode, std::size_t batchNum)
 {
-    return kFlagBufferHeaderSize + (batchNum + 1) / 2;
+    switch (opcode) {
+        case KvOpcode::BatchStore:
+        case KvOpcode::BatchRetrieve: return kFlagBufferHeaderSize + (batchNum + 1) / 2;
+        case KvOpcode::Delete:
+        case KvOpcode::Exist: return kFlagBufferHeaderSize + (batchNum + 7) / 8;
+        default: return kFlagBufferHeaderSize + 1;
+    }
 }
 
-Status AllocateSubBatchFlagBuffer(std::size_t batchNum, BufferManager& flagBufferManager,
+Status AllocateSubBatchFlagBuffer(KvOpcode opcode, std::size_t batchNum,
+                                  BufferManager& flagBufferManager,
                                   TransportSubBatchContext& subBatchContext)
 {
-    auto status =
-        flagBufferManager.Allocate(GetFlagBufferSize(batchNum), subBatchContext.flagBuffer);
+    const auto flagBufferSize = GetFlagBufferSize(opcode, batchNum);
+    auto status = flagBufferManager.Allocate(flagBufferSize, subBatchContext.flagBuffer);
     if (!status.ok()) {
+        UC_ERROR(
+            "Allocate sub-batch flag buffer failed opcode={} batch_num={} size={} code={} "
+            "message={}",
+            static_cast<int>(opcode), batchNum, flagBufferSize, static_cast<int>(status.code),
+            status.message);
         subBatchContext.flagBuffer = {};
         return status;
     }
@@ -117,13 +130,13 @@ void ResetSubBatchContext(std::size_t batchNum, TransportSubBatchContext& subBat
     subBatchContext.status = Status::OK();
 }
 
-Status PrepareSubBatchRequest(TransportOpType opType, std::uint16_t cid, std::size_t batchNum,
-                              BufferManager& flagBufferManager,
+Status PrepareSubBatchRequest(TransportOpType opType, KvOpcode opcode, std::uint16_t cid,
+                              std::size_t batchNum, BufferManager& flagBufferManager,
                               TransportSubBatchContext& subBatchContext)
 {
     subBatchContext.opType = opType;
     subBatchContext.cid = cid;
-    auto status = AllocateSubBatchFlagBuffer(batchNum, flagBufferManager, subBatchContext);
+    auto status = AllocateSubBatchFlagBuffer(opcode, batchNum, flagBufferManager, subBatchContext);
     if (!status.ok()) { return SetSubBatchBuildFailed(subBatchContext, status); }
     return Status::OK();
 }
@@ -134,11 +147,23 @@ Status PackSubBatchRequest(ProtocolManager& protocolManager, BufferManager& send
 {
     auto packedSize = protocolManager.GetPackedSize(opcode, request);
     auto status = sendBufferManager.Allocate(packedSize, subBatchContext.sendSge);
-    if (!status.ok()) { return SetSubBatchBuildFailed(subBatchContext, status); }
+    if (!status.ok()) {
+        UC_ERROR(
+            "Allocate sub-batch send buffer failed opcode={} cid={} packed_size={} code={} "
+            "message={}",
+            static_cast<int>(opcode), subBatchContext.cid, packedSize,
+            static_cast<int>(status.code), status.message);
+        return SetSubBatchBuildFailed(subBatchContext, status);
+    }
 
     status = protocolManager.PackRequest(reinterpret_cast<void*>(subBatchContext.sendSge.addr),
                                          opcode, request);
-    if (!status.ok()) { return SetSubBatchBuildFailed(subBatchContext, status); }
+    if (!status.ok()) {
+        UC_ERROR("Pack sub-batch request failed opcode={} cid={} code={} message={}",
+                 static_cast<int>(opcode), subBatchContext.cid, static_cast<int>(status.code),
+                 status.message);
+        return SetSubBatchBuildFailed(subBatchContext, status);
+    }
 
     subBatchContext.status = status;
     return status;
@@ -156,6 +181,8 @@ Status InitializeSubBatchSubmission(TransportOpType opType, std::size_t batchNum
 
     if (!isSupported) {
         auto status = Status::Error(StatusCode::UNSUPPORTED, unsupportedMessage);
+        UC_ERROR("Unsupported sub-batch submission op_type={} batch_num={} message={}",
+                 static_cast<int>(opType), batchNum, unsupportedMessage);
         return SetSubBatchBuildFailed(subBatchContext, status);
     }
     opcode = ToKvOpcode(opType);
@@ -292,7 +319,10 @@ std::unique_ptr<SqeRequest> BuildSqeRequest(
         }
         case KvOpcode::KeepAlive:
             return std::make_unique<KvKeepAliveRequest>(BuildKeepAliveRequest(cid, flagBuffer));
-        default: return nullptr;
+        default:
+            UC_ERROR("Build SQE request failed: unsupported opcode={} cid={}",
+                     static_cast<int>(opcode), cid);
+            return nullptr;
     }
 }
 
@@ -306,9 +336,13 @@ Status AsuTransportImpl::ValidateSqeRequestAttrs()
         try {
             const auto parsed = std::stoull(iter->second, nullptr, 0);
             if (parsed > maxValue) {
+                UC_ERROR("Validate SQE attr failed name={} value={} reason=exceeds_range", name,
+                         iter->second);
                 return Status::Error(StatusCode::INVALID_ARGUMENT, name + " exceeds valid range");
             }
         } catch (const std::exception&) {
+            UC_ERROR("Validate SQE attr failed name={} value={} reason=invalid_integer", name,
+                     iter->second);
             return Status::Error(StatusCode::INVALID_ARGUMENT, name + " is not a valid integer");
         }
         return Status::OK();
@@ -318,18 +352,25 @@ Status AsuTransportImpl::ValidateSqeRequestAttrs()
                                                         auto maxValue) -> Status {
         auto iter = config_.attrs.find(name);
         if (iter == config_.attrs.end()) {
+            UC_ERROR("Validate SQE attr failed name={} reason=missing_required", name);
             return Status::Error(StatusCode::INVALID_ARGUMENT, name + " is required");
         }
         try {
             const auto parsed = std::stoull(iter->second, nullptr, 0);
             if (parsed > maxValue) {
+                UC_ERROR("Validate SQE attr failed name={} value={} reason=exceeds_range", name,
+                         iter->second);
                 return Status::Error(StatusCode::INVALID_ARGUMENT, name + " exceeds valid range");
             }
             if (parsed == 0) {
+                UC_ERROR("Validate SQE attr failed name={} value={} reason=must_be_positive", name,
+                         iter->second);
                 return Status::Error(StatusCode::INVALID_ARGUMENT,
                                      name + " must be greater than zero");
             }
         } catch (const std::exception&) {
+            UC_ERROR("Validate SQE attr failed name={} value={} reason=invalid_integer", name,
+                     iter->second);
             return Status::Error(StatusCode::INVALID_ARGUMENT, name + " is not a valid integer");
         }
         return Status::OK();
@@ -342,6 +383,8 @@ Status AsuTransportImpl::ValidateSqeRequestAttrs()
         if (value == "1" || value == "0" || value == "true" || value == "false") {
             return Status::OK();
         }
+        UC_ERROR("Validate SQE attr failed name={} value={} reason=invalid_bool", name,
+                 iter->second);
         return Status::Error(StatusCode::INVALID_ARGUMENT, name + " is not a valid bool");
     };
 
@@ -358,8 +401,10 @@ Status AsuTransportImpl::ValidateSqeRequestAttrs()
     status =
         validateRequiredPositiveInteger("kernel_count", std::numeric_limits<std::uint32_t>::max());
     if (!status.ok()) { return status; }
-    return validateRequiredPositiveInteger("quiet_count",
-                                           std::numeric_limits<std::uint32_t>::max());
+    status =
+        validateRequiredPositiveInteger("quiet_count", std::numeric_limits<std::uint32_t>::max());
+    if (!status.ok()) { return status; }
+    return Status::OK();
 }
 
 Status AsuTransportImpl::SubmitEntrySubBatchRequest(TransportOpType opType,
@@ -376,7 +421,7 @@ Status AsuTransportImpl::SubmitEntrySubBatchRequest(TransportOpType opType,
                                      kUnsupportedMessage, subBatchContext, opcode, shouldSubmit);
     if (!status.ok() || !shouldSubmit) { return status; }
 
-    status = PrepareSubBatchRequest(opType, AllocateRequestCid(), subBatch.entries.size,
+    status = PrepareSubBatchRequest(opType, opcode, AllocateRequestCid(), subBatch.entries.size,
                                     flagBufferManager_, subBatchContext);
     if (!status.ok()) { return status; }
 
@@ -399,7 +444,7 @@ Status AsuTransportImpl::SubmitKeySubBatchRequest(TransportOpType opType,
                                      kUnsupportedMessage, subBatchContext, opcode, shouldSubmit);
     if (!status.ok() || !shouldSubmit) { return status; }
 
-    status = PrepareSubBatchRequest(opType, AllocateRequestCid(), subBatch.keys.size,
+    status = PrepareSubBatchRequest(opType, opcode, AllocateRequestCid(), subBatch.keys.size,
                                     flagBufferManager_, subBatchContext);
     if (!status.ok()) { return status; }
 
@@ -420,7 +465,7 @@ Status AsuTransportImpl::SubmitKeepAliveRequest(TransportSubBatchContext& subBat
                                                subBatchContext, opcode, shouldSubmit);
     if (!status.ok() || !shouldSubmit) { return status; }
 
-    status = PrepareSubBatchRequest(opType, AllocateRequestCid(), 1, flagBufferManager_,
+    status = PrepareSubBatchRequest(opType, opcode, AllocateRequestCid(), 1, flagBufferManager_,
                                     subBatchContext);
     if (!status.ok()) { return status; }
 
