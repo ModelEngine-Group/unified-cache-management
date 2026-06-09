@@ -30,7 +30,7 @@ public:
 
     ~MemoryPool()
     {
-        if (pool) free(pool);
+        if (pool) { free(pool); }
         UC_DEBUG("free all pool.");
     }
 
@@ -44,7 +44,7 @@ public:
 
     void deallocate(const std::vector<void*>& blocks)
     {
-        if (blocks.empty()) return;
+        if (blocks.empty()) { return; }
         std::lock_guard<std::mutex> lock(mutex_);
         freeBlocks.insert(freeBlocks.end(), blocks.begin(), blocks.end());
         UC_DEBUG("deallocate blocks count: {}", blocks.size());

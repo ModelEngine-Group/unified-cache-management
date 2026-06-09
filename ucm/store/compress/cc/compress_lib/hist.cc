@@ -44,13 +44,14 @@ unsigned HIST_count_simple(unsigned* count, unsigned* maxSymbolValuePtr, const v
         count[*ip++]++;
     }
 
-    while (!count[maxSymbolValue]) maxSymbolValue--;
+    while (!count[maxSymbolValue]) { maxSymbolValue--; }
     *maxSymbolValuePtr = maxSymbolValue;
 
     {
         U32 s;
-        for (s = 0; s <= maxSymbolValue; s++)
-            if (count[s] > largestCount) largestCount = count[s];
+        for (s = 0; s <= maxSymbolValue; s++) {
+            if (count[s] > largestCount) { largestCount = count[s]; }
+        }
     }
 
     return largestCount;
@@ -97,50 +98,50 @@ static size_t HIST_count_parallel_wksp(unsigned* count, unsigned* maxSymbolValue
             U32 c = cached;
             cached = MEM_read32(ip);
             ip += 4;
-            Counting1[(BYTE)c]++;
-            Counting2[(BYTE)(c >> 8)]++;
-            Counting3[(BYTE)(c >> 16)]++;
+            Counting1[static_cast<BYTE>(c)]++;
+            Counting2[static_cast<BYTE>(c >> 8)]++;
+            Counting3[static_cast<BYTE>(c >> 16)]++;
             Counting4[c >> 24]++;
             c = cached;
             cached = MEM_read32(ip);
             ip += 4;
-            Counting1[(BYTE)c]++;
-            Counting2[(BYTE)(c >> 8)]++;
-            Counting3[(BYTE)(c >> 16)]++;
+            Counting1[static_cast<BYTE>(c)]++;
+            Counting2[static_cast<BYTE>(c >> 8)]++;
+            Counting3[static_cast<BYTE>(c >> 16)]++;
             Counting4[c >> 24]++;
             c = cached;
             cached = MEM_read32(ip);
             ip += 4;
-            Counting1[(BYTE)c]++;
-            Counting2[(BYTE)(c >> 8)]++;
-            Counting3[(BYTE)(c >> 16)]++;
+            Counting1[static_cast<BYTE>(c)]++;
+            Counting2[static_cast<BYTE>(c >> 8)]++;
+            Counting3[static_cast<BYTE>(c >> 16)]++;
             Counting4[c >> 24]++;
             c = cached;
             cached = MEM_read32(ip);
             ip += 4;
-            Counting1[(BYTE)c]++;
-            Counting2[(BYTE)(c >> 8)]++;
-            Counting3[(BYTE)(c >> 16)]++;
+            Counting1[static_cast<BYTE>(c)]++;
+            Counting2[static_cast<BYTE>(c >> 8)]++;
+            Counting3[static_cast<BYTE>(c >> 16)]++;
             Counting4[c >> 24]++;
         }
         ip -= 4;
     }
 
     /* finish last symbols */
-    while (ip < iend) Counting1[*ip++]++;
+    while (ip < iend) { Counting1[*ip++]++; }
 
     {
         U32 s;
         for (s = 0; s < 256; s++) {
             Counting1[s] += Counting2[s] + Counting3[s] + Counting4[s];
-            if (Counting1[s] > max) max = Counting1[s];
+            if (Counting1[s] > max) { max = Counting1[s]; }
         }
     }
 
     {
         unsigned maxSymbolValue = 255;
-        while (!Counting1[maxSymbolValue]) maxSymbolValue--;
-        if (check && maxSymbolValue > *maxSymbolValuePtr) return ERROR(maxSymbolValue_tooSmall);
+        while (!Counting1[maxSymbolValue]) { maxSymbolValue--; }
+        if (check && maxSymbolValue > *maxSymbolValuePtr) { return ERROR(maxSymbolValue_tooSmall); }
         *maxSymbolValuePtr = maxSymbolValue;
         memmove(count, Counting1, countSize); /* in case count & Counting1 are overlapping */
     }
@@ -178,14 +179,14 @@ size_t HIST_count_BF16(unsigned* count, unsigned* maxSymbolValuePtr, const void*
     {
         U32 s;
         for (s = 0; s < 256; s++) {
-            if (count[s] > largestCount) largestCount = count[s];
+            if (count[s] > largestCount) { largestCount = count[s]; }
         }
     }
 
     {
         unsigned maxSymbolValue = 255;
-        while (!count[maxSymbolValue]) maxSymbolValue--;
-        if (maxSymbolValue > *maxSymbolValuePtr) return ERROR(maxSymbolValue_tooSmall);
+        while (!count[maxSymbolValue]) { maxSymbolValue--; }
+        if (maxSymbolValue > *maxSymbolValuePtr) { return ERROR(maxSymbolValue_tooSmall); }
         *maxSymbolValuePtr = maxSymbolValue;
     }
     return (size_t)largestCount;
@@ -229,8 +230,8 @@ size_t HIST_count_BF16_fixRatio(unsigned* count, unsigned* maxSymbolValuePtr, co
 
     {
         unsigned maxSymbolValue = 255;
-        while (!count[maxSymbolValue]) maxSymbolValue--;
-        if (maxSymbolValue > *maxSymbolValuePtr) return ERROR(maxSymbolValue_tooSmall);
+        while (!count[maxSymbolValue]) { maxSymbolValue--; }
+        if (maxSymbolValue > *maxSymbolValuePtr) { return ERROR(maxSymbolValue_tooSmall); }
         *maxSymbolValuePtr = maxSymbolValue;
     }
 
@@ -272,9 +273,10 @@ size_t HIST_count_FP16(unsigned* count, unsigned* maxSymbolValuePtr, const void*
             ip += 4;
 
             // 展开 8 次，每次处理 1 个字节
-            uint16_t vals[8] = {(uint16_t)(c1),       (uint16_t)(c1 >> 16), (uint16_t)(c1 >> 32),
-                                (uint16_t)(c1 >> 48), (uint16_t)(c2),       (uint16_t)(c2 >> 16),
-                                (uint16_t)(c2 >> 32), (uint16_t)(c2 >> 48)};
+            uint16_t vals[8] = {static_cast<uint16_t>(c1),       static_cast<uint16_t>(c1 >> 16),
+                                static_cast<uint16_t>(c1 >> 32), static_cast<uint16_t>(c1 >> 48),
+                                static_cast<uint16_t>(c2),       static_cast<uint16_t>(c2 >> 16),
+                                static_cast<uint16_t>(c2 >> 32), static_cast<uint16_t>(c2 >> 48)};
 
             for (int pos = 0; pos < 8; pos++) {
                 uint16_t v = vals[pos];
@@ -282,8 +284,8 @@ size_t HIST_count_FP16(unsigned* count, unsigned* maxSymbolValuePtr, const void*
                 count[sym]++;
 
                 sign[pos] |= ((v >> 15) & 0x1) << g;
-                mantissa2[pos] |= (uint16_t)((v >> 8) & 0x3) << (g * 2);
-                mantissa8[pos] |= (uint64_t)(v & 0xFF) << (g * 8);
+                mantissa2[pos] |= static_cast<uint16_t>((v >> 8) & 0x3) << (g * 2);
+                mantissa8[pos] |= static_cast<uint64_t>(v & 0xFF) << (g * 8);
             }
         }
 
@@ -297,14 +299,14 @@ size_t HIST_count_FP16(unsigned* count, unsigned* maxSymbolValuePtr, const void*
     {
         U32 s;
         for (s = 0; s < 256; s++) {
-            if (count[s] > largestCount) largestCount = count[s];
+            if (count[s] > largestCount) { largestCount = count[s]; }
         }
     }
 
     {
         unsigned maxSymbolValue = 255;
-        while (!count[maxSymbolValue]) maxSymbolValue--;
-        if (maxSymbolValue > *maxSymbolValuePtr) return ERROR(maxSymbolValue_tooSmall);
+        while (!count[maxSymbolValue]) { maxSymbolValue--; }
+        if (maxSymbolValue > *maxSymbolValuePtr) { return ERROR(maxSymbolValue_tooSmall); }
         *maxSymbolValuePtr = maxSymbolValue;
     }
     return (size_t)largestCount;
@@ -344,9 +346,10 @@ size_t HIST_lossy_count_FP16(unsigned* count, unsigned* maxSymbolValuePtr, const
             ip += 4;
 
             // 展开 8 次，每次处理 1 个字节
-            uint16_t vals[8] = {(uint16_t)(c1),       (uint16_t)(c1 >> 16), (uint16_t)(c1 >> 32),
-                                (uint16_t)(c1 >> 48), (uint16_t)(c2),       (uint16_t)(c2 >> 16),
-                                (uint16_t)(c2 >> 32), (uint16_t)(c2 >> 48)};
+            uint16_t vals[8] = {static_cast<uint16_t>(c1),       static_cast<uint16_t>(c1 >> 16),
+                                static_cast<uint16_t>(c1 >> 32), static_cast<uint16_t>(c1 >> 48),
+                                static_cast<uint16_t>(c2),       static_cast<uint16_t>(c2 >> 16),
+                                static_cast<uint16_t>(c2 >> 32), static_cast<uint16_t>(c2 >> 48)};
 
             for (int pos = 0; pos < 8; pos++) {
                 uint16_t v = vals[pos];
@@ -354,7 +357,7 @@ size_t HIST_lossy_count_FP16(unsigned* count, unsigned* maxSymbolValuePtr, const
                 count[sym]++;
 
                 sign[pos] |= ((v >> 15) & 0x1) << g;
-                mantissa4[pos] |= (uint16_t)((v >> 6) & 0xF) << (g * 4);
+                mantissa4[pos] |= static_cast<uint16_t>((v >> 6) & 0xF) << (g * 4);
             }
         }
 
@@ -367,14 +370,14 @@ size_t HIST_lossy_count_FP16(unsigned* count, unsigned* maxSymbolValuePtr, const
     {
         U32 s;
         for (s = 0; s < 256; s++) {
-            if (count[s] > largestCount) largestCount = count[s];
+            if (count[s] > largestCount) { largestCount = count[s]; }
         }
     }
 
     {
         unsigned maxSymbolValue = 255;
-        while (!count[maxSymbolValue]) maxSymbolValue--;
-        if (maxSymbolValue > *maxSymbolValuePtr) return ERROR(maxSymbolValue_tooSmall);
+        while (!count[maxSymbolValue]) { maxSymbolValue--; }
+        if (maxSymbolValue > *maxSymbolValuePtr) { return ERROR(maxSymbolValue_tooSmall); }
         *maxSymbolValuePtr = maxSymbolValue;
     }
     return (size_t)largestCount;
@@ -414,9 +417,10 @@ size_t HIST_count_FP8E5M2(unsigned* count, unsigned* maxSymbolValuePtr, const vo
             ip += 4;
 
             // 展开 8 次，每次处理 1 个字节
-            uint8_t vals[8] = {(uint8_t)(c1),       (uint8_t)(c1 >> 8), (uint8_t)(c1 >> 16),
-                               (uint8_t)(c1 >> 24), (uint8_t)(c2),      (uint8_t)(c2 >> 8),
-                               (uint8_t)(c2 >> 16), (uint8_t)(c2 >> 24)};
+            uint8_t vals[8] = {static_cast<uint8_t>(c1),       static_cast<uint8_t>(c1 >> 8),
+                               static_cast<uint8_t>(c1 >> 16), static_cast<uint8_t>(c1 >> 24),
+                               static_cast<uint8_t>(c2),       static_cast<uint8_t>(c2 >> 8),
+                               static_cast<uint8_t>(c2 >> 16), static_cast<uint8_t>(c2 >> 24)};
 
             for (int pos = 0; pos < 8; pos++) {
                 uint8_t v = vals[pos];
@@ -424,7 +428,7 @@ size_t HIST_count_FP8E5M2(unsigned* count, unsigned* maxSymbolValuePtr, const vo
                 count[sym]++;
 
                 sign[pos] |= ((v >> 7) & 0x1) << g;
-                mantissa16[pos] |= (uint16_t)(v & 0x3) << (g * 2);
+                mantissa16[pos] |= static_cast<uint16_t>(v & 0x3) << (g * 2);
             }
         }
 
@@ -437,14 +441,14 @@ size_t HIST_count_FP8E5M2(unsigned* count, unsigned* maxSymbolValuePtr, const vo
     {
         U32 s;
         for (s = 0; s < 256; s++) {
-            if (count[s] > largestCount) largestCount = count[s];
+            if (count[s] > largestCount) { largestCount = count[s]; }
         }
     }
 
     {
         unsigned maxSymbolValue = 255;
-        while (!count[maxSymbolValue]) maxSymbolValue--;
-        if (maxSymbolValue > *maxSymbolValuePtr) return ERROR(maxSymbolValue_tooSmall);
+        while (!count[maxSymbolValue]) { maxSymbolValue--; }
+        if (maxSymbolValue > *maxSymbolValuePtr) { return ERROR(maxSymbolValue_tooSmall); }
         *maxSymbolValuePtr = maxSymbolValue;
     }
     return (size_t)largestCount;
@@ -458,10 +462,13 @@ size_t HIST_count_FP8E5M2(unsigned* count, unsigned* maxSymbolValuePtr, const vo
 size_t HIST_countFast_wksp(unsigned* count, unsigned* maxSymbolValuePtr, const void* source,
                            size_t sourceSize, void* workSpace, size_t workSpaceSize)
 {
-    if (sourceSize < 1500) /* heuristic threshold */
+    if (sourceSize < 1500) /* heuristic threshold */ {
         return HIST_count_simple(count, maxSymbolValuePtr, source, sourceSize);
-    if ((size_t)workSpace & 3) return ERROR(GENERIC); /* must be aligned on 4-bytes boundaries */
-    if (workSpaceSize < HIST_WKSP_SIZE) return ERROR(workSpace_tooSmall);
+    }
+    if ((size_t)workSpace & 3) {
+        return ERROR(GENERIC);
+    } /* must be aligned on 4-bytes boundaries */
+    if (workSpaceSize < HIST_WKSP_SIZE) { return ERROR(workSpace_tooSmall); }
     return HIST_count_parallel_wksp(count, maxSymbolValuePtr, source, sourceSize, trustInput,
                                     (U32*)workSpace);
 }
@@ -481,11 +488,14 @@ size_t HIST_countFast(unsigned* count, unsigned* maxSymbolValuePtr, const void* 
 size_t HIST_count_wksp(unsigned* count, unsigned* maxSymbolValuePtr, const void* source,
                        size_t sourceSize, void* workSpace, size_t workSpaceSize)
 {
-    if ((size_t)workSpace & 3) return ERROR(GENERIC); /* must be aligned on 4-bytes boundaries */
-    if (workSpaceSize < HIST_WKSP_SIZE) return ERROR(workSpace_tooSmall);
-    if (*maxSymbolValuePtr < 255)
+    if ((size_t)workSpace & 3) {
+        return ERROR(GENERIC);
+    } /* must be aligned on 4-bytes boundaries */
+    if (workSpaceSize < HIST_WKSP_SIZE) { return ERROR(workSpace_tooSmall); }
+    if (*maxSymbolValuePtr < 255) {
         return HIST_count_parallel_wksp(count, maxSymbolValuePtr, source, sourceSize,
                                         checkMaxSymbolValue, (U32*)workSpace);
+    }
     *maxSymbolValuePtr = 255;
     return HIST_countFast_wksp(count, maxSymbolValuePtr, source, sourceSize, workSpace,
                                workSpaceSize);

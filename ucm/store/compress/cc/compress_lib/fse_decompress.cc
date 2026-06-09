@@ -55,7 +55,7 @@
 /* Function templates */
 FSE_DTable* FSE_createDTable(unsigned tableLog)
 {
-    if (tableLog > FSE_TABLELOG_ABSOLUTE_MAX) tableLog = FSE_TABLELOG_ABSOLUTE_MAX;
+    if (tableLog > FSE_TABLELOG_ABSOLUTE_MAX) { tableLog = FSE_TABLELOG_ABSOLUTE_MAX; }
     return (FSE_DTable*)malloc(FSE_DTABLE_SIZE_U32(tableLog) * sizeof(U32));
 }
 
@@ -73,8 +73,8 @@ size_t FSE_buildDTable(FSE_DTable* dt, const short* normalizedCounter, unsigned 
     U32 highThreshold = tableSize - 1;
 
     /* Sanity Checks */
-    if (maxSymbolValue > FSE_MAX_SYMBOL_VALUE) return ERROR(maxSymbolValue_tooLarge);
-    if (tableLog > FSE_MAX_TABLELOG) return ERROR(tableLog_tooLarge);
+    if (maxSymbolValue > FSE_MAX_SYMBOL_VALUE) { return ERROR(maxSymbolValue_tooLarge); }
+    if (tableLog > FSE_MAX_TABLELOG) { return ERROR(tableLog_tooLarge); }
 
     /* Init, lay down lowprob symbols */
     {
@@ -89,7 +89,7 @@ size_t FSE_buildDTable(FSE_DTable* dt, const short* normalizedCounter, unsigned 
                     tableDecode[highThreshold--].symbol = (FSE_FUNCTION_TYPE)s;
                     symbolNext[s] = 1;
                 } else {
-                    if (normalizedCounter[s] >= largeLimit) DTableH.fastMode = 0;
+                    if (normalizedCounter[s] >= largeLimit) { DTableH.fastMode = 0; }
                     symbolNext[s] = normalizedCounter[s];
                 }
             }
@@ -107,12 +107,14 @@ size_t FSE_buildDTable(FSE_DTable* dt, const short* normalizedCounter, unsigned 
             for (i = 0; i < normalizedCounter[s]; i++) {
                 tableDecode[position].symbol = (FSE_FUNCTION_TYPE)s;
                 position = (position + step) & tableMask;
-                while (position > highThreshold)
-                    position = (position + step) & tableMask; /* lowprob area */
+                while (position > highThreshold) {
+                    position = (position + step) & tableMask;
+                } /* lowprob area */
             }
         }
-        if (position != 0)
-            return ERROR(GENERIC); /* position must reach all cells once, otherwise
+        if (position != 0) {
+            return ERROR(GENERIC);
+        } /* position must reach all cells once, otherwise
                                       normalizedCounter is incorrect */
     }
 
@@ -122,7 +124,7 @@ size_t FSE_buildDTable(FSE_DTable* dt, const short* normalizedCounter, unsigned 
         for (u = 0; u < tableSize; u++) {
             FSE_FUNCTION_TYPE const symbol = (FSE_FUNCTION_TYPE)(tableDecode[u].symbol);
             U32 const nextState = symbolNext[symbol]++;
-            tableDecode[u].nbBits = (BYTE)(tableLog - BIT_highbit32(nextState));
+            tableDecode[u].nbBits = static_cast<BYTE>(tableLog - BIT_highbit32(nextState));
             tableDecode[u].newState = (U16)((nextState << tableDecode[u].nbBits) - tableSize);
         }
     }
@@ -164,15 +166,15 @@ size_t FSE_buildDTable_raw(FSE_DTable* dt, unsigned nbBits)
     unsigned s;
 
     /* Sanity checks */
-    if (nbBits < 1) return ERROR(GENERIC); /* min size */
+    if (nbBits < 1) { return ERROR(GENERIC); } /* min size */
 
     /* Build Decoding Table */
     DTableH->tableLog = (U16)nbBits;
     DTableH->fastMode = 1;
     for (s = 0; s < maxSV1; s++) {
         dinfo[s].newState = 0;
-        dinfo[s].symbol = (BYTE)s;
-        dinfo[s].nbBits = (BYTE)nbBits;
+        dinfo[s].symbol = static_cast<BYTE>(s);
+        dinfo[s].nbBits = static_cast<BYTE>(nbBits);
     }
 
     return 0;
@@ -205,8 +207,10 @@ FORCE_INLINE_TEMPLATE size_t FSE_decompress_usingDTable_generic(void* dst, size_
     for (; (BIT_reloadDStream(&bitD) == BIT_DStream_unfinished) & (op < olimit); op += 4) {
         op[0] = FSE_GETSYMBOL(&state1);
 
-        if (FSE_MAX_TABLELOG * 2 + 7 > sizeof(bitD.bitContainer) * 8) /* This test must be static */
+        if (FSE_MAX_TABLELOG * 2 + 7 >
+            sizeof(bitD.bitContainer) * 8) { /* This test must be static */
             BIT_reloadDStream(&bitD);
+        }
 
         op[1] = FSE_GETSYMBOL(&state2);
 
@@ -220,8 +224,10 @@ FORCE_INLINE_TEMPLATE size_t FSE_decompress_usingDTable_generic(void* dst, size_
 
         op[2] = FSE_GETSYMBOL(&state1);
 
-        if (FSE_MAX_TABLELOG * 2 + 7 > sizeof(bitD.bitContainer) * 8) /* This test must be static */
+        if (FSE_MAX_TABLELOG * 2 + 7 >
+            sizeof(bitD.bitContainer) * 8) { /* This test must be static */
             BIT_reloadDStream(&bitD);
+        }
 
         op[3] = FSE_GETSYMBOL(&state2);
     }
@@ -230,14 +236,14 @@ FORCE_INLINE_TEMPLATE size_t FSE_decompress_usingDTable_generic(void* dst, size_
     /* note : BIT_reloadDStream(&bitD) >= FSE_DStream_partiallyFilled; Ends at exactly
      * BIT_DStream_completed */
     while (1) {
-        if (op > (omax - 2)) return ERROR(dstSize_tooSmall);
+        if (op > (omax - 2)) { return ERROR(dstSize_tooSmall); }
         *op++ = FSE_GETSYMBOL(&state1);
         if (BIT_reloadDStream(&bitD) == BIT_DStream_overflow) {
             *op++ = FSE_GETSYMBOL(&state2);
             break;
         }
 
-        if (op > (omax - 2)) return ERROR(dstSize_tooSmall);
+        if (op > (omax - 2)) { return ERROR(dstSize_tooSmall); }
         *op++ = FSE_GETSYMBOL(&state2);
         if (BIT_reloadDStream(&bitD) == BIT_DStream_overflow) {
             *op++ = FSE_GETSYMBOL(&state1);
@@ -256,8 +262,9 @@ size_t FSE_decompress_usingDTable(void* dst, size_t originalSize, const void* cS
     const U32 fastMode = DTableH->fastMode;
 
     /* select fast mode (static) */
-    if (fastMode)
+    if (fastMode) {
         return FSE_decompress_usingDTable_generic(dst, originalSize, cSrc, cSrcSize, dt, 1);
+    }
     return FSE_decompress_usingDTable_generic(dst, originalSize, cSrc, cSrcSize, dt, 0);
 }
 
@@ -273,8 +280,8 @@ size_t FSE_decompress_wksp(void* dst, size_t dstCapacity, const void* cSrc, size
     /* normal FSE decoding mode */
     size_t const NCountLength =
         FSE_readNCount(counting, &maxSymbolValue, &tableLog, istart, cSrcSize);
-    if (FSE_isError(NCountLength)) return NCountLength;
-    if (tableLog > maxLog) return ERROR(tableLog_tooLarge);
+    if (FSE_isError(NCountLength)) { return NCountLength; }
+    if (tableLog > maxLog) { return ERROR(tableLog_tooLarge); }
     assert(NCountLength <= cSrcSize);
     ip += NCountLength;
     cSrcSize -= NCountLength;

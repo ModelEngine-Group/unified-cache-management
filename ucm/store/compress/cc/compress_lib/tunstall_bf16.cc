@@ -26,18 +26,21 @@
 static uint8_t bf16_to_exp(uint16_t x)
 {
     uint16_t e = (x >> 7) & 0xFF;
-    if (e < BF16_EXP_MIN) e = BF16_EXP_MIN;
-    if (e > BF16_EXP_MAX) e = BF16_EXP_MAX;
-    return (uint8_t)(e - BF16_EXP_MIN);
+    if (e < BF16_EXP_MIN) { e = BF16_EXP_MIN; }
+    if (e > BF16_EXP_MAX) { e = BF16_EXP_MAX; }
+    return static_cast<uint8_t>(e - BF16_EXP_MIN);
 }
 
-static uint8_t bf16_sign_mant8(uint16_t x) { return (uint8_t)(((x >> 8) & 0x80) | (x & 0x7F)); }
+static uint8_t bf16_sign_mant8(uint16_t x)
+{
+    return static_cast<uint8_t>(((x >> 8) & 0x80) | (x & 0x7F));
+}
 
 static uint8_t bf16_pack_extra8(const uint16_t* p_src)
 {
     uint8_t extra8 = 0;
     for (size_t lane = 0; lane < 8; lane++) {
-        extra8 |= (uint8_t)(((p_src[lane] >> 3) & 0x01) << (7 - lane));
+        extra8 |= static_cast<uint8_t>(((p_src[lane] >> 3) & 0x01) << (7 - lane));
     }
     return extra8;
 }
@@ -47,9 +50,9 @@ static void compress_bf16_to_fp8(uint8_t* p_dst, const uint16_t* p_src, size_t n
     for (size_t i = 0; i < n_bf16; i++) {
         uint16_t x = p_src[i];
         uint8_t exp5 = bf16_to_exp(x);
-        uint8_t sign = (uint8_t)((x >> 15) & 0x01);
-        uint8_t mant2 = (uint8_t)((x >> 5) & 0x03);
-        p_dst[i] = (uint8_t)((exp5 << 3) | (sign << 2) | mant2);
+        uint8_t sign = static_cast<uint8_t>((x >> 15) & 0x01);
+        uint8_t mant2 = static_cast<uint8_t>((x >> 5) & 0x03);
+        p_dst[i] = static_cast<uint8_t>((exp5 << 3) | (sign << 2) | mant2);
     }
 }
 
@@ -57,9 +60,10 @@ static void decompress_fp8_to_bf16(uint16_t* p_dst, const uint8_t* p_src, size_t
 {
     for (size_t i = 0; i < n_bf16; i++) {
         uint16_t fp8 = p_src[i];
-        uint16_t exp8 = (uint16_t)((uint16_t)(fp8 >> 3) + BF16_EXP_MIN) << 7;
-        uint16_t sign = (uint16_t)(fp8 & 0x04) << 13;
-        uint16_t mant2 = (uint16_t)(fp8 & 0x03) << 5;
+        uint16_t exp8 =
+            static_cast<uint16_t>((static_cast<uint16_t>(fp8 >> 3) + BF16_EXP_MIN) << 7);
+        uint16_t sign = static_cast<uint16_t>((fp8 & 0x04) << 13);
+        uint16_t mant2 = static_cast<uint16_t>((fp8 & 0x03) << 5);
         p_dst[i] = sign | exp8 | mant2 | 0x10;
     }
 }
@@ -69,9 +73,10 @@ static void decompress_fp8_to_bf16_inplace(uint8_t* p_data, size_t n_bf16)
 #if !defined(NEON_DECOMPRESSION)
     for (size_t i = n_bf16; i > 0; i--) {
         uint16_t fp8 = p_data[i - 1];
-        uint16_t exp8 = (uint16_t)((uint16_t)(fp8 >> 3) + BF16_EXP_MIN) << 7;
-        uint16_t sign = (uint16_t)(fp8 & 0x04) << 13;
-        uint16_t mant2 = (uint16_t)(fp8 & 0x03) << 5;
+        uint16_t exp8 =
+            static_cast<uint16_t>((static_cast<uint16_t>(fp8 >> 3) + BF16_EXP_MIN) << 7);
+        uint16_t sign = static_cast<uint16_t>((fp8 & 0x04) << 13);
+        uint16_t mant2 = static_cast<uint16_t>((fp8 & 0x03) << 5);
         uint16_t bf16 = sign | exp8 | mant2 | 0x10;
         memcpy(p_data + ((i - 1) << 1), &bf16, sizeof(bf16));
     }
@@ -86,14 +91,15 @@ static void decompress_fp8_to_bf16_inplace(uint8_t* p_data, size_t n_bf16)
 #pragma GCC ivdep
     for (int i = (int)n_bf16 - 1; i >= (int)(n_bf16 - remainder); i--) {
         uint16_t fp8 = src[i];
-        uint16_t exp8 = (uint16_t)((uint16_t)(fp8 >> 3) + BF16_EXP_MIN) << 7;
-        uint16_t sign = (uint16_t)(fp8 & 0x04) << 13;
-        uint16_t mant2 = (uint16_t)(fp8 & 0x03) << 5;
+        uint16_t exp8 =
+            static_cast<uint16_t>((static_cast<uint16_t>(fp8 >> 3) + BF16_EXP_MIN) << 7);
+        uint16_t sign = static_cast<uint16_t>((fp8 & 0x04) << 13);
+        uint16_t mant2 = static_cast<uint16_t>((fp8 & 0x03) << 5);
         dst[i] = sign | exp8 | mant2 | 0x10;
     }
 
     // --- NEON 主循环常量 ---
-    const uint16x8_t v_exp_min_shifted = vdupq_n_u16((uint16_t)BF16_EXP_MIN << 7);
+    const uint16x8_t v_exp_min_shifted = vdupq_n_u16(static_cast<uint16_t>(BF16_EXP_MIN) << 7);
     const uint16x8_t mask_sign = vdupq_n_u16(0x04);
     const uint16x8_t mask_mant = vdupq_n_u16(0x03);
     const uint16x8_t v_const_10 = vdupq_n_u16(0x10);
@@ -186,18 +192,18 @@ int TunstallCompressBF16(uint8_t* p_dst,         // 需要 n_bf16*2 字节, 但�
     // stage2: 符号+3bit尾数打包
     for (size_t i = 0; i < n_bf16; i += 32) {
         for (size_t lane = 0; lane < 8; lane++) {
-            uint8_t sm_0 = (uint8_t)(bf16_sign_mant8(p_src[i + lane]) >> 4);
-            uint8_t sm_8 = (uint8_t)(bf16_sign_mant8(p_src[i + lane + 8]) >> 4);
-            uint8_t sm_16 = (uint8_t)(bf16_sign_mant8(p_src[i + lane + 16]) >> 4);
-            uint8_t sm_24 = (uint8_t)(bf16_sign_mant8(p_src[i + lane + 24]) >> 4);
-            p_dst[(i >> 1) + (lane << 1)] = (uint8_t)(sm_0 | (sm_8 << 4));
-            p_dst[(i >> 1) + (lane << 1) + 1] = (uint8_t)(sm_16 | (sm_24 << 4));
+            uint8_t sm_0 = static_cast<uint8_t>(bf16_sign_mant8(p_src[i + lane]) >> 4);
+            uint8_t sm_8 = static_cast<uint8_t>(bf16_sign_mant8(p_src[i + lane + 8]) >> 4);
+            uint8_t sm_16 = static_cast<uint8_t>(bf16_sign_mant8(p_src[i + lane + 16]) >> 4);
+            uint8_t sm_24 = static_cast<uint8_t>(bf16_sign_mant8(p_src[i + lane + 24]) >> 4);
+            p_dst[(i >> 1) + (lane << 1)] = static_cast<uint8_t>(sm_0 | (sm_8 << 4));
+            p_dst[(i >> 1) + (lane << 1) + 1] = static_cast<uint8_t>(sm_16 | (sm_24 << 4));
         }
     }
 
     // stage3: 把 tunstall 流尾部空出来的字节拿来存第4bit尾数
     size_t extra_bytes = (n_bf16 / 2) - tunstall_len;
-    if (extra_bytes >= (n_bf16 / 8)) extra_bytes = (n_bf16 / 8);
+    if (extra_bytes >= (n_bf16 / 8)) { extra_bytes = (n_bf16 / 8); }
     uint8_t* p_extra = p_tunstall + tunstall_len;
     for (size_t i = 0; i < extra_bytes; i++) { p_extra[i] = bf16_pack_extra8(p_src + (i << 3)); }
 
@@ -371,8 +377,8 @@ static int compact_tunstall_inplace_streams(uint8_t* p_stream_end, uint8_t** pp_
     uint8_t* p_extra_new = p_sm_new - extra_len;
     uint8_t* p_mark_new = p_extra_new - mark_len;
 
-    if (extra_len > 0) memmove(p_extra_new, *pp_extra, extra_len);
-    if (mark_len > 0) memmove(p_mark_new, *pp_mark, mark_len);
+    if (extra_len > 0) { memmove(p_extra_new, *pp_extra, extra_len); }
+    if (mark_len > 0) { memmove(p_mark_new, *pp_mark, mark_len); }
 
     *pp_mark = p_mark_new;
     *pp_mark_end = p_extra_new;
@@ -479,7 +485,7 @@ static int decompress_tunstall_trunc_inplace(uint8_t* p_data, size_t n_bf16)
             if (!using_tail && (size_t)(p_sm_end - p_mark) <= sizeof(tail)) {
                 err = spill_tunstall_inplace_streams(tail, sizeof(tail), &p_sm, &p_sm_end, &p_mark,
                                                      &p_mark_end, &p_extra, &p_extra_end);
-                if (err) return err;
+                if (err) { return err; }
                 using_tail = 1;
             }
 
@@ -504,7 +510,7 @@ static int decompress_tunstall_trunc_inplace(uint8_t* p_data, size_t n_bf16)
                     err = spill_tunstall_inplace_streams(tail, sizeof(tail), &p_sm, &p_sm_end,
                                                          &p_mark, &p_mark_end, &p_extra,
                                                          &p_extra_end);
-                    if (err) return err;
+                    if (err) { return err; }
                     using_tail = 1;
                 } else {
                     uint8_t* p_first_src =
@@ -512,7 +518,7 @@ static int decompress_tunstall_trunc_inplace(uint8_t* p_data, size_t n_bf16)
                     if (p_dst + dst_block_bytes > p_first_src) {
                         err = compact_tunstall_inplace_streams(p_sm_end, &p_sm, &p_sm_end, &p_mark,
                                                                &p_mark_end, &p_extra, &p_extra_end);
-                        if (err) return err;
+                        if (err) { return err; }
                         p_first_src = (p_mark < p_mark_end)
                                           ? p_mark
                                           : ((p_extra < p_extra_end) ? p_extra : p_sm);

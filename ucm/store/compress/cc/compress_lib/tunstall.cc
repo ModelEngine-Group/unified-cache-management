@@ -143,7 +143,7 @@ static int ts_get_hist_from_array(ts_hist_t* p_hist, const uint8_t* p_src, size_
         uint64_t freq = p_hist->hist[symb].freq;
         p_hist->hist[symb].symb = symb;
         p_hist->hist[symb].prob = (double)freq / src_len;  // 概率 = 频率 / 总数
-        if (freq) p_hist->n_symb++;                        // 遇到非零 symbolsymbol 总数 +1
+        if (freq) { p_hist->n_symb++; }                    // 遇到非零 symbolsymbol 总数 +1
     }
     qsort((void*)(p_hist->hist), TS_N_SYMB, sizeof(ts_hist_item_t),
           ts_cmp_hist);  // hist 排序, 频率高的排在前面
@@ -489,7 +489,8 @@ int TunstallCompressDynamic(uint8_t* p_dst, size_t* p_dst_len, const uint8_t* p_
         ts_build_lut(p_hdr->dynamic.lut, etree, &hist));  // 建立 LUT, 直接建立p_hdr->dynamic.lut
     RET_WHEN_ERROR(ts_check_lut(p_hdr->dynamic.lut));     // 检LUT 表是否符合一些基本要
     p_hdr->mode = TS_MODE_DYNAMIC;
-    p_hdr->dynamic.src_len = (uint32_t)src_len;  // 标记为动态表模式，让解压器能识别模式
+    p_hdr->dynamic.src_len =
+        static_cast<uint32_t>(src_len);  // 标记为动态表模式，让解压器能识别模式
 
 #if TS_DEBUG_PRINT                     //
     ts_print_lut(p_hdr->dynamic.lut);  // 打印编码
@@ -529,7 +530,7 @@ int TunstallCompressPredef(uint8_t* p_dst, size_t* p_dst_len, const uint8_t* p_s
 
     p_hdr->mode = TS_MODE_PREDEF_START + lambda;
     p_hdr->n_symb = hist.n_symb;
-    p_hdr->src_len = (uint32_t)src_len;
+    p_hdr->src_len = static_cast<uint32_t>(src_len);
     uint8_t symb2idx[TS_N_SYMB];
     ts_build_idx2symb_symb2idx(p_hdr->idx2symb, symb2idx, &hist);  // 建立 idx2symb/symb2idx 映射
 
