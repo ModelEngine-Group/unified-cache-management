@@ -65,7 +65,7 @@ counter:
     documentation: "Total bytes saved through the UCM connector (summed across all wait_for_save calls)"
   - name: "dump_event_reshape_cache_direct_used_total"
     documentation: "Number of dump submissions synchronized with attn_metadata.reshape_cache_event"
-  - name: "dump_event_reshape_cache_mla_layer_used_total"
+  - name: "dump_event_reshape_cache_layer_used_total"
     documentation: "Number of dump submissions synchronized with attn_metadata[layer_name].reshape_cache_event"
   - name: "dump_event_current_stream_used_total"
     documentation: "Number of dump submissions synchronized with a UCM-recorded current stream event fallback"

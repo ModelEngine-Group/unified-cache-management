@@ -836,17 +836,14 @@ class UCMDirectConnector(KVConnectorBase_V1):
         if attn_metadata is None:
             return None, "none"
 
-        if self.use_mla:
-            if not layer_name:
-                return None, "mla_missing_layer"
+        if layer_name:
             try:
                 layer_metadata = attn_metadata[layer_name]
                 event = getattr(layer_metadata, "reshape_cache_event", None)
                 if event is not None:
-                    return event, "mla_layer"
+                    return event, "layer"
             except (KeyError, TypeError, AttributeError):
                 pass
-            return None, "mla_missing"
 
         event = getattr(attn_metadata, "reshape_cache_event", None)
         if event is not None:
@@ -876,9 +873,9 @@ class UCMDirectConnector(KVConnectorBase_V1):
                     ucmmetrics.update_stats(
                         "dump_event_reshape_cache_direct_used_total", 1.0
                     )
-                elif event_source == "mla_layer":
+                elif event_source == "layer":
                     ucmmetrics.update_stats(
-                        "dump_event_reshape_cache_mla_layer_used_total", 1.0
+                        "dump_event_reshape_cache_layer_used_total", 1.0
                     )
                 return event_handle
 

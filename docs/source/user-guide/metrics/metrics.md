@@ -224,7 +224,7 @@ The default metrics configuration contains the following UCM metrics.
 | `ucm:load_bytes_total` | Total bytes loaded through the UCM connector. |
 | `ucm:save_bytes_total` | Total bytes saved through the UCM connector. |
 | `ucm:dump_event_reshape_cache_direct_used_total` | Dump submissions synchronized with `attn_metadata.reshape_cache_event`. |
-| `ucm:dump_event_reshape_cache_mla_layer_used_total` | Dump submissions synchronized with `attn_metadata[layer_name].reshape_cache_event`. |
+| `ucm:dump_event_reshape_cache_layer_used_total` | Dump submissions synchronized with `attn_metadata[layer_name].reshape_cache_event`. |
 | `ucm:dump_event_current_stream_used_total` | Dump submissions synchronized with a UCM-recorded current stream event fallback. |
 | `ucm:dump_event_sync_fallback_used_total` | Dump submissions that fell back to device synchronization because no event handle was available. |
 
