@@ -27,6 +27,7 @@
 #include <condition_variable>
 #include <cstddef>
 #include <cstdint>
+#include <memory>
 #include <mutex>
 #include <string>
 #include <vector>
@@ -85,7 +86,7 @@ struct TransportSubBatchContext {
     TransportOpType opType{TransportOpType::QUERY};
     TransportSubBatchState state{TransportSubBatchState::PENDING};
     Status status{Status::OK()};
-    ConnectionChannel* channel{nullptr};
+    std::shared_ptr<ConnectionChannel> channel;
     bool useSeekControl{false};
     ScatterGatherEntry sendSge;
     ScatterGatherEntry flagBuffer;

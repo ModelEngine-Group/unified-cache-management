@@ -27,6 +27,7 @@
 #include <memory>
 #include <thread>
 #include <utility>
+#include "aicpu_trans_provider.h"
 #include "asu_response_status.h"
 #include "asu_transport/asu_transport.h"
 #include "connection_internal.h"
@@ -60,20 +61,43 @@ Status AsuTransportImpl::Init(const TransportConfig& config)
     config_ = config;
     ioScheduler_ = IoScheduler(config_);
 
-    connManager_.PrepareForInit();
+    if (!transProvider_) {
+        switch (config_.providerType) {
+            case TransProviderType::AICPU:
+                transProvider_ = std::make_unique<AICPUTransProvider>();
+                break;
+        }
+    }
+    if (!transProvider_) {
+        UC_ERROR("AsuTransportImpl::Init: TransProvider is null");
+        return Status::Error(StatusCode::NOT_INITIALIZED, "TransProvider is null");
+    }
+
+    std::string localIp;
+    auto it = config_.attrs.find("localIp");
+    if (it != config_.attrs.end()) { localIp = it->second; }
+
+    std::uint32_t timeout = 5000;
+    auto tit = config_.attrs.find("timeout");
+    if (tit != config_.attrs.end()) {
+        timeout = static_cast<std::uint32_t>(std::stoul(tit->second));
+    }
+
+    connManager_.reset();
+    connManager_ = std::make_unique<ConnectionManager>(*transProvider_, localIp, timeout);
 
     std::uint32_t qp_num = config_.queryQpNum + config_.loadQpNum + config_.storeQpNum;
     UC_DEBUG("AsuTransportImpl::Init endpoints={} qp_num={}", config_.endpoints.size(), qp_num);
     for (const auto& ep : config_.endpoints) {
-        auto s = connManager_.AddGroup(ep, qp_num);
+        auto s = connManager_->AddGroup(ep, qp_num);
         if (!s.ok()) {
             UC_DEBUG("AsuTransportImpl::Init AddGroup FAILED: {}", s.message);
-            (void)connManager_.Shutdown();
+            (void)connManager_->Shutdown();
             return s;
         }
     }
 
-    connManager_.StartRecoverLoop();
+    connManager_->StartRecoverLoop();
 
     auto status = ValidateSqeRequestAttrs();
     if (!status.ok()) { return status; }
@@ -109,7 +133,11 @@ Status AsuTransportImpl::Shutdown()
     for (const auto& ctx : taskManager_.GetAll()) {
         if (ctx != nullptr) { (void)taskManager_.Remove(ctx->taskId); }
     }
-    connManager_.Shutdown();
+    if (connManager_) {
+        connManager_->Shutdown();
+        connManager_.reset();
+    }
+
     UC_DEBUG("AsuTransportImpl::Shutdown OK");
     return Status::OK();
 }
@@ -288,7 +316,6 @@ Status AsuTransportImpl::SubmitAsync(std::unique_ptr<TransportTaskContext> ctx, 
         taskId = kInvalidTaskId;
         return Status::Error(StatusCode::RESOURCE_BUSY, "transport task queue is full");
     }
-    UC_DEBUG("AsuTransportImpl::SubmitAsync OK: taskId={}", taskId);
     return Status::OK();
 }
 
@@ -298,7 +325,6 @@ void AsuTransportImpl::WorkerLoop()
         if (!ctx) { return; }
         ProcessTask(ctx);
     });
-    UC_DEBUG("AsuTransportImpl::WorkerLoop stopped");
 }
 
 void AsuTransportImpl::CompletionLoop()
@@ -316,8 +342,8 @@ Status AsuTransportImpl::AssignSubBatchConnections(
     for (auto& subBatchContext : subBatchContexts) {
         if (!subBatchContext.status.ok()) { continue; }
 
-        auto* channel = connManager_.SelectConnection();
-        if (channel == nullptr) {
+        auto channel = connManager_->SelectConnection();
+        if (!channel) {
             const auto status =
                 Status::Error(StatusCode::CONNECTION_ERROR, "no available connection channel");
             std::fill(subBatchContext.entryStatus.begin(), subBatchContext.entryStatus.end(),
@@ -373,7 +399,7 @@ void AsuTransportImpl::ProcessTask(const TransportTaskContextPtr& ctx)
         if (finalStatus.ok()) { finalStatus = connectionStatus; }
     }
 
-    std::vector<SendIoBatch> ioBatches;
+    std::vector<TransProvider::SendIoBatch> ioBatches;
     std::vector<std::size_t> subBatchIndexes;
     auto buildStatus = BuildSubBatchSendBuffers(subBatchContexts, ioBatches, subBatchIndexes);
     UC_DEBUG(
@@ -406,7 +432,6 @@ void AsuTransportImpl::ProcessTask(const TransportTaskContextPtr& ctx)
         ctx->cv.notify_all();
         return;
     }
-
     if (!subBatchContexts.empty()) { ctx->subBatchContexts = std::move(subBatchContexts); }
     ctx->finalStatus = finalStatus;
     ctx->InitializeTerminalSubBatchCount();
@@ -472,14 +497,13 @@ void AsuTransportImpl::PollTaskCompletions(const TransportTaskContextPtr& ctx)
 
         if (subBatchContext.status.code == StatusCode::ASU_CQE_INTERNAL_ERROR ||
             subBatchContext.status.code == StatusCode::ASU_CQE_IO_TIMEOUT) {
-            connManager_.ReportFailure(subBatchContext.channel);
+            connManager_->ReportFailure(subBatchContext.channel);
         }
         CompleteSubBatch(*ctx, subBatchContext, subBatchContext.status);
     }
     ctx->TryFinalizeFromSubBatches();
     if (ctx->Done()) { ctx->cv.notify_all(); }
 }
-
 void AsuTransportImpl::BuildResult(const TransportTaskContext& ctx, TaskResult& result)
 {
     result.status = ctx.finalStatus;
@@ -498,6 +522,11 @@ void AsuTransportImpl::BuildResult(const TransportTaskContext& ctx, TaskResult& 
     if (ctx.opType == TransportOpType::QUERY) {
         result.queryResult = BuildQueryResultFromEntryStatus(result.entryStatus);
     }
+}
+
+void AsuTransportImpl::SetTransProvider(std::unique_ptr<TransProvider> provider)
+{
+    transProvider_ = std::move(provider);
 }
 
 std::unique_ptr<AsuTransport> CreateAsuTransport() { return std::make_unique<AsuTransportImpl>(); }

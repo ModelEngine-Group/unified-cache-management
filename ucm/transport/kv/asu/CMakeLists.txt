@@ -17,22 +17,46 @@ find_path(ASU_ASCEND_INCLUDE_DIR
 if(NOT ASU_ASCEND_INCLUDE_DIR)
     message(FATAL_ERROR "Cannot find acl/acl.h under ASCEND_ROOT=${ASCEND_ROOT}")
 endif()
+
+find_library(ASU_ASCENDCL_LIB
+    NAMES ascendcl
+    HINTS
+        ${ASCEND_ROOT}/lib64
+        ${ASCEND_ROOT}/aarch64-linux/lib64
+    NO_DEFAULT_PATH
+)
+if(NOT ASU_ASCENDCL_LIB)
+    message(FATAL_ERROR "Cannot find libascendcl under ASCEND_ROOT=${ASCEND_ROOT}")
+endif()
+
+message(STATUS "ASU ASCEND include: ${ASU_ASCEND_INCLUDE_DIR}")
+message(STATUS "ASU ASCENDCL lib: ${ASU_ASCENDCL_LIB}")
+
 file(GLOB ASU_COMMON_SOURCES CONFIGURE_DEPENDS common/*.cpp)
 file(GLOB ASU_TRANSPORT_SOURCES CONFIGURE_DEPENDS trans/src/*.cpp)
+file(GLOB LOGGER_SOURCES CONFIGURE_DEPENDS 
+    ${UCM_ROOT_DIR}/ucm/shared/infra/logger/*.cc
+    ${UCM_ROOT_DIR}/ucm/shared/infra/logger/cc/*.cc
+)
 list(APPEND ASU_TRANSPORT_SOURCES ${ASU_COMMON_SOURCES})
+list(APPEND ASU_TRANSPORT_SOURCES ${LOGGER_SOURCES})
+list(APPEND ASU_TRANSPORT_SOURCES ${UCM_ROOT_DIR}/ucm/shared/trans/ascend/ascend_buffer.cc)
 add_library(asu_transport SHARED ${ASU_TRANSPORT_SOURCES})
 target_include_directories(asu_transport
     PUBLIC
         ${CMAKE_CURRENT_SOURCE_DIR}/trans/include
-        ${ASU_ASCEND_INCLUDE_DIR}
     PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/common
         ${CMAKE_CURRENT_SOURCE_DIR}/trans/src
         ${UCM_ROOT_DIR}/ucm/shared/infra
+        ${UCM_ROOT_DIR}/ucm/shared/infra/logger
+        ${UCM_ROOT_DIR}/ucm/shared/infra/logger/cc
+        ${UCM_ROOT_DIR}/ucm/shared/infra/status
+        ${UCM_ROOT_DIR}/ucm/shared
+        ${ASU_ASCEND_INCLUDE_DIR}
 )
-target_link_libraries(asu_transport PUBLIC infra_logger pthread)
-
-target_link_libraries(asu_transport PUBLIC trans)
+target_compile_definitions(asu_transport PRIVATE SPDLOG_FMT_EXTERNAL)
+target_link_libraries(asu_transport PUBLIC pthread fmt spdlog z ${ASU_ASCENDCL_LIB})
 
 file(GLOB ASU_CLIENT_SOURCES CONFIGURE_DEPENDS client/src/*.cpp)
 add_library(asu_client SHARED ${ASU_CLIENT_SOURCES})
@@ -45,8 +69,10 @@ target_include_directories(asu_client
         ${CMAKE_CURRENT_SOURCE_DIR}/common
         ${CMAKE_CURRENT_SOURCE_DIR}/client/src
         ${UCM_ROOT_DIR}/ucm/shared/infra
+        ${UCM_ROOT_DIR}/ucm/transport/kv/common/include
 )
 target_link_libraries(asu_client PUBLIC asu_transport kv_common pthread)
+target_compile_definitions(asu_client PRIVATE SPDLOG_FMT_EXTERNAL)
 
 if(BUILD_UNIT_TESTS)
     target_compile_definitions(asu_transport PRIVATE ASU_BUILD_TESTS)
@@ -63,10 +89,12 @@ if(BUILD_UNIT_TESTS)
         ${CMAKE_CURRENT_SOURCE_DIR}/client/src
         ${CMAKE_CURRENT_SOURCE_DIR}/trans/src
         ${UCM_ROOT_DIR}/ucm/shared/infra
+        ${ASU_ASCEND_INCLUDE_DIR}
     )
     target_link_libraries(asu.test PRIVATE
         asu_client
         gtest_main gtest
+        ${ASU_ASCENDCL_LIB}
     )
     gtest_discover_tests(asu.test)
 endif()

@@ -1,172 +1,505 @@
+/**
+ * MIT License
+ *
+ * Copyright (c) 2026 Huawei Technologies Co., Ltd. All rights reserved.
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining a copy
+ * of this software and associated documentation files (the "Software"), to deal
+ * in the Software without restriction, including without limitation the rights
+ * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+ * copies of the Software, and to permit persons to whom the Software is
+ * furnished to do so, subject to the following conditions:
+ *
+ * The above copyright notice and this permission notice shall be included in all
+ * copies or substantial portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+ * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+ * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+ * SOFTWARE.
+ * */
 #include "connection_manager.h"
+#include <atomic>
 #include <cstdint>
 #include <gtest/gtest.h>
+#include <set>
+#include <vector>
 #include "connection_internal.h"
-#include "test_helper.h"
+#include "trans_provider.h"
 
 namespace UC::ASU {
 namespace {
 
-using UC::ASU::test::MakeEndpoint;
-using UC::ASU::test::StubCreateConnection;
-using UC::ASU::test::StubDeleteConnections;
+static std::atomic<int> g_deleteCount{0};
+static std::atomic<int> g_createCount{0};
+
+class StubTransProvider : public TransProvider {
+public:
+    std::uint32_t forceReturnCount = 0;
+
+    Status CreateConnection(const std::string&, const std::string&, uint32_t, uint32_t qpNum,
+                            uint32_t, std::vector<ConnectionHandle>& handles) override
+    {
+        g_createCount.fetch_add(1);
+        handles.clear();
+        std::uint32_t count = (forceReturnCount > 0) ? forceReturnCount : qpNum;
+        for (std::uint32_t i = 0; i < count; ++i) {
+            handles.push_back(reinterpret_cast<ConnectionHandle>(
+                static_cast<uintptr_t>(g_createCount.load() * 100 + i + 1)));
+        }
+        return Status::OK();
+    }
+
+    std::vector<Status> DeleteConnections(const std::vector<ConnectionHandle>& handles) override
+    {
+        for (std::size_t i = 0; i < handles.size(); ++i) { g_deleteCount.fetch_add(1); }
+        return std::vector<Status>(handles.size(), Status::OK());
+    }
+
+    std::vector<Status> Send(const std::vector<SendIoBatch>&, uint32_t, uint32_t) override
+    {
+        return {};
+    }
+    Status RegisterMemory(ConnectionHandle, const std::vector<RegisterMemoryDesc>&,
+                          std::vector<MemHandle>&) override
+    {
+        return Status::OK();
+    }
+    std::vector<Status> UnregisterMemory(const std::vector<UnregisterMemoryDesc>&) override
+    {
+        return {};
+    }
+    Status AllocThread(uint32_t, const std::vector<uint32_t>&, std::vector<ThreadHandle>&) override
+    {
+        return Status::OK();
+    }
+    std::vector<Status> FreeThread(const std::vector<ThreadHandle>&) override { return {}; }
+    Status GetMemTokenId(MemHandle, uint32_t&) override { return Status::OK(); }
+};
+
+AsuEndpoint MakeEndpoint(const std::string& ip = "10.0.0.1")
+{
+    AsuEndpoint ep;
+    ep.ip = ip;
+    ep.port = 16666;
+    return ep;
+}
 
 }  // namespace
 
-// Purpose: Verify AddGroup creates channels and SelectConnection works with different routing
-// policies.
-TEST(ConnectionManagerTest, AddGroupAndSelectConnection)
-{
-    ConnectionManager mgr;
-    mgr.SetConnectionOps(StubCreateConnection, StubDeleteConnections);
-    ASSERT_TRUE(mgr.AddGroup(MakeEndpoint("10.0.0.1"), 4).ok());
-    ASSERT_TRUE(mgr.AddGroup(MakeEndpoint("10.0.0.2"), 2).ok());
+// ─── ConnectionChannel Tests ───
 
-    // Verify Round Robin distributes across groups
+TEST(ConnectionChannelTest, InitialStateIsActiveWithZeroCounters)
+{
+    g_deleteCount = 0;
+    StubTransProvider provider;
+    ConnectionGroup group(0, MakeEndpoint());
+    auto handle = reinterpret_cast<ConnectionHandle>(static_cast<uintptr_t>(0x1234));
+    ConnectionChannel ch(0, &group, handle, &provider);
+
+    EXPECT_EQ(ch.GetState(), ChannelState::ACTIVE);
+    EXPECT_EQ(ch.GetInflightCount(), 0u);
+    EXPECT_EQ(ch.GetChannelId(), 0u);
+    EXPECT_EQ(ch.GetGroup(), &group);
+    EXPECT_EQ(ch.GetConnection(), handle);
+}
+
+TEST(ConnectionChannelTest, IncrementAndReleaseInflight)
+{
+    ConnectionGroup group(0, MakeEndpoint());
+    ConnectionChannel ch(0, &group, nullptr, nullptr);
+
+    ch.IncrementInflight();
+    ch.IncrementInflight();
+    ch.IncrementInflight();
+    EXPECT_EQ(ch.GetInflightCount(), 3u);
+
+    ch.ReleaseInflight();
+    EXPECT_EQ(ch.GetInflightCount(), 2u);
+}
+
+TEST(ConnectionChannelTest, FetchAddErrorCountAccumulates)
+{
+    ConnectionGroup group(0, MakeEndpoint());
+    ConnectionChannel ch(0, &group, nullptr, nullptr);
+
+    auto old = ch.FetchAddErrorCount(1);
+    EXPECT_EQ(old, 0u);
+
+    old = ch.FetchAddErrorCount(1);
+    EXPECT_EQ(old, 1u);
+
+    old = ch.FetchAddErrorCount(3);
+    EXPECT_EQ(old, 2u);
+}
+
+TEST(ConnectionChannelTest, MarkForDrainTransitionsActiveToDraining)
+{
+    ConnectionGroup group(0, MakeEndpoint());
+    ConnectionChannel ch(0, &group, nullptr, nullptr);
+
+    EXPECT_EQ(ch.GetState(), ChannelState::ACTIVE);
+    bool ok = ch.MarkForDrain();
+    EXPECT_TRUE(ok);
+    EXPECT_EQ(ch.GetState(), ChannelState::DRAINING);
+}
+
+TEST(ConnectionChannelTest, MarkForDrainFailsIfAlreadyDraining)
+{
+    ConnectionGroup group(0, MakeEndpoint());
+    ConnectionChannel ch(0, &group, nullptr, nullptr);
+
+    EXPECT_TRUE(ch.MarkForDrain());
+    EXPECT_FALSE(ch.MarkForDrain());
+    EXPECT_EQ(ch.GetState(), ChannelState::DRAINING);
+}
+
+TEST(ConnectionChannelTest, DestructorCallsDeleteFn)
+{
+    g_deleteCount = 0;
+    auto handle = reinterpret_cast<ConnectionHandle>(static_cast<uintptr_t>(0xABCD));
+    {
+        StubTransProvider provider;
+        ConnectionGroup group(0, MakeEndpoint());
+        ConnectionChannel ch(0, &group, handle, &provider);
+    }
+    EXPECT_EQ(g_deleteCount.load(), 1);
+}
+
+TEST(ConnectionChannelTest, DestructorDoesNotCallDeleteFnWhenHandleIsNull)
+{
+    g_deleteCount = 0;
+    {
+        StubTransProvider provider;
+        ConnectionGroup group(0, MakeEndpoint());
+        ConnectionChannel ch(0, &group, nullptr, &provider);
+    }
+    EXPECT_EQ(g_deleteCount.load(), 0);
+}
+
+// ─── ConnectionGroup Tests ───
+
+TEST(ConnectionGroupTest, ConstructionSetsGroupIdAndEndpoint)
+{
+    auto ep = MakeEndpoint("192.168.1.1");
+    ConnectionGroup group(42, ep);
+
+    EXPECT_EQ(group.GetGroupId(), 42u);
+    EXPECT_EQ(group.GetEndpoint().ip, "192.168.1.1");
+    EXPECT_TRUE(group.GetChannels().empty());
+}
+
+TEST(ConnectionGroupTest, AddChannelCreatesChannelsWithIncrementingIds)
+{
+    StubTransProvider provider;
+    ConnectionGroup group(0, MakeEndpoint());
+
+    auto ch0 = group.AddChannel(reinterpret_cast<ConnectionHandle>(1), &provider);
+    auto ch1 = group.AddChannel(reinterpret_cast<ConnectionHandle>(2), &provider);
+    auto ch2 = group.AddChannel(reinterpret_cast<ConnectionHandle>(3), &provider);
+
+    EXPECT_EQ(group.GetChannels().size(), 3u);
+    EXPECT_EQ(ch0->GetChannelId(), 0u);
+    EXPECT_EQ(ch1->GetChannelId(), 1u);
+    EXPECT_EQ(ch2->GetChannelId(), 2u);
+}
+
+TEST(ConnectionGroupTest, RemoveChannelRemovesCorrectChannel)
+{
+    StubTransProvider provider;
+    ConnectionGroup group(0, MakeEndpoint());
+
+    auto ch0 = group.AddChannel(reinterpret_cast<ConnectionHandle>(1), &provider);
+    auto ch1 = group.AddChannel(reinterpret_cast<ConnectionHandle>(2), &provider);
+    auto ch2 = group.AddChannel(reinterpret_cast<ConnectionHandle>(3), &provider);
+
+    group.RemoveChannel(ch1.get());
+    EXPECT_EQ(group.GetChannels().size(), 2u);
+    EXPECT_EQ(group.GetChannels()[0]->GetChannelId(), 0u);
+    EXPECT_EQ(group.GetChannels()[1]->GetChannelId(), 2u);
+}
+
+TEST(ConnectionGroupTest, HasActiveChannelReturnsCorrectValue)
+{
+    StubTransProvider provider;
+    ConnectionGroup group(0, MakeEndpoint());
+
+    EXPECT_FALSE(group.HasActiveChannel());
+
+    auto ch = group.AddChannel(reinterpret_cast<ConnectionHandle>(1), &provider);
+    EXPECT_TRUE(group.HasActiveChannel());
+
+    ch->MarkForDrain();
+    EXPECT_FALSE(group.HasActiveChannel());
+}
+
+// ─── ConnectionManager Tests ───
+
+TEST(ConnectionManagerTest, AddGroupCreatesGroupWithChannels)
+{
+    g_createCount = 0;
+    g_deleteCount = 0;
+    StubTransProvider provider;
+    ConnectionManager mgr(provider, "", 5000);
+
+    auto status = mgr.AddGroup(MakeEndpoint(), 3);
+    EXPECT_TRUE(status.ok()) << status.message;
+
+    EXPECT_EQ(mgr.TotalInflightCount(), 0);
+}
+
+TEST(ConnectionManagerTest, AddGroupFailsWhenCreateFnReturnsWrongCount)
+{
+    StubTransProvider provider;
+    provider.forceReturnCount = 1;
+    ConnectionManager mgr(provider, "", 5000);
+
+    auto status = mgr.AddGroup(MakeEndpoint(), 3);
+    EXPECT_FALSE(status.ok());
+    EXPECT_EQ(status.code, StatusCode::CONNECTION_ERROR);
+}
+
+TEST(ConnectionManagerTest, AddGroupFailsAfterShutdown)
+{
+    StubTransProvider provider;
+    ConnectionManager mgr(provider, "", 5000);
+    mgr.Shutdown();
+
+    auto status = mgr.AddGroup(MakeEndpoint(), 1);
+    EXPECT_FALSE(status.ok());
+    EXPECT_EQ(status.code, StatusCode::NOT_INITIALIZED);
+}
+
+TEST(ConnectionManagerTest, SelectConnectionRoundRobinCyclesThroughChannels)
+{
+    g_createCount = 0;
+    StubTransProvider provider;
+    ConnectionManager mgr(provider, "", 5000);
+    mgr.AddGroup(MakeEndpoint(), 3);
     mgr.SetRoutingPolicy(RoutingPolicy::ROUND_ROBIN);
-    auto* ch1 = mgr.SelectConnection();
+
+    auto ch0 = mgr.SelectConnection();
+    auto ch1 = mgr.SelectConnection();
+    auto ch2 = mgr.SelectConnection();
+    auto ch3 = mgr.SelectConnection();
+
+    ASSERT_NE(ch0, nullptr);
     ASSERT_NE(ch1, nullptr);
-    ch1->ReleaseInflight();
-    auto* ch2 = mgr.SelectConnection();
     ASSERT_NE(ch2, nullptr);
-    ch2->ReleaseInflight();
-
-    // Verify Least Loaded balances inflight
-    mgr.SetRoutingPolicy(RoutingPolicy::LEAST_LOADED);
-    auto* ch3 = mgr.SelectConnection();
     ASSERT_NE(ch3, nullptr);
-    EXPECT_EQ(ch3->GetInflightCount(), 1u);
-    ch3->ReleaseInflight();
 
-    mgr.Shutdown();
+    EXPECT_NE(ch0->GetChannelId(), ch1->GetChannelId());
+    EXPECT_NE(ch1->GetChannelId(), ch2->GetChannelId());
+    EXPECT_EQ(ch0->GetChannelId(), ch3->GetChannelId());
 }
 
-// Purpose: Verify ReportFailure triggers drain at threshold and RecoverLoop rebuilds channels.
-TEST(ConnectionManagerTest, ReportFailureAndRecoverLoop)
+TEST(ConnectionManagerTest, SelectConnectionLeastLoadedPicksLowestInflight)
 {
-    ConnectionManager mgr;
-    mgr.SetConnectionOps(StubCreateConnection, StubDeleteConnections);
-    ASSERT_TRUE(mgr.AddGroup(MakeEndpoint("10.0.0.1"), 4).ok());
-    mgr.StartRecoverLoop();
+    g_createCount = 0;
+    StubTransProvider provider;
+    ConnectionManager mgr(provider, "", 5000);
+    mgr.AddGroup(MakeEndpoint(), 3);
+    mgr.SetRoutingPolicy(RoutingPolicy::LEAST_LOADED);
 
-    auto* channel = mgr.SelectConnection();
-    ASSERT_NE(channel, nullptr);
-    channel->ReleaseInflight();
+    auto ch0 = mgr.SelectConnection();
+    auto ch1 = mgr.SelectConnection();
+    auto ch2 = mgr.SelectConnection();
 
-    // Below threshold: stays ACTIVE
-    mgr.ReportFailure(channel);
-    EXPECT_EQ(channel->GetState(), ChannelState::ACTIVE);
+    ASSERT_NE(ch0, nullptr);
+    ASSERT_NE(ch1, nullptr);
+    ASSERT_NE(ch2, nullptr);
 
-    // At threshold: triggers DRAINING
-    mgr.ReportFailure(channel);
-    EXPECT_EQ(channel->GetState(), ChannelState::DRAINING);
+    auto ch3 = mgr.SelectConnection();
+    ASSERT_NE(ch3, nullptr);
+    EXPECT_EQ(ch3->GetInflightCount(), 2u);
+}
 
-    // RecoverLoop will see inflight is already 0 and complete drain
-    auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(3);
-    while (std::chrono::steady_clock::now() < deadline) {
-        if (channel->GetGroup()->HasActiveChannel()) break;
-        std::this_thread::sleep_for(std::chrono::milliseconds(50));
-    }
-    EXPECT_TRUE(channel->GetGroup()->HasActiveChannel());
-    EXPECT_EQ(channel->GetGroup()->GetChannels().size(), 4u);
+TEST(ConnectionManagerTest, SelectConnectionReturnsNullptrWhenNoChannels)
+{
+    StubTransProvider provider;
+    provider.forceReturnCount = 0;
+    ConnectionManager mgr(provider, "", 5000);
+
+    auto ch = mgr.SelectConnection();
+    EXPECT_EQ(ch, nullptr);
+}
+
+TEST(ConnectionManagerTest, SelectConnectionReturnsNullptrAfterShutdown)
+{
+    StubTransProvider provider;
+    ConnectionManager mgr(provider, "", 5000);
+    mgr.AddGroup(MakeEndpoint(), 3);
+    mgr.Shutdown();
+
+    auto ch = mgr.SelectConnection();
+    EXPECT_EQ(ch, nullptr);
+}
+
+TEST(ConnectionManagerTest, ReportFailureBelowThresholdDoesNotDrain)
+{
+    g_createCount = 0;
+    StubTransProvider provider;
+    ConnectionManager mgr(provider, "", 5000);
+    mgr.AddGroup(MakeEndpoint(), 1);
+
+    auto ch = mgr.SelectConnection();
+    ASSERT_NE(ch, nullptr);
+
+    mgr.ReportFailure(ch);
+    EXPECT_EQ(ch->GetState(), ChannelState::ACTIVE);
+}
+
+TEST(ConnectionManagerTest, ReportFailureAtThresholdMarksForDrain)
+{
+    g_createCount = 0;
+    StubTransProvider provider;
+    ConnectionManager mgr(provider, "", 5000);
+    mgr.AddGroup(MakeEndpoint(), 1);
+
+    auto ch = mgr.SelectConnection();
+    ASSERT_NE(ch, nullptr);
+
+    mgr.ReportFailure(ch);
+    mgr.ReportFailure(ch);
+    EXPECT_EQ(ch->GetState(), ChannelState::DRAINING);
+}
+
+TEST(ConnectionManagerTest, ShutdownClearsAllResources)
+{
+    g_deleteCount = 0;
+    StubTransProvider provider;
+    ConnectionManager mgr(provider, "", 5000);
+    mgr.AddGroup(MakeEndpoint(), 3);
+
+    auto status = mgr.Shutdown();
+    EXPECT_TRUE(status.ok());
+    EXPECT_EQ(g_deleteCount.load(), 3);
     EXPECT_EQ(mgr.TotalInflightCount(), 0);
-
-    mgr.Shutdown();
 }
 
-// Purpose: Verify Drain lifecycle: BeginDrain CAS, FinishDrain sets FAILED, HasActiveChannel logic.
-TEST(ConnectionManagerTest, DrainLifecycle)
+TEST(ConnectionManagerTest, TotalInflightCountSumsCorrectly)
 {
-    ConnectionManager mgr;
-    mgr.SetConnectionOps(StubCreateConnection, StubDeleteConnections);
-    ASSERT_TRUE(mgr.AddGroup(MakeEndpoint("10.0.0.1"), 2).ok());
+    g_createCount = 0;
+    StubTransProvider provider;
+    ConnectionManager mgr(provider, "", 5000);
+    mgr.AddGroup(MakeEndpoint(), 3);
 
-    auto* ch0 = mgr.SelectConnection();
-    ch0->ReleaseInflight();
-    const auto& channels = ch0->GetGroup()->GetChannels();
-    auto* ch1 = channels[1].get();
+    auto ch0 = mgr.SelectConnection();
+    auto ch1 = mgr.SelectConnection();
+    ch0->IncrementInflight();
+    ch0->IncrementInflight();
+    ch1->IncrementInflight();
 
-    // BeginDrain CAS
-    EXPECT_TRUE(ch0->BeginDrain());
-    EXPECT_FALSE(ch0->BeginDrain());  // Second call fails
-    EXPECT_EQ(ch0->GetState(), ChannelState::DRAINING);
-    EXPECT_TRUE(ch0->GetGroup()->HasActiveChannel());  // ch1 is still active
-
-    // FinishDrain
-    ch0->FinishDrain();
-    EXPECT_EQ(ch0->GetState(), ChannelState::FAILED);
-    EXPECT_EQ(ch0->GetNativeQp(), nullptr);
-
-    // Drain all
-    ch1->BeginDrain();
-    ch1->FinishDrain();
-    EXPECT_FALSE(ch0->GetGroup()->HasActiveChannel());
-
-    mgr.Shutdown();
+    EXPECT_EQ(mgr.TotalInflightCount(), 5);
 }
 
-// Purpose: Verify SelectConnection returns nullptr when no active channels exist.
-TEST(ConnectionManagerTest, SelectConnection_NoActiveChannel)
+TEST(ConnectionManagerTest, LeastLoadedAlwaysPicksLowestWhileRoundRobinCycles)
 {
-    ConnectionManager mgr;
-    mgr.SetConnectionOps(StubCreateConnection, StubDeleteConnections);
-    ASSERT_TRUE(mgr.AddGroup(MakeEndpoint("10.0.0.1"), 2).ok());
+    g_createCount = 0;
+    StubTransProvider provider;
+    ConnectionManager mgr(provider, "", 5000);
+    mgr.AddGroup(MakeEndpoint(), 2);
 
-    auto* ch0 = mgr.SelectConnection();
-    auto* ch1 = mgr.SelectConnection();
-    ch0->ReleaseInflight();
-    ch1->ReleaseInflight();
+    mgr.SetRoutingPolicy(RoutingPolicy::ROUND_ROBIN);
+    auto rr1 = mgr.SelectConnection();
+    auto rr2 = mgr.SelectConnection();
+    ASSERT_NE(rr1, nullptr);
+    ASSERT_NE(rr2, nullptr);
+    EXPECT_NE(rr1->GetChannelId(), rr2->GetChannelId());
 
-    ch0->BeginDrain();
-    ch0->FinishDrain();
-    ch1->BeginDrain();
-    ch1->FinishDrain();
+    mgr.SetRoutingPolicy(RoutingPolicy::LEAST_LOADED);
+    auto ll1 = mgr.SelectConnection();
+    ASSERT_NE(ll1, nullptr);
+    EXPECT_EQ(ll1->GetInflightCount(), 2u);
 
-    EXPECT_EQ(mgr.SelectConnection(), nullptr);
-    mgr.Shutdown();
+    auto ll2 = mgr.SelectConnection();
+    ASSERT_NE(ll2, nullptr);
+    EXPECT_NE(ll1->GetChannelId(), ll2->GetChannelId());
+    EXPECT_EQ(ll2->GetInflightCount(), 2u);
 }
 
-// Purpose: Verify Shutdown cleans up resources and prevents further selection.
-TEST(ConnectionManagerTest, Shutdown_CleansUp)
+// ─── ConnectionManager Multi-Group Tests ───
+
+TEST(ConnectionManagerTest, SelectConnectionRoundRobinAcrossMultipleGroups)
 {
-    ConnectionManager mgr;
-    mgr.SetConnectionOps(StubCreateConnection, StubDeleteConnections);
-    ASSERT_TRUE(mgr.AddGroup(MakeEndpoint("10.0.0.1"), 4).ok());
+    g_createCount = 0;
+    StubTransProvider provider;
+    ConnectionManager mgr(provider, "", 5000);
+    mgr.AddGroup(MakeEndpoint("10.0.0.1"), 2);
+    mgr.AddGroup(MakeEndpoint("10.0.0.2"), 2);
 
-    auto s = mgr.Shutdown();
-    EXPECT_TRUE(s.ok());
-    EXPECT_EQ(mgr.SelectConnection(), nullptr);
-}
+    mgr.SetRoutingPolicy(RoutingPolicy::ROUND_ROBIN);
 
-// Purpose: Verify RecoverLoop handles multiple simultaneous failures and recovers.
-TEST(ConnectionManagerTest, RecoverLoop_MultipleFailures)
-{
-    ConnectionManager mgr;
-    mgr.SetConnectionOps(StubCreateConnection, StubDeleteConnections);
-    ASSERT_TRUE(mgr.AddGroup(MakeEndpoint("10.0.0.1"), 4).ok());
-    mgr.StartRecoverLoop();
-
-    std::vector<ConnectionChannel*> channels;
+    std::set<std::uint32_t> selectedIds;
     for (int i = 0; i < 4; ++i) {
-        auto* ch = mgr.SelectConnection();
+        auto ch = mgr.SelectConnection();
         ASSERT_NE(ch, nullptr);
-        channels.push_back(ch);
-        mgr.ReportFailure(ch);
-        mgr.ReportFailure(ch);
-        ch->ReleaseInflight();
+        selectedIds.insert(ch->GetChannelId());
     }
+    EXPECT_EQ(selectedIds.size(), 2u);
 
-    auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(3);
-    while (std::chrono::steady_clock::now() < deadline) {
-        if (channels[0]->GetGroup()->HasActiveChannel()) break;
-        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    auto ch5 = mgr.SelectConnection();
+    ASSERT_NE(ch5, nullptr);
+}
+
+TEST(ConnectionManagerTest, SelectConnectionReturnsNullptrWhenAllChannelsAtMaxInflight)
+{
+    g_createCount = 0;
+    StubTransProvider provider;
+    ConnectionManager mgr(provider, "", 5000);
+    mgr.AddGroup(MakeEndpoint(), 2);
+    mgr.SetRoutingPolicy(RoutingPolicy::ROUND_ROBIN);
+
+    auto ch0 = mgr.SelectConnection();
+    auto ch1 = mgr.SelectConnection();
+    ASSERT_NE(ch0, nullptr);
+    ASSERT_NE(ch1, nullptr);
+
+    ch0->SetInflightCount(256);
+    ch1->SetInflightCount(256);
+
+    auto ch = mgr.SelectConnection();
+    EXPECT_EQ(ch, nullptr);
+}
+
+TEST(ConnectionManagerTest, ShutdownIsIdempotent)
+{
+    g_deleteCount = 0;
+    StubTransProvider provider;
+    ConnectionManager mgr(provider, "", 5000);
+    mgr.AddGroup(MakeEndpoint(), 3);
+
+    auto status1 = mgr.Shutdown();
+    EXPECT_TRUE(status1.ok());
+    EXPECT_EQ(g_deleteCount.load(), 3);
+
+    auto status2 = mgr.Shutdown();
+    EXPECT_TRUE(status2.ok());
+    EXPECT_EQ(g_deleteCount.load(), 3);
+}
+
+TEST(ConnectionManagerTest, ReportFailureMultipleTimesDoesNotDuplicateInDrainList)
+{
+    g_createCount = 0;
+    g_deleteCount = 0;
+    StubTransProvider provider;
+    ConnectionManager mgr(provider, "", 5000);
+    mgr.AddGroup(MakeEndpoint(), 1);
+
+    {
+        auto ch = mgr.SelectConnection();
+        ASSERT_NE(ch, nullptr);
+
+        for (int i = 0; i < 5; ++i) { mgr.ReportFailure(ch); }
+
+        EXPECT_EQ(ch->GetState(), ChannelState::DRAINING);
     }
-
-    EXPECT_TRUE(channels[0]->GetGroup()->HasActiveChannel());
-    EXPECT_EQ(channels[0]->GetGroup()->GetChannels().size(), 4u);
-    EXPECT_EQ(mgr.TotalInflightCount(), 0);
 
     mgr.Shutdown();
+    EXPECT_EQ(g_deleteCount.load(), 1);
 }
 
 }  // namespace UC::ASU

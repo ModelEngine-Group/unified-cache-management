@@ -23,7 +23,6 @@
  * */
 #pragma once
 
-#include <acl/acl.h>
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
@@ -36,6 +35,7 @@
 #include "asu_transport/asu_transport.h"
 #include "asu_transport/types.h"
 #include "kv_protocol.h"
+#include "trans_provider.h"
 
 namespace UC::ASU {
 
@@ -52,23 +52,15 @@ struct ScatterGatherEntry;
 
 class ConnectionManager {
 public:
-    ConnectionManager();
+    ConnectionManager(TransProvider& provider, const std::string& localIp, std::uint32_t timeout);
     ~ConnectionManager();
-
-    using CreateConnectionFunc =
-        std::function<std::vector<ConnectionHandle>(const AsuEndpoint&, std::uint32_t)>;
-    using DeleteConnectionsFunc =
-        std::function<std::vector<Status>(const std::vector<ConnectionHandle>&)>;
-
-    void SetConnectionOps(CreateConnectionFunc create_fn, DeleteConnectionsFunc delete_fn);
-    void PrepareForInit();
 
     Status AddGroup(const AsuEndpoint& endpoint, std::uint32_t qp_num);
     Status Shutdown();
 
-    ConnectionChannel* SelectConnection();
+    std::shared_ptr<ConnectionChannel> SelectConnection();
     void SetRoutingPolicy(RoutingPolicy policy);
-    void ReportFailure(ConnectionChannel* channel);
+    void ReportFailure(const std::shared_ptr<ConnectionChannel>& channel);
 
     void StartRecoverLoop();
     void StopRecoverLoop();
@@ -79,8 +71,7 @@ private:
     std::vector<std::unique_ptr<ConnectionGroup>> groups_;
     std::shared_mutex structureMu_;  // shared_mutex allows concurrent reads
 
-    // Flat cache for fast channel selection, rebuilt on structure changes.
-    std::vector<ConnectionChannel*> channelCache_;
+    std::vector<std::shared_ptr<ConnectionChannel>> channelCache_;
     std::mutex channelCacheMu_;
     std::atomic<bool> cacheDirty_{false};
 
@@ -90,31 +81,22 @@ private:
     RoutingPolicy routingPolicy_{RoutingPolicy::ROUND_ROBIN};
     static constexpr std::uint32_t kMaxInflightPerChannel = 256;
     static constexpr std::uint32_t kFailureThreshold = 2;
-    static constexpr std::uint64_t kDrainTimeoutMs = 30000;
     static constexpr std::uint64_t kRecoverIntervalMs = 100;
 
     std::thread recoverWorker_;
     std::atomic<bool> stopRecover_{false};
 
     std::shared_mutex drainMu_;
-    std::vector<ConnectionChannel*> drainList_;
+    std::vector<std::shared_ptr<ConnectionChannel>> drainList_;
 
-    CreateConnectionFunc createFn_;
-    DeleteConnectionsFunc deleteFn_;
+    TransProvider& provider_;
+    std::string localIp_;
+    std::uint32_t timeout_;
 
     void RecoverLoop();
     void RebuildChannelCache();
-    ConnectionChannel* SelectByRoundRobin();
-    ConnectionChannel* SelectByLeastLoaded();
+    std::shared_ptr<ConnectionChannel> SelectByRoundRobin();
+    std::shared_ptr<ConnectionChannel> SelectByLeastLoaded();
 };
-
-struct SendIoBatch {
-    ConnectionHandle connectionHandle{nullptr};
-    const ScatterGatherEntry* sendSge{nullptr};
-    aclrtStream stream{nullptr};
-};
-
-std::vector<Status> Send(const std::vector<SendIoBatch>& ioBatches, std::uint32_t kernelCount,
-                         std::uint32_t quietCount);
 
 }  // namespace UC::ASU

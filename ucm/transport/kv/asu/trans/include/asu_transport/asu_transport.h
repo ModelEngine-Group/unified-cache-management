@@ -50,6 +50,8 @@ struct TransportConfig {
     AsuId asuId{0};
     std::vector<AsuEndpoint> endpoints;
 
+    TransProviderType providerType{TransProviderType::AICPU};
+
     std::uint32_t queryQpNum{1};
     std::uint32_t loadQpNum{4};
     std::uint32_t storeQpNum{2};

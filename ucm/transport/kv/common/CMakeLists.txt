@@ -1,5 +1,6 @@
 file(GLOB KV_COMMON_SOURCES CONFIGURE_DEPENDS src/*.cpp)
 add_library(kv_common STATIC ${KV_COMMON_SOURCES})
+set_target_properties(kv_common PROPERTIES POSITION_INDEPENDENT_CODE ON)
 target_include_directories(kv_common
     PUBLIC
         ${CMAKE_CURRENT_SOURCE_DIR}/include
