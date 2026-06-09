@@ -13,7 +13,6 @@ from ...errors import ScriptNotFoundError
 from ...registry import ToolAdapter
 from ...runner import run_command
 
-
 IMPORT_MODE_ENV = "UCM_TOOLKIT_POSIX_AIO_IMPORT"
 
 
@@ -29,9 +28,7 @@ def _path_resolves_to_repo_root(path: str, repo_root: Path) -> bool:
 def _ucm_is_available_without_repo_root(repo_root: Path) -> bool:
     """Return whether ucm can be imported without the source tree root."""
     search_path = [
-        path
-        for path in sys.path
-        if not _path_resolves_to_repo_root(path, repo_root)
+        path for path in sys.path if not _path_resolves_to_repo_root(path, repo_root)
     ]
     return importlib.machinery.PathFinder.find_spec("ucm", search_path) is not None
 
@@ -40,7 +37,9 @@ def _prepend_pythonpath(env: dict[str, str], path: Path) -> None:
     """Prepend a path to PYTHONPATH in a child process environment."""
     value = str(path)
     pythonpath = env.get("PYTHONPATH")
-    env["PYTHONPATH"] = value if not pythonpath else os.pathsep.join([value, pythonpath])
+    env["PYTHONPATH"] = (
+        value if not pythonpath else os.pathsep.join([value, pythonpath])
+    )
 
 
 def _drop_repo_root_from_pythonpath(env: dict[str, str], repo_root: Path) -> None:
@@ -159,7 +158,9 @@ class PosixAioTool(ToolAdapter):
         import_mode = env.get(IMPORT_MODE_ENV, "auto").strip().lower()
         if import_mode == "source":
             _prepend_pythonpath(env, repo_root)
-        elif import_mode == "installed" or _ucm_is_available_without_repo_root(repo_root):
+        elif import_mode == "installed" or _ucm_is_available_without_repo_root(
+            repo_root
+        ):
             _drop_repo_root_from_pythonpath(env, repo_root)
         else:
             _prepend_pythonpath(env, repo_root)

@@ -1,15 +1,15 @@
 #!/usr/bin/env python3
 """网络流量可视化工具 — 解析 net_monitor_pro.sh 生成的 CSV 数据并绘图。"""
 
-import sys
+import argparse
 import glob
 import re
-import argparse
+import sys
 from pathlib import Path
 
-import pandas as pd
-import matplotlib.pyplot as plt
 import matplotlib.dates as mdates
+import matplotlib.pyplot as plt
+import pandas as pd
 from matplotlib.ticker import FuncFormatter
 
 plt.rcParams["font.sans-serif"] = ["Microsoft YaHei", "SimHei", "DejaVu Sans"]
@@ -111,9 +111,21 @@ def plot_traffic(df: pd.DataFrame, output_dir: Path, interfaces=None):
         sub = df[df["网卡"] == eth].sort_values("时间")
         speed_mbps = sub["端口速率_Mbps"].iloc[0] if len(sub) > 0 else 0
 
-        ax.fill_between(sub["时间"], sub["接收速率_Bps"], alpha=0.3, color=PALETTE[0], label="接收 (RX)")
+        ax.fill_between(
+            sub["时间"],
+            sub["接收速率_Bps"],
+            alpha=0.3,
+            color=PALETTE[0],
+            label="接收 (RX)",
+        )
         ax.plot(sub["时间"], sub["接收速率_Bps"], color=PALETTE[0], linewidth=1.2)
-        ax.fill_between(sub["时间"], sub["发送速率_Bps"], alpha=0.3, color=PALETTE[1], label="发送 (TX)")
+        ax.fill_between(
+            sub["时间"],
+            sub["发送速率_Bps"],
+            alpha=0.3,
+            color=PALETTE[1],
+            label="发送 (TX)",
+        )
         ax.plot(sub["时间"], sub["发送速率_Bps"], color=PALETTE[1], linewidth=1.2)
 
         # 端口带宽上限参考线
@@ -128,7 +140,10 @@ def plot_traffic(df: pd.DataFrame, output_dir: Path, interfaces=None):
                 label=f"端口上限 ({rate_formatter_mbps(speed_mbps, None)})",
             )
 
-        ax.set_title(f"{eth}  (驱动: {sub['驱动'].iloc[0]}, 端口: {sub['端口速率'].iloc[0]})", fontsize=10)
+        ax.set_title(
+            f"{eth}  (驱动: {sub['驱动'].iloc[0]}, 端口: {sub['端口速率'].iloc[0]})",
+            fontsize=10,
+        )
         ax.set_ylabel("速率")
         ax.yaxis.set_major_formatter(FuncFormatter(rate_formatter_bps))
         ax.legend(loc="upper right", fontsize=8)
@@ -150,16 +165,30 @@ def plot_traffic(df: pd.DataFrame, output_dir: Path, interfaces=None):
         valid = sub[sub["利用率_pct"] >= 0]
         if len(valid) == 0:
             continue
-        ax2.plot(valid["时间"], valid["利用率_pct"], label=eth, linewidth=1.5, color=PALETTE[idx % len(PALETTE)])
+        ax2.plot(
+            valid["时间"],
+            valid["利用率_pct"],
+            label=eth,
+            linewidth=1.5,
+            color=PALETTE[idx % len(PALETTE)],
+        )
 
-    ax2.axhline(80, color="red", linestyle="--", linewidth=0.8, alpha=0.6, label="80% 告警线")
-    ax2.axhline(30, color="orange", linestyle="--", linewidth=0.8, alpha=0.4, label="30% 警戒线")
+    ax2.axhline(
+        80, color="red", linestyle="--", linewidth=0.8, alpha=0.6, label="80% 告警线"
+    )
+    ax2.axhline(
+        30, color="orange", linestyle="--", linewidth=0.8, alpha=0.4, label="30% 警戒线"
+    )
     ax2.set_ylabel("利用率 (%)")
     ax2.set_ylim(
         0,
         max(
             105,
-            df[df["利用率_pct"] >= 0]["利用率_pct"].max() * 1.1 if len(df[df["利用率_pct"] >= 0]) > 0 else 105,
+            (
+                df[df["利用率_pct"] >= 0]["利用率_pct"].max() * 1.1
+                if len(df[df["利用率_pct"] >= 0]) > 0
+                else 105
+            ),
         ),
     )
     ax2.set_xlabel("时间")
@@ -175,8 +204,12 @@ def plot_traffic(df: pd.DataFrame, output_dir: Path, interfaces=None):
     fig3, ax3 = plt.subplots(figsize=(14, 5))
     fig3.suptitle("所有网卡总流量对比 (堆叠面积图)", fontsize=14, fontweight="bold")
     # 按时间对齐: 同一时刻的 RX 和 TX 分别堆叠
-    pivoted_rx = df.pivot_table(index="时间", columns="网卡", values="接收速率_Bps", aggfunc="mean").fillna(0)
-    pivoted_tx = df.pivot_table(index="时间", columns="网卡", values="发送速率_Bps", aggfunc="mean").fillna(0)
+    pivoted_rx = df.pivot_table(
+        index="时间", columns="网卡", values="接收速率_Bps", aggfunc="mean"
+    ).fillna(0)
+    pivoted_tx = df.pivot_table(
+        index="时间", columns="网卡", values="发送速率_Bps", aggfunc="mean"
+    ).fillna(0)
 
     bottom_rx = 0
     for idx, eth in enumerate(ifs):
@@ -228,8 +261,12 @@ def plot_traffic(df: pd.DataFrame, output_dir: Path, interfaces=None):
     for eth in ifs:
         sub = df[df["网卡"] == eth]
         labels.append(eth)
-        stats_rx.append({"峰值": sub["接收速率_Bps"].max(), "均值": sub["接收速率_Bps"].mean()})
-        stats_tx.append({"峰值": sub["发送速率_Bps"].max(), "均值": sub["发送速率_Bps"].mean()})
+        stats_rx.append(
+            {"峰值": sub["接收速率_Bps"].max(), "均值": sub["接收速率_Bps"].mean()}
+        )
+        stats_tx.append(
+            {"峰值": sub["发送速率_Bps"].max(), "均值": sub["发送速率_Bps"].mean()}
+        )
 
     x = range(len(labels))
     width = 0.35
@@ -240,8 +277,22 @@ def plot_traffic(df: pd.DataFrame, output_dir: Path, interfaces=None):
     ]:
         peak_vals = [s["峰值"] for s in stats]
         avg_vals = [s["均值"] for s in stats]
-        ax_side.bar([i - width / 2 for i in x], peak_vals, width, label="峰值", color=PALETTE[color_idx], alpha=0.7)
-        ax_side.bar([i + width / 2 for i in x], avg_vals, width, label="均值", color=PALETTE[color_idx + 2], alpha=0.7)
+        ax_side.bar(
+            [i - width / 2 for i in x],
+            peak_vals,
+            width,
+            label="峰值",
+            color=PALETTE[color_idx],
+            alpha=0.7,
+        )
+        ax_side.bar(
+            [i + width / 2 for i in x],
+            avg_vals,
+            width,
+            label="均值",
+            color=PALETTE[color_idx + 2],
+            alpha=0.7,
+        )
         ax_side.set_xticks(x)
         ax_side.set_xticklabels(labels, fontsize=9)
         ax_side.set_title(title)
@@ -261,10 +312,18 @@ def plot_traffic(df: pd.DataFrame, output_dir: Path, interfaces=None):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="解析 net_monitor_pro.sh 的 CSV 日志，生成网络流量可视化图表")
-    parser.add_argument("csv", nargs="*", help="CSV 文件路径（不指定则自动查找当前目录下 *.csv）")
-    parser.add_argument("-o", "--output", default=".", help="图片输出目录（默认当前目录）")
-    parser.add_argument("-i", "--interfaces", nargs="*", help="只绘制指定网卡（如 enp194s0f0）")
+    parser = argparse.ArgumentParser(
+        description="解析 net_monitor_pro.sh 的 CSV 日志，生成网络流量可视化图表"
+    )
+    parser.add_argument(
+        "csv", nargs="*", help="CSV 文件路径（不指定则自动查找当前目录下 *.csv）"
+    )
+    parser.add_argument(
+        "-o", "--output", default=".", help="图片输出目录（默认当前目录）"
+    )
+    parser.add_argument(
+        "-i", "--interfaces", nargs="*", help="只绘制指定网卡（如 enp194s0f0）"
+    )
     args = parser.parse_args()
 
     csv_files = args.csv or sorted(glob.glob("*.csv"))

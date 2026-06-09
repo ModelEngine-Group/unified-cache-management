@@ -94,13 +94,17 @@ def update_tool_field(tool_name: str, field_name: str, value: str) -> None:
         raise RegistryUpdateError(f"cannot locate source file for {tool.name}")
 
     text = source_file.read_text(encoding="utf-8")
-    class_header = rf"class\s+{re.escape(tool.__class__.__name__)}\b[\s\S]*?(?=^class\s|\Z)"
+    class_header = (
+        rf"class\s+{re.escape(tool.__class__.__name__)}\b[\s\S]*?(?=^class\s|\Z)"
+    )
     match = re.search(class_header, text, flags=re.MULTILINE)
     if not match:
         raise RegistryUpdateError(f"cannot find class {tool.__class__.__name__}")
 
     class_text = match.group(0)
-    field_re = re.compile(rf"^(\s*){re.escape(field_name)}\s*=\s*(['\"])(.*?)\2", re.MULTILINE)
+    field_re = re.compile(
+        rf"^(\s*){re.escape(field_name)}\s*=\s*(['\"])(.*?)\2", re.MULTILINE
+    )
     field_match = field_re.search(class_text)
     if not field_match:
         raise RegistryUpdateError(f"cannot find field {field_name}")

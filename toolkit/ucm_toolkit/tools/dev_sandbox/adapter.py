@@ -7,7 +7,12 @@ import shutil
 from pathlib import Path
 
 from ... import registry
-from ...errors import BinaryNotFoundError, BuildDirNotFoundError, CommandNotFoundError, ToolkitError
+from ...errors import (
+    BinaryNotFoundError,
+    BuildDirNotFoundError,
+    CommandNotFoundError,
+    ToolkitError,
+)
 from ...registry import ToolAdapter
 from ...runner import check_command, command_exists, run_command
 
@@ -30,8 +35,12 @@ class DevSandboxTool(ToolAdapter):
     def add_build_args(self, parser: argparse.ArgumentParser) -> None:
         """Register dev-sandbox build arguments."""
         parser.add_argument("--build-type", default="Release", help="CMake build type")
-        parser.add_argument("--jobs", "-j", type=int, default=None, help="Build parallelism")
-        parser.add_argument("--build-dir", default=None, help="Override dev-sandbox build directory")
+        parser.add_argument(
+            "--jobs", "-j", type=int, default=None, help="Build parallelism"
+        )
+        parser.add_argument(
+            "--build-dir", default=None, help="Override dev-sandbox build directory"
+        )
         parser.add_argument(
             "--cmake-arg",
             action="append",
@@ -84,7 +93,9 @@ class DevSandboxTool(ToolAdapter):
         build_dir = registry.resolve_repo_path(self.build_dir or "")
         ok = True
         print(f"{self.name}:")
-        print(f"  source_dir: {source_dir} {'OK' if source_dir.exists() else 'MISSING'}")
+        print(
+            f"  source_dir: {source_dir} {'OK' if source_dir.exists() else 'MISSING'}"
+        )
         if not source_dir.exists():
             ok = False
         print(f"  build_dir:  {build_dir} {'OK' if build_dir.exists() else 'MISSING'}")

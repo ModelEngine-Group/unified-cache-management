@@ -21,7 +21,9 @@ def handle(args: argparse.Namespace) -> int:
     if raw_args is None:
         raw_args = []
     if not raw_args:
-        raise ToolkitError("missing build tool\nusage: ucm-toolkit build TOOL [tool build args...]")
+        raise ToolkitError(
+            "missing build tool\nusage: ucm-toolkit build TOOL [tool build args...]"
+        )
 
     tool_name = raw_args[0]
     tool = registry.get(tool_name)

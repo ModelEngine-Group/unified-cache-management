@@ -10,7 +10,9 @@ from .. import registry
 def add_parser(subparsers: argparse._SubParsersAction) -> argparse.ArgumentParser:
     """Register the list command parser."""
     parser = subparsers.add_parser("list", help="List top-level toolkit tools")
-    parser.add_argument("--verbose", "-v", action="store_true", help="Show extra fields")
+    parser.add_argument(
+        "--verbose", "-v", action="store_true", help="Show extra fields"
+    )
     parser.set_defaults(handler=handle)
     return parser
 

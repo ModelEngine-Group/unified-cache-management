@@ -22,7 +22,9 @@ class NicMonitorTool(ToolAdapter):
     def add_run_args(self, parser: argparse.ArgumentParser) -> None:
         """Register NIC load run arguments."""
         parser.add_argument("mode", choices=("fg", "bg"), help="Monitor mode")
-        parser.add_argument("args", nargs="*", help="Arguments forwarded to the monitor script")
+        parser.add_argument(
+            "args", nargs="*", help="Arguments forwarded to the monitor script"
+        )
 
     def run(self, tool_args: list[str]) -> int:
         """Run passive NIC load monitoring."""
@@ -50,13 +52,19 @@ class NicMonitorTool(ToolAdapter):
         return 0 if script_ok and bash_ok else 1
 
     def _print_run_help(self) -> None:
-        print("usage: ucm-toolkit run nic-monitor { fg [interval_sec] | bg [duration_hours] [interval_sec] } [options]")
+        print(
+            "usage: ucm-toolkit run nic-monitor { fg [interval_sec] | bg [duration_hours] [interval_sec] } [options]"
+        )
         print()
         print("Passive physical NIC traffic monitor.")
         print()
         print("Options:")
-        print("  --log-dir PATH                 Background log directory (default: ./net_log)")
-        print("  --stat-cycle-seconds SECONDS   Background summary interval (default: 3600)")
+        print(
+            "  --log-dir PATH                 Background log directory (default: ./net_log)"
+        )
+        print(
+            "  --stat-cycle-seconds SECONDS   Background summary interval (default: 3600)"
+        )
         print()
         print("Examples:")
         print("  ucm-toolkit run nic-monitor fg")

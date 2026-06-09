@@ -11,7 +11,9 @@ def add_parser(subparsers: argparse._SubParsersAction) -> argparse.ArgumentParse
     """Register the clean command parser."""
     parser = subparsers.add_parser("clean", help="Clean a toolkit tool")
     parser.add_argument("tool", help="Top-level tool name")
-    parser.add_argument("--dry-run", action="store_true", help="Print what would be cleaned")
+    parser.add_argument(
+        "--dry-run", action="store_true", help="Print what would be cleaned"
+    )
     parser.set_defaults(handler=handle)
     return parser
 
