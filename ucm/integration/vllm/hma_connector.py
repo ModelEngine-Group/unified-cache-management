@@ -573,9 +573,7 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
             else (None, None)
         )
 
-        for group_id, group_spec in enumerate(
-            self._kv_cache_config.kv_cache_groups
-        ):
+        for group_id, group_spec in enumerate(self._kv_cache_config.kv_cache_groups):
             group_caches: dict[str, torch.Tensor] = {}
             for layer_name in group_spec.layer_names:
                 if isinstance(kv_caches[layer_name], torch.Tensor):
