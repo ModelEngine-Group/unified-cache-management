@@ -364,6 +364,9 @@ class UCMDirectConnector(KVConnectorBase_V1):
         self.launch_config = ucm_config.get_config()
         self.connector_configs = self.launch_config.get("ucm_connectors", [])
         self.enable_event_sync = self.launch_config.get("enable_event_sync", True)
+        self.enable_reshape_cache_event_sync = self.launch_config.get(
+            "enable_reshape_cache_event_sync", False
+        )
         self.enable_record_traces = self.launch_config.get(
             "enable_record_traces", False
         )
@@ -857,36 +860,37 @@ class UCMDirectConnector(KVConnectorBase_V1):
     ) -> int:
         if not self.enable_event_sync:
             self.device.synchronize()
-            logger.debug("dump event sync disabled; synchronized current stream.")
             return 0
 
-        reshape_cache_event, event_source = self._get_reshape_cache_event(
-            layer_name, attn_metadata
-        )
-        event_handle = (
-            self.device.get_event_handle_from_event(reshape_cache_event)
-            if reshape_cache_event is not None
-            else 0
-        )
-        if event_handle != 0:
-            logger.debug(
-                f"dump event handle from reshape_cache_event source={event_source}, "
-                f"layer_name={layer_name}, handle={event_handle}."
+        if self.enable_reshape_cache_event_sync:
+            reshape_cache_event, event_source = self._get_reshape_cache_event(
+                layer_name, attn_metadata
             )
-            return event_handle
+            event_handle = (
+                self.device.get_event_handle_from_event(reshape_cache_event)
+                if reshape_cache_event is not None
+                else 0
+            )
+            if event_handle != 0:
+                if event_source == "direct":
+                    ucmmetrics.update_stats(
+                        "dump_event_reshape_cache_direct_used_total", 1.0
+                    )
+                elif event_source == "mla_layer":
+                    ucmmetrics.update_stats(
+                        "dump_event_reshape_cache_mla_layer_used_total", 1.0
+                    )
+                return event_handle
 
         event_handle = self.device.get_event_handle()
         if event_handle == 0:
             self.device.synchronize()
-            logger.debug(
-                f"dump event fallback synchronized current stream, "
-                f"reshape_event_source={event_source}, layer_name={layer_name}."
+            ucmmetrics.update_stats(
+                "dump_event_sync_fallback_used_total", 1.0
             )
         else:
-            logger.debug(
-                f"dump event handle from current stream fallback, "
-                f"reshape_event_source={event_source}, layer_name={layer_name}, "
-                f"handle={event_handle}."
+            ucmmetrics.update_stats(
+                "dump_event_current_stream_used_total", 1.0
             )
         return event_handle
 

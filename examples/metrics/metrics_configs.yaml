@@ -63,6 +63,14 @@ counter:
     documentation: "Total bytes loaded through the UCM connector (summed across all start_load_kv calls)"
   - name: "save_bytes_total"
     documentation: "Total bytes saved through the UCM connector (summed across all wait_for_save calls)"
+  - name: "dump_event_reshape_cache_direct_used_total"
+    documentation: "Number of dump submissions synchronized with attn_metadata.reshape_cache_event"
+  - name: "dump_event_reshape_cache_mla_layer_used_total"
+    documentation: "Number of dump submissions synchronized with attn_metadata[layer_name].reshape_cache_event"
+  - name: "dump_event_current_stream_used_total"
+    documentation: "Number of dump submissions synchronized with a UCM-recorded current stream event fallback"
+  - name: "dump_event_sync_fallback_used_total"
+    documentation: "Number of dump submissions that fell back to device synchronization because no event handle was available"
 
 # Gauge metrics configuration
 gauge:
