@@ -172,7 +172,7 @@ TEST_F(SqeRequestTest, SubmitBatchRetrieveUsesRetrieveOpcodeAndRequest)
 
 TEST_F(SqeRequestTest, SubmitDeleteCopiesKeysAndBuildsFlagBackedRequest)
 {
-    std::vector<CacheKey> keys = {"k0", "k1"};
+    std::vector<CacheKey> keys = {"k0", "k1", "k2", "k3", "k4", "k5", "k6", "k7", "k8"};
     IoScheduler::ScheduledKeyBatch subBatch{
         BatchView<CacheKey>{keys.data(), keys.size()}
     };
@@ -187,6 +187,7 @@ TEST_F(SqeRequestTest, SubmitDeleteCopiesKeysAndBuildsFlagBackedRequest)
     EXPECT_EQ(subBatchContext.cid, std::uint16_t{55});
     EXPECT_EQ(subBatchContext.state, TransportSubBatchState::PENDING);
     EXPECT_TRUE(subBatchContext.status.ok());
+    EXPECT_EQ(subBatchContext.flagBuffer.length, kFlagBufferHeaderSize + (keys.size() + 7) / 8);
     EXPECT_NE(subBatchContext.sendSge.addr, std::uint64_t{0});
     ASSERT_EQ(subBatchContext.entryStatus.size(), keys.size());
     for (const auto& entryStatus : subBatchContext.entryStatus) { EXPECT_TRUE(entryStatus.ok()); }
@@ -194,7 +195,7 @@ TEST_F(SqeRequestTest, SubmitDeleteCopiesKeysAndBuildsFlagBackedRequest)
 
 TEST_F(SqeRequestTest, SubmitExistReadsScAttribute)
 {
-    std::vector<CacheKey> keys = {"k0"};
+    std::vector<CacheKey> keys = {"k0", "k1", "k2", "k3", "k4", "k5", "k6", "k7", "k8"};
     IoScheduler::ScheduledKeyBatch subBatch{
         BatchView<CacheKey>{keys.data(), keys.size()}
     };
@@ -210,6 +211,7 @@ TEST_F(SqeRequestTest, SubmitExistReadsScAttribute)
     EXPECT_EQ(subBatchContext.state, TransportSubBatchState::PENDING);
     EXPECT_TRUE(subBatchContext.status.ok());
     EXPECT_TRUE(subBatchContext.useSeekControl);
+    EXPECT_EQ(subBatchContext.flagBuffer.length, kFlagBufferHeaderSize + (keys.size() + 7) / 8);
 }
 
 TEST_F(SqeRequestTest, SubmitExistDisablesSeekControlWhenScDisabled)

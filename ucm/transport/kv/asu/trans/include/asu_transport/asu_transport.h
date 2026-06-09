@@ -70,8 +70,8 @@ struct TransportConfig {
     bool preconnect{true};
     bool bindCqPoller{true};
 
-    std::size_t sendBufferSlotSize{4096};
-    std::size_t sendBufferSlotNum{1};
+    std::size_t sendBufferSlotSize{4160};
+    std::size_t sendBufferSlotNum{128};
     std::size_t flagBufferSlotSize{128};
     std::size_t flagBufferSlotNum{4096};
     std::size_t asuBatchLoadIoNum{110};
