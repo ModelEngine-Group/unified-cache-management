@@ -1071,5 +1071,1391 @@ TEST_F(ProtocolManagerTest, EndToEndPackAndUnpack)
     EXPECT_EQ(resp.result_buffer[1], 0x0);
 }
 
+class KvProtocolVerifyTest : public ::testing::Test {
+protected:
+    void SetUp() override { mgr_ = std::make_unique<ProtocolManager>(); }
+    void TearDown() override {}
+
+    std::unique_ptr<ProtocolManager> mgr_;
+
+    static std::vector<std::uint32_t> PackStore(std::uint16_t cid = 0x1234, std::uint32_t ns = 1,
+                                                std::uint8_t dtype = 1, std::uint8_t dspec = 5)
+    {
+        KvStoreRequest req;
+        req.cid = cid;
+        req.kv_ns_id = ns;
+        req.dtype = dtype;
+        req.dspec = dspec;
+        req.buffer_addr = 0x123456789ABCULL;
+        req.buffer_length = 0x10000;
+        req.mr_key = 0x76543210;
+        req.offset = 0x1000;
+        req.lr = true;
+        req.length = 2;
+        req.key = "test_key_01";
+        KvStoreProtocol proto;
+        std::vector<std::uint32_t> buf(16, 0);
+        auto s = proto.PackSqe(req, buf.data());
+        EXPECT_TRUE(s.ok()) << s.message;
+        return buf;
+    }
+
+    static std::vector<std::uint32_t> PackRetrieve()
+    {
+        KvRetrieveRequest req;
+        req.cid = 0x5678;
+        req.kv_ns_id = 2;
+        req.buffer_addr = 0xFEDCBA987654ULL;
+        req.buffer_length = 0x20000;
+        req.mr_key = 0x12345678;
+        req.offset = 0x2000;
+        req.lr = false;
+        req.length = 3;
+        req.key = "retrieve_key";
+        KvRetrieveProtocol proto;
+        std::vector<std::uint32_t> buf(16, 0);
+        auto s = proto.PackSqe(req, buf.data());
+        EXPECT_TRUE(s.ok()) << s.message;
+        return buf;
+    }
+
+    static std::vector<std::uint32_t> PackBatchStore(std::uint16_t batch_n = 2, bool rflag = false)
+    {
+        KvBatchStoreRequest req;
+        req.cid = 0xABCD;
+        req.kv_ns_id = 3;
+        req.dtype = 2;
+        req.dspec = 10;
+        req.response_buffer_addr = rflag ? 0xAAAA0000ULL : 0;
+        req.response_mr_key = rflag ? 0x1111 : 0;
+        req.lr = false;
+        req.rflag = rflag;
+        req.batch_number = batch_n;
+        for (std::uint16_t i = 0; i < batch_n; ++i) {
+            KvBatchStoreEntry e;
+            e.offset = (i + 1) * 512;
+            e.key = "bs_key_" + std::to_string(i);
+            e.buffer_addr = 0xBBBB0000ULL + i * 0x1000;
+            e.mr_key = 0x2222 + i;
+            e.length = 512;
+            req.entries.push_back(e);
+        }
+        KvBatchStoreProtocol proto;
+        std::size_t sz = proto.PackedSize(req) / sizeof(std::uint32_t);
+        std::vector<std::uint32_t> buf(sz, 0);
+        auto s = proto.PackSqe(req, buf.data());
+        EXPECT_TRUE(s.ok()) << s.message;
+        return buf;
+    }
+
+    static std::vector<std::uint32_t> PackBatchRetrieve(std::uint16_t batch_n = 2,
+                                                        bool rflag = false)
+    {
+        KvBatchRetrieveRequest req;
+        req.cid = 0xDCBA;
+        req.kv_ns_id = 4;
+        req.response_buffer_addr = rflag ? 0xCCCC0000ULL : 0;
+        req.response_mr_key = rflag ? 0x3333 : 0;
+        req.lr = false;
+        req.rflag = rflag;
+        req.batch_number = batch_n;
+        for (std::uint16_t i = 0; i < batch_n; ++i) {
+            KvBatchRetrieveEntry e;
+            e.offset = (i + 1) * 512;
+            e.key = "br_key_" + std::to_string(i);
+            e.buffer_addr = 0xDDDD0000ULL + i * 0x1000;
+            e.mr_key = 0x4444 + i;
+            e.length = 512;
+            req.entries.push_back(e);
+        }
+        KvBatchRetrieveProtocol proto;
+        std::size_t sz = proto.PackedSize(req) / sizeof(std::uint32_t);
+        std::vector<std::uint32_t> buf(sz, 0);
+        auto s = proto.PackSqe(req, buf.data());
+        EXPECT_TRUE(s.ok()) << s.message;
+        return buf;
+    }
+
+    static std::vector<std::uint32_t> PackDelete(std::uint16_t batch_n = 3, bool rflag = false)
+    {
+        KvDeleteRequest req;
+        req.cid = 0x1111;
+        req.kv_ns_id = 5;
+        req.response_buffer_addr = rflag ? 0xEEEE0000ULL : 0;
+        req.response_mr_key = rflag ? 0x5555 : 0;
+        req.rflag = rflag;
+        req.batch_number = batch_n;
+        for (std::uint16_t i = 0; i < batch_n; ++i) {
+            req.keys.push_back("del_key_" + std::to_string(i));
+        }
+        KvDeleteProtocol proto;
+        std::size_t sz = proto.PackedSize(req) / sizeof(std::uint32_t);
+        std::vector<std::uint32_t> buf(sz, 0);
+        auto s = proto.PackSqe(req, buf.data());
+        EXPECT_TRUE(s.ok()) << s.message;
+        return buf;
+    }
+
+    static std::vector<std::uint32_t> PackExist(std::uint16_t batch_n = 3, bool rflag = false,
+                                                bool sc = false)
+    {
+        KvExistRequest req;
+        req.cid = 0x2222;
+        req.kv_ns_id = 6;
+        req.response_buffer_addr = rflag ? 0xFFFF0000ULL : 0;
+        req.response_mr_key = rflag ? 0x6666 : 0;
+        req.rflag = rflag;
+        req.sc = sc;
+        req.batch_number = batch_n;
+        for (std::uint16_t i = 0; i < batch_n; ++i) {
+            req.keys.push_back("ex_key_" + std::to_string(i));
+        }
+        KvExistProtocol proto;
+        std::size_t sz = proto.PackedSize(req) / sizeof(std::uint32_t);
+        std::vector<std::uint32_t> buf(sz, 0);
+        auto s = proto.PackSqe(req, buf.data());
+        EXPECT_TRUE(s.ok()) << s.message;
+        return buf;
+    }
+
+    static std::vector<std::uint32_t> PackKeepAlive(bool rflag = false)
+    {
+        KvKeepAliveRequest req;
+        req.cid = 0x3333;
+        req.response_buffer_addr = rflag ? 0xAAAA0000ULL : 0;
+        req.response_mr_key = rflag ? 0x7777 : 0;
+        req.rflag = rflag;
+        KvKeepAliveProtocol proto;
+        std::vector<std::uint32_t> buf(16, 0);
+        auto s = proto.PackSqe(req, buf.data());
+        EXPECT_TRUE(s.ok()) << s.message;
+        return buf;
+    }
+};
+
+// ── Valid pack-then-verify for all 7 protocols ──
+
+TEST_F(KvProtocolVerifyTest, StoreValidPackedBufferPasses)
+{
+    auto buf = PackStore();
+    auto s = mgr_->VerifyPackedBuffer(buf.data(), buf.size() * sizeof(std::uint32_t));
+    EXPECT_TRUE(s.ok()) << s.message;
+}
+
+TEST_F(KvProtocolVerifyTest, RetrieveValidPackedBufferPasses)
+{
+    auto buf = PackRetrieve();
+    auto s = mgr_->VerifyPackedBuffer(buf.data(), buf.size() * sizeof(std::uint32_t));
+    EXPECT_TRUE(s.ok()) << s.message;
+}
+
+TEST_F(KvProtocolVerifyTest, BatchStoreValidPackedBufferPasses)
+{
+    auto buf = PackBatchStore(2, false);
+    auto s = mgr_->VerifyPackedBuffer(buf.data(), buf.size() * sizeof(std::uint32_t));
+    EXPECT_TRUE(s.ok()) << s.message;
+}
+
+TEST_F(KvProtocolVerifyTest, BatchStoreWithRflagValidPackedBufferPasses)
+{
+    auto buf = PackBatchStore(3, true);
+    auto s = mgr_->VerifyPackedBuffer(buf.data(), buf.size() * sizeof(std::uint32_t));
+    EXPECT_TRUE(s.ok()) << s.message;
+}
+
+TEST_F(KvProtocolVerifyTest, BatchRetrieveValidPackedBufferPasses)
+{
+    auto buf = PackBatchRetrieve(2, false);
+    auto s = mgr_->VerifyPackedBuffer(buf.data(), buf.size() * sizeof(std::uint32_t));
+    EXPECT_TRUE(s.ok()) << s.message;
+}
+
+TEST_F(KvProtocolVerifyTest, BatchRetrieveWithRflagValidPackedBufferPasses)
+{
+    auto buf = PackBatchRetrieve(4, true);
+    auto s = mgr_->VerifyPackedBuffer(buf.data(), buf.size() * sizeof(std::uint32_t));
+    EXPECT_TRUE(s.ok()) << s.message;
+}
+
+TEST_F(KvProtocolVerifyTest, DeleteValidPackedBufferPasses)
+{
+    auto buf = PackDelete(3, false);
+    auto s = mgr_->VerifyPackedBuffer(buf.data(), buf.size() * sizeof(std::uint32_t));
+    EXPECT_TRUE(s.ok()) << s.message;
+}
+
+TEST_F(KvProtocolVerifyTest, DeleteWithRflagValidPackedBufferPasses)
+{
+    auto buf = PackDelete(5, true);
+    auto s = mgr_->VerifyPackedBuffer(buf.data(), buf.size() * sizeof(std::uint32_t));
+    EXPECT_TRUE(s.ok()) << s.message;
+}
+
+TEST_F(KvProtocolVerifyTest, ExistValidPackedBufferPasses)
+{
+    auto buf = PackExist(3, false, false);
+    auto s = mgr_->VerifyPackedBuffer(buf.data(), buf.size() * sizeof(std::uint32_t));
+    EXPECT_TRUE(s.ok()) << s.message;
+}
+
+TEST_F(KvProtocolVerifyTest, ExistWithScAndRflagValidPackedBufferPasses)
+{
+    auto buf = PackExist(4, true, true);
+    auto s = mgr_->VerifyPackedBuffer(buf.data(), buf.size() * sizeof(std::uint32_t));
+    EXPECT_TRUE(s.ok()) << s.message;
+}
+
+TEST_F(KvProtocolVerifyTest, KeepAliveValidPackedBufferPasses)
+{
+    auto buf = PackKeepAlive(false);
+    auto s = mgr_->VerifyPackedBuffer(buf.data(), buf.size() * sizeof(std::uint32_t));
+    EXPECT_TRUE(s.ok()) << s.message;
+}
+
+TEST_F(KvProtocolVerifyTest, KeepAliveWithRflagValidPackedBufferPasses)
+{
+    auto buf = PackKeepAlive(true);
+    auto s = mgr_->VerifyPackedBuffer(buf.data(), buf.size() * sizeof(std::uint32_t));
+    EXPECT_TRUE(s.ok()) << s.message;
+}
+
+// ── ProtocolManager dispatch ──
+
+TEST_F(KvProtocolVerifyTest, ManagerRejectsNullPointer)
+{
+    auto s = mgr_->VerifyPackedBuffer(nullptr, 64);
+    EXPECT_FALSE(s.ok());
+    EXPECT_NE(s.message.find("invalid data_ptr"), std::string::npos);
+}
+
+TEST_F(KvProtocolVerifyTest, ManagerRejectsTooSmallLength)
+{
+    std::uint32_t buf[4] = {0};
+    auto s = mgr_->VerifyPackedBuffer(buf, 16);
+    EXPECT_FALSE(s.ok());
+    EXPECT_NE(s.message.find("length too small"), std::string::npos);
+}
+
+TEST_F(KvProtocolVerifyTest, ManagerRejectsUnknownOpcode)
+{
+    std::vector<std::uint32_t> buf(16, 0);
+    buf[0] = 0xFF;
+    auto s = mgr_->VerifyPackedBuffer(buf.data(), buf.size() * sizeof(std::uint32_t));
+    EXPECT_FALSE(s.ok());
+    EXPECT_NE(s.message.find("unknown opcode"), std::string::npos);
+}
+
+// ── Store: length mismatch ──
+
+TEST_F(KvProtocolVerifyTest, StoreRejectsWrongLength)
+{
+    auto buf = PackStore();
+    auto s = mgr_->VerifyPackedBuffer(buf.data(), (buf.size() - 1) * sizeof(std::uint32_t));
+    EXPECT_FALSE(s.ok());
+    EXPECT_NE(s.message.find("length"), std::string::npos);
+}
+
+// ── Store: fixed bits ──
+
+TEST_F(KvProtocolVerifyTest, StoreRejectsBadFixedBits)
+{
+    auto buf = PackStore();
+    buf[0] &= ~(0x3U << 14);
+    auto s = mgr_->VerifyPackedBuffer(buf.data(), buf.size() * sizeof(std::uint32_t));
+    EXPECT_FALSE(s.ok());
+    EXPECT_NE(s.message.find("fixed bits"), std::string::npos);
+}
+
+// ── Store: reserved bits in data[0] ──
+
+TEST_F(KvProtocolVerifyTest, StoreRejectsReservedBitsInDword0)
+{
+    auto buf = PackStore();
+    buf[0] |= (1U << 10);
+    auto s = mgr_->VerifyPackedBuffer(buf.data(), buf.size() * sizeof(std::uint32_t));
+    EXPECT_FALSE(s.ok());
+    EXPECT_NE(s.message.find("reserved bits"), std::string::npos);
+}
+
+// ── Store: reserved bits in data[2] ──
+
+TEST_F(KvProtocolVerifyTest, StoreRejectsReservedBitsInDword2)
+{
+    auto buf = PackStore();
+    buf[2] |= 0x1;
+    auto s = mgr_->VerifyPackedBuffer(buf.data(), buf.size() * sizeof(std::uint32_t));
+    EXPECT_FALSE(s.ok());
+    EXPECT_NE(s.message.find("reserved bits"), std::string::npos);
+}
+
+// ── Store: reserved bits in data[3-5] ──
+
+TEST_F(KvProtocolVerifyTest, StoreRejectsReservedBitsInDword3)
+{
+    auto buf = PackStore();
+    buf[3] = 0xDEAD;
+    auto s = mgr_->VerifyPackedBuffer(buf.data(), buf.size() * sizeof(std::uint32_t));
+    EXPECT_FALSE(s.ok());
+    EXPECT_NE(s.message.find("reserved bits"), std::string::npos);
+}
+
+// ── Store: buffer_addr zero ──
+
+TEST_F(KvProtocolVerifyTest, StoreRejectsZeroBufferAddr)
+{
+    auto buf = PackStore();
+    buf[6] = 0;
+    buf[7] = 0;
+    auto s = mgr_->VerifyPackedBuffer(buf.data(), buf.size() * sizeof(std::uint32_t));
+    EXPECT_FALSE(s.ok());
+    EXPECT_NE(s.message.find("buffer_addr"), std::string::npos);
+}
+
+// ── Store: buffer_length zero ──
+
+TEST_F(KvProtocolVerifyTest, StoreRejectsZeroBufferLength)
+{
+    auto buf = PackStore();
+    buf[8] &= 0xFF000000U;
+    auto s = mgr_->VerifyPackedBuffer(buf.data(), buf.size() * sizeof(std::uint32_t));
+    EXPECT_FALSE(s.ok());
+    EXPECT_NE(s.message.find("buffer_length"), std::string::npos);
+}
+
+// ── Store: buffer_length not aligned ──
+
+TEST_F(KvProtocolVerifyTest, StoreRejectsUnalignedBufferLength)
+{
+    auto buf = PackStore();
+    buf[8] = (buf[8] & 0xFF000000U) | 0x100;
+    auto s = mgr_->VerifyPackedBuffer(buf.data(), buf.size() * sizeof(std::uint32_t));
+    EXPECT_FALSE(s.ok());
+    EXPECT_NE(s.message.find("512B aligned"), std::string::npos);
+}
+
+// ── Store: DptrType mismatch ──
+
+TEST_F(KvProtocolVerifyTest, StoreRejectsBadDptrType)
+{
+    auto buf = PackStore();
+    buf[9] = (0x01U << 24) | (buf[9] & 0xFFFFFF);
+    auto s = mgr_->VerifyPackedBuffer(buf.data(), buf.size() * sizeof(std::uint32_t));
+    EXPECT_FALSE(s.ok());
+    EXPECT_NE(s.message.find("DptrType"), std::string::npos);
+}
+
+// ── Store: offset not aligned ──
+
+TEST_F(KvProtocolVerifyTest, StoreRejectsUnalignedOffset)
+{
+    auto buf = PackStore();
+    buf[10] = 0x100;
+    auto s = mgr_->VerifyPackedBuffer(buf.data(), buf.size() * sizeof(std::uint32_t));
+    EXPECT_FALSE(s.ok());
+    EXPECT_NE(s.message.find("offset"), std::string::npos);
+}
+
+// ── Store: length zero ──
+
+TEST_F(KvProtocolVerifyTest, StoreRejectsZeroLength)
+{
+    auto buf = PackStore();
+    buf[11] &= 0xFF000000U;
+    auto s = mgr_->VerifyPackedBuffer(buf.data(), buf.size() * sizeof(std::uint32_t));
+    EXPECT_FALSE(s.ok());
+    EXPECT_NE(s.message.find("length"), std::string::npos);
+}
+
+// ── Store: reserved bits in data[11] ──
+
+TEST_F(KvProtocolVerifyTest, StoreRejectsReservedBitsInDword11)
+{
+    auto buf = PackStore();
+    buf[11] |= (1U << 25);
+    auto s = mgr_->VerifyPackedBuffer(buf.data(), buf.size() * sizeof(std::uint32_t));
+    EXPECT_FALSE(s.ok());
+    EXPECT_NE(s.message.find("reserved bits"), std::string::npos);
+}
+
+// ── Store: key all zeros ──
+
+TEST_F(KvProtocolVerifyTest, StoreRejectsAllZeroKey)
+{
+    auto buf = PackStore();
+    buf[12] = 0;
+    buf[13] = 0;
+    buf[14] = 0;
+    buf[15] = 0;
+    auto s = mgr_->VerifyPackedBuffer(buf.data(), buf.size() * sizeof(std::uint32_t));
+    EXPECT_FALSE(s.ok());
+    EXPECT_NE(s.message.find("key"), std::string::npos);
+}
+
+// ── Retrieve: length mismatch ──
+
+TEST_F(KvProtocolVerifyTest, RetrieveRejectsWrongLength)
+{
+    auto buf = PackRetrieve();
+    auto s = mgr_->VerifyPackedBuffer(buf.data(), (buf.size() + 1) * sizeof(std::uint32_t));
+    EXPECT_FALSE(s.ok());
+    EXPECT_NE(s.message.find("length"), std::string::npos);
+}
+
+// ── Retrieve: reserved bits in data[2] ──
+
+TEST_F(KvProtocolVerifyTest, RetrieveRejectsReservedBitsInDword2)
+{
+    auto buf = PackRetrieve();
+    buf[2] = 0x1;
+    auto s = mgr_->VerifyPackedBuffer(buf.data(), buf.size() * sizeof(std::uint32_t));
+    EXPECT_FALSE(s.ok());
+    EXPECT_NE(s.message.find("reserved bits"), std::string::npos);
+}
+
+// ── Retrieve: DptrType mismatch ──
+
+TEST_F(KvProtocolVerifyTest, RetrieveRejectsBadDptrType)
+{
+    auto buf = PackRetrieve();
+    buf[9] = (0x01U << 24) | (buf[9] & 0xFFFFFF);
+    auto s = mgr_->VerifyPackedBuffer(buf.data(), buf.size() * sizeof(std::uint32_t));
+    EXPECT_FALSE(s.ok());
+    EXPECT_NE(s.message.find("DptrType"), std::string::npos);
+}
+
+// ── BatchStore: length mismatch ──
+
+TEST_F(KvProtocolVerifyTest, BatchStoreRejectsWrongLength)
+{
+    auto buf = PackBatchStore(2);
+    auto s = mgr_->VerifyPackedBuffer(buf.data(), (buf.size() + 4) * sizeof(std::uint32_t));
+    EXPECT_FALSE(s.ok());
+    EXPECT_NE(s.message.find("length"), std::string::npos);
+}
+
+// ── BatchStore: batch_number out of range ──
+
+TEST_F(KvProtocolVerifyTest, BatchStoreRejectsZeroBatchNumber)
+{
+    auto buf = PackBatchStore(2);
+    buf[10] = 0;
+    auto s = mgr_->VerifyPackedBuffer(buf.data(), buf.size() * sizeof(std::uint32_t));
+    EXPECT_FALSE(s.ok());
+    EXPECT_NE(s.message.find("batch_number"), std::string::npos);
+}
+
+// ── BatchStore: data[8] mismatch ──
+
+TEST_F(KvProtocolVerifyTest, BatchStoreRejectsData8Mismatch)
+{
+    auto buf = PackBatchStore(2);
+    buf[8] = 0xDEAD;
+    auto s = mgr_->VerifyPackedBuffer(buf.data(), buf.size() * sizeof(std::uint32_t));
+    EXPECT_FALSE(s.ok());
+    EXPECT_NE(s.message.find("data[8]"), std::string::npos);
+}
+
+// ── BatchStore: DptrType mismatch ──
+
+TEST_F(KvProtocolVerifyTest, BatchStoreRejectsBadDptrType)
+{
+    auto buf = PackBatchStore(2);
+    buf[9] = (0x40U << 24);
+    auto s = mgr_->VerifyPackedBuffer(buf.data(), buf.size() * sizeof(std::uint32_t));
+    EXPECT_FALSE(s.ok());
+    EXPECT_NE(s.message.find("DptrType"), std::string::npos);
+}
+
+// ── BatchStore: reserved bits in data[10] ──
+
+TEST_F(KvProtocolVerifyTest, BatchStoreRejectsReservedBitsInDword10)
+{
+    auto buf = PackBatchStore(2);
+    buf[10] |= (1U << 20);
+    auto s = mgr_->VerifyPackedBuffer(buf.data(), buf.size() * sizeof(std::uint32_t));
+    EXPECT_FALSE(s.ok());
+    EXPECT_NE(s.message.find("reserved bits"), std::string::npos);
+}
+
+// ── BatchStore: reserved bits in data[12-15] ──
+
+TEST_F(KvProtocolVerifyTest, BatchStoreRejectsReservedBitsInDword12)
+{
+    auto buf = PackBatchStore(2);
+    buf[12] = 0xBEEF;
+    auto s = mgr_->VerifyPackedBuffer(buf.data(), buf.size() * sizeof(std::uint32_t));
+    EXPECT_FALSE(s.ok());
+    EXPECT_NE(s.message.find("reserved bits"), std::string::npos);
+}
+
+// ── BatchStore: rflag false but response addr non-zero ──
+
+TEST_F(KvProtocolVerifyTest, BatchStoreRejectsRflagFalseWithResponseAddr)
+{
+    auto buf = PackBatchStore(2, false);
+    buf[3] = 0x1234;
+    auto s = mgr_->VerifyPackedBuffer(buf.data(), buf.size() * sizeof(std::uint32_t));
+    EXPECT_FALSE(s.ok());
+    EXPECT_NE(s.message.find("rflag"), std::string::npos);
+}
+
+// ── BatchStore: entry key all zeros ──
+
+TEST_F(KvProtocolVerifyTest, BatchStoreRejectsEntryAllZeroKey)
+{
+    auto buf = PackBatchStore(2);
+    std::uint32_t* entry0 = buf.data() + 16;
+    entry0[1] = 0;
+    entry0[2] = 0;
+    entry0[3] = 0;
+    entry0[4] = 0;
+    auto s = mgr_->VerifyPackedBuffer(buf.data(), buf.size() * sizeof(std::uint32_t));
+    EXPECT_FALSE(s.ok());
+    EXPECT_NE(s.message.find("key"), std::string::npos);
+}
+
+// ── BatchStore: entry buffer_addr zero ──
+
+TEST_F(KvProtocolVerifyTest, BatchStoreRejectsEntryZeroBufferAddr)
+{
+    auto buf = PackBatchStore(2);
+    std::uint32_t* entry0 = buf.data() + 16;
+    entry0[5] = 0;
+    entry0[6] = 0;
+    auto s = mgr_->VerifyPackedBuffer(buf.data(), buf.size() * sizeof(std::uint32_t));
+    EXPECT_FALSE(s.ok());
+    EXPECT_NE(s.message.find("buffer_addr"), std::string::npos);
+}
+
+// ── BatchStore: entry length zero ──
+
+TEST_F(KvProtocolVerifyTest, BatchStoreRejectsEntryZeroLength)
+{
+    auto buf = PackBatchStore(2);
+    std::uint32_t* entry0 = buf.data() + 16;
+    entry0[7] &= 0xFF000000U;
+    auto s = mgr_->VerifyPackedBuffer(buf.data(), buf.size() * sizeof(std::uint32_t));
+    EXPECT_FALSE(s.ok());
+    EXPECT_NE(s.message.find("length"), std::string::npos);
+}
+
+// ── BatchStore: entry DptrType mismatch ──
+
+TEST_F(KvProtocolVerifyTest, BatchStoreRejectsEntryBadDptrType)
+{
+    auto buf = PackBatchStore(2);
+    std::uint32_t* entry0 = buf.data() + 16;
+    entry0[8] = (0x01U << 24) | (entry0[8] & 0xFFFFFF);
+    auto s = mgr_->VerifyPackedBuffer(buf.data(), buf.size() * sizeof(std::uint32_t));
+    EXPECT_FALSE(s.ok());
+    EXPECT_NE(s.message.find("DptrType"), std::string::npos);
+}
+
+// ── BatchRetrieve: reserved bits in data[2] ──
+
+TEST_F(KvProtocolVerifyTest, BatchRetrieveRejectsReservedBitsInDword2)
+{
+    auto buf = PackBatchRetrieve(2);
+    buf[2] = 0x1;
+    auto s = mgr_->VerifyPackedBuffer(buf.data(), buf.size() * sizeof(std::uint32_t));
+    EXPECT_FALSE(s.ok());
+    EXPECT_NE(s.message.find("reserved bits"), std::string::npos);
+}
+
+// ── BatchRetrieve: data[8] mismatch ──
+
+TEST_F(KvProtocolVerifyTest, BatchRetrieveRejectsData8Mismatch)
+{
+    auto buf = PackBatchRetrieve(2);
+    buf[8] = 0xBEEF;
+    auto s = mgr_->VerifyPackedBuffer(buf.data(), buf.size() * sizeof(std::uint32_t));
+    EXPECT_FALSE(s.ok());
+    EXPECT_NE(s.message.find("data[8]"), std::string::npos);
+}
+
+// ── BatchRetrieve: entry offset not aligned ──
+
+TEST_F(KvProtocolVerifyTest, BatchRetrieveRejectsEntryUnalignedOffset)
+{
+    auto buf = PackBatchRetrieve(2);
+    std::uint32_t* entry0 = buf.data() + 16;
+    entry0[0] = 0x100;
+    auto s = mgr_->VerifyPackedBuffer(buf.data(), buf.size() * sizeof(std::uint32_t));
+    EXPECT_FALSE(s.ok());
+    EXPECT_NE(s.message.find("offset"), std::string::npos);
+}
+
+// ── Delete: data[8] mismatch ──
+
+TEST_F(KvProtocolVerifyTest, DeleteRejectsData8Mismatch)
+{
+    auto buf = PackDelete(3);
+    buf[8] = 0xDEAD;
+    auto s = mgr_->VerifyPackedBuffer(buf.data(), buf.size() * sizeof(std::uint32_t));
+    EXPECT_FALSE(s.ok());
+    EXPECT_NE(s.message.find("data[8]"), std::string::npos);
+}
+
+// ── Delete: batch_number out of range ──
+
+TEST_F(KvProtocolVerifyTest, DeleteRejectsBatchNumberOutOfRange)
+{
+    auto buf = PackDelete(3);
+    buf[10] = 255;
+    auto s = mgr_->VerifyPackedBuffer(buf.data(), buf.size() * sizeof(std::uint32_t));
+    EXPECT_FALSE(s.ok());
+    EXPECT_NE(s.message.find("batch_number"), std::string::npos);
+}
+
+// ── Delete: reserved bits in data[11-15] ──
+
+TEST_F(KvProtocolVerifyTest, DeleteRejectsReservedBitsInDword11)
+{
+    auto buf = PackDelete(3);
+    buf[11] = 0x1;
+    auto s = mgr_->VerifyPackedBuffer(buf.data(), buf.size() * sizeof(std::uint32_t));
+    EXPECT_FALSE(s.ok());
+    EXPECT_NE(s.message.find("reserved bits"), std::string::npos);
+}
+
+TEST_F(KvProtocolVerifyTest, DeleteRejectsReservedBitsInDword15)
+{
+    auto buf = PackDelete(3);
+    buf[15] = 0x1;
+    auto s = mgr_->VerifyPackedBuffer(buf.data(), buf.size() * sizeof(std::uint32_t));
+    EXPECT_FALSE(s.ok());
+    EXPECT_NE(s.message.find("reserved bits"), std::string::npos);
+}
+
+// ── Delete: entry key all zeros ──
+
+TEST_F(KvProtocolVerifyTest, DeleteRejectsEntryAllZeroKey)
+{
+    auto buf = PackDelete(3);
+    std::uint32_t* entry0 = buf.data() + 16;
+    entry0[0] = 0;
+    entry0[1] = 0;
+    entry0[2] = 0;
+    entry0[3] = 0;
+    auto s = mgr_->VerifyPackedBuffer(buf.data(), buf.size() * sizeof(std::uint32_t));
+    EXPECT_FALSE(s.ok());
+    EXPECT_NE(s.message.find("key"), std::string::npos);
+}
+
+// ── Exist: data[8] mismatch ──
+
+TEST_F(KvProtocolVerifyTest, ExistRejectsData8Mismatch)
+{
+    auto buf = PackExist(3);
+    buf[8] = 0xDEAD;
+    auto s = mgr_->VerifyPackedBuffer(buf.data(), buf.size() * sizeof(std::uint32_t));
+    EXPECT_FALSE(s.ok());
+    EXPECT_NE(s.message.find("data[8]"), std::string::npos);
+}
+
+// ── Exist: batch_number out of range ──
+
+TEST_F(KvProtocolVerifyTest, ExistRejectsBatchNumberOutOfRange)
+{
+    auto buf = PackExist(3);
+    buf[10] = 257;
+    auto s = mgr_->VerifyPackedBuffer(buf.data(), buf.size() * sizeof(std::uint32_t));
+    EXPECT_FALSE(s.ok());
+    EXPECT_NE(s.message.find("batch_number"), std::string::npos);
+}
+
+// ── Exist: reserved bits in data[11] ──
+
+TEST_F(KvProtocolVerifyTest, ExistRejectsReservedBitsInDword11)
+{
+    auto buf = PackExist(3);
+    buf[11] = 0x1;
+    auto s = mgr_->VerifyPackedBuffer(buf.data(), buf.size() * sizeof(std::uint32_t));
+    EXPECT_FALSE(s.ok());
+    EXPECT_NE(s.message.find("reserved bits"), std::string::npos);
+}
+
+// ── Exist: reserved bits in data[12-15] ──
+
+TEST_F(KvProtocolVerifyTest, ExistRejectsReservedBitsInDword12)
+{
+    auto buf = PackExist(3);
+    buf[12] = 0x1;
+    auto s = mgr_->VerifyPackedBuffer(buf.data(), buf.size() * sizeof(std::uint32_t));
+    EXPECT_FALSE(s.ok());
+    EXPECT_NE(s.message.find("reserved bits"), std::string::npos);
+}
+
+// ── Exist: reserved bits in data[10] bit17-31 ──
+
+TEST_F(KvProtocolVerifyTest, ExistRejectsReservedBitsInDword10High)
+{
+    auto buf = PackExist(3, false, true);
+    buf[10] |= (1U << 20);
+    auto s = mgr_->VerifyPackedBuffer(buf.data(), buf.size() * sizeof(std::uint32_t));
+    EXPECT_FALSE(s.ok());
+    EXPECT_NE(s.message.find("reserved bits"), std::string::npos);
+}
+
+// ── KeepAlive: length mismatch ──
+
+TEST_F(KvProtocolVerifyTest, KeepAliveRejectsWrongLength)
+{
+    auto buf = PackKeepAlive();
+    auto s = mgr_->VerifyPackedBuffer(buf.data(), (buf.size() + 1) * sizeof(std::uint32_t));
+    EXPECT_FALSE(s.ok());
+    EXPECT_NE(s.message.find("length"), std::string::npos);
+}
+
+// ── KeepAlive: reserved bits in data[0] ──
+
+TEST_F(KvProtocolVerifyTest, KeepAliveRejectsReservedBitsInDword0)
+{
+    auto buf = PackKeepAlive();
+    buf[0] |= (1U << 10);
+    auto s = mgr_->VerifyPackedBuffer(buf.data(), buf.size() * sizeof(std::uint32_t));
+    EXPECT_FALSE(s.ok());
+    EXPECT_NE(s.message.find("reserved bits"), std::string::npos);
+}
+
+// ── KeepAlive: reserved bits in data[14-15] ──
+
+TEST_F(KvProtocolVerifyTest, KeepAliveRejectsReservedBitsBit14)
+{
+    auto buf = PackKeepAlive();
+    buf[0] |= (1U << 14);
+    auto s = mgr_->VerifyPackedBuffer(buf.data(), buf.size() * sizeof(std::uint32_t));
+    EXPECT_FALSE(s.ok());
+    EXPECT_NE(s.message.find("reserved bits"), std::string::npos);
+}
+
+// ── KeepAlive: reserved bits in data[1-2] ──
+
+TEST_F(KvProtocolVerifyTest, KeepAliveRejectsReservedBitsInDword1)
+{
+    auto buf = PackKeepAlive();
+    buf[1] = 0x1;
+    auto s = mgr_->VerifyPackedBuffer(buf.data(), buf.size() * sizeof(std::uint32_t));
+    EXPECT_FALSE(s.ok());
+    EXPECT_NE(s.message.find("reserved bits"), std::string::npos);
+}
+
+// ── KeepAlive: reserved bits in data[6-15] ──
+
+TEST_F(KvProtocolVerifyTest, KeepAliveRejectsReservedBitsInDword6)
+{
+    auto buf = PackKeepAlive();
+    buf[6] = 0x1;
+    auto s = mgr_->VerifyPackedBuffer(buf.data(), buf.size() * sizeof(std::uint32_t));
+    EXPECT_FALSE(s.ok());
+    EXPECT_NE(s.message.find("reserved bits"), std::string::npos);
+}
+
+TEST_F(KvProtocolVerifyTest, KeepAliveRejectsReservedBitsInDword15)
+{
+    auto buf = PackKeepAlive();
+    buf[15] = 0x1;
+    auto s = mgr_->VerifyPackedBuffer(buf.data(), buf.size() * sizeof(std::uint32_t));
+    EXPECT_FALSE(s.ok());
+    EXPECT_NE(s.message.find("reserved bits"), std::string::npos);
+}
+
+// ── KeepAlive: rflag false but response addr non-zero ──
+
+TEST_F(KvProtocolVerifyTest, KeepAliveRejectsRflagFalseWithResponseAddr)
+{
+    auto buf = PackKeepAlive(false);
+    buf[3] = 0x1234;
+    auto s = mgr_->VerifyPackedBuffer(buf.data(), buf.size() * sizeof(std::uint32_t));
+    EXPECT_FALSE(s.ok());
+    EXPECT_NE(s.message.find("rflag"), std::string::npos);
+}
+
+// ══════════════════════════════════════════════════════════════
+// Supplementary tests for full branch coverage (store.xlsx spec)
+// ══════════════════════════════════════════════════════════════
+
+// ── Retrieve: missing branches ──
+
+TEST_F(KvProtocolVerifyTest, RetrieveRejectsBadFixedBits)
+{
+    auto buf = PackRetrieve();
+    buf[0] &= ~(0x3U << 14);
+    auto s = mgr_->VerifyPackedBuffer(buf.data(), buf.size() * sizeof(std::uint32_t));
+    EXPECT_FALSE(s.ok());
+    EXPECT_NE(s.message.find("fixed bits"), std::string::npos);
+}
+
+TEST_F(KvProtocolVerifyTest, RetrieveRejectsReservedBitsInDword0)
+{
+    auto buf = PackRetrieve();
+    buf[0] |= (1U << 10);
+    auto s = mgr_->VerifyPackedBuffer(buf.data(), buf.size() * sizeof(std::uint32_t));
+    EXPECT_FALSE(s.ok());
+    EXPECT_NE(s.message.find("reserved bits"), std::string::npos);
+}
+
+TEST_F(KvProtocolVerifyTest, RetrieveRejectsReservedBitsInDword3)
+{
+    auto buf = PackRetrieve();
+    buf[3] = 0xDEAD;
+    auto s = mgr_->VerifyPackedBuffer(buf.data(), buf.size() * sizeof(std::uint32_t));
+    EXPECT_FALSE(s.ok());
+    EXPECT_NE(s.message.find("reserved bits"), std::string::npos);
+}
+
+TEST_F(KvProtocolVerifyTest, RetrieveRejectsZeroBufferAddr)
+{
+    auto buf = PackRetrieve();
+    buf[6] = 0;
+    buf[7] = 0;
+    auto s = mgr_->VerifyPackedBuffer(buf.data(), buf.size() * sizeof(std::uint32_t));
+    EXPECT_FALSE(s.ok());
+    EXPECT_NE(s.message.find("buffer_addr"), std::string::npos);
+}
+
+TEST_F(KvProtocolVerifyTest, RetrieveRejectsZeroBufferLength)
+{
+    auto buf = PackRetrieve();
+    buf[8] &= 0xFF000000U;
+    auto s = mgr_->VerifyPackedBuffer(buf.data(), buf.size() * sizeof(std::uint32_t));
+    EXPECT_FALSE(s.ok());
+    EXPECT_NE(s.message.find("buffer_length"), std::string::npos);
+}
+
+TEST_F(KvProtocolVerifyTest, RetrieveRejectsUnalignedBufferLength)
+{
+    auto buf = PackRetrieve();
+    buf[8] = (buf[8] & 0xFF000000U) | 0x100;
+    auto s = mgr_->VerifyPackedBuffer(buf.data(), buf.size() * sizeof(std::uint32_t));
+    EXPECT_FALSE(s.ok());
+    EXPECT_NE(s.message.find("512B aligned"), std::string::npos);
+}
+
+TEST_F(KvProtocolVerifyTest, RetrieveRejectsUnalignedOffset)
+{
+    auto buf = PackRetrieve();
+    buf[10] = 0x100;
+    auto s = mgr_->VerifyPackedBuffer(buf.data(), buf.size() * sizeof(std::uint32_t));
+    EXPECT_FALSE(s.ok());
+    EXPECT_NE(s.message.find("offset"), std::string::npos);
+}
+
+TEST_F(KvProtocolVerifyTest, RetrieveRejectsZeroLength)
+{
+    auto buf = PackRetrieve();
+    buf[11] &= 0xFF000000U;
+    auto s = mgr_->VerifyPackedBuffer(buf.data(), buf.size() * sizeof(std::uint32_t));
+    EXPECT_FALSE(s.ok());
+    EXPECT_NE(s.message.find("length"), std::string::npos);
+}
+
+TEST_F(KvProtocolVerifyTest, RetrieveRejectsReservedBitsInDword11)
+{
+    auto buf = PackRetrieve();
+    buf[11] |= (1U << 25);
+    auto s = mgr_->VerifyPackedBuffer(buf.data(), buf.size() * sizeof(std::uint32_t));
+    EXPECT_FALSE(s.ok());
+    EXPECT_NE(s.message.find("reserved bits"), std::string::npos);
+}
+
+TEST_F(KvProtocolVerifyTest, RetrieveRejectsAllZeroKey)
+{
+    auto buf = PackRetrieve();
+    buf[12] = 0;
+    buf[13] = 0;
+    buf[14] = 0;
+    buf[15] = 0;
+    auto s = mgr_->VerifyPackedBuffer(buf.data(), buf.size() * sizeof(std::uint32_t));
+    EXPECT_FALSE(s.ok());
+    EXPECT_NE(s.message.find("key"), std::string::npos);
+}
+
+// ── BatchStore: missing branches ──
+
+TEST_F(KvProtocolVerifyTest, BatchStoreRejectsBadFixedBits)
+{
+    auto buf = PackBatchStore(2);
+    buf[0] &= ~(0x3U << 14);
+    auto s = mgr_->VerifyPackedBuffer(buf.data(), buf.size() * sizeof(std::uint32_t));
+    EXPECT_FALSE(s.ok());
+    EXPECT_NE(s.message.find("fixed bits"), std::string::npos);
+}
+
+TEST_F(KvProtocolVerifyTest, BatchStoreRejectsReservedBitsInDword0)
+{
+    auto buf = PackBatchStore(2);
+    buf[0] |= (1U << 10);
+    auto s = mgr_->VerifyPackedBuffer(buf.data(), buf.size() * sizeof(std::uint32_t));
+    EXPECT_FALSE(s.ok());
+    EXPECT_NE(s.message.find("reserved bits"), std::string::npos);
+}
+
+TEST_F(KvProtocolVerifyTest, BatchStoreRejectsReservedBitsInDword2)
+{
+    auto buf = PackBatchStore(2);
+    buf[2] |= 0x1;
+    auto s = mgr_->VerifyPackedBuffer(buf.data(), buf.size() * sizeof(std::uint32_t));
+    EXPECT_FALSE(s.ok());
+    EXPECT_NE(s.message.find("reserved bits"), std::string::npos);
+}
+
+TEST_F(KvProtocolVerifyTest, BatchStoreRejectsReservedBitsInDword6)
+{
+    auto buf = PackBatchStore(2);
+    buf[6] = 0x1;
+    auto s = mgr_->VerifyPackedBuffer(buf.data(), buf.size() * sizeof(std::uint32_t));
+    EXPECT_FALSE(s.ok());
+    EXPECT_NE(s.message.find("reserved bits"), std::string::npos);
+}
+
+TEST_F(KvProtocolVerifyTest, BatchStoreRejectsRflagSetWithZeroResponseAddr)
+{
+    auto buf = PackBatchStore(2, true);
+    buf[3] = 0;
+    buf[4] = 0;
+    auto s = mgr_->VerifyPackedBuffer(buf.data(), buf.size() * sizeof(std::uint32_t));
+    EXPECT_FALSE(s.ok());
+    EXPECT_NE(s.message.find("rflag"), std::string::npos);
+}
+
+TEST_F(KvProtocolVerifyTest, BatchStoreRejectsRflagSetWithZeroResponseMrKey)
+{
+    auto buf = PackBatchStore(2, true);
+    buf[5] = 0;
+    auto s = mgr_->VerifyPackedBuffer(buf.data(), buf.size() * sizeof(std::uint32_t));
+    EXPECT_FALSE(s.ok());
+    EXPECT_NE(s.message.find("rflag"), std::string::npos);
+}
+
+TEST_F(KvProtocolVerifyTest, BatchStoreRejectsRflagFalseWithResponseMrKey)
+{
+    auto buf = PackBatchStore(2, false);
+    buf[5] = 0x1234;
+    auto s = mgr_->VerifyPackedBuffer(buf.data(), buf.size() * sizeof(std::uint32_t));
+    EXPECT_FALSE(s.ok());
+    EXPECT_NE(s.message.find("rflag"), std::string::npos);
+}
+
+TEST_F(KvProtocolVerifyTest, BatchStoreRejectsEntryUnalignedOffset)
+{
+    auto buf = PackBatchStore(2);
+    std::uint32_t* entry0 = buf.data() + 16;
+    entry0[0] = 0x100;
+    auto s = mgr_->VerifyPackedBuffer(buf.data(), buf.size() * sizeof(std::uint32_t));
+    EXPECT_FALSE(s.ok());
+    EXPECT_NE(s.message.find("offset"), std::string::npos);
+}
+
+TEST_F(KvProtocolVerifyTest, BatchStoreRejectsEntryUnalignedLength)
+{
+    auto buf = PackBatchStore(2);
+    std::uint32_t* entry0 = buf.data() + 16;
+    entry0[7] = (entry0[7] & 0xFF000000U) | 0x100;
+    auto s = mgr_->VerifyPackedBuffer(buf.data(), buf.size() * sizeof(std::uint32_t));
+    EXPECT_FALSE(s.ok());
+    EXPECT_NE(s.message.find("512B aligned"), std::string::npos);
+}
+
+// ── BatchRetrieve: missing branches ──
+
+TEST_F(KvProtocolVerifyTest, BatchRetrieveRejectsBadFixedBits)
+{
+    auto buf = PackBatchRetrieve(2);
+    buf[0] &= ~(0x3U << 14);
+    auto s = mgr_->VerifyPackedBuffer(buf.data(), buf.size() * sizeof(std::uint32_t));
+    EXPECT_FALSE(s.ok());
+    EXPECT_NE(s.message.find("fixed bits"), std::string::npos);
+}
+
+TEST_F(KvProtocolVerifyTest, BatchRetrieveRejectsReservedBitsInDword0)
+{
+    auto buf = PackBatchRetrieve(2);
+    buf[0] |= (1U << 10);
+    auto s = mgr_->VerifyPackedBuffer(buf.data(), buf.size() * sizeof(std::uint32_t));
+    EXPECT_FALSE(s.ok());
+    EXPECT_NE(s.message.find("reserved bits"), std::string::npos);
+}
+
+TEST_F(KvProtocolVerifyTest, BatchRetrieveRejectsReservedBitsInDword6)
+{
+    auto buf = PackBatchRetrieve(2);
+    buf[6] = 0x1;
+    auto s = mgr_->VerifyPackedBuffer(buf.data(), buf.size() * sizeof(std::uint32_t));
+    EXPECT_FALSE(s.ok());
+    EXPECT_NE(s.message.find("reserved bits"), std::string::npos);
+}
+
+TEST_F(KvProtocolVerifyTest, BatchRetrieveRejectsRflagSetWithZeroResponseAddr)
+{
+    auto buf = PackBatchRetrieve(2, true);
+    buf[3] = 0;
+    buf[4] = 0;
+    auto s = mgr_->VerifyPackedBuffer(buf.data(), buf.size() * sizeof(std::uint32_t));
+    EXPECT_FALSE(s.ok());
+    EXPECT_NE(s.message.find("rflag"), std::string::npos);
+}
+
+TEST_F(KvProtocolVerifyTest, BatchRetrieveRejectsRflagSetWithZeroResponseMrKey)
+{
+    auto buf = PackBatchRetrieve(2, true);
+    buf[5] = 0;
+    auto s = mgr_->VerifyPackedBuffer(buf.data(), buf.size() * sizeof(std::uint32_t));
+    EXPECT_FALSE(s.ok());
+    EXPECT_NE(s.message.find("rflag"), std::string::npos);
+}
+
+TEST_F(KvProtocolVerifyTest, BatchRetrieveRejectsRflagFalseWithResponseAddr)
+{
+    auto buf = PackBatchRetrieve(2, false);
+    buf[3] = 0x1234;
+    auto s = mgr_->VerifyPackedBuffer(buf.data(), buf.size() * sizeof(std::uint32_t));
+    EXPECT_FALSE(s.ok());
+    EXPECT_NE(s.message.find("rflag"), std::string::npos);
+}
+
+TEST_F(KvProtocolVerifyTest, BatchRetrieveRejectsRflagFalseWithResponseMrKey)
+{
+    auto buf = PackBatchRetrieve(2, false);
+    buf[5] = 0x1234;
+    auto s = mgr_->VerifyPackedBuffer(buf.data(), buf.size() * sizeof(std::uint32_t));
+    EXPECT_FALSE(s.ok());
+    EXPECT_NE(s.message.find("rflag"), std::string::npos);
+}
+
+TEST_F(KvProtocolVerifyTest, BatchRetrieveRejectsBadDptrType)
+{
+    auto buf = PackBatchRetrieve(2);
+    buf[9] = (0x40U << 24);
+    auto s = mgr_->VerifyPackedBuffer(buf.data(), buf.size() * sizeof(std::uint32_t));
+    EXPECT_FALSE(s.ok());
+    EXPECT_NE(s.message.find("DptrType"), std::string::npos);
+}
+
+TEST_F(KvProtocolVerifyTest, BatchRetrieveRejectsReservedBitsInDword10)
+{
+    auto buf = PackBatchRetrieve(2);
+    buf[10] |= (1U << 20);
+    auto s = mgr_->VerifyPackedBuffer(buf.data(), buf.size() * sizeof(std::uint32_t));
+    EXPECT_FALSE(s.ok());
+    EXPECT_NE(s.message.find("reserved bits"), std::string::npos);
+}
+
+TEST_F(KvProtocolVerifyTest, BatchRetrieveRejectsZeroBatchNumber)
+{
+    auto buf = PackBatchRetrieve(2);
+    buf[10] = 0;
+    auto s = mgr_->VerifyPackedBuffer(buf.data(), buf.size() * sizeof(std::uint32_t));
+    EXPECT_FALSE(s.ok());
+    EXPECT_NE(s.message.find("batch_number"), std::string::npos);
+}
+
+TEST_F(KvProtocolVerifyTest, BatchRetrieveRejectsWrongLength)
+{
+    auto buf = PackBatchRetrieve(2);
+    auto s = mgr_->VerifyPackedBuffer(buf.data(), (buf.size() + 4) * sizeof(std::uint32_t));
+    EXPECT_FALSE(s.ok());
+    EXPECT_NE(s.message.find("length"), std::string::npos);
+}
+
+TEST_F(KvProtocolVerifyTest, BatchRetrieveRejectsReservedBitsInDword11)
+{
+    auto buf = PackBatchRetrieve(2);
+    buf[11] |= (1U << 10);
+    auto s = mgr_->VerifyPackedBuffer(buf.data(), buf.size() * sizeof(std::uint32_t));
+    EXPECT_FALSE(s.ok());
+    EXPECT_NE(s.message.find("reserved bits"), std::string::npos);
+}
+
+TEST_F(KvProtocolVerifyTest, BatchRetrieveRejectsEntryAllZeroKey)
+{
+    auto buf = PackBatchRetrieve(2);
+    std::uint32_t* entry0 = buf.data() + 16;
+    entry0[1] = 0;
+    entry0[2] = 0;
+    entry0[3] = 0;
+    entry0[4] = 0;
+    auto s = mgr_->VerifyPackedBuffer(buf.data(), buf.size() * sizeof(std::uint32_t));
+    EXPECT_FALSE(s.ok());
+    EXPECT_NE(s.message.find("key"), std::string::npos);
+}
+
+TEST_F(KvProtocolVerifyTest, BatchRetrieveRejectsEntryZeroBufferAddr)
+{
+    auto buf = PackBatchRetrieve(2);
+    std::uint32_t* entry0 = buf.data() + 16;
+    entry0[5] = 0;
+    entry0[6] = 0;
+    auto s = mgr_->VerifyPackedBuffer(buf.data(), buf.size() * sizeof(std::uint32_t));
+    EXPECT_FALSE(s.ok());
+    EXPECT_NE(s.message.find("buffer_addr"), std::string::npos);
+}
+
+TEST_F(KvProtocolVerifyTest, BatchRetrieveRejectsEntryZeroLength)
+{
+    auto buf = PackBatchRetrieve(2);
+    std::uint32_t* entry0 = buf.data() + 16;
+    entry0[7] &= 0xFF000000U;
+    auto s = mgr_->VerifyPackedBuffer(buf.data(), buf.size() * sizeof(std::uint32_t));
+    EXPECT_FALSE(s.ok());
+    EXPECT_NE(s.message.find("length"), std::string::npos);
+}
+
+TEST_F(KvProtocolVerifyTest, BatchRetrieveRejectsEntryUnalignedLength)
+{
+    auto buf = PackBatchRetrieve(2);
+    std::uint32_t* entry0 = buf.data() + 16;
+    entry0[7] = (entry0[7] & 0xFF000000U) | 0x100;
+    auto s = mgr_->VerifyPackedBuffer(buf.data(), buf.size() * sizeof(std::uint32_t));
+    EXPECT_FALSE(s.ok());
+    EXPECT_NE(s.message.find("512B aligned"), std::string::npos);
+}
+
+TEST_F(KvProtocolVerifyTest, BatchRetrieveRejectsEntryBadDptrType)
+{
+    auto buf = PackBatchRetrieve(2);
+    std::uint32_t* entry0 = buf.data() + 16;
+    entry0[8] = (0x01U << 24) | (entry0[8] & 0xFFFFFF);
+    auto s = mgr_->VerifyPackedBuffer(buf.data(), buf.size() * sizeof(std::uint32_t));
+    EXPECT_FALSE(s.ok());
+    EXPECT_NE(s.message.find("DptrType"), std::string::npos);
+}
+
+// ── Delete: missing branches ──
+
+TEST_F(KvProtocolVerifyTest, DeleteRejectsBadFixedBits)
+{
+    auto buf = PackDelete(3);
+    buf[0] &= ~(0x3U << 14);
+    auto s = mgr_->VerifyPackedBuffer(buf.data(), buf.size() * sizeof(std::uint32_t));
+    EXPECT_FALSE(s.ok());
+    EXPECT_NE(s.message.find("fixed bits"), std::string::npos);
+}
+
+TEST_F(KvProtocolVerifyTest, DeleteRejectsReservedBitsInDword0)
+{
+    auto buf = PackDelete(3);
+    buf[0] |= (1U << 10);
+    auto s = mgr_->VerifyPackedBuffer(buf.data(), buf.size() * sizeof(std::uint32_t));
+    EXPECT_FALSE(s.ok());
+    EXPECT_NE(s.message.find("reserved bits"), std::string::npos);
+}
+
+TEST_F(KvProtocolVerifyTest, DeleteRejectsReservedBitsInDword2)
+{
+    auto buf = PackDelete(3);
+    buf[2] = 0x1;
+    auto s = mgr_->VerifyPackedBuffer(buf.data(), buf.size() * sizeof(std::uint32_t));
+    EXPECT_FALSE(s.ok());
+    EXPECT_NE(s.message.find("reserved bits"), std::string::npos);
+}
+
+TEST_F(KvProtocolVerifyTest, DeleteRejectsReservedBitsInDword6)
+{
+    auto buf = PackDelete(3);
+    buf[6] = 0x1;
+    auto s = mgr_->VerifyPackedBuffer(buf.data(), buf.size() * sizeof(std::uint32_t));
+    EXPECT_FALSE(s.ok());
+    EXPECT_NE(s.message.find("reserved bits"), std::string::npos);
+}
+
+TEST_F(KvProtocolVerifyTest, DeleteRejectsRflagSetWithZeroResponseAddr)
+{
+    auto buf = PackDelete(3, true);
+    buf[3] = 0;
+    buf[4] = 0;
+    auto s = mgr_->VerifyPackedBuffer(buf.data(), buf.size() * sizeof(std::uint32_t));
+    EXPECT_FALSE(s.ok());
+    EXPECT_NE(s.message.find("rflag"), std::string::npos);
+}
+
+TEST_F(KvProtocolVerifyTest, DeleteRejectsRflagSetWithZeroResponseMrKey)
+{
+    auto buf = PackDelete(3, true);
+    buf[5] = 0;
+    auto s = mgr_->VerifyPackedBuffer(buf.data(), buf.size() * sizeof(std::uint32_t));
+    EXPECT_FALSE(s.ok());
+    EXPECT_NE(s.message.find("rflag"), std::string::npos);
+}
+
+TEST_F(KvProtocolVerifyTest, DeleteRejectsRflagFalseWithResponseAddr)
+{
+    auto buf = PackDelete(3, false);
+    buf[3] = 0x1234;
+    auto s = mgr_->VerifyPackedBuffer(buf.data(), buf.size() * sizeof(std::uint32_t));
+    EXPECT_FALSE(s.ok());
+    EXPECT_NE(s.message.find("rflag"), std::string::npos);
+}
+
+TEST_F(KvProtocolVerifyTest, DeleteRejectsRflagFalseWithResponseMrKey)
+{
+    auto buf = PackDelete(3, false);
+    buf[5] = 0x1234;
+    auto s = mgr_->VerifyPackedBuffer(buf.data(), buf.size() * sizeof(std::uint32_t));
+    EXPECT_FALSE(s.ok());
+    EXPECT_NE(s.message.find("rflag"), std::string::npos);
+}
+
+TEST_F(KvProtocolVerifyTest, DeleteRejectsBadDptrType)
+{
+    auto buf = PackDelete(3);
+    buf[9] = (0x40U << 24);
+    auto s = mgr_->VerifyPackedBuffer(buf.data(), buf.size() * sizeof(std::uint32_t));
+    EXPECT_FALSE(s.ok());
+    EXPECT_NE(s.message.find("DptrType"), std::string::npos);
+}
+
+TEST_F(KvProtocolVerifyTest, DeleteRejectsReservedBitsInDword10)
+{
+    auto buf = PackDelete(3);
+    buf[10] |= (1U << 20);
+    auto s = mgr_->VerifyPackedBuffer(buf.data(), buf.size() * sizeof(std::uint32_t));
+    EXPECT_FALSE(s.ok());
+    EXPECT_NE(s.message.find("reserved bits"), std::string::npos);
+}
+
+TEST_F(KvProtocolVerifyTest, DeleteRejectsWrongLength)
+{
+    auto buf = PackDelete(3);
+    auto s = mgr_->VerifyPackedBuffer(buf.data(), (buf.size() + 4) * sizeof(std::uint32_t));
+    EXPECT_FALSE(s.ok());
+    EXPECT_NE(s.message.find("length"), std::string::npos);
+}
+
+// ── Exist: missing branches ──
+
+TEST_F(KvProtocolVerifyTest, ExistRejectsBadFixedBits)
+{
+    auto buf = PackExist(3);
+    buf[0] &= ~(0x3U << 14);
+    auto s = mgr_->VerifyPackedBuffer(buf.data(), buf.size() * sizeof(std::uint32_t));
+    EXPECT_FALSE(s.ok());
+    EXPECT_NE(s.message.find("fixed bits"), std::string::npos);
+}
+
+TEST_F(KvProtocolVerifyTest, ExistRejectsReservedBitsInDword0)
+{
+    auto buf = PackExist(3);
+    buf[0] |= (1U << 10);
+    auto s = mgr_->VerifyPackedBuffer(buf.data(), buf.size() * sizeof(std::uint32_t));
+    EXPECT_FALSE(s.ok());
+    EXPECT_NE(s.message.find("reserved bits"), std::string::npos);
+}
+
+TEST_F(KvProtocolVerifyTest, ExistRejectsReservedBitsInDword2)
+{
+    auto buf = PackExist(3);
+    buf[2] = 0x1;
+    auto s = mgr_->VerifyPackedBuffer(buf.data(), buf.size() * sizeof(std::uint32_t));
+    EXPECT_FALSE(s.ok());
+    EXPECT_NE(s.message.find("reserved bits"), std::string::npos);
+}
+
+TEST_F(KvProtocolVerifyTest, ExistRejectsReservedBitsInDword6)
+{
+    auto buf = PackExist(3);
+    buf[6] = 0x1;
+    auto s = mgr_->VerifyPackedBuffer(buf.data(), buf.size() * sizeof(std::uint32_t));
+    EXPECT_FALSE(s.ok());
+    EXPECT_NE(s.message.find("reserved bits"), std::string::npos);
+}
+
+TEST_F(KvProtocolVerifyTest, ExistRejectsRflagSetWithZeroResponseAddr)
+{
+    auto buf = PackExist(3, true);
+    buf[3] = 0;
+    buf[4] = 0;
+    auto s = mgr_->VerifyPackedBuffer(buf.data(), buf.size() * sizeof(std::uint32_t));
+    EXPECT_FALSE(s.ok());
+    EXPECT_NE(s.message.find("rflag"), std::string::npos);
+}
+
+TEST_F(KvProtocolVerifyTest, ExistRejectsRflagSetWithZeroResponseMrKey)
+{
+    auto buf = PackExist(3, true);
+    buf[5] = 0;
+    auto s = mgr_->VerifyPackedBuffer(buf.data(), buf.size() * sizeof(std::uint32_t));
+    EXPECT_FALSE(s.ok());
+    EXPECT_NE(s.message.find("rflag"), std::string::npos);
+}
+
+TEST_F(KvProtocolVerifyTest, ExistRejectsRflagFalseWithResponseAddr)
+{
+    auto buf = PackExist(3, false);
+    buf[3] = 0x1234;
+    auto s = mgr_->VerifyPackedBuffer(buf.data(), buf.size() * sizeof(std::uint32_t));
+    EXPECT_FALSE(s.ok());
+    EXPECT_NE(s.message.find("rflag"), std::string::npos);
+}
+
+TEST_F(KvProtocolVerifyTest, ExistRejectsRflagFalseWithResponseMrKey)
+{
+    auto buf = PackExist(3, false);
+    buf[5] = 0x1234;
+    auto s = mgr_->VerifyPackedBuffer(buf.data(), buf.size() * sizeof(std::uint32_t));
+    EXPECT_FALSE(s.ok());
+    EXPECT_NE(s.message.find("rflag"), std::string::npos);
+}
+
+TEST_F(KvProtocolVerifyTest, ExistRejectsBadDptrType)
+{
+    auto buf = PackExist(3);
+    buf[9] = (0x40U << 24);
+    auto s = mgr_->VerifyPackedBuffer(buf.data(), buf.size() * sizeof(std::uint32_t));
+    EXPECT_FALSE(s.ok());
+    EXPECT_NE(s.message.find("DptrType"), std::string::npos);
+}
+
+TEST_F(KvProtocolVerifyTest, ExistRejectsWrongLength)
+{
+    auto buf = PackExist(3);
+    auto s = mgr_->VerifyPackedBuffer(buf.data(), (buf.size() + 4) * sizeof(std::uint32_t));
+    EXPECT_FALSE(s.ok());
+    EXPECT_NE(s.message.find("length"), std::string::npos);
+}
+
+TEST_F(KvProtocolVerifyTest, ExistRejectsEntryAllZeroKey)
+{
+    auto buf = PackExist(3);
+    std::uint32_t* entry0 = buf.data() + 16;
+    entry0[0] = 0;
+    entry0[1] = 0;
+    entry0[2] = 0;
+    entry0[3] = 0;
+    auto s = mgr_->VerifyPackedBuffer(buf.data(), buf.size() * sizeof(std::uint32_t));
+    EXPECT_FALSE(s.ok());
+    EXPECT_NE(s.message.find("key"), std::string::npos);
+}
+
+// ── KeepAlive: missing branches ──
+
+TEST_F(KvProtocolVerifyTest, KeepAliveRejectsRflagSetWithZeroResponseAddr)
+{
+    auto buf = PackKeepAlive(true);
+    buf[3] = 0;
+    buf[4] = 0;
+    auto s = mgr_->VerifyPackedBuffer(buf.data(), buf.size() * sizeof(std::uint32_t));
+    EXPECT_FALSE(s.ok());
+    EXPECT_NE(s.message.find("rflag"), std::string::npos);
+}
+
+TEST_F(KvProtocolVerifyTest, KeepAliveRejectsRflagSetWithZeroResponseMrKey)
+{
+    auto buf = PackKeepAlive(true);
+    buf[5] = 0;
+    auto s = mgr_->VerifyPackedBuffer(buf.data(), buf.size() * sizeof(std::uint32_t));
+    EXPECT_FALSE(s.ok());
+    EXPECT_NE(s.message.find("rflag"), std::string::npos);
+}
+
+TEST_F(KvProtocolVerifyTest, KeepAliveRejectsRflagFalseWithResponseMrKey)
+{
+    auto buf = PackKeepAlive(false);
+    buf[5] = 0x1234;
+    auto s = mgr_->VerifyPackedBuffer(buf.data(), buf.size() * sizeof(std::uint32_t));
+    EXPECT_FALSE(s.ok());
+    EXPECT_NE(s.message.find("rflag"), std::string::npos);
+}
+
 }  // namespace
 }  // namespace UC::ASU

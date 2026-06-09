@@ -55,6 +55,95 @@ static void UnpackResultBuffer1Bit(const std::uint32_t* result_data, std::uint16
     }
 }
 
+static Status VerifyFixedBits(const std::uint32_t* data, const char* log_prefix)
+{
+    if (((data[0] >> 14) & 0x3) != kFixedBits) {
+        return Status::Error(StatusCode::INVALID_ARGUMENT,
+                             std::string(log_prefix) + ": fixed bits mismatch");
+    }
+    return Status::OK();
+}
+
+static Status VerifyRflagConsistency(const std::uint32_t* data, const char* log_prefix)
+{
+    bool rflag = (data[0] >> 13) & 0x1;
+    std::uint64_t resp_addr =
+        static_cast<std::uint64_t>(data[3]) | (static_cast<std::uint64_t>(data[4]) << 32);
+    std::uint32_t resp_mr_key = data[5];
+    if (rflag) {
+        if (resp_addr == 0) {
+            return Status::Error(
+                StatusCode::INVALID_ARGUMENT,
+                std::string(log_prefix) + ": rflag set but response_buffer_addr is zero");
+        }
+        if (resp_mr_key == 0) {
+            return Status::Error(
+                StatusCode::INVALID_ARGUMENT,
+                std::string(log_prefix) + ": rflag set but response_mr_key is zero");
+        }
+    } else {
+        if (resp_addr != 0) {
+            return Status::Error(
+                StatusCode::INVALID_ARGUMENT,
+                std::string(log_prefix) + ": rflag false but response_buffer_addr non-zero");
+        }
+        if (resp_mr_key != 0) {
+            return Status::Error(
+                StatusCode::INVALID_ARGUMENT,
+                std::string(log_prefix) + ": rflag false but response_mr_key non-zero");
+        }
+    }
+    return Status::OK();
+}
+
+static Status VerifyKeyNotAllZero(const std::uint32_t* key_dwords, const std::string& log_prefix)
+{
+    if (key_dwords[0] == 0 && key_dwords[1] == 0 && key_dwords[2] == 0 && key_dwords[3] == 0) {
+        return Status::Error(StatusCode::INVALID_ARGUMENT, log_prefix + ": key is all zeros");
+    }
+    return Status::OK();
+}
+
+static Status VerifyBatchEntry(const std::uint32_t* base, const std::string& log_prefix,
+                               std::uint16_t i)
+{
+    if (base[0] % kAlignmentBytes != 0) {
+        return Status::Error(
+            StatusCode::INVALID_ARGUMENT,
+            log_prefix + ": entry[" + std::to_string(i) + "] offset not 512B aligned");
+    }
+
+    auto key_status =
+        VerifyKeyNotAllZero(&base[1], log_prefix + ": entry[" + std::to_string(i) + "]");
+    if (!key_status.ok()) { return key_status; }
+
+    std::uint64_t entry_addr =
+        static_cast<std::uint64_t>(base[5]) | (static_cast<std::uint64_t>(base[6]) << 32);
+    if (entry_addr == 0) {
+        return Status::Error(StatusCode::INVALID_ARGUMENT,
+                             log_prefix + ": entry[" + std::to_string(i) + "] buffer_addr is zero");
+    }
+
+    std::uint32_t entry_length = base[7] & 0xFFFFFF;
+    if (entry_length == 0) {
+        return Status::Error(StatusCode::INVALID_ARGUMENT,
+                             log_prefix + ": entry[" + std::to_string(i) + "] length is zero");
+    }
+    if (entry_length % kAlignmentBytes != 0) {
+        return Status::Error(
+            StatusCode::INVALID_ARGUMENT,
+            log_prefix + ": entry[" + std::to_string(i) + "] length not 512B aligned");
+    }
+
+    if ((base[8] >> 24) != static_cast<std::uint32_t>(DptrType::Standard)) {
+        return Status::Error(
+            StatusCode::INVALID_ARGUMENT,
+            log_prefix + ": entry[" + std::to_string(i) + "] DptrType != Standard");
+    }
+
+    return Status::OK();
+}
+
 Status KvStoreProtocol::PackSqe(const SqeRequest& req, std::uint32_t* target)
 {
     auto& r = static_cast<const KvStoreRequest&>(req);
@@ -131,6 +220,70 @@ Status KvStoreProtocol::ValidateRequest(const KvStoreRequest& r) const
     return Status::OK();
 }
 
+Status KvStoreProtocol::VerifyPackedBuffer(const std::uint32_t* data, std::size_t length) const
+{
+    constexpr std::size_t kExpectedLength = kSqeDwordCount * sizeof(std::uint32_t);
+    if (length != kExpectedLength) {
+        return Status::Error(StatusCode::INVALID_ARGUMENT,
+                             "Store: length(" + std::to_string(length) + ") != expected(" +
+                                 std::to_string(kExpectedLength) + ")");
+    }
+
+    auto status = VerifyFixedBits(data, "Store");
+    if (!status.ok()) { return status; }
+    if ((data[0] >> 8) & 0x3F) {
+        return Status::Error(StatusCode::INVALID_ARGUMENT,
+                             "Store: reserved bits non-zero in data[0] bit8-13");
+    }
+
+    if (data[2] & 0xFFFF00FFU) {
+        return Status::Error(StatusCode::INVALID_ARGUMENT,
+                             "Store: reserved bits non-zero in data[2] bit0-7,bit16-31");
+    }
+
+    if (data[3] || data[4] || data[5]) {
+        return Status::Error(StatusCode::INVALID_ARGUMENT,
+                             "Store: reserved bits non-zero in data[3-5]");
+    }
+
+    std::uint64_t buffer_addr =
+        static_cast<std::uint64_t>(data[6]) | (static_cast<std::uint64_t>(data[7]) << 32);
+    if (buffer_addr == 0) {
+        return Status::Error(StatusCode::INVALID_ARGUMENT, "Store: buffer_addr is zero");
+    }
+
+    std::uint32_t buffer_length = data[8] & 0xFFFFFF;
+    if (buffer_length == 0) {
+        return Status::Error(StatusCode::INVALID_ARGUMENT, "Store: buffer_length is zero");
+    }
+    if (buffer_length % kAlignmentBytes != 0) {
+        return Status::Error(StatusCode::INVALID_ARGUMENT, "Store: buffer_length not 512B aligned");
+    }
+
+    if ((data[9] >> 24) != static_cast<std::uint32_t>(DptrType::Standard)) {
+        return Status::Error(StatusCode::INVALID_ARGUMENT, "Store: DptrType != Standard");
+    }
+
+    std::uint32_t offset = data[10];
+    if (offset % kAlignmentBytes != 0) {
+        return Status::Error(StatusCode::INVALID_ARGUMENT, "Store: offset not 512B aligned");
+    }
+
+    std::uint32_t kv_length = data[11] & 0xFFFFFF;
+    if (kv_length == 0) {
+        return Status::Error(StatusCode::INVALID_ARGUMENT, "Store: length is zero");
+    }
+    if (data[11] & 0x7F000000U) {
+        return Status::Error(StatusCode::INVALID_ARGUMENT,
+                             "Store: reserved bits non-zero in data[11] bit24-30");
+    }
+
+    status = VerifyKeyNotAllZero(&data[12], "Store");
+    if (!status.ok()) { return status; }
+
+    return Status::OK();
+}
+
 Status KvRetrieveProtocol::PackSqe(const SqeRequest& req, std::uint32_t* target)
 {
     auto& r = static_cast<const KvRetrieveRequest&>(req);
@@ -194,6 +347,71 @@ Status KvRetrieveProtocol::ValidateRequest(const KvRetrieveRequest& r) const
             StatusCode::INVALID_ARGUMENT,
             "key size(" + std::to_string(r.key.size()) + ") exceeds 16 bytes in Retrieve request");
     }
+    return Status::OK();
+}
+
+Status KvRetrieveProtocol::VerifyPackedBuffer(const std::uint32_t* data, std::size_t length) const
+{
+    constexpr std::size_t kExpectedLength = kSqeDwordCount * sizeof(std::uint32_t);
+    if (length != kExpectedLength) {
+        return Status::Error(StatusCode::INVALID_ARGUMENT,
+                             "Retrieve: length(" + std::to_string(length) + ") != expected(" +
+                                 std::to_string(kExpectedLength) + ")");
+    }
+
+    auto status = VerifyFixedBits(data, "Retrieve");
+    if (!status.ok()) { return status; }
+    if ((data[0] >> 8) & 0x3F) {
+        return Status::Error(StatusCode::INVALID_ARGUMENT,
+                             "Retrieve: reserved bits non-zero in data[0] bit8-13");
+    }
+
+    if (data[2] != 0) {
+        return Status::Error(StatusCode::INVALID_ARGUMENT,
+                             "Retrieve: reserved bits non-zero in data[2]");
+    }
+
+    if (data[3] || data[4] || data[5]) {
+        return Status::Error(StatusCode::INVALID_ARGUMENT,
+                             "Retrieve: reserved bits non-zero in data[3-5]");
+    }
+
+    std::uint64_t buffer_addr =
+        static_cast<std::uint64_t>(data[6]) | (static_cast<std::uint64_t>(data[7]) << 32);
+    if (buffer_addr == 0) {
+        return Status::Error(StatusCode::INVALID_ARGUMENT, "Retrieve: buffer_addr is zero");
+    }
+
+    std::uint32_t buffer_length = data[8] & 0xFFFFFF;
+    if (buffer_length == 0) {
+        return Status::Error(StatusCode::INVALID_ARGUMENT, "Retrieve: buffer_length is zero");
+    }
+    if (buffer_length % kAlignmentBytes != 0) {
+        return Status::Error(StatusCode::INVALID_ARGUMENT,
+                             "Retrieve: buffer_length not 512B aligned");
+    }
+
+    if ((data[9] >> 24) != static_cast<std::uint32_t>(DptrType::Standard)) {
+        return Status::Error(StatusCode::INVALID_ARGUMENT, "Retrieve: DptrType != Standard");
+    }
+
+    std::uint32_t offset = data[10];
+    if (offset % kAlignmentBytes != 0) {
+        return Status::Error(StatusCode::INVALID_ARGUMENT, "Retrieve: offset not 512B aligned");
+    }
+
+    std::uint32_t kv_length = data[11] & 0xFFFFFF;
+    if (kv_length == 0) {
+        return Status::Error(StatusCode::INVALID_ARGUMENT, "Retrieve: length is zero");
+    }
+    if (data[11] & 0x7F000000U) {
+        return Status::Error(StatusCode::INVALID_ARGUMENT,
+                             "Retrieve: reserved bits non-zero in data[11] bit24-30");
+    }
+
+    status = VerifyKeyNotAllZero(&data[12], "Retrieve");
+    if (!status.ok()) { return status; }
+
     return Status::OK();
 }
 
@@ -339,6 +557,72 @@ Status KvBatchStoreProtocol::UnpackCqe(const std::uint32_t* data, std::uint16_t 
     return Status::OK();
 }
 
+Status KvBatchStoreProtocol::VerifyPackedBuffer(const std::uint32_t* data, std::size_t length) const
+{
+    auto status = VerifyFixedBits(data, "BatchStore");
+    if (!status.ok()) { return status; }
+    if ((data[0] >> 8) & 0x1F) {
+        return Status::Error(StatusCode::INVALID_ARGUMENT,
+                             "BatchStore: reserved bits non-zero in data[0] bit8-12");
+    }
+
+    if (data[2] & 0xFFFF00FFU) {
+        return Status::Error(StatusCode::INVALID_ARGUMENT,
+                             "BatchStore: reserved bits non-zero in data[2] bit0-7,bit16-31");
+    }
+
+    if (data[6] || data[7]) {
+        return Status::Error(StatusCode::INVALID_ARGUMENT,
+                             "BatchStore: reserved bits non-zero in data[6-7]");
+    }
+
+    status = VerifyRflagConsistency(data, "BatchStore");
+    if (!status.ok()) { return status; }
+
+    if (data[9] != (static_cast<std::uint32_t>(DptrType::Batch) << 24)) {
+        return Status::Error(StatusCode::INVALID_ARGUMENT,
+                             "BatchStore: data[9] DptrType or reserved bits mismatch");
+    }
+
+    if (data[10] >> 16) {
+        return Status::Error(StatusCode::INVALID_ARGUMENT,
+                             "BatchStore: reserved bits non-zero in data[10] bit16-31");
+    }
+    std::uint16_t batch_number = data[10] & 0xFFFF;
+    if (batch_number == 0 || batch_number > kMaxBatchNumber) {
+        return Status::Error(
+            StatusCode::INVALID_ARGUMENT,
+            "BatchStore: batch_number(" + std::to_string(batch_number) + ") out of range [1, 110]");
+    }
+
+    if (data[8] != static_cast<std::uint32_t>(batch_number) * kBatchEntrySizeBytes) {
+        return Status::Error(StatusCode::INVALID_ARGUMENT,
+                             "BatchStore: data[8](" + std::to_string(data[8]) +
+                                 ") != batch_number * " + std::to_string(kBatchEntrySizeBytes));
+    }
+
+    std::size_t expected_length =
+        (kSqeDwordCount + batch_number * kBatchEntryDwordCount) * sizeof(std::uint32_t);
+    if (length != expected_length) {
+        return Status::Error(StatusCode::INVALID_ARGUMENT,
+                             "BatchStore: length(" + std::to_string(length) + ") != expected(" +
+                                 std::to_string(expected_length) + ")");
+    }
+
+    if ((data[11] & 0x7FFFFFFFU) || data[12] || data[13] || data[14] || data[15]) {
+        return Status::Error(StatusCode::INVALID_ARGUMENT,
+                             "BatchStore: reserved bits non-zero in data[11-15]");
+    }
+
+    for (std::uint16_t i = 0; i < batch_number; ++i) {
+        const std::uint32_t* base = data + kSqeDwordCount + i * kBatchEntryDwordCount;
+        auto entry_status = VerifyBatchEntry(base, "BatchStore", i);
+        if (!entry_status.ok()) { return entry_status; }
+    }
+
+    return Status::OK();
+}
+
 std::size_t KvBatchRetrieveProtocol::PackedSize(const SqeRequest& req) const
 {
     auto& r = static_cast<const KvBatchRetrieveRequest&>(req);
@@ -470,6 +754,73 @@ Status KvBatchRetrieveProtocol::UnpackCqe(const std::uint32_t* data, std::uint16
     return Status::OK();
 }
 
+Status KvBatchRetrieveProtocol::VerifyPackedBuffer(const std::uint32_t* data,
+                                                   std::size_t length) const
+{
+    auto status = VerifyFixedBits(data, "BatchRetrieve");
+    if (!status.ok()) { return status; }
+    if ((data[0] >> 8) & 0x1F) {
+        return Status::Error(StatusCode::INVALID_ARGUMENT,
+                             "BatchRetrieve: reserved bits non-zero in data[0] bit8-12");
+    }
+
+    if (data[2] != 0) {
+        return Status::Error(StatusCode::INVALID_ARGUMENT,
+                             "BatchRetrieve: reserved bits non-zero in data[2]");
+    }
+
+    if (data[6] || data[7]) {
+        return Status::Error(StatusCode::INVALID_ARGUMENT,
+                             "BatchRetrieve: reserved bits non-zero in data[6-7]");
+    }
+
+    status = VerifyRflagConsistency(data, "BatchRetrieve");
+    if (!status.ok()) { return status; }
+
+    if (data[9] != (static_cast<std::uint32_t>(DptrType::Batch) << 24)) {
+        return Status::Error(StatusCode::INVALID_ARGUMENT,
+                             "BatchRetrieve: data[9] DptrType or reserved bits mismatch");
+    }
+
+    if (data[10] >> 16) {
+        return Status::Error(StatusCode::INVALID_ARGUMENT,
+                             "BatchRetrieve: reserved bits non-zero in data[10] bit16-31");
+    }
+    std::uint16_t batch_number = data[10] & 0xFFFF;
+    if (batch_number == 0 || batch_number > kMaxBatchNumber) {
+        return Status::Error(StatusCode::INVALID_ARGUMENT, "BatchRetrieve: batch_number(" +
+                                                               std::to_string(batch_number) +
+                                                               ") out of range [1, 110]");
+    }
+
+    if (data[8] != static_cast<std::uint32_t>(batch_number) * kBatchEntrySizeBytes) {
+        return Status::Error(StatusCode::INVALID_ARGUMENT,
+                             "BatchRetrieve: data[8](" + std::to_string(data[8]) +
+                                 ") != batch_number * " + std::to_string(kBatchEntrySizeBytes));
+    }
+
+    std::size_t expected_length =
+        (kSqeDwordCount + batch_number * kBatchEntryDwordCount) * sizeof(std::uint32_t);
+    if (length != expected_length) {
+        return Status::Error(StatusCode::INVALID_ARGUMENT,
+                             "BatchRetrieve: length(" + std::to_string(length) + ") != expected(" +
+                                 std::to_string(expected_length) + ")");
+    }
+
+    if ((data[11] & 0x7FFFFFFFU) || data[12] || data[13] || data[14] || data[15]) {
+        return Status::Error(StatusCode::INVALID_ARGUMENT,
+                             "BatchRetrieve: reserved bits non-zero in data[11-15]");
+    }
+
+    for (std::uint16_t i = 0; i < batch_number; ++i) {
+        const std::uint32_t* base = data + kSqeDwordCount + i * kBatchEntryDwordCount;
+        auto entry_status = VerifyBatchEntry(base, "BatchRetrieve", i);
+        if (!entry_status.ok()) { return entry_status; }
+    }
+
+    return Status::OK();
+}
+
 std::size_t KvDeleteProtocol::PackedSize(const SqeRequest& req) const
 {
     auto& r = static_cast<const KvDeleteRequest&>(req);
@@ -558,6 +909,72 @@ Status KvDeleteProtocol::UnpackCqe(const std::uint32_t* data, std::uint16_t batc
 {
     UnpackCqeBase(data, out);
     UnpackResultBuffer1Bit(data + kCqeDwordCount, batch_number, out.result_buffer);
+    return Status::OK();
+}
+
+Status KvDeleteProtocol::VerifyPackedBuffer(const std::uint32_t* data, std::size_t length) const
+{
+    auto status = VerifyFixedBits(data, "Delete");
+    if (!status.ok()) { return status; }
+    if ((data[0] >> 8) & 0x1F) {
+        return Status::Error(StatusCode::INVALID_ARGUMENT,
+                             "Delete: reserved bits non-zero in data[0] bit8-12");
+    }
+
+    if (data[2] != 0) {
+        return Status::Error(StatusCode::INVALID_ARGUMENT,
+                             "Delete: reserved bits non-zero in data[2]");
+    }
+
+    if (data[6] || data[7]) {
+        return Status::Error(StatusCode::INVALID_ARGUMENT,
+                             "Delete: reserved bits non-zero in data[6-7]");
+    }
+
+    status = VerifyRflagConsistency(data, "Delete");
+    if (!status.ok()) { return status; }
+
+    if (data[9] != (static_cast<std::uint32_t>(DptrType::Batch) << 24)) {
+        return Status::Error(StatusCode::INVALID_ARGUMENT,
+                             "Delete: data[9] DptrType or reserved bits mismatch");
+    }
+
+    if (data[10] >> 16) {
+        return Status::Error(StatusCode::INVALID_ARGUMENT,
+                             "Delete: reserved bits non-zero in data[10] bit16-31");
+    }
+    std::uint16_t batch_number = data[10] & 0xFFFF;
+    if (batch_number == 0 || batch_number > kMaxDeleteBatchNumber) {
+        return Status::Error(
+            StatusCode::INVALID_ARGUMENT,
+            "Delete: batch_number(" + std::to_string(batch_number) + ") out of range [1, 254]");
+    }
+
+    if (data[8] != static_cast<std::uint32_t>(batch_number) * kKeyEntrySizeBytes) {
+        return Status::Error(StatusCode::INVALID_ARGUMENT,
+                             "Delete: data[8](" + std::to_string(data[8]) + ") != batch_number * " +
+                                 std::to_string(kKeyEntrySizeBytes));
+    }
+
+    std::size_t expected_length =
+        (kSqeDwordCount + batch_number * kKeyEntryDwordCount) * sizeof(std::uint32_t);
+    if (length != expected_length) {
+        return Status::Error(StatusCode::INVALID_ARGUMENT,
+                             "Delete: length(" + std::to_string(length) + ") != expected(" +
+                                 std::to_string(expected_length) + ")");
+    }
+
+    if (data[11] || data[12] || data[13] || data[14] || data[15]) {
+        return Status::Error(StatusCode::INVALID_ARGUMENT,
+                             "Delete: reserved bits non-zero in data[11-15]");
+    }
+
+    for (std::uint16_t i = 0; i < batch_number; ++i) {
+        const std::uint32_t* base = data + kSqeDwordCount + i * kKeyEntryDwordCount;
+        auto key_status = VerifyKeyNotAllZero(base, "Delete: entry[" + std::to_string(i) + "]");
+        if (!key_status.ok()) { return key_status; }
+    }
+
     return Status::OK();
 }
 
@@ -654,6 +1071,72 @@ Status KvExistProtocol::UnpackCqe(const std::uint32_t* data, std::uint16_t batch
     return Status::OK();
 }
 
+Status KvExistProtocol::VerifyPackedBuffer(const std::uint32_t* data, std::size_t length) const
+{
+    auto status = VerifyFixedBits(data, "Exist");
+    if (!status.ok()) { return status; }
+    if ((data[0] >> 8) & 0x1F) {
+        return Status::Error(StatusCode::INVALID_ARGUMENT,
+                             "Exist: reserved bits non-zero in data[0] bit8-12");
+    }
+
+    if (data[2] != 0) {
+        return Status::Error(StatusCode::INVALID_ARGUMENT,
+                             "Exist: reserved bits non-zero in data[2]");
+    }
+
+    if (data[6] || data[7]) {
+        return Status::Error(StatusCode::INVALID_ARGUMENT,
+                             "Exist: reserved bits non-zero in data[6-7]");
+    }
+
+    status = VerifyRflagConsistency(data, "Exist");
+    if (!status.ok()) { return status; }
+
+    if (data[9] != (static_cast<std::uint32_t>(DptrType::Batch) << 24)) {
+        return Status::Error(StatusCode::INVALID_ARGUMENT,
+                             "Exist: data[9] DptrType or reserved bits mismatch");
+    }
+
+    if (data[10] >> 17) {
+        return Status::Error(StatusCode::INVALID_ARGUMENT,
+                             "Exist: reserved bits non-zero in data[10] bit17-31");
+    }
+    std::uint16_t batch_number = data[10] & 0xFFFF;
+    if (batch_number == 0 || batch_number > kMaxExistBatchNumber) {
+        return Status::Error(
+            StatusCode::INVALID_ARGUMENT,
+            "Exist: batch_number(" + std::to_string(batch_number) + ") out of range [1, 256]");
+    }
+
+    if (data[8] != static_cast<std::uint32_t>(batch_number) * kKeyEntrySizeBytes) {
+        return Status::Error(StatusCode::INVALID_ARGUMENT,
+                             "Exist: data[8](" + std::to_string(data[8]) + ") != batch_number * " +
+                                 std::to_string(kKeyEntrySizeBytes));
+    }
+
+    std::size_t expected_length =
+        (kSqeDwordCount + batch_number * kKeyEntryDwordCount) * sizeof(std::uint32_t);
+    if (length != expected_length) {
+        return Status::Error(StatusCode::INVALID_ARGUMENT,
+                             "Exist: length(" + std::to_string(length) + ") != expected(" +
+                                 std::to_string(expected_length) + ")");
+    }
+
+    if (data[11] || data[12] || data[13] || data[14] || data[15]) {
+        return Status::Error(StatusCode::INVALID_ARGUMENT,
+                             "Exist: reserved bits non-zero in data[11-15]");
+    }
+
+    for (std::uint16_t i = 0; i < batch_number; ++i) {
+        const std::uint32_t* base = data + kSqeDwordCount + i * kKeyEntryDwordCount;
+        auto key_status = VerifyKeyNotAllZero(base, "Exist: entry[" + std::to_string(i) + "]");
+        if (!key_status.ok()) { return key_status; }
+    }
+
+    return Status::OK();
+}
+
 Status KvKeepAliveProtocol::PackSqe(const SqeRequest& req, std::uint32_t* target)
 {
     auto& r = static_cast<const KvKeepAliveRequest&>(req);
@@ -691,6 +1174,39 @@ Status KvKeepAliveProtocol::ValidateRequest(const KvKeepAliveRequest& r) const
                 "response_mr_key must be zero when rflag is false in KeepAlive request");
         }
     }
+    return Status::OK();
+}
+
+Status KvKeepAliveProtocol::VerifyPackedBuffer(const std::uint32_t* data, std::size_t length) const
+{
+    constexpr std::size_t kExpectedLength = kSqeDwordCount * sizeof(std::uint32_t);
+    if (length != kExpectedLength) {
+        return Status::Error(StatusCode::INVALID_ARGUMENT,
+                             "KeepAlive: length(" + std::to_string(length) + ") != expected(" +
+                                 std::to_string(kExpectedLength) + ")");
+    }
+
+    if (data[0] & 0xDF00U) {
+        return Status::Error(StatusCode::INVALID_ARGUMENT,
+                             "KeepAlive: reserved bits non-zero in data[0] bit8-12 or bit14-15");
+    }
+
+    if (data[1] || data[2]) {
+        return Status::Error(StatusCode::INVALID_ARGUMENT,
+                             "KeepAlive: reserved bits non-zero in data[1-2]");
+    }
+
+    auto status = VerifyRflagConsistency(data, "KeepAlive");
+    if (!status.ok()) { return status; }
+
+    for (std::size_t i = 6; i < kSqeDwordCount; ++i) {
+        if (data[i] != 0) {
+            return Status::Error(
+                StatusCode::INVALID_ARGUMENT,
+                "KeepAlive: reserved bits non-zero in data[" + std::to_string(i) + "]");
+        }
+    }
+
     return Status::OK();
 }
 
@@ -737,6 +1253,25 @@ Status ProtocolManager::PollResponseCid(const void* data_ptr, std::uint16_t& cid
     auto* data = static_cast<const std::uint32_t*>(data_ptr);
     cid = data[3] & 0xFFFF;
     return Status::OK();
+}
+
+Status ProtocolManager::VerifyPackedBuffer(const void* data_ptr, std::size_t length)
+{
+    if (!data_ptr || length < kSqeDwordCount * sizeof(std::uint32_t)) {
+        return Status::Error(StatusCode::INVALID_ARGUMENT,
+                             "VerifyPackedBuffer: invalid data_ptr or length too small");
+    }
+
+    auto* data = static_cast<const std::uint32_t*>(data_ptr);
+    auto opcode = static_cast<KvOpcode>(data[0] & 0xFF);
+
+    KvProtocol* proto = GetProtocol(opcode);
+    if (!proto) {
+        return Status::Error(StatusCode::INVALID_ARGUMENT,
+                             "VerifyPackedBuffer: unknown opcode " +
+                                 std::to_string(static_cast<std::uint8_t>(opcode)));
+    }
+    return proto->VerifyPackedBuffer(data, length);
 }
 
 KvProtocol* ProtocolManager::GetProtocol(KvOpcode opcode) const
