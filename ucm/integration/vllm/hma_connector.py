@@ -578,7 +578,10 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
         ):
             group_caches: dict[str, torch.Tensor] = {}
             for layer_name in group_spec.layer_names:
-                group_caches[layer_name] = tuple(kv_caches[layer_name])
+                if isinstance(kv_caches[layer_name], torch.Tensor):
+                    group_caches[layer_name] = kv_caches[layer_name]
+                else:
+                    group_caches[layer_name] = tuple(kv_caches[layer_name])
             layout = KVCacheGroupLayout(group_caches)
             self.group_layouts[group_id] = layout
 
