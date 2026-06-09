@@ -300,6 +300,7 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
         self.wa_store: Optional[UcmKVStoreBaseV1] = None
         self.requests_meta: dict[str, FAWARequestMeta] = {}
         self.tp_dump_tasks: dict[tuple, list[FAWADumpTask]] = {}
+        self.wa_dump_block_wise = self.launch_config.get("wa_dump_block_wise", True)
 
         if role == KVConnectorRole.SCHEDULER:
             self.store = self._create_fa_store(None)
@@ -504,6 +505,8 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
         config["posix_gc_enable"] = (
             self._role != KVConnectorRole.WORKER and dp_rank == 0
         )
+        if config.get("posix_capacity_gb", None) is not None:
+            config["posix_capacity_gb"] = int(config["posix_capacity_gb"]) // 2
         return name, module_path, config
 
     @staticmethod
@@ -734,6 +737,7 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
         group_id: int,
         group_block_ids: list[int],
         window_boundary_token_idx: np.ndarray,
+        fetch_wa_block_wise: bool,
     ) -> list[int]:
         """Select the physical group blocks needed for FA or WA store rows."""
 
@@ -742,13 +746,20 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
         if is_window_group:
             if not group_meta.tail_tokens:
                 return []
-            # WA loads/dumps only the tail for the final boundary in the range.
-            boundary_block_idx = (
-                window_boundary_token_idx[-1] // group_meta.token_block_size
-            ) + 1
-            return group_block_ids[
-                boundary_block_idx - group_meta.tail_blocks : boundary_block_idx
-            ]
+            if fetch_wa_block_wise:
+                # Block-wise WA stores one tail row for each canonical boundary.
+                boundary_block_indices = window_boundary_token_idx // group_meta.token_block_size
+                offsets = np.arange(group_meta.tail_blocks - 1, -1, -1, dtype=np.int64)
+                boundary_block_indices = boundary_block_indices[:, None] - offsets[None, :]
+                return np.array(group_block_ids)[boundary_block_indices.flatten()].tolist()
+            else:
+                # Chunk-wise WA stores only the tail for the final boundary.
+                boundary_block_idx = (
+                    window_boundary_token_idx[-1] // group_meta.token_block_size
+                ) + 1
+                return group_block_ids[
+                    boundary_block_idx - group_meta.tail_blocks : boundary_block_idx
+                ]
         # FA rows map each canonical hash block to its containing group block.
         return np.array(group_block_ids)[
             window_boundary_token_idx // group_meta.token_block_size
@@ -801,6 +812,7 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
                         group_id,
                         group_block_ids,
                         window_boundary_token_idx,
+                        fetch_wa_block_wise=False,  # always fetch the full WA tail on load to simplify logic
                     )
                 )
 
@@ -823,6 +835,7 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
                         group_id,
                         group_block_ids,
                         window_boundary_token_idx,
+                        fetch_wa_block_wise=self.wa_dump_block_wise,
                     )
                 )
         req_meta.token_processed = computed_end_token
@@ -1084,8 +1097,8 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
         wa_ptr_rows: list[np.ndarray] = []
         dump_request_ids: tuple[str] = ()
         if self.tp_size > 1:
-            # Split FA rows by canonical block index and balance WA rows by
-            # assigning whole request boundaries round-robin across ranks.
+            # Split FA rows by canonical block index. Block-wise WA follows the same
+            # TP key slice; chunk-wise WA assigns one final boundary per request.
             wa_dump_ring_idx = 0
             for request_id, request in metadata.request_meta.items():
                 if not request.dump_keys:
@@ -1096,20 +1109,41 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
                 tp_block_end = num_keys * (self.tp_rank + 1) // self.tp_size
                 tp_dump_keys = request.dump_keys[tp_block_start:tp_block_end]
                 if tp_dump_keys:
-                    tp_dump_vllm_block_ids = tuple(
+                    fa_dump_vllm_block_ids = tuple(
                         group_block_ids[tp_block_start:tp_block_end]
-                        for group_block_ids in request.dump_vllm_block_ids
+                        if group_id in self.fa_group_ids
+                        else group_block_ids
+                        for group_id, group_block_ids in enumerate(request.dump_vllm_block_ids)
                     )
+                    
                     fa_dump_keys.extend(tp_dump_keys)
                     fa_ptr_rows.append(
                         self._extract_fa_ptr(
                             tp_dump_keys,
                             request.dump_hash_start + tp_block_start,
                             request.dump_hash_start + tp_block_end,
-                            tp_dump_vllm_block_ids,
+                            fa_dump_vllm_block_ids,
                         )
                     )
-                if wa_dump_ring_idx % self.tp_size == self.tp_rank:
+                if self.wa_dump_block_wise:
+                    if tp_dump_keys:
+                        wa_dump_vllm_block_ids = tuple(
+                            group_block_ids[
+                                tp_block_start * self.group_metas[group_id].tail_blocks :
+                                tp_block_end * self.group_metas[group_id].tail_blocks
+                            ]
+                            if group_id in self.window_group_ids
+                            else group_block_ids
+                            for group_id, group_block_ids in enumerate(request.dump_vllm_block_ids)
+                        ) 
+                        wa_dump_keys.extend(tp_dump_keys)
+                        wa_ptr_rows.append(
+                            self._extract_wa_ptr(
+                                tp_dump_keys,
+                                wa_dump_vllm_block_ids,
+                            )
+                        )
+                elif wa_dump_ring_idx % self.tp_size == self.tp_rank:
                     wa_dump_keys.extend(request.dump_keys[-1:])
                     wa_ptr_rows.append(
                         self._extract_wa_ptr(
@@ -1132,14 +1166,22 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
                         request.dump_vllm_block_ids,
                     )
                 )
-
-                wa_dump_keys.extend(request.dump_keys[-1:])
-                wa_ptr_rows.append(
-                    self._extract_wa_ptr(
-                        request.dump_keys[-1:],
-                        request.dump_vllm_block_ids,
+                if self.wa_dump_block_wise:
+                    wa_dump_keys.extend(request.dump_keys)
+                    wa_ptr_rows.append(
+                        self._extract_wa_ptr(
+                            request.dump_keys,
+                            request.dump_vllm_block_ids,
+                        )
                     )
-                )
+                else:
+                    wa_dump_keys.extend(request.dump_keys[-1:])
+                    wa_ptr_rows.append(
+                        self._extract_wa_ptr(
+                            request.dump_keys[-1:],
+                            request.dump_vllm_block_ids,
+                        )
+                    )
 
         if fa_dump_keys:
             event_handle = self._get_dump_event_handle()
