@@ -71,16 +71,86 @@ class PosixAioTool(ToolAdapter):
 
     def add_run_args(self, parser: argparse.ArgumentParser) -> None:
         """Register POSIX AIO run arguments."""
-        parser.add_argument("--worker-number", type=int)
-        parser.add_argument("--shard-size", type=int)
-        parser.add_argument("--shard-number", type=int)
-        parser.add_argument("--block-number", type=int)
-        parser.add_argument("--dump-epoch-number", type=int)
-        parser.add_argument("--load-epoch-number", type=int)
-        parser.add_argument("--storage-backend", action="append")
+        parser.add_argument(
+            "-w",
+            "--worker-number",
+            type=int,
+            help="worker number: number of worker processes to start concurrently.",
+        )
+        parser.add_argument(
+            "-s",
+            "--shard-size",
+            type=int,
+            help=(
+                "shard size: POSIX store I/O size. In layerwise mode, this is "
+                "the K/V tensor size for one layer of one block. In non-layerwise "
+                "mode, this is the K/V tensor size for all layers of one block."
+            ),
+        )
+        parser.add_argument(
+            "-n",
+            "--shard-number",
+            type=int,
+            help="shard number: number of layers in layerwise mode; use 1 in non-layerwise mode.",
+        )
+        parser.add_argument(
+            "-b",
+            "--block-number",
+            type=int,
+            help="block number: total number of blocks.",
+        )
+        parser.add_argument(
+            "-d",
+            "--dump-epoch-number",
+            type=int,
+            help="dump epoch number: number of dump epochs.",
+        )
+        parser.add_argument(
+            "-l",
+            "--load-epoch-number",
+            type=int,
+            help="load epoch number: number of load epochs.",
+        )
+        parser.add_argument(
+            "-o",
+            "--storage-backend",
+            action="append",
+            help="storage backend: storage backend path; may be repeated.",
+        )
+
+    def _build_run_parser(self) -> argparse.ArgumentParser:
+        parser = argparse.ArgumentParser(
+            prog="ucm-toolkit run posix-aio",
+            description="Run the POSIX AIO store benchmark.",
+        )
+        self.add_run_args(parser)
+        return parser
+
+    @staticmethod
+    def _forward_args(args: argparse.Namespace) -> list[str]:
+        forwarded: list[str] = []
+        option_names = (
+            "worker_number",
+            "shard_size",
+            "shard_number",
+            "block_number",
+            "dump_epoch_number",
+            "load_epoch_number",
+        )
+        for option_name in option_names:
+            value = getattr(args, option_name)
+            if value is not None:
+                forwarded.extend([f"--{option_name.replace('_', '-')}", str(value)])
+        if args.storage_backend is not None:
+            for path in args.storage_backend:
+                forwarded.extend(["--storage-backend", path])
+        return forwarded
 
     def run(self, tool_args: list[str]) -> int:
         """Run the POSIX AIO test script."""
+        parser = self._build_run_parser()
+        args = parser.parse_args(tool_args)
+        forwarded_args = self._forward_args(args)
         script = registry.resolve_repo_path(self.script_path or "")
         if not script.exists():
             raise ScriptNotFoundError(str(script))
@@ -93,7 +163,7 @@ class PosixAioTool(ToolAdapter):
             _drop_repo_root_from_pythonpath(env, repo_root)
         else:
             _prepend_pythonpath(env, repo_root)
-        return run_command([sys.executable, str(script), *tool_args], env=env)
+        return run_command([sys.executable, str(script), *forwarded_args], env=env)
 
     def doctor(self, args: argparse.Namespace | None = None) -> int:
         """Inspect POSIX AIO script availability."""

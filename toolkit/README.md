@@ -329,13 +329,13 @@ ucm-toolkit run posix-aio \
 
 | 参数 | 默认值 | 说明 |
 | --- | --- | --- |
-| `--worker-number` | `1` | worker 进程数量；脚本会为每个 worker 分配一个 `device_id`。 |
-| `--shard-size` | `8388608` | 单个 shard 大小，单位 bytes。 |
-| `--shard-number` | `1` | 每个 block 的 shard 数量。 |
-| `--block-number` | `64` | block 数量。 |
-| `--dump-epoch-number` | `32` | dump 轮数。 |
-| `--load-epoch-number` | `32` | load 轮数。 |
-| `--storage-backend` | `./build/data` | 存储路径；可重复指定多个。只要传入该参数，就会用传入列表替换默认列表。 |
+| `-w`, `--worker-number` | `1` | worker number: number of worker processes to start concurrently. |
+| `-s`, `--shard-size` | `8388608` | shard size: POSIX store I/O size. In layerwise mode, this is the K/V tensor size for one layer of one block. In non-layerwise mode, this is the K/V tensor size for all layers of one block. |
+| `-n`, `--shard-number` | `1` | shard number: number of layers in layerwise mode; use 1 in non-layerwise mode. |
+| `-b`, `--block-number` | `64` | block number: total number of blocks. |
+| `-d`, `--dump-epoch-number` | `32` | dump epoch number: number of dump epochs. |
+| `-l`, `--load-epoch-number` | `32` | load epoch number: number of load epochs. |
+| `-o`, `--storage-backend` | `./build/data` | storage backend: storage backend path; may be repeated. Passing this option replaces the default backend list with the provided values. |
 
 资源估算：
 
