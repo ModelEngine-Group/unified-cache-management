@@ -43,6 +43,7 @@ struct SourceLocation {
 
 class Logger {
     std::shared_ptr<spdlog::logger> logger_;
+    std::shared_ptr<spdlog::logger> file_logger_;
     std::mutex mutex_;
     bool rate_limit_enabled_{true};
     uint64_t rate_limit_window_ms_{60000};
@@ -69,6 +70,7 @@ public:
     static void _signal_handler(int signum) { Logger::GetInstance().Flush(); }
 
     void Log(Level&& lv, SourceLocation&& loc, std::string&& msg);
+    void LogFileOnly(Level&& lv, SourceLocation&& loc, std::string&& msg);
     void Setup(const std::string& path, int max_files, int max_size);
     void Flush();
 

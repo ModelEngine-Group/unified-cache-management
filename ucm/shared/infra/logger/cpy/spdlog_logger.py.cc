@@ -37,13 +37,19 @@ void RateLimitLogWrapper(Level lv, std::string file, std::string func, int line,
     LogRateLimit(std::move(lv), std::move(file), std::move(func), line, std::move(msg));
 }
 
+void FileOnlyLogWrapper(Level lv, std::string file, std::string func, int line, std::string msg)
+{
+    LogFileOnly(std::move(lv), std::move(file), std::move(func), line, std::move(msg));
+}
+
 PYBIND11_MODULE(ucmlogger, m)
 {
-    m.def("setup", &Setup);
-    m.def("flush", &Flush);
-    m.def("log", &LogWrapper);
-    m.def("log_rate_limit", &RateLimitLogWrapper);
-    m.def("isEnabledFor", &isEnabledFor);
+    m.def("setup", &Setup, py::call_guard<py::gil_scoped_release>());
+    m.def("flush", &Flush, py::call_guard<py::gil_scoped_release>());
+    m.def("log", &LogWrapper, py::call_guard<py::gil_scoped_release>());
+    m.def("log_rate_limit", &RateLimitLogWrapper, py::call_guard<py::gil_scoped_release>());
+    m.def("log_file_only", &FileOnlyLogWrapper, py::call_guard<py::gil_scoped_release>());
+    m.def("isEnabledFor", &isEnabledFor, py::call_guard<py::gil_scoped_release>());
     py::enum_<Level>(m, "Level")
         .value("DEBUG", Level::DEBUG)
         .value("INFO", Level::INFO)
