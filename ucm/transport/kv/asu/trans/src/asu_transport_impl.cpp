@@ -490,6 +490,12 @@ void AsuTransportImpl::PollTaskCompletions(const TransportTaskContextPtr& ctx)
         subBatchContext.status = KvResponseStatusToSubBatchStatus(response.status);
         FillEntryStatusFromCqeResult(response, subBatchContext);
 
+        if (subBatchContext.opType == TransportOpType::QUERY &&
+            subBatchContext.status.code == StatusCode::ASU_CQE_CHECK_RESULT_BUFFER) {
+            CompleteSubBatch(*ctx, subBatchContext, Status::OK());
+            continue;
+        }
+
         if (subBatchContext.status.ok()) {
             CompleteSubBatch(*ctx, subBatchContext, Status::OK());
             continue;

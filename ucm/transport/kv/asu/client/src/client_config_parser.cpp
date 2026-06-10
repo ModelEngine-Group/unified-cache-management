@@ -110,7 +110,8 @@ Status LoadAsuClientConfig(const std::string& configPath, AsuClientConfig& confi
         } else if (key == "hashTable.batchTopKAffinity.dynamicAdjustEnabled" ||
                    key == "batch_topk_affinity.dynamic_adjust_enabled") {
             config.attrs["batch_topk_affinity.dynamic_adjust_enabled"] = value;
-        } else if (key == "transport.asuIds" || key == "asuIds" || key == "asu_ids") {
+        } else if (key == "transport.asuIds" || key == "transport.asu_ids" || key == "asuIds" ||
+                   key == "asu_ids") {
             for (const auto& asuIdText : SplitConfigValue(value, ',')) {
                 TransportConfig transportConfig;
                 transportConfig.asuId = ParseConfigUint64(asuIdText);

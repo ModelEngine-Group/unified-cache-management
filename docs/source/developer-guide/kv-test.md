@@ -11,7 +11,8 @@ file.
 ## Build and environment
 
 `kv-test` is built from `ucm/transport/kv/kv-test/CMakeLists.txt` and links
-against `asu_client`.
+against `asu_client` and the ASU Ascend dependency interface used by the ASU
+module.
 
 `kv-test` is included only when ASU support is enabled:
 
@@ -71,7 +72,7 @@ Naming rules:
 - CLI commands and long options use kebab-case, for example `batch-store`,
   `power-cycle`, `--batch-size`, and `--read-ratio`.
 - Config keys use dot-separated snake_case, for example `bench.read_ratio`,
-  `limits.batch_store_max`, and `transport.asu_ids`.
+  `limits.memory_max_bytes`, and `transport.asu_ids`.
 - Compatibility spellings may exist in lower-level parsers, but kv-test help,
   docs, examples, and generated configs should only use the canonical forms
   above.
@@ -83,8 +84,8 @@ Supported commands:
 | `connect` | Initializes the ASU client and exits. |
 | `config check` | Loads config, validates fixed kv-test behavior constraints, prints selected config values, and exits. |
 | `version` | Prints `kv-test version <value>`, where the value is read from `version.ini`. |
-| `store` | Stores entries one by one. |
-| `retrieve` | Retrieves entries one by one. |
+| `store` | Stores all selected entries in one ASU client call in the current implementation. |
+| `retrieve` | Retrieves all selected entries in one ASU client call in the current implementation. |
 | `delete` | Deletes all selected keys in one ASU client call. |
 | `exist` | Runs a per-key ASU query and prints existence summary. |
 | `batch-store` | Stores all selected entries in one ASU client call. |
@@ -105,6 +106,7 @@ Options can use either `--option value` or `--option=value`.
 | `--check` | Enables consistency checking where supported. |
 | `--timeout <ms>` | Overrides `default_wait_timeout_ms` for this run. |
 | `--output <path>` | Overrides `output.path`. |
+| `--progress` | For `bench`, prints one progress line per measured second. |
 
 ## Key selection
 
@@ -154,29 +156,25 @@ Example:
 client_id=kv-test-client-0
 default_wait_timeout_ms=5000
 
-asu.client.mode=local
+asu.client.mode=fake_backend
 local_store.path=./kv-test-local-store
-# To exercise AsuClient + AsuTransportImpl with a local mock backend:
-# asu.client.mode=fake_backend
-# fake_backend.path=./kv-test-fake-backend-store
-# fake_backend.latency_ms=1
+fake_backend.path=./kv-test-fake-backend-store
+fake_backend.latency_ms=1
 
 view.config_path=./ucm/transport/kv/kv-test/asu_view.conf
 hash_table.type=RING_HASH
 ring_hash.virtual_node_count=128
 
-transport.asu_ids=1
+transport.asu_ids=1,2,3
 asu_info.1=protocol=TCP,local.comm_id=127.0.0.1,port=19001,local.phy_device_id=0
+asu_info.2=protocol=TCP,local.comm_id=127.0.0.1,port=19002,local.phy_device_id=0
+asu_info.3=protocol=TCP,local.comm_id=127.0.0.1,port=19003,local.phy_device_id=0
 
 kv.key_prefix=kv-test-key-
 kv.seed=20260530
 kv.value_size=4096
 kv.count=16
 
-limits.batch_store_max=110
-limits.batch_retrieve_max=110
-limits.delete_max=254
-limits.exist_max=256
 limits.memory_max_bytes=4294967296
 
 bench.io_size=4096
@@ -209,6 +207,13 @@ These fields are parsed by the ASU client config parser:
 | `contiguous_block_affinity.*` | Contiguous block affinity options. |
 | `batch_topk_affinity.*` | Batch top-k affinity options. |
 
+When `view.config_path` is set, the loaded view is the ASU membership used by
+`AsuClient`. Every ASU id in that view must have a matching `transport.asu_ids`
+entry so Client can build a transport for it. Non-mocked transports also need
+endpoint information such as `asu_info.<id>`. If `view.config_path` is omitted
+and `view_service_addrs` is empty, the default view is derived from
+`transport.asu_ids`.
+
 ### kv-test-only fields
 
 These fields are parsed by `kv-test` itself:
@@ -223,12 +228,8 @@ These fields are parsed by `kv-test` itself:
 | `kv.seed` | Seed for deterministic value generation. |
 | `kv.value_size` | Value size for normal commands. |
 | `kv.count` | Default count for count-based generation. |
-| `limits.batch_store_max` | Maximum accepted `batch-store` batch size. Default `110`. |
-| `limits.batch_retrieve_max` | Maximum accepted `batch-retrieve` batch size. Default `110`. |
-| `limits.delete_max` | Client-side sub-batch limit used after Client routes a delete request to transports. kv-test does not split the user-selected key set before calling Client. |
-| `limits.exist_max` | Client-side sub-batch limit used after Client routes an exist/query request to transports. kv-test does not split the user-selected key set before calling Client. |
-| `limits.memory_max_bytes` | Maximum generated value payload bytes held by kv-test before a command starts. Default is 4 GiB. |
-| `bench.io_size` | Bench value size. |
+| `limits.memory_max_bytes` | Maximum value payload bytes held by kv-test. For normal commands this limits generated value bytes. For `bench`, this limits the reusable buffer pool. Default is 4 GiB. |
+| `bench.io_size` | Bench value size for one key. Must not exceed the protocol 24-bit length limit `0xFFFFFF`. |
 | `bench.concurrency` | Number of benchmark operations launched concurrently in one wave. |
 | `bench.duration_sec` | Measured benchmark duration. Must be greater than zero. |
 | `bench.warmup_sec` | Warmup duration. |
@@ -238,6 +239,10 @@ These fields are parsed by `kv-test` itself:
 | `output.path` | Base output directory. Empty value uses `.`. |
 | `output.realtime_file_max_bytes` | Maximum realtime CSV size before rolling. Default is 100 MiB. |
 | `connection.timeout_ms` | Also overrides ASU client default wait timeout. |
+
+Batch and sub-batch limits are left to Client and Transport. New kv-test configs
+should not include older `limits.batch_store_max`, `limits.batch_retrieve_max`,
+`limits.delete_max`, or `limits.exist_max` fields.
 
 ## Local mode
 
@@ -269,7 +274,9 @@ The local transport stores each key under:
 ```
 
 The directory persists across separate `kv-test` commands. Delete removes the
-corresponding file. Exist checks whether the file exists.
+corresponding file when it exists. Deleting a missing key is treated as success,
+matching the current Delete result-buffer semantics. Exist checks whether the
+file exists.
 
 Because this mode replaces the ASU transport implementation, it can exercise
 `AsuClient` routing and aggregation at a high level, but it does not validate
@@ -301,6 +308,11 @@ Mocked or not covered in this mode:
 - real memory registration, `rkey`, and `lkey` semantics
 - real connection failure, drain, and recovery behavior
 
+The mock send path is installed through a temporary `AICPUTransProvider` send
+hook while fake_backend mode is enabled. `AICPUTransProvider::CreateConnection`
+also returns placeholder connection handles so `ConnectionManager` can create
+channels during this software-only integration phase.
+
 The fake backend stores each key under:
 
 ```text
@@ -320,6 +332,12 @@ During this temporary integration stage, fake backend maps each
 recover a per-ASU namespace from the send buffer without changing the Transport
 `Send` interface. This is a kv-test-only temporary semantic mapping, not a
 long-term protocol statement that KVNS_ID is ASU ID.
+
+The fake backend writes the CQE/flag buffer synchronously before `Send` returns.
+Query returns CQE status `0` when every key exists and `0x732` with a
+result-buffer payload when only some keys exist. Delete treats missing keys as
+successful entries; a result-buffer byte value of `0` means success and `1`
+means delete failed.
 
 Mode differences:
 
@@ -387,8 +405,9 @@ kv-test store --prefix user- --key-start 100 --key-end 199
 kv-test batch-store --count 16 --batch-size 16 --check
 ```
 
-`store` submits one ASU `StoreAsync` call per entry. `batch-store` submits all
-selected entries in one ASU `StoreAsync` call.
+In the current implementation, both `store` and `batch-store` submit all
+selected entries in one ASU `StoreAsync` call. The command names are kept for
+CLI compatibility while the ASU stack currently exposes the batch path.
 
 With `--check`, the tool retrieves the same entries and compares the returned
 bytes with generated expected values.
@@ -401,8 +420,9 @@ kv-test retrieve --keys key1,key2,key3 --check
 kv-test batch-retrieve --count 16 --batch-size 16 --check
 ```
 
-`retrieve` submits one ASU `LoadAsync` call per entry. `batch-retrieve` submits
-all selected entries in one ASU `LoadAsync` call.
+In the current implementation, both `retrieve` and `batch-retrieve` submit all
+selected entries in one ASU `LoadAsync` call. The command names are kept for
+CLI compatibility while the ASU stack currently exposes the batch path.
 
 With `--check`, retrieved bytes are compared with generated expected values.
 
@@ -416,7 +436,8 @@ kv-test delete --keys key1,key2,key3
 The command submits one ASU `DeleteAsync` call containing all selected keys.
 Any DHT routing or per-transport sub-batch splitting is handled inside Client.
 With `--check`, the tool runs an exist query and expects all selected keys to be
-missing.
+missing. Delete treats a missing key as a successful delete unless the backend
+reports an actual IO/delete failure.
 
 ### exist
 
@@ -453,6 +474,7 @@ kv-test bench retrieve --duration 10 --concurrency 1 --io-size 4096
 kv-test bench --op batch-store --batch-size 16 --duration 10 --concurrency 1
 kv-test bench --op batch-retrieve --batch-size 16 --duration 10 --concurrency 1
 kv-test bench mix --read-ratio 70 --write-ratio 30 --duration 10 --concurrency 1
+kv-test bench batch-store --duration 10 --progress
 ```
 
 Bench operation can be provided as `kv-test bench <op>` or through `--op` /
@@ -464,6 +486,7 @@ Requirements:
 - `bench.concurrency` must be greater than zero.
 - `bench.duration_sec` must be greater than zero.
 - `bench.io_size` must be greater than zero.
+- `bench.io_size` must be less than or equal to `0xFFFFFF`.
 - `read_ratio` and `write_ratio` must each be in `0..100`.
 - For `mix`, at least one of `read_ratio` or `write_ratio` must be greater than
   zero.
@@ -471,6 +494,15 @@ Requirements:
 
 The benchmark runner launches one asynchronous task per operation in a wave.
 Each wave contains up to `concurrency` operations.
+
+Bench uses a fixed reusable buffer pool instead of pre-generating all data for
+the whole run. The pool holds `entries_per_operation * concurrency` buffers of
+`bench.io_size` bytes. Each new batch updates metadata for the selected slot and
+reuses its value buffers.
+
+With `--progress`, bench prints one measured progress line per second instead
+of rewriting a terminal line. The final summary and report output are still
+written after the run.
 
 ## Output
 

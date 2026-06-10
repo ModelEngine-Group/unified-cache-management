@@ -100,10 +100,6 @@ write_fake_backend_config() {
         echo "kv.value_size=4096"
         echo "kv.count=16"
         echo
-        echo "limits.batch_store_max=110"
-        echo "limits.batch_retrieve_max=110"
-        echo "limits.delete_max=254"
-        echo "limits.exist_max=256"
         echo "limits.memory_max_bytes=4294967296"
         echo
         echo "bench.io_size=4096"

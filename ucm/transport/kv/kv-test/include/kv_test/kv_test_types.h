@@ -125,13 +125,6 @@ struct CommandOptions {
     std::string outputPath;
 };
 
-struct BatchLimits {
-    std::uint32_t batchStoreMax{110};
-    std::uint32_t batchRetrieveMax{110};
-    std::uint32_t deleteMax{254};
-    std::uint32_t existMax{256};
-};
-
 struct BenchConfig {
     BenchOpType op{BenchOpType::UNKNOWN};
     std::uint64_t ioSize{0};
@@ -176,7 +169,6 @@ struct KvTestConfig {
     UC::ASU::AsuClientConfig asuClientConfig;
     ToolBehaviorConfig behavior;
     HcommProtocolMapping hcommProtocolMapping;
-    BatchLimits limits;
     BenchConfig bench;
     OutputConfig output;
     FakeBackendConfig fakeBackend;

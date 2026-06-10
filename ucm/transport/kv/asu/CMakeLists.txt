@@ -32,6 +32,10 @@ endif()
 message(STATUS "ASU ASCEND include: ${ASU_ASCEND_INCLUDE_DIR}")
 message(STATUS "ASU ASCENDCL lib: ${ASU_ASCENDCL_LIB}")
 
+add_library(asu_ascend_deps INTERFACE)
+target_include_directories(asu_ascend_deps INTERFACE ${ASU_ASCEND_INCLUDE_DIR})
+target_link_libraries(asu_ascend_deps INTERFACE ${ASU_ASCENDCL_LIB})
+
 file(GLOB ASU_COMMON_SOURCES CONFIGURE_DEPENDS common/*.cpp)
 file(GLOB ASU_TRANSPORT_SOURCES CONFIGURE_DEPENDS trans/src/*.cpp)
 file(GLOB LOGGER_SOURCES CONFIGURE_DEPENDS 
@@ -53,10 +57,14 @@ target_include_directories(asu_transport
         ${UCM_ROOT_DIR}/ucm/shared/infra/logger/cc
         ${UCM_ROOT_DIR}/ucm/shared/infra/status
         ${UCM_ROOT_DIR}/ucm/shared
-        ${ASU_ASCEND_INCLUDE_DIR}
 )
 target_compile_definitions(asu_transport PRIVATE SPDLOG_FMT_EXTERNAL)
-target_link_libraries(asu_transport PUBLIC pthread fmt spdlog z ${ASU_ASCENDCL_LIB})
+target_link_libraries(asu_transport
+    PUBLIC
+        pthread fmt spdlog z
+    PRIVATE
+        asu_ascend_deps
+)
 
 file(GLOB ASU_CLIENT_SOURCES CONFIGURE_DEPENDS client/src/*.cpp)
 add_library(asu_client SHARED ${ASU_CLIENT_SOURCES})
@@ -89,12 +97,10 @@ if(BUILD_UNIT_TESTS)
         ${CMAKE_CURRENT_SOURCE_DIR}/client/src
         ${CMAKE_CURRENT_SOURCE_DIR}/trans/src
         ${UCM_ROOT_DIR}/ucm/shared/infra
-        ${ASU_ASCEND_INCLUDE_DIR}
     )
     target_link_libraries(asu.test PRIVATE
         asu_client
         gtest_main gtest
-        ${ASU_ASCENDCL_LIB}
     )
     gtest_discover_tests(asu.test)
 endif()
