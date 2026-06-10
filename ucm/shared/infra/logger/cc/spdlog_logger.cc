@@ -160,7 +160,7 @@ std::shared_ptr<spdlog::logger> Logger::Make()
     std::lock_guard<std::mutex> lg(this->mutex_);
     if (this->logger_) { return this->logger_; }
     std::string pid = std::to_string(getpid());
-    std::string log_path = this->path_ + "/" + pid + "/ucm.log";
+    std::string log_path = this->path_ + "/ucm-" + pid + ".log";
     const std::string name = "UC";
     try {
         if (!spdlog::thread_pool()) { spdlog::init_thread_pool(8192, 1); }
