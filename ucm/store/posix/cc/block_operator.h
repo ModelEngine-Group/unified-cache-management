@@ -25,7 +25,9 @@
 #define UNIFIEDCACHE_POSIX_STORE_CC_BLOCK_OPERATOR_H
 
 #include <atomic>
+#include <cerrno>
 #include <condition_variable>
+#include <cstdint>
 #include <fcntl.h>
 #include <functional>
 #include <list>
@@ -48,6 +50,7 @@ public:
         bool activated;
         int32_t flags;
         OpenCallback callback;
+        uint64_t tag{0};  // owning task id, for CancelQueued
     };
     struct CommitTask {
         Detail::BlockId id;
@@ -92,6 +95,28 @@ public:
         std::lock_guard<std::mutex> lock{q.mutex};
         q.queue.push_back(std::move(task));
         q.cv.notify_one();
+    }
+    // Remove queued (not yet started) open tasks of `tag` and fail them fast via their own
+    // callback, so a timed-out task's backlog is not opened once the disk recovers. Open tasks
+    // already picked up by a worker (possibly blocked in open()) are no longer in the queue and
+    // are left to resolve on their own. Callbacks run outside the queue lock.
+    void CancelQueued(uint64_t tag)
+    {
+        std::list<OpenTask> purged;
+        {
+            std::lock_guard<std::mutex> lock{openQueue_.mutex};
+            auto& q = openQueue_.queue;
+            for (auto it = q.begin(); it != q.end();) {
+                if (it->tag == tag) {
+                    purged.splice(purged.end(), q, it++);
+                } else {
+                    ++it;
+                }
+            }
+        }
+        for (auto& task : purged) {
+            if (task.callback) { task.callback(OpenResult{-1, ECANCELED}); }
+        }
     }
 
 private:

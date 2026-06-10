@@ -25,9 +25,13 @@
 #define UNIFIEDCACHE_POSIX_STORE_CC_AIO_IMPL_H
 
 #include <atomic>
+#include <cstdint>
 #include <functional>
 #include <linux/aio_abi.h>
+#include <mutex>
 #include <thread>
+#include <unordered_map>
+#include <vector>
 #include "status/status.h"
 
 namespace UC::PosixStore {
@@ -45,26 +49,48 @@ public:
         uint32_t length;
         void* buffer;
         Callback callback;
+        uint64_t tag{0};  // owning task id; 0 = untracked (no cancellation support)
     };
+    // Invoked periodically on the completion thread (see CompletionLoop). Used by the engine to
+    // run its deadline watchdog without spawning an extra thread.
+    using SweepFn = std::function<void()>;
 
     ~AioImpl();
-    Status Setup();
+    Status Setup(size_t epollTimeoutMs, size_t sweepIntervalMs, size_t submitTimeoutMs);
     Status ReadAsync(Io&& io);
     Status WriteAsync(Io&& io);
+    void SetSweepFn(SweepFn fn) { sweepFn_ = std::move(fn); }
+    // Best-effort cancel of all in-flight kernel IOs belonging to a task. Cancellation of disk
+    // IO is not guaranteed (most drivers reject io_cancel); uncancellable IOs are left for the
+    // completion thread to harvest (or leaked if the device never reports them).
+    void CancelTask(uint64_t tag);
 
 private:
     void CompletionLoop();
+    void MaybeSweep();
     void HarvestCompletions(std::vector<io_event>& events);
     Status SubmitIo(struct iocb* cb);
+    void Track(uint64_t tag, struct iocb* cb);
+    void Untrack(struct iocb* cb);
 
     size_t queueDepth_{4096};
-    size_t epollTimeoutMs{10};
+    size_t epollTimeoutMs_{10};
+    size_t sweepIntervalMs_{0};      // 0 => sweep on every completion-loop tick
+    size_t submitTimeoutMs_{5000};   // cap on io_submit EAGAIN retry (queue full); 0 => no cap
     size_t batchCompleteSize{512};
     aio_context_t ctx_{0};
     int32_t eventFd_{-1};
     int32_t epollFd_{-1};
     std::atomic_bool stop_{false};
     std::thread eventThread_;
+    SweepFn sweepFn_{nullptr};
+    double lastSweepTp_{0};
+    // iocb<->task side table, so CancelTask can find a task's in-flight iocbs. The heap iocb and
+    // its Callback are owned by "kernel + completion thread": the harvest path (or CancelTask on
+    // a successful cancel) is the sole deleter. Guarded by tableMutex_.
+    std::mutex tableMutex_;
+    std::unordered_map<uint64_t, std::vector<struct iocb*>> iocbTable_;
+    std::unordered_map<struct iocb*, uint64_t> iocbToTag_;
 };
 
 }  // namespace UC::PosixStore

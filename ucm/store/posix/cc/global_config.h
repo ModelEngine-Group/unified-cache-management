@@ -43,6 +43,10 @@ struct Config {
     size_t openConcurrency{32};
     size_t commitConcurrency{4};
     size_t timeoutMs{30000};
+    size_t aioTimeoutMs{0};          // AIO per-task deadline; 0 => fall back to timeoutMs
+    size_t aioSweepIntervalMs{0};    // AIO watchdog sweep cadence; 0 => every completion-loop tick
+    size_t aioEpollTimeoutMs{10};    // AIO completion-loop poll interval (also bounds sweep latency)
+    size_t aioSubmitTimeoutMs{5000};  // cap on io_submit EAGAIN retry when in-flight queue is full
     size_t dataDirShardBytes{3};
     bool posixGcEnable{true};
     double posixGcRecyclePercent{0.1};

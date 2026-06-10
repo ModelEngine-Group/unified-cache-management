@@ -115,6 +115,10 @@ private:
         inConfig.GetNumber("posix_open_concurrency", config.openConcurrency);
         inConfig.GetNumber("posix_commit_concurrency", config.commitConcurrency);
         inConfig.GetNumber("timeout_ms", config.timeoutMs);
+        inConfig.GetNumber("posix_aio_timeout_ms", config.aioTimeoutMs);
+        inConfig.GetNumber("posix_aio_sweep_interval_ms", config.aioSweepIntervalMs);
+        inConfig.GetNumber("posix_aio_epoll_timeout_ms", config.aioEpollTimeoutMs);
+        inConfig.GetNumber("posix_aio_submit_timeout_ms", config.aioSubmitTimeoutMs);
         inConfig.GetNumber("data_dir_shard_bytes", config.dataDirShardBytes);
         inConfig.Get("posix_gc_enable", config.posixGcEnable);
         inConfig.Get("posix_gc_recycle_percent", config.posixGcRecyclePercent);
@@ -214,6 +218,10 @@ private:
         UC_INFO("Set {}::OpenConcurrency to {}.", ns, config.openConcurrency);
         UC_INFO("Set {}::CommitConcurrency to {}.", ns, config.commitConcurrency);
         UC_INFO("Set {}::TimeoutMs to {}.", ns, config.timeoutMs);
+        UC_INFO("Set {}::AioTimeoutMs to {}.", ns, config.aioTimeoutMs);
+        UC_INFO("Set {}::AioSweepIntervalMs to {}.", ns, config.aioSweepIntervalMs);
+        UC_INFO("Set {}::AioEpollTimeoutMs to {}.", ns, config.aioEpollTimeoutMs);
+        UC_INFO("Set {}::AioSubmitTimeoutMs to {}.", ns, config.aioSubmitTimeoutMs);
         UC_INFO("Set {}::DataDirShardBytes to {}.", ns, config.dataDirShardBytes);
         if (config.posixGcEnable && config.posixCapacityGb > 0) {
             UC_INFO("Set {}::PosixGcEnable to {}.", ns, config.posixGcEnable);
