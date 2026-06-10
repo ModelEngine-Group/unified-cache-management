@@ -33,7 +33,7 @@ Environment Variables:
     UCM_LOG_MAX_FILES: Max rotated files per process (default: 10)
     UCM_LOG_MAX_SIZE: Max size in MiB per file (default: 5)
     UCM_LOG_TO_FILE: Enable the per-process log file (default: true)
-    UCM_CAPTURE_VLLM_LOG: Also forward vLLM's logs into the UCM log file
+    UCM_CAPTURE_VLLM_LOG: Also write vLLM's logs to <dir>/vllm-<pid>.log
                           (default: true, see logger_patch)
 
     UCM_LOG_RATE_LIMIT_ENABLE: Enable/disable rate limiting (default: true)

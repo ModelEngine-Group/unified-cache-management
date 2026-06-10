@@ -101,6 +101,8 @@ private:
     std::array<SlotData, HASH_SLOT_NUM> hash_slots_;
 
     std::shared_ptr<spdlog::logger> Make();
+    std::shared_ptr<spdlog::logger> MakeCapture();
+    bool file_enabled_{true};
     std::string path_{"log"};
     int max_files_{3};
     int max_size_{5 * 1048576};  // 5MB

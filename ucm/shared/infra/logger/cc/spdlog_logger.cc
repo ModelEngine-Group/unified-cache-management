@@ -63,8 +63,7 @@ void Logger::Log(Level&& lv, SourceLocation&& loc, std::string&& msg)
 void Logger::LogFileOnly(Level&& lv, SourceLocation&& loc, std::string&& msg)
 {
     auto level = SpdLevels[fmt::underlying(lv)];
-    this->Make();
-    auto logger = this->file_logger_;
+    auto logger = this->MakeCapture();
     if (!logger) { return; }
     logger->log(spdlog::source_loc{loc.file, loc.line, loc.func}, level, std::move(msg));
 }
@@ -170,9 +169,9 @@ std::shared_ptr<spdlog::logger> Logger::Make()
         std::vector<spdlog::sink_ptr> sinks;
         sinks.push_back(console_sink);
 
-        spdlog::sink_ptr file_sink = nullptr;
-        if (EnvFlag("UCM_LOG_TO_FILE", true)) {
-            file_sink = std::make_shared<spdlog::sinks::rotating_file_sink_mt>(
+        this->file_enabled_ = EnvFlag("UCM_LOG_TO_FILE", true);
+        if (this->file_enabled_) {
+            auto file_sink = std::make_shared<spdlog::sinks::rotating_file_sink_mt>(
                 log_path, this->max_size_, this->max_files_);
             sinks.push_back(file_sink);
         }
@@ -190,21 +189,37 @@ std::shared_ptr<spdlog::logger> Logger::Make()
         logger->flush_on(spdlog::level::warn);
         spdlog::register_logger(logger);
 
-        if (file_sink) {
-            auto file_logger = std::make_shared<spdlog::async_logger>(
-                name + "_FILE", file_sink, tp, spdlog::async_overflow_policy::overrun_oldest);
-            file_logger->set_pattern("[%Y-%m-%d %H:%M:%S.%f][%n][%^%L%$] %v [%P,%t][%s:%#,%!]");
-            file_logger->set_level(logger->level());
-            file_logger->flush_on(spdlog::level::warn);
-            spdlog::register_logger(file_logger);
-            this->file_logger_ = file_logger;
-        }
-
         spdlog::flush_every(std::chrono::seconds(1));
         this->logger_ = logger;
         return this->logger_;
     } catch (...) {
         return spdlog::default_logger();
+    }
+}
+
+std::shared_ptr<spdlog::logger> Logger::MakeCapture()
+{
+    if (this->file_logger_) { return this->file_logger_; }
+    auto main_logger = this->Make();
+    if (!this->file_enabled_) { return nullptr; }
+    std::lock_guard<std::mutex> lg(this->mutex_);
+    if (this->file_logger_) { return this->file_logger_; }
+    std::string pid = std::to_string(getpid());
+    std::string log_path = this->path_ + "/vllm-" + pid + ".log";
+    try {
+        auto file_sink = std::make_shared<spdlog::sinks::rotating_file_sink_mt>(
+            log_path, this->max_size_, this->max_files_);
+        auto logger = std::make_shared<spdlog::async_logger>(
+            "VLLM", file_sink, spdlog::thread_pool(),
+            spdlog::async_overflow_policy::overrun_oldest);
+        logger->set_pattern("[%Y-%m-%d %H:%M:%S.%f][%n][%^%L%$] %v [%P,%t][%s:%#,%!]");
+        if (main_logger) { logger->set_level(main_logger->level()); }
+        logger->flush_on(spdlog::level::warn);
+        spdlog::register_logger(logger);
+        this->file_logger_ = logger;
+        return this->file_logger_;
+    } catch (...) {
+        return nullptr;
     }
 }
 
