@@ -37,10 +37,6 @@
 
 namespace UC::ASU {
 
-namespace {
-
-}  // namespace
-
 AsuTransportImpl::~AsuTransportImpl() { Shutdown(); }
 
 Status AsuTransportImpl::Init(const std::string& configPath)
@@ -102,12 +98,14 @@ Status AsuTransportImpl::Init(const TransportConfig& config)
     auto status = ValidateSqeRequestAttrs();
     if (!status.ok()) { return status; }
 
-    status = sendBufferManager_.Init("asu send buffer", MemoryType::HOST,
-                                     config_.sendBufferSlotSize, config_.sendBufferSlotNum);
+    status =
+        sendBufferManager_.Init("asu send buffer", MemoryType::HOST, config_.sendBufferSlotSize,
+                                config_.sendBufferSlotNum, transProvider_.get());
     if (!status.ok()) { return status; }
 
-    status = flagBufferManager_.Init("asu flag buffer", MemoryType::HOST,
-                                     config_.flagBufferSlotSize, config_.flagBufferSlotNum);
+    status =
+        flagBufferManager_.Init("asu flag buffer", MemoryType::HOST, config_.flagBufferSlotSize,
+                                config_.flagBufferSlotNum, transProvider_.get());
     if (!status.ok()) { return status; }
     protocolManager_ = std::make_unique<ProtocolManager>();
 

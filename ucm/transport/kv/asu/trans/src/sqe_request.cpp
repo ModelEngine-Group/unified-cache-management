@@ -200,7 +200,7 @@ KvBatchStoreRequest BuildBatchStoreRequest(
     request.dtype = GetTransportConfigAttr<std::uint8_t>(attrs, "dtype");
     request.dspec = GetTransportConfigAttr<std::uint8_t>(attrs, "dspec");
     request.response_buffer_addr = flagBuffer.addr;
-    request.response_mr_key = flagBuffer.lkey;
+    request.response_mr_key = flagBuffer.tokenId;
     request.lr = GetTransportConfigAttr<bool>(attrs, "lr");
     request.rflag = true;
     request.batch_number = static_cast<std::uint16_t>(entries.size);
@@ -225,7 +225,7 @@ KvBatchRetrieveRequest BuildBatchRetrieveRequest(
     request.cid = cid;
     request.kv_ns_id = GetTransportConfigAttr<std::uint32_t>(attrs, "kv_ns_id");
     request.response_buffer_addr = flagBuffer.addr;
-    request.response_mr_key = flagBuffer.lkey;
+    request.response_mr_key = flagBuffer.tokenId;
     request.lr = GetTransportConfigAttr<bool>(attrs, "lr");
     request.rflag = true;
     request.batch_number = static_cast<std::uint16_t>(entries.size);
@@ -260,7 +260,7 @@ KvDeleteRequest BuildDeleteRequest(const BatchView<CacheKey>& keys,
     request.cid = cid;
     request.kv_ns_id = GetTransportConfigAttr<std::uint32_t>(attrs, "kv_ns_id");
     request.response_buffer_addr = flagBuffer.addr;
-    request.response_mr_key = flagBuffer.lkey;
+    request.response_mr_key = flagBuffer.tokenId;
     request.rflag = true;
     request.keys = CopyKeys(keys);
     request.batch_number = static_cast<std::uint16_t>(request.keys.size());
@@ -275,7 +275,7 @@ KvExistRequest BuildExistRequest(const BatchView<CacheKey>& keys,
     request.cid = cid;
     request.kv_ns_id = GetTransportConfigAttr<std::uint32_t>(attrs, "kv_ns_id");
     request.response_buffer_addr = flagBuffer.addr;
-    request.response_mr_key = flagBuffer.lkey;
+    request.response_mr_key = flagBuffer.tokenId;
     request.rflag = true;
     request.sc = GetTransportConfigAttr<bool>(attrs, "sc");
     request.keys = CopyKeys(keys);
@@ -288,7 +288,7 @@ KvKeepAliveRequest BuildKeepAliveRequest(std::uint16_t cid, const ScatterGatherE
     KvKeepAliveRequest request;
     request.cid = cid;
     request.response_buffer_addr = flagBuffer.addr;
-    request.response_mr_key = flagBuffer.lkey;
+    request.response_mr_key = flagBuffer.tokenId;
     request.rflag = true;
     return request;
 }

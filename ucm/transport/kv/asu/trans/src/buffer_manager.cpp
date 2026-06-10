@@ -31,13 +31,19 @@ namespace UC::ASU {
 
 BufferManager::~BufferManager()
 {
+    if (provider_ && memHandle_) {
+        std::vector<TransProvider::UnregisterMemoryDesc> descs{
+            {nullptr, memHandle_}
+        };
+        provider_->UnregisterMemory(descs);
+    }
     memory_.reset();
     slot_size_ = 0;
     slot_num_ = 0;
 }
 
 Status BufferManager::Init(std::string name, MemoryType type, std::size_t slot_size,
-                           std::size_t slot_num)
+                           std::size_t slot_num, TransProvider* provider)
 {
     if (memory_) {
         return Status::Error(StatusCode::INVALID_ARGUMENT, name + " already initialized");
@@ -79,6 +85,45 @@ Status BufferManager::Init(std::string name, MemoryType type, std::size_t slot_s
 
     index_pool_.Setup(static_cast<IndexPool::Index>(slot_num));
 
+    if (provider) {
+        provider_ = provider;
+        auto regStatus = RegisterMemory();
+        if (!regStatus.ok()) {
+            provider_ = nullptr;
+            memory_.reset();
+            return regStatus;
+        }
+    }
+
+    return Status::OK();
+}
+
+Status BufferManager::RegisterMemory()
+{
+    auto memType = (memory_type_ == MemoryType::ASCEND_DEVICE) ? TransProvider::MemType::MEM_DEVICE
+                                                               : TransProvider::MemType::MEM_HOST;
+    std::size_t total = slot_size_ * slot_num_;
+    std::vector<TransProvider::RegisterMemoryDesc> descs{
+        {memType, reinterpret_cast<uintptr_t>(memory_.get()), total}
+    };
+    std::vector<TransProvider::MemHandle> memHandles;
+    auto regStatus = provider_->RegisterMemory(nullptr, descs, memHandles);
+    if (!regStatus.ok() || memHandles.empty()) {
+        return Status::Error(StatusCode::INTERNAL_ERROR,
+                             name_ + ": failed to register memory: " + regStatus.message);
+    }
+
+    auto tokenStatus = provider_->GetMemTokenId(memHandles[0], tokenId_);
+    if (!tokenStatus.ok()) {
+        std::vector<TransProvider::UnregisterMemoryDesc> unregDescs{
+            {nullptr, memHandles[0]}
+        };
+        provider_->UnregisterMemory(unregDescs);
+        return Status::Error(StatusCode::INTERNAL_ERROR,
+                             name_ + ": failed to get token id: " + tokenStatus.message);
+    }
+
+    memHandle_ = memHandles[0];
     return Status::OK();
 }
 
@@ -99,7 +144,7 @@ Status BufferManager::Allocate(std::size_t size, ScatterGatherEntry& sge)
     void* addr = static_cast<char*>(memory_.get()) + idx * slot_size_;
     sge.addr = reinterpret_cast<std::uint64_t>(addr);
     sge.length = static_cast<std::uint32_t>(size);
-    sge.lkey = static_cast<std::uint32_t>(idx + 1);
+    sge.tokenId = tokenId_;
     sge.slot_index = idx;
     return Status::OK();
 }
