@@ -1,0 +1,258 @@
+﻿#include "kv_test/asu_client_runner.h"
+#include <algorithm>
+#include "asu_client/asu_client.h"
+
+namespace UC::KVTest {
+
+namespace {
+
+constexpr int kExitInvalidArgument = 1;
+constexpr int kExitAsuStatusBase = 100;
+
+Status ToKvTestStatus(const UC::ASU::Status& status, const std::string& operation)
+{
+    if (status.ok()) { return Status::Success(); }
+    return Status::Error(kExitAsuStatusBase + static_cast<int>(status.code),
+                         operation + " failed: " + status.message);
+}
+
+UC::ASU::TaskResult BuildEmptyTaskResult()
+{
+    UC::ASU::TaskResult result;
+    result.status = UC::ASU::Status::OK();
+    return result;
+}
+
+UC::ASU::TaskResult BuildFailedTaskResult(const UC::ASU::Status& status, std::size_t entryCount)
+{
+    UC::ASU::TaskResult result;
+    result.status = status;
+    result.entryStatus.assign(entryCount, status);
+    return result;
+}
+
+Status FinalizeTaskResult(CommandResult& result)
+{
+    result.status = ToKvTestStatus(result.taskResult.status, "asu task");
+    return result.status;
+}
+
+Status FinalizeQueryResult(CommandResult& result)
+{
+    result.status = Status::Success();
+    return result.status;
+}
+
+using EntrySubmitMethod = UC::ASU::Status (UC::ASU::AsuClient::*)(
+    const std::vector<UC::ASU::KVBuffer>&, UC::ASU::TaskId&);
+
+Status SubmitAndWaitEntries(UC::ASU::AsuClient& client,
+                            const std::vector<UC::ASU::KVBuffer>& entries,
+                            EntrySubmitMethod submitMethod, std::uint64_t timeoutMs,
+                            const std::string& operation, CommandResult& result)
+{
+    UC::ASU::TaskId taskId{UC::ASU::kInvalidTaskId};
+    auto status = (client.*submitMethod)(entries, taskId);
+    if (!status.ok()) {
+        result.taskResult = BuildFailedTaskResult(status, entries.size());
+        return FinalizeTaskResult(result);
+    }
+
+    status = client.Wait(taskId, timeoutMs, result.taskResult);
+    if (!status.ok()) {
+        if (result.taskResult.status.ok()) { result.taskResult.status = status; }
+        result.status = ToKvTestStatus(status, operation);
+        return result.status;
+    }
+
+    return FinalizeTaskResult(result);
+}
+
+Status SubmitAndWaitKeys(UC::ASU::AsuClient& client, const std::vector<UC::ASU::CacheKey>& keys,
+                         std::uint64_t timeoutMs, CommandResult& result)
+{
+    UC::ASU::TaskId taskId{UC::ASU::kInvalidTaskId};
+    auto status = client.DeleteAsync(keys, taskId);
+    if (!status.ok()) {
+        result.taskResult = BuildFailedTaskResult(status, keys.size());
+        return FinalizeTaskResult(result);
+    }
+
+    status = client.Wait(taskId, timeoutMs, result.taskResult);
+    if (!status.ok()) {
+        if (result.taskResult.status.ok()) { result.taskResult.status = status; }
+        result.status = ToKvTestStatus(status, "delete");
+        return result.status;
+    }
+
+    return FinalizeTaskResult(result);
+}
+
+Status SubmitEntriesOneByOne(UC::ASU::AsuClient& client,
+                             const std::vector<UC::ASU::KVBuffer>& entries,
+                             EntrySubmitMethod submitMethod, std::uint64_t timeoutMs,
+                             const std::string& operation, CommandResult& result)
+{
+    result.taskResult = BuildEmptyTaskResult();
+    result.taskResult.entryStatus.reserve(entries.size());
+
+    UC::ASU::Status firstFailure = UC::ASU::Status::OK();
+    for (const auto& entry : entries) {
+        std::vector<UC::ASU::KVBuffer> singleEntry{entry};
+        CommandResult singleResult;
+        auto status = SubmitAndWaitEntries(client, singleEntry, submitMethod, timeoutMs, operation,
+                                           singleResult);
+        if (singleResult.taskResult.entryStatus.empty()) {
+            result.taskResult.entryStatus.push_back(singleResult.taskResult.status);
+        } else {
+            result.taskResult.entryStatus.push_back(singleResult.taskResult.entryStatus.front());
+        }
+
+        if (!status.Ok() && firstFailure.ok()) {
+            firstFailure = singleResult.taskResult.status.ok()
+                               ? UC::ASU::Status::Error(
+                                     static_cast<UC::ASU::StatusCode>(status.code), status.message)
+                               : singleResult.taskResult.status;
+        }
+    }
+
+    if (!firstFailure.ok()) {
+        result.taskResult.status = UC::ASU::Status::Error(
+            UC::ASU::StatusCode::PARTIAL_FAILED, operation + " failed for one or more entries");
+        return FinalizeTaskResult(result);
+    }
+
+    return FinalizeTaskResult(result);
+}
+
+}  // namespace
+
+AsuClientRunner::AsuClientRunner(std::unique_ptr<UC::ASU::AsuClient> client)
+    : client_(std::move(client))
+{
+}
+
+AsuClientRunner::~AsuClientRunner() = default;
+
+Status AsuClientRunner::Init(const KvTestConfig& config)
+{
+    if (client_ == nullptr) { return Status::Error(kExitInvalidArgument, "asu client is null"); }
+
+    auto status = client_->Init(config.asuClientConfig);
+    return ToKvTestStatus(status, "asu client init");
+}
+
+Status AsuClientRunner::Shutdown()
+{
+    if (client_ == nullptr) { return Status::Success(); }
+
+    auto status = client_->Shutdown();
+    return ToKvTestStatus(status, "asu client shutdown");
+}
+
+Status AsuClientRunner::RegisterBuffers(BufferSet& buffers)
+{
+    if (client_ == nullptr) { return Status::Error(kExitInvalidArgument, "asu client is null"); }
+    if (buffers.regions.size() != buffers.entries.size()) {
+        return Status::Error(kExitInvalidArgument,
+                             "buffer region count does not match entry count");
+    }
+
+    buffers.registerResults.clear();
+    auto status = client_->RegisterRegions(buffers.regions, buffers.registerResults);
+    if (!status.ok()) { return ToKvTestStatus(status, "register buffers"); }
+    if (buffers.registerResults.size() != buffers.regions.size()) {
+        return Status::Error(kExitInvalidArgument,
+                             "register buffer result count does not match region count");
+    }
+
+    for (std::size_t index = 0; index < buffers.registerResults.size(); ++index) {
+        const auto& result = buffers.registerResults[index];
+        if (!result.status.ok()) { return ToKvTestStatus(result.status, "register buffer entry"); }
+        buffers.entries[index].buffer.handle = result.handle;
+    }
+
+    return Status::Success();
+}
+
+Status AsuClientRunner::UnregisterBuffers(const BufferSet& buffers)
+{
+    if (client_ == nullptr) { return Status::Success(); }
+
+    std::vector<UC::ASU::MRHandle> handles;
+    handles.reserve(buffers.registerResults.size());
+    for (const auto& result : buffers.registerResults) {
+        if (result.handle != UC::ASU::kInvalidMRHandle) { handles.push_back(result.handle); }
+    }
+    if (handles.empty()) { return Status::Success(); }
+
+    auto status = client_->UnregisterRegions(handles);
+    return ToKvTestStatus(status, "unregister buffers");
+}
+
+Status AsuClientRunner::Store(const BufferSet& buffers, SubmitMode submitMode,
+                              std::uint64_t timeoutMs, CommandResult& result)
+{
+    if (client_ == nullptr) { return Status::Error(kExitInvalidArgument, "asu client is null"); }
+    if (buffers.entries.empty()) {
+        result.taskResult = BuildEmptyTaskResult();
+        return FinalizeTaskResult(result);
+    }
+
+    if (submitMode == SubmitMode::SINGLE_ENTRY_PER_CALL) {
+        return SubmitEntriesOneByOne(*client_, buffers.entries, &UC::ASU::AsuClient::StoreAsync,
+                                     timeoutMs, "store", result);
+    }
+
+    return SubmitAndWaitEntries(*client_, buffers.entries, &UC::ASU::AsuClient::StoreAsync,
+                                timeoutMs, "store", result);
+}
+
+Status AsuClientRunner::Retrieve(const BufferSet& buffers, SubmitMode submitMode,
+                                 std::uint64_t timeoutMs, CommandResult& result)
+{
+    if (client_ == nullptr) { return Status::Error(kExitInvalidArgument, "asu client is null"); }
+    if (buffers.entries.empty()) {
+        result.taskResult = BuildEmptyTaskResult();
+        return FinalizeTaskResult(result);
+    }
+
+    if (submitMode == SubmitMode::SINGLE_ENTRY_PER_CALL) {
+        return SubmitEntriesOneByOne(*client_, buffers.entries, &UC::ASU::AsuClient::LoadAsync,
+                                     timeoutMs, "retrieve", result);
+    }
+
+    return SubmitAndWaitEntries(*client_, buffers.entries, &UC::ASU::AsuClient::LoadAsync,
+                                timeoutMs, "retrieve", result);
+}
+
+Status AsuClientRunner::Delete(const std::vector<UC::ASU::CacheKey>& keys, std::uint64_t timeoutMs,
+                               CommandResult& result)
+{
+    if (client_ == nullptr) { return Status::Error(kExitInvalidArgument, "asu client is null"); }
+    if (keys.empty()) {
+        result.taskResult = BuildEmptyTaskResult();
+        return FinalizeTaskResult(result);
+    }
+
+    return SubmitAndWaitKeys(*client_, keys, timeoutMs, result);
+}
+
+Status AsuClientRunner::Exist(const std::vector<UC::ASU::CacheKey>& keys, std::uint64_t timeoutMs,
+                              CommandResult& result)
+{
+    if (client_ == nullptr) { return Status::Error(kExitInvalidArgument, "asu client is null"); }
+
+    UC::ASU::QueryOptions options;
+    options.mode = UC::ASU::QueryMode::PER_KEY;
+    options.timeoutMs = timeoutMs;
+    auto status = client_->Query(keys, options, result.queryResult);
+    if (!status.ok()) {
+        result.status = ToKvTestStatus(status, "exist");
+        return result.status;
+    }
+
+    return FinalizeQueryResult(result);
+}
+
+}  // namespace UC::KVTest
