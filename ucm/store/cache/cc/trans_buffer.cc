@@ -126,6 +126,7 @@ class LocalBufferStrategy : public BufferStrategy {
     };
 
     bool ioDirect_{false};
+    bool useHugePage_{false};
     BufferHeader header_;
     LocalMutex bucketLocks_[nHashTableBucket];
     std::unique_ptr<LocalLock[]> nodeLocks_;
@@ -134,8 +135,9 @@ class LocalBufferStrategy : public BufferStrategy {
 
 public:
     LocalBufferStrategy(int32_t deviceId, size_t nodeSize, size_t totalSize, size_t reservedNumber,
-                        bool ioDirect)
-        : BufferStrategy(deviceId, nodeSize, totalSize, reservedNumber), ioDirect_(ioDirect)
+                        bool ioDirect, bool useHugePage)
+        : BufferStrategy(deviceId, nodeSize, totalSize, reservedNumber), ioDirect_(ioDirect),
+          useHugePage_(useHugePage)
     {
     }
     Status Setup() override
@@ -164,12 +166,17 @@ public:
             UC_ERROR("Failed to make buffer on device({}).", deviceId);
             return Status::Error();
         }
-        data_ = ioDirect_ ? buffer->MakeHostBuffer4DirectIo(nodeSize * nNode)
+        UC_DEBUG("Make cache local buffer start, device: {}, ioDirect: {}, useHugePage: {}, nodeSize: {}, nNode: {}, totalSize: {}.",
+                 deviceId, ioDirect_, useHugePage_, nodeSize, nNode, nodeSize * nNode);
+        data_ = ioDirect_ ? buffer->MakeHostBuffer4DirectIo(nodeSize * nNode, useHugePage_)
                           : buffer->MakeHostBuffer(nodeSize * nNode);
         if (!data_) [[unlikely]] {
-            UC_ERROR("Failed to make pinned({}) for device({}).", nodeSize * nNode, deviceId);
+            UC_ERROR("Failed to make pinned({}) for device({}), ioDirect: {}, useHugePage: {}, nodeSize: {}, nNode: {}.",
+                     nodeSize * nNode, deviceId, ioDirect_, useHugePage_, nodeSize, nNode);
             return Status::OutOfMemory();
         }
+        UC_DEBUG("Make cache local buffer success, device: {}, ioDirect: {}, useHugePage: {}, totalSize: {}.",
+                 deviceId, ioDirect_, useHugePage_, nodeSize * nNode);
         for (size_t i = 0; i < nHashTableBucket; i++) { header_.buckets[i] = invalidIndex; }
         for (size_t i = 0; i < nNode; i++) { meta_[i].Init(); }
         header_.freeHead = 0;
@@ -469,7 +476,7 @@ Status TransBuffer::Setup(const Config& config)
         if (!config.shareBufferEnable) {
             strategy_ = std::make_shared<LocalBufferStrategy>(
                 config.deviceId, config.shardSize, config.bufferCapacity,
-                config.loadExclusiveBufferNumber, config.ioDirect);
+                config.loadExclusiveBufferNumber, config.ioDirect, config.cacheUseHugePage);
         } else if (config.deviceId >= 0) {
             strategy_ = std::make_shared<SharedBufferStrategy>(
                 config.uniqueId, config.deviceId, config.shardSize, config.bufferCapacity,
