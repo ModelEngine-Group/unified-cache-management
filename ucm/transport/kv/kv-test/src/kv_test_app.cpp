@@ -49,6 +49,27 @@ std::string EffectiveKeyPrefix(const CommandOptions& options, const KvTestConfig
     return options.keyPrefix.empty() ? config.keyPrefix : options.keyPrefix;
 }
 
+CommandOptions BuildEffectiveOptions(const CommandOptions& options, const KvTestConfig& config)
+{
+    CommandOptions effective = options;
+    effective.seed = EffectiveSeed(options, config);
+    effective.count = EffectiveCount(options, config);
+    effective.valueSize = options.command == CommandType::BENCH
+                              ? config.bench.ioSize
+                              : EffectiveValueSize(options, config);
+    effective.keyPrefix = EffectiveKeyPrefix(options, config);
+    effective.batchSize = config.bench.batchSize;
+    effective.timeoutMs = config.asuClientConfig.defaultWaitTimeoutMs;
+    effective.outputPath = config.output.path;
+    if (effective.benchOp == BenchOpType::UNKNOWN) { effective.benchOp = config.bench.op; }
+    effective.concurrency = config.bench.concurrency;
+    effective.durationSec = config.bench.durationSec;
+    effective.warmupSec = config.bench.warmupSec;
+    effective.readRatio = config.bench.readRatio;
+    effective.writeRatio = config.bench.writeRatio;
+    return effective;
+}
+
 Status WritePowerCycleMetadata(const CommandOptions& options, const KvTestConfig& config)
 {
     std::error_code errorCode;
@@ -409,6 +430,7 @@ int KvTestApp::Run(int argc, char** argv)
     }
 
     MaybePrepareFakeBackend(config);
+    const auto effectiveOptions = BuildEffectiveOptions(options, config);
 
     status = hcommConfigAdapter_.ValidateChannelSource(config);
     if (!status.Ok()) {
@@ -442,20 +464,20 @@ int KvTestApp::Run(int argc, char** argv)
     CommandResult result;
     AsuClientRunner clientRunner(CreateClientForConfig(config));
     status = clientRunner.Init(config);
-    if (status.Ok()) { status = RunCommand(options, config, clientRunner, result); }
+    if (status.Ok()) { status = RunCommand(effectiveOptions, config, clientRunner, result); }
 
     auto shutdownStatus = clientRunner.Shutdown();
     if (status.Ok() && !shutdownStatus.Ok()) { status = shutdownStatus; }
 
     result.status = status;
-    auto writeStatus = resultWriter_.WriteSummary(options, result);
+    auto writeStatus = resultWriter_.WriteSummary(effectiveOptions, result);
     if (status.Ok() && !writeStatus.Ok()) { status = writeStatus; }
 
     auto closeStatus = resultWriter_.Close();
     if (status.Ok() && !closeStatus.Ok()) { status = closeStatus; }
 
     if (status.Ok()) {
-        PrintSuccess(options, result);
+        PrintSuccess(effectiveOptions, result);
     } else {
         PrintFailure(status);
         PrintConsistencySummary(result);

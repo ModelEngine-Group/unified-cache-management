@@ -50,7 +50,8 @@ public:
     {
         return {};
     }
-    std::vector<Status> Send(const std::vector<SendIoBatch>&, uint32_t, uint32_t) override
+    std::vector<Status> Send(const std::vector<TransProvider::SendIoBatch>&, uint32_t,
+                             uint32_t) override
     {
         return {};
     }

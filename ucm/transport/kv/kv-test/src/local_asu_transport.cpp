@@ -120,14 +120,11 @@ public:
         result.entryStatus.reserve(keys.size());
         for (const auto& key : keys) {
             std::error_code errorCode;
-            const bool removed = std::filesystem::remove(KeyPath(key), errorCode);
+            (void)std::filesystem::remove(KeyPath(key), errorCode);
             if (errorCode) {
                 result.entryStatus.emplace_back(UC::ASU::Status::Error(
                     UC::ASU::StatusCode::IO_ERROR,
                     "failed to delete local key=" + key + " error=" + errorCode.message()));
-            } else if (!removed) {
-                result.entryStatus.emplace_back(UC::ASU::Status::Error(
-                    UC::ASU::StatusCode::NOT_FOUND, "local key not found=" + key));
             } else {
                 result.entryStatus.emplace_back(UC::ASU::Status::OK());
             }

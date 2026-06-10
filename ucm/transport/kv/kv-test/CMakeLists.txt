@@ -20,9 +20,11 @@ target_include_directories(kv-test
         ../asu/client/include
         ../asu/trans/include
         ../asu/trans/src
+        ${UCM_ROOT_DIR}/ucm/shared/infra
 )
 
 target_link_libraries(kv-test
     PRIVATE
         asu_client
+        asu_ascend_deps
 )

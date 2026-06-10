@@ -11,9 +11,18 @@
 #include <mutex>
 #include <sstream>
 #include <thread>
+#include "aicpu_trans_provider.h"
 #include "buffer_manager.h"
 #include "connection_manager.h"
 #include "kv_protocol.h"
+#include "trans_provider.h"
+
+namespace UC::ASU {
+
+std::vector<Status> MockSend(const std::vector<TransProvider::SendIoBatch>& ioBatches,
+                             std::uint32_t kernelCount, std::uint32_t quietCount);
+
+}  // namespace UC::ASU
 
 namespace UC::KVTest {
 namespace {
@@ -329,14 +338,19 @@ UC::ASU::Status CompleteExist(const FakeBackendConfig& config, UC::ASU::AsuId as
     return UC::ASU::Status::OK();
 }
 
-UC::ASU::Status CompleteFakeBackendRequest(FakeBackendConfig config,
-                                           const UC::ASU::ScatterGatherEntry& sendSge)
+UC::ASU::Status CompleteFakeBackendRequest(FakeBackendConfig config, const void* sendBuffer,
+                                           std::uint64_t len)
 {
     if (config.latencyMs > 0) {
         std::this_thread::sleep_for(std::chrono::milliseconds(config.latencyMs));
     }
 
-    const auto* request = reinterpret_cast<const std::uint32_t*>(sendSge.addr);
+    if (sendBuffer == nullptr || len < sizeof(std::uint32_t)) {
+        return UC::ASU::Status::Error(UC::ASU::StatusCode::INVALID_ARGUMENT,
+                                      "fake backend send buffer is empty");
+    }
+
+    const auto* request = reinterpret_cast<const std::uint32_t*>(sendBuffer);
     const auto asuId = RequestAsuId(request);
     switch (RequestOpcode(request)) {
         case UC::ASU::KvOpcode::BatchStore: return CompleteBatchStore(config, asuId, request);
@@ -365,16 +379,22 @@ FakeBackendConfig GetFakeBackendConfig(bool& enabled)
 
 void SetFakeBackendConfig(FakeBackendConfig config)
 {
-    std::lock_guard<std::mutex> lock(g_fakeBackendMu);
-    g_fakeBackendConfig = std::move(config);
-    g_fakeBackendEnabled = true;
+    {
+        std::lock_guard<std::mutex> lock(g_fakeBackendMu);
+        g_fakeBackendConfig = std::move(config);
+        g_fakeBackendEnabled = true;
+    }
+    UC::ASU::SetAICPUTransProviderSendHook(&UC::ASU::MockSend);
 }
 
 void DisableFakeBackend()
 {
-    std::lock_guard<std::mutex> lock(g_fakeBackendMu);
-    g_fakeBackendConfig = FakeBackendConfig{};
-    g_fakeBackendEnabled = false;
+    UC::ASU::SetAICPUTransProviderSendHook(nullptr);
+    {
+        std::lock_guard<std::mutex> lock(g_fakeBackendMu);
+        g_fakeBackendConfig = FakeBackendConfig{};
+        g_fakeBackendEnabled = false;
+    }
 }
 
 void PatchTransportConfig(UC::ASU::TransportConfig& config)
@@ -472,8 +492,8 @@ void MaybePrepareFakeBackend(KvTestConfig& config)
 
 namespace UC::ASU {
 
-std::vector<Status> MockSend(const std::vector<SendIoBatch>& ioBatches, std::uint32_t kernelCount,
-                             std::uint32_t quietCount)
+std::vector<Status> MockSend(const std::vector<TransProvider::SendIoBatch>& ioBatches,
+                             std::uint32_t kernelCount, std::uint32_t quietCount)
 {
     (void)kernelCount;
     (void)quietCount;
@@ -489,22 +509,23 @@ std::vector<Status> MockSend(const std::vector<SendIoBatch>& ioBatches, std::uin
     std::vector<Status> statuses;
     statuses.reserve(ioBatches.size());
     for (const auto& ioBatch : ioBatches) {
-        if (ioBatch.sendSge == nullptr || ioBatch.sendSge->addr == 0) {
+        if (ioBatch.sendBuffer == nullptr || ioBatch.len == 0) {
             statuses.emplace_back(
-                Status::Error(StatusCode::INVALID_ARGUMENT, "fake backend send SGE is empty"));
+                Status::Error(StatusCode::INVALID_ARGUMENT, "fake backend send buffer is empty"));
             continue;
         }
 
         // kv-test fake backend temporarily completes the CQE before Send returns. The production
         // path still observes completion through Transport polling, while the mock avoids detached
         // threads racing with sub-batch buffer lifetime in multi sub-batch tests.
-        statuses.emplace_back(UC::KVTest::CompleteFakeBackendRequest(config, *ioBatch.sendSge));
+        statuses.emplace_back(
+            UC::KVTest::CompleteFakeBackendRequest(config, ioBatch.sendBuffer, ioBatch.len));
     }
     return statuses;
 }
 
-std::vector<Status> Send(const std::vector<SendIoBatch>& ioBatches, std::uint32_t kernelCount,
-                         std::uint32_t quietCount)
+std::vector<Status> Send(const std::vector<TransProvider::SendIoBatch>& ioBatches,
+                         std::uint32_t kernelCount, std::uint32_t quietCount)
 {
     return MockSend(ioBatches, kernelCount, quietCount);
 }

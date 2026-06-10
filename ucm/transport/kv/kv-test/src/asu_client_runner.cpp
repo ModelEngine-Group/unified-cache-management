@@ -109,10 +109,10 @@ Status SubmitEntriesOneByOne(UC::ASU::AsuClient& client,
         }
 
         if (!status.Ok() && firstFailure.ok()) {
-            firstFailure = singleResult.taskResult.status.ok()
-                               ? UC::ASU::Status::Error(
-                                     static_cast<UC::ASU::StatusCode>(status.code), status.message)
-                               : singleResult.taskResult.status;
+            firstFailure =
+                singleResult.taskResult.status.ok()
+                    ? UC::ASU::Status::Error(UC::ASU::StatusCode::INTERNAL_ERROR, status.message)
+                    : singleResult.taskResult.status;
         }
     }
 

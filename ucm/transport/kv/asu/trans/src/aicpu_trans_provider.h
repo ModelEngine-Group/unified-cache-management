@@ -4,11 +4,24 @@
 
 namespace UC::ASU {
 
+using AICPUTransProviderSendHook =
+    std::vector<Status> (*)(const std::vector<TransProvider::SendIoBatch>& ioBatches,
+                            uint32_t kernelCount, uint32_t quietCount);
+
+void SetAICPUTransProviderSendHook(AICPUTransProviderSendHook hook);
+AICPUTransProviderSendHook GetAICPUTransProviderSendHook();
+
 class AICPUTransProvider : public TransProvider {
 public:
-    Status CreateConnection(const std::string&, const std::string&, uint32_t, uint32_t, uint32_t,
-                            std::vector<ConnectionHandle>&) override
+    Status CreateConnection(const std::string&, const std::string&, uint32_t, uint32_t qpNum,
+                            uint32_t, std::vector<ConnectionHandle>& handles) override
     {
+        handles.clear();
+        handles.reserve(qpNum);
+        for (uint32_t index = 0; index < qpNum; ++index) {
+            handles.push_back(reinterpret_cast<ConnectionHandle>(
+                static_cast<std::uintptr_t>(index) + static_cast<std::uintptr_t>(1)));
+        }
         return Status::OK();
     }
 
@@ -17,8 +30,11 @@ public:
         return std::vector<Status>(handles.size(), Status::OK());
     }
 
-    std::vector<Status> Send(const std::vector<SendIoBatch>& ioBatches, uint32_t, uint32_t) override
+    std::vector<Status> Send(const std::vector<TransProvider::SendIoBatch>& ioBatches,
+                             uint32_t kernelCount, uint32_t quietCount) override
     {
+        auto hook = GetAICPUTransProviderSendHook();
+        if (hook != nullptr) { return hook(ioBatches, kernelCount, quietCount); }
         return std::vector<Status>(ioBatches.size(), Status::OK());
     }
 

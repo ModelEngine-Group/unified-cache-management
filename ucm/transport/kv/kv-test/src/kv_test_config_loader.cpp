@@ -165,7 +165,6 @@ Status KvTestConfigLoader::Load(const std::string& configPath, KvTestConfig& con
 
     config.behavior = ToolBehaviorConfig{};
     config.hcommProtocolMapping = HcommProtocolMapping{};
-    config.limits = BatchLimits{};
     config.bench = BenchConfig{};
     config.output = OutputConfig{};
     config.fakeBackend = FakeBackendConfig{};
@@ -196,10 +195,6 @@ Status KvTestConfigLoader::Load(const std::string& configPath, KvTestConfig& con
         GetUint64Any(values, {"kv.seed"}, config.seed);
         GetUint64Any(values, {"kv.count"}, config.count);
 
-        GetUint32Any(values, {"limits.batch_store_max"}, config.limits.batchStoreMax);
-        GetUint32Any(values, {"limits.batch_retrieve_max"}, config.limits.batchRetrieveMax);
-        GetUint32Any(values, {"limits.delete_max"}, config.limits.deleteMax);
-        GetUint32Any(values, {"limits.exist_max"}, config.limits.existMax);
         GetUint64Any(values, {"limits.memory_max_bytes"}, config.memoryMaxBytes);
 
         GetUint64Any(values, {"bench.io_size"}, config.bench.ioSize);
