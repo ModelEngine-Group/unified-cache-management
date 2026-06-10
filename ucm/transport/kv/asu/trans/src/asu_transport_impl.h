@@ -124,11 +124,11 @@ private:
 
     TransportConfig config_;
     IoScheduler ioScheduler_;
+    std::unique_ptr<TransProvider> transProvider_;
     BufferManager sendBufferManager_;
     BufferManager flagBufferManager_;
     std::unique_ptr<ProtocolManager> protocolManager_;
 
-    std::unique_ptr<TransProvider> transProvider_;
     std::unique_ptr<ConnectionManager> connManager_;
     TransportTaskManager taskManager_;
     UC::SpscRingQueue<TransportTaskContextPtr> executeQueue_;

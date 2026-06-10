@@ -56,8 +56,9 @@ public:
         return {};
     }
     Status RegisterMemory(ConnectionHandle, const std::vector<RegisterMemoryDesc>&,
-                          std::vector<MemHandle>&) override
+                          std::vector<MemHandle>& handles) override
     {
+        handles.push_back(reinterpret_cast<MemHandle>(static_cast<uintptr_t>(1)));
         return Status::OK();
     }
     std::vector<Status> UnregisterMemory(const std::vector<UnregisterMemoryDesc>&) override
@@ -69,7 +70,11 @@ public:
         return Status::OK();
     }
     std::vector<Status> FreeThread(const std::vector<ThreadHandle>&) override { return {}; }
-    Status GetMemTokenId(MemHandle, uint32_t&) override { return Status::OK(); }
+    Status GetMemTokenId(MemHandle, uint32_t& tokenId) override
+    {
+        tokenId = 1;
+        return Status::OK();
+    }
 };
 
 constexpr std::size_t kFlagBufferHeaderSize = 16;
@@ -125,11 +130,14 @@ protected:
         transport_->SetTransProvider(std::make_unique<StubTransProvider>());
         transport_->config_.attrs = DefaultAttrs();
         transport_->nextRequestCid_.store(1, std::memory_order_relaxed);
-        auto status = transport_->flagBufferManager_.Init("test flag buffer", MemoryType::HOST,
-                                                          kFlagBufferSlotSize, kFlagBufferSlotNum);
+        auto* provider = transport_->transProvider_.get();
+        auto status =
+            transport_->flagBufferManager_.Init("test flag buffer", MemoryType::HOST,
+                                                kFlagBufferSlotSize, kFlagBufferSlotNum, provider);
         ASSERT_TRUE(status.ok()) << status.message;
-        status = transport_->sendBufferManager_.Init(
-            "test send buffer", MemoryType::HOST, kTestSendBufferSlotSize, kTestSendBufferSlotNum);
+        status = transport_->sendBufferManager_.Init("test send buffer", MemoryType::HOST,
+                                                     kTestSendBufferSlotSize,
+                                                     kTestSendBufferSlotNum, provider);
         ASSERT_TRUE(status.ok()) << status.message;
         transport_->protocolManager_ = std::make_unique<ProtocolManager>();
     }

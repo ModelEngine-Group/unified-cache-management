@@ -27,6 +27,7 @@
 #include <gtest/gtest.h>
 #include <thread>
 #include <vector>
+#include "trans_provider.h"
 
 namespace UC::ASU {
 namespace {
@@ -124,7 +125,7 @@ TEST_F(BufferManagerTest, SingleAllocateAndFree)
     ASSERT_TRUE(status.ok()) << status.message;
     ASSERT_NE(sge.addr, 0);
     ASSERT_EQ(sge.length, 64);
-    ASSERT_NE(sge.lkey, 0);
+    ASSERT_EQ(sge.tokenId, 0);
     ASSERT_NE(sge.slot_index, UINT32_MAX);
 
     auto* ptr = reinterpret_cast<void*>(sge.addr);
@@ -321,6 +322,132 @@ TEST_F(BufferManagerTest, AllocateReturnsBusyWhenFull)
 
     mgr.Free(sge1.slot_index);
     mgr.Free(sge2.slot_index);
+}
+
+class StubTransProvider : public TransProvider {
+public:
+    uint32_t registerCount = 0;
+    uint32_t unregisterCount = 0;
+    uint32_t fakeTokenId = 42;
+    bool failRegister = false;
+    bool failGetToken = false;
+    MemType lastMemType = MemType::MEM_HOST;
+    uintptr_t lastAddr = 0;
+    size_t lastSize = 0;
+
+    Status CreateConnection(const std::string&, const std::string&, uint32_t, uint32_t, uint32_t,
+                            std::vector<ConnectionHandle>&) override
+    {
+        return Status::OK();
+    }
+    std::vector<Status> DeleteConnections(const std::vector<ConnectionHandle>&) override
+    {
+        return {};
+    }
+    std::vector<Status> Send(const std::vector<SendIoBatch>&, uint32_t, uint32_t) override
+    {
+        return {};
+    }
+    Status RegisterMemory(ConnectionHandle, const std::vector<RegisterMemoryDesc>& descs,
+                          std::vector<MemHandle>& handles) override
+    {
+        registerCount++;
+        if (!descs.empty()) {
+            lastMemType = descs[0].memoryType;
+            lastAddr = descs[0].addr;
+            lastSize = descs[0].size;
+        }
+        if (failRegister) {
+            return Status::Error(StatusCode::INTERNAL_ERROR, "stub register failed");
+        }
+        handles.push_back(reinterpret_cast<MemHandle>(static_cast<uintptr_t>(registerCount)));
+        return Status::OK();
+    }
+    std::vector<Status> UnregisterMemory(const std::vector<UnregisterMemoryDesc>& descs) override
+    {
+        unregisterCount += static_cast<uint32_t>(descs.size());
+        return std::vector<Status>(descs.size(), Status::OK());
+    }
+    Status AllocThread(uint32_t, const std::vector<uint32_t>&, std::vector<ThreadHandle>&) override
+    {
+        return Status::OK();
+    }
+    std::vector<Status> FreeThread(const std::vector<ThreadHandle>&) override { return {}; }
+    Status GetMemTokenId(MemHandle, uint32_t& tokenId) override
+    {
+        if (failGetToken) {
+            return Status::Error(StatusCode::INTERNAL_ERROR, "stub get token failed");
+        }
+        tokenId = fakeTokenId;
+        return Status::OK();
+    }
+};
+
+TEST_F(BufferManagerTest, InitWithProviderRegistersMemory)
+{
+    StubTransProvider provider;
+
+    BufferManager mgr;
+    auto status = mgr.Init("test_rdma", MemoryType::HOST, 1024, 10, &provider);
+    ASSERT_TRUE(status.ok()) << status.message;
+    ASSERT_EQ(provider.registerCount, 1);
+    ASSERT_EQ(provider.lastMemType, TransProvider::MemType::MEM_HOST);
+    ASSERT_NE(provider.lastAddr, 0);
+    ASSERT_EQ(provider.lastSize, 1024 * 10);
+    ASSERT_EQ(mgr.GetTokenId(), 42);
+}
+
+TEST_F(BufferManagerTest, InitWithProviderAllocateReturnsTokenId)
+{
+    StubTransProvider provider;
+    provider.fakeTokenId = 99;
+
+    BufferManager mgr;
+    auto status = mgr.Init("test_rdma", MemoryType::HOST, 1024, 10, &provider);
+    ASSERT_TRUE(status.ok()) << status.message;
+
+    ScatterGatherEntry sge;
+    status = mgr.Allocate(64, sge);
+    ASSERT_TRUE(status.ok()) << status.message;
+    ASSERT_EQ(sge.tokenId, 99);
+
+    mgr.Free(sge.slot_index);
+}
+
+TEST_F(BufferManagerTest, DestroyWithProviderUnregistersMemory)
+{
+    StubTransProvider provider;
+    {
+        BufferManager mgr;
+        auto status = mgr.Init("test_rdma", MemoryType::HOST, 1024, 10, &provider);
+        ASSERT_TRUE(status.ok()) << status.message;
+        ASSERT_EQ(provider.unregisterCount, 0);
+    }
+    ASSERT_EQ(provider.unregisterCount, 1);
+}
+
+TEST_F(BufferManagerTest, InitWithProviderRegisterFails)
+{
+    StubTransProvider provider;
+    provider.failRegister = true;
+
+    BufferManager mgr;
+    auto status = mgr.Init("test_rdma", MemoryType::HOST, 1024, 10, &provider);
+    ASSERT_FALSE(status.ok());
+    ASSERT_EQ(status.code, StatusCode::INTERNAL_ERROR);
+    ASSERT_EQ(provider.unregisterCount, 0);
+}
+
+TEST_F(BufferManagerTest, InitWithProviderGetTokenFailsCleansUp)
+{
+    StubTransProvider provider;
+    provider.failGetToken = true;
+
+    BufferManager mgr;
+    auto status = mgr.Init("test_rdma", MemoryType::HOST, 1024, 10, &provider);
+    ASSERT_FALSE(status.ok());
+    ASSERT_EQ(status.code, StatusCode::INTERNAL_ERROR);
+    ASSERT_EQ(provider.unregisterCount, 1);
 }
 
 }  // namespace

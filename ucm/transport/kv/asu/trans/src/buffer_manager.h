@@ -29,13 +29,14 @@
 #include <string>
 #include "asu_transport/types.h"
 #include "thread/index_pool.h"
+#include "trans_provider.h"
 
 namespace UC::ASU {
 
 struct ScatterGatherEntry {
     std::uint64_t addr{0};
     std::uint32_t length{0};
-    std::uint32_t lkey{0};
+    std::uint32_t tokenId{0};
     std::uint32_t slot_index{UINT32_MAX};
 };
 
@@ -47,14 +48,18 @@ public:
     BufferManager(const BufferManager&) = delete;
     BufferManager& operator=(const BufferManager&) = delete;
 
-    Status Init(std::string name, MemoryType type, std::size_t slot_size, std::size_t slot_num);
+    Status Init(std::string name, MemoryType type, std::size_t slot_size, std::size_t slot_num,
+                TransProvider* provider = nullptr);
 
     Status Allocate(std::size_t size, ScatterGatherEntry& sge);
     Status Free(std::uint32_t slot_index);
 
     bool IsValidPointer(const void* ptr) const;
 
+    std::uint32_t GetTokenId() const { return tokenId_; }
+
 private:
+    Status RegisterMemory();
     std::string name_;
     std::size_t slot_size_{0};
     std::size_t slot_num_{0};
@@ -62,6 +67,10 @@ private:
 
     std::shared_ptr<void> memory_;
     IndexPool index_pool_;
+
+    TransProvider* provider_{nullptr};
+    TransProvider::MemHandle memHandle_{nullptr};
+    std::uint32_t tokenId_{0};
 };
 
 }  // namespace UC::ASU

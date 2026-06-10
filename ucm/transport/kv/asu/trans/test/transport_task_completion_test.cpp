@@ -91,11 +91,14 @@ protected:
     {
         transport_ = std::make_unique<AsuTransportImpl>();
         transport_->SetTransProvider(std::make_unique<StubTransProvider>());
-        auto status = transport_->sendBufferManager_.Init("test send buffer", MemoryType::HOST,
-                                                          kTestBufferSlotSize, kTestBufferSlotNum);
+        auto* provider = transport_->transProvider_.get();
+        auto status =
+            transport_->sendBufferManager_.Init("test send buffer", MemoryType::HOST,
+                                                kTestBufferSlotSize, kTestBufferSlotNum, provider);
         ASSERT_TRUE(status.ok()) << status.message;
-        status = transport_->flagBufferManager_.Init("test flag buffer", MemoryType::HOST,
-                                                     kTestBufferSlotSize, kTestBufferSlotNum);
+        status =
+            transport_->flagBufferManager_.Init("test flag buffer", MemoryType::HOST,
+                                                kTestBufferSlotSize, kTestBufferSlotNum, provider);
         ASSERT_TRUE(status.ok()) << status.message;
     }
 
