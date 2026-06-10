@@ -30,6 +30,8 @@
 #include <cstdlib>
 #include <mutex>
 #include <spdlog/spdlog.h>
+#include <string>
+#include <unordered_set>
 namespace UC::Logger {
 
 constexpr size_t HASH_SLOT_NUM = 512;
@@ -40,6 +42,8 @@ struct SourceLocation {
     const char* func = "";
     const int32_t line = 0;
 };
+
+const char* InternSourceString(std::string&& s);
 
 class Logger {
     std::shared_ptr<spdlog::logger> logger_;

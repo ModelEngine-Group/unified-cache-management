@@ -42,6 +42,17 @@ static spdlog::level::level_enum SpdLevels[] = {spdlog::level::debug, spdlog::le
                                                 spdlog::level::warn, spdlog::level::err,
                                                 spdlog::level::critical};
 
+/* The async logger formats messages on a background thread after the caller
+ * has returned, but spdlog::source_loc only stores raw char pointers; intern
+ * file/function names so those pointers stay valid for the process lifetime. */
+const char* InternSourceString(std::string&& s)
+{
+    static std::mutex mtx;
+    static std::unordered_set<std::string> pool;
+    std::lock_guard<std::mutex> lg(mtx);
+    return pool.insert(std::move(s)).first->c_str();
+}
+
 void Logger::Log(Level&& lv, SourceLocation&& loc, std::string&& msg)
 {
     auto level = SpdLevels[fmt::underlying(lv)];
