@@ -57,8 +57,9 @@ public:
         return {};
     }
     Status RegisterMemory(ConnectionHandle, const std::vector<RegisterMemoryDesc>&,
-                          std::vector<MemHandle>&) override
+                          std::vector<MemHandle>& handles) override
     {
+        handles.push_back(reinterpret_cast<MemHandle>(static_cast<uintptr_t>(1)));
         return Status::OK();
     }
     std::vector<Status> UnregisterMemory(const std::vector<UnregisterMemoryDesc>&) override
@@ -70,7 +71,11 @@ public:
         return Status::OK();
     }
     std::vector<Status> FreeThread(const std::vector<ThreadHandle>&) override { return {}; }
-    Status GetMemTokenId(MemHandle, uint32_t&) override { return Status::OK(); }
+    Status GetMemTokenId(MemHandle, uint32_t& tokenId) override
+    {
+        tokenId = 1;
+        return Status::OK();
+    }
 };
 
 class TransportTaskCompletionTest : public ::testing::Test {
@@ -191,7 +196,7 @@ TEST_F(TransportTaskCompletionTest, ReleaseSubBatchResourcesReleasesChannelInfli
     EXPECT_EQ(subBatchContext.channel.get(), nullptr);
 }
 
-TEST_F(TransportTaskCompletionTest, TryFinalizeEmptyTaskUsesExistingFinalStatus)
+TEST_F(TransportTaskCompletionTest, TryFinalizeEmptyTaskMarksPartialFailed)
 {
     TransportTaskContext ctx;
     ctx.finalStatus = Status::OK();
@@ -199,6 +204,7 @@ TEST_F(TransportTaskCompletionTest, TryFinalizeEmptyTaskUsesExistingFinalStatus)
     ctx.TryFinalizeFromSubBatches();
 
     EXPECT_EQ(ctx.state.load(std::memory_order_acquire), TransportTaskState::COMPLETED);
+    EXPECT_EQ(ctx.finalStatus.code, StatusCode::PARTIAL_FAILED);
 
     ctx.state.store(TransportTaskState::PENDING, std::memory_order_release);
     ctx.finalStatus = Status::Error(StatusCode::UNSUPPORTED, "unsupported");
@@ -206,6 +212,7 @@ TEST_F(TransportTaskCompletionTest, TryFinalizeEmptyTaskUsesExistingFinalStatus)
     ctx.TryFinalizeFromSubBatches();
 
     EXPECT_EQ(ctx.state.load(std::memory_order_acquire), TransportTaskState::COMPLETED);
+    EXPECT_EQ(ctx.finalStatus.code, StatusCode::PARTIAL_FAILED);
 }
 
 TEST_F(TransportTaskCompletionTest, TryFinalizeWaitsUntilAllSubBatchesFinish)

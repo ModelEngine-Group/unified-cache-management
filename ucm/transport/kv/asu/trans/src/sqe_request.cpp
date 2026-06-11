@@ -23,7 +23,6 @@
  * */
 #include <algorithm>
 #include <cctype>
-#include <limits>
 #include <memory>
 #include <string>
 #include <type_traits>
@@ -123,13 +122,6 @@ struct SubBatchRequestSource {
     static SubBatchRequestSource KeepAlive() { return SubBatchRequestSource{}; }
 };
 
-void ResetSubBatchContext(std::size_t batchNum, TransportSubBatchContext& subBatchContext)
-{
-    subBatchContext.entryStatus.assign(batchNum, Status::OK());
-    subBatchContext.state = TransportSubBatchState::PENDING;
-    subBatchContext.status = Status::OK();
-}
-
 Status PrepareSubBatchRequest(TransportOpType opType, KvOpcode opcode, std::uint16_t cid,
                               std::size_t batchNum, BufferManager& flagBufferManager,
                               TransportSubBatchContext& subBatchContext)
@@ -167,27 +159,6 @@ Status PackSubBatchRequest(ProtocolManager& protocolManager, BufferManager& send
 
     subBatchContext.status = status;
     return status;
-}
-
-Status InitializeSubBatchSubmission(TransportOpType opType, std::size_t batchNum, bool isSupported,
-                                    const std::string& unsupportedMessage,
-                                    TransportSubBatchContext& subBatchContext, KvOpcode& opcode,
-                                    bool& shouldSubmit)
-{
-    ResetSubBatchContext(batchNum, subBatchContext);
-    shouldSubmit = false;
-
-    if (batchNum == 0) { return Status::OK(); }
-
-    if (!isSupported) {
-        auto status = Status::Error(StatusCode::UNSUPPORTED, unsupportedMessage);
-        UC_ERROR("Unsupported sub-batch submission op_type={} batch_num={} message={}",
-                 static_cast<int>(opType), batchNum, unsupportedMessage);
-        return SetSubBatchBuildFailed(subBatchContext, status);
-    }
-    opcode = ToKvOpcode(opType);
-    shouldSubmit = true;
-    return Status::OK();
 }
 
 KvBatchStoreRequest BuildBatchStoreRequest(
@@ -328,101 +299,17 @@ std::unique_ptr<SqeRequest> BuildSqeRequest(
 
 }  // namespace
 
-Status AsuTransportImpl::ValidateSqeRequestAttrs()
-{
-    const auto validateInteger = [this](const std::string& name, auto maxValue) -> Status {
-        auto iter = config_.attrs.find(name);
-        if (iter == config_.attrs.end()) { return Status::OK(); }
-        try {
-            const auto parsed = std::stoull(iter->second, nullptr, 0);
-            if (parsed > maxValue) {
-                UC_ERROR("Validate SQE attr failed name={} value={} reason=exceeds_range", name,
-                         iter->second);
-                return Status::Error(StatusCode::INVALID_ARGUMENT, name + " exceeds valid range");
-            }
-        } catch (const std::exception&) {
-            UC_ERROR("Validate SQE attr failed name={} value={} reason=invalid_integer", name,
-                     iter->second);
-            return Status::Error(StatusCode::INVALID_ARGUMENT, name + " is not a valid integer");
-        }
-        return Status::OK();
-    };
-
-    const auto validateRequiredPositiveInteger = [this](const std::string& name,
-                                                        auto maxValue) -> Status {
-        auto iter = config_.attrs.find(name);
-        if (iter == config_.attrs.end()) {
-            UC_ERROR("Validate SQE attr failed name={} reason=missing_required", name);
-            return Status::Error(StatusCode::INVALID_ARGUMENT, name + " is required");
-        }
-        try {
-            const auto parsed = std::stoull(iter->second, nullptr, 0);
-            if (parsed > maxValue) {
-                UC_ERROR("Validate SQE attr failed name={} value={} reason=exceeds_range", name,
-                         iter->second);
-                return Status::Error(StatusCode::INVALID_ARGUMENT, name + " exceeds valid range");
-            }
-            if (parsed == 0) {
-                UC_ERROR("Validate SQE attr failed name={} value={} reason=must_be_positive", name,
-                         iter->second);
-                return Status::Error(StatusCode::INVALID_ARGUMENT,
-                                     name + " must be greater than zero");
-            }
-        } catch (const std::exception&) {
-            UC_ERROR("Validate SQE attr failed name={} value={} reason=invalid_integer", name,
-                     iter->second);
-            return Status::Error(StatusCode::INVALID_ARGUMENT, name + " is not a valid integer");
-        }
-        return Status::OK();
-    };
-
-    const auto validateBool = [this](const std::string& name) -> Status {
-        auto iter = config_.attrs.find(name);
-        if (iter == config_.attrs.end()) { return Status::OK(); }
-        const auto value = ToLower(iter->second);
-        if (value == "1" || value == "0" || value == "true" || value == "false") {
-            return Status::OK();
-        }
-        UC_ERROR("Validate SQE attr failed name={} value={} reason=invalid_bool", name,
-                 iter->second);
-        return Status::Error(StatusCode::INVALID_ARGUMENT, name + " is not a valid bool");
-    };
-
-    auto status = validateInteger("kv_ns_id", std::numeric_limits<std::uint32_t>::max());
-    if (!status.ok()) { return status; }
-    status = validateInteger("dtype", std::numeric_limits<std::uint8_t>::max());
-    if (!status.ok()) { return status; }
-    status = validateInteger("dspec", std::numeric_limits<std::uint8_t>::max());
-    if (!status.ok()) { return status; }
-    status = validateBool("sc");
-    if (!status.ok()) { return status; }
-    status = validateBool("lr");
-    if (!status.ok()) { return status; }
-    status =
-        validateRequiredPositiveInteger("kernel_count", std::numeric_limits<std::uint32_t>::max());
-    if (!status.ok()) { return status; }
-    status =
-        validateRequiredPositiveInteger("quiet_count", std::numeric_limits<std::uint32_t>::max());
-    if (!status.ok()) { return status; }
-    return Status::OK();
-}
-
 Status AsuTransportImpl::SubmitEntrySubBatchRequest(TransportOpType opType,
                                                     const IoScheduler::ScheduledIoBatch& subBatch,
                                                     TransportSubBatchContext& subBatchContext)
 {
-    constexpr auto kUnsupportedMessage =
-        "entry batch submit only supports batch store/retrieve operations";
     const auto source = SubBatchRequestSource::FromEntries(subBatch.entries);
-    KvOpcode opcode{};
-    bool shouldSubmit = false;
-    auto status =
-        InitializeSubBatchSubmission(opType, subBatch.entries.size, IsEntryBatchOp(opType),
-                                     kUnsupportedMessage, subBatchContext, opcode, shouldSubmit);
-    if (!status.ok() || !shouldSubmit) { return status; }
+    subBatchContext.entryStatus.assign(subBatch.entries.size, Status::OK());
+    const auto opcode = ToKvOpcode(opType);
 
-    status = PrepareSubBatchRequest(opType, opcode, AllocateRequestCid(), subBatch.entries.size,
-                                    flagBufferManager_, subBatchContext);
+    auto status =
+        PrepareSubBatchRequest(opType, opcode, AllocateRequestCid(), subBatch.entries.size,
+                               flagBufferManager_, subBatchContext);
     if (!status.ok()) { return status; }
 
     auto request = BuildSqeRequest(opcode, source, config_.attrs, subBatchContext.cid,
@@ -435,17 +322,12 @@ Status AsuTransportImpl::SubmitKeySubBatchRequest(TransportOpType opType,
                                                   const IoScheduler::ScheduledKeyBatch& subBatch,
                                                   TransportSubBatchContext& subBatchContext)
 {
-    constexpr auto kUnsupportedMessage = "key batch submit only supports query/delete";
     const auto source = SubBatchRequestSource::FromKeys(subBatch.keys);
-    KvOpcode opcode{};
-    bool shouldSubmit = false;
-    auto status =
-        InitializeSubBatchSubmission(opType, subBatch.keys.size, IsKeyBatchOp(opType),
-                                     kUnsupportedMessage, subBatchContext, opcode, shouldSubmit);
-    if (!status.ok() || !shouldSubmit) { return status; }
+    subBatchContext.entryStatus.assign(subBatch.keys.size, Status::OK());
+    const auto opcode = ToKvOpcode(opType);
 
-    status = PrepareSubBatchRequest(opType, opcode, AllocateRequestCid(), subBatch.keys.size,
-                                    flagBufferManager_, subBatchContext);
+    auto status = PrepareSubBatchRequest(opType, opcode, AllocateRequestCid(), subBatch.keys.size,
+                                         flagBufferManager_, subBatchContext);
     if (!status.ok()) { return status; }
 
     auto request = BuildSqeRequest(opcode, source, config_.attrs, subBatchContext.cid,
@@ -456,17 +338,13 @@ Status AsuTransportImpl::SubmitKeySubBatchRequest(TransportOpType opType,
 
 Status AsuTransportImpl::SubmitKeepAliveRequest(TransportSubBatchContext& subBatchContext)
 {
-    constexpr auto kUnsupportedMessage = "keep alive submit only supports keep alive";
     const auto opType = TransportOpType::KEEP_ALIVE;
     const auto source = SubBatchRequestSource::KeepAlive();
-    KvOpcode opcode{};
-    bool shouldSubmit = false;
-    auto status = InitializeSubBatchSubmission(opType, 1, true, kUnsupportedMessage,
-                                               subBatchContext, opcode, shouldSubmit);
-    if (!status.ok() || !shouldSubmit) { return status; }
+    subBatchContext.entryStatus.assign(1, Status::OK());
+    const auto opcode = ToKvOpcode(opType);
 
-    status = PrepareSubBatchRequest(opType, opcode, AllocateRequestCid(), 1, flagBufferManager_,
-                                    subBatchContext);
+    auto status = PrepareSubBatchRequest(opType, opcode, AllocateRequestCid(), 1,
+                                         flagBufferManager_, subBatchContext);
     if (!status.ok()) { return status; }
 
     auto request = BuildSqeRequest(opcode, source, config_.attrs, subBatchContext.cid,

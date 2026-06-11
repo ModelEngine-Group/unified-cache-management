@@ -120,8 +120,6 @@ struct TransportTaskContext {
 class TransportTaskManager : public TaskManagerBase<TransportTaskContext, TransportTaskState> {
 public:
     TransportTaskManager() : TaskManagerBase(TransportTaskState::PENDING, "transport") {}
-
-    void CancelAll();
 };
 
 }  // namespace UC::ASU

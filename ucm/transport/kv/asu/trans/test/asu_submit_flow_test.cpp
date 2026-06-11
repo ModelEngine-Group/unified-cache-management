@@ -65,8 +65,9 @@ public:
     }
 
     Status RegisterMemory(ConnectionHandle, const std::vector<RegisterMemoryDesc>&,
-                          std::vector<MemHandle>&) override
+                          std::vector<MemHandle>& handles) override
     {
+        handles.push_back(reinterpret_cast<MemHandle>(static_cast<uintptr_t>(1)));
         return Status::OK();
     }
 
@@ -82,7 +83,11 @@ public:
 
     std::vector<Status> FreeThread(const std::vector<ThreadHandle>&) override { return {}; }
 
-    Status GetMemTokenId(MemHandle, uint32_t&) override { return Status::OK(); }
+    Status GetMemTokenId(MemHandle, uint32_t& tokenId) override
+    {
+        tokenId = 1;
+        return Status::OK();
+    }
 };
 
 class AsuSubmitFlowBufferTest : public ::testing::Test {
