@@ -1,14 +1,11 @@
 # Set to other image if needed
 ARG IMAGE_SOURCE="quay.io/ascend"
-ARG IMAGE_NAME_VERSION="vllm-ascend:v0.11.0"
+ARG IMAGE_NAME_VERSION="vllm-ascend:v0.20.2rc1"
 
 FROM ${IMAGE_SOURCE}/${IMAGE_NAME_VERSION}
 
 ARG PIP_INDEX_URL="https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple"
 ARG INSTALL_MODE="source"
-
-# Apply the UCM monkey patch for vllm & vllm_ascend
-ENV ENABLE_UCM_PATCH=1
 
 WORKDIR /workspace
 
@@ -20,7 +17,7 @@ RUN pip config set global.index-url ${PIP_INDEX_URL}
 # Build or link package
 RUN if [ "${INSTALL_MODE}" != "package" ]; then \
         pip install --no-cache-dir build cmake && \
-        export WORKSPACE=/workspace SKIP_TAR=1 && \
+        export WORKSPACE=/workspace SKIP_TAR=1 ENABLE_SPARSE=false && \
         bash /workspace/unified-cache-management/scripts/build_ascend.sh; \
     else \
         ln -s /workspace/unified-cache-management /workspace/package; \
@@ -28,10 +25,5 @@ RUN if [ "${INSTALL_MODE}" != "package" ]; then \
 
 # Install UCM
 RUN pip install /workspace/package/uc_manager-*.whl
-
-# Install Ascend custom ops if present
-RUN if [ -f /workspace/package/install_ascend_ops.sh ]; then \
-        cd /workspace/package && bash install_ascend_ops.sh; \
-    fi
 
 CMD ["/bin/bash"]
