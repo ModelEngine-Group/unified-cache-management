@@ -61,6 +61,7 @@ void LoadQueue::Submit(TaskPtr task, WaiterPtr waiter)
     auto success = waiting_.TryPush({task, waiter});
     if (success) { return; }
     UC_ERROR("Waiting queue full, submit load task({}) failed.", task->id);
+    UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("cache_load_queue_full_total"), 1.0);
     failureSet_->Insert(task->id);
     waiter->Done();
 }
@@ -99,6 +100,8 @@ void LoadQueue::DispatchOneTask(TaskPair&& pair)
             auto res = backend_->Load(std::move(backendTask));
             if (!res) [[unlikely]] {
                 UC_ERROR("Failed({}) to submit load task({}) to backend.", res.Error(), task->id);
+                UC::Metrics::UpdateStats(
+                    NAME_TO_METRIC_ID("cache_backend_load_submit_errors_total"), 1.0);
                 failureSet_->Insert(task->id);
                 waiter->Done();
                 return;
@@ -153,6 +156,7 @@ void LoadQueue::TransferOneTask(CopyStream& stream, ShardTask&& task)
                                      task.shard.addrs.data());
         if (s.Failure()) [[unlikely]] {
             UC_ERROR("Failed({}) to do H2D batch async for task({}).", s, task.taskHandle);
+            UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("cache_h2d_errors_total"), 1.0);
             break;
         }
         auto tpH2dSubmitted = NowTime::Now();
@@ -168,6 +172,7 @@ void LoadQueue::TransferOneTask(CopyStream& stream, ShardTask&& task)
         holder_.clear();
         if (s.Failure()) [[unlikely]] {
             UC_ERROR("Failed({}) to sync on stream for task({}).", s, task.taskHandle);
+            UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("cache_h2d_errors_total"), 1.0);
             break;
         }
     } while (0);
@@ -182,6 +187,8 @@ Status LoadQueue::WaitBackendTaskReady(ShardTask& task)
         if (s.Failure()) [[unlikely]] {
             UC_ERROR("Failed({}) to wait backend({}) for task({}).", s, task.backendTaskHandle,
                      task.taskHandle);
+            UC::Metrics::UpdateStats(
+                NAME_TO_METRIC_ID("cache_backend_load_wait_errors_total"), 1.0);
             return s;
         }
         task.bufferHandle.MarkReady();

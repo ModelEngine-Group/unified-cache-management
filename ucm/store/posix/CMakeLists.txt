@@ -2,6 +2,9 @@ file(GLOB_RECURSE UCM_POSIX_STORE_CC_SOURCE_FILES "./cc/*.cc")
 add_library(posixstore SHARED ${UCM_POSIX_STORE_CC_SOURCE_FILES})
 target_include_directories(posixstore PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/cc)
 target_link_libraries(posixstore PUBLIC storeintf infra_logger metrics)
+if(BUILD_UNIT_TESTS)
+    target_compile_definitions(posixstore PUBLIC UCM_ENABLE_TEST_HOOKS)
+endif()
 # libmetrics.so installs to ucm/shared/metrics/; posixstore.so to
 # ucm/store/posix/ — ../../shared/metrics reaches it.
 set_target_properties(posixstore PROPERTIES

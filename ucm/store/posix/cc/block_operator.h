@@ -32,11 +32,45 @@
 #include <functional>
 #include <list>
 #include <mutex>
+#include <string>
+#include <sys/stat.h>
 #include <thread>
+#include "logger/logger.h"
 #include "space_layout.h"
 #include "type/types.h"
 
 namespace UC::PosixStore {
+
+#ifdef UCM_ENABLE_TEST_HOOKS
+namespace TestHooks {
+using OpenHook = std::function<int32_t(const std::string&, int32_t, mode_t)>;
+inline std::mutex& OpenHookMutex()
+{
+    static std::mutex mutex;
+    return mutex;
+}
+inline OpenHook& OpenHookSlot()
+{
+    static OpenHook hook;
+    return hook;
+}
+inline void SetOpenHook(OpenHook hook)
+{
+    std::lock_guard<std::mutex> lock{OpenHookMutex()};
+    OpenHookSlot() = std::move(hook);
+}
+inline void ClearOpenHook()
+{
+    std::lock_guard<std::mutex> lock{OpenHookMutex()};
+    OpenHookSlot() = nullptr;
+}
+inline OpenHook GetOpenHook()
+{
+    std::lock_guard<std::mutex> lock{OpenHookMutex()};
+    return OpenHookSlot();
+}
+}  // namespace TestHooks
+#endif
 
 class BlockOperator {
 public:
@@ -114,6 +148,9 @@ public:
                 }
             }
         }
+        if (!purged.empty()) {
+            UC_WARN("AIO task({}) cancelled {} queued open task(s).", tag, purged.size());
+        }
         for (auto& task : purged) {
             if (task.callback) { task.callback(OpenResult{-1, ECANCELED}); }
         }
@@ -134,7 +171,12 @@ private:
                 openQueue_.queue.pop_front();
             }
             const auto path = layout_->DataFilePath(task.id, task.activated);
+#ifdef UCM_ENABLE_TEST_HOOKS
+            auto hook = TestHooks::GetOpenHook();
+            auto fd = hook ? hook(path, task.flags, mode) : ::open(path.c_str(), task.flags, mode);
+#else
             auto fd = ::open(path.c_str(), task.flags, mode);
+#endif
             auto err = (fd < 0) ? errno : 0;
             if (task.callback) { task.callback(OpenResult{fd, err}); }
         }

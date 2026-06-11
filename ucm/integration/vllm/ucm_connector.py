@@ -81,6 +81,10 @@ def _drop_null_vllm_blocks(
     return filtered_ucm_block_ids, filtered_vllm_block_ids
 
 
+def _record_counter(name: str, value: float = 1.0) -> None:
+    ucmmetrics.update_stats({name: value})
+
+
 @dataclass
 class RequestMeta:
     ucm_block_ids: list[bytes] = field(default_factory=list)
@@ -382,6 +386,22 @@ class UCMDirectConnector(KVConnectorBase_V1):
         self.hash_block_size = self.block_size
         self.block_size *= self.cp_world_size
 
+    @staticmethod
+    def _record_counter(name: str, value: float = 1.0) -> None:
+        _record_counter(name, value)
+
+    def _record_load_error(self, metric_name: str, block_ids: Any) -> None:
+        invalid_blocks = set(block_ids)
+        new_invalid_blocks = invalid_blocks - self._invalid_block_ids
+        self._invalid_block_ids.update(invalid_blocks)
+        ucmmetrics.update_stats(
+            {
+                metric_name: 1.0,
+                "connector_load_invalid_requests_total": 1.0,
+                "connector_load_invalid_blocks_total": float(len(new_invalid_blocks)),
+            }
+        )
+
     def generate_hash(
         self, block_size: int, token_ids: List[int], parent_block_hash_value: bytes
     ) -> list[bytes]:
@@ -554,6 +574,7 @@ class UCMDirectConnector(KVConnectorBase_V1):
             logger.error(
                 f"request {request.request_id} look up error. {type(e).__name__}: {e}"
             )
+            self._record_counter("connector_lookup_errors_total")
 
         logger.info_once(
             f"request_id: {request.request_id}, "
@@ -746,7 +767,8 @@ class UCMDirectConnector(KVConnectorBase_V1):
                 logger.error(
                     f"request {request_id} submit load task error. {type(e).__name__}: {e}"
                 )
-                self._invalid_block_ids.update(
+                self._record_load_error(
+                    "connector_load_submit_errors_total",
                     metadata.request_meta[request_id].load_block_ids[1]
                 )
                 num_loaded_block -= len(ucm_block_ids)
@@ -758,7 +780,8 @@ class UCMDirectConnector(KVConnectorBase_V1):
                 logger.error(
                     f"request {request_id} wait load task error. {type(e).__name__}: {e}"
                 )
-                self._invalid_block_ids.update(
+                self._record_load_error(
+                    "connector_load_wait_errors_total",
                     metadata.request_meta[request_id].load_block_ids[1]
                 )
                 num_loaded_block -= request_to_load_blocks.get(request_id, 0)
@@ -851,6 +874,7 @@ class UCMDirectConnector(KVConnectorBase_V1):
                 dump_tasks.append(task)
             except Exception as e:
                 logger.error(f"dump kv cache failed. {type(e).__name__}: {e}")
+                self._record_counter("connector_dump_submit_errors_total")
                 return
 
             try:
@@ -859,6 +883,7 @@ class UCMDirectConnector(KVConnectorBase_V1):
                 save_end_time = time.perf_counter() * 1000
             except Exception as e:
                 logger.error(f"wait for dump kv cache failed. {type(e).__name__}: {e}")
+                self._record_counter("connector_dump_wait_errors_total")
                 return
 
             save_bytes = num_saved_block * self.block_data_size
@@ -944,7 +969,8 @@ class UCMLayerWiseConnector(UCMDirectConnector):
                 logger.error(
                     f"request {request_id} submit load task error. {type(e).__name__}: {e}"
                 )
-                self._invalid_block_ids.update(
+                self._record_load_error(
+                    "connector_load_submit_errors_total",
                     metadata.request_meta[request_id].load_block_ids[1]
                 )
                 self._failure_req_ids.add(request_id)
@@ -1008,7 +1034,8 @@ class UCMLayerWiseConnector(UCMDirectConnector):
                 logger.error(
                     f"request {request_id} wait {layer_name} load failed. {type(e).__name__}: {e}"
                 )
-                self._invalid_block_ids.update(
+                self._record_load_error(
+                    "connector_load_wait_errors_total",
                     metadata.request_meta[request_id].load_block_ids[1]
                 )
                 self._failure_req_ids.add(request_id)
@@ -1083,6 +1110,7 @@ class UCMLayerWiseConnector(UCMDirectConnector):
                 self.dump_tasks[layer_name] = task
             except Exception as e:
                 logger.error(f"submit dump task failed. {type(e).__name__}: {e}")
+                self._record_counter("connector_dump_submit_errors_total")
         if self.is_save:
             submit_end = time.perf_counter()
             ucmmetrics.update_stats(
@@ -1105,6 +1133,7 @@ class UCMLayerWiseConnector(UCMDirectConnector):
                 self.store.wait(self.dump_tasks[layer_name])
         except Exception as e:
             logger.error(f"wait for dump kv cache failed. {type(e).__name__}: {e}")
+            self._record_counter("connector_dump_wait_errors_total")
         total_end = time.perf_counter()
         stats = {"layerwise_save_tail_total_ms": (total_end - total_start) * 1000}
         if self._layerwise_batch_start is not None:
@@ -1356,6 +1385,7 @@ class UCMLiteConnector(UCMDirectConnector):
                 logger.error(
                     f"request {request.request_id} wait dump task error. {type(e).__name__}: {e}"
                 )
+                self._record_counter("connector_dump_wait_errors_total")
             self.requests_meta[request.request_id] = RequestMeta()
 
         self.total_hit_block_nums += external_hit_blocks
@@ -1675,6 +1705,7 @@ class KVCacheGroupManager:
                     f"full-attn group {fa.group_id} lookup error. "
                     f"{type(e).__name__}: {e}"
                 )
+                _record_counter("connector_lookup_errors_total")
                 candidates.append(0)
                 continue
             candidates.append(max(fa_hit_blocks, 0) * fa.block_size)
@@ -1709,6 +1740,7 @@ class KVCacheGroupManager:
                         f"mamba-align group {sw.group_id} lookup error. "
                         f"{type(e).__name__}: {e}"
                     )
+                    _record_counter("connector_lookup_errors_total")
                     return 0, 0
                 if not all(results):
                     logger.info(
@@ -1752,6 +1784,7 @@ class KVCacheGroupManager:
                     f"sliding window group {sw.group_id} lookup error. "
                     f"{type(e).__name__}: {e}"
                 )
+                _record_counter("connector_lookup_errors_total")
                 return 0, 0
             if not all(results):
                 logger.info(

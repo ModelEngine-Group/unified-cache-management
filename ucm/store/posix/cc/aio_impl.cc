@@ -35,6 +35,56 @@
 
 namespace UC::PosixStore {
 
+#ifdef UCM_ENABLE_TEST_HOOKS
+namespace {
+std::mutex& AioHookMutex()
+{
+    static std::mutex mutex;
+    return mutex;
+}
+TestHooks::AioSubmitHook& AioSubmitHookSlot()
+{
+    static TestHooks::AioSubmitHook hook;
+    return hook;
+}
+TestHooks::AioCancelHook& AioCancelHookSlot()
+{
+    static TestHooks::AioCancelHook hook;
+    return hook;
+}
+}  // namespace
+
+namespace TestHooks {
+void SetAioSubmitHook(AioSubmitHook hook)
+{
+    std::lock_guard<std::mutex> lock{AioHookMutex()};
+    AioSubmitHookSlot() = std::move(hook);
+}
+void SetAioCancelHook(AioCancelHook hook)
+{
+    std::lock_guard<std::mutex> lock{AioHookMutex()};
+    AioCancelHookSlot() = std::move(hook);
+}
+void ClearAioHooks()
+{
+    std::lock_guard<std::mutex> lock{AioHookMutex()};
+    AioSubmitHookSlot() = nullptr;
+    AioCancelHookSlot() = nullptr;
+}
+}  // namespace TestHooks
+
+static TestHooks::AioSubmitHook GetAioSubmitHook()
+{
+    std::lock_guard<std::mutex> lock{AioHookMutex()};
+    return AioSubmitHookSlot();
+}
+static TestHooks::AioCancelHook GetAioCancelHook()
+{
+    std::lock_guard<std::mutex> lock{AioHookMutex()};
+    return AioCancelHookSlot();
+}
+#endif
+
 static inline int32_t AioSetup(int32_t nEvents, aio_context_t* pCtx)
 {
     return syscall(SYS_io_setup, nEvents, pCtx);
@@ -46,10 +96,18 @@ static inline int32_t AioGetEvents(aio_context_t ctx, int64_t minNr, int64_t max
 }
 static inline int32_t AioSubmit(aio_context_t ctx, int64_t nr, iocb** ios)
 {
+#ifdef UCM_ENABLE_TEST_HOOKS
+    auto hook = GetAioSubmitHook();
+    if (hook) { return hook(ctx, nr, ios); }
+#endif
     return syscall(SYS_io_submit, ctx, nr, ios);
 }
 static inline int32_t AioCancel(aio_context_t ctx, struct iocb* cb, io_event* result)
 {
+#ifdef UCM_ENABLE_TEST_HOOKS
+    auto hook = GetAioCancelHook();
+    if (hook) { return hook(ctx, cb, result); }
+#endif
     return syscall(SYS_io_cancel, ctx, cb, result);
 }
 static inline int32_t AioDestroy(aio_context_t ctx) { return syscall(SYS_io_destroy, ctx); }
@@ -109,6 +167,9 @@ Status AioImpl::Setup(size_t epollTimeoutMs, size_t sweepIntervalMs, size_t subm
     epollTimeoutMs_ = epollTimeoutMs > 0 ? epollTimeoutMs : 10;
     sweepIntervalMs_ = sweepIntervalMs;
     submitTimeoutMs_ = submitTimeoutMs;
+    UC_INFO("AIO setup: queueDepth={}, epollTimeoutMs={}, sweepIntervalMs={}, "
+            "submitTimeoutMs={}.",
+            queueDepth_, epollTimeoutMs_, sweepIntervalMs_, submitTimeoutMs_);
     auto ret = AioSetup(queueDepth_, &ctx_);
     if (ret != 0) {
         UC_ERROR("Failed({}) to call AioSetup.", ret);
@@ -188,7 +249,8 @@ void AioImpl::CompletionLoop()
             if (epollEvents[i].data.ptr == nullptr) {
                 uint64_t count;
                 auto ret = read(eventFd_, &count, sizeof(count));
-                if (ret < 0) { UC_WARN("Failed to call read."); }
+                auto eno = errno;
+                if (ret < 0 && eno != EAGAIN) { UC_WARN("Failed({}) to read aio eventfd.", eno); }
                 HarvestCompletions(aioEvents);
             }
         }
@@ -274,7 +336,10 @@ void AioImpl::CancelTask(uint64_t tag)
     {
         std::lock_guard<std::mutex> lk(tableMutex_);
         auto it = iocbTable_.find(tag);
-        if (it == iocbTable_.end()) { return; }
+        if (it == iocbTable_.end()) {
+            UC_DEBUG("AIO cancel task({}): no tracked in-flight IO.", tag);
+            return;
+        }
         auto& vec = it->second;
         for (auto vi = vec.begin(); vi != vec.end();) {
             io_event ev{};

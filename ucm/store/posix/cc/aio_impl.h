@@ -36,6 +36,16 @@
 
 namespace UC::PosixStore {
 
+#ifdef UCM_ENABLE_TEST_HOOKS
+namespace TestHooks {
+using AioSubmitHook = std::function<int32_t(aio_context_t, int64_t, iocb**)>;
+using AioCancelHook = std::function<int32_t(aio_context_t, struct iocb*, io_event*)>;
+void SetAioSubmitHook(AioSubmitHook hook);
+void SetAioCancelHook(AioCancelHook hook);
+void ClearAioHooks();
+}  // namespace TestHooks
+#endif
+
 class AioImpl {
 public:
     struct Result {

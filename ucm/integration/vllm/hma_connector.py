@@ -680,6 +680,7 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
                 f"request {request.request_id} FAWA lookup error. "
                 f"{type(e).__name__}: {e}"
             )
+            self._record_counter("connector_lookup_errors_total")
 
         total_hit_block_num = hbm_hit_block_num + external_hit_blocks
         external_hit_tokens = external_hit_blocks * self.hash_block_size
@@ -920,7 +921,10 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
                 f"request {load_task.request_id} wait FAWA load "
                 f"task label={load_task.label} error. {type(e).__name__}: {e}"
             )
-            self._invalid_block_ids.update(load_task.anchor_vllm_block_ids)
+            self._record_load_error(
+                "connector_load_wait_errors_total",
+                load_task.anchor_vllm_block_ids,
+            )
 
     def get_block_ids_with_load_errors(self) -> set[int]:
         res = self._invalid_block_ids
@@ -1060,7 +1064,10 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
                     f"request {request_id} submit FAWA load task "
                     f"error. {type(e).__name__}: {e}"
                 )
-                self._invalid_block_ids.update(group0_vllm_block_ids)
+                self._record_load_error(
+                    "connector_load_submit_errors_total",
+                    group0_vllm_block_ids,
+                )
 
         for load_task in tasks:
             self._wait_load_task(load_task)
@@ -1196,6 +1203,7 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
             except Exception as e:
                 self.device.destroy_event_handle(event_handle)
                 logger.error(f"dump FAWA kv cache failed. {type(e).__name__}: {e}")
+                self._record_counter("connector_dump_submit_errors_total")
         if wa_dump_keys:
             event_handle = self._get_dump_event_handle()
             window_ptrs = np.vstack(wa_ptr_rows)
@@ -1214,6 +1222,7 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
             except Exception as e:
                 self.device.destroy_event_handle(event_handle)
                 logger.error(f"dump FAWA kv cache failed. {type(e).__name__}: {e}")
+                self._record_counter("connector_dump_submit_errors_total")
 
     def _drain_best_effort_dump_tasks(self, finished_req_ids: set[str]) -> None:
         """Best-effort wait for FAWA dump tasks.
@@ -1238,6 +1247,7 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
                             f"label={dump_task.label}, keys={dump_task.key_count}, "
                             f"{type(e).__name__}: {e}"
                         )
+                        self._record_counter("connector_dump_wait_errors_total")
                     finally:
                         self.device.destroy_event_handle(dump_task.event_handle)
 

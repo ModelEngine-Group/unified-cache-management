@@ -43,6 +43,7 @@ protected:
     using TaskIdSet = HashSet<TaskHandle>;
     size_t timeoutMs_;
     TaskIdSet failureSet_;
+    TaskIdSet timeoutSet_;
     TaskSet tasks_{};
     std::shared_mutex mutex_{};
     virtual void Dispatch(TaskPtr t, WaiterPtr w) = 0;
@@ -118,6 +119,12 @@ public:
             return Status::Timeout();
         }
         auto failure = failureSet_.Contains(taskId);
+        auto timeout = timeoutSet_.Contains(taskId);
+        if (timeout) [[unlikely]] {
+            timeoutSet_.Remove(taskId);
+            if (failure) { failureSet_.Remove(taskId); }
+            return Status::Timeout();
+        }
         if (failure) [[unlikely]] {
             failureSet_.Remove(taskId);
             return Status::Error();

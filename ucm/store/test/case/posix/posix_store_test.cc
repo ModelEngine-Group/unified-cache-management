@@ -21,12 +21,133 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  * */
+#include <atomic>
+#include <chrono>
+#include <condition_variable>
+#include <cstdlib>
+#include <cstring>
+#include <memory>
+#include <mutex>
+#include <thread>
 #include "posix/cc/posix_store.cc"
 #include "detail/data_generator.h"
 #include "detail/path_base.h"
 #include "detail/types_helper.h"
+#include "metrics_api.h"
 
 class UCPosixStoreTest : public UC::Test::Detail::PathBase {};
+
+namespace {
+constexpr size_t AIO_TEST_DATA_SIZE = 4096;
+using BufferPtr = std::unique_ptr<void, decltype(&std::free)>;
+
+UC::Detail::Dictionary MakeAioConfig(const std::string& path, size_t timeoutMs = 50,
+                                     size_t openConcurrency = 1)
+{
+    UC::Detail::Dictionary config;
+    config.SetNumber("device_id", 0);
+    config.Set("storage_backends", std::vector<std::string>{path});
+    config.SetNumber("tensor_size", AIO_TEST_DATA_SIZE);
+    config.SetNumber("shard_size", AIO_TEST_DATA_SIZE);
+    config.SetNumber("block_size", AIO_TEST_DATA_SIZE);
+    config.Set("posix_io_engine", std::string("aio"));
+    config.SetNumber("timeout_ms", timeoutMs);
+    config.SetNumber("posix_open_concurrency", openConcurrency);
+    config.SetNumber("posix_commit_concurrency", size_t(1));
+    config.SetNumber("posix_aio_epoll_timeout_ms", size_t(5));
+    config.SetNumber("posix_aio_submit_timeout_ms", size_t(50));
+    config.SetNumber("data_dir_shard_bytes", size_t(0));
+    return config;
+}
+
+BufferPtr MakeAlignedBuffer(size_t marker)
+{
+    void* buffer = nullptr;
+    if (posix_memalign(&buffer, 4096, AIO_TEST_DATA_SIZE) != 0) { return {nullptr, &std::free}; }
+    std::memset(buffer, 0, AIO_TEST_DATA_SIZE);
+    *reinterpret_cast<size_t*>(buffer) = marker;
+    return {buffer, &std::free};
+}
+
+UC::Detail::TaskDesc MakeDumpDesc(const char* brief, const UC::Detail::BlockId& block,
+                                  void* buffer)
+{
+    UC::Detail::TaskDesc desc;
+    desc.brief = brief;
+    desc.push_back(UC::Detail::Shard{block, 0, {buffer}});
+    return desc;
+}
+
+void RegisterCounter(const std::string& name)
+{
+    UC::Metrics::SetUp();
+    UC::Metrics::CreateStats(name, "counter");
+    UC::Metrics::GetAllStatsAndClear();
+}
+
+double ReadCounter(const std::string& name)
+{
+    const auto stats = UC::Metrics::GetAllStatsAndClear();
+    const auto& counters = std::get<0>(stats);
+    auto it = counters.find(name);
+    return it == counters.end() ? 0.0 : it->second;
+}
+
+class StallingOpenHook {
+public:
+    StallingOpenHook()
+    {
+        UC::PosixStore::TestHooks::SetOpenHook(
+            [this](const std::string&, int32_t, mode_t) { return Run(); });
+    }
+    ~StallingOpenHook()
+    {
+        {
+            std::lock_guard<std::mutex> lock{mutex_};
+            release_ = true;
+        }
+        cv_.notify_all();
+        std::unique_lock<std::mutex> lock{mutex_};
+        cv_.wait(lock, [this] { return active_ == 0; });
+        UC::PosixStore::TestHooks::ClearOpenHook();
+    }
+    bool WaitEntered(size_t timeoutMs = 1000)
+    {
+        std::unique_lock<std::mutex> lock{mutex_};
+        return cv_.wait_for(lock, std::chrono::milliseconds(timeoutMs),
+                            [this] { return entered_; });
+    }
+
+private:
+    int32_t Run()
+    {
+        {
+            std::lock_guard<std::mutex> lock{mutex_};
+            ++active_;
+            entered_ = true;
+        }
+        cv_.notify_all();
+        std::unique_lock<std::mutex> lock{mutex_};
+        cv_.wait(lock, [this] { return release_; });
+        --active_;
+        cv_.notify_all();
+        errno = EIO;
+        return -1;
+    }
+
+private:
+    std::mutex mutex_;
+    std::condition_variable cv_;
+    bool entered_{false};
+    bool release_{false};
+    size_t active_{0};
+};
+
+class ScopedAioHooks {
+public:
+    ~ScopedAioHooks() { UC::PosixStore::TestHooks::ClearAioHooks(); }
+};
+}  // namespace
 
 TEST_F(UCPosixStoreTest, SetupWithInvalidParam)
 {
@@ -146,4 +267,145 @@ TEST_F(UCPosixStoreTest, DumpThenLoadWithIoDirect)
     ASSERT_EQ(*(size_t*)buffer1, *(size_t*)buffer2);
     free(buffer1);
     free(buffer2);
+}
+
+TEST_F(UCPosixStoreTest, AioWaitTimesOutWhenOpenStalls)
+{
+    using namespace UC::PosixStore;
+    RegisterCounter("posix_aio_timeout_total");
+    PosixStore store;
+    ASSERT_EQ(store.Setup(MakeAioConfig(Path())), UC::Status::OK());
+    StallingOpenHook hook;
+    auto buffer = MakeAlignedBuffer(1);
+    ASSERT_NE(buffer.get(), nullptr);
+    auto block = UC::Test::Detail::TypesHelper::MakeBlockIdRandomly();
+    auto handle = store.Dump(MakeDumpDesc("AioOpenStall", block, buffer.get()));
+    ASSERT_TRUE(handle.HasValue());
+    ASSERT_TRUE(hook.WaitEntered());
+
+    auto start = std::chrono::steady_clock::now();
+    auto status = store.Wait(handle.Value());
+    auto elapsed = std::chrono::steady_clock::now() - start;
+
+    ASSERT_EQ(status, UC::Status::Timeout());
+    ASSERT_LT(std::chrono::duration_cast<std::chrono::milliseconds>(elapsed).count(), 1000);
+    ASSERT_GE(ReadCounter("posix_aio_timeout_total"), 1.0);
+}
+
+TEST_F(UCPosixStoreTest, AioWaitTimesOutWhenCompletionIsLost)
+{
+    using namespace UC::PosixStore;
+    PosixStore store;
+    ASSERT_EQ(store.Setup(MakeAioConfig(Path())), UC::Status::OK());
+    ScopedAioHooks hooks;
+    std::atomic<size_t> submits{0};
+    TestHooks::SetAioSubmitHook([&submits](aio_context_t, int64_t nr, iocb**) {
+        submits.fetch_add(static_cast<size_t>(nr), std::memory_order_relaxed);
+        return static_cast<int32_t>(nr);
+    });
+    TestHooks::SetAioCancelHook([](aio_context_t, struct iocb*, io_event*) { return 0; });
+    auto buffer = MakeAlignedBuffer(2);
+    ASSERT_NE(buffer.get(), nullptr);
+    auto block = UC::Test::Detail::TypesHelper::MakeBlockIdRandomly();
+    auto handle = store.Dump(MakeDumpDesc("AioLostCompletion", block, buffer.get()));
+    ASSERT_TRUE(handle.HasValue());
+
+    auto start = std::chrono::steady_clock::now();
+    auto status = store.Wait(handle.Value());
+    auto elapsed = std::chrono::steady_clock::now() - start;
+
+    ASSERT_EQ(status, UC::Status::Timeout());
+    ASSERT_GT(submits.load(std::memory_order_relaxed), 0);
+    ASSERT_LT(std::chrono::duration_cast<std::chrono::milliseconds>(elapsed).count(), 1000);
+}
+
+TEST_F(UCPosixStoreTest, AioCheckFinishesLostCompletionAfterDeadline)
+{
+    using namespace UC::PosixStore;
+    PosixStore store;
+    ASSERT_EQ(store.Setup(MakeAioConfig(Path(), 30)), UC::Status::OK());
+    ScopedAioHooks hooks;
+    TestHooks::SetAioSubmitHook(
+        [](aio_context_t, int64_t nr, iocb**) { return static_cast<int32_t>(nr); });
+    TestHooks::SetAioCancelHook([](aio_context_t, struct iocb*, io_event*) { return 0; });
+    auto buffer = MakeAlignedBuffer(3);
+    ASSERT_NE(buffer.get(), nullptr);
+    auto block = UC::Test::Detail::TypesHelper::MakeBlockIdRandomly();
+    auto handle = store.Dump(MakeDumpDesc("AioCheckLostCompletion", block, buffer.get()));
+    ASSERT_TRUE(handle.HasValue());
+
+    bool finished = false;
+    auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(4);
+    while (std::chrono::steady_clock::now() < deadline) {
+        auto check = store.Check(handle.Value());
+        ASSERT_TRUE(check.HasValue());
+        if (check.Value()) {
+            finished = true;
+            break;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    }
+
+    ASSERT_TRUE(finished);
+    ASSERT_EQ(store.Wait(handle.Value()), UC::Status::Timeout());
+}
+
+TEST(UCAioImplTest, SubmitEagainHonorsDeadline)
+{
+    using namespace UC::PosixStore;
+    ScopedAioHooks hooks;
+    TestHooks::SetAioSubmitHook([](aio_context_t, int64_t, iocb**) {
+        errno = EAGAIN;
+        return -1;
+    });
+    AioImpl aio;
+    ASSERT_EQ(aio.Setup(5, 0, 30), UC::Status::OK());
+    auto buffer = MakeAlignedBuffer(4);
+    ASSERT_NE(buffer.get(), nullptr);
+    AioImpl::Io io;
+    io.fd = 0;
+    io.offset = 0;
+    io.length = AIO_TEST_DATA_SIZE;
+    io.buffer = buffer.get();
+    io.callback = [](AioImpl::Result) {};
+
+    auto start = std::chrono::steady_clock::now();
+    auto status = aio.ReadAsync(std::move(io));
+    auto elapsed = std::chrono::steady_clock::now() - start;
+
+    ASSERT_EQ(status, UC::Status::Timeout());
+    ASSERT_GE(std::chrono::duration_cast<std::chrono::milliseconds>(elapsed).count(), 20);
+    ASSERT_LT(std::chrono::duration_cast<std::chrono::milliseconds>(elapsed).count(), 1000);
+}
+
+TEST_F(UCPosixStoreTest, AioQueuedTasksTimeOutWhileOpenWorkerIsStuck)
+{
+    using namespace UC::PosixStore;
+    PosixStore store;
+    ASSERT_EQ(store.Setup(MakeAioConfig(Path(), 50, 1)), UC::Status::OK());
+    StallingOpenHook hook;
+    auto buffer1 = MakeAlignedBuffer(5);
+    auto buffer2 = MakeAlignedBuffer(6);
+    auto buffer3 = MakeAlignedBuffer(7);
+    ASSERT_NE(buffer1.get(), nullptr);
+    ASSERT_NE(buffer2.get(), nullptr);
+    ASSERT_NE(buffer3.get(), nullptr);
+    auto block1 = UC::Test::Detail::TypesHelper::MakeBlockIdRandomly();
+    auto block2 = UC::Test::Detail::TypesHelper::MakeBlockIdRandomly();
+    auto block3 = UC::Test::Detail::TypesHelper::MakeBlockIdRandomly();
+    auto handle1 = store.Dump(MakeDumpDesc("AioQueuedTimeout1", block1, buffer1.get()));
+    ASSERT_TRUE(handle1.HasValue());
+    ASSERT_TRUE(hook.WaitEntered());
+    auto handle2 = store.Dump(MakeDumpDesc("AioQueuedTimeout2", block2, buffer2.get()));
+    auto handle3 = store.Dump(MakeDumpDesc("AioQueuedTimeout3", block3, buffer3.get()));
+    ASSERT_TRUE(handle2.HasValue());
+    ASSERT_TRUE(handle3.HasValue());
+
+    auto start = std::chrono::steady_clock::now();
+    ASSERT_EQ(store.Wait(handle2.Value()), UC::Status::Timeout());
+    ASSERT_EQ(store.Wait(handle3.Value()), UC::Status::Timeout());
+    ASSERT_EQ(store.Wait(handle1.Value()), UC::Status::Timeout());
+    auto elapsed = std::chrono::steady_clock::now() - start;
+
+    ASSERT_LT(std::chrono::duration_cast<std::chrono::milliseconds>(elapsed).count(), 1500);
 }

@@ -24,6 +24,7 @@
 #ifndef UNIFIEDCACHE_POSIX_STORE_CC_IO_ENGINE_AIO_H
 #define UNIFIEDCACHE_POSIX_STORE_CC_IO_ENGINE_AIO_H
 
+#include <cerrno>
 #include <limits>
 #include <mutex>
 #include <tuple>
@@ -67,6 +68,9 @@ public:
         layout_ = layout;
         blockOperator_.Setup(layout, config.openConcurrency, config.commitConcurrency);
         aio_.SetSweepFn([this] { SweepDeadlines(); });
+        UC_INFO("AIO engine setup: effectiveTimeoutMs={}, watchdogGraceMs={}, "
+                "openConcurrency={}, commitConcurrency={}.",
+                timeoutMs_, kWatchdogGraceMs, config.openConcurrency, config.commitConcurrency);
         return aio_.Setup(config.aioEpollTimeoutMs, config.aioSweepIntervalMs,
                           config.aioSubmitTimeoutMs);
     }
@@ -79,6 +83,21 @@ private:
         static UC::Metrics::CachedMetric loadQueueDuration{"posix_load_queue_wait_duration_ms"};
         UC::Metrics::UpdateStats(dump ? dumpQueueDuration : loadQueueDuration, wait * 1e3);
     }
+    static void IncrementAioTimeoutMetric()
+    {
+        static UC::Metrics::CachedMetric timeoutTotal{"posix_aio_timeout_total"};
+        UC::Metrics::UpdateStats(timeoutTotal, 1.0);
+    }
+    static void IncrementOpenErrorMetric()
+    {
+        static UC::Metrics::CachedMetric openErrors{"posix_open_errors_total"};
+        UC::Metrics::UpdateStats(openErrors, 1.0);
+    }
+    static void IncrementIoErrorMetric()
+    {
+        static UC::Metrics::CachedMetric ioErrors{"posix_io_errors_total"};
+        UC::Metrics::UpdateStats(ioErrors, 1.0);
+    }
     void CommitBlock(Detail::BlockId id, bool success)
     {
         blockOperator_.Submit(BlockOperator::CommitTask{std::move(id), success});
@@ -89,6 +108,7 @@ private:
     {
         if (result.error != 0) {
             UC_ERROR("Failed({}) to do io on block({}).", result.error, id);
+            if (result.error != ECANCELED) { IncrementIoErrorMetric(); }
             failureSet_.Insert(tid);
         }
         ::close(fd);
@@ -113,6 +133,7 @@ private:
         };
         if (result.error != 0) {
             UC_ERROR("Failed({}) to do open on block({}).", result.error, shard.owner);
+            if (result.error != ECANCELED) { IncrementOpenErrorMetric(); }
             handleFailure(result.fd);
             return;
         }
@@ -134,7 +155,15 @@ private:
             OnIoCallback<dump>(tid, w, fd, last, id, ioResult);
         };
         auto status = dump ? aio_.WriteAsync(std::move(io)) : aio_.ReadAsync(std::move(io));
-        if (status.Failure()) { handleFailure(result.fd); }
+        if (status.Failure()) {
+            if (status == Status::Timeout()) {
+                timeoutSet_.Insert(tid);
+                IncrementAioTimeoutMetric();
+            } else {
+                IncrementIoErrorMetric();
+            }
+            handleFailure(result.fd);
+        }
     }
     template <bool dump>
     void Dispatch(TaskPtr t, WaiterPtr w)
@@ -196,6 +225,13 @@ private:
                                 : std::numeric_limits<double>::max();
             registry_[id] = Inflight{t, w, deadline, num, false};
         }
+        if (timeoutMs_ > 0) {
+            UC_DEBUG("AIO task({}) registered: type={}, shardCount={}, deadlineMs={}.", id,
+                     isDump ? "dump" : "load", num, timeoutMs_ + kWatchdogGraceMs);
+        } else {
+            UC_DEBUG("AIO task({}) registered: type={}, shardCount={}, deadline=disabled.", id,
+                     isDump ? "dump" : "load", num);
+        }
         if (isDump) {
             UpdateWaitMetrics<true>(wait);
             Dispatch<true>(t, w);
@@ -222,8 +258,7 @@ private:
         for (auto& [id, w, shardCount] : due) {
             auto stuckMs = (now - w->startTp) * 1e3;
             auto pending = w->Pending();
-            static UC::Metrics::CachedMetric timeoutTotal{"posix_aio_timeout_total"};
-            UC::Metrics::UpdateStats(timeoutTotal, 1.0);
+            IncrementAioTimeoutMetric();
             UC_ERROR("AIO task({}) timed out after {:.1f}ms; force-draining latch ({} of {} "
                      "shard(s) outstanding).",
                      id, stuckMs, pending, shardCount);
@@ -244,6 +279,7 @@ private:
             w = it->second.w;
         }
         UC_ERROR("AIO task({}) cancelled on wait timeout; force-draining latch.", t->id);
+        IncrementAioTimeoutMetric();
         ForceComplete(t->id, w);
     }
     // Stop a timed-out/cancelled task from doing any further work so the engine is free for new
@@ -253,7 +289,11 @@ private:
     // have already set the registry entry aborted (outside regMutex_).
     void ForceComplete(Detail::TaskHandle id, const WaiterPtr& w)
     {
+        auto pending = w ? w->Pending() : 0;
+        UC_WARN("AIO task({}) force-completing; pending latch count before abort={}.", id,
+                pending);
         failureSet_.Insert(id);
+        timeoutSet_.Insert(id);
         aio_.CancelTask(id);
         blockOperator_.CancelQueued(id);
         if (w) { w->Abort(); }
