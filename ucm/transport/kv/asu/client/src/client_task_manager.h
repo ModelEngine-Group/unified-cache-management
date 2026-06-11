@@ -42,6 +42,7 @@ struct ClientSubTask {
     TaskId transTaskId{kInvalidTaskId};
     bool completed{false};
     bool failed{false};
+    Status status{Status::OK()};
 
     // TODO: optimize by zero-copy ?
     std::vector<KVBuffer> entries;

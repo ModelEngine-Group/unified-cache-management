@@ -43,6 +43,41 @@ Status PartialFailed(const std::string& message)
     return Status::Error(StatusCode::PARTIAL_FAILED, message);
 }
 
+const char* ClientOpTypeName(ClientOpType opType)
+{
+    switch (opType) {
+        case ClientOpType::LOAD: return "load";
+        case ClientOpType::STORE: return "store";
+        case ClientOpType::DELETE: return "delete";
+        default: return "unknown";
+    }
+}
+
+std::size_t SubTaskItemCount(const ClientSubTask& subTask)
+{
+    return subTask.entries.empty() ? subTask.keys.size() : subTask.entries.size();
+}
+
+std::string SubTaskContext(const ClientTaskContext& ctx, const ClientSubTask& subTask)
+{
+    return "client_task_id=" + std::to_string(ctx.taskId) + " op=" + ClientOpTypeName(ctx.opType) +
+           " asuId=" + std::to_string(subTask.asuId) +
+           " trans_task_id=" + std::to_string(subTask.transTaskId) +
+           " item_count=" + std::to_string(SubTaskItemCount(subTask));
+}
+
+std::string FirstFailedSubTaskContext(const ClientTaskContext& ctx)
+{
+    for (const auto& subTask : ctx.subTasks) {
+        if (!subTask.failed) { continue; }
+
+        return SubTaskContext(ctx, subTask) +
+               " code=" + std::to_string(static_cast<int>(subTask.status.code)) +
+               " message=" + subTask.status.message;
+    }
+    return "client_task_id=" + std::to_string(ctx.taskId) + " op=" + ClientOpTypeName(ctx.opType);
+}
+
 std::vector<UC::KV::CacheKey> ExtractEntryKeys(const std::vector<KVBuffer>& entries)
 {
     std::vector<UC::KV::CacheKey> keys;
@@ -535,6 +570,10 @@ bool AsuClientImpl::PollTask(const ClientTaskContextPtr& ctx)
         if (transIter == snapshot->transports.end()) {
             subTask.completed = true;
             subTask.failed = true;
+            subTask.status = Status::Error(StatusCode::NOT_FOUND, "routed asu transport not found");
+            UC_ERROR("ASU client subtask check failed: {} code={} message={}.",
+                     SubTaskContext(*ctx, subTask), static_cast<int>(subTask.status.code),
+                     subTask.status.message);
             anyFailed = true;
             continue;
         }
@@ -544,6 +583,9 @@ bool AsuClientImpl::PollTask(const ClientTaskContextPtr& ctx)
         if (!status.ok()) {
             subTask.completed = true;
             subTask.failed = true;
+            subTask.status = status;
+            UC_ERROR("ASU client subtask check failed: {} code={} message={}.",
+                     SubTaskContext(*ctx, subTask), static_cast<int>(status.code), status.message);
             anyFailed = true;
             continue;
         }
@@ -554,7 +596,13 @@ bool AsuClientImpl::PollTask(const ClientTaskContextPtr& ctx)
         subTask.completed = true;
         if (!subResult.status.ok()) {
             subTask.failed = true;
+            subTask.status = subResult.status;
+            UC_ERROR("ASU client subtask result failed after check: {} code={} message={}.",
+                     SubTaskContext(*ctx, subTask), static_cast<int>(subResult.status.code),
+                     subResult.status.message);
             anyFailed = true;
+        } else {
+            subTask.status = Status::OK();
         }
 
         const auto& originalIndices = subTask.originalIndices;
@@ -566,8 +614,10 @@ bool AsuClientImpl::PollTask(const ClientTaskContextPtr& ctx)
 
     if (allDone) {
         ctx->finalStatus =
-            anyFailed ? Status::Error(StatusCode::PARTIAL_FAILED, "client task partially failed")
-                      : Status::OK();
+            anyFailed
+                ? Status::Error(StatusCode::PARTIAL_FAILED,
+                                "client task partially failed: " + FirstFailedSubTaskContext(*ctx))
+                : Status::OK();
         ctx->state.store(ClientTaskState::COMPLETED, std::memory_order_release);
         ctx->cv.notify_all();
         return true;
@@ -599,7 +649,15 @@ Status AsuClientImpl::WaitTaskContext(const ClientTaskContextPtr& ctx, std::uint
         if (!snapshot || ctx->state.load(std::memory_order_acquire) != ClientTaskState::INFLIGHT) {
             if (std::chrono::steady_clock::now() >= deadline) {
                 BuildResult(ctx, result);
-                result.status = Status::Error(StatusCode::TIMEOUT, "client task wait timeout");
+                result.status = Status::Error(
+                    StatusCode::TIMEOUT,
+                    "client task wait timeout before inflight: client_task_id=" +
+                        std::to_string(ctx->taskId) + " op=" + ClientOpTypeName(ctx->opType) +
+                        " wait_ms=" + std::to_string(waitMs));
+                UC_ERROR(
+                    "ASU client task wait timeout before inflight: client_task_id={} op={} "
+                    "wait_ms={}.",
+                    ctx->taskId, ClientOpTypeName(ctx->opType), waitMs);
                 return result.status;
             }
             ctx->cv.wait_until(lock, deadline);
@@ -616,6 +674,11 @@ Status AsuClientImpl::WaitTaskContext(const ClientTaskContextPtr& ctx, std::uint
             if (transIter == snapshot->transports.end()) {
                 subTask.completed = true;
                 subTask.failed = true;
+                subTask.status =
+                    Status::Error(StatusCode::NOT_FOUND, "routed asu transport not found");
+                UC_ERROR("ASU client subtask wait failed: {} code={} message={}.",
+                         SubTaskContext(*ctx, subTask), static_cast<int>(subTask.status.code),
+                         subTask.status.message);
                 anyFailed = true;
                 continue;
             }
@@ -623,7 +686,12 @@ Status AsuClientImpl::WaitTaskContext(const ClientTaskContextPtr& ctx, std::uint
             const auto now = std::chrono::steady_clock::now();
             if (now >= deadline) {
                 BuildResult(ctx, result);
-                result.status = Status::Error(StatusCode::TIMEOUT, "client task wait timeout");
+                result.status = Status::Error(StatusCode::TIMEOUT,
+                                              "client task wait timeout before subtask wait: " +
+                                                  SubTaskContext(*ctx, subTask) +
+                                                  " wait_ms=" + std::to_string(waitMs));
+                UC_ERROR("ASU client task wait timeout before subtask wait: {} wait_ms={}.",
+                         SubTaskContext(*ctx, subTask), waitMs);
                 return result.status;
             }
             const auto remainingMs =
@@ -636,7 +704,14 @@ Status AsuClientImpl::WaitTaskContext(const ClientTaskContextPtr& ctx, std::uint
 
             if (status.code == StatusCode::TIMEOUT) {
                 BuildResult(ctx, result);
-                result.status = Status::Error(StatusCode::TIMEOUT, "client task wait timeout");
+                subTask.status = status;
+                result.status = Status::Error(
+                    StatusCode::TIMEOUT,
+                    "client task transport wait timeout: " + SubTaskContext(*ctx, subTask) +
+                        " sub_timeout_ms=" + std::to_string(subTimeoutMs) +
+                        " message=" + status.message);
+                UC_ERROR("ASU client transport wait timeout: {} sub_timeout_ms={} message={}.",
+                         SubTaskContext(*ctx, subTask), subTimeoutMs, status.message);
                 return result.status;
             }
             if (status.code == StatusCode::IN_PROGRESS ||
@@ -647,7 +722,15 @@ Status AsuClientImpl::WaitTaskContext(const ClientTaskContextPtr& ctx, std::uint
             subTask.completed = true;
             if (!status.ok() || !subResult.status.ok()) {
                 subTask.failed = true;
+                subTask.status = !status.ok() ? status : subResult.status;
+                UC_ERROR(
+                    "ASU client subtask result failed after wait: {} wait_status_code={} "
+                    "wait_message={} result_status_code={} result_message={}.",
+                    SubTaskContext(*ctx, subTask), static_cast<int>(status.code), status.message,
+                    static_cast<int>(subResult.status.code), subResult.status.message);
                 anyFailed = true;
+            } else {
+                subTask.status = Status::OK();
             }
 
             const auto& originalIndices = subTask.originalIndices;
@@ -663,7 +746,8 @@ Status AsuClientImpl::WaitTaskContext(const ClientTaskContextPtr& ctx, std::uint
         }
         if (allDone) {
             ctx->finalStatus = anyFailed ? Status::Error(StatusCode::PARTIAL_FAILED,
-                                                         "client task partially failed")
+                                                         "client task partially failed: " +
+                                                             FirstFailedSubTaskContext(*ctx))
                                          : Status::OK();
             ctx->state.store(ClientTaskState::COMPLETED, std::memory_order_release);
             ctx->cv.notify_all();
