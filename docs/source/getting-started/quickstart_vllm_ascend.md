@@ -25,25 +25,27 @@ cd ..
 
 >**Note:** For the Atlas A3 series, the `PLATFORM` variable should be set to `ascend-a3`.
 
-2、Apply vLLM and vLLM-Ascend Integration Patches (Not required for versions >= v0.17.0rc1)
+2、Apply vLLM and vLLM-Ascend Integration Patches
+
 To enable Unified Cache Management (UCM) integration, you need to apply patches to both vLLM and vLLM-Ascend source trees.
 
 #### Option A: Monkey Patch (Recommended)
 
 This method enables UCM features dynamically at runtime via environment variables, requiring no source code modifications.
+It automatically detects the vLLM version and applies patches only when needed — you can safely keep it enabled regardless of your vLLM version.
+Available for vLLM ≥ 0.11.0 (not supported on 0.9.2, which requires Manual Git Patch).
 
 1. Enable Monkey Patch:
 ```bash
 export ENABLE_UCM_PATCH=1
 ```
->**Note:** Enabling ENABLE_UCM_PATCH is required to use the Prefix Caching feature with UCM.
 
 2. Enable Sparse Attention (supported on v0.11.0):
 ```bash
 export ENABLE_SPARSE=1
 ```
 
-#### Option B: Manual Git Patch (Legacy/Alternative)
+#### Option B: Manual Git Patch (Legacy/Alternative, only supported for v0.9.2 and v0.11.0)
 
 If you prefer modifying the source code directly, follow these steps:
 
@@ -83,9 +85,10 @@ pip install uc-manager
 ### Option 3: Setup from docker
 
 #### Build image from source
-Use following command to build UCM with vLLM-Ascend(v0.17.0rc1):
+Check the `docker/` directory for available Dockerfile versions (e.g. `v0.20.2`, `v0.18.0`, `v0.17.0`, `v0.11.0`), then build with the desired version:
 ```bash
-docker build -t ucm-vllm:latest -f ./docker/Dockerfile.ucm-vllm-ascend.a2-v0.17.0 ./
+# Replace <vllm_ascend_version> with the version you need (e.g. v0.20.2)
+docker build -t ucm-vllm:latest -f ./docker/Dockerfile.ucm-vllm-ascend.a2-<vllm_ascend_version> ./
 ```
 
 For vLLM-Ascend(v0.11.0) with sparse attention support:
@@ -100,12 +103,13 @@ The Dockerfile automatically invokes the build script (`scripts/build_ascend.sh`
 If you have a pre-built tar package (e.g. from CI), extract it and build the image in `package` mode:
 ```bash
 mkdir -p /tmp/ucm-pkg && tar xzf AI-Storage-Kit_*.tar.gz -C /tmp/ucm-pkg
+# Replace <vllm_ascend_version> with the version you need (e.g. v0.20.2)
 docker build --build-arg INSTALL_MODE=package \
-  -t ucm-vllm:latest -f /tmp/ucm-pkg/docker/Dockerfile.ucm-vllm-ascend.a2-v0.17.0 /tmp/ucm-pkg
+  -t ucm-vllm:latest -f /tmp/ucm-pkg/docker/Dockerfile.ucm-vllm-ascend.a2-<vllm_ascend_version> /tmp/ucm-pkg
 ```
 
 vllm-ascend provides two variants: **Ubuntu** and **openEuler**.
-The `Dockerfile.ucm-vllm-ascend.a2-v0.17.0` uses the **Ubuntu** variant by default.
+The Dockerfile uses the **Ubuntu** variant by default.
 
 If you want to use the **openEuler** variant, override the base image with `--build-arg IMAGE_NAME_VERSION`:
 
@@ -214,6 +218,7 @@ vllm serve Qwen/Qwen2.5-14B-Instruct \
 
 **⚠️ The log files of UCM module will be put under `log` directory of the path you start vllm service. To use a custom log path, set `export UCM_LOG_PATH=my_log_dir`.**
 
+
 If you see log as below:
 
 ```bash
@@ -237,4 +242,8 @@ curl http://localhost:7800/v1/completions \
   }'
 
 ```
+
+### Running with Other Models
+
+To run UCM with other models, first check which models are supported in the [Support Matrix](../user-guide/support-matrix/support_matrix.md). Then refer to the official [vLLM Recipes](https://recipes.vllm.ai/) and [vLLM-Ascend Model Tutorials](https://docs.vllm.ai/projects/ascend/en/latest/tutorials/models/index.html) for the specific model's serving command and parameters. You only need to add the `--kv-transfer-config` argument as shown in the example above to enable UCM integration.
 </details>

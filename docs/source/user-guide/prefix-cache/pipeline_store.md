@@ -72,6 +72,15 @@ ucm_connectors:
     ucm_connector_config:
       store_pipeline: "Cache|Posix"
       storage_backends: "/mnt/test"
+      io_direct: false
+      # cache_buffer_capacity_gb: 256
+      # posix_capacity_gb: 1024
+      use_gdr: false
+enable_event_sync: true
+use_layerwise: true
+enable_record_traces: false
+use_lite: false
+persist_token_threshold: 0
 ```
 
 ### Required Parameters
@@ -96,35 +105,76 @@ ucm_connectors:
 
 ### Optional Parameters
 
+Parameters inside `ucm_connector_config`:
+
 * **io_direct** (optional, default: `false`):  
-  Whether to enable direct I/O.
+  Whether to enable direct I/O. For Posix Store, this bypasses the OS page cache when reading/writing files to disk.
 
-* **stream_number** *(optional, default: 8)*  
-  Number of threads used for data transfer between the Host and Storage.
+* **cache_buffer_capacity_gb** *(optional, default: 256)*  
+  The capacity of the Cache Store host-side buffer in GB.  
+  The default value of 256 GB is sufficient in most cases.  
+  When using models like MLA, make sure `/dev/shm` has enough space,  
+  or set this parameter to a smaller value.  
+  Note: when multiple data-parallel instances run on the same node,  
+  each creates its own Cache Store buffer.
 
-* **buffer_number** *(optional, default: 16384)*  
-  The number of dram pinned buffers for data transfer between the Device and Host.
-  In the vast majority of cases, the default value of 16384 is already sufficient.  
-  You can also check the vLLM startup logs, where you’ll see a line like  
-  ```
-  vllm cache_config_info with initialization after num_gpu_blocks is: xxx
-  ```
-  As a rule of thumb, set `buffer_number` **>=** the reported `num_gpu_blocks` for better performance.  
-  If you are using the **Layerwise Connector**, you could set  
-  ```
-  buffer_number = num_gpu_blocks × num_layers
-  ```
-  But as said before, the default value of 16384 is already enough in most cases.
+* **posix_capacity_gb** *(optional, default: 0)*  
+  The maximum storage capacity in GB for the Posix Store.  
+  When set to a value greater than 0, garbage collection (GC) is enabled  
+  and will recycle disk space when the threshold is reached.  
+  When set to 0 (default), no capacity limit or GC is applied.
 
+* **posix_io_engine** *(optional, default: "psync")*  
+  I/O engine type for the Posix Store. Supported values: `"psync"` (pread/pwrite), `"aio"` (libaio).
 
-* **waiting_queue_depth** *(optional, default: 1024)*  
-  Depth of the waiting queue for transfer tasks.  
+* **use_gdr** *(optional, default: false)*  
+  Enable GPUDirect RDMA transfers for Cache Store/Pc Store H2D and D2H copies.  
+  This requires an RDMA-capable NIC, a working GPUDirect RDMA environment,  
+  and building UCM with `ENABLE_GDR=1`.
 
-* **running_queue_depth** *(optional, default: 32768)*  
-  Depth of the running queue for transfer tasks.  
+* **waiting_queue_depth** *(optional, default: 8192)*  
+  Depth of the waiting queue for transfer tasks in the Cache Store.  
+
+* **running_queue_depth** *(optional, default: 524288)*  
+  Depth of the running queue for transfer tasks in the Cache Store.  
 
 * **timeout_ms** *(optional, default: 30000)*  
-  Timeout in milliseconds for external interfaces.
+  Timeout in milliseconds for external interfaces (applies to both Cache Store and Posix Store).
+
+Top-level parameters (outside `ucm_connector_config`):
+
+* **enable_event_sync** *(optional, default: true)*  
+  Whether to enable event synchronization.  
+  When using `UcmNfsStore`, this should be set to `false`.
+
+* **use_layerwise** *(optional, default: true)*  
+  Whether to use layerwise loading/saving of KV cache blocks.  
+  Enabled by default for `UCMConnector`.
+
+* **hit_ratio** *(optional)*  
+  When set, limits the number of hit tokens to `hit_ratio × num_prompt_tokens`.  
+  Useful for controlling the proportion of cached tokens that are actually loaded.
+
+* **enable_record_traces** *(optional, default: false)*  
+  Whether to record request traces.  
+  When enabled, logs per-request traces (timestamp, input_length, output_length, hash_ids).  
+  Each hash_id takes 32 bytes. Enable only when needed,  
+  and configure `UCM_LOG_MAX_FILES` and `UCM_LOG_MAX_SIZE` accordingly.
+
+* **use_lite** *(optional, default: false)*  
+  Whether to use the UCM Lite Connector.  
+  UCM Lite Connector works with Fake Store to skip actual KV dump/load operations,  
+  only collecting hit ratio statistics.  
+  It is suggested to first collect hit ratio statistics and confirm with relevant  
+  project members whether to adopt UCM.
+
+* **persist_token_threshold** *(optional, default: 0)*  
+  Minimum token threshold for KV persistence.  
+  Requests with fewer tokens than this threshold will skip KV load and dump operations.
+
+* **metrics_config_path** *(optional)*  
+  Path to a UCM metrics configuration YAML file.  
+  When set, enables UCM metrics that can be monitored online via Grafana and Prometheus.
 
 
 ## Launching Inference
@@ -160,7 +210,15 @@ ucm_connectors:
     ucm_connector_config:
       store_pipeline: "Cache|Posix"
       storage_backends: "/mnt/test"
+      io_direct: false
+      # cache_buffer_capacity_gb: 256
+      # posix_capacity_gb: 1024
+      use_gdr: false
+enable_event_sync: true
 use_layerwise: true
+enable_record_traces: false
+use_lite: false
+persist_token_threshold: 0
 ```
 
 **⚠️ Make sure to replace `"/vllm-workspace/unified-cache-management/examples/ucm_config_example.yaml"` with your actual config file path.**

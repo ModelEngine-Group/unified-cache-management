@@ -32,6 +32,7 @@
 namespace UC::Logger {
 
 void Log(Level lv, std::string file, std::string func, int line, std::string msg);
+void LogFileOnly(Level lv, std::string file, std::string func, int line, std::string msg);
 void LogRateLimit(Level lv, std::string file, std::string func, int line, std::string msg);
 
 template <typename... Args>
