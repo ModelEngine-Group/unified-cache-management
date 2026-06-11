@@ -488,7 +488,7 @@ class VidLangKVCache(PivotKVCache):
         no_compression = math.isclose(compression_ratio, 1.0, rel_tol=1e-9)
         # print('compression_ratio of layer %d: %.4f' % (layer_idx, compression_ratio))
 
-        if (self.kvcache_compression and self.compression_ratio < 1.0 and no_compression):
+        if self.kvcache_compression and self.compression_ratio < 1.0 and no_compression:
             # Truncate the prompts directly when no compression
             key_states = key_states[:, :, : -self.prompt_length]
             value_states = value_states[:, :, : -self.prompt_length]
