@@ -21,31 +21,33 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  * */
-#pragma once
-
-#include <cstdint>
+#include "asu_transport/fake_backend.h"
 #include <string>
-#include <vector>
-#include "asu_transport/asu_transport.h"
+#include <utility>
 
 namespace UC::ASU {
 
-std::string TrimConfigValue(const std::string& value);
-std::vector<std::string> SplitConfigValue(const std::string& value, char delimiter);
-std::uint64_t ParseConfigUint64(const std::string& value);
-Protocol ParseConfigProtocol(std::string value);
-TransProviderType ParseConfigTransProviderType(std::string value);
-
-bool ApplyTransportBufferConfigField(TransportConfig& config, const std::string& key,
-                                     const std::string& value);
-bool ApplyTransportIoNumConfigField(TransportConfig& config, const std::string& key,
-                                    const std::string& value);
-bool ApplyTransportProviderConfigField(TransportConfig& config, const std::string& key,
-                                       const std::string& value);
-bool TryParseAsuInfoKey(const std::string& key, AsuId& asuId);
-bool TryGetTransportAttrKey(const std::string& key, std::string& attrKey);
-
-AsuEndpoint ParseTransportEndpoint(const std::string& value);
-AsuEndpoint ParseClientViewEndpoint(const std::string& value);
+void PatchFakeBackendTransportConfig(TransportConfig& config, const FakeBackendConfig& fakeConfig)
+{
+    config.providerType = TransProviderType::FAKE;
+    config.attrs.try_emplace("kernel_count", "1");
+    config.attrs.try_emplace("quiet_count", "1");
+    config.attrs["kv_ns_id"] = std::to_string(config.asuId);
+    config.attrs.try_emplace("dtype", "0");
+    config.attrs.try_emplace("dspec", "0");
+    config.attrs.try_emplace("lr", "false");
+    config.attrs["sc"] = "true";
+    config.attrs["fake_backend.path"] = fakeConfig.storePath;
+    config.attrs["fake_backend.latency_ms"] = std::to_string(fakeConfig.latencyMs);
+    config.attrs["fake_backend.device_id"] = std::to_string(fakeConfig.deviceId);
+    if (config.endpoints.empty()) {
+        AsuEndpoint endpoint;
+        endpoint.ip = "fake_backend";
+        endpoint.port = 19001;
+        endpoint.protocol = Protocol::TCP;
+        endpoint.deviceId = fakeConfig.deviceId;
+        config.endpoints.emplace_back(std::move(endpoint));
+    }
+}
 
 }  // namespace UC::ASU

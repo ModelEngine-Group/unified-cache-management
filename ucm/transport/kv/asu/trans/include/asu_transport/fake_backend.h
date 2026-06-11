@@ -25,27 +25,16 @@
 
 #include <cstdint>
 #include <string>
-#include <vector>
 #include "asu_transport/asu_transport.h"
 
 namespace UC::ASU {
 
-std::string TrimConfigValue(const std::string& value);
-std::vector<std::string> SplitConfigValue(const std::string& value, char delimiter);
-std::uint64_t ParseConfigUint64(const std::string& value);
-Protocol ParseConfigProtocol(std::string value);
-TransProviderType ParseConfigTransProviderType(std::string value);
+struct FakeBackendConfig {
+    std::string storePath;
+    std::uint64_t latencyMs{1};
+    std::int32_t deviceId{0};
+};
 
-bool ApplyTransportBufferConfigField(TransportConfig& config, const std::string& key,
-                                     const std::string& value);
-bool ApplyTransportIoNumConfigField(TransportConfig& config, const std::string& key,
-                                    const std::string& value);
-bool ApplyTransportProviderConfigField(TransportConfig& config, const std::string& key,
-                                       const std::string& value);
-bool TryParseAsuInfoKey(const std::string& key, AsuId& asuId);
-bool TryGetTransportAttrKey(const std::string& key, std::string& attrKey);
-
-AsuEndpoint ParseTransportEndpoint(const std::string& value);
-AsuEndpoint ParseClientViewEndpoint(const std::string& value);
+void PatchFakeBackendTransportConfig(TransportConfig& config, const FakeBackendConfig& fakeConfig);
 
 }  // namespace UC::ASU

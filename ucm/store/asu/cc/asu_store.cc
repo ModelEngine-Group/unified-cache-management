@@ -78,6 +78,36 @@ void LogAsuStatus(const char* operation, const AsuStatus& status)
              status.message);
 }
 
+AsuStatus WaitPrerequisiteEvent(std::uintptr_t eventHandle)
+{
+    if (eventHandle == 0) { return AsuStatus::OK(); }
+    auto ret = aclrtSynchronizeEvent(reinterpret_cast<aclrtEvent>(eventHandle));
+    if (ret == ACL_SUCCESS) { return AsuStatus::OK(); }
+    return AsuStatus::Error(AsuStatusCode::INTERNAL_ERROR,
+                            "aclrtSynchronizeEvent failed: " + std::to_string(ret));
+}
+
+const char* TransProviderBackendName(UC::ASU::TransProviderType providerType)
+{
+    switch (providerType) {
+        case UC::ASU::TransProviderType::FAKE: return "fake";
+        case UC::ASU::TransProviderType::AIV: return "aiv";
+        case UC::ASU::TransProviderType::AICPU: return "aicpu";
+        case UC::ASU::TransProviderType::UNSUPPORTED: return "unsupported";
+    }
+    return "unknown";
+}
+
+UC::ASU::TransProviderType ParseTransProviderBackend(std::string backend)
+{
+    std::transform(backend.begin(), backend.end(), backend.begin(),
+                   [](unsigned char ch) { return static_cast<char>(std::toupper(ch)); });
+    if (backend == "FAKE") { return UC::ASU::TransProviderType::FAKE; }
+    if (backend == "AIV") { return UC::ASU::TransProviderType::AIV; }
+    if (backend == "AICPU") { return UC::ASU::TransProviderType::AICPU; }
+    return UC::ASU::TransProviderType::UNSUPPORTED;
+}
+
 UC::ASU::MemoryType ParseMemoryType(const std::string& memoryType)
 {
     if (memoryType == "host") { return UC::ASU::MemoryType::HOST; }
@@ -405,6 +435,14 @@ private:
         }
         if (!config.asuIps.empty() && config.asuIps.size() != config.asuIds.size()) {
             return Status::InvalidParam("asu_ips size must match asu_ids size");
+        }
+        if (config.transProviderType == UC::ASU::TransProviderType::UNSUPPORTED) {
+            return Status::Unsupported();
+        }
+        if (config.transProviderType == UC::ASU::TransProviderType::FAKE &&
+            !config.configPath.empty()) {
+            return Status::InvalidParam(
+                "asu_trans_provider_backend=fake does not support asu_config_path");
         }
         if (config.tensorSizes.empty()) { return Status::InvalidParam("invalid tensor size"); }
         if (config.shardSize == 0) { return Status::InvalidParam("invalid shard size"); }
