@@ -83,7 +83,7 @@ private:
     {
         const auto last = shard.index + 1 == nShardPerBlock_;
         const auto& id = shard.owner;
-        auto handleFailure = [&](int32_t fd) {
+        auto handleFailure = [this, tid, w, last, id](int32_t fd) {
             failureSet_.Insert(tid);
             if (fd >= 0) { ::close(fd); }
             if constexpr (dump) {
