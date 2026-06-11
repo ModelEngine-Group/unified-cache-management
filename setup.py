@@ -33,6 +33,7 @@ from setuptools.command.build_ext import build_ext
 ROOT_DIR = os.path.abspath(os.path.dirname(__file__))
 PLATFORM = os.getenv("PLATFORM")
 ENABLE_SPARSE = os.getenv("ENABLE_SPARSE")
+BUILD_UCM_ASU = os.getenv("BUILD_UCM_ASU", "0") not in ("", "0", "false", "False")
 ENABLE_MINDIE = os.getenv("UCM_ENABLE_MINDIE", "0") not in ("", "0", "false", "False")
 
 
@@ -166,6 +167,8 @@ class CMakeBuild(build_ext):
 
         if enable_sparse():
             cmake_args += ["-DBUILD_UCM_SPARSE=ON"]
+        if BUILD_UCM_ASU:
+            cmake_args += ["-DBUILD_UCM_ASU=ON"]
 
         match PLATFORM:
             case "cuda":

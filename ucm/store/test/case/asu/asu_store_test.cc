@@ -352,9 +352,10 @@ TEST(UCAsuStoreTest, RejectsInvalidTensorLayout)
     ASSERT_TRUE(status.Failure());
 }
 
-TEST(UCAsuStoreTest, RejectsMultipleShardsPerBlock)
+TEST(UCAsuStoreTest, AllowsMultipleShardsPerBlock)
 {
     UC::AsuStore::AsuStore store;
+    UseFakeBackend(store);
     auto config = MakeBaseConfig();
     config.Set("asu_mode", std::string{"transport"});
     config.Set("asu_ips", std::vector<std::string>{"127.0.0.1"});
@@ -362,12 +363,13 @@ TEST(UCAsuStoreTest, RejectsMultipleShardsPerBlock)
     config.SetNumber("block_size", std::size_t{128});
 
     auto status = store.Setup(config);
-    ASSERT_TRUE(status.Failure());
+    ASSERT_TRUE(status.Success()) << status.ToString();
 }
 
-TEST(UCAsuStoreTest, RejectsMultipleTensorBuffersPerBlock)
+TEST(UCAsuStoreTest, AllowsMultipleTensorBuffersPerShard)
 {
     UC::AsuStore::AsuStore store;
+    UseFakeBackend(store);
     auto config = MakeBaseConfig();
     config.Set("asu_mode", std::string{"transport"});
     config.Set("asu_ips", std::vector<std::string>{"127.0.0.1"});
@@ -376,5 +378,17 @@ TEST(UCAsuStoreTest, RejectsMultipleTensorBuffersPerBlock)
     config.Set("tensor_size_list", std::vector<ssize_t>{32, 32});
 
     auto status = store.Setup(config);
-    ASSERT_TRUE(status.Failure());
+    ASSERT_TRUE(status.Success()) << status.ToString();
+
+    std::array<std::byte, 32> first{};
+    std::array<std::byte, 32> second{};
+    auto block = UC::Test::Detail::TypesHelper::MakeBlockId("aab2c3d4e5f6789012345678901234ab");
+    UC::Detail::TaskDesc task;
+    task.brief = "asu-store-test";
+    task.push_back(UC::Detail::Shard{
+        block, 0, {first.data(), second.data()}
+    });
+    auto dump = store.Dump(task);
+    ASSERT_TRUE(dump.HasValue()) << dump.Error().ToString();
+    ASSERT_TRUE(store.Wait(dump.Value()).Success());
 }

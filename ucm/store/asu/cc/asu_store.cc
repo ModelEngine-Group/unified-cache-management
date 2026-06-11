@@ -22,17 +22,22 @@
  * SOFTWARE.
  * */
 #include "asu_store.h"
+#include <acl/acl.h>
 #include <algorithm>
+#include <any>
+#include <cctype>
 #include <cstddef>
 #include <functional>
 #include <iomanip>
 #include <memory>
 #include <numeric>
 #include <sstream>
+#include <stdexcept>
 #include <string>
 #include <utility>
 #include "asu_client/asu_client.h"
 #include "asu_transport/asu_transport.h"
+#include "asu_transport/fake_backend.h"
 #include "logger/logger.h"
 #include "ucmstore_v1.h"
 
@@ -42,13 +47,31 @@ namespace {
 using AsuStatus = UC::ASU::Status;
 using AsuStatusCode = UC::ASU::StatusCode;
 
-std::string ToHex(const Detail::BlockId& block)
+std::uint64_t HashAsuKey(const Detail::BlockId& block, std::size_t shardIndex,
+                         std::size_t tensorIndex)
+{
+    std::uint64_t hash = 1469598103934665603ULL;
+    const auto mixByte = [&hash](std::uint8_t value) {
+        hash ^= value;
+        hash *= 1099511628211ULL;
+    };
+
+    for (auto b : block) { mixByte(std::to_integer<std::uint8_t>(b)); }
+    for (std::size_t shift = 0; shift < sizeof(shardIndex) * 8; shift += 8) {
+        mixByte(static_cast<std::uint8_t>((shardIndex >> shift) & 0xFF));
+    }
+    for (std::size_t shift = 0; shift < sizeof(tensorIndex) * 8; shift += 8) {
+        mixByte(static_cast<std::uint8_t>((tensorIndex >> shift) & 0xFF));
+    }
+    return hash;
+}
+
+std::string MakeAsuKey(const Detail::BlockId& block, std::size_t shardIndex,
+                       std::size_t tensorIndex)
 {
     std::ostringstream os;
-    os << std::hex << std::setfill('0');
-    for (auto b : block) {
-        os << std::setw(2) << static_cast<unsigned>(std::to_integer<unsigned char>(b));
-    }
+    os << std::hex << std::setfill('0') << std::setw(16)
+       << HashAsuKey(block, shardIndex, tensorIndex);
     return os.str();
 }
 
@@ -116,6 +139,39 @@ UC::ASU::MemoryType ParseMemoryType(const std::string& memoryType)
     return UC::ASU::MemoryType::ASCEND_DEVICE;
 }
 
+bool TryGetStringLike(const Detail::Dictionary& inConfig, const std::string& key,
+                      std::string& value)
+{
+    if (!inConfig.Contains(key)) { return false; }
+    try {
+        inConfig.Get(key, value);
+        return true;
+    } catch (const std::bad_any_cast&) {
+    }
+    try {
+        bool boolValue = false;
+        inConfig.Get(key, boolValue);
+        value = boolValue ? "true" : "false";
+        return true;
+    } catch (const std::bad_any_cast&) {
+    }
+    try {
+        ssize_t numberValue = 0;
+        inConfig.GetNumber(key, numberValue);
+        value = std::to_string(numberValue);
+        return true;
+    } catch (const std::bad_any_cast&) {
+    }
+    return false;
+}
+
+void ReadClientAttr(const Detail::Dictionary& inConfig, const std::string& yamlKey,
+                    const std::string& attrKey, Config& config)
+{
+    std::string value;
+    if (TryGetStringLike(inConfig, yamlKey, value)) { config.clientAttrs[attrKey] = value; }
+}
+
 }  // namespace
 
 UC::ASU::TransportConfig BuildTransportConfig(const Config& config, std::size_t index)
@@ -128,12 +184,20 @@ UC::ASU::TransportConfig BuildTransportConfig(const Config& config, std::size_t 
     transportConfig.storeTimeoutMs = config.storeTimeoutMs;
     transportConfig.maxInflightTasks = static_cast<std::uint32_t>(config.maxInflightTasks);
     transportConfig.maxInflightBytes = config.maxInflightBytes;
+    transportConfig.providerType = config.transProviderType;
     if (!config.asuIps.empty()) {
         UC::ASU::AsuEndpoint endpoint;
         endpoint.ip = config.asuIps[index];
         endpoint.port = config.asuPort;
         endpoint.deviceId = config.deviceId;
         transportConfig.endpoints.emplace_back(std::move(endpoint));
+    }
+    if (config.transProviderType == UC::ASU::TransProviderType::FAKE) {
+        UC::ASU::FakeBackendConfig fakeConfig;
+        fakeConfig.storePath = config.fakeBackendPath;
+        fakeConfig.latencyMs = config.fakeBackendLatencyMs;
+        fakeConfig.deviceId = config.deviceId >= 0 ? config.deviceId : 0;
+        UC::ASU::PatchFakeBackendTransportConfig(transportConfig, fakeConfig);
     }
     return transportConfig;
 }
@@ -147,6 +211,7 @@ public:
         asuConfig.clientId = config.clientId;
         asuConfig.viewServiceAddrs = config.viewServiceAddrs;
         asuConfig.defaultWaitTimeoutMs = config.defaultWaitTimeoutMs;
+        asuConfig.attrs = config.clientAttrs;
         asuConfig.transportConfigs.reserve(config.asuIds.size());
         for (std::size_t i = 0; i < config.asuIds.size(); ++i) {
             asuConfig.transportConfigs.emplace_back(BuildTransportConfig(config, i));
@@ -274,10 +339,10 @@ public:
 
     ~AsuStore() override
     {
-        if (!backend_) { return; }
-
-        auto status = backend_->Shutdown();
-        if (!status.ok()) { UC_ERROR("Failed to shutdown ASU backend: {}.", status.message); }
+        if (backend_) {
+            auto status = backend_->Shutdown();
+            if (!status.ok()) { UC_ERROR("Failed to shutdown ASU backend: {}.", status.message); }
+        }
     }
 
     Status Setup(const Detail::Dictionary& inConfig) override
@@ -347,6 +412,11 @@ public:
 
     Expected<Detail::TaskHandle> Dump(Detail::TaskDesc task) override
     {
+        auto status = WaitPrerequisiteEvent(task.prerequisiteHandle);
+        if (!status.ok()) {
+            LogAsuStatus("wait prerequisite event", status);
+            return ConvertStatus(status);
+        }
         return Submit(std::move(task), &AsuBackend::StoreAsync);
     }
 
@@ -404,6 +474,26 @@ private:
         inConfig.GetNumber("block_size", config.blockSize);
         inConfig.GetNumber("device_id", config.deviceId);
         inConfig.Get("asu_memory_type", config.memoryType);
+        std::string providerBackend;
+        if (TryGetStringLike(inConfig, "asu_trans_provider_backend", providerBackend)) {
+            config.transProviderType = ParseTransProviderBackend(providerBackend);
+        }
+        inConfig.Get("asu_fake_backend_path", config.fakeBackendPath);
+        inConfig.GetNumber("asu_fake_backend_latency_ms", config.fakeBackendLatencyMs);
+        ReadClientAttr(inConfig, "asu_router_type", "hash_table.type", config);
+        ReadClientAttr(inConfig, "asu_ring_hash_virtual_node_count", "ring_hash.virtual_node_count",
+                       config);
+        ReadClientAttr(inConfig, "asu_maglev_table_size", "maglev.table_size", config);
+        ReadClientAttr(inConfig, "asu_contiguous_block_affinity_block_count",
+                       "contiguous_block_affinity.block_count", config);
+        ReadClientAttr(inConfig, "asu_contiguous_block_affinity_full_spread_type",
+                       "contiguous_block_affinity.full_spread_type", config);
+        ReadClientAttr(inConfig, "asu_contiguous_block_affinity_dynamic_adjust_enabled",
+                       "contiguous_block_affinity.dynamic_adjust_enabled", config);
+        ReadClientAttr(inConfig, "asu_batch_topk_affinity_top_k", "batch_topk_affinity.top_k",
+                       config);
+        ReadClientAttr(inConfig, "asu_batch_topk_affinity_dynamic_adjust_enabled",
+                       "batch_topk_affinity.dynamic_adjust_enabled", config);
 
         std::size_t tensorSize = 0;
         inConfig.GetNumber("tensor_size", tensorSize);
@@ -455,12 +545,6 @@ private:
         if (config.blockSize % config.shardSize != 0) {
             return Status::InvalidParam("invalid block size({})", config.blockSize);
         }
-        if (config.blockSize != config.shardSize) {
-            return Status::InvalidParam("asu store requires one shard per block");
-        }
-        if (config.tensorSizes.size() != 1) {
-            return Status::InvalidParam("asu store requires one tensor buffer per block");
-        }
         return Status::OK();
     }
 
@@ -502,7 +586,7 @@ private:
         std::vector<UC::ASU::CacheKey> keys;
         keys.reserve(num);
         for (std::size_t blockIndex = 0; blockIndex < num; ++blockIndex) {
-            keys.emplace_back(ToHex(blocks[blockIndex]));
+            keys.emplace_back(MakeAsuKey(blocks[blockIndex], 0, 0));
         }
         return keys;
     }
@@ -539,7 +623,7 @@ private:
             }
             for (std::size_t tensorIndex = 0; tensorIndex < shard.addrs.size(); ++tensorIndex) {
                 UC::ASU::KVBuffer entry;
-                entry.key = ToHex(shard.owner);
+                entry.key = MakeAsuKey(shard.owner, shard.index, tensorIndex);
                 entry.buffer.region.memoryType = memoryType;
                 entry.buffer.region.addr =
                     reinterpret_cast<std::uint64_t>(shard.addrs[tensorIndex]);
@@ -564,6 +648,9 @@ private:
         UC_INFO("Set AsuStore::BlockSize to {}.", config.blockSize);
         UC_INFO("Set AsuStore::TensorSizes to {}.", config.tensorSizes);
         UC_INFO("Set AsuStore::DeviceId to {}.", config.deviceId);
+        UC_INFO("Set AsuStore::TransProviderBackend to {}.",
+                TransProviderBackendName(config.transProviderType));
+        UC_INFO("Set AsuStore::FakeBackendPath to {}.", config.fakeBackendPath);
     }
 
     Config config_;

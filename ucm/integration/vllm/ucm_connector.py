@@ -355,6 +355,9 @@ class UCMDirectConnector(KVConnectorBase_V1):
                 * (1 if self.is_mla else self.num_head * 2)
                 * self.blocks_per_chunk
             )
+            if config.get("store_pipeline") == "ASU":
+                config["shard_size"] = config["block_size"]
+                config["tensor_size"] = config["block_size"]
         dp_rank = self._vllm_config.parallel_config.data_parallel_rank
         config["posix_gc_enable"] = (
             self._role != KVConnectorRole.WORKER and dp_rank == 0

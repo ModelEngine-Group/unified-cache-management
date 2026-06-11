@@ -73,6 +73,7 @@ function build_wheels()
 
     cd ${KVCACHE_PROJECT_ROOT}
     export ENABLE_SPARSE=${ENABLE_SPARSE:-TRUE}
+    export BUILD_UCM_ASU=${BUILD_UCM_ASU:-ON}
     python3 -m build --no-isolation --wheel
 
     if [ $? -eq 0 ]; then
@@ -105,6 +106,7 @@ function collect_artifacts()
     cp -r "${KVCACHE_PROJECT_ROOT}/docker" .
     cp -r "${KVCACHE_PROJECT_ROOT}/examples/deployments" .
     cp -r "${KVCACHE_PROJECT_ROOT}/examples/ucm_config_example.yaml" ucm_config.yaml
+    cp -r "${KVCACHE_PROJECT_ROOT}/examples/ucm_config_asu_fake_backend.yaml" ucm_config_asu_fake_backend.yaml
     cp -r "${KVCACHE_PROJECT_ROOT}/examples/metrics/metrics_configs.yaml" metrics_configs.yaml
     cp -r "${KVCACHE_PROJECT_ROOT}/test" .
     cp "${KVCACHE_PROJECT_ROOT}/ucm/integration/vllm/patch/0.11.0/vllm-adapt.patch" .
