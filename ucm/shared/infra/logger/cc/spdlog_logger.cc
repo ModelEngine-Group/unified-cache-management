@@ -209,9 +209,9 @@ std::shared_ptr<spdlog::logger> Logger::MakeCapture()
     try {
         auto file_sink = std::make_shared<spdlog::sinks::rotating_file_sink_mt>(
             log_path, this->max_size_, this->max_files_);
-        auto logger = std::make_shared<spdlog::async_logger>(
-            "VLLM", file_sink, spdlog::thread_pool(),
-            spdlog::async_overflow_policy::overrun_oldest);
+        auto logger =
+            std::make_shared<spdlog::async_logger>("VLLM", file_sink, spdlog::thread_pool(),
+                                                   spdlog::async_overflow_policy::overrun_oldest);
         logger->set_pattern("[%Y-%m-%d %H:%M:%S.%f][%n][%^%L%$] %v [%P,%t][%s:%#,%!]");
         if (main_logger) { logger->set_level(main_logger->level()); }
         logger->flush_on(spdlog::level::warn);

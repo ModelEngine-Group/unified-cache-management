@@ -101,7 +101,7 @@ jobs:
           cache-from: type=gha,scope=npu
           cache-to: type=gha,mode=max,scope=npu,ignore-error=true
 
-  test-build-vllm-ascend-v0-20-2:
+  test-build-vllm-ascend-deepseekv4:
     timeout-minutes: 25
     runs-on: ubuntu-24.04-arm
     steps:
@@ -116,14 +116,14 @@ jobs:
         uses: docker/build-push-action@v5
         with:
           context: .
-          file: ./docker/Dockerfile.ucm-vllm-ascend.a2-v0.20.2
+          file: ./docker/Dockerfile.ucm-vllm-ascend.a2-deepseekv4
           build-args: |
             PIP_INDEX_URL=https://pypi.org/simple
-          tags: ucm-npu-v0.20.2:latest
+          tags: ucm-npu-deepseekv4:latest
           push: false
           load: false
-          cache-from: type=gha,scope=npu-v0.20.2
-          cache-to: type=gha,mode=max,scope=npu-v0.20.2,ignore-error=true
+          cache-from: type=gha,scope=npu-deepseekv4
+          cache-to: type=gha,mode=max,scope=npu-deepseekv4,ignore-error=true
 
   test-build-vllm-cuda-v0-20-2:
     timeout-minutes: 25
