@@ -34,9 +34,10 @@ docker run --rm \
 git clone --depth 1 --branch <branch_or_tag_name> https://github.com/ModelEngine-Group/unified-cache-management.git
 cd unified-cache-management
 ```
-Use following command to build UCM with vLLM(v0.17.0):
+Check the `docker/` directory for available Dockerfile versions (e.g. `v0.20.2`, `v0.18.0`, `v0.17.0`, `v0.11.0`), then build with the desired version:
 ```bash
-docker build -t ucm-vllm:latest -f ./docker/Dockerfile.ucm-vllm-cuda-v0.17.0 ./
+# Replace <vllm_version> with the version you need (e.g. v0.20.2)
+docker build -t ucm-vllm:latest -f ./docker/Dockerfile.ucm-vllm-cuda-<vllm_version> ./
 ```
 
 For vLLM(v0.11.0) with sparse attention support:
@@ -51,8 +52,9 @@ The Dockerfile automatically invokes the build script (`scripts/build_cuda.sh`) 
 If you have a pre-built tar package (e.g. from CI), extract it and build the image in `package` mode:
 ```bash
 mkdir -p /tmp/ucm-pkg && tar xzf AI-Storage-Kit_*.tar.gz -C /tmp/ucm-pkg
+# Replace <vllm_version> with the version you need (e.g. v0.20.2)
 docker build --build-arg INSTALL_MODE=package \
-  -t ucm-vllm:latest -f /tmp/ucm-pkg/docker/Dockerfile.ucm-vllm-cuda-v0.17.0 /tmp/ucm-pkg
+  -t ucm-vllm:latest -f /tmp/ucm-pkg/docker/Dockerfile.ucm-vllm-cuda-<vllm_version> /tmp/ucm-pkg
 ```
 
 
@@ -93,33 +95,32 @@ docker build --build-arg INSTALL_MODE=package \
     pip install -v -e . --no-build-isolation
     ```
 
-3. Apply vLLM Integration Patches (Not required for versions > 0.11.0)
+3. Apply vLLM Integration Patches
 
-    To integrate UCM with vLLM 0.11.0, you can choose between a dynamic **monkey patch** (recommended) and a manual **git patch**.
+    To integrate UCM with vLLM, you can choose between a dynamic **monkey patch** (recommended) and a manual **git patch**.
 
     >**Recommendation**: We highly recommend the Monkey Patch approach for its non-invasive nature and ease of use.
 
     #### Option A: Monkey Patch (Recommended)
 
     This method enables UCM features dynamically at runtime via environment variables, requiring no source code modifications.
-    
+    It automatically detects the vLLM version and applies patches only when needed — you can safely keep it enabled regardless of your vLLM version.
+    Available for vLLM ≥ 0.11.0 (not supported on 0.9.2, which requires Manual Git Patch).
 
     1. Enable Monkey Patch:
     ```bash
     export ENABLE_UCM_PATCH=1
     ```
 
-    2. Enable Sparse Attention (Optional):
+    2. Enable Sparse Attention (Optional, vLLM 0.11.0 only):
     ```bash
     export ENABLE_SPARSE=1
     ```
 
     **Note:**
-    - Monkey patch is only available for vLLM 0.11.0.
-    - Enabling ENABLE_UCM_PATCH is required to use the Prefix Caching feature with UCM on vLLM 0.11.0.
     - ReRoPE support is currently only available via the Git Patch method.
 
-    #### Option B: Manual Git Patch (Legacy/Alternative)
+    #### Option B: Manual Git Patch (Legacy/Alternative, only available for vLLM 0.9.2 and 0.11.0)
 
     If you prefer modifying the source code directly, follow these steps:
     
@@ -145,15 +146,19 @@ docker build --build-arg INSTALL_MODE=package \
     git apply <path_to_ucm>/ucm/integration/vllm/patch/0.9.2/vllm-adapt-rerope.patch
     ```
 
-    ###### vLLM 0.11.0 
+    ###### vLLM 0.11.0
 
-    v0.11.0 only requires the sparse attention patch:
+    - Full UCM integration (recommended):
+    ```bash
+    git apply <path_to_ucm>/ucm/integration/vllm/patch/0.11.0/vllm-adapt.patch
+    ```
 
+    - Sparse attention only:
     ```bash
     git apply <path_to_ucm>/ucm/integration/vllm/patch/0.11.0/vllm-adapt-sparse.patch
     ```
 
-    - ReRoPE support only (optional):
+    - ReRoPE support only:
     ```bash
     git apply <path_to_ucm>/ucm/integration/vllm/patch/0.11.0/vllm-adapt-rerope.patch
     ```
@@ -280,4 +285,8 @@ curl http://localhost:7800/v1/completions \
     "temperature": 0
   }'
 ```
+
+### Running with Other Models
+
+To run UCM with other models, first check which models are supported in the [Support Matrix](../user-guide/support-matrix/support_matrix.md). Then refer to the official [vLLM Recipes](https://recipes.vllm.ai/) for the specific model's serving command and parameters. You only need to add the `--kv-transfer-config` argument as shown in the example above to enable UCM integration.
 </details>
