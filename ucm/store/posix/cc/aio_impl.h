@@ -59,20 +59,15 @@ public:
         uint32_t length;
         void* buffer;
         Callback callback;
-        uint64_t tag{0};  // owning task id; 0 = untracked (no cancellation support)
+        uint64_t tag{0};
     };
-    // Invoked periodically on the completion thread (see CompletionLoop). Used by the engine to
-    // run its deadline watchdog without spawning an extra thread.
     using SweepFn = std::function<void()>;
 
     ~AioImpl();
-    Status Setup(size_t epollTimeoutMs, size_t sweepIntervalMs, size_t submitTimeoutMs);
+    Status Setup(size_t timeoutMs);
     Status ReadAsync(Io&& io);
     Status WriteAsync(Io&& io);
     void SetSweepFn(SweepFn fn) { sweepFn_ = std::move(fn); }
-    // Best-effort cancel of all in-flight kernel IOs belonging to a task. Cancellation of disk
-    // IO is not guaranteed (most drivers reject io_cancel); uncancellable IOs are left for the
-    // completion thread to harvest (or leaked if the device never reports them).
     void CancelTask(uint64_t tag);
 
 private:
@@ -84,9 +79,9 @@ private:
     void Untrack(struct iocb* cb);
 
     size_t queueDepth_{4096};
-    size_t epollTimeoutMs_{10};
-    size_t sweepIntervalMs_{0};      // 0 => sweep on every completion-loop tick
-    size_t submitTimeoutMs_{5000};   // cap on io_submit EAGAIN retry (queue full); 0 => no cap
+    size_t epollTimeoutMs_{100};
+    size_t sweepIntervalMs_{100};
+    size_t submitTimeoutMs_{0};
     size_t batchCompleteSize{512};
     aio_context_t ctx_{0};
     int32_t eventFd_{-1};
@@ -95,9 +90,6 @@ private:
     std::thread eventThread_;
     SweepFn sweepFn_{nullptr};
     double lastSweepTp_{0};
-    // iocb<->task side table, so CancelTask can find a task's in-flight iocbs. The heap iocb and
-    // its Callback are owned by "kernel + completion thread": the harvest path (or CancelTask on
-    // a successful cancel) is the sole deleter. Guarded by tableMutex_.
     std::mutex tableMutex_;
     std::unordered_map<uint64_t, std::vector<struct iocb*>> iocbTable_;
     std::unordered_map<struct iocb*, uint64_t> iocbToTag_;

@@ -54,8 +54,6 @@ UC::Detail::Dictionary MakeAioConfig(const std::string& path, size_t timeoutMs =
     config.SetNumber("timeout_ms", timeoutMs);
     config.SetNumber("posix_open_concurrency", openConcurrency);
     config.SetNumber("posix_commit_concurrency", size_t(1));
-    config.SetNumber("posix_aio_epoll_timeout_ms", size_t(5));
-    config.SetNumber("posix_aio_submit_timeout_ms", size_t(50));
     config.SetNumber("data_dir_shard_bytes", size_t(0));
     return config;
 }
@@ -359,7 +357,7 @@ TEST(UCAioImplTest, SubmitEagainHonorsDeadline)
         return -1;
     });
     AioImpl aio;
-    ASSERT_EQ(aio.Setup(5, 0, 30), UC::Status::OK());
+    ASSERT_EQ(aio.Setup(30), UC::Status::OK());
     auto buffer = MakeAlignedBuffer(4);
     ASSERT_NE(buffer.get(), nullptr);
     AioImpl::Io io;

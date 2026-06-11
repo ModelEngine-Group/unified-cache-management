@@ -94,9 +94,6 @@ public:
         if (!finished) [[unlikely]] {
             failureSet_.Insert(taskId);
             Cancel(t);
-            // Bounded grace: an engine with a watchdog (e.g. AIO) force-drains the latch inside
-            // Cancel(), so the first round returns immediately. The hard cap guarantees Wait()
-            // returns even if the latch never drains, instead of blocking forever as before.
             constexpr size_t drainSliceMs = 2000;
             constexpr size_t maxDrainRounds = 3;
             bool drained = false;
@@ -113,9 +110,7 @@ public:
                          " IO.",
                          taskId);
             }
-            // Keep the failure marker (do not Remove): an IO abandoned here may complete late and
-            // must not be treated as success (e.g. wrongly commit a partial block). Task ids are
-            // monotonic, so a stale marker never collides with a future task.
+            // Late IO callbacks must still see failure and avoid committing success.
             return Status::Timeout();
         }
         auto failure = failureSet_.Contains(taskId);

@@ -60,17 +60,11 @@ public:
         if (this->counter_ == 0) { return; }
         this->cv_.wait(lk, [this] { return this->counter_ == 0; });
     }
-    // Force the latch to the completed state, regardless of how many Done() calls are still
-    // outstanding. Runs the epilog exactly once (whether the into-zero transition is performed
-    // by a real Done() or by Abort()) and wakes all waiters. Safe to call concurrently with
-    // Done(): the counter is a single atomic word, so only one operation can move it from a
-    // positive value to 0; that operation owns the epilog. A real Done() arriving after Abort()
-    // observes counter_ == 0 and becomes a no-op.
+    // Abort may race with Done(); only the thread moving counter_ to zero runs finish_.
     void Abort() noexcept
     {
         auto prev = this->counter_.exchange(0, std::memory_order_acq_rel);
         if (prev == 0) {
-            // Already completed by a real Done() (which ran the epilog) or a prior Abort().
             std::lock_guard<std::mutex> lg(this->mutex_);
             this->cv_.notify_all();
             return;

@@ -84,7 +84,7 @@ public:
         bool activated;
         int32_t flags;
         OpenCallback callback;
-        uint64_t tag{0};  // owning task id, for CancelQueued
+        uint64_t tag{0};
     };
     struct CommitTask {
         Detail::BlockId id;
@@ -130,10 +130,6 @@ public:
         q.queue.push_back(std::move(task));
         q.cv.notify_one();
     }
-    // Remove queued (not yet started) open tasks of `tag` and fail them fast via their own
-    // callback, so a timed-out task's backlog is not opened once the disk recovers. Open tasks
-    // already picked up by a worker (possibly blocked in open()) are no longer in the queue and
-    // are left to resolve on their own. Callbacks run outside the queue lock.
     void CancelQueued(uint64_t tag)
     {
         std::list<OpenTask> purged;

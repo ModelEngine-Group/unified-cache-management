@@ -30,6 +30,7 @@
 #include <cerrno>
 #include <chrono>
 #include <cstring>
+#include <memory>
 #include "logger/logger.h"
 #include "time/now_time.h"
 
@@ -138,6 +139,12 @@ static inline void AioSetEventFd(struct iocb* iocb, int32_t eventfd)
     iocb->aio_flags |= (1 << 0) /* IOCB_FLAG_RESFD */;
     iocb->aio_resfd = eventfd;
 }
+static inline void ReleaseToAioCompletion(std::unique_ptr<struct iocb>& cb,
+                                          std::unique_ptr<AioImpl::Callback>& data)
+{
+    data.release();
+    cb.release();
+}
 
 AioImpl::~AioImpl()
 {
@@ -151,10 +158,6 @@ AioImpl::~AioImpl()
     if (epollFd_ >= 0) { close(epollFd_); }
     if (eventFd_ >= 0) { close(eventFd_); }
     if (ctx_) { AioDestroy(ctx_); }
-    // The completion thread is joined and the kernel context destroyed; any iocb still tracked
-    // here belongs to an IO that never completed (a truly hung device). Its heap iocb/Callback is
-    // intentionally not reclaimed (doing so could race a kernel still touching the buffer); the
-    // process is exiting, so the OS reclaims the memory. Just surface the count.
     std::lock_guard<std::mutex> lk(tableMutex_);
     if (!iocbToTag_.empty()) {
         UC_WARN("AIO teardown: {} in-flight IO(s) abandoned (never completed; not reclaimed).",
@@ -162,11 +165,12 @@ AioImpl::~AioImpl()
     }
 }
 
-Status AioImpl::Setup(size_t epollTimeoutMs, size_t sweepIntervalMs, size_t submitTimeoutMs)
+Status AioImpl::Setup(size_t timeoutMs)
 {
-    epollTimeoutMs_ = epollTimeoutMs > 0 ? epollTimeoutMs : 10;
-    sweepIntervalMs_ = sweepIntervalMs;
-    submitTimeoutMs_ = submitTimeoutMs;
+    constexpr size_t defaultSweepIntervalMs = 100;
+    epollTimeoutMs_ = timeoutMs > 0 ? timeoutMs : defaultSweepIntervalMs;
+    sweepIntervalMs_ = defaultSweepIntervalMs;
+    submitTimeoutMs_ = timeoutMs;
     UC_INFO("AIO setup: queueDepth={}, epollTimeoutMs={}, sweepIntervalMs={}, "
             "submitTimeoutMs={}.",
             queueDepth_, epollTimeoutMs_, sweepIntervalMs_, submitTimeoutMs_);
@@ -202,9 +206,6 @@ Status AioImpl::Setup(size_t epollTimeoutMs, size_t sweepIntervalMs, size_t subm
 
 Status AioImpl::ReadAsync(Io&& io)
 {
-    // Heap-allocate the iocb (stable address) so it can later be passed to io_cancel and so the
-    // completion thread can reclaim it. Track before submit: once submitted, a completion may be
-    // harvested concurrently, and harvest looks the iocb up in the side table.
     auto cb = std::make_unique<struct iocb>();
     auto data = std::make_unique<Callback>(std::move(io.callback));
     AioPrepareRead(cb.get(), io.fd, io.buffer, io.length, io.offset);
@@ -214,10 +215,9 @@ Status AioImpl::ReadAsync(Io&& io)
     if (status.Failure()) {
         Untrack(cb.get());
         UC_ERROR("Failed({}) to submit read io.", status);
-        return status;  // cb and data reclaimed by unique_ptr
+        return status;
     }
-    data.release();
-    cb.release();  // ownership transferred to "kernel + completion thread"
+    ReleaseToAioCompletion(cb, data);
     return Status::OK();
 }
 
@@ -232,10 +232,9 @@ Status AioImpl::WriteAsync(Io&& io)
     if (status.Failure()) {
         Untrack(cb.get());
         UC_ERROR("Failed({}) to submit write io.", status);
-        return status;  // cb and data reclaimed by unique_ptr
+        return status;
     }
-    data.release();
-    cb.release();  // ownership transferred to "kernel + completion thread"
+    ReleaseToAioCompletion(cb, data);
     return Status::OK();
 }
 
@@ -254,8 +253,6 @@ void AioImpl::CompletionLoop()
                 HarvestCompletions(aioEvents);
             }
         }
-        // epoll_wait wakes at least every epollTimeoutMs_ even with no completions, so the
-        // deadline watchdog runs on this same thread without an extra timer thread.
         MaybeSweep();
     }
 }
@@ -291,9 +288,6 @@ void AioImpl::HarvestCompletions(std::vector<io_event>& events)
                 (*cb)(res);
                 delete cb;
             }
-            // The completion thread is the sole reclaimer of the heap iocb (and its side-table
-            // entry) for IOs that the kernel reports. Successfully io_cancel'd IOs are NOT
-            // reported here and are reclaimed by CancelTask instead.
             if (iocbPtr) {
                 Untrack(iocbPtr);
                 delete iocbPtr;
@@ -305,7 +299,7 @@ void AioImpl::HarvestCompletions(std::vector<io_event>& events)
 
 void AioImpl::Track(uint64_t tag, struct iocb* cb)
 {
-    if (tag == 0) { return; }  // untracked: no cancellation support requested
+    if (tag == 0) { return; }
     std::lock_guard<std::mutex> lk(tableMutex_);
     iocbTable_[tag].push_back(cb);
     iocbToTag_[cb] = tag;
@@ -327,10 +321,6 @@ void AioImpl::Untrack(struct iocb* cb)
 
 void AioImpl::CancelTask(uint64_t tag)
 {
-    // Collect successfully-cancelled iocbs under the lock (mutually exclusive with harvest's
-    // Untrack and with submit's Track), then invoke their callbacks and reclaim them outside the
-    // lock to avoid holding tableMutex_ across user callbacks. A successful io_cancel means the
-    // kernel will NOT report the IO via io_getevents, so CancelTask becomes its sole reclaimer.
     std::vector<struct iocb*> cancelled;
     size_t uncancellable = 0;
     {
@@ -372,9 +362,6 @@ void AioImpl::CancelTask(uint64_t tag)
 Status AioImpl::SubmitIo(iocb* cb)
 {
     AioSetEventFd(cb, eventFd_);
-    // The in-flight queue (queueDepth_) can stay full when earlier IOs are stuck on a dead disk.
-    // Cap the EAGAIN retry so the submitting open-worker thread is not lost spinning forever; on
-    // timeout the shard fails fast and the worker returns to serve new requests after recovery.
     const auto deadline = NowTime::Now() + static_cast<double>(submitTimeoutMs_) / 1000.0;
     for (;;) {
         auto ret = AioSubmit(ctx_, 1, &cb);

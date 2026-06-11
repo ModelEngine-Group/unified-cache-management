@@ -40,9 +40,6 @@
 namespace UC::PosixStore {
 
 class IoEngineAio : public Detail::TaskWrapper<TransTask, Detail::TaskHandle> {
-    // Grace added on top of timeoutMs_ for the watchdog deadline, so the caller's own
-    // Wait(timeoutMs_) fires first and returns a clean Status::Timeout(); the watchdog is the
-    // backstop for tasks whose Wait is never called (e.g. Check-only) or otherwise stuck.
     static constexpr size_t kWatchdogGraceMs = 2000;
     struct Inflight {
         TaskPtr t;
@@ -57,22 +54,21 @@ class IoEngineAio : public Detail::TaskWrapper<TransTask, Detail::TaskHandle> {
     std::mutex regMutex_;
     std::unordered_map<Detail::TaskHandle, Inflight> registry_;
     BlockOperator blockOperator_;
-    AioImpl aio_;  // declared last => destroyed first (joins completion thread before registry_)
+    AioImpl aio_;
 
 public:
     Status Setup(const Config& config, const SpaceLayout* layout)
     {
-        timeoutMs_ = config.aioTimeoutMs ? config.aioTimeoutMs : config.timeoutMs;
+        timeoutMs_ = config.timeoutMs;
         shardSize_ = config.shardSize;
         nShardPerBlock_ = config.blockSize / config.shardSize;
         layout_ = layout;
         blockOperator_.Setup(layout, config.openConcurrency, config.commitConcurrency);
         aio_.SetSweepFn([this] { SweepDeadlines(); });
-        UC_INFO("AIO engine setup: effectiveTimeoutMs={}, watchdogGraceMs={}, "
+        UC_INFO("AIO engine setup: timeoutMs={}, watchdogGraceMs={}, "
                 "openConcurrency={}, commitConcurrency={}.",
                 timeoutMs_, kWatchdogGraceMs, config.openConcurrency, config.commitConcurrency);
-        return aio_.Setup(config.aioEpollTimeoutMs, config.aioSweepIntervalMs,
-                          config.aioSubmitTimeoutMs);
+        return aio_.Setup(timeoutMs_);
     }
 
 private:
@@ -150,7 +146,7 @@ private:
         io.offset = shard.index * shardSize_;
         io.length = shardSize_;
         io.buffer = shard.addrs.front();
-        io.tag = tid;  // lets the watchdog best-effort io_cancel this task's in-flight IOs
+        io.tag = tid;
         io.callback = [this, tid, w, fd = result.fd, last, id](AioImpl::Result ioResult) {
             OnIoCallback<dump>(tid, w, fd, last, id, ioResult);
         };
@@ -178,9 +174,7 @@ private:
             task.id = shard.owner;
             task.activated = dump;
             task.flags = flags;
-            task.tag = t->id;  // lets CancelQueued purge this task's not-yet-started opens
-            // Capture the task shared_ptr (not a raw ref into t->desc) so t outlives every open
-            // callback even if Wait() has already returned Timeout and abandoned a stuck open.
+            task.tag = t->id;
             task.callback = [this, t, w, i](BlockOperator::OpenResult result) {
                 OnOpenCallback<dump>(t->id, w, t->desc[i], result);
             };
@@ -213,8 +207,6 @@ private:
             UC::Metrics::UpdateStats(isDump ? dumpDuration : loadDuration, costMs);
             UC::Metrics::UpdateStats(isDump ? dumpBandwidth : loadBandwidth, bwGbps);
             UC::Metrics::UpdateStats(isDump ? dumpBytes : loadBytes, static_cast<double>(size));
-            // Runs exactly once (normal last Done() or a watchdog/Cancel Abort()); drop the
-            // task from the deadline registry so the watchdog stops tracking it.
             std::lock_guard<std::mutex> lk(regMutex_);
             registry_.erase(id);
         });
@@ -253,8 +245,6 @@ private:
                 }
             }
         }
-        // ForceComplete()/Abort() must run outside regMutex_: Abort fires the epilog, which
-        // re-locks regMutex_ to erase the registry entry.
         for (auto& [id, w, shardCount] : due) {
             auto stuckMs = (now - w->startTp) * 1e3;
             auto pending = w->Pending();
@@ -267,8 +257,6 @@ private:
     }
     void Cancel(TaskPtr t) override
     {
-        // Invoked by TaskWrapper::Wait on its own timeout; force-complete immediately rather than
-        // waiting for the next watchdog tick. Reuses the same path as the watchdog.
         WaiterPtr w;
         {
             std::lock_guard<std::mutex> lk(regMutex_);
@@ -282,11 +270,6 @@ private:
         IncrementAioTimeoutMetric();
         ForceComplete(t->id, w);
     }
-    // Stop a timed-out/cancelled task from doing any further work so the engine is free for new
-    // requests once the disk recovers: mark it failed, best-effort cancel its in-flight kernel
-    // IOs, purge its not-yet-started queued opens (each fails fast), then force-drain the latch to
-    // cover whatever is left (opens already blocked in a syscall, uncancellable IOs). Caller must
-    // have already set the registry entry aborted (outside regMutex_).
     void ForceComplete(Detail::TaskHandle id, const WaiterPtr& w)
     {
         auto pending = w ? w->Pending() : 0;
