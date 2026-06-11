@@ -1345,7 +1345,7 @@ class UCMLiteConnector(UCMDirectConnector):
                 request_meta.total_hit_block_num - request_meta.hbm_hit_block_num
             )
             need_dump_blks = request_meta.ucm_block_ids[
-                request_meta.total_hit_block_num :
+                request_meta.total_hit_block_num:
             ]
             shard_indexs = [0] * len(need_dump_blks)
             total_ptrs = [[0]] * len(need_dump_blks)
@@ -1743,7 +1743,7 @@ class KVCacheGroupManager:
             # (validated in __init__).
             num_blocks_in_total_hit = total_hit_tokens // sw.block_size
             tail_block_ids = sw_block_ids[
-                num_blocks_in_total_hit - tail_count : num_blocks_in_total_hit
+                num_blocks_in_total_hit - tail_count:num_blocks_in_total_hit
             ]
             try:
                 results = store.lookup(tail_block_ids)
@@ -2716,8 +2716,6 @@ class UCMConnector(KVConnectorBase_V1, SupportsHMA):
             self.connector = UCMHybridLinearAttentionConnector(
                 vllm_config, role, kv_cache_config
             )
-        # elif use_hma:
-        #     self.connector = UCMHMAConnector(vllm_config, role, kv_cache_config)
         else:
             self.connector = UCMDirectConnector(vllm_config, role, kv_cache_config)
 

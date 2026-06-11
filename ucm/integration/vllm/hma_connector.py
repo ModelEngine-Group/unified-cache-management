@@ -742,7 +742,7 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
                     window_boundary_token_idx[-1] // group_meta.token_block_size
                 ) + 1
                 return group_block_ids[
-                    boundary_block_idx - group_meta.tail_blocks : boundary_block_idx
+                    boundary_block_idx - group_meta.tail_blocks:boundary_block_idx
                 ]
         # FA rows map each canonical hash block to its containing group block.
         return np.array(group_block_ids)[
@@ -1121,7 +1121,7 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
                                     tp_block_start
                                     * self.group_metas[
                                         group_id
-                                    ].tail_blocks : tp_block_end
+                                    ].tail_blocks:tp_block_end
                                     * self.group_metas[group_id].tail_blocks
                                 ]
                                 if group_id in self.window_group_ids

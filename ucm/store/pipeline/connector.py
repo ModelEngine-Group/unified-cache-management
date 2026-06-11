@@ -197,7 +197,8 @@ def _build_cache_compress_posix_pipeline(
     if config.get("device_id", -1) >= 0:
         if (posix_config["block_size"] % posix_config["shard_size"]) != 0:
             print(
-                f'_build_cache_compress_posix_pipeline: error paraments {posix_config["block_size"]} {posix_config["shard_size"]}'
+                "_build_cache_compress_posix_pipeline: error paraments "
+                f"{posix_config['block_size']} {posix_config['shard_size']}"
             )
             return
         layers = posix_config["block_size"] // posix_config["shard_size"]
