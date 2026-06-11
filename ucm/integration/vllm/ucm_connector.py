@@ -17,6 +17,14 @@ from vllm.distributed.kv_transfer.kv_connector.v1.base import (
     KVConnectorRole,
     SupportsHMA,
 )
+
+try:
+    from vllm.distributed.kv_transfer.kv_connector.v1.base import (
+        KVConnectorWorkerMetadata,
+    )
+except ImportError:
+    KVConnectorWorkerMetadata = object
+
 from vllm.distributed.parallel_state import get_world_group
 from vllm.model_executor.models.utils import extract_layer_index
 from vllm.platforms import current_platform
@@ -270,6 +278,26 @@ class RequestHasher:
         return h.digest()
 
 
+@dataclass
+class UCMWorkerMetadata(KVConnectorWorkerMetadata):
+    """Worker -> Scheduler metadata for tracking failed load requests.
+
+    This class stores and aggregates IDs of load requests that failed on the worker.
+    """
+
+    load_failed_reqs: set[str] = field(default_factory=set)
+
+    def mark_failed(self, req_id: str) -> None:
+        """Record a failed load request from this worker."""
+        self.load_failed_reqs.add(req_id)
+
+    def aggregate(self, other: Any) -> Any:
+        assert isinstance(other, UCMWorkerMetadata)
+
+        self.load_failed_reqs.update(other.load_failed_reqs)
+        return self
+
+
 class UCMDirectConnector(KVConnectorBase_V1):
     """
     This connector means synchronize:
@@ -355,6 +383,7 @@ class UCMDirectConnector(KVConnectorBase_V1):
             self.request_hasher = RequestHasher(
                 vllm_config, self.tp_rank % self.tp_size
             )
+            self._connector_worker_meta = UCMWorkerMetadata()
 
         metrics_config = self.launch_config.get("metrics_config_path", "")
         if metrics_config:
@@ -692,19 +721,6 @@ class UCMDirectConnector(KVConnectorBase_V1):
                         resumed_from_preemption = (
                             request_id in scheduled_cached_reqs.resumed_req_ids
                         )
-                    if (
-                        scheduled_cached_reqs.num_computed_tokens[i]
-                        < req_meta.token_processed
-                        and not resumed_from_preemption
-                    ):
-                        logger.warning(
-                            f"Request {request_id} has fewer computed tokens "
-                            f"({scheduled_cached_reqs.num_computed_tokens[i]}) than previously processed "
-                            f"tokens ({req_meta.token_processed}), "
-                            f"skipping caching."
-                        )
-                        self.requests_meta.pop(request_id, None)
-                        continue
                     requests_dispatch_meta[request_id] = self._generate_dispatch_meta(
                         req_meta,
                         scheduler_output.num_scheduled_tokens[request_id],
@@ -775,6 +791,7 @@ class UCMDirectConnector(KVConnectorBase_V1):
                 self._invalid_block_ids.update(
                     metadata.request_meta[request_id].load_block_ids[1]
                 )
+                self._connector_worker_meta.mark_failed(request_id)
                 num_loaded_block -= len(ucm_block_ids)
 
         for request_id, task in request_to_task.items():
@@ -787,6 +804,7 @@ class UCMDirectConnector(KVConnectorBase_V1):
                 self._invalid_block_ids.update(
                     metadata.request_meta[request_id].load_block_ids[1]
                 )
+                self._connector_worker_meta.mark_failed(request_id)
                 num_loaded_block -= request_to_load_blocks.get(request_id, 0)
 
         load_end_time = time.perf_counter() * 1000
@@ -916,6 +934,24 @@ class UCMDirectConnector(KVConnectorBase_V1):
         self._invalid_block_ids = set()
         return res
 
+    def build_connector_worker_meta(self) -> UCMWorkerMetadata | None:
+        """Return load failed request IDs since the last call."""
+        if not self._connector_worker_meta.load_failed_reqs:
+            return None
+        meta = self._connector_worker_meta
+        self._connector_worker_meta = UCMWorkerMetadata()
+        return meta
+
+    def update_connector_output(self, connector_output: KVConnectorOutput):
+        meta = getattr(connector_output, "kv_connector_worker_meta", None)
+        if meta is None:
+            return
+        if not isinstance(meta, UCMWorkerMetadata):
+            return
+        for req_id in meta.load_failed_reqs:
+            logger.info(f"Request {req_id} failed to load, skip caching.")
+            self.requests_meta.pop(req_id, None)
+
     def request_finished_all_groups(
         self,
         request: "Request",
@@ -974,6 +1010,7 @@ class UCMLayerWiseConnector(UCMDirectConnector):
                     metadata.request_meta[request_id].load_block_ids[1]
                 )
                 self._failure_req_ids.add(request_id)
+                self._connector_worker_meta.mark_failed(request_id)
 
     def start_load_kv(self, forward_context: "ForwardContext", **kwargs) -> None:
         self._layerwise_batch_start = time.perf_counter()
@@ -1037,6 +1074,7 @@ class UCMLayerWiseConnector(UCMDirectConnector):
                 self._invalid_block_ids.update(
                     metadata.request_meta[request_id].load_block_ids[1]
                 )
+                self._connector_worker_meta.mark_failed(request_id)
                 self._failure_req_ids.add(request_id)
 
         wait_end = time.perf_counter()
