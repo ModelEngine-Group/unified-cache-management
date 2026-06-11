@@ -178,6 +178,8 @@ class CMakeBuild(build_ext):
         match PLATFORM:
             case "cuda":
                 cmake_args += ["-DRUNTIME_ENVIRONMENT=cuda"]
+            case "rocm":
+                cmake_args += ["-DRUNTIME_ENVIRONMENT=rocm"]
             case "ascend":
                 cmake_args += ["-DRUNTIME_ENVIRONMENT=ascend"]
             case "ascend-a3":

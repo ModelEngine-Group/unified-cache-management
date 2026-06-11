@@ -95,7 +95,9 @@ docker build --build-arg INSTALL_MODE=package \
     pip install -v -e . --no-build-isolation
     ```
 
-3. Apply vLLM Integration Patches
+    > **Note:** On AMD GPUs set `export PLATFORM=rocm` instead of `cuda`. This selects the ROCm device backend, which builds the same KV-transfer and Hamming-distance kernels with HIP. It requires a ROCm installation and a ROCm build of PyTorch in the environment; pass `-DCMAKE_HIP_ARCHITECTURES=<arch>` (e.g. `gfx90a`, `gfx1100`) if CMake does not detect your GPU. Validated on gfx90a and gfx1100.
+
+3. Apply vLLM Integration Patches (Not required for versions > 0.11.0)
 
     To integrate UCM with vLLM, you can choose between a dynamic **monkey patch** (recommended) and a manual **git patch**.
 

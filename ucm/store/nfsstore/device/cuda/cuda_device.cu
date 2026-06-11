@@ -32,16 +32,26 @@
 
 inline __device__ void H2DUnit(uint8_t* __restrict__ dst, const volatile uint8_t* __restrict__ src)
 {
+#if defined(__CUDA_ARCH__)
     uint64_t a, b;
     asm volatile("ld.global.cs.v2.u64 {%0, %1}, [%2];" : "=l"(a), "=l"(b) : "l"(src));
     asm volatile("st.global.cg.v2.u64 [%0], {%1, %2};" ::"l"(dst), "l"(a), "l"(b));
+#else
+    *reinterpret_cast<uint4*>(dst) =
+        *reinterpret_cast<const uint4*>(const_cast<const uint8_t*>(src));
+#endif
 }
 
 inline __device__ void D2HUnit(volatile uint8_t* __restrict__ dst, const uint8_t* __restrict__ src)
 {
+#if defined(__CUDA_ARCH__)
     uint64_t a, b;
     asm volatile("ld.global.cs.v2.u64 {%0, %1}, [%2];" : "=l"(a), "=l"(b) : "l"(src));
     asm volatile("st.volatile.global.v2.u64 [%0], {%1, %2};" ::"l"(dst), "l"(a), "l"(b));
+#else
+    *reinterpret_cast<uint4*>(const_cast<uint8_t*>(dst)) =
+        *reinterpret_cast<const uint4*>(src);
+#endif
 }
 
 __global__ void H2DKernel(uintptr_t* dst, const volatile uintptr_t* src, size_t num, size_t size)

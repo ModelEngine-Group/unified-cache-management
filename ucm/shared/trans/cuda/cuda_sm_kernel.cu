@@ -34,6 +34,7 @@ namespace UC::Trans {
 inline __device__ void CudaCopyUnit(const uint8_t* __restrict__ src,
                                     volatile uint8_t* __restrict__ dst)
 {
+#if defined(__CUDA_ARCH__)
     uint4 lo, hi;
     asm volatile("ld.global.cs.v4.b32 {%0,%1,%2,%3}, [%4];"
                  : "=r"(lo.x), "=r"(lo.y), "=r"(lo.z), "=r"(lo.w)
@@ -47,6 +48,15 @@ inline __device__ void CudaCopyUnit(const uint8_t* __restrict__ src,
     asm volatile("st.volatile.global.v4.b32 [%0+16], {%1,%2,%3,%4};"
                  :
                  : "l"(dst), "r"(hi.x), "r"(hi.y), "r"(hi.z), "r"(hi.w));
+#else
+    // HIP/ROCm has no ld.global.cs/st.volatile.global PTX and no __ldcs/__stcg
+    // streaming builtins; those are NVIDIA cache-policy hints, not semantics.
+    // A plain vectorized 32-byte copy is the portable equivalent.
+    const uint4* src4 = reinterpret_cast<const uint4*>(src);
+    uint4* dst4 = reinterpret_cast<uint4*>(const_cast<uint8_t*>(dst));
+    dst4[0] = src4[0];
+    dst4[1] = src4[1];
+#endif
 }
 
 __global__ void CudaCopyKernel(const void** src, void** dst, size_t size, size_t num)

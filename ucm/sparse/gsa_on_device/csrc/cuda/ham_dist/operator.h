@@ -1,7 +1,14 @@
 #pragma once
 
+#ifdef USE_ROCM
+// torch keeps the cuda spelling for its public symbols on ROCm; the hipified
+// context header provides c10::cuda::getCurrentCUDAStream backed by HIP, while
+// the cuda-spelled header pulls in NVIDIA-only cuda_runtime_api.h/cusparse.h.
+#include <ATen/hip/HIPContext.h>
+#else
 #include <ATen/cuda/CUDAContext.h>
 #include <cuda.h>
+#endif
 #include <cuda_runtime.h>
 #include <torch/script.h>
 
