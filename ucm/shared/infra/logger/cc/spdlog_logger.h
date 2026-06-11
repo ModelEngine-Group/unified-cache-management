@@ -30,6 +30,8 @@
 #include <cstdlib>
 #include <mutex>
 #include <spdlog/spdlog.h>
+#include <string>
+#include <unordered_set>
 namespace UC::Logger {
 
 constexpr size_t HASH_SLOT_NUM = 512;
@@ -41,8 +43,11 @@ struct SourceLocation {
     const int32_t line = 0;
 };
 
+const char* InternSourceString(std::string&& s);
+
 class Logger {
     std::shared_ptr<spdlog::logger> logger_;
+    std::shared_ptr<spdlog::logger> file_logger_;
     std::mutex mutex_;
     bool rate_limit_enabled_{true};
     uint64_t rate_limit_window_ms_{60000};
@@ -69,6 +74,7 @@ public:
     static void _signal_handler(int signum) { Logger::GetInstance().Flush(); }
 
     void Log(Level&& lv, SourceLocation&& loc, std::string&& msg);
+    void LogFileOnly(Level&& lv, SourceLocation&& loc, std::string&& msg);
     void Setup(const std::string& path, int max_files, int max_size);
     void Flush();
 
@@ -95,6 +101,8 @@ private:
     std::array<SlotData, HASH_SLOT_NUM> hash_slots_;
 
     std::shared_ptr<spdlog::logger> Make();
+    std::shared_ptr<spdlog::logger> MakeCapture();
+    bool file_enabled_{true};
     std::string path_{"log"};
     int max_files_{3};
     int max_size_{5 * 1048576};  // 5MB

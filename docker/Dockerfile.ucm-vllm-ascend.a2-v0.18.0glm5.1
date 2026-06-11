@@ -1,14 +1,11 @@
 # Set to other image if needed
-ARG IMAGE_SOURCE="vllm"
-ARG IMAGE_NAME_VERSION="vllm-openai:v0.11.0"
+ARG IMAGE_SOURCE="quay.io/ascend"
+ARG IMAGE_NAME_VERSION="vllm-ascend:v0.18.0"
 
 FROM ${IMAGE_SOURCE}/${IMAGE_NAME_VERSION}
 
 ARG PIP_INDEX_URL="https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple"
 ARG INSTALL_MODE="source"
-
-# Apply the UCM monkey patch for vllm
-ENV ENABLE_UCM_PATCH=1
 
 WORKDIR /workspace
 
@@ -17,11 +14,13 @@ COPY . /workspace/unified-cache-management
 
 RUN pip config set global.index-url ${PIP_INDEX_URL}
 
+RUN pip install --no-cache-dir "transformers==5.4"
+
 # Build or link package
 RUN if [ "${INSTALL_MODE}" != "package" ]; then \
         pip install --no-cache-dir build cmake && \
-        export WORKSPACE=/workspace SKIP_TAR=1 && \
-        bash /workspace/unified-cache-management/scripts/build_cuda.sh; \
+        export WORKSPACE=/workspace SKIP_TAR=1 ENABLE_SPARSE=false && \
+        bash /workspace/unified-cache-management/scripts/build_ascend.sh; \
     else \
         ln -s /workspace/unified-cache-management /workspace/package; \
     fi
@@ -29,4 +28,4 @@ RUN if [ "${INSTALL_MODE}" != "package" ]; then \
 # Install UCM
 RUN pip install /workspace/package/uc_manager-*.whl
 
-ENTRYPOINT ["/bin/bash"]
+CMD ["/bin/bash"]

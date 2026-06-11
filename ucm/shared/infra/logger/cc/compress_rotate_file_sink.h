@@ -58,23 +58,16 @@ public:
         if (max_files > MaxFiles) {
             throw_spdlog_ex("rotating sink constructor: max_files arg cannot exceed MaxFiles");
         }
-        file_helper_.open(base_filename_);
-        current_size_ = file_helper_.size();  // expensive. called only once
-        if (rotate_on_open && current_size_ > 0) {
-            std::string src_path = "";
-            if (!rotate_(src_path)) {
-                throw_spdlog_ex("rotating_file_sink: failed rotating file" + base_filename_);
-            }
-            if (!compress_(src_path)) {
-                throw_spdlog_ex("rotating_file_sink: failed compressing file" + base_filename_);
-            }
-            current_size_ = 0;
-        }
+        // file open is deferred to the first write, so processes that never
+        // log to file do not leave empty log files behind
+        current_size_ = 0;
+        rotate_on_open_ = rotate_on_open;
     }
 
 private:
     SPDLOG_INLINE void sink_it_(const details::log_msg &msg)
     {
+        if (!opened_) { open_(); }
         memory_buf_t formatted;
         base_sink<std::mutex>::formatter_->format(msg, formatted);
         auto new_size = current_size_ + formatted.size();
@@ -96,7 +89,28 @@ private:
         current_size_ = new_size;
     }
 
-    SPDLOG_INLINE void flush_() { file_helper_.flush(); }
+    SPDLOG_INLINE void flush_()
+    {
+        if (!opened_) { return; }
+        file_helper_.flush();
+    }
+
+    SPDLOG_INLINE void open_()
+    {
+        file_helper_.open(base_filename_);
+        current_size_ = file_helper_.size();  // expensive. called only once
+        if (rotate_on_open_ && current_size_ > 0) {
+            std::string src_path = "";
+            if (!rotate_(src_path)) {
+                throw_spdlog_ex("rotating_file_sink: failed rotating file" + base_filename_);
+            }
+            if (!compress_(src_path)) {
+                throw_spdlog_ex("rotating_file_sink: failed compressing file" + base_filename_);
+            }
+            current_size_ = 0;
+        }
+        opened_ = true;
+    }
 
     SPDLOG_INLINE bool rotate_(std::string &src_path)
     {
@@ -189,6 +203,8 @@ private:
     }
 
     filename_t base_filename_;
+    bool opened_{false};
+    bool rotate_on_open_{false};
     std::size_t max_size_;
     std::size_t max_files_;
     std::size_t current_size_;
