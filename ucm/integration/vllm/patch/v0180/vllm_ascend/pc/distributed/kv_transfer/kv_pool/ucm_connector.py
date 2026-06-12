@@ -74,8 +74,19 @@ def request_finished_all_groups(
     return engine.request_finished(request, [])
 
 
+def get_finished(
+    self: Any,
+    finished_req_ids: set[str],
+) -> tuple[set[str] | None, set[str] | None]:
+    return self._call_ucm_reserved_hook("get_finished", finished_req_ids)
+
+
 def build_connector_worker_meta(self: Any) -> Any:
     return self._call_ucm_reserved_hook("build_connector_worker_meta")
+
+
+def update_connector_output(self: Any, connector_output: Any) -> None:
+    return self._call_ucm_reserved_hook("update_connector_output", connector_output)
 
 
 def take_events(self: Any) -> Iterable[Any]:
@@ -142,11 +153,13 @@ def patch_ucm_connector_v1(mod: Any) -> None:
         "request_finished_all_groups",
         request_finished_all_groups,
     )
+    patch_or_inject(target_cls, "get_finished", get_finished)
     patch_or_inject(
         target_cls,
         "build_connector_worker_meta",
         build_connector_worker_meta,
     )
+    patch_or_inject(target_cls, "update_connector_output", update_connector_output)
     patch_or_inject(target_cls, "take_events", take_events)
     patch_or_inject(target_cls, "get_kv_connector_stats", get_kv_connector_stats)
     patch_or_inject(

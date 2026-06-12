@@ -17,6 +17,14 @@ from vllm.distributed.kv_transfer.kv_connector.v1.base import (
     KVConnectorRole,
     SupportsHMA,
 )
+
+try:
+    from vllm.distributed.kv_transfer.kv_connector.v1.base import (
+        KVConnectorWorkerMetadata,
+    )
+except ImportError:
+    KVConnectorWorkerMetadata = object
+
 from vllm.distributed.parallel_state import get_world_group
 from vllm.model_executor.models.utils import extract_layer_index
 from vllm.platforms import current_platform
@@ -274,6 +282,26 @@ class RequestHasher:
         return h.digest()
 
 
+@dataclass
+class UCMWorkerMetadata(KVConnectorWorkerMetadata):
+    """Worker -> Scheduler metadata for tracking failed load requests.
+
+    This class stores and aggregates IDs of load requests that failed on the worker.
+    """
+
+    load_failed_reqs: set[str] = field(default_factory=set)
+
+    def mark_failed(self, req_id: str) -> None:
+        """Record a failed load request from this worker."""
+        self.load_failed_reqs.add(req_id)
+
+    def aggregate(self, other: Any) -> Any:
+        assert isinstance(other, UCMWorkerMetadata)
+
+        self.load_failed_reqs.update(other.load_failed_reqs)
+        return self
+
+
 class UCMDirectConnector(KVConnectorBase_V1):
     """
     This connector means synchronize:
@@ -359,6 +387,7 @@ class UCMDirectConnector(KVConnectorBase_V1):
             self.request_hasher = RequestHasher(
                 vllm_config, self.tp_rank % self.tp_size
             )
+            self._connector_worker_meta = UCMWorkerMetadata()
 
         metrics_config = self.launch_config.get("metrics_config_path", "")
         if metrics_config:
@@ -564,17 +593,18 @@ class UCMDirectConnector(KVConnectorBase_V1):
             return 0, False
 
         external_block_ids = ucm_block_ids[hbm_hit_block_num * self.cp_world_size :]
-        if not external_block_ids:
-            return 0, False
-        try:
-            external_hit_blocks = self.store.lookup_on_prefix(external_block_ids) + 1
-            external_hit_blocks //= self.cp_world_size
-        except Exception as e:
-            external_hit_blocks = 0
-            logger.error(
-                f"request {request.request_id} look up error. {type(e).__name__}: {e}"
-            )
-            self._record_counter("connector_lookup_errors_total")
+        external_hit_blocks = 0
+        if external_block_ids:
+            try:
+                external_hit_blocks = (
+                    self.store.lookup_on_prefix(external_block_ids) + 1
+                )
+                external_hit_blocks //= self.cp_world_size
+            except Exception as e:
+                logger.error(
+                    f"request {request.request_id} look up error. {type(e).__name__}: {e}"
+                )
+                self._record_counter("connector_lookup_errors_total")
 
         logger.info_once(
             f"request_id: {request.request_id}, "
@@ -582,6 +612,10 @@ class UCMDirectConnector(KVConnectorBase_V1):
             f"hit hbm: {hbm_hit_block_num * self.cp_world_size}, "
             f"hit external: {external_hit_blocks * self.cp_world_size}"
         )
+
+        if not external_block_ids:
+            return 0, False
+
         ucmmetrics.update_stats(
             {
                 "interval_lookup_hit_rates": external_hit_blocks
@@ -658,6 +692,14 @@ class UCMDirectConnector(KVConnectorBase_V1):
             ]
             dump_vllm_block_ids = req_meta.vllm_block_ids[start_idx:end_idx]
             req_meta.token_processed += new_tokens
+            if req_meta.token_processed > req_meta.num_token_ids:
+                logger.warning(
+                    f"Processed tokens "
+                    f"({req_meta.token_processed}) exceed total tokens "
+                    f"({req_meta.num_token_ids}). Truncating dump_vllm_block_ids "
+                    f"to the length of dump_ucm_block_ids."
+                )
+                dump_vllm_block_ids = dump_vllm_block_ids[: len(dump_ucm_block_ids)]
 
         return RequestDispatchMeta(
             (load_ucm_block_ids, load_vllm_block_ids),
@@ -771,6 +813,7 @@ class UCMDirectConnector(KVConnectorBase_V1):
                     "connector_load_submit_errors_total",
                     metadata.request_meta[request_id].load_block_ids[1],
                 )
+                self._connector_worker_meta.mark_failed(request_id)
                 num_loaded_block -= len(ucm_block_ids)
 
         for request_id, task in request_to_task.items():
@@ -784,6 +827,7 @@ class UCMDirectConnector(KVConnectorBase_V1):
                     "connector_load_wait_errors_total",
                     metadata.request_meta[request_id].load_block_ids[1],
                 )
+                self._connector_worker_meta.mark_failed(request_id)
                 num_loaded_block -= request_to_load_blocks.get(request_id, 0)
 
         load_end_time = time.perf_counter() * 1000
@@ -915,6 +959,24 @@ class UCMDirectConnector(KVConnectorBase_V1):
         self._invalid_block_ids = set()
         return res
 
+    def build_connector_worker_meta(self) -> UCMWorkerMetadata | None:
+        """Return load failed request IDs since the last call."""
+        if not self._connector_worker_meta.load_failed_reqs:
+            return None
+        meta = self._connector_worker_meta
+        self._connector_worker_meta = UCMWorkerMetadata()
+        return meta
+
+    def update_connector_output(self, connector_output: KVConnectorOutput):
+        meta = getattr(connector_output, "kv_connector_worker_meta", None)
+        if meta is None:
+            return
+        if not isinstance(meta, UCMWorkerMetadata):
+            return
+        for req_id in meta.load_failed_reqs:
+            logger.info(f"Request {req_id} failed to load, skip caching.")
+            self.requests_meta.pop(req_id, None)
+
     def request_finished_all_groups(
         self,
         request: "Request",
@@ -967,13 +1029,14 @@ class UCMLayerWiseConnector(UCMDirectConnector):
                 self.load_tasks[layer_id][request_id] = task
             except Exception as e:
                 logger.error(
-                    f"request {request_id} submit load task error. {type(e).__name__}: {e}"
+                    f"request {request_id} submit load task for layer {layer_id} error. {type(e).__name__}: {e}"
                 )
                 self._record_load_error(
                     "connector_load_submit_errors_total",
                     metadata.request_meta[request_id].load_block_ids[1],
                 )
                 self._failure_req_ids.add(request_id)
+                self._connector_worker_meta.mark_failed(request_id)
 
     def start_load_kv(self, forward_context: "ForwardContext", **kwargs) -> None:
         self._layerwise_batch_start = time.perf_counter()
@@ -1038,6 +1101,7 @@ class UCMLayerWiseConnector(UCMDirectConnector):
                     "connector_load_wait_errors_total",
                     metadata.request_meta[request_id].load_block_ids[1],
                 )
+                self._connector_worker_meta.mark_failed(request_id)
                 self._failure_req_ids.add(request_id)
 
         wait_end = time.perf_counter()
@@ -1109,7 +1173,9 @@ class UCMLayerWiseConnector(UCMDirectConnector):
                 )
                 self.dump_tasks[layer_name] = task
             except Exception as e:
-                logger.error(f"submit dump task failed. {type(e).__name__}: {e}")
+                logger.error(
+                    f"submit dump task for {layer_name} failed. {type(e).__name__}: {e}"
+                )
                 self._record_counter("connector_dump_submit_errors_total")
         if self.is_save:
             submit_end = time.perf_counter()
