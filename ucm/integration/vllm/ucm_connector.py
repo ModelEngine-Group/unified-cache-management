@@ -882,13 +882,9 @@ class UCMDirectConnector(KVConnectorBase_V1):
         event_handle = self.device.get_event_handle()
         if event_handle == 0:
             self.device.synchronize()
-            ucmmetrics.update_stats(
-                "dump_event_sync_fallback_used_total", 1.0
-            )
+            ucmmetrics.update_stats("dump_event_sync_fallback_used_total", 1.0)
         else:
-            ucmmetrics.update_stats(
-                "dump_event_current_stream_used_total", 1.0
-            )
+            ucmmetrics.update_stats("dump_event_current_stream_used_total", 1.0)
         return event_handle
 
     def save_kv_layer(
