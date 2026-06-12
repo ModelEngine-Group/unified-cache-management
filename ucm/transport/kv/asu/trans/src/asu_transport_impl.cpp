@@ -65,7 +65,7 @@ Status AsuTransportImpl::Init(const TransportConfig& config)
                 break;
             case TransProviderType::FAKE:
                 transProvider_ =
-                    std::make_unique<FakeTransProvider>(MakeFakeBackendConfig(config_));
+                    std::make_unique<FakeTransProvider>(MakeFakeTransProviderConfig(config_));
                 break;
             case TransProviderType::AIV:
                 return Status::Error(StatusCode::UNSUPPORTED,

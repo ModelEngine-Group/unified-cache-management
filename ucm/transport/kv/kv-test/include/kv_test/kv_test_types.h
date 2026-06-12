@@ -141,7 +141,7 @@ struct OutputConfig {
     std::uint64_t realtimeFileMaxBytes{0};
 };
 
-struct FakeBackendConfig {
+struct KvTestFakeBackendConfig {
     std::string storePath;
     std::uint64_t latencyMs{1};
 };
@@ -171,7 +171,7 @@ struct KvTestConfig {
     HcommProtocolMapping hcommProtocolMapping;
     BenchConfig bench;
     OutputConfig output;
-    FakeBackendConfig fakeBackend;
+    KvTestFakeBackendConfig fakeBackend;
     std::string asuClientMode;
     std::string localStorePath;
     std::string keyPrefix;

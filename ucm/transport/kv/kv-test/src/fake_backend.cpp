@@ -18,7 +18,8 @@ std::string NormalizeMode(std::string value)
     return value;
 }
 
-void PatchTransportConfig(UC::ASU::TransportConfig& config, const FakeBackendConfig& fakeConfig)
+void PatchTransportConfig(UC::ASU::TransportConfig& config,
+                          const KvTestFakeBackendConfig& fakeConfig)
 {
     config.providerType = UC::ASU::TransProviderType::FAKE;
     config.attrs.try_emplace("kernel_count", "1");

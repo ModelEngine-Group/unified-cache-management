@@ -23,14 +23,20 @@
  * */
 #pragma once
 
-#include "asu_transport/fake_backend.h"
+#include "asu_transport/asu_transport.h"
 #include "trans_provider.h"
 
 namespace UC::ASU {
 
+struct FakeTransProviderConfig {
+    std::string storePath{"./asu-fake-backend-store"};
+    std::uint64_t latencyMs{1};
+    std::int32_t deviceId{0};
+};
+
 class FakeTransProvider : public TransProvider {
 public:
-    explicit FakeTransProvider(FakeBackendConfig config);
+    explicit FakeTransProvider(FakeTransProviderConfig config);
 
     Status CreateConnection(const std::string&, const std::string&, uint32_t, uint32_t qpNum,
                             uint32_t, std::vector<ConnectionHandle>& handles) override;
@@ -54,10 +60,10 @@ public:
 private:
     Status SetUpAclRuntime();
 
-    FakeBackendConfig config_;
+    FakeTransProviderConfig config_;
     bool aclReady_{false};
 };
 
-FakeBackendConfig MakeFakeBackendConfig(const TransportConfig& config);
+FakeTransProviderConfig MakeFakeTransProviderConfig(const TransportConfig& config);
 
 }  // namespace UC::ASU

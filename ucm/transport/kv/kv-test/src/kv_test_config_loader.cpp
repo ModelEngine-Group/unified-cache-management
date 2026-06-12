@@ -167,7 +167,7 @@ Status KvTestConfigLoader::Load(const std::string& configPath, KvTestConfig& con
     config.hcommProtocolMapping = HcommProtocolMapping{};
     config.bench = BenchConfig{};
     config.output = OutputConfig{};
-    config.fakeBackend = FakeBackendConfig{};
+    config.fakeBackend = KvTestFakeBackendConfig{};
     config.asuClientMode.clear();
     config.localStorePath.clear();
     config.keyPrefix.clear();

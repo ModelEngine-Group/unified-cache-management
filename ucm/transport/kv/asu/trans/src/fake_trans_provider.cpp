@@ -48,12 +48,6 @@ constexpr std::uint8_t kDeleteEntryFailed = 0x1;
 constexpr std::uint8_t kExistEntryNotExist = 0x0;
 constexpr std::uint8_t kExistEntryExist = 0x1;
 
-std::filesystem::path StoreRoot(const FakeBackendConfig& config)
-{
-    if (!config.storePath.empty()) { return config.storePath; }
-    return "./asu-fake-backend-store";
-}
-
 std::uint64_t ReadU64(std::uint32_t low, std::uint32_t high)
 {
     return static_cast<std::uint64_t>(low) | (static_cast<std::uint64_t>(high) << 32);
@@ -89,17 +83,18 @@ std::string KeyFileName(const std::string& key)
     return stream.str();
 }
 
-std::filesystem::path AsuRoot(const FakeBackendConfig& config, AsuId asuId)
+std::filesystem::path AsuRoot(const FakeTransProviderConfig& config, AsuId asuId)
 {
-    return StoreRoot(config) / ("asu-" + std::to_string(asuId));
+    return std::filesystem::path(config.storePath) / ("asu-" + std::to_string(asuId));
 }
 
-std::filesystem::path KeyPath(const FakeBackendConfig& config, AsuId asuId, const std::string& key)
+std::filesystem::path KeyPath(const FakeTransProviderConfig& config, AsuId asuId,
+                              const std::string& key)
 {
     return AsuRoot(config, asuId) / KeyFileName(key);
 }
 
-bool StoreBytes(const FakeBackendConfig& config, AsuId asuId, const std::string& key,
+bool StoreBytes(const FakeTransProviderConfig& config, AsuId asuId, const std::string& key,
                 std::uint64_t addr, std::uint32_t length)
 {
     std::vector<char> buffer(length);
@@ -124,7 +119,7 @@ bool StoreBytes(const FakeBackendConfig& config, AsuId asuId, const std::string&
     return output.good();
 }
 
-bool LoadBytes(const FakeBackendConfig& config, AsuId asuId, const std::string& key,
+bool LoadBytes(const FakeTransProviderConfig& config, AsuId asuId, const std::string& key,
                std::uint64_t addr, std::uint32_t length)
 {
     std::ifstream input(KeyPath(config, asuId, key), std::ios::binary);
@@ -151,14 +146,14 @@ bool LoadBytes(const FakeBackendConfig& config, AsuId asuId, const std::string& 
     return true;
 }
 
-bool DeleteKey(const FakeBackendConfig& config, AsuId asuId, const std::string& key)
+bool DeleteKey(const FakeTransProviderConfig& config, AsuId asuId, const std::string& key)
 {
     std::error_code errorCode;
     std::filesystem::remove(KeyPath(config, asuId, key), errorCode);
     return !errorCode;
 }
 
-bool ExistsKey(const FakeBackendConfig& config, AsuId asuId, const std::string& key)
+bool ExistsKey(const FakeTransProviderConfig& config, AsuId asuId, const std::string& key)
 {
     std::error_code errorCode;
     return std::filesystem::exists(KeyPath(config, asuId, key), errorCode);
@@ -223,7 +218,7 @@ std::vector<std::string> ReadKeyEntries(const std::uint32_t* request, std::uint1
     return keys;
 }
 
-Status CompleteBatchStore(const FakeBackendConfig& config, AsuId asuId,
+Status CompleteBatchStore(const FakeTransProviderConfig& config, AsuId asuId,
                           const std::uint32_t* request)
 {
     const auto cid = static_cast<std::uint16_t>(RequestCid(request));
@@ -248,7 +243,7 @@ Status CompleteBatchStore(const FakeBackendConfig& config, AsuId asuId,
     return Status::OK();
 }
 
-Status CompleteBatchRetrieve(const FakeBackendConfig& config, AsuId asuId,
+Status CompleteBatchRetrieve(const FakeTransProviderConfig& config, AsuId asuId,
                              const std::uint32_t* request)
 {
     const auto cid = static_cast<std::uint16_t>(RequestCid(request));
@@ -273,7 +268,8 @@ Status CompleteBatchRetrieve(const FakeBackendConfig& config, AsuId asuId,
     return Status::OK();
 }
 
-Status CompleteDelete(const FakeBackendConfig& config, AsuId asuId, const std::uint32_t* request)
+Status CompleteDelete(const FakeTransProviderConfig& config, AsuId asuId,
+                      const std::uint32_t* request)
 {
     const auto cid = static_cast<std::uint16_t>(RequestCid(request));
     const auto responseBufferAddr = ReadU64(request[3], request[4]);
@@ -294,7 +290,8 @@ Status CompleteDelete(const FakeBackendConfig& config, AsuId asuId, const std::u
     return Status::OK();
 }
 
-Status CompleteExist(const FakeBackendConfig& config, AsuId asuId, const std::uint32_t* request)
+Status CompleteExist(const FakeTransProviderConfig& config, AsuId asuId,
+                     const std::uint32_t* request)
 {
     const auto cid = static_cast<std::uint16_t>(RequestCid(request));
     const auto responseBufferAddr = ReadU64(request[3], request[4]);
@@ -319,7 +316,7 @@ Status CompleteExist(const FakeBackendConfig& config, AsuId asuId, const std::ui
     return Status::OK();
 }
 
-Status CompleteFakeBackendRequest(FakeBackendConfig config, const void* sendBuffer,
+Status CompleteFakeBackendRequest(const FakeTransProviderConfig& config, const void* sendBuffer,
                                   std::uint64_t len)
 {
     if (config.latencyMs > 0) {
@@ -350,12 +347,14 @@ Status CompleteFakeBackendRequest(FakeBackendConfig config, const void* sendBuff
 
 }  // namespace
 
-FakeBackendConfig MakeFakeBackendConfig(const TransportConfig& config)
+FakeTransProviderConfig MakeFakeTransProviderConfig(const TransportConfig& config)
 {
-    FakeBackendConfig fakeConfig;
+    FakeTransProviderConfig fakeConfig;
     fakeConfig.deviceId = config.endpoints.empty() ? 0 : config.endpoints.front().deviceId;
     auto pathIter = config.attrs.find("fake_backend.path");
-    if (pathIter != config.attrs.end()) { fakeConfig.storePath = pathIter->second; }
+    if (pathIter != config.attrs.end() && !pathIter->second.empty()) {
+        fakeConfig.storePath = pathIter->second;
+    }
     auto latencyIter = config.attrs.find("fake_backend.latency_ms");
     if (latencyIter != config.attrs.end()) {
         fakeConfig.latencyMs = static_cast<std::uint64_t>(std::stoull(latencyIter->second));
@@ -364,14 +363,10 @@ FakeBackendConfig MakeFakeBackendConfig(const TransportConfig& config)
     if (deviceIter != config.attrs.end()) {
         fakeConfig.deviceId = static_cast<std::int32_t>(std::stol(deviceIter->second));
     }
-    if (fakeConfig.storePath.empty()) { fakeConfig.storePath = "./asu-fake-backend-store"; }
     return fakeConfig;
 }
 
-FakeTransProvider::FakeTransProvider(FakeBackendConfig config) : config_(std::move(config))
-{
-    if (config_.storePath.empty()) { config_.storePath = "./asu-fake-backend-store"; }
-}
+FakeTransProvider::FakeTransProvider(FakeTransProviderConfig config) : config_(std::move(config)) {}
 
 Status FakeTransProvider::SetUpAclRuntime()
 {

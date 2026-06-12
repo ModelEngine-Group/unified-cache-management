@@ -37,7 +37,6 @@
 #include <utility>
 #include "asu_client/asu_client.h"
 #include "asu_transport/asu_transport.h"
-#include "asu_transport/fake_backend.h"
 #include "logger/logger.h"
 #include "ucmstore_v1.h"
 
@@ -47,31 +46,16 @@ namespace {
 using AsuStatus = UC::ASU::Status;
 using AsuStatusCode = UC::ASU::StatusCode;
 
-std::uint64_t HashAsuKey(const Detail::BlockId& block, std::size_t shardIndex,
-                         std::size_t tensorIndex)
+std::uint64_t HashAsuKey(const Detail::BlockId& block)
 {
-    std::uint64_t hash = 1469598103934665603ULL;
-    const auto mixByte = [&hash](std::uint8_t value) {
-        hash ^= value;
-        hash *= 1099511628211ULL;
-    };
-
-    for (auto b : block) { mixByte(std::to_integer<std::uint8_t>(b)); }
-    for (std::size_t shift = 0; shift < sizeof(shardIndex) * 8; shift += 8) {
-        mixByte(static_cast<std::uint8_t>((shardIndex >> shift) & 0xFF));
-    }
-    for (std::size_t shift = 0; shift < sizeof(tensorIndex) * 8; shift += 8) {
-        mixByte(static_cast<std::uint8_t>((tensorIndex >> shift) & 0xFF));
-    }
-    return hash;
+    static Detail::BlockIdHasher hasher;
+    return static_cast<std::uint64_t>(hasher(block));
 }
 
-std::string MakeAsuKey(const Detail::BlockId& block, std::size_t shardIndex,
-                       std::size_t tensorIndex)
+std::string MakeAsuKey(const Detail::BlockId& block)
 {
     std::ostringstream os;
-    os << std::hex << std::setfill('0') << std::setw(16)
-       << HashAsuKey(block, shardIndex, tensorIndex);
+    os << std::hex << std::setfill('0') << std::setw(16) << HashAsuKey(block);
     return os.str();
 }
 
@@ -193,11 +177,26 @@ UC::ASU::TransportConfig BuildTransportConfig(const Config& config, std::size_t 
         transportConfig.endpoints.emplace_back(std::move(endpoint));
     }
     if (config.transProviderType == UC::ASU::TransProviderType::FAKE) {
-        UC::ASU::FakeBackendConfig fakeConfig;
-        fakeConfig.storePath = config.fakeBackendPath;
-        fakeConfig.latencyMs = config.fakeBackendLatencyMs;
-        fakeConfig.deviceId = config.deviceId >= 0 ? config.deviceId : 0;
-        UC::ASU::PatchFakeBackendTransportConfig(transportConfig, fakeConfig);
+        const auto fakeDeviceId = config.deviceId >= 0 ? config.deviceId : 0;
+        transportConfig.attrs.try_emplace("kernel_count", "1");
+        transportConfig.attrs.try_emplace("quiet_count", "1");
+        transportConfig.attrs["kv_ns_id"] = std::to_string(transportConfig.asuId);
+        transportConfig.attrs.try_emplace("dtype", "0");
+        transportConfig.attrs.try_emplace("dspec", "0");
+        transportConfig.attrs.try_emplace("lr", "false");
+        transportConfig.attrs["sc"] = "true";
+        transportConfig.attrs["fake_backend.path"] = config.fakeBackendPath;
+        transportConfig.attrs["fake_backend.latency_ms"] =
+            std::to_string(config.fakeBackendLatencyMs);
+        transportConfig.attrs["fake_backend.device_id"] = std::to_string(fakeDeviceId);
+        if (transportConfig.endpoints.empty()) {
+            UC::ASU::AsuEndpoint endpoint;
+            endpoint.ip = "fake_backend";
+            endpoint.port = 19001;
+            endpoint.protocol = UC::ASU::Protocol::TCP;
+            endpoint.deviceId = fakeDeviceId;
+            transportConfig.endpoints.emplace_back(std::move(endpoint));
+        }
     }
     return transportConfig;
 }
@@ -586,7 +585,7 @@ private:
         std::vector<UC::ASU::CacheKey> keys;
         keys.reserve(num);
         for (std::size_t blockIndex = 0; blockIndex < num; ++blockIndex) {
-            keys.emplace_back(MakeAsuKey(blocks[blockIndex], 0, 0));
+            keys.emplace_back(MakeAsuKey(blocks[blockIndex]));
         }
         return keys;
     }
@@ -623,7 +622,7 @@ private:
             }
             for (std::size_t tensorIndex = 0; tensorIndex < shard.addrs.size(); ++tensorIndex) {
                 UC::ASU::KVBuffer entry;
-                entry.key = MakeAsuKey(shard.owner, shard.index, tensorIndex);
+                entry.key = MakeAsuKey(shard.owner);
                 entry.buffer.region.memoryType = memoryType;
                 entry.buffer.region.addr =
                     reinterpret_cast<std::uint64_t>(shard.addrs[tensorIndex]);

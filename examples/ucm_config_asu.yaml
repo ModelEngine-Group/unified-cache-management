@@ -1,7 +1,7 @@
 # UCM ASU fake backend example for vLLM / vLLM-Ascend software integration tests.
 #
 # Use with:
-# kv_connector_extra_config={"UCM_CONFIG_FILE": "/workspace/unified-cache-management/examples/ucm_config_asu_fake_backend.yaml"}
+# kv_connector_extra_config={"UCM_CONFIG_FILE": "/workspace/unified-cache-management/examples/ucm_config_asu.yaml"}
 
 ucm_connectors:
   - ucm_connector_name: "UcmPipelineStore"
