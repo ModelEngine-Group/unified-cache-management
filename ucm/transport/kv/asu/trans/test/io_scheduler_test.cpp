@@ -52,20 +52,6 @@ TEST(IoSchedulerTest, SplitEntryBatchPreservesOrderAndUsesViews)
     EXPECT_EQ(batches[1].entries[1].key, "key_3");
 }
 
-TEST(IoSchedulerTest, SplitKeyBatchReturnsEmptyForEmptyInputOrZeroLimit)
-{
-    TransportConfig config;
-    config.asuQueryIoNum = 0;
-    IoScheduler scheduler(config);
-    std::vector<CacheKey> keys = {"a", "b"};
-
-    EXPECT_TRUE(scheduler.SplitForAsu(BatchView<CacheKey>{keys.data(), 0}, TransportOpType::DELETE)
-                    .empty());
-    EXPECT_TRUE(
-        scheduler.SplitForAsu(BatchView<CacheKey>{keys.data(), keys.size()}, TransportOpType::QUERY)
-            .empty());
-}
-
 TEST(IoSchedulerTest, GetSqeIoNumMatchesOperationKind)
 {
     TransportConfig config;

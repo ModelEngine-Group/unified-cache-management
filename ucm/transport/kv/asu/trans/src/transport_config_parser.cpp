@@ -22,12 +22,105 @@
  * SOFTWARE.
  * */
 #include "transport_config_parser.h"
+#include <algorithm>
+#include <cctype>
 #include <fstream>
+#include <limits>
 #include <utility>
 #include "asu_transport/asu_transport.h"
 #include "config_parser_common.h"
+#include "logger.h"
 
 namespace UC::ASU {
+
+namespace {
+
+std::string ToLower(std::string value)
+{
+    std::transform(value.begin(), value.end(), value.begin(),
+                   [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
+    return value;
+}
+
+}  // namespace
+
+Status ValidateSqeRequestAttrs(const std::unordered_map<std::string, std::string>& attrs)
+{
+    const auto parseInteger = [&attrs](const std::string& name, auto maxValue,
+                                       std::uint64_t& out) -> Status {
+        auto iter = attrs.find(name);
+        if (iter == attrs.end()) { return Status::Error(StatusCode::NOT_FOUND, ""); }
+        try {
+            out = std::stoull(iter->second, nullptr, 0);
+            if (out > maxValue) {
+                UC_ERROR("Validate SQE attr failed name={} value={} reason=exceeds_range", name,
+                         iter->second);
+                return Status::Error(StatusCode::INVALID_ARGUMENT, name + " exceeds valid range");
+            }
+        } catch (const std::exception&) {
+            UC_ERROR("Validate SQE attr failed name={} value={} reason=invalid_integer", name,
+                     iter->second);
+            return Status::Error(StatusCode::INVALID_ARGUMENT, name + " is not a valid integer");
+        }
+        return Status::OK();
+    };
+
+    const auto validateInteger = [&](const std::string& name, auto maxValue) -> Status {
+        std::uint64_t dummy;
+        auto s = parseInteger(name, maxValue, dummy);
+        if (s.code == StatusCode::NOT_FOUND) { return Status::OK(); }
+        return s;
+    };
+
+    const auto validateRequiredPositiveInteger = [&](const std::string& name,
+                                                     auto maxValue) -> Status {
+        std::uint64_t parsed;
+        auto s = parseInteger(name, maxValue, parsed);
+        if (s.code == StatusCode::NOT_FOUND) {
+            UC_ERROR("Validate SQE attr failed name={} reason=missing_required", name);
+            return Status::Error(StatusCode::INVALID_ARGUMENT, name + " is required");
+        }
+        if (!s.ok()) { return s; }
+        if (parsed == 0) {
+            UC_ERROR("Validate SQE attr failed name={} reason=must_be_positive", name);
+            return Status::Error(StatusCode::INVALID_ARGUMENT, name + " must be greater than zero");
+        }
+        return Status::OK();
+    };
+
+    const auto validateBool = [&attrs](const std::string& name) -> Status {
+        auto iter = attrs.find(name);
+        if (iter == attrs.end()) { return Status::OK(); }
+        const auto value = ToLower(iter->second);
+        if (value == "1" || value == "0" || value == "true" || value == "false") {
+            return Status::OK();
+        }
+        UC_ERROR("Validate SQE attr failed name={} value={} reason=invalid_bool", name,
+                 iter->second);
+        return Status::Error(StatusCode::INVALID_ARGUMENT, name + " is not a valid bool");
+    };
+
+    auto status = validateInteger("kv_ns_id", std::numeric_limits<std::uint32_t>::max());
+    if (!status.ok()) { return status; }
+    status = validateInteger("timeout", std::numeric_limits<std::uint32_t>::max());
+    if (!status.ok()) { return status; }
+    status = validateInteger("dtype", std::numeric_limits<std::uint8_t>::max());
+    if (!status.ok()) { return status; }
+    status = validateInteger("dspec", std::numeric_limits<std::uint8_t>::max());
+    if (!status.ok()) { return status; }
+    status = validateBool("sc");
+    if (!status.ok()) { return status; }
+    status = validateBool("lr");
+    if (!status.ok()) { return status; }
+    status =
+        validateRequiredPositiveInteger("kernel_count", std::numeric_limits<std::uint32_t>::max());
+    if (!status.ok()) { return status; }
+    status =
+        validateRequiredPositiveInteger("quiet_count", std::numeric_limits<std::uint32_t>::max());
+    if (!status.ok()) { return status; }
+    return Status::OK();
+}
+
 Status LoadTransportConfig(const std::string& configPath, TransportConfig& config)
 {
     std::ifstream configFile{configPath};
@@ -74,7 +167,7 @@ Status LoadTransportConfig(const std::string& configPath, TransportConfig& confi
             config.attrs[key] = value;
         }
     }
-    return Status::OK();
+    return ValidateSqeRequestAttrs(config.attrs);
 }
 
 }  // namespace UC::ASU

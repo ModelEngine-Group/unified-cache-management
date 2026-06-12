@@ -35,7 +35,9 @@ namespace {
 std::uint32_t GetSendCountAttr(const std::unordered_map<std::string, std::string>& attrs,
                                const std::string& name)
 {
-    return static_cast<std::uint32_t>(std::stoull(attrs.at(name), nullptr, 0));
+    auto it = attrs.find(name);
+    if (it == attrs.end()) { return 0; }
+    return static_cast<std::uint32_t>(std::stoull(it->second, nullptr, 0));
 }
 
 void SetSubBatchSendFailed(TransportSubBatchContext& subBatchContext, const Status& status)
@@ -50,58 +52,67 @@ void SetSubBatchSendFailed(TransportSubBatchContext& subBatchContext, const Stat
 Status AsuTransportImpl::SubmitTaskRequests(const TransportTaskContext& ctx,
                                             std::vector<TransportSubBatchContext>& subBatchContexts)
 {
-    Status finalStatus = Status::OK();
+    Status status = Status::OK();
 
     if (IsEntryBatchOp(ctx.opType)) {
+        if (ctx.entries.empty()) {
+            UC_ERROR("Submit entry batch failed: entry batch is empty");
+            return Status::Error(StatusCode::INVALID_ARGUMENT, "entry batch is empty");
+        }
         const auto subBatches = ioScheduler_.SplitForAsu(ctx.entries, ctx.opType);
         subBatchContexts.reserve(subBatches.size());
         for (std::size_t index = 0; index < subBatches.size(); ++index) {
             const auto& subBatch = subBatches[index];
             auto& subBatchContext = subBatchContexts.emplace_back();
-            auto status = SubmitEntrySubBatchRequest(ctx.opType, subBatch, subBatchContext);
-            subBatchContext.status = status;
-            if (!status.ok()) {
+            auto subBatchStatus = SubmitEntrySubBatchRequest(ctx.opType, subBatch, subBatchContext);
+            subBatchContext.status = subBatchStatus;
+            if (!subBatchStatus.ok()) {
                 UC_ERROR("Submit entry sub-batch failed index={} batch_size={} code={} message={}",
-                         index, subBatch.entries.size, static_cast<int>(status.code),
-                         status.message);
-                if (finalStatus.ok()) { finalStatus = status; }
+                         index, subBatch.entries.size, static_cast<int>(subBatchStatus.code),
+                         subBatchStatus.message);
+                if (status.ok()) { status = subBatchStatus; }
             }
         }
     } else if (IsKeyBatchOp(ctx.opType)) {
+        if (ctx.keys.empty()) {
+            UC_ERROR("Submit key batch failed: key batch is empty");
+            return Status::Error(StatusCode::INVALID_ARGUMENT, "key batch is empty");
+        }
         const auto subBatches = ioScheduler_.SplitForAsu(ctx.keys, ctx.opType);
         subBatchContexts.reserve(subBatches.size());
         for (std::size_t index = 0; index < subBatches.size(); ++index) {
             const auto& subBatch = subBatches[index];
             auto& subBatchContext = subBatchContexts.emplace_back();
-            auto status = SubmitKeySubBatchRequest(ctx.opType, subBatch, subBatchContext);
-            subBatchContext.status = status;
-            if (!status.ok()) {
+            auto subBatchStatus = SubmitKeySubBatchRequest(ctx.opType, subBatch, subBatchContext);
+            subBatchContext.status = subBatchStatus;
+            if (!subBatchStatus.ok()) {
                 UC_ERROR("Submit key sub-batch failed index={} batch_size={} code={} message={}",
-                         index, subBatch.keys.size, static_cast<int>(status.code), status.message);
-                if (finalStatus.ok()) { finalStatus = status; }
+                         index, subBatch.keys.size, static_cast<int>(subBatchStatus.code),
+                         subBatchStatus.message);
+                if (status.ok()) { status = subBatchStatus; }
             }
         }
     } else if (IsKeepAliveOp(ctx.opType)) {
         auto& subBatchContext = subBatchContexts.emplace_back();
-        auto status = SubmitKeepAliveRequest(subBatchContext);
-        subBatchContext.status = status;
-        if (!status.ok()) {
+        auto subBatchStatus = SubmitKeepAliveRequest(subBatchContext);
+        subBatchContext.status = subBatchStatus;
+        if (!subBatchStatus.ok()) {
             UC_ERROR("Submit keep-alive request failed code={} message={}",
-                     static_cast<int>(status.code), status.message);
-            if (finalStatus.ok()) { finalStatus = status; }
+                     static_cast<int>(subBatchStatus.code), subBatchStatus.message);
+            if (status.ok()) { status = subBatchStatus; }
         }
     } else {
-        finalStatus = Status::Error(StatusCode::UNSUPPORTED, "transport operation is unsupported");
+        status = Status::Error(StatusCode::UNSUPPORTED, "transport operation is unsupported");
         UC_ERROR("Unsupported transport operation op_type={}", static_cast<int>(ctx.opType));
     }
-    return finalStatus;
+    return status;
 }
 
 Status AsuTransportImpl::BuildSubBatchSendBuffers(
     std::vector<TransportSubBatchContext>& subBatchContexts,
     std::vector<TransProvider::SendIoBatch>& ioBatches, std::vector<std::size_t>& subBatchIndexes)
 {
-    Status finalStatus = Status::OK();
+    Status status = Status::OK();
     ioBatches.reserve(subBatchContexts.size());
     subBatchIndexes.reserve(subBatchContexts.size());
 
@@ -111,23 +122,23 @@ Status AsuTransportImpl::BuildSubBatchSendBuffers(
             UC_ERROR("Skip sub-batch before send index={} cid={} code={} message={}", index,
                      subBatchContext.cid, static_cast<int>(subBatchContext.status.code),
                      subBatchContext.status.message);
-            if (finalStatus.ok()) {
-                finalStatus = Status::Error(StatusCode::PARTIAL_FAILED,
-                                            "one or more sub-batches failed before send");
+            if (status.ok()) {
+                status =
+                    Status::Error(StatusCode::PARTIAL_FAILED, "transport task partially failed");
             }
             ReleaseSubBatchResources(subBatchContext);
             continue;
         }
 
         if (subBatchContext.flagBuffer.addr == 0 || subBatchContext.flagBuffer.length == 0) {
-            const auto status =
+            const auto subBatchStatus =
                 Status::Error(StatusCode::NOT_INITIALIZED, "sub-batch flag buffer is not ready");
             UC_ERROR(
                 "Sub-batch flag buffer is not ready index={} cid={} flag_addr={} flag_length={}",
                 index, subBatchContext.cid, subBatchContext.flagBuffer.addr,
                 subBatchContext.flagBuffer.length);
-            SetSubBatchSendFailed(subBatchContext, status);
-            if (finalStatus.ok()) { finalStatus = status; }
+            SetSubBatchSendFailed(subBatchContext, subBatchStatus);
+            if (status.ok()) { status = subBatchStatus; }
             ReleaseSubBatchResources(subBatchContext);
             continue;
         }
@@ -140,7 +151,7 @@ Status AsuTransportImpl::BuildSubBatchSendBuffers(
         subBatchIndexes.emplace_back(index);
     }
 
-    return finalStatus;
+    return status;
 }
 
 Status AsuTransportImpl::SendSubBatchBuffers(
@@ -148,16 +159,16 @@ Status AsuTransportImpl::SendSubBatchBuffers(
     const std::vector<TransProvider::SendIoBatch>& ioBatches,
     const std::vector<std::size_t>& subBatchIndexes)
 {
-    Status finalStatus = Status::OK();
-    if (ioBatches.empty()) { return finalStatus; }
+    Status status = Status::OK();
+    if (ioBatches.empty()) { return status; }
 
     const auto kernelCount = GetSendCountAttr(config_.attrs, "kernel_count");
     const auto quietCount = GetSendCountAttr(config_.attrs, "quiet_count");
 
     const auto sendStatuses = transProvider_->Send(ioBatches, kernelCount, quietCount);
     if (sendStatuses.size() != ioBatches.size()) {
-        const auto status = Status::Error(StatusCode::INTERNAL_ERROR,
-                                          "transport send returned unexpected status count");
+        status = Status::Error(StatusCode::INTERNAL_ERROR,
+                               "transport send returned unexpected status count");
         UC_ERROR("Transport send returned unexpected status count expected={} actual={}",
                  ioBatches.size(), sendStatuses.size());
         for (auto index : subBatchIndexes) {
@@ -169,17 +180,17 @@ Status AsuTransportImpl::SendSubBatchBuffers(
 
     for (std::size_t index = 0; index < sendStatuses.size(); ++index) {
         auto& subBatchContext = subBatchContexts[subBatchIndexes[index]];
-        const auto& status = sendStatuses[index];
-        if (status.ok()) { continue; }
+        const auto& subBatchStatus = sendStatuses[index];
+        if (subBatchStatus.ok()) { continue; }
 
         UC_ERROR("Send sub-batch failed sub_batch_index={} cid={} code={} message={}",
-                 subBatchIndexes[index], subBatchContext.cid, static_cast<int>(status.code),
-                 status.message);
-        SetSubBatchSendFailed(subBatchContext, status);
+                 subBatchIndexes[index], subBatchContext.cid, static_cast<int>(subBatchStatus.code),
+                 subBatchStatus.message);
+        SetSubBatchSendFailed(subBatchContext, subBatchStatus);
         connManager_->ReportFailure(subBatchContext.channel);
-        if (finalStatus.ok()) { finalStatus = status; }
+        if (status.ok()) { status = subBatchStatus; }
     }
-    return finalStatus;
+    return status;
 }
 
 }  // namespace UC::ASU

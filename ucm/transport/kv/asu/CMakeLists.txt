@@ -61,7 +61,7 @@ target_include_directories(asu_transport
 target_compile_definitions(asu_transport PRIVATE SPDLOG_FMT_EXTERNAL)
 target_link_libraries(asu_transport
     PUBLIC
-        pthread fmt spdlog z
+        pthread fmt spdlog zlibstatic
     PRIVATE
         asu_ascend_deps
 )
@@ -100,6 +100,7 @@ if(BUILD_UNIT_TESTS)
     )
     target_link_libraries(asu.test PRIVATE
         asu_client
+        asu_ascend_deps
         gtest_main gtest
     )
     gtest_discover_tests(asu.test)

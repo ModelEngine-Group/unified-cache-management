@@ -24,6 +24,7 @@
 #pragma once
 
 #include <string>
+#include <unordered_map>
 #include "asu_transport/types.h"
 
 namespace UC::ASU {
@@ -31,5 +32,6 @@ namespace UC::ASU {
 struct TransportConfig;
 
 Status LoadTransportConfig(const std::string& configPath, TransportConfig& config);
+Status ValidateSqeRequestAttrs(const std::unordered_map<std::string, std::string>& attrs);
 
 }  // namespace UC::ASU

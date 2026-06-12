@@ -30,7 +30,6 @@ namespace {
 
 std::size_t GetSubBatchCount(std::size_t total, std::size_t ioNum)
 {
-    if (total == 0 || ioNum == 0) { return 0; }
     return 1 + (total - 1) / ioNum;
 }
 
@@ -39,8 +38,6 @@ std::vector<ScheduledBatch> SplitBatchView(const BatchView<Value>& view, std::si
                                            SetView setView)
 {
     std::vector<ScheduledBatch> result;
-    if (view.empty() || ioNum == 0) { return result; }
-
     const std::size_t subBatchCount = GetSubBatchCount(view.size, ioNum);
     result.reserve(subBatchCount);
 

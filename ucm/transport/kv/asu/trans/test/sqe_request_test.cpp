@@ -34,6 +34,7 @@
 #include "buffer_manager.h"
 #include "kv_protocol.h"
 #include "trans_provider.h"
+#include "transport_config_parser.h"
 
 namespace UC::ASU {
 
@@ -147,28 +148,23 @@ protected:
 
 TEST_F(SqeRequestTest, ValidateSqeRequestAttrsRejectsMalformedValues)
 {
-    transport_->config_.attrs = DefaultAttrs();
-    EXPECT_TRUE(transport_->ValidateSqeRequestAttrs().ok());
+    EXPECT_TRUE(ValidateSqeRequestAttrs(DefaultAttrs()).ok());
 
     auto attrs = DefaultAttrs();
     attrs["dtype"] = "256";
-    transport_->config_.attrs = attrs;
-    EXPECT_EQ(transport_->ValidateSqeRequestAttrs().code, StatusCode::INVALID_ARGUMENT);
+    EXPECT_EQ(ValidateSqeRequestAttrs(attrs).code, StatusCode::INVALID_ARGUMENT);
 
     attrs = DefaultAttrs();
     attrs["lr"] = "maybe";
-    transport_->config_.attrs = attrs;
-    EXPECT_EQ(transport_->ValidateSqeRequestAttrs().code, StatusCode::INVALID_ARGUMENT);
+    EXPECT_EQ(ValidateSqeRequestAttrs(attrs).code, StatusCode::INVALID_ARGUMENT);
 
     attrs = DefaultAttrs();
     attrs.erase("kernel_count");
-    transport_->config_.attrs = attrs;
-    EXPECT_EQ(transport_->ValidateSqeRequestAttrs().code, StatusCode::INVALID_ARGUMENT);
+    EXPECT_EQ(ValidateSqeRequestAttrs(attrs).code, StatusCode::INVALID_ARGUMENT);
 
     attrs = DefaultAttrs();
     attrs["quiet_count"] = "0";
-    transport_->config_.attrs = attrs;
-    EXPECT_EQ(transport_->ValidateSqeRequestAttrs().code, StatusCode::INVALID_ARGUMENT);
+    EXPECT_EQ(ValidateSqeRequestAttrs(attrs).code, StatusCode::INVALID_ARGUMENT);
 }
 
 TEST_F(SqeRequestTest, SubmitBatchStoreAllocatesFlagBufferAndBuildsRequest)

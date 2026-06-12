@@ -104,7 +104,6 @@ private:
     Status SendSubBatchBuffers(std::vector<TransportSubBatchContext>& subBatchContexts,
                                const std::vector<TransProvider::SendIoBatch>& ioBatches,
                                const std::vector<std::size_t>& subBatchIndexes);
-    Status ValidateSqeRequestAttrs();
     Status SubmitEntrySubBatchRequest(TransportOpType opType,
                                       const IoScheduler::ScheduledIoBatch& subBatch,
                                       TransportSubBatchContext& subBatchContext);

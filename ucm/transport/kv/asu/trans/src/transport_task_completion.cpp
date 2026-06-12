@@ -39,11 +39,10 @@ Status BuildTaskFinalStatus(const TransportTaskContext& ctx)
 {
     for (const auto& subBatchContext : ctx.subBatchContexts) {
         if (!subBatchContext.status.ok()) {
-            return Status::Error(StatusCode::PARTIAL_FAILED, "one or more sub-batches failed");
+            return Status::Error(StatusCode::PARTIAL_FAILED, "transport task partially failed");
         }
     }
 
-    if (!ctx.finalStatus.ok()) { return ctx.finalStatus; }
     return Status::OK();
 }
 
@@ -109,6 +108,7 @@ void AsuTransportImpl::CompleteSubBatch(TransportTaskContext& ctx,
 void TransportTaskContext::TryFinalizeFromSubBatches()
 {
     if (subBatchContexts.empty()) {
+        finalStatus = Status::Error(StatusCode::PARTIAL_FAILED, "transport task partially failed");
         state.store(TransportTaskState::COMPLETED, std::memory_order_release);
         return;
     }
