@@ -31,6 +31,7 @@
 #include <unordered_map>
 #include <vector>
 #include "aio_impl.h"
+#include "backend_health.h"
 #include "block_operator.h"
 #include "logger/logger.h"
 #include "metrics_api.h"
@@ -55,14 +56,17 @@ class IoEngineAio : public Detail::TaskWrapper<TransTask, Detail::TaskHandle> {
     std::unordered_map<Detail::TaskHandle, Inflight> registry_;
     BlockOperator blockOperator_;
     AioImpl aio_;
+    BackendHealth* backendHealth_{nullptr};
+    TaskIdSet abandonedSet_;
 
 public:
-    Status Setup(const Config& config, const SpaceLayout* layout)
+    Status Setup(const Config& config, const SpaceLayout* layout, BackendHealth* backendHealth)
     {
         timeoutMs_ = config.timeoutMs;
         shardSize_ = config.shardSize;
         nShardPerBlock_ = config.blockSize / config.shardSize;
         layout_ = layout;
+        backendHealth_ = backendHealth;
         blockOperator_.Setup(layout, config.openConcurrency, config.commitConcurrency);
         aio_.SetSweepFn([this] { SweepDeadlines(); });
         UC_INFO(
@@ -95,22 +99,48 @@ private:
         static UC::Metrics::CachedMetric ioErrors{"posix_io_errors_total"};
         UC::Metrics::UpdateStats(ioErrors, 1.0);
     }
-    void CommitBlock(Detail::BlockId id, bool success)
+    void CommitBlock(Detail::TaskHandle tid, WaiterPtr w, Detail::BlockId id, bool success)
     {
-        blockOperator_.Submit(BlockOperator::CommitTask{std::move(id), success});
+        blockOperator_.Submit(BlockOperator::CommitTask{
+            std::move(id),
+            success,
+            [this, tid, w](BlockOperator::CommitResult result) {
+                if (result.error != 0) {
+                    if (result.error != ECANCELED) {
+                        UC_ERROR("Failed({}) to commit aio task({}).", result.error, tid);
+                        IncrementIoErrorMetric();
+                    }
+                    failureSet_.Insert(tid);
+                }
+                w->Done();
+            },
+            tid});
     }
+    void MarkBackendUnhealthy(const std::string& reason)
+    {
+        if (backendHealth_) { backendHealth_->MarkUnhealthy(reason); }
+    }
+    bool IsAbandoned(Detail::TaskHandle tid) { return abandonedSet_.Contains(tid); }
     template <bool dump>
     void OnIoCallback(const Detail::TaskHandle& tid, WaiterPtr w, int32_t fd, bool last,
                       const Detail::BlockId& id, const AioImpl::Result& result)
     {
-        if (result.error != 0) {
+        const auto abandoned = IsAbandoned(tid);
+        if (result.error != 0 && !abandoned) {
             UC_ERROR("Failed({}) to do io on block({}).", result.error, id);
             if (result.error != ECANCELED) { IncrementIoErrorMetric(); }
             failureSet_.Insert(tid);
         }
         ::close(fd);
+        if (abandoned) {
+            w->Done();
+            return;
+        }
         if constexpr (dump) {
-            if (last) { CommitBlock(id, !failureSet_.Contains(tid)); }
+            if (last) {
+                CommitBlock(tid, w, id, !failureSet_.Contains(tid));
+                return;
+            }
         }
         w->Done();
     }
@@ -123,8 +153,15 @@ private:
         auto handleFailure = [&](int32_t fd) {
             failureSet_.Insert(tid);
             if (fd >= 0) { ::close(fd); }
+            if (IsAbandoned(tid)) {
+                w->Done();
+                return;
+            }
             if constexpr (dump) {
-                if (last) { CommitBlock(id, false); }
+                if (last) {
+                    CommitBlock(tid, w, id, false);
+                    return;
+                }
             }
             w->Done();
         };
@@ -134,10 +171,17 @@ private:
             handleFailure(result.fd);
             return;
         }
-        if (failureSet_.Contains(tid)) {
+        if (failureSet_.Contains(tid) || IsAbandoned(tid)) {
             if (result.fd >= 0) { ::close(result.fd); }
+            if (IsAbandoned(tid)) {
+                w->Done();
+                return;
+            }
             if constexpr (dump) {
-                if (last) { CommitBlock(id, false); }
+                if (last) {
+                    CommitBlock(tid, w, id, false);
+                    return;
+                }
             }
             w->Done();
             return;
@@ -156,6 +200,7 @@ private:
             if (status == Status::Timeout()) {
                 timeoutSet_.Insert(tid);
                 IncrementAioTimeoutMetric();
+                MarkBackendUnhealthy("aio submit timeout");
             } else {
                 IncrementIoErrorMetric();
             }
@@ -254,6 +299,7 @@ private:
                 "AIO task({}) timed out after {:.1f}ms; force-draining latch ({} of {} "
                 "shard(s) outstanding).",
                 id, stuckMs, pending, shardCount);
+            MarkBackendUnhealthy("aio task deadline exceeded");
             ForceComplete(id, w);
         }
     }
@@ -270,6 +316,7 @@ private:
         }
         UC_ERROR("AIO task({}) cancelled on wait timeout; force-draining latch.", t->id);
         IncrementAioTimeoutMetric();
+        MarkBackendUnhealthy("aio wait timeout");
         ForceComplete(t->id, w);
     }
     void ForceComplete(Detail::TaskHandle id, const WaiterPtr& w)
@@ -278,6 +325,7 @@ private:
         UC_WARN("AIO task({}) force-completing; pending latch count before abort={}.", id, pending);
         failureSet_.Insert(id);
         timeoutSet_.Insert(id);
+        abandonedSet_.Insert(id);
         aio_.CancelTask(id);
         blockOperator_.CancelQueued(id);
         if (w) { w->Abort(); }

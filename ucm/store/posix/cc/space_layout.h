@@ -46,6 +46,7 @@ public:
     size_t CountFilesInShard(const std::string& shard) const;
     std::vector<Detail::BlockId> GetOldestFiles(const std::string& shard, double recyclePercent,
                                                 size_t maxRecycleCount) const;
+    const std::vector<std::string>& StorageBackends() const { return storageBackends_; }
 
 private:
     std::vector<std::string> RelativeRoots() const;

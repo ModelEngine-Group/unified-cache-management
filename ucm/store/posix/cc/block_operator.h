@@ -78,7 +78,11 @@ public:
         int32_t fd;
         int32_t error;
     };
+    struct CommitResult {
+        int32_t error;
+    };
     using OpenCallback = std::function<void(OpenResult)>;
+    using CommitCallback = std::function<void(CommitResult)>;
     struct OpenTask {
         Detail::BlockId id;
         bool activated;
@@ -89,6 +93,8 @@ public:
     struct CommitTask {
         Detail::BlockId id;
         bool success;
+        CommitCallback callback;
+        uint64_t tag{0};
     };
 
     ~BlockOperator()
@@ -133,6 +139,7 @@ public:
     void CancelQueued(uint64_t tag)
     {
         std::list<OpenTask> purged;
+        std::list<CommitTask> purgedCommits;
         {
             std::lock_guard<std::mutex> lock{openQueue_.mutex};
             auto& q = openQueue_.queue;
@@ -144,11 +151,28 @@ public:
                 }
             }
         }
+        {
+            std::lock_guard<std::mutex> lock{commitQueue_.mutex};
+            auto& q = commitQueue_.queue;
+            for (auto it = q.begin(); it != q.end();) {
+                if (it->tag == tag) {
+                    purgedCommits.splice(purgedCommits.end(), q, it++);
+                } else {
+                    ++it;
+                }
+            }
+        }
         if (!purged.empty()) {
             UC_WARN("AIO task({}) cancelled {} queued open task(s).", tag, purged.size());
         }
+        if (!purgedCommits.empty()) {
+            UC_WARN("AIO task({}) cancelled {} queued commit task(s).", tag, purgedCommits.size());
+        }
         for (auto& task : purged) {
             if (task.callback) { task.callback(OpenResult{-1, ECANCELED}); }
+        }
+        for (auto& task : purgedCommits) {
+            if (task.callback) { task.callback(CommitResult{ECANCELED}); }
         }
     }
 
@@ -189,7 +213,10 @@ private:
                 task = std::move(commitQueue_.queue.front());
                 commitQueue_.queue.pop_front();
             }
-            layout_->CommitFile(task.id, task.success);
+            auto status = layout_->CommitFile(task.id, task.success);
+            if (task.callback) {
+                task.callback(CommitResult{status.Success() ? 0 : status.Underlying()});
+            }
         }
     }
 

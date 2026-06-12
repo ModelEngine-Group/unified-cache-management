@@ -29,15 +29,17 @@
 
 namespace UC::PosixStore {
 
+class BackendHealth;
+
 class TransManager {
 public:
     using IoEngine = Detail::TaskWrapper<TransTask, Detail::TaskHandle>;
 
-    Status Setup(const Config& config, const SpaceLayout* layout)
+    Status Setup(const Config& config, const SpaceLayout* layout, BackendHealth* backendHealth = nullptr)
     {
         if (config.ioEngine == "aio") {
             ioEngine_ = &ioEngineAio_;
-            return ioEngineAio_.Setup(config, layout);
+            return ioEngineAio_.Setup(config, layout, backendHealth);
         }
         if (config.ioEngine == "psync") {
             ioEngine_ = &ioEnginePsync_;
