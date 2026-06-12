@@ -35,7 +35,8 @@ class TransManager {
 public:
     using IoEngine = Detail::TaskWrapper<TransTask, Detail::TaskHandle>;
 
-    Status Setup(const Config& config, const SpaceLayout* layout, BackendHealth* backendHealth = nullptr)
+    Status Setup(const Config& config, const SpaceLayout* layout,
+                 BackendHealth* backendHealth = nullptr)
     {
         if (config.ioEngine == "aio") {
             ioEngine_ = &ioEngineAio_;

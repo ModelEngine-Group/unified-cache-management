@@ -102,8 +102,7 @@ private:
     void CommitBlock(Detail::TaskHandle tid, WaiterPtr w, Detail::BlockId id, bool success)
     {
         blockOperator_.Submit(BlockOperator::CommitTask{
-            std::move(id),
-            success,
+            std::move(id), success,
             [this, tid, w](BlockOperator::CommitResult result) {
                 if (result.error != 0) {
                     if (result.error != ECANCELED) {
