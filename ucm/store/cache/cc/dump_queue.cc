@@ -142,8 +142,7 @@ Status DumpQueue::DumpOneTask(CopyStream& stream, TaskPtr task)
     auto res = backend_->Dump(std::move(backendTaskDesc));
     if (!res) [[unlikely]] {
         UC_ERROR("Failed({}) to submit dump task({}) to backend.", res.Error(), task->id);
-        UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("cache_backend_dump_submit_errors_total"),
-                                 1.0);
+        UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("cache_backend_dump_submit_errors_total"), 1.0);
         return res.Error();
     }
     dumpCtx.backendTaskHandle = res.Value();

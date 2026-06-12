@@ -65,9 +65,10 @@ public:
         layout_ = layout;
         blockOperator_.Setup(layout, config.openConcurrency, config.commitConcurrency);
         aio_.SetSweepFn([this] { SweepDeadlines(); });
-        UC_INFO("AIO engine setup: timeoutMs={}, watchdogGraceMs={}, "
-                "openConcurrency={}, commitConcurrency={}.",
-                timeoutMs_, kWatchdogGraceMs, config.openConcurrency, config.commitConcurrency);
+        UC_INFO(
+            "AIO engine setup: timeoutMs={}, watchdogGraceMs={}, "
+            "openConcurrency={}, commitConcurrency={}.",
+            timeoutMs_, kWatchdogGraceMs, config.openConcurrency, config.commitConcurrency);
         return aio_.Setup(timeoutMs_);
     }
 
@@ -249,9 +250,10 @@ private:
             auto stuckMs = (now - w->startTp) * 1e3;
             auto pending = w->Pending();
             IncrementAioTimeoutMetric();
-            UC_ERROR("AIO task({}) timed out after {:.1f}ms; force-draining latch ({} of {} "
-                     "shard(s) outstanding).",
-                     id, stuckMs, pending, shardCount);
+            UC_ERROR(
+                "AIO task({}) timed out after {:.1f}ms; force-draining latch ({} of {} "
+                "shard(s) outstanding).",
+                id, stuckMs, pending, shardCount);
             ForceComplete(id, w);
         }
     }
@@ -273,8 +275,7 @@ private:
     void ForceComplete(Detail::TaskHandle id, const WaiterPtr& w)
     {
         auto pending = w ? w->Pending() : 0;
-        UC_WARN("AIO task({}) force-completing; pending latch count before abort={}.", id,
-                pending);
+        UC_WARN("AIO task({}) force-completing; pending latch count before abort={}.", id, pending);
         failureSet_.Insert(id);
         timeoutSet_.Insert(id);
         aio_.CancelTask(id);

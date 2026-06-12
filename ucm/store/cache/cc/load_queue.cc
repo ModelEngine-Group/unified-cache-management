@@ -187,8 +187,8 @@ Status LoadQueue::WaitBackendTaskReady(ShardTask& task)
         if (s.Failure()) [[unlikely]] {
             UC_ERROR("Failed({}) to wait backend({}) for task({}).", s, task.backendTaskHandle,
                      task.taskHandle);
-            UC::Metrics::UpdateStats(
-                NAME_TO_METRIC_ID("cache_backend_load_wait_errors_total"), 1.0);
+            UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("cache_backend_load_wait_errors_total"),
+                                     1.0);
             return s;
         }
         task.bufferHandle.MarkReady();

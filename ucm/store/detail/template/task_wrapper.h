@@ -106,9 +106,10 @@ public:
                         r + 1, maxDrainRounds);
             }
             if (!drained) {
-                UC_ERROR("Task({}) latch never drained; returning Timeout and abandoning in-flight"
-                         " IO.",
-                         taskId);
+                UC_ERROR(
+                    "Task({}) latch never drained; returning Timeout and abandoning in-flight"
+                    " IO.",
+                    taskId);
             }
             // Late IO callbacks must still see failure and avoid committing success.
             return Status::Timeout();

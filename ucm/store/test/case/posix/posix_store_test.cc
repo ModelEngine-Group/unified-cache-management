@@ -21,6 +21,7 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  * */
+#include "posix/cc/posix_store.cc"
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
@@ -29,7 +30,6 @@
 #include <memory>
 #include <mutex>
 #include <thread>
-#include "posix/cc/posix_store.cc"
 #include "detail/data_generator.h"
 #include "detail/path_base.h"
 #include "detail/types_helper.h"
@@ -67,8 +67,7 @@ BufferPtr MakeAlignedBuffer(size_t marker)
     return {buffer, &std::free};
 }
 
-UC::Detail::TaskDesc MakeDumpDesc(const char* brief, const UC::Detail::BlockId& block,
-                                  void* buffer)
+UC::Detail::TaskDesc MakeDumpDesc(const char* brief, const UC::Detail::BlockId& block, void* buffer)
 {
     UC::Detail::TaskDesc desc;
     desc.brief = brief;

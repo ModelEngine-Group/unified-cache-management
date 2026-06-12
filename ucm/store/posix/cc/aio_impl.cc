@@ -22,15 +22,15 @@
  * SOFTWARE.
  * */
 #include "aio_impl.h"
-#include <sys/epoll.h>
-#include <sys/eventfd.h>
-#include <sys/syscall.h>
-#include <unistd.h>
 #include <algorithm>
 #include <cerrno>
 #include <chrono>
 #include <cstring>
 #include <memory>
+#include <sys/epoll.h>
+#include <sys/eventfd.h>
+#include <sys/syscall.h>
+#include <unistd.h>
 #include "logger/logger.h"
 #include "time/now_time.h"
 
@@ -171,9 +171,10 @@ Status AioImpl::Setup(size_t timeoutMs)
     epollTimeoutMs_ = timeoutMs > 0 ? timeoutMs : defaultSweepIntervalMs;
     sweepIntervalMs_ = defaultSweepIntervalMs;
     submitTimeoutMs_ = timeoutMs;
-    UC_INFO("AIO setup: queueDepth={}, epollTimeoutMs={}, sweepIntervalMs={}, "
-            "submitTimeoutMs={}.",
-            queueDepth_, epollTimeoutMs_, sweepIntervalMs_, submitTimeoutMs_);
+    UC_INFO(
+        "AIO setup: queueDepth={}, epollTimeoutMs={}, sweepIntervalMs={}, "
+        "submitTimeoutMs={}.",
+        queueDepth_, epollTimeoutMs_, sweepIntervalMs_, submitTimeoutMs_);
     auto ret = AioSetup(queueDepth_, &ctx_);
     if (ret != 0) {
         UC_ERROR("Failed({}) to call AioSetup.", ret);
