@@ -153,6 +153,11 @@ def apply_all_patches() -> None:
             case _:
                 pass
 
+        major, minor, *_ = version.split(".")
+        if (int(major), int(minor)) >= (0, 21):
+            logger.info("UCM patching vllm for load-failure recovery...")
+            import ucm.integration.vllm.patch.load_failure_patch
+
         # vllm_ascend patches
         ascend_version = get_vllm_ascend_version()
         match ascend_version:
