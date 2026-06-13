@@ -78,7 +78,6 @@ ucm_connectors:
       use_gdr: false
 enable_event_sync: true
 use_layerwise: true
-layerwise_wait_for_save: true
 enable_record_traces: false
 use_lite: false
 persist_token_threshold: 0
@@ -152,11 +151,6 @@ Top-level parameters (outside `ucm_connector_config`):
   Whether to use layerwise loading/saving of KV cache blocks.  
   Enabled by default for `UCMConnector`.
 
-* **layerwise_wait_for_save** *(optional, default: true)*
-  Controls when LayerWise waits for asynchronous dump tasks. When `true`,
-  `wait_for_save()` waits for all layer dumps as before. When `false`, the wait
-  and event cleanup are deferred until request completion or preemption.
-
 * **hit_ratio** *(optional)*  
   When set, limits the number of hit tokens to `hit_ratio × num_prompt_tokens`.  
   Useful for controlling the proportion of cached tokens that are actually loaded.
@@ -222,7 +216,6 @@ ucm_connectors:
       use_gdr: false
 enable_event_sync: true
 use_layerwise: true
-layerwise_wait_for_save: true
 enable_record_traces: false
 use_lite: false
 persist_token_threshold: 0

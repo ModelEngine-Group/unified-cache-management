@@ -371,9 +371,6 @@ class UCMDirectConnector(KVConnectorBase_V1):
         self.launch_config = ucm_config.get_config()
         self.connector_configs = self.launch_config.get("ucm_connectors", [])
         self.enable_event_sync = self.launch_config.get("enable_event_sync", True)
-        self.layerwise_wait_for_save = self.launch_config.get(
-            "layerwise_wait_for_save", True
-        )
         self.enable_record_traces = self.launch_config.get(
             "enable_record_traces", False
         )
@@ -767,16 +764,11 @@ class UCMDirectConnector(KVConnectorBase_V1):
         self,
         requests_dispatch_meta: dict[str, RequestDispatchMeta],
     ) -> None:
-        if not self._wait_dump_on_request_finished():
-            return
         self._async_dump_req_ids.update(
             request_id
             for request_id, dispatch_meta in requests_dispatch_meta.items()
             if len(dispatch_meta.dump_block_ids[0]) > 0
         )
-
-    def _wait_dump_on_request_finished(self) -> bool:
-        return not self.use_layerwise or not self.layerwise_wait_for_save
 
     def start_load_kv(self, forward_context: "ForwardContext", **kwargs) -> None:
         metadata = self._get_connector_metadata()
@@ -934,8 +926,6 @@ class UCMDirectConnector(KVConnectorBase_V1):
         self,
         kv_connector_metadata: KVConnectorMetadata | set[str],
     ) -> None:
-        if not self._wait_dump_on_request_finished():
-            return
         preempted_req_ids = (
             kv_connector_metadata
             if isinstance(kv_connector_metadata, set)
@@ -1050,8 +1040,6 @@ class UCMDirectConnector(KVConnectorBase_V1):
         request: "Request",
         block_ids: list[int],
     ) -> tuple[bool, dict[str, Any] | None]:
-        if not self._wait_dump_on_request_finished():
-            return False, None
         if request.request_id in self._async_dump_req_ids:
             self._async_dump_req_ids.discard(request.request_id)
             return True, None
@@ -1070,8 +1058,6 @@ class UCMDirectConnector(KVConnectorBase_V1):
         self,
         finished_req_ids: set[str],
     ) -> tuple[Optional[set[str]], Optional[set[str]]]:
-        if not self._wait_dump_on_request_finished():
-            return None, None
         async_finished_req_ids = finished_req_ids & self._async_dump_req_ids
 
         if async_finished_req_ids:
@@ -1110,7 +1096,6 @@ class UCMLayerWiseConnector(UCMDirectConnector):
         super().__init__(vllm_config, role, kv_cache_config)
         # {layer_id: {request_id: Task}}
         self.load_tasks: dict[int, dict[str, Task]] = defaultdict(dict)
-        self.dump_tasks: dict[str, Task] = {}
         self.use_layerwise = True
         self.is_save = False
         self.need_load = False
@@ -1280,16 +1265,13 @@ class UCMLayerWiseConnector(UCMDirectConnector):
                 task = self.store.dump_data(
                     total_ucm_block_ids, shard_indexs, layer_ptrs, event_handle
                 )
-                if self._wait_dump_on_request_finished():
-                    self._pending_dump_tasks.append(
-                        PendingDumpTask(
-                            task=task,
-                            request_ids=set(dump_request_ids),
-                            event_handle=event_handle,
-                        )
+                self._pending_dump_tasks.append(
+                    PendingDumpTask(
+                        task=task,
+                        request_ids=set(dump_request_ids),
+                        event_handle=event_handle,
                     )
-                else:
-                    self.dump_tasks[layer_name] = task
+                )
             except Exception as e:
                 logger.error(
                     f"submit dump task for {layer_name} failed. {type(e).__name__}: {e}"
@@ -1303,55 +1285,25 @@ class UCMLayerWiseConnector(UCMDirectConnector):
             )
 
     def wait_for_save(self) -> None:
-        if self._wait_dump_on_request_finished():
-            self._poll_pending_dump_tasks()
-            if self._connector_metadata:
-                metadata = self._get_connector_metadata()
-                self._async_dump_req_ids.update(
-                    request_id
-                    for request_id, request in metadata.request_meta.items()
-                    if len(request.dump_block_ids[0]) > 0
-                )
+        # Only reap completed tasks here. Unfinished dumps are waited when the
+        # request finishes or is preempted.
+        self._poll_pending_dump_tasks()
+        if self._connector_metadata:
+            metadata = self._get_connector_metadata()
+            self._async_dump_req_ids.update(
+                request_id
+                for request_id, request in metadata.request_meta.items()
+                if len(request.dump_block_ids[0]) > 0
+            )
 
-            total_end = time.perf_counter()
-            if self._layerwise_batch_start is not None:
-                batch_total_ms = (total_end - self._layerwise_batch_start) * 1000
-                ucmmetrics.update_stats({"layerwise_batch_total_ms": batch_total_ms})
-                self._layerwise_batch_start = None
-
-            self.dump_tasks.clear()
-            self.is_save = False
-            self.dump_total_ptrs = None
-            return
-
-        if not self.is_save:
-            total_end = time.perf_counter()
-            if self._layerwise_batch_start is not None:
-                batch_total_ms = (total_end - self._layerwise_batch_start) * 1000
-                ucmmetrics.update_stats({"layerwise_batch_total_ms": batch_total_ms})
-                self._layerwise_batch_start = None
-            return
-        total_start = time.perf_counter()
-        try:
-            for layer_name in self.kv_caches:
-                if layer_name not in self.dump_tasks:
-                    continue
-                self.store.wait(self.dump_tasks[layer_name])
-        except Exception as e:
-            logger.error(f"wait for dump kv cache failed. {type(e).__name__}: {e}")
         total_end = time.perf_counter()
-        stats = {"layerwise_save_tail_total_ms": (total_end - total_start) * 1000}
         if self._layerwise_batch_start is not None:
-            stats["layerwise_batch_total_ms"] = (
-                total_end - self._layerwise_batch_start
-            ) * 1000
+            batch_total_ms = (total_end - self._layerwise_batch_start) * 1000
+            ucmmetrics.update_stats({"layerwise_batch_total_ms": batch_total_ms})
             self._layerwise_batch_start = None
-        ucmmetrics.update_stats(stats)
-        self.dump_tasks.clear()
+
         self.is_save = False
         self.dump_total_ptrs = None
-        if self.enable_event_sync:
-            self.device.destroy_event_handles()
 
 
 class UCMCPConnector(UCMLayerWiseConnector):
