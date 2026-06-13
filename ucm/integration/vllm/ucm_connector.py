@@ -887,6 +887,27 @@ class UCMDirectConnector(KVConnectorBase_V1):
             self.device.destroy_event_handle(pending_dump_task.event_handle)
             pending_dump_task.event_handle = 0
 
+    def _poll_pending_dump_tasks(self) -> None:
+        remaining_tasks: list[PendingDumpTask] = []
+        for pending_dump_task in self._pending_dump_tasks:
+            try:
+                if not self.store.check(pending_dump_task.task):
+                    remaining_tasks.append(pending_dump_task)
+                    continue
+            except Exception as e:
+                logger.error(f"check dump kv cache failed. {type(e).__name__}: {e}")
+                remaining_tasks.append(pending_dump_task)
+                continue
+
+            try:
+                # Check does not consume the task handle. Wait is non-blocking
+                # after completion and removes the task from the store.
+                self._wait_pending_dump_task(pending_dump_task)
+            except Exception as e:
+                logger.error(f"wait for dump kv cache failed. {type(e).__name__}: {e}")
+
+        self._pending_dump_tasks = remaining_tasks
+
     def _flush_pending_dump_tasks(self, request_ids: Optional[set[str]] = None) -> None:
         pending_dump_tasks = self._pending_dump_tasks
         self._pending_dump_tasks = []
@@ -919,6 +940,8 @@ class UCMDirectConnector(KVConnectorBase_V1):
 
     def wait_for_save(self) -> None:
         # TODO support PP
+        self._poll_pending_dump_tasks()
+
         metadata = self._get_connector_metadata()
         assert isinstance(metadata, UCMConnectorMetadata)
         metadata_dump_request_ids = {
@@ -1242,6 +1265,7 @@ class UCMLayerWiseConnector(UCMDirectConnector):
                     total_vllm_block_ids, layer_first=True
                 )
             shard_indexs = [layer_id] * len(total_ucm_block_ids)
+            event_handle = 0
             try:
                 layer_ptrs = np.ascontiguousarray(self.dump_total_ptrs[local_layer_id])
                 event_handle = self._get_dump_event_handle()
@@ -1250,7 +1274,9 @@ class UCMLayerWiseConnector(UCMDirectConnector):
                 )
                 self.dump_tasks[layer_name] = task
             except Exception as e:
-                logger.error(f"submit dump task for {layer_name} failed. {type(e).__name__}: {e}")
+                logger.error(
+                    f"submit dump task for {layer_name} failed. {type(e).__name__}: {e}"
+                )
                 if self.enable_event_sync and event_handle and self.device is not None:
                     self.device.destroy_event_handle(event_handle)
         if self.is_save:
