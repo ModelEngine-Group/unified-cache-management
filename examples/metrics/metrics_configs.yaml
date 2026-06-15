@@ -249,5 +249,5 @@ histogram:
     documentation: "Time to submit one layer's dump task in save_kv_layer (ms)"
     buckets: [0.01, 0.05, 0.1, 0.5, 1, 2, 5, 10, 20, 50]
   - name: "layerwise_save_tail_total_ms"
-    documentation: "Total wait_for_save duration - unoverlappable dump tail at end of forward (ms)"
+    documentation: "Legacy metric; LayerWise no longer waits for dump completion in wait_for_save"
     buckets: [0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000]

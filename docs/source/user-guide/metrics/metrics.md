@@ -146,7 +146,7 @@ Open `http://<your-host>:3000`, add a Prometheus data source pointing to
 |------|----------|
 | `examples/metrics/grafana_connector.json` | Connector-level activity: hit rate, request/block sizes, end-to-end load/save durations and speeds. |
 | `examples/metrics/grafana_pipeline_store.json` | Cache Store and Posix Store diagnosis: task breakdowns, queue wait, transfer duration, bandwidth, backend load ratio. |
-| `examples/metrics/grafana_layerwise.json` | `use_layerwise=true` diagnosis: `wait_for_layer_load()` blocking, inter-call interval, submit diagnostics, `wait_for_save()` tail. |
+| `examples/metrics/grafana_layerwise.json` | `use_layerwise=true` diagnosis: `wait_for_layer_load()` blocking, inter-call interval, and asynchronous dump submit diagnostics. |
 | `examples/metrics/grafana_vllm.json` | vLLM service-side request latency, token throughput, scheduler state, and cache state. |
 
 The dashboards share the `ucm` Grafana tag. After importing them, the dashboard
@@ -271,4 +271,4 @@ The default metrics configuration contains the following UCM metrics.
 | `ucm:layerwise_first_layer_submit_ms` | Time to submit first layer load tasks during `start_load_kv`. |
 | `ucm:layerwise_first_layer_requests` | Number of requests whose first-layer load was submitted in `start_load_kv`. |
 | `ucm:layerwise_save_submit_ms` | Time to submit one layer's dump task in `save_kv_layer()`. |
-| `ucm:layerwise_save_tail_total_ms` | Total `wait_for_save()` duration. |
+| `ucm:layerwise_save_tail_total_ms` | Legacy metric; LayerWise no longer waits for dump completion in `wait_for_save()`. |
