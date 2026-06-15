@@ -753,9 +753,9 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
             f"FAWA request_id: {request.request_id}, "
             f"total tokens: {request.num_tokens}, "
             f"hit hbm tokens: {num_computed_tokens}, "
-            f"hit external tokens: {external_hit_tokens}"
-            f"load blocks: {total_hit_block_num - wa_hbm_hit_block_num}"
-            f"dump blocks: {len(canonical_hashes) - total_hit_block_num}"
+            f"hit external tokens: {external_hit_tokens}, "
+            f"load blocks: {total_hit_block_num - wa_hbm_hit_block_num}, "
+            f"dump blocks: {len(canonical_hashes) - total_hit_block_num}, "
         )
         return external_hit_tokens, False
 

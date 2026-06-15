@@ -15,4 +15,3 @@ def patch_core_sched_scheduler(mod):
         "_update_requests_with_invalid_blocks",
         scheduler.Scheduler._update_requests_with_invalid_blocks,
     )
-
