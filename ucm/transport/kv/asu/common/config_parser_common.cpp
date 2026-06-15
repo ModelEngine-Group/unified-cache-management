@@ -121,6 +121,16 @@ Protocol ParseConfigProtocol(std::string value)
     return Protocol::TCP;
 }
 
+TransProviderType ParseConfigTransProviderType(std::string value)
+{
+    std::transform(value.begin(), value.end(), value.begin(),
+                   [](unsigned char ch) { return static_cast<char>(std::toupper(ch)); });
+    if (value == "FAKE") { return TransProviderType::FAKE; }
+    if (value == "AIV") { return TransProviderType::AIV; }
+    if (value == "AICPU") { return TransProviderType::AICPU; }
+    return TransProviderType::UNSUPPORTED;
+}
+
 bool ApplyTransportBufferConfigField(TransportConfig& config, const std::string& key,
                                      const std::string& value)
 {
@@ -153,6 +163,18 @@ bool ApplyTransportIoNumConfigField(TransportConfig& config, const std::string& 
         config.asuDeleteIoNum = static_cast<std::size_t>(ParseConfigUint64(value));
     } else if (key == "queryIoNum" || key == "query_io_num") {
         config.asuQueryIoNum = static_cast<std::size_t>(ParseConfigUint64(value));
+    } else {
+        return false;
+    }
+    return true;
+}
+
+bool ApplyTransportProviderConfigField(TransportConfig& config, const std::string& key,
+                                       const std::string& value)
+{
+    if (key == "providerBackend" || key == "provider_backend" || key == "transProviderBackend" ||
+        key == "trans_provider_backend") {
+        config.providerType = ParseConfigTransProviderType(value);
     } else {
         return false;
     }

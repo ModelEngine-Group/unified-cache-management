@@ -77,7 +77,8 @@ Status LoadAsuClientConfig(const std::string& configPath, AsuClientConfig& confi
             config.attrs["view.config_path"] = value;
         } else if (key == "defaultWaitTimeoutMs" || key == "default_wait_timeout_ms") {
             config.defaultWaitTimeoutMs = ParseConfigUint64(value);
-        } else if (key == "hashTable.type" || key == "hash_table.type") {
+        } else if (key == "router.type" || key == "routerType" || key == "hashTable.type" ||
+                   key == "hash_table.type") {
             auto type = value;
             std::transform(type.begin(), type.end(), type.begin(),
                            [](unsigned char ch) { return static_cast<char>(std::toupper(ch)); });
@@ -134,6 +135,9 @@ Status LoadAsuClientConfig(const std::string& configPath, AsuClientConfig& confi
                 continue;
             }
             if (ApplyTransportIoNumConfigField(transportConfig, field.first, field.second)) {
+                continue;
+            }
+            if (ApplyTransportProviderConfigField(transportConfig, field.first, field.second)) {
                 continue;
             }
             transportConfig.attrs.emplace(field);

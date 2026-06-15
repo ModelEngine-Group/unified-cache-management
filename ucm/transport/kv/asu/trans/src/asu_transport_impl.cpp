@@ -32,6 +32,7 @@
 #include "asu_transport/asu_transport.h"
 #include "connection_internal.h"
 #include "connection_manager.h"
+#include "fake_trans_provider.h"
 #include "logger.h"
 #include "transport_config_parser.h"
 
@@ -62,6 +63,16 @@ Status AsuTransportImpl::Init(const TransportConfig& config)
             case TransProviderType::AICPU:
                 transProvider_ = std::make_unique<AICPUTransProvider>();
                 break;
+            case TransProviderType::FAKE:
+                transProvider_ =
+                    std::make_unique<FakeTransProvider>(MakeFakeTransProviderConfig(config_));
+                break;
+            case TransProviderType::AIV:
+                return Status::Error(StatusCode::UNSUPPORTED,
+                                     "AIV trans provider is not implemented");
+            case TransProviderType::UNSUPPORTED:
+                return Status::Error(StatusCode::UNSUPPORTED,
+                                     "ASU trans provider backend is not supported");
         }
     }
     if (!transProvider_) {

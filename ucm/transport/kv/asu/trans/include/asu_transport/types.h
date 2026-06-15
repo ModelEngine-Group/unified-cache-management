@@ -36,7 +36,7 @@ using MRHandle = std::uint64_t;
 using CacheKey = std::string;
 using AsuId = std::uint64_t;
 
-enum class TransProviderType { AICPU };
+enum class TransProviderType { AICPU, FAKE, AIV, UNSUPPORTED };
 
 constexpr TaskId kInvalidTaskId = 0;
 constexpr MRHandle kInvalidMRHandle = 0;

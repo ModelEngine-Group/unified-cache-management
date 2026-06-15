@@ -64,9 +64,15 @@ public:
     {
         return {};
     }
-    Status RegisterMemory(ConnectionHandle, const std::vector<RegisterMemoryDesc>&,
-                          std::vector<MemHandle>&) override
+    Status RegisterMemory(ConnectionHandle, const std::vector<RegisterMemoryDesc>& descs,
+                          std::vector<MemHandle>& handles) override
     {
+        handles.clear();
+        handles.reserve(descs.size());
+        for (std::size_t index = 0; index < descs.size(); ++index) {
+            handles.push_back(reinterpret_cast<MemHandle>(static_cast<std::uintptr_t>(index) +
+                                                          static_cast<std::uintptr_t>(1)));
+        }
         return Status::OK();
     }
     std::vector<Status> UnregisterMemory(const std::vector<UnregisterMemoryDesc>&) override
@@ -78,7 +84,11 @@ public:
         return Status::OK();
     }
     std::vector<Status> FreeThread(const std::vector<ThreadHandle>&) override { return {}; }
-    Status GetMemTokenId(MemHandle, uint32_t&) override { return Status::OK(); }
+    Status GetMemTokenId(MemHandle, uint32_t& tokenId) override
+    {
+        tokenId = 1;
+        return Status::OK();
+    }
 };
 
 AsuEndpoint MakeEndpoint(const std::string& ip = "10.0.0.1")

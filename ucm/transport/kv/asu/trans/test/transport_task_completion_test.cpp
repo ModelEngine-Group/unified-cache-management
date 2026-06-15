@@ -23,8 +23,10 @@
  * */
 #include <acl/acl.h>
 #include <atomic>
+#include <cstddef>
 #include <cstdint>
 #include <gtest/gtest.h>
+#include <vector>
 #define private public
 #include "asu_transport_impl.h"
 #undef private

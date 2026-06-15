@@ -22,13 +22,17 @@
  * SOFTWARE.
  * */
 #include "asu_store.h"
+#include <acl/acl.h>
 #include <algorithm>
+#include <any>
+#include <cctype>
 #include <cstddef>
 #include <functional>
 #include <iomanip>
 #include <memory>
 #include <numeric>
 #include <sstream>
+#include <stdexcept>
 #include <string>
 #include <utility>
 #include "asu_client/asu_client.h"
@@ -42,13 +46,16 @@ namespace {
 using AsuStatus = UC::ASU::Status;
 using AsuStatusCode = UC::ASU::StatusCode;
 
-std::string ToHex(const Detail::BlockId& block)
+std::uint64_t HashAsuKey(const Detail::BlockId& block)
+{
+    static Detail::BlockIdHasher hasher;
+    return static_cast<std::uint64_t>(hasher(block));
+}
+
+std::string MakeAsuKey(const Detail::BlockId& block)
 {
     std::ostringstream os;
-    os << std::hex << std::setfill('0');
-    for (auto b : block) {
-        os << std::setw(2) << static_cast<unsigned>(std::to_integer<unsigned char>(b));
-    }
+    os << std::hex << std::setfill('0') << std::setw(16) << HashAsuKey(block);
     return os.str();
 }
 
@@ -78,12 +85,75 @@ void LogAsuStatus(const char* operation, const AsuStatus& status)
              status.message);
 }
 
+AsuStatus WaitPrerequisiteEvent(std::uintptr_t eventHandle)
+{
+    if (eventHandle == 0) { return AsuStatus::OK(); }
+    auto ret = aclrtSynchronizeEvent(reinterpret_cast<aclrtEvent>(eventHandle));
+    if (ret == ACL_SUCCESS) { return AsuStatus::OK(); }
+    return AsuStatus::Error(AsuStatusCode::INTERNAL_ERROR,
+                            "aclrtSynchronizeEvent failed: " + std::to_string(ret));
+}
+
+const char* TransProviderBackendName(UC::ASU::TransProviderType providerType)
+{
+    switch (providerType) {
+        case UC::ASU::TransProviderType::FAKE: return "fake";
+        case UC::ASU::TransProviderType::AIV: return "aiv";
+        case UC::ASU::TransProviderType::AICPU: return "aicpu";
+        case UC::ASU::TransProviderType::UNSUPPORTED: return "unsupported";
+    }
+    return "unknown";
+}
+
+UC::ASU::TransProviderType ParseTransProviderBackend(std::string backend)
+{
+    std::transform(backend.begin(), backend.end(), backend.begin(),
+                   [](unsigned char ch) { return static_cast<char>(std::toupper(ch)); });
+    if (backend == "FAKE") { return UC::ASU::TransProviderType::FAKE; }
+    if (backend == "AIV") { return UC::ASU::TransProviderType::AIV; }
+    if (backend == "AICPU") { return UC::ASU::TransProviderType::AICPU; }
+    return UC::ASU::TransProviderType::UNSUPPORTED;
+}
+
 UC::ASU::MemoryType ParseMemoryType(const std::string& memoryType)
 {
     if (memoryType == "host") { return UC::ASU::MemoryType::HOST; }
     if (memoryType == "host_pinned") { return UC::ASU::MemoryType::HOST_PINNED; }
     if (memoryType == "ascend_device") { return UC::ASU::MemoryType::ASCEND_DEVICE; }
     return UC::ASU::MemoryType::ASCEND_DEVICE;
+}
+
+bool TryGetStringLike(const Detail::Dictionary& inConfig, const std::string& key,
+                      std::string& value)
+{
+    if (!inConfig.Contains(key)) { return false; }
+    try {
+        inConfig.Get(key, value);
+        return true;
+    } catch (const std::bad_any_cast&) {
+    }
+    try {
+        bool boolValue = false;
+        inConfig.Get(key, boolValue);
+        value = boolValue ? "true" : "false";
+        return true;
+    } catch (const std::bad_any_cast&) {
+    }
+    try {
+        ssize_t numberValue = 0;
+        inConfig.GetNumber(key, numberValue);
+        value = std::to_string(numberValue);
+        return true;
+    } catch (const std::bad_any_cast&) {
+    }
+    return false;
+}
+
+void ReadClientAttr(const Detail::Dictionary& inConfig, const std::string& yamlKey,
+                    const std::string& attrKey, Config& config)
+{
+    std::string value;
+    if (TryGetStringLike(inConfig, yamlKey, value)) { config.clientAttrs[attrKey] = value; }
 }
 
 }  // namespace
@@ -98,12 +168,35 @@ UC::ASU::TransportConfig BuildTransportConfig(const Config& config, std::size_t 
     transportConfig.storeTimeoutMs = config.storeTimeoutMs;
     transportConfig.maxInflightTasks = static_cast<std::uint32_t>(config.maxInflightTasks);
     transportConfig.maxInflightBytes = config.maxInflightBytes;
+    transportConfig.providerType = config.transProviderType;
     if (!config.asuIps.empty()) {
         UC::ASU::AsuEndpoint endpoint;
         endpoint.ip = config.asuIps[index];
         endpoint.port = config.asuPort;
         endpoint.deviceId = config.deviceId;
         transportConfig.endpoints.emplace_back(std::move(endpoint));
+    }
+    if (config.transProviderType == UC::ASU::TransProviderType::FAKE) {
+        const auto fakeDeviceId = config.deviceId >= 0 ? config.deviceId : 0;
+        transportConfig.attrs.try_emplace("kernel_count", "1");
+        transportConfig.attrs.try_emplace("quiet_count", "1");
+        transportConfig.attrs["kv_ns_id"] = std::to_string(transportConfig.asuId);
+        transportConfig.attrs.try_emplace("dtype", "0");
+        transportConfig.attrs.try_emplace("dspec", "0");
+        transportConfig.attrs.try_emplace("lr", "false");
+        transportConfig.attrs["sc"] = "true";
+        transportConfig.attrs["fake_backend.path"] = config.fakeBackendPath;
+        transportConfig.attrs["fake_backend.latency_ms"] =
+            std::to_string(config.fakeBackendLatencyMs);
+        transportConfig.attrs["fake_backend.device_id"] = std::to_string(fakeDeviceId);
+        if (transportConfig.endpoints.empty()) {
+            UC::ASU::AsuEndpoint endpoint;
+            endpoint.ip = "fake_backend";
+            endpoint.port = 19001;
+            endpoint.protocol = UC::ASU::Protocol::TCP;
+            endpoint.deviceId = fakeDeviceId;
+            transportConfig.endpoints.emplace_back(std::move(endpoint));
+        }
     }
     return transportConfig;
 }
@@ -117,6 +210,7 @@ public:
         asuConfig.clientId = config.clientId;
         asuConfig.viewServiceAddrs = config.viewServiceAddrs;
         asuConfig.defaultWaitTimeoutMs = config.defaultWaitTimeoutMs;
+        asuConfig.attrs = config.clientAttrs;
         asuConfig.transportConfigs.reserve(config.asuIds.size());
         for (std::size_t i = 0; i < config.asuIds.size(); ++i) {
             asuConfig.transportConfigs.emplace_back(BuildTransportConfig(config, i));
@@ -244,10 +338,10 @@ public:
 
     ~AsuStore() override
     {
-        if (!backend_) { return; }
-
-        auto status = backend_->Shutdown();
-        if (!status.ok()) { UC_ERROR("Failed to shutdown ASU backend: {}.", status.message); }
+        if (backend_) {
+            auto status = backend_->Shutdown();
+            if (!status.ok()) { UC_ERROR("Failed to shutdown ASU backend: {}.", status.message); }
+        }
     }
 
     Status Setup(const Detail::Dictionary& inConfig) override
@@ -317,6 +411,11 @@ public:
 
     Expected<Detail::TaskHandle> Dump(Detail::TaskDesc task) override
     {
+        auto status = WaitPrerequisiteEvent(task.prerequisiteHandle);
+        if (!status.ok()) {
+            LogAsuStatus("wait prerequisite event", status);
+            return ConvertStatus(status);
+        }
         return Submit(std::move(task), &AsuBackend::StoreAsync);
     }
 
@@ -374,6 +473,26 @@ private:
         inConfig.GetNumber("block_size", config.blockSize);
         inConfig.GetNumber("device_id", config.deviceId);
         inConfig.Get("asu_memory_type", config.memoryType);
+        std::string providerBackend;
+        if (TryGetStringLike(inConfig, "asu_trans_provider_backend", providerBackend)) {
+            config.transProviderType = ParseTransProviderBackend(providerBackend);
+        }
+        inConfig.Get("asu_fake_backend_path", config.fakeBackendPath);
+        inConfig.GetNumber("asu_fake_backend_latency_ms", config.fakeBackendLatencyMs);
+        ReadClientAttr(inConfig, "asu_router_type", "hash_table.type", config);
+        ReadClientAttr(inConfig, "asu_ring_hash_virtual_node_count", "ring_hash.virtual_node_count",
+                       config);
+        ReadClientAttr(inConfig, "asu_maglev_table_size", "maglev.table_size", config);
+        ReadClientAttr(inConfig, "asu_contiguous_block_affinity_block_count",
+                       "contiguous_block_affinity.block_count", config);
+        ReadClientAttr(inConfig, "asu_contiguous_block_affinity_full_spread_type",
+                       "contiguous_block_affinity.full_spread_type", config);
+        ReadClientAttr(inConfig, "asu_contiguous_block_affinity_dynamic_adjust_enabled",
+                       "contiguous_block_affinity.dynamic_adjust_enabled", config);
+        ReadClientAttr(inConfig, "asu_batch_topk_affinity_top_k", "batch_topk_affinity.top_k",
+                       config);
+        ReadClientAttr(inConfig, "asu_batch_topk_affinity_dynamic_adjust_enabled",
+                       "batch_topk_affinity.dynamic_adjust_enabled", config);
 
         std::size_t tensorSize = 0;
         inConfig.GetNumber("tensor_size", tensorSize);
@@ -406,6 +525,14 @@ private:
         if (!config.asuIps.empty() && config.asuIps.size() != config.asuIds.size()) {
             return Status::InvalidParam("asu_ips size must match asu_ids size");
         }
+        if (config.transProviderType == UC::ASU::TransProviderType::UNSUPPORTED) {
+            return Status::Unsupported();
+        }
+        if (config.transProviderType == UC::ASU::TransProviderType::FAKE &&
+            !config.configPath.empty()) {
+            return Status::InvalidParam(
+                "asu_trans_provider_backend=fake does not support asu_config_path");
+        }
         if (config.tensorSizes.empty()) { return Status::InvalidParam("invalid tensor size"); }
         if (config.shardSize == 0) { return Status::InvalidParam("invalid shard size"); }
         if (config.blockSize == 0) { return Status::InvalidParam("invalid block size"); }
@@ -416,12 +543,6 @@ private:
         }
         if (config.blockSize % config.shardSize != 0) {
             return Status::InvalidParam("invalid block size({})", config.blockSize);
-        }
-        if (config.blockSize != config.shardSize) {
-            return Status::InvalidParam("asu store requires one shard per block");
-        }
-        if (config.tensorSizes.size() != 1) {
-            return Status::InvalidParam("asu store requires one tensor buffer per block");
         }
         return Status::OK();
     }
@@ -464,7 +585,7 @@ private:
         std::vector<UC::ASU::CacheKey> keys;
         keys.reserve(num);
         for (std::size_t blockIndex = 0; blockIndex < num; ++blockIndex) {
-            keys.emplace_back(ToHex(blocks[blockIndex]));
+            keys.emplace_back(MakeAsuKey(blocks[blockIndex]));
         }
         return keys;
     }
@@ -501,7 +622,7 @@ private:
             }
             for (std::size_t tensorIndex = 0; tensorIndex < shard.addrs.size(); ++tensorIndex) {
                 UC::ASU::KVBuffer entry;
-                entry.key = ToHex(shard.owner);
+                entry.key = MakeAsuKey(shard.owner);
                 entry.buffer.region.memoryType = memoryType;
                 entry.buffer.region.addr =
                     reinterpret_cast<std::uint64_t>(shard.addrs[tensorIndex]);
@@ -526,6 +647,9 @@ private:
         UC_INFO("Set AsuStore::BlockSize to {}.", config.blockSize);
         UC_INFO("Set AsuStore::TensorSizes to {}.", config.tensorSizes);
         UC_INFO("Set AsuStore::DeviceId to {}.", config.deviceId);
+        UC_INFO("Set AsuStore::TransProviderBackend to {}.",
+                TransProviderBackendName(config.transProviderType));
+        UC_INFO("Set AsuStore::FakeBackendPath to {}.", config.fakeBackendPath);
     }
 
     Config config_;

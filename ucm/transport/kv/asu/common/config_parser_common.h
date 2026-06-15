@@ -34,11 +34,14 @@ std::string TrimConfigValue(const std::string& value);
 std::vector<std::string> SplitConfigValue(const std::string& value, char delimiter);
 std::uint64_t ParseConfigUint64(const std::string& value);
 Protocol ParseConfigProtocol(std::string value);
+TransProviderType ParseConfigTransProviderType(std::string value);
 
 bool ApplyTransportBufferConfigField(TransportConfig& config, const std::string& key,
                                      const std::string& value);
 bool ApplyTransportIoNumConfigField(TransportConfig& config, const std::string& key,
                                     const std::string& value);
+bool ApplyTransportProviderConfigField(TransportConfig& config, const std::string& key,
+                                       const std::string& value);
 bool TryParseAsuInfoKey(const std::string& key, AsuId& asuId);
 bool TryGetTransportAttrKey(const std::string& key, std::string& attrKey);
 
