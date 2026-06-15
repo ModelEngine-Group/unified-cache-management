@@ -28,6 +28,7 @@
 #include <cstdint>
 #include <functional>
 #include <linux/aio_abi.h>
+#include <memory>
 #include <mutex>
 #include <thread>
 #include <unordered_map>
@@ -58,6 +59,7 @@ public:
         uint64_t offset;
         uint32_t length;
         void* buffer;
+        std::shared_ptr<void> bufferOwner;
         Callback callback;
         uint64_t tag{0};
     };

@@ -316,6 +316,75 @@ TEST_F(UCPosixStoreTest, AioWaitTimesOutWhenCompletionIsLost)
     ASSERT_LT(std::chrono::duration_cast<std::chrono::milliseconds>(elapsed).count(), 1000);
 }
 
+TEST_F(UCPosixStoreTest, AioDumpSubmitsOwnedBufferWhenTimeoutCanReturn)
+{
+    using namespace UC::PosixStore;
+    PosixStore store;
+    ASSERT_EQ(store.Setup(MakeAioConfig(Path())), UC::Status::OK());
+    ScopedAioHooks hooks;
+    std::atomic<uintptr_t> submittedBuffer{0};
+    TestHooks::SetAioSubmitHook([&submittedBuffer](aio_context_t, int64_t nr, iocb** ios) {
+        submittedBuffer.store(ios[0]->aio_buf, std::memory_order_relaxed);
+        return static_cast<int32_t>(nr);
+    });
+    TestHooks::SetAioCancelHook([](aio_context_t, struct iocb*, io_event*) { return 0; });
+    auto buffer = MakeAlignedBuffer(8);
+    ASSERT_NE(buffer.get(), nullptr);
+    auto block = UC::Test::Detail::TypesHelper::MakeBlockIdRandomly();
+    auto handle = store.Dump(MakeDumpDesc("AioDumpOwnedBuffer", block, buffer.get()));
+    ASSERT_TRUE(handle.HasValue());
+
+    ASSERT_EQ(store.Wait(handle.Value()), UC::Status::Timeout());
+    ASSERT_NE(submittedBuffer.load(std::memory_order_relaxed), 0U);
+    ASSERT_NE(submittedBuffer.load(std::memory_order_relaxed),
+              reinterpret_cast<uintptr_t>(buffer.get()));
+}
+
+TEST_F(UCPosixStoreTest, AioLoadSubmitsOwnedBufferWhenTimeoutCanReturn)
+{
+    using namespace UC::PosixStore;
+    auto block = UC::Test::Detail::TypesHelper::MakeBlockIdRandomly();
+    auto dumpBuffer = MakeAlignedBuffer(9);
+    ASSERT_NE(dumpBuffer.get(), nullptr);
+    {
+        PosixStore store;
+        ASSERT_EQ(store.Setup(MakeAioConfig(Path(), 5000)), UC::Status::OK());
+        auto handle = store.Dump(MakeDumpDesc("AioLoadOwnedBufferPrepare", block, dumpBuffer.get()));
+        ASSERT_TRUE(handle.HasValue());
+        ASSERT_EQ(store.Wait(handle.Value()), UC::Status::OK());
+        bool found = false;
+        for (size_t i = 0; i < 20; ++i) {
+            auto founds = store.Lookup(&block, 1);
+            ASSERT_TRUE(founds.HasValue());
+            if (founds.Value()[0]) {
+                found = true;
+                break;
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(50));
+        }
+        ASSERT_TRUE(found);
+    }
+
+    PosixStore store;
+    ASSERT_EQ(store.Setup(MakeAioConfig(Path())), UC::Status::OK());
+    ScopedAioHooks hooks;
+    std::atomic<uintptr_t> submittedBuffer{0};
+    TestHooks::SetAioSubmitHook([&submittedBuffer](aio_context_t, int64_t nr, iocb** ios) {
+        submittedBuffer.store(ios[0]->aio_buf, std::memory_order_relaxed);
+        return static_cast<int32_t>(nr);
+    });
+    TestHooks::SetAioCancelHook([](aio_context_t, struct iocb*, io_event*) { return 0; });
+    auto loadBuffer = MakeAlignedBuffer(0);
+    ASSERT_NE(loadBuffer.get(), nullptr);
+    auto handle = store.Load(MakeDumpDesc("AioLoadOwnedBuffer", block, loadBuffer.get()));
+    ASSERT_TRUE(handle.HasValue());
+
+    ASSERT_EQ(store.Wait(handle.Value()), UC::Status::Timeout());
+    ASSERT_NE(submittedBuffer.load(std::memory_order_relaxed), 0U);
+    ASSERT_NE(submittedBuffer.load(std::memory_order_relaxed),
+              reinterpret_cast<uintptr_t>(loadBuffer.get()));
+}
+
 TEST_F(UCPosixStoreTest, AioCheckFinishesLostCompletionAfterDeadline)
 {
     using namespace UC::PosixStore;
