@@ -297,7 +297,7 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
         self.group_metas: dict[int, KVCacheGroupMeta] = {}
         self.file_size = {}
 
-        # The maximum token block size across all groups, used for aligning the number of computed tokens in the scheduler. 
+        # The maximum token block size across all groups, used for aligning the number of computed tokens in the scheduler.
         self.max_token_block_size = 0
         self._init_group_metas()
         self.fa_store: Optional[UcmKVStoreBaseV1] = None
@@ -429,7 +429,9 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
                 tail_blocks=tail_blocks,
                 tail_tokens=tail_tokens,
             )
-        logger.info_once(f"max token_block_size of all groups: {self.max_token_block_size}")
+        logger.info_once(
+            f"max token_block_size of all groups: {self.max_token_block_size}"
+        )
         assert self.max_token_block_size % self.DEFAULT_HASH_BLOCK_SIZE == 0
         # get file size for block gc
         if len(layer_compress_ratios) < 61:
@@ -706,8 +708,7 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
     ) -> tuple[int, bool]:
         wa_hbm_hit_block_num = num_computed_tokens // self.hash_block_size
         wa_computed_tokens = wa_hbm_hit_block_num * self.hash_block_size
-            
-            
+
         canonical_hashes = self.generate_hash(
             self.hash_block_size, request.all_token_ids, self._seed
         )
@@ -728,16 +729,17 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
                 f"{type(e).__name__}: {e}"
             )
         total_hit_block_num = wa_hbm_hit_block_num + external_hit_blocks
-        num_total_hit_tokens = external_hit_blocks * self.hash_block_size + wa_computed_tokens 
+        num_total_hit_tokens = (
+            external_hit_blocks * self.hash_block_size + wa_computed_tokens
+        )
         external_hit_tokens = num_total_hit_tokens - num_computed_tokens
-    
+
         if num_total_hit_tokens == request.num_tokens:
             external_hit_tokens -= 1
 
         if external_hit_blocks == 0:
             external_hit_tokens = 0
             num_total_hit_tokens = num_computed_tokens
-
 
         # TODO :for HMA, vllm should offer all kv group's prefix block hits，so that more FA blocks can be reused
         self.requests_meta[request.request_id] = FAWARequestMeta(
