@@ -295,6 +295,7 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
         self.is_ascend_layout = False
         self.fa_group_ids, self.window_group_ids = [], []
         self.group_metas: dict[int, KVCacheGroupMeta] = {}
+        self.file_size = {}
         self._init_group_metas()
         self.fa_store: Optional[UcmKVStoreBaseV1] = None
         self.wa_store: Optional[UcmKVStoreBaseV1] = None
@@ -426,6 +427,43 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
                 tail_tokens=tail_tokens,
             )
 
+        # get file size for block gc
+        if len(layer_compress_ratios) < 61:
+            # for dsv4 flash
+            num_c4a_layers = 21
+            num_c128a_layers = 20
+            # TODO only support for dp tp
+            num_total_layers = 43
+        else:
+            # for dsv4 pro
+            num_c4a_layers = 30
+            num_c128a_layers = 31
+            num_total_layers = 61
+
+        if (
+            self._vllm_config.speculative_config is not None
+            and self._vllm_config.speculative_config.num_speculative_tokens > 0
+        ):
+            num_total_layers += 1
+
+        # TODO we should get file size in worker thread
+        if self.is_ascend_layout:
+            self.file_size["FA"] = (
+                131072 + 16384 + 256
+            ) * num_c4a_layers + 4096 * num_c128a_layers
+            self.file_size["WA"] = (
+                131072 * num_total_layers + (32768 + 8192) * num_c4a_layers
+            )
+        else:
+            self.file_size["FA"] = (
+                37376 + 8448
+            ) * num_c4a_layers + 1168 * num_c128a_layers
+            self.file_size["WA"] = (37376 * 2) * num_total_layers + (
+                8192 + 32768
+            ) * num_c4a_layers
+        self.file_size["FA"] = round_up(self.file_size["FA"], 4096)
+        self.file_size["WA"] = round_up(self.file_size["WA"], 4096)
+
     def _create_fa_store(
         self,
         group_layouts: Optional[dict[int, KVCacheGroupLayout]],
@@ -540,10 +578,17 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
             padded_size = round_up(sum(tensor_size_list), aligned_size)
             config["shard_size"] = padded_size
             config["block_size"] = padded_size
+            if self.file_size[label] != padded_size:
+                logger.info_once(
+                    f"GC file size of {label} does not match real file size. "
+                    f"Worker: {padded_size}, Scheduler: {self.file_size[label]}"
+                )
             # MLA stores aggregate TP shards under one logical rank group.
             config["local_rank_size"] = self.tp_size if self.is_mla else 1
             if cpu_affinity_cores:
                 config["cpu_affinity_cores"] = list(cpu_affinity_cores)
+        else:
+            config["block_size"] = self.file_size[label]
         logger.info(
             f"create FAWA {label} {name} with config: "
             f"{self._summarize_store_config(config)}"
@@ -1014,7 +1059,11 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
         for request_id, request in metadata.request_meta.items():
             if not request.load_keys:
                 continue
-            group0_vllm_block_ids = set(request.load_vllm_block_ids[0])
+            all_group_vllm_block_ids = {
+                block_id
+                for block_ids in request.load_vllm_block_ids
+                for block_id in block_ids
+            }
             try:
                 if self.fa_store is None:
                     raise RuntimeError("FA store is not initialized.")
@@ -1035,7 +1084,7 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
                         self.fa_store,
                         request.load_keys,
                         fa_ptrs,
-                        group0_vllm_block_ids,
+                        all_group_vllm_block_ids,
                     )
                 )
 
@@ -1052,7 +1101,7 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
                         self.wa_store,
                         window_keys,
                         window_ptrs,
-                        group0_vllm_block_ids,
+                        all_group_vllm_block_ids,
                     )
                 )
             except Exception as e:
@@ -1060,7 +1109,7 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
                     f"request {request_id} submit FAWA load task "
                     f"error. {type(e).__name__}: {e}"
                 )
-                self._invalid_block_ids.update(group0_vllm_block_ids)
+                self._invalid_block_ids.update(all_group_vllm_block_ids)
 
         for load_task in tasks:
             self._wait_load_task(load_task)
