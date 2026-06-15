@@ -1124,6 +1124,8 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
         if self.wa_store is None:
             raise RuntimeError("WA store is not initialized.")
 
+        self._poll_completed_dump_tasks()
+
         fa_dump_keys: list[bytes] = []
         wa_dump_keys: list[bytes] = []
         fa_ptr_rows: list[np.ndarray] = []
@@ -1263,6 +1265,35 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
             except Exception as e:
                 self.device.destroy_event_handle(event_handle)
                 logger.error(f"dump FAWA kv cache failed. {type(e).__name__}: {e}")
+
+    def _poll_completed_dump_tasks(self) -> None:
+        """Reap completed FAWA dump tasks without waiting for in-flight tasks."""
+
+        for request_ids, dump_tasks in list(self.tp_dump_tasks.items()):
+            in_flight_tasks = []
+            for dump_task in dump_tasks:
+                task_finished = False
+                try:
+                    task_finished = dump_task.store.check(dump_task.task)
+                    if not task_finished:
+                        in_flight_tasks.append(dump_task)
+                        continue
+
+                    dump_task.store.wait(dump_task.task)
+                except Exception as e:
+                    logger.error(
+                        "Best-effort FAWA dump task failed; external cache may miss. "
+                        f"label={dump_task.label}, keys={dump_task.key_count}, "
+                        f"{type(e).__name__}: {e}"
+                    )
+                finally:
+                    if task_finished:
+                        self.device.destroy_event_handle(dump_task.event_handle)
+
+            if in_flight_tasks:
+                self.tp_dump_tasks[request_ids] = in_flight_tasks
+            else:
+                self.tp_dump_tasks.pop(request_ids, None)
 
     def _drain_best_effort_dump_tasks(self, finished_req_ids: set[str]) -> None:
         """Best-effort wait for FAWA dump tasks.
