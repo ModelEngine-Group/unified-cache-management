@@ -77,18 +77,6 @@ counter:
     documentation: "Number of Posix open failures"
   - name: "posix_io_errors_total"
     documentation: "Number of Posix read, write, or AIO completion failures"
-  - name: "posix_backend_unhealthy_transitions_total"
-    documentation: "Number of Posix AIO backend unhealthy transitions"
-  - name: "posix_backend_recovered_total"
-    documentation: "Number of Posix AIO backend recovery transitions"
-  - name: "posix_backend_probe_timeout_total"
-    documentation: "Number of Posix AIO backend recovery probe timeouts"
-  - name: "posix_backend_short_circuit_lookup_total"
-    documentation: "Number of Posix lookups skipped while the AIO backend is unhealthy"
-  - name: "posix_backend_short_circuit_load_total"
-    documentation: "Number of Posix loads skipped while the AIO backend is unhealthy"
-  - name: "posix_backend_short_circuit_dump_total"
-    documentation: "Number of Posix dumps skipped while the AIO backend is unhealthy"
 
   # -- Connector layer: per-worker real throughput counters ----------------
   # The legacy load_speed / save_speed histograms sample per-call speed
@@ -118,9 +106,6 @@ counter:
 gauge:
   - name: "cache_lookup_hit_rate"
     documentation: "Instantaneous Cache stage hit rate from the most recent lookup call"
-    multiprocess_mode: "livemostrecent"
-  - name: "posix_backend_unhealthy"
-    documentation: "Whether the Posix AIO backend is currently unhealthy"
     multiprocess_mode: "livemostrecent"
 
 # Histogram metrics configuration

@@ -22,7 +22,6 @@
  * SOFTWARE.
  * */
 #include <fmt/ranges.h>
-#include "backend_health.h"
 #include "logger/logger.h"
 #include "space_manager.h"
 #include "trans_manager.h"
@@ -31,7 +30,6 @@
 namespace UC::PosixStore {
 
 class PosixStore : public StoreV1 {
-    BackendHealth backendHealth_;
     SpaceManager spaceMgr_;
     TransManager transMgr_;
     bool transEnable_{false};
@@ -47,12 +45,9 @@ public:
         }
         s = spaceMgr_.Setup(config);
         if (s.Failure()) [[unlikely]] { return s; }
-        s = backendHealth_.Setup(config, spaceMgr_.GetLayout());
-        if (s.Failure()) [[unlikely]] { return s; }
-        spaceMgr_.SetBackendHealth(&backendHealth_);
         transEnable_ = config.deviceId >= 0;
         if (transEnable_) {
-            s = transMgr_.Setup(config, spaceMgr_.GetLayout(), &backendHealth_);
+            s = transMgr_.Setup(config, spaceMgr_.GetLayout());
             if (s.Failure()) [[unlikely]] { return s; }
         }
         ShowConfig(config);
@@ -61,20 +56,12 @@ public:
     std::string Readme() const override { return "PosixStore"; }
     Expected<std::vector<uint8_t>> Lookup(const Detail::BlockId* blocks, size_t num) override
     {
-        if (!backendHealth_.IsHealthy()) {
-            backendHealth_.RecordShortCircuit(BackendOperation::Lookup);
-            return std::vector<uint8_t>(num, false);
-        }
         auto res = spaceMgr_.Lookup(blocks, num);
         if (!res) [[unlikely]] { UC_ERROR("Failed({}) to lookup blocks({}).", res.Error(), num); }
         return res;
     }
     Expected<ssize_t> LookupOnPrefix(const Detail::BlockId* blocks, size_t num) override
     {
-        if (!backendHealth_.IsHealthy()) {
-            backendHealth_.RecordShortCircuit(BackendOperation::Lookup);
-            return static_cast<ssize_t>(-1);
-        }
         auto res = spaceMgr_.LookupOnPrefix(blocks, num);
         if (!res) [[unlikely]] { UC_ERROR("Failed({}) to lookup blocks({}).", res.Error(), num); }
         return res;
@@ -83,10 +70,6 @@ public:
     Expected<Detail::TaskHandle> Load(Detail::TaskDesc task) override
     {
         if (!transEnable_) { return Status::Error("transfer is not enable"); }
-        if (!backendHealth_.IsHealthy()) {
-            backendHealth_.RecordShortCircuit(BackendOperation::Load);
-            return Status::Timeout();
-        }
         auto res = transMgr_.GetIoEngine()->Submit({TransTask::Type::LOAD, std::move(task)});
         if (!res) [[unlikely]] {
             UC_ERROR("Failed({}) to submit load task({}).", res.Error(), task.brief);
@@ -96,10 +79,6 @@ public:
     Expected<Detail::TaskHandle> Dump(Detail::TaskDesc task) override
     {
         if (!transEnable_) { return Status::Error("transfer is not enable"); }
-        if (!backendHealth_.IsHealthy()) {
-            backendHealth_.RecordShortCircuit(BackendOperation::Dump);
-            return Status::Timeout();
-        }
         auto res = transMgr_.GetIoEngine()->Submit({TransTask::Type::DUMP, std::move(task)});
         if (!res) [[unlikely]] {
             UC_ERROR("Failed({}) to submit dump task({}).", res.Error(), task.brief);

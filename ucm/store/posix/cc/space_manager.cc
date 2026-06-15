@@ -22,7 +22,6 @@
  * SOFTWARE.
  * */
 #include "space_manager.h"
-#include "backend_health.h"
 #include "logger/logger.h"
 #include "posix_file.h"
 
@@ -32,7 +31,6 @@ Status SpaceManager::Setup(const Config& config)
 {
     hotnessTrackerEnable_ = config.deviceId == -1;
     gcEnable_ = config.posixGcEnable && config.posixCapacityGb > 0;
-    timeoutMs_ = config.timeoutMs;
     auto s = layout_.Setup(config);
     if (s.Failure()) [[unlikely]] { return s; }
     if (hotnessTrackerEnable_) {
@@ -94,17 +92,9 @@ Expected<ssize_t> SpaceManager::LookupOnPrefix(const Detail::BlockId* blocks, si
         prefixLookupSrv_.Push({blocks, begin, num, nWorker, firstFail, status, waiter});
     }
 
-    if (!waiter->WaitFor(timeoutMs_)) {
-        status->store(Status::Timeout().Underlying(), std::memory_order_release);
-        waiter->Abort();
-    }
+    waiter->Wait();
 
     auto s = status->load();
-    if (s == Status::Timeout().Underlying()) [[unlikely]] {
-        if (backendHealth_) { backendHealth_->MarkUnhealthy("lookup timeout"); }
-        UC_WARN("Posix lookup timed out after {}ms; returning miss.", timeoutMs_);
-        return static_cast<ssize_t>(-1);
-    }
     if (s != ok) [[unlikely]] { return Status{s, "failed to lookup some blocks"}; }
 
     return firstFail->load() - 1;
@@ -152,7 +142,6 @@ void SpaceManager::OnLookupPrefixTimeout(PrefixLookupContext& ctx)
     auto ok = Status::OK().Underlying();
     auto timeout = Status::Timeout().Underlying();
     ctx.status->compare_exchange_weak(ok, timeout, std::memory_order_acq_rel);
-    if (backendHealth_) { backendHealth_->MarkUnhealthy("lookup worker timeout"); }
     ctx.waiter->Done();
 }
 }  // namespace UC::PosixStore

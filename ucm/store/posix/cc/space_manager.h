@@ -33,8 +33,6 @@
 
 namespace UC::PosixStore {
 
-class BackendHealth;
-
 class SpaceManager {
     struct PrefixLookupContext {
         const Detail::BlockId* blocks;
@@ -51,14 +49,11 @@ private:
     ThreadPool<PrefixLookupContext> prefixLookupSrv_;
     HotnessTracker hotnessTracker_;
     ShardGarbageCollector gcMgr_;
-    BackendHealth* backendHealth_{nullptr};
     bool hotnessTrackerEnable_{false};
     bool gcEnable_{false};
-    size_t timeoutMs_{0};
 
 public:
     Status Setup(const Config& config);
-    void SetBackendHealth(BackendHealth* backendHealth) { backendHealth_ = backendHealth; }
     Expected<std::vector<uint8_t>> Lookup(const Detail::BlockId* blocks, size_t num);
     Expected<ssize_t> LookupOnPrefix(const Detail::BlockId* blocks, size_t num);
     const SpaceLayout* GetLayout() const { return &layout_; }

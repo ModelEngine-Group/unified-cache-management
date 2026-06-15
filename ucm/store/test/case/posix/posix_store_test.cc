@@ -75,14 +75,6 @@ UC::Detail::TaskDesc MakeDumpDesc(const char* brief, const UC::Detail::BlockId& 
     return desc;
 }
 
-UC::Detail::TaskDesc MakeLoadDesc(const char* brief, const UC::Detail::BlockId& block, void* buffer)
-{
-    UC::Detail::TaskDesc desc;
-    desc.brief = brief;
-    desc.push_back(UC::Detail::Shard{block, 0, {buffer}});
-    return desc;
-}
-
 void RegisterCounter(const std::string& name)
 {
     UC::Metrics::SetUp();
@@ -151,32 +143,6 @@ private:
 class ScopedAioHooks {
 public:
     ~ScopedAioHooks() { UC::PosixStore::TestHooks::ClearAioHooks(); }
-};
-
-class ControlledProbeHook {
-public:
-    ControlledProbeHook()
-    {
-        UC::PosixStore::TestHooks::SetBackendProbeHook(
-            [this](const std::vector<std::string>&) { return Run(); });
-    }
-    ~ControlledProbeHook() { UC::PosixStore::TestHooks::ClearBackendProbeHook(); }
-    void Recover()
-    {
-        std::lock_guard<std::mutex> lock{mutex_};
-        recovered_ = true;
-    }
-
-private:
-    UC::Status Run()
-    {
-        std::lock_guard<std::mutex> lock{mutex_};
-        return recovered_ ? UC::Status::OK() : UC::Status::Timeout();
-    }
-
-private:
-    std::mutex mutex_;
-    bool recovered_{false};
 };
 }  // namespace
 
@@ -323,145 +289,9 @@ TEST_F(UCPosixStoreTest, AioWaitTimesOutWhenOpenStalls)
     ASSERT_GE(ReadCounter("posix_aio_timeout_total"), 1.0);
 }
 
-TEST_F(UCPosixStoreTest, AioBackendPauseShortCircuitsLoadDumpAndLookup)
-{
-    using namespace UC::PosixStore;
-    ControlledProbeHook probe;
-    PosixStore store;
-    ASSERT_EQ(store.Setup(MakeAioConfig(Path())), UC::Status::OK());
-
-    auto cachedBuffer = MakeAlignedBuffer(11);
-    ASSERT_NE(cachedBuffer.get(), nullptr);
-    auto cachedBlock = UC::Test::Detail::TypesHelper::MakeBlockIdRandomly();
-    auto cachedDump = store.Dump(MakeDumpDesc("AioCachedBeforePause", cachedBlock,
-                                             cachedBuffer.get()));
-    ASSERT_TRUE(cachedDump.HasValue());
-    ASSERT_EQ(store.Wait(cachedDump.Value()), UC::Status::OK());
-    auto foundBeforePause = store.Lookup(&cachedBlock, 1);
-    ASSERT_TRUE(foundBeforePause.HasValue());
-    ASSERT_EQ(foundBeforePause.Value(), std::vector<uint8_t>{true});
-
-    StallingOpenHook hook;
-    auto stalledBuffer = MakeAlignedBuffer(12);
-    ASSERT_NE(stalledBuffer.get(), nullptr);
-    auto stalledBlock = UC::Test::Detail::TypesHelper::MakeBlockIdRandomly();
-    auto stalledDump = store.Dump(MakeDumpDesc("AioPauseTrigger", stalledBlock,
-                                              stalledBuffer.get()));
-    ASSERT_TRUE(stalledDump.HasValue());
-    ASSERT_TRUE(hook.WaitEntered());
-    ASSERT_EQ(store.Wait(stalledDump.Value()), UC::Status::Timeout());
-
-    auto lookupWhilePaused = store.Lookup(&cachedBlock, 1);
-    ASSERT_TRUE(lookupWhilePaused.HasValue());
-    ASSERT_EQ(lookupWhilePaused.Value(), std::vector<uint8_t>{false});
-
-    auto loadBuffer = MakeAlignedBuffer(13);
-    ASSERT_NE(loadBuffer.get(), nullptr);
-    auto pausedLoad = store.Load(MakeLoadDesc("AioPausedLoad", cachedBlock, loadBuffer.get()));
-    ASSERT_FALSE(pausedLoad.HasValue());
-    ASSERT_EQ(pausedLoad.Error(), UC::Status::Timeout());
-
-    auto pausedDumpBlock = UC::Test::Detail::TypesHelper::MakeBlockIdRandomly();
-    auto pausedDumpBuffer = MakeAlignedBuffer(14);
-    ASSERT_NE(pausedDumpBuffer.get(), nullptr);
-    auto pausedDump = store.Dump(MakeDumpDesc("AioPausedDump", pausedDumpBlock,
-                                             pausedDumpBuffer.get()));
-    ASSERT_FALSE(pausedDump.HasValue());
-    ASSERT_EQ(pausedDump.Error(), UC::Status::Timeout());
-}
-
-TEST_F(UCPosixStoreTest, AioBackendPauseIsSharedByStoresOnSameBackend)
-{
-    using namespace UC::PosixStore;
-    ControlledProbeHook probe;
-    auto path = Path();
-    PosixStore writer;
-    PosixStore lookup;
-    ASSERT_EQ(writer.Setup(MakeAioConfig(path)), UC::Status::OK());
-    ASSERT_EQ(lookup.Setup(MakeAioConfig(path)), UC::Status::OK());
-
-    auto cachedBuffer = MakeAlignedBuffer(31);
-    ASSERT_NE(cachedBuffer.get(), nullptr);
-    auto cachedBlock = UC::Test::Detail::TypesHelper::MakeBlockIdRandomly();
-    auto cachedDump = writer.Dump(MakeDumpDesc("AioSharedHealthCached", cachedBlock,
-                                              cachedBuffer.get()));
-    ASSERT_TRUE(cachedDump.HasValue());
-    ASSERT_EQ(writer.Wait(cachedDump.Value()), UC::Status::OK());
-    auto foundBeforePause = lookup.Lookup(&cachedBlock, 1);
-    ASSERT_TRUE(foundBeforePause.HasValue());
-    ASSERT_EQ(foundBeforePause.Value(), std::vector<uint8_t>{true});
-
-    StallingOpenHook hook;
-    auto stalledBuffer = MakeAlignedBuffer(32);
-    ASSERT_NE(stalledBuffer.get(), nullptr);
-    auto stalledBlock = UC::Test::Detail::TypesHelper::MakeBlockIdRandomly();
-    auto stalledDump = writer.Dump(MakeDumpDesc("AioSharedHealthTrigger", stalledBlock,
-                                               stalledBuffer.get()));
-    ASSERT_TRUE(stalledDump.HasValue());
-    ASSERT_TRUE(hook.WaitEntered());
-    ASSERT_EQ(writer.Wait(stalledDump.Value()), UC::Status::Timeout());
-
-    auto foundAfterPause = lookup.Lookup(&cachedBlock, 1);
-    ASSERT_TRUE(foundAfterPause.HasValue());
-    ASSERT_EQ(foundAfterPause.Value(), std::vector<uint8_t>{false});
-}
-
-TEST_F(UCPosixStoreTest, AioBackendPauseRecoversAfterProbeSucceeds)
-{
-    using namespace UC::PosixStore;
-    ControlledProbeHook probe;
-    PosixStore store;
-    ASSERT_EQ(store.Setup(MakeAioConfig(Path(), 50)), UC::Status::OK());
-
-    auto cachedBuffer = MakeAlignedBuffer(21);
-    ASSERT_NE(cachedBuffer.get(), nullptr);
-    auto cachedBlock = UC::Test::Detail::TypesHelper::MakeBlockIdRandomly();
-    auto cachedDump = store.Dump(MakeDumpDesc("AioRecoveryCached", cachedBlock,
-                                             cachedBuffer.get()));
-    ASSERT_TRUE(cachedDump.HasValue());
-    ASSERT_EQ(store.Wait(cachedDump.Value()), UC::Status::OK());
-
-    {
-        StallingOpenHook hook;
-        auto stalledBuffer = MakeAlignedBuffer(22);
-        ASSERT_NE(stalledBuffer.get(), nullptr);
-        auto stalledBlock = UC::Test::Detail::TypesHelper::MakeBlockIdRandomly();
-        auto stalledDump = store.Dump(MakeDumpDesc("AioRecoveryTrigger", stalledBlock,
-                                                  stalledBuffer.get()));
-        ASSERT_TRUE(stalledDump.HasValue());
-        ASSERT_TRUE(hook.WaitEntered());
-        ASSERT_EQ(store.Wait(stalledDump.Value()), UC::Status::Timeout());
-        auto pausedLookup = store.Lookup(&cachedBlock, 1);
-        ASSERT_TRUE(pausedLookup.HasValue());
-        ASSERT_EQ(pausedLookup.Value(), std::vector<uint8_t>{false});
-    }
-
-    probe.Recover();
-    bool recovered = false;
-    auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(4);
-    while (std::chrono::steady_clock::now() < deadline) {
-        auto lookup = store.Lookup(&cachedBlock, 1);
-        ASSERT_TRUE(lookup.HasValue());
-        if (lookup.Value() == std::vector<uint8_t>{true}) {
-            recovered = true;
-            break;
-        }
-        std::this_thread::sleep_for(std::chrono::milliseconds(100));
-    }
-    ASSERT_TRUE(recovered);
-
-    auto loadBuffer = MakeAlignedBuffer(23);
-    ASSERT_NE(loadBuffer.get(), nullptr);
-    auto load = store.Load(MakeLoadDesc("AioRecoveredLoad", cachedBlock, loadBuffer.get()));
-    ASSERT_TRUE(load.HasValue());
-    ASSERT_EQ(store.Wait(load.Value()), UC::Status::OK());
-    ASSERT_EQ(*reinterpret_cast<size_t*>(loadBuffer.get()), size_t{21});
-}
-
 TEST_F(UCPosixStoreTest, AioWaitTimesOutWhenCompletionIsLost)
 {
     using namespace UC::PosixStore;
-    ControlledProbeHook probe;
     PosixStore store;
     ASSERT_EQ(store.Setup(MakeAioConfig(Path())), UC::Status::OK());
     ScopedAioHooks hooks;
@@ -484,42 +314,6 @@ TEST_F(UCPosixStoreTest, AioWaitTimesOutWhenCompletionIsLost)
     ASSERT_EQ(status, UC::Status::Timeout());
     ASSERT_GT(submits.load(std::memory_order_relaxed), 0);
     ASSERT_LT(std::chrono::duration_cast<std::chrono::milliseconds>(elapsed).count(), 1000);
-
-    auto nextBuffer = MakeAlignedBuffer(24);
-    ASSERT_NE(nextBuffer.get(), nullptr);
-    auto nextBlock = UC::Test::Detail::TypesHelper::MakeBlockIdRandomly();
-    auto nextDump = store.Dump(MakeDumpDesc("AioLostCompletionPaused", nextBlock,
-                                           nextBuffer.get()));
-    ASSERT_FALSE(nextDump.HasValue());
-    ASSERT_EQ(nextDump.Error(), UC::Status::Timeout());
-}
-
-TEST_F(UCPosixStoreTest, AioSubmitTimeoutPausesBackend)
-{
-    using namespace UC::PosixStore;
-    ControlledProbeHook probe;
-    PosixStore store;
-    ASSERT_EQ(store.Setup(MakeAioConfig(Path(), 30)), UC::Status::OK());
-    ScopedAioHooks hooks;
-    TestHooks::SetAioSubmitHook([](aio_context_t, int64_t, iocb**) {
-        errno = EAGAIN;
-        return -1;
-    });
-
-    auto buffer = MakeAlignedBuffer(25);
-    ASSERT_NE(buffer.get(), nullptr);
-    auto block = UC::Test::Detail::TypesHelper::MakeBlockIdRandomly();
-    auto handle = store.Dump(MakeDumpDesc("AioSubmitTimeoutPause", block, buffer.get()));
-    ASSERT_TRUE(handle.HasValue());
-    ASSERT_EQ(store.Wait(handle.Value()), UC::Status::Timeout());
-
-    auto nextBuffer = MakeAlignedBuffer(26);
-    ASSERT_NE(nextBuffer.get(), nullptr);
-    auto nextBlock = UC::Test::Detail::TypesHelper::MakeBlockIdRandomly();
-    auto nextDump = store.Dump(MakeDumpDesc("AioSubmitTimeoutPaused", nextBlock,
-                                           nextBuffer.get()));
-    ASSERT_FALSE(nextDump.HasValue());
-    ASSERT_EQ(nextDump.Error(), UC::Status::Timeout());
 }
 
 TEST_F(UCPosixStoreTest, AioCheckFinishesLostCompletionAfterDeadline)
