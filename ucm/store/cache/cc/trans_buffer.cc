@@ -427,7 +427,8 @@ public:
 
 class SharedBufferWatcherStrategy : public SharedBufferStrategy {
 public:
-    SharedBufferWatcherStrategy(const std::string& uuid) : SharedBufferStrategy(uuid, -1, 0, 0, 0)
+    explicit SharedBufferWatcherStrategy(const std::string& uuid)
+        : SharedBufferStrategy(uuid, -1, 0, 0, 0)
     {
     }
     Status Setup() override
