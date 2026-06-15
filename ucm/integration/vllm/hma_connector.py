@@ -296,6 +296,9 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
         self.fa_group_ids, self.window_group_ids = [], []
         self.group_metas: dict[int, KVCacheGroupMeta] = {}
         self.file_size = {}
+
+        # The maximum token block size across all groups, used for aligning the number of computed tokens in the scheduler. 
+        self.max_token_block_size = 0
         self._init_group_metas()
         self.fa_store: Optional[UcmKVStoreBaseV1] = None
         self.wa_store: Optional[UcmKVStoreBaseV1] = None
@@ -396,7 +399,6 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
             window_size = getattr(spec, "sliding_window", None)
             compress_ratio = getattr(spec, "compress_ratio", 1)
             token_block_size = kv_cache_spec.block_size
-
             if self.is_ascend_layout:
                 # Ascend compressed groups expose a logical block span scaled by
                 # the compression ratio.
@@ -420,13 +422,15 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
                 self.window_group_ids.append(group_id)
 
             tail_blocks = max(tail_tokens // token_block_size, 1)
+            self.max_token_block_size = max(self.max_token_block_size, token_block_size)
             self.group_metas[group_id] = KVCacheGroupMeta(
                 group_id=group_id,
                 token_block_size=token_block_size,
                 tail_blocks=tail_blocks,
                 tail_tokens=tail_tokens,
             )
-
+        logger.info_once(f"max token_block_size of all groups: {self.max_token_block_size}")
+        assert self.max_token_block_size % self.DEFAULT_HASH_BLOCK_SIZE == 0
         # get file size for block gc
         if len(layer_compress_ratios) < 61:
             # for dsv4 flash
@@ -700,12 +704,10 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
         request: "Request",
         num_computed_tokens: int,
     ) -> tuple[int, bool]:
-        if num_computed_tokens % self.hash_block_size != 0:
-            raise RuntimeError(
-                f"FAWA requires aligned computed tokens, got "
-                f"{num_computed_tokens} with block size {self.hash_block_size}."
-            )
-        hbm_hit_block_num = num_computed_tokens // self.hash_block_size
+        wa_hbm_hit_block_num = num_computed_tokens // self.hash_block_size
+        wa_computed_tokens = wa_hbm_hit_block_num * self.hash_block_size
+            
+            
         canonical_hashes = self.generate_hash(
             self.hash_block_size, request.all_token_ids, self._seed
         )
@@ -713,7 +715,7 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
         if self.persist_token_threshold > request.num_tokens:
             return 0, False
 
-        external_keys = canonical_hashes[hbm_hit_block_num:]
+        external_keys = canonical_hashes[wa_hbm_hit_block_num:]
         if not external_keys:
             return 0, False
 
@@ -725,25 +727,33 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
                 f"request {request.request_id} FAWA lookup error. "
                 f"{type(e).__name__}: {e}"
             )
-
-        total_hit_block_num = hbm_hit_block_num + external_hit_blocks
-        external_hit_tokens = external_hit_blocks * self.hash_block_size
-        num_total_hit_tokens = total_hit_block_num * self.hash_block_size
+        total_hit_block_num = wa_hbm_hit_block_num + external_hit_blocks
+        num_total_hit_tokens = external_hit_blocks * self.hash_block_size + wa_computed_tokens 
+        external_hit_tokens = num_total_hit_tokens - num_computed_tokens
+    
         if num_total_hit_tokens == request.num_tokens:
             external_hit_tokens -= 1
 
+        if external_hit_blocks == 0:
+            external_hit_tokens = 0
+            num_total_hit_tokens = num_computed_tokens
+
+
+        # TODO :for HMA, vllm should offer all kv group's prefix block hits，so that more FA blocks can be reused
         self.requests_meta[request.request_id] = FAWARequestMeta(
             ucm_block_ids=canonical_hashes,
-            hbm_hit_block_num=hbm_hit_block_num,
+            hbm_hit_block_num=wa_hbm_hit_block_num,
             total_hit_block_num=total_hit_block_num,
-            num_token_ids=len(request.all_token_ids),
+            num_token_ids=request.num_tokens,
             token_processed=num_total_hit_tokens,
         )
         logger.info_once(
             f"FAWA request_id: {request.request_id}, "
-            f"total_blocks_num: {len(canonical_hashes)}, "
-            f"hit hbm: {hbm_hit_block_num}, "
-            f"hit external: {external_hit_blocks}"
+            f"total tokens: {request.num_tokens}, "
+            f"hit hbm tokens: {num_computed_tokens}, "
+            f"hit external tokens: {external_hit_tokens}"
+            f"load blocks: {total_hit_block_num - wa_hbm_hit_block_num}"
+            f"dump blocks: {len(canonical_hashes) - total_hit_block_num}"
         )
         return external_hit_tokens, False
 
