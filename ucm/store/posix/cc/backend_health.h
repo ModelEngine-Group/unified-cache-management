@@ -27,21 +27,21 @@
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
-#include <cstdlib>
 #include <dirent.h>
 #include <errno.h>
 #include <exception>
 #include <fcntl.h>
-#include <fmt/format.h>
 #include <functional>
+#include <cstdlib>
 #include <memory>
 #include <mutex>
 #include <string>
 #include <sys/stat.h>
 #include <thread>
-#include <unistd.h>
 #include <unordered_map>
+#include <unistd.h>
 #include <vector>
+#include <fmt/format.h>
 #include "global_config.h"
 #include "logger/logger.h"
 #include "metrics_api.h"
@@ -173,8 +173,9 @@ private:
             {
                 if (!state_) { return; }
                 std::unique_lock<std::mutex> lock{state_->mutex};
-                state_->cv.wait(
-                    lock, [this] { return stop_.load(std::memory_order_acquire) || !IsHealthy(); });
+                state_->cv.wait(lock, [this] {
+                    return stop_.load(std::memory_order_acquire) || !IsHealthy();
+                });
                 if (stop_.load(std::memory_order_acquire)) { return; }
             }
             ProbeUntilRecovered();
@@ -249,9 +250,8 @@ private:
     {
         if (!state_) { return; }
         std::unique_lock<std::mutex> lock{state_->mutex};
-        state_->cv.wait_for(lock, std::chrono::milliseconds(kProbeIntervalMs), [this] {
-            return stop_.load(std::memory_order_acquire) || IsHealthy();
-        });
+        state_->cv.wait_for(lock, std::chrono::milliseconds(kProbeIntervalMs),
+                            [this] { return stop_.load(std::memory_order_acquire) || IsHealthy(); });
     }
 
     bool ShouldStop() const
@@ -327,8 +327,7 @@ private:
         return false;
     }
 
-    static bool FindProbeFileInDir(const std::string& dir, std::string& probeFile,
-                                   std::vector<std::string>& nextDirs)
+    static bool FindProbeFileInDir(const std::string& dir, std::string& probeFile, std::vector<std::string>& nextDirs)
     {
         DIR* handle = ::opendir(dir.c_str());
         if (!handle) { return false; }
@@ -336,7 +335,7 @@ private:
             std::string name{entry->d_name};
             if (name == "." || name == "..") { continue; }
             auto child = JoinPath(dir, name);
-            struct stat st{};
+            struct stat st {};
             if (::lstat(child.c_str(), &st) != 0) { continue; }
             if (S_ISREG(st.st_mode) && st.st_size > 0) {
                 probeFile = std::move(child);
@@ -359,9 +358,7 @@ private:
 #ifdef O_DIRECT
         if (fd < 0 && errno == EINVAL) { fd = ::open(file.c_str(), O_RDONLY); }
 #endif
-        if (fd < 0) {
-            return Status::OsApiError(fmt::format("failed to open probe file {}", file));
-        }
+        if (fd < 0) { return Status::OsApiError(fmt::format("failed to open probe file {}", file)); }
 
         void* buffer = nullptr;
         if (::posix_memalign(&buffer, 4096, 4096) != 0) {
@@ -418,9 +415,9 @@ private:
         static UC::Metrics::CachedMetric lookup{"posix_backend_short_circuit_lookup_total"};
         static UC::Metrics::CachedMetric load{"posix_backend_short_circuit_load_total"};
         static UC::Metrics::CachedMetric dump{"posix_backend_short_circuit_dump_total"};
-        auto& metric = op == BackendOperation::Lookup ? lookup
-                       : op == BackendOperation::Load ? load
-                                                      : dump;
+        auto& metric = op == BackendOperation::Lookup   ? lookup
+                       : op == BackendOperation::Load   ? load
+                                                        : dump;
         UC::Metrics::UpdateStats(metric, 1.0);
     }
 

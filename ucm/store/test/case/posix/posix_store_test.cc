@@ -333,8 +333,8 @@ TEST_F(UCPosixStoreTest, AioBackendPauseShortCircuitsLoadDumpAndLookup)
     auto cachedBuffer = MakeAlignedBuffer(11);
     ASSERT_NE(cachedBuffer.get(), nullptr);
     auto cachedBlock = UC::Test::Detail::TypesHelper::MakeBlockIdRandomly();
-    auto cachedDump =
-        store.Dump(MakeDumpDesc("AioCachedBeforePause", cachedBlock, cachedBuffer.get()));
+    auto cachedDump = store.Dump(MakeDumpDesc("AioCachedBeforePause", cachedBlock,
+                                             cachedBuffer.get()));
     ASSERT_TRUE(cachedDump.HasValue());
     ASSERT_EQ(store.Wait(cachedDump.Value()), UC::Status::OK());
     auto foundBeforePause = store.Lookup(&cachedBlock, 1);
@@ -345,8 +345,8 @@ TEST_F(UCPosixStoreTest, AioBackendPauseShortCircuitsLoadDumpAndLookup)
     auto stalledBuffer = MakeAlignedBuffer(12);
     ASSERT_NE(stalledBuffer.get(), nullptr);
     auto stalledBlock = UC::Test::Detail::TypesHelper::MakeBlockIdRandomly();
-    auto stalledDump =
-        store.Dump(MakeDumpDesc("AioPauseTrigger", stalledBlock, stalledBuffer.get()));
+    auto stalledDump = store.Dump(MakeDumpDesc("AioPauseTrigger", stalledBlock,
+                                              stalledBuffer.get()));
     ASSERT_TRUE(stalledDump.HasValue());
     ASSERT_TRUE(hook.WaitEntered());
     ASSERT_EQ(store.Wait(stalledDump.Value()), UC::Status::Timeout());
@@ -364,8 +364,8 @@ TEST_F(UCPosixStoreTest, AioBackendPauseShortCircuitsLoadDumpAndLookup)
     auto pausedDumpBlock = UC::Test::Detail::TypesHelper::MakeBlockIdRandomly();
     auto pausedDumpBuffer = MakeAlignedBuffer(14);
     ASSERT_NE(pausedDumpBuffer.get(), nullptr);
-    auto pausedDump =
-        store.Dump(MakeDumpDesc("AioPausedDump", pausedDumpBlock, pausedDumpBuffer.get()));
+    auto pausedDump = store.Dump(MakeDumpDesc("AioPausedDump", pausedDumpBlock,
+                                             pausedDumpBuffer.get()));
     ASSERT_FALSE(pausedDump.HasValue());
     ASSERT_EQ(pausedDump.Error(), UC::Status::Timeout());
 }
@@ -383,8 +383,8 @@ TEST_F(UCPosixStoreTest, AioBackendPauseIsSharedByStoresOnSameBackend)
     auto cachedBuffer = MakeAlignedBuffer(31);
     ASSERT_NE(cachedBuffer.get(), nullptr);
     auto cachedBlock = UC::Test::Detail::TypesHelper::MakeBlockIdRandomly();
-    auto cachedDump =
-        writer.Dump(MakeDumpDesc("AioSharedHealthCached", cachedBlock, cachedBuffer.get()));
+    auto cachedDump = writer.Dump(MakeDumpDesc("AioSharedHealthCached", cachedBlock,
+                                              cachedBuffer.get()));
     ASSERT_TRUE(cachedDump.HasValue());
     ASSERT_EQ(writer.Wait(cachedDump.Value()), UC::Status::OK());
     auto foundBeforePause = lookup.Lookup(&cachedBlock, 1);
@@ -395,8 +395,8 @@ TEST_F(UCPosixStoreTest, AioBackendPauseIsSharedByStoresOnSameBackend)
     auto stalledBuffer = MakeAlignedBuffer(32);
     ASSERT_NE(stalledBuffer.get(), nullptr);
     auto stalledBlock = UC::Test::Detail::TypesHelper::MakeBlockIdRandomly();
-    auto stalledDump =
-        writer.Dump(MakeDumpDesc("AioSharedHealthTrigger", stalledBlock, stalledBuffer.get()));
+    auto stalledDump = writer.Dump(MakeDumpDesc("AioSharedHealthTrigger", stalledBlock,
+                                               stalledBuffer.get()));
     ASSERT_TRUE(stalledDump.HasValue());
     ASSERT_TRUE(hook.WaitEntered());
     ASSERT_EQ(writer.Wait(stalledDump.Value()), UC::Status::Timeout());
@@ -416,8 +416,8 @@ TEST_F(UCPosixStoreTest, AioBackendPauseRecoversAfterProbeSucceeds)
     auto cachedBuffer = MakeAlignedBuffer(21);
     ASSERT_NE(cachedBuffer.get(), nullptr);
     auto cachedBlock = UC::Test::Detail::TypesHelper::MakeBlockIdRandomly();
-    auto cachedDump =
-        store.Dump(MakeDumpDesc("AioRecoveryCached", cachedBlock, cachedBuffer.get()));
+    auto cachedDump = store.Dump(MakeDumpDesc("AioRecoveryCached", cachedBlock,
+                                             cachedBuffer.get()));
     ASSERT_TRUE(cachedDump.HasValue());
     ASSERT_EQ(store.Wait(cachedDump.Value()), UC::Status::OK());
 
@@ -426,8 +426,8 @@ TEST_F(UCPosixStoreTest, AioBackendPauseRecoversAfterProbeSucceeds)
         auto stalledBuffer = MakeAlignedBuffer(22);
         ASSERT_NE(stalledBuffer.get(), nullptr);
         auto stalledBlock = UC::Test::Detail::TypesHelper::MakeBlockIdRandomly();
-        auto stalledDump =
-            store.Dump(MakeDumpDesc("AioRecoveryTrigger", stalledBlock, stalledBuffer.get()));
+        auto stalledDump = store.Dump(MakeDumpDesc("AioRecoveryTrigger", stalledBlock,
+                                                  stalledBuffer.get()));
         ASSERT_TRUE(stalledDump.HasValue());
         ASSERT_TRUE(hook.WaitEntered());
         ASSERT_EQ(store.Wait(stalledDump.Value()), UC::Status::Timeout());
@@ -488,8 +488,8 @@ TEST_F(UCPosixStoreTest, AioWaitTimesOutWhenCompletionIsLost)
     auto nextBuffer = MakeAlignedBuffer(24);
     ASSERT_NE(nextBuffer.get(), nullptr);
     auto nextBlock = UC::Test::Detail::TypesHelper::MakeBlockIdRandomly();
-    auto nextDump =
-        store.Dump(MakeDumpDesc("AioLostCompletionPaused", nextBlock, nextBuffer.get()));
+    auto nextDump = store.Dump(MakeDumpDesc("AioLostCompletionPaused", nextBlock,
+                                           nextBuffer.get()));
     ASSERT_FALSE(nextDump.HasValue());
     ASSERT_EQ(nextDump.Error(), UC::Status::Timeout());
 }
@@ -516,7 +516,8 @@ TEST_F(UCPosixStoreTest, AioSubmitTimeoutPausesBackend)
     auto nextBuffer = MakeAlignedBuffer(26);
     ASSERT_NE(nextBuffer.get(), nullptr);
     auto nextBlock = UC::Test::Detail::TypesHelper::MakeBlockIdRandomly();
-    auto nextDump = store.Dump(MakeDumpDesc("AioSubmitTimeoutPaused", nextBlock, nextBuffer.get()));
+    auto nextDump = store.Dump(MakeDumpDesc("AioSubmitTimeoutPaused", nextBlock,
+                                           nextBuffer.get()));
     ASSERT_FALSE(nextDump.HasValue());
     ASSERT_EQ(nextDump.Error(), UC::Status::Timeout());
 }
