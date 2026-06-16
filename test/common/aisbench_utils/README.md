@@ -198,11 +198,11 @@ hit_info = cal_prefix_hit_info(
 from common.aisbench_utils import get_data, save_log, save_csv
 
 # Parse log
-ans, log_dir = get_data("aisbench.log", "10", 1)
+perf_result, log_dir = get_data("aisbench.log", "10", 1)
 
 # Save log and CSV
 save_log("aisbench.log", log_dir)
-save_csv(ans, "aisbench_result.csv")
+save_csv(perf_result, "aisbench_result.csv")
 ```
 
 ## Dependencies

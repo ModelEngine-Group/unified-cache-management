@@ -2,6 +2,7 @@
 AISBench API configuration generation module
 Generate AISBench test API configuration file based on template
 """
+
 import errno
 import logging
 import os
@@ -59,7 +60,7 @@ def generate_api_config(
     enable_think: bool = False,
     test_accuracy: bool = False,
     work_path: str = "/home/benchmark",
-    test_abbr: Optional[str] = None
+    test_abbr: Optional[str] = None,
 ) -> str:
     """
     Generate AISBench API configuration file
@@ -105,7 +106,10 @@ def generate_api_config(
         generation_kwargs = "temperature=0,\n\t\t\tignore_eos=True"
 
     if enable_think:
-        generation_kwargs = generation_kwargs + ",\n\t\t\tchat_template_kwargs={\"enable_thinking\": True}"
+        generation_kwargs = (
+            generation_kwargs
+            + ',\n\t\t\tchat_template_kwargs={"enable_thinking": True}'
+        )
 
     # Build host configuration based on url or host_ip/host_port
     if url:
@@ -118,7 +122,7 @@ def generate_api_config(
         logging.info(f"Using host_ip: {host_ip}, host_port: {host_port}")
 
     # API config template content
-    template_content = f'''from ais_bench.benchmark.models import {api_test_type}
+    template_content = f"""from ais_bench.benchmark.models import {api_test_type}
 
 models = [
     dict(
@@ -137,11 +141,11 @@ models = [
         )
     )
 ]
-'''
+"""
 
     # Write to temporary config file
     temp_api_path = os.path.join(os.getcwd(), "temp_api.py")
-    with open(temp_api_path, 'w', encoding='utf-8') as f:
+    with open(temp_api_path, "w", encoding="utf-8") as f:
         f.write(template_content)
 
     logging.info(f"API config file generated: {temp_api_path}")
@@ -151,7 +155,12 @@ models = [
     logging.info(f"Output len: {output_len}")
 
     # Create symlink to AISBench config directory
-    target_path = os.path.normpath(os.path.join(work_path, "ais_bench/benchmark/configs/models/vllm_api/vllm_api_chat_temp.py"))
+    target_path = os.path.normpath(
+        os.path.join(
+            work_path,
+            "ais_bench/benchmark/configs/models/vllm_api/vllm_api_chat_temp.py",
+        )
+    )
     symlink_force(temp_api_path, target_path)
 
     return temp_api_path
@@ -171,7 +180,7 @@ def modify_aisbench_api_from_template(
     enable_think: bool = False,
     test_accuracy: bool = False,
     work_path: str = "/home/benchmark",
-    test_abbr: Optional[str] = None
+    test_abbr: Optional[str] = None,
 ) -> str:
     """
     Generate AISBench API config from template file (using regex substitution)
@@ -201,7 +210,7 @@ def modify_aisbench_api_from_template(
     # Read template file
     temp_api_path = os.path.join(os.getcwd(), "temp_api.py")
 
-    with open(template_path, 'r', encoding='utf-8') as file_default:
+    with open(template_path, "r", encoding="utf-8") as file_default:
         content = file_default.read()
 
     # Use regex substitution
@@ -216,14 +225,22 @@ def modify_aisbench_api_from_template(
         # Use url parameter (supports domain names)
         content = re.sub("url_for_replace", url, content)
         # Remove host_ip/host_port lines if present in template
-        content = re.sub(r'host_ip="ip_for_replace",\s*\n\s*host_port=port_for_replace,', 'url="url_for_replace",', content)
+        content = re.sub(
+            r'host_ip="ip_for_replace",\s*\n\s*host_port=port_for_replace,',
+            'url="url_for_replace",',
+            content,
+        )
         logging.info(f"Using custom URL: {url}")
     else:
         # Use host_ip + host_port
         content = re.sub("ip_for_replace", host_ip, content)
         content = re.sub("port_for_replace", host_port, content)
         # Remove url line if present in template
-        content = re.sub(r'url="url_for_replace",', f'host_ip="{host_ip}",\n        host_port={host_port},', content)
+        content = re.sub(
+            r'url="url_for_replace",',
+            f'host_ip="{host_ip}",\n        host_port={host_port},',
+            content,
+        )
         logging.info(f"Using host_ip: {host_ip}, host_port: {host_port}")
 
     content = re.sub("outputlen_for_replace", str(output_len), content)
@@ -236,18 +253,28 @@ def modify_aisbench_api_from_template(
         generation_kwargs = "temperature=0,\n\t\t\tignore_eos=True"
 
     if enable_think:
-        generation_kwargs = generation_kwargs + ",\n\t\t\tchat_template_kwargs={\"enable_thinking\": True}"
+        generation_kwargs = (
+            generation_kwargs
+            + ',\n\t\t\tchat_template_kwargs={"enable_thinking": True}'
+        )
 
-    content = re.sub("generation_kwargs_for_replace", generation_kwargs.expandtabs(4), content)
+    content = re.sub(
+        "generation_kwargs_for_replace", generation_kwargs.expandtabs(4), content
+    )
 
     # Write to temporary file
-    with open(temp_api_path, 'w', encoding='utf-8') as file_temp:
+    with open(temp_api_path, "w", encoding="utf-8") as file_temp:
         file_temp.write(content)
 
     logging.info(f"API config file generated from template: {temp_api_path}")
 
     # Create symlink to AISBench config directory
-    target_path = os.path.normpath(os.path.join(work_path, "ais_bench/benchmark/configs/models/vllm_api/vllm_api_chat_temp.py"))
+    target_path = os.path.normpath(
+        os.path.join(
+            work_path,
+            "ais_bench/benchmark/configs/models/vllm_api/vllm_api_chat_temp.py",
+        )
+    )
     symlink_force(temp_api_path, target_path)
 
     return temp_api_path

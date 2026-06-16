@@ -5,6 +5,7 @@ Supports non-repeat mode and repeatable mode, with auto-reset feature
 Changes: Removed file-based picked_ids.txt dependency, using in-memory tracking only.
 When data is exhausted in non-repeat mode, auto-reset is always applied.
 """
+
 import json
 import logging
 import os
@@ -32,9 +33,7 @@ class LightTokenizer:
         # Resolve tokenizer.json path from model directory
         tokenizer_json = os.path.join(model_path, "tokenizer.json")
         if not os.path.isfile(tokenizer_json):
-            raise FileNotFoundError(
-                f"tokenizer.json not found in {model_path}"
-            )
+            raise FileNotFoundError(f"tokenizer.json not found in {model_path}")
 
         from tokenizers import Tokenizer
 
@@ -114,7 +113,7 @@ class DataPicker:
 
     def _count_lines(self) -> int:
         """Count total lines in jsonl file"""
-        with open(self.jsonl_file, 'r', encoding='utf-8') as f:
+        with open(self.jsonl_file, "r", encoding="utf-8") as f:
             return sum(1 for _ in f)
 
     def _save_picked_ids(self):
@@ -168,12 +167,12 @@ class DataPicker:
 
     def _read_line(self, line_id: int) -> Optional[str]:
         """Read data from specified line"""
-        with open(self.jsonl_file, 'r', encoding='utf-8') as f:
+        with open(self.jsonl_file, "r", encoding="utf-8") as f:
             for i, line in enumerate(f):
                 if i == line_id:
                     try:
                         data = json.loads(line)
-                        return data.get('question', '')
+                        return data.get("question", "")
                     except json.JSONDecodeError:
                         logging.warning(f"Line {line_id} JSON parse failed")
                         return None

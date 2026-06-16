@@ -12,15 +12,18 @@ Improvements:
 - Added time-based random offset to ensure different prefixes across test runs
 - Improved error handling with user-friendly messages
 """
+
 import json
 import logging
 import os
 import random
 import time
 from pathlib import Path
-from typing import Optional, Tuple, List, Union
+from typing import List, Optional, Tuple, Union
 
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logging.basicConfig(
+    level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
+)
 
 try:
     from tqdm import tqdm
@@ -34,24 +37,36 @@ def _get_tokenizer(tokenizer_path: str):
     """Load tokenizer - prefer HuggingFaceTokenizer (no torch dependency)"""
     try:
         from common.llm_connection.token_counter import HuggingFaceTokenizer
+
         return HuggingFaceTokenizer(tokenizer_path)
     except ImportError:
         # Fallback to LightTokenizer or AutoTokenizer
         try:
             from .data_picker import LightTokenizer
+
             return LightTokenizer(tokenizer_path)
         except FileNotFoundError:
             try:
                 from transformers import AutoTokenizer
-                return AutoTokenizer.from_pretrained(tokenizer_path, trust_remote_code=True)
+
+                return AutoTokenizer.from_pretrained(
+                    tokenizer_path, trust_remote_code=True
+                )
             except Exception as e:
-                raise RuntimeError(f"Failed to load tokenizer: {tokenizer_path}, error: {e}") from e
+                raise RuntimeError(
+                    f"Failed to load tokenizer: {tokenizer_path}, error: {e}"
+                ) from e
         except ImportError as e:
             try:
                 from transformers import AutoTokenizer
-                return AutoTokenizer.from_pretrained(tokenizer_path, trust_remote_code=True)
+
+                return AutoTokenizer.from_pretrained(
+                    tokenizer_path, trust_remote_code=True
+                )
             except Exception as inner:
-                raise RuntimeError(f"Failed to load tokenizer: {tokenizer_path}, error: {inner}") from e
+                raise RuntimeError(
+                    f"Failed to load tokenizer: {tokenizer_path}, error: {inner}"
+                ) from e
 
 
 def create_dataset(
@@ -59,7 +74,7 @@ def create_dataset(
     input_len: int,
     number: int,
     prefix_flag: int,
-    gsm8k_path: str = None
+    gsm8k_path: str = None,
 ) -> Optional[List[str]]:
     """
     Create dataset with specified token length from GSM8K
@@ -93,10 +108,7 @@ def create_dataset(
     attempts = 0
     max_attempts = number * 10
 
-    picker = DataPicker(
-        str(gsm8k_path),
-        prefix_flag
-    )
+    picker = DataPicker(str(gsm8k_path), prefix_flag)
 
     pbar = tqdm(total=number, desc="Generating dataset", unit="row") if tqdm else None
 
@@ -135,7 +147,9 @@ def create_dataset(
             if len(corrected_tokens) >= input_len:
                 corrected_tokens = corrected_tokens[:input_len]
             else:
-                corrected_tokens = (corrected_tokens * ((input_len // len(corrected_tokens)) + 1))[:input_len]
+                corrected_tokens = (
+                    corrected_tokens * ((input_len // len(corrected_tokens)) + 1)
+                )[:input_len]
             adjusted_text = tokenizer.decode(corrected_tokens, skip_special_tokens=True)
 
         output_samples.append(adjusted_text)
@@ -158,7 +172,7 @@ def create_dataset_from_random_tokens(
     input_len: int,
     number: int,
     seed: int = 42,
-    use_time_offset: bool = True
+    use_time_offset: bool = True,
 ) -> List[str]:
     """
     Create dataset using random token generation (no dataset dependency)
@@ -184,11 +198,17 @@ def create_dataset_from_random_tokens(
     time_offset = int(time.time()) % 1000000 if use_time_offset else 0
     effective_seed = seed + time_offset
 
-    logging.info(f"Generating {number} samples with {input_len} tokens each (seed={seed}, time_offset={time_offset}, effective_seed={effective_seed})")
+    logging.info(
+        f"Generating {number} samples with {input_len} tokens each (seed={seed}, time_offset={time_offset}, effective_seed={effective_seed})"
+    )
     tokenizer = _get_tokenizer(tokenizer_path)
 
     output_samples = []
-    pbar = tqdm(total=number, desc="Generating random tokens", unit="row") if tqdm else None
+    pbar = (
+        tqdm(total=number, desc="Generating random tokens", unit="row")
+        if tqdm
+        else None
+    )
 
     for i in range(number):
         # Use different seed for each sample for variety
@@ -206,10 +226,7 @@ def create_dataset_from_random_tokens(
 
 
 def generate_unique_tokens(
-    tokenizer_path: str,
-    seed: int,
-    n: int,
-    number: int
+    tokenizer_path: str, seed: int, n: int, number: int
 ) -> List[str]:
     """
     Generate n unique tokens for number rows based on tokenizer and random seed
@@ -229,10 +246,16 @@ def generate_unique_tokens(
     vocab_size = len(tokenizer)
 
     if n > vocab_size:
-        raise ValueError(f"Requested tokens per row {n} exceeds vocab size {vocab_size}")
+        raise ValueError(
+            f"Requested tokens per row {n} exceeds vocab size {vocab_size}"
+        )
 
     all_lines = []
-    pbar = tqdm(total=number, desc="Generating unique tokens", unit="row") if tqdm else None
+    pbar = (
+        tqdm(total=number, desc="Generating unique tokens", unit="row")
+        if tqdm
+        else None
+    )
 
     for line_idx in range(number):
         if pbar:
@@ -266,9 +289,11 @@ def generate_unique_tokens(
             attempts += 1
 
         if len(unique_tokens) < n:
-            logging.warning(f"Row {line_idx + 1} only generated {len(unique_tokens)} unique tokens")
+            logging.warning(
+                f"Row {line_idx + 1} only generated {len(unique_tokens)} unique tokens"
+            )
 
-        all_lines.append(''.join(unique_tokens))
+        all_lines.append("".join(unique_tokens))
 
     if pbar:
         pbar.close()
@@ -291,7 +316,9 @@ def write_data(path: str, dataset: List[str], num: Optional[int] = None):
 
     with open(path, "w", encoding="utf-8") as f:
         for item in dataset:
-            f.write(json.dumps({"question": item, "answer": "none"}, ensure_ascii=False))
+            f.write(
+                json.dumps({"question": item, "answer": "none"}, ensure_ascii=False)
+            )
             f.write("\n")
 
     logging.info(f"Dataset saved: {path} ({len(dataset)} samples)")
@@ -303,7 +330,7 @@ def sample_target_length(
     length_mean: Optional[int] = None,
     length_std: Optional[float] = None,
     length_min: Optional[int] = None,
-    length_max: Optional[int] = None
+    length_max: Optional[int] = None,
 ) -> int:
     """Sample target length from Gaussian or uniform distribution"""
     fixed_length = max(1, int(fixed_length))
@@ -336,7 +363,7 @@ def _build_length_tag(
     length_mean: Optional[int],
     length_std: Optional[float],
     length_min: Optional[int],
-    length_max: Optional[int]
+    length_max: Optional[int],
 ) -> str:
     """Build length tag for file naming"""
     if (length_mean is not None) and (length_std is not None):
@@ -379,7 +406,7 @@ def create_multi_prefix_dataset(
     length_min: Optional[int] = None,
     length_max: Optional[int] = None,
     gsm8k_path: Optional[str] = None,
-    use_gsm8k: bool = True
+    use_gsm8k: bool = True,
 ) -> Tuple[str, str]:
     """
     Create multi-prefix dataset
@@ -406,27 +433,34 @@ def create_multi_prefix_dataset(
         (prefix_path, dataset_path) - Prefix file path and dataset file path
     """
     base_name = os.path.basename(os.path.normpath(tokenizer_path))
-    use_variable_length = (
-        (length_mean is not None and length_std is not None)
-        or (length_min is not None and length_max is not None)
+    use_variable_length = (length_mean is not None and length_std is not None) or (
+        length_min is not None and length_max is not None
     )
 
     # Data source tag for file naming
     source_tag = "GSM8K" if use_gsm8k else "Random"
 
     # Helper function to get dataset based on mode
-    def _get_dataset(length: int, count: int, prefix_flag_val: int) -> Optional[List[str]]:
+    def _get_dataset(
+        length: int, count: int, prefix_flag_val: int
+    ) -> Optional[List[str]]:
         if use_gsm8k:
-            return create_dataset(tokenizer_path, length, count, prefix_flag_val, gsm8k_path)
+            return create_dataset(
+                tokenizer_path, length, count, prefix_flag_val, gsm8k_path
+            )
         else:
-            return create_dataset_from_random_tokens(tokenizer_path, length, count, seed)
+            return create_dataset_from_random_tokens(
+                tokenizer_path, length, count, seed
+            )
 
     # ========== Normal dataset (no prefix) ==========
     if prefix_flag == 0:
         if use_variable_length:
             rng = random.Random(seed)
             real_lens = [
-                sample_target_length(rng, input_len, length_mean, length_std, length_min, length_max)
+                sample_target_length(
+                    rng, input_len, length_mean, length_std, length_min, length_max
+                )
                 for _ in range(number)
             ]
             max_len = max(real_lens)
@@ -439,7 +473,11 @@ def create_multi_prefix_dataset(
             tokenizer = _get_tokenizer(tokenizer_path)
             dataset = []
 
-            pbar = tqdm(total=number, desc="Truncating to variable lengths", unit="row") if tqdm else None
+            pbar = (
+                tqdm(total=number, desc="Truncating to variable lengths", unit="row")
+                if tqdm
+                else None
+            )
             for i, rl in enumerate(real_lens):
                 adjusted = _truncate_or_pad_text(tokenizer, long_texts[i], rl)
                 dataset.append(adjusted)
@@ -448,24 +486,42 @@ def create_multi_prefix_dataset(
             if pbar:
                 pbar.close()
 
-            length_tag = _build_length_tag(input_len, length_mean, length_std, length_min, length_max)
-            dataset_path = os.path.join(save_path, f'{source_tag}-{length_tag}-num{number}-{base_name}.jsonl')
+            length_tag = _build_length_tag(
+                input_len, length_mean, length_std, length_min, length_max
+            )
+            dataset_path = os.path.join(
+                save_path, f"{source_tag}-{length_tag}-num{number}-{base_name}.jsonl"
+            )
             write_data(dataset_path, dataset, number)
             return "", dataset_path
         else:
             dataset = _get_dataset(input_len, number, 0)
             if dataset is None:
                 return "", ""
-            dataset_path = os.path.join(save_path, f'{source_tag}-in{input_len}-num{number}-{base_name}.jsonl')
+            dataset_path = os.path.join(
+                save_path, f"{source_tag}-in{input_len}-num{number}-{base_name}.jsonl"
+            )
             write_data(dataset_path, dataset, number)
             return "", dataset_path
 
     # ========== Prefix dataset ==========
     if use_variable_length:
         return _create_prefix_dataset_variable(
-            tokenizer_path, input_len, number, save_path, base_name, dp,
-            repeat_rate, seed, prefix_num, length_mean, length_std,
-            length_min, length_max, gsm8k_path, use_gsm8k
+            tokenizer_path,
+            input_len,
+            number,
+            save_path,
+            base_name,
+            dp,
+            repeat_rate,
+            seed,
+            prefix_num,
+            length_mean,
+            length_std,
+            length_min,
+            length_max,
+            gsm8k_path,
+            use_gsm8k,
         )
 
     # -------- Fixed-length prefix dataset --------
@@ -481,11 +537,17 @@ def create_multi_prefix_dataset(
         for j in range(dp):
             prefix_dataset.append(prefix_data[i])
 
-    prefix_path = os.path.join(save_path, f'prefix-{source_tag}-in{prefix_len}-num{dp*prefix_num}-{base_name}.jsonl')
+    prefix_path = os.path.join(
+        save_path,
+        f"prefix-{source_tag}-in{prefix_len}-num{dp*prefix_num}-{base_name}.jsonl",
+    )
     write_data(prefix_path, prefix_dataset, dp * prefix_num)
 
     if repeat_rate >= 1:
-        dataset_path = os.path.join(save_path, f'{source_tag}-in{prefix_len}-num{number}-{base_name}-repeatRate{repeat_rate}.jsonl')
+        dataset_path = os.path.join(
+            save_path,
+            f"{source_tag}-in{prefix_len}-num{number}-{base_name}-repeatRate{repeat_rate}.jsonl",
+        )
         write_data(dataset_path, prefix_dataset, number)
         return prefix_path, dataset_path
 
@@ -506,14 +568,21 @@ def create_multi_prefix_dataset(
     dataset = []
     pbar = tqdm(total=number, desc="Stitching dataset", unit="row") if tqdm else None
     for data_len in range(number):
-        single_data = prefix_data[data_len % prefix_num] + uniq_token_set[data_len] + suffix_dataset[data_len]
+        single_data = (
+            prefix_data[data_len % prefix_num]
+            + uniq_token_set[data_len]
+            + suffix_dataset[data_len]
+        )
         dataset.append(single_data)
         if pbar:
             pbar.update(1)
     if pbar:
         pbar.close()
 
-    dataset_path = os.path.join(save_path, f'{source_tag}-in{input_len}-num{number}-{base_name}-repeatRate{repeat_rate}.jsonl')
+    dataset_path = os.path.join(
+        save_path,
+        f"{source_tag}-in{input_len}-num{number}-{base_name}-repeatRate{repeat_rate}.jsonl",
+    )
     write_data(dataset_path, dataset, number)
 
     return prefix_path, dataset_path
@@ -534,21 +603,29 @@ def _create_prefix_dataset_variable(
     length_min: Optional[int],
     length_max: Optional[int],
     gsm8k_path: Optional[str],
-    use_gsm8k: bool = True
+    use_gsm8k: bool = True,
 ) -> Tuple[str, str]:
     """Variable-length prefix dataset generation"""
     rng = random.Random(seed)
     source_tag = "GSM8K" if use_gsm8k else "Random"
 
     # Helper function to get dataset based on mode
-    def _get_dataset(length: int, count: int, prefix_flag_val: int) -> Optional[List[str]]:
+    def _get_dataset(
+        length: int, count: int, prefix_flag_val: int
+    ) -> Optional[List[str]]:
         if use_gsm8k:
-            return create_dataset(tokenizer_path, length, count, prefix_flag_val, gsm8k_path)
+            return create_dataset(
+                tokenizer_path, length, count, prefix_flag_val, gsm8k_path
+            )
         else:
-            return create_dataset_from_random_tokens(tokenizer_path, length, count, seed)
+            return create_dataset_from_random_tokens(
+                tokenizer_path, length, count, seed
+            )
 
     real_lens = [
-        sample_target_length(rng, input_len, length_mean, length_std, length_min, length_max)
+        sample_target_length(
+            rng, input_len, length_mean, length_std, length_min, length_max
+        )
         for _ in range(number)
     ]
     common_lens = [max(0, min(rl, int(round(rl * repeat_rate)))) for rl in real_lens]
@@ -568,11 +645,17 @@ def _create_prefix_dataset_variable(
         for j in range(dp):
             prefix_dataset.append(prefix_data[i])
 
-    prefix_path = os.path.join(save_path, f'prefix-{source_tag}-in{max_common_len}-num{dp*prefix_num}-{base_name}.jsonl')
+    prefix_path = os.path.join(
+        save_path,
+        f"prefix-{source_tag}-in{max_common_len}-num{dp*prefix_num}-{base_name}.jsonl",
+    )
     write_data(prefix_path, prefix_dataset, dp * prefix_num)
 
     if repeat_rate >= 1:
-        dataset_path = os.path.join(save_path, f'{source_tag}-in{max_common_len}-num{number}-{base_name}-repeatRate{repeat_rate}.jsonl')
+        dataset_path = os.path.join(
+            save_path,
+            f"{source_tag}-in{max_common_len}-num{number}-{base_name}-repeatRate{repeat_rate}.jsonl",
+        )
         write_data(dataset_path, prefix_dataset, number)
         return prefix_path, dataset_path
 
@@ -592,7 +675,11 @@ def _create_prefix_dataset_variable(
         return "", ""
 
     dataset = []
-    pbar = tqdm(total=number, desc="Stitching dataset (variable)", unit="row") if tqdm else None
+    pbar = (
+        tqdm(total=number, desc="Stitching dataset (variable)", unit="row")
+        if tqdm
+        else None
+    )
     for idx in range(number):
         rl = real_lens[idx]
         cl = common_lens[idx]
@@ -606,7 +693,9 @@ def _create_prefix_dataset_variable(
 
         suffix_text = suffix_pool[idx]
         if suffix_len_needed > 0 and suffix_text:
-            suffix_text = _truncate_or_pad_text(tokenizer, suffix_text, suffix_len_needed)
+            suffix_text = _truncate_or_pad_text(
+                tokenizer, suffix_text, suffix_len_needed
+            )
         else:
             suffix_text = ""
 
@@ -617,12 +706,19 @@ def _create_prefix_dataset_variable(
     if pbar:
         pbar.close()
 
-    length_tag = _build_length_tag(input_len, length_mean, length_std, length_min, length_max)
-    dataset_path = os.path.join(save_path, f'{source_tag}-{length_tag}-num{number}-{base_name}-repeatRate{repeat_rate}.jsonl')
+    length_tag = _build_length_tag(
+        input_len, length_mean, length_std, length_min, length_max
+    )
+    dataset_path = os.path.join(
+        save_path,
+        f"{source_tag}-{length_tag}-num{number}-{base_name}-repeatRate{repeat_rate}.jsonl",
+    )
     write_data(dataset_path, dataset, number)
 
     logging.info(f"  max_common_len={max_common_len}, max_suffix_len={max_suffix_len}")
-    logging.info(f"  avg_hit_ratio={sum(c / r for c, r in zip(common_lens, real_lens)) / len(real_lens):.2%}")
+    logging.info(
+        f"  avg_hit_ratio={sum(c / r for c, r in zip(common_lens, real_lens)) / len(real_lens):.2%}"
+    )
 
     return prefix_path, dataset_path
 

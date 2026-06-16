@@ -2,6 +2,7 @@
 AISBench result parser module
 Parse aisbench log file, extract performance metrics and save results
 """
+
 import logging
 import os
 import re
@@ -32,7 +33,7 @@ def get_data(aisbench_log: str, req_rate: str, npu_num: int) -> Tuple[List, str]
     default_values[5] = 0  # req_rate default to 0
 
     try:
-        with open(aisbench_log, 'r') as f_streaming:
+        with open(aisbench_log, "r") as f_streaming:
             txt = f_streaming.readlines()
 
             current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -61,27 +62,27 @@ def get_data(aisbench_log: str, req_rate: str, npu_num: int) -> Tuple[List, str]
 
                 if "Current exp folder" in line:
                     matches = re.findall(r"[\w']+", line)
-                    log_dir = '/'.join(matches[-3:])
+                    log_dir = "/".join(matches[-3:])
 
                 if "TTFT" in line:
-                    matches = re.findall(r'(\d+\.\d+)', line)
+                    matches = re.findall(r"(\d+\.\d+)", line)
                     if len(matches) >= 6:
                         slo_p90_first_token_time = float(matches[5])
                         AVG_first_token_time = float(matches[0])
 
                 if "TPOT" in line:
-                    matches = re.findall(r'(\d+\.\d+)', line)
+                    matches = re.findall(r"(\d+\.\d+)", line)
                     if len(matches) >= 6:
                         slo_p90_token_time = float(matches[5])
                         AVG_token_time = float(matches[0])
 
                 if "Benchmark Duration" in line:
-                    matches = re.findall(r'(\d+\.\d+)', line)
+                    matches = re.findall(r"(\d+\.\d+)", line)
                     if matches:
                         total_time = float(matches[0]) / 1000
 
                 if "Concurrency" in line:
-                    matches = re.findall(r'(\d+\.\d+)', line)
+                    matches = re.findall(r"(\d+\.\d+)", line)
                     if matches:
                         Concurrency = float(matches[0])
 
@@ -90,49 +91,49 @@ def get_data(aisbench_log: str, req_rate: str, npu_num: int) -> Tuple[List, str]
                     max_Concurrency = matches[-1]
 
                 if "Output Token Throughput" in line:
-                    matches = re.findall(r'(\d+\.\d+)', line)
+                    matches = re.findall(r"(\d+\.\d+)", line)
                     if matches:
                         GenerateSpeed = float(matches[0])
                         single_generatespeed = GenerateSpeed / npu_num
 
                 if "Input Token Throughput" in line:
-                    matches = re.findall(r'(\d+\.\d+)', line)
+                    matches = re.findall(r"(\d+\.\d+)", line)
                     if matches:
                         input_token_throughput = float(matches[0])
 
                 if "Total Token Throughput" in line:
-                    matches = re.findall(r'(\d+\.\d+)', line)
+                    matches = re.findall(r"(\d+\.\d+)", line)
                     if matches:
                         e2e_throughput = float(matches[0])
                         single_e2e_throughput = e2e_throughput / npu_num
 
                 if "InputTokens" in line:
-                    matches = re.findall(r'(\d+\.?\d*)', line)
+                    matches = re.findall(r"(\d+\.?\d*)", line)
                     if matches:
                         Total_InputTokens = float(matches[0])
 
                 if "OutputTokens" in line:
-                    matches = re.findall(r'(\d+\.?\d*)', line)
+                    matches = re.findall(r"(\d+\.?\d*)", line)
                     if matches:
                         Total_GeneratedTokens = float(matches[0])
 
                 if "Total Requests" in line:
-                    matches = re.findall(r'(\d+\.?\d*)', line)
+                    matches = re.findall(r"(\d+\.?\d*)", line)
                     if matches:
                         Total_requests = float(matches[0])
 
                 if "Request Throughput" in line:
-                    matches = re.findall(r'(\d+\.\d+)', line)
+                    matches = re.findall(r"(\d+\.\d+)", line)
                     if matches:
                         qps = float(matches[0])
                         qpm = qps * 60
 
                 if "Prefill Token Throughput" in line:
-                    matches = re.findall(r'(\d+\.\d+)', line)
+                    matches = re.findall(r"(\d+\.\d+)", line)
                     if matches:
                         prefill_throughput = float(matches[0])
 
-            ans = [
+            perf_result = [
                 current_time,
                 Total_InputTokens,
                 Total_GeneratedTokens,
@@ -152,14 +153,14 @@ def get_data(aisbench_log: str, req_rate: str, npu_num: int) -> Tuple[List, str]
                 qps,
                 qpm,
                 input_token_throughput,
-                prefill_throughput
+                prefill_throughput,
             ]
 
     except Exception as e:
         logging.warning(traceback.format_exc())
-        ans = default_values
+        perf_result = default_values
 
-    return ans, log_dir
+    return perf_result, log_dir
 
 
 def save_log(aisbench_log: str, log_dir: str):
@@ -180,10 +181,10 @@ def save_log(aisbench_log: str, log_dir: str):
     target_file = "aisbench_all.log"
 
     try:
-        with open(source_file, 'r', encoding='utf-8') as src:
+        with open(source_file, "r", encoding="utf-8") as src:
             content = src.read()
 
-        with open(target_file, 'a', encoding='utf-8') as tgt:
+        with open(target_file, "a", encoding="utf-8") as tgt:
             tgt.write(f"\n\n{'='*50}\n")
             tgt.write(f"{'='*50}\n\n")
             tgt.write(content)
@@ -199,12 +200,12 @@ def save_log(aisbench_log: str, log_dir: str):
         logging.error(f"Error occurred: {e}")
 
 
-def save_csv(ans: List, filename: str):
+def save_csv(perf_result: List, filename: str):
     """
     Save performance data to CSV file
 
     Args:
-        ans: Performance data list
+        perf_result: Performance data list
         filename: Output CSV filename
     """
     headers = [
@@ -227,7 +228,7 @@ def save_csv(ans: List, filename: str):
         "qps",
         "qpm",
         "input_token_throughput",
-        "prefill_token_throughput"
+        "prefill_token_throughput",
     ]
 
     file_exists = os.path.exists(filename)
@@ -236,12 +237,12 @@ def save_csv(ans: List, filename: str):
         if file_exists:
             df_existing = pd.read_csv(filename)
             logging.info("File exists, reading existing data")
-            new_row = pd.DataFrame([ans], columns=headers)
+            new_row = pd.DataFrame([perf_result], columns=headers)
             df_updated = pd.concat([df_existing, new_row], ignore_index=True)
             df_updated.to_csv(filename, index=False)
             logging.info("Successfully appended new row")
         else:
-            df_new = pd.DataFrame([ans], columns=headers)
+            df_new = pd.DataFrame([perf_result], columns=headers)
             df_new.to_csv(filename, index=False)
             logging.info("Created new file and wrote data")
 

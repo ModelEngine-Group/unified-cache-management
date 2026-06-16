@@ -1,18 +1,21 @@
 """
 AISBench Prefix Cache test configuration data classes
 """
+
 from dataclasses import dataclass, field
-from typing import Optional, List, Any, Dict, Union
+from typing import Any, Dict, List, Optional, Union
 
 
 class DatasetType(str):
     """Dataset type enumeration"""
+
     NORMAL = "normal"
     PREFIX_CACHE = "prefix_cache"
 
 
 class TestMode(str):
     """Test mode enumeration"""
+
     PERFORMANCE = "perf"
     ACCURACY = "accuracy"
 
@@ -27,40 +30,43 @@ class AisbenchConfig:
     Note: Users can pass any reasonable type for numeric/string parameters,
           automatic type conversion will be performed in __post_init__
     """
+
     # Basic configuration (required)
-    input_len: int = 2048              # Input token length
-    output_len: int = 2048             # Output token length
-    data_num: int = 160                # Number of dataset samples
-    concurrency: int = 40              # Maximum concurrency
+    input_len: int = 2048  # Input token length
+    output_len: int = 2048  # Output token length
+    data_num: int = 160  # Number of dataset samples
+    concurrency: int = 40  # Maximum concurrency
 
     # Request configuration
     request_rate: Union[int, float, str] = 0  # Request rate, auto-convert to str
-    test_type: str = "stream"          # stream or text
-    repeat: int = 1                    # Test repeat count
+    test_type: str = "stream"  # stream or text
+    repeat: int = 1  # Test repeat count
 
     # Dataset configuration
-    dataset: str = ""                  # Specified dataset path (optional)
+    dataset: str = ""  # Specified dataset path (optional)
     dataset_type: str = DatasetType.NORMAL  # normal or prefix_cache
 
     # Prefix Cache configuration
-    prefix_num: int = 1                # Number of prefix types
-    repeat_rate: Union[int, float, str] = 0.5  # Prefix repeat rate, auto-parse (50%, 0.5, 50 all work)
-    prefix_test: bool = False          # Whether to warmup prefix first
-    dp: int = 1                        # Number of DP domains
-    seed: int = 1                      # Random seed
+    prefix_num: int = 1  # Number of prefix types
+    repeat_rate: Union[int, float, str] = (
+        0.5  # Prefix repeat rate, auto-parse (50%, 0.5, 50 all work)
+    )
+    prefix_test: bool = False  # Whether to warmup prefix first
+    dp: int = 1  # Number of DP domains
+    seed: int = 1  # Random seed
 
     # Variable-length dataset configuration
     length_mean: Optional[int] = None  # Input length mean (Gaussian distribution)
-    length_std: Optional[float] = None # Input length standard deviation
-    length_min: Optional[int] = None   # Input length minimum
-    length_max: Optional[int] = None   # Input length maximum
+    length_std: Optional[float] = None  # Input length standard deviation
+    length_min: Optional[int] = None  # Input length minimum
+    length_max: Optional[int] = None  # Input length maximum
 
     # Test mode configuration
-    test_accuracy: bool = False        # Whether to test accuracy
-    enable_think: bool = False         # DeepSeek V3.1 thinking mode
+    test_accuracy: bool = False  # Whether to test accuracy
+    enable_think: bool = False  # DeepSeek V3.1 thinking mode
 
     # Hardware configuration
-    npu_num: int = 1                   # Number of NPU cards
+    npu_num: int = 1  # Number of NPU cards
 
     # Test name (for result recording)
     test_name: str = "Default"
@@ -92,7 +98,9 @@ class AisbenchConfig:
             return value
         else:
             # Convert int/float to string
-            return str(int(value) if isinstance(value, float) and value.is_integer() else value)
+            return str(
+                int(value) if isinstance(value, float) and value.is_integer() else value
+            )
 
     def _parse_repeat_rate(self, value: Union[int, float, str]) -> str:
         """
@@ -109,9 +117,9 @@ class AisbenchConfig:
         """
         if isinstance(value, str):
             # Handle string input
-            if value.endswith('%'):
+            if value.endswith("%"):
                 # Percentage format: "50%" -> 0.5
-                pct = float(value.rstrip('%'))
+                pct = float(value.rstrip("%"))
                 return str(pct / 100)
             else:
                 # Already decimal or plain number string
@@ -135,32 +143,32 @@ class AisbenchConfig:
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary"""
         return {
-            'input_len': self.input_len,
-            'output_len': self.output_len,
-            'data_num': self.data_num,
-            'concurrency': self.concurrency,
-            'request_rate': self.request_rate,
-            'test_type': self.test_type,
-            'repeat': self.repeat,
-            'dataset': self.dataset,
-            'dataset_type': self.dataset_type,
-            'prefix_num': self.prefix_num,
-            'repeat_rate': self.repeat_rate,
-            'prefix_test': self.prefix_test,
-            'dp': self.dp,
-            'seed': self.seed,
-            'length_mean': self.length_mean,
-            'length_std': self.length_std,
-            'length_min': self.length_min,
-            'length_max': self.length_max,
-            'test_accuracy': self.test_accuracy,
-            'enable_think': self.enable_think,
-            'npu_num': self.npu_num,
-            'test_name': self.test_name,
+            "input_len": self.input_len,
+            "output_len": self.output_len,
+            "data_num": self.data_num,
+            "concurrency": self.concurrency,
+            "request_rate": self.request_rate,
+            "test_type": self.test_type,
+            "repeat": self.repeat,
+            "dataset": self.dataset,
+            "dataset_type": self.dataset_type,
+            "prefix_num": self.prefix_num,
+            "repeat_rate": self.repeat_rate,
+            "prefix_test": self.prefix_test,
+            "dp": self.dp,
+            "seed": self.seed,
+            "length_mean": self.length_mean,
+            "length_std": self.length_std,
+            "length_min": self.length_min,
+            "length_max": self.length_max,
+            "test_accuracy": self.test_accuracy,
+            "enable_think": self.enable_think,
+            "npu_num": self.npu_num,
+            "test_name": self.test_name,
         }
 
     @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> 'AisbenchConfig':
+    def from_dict(cls, data: Dict[str, Any]) -> "AisbenchConfig":
         """Create config from dictionary"""
         return cls(**{k: v for k, v in data.items() if k in cls.__dataclass_fields__})
 
@@ -170,6 +178,7 @@ class AisbenchResult:
     """
     AISBench test result data class
     """
+
     test_name: str = ""
     status: str = ""
 
