@@ -25,10 +25,7 @@
 #define UNIFIEDCACHE_POSIX_STORE_CC_IO_ENGINE_AIO_H
 
 #include <cerrno>
-#include <cstdlib>
-#include <cstring>
 #include <limits>
-#include <memory>
 #include <mutex>
 #include <tuple>
 #include <unordered_map>
@@ -98,12 +95,6 @@ private:
         static UC::Metrics::CachedMetric ioErrors{"posix_io_errors_total"};
         UC::Metrics::UpdateStats(ioErrors, 1.0);
     }
-    std::shared_ptr<void> MakeOwnedIoBuffer() const
-    {
-        void* buffer = nullptr;
-        if (posix_memalign(&buffer, 4096, shardSize_) != 0) { return {}; }
-        return std::shared_ptr<void>(buffer, [](void* ptr) { std::free(ptr); });
-    }
     void CommitBlock(Detail::BlockId id, bool success)
     {
         blockOperator_.Submit(BlockOperator::CommitTask{std::move(id), success});
@@ -151,33 +142,13 @@ private:
             w->Done();
             return;
         }
-        auto* userBuffer = shard.addrs.front();
-        auto ioBuffer = userBuffer;
-        std::shared_ptr<void> ioBufferOwner;
-        if (timeoutMs_ > 0) {
-            ioBufferOwner = MakeOwnedIoBuffer();
-            if (!ioBufferOwner) {
-                UC_ERROR("Failed to allocate owned aio buffer for task({}).", tid);
-                handleFailure(result.fd);
-                return;
-            }
-            ioBuffer = ioBufferOwner.get();
-            if constexpr (dump) { std::memcpy(ioBuffer, userBuffer, shardSize_); }
-        }
         AioImpl::Io io;
         io.fd = result.fd;
         io.offset = shard.index * shardSize_;
         io.length = shardSize_;
-        io.buffer = ioBuffer;
-        io.bufferOwner = ioBufferOwner;
+        io.buffer = shard.addrs.front();
         io.tag = tid;
-        io.callback = [this, tid, w, fd = result.fd, last, id, ioBuffer, userBuffer,
-                       copySize = shardSize_](AioImpl::Result ioResult) {
-            if constexpr (!dump) {
-                if (ioResult.error == 0 && !failureSet_.Contains(tid)) {
-                    std::memcpy(userBuffer, ioBuffer, copySize);
-                }
-            }
+        io.callback = [this, tid, w, fd = result.fd, last, id](AioImpl::Result ioResult) {
             OnIoCallback<dump>(tid, w, fd, last, id, ioResult);
         };
         auto status = dump ? aio_.WriteAsync(std::move(io)) : aio_.ReadAsync(std::move(io));

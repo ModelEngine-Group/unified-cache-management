@@ -139,12 +139,8 @@ static inline void AioSetEventFd(struct iocb* iocb, int32_t eventfd)
     iocb->aio_flags |= (1 << 0) /* IOCB_FLAG_RESFD */;
     iocb->aio_resfd = eventfd;
 }
-struct AioCompletionData {
-    AioImpl::Callback callback;
-    std::shared_ptr<void> bufferOwner;
-};
 static inline void ReleaseToAioCompletion(std::unique_ptr<struct iocb>& cb,
-                                          std::unique_ptr<AioCompletionData>& data)
+                                          std::unique_ptr<AioImpl::Callback>& data)
 {
     data.release();
     cb.release();
@@ -212,9 +208,7 @@ Status AioImpl::Setup(size_t timeoutMs)
 Status AioImpl::ReadAsync(Io&& io)
 {
     auto cb = std::make_unique<struct iocb>();
-    auto data = std::make_unique<AioCompletionData>();
-    data->callback = std::move(io.callback);
-    data->bufferOwner = std::move(io.bufferOwner);
+    auto data = std::make_unique<Callback>(std::move(io.callback));
     AioPrepareRead(cb.get(), io.fd, io.buffer, io.length, io.offset);
     cb->aio_data = (uintptr_t)(void*)data.get();
     Track(io.tag, cb.get());
@@ -231,9 +225,7 @@ Status AioImpl::ReadAsync(Io&& io)
 Status AioImpl::WriteAsync(Io&& io)
 {
     auto cb = std::make_unique<struct iocb>();
-    auto data = std::make_unique<AioCompletionData>();
-    data->callback = std::move(io.callback);
-    data->bufferOwner = std::move(io.bufferOwner);
+    auto data = std::make_unique<Callback>(std::move(io.callback));
     AioPrepareWrite(cb.get(), io.fd, io.buffer, io.length, io.offset);
     cb->aio_data = (uintptr_t)(void*)data.get();
     Track(io.tag, cb.get());
@@ -284,7 +276,7 @@ void AioImpl::HarvestCompletions(std::vector<io_event>& events)
         auto num = AioGetEvents(ctx_, 1, batchSize, events.data(), nullptr);
         for (auto i = 0; i < num; i++) {
             auto* iocbPtr = reinterpret_cast<struct iocb*>(events[i].obj);
-            auto data = (AioCompletionData*)(void*)events[i].data;
+            auto cb = (Callback*)(void*)events[i].data;
             Result res;
             if (events[i].res >= 0) {
                 res.nBytes = events[i].res;
@@ -293,9 +285,9 @@ void AioImpl::HarvestCompletions(std::vector<io_event>& events)
                 res.nBytes = -1;
                 res.error = -static_cast<int>(events[i].res);
             }
-            if (data) {
-                data->callback(res);
-                delete data;
+            if (cb) {
+                (*cb)(res);
+                delete cb;
             }
             if (iocbPtr) {
                 Untrack(iocbPtr);
@@ -355,10 +347,10 @@ void AioImpl::CancelTask(uint64_t tag)
         if (vec.empty()) { iocbTable_.erase(it); }
     }
     for (auto* cbp : cancelled) {
-        auto* data = reinterpret_cast<AioCompletionData*>(cbp->aio_data);
-        if (data) {
-            data->callback(Result{-1, ECANCELED});
-            delete data;
+        auto* cb = reinterpret_cast<Callback*>(cbp->aio_data);
+        if (cb) {
+            (*cb)(Result{-1, ECANCELED});
+            delete cb;
         }
         delete cbp;
     }
