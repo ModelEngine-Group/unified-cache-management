@@ -79,7 +79,7 @@ private:
     void Untrack(struct iocb* cb);
 
     size_t queueDepth_{4096};
-    size_t epollTimeoutMs_{100};
+    size_t epollTimeoutMs_{10};
     size_t sweepIntervalMs_{100};
     size_t submitTimeoutMs_{0};
     size_t batchCompleteSize{512};

@@ -168,8 +168,9 @@ AioImpl::~AioImpl()
 Status AioImpl::Setup(size_t timeoutMs)
 {
     constexpr size_t defaultSweepIntervalMs = 100;
-    epollTimeoutMs_ = timeoutMs > 0 ? timeoutMs : defaultSweepIntervalMs;
+    constexpr size_t defaultEpollTimeoutMs = 10;
     sweepIntervalMs_ = defaultSweepIntervalMs;
+    epollTimeoutMs_ = defaultEpollTimeoutMs;
     submitTimeoutMs_ = timeoutMs;
     UC_INFO(
         "AIO setup: queueDepth={}, epollTimeoutMs={}, sweepIntervalMs={}, "
