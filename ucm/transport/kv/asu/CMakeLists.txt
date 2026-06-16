@@ -75,6 +75,33 @@ target_link_libraries(asu_transport
         asu_ascend_deps
 )
 
+option(BUILD_UCM_ASU_AIV "Enable AIV transport backend (requires external libumc.a)" OFF)
+
+if(BUILD_UCM_ASU_AIV)
+    if(NOT DEFINED ASU_AIV_PROVIDER_ROOT)
+        if(DEFINED ENV{ASU_AIV_PROVIDER_ROOT})
+            set(ASU_AIV_PROVIDER_ROOT "$ENV{ASU_AIV_PROVIDER_ROOT}" CACHE PATH "Install prefix of libumc.a")
+        else()
+            set(ASU_AIV_PROVIDER_ROOT "" CACHE PATH "Install prefix of libumc.a")
+        endif()
+    endif()
+
+    find_library(ASU_AIV_PROVIDER_LIB
+        NAMES libumc.a umc
+        HINTS
+            ${ASU_AIV_PROVIDER_ROOT}/lib
+            ${ASU_AIV_PROVIDER_ROOT}/lib64
+        NO_DEFAULT_PATH
+    )
+    if(NOT ASU_AIV_PROVIDER_LIB)
+        message(FATAL_ERROR "Cannot find libumc.a under ASU_AIV_PROVIDER_ROOT=${ASU_AIV_PROVIDER_ROOT}")
+    endif()
+
+    message(STATUS "ASU AIV provider lib: ${ASU_AIV_PROVIDER_LIB}")
+    target_link_libraries(asu_transport PRIVATE ${ASU_AIV_PROVIDER_LIB} dl)
+    target_compile_definitions(asu_transport PRIVATE UCM_ASU_ENABLE_AIV)
+endif()
+
 file(GLOB ASU_CLIENT_SOURCES CONFIGURE_DEPENDS client/src/*.cpp)
 add_library(asu_client SHARED ${ASU_CLIENT_SOURCES})
 target_include_directories(asu_client
