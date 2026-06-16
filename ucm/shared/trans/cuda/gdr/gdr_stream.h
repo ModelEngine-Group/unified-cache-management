@@ -65,7 +65,7 @@ public:
     Status WaitEvent(void* event) override;
 
 private:
-    static constexpr size_t kOperationRingCapacity = 8192;
+    static constexpr size_t kOperationRingCapacity = 32768;
     static constexpr size_t kOperationRingMask = kOperationRingCapacity - 1;
     static constexpr size_t kCompletionRingCapacity = 8192;
     static constexpr size_t kCompletionRingMask = kCompletionRingCapacity - 1;
