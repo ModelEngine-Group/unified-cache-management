@@ -42,14 +42,14 @@ constexpr size_t AIO_TEST_DATA_SIZE = 4096;
 using BufferPtr = std::unique_ptr<void, decltype(&std::free)>;
 
 UC::Detail::Dictionary MakeAioConfig(const std::string& path, size_t timeoutMs = 50,
-                                     size_t openConcurrency = 1)
+                                     size_t openConcurrency = 1, size_t shardsPerBlock = 1)
 {
     UC::Detail::Dictionary config;
     config.SetNumber("device_id", 0);
     config.Set("storage_backends", std::vector<std::string>{path});
     config.SetNumber("tensor_size", AIO_TEST_DATA_SIZE);
     config.SetNumber("shard_size", AIO_TEST_DATA_SIZE);
-    config.SetNumber("block_size", AIO_TEST_DATA_SIZE);
+    config.SetNumber("block_size", AIO_TEST_DATA_SIZE * shardsPerBlock);
     config.Set("posix_io_engine", std::string("aio"));
     config.SetNumber("timeout_ms", timeoutMs);
     config.SetNumber("posix_open_concurrency", openConcurrency);
@@ -92,10 +92,13 @@ double ReadCounter(const std::string& name)
 
 class StallingOpenHook {
 public:
-    StallingOpenHook()
+    explicit StallingOpenHook(bool succeedAfterRelease = false)
+        : succeedAfterRelease_{succeedAfterRelease}
     {
         UC::PosixStore::TestHooks::SetOpenHook(
-            [this](const std::string&, int32_t, mode_t) { return Run(); });
+            [this](const std::string& path, int32_t flags, mode_t mode) {
+                return Run(path, flags, mode);
+            });
     }
     ~StallingOpenHook()
     {
@@ -116,7 +119,7 @@ public:
     }
 
 private:
-    int32_t Run()
+    int32_t Run(const std::string& path, int32_t flags, mode_t mode)
     {
         {
             std::lock_guard<std::mutex> lock{mutex_};
@@ -126,10 +129,15 @@ private:
         cv_.notify_all();
         std::unique_lock<std::mutex> lock{mutex_};
         cv_.wait(lock, [this] { return release_; });
+        auto succeed = succeedAfterRelease_;
+        lock.unlock();
+        auto fd = succeed ? ::open(path.c_str(), flags, mode) : -1;
+        auto err = succeed ? errno : EIO;
+        lock.lock();
         --active_;
         cv_.notify_all();
-        errno = EIO;
-        return -1;
+        errno = err;
+        return fd;
     }
 
 private:
@@ -137,6 +145,7 @@ private:
     std::condition_variable cv_;
     bool entered_{false};
     bool release_{false};
+    bool succeedAfterRelease_{false};
     size_t active_{0};
 };
 
@@ -344,7 +353,7 @@ TEST_F(UCPosixStoreTest, AioCheckFinishesLostCompletionAfterDeadline)
     }
 
     ASSERT_TRUE(finished);
-    ASSERT_EQ(store.Wait(handle.Value()), UC::Status::Timeout());
+    ASSERT_EQ(store.Wait(handle.Value()), UC::Status::Error());
 }
 
 TEST(UCAioImplTest, SubmitEagainHonorsDeadline)
@@ -405,4 +414,37 @@ TEST_F(UCPosixStoreTest, AioQueuedTasksTimeOutWhileOpenWorkerIsStuck)
     auto elapsed = std::chrono::steady_clock::now() - start;
 
     ASSERT_LT(std::chrono::duration_cast<std::chrono::milliseconds>(elapsed).count(), 1500);
+}
+
+TEST_F(UCPosixStoreTest, AioTimedOutMultiShardDumpDoesNotCommitAfterLateOpen)
+{
+    using namespace UC::PosixStore;
+    PosixStore store;
+    ASSERT_EQ(store.Setup(MakeAioConfig(Path(), 50, 1, 2)), UC::Status::OK());
+    auto buffer1 = MakeAlignedBuffer(8);
+    auto buffer2 = MakeAlignedBuffer(9);
+    ASSERT_NE(buffer1.get(), nullptr);
+    ASSERT_NE(buffer2.get(), nullptr);
+    auto block = UC::Test::Detail::TypesHelper::MakeBlockIdRandomly();
+
+    {
+        StallingOpenHook hook{true};
+        UC::Detail::TaskDesc desc;
+        desc.brief = "AioMultiShardLateOpen";
+        desc.push_back(UC::Detail::Shard{block, 0, {buffer1.get()}});
+        desc.push_back(UC::Detail::Shard{block, 1, {buffer2.get()}});
+        auto handle = store.Dump(std::move(desc));
+        ASSERT_TRUE(handle.HasValue());
+        ASSERT_TRUE(hook.WaitEntered());
+
+        ASSERT_EQ(store.Wait(handle.Value()), UC::Status::Timeout());
+    }
+
+    auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(500);
+    while (std::chrono::steady_clock::now() < deadline) {
+        auto founds = store.Lookup(&block, 1);
+        ASSERT_TRUE(founds.HasValue());
+        ASSERT_EQ(founds.Value(), std::vector<uint8_t>{false});
+        std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    }
 }

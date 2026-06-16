@@ -73,6 +73,7 @@ public:
     }
 
 private:
+    bool IsAio() const override { return true; }
     template <bool dump>
     static void UpdateWaitMetrics(double wait)
     {
@@ -154,7 +155,6 @@ private:
         auto status = dump ? aio_.WriteAsync(std::move(io)) : aio_.ReadAsync(std::move(io));
         if (status.Failure()) {
             if (status == Status::Timeout()) {
-                timeoutSet_.Insert(tid);
                 IncrementAioTimeoutMetric();
             } else {
                 IncrementIoErrorMetric();
@@ -277,7 +277,6 @@ private:
         auto pending = w ? w->Pending() : 0;
         UC_WARN("AIO task({}) force-completing; pending latch count before abort={}.", id, pending);
         failureSet_.Insert(id);
-        timeoutSet_.Insert(id);
         aio_.CancelTask(id);
         blockOperator_.CancelQueued(id);
         if (w) { w->Abort(); }

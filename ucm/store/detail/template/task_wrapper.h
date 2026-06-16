@@ -24,6 +24,7 @@
 #ifndef UNIFIEDCACHE_STORE_DETAIL_TEMPLATE_TASK_WRAPPER_H
 #define UNIFIEDCACHE_STORE_DETAIL_TEMPLATE_TASK_WRAPPER_H
 
+#include <memory>
 #include <shared_mutex>
 #include <unordered_map>
 #include "logger/logger.h"
@@ -43,11 +44,11 @@ protected:
     using TaskIdSet = HashSet<TaskHandle>;
     size_t timeoutMs_;
     TaskIdSet failureSet_;
-    TaskIdSet timeoutSet_;
     TaskSet tasks_{};
     std::shared_mutex mutex_{};
     virtual void Dispatch(TaskPtr t, WaiterPtr w) = 0;
     virtual void Cancel(TaskPtr t) {}
+    virtual bool IsAio() const { return false; }
 
 public:
     Expected<TaskHandle> Submit(Task task)
@@ -111,18 +112,13 @@ public:
                     " IO.",
                     taskId);
             }
-            // Late IO callbacks must still see failure and avoid committing success.
+            // For Aio, Late IO callbacks must still see failure and avoid committing success.
+            if (!IsAio()) { failureSet_.Remove(taskId); }
             return Status::Timeout();
         }
         auto failure = failureSet_.Contains(taskId);
-        auto timeout = timeoutSet_.Contains(taskId);
-        if (timeout) [[unlikely]] {
-            timeoutSet_.Remove(taskId);
-            if (failure) { failureSet_.Remove(taskId); }
-            return Status::Timeout();
-        }
         if (failure) [[unlikely]] {
-            failureSet_.Remove(taskId);
+            if (!IsAio()) { failureSet_.Remove(taskId); }
             return Status::Error();
         }
         return Status::OK();
