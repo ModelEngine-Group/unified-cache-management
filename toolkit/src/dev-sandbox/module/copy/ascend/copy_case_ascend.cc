@@ -67,19 +67,30 @@ DEFINE_COPY_CASE(OneHost2AllDeviceCECase, "one_host_to_all_device_ce",
 DEFINE_COPY_CASE(AllHost2AllDeviceCECase, "all_host_to_all_device_ce",
                  "memcpy from all host to all device with ce at one time", ctx)
 {
-    std::vector<const CopyBuffer*> srcBuffers(ctx.nDevice);
-    std::vector<const CopyBuffer*> dstBuffers(ctx.nDevice);
+    // Use unique_ptr for automatic memory management (RAII)
+    std::vector<std::unique_ptr<CopyBuffer>> srcBuffers(ctx.nDevice);
+    std::vector<std::unique_ptr<CopyBuffer>> dstBuffers(ctx.nDevice);
+
     for (size_t device = 0; device < ctx.nDevice; device++) {
-        srcBuffers[device] = new HostCopyBuffer{device, ctx.size, ctx.num};
-        dstBuffers[device] = new DeviceCopyBuffer{device, ctx.size, ctx.num};
+        srcBuffers[device] = std::make_unique<HostCopyBuffer>(device, ctx.size, ctx.num);
+        dstBuffers[device] = std::make_unique<DeviceCopyBuffer>(device, ctx.size, ctx.num);
     }
+
+    // Extract raw pointers for DoCopyBatch (which requires raw pointer vectors)
+    std::vector<const CopyBuffer*> srcPtrs;
+    std::vector<const CopyBuffer*> dstPtrs;
+    srcPtrs.reserve(ctx.nDevice);
+    dstPtrs.reserve(ctx.nDevice);
+    for (size_t device = 0; device < ctx.nDevice; device++) {
+        srcPtrs.push_back(srcBuffers[device].get());
+        dstPtrs.push_back(dstBuffers[device].get());
+    }
+
     H2DCECopyInstance instance{ctx.iter, false};
     CopyResult result;
-    result.Push(instance.DoCopyBatch(srcBuffers, dstBuffers));
-    for (size_t device = 0; device < ctx.nDevice; device++) {
-        delete srcBuffers[device];
-        delete dstBuffers[device];
-    }
+    result.Push(instance.DoCopyBatch(srcPtrs, dstPtrs));
+
+    // No manual delete needed - unique_ptr automatically releases memory on destruction
     result.Show("[[ " + Key() + " ]] " + Brief());
 }
 
