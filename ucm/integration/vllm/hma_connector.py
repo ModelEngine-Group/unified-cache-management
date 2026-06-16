@@ -111,6 +111,7 @@ class KVCacheGroupLayout:
             strides.append(block_stride)
             tensor_size = math.prod([t.shape[i] for i in size_dims]) * t.element_size()
             # GPU buffer sizes for GPUDirect RDMA registration in store.
+            # Total buffer size = number of blocks (shape[0]) × bytes per block stride.
             buffer_sizes.append(int(t.shape[0]) * block_stride)
             token_dim = 1
             tensor_block_size = int(t.shape[token_dim])
@@ -655,8 +656,7 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
                     f"register FAWA {label} GPU KV buffers: "
                     f"count={len(gpu_kv_buffer_addrs)}, "
                     f"bytes={sum(int(size) for size in gpu_kv_buffer_sizes)}, "
-                    f"addrs={gpu_kv_buffer_addrs}, "
-                    f"sizes={gpu_kv_buffer_sizes}"
+                    f"first_5={[(addr, size) for addr, size in zip(gpu_kv_buffer_addrs[:5], gpu_kv_buffer_sizes[:5])]}"
                 )
             if cpu_affinity_cores:
                 config["cpu_affinity_cores"] = list(cpu_affinity_cores)
@@ -680,12 +680,13 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
             summary["tensor_bytes"] = sum(tensor_sizes)
         gpu_kv_buffer_addrs = summary.pop("gpu_kv_buffer_addrs", None)
         gpu_kv_buffer_sizes = summary.pop("gpu_kv_buffer_sizes", None)
+        assert (gpu_kv_buffer_addrs is None) == (gpu_kv_buffer_sizes is None), (
+            "GPU KV buffer addresses and sizes must be both None or both non-None"
+        )
         if gpu_kv_buffer_addrs is not None:
             summary["gpu_kv_buffer_count"] = len(gpu_kv_buffer_addrs)
             summary["gpu_kv_buffer_bytes"] = (
                 sum(int(size) for size in gpu_kv_buffer_sizes)
-                if gpu_kv_buffer_sizes is not None
-                else 0
             )
         return summary
 
