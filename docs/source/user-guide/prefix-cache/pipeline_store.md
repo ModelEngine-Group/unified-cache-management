@@ -216,6 +216,7 @@ ucm_connectors:
       use_gdr: false
 enable_event_sync: true
 use_layerwise: true
+enable_reshape_cache_event_sync: false
 enable_record_traces: false
 use_lite: false
 persist_token_threshold: 0

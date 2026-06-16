@@ -26,6 +26,9 @@ ucm_connectors:
 
 # When you use UcmNfsStore, you should set enable_event_sync to false.
 enable_event_sync: true
+# Use vLLM-Ascend reshape cache events to start D2H immediately after KV cache is ready.
+# Enable for better dump performance.
+enable_reshape_cache_event_sync: false
 # Enable UCM metrics so they can be monitored online via Grafana and Prometheus.
 # metrics_config_path: "/workspace/unified-cache-management/examples/metrics/metrics_configs.yaml"
 
