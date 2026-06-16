@@ -170,6 +170,9 @@ TEST_F(SqeRequestTest, ValidateSqeRequestAttrsRejectsMalformedValues)
 TEST_F(SqeRequestTest, SubmitBatchStoreAllocatesFlagBufferAndBuildsRequest)
 {
     auto entries = MakeEntries(3);
+    entries[0].offset = kAlignmentBytes;
+    entries[1].offset = kAlignmentBytes * 2;
+    entries[2].offset = kAlignmentBytes * 3;
     IoScheduler::ScheduledIoBatch subBatch{
         BatchView<KVBuffer>{entries.data(), entries.size()}
     };
@@ -196,6 +199,10 @@ TEST_F(SqeRequestTest, SubmitBatchStoreAllocatesFlagBufferAndBuildsRequest)
     EXPECT_EQ(packedResponseAddr, subBatchContext.flagBuffer.device_addr);
     ASSERT_EQ(subBatchContext.entryStatus.size(), entries.size());
     for (const auto& entryStatus : subBatchContext.entryStatus) { EXPECT_TRUE(entryStatus.ok()); }
+    const auto* sqe = reinterpret_cast<const std::uint32_t*>(subBatchContext.sendSge.addr);
+    EXPECT_EQ(sqe[kSqeDwordCount], entries[0].offset);
+    EXPECT_EQ(sqe[kSqeDwordCount + kBatchEntryDwordCount], entries[1].offset);
+    EXPECT_EQ(sqe[kSqeDwordCount + 2 * kBatchEntryDwordCount], entries[2].offset);
 }
 
 TEST_F(SqeRequestTest, SubmitBatchStorePacksSqeIntoDeviceSendBuffer)
@@ -239,6 +246,8 @@ TEST_F(SqeRequestTest, SubmitBatchStorePacksSqeIntoDeviceSendBuffer)
 TEST_F(SqeRequestTest, SubmitBatchRetrieveUsesRetrieveOpcodeAndRequest)
 {
     auto entries = MakeEntries(2);
+    entries[0].offset = kAlignmentBytes * 4;
+    entries[1].offset = kAlignmentBytes * 5;
     IoScheduler::ScheduledIoBatch subBatch{
         BatchView<KVBuffer>{entries.data(), entries.size()}
     };
@@ -254,6 +263,9 @@ TEST_F(SqeRequestTest, SubmitBatchRetrieveUsesRetrieveOpcodeAndRequest)
     EXPECT_EQ(subBatchContext.state, TransportSubBatchState::PENDING);
     EXPECT_TRUE(subBatchContext.status.ok());
     EXPECT_NE(subBatchContext.sendSge.local_addr, std::uint64_t{0});
+    const auto* sqe = reinterpret_cast<const std::uint32_t*>(subBatchContext.sendSge.local_addr);
+    EXPECT_EQ(sqe[kSqeDwordCount], entries[0].offset);
+    EXPECT_EQ(sqe[kSqeDwordCount + kBatchEntryDwordCount], entries[1].offset);
 }
 
 TEST_F(SqeRequestTest, SubmitDeleteCopiesKeysAndBuildsFlagBackedRequest)

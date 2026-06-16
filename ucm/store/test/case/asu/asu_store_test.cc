@@ -40,6 +40,9 @@ namespace {
 
 struct FakeAsuBackendState {
     std::vector<UC::ASU::QueryMode> queryModes;
+    std::vector<UC::AsuStore::Config> initConfigs;
+    std::vector<UC::ASU::KVBuffer> lastLoadEntries;
+    std::vector<UC::ASU::KVBuffer> lastStoreEntries;
 };
 
 class FakeAsuBackend final : public UC::AsuStore::AsuBackend {
@@ -51,6 +54,7 @@ public:
     UC::ASU::Status Init(const UC::AsuStore::Config& config) override
     {
         config_ = config;
+        state_->initConfigs.emplace_back(config);
         initialized_ = true;
         return UC::ASU::Status::OK();
     }
@@ -91,12 +95,14 @@ public:
     UC::ASU::Status LoadAsync(const std::vector<UC::ASU::KVBuffer>& entries,
                               UC::ASU::TaskId& taskId) override
     {
+        state_->lastLoadEntries = entries;
         return Submit(entries, taskId);
     }
 
     UC::ASU::Status StoreAsync(const std::vector<UC::ASU::KVBuffer>& entries,
                                UC::ASU::TaskId& taskId) override
     {
+        state_->lastStoreEntries = entries;
         for (const auto& entry : entries) { storedKeys_.emplace(entry.key); }
         return Submit(entries, taskId);
     }
@@ -338,18 +344,133 @@ TEST(UCAsuStoreTest, TransportModeConfigPathSmoke)
     ExpectLoadDumpSmoke(store, block);
 }
 
-TEST(UCAsuStoreTest, RejectsInvalidTensorLayout)
+TEST(UCAsuStoreTest, RejectsOddMultiTensorLayout)
 {
     UC::AsuStore::AsuStore store;
     auto config = MakeBaseConfig();
     config.Set("asu_mode", std::string{"transport"});
     config.Set("asu_ips", std::vector<std::string>{"127.0.0.1"});
     config.Set("asu_ids", std::vector<ssize_t>{1001});
+    config.Set("asu_tensor_layout", std::string{"gqa"});
     config.SetNumber("tensor_size", std::size_t{0});
-    config.Set("tensor_size_list", std::vector<ssize_t>{32, 16});
+    config.Set("tensor_size_list", std::vector<ssize_t>{16, 16, 16});
+    config.SetNumber("shard_size", std::size_t{48});
+    config.SetNumber("block_size", std::size_t{48});
 
     auto status = store.Setup(config);
     ASSERT_TRUE(status.Failure());
+}
+
+TEST(UCAsuStoreTest, UsesNonLayerwiseMlaTensorOffsets)
+{
+    UC::AsuStore::AsuStore store;
+    auto state = UseFakeBackend(store);
+    auto config = MakeBaseConfig();
+    config.Set("asu_mode", std::string{"transport"});
+    config.Set("asu_ips", std::vector<std::string>{"127.0.0.1"});
+    config.Set("asu_ids", std::vector<ssize_t>{1001});
+    config.Set("asu_tensor_layout", std::string{"mla"});
+    config.SetNumber("tensor_size", std::size_t{0});
+    config.Set("tensor_size_list", std::vector<ssize_t>{100, 120, 140});
+    config.SetNumber("shard_size", std::size_t{360});
+    config.SetNumber("block_size", std::size_t{360});
+
+    auto status = store.Setup(config);
+    ASSERT_TRUE(status.Success()) << status.ToString();
+    ASSERT_FALSE(state->initConfigs.empty());
+    ASSERT_EQ(state->initConfigs.back().tensorSizes.size(), std::size_t{3});
+    EXPECT_EQ(state->initConfigs.back().tensorSizes[0], std::size_t{512});
+    EXPECT_EQ(state->initConfigs.back().tensorSizes[1], std::size_t{512});
+    EXPECT_EQ(state->initConfigs.back().tensorSizes[2], std::size_t{512});
+
+    std::array<std::byte, 140> first{};
+    std::array<std::byte, 140> second{};
+    std::array<std::byte, 140> third{};
+    auto block = UC::Test::Detail::TypesHelper::MakeBlockId("d1b2c3d4e5f6789012345678901234ab");
+    UC::Detail::TaskDesc task;
+    task.brief = "asu-store-test";
+    task.push_back(UC::Detail::Shard{
+        block, 0, {first.data(), second.data(), third.data()}
+    });
+
+    auto dump = store.Dump(task);
+    ASSERT_TRUE(dump.HasValue()) << dump.Error().ToString();
+    ASSERT_EQ(state->lastStoreEntries.size(), 3);
+    EXPECT_EQ(state->lastStoreEntries[0].buffer.region.size, std::size_t{512});
+    EXPECT_EQ(state->lastStoreEntries[0].offset, std::uint32_t{0});
+    EXPECT_EQ(state->lastStoreEntries[1].buffer.region.size, std::size_t{512});
+    EXPECT_EQ(state->lastStoreEntries[1].offset, std::uint32_t{512});
+    EXPECT_EQ(state->lastStoreEntries[2].buffer.region.size, std::size_t{512});
+    EXPECT_EQ(state->lastStoreEntries[2].offset, std::uint32_t{1024});
+}
+
+TEST(UCAsuStoreTest, UsesLayerwiseMlaTensorOffsets)
+{
+    UC::AsuStore::AsuStore store;
+    auto state = UseFakeBackend(store);
+    auto config = MakeBaseConfig();
+    config.Set("asu_mode", std::string{"transport"});
+    config.Set("asu_ips", std::vector<std::string>{"127.0.0.1"});
+    config.Set("asu_ids", std::vector<ssize_t>{1001});
+    config.Set("asu_tensor_layout", std::string{"mla"});
+    config.SetNumber("tensor_size", std::size_t{0});
+    config.Set("tensor_size_list", std::vector<ssize_t>{128});
+    config.SetNumber("shard_size", std::size_t{128});
+    config.SetNumber("block_size", std::size_t{384});
+
+    auto status = store.Setup(config);
+    ASSERT_TRUE(status.Success()) << status.ToString();
+
+    std::array<std::byte, 128> buffer{};
+    auto block = UC::Test::Detail::TypesHelper::MakeBlockId("e1b2c3d4e5f6789012345678901234ab");
+    UC::Detail::TaskDesc task;
+    task.brief = "asu-store-test";
+    task.push_back(UC::Detail::Shard{block, 2, {buffer.data()}});
+
+    auto dump = store.Dump(task);
+    ASSERT_TRUE(dump.HasValue()) << dump.Error().ToString();
+    ASSERT_EQ(state->lastStoreEntries.size(), 1);
+    EXPECT_EQ(state->lastStoreEntries[0].buffer.region.addr,
+              reinterpret_cast<std::uint64_t>(buffer.data()));
+    EXPECT_EQ(state->lastStoreEntries[0].buffer.region.size, std::size_t{512});
+    EXPECT_EQ(state->lastStoreEntries[0].offset, std::uint32_t{1024});
+}
+
+TEST(UCAsuStoreTest, AlignsTensorSizeAndDerivesShardBlockSize)
+{
+    UC::AsuStore::AsuStore store;
+    auto state = UseFakeBackend(store);
+    auto config = MakeBaseConfig();
+    config.Set("asu_mode", std::string{"transport"});
+    config.Set("asu_ips", std::vector<std::string>{"127.0.0.1"});
+    config.Set("asu_ids", std::vector<ssize_t>{1001});
+    config.SetNumber("tensor_size", std::size_t{100});
+    config.SetNumber("shard_size", std::size_t{100});
+    config.SetNumber("block_size", std::size_t{300});
+
+    auto status = store.Setup(config);
+    ASSERT_TRUE(status.Success()) << status.ToString();
+    ASSERT_FALSE(state->initConfigs.empty());
+    ASSERT_EQ(state->initConfigs.back().tensorSizes.size(), std::size_t{1});
+    EXPECT_EQ(state->initConfigs.back().tensorSizes[0],
+              static_cast<std::size_t>(UC::ASU::kAsuAlignmentBytes));
+    EXPECT_EQ(state->initConfigs.back().shardSize,
+              static_cast<std::size_t>(UC::ASU::kAsuAlignmentBytes));
+    EXPECT_EQ(state->initConfigs.back().blockSize,
+              static_cast<std::size_t>(UC::ASU::kAsuAlignmentBytes) * 3);
+
+    std::array<std::byte, 100> buffer{};
+    auto block = UC::Test::Detail::TypesHelper::MakeBlockId("abb2c3d4e5f6789012345678901234ab");
+    UC::Detail::TaskDesc task;
+    task.brief = "asu-store-test";
+    task.push_back(UC::Detail::Shard{block, 2, {buffer.data()}});
+
+    auto dump = store.Dump(task);
+    ASSERT_TRUE(dump.HasValue()) << dump.Error().ToString();
+    ASSERT_FALSE(state->lastStoreEntries.empty());
+    EXPECT_EQ(state->lastStoreEntries[0].buffer.region.size,
+              static_cast<std::size_t>(UC::ASU::kAsuAlignmentBytes));
+    EXPECT_EQ(state->lastStoreEntries[0].offset, UC::ASU::kAsuAlignmentBytes * 2);
 }
 
 TEST(UCAsuStoreTest, AllowsMultipleShardsPerBlock)
@@ -366,29 +487,81 @@ TEST(UCAsuStoreTest, AllowsMultipleShardsPerBlock)
     ASSERT_TRUE(status.Success()) << status.ToString();
 }
 
-TEST(UCAsuStoreTest, AllowsMultipleTensorBuffersPerShard)
+TEST(UCAsuStoreTest, UsesLayerwiseGqaKeyValueOffsets)
 {
     UC::AsuStore::AsuStore store;
-    UseFakeBackend(store);
+    auto state = UseFakeBackend(store);
     auto config = MakeBaseConfig();
     config.Set("asu_mode", std::string{"transport"});
     config.Set("asu_ips", std::vector<std::string>{"127.0.0.1"});
     config.Set("asu_ids", std::vector<ssize_t>{1001});
+    config.Set("asu_tensor_layout", std::string{"gqa"});
     config.SetNumber("tensor_size", std::size_t{0});
-    config.Set("tensor_size_list", std::vector<ssize_t>{32, 32});
+    config.Set("tensor_size_list", std::vector<ssize_t>{100, 200});
+    config.SetNumber("shard_size", std::size_t{300});
+    config.SetNumber("block_size", std::size_t{900});
 
     auto status = store.Setup(config);
     ASSERT_TRUE(status.Success()) << status.ToString();
 
-    std::array<std::byte, 32> first{};
-    std::array<std::byte, 32> second{};
-    auto block = UC::Test::Detail::TypesHelper::MakeBlockId("aab2c3d4e5f6789012345678901234ab");
+    std::array<std::byte, 100> key{};
+    std::array<std::byte, 200> value{};
+    auto block = UC::Test::Detail::TypesHelper::MakeBlockId("b1b2c3d4e5f6789012345678901234ab");
     UC::Detail::TaskDesc task;
     task.brief = "asu-store-test";
     task.push_back(UC::Detail::Shard{
-        block, 0, {first.data(), second.data()}
+        block, 2, {key.data(), value.data()}
     });
+
     auto dump = store.Dump(task);
     ASSERT_TRUE(dump.HasValue()) << dump.Error().ToString();
-    ASSERT_TRUE(store.Wait(dump.Value()).Success());
+    ASSERT_EQ(state->lastStoreEntries.size(), 2);
+    EXPECT_EQ(state->lastStoreEntries[0].buffer.region.addr,
+              reinterpret_cast<std::uint64_t>(key.data()));
+    EXPECT_EQ(state->lastStoreEntries[0].buffer.region.size, std::size_t{512});
+    EXPECT_EQ(state->lastStoreEntries[0].offset, std::uint32_t{1024});
+    EXPECT_EQ(state->lastStoreEntries[1].buffer.region.addr,
+              reinterpret_cast<std::uint64_t>(value.data()));
+    EXPECT_EQ(state->lastStoreEntries[1].buffer.region.size, std::size_t{512});
+    EXPECT_EQ(state->lastStoreEntries[1].offset, std::uint32_t{2560});
+}
+
+TEST(UCAsuStoreTest, UsesNonLayerwiseGqaKeyValueOffsets)
+{
+    UC::AsuStore::AsuStore store;
+    auto state = UseFakeBackend(store);
+    auto config = MakeBaseConfig();
+    config.Set("asu_mode", std::string{"transport"});
+    config.Set("asu_ips", std::vector<std::string>{"127.0.0.1"});
+    config.Set("asu_ids", std::vector<ssize_t>{1001});
+    config.Set("asu_tensor_layout", std::string{"gqa"});
+    config.SetNumber("tensor_size", std::size_t{0});
+    config.Set("tensor_size_list", std::vector<ssize_t>{100, 200, 100, 200, 100, 200});
+    config.SetNumber("shard_size", std::size_t{900});
+    config.SetNumber("block_size", std::size_t{900});
+
+    auto status = store.Setup(config);
+    ASSERT_TRUE(status.Success()) << status.ToString();
+
+    std::array<std::array<std::byte, 200>, 6> buffers{};
+    auto block = UC::Test::Detail::TypesHelper::MakeBlockId("c1b2c3d4e5f6789012345678901234ab");
+    UC::Detail::TaskDesc task;
+    task.brief = "asu-store-test";
+    task.push_back(UC::Detail::Shard{
+        block,
+        0,
+        {buffers[0].data(), buffers[1].data(), buffers[2].data(), buffers[3].data(),
+          buffers[4].data(), buffers[5].data()}
+    });
+
+    auto dump = store.Dump(task);
+    ASSERT_TRUE(dump.HasValue()) << dump.Error().ToString();
+    ASSERT_EQ(state->lastStoreEntries.size(), 6);
+    const std::array<std::uint32_t, 6> expectedOffsets{0, 1536, 512, 2048, 1024, 2560};
+    for (std::size_t index = 0; index < expectedOffsets.size(); ++index) {
+        EXPECT_EQ(state->lastStoreEntries[index].buffer.region.addr,
+                  reinterpret_cast<std::uint64_t>(buffers[index].data()));
+        EXPECT_EQ(state->lastStoreEntries[index].buffer.region.size, std::size_t{512});
+        EXPECT_EQ(state->lastStoreEntries[index].offset, expectedOffsets[index]);
+    }
 }

@@ -40,6 +40,7 @@ enum class TransProviderType { AICPU, FAKE, AIV, UNSUPPORTED };
 
 constexpr TaskId kInvalidTaskId = 0;
 constexpr MRHandle kInvalidMRHandle = 0;
+constexpr std::uint32_t kAsuAlignmentBytes = 512;  // KV protocol requires 512B alignment
 
 enum class StatusCode {
     OK = 0,
@@ -134,6 +135,7 @@ struct Buffer {  // 单个IO
 struct KVBuffer {
     CacheKey key;
     Buffer buffer;
+    std::uint32_t offset{0};  // target buffer offset
 };
 
 struct RegisterResult {

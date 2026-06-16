@@ -578,6 +578,23 @@ TEST_F(KvProtocolPackTest, BatchStoreValidateRequestRejectsRflagWithZeroResponse
     EXPECT_NE(status.message.find("response_buffer_addr is zero"), std::string::npos);
 }
 
+TEST_F(KvProtocolPackTest, BatchStoreValidateRequestRejectsUnalignedLength)
+{
+    KvBatchStoreRequest req;
+    req.batch_number = 1;
+    req.entries.resize(1);
+    req.entries[0].key = "key";
+    req.entries[0].offset = 0;
+    req.entries[0].buffer_addr = 0x1000;
+    req.entries[0].length = 100;
+
+    KvBatchStoreProtocol proto;
+    std::vector<std::uint32_t> target(64, 0);
+    auto status = proto.PackSqe(req, target.data());
+    EXPECT_FALSE(status.ok());
+    EXPECT_NE(status.message.find("512B aligned"), std::string::npos);
+}
+
 TEST_F(KvProtocolPackTest, KeepAliveValidateRequestRejectsRflagWithZeroResponseAddr)
 {
     KvKeepAliveRequest req;
@@ -736,6 +753,22 @@ TEST_F(KvProtocolPackTest, RetrieveValidateRequestRejectsZeroBufferAddr)
     EXPECT_NE(status.message.find("buffer_addr is zero"), std::string::npos);
 }
 
+TEST_F(KvProtocolPackTest, RetrieveValidateRequestRejectsUnalignedBufferLength)
+{
+    KvRetrieveRequest req;
+    req.buffer_addr = 0x2000;
+    req.buffer_length = 100;
+    req.offset = 512;
+    req.length = 512;
+    req.key = "retrieve_key";
+
+    KvRetrieveProtocol proto;
+    std::vector<std::uint32_t> target(16, 0);
+    auto status = proto.PackSqe(req, target.data());
+    EXPECT_FALSE(status.ok());
+    EXPECT_NE(status.message.find("512B aligned"), std::string::npos);
+}
+
 TEST_F(KvProtocolPackTest, BatchRetrieveValidateRequestAcceptsValid)
 {
     KvBatchRetrieveRequest req;
@@ -767,6 +800,23 @@ TEST_F(KvProtocolPackTest, BatchRetrieveValidateRequestRejectsMismatch)
     auto status = proto.PackSqe(req, target.data());
     EXPECT_FALSE(status.ok());
     EXPECT_NE(status.message.find("must equal entries.size()"), std::string::npos);
+}
+
+TEST_F(KvProtocolPackTest, BatchRetrieveValidateRequestRejectsUnalignedLength)
+{
+    KvBatchRetrieveRequest req;
+    req.batch_number = 1;
+    req.entries.resize(1);
+    req.entries[0].key = "key";
+    req.entries[0].offset = 0;
+    req.entries[0].buffer_addr = 0x1000;
+    req.entries[0].length = 100;
+
+    KvBatchRetrieveProtocol proto;
+    std::vector<std::uint32_t> target(64, 0);
+    auto status = proto.PackSqe(req, target.data());
+    EXPECT_FALSE(status.ok());
+    EXPECT_NE(status.message.find("512B aligned"), std::string::npos);
 }
 
 TEST_F(KvProtocolPackTest, DeleteValidateRequestAcceptsValid)
