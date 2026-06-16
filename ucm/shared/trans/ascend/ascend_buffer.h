@@ -32,6 +32,7 @@ class AscendBuffer : public ReservedBuffer {
 public:
     std::shared_ptr<void> MakeDeviceBuffer(size_t size) override;
     std::shared_ptr<void> MakeHostBuffer(size_t size) override;
+    std::shared_ptr<void> MakeHostPinnedBuffer(size_t size, void** pDevice = nullptr) override;
     std::shared_ptr<void> MakeHostBuffer4DirectIo(size_t size) override;
 };
 

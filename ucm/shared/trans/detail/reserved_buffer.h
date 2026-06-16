@@ -78,6 +78,12 @@ public:
         return this->MakeHostBuffer(size);
     }
 
+    std::shared_ptr<void> MakeHostPinnedBuffer(size_t size, void** pDevice = nullptr) override
+    {
+        if (pDevice) { *pDevice = nullptr; }
+        return this->MakeHostBuffer(size);
+    }
+
     Status MakeHostBuffers(size_t size, size_t number) override
     {
         auto totalSize = size * number;

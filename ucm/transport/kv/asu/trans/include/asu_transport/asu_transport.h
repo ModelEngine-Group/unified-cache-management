@@ -72,9 +72,12 @@ struct TransportConfig {
     bool preconnect{true};
     bool bindCqPoller{true};
 
+    // Slot sizes are caller-visible capacities; BufferManager computes the
+    // aligned physical stride used for allocation and memory registration.
     std::size_t sendBufferSlotSize{4160};
     std::size_t sendBufferSlotNum{128};
-    std::size_t flagBufferSlotSize{128};
+    // Maximum memory required by a batch store/retrieve response flag buffer.
+    std::size_t flagBufferSlotSize{71};
     std::size_t flagBufferSlotNum{4096};
     std::size_t asuBatchLoadIoNum{110};
     std::size_t asuBatchStoreIoNum{110};

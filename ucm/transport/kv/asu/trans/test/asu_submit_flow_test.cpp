@@ -216,8 +216,8 @@ TEST_F(AsuSubmitFlowBufferTest, BuildSubBatchSendBuffersReleasesPreFailedSubBatc
     EXPECT_TRUE(subBatchIndexes.empty());
     EXPECT_EQ(subBatchContext.sendSge.slot_index, UINT32_MAX);
     EXPECT_EQ(subBatchContext.flagBuffer.slot_index, UINT32_MAX);
-    EXPECT_EQ(subBatchContext.sendSge.addr, std::uint64_t{0});
-    EXPECT_EQ(subBatchContext.flagBuffer.addr, std::uint64_t{0});
+    EXPECT_EQ(subBatchContext.sendSge.local_addr, std::uint64_t{0});
+    EXPECT_EQ(subBatchContext.flagBuffer.local_addr, std::uint64_t{0});
 }
 
 TEST_F(AsuSubmitFlowBufferTest, BuildSubBatchSendBuffersMarksMissingFlagBufferFailed)
@@ -257,6 +257,97 @@ TEST_F(AsuSubmitFlowBufferTest, BuildSubBatchSendBuffersMarksMissingFlagBufferFa
     for (const auto& entryStatus : subBatchContext.entryStatus) {
         EXPECT_EQ(entryStatus.code, StatusCode::NOT_INITIALIZED);
     }
+}
+
+TEST_F(AsuSubmitFlowBufferTest, BuildSubBatchSendBuffersRejectsZeroSendLength)
+{
+    ASSERT_TRUE(
+        transport_->sendBufferManager_.Init("test send buffer", MemoryType::HOST, 4096, 1).ok());
+    ASSERT_TRUE(
+        transport_->flagBufferManager_.Init("test flag buffer", MemoryType::HOST, 128, 1).ok());
+
+    transport_->connManager_ =
+        std::make_unique<ConnectionManager>(*transport_->transProvider_, "", 5000);
+    ASSERT_TRUE(transport_->connManager_->AddGroup(AsuEndpoint{}, 1).ok());
+
+    std::vector<TransportSubBatchContext> subBatchContexts(1);
+    auto& subBatchContext = subBatchContexts[0];
+    subBatchContext.state = TransportSubBatchState::PENDING;
+    subBatchContext.channel = transport_->connManager_->SelectConnection();
+    subBatchContext.entryStatus.assign(1, Status::OK());
+    ASSERT_TRUE(transport_->sendBufferManager_.Allocate(64, subBatchContext.sendSge).ok());
+    ASSERT_TRUE(transport_->flagBufferManager_.Allocate(64, subBatchContext.flagBuffer).ok());
+    subBatchContext.sendSge.length = 0;
+
+    std::vector<TransProvider::SendIoBatch> ioBatches;
+    std::vector<std::size_t> subBatchIndexes;
+    const auto status =
+        transport_->BuildSubBatchSendBuffers(subBatchContexts, ioBatches, subBatchIndexes);
+
+    EXPECT_EQ(status.code, StatusCode::NOT_INITIALIZED);
+    EXPECT_TRUE(ioBatches.empty());
+    EXPECT_EQ(subBatchContext.state, TransportSubBatchState::COMPLETED);
+}
+
+TEST_F(AsuSubmitFlowBufferTest, BuildSubBatchSendBuffersRejectsMissingChannel)
+{
+    ASSERT_TRUE(
+        transport_->sendBufferManager_.Init("test send buffer", MemoryType::HOST, 4096, 1).ok());
+    ASSERT_TRUE(
+        transport_->flagBufferManager_.Init("test flag buffer", MemoryType::HOST, 128, 1).ok());
+
+    std::vector<TransportSubBatchContext> subBatchContexts(1);
+    auto& subBatchContext = subBatchContexts[0];
+    subBatchContext.state = TransportSubBatchState::PENDING;
+    subBatchContext.entryStatus.assign(1, Status::OK());
+    ASSERT_TRUE(transport_->sendBufferManager_.Allocate(64, subBatchContext.sendSge).ok());
+    ASSERT_TRUE(transport_->flagBufferManager_.Allocate(64, subBatchContext.flagBuffer).ok());
+
+    std::vector<TransProvider::SendIoBatch> ioBatches;
+    std::vector<std::size_t> subBatchIndexes;
+    const auto status =
+        transport_->BuildSubBatchSendBuffers(subBatchContexts, ioBatches, subBatchIndexes);
+
+    EXPECT_EQ(status.code, StatusCode::NOT_INITIALIZED);
+    EXPECT_TRUE(ioBatches.empty());
+    EXPECT_EQ(subBatchContext.state, TransportSubBatchState::COMPLETED);
+}
+
+TEST_F(AsuSubmitFlowBufferTest, BuildSubBatchSendBuffersUsesHostPinnedDeviceAddresses)
+{
+    ASSERT_TRUE(
+        transport_->sendBufferManager_.Init("test send buffer", MemoryType::HOST_PINNED, 4096, 1)
+            .ok());
+    ASSERT_TRUE(
+        transport_->flagBufferManager_.Init("test flag buffer", MemoryType::HOST_PINNED, 128, 1)
+            .ok());
+
+    transport_->connManager_ =
+        std::make_unique<ConnectionManager>(*transport_->transProvider_, "", 5000);
+    ASSERT_TRUE(transport_->connManager_->AddGroup(AsuEndpoint{}, 1).ok());
+
+    std::vector<TransportSubBatchContext> subBatchContexts(1);
+    auto& subBatchContext = subBatchContexts[0];
+    subBatchContext.state = TransportSubBatchState::PENDING;
+    subBatchContext.channel = transport_->connManager_->SelectConnection();
+    subBatchContext.entryStatus.assign(1, Status::OK());
+    ASSERT_NE(subBatchContext.channel, nullptr);
+    ASSERT_TRUE(transport_->sendBufferManager_.Allocate(64, subBatchContext.sendSge).ok());
+    ASSERT_TRUE(transport_->flagBufferManager_.Allocate(64, subBatchContext.flagBuffer).ok());
+    ASSERT_NE(subBatchContext.sendSge.local_addr, subBatchContext.sendSge.device_addr);
+    ASSERT_NE(subBatchContext.flagBuffer.local_addr, subBatchContext.flagBuffer.device_addr);
+
+    std::vector<TransProvider::SendIoBatch> ioBatches;
+    std::vector<std::size_t> subBatchIndexes;
+    const auto status =
+        transport_->BuildSubBatchSendBuffers(subBatchContexts, ioBatches, subBatchIndexes);
+
+    ASSERT_TRUE(status.ok()) << status.message;
+    ASSERT_EQ(ioBatches.size(), std::size_t{1});
+    EXPECT_EQ(ioBatches[0].sendBuffer,
+              reinterpret_cast<void*>(subBatchContext.sendSge.device_addr));
+    EXPECT_EQ(ioBatches[0].flagBuffer,
+              reinterpret_cast<void*>(subBatchContext.flagBuffer.device_addr));
 }
 
 TEST(AsuSubmitFlowTest, SendSubBatchBuffersFailsAllSentSubBatchesWhenStatusCountMismatches)

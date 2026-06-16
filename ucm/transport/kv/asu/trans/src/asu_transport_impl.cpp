@@ -22,9 +22,13 @@
  * SOFTWARE.
  * */
 #include "asu_transport_impl.h"
+#include <acl/acl.h>
 #include <algorithm>
+#include <array>
 #include <chrono>
+#include <cstdint>
 #include <memory>
+#include <string>
 #include <thread>
 #include <utility>
 #include "aicpu_trans_provider.h"
@@ -37,6 +41,26 @@
 #include "transport_config_parser.h"
 
 namespace UC::ASU {
+
+namespace {
+
+constexpr std::size_t kFlagBufferHeaderCopySize = kCqeDwordCount * sizeof(std::uint32_t);
+
+Status CopyDeviceToHost(const ScatterGatherEntry& sge, void* host, std::size_t size)
+{
+    if (size > sge.length) {
+        return Status::Error(StatusCode::INVALID_ARGUMENT, "copy size exceeds buffer length");
+    }
+    const auto ret = aclrtMemcpy(host, size, reinterpret_cast<void*>(sge.device_addr), size,
+                                 ACL_MEMCPY_DEVICE_TO_HOST);
+    if (ret != ACL_SUCCESS) {
+        return Status::Error(StatusCode::INTERNAL_ERROR,
+                             "copy device memory to host failed ret=" + std::to_string(ret));
+    }
+    return Status::OK();
+}
+
+}  // namespace
 
 AsuTransportImpl::~AsuTransportImpl() { Shutdown(); }
 
@@ -106,14 +130,14 @@ Status AsuTransportImpl::Init(const TransportConfig& config)
 
     connManager_->StartRecoverLoop();
 
-    auto status =
-        sendBufferManager_.Init("asu send buffer", MemoryType::HOST, config_.sendBufferSlotSize,
-                                config_.sendBufferSlotNum, transProvider_.get());
+    auto status = sendBufferManager_.Init("asu send buffer", MemoryType::HOST_PINNED,
+                                          config_.sendBufferSlotSize, config_.sendBufferSlotNum,
+                                          transProvider_.get());
     if (!status.ok()) { return status; }
 
-    status =
-        flagBufferManager_.Init("asu flag buffer", MemoryType::HOST, config_.flagBufferSlotSize,
-                                config_.flagBufferSlotNum, transProvider_.get());
+    status = flagBufferManager_.Init("asu flag buffer", MemoryType::HOST_PINNED,
+                                     config_.flagBufferSlotSize, config_.flagBufferSlotNum,
+                                     transProvider_.get());
     if (!status.ok()) { return status; }
     protocolManager_ = std::make_unique<ProtocolManager>();
 
@@ -436,23 +460,58 @@ void AsuTransportImpl::PollTaskCompletions(const TransportTaskContextPtr& ctx)
     for (auto& subBatchContext : ctx->subBatchContexts) {
         if (subBatchContext.state != TransportSubBatchState::PENDING) { continue; }
 
+        auto completeWithError = [this, &ctx, &subBatchContext](const Status& status) {
+            std::fill(subBatchContext.entryStatus.begin(), subBatchContext.entryStatus.end(),
+                      status);
+            CompleteSubBatch(*ctx, subBatchContext, status);
+        };
+
         std::uint16_t completedCid = 0;
-        if (const auto status = protocolManager_->PollResponseCid(
-                reinterpret_cast<void*>(subBatchContext.flagBuffer.addr), completedCid);
+        const void* responseData = nullptr;
+        std::array<std::uint8_t, kFlagBufferHeaderCopySize> flagHeader{};
+        std::vector<std::uint8_t> flagBuffer;
+        if (subBatchContext.flagBuffer.memory_type == MemoryType::ASCEND_DEVICE) {
+            auto status =
+                CopyDeviceToHost(subBatchContext.flagBuffer, flagHeader.data(), flagHeader.size());
+            if (!status.ok()) {
+                // Without a readable header, this sub-batch cannot be polled or unpacked.
+                UC_ERROR("Copy flag buffer header from device failed cid={} code={} message={}",
+                         subBatchContext.cid, static_cast<int>(status.code), status.message);
+                completeWithError(status);
+                continue;
+            }
+            responseData = flagHeader.data();
+        } else {
+            responseData = reinterpret_cast<void*>(subBatchContext.flagBuffer.local_addr);
+        }
+
+        if (const auto status = protocolManager_->PollResponseCid(responseData, completedCid);
             !status.ok()) {
             continue;
         }
         if (completedCid == 0 || completedCid != subBatchContext.cid) { continue; }
 
+        if (subBatchContext.flagBuffer.memory_type == MemoryType::ASCEND_DEVICE) {
+            // The header matched; copy the full CQE before unpacking entry status.
+            flagBuffer.resize(subBatchContext.flagBuffer.length);
+            auto status =
+                CopyDeviceToHost(subBatchContext.flagBuffer, flagBuffer.data(), flagBuffer.size());
+            if (!status.ok()) {
+                // The matched CQE cannot be decoded without the complete flag buffer.
+                UC_ERROR("Copy flag buffer from device failed cid={} code={} message={}",
+                         subBatchContext.cid, static_cast<int>(status.code), status.message);
+                completeWithError(status);
+                continue;
+            }
+            responseData = flagBuffer.data();
+        }
+
         KvResponse response;
         const auto batchNumber = static_cast<std::uint16_t>(subBatchContext.entryStatus.size());
         if (const auto status = protocolManager_->UnpackResponse(
-                reinterpret_cast<void*>(subBatchContext.flagBuffer.addr),
-                ToKvOpcode(subBatchContext.opType), batchNumber, response);
+                responseData, ToKvOpcode(subBatchContext.opType), batchNumber, response);
             !status.ok()) {
-            std::fill(subBatchContext.entryStatus.begin(), subBatchContext.entryStatus.end(),
-                      status);
-            CompleteSubBatch(*ctx, subBatchContext, status);
+            completeWithError(status);
             continue;
         }
 

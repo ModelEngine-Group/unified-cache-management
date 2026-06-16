@@ -22,6 +22,7 @@
  * SOFTWARE.
  * */
 #include <acl/acl.h>
+#include <array>
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
@@ -150,8 +151,58 @@ TEST_F(TransportTaskCompletionTest, ReleaseSubBatchResourcesClearsAllocatedSlots
 
     EXPECT_EQ(subBatchContext.sendSge.slot_index, UINT32_MAX);
     EXPECT_EQ(subBatchContext.flagBuffer.slot_index, UINT32_MAX);
-    EXPECT_EQ(subBatchContext.sendSge.addr, std::uint64_t{0});
-    EXPECT_EQ(subBatchContext.flagBuffer.addr, std::uint64_t{0});
+    EXPECT_EQ(subBatchContext.sendSge.local_addr, std::uint64_t{0});
+    EXPECT_EQ(subBatchContext.flagBuffer.local_addr, std::uint64_t{0});
+}
+
+TEST_F(TransportTaskCompletionTest, PollTaskCompletionsReadsDeviceFlagBuffer)
+{
+    AsuTransportImpl deviceTransport;
+    deviceTransport.SetTransProvider(std::make_unique<StubTransProvider>());
+    auto* provider = deviceTransport.transProvider_.get();
+    ASSERT_TRUE(deviceTransport.sendBufferManager_
+                    .Init("test send buffer", MemoryType::HOST, kTestBufferSlotSize,
+                          kTestBufferSlotNum, provider)
+                    .ok());
+    ASSERT_TRUE(deviceTransport.flagBufferManager_
+                    .Init("test flag buffer", MemoryType::ASCEND_DEVICE, kTestBufferSlotSize,
+                          kTestBufferSlotNum, provider)
+                    .ok());
+    deviceTransport.protocolManager_ = std::make_unique<ProtocolManager>();
+
+    auto ctx = std::make_shared<TransportTaskContext>();
+    ctx->state.store(TransportTaskState::INFLIGHT, std::memory_order_release);
+    ctx->subBatchContexts.resize(1);
+    ctx->completedSubBatchCount = 0;
+
+    auto& subBatchContext = ctx->subBatchContexts[0];
+    subBatchContext.cid = 123;
+    subBatchContext.opType = TransportOpType::BATCH_STORE;
+    subBatchContext.entryStatus.assign(2, Status::OK());
+    ASSERT_TRUE(
+        deviceTransport.flagBufferManager_
+            .Allocate((kCqeDwordCount + 1) * sizeof(std::uint32_t), subBatchContext.flagBuffer)
+            .ok());
+    ASSERT_EQ(subBatchContext.flagBuffer.memory_type, MemoryType::ASCEND_DEVICE);
+
+    std::array<std::uint32_t, kCqeDwordCount + 1> cqe{};
+    cqe[3] = subBatchContext.cid;
+    ASSERT_EQ(aclrtMemcpy(reinterpret_cast<void*>(subBatchContext.flagBuffer.device_addr),
+                          cqe.size() * sizeof(std::uint32_t), cqe.data(),
+                          cqe.size() * sizeof(std::uint32_t), ACL_MEMCPY_HOST_TO_DEVICE),
+              ACL_SUCCESS);
+
+    deviceTransport.PollTaskCompletions(ctx);
+
+    EXPECT_EQ(ctx->completedSubBatchCount, std::uint32_t{1});
+    EXPECT_EQ(ctx->state.load(std::memory_order_acquire), TransportTaskState::COMPLETED);
+    EXPECT_TRUE(ctx->finalStatus.ok()) << ctx->finalStatus.message;
+    EXPECT_EQ(subBatchContext.state, TransportSubBatchState::COMPLETED);
+    EXPECT_TRUE(subBatchContext.status.ok()) << subBatchContext.status.message;
+    ASSERT_EQ(subBatchContext.entryStatus.size(), std::size_t{2});
+    EXPECT_TRUE(subBatchContext.entryStatus[0].ok());
+    EXPECT_TRUE(subBatchContext.entryStatus[1].ok());
+    EXPECT_EQ(subBatchContext.flagBuffer.slot_index, UINT32_MAX);
 }
 
 TEST_F(TransportTaskCompletionTest, ReleaseSubBatchResourcesPreservesSubBatchStatus)

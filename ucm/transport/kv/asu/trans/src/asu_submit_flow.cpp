@@ -130,24 +130,31 @@ Status AsuTransportImpl::BuildSubBatchSendBuffers(
             continue;
         }
 
-        if (subBatchContext.flagBuffer.addr == 0 || subBatchContext.flagBuffer.length == 0) {
-            const auto subBatchStatus =
-                Status::Error(StatusCode::NOT_INITIALIZED, "sub-batch flag buffer is not ready");
+        if (subBatchContext.channel == nullptr ||
+            !IsTransportBufferReady(subBatchContext.sendSge) ||
+            !IsTransportBufferReady(subBatchContext.flagBuffer)) {
+            const auto subBatchStatus = Status::Error(StatusCode::NOT_INITIALIZED,
+                                                      "sub-batch transport buffers are not ready");
             UC_ERROR(
-                "Sub-batch flag buffer is not ready index={} cid={} flag_addr={} flag_length={}",
-                index, subBatchContext.cid, subBatchContext.flagBuffer.addr,
-                subBatchContext.flagBuffer.length);
+                "Sub-batch transport buffers are not ready index={} cid={} channel={} "
+                "send_local_addr={} send_device_addr={} send_length={} send_slot={} "
+                "flag_local_addr={} flag_device_addr={} flag_length={} flag_slot={}",
+                index, subBatchContext.cid, subBatchContext.channel != nullptr,
+                subBatchContext.sendSge.local_addr, subBatchContext.sendSge.device_addr,
+                subBatchContext.sendSge.length, subBatchContext.sendSge.slot_index,
+                subBatchContext.flagBuffer.local_addr, subBatchContext.flagBuffer.device_addr,
+                subBatchContext.flagBuffer.length, subBatchContext.flagBuffer.slot_index);
             SetSubBatchSendFailed(subBatchContext, subBatchStatus);
             if (status.ok()) { status = subBatchStatus; }
             ReleaseSubBatchResources(subBatchContext);
             continue;
         }
 
-        ioBatches.push_back(
-            TransProvider::SendIoBatch{subBatchContext.channel->GetConnection(),
-                                       reinterpret_cast<void*>(subBatchContext.sendSge.addr),
-                                       reinterpret_cast<void*>(subBatchContext.flagBuffer.addr),
-                                       subBatchContext.sendSge.length});
+        ioBatches.push_back(TransProvider::SendIoBatch{
+            subBatchContext.channel->GetConnection(),
+            reinterpret_cast<void*>(subBatchContext.sendSge.device_addr),
+            reinterpret_cast<void*>(subBatchContext.flagBuffer.device_addr),
+            subBatchContext.sendSge.length});
         subBatchIndexes.emplace_back(index);
     }
 

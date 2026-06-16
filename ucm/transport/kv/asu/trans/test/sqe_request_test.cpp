@@ -133,10 +133,10 @@ protected:
         transport_->nextRequestCid_.store(1, std::memory_order_relaxed);
         auto* provider = transport_->transProvider_.get();
         auto status =
-            transport_->flagBufferManager_.Init("test flag buffer", MemoryType::HOST,
+            transport_->flagBufferManager_.Init("test flag buffer", MemoryType::HOST_PINNED,
                                                 kFlagBufferSlotSize, kFlagBufferSlotNum, provider);
         ASSERT_TRUE(status.ok()) << status.message;
-        status = transport_->sendBufferManager_.Init("test send buffer", MemoryType::HOST,
+        status = transport_->sendBufferManager_.Init("test send buffer", MemoryType::HOST_PINNED,
                                                      kTestSendBufferSlotSize,
                                                      kTestSendBufferSlotNum, provider);
         ASSERT_TRUE(status.ok()) << status.message;
@@ -185,9 +185,55 @@ TEST_F(SqeRequestTest, SubmitBatchStoreAllocatesFlagBufferAndBuildsRequest)
     EXPECT_EQ(subBatchContext.opType, TransportOpType::BATCH_STORE);
     EXPECT_EQ(subBatchContext.state, TransportSubBatchState::PENDING);
     EXPECT_TRUE(subBatchContext.status.ok());
-    EXPECT_NE(subBatchContext.sendSge.addr, std::uint64_t{0});
+    EXPECT_NE(subBatchContext.sendSge.local_addr, std::uint64_t{0});
+    EXPECT_NE(subBatchContext.sendSge.local_addr, subBatchContext.sendSge.device_addr);
+    EXPECT_NE(subBatchContext.flagBuffer.local_addr, subBatchContext.flagBuffer.device_addr);
+
+    const auto* packedSqe =
+        reinterpret_cast<const std::uint32_t*>(subBatchContext.sendSge.local_addr);
+    const auto packedResponseAddr =
+        static_cast<std::uint64_t>(packedSqe[3]) | (static_cast<std::uint64_t>(packedSqe[4]) << 32);
+    EXPECT_EQ(packedResponseAddr, subBatchContext.flagBuffer.device_addr);
     ASSERT_EQ(subBatchContext.entryStatus.size(), entries.size());
     for (const auto& entryStatus : subBatchContext.entryStatus) { EXPECT_TRUE(entryStatus.ok()); }
+}
+
+TEST_F(SqeRequestTest, SubmitBatchStorePacksSqeIntoDeviceSendBuffer)
+{
+    AsuTransportImpl deviceTransport;
+    deviceTransport.SetTransProvider(std::make_unique<StubTransProvider>());
+    deviceTransport.config_.attrs = DefaultAttrs();
+    deviceTransport.nextRequestCid_.store(41, std::memory_order_relaxed);
+    auto* provider = deviceTransport.transProvider_.get();
+    ASSERT_TRUE(deviceTransport.flagBufferManager_
+                    .Init("test flag buffer", MemoryType::HOST_PINNED, kFlagBufferSlotSize,
+                          kFlagBufferSlotNum, provider)
+                    .ok());
+    ASSERT_TRUE(deviceTransport.sendBufferManager_
+                    .Init("test send buffer", MemoryType::ASCEND_DEVICE, kTestSendBufferSlotSize,
+                          kTestSendBufferSlotNum, provider)
+                    .ok());
+    deviceTransport.protocolManager_ = std::make_unique<ProtocolManager>();
+
+    auto entries = MakeEntries(3);
+    IoScheduler::ScheduledIoBatch subBatch{
+        BatchView<KVBuffer>{entries.data(), entries.size()}
+    };
+    TransportSubBatchContext subBatchContext;
+
+    const auto status = deviceTransport.SubmitEntrySubBatchRequest(TransportOpType::BATCH_STORE,
+                                                                   subBatch, subBatchContext);
+
+    ASSERT_TRUE(status.ok()) << status.message;
+    EXPECT_EQ(subBatchContext.sendSge.memory_type, MemoryType::ASCEND_DEVICE);
+    EXPECT_NE(subBatchContext.sendSge.device_addr, std::uint64_t{0});
+    std::vector<std::uint8_t> packed(subBatchContext.sendSge.length);
+    ASSERT_EQ(aclrtMemcpy(packed.data(), packed.size(),
+                          reinterpret_cast<void*>(subBatchContext.sendSge.device_addr),
+                          packed.size(), ACL_MEMCPY_DEVICE_TO_HOST),
+              ACL_SUCCESS);
+    EXPECT_TRUE(
+        deviceTransport.protocolManager_->VerifyPackedBuffer(packed.data(), packed.size()).ok());
 }
 
 TEST_F(SqeRequestTest, SubmitBatchRetrieveUsesRetrieveOpcodeAndRequest)
@@ -207,7 +253,7 @@ TEST_F(SqeRequestTest, SubmitBatchRetrieveUsesRetrieveOpcodeAndRequest)
     EXPECT_EQ(subBatchContext.cid, std::uint16_t{9});
     EXPECT_EQ(subBatchContext.state, TransportSubBatchState::PENDING);
     EXPECT_TRUE(subBatchContext.status.ok());
-    EXPECT_NE(subBatchContext.sendSge.addr, std::uint64_t{0});
+    EXPECT_NE(subBatchContext.sendSge.local_addr, std::uint64_t{0});
 }
 
 TEST_F(SqeRequestTest, SubmitDeleteCopiesKeysAndBuildsFlagBackedRequest)
@@ -228,7 +274,7 @@ TEST_F(SqeRequestTest, SubmitDeleteCopiesKeysAndBuildsFlagBackedRequest)
     EXPECT_EQ(subBatchContext.state, TransportSubBatchState::PENDING);
     EXPECT_TRUE(subBatchContext.status.ok());
     EXPECT_EQ(subBatchContext.flagBuffer.length, kFlagBufferHeaderSize + (keys.size() + 7) / 8);
-    EXPECT_NE(subBatchContext.sendSge.addr, std::uint64_t{0});
+    EXPECT_NE(subBatchContext.sendSge.local_addr, std::uint64_t{0});
     ASSERT_EQ(subBatchContext.entryStatus.size(), keys.size());
     for (const auto& entryStatus : subBatchContext.entryStatus) { EXPECT_TRUE(entryStatus.ok()); }
 }
@@ -297,8 +343,8 @@ TEST_F(SqeRequestTest, AllocationFailureMarksWholeSubBatchFailed)
     EXPECT_EQ(status.code, StatusCode::NOT_INITIALIZED);
     EXPECT_EQ(subBatchContext.state, TransportSubBatchState::COMPLETED);
     EXPECT_EQ(subBatchContext.status.code, StatusCode::NOT_INITIALIZED);
-    EXPECT_EQ(subBatchContext.flagBuffer.addr, std::uint64_t{0});
-    EXPECT_EQ(subBatchContext.sendSge.addr, std::uint64_t{0});
+    EXPECT_EQ(subBatchContext.flagBuffer.local_addr, std::uint64_t{0});
+    EXPECT_EQ(subBatchContext.sendSge.local_addr, std::uint64_t{0});
     ASSERT_EQ(subBatchContext.entryStatus.size(), entries.size());
     for (const auto& entryStatus : subBatchContext.entryStatus) {
         EXPECT_EQ(entryStatus.code, StatusCode::NOT_INITIALIZED);
@@ -318,7 +364,7 @@ TEST_F(SqeRequestTest, SubmitKeepAliveBuildsFlagBackedRequest)
     EXPECT_EQ(subBatchContext.state, TransportSubBatchState::PENDING);
     EXPECT_TRUE(subBatchContext.status.ok());
     EXPECT_EQ(subBatchContext.flagBuffer.length, kFlagBufferHeaderSize + 1);
-    EXPECT_NE(subBatchContext.sendSge.addr, std::uint64_t{0});
+    EXPECT_NE(subBatchContext.sendSge.local_addr, std::uint64_t{0});
     ASSERT_EQ(subBatchContext.entryStatus.size(), 1);
     EXPECT_TRUE(subBatchContext.entryStatus[0].ok());
 }
