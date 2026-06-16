@@ -680,13 +680,13 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
             summary["tensor_bytes"] = sum(tensor_sizes)
         gpu_kv_buffer_addrs = summary.pop("gpu_kv_buffer_addrs", None)
         gpu_kv_buffer_sizes = summary.pop("gpu_kv_buffer_sizes", None)
-        assert (gpu_kv_buffer_addrs is None) == (gpu_kv_buffer_sizes is None), (
-            "GPU KV buffer addresses and sizes must be both None or both non-None"
-        )
+        assert (gpu_kv_buffer_addrs is None) == (
+            gpu_kv_buffer_sizes is None
+        ), "GPU KV buffer addresses and sizes must be both None or both non-None"
         if gpu_kv_buffer_addrs is not None:
             summary["gpu_kv_buffer_count"] = len(gpu_kv_buffer_addrs)
-            summary["gpu_kv_buffer_bytes"] = (
-                sum(int(size) for size in gpu_kv_buffer_sizes)
+            summary["gpu_kv_buffer_bytes"] = sum(
+                int(size) for size in gpu_kv_buffer_sizes
             )
         return summary
 
