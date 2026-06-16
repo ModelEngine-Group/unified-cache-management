@@ -2930,8 +2930,6 @@ class UCMConnector(KVConnectorBase_V1, SupportsHMA):
             self.connector = UCMHybridLinearAttentionConnector(
                 vllm_config, role, kv_cache_config
             )
-        # elif use_hma:
-        #     self.connector = UCMHMAConnector(vllm_config, role, kv_cache_config)
         else:
             self.connector = UCMDirectConnector(vllm_config, role, kv_cache_config)
 

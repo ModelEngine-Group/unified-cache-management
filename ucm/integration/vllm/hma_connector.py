@@ -295,6 +295,10 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
         self.is_ascend_layout = False
         self.fa_group_ids, self.window_group_ids = [], []
         self.group_metas: dict[int, KVCacheGroupMeta] = {}
+        self.file_size = {}
+
+        # The maximum token block size across all groups, used for aligning the number of computed tokens in the scheduler.
+        self.max_token_block_size = 0
         self._init_group_metas()
         self.fa_store: Optional[UcmKVStoreBaseV1] = None
         self.wa_store: Optional[UcmKVStoreBaseV1] = None
@@ -395,7 +399,6 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
             window_size = getattr(spec, "sliding_window", None)
             compress_ratio = getattr(spec, "compress_ratio", 1)
             token_block_size = kv_cache_spec.block_size
-
             if self.is_ascend_layout:
                 # Ascend compressed groups expose a logical block span scaled by
                 # the compression ratio.
@@ -419,12 +422,53 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
                 self.window_group_ids.append(group_id)
 
             tail_blocks = max(tail_tokens // token_block_size, 1)
+            self.max_token_block_size = max(self.max_token_block_size, token_block_size)
             self.group_metas[group_id] = KVCacheGroupMeta(
                 group_id=group_id,
                 token_block_size=token_block_size,
                 tail_blocks=tail_blocks,
                 tail_tokens=tail_tokens,
             )
+        logger.info_once(
+            f"max token_block_size of all groups: {self.max_token_block_size}"
+        )
+        assert self.max_token_block_size % self.DEFAULT_HASH_BLOCK_SIZE == 0
+        # get file size for block gc
+        if len(layer_compress_ratios) < 61:
+            # for dsv4 flash
+            num_c4a_layers = 21
+            num_c128a_layers = 20
+            # TODO only support for dp tp
+            num_total_layers = 43
+        else:
+            # for dsv4 pro
+            num_c4a_layers = 30
+            num_c128a_layers = 31
+            num_total_layers = 61
+
+        if (
+            self._vllm_config.speculative_config is not None
+            and self._vllm_config.speculative_config.num_speculative_tokens > 0
+        ):
+            num_total_layers += 1
+
+        # TODO we should get file size in worker thread
+        if self.is_ascend_layout:
+            self.file_size["FA"] = (
+                131072 + 16384 + 256
+            ) * num_c4a_layers + 4096 * num_c128a_layers
+            self.file_size["WA"] = (
+                131072 * num_total_layers + (32768 + 8192) * num_c4a_layers
+            )
+        else:
+            self.file_size["FA"] = (
+                37376 + 8448
+            ) * num_c4a_layers + 1168 * num_c128a_layers
+            self.file_size["WA"] = (37376 * 2) * num_total_layers + (
+                8192 + 32768
+            ) * num_c4a_layers
+        self.file_size["FA"] = round_up(self.file_size["FA"], 4096)
+        self.file_size["WA"] = round_up(self.file_size["WA"], 4096)
 
     def _create_fa_store(
         self,
@@ -540,10 +584,17 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
             padded_size = round_up(sum(tensor_size_list), aligned_size)
             config["shard_size"] = padded_size
             config["block_size"] = padded_size
+            if self.file_size[label] != padded_size:
+                logger.info_once(
+                    f"GC file size of {label} does not match real file size. "
+                    f"Worker: {padded_size}, Scheduler: {self.file_size[label]}"
+                )
             # MLA stores aggregate TP shards under one logical rank group.
             config["local_rank_size"] = self.tp_size if self.is_mla else 1
             if cpu_affinity_cores:
                 config["cpu_affinity_cores"] = list(cpu_affinity_cores)
+        else:
+            config["block_size"] = self.file_size[label]
         logger.info(
             f"create FAWA {label} {name} with config: "
             f"{self._summarize_store_config(config)}"
@@ -655,12 +706,9 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
         request: "Request",
         num_computed_tokens: int,
     ) -> tuple[int, bool]:
-        if num_computed_tokens % self.hash_block_size != 0:
-            raise RuntimeError(
-                f"FAWA requires aligned computed tokens, got "
-                f"{num_computed_tokens} with block size {self.hash_block_size}."
-            )
-        hbm_hit_block_num = num_computed_tokens // self.hash_block_size
+        wa_hbm_hit_block_num = num_computed_tokens // self.hash_block_size
+        wa_computed_tokens = wa_hbm_hit_block_num * self.hash_block_size
+
         canonical_hashes = self.generate_hash(
             self.hash_block_size, request.all_token_ids, self._seed
         )
@@ -668,7 +716,7 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
         if self.persist_token_threshold > request.num_tokens:
             return 0, False
 
-        external_keys = canonical_hashes[hbm_hit_block_num:]
+        external_keys = canonical_hashes[wa_hbm_hit_block_num:]
         if not external_keys:
             return 0, False
 
@@ -682,24 +730,34 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
             )
             self._record_counter("connector_lookup_errors_total")
 
-        total_hit_block_num = hbm_hit_block_num + external_hit_blocks
-        external_hit_tokens = external_hit_blocks * self.hash_block_size
-        num_total_hit_tokens = total_hit_block_num * self.hash_block_size
+        total_hit_block_num = wa_hbm_hit_block_num + external_hit_blocks
+        num_total_hit_tokens = (
+            external_hit_blocks * self.hash_block_size + wa_computed_tokens
+        )
+        external_hit_tokens = num_total_hit_tokens - num_computed_tokens
+
         if num_total_hit_tokens == request.num_tokens:
             external_hit_tokens -= 1
 
+        if external_hit_blocks == 0:
+            external_hit_tokens = 0
+            num_total_hit_tokens = num_computed_tokens
+
+        # TODO :for HMA, vllm should offer all kv group's prefix block hits，so that more FA blocks can be reused
         self.requests_meta[request.request_id] = FAWARequestMeta(
             ucm_block_ids=canonical_hashes,
-            hbm_hit_block_num=hbm_hit_block_num,
+            hbm_hit_block_num=wa_hbm_hit_block_num,
             total_hit_block_num=total_hit_block_num,
-            num_token_ids=len(request.all_token_ids),
+            num_token_ids=request.num_tokens,
             token_processed=num_total_hit_tokens,
         )
         logger.info_once(
             f"FAWA request_id: {request.request_id}, "
-            f"total_blocks_num: {len(canonical_hashes)}, "
-            f"hit hbm: {hbm_hit_block_num}, "
-            f"hit external: {external_hit_blocks}"
+            f"total tokens: {request.num_tokens}, "
+            f"hit hbm tokens: {num_computed_tokens}, "
+            f"hit external tokens: {external_hit_tokens}, "
+            f"load blocks: {total_hit_block_num - wa_hbm_hit_block_num}, "
+            f"dump blocks: {len(canonical_hashes) - total_hit_block_num}, "
         )
         return external_hit_tokens, False
 
@@ -1018,7 +1076,11 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
         for request_id, request in metadata.request_meta.items():
             if not request.load_keys:
                 continue
-            group0_vllm_block_ids = set(request.load_vllm_block_ids[0])
+            all_group_vllm_block_ids = {
+                block_id
+                for block_ids in request.load_vllm_block_ids
+                for block_id in block_ids
+            }
             try:
                 if self.fa_store is None:
                     raise RuntimeError("FA store is not initialized.")
@@ -1039,7 +1101,7 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
                         self.fa_store,
                         request.load_keys,
                         fa_ptrs,
-                        group0_vllm_block_ids,
+                        all_group_vllm_block_ids,
                     )
                 )
 
@@ -1056,7 +1118,7 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
                         self.wa_store,
                         window_keys,
                         window_ptrs,
-                        group0_vllm_block_ids,
+                        all_group_vllm_block_ids,
                     )
                 )
             except Exception as e:
@@ -1066,7 +1128,7 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
                 )
                 self._record_load_error(
                     "connector_load_submit_errors_total",
-                    group0_vllm_block_ids,
+                    all_group_vllm_block_ids,
                 )
 
         for load_task in tasks:
@@ -1081,6 +1143,8 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
             raise RuntimeError("FA store is not initialized.")
         if self.wa_store is None:
             raise RuntimeError("WA store is not initialized.")
+
+        self._poll_completed_dump_tasks()
 
         fa_dump_keys: list[bytes] = []
         wa_dump_keys: list[bytes] = []
@@ -1223,6 +1287,35 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
                 self.device.destroy_event_handle(event_handle)
                 logger.error(f"dump FAWA kv cache failed. {type(e).__name__}: {e}")
                 self._record_counter("connector_dump_submit_errors_total")
+
+    def _poll_completed_dump_tasks(self) -> None:
+        """Reap completed FAWA dump tasks without waiting for in-flight tasks."""
+
+        for request_ids, dump_tasks in list(self.tp_dump_tasks.items()):
+            in_flight_tasks = []
+            for dump_task in dump_tasks:
+                task_finished = False
+                try:
+                    task_finished = dump_task.store.check(dump_task.task)
+                    if not task_finished:
+                        in_flight_tasks.append(dump_task)
+                        continue
+
+                    dump_task.store.wait(dump_task.task)
+                except Exception as e:
+                    logger.error(
+                        "Best-effort FAWA dump task failed; external cache may miss. "
+                        f"label={dump_task.label}, keys={dump_task.key_count}, "
+                        f"{type(e).__name__}: {e}"
+                    )
+                finally:
+                    if task_finished:
+                        self.device.destroy_event_handle(dump_task.event_handle)
+
+            if in_flight_tasks:
+                self.tp_dump_tasks[request_ids] = in_flight_tasks
+            else:
+                self.tp_dump_tasks.pop(request_ids, None)
 
     def _drain_best_effort_dump_tasks(self, finished_req_ids: set[str]) -> None:
         """Best-effort wait for FAWA dump tasks.
