@@ -24,6 +24,7 @@
 #ifndef UNIFIEDCACHE_STORE_DETAIL_TEMPLATE_TASK_WRAPPER_H
 #define UNIFIEDCACHE_STORE_DETAIL_TEMPLATE_TASK_WRAPPER_H
 
+#include <memory>
 #include <shared_mutex>
 #include <unordered_map>
 #include "logger/logger.h"
@@ -47,6 +48,7 @@ protected:
     std::shared_mutex mutex_{};
     virtual void Dispatch(TaskPtr t, WaiterPtr w) = 0;
     virtual void Cancel(TaskPtr t) {}
+    virtual bool IsAio() const { return false; }
 
 public:
     Expected<TaskHandle> Submit(Task task)
@@ -97,12 +99,12 @@ public:
             while (!w->WaitForDuration(drainSliceMs)) {
                 UC_WARN("Task({}) has not finished after ({}) ms.", taskId, drainSliceMs);
             }
-            failureSet_.Remove(taskId);
+            if (!IsAio()) { failureSet_.Remove(taskId); }
             return Status::Timeout();
         }
         auto failure = failureSet_.Contains(taskId);
         if (failure) [[unlikely]] {
-            failureSet_.Remove(taskId);
+            if (!IsAio()) { failureSet_.Remove(taskId); }
             return Status::Error();
         }
         return Status::OK();

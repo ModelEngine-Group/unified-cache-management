@@ -60,6 +60,7 @@ void DumpQueue::Submit(TaskPtr task, WaiterPtr waiter)
     auto success = waiting_.TryPush({task, waiter});
     if (success) { return; }
     UC_ERROR("Waiting queue full, submit dump task({}) failed.", task->id);
+    UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("cache_dump_queue_full_total"), 1.0);
     failureSet_->Insert(task->id);
     waiter->Done();
 }
@@ -104,6 +105,7 @@ Status DumpQueue::DumpOneTask(CopyStream& stream, TaskPtr task)
         auto s = stream.WaitEvent(reinterpret_cast<void*>(task->desc.prerequisiteHandle));
         if (s.Failure()) [[unlikely]] {
             UC_ERROR("Failed({}) to wait prerequisite event for dump task({}).", s, task->id);
+            UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("cache_d2h_errors_total"), 1.0);
             return s;
         }
     }
@@ -116,6 +118,7 @@ Status DumpQueue::DumpOneTask(CopyStream& stream, TaskPtr task)
                 DeviceToHostGatherAsync(stream.NextStream(), shard.addrs.data(), handle.Data());
             if (s.Failure()) [[unlikely]] {
                 UC_ERROR("Failed({}) to do D2H batch async for task({}).", s, task->id);
+                UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("cache_d2h_errors_total"), 1.0);
                 return s;
             }
         }
@@ -131,6 +134,7 @@ Status DumpQueue::DumpOneTask(CopyStream& stream, TaskPtr task)
     auto s = stream.Synchronize();
     if (s.Failure()) [[unlikely]] {
         UC_ERROR("Failed({}) to sync on stream for task({}).", s, task->id);
+        UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("cache_d2h_errors_total"), 1.0);
         return s;
     }
     auto tpSyncStream = NowTime::Now();
@@ -138,6 +142,7 @@ Status DumpQueue::DumpOneTask(CopyStream& stream, TaskPtr task)
     auto res = backend_->Dump(std::move(backendTaskDesc));
     if (!res) [[unlikely]] {
         UC_ERROR("Failed({}) to submit dump task({}) to backend.", res.Error(), task->id);
+        UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("cache_backend_dump_submit_errors_total"), 1.0);
         return res.Error();
     }
     dumpCtx.backendTaskHandle = res.Value();
@@ -186,6 +191,8 @@ void DumpQueue::BackendDumpStage()
             if (s.Failure()) {
                 UC_ERROR("Failed({}) to wait backend({}) for task({}).", s, task.backendTaskHandle,
                          task.taskHandle);
+                UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("cache_backend_dump_wait_errors_total"),
+                                         1.0);
                 return;
             }
         }

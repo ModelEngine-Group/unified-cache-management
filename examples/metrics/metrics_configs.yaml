@@ -33,6 +33,22 @@ counter:
     documentation: "Total shards dispatched by Cache dump (mirror of cache_load_shards_total)"
   - name: "cache_dump_backend_shards_total"
     documentation: "Shards actually pushed to backend on dump (excludes !handle.Owner() skips in shared-buffer scenario)"
+  - name: "cache_load_queue_full_total"
+    documentation: "Number of Cache load submissions rejected because the waiting queue was full"
+  - name: "cache_dump_queue_full_total"
+    documentation: "Number of Cache dump submissions rejected because the waiting queue was full"
+  - name: "cache_backend_load_submit_errors_total"
+    documentation: "Number of Cache load backend submit failures"
+  - name: "cache_backend_load_wait_errors_total"
+    documentation: "Number of Cache load backend wait failures"
+  - name: "cache_backend_dump_submit_errors_total"
+    documentation: "Number of Cache dump backend submit failures"
+  - name: "cache_backend_dump_wait_errors_total"
+    documentation: "Number of Cache dump backend wait failures"
+  - name: "cache_h2d_errors_total"
+    documentation: "Number of Cache host-to-device transfer or sync failures"
+  - name: "cache_d2h_errors_total"
+    documentation: "Number of Cache device-to-host transfer, event wait, or sync failures"
 
   # -- Pipeline Cache stage: per-worker real throughput counters ------------
   # Accumulated per completed Cache task with size = shardSize * num_shards.
@@ -53,6 +69,14 @@ counter:
     documentation: "Total bytes transferred from posix storage to host buffer (load path, summed per completed task)"
   - name: "posix_h2s_bytes_total"
     documentation: "Total bytes transferred from host buffer to posix storage (dump path, summed per completed task)"
+  - name: "posix_aio_timeout_total"
+    documentation: "Number of Posix AIO task or submit timeouts"
+  - name: "posix_io_timeout_total"
+    documentation: "Number of Posix synchronous worker task timeouts"
+  - name: "posix_open_errors_total"
+    documentation: "Number of Posix open failures"
+  - name: "posix_io_errors_total"
+    documentation: "Number of Posix read, write, or AIO completion failures"
 
   # -- Connector layer: per-worker real throughput counters ----------------
   # The legacy load_speed / save_speed histograms sample per-call speed
@@ -63,6 +87,20 @@ counter:
     documentation: "Total bytes loaded through the UCM connector (summed across all start_load_kv calls)"
   - name: "save_bytes_total"
     documentation: "Total bytes saved through the UCM connector (summed across all wait_for_save calls)"
+  - name: "connector_lookup_errors_total"
+    documentation: "Number of connector lookup errors treated as cache misses"
+  - name: "connector_load_submit_errors_total"
+    documentation: "Number of connector load submit failures"
+  - name: "connector_load_wait_errors_total"
+    documentation: "Number of connector load wait failures"
+  - name: "connector_load_invalid_requests_total"
+    documentation: "Number of connector load failure events that invalidated request blocks"
+  - name: "connector_load_invalid_blocks_total"
+    documentation: "Number of newly invalidated vLLM block ids caused by connector load failures"
+  - name: "connector_dump_submit_errors_total"
+    documentation: "Number of connector dump submit failures"
+  - name: "connector_dump_wait_errors_total"
+    documentation: "Number of connector dump wait failures"
 
 # Gauge metrics configuration
 gauge:
