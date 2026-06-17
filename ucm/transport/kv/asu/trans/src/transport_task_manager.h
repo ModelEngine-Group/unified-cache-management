@@ -113,6 +113,7 @@ struct TransportTaskContext {
     std::condition_variable cv;
 
     bool Done() const;
+    Status BuildFinalStatus() const;
     void InitializeTerminalSubBatchCount();
     void TryFinalizeFromSubBatches();
 };
