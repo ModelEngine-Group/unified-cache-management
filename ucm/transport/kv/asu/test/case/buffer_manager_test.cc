@@ -71,6 +71,20 @@ TEST_F(BufferManagerTest, InitWithZeroSlotNum)
     ASSERT_EQ(status.code, StatusCode::INVALID_ARGUMENT);
 }
 
+TEST_F(BufferManagerTest, InitHostWithUnalignedSlotCapacity)
+{
+    BufferManager mgr;
+    auto status = mgr.Init("test_buffer", MemoryType::HOST, 1000, 10);
+    ASSERT_TRUE(status.ok()) << status.message;
+}
+
+TEST_F(BufferManagerTest, InitDeviceWithUnalignedSlotCapacity)
+{
+    BufferManager mgr;
+    auto status = mgr.Init("test_buffer", MemoryType::ASCEND_DEVICE, 1000, 10);
+    ASSERT_TRUE(status.ok()) << status.message;
+}
+
 TEST_F(BufferManagerTest, DoubleInit)
 {
     BufferManager mgr;
@@ -123,12 +137,13 @@ TEST_F(BufferManagerTest, SingleAllocateAndFree)
     ScatterGatherEntry sge;
     status = mgr.Allocate(64, sge);
     ASSERT_TRUE(status.ok()) << status.message;
-    ASSERT_NE(sge.addr, 0);
+    ASSERT_NE(sge.local_addr, 0);
     ASSERT_EQ(sge.length, 64);
     ASSERT_EQ(sge.tokenId, 0);
     ASSERT_NE(sge.slot_index, UINT32_MAX);
+    ASSERT_EQ(sge.memory_type, MemoryType::HOST);
 
-    auto* ptr = reinterpret_cast<void*>(sge.addr);
+    auto* ptr = reinterpret_cast<void*>(sge.local_addr);
     std::memset(ptr, 0xAB, 64);
 
     status = mgr.Free(sge.slot_index);
@@ -147,12 +162,12 @@ TEST_F(BufferManagerTest, MultipleAllocatesAndFrees)
     for (int i = 0; i < kCount; ++i) {
         status = mgr.Allocate(128, sges[i]);
         ASSERT_TRUE(status.ok()) << "Failed at i=" << i << ": " << status.message;
-        ASSERT_NE(sges[i].addr, 0);
-        std::memset(reinterpret_cast<void*>(sges[i].addr), i, 128);
+        ASSERT_NE(sges[i].local_addr, 0);
+        std::memset(reinterpret_cast<void*>(sges[i].local_addr), i, 128);
     }
 
     for (int i = 0; i < kCount; ++i) {
-        auto* data = reinterpret_cast<unsigned char*>(sges[i].addr);
+        auto* data = reinterpret_cast<unsigned char*>(sges[i].local_addr);
         for (int j = 0; j < 128; ++j) { ASSERT_EQ(data[j], static_cast<unsigned char>(i)); }
     }
 
@@ -191,10 +206,61 @@ TEST_F(BufferManagerTest, AllocateFullSlotSize)
     status = mgr.Allocate(1024, sge);
     ASSERT_TRUE(status.ok()) << status.message;
     ASSERT_EQ(sge.length, 1024);
+}
 
-    std::memset(reinterpret_cast<void*>(sge.addr), 0xFF, 1024);
+TEST_F(BufferManagerTest, AllocateFull4160ByteSlotCapacity)
+{
+    BufferManager mgr;
+    auto status = mgr.Init("test_buffer", MemoryType::HOST, 4160, 10);
+    ASSERT_TRUE(status.ok());
 
-    mgr.Free(sge.slot_index);
+    ScatterGatherEntry sge;
+    status = mgr.Allocate(4160, sge);
+    ASSERT_TRUE(status.ok()) << status.message;
+    ASSERT_EQ(sge.length, 4160);
+}
+
+TEST_F(BufferManagerTest, AllocateExceeds4160ByteSlotCapacity)
+{
+    BufferManager mgr;
+    auto status = mgr.Init("test_buffer", MemoryType::HOST, 4160, 10);
+    ASSERT_TRUE(status.ok());
+
+    ScatterGatherEntry sge;
+    status = mgr.Allocate(4161, sge);
+    ASSERT_FALSE(status.ok());
+    ASSERT_EQ(status.code, StatusCode::INVALID_ARGUMENT);
+}
+
+TEST_F(BufferManagerTest, AllMemoryTypesUseAlignedSlotStride)
+{
+    for (const auto type : {MemoryType::HOST, MemoryType::HOST_PINNED, MemoryType::ASCEND_DEVICE}) {
+        BufferManager mgr;
+        auto status = mgr.Init("test_buffer", type, 4160, 2);
+        ASSERT_TRUE(status.ok()) << status.message;
+
+        ScatterGatherEntry first;
+        ScatterGatherEntry second;
+        ASSERT_TRUE(mgr.Allocate(4160, first).ok());
+        ASSERT_TRUE(mgr.Allocate(4160, second).ok());
+        ASSERT_EQ(second.local_addr - first.local_addr, 4160);
+        ASSERT_EQ(second.device_addr - first.device_addr, 4160);
+    }
+}
+
+TEST_F(BufferManagerTest, FlagBufferCapacity71Uses128ByteStride)
+{
+    BufferManager mgr;
+    auto status = mgr.Init("flag_buffer", MemoryType::HOST_PINNED, 71, 2);
+    ASSERT_TRUE(status.ok()) << status.message;
+
+    ScatterGatherEntry first;
+    ScatterGatherEntry second;
+    ASSERT_TRUE(mgr.Allocate(71, first).ok());
+    ASSERT_TRUE(mgr.Allocate(71, second).ok());
+    ASSERT_EQ(first.length, 71);
+    ASSERT_EQ(second.local_addr - first.local_addr, 128);
+    ASSERT_EQ(second.device_addr - first.device_addr, 128);
 }
 
 TEST_F(BufferManagerTest, ReuseAfterFree)
@@ -212,7 +278,7 @@ TEST_F(BufferManagerTest, ReuseAfterFree)
     ScatterGatherEntry sge2;
     status = mgr.Allocate(64, sge2);
     ASSERT_TRUE(status.ok());
-    ASSERT_EQ(sge2.addr, sge1.addr);
+    ASSERT_EQ(sge2.local_addr, sge1.local_addr);
     ASSERT_EQ(sge2.slot_index, sge1.slot_index);
 
     mgr.Free(sge2.slot_index);
@@ -233,7 +299,7 @@ TEST_F(BufferManagerTest, ConcurrentAllocateAndFree)
             auto s = mgr.Allocate(64, sge);
             ASSERT_TRUE(s.ok()) << "Thread " << thread_id << " op " << i << ": " << s.message;
 
-            std::memset(reinterpret_cast<void*>(sge.addr), thread_id, 64);
+            std::memset(reinterpret_cast<void*>(sge.local_addr), thread_id, 64);
 
             s = mgr.Free(sge.slot_index);
             ASSERT_TRUE(s.ok()) << s.message;
@@ -260,10 +326,10 @@ TEST_F(BufferManagerTest, ConcurrentStressTest)
             auto s = mgr.Allocate(128, sge);
             ASSERT_TRUE(s.ok());
 
-            std::memset(reinterpret_cast<void*>(sge.addr), thread_id, 128);
+            std::memset(reinterpret_cast<void*>(sge.local_addr), thread_id, 128);
 
             for (int j = 0; j < 128; ++j) {
-                ASSERT_EQ(reinterpret_cast<unsigned char*>(sge.addr)[j], thread_id);
+                ASSERT_EQ(reinterpret_cast<unsigned char*>(sge.local_addr)[j], thread_id);
             }
 
             s = mgr.Free(sge.slot_index);
@@ -286,7 +352,7 @@ TEST_F(BufferManagerTest, FreeZeroesMemory)
     status = mgr.Allocate(64, sge1);
     ASSERT_TRUE(status.ok());
 
-    auto* ptr = reinterpret_cast<uint8_t*>(sge1.addr);
+    auto* ptr = reinterpret_cast<uint8_t*>(sge1.local_addr);
     std::memset(ptr, 0xAB, 1024);
 
     status = mgr.Free(sge1.slot_index);
@@ -295,10 +361,10 @@ TEST_F(BufferManagerTest, FreeZeroesMemory)
     ScatterGatherEntry sge2;
     status = mgr.Allocate(64, sge2);
     ASSERT_TRUE(status.ok());
-    ASSERT_EQ(sge2.addr, sge1.addr);
+    ASSERT_EQ(sge2.local_addr, sge1.local_addr);
     ASSERT_EQ(sge2.slot_index, sge1.slot_index);
 
-    auto* ptr2 = reinterpret_cast<uint8_t*>(sge2.addr);
+    auto* ptr2 = reinterpret_cast<uint8_t*>(sge2.local_addr);
     for (size_t i = 0; i < 1024; ++i) {
         ASSERT_EQ(ptr2[i], 0) << "byte " << i << " not zeroed after free";
     }
@@ -395,6 +461,33 @@ TEST_F(BufferManagerTest, InitWithProviderRegistersMemory)
     ASSERT_NE(provider.lastAddr, 0);
     ASSERT_EQ(provider.lastSize, 1024 * 10);
     ASSERT_EQ(mgr.GetTokenId(), 42);
+
+    ScatterGatherEntry sge;
+    ASSERT_TRUE(mgr.Allocate(64, sge).ok());
+    ASSERT_EQ(sge.local_addr, sge.device_addr);
+}
+
+TEST_F(BufferManagerTest, HostPinnedRegistersDeviceAddress)
+{
+    StubTransProvider provider;
+
+    BufferManager mgr;
+    auto status = mgr.Init("test_rdma_pinned", MemoryType::HOST_PINNED, 4096, 1, &provider);
+    ASSERT_TRUE(status.ok()) << status.message;
+    ASSERT_EQ(provider.registerCount, 1);
+    ASSERT_EQ(provider.lastMemType, TransProvider::MemType::MEM_DEVICE);
+
+    ScatterGatherEntry sge;
+    ASSERT_TRUE(mgr.Allocate(64, sge).ok());
+    ASSERT_NE(sge.local_addr, 0);
+    ASSERT_NE(sge.device_addr, 0);
+    ASSERT_NE(sge.local_addr, sge.device_addr);
+    ASSERT_EQ(sge.local_addr % 4096, 0);
+    ASSERT_EQ(provider.lastAddr, sge.device_addr);
+
+    // The CPU writes through addr while HCOMM and remote RDMA use device_addr.
+    std::memset(reinterpret_cast<void*>(sge.local_addr), 0x5A, sge.length);
+    ASSERT_EQ(*reinterpret_cast<unsigned char*>(sge.local_addr), 0x5A);
 }
 
 TEST_F(BufferManagerTest, InitWithProviderAllocateReturnsTokenId)

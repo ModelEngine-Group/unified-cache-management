@@ -21,8 +21,10 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  * */
+#include <acl/acl.h>
 #include <algorithm>
 #include <cctype>
+#include <cstdint>
 #include <memory>
 #include <string>
 #include <type_traits>
@@ -148,8 +150,23 @@ Status PackSubBatchRequest(ProtocolManager& protocolManager, BufferManager& send
         return SetSubBatchBuildFailed(subBatchContext, status);
     }
 
-    status = protocolManager.PackRequest(reinterpret_cast<void*>(subBatchContext.sendSge.addr),
-                                         opcode, request);
+    if (subBatchContext.sendSge.memory_type == MemoryType::ASCEND_DEVICE) {
+        std::vector<std::uint8_t> staging(packedSize, 0);
+        status = protocolManager.PackRequest(staging.data(), opcode, request);
+        if (status.ok()) {
+            const auto ret =
+                aclrtMemcpy(reinterpret_cast<void*>(subBatchContext.sendSge.device_addr),
+                            packedSize, staging.data(), packedSize, ACL_MEMCPY_HOST_TO_DEVICE);
+            if (ret != ACL_SUCCESS) {
+                status = Status::Error(
+                    StatusCode::INTERNAL_ERROR,
+                    "copy packed SQE to device memory failed ret=" + std::to_string(ret));
+            }
+        }
+    } else {
+        status = protocolManager.PackRequest(
+            reinterpret_cast<void*>(subBatchContext.sendSge.local_addr), opcode, request);
+    }
     if (!status.ok()) {
         UC_ERROR("Pack sub-batch request failed opcode={} cid={} code={} message={}",
                  static_cast<int>(opcode), subBatchContext.cid, static_cast<int>(status.code),
@@ -170,7 +187,7 @@ KvBatchStoreRequest BuildBatchStoreRequest(
     request.kv_ns_id = GetTransportConfigAttr<std::uint32_t>(attrs, "kv_ns_id");
     request.dtype = GetTransportConfigAttr<std::uint8_t>(attrs, "dtype");
     request.dspec = GetTransportConfigAttr<std::uint8_t>(attrs, "dspec");
-    request.response_buffer_addr = flagBuffer.addr;
+    request.response_buffer_addr = flagBuffer.device_addr;
     request.response_mr_key = flagBuffer.tokenId;
     request.lr = GetTransportConfigAttr<bool>(attrs, "lr");
     request.rflag = true;
@@ -195,7 +212,7 @@ KvBatchRetrieveRequest BuildBatchRetrieveRequest(
     KvBatchRetrieveRequest request;
     request.cid = cid;
     request.kv_ns_id = GetTransportConfigAttr<std::uint32_t>(attrs, "kv_ns_id");
-    request.response_buffer_addr = flagBuffer.addr;
+    request.response_buffer_addr = flagBuffer.device_addr;
     request.response_mr_key = flagBuffer.tokenId;
     request.lr = GetTransportConfigAttr<bool>(attrs, "lr");
     request.rflag = true;
@@ -230,7 +247,7 @@ KvDeleteRequest BuildDeleteRequest(const BatchView<CacheKey>& keys,
     KvDeleteRequest request;
     request.cid = cid;
     request.kv_ns_id = GetTransportConfigAttr<std::uint32_t>(attrs, "kv_ns_id");
-    request.response_buffer_addr = flagBuffer.addr;
+    request.response_buffer_addr = flagBuffer.device_addr;
     request.response_mr_key = flagBuffer.tokenId;
     request.rflag = true;
     request.keys = CopyKeys(keys);
@@ -245,7 +262,7 @@ KvExistRequest BuildExistRequest(const BatchView<CacheKey>& keys,
     KvExistRequest request;
     request.cid = cid;
     request.kv_ns_id = GetTransportConfigAttr<std::uint32_t>(attrs, "kv_ns_id");
-    request.response_buffer_addr = flagBuffer.addr;
+    request.response_buffer_addr = flagBuffer.device_addr;
     request.response_mr_key = flagBuffer.tokenId;
     request.rflag = true;
     request.sc = GetTransportConfigAttr<bool>(attrs, "sc");
@@ -258,7 +275,7 @@ KvKeepAliveRequest BuildKeepAliveRequest(std::uint16_t cid, const ScatterGatherE
 {
     KvKeepAliveRequest request;
     request.cid = cid;
-    request.response_buffer_addr = flagBuffer.addr;
+    request.response_buffer_addr = flagBuffer.device_addr;
     request.response_mr_key = flagBuffer.tokenId;
     request.rflag = true;
     return request;

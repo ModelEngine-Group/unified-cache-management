@@ -23,10 +23,35 @@
  * */
 #include "ascend_buffer.h"
 #include <acl/acl.h>
+#include <limits>
 #include <sys/mman.h>
 #include "logger/logger.h"
 
 namespace UC::Trans {
+
+namespace {
+
+constexpr std::uintptr_t HOST_REGISTER_PAGE_SIZE = 4096;
+
+void FreeHostMemory(void* host)
+{
+    auto ret = aclrtFreeHost(host);
+    if (ret != ACL_SUCCESS) { UC_ERROR("Failed to free host memory addr={} ret={}", host, ret); }
+}
+
+void* AlignUp(void* ptr, std::uintptr_t alignment)
+{
+    const auto addr = reinterpret_cast<std::uintptr_t>(ptr);
+    return reinterpret_cast<void*>((addr + alignment - 1) / alignment * alignment);
+}
+
+void ReleaseHostPinnedMemory(void* registeredHost, void* allocatedHost)
+{
+    Buffer::UnregisterHostBuffer(registeredHost);
+    FreeHostMemory(allocatedHost);
+}
+
+}  // namespace
 
 class HostHugePages : public std::enable_shared_from_this<HostHugePages> {
     struct ConstructorKey {};
@@ -122,6 +147,35 @@ std::shared_ptr<void> Trans::AscendBuffer::MakeHostBuffer(size_t size)
     auto ret = aclrtMallocHost(&host, size);
     if (ret == ACL_SUCCESS) { return std::shared_ptr<void>(host, aclrtFreeHost); }
     return nullptr;
+}
+
+std::shared_ptr<void> Trans::AscendBuffer::MakeHostPinnedBuffer(size_t size, void** pDevice)
+{
+    if (pDevice) { *pDevice = nullptr; }
+
+    constexpr auto kMaxSize = std::numeric_limits<size_t>::max();
+    if (size > kMaxSize - (HOST_REGISTER_PAGE_SIZE - 1)) { return nullptr; }
+
+    void* allocatedHost = nullptr;
+    const auto allocationSize = size + HOST_REGISTER_PAGE_SIZE - 1;
+    auto ret = aclrtMallocHost(&allocatedHost, allocationSize);
+    if (ret != ACL_SUCCESS) { return nullptr; }
+
+    void* host = AlignUp(allocatedHost, HOST_REGISTER_PAGE_SIZE);
+
+    void* device = nullptr;
+    auto status = Buffer::RegisterHostBuffer(host, size, &device);
+    if (status.Failure()) {
+        UC_ERROR("Failed to register host-pinned memory addr={} size={} status={}", host, size,
+                 status);
+        FreeHostMemory(allocatedHost);
+        return nullptr;
+    }
+
+    if (pDevice) { *pDevice = device; }
+    return std::shared_ptr<void>(host, [allocatedHost](void* registeredHost) {
+        ReleaseHostPinnedMemory(registeredHost, allocatedHost);
+    });
 }
 
 std::shared_ptr<void> Trans::AscendBuffer::MakeHostBuffer4DirectIo(size_t size)

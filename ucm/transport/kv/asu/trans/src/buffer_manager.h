@@ -34,11 +34,18 @@
 namespace UC::ASU {
 
 struct ScatterGatherEntry {
-    std::uint64_t addr{0};
+    // Local-side address. CPU-accessible for HOST/HOST_PINNED and a local
+    // device address for ASCEND_DEVICE.
+    std::uint64_t local_addr{0};
+    // Device-visible address used by HCOMM/HIXL and remote RDMA operations.
+    std::uint64_t device_addr{0};
     std::uint32_t length{0};
     std::uint32_t tokenId{0};
     std::uint32_t slot_index{UINT32_MAX};
+    MemoryType memory_type{MemoryType::HOST};
 };
+
+bool IsTransportBufferReady(const ScatterGatherEntry& sge);
 
 class BufferManager {
 public:
@@ -48,7 +55,7 @@ public:
     BufferManager(const BufferManager&) = delete;
     BufferManager& operator=(const BufferManager&) = delete;
 
-    Status Init(std::string name, MemoryType type, std::size_t slot_size, std::size_t slot_num,
+    Status Init(std::string name, MemoryType type, std::size_t slot_capacity, std::size_t slot_num,
                 TransProvider* provider = nullptr);
 
     Status Allocate(std::size_t size, ScatterGatherEntry& sge);
@@ -59,13 +66,26 @@ public:
     std::uint32_t GetTokenId() const { return tokenId_; }
 
 private:
+    struct BufferRegion {
+        static Status Create(MemoryType type, std::size_t size, BufferRegion& region);
+
+        explicit operator bool() const { return owner != nullptr; }
+        void Reset();
+
+        std::shared_ptr<void> owner;
+        void* localAddr{nullptr};
+        void* deviceAddr{nullptr};
+        TransProvider::MemType providerMemType{TransProvider::MemType::MEM_HOST};
+    };
+
     Status RegisterMemory();
     std::string name_;
-    std::size_t slot_size_{0};
+    std::size_t slot_capacity_{0};
+    std::size_t slot_stride_{0};
     std::size_t slot_num_{0};
     MemoryType memory_type_{MemoryType::HOST};
 
-    std::shared_ptr<void> memory_;
+    BufferRegion region_;
     IndexPool index_pool_;
 
     TransProvider* provider_{nullptr};
