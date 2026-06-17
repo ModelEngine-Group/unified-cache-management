@@ -96,23 +96,9 @@ public:
             failureSet_.Insert(taskId);
             Cancel(t);
             constexpr size_t drainSliceMs = 2000;
-            constexpr size_t maxDrainRounds = 3;
-            bool drained = false;
-            for (size_t r = 0; r < maxDrainRounds; ++r) {
-                if (w->WaitForDuration(drainSliceMs)) {
-                    drained = true;
-                    break;
-                }
-                UC_WARN("Task({}) not drained after {}ms (round {}/{}).", taskId, drainSliceMs,
-                        r + 1, maxDrainRounds);
+            while (!w->WaitForDuration(drainSliceMs)) {
+                UC_WARN("Task({}) has not finished after ({}) ms.", taskId, drainSliceMs);
             }
-            if (!drained) {
-                UC_ERROR(
-                    "Task({}) latch never drained; returning Timeout and abandoning in-flight"
-                    " IO.",
-                    taskId);
-            }
-            // For Aio, Late IO callbacks must still see failure and avoid committing success.
             if (!IsAio()) { failureSet_.Remove(taskId); }
             return Status::Timeout();
         }
