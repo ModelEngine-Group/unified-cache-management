@@ -22,6 +22,9 @@
  * SOFTWARE.
  * */
 #include "dump_queue.h"
+#include <algorithm>
+#include <atomic>
+#include <memory>
 #include "logger/logger.h"
 #include "metrics_api.h"
 #include "thread/cpu_affinity.h"
@@ -42,6 +45,8 @@ Status DumpQueue::Setup(const Config& config, TaskIdSet* failureSet, TransBuffer
     backend_ = config.storeBackend;
     deviceId_ = config.deviceId;
     tensorSizes_ = config.tensorSizes;
+    shardBytes_ = 0;
+    for (const auto size : tensorSizes_) { shardBytes_ += size; }
     streamNumber_ = config.streamNumber;
     useGdr_ = config.useGdr;
     cpuAffinityCores_ = config.cpuAffinityCores;
@@ -101,6 +106,7 @@ Status DumpQueue::DumpOneTask(CopyStream& stream, TaskPtr task)
     UC_DEBUG("Try to dump ({}) shards.", nShard);
     DumpCtx dumpCtx;
     dumpCtx.taskHandle = task->id;
+    std::shared_ptr<std::atomic<double>> eventReadyTp;
     if (task->desc.prerequisiteHandle != 0) {
         auto s = stream.WaitEvent(reinterpret_cast<void*>(task->desc.prerequisiteHandle));
         if (s.Failure()) [[unlikely]] {
@@ -108,7 +114,16 @@ Status DumpQueue::DumpOneTask(CopyStream& stream, TaskPtr task)
             UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("cache_d2h_errors_total"), 1.0);
             return s;
         }
+        // Timestamp the moment the prerequisite event is actually satisfied, so the
+        // compute-wait phase can be split from the pure D2H copy phase. The callback
+        // is enqueued behind WaitEvent and ahead of the copies, adding no serialization.
+        eventReadyTp = std::make_shared<std::atomic<double>>(0.0);
+        auto cbStatus = stream.AppendCallback([eventReadyTp](bool) {
+            eventReadyTp->store(NowTime::Now(), std::memory_order_release);
+        });
+        if (cbStatus.Failure()) [[unlikely]] { eventReadyTp.reset(); }
     }
+    size_t copiedShards = 0;
     for (size_t i = 0; i < nShard; i++) {
         auto& shard = task->desc[i];
         auto handle = buffer_->Get(shard.owner, shard.index);
@@ -121,6 +136,7 @@ Status DumpQueue::DumpOneTask(CopyStream& stream, TaskPtr task)
                 UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("cache_d2h_errors_total"), 1.0);
                 return s;
             }
+            copiedShards++;
         }
         backendTaskDesc.push_back(Detail::Shard{shard.owner, shard.index, {handle.Data()}});
         dumpCtx.bufferHandles.push_back(std::move(handle));
@@ -148,13 +164,33 @@ Status DumpQueue::DumpOneTask(CopyStream& stream, TaskPtr task)
     dumpCtx.backendTaskHandle = res.Value();
     dumping_.Push(std::move(dumpCtx));
     auto tpEnd = NowTime::Now();
-    UC_DEBUG("Cache task({}) mk_buf={:.3f}ms, sync={:.3f}ms, back={:.3f}ms.", task->id,
-             (tpMakeBuffer - tp) * 1e3, (tpSyncStream - tpMakeBuffer) * 1e3,
+    // Split the sync phase into "waiting for the prerequisite event (compute)" and
+    // "pure D2H copy". Without the split, a fast copy hidden behind a long compute
+    // window is indistinguishable from a genuinely slow copy.
+    auto d2hStartTp = tpMakeBuffer;
+    auto prereqWaitMs = 0.0;
+    if (eventReadyTp) {
+        auto ready = eventReadyTp->load(std::memory_order_acquire);
+        if (ready > 0.0) {  // callback may not have fired yet; fall back if so
+            ready = std::min(ready, tpSyncStream);
+            prereqWaitMs = std::max(0.0, ready - tp) * 1e3;
+            UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("cache_dump_prereq_wait_ms"),
+                                     prereqWaitMs);
+            d2hStartTp = std::max(d2hStartTp, ready);
+        }
+    }
+    auto d2hMs = std::max(0.0, tpSyncStream - d2hStartTp) * 1e3;
+    UC_DEBUG("Cache task({}) mk_buf={:.3f}ms, prereq={:.3f}ms, d2h={:.3f}ms, back={:.3f}ms.",
+             task->id, (tpMakeBuffer - tp) * 1e3, prereqWaitMs, d2hMs,
              (tpEnd - tpSyncStream) * 1e3);
     UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("cache_dump_mkbuf_duration_ms"),
                              (tpMakeBuffer - tp) * 1e3);
-    UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("cache_d2h_duration_ms"),
-                             (tpSyncStream - tpMakeBuffer) * 1e3);
+    UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("cache_d2h_duration_ms"), d2hMs);
+    if (copiedShards > 0 && d2hMs > 0.0) {
+        auto copiedBytes = static_cast<double>(copiedShards) * static_cast<double>(shardBytes_);
+        UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("cache_d2h_bandwidth_gbps"),
+                                 copiedBytes / (d2hMs * 1e-3) / 1e9);
+    }
     UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("cache_dump_backend_submit_duration_ms"),
                              (tpEnd - tpSyncStream) * 1e3);
     return Status::OK();
@@ -186,7 +222,10 @@ void DumpQueue::BackendDumpStage()
     }
     dumping_.ConsumerLoop(stop_, [this](auto&& task) {
         if (task.backendTaskHandle > finishedBackendTaskHandle_) {
+            auto tpWait = NowTime::Now();
             auto s = backend_->Wait(task.backendTaskHandle);
+            UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("cache_dump_backend_wait_duration_ms"),
+                                     (NowTime::Now() - tpWait) * 1e3);
             finishedBackendTaskHandle_ = task.backendTaskHandle;
             if (s.Failure()) {
                 UC_ERROR("Failed({}) to wait backend({}) for task({}).", s, task.backendTaskHandle,

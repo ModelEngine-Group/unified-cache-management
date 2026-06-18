@@ -42,6 +42,8 @@ Status LoadQueue::Setup(const Config& config, TaskIdSet* failureSet, TransBuffer
     backend_ = config.storeBackend;
     deviceId_ = config.deviceId;
     tensorSizes_ = config.tensorSizes;
+    shardBytes_ = 0;
+    for (const auto size : tensorSizes_) { shardBytes_ += size; }
     streamNumber_ = config.streamNumber;
     useGdr_ = config.useGdr;
     cpuAffinityCores_ = config.cpuAffinityCores;
@@ -119,7 +121,7 @@ void LoadQueue::DispatchOneTask(TaskPair&& pair)
              (tpWait - tp) * 1e3, (tpDispatch - tpWait) * 1e3);
     UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("cache_load_queue_wait_duration_ms"),
                              (tpWait - tp) * 1e3);
-    UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("cache_load_dispatch_duration_ms"),
+    UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("cache_load_backend_submit_duration_ms"),
                              (tpDispatch - tpWait) * 1e3);
     UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("cache_load_backend_shards_total"),
                              static_cast<double>(backendSubmitCount));
@@ -162,13 +164,21 @@ void LoadQueue::TransferOneTask(CopyStream& stream, ShardTask&& task)
         auto tpH2dSubmitted = NowTime::Now();
         UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("cache_shard_backend_wait_ms"),
                                  (tpBackendReady - tpBackendWait) * 1e3);
-        UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("cache_shard_h2d_ms"),
+        UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("cache_h2d_submit_ms"),
                                  (tpH2dSubmitted - tpBackendReady) * 1e3);
         if (!task.waiter) {
             holder_.push_back(std::move(task));
             return;
         }
+        const auto copiedShards = holder_.size() + 1;
         s = stream.Synchronize();
+        auto h2dSyncMs = (NowTime::Now() - tpH2dSubmitted) * 1e3;
+        UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("cache_h2d_sync_ms"), h2dSyncMs);
+        if (copiedShards > 0 && h2dSyncMs > 0.0) {
+            auto copiedBytes = static_cast<double>(copiedShards) * static_cast<double>(shardBytes_);
+            UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("cache_h2d_bandwidth_gbps"),
+                                     copiedBytes / (h2dSyncMs * 1e-3) / 1e9);
+        }
         holder_.clear();
         if (s.Failure()) [[unlikely]] {
             UC_ERROR("Failed({}) to sync on stream for task({}).", s, task.taskHandle);
