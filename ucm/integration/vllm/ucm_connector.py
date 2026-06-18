@@ -837,6 +837,7 @@ class UCMDirectConnector(KVConnectorBase_V1):
                 self._record_load_error(
                     "connector_load_submit_errors_total",
                     metadata.request_meta[request_id].load_block_ids[1],
+                    +metadata.request_meta[request_id].dump_block_ids[1],
                 )
                 self._connector_worker_meta.mark_failed(request_id)
                 num_loaded_block -= len(ucm_block_ids)
@@ -851,6 +852,7 @@ class UCMDirectConnector(KVConnectorBase_V1):
                 self._record_load_error(
                     "connector_load_wait_errors_total",
                     metadata.request_meta[request_id].load_block_ids[1],
+                    +metadata.request_meta[request_id].dump_block_ids[1],
                 )
                 self._connector_worker_meta.mark_failed(request_id)
                 num_loaded_block -= request_to_load_blocks.get(request_id, 0)
@@ -1150,6 +1152,7 @@ class UCMLayerWiseConnector(UCMDirectConnector):
                 self._record_load_error(
                     "connector_load_submit_errors_total",
                     metadata.request_meta[request_id].load_block_ids[1],
+                    +metadata.request_meta[request_id].dump_block_ids[1],
                 )
                 self._failure_req_ids.add(request_id)
                 self._connector_worker_meta.mark_failed(request_id)
@@ -1216,6 +1219,7 @@ class UCMLayerWiseConnector(UCMDirectConnector):
                 self._record_load_error(
                     "connector_load_wait_errors_total",
                     metadata.request_meta[request_id].load_block_ids[1],
+                    +metadata.request_meta[request_id].dump_block_ids[1],
                 )
                 self._connector_worker_meta.mark_failed(request_id)
                 self._failure_req_ids.add(request_id)

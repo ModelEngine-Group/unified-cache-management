@@ -253,7 +253,6 @@ class FAWALoadTask:
     store: UcmKVStoreBaseV1
     task: Task
     key_count: int
-    anchor_vllm_block_ids: set[int] = field(default_factory=set)
 
 
 @dataclass
@@ -305,6 +304,11 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
         self.requests_meta: dict[str, FAWARequestMeta] = {}
         self.tp_dump_tasks: dict[tuple, list[FAWADumpTask]] = {}
         self.wa_dump_block_wise = self.launch_config.get("wa_dump_block_wise", True)
+
+        # If the number of external hit blocks is small, it's possible that the load overhead is larger than the compute of a few blocks.
+        # In that case, we can skip loading and directly compute the missed blocks, which can be faster.
+        # This threshold can be tuned based on the performance characteristics of the system.
+        self.load_threshold_blocks = self.launch_config.get("load_threshold_blocks", 0)
 
         if role == KVConnectorRole.SCHEDULER:
             self.store = self._create_fa_store(None)
@@ -739,9 +743,11 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
         if num_total_hit_tokens == request.num_tokens:
             external_hit_tokens -= 1
 
-        if external_hit_blocks == 0:
+        if external_hit_blocks <= self.load_threshold_blocks:
             external_hit_tokens = 0
             num_total_hit_tokens = num_computed_tokens
+            # let wa_hbm_hit_block_num equal to total_hit_block_num,so no need to load external blocks
+            wa_hbm_hit_block_num += external_hit_blocks
 
         # TODO :for HMA, vllm should offer all kv group's prefix block hits，so that more FA blocks can be reused
         self.requests_meta[request.request_id] = FAWARequestMeta(
@@ -863,7 +869,10 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
             req_meta.num_token_ids,
             req_meta.token_processed + new_tokens,
         )
-        dump_start = req_meta.token_processed // self.hash_block_size
+        dump_start = max(
+            req_meta.total_hit_block_num,
+            req_meta.token_processed // self.hash_block_size,
+        )
         dump_end = computed_end_token // self.hash_block_size
         dump_block_keys: list[bytes] = []
         dump_vllm_block_ids: list[list[int]] = []
@@ -941,9 +950,6 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
         preempted_req_ids = set(scheduler_output.preempted_req_ids or ())
         return UCMFAWAConnectorMetadata(requests_dispatch_meta, preempted_req_ids)
 
-    def update_connector_output(self, connector_output) -> None:
-        return None
-
     def _submit_load_task(
         self,
         request_id: str,
@@ -951,7 +957,6 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
         store: UcmKVStoreBaseV1,
         keys: list[bytes],
         ptrs: np.ndarray,
-        anchor_vllm_block_ids: set[int],
     ) -> FAWALoadTask:
         """Submit one store load and retain block ids for failure reporting."""
 
@@ -963,7 +968,6 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
             store=store,
             task=task,
             key_count=len(keys),
-            anchor_vllm_block_ids=anchor_vllm_block_ids,
         )
 
     def _wait_load_task(
@@ -979,10 +983,12 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
                 f"request {load_task.request_id} wait FAWA load "
                 f"task label={load_task.label} error. {type(e).__name__}: {e}"
             )
+            affected_block_ids = self._get_request_all_block_ids(load_task.request_id)
             self._record_load_error(
                 "connector_load_wait_errors_total",
-                load_task.anchor_vllm_block_ids,
+                affected_block_ids,
             )
+            self._connector_worker_meta.mark_failed(load_task.request_id)
 
     def get_block_ids_with_load_errors(self) -> set[int]:
         res = self._invalid_block_ids
@@ -1067,6 +1073,24 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
 
         return np.concatenate(all_ptrs, axis=1)
 
+    def _get_request_all_block_ids(self, request_id: str) -> set[int]:
+        """Get all VLLM block ids referenced by one request's load and dump plan."""
+        metadata = self._get_connector_metadata()
+        request = metadata.request_meta.get(request_id, None)
+        if request is None:
+            return set()
+        all_group_vllm_block_ids = {
+            block_id
+            for block_ids in request.load_vllm_block_ids
+            for block_id in block_ids
+        }
+        all_group_vllm_block_ids |= {
+            block_id
+            for block_ids in request.dump_vllm_block_ids
+            for block_id in block_ids
+        }
+        return all_group_vllm_block_ids
+
     def start_load_kv(self, forward_context: "ForwardContext", **kwargs) -> None:
         metadata = self._get_connector_metadata()
         if not isinstance(metadata, UCMFAWAConnectorMetadata):
@@ -1076,11 +1100,7 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
         for request_id, request in metadata.request_meta.items():
             if not request.load_keys:
                 continue
-            all_group_vllm_block_ids = {
-                block_id
-                for block_ids in request.load_vllm_block_ids
-                for block_id in block_ids
-            }
+
             try:
                 if self.fa_store is None:
                     raise RuntimeError("FA store is not initialized.")
@@ -1101,7 +1121,6 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
                         self.fa_store,
                         request.load_keys,
                         fa_ptrs,
-                        all_group_vllm_block_ids,
                     )
                 )
 
@@ -1118,7 +1137,6 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
                         self.wa_store,
                         window_keys,
                         window_ptrs,
-                        all_group_vllm_block_ids,
                     )
                 )
             except Exception as e:
@@ -1126,9 +1144,10 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
                     f"request {request_id} submit FAWA load task "
                     f"error. {type(e).__name__}: {e}"
                 )
+                affected_block_ids = self._get_request_all_block_ids(request_id)
                 self._record_load_error(
                     "connector_load_submit_errors_total",
-                    all_group_vllm_block_ids,
+                    affected_block_ids,
                 )
 
         for load_task in tasks:
@@ -1295,22 +1314,31 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
             in_flight_tasks = []
             for dump_task in dump_tasks:
                 task_finished = False
+
                 try:
                     task_finished = dump_task.store.check(dump_task.task)
-                    if not task_finished:
-                        in_flight_tasks.append(dump_task)
-                        continue
-
-                    dump_task.store.wait(dump_task.task)
                 except Exception as e:
                     logger.error(
-                        "Best-effort FAWA dump task failed; external cache may miss. "
+                        "Check FAWA dump task failed; external cache may miss. "
                         f"label={dump_task.label}, keys={dump_task.key_count}, "
                         f"{type(e).__name__}: {e}"
                     )
-                finally:
-                    if task_finished:
+                    in_flight_tasks.append(dump_task)
+                    continue
+
+                if task_finished:
+                    try:
+                        dump_task.store.wait(dump_task.task)
+                    except Exception as e:
+                        logger.error(
+                            "Best-effort FAWA dump task failed; external cache may miss. "
+                            f"label={dump_task.label}, keys={dump_task.key_count}, "
+                            f"{type(e).__name__}: {e}"
+                        )
+                    finally:
                         self.device.destroy_event_handle(dump_task.event_handle)
+                else:
+                    in_flight_tasks.append(dump_task)
 
             if in_flight_tasks:
                 self.tp_dump_tasks[request_ids] = in_flight_tasks
