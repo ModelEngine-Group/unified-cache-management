@@ -1262,6 +1262,7 @@ class UCMLayerWiseConnector(UCMDirectConnector):
 
         save_tail_metric = self._BATCH_SAVE_TAIL_METRICS.get(batch_type)
         if save_tail_metric and save_tail_ms is not None:
+            stats["layerwise_save_tail_total_ms"] = save_tail_ms
             stats[save_tail_metric] = save_tail_ms
 
         self._layerwise_batch_start = None
@@ -1452,6 +1453,11 @@ class UCMLayerWiseConnector(UCMDirectConnector):
             )
 
     def wait_for_save(self) -> None:
+        save_tail_start = time.perf_counter()
+        wait_for_save_start_ms = save_tail_start * 1000
+        for pending_dump_task in self._pending_dump_tasks:
+            if pending_dump_task.wait_for_save_start_ms <= 0:
+                pending_dump_task.wait_for_save_start_ms = wait_for_save_start_ms
         self._poll_pending_dump_tasks()
         if self._connector_metadata:
             metadata = self._get_connector_metadata()
@@ -1462,7 +1468,8 @@ class UCMLayerWiseConnector(UCMDirectConnector):
             )
 
         total_end = time.perf_counter()
-        stats = self._layerwise_batch_stats(total_end)
+        save_tail_ms = (total_end - save_tail_start) * 1000
+        stats = self._layerwise_batch_stats(total_end, save_tail_ms)
         if stats:
             ucmmetrics.update_stats(stats)
         self.is_save = False

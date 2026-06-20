@@ -65,6 +65,7 @@ private:
     std::thread dispatcher_;
     std::thread transfer_;
     std::vector<ShardTask> holder_;
+    double h2dBatchStartTp_{0.0};
 
 public:
     ~LoadQueue();

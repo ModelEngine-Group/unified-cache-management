@@ -99,7 +99,7 @@ void DumpQueue::DispatchOneTask(CopyStream& stream, TaskPair&& pair)
 
 Status DumpQueue::DumpOneTask(CopyStream& stream, TaskPtr task)
 {
-    auto tp = NowTime::Now();
+    auto dumpStartTp = NowTime::Now();
     Detail::TaskDesc backendTaskDesc;
     backendTaskDesc.brief = "Cache2Backend";
     const auto nShard = task->desc.size();
@@ -114,9 +114,6 @@ Status DumpQueue::DumpOneTask(CopyStream& stream, TaskPtr task)
             UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("cache_d2h_errors_total"), 1.0);
             return s;
         }
-        // Timestamp the moment the prerequisite event is actually satisfied, so the
-        // compute-wait phase can be split from the pure D2H copy phase. The callback
-        // is enqueued behind WaitEvent and ahead of the copies, adding no serialization.
         eventReadyTp = std::make_shared<std::atomic<double>>(0.0);
         auto cbStatus = stream.AppendCallback([eventReadyTp](bool) {
             eventReadyTp->store(NowTime::Now(), std::memory_order_release);
@@ -147,6 +144,7 @@ Status DumpQueue::DumpOneTask(CopyStream& stream, TaskPtr task)
     UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("cache_dump_backend_shards_total"),
                              static_cast<double>(backendTaskDesc.size()));
     if (backendTaskDesc.empty()) { return Status::OK(); }
+    auto tpSyncStart = NowTime::Now();
     auto s = stream.Synchronize();
     if (s.Failure()) [[unlikely]] {
         UC_ERROR("Failed({}) to sync on stream for task({}).", s, task->id);
@@ -154,6 +152,7 @@ Status DumpQueue::DumpOneTask(CopyStream& stream, TaskPtr task)
         return s;
     }
     auto tpSyncStream = NowTime::Now();
+    auto tpBackendSubmitStart = NowTime::Now();
     for (auto& handle : dumpCtx.bufferHandles) { handle.MarkReady(); }
     auto res = backend_->Dump(std::move(backendTaskDesc));
     if (!res) [[unlikely]] {
@@ -164,35 +163,29 @@ Status DumpQueue::DumpOneTask(CopyStream& stream, TaskPtr task)
     dumpCtx.backendTaskHandle = res.Value();
     dumping_.Push(std::move(dumpCtx));
     auto tpEnd = NowTime::Now();
-    // Split the sync phase into "waiting for the prerequisite event (compute)" and
-    // "pure D2H copy". Without the split, a fast copy hidden behind a long compute
-    // window is indistinguishable from a genuinely slow copy.
-    auto d2hStartTp = tpMakeBuffer;
     auto prereqWaitMs = 0.0;
+    auto d2hMs = std::max(0.0, tpSyncStream - tpSyncStart) * 1e3;
     if (eventReadyTp) {
         auto ready = eventReadyTp->load(std::memory_order_acquire);
-        if (ready > 0.0) {  // callback may not have fired yet; fall back if so
-            ready = std::min(ready, tpSyncStream);
-            prereqWaitMs = std::max(0.0, ready - tp) * 1e3;
+        if (ready > 0.0) {
+            prereqWaitMs = std::max(0.0, ready - dumpStartTp) * 1e3;
             UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("cache_dump_prereq_wait_ms"),
                                      prereqWaitMs);
-            d2hStartTp = std::max(d2hStartTp, ready);
         }
     }
-    auto d2hMs = std::max(0.0, tpSyncStream - d2hStartTp) * 1e3;
-    UC_DEBUG("Cache task({}) mk_buf={:.3f}ms, prereq={:.3f}ms, d2h={:.3f}ms, back={:.3f}ms.",
-             task->id, (tpMakeBuffer - tp) * 1e3, prereqWaitMs, d2hMs,
-             (tpEnd - tpSyncStream) * 1e3);
-    UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("cache_dump_mkbuf_duration_ms"),
-                             (tpMakeBuffer - tp) * 1e3);
-    UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("cache_d2h_duration_ms"), d2hMs);
     if (copiedShards > 0 && d2hMs > 0.0) {
         auto copiedBytes = static_cast<double>(copiedShards) * static_cast<double>(shardBytes_);
+        UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("cache_d2h_duration_ms"), d2hMs);
         UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("cache_d2h_bandwidth_gbps"),
                                  copiedBytes / (d2hMs * 1e-3) / 1e9);
     }
+    UC_DEBUG("Cache task({}) mk_buf={:.3f}ms, prereq={:.3f}ms, d2h={:.3f}ms, back={:.3f}ms.",
+             task->id, (tpMakeBuffer - dumpStartTp) * 1e3, prereqWaitMs, d2hMs,
+             (tpEnd - tpBackendSubmitStart) * 1e3);
+    UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("cache_dump_mkbuf_duration_ms"),
+                             (tpMakeBuffer - dumpStartTp) * 1e3);
     UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("cache_dump_backend_submit_duration_ms"),
-                             (tpEnd - tpSyncStream) * 1e3);
+                             (tpEnd - tpBackendSubmitStart) * 1e3);
     return Status::OK();
 }
 

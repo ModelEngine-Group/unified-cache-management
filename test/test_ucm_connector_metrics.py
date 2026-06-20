@@ -980,6 +980,7 @@ def test_example_metrics_config_defaults_to_vllm_connector_metrics():
     )
     assert "connector_task_" not in text
     assert 'name: "save_completion_wait_duration"' in text
+    assert 'name: "cache_d2h_callback_wait_ms"' not in text
     assert 'name: "save_speed"' not in text
     assert '# multiproc_dir: "/vllm-workspace"' in text
     assert '# multiproc_prefix: "ucm_multiproc:"' in text
@@ -1060,7 +1061,9 @@ def test_ucm_dashboards_reference_configured_vllm_connector_metrics():
         }
 
         assert referenced <= expected_vllm_names
-        assert not any(metric.startswith("ucm:connector_task_") for metric in referenced)
+        assert not any(
+            metric.startswith("ucm:connector_task_") for metric in referenced
+        )
 
 
 def test_vllm_dashboard_uses_combined_prefix_cache_hit_rate_breakdown():
@@ -1227,3 +1230,237 @@ def test_ucm_dashboards_use_engine_and_worker_rank_filters():
                 assert 'engine=~"$engine"' in expr
                 assert 'worker_rank=~"$worker_rank"' not in expr
                 assert "sum by (model_name)" in expr
+
+
+def test_layerwise_dashboard_hides_no_transfer_and_uses_rate_interval_for_breakdown():
+    dashboard = json.loads(
+        (REPO_ROOT / "examples" / "metrics" / "grafana_layerwise.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    panels = {panel["title"]: panel for panel in dashboard["panels"]}
+    all_panels = []
+    for panel in dashboard["panels"]:
+        all_panels.append(panel)
+        all_panels.extend(panel.get("panels", []))
+
+    assert "Layerwise / Batch Total - No Transfer" not in panels
+    assert all("No Transfer" not in panel["title"] for panel in all_panels)
+
+    batch_mix = panels["Layerwise / Batch Mix Rate"]
+    assert all(
+        "layerwise_batch_total_no_transfer_ms" not in target["expr"]
+        for target in batch_mix["targets"]
+    )
+    assert all(
+        "no transfer" not in target.get("legendFormat", "")
+        for target in batch_mix["targets"]
+    )
+
+    load_only = panels["Layerwise / Load Only Batch Avg Breakdown"]
+    save_only = panels["Layerwise / Save Only Batch Avg Breakdown"]
+    load_save = panels["Layerwise / Load + Save Batch Avg Breakdown"]
+    for panel in (load_only, save_only, load_save):
+        for target in panel["targets"]:
+            assert "[40s]" not in target["expr"]
+            assert "[$__rate_interval]" in target["expr"]
+
+
+def test_layerwise_dashboard_uses_batch_duration_and_dump_completion_wait():
+    dashboard = json.loads(
+        (REPO_ROOT / "examples" / "metrics" / "grafana_layerwise.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    all_panels = []
+    for panel in dashboard["panels"]:
+        all_panels.append(panel)
+        all_panels.extend(panel.get("panels", []))
+    panels = {panel["title"]: panel for panel in all_panels}
+
+    assert "Layerwise / Batch Total Duration (all batches)" not in panels
+    assert "Layerwise / wait_for_save Total (save batches only)" not in panels
+    assert all("Batch Total" not in panel["title"] for panel in all_panels)
+
+    assert "Layerwise / Batch Duration - Load Only" in panels
+    assert "Layerwise / Batch Duration - Save Only" in panels
+    assert "Layerwise / Batch Duration - Load + Save" in panels
+
+    panel = panels["Layerwise / Dump Completion Wait Duration"]
+    assert panel["gridPos"] == {"h": 8, "w": 12, "x": 0, "y": 64}
+    assert all(
+        "ucm:save_completion_wait_duration" in target["expr"]
+        for target in panel["targets"]
+    )
+    assert all(
+        "ucm:layerwise_save_tail_total_ms" not in target["expr"]
+        for target in panel["targets"]
+    )
+
+
+def test_layerwise_wait_for_save_records_save_tail_and_completion_start():
+    source = (
+        REPO_ROOT / "ucm" / "integration" / "vllm" / "ucm_connector.py"
+    ).read_text(encoding="utf-8")
+
+    assert "save_tail_start = time.perf_counter()" in source
+    assert "wait_for_save_start_ms = save_tail_start * 1000" in source
+    assert "pending_dump_task.wait_for_save_start_ms = wait_for_save_start_ms" in source
+    assert "save_tail_ms = (total_end - save_tail_start) * 1000" in source
+    assert "self._layerwise_batch_stats(total_end, save_tail_ms)" in source
+    assert 'stats["layerwise_save_tail_total_ms"] = save_tail_ms' in source
+
+
+def test_cache_load_h2d_duration_uses_first_backend_ready_time():
+    header = (REPO_ROOT / "ucm" / "store" / "cache" / "cc" / "load_queue.h").read_text(
+        encoding="utf-8"
+    )
+    source = (REPO_ROOT / "ucm" / "store" / "cache" / "cc" / "load_queue.cc").read_text(
+        encoding="utf-8"
+    )
+
+    assert "double h2dBatchStartTp_{0.0};" in header
+    assert "firstH2dReadyTp" not in header
+    assert "firstH2dReadyTp" not in source
+    assert "double h2dBatchStartTp = 0.0;" not in source
+    assert "double& h2dBatchStartTp" not in header
+    assert "double& h2dBatchStartTp" not in source
+    assert "if (holder_.empty()) { h2dBatchStartTp_ = tpBackendReady; }" in source
+    assert "auto h2dSyncMs = (NowTime::Now() - h2dBatchStartTp_) * 1e3;" in source
+    assert "h2dBatchStartTp_ = 0.0;" in source
+    assert "auto h2dSyncMs = (NowTime::Now() - tpH2dSubmitted) * 1e3;" not in source
+
+
+def test_cache_dump_d2h_metrics_require_event_ready_timestamp():
+    source = (REPO_ROOT / "ucm" / "store" / "cache" / "cc" / "dump_queue.cc").read_text(
+        encoding="utf-8"
+    )
+
+    stream_header = (REPO_ROOT / "ucm" / "shared" / "trans" / "stream.h").read_text(
+        encoding="utf-8"
+    )
+    cuda_header = (
+        REPO_ROOT / "ucm" / "shared" / "trans" / "cuda" / "cuda_stream.h"
+    ).read_text(encoding="utf-8")
+    cuda_source = (
+        REPO_ROOT / "ucm" / "shared" / "trans" / "cuda" / "cuda_stream.cc"
+    ).read_text(encoding="utf-8")
+    ascend_header = (
+        REPO_ROOT / "ucm" / "shared" / "trans" / "ascend" / "ascend_stream.h"
+    ).read_text(encoding="utf-8")
+    ascend_source = (
+        REPO_ROOT / "ucm" / "shared" / "trans" / "ascend" / "ascend_stream.cc"
+    ).read_text(encoding="utf-8")
+
+    assert "struct StreamEventTimer" not in stream_header
+    assert "RecordEventTimerStart" not in stream_header
+    assert "RecordEventTimerEnd" not in stream_header
+    assert "EventElapsedTimeMs" not in stream_header
+    assert "DestroyEventTimer" not in stream_header
+
+    assert "RecordEventTimerStart" not in cuda_header
+    assert "RecordEventTimerEnd" not in cuda_header
+    assert "EventElapsedTimeMs" not in cuda_header
+    assert "DestroyEventTimer" not in cuda_header
+    assert "CudaEventTimer" not in cuda_source
+    assert "cudaEventCreate(&eventTimer->start)" not in cuda_source
+    assert "cudaEventRecord(eventTimer->start, stream_)" not in cuda_source
+    assert "cudaEventRecord(eventTimer->end, stream_)" not in cuda_source
+    assert "cudaEventSynchronize(eventTimer->end)" not in cuda_source
+    assert (
+        "cudaEventElapsedTime(&elapsedMs, eventTimer->start, eventTimer->end)"
+        not in cuda_source
+    )
+
+    assert "RecordEventTimerStart" not in ascend_header
+    assert "RecordEventTimerEnd" not in ascend_header
+    assert "EventElapsedTimeMs" not in ascend_header
+    assert "DestroyEventTimer" not in ascend_header
+    assert "AscendEventTimer" not in ascend_source
+    assert "aclrtCreateEvent(&eventTimer->start)" not in ascend_source
+    assert "aclrtRecordEvent(eventTimer->start, stream_)" not in ascend_source
+    assert "aclrtRecordEvent(eventTimer->end, stream_)" not in ascend_source
+    assert "aclrtSynchronizeEvent(eventTimer->end)" not in ascend_source
+    assert (
+        "aclrtEventElapsedTime(&elapsedMs, eventTimer->start, eventTimer->end)"
+        not in ascend_source
+    )
+
+    assert "eventReadyTp->store(NowTime::Now(), std::memory_order_release);" in source
+    assert "auto ready = eventReadyTp->load(std::memory_order_acquire);" in source
+    assert "auto tpSyncStart = NowTime::Now();" in source
+    assert "auto tpSyncStream = NowTime::Now();" in source
+    assert "auto d2hMs = std::max(0.0, tpSyncStream - tpSyncStart) * 1e3;" in source
+    assert "auto tpBackendSubmitStart = NowTime::Now();" in source
+    assert "(tpEnd - tpBackendSubmitStart) * 1e3" in source
+    assert 'NAME_TO_METRIC_ID("cache_d2h_callback_wait_ms")' not in source
+    assert "auto dumpStartTp = NowTime::Now();" in source
+    assert "std::shared_ptr<std::atomic<double>> d2hEndTp" not in source
+    assert "auto endCbStatus = stream.AppendCallback" not in source
+    assert "d2hEndTp" not in source
+    assert "auto tp = NowTime::Now();" not in source
+    assert "auto d2hStartTp = tpMakeBuffer;" not in source
+    assert "d2hStartTp = std::max(d2hStartTp, ready);" not in source
+    assert "tpSyncStream - ready" not in source
+    assert "end - ready" not in source
+    assert "Trans::StreamEventTimer d2hEventTimer" not in source
+    assert "RecordEventTimerStart" not in source
+    assert "RecordEventTimerEnd" not in source
+    assert "EventElapsedTimeMs" not in source
+    assert "DestroyEventTimer" not in source
+    assert "auto copyStream = stream.NextStream();" not in source
+    assert "DeviceToHostGatherAsync(stream.NextStream()" in source
+    assert "if (eventReadyTp && copiedShards > 0)" not in source
+
+    d2h_duration_pos = source.index('NAME_TO_METRIC_ID("cache_d2h_duration_ms")')
+    d2h_bandwidth_pos = source.index('NAME_TO_METRIC_ID("cache_d2h_bandwidth_gbps")')
+    sync_start_pos = source.index("auto tpSyncStart = NowTime::Now()")
+    sync_pos = source.index("auto s = stream.Synchronize()")
+    sync_end_pos = source.index("auto tpSyncStream = NowTime::Now()")
+    d2h_ms_pos = source.index(
+        "auto d2hMs = std::max(0.0, tpSyncStream - tpSyncStart) * 1e3;"
+    )
+    backend_submit_start_pos = source.index(
+        "auto tpBackendSubmitStart = NowTime::Now()"
+    )
+    prereq_block_pos = source.index("if (eventReadyTp)")
+    ready_load_pos = source.index("auto ready = eventReadyTp->load", prereq_block_pos)
+    backend_submit_pos = source.index(
+        'NAME_TO_METRIC_ID("cache_dump_backend_submit_duration_ms")'
+    )
+
+    assert sync_start_pos < sync_pos < sync_end_pos < backend_submit_start_pos
+    assert sync_end_pos < d2h_ms_pos < d2h_duration_pos < backend_submit_pos
+    assert prereq_block_pos < ready_load_pos < backend_submit_pos
+    assert d2h_ms_pos < d2h_bandwidth_pos < backend_submit_pos
+
+
+def test_pipeline_dashboard_orders_cache_bandwidth_rows():
+    dashboard = json.loads(
+        (REPO_ROOT / "examples" / "metrics" / "grafana_pipeline_store.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    panels = {panel["title"]: panel for panel in dashboard["panels"]}
+
+    assert panels["Cache Load Bandwidth (aggregated)"]["gridPos"]["y"] == 33
+    assert panels["Cache Dump Bandwidth (aggregated)"]["gridPos"]["y"] == 33
+    assert panels["Cache Load Bandwidth (per task)"]["gridPos"]["y"] == 41
+    assert panels["Cache Dump Bandwidth (per task)"]["gridPos"]["y"] == 41
+    assert panels["Cache Load H2D Bandwidth (per task)"]["gridPos"]["y"] == 49
+    assert panels["Cache Dump D2H Bandwidth (per task)"]["gridPos"]["y"] == 49
+    assert panels["Cache Load Backend Wait Duration"]["gridPos"] == {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 65,
+    }
+    assert panels["Cache Dump Wait Compute Duration"]["gridPos"] == {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 65,
+    }
+    assert panels["Cache Load H2D Duration"]["gridPos"]["y"] == 73
+    assert "Cache Dump D2H Duration (include wait compute)" in panels
+    assert "Cache Dump D2H Duration" not in panels

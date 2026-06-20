@@ -161,6 +161,7 @@ void LoadQueue::TransferOneTask(CopyStream& stream, ShardTask&& task)
             UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("cache_h2d_errors_total"), 1.0);
             break;
         }
+        if (holder_.empty()) { h2dBatchStartTp_ = tpBackendReady; }
         auto tpH2dSubmitted = NowTime::Now();
         UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("cache_shard_backend_wait_ms"),
                                  (tpBackendReady - tpBackendWait) * 1e3);
@@ -172,7 +173,7 @@ void LoadQueue::TransferOneTask(CopyStream& stream, ShardTask&& task)
         }
         const auto copiedShards = holder_.size() + 1;
         s = stream.Synchronize();
-        auto h2dSyncMs = (NowTime::Now() - tpH2dSubmitted) * 1e3;
+        auto h2dSyncMs = (NowTime::Now() - h2dBatchStartTp_) * 1e3;
         UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("cache_h2d_sync_ms"), h2dSyncMs);
         if (copiedShards > 0 && h2dSyncMs > 0.0) {
             auto copiedBytes = static_cast<double>(copiedShards) * static_cast<double>(shardBytes_);
@@ -180,6 +181,7 @@ void LoadQueue::TransferOneTask(CopyStream& stream, ShardTask&& task)
                                      copiedBytes / (h2dSyncMs * 1e-3) / 1e9);
         }
         holder_.clear();
+        h2dBatchStartTp_ = 0.0;
         if (s.Failure()) [[unlikely]] {
             UC_ERROR("Failed({}) to sync on stream for task({}).", s, task.taskHandle);
             UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("cache_h2d_errors_total"), 1.0);

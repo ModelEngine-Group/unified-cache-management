@@ -196,10 +196,10 @@ histogram:
     documentation: "Cache dump time waiting for the prerequisite compute event (layer KV ready) to fire before D2H can start (ms). Large => dump is compute-gated, not copy-gated."
     buckets: [0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500]
   - name: "cache_d2h_duration_ms"
-    documentation: "Cache dump pure D2H copy drain after the prerequisite event fired and async submit finished (ms). Excludes compute-event wait (see cache_dump_prereq_wait_ms)."
+    documentation: "Cache dump stream synchronize duration including prerequisite compute wait and D2H copy (ms). Use cache_dump_prereq_wait_ms to estimate the compute-gated portion."
     buckets: [0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500]
   - name: "cache_d2h_bandwidth_gbps"
-    documentation: "Cache dump pure D2H copy bandwidth (GB/s): copied bytes / cache_d2h_duration_ms. Directly comparable to memcpy microbenchmarks; far below them => host memory/DMA path issue."
+    documentation: "Cache dump effective D2H bandwidth (GB/s): copied bytes / cache_d2h_duration_ms. Duration includes prerequisite compute wait."
     buckets: [0.5, 1, 2, 4, 8, 12, 16, 24, 32, 48, 64, 96, 128, 192, 256]
   - name: "cache_dump_backend_submit_duration_ms"
     documentation: "Cache dump backend submit duration: synchronous time to pass buffers to the lower tier (ms). Does NOT include the lower tier's actual write time."
