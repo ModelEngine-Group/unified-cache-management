@@ -111,8 +111,15 @@ class KVCacheGroupLayout:
             strides.append(block_stride)
             tensor_size = math.prod([t.shape[i] for i in size_dims]) * t.element_size()
             # GPU buffer sizes for GPUDirect RDMA registration in store.
-            # Total buffer size = number of blocks (shape[0]) × bytes per block stride.
-            buffer_sizes.append(int(t.shape[0]) * block_stride)
+            # Total buffer size = number of blocks (shape[0]) times bytes per block stride.
+            buffer_size = int(t.shape[0]) * int(block_stride)
+            if buffer_size > np.iinfo(np.uint64).max:
+                raise OverflowError(
+                    "GPU KV buffer size exceeds uint64: "
+                    f"blocks={int(t.shape[0])}, block_stride={block_stride}, "
+                    f"size={buffer_size}, max={np.iinfo(np.uint64).max}"
+                )
+            buffer_sizes.append(buffer_size)
             token_dim = 1
             tensor_block_size = int(t.shape[token_dim])
             tensor_token_strides.append(t.stride(token_dim) * t.element_size())
@@ -781,9 +788,9 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
                 key = (addr, size)
                 if key in gpu_kv_buffer_set:
                     continue
-                gpu_kv_buffer_set.add(key)
-                gpu_kv_buffer_addrs.append(key[0])
-                gpu_kv_buffer_sizes.append(key[1])
+                gpu_kv_buffer_set.add((addr, size))
+                gpu_kv_buffer_addrs.append(addr)
+                gpu_kv_buffer_sizes.append(size)
         return gpu_kv_buffer_addrs, gpu_kv_buffer_sizes
 
     @fawa_latency_metric(

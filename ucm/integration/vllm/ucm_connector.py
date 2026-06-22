@@ -549,12 +549,12 @@ class UCMDirectConnector(KVConnectorBase_V1):
             gpu_kv_buffer_addrs = []
             gpu_kv_buffer_sizes = []
             for addr, size in zip(buffer_addrs, buffer_sizes):
-                key = (int(addr), int(size))
+                key = (addr, size)
                 if key in gpu_kv_buffer_set:
                     continue
-                gpu_kv_buffer_set.add(key)
-                gpu_kv_buffer_addrs.append(key[0])
-                gpu_kv_buffer_sizes.append(key[1])
+                gpu_kv_buffer_set.add((addr, size))
+                gpu_kv_buffer_addrs.append(addr)
+                gpu_kv_buffer_sizes.append(size)
             config["gpu_kv_buffer_addrs"] = gpu_kv_buffer_addrs
             config["gpu_kv_buffer_sizes"] = gpu_kv_buffer_sizes
             if cpu_affinity_cores:
