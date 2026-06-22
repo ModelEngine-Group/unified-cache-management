@@ -169,8 +169,7 @@ Status DumpQueue::DumpOneTask(CopyStream& stream, TaskPtr task)
         auto ready = eventReadyTp->load(std::memory_order_acquire);
         if (ready > 0.0) {
             prereqWaitMs = std::max(0.0, ready - dumpStartTp) * 1e3;
-            UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("cache_dump_prereq_wait_ms"),
-                                     prereqWaitMs);
+            UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("cache_dump_prereq_wait_ms"), prereqWaitMs);
         }
     }
     if (copiedShards > 0 && d2hMs > 0.0) {
