@@ -86,9 +86,10 @@ Status HixlTransport::Shutdown()
             const auto status =
                 hixl_.Disconnect(item.second.remote_engine.c_str(), connect_timeout_ms_);
             if (status != hixl::SUCCESS) {
-                UC_ERROR("transport hixl disconnect failed: Disconnect(\"{}\") returned {}",
-                         item.second.remote_engine, static_cast<int>(status));
-                result = Status::Failed;
+                UC_WARN(
+                    "transport hixl disconnect during shutdown returned: Disconnect(\"{}\") "
+                    "returned {}",
+                    item.second.remote_engine, static_cast<int>(status));
             }
         }
         for (const auto& item : memories_) {
@@ -101,12 +102,7 @@ Status HixlTransport::Shutdown()
                 }
             }
         }
-        const auto status = hixl_.Finalize();
-        if (status != hixl::SUCCESS) {
-            UC_ERROR("transport hixl finalize failed: Finalize returned {}",
-                     static_cast<int>(status));
-            result = Status::Failed;
-        }
+        hixl_.Finalize();
         local_engine_.clear();
     }
     peers_.clear();
