@@ -20,10 +20,6 @@ PYBIND11_MODULE(ucmcompressor, module)
     config.def_readwrite("shardSize", &Config::shardSize);
     config.def_readwrite("blockSize", &Config::blockSize);
     config.def_readwrite("streamNumber", &Config::streamNumber);
-    // config.def_readwrite("bufferSize", &Config::bufferSize);
-    // config.def_readwrite("shareBufferEnable", &Config::shareBufferEnable);
-    // config.def_readwrite("waitingQueueDepth", &Config::waitingQueueDepth);
-    // config.def_readwrite("runningQueueDepth", &Config::runningQueueDepth);
     config.def_readwrite("timeoutMs", &Config::timeoutMs);
     store.def(py::init<>());
     store.def("Self", &CompressorPy::Self);

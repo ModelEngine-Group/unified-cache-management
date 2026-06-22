@@ -3,7 +3,7 @@
 
 #include <condition_variable>
 #include <unistd.h>
-#include "compress_lib/huf.h"
+#include "compress_lib/compress_types.h"
 #include "compress_lib/tunstall_bf16.h"
 #include "global_config.h"
 #include "memory_pool.h"

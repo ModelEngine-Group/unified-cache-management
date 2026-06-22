@@ -154,8 +154,11 @@ def apply_all_patches() -> None:
                 logger.info("UCM patching vllm for pc...")
                 import ucm.integration.vllm.patch.v0191.vllm.pc_patch
             case "0.20.2":
-                logger.info("UCM patching vllm for pc...")
-                import ucm.integration.vllm.patch.v0202.vllm.pc_patch
+                logger.info("UCM patching vllm 0.20.2 for load-failure recovery...")
+                import ucm.integration.vllm.patch.v0202.vllm.load_failure_patch
+            case "0.21.0":
+                logger.info("UCM patching vllm 0.21.0 for load-failure recovery...")
+                import ucm.integration.vllm.patch.v0202.vllm.load_failure_patch
             case _:
                 pass
 
