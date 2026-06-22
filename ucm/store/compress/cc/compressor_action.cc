@@ -81,6 +81,8 @@ void CompressorAction::Compress_Load(CompressTask& ct)
                 }
                 UC_DEBUG("COMPRESS LOAD | shard: {}, done, decompressed_size: {}", shards[i].index,
                          shardSize_);
+            } else {
+                UC_ERROR("COMPRESS LOAD FAILED | shard: {}, unsupported ratio", shards[i].index);
             }
         }
     }
@@ -112,11 +114,6 @@ void CompressorAction::Compress_Dump(CompressTask& ct)
         std::vector<void*> blockToFree;
         std::unique_ptr<MemoryPool> dump_memoryPool_ =
             std::make_unique<MemoryPool>(compBufSize, ct.task->desc.size());
-        if (!dump_memoryPool_) {
-            UC_ERROR("COMPRESS DUMP OOM | task_id: {}, required: {} B", ct.task->id,
-                     shardSize_ * desc.size());
-            Status::NoSpace();
-        }
 
         for (const UC::Detail::Shard& s : desc) {
             UC_DEBUG("COMPRESS DUMP | task_id: {}, shard: {}, compressing...", ct.task->id,
@@ -126,14 +123,25 @@ void CompressorAction::Compress_Dump(CompressTask& ct)
             uint16_t* src = static_cast<uint16_t*>(s.addrs[0]);
 
             size_t compBytes = 0;
+            bool ok = true;
             if (ratio == R200) {
                 size_t n_bf16 = shardSize_ >> 1;
                 int err = TunstallCompressBF16(compBuf, src, n_bf16);
                 if (err != 0) [[unlikely]] {
                     UC_ERROR("COMPRESS DUMP FAILED | task_id: {}, shard: {}, error: {}",
                              ct.task->id, s.index, err);
+                    ok = false;
                 }
                 compBytes = n_bf16;
+            } else {
+                UC_ERROR("COMPRESS DUMP FAILED | task_id: {}, shard: {}, unsupported ratio",
+                         ct.task->id, s.index);
+                ok = false;
+            }
+
+            if (!ok) {
+                dump_memoryPool_->deallocate({compBuf});
+                continue;
             }
 
             std::vector<void*> _addrs{static_cast<void*>(compBuf)};
