@@ -29,6 +29,7 @@ struct Config {
     std::size_t blockSize{0};
     std::int32_t deviceId{-1};
     std::string memoryType;
+    std::string tensorLayout;
     UC::ASU::TransProviderType transProviderType{UC::ASU::TransProviderType::AICPU};
     std::string fakeBackendPath;
     std::uint64_t fakeBackendLatencyMs{1};

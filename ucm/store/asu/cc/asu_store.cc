@@ -46,6 +46,11 @@ namespace {
 using AsuStatus = UC::ASU::Status;
 using AsuStatusCode = UC::ASU::StatusCode;
 
+std::size_t AlignUp(std::size_t value, std::size_t alignment)
+{
+    return ((value + alignment - 1) / alignment) * alignment;
+}
+
 std::uint64_t HashAsuKey(const Detail::BlockId& block)
 {
     static Detail::BlockIdHasher hasher;
@@ -347,6 +352,7 @@ public:
     Status Setup(const Detail::Dictionary& inConfig) override
     {
         auto config = ParseConfig(inConfig);
+        NormalizeAsuShardConfig(config);
         auto status = CheckConfig(config);
         if (status.Failure()) { return status; }
 
@@ -473,6 +479,7 @@ private:
         inConfig.GetNumber("block_size", config.blockSize);
         inConfig.GetNumber("device_id", config.deviceId);
         inConfig.Get("asu_memory_type", config.memoryType);
+        inConfig.Get("asu_tensor_layout", config.tensorLayout);
         std::string providerBackend;
         if (TryGetStringLike(inConfig, "asu_trans_provider_backend", providerBackend)) {
             config.transProviderType = ParseTransProviderBackend(providerBackend);
@@ -506,6 +513,23 @@ private:
         return config;
     }
 
+    void NormalizeAsuShardConfig(Config& config)
+    {
+        if (config.tensorSizes.empty() || config.shardSize == 0 || config.blockSize == 0) {
+            return;
+        }
+        if (config.blockSize % config.shardSize != 0) { return; }
+
+        const auto shardsPerBlock = config.blockSize / config.shardSize;
+        std::size_t alignedShardSize = 0;
+        for (auto& tensorSize : config.tensorSizes) {
+            tensorSize = AlignUp(tensorSize, UC::ASU::kAsuAlignmentBytes);
+            alignedShardSize += tensorSize;
+        }
+        config.shardSize = alignedShardSize;
+        config.blockSize = alignedShardSize * shardsPerBlock;
+    }
+
     Status CheckConfig(const Config& config)
     {
         if (config.mode != "client" && config.mode != "transport") {
@@ -533,16 +557,33 @@ private:
             return Status::InvalidParam(
                 "asu_trans_provider_backend=fake does not support asu_config_path");
         }
+        if (!config.tensorLayout.empty() && config.tensorLayout != "mla" &&
+            config.tensorLayout != "gqa") {
+            return Status::InvalidParam("invalid asu_tensor_layout({})", config.tensorLayout);
+        }
         if (config.tensorSizes.empty()) { return Status::InvalidParam("invalid tensor size"); }
+        if (config.tensorLayout == "gqa" &&
+            (config.tensorSizes.size() < 2 || config.tensorSizes.size() % 2 != 0)) {
+            return Status::InvalidParam("invalid tensor size count({})", config.tensorSizes.size());
+        }
         if (config.shardSize == 0) { return Status::InvalidParam("invalid shard size"); }
         if (config.blockSize == 0) { return Status::InvalidParam("invalid block size"); }
         const auto tensorSum =
             std::accumulate(config.tensorSizes.begin(), config.tensorSizes.end(), std::size_t{0});
-        if (tensorSum != config.shardSize) {
+        if (tensorSum == 0 || tensorSum > config.shardSize) {
             return Status::InvalidParam("invalid shard size({})", config.shardSize);
         }
         if (config.blockSize % config.shardSize != 0) {
             return Status::InvalidParam("invalid block size({})", config.blockSize);
+        }
+        const auto shardsPerBlock = config.blockSize / config.shardSize;
+        if (shardsPerBlock > 1 && config.tensorLayout == "gqa" && config.tensorSizes.size() != 2) {
+            return Status::InvalidParam("invalid layerwise gqa tensor size count({})",
+                                        config.tensorSizes.size());
+        }
+        if (shardsPerBlock > 1 && config.tensorLayout == "mla" && config.tensorSizes.size() != 1) {
+            return Status::InvalidParam("invalid layerwise mla tensor size count({})",
+                                        config.tensorSizes.size());
         }
         return Status::OK();
     }
@@ -557,6 +598,52 @@ private:
     }
 
     std::size_t ShardsPerBlock() const { return config_.blockSize / config_.shardSize; }
+
+    std::vector<std::size_t> BuildMlaTensorOffsets(std::size_t shardIndex) const
+    {
+        std::vector<std::size_t> offsets(config_.tensorSizes.size());
+        auto offset = shardIndex * config_.shardSize;
+        for (std::size_t index = 0; index < config_.tensorSizes.size(); ++index) {
+            offsets[index] = offset;
+            offset += config_.tensorSizes[index];
+        }
+        return offsets;
+    }
+
+    std::vector<std::size_t> BuildGqaTensorOffsets(std::size_t shardIndex) const
+    {
+        std::vector<std::size_t> offsets(config_.tensorSizes.size());
+        const auto tensorCount = config_.tensorSizes.size();
+        if (ShardsPerBlock() > 1) {  // layerwise case
+            const auto numLayers = ShardsPerBlock();
+            offsets[0] = shardIndex * config_.tensorSizes[0];
+            offsets[1] = numLayers * config_.tensorSizes[0] + shardIndex * config_.tensorSizes[1];
+            return offsets;
+        }
+
+        std::size_t keyBase = 0;  // non-layerwise case
+        std::size_t keyPrefix = 0;
+        std::size_t valuePrefix = 0;
+        for (std::size_t index = 0; index < tensorCount; ++index) {
+            if (index % 2 == 0) { keyBase += config_.tensorSizes[index]; }
+        }
+        for (std::size_t index = 0; index < tensorCount; ++index) {
+            if (index % 2 == 0) {
+                offsets[index] = keyPrefix;
+                keyPrefix += config_.tensorSizes[index];
+            } else {
+                offsets[index] = keyBase + valuePrefix;
+                valuePrefix += config_.tensorSizes[index];
+            }
+        }
+        return offsets;
+    }
+
+    std::vector<std::size_t> BuildTensorOffsets(std::size_t shardIndex) const
+    {
+        if (config_.tensorLayout == "gqa") { return BuildGqaTensorOffsets(shardIndex); }
+        return BuildMlaTensorOffsets(shardIndex);
+    }
 
     Expected<std::vector<uint8_t>> QueryBlocks(const Detail::BlockId* blocks, std::size_t num,
                                                const UC::ASU::QueryOptions& options) const
@@ -620,6 +707,7 @@ private:
             if (shard.addrs.size() != config_.tensorSizes.size()) {
                 return Status::InvalidParam("invalid tensor addr count({})", shard.addrs.size());
             }
+            const auto tensorOffsets = BuildTensorOffsets(shard.index);
             for (std::size_t tensorIndex = 0; tensorIndex < shard.addrs.size(); ++tensorIndex) {
                 UC::ASU::KVBuffer entry;
                 entry.key = MakeAsuKey(shard.owner);
@@ -629,6 +717,7 @@ private:
                 entry.buffer.region.size = config_.tensorSizes[tensorIndex];
                 entry.buffer.region.deviceId = config_.deviceId;
                 entry.buffer.handle = UC::ASU::kInvalidMRHandle;
+                entry.offset = static_cast<std::uint32_t>(tensorOffsets[tensorIndex]);
                 entries.emplace_back(std::move(entry));
             }
         }
@@ -646,6 +735,7 @@ private:
         UC_INFO("Set AsuStore::ShardSize to {}.", config.shardSize);
         UC_INFO("Set AsuStore::BlockSize to {}.", config.blockSize);
         UC_INFO("Set AsuStore::TensorSizes to {}.", config.tensorSizes);
+        UC_INFO("Set AsuStore::TensorLayout to {}.", config.tensorLayout);
         UC_INFO("Set AsuStore::DeviceId to {}.", config.deviceId);
         UC_INFO("Set AsuStore::TransProviderBackend to {}.",
                 TransProviderBackendName(config.transProviderType));
