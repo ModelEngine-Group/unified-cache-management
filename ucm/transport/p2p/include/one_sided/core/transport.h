@@ -17,7 +17,7 @@ struct Endpoint {
     std::string host = "127.0.0.1";
     uint16_t port = 0;
 
-    std::string toString() const { return host + ":" + std::to_string(port); }
+    std::string ToString() const { return host + ":" + std::to_string(port); }
 };
 
 enum class Opcode {
@@ -70,16 +70,16 @@ class Transport {
 public:
     virtual ~Transport() = default;
 
-    virtual const char* name() const = 0;
-    virtual Status init(const InitAttrs& options) = 0;
-    virtual Status shutdown() = 0;
+    virtual const char* Name() const = 0;
+    virtual Status Init(const InitAttrs& options) = 0;
+    virtual Status Shutdown() = 0;
 
-    virtual Status registerMemory(const MemoryRegion& memory, MemoryHandle& handle) = 0;
-    virtual Status unregisterMemory(MemoryHandle handle) = 0;
-    virtual Status exportMetadata(const ManagerID& manager_id, Metadata& out) = 0;
-    virtual Status importMetadata(const ManagerID& manager_id, const Metadata& metadata) = 0;
-    virtual Status connectPeer(const ManagerID& manager_id) = 0;
-    virtual Status execute(const Operation& request) = 0;
+    virtual Status RegisterMemory(const MemoryRegion& memory, MemoryHandle& handle) = 0;
+    virtual Status UnregisterMemory(MemoryHandle handle) = 0;
+    virtual Status ExportMetadata(const ManagerID& manager_id, Metadata& out) = 0;
+    virtual Status ImportMetadata(const ManagerID& manager_id, const Metadata& metadata) = 0;
+    virtual Status ConnectPeer(const ManagerID& manager_id) = 0;
+    virtual Status Execute(const Operation& request) = 0;
 };
 
 using TransportPtr = std::shared_ptr<Transport>;
