@@ -1129,7 +1129,135 @@ class UCMLayerWiseConnector(UCMDirectConnector):
         self._failure_req_ids: set[str] = set()
         self._layerwise_prev_wait_end: Optional[float] = None
         self._layerwise_batch_start: Optional[float] = None
+        # MTP layers can be revisited several times in one speculative decode
+        # batch. Keep only the last metadata snapshot for each MTP layer and
+        # submit its dump after the layerwise forward finishes.
+        self._deferred_mtp_dumps: dict[int, tuple[list[bytes], list[int], set[str]]] = (
+            {}
+        )
+        self._is_mtp = False
+        self._num_mtp_layers = 0
+        self._mtp_layer_start: Optional[int] = None
+        self._mtp_layer_end: Optional[int] = None
+        self._init_mtp_layerwise_dump_state()
         logger.info("Init UCMLayerWiseConnector.")
+
+    def _init_mtp_layerwise_dump_state(self) -> None:
+        """Cache whether MTP is enabled and how many MTP layers it has."""
+        speculative_config = getattr(self._vllm_config, "speculative_config", None)
+        if speculative_config is None:
+            return
+
+        mtp_method = getattr(speculative_config, "method", None)
+        self._is_mtp = mtp_method == "mtp" or (
+            isinstance(mtp_method, str) and mtp_method.endswith("_mtp")
+        )
+        if not self._is_mtp:
+            return
+
+        draft_model_config = getattr(speculative_config, "draft_model_config", None)
+        draft_hf_config = getattr(draft_model_config, "hf_config", None)
+        value = getattr(draft_hf_config, "n_predict", None)
+        if value is not None:
+            try:
+                self._num_mtp_layers = max(int(value), 0)
+            except (TypeError, ValueError) as e:
+                logger.warning(
+                    f"Failed to parse MTP n_predict from draft hf_config, "
+                    f"n_predict={value}. "
+                    f"{type(e).__name__}: {e}"
+                )
+
+    def _refresh_mtp_layer_range(self) -> None:
+        """Resolve MTP layer ids from the registered KV cache layout."""
+        self._mtp_layer_start = None
+        self._mtp_layer_end = None
+        if not self._is_mtp or self._num_mtp_layers <= 0:
+            return
+
+        num_hidden_layers = self.kv_cache_layout.num_hidden_layers
+        if num_hidden_layers <= 0:
+            logger.warning_once(
+                "Skip deferred MTP layerwise dump because num_hidden_layers is unknown."
+            )
+            return
+
+        # MTP layers are indexed after the base model layers, e.g. a 78-layer
+        # model uses layer_id 78 for its first MTP layer.
+        self._mtp_layer_start = num_hidden_layers
+        self._mtp_layer_end = num_hidden_layers + self._num_mtp_layers
+
+    def _is_mtp_layer(self, layer_id: int) -> bool:
+        """Check whether a global layer id belongs to the MTP layer range."""
+        return (
+            self._mtp_layer_start is not None
+            and self._mtp_layer_end is not None
+            and self._mtp_layer_start <= layer_id < self._mtp_layer_end
+        )
+
+    def register_kv_caches(self, kv_caches: dict[str, torch.Tensor]):
+        super().register_kv_caches(kv_caches)
+        self._refresh_mtp_layer_range()
+
+    def _submit_layerwise_dump_task(
+        self,
+        layer_id: int,
+        total_ucm_block_ids: list[bytes],
+        total_vllm_block_ids: list[int],
+        dump_request_ids: set[str],
+    ) -> None:
+        """Submit a layerwise dump and attach it to the existing async lifecycle."""
+        if not dump_request_ids:
+            return
+
+        local_layer_id = layer_id - self.first_layer_id
+        if self.dump_total_ptrs is None:
+            self.dump_total_ptrs = self.kv_cache_layout.extract_block_addrs(
+                total_vllm_block_ids, layer_first=True
+            )
+
+        event_handle = 0
+        try:
+            layer_ptrs = np.ascontiguousarray(self.dump_total_ptrs[local_layer_id])
+            shard_indexs = [layer_id] * len(total_ucm_block_ids)
+            event_handle = self._get_dump_event_handle()
+            task = self.store.dump_data(
+                total_ucm_block_ids, shard_indexs, layer_ptrs, event_handle
+            )
+            self._pending_dump_tasks.append(
+                PendingDumpTask(
+                    task=task,
+                    request_ids=set(dump_request_ids),
+                    event_handle=event_handle,
+                )
+            )
+        except Exception as e:
+            logger.error(
+                f"submit dump task for layer {layer_id} failed. {type(e).__name__}: {e}"
+            )
+            self._record_counter("connector_dump_submit_errors_total")
+            if self.enable_event_sync and event_handle and self.device is not None:
+                self.device.destroy_event_handle(event_handle)
+
+    def _flush_deferred_mtp_dumps(self) -> None:
+        """Submit the last saved metadata snapshot for each deferred MTP layer."""
+        if not self._deferred_mtp_dumps:
+            return
+
+        deferred_mtp_dumps = self._deferred_mtp_dumps
+        self._deferred_mtp_dumps = {}
+        for layer_id in sorted(deferred_mtp_dumps):
+            (
+                total_ucm_block_ids,
+                total_vllm_block_ids,
+                dump_request_ids,
+            ) = deferred_mtp_dumps[layer_id]
+            self._submit_layerwise_dump_task(
+                layer_id,
+                total_ucm_block_ids,
+                total_vllm_block_ids,
+                dump_request_ids,
+            )
 
     def _submit_request_load_tasks_for_layer(
         self,
@@ -1282,32 +1410,23 @@ class UCMLayerWiseConnector(UCMDirectConnector):
             total_vllm_block_ids.extend(vllm_block_ids)
 
         if dump_request_ids:
-            if self.dump_total_ptrs is None:
-                self.dump_total_ptrs = self.kv_cache_layout.extract_block_addrs(
-                    total_vllm_block_ids, layer_first=True
+            if self._is_mtp_layer(layer_id):
+                self._deferred_mtp_dumps[layer_id] = (
+                    list(total_ucm_block_ids),
+                    list(total_vllm_block_ids),
+                    set(dump_request_ids),
                 )
-            shard_indexs = [layer_id] * len(total_ucm_block_ids)
-            event_handle = 0
-            try:
-                layer_ptrs = np.ascontiguousarray(self.dump_total_ptrs[local_layer_id])
-                event_handle = self._get_dump_event_handle()
-                task = self.store.dump_data(
-                    total_ucm_block_ids, shard_indexs, layer_ptrs, event_handle
+                logger.debug(
+                    f"Defer MTP layerwise dump: layer={layer_name}, "
+                    f"layer_id={layer_id}, blocks={len(total_ucm_block_ids)}"
                 )
-                self._pending_dump_tasks.append(
-                    PendingDumpTask(
-                        task=task,
-                        request_ids=set(dump_request_ids),
-                        event_handle=event_handle,
-                    )
+            else:
+                self._submit_layerwise_dump_task(
+                    layer_id,
+                    total_ucm_block_ids,
+                    total_vllm_block_ids,
+                    dump_request_ids,
                 )
-            except Exception as e:
-                logger.error(
-                    f"submit dump task for {layer_name} failed. {type(e).__name__}: {e}"
-                )
-                self._record_counter("connector_dump_submit_errors_total")
-                if self.enable_event_sync and event_handle and self.device is not None:
-                    self.device.destroy_event_handle(event_handle)
         if self.is_save:
             submit_end = time.perf_counter()
             ucmmetrics.update_stats(
@@ -1315,6 +1434,7 @@ class UCMLayerWiseConnector(UCMDirectConnector):
             )
 
     def wait_for_save(self) -> None:
+        self._flush_deferred_mtp_dumps()
         # Only reap completed tasks here. Unfinished dumps are waited when the
         # request finishes or is preempted.
         self._poll_pending_dump_tasks()
