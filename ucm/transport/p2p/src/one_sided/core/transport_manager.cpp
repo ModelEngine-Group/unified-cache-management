@@ -11,6 +11,7 @@
 #include <utility>
 #include <vector>
 #include "control/metadata_channel.h"
+#include "hixl/hixl_transport.h"
 #include "logger/logger.h"
 #include "transport_common.h"
 
@@ -77,9 +78,33 @@ bool SameMemoryRegion(const MemoryRegion& left, const MemoryRegion& right)
            left.device_id == right.device_id;
 }
 
+bool MemoryRange(const MemoryRegion& memory, uint64_t* begin, uint64_t* end)
+{
+    const auto range_begin = detail::PtrToU64(memory.addr);
+    if (memory.length > std::numeric_limits<uint64_t>::max() - range_begin) { return false; }
+    if (begin != nullptr) { *begin = range_begin; }
+    if (end != nullptr) { *end = range_begin + memory.length; }
+    return true;
+}
+
+bool MemoryRegionOverlaps(const MemoryRegion& left, const MemoryRegion& right)
+{
+    if (left.type != right.type || left.device_id != right.device_id) { return false; }
+
+    uint64_t left_begin = 0;
+    uint64_t left_end = 0;
+    uint64_t right_begin = 0;
+    uint64_t right_end = 0;
+    if (!MemoryRange(left, &left_begin, &left_end) ||
+        !MemoryRange(right, &right_begin, &right_end)) {
+        return true;
+    }
+    return left_begin < right_end && right_begin < left_end;
+}
+
 const char* TransportForDirect(OperationDirect direct)
 {
-    (void)direct;
+    if (direct == OperationDirect::RemoteDeviceHost) { return "hixl"; }
     return nullptr;
 }
 
@@ -127,7 +152,9 @@ Status TransportManager::InstallTransport(const std::string& protocol, const Ini
 TransportPtr TransportManager::CreateTransport(const std::string& protocol) const
 {
     using Factory = std::function<TransportPtr()>;
-    static const std::unordered_map<std::string, Factory> factories{};
+    static const std::unordered_map<std::string, Factory> factories{
+        {"hixl", []() { return std::make_shared<HixlTransport>(); }},
+    };
 
     const auto it = factories.find(protocol);
     return it == factories.end() ? nullptr : it->second();
@@ -225,6 +252,7 @@ Status TransportManager::RegisterMemory(const MemoryRegion& memory, MemoryHandle
 {
     handle = kInvalidMemoryHandle;
     if (memory.addr == nullptr || memory.length == 0) { return Status::InvalidArgument; }
+    if (!MemoryRange(memory, nullptr, nullptr)) { return Status::InvalidArgument; }
     if (transports_.empty()) { return Status::Failed; }
 
     for (const auto& item : memories_) {
@@ -232,6 +260,7 @@ Status TransportManager::RegisterMemory(const MemoryRegion& memory, MemoryHandle
             handle = item.first;
             return Status::Ok;
         }
+        if (MemoryRegionOverlaps(item.second.region, memory)) { return Status::InvalidArgument; }
     }
 
     MemoryRecord record;

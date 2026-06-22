@@ -8,6 +8,7 @@
 #include <vector>
 #include "control/metadata_channel.h"
 #include "core/transport.h"
+#include "core/transport_init_attrs.h"
 
 namespace transport {
 
