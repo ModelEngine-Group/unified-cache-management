@@ -196,7 +196,7 @@ KvBatchStoreRequest BuildBatchStoreRequest(
     for (std::size_t index = 0; index < entries.size; ++index) {
         KvBatchStoreEntry entry;
         entry.key = entries[index].key;
-        entry.offset = 0;
+        entry.offset = entries[index].offset;
         entry.buffer_addr = entries[index].buffer.region.addr;
         entry.mr_key = ToSqeMrKey(entries[index].buffer.handle);
         entry.length = static_cast<std::uint32_t>(entries[index].buffer.region.size);
@@ -221,7 +221,7 @@ KvBatchRetrieveRequest BuildBatchRetrieveRequest(
     for (std::size_t index = 0; index < entries.size; ++index) {
         KvBatchRetrieveEntry entry;
         entry.key = entries[index].key;
-        entry.offset = 0;
+        entry.offset = entries[index].offset;
         entry.buffer_addr = entries[index].buffer.region.addr;
         entry.mr_key = ToSqeMrKey(entries[index].buffer.handle);
         entry.length = static_cast<std::uint32_t>(entries[index].buffer.region.size);
