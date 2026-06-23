@@ -3,12 +3,10 @@
 #include <cmath>    // from cmath import log
 #include <cstdlib>  // from cstdlib import qsort
 #include <cstring>  // from cstring import memset, memcpy
-#include "securec.h"
 #if TS_DEBUG_PRINT
 #include <stdio.h>
 #endif
 
-#include "securec_check.h"
 #include "tunstall.h"
 
 #define TS_V2_EXPAND \
@@ -59,7 +57,7 @@ static int ts_do_not_compress(uint8_t* p_dst, size_t* p_dst_len, const uint8_t* 
     p_hdr->mode = TS_MODE_UNCOMPRESS;                                  // 调整非压缩模式
     p_hdr->uncompress.length = src_len;
     p_dst = p_dst_base + ts_get_header_length(p_hdr);
-    SECUREC_CHECK(memcpy_s(p_dst, src_len, p_src, src_len));
+    memcpy(p_dst, p_src, src_len);
     *p_dst_len = (p_dst + src_len) - p_dst_base;  // dst大小
     return R_TS_OK;
 }
@@ -136,7 +134,7 @@ static int ts_cmp_hist(const void* p_a, const void* p_b)
 // 功能：统计输入数据中各符号的出现频率，构建直方图（也即概率表）同时检查符号值是否在有效范围
 static int ts_get_hist_from_array(ts_hist_t* p_hist, const uint8_t* p_src, size_t src_len)
 {
-    SECUREC_CHECK(memset_s(p_hist, sizeof(ts_hist_t), 0, sizeof(ts_hist_t)));
+    memset(p_hist, 0, sizeof(ts_hist_t));
     for (size_t i = 0; i < src_len; i++) {  // 循环：遍历输入数组，统计频率freq
         uint8_t symb = p_src[i];
         RET_ERROR_IF(R_ERR_SYMB_RANGE, symb >= TS_N_SYMB);  // 检查符号是否超出范围
@@ -242,10 +240,10 @@ static int ts_build_lut(ts_lut_item_t* p_lut, size_t max_lut_size, ts_enc_state_
     uint8_t lut_black_list[TS_LUT_SIZE] = {
         0};  // 数组：黑名单，上了黑名单的LUT表项不能被展开，初始化全都不在黑名
 
-    SECUREC_CHECK(memset_s(p_lut, TS_LUT_BYTES, 0, TS_LUT_BYTES));  // 清空 LUT
-    uint32_t lut_size = 1;  // 初始只有一item，其 mark = 0 (init_mark)
+    memset(p_lut, 0, TS_LUT_BYTES);  // 清空 LUT
+    uint32_t lut_size = 1;           // 初始只有一item，其 mark = 0 (init_mark)
 
-    SECUREC_CHECK(memset_s(p_enc_table, TS_ENC_STATE_TABLE_BYTES, 0, TS_ENC_STATE_TABLE_BYTES));
+    memset(p_enc_table, 0, TS_ENC_STATE_TABLE_BYTES);
     uint16_t new_state = 0;   // 当前最新的state, 最开始只有一个状
     p_enc_table[0].mark = 0;  // init_mark = 0
 
@@ -598,7 +596,7 @@ int TunstallDecompress(uint8_t* p_dst, size_t* p_dst_len, const uint8_t* p_src,
 
     if (p_hdr->mode == TS_MODE_UNCOMPRESS) {
         p_src += ts_get_header_length(p_hdr);
-        SECUREC_CHECK(memcpy_s(p_dst, p_hdr->uncompress.length, p_src, p_hdr->uncompress.length));
+        memcpy(p_dst, p_src, p_hdr->uncompress.length);
         *p_dst_len = p_hdr->uncompress.length;
 
     } else {
@@ -635,12 +633,10 @@ int TunstallDecompress(uint8_t* p_dst, size_t* p_dst_len, const uint8_t* p_src,
             uint32_t mark2 = (mark21 >> TS_MARK_BITS) & ((1 << TS_MARK_BITS) - 1);
             p_src += (TS_MARK_BITS * 2 / 8);
 
-            SECUREC_CHECK(
-                memcpy_s(p_dst, sizeof(ts_lut_item_t), p_lut[mark1].v, sizeof(ts_lut_item_t)));
+            memcpy(p_dst, p_lut[mark1].v, sizeof(ts_lut_item_t));
             p_dst += p_lut[mark1].c;
 
-            SECUREC_CHECK(
-                memcpy_s(p_dst, sizeof(ts_lut_item_t), p_lut[mark2].v, sizeof(ts_lut_item_t)));
+            memcpy(p_dst, p_lut[mark2].v, sizeof(ts_lut_item_t));
             p_dst += p_lut[mark2].c;
         }
 

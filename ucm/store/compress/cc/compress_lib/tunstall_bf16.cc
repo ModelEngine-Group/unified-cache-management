@@ -2,7 +2,6 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
-#include "securec_check.h"
 
 #define ENABLE_NEON_DECOMPPRESSION 1
 #define ENABLE_EXTRA_DECOMPRESSION 1
@@ -79,7 +78,7 @@ static int decompress_fp8_to_bf16_inplace(uint8_t* p_data, size_t n_bf16)
         uint16_t sign = static_cast<uint16_t>((fp8 & 0x04) << 13);
         uint16_t mant2 = static_cast<uint16_t>((fp8 & 0x03) << 5);
         uint16_t bf16 = sign | exp8 | mant2 | 0x10;
-        SECUREC_CHECK(memcpy_s(p_data + ((i - 1) << 1), sizeof(bf16), &bf16, sizeof(bf16)));
+        memcpy(p_data + ((i - 1) << 1), &bf16, sizeof(bf16));
     }
     return R_TS_OK;
 #else
@@ -248,8 +247,7 @@ static int decompress_tunstall_trunc(uint16_t* p_dst, const uint8_t* p_src, size
         while (p_exp_write < p_exp_end) {
             const ts_lut_item_t* it = &(p_hdr->dynamic.lut[p_mark[0]]);
             p_mark++;
-            SECUREC_CHECK(
-                memcpy_s(p_exp_write, sizeof(ts_lut_item_t), it->v, sizeof(ts_lut_item_t)));
+            memcpy(p_exp_write, it->v, sizeof(ts_lut_item_t));
             p_exp_write += it->c;
         }
 
@@ -353,7 +351,7 @@ static int decompress_tunstall_trunc(uint16_t* p_dst, const uint8_t* p_src, size
             p_extra += 4;
         }
 
-        SECUREC_CHECK(memcpy_s(buf_exp, BLOCK_TAIL, (buf_exp + BLOCK_SIZE), BLOCK_TAIL));
+        memcpy(buf_exp, buf_exp + BLOCK_SIZE, BLOCK_TAIL);
         p_exp_write -= BLOCK_SIZE;
     }
 
@@ -381,8 +379,8 @@ static int compact_tunstall_inplace_streams(uint8_t* p_stream_end, uint8_t** pp_
     uint8_t* p_extra_new = p_sm_new - extra_len;
     uint8_t* p_mark_new = p_extra_new - mark_len;
 
-    if (extra_len > 0) { SECUREC_CHECK(memmove_s(p_extra_new, extra_len, *pp_extra, extra_len)); }
-    if (mark_len > 0) { SECUREC_CHECK(memmove_s(p_mark_new, mark_len, *pp_mark, mark_len)); }
+    if (extra_len > 0) { memmove(p_extra_new, *pp_extra, extra_len); }
+    if (mark_len > 0) { memmove(p_mark_new, *pp_mark, mark_len); }
 
     *pp_mark = p_mark_new;
     *pp_mark_end = p_extra_new;
@@ -413,7 +411,7 @@ static int spill_tunstall_inplace_streams(uint8_t* p_tail, size_t tail_size, uin
 
     RET_ERROR_IF(R_ERR_SYNTAX, tail_len > tail_size);
 
-    SECUREC_CHECK(memcpy_s(p_tail, tail_len, *pp_mark, tail_len));
+    memcpy(p_tail, *pp_mark, tail_len);
 
     *pp_mark = p_tail;
     *pp_mark_end = p_tail + mark_end_off;
@@ -436,7 +434,7 @@ static int decompress_tunstall_trunc_inplace(uint8_t* p_data, size_t n_bf16)
 
     ts_header_t hdr = {};
     RET_ERROR_IF(R_ERR_SYNTAX, (n_bf16 / 2) < sizeof(hdr.dynamic));
-    SECUREC_CHECK(memcpy_s(&hdr.dynamic, sizeof(hdr.dynamic), p_tunstall_src, sizeof(hdr.dynamic)));
+    memcpy(&hdr.dynamic, p_tunstall_src, sizeof(hdr.dynamic));
 
     RET_ERROR_IF(R_ERR_SYNTAX, hdr.mode != TS_MODE_DYNAMIC);
     RET_ERROR_IF(R_ERR_SYNTAX, (hdr.dynamic.n_mark & 1) != 0);
@@ -446,8 +444,8 @@ static int decompress_tunstall_trunc_inplace(uint8_t* p_data, size_t n_bf16)
     RET_ERROR_IF(R_ERR_SYNTAX, tunstall_len > sm_total);
 
     // Repack upper half as {tunstall, extra, sm}; compact then moves only tunstall/extra.
-    SECUREC_CHECK(memcpy_s(p_src, sm_total, p_tunstall_src, sm_total));
-    SECUREC_CHECK(memcpy_s(p_src + sm_total, sm_total, p_data, sm_total));
+    memcpy(p_src, p_tunstall_src, sm_total);
+    memcpy(p_src + sm_total, p_data, sm_total);
 
     uint8_t* p_mark = p_src + sizeof(hdr.dynamic);
     uint8_t* p_mark_end = p_mark + (size_t)hdr.dynamic.n_mark;
@@ -480,8 +478,7 @@ static int decompress_tunstall_trunc_inplace(uint8_t* p_data, size_t n_bf16)
         while (p_exp_write < p_exp_end) {
             const ts_lut_item_t* it = &(hdr.dynamic.lut[p_mark[0]]);
             p_mark++;
-            SECUREC_CHECK(
-                memcpy_s(p_exp_write, sizeof(ts_lut_item_t), it->v, sizeof(ts_lut_item_t)));
+            memcpy(p_exp_write, it->v, sizeof(ts_lut_item_t));
             p_exp_write += it->c;
         }
 
@@ -498,12 +495,12 @@ static int decompress_tunstall_trunc_inplace(uint8_t* p_data, size_t n_bf16)
             uint8_t extra[4] = {0};
 
             RET_ERROR_IF(R_ERR_SYNTAX, (size_t)(p_sm_end - p_sm) < sizeof(sm));
-            SECUREC_CHECK(memcpy_s(sm, sizeof(sm), p_sm, sizeof(sm)));
+            memcpy(sm, p_sm, sizeof(sm));
             p_sm += sizeof(sm);
 
             int has_extra = 0;
             if ((size_t)(p_extra_end - p_extra) >= sizeof(extra)) {
-                SECUREC_CHECK(memcpy_s(extra, sizeof(extra), p_extra, sizeof(extra)));
+                memcpy(extra, p_extra, sizeof(extra));
                 p_extra += sizeof(extra);
                 has_extra = 1;
             } else {
@@ -623,7 +620,7 @@ static int decompress_tunstall_trunc_inplace(uint8_t* p_data, size_t n_bf16)
         }
 
         if (actual_block_size == BLOCK_SIZE) {
-            SECUREC_CHECK(memcpy_s(buf_exp, BLOCK_TAIL, (buf_exp + BLOCK_SIZE), BLOCK_TAIL));
+            memcpy(buf_exp, buf_exp + BLOCK_SIZE, BLOCK_TAIL);
             p_exp_write -= BLOCK_SIZE;
         }
     }
