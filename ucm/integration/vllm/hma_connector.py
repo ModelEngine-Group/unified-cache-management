@@ -970,6 +970,14 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
             key_count=len(keys),
         )
 
+    def _handle_load_err(self, request_id: str):
+        affected_block_ids = self._get_request_all_block_ids(request_id)
+        self._record_load_error(
+            "connector_load_wait_errors_total",
+            affected_block_ids,
+        )
+        self._connector_worker_meta.mark_failed(request_id)
+
     def _wait_load_task(
         self,
         load_task: FAWALoadTask,
@@ -983,12 +991,7 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
                 f"request {load_task.request_id} wait FAWA load "
                 f"task label={load_task.label} error. {type(e).__name__}: {e}"
             )
-            affected_block_ids = self._get_request_all_block_ids(load_task.request_id)
-            self._record_load_error(
-                "connector_load_wait_errors_total",
-                affected_block_ids,
-            )
-            self._connector_worker_meta.mark_failed(load_task.request_id)
+            self._handle_load_err(load_task.request_id)
 
     def get_block_ids_with_load_errors(self) -> set[int]:
         res = self._invalid_block_ids
@@ -1144,11 +1147,7 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
                     f"request {request_id} submit FAWA load task "
                     f"error. {type(e).__name__}: {e}"
                 )
-                affected_block_ids = self._get_request_all_block_ids(request_id)
-                self._record_load_error(
-                    "connector_load_submit_errors_total",
-                    affected_block_ids,
-                )
+                self._handle_load_err(request_id)
 
         for load_task in tasks:
             self._wait_load_task(load_task)
