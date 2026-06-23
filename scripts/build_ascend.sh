@@ -95,6 +95,7 @@ function delete_redundant_files() {
     rm -f metrics_configs.yaml
     rm -f *.run
     rm -f *.patch
+    rm -f install.sh
     rm -f install_ascend_ops.sh
 }
 
@@ -102,6 +103,7 @@ function collect_artifacts()
 {
     cd ${PACKAGE_DIR}
     cp ${VERSION_FILE} .
+    cp "${KVCACHE_PROJECT_ROOT}/install.sh" .
     cp -r "${KVCACHE_PROJECT_ROOT}/docker" .
     cp -r "${KVCACHE_PROJECT_ROOT}/examples/deployments" .
     cp -r "${KVCACHE_PROJECT_ROOT}/examples/ucm_config_example.yaml" ucm_config.yaml

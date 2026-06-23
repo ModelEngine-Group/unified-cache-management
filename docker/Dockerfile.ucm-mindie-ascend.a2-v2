@@ -16,6 +16,8 @@ COPY . /workspace/unified-cache-management
 
 RUN pip config set global.index-url ${PIP_INDEX_URL}
 
+ENV UCM_ENGINE_TYPE=mindie
+
 ENV PLATFORM=ascend \
     UCM_ENABLE_MINDIE=${UCM_ENABLE_MINDIE} \
     UCM_CXX11_ABI=${UCM_CXX11_ABI}
@@ -31,6 +33,11 @@ RUN if [ "${INSTALL_MODE}" != "package" ]; then \
 
 # Install UCM
 RUN pip install /workspace/package/uc_manager-*.whl
+
+# Run optional post-install hook
+RUN if [ -f /workspace/package/install.sh ]; then \
+        bash /workspace/package/install.sh; \
+    fi
 
 # Apply patch for MindIE
 RUN UCM_ENABLE_MINDIE=${UCM_ENABLE_MINDIE} python -c "import ucm.integration.mindie.patch.boot_patch as bp; bp.apply_patch(); print('[UCM][MindIE] patch applied (or already in place).')"
