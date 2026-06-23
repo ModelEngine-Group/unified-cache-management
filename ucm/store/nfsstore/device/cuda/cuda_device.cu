@@ -37,6 +37,10 @@ inline __device__ void H2DUnit(uint8_t* __restrict__ dst, const volatile uint8_t
     asm volatile("ld.global.cs.v2.u64 {%0, %1}, [%2];" : "=l"(a), "=l"(b) : "l"(src));
     asm volatile("st.global.cg.v2.u64 [%0], {%1, %2};" ::"l"(dst), "l"(a), "l"(b));
 #else
+    // Plain 16-byte copy; see cuda_sm_kernel.cu for why dropping `volatile` is
+    // correct on AMD (coherent host registration + the per-transfer stream sync
+    // provide host visibility; AMD `volatile` is only an L1-bypass/glc hint at
+    // GPU-L2 scope, neither necessary nor sufficient here).
     *reinterpret_cast<uint4*>(dst) =
         *reinterpret_cast<const uint4*>(const_cast<const uint8_t*>(src));
 #endif
@@ -49,6 +53,8 @@ inline __device__ void D2HUnit(volatile uint8_t* __restrict__ dst, const uint8_t
     asm volatile("ld.global.cs.v2.u64 {%0, %1}, [%2];" : "=l"(a), "=l"(b) : "l"(src));
     asm volatile("st.volatile.global.v2.u64 [%0], {%1, %2};" ::"l"(dst), "l"(a), "l"(b));
 #else
+    // Plain 16-byte copy; volatile not needed on AMD (see H2DUnit and the
+    // cuda_sm_kernel.cu note).
     *reinterpret_cast<uint4*>(const_cast<uint8_t*>(dst)) =
         *reinterpret_cast<const uint4*>(src);
 #endif

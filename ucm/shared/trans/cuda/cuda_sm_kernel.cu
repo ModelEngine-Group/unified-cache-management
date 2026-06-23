@@ -49,9 +49,14 @@ inline __device__ void CudaCopyUnit(const uint8_t* __restrict__ src,
                  :
                  : "l"(dst), "r"(hi.x), "r"(hi.y), "r"(hi.z), "r"(hi.w));
 #else
-    // HIP/ROCm has no ld.global.cs/st.volatile.global PTX and no __ldcs/__stcg
-    // streaming builtins; those are NVIDIA cache-policy hints, not semantics.
-    // A plain vectorized 32-byte copy is the portable equivalent.
+    // ROCm has no ld.global.cs/st.volatile.global PTX or __ldcs/__stcg builtins;
+    // this is a plain vectorized 32-byte copy. Dropping `volatile` is correct on
+    // AMD: host visibility comes from the fine-grained-coherent host registration
+    // plus the per-transfer hipStreamSynchronize (GPU caches flush at kernel
+    // completion), not from the qualifier. On AMD `volatile` only forces an L1
+    // bypass (glc, GPU-L2 scope), which is neither necessary nor sufficient for
+    // host visibility; system-scope ordering, if ever needed, is
+    // __threadfence_system.
     const uint4* src4 = reinterpret_cast<const uint4*>(src);
     uint4* dst4 = reinterpret_cast<uint4*>(const_cast<uint8_t*>(dst));
     dst4[0] = src4[0];
