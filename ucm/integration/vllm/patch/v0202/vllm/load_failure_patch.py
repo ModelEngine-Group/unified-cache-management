@@ -24,7 +24,7 @@ def patch_core_single_type_kv_cache_manager(mod):
     from ucm.integration.vllm.patch.v0202.vllm.v1.core import single_type_kv_cache_manager
 
     patch_or_inject(
-        mod.Scheduler,
+        mod.SingleTypeKVCacheManager,
         "remove_skipped_blocks",
         single_type_kv_cache_manager.SingleTypeKVCacheManager.remove_skipped_blocks,
     )

@@ -33,7 +33,7 @@ if TYPE_CHECKING:
 
 logger = init_logger(__name__)
 
-def fawa_latency_metric(metric_name: str, *, ms_threshold: int):
+def fawa_latency_metric(metric_name: str, *, ms_threshold: int = 1):
     def decorator(func):
         @wraps(func)
         def wrapper(self, *args, **kwargs):
