@@ -1,8 +1,8 @@
 import copy
 import math
 import os
-from dataclasses import dataclass, field
 import time
+from dataclasses import dataclass, field
 from functools import wraps
 from typing import TYPE_CHECKING, Optional, Sequence, Tuple
 
@@ -19,10 +19,10 @@ from vllm.v1.core.sched.output import SchedulerOutput
 from ucm.integration.vllm.device import create_device
 from ucm.integration.vllm.ucm_connector import UCMDirectConnector
 from ucm.logger import init_logger
+from ucm.shared.metrics import ucmmetrics
 from ucm.sparse.utils import round_up
 from ucm.store.factory_v1 import UcmConnectorFactoryV1
 from ucm.store.ucmstore_v1 import Task, UcmKVStoreBaseV1
-from ucm.shared.metrics import ucmmetrics
 
 if TYPE_CHECKING:
     from vllm.config import VllmConfig
@@ -32,6 +32,7 @@ if TYPE_CHECKING:
     from vllm.v1.request import Request
 
 logger = init_logger(__name__)
+
 
 def fawa_latency_metric(metric_name: str, *, ms_threshold: int = 1):
     def decorator(func):
@@ -50,9 +51,11 @@ def fawa_latency_metric(metric_name: str, *, ms_threshold: int = 1):
                             metric_name: duration_ms,
                         }
                     )
+
         return wrapper
 
     return decorator
+
 
 @dataclass(frozen=True)
 class KVCacheGroupMeta:
