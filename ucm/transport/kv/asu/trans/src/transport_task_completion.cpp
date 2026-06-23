@@ -28,16 +28,9 @@
 
 namespace UC::ASU {
 
-namespace {
-
-bool IsSubBatchTerminal(TransportSubBatchState state)
+Status TransportTaskContext::BuildFinalStatus() const
 {
-    return state == TransportSubBatchState::COMPLETED;
-}
-
-Status BuildTaskFinalStatus(const TransportTaskContext& ctx)
-{
-    for (const auto& subBatchContext : ctx.subBatchContexts) {
+    for (const auto& subBatchContext : subBatchContexts) {
         if (!subBatchContext.status.ok()) {
             return Status::Error(StatusCode::PARTIAL_FAILED, "transport task partially failed");
         }
@@ -46,14 +39,12 @@ Status BuildTaskFinalStatus(const TransportTaskContext& ctx)
     return Status::OK();
 }
 
-}  // namespace
-
 void TransportTaskContext::InitializeTerminalSubBatchCount()
 {
     // At submit completion time, terminal sub-batches are usually submit/send failures.
     completedSubBatchCount = 0;
     for (const auto& subBatchContext : subBatchContexts) {
-        if (!IsSubBatchTerminal(subBatchContext.state)) { continue; }
+        if (subBatchContext.state != TransportSubBatchState::COMPLETED) { continue; }
 
         ++completedSubBatchCount;
     }
@@ -115,7 +106,7 @@ void TransportTaskContext::TryFinalizeFromSubBatches()
 
     if (completedSubBatchCount != static_cast<std::uint32_t>(subBatchContexts.size())) { return; }
 
-    finalStatus = BuildTaskFinalStatus(*this);
+    finalStatus = BuildFinalStatus();
     state.store(TransportTaskState::COMPLETED, std::memory_order_release);
 }
 
