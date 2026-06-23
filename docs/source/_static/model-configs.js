@@ -198,8 +198,24 @@ function getEmbeddedModelConfigs() {
             "kv_lora_rank": 512,
             "qk_rope_head_dim": 64
         },
+        "zai-org/GLM-5.2": {
+            "hidden_size": 6144,
+            "num_attention_heads": 64,
+            "num_hidden_layers": 78,
+            "num_key_value_heads": 64,
+            "index_head_dim": 128,
+            "kv_lora_rank": 512,
+            "qk_rope_head_dim": 64
+        },
 
         // MiniMax Series (GQA)
+        "minimax/MiniMax-M2.7": {
+            "hidden_size": 3072,
+            "num_attention_heads": 48,
+            "num_hidden_layers": 62,
+            "num_key_value_heads": 8,
+            "head_dim": 128
+        },
         "minimax/MiniMax-M2.5": {
             "hidden_size": 3072,
             "num_attention_heads": 48,
@@ -221,7 +237,13 @@ function getEmbeddedModelConfigs() {
             "num_key_value_heads": 8,
             "head_dim": 128
         },
-
+        "minimax/MiniMax-M3": {
+            "hidden_size": 6144,
+            "num_attention_heads": 64,
+            "num_hidden_layers": 60,
+            "num_key_value_heads": 4,
+            "head_dim": 128
+        },
         // Kimi Series (MLA)
         "moonshot/Kimi-K2.5": {
             "hidden_size": 7168,
@@ -232,6 +254,14 @@ function getEmbeddedModelConfigs() {
             "qk_rope_head_dim": 64
         },
         "moonshot/Kimi-K2.6": {
+            "hidden_size": 7168,
+            "num_attention_heads": 64,
+            "num_hidden_layers": 61,
+            "num_key_value_heads": 64,
+            "kv_lora_rank": 512,
+            "qk_rope_head_dim": 64
+        },
+        "moonshot/Kimi-K2.7-Code": {
             "hidden_size": 7168,
             "num_attention_heads": 64,
             "num_hidden_layers": 61,
