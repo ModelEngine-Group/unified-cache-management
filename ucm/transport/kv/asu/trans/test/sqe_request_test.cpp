@@ -199,7 +199,7 @@ TEST_F(SqeRequestTest, SubmitBatchStoreAllocatesFlagBufferAndBuildsRequest)
     EXPECT_EQ(packedResponseAddr, subBatchContext.flagBuffer.device_addr);
     ASSERT_EQ(subBatchContext.entryStatus.size(), entries.size());
     for (const auto& entryStatus : subBatchContext.entryStatus) { EXPECT_TRUE(entryStatus.ok()); }
-    const auto* sqe = reinterpret_cast<const std::uint32_t*>(subBatchContext.sendSge.addr);
+    const auto* sqe = reinterpret_cast<const std::uint32_t*>(subBatchContext.sendSge.local_addr);
     EXPECT_EQ(sqe[kSqeDwordCount], entries[0].offset);
     EXPECT_EQ(sqe[kSqeDwordCount + kBatchEntryDwordCount], entries[1].offset);
     EXPECT_EQ(sqe[kSqeDwordCount + 2 * kBatchEntryDwordCount], entries[2].offset);

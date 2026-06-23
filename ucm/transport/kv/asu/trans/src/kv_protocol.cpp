@@ -161,7 +161,7 @@ Status KvStoreProtocol::PackSqe(const SqeRequest& req, std::uint32_t* target)
     target[10] = r.offset;
     target[11] = (r.lr ? (1U << 31) : 0) | (r.length & 0xFFFFFF);
 
-    std::size_t key_len = std::min(r.key.size(), static_cast<std::size_t>(16));
+    std::size_t key_len = std::min(r.key.size(), static_cast<std::size_t>(8));
     if (key_len > 0) { std::memcpy(&target[12], r.key.data(), key_len); }
     return Status::OK();
 }
@@ -202,10 +202,10 @@ Status KvStoreProtocol::ValidateRequest(const KvStoreRequest& r) const
     if (r.key.empty()) [[unlikely]] {
         return Status::Error(StatusCode::INVALID_ARGUMENT, "key is empty in Store request");
     }
-    if (r.key.size() > 16) [[unlikely]] {
+    if (r.key.size() > 8) [[unlikely]] {
         return Status::Error(
             StatusCode::INVALID_ARGUMENT,
-            "key size(" + std::to_string(r.key.size()) + ") exceeds 16 bytes in Store request");
+            "key size(" + std::to_string(r.key.size()) + ") exceeds 8 bytes in Store request");
     }
     if (r.dtype > 0x7) [[unlikely]] {
         return Status::Error(
@@ -300,7 +300,7 @@ Status KvRetrieveProtocol::PackSqe(const SqeRequest& req, std::uint32_t* target)
     target[10] = r.offset;
     target[11] = (r.lr ? (1U << 31) : 0) | (r.length & 0xFFFFFF);
 
-    std::size_t key_len = std::min(r.key.size(), static_cast<std::size_t>(16));
+    std::size_t key_len = std::min(r.key.size(), static_cast<std::size_t>(8));
     if (key_len > 0) { std::memcpy(&target[12], r.key.data(), key_len); }
     return Status::OK();
 }
@@ -342,10 +342,10 @@ Status KvRetrieveProtocol::ValidateRequest(const KvRetrieveRequest& r) const
     if (r.key.empty()) [[unlikely]] {
         return Status::Error(StatusCode::INVALID_ARGUMENT, "key is empty in Retrieve request");
     }
-    if (r.key.size() > 16) [[unlikely]] {
+    if (r.key.size() > 8) [[unlikely]] {
         return Status::Error(
             StatusCode::INVALID_ARGUMENT,
-            "key size(" + std::to_string(r.key.size()) + ") exceeds 16 bytes in Retrieve request");
+            "key size(" + std::to_string(r.key.size()) + ") exceeds 8 bytes in Retrieve request");
     }
     return Status::OK();
 }
@@ -503,11 +503,11 @@ Status KvBatchStoreProtocol::ValidateRequest(const KvBatchStoreRequest& r) const
                 StatusCode::INVALID_ARGUMENT,
                 "entry[" + std::to_string(i) + "] key is empty in BatchStore request");
         }
-        if (entry.key.size() > 16) [[unlikely]] {
+        if (entry.key.size() > 8) [[unlikely]] {
             return Status::Error(StatusCode::INVALID_ARGUMENT,
                                  "entry[" + std::to_string(i) + "] key size(" +
                                      std::to_string(entry.key.size()) +
-                                     ") exceeds 16 bytes in BatchStore request");
+                                     ") exceeds 8 bytes in BatchStore request");
         }
         if (entry.buffer_addr == 0) [[unlikely]] {
             return Status::Error(
@@ -539,7 +539,7 @@ void KvBatchStoreProtocol::PackEntry(const KvBatchStoreEntry& entry, std::uint32
 {
     base[0] = entry.offset;
 
-    std::size_t key_len = std::min(entry.key.size(), static_cast<std::size_t>(16));
+    std::size_t key_len = std::min(entry.key.size(), static_cast<std::size_t>(8));
     if (key_len > 0) { std::memcpy(&base[1], entry.key.data(), key_len); }
 
     base[5] = entry.buffer_addr & 0xFFFFFFFFULL;
@@ -700,11 +700,11 @@ Status KvBatchRetrieveProtocol::ValidateRequest(const KvBatchRetrieveRequest& r)
                 StatusCode::INVALID_ARGUMENT,
                 "entry[" + std::to_string(i) + "] key is empty in BatchRetrieve request");
         }
-        if (entry.key.size() > 16) [[unlikely]] {
+        if (entry.key.size() > 8) [[unlikely]] {
             return Status::Error(StatusCode::INVALID_ARGUMENT,
                                  "entry[" + std::to_string(i) + "] key size(" +
                                      std::to_string(entry.key.size()) +
-                                     ") exceeds 16 bytes in BatchRetrieve request");
+                                     ") exceeds 8 bytes in BatchRetrieve request");
         }
         if (entry.buffer_addr == 0) [[unlikely]] {
             return Status::Error(
@@ -736,7 +736,7 @@ void KvBatchRetrieveProtocol::PackEntry(const KvBatchRetrieveEntry& entry, std::
 {
     base[0] = entry.offset;
 
-    std::size_t key_len = std::min(entry.key.size(), static_cast<std::size_t>(16));
+    std::size_t key_len = std::min(entry.key.size(), static_cast<std::size_t>(8));
     if (key_len > 0) { std::memcpy(&base[1], entry.key.data(), key_len); }
 
     base[5] = entry.buffer_addr & 0xFFFFFFFFULL;
@@ -888,11 +888,11 @@ Status KvDeleteProtocol::ValidateRequest(const KvDeleteRequest& r) const
             return Status::Error(StatusCode::INVALID_ARGUMENT,
                                  "key[" + std::to_string(i) + "] is empty in Delete request");
         }
-        if (r.keys[i].size() > 16) [[unlikely]] {
+        if (r.keys[i].size() > 8) [[unlikely]] {
             return Status::Error(StatusCode::INVALID_ARGUMENT,
                                  "key[" + std::to_string(i) + "] size(" +
                                      std::to_string(r.keys[i].size()) +
-                                     ") exceeds 16 bytes in Delete request");
+                                     ") exceeds 8 bytes in Delete request");
         }
     }
     return Status::OK();
@@ -900,8 +900,8 @@ Status KvDeleteProtocol::ValidateRequest(const KvDeleteRequest& r) const
 
 void KvDeleteProtocol::PackEntry(const std::string& key, std::uint32_t* base)
 {
-    std::size_t key_len = std::min(key.size(), static_cast<std::size_t>(16));
-    if (key_len > 0) { std::memcpy(base, key.data(), key_len); }
+    std::size_t key_len = std::min(key.size(), static_cast<std::size_t>(8));
+    if (key_len > 0) { std::memcpy(&base[0], key.data(), key_len); }
 }
 
 Status KvDeleteProtocol::UnpackCqe(const std::uint32_t* data, std::uint16_t batch_number,
@@ -1046,11 +1046,11 @@ Status KvExistProtocol::ValidateRequest(const KvExistRequest& r) const
             return Status::Error(StatusCode::INVALID_ARGUMENT,
                                  "key[" + std::to_string(i) + "] is empty in Exist request");
         }
-        if (r.keys[i].size() > 16) [[unlikely]] {
+        if (r.keys[i].size() > 8) [[unlikely]] {
             return Status::Error(StatusCode::INVALID_ARGUMENT,
                                  "key[" + std::to_string(i) + "] size(" +
                                      std::to_string(r.keys[i].size()) +
-                                     ") exceeds 16 bytes in Exist request");
+                                     ") exceeds 8 bytes in Exist request");
         }
     }
     return Status::OK();
@@ -1058,8 +1058,8 @@ Status KvExistProtocol::ValidateRequest(const KvExistRequest& r) const
 
 void KvExistProtocol::PackEntry(const std::string& key, std::uint32_t* base)
 {
-    std::size_t key_len = std::min(key.size(), static_cast<std::size_t>(16));
-    if (key_len > 0) { std::memcpy(base, key.data(), key_len); }
+    std::size_t key_len = std::min(key.size(), static_cast<std::size_t>(8));
+    if (key_len > 0) { std::memcpy(&base[0], key.data(), key_len); }
 }
 
 Status KvExistProtocol::UnpackCqe(const std::uint32_t* data, std::uint16_t batch_number,
