@@ -1,4 +1,5 @@
-﻿#include "kv_test/bench_runner.h"
+#include "kv_test/bench_runner.h"
+#include <acl/acl.h>
 #include <algorithm>
 #include <chrono>
 #include <cmath>
@@ -7,8 +8,10 @@
 #include <iomanip>
 #include <iostream>
 #include <limits>
+#include <memory>
 #include <numeric>
 #include <sstream>
+#include "kv_test/fake_backend.h"
 
 namespace UC::KVTest {
 
@@ -40,6 +43,17 @@ UC::ASU::MemoryRegion MakeHostRegion(std::vector<std::uint8_t>& buffer)
     region.addr = buffer.empty() ? 0 : reinterpret_cast<std::uint64_t>(buffer.data());
     region.size = buffer.size();
     region.deviceId = -1;
+    region.numaNode = -1;
+    return region;
+}
+
+UC::ASU::MemoryRegion MakeDeviceRegion(const std::shared_ptr<void>& buffer, std::size_t size)
+{
+    UC::ASU::MemoryRegion region;
+    region.memoryType = UC::ASU::MemoryType::ASCEND_DEVICE;
+    region.addr = buffer ? reinterpret_cast<std::uint64_t>(buffer.get()) : 0;
+    region.size = size;
+    region.deviceId = 0;
     region.numaNode = -1;
     return region;
 }
@@ -173,22 +187,83 @@ void FillStoreValue(std::vector<std::uint8_t>& value, std::uint64_t valueIndex, 
     }
 }
 
-BenchBufferPool BuildBenchBufferPool(const BenchConfig& bench, std::uint64_t entryCountPerOperation,
-                                     std::uint64_t seed)
+Status CopyHostToDevice(const std::vector<std::uint8_t>& hostBuffer,
+                        const std::shared_ptr<void>& deviceBuffer, std::size_t index)
 {
-    BenchBufferPool pool;
-    pool.resize(bench.concurrency);
+    if (hostBuffer.empty()) { return Status::Success(); }
+    auto ret = aclrtMemcpy(deviceBuffer.get(), hostBuffer.size(), hostBuffer.data(),
+                           hostBuffer.size(), ACL_MEMCPY_HOST_TO_DEVICE);
+    if (ret != ACL_SUCCESS) {
+        return Status::Error(
+            kExitInvalidArgument,
+            "fake_backend bench host-to-device copy failed: index=" + std::to_string(index) +
+                " size=" + std::to_string(hostBuffer.size()) + " ret=" + std::to_string(ret));
+    }
+    return Status::Success();
+}
 
+Status MakeDeviceBuffer(const std::vector<std::uint8_t>& hostBuffer,
+                        std::shared_ptr<void>& deviceBuffer)
+{
+    if (hostBuffer.empty()) {
+        deviceBuffer.reset();
+        return Status::Success();
+    }
+
+    void* ptr = nullptr;
+    auto ret = aclrtMalloc(&ptr, hostBuffer.size(), ACL_MEM_TYPE_HIGH_BAND_WIDTH);
+    if (ret != ACL_SUCCESS) {
+        return Status::Error(kExitInvalidArgument, "fake_backend bench aclrtMalloc failed: size=" +
+                                                       std::to_string(hostBuffer.size()) +
+                                                       " ret=" + std::to_string(ret));
+    }
+    deviceBuffer = std::shared_ptr<void>(ptr, aclrtFree);
+    return CopyHostToDevice(hostBuffer, deviceBuffer, 0);
+}
+
+Status SyncBenchDeviceBuffers(const KvTestConfig& config, BenchBufferSlot& slot,
+                              std::size_t entryCount)
+{
+    auto status = MaybeSetUpFakeBackendAclThread(config);
+    if (!status.Ok()) { return status; }
+
+    auto& buffers = slot.buffers;
+    if (buffers.ownedBuffers.size() < entryCount || buffers.deviceBuffers.size() < entryCount) {
+        return Status::Error(kExitInvalidArgument, "fake_backend bench buffer count mismatch");
+    }
+    for (std::size_t index = 0; index < entryCount; ++index) {
+        status = CopyHostToDevice(buffers.ownedBuffers[index], buffers.deviceBuffers[index], index);
+        if (!status.Ok()) { return status; }
+    }
+    return Status::Success();
+}
+
+Status BuildBenchBufferPool(const KvTestConfig& config, bool useDeviceBuffers,
+                            std::uint64_t entryCountPerOperation, BenchBufferPool& pool)
+{
+    const auto& bench = config.bench;
+    if (useDeviceBuffers) {
+        auto status = MaybeSetUpFakeBackendAclThread(config);
+        if (!status.Ok()) { return status; }
+    }
+
+    pool.resize(bench.concurrency);
     for (std::size_t slotIndex = 0; slotIndex < pool.size(); ++slotIndex) {
-        auto& slot = pool[slotIndex];
-        auto& buffers = slot.buffers;
+        auto& buffers = pool[slotIndex].buffers;
         buffers.ownedBuffers.reserve(static_cast<std::size_t>(entryCountPerOperation));
+        buffers.deviceBuffers.reserve(static_cast<std::size_t>(entryCountPerOperation));
         for (std::uint64_t index = 0; index < entryCountPerOperation; ++index) {
             auto& value = buffers.ownedBuffers.emplace_back(static_cast<std::size_t>(bench.ioSize));
-            FillStoreValue(value, slotIndex * entryCountPerOperation + index, seed);
+            FillStoreValue(value, slotIndex * entryCountPerOperation + index, config.seed);
+            if (useDeviceBuffers) {
+                std::shared_ptr<void> deviceBuffer;
+                auto status = MakeDeviceBuffer(value, deviceBuffer);
+                if (!status.Ok()) { return status; }
+                buffers.deviceBuffers.emplace_back(std::move(deviceBuffer));
+            }
         }
     }
-    return pool;
+    return Status::Success();
 }
 
 bool IsBenchReadOperation(BenchOpType op, std::uint64_t operationIndex, const BenchConfig& bench)
@@ -202,7 +277,7 @@ bool IsBenchReadOperation(BenchOpType op, std::uint64_t operationIndex, const Be
 }
 
 Status PrepareBenchBuffers(BenchBufferSlot& slot, std::uint64_t begin, std::size_t entryCount,
-                           const std::string& keyPrefix)
+                           const std::string& keyPrefix, bool useDeviceBuffers)
 {
     auto& buffers = slot.buffers;
     buffers.regions.clear();
@@ -213,8 +288,9 @@ Status PrepareBenchBuffers(BenchBufferSlot& slot, std::uint64_t begin, std::size
 
     for (std::size_t index = 0; index < entryCount; ++index) {
         const auto keyIndex = begin + index;
-        auto& value = buffers.ownedBuffers[index];
-        auto region = MakeHostRegion(value);
+        auto region = useDeviceBuffers ? MakeDeviceRegion(buffers.deviceBuffers[index],
+                                                          buffers.ownedBuffers[index].size())
+                                       : MakeHostRegion(buffers.ownedBuffers[index]);
         buffers.regions.emplace_back(region);
         UC::ASU::CacheKey key{};
         auto status = StringToCacheKey(keyPrefix + std::to_string(keyIndex), key);
@@ -224,31 +300,42 @@ Status PrepareBenchBuffers(BenchBufferSlot& slot, std::uint64_t begin, std::size
     return Status::Success();
 }
 
-Status ExecuteBenchOperation(BenchOpType requestedOp, const BenchConfig& bench,
+Status ExecuteBenchOperation(BenchOpType requestedOp, const KvTestConfig& config,
                              AsuClientRunner& clientRunner, BenchBufferSlot& slot,
                              std::uint64_t begin, std::size_t entryCount,
                              std::uint64_t operationIndex, const std::string& keyPrefix,
-                             std::uint64_t timeoutMs, CommandResult& operationResult)
+                             bool useDeviceBuffers, CommandResult& operationResult)
 {
+    const auto& bench = config.bench;
     const bool isRead = IsBenchReadOperation(requestedOp, operationIndex, bench);
     const auto submitMode =
         entryCount > 1 ? SubmitMode::ALL_ENTRIES_IN_ONE_CALL : SubmitMode::SINGLE_ENTRY_PER_CALL;
-    auto status = PrepareBenchBuffers(slot, begin, entryCount, keyPrefix);
+    auto status = PrepareBenchBuffers(slot, begin, entryCount, keyPrefix, useDeviceBuffers);
     if (!status.Ok()) { return status; }
     auto& buffers = slot.buffers;
+
+    if (useDeviceBuffers && !isRead) {
+        auto status = SyncBenchDeviceBuffers(config, slot, entryCount);
+        if (!status.Ok()) { return status; }
+    }
+
+    if (useDeviceBuffers && !isRead) {
+        auto status = SyncBenchDeviceBuffers(config, slot, entryCount);
+        if (!status.Ok()) { return status; }
+    }
 
     status = clientRunner.RegisterBuffers(buffers);
     if (!status.Ok()) { return status; }
 
-    status = isRead ? clientRunner.Retrieve(buffers, submitMode, timeoutMs, operationResult)
-                    : clientRunner.Store(buffers, submitMode, timeoutMs, operationResult);
+    status =
+        isRead ? clientRunner.Retrieve(buffers, submitMode,
+                                       config.asuClientConfig.defaultWaitTimeoutMs, operationResult)
+               : clientRunner.Store(buffers, submitMode,
+                                    config.asuClientConfig.defaultWaitTimeoutMs, operationResult);
     auto unregisterStatus = clientRunner.UnregisterBuffers(buffers);
     if (status.Ok() && !unregisterStatus.Ok()) { status = unregisterStatus; }
     return status;
 }
-
-using EntrySubmitMethod = UC::ASU::Status (UC::ASU::AsuClient::*)(
-    const std::vector<UC::ASU::KVBuffer>&, UC::ASU::TaskId&);
 
 }  // namespace
 
@@ -288,7 +375,10 @@ Status BenchRunner::Run(const CommandOptions& options, const KvTestConfig& confi
     if (!status.Ok()) { return status; }
 
     const std::string keyPrefix = config.keyPrefix.empty() ? "b" : config.keyPrefix;
-    auto bufferPool = BuildBenchBufferPool(bench, entryCountPerOperation, config.seed);
+    const bool useDeviceBuffers = IsFakeBackendMode(config);
+    BenchBufferPool bufferPool;
+    status = BuildBenchBufferPool(config, useDeviceBuffers, entryCountPerOperation, bufferPool);
+    if (!status.Ok()) { return status; }
 
     using Clock = std::chrono::steady_clock;
     std::vector<double> measuredLatenciesUs;
@@ -345,9 +435,8 @@ Status BenchRunner::Run(const CommandOptions& options, const KvTestConfig& confi
                         CommandResult operationResult;
                         const auto operationStart = Clock::now();
                         auto opStatus = ExecuteBenchOperation(
-                            bench.op, bench, clientRunner, *bufferSlot, begin, currentEntryCount,
-                            currentOperationIndex, keyPrefix,
-                            config.asuClientConfig.defaultWaitTimeoutMs, operationResult);
+                            bench.op, config, clientRunner, *bufferSlot, begin, currentEntryCount,
+                            currentOperationIndex, keyPrefix, useDeviceBuffers, operationResult);
                         const auto operationEnd = Clock::now();
                         OperationOutcome outcome;
                         outcome.status = opStatus;

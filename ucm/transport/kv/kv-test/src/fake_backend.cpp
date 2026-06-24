@@ -21,6 +21,8 @@ std::string NormalizeMode(std::string value)
 void PatchTransportConfig(UC::ASU::TransportConfig& config,
                           const KvTestFakeBackendConfig& fakeConfig)
 {
+    const auto fakeBackendDeviceId =
+        config.endpoints.empty() ? kFakeBackendAclDeviceId : config.endpoints.front().deviceId;
     config.providerType = UC::ASU::TransProviderType::FAKE;
     config.attrs.try_emplace("kernel_count", "1");
     config.attrs.try_emplace("quiet_count", "1");
@@ -31,15 +33,50 @@ void PatchTransportConfig(UC::ASU::TransportConfig& config,
     config.attrs["sc"] = "true";
     config.attrs["fake_backend.path"] = fakeConfig.storePath;
     config.attrs["fake_backend.latency_ms"] = std::to_string(fakeConfig.latencyMs);
-    config.attrs["fake_backend.device_id"] = std::to_string(kFakeBackendAclDeviceId);
+    config.attrs["fake_backend.device_id"] = std::to_string(fakeBackendDeviceId);
     if (config.endpoints.empty()) {
         UC::ASU::AsuEndpoint endpoint;
         endpoint.ip = "fake_backend";
         endpoint.port = 19001;
         endpoint.protocol = UC::ASU::Protocol::TCP;
-        endpoint.deviceId = kFakeBackendAclDeviceId;
+        endpoint.deviceId = fakeBackendDeviceId;
         config.endpoints.emplace_back(std::move(endpoint));
     }
+}
+
+std::int32_t ResolveFakeBackendDeviceId(const KvTestConfig& config)
+{
+    if (config.asuClientConfig.transportConfigs.empty()) { return kFakeBackendAclDeviceId; }
+
+    const auto& transportConfig = config.asuClientConfig.transportConfigs.front();
+    auto deviceIter = transportConfig.attrs.find("fake_backend.device_id");
+    if (deviceIter != transportConfig.attrs.end() && !deviceIter->second.empty()) {
+        return static_cast<std::int32_t>(std::stol(deviceIter->second));
+    }
+    if (!transportConfig.endpoints.empty()) { return transportConfig.endpoints.front().deviceId; }
+    return kFakeBackendAclDeviceId;
+}
+
+Status SetUpAclThreadDevice(std::int32_t deviceId, bool* initialized)
+{
+    thread_local std::int32_t readyDeviceId = -1;
+    if (readyDeviceId == deviceId) { return Status::Success(); }
+
+    auto ret = aclInit(nullptr);
+    if (ret != ACL_SUCCESS && ret != ACL_ERROR_REPEAT_INITIALIZE) {
+        return Status::Error(kExitInvalidArgument,
+                             "fake_backend aclInit failed: ret=" + std::to_string(ret));
+    }
+    if (initialized != nullptr) { *initialized = ret == ACL_SUCCESS; }
+
+    ret = aclrtSetDevice(deviceId);
+    if (ret != ACL_SUCCESS) {
+        return Status::Error(kExitInvalidArgument,
+                             "fake_backend aclrtSetDevice failed: device_id=" +
+                                 std::to_string(deviceId) + " ret=" + std::to_string(ret));
+    }
+    readyDeviceId = deviceId;
+    return Status::Success();
 }
 
 }  // namespace
@@ -50,21 +87,11 @@ Status FakeBackendAclRuntime::MaybeSetUp(const KvTestConfig& config)
 {
     if (!IsFakeBackendMode(config)) { return Status::Success(); }
 
-    auto ret = aclInit(nullptr);
-    if (ret != ACL_SUCCESS) {
-        return Status::Error(kExitInvalidArgument,
-                             "fake_backend aclInit failed: " + std::to_string(ret));
-    }
-    initialized_ = true;
-
-    // kv-test fake_backend is a temporary standalone test path. Use device 0 until the
-    // ASU client/transport runtime contract is formalized.
-    ret = aclrtSetDevice(kFakeBackendAclDeviceId);
-    if (ret != ACL_SUCCESS) {
-        return Status::Error(kExitInvalidArgument,
-                             "fake_backend aclrtSetDevice failed: device_id=" +
-                                 std::to_string(kFakeBackendAclDeviceId) +
-                                 " ret=" + std::to_string(ret));
+    deviceId_ = ResolveFakeBackendDeviceId(config);
+    auto status = SetUpAclThreadDevice(deviceId_, &initialized_);
+    if (!status.Ok()) {
+        TearDown();
+        return status;
     }
     deviceSet_ = true;
     return Status::Success();
@@ -73,7 +100,7 @@ Status FakeBackendAclRuntime::MaybeSetUp(const KvTestConfig& config)
 void FakeBackendAclRuntime::TearDown()
 {
     if (deviceSet_) {
-        (void)aclrtResetDevice(kFakeBackendAclDeviceId);
+        (void)aclrtResetDevice(deviceId_);
         deviceSet_ = false;
     }
     if (initialized_) {
@@ -86,6 +113,12 @@ bool IsFakeBackendMode(const KvTestConfig& config)
 {
     const auto mode = NormalizeMode(config.asuClientMode);
     return mode == "fake_backend" || mode == "fakebackend";
+}
+
+Status MaybeSetUpFakeBackendAclThread(const KvTestConfig& config)
+{
+    if (!IsFakeBackendMode(config)) { return Status::Success(); }
+    return SetUpAclThreadDevice(ResolveFakeBackendDeviceId(config), nullptr);
 }
 
 void MaybePrepareFakeBackend(KvTestConfig& config)

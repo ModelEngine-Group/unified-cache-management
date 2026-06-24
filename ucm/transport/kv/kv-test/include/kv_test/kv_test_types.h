@@ -52,6 +52,11 @@ enum class ValuePlacement {
     ASU_MANAGED = 0,
 };
 
+enum class PayloadBufferPlacement {
+    HOST = 0,
+    ASCEND_DEVICE,
+};
+
 enum class DigestAlgorithm {
     CRC64 = 0,
 };
@@ -194,6 +199,7 @@ struct GeneratedData {
 
 struct BufferSet {
     std::vector<std::vector<std::uint8_t>> ownedBuffers;
+    std::vector<std::shared_ptr<void>> deviceBuffers;
     std::vector<UC::ASU::MemoryRegion> regions;
     std::vector<UC::ASU::KVBuffer> entries;
     std::vector<UC::ASU::RegisterResult> registerResults;

@@ -391,6 +391,12 @@ Status CreateClientForConfig(const KvTestConfig& config,
     return status;
 }
 
+PayloadBufferPlacement PayloadPlacementForConfig(const KvTestConfig& config)
+{
+    return IsFakeBackendMode(config) ? PayloadBufferPlacement::ASCEND_DEVICE
+                                     : PayloadBufferPlacement::HOST;
+}
+
 }  // namespace
 
 KvTestApp::KvTestApp() = default;
@@ -527,8 +533,9 @@ Status KvTestApp::RunStoreLikeCommand(const CommandOptions& options, const KvTes
     auto status = generator_.Generate(options, config, data);
     if (!status.Ok()) { return status; }
 
+    const auto payloadPlacement = PayloadPlacementForConfig(config);
     BufferSet buffers;
-    status = bufferAllocator_.BuildStoreBuffers(data, buffers);
+    status = bufferAllocator_.BuildStoreBuffers(data, payloadPlacement, buffers);
     if (!status.Ok()) { return status; }
 
     status = clientRunner.RegisterBuffers(buffers);
@@ -549,7 +556,7 @@ Status KvTestApp::RunStoreLikeCommand(const CommandOptions& options, const KvTes
     if (!status.Ok() || !options.check) { return status; }
 
     BufferSet retrievedBuffers;
-    status = bufferAllocator_.BuildRetrieveBuffers(data, retrievedBuffers);
+    status = bufferAllocator_.BuildRetrieveBuffers(data, payloadPlacement, retrievedBuffers);
     if (!status.Ok()) { return status; }
 
     status = clientRunner.RegisterBuffers(retrievedBuffers);
@@ -561,6 +568,7 @@ Status KvTestApp::RunStoreLikeCommand(const CommandOptions& options, const KvTes
 
     CommandResult retrieveResult;
     status = clientRunner.Retrieve(retrievedBuffers, submitMode, options.timeoutMs, retrieveResult);
+    if (status.Ok()) { status = bufferAllocator_.CopyDeviceBuffersToHost(retrievedBuffers); }
     if (status.Ok()) {
         status = consistencyChecker_.CheckStoreResult(data, retrievedBuffers, retrieveResult,
                                                       result.consistency);
@@ -582,8 +590,9 @@ Status KvTestApp::RunRetrieveLikeCommand(const CommandOptions& options, const Kv
         if (!status.Ok()) { return status; }
     }
 
+    const auto payloadPlacement = PayloadPlacementForConfig(config);
     BufferSet buffers;
-    status = bufferAllocator_.BuildRetrieveBuffers(data, buffers);
+    status = bufferAllocator_.BuildRetrieveBuffers(data, payloadPlacement, buffers);
     if (!status.Ok()) { return status; }
 
     status = clientRunner.RegisterBuffers(buffers);
@@ -596,6 +605,7 @@ Status KvTestApp::RunRetrieveLikeCommand(const CommandOptions& options, const Kv
     const SubmitMode submitMode = SubmitMode::ALL_ENTRIES_IN_ONE_CALL;
     status = clientRunner.Retrieve(buffers, submitMode, options.timeoutMs, result);
     const bool checkResult = options.check || options.command == CommandType::POWER_CYCLE_VERIFY;
+    if (status.Ok() && checkResult) { status = bufferAllocator_.CopyDeviceBuffersToHost(buffers); }
     if (status.Ok() && checkResult) {
         status = consistencyChecker_.CheckRetrieveResult(data, buffers, result, result.consistency);
     }
