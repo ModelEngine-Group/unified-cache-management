@@ -6,7 +6,7 @@
 #include <limits>
 #include <stdexcept>
 #include <unordered_map>
-#include "../../asu/client/src/client_config_parser.h"
+#include "kv_test/asu_runtime_proxy.h"
 
 namespace UC::KVTest {
 
@@ -159,15 +159,12 @@ Status KvTestConfigLoader::ResolveConfigPath(const std::string& configPath,
 
 Status KvTestConfigLoader::Load(const std::string& configPath, KvTestConfig& config) const
 {
-    auto asuStatus = UC::ASU::LoadAsuClientConfig(configPath, config.asuClientConfig);
-    auto status = ToKvTestConfigStatus(asuStatus);
-    if (!status.Ok()) { return status; }
-
     config.behavior = ToolBehaviorConfig{};
     config.hcommProtocolMapping = HcommProtocolMapping{};
     config.bench = BenchConfig{};
     config.output = OutputConfig{};
     config.fakeBackend = KvTestFakeBackendConfig{};
+    config.asuRuntime = AsuRuntimeLibraryConfig{};
     config.asuClientMode.clear();
     config.localStorePath.clear();
     config.keyPrefix.clear();
@@ -176,10 +173,28 @@ Status KvTestConfigLoader::Load(const std::string& configPath, KvTestConfig& con
     config.count = 0;
     config.memoryMaxBytes = kDefaultMemoryMaxBytes;
 
+    Status status;
     auto values = LoadKeyValueFile(configPath, status);
     if (!status.Ok()) { return status; }
 
     try {
+        GetStringAny(
+            values,
+            {"asu.client_library_path", "asu.client.library_path", "asu_client.library_path"},
+            config.asuRuntime.clientLibraryPath);
+        GetStringAny(values,
+                     {"asu.transport_library_path", "asu.transport.library_path",
+                      "asu_transport.library_path"},
+                     config.asuRuntime.transportLibraryPath);
+
+        status = AsuRuntimeProxy::Instance().Load(config.asuRuntime);
+        if (!status.Ok()) { return status; }
+
+        auto asuStatus =
+            AsuRuntimeProxy::Instance().LoadAsuClientConfig(configPath, config.asuClientConfig);
+        status = ToKvTestConfigStatus(asuStatus);
+        if (!status.Ok()) { return status; }
+
         GetStringAny(values, {"asu.client.mode"}, config.asuClientMode);
         GetStringAny(values, {"local_store.path"}, config.localStorePath);
         GetStringAny(values, {"fake_backend.path", "fakebackend.path"},

@@ -1,6 +1,7 @@
 add_executable(kv-test
     src/arg_parser.cpp
     src/asu_client_runner.cpp
+    src/asu_runtime_proxy.cpp
     src/bench_runner.cpp
     src/buffer_allocator.cpp
     src/consistency_checker.cpp
@@ -19,12 +20,11 @@ target_include_directories(kv-test
         include
         ../asu/client/include
         ../asu/trans/include
-        ../asu/trans/src
         ${UCM_ROOT_DIR}/ucm/shared/infra
 )
 
 target_link_libraries(kv-test
     PRIVATE
-        asu_client
+        ${CMAKE_DL_LIBS}
         asu_ascend_deps
 )

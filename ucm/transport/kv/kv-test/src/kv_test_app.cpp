@@ -7,7 +7,7 @@
 #include <iostream>
 #include <sstream>
 #include <unordered_map>
-#include "asu_client/asu_client.h"
+#include "kv_test/asu_runtime_proxy.h"
 #include "kv_test/fake_backend.h"
 #include "kv_test/local_asu_transport.h"
 
@@ -377,12 +377,18 @@ std::string NormalizeAttrValue(std::string value)
     return value;
 }
 
-std::unique_ptr<UC::ASU::AsuClient> CreateClientForConfig(const KvTestConfig& config)
+Status CreateClientForConfig(const KvTestConfig& config,
+                             std::unique_ptr<UC::ASU::AsuClient>& client)
 {
     if (NormalizeAttrValue(config.asuClientMode) == "local") {
-        return UC::ASU::CreateAsuClient(CreateLocalAsuTransportFactory(config.localStorePath));
+        auto transportFactory = CreateLocalAsuTransportFactory(config.localStorePath);
+        Status status;
+        client = AsuRuntimeProxy::Instance().CreateAsuClient(&transportFactory, status);
+        return status;
     }
-    return UC::ASU::CreateAsuClient();
+    Status status;
+    client = AsuRuntimeProxy::Instance().CreateAsuClient(nullptr, status);
+    return status;
 }
 
 }  // namespace
@@ -462,7 +468,13 @@ int KvTestApp::Run(int argc, char** argv)
     }
 
     CommandResult result;
-    AsuClientRunner clientRunner(CreateClientForConfig(config));
+    std::unique_ptr<UC::ASU::AsuClient> client;
+    status = CreateClientForConfig(config, client);
+    if (!status.Ok()) {
+        PrintFailure(status);
+        return ToExitCode(status);
+    }
+    AsuClientRunner clientRunner(std::move(client));
     status = clientRunner.Init(config);
     if (status.Ok()) { status = RunCommand(effectiveOptions, config, clientRunner, result); }
 

@@ -146,6 +146,11 @@ struct KvTestFakeBackendConfig {
     std::uint64_t latencyMs{1};
 };
 
+struct AsuRuntimeLibraryConfig {
+    std::string clientLibraryPath;
+    std::string transportLibraryPath;
+};
+
 struct ToolBehaviorConfig {
     ConfigFormat configFormat{ConfigFormat::ASU_CLIENT_KEY_VALUE};
     HcommApiBoundary hcommApiBoundary{HcommApiBoundary::C_API};
@@ -172,6 +177,7 @@ struct KvTestConfig {
     BenchConfig bench;
     OutputConfig output;
     KvTestFakeBackendConfig fakeBackend;
+    AsuRuntimeLibraryConfig asuRuntime;
     std::string asuClientMode;
     std::string localStorePath;
     std::string keyPrefix;
