@@ -103,10 +103,7 @@ class Scheduler:
                         request.num_computed_tokens - req_num_computed_tokens
                     )
                     request.num_computed_tokens = req_num_computed_tokens
-                """UCM patch for HMA start"""
-                # reset num_output_placeholders to 0 for affected requests, so that they can be properly rescheduled and avoid hanging due to KV load failure
-                request.num_output_placeholders = 0
-                """UCM patch for HMA end"""
+                
                 affected_req_ids.add(request.request_id)
 
         return affected_req_ids, total_affected_tokens, blocks_to_evict
