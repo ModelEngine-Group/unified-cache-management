@@ -587,4 +587,6 @@ void AsuTransportImpl::SetTransProvider(std::unique_ptr<TransProvider> provider)
 
 std::unique_ptr<AsuTransport> CreateAsuTransport() { return std::make_unique<AsuTransportImpl>(); }
 
+extern "C" std::unique_ptr<AsuTransport> UcmAsuCreateAsuTransport() { return CreateAsuTransport(); }
+
 }  // namespace UC::ASU

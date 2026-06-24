@@ -1076,4 +1076,20 @@ std::unique_ptr<AsuClient> CreateAsuClient(TransportFactory transportFactory)
     return std::make_unique<AsuClientImpl>(std::move(transportFactory), nullptr);
 }
 
+extern "C" std::unique_ptr<AsuClient> UcmAsuCreateAsuClient(
+    const TransportFactory* transportFactory)
+{
+    if (transportFactory == nullptr) { return CreateAsuClient(); }
+    return CreateAsuClient(*transportFactory);
+}
+
+extern "C" Status UcmAsuLoadAsuClientConfig(const char* configPath, AsuClientConfig* config)
+{
+    if (configPath == nullptr || config == nullptr) {
+        return Status::Error(StatusCode::INVALID_ARGUMENT,
+                             "UcmAsuLoadAsuClientConfig received null argument");
+    }
+    return LoadAsuClientConfig(configPath, *config);
+}
+
 }  // namespace UC::ASU
