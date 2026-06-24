@@ -112,7 +112,7 @@ std::shared_ptr<ConnectionChannel> ConnectionManager::SelectConnection()
     return channel;
 }
 
-TransProvider::ConnectionHandle ConnectionManager::GetActiveConnectionHandle()
+std::shared_ptr<ConnectionChannel> ConnectionManager::GetActiveConnection()
 {
     if (shuttingDown_.load(std::memory_order_acquire)) { return nullptr; }
 
@@ -120,7 +120,7 @@ TransProvider::ConnectionHandle ConnectionManager::GetActiveConnectionHandle()
     if (cacheDirty_.load(std::memory_order_acquire)) { RebuildChannelCache(); }
 
     for (const auto& channel : channelCache_) {
-        if (channel->GetState() == ChannelState::ACTIVE) { return channel->GetConnection(); }
+        if (channel->GetState() == ChannelState::ACTIVE) { return channel; }
     }
     return nullptr;
 }

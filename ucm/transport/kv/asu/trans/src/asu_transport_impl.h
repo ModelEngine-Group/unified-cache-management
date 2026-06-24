@@ -121,6 +121,12 @@ private:
 
     void SetTransProvider(std::unique_ptr<TransProvider> provider);
 
+    struct RegisteredRegionState {
+        TransProvider::ConnectionHandle connectionHandle{nullptr};
+        TransProvider::MemHandle memHandle{nullptr};
+        std::shared_ptr<ConnectionChannel> channel;
+    };
+
     TransportConfig config_;
     IoScheduler ioScheduler_;
     std::unique_ptr<TransProvider> transProvider_;
@@ -141,6 +147,7 @@ private:
     std::mutex registeredRegionsMu_;
     std::atomic<MRHandle> nextMrHandle_{1};
     std::unordered_map<MRHandle, RegisteredMemory> registeredRegions_;
+    std::unordered_map<MRHandle, RegisteredRegionState> registeredRegionStates_;
 };
 
 }  // namespace UC::ASU
