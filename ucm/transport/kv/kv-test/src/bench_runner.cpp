@@ -44,6 +44,11 @@ std::size_t AlignUp(std::size_t value, std::size_t alignment)
     return value + alignment - remainder;
 }
 
+std::uintptr_t AlignUpAddress(std::uintptr_t value, std::size_t alignment)
+{
+    return static_cast<std::uintptr_t>(AlignUp(static_cast<std::size_t>(value), alignment));
+}
+
 UC::ASU::MemoryRegion MakeDeviceRegion(std::uint64_t addr, std::size_t size)
 {
     UC::ASU::MemoryRegion region;
@@ -206,14 +211,22 @@ Status MakeDeviceBuffer(std::size_t size, std::shared_ptr<void>& deviceBuffer)
         return Status::Success();
     }
 
+    if (size > std::numeric_limits<std::size_t>::max() - (kDeviceMrRegisterAlignment - 1)) {
+        return Status::Error(kExitInvalidArgument, "device payload bench allocation size overflow");
+    }
+    const auto allocationSize = size + kDeviceMrRegisterAlignment - 1;
+
     void* ptr = nullptr;
-    auto ret = aclrtMalloc(&ptr, size, ACL_MEM_TYPE_HIGH_BAND_WIDTH);
+    auto ret = aclrtMalloc(&ptr, allocationSize, ACL_MEM_MALLOC_HUGE_ONLY);
     if (ret != ACL_SUCCESS) {
         return Status::Error(kExitInvalidArgument,
                              "device payload bench aclrtMalloc failed: size=" +
-                                 std::to_string(size) + " ret=" + std::to_string(ret));
+                                 std::to_string(allocationSize) + " ret=" + std::to_string(ret));
     }
-    deviceBuffer = std::shared_ptr<void>(ptr, aclrtFree);
+    const auto baseAddr =
+        AlignUpAddress(reinterpret_cast<std::uintptr_t>(ptr), kDeviceMrRegisterAlignment);
+    deviceBuffer = std::shared_ptr<void>(reinterpret_cast<void*>(baseAddr),
+                                         [ptr](void*) { (void)aclrtFree(ptr); });
     return Status::Success();
 }
 
