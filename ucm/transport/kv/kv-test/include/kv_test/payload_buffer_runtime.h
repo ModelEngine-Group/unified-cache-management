@@ -5,10 +5,10 @@
 
 namespace UC::KVTest {
 
-class FakeBackendAclRuntime {
+class PayloadBufferAclRuntime {
 public:
-    FakeBackendAclRuntime() = default;
-    ~FakeBackendAclRuntime();
+    PayloadBufferAclRuntime() = default;
+    ~PayloadBufferAclRuntime();
 
     Status MaybeSetUp(const KvTestConfig& config);
     void TearDown();
@@ -19,8 +19,7 @@ private:
     std::int32_t deviceId_{0};
 };
 
-bool IsFakeBackendMode(const KvTestConfig& config);
-Status MaybeSetUpFakeBackendAclThread(const KvTestConfig& config);
-void MaybePrepareFakeBackend(KvTestConfig& config);
+bool UsesDevicePayloadBuffers(const KvTestConfig& config);
+Status MaybeSetUpPayloadAclThread(const KvTestConfig& config);
 
 }  // namespace UC::KVTest

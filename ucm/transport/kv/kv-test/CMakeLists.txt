@@ -5,12 +5,13 @@ add_executable(kv-test
     src/bench_runner.cpp
     src/buffer_allocator.cpp
     src/consistency_checker.cpp
-    src/fake_backend.cpp
     src/hcomm_config_adapter.cpp
     src/key_value_generator.cpp
     src/kv_test_app.cpp
     src/kv_test_config_loader.cpp
+    src/kv_test_config_helpers.cpp
     src/local_asu_transport.cpp
+    src/payload_buffer_runtime.cpp
     src/kv_test_main.cpp
     src/result_writer.cpp
 )

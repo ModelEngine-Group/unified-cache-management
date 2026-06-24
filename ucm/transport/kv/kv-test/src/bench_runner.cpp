@@ -11,7 +11,7 @@
 #include <memory>
 #include <numeric>
 #include <sstream>
-#include "kv_test/fake_backend.h"
+#include "kv_test/payload_buffer_runtime.h"
 
 namespace UC::KVTest {
 
@@ -224,7 +224,7 @@ Status MakeDeviceBuffer(const std::vector<std::uint8_t>& hostBuffer,
 Status SyncBenchDeviceBuffers(const KvTestConfig& config, BenchBufferSlot& slot,
                               std::size_t entryCount)
 {
-    auto status = MaybeSetUpFakeBackendAclThread(config);
+    auto status = MaybeSetUpPayloadAclThread(config);
     if (!status.Ok()) { return status; }
 
     auto& buffers = slot.buffers;
@@ -243,7 +243,7 @@ Status BuildBenchBufferPool(const KvTestConfig& config, bool useDeviceBuffers,
 {
     const auto& bench = config.bench;
     if (useDeviceBuffers) {
-        auto status = MaybeSetUpFakeBackendAclThread(config);
+        auto status = MaybeSetUpPayloadAclThread(config);
         if (!status.Ok()) { return status; }
     }
 
@@ -375,7 +375,7 @@ Status BenchRunner::Run(const CommandOptions& options, const KvTestConfig& confi
     if (!status.Ok()) { return status; }
 
     const std::string keyPrefix = config.keyPrefix.empty() ? "b" : config.keyPrefix;
-    const bool useDeviceBuffers = IsFakeBackendMode(config);
+    const bool useDeviceBuffers = UsesDevicePayloadBuffers(config);
     BenchBufferPool bufferPool;
     status = BuildBenchBufferPool(config, useDeviceBuffers, entryCountPerOperation, bufferPool);
     if (!status.Ok()) { return status; }

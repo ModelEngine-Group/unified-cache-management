@@ -8,8 +8,9 @@
 #include <sstream>
 #include <unordered_map>
 #include "kv_test/asu_runtime_proxy.h"
-#include "kv_test/fake_backend.h"
+#include "kv_test/kv_test_config_helpers.h"
 #include "kv_test/local_asu_transport.h"
+#include "kv_test/payload_buffer_runtime.h"
 
 namespace UC::KVTest {
 
@@ -393,8 +394,8 @@ Status CreateClientForConfig(const KvTestConfig& config,
 
 PayloadBufferPlacement PayloadPlacementForConfig(const KvTestConfig& config)
 {
-    return IsFakeBackendMode(config) ? PayloadBufferPlacement::ASCEND_DEVICE
-                                     : PayloadBufferPlacement::HOST;
+    return UsesDevicePayloadBuffers(config) ? PayloadBufferPlacement::ASCEND_DEVICE
+                                            : PayloadBufferPlacement::HOST;
 }
 
 }  // namespace
@@ -460,8 +461,8 @@ int KvTestApp::Run(int argc, char** argv)
         return kExitSuccess;
     }
 
-    FakeBackendAclRuntime fakeBackendAclRuntime;
-    status = fakeBackendAclRuntime.MaybeSetUp(config);
+    PayloadBufferAclRuntime payloadBufferAclRuntime;
+    status = payloadBufferAclRuntime.MaybeSetUp(config);
     if (!status.Ok()) {
         PrintFailure(status);
         return ToExitCode(status);
