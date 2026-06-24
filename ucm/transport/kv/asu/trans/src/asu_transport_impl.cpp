@@ -321,11 +321,37 @@ Status AsuTransportImpl::RegisterRegions(const std::vector<MemoryRegion>& region
 
     std::lock_guard<std::mutex> lock(registeredRegionsMu_);
     for (const auto& region : regions) {
-        auto handle = nextMrHandle_.fetch_add(1, std::memory_order_relaxed);
-        if (handle == kInvalidMRHandle) {
-            handle = nextMrHandle_.fetch_add(1, std::memory_order_relaxed);
+        const auto memType = region.memoryType == MemoryType::ASCEND_DEVICE
+                                 ? TransProvider::MemType::MEM_DEVICE
+                                 : TransProvider::MemType::MEM_HOST;
+        std::vector<TransProvider::RegisterMemoryDesc> descs{
+            {memType, static_cast<std::uintptr_t>(region.addr),
+             static_cast<std::size_t>(region.size)}
+        };
+        std::vector<TransProvider::MemHandle> memHandles;
+        auto status = transProvider_->RegisterMemory(nullptr, descs, memHandles);
+        if (!status.ok() || memHandles.empty()) {
+            results.emplace_back(RegisterResult{
+                status.ok() ? Status::Error(StatusCode::INTERNAL_ERROR,
+                                            "transport register memory returned no handle")
+                            : status,
+                kInvalidMRHandle});
+            continue;
         }
-        registeredRegions_[handle] = region;
+
+        auto handle = static_cast<MRHandle>(reinterpret_cast<std::uintptr_t>(memHandles[0]));
+        uint32_t tokenId{0};
+        status = transProvider_->GetMemTokenId(memHandles[0], tokenId);
+        if (!status.ok()) {
+            results.emplace_back(RegisterResult{status, kInvalidMRHandle});
+            continue;
+        }
+
+        RegisteredMemory regMem;
+        regMem.region = region;
+        regMem.handle = handle;
+        regMem.tokenId = tokenId;  // Only UB is supported for the current version.
+        registeredRegions_[handle] = regMem;
         results.emplace_back(RegisterResult{Status::OK(), handle});
     }
     return Status::OK();
@@ -339,7 +365,7 @@ Status AsuTransportImpl::BindRegisteredRegions(const std::vector<RegisteredMemor
 
     std::lock_guard<std::mutex> lock(registeredRegionsMu_);
     for (const auto& region : regions) {
-        registeredRegions_[region.handle] = region.region;
+        registeredRegions_[region.handle] = region;
         results.emplace_back(RegisterResult{Status::OK(), region.handle});
     }
     return Status::OK();

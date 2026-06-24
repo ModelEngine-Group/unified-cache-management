@@ -140,7 +140,7 @@ private:
 
     std::mutex registeredRegionsMu_;
     std::atomic<MRHandle> nextMrHandle_{1};
-    std::unordered_map<MRHandle, MemoryRegion> registeredRegions_;
+    std::unordered_map<MRHandle, RegisteredMemory> registeredRegions_;
 };
 
 }  // namespace UC::ASU
