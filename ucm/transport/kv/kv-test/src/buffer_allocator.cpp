@@ -10,6 +10,7 @@ constexpr int kExitInvalidArgument = 1;
 
 constexpr std::uint8_t kRetrieveBufferInitialValue = 0xA5;
 constexpr std::size_t kDeviceBufferAlignment = UC::ASU::kAsuAlignmentBytes;
+constexpr std::size_t kDeviceMrRegisterAlignment = 2ULL * 1024ULL * 1024ULL;
 
 UC::ASU::MemoryRegion MakeHostRegion(std::vector<std::uint8_t>& buffer)
 {
@@ -89,11 +90,16 @@ Status BuildDeviceBuffers(BufferSet& buffers)
 
     if (totalSize == 0) { return Status::Success(); }
 
+    const auto registerSize = AlignUp(totalSize, kDeviceMrRegisterAlignment);
+    if (registerSize < totalSize) {
+        return Status::Error(kExitInvalidArgument, "device payload register size overflow");
+    }
+
     void* ptr = nullptr;
-    auto ret = aclrtMalloc(&ptr, totalSize, ACL_MEM_TYPE_HIGH_BAND_WIDTH);
+    auto ret = aclrtMalloc(&ptr, registerSize, ACL_MEM_TYPE_HIGH_BAND_WIDTH);
     if (ret != ACL_SUCCESS) {
         return Status::Error(kExitInvalidArgument, "device payload aclrtMalloc failed: size=" +
-                                                       std::to_string(totalSize) +
+                                                       std::to_string(registerSize) +
                                                        " ret=" + std::to_string(ret));
     }
 
@@ -106,7 +112,7 @@ Status BuildDeviceBuffers(BufferSet& buffers)
     }
 
     buffers.deviceBuffers.emplace_back(deviceBuffer);
-    buffers.regions.emplace_back(MakeDeviceRegion(baseAddr, totalSize));
+    buffers.regions.emplace_back(MakeDeviceRegion(baseAddr, registerSize));
     buffers.entryRegionIndexes.assign(buffers.ownedBuffers.size(), 0);
     return Status::Success();
 }

@@ -18,6 +18,8 @@ namespace UC::KVTest {
 namespace {
 
 constexpr int kExitInvalidArgument = 1;
+constexpr std::size_t kDeviceBufferAlignment = UC::ASU::kAsuAlignmentBytes;
+constexpr std::size_t kDeviceMrRegisterAlignment = 2ULL * 1024ULL * 1024ULL;
 
 struct BenchBufferSlot {
     BufferSet buffers;
@@ -265,8 +267,13 @@ Status BuildBenchBufferPool(const KvTestConfig& config, bool useDeviceBuffers,
             }
         }
         if (useDeviceBuffers) {
+            const auto registerSize = AlignUp(deviceBufferSize, kDeviceMrRegisterAlignment);
+            if (registerSize < deviceBufferSize) {
+                return Status::Error(kExitInvalidArgument,
+                                     "device payload bench register size overflow");
+            }
             std::shared_ptr<void> deviceBuffer;
-            auto status = MakeDeviceBuffer(deviceBufferSize, deviceBuffer);
+            auto status = MakeDeviceBuffer(registerSize, deviceBuffer);
             if (!status.Ok()) { return status; }
             buffers.deviceBuffers.emplace_back(std::move(deviceBuffer));
         }
@@ -298,9 +305,10 @@ Status PrepareBenchBuffers(BenchBufferSlot& slot, std::uint64_t begin, std::size
             buffers.deviceBuffers.empty()
                 ? 0
                 : reinterpret_cast<std::uintptr_t>(buffers.deviceBuffers.front().get());
-        const auto regionSize = entryCount == 0 ? 0
-                                                : buffers.deviceBufferOffsets[entryCount - 1] +
-                                                      buffers.ownedBuffers[entryCount - 1].size();
+        const auto dataSize = entryCount == 0 ? 0
+                                              : buffers.deviceBufferOffsets[entryCount - 1] +
+                                                    buffers.ownedBuffers[entryCount - 1].size();
+        const auto regionSize = AlignUp(dataSize, kDeviceMrRegisterAlignment);
         buffers.regions.emplace_back(MakeDeviceRegion(baseAddr, regionSize));
         buffers.entryRegionIndexes.assign(entryCount, 0);
     } else {
