@@ -200,8 +200,10 @@ struct GeneratedData {
 struct BufferSet {
     std::vector<std::vector<std::uint8_t>> ownedBuffers;
     std::vector<std::shared_ptr<void>> deviceBuffers;
+    std::vector<std::size_t> deviceBufferOffsets;
     std::vector<UC::ASU::MemoryRegion> regions;
     std::vector<UC::ASU::KVBuffer> entries;
+    std::vector<std::size_t> entryRegionIndexes;
     std::vector<UC::ASU::RegisterResult> registerResults;
 };
 

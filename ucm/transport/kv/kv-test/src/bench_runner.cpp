@@ -19,19 +19,6 @@ namespace {
 
 constexpr int kExitInvalidArgument = 1;
 
-Status StringToCacheKey(const std::string& value, UC::ASU::CacheKey& key)
-{
-    if (value.size() > key.size()) {
-        return Status::Error(kExitInvalidArgument,
-                             "bench key length exceeds " + std::to_string(key.size()) +
-                                 " bytes: length=" + std::to_string(value.size()) +
-                                 ", key=" + value);
-    }
-    key = UC::ASU::CacheKey{};
-    if (!value.empty()) { std::memcpy(key.data(), value.data(), value.size()); }
-    return Status::Success();
-}
-
 struct BenchBufferSlot {
     BufferSet buffers;
 };
@@ -47,11 +34,19 @@ UC::ASU::MemoryRegion MakeHostRegion(std::vector<std::uint8_t>& buffer)
     return region;
 }
 
-UC::ASU::MemoryRegion MakeDeviceRegion(const std::shared_ptr<void>& buffer, std::size_t size)
+std::size_t AlignUp(std::size_t value, std::size_t alignment)
+{
+    if (alignment == 0) { return value; }
+    const auto remainder = value % alignment;
+    if (remainder == 0) { return value; }
+    return value + alignment - remainder;
+}
+
+UC::ASU::MemoryRegion MakeDeviceRegion(std::uint64_t addr, std::size_t size)
 {
     UC::ASU::MemoryRegion region;
     region.memoryType = UC::ASU::MemoryType::ASCEND_DEVICE;
-    region.addr = buffer ? reinterpret_cast<std::uint64_t>(buffer.get()) : 0;
+    region.addr = addr;
     region.size = size;
     region.deviceId = 0;
     region.numaNode = -1;
@@ -187,38 +182,37 @@ void FillStoreValue(std::vector<std::uint8_t>& value, std::uint64_t valueIndex, 
     }
 }
 
-Status CopyHostToDevice(const std::vector<std::uint8_t>& hostBuffer,
-                        const std::shared_ptr<void>& deviceBuffer, std::size_t index)
+Status CopyHostToDevice(const std::vector<std::uint8_t>& hostBuffer, std::uintptr_t deviceAddr,
+                        std::size_t index)
 {
     if (hostBuffer.empty()) { return Status::Success(); }
-    auto ret = aclrtMemcpy(deviceBuffer.get(), hostBuffer.size(), hostBuffer.data(),
-                           hostBuffer.size(), ACL_MEMCPY_HOST_TO_DEVICE);
+    auto ret = aclrtMemcpy(reinterpret_cast<void*>(deviceAddr), hostBuffer.size(),
+                           hostBuffer.data(), hostBuffer.size(), ACL_MEMCPY_HOST_TO_DEVICE);
     if (ret != ACL_SUCCESS) {
         return Status::Error(
             kExitInvalidArgument,
-            "fake_backend bench host-to-device copy failed: index=" + std::to_string(index) +
+            "device payload bench host-to-device copy failed: index=" + std::to_string(index) +
                 " size=" + std::to_string(hostBuffer.size()) + " ret=" + std::to_string(ret));
     }
     return Status::Success();
 }
 
-Status MakeDeviceBuffer(const std::vector<std::uint8_t>& hostBuffer,
-                        std::shared_ptr<void>& deviceBuffer)
+Status MakeDeviceBuffer(std::size_t size, std::shared_ptr<void>& deviceBuffer)
 {
-    if (hostBuffer.empty()) {
+    if (size == 0) {
         deviceBuffer.reset();
         return Status::Success();
     }
 
     void* ptr = nullptr;
-    auto ret = aclrtMalloc(&ptr, hostBuffer.size(), ACL_MEM_TYPE_HIGH_BAND_WIDTH);
+    auto ret = aclrtMalloc(&ptr, size, ACL_MEM_TYPE_HIGH_BAND_WIDTH);
     if (ret != ACL_SUCCESS) {
-        return Status::Error(kExitInvalidArgument, "fake_backend bench aclrtMalloc failed: size=" +
-                                                       std::to_string(hostBuffer.size()) +
-                                                       " ret=" + std::to_string(ret));
+        return Status::Error(kExitInvalidArgument,
+                             "device payload bench aclrtMalloc failed: size=" +
+                                 std::to_string(size) + " ret=" + std::to_string(ret));
     }
     deviceBuffer = std::shared_ptr<void>(ptr, aclrtFree);
-    return CopyHostToDevice(hostBuffer, deviceBuffer, 0);
+    return Status::Success();
 }
 
 Status SyncBenchDeviceBuffers(const KvTestConfig& config, BenchBufferSlot& slot,
@@ -228,11 +222,14 @@ Status SyncBenchDeviceBuffers(const KvTestConfig& config, BenchBufferSlot& slot,
     if (!status.Ok()) { return status; }
 
     auto& buffers = slot.buffers;
-    if (buffers.ownedBuffers.size() < entryCount || buffers.deviceBuffers.size() < entryCount) {
-        return Status::Error(kExitInvalidArgument, "fake_backend bench buffer count mismatch");
+    if (buffers.ownedBuffers.size() < entryCount || buffers.deviceBuffers.empty() ||
+        buffers.deviceBufferOffsets.size() < entryCount) {
+        return Status::Error(kExitInvalidArgument, "device payload bench buffer count mismatch");
     }
+    const auto baseAddr = reinterpret_cast<std::uintptr_t>(buffers.deviceBuffers.front().get());
     for (std::size_t index = 0; index < entryCount; ++index) {
-        status = CopyHostToDevice(buffers.ownedBuffers[index], buffers.deviceBuffers[index], index);
+        status = CopyHostToDevice(buffers.ownedBuffers[index],
+                                  baseAddr + buffers.deviceBufferOffsets[index], index);
         if (!status.Ok()) { return status; }
     }
     return Status::Success();
@@ -251,16 +248,27 @@ Status BuildBenchBufferPool(const KvTestConfig& config, bool useDeviceBuffers,
     for (std::size_t slotIndex = 0; slotIndex < pool.size(); ++slotIndex) {
         auto& buffers = pool[slotIndex].buffers;
         buffers.ownedBuffers.reserve(static_cast<std::size_t>(entryCountPerOperation));
-        buffers.deviceBuffers.reserve(static_cast<std::size_t>(entryCountPerOperation));
+        buffers.deviceBufferOffsets.reserve(static_cast<std::size_t>(entryCountPerOperation));
+        std::size_t deviceBufferSize = 0;
         for (std::uint64_t index = 0; index < entryCountPerOperation; ++index) {
             auto& value = buffers.ownedBuffers.emplace_back(static_cast<std::size_t>(bench.ioSize));
             FillStoreValue(value, slotIndex * entryCountPerOperation + index, config.seed);
             if (useDeviceBuffers) {
-                std::shared_ptr<void> deviceBuffer;
-                auto status = MakeDeviceBuffer(value, deviceBuffer);
-                if (!status.Ok()) { return status; }
-                buffers.deviceBuffers.emplace_back(std::move(deviceBuffer));
+                const auto offset = AlignUp(deviceBufferSize, kDeviceBufferAlignment);
+                if (offset < deviceBufferSize ||
+                    value.size() > std::numeric_limits<std::size_t>::max() - offset) {
+                    return Status::Error(kExitInvalidArgument,
+                                         "device payload bench buffer size overflow");
+                }
+                buffers.deviceBufferOffsets.emplace_back(offset);
+                deviceBufferSize = offset + value.size();
             }
+        }
+        if (useDeviceBuffers) {
+            std::shared_ptr<void> deviceBuffer;
+            auto status = MakeDeviceBuffer(deviceBufferSize, deviceBuffer);
+            if (!status.Ok()) { return status; }
+            buffers.deviceBuffers.emplace_back(std::move(deviceBuffer));
         }
     }
     return Status::Success();
@@ -282,16 +290,33 @@ Status PrepareBenchBuffers(BenchBufferSlot& slot, std::uint64_t begin, std::size
     auto& buffers = slot.buffers;
     buffers.regions.clear();
     buffers.entries.clear();
+    buffers.entryRegionIndexes.clear();
     buffers.registerResults.clear();
-    buffers.regions.reserve(entryCount);
     buffers.entries.reserve(entryCount);
+    if (useDeviceBuffers) {
+        const auto baseAddr =
+            buffers.deviceBuffers.empty()
+                ? 0
+                : reinterpret_cast<std::uintptr_t>(buffers.deviceBuffers.front().get());
+        const auto regionSize = entryCount == 0 ? 0
+                                                : buffers.deviceBufferOffsets[entryCount - 1] +
+                                                      buffers.ownedBuffers[entryCount - 1].size();
+        buffers.regions.emplace_back(MakeDeviceRegion(baseAddr, regionSize));
+        buffers.entryRegionIndexes.assign(entryCount, 0);
+    } else {
+        buffers.regions.reserve(entryCount);
+    }
 
     for (std::size_t index = 0; index < entryCount; ++index) {
         const auto keyIndex = begin + index;
-        auto region = useDeviceBuffers ? MakeDeviceRegion(buffers.deviceBuffers[index],
-                                                          buffers.ownedBuffers[index].size())
-                                       : MakeHostRegion(buffers.ownedBuffers[index]);
-        buffers.regions.emplace_back(region);
+        const auto region =
+            useDeviceBuffers
+                ? MakeDeviceRegion(
+                      reinterpret_cast<std::uintptr_t>(buffers.deviceBuffers.front().get()) +
+                          buffers.deviceBufferOffsets[index],
+                      buffers.ownedBuffers[index].size())
+                : MakeHostRegion(buffers.ownedBuffers[index]);
+        if (!useDeviceBuffers) { buffers.regions.emplace_back(region); }
         UC::ASU::CacheKey key{};
         auto status = StringToCacheKey(keyPrefix + std::to_string(keyIndex), key);
         if (!status.Ok()) { return status; }

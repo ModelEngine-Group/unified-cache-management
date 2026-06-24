@@ -1,5 +1,6 @@
 #include "kv_test/buffer_allocator.h"
 #include <acl/acl.h>
+#include <limits>
 
 namespace UC::KVTest {
 
@@ -8,6 +9,7 @@ namespace {
 constexpr int kExitInvalidArgument = 1;
 
 constexpr std::uint8_t kRetrieveBufferInitialValue = 0xA5;
+constexpr std::size_t kDeviceBufferAlignment = UC::ASU::kAsuAlignmentBytes;
 
 UC::ASU::MemoryRegion MakeHostRegion(std::vector<std::uint8_t>& buffer)
 {
@@ -20,11 +22,19 @@ UC::ASU::MemoryRegion MakeHostRegion(std::vector<std::uint8_t>& buffer)
     return region;
 }
 
-UC::ASU::MemoryRegion MakeDeviceRegion(const std::shared_ptr<void>& buffer, std::size_t size)
+std::size_t AlignUp(std::size_t value, std::size_t alignment)
+{
+    if (alignment == 0) { return value; }
+    const auto remainder = value % alignment;
+    if (remainder == 0) { return value; }
+    return value + alignment - remainder;
+}
+
+UC::ASU::MemoryRegion MakeDeviceRegion(std::uint64_t addr, std::size_t size)
 {
     UC::ASU::MemoryRegion region;
     region.memoryType = UC::ASU::MemoryType::ASCEND_DEVICE;
-    region.addr = buffer ? reinterpret_cast<std::uint64_t>(buffer.get()) : 0;
+    region.addr = addr;
     region.size = size;
     region.deviceId = 0;
     region.numaNode = -1;
@@ -48,29 +58,15 @@ Status ValidateGeneratedData(const GeneratedData& data, const std::string& opera
     return Status::Success();
 }
 
-Status MakeDeviceBuffer(const std::vector<std::uint8_t>& hostBuffer,
-                        std::shared_ptr<void>& deviceBuffer)
+Status CopyHostToDevice(const std::vector<std::uint8_t>& hostBuffer, void* deviceAddr)
 {
-    if (hostBuffer.empty()) {
-        deviceBuffer.reset();
-        return Status::Success();
-    }
+    if (hostBuffer.empty()) { return Status::Success(); }
 
-    void* ptr = nullptr;
-    auto ret = aclrtMalloc(&ptr, hostBuffer.size(), ACL_MEM_TYPE_HIGH_BAND_WIDTH);
+    const auto ret = aclrtMemcpy(deviceAddr, hostBuffer.size(), hostBuffer.data(),
+                                 hostBuffer.size(), ACL_MEMCPY_HOST_TO_DEVICE);
     if (ret != ACL_SUCCESS) {
-        return Status::Error(kExitInvalidArgument, "fake_backend aclrtMalloc failed: size=" +
-                                                       std::to_string(hostBuffer.size()) +
-                                                       " ret=" + std::to_string(ret));
-    }
-    deviceBuffer = std::shared_ptr<void>(ptr, aclrtFree);
-
-    ret = aclrtMemcpy(deviceBuffer.get(), hostBuffer.size(), hostBuffer.data(), hostBuffer.size(),
-                      ACL_MEMCPY_HOST_TO_DEVICE);
-    if (ret != ACL_SUCCESS) {
-        deviceBuffer.reset();
         return Status::Error(kExitInvalidArgument,
-                             "fake_backend host-to-device copy failed: size=" +
+                             "device payload host-to-device copy failed: size=" +
                                  std::to_string(hostBuffer.size()) + " ret=" + std::to_string(ret));
     }
     return Status::Success();
@@ -78,13 +74,40 @@ Status MakeDeviceBuffer(const std::vector<std::uint8_t>& hostBuffer,
 
 Status BuildDeviceBuffers(BufferSet& buffers)
 {
-    buffers.deviceBuffers.reserve(buffers.ownedBuffers.size());
+    std::size_t totalSize = 0;
+    buffers.deviceBufferOffsets.clear();
+    buffers.deviceBufferOffsets.reserve(buffers.ownedBuffers.size());
     for (const auto& hostBuffer : buffers.ownedBuffers) {
-        std::shared_ptr<void> deviceBuffer;
-        auto status = MakeDeviceBuffer(hostBuffer, deviceBuffer);
-        if (!status.Ok()) { return status; }
-        buffers.deviceBuffers.emplace_back(std::move(deviceBuffer));
+        const auto offset = AlignUp(totalSize, kDeviceBufferAlignment);
+        if (offset < totalSize ||
+            hostBuffer.size() > std::numeric_limits<std::size_t>::max() - offset) {
+            return Status::Error(kExitInvalidArgument, "device payload buffer size overflow");
+        }
+        buffers.deviceBufferOffsets.emplace_back(offset);
+        totalSize = offset + hostBuffer.size();
     }
+
+    if (totalSize == 0) { return Status::Success(); }
+
+    void* ptr = nullptr;
+    auto ret = aclrtMalloc(&ptr, totalSize, ACL_MEM_TYPE_HIGH_BAND_WIDTH);
+    if (ret != ACL_SUCCESS) {
+        return Status::Error(kExitInvalidArgument, "device payload aclrtMalloc failed: size=" +
+                                                       std::to_string(totalSize) +
+                                                       " ret=" + std::to_string(ret));
+    }
+
+    auto deviceBuffer = std::shared_ptr<void>(ptr, aclrtFree);
+    const auto baseAddr = reinterpret_cast<std::uintptr_t>(deviceBuffer.get());
+    for (std::size_t index = 0; index < buffers.ownedBuffers.size(); ++index) {
+        auto* deviceAddr = reinterpret_cast<void*>(baseAddr + buffers.deviceBufferOffsets[index]);
+        auto status = CopyHostToDevice(buffers.ownedBuffers[index], deviceAddr);
+        if (!status.Ok()) { return status; }
+    }
+
+    buffers.deviceBuffers.emplace_back(deviceBuffer);
+    buffers.regions.emplace_back(MakeDeviceRegion(baseAddr, totalSize));
+    buffers.entryRegionIndexes.assign(buffers.ownedBuffers.size(), 0);
     return Status::Success();
 }
 
@@ -92,7 +115,12 @@ UC::ASU::MemoryRegion MakeRegion(BufferSet& buffers, std::size_t index,
                                  PayloadBufferPlacement placement)
 {
     if (placement == PayloadBufferPlacement::ASCEND_DEVICE) {
-        return MakeDeviceRegion(buffers.deviceBuffers[index], buffers.ownedBuffers[index].size());
+        const auto baseAddr =
+            buffers.deviceBuffers.empty()
+                ? 0
+                : reinterpret_cast<std::uintptr_t>(buffers.deviceBuffers.front().get());
+        return MakeDeviceRegion(baseAddr + buffers.deviceBufferOffsets[index],
+                                buffers.ownedBuffers[index].size());
     }
     return MakeHostRegion(buffers.ownedBuffers[index]);
 }
@@ -119,7 +147,9 @@ Status BufferAllocator::BuildStoreBuffers(const GeneratedData& data,
 
     for (std::size_t index = 0; index < data.keys.size(); ++index) {
         auto region = MakeRegion(buffers, index, placement);
-        buffers.regions.emplace_back(region);
+        if (placement != PayloadBufferPlacement::ASCEND_DEVICE) {
+            buffers.regions.emplace_back(region);
+        }
         buffers.entries.emplace_back(MakeKvBuffer(data.keys[index], region));
     }
 
@@ -148,7 +178,9 @@ Status BufferAllocator::BuildRetrieveBuffers(const GeneratedData& data,
 
     for (std::size_t index = 0; index < data.keys.size(); ++index) {
         auto region = MakeRegion(buffers, index, placement);
-        buffers.regions.emplace_back(region);
+        if (placement != PayloadBufferPlacement::ASCEND_DEVICE) {
+            buffers.regions.emplace_back(region);
+        }
         buffers.entries.emplace_back(MakeKvBuffer(data.keys[index], region));
     }
 
@@ -158,21 +190,21 @@ Status BufferAllocator::BuildRetrieveBuffers(const GeneratedData& data,
 Status BufferAllocator::CopyDeviceBuffersToHost(BufferSet& buffers) const
 {
     if (buffers.deviceBuffers.empty()) { return Status::Success(); }
-    if (buffers.deviceBuffers.size() != buffers.ownedBuffers.size()) {
+    if (buffers.entries.size() != buffers.ownedBuffers.size()) {
         return Status::Error(kExitInvalidArgument,
-                             "fake_backend device/host buffer count mismatch");
+                             "device payload entry/host buffer count mismatch");
     }
 
     for (std::size_t index = 0; index < buffers.ownedBuffers.size(); ++index) {
         auto& hostBuffer = buffers.ownedBuffers[index];
         if (hostBuffer.empty()) { continue; }
-        auto ret =
-            aclrtMemcpy(hostBuffer.data(), hostBuffer.size(), buffers.deviceBuffers[index].get(),
-                        hostBuffer.size(), ACL_MEMCPY_DEVICE_TO_HOST);
+        auto ret = aclrtMemcpy(hostBuffer.data(), hostBuffer.size(),
+                               reinterpret_cast<void*>(buffers.entries[index].buffer.region.addr),
+                               hostBuffer.size(), ACL_MEMCPY_DEVICE_TO_HOST);
         if (ret != ACL_SUCCESS) {
             return Status::Error(
                 kExitInvalidArgument,
-                "fake_backend device-to-host copy failed: index=" + std::to_string(index) +
+                "device payload device-to-host copy failed: index=" + std::to_string(index) +
                     " size=" + std::to_string(hostBuffer.size()) + " ret=" + std::to_string(ret));
         }
     }
