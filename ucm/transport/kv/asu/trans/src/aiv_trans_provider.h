@@ -98,16 +98,16 @@ public:
     }
 
 private:
-    static Status FromImpl(const Status& s)
+    static Status FromImpl(const Status& status)
     {
-        return s.ok() ? Status::OK() : Status::Error(s.code, s.message);
+        return status.ok() ? Status::OK() : Status::Error(status.code, status.message);
     }
 
-    static std::vector<Status> FromImpl(const std::vector<Status>& vec)
+    static std::vector<Status> FromImpl(const std::vector<Status>& statuses)
     {
         std::vector<Status> out;
-        out.reserve(vec.size());
-        for (const auto& s : vec) { out.push_back(FromImpl(s)); }
+        out.reserve(statuses.size());
+        for (const auto& status : statuses) { out.push_back(FromImpl(status)); }
         return out;
     }
 

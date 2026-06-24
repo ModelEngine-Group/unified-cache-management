@@ -173,7 +173,8 @@ bool ApplyTransportProviderConfigField(TransportConfig& config, const std::strin
                                        const std::string& value)
 {
     if (key == "providerBackend" || key == "provider_backend" || key == "transProviderBackend" ||
-        key == "trans_provider_backend") {
+        key == "trans_provider_backend" || key == "providerType" || key == "provider_type" ||
+        key == "transProviderType" || key == "trans_provider_type") {
         config.providerType = ParseConfigTransProviderType(value);
     } else {
         return false;

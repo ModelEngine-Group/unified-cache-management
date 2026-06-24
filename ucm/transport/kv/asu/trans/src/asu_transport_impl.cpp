@@ -31,15 +31,19 @@
 #include <string>
 #include <thread>
 #include <utility>
+#ifdef UCM_ASU_ENABLE_AICPU_PROVIDER
 #include "aicpu_trans_provider.h"
-#ifdef UCM_ASU_ENABLE_AIV
+#endif
+#ifdef UCM_ASU_ENABLE_AIV_PROVIDER
 #include "aiv_trans_provider.h"
 #endif
 #include "asu_response_status.h"
 #include "asu_transport/asu_transport.h"
 #include "connection_internal.h"
 #include "connection_manager.h"
+#ifdef UCM_ASU_ENABLE_FAKE_PROVIDER
 #include "fake_trans_provider.h"
+#endif
 #include "logger.h"
 #include "transport_config_parser.h"
 
@@ -88,19 +92,34 @@ Status AsuTransportImpl::Init(const TransportConfig& config)
     if (!transProvider_) {
         switch (config_.providerType) {
             case TransProviderType::AICPU:
+#ifdef UCM_ASU_ENABLE_AICPU_PROVIDER
                 transProvider_ = std::make_unique<AICPUTransProvider>();
                 break;
+#else
+                return Status::Error(
+                    StatusCode::UNSUPPORTED,
+                    "AICPU trans provider is not built; enable BUILD_UCM_ASU_PROVIDER_AICPU");
+#endif
             case TransProviderType::FAKE:
+#ifdef UCM_ASU_ENABLE_FAKE_PROVIDER
                 transProvider_ =
                     std::make_unique<FakeTransProvider>(MakeFakeTransProviderConfig(config_));
                 break;
-            case TransProviderType::AIV:
-#ifdef UCM_ASU_ENABLE_AIV
-                transProvider_ = std::make_unique<AIVTransProvider>();
 #else
-                return Status::Error(StatusCode::UNSUPPORTED, "AIV backend not enabled");
+                return Status::Error(
+                    StatusCode::UNSUPPORTED,
+                    "FAKE trans provider is not built; enable BUILD_UCM_ASU_PROVIDER_FAKE");
 #endif
+            case TransProviderType::AIV:
+#ifdef UCM_ASU_ENABLE_AIV_PROVIDER
+                transProvider_ = std::make_unique<AIVTransProvider>();
                 break;
+#else
+                return Status::Error(
+                    StatusCode::UNSUPPORTED,
+                    "AIV trans provider is not built; enable BUILD_UCM_ASU_PROVIDER_AIV and set "
+                    "ASU_AIV_PROVIDER_ROOT");
+#endif
             case TransProviderType::UNSUPPORTED:
                 return Status::Error(StatusCode::UNSUPPORTED,
                                      "ASU trans provider backend is not supported");
