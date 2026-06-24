@@ -21,33 +21,43 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  * */
-#ifndef UNIFIEDCACHE_STORE_CC_DS3FS_STORE_H
-#define UNIFIEDCACHE_STORE_CC_DS3FS_STORE_H
+#ifndef UNIFIEDCACHE_MOONCAKE_STORE_CC_TRANS_MANAGER_H
+#define UNIFIEDCACHE_MOONCAKE_STORE_CC_TRANS_MANAGER_H
 
 #include <memory>
-#include "ucmstore_v1.h"
+#include "dump_queue.h"
+#include "global_config.h"
+#include "host_buffer_pool.h"
+#include "load_queue.h"
+#include "real_client.h"
+#include "share_load_queue.h"
+#include "template/task_wrapper.h"
+#include "trans_task.h"
+#include "type/types.h"
 
-namespace UC::Ds3fsStore {
+namespace UC::MooncakeStore {
 
-class Ds3fsStoreImpl;
-class Ds3fsStore : public StoreV1 {
+class TransManager : public Detail::TaskWrapper<TransTask, Detail::TaskHandle> {
 public:
-    ~Ds3fsStore() override;
-    Status Setup(const Detail::Dictionary& config) override;
-    std::string Readme() const override;
-    Expected<std::vector<uint8_t>> Lookup(const Detail::BlockId* blocks, size_t num) override;
-    Expected<ssize_t> LookupOnPrefix(const Detail::BlockId* blocks, size_t num) override;
-    void Prefetch(const Detail::BlockId* blocks, size_t num) override;
-    Expected<Detail::TaskHandle> Load(Detail::TaskDesc task) override;
-    Expected<Detail::TaskHandle> Dump(Detail::TaskDesc task) override;
-    Expected<bool> Check(Detail::TaskHandle taskId) override;
-    Status Wait(Detail::TaskHandle taskId) override;
-    Status RegisterMemory(void* base_addr, size_t total_size) override;
+    Status Setup(const Config& config);
+    void Close();
+    std::shared_ptr<mooncake::RealClient> GetRealClient() const { return realClient_; }
+
+protected:
+    void Dispatch(TaskPtr t, WaiterPtr w) override;
 
 private:
-    std::shared_ptr<Ds3fsStoreImpl> impl_;
+    Status SetupRealClient(const Config& config);
+
+    std::shared_ptr<mooncake::RealClient> realClient_;
+    HostBufferPool bufPool_;
+    LoadQueue loadQ_;
+    DumpQueue dumpQ_;
+    ShareLoadQueue shareLoadQ_;
+    size_t localRankSize_{1};
+    Config config_;
 };
 
-}  // namespace UC::Ds3fsStore
+}  // namespace UC::MooncakeStore
 
 #endif
