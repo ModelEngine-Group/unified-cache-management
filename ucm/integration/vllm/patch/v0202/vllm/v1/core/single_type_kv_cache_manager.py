@@ -4,6 +4,30 @@ logger = init_logger(__name__)
 
 
 class SingleTypeKVCacheManager:
+    def free(self, request_id: str) -> None:
+        """
+        Free the blocks for the request.
+
+        Args:
+            request_id: The request ID.
+        """
+        # Default to [] in case a request is freed (aborted) before alloc.
+        req_blocks = self.req_to_blocks.pop(request_id, [])
+
+        # Free blocks in reverse order so that the tail blocks are freed first.
+        # Deduplicate while preserving reverse order.
+        seen_blocks = set()
+        ordered_blocks = []
+
+        for block in reversed(req_blocks):
+            if block in seen_blocks:
+                continue
+            seen_blocks.add(block)
+            ordered_blocks.append(block)
+
+        self.block_pool.free_blocks(ordered_blocks)
+        self.num_cached_block.pop(request_id, None)
+
     def remove_skipped_blocks(
         self, request_id: str, total_computed_tokens: int
     ) -> None:
