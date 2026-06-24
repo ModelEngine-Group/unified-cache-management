@@ -61,7 +61,6 @@ private:
     Status SetUpAclRuntime();
 
     FakeTransProviderConfig config_;
-    bool aclReady_{false};
 };
 
 FakeTransProviderConfig MakeFakeTransProviderConfig(const TransportConfig& config);

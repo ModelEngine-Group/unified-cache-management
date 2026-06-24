@@ -26,6 +26,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cstddef>
+#include <cstdint>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
@@ -371,21 +372,23 @@ FakeTransProvider::FakeTransProvider(FakeTransProviderConfig config) : config_(s
 
 Status FakeTransProvider::SetUpAclRuntime()
 {
-    if (aclReady_) { return Status::OK(); }
+    const auto deviceId = config_.deviceId < 0 ? 0 : config_.deviceId;
+    thread_local std::int32_t readyDeviceId = -1;
+    if (readyDeviceId == deviceId) { return Status::OK(); }
+
     auto ret = aclInit(nullptr);
     if (ret != ACL_SUCCESS && ret != ACL_ERROR_REPEAT_INITIALIZE) {
         return Status::Error(StatusCode::INTERNAL_ERROR,
                              "ASU fake backend aclInit failed: " + std::to_string(ret));
     }
 
-    const auto deviceId = config_.deviceId < 0 ? 0 : config_.deviceId;
     ret = aclrtSetDevice(deviceId);
     if (ret != ACL_SUCCESS) {
         return Status::Error(StatusCode::INTERNAL_ERROR,
                              "ASU fake backend aclrtSetDevice failed: device_id=" +
                                  std::to_string(deviceId) + " ret=" + std::to_string(ret));
     }
-    aclReady_ = true;
+    readyDeviceId = deviceId;
     return Status::OK();
 }
 
@@ -415,6 +418,9 @@ std::vector<Status> FakeTransProvider::Send(const std::vector<SendIoBatch>& ioBa
 {
     (void)kernelCount;
     (void)quietCount;
+    auto runtimeStatus = SetUpAclRuntime();
+    if (!runtimeStatus.ok()) { return std::vector<Status>(ioBatches.size(), runtimeStatus); }
+
     std::vector<Status> statuses;
     statuses.reserve(ioBatches.size());
     for (const auto& ioBatch : ioBatches) {
