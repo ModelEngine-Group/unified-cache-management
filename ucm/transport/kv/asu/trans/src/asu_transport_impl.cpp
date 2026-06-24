@@ -352,7 +352,7 @@ Status AsuTransportImpl::RegisterRegions(const std::vector<MemoryRegion>& region
         regMem.handle = handle;
         regMem.tokenId = tokenId;  // Only UB is supported for the current version.
         registeredRegions_[handle] = regMem;
-        results.emplace_back(RegisterResult{Status::OK(), handle});
+        results.emplace_back(RegisterResult{Status::OK(), handle, 0, 0, tokenId});
     }
     return Status::OK();
 }
@@ -366,7 +366,8 @@ Status AsuTransportImpl::BindRegisteredRegions(const std::vector<RegisteredMemor
     std::lock_guard<std::mutex> lock(registeredRegionsMu_);
     for (const auto& region : regions) {
         registeredRegions_[region.handle] = region;
-        results.emplace_back(RegisterResult{Status::OK(), region.handle});
+        results.emplace_back(
+            RegisterResult{Status::OK(), region.handle, region.lkey, region.rkey, region.tokenId});
     }
     return Status::OK();
 }

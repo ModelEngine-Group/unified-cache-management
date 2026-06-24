@@ -56,6 +56,7 @@ struct TestState {
     std::unordered_map<AsuId, QueryResult> prefixQueryResults;
     std::vector<AsuId> registerCalls;
     std::vector<AsuId> bindCalls;
+    std::unordered_map<AsuId, std::vector<RegisteredMemory>> boundRegions;
     std::vector<AsuId> unregisterCalls;
     std::vector<AsuId> queryCalls;
     std::unordered_map<AsuId, std::size_t> queryKeyCounts;
@@ -217,7 +218,8 @@ public:
         state_->registerCalls.emplace_back(config_.asuId);
         results.clear();
         for (std::size_t index = 0; index < regions.size(); ++index) {
-            results.emplace_back(RegisterResult{Status::OK(), 500 + index});
+            results.emplace_back(RegisterResult{Status::OK(), 500 + index, 0, 0,
+                                                900 + static_cast<std::uint32_t>(index)});
         }
         return Status::OK();
     }
@@ -226,9 +228,11 @@ public:
                                  std::vector<RegisterResult>& results) override
     {
         state_->bindCalls.emplace_back(config_.asuId);
+        state_->boundRegions[config_.asuId] = regions;
         results.clear();
         for (const auto& region : regions) {
-            results.emplace_back(RegisterResult{Status::OK(), region.handle});
+            results.emplace_back(RegisterResult{Status::OK(), region.handle, region.lkey,
+                                                region.rkey, region.tokenId});
         }
         return Status::OK();
     }
@@ -981,6 +985,15 @@ TEST(AsuClientImplTest, MemoryRegister_RegisterRegionsRegistersFirstTransportAnd
     ASSERT_EQ(results.size(), std::size_t{2});
     EXPECT_EQ(results[0].handle, MRHandle{500});
     EXPECT_EQ(results[1].handle, MRHandle{501});
+    EXPECT_EQ(results[0].tokenId, std::uint32_t{900});
+    EXPECT_EQ(results[1].tokenId, std::uint32_t{901});
+    ASSERT_EQ(state->boundRegions[20].size(), std::size_t{2});
+    EXPECT_EQ(state->boundRegions[20][0].handle, MRHandle{500});
+    EXPECT_EQ(state->boundRegions[20][0].tokenId, std::uint32_t{900});
+    EXPECT_EQ(state->boundRegions[20][1].handle, MRHandle{501});
+    EXPECT_EQ(state->boundRegions[20][1].tokenId, std::uint32_t{901});
+    ASSERT_EQ(state->boundRegions[30].size(), std::size_t{2});
+    EXPECT_EQ(state->boundRegions[30][0].tokenId, std::uint32_t{900});
 }
 
 TEST(AsuClientImplTest, MemoryRegister_FirstRegisterFailureIncludesAsuContext)
@@ -1464,6 +1477,9 @@ TEST(AsuClientImplTest, SnapshotRefresh_ReusesExistingTransportAndBindsResources
     ASSERT_TRUE(client->Shutdown().ok());
     EXPECT_EQ(state->createdTransports, std::uint32_t{2});
     EXPECT_EQ(state->bindCalls, std::vector<AsuId>({20}));
+    ASSERT_EQ(state->boundRegions[20].size(), std::size_t{1});
+    EXPECT_EQ(state->boundRegions[20][0].handle, MRHandle{500});
+    EXPECT_EQ(state->boundRegions[20][0].tokenId, std::uint32_t{900});
 }
 
 TEST(AsuClientImplTest,

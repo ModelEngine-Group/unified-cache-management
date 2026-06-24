@@ -163,6 +163,9 @@ struct KVBuffer {
 struct RegisterResult {
     Status status;
     MRHandle handle{kInvalidMRHandle};
+    std::uint32_t lkey{0};
+    std::uint32_t rkey{0};
+    std::uint32_t tokenId{0};
 };
 
 struct RegisteredMemory {  // 用于绑定已注册的内存
