@@ -31,3 +31,9 @@ def patch_core_single_type_kv_cache_manager(mod):
         "remove_skipped_blocks",
         single_type_kv_cache_manager.SingleTypeKVCacheManager.remove_skipped_blocks,
     )
+
+    patch_or_inject(
+        mod.SingleTypeKVCacheManager,
+        "free",
+        single_type_kv_cache_manager.SingleTypeKVCacheManager.free,
+    )

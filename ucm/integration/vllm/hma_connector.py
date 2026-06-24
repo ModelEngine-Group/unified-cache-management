@@ -334,7 +334,7 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
         # If the number of external hit blocks is small, it's possible that the load overhead is larger than the compute of a few blocks.
         # In that case, we can skip loading and directly compute the missed blocks, which can be faster.
         # This threshold can be tuned based on the performance characteristics of the system.
-        self.load_blocks_threshold = self.launch_config.get("load_blocks_threshold", 0)
+        self.load_tokens_threshold = self.launch_config.get("load_tokens_threshold", 0)
 
         if role == KVConnectorRole.SCHEDULER:
             self.store = self._create_fa_store(None)
@@ -745,12 +745,14 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
         wa_hbm_hit_block_num = num_computed_tokens // self.hash_block_size
         wa_computed_tokens = wa_hbm_hit_block_num * self.hash_block_size
 
+        if (
+            request.num_tokens <= self.persist_token_threshold
+            or request.num_tokens <= (wa_computed_tokens + self.load_tokens_threshold)
+        ):
+            return 0, False
         canonical_hashes = self.generate_hash(
             self.hash_block_size, request.all_token_ids, self._seed
         )
-
-        if self.persist_token_threshold > request.num_tokens:
-            return 0, False
 
         external_keys = canonical_hashes[wa_hbm_hit_block_num:]
         if not external_keys:
@@ -775,7 +777,7 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
         if num_total_hit_tokens == request.num_tokens:
             external_hit_tokens -= 1
 
-        if external_hit_blocks <= self.load_blocks_threshold:
+        if external_hit_blocks * self.hash_block_size <= self.load_tokens_threshold:
             external_hit_tokens = 0
             num_total_hit_tokens = num_computed_tokens
             # let wa_hbm_hit_block_num equal to total_hit_block_num,so no need to load external blocks
