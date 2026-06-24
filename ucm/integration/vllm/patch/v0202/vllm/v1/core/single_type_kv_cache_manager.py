@@ -21,6 +21,9 @@ class SingleTypeKVCacheManager:
 
         for block in reversed(req_blocks):
             if block in seen_blocks:
+                logger.warning(
+                    f"request_id {request_id} free duplicate physical KV blocks in self.kv_cache_group_id {self.kv_cache_group_id}"
+                )
                 continue
             seen_blocks.add(block)
             ordered_blocks.append(block)
