@@ -59,6 +59,7 @@ public:
     Status Shutdown();
 
     std::shared_ptr<ConnectionChannel> SelectConnection();
+    TransProvider::ConnectionHandle GetActiveConnectionHandle();
     void SetRoutingPolicy(RoutingPolicy policy);
     void ReportFailure(const std::shared_ptr<ConnectionChannel>& channel);
 

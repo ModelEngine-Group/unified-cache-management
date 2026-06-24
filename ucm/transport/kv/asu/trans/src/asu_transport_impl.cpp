@@ -329,7 +329,19 @@ Status AsuTransportImpl::RegisterRegions(const std::vector<MemoryRegion>& region
              static_cast<std::size_t>(region.size)}
         };
         std::vector<TransProvider::MemHandle> memHandles;
-        auto status = transProvider_->RegisterMemory(nullptr, descs, memHandles);
+        const auto connectionHandle =
+            memType == TransProvider::MemType::MEM_DEVICE && connManager_ != nullptr
+                ? connManager_->GetActiveConnectionHandle()
+                : nullptr;
+        if (memType == TransProvider::MemType::MEM_DEVICE && connectionHandle == nullptr) {
+            results.emplace_back(RegisterResult{
+                Status::Error(StatusCode::CONNECTION_ERROR,
+                              "transport register device memory requires an active connection"),
+                kInvalidMRHandle});
+            continue;
+        }
+
+        auto status = transProvider_->RegisterMemory(connectionHandle, descs, memHandles);
         if (!status.ok() || memHandles.empty()) {
             results.emplace_back(RegisterResult{
                 status.ok() ? Status::Error(StatusCode::INTERNAL_ERROR,
@@ -375,6 +387,22 @@ Status AsuTransportImpl::BindRegisteredRegions(const std::vector<RegisteredMemor
 Status AsuTransportImpl::UnregisterRegions(const std::vector<MRHandle>& handles)
 {
     std::lock_guard<std::mutex> lock(registeredRegionsMu_);
+    std::vector<TransProvider::UnregisterMemoryDesc> descs;
+    descs.reserve(handles.size());
+    for (auto handle : handles) {
+        if (handle == kInvalidMRHandle) { continue; }
+        descs.push_back(TransProvider::UnregisterMemoryDesc{
+            nullptr,
+            reinterpret_cast<TransProvider::MemHandle>(static_cast<std::uintptr_t>(handle))});
+    }
+
+    if (!descs.empty()) {
+        const auto statuses = transProvider_->UnregisterMemory(descs);
+        for (const auto& status : statuses) {
+            if (!status.ok()) { return status; }
+        }
+    }
+
     for (auto handle : handles) { registeredRegions_.erase(handle); }
     return Status::OK();
 }
