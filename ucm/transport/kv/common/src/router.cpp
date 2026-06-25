@@ -37,7 +37,7 @@ using RingData = std::vector<RingNode>;
 
 constexpr std::uint64_t kMaxVirtualNodeSaltAttempts = 4096;
 
-std::uint32_t Crc32IEEEBytes(const void* data, std::size_t size)
+std::uint64_t Crc32IEEE(std::string_view data)
 {
     static const auto table = [] {
         std::array<std::uint32_t, 256> values{};
@@ -56,16 +56,8 @@ std::uint32_t Crc32IEEEBytes(const void* data, std::size_t size)
     }();
 
     std::uint32_t crc = 0xFFFFFFFFU;
-    const auto* bytes = static_cast<const unsigned char*>(data);
-    for (std::size_t index = 0; index < size; ++index) {
-        crc = table[(crc ^ bytes[index]) & 0xFFU] ^ (crc >> 8U);
-    }
+    for (unsigned char ch : data) { crc = table[(crc ^ ch) & 0xFFU] ^ (crc >> 8U); }
     return crc ^ 0xFFFFFFFFU;
-}
-
-std::uint64_t Crc32IEEE(std::string_view text)
-{
-    return Crc32IEEEBytes(text.data(), text.size());
 }
 
 std::string_view CacheKeyView(const CacheKey& key)
@@ -332,8 +324,8 @@ std::vector<NodeId> BatchTopKAffinityRouter::SelectCandidates(std::string_view b
     std::vector<std::pair<std::uint64_t, NodeId>> scores;
     scores.reserve(nodeIds_.size());
     for (auto nodeId : nodeIds_) {
-        const auto prefix = "batch-topk-candidate#node-" + std::to_string(nodeId) + "#";
-        scores.emplace_back(HashWithPrefix(prefix, batchKey, hash_), nodeId);
+        const auto prefix = "batch-topk-candidate#" + std::string(batchKey) + "#node-";
+        scores.emplace_back(hash_(prefix + std::to_string(nodeId)), nodeId);
     }
 
     std::sort(scores.begin(), scores.end());
