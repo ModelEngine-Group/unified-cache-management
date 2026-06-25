@@ -28,11 +28,18 @@ import threading
 import time
 from typing import Any, Union
 
-import yaml
 from prometheus_client import Counter, Gauge, Histogram
 
 from ucm.logger import init_logger
-from ucm.shared.metrics import ucmmetrics
+from ucm.metrics_config import (
+    MULTIPROC_CONSUMER,
+    consumer_enabled,
+    get_metric_definitions,
+    load_metrics_config,
+    multiproc_metric_name,
+    setup_ucm_metrics,
+)
+from ucm.metrics_dispatcher import get_metrics_dispatcher
 
 logger = init_logger(__name__)
 
@@ -43,24 +50,6 @@ _metric_mappings: dict[str, Union[Counter, Gauge, Histogram]] = {}
 
 class PrometheusStatsLogger:
 
-    def _load_config(self, config_path: str) -> dict[str, Any]:
-        """Load configuration from YAML file"""
-        try:
-            with open(config_path, "r") as f:
-                config = yaml.safe_load(f)
-                if config is None:
-                    logger.warning(
-                        f"Config file {config_path} is empty, using defaults"
-                    )
-                    return {}
-                return config
-        except FileNotFoundError:
-            logger.warning(f"Config file {config_path} not found, using defaults")
-            return {}
-        except yaml.YAMLError as e:
-            logger.error(f"Error parsing YAML config file {config_path}: {e}")
-            return {}
-
     def __init__(self, model_name, worker_id, config_path):
         """
         Load metrics config from YAML file (config_path),
@@ -69,11 +58,16 @@ class PrometheusStatsLogger:
         if _metric_mappings:
             logger.warning("Metrics are already registered, skipping re-registration.")
             return
-        # Load metrics config
-        self.config = self._load_config(config_path)
+        self.config = load_metrics_config(config_path)
+        self.metric_definitions = get_metric_definitions(self.config)
+        if not self.metric_definitions:
+            return
+        if not consumer_enabled(self.config, MULTIPROC_CONSUMER):
+            return
         self.log_interval = self.config.get("log_interval", 10)
 
-        ucmmetrics.set_up()
+        setup_ucm_metrics(self.config)
+        self.metrics_dispatcher = get_metrics_dispatcher(self.config)
 
         multiproc_dir = self.config.get("multiproc_dir", "/vllm-workspace")
         if "PROMETHEUS_MULTIPROC_DIR" not in os.environ:
@@ -106,11 +100,14 @@ class PrometheusStatsLogger:
         """
         metric_cls, default_kwargs = self.metric_type_config[metric_type]
         cfg_list = self.config.get(metric_type, [])
+        registered_count = 0
 
         for cfg in cfg_list:
             name = cfg.get("name")
+            if not name:
+                continue
             doc = cfg.get("documentation", "")
-            prometheus_name = f"{self.metric_prefix}{name}"
+            prometheus_name = multiproc_metric_name(self.config, name)
 
             metric_kwargs = {
                 "name": prometheus_name,
@@ -122,16 +119,22 @@ class PrometheusStatsLogger:
 
             metric = metric_cls(**metric_kwargs)
             _metric_mappings[name] = metric
-            buckets = list(getattr(metric, "_upper_bounds", []))
-            ucmmetrics.create_stats(name, metric_type, buckets)
+            registered_count += 1
+        return registered_count
 
     def _init_metrics_from_config(self):
         """Initialize metrics based on config"""
-        # Get metric name prefix from config (e.g., "ucm:")
-        self.metric_prefix = self.config.get("metric_prefix", "ucm:")
-
-        for metric_type in self.metric_type_config.keys():
-            self._register_metrics_by_type(metric_type)
+        counts = {
+            metric_type: self._register_metrics_by_type(metric_type)
+            for metric_type in self.metric_type_config.keys()
+        }
+        logger.info(
+            f"UCM metrics multiproc path enabled: total={sum(counts.values())}, "
+            f"counters={counts['counter']}, gauges={counts['gauge']}, "
+            f"histograms={counts['histogram']}, prefix="
+            f"{self.config.get('multiproc_prefix', self.config.get('metric_prefix', 'ucm:'))}, "
+            f"labels={self.labelnames}"
+        )
 
     def _update_counter(self, metric, value):
         if value < 0:
@@ -197,8 +200,9 @@ class PrometheusStatsLogger:
         Periodically update Prometheus metrics in a loop until stopped.
         """
         while self.is_running:
+            self.metrics_dispatcher.drain_to_consumers()
             counter_stats, gauge_stats, histogram_stats = (
-                ucmmetrics.get_all_stats_and_clear()
+                self.metrics_dispatcher.get_stats_and_clear(MULTIPROC_CONSUMER)
             )
             self.update_stats(counter_stats, gauge_stats, histogram_stats)
             time.sleep(self.log_interval)

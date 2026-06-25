@@ -27,7 +27,7 @@ ucm_connectors:
 # When you use UcmNfsStore, you should set enable_event_sync to false.
 enable_event_sync: true
 # Enable UCM metrics so they can be monitored online via Grafana and Prometheus.
-# metrics_config_path: "/workspace/unified-cache-management/examples/metrics/metrics_configs.yaml"
+metrics_config_path: "/workspace/unified-cache-management/examples/metrics/metrics_configs.yaml"
 
 # Sparse attention configuration
 # ucm_sparse_config:
@@ -56,5 +56,5 @@ use_lite: false
 persist_token_threshold: 0
 
 # Minimum block threshold for loading KV cache.
-# Only when hit blocks num > load_threshold_blocks, kv cache loading behavior can be triggered
-load_threshold_blocks: 1
+# Only when hit blocks num > load_blocks_threshold, kv cache loading behavior can be triggered
+load_blocks_threshold: 1
