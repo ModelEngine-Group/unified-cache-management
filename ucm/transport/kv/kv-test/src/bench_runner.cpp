@@ -11,6 +11,7 @@
 #include <memory>
 #include <numeric>
 #include <sstream>
+#include <system_error>
 #include "kv_test/payload_buffer_runtime.h"
 
 namespace UC::KVTest {
@@ -432,6 +433,28 @@ Status ExecuteBenchOperation(BenchOpType requestedOp, const KvTestConfig& config
     return status;
 }
 
+OperationOutcome RunBenchOperation(BenchOpType op, const KvTestConfig& config,
+                                   AsuClientRunner& clientRunner, BenchBufferSlot& slot,
+                                   std::uint64_t begin, std::size_t entryCount,
+                                   std::uint64_t operationIndex, const std::string& keyPrefix,
+                                   bool useDeviceBuffers)
+{
+    CommandResult operationResult;
+    const auto operationStart = std::chrono::steady_clock::now();
+    auto opStatus =
+        ExecuteBenchOperation(op, config, clientRunner, slot, begin, entryCount, operationIndex,
+                              keyPrefix, useDeviceBuffers, operationResult);
+    const auto operationEnd = std::chrono::steady_clock::now();
+
+    OperationOutcome outcome;
+    outcome.status = opStatus;
+    outcome.latencyUs =
+        std::chrono::duration<double, std::micro>(operationEnd - operationStart).count();
+    outcome.entryCount = entryCount;
+    outcome.bytes = entryCount * config.bench.ioSize;
+    return outcome;
+}
+
 }  // namespace
 
 Status BenchRunner::Run(const CommandOptions& options, const KvTestConfig& config,
@@ -520,7 +543,9 @@ Status BenchRunner::Run(const CommandOptions& options, const KvTestConfig& confi
 
         while (Clock::now() < phaseEnd) {
             std::vector<std::future<OperationOutcome>> futures;
+            std::vector<OperationOutcome> inlineOutcomes;
             futures.reserve(bench.concurrency);
+            inlineOutcomes.reserve(bench.concurrency);
             for (std::uint32_t inFlight = 0;
                  inFlight < bench.concurrency && Clock::now() < phaseEnd; ++inFlight) {
                 const auto begin =
@@ -531,25 +556,64 @@ Status BenchRunner::Run(const CommandOptions& options, const KvTestConfig& confi
                 const auto currentOperationIndex = operationIndex++;
                 auto* bufferSlot = &bufferPool[inFlight];
 
-                futures.emplace_back(std::async(
-                    std::launch::async,
-                    [&, begin, currentEntryCount, currentOperationIndex,
-                     bufferSlot]() -> OperationOutcome {
-                        CommandResult operationResult;
-                        const auto operationStart = Clock::now();
-                        auto opStatus = ExecuteBenchOperation(
-                            bench.op, config, clientRunner, *bufferSlot, begin, currentEntryCount,
-                            currentOperationIndex, keyPrefix, useDeviceBuffers, operationResult);
-                        const auto operationEnd = Clock::now();
-                        OperationOutcome outcome;
-                        outcome.status = opStatus;
-                        outcome.latencyUs =
-                            std::chrono::duration<double, std::micro>(operationEnd - operationStart)
-                                .count();
-                        outcome.entryCount = currentEntryCount;
-                        outcome.bytes = currentEntryCount * bench.ioSize;
-                        return outcome;
-                    }));
+                if (bench.concurrency == 1) {
+                    inlineOutcomes.emplace_back(RunBenchOperation(
+                        bench.op, config, clientRunner, *bufferSlot, begin, currentEntryCount,
+                        currentOperationIndex, keyPrefix, useDeviceBuffers));
+                    continue;
+                }
+
+                try {
+                    futures.emplace_back(std::async(
+                        std::launch::async,
+                        [&, begin, currentEntryCount, currentOperationIndex,
+                         bufferSlot]() -> OperationOutcome {
+                            return RunBenchOperation(bench.op, config, clientRunner, *bufferSlot,
+                                                     begin, currentEntryCount,
+                                                     currentOperationIndex, keyPrefix,
+                                                     useDeviceBuffers);
+                        }));
+                } catch (const std::system_error& e) {
+                    return Status::Error(
+                        kExitInvalidArgument,
+                        "bench async worker creation failed: " + std::string(e.what()));
+                }
+            }
+
+            for (auto& outcome : inlineOutcomes) {
+                if (!outcome.status.Ok()) {
+                    ++result.benchMetrics.errorCount;
+                    if (collectStats) { ++windowErrors; }
+                    result.status = outcome.status;
+                    return outcome.status;
+                }
+
+                if (!collectStats) { continue; }
+
+                measuredLatenciesUs.push_back(outcome.latencyUs);
+                ++result.benchMetrics.completedOperations;
+                result.benchMetrics.completedEntries += outcome.entryCount;
+                result.benchMetrics.completedBytes += outcome.bytes;
+                ++windowOperationCount;
+                windowEntryCount += outcome.entryCount;
+                windowBytes += outcome.bytes;
+                windowLatencyUs += outcome.latencyUs;
+
+                const auto operationEnd = Clock::now();
+                const auto elapsedSec =
+                    std::chrono::duration_cast<std::chrono::seconds>(operationEnd - phaseStart)
+                        .count() +
+                    1;
+                if (static_cast<std::uint64_t>(elapsedSec) != currentSecond) {
+                    emitProgressSample(windowOperationCount);
+
+                    currentSecond = static_cast<std::uint64_t>(elapsedSec);
+                    windowOperationCount = 0;
+                    windowEntryCount = 0;
+                    windowBytes = 0;
+                    windowErrors = 0;
+                    windowLatencyUs = 0.0;
+                }
             }
 
             for (auto& future : futures) {
