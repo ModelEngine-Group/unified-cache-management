@@ -22,6 +22,8 @@
  * SOFTWARE.
  * */
 #include "io_scheduler.h"
+#include <algorithm>
+#include <cstring>
 #include <gtest/gtest.h>
 #include <string>
 #include <vector>
@@ -29,11 +31,19 @@
 namespace UC::ASU {
 namespace {
 
+CacheKey MakeCacheKey(const std::string& text)
+{
+    CacheKey key{};
+    const auto size = std::min(text.size(), key.size());
+    if (size > 0) { std::memcpy(key.data(), text.data(), size); }
+    return key;
+}
+
 TEST(IoSchedulerTest, SplitEntryBatchPreservesOrderAndUsesViews)
 {
     std::vector<KVBuffer> entries(5);
     for (std::size_t index = 0; index < entries.size(); ++index) {
-        entries[index].key = "key_" + std::to_string(index);
+        entries[index].key = MakeCacheKey("key_" + std::to_string(index));
     }
 
     TransportConfig config;
@@ -49,7 +59,7 @@ TEST(IoSchedulerTest, SplitEntryBatchPreservesOrderAndUsesViews)
     EXPECT_EQ(&batches[0].entries[0], &entries[0]);
     EXPECT_EQ(&batches[1].entries[0], &entries[2]);
     EXPECT_EQ(&batches[2].entries[0], &entries[4]);
-    EXPECT_EQ(batches[1].entries[1].key, "key_3");
+    EXPECT_EQ(batches[1].entries[1].key, MakeCacheKey("key_3"));
 }
 
 TEST(IoSchedulerTest, GetSqeIoNumMatchesOperationKind)

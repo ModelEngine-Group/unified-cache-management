@@ -24,7 +24,6 @@
 #include "kv_common/router.h"
 #include <algorithm>
 #include <array>
-#include <cstring>
 #include <string>
 #include <string_view>
 #include <unordered_set>
@@ -65,14 +64,6 @@ std::string_view CacheKeyView(const CacheKey& key)
     return {reinterpret_cast<const char*>(key.data()), key.size()};
 }
 
-std::uint64_t HashWithPrefix(std::string_view prefix, std::string_view suffix,
-                             const HashFunction& hash)
-{
-    std::string data(prefix);
-    data.append(suffix.data(), suffix.size());
-    return hash(data);
-}
-
 std::string BuildVirtualNodeKey(NodeId nodeId, std::uint64_t index, std::uint64_t salt)
 {
     auto key = "vn-" + std::to_string(index) + "#node-" + std::to_string(nodeId);
@@ -81,7 +72,7 @@ std::string BuildVirtualNodeKey(NodeId nodeId, std::uint64_t index, std::uint64_
 }
 
 bool InsertVirtualNode(RingData& ringData, std::unordered_set<std::uint64_t>& usedHashes,
-                       const HashFunction& hash, NodeId nodeId, std::uint64_t index)
+                       NodeId nodeId, std::uint64_t index, const HashFunction& hash)
 {
     std::uint64_t salt = 0;
     auto hashValue = hash(BuildVirtualNodeKey(nodeId, index, salt));
@@ -144,9 +135,7 @@ std::shared_ptr<Router> CreateFullSpreadRouter(const std::vector<NodeId>& nodeId
 
 Router::Router(HashFunction hash) : hash_(std::move(hash))
 {
-    if (!hash_) {
-        hash_ = [](std::string_view key) { return Crc32IEEE(key); };
-    }
+    if (!hash_) { hash_ = Crc32IEEE; }
 }
 
 std::unordered_map<NodeId, std::vector<Router::EntryIndex>> Router::RouteKeys(
@@ -176,7 +165,7 @@ void RingHashRouter::Build(const std::vector<NodeId>& nodeIds)
     usedHashes.reserve(activeNodeIds.size() * config_.ringHash.virtualNodeCount);
     for (auto nodeId : activeNodeIds) {
         for (std::uint64_t index = 0; index < config_.ringHash.virtualNodeCount; ++index) {
-            if (!InsertVirtualNode(ringData, usedHashes, hash_, nodeId, index)) { break; }
+            if (!InsertVirtualNode(ringData, usedHashes, nodeId, index, hash_)) { break; }
         }
     }
 
@@ -221,8 +210,7 @@ void MaglevRouter::Build(const std::vector<NodeId>& nodeIds)
     for (auto nodeId : activeNodeIds) {
         auto value = std::to_string(nodeId);
         offsets.emplace_back(hash_("maglev-offset#node-" + value) % config_.maglev.tableSize);
-        skips.emplace_back(hash_("maglev-skip#node-" + value) % (config_.maglev.tableSize - 1) +
-                           1);
+        skips.emplace_back(hash_("maglev-skip#node-" + value) % (config_.maglev.tableSize - 1) + 1);
     }
 
     std::uint64_t filled = 0;
@@ -303,9 +291,9 @@ std::unordered_map<NodeId, std::vector<Router::EntryIndex>> BatchTopKAffinityRou
     if (candidates.empty()) { return routes; }
 
     for (EntryIndex index = 0; index < keys.size(); ++index) {
-        auto nodeId = candidates[HashWithPrefix("batch-topk-key#", CacheKeyView(keys[index]),
-                                                hash_) %
-                                 candidates.size()];
+        std::string keyHashInput = "batch-topk-key#";
+        keyHashInput.append(CacheKeyView(keys[index]));
+        auto nodeId = candidates[hash_(keyHashInput) % candidates.size()];
         routes[nodeId].emplace_back(index);
     }
     return routes;
@@ -317,15 +305,15 @@ NodeId BatchTopKAffinityRouter::RouteKey(const CacheKey& key) const
     return nodeIds_[hash_(CacheKeyView(key)) % nodeIds_.size()];
 }
 
-std::vector<NodeId> BatchTopKAffinityRouter::SelectCandidates(std::string_view batchKey) const
+std::vector<NodeId> BatchTopKAffinityRouter::SelectCandidates(const std::string& batchKey) const
 {
     if (nodeIds_.empty()) { return {}; }
 
     std::vector<std::pair<std::uint64_t, NodeId>> scores;
     scores.reserve(nodeIds_.size());
     for (auto nodeId : nodeIds_) {
-        const auto prefix = "batch-topk-candidate#" + std::string(batchKey) + "#node-";
-        scores.emplace_back(hash_(prefix + std::to_string(nodeId)), nodeId);
+        scores.emplace_back(
+            hash_("batch-topk-candidate#" + batchKey + "#node-" + std::to_string(nodeId)), nodeId);
     }
 
     std::sort(scores.begin(), scores.end());

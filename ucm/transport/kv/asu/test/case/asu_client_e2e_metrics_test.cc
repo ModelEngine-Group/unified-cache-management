@@ -25,12 +25,14 @@
 #include <chrono>
 #include <cstdint>
 #include <ctime>
+#include <cstring>
 #include <functional>
 #include <gtest/gtest.h>
 #include <iostream>
 #include <mutex>
 #include <numeric>
 #include <string>
+#include <string_view>
 #include <thread>
 #include <unordered_map>
 #include <unordered_set>
@@ -40,6 +42,37 @@
 
 namespace UC::ASU {
 namespace {
+
+CacheKey MakeCacheKey(std::string_view text)
+{
+    CacheKey key{};
+    if (text.size() <= key.size()) {
+        if (!text.empty()) { std::memcpy(key.data(), text.data(), text.size()); }
+        return key;
+    }
+    const auto hash = std::hash<std::string_view>{}(text);
+    std::memcpy(key.data(), &hash, key.size());
+    return key;
+}
+
+CacheKey MakeCacheKey(std::uint64_t value)
+{
+    CacheKey key{};
+    std::memcpy(key.data(), &value, key.size());
+    return key;
+}
+
+struct CacheKeyHasher {
+    std::size_t operator()(const CacheKey& key) const
+    {
+        std::uint64_t hash = 1469598103934665603ULL;
+        for (auto byte : key) {
+            hash ^= static_cast<std::uint64_t>(std::to_integer<unsigned char>(byte));
+            hash *= 1099511628211ULL;
+        }
+        return static_cast<std::size_t>(hash);
+    }
+};
 
 enum class OperationKind {
     QUERY,
@@ -167,10 +200,20 @@ struct ResourceSnapshot {
     std::clock_t cpuTicks{0};
 };
 
+bool CacheKeyStartsWith(const CacheKey& key, const CacheKey& prefix)
+{
+    auto prefixLength = prefix.size();
+    while (prefixLength > 0 && prefix[prefixLength - 1] == std::byte{0}) { --prefixLength; }
+    if (prefixLength == 0) { return false; }
+    return std::equal(prefix.begin(), prefix.begin() + prefixLength, key.begin());
+}
+
 struct ClusterState {
     mutable std::mutex mutex;
     std::unordered_set<AsuId> activeAsus;
-    std::unordered_map<AsuId, std::unordered_map<CacheKey, std::vector<std::uint8_t>>> stores;
+    std::unordered_map<AsuId,
+                       std::unordered_map<CacheKey, std::vector<std::uint8_t>, CacheKeyHasher>>
+        stores;
     std::unordered_map<TaskId, TaskResult> tasks;
     std::unordered_map<AsuId, std::size_t> queryCalls;
     std::unordered_map<AsuId, std::size_t> loadCalls;
@@ -318,7 +361,7 @@ public:
         for (std::size_t index = 0; index < keys.size(); ++index) {
             if (options.mode == QueryMode::PREFIX) {
                 const bool hit = std::any_of(store.begin(), store.end(), [&](const auto& item) {
-                    return item.first.rfind(keys[index], 0) == 0;
+                    return CacheKeyStartsWith(item.first, keys[index]);
                 });
                 result.exists[index] = hit ? 1 : 0;
                 if (hit) { ++result.prefixHitKeys; }
@@ -596,7 +639,8 @@ std::vector<KVBuffer> MakeStoreEntries(const std::string& prefix, std::size_t co
     for (std::size_t index = 0; index < count; ++index) {
         payloads.emplace_back(
             MakePayload(baseSize + (index % 5U) * 17U, static_cast<std::uint8_t>(index + 1U)));
-        entries.emplace_back(MakeBuffer(prefix + std::to_string(index), payloads.back()));
+        entries.emplace_back(MakeBuffer(MakeCacheKey(prefix + std::to_string(index)),
+                                        payloads.back()));
     }
     return entries;
 }
@@ -716,7 +760,7 @@ std::vector<CacheKey> MakeProbeKeys(std::size_t count)
     std::vector<CacheKey> keys;
     keys.reserve(count);
     for (std::size_t index = 0; index < count; ++index) {
-        keys.emplace_back("refresh-probe-" + std::to_string(index));
+        keys.emplace_back(MakeCacheKey("refresh-probe-" + std::to_string(index)));
     }
     return keys;
 }
@@ -814,7 +858,8 @@ TEST(AsuClientE2EMetricsTest, DiskMembershipChangesRefreshAndContinueWorkload)
     viewServer->Publish({1, 2, 3});
     state->ForceNextQueryFailure();
     QueryResult ignoredResult;
-    auto status = client->Query({"membership-refresh-add"}, QueryOptions{}, ignoredResult);
+    auto status =
+        client->Query({MakeCacheKey("membership-refresh-add")}, QueryOptions{}, ignoredResult);
     EXPECT_EQ(status.code, StatusCode::CONNECTION_ERROR);
     ASSERT_TRUE(WaitUntil(
         [&] { return viewServer->FetchCount() >= 2 && state->Snapshot().createdTransports >= 3; }));
@@ -868,7 +913,8 @@ TEST(AsuClientE2EMetricsTest, NoDiskAndEmptyRequestsReturnStableStatuses)
         ASSERT_TRUE(client->Init(MakeClientConfig({})).ok());
 
         QueryResult queryResult;
-        auto status = client->Query({"missing-on-empty-view"}, QueryOptions{}, queryResult);
+        auto status =
+            client->Query({MakeCacheKey("missing-on-empty-view")}, QueryOptions{}, queryResult);
         ASSERT_TRUE(status.ok()) << status.message;
         ASSERT_EQ(queryResult.exists, std::vector<std::uint8_t>{0});
 

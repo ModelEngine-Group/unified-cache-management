@@ -2,26 +2,49 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <cstring>
 #include <gtest/gtest.h>
 #include <iostream>
 #include <string>
+#include <string_view>
 #include <unordered_map>
 #include <vector>
 
 namespace UC::KV {
 namespace {
 
-std::uint64_t Fnv1a64(const std::string& value)
+CacheKey MakeCacheKey(std::uint64_t value)
+{
+    CacheKey key{};
+    std::memcpy(key.data(), &value, key.size());
+    return key;
+}
+
+std::string CacheKeyToHex(const CacheKey& key)
+{
+    static constexpr char kHex[] = "0123456789abcdef";
+    std::string text;
+    text.reserve(key.size() * 2);
+    for (auto byte : key) {
+        const auto value = static_cast<unsigned char>(std::to_integer<unsigned char>(byte));
+        text.push_back(kHex[value >> 4]);
+        text.push_back(kHex[value & 0xF]);
+    }
+    return text;
+}
+
+std::uint64_t Fnv1a64(std::string_view value)
 {
     std::uint64_t hash = 1469598103934665603ULL;
-    for (unsigned char ch : value) {
+    for (auto byte : value) {
+        const auto ch = static_cast<unsigned char>(byte);
         hash ^= static_cast<std::uint64_t>(ch);
         hash *= 1099511628211ULL;
     }
     return hash;
 }
 
-std::uint64_t StableHash(const std::string& value)
+std::uint64_t StableHash(std::string_view value)
 {
     auto hash = Fnv1a64(value);
     hash += 0x9e3779b97f4a7c15ULL;
@@ -29,6 +52,26 @@ std::uint64_t StableHash(const std::string& value)
     hash = (hash ^ (hash >> 27U)) * 0x94d049bb133111ebULL;
     return hash ^ (hash >> 31U);
 }
+
+CacheKey MakeCacheKey(std::string_view text)
+{
+    CacheKey key{};
+    if (text.size() <= key.size()) {
+        if (!text.empty()) { std::memcpy(key.data(), text.data(), text.size()); }
+        return key;
+    }
+    const auto hash = StableHash(text);
+    std::memcpy(key.data(), &hash, key.size());
+    return key;
+}
+
+struct CacheKeyHasher {
+    std::size_t operator()(const CacheKey& key) const
+    {
+        return static_cast<std::size_t>(
+            StableHash({reinterpret_cast<const char*>(key.data()), key.size()}));
+    }
+};
 
 std::vector<NodeId> MakeNodeIds(std::size_t count)
 {
@@ -45,18 +88,17 @@ std::vector<CacheKey> MakeKeys(std::size_t count)
     std::vector<CacheKey> keys;
     keys.reserve(count);
     for (std::size_t index = 0; index < count; ++index) {
-        keys.emplace_back("router-key-" + std::to_string(index));
+        keys.emplace_back(MakeCacheKey("router-key-" + std::to_string(index)));
     }
     return keys;
 }
 
-std::unordered_map<CacheKey, NodeId> CaptureKeyRoutes(const std::vector<NodeId>& nodeIds,
-                                                      RouterConfig config,
-                                                      const std::vector<CacheKey>& keys)
+std::unordered_map<CacheKey, NodeId, CacheKeyHasher> CaptureKeyRoutes(
+    const std::vector<NodeId>& nodeIds, RouterConfig config, const std::vector<CacheKey>& keys)
 {
     auto router = CreateRouter(nodeIds, StableHash, config);
     auto routesByNode = router->RouteKeys(keys);
-    std::unordered_map<CacheKey, NodeId> routes;
+    std::unordered_map<CacheKey, NodeId, CacheKeyHasher> routes;
     for (const auto& item : routesByNode) {
         for (auto index : item.second) { routes.emplace(keys[index], item.first); }
     }
@@ -77,8 +119,9 @@ void ExpectBalancedDistribution(const std::unordered_map<NodeId, std::vector<std
     }
 }
 
-double CalculateMigrationRatio(const std::unordered_map<CacheKey, NodeId>& oldRoutes,
-                               const std::unordered_map<CacheKey, NodeId>& newRoutes)
+double CalculateMigrationRatio(
+    const std::unordered_map<CacheKey, NodeId, CacheKeyHasher>& oldRoutes,
+    const std::unordered_map<CacheKey, NodeId, CacheKeyHasher>& newRoutes)
 {
     std::size_t movedCount = 0;
     std::size_t comparedCount = 0;
@@ -148,7 +191,7 @@ TEST(RouterTest, ContiguousBlockAffinityRoutesKKeysTogether)
         for (std::size_t index = begin; index < end; ++index) {
             auto iter = routes.find(keys[index]);
             ASSERT_NE(iter, routes.end());
-            EXPECT_EQ(iter->second, groupNodeId) << "key=" << keys[index];
+            EXPECT_EQ(iter->second, groupNodeId) << "key=" << CacheKeyToHex(keys[index]);
         }
     }
 }
@@ -178,7 +221,7 @@ TEST(RouterTest, ContiguousBlockAffinityUsesConfiguredFullSpreadType)
         for (std::size_t index = begin; index < end; ++index) {
             auto iter = routes.find(keys[index]);
             ASSERT_NE(iter, routes.end());
-            EXPECT_EQ(iter->second, expectedNodeId) << "key=" << keys[index];
+            EXPECT_EQ(iter->second, expectedNodeId) << "key=" << CacheKeyToHex(keys[index]);
         }
     }
 }

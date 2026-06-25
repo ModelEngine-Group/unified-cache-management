@@ -43,6 +43,7 @@ std::vector<UC::KV::CacheKey> MakeKeys(std::size_t count)
     std::vector<UC::KV::CacheKey> keys;
     keys.reserve(count);
     for (std::size_t index = 0; index < count; ++index) {
+        // Start from 1 so the first generated CacheKey is not all zeros.
         keys.emplace_back(MakeCacheKey(static_cast<std::uint64_t>(index + 1)));
     }
     return keys;

@@ -21,12 +21,23 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  * */
+#include <algorithm>
 #include <cstdint>
+#include <cstring>
 #include <gtest/gtest.h>
+#include <string_view>
 #include "asu_client_impl.h"
 
 namespace UC::ASU {
 namespace {
+
+CacheKey MakeCacheKey(std::string_view text)
+{
+    CacheKey key{};
+    const auto size = std::min(text.size(), key.size());
+    if (size > 0) { std::memcpy(key.data(), text.data(), size); }
+    return key;
+}
 
 class StubTransport : public AsuTransport {
 public:
@@ -162,10 +173,10 @@ std::vector<KVBuffer> MakeEntries(std::vector<std::uint8_t>& payload)
     buffer.region = region;
 
     return {
-        KVBuffer{"alpha", buffer},
-        KVBuffer{"beta",  buffer},
-        KVBuffer{"gamma", buffer},
-        KVBuffer{"delta", buffer},
+        KVBuffer{MakeCacheKey("alpha"), buffer},
+        KVBuffer{MakeCacheKey("beta"),  buffer},
+        KVBuffer{MakeCacheKey("gamma"), buffer},
+        KVBuffer{MakeCacheKey("delta"), buffer},
     };
 }
 
@@ -210,7 +221,7 @@ TEST(AsuSmokeTest, ClientAsyncTasksCompleteEndToEnd)
     ASSERT_NE(storeTaskId, kInvalidTaskId);
     ExpectCompleted(*client, storeTaskId, entries.size());
 
-    std::vector<CacheKey> keys{"alpha", "beta", "gamma", "delta"};
+    std::vector<CacheKey> keys{MakeCacheKey("alpha"), MakeCacheKey("beta"), MakeCacheKey("gamma"), MakeCacheKey("delta")};
     QueryOptions queryOptions;
     queryOptions.timeoutMs = 500;
     QueryResult queryResult;
