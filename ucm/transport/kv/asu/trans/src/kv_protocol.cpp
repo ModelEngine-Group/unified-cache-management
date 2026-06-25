@@ -110,11 +110,6 @@ static bool IsCacheKeyAllZero(const CacheKey& key)
                        [](std::byte value) { return value == std::byte{0}; });
 }
 
-static void PackCacheKey(const CacheKey& key, std::uint32_t* target)
-{
-    std::memcpy(target, key.data(), kCacheKeySizeBytes);
-}
-
 static Status VerifyBatchEntry(const std::uint32_t* base, const std::string& log_prefix,
                                std::uint16_t i)
 {
@@ -172,7 +167,7 @@ Status KvStoreProtocol::PackSqe(const SqeRequest& req, std::uint32_t* target)
     target[10] = r.offset;
     target[11] = (r.lr ? (1U << 31) : 0) | (r.length & 0xFFFFFF);
 
-    PackCacheKey(r.key, &target[12]);
+    std::memcpy(&target[12], r.key.data(), kCacheKeySizeBytes);
     return Status::OK();
 }
 
@@ -305,7 +300,7 @@ Status KvRetrieveProtocol::PackSqe(const SqeRequest& req, std::uint32_t* target)
     target[10] = r.offset;
     target[11] = (r.lr ? (1U << 31) : 0) | (r.length & 0xFFFFFF);
 
-    PackCacheKey(r.key, &target[12]);
+    std::memcpy(&target[12], r.key.data(), kCacheKeySizeBytes);
     return Status::OK();
 }
 
@@ -533,7 +528,7 @@ void KvBatchStoreProtocol::PackEntry(const KvBatchStoreEntry& entry, std::uint32
 {
     base[0] = entry.offset;
 
-    PackCacheKey(entry.key, &base[1]);
+    std::memcpy(&base[1], entry.key.data(), kCacheKeySizeBytes);
 
     base[5] = entry.buffer_addr & 0xFFFFFFFFULL;
     base[6] = (entry.buffer_addr >> 32) & 0xFFFFFFFFULL;
@@ -723,7 +718,7 @@ void KvBatchRetrieveProtocol::PackEntry(const KvBatchRetrieveEntry& entry, std::
 {
     base[0] = entry.offset;
 
-    PackCacheKey(entry.key, &base[1]);
+    std::memcpy(&base[1], entry.key.data(), kCacheKeySizeBytes);
 
     base[5] = entry.buffer_addr & 0xFFFFFFFFULL;
     base[6] = (entry.buffer_addr >> 32) & 0xFFFFFFFFULL;
@@ -881,7 +876,7 @@ Status KvDeleteProtocol::ValidateRequest(const KvDeleteRequest& r) const
 
 void KvDeleteProtocol::PackEntry(const CacheKey& key, std::uint32_t* base)
 {
-    PackCacheKey(key, &base[0]);
+    std::memcpy(&base[0], key.data(), kCacheKeySizeBytes);
 }
 
 Status KvDeleteProtocol::UnpackCqe(const std::uint32_t* data, std::uint16_t batch_number,
@@ -1032,7 +1027,7 @@ Status KvExistProtocol::ValidateRequest(const KvExistRequest& r) const
 
 void KvExistProtocol::PackEntry(const CacheKey& key, std::uint32_t* base)
 {
-    PackCacheKey(key, &base[0]);
+    std::memcpy(&base[0], key.data(), kCacheKeySizeBytes);
 }
 
 Status KvExistProtocol::UnpackCqe(const std::uint32_t* data, std::uint16_t batch_number,
