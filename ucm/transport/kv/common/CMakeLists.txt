@@ -4,6 +4,7 @@ set_target_properties(kv_common PROPERTIES POSITION_INDEPENDENT_CODE ON)
 target_include_directories(kv_common
     PUBLIC
         ${CMAKE_CURRENT_SOURCE_DIR}/include
+        ${CMAKE_CURRENT_SOURCE_DIR}/../asu/trans/include
 )
 
 if(BUILD_UNIT_TESTS)

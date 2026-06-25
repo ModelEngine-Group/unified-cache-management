@@ -23,6 +23,8 @@
  * */
 #pragma once
 
+#include <array>
+#include <cstddef>
 #include <cstdint>
 #include <optional>
 #include <string>
@@ -33,7 +35,8 @@ namespace UC::ASU {
 
 using TaskId = std::uint64_t;
 using MRHandle = std::uint64_t;
-using CacheKey = std::string;
+constexpr std::size_t kCacheKeySizeBytes = 8;
+using CacheKey = std::array<std::byte, kCacheKeySizeBytes>;
 using AsuId = std::uint64_t;
 
 enum class TransProviderType { AICPU, FAKE, AIV, UNSUPPORTED };

@@ -104,6 +104,17 @@ static Status VerifyKeyNotAllZero(const std::uint32_t* key_dwords, const std::st
     return Status::OK();
 }
 
+static bool IsCacheKeyAllZero(const CacheKey& key)
+{
+    return std::all_of(key.begin(), key.end(),
+                       [](std::byte value) { return value == std::byte{0}; });
+}
+
+static void PackCacheKey(const CacheKey& key, std::uint32_t* target)
+{
+    std::memcpy(target, key.data(), kCacheKeySizeBytes);
+}
+
 static Status VerifyBatchEntry(const std::uint32_t* base, const std::string& log_prefix,
                                std::uint16_t i)
 {
@@ -161,8 +172,7 @@ Status KvStoreProtocol::PackSqe(const SqeRequest& req, std::uint32_t* target)
     target[10] = r.offset;
     target[11] = (r.lr ? (1U << 31) : 0) | (r.length & 0xFFFFFF);
 
-    std::size_t key_len = std::min(r.key.size(), static_cast<std::size_t>(8));
-    if (key_len > 0) { std::memcpy(&target[12], r.key.data(), key_len); }
+    PackCacheKey(r.key, &target[12]);
     return Status::OK();
 }
 
@@ -199,13 +209,8 @@ Status KvStoreProtocol::ValidateRequest(const KvStoreRequest& r) const
             StatusCode::INVALID_ARGUMENT,
             "length(" + std::to_string(r.length) + ") exceeds 24-bit limit in Store request");
     }
-    if (r.key.empty()) [[unlikely]] {
-        return Status::Error(StatusCode::INVALID_ARGUMENT, "key is empty in Store request");
-    }
-    if (r.key.size() > 8) [[unlikely]] {
-        return Status::Error(
-            StatusCode::INVALID_ARGUMENT,
-            "key size(" + std::to_string(r.key.size()) + ") exceeds 8 bytes in Store request");
+    if (IsCacheKeyAllZero(r.key)) [[unlikely]] {
+        return Status::Error(StatusCode::INVALID_ARGUMENT, "key is all zeros in Store request");
     }
     if (r.dtype > 0x7) [[unlikely]] {
         return Status::Error(
@@ -300,8 +305,7 @@ Status KvRetrieveProtocol::PackSqe(const SqeRequest& req, std::uint32_t* target)
     target[10] = r.offset;
     target[11] = (r.lr ? (1U << 31) : 0) | (r.length & 0xFFFFFF);
 
-    std::size_t key_len = std::min(r.key.size(), static_cast<std::size_t>(8));
-    if (key_len > 0) { std::memcpy(&target[12], r.key.data(), key_len); }
+    PackCacheKey(r.key, &target[12]);
     return Status::OK();
 }
 
@@ -339,13 +343,9 @@ Status KvRetrieveProtocol::ValidateRequest(const KvRetrieveRequest& r) const
             StatusCode::INVALID_ARGUMENT,
             "length(" + std::to_string(r.length) + ") exceeds 24-bit limit in Retrieve request");
     }
-    if (r.key.empty()) [[unlikely]] {
-        return Status::Error(StatusCode::INVALID_ARGUMENT, "key is empty in Retrieve request");
-    }
-    if (r.key.size() > 8) [[unlikely]] {
-        return Status::Error(
-            StatusCode::INVALID_ARGUMENT,
-            "key size(" + std::to_string(r.key.size()) + ") exceeds 8 bytes in Retrieve request");
+    if (IsCacheKeyAllZero(r.key)) [[unlikely]] {
+        return Status::Error(StatusCode::INVALID_ARGUMENT,
+                             "key is all zeros in Retrieve request");
     }
     return Status::OK();
 }
@@ -498,16 +498,10 @@ Status KvBatchStoreProtocol::ValidateRequest(const KvBatchStoreRequest& r) const
                                      std::to_string(entry.offset) +
                                      ") must be 512B aligned in BatchStore request");
         }
-        if (entry.key.empty()) [[unlikely]] {
+        if (IsCacheKeyAllZero(entry.key)) [[unlikely]] {
             return Status::Error(
                 StatusCode::INVALID_ARGUMENT,
-                "entry[" + std::to_string(i) + "] key is empty in BatchStore request");
-        }
-        if (entry.key.size() > 8) [[unlikely]] {
-            return Status::Error(StatusCode::INVALID_ARGUMENT,
-                                 "entry[" + std::to_string(i) + "] key size(" +
-                                     std::to_string(entry.key.size()) +
-                                     ") exceeds 8 bytes in BatchStore request");
+                "entry[" + std::to_string(i) + "] key is all zeros in BatchStore request");
         }
         if (entry.buffer_addr == 0) [[unlikely]] {
             return Status::Error(
@@ -539,8 +533,7 @@ void KvBatchStoreProtocol::PackEntry(const KvBatchStoreEntry& entry, std::uint32
 {
     base[0] = entry.offset;
 
-    std::size_t key_len = std::min(entry.key.size(), static_cast<std::size_t>(8));
-    if (key_len > 0) { std::memcpy(&base[1], entry.key.data(), key_len); }
+    PackCacheKey(entry.key, &base[1]);
 
     base[5] = entry.buffer_addr & 0xFFFFFFFFULL;
     base[6] = (entry.buffer_addr >> 32) & 0xFFFFFFFFULL;
@@ -695,16 +688,10 @@ Status KvBatchRetrieveProtocol::ValidateRequest(const KvBatchRetrieveRequest& r)
                                      std::to_string(entry.offset) +
                                      ") must be 512B aligned in BatchRetrieve request");
         }
-        if (entry.key.empty()) [[unlikely]] {
+        if (IsCacheKeyAllZero(entry.key)) [[unlikely]] {
             return Status::Error(
                 StatusCode::INVALID_ARGUMENT,
-                "entry[" + std::to_string(i) + "] key is empty in BatchRetrieve request");
-        }
-        if (entry.key.size() > 8) [[unlikely]] {
-            return Status::Error(StatusCode::INVALID_ARGUMENT,
-                                 "entry[" + std::to_string(i) + "] key size(" +
-                                     std::to_string(entry.key.size()) +
-                                     ") exceeds 8 bytes in BatchRetrieve request");
+                "entry[" + std::to_string(i) + "] key is all zeros in BatchRetrieve request");
         }
         if (entry.buffer_addr == 0) [[unlikely]] {
             return Status::Error(
@@ -736,8 +723,7 @@ void KvBatchRetrieveProtocol::PackEntry(const KvBatchRetrieveEntry& entry, std::
 {
     base[0] = entry.offset;
 
-    std::size_t key_len = std::min(entry.key.size(), static_cast<std::size_t>(8));
-    if (key_len > 0) { std::memcpy(&base[1], entry.key.data(), key_len); }
+    PackCacheKey(entry.key, &base[1]);
 
     base[5] = entry.buffer_addr & 0xFFFFFFFFULL;
     base[6] = (entry.buffer_addr >> 32) & 0xFFFFFFFFULL;
@@ -884,24 +870,18 @@ Status KvDeleteProtocol::ValidateRequest(const KvDeleteRequest& r) const
         }
     }
     for (std::size_t i = 0; i < r.batch_number; ++i) {
-        if (r.keys[i].empty()) [[unlikely]] {
+        if (IsCacheKeyAllZero(r.keys[i])) [[unlikely]] {
             return Status::Error(StatusCode::INVALID_ARGUMENT,
-                                 "key[" + std::to_string(i) + "] is empty in Delete request");
-        }
-        if (r.keys[i].size() > 8) [[unlikely]] {
-            return Status::Error(StatusCode::INVALID_ARGUMENT,
-                                 "key[" + std::to_string(i) + "] size(" +
-                                     std::to_string(r.keys[i].size()) +
-                                     ") exceeds 8 bytes in Delete request");
+                                 "key[" + std::to_string(i) +
+                                     "] is all zeros in Delete request");
         }
     }
     return Status::OK();
 }
 
-void KvDeleteProtocol::PackEntry(const std::string& key, std::uint32_t* base)
+void KvDeleteProtocol::PackEntry(const CacheKey& key, std::uint32_t* base)
 {
-    std::size_t key_len = std::min(key.size(), static_cast<std::size_t>(8));
-    if (key_len > 0) { std::memcpy(&base[0], key.data(), key_len); }
+    PackCacheKey(key, &base[0]);
 }
 
 Status KvDeleteProtocol::UnpackCqe(const std::uint32_t* data, std::uint16_t batch_number,
@@ -1042,24 +1022,17 @@ Status KvExistProtocol::ValidateRequest(const KvExistRequest& r) const
         }
     }
     for (std::size_t i = 0; i < r.batch_number; ++i) {
-        if (r.keys[i].empty()) [[unlikely]] {
+        if (IsCacheKeyAllZero(r.keys[i])) [[unlikely]] {
             return Status::Error(StatusCode::INVALID_ARGUMENT,
-                                 "key[" + std::to_string(i) + "] is empty in Exist request");
-        }
-        if (r.keys[i].size() > 8) [[unlikely]] {
-            return Status::Error(StatusCode::INVALID_ARGUMENT,
-                                 "key[" + std::to_string(i) + "] size(" +
-                                     std::to_string(r.keys[i].size()) +
-                                     ") exceeds 8 bytes in Exist request");
+                                 "key[" + std::to_string(i) + "] is all zeros in Exist request");
         }
     }
     return Status::OK();
 }
 
-void KvExistProtocol::PackEntry(const std::string& key, std::uint32_t* base)
+void KvExistProtocol::PackEntry(const CacheKey& key, std::uint32_t* base)
 {
-    std::size_t key_len = std::min(key.size(), static_cast<std::size_t>(8));
-    if (key_len > 0) { std::memcpy(&base[0], key.data(), key_len); }
+    PackCacheKey(key, &base[0]);
 }
 
 Status KvExistProtocol::UnpackCqe(const std::uint32_t* data, std::uint16_t batch_number,

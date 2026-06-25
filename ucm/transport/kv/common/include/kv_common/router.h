@@ -26,14 +26,14 @@
 #include <cstdint>
 #include <functional>
 #include <memory>
-#include <string>
 #include <unordered_map>
 #include <utility>
 #include <vector>
+#include "asu_transport/types.h"
 
 namespace UC::KV {
 
-using CacheKey = std::string;
+using CacheKey = UC::ASU::CacheKey;
 using NodeId = std::uint64_t;
 using HashFunction = std::function<std::uint64_t(const CacheKey&)>;
 

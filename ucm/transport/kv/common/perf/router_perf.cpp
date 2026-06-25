@@ -1,5 +1,6 @@
 #include <chrono>
 #include <cstdint>
+#include <cstring>
 #include <iomanip>
 #include <iostream>
 #include <memory>
@@ -11,6 +12,13 @@
 namespace {
 
 using Clock = std::chrono::steady_clock;
+
+UC::KV::CacheKey MakeCacheKey(std::uint64_t value)
+{
+    UC::KV::CacheKey key{};
+    std::memcpy(key.data(), &value, key.size());
+    return key;
+}
 
 struct PerfResult {
     std::string name;
@@ -35,7 +43,7 @@ std::vector<UC::KV::CacheKey> MakeKeys(std::size_t count)
     std::vector<UC::KV::CacheKey> keys;
     keys.reserve(count);
     for (std::size_t index = 0; index < count; ++index) {
-        keys.emplace_back("router-perf-key-" + std::to_string(index));
+        keys.emplace_back(MakeCacheKey(static_cast<std::uint64_t>(index + 1)));
     }
     return keys;
 }

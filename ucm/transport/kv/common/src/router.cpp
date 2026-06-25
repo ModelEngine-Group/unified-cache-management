@@ -24,6 +24,9 @@
 #include "kv_common/router.h"
 #include <algorithm>
 #include <array>
+#include <cstring>
+#include <string>
+#include <string_view>
 #include <unordered_set>
 #include <utility>
 
@@ -34,7 +37,7 @@ using RingData = std::vector<RingNode>;
 
 constexpr std::uint64_t kMaxVirtualNodeSaltAttempts = 4096;
 
-std::uint64_t Crc32IEEE(const std::string& data)
+std::uint32_t Crc32IEEEBytes(const void* data, std::size_t size)
 {
     static const auto table = [] {
         std::array<std::uint32_t, 256> values{};
@@ -53,8 +56,30 @@ std::uint64_t Crc32IEEE(const std::string& data)
     }();
 
     std::uint32_t crc = 0xFFFFFFFFU;
-    for (unsigned char ch : data) { crc = table[(crc ^ ch) & 0xFFU] ^ (crc >> 8U); }
+    const auto* bytes = static_cast<const unsigned char*>(data);
+    for (std::size_t index = 0; index < size; ++index) {
+        crc = table[(crc ^ bytes[index]) & 0xFFU] ^ (crc >> 8U);
+    }
     return crc ^ 0xFFFFFFFFU;
+}
+
+std::uint64_t Crc32IEEE(const CacheKey& key)
+{
+    return Crc32IEEEBytes(key.data(), key.size());
+}
+
+std::uint64_t Crc32IEEE(std::string_view text)
+{
+    return Crc32IEEEBytes(text.data(), text.size());
+}
+
+std::uint64_t HashWithPrefix(std::string_view prefix, const CacheKey& key)
+{
+    std::string data(prefix);
+    const auto oldSize = data.size();
+    data.resize(oldSize + key.size());
+    std::memcpy(data.data() + oldSize, key.data(), key.size());
+    return Crc32IEEE(data);
 }
 
 std::string BuildVirtualNodeKey(NodeId nodeId, std::uint64_t index, std::uint64_t salt)
@@ -65,14 +90,14 @@ std::string BuildVirtualNodeKey(NodeId nodeId, std::uint64_t index, std::uint64_
 }
 
 bool InsertVirtualNode(RingData& ringData, std::unordered_set<std::uint64_t>& usedHashes,
-                       NodeId nodeId, std::uint64_t index, const HashFunction& hash)
+                       NodeId nodeId, std::uint64_t index)
 {
     std::uint64_t salt = 0;
-    auto hashValue = hash(BuildVirtualNodeKey(nodeId, index, salt));
+    auto hashValue = Crc32IEEE(BuildVirtualNodeKey(nodeId, index, salt));
     while (!usedHashes.emplace(hashValue).second) {
         if (salt >= kMaxVirtualNodeSaltAttempts) { return false; }
         ++salt;
-        hashValue = hash(BuildVirtualNodeKey(nodeId, index, salt));
+        hashValue = Crc32IEEE(BuildVirtualNodeKey(nodeId, index, salt));
     }
     ringData.emplace_back(hashValue, nodeId);
     return true;
@@ -102,16 +127,21 @@ std::vector<NodeId> NormalizeNodeIds(const std::vector<NodeId>& nodeIds)
     return activeNodeIds;
 }
 
-std::string BuildBatchKey(const std::vector<CacheKey>& keys)
+CacheKey BuildBatchKey(const std::vector<CacheKey>& keys)
 {
     std::string batchKey = "batch-size#" + std::to_string(keys.size());
     for (std::size_t index = 0; index < keys.size(); ++index) {
         batchKey += "#";
         batchKey += std::to_string(index);
         batchKey += ":";
-        batchKey += keys[index];
+        const auto oldSize = batchKey.size();
+        batchKey.resize(oldSize + keys[index].size());
+        std::memcpy(batchKey.data() + oldSize, keys[index].data(), keys[index].size());
     }
-    return batchKey;
+    CacheKey key{};
+    const auto hash = Crc32IEEE(batchKey);
+    std::memcpy(key.data(), &hash, std::min(key.size(), sizeof(hash)));
+    return key;
 }
 
 std::shared_ptr<Router> CreateFullSpreadRouter(const std::vector<NodeId>& nodeIds,
@@ -128,7 +158,9 @@ std::shared_ptr<Router> CreateFullSpreadRouter(const std::vector<NodeId>& nodeId
 
 Router::Router(HashFunction hash) : hash_(std::move(hash))
 {
-    if (!hash_) { hash_ = Crc32IEEE; }
+    if (!hash_) {
+        hash_ = [](const CacheKey& key) { return Crc32IEEE(key); };
+    }
 }
 
 std::unordered_map<NodeId, std::vector<Router::EntryIndex>> Router::RouteKeys(
@@ -158,7 +190,7 @@ void RingHashRouter::Build(const std::vector<NodeId>& nodeIds)
     usedHashes.reserve(activeNodeIds.size() * config_.ringHash.virtualNodeCount);
     for (auto nodeId : activeNodeIds) {
         for (std::uint64_t index = 0; index < config_.ringHash.virtualNodeCount; ++index) {
-            if (!InsertVirtualNode(ringData, usedHashes, nodeId, index, hash_)) { break; }
+            if (!InsertVirtualNode(ringData, usedHashes, nodeId, index)) { break; }
         }
     }
 
@@ -202,8 +234,10 @@ void MaglevRouter::Build(const std::vector<NodeId>& nodeIds)
 
     for (auto nodeId : activeNodeIds) {
         auto value = std::to_string(nodeId);
-        offsets.emplace_back(hash_("maglev-offset#node-" + value) % config_.maglev.tableSize);
-        skips.emplace_back(hash_("maglev-skip#node-" + value) % (config_.maglev.tableSize - 1) + 1);
+        offsets.emplace_back(Crc32IEEE("maglev-offset#node-" + value) % config_.maglev.tableSize);
+        skips.emplace_back(Crc32IEEE("maglev-skip#node-" + value) %
+                               (config_.maglev.tableSize - 1) +
+                           1);
     }
 
     std::uint64_t filled = 0;
@@ -284,7 +318,8 @@ std::unordered_map<NodeId, std::vector<Router::EntryIndex>> BatchTopKAffinityRou
     if (candidates.empty()) { return routes; }
 
     for (EntryIndex index = 0; index < keys.size(); ++index) {
-        auto nodeId = candidates[hash_("batch-topk-key#" + keys[index]) % candidates.size()];
+        auto nodeId = candidates[HashWithPrefix("batch-topk-key#", keys[index]) %
+                                 candidates.size()];
         routes[nodeId].emplace_back(index);
     }
     return routes;
@@ -303,8 +338,8 @@ std::vector<NodeId> BatchTopKAffinityRouter::SelectCandidates(const CacheKey& ba
     std::vector<std::pair<std::uint64_t, NodeId>> scores;
     scores.reserve(nodeIds_.size());
     for (auto nodeId : nodeIds_) {
-        scores.emplace_back(
-            hash_("batch-topk-candidate#" + batchKey + "#node-" + std::to_string(nodeId)), nodeId);
+        const auto prefix = "batch-topk-candidate#node-" + std::to_string(nodeId) + "#";
+        scores.emplace_back(HashWithPrefix(prefix, batchKey), nodeId);
     }
 
     std::sort(scores.begin(), scores.end());
