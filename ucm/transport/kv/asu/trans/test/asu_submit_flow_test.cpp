@@ -185,6 +185,34 @@ TEST(AsuTransportRegisterTest, RegisterRegionsReturnsPartialFailedAndRollsBackSu
     EXPECT_TRUE(transport.registeredRegionStates_.empty());
 }
 
+TEST(AsuTransportRegisterTest, ShutdownUnregistersRegisteredRegions)
+{
+    auto provider = std::make_unique<StubTransProvider>();
+    auto* providerPtr = provider.get();
+
+    AsuTransportImpl transport;
+    transport.SetTransProvider(std::move(provider));
+
+    std::vector<MemoryRegion> regions(2);
+    regions[0].addr = 0x1000;
+    regions[0].size = 4096;
+    regions[1].addr = 0x2000;
+    regions[1].size = 4096;
+
+    std::vector<RegisterResult> results;
+    auto status = transport.RegisterRegions(regions, results);
+    ASSERT_TRUE(status.ok()) << status.message;
+    ASSERT_EQ(results.size(), std::size_t{2});
+    ASSERT_EQ(transport.registeredRegions_.size(), std::size_t{2});
+
+    status = transport.Shutdown();
+
+    EXPECT_TRUE(status.ok()) << status.message;
+    EXPECT_EQ(providerPtr->unregisterCount, std::uint32_t{2});
+    EXPECT_TRUE(transport.registeredRegions_.empty());
+    EXPECT_TRUE(transport.registeredRegionStates_.empty());
+}
+
 TEST(AsuSubmitFlowTest, SendSubBatchBuffersReportsSendFailures)
 {
     g_sendStatuses = {

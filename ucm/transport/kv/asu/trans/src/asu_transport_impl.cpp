@@ -178,6 +178,7 @@ Status AsuTransportImpl::Init(const TransportConfig& config)
 
 Status AsuTransportImpl::Shutdown()
 {
+    Status finalStatus = Status::OK();
     for (const auto& ctx : taskManager_.GetAll()) {
         if (ctx == nullptr) { continue; }
         std::lock_guard<std::mutex> lock(ctx->waitMu);
@@ -199,16 +200,30 @@ Status AsuTransportImpl::Shutdown()
     }
     {
         std::lock_guard<std::mutex> lock(registeredRegionsMu_);
+        std::vector<TransProvider::UnregisterMemoryDesc> descs;
+        descs.reserve(registeredRegionStates_.size());
+        for (const auto& item : registeredRegionStates_) {
+            const auto& state = item.second;
+            descs.push_back(
+                TransProvider::UnregisterMemoryDesc{state.connectionHandle, state.memHandle});
+        }
+        if (!descs.empty() && transProvider_) {
+            const auto statuses = transProvider_->UnregisterMemory(descs);
+            for (const auto& status : statuses) {
+                if (!status.ok() && finalStatus.ok()) { finalStatus = status; }
+            }
+        }
         registeredRegions_.clear();
         registeredRegionStates_.clear();
     }
     if (connManager_) {
-        connManager_->Shutdown();
+        auto status = connManager_->Shutdown();
+        if (!status.ok() && finalStatus.ok()) { finalStatus = status; }
         connManager_.reset();
     }
 
     UC_DEBUG("AsuTransportImpl::Shutdown OK");
-    return Status::OK();
+    return finalStatus;
 }
 
 Status AsuTransportImpl::CheckHealth()
