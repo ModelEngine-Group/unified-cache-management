@@ -28,10 +28,8 @@
 #include <cctype>
 #include <cstddef>
 #include <functional>
-#include <iomanip>
 #include <memory>
 #include <numeric>
-#include <sstream>
 #include <stdexcept>
 #include <string>
 #include <utility>
@@ -59,9 +57,12 @@ std::uint64_t HashAsuKey(const Detail::BlockId& block)
 
 std::string MakeAsuKey(const Detail::BlockId& block)
 {
-    std::ostringstream os;
-    os << std::hex << std::setfill('0') << std::setw(16) << HashAsuKey(block);
-    return os.str();
+    const auto hash = HashAsuKey(block);
+    std::string key(sizeof(hash), '\0');
+    for (std::size_t i = 0; i < key.size(); ++i) {
+        key[i] = static_cast<char>((hash >> (i * 8)) & 0xff);
+    }
+    return key;
 }
 
 Status ConvertStatus(const AsuStatus& status)
