@@ -202,7 +202,7 @@ multiturn_dialogue_perf_cases = [
     pytest.param(
         PerfConfig(
             data_type="multi_turn_dialogue",
-            dataset_file_path="datasets/multi_turn_dialogues/multiturndialog.json",
+            dataset_file_path="../common/uc_eval/datasets/multi_turn_dialogues/multiturndialog.json",
             enable_prefix_cache=False,
             parallel_num=1,
             benchmark_mode="default-perf",
@@ -217,7 +217,7 @@ multiturn_dialogue_perf_cases = [
 @pytest.mark.parametrize("perf_config", multiturn_dialogue_perf_cases)
 @export_vars
 def test_multiturn_dialogue_perf(
-    perf_config: PerfConfig, model_config: ModelConfig
+        perf_config: PerfConfig, model_config: ModelConfig
 ):
     file_save_path = config_instance.get_config("reports").get("base_dir")
     task = MultiTurnDialogPerfTask(model_config, perf_config, file_save_path)
