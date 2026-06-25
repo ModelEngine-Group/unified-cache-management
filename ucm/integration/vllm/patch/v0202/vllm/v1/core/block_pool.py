@@ -9,7 +9,7 @@ class BlockPool:
 
         # UCM double-free guard patch start: filter duplicate/null blocks.
         blocks = []
-        seen_block_objects: set[int] = set()
+        seen_block_ids: set[int] = set()
         duplicate_block_ids: set[int] = set()
 
         for block in ordered_blocks:
@@ -18,12 +18,12 @@ class BlockPool:
             if block.is_null:
                 continue
 
-            block_object_id = id(block)
-            if block_object_id in seen_block_objects:
-                duplicate_block_ids.add(block.block_id)
+            block_id = block.block_id
+            if block_id in seen_block_ids:
+                duplicate_block_ids.add(block_id)
                 continue
 
-            seen_block_objects.add(block_object_id)
+            seen_block_ids.add(block_id)
             blocks.append(block)
 
         if duplicate_block_ids:
