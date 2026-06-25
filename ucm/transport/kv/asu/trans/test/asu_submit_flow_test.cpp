@@ -42,6 +42,10 @@ std::vector<Status> g_sendStatuses;
 
 class StubTransProvider : public TransProvider {
 public:
+    std::uint32_t registerCount{0};
+    std::uint32_t unregisterCount{0};
+    std::uint32_t failRegisterAt{0};
+
     Status CreateConnection(const std::string&, const std::string&, uint32_t, uint32_t qpNum,
                             uint32_t, std::vector<ConnectionHandle>& handles) override
     {
@@ -67,13 +71,19 @@ public:
     Status RegisterMemory(ConnectionHandle, const std::vector<RegisterMemoryDesc>&,
                           std::vector<MemHandle>& handles) override
     {
-        handles.push_back(reinterpret_cast<MemHandle>(static_cast<uintptr_t>(1)));
+        ++registerCount;
+        if (failRegisterAt != 0 && registerCount == failRegisterAt) {
+            return Status::Error(StatusCode::INTERNAL_ERROR, "stub register failed");
+        }
+        handles.push_back(
+            reinterpret_cast<MemHandle>(static_cast<uintptr_t>(registerCount)));
         return Status::OK();
     }
 
-    std::vector<Status> UnregisterMemory(const std::vector<UnregisterMemoryDesc>&) override
+    std::vector<Status> UnregisterMemory(const std::vector<UnregisterMemoryDesc>& descs) override
     {
-        return {};
+        unregisterCount += static_cast<std::uint32_t>(descs.size());
+        return std::vector<Status>(descs.size(), Status::OK());
     }
 
     Status AllocThread(uint32_t, const std::vector<uint32_t>&, std::vector<ThreadHandle>&) override
@@ -144,6 +154,35 @@ TEST(AsuSubmitFlowTest, SendSubBatchBuffersReadsSendCountsFromAttrs)
     EXPECT_EQ(g_quietCount, std::uint32_t{7});
     EXPECT_EQ(subBatchContexts[0].state, TransportSubBatchState::PENDING);
     EXPECT_TRUE(subBatchContexts[0].status.ok());
+}
+
+TEST(AsuTransportRegisterTest, RegisterRegionsReturnsPartialFailedAndRollsBackSuccessfulRegions)
+{
+    auto provider = std::make_unique<StubTransProvider>();
+    auto* providerPtr = provider.get();
+    providerPtr->failRegisterAt = 2;
+
+    AsuTransportImpl transport;
+    transport.SetTransProvider(std::move(provider));
+
+    std::vector<MemoryRegion> regions(2);
+    regions[0].addr = 0x1000;
+    regions[0].size = 4096;
+    regions[1].addr = 0x2000;
+    regions[1].size = 4096;
+
+    std::vector<RegisterResult> results;
+    auto status = transport.RegisterRegions(regions, results);
+
+    EXPECT_EQ(status.code, StatusCode::PARTIAL_FAILED);
+    ASSERT_EQ(results.size(), std::size_t{2});
+    EXPECT_TRUE(results[0].status.ok()) << results[0].status.message;
+    EXPECT_EQ(results[0].handle, MRHandle{1});
+    EXPECT_EQ(results[1].status.code, StatusCode::INTERNAL_ERROR);
+    EXPECT_EQ(results[1].handle, kInvalidMRHandle);
+    EXPECT_EQ(providerPtr->unregisterCount, std::uint32_t{1});
+    EXPECT_TRUE(transport.registeredRegions_.empty());
+    EXPECT_TRUE(transport.registeredRegionStates_.empty());
 }
 
 TEST(AsuSubmitFlowTest, SendSubBatchBuffersReportsSendFailures)

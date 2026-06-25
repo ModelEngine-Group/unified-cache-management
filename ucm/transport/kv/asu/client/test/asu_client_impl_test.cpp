@@ -996,6 +996,60 @@ TEST(AsuClientImplTest, MemoryRegister_RegisterRegionsRegistersFirstTransportAnd
     EXPECT_EQ(state->boundRegions[30][0].tokenId, std::uint32_t{900});
 }
 
+TEST(AsuClientImplTest, MemoryRegister_PartialRegisterFailureDoesNotBindFollowers)
+{
+    class PartialRegisterTransport final : public FakeTransport {
+    public:
+        explicit PartialRegisterTransport(std::shared_ptr<TestState> state)
+            : FakeTransport(state), state_(std::move(state))
+        {
+        }
+
+        Status RegisterRegions(const std::vector<MemoryRegion>& regions,
+                               std::vector<RegisterResult>& results) override
+        {
+            state_->registerCalls.emplace_back(10);
+            results.clear();
+            results.reserve(regions.size());
+            if (!regions.empty()) {
+                results.emplace_back(RegisterResult{Status::OK(), 500, 0, 0, 900});
+            }
+            if (regions.size() > 1) {
+                results.emplace_back(RegisterResult{
+                    Status::Error(StatusCode::INTERNAL_ERROR, "fake region register failure"),
+                    kInvalidMRHandle});
+            }
+            return Status::Error(StatusCode::PARTIAL_FAILED,
+                                 "one or more memory regions failed to register");
+        }
+
+    private:
+        std::shared_ptr<TestState> state_;
+    };
+
+    auto state = std::make_shared<TestState>();
+    auto client = CreateAsuClient([state] {
+        ++state->createdTransports;
+        if (state->createdTransports == 1) {
+            return std::unique_ptr<AsuTransport>(new PartialRegisterTransport(state));
+        }
+        return std::unique_ptr<AsuTransport>(new FakeTransport(state));
+    });
+    ASSERT_TRUE(client->Init(MakeConfig({10, 20})).ok());
+
+    std::vector<RegisterResult> results;
+    auto status = client->RegisterRegions({MemoryRegion{}, MemoryRegion{}}, results);
+
+    EXPECT_EQ(status.code, StatusCode::PARTIAL_FAILED);
+    EXPECT_NE(status.message.find("asuIndex=0"), std::string::npos);
+    EXPECT_NE(status.message.find("asuId=10"), std::string::npos);
+    EXPECT_EQ(state->registerCalls, std::vector<AsuId>({10}));
+    EXPECT_TRUE(state->bindCalls.empty());
+    ASSERT_EQ(results.size(), std::size_t{2});
+    EXPECT_TRUE(results[0].status.ok()) << results[0].status.message;
+    EXPECT_EQ(results[1].status.code, StatusCode::INTERNAL_ERROR);
+}
+
 TEST(AsuClientImplTest, MemoryRegister_FirstRegisterFailureIncludesAsuContext)
 {
     class FailingRegisterTransport final : public FakeTransport {
