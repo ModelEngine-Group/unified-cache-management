@@ -29,9 +29,9 @@
 
 namespace UC::ASU {
 
-class AIVTransProvider : public TransProvider {
+class AIVTransProviderAdapter : public TransProvider {
 public:
-    AIVTransProvider() : impl_(CreateAIVTransProvider()) {}
+    AIVTransProviderAdapter() : impl_(CreateAIVTransProvider()) {}
 
     Status CreateConnection(const std::string& localIp, const std::string& remoteIp, uint32_t port,
                             uint32_t qpNum, uint32_t timeout,
