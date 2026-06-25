@@ -202,3 +202,17 @@ class UcmKVStoreBaseV1(ABC):
             ``True`` if the task has finished, ``False`` if still in-flight.
         """
         pass
+
+    @abstractmethod
+    def register_memory(self, base_addr: int, total_size: int) -> None:
+        """Register device memory range for transfer operations.
+
+        This method should be called once during initialization to register
+        the entire KV cache memory range. Subsequent Load/Dump operations
+        will use addresses within this registered range.
+
+        Args:
+            base_addr: Base address of the memory region (as Python int).
+            total_size: Total size of the memory region in bytes.
+        """
+        pass

@@ -21,33 +21,52 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  * */
-#ifndef UNIFIEDCACHE_STORE_CC_DS3FS_STORE_H
-#define UNIFIEDCACHE_STORE_CC_DS3FS_STORE_H
+#ifndef UNIFIEDCACHE_MOONCAKE_STORE_CC_GLOBAL_CONFIG_H
+#define UNIFIEDCACHE_MOONCAKE_STORE_CC_GLOBAL_CONFIG_H
 
-#include <memory>
-#include "ucmstore_v1.h"
+#include <cstdint>
+#include <string>
+#include <vector>
 
-namespace UC::Ds3fsStore {
+namespace UC {
+class StoreV1;
+}
 
-class Ds3fsStoreImpl;
-class Ds3fsStore : public StoreV1 {
-public:
-    ~Ds3fsStore() override;
-    Status Setup(const Detail::Dictionary& config) override;
-    std::string Readme() const override;
-    Expected<std::vector<uint8_t>> Lookup(const Detail::BlockId* blocks, size_t num) override;
-    Expected<ssize_t> LookupOnPrefix(const Detail::BlockId* blocks, size_t num) override;
-    void Prefetch(const Detail::BlockId* blocks, size_t num) override;
-    Expected<Detail::TaskHandle> Load(Detail::TaskDesc task) override;
-    Expected<Detail::TaskHandle> Dump(Detail::TaskDesc task) override;
-    Expected<bool> Check(Detail::TaskHandle taskId) override;
-    Status Wait(Detail::TaskHandle taskId) override;
-    Status RegisterMemory(void* base_addr, size_t total_size) override;
+namespace UC::MooncakeStore {
 
-private:
-    std::shared_ptr<Ds3fsStoreImpl> impl_;
+struct Config {
+    std::string localHostname{};
+    std::string metadataServer{"P2PHANDSHAKE"};
+    std::string masterServerAddress{"127.0.0.1:50088"};
+    std::string protocol{"ascend"};
+    std::string deviceName{};
+
+    uint64_t globalSegmentSize{32212254720};
+    uint64_t localBufferSize{1073741824};
+    uint32_t replicaNum{1};
+    bool withSoftPin{false};
+
+    std::vector<uint64_t> tensorSizeList{};
+
+    int32_t deviceId{-1};
+    uint32_t loadQueueDepth{524288};
+    uint32_t dumpQueueDepth{8192};
+    uint32_t hostBufPoolSize{1024};
+    size_t timeoutMs{0};
+
+    size_t streamNumber{4};
+    std::vector<ssize_t> cpuAffinityCores{};
+
+    bool ioDirect{false};
+
+    size_t localRankSize{1};
+    std::string uniqueId{};
+    uint64_t shareBufferCapacity{64ULL << 30};
+    size_t shareBufferNumber{0};
+
+    StoreV1* storeBackend{nullptr};
 };
 
-}  // namespace UC::Ds3fsStore
+}  // namespace UC::MooncakeStore
 
 #endif

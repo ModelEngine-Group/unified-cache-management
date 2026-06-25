@@ -131,6 +131,12 @@ Status Compressor::Wait(Detail::TaskHandle taskId)
     return s;
 }
 
+Status Compressor::RegisterMemory(void* base_addr, size_t total_size)
+{
+    if (!impl_->backend) { return Status::OK(); }
+    return impl_->backend->RegisterMemory(base_addr, total_size);
+}
+
 }  // namespace UC::Compressor
 
 extern "C" UC::StoreV1* MakeCompressStore() { return new UC::Compressor::Compressor(); }
