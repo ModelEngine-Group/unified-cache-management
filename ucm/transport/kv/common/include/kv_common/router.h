@@ -26,6 +26,7 @@
 #include <cstdint>
 #include <functional>
 #include <memory>
+#include <string_view>
 #include <unordered_map>
 #include <utility>
 #include <vector>
@@ -35,7 +36,7 @@ namespace UC::KV {
 
 using CacheKey = UC::ASU::CacheKey;
 using NodeId = std::uint64_t;
-using HashFunction = std::function<std::uint64_t(const CacheKey&)>;
+using HashFunction = std::function<std::uint64_t(std::string_view)>;
 
 constexpr NodeId kInvalidNodeId = UINT64_MAX;
 constexpr std::uint64_t kDefaultVirtualNodeCount = 128;
@@ -171,7 +172,7 @@ private:
     // Returns the owner selected from all active nodes.
     NodeId RouteKey(const CacheKey& key) const override;
     // Selects the TopK candidates for one batch fingerprint.
-    std::vector<NodeId> SelectCandidates(const CacheKey& batchKey) const;
+    std::vector<NodeId> SelectCandidates(std::string_view batchKey) const;
 
     RouterConfig config_;
     std::vector<NodeId> nodeIds_;

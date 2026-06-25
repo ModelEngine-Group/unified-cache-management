@@ -63,23 +63,22 @@ std::uint32_t Crc32IEEEBytes(const void* data, std::size_t size)
     return crc ^ 0xFFFFFFFFU;
 }
 
-std::uint64_t Crc32IEEE(const CacheKey& key)
-{
-    return Crc32IEEEBytes(key.data(), key.size());
-}
-
 std::uint64_t Crc32IEEE(std::string_view text)
 {
     return Crc32IEEEBytes(text.data(), text.size());
 }
 
-std::uint64_t HashWithPrefix(std::string_view prefix, const CacheKey& key)
+std::string_view CacheKeyView(const CacheKey& key)
+{
+    return {reinterpret_cast<const char*>(key.data()), key.size()};
+}
+
+std::uint64_t HashWithPrefix(std::string_view prefix, std::string_view suffix,
+                             const HashFunction& hash)
 {
     std::string data(prefix);
-    const auto oldSize = data.size();
-    data.resize(oldSize + key.size());
-    std::memcpy(data.data() + oldSize, key.data(), key.size());
-    return Crc32IEEE(data);
+    data.append(suffix.data(), suffix.size());
+    return hash(data);
 }
 
 std::string BuildVirtualNodeKey(NodeId nodeId, std::uint64_t index, std::uint64_t salt)
@@ -90,14 +89,14 @@ std::string BuildVirtualNodeKey(NodeId nodeId, std::uint64_t index, std::uint64_
 }
 
 bool InsertVirtualNode(RingData& ringData, std::unordered_set<std::uint64_t>& usedHashes,
-                       NodeId nodeId, std::uint64_t index)
+                       const HashFunction& hash, NodeId nodeId, std::uint64_t index)
 {
     std::uint64_t salt = 0;
-    auto hashValue = Crc32IEEE(BuildVirtualNodeKey(nodeId, index, salt));
+    auto hashValue = hash(BuildVirtualNodeKey(nodeId, index, salt));
     while (!usedHashes.emplace(hashValue).second) {
         if (salt >= kMaxVirtualNodeSaltAttempts) { return false; }
         ++salt;
-        hashValue = Crc32IEEE(BuildVirtualNodeKey(nodeId, index, salt));
+        hashValue = hash(BuildVirtualNodeKey(nodeId, index, salt));
     }
     ringData.emplace_back(hashValue, nodeId);
     return true;
@@ -127,21 +126,16 @@ std::vector<NodeId> NormalizeNodeIds(const std::vector<NodeId>& nodeIds)
     return activeNodeIds;
 }
 
-CacheKey BuildBatchKey(const std::vector<CacheKey>& keys)
+std::string BuildBatchKey(const std::vector<CacheKey>& keys)
 {
     std::string batchKey = "batch-size#" + std::to_string(keys.size());
     for (std::size_t index = 0; index < keys.size(); ++index) {
         batchKey += "#";
         batchKey += std::to_string(index);
         batchKey += ":";
-        const auto oldSize = batchKey.size();
-        batchKey.resize(oldSize + keys[index].size());
-        std::memcpy(batchKey.data() + oldSize, keys[index].data(), keys[index].size());
+        batchKey.append(CacheKeyView(keys[index]));
     }
-    CacheKey key{};
-    const auto hash = Crc32IEEE(batchKey);
-    std::memcpy(key.data(), &hash, std::min(key.size(), sizeof(hash)));
-    return key;
+    return batchKey;
 }
 
 std::shared_ptr<Router> CreateFullSpreadRouter(const std::vector<NodeId>& nodeIds,
@@ -159,7 +153,7 @@ std::shared_ptr<Router> CreateFullSpreadRouter(const std::vector<NodeId>& nodeId
 Router::Router(HashFunction hash) : hash_(std::move(hash))
 {
     if (!hash_) {
-        hash_ = [](const CacheKey& key) { return Crc32IEEE(key); };
+        hash_ = [](std::string_view key) { return Crc32IEEE(key); };
     }
 }
 
@@ -190,7 +184,7 @@ void RingHashRouter::Build(const std::vector<NodeId>& nodeIds)
     usedHashes.reserve(activeNodeIds.size() * config_.ringHash.virtualNodeCount);
     for (auto nodeId : activeNodeIds) {
         for (std::uint64_t index = 0; index < config_.ringHash.virtualNodeCount; ++index) {
-            if (!InsertVirtualNode(ringData, usedHashes, nodeId, index)) { break; }
+            if (!InsertVirtualNode(ringData, usedHashes, hash_, nodeId, index)) { break; }
         }
     }
 
@@ -202,7 +196,7 @@ NodeId RingHashRouter::RouteKey(const CacheKey& key) const
 {
     if (ring_.empty()) { return kInvalidNodeId; }
 
-    const auto hashValue = hash_(key);
+    const auto hashValue = hash_(CacheKeyView(key));
     auto iter = std::lower_bound(
         ring_.begin(), ring_.end(), hashValue,
         [](const RingNode& ringNode, std::uint64_t value) { return ringNode.first < value; });
@@ -234,9 +228,8 @@ void MaglevRouter::Build(const std::vector<NodeId>& nodeIds)
 
     for (auto nodeId : activeNodeIds) {
         auto value = std::to_string(nodeId);
-        offsets.emplace_back(Crc32IEEE("maglev-offset#node-" + value) % config_.maglev.tableSize);
-        skips.emplace_back(Crc32IEEE("maglev-skip#node-" + value) %
-                               (config_.maglev.tableSize - 1) +
+        offsets.emplace_back(hash_("maglev-offset#node-" + value) % config_.maglev.tableSize);
+        skips.emplace_back(hash_("maglev-skip#node-" + value) % (config_.maglev.tableSize - 1) +
                            1);
     }
 
@@ -261,7 +254,7 @@ void MaglevRouter::Build(const std::vector<NodeId>& nodeIds)
 NodeId MaglevRouter::RouteKey(const CacheKey& key) const
 {
     if (lookupTable_.empty()) { return kInvalidNodeId; }
-    return lookupTable_[hash_(key) % lookupTable_.size()];
+    return lookupTable_[hash_(CacheKeyView(key)) % lookupTable_.size()];
 }
 
 ContiguousBlockAffinityRouter::ContiguousBlockAffinityRouter(const std::vector<NodeId>& nodeIds,
@@ -318,7 +311,8 @@ std::unordered_map<NodeId, std::vector<Router::EntryIndex>> BatchTopKAffinityRou
     if (candidates.empty()) { return routes; }
 
     for (EntryIndex index = 0; index < keys.size(); ++index) {
-        auto nodeId = candidates[HashWithPrefix("batch-topk-key#", keys[index]) %
+        auto nodeId = candidates[HashWithPrefix("batch-topk-key#", CacheKeyView(keys[index]),
+                                                hash_) %
                                  candidates.size()];
         routes[nodeId].emplace_back(index);
     }
@@ -328,10 +322,10 @@ std::unordered_map<NodeId, std::vector<Router::EntryIndex>> BatchTopKAffinityRou
 NodeId BatchTopKAffinityRouter::RouteKey(const CacheKey& key) const
 {
     if (nodeIds_.empty()) { return kInvalidNodeId; }
-    return nodeIds_[hash_(key) % nodeIds_.size()];
+    return nodeIds_[hash_(CacheKeyView(key)) % nodeIds_.size()];
 }
 
-std::vector<NodeId> BatchTopKAffinityRouter::SelectCandidates(const CacheKey& batchKey) const
+std::vector<NodeId> BatchTopKAffinityRouter::SelectCandidates(std::string_view batchKey) const
 {
     if (nodeIds_.empty()) { return {}; }
 
@@ -339,7 +333,7 @@ std::vector<NodeId> BatchTopKAffinityRouter::SelectCandidates(const CacheKey& ba
     scores.reserve(nodeIds_.size());
     for (auto nodeId : nodeIds_) {
         const auto prefix = "batch-topk-candidate#node-" + std::to_string(nodeId) + "#";
-        scores.emplace_back(HashWithPrefix(prefix, batchKey), nodeId);
+        scores.emplace_back(HashWithPrefix(prefix, batchKey, hash_), nodeId);
     }
 
     std::sort(scores.begin(), scores.end());
