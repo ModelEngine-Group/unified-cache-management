@@ -25,6 +25,7 @@
 #define UNIFIEDCACHE_CACHE_STORE_CC_DUMP_QUEUE_H
 
 #include <future>
+#include <string>
 #include <thread>
 #include "copy_stream.h"
 #include "template/hashset.h"
@@ -58,6 +59,7 @@ private:
     size_t shardBytes_{0};
     size_t streamNumber_{1};
     bool useGdr_{false};
+    bool cacheSdmaDirect_{false};
     std::vector<ssize_t> cpuAffinityCores_{};
     SpscRingQueue<TaskPair> waiting_;
     SpscRingQueue<DumpCtx> dumping_;
@@ -73,8 +75,7 @@ private:
     void DispatchStage(std::promise<Status>& started);
     void DispatchOneTask(CopyStream& stream, TaskPair&& pair);
     Status DumpOneTask(CopyStream& stream, TaskPtr task);
-    Status DeviceToHostGatherAsync(std::shared_ptr<Trans::Stream> stream, void** device,
-                                   void* host);
+    Status DeviceToHostAsync(CopyStream& stream, void** device, void* host);
     void BackendDumpStage();
 };
 

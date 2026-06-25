@@ -81,6 +81,13 @@ Status Buffer::RegisterHostBuffer(void* host, size_t size, void** pDevice)
     return Status::OK();
 }
 
+Status Buffer::GetHostDevicePointer(void* host, void** pDevice)
+{
+    auto ret = cudaHostGetDevicePointer(pDevice, host, 0);
+    if (ret != cudaSuccess) [[unlikely]] { return Status{ret, cudaGetErrorString(ret)}; }
+    return Status::OK();
+}
+
 void Buffer::UnregisterHostBuffer(void* host)
 {
     GdrMrBuffer::GdrUnregisterHostBuffer(host);
