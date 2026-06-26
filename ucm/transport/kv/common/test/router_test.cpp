@@ -13,13 +13,6 @@
 namespace UC::KV {
 namespace {
 
-CacheKey MakeCacheKey(std::uint64_t value)
-{
-    CacheKey key{};
-    std::memcpy(key.data(), &value, key.size());
-    return key;
-}
-
 std::string CacheKeyToHex(const CacheKey& key)
 {
     static constexpr char kHex[] = "0123456789abcdef";

@@ -96,10 +96,21 @@ static Status VerifyRflagConsistency(const std::uint32_t* data, const char* log_
     return Status::OK();
 }
 
-static Status VerifyKeyNotAllZero(const std::uint32_t* key_dwords, const std::string& log_prefix)
+static Status VerifyCacheKeyEntry(const std::uint32_t* key_dwords, const std::string& log_prefix)
 {
-    if (key_dwords[0] == 0 && key_dwords[1] == 0 && key_dwords[2] == 0 && key_dwords[3] == 0) {
+    const auto* bytes = reinterpret_cast<const std::byte*>(key_dwords);
+    const auto keyAllZero =
+        std::all_of(bytes, bytes + kCacheKeySizeBytes,
+                    [](std::byte value) { return value == std::byte{0}; });
+    if (keyAllZero) {
         return Status::Error(StatusCode::INVALID_ARGUMENT, log_prefix + ": key is all zeros");
+    }
+    const auto tailAllZero =
+        std::all_of(bytes + kCacheKeySizeBytes, bytes + kKeyEntrySizeBytes,
+                    [](std::byte value) { return value == std::byte{0}; });
+    if (!tailAllZero) {
+        return Status::Error(StatusCode::INVALID_ARGUMENT,
+                             log_prefix + ": reserved key bytes are non-zero");
     }
     return Status::OK();
 }
@@ -120,7 +131,7 @@ static Status VerifyBatchEntry(const std::uint32_t* base, const std::string& log
     }
 
     auto key_status =
-        VerifyKeyNotAllZero(&base[1], log_prefix + ": entry[" + std::to_string(i) + "]");
+        VerifyCacheKeyEntry(&base[1], log_prefix + ": entry[" + std::to_string(i) + "]");
     if (!key_status.ok()) { return key_status; }
 
     std::uint64_t entry_addr =
@@ -278,7 +289,7 @@ Status KvStoreProtocol::VerifyPackedBuffer(const std::uint32_t* data, std::size_
                              "Store: reserved bits non-zero in data[11] bit24-30");
     }
 
-    status = VerifyKeyNotAllZero(&data[12], "Store");
+    status = VerifyCacheKeyEntry(&data[12], "Store");
     if (!status.ok()) { return status; }
 
     return Status::OK();
@@ -404,7 +415,7 @@ Status KvRetrieveProtocol::VerifyPackedBuffer(const std::uint32_t* data, std::si
                              "Retrieve: reserved bits non-zero in data[11] bit24-30");
     }
 
-    status = VerifyKeyNotAllZero(&data[12], "Retrieve");
+    status = VerifyCacheKeyEntry(&data[12], "Retrieve");
     if (!status.ok()) { return status; }
 
     return Status::OK();
@@ -946,7 +957,7 @@ Status KvDeleteProtocol::VerifyPackedBuffer(const std::uint32_t* data, std::size
 
     for (std::uint16_t i = 0; i < batch_number; ++i) {
         const std::uint32_t* base = data + kSqeDwordCount + i * kKeyEntryDwordCount;
-        auto key_status = VerifyKeyNotAllZero(base, "Delete: entry[" + std::to_string(i) + "]");
+        auto key_status = VerifyCacheKeyEntry(base, "Delete: entry[" + std::to_string(i) + "]");
         if (!key_status.ok()) { return key_status; }
     }
 
@@ -1098,7 +1109,7 @@ Status KvExistProtocol::VerifyPackedBuffer(const std::uint32_t* data, std::size_
 
     for (std::uint16_t i = 0; i < batch_number; ++i) {
         const std::uint32_t* base = data + kSqeDwordCount + i * kKeyEntryDwordCount;
-        auto key_status = VerifyKeyNotAllZero(base, "Exist: entry[" + std::to_string(i) + "]");
+        auto key_status = VerifyCacheKeyEntry(base, "Exist: entry[" + std::to_string(i) + "]");
         if (!key_status.ok()) { return key_status; }
     }
 
