@@ -480,7 +480,7 @@ class UCMDirectConnector(KVConnectorBase_V1):
         if "cache_sdma_direct_launch_granularity" in config:
             return
         config["cache_sdma_direct_launch_granularity"] = (
-            "task" if self.launch_config.get("use_layerwise", False) else "shard"
+            "task" if self.use_layerwise else "shard"
         )
 
     def _record_load_error(self, metric_name: str, block_ids: Any) -> None:
