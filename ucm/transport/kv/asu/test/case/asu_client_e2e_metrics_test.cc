@@ -55,13 +55,6 @@ CacheKey MakeCacheKey(std::string_view text)
     return key;
 }
 
-CacheKey MakeCacheKey(std::uint64_t value)
-{
-    CacheKey key{};
-    std::memcpy(key.data(), &value, key.size());
-    return key;
-}
-
 struct CacheKeyHasher {
     std::size_t operator()(const CacheKey& key) const
     {

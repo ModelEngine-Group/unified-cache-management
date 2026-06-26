@@ -59,11 +59,6 @@ std::uint64_t Crc32IEEE(std::string_view data)
     return crc ^ 0xFFFFFFFFU;
 }
 
-std::string_view CacheKeyView(const CacheKey& key)
-{
-    return {reinterpret_cast<const char*>(key.data()), key.size()};
-}
-
 std::string BuildVirtualNodeKey(NodeId nodeId, std::uint64_t index, std::uint64_t salt)
 {
     auto key = "vn-" + std::to_string(index) + "#node-" + std::to_string(nodeId);
@@ -116,7 +111,7 @@ std::string BuildBatchKey(const std::vector<CacheKey>& keys)
         batchKey += "#";
         batchKey += std::to_string(index);
         batchKey += ":";
-        batchKey.append(CacheKeyView(keys[index]));
+        batchKey.append(UC::ASU::CacheKeyView(keys[index]));
     }
     return batchKey;
 }
@@ -177,7 +172,7 @@ NodeId RingHashRouter::RouteKey(const CacheKey& key) const
 {
     if (ring_.empty()) { return kInvalidNodeId; }
 
-    const auto hashValue = hash_(CacheKeyView(key));
+    const auto hashValue = hash_(UC::ASU::CacheKeyView(key));
     auto iter = std::lower_bound(
         ring_.begin(), ring_.end(), hashValue,
         [](const RingNode& ringNode, std::uint64_t value) { return ringNode.first < value; });
@@ -234,7 +229,7 @@ void MaglevRouter::Build(const std::vector<NodeId>& nodeIds)
 NodeId MaglevRouter::RouteKey(const CacheKey& key) const
 {
     if (lookupTable_.empty()) { return kInvalidNodeId; }
-    return lookupTable_[hash_(CacheKeyView(key)) % lookupTable_.size()];
+    return lookupTable_[hash_(UC::ASU::CacheKeyView(key)) % lookupTable_.size()];
 }
 
 ContiguousBlockAffinityRouter::ContiguousBlockAffinityRouter(const std::vector<NodeId>& nodeIds,
@@ -292,7 +287,7 @@ std::unordered_map<NodeId, std::vector<Router::EntryIndex>> BatchTopKAffinityRou
 
     for (EntryIndex index = 0; index < keys.size(); ++index) {
         std::string keyHashInput = "batch-topk-key#";
-        keyHashInput.append(CacheKeyView(keys[index]));
+        keyHashInput.append(UC::ASU::CacheKeyView(keys[index]));
         auto nodeId = candidates[hash_(keyHashInput) % candidates.size()];
         routes[nodeId].emplace_back(index);
     }
@@ -302,7 +297,7 @@ std::unordered_map<NodeId, std::vector<Router::EntryIndex>> BatchTopKAffinityRou
 NodeId BatchTopKAffinityRouter::RouteKey(const CacheKey& key) const
 {
     if (nodeIds_.empty()) { return kInvalidNodeId; }
-    return nodeIds_[hash_(CacheKeyView(key)) % nodeIds_.size()];
+    return nodeIds_[hash_(UC::ASU::CacheKeyView(key)) % nodeIds_.size()];
 }
 
 std::vector<NodeId> BatchTopKAffinityRouter::SelectCandidates(const std::string& batchKey) const

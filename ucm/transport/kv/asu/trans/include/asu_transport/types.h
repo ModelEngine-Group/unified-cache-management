@@ -28,6 +28,7 @@
 #include <cstdint>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -38,6 +39,11 @@ using MRHandle = std::uint64_t;
 constexpr std::size_t kCacheKeySizeBytes = 8;
 using CacheKey = std::array<std::byte, kCacheKeySizeBytes>;
 using AsuId = std::uint64_t;
+
+inline std::string_view CacheKeyView(const CacheKey& key)
+{
+    return {reinterpret_cast<const char*>(key.data()), key.size()};
+}
 
 enum class TransProviderType { AICPU, FAKE, AIV, UNSUPPORTED };
 

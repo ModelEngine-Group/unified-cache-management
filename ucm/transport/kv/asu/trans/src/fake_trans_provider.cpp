@@ -70,16 +70,6 @@ CacheKey ReadKey(const std::uint32_t* data)
     return key;
 }
 
-std::string KeyToHex(const CacheKey& key)
-{
-    std::ostringstream stream;
-    stream << std::hex << std::setfill('0');
-    for (auto byte : key) {
-        stream << std::setw(2) << static_cast<unsigned>(std::to_integer<unsigned char>(byte));
-    }
-    return stream.str();
-}
-
 std::string KeyFileName(const CacheKey& key)
 {
     std::uint64_t hash = 1469598103934665603ULL;
@@ -115,7 +105,7 @@ bool StoreBytes(const FakeTransProviderConfig& config, AsuId asuId, const CacheK
         UC_ERROR(
             "ASU fake backend device-to-host copy failed asuId={} key={} addr={} length={} "
             "ret={}.",
-            asuId, KeyToHex(key), addr, length, ret);
+            asuId, CacheKeyView(key), addr, length, ret);
         return false;
     }
 
@@ -123,7 +113,7 @@ bool StoreBytes(const FakeTransProviderConfig& config, AsuId asuId, const CacheK
     std::ofstream output(KeyPath(config, asuId, key), std::ios::binary | std::ios::trunc);
     if (!output) {
         UC_ERROR("ASU fake backend failed to open store file asuId={} key={} path={}.", asuId,
-                 KeyToHex(key), KeyPath(config, asuId, key).string());
+                 CacheKeyView(key), KeyPath(config, asuId, key).string());
         return false;
     }
     output.write(buffer.data(), static_cast<std::streamsize>(buffer.size()));
@@ -136,7 +126,7 @@ bool LoadBytes(const FakeTransProviderConfig& config, AsuId asuId, const CacheKe
     std::ifstream input(KeyPath(config, asuId, key), std::ios::binary);
     if (!input) {
         UC_ERROR("ASU fake backend failed to open load file asuId={} key={} path={}.", asuId,
-                 KeyToHex(key), KeyPath(config, asuId, key).string());
+                 CacheKeyView(key), KeyPath(config, asuId, key).string());
         return false;
     }
     std::vector<char> buffer(length, 0);
@@ -151,7 +141,7 @@ bool LoadBytes(const FakeTransProviderConfig& config, AsuId asuId, const CacheKe
         UC_ERROR(
             "ASU fake backend host-to-device copy failed asuId={} key={} addr={} length={} "
             "ret={}.",
-            asuId, KeyToHex(key), addr, length, ret);
+            asuId, CacheKeyView(key), addr, length, ret);
         return false;
     }
     return true;

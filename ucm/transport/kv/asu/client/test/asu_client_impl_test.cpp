@@ -32,13 +32,6 @@ static CacheKey MakeCacheKey(std::string_view text)
     return key;
 }
 
-static CacheKey MakeCacheKey(std::uint64_t value)
-{
-    CacheKey key{};
-    std::memcpy(key.data(), &value, key.size());
-    return key;
-}
-
 struct TestState {
     std::uint32_t createdTransports{0};
     std::unordered_map<AsuId, TransportConfig> initConfigs;
