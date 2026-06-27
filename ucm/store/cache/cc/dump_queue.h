@@ -58,6 +58,7 @@ private:
     size_t shardBytes_{0};
     size_t streamNumber_{1};
     bool useGdr_{false};
+    bool useHostBuffer_{false};
     std::vector<ssize_t> cpuAffinityCores_{};
     SpscRingQueue<TaskPair> waiting_;
     SpscRingQueue<DumpCtx> dumping_;
@@ -75,6 +76,8 @@ private:
     Status DumpOneTask(CopyStream& stream, TaskPtr task);
     Status DeviceToHostGatherAsync(std::shared_ptr<Trans::Stream> stream, void** device,
                                    void* host);
+    Status HostToHostGather(const std::vector<void*>& sources, void* destination);
+    Status ValidateHostAddrs(const Detail::Shard& shard) const;
     void BackendDumpStage();
 };
 

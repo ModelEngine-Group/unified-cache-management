@@ -47,6 +47,7 @@ struct Config {
     size_t timeoutMs{30000};
     size_t streamNumber{4};
     bool cacheLoadBackendOnly{false};
+    bool useHostBuffer{false};
     std::vector<uintptr_t> gpuKvBufferAddrs{};
     std::vector<size_t> gpuKvBufferSizes{};
     bool useGdr{false};

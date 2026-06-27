@@ -22,6 +22,7 @@
  * SOFTWARE.
  * */
 #include "load_queue.h"
+#include <cstring>
 #include "logger/logger.h"
 #include "metrics_api.h"
 #include "thread/cpu_affinity.h"
@@ -46,6 +47,7 @@ Status LoadQueue::Setup(const Config& config, TaskIdSet* failureSet, TransBuffer
     for (const auto size : tensorSizes_) { shardBytes_ += size; }
     streamNumber_ = config.streamNumber;
     useGdr_ = config.useGdr;
+    useHostBuffer_ = config.useHostBuffer;
     cpuAffinityCores_ = config.cpuAffinityCores;
     waiting_.Setup(config.waitingQueueDepth);
     running_.Setup(config.runningQueueDepth);
@@ -132,7 +134,7 @@ void LoadQueue::DispatchOneTask(TaskPair&& pair)
 void LoadQueue::TransferStage(std::promise<Status>& started)
 {
     CopyStream stream;
-    auto s = stream.Setup(deviceId_, streamNumber_, useGdr_);
+    auto s = useHostBuffer_ ? Status::OK() : stream.Setup(deviceId_, streamNumber_, useGdr_);
     started.set_value(s);
     if (s.Failure()) [[unlikely]] { return; }
     if (!cpuAffinityCores_.empty()) {
@@ -154,10 +156,18 @@ void LoadQueue::TransferOneTask(CopyStream& stream, ShardTask&& task)
         s = WaitBackendTaskReady(task);
         if (s.Failure()) [[unlikely]] { break; }
         auto tpBackendReady = NowTime::Now();
-        s = HostToDeviceScatterAsync(stream.NextStream(), task.bufferHandle.Data(),
-                                     task.shard.addrs.data());
+        if (useHostBuffer_) {
+            s = ValidateHostAddrs(task.shard);
+            if (s.Success()) {
+                s = HostToHostScatter(task.bufferHandle.Data(), task.shard.addrs.data());
+            }
+        } else {
+            s = HostToDeviceScatterAsync(stream.NextStream(), task.bufferHandle.Data(),
+                                         task.shard.addrs.data());
+        }
         if (s.Failure()) [[unlikely]] {
-            UC_ERROR("Failed({}) to do H2D batch async for task({}).", s, task.taskHandle);
+            UC_ERROR("Failed({}) to do {} scatter for task({}).", s,
+                     useHostBuffer_ ? "H2H" : "H2D", task.taskHandle);
             UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("cache_h2d_errors_total"), 1.0);
             break;
         }
@@ -167,6 +177,7 @@ void LoadQueue::TransferOneTask(CopyStream& stream, ShardTask&& task)
                                  (tpBackendReady - tpBackendWait) * 1e3);
         UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("cache_h2d_submit_ms"),
                                  (tpH2dSubmitted - tpBackendReady) * 1e3);
+        if (useHostBuffer_) { break; }
         if (!task.waiter) {
             holder_.push_back(std::move(task));
             return;
@@ -227,6 +238,33 @@ Status LoadQueue::HostToDeviceScatterAsync(std::shared_ptr<Trans::Stream> stream
             return s;
         }
         offset += size;
+    }
+    return Status::OK();
+}
+
+Status LoadQueue::HostToHostScatter(void* hostSrc, void** hostDst)
+{
+    const auto number = tensorSizes_.size();
+    for (size_t i = 0, offset = 0; i < number; i++) {
+        auto src = (void*)(((int8_t*)hostSrc) + offset);
+        auto dst = hostDst[i];
+        auto size = tensorSizes_[i];
+        std::memcpy(dst, src, size);
+        offset += size;
+    }
+    return Status::OK();
+}
+
+Status LoadQueue::ValidateHostAddrs(const Detail::Shard& shard) const
+{
+    if (shard.addrs.size() != tensorSizes_.size()) {
+        return Status::InvalidParam("invalid host addr number({}, expect {})", shard.addrs.size(),
+                                    tensorSizes_.size());
+    }
+    for (size_t i = 0; i < shard.addrs.size(); i++) {
+        if (shard.addrs[i] == nullptr) {
+            return Status::InvalidParam("invalid null host addr({})", i);
+        }
     }
     return Status::OK();
 }

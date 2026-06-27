@@ -119,6 +119,7 @@ private:
         config.Get("store_backend", param.storeBackend);
         config.Get("unique_id", param.uniqueId);
         config.Get("cache_load_backend_only", param.cacheLoadBackendOnly);
+        config.Get("cache_use_host_buffer", param.useHostBuffer);
         config.GetNumber("device_id", param.deviceId);
         size_t tensorSize = 0;
         config.GetNumber("tensor_size", tensorSize);
@@ -202,6 +203,7 @@ private:
         UC_INFO("Set {}::StoreBackend to {}.", ns, config.storeBackend->Readme());
         UC_INFO("Set {}::UniqueId to {}.", ns, config.uniqueId);
         UC_INFO("Set {}::CacheLoadBackendOnly to {}.", ns, config.cacheLoadBackendOnly);
+        UC_INFO("Set {}::UseHostBuffer to {}.", ns, config.useHostBuffer);
         UC_INFO("Set {}::DeviceId to {}.", ns, config.deviceId);
         const auto& v = config.tensorSizes;
         if (v.empty()) {
