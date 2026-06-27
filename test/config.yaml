@@ -59,3 +59,45 @@ Env_preCheck:
   expected_fetch_bandwidth: 10
   kvCache_block_number: 1024
   storage_backends: [""]
+
+# AISBench Prefix Cache Test Configuration
+aisbench_prefix_cache:
+  # Dataset configuration
+  dataset:
+    base_path: "/mnt/host/d/Dataset/gsm"
+    gsm8k_source: "/mnt/host/d/Dataset/gsm/GSM8K.jsonl"
+    # Data source mode:
+    # - use_gsm8k: true  Use GSM8K dataset as content source
+    # - use_gsm8k: false Generate random tokens directly (no dataset dependency)
+    use_gsm8k: false
+
+  # AISBench work path configuration
+  aisbench:
+    work_path: "/benchmark"
+    output_dir: "./outputs/default"
+
+  # Model configuration
+  model:
+    name: "qwen3:0.6b"
+    path: "/mnt/host/d/Models/Qwen3-32B"
+    tokenizer_path: "/mnt/host/d/Models/Qwen3-32B"
+
+  # Server configuration
+  server:
+    url: "http://192.168.65.254:9090"
+
+  # Test configuration
+  test:
+    default_perf: "default_perf"  # or "stable_stage" for steady-state testing
+    test_type: "stream"           # stream or text
+
+  # Node info configuration (for PD separation scenario)
+  pod_info: []
+  # Example:
+  # pod_info:
+  #   - "141.xx.xx.11:8000"
+  #   - "141.xx.xx.12:8000"
+
+  # Hardware configuration
+  hardware:
+    npu_num: 1
