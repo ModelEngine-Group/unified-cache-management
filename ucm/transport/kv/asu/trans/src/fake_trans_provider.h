@@ -25,6 +25,8 @@
 
 #include <atomic>
 #include <cstdint>
+#include <mutex>
+#include <unordered_map>
 #include "asu_transport/asu_transport.h"
 #include "trans_provider.h"
 
@@ -60,10 +62,19 @@ public:
     Status GetMemTokenId(MemHandle, uint32_t& tokenId) override;
 
 private:
+    struct RegisteredMemory {
+        std::uintptr_t providerAddr{0};
+        std::uintptr_t localAddr{0};
+        std::size_t size{0};
+    };
+
     Status SetUpAclRuntime();
+    Status ResolveLocalAddress(const void* providerAddr, std::size_t size, void*& localAddr);
 
     FakeTransProviderConfig config_;
     std::atomic<std::uintptr_t> nextMemoryHandle_{1};
+    std::mutex registeredMemoryMu_;
+    std::unordered_map<MemHandle, RegisteredMemory> registeredMemories_;
 };
 
 FakeTransProviderConfig MakeFakeTransProviderConfig(const TransportConfig& config);

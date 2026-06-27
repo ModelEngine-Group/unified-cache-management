@@ -31,6 +31,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iomanip>
+#include <limits>
 #include <sstream>
 #include <thread>
 #include <utility>
@@ -221,12 +222,10 @@ std::vector<CacheKey> ReadKeyEntries(const std::uint32_t* request, std::uint16_t
 }
 
 Status CompleteBatchStore(const FakeTransProviderConfig& config, AsuId asuId,
-                          const std::uint32_t* request)
+                          const std::uint32_t* request, std::uint32_t* flagBuffer)
 {
     const auto cid = static_cast<std::uint16_t>(RequestCid(request));
-    const auto responseBufferAddr = ReadU64(request[3], request[4]);
     const auto batchNumber = static_cast<std::uint16_t>(request[10] & 0xFFFF);
-    auto* flagBuffer = reinterpret_cast<std::uint32_t*>(responseBufferAddr);
     std::vector<std::uint8_t> results(batchNumber, kBatchEntryOk);
 
     const auto entries = ReadBatchEntries(request, batchNumber);
@@ -246,12 +245,10 @@ Status CompleteBatchStore(const FakeTransProviderConfig& config, AsuId asuId,
 }
 
 Status CompleteBatchRetrieve(const FakeTransProviderConfig& config, AsuId asuId,
-                             const std::uint32_t* request)
+                             const std::uint32_t* request, std::uint32_t* flagBuffer)
 {
     const auto cid = static_cast<std::uint16_t>(RequestCid(request));
-    const auto responseBufferAddr = ReadU64(request[3], request[4]);
     const auto batchNumber = static_cast<std::uint16_t>(request[10] & 0xFFFF);
-    auto* flagBuffer = reinterpret_cast<std::uint32_t*>(responseBufferAddr);
     std::vector<std::uint8_t> results(batchNumber, kBatchEntryOk);
 
     const auto entries = ReadBatchEntries(request, batchNumber);
@@ -271,12 +268,10 @@ Status CompleteBatchRetrieve(const FakeTransProviderConfig& config, AsuId asuId,
 }
 
 Status CompleteDelete(const FakeTransProviderConfig& config, AsuId asuId,
-                      const std::uint32_t* request)
+                      const std::uint32_t* request, std::uint32_t* flagBuffer)
 {
     const auto cid = static_cast<std::uint16_t>(RequestCid(request));
-    const auto responseBufferAddr = ReadU64(request[3], request[4]);
     const auto batchNumber = static_cast<std::uint16_t>(request[10] & 0xFFFF);
-    auto* flagBuffer = reinterpret_cast<std::uint32_t*>(responseBufferAddr);
     std::vector<std::uint8_t> results(batchNumber, kDeleteEntryOk);
 
     const auto keys = ReadKeyEntries(request, batchNumber);
@@ -293,12 +288,10 @@ Status CompleteDelete(const FakeTransProviderConfig& config, AsuId asuId,
 }
 
 Status CompleteExist(const FakeTransProviderConfig& config, AsuId asuId,
-                     const std::uint32_t* request)
+                     const std::uint32_t* request, std::uint32_t* flagBuffer)
 {
     const auto cid = static_cast<std::uint16_t>(RequestCid(request));
-    const auto responseBufferAddr = ReadU64(request[3], request[4]);
     const auto batchNumber = static_cast<std::uint16_t>(request[10] & 0xFFFF);
-    auto* flagBuffer = reinterpret_cast<std::uint32_t*>(responseBufferAddr);
     std::vector<std::uint8_t> results(batchNumber, kExistEntryNotExist);
     std::uint16_t existingKeyNumber = 0;
 
@@ -318,26 +311,41 @@ Status CompleteExist(const FakeTransProviderConfig& config, AsuId asuId,
     return Status::OK();
 }
 
+std::size_t CompletionDwordCount(const std::uint32_t* request)
+{
+    const auto opcode = RequestOpcode(request);
+    if (opcode == KvOpcode::KeepAlive) { return kCqeDwordCount; }
+
+    const auto batchNumber = static_cast<std::uint16_t>(request[10] & 0xFFFF);
+    const auto resultDwordCount =
+        opcode == KvOpcode::BatchStore || opcode == KvOpcode::BatchRetrieve
+            ? (static_cast<std::size_t>(batchNumber) + 7) / 8
+            : (static_cast<std::size_t>(batchNumber) + 31) / 32;
+    return kCqeDwordCount + resultDwordCount;
+}
+
 Status CompleteFakeBackendRequest(const FakeTransProviderConfig& config, const void* sendBuffer,
-                                  std::uint64_t len)
+                                  std::uint64_t len, std::vector<std::uint32_t>& completion)
 {
     if (config.latencyMs > 0) {
         std::this_thread::sleep_for(std::chrono::milliseconds(config.latencyMs));
     }
 
-    if (sendBuffer == nullptr || len < sizeof(std::uint32_t)) {
+    if (sendBuffer == nullptr || len < kSqeDwordCount * sizeof(std::uint32_t)) {
         return Status::Error(StatusCode::INVALID_ARGUMENT, "fake backend send buffer is empty");
     }
 
     const auto* request = reinterpret_cast<const std::uint32_t*>(sendBuffer);
+    completion.assign(CompletionDwordCount(request), 0);
+    auto* flagBuffer = completion.data();
     const auto asuId = RequestAsuId(request);
     switch (RequestOpcode(request)) {
-        case KvOpcode::BatchStore: return CompleteBatchStore(config, asuId, request);
-        case KvOpcode::BatchRetrieve: return CompleteBatchRetrieve(config, asuId, request);
-        case KvOpcode::Delete: return CompleteDelete(config, asuId, request);
-        case KvOpcode::Exist: return CompleteExist(config, asuId, request);
+        case KvOpcode::BatchStore: return CompleteBatchStore(config, asuId, request, flagBuffer);
+        case KvOpcode::BatchRetrieve:
+            return CompleteBatchRetrieve(config, asuId, request, flagBuffer);
+        case KvOpcode::Delete: return CompleteDelete(config, asuId, request, flagBuffer);
+        case KvOpcode::Exist: return CompleteExist(config, asuId, request, flagBuffer);
         case KvOpcode::KeepAlive: {
-            auto* flagBuffer = reinterpret_cast<std::uint32_t*>(ReadU64(request[3], request[4]));
             PackCqeHeader(flagBuffer, static_cast<std::uint16_t>(RequestCid(request)), kCqeSuccess);
             return Status::OK();
         }
@@ -392,6 +400,24 @@ Status FakeTransProvider::SetUpAclRuntime()
     return Status::OK();
 }
 
+Status FakeTransProvider::ResolveLocalAddress(const void* providerAddr, std::size_t size,
+                                              void*& localAddr)
+{
+    const auto address = reinterpret_cast<std::uintptr_t>(providerAddr);
+    std::lock_guard<std::mutex> lock(registeredMemoryMu_);
+    for (const auto& item : registeredMemories_) {
+        const auto& memory = item.second;
+        if (address < memory.providerAddr) { continue; }
+        const auto offset = address - memory.providerAddr;
+        if (offset > memory.size || size > memory.size - offset) { continue; }
+        localAddr = reinterpret_cast<void*>(memory.localAddr + offset);
+        return Status::OK();
+    }
+    localAddr = nullptr;
+    return Status::Error(StatusCode::BUFFER_NOT_REGISTERED,
+                         "fake backend IO buffer is not registered");
+}
+
 Status FakeTransProvider::CreateConnection(const std::string&, const std::string&, uint32_t,
                                            uint32_t qpNum, uint32_t,
                                            std::vector<ConnectionHandle>& handles)
@@ -424,7 +450,37 @@ std::vector<Status> FakeTransProvider::Send(const std::vector<SendIoBatch>& ioBa
     std::vector<Status> statuses;
     statuses.reserve(ioBatches.size());
     for (const auto& ioBatch : ioBatches) {
-        statuses.emplace_back(CompleteFakeBackendRequest(config_, ioBatch.sendBuffer, ioBatch.len));
+        if (ioBatch.sendBuffer == nullptr || ioBatch.flagBuffer == nullptr ||
+            ioBatch.len > std::numeric_limits<std::size_t>::max()) {
+            statuses.emplace_back(
+                Status::Error(StatusCode::INVALID_ARGUMENT, "fake backend IO buffer is invalid"));
+            continue;
+        }
+
+        void* localSendBuffer = nullptr;
+        auto status = ResolveLocalAddress(ioBatch.sendBuffer, static_cast<std::size_t>(ioBatch.len),
+                                          localSendBuffer);
+        if (!status.ok()) {
+            statuses.emplace_back(std::move(status));
+            continue;
+        }
+
+        std::vector<std::uint32_t> completion;
+        status = CompleteFakeBackendRequest(config_, localSendBuffer, ioBatch.len, completion);
+        if (!status.ok()) {
+            statuses.emplace_back(std::move(status));
+            continue;
+        }
+
+        const auto completionSize = completion.size() * sizeof(std::uint32_t);
+        void* localFlagBuffer = nullptr;
+        status = ResolveLocalAddress(ioBatch.flagBuffer, completionSize, localFlagBuffer);
+        if (!status.ok()) {
+            statuses.emplace_back(std::move(status));
+            continue;
+        }
+        std::memcpy(localFlagBuffer, completion.data(), completionSize);
+        statuses.emplace_back(Status::OK());
     }
     return statuses;
 }
@@ -435,10 +491,16 @@ Status FakeTransProvider::RegisterMemory(ConnectionHandle,
 {
     memoryHandles.clear();
     memoryHandles.reserve(memoryDescs.size());
-    for (std::size_t index = 0; index < memoryDescs.size(); ++index) {
+    std::lock_guard<std::mutex> lock(registeredMemoryMu_);
+    for (const auto& desc : memoryDescs) {
         auto handle = nextMemoryHandle_.fetch_add(1, std::memory_order_relaxed);
         if (handle == 0) { handle = nextMemoryHandle_.fetch_add(1, std::memory_order_relaxed); }
-        memoryHandles.push_back(reinterpret_cast<MemHandle>(handle));
+        auto memoryHandle = reinterpret_cast<MemHandle>(handle);
+        if (desc.localAddr != 0) {
+            registeredMemories_[memoryHandle] =
+                RegisteredMemory{desc.addr, desc.localAddr, desc.size};
+        }
+        memoryHandles.push_back(memoryHandle);
     }
     return Status::OK();
 }
@@ -446,6 +508,8 @@ Status FakeTransProvider::RegisterMemory(ConnectionHandle,
 std::vector<Status> FakeTransProvider::UnregisterMemory(
     const std::vector<UnregisterMemoryDesc>& handles)
 {
+    std::lock_guard<std::mutex> lock(registeredMemoryMu_);
+    for (const auto& desc : handles) { registeredMemories_.erase(desc.memoryHandle); }
     return std::vector<Status>(handles.size(), Status::OK());
 }
 

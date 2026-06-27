@@ -75,8 +75,7 @@ public:
         if (failRegisterAt != 0 && registerCount == failRegisterAt) {
             return Status::Error(StatusCode::INTERNAL_ERROR, "stub register failed");
         }
-        handles.push_back(
-            reinterpret_cast<MemHandle>(static_cast<uintptr_t>(registerCount)));
+        handles.push_back(reinterpret_cast<MemHandle>(static_cast<uintptr_t>(registerCount)));
         return Status::OK();
     }
 
