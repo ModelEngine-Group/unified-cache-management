@@ -15,19 +15,3 @@ def patch_core_sched_scheduler(mod):
         "_update_requests_with_invalid_blocks",
         scheduler.Scheduler._update_requests_with_invalid_blocks,
     )
-
-
-# double free patch
-@when_imported("vllm.v1.core.single_type_kv_cache_manager")
-def patch_core_single_type_kv_cache_manager(mod):
-    logger.debug(f"Patched {mod} called")
-
-    from ucm.integration.vllm.patch.v0202.vllm.v1.core import (
-        single_type_kv_cache_manager,
-    )
-
-    patch_or_inject(
-        mod.SingleTypeKVCacheManager,
-        "remove_skipped_blocks",
-        single_type_kv_cache_manager.SingleTypeKVCacheManager.remove_skipped_blocks,
-    )

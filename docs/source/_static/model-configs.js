@@ -1,9 +1,8 @@
 /**
- * KV Cache Calculator - Model Configurations & Translations
- * 
- * This file contains:
- * 1. Translation strings (English only)
- * 2. Embedded preset model configurations
+ * KV Cache Calculator - Model Configurations
+ *
+ * Standard Models: MHA, MQA, GQA, MLA, DSA architectures
+ * Hybrid Models (DeepSeek V4) are handled separately in the Hybrid tab
  */
 
 // English-only translations
@@ -47,11 +46,12 @@ const translations = {
 
 /**
  * Get embedded model configurations
- * Updated with 2025 mainstream models
+ * Standard Models only (MHA, MQA, GQA, MLA, DSA)
+ * DeepSeek V4 models are in Hybrid tab
  */
 function getEmbeddedModelConfigs() {
     return {
-        // DeepSeek Models
+        // DeepSeek V3 Series (MLA)
         "deepseek-ai/DeepSeek-V3": {
             "hidden_size": 7168,
             "num_attention_heads": 128,
@@ -82,9 +82,35 @@ function getEmbeddedModelConfigs() {
             "num_hidden_layers": 61,
             "num_key_value_heads": 128,
             "kv_lora_rank": 512,
-            "qk_rope_head_dim": 64
+            "qk_rope_head_dim": 64,
+            "index_head_dim": 128
         },
-        // Qwen3 Models
+
+        // DeepSeek V4 Series (Hybrid - for Hybrid tab only)
+        "deepseek-ai/DeepSeek-V4-Pro": {
+            "hidden_size": 7168,
+            "num_attention_heads": 128,
+            "num_hidden_layers": 61,
+            "num_key_value_heads": 1,
+            "head_dim": 512,
+            "index_head_dim": 128,
+            "sliding_window": 128,
+            "qk_rope_head_dim": 64,
+            "compress_ratios": [128,128,4,128,4,128,4,128,4,128,4,128,4,128,4,128,4,128,4,128,4,128,4,128,4,128,4,128,4,128,4,128,4,128,4,128,4,128,4,128,4,128,4,128,4,128,4,128,4,128,4,128,4,128,4,128,4,128,4,128,4,0]
+        },
+        "deepseek-ai/DeepSeek-V4-Flash": {
+            "hidden_size": 4096,
+            "num_attention_heads": 64,
+            "num_hidden_layers": 43,
+            "num_key_value_heads": 1,
+            "head_dim": 512,
+            "index_head_dim": 128,
+            "sliding_window": 128,
+            "qk_rope_head_dim": 64,
+            "compress_ratios": [0, 0, 4, 128, 4, 128, 4, 128, 4, 128, 4, 128, 4, 128, 4, 128, 4, 128, 4, 128, 4, 128, 4, 128, 4, 128, 4, 128, 4, 128, 4, 128, 4, 128, 4, 128, 4, 128, 4, 128, 4, 128, 4, 0]
+        },
+
+        // Qwen3 Series (GQA)
         "Qwen/Qwen3-32B": {
             "hidden_size": 5120,
             "num_attention_heads": 64,
@@ -106,59 +132,8 @@ function getEmbeddedModelConfigs() {
             "num_key_value_heads": 8,
             "head_dim": 128
         },
-        "Qwen/Qwen3-14B": {
-            "hidden_size": 5120,
-            "num_attention_heads": 40,
-            "num_hidden_layers": 40,
-            "num_key_value_heads": 8,
-            "head_dim": 128
-        },
-        "Qwen/Qwen2.5-7B-Instruct": {
-            "hidden_size": 3584,
-            "num_attention_heads": 28,
-            "num_hidden_layers": 28,
-            "num_key_value_heads": 4
-        },
-        "Qwen/Qwen-7B": {
-            "hidden_size": 4096,
-            "num_attention_heads": 32,
-            "num_hidden_layers": 32,
-            "num_key_value_heads": 32
-        },
-        // Qwen3.5 Series (GQA with explicit head_dim, some Hybrid)
-        "Qwen/Qwen3.5-397B-A17B": {
-            "hidden_size": 4096,
-            "num_attention_heads": 32,
-            "num_hidden_layers": 60,
-            "num_key_value_heads": 2,
-            "head_dim": 256,
-            "is_hybrid": true
-        },
-        "Qwen/Qwen3.5-122B-A10B": {
-            "hidden_size": 3072,
-            "num_attention_heads": 32,
-            "num_hidden_layers": 48,
-            "num_key_value_heads": 2,
-            "head_dim": 256,
-            "is_hybrid": true
-        },
-        "Qwen/Qwen3.5-35B-A3B": {
-            "hidden_size": 2048,
-            "num_attention_heads": 16,
-            "num_hidden_layers": 40,
-            "num_key_value_heads": 2,
-            "head_dim": 256,
-            "is_hybrid": true
-        },
-        "Qwen/Qwen3.5-27B": {
-            "hidden_size": 5120,
-            "num_attention_heads": 40,
-            "num_hidden_layers": 64,
-            "num_key_value_heads": 4,
-            "head_dim": 256,
-            "is_hybrid": true
-        },
-        // Llama Models
+
+        // Llama Series (GQA)
         "meta-llama/Llama-3.1-70B-Instruct": {
             "hidden_size": 8192,
             "num_attention_heads": 64,
@@ -171,9 +146,10 @@ function getEmbeddedModelConfigs() {
             "num_hidden_layers": 126,
             "num_key_value_heads": 8
         },
+
         // GLM Series
-        // GQA
-        "zai-org/GLM-4.5":{
+        // GQA Models
+        "zai-org/GLM-4.5": {
             "hidden_size": 5120,
             "num_attention_heads": 96,
             "num_hidden_layers": 92,
@@ -194,7 +170,7 @@ function getEmbeddedModelConfigs() {
             "num_key_value_heads": 8,
             "head_dim": 128
         },
-        // MLA
+        // MLA Models
         "zai-org/GLM-4.7-Flash": {
             "hidden_size": 2048,
             "num_attention_heads": 20,
@@ -203,11 +179,13 @@ function getEmbeddedModelConfigs() {
             "kv_lora_rank": 512,
             "qk_rope_head_dim": 64
         },
+        // DSA Models
         "zai-org/GLM-5": {
             "hidden_size": 6144,
             "num_attention_heads": 64,
             "num_hidden_layers": 78,
             "num_key_value_heads": 64,
+            "index_head_dim": 128,
             "kv_lora_rank": 512,
             "qk_rope_head_dim": 64
         },
@@ -216,11 +194,28 @@ function getEmbeddedModelConfigs() {
             "num_attention_heads": 64,
             "num_hidden_layers": 78,
             "num_key_value_heads": 64,
+            "index_head_dim": 128,
+            "kv_lora_rank": 512,
+            "qk_rope_head_dim": 64
+        },
+        "zai-org/GLM-5.2": {
+            "hidden_size": 6144,
+            "num_attention_heads": 64,
+            "num_hidden_layers": 78,
+            "num_key_value_heads": 64,
+            "index_head_dim": 128,
             "kv_lora_rank": 512,
             "qk_rope_head_dim": 64
         },
 
-        // MiniMax Series (GQA + MoE)
+        // MiniMax Series (GQA)
+        "minimax/MiniMax-M2.7": {
+            "hidden_size": 3072,
+            "num_attention_heads": 48,
+            "num_hidden_layers": 62,
+            "num_key_value_heads": 8,
+            "head_dim": 128
+        },
         "minimax/MiniMax-M2.5": {
             "hidden_size": 3072,
             "num_attention_heads": 48,
@@ -242,8 +237,31 @@ function getEmbeddedModelConfigs() {
             "num_key_value_heads": 8,
             "head_dim": 128
         },
-        // Kimi Series (MLA + Multimodal)
+        "minimax/MiniMax-M3": {
+            "hidden_size": 6144,
+            "num_attention_heads": 64,
+            "num_hidden_layers": 60,
+            "num_key_value_heads": 4,
+            "head_dim": 128
+        },
+        // Kimi Series (MLA)
         "moonshot/Kimi-K2.5": {
+            "hidden_size": 7168,
+            "num_attention_heads": 64,
+            "num_hidden_layers": 61,
+            "num_key_value_heads": 64,
+            "kv_lora_rank": 512,
+            "qk_rope_head_dim": 64
+        },
+        "moonshot/Kimi-K2.6": {
+            "hidden_size": 7168,
+            "num_attention_heads": 64,
+            "num_hidden_layers": 61,
+            "num_key_value_heads": 64,
+            "kv_lora_rank": 512,
+            "qk_rope_head_dim": 64
+        },
+        "moonshot/Kimi-K2.7-Code": {
             "hidden_size": 7168,
             "num_attention_heads": 64,
             "num_hidden_layers": 61,

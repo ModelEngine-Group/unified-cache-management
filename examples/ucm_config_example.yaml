@@ -55,6 +55,6 @@ use_lite: false
 # Requests with fewer tokens skip KV load and dump operations.
 persist_token_threshold: 0
 
-# Minimum block threshold for loading KV cache.
-# Only when hit blocks num > load_blocks_threshold, kv cache loading behavior can be triggered
-load_blocks_threshold: 1
+# Minimum token threshold for loading KV cache.
+# Only when external hit tokens num > load_tokens_threshold, kv cache loading behavior can be triggered
+load_tokens_threshold: 2048

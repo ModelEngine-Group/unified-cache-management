@@ -41,7 +41,7 @@ set(LIBRARIES
 )
 
 # NPU特殊配置
-if(RUNTIME_ENVIRONMENT STREQUAL "ascend")
+if(UCM_RUNTIME_ASCEND_FAMILY)
     message(STATUS "Configuring for NPU/Ascend device")
 
     # 查找torch_npu路径
@@ -59,7 +59,7 @@ if(RUNTIME_ENVIRONMENT STREQUAL "ascend")
         list(INSERT LIBRARIES 0 torch_npu)
         set(CXX11_ABI "0")
     else()
-        message(WARNING "torch_npu not found, but RUNTIME_ENVIRONMENT is set to ascend")
+        message(WARNING "torch_npu not found, but RUNTIME_ENVIRONMENT is set to ${RUNTIME_ENVIRONMENT}")
     endif()
 endif()
 

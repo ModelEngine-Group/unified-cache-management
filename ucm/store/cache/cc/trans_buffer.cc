@@ -89,6 +89,7 @@ public:
     virtual size_t& FirstAt(size_t iBucket) = 0;
     virtual size_t FetchNode(bool allowReserved) = 0;
     virtual void* DataAt(size_t iNode) = 0;
+    virtual void* DeviceDataAt(size_t iNode) = 0;
     virtual BufferMetaNode* MetaAt(size_t iNode) = 0;
 };
 
@@ -126,17 +127,26 @@ class LocalBufferStrategy : public BufferStrategy {
     };
 
     bool ioDirect_{false};
+    bool mapHostToDevice_{false};
     BufferHeader header_;
     LocalMutex bucketLocks_[nHashTableBucket];
     std::unique_ptr<LocalLock[]> nodeLocks_;
     std::unique_ptr<BufferMetaNode[]> meta_;
     std::shared_ptr<void> data_;
+    std::byte* dataOnDevice_{nullptr};
+    bool registeredMappedHost_{false};
 
 public:
     LocalBufferStrategy(int32_t deviceId, size_t nodeSize, size_t totalSize, size_t reservedNumber,
-                        bool ioDirect)
-        : BufferStrategy(deviceId, nodeSize, totalSize, reservedNumber), ioDirect_(ioDirect)
+                        bool ioDirect, bool mapHostToDevice)
+        : BufferStrategy(deviceId, nodeSize, totalSize, reservedNumber),
+          ioDirect_(ioDirect),
+          mapHostToDevice_(mapHostToDevice)
     {
+    }
+    ~LocalBufferStrategy() override
+    {
+        if (registeredMappedHost_ && data_) { Trans::Buffer::UnregisterHostBuffer(data_.get()); }
     }
     Status Setup() override
     {
@@ -170,6 +180,22 @@ public:
             UC_ERROR("Failed to make pinned({}) for device({}).", nodeSize * nNode, deviceId);
             return Status::OutOfMemory();
         }
+        if (mapHostToDevice_) {
+            void* deviceData = nullptr;
+            auto s = Status::OK();
+            if (ioDirect_) {
+                s = Trans::Buffer::GetHostDevicePointer(data_.get(), &deviceData);
+            } else {
+                s = Trans::Buffer::RegisterHostBuffer(data_.get(), nodeSize * nNode, &deviceData);
+                registeredMappedHost_ = s.Success();
+            }
+            if (s.Failure()) [[unlikely]] {
+                UC_ERROR("Failed({}) to map pinned host buffer({}) to device({}).", s,
+                         nodeSize * nNode, deviceId);
+                return s;
+            }
+            dataOnDevice_ = static_cast<std::byte*>(deviceData);
+        }
         for (size_t i = 0; i < nHashTableBucket; i++) { header_.buckets[i] = invalidIndex; }
         for (size_t i = 0; i < nNode; i++) { meta_[i].Init(); }
         header_.freeHead = 0;
@@ -192,6 +218,11 @@ public:
     void* DataAt(size_t iNode) override
     {
         return ((std::byte*)data_.get()) + header_.nodeSize * iNode;
+    }
+    void* DeviceDataAt(size_t iNode) override
+    {
+        if (dataOnDevice_ == nullptr) { return nullptr; }
+        return dataOnDevice_ + header_.nodeSize * iNode;
     }
     BufferMetaNode* MetaAt(size_t iNode) override { return meta_.get() + iNode; }
 };
@@ -422,6 +453,7 @@ public:
         return iNode;
     }
     void* DataAt(size_t iNode) override { return data_ + nodeSize_ * iNode; }
+    void* DeviceDataAt(size_t iNode) override { return dataOnDevice_ + nodeSize_ * iNode; }
     BufferMetaNode* MetaAt(size_t iNode) override { return meta_ + iNode; }
 };
 
@@ -461,6 +493,7 @@ public:
         return Status::OK();
     }
     void* DataAt(size_t iNode) override { return nullptr; }
+    void* DeviceDataAt(size_t iNode) override { return nullptr; }
 };
 
 Status TransBuffer::Setup(const Config& config)
@@ -470,7 +503,7 @@ Status TransBuffer::Setup(const Config& config)
         if (!config.shareBufferEnable) {
             strategy_ = std::make_shared<LocalBufferStrategy>(
                 config.deviceId, config.shardSize, config.bufferCapacity,
-                config.loadExclusiveBufferNumber, config.ioDirect);
+                config.loadExclusiveBufferNumber, config.ioDirect, config.cacheSdmaDirect);
         } else if (config.deviceId >= 0) {
             strategy_ = std::make_shared<SharedBufferStrategy>(
                 config.uniqueId, config.deviceId, config.shardSize, config.bufferCapacity,
@@ -618,6 +651,8 @@ void TransBuffer::Remove(size_t iBucket, size_t iNode)
 }
 
 void* TransBuffer::DataAt(Index pos) { return strategy_->DataAt(pos); }
+
+void* TransBuffer::DeviceDataAt(Index pos) { return strategy_->DeviceDataAt(pos); }
 
 void TransBuffer::Acquire(Index pos)
 {

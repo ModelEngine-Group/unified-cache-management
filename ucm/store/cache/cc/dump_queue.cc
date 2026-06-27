@@ -49,6 +49,7 @@ Status DumpQueue::Setup(const Config& config, TaskIdSet* failureSet, TransBuffer
     for (const auto size : tensorSizes_) { shardBytes_ += size; }
     streamNumber_ = config.streamNumber;
     useGdr_ = config.useGdr;
+    cacheSdmaDirect_ = config.cacheSdmaDirect;
     cpuAffinityCores_ = config.cpuAffinityCores;
     waiting_.Setup(config.waitingQueueDepth);
     dumping_.Setup(config.runningQueueDepth);
@@ -73,7 +74,8 @@ void DumpQueue::Submit(TaskPtr task, WaiterPtr waiter)
 void DumpQueue::DispatchStage(std::promise<Status>& started)
 {
     CopyStream stream;
-    auto s = stream.Setup(deviceId_, streamNumber_, useGdr_);
+    auto s = cacheSdmaDirect_ ? stream.SetupSdmaDirect(deviceId_, useGdr_)
+                              : stream.Setup(deviceId_, streamNumber_, useGdr_);
     started.set_value(s);
     if (s.Failure()) [[unlikely]] { return; }
     if (!cpuAffinityCores_.empty()) {
@@ -126,10 +128,10 @@ Status DumpQueue::DumpOneTask(CopyStream& stream, TaskPtr task)
         auto handle = buffer_->Get(shard.owner, shard.index);
         if (!handle.Owner()) { continue; }
         if (!handle.Ready()) {
-            auto s =
-                DeviceToHostGatherAsync(stream.NextStream(), shard.addrs.data(), handle.Data());
+            auto* host = cacheSdmaDirect_ ? handle.DeviceData() : handle.Data();
+            auto s = DeviceToHostAsync(stream, shard.addrs.data(), host);
             if (s.Failure()) [[unlikely]] {
-                UC_ERROR("Failed({}) to do D2H batch async for task({}).", s, task->id);
+                UC_ERROR("Failed({}) to do D2H for task({}).", s, task->id);
                 UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("cache_d2h_errors_total"), 1.0);
                 return s;
             }
@@ -188,22 +190,9 @@ Status DumpQueue::DumpOneTask(CopyStream& stream, TaskPtr task)
     return Status::OK();
 }
 
-Status DumpQueue::DeviceToHostGatherAsync(std::shared_ptr<Trans::Stream> stream, void** device,
-                                          void* host)
+Status DumpQueue::DeviceToHostAsync(CopyStream& stream, void** device, void* host)
 {
-    const auto number = tensorSizes_.size();
-    for (size_t i = 0, offset = 0; i < number; i++) {
-        auto pDevice = device[i];
-        auto pHost = (void*)(((int8_t*)host) + offset);
-        auto size = tensorSizes_[i];
-        auto s = stream->DeviceToHostAsync(pDevice, pHost, size);
-        if (s.Failure()) [[unlikely]] {
-            UC_ERROR("Failed({}) to do D2H({}) batch({}/{}) async.", s, size, i, number);
-            return s;
-        }
-        offset += size;
-    }
-    return Status::OK();
+    return stream.DeviceToHostAsync(device, host, tensorSizes_);
 }
 
 void DumpQueue::BackendDumpStage()
