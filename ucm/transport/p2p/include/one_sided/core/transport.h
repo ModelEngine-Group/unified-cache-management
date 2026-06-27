@@ -78,7 +78,6 @@ public:
     virtual Status UnregisterMemory(MemoryHandle handle) = 0;
     virtual Status ExportMetadata(const ManagerID& manager_id, Metadata& out) = 0;
     virtual Status ImportMetadata(const ManagerID& manager_id, const Metadata& metadata) = 0;
-    virtual Status ConnectPeer(const ManagerID& manager_id) = 0;
     virtual Status Execute(const Operation& request) = 0;
 };
 
