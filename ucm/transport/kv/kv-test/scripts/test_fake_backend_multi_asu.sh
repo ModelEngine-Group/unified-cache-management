@@ -15,8 +15,8 @@ LOG="${WORK_DIR}/command.log"
 
 write_fake_backend_config "${CONFIG}" "${STORE}" "${OUTPUT}" "1,2"
 
-run_success "${LOG}" "${KV_TEST}" store --configpath "${CONFIG}" --prefix fb-multi- --key-start 0 --key-end 63 --check
-run_success "${LOG}" "${KV_TEST}" exist --configpath "${CONFIG}" --prefix fb-multi- --key-start 0 --key-end 63
+run_success "${LOG}" "${KV_TEST}" store --configpath "${CONFIG}" --prefix m --key-start 0 --key-end 63 --check
+run_success "${LOG}" "${KV_TEST}" exist --configpath "${CONFIG}" --prefix m --key-start 0 --key-end 63
 assert_contains "${LOG}" "total=64"
 assert_contains "${LOG}" "exists=64"
 assert_contains "${LOG}" "missing=0"

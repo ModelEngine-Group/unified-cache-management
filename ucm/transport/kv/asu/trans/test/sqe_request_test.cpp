@@ -22,10 +22,13 @@
  * SOFTWARE.
  * */
 #include <acl/acl.h>
+#include <algorithm>
 #include <cstdint>
+#include <cstring>
 #include <gtest/gtest.h>
 #include <memory>
 #include <string>
+#include <string_view>
 #include <unordered_map>
 #include <vector>
 #define private public
@@ -39,6 +42,14 @@
 namespace UC::ASU {
 
 namespace {
+
+CacheKey MakeCacheKey(std::string_view text)
+{
+    CacheKey key{};
+    const auto size = std::min(text.size(), key.size());
+    if (size > 0) { std::memcpy(key.data(), text.data(), size); }
+    return key;
+}
 
 class StubTransProvider : public TransProvider {
 public:
@@ -101,7 +112,7 @@ std::vector<KVBuffer> MakeEntries(std::size_t count)
 {
     std::vector<KVBuffer> entries(count);
     for (std::size_t index = 0; index < count; ++index) {
-        entries[index].key = "key_" + std::to_string(index);
+        entries[index].key = MakeCacheKey("key_" + std::to_string(index));
         entries[index].buffer.region.addr = 0x100000 + index * 0x1000;
         entries[index].buffer.region.size = 4096;
         entries[index].buffer.handle = 0x20 + index;
@@ -270,7 +281,9 @@ TEST_F(SqeRequestTest, SubmitBatchRetrieveUsesRetrieveOpcodeAndRequest)
 
 TEST_F(SqeRequestTest, SubmitDeleteCopiesKeysAndBuildsFlagBackedRequest)
 {
-    std::vector<CacheKey> keys = {"k0", "k1", "k2", "k3", "k4", "k5", "k6", "k7", "k8"};
+    std::vector<CacheKey> keys = {MakeCacheKey("k0"), MakeCacheKey("k1"), MakeCacheKey("k2"),
+                                  MakeCacheKey("k3"), MakeCacheKey("k4"), MakeCacheKey("k5"),
+                                  MakeCacheKey("k6"), MakeCacheKey("k7"), MakeCacheKey("k8")};
     IoScheduler::ScheduledKeyBatch subBatch{
         BatchView<CacheKey>{keys.data(), keys.size()}
     };
@@ -293,7 +306,9 @@ TEST_F(SqeRequestTest, SubmitDeleteCopiesKeysAndBuildsFlagBackedRequest)
 
 TEST_F(SqeRequestTest, SubmitExistReadsScAttribute)
 {
-    std::vector<CacheKey> keys = {"k0", "k1", "k2", "k3", "k4", "k5", "k6", "k7", "k8"};
+    std::vector<CacheKey> keys = {MakeCacheKey("k0"), MakeCacheKey("k1"), MakeCacheKey("k2"),
+                                  MakeCacheKey("k3"), MakeCacheKey("k4"), MakeCacheKey("k5"),
+                                  MakeCacheKey("k6"), MakeCacheKey("k7"), MakeCacheKey("k8")};
     IoScheduler::ScheduledKeyBatch subBatch{
         BatchView<CacheKey>{keys.data(), keys.size()}
     };
@@ -319,7 +334,7 @@ TEST_F(SqeRequestTest, SubmitExistDisablesSeekControlWhenScDisabled)
     transport_->config_.attrs = attrs;
     transport_->nextRequestCid_.store(13, std::memory_order_relaxed);
 
-    std::vector<CacheKey> keys = {"k0"};
+    std::vector<CacheKey> keys = {MakeCacheKey("k0")};
     IoScheduler::ScheduledKeyBatch subBatch{
         BatchView<CacheKey>{keys.data(), keys.size()}
     };

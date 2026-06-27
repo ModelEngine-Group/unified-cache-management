@@ -8,6 +8,7 @@
 #include <utility>
 
 namespace UC::KVTest {
+using UC::ASU::CacheKeyToHex;
 namespace {
 
 class LocalAsuTransport final : public UC::ASU::AsuTransport {
@@ -58,7 +59,7 @@ public:
 
         result = UC::ASU::QueryResult{};
         if (options.mode == UC::ASU::QueryMode::PREFIX) {
-            result.prefixHitKeys = CountPrefixHits(keys.empty() ? "" : keys.front());
+            result.prefixHitKeys = keys.empty() ? 0 : CountPrefixHits(keys.front());
             return UC::ASU::Status::OK();
         }
 
@@ -122,9 +123,10 @@ public:
             std::error_code errorCode;
             (void)std::filesystem::remove(KeyPath(key), errorCode);
             if (errorCode) {
-                result.entryStatus.emplace_back(UC::ASU::Status::Error(
-                    UC::ASU::StatusCode::IO_ERROR,
-                    "failed to delete local key=" + key + " error=" + errorCode.message()));
+                result.entryStatus.emplace_back(
+                    UC::ASU::Status::Error(UC::ASU::StatusCode::IO_ERROR,
+                                           "failed to delete local key=" + CacheKeyToHex(key) +
+                                               " error=" + errorCode.message()));
             } else {
                 result.entryStatus.emplace_back(UC::ASU::Status::OK());
             }
@@ -237,18 +239,6 @@ private:
         }
     }
 
-    static std::string HexEncode(const std::string& value)
-    {
-        constexpr char kHex[] = "0123456789abcdef";
-        std::string output;
-        output.reserve(value.size() * 2);
-        for (unsigned char ch : value) {
-            output.push_back(kHex[ch >> 4]);
-            output.push_back(kHex[ch & 0x0F]);
-        }
-        return output;
-    }
-
     std::filesystem::path AsuRoot() const
     {
         return std::filesystem::path(storeRoot_) / ("asu-" + std::to_string(config_.asuId));
@@ -256,21 +246,22 @@ private:
 
     std::filesystem::path KeyPath(const UC::ASU::CacheKey& key) const
     {
-        return AsuRoot() / (HexEncode(key) + ".bin");
+        return AsuRoot() / (CacheKeyToHex(key) + ".bin");
     }
 
     UC::ASU::Status StoreEntry(const UC::ASU::KVBuffer& entry)
     {
         std::ofstream file{KeyPath(entry.key), std::ios::binary | std::ios::trunc};
         if (!file.is_open()) {
-            return UC::ASU::Status::Error(UC::ASU::StatusCode::IO_ERROR,
-                                          "failed to open local key for store=" + entry.key);
+            return UC::ASU::Status::Error(
+                UC::ASU::StatusCode::IO_ERROR,
+                "failed to open local key for store=" + CacheKeyToHex(entry.key));
         }
         const auto* data = reinterpret_cast<const char*>(entry.buffer.region.addr);
         file.write(data, static_cast<std::streamsize>(entry.buffer.region.size));
         if (!file.good()) {
             return UC::ASU::Status::Error(UC::ASU::StatusCode::IO_ERROR,
-                                          "failed to write local key=" + entry.key);
+                                          "failed to write local key=" + CacheKeyToHex(entry.key));
         }
         return UC::ASU::Status::OK();
     }
@@ -280,7 +271,7 @@ private:
         std::ifstream file{KeyPath(entry.key), std::ios::binary};
         if (!file.is_open()) {
             return UC::ASU::Status::Error(UC::ASU::StatusCode::NOT_FOUND,
-                                          "local key not found=" + entry.key);
+                                          "local key not found=" + CacheKeyToHex(entry.key));
         }
 
         file.seekg(0, std::ios::end);
@@ -288,26 +279,29 @@ private:
         file.seekg(0, std::ios::beg);
         if (size < 0 || static_cast<std::uint64_t>(size) >
                             static_cast<std::uint64_t>(entry.buffer.region.size)) {
-            return UC::ASU::Status::Error(UC::ASU::StatusCode::BUFFER_NOT_SUPPORTED,
-                                          "local value does not fit destination key=" + entry.key);
+            return UC::ASU::Status::Error(
+                UC::ASU::StatusCode::BUFFER_NOT_SUPPORTED,
+                "local value does not fit destination key=" + CacheKeyToHex(entry.key));
         }
 
         auto* data = reinterpret_cast<char*>(entry.buffer.region.addr);
         file.read(data, size);
         if (!file.good() && !file.eof()) {
             return UC::ASU::Status::Error(UC::ASU::StatusCode::IO_ERROR,
-                                          "failed to read local key=" + entry.key);
+                                          "failed to read local key=" + CacheKeyToHex(entry.key));
         }
         return UC::ASU::Status::OK();
     }
 
-    std::uint32_t CountPrefixHits(const std::string& prefix) const
+    std::uint32_t CountPrefixHits(const UC::ASU::CacheKey& prefixKey) const
     {
         std::uint32_t hits = 0;
         std::error_code errorCode;
         for (const auto& entry : std::filesystem::directory_iterator(AsuRoot(), errorCode)) {
             if (errorCode) { break; }
-            if (entry.path().filename().string().rfind(HexEncode(prefix), 0) == 0) { ++hits; }
+            if (entry.path().filename().string().rfind(CacheKeyToHex(prefixKey), 0) == 0) {
+                ++hits;
+            }
         }
         return hits;
     }

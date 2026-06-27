@@ -4,12 +4,14 @@
 #include <chrono>
 #include <cstdint>
 #include <cstdio>
+#include <cstring>
 #include <fstream>
 #include <gtest/gtest.h>
 #include <iostream>
 #include <memory>
 #include <mutex>
 #include <string>
+#include <string_view>
 #include <thread>
 #include <unordered_map>
 #include <utility>
@@ -17,6 +19,18 @@
 #include "kv_common/router.h"
 
 namespace UC::ASU {
+
+static CacheKey MakeCacheKey(std::string_view text)
+{
+    CacheKey key{};
+    if (text.size() <= key.size()) {
+        if (!text.empty()) { std::memcpy(key.data(), text.data(), text.size()); }
+        return key;
+    }
+    const auto hash = std::hash<std::string_view>{}(text);
+    std::memcpy(key.data(), &hash, key.size());
+    return key;
+}
 
 struct TestState {
     std::uint32_t createdTransports{0};
@@ -107,7 +121,9 @@ public:
 
         result.exists.clear();
         result.exists.reserve(keys.size());
-        for (const auto& key : keys) { result.exists.emplace_back(key == "k15" || key == "k25"); }
+        for (const auto& key : keys) {
+            result.exists.emplace_back(key == MakeCacheKey("k15") || key == MakeCacheKey("k25"));
+        }
         result.prefixHitKeys = 0;
         return Status::OK();
     }
@@ -325,10 +341,13 @@ CacheKey FindKeyForAsu(const std::vector<AsuId>& asuIds, AsuId targetAsuId)
 {
     std::vector<UC::KV::NodeId> nodeIds(asuIds.begin(), asuIds.end());
     auto router = UC::KV::CreateRouter(nodeIds, UC::KV::HashFunction{}, UC::KV::RouterConfig{});
-    for (std::size_t index = 0; index < 10000; ++index) {
-        auto key = "route-key-" + std::to_string(targetAsuId) + "-" + std::to_string(index);
-        auto routes = router->RouteKeys({key});
-        if (routes.size() == 1 && routes.begin()->first == targetAsuId) { return key; }
+    for (std::uint32_t index = 1; index < 1000000; ++index) {
+        std::uint64_t combined = (static_cast<std::uint64_t>(targetAsuId) << 32) | index;
+        CacheKey cacheKey{};
+        std::memcpy(cacheKey.data(), &combined, sizeof(combined));
+        auto routeKey = std::string(CacheKeyView(cacheKey));
+        auto routes = router->RouteKeys({routeKey});
+        if (routes.size() == 1 && routes.begin()->first == targetAsuId) { return cacheKey; }
     }
     return {};
 }
@@ -349,13 +368,13 @@ TEST(AsuClientImplTest, Lifecycle_OperationsBeforeInitReturnExpectedErrors)
     auto client = CreateAsuClient(MakeFactory(state));
 
     QueryResult queryResult;
-    auto status = client->Query({"k05"}, QueryOptions{}, queryResult);
+    auto status = client->Query({MakeCacheKey("k05")}, QueryOptions{}, queryResult);
     EXPECT_EQ(status.code, StatusCode::NOT_INITIALIZED);
 
     TaskId taskId = kInvalidTaskId;
     status = client->StoreAsync(
         {
-            KVBuffer{"k05", {}}
+            KVBuffer{MakeCacheKey("k05"), {}}
     },
         taskId);
     EXPECT_EQ(status.code, StatusCode::NOT_INITIALIZED);
@@ -386,14 +405,14 @@ TEST(AsuClientImplTest, Lifecycle_ShutdownClearsTasksAndRejectsFutureOperations)
     TaskId taskId = kInvalidTaskId;
     auto status = client->StoreAsync(
         {
-            KVBuffer{"k05", {}}
+            KVBuffer{MakeCacheKey("k05"), {}}
     },
         taskId);
     ASSERT_TRUE(status.ok()) << status.message;
     ASSERT_TRUE(client->Shutdown().ok());
 
     QueryResult queryResult;
-    status = client->Query({"k05"}, QueryOptions{}, queryResult);
+    status = client->Query({MakeCacheKey("k05")}, QueryOptions{}, queryResult);
     EXPECT_EQ(status.code, StatusCode::NOT_INITIALIZED);
 
     TaskResult taskResult;
@@ -519,8 +538,8 @@ TEST(AsuClientImplTest, Routing_UsesRouterConfigFromClientConfigAttrs)
 
     auto keyForAsu10 = FindKeyForAsu({10, 20}, 10);
     auto keyForAsu20 = FindKeyForAsu({10, 20}, 20);
-    ASSERT_FALSE(keyForAsu10.empty());
-    ASSERT_FALSE(keyForAsu20.empty());
+    ASSERT_NE(keyForAsu10, CacheKey{});
+    ASSERT_NE(keyForAsu20, CacheKey{});
 
     auto client = CreateAsuClient(MakeFactory(state));
     ASSERT_TRUE(client->Init(config).ok());
@@ -562,7 +581,8 @@ TEST(AsuClientImplTest, Query_PerKeyKeepsOriginalOrder)
     ASSERT_TRUE(client->Init(MakeConfig({10, 20})).ok());
 
     QueryResult result;
-    auto status = client->Query({"k05", "k15", "k25"}, QueryOptions{}, result);
+    auto status = client->Query({MakeCacheKey("k05"), MakeCacheKey("k15"), MakeCacheKey("k25")},
+                                QueryOptions{}, result);
 
     EXPECT_TRUE(status.ok()) << status.message;
     EXPECT_EQ(result.exists, std::vector<std::uint8_t>({0, 1, 1}));
@@ -576,7 +596,7 @@ TEST(AsuClientImplTest, Query_PerKeyFailureIncludesAsuContext)
     ASSERT_TRUE(client->Init(MakeConfig({10, 20})).ok());
 
     QueryResult result;
-    auto status = client->Query({"k15"}, QueryOptions{}, result);
+    auto status = client->Query({MakeCacheKey("k15")}, QueryOptions{}, result);
 
     EXPECT_EQ(status.code, StatusCode::IO_ERROR);
     EXPECT_NE(status.message.find("asuId=20"), std::string::npos);
@@ -609,7 +629,7 @@ TEST(AsuClientImplTest, Query_PerKeyResultSizeMismatchReturnsInternalError)
     ASSERT_TRUE(client->Init(MakeConfig({10})).ok());
 
     QueryResult result;
-    auto status = client->Query({"k05"}, QueryOptions{}, result);
+    auto status = client->Query({MakeCacheKey("k05")}, QueryOptions{}, result);
 
     EXPECT_EQ(status.code, StatusCode::INTERNAL_ERROR);
     EXPECT_NE(status.message.find("query result size mismatch"), std::string::npos);
@@ -637,7 +657,9 @@ TEST(AsuClientImplTest, Query_PrefixBroadcastsAndMergesResults)
     QueryOptions options;
     options.mode = QueryMode::PREFIX;
     QueryResult result;
-    auto status = client->Query({"prefix-a", "prefix-b", "prefix-c"}, options, result);
+    auto status = client->Query(
+        {MakeCacheKey("prefix-a"), MakeCacheKey("prefix-b"), MakeCacheKey("prefix-c")}, options,
+        result);
 
     EXPECT_TRUE(status.ok()) << status.message;
     EXPECT_EQ(result.exists, std::vector<std::uint8_t>({1, 1, 1}));
@@ -667,7 +689,9 @@ TEST(AsuClientImplTest, Query_PrefixPartialFailureIncludesAsuContext)
     QueryOptions options;
     options.mode = QueryMode::PREFIX;
     QueryResult result;
-    auto status = client->Query({"prefix-a", "prefix-b", "prefix-c"}, options, result);
+    auto status = client->Query(
+        {MakeCacheKey("prefix-a"), MakeCacheKey("prefix-b"), MakeCacheKey("prefix-c")}, options,
+        result);
 
     EXPECT_EQ(status.code, StatusCode::PARTIAL_FAILED);
     EXPECT_NE(status.message.find("asuId=20"), std::string::npos);
@@ -686,7 +710,8 @@ TEST(AsuClientImplTest, Query_PrefixResultSizeMismatchReturnsInternalError)
     QueryOptions options;
     options.mode = QueryMode::PREFIX;
     QueryResult result;
-    auto status = client->Query({"prefix-a", "prefix-b"}, options, result);
+    auto status =
+        client->Query({MakeCacheKey("prefix-a"), MakeCacheKey("prefix-b")}, options, result);
 
     EXPECT_EQ(status.code, StatusCode::INTERNAL_ERROR);
     EXPECT_NE(status.message.find("prefix query result size mismatch"), std::string::npos);
@@ -702,11 +727,11 @@ TEST(AsuClientImplTest, BackgroundRefresh_QueryReturnsErrorWithoutRetry)
     EXPECT_EQ(state->createdTransports, std::uint32_t{2});
 
     QueryResult result;
-    auto status = client->Query({"k05"}, QueryOptions{}, result);
+    auto status = client->Query({MakeCacheKey("k05")}, QueryOptions{}, result);
 
     EXPECT_EQ(status.code, StatusCode::CONNECTION_ERROR);
 
-    status = client->Query({"k15"}, QueryOptions{}, result);
+    status = client->Query({MakeCacheKey("k15")}, QueryOptions{}, result);
 
     EXPECT_TRUE(status.ok()) << status.message;
     EXPECT_EQ(result.exists, std::vector<std::uint8_t>({1}));
@@ -730,7 +755,7 @@ TEST(AsuClientImplTest, BackgroundRefresh_QueryDoesNotRefreshNonRefreshableError
     ASSERT_TRUE(client->Init(config).ok());
 
     QueryResult result;
-    auto status = client->Query({"k05"}, QueryOptions{}, result);
+    auto status = client->Query({MakeCacheKey("k05")}, QueryOptions{}, result);
 
     EXPECT_EQ(status.code, StatusCode::INVALID_ARGUMENT);
     EXPECT_EQ(viewServer->FetchCount(), std::size_t{1});
@@ -755,7 +780,7 @@ TEST(AsuClientImplTest, BackgroundRefresh_QueryRefreshesOnIoError)
     ASSERT_TRUE(client->Init(config).ok());
 
     QueryResult result;
-    auto status = client->Query({"k05"}, QueryOptions{}, result);
+    auto status = client->Query({MakeCacheKey("k05")}, QueryOptions{}, result);
 
     EXPECT_EQ(status.code, StatusCode::IO_ERROR);
     ASSERT_TRUE(client->Shutdown().ok());
@@ -780,7 +805,7 @@ TEST(AsuClientImplTest, BackgroundRefresh_QueryRefreshesOnTimeout)
     ASSERT_TRUE(client->Init(config).ok());
 
     QueryResult result;
-    auto status = client->Query({"k05"}, QueryOptions{}, result);
+    auto status = client->Query({MakeCacheKey("k05")}, QueryOptions{}, result);
 
     EXPECT_EQ(status.code, StatusCode::TIMEOUT);
     ASSERT_TRUE(client->Shutdown().ok());
@@ -804,7 +829,7 @@ TEST(AsuClientImplTest, BackgroundRefresh_QueryKeepsOriginalErrorWhenViewFetchFa
     ASSERT_TRUE(client->Init(config).ok());
 
     QueryResult result;
-    auto status = client->Query({"k05"}, QueryOptions{}, result);
+    auto status = client->Query({MakeCacheKey("k05")}, QueryOptions{}, result);
 
     EXPECT_EQ(status.code, StatusCode::CONNECTION_ERROR);
     ASSERT_TRUE(client->Shutdown().ok());
@@ -829,7 +854,7 @@ TEST(AsuClientImplTest, BackgroundRefresh_LoadReturnsErrorWithoutRetry)
     TaskId taskId = kInvalidTaskId;
     auto status = client->LoadAsync(
         {
-            KVBuffer{"k05", {}}
+            KVBuffer{MakeCacheKey("k05"), {}}
     },
         taskId);
 
@@ -858,7 +883,7 @@ TEST(AsuClientImplTest, BackgroundRefresh_StoreReturnsErrorWithoutRetry)
     TaskId taskId = kInvalidTaskId;
     auto status = client->StoreAsync(
         {
-            KVBuffer{"k05", {}}
+            KVBuffer{MakeCacheKey("k05"), {}}
     },
         taskId);
 
@@ -885,7 +910,7 @@ TEST(AsuClientImplTest, BackgroundRefresh_DeleteReturnsErrorWithoutRetry)
     ASSERT_TRUE(client->Init(config).ok());
 
     TaskId taskId = kInvalidTaskId;
-    auto status = client->DeleteAsync({"k05"}, taskId);
+    auto status = client->DeleteAsync({MakeCacheKey("k05")}, taskId);
 
     EXPECT_EQ(status.code, StatusCode::CONNECTION_ERROR);
     EXPECT_EQ(taskId, kInvalidTaskId);
@@ -911,7 +936,7 @@ TEST(AsuClientImplTest, ViewEpoch_DoesNotPublishSameOrOlderViewEpoch)
     ASSERT_TRUE(client->Init(config).ok());
 
     QueryResult result;
-    auto status = client->Query({"k05"}, QueryOptions{}, result);
+    auto status = client->Query({MakeCacheKey("k05")}, QueryOptions{}, result);
     EXPECT_EQ(status.code, StatusCode::CONNECTION_ERROR);
     ASSERT_TRUE(client->Shutdown().ok());
     EXPECT_EQ(state->createdTransports, std::uint32_t{1});
@@ -929,11 +954,11 @@ TEST(AsuClientImplTest, SnapshotRefresh_BuildFailureKeepsOldSnapshot)
     ASSERT_TRUE(client->Init(config).ok());
 
     QueryResult result;
-    auto status = client->Query({"k05"}, QueryOptions{}, result);
+    auto status = client->Query({MakeCacheKey("k05")}, QueryOptions{}, result);
     EXPECT_EQ(status.code, StatusCode::CONNECTION_ERROR);
     ASSERT_TRUE(WaitForFetchCount(viewServer, 2));
 
-    status = client->Query({"k05"}, QueryOptions{}, result);
+    status = client->Query({MakeCacheKey("k05")}, QueryOptions{}, result);
 
     EXPECT_TRUE(status.ok()) << status.message;
     EXPECT_EQ(state->createdTransports, std::uint32_t{1});
@@ -1080,7 +1105,7 @@ TEST(AsuClientImplTest, MemoryRegister_BindFailureDoesNotCacheResource)
 
     state->failFirstQuery = true;
     QueryResult queryResult;
-    status = client->Query({"k05"}, QueryOptions{}, queryResult);
+    status = client->Query({MakeCacheKey("k05")}, QueryOptions{}, queryResult);
 
     EXPECT_EQ(status.code, StatusCode::CONNECTION_ERROR);
     ASSERT_TRUE(client->Shutdown().ok());
@@ -1141,7 +1166,7 @@ TEST(AsuClientImplTest, MemoryRegister_UnregisterRemovesCachedResourceBeforeFutu
 
     state->failFirstQuery = true;
     QueryResult queryResult;
-    status = client->Query({"k05"}, QueryOptions{}, queryResult);
+    status = client->Query({MakeCacheKey("k05")}, QueryOptions{}, queryResult);
 
     EXPECT_EQ(status.code, StatusCode::CONNECTION_ERROR);
     ASSERT_TRUE(client->Shutdown().ok());
@@ -1158,7 +1183,7 @@ TEST(AsuClientImplTest, Task_CheckRemovesTaskAfterCompletion)
     TaskId taskId = 0;
     auto status = client->StoreAsync(
         {
-            KVBuffer{"k05", {}}
+            KVBuffer{MakeCacheKey("k05"), {}}
     },
         taskId);
     ASSERT_TRUE(status.ok()) << status.message;
@@ -1181,7 +1206,7 @@ TEST(AsuClientImplTest, Task_CheckKeepsInProgressTaskUntilCompletion)
     TaskId taskId = 0;
     auto status = client->StoreAsync(
         {
-            KVBuffer{"k05", {}}
+            KVBuffer{MakeCacheKey("k05"), {}}
     },
         taskId);
     ASSERT_TRUE(status.ok()) << status.message;
@@ -1216,7 +1241,7 @@ TEST(AsuClientImplTest, Task_CheckRefreshesViewOnRefreshableChildFailure)
     TaskId taskId = 0;
     auto status = client->StoreAsync(
         {
-            KVBuffer{"k05", {}}
+            KVBuffer{MakeCacheKey("k05"), {}}
     },
         taskId);
     ASSERT_TRUE(status.ok()) << status.message;
@@ -1238,8 +1263,8 @@ TEST(AsuClientImplTest, Task_PartialDispatchFailureCancelsDispatchedSubtasks)
     ASSERT_TRUE(client->Init(MakeConfig({10, 20})).ok());
     auto keyForAsu10 = FindKeyForAsu({10, 20}, 10);
     auto keyForAsu20 = FindKeyForAsu({10, 20}, 20);
-    ASSERT_FALSE(keyForAsu10.empty());
-    ASSERT_FALSE(keyForAsu20.empty());
+    ASSERT_NE(keyForAsu10, CacheKey{});
+    ASSERT_NE(keyForAsu20, CacheKey{});
 
     TaskId taskId = kInvalidTaskId;
     auto status = client->StoreAsync(
@@ -1265,7 +1290,7 @@ TEST(AsuClientImplTest, Task_WaitRemovesTaskAfterCompletion)
     TaskId taskId = 0;
     auto status = client->StoreAsync(
         {
-            KVBuffer{"k05", {}}
+            KVBuffer{MakeCacheKey("k05"), {}}
     },
         taskId);
     ASSERT_TRUE(status.ok()) << status.message;
@@ -1311,7 +1336,7 @@ TEST(AsuClientImplTest, Task_WaitTimeoutKeepsTaskForLaterCompletion)
     TaskId taskId = 0;
     auto status = client->StoreAsync(
         {
-            KVBuffer{"k05", {}}
+            KVBuffer{MakeCacheKey("k05"), {}}
     },
         taskId);
     ASSERT_TRUE(status.ok()) << status.message;
@@ -1337,9 +1362,9 @@ TEST(AsuClientImplTest, Task_CheckKeepsEntryStatusInOriginalOrderAcrossAsus)
     ASSERT_TRUE(client->Init(MakeConfig({10, 20, 30})).ok());
     auto entries = BuildRoutedEntries({30, 10, 20});
     ASSERT_EQ(entries.size(), std::size_t{3});
-    ASSERT_FALSE(entries[0].key.empty());
-    ASSERT_FALSE(entries[1].key.empty());
-    ASSERT_FALSE(entries[2].key.empty());
+    ASSERT_NE(entries[0].key, CacheKey{});
+    ASSERT_NE(entries[1].key, CacheKey{});
+    ASSERT_NE(entries[2].key, CacheKey{});
 
     TaskId taskId = 0;
     auto status = client->StoreAsync(entries, taskId);
@@ -1365,9 +1390,9 @@ TEST(AsuClientImplTest, Task_LoadKeepsEntryStatusInOriginalOrderAcrossAsus)
     ASSERT_TRUE(client->Init(MakeConfig({10, 20, 30})).ok());
     auto entries = BuildRoutedEntries({30, 10, 20});
     ASSERT_EQ(entries.size(), std::size_t{3});
-    ASSERT_FALSE(entries[0].key.empty());
-    ASSERT_FALSE(entries[1].key.empty());
-    ASSERT_FALSE(entries[2].key.empty());
+    ASSERT_NE(entries[0].key, CacheKey{});
+    ASSERT_NE(entries[1].key, CacheKey{});
+    ASSERT_NE(entries[2].key, CacheKey{});
 
     TaskId taskId = kInvalidTaskId;
     auto status = client->LoadAsync(entries, taskId);
@@ -1393,9 +1418,9 @@ TEST(AsuClientImplTest, Task_DeleteKeepsEntryStatusInOriginalOrderAcrossAsus)
     ASSERT_TRUE(client->Init(MakeConfig({10, 20, 30})).ok());
     auto entries = BuildRoutedEntries({30, 10, 20});
     ASSERT_EQ(entries.size(), std::size_t{3});
-    ASSERT_FALSE(entries[0].key.empty());
-    ASSERT_FALSE(entries[1].key.empty());
-    ASSERT_FALSE(entries[2].key.empty());
+    ASSERT_NE(entries[0].key, CacheKey{});
+    ASSERT_NE(entries[1].key, CacheKey{});
+    ASSERT_NE(entries[2].key, CacheKey{});
     std::vector<CacheKey> keys;
     keys.reserve(entries.size());
     for (const auto& entry : entries) { keys.emplace_back(entry.key); }
@@ -1432,7 +1457,7 @@ TEST(AsuClientImplTest, SnapshotRefresh_ReusesExistingTransportAndBindsResources
     state->failFirstQuery = true;
 
     QueryResult result;
-    status = client->Query({"k05"}, QueryOptions{}, result);
+    status = client->Query({MakeCacheKey("k05")}, QueryOptions{}, result);
 
     EXPECT_EQ(status.code, StatusCode::CONNECTION_ERROR);
     ASSERT_TRUE(client->Shutdown().ok());
@@ -1458,7 +1483,7 @@ TEST(AsuClientImplTest,
     TaskId taskId = 0;
     auto status = client->StoreAsync(
         {
-            KVBuffer{"k15", {}}
+            KVBuffer{MakeCacheKey("k15"), {}}
     },
         taskId);
     ASSERT_TRUE(status.ok()) << status.message;
@@ -1466,7 +1491,7 @@ TEST(AsuClientImplTest,
 
     state->failFirstQuery = true;
     QueryResult queryResult;
-    status = client->Query({"k05"}, QueryOptions{}, queryResult);
+    status = client->Query({MakeCacheKey("k05")}, QueryOptions{}, queryResult);
     ASSERT_EQ(status.code, StatusCode::CONNECTION_ERROR);
     ASSERT_TRUE(WaitForFetchCount(viewServer, 2));
     std::this_thread::sleep_for(std::chrono::milliseconds(10));
@@ -1478,7 +1503,7 @@ TEST(AsuClientImplTest,
 
     status = client->StoreAsync(
         {
-            KVBuffer{"k15", {}}
+            KVBuffer{MakeCacheKey("k15"), {}}
     },
         taskId);
     EXPECT_TRUE(status.ok()) << status.message;

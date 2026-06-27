@@ -171,7 +171,7 @@ private:
     // Returns the owner selected from all active nodes.
     NodeId RouteKey(const CacheKey& key) const override;
     // Selects the TopK candidates for one batch fingerprint.
-    std::vector<NodeId> SelectCandidates(const CacheKey& batchKey) const;
+    std::vector<NodeId> SelectCandidates(const std::string& batchKey) const;
 
     RouterConfig config_;
     std::vector<NodeId> nodeIds_;

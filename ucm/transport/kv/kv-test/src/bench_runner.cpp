@@ -2,6 +2,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <cstring>
 #include <future>
 #include <iomanip>
 #include <iostream>
@@ -14,6 +15,19 @@ namespace UC::KVTest {
 namespace {
 
 constexpr int kExitInvalidArgument = 1;
+
+Status StringToCacheKey(const std::string& value, UC::ASU::CacheKey& key)
+{
+    if (value.size() > key.size()) {
+        return Status::Error(kExitInvalidArgument,
+                             "bench key length exceeds " + std::to_string(key.size()) +
+                                 " bytes: length=" + std::to_string(value.size()) +
+                                 ", key=" + value);
+    }
+    key = UC::ASU::CacheKey{};
+    if (!value.empty()) { std::memcpy(key.data(), value.data(), value.size()); }
+    return Status::Success();
+}
 
 struct BenchBufferSlot {
     BufferSet buffers;
@@ -187,8 +201,8 @@ bool IsBenchReadOperation(BenchOpType op, std::uint64_t operationIndex, const Be
     return operationIndex % ratioTotal < bench.readRatio;
 }
 
-void PrepareBenchBuffers(BenchBufferSlot& slot, std::uint64_t begin, std::size_t entryCount,
-                         const std::string& keyPrefix)
+Status PrepareBenchBuffers(BenchBufferSlot& slot, std::uint64_t begin, std::size_t entryCount,
+                           const std::string& keyPrefix)
 {
     auto& buffers = slot.buffers;
     buffers.regions.clear();
@@ -202,8 +216,12 @@ void PrepareBenchBuffers(BenchBufferSlot& slot, std::uint64_t begin, std::size_t
         auto& value = buffers.ownedBuffers[index];
         auto region = MakeHostRegion(value);
         buffers.regions.emplace_back(region);
-        buffers.entries.emplace_back(MakeKvBuffer(keyPrefix + std::to_string(keyIndex), region));
+        UC::ASU::CacheKey key{};
+        auto status = StringToCacheKey(keyPrefix + std::to_string(keyIndex), key);
+        if (!status.Ok()) { return status; }
+        buffers.entries.emplace_back(MakeKvBuffer(key, region));
     }
+    return Status::Success();
 }
 
 Status ExecuteBenchOperation(BenchOpType requestedOp, const BenchConfig& bench,
@@ -215,10 +233,11 @@ Status ExecuteBenchOperation(BenchOpType requestedOp, const BenchConfig& bench,
     const bool isRead = IsBenchReadOperation(requestedOp, operationIndex, bench);
     const auto submitMode =
         entryCount > 1 ? SubmitMode::ALL_ENTRIES_IN_ONE_CALL : SubmitMode::SINGLE_ENTRY_PER_CALL;
-    PrepareBenchBuffers(slot, begin, entryCount, keyPrefix);
+    auto status = PrepareBenchBuffers(slot, begin, entryCount, keyPrefix);
+    if (!status.Ok()) { return status; }
     auto& buffers = slot.buffers;
 
-    auto status = clientRunner.RegisterBuffers(buffers);
+    status = clientRunner.RegisterBuffers(buffers);
     if (!status.Ok()) { return status; }
 
     status = isRead ? clientRunner.Retrieve(buffers, submitMode, timeoutMs, operationResult)
@@ -268,7 +287,7 @@ Status BenchRunner::Run(const CommandOptions& options, const KvTestConfig& confi
     auto status = ValidateBenchBufferConfig(bench, poolEntryCount, config.memoryMaxBytes);
     if (!status.Ok()) { return status; }
 
-    const std::string keyPrefix = config.keyPrefix.empty() ? "bench-key-" : config.keyPrefix;
+    const std::string keyPrefix = config.keyPrefix.empty() ? "b" : config.keyPrefix;
     auto bufferPool = BuildBenchBufferPool(bench, entryCountPerOperation, config.seed);
 
     using Clock = std::chrono::steady_clock;

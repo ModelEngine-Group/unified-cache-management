@@ -22,12 +22,29 @@
  * SOFTWARE.
  * */
 #include "kv_protocol.h"
+#include <algorithm>
 #include <cstdint>
 #include <cstring>
 #include <gtest/gtest.h>
+#include <string_view>
 
 namespace UC::ASU {
 namespace {
+
+CacheKey MakeCacheKey(std::string_view text)
+{
+    CacheKey key{};
+    const auto size = std::min(text.size(), key.size());
+    if (size > 0) { std::memcpy(key.data(), text.data(), size); }
+    return key;
+}
+
+CacheKey MakeCacheKey(std::uint64_t value)
+{
+    CacheKey key{};
+    std::memcpy(key.data(), &value, key.size());
+    return key;
+}
 
 class KvProtocolPackTest : public ::testing::Test {
 protected:
@@ -47,7 +64,7 @@ TEST_F(KvProtocolPackTest, StoreProtocolPackMatchesProtocol)
     constexpr std::uint32_t kOffset = 0x00001000;
     constexpr bool kLr = true;
     constexpr std::uint32_t kLength = 0x00000002;
-    const std::string kKey = "tk_02";
+    const std::string kKey = "test_key_01";
 
     KvStoreRequest req;
     req.cid = kCid;
@@ -60,7 +77,7 @@ TEST_F(KvProtocolPackTest, StoreProtocolPackMatchesProtocol)
     req.offset = kOffset;
     req.lr = kLr;
     req.length = kLength;
-    req.key = kKey;
+    req.key = MakeCacheKey(kKey);
 
     KvStoreProtocol proto;
     std::vector<std::uint32_t> packed(16, 0);
@@ -77,7 +94,7 @@ TEST_F(KvProtocolPackTest, StoreProtocolPackMatchesProtocol)
     expected[9] = (0x40 << 24) | ((kMrKey >> 8) & 0xFFFFFF);
     expected[10] = kOffset;
     expected[11] = (kLr ? (1U << 31) : 0) | (kLength & 0xFFFFFF);
-    std::size_t key_len = std::min(kKey.size(), static_cast<std::size_t>(8));
+    std::size_t key_len = std::min(kKey.size(), kCacheKeySizeBytes);
     if (key_len > 0) { std::memcpy(&expected[12], kKey.data(), key_len); }
 
     ASSERT_EQ(packed.size(), expected.size());
@@ -97,7 +114,7 @@ TEST_F(KvProtocolPackTest, RetrieveProtocolPackMatchesProtocol)
     constexpr std::uint32_t kOffset = 0x00002000;
     constexpr bool kLr = false;
     constexpr std::uint32_t kLength = 0x00000003;
-    const std::string kKey = "retkez";
+    const std::string kKey = "retrieve_key";
 
     KvRetrieveRequest req;
     req.cid = kCid;
@@ -108,7 +125,7 @@ TEST_F(KvProtocolPackTest, RetrieveProtocolPackMatchesProtocol)
     req.offset = kOffset;
     req.lr = kLr;
     req.length = kLength;
-    req.key = kKey;
+    req.key = MakeCacheKey(kKey);
 
     KvRetrieveProtocol proto;
     std::vector<std::uint32_t> packed(proto.PackedSize(req) / sizeof(std::uint32_t), 0);
@@ -124,7 +141,7 @@ TEST_F(KvProtocolPackTest, RetrieveProtocolPackMatchesProtocol)
     expected[9] = (0x40 << 24) | ((kMrKey >> 8) & 0xFFFFFF);
     expected[10] = kOffset;
     expected[11] = (kLr ? (1U << 31) : 0) | (kLength & 0xFFFFFF);
-    std::memcpy(&expected[12], kKey.data(), std::min(kKey.size(), static_cast<std::size_t>(8)));
+    std::memcpy(&expected[12], kKey.data(), std::min(kKey.size(), kCacheKeySizeBytes));
 
     ASSERT_EQ(packed.size(), expected.size());
     for (std::size_t i = 0; i < expected.size(); ++i) {
@@ -145,14 +162,14 @@ TEST_F(KvProtocolPackTest, BatchStoreProtocolPackMatchesProtocol)
 
     KvBatchStoreEntry entry1;
     entry1.offset = 0x1000;
-    entry1.key = "bk_1";
+    entry1.key = MakeCacheKey("batch_key_1");
     entry1.buffer_addr = 0x0000AAAABBBBCCCCULL;
     entry1.mr_key = 0x11111111;
     entry1.length = 0x2000;
 
     KvBatchStoreEntry entry2;
     entry2.offset = 0x2000;
-    entry2.key = "bk_2";
+    entry2.key = MakeCacheKey("batch_key_2");
     entry2.buffer_addr = 0x0000DDDDEEEEFFFFULL;
     entry2.mr_key = 0x22222222;
     entry2.length = 0x3000;
@@ -187,16 +204,14 @@ TEST_F(KvProtocolPackTest, BatchStoreProtocolPackMatchesProtocol)
     expected[11] = kLr ? (1U << 31) : 0;
 
     expected[16] = entry1.offset;
-    std::memcpy(&expected[17], entry1.key.data(),
-                std::min(entry1.key.size(), static_cast<std::size_t>(8)));
+    std::memcpy(&expected[17], entry1.key.data(), std::min(entry1.key.size(), kCacheKeySizeBytes));
     expected[21] = entry1.buffer_addr & 0xFFFFFFFFULL;
     expected[22] = (entry1.buffer_addr >> 32) & 0xFFFFFFFFULL;
     expected[23] = ((entry1.mr_key & 0xFF) << 24) | (entry1.length & 0xFFFFFF);
     expected[24] = (0x40 << 24) | ((entry1.mr_key >> 8) & 0xFFFFFF);
 
     expected[25] = entry2.offset;
-    std::memcpy(&expected[26], entry2.key.data(),
-                std::min(entry2.key.size(), static_cast<std::size_t>(8)));
+    std::memcpy(&expected[26], entry2.key.data(), std::min(entry2.key.size(), kCacheKeySizeBytes));
     expected[30] = entry2.buffer_addr & 0xFFFFFFFFULL;
     expected[31] = (entry2.buffer_addr >> 32) & 0xFFFFFFFFULL;
     expected[32] = ((entry2.mr_key & 0xFF) << 24) | (entry2.length & 0xFFFFFF);
@@ -219,7 +234,7 @@ TEST_F(KvProtocolPackTest, BatchRetrieveProtocolPackMatchesProtocol)
 
     KvBatchRetrieveEntry entry;
     entry.offset = 0x3000;
-    entry.key = "br_key";
+    entry.key = MakeCacheKey("batch_ret_key");
     entry.buffer_addr = 0x0000777788889999ULL;
     entry.mr_key = 0x33333333;
     entry.length = 0x4000;
@@ -249,8 +264,7 @@ TEST_F(KvProtocolPackTest, BatchRetrieveProtocolPackMatchesProtocol)
     expected[9] = 0x01 << 24;
     expected[10] = 1;
     expected[16] = entry.offset;
-    std::memcpy(&expected[17], entry.key.data(),
-                std::min(entry.key.size(), static_cast<std::size_t>(8)));
+    std::memcpy(&expected[17], entry.key.data(), std::min(entry.key.size(), kCacheKeySizeBytes));
     expected[21] = entry.buffer_addr & 0xFFFFFFFFULL;
     expected[22] = (entry.buffer_addr >> 32) & 0xFFFFFFFFULL;
     expected[23] = ((entry.mr_key & 0xFF) << 24) | (entry.length & 0xFFFFFF);
@@ -277,7 +291,7 @@ TEST_F(KvProtocolPackTest, DeleteProtocolPackMatchesProtocol)
     req.response_mr_key = kRespMrKey;
     req.rflag = kRflag;
     req.batch_number = 2;
-    req.keys = {"dk_1", "dk_2"};
+    req.keys = {MakeCacheKey("delete_key_1"), MakeCacheKey("delete_key_2")};
 
     KvDeleteProtocol proto;
     std::vector<std::uint32_t> packed(proto.PackedSize(req) / sizeof(std::uint32_t), 0);
@@ -294,9 +308,9 @@ TEST_F(KvProtocolPackTest, DeleteProtocolPackMatchesProtocol)
     expected[9] = 0x01 << 24;
     expected[10] = 2;
     std::memcpy(&expected[16], req.keys[0].data(),
-                std::min(req.keys[0].size(), static_cast<std::size_t>(8)));
+                std::min(req.keys[0].size(), kCacheKeySizeBytes));
     std::memcpy(&expected[20], req.keys[1].data(),
-                std::min(req.keys[1].size(), static_cast<std::size_t>(8)));
+                std::min(req.keys[1].size(), kCacheKeySizeBytes));
 
     ASSERT_EQ(packed.size(), expected.size());
     for (std::size_t i = 0; i < expected.size(); ++i) {
@@ -321,7 +335,7 @@ TEST_F(KvProtocolPackTest, ExistProtocolPackMatchesProtocol)
     req.rflag = kRflag;
     req.sc = kSc;
     req.batch_number = 1;
-    req.keys = {"exkey"};
+    req.keys = {MakeCacheKey("exist_key")};
 
     KvExistProtocol proto;
     std::vector<std::uint32_t> packed(proto.PackedSize(req) / sizeof(std::uint32_t), 0);
@@ -338,7 +352,7 @@ TEST_F(KvProtocolPackTest, ExistProtocolPackMatchesProtocol)
     expected[9] = 0x01 << 24;
     expected[10] = 1 | (kSc ? (1U << 16) : 0);
     std::memcpy(&expected[16], req.keys[0].data(),
-                std::min(req.keys[0].size(), static_cast<std::size_t>(8)));
+                std::min(req.keys[0].size(), kCacheKeySizeBytes));
 
     ASSERT_EQ(packed.size(), expected.size());
     for (std::size_t i = 0; i < expected.size(); ++i) {
@@ -422,7 +436,7 @@ TEST_F(KvProtocolPackTest, StoreValidateRequestRejectsZeroBufferAddr)
     req.buffer_length = 512;
     req.offset = 0;
     req.length = 1;
-    req.key = "key";
+    req.key = MakeCacheKey("key");
 
     KvStoreProtocol proto;
     std::vector<std::uint32_t> target(16, 0);
@@ -438,7 +452,7 @@ TEST_F(KvProtocolPackTest, StoreValidateRequestRejectsZeroBufferLength)
     req.buffer_length = 0;
     req.offset = 0;
     req.length = 1;
-    req.key = "key";
+    req.key = MakeCacheKey("key");
 
     KvStoreProtocol proto;
     std::vector<std::uint32_t> target(16, 0);
@@ -454,7 +468,7 @@ TEST_F(KvProtocolPackTest, StoreValidateRequestRejectsUnalignedBufferLength)
     req.buffer_length = 100;
     req.offset = 0;
     req.length = 1;
-    req.key = "key";
+    req.key = MakeCacheKey("key");
 
     KvStoreProtocol proto;
     std::vector<std::uint32_t> target(16, 0);
@@ -463,37 +477,20 @@ TEST_F(KvProtocolPackTest, StoreValidateRequestRejectsUnalignedBufferLength)
     EXPECT_NE(status.message.find("512B aligned"), std::string::npos);
 }
 
-TEST_F(KvProtocolPackTest, StoreValidateRequestRejectsEmptyKey)
+TEST_F(KvProtocolPackTest, StoreValidateRequestRejectsAllZeroKey)
 {
     KvStoreRequest req;
     req.buffer_addr = 0x1000;
     req.buffer_length = 512;
     req.offset = 0;
     req.length = 1;
-    req.key = "";
+    req.key = CacheKey{};
 
     KvStoreProtocol proto;
     std::vector<std::uint32_t> target(16, 0);
     auto status = proto.PackSqe(req, target.data());
     EXPECT_FALSE(status.ok());
-    EXPECT_NE(status.message.find("key is empty"), std::string::npos);
-}
-
-TEST_F(KvProtocolPackTest, StoreValidateRequestRejectsKeyTooLong)
-{
-    KvStoreRequest req;
-    req.buffer_addr = 0x1000;
-    req.buffer_length = 512;
-    req.offset = 0;
-    req.length = 1;
-    req.key = "this_key_is_way_too_long_for_16_bytes";
-
-    KvStoreProtocol proto;
-    std::vector<std::uint32_t> target(16, 0);
-    auto status = proto.PackSqe(req, target.data());
-    EXPECT_FALSE(status.ok());
-    EXPECT_NE(status.message.find("key size("), std::string::npos);
-    EXPECT_NE(status.message.find("exceeds 8 bytes"), std::string::npos);
+    EXPECT_NE(status.message.find("all zeros"), std::string::npos);
 }
 
 TEST_F(KvProtocolPackTest, StoreValidateRequestRejectsDtypeOverflow)
@@ -503,7 +500,7 @@ TEST_F(KvProtocolPackTest, StoreValidateRequestRejectsDtypeOverflow)
     req.buffer_length = 512;
     req.offset = 0;
     req.length = 1;
-    req.key = "key";
+    req.key = MakeCacheKey("key");
     req.dtype = 8;
 
     KvStoreProtocol proto;
@@ -521,7 +518,7 @@ TEST_F(KvProtocolPackTest, StoreValidateRequestRejectsDspecOverflow)
     req.buffer_length = 512;
     req.offset = 0;
     req.length = 1;
-    req.key = "key";
+    req.key = MakeCacheKey("key");
     req.dspec = 32;
 
     KvStoreProtocol proto;
@@ -539,7 +536,7 @@ TEST_F(KvProtocolPackTest, StoreValidateRequestAcceptsValidRequest)
     req.buffer_length = 512;
     req.offset = 0;
     req.length = 1;
-    req.key = "vkey";
+    req.key = MakeCacheKey("valid_key");
     req.dtype = 1;
     req.dspec = 5;
 
@@ -569,7 +566,7 @@ TEST_F(KvProtocolPackTest, BatchStoreValidateRequestRejectsRflagWithZeroResponse
     req.rflag = true;
     req.response_buffer_addr = 0;
     req.entries.resize(1);
-    req.entries[0].key = "key";
+    req.entries[0].key = MakeCacheKey("key");
 
     KvBatchStoreProtocol proto;
     std::vector<std::uint32_t> target(64, 0);
@@ -583,7 +580,7 @@ TEST_F(KvProtocolPackTest, BatchStoreValidateRequestRejectsUnalignedLength)
     KvBatchStoreRequest req;
     req.batch_number = 1;
     req.entries.resize(1);
-    req.entries[0].key = "key";
+    req.entries[0].key = MakeCacheKey("key");
     req.entries[0].offset = 0;
     req.entries[0].buffer_addr = 0x1000;
     req.entries[0].length = 100;
@@ -595,12 +592,12 @@ TEST_F(KvProtocolPackTest, BatchStoreValidateRequestRejectsUnalignedLength)
     EXPECT_NE(status.message.find("512B aligned"), std::string::npos);
 }
 
-TEST_F(KvProtocolPackTest, BatchStoreValidateRequestRejectsKeyTooLong)
+TEST_F(KvProtocolPackTest, BatchStoreValidateRequestRejectsAllZeroKey)
 {
     KvBatchStoreRequest req;
     req.batch_number = 1;
     req.entries.resize(1);
-    req.entries[0].key = "toolongkey9";
+    req.entries[0].key = CacheKey{};
     req.entries[0].offset = 0;
     req.entries[0].buffer_addr = 0x1000;
     req.entries[0].length = 512;
@@ -609,8 +606,7 @@ TEST_F(KvProtocolPackTest, BatchStoreValidateRequestRejectsKeyTooLong)
     std::vector<std::uint32_t> target(64, 0);
     auto status = proto.PackSqe(req, target.data());
     EXPECT_FALSE(status.ok());
-    EXPECT_NE(status.message.find("key size("), std::string::npos);
-    EXPECT_NE(status.message.find("exceeds 8 bytes"), std::string::npos);
+    EXPECT_NE(status.message.find("all zeros"), std::string::npos);
 }
 
 TEST_F(KvProtocolPackTest, KeepAliveValidateRequestRejectsRflagWithZeroResponseAddr)
@@ -747,7 +743,7 @@ TEST_F(KvProtocolPackTest, RetrieveValidateRequestAcceptsValid)
     req.buffer_length = 1024;
     req.offset = 512;
     req.length = 512;
-    req.key = "retkey";
+    req.key = MakeCacheKey("retrieve_key");
 
     KvRetrieveProtocol proto;
     std::vector<std::uint32_t> target(16, 0);
@@ -762,7 +758,7 @@ TEST_F(KvProtocolPackTest, RetrieveValidateRequestRejectsZeroBufferAddr)
     req.buffer_length = 1024;
     req.offset = 0;
     req.length = 1;
-    req.key = "key";
+    req.key = MakeCacheKey("key");
 
     KvRetrieveProtocol proto;
     std::vector<std::uint32_t> target(16, 0);
@@ -778,7 +774,7 @@ TEST_F(KvProtocolPackTest, RetrieveValidateRequestRejectsUnalignedBufferLength)
     req.buffer_length = 100;
     req.offset = 512;
     req.length = 512;
-    req.key = "retkey";
+    req.key = MakeCacheKey("retrieve_key");
 
     KvRetrieveProtocol proto;
     std::vector<std::uint32_t> target(16, 0);
@@ -787,21 +783,20 @@ TEST_F(KvProtocolPackTest, RetrieveValidateRequestRejectsUnalignedBufferLength)
     EXPECT_NE(status.message.find("512B aligned"), std::string::npos);
 }
 
-TEST_F(KvProtocolPackTest, RetrieveValidateRequestRejectsKeyTooLong)
+TEST_F(KvProtocolPackTest, RetrieveValidateRequestRejectsAllZeroKey)
 {
     KvRetrieveRequest req;
     req.buffer_addr = 0x2000;
     req.buffer_length = 1024;
     req.offset = 512;
     req.length = 512;
-    req.key = "toolongkey9";
+    req.key = CacheKey{};
 
     KvRetrieveProtocol proto;
     std::vector<std::uint32_t> target(16, 0);
     auto status = proto.PackSqe(req, target.data());
     EXPECT_FALSE(status.ok());
-    EXPECT_NE(status.message.find("key size("), std::string::npos);
-    EXPECT_NE(status.message.find("exceeds 8 bytes"), std::string::npos);
+    EXPECT_NE(status.message.find("all zeros"), std::string::npos);
 }
 
 TEST_F(KvProtocolPackTest, BatchRetrieveValidateRequestAcceptsValid)
@@ -809,11 +804,11 @@ TEST_F(KvProtocolPackTest, BatchRetrieveValidateRequestAcceptsValid)
     KvBatchRetrieveRequest req;
     req.batch_number = 2;
     req.entries.resize(2);
-    req.entries[0].key = "key1";
+    req.entries[0].key = MakeCacheKey("key1");
     req.entries[0].offset = 0;
     req.entries[0].buffer_addr = 0x1000;
     req.entries[0].length = 512;
-    req.entries[1].key = "key2";
+    req.entries[1].key = MakeCacheKey("key2");
     req.entries[1].offset = 512;
     req.entries[1].buffer_addr = 0x2000;
     req.entries[1].length = 512;
@@ -842,7 +837,7 @@ TEST_F(KvProtocolPackTest, BatchRetrieveValidateRequestRejectsUnalignedLength)
     KvBatchRetrieveRequest req;
     req.batch_number = 1;
     req.entries.resize(1);
-    req.entries[0].key = "key";
+    req.entries[0].key = MakeCacheKey("key");
     req.entries[0].offset = 0;
     req.entries[0].buffer_addr = 0x1000;
     req.entries[0].length = 100;
@@ -854,12 +849,12 @@ TEST_F(KvProtocolPackTest, BatchRetrieveValidateRequestRejectsUnalignedLength)
     EXPECT_NE(status.message.find("512B aligned"), std::string::npos);
 }
 
-TEST_F(KvProtocolPackTest, BatchRetrieveValidateRequestRejectsKeyTooLong)
+TEST_F(KvProtocolPackTest, BatchRetrieveValidateRequestRejectsAllZeroKey)
 {
     KvBatchRetrieveRequest req;
     req.batch_number = 1;
     req.entries.resize(1);
-    req.entries[0].key = "toolongkey9";
+    req.entries[0].key = CacheKey{};
     req.entries[0].offset = 0;
     req.entries[0].buffer_addr = 0x1000;
     req.entries[0].length = 512;
@@ -868,15 +863,14 @@ TEST_F(KvProtocolPackTest, BatchRetrieveValidateRequestRejectsKeyTooLong)
     std::vector<std::uint32_t> target(64, 0);
     auto status = proto.PackSqe(req, target.data());
     EXPECT_FALSE(status.ok());
-    EXPECT_NE(status.message.find("key size("), std::string::npos);
-    EXPECT_NE(status.message.find("exceeds 8 bytes"), std::string::npos);
+    EXPECT_NE(status.message.find("all zeros"), std::string::npos);
 }
 
 TEST_F(KvProtocolPackTest, DeleteValidateRequestAcceptsValid)
 {
     KvDeleteRequest req;
     req.batch_number = 2;
-    req.keys = {"key1", "key2"};
+    req.keys = {MakeCacheKey("key1"), MakeCacheKey("key2")};
 
     KvDeleteProtocol proto;
     std::vector<std::uint32_t> target(32, 0);
@@ -884,38 +878,24 @@ TEST_F(KvProtocolPackTest, DeleteValidateRequestAcceptsValid)
     EXPECT_TRUE(status.ok()) << status.message;
 }
 
-TEST_F(KvProtocolPackTest, DeleteValidateRequestRejectsEmptyKey)
+TEST_F(KvProtocolPackTest, DeleteValidateRequestRejectsAllZeroKey)
 {
     KvDeleteRequest req;
     req.batch_number = 2;
-    req.keys = {"key1", ""};
+    req.keys = {MakeCacheKey("key1"), CacheKey{}};
 
     KvDeleteProtocol proto;
     std::vector<std::uint32_t> target(32, 0);
     auto status = proto.PackSqe(req, target.data());
     EXPECT_FALSE(status.ok());
-    EXPECT_NE(status.message.find("is empty"), std::string::npos);
-}
-
-TEST_F(KvProtocolPackTest, DeleteValidateRequestRejectsKeyTooLong)
-{
-    KvDeleteRequest req;
-    req.batch_number = 2;
-    req.keys = {"key1", "toolongkey9"};
-
-    KvDeleteProtocol proto;
-    std::vector<std::uint32_t> target(32, 0);
-    auto status = proto.PackSqe(req, target.data());
-    EXPECT_FALSE(status.ok());
-    EXPECT_NE(status.message.find("size("), std::string::npos);
-    EXPECT_NE(status.message.find("exceeds 8 bytes"), std::string::npos);
+    EXPECT_NE(status.message.find("all zeros"), std::string::npos);
 }
 
 TEST_F(KvProtocolPackTest, ExistValidateRequestAcceptsValid)
 {
     KvExistRequest req;
     req.batch_number = 1;
-    req.keys = {"exkey"};
+    req.keys = {MakeCacheKey("exist_key")};
 
     KvExistProtocol proto;
     std::vector<std::uint32_t> target(32, 0);
@@ -927,7 +907,7 @@ TEST_F(KvProtocolPackTest, ExistValidateRequestRejectsBatchNumberOverflow)
 {
     KvExistRequest req;
     req.batch_number = 300;
-    req.keys.resize(300, "key");
+    req.keys.resize(300, MakeCacheKey("key"));
 
     KvExistProtocol proto;
     std::vector<std::uint32_t> target(16, 0);
@@ -936,18 +916,17 @@ TEST_F(KvProtocolPackTest, ExistValidateRequestRejectsBatchNumberOverflow)
     EXPECT_NE(status.message.find("must be in range"), std::string::npos);
 }
 
-TEST_F(KvProtocolPackTest, ExistValidateRequestRejectsKeyTooLong)
+TEST_F(KvProtocolPackTest, ExistValidateRequestRejectsAllZeroKey)
 {
     KvExistRequest req;
     req.batch_number = 1;
-    req.keys = {"toolongkey9"};
+    req.keys = {CacheKey{}};
 
     KvExistProtocol proto;
     std::vector<std::uint32_t> target(32, 0);
     auto status = proto.PackSqe(req, target.data());
     EXPECT_FALSE(status.ok());
-    EXPECT_NE(status.message.find("size("), std::string::npos);
-    EXPECT_NE(status.message.find("exceeds 8 bytes"), std::string::npos);
+    EXPECT_NE(status.message.find("all zeros"), std::string::npos);
 }
 
 TEST_F(KvProtocolPackTest, StoreValidateRequestRejectsZeroLength)
@@ -957,7 +936,7 @@ TEST_F(KvProtocolPackTest, StoreValidateRequestRejectsZeroLength)
     req.buffer_length = 512;
     req.offset = 0;
     req.length = 0;
-    req.key = "key";
+    req.key = MakeCacheKey("key");
 
     KvStoreProtocol proto;
     std::vector<std::uint32_t> target(16, 0);
@@ -973,7 +952,7 @@ TEST_F(KvProtocolPackTest, StoreValidateRequestRejectsUnalignedOffset)
     req.buffer_length = 512;
     req.offset = 100;
     req.length = 1;
-    req.key = "key";
+    req.key = MakeCacheKey("key");
 
     KvStoreProtocol proto;
     std::vector<std::uint32_t> target(16, 0);
@@ -1001,7 +980,7 @@ TEST_F(ProtocolManagerTest, PackStoreRequest)
     req.mr_key = 0xABCD;
     req.offset = 0;
     req.length = 1;
-    req.key = "test_key";
+    req.key = MakeCacheKey("test_key");
 
     std::vector<std::uint32_t> target(16, 0);
     auto status = mgr_->PackRequest(target.data(), KvOpcode::Store, req);
@@ -1024,11 +1003,11 @@ TEST_F(ProtocolManagerTest, PackBatchStoreRequest)
     req.rflag = true;
     req.batch_number = 2;
     req.entries.resize(2);
-    req.entries[0].key = "key1";
+    req.entries[0].key = MakeCacheKey("key1");
     req.entries[0].offset = 0;
     req.entries[0].buffer_addr = 0x3000;
     req.entries[0].length = 512;
-    req.entries[1].key = "key2";
+    req.entries[1].key = MakeCacheKey("key2");
     req.entries[1].offset = 512;
     req.entries[1].buffer_addr = 0x4000;
     req.entries[1].length = 512;
@@ -1065,7 +1044,7 @@ TEST_F(ProtocolManagerTest, PackRequestRejectsInvalidRequest)
     req.buffer_length = 512;
     req.offset = 0;
     req.length = 1;
-    req.key = "key";
+    req.key = MakeCacheKey("key");
 
     std::vector<std::uint32_t> target(16, 0);
     auto status = mgr_->PackRequest(target.data(), KvOpcode::Store, req);
@@ -1148,7 +1127,7 @@ TEST_F(ProtocolManagerTest, UnpackStoreReturnsUnsupported)
 TEST_F(ProtocolManagerTest, GetPackedSizeReturnsCorrectValue)
 {
     KvStoreRequest store_req;
-    store_req.key = "key";
+    store_req.key = MakeCacheKey("key");
     EXPECT_EQ(mgr_->GetPackedSize(KvOpcode::Store, store_req), 64);
 
     KvBatchStoreRequest batch_req;
@@ -1167,11 +1146,11 @@ TEST_F(ProtocolManagerTest, EndToEndPackAndUnpack)
     req.response_mr_key = 0x3333;
     req.rflag = true;
     req.entries.resize(2);
-    req.entries[0].key = "key_a";
+    req.entries[0].key = MakeCacheKey("key_a");
     req.entries[0].offset = 0;
     req.entries[0].buffer_addr = 0x9000;
     req.entries[0].length = 512;
-    req.entries[1].key = "key_b";
+    req.entries[1].key = MakeCacheKey("key_b");
     req.entries[1].offset = 512;
     req.entries[1].buffer_addr = 0xA000;
     req.entries[1].length = 512;
@@ -1223,7 +1202,7 @@ protected:
         req.offset = 0x1000;
         req.lr = true;
         req.length = 2;
-        req.key = "tk_01";
+        req.key = MakeCacheKey("test_key_01");
         KvStoreProtocol proto;
         std::vector<std::uint32_t> buf(16, 0);
         auto s = proto.PackSqe(req, buf.data());
@@ -1242,7 +1221,7 @@ protected:
         req.offset = 0x2000;
         req.lr = false;
         req.length = 3;
-        req.key = "retkey";
+        req.key = MakeCacheKey("retrieve_key");
         KvRetrieveProtocol proto;
         std::vector<std::uint32_t> buf(16, 0);
         auto s = proto.PackSqe(req, buf.data());
@@ -1265,7 +1244,7 @@ protected:
         for (std::uint16_t i = 0; i < batch_n; ++i) {
             KvBatchStoreEntry e;
             e.offset = (i + 1) * 512;
-            e.key = "bs_key_" + std::to_string(i);
+            e.key = MakeCacheKey(static_cast<std::uint64_t>(0xB500 + i));
             e.buffer_addr = 0xBBBB0000ULL + i * 0x1000;
             e.mr_key = 0x2222 + i;
             e.length = 512;
@@ -1293,7 +1272,7 @@ protected:
         for (std::uint16_t i = 0; i < batch_n; ++i) {
             KvBatchRetrieveEntry e;
             e.offset = (i + 1) * 512;
-            e.key = "br_key_" + std::to_string(i);
+            e.key = MakeCacheKey(static_cast<std::uint64_t>(0xB600 + i));
             e.buffer_addr = 0xDDDD0000ULL + i * 0x1000;
             e.mr_key = 0x4444 + i;
             e.length = 512;
@@ -1317,7 +1296,7 @@ protected:
         req.rflag = rflag;
         req.batch_number = batch_n;
         for (std::uint16_t i = 0; i < batch_n; ++i) {
-            req.keys.push_back("dk_" + std::to_string(i));
+            req.keys.push_back(MakeCacheKey(static_cast<std::uint64_t>(0xD000 + i)));
         }
         KvDeleteProtocol proto;
         std::size_t sz = proto.PackedSize(req) / sizeof(std::uint32_t);
@@ -1339,7 +1318,7 @@ protected:
         req.sc = sc;
         req.batch_number = batch_n;
         for (std::uint16_t i = 0; i < batch_n; ++i) {
-            req.keys.push_back("ex_key_" + std::to_string(i));
+            req.keys.push_back(MakeCacheKey(static_cast<std::uint64_t>(0xE000 + i)));
         }
         KvExistProtocol proto;
         std::size_t sz = proto.PackedSize(req) / sizeof(std::uint32_t);

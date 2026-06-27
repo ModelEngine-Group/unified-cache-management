@@ -15,14 +15,14 @@ LOG="${WORK_DIR}/command.log"
 
 write_fake_backend_config "${CONFIG}" "${STORE}" "${OUTPUT}" "1"
 
-run_success "${LOG}" "${KV_TEST}" store --configpath "${CONFIG}" --key fb-single --check
-run_success "${LOG}" "${KV_TEST}" exist --configpath "${CONFIG}" --key fb-single
+run_success "${LOG}" "${KV_TEST}" store --configpath "${CONFIG}" --key fb1 --check
+run_success "${LOG}" "${KV_TEST}" exist --configpath "${CONFIG}" --key fb1
 assert_contains "${LOG}" "result=exists"
 
-run_success "${LOG}" "${KV_TEST}" retrieve --configpath "${CONFIG}" --key fb-single --check
-run_success "${LOG}" "${KV_TEST}" delete --configpath "${CONFIG}" --key fb-single --check
+run_success "${LOG}" "${KV_TEST}" retrieve --configpath "${CONFIG}" --key fb1 --check
+run_success "${LOG}" "${KV_TEST}" delete --configpath "${CONFIG}" --key fb1 --check
 
-run_success "${LOG}" "${KV_TEST}" exist --configpath "${CONFIG}" --key fb-single
+run_success "${LOG}" "${KV_TEST}" exist --configpath "${CONFIG}" --key fb1
 assert_contains "${LOG}" "result=missing"
 
 print_success "fake_backend single ASU flow passed"
