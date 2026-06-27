@@ -1081,6 +1081,10 @@ def test_vllm_dashboard_uses_combined_prefix_cache_hit_rate_breakdown():
     assert panel["fieldConfig"]["defaults"]["unit"] == "percentunit"
     assert panel["fieldConfig"]["defaults"]["min"] == 0
     assert panel["fieldConfig"]["defaults"]["max"] == 1
+    assert panel["fieldConfig"]["defaults"]["custom"]["stacking"] == {
+        "group": "A",
+        "mode": "normal",
+    }
     assert panel["gridPos"] == {"h": 8, "w": 24, "x": 0, "y": 24}
     assert len(panel["targets"]) == 2
 
@@ -1088,19 +1092,18 @@ def test_vllm_dashboard_uses_combined_prefix_cache_hit_rate_breakdown():
         (
             "GPU Prefix Cache",
             "vllm:prefix_cache_hits_total",
-            "vllm:prefix_cache_queries_total",
         ),
         (
             "Connector Prefix Cache",
             "vllm:external_prefix_cache_hits_total",
-            "vllm:external_prefix_cache_queries_total",
         ),
     ]
-    for target, (legend, hits, queries) in zip(panel["targets"], expected):
+    for target, (legend, hits) in zip(panel["targets"], expected):
         assert target["legendFormat"] == legend
         expr = target["expr"]
         assert hits in expr
-        assert queries in expr
+        assert "vllm:prefix_cache_queries_total" in expr
+        assert "vllm:external_prefix_cache_queries_total" not in expr
         assert 'model_name="$model_name"' in expr
         assert 'job=~"$job"' in expr
         assert 'instance="$instance"' in expr
