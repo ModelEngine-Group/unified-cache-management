@@ -25,6 +25,7 @@
 #include <acl/acl.h>
 #include <algorithm>
 #include <chrono>
+#include <cstddef>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
@@ -62,18 +63,18 @@ KvOpcode RequestOpcode(const std::uint32_t* request)
     return static_cast<KvOpcode>(request[0] & 0xFF);
 }
 
-std::string ReadKey(const std::uint32_t* data)
+CacheKey ReadKey(const std::uint32_t* data)
 {
-    char key[17] = {};
-    std::memcpy(key, data, 16);
-    const auto keyLen = std::find(key, key + 16, '\0') - key;
-    return std::string(key, static_cast<std::size_t>(keyLen));
+    CacheKey key{};
+    std::memcpy(key.data(), data, kCacheKeySizeBytes);
+    return key;
 }
 
-std::string KeyFileName(const std::string& key)
+std::string KeyFileName(const CacheKey& key)
 {
     std::uint64_t hash = 1469598103934665603ULL;
-    for (unsigned char ch : key) {
+    for (auto byte : key) {
+        const auto ch = std::to_integer<unsigned char>(byte);
         hash ^= ch;
         hash *= 1099511628211ULL;
     }
@@ -89,12 +90,12 @@ std::filesystem::path AsuRoot(const FakeTransProviderConfig& config, AsuId asuId
 }
 
 std::filesystem::path KeyPath(const FakeTransProviderConfig& config, AsuId asuId,
-                              const std::string& key)
+                              const CacheKey& key)
 {
     return AsuRoot(config, asuId) / KeyFileName(key);
 }
 
-bool StoreBytes(const FakeTransProviderConfig& config, AsuId asuId, const std::string& key,
+bool StoreBytes(const FakeTransProviderConfig& config, AsuId asuId, const CacheKey& key,
                 std::uint64_t addr, std::uint32_t length)
 {
     std::vector<char> buffer(length);
@@ -104,28 +105,28 @@ bool StoreBytes(const FakeTransProviderConfig& config, AsuId asuId, const std::s
         UC_ERROR(
             "ASU fake backend device-to-host copy failed asuId={} key={} addr={} length={} "
             "ret={}.",
-            asuId, key, addr, length, ret);
+            asuId, CacheKeyToHex(key), addr, length, ret);
         return false;
     }
 
     std::filesystem::create_directories(AsuRoot(config, asuId));
     std::ofstream output(KeyPath(config, asuId, key), std::ios::binary | std::ios::trunc);
     if (!output) {
-        UC_ERROR("ASU fake backend failed to open store file asuId={} key={} path={}.", asuId, key,
-                 KeyPath(config, asuId, key).string());
+        UC_ERROR("ASU fake backend failed to open store file asuId={} key={} path={}.", asuId,
+                 CacheKeyToHex(key), KeyPath(config, asuId, key).string());
         return false;
     }
     output.write(buffer.data(), static_cast<std::streamsize>(buffer.size()));
     return output.good();
 }
 
-bool LoadBytes(const FakeTransProviderConfig& config, AsuId asuId, const std::string& key,
+bool LoadBytes(const FakeTransProviderConfig& config, AsuId asuId, const CacheKey& key,
                std::uint64_t addr, std::uint32_t length)
 {
     std::ifstream input(KeyPath(config, asuId, key), std::ios::binary);
     if (!input) {
-        UC_ERROR("ASU fake backend failed to open load file asuId={} key={} path={}.", asuId, key,
-                 KeyPath(config, asuId, key).string());
+        UC_ERROR("ASU fake backend failed to open load file asuId={} key={} path={}.", asuId,
+                 CacheKeyToHex(key), KeyPath(config, asuId, key).string());
         return false;
     }
     std::vector<char> buffer(length, 0);
@@ -140,20 +141,20 @@ bool LoadBytes(const FakeTransProviderConfig& config, AsuId asuId, const std::st
         UC_ERROR(
             "ASU fake backend host-to-device copy failed asuId={} key={} addr={} length={} "
             "ret={}.",
-            asuId, key, addr, length, ret);
+            asuId, CacheKeyToHex(key), addr, length, ret);
         return false;
     }
     return true;
 }
 
-bool DeleteKey(const FakeTransProviderConfig& config, AsuId asuId, const std::string& key)
+bool DeleteKey(const FakeTransProviderConfig& config, AsuId asuId, const CacheKey& key)
 {
     std::error_code errorCode;
     std::filesystem::remove(KeyPath(config, asuId, key), errorCode);
     return !errorCode;
 }
 
-bool ExistsKey(const FakeTransProviderConfig& config, AsuId asuId, const std::string& key)
+bool ExistsKey(const FakeTransProviderConfig& config, AsuId asuId, const CacheKey& key)
 {
     std::error_code errorCode;
     return std::filesystem::exists(KeyPath(config, asuId, key), errorCode);
@@ -187,7 +188,7 @@ void PackResultBuffer1Bit(std::uint32_t* resultData, const std::vector<std::uint
 }
 
 struct BatchEntry {
-    std::string key;
+    CacheKey key{};
     std::uint64_t bufferAddr{0};
     std::uint32_t length{0};
 };
@@ -207,9 +208,9 @@ std::vector<BatchEntry> ReadBatchEntries(const std::uint32_t* request, std::uint
     return entries;
 }
 
-std::vector<std::string> ReadKeyEntries(const std::uint32_t* request, std::uint16_t batchNumber)
+std::vector<CacheKey> ReadKeyEntries(const std::uint32_t* request, std::uint16_t batchNumber)
 {
-    std::vector<std::string> keys;
+    std::vector<CacheKey> keys;
     keys.reserve(batchNumber);
     for (std::uint16_t index = 0; index < batchNumber; ++index) {
         const auto* entry = request + kSqeDwordCount + index * kKeyEntryDwordCount;

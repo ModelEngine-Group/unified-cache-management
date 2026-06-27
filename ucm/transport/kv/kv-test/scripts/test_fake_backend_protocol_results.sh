@@ -17,17 +17,17 @@ TRACE="${WORK_DIR}/fake-backend.trace"
 write_fake_backend_config "${CONFIG}" "${STORE}" "${OUTPUT}" "1"
 export KV_TEST_FAKE_BACKEND_TRACE="${TRACE}"
 
-run_success "${LOG}" "${KV_TEST}" store --configpath "${CONFIG}" --key proto-existing
+run_success "${LOG}" "${KV_TEST}" store --configpath "${CONFIG}" --key pexist
 
 >"${TRACE}"
-run_success "${LOG}" "${KV_TEST}" exist --configpath "${CONFIG}" --key proto-existing
+run_success "${LOG}" "${KV_TEST}" exist --configpath "${CONFIG}" --key pexist
 assert_contains "${LOG}" "result=exists"
 assert_contains "${TRACE}" "opcode=Exist"
 assert_contains "${TRACE}" "status=0x000"
 assert_contains "${TRACE}" "result_buffer=0"
 
 >"${TRACE}"
-run_success "${LOG}" "${KV_TEST}" exist --configpath "${CONFIG}" --keys proto-existing,proto-missing
+run_success "${LOG}" "${KV_TEST}" exist --configpath "${CONFIG}" --keys pexist,pmiss
 assert_contains "${LOG}" "total=2"
 assert_contains "${LOG}" "exists=1"
 assert_contains "${LOG}" "missing=1"
@@ -36,13 +36,13 @@ assert_contains "${TRACE}" "status=0x732"
 assert_contains "${TRACE}" "result_buffer=1"
 
 >"${TRACE}"
-run_failure "${LOG}" "${KV_TEST}" batch-retrieve --configpath "${CONFIG}" --keys proto-existing,proto-missing --batch-size 2
+run_failure "${LOG}" "${KV_TEST}" batch-retrieve --configpath "${CONFIG}" --keys pexist,pmiss --batch-size 2
 assert_contains "${TRACE}" "opcode=BatchRetrieve"
 assert_contains "${TRACE}" "status=0x732"
 assert_contains "${TRACE}" "result_buffer=1"
 
 >"${TRACE}"
-run_success "${LOG}" "${KV_TEST}" delete --configpath "${CONFIG}" --keys proto-existing,proto-missing
+run_success "${LOG}" "${KV_TEST}" delete --configpath "${CONFIG}" --keys pexist,pmiss
 assert_contains "${TRACE}" "opcode=Delete"
 assert_contains "${TRACE}" "status=0x000"
 assert_contains "${TRACE}" "result_buffer=0"

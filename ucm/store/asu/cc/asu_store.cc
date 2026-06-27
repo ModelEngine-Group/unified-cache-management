@@ -27,6 +27,7 @@
 #include <any>
 #include <cctype>
 #include <cstddef>
+#include <cstring>
 #include <functional>
 #include <memory>
 #include <numeric>
@@ -55,13 +56,11 @@ std::uint64_t HashAsuKey(const Detail::BlockId& block)
     return static_cast<std::uint64_t>(hasher(block));
 }
 
-std::string MakeAsuKey(const Detail::BlockId& block)
+UC::ASU::CacheKey MakeAsuKey(const Detail::BlockId& block)
 {
     const auto hash = HashAsuKey(block);
-    std::string key(sizeof(hash), '\0');
-    for (std::size_t i = 0; i < key.size(); ++i) {
-        key[i] = static_cast<char>((hash >> (i * 8)) & 0xff);
-    }
+    UC::ASU::CacheKey key{};
+    std::memcpy(key.data(), &hash, key.size());
     return key;
 }
 

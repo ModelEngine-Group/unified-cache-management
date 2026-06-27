@@ -95,7 +95,7 @@ write_fake_backend_config() {
             echo "asu_info.${id}=protocol=TCP,local.comm_id=127.0.0.1,port=$((19000 + id)),local.phy_device_id=0"
         done
         echo
-        echo "kv.key_prefix=kv-test-fake-key-"
+        echo "kv.key_prefix=k"
         echo "kv.seed=20260530"
         echo "kv.value_size=4096"
         echo "kv.count=16"

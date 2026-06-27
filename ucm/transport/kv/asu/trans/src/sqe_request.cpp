@@ -230,9 +230,9 @@ KvBatchRetrieveRequest BuildBatchRetrieveRequest(
     return request;
 }
 
-std::vector<std::string> CopyKeys(const BatchView<CacheKey>& keys)
+std::vector<CacheKey> CopyKeys(const BatchView<CacheKey>& keys)
 {
-    std::vector<std::string> requestKeys;
+    std::vector<CacheKey> requestKeys;
     requestKeys.reserve(keys.size);
     for (std::size_t index = 0; index < keys.size; ++index) {
         requestKeys.emplace_back(keys[index]);

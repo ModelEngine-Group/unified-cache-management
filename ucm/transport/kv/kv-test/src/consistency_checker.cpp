@@ -1,8 +1,10 @@
 ﻿#include "kv_test/consistency_checker.h"
+#include <string>
 #include "kv_test/key_value_generator.h"
 
 namespace UC::KVTest {
 
+using UC::ASU::CacheKeyToHex;
 namespace {
 
 constexpr int kExitInvalidArgument = 1;
@@ -43,9 +45,9 @@ std::string AsuStatusCodeToString(UC::ASU::StatusCode code)
 Status ConsistencyError(const std::string& operation, const UC::ASU::CacheKey& key,
                         const std::string& reason)
 {
-    return Status::Error(
-        kExitConsistencyFailed,
-        "consistency check failed: operation=" + operation + " key=" + key + " reason=" + reason);
+    return Status::Error(kExitConsistencyFailed,
+                         "consistency check failed: operation=" + operation +
+                             " key=" + CacheKeyToHex(key) + " reason=" + reason);
 }
 
 Status ValidateTaskForConsistency(const CommandResult& result, const std::string& operation,
@@ -99,7 +101,7 @@ Status DigestValue(const std::vector<std::uint8_t>& value, std::string& digest)
 void SetValueComparison(ConsistencySummary& summary, const UC::ASU::CacheKey& key,
                         const std::string& expectedDigest, const std::string& actualDigest)
 {
-    summary.key = key;
+    summary.key = CacheKeyToHex(key);
     summary.expected = "digest=" + expectedDigest;
     summary.actual = "digest=" + actualDigest;
 }
@@ -107,7 +109,7 @@ void SetValueComparison(ConsistencySummary& summary, const UC::ASU::CacheKey& ke
 void SetExistComparison(ConsistencySummary& summary, const UC::ASU::CacheKey& key,
                         bool expectedExists, bool actualExists)
 {
-    summary.key = key;
+    summary.key = CacheKeyToHex(key);
     summary.expected = expectedExists ? "exists=true" : "exists=false";
     summary.actual = actualExists ? "exists=true" : "exists=false";
 }

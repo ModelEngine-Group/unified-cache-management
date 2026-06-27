@@ -78,11 +78,19 @@ std::string FirstFailedSubTaskContext(const ClientTaskContext& ctx)
     return "client_task_id=" + std::to_string(ctx.taskId) + " op=" + ClientOpTypeName(ctx.opType);
 }
 
+std::vector<UC::KV::CacheKey> ToRouterKeys(const std::vector<CacheKey>& keys)
+{
+    std::vector<UC::KV::CacheKey> routerKeys;
+    routerKeys.reserve(keys.size());
+    for (const auto& key : keys) { routerKeys.emplace_back(std::string(CacheKeyView(key))); }
+    return routerKeys;
+}
+
 std::vector<UC::KV::CacheKey> ExtractEntryKeys(const std::vector<KVBuffer>& entries)
 {
     std::vector<UC::KV::CacheKey> keys;
     keys.reserve(entries.size());
-    for (const auto& entry : entries) { keys.emplace_back(entry.key); }
+    for (const auto& entry : entries) { keys.emplace_back(std::string(CacheKeyView(entry.key))); }
     return keys;
 }
 
@@ -212,7 +220,7 @@ Status AsuClientImpl::QueryOnce(const std::vector<CacheKey>& keys, const QueryOp
         return finalStatus;
     }
 
-    auto routes = snapshot->router->RouteKeys(keys);
+    auto routes = snapshot->router->RouteKeys(ToRouterKeys(keys));
     for (const auto& route : routes) {
         auto transportIter = snapshot->transports.find(route.first);
         if (transportIter == snapshot->transports.end()) {
@@ -470,7 +478,7 @@ Status AsuClientImpl::SubmitAsyncOnce(ClientOpType opType, const std::vector<Cac
     ctx->viewSnapshot = snapshot;
     ctx->entryStatus.assign(keys.size(), Status::OK());
 
-    auto routes = snapshot->router->RouteKeys(keys);
+    auto routes = snapshot->router->RouteKeys(ToRouterKeys(keys));
     for (const auto& route : routes) {
         if (snapshot->transports.find(route.first) == snapshot->transports.end()) {
             auto status = Status::Error(StatusCode::NOT_FOUND, "routed asu transport not found");

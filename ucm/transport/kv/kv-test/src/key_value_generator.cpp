@@ -1,5 +1,6 @@
 ﻿#include "kv_test/key_value_generator.h"
 #include <algorithm>
+#include <cstring>
 #include <fstream>
 #include <iomanip>
 #include <limits>
@@ -31,10 +32,23 @@ std::uint64_t HashUint64(std::uint64_t hash, std::uint64_t value)
     return hash;
 }
 
-std::uint64_t HashString(std::uint64_t hash, const std::string& value)
+std::uint64_t HashString(std::uint64_t hash, std::string_view value)
 {
     for (const char byte : value) { hash = HashByte(hash, static_cast<std::uint8_t>(byte)); }
     return hash;
+}
+
+Status StringToCacheKey(const std::string& value, const std::string& source, UC::ASU::CacheKey& key)
+{
+    if (value.size() > key.size()) {
+        return Status::Error(kExitInvalidArgument,
+                             source + " key length exceeds " + std::to_string(key.size()) +
+                                 " bytes: length=" + std::to_string(value.size()) +
+                                 ", key=" + value);
+    }
+    key = UC::ASU::CacheKey{};
+    if (!value.empty()) { std::memcpy(key.data(), value.data(), value.size()); }
+    return Status::Success();
 }
 
 std::uint64_t SplitMix64Next(std::uint64_t& state)
@@ -50,7 +64,8 @@ std::vector<std::uint8_t> GenerateValueBytes(const UC::ASU::CacheKey& key, std::
                                              std::uint64_t valueSize)
 {
     std::vector<std::uint8_t> value(static_cast<std::size_t>(valueSize));
-    std::uint64_t state = HashString(HashUint64(kFnvOffsetBasis64, seed), key);
+    std::uint64_t state =
+        HashString(HashUint64(kFnvOffsetBasis64, seed), UC::ASU::CacheKeyView(key));
     for (std::size_t offset = 0; offset < value.size();) {
         const std::uint64_t random = SplitMix64Next(state);
         for (std::uint32_t byteIndex = 0; byteIndex < 8 && offset < value.size();
@@ -83,7 +98,10 @@ Status AddCommaSeparatedKeys(const std::string& value, const std::string& source
         if (item.empty()) {
             return Status::Error(kExitInvalidArgument, source + " contains an empty key");
         }
-        keys.push_back(item);
+        UC::ASU::CacheKey key{};
+        auto status = StringToCacheKey(item, source, key);
+        if (!status.Ok()) { return status; }
+        keys.push_back(key);
     }
 
     return Status::Success();
@@ -119,7 +137,11 @@ Status GenerateRangeKeys(const CommandOptions& options, std::vector<UC::ASU::Cac
 
     keys.reserve(static_cast<std::size_t>(rangeCount));
     for (std::uint64_t index = options.keyStart; index <= options.keyEnd; ++index) {
-        keys.push_back(options.keyPrefix + std::to_string(index));
+        UC::ASU::CacheKey key{};
+        auto status =
+            StringToCacheKey(options.keyPrefix + std::to_string(index), "generated range", key);
+        if (!status.Ok()) { return status; }
+        keys.push_back(key);
         if (index == std::numeric_limits<std::uint64_t>::max()) { break; }
     }
     return Status::Success();
@@ -167,7 +189,10 @@ Status KeyValueGenerator::Generate(const CommandOptions& options, const KvTestCo
         data.keys.reserve(options.keys.size());
         for (const auto& key : options.keys) {
             if (key.empty()) { return Status::Error(kExitInvalidArgument, "key cannot be empty"); }
-            data.keys.push_back(key);
+            UC::ASU::CacheKey cacheKey{};
+            auto status = StringToCacheKey(key, "--key/--keys", cacheKey);
+            if (!status.Ok()) { return status; }
+            data.keys.push_back(cacheKey);
         }
     } else if (!options.keysFile.empty()) {
         auto status = LoadKeysFile(options.keysFile, data.keys);
@@ -181,7 +206,11 @@ Status KeyValueGenerator::Generate(const CommandOptions& options, const KvTestCo
         }
         data.keys.reserve(static_cast<std::size_t>(count));
         for (std::uint64_t index = 0; index < count; ++index) {
-            data.keys.push_back(config.keyPrefix + std::to_string(index));
+            UC::ASU::CacheKey key{};
+            auto status =
+                StringToCacheKey(config.keyPrefix + std::to_string(index), "generated config", key);
+            if (!status.Ok()) { return status; }
+            data.keys.push_back(key);
         }
     }
 

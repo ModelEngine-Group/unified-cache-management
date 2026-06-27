@@ -24,6 +24,7 @@
 #include "kv_common/router.h"
 #include <algorithm>
 #include <array>
+#include <string>
 #include <unordered_set>
 #include <utility>
 
@@ -34,7 +35,7 @@ using RingData = std::vector<RingNode>;
 
 constexpr std::uint64_t kMaxVirtualNodeSaltAttempts = 4096;
 
-std::uint64_t Crc32IEEE(const std::string& data)
+std::uint64_t Crc32IEEE(std::string_view data)
 {
     static const auto table = [] {
         std::array<std::uint32_t, 256> values{};
@@ -296,7 +297,7 @@ NodeId BatchTopKAffinityRouter::RouteKey(const CacheKey& key) const
     return nodeIds_[hash_(key) % nodeIds_.size()];
 }
 
-std::vector<NodeId> BatchTopKAffinityRouter::SelectCandidates(const CacheKey& batchKey) const
+std::vector<NodeId> BatchTopKAffinityRouter::SelectCandidates(const std::string& batchKey) const
 {
     if (nodeIds_.empty()) { return {}; }
 
