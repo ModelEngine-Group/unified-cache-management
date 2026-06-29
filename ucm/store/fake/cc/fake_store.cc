@@ -82,6 +82,7 @@ public:
     }
     Expected<bool> Check(Detail::TaskHandle taskId) override { return true; }
     Status Wait(Detail::TaskHandle taskId) override { return Status::OK(); }
+    Status RegisterMemory(void* base_addr, size_t total_size) override { return Status::OK(); }
 
 private:
     static Detail::TaskHandle NextId() noexcept

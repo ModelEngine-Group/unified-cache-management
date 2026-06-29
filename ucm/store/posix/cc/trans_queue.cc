@@ -61,6 +61,7 @@ Status TransQueue::Setup(const Config& config, TaskIdSet* failureSet, const Spac
 
 void TransQueue::OnIoUnitTimeout(IoUnit& ios)
 {
+    UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("posix_io_timeout_total"), 1.0);
     if (!failureSet_->Contains(ios.owner)) { failureSet_->Insert(ios.owner); }
     ios.waiter->Done();
 }
@@ -136,6 +137,7 @@ Status TransQueue::H2S(IoUnit& ios)
     auto s = file.Open(flags);
     if (s.Failure()) [[unlikely]] {
         UC_ERROR("Failed({}) to open file({}) with flags({}).", s, path, flags);
+        UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("posix_open_errors_total"), 1.0);
         return s;
     }
     auto offset = shardSize_ * ios.shard.index;
@@ -143,6 +145,7 @@ Status TransQueue::H2S(IoUnit& ios)
         s = file.Write(addr, ioSize_, offset);
         if (s.Failure()) [[unlikely]] {
             UC_ERROR("Failed({}) to write file({}:{}).", s, path, offset);
+            UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("posix_io_errors_total"), 1.0);
             return s;
         }
         offset += ioSize_;
@@ -159,6 +162,7 @@ Status TransQueue::S2H(IoUnit& ios)
     auto s = file.Open(flags);
     if (s.Failure()) [[unlikely]] {
         UC_ERROR("Failed({}) to open file({}) with flags({}).", s, path, flags);
+        UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("posix_open_errors_total"), 1.0);
         return s;
     }
     auto offset = shardSize_ * ios.shard.index;
@@ -166,6 +170,7 @@ Status TransQueue::S2H(IoUnit& ios)
         s = file.Read(addr, ioSize_, offset);
         if (s.Failure()) [[unlikely]] {
             UC_ERROR("Failed({}) to read file({}:{}).", s, path, offset);
+            UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("posix_io_errors_total"), 1.0);
             return s;
         }
         offset += ioSize_;

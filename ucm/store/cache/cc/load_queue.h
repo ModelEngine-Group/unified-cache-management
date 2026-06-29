@@ -25,7 +25,9 @@
 #define UNIFIEDCACHE_CACHE_STORE_CC_LOAD_QUEUE_H
 
 #include <future>
+#include <string>
 #include <thread>
+#include <vector>
 #include "copy_stream.h"
 #include "template/hashset.h"
 #include "template/spsc_ring_queue.h"
@@ -47,6 +49,7 @@ class LoadQueue {
         TransBuffer::Handle bufferHandle;
         Detail::TaskHandle backendTaskHandle;
         WaiterPtr waiter;
+        bool launchBoundary{false};
     };
 
 private:
@@ -56,14 +59,18 @@ private:
     StoreV1* backend_{nullptr};
     int32_t deviceId_{-1};
     std::vector<size_t> tensorSizes_{};
+    size_t shardBytes_{0};
     size_t streamNumber_{1};
     bool useGdr_{false};
+    bool cacheSdmaDirect_{false};
+    std::string sdmaDirectLaunchGranularity_{kSdmaDirectLaunchShard};
     std::vector<ssize_t> cpuAffinityCores_{};
     SpscRingQueue<TaskPair> waiting_;
     SpscRingQueue<ShardTask> running_;
     std::thread dispatcher_;
     std::thread transfer_;
     std::vector<ShardTask> holder_;
+    double h2dBatchStartTp_{0.0};
 
 public:
     ~LoadQueue();
@@ -76,8 +83,11 @@ private:
     void TransferStage(std::promise<Status>& started);
     void TransferOneTask(CopyStream& stream, ShardTask&& task);
     Status WaitBackendTaskReady(ShardTask& task);
-    Status HostToDeviceScatterAsync(std::shared_ptr<Trans::Stream> stream, void* host,
-                                    void** device);
+    Status HostToDeviceAsync(CopyStream& stream, void* host, void** device);
+    Status HostToDeviceTaskAsync(CopyStream& stream, std::vector<ShardTask>& tasks);
+    Status FlushSdmaDirectTaskBatch(CopyStream& stream);
+    void ClearSdmaDirectHolders() noexcept;
+    bool UseSdmaDirectTaskLaunch() const noexcept;
 };
 
 }  // namespace UC::CacheStore

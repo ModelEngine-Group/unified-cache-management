@@ -23,6 +23,9 @@
  * */
 #include <acl/acl.h>
 #include "ascend_buffer.h"
+#if UCM_RUNTIME_ASCEND_SDMA_DIRECT
+#include "sdma_direct/ascend_sdma_direct_stream.h"
+#endif
 #include "ascend_stream.h"
 #include "trans/device.h"
 
@@ -57,6 +60,20 @@ std::shared_ptr<Stream> Device::MakeSharedStream()
         return nullptr;
     }
     if (stream->Setup().Success()) { return stream; }
+    return nullptr;
+}
+
+std::shared_ptr<Stream> Device::MakeSdmaDirectStream()
+{
+#if UCM_RUNTIME_ASCEND_SDMA_DIRECT
+    std::shared_ptr<AscendSdmaDirectStream> stream = nullptr;
+    try {
+        stream = std::make_shared<AscendSdmaDirectStream>();
+    } catch (...) {
+        return nullptr;
+    }
+    if (stream->Setup().Success()) { return stream; }
+#endif
     return nullptr;
 }
 

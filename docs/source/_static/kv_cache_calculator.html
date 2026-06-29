@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>KV Cache Calculator</title>
-    <!-- KV Cache Calculator - Optimized for Sphinx Integration -->
+    <!-- KV Cache Calculator - Optimized with Tabs -->
     <link rel="stylesheet" href="styles.css">
 </head>
 <body>
@@ -18,115 +18,207 @@
                     <span>Configuration</span>
                 </h2>
 
-                <div class="form-group">
-                    <label class="form-label">Model Source</label>
-                    <div class="model-source-selector">
-                        <div class="model-source-option active" id="preset-option" onclick="setModelSource('preset')">Preset Models</div>
-                        <div class="model-source-option" id="custom-option" onclick="setModelSource('custom')">Custom Model</div>
-                    </div>
-                </div>
-
-                <!-- Preset Models -->
-                <div id="preset-model-section" class="form-group">
-                    <label class="form-label">Select Model</label>
-                    <select id="preset-model-select" class="form-select">
-                        <option value="">Loading models...</option>
-                    </select>
-                </div>
-
-                <!-- Custom Model URL -->
-                <div id="custom-model-section" class="form-group hidden">
-                    <label class="form-label">Model URL</label>
-                    <input type="url" id="model-url" class="form-input" placeholder="e.g., https://huggingface.co/meta-llama/Llama-3.1-8B-Instruct">
-
-                    <!-- Platform Support Info -->
-                    <div class="url-format-guide" style="margin-top: 0.5rem; padding: 0.75rem; background: var(--bg-secondary); border-radius: 6px; border: 1px solid var(--border-color);">
-                        <div style="font-size: 0.75rem; color: var(--text-secondary); margin-bottom: 0.5rem;">
-                            <strong>Supported Platforms:</strong> HuggingFace, ModelScope
+                <!-- Model Type Selector (Standard / Hybrid) -->
+                    <div class="form-group">
+                        <label class="form-label">Model Type</label>
+                        <div class="model-type-selector">
+                            <div class="model-type-option active" id="config-tab-standard" onclick="switchConfigTab('standard')">Standard Models</div>
+                            <div class="model-type-option" id="config-tab-hybrid" onclick="switchConfigTab('hybrid')">Hybrid Models</div>
                         </div>
-                        <div style="font-size: 0.7rem; color: var(--text-secondary); line-height: 1.5;">
-                            <div style="margin-bottom: 0.25rem;"><strong style="color: var(--text-primary);">HuggingFace:</strong></div>
-                            <div style="margin-left: 0.5rem; color: var(--accent-primary); font-family: monospace; font-size: 0.65rem;">
-                                https://huggingface.co/ORG/MODEL
-                            </div>
-                            <div style="margin-top: 0.5rem; margin-bottom: 0.25rem;"><strong style="color: var(--text-primary);">ModelScope:</strong></div>
-                            <div style="margin-left: 0.5rem; color: var(--accent-primary); font-family: monospace; font-size: 0.65rem;">
-                                https://www.modelscope.cn/models/ORG/MODEL
-                            </div>
+                        <div class="text-sm text-secondary mt-1" style="font-size: 0.75rem; color: var(--text-secondary);">DeepSeek V4 series requires Hybrid Models tab</div>
+                    </div>
+
+                <!-- Standard Models Content -->
+                <div class="config-tab-content active" id="config-content-standard">
+                    <div class="form-group">
+                        <label class="form-label">Model Source</label>
+                        <div class="model-source-selector">
+                            <div class="model-source-option active" id="preset-option" onclick="setModelSource('preset')">Preset Models</div>
+                            <div class="model-source-option" id="custom-option" onclick="setModelSource('custom')">Custom Model</div>
                         </div>
                     </div>
-                </div>
 
-                <!-- Data Type -->
-                <div class="form-group">
-                    <label class="form-label">Data Type</label>
-                    <select id="dtype-select" class="form-select">
-                        <option value="float16">float16 (2 bytes)</option>
-                        <option value="bfloat16">bfloat16 (2 bytes)</option>
-                        <option value="float32">float32 (4 bytes)</option>
-                        <option value="int8">int8 (1 byte)</option>
-                    </select>
-                </div>
-
-                <!-- Input Parameters Row 1 -->
-                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 0.75rem; margin-bottom: 0.75rem;">
-                    <!-- Number of Tokens -->
-                    <div class="form-group">
-                        <label class="form-label">Number of Tokens</label>
-                        <input type="number" id="token-input" class="form-input" value="4096" min="1">
+                    <!-- Preset Models -->
+                    <div id="preset-model-section" class="form-group">
+                        <label class="form-label">Select Model</label>
+                        <select id="preset-model-select" class="form-select" onchange="onModelSelect()">
+                            <option value="">Loading models...</option>
+                        </select>
                     </div>
 
-                    <!-- Batch Size -->
-                    <div class="form-group">
-                        <label class="form-label">Batch Size</label>
-                        <input type="number" id="batch-size" class="form-input" value="1" min="1">
-                    </div>
-                </div>
+                    <!-- Custom Model URL -->
+                    <div id="custom-model-section" class="form-group hidden">
+                        <label class="form-label">Model URL</label>
+                        <input type="url" id="model-url" class="form-input" placeholder="e.g., https://huggingface.co/meta-llama/Llama-3.1-8B-Instruct">
 
-                <!-- Input Parameters Row 2 -->
-                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 0.75rem; margin-bottom: 0.75rem;">
-                    <!-- Tensor Parallelism -->
-                    <div class="form-group">
-                        <label class="form-label">Tensor Parallelism (TP)</label>
-                        <input type="number" id="tp" class="form-input" value="1" min="1">
-                    </div>
-
-                    <!-- Data Parallelism -->
-                    <div class="form-group">
-                        <label class="form-label">Data Parallelism (DP)</label>
-                        <input type="number" id="dp" class="form-input" value="1" min="1">
-                    </div>
-                </div>
-
-                <!-- Calculate Button -->
-                <div class="btn-group">
-                    <button onclick="calculateKVCache()" class="btn btn-primary">
-                        <span>Calculate KV Cache</span>
-                    </button>
-                </div>
-
-                <!-- Max Tokens Calculator Section -->
-                <div class="calculation-section" style="margin-top: 1.5rem; padding-top: 1rem; border-top: 1px solid var(--border-color);">
-                    <h4 style="margin: 0 0 1rem 0; font-size: 1rem; color: var(--text-primary);">
-                        <span>Maximum Tokens Calculator</span>
-                    </h4>
-
-                    <!-- GPU Memory -->
-                    <div class="form-group">
-                        <label class="form-label">Single-GPU Memory for KV Cache (GB)</label>
-                        <input type="number" id="gpu-memory-input" class="form-input" value="42" min="1" step="1">
-                        <div class="text-sm text-secondary mt-1">Memory available for KV cache (excluding model weights)</div>
+                        <!-- Platform Support Info -->
+                        <div class="url-format-guide" style="margin-top: 0.5rem; padding: 0.75rem; background: var(--bg-secondary); border-radius: 6px; border: 1px solid var(--border-color);">
+                            <div style="font-size: 0.75rem; color: var(--text-secondary); margin-bottom: 0.5rem;">
+                                <strong>Supported Platforms:</strong> HuggingFace, ModelScope
+                            </div>
+                            <div style="font-size: 0.7rem; color: var(--text-secondary); line-height: 1.5;">
+                                <div style="margin-bottom: 0.25rem;"><strong style="color: var(--text-primary);">HuggingFace:</strong></div>
+                                <div style="margin-left: 0.5rem; color: var(--accent-primary); font-family: monospace; font-size: 0.65rem;">
+                                    https://huggingface.co/ORG/MODEL
+                                </div>
+                                <div style="margin-top: 0.5rem; margin-bottom: 0.25rem;"><strong style="color: var(--text-primary);">ModelScope:</strong></div>
+                                <div style="margin-left: 0.5rem; color: var(--accent-primary); font-family: monospace; font-size: 0.65rem;">
+                                    https://www.modelscope.cn/models/ORG/MODEL
+                                </div>
+                            </div>
+                        </div>
                     </div>
 
-                    <!-- Calculate Max Tokens Button -->
+                    <!-- Data Type -->
+                    <div class="form-group">
+                        <label class="form-label">Data Type</label>
+                        <select id="dtype-select" class="form-select">
+                            <option value="float16">float16 (2 bytes)</option>
+                            <option value="bfloat16">bfloat16 (2 bytes)</option>
+                            <option value="float32">float32 (4 bytes)</option>
+                            <option value="int8">int8 (1 byte)</option>
+                        </select>
+                    </div>
+
+                    <!-- Input Parameters Row 1 -->
+                    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 0.75rem; margin-bottom: 0.75rem;">
+                        <!-- Number of Tokens -->
+                        <div class="form-group">
+                            <label class="form-label">Number of Tokens</label>
+                            <input type="number" id="token-input" class="form-input" value="4096" min="1">
+                        </div>
+
+                        <!-- Batch Size -->
+                        <div class="form-group">
+                            <label class="form-label">Batch Size</label>
+                            <input type="number" id="batch-size" class="form-input" value="1" min="1">
+                        </div>
+                    </div>
+
+                    <!-- Input Parameters Row 2 -->
+                    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 0.75rem; margin-bottom: 0.75rem;">
+                        <!-- Tensor Parallelism -->
+                        <div class="form-group">
+                            <label class="form-label">Tensor Parallelism (TP)</label>
+                            <input type="number" id="tp" class="form-input" value="1" min="1">
+                        </div>
+
+                        <!-- Data Parallelism -->
+                        <div class="form-group">
+                            <label class="form-label">Data Parallelism (DP)</label>
+                            <input type="number" id="dp" class="form-input" value="1" min="1">
+                        </div>
+                    </div>
+
+                    <!-- Calculate Button -->
                     <div class="btn-group">
-                        <button onclick="calculateMaxTokens()" class="btn btn-secondary" style="background: #5191ee;">
-                            <span>Calculate Max Tokens</span>
+                        <button onclick="calculateKVCache()" class="btn btn-primary">
+                            <span>Calculate KV Cache</span>
                         </button>
                     </div>
+
+                    <!-- Max Tokens Calculator Section -->
+                    <div class="calculation-section" style="margin-top: 1.5rem; padding-top: 1rem; border-top: 1px solid var(--border-color);">
+                        <h4 style="margin: 0 0 1rem 0; font-size: 1rem; color: var(--text-primary);">
+                            <span>Maximum Tokens Calculator</span>
+                        </h4>
+
+                        <!-- GPU Memory -->
+                        <div class="form-group">
+                            <label class="form-label">Single-GPU Memory for KV Cache (GiB)</label>
+                            <input type="number" id="gpu-memory-input" class="form-input" value="42" min="1" step="1">
+                            <div class="text-sm text-secondary mt-1">Memory available for KV cache (excluding model weights)</div>
+                        </div>
+
+                        <!-- Calculate Max Tokens Button -->
+                        <div class="btn-group">
+                            <button onclick="calculateMaxTokens()" class="btn btn-secondary" style="background: #5191ee;">
+                                <span>Calculate Max Tokens</span>
+                            </button>
+                        </div>
+                    </div>
                 </div>
 
-              </section>
+                <!-- Hybrid Models Content -->
+                <div class="config-tab-content" id="config-content-hybrid">
+                    <!-- Model Selection for Hybrid (Only Preset) -->
+                    <div class="form-group">
+                        <label class="form-label">Select Hybrid Model</label>
+                        <select id="hybrid-model-select" class="form-select" onchange="onHybridModelSelect()">
+                            <option value="deepseek-ai/DeepSeek-V4-Pro">DeepSeek V4 Pro</option>
+                            <option value="deepseek-ai/DeepSeek-V4-Flash">DeepSeek V4 Flash</option>
+                        </select>
+                    </div>
+
+                    <!-- Deployment Method (instead of Data Type) -->
+                    <div class="form-group">
+                        <label class="form-label">Deployment Method</label>
+                        <select id="hybrid-deployment" class="form-select" onchange="currentDeployment = this.value;">
+                            <option value="vllm">vLLM</option>
+                            <option value="vllm-ascend">vLLM-Ascend</option>
+                        </select>
+                    </div>
+
+                    <!-- Input Parameters Row 1 -->
+                    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 0.75rem; margin-bottom: 0.75rem;">
+                        <!-- Number of Tokens -->
+                        <div class="form-group">
+                            <label class="form-label">Number of Tokens</label>
+                            <input type="number" id="hybrid-token-input" class="form-input" value="4096" min="1">
+                        </div>
+
+                        <!-- Batch Size -->
+                        <div class="form-group">
+                            <label class="form-label">Batch Size</label>
+                            <input type="number" id="hybrid-batch-size" class="form-input" value="1" min="1">
+                        </div>
+                    </div>
+
+                    <!-- Input Parameters Row 2 -->
+                    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 0.75rem; margin-bottom: 0.75rem;">
+                        <!-- Tensor Parallelism -->
+                        <div class="form-group">
+                            <label class="form-label">Tensor Parallelism (TP)</label>
+                            <input type="number" id="hybrid-tp" class="form-input" value="1" min="1">
+                        </div>
+
+                        <!-- Data Parallelism -->
+                        <div class="form-group">
+                            <label class="form-label">Data Parallelism (DP)</label>
+                            <input type="number" id="hybrid-dp" class="form-input" value="1" min="1">
+                        </div>
+                    </div>
+
+                    <!-- Calculate Button -->
+                    <div class="btn-group">
+                        <button onclick="calculateHybrid()" class="btn btn-primary">
+                            <span>Calculate KV Cache</span>
+                        </button>
+                    </div>
+
+                    <!-- Max Tokens Calculator Section -->
+                    <div class="calculation-section" style="margin-top: 1.5rem; padding-top: 1rem; border-top: 1px solid var(--border-color);">
+                        <h4 style="margin: 0 0 1rem 0; font-size: 1rem; color: var(--text-primary);">
+                            <span>Maximum Tokens Calculator</span>
+                        </h4>
+
+                        <!-- GPU Memory -->
+                        <div class="form-group">
+                            <label class="form-label">Single-GPU Memory for KV Cache (GiB)</label>
+                            <input type="number" id="hybrid-gpu-memory-input" class="form-input" value="42" min="1" step="1">
+                            <div class="text-sm text-secondary mt-1">Memory available for KV cache (excluding model weights)</div>
+                        </div>
+
+                        <!-- Calculate Max Tokens Button -->
+                        <div class="btn-group">
+                            <button onclick="calculateHybridMaxTokens()" class="btn btn-secondary">
+                                <span>Calculate Max Tokens</span>
+                            </button>
+                        </div>
+                    </div>
+                </div>
+
+            </section>
 
             <!-- Results Panel -->
             <section class="card">
@@ -155,168 +247,17 @@
             </section>
         </div>
 
-        <!-- Formula Reference Section -->
-        <section class="card" style="margin-top: 1rem;">
+        <!-- Formula Reference Section - Dynamic -->
+        <section class="card" id="formula-reference-section" style="margin-top: 1rem;">
             <h2 class="section-title">
                 <span>📚</span>
-                <span>Formula Reference</span>
+                <span>Current Model Formula Reference</span>
             </h2>
 
-            <div style="display: grid; gap: 1.5rem; margin-top: 1rem;">
-                <!-- MLA Formula -->
-                <div class="formula-card">
-                    <div class="formula-header">
-                        <span>🔸</span>
-                        <span>MLA (Multi-head Latent Attention)</span>
-                    </div>
-                    <div class="formula-content">
-                        <div class="formula-main">
-                            Single-GPU KV Cache = layers × tokens × batch × (kv_lora_rank + qk_rope_head_dim) / tp × dtype_size
-                        </div>
-                        <div class="formula-breakdown">
-                            <div class="formula-step">
-                                <span class="formula-step-label">Note:</span>
-                                <span class="formula-step-value">No factor of 2 because K and V are compressed together into latent space</span>
-                            </div>
-                            <div class="formula-step">
-                                <span class="formula-step-label">kv_lora_rank:</span>
-                                <span class="formula-step-value">Compressed KV dimension</span>
-                            </div>
-                            <div class="formula-step">
-                                <span class="formula-step-label">qk_rope_head_dim:</span>
-                                <span class="formula-step-value">RoPE positional encoding dimension</span>
-                            </div>
-                            <div class="formula-step">
-                                <span class="formula-step-label">Models:</span>
-                                <span class="formula-step-value">DeepSeek V3/R1/V3.2, Kimi K2/K2.5, GLM-5</span>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-
-                <!-- GQA Formula -->
-                <div class="formula-card">
-                    <div class="formula-header">
-                        <span>🔹</span>
-                        <span>GQA (Grouped-Query Attention)</span>
-                    </div>
-                    <div class="formula-content">
-                        <div class="formula-main">
-                            Single-GPU KV Cache = 2 × layers × tokens × batch × kv_heads × head_dim / tp × dtype_size
-                        </div>
-                        <div class="formula-breakdown">
-                            <div class="formula-step">
-                                <span class="formula-step-label">2:</span>
-                                <span class="formula-step-value">Key and Value matrices</span>
-                            </div>
-                            <div class="formula-step">
-                                <span class="formula-step-label">kv_heads:</span>
-                                <span class="formula-step-value">Number of KV heads (less than attention heads)</span>
-                            </div>
-                            <div class="formula-step">
-                                <span class="formula-step-label">head_dim:</span>
-                                <span class="formula-step-value">Dimension per attention head</span>
-                            </div>
-                            <div class="formula-step">
-                                <span class="formula-step-label">Models:</span>
-                                <span class="formula-step-value">Qwen3, GLM-4.7, GLM-4.5, MiniMax-M2 series</span>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-
-                <!-- Hybrid Formula -->
-                <div class="formula-card" style="border-left-color: var(--accent-warning);">
-                    <div class="formula-header">
-                        <span>⚠️</span>
-                        <span>Hybrid (Mixed Architecture)</span>
-                    </div>
-                    <div class="formula-content">
-                        <div class="formula-main">
-                            Single-GPU KV Cache = 2 × attn_layers × tokens × batch × kv_heads × head_dim / tp × dtype_size
-                        </div>
-                        <div class="formula-breakdown">
-                            <div class="formula-step">
-                                <span class="formula-step-label">Warning:</span>
-                                <span class="formula-step-value">Calculation may not be accurate for hybrid architectures. Further adaptation needed.</span>
-                            </div>
-                            <div class="formula-step">
-                                <span class="formula-step-label">Linear + Full Attention:</span>
-                                <span class="formula-step-value"><code>layer_types</code> contains "linear_attention" and "full_attention" (e.g., Qwen3.5 series)</span>
-                            </div>
-                            <div class="formula-step">
-                                <span class="formula-step-label">Sliding + Full Attention:</span>
-                                <span class="formula-step-value"><code>layer_types</code> contains "sliding_attention" and "full_attention" + <code>sliding_window</code> (e.g., Gemma4, GPT-OSS)</span>
-                            </div>
-                            <div class="formula-step">
-                                <span class="formula-step-label">Attention + SSM:</span>
-                                <span class="formula-step-value"><code>hybrid_layer_pattern</code> with 0=SSM, 1=Attention (e.g., MiMo-V2-Flash)</span>
-                            </div>
-                            <div class="formula-step">
-                                <span class="formula-step-label">Models:</span>
-                                <span class="formula-step-value">Qwen3.5 series</span>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-
-                <!-- Standard Transformer Formula -->
-                <div class="formula-card">
-                    <div class="formula-header">
-                        <span>🔹</span>
-                        <span>Standard Transformer (MHA/MQA)</span>
-                    </div>
-                    <div class="formula-content">
-                        <div class="formula-main">
-                            Single-GPU KV Cache = 2 × layers × tokens × batch × hidden_size × (kv_heads / attn_heads) / tp × dtype_size
-                        </div>
-                        <div class="formula-breakdown">
-                            <div class="formula-step">
-                                <span class="formula-step-label">MHA:</span>
-                                <span class="formula-step-value">kv_heads = attn_heads (every head has its own KV)</span>
-                            </div>
-                            <div class="formula-step">
-                                <span class="formula-step-label">MQA:</span>
-                                <span class="formula-step-value">kv_heads = 1 (all heads share single KV)</span>
-                            </div>
-                            <div class="formula-step">
-                                <span class="formula-step-label">Models:</span>
-                                <span class="formula-step-value">GPT-2 (MHA), PaLM/BLOOM (MQA)</span>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-
-                <!-- Model Type Detection Guide -->
-                <div class="formula-card" style="border-left-color: var(--accent-info, #3b82f6);">
-                    <div class="formula-header">
-                        <span>🔍</span>
-                        <span>How to Identify Model Type from Config</span>
-                    </div>
-                    <div class="formula-content">
-                        <div class="formula-breakdown">
-                            <div class="formula-step">
-                                <span class="formula-step-label">1. MLA:</span>
-                                <span class="formula-step-value">Check for <code>kv_lora_rank</code> + <code>qk_rope_head_dim</code></span>
-                            </div>
-                            <div class="formula-step">
-                                <span class="formula-step-label">2. Hybrid:</span>
-                                <span class="formula-step-value"><code>layer_types</code> with multiple types, or <code>hybrid_layer_pattern</code>, or <code>sliding_window</code> with mixed layers</span>
-                            </div>
-                            <div class="formula-step">
-                                <span class="formula-step-label">3. GQA:</span>
-                                <span class="formula-step-value">Has <code>head_dim</code> and kv_heads < attn_heads</span>
-                            </div>
-                            <div class="formula-step">
-                                <span class="formula-step-label">4. Standard:</span>
-                                <span class="formula-step-value">Falls through to MHA/MQA/GQA based on kv_heads ratio</span>
-                            </div>
-                            <div class="formula-step">
-                                <span class="formula-step-label">Multimodal:</span>
-                                <span class="formula-step-value">Config nested in <code>text_config</code></span>
-                            </div>
-                        </div>
-                    </div>
+            <div id="dynamic-formula-container">
+                <div class="text-center" style="padding: 2rem;">
+                    <div style="font-size: 3rem; margin-bottom: 1rem;">📊</div>
+                    <div class="subtitle" style="color: var(--text-secondary);">Select a model to see its KV Cache formula.</div>
                 </div>
             </div>
         </section>

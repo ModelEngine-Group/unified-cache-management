@@ -8,10 +8,6 @@ target_include_directories(metrics PUBLIC
 file(GLOB_RECURSE UCMMETRICS_CPY_SOURCE_FILES CONFIGURE_DEPENDS "./cpy/*.cc")
 pybind11_add_module(ucmmetrics ${UCMMETRICS_CPY_SOURCE_FILES})
 target_link_libraries(ucmmetrics PRIVATE metrics)
-set_target_properties(ucmmetrics PROPERTIES
-    INSTALL_RPATH "$ORIGIN"
-    BUILD_WITH_INSTALL_RPATH TRUE
-)
 
 file(RELATIVE_PATH INSTALL_REL_PATH
      ${UCM_ROOT_DIR}
