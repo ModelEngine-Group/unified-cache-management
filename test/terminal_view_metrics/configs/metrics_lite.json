@@ -1,0 +1,137 @@
+{
+  "title": "Metrics Lite",
+  "metrics": [
+    {
+      "name": "e2e_request_latency_avg_s",
+      "type": "promql",
+      "expr": "sum by () (rate(vllm:e2e_request_latency_seconds_sum[$__rate_interval])) / sum by () (rate(vllm:e2e_request_latency_seconds_count[$__rate_interval]))",
+      "value": "avg",
+      "unit": "s"
+    },
+    {
+      "name": "ttft_avg_s",
+      "type": "promql",
+      "expr": "sum by () (rate(vllm:time_to_first_token_seconds_sum[$__rate_interval])) / sum by () (rate(vllm:time_to_first_token_seconds_count[$__rate_interval]))",
+      "value": "avg",
+      "unit": "s"
+    },
+    {
+      "name": "tpot_avg_s",
+      "type": "promql",
+      "expr": "sum by () (rate(vllm:request_time_per_output_token_seconds_sum[$__rate_interval])) / sum by () (rate(vllm:request_time_per_output_token_seconds_count[$__rate_interval]))",
+      "value": "avg",
+      "unit": "s"
+    },
+    {
+      "name": "prompt_tokens_per_s",
+      "type": "promql",
+      "expr": "sum by () (rate(vllm:prompt_tokens_total[$__rate_interval]))",
+      "value": "tokens_per_s",
+      "unit": "tokens/s"
+    },
+    {
+      "name": "generation_tokens_per_s",
+      "type": "promql",
+      "expr": "sum by () (rate(vllm:generation_tokens_total[$__rate_interval]))",
+      "value": "tokens_per_s",
+      "unit": "tokens/s"
+    },
+    {
+      "name": "prefix_cache_hit_rate",
+      "type": "promql",
+      "expr": "sum by () (rate(vllm:prefix_cache_hits_total[$__rate_interval])) / sum by () (rate(vllm:prefix_cache_queries_total[$__rate_interval]))",
+      "value": "hit_rate",
+      "unit": "ratio"
+    },
+    {
+      "name": "external_prefix_cache_hit_rate",
+      "type": "promql",
+      "expr": "sum by () (rate(vllm:external_prefix_cache_hits_total[$__rate_interval])) / sum by () (rate(vllm:external_prefix_cache_queries_total[$__rate_interval]))",
+      "value": "hit_rate",
+      "unit": "ratio"
+    },
+    {
+      "name": "posix_store_load_ratio",
+      "type": "promql",
+      "expr": "sum by () (rate(ucm:cache_load_backend_shards_total[$__rate_interval])) / clamp_min(sum by () (rate(ucm:cache_load_shards_total[$__rate_interval])), 1)",
+      "value": "ratio",
+      "unit": "ratio"
+    },
+    {
+      "name": "posix_store_load_fraction",
+      "type": "promql",
+      "expr": "sum by () (rate(ucm:cache_load_backend_shards_total[$__rate_interval])) / sum by () (rate(ucm:cache_load_shards_total[$__rate_interval]))",
+      "value": "fraction",
+      "unit": "ratio"
+    },
+    {
+      "name": "cache_store_load_hit_fraction",
+      "type": "promql",
+      "expr": "clamp_min(1 - (sum by () (rate(ucm:cache_load_backend_shards_total[$__rate_interval])) / sum by () (rate(ucm:cache_load_shards_total[$__rate_interval]))), 0)",
+      "value": "fraction",
+      "unit": "ratio"
+    },
+    {
+      "name": "total_requests",
+      "type": "promql",
+      "expr": "sum by () (increase(vllm:time_to_first_token_seconds_count[$__rate_interval]))",
+      "value": "requests"
+    },
+    {
+      "name": "total_generated_tokens",
+      "type": "promql",
+      "expr": "sum by () (increase(vllm:request_generation_tokens_sum[$__rate_interval]))",
+      "value": "tokens",
+      "unit": "tokens"
+    },
+    {
+      "name": "request_queue_time_avg_s",
+      "type": "promql",
+      "expr": "sum by () (rate(vllm:request_queue_time_seconds_sum[$__rate_interval])) / sum by () (rate(vllm:request_queue_time_seconds_count[$__rate_interval]))",
+      "value": "avg",
+      "unit": "s"
+    },
+    {
+      "name": "request_inference_time_avg_s",
+      "type": "promql",
+      "expr": "sum by () (rate(vllm:request_inference_time_seconds_sum[$__rate_interval])) / sum by () (rate(vllm:request_inference_time_seconds_count[$__rate_interval]))",
+      "value": "avg",
+      "unit": "s"
+    },
+    {
+      "name": "request_prefill_time_avg_s",
+      "type": "promql",
+      "expr": "sum by () (rate(vllm:request_prefill_time_seconds_sum[$__rate_interval])) / sum by () (rate(vllm:request_prefill_time_seconds_count[$__rate_interval]))",
+      "value": "avg",
+      "unit": "s"
+    },
+    {
+      "name": "request_decode_time_avg_s",
+      "type": "promql",
+      "expr": "sum by () (rate(vllm:request_decode_time_seconds_sum[$__rate_interval])) / sum by () (rate(vllm:request_decode_time_seconds_count[$__rate_interval]))",
+      "value": "avg",
+      "unit": "s"
+    },
+    {
+      "name": "decode_tps",
+      "type": "promql",
+      "expr": "sum by () (rate(vllm:request_generation_tokens_sum[$__rate_interval])) / sum by () (rate(vllm:request_decode_time_seconds_sum[$__rate_interval]))",
+      "value": "tokens_per_s",
+      "unit": "tokens/s"
+    },
+    {
+      "name": "overall_tps",
+      "type": "promql",
+      "expr": "sum by () (rate(vllm:request_generation_tokens_sum[$__rate_interval])) / (sum by () (rate(vllm:request_prefill_time_seconds_sum[$__rate_interval])) + sum by () (rate(vllm:request_decode_time_seconds_sum[$__rate_interval])))",
+      "value": "tokens_per_s",
+      "unit": "tokens/s"
+    },
+    {
+      "name": "interval_lookup_hit_rate",
+      "type": "promql",
+      "expr": "sum by () (rate(ucm:interval_lookup_hit_rates_sum[$__rate_interval])) / sum by () (rate(ucm:interval_lookup_hit_rates_count[$__rate_interval]))",
+      "value": "hit_rate",
+      "unit": "ratio"
+    }
+  ]
+}
