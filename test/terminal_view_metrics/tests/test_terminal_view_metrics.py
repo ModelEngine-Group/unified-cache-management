@@ -415,6 +415,40 @@ ucm:load_duration_bucket{worker_id="0",le="+Inf"} 100
             self.assertIn("ucm:save_bytes_total", output.getvalue())
             self.assertIn("rate=10.000", output.getvalue())
 
+    def test_cli_query_defaults_to_metrics_lite_config(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "metrics.db"
+            start_ms = parse_time_ms("2026-06-25T10:00:00")
+            with MetricsStore(db_path) as store:
+                store.write_samples(
+                    parse_prometheus_text("vllm:time_to_first_token_seconds_count 5"),
+                    start_ms,
+                )
+                store.write_samples(
+                    parse_prometheus_text("vllm:time_to_first_token_seconds_count 9"),
+                    start_ms + 10_000,
+                )
+
+            output = io.StringIO()
+            with redirect_stdout(output):
+                result = main(
+                    [
+                        "query",
+                        "--db",
+                        str(db_path),
+                        "--window",
+                        "10s",
+                        "--start-time",
+                        "2026-06-25T10:00:00",
+                        "--aggr-by",
+                        "10s",
+                    ]
+                )
+
+            self.assertEqual(result, 0)
+            self.assertIn("total_requests", output.getvalue())
+            self.assertIn("requests=4.000", output.getvalue())
+
     def test_cli_query_filters_rows_by_tag(self):
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)

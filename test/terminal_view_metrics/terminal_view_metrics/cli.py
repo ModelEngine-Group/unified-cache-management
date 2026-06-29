@@ -88,7 +88,7 @@ def _add_collect_args(parser: argparse.ArgumentParser) -> None:
 
 def _add_query_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--db", default=DEFAULT_DB)
-    parser.add_argument("--config", default="ucm_overview")
+    parser.add_argument("--config", default="metrics_lite")
     parser.add_argument("--window", default="5m")
     parser.add_argument(
         "--aggr-by",

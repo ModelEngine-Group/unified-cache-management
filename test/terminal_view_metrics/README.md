@@ -34,11 +34,10 @@ Clear the stored samples:
 python test/terminal_view_metrics/metrics_cli.py clean
 ```
 
-Run a query:
+Run a query. The default query config is `metrics_lite`:
 
 ```bash
 python test/terminal_view_metrics/metrics_cli.py query \
-  --config metrics_lite \
   --window 10m \
   --aggr-by 1m
 ```
