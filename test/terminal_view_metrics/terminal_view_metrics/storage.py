@@ -130,6 +130,18 @@ ORDER BY ts_ms
         row = self.conn.execute("SELECT MAX(ts_ms) FROM samples").fetchone()
         return int(row[0]) if row and row[0] is not None else None
 
+    def clear(self) -> None:
+        self.conn.executescript(
+            """
+DELETE FROM samples;
+DELETE FROM series;
+DELETE FROM metadata;
+DELETE FROM sqlite_sequence WHERE name = 'series';
+"""
+        )
+        self.conn.commit()
+        self.conn.execute("VACUUM")
+
     def prune_before(self, cutoff_ms: int) -> int:
         cursor = self.conn.execute("DELETE FROM samples WHERE ts_ms < ?", (cutoff_ms,))
         self.conn.commit()

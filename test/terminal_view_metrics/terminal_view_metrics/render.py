@@ -13,13 +13,16 @@ def render_table(rows: list[QueryRow], limit: int | None = None) -> str:
     include_bucket = any(
         row.start_ms is not None and row.end_ms is not None for row in visible_rows
     )
-    table_rows = [_row_cells(row, include_bucket) for row in visible_rows]
+    table_row_groups = [
+        [_row_cells(row, include_bucket) for row in group]
+        for group in _display_groups(visible_rows, include_bucket)
+    ]
+    table_rows = [row for group in table_row_groups for row in group]
     headers = (
-        ["bucket", "metric", "group", "values", "unit"]
+        ["bucket", "metric", "values", "unit"]
         if include_bucket
         else [
             "metric",
-            "group",
             "values",
             "unit",
         ]
@@ -32,10 +35,14 @@ def render_table(rows: list[QueryRow], limit: int | None = None) -> str:
         "  ".join(headers[index].ljust(widths[index]) for index in range(len(headers))),
         "  ".join("-" * width for width in widths),
     ]
-    lines.extend(
-        "  ".join(row[index].ljust(widths[index]) for index in range(len(headers)))
-        for row in table_rows
-    )
+    separator = "=" * len(lines[0])
+    for group_index, group in enumerate(table_row_groups):
+        lines.extend(
+            "  ".join(row[index].ljust(widths[index]) for index in range(len(headers)))
+            for row in group
+        )
+        if include_bucket and group_index + 1 < len(table_row_groups):
+            lines.append(separator)
     return "\n".join(lines)
 
 
@@ -47,30 +54,32 @@ def render_json(rows: list[QueryRow], limit: int | None = None) -> str:
                 "metric": row.metric,
                 "bucket_start_ms": row.start_ms,
                 "bucket_end_ms": row.end_ms,
-                "group": row.group,
-                "values": row.values,
+                "values": _ordered_values(row.values),
                 "unit": row.unit,
             }
             for row in visible_rows
         ],
         indent=2,
-        sort_keys=True,
     )
 
 
-def _format_group(group: dict[str, str]) -> str:
-    if not group:
-        return "-"
-    return ",".join(f"{key}={value}" for key, value in group.items())
+def _display_groups(rows: list[QueryRow], include_bucket: bool) -> list[list[QueryRow]]:
+    if not include_bucket:
+        return [rows]
+    groups: dict[str, list[QueryRow]] = {}
+    for row in rows:
+        groups.setdefault(row.metric, []).append(row)
+    return [
+        sorted(group, key=lambda row: (row.start_ms or 0, row.end_ms or 0))
+        for group in groups.values()
+    ]
 
 
 def _row_cells(row: QueryRow, include_bucket: bool) -> list[str]:
     cells = []
     if include_bucket:
         cells.append(_format_bucket(row))
-    cells.extend(
-        [row.metric, _format_group(row.group), _format_values(row.values), row.unit]
-    )
+    cells.extend([row.metric, _format_values(row.values), row.unit])
     return cells
 
 
@@ -81,11 +90,23 @@ def _format_bucket(row: QueryRow) -> str:
 
 
 def _format_time(timestamp_ms: int) -> str:
-    return dt.datetime.fromtimestamp(timestamp_ms / 1000).strftime("%Y-%m-%d %H:%M:%S")
+    return dt.datetime.fromtimestamp(timestamp_ms / 1000).strftime("%m-%d %H:%M:%S")
 
 
 def _format_values(values: dict[str, float]) -> str:
-    return " ".join(f"{key}={_format_number(value)}" for key, value in values.items())
+    return " ".join(
+        f"{key}={_format_number(value)}"
+        for key, value in _ordered_values(values).items()
+    )
+
+
+def _ordered_values(values: dict[str, float]) -> dict[str, float]:
+    preferred = ("p50", "p90", "p99", "avg")
+    ordered = {key: values[key] for key in preferred if key in values}
+    ordered.update(
+        {key: value for key, value in values.items() if key not in preferred}
+    )
+    return ordered
 
 
 def _format_number(value: float) -> str:

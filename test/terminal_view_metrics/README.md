@@ -16,8 +16,7 @@ Start a background collector:
 
 ```bash
 python test/terminal_view_metrics/metrics_cli.py start \
-  --url http://127.0.0.1:8000/metrics \
-  --interval 5s
+  --url http://127.0.0.1:8000/metrics
 ```
 
 The collector stores all scraped metrics by default. Config files are used by
@@ -27,6 +26,12 @@ Stop the collector:
 
 ```bash
 python test/terminal_view_metrics/metrics_cli.py stop
+```
+
+Clear the stored samples:
+
+```bash
+python test/terminal_view_metrics/metrics_cli.py clean
 ```
 
 Run a query:
@@ -39,10 +44,11 @@ python test/terminal_view_metrics/metrics_cli.py query \
 ```
 
 ```text
-bucket                                       metric                group                         values                         unit
-------------------------------------------  --------------------  ----------------------------  -----------------------------  ----
-2026-06-25 10:00:00..2026-06-25 10:01:00  ucm:load_bytes_total  model_name=qwen,worker_id=0    rate=8.420                     GB/s
-2026-06-25 10:01:00..2026-06-25 10:02:00  ucm:load_duration     model_name=qwen,worker_id=0    avg=31.200 p50=22.000 p90=80  ms
+bucket                       metric                values                                  unit
+---------------------------  --------------------  --------------------------------------  ----
+06-25 10:00:00..06-25 10:01:00  ucm:load_bytes_total  rate=8.420                            GB/s
+==============================================================================================
+06-25 10:01:00..06-25 10:02:00  ucm:load_duration     p50=22.000 p90=80.000 p99=95.000 avg=31.200  ms
 ```
 
 The default database is `/tmp/ucm_metrics.db`. Use `--db` only when you want a
@@ -63,8 +69,8 @@ python test/terminal_view_metrics/metrics_cli.py query \
 `--start-time` accepts epoch seconds, epoch milliseconds, or a local ISO timestamp.
 With `--start-time`, `--window` means `[start-time, start-time + window]`.
 `--aggr-by` is the recommended display mode: it renders one row per time
-bucket, metric, and label group. `--tag KEY=VALUE` filters Prometheus labels
-before aggregation, and can be repeated for multiple labels.
+bucket and metric. `--tag KEY=VALUE` filters Prometheus labels before
+aggregation, and can be repeated for multiple labels.
 
 ## Query model
 
@@ -74,6 +80,7 @@ Counter metrics use positive deltas inside each `--aggr-by` time bucket.
 Classic histogram metrics store raw `_bucket`, `_sum`, and `_count` samples.
 Queries compute bucket deltas inside each `--aggr-by` time bucket and then
 estimate quantiles with Prometheus-style linear interpolation.
+Direct histogram metrics display `p50`, `p90`, `p99`, and `avg`.
 
 ## Config shape
 
@@ -84,12 +91,15 @@ like this for direct histogram handling:
 {
   "name": "ucm:load_duration",
   "type": "histogram",
+  "aggregate": "sum",
   "avg": true,
   "quantiles": [0.5, 0.9, 0.99],
-  "unit": "ms",
-  "group_by": ["model_name", "worker_id"]
+  "unit": "ms"
 }
 ```
+
+When the display name should differ from the Prometheus metric base name, set
+`source` to the Prometheus metric without `_bucket`, `_sum`, or `_count`.
 
 For Grafana-style panel values, use `type: "promql"` with a PromQL-like
 expression:
@@ -98,15 +108,20 @@ expression:
 {
   "name": "Cache Lookup Hit Rate",
   "type": "promql",
-  "expr": "sum by (worker_id) (rate(ucm:cache_lookup_hit_blocks_total[$__rate_interval])) / (sum by (worker_id) (rate(ucm:cache_lookup_hit_blocks_total[$__rate_interval])) + sum by (worker_id) (rate(ucm:cache_lookup_miss_blocks_total[$__rate_interval])))",
-  "value": "hit_rate",
-  "group_by": ["worker_id"]
+  "aggregate": "avg",
+  "expr": "sum by () (rate(ucm:cache_lookup_hit_blocks_total[$__rate_interval])) / (sum by () (rate(ucm:cache_lookup_hit_blocks_total[$__rate_interval])) + sum by () (rate(ucm:cache_lookup_miss_blocks_total[$__rate_interval])))",
+  "value": "hit_rate"
 }
 ```
+
+Every metric entry must set `aggregate` to `sum` or `avg`. Query output
+aggregates all matching series into one row. Use `sum` for throughput, bytes,
+token counts, and request counts; use `avg` for ratios, latencies, durations,
+and utilization percentages.
 
 The local evaluator supports the Prometheus/Grafana patterns used by the bundled
 dashboards: `rate`, `increase`, `sum by (...)`, arithmetic, `histogram_quantile`,
 `clamp_min`, direct gauge selectors, `$__rate_interval`, and `${perWorker:raw}`.
 Bundled panel configs include `metrics_lite`, `ucm_grafana_panels`, and
-`vllm_grafana_panels`. `metrics_lite` mirrors the data points tracked by the
-dev-toolkit lightweight metrics collector.
+`vllm_grafana_panels`. `metrics_lite` is a compact view of common latency,
+cache hit, backend load, and request-count metrics.

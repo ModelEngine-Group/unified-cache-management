@@ -5,77 +5,109 @@
       "name": "ucm:load_bytes_total",
       "type": "counter",
       "op": "rate",
-      "scale": 1e-9,
+      "scale": 1e-09,
       "unit": "GB/s",
-      "group_by": ["model_name", "worker_id"]
+      "aggregate": "sum"
     },
     {
       "name": "ucm:save_bytes_total",
       "type": "counter",
       "op": "rate",
-      "scale": 1e-9,
+      "scale": 1e-09,
       "unit": "GB/s",
-      "group_by": ["model_name", "worker_id"]
+      "aggregate": "sum"
     },
     {
       "name": "ucm:load_requests_num",
       "type": "histogram",
       "avg": true,
-      "quantiles": [0.5, 0.9, 0.99],
-      "group_by": ["model_name", "worker_id"]
+      "quantiles": [
+        0.5,
+        0.9,
+        0.99
+      ],
+      "aggregate": "sum"
     },
     {
       "name": "ucm:load_blocks_num",
       "type": "histogram",
       "avg": true,
-      "quantiles": [0.5, 0.9, 0.99],
-      "group_by": ["model_name", "worker_id"]
+      "quantiles": [
+        0.5,
+        0.9,
+        0.99
+      ],
+      "aggregate": "sum"
     },
     {
       "name": "ucm:load_duration",
       "type": "histogram",
       "avg": true,
-      "quantiles": [0.5, 0.9, 0.99],
+      "quantiles": [
+        0.5,
+        0.9,
+        0.99
+      ],
       "unit": "ms",
-      "group_by": ["model_name", "worker_id"]
+      "aggregate": "sum"
     },
     {
       "name": "ucm:load_speed",
       "type": "histogram",
       "avg": true,
-      "quantiles": [0.5, 0.9, 0.99],
+      "quantiles": [
+        0.5,
+        0.9,
+        0.99
+      ],
       "unit": "GB/s",
-      "group_by": ["model_name", "worker_id"]
+      "aggregate": "sum"
     },
     {
       "name": "ucm:save_requests_num",
       "type": "histogram",
       "avg": true,
-      "quantiles": [0.5, 0.9, 0.99],
-      "group_by": ["model_name", "worker_id"]
+      "quantiles": [
+        0.5,
+        0.9,
+        0.99
+      ],
+      "aggregate": "sum"
     },
     {
       "name": "ucm:save_blocks_num",
       "type": "histogram",
       "avg": true,
-      "quantiles": [0.5, 0.9, 0.99],
-      "group_by": ["model_name", "worker_id"]
+      "quantiles": [
+        0.5,
+        0.9,
+        0.99
+      ],
+      "aggregate": "sum"
     },
     {
       "name": "ucm:save_duration",
       "type": "histogram",
       "avg": true,
-      "quantiles": [0.5, 0.9, 0.99],
+      "quantiles": [
+        0.5,
+        0.9,
+        0.99
+      ],
       "unit": "ms",
-      "group_by": ["model_name", "worker_id"]
+      "aggregate": "sum"
     },
     {
       "name": "ucm:save_speed",
       "type": "histogram",
       "avg": true,
-      "quantiles": [0.5, 0.9, 0.99],
+      "quantiles": [
+        0.5,
+        0.9,
+        0.99
+      ],
       "unit": "GB/s",
-      "group_by": ["model_name", "worker_id"]
+      "aggregate": "sum"
     }
   ]
 }

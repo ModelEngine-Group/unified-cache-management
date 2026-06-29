@@ -118,23 +118,25 @@ class QueryEngine:
         end_ms: int,
         tag_filters: Mapping[str, str] | None,
     ) -> list[QueryRow]:
+        aggregate = spec["aggregate"]
         scale = float(spec.get("scale", 1.0))
         value_name = spec.get("value", "value")
         evaluator = PromqlEvaluator(self.store, start_ms, end_ms, tag_filters)
-        rows: list[QueryRow] = []
+        grouped: dict[tuple[tuple[str, str], ...], list[float]] = defaultdict(list)
         for point in evaluator.evaluate(spec["expr"]).values():
             value = point.value * scale
             if not math.isfinite(value):
                 continue
-            rows.append(
-                QueryRow(
-                    spec["name"],
-                    _row_group(point.labels, spec.get("group_by")),
-                    {value_name: value},
-                    spec.get("unit", ""),
-                )
+            grouped[_group_key(point.labels, spec.get("group_by", []))].append(value)
+        return [
+            QueryRow(
+                spec["name"],
+                dict(group),
+                {value_name: _aggregate(values, aggregate)},
+                spec.get("unit", ""),
             )
-        return rows
+            for group, values in grouped.items()
+        ]
 
     def _counter_rows(
         self,
@@ -144,9 +146,10 @@ class QueryEngine:
         tag_filters: Mapping[str, str] | None,
     ) -> list[QueryRow]:
         op = spec.get("op", "rate")
+        aggregate = spec["aggregate"]
         scale = float(spec.get("scale", 1.0))
-        grouped: dict[tuple[tuple[str, str], ...], float] = defaultdict(float)
-        for series in self.store.list_series(spec["name"]):
+        grouped: dict[tuple[tuple[str, str], ...], list[float]] = defaultdict(list)
+        for series in self.store.list_series(_source_name(spec)):
             if not _matches_tag_filters(series["labels"], tag_filters):
                 continue
             samples = self.store.samples_for_series(int(series["id"]), start_ms, end_ms)
@@ -155,13 +158,18 @@ class QueryEngine:
                 continue
             elapsed = max((samples[-1][0] - samples[0][0]) / 1000.0, 0.001)
             value = delta / elapsed if op == "rate" else delta
-            grouped[_group_key(series["labels"], spec.get("group_by", []))] += (
+            grouped[_group_key(series["labels"], spec.get("group_by", []))].append(
                 value * scale
             )
         key_name = "rate" if op == "rate" else "increase"
         return [
-            QueryRow(spec["name"], dict(group), {key_name: value}, spec.get("unit", ""))
-            for group, value in grouped.items()
+            QueryRow(
+                spec["name"],
+                dict(group),
+                {key_name: _aggregate(values, aggregate)},
+                spec.get("unit", ""),
+            )
+            for group, values in grouped.items()
         ]
 
     def _gauge_rows(
@@ -171,10 +179,10 @@ class QueryEngine:
         end_ms: int,
         tag_filters: Mapping[str, str] | None,
     ) -> list[QueryRow]:
-        aggregate = spec.get("aggregate", "avg")
+        aggregate = spec["aggregate"]
         scale = float(spec.get("scale", 1.0))
         grouped: dict[tuple[tuple[str, str], ...], list[float]] = defaultdict(list)
-        for series in self.store.list_series(spec["name"]):
+        for series in self.store.list_series(_source_name(spec)):
             if not _matches_tag_filters(series["labels"], tag_filters):
                 continue
             samples = self.store.samples_for_series(int(series["id"]), start_ms, end_ms)
@@ -201,6 +209,7 @@ class QueryEngine:
         tag_filters: Mapping[str, str] | None,
     ) -> list[QueryRow]:
         name = spec["name"]
+        source_name = _source_name(spec)
         group_by = spec.get("group_by", [])
         scale = float(spec.get("scale", 1.0))
         bucket_values: dict[tuple[tuple[str, str], ...], dict[float, float]] = (
@@ -209,7 +218,7 @@ class QueryEngine:
         sum_values: dict[tuple[tuple[str, str], ...], float] = defaultdict(float)
         count_values: dict[tuple[tuple[str, str], ...], float] = defaultdict(float)
 
-        for series in self.store.list_series(f"{name}_bucket"):
+        for series in self.store.list_series(f"{source_name}_bucket"):
             labels = dict(series["labels"])
             if not _matches_tag_filters(labels, tag_filters):
                 continue
@@ -224,7 +233,7 @@ class QueryEngine:
             bucket_values[_group_key(labels, group_by)][le] += delta
 
         for suffix, target in (("_sum", sum_values), ("_count", count_values)):
-            for series in self.store.list_series(f"{name}{suffix}"):
+            for series in self.store.list_series(f"{source_name}{suffix}"):
                 if not _matches_tag_filters(series["labels"], tag_filters):
                     continue
                 samples = self.store.samples_for_series(
@@ -239,12 +248,12 @@ class QueryEngine:
         for group, buckets in bucket_values.items():
             values: dict[str, float] = {}
             count = count_values.get(group) or buckets.get(math.inf, 0.0)
-            if spec.get("avg", False) and count > 0:
-                values["avg"] = (sum_values.get(group, 0.0) / count) * scale
             for quantile in spec.get("quantiles", []):
                 value = histogram_quantile(float(quantile), buckets, count)
                 if value is not None:
                     values[_quantile_name(float(quantile))] = value * scale
+            if spec.get("avg", False) and count > 0:
+                values["avg"] = (sum_values.get(group, 0.0) / count) * scale
             if values:
                 rows.append(QueryRow(name, dict(group), values, spec.get("unit", "")))
         return rows
@@ -311,12 +320,8 @@ def _matches_tag_filters(labels: object, tag_filters: Mapping[str, str] | None) 
     )
 
 
-def _row_group(
-    labels: dict[str, str], group_by: Iterable[str] | None
-) -> dict[str, str]:
-    if group_by is None:
-        return dict(labels)
-    return {name: str(labels.get(name, "")) for name in group_by}
+def _source_name(spec: dict) -> str:
+    return str(spec.get("source", spec["name"]))
 
 
 def _parse_le(value: str) -> float:
@@ -335,13 +340,9 @@ def _quantile_name(quantile: float) -> str:
 def _aggregate(values: list[float], aggregate: str) -> float:
     if aggregate == "sum":
         return sum(values)
-    if aggregate == "max":
-        return max(values)
-    if aggregate == "min":
-        return min(values)
-    if aggregate == "last":
-        return values[-1]
-    return sum(values) / len(values)
+    if aggregate == "avg":
+        return sum(values) / len(values)
+    raise ValueError(f"Unsupported aggregate: {aggregate}")
 
 
 def _primary_value(row: QueryRow) -> float:

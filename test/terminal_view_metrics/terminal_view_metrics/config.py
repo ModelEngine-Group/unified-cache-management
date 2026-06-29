@@ -9,6 +9,7 @@ from typing import Iterator
 from .promql import metric_names_in_expr
 
 CONFIG_DIR = Path(__file__).resolve().parents[1] / "configs"
+DEFAULT_HISTOGRAM_QUANTILES = [0.5, 0.9, 0.99]
 
 
 def load_config(path: str | Path) -> dict:
@@ -64,7 +65,7 @@ def metric_names_for_scrape(config: dict) -> set[str]:
         if "expr" in spec:
             names.update(metric_names_in_expr(spec["expr"]))
             continue
-        name = spec["name"]
+        name = spec.get("source", spec["name"])
         metric_type = spec.get("type", "gauge")
         if metric_type == "histogram":
             names.update({f"{name}_bucket", f"{name}_sum", f"{name}_count"})
@@ -119,6 +120,12 @@ def _normalize_metric(metric: dict, prefix: str) -> dict:
     if prefix and ":" not in name and not name.startswith(prefix):
         name = f"{prefix}{name}"
     spec["name"] = name
+    aggregate = spec.get("aggregate")
+    if aggregate not in {"sum", "avg"}:
+        raise ValueError(f"Metric {name} requires aggregate to be 'sum' or 'avg'")
+    if spec.get("type") == "histogram":
+        spec["avg"] = True
+        spec["quantiles"] = list(DEFAULT_HISTOGRAM_QUANTILES)
     return spec
 
 

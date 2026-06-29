@@ -6,7 +6,7 @@
       "type": "promql",
       "expr": "sum by (worker_id) (rate(ucm:cache_lookup_hit_blocks_total[$__rate_interval])) / (sum by (worker_id) (rate(ucm:cache_lookup_hit_blocks_total[$__rate_interval])) + sum by (worker_id) (rate(ucm:cache_lookup_miss_blocks_total[$__rate_interval])))",
       "value": "hit_rate",
-      "group_by": ["worker_id"]
+      "aggregate": "avg"
     },
     {
       "name": "Connector Load Throughput",
@@ -14,7 +14,7 @@
       "expr": "sum by (model_name, worker_id) (rate(ucm:load_bytes_total[$__rate_interval])) / 1e9",
       "value": "gbps",
       "unit": "GB/s",
-      "group_by": ["model_name", "worker_id"]
+      "aggregate": "sum"
     },
     {
       "name": "Connector Save Throughput",
@@ -22,7 +22,7 @@
       "expr": "sum by (model_name, worker_id) (rate(ucm:save_bytes_total[$__rate_interval])) / 1e9",
       "value": "gbps",
       "unit": "GB/s",
-      "group_by": ["model_name", "worker_id"]
+      "aggregate": "sum"
     },
     {
       "name": "Connector Load Duration p90",
@@ -30,7 +30,7 @@
       "expr": "histogram_quantile(0.9, sum by (le, model_name, worker_id) (rate(ucm:load_duration_bucket[$__rate_interval])))",
       "value": "p90",
       "unit": "ms",
-      "group_by": ["model_name", "worker_id"]
+      "aggregate": "avg"
     },
     {
       "name": "Connector Load Duration p99",
@@ -38,7 +38,7 @@
       "expr": "histogram_quantile(0.99, sum by (le, model_name, worker_id) (rate(ucm:load_duration_bucket[$__rate_interval])))",
       "value": "p99",
       "unit": "ms",
-      "group_by": ["model_name", "worker_id"]
+      "aggregate": "avg"
     },
     {
       "name": "Connector Load Duration Avg",
@@ -46,7 +46,7 @@
       "expr": "sum by (model_name, worker_id) (rate(ucm:load_duration_sum[$__rate_interval])) / sum by (model_name, worker_id) (rate(ucm:load_duration_count[$__rate_interval]))",
       "value": "avg",
       "unit": "ms",
-      "group_by": ["model_name", "worker_id"]
+      "aggregate": "avg"
     },
     {
       "name": "Connector Save Duration p90",
@@ -54,7 +54,7 @@
       "expr": "histogram_quantile(0.9, sum by (le, model_name, worker_id) (rate(ucm:save_duration_bucket[$__rate_interval])))",
       "value": "p90",
       "unit": "ms",
-      "group_by": ["model_name", "worker_id"]
+      "aggregate": "avg"
     },
     {
       "name": "Connector Save Duration p99",
@@ -62,7 +62,7 @@
       "expr": "histogram_quantile(0.99, sum by (le, model_name, worker_id) (rate(ucm:save_duration_bucket[$__rate_interval])))",
       "value": "p99",
       "unit": "ms",
-      "group_by": ["model_name", "worker_id"]
+      "aggregate": "avg"
     },
     {
       "name": "Cache Load Throughput",
@@ -70,7 +70,7 @@
       "expr": "sum by (worker_id) (rate(ucm:cache_load_bytes_total[$__rate_interval])) / 1e9",
       "value": "gbps",
       "unit": "GB/s",
-      "group_by": ["worker_id"]
+      "aggregate": "sum"
     },
     {
       "name": "Cache Dump Throughput",
@@ -78,7 +78,7 @@
       "expr": "sum by (worker_id) (rate(ucm:cache_dump_bytes_total[$__rate_interval])) / 1e9",
       "value": "gbps",
       "unit": "GB/s",
-      "group_by": ["worker_id"]
+      "aggregate": "sum"
     },
     {
       "name": "Cache Load Duration p99",
@@ -86,7 +86,7 @@
       "expr": "histogram_quantile(0.99, sum by (le, worker_id) (rate(ucm:cache_load_duration_ms_bucket[$__rate_interval])))",
       "value": "p99",
       "unit": "ms",
-      "group_by": ["worker_id"]
+      "aggregate": "avg"
     },
     {
       "name": "Cache Dump Duration p99",
@@ -94,7 +94,7 @@
       "expr": "histogram_quantile(0.99, sum by (le, worker_id) (rate(ucm:cache_dump_duration_ms_bucket[$__rate_interval])))",
       "value": "p99",
       "unit": "ms",
-      "group_by": ["worker_id"]
+      "aggregate": "avg"
     },
     {
       "name": "Posix Read Throughput",
@@ -102,7 +102,7 @@
       "expr": "sum by (worker_id) (rate(ucm:posix_s2h_bytes_total[$__rate_interval])) / 1e9",
       "value": "gbps",
       "unit": "GB/s",
-      "group_by": ["worker_id"]
+      "aggregate": "sum"
     },
     {
       "name": "Posix Write Throughput",
@@ -110,7 +110,7 @@
       "expr": "sum by (worker_id) (rate(ucm:posix_h2s_bytes_total[$__rate_interval])) / 1e9",
       "value": "gbps",
       "unit": "GB/s",
-      "group_by": ["worker_id"]
+      "aggregate": "sum"
     }
   ]
 }

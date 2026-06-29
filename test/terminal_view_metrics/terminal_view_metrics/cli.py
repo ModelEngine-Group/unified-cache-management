@@ -66,6 +66,10 @@ def _build_parser() -> argparse.ArgumentParser:
     presets = subparsers.add_parser("list-configs", help="List bundled config presets")
     presets.set_defaults(func=_cmd_list_configs)
 
+    clean = subparsers.add_parser("clean", help="Clear the metrics SQLite database")
+    clean.add_argument("--db", default=DEFAULT_DB)
+    clean.set_defaults(func=_cmd_clean)
+
     return parser
 
 
@@ -199,6 +203,16 @@ def _cmd_query(args: argparse.Namespace) -> int:
         print(render_json(rows, args.limit))
     else:
         print(render_table(rows, args.limit))
+    return 0
+
+
+def _cmd_clean(args: argparse.Namespace) -> int:
+    store = MetricsStore(args.db)
+    try:
+        store.clear()
+    finally:
+        store.close()
+    print(f"database cleaned: {args.db}")
     return 0
 
 
