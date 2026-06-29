@@ -1134,6 +1134,7 @@ def test_vllm_dashboard_shows_time_range_token_and_prefix_totals():
         assert panel["type"] == "stat"
         assert panel["gridPos"] == {"h": 4, "w": w, "x": x, "y": 0}
         assert panel["fieldConfig"]["defaults"]["unit"] == "short"
+        assert panel["fieldConfig"]["defaults"]["decimals"] == 2
         assert len(panel["targets"]) == 1
         target = panel["targets"][0]
         assert target["instant"] is True
