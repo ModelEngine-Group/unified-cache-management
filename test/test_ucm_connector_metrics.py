@@ -1085,7 +1085,7 @@ def test_vllm_dashboard_uses_combined_prefix_cache_hit_rate_breakdown():
         "group": "A",
         "mode": "none",
     }
-    assert panel["gridPos"] == {"h": 8, "w": 24, "x": 0, "y": 24}
+    assert panel["gridPos"] == {"h": 8, "w": 24, "x": 0, "y": 36}
     assert len(panel["targets"]) == 2
 
     expected = [
@@ -1111,6 +1111,114 @@ def test_vllm_dashboard_uses_combined_prefix_cache_hit_rate_breakdown():
         assert 'job=~"$job"' in expr
         assert 'instance="$instance"' in expr
         assert "clamp_min" in expr
+
+
+def test_vllm_dashboard_shows_time_range_token_and_prefix_totals():
+    dashboard = json.loads(
+        (REPO_ROOT / "examples" / "metrics" / "grafana_vllm.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    panels = {panel["title"]: panel for panel in dashboard["panels"]}
+
+    expected = [
+        ("Total Input Tokens", "vllm:prompt_tokens_total", 0, 5),
+        ("Total Output Tokens", "vllm:generation_tokens_total", 5, 5),
+        ("Prefix Cache Queries", "vllm:prefix_cache_queries_total", 10, 5),
+        ("GPU Prefix Cache Hits", "vllm:prefix_cache_hits_total", 15, 5),
+        ("Connector Prefix Cache Hits", "vllm:external_prefix_cache_hits_total", 20, 4),
+    ]
+
+    for title, metric, x, w in expected:
+        panel = panels[title]
+        assert panel["type"] == "stat"
+        assert panel["gridPos"] == {"h": 4, "w": w, "x": x, "y": 0}
+        assert panel["fieldConfig"]["defaults"]["unit"] == "short"
+        assert len(panel["targets"]) == 1
+        target = panel["targets"][0]
+        assert target["instant"] is True
+        assert target["range"] is False
+        expr = target["expr"]
+        assert expr == (
+            f'sum(increase({metric}{{model_name="$model_name", '
+            'job=~"$job", instance="$instance", engine=~"$engine"}[$__range]))'
+        )
+        assert "$__rate_interval" not in expr
+
+    pie = panels["Prefix Cache Query Breakdown"]
+    assert pie["type"] == "piechart"
+    assert pie["gridPos"] == {"h": 8, "w": 24, "x": 0, "y": 4}
+    assert pie["options"]["displayLabels"] == ["name", "value", "percent"]
+    assert pie["options"]["legend"]["displayMode"] == "table"
+    assert pie["options"]["legend"]["values"] == ["value", "percent"]
+    pie_targets = {target["legendFormat"]: target["expr"] for target in pie["targets"]}
+    assert set(pie_targets) == {
+        "GPU Prefix Cache Hits",
+        "Connector Prefix Cache Hits",
+        "Misses",
+    }
+    assert pie_targets["GPU Prefix Cache Hits"] == (
+        'sum(increase(vllm:prefix_cache_hits_total{model_name="$model_name", '
+        'job=~"$job", instance="$instance", engine=~"$engine"}[$__range]))'
+    )
+    assert pie_targets["Connector Prefix Cache Hits"] == (
+        'sum(increase(vllm:external_prefix_cache_hits_total{model_name="$model_name", '
+        'job=~"$job", instance="$instance", engine=~"$engine"}[$__range]))'
+    )
+    assert "vllm:prefix_cache_queries_total" in pie_targets["Misses"]
+    assert "vllm:prefix_cache_hits_total" in pie_targets["Misses"]
+    assert "vllm:external_prefix_cache_hits_total" in pie_targets["Misses"]
+    assert pie_targets["Misses"].startswith("clamp_min(")
+    assert "$__rate_interval" not in pie_targets["Misses"]
+
+    assert panels["E2E Request Latency"]["gridPos"]["y"] == 12
+
+
+def test_vllm_dashboard_uses_engine_filter_and_aggregates_engine_series():
+    dashboard = json.loads(
+        (REPO_ROOT / "examples" / "metrics" / "grafana_vllm.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    variables = {var["name"]: var for var in dashboard["templating"]["list"]}
+
+    engine = variables["engine"]
+    assert engine["includeAll"] is True
+    assert engine["allValue"] == ".*"
+    assert engine["current"] == {"selected": True, "text": "All", "value": "$__all"}
+    assert (
+        engine["definition"]
+        == 'label_values(vllm:num_requests_running{job=~"$job", model_name="$model_name"}, engine)'
+    )
+
+    instance = variables["instance"]
+    assert 'engine=~"$engine"' in instance["definition"]
+    assert 'engine=~"$engine"' in instance["query"]["query"]
+
+    panels = {panel["title"]: panel for panel in dashboard["panels"]}
+    e2e_average = next(
+        target
+        for target in panels["E2E Request Latency"]["targets"]
+        if target["legendFormat"] == "Average"
+    )["expr"]
+    assert "sum(rate(vllm:e2e_request_latency_seconds_sum" in e2e_average
+    assert "sum(rate(vllm:e2e_request_latency_seconds_count" in e2e_average
+
+    scheduler_exprs = {
+        target["legendFormat"]: target["expr"]
+        for target in panels["Scheduler State"]["targets"]
+    }
+    assert scheduler_exprs["Num Running"].startswith("sum(")
+    assert scheduler_exprs["Num Waiting"].startswith("sum(")
+
+    cache_usage_expr = panels["Cache Utilization"]["targets"][0]["expr"]
+    assert cache_usage_expr.startswith("avg(")
+
+    for panel in dashboard["panels"]:
+        for target in panel.get("targets", []):
+            expr = target.get("expr", "")
+            if "vllm:" in expr:
+                assert 'engine=~"$engine"' in expr
 
 
 def test_grafana_dashboards_use_isolated_vllm_ucm_identity():
