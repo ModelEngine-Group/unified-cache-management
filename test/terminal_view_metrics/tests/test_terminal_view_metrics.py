@@ -867,7 +867,9 @@ vllm:num_requests_running{worker_id="1"} 5
         )
 
     def test_preset_configs_use_explicit_aggregate_without_group_by(self):
-        self.assertGreater(len(list_preset_configs()), 0)
+        self.assertEqual(
+            [path.name for path in list_preset_configs()], ["metrics_lite.json"]
+        )
         for path in list_preset_configs():
             config = load_config(path)
             for metric in config.get("metrics", []):

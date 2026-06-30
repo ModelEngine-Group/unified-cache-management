@@ -57,7 +57,6 @@ Query a fixed historical window by providing the window start time:
 
 ```bash
 python test/terminal_view_metrics/metrics_cli.py query \
-  --config ucm_overview \
   --start-time 2026-06-25T10:00:00 \
   --window 10m \
   --aggr-by 1m \
@@ -121,6 +120,5 @@ and utilization percentages.
 The local evaluator supports the Prometheus/Grafana patterns used by the bundled
 dashboards: `rate`, `increase`, `sum by (...)`, arithmetic, `histogram_quantile`,
 `clamp_min`, direct gauge selectors, `$__rate_interval`, and `${perWorker:raw}`.
-Bundled panel configs include `metrics_lite`, `ucm_grafana_panels`, and
-`vllm_grafana_panels`. `metrics_lite` is a compact view of common latency,
+The bundled preset config is `metrics_lite`, a compact view of common latency,
 cache hit, backend load, and request-count metrics.
