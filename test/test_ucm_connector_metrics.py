@@ -1,3 +1,4 @@
+import ast
 import importlib
 import json
 import math
@@ -254,6 +255,7 @@ GRAFANA_UCM_DASHBOARDS = [
     "grafana_connector.json",
     "grafana_layerwise.json",
     "grafana_pipeline_store.json",
+    "grafana_mooncake.json",
 ]
 
 
@@ -354,6 +356,7 @@ def _install_stubs():
 _install_stubs()
 
 import ucm.integration.vllm.ucm_connector as ucm_connector_module
+from ucm.default_metrics_config import DEFAULT_METRICS_CONFIG
 from ucm.integration.vllm.metrics import UCMConnectorStats, UCMPromMetrics
 from ucm.integration.vllm.ucm_connector import (
     PendingDumpTask,
@@ -364,6 +367,8 @@ from ucm.metrics_config import (
     consumer_enabled,
     get_metric_definitions,
     get_vllm_connector_metric_definitions,
+    load_launch_metrics_config,
+    metrics_enabled,
     multiproc_metric_name,
     setup_ucm_metrics,
     vllm_connector_prefix,
@@ -377,6 +382,90 @@ def _metric_types():
         FakeCounter: FakeCounter,
         FakeHistogram: FakeHistogram,
     }
+
+
+def _strip_yaml_comment(line):
+    in_quote = False
+    previous = ""
+    for index, char in enumerate(line):
+        if char == '"' and previous != "\\":
+            in_quote = not in_quote
+        if char == "#" and not in_quote:
+            return line[:index].rstrip()
+        previous = char
+    return line.rstrip()
+
+
+def _parse_yaml_scalar(value):
+    value = value.strip()
+    if not value:
+        return ""
+    if value in {"true", "false"}:
+        return value == "true"
+    if value[0] in {'"', "'", "["}:
+        return ast.literal_eval(value)
+    try:
+        return int(value)
+    except ValueError:
+        try:
+            return float(value)
+        except ValueError:
+            return value
+
+
+def _load_example_metrics_config_without_yaml():
+    path = REPO_ROOT / "examples" / "metrics" / "metrics_configs.yaml"
+    lines = path.read_text(encoding="utf-8").splitlines()
+    config = {}
+    section = None
+    current_item = None
+    index = 0
+
+    while index < len(lines):
+        raw = _strip_yaml_comment(lines[index])
+        stripped = raw.strip()
+        if not stripped:
+            index += 1
+            continue
+
+        indent = len(raw) - len(raw.lstrip())
+        if indent == 0:
+            key, _, value = stripped.partition(":")
+            if value.strip():
+                config[key] = _parse_yaml_scalar(value)
+                section = None
+            else:
+                config[key] = [] if key in {"counter", "gauge", "histogram"} else {}
+                section = key
+            current_item = None
+            index += 1
+            continue
+
+        if section == "consumers" and indent == 2:
+            key, _, value = stripped.partition(":")
+            config[section][key] = _parse_yaml_scalar(value)
+            index += 1
+            continue
+
+        if section in {"counter", "gauge", "histogram"}:
+            if stripped.startswith("- name:"):
+                current_item = {"name": _parse_yaml_scalar(stripped.split(":", 1)[1])}
+                config[section].append(current_item)
+                index += 1
+                continue
+            if current_item is not None:
+                key, _, value = stripped.partition(":")
+                if key == "buckets":
+                    bucket_text = value.strip()
+                    while "]" not in bucket_text:
+                        index += 1
+                        bucket_text += " " + _strip_yaml_comment(lines[index]).strip()
+                    current_item[key] = _parse_yaml_scalar(bucket_text)
+                else:
+                    current_item[key] = _parse_yaml_scalar(value)
+        index += 1
+
+    return config
 
 
 def _metrics_config(consumers=None):
@@ -416,8 +505,8 @@ def _metrics_config(consumers=None):
     }
 
 
-def _vllm_config(config=None):
-    launch_config = {}
+def _vllm_config(config=None, launch_config=None):
+    launch_config = dict(launch_config or {})
     if config is not None:
         launch_config["metrics_config"] = config
     return SimpleNamespace(
@@ -482,6 +571,62 @@ def test_config_definitions_register_enable_list_and_metric_names():
         ("cache_load_duration_ms", "histogram", (1, 5)),
         ("interval_lookup_hit_rates", "histogram", (0.1, 0.5, 1.0)),
     ]
+
+
+def test_default_metrics_config_matches_example_yaml():
+    assert DEFAULT_METRICS_CONFIG == _load_example_metrics_config_without_yaml()
+
+
+def test_launch_metrics_config_defaults_to_builtin_metrics_when_path_is_missing():
+    _reset_fakes()
+
+    config = load_launch_metrics_config({})
+    definitions = get_metric_definitions(config)
+    setup_ucm_metrics(config)
+
+    assert config == DEFAULT_METRICS_CONFIG
+    assert definitions
+    assert consumer_enabled(config, "vllm_connector")
+    assert not consumer_enabled(config, "multiproc")
+    assert fake_ucmmetrics.setup_calls == 1
+    assert {name for name, _, _ in fake_ucmmetrics.created} == {
+        definition.name for definition in definitions
+    }
+
+
+def test_launch_metrics_config_uses_explicit_file_as_enable_list(monkeypatch):
+    import ucm.metrics_config as metrics_config
+
+    custom_config = {
+        "vllm_connector_prefix": "ucm:",
+        "consumers": {"vllm_connector": True},
+        "counter": [
+            {
+                "name": "only_this_counter_total",
+                "documentation": "Only configured metric.",
+            }
+        ],
+    }
+    monkeypatch.setattr(metrics_config, "load_metrics_config", lambda _: custom_config)
+
+    config = load_launch_metrics_config({"metrics_config_path": "metrics.yaml"})
+    definitions = get_metric_definitions(config)
+
+    assert [definition.name for definition in definitions] == [
+        "only_this_counter_total"
+    ]
+
+
+def test_launch_metrics_config_respects_enable_metrics_switch():
+    assert metrics_enabled({}) is True
+    assert metrics_enabled({"enable_metrics": False}) is False
+    assert load_launch_metrics_config({"enable_metrics": False}) == {}
+    assert (
+        load_launch_metrics_config(
+            {"enable_metrics": False, "metrics_config": _metrics_config()}
+        )
+        == {}
+    )
 
 
 def test_setup_ucm_metrics_logs_registered_metrics(monkeypatch):
@@ -764,8 +909,14 @@ def test_ucm_connector_builds_stats_and_respects_vllm_connector_switch():
         ["model_name", "engine"],
         {0: ["model-a", "0"]},
     )
-    missing_config = UCMConnector.build_prom_metrics(
+    default_prom = UCMConnector.build_prom_metrics(
         _vllm_config(),
+        _metric_types(),
+        ["model_name", "engine"],
+        {0: ["model-a", "0"]},
+    )
+    disabled_by_launch_config = UCMConnector.build_prom_metrics(
+        _vllm_config(launch_config={"enable_metrics": False}),
         _metric_types(),
         ["model_name", "engine"],
         {0: ["model-a", "0"]},
@@ -774,11 +925,35 @@ def test_ucm_connector_builds_stats_and_respects_vllm_connector_switch():
     assert isinstance(stats, UCMConnectorStats)
     assert stats.data == data
     assert isinstance(prom, UCMPromMetrics)
+    assert isinstance(default_prom, UCMPromMetrics)
     assert disabled is None
-    assert missing_config is None
+    assert disabled_by_launch_config is None
 
 
-def test_direct_connector_drains_dispatcher_vllm_connector_snapshot():
+def test_ucm_connector_metrics_registration_is_owned_by_outer_connector():
+    class CustomInnerConnector(UCMDirectConnector):
+        pass
+
+    prom = UCMConnector.build_prom_metrics(
+        _vllm_config(),
+        _metric_types(),
+        ["model_name", "engine"],
+        {0: ["model-a", "0"]},
+    )
+    stats = UCMConnector.build_kv_connector_stats(
+        {"counters_by_rank": {"0": {"load_bytes_total": 1.0}}}
+    )
+
+    assert "get_kv_connector_stats" in UCMConnector.__dict__
+    assert "build_kv_connector_stats" in UCMConnector.__dict__
+    assert "build_prom_metrics" in UCMConnector.__dict__
+    assert not hasattr(CustomInnerConnector, "build_prom_metrics")
+    assert isinstance(prom, UCMPromMetrics)
+    assert isinstance(stats, UCMConnectorStats)
+    assert stats.data["counters_by_rank"]["0"]["load_bytes_total"] == 1.0
+
+
+def test_ucm_connector_drains_dispatcher_vllm_connector_snapshot():
     _reset_fakes()
     config = _metrics_config()
     dispatcher = get_metrics_dispatcher(config)
@@ -787,7 +962,12 @@ def test_direct_connector_drains_dispatcher_vllm_connector_snapshot():
         {"cache_lookup_hit_rate": 0.5},
         {"load_duration": ([0, 1, 0], 75.0)},
     )
-    connector = object.__new__(UCMDirectConnector)
+    connector = object.__new__(UCMConnector)
+    connector.connector = SimpleNamespace(
+        get_kv_connector_stats=lambda: pytest.fail(
+            "inner connector metrics should not be used"
+        )
+    )
     connector._vllm_metrics_enabled = True
     connector._vllm_metric_definitions = get_vllm_connector_metric_definitions(config)
     connector._metrics_dispatcher = dispatcher
@@ -965,13 +1145,16 @@ def test_multiproc_logger_respects_consumer_switch():
     assert FakeCounter.created == {}
 
 
-def test_ucm_connector_get_kv_connector_stats_forwards_to_inner_connector():
-    expected = UCMConnectorStats(worker_rank=2)
-    inner = SimpleNamespace(get_kv_connector_stats=lambda: expected)
+def test_ucm_connector_get_kv_connector_stats_skips_inner_when_disabled():
     connector = object.__new__(UCMConnector)
-    connector.connector = inner
+    connector.connector = SimpleNamespace(
+        get_kv_connector_stats=lambda: pytest.fail(
+            "inner connector metrics should not be used"
+        )
+    )
+    connector._vllm_metrics_enabled = False
 
-    assert connector.get_kv_connector_stats() is expected
+    assert connector.get_kv_connector_stats() is None
 
 
 def test_example_metrics_config_defaults_to_vllm_connector_metrics():
@@ -1236,6 +1419,10 @@ def test_grafana_dashboards_use_isolated_vllm_ucm_identity():
             "vLLM - UCM Cache / Posix Store (vLLM Metrics)",
             "ucm-vllm-pipeline-store",
         ),
+        "grafana_mooncake.json": (
+            "vLLM - UCM Mooncake Store (vLLM Metrics)",
+            "ucm-vllm-mooncake-store",
+        ),
         "grafana_vllm.json": (
             "vLLM (UCM Metrics)",
             "ucm-vllm-overview",
@@ -1347,6 +1534,41 @@ def test_ucm_dashboards_use_engine_and_worker_rank_filters():
                 assert "sum by (model_name)" in expr
 
 
+def test_mooncake_dashboard_covers_configured_mooncake_metrics():
+    dashboard_path = REPO_ROOT / "examples" / "metrics" / "grafana_mooncake.json"
+    dashboard_text = dashboard_path.read_text(encoding="utf-8")
+    dashboard = json.loads(dashboard_text)
+    panels = {panel["title"]: panel for panel in dashboard["panels"]}
+
+    assert dashboard["title"] == "vLLM - UCM Mooncake Store (vLLM Metrics)"
+    assert dashboard["uid"] == "ucm-vllm-mooncake-store"
+    assert "Mooncake Store" in panels
+    assert "Mooncake Load Hit / Miss Shards" in panels
+    assert "Mooncake Dump Existing / Missing Shards" in panels
+    assert "Mooncake Load Stage Avg Breakdown" in panels
+    assert "Mooncake Dump Stage Avg Breakdown" in panels
+    assert "Mooncake Error Rate" in panels
+    assert "mooncake_h2d_bandwidth_gbps" not in dashboard_text
+    assert "mooncake_d2h_bandwidth_gbps" not in dashboard_text
+
+    metrics_text = (
+        REPO_ROOT / "examples" / "metrics" / "metrics_configs.yaml"
+    ).read_text(encoding="utf-8")
+    configured_mooncake = {
+        name
+        for name in re.findall(
+            r'^\s*-\s+name:\s+"(mooncake_[^"]+)"', metrics_text, re.MULTILINE
+        )
+        if name not in {"mooncake_h2d_bandwidth_gbps", "mooncake_d2h_bandwidth_gbps"}
+    }
+    referenced = {
+        re.sub(r"_(bucket|sum|count)$", "", metric)
+        for metric in re.findall(r"ucm:(mooncake_[A-Za-z0-9_]+)", dashboard_text)
+    }
+
+    assert configured_mooncake <= referenced
+
+
 def test_layerwise_dashboard_hides_no_transfer_and_uses_rate_interval_for_breakdown():
     dashboard = json.loads(
         (REPO_ROOT / "examples" / "metrics" / "grafana_layerwise.json").read_text(
@@ -1426,7 +1648,7 @@ def test_layerwise_wait_for_save_records_save_tail_and_completion_start():
     assert 'stats["layerwise_save_tail_total_ms"] = save_tail_ms' in source
 
 
-def test_cache_load_h2d_duration_uses_first_backend_ready_time():
+def test_cache_load_h2d_duration_records_stream_synchronize_only():
     header = (REPO_ROOT / "ucm" / "store" / "cache" / "cc" / "load_queue.h").read_text(
         encoding="utf-8"
     )
@@ -1434,15 +1656,16 @@ def test_cache_load_h2d_duration_uses_first_backend_ready_time():
         encoding="utf-8"
     )
 
-    assert "double h2dBatchStartTp_{0.0};" in header
+    assert "double h2dBatchStartTp_{0.0};" not in header
     assert "firstH2dReadyTp" not in header
     assert "firstH2dReadyTp" not in source
     assert "double h2dBatchStartTp = 0.0;" not in source
     assert "double& h2dBatchStartTp" not in header
     assert "double& h2dBatchStartTp" not in source
-    assert "if (holder_.empty()) { h2dBatchStartTp_ = tpBackendReady; }" in source
-    assert "auto h2dSyncMs = (NowTime::Now() - h2dBatchStartTp_) * 1e3;" in source
-    assert "h2dBatchStartTp_ = 0.0;" in source
+    assert "h2dBatchStartTp_" not in source
+    assert "auto tpH2dSyncStart = NowTime::Now();" in source
+    assert "auto h2dSyncMs = (NowTime::Now() - tpH2dSyncStart) * 1e3;" in source
+    assert "cache_h2d_bandwidth_gbps" not in source
     assert "auto h2dSyncMs = (NowTime::Now() - tpH2dSubmitted) * 1e3;" not in source
 
 
@@ -1524,11 +1747,11 @@ def test_cache_dump_d2h_metrics_require_event_ready_timestamp():
     assert "EventElapsedTimeMs" not in source
     assert "DestroyEventTimer" not in source
     assert "auto copyStream = stream.NextStream();" not in source
-    assert "DeviceToHostGatherAsync(stream.NextStream()" in source
+    assert "DeviceToHostAsync(stream, shard.addrs.data(), host)" in source
     assert "if (eventReadyTp && copiedShards > 0)" not in source
+    assert "cache_d2h_bandwidth_gbps" not in source
 
     d2h_duration_pos = source.index('NAME_TO_METRIC_ID("cache_d2h_duration_ms")')
-    d2h_bandwidth_pos = source.index('NAME_TO_METRIC_ID("cache_d2h_bandwidth_gbps")')
     sync_start_pos = source.index("auto tpSyncStart = NowTime::Now()")
     sync_pos = source.index("auto s = stream.Synchronize()")
     sync_end_pos = source.index("auto tpSyncStream = NowTime::Now()")
@@ -1547,7 +1770,37 @@ def test_cache_dump_d2h_metrics_require_event_ready_timestamp():
     assert sync_start_pos < sync_pos < sync_end_pos < backend_submit_start_pos
     assert sync_end_pos < d2h_ms_pos < d2h_duration_pos < backend_submit_pos
     assert prereq_block_pos < ready_load_pos < backend_submit_pos
-    assert d2h_ms_pos < d2h_bandwidth_pos < backend_submit_pos
+
+
+def test_h2d_d2h_bandwidth_metrics_are_not_configured_or_recorded():
+    metrics_text = (
+        REPO_ROOT / "examples" / "metrics" / "metrics_configs.yaml"
+    ).read_text(encoding="utf-8")
+    sources = "\n".join(
+        path.read_text(encoding="utf-8")
+        for path in (
+            REPO_ROOT / "ucm" / "store" / "cache" / "cc" / "load_queue.cc",
+            REPO_ROOT / "ucm" / "store" / "cache" / "cc" / "dump_queue.cc",
+            REPO_ROOT / "ucm" / "store" / "mooncakestore" / "cc" / "load_queue.cc",
+            REPO_ROOT / "ucm" / "store" / "mooncakestore" / "cc" / "dump_queue.cc",
+            REPO_ROOT
+            / "ucm"
+            / "store"
+            / "mooncakestore"
+            / "cc"
+            / "share_load_queue.cc",
+        )
+    )
+    removed_metrics = {
+        "cache_h2d_bandwidth_gbps",
+        "cache_d2h_bandwidth_gbps",
+        "mooncake_h2d_bandwidth_gbps",
+        "mooncake_d2h_bandwidth_gbps",
+    }
+
+    for metric in removed_metrics:
+        assert metric not in metrics_text
+        assert metric not in sources
 
 
 def test_pipeline_dashboard_orders_cache_bandwidth_rows():
@@ -1562,8 +1815,8 @@ def test_pipeline_dashboard_orders_cache_bandwidth_rows():
     assert panels["Cache Dump Bandwidth (aggregated)"]["gridPos"]["y"] == 33
     assert panels["Cache Load Bandwidth (per task)"]["gridPos"]["y"] == 41
     assert panels["Cache Dump Bandwidth (per task)"]["gridPos"]["y"] == 41
-    assert panels["Cache Load H2D Bandwidth (per task)"]["gridPos"]["y"] == 49
-    assert panels["Cache Dump D2H Bandwidth (per task)"]["gridPos"]["y"] == 49
+    assert "Cache Load H2D Bandwidth (per task)" not in panels
+    assert "Cache Dump D2H Bandwidth (per task)" not in panels
     assert panels["Cache Load Backend Wait Duration"]["gridPos"] == {
         "h": 8,
         "w": 12,

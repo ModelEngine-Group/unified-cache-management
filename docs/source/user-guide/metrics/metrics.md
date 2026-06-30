@@ -1,12 +1,15 @@
 # Observability
 
-UCM exports metrics through the vLLM `/metrics` endpoint. The metrics are
-registered from `examples/metrics/metrics_configs.yaml`, accumulated inside UCM,
-and fanned out to the enabled Python-side consumers.
+UCM exports metrics through the vLLM `/metrics` endpoint. By default, the
+built-in metrics config in `ucm/default_metrics_config.py` registers the full
+metric set. If `metrics_config_path` is provided, that file becomes the
+enable-list instead. Metrics are accumulated inside UCM and fanned out to the
+enabled Python-side consumers.
 
 ## How Metrics Flow
 
-1. `metrics_configs.yaml` defines counters, gauges, and histograms.
+1. The built-in default config, or a user-provided `metrics_configs.yaml`, defines
+   counters, gauges, and histograms.
 2. The Python metrics dispatcher drains the C++ metrics snapshot once and fans
    it out to the enabled `multiproc` and `vllm_connector` consumers.
 3. `multiproc` creates `prometheus_client` metrics with `model_name` and
@@ -36,8 +39,22 @@ Set the Prometheus multiprocess directory before starting vLLM:
 export PROMETHEUS_MULTIPROC_DIR=/vllm-workspace
 ```
 
-In the UCM config file used by vLLM, set `metrics_config_path` to the metrics
-configuration file you want to use, for example:
+In the UCM config file used by vLLM, metrics are enabled by default. You can set
+the switch explicitly:
+
+```yaml
+enable_metrics: true
+```
+
+To disable all UCM metrics:
+
+```yaml
+enable_metrics: false
+```
+
+To customize which metrics are registered, set `metrics_config_path` to the
+metrics configuration file you want to use. When this path is omitted, UCM uses
+the built-in default config:
 
 ```yaml
 metrics_config_path: "/vllm-workspace/unified-cache-management/examples/metrics/metrics_configs.yaml"

@@ -353,12 +353,6 @@ class UCMDirectConnector(KVConnectorBase_V1):
         self.local_rank = (
             -1 if role == KVConnectorRole.SCHEDULER else get_world_group().local_rank
         )
-        self._worker_rank = (
-            get_world_group().rank if role == KVConnectorRole.WORKER else None
-        )
-        self._vllm_metrics_enabled = False
-        self._vllm_metric_definitions = []
-        self._metrics_dispatcher = None
         self.tp_rank = self._vllm_config.parallel_config.rank
         self.block_size = self._vllm_config.cache_config.block_size
         self.is_mla = self._vllm_config.model_config.is_deepseek_mla
@@ -423,42 +417,6 @@ class UCMDirectConnector(KVConnectorBase_V1):
                 vllm_config, self.tp_rank % self.tp_size
             )
             self._connector_worker_meta = UCMWorkerMetadata()
-
-        metrics_config_path = self.launch_config.get("metrics_config_path", "")
-        self.metrics_config = load_launch_metrics_config(self.launch_config)
-        if self.metrics_config and (
-            consumer_enabled(self.metrics_config, MULTIPROC_CONSUMER)
-            or consumer_enabled(self.metrics_config, VLLM_CONNECTOR_CONSUMER)
-        ):
-            setup_ucm_metrics(self.metrics_config)
-            self._metrics_dispatcher = get_metrics_dispatcher(self.metrics_config)
-        if (
-            metrics_config_path
-            and self.metrics_config
-            and consumer_enabled(self.metrics_config, MULTIPROC_CONSUMER)
-        ):
-            worker_id = (
-                f"{self.engine_id}_{get_world_group().rank}"
-                if role == KVConnectorRole.WORKER
-                else self.engine_id
-            )
-            self.stats_logger = PrometheusStatsLogger(
-                vllm_config.model_config.served_model_name,
-                worker_id,
-                metrics_config_path,
-            )
-            logger.info(
-                f"metrics_config_path: {metrics_config_path}, set worker_id: {worker_id}"
-            )
-        if (
-            role == KVConnectorRole.WORKER
-            and self.metrics_config
-            and consumer_enabled(self.metrics_config, VLLM_CONNECTOR_CONSUMER)
-        ):
-            self._vllm_metric_definitions = get_vllm_connector_metric_definitions(
-                self.metrics_config
-            )
-            self._vllm_metrics_enabled = bool(self._vllm_metric_definitions)
 
         self.persist_token_threshold = self.launch_config.get(
             "persist_token_threshold", 0
@@ -1138,26 +1096,6 @@ class UCMDirectConnector(KVConnectorBase_V1):
         if not math.isfinite(value):
             return 0.0
         return max(value, 0.0)
-
-    def get_kv_connector_stats(self) -> Optional["KVConnectorStats"]:
-        if not self._vllm_metrics_enabled:
-            return None
-        if self._metrics_dispatcher is None:
-            return None
-        self._metrics_dispatcher.drain_to_consumers()
-        counter_stats, gauge_stats, histogram_stats = (
-            self._metrics_dispatcher.get_stats_and_clear(VLLM_CONNECTOR_CONSUMER)
-        )
-        stats = UCMConnectorStats.from_ucm_snapshot(
-            counter_stats=counter_stats,
-            gauge_stats=gauge_stats,
-            histogram_stats=histogram_stats,
-            worker_rank=self._worker_rank,
-            metric_definitions=self._vllm_metric_definitions,
-        )
-        if stats.is_empty():
-            return None
-        return stats
 
     def clear_connector_metadata(self) -> None:
         super().clear_connector_metadata()
@@ -3172,7 +3110,12 @@ class UCMConnector(KVConnectorBase_V1, SupportsHMA):
         )
         self.connector: KVConnectorBase_V1
         ucm_config = Config(vllm_config.kv_transfer_config)
+        self.engine_id = vllm_config.kv_transfer_config.engine_id
         self.launch_config = ucm_config.get_config()
+        self._worker_rank = (
+            get_world_group().rank if role == KVConnectorRole.WORKER else None
+        )
+        self._setup_ucm_metrics(vllm_config, role)
         logger.info(f"self.launch_config: {self.launch_config}")
 
         use_layerwise = (
@@ -3234,6 +3177,95 @@ class UCMConnector(KVConnectorBase_V1, SupportsHMA):
             )
         else:
             self.connector = UCMDirectConnector(vllm_config, role, kv_cache_config)
+
+    def _setup_ucm_metrics(self, vllm_config: "VllmConfig", role: KVConnectorRole):
+        self._vllm_metrics_enabled = False
+        self._vllm_metric_definitions = []
+        self._metrics_dispatcher = None
+
+        metrics_config_path = self.launch_config.get("metrics_config_path", "")
+        self.metrics_config = load_launch_metrics_config(self.launch_config)
+        if self.metrics_config and (
+            consumer_enabled(self.metrics_config, MULTIPROC_CONSUMER)
+            or consumer_enabled(self.metrics_config, VLLM_CONNECTOR_CONSUMER)
+        ):
+            setup_ucm_metrics(self.metrics_config)
+            self._metrics_dispatcher = get_metrics_dispatcher(self.metrics_config)
+        if (
+            metrics_config_path
+            and self.metrics_config
+            and consumer_enabled(self.metrics_config, MULTIPROC_CONSUMER)
+        ):
+            worker_id = (
+                f"{self.engine_id}_{get_world_group().rank}"
+                if role == KVConnectorRole.WORKER
+                else self.engine_id
+            )
+            self.stats_logger = PrometheusStatsLogger(
+                vllm_config.model_config.served_model_name,
+                worker_id,
+                metrics_config_path,
+            )
+            logger.info(
+                f"metrics_config_path: {metrics_config_path}, set worker_id: {worker_id}"
+            )
+        if (
+            role == KVConnectorRole.WORKER
+            and self.metrics_config
+            and consumer_enabled(self.metrics_config, VLLM_CONNECTOR_CONSUMER)
+        ):
+            self._vllm_metric_definitions = get_vllm_connector_metric_definitions(
+                self.metrics_config
+            )
+            self._vllm_metrics_enabled = bool(self._vllm_metric_definitions)
+
+    def get_kv_connector_stats(self) -> Optional["KVConnectorStats"]:
+        if not self._vllm_metrics_enabled:
+            return None
+        if self._metrics_dispatcher is None:
+            return None
+        self._metrics_dispatcher.drain_to_consumers()
+        counter_stats, gauge_stats, histogram_stats = (
+            self._metrics_dispatcher.get_stats_and_clear(VLLM_CONNECTOR_CONSUMER)
+        )
+        stats = UCMConnectorStats.from_ucm_snapshot(
+            counter_stats,
+            gauge_stats,
+            histogram_stats,
+            worker_rank=self._worker_rank,
+            metric_definitions=self._vllm_metric_definitions,
+        )
+        return None if stats.is_empty() else stats
+
+    @classmethod
+    def build_kv_connector_stats(
+        cls, data: dict[str, Any] | None = None
+    ) -> Optional["KVConnectorStats"]:
+        return UCMConnectorStats(data=data) if data is not None else UCMConnectorStats()
+
+    @classmethod
+    def build_prom_metrics(
+        cls,
+        vllm_config: "VllmConfig",
+        metric_types: dict[type["PromMetric"], type["PromMetricT"]],
+        labelnames: list[str],
+        per_engine_labelvalues: dict[int, list[object]],
+    ) -> Optional["KVConnectorPromMetrics"]:
+        if not UCM_HAS_PROM_METRICS:
+            return None
+        config = load_launch_metrics_config(
+            Config(vllm_config.kv_transfer_config).get_config()
+        )
+        if not config or not consumer_enabled(config, VLLM_CONNECTOR_CONSUMER):
+            return None
+        if not get_vllm_connector_metric_definitions(config):
+            return None
+        return UCMPromMetrics(
+            vllm_config,
+            metric_types,
+            labelnames,
+            per_engine_labelvalues,
+        )
 
     def get_num_new_matched_tokens(
         self,
@@ -3370,39 +3402,6 @@ class UCMConnector(KVConnectorBase_V1, SupportsHMA):
         This prevents overwrites of paged KV buffer before saving done.
         """
         self.connector.wait_for_save()
-
-    def get_kv_connector_stats(self) -> Optional["KVConnectorStats"]:
-        return self.connector.get_kv_connector_stats()
-
-    @classmethod
-    def build_kv_connector_stats(
-        cls, data: dict[str, Any] | None = None
-    ) -> Optional["KVConnectorStats"]:
-        return UCMConnectorStats(data=data) if data is not None else UCMConnectorStats()
-
-    @classmethod
-    def build_prom_metrics(
-        cls,
-        vllm_config: "VllmConfig",
-        metric_types: dict[type["PromMetric"], type["PromMetricT"]],
-        labelnames: list[str],
-        per_engine_labelvalues: dict[int, list[object]],
-    ) -> Optional["KVConnectorPromMetrics"]:
-        if not UCM_HAS_PROM_METRICS:
-            return None
-        config = load_launch_metrics_config(
-            Config(vllm_config.kv_transfer_config).get_config()
-        )
-        if not config or not consumer_enabled(config, VLLM_CONNECTOR_CONSUMER):
-            return None
-        if not get_vllm_connector_metric_definitions(config):
-            return None
-        return UCMPromMetrics(
-            vllm_config,
-            metric_types,
-            labelnames,
-            per_engine_labelvalues,
-        )
 
     def request_finished_all_groups(
         self,

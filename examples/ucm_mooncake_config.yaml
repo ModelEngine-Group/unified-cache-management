@@ -26,7 +26,9 @@ ucm_connectors:
 # before Mooncake reads device memory for dump.
 enable_event_sync: true
 
-# Enable UCM metrics (optional)
+# Enable UCM metrics (optional). If metrics_config_path is omitted, UCM uses
+# the built-in default config.
+enable_metrics: true
 # metrics_config_path: "/workspace/unified-cache-management/examples/metrics/metrics_configs.yaml"
 
 # Sparse attention (optional)

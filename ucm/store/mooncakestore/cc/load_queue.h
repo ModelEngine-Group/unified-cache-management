@@ -78,6 +78,8 @@ private:
 
     Status HostToDeviceScatterAsync(std::shared_ptr<Trans::Stream> stream, void* host,
                                     void** device);
+    size_t BlockBytes() const;
+    void RecordH2dMetrics(size_t copiedShards, double h2dMs) const;
 
 private:
     alignas(64) std::atomic_bool stop_{false};

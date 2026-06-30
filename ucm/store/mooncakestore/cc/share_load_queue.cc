@@ -22,7 +22,10 @@
  * SOFTWARE.
  * */
 #include "share_load_queue.h"
+#include <numeric>
 #include "logger/logger.h"
+#include "metrics_api.h"
+#include "time/now_time.h"
 #include "trans/device.h"
 
 namespace UC::MooncakeStore {
@@ -201,14 +204,20 @@ void ShareLoadQueue::HandleLoadTask(BlockTask& task, Trans::Stream& stream)
         backendTask.push_back(
             Detail::Shard{task.shard.owner, task.shard.index, {task.reader->GetData()}});
 
+        auto tpSubmit = NowTime::Now();
         auto res = backend_->Load(std::move(backendTask));
         if (!res) [[unlikely]] {
             UC_ERROR("Failed({}) to submit backend load for key={}.", res.Error(), task.shard.key);
+            UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("mooncake_backend_load_submit_errors_total"),
+                                     1.0);
             task.reader->MarkFailed();
             failureSet_->Insert(task.taskHandle);
             if (task.done) { task.done(false); }
             return;
         }
+        UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("mooncake_load_backend_submit_duration_ms"),
+                                 (NowTime::Now() - tpSubmit) * 1e3);
+        UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("mooncake_load_backend_shards_total"), 1.0);
 
         task.backendTaskHandle = res.Value();
         // Put into load list to wait for backend completion
@@ -241,14 +250,19 @@ void ShareLoadQueue::HandleReadyTask(Status s, BlockTask& task, Trans::Stream& s
     auto hs = HostToDeviceScatterAsync(stream, host, task.shard.addrs.data());
     if (hs.Failure()) [[unlikely]] {
         UC_ERROR("Failed({}) to H2D for key={}.", hs, task.shard.key);
+        UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("mooncake_h2d_errors_total"), 1.0);
         failureSet_->Insert(task.taskHandle);
         if (task.done) { task.done(false); }
         return;
     }
 
+    auto h2dSyncStart = NowTime::Now();
     auto ss = stream.Synchronized();
+    auto h2dMs = (NowTime::Now() - h2dSyncStart) * 1e3;
+    RecordH2dMetrics(h2dMs);
     if (ss.Failure()) [[unlikely]] {
         UC_ERROR("Failed({}) to sync stream for key={}.", ss, task.shard.key);
+        UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("mooncake_h2d_errors_total"), 1.0);
         failureSet_->Insert(task.taskHandle);
         if (task.done) { task.done(false); }
         return;
@@ -265,14 +279,20 @@ void ShareLoadQueue::HandleBackendComplete(BlockTask& task, Trans::Stream& strea
         return;
     }
 
+    auto tpWait = NowTime::Now();
     auto ws = backend_->Wait(task.backendTaskHandle);
+    auto tpReady = NowTime::Now();
     if (ws.Failure()) [[unlikely]] {
         UC_ERROR("Failed({}) to wait backend for key={}.", ws, task.shard.key);
+        UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("mooncake_backend_load_wait_errors_total"),
+                                 1.0);
         task.reader->MarkFailed();
         failureSet_->Insert(task.taskHandle);
         if (task.done) { task.done(false); }
         return;
     }
+    UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("mooncake_backend_load_wait_duration_ms"),
+                             (tpReady - tpWait) * 1e3);
     task.reader->MarkLoaded();
     task.backendTaskHandle = 0;
 
@@ -281,14 +301,19 @@ void ShareLoadQueue::HandleBackendComplete(BlockTask& task, Trans::Stream& strea
     auto hs = HostToDeviceScatterAsync(stream, host, task.shard.addrs.data());
     if (hs.Failure()) [[unlikely]] {
         UC_ERROR("Failed({}) to H2D for key={}.", hs, task.shard.key);
+        UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("mooncake_h2d_errors_total"), 1.0);
         failureSet_->Insert(task.taskHandle);
         if (task.done) { task.done(false); }
         return;
     }
 
+    auto h2dSyncStart = NowTime::Now();
     auto ss = stream.Synchronized();
+    auto h2dMs = (NowTime::Now() - h2dSyncStart) * 1e3;
+    RecordH2dMetrics(h2dMs);
     if (ss.Failure()) [[unlikely]] {
         UC_ERROR("Failed({}) to sync stream for key={}.", ss, task.shard.key);
+        UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("mooncake_h2d_errors_total"), 1.0);
         failureSet_->Insert(task.taskHandle);
         if (task.done) { task.done(false); }
         return;
@@ -312,6 +337,18 @@ Status ShareLoadQueue::HostToDeviceScatterAsync(Trans::Stream& stream, void* hos
         offset += size;
     }
     return Status::OK();
+}
+
+size_t ShareLoadQueue::BlockBytes() const
+{
+    return std::accumulate(tensorSizes_.begin(), tensorSizes_.end(), size_t{0});
+}
+
+void ShareLoadQueue::RecordH2dMetrics(double h2dMs) const
+{
+    UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("mooncake_h2d_duration_ms"), h2dMs);
+    auto bytes = static_cast<double>(BlockBytes());
+    UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("mooncake_h2d_bytes_total"), bytes);
 }
 
 }  // namespace UC::MooncakeStore

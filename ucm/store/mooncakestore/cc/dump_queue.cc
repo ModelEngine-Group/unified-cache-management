@@ -24,7 +24,9 @@
 #include "dump_queue.h"
 #include <acl/acl_rt.h>
 #include <chrono>
+#include <numeric>
 #include "logger/logger.h"
+#include "metrics_api.h"
 #include "replica.h"
 #include "thread/cpu_affinity.h"
 
@@ -76,6 +78,7 @@ void DumpQueue::Submit(TaskPtr task, WaiterPtr waiter)
     waiter->Up();
     if (waiting_.TryPush({task, waiter})) { return; }
     UC_ERROR("Waiting queue full, submit dump task({}) failed.", task->id);
+    UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("mooncake_dump_queue_full_total"), 1.0);
     failureSet_->Insert(task->id);
     waiter->Done();
 }
@@ -99,6 +102,8 @@ void DumpQueue::DispatchOneTask(CopyStream& stream, TaskPair&& pair)
     auto& waiter = pair.second;
     auto wait = NowTime::Now() - waiter->startTp;
     UC_DEBUG("Mooncake task({}) start running, wait {:.3f}ms.", task->id, wait * 1e3);
+    UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("mooncake_dump_queue_wait_duration_ms"),
+                             wait * 1e3);
     if (!failureSet_->Contains(task->id)) {
         auto s = DumpOneTask(stream, task);
         if (s.Failure()) [[unlikely]] { failureSet_->Insert(task->id); }
@@ -109,8 +114,11 @@ void DumpQueue::DispatchOneTask(CopyStream& stream, TaskPair&& pair)
 Status DumpQueue::WaitPrerequisite(TaskPtr task)
 {
     if (task->prerequisiteHandle == 0) { return Status::OK(); }
+    auto tp = NowTime::Now();
     auto event = reinterpret_cast<aclrtEvent>(task->prerequisiteHandle);
     auto ret = aclrtSynchronizeEvent(event);
+    UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("mooncake_dump_prereq_wait_ms"),
+                             (NowTime::Now() - tp) * 1e3);
     if (ret != 0) {
         UC_ERROR("aclrtSynchronizeEvent failed, ret={}, task={}", ret, task->id);
         return Status::Error("aclrtSynchronizeEvent failed");
@@ -133,6 +141,7 @@ Status DumpQueue::PrepareBackendDump(CopyStream& stream, TaskPtr task, DumpCtx& 
         auto s = DeviceToHostGatherAsync(stream.NextStream(), shard.addrs.data(), buf.get());
         if (s.Failure()) [[unlikely]] {
             UC_ERROR("Failed({}) to do D2H batch async for task({}).", s, task->id);
+            UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("mooncake_d2h_errors_total"), 1.0);
             return s;
         }
 
@@ -150,12 +159,16 @@ Status DumpQueue::PutToMooncake(TaskPtr task, const std::vector<std::string>& ke
     mooncake::ReplicateConfig cfg;
     cfg.replica_num = replicaNum_;
     cfg.with_soft_pin = withSoftPin_;
+    auto tp = NowTime::Now();
     auto putResults = realClient_->batch_put_from_multi_buffers(keys, allBuffers, allSizes, cfg);
+    UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("mooncake_put_duration_ms"),
+                             (NowTime::Now() - tp) * 1e3);
 
     for (size_t i = 0; i < putResults.size(); ++i) {
         if (putResults[i] < 0) {
             UC_ERROR("Mooncake batch_put failed: task={}, key={}, rc={}", task->id, keys[i],
                      putResults[i]);
+            UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("mooncake_put_errors_total"), 1.0);
             return Status::Error("batch_put failed");
         }
     }
@@ -165,19 +178,32 @@ Status DumpQueue::PutToMooncake(TaskPtr task, const std::vector<std::string>& ke
 Status DumpQueue::SubmitBackendDump(CopyStream& stream, TaskPtr task, DumpCtx&& dumpCtx,
                                     Detail::TaskDesc&& backendTaskDesc)
 {
+    const auto copiedShards = dumpCtx.hostBufs.size();
+    const auto backendShards = backendTaskDesc.size();
+    auto tpSyncStart = NowTime::Now();
     auto s = stream.Synchronize();
+    auto tpSyncEnd = NowTime::Now();
+    RecordD2hMetrics(copiedShards, (tpSyncEnd - tpSyncStart) * 1e3);
     if (s.Failure()) [[unlikely]] {
         UC_ERROR("Failed({}) to sync on stream for task({}).", s, task->id);
+        UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("mooncake_d2h_errors_total"), 1.0);
         return s;
     }
 
+    auto tpBackendSubmit = NowTime::Now();
     auto res = backend_->Dump(std::move(backendTaskDesc));
+    UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("mooncake_dump_backend_submit_duration_ms"),
+                             (NowTime::Now() - tpBackendSubmit) * 1e3);
     if (!res) [[unlikely]] {
         UC_ERROR("Failed({}) to submit dump task({}) to backend.", res.Error(), task->id);
+        UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("mooncake_backend_dump_submit_errors_total"),
+                                 1.0);
         return res.Error();
     }
     dumpCtx.backendTaskHandle = res.Value();
     dumping_.Push(std::move(dumpCtx));
+    UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("mooncake_dump_backend_shards_total"),
+                             static_cast<double>(backendShards));
     return Status::OK();
 }
 
@@ -198,7 +224,10 @@ Status DumpQueue::DumpOneTask(CopyStream& stream, TaskPtr task)
         allSizes.push_back(s.sizes);
     }
 
+    auto tpExists = NowTime::Now();
     auto existsResult = realClient_->batchIsExist(keys);
+    UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("mooncake_exists_duration_ms"),
+                             (NowTime::Now() - tpExists) * 1e3);
     std::vector<std::string> missingKeys;
     std::vector<std::vector<void*>> missingBuffers;
     std::vector<std::vector<size_t>> missingSizes;
@@ -209,6 +238,10 @@ Status DumpQueue::DumpOneTask(CopyStream& stream, TaskPtr task)
             missingSizes.push_back(allSizes[i]);
         }
     }
+    UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("mooncake_dump_existing_shards_total"),
+                             static_cast<double>(keys.size() - missingKeys.size()));
+    UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("mooncake_dump_missing_shards_total"),
+                             static_cast<double>(missingKeys.size()));
 
     UC_DEBUG("Mooncake task({}) exists check: {}/{} keys missing.", task->id, missingKeys.size(),
              keys.size());
@@ -220,6 +253,7 @@ Status DumpQueue::DumpOneTask(CopyStream& stream, TaskPtr task)
             auto s = stream.WaitEvent(reinterpret_cast<void*>(task->prerequisiteHandle));
             if (s.Failure()) [[unlikely]] {
                 UC_ERROR("Failed({}) to set stream wait event for task({}).", s, task->id);
+                UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("mooncake_d2h_errors_total"), 1.0);
                 return s;
             }
         }
@@ -251,11 +285,16 @@ void DumpQueue::BackendDumpStage()
     }
     dumping_.ConsumerLoop(stop_, [this](auto&& task) {
         if (task.backendTaskHandle > finishedBackendTaskHandle_) {
+            auto tpWait = NowTime::Now();
             auto s = backend_->Wait(task.backendTaskHandle);
+            UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("mooncake_dump_backend_wait_duration_ms"),
+                                     (NowTime::Now() - tpWait) * 1e3);
             finishedBackendTaskHandle_ = task.backendTaskHandle;
             if (s.Failure()) {
                 UC_ERROR("Failed({}) to wait backend({}) for task({}).", s, task.backendTaskHandle,
                          task.taskHandle);
+                UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("mooncake_backend_dump_wait_errors_total"),
+                                         1.0);
                 return;
             }
         }
@@ -278,6 +317,18 @@ Status DumpQueue::DeviceToHostGatherAsync(std::shared_ptr<Trans::Stream> stream,
         offset += size;
     }
     return Status::OK();
+}
+
+size_t DumpQueue::BlockBytes() const
+{
+    return std::accumulate(tensorSizes_.begin(), tensorSizes_.end(), size_t{0});
+}
+
+void DumpQueue::RecordD2hMetrics(size_t copiedShards, double d2hMs) const
+{
+    UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("mooncake_d2h_duration_ms"), d2hMs);
+    auto copiedBytes = static_cast<double>(copiedShards) * static_cast<double>(BlockBytes());
+    UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("mooncake_d2h_bytes_total"), copiedBytes);
 }
 
 }  // namespace UC::MooncakeStore
