@@ -985,6 +985,25 @@ def test_ucm_connector_drains_dispatcher_vllm_connector_snapshot():
     assert connector.get_kv_connector_stats() is None
 
 
+def test_ucm_connector_records_prefix_cache_token_counters():
+    _reset_fakes()
+    connector = object.__new__(UCMConnector)
+    connector.connector = SimpleNamespace(
+        get_num_new_matched_tokens=lambda request, num_computed_tokens: (384, False)
+    )
+    request = SimpleNamespace(num_tokens=2048)
+
+    assert connector.get_num_new_matched_tokens(request, 512) == (384, False)
+
+    assert fake_ucmmetrics.updated == [
+        {
+            "total_prefix_query_tokens_total": 2048,
+            "gpu_hbm_hit_tokens_total": 512,
+            "ucm_hit_tokens_total": 384,
+        }
+    ]
+
+
 def test_direct_connector_get_finished_records_async_durations():
     _reset_fakes()
     import ucm.integration.vllm.ucm_connector as ucm_connector_module
@@ -1274,13 +1293,13 @@ def test_vllm_dashboard_uses_combined_prefix_cache_hit_rate_breakdown():
     expected = [
         (
             "GPU Prefix Cache",
-            "vllm:prefix_cache_hits_total",
-            "vllm:prefix_cache_queries_total",
+            "ucm:gpu_hbm_hit_tokens_total",
+            "ucm:total_prefix_query_tokens_total",
         ),
         (
             "Connector Prefix Cache",
-            "vllm:external_prefix_cache_hits_total",
-            "vllm:prefix_cache_queries_total",
+            "ucm:ucm_hit_tokens_total",
+            "ucm:total_prefix_query_tokens_total",
         ),
     ]
     for target, (legend, hits, queries) in zip(panel["targets"], expected):
@@ -1288,8 +1307,9 @@ def test_vllm_dashboard_uses_combined_prefix_cache_hit_rate_breakdown():
         expr = target["expr"]
         assert hits in expr
         assert queries in expr
-        if legend == "Connector Prefix Cache":
-            assert "vllm:external_prefix_cache_queries_total" not in expr
+        assert "vllm:prefix_cache_queries_total" not in expr
+        assert "vllm:prefix_cache_hits_total" not in expr
+        assert "vllm:external_prefix_cache_hits_total" not in expr
         assert 'model_name="$model_name"' in expr
         assert 'job=~"$job"' in expr
         assert 'instance="$instance"' in expr
@@ -1307,9 +1327,9 @@ def test_vllm_dashboard_shows_time_range_token_and_prefix_totals():
     expected = [
         ("Total Input Tokens", "vllm:prompt_tokens_total", 0, 5),
         ("Total Output Tokens", "vllm:generation_tokens_total", 5, 5),
-        ("Prefix Cache Queries", "vllm:prefix_cache_queries_total", 10, 5),
-        ("GPU Prefix Cache Hits", "vllm:prefix_cache_hits_total", 15, 5),
-        ("Connector Prefix Cache Hits", "vllm:external_prefix_cache_hits_total", 20, 4),
+        ("Prefix Cache Query Tokens", "ucm:total_prefix_query_tokens_total", 10, 5),
+        ("GPU/HBM Prefix Hit Tokens", "ucm:gpu_hbm_hit_tokens_total", 15, 5),
+        ("UCM Prefix Hit Tokens", "ucm:ucm_hit_tokens_total", 20, 4),
     ]
 
     for title, metric, x, w in expected:
@@ -1337,21 +1357,23 @@ def test_vllm_dashboard_shows_time_range_token_and_prefix_totals():
     assert pie["options"]["legend"]["values"] == ["value", "percent"]
     pie_targets = {target["legendFormat"]: target["expr"] for target in pie["targets"]}
     assert set(pie_targets) == {
-        "GPU Prefix Cache Hits",
-        "Connector Prefix Cache Hits",
+        "GPU/HBM Prefix Hit Tokens",
+        "UCM Prefix Hit Tokens",
         "Misses",
     }
-    assert pie_targets["GPU Prefix Cache Hits"] == (
-        'sum(increase(vllm:prefix_cache_hits_total{model_name="$model_name", '
+    assert pie_targets["GPU/HBM Prefix Hit Tokens"] == (
+        'sum(increase(ucm:gpu_hbm_hit_tokens_total{model_name="$model_name", '
         'job=~"$job", instance="$instance", engine=~"$engine"}[$__range]))'
     )
-    assert pie_targets["Connector Prefix Cache Hits"] == (
-        'sum(increase(vllm:external_prefix_cache_hits_total{model_name="$model_name", '
+    assert pie_targets["UCM Prefix Hit Tokens"] == (
+        'sum(increase(ucm:ucm_hit_tokens_total{model_name="$model_name", '
         'job=~"$job", instance="$instance", engine=~"$engine"}[$__range]))'
     )
-    assert "vllm:prefix_cache_queries_total" in pie_targets["Misses"]
-    assert "vllm:prefix_cache_hits_total" in pie_targets["Misses"]
-    assert "vllm:external_prefix_cache_hits_total" in pie_targets["Misses"]
+    assert "ucm:total_prefix_query_tokens_total" in pie_targets["Misses"]
+    assert "ucm:gpu_hbm_hit_tokens_total" in pie_targets["Misses"]
+    assert "ucm:ucm_hit_tokens_total" in pie_targets["Misses"]
+    assert "vllm:prefix_cache_queries_total" not in pie_targets["Misses"]
+    assert "vllm:external_prefix_cache_hits_total" not in pie_targets["Misses"]
     assert pie_targets["Misses"].startswith("clamp_min(")
     assert "$__rate_interval" not in pie_targets["Misses"]
 

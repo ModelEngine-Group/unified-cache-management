@@ -3285,7 +3285,39 @@ class UCMConnector(KVConnectorBase_V1, SupportsHMA):
             the number of tokens that can be loaded from the
             external KV cache beyond what is already computed.
         """
-        return self.connector.get_num_new_matched_tokens(request, num_computed_tokens)
+        external_hit_tokens, need_load = self.connector.get_num_new_matched_tokens(
+            request, num_computed_tokens
+        )
+        self._record_prefix_cache_token_metrics(
+            request,
+            num_computed_tokens,
+            external_hit_tokens,
+        )
+        return external_hit_tokens, need_load
+
+    @staticmethod
+    def _record_prefix_cache_token_metrics(
+        request: "Request",
+        num_computed_tokens: int,
+        external_hit_tokens: int,
+    ) -> None:
+        total_tokens = getattr(request, "num_tokens", None)
+        if total_tokens is None:
+            total_tokens = len(getattr(request, "all_token_ids", ()))
+
+        total_tokens = max(int(total_tokens), 0)
+        gpu_hbm_hit_tokens = min(max(int(num_computed_tokens), 0), total_tokens)
+        ucm_hit_tokens = min(
+            max(int(external_hit_tokens), 0),
+            max(total_tokens - gpu_hbm_hit_tokens, 0),
+        )
+        ucmmetrics.update_stats(
+            {
+                "total_prefix_query_tokens_total": total_tokens,
+                "gpu_hbm_hit_tokens_total": gpu_hbm_hit_tokens,
+                "ucm_hit_tokens_total": ucm_hit_tokens,
+            }
+        )
 
     def update_state_after_alloc(
         self, request: "Request", blocks: "KVCacheBlocks", num_external_tokens: int
