@@ -10,6 +10,7 @@ from contextlib import redirect_stdout
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
+PROJECT_ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT))
 
 from terminal_view_metrics.cli import DEFAULT_DB, main
@@ -27,6 +28,9 @@ from terminal_view_metrics.storage import MetricsStore
 
 
 class TerminalViewMetricsTest(unittest.TestCase):
+    def test_tool_lives_under_project_tools_directory(self):
+        self.assertEqual(ROOT, PROJECT_ROOT / "tools" / "terminal_view_metrics")
+
     def test_parse_prometheus_text_handles_labels_and_special_values(self):
         text = """
 # HELP ucm:load_duration Time to load

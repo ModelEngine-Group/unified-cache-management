@@ -9,13 +9,13 @@ deployments that do not have Prometheus and Grafana available.
 List bundled configs:
 
 ```bash
-python test/terminal_view_metrics/metrics_cli.py list-configs
+python tools/terminal_view_metrics/metrics_cli.py list-configs
 ```
 
 Start a background collector:
 
 ```bash
-python test/terminal_view_metrics/metrics_cli.py start \
+python tools/terminal_view_metrics/metrics_cli.py start \
   --url http://127.0.0.1:8000/metrics
 ```
 
@@ -25,19 +25,19 @@ The collector stores all scraped metrics by default. Config files are used by
 Stop the collector:
 
 ```bash
-python test/terminal_view_metrics/metrics_cli.py stop
+python tools/terminal_view_metrics/metrics_cli.py stop
 ```
 
 Clear the stored samples:
 
 ```bash
-python test/terminal_view_metrics/metrics_cli.py clean
+python tools/terminal_view_metrics/metrics_cli.py clean
 ```
 
 Run a query. The default query config is `metrics_lite`:
 
 ```bash
-python test/terminal_view_metrics/metrics_cli.py query \
+python tools/terminal_view_metrics/metrics_cli.py query \
   --window 10m \
   --aggr-by 1m
 ```
@@ -56,7 +56,7 @@ different file.
 Query a fixed historical window by providing the window start time:
 
 ```bash
-python test/terminal_view_metrics/metrics_cli.py query \
+python tools/terminal_view_metrics/metrics_cli.py query \
   --start-time 2026-06-25T10:00:00 \
   --window 10m \
   --aggr-by 1m \
