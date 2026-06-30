@@ -73,6 +73,12 @@ Status Buffer::RegisterHostBuffer(void* host, size_t size, void** pDevice)
     return Status::OK();
 }
 
+Status Buffer::GetHostDevicePointer(void* host, void** pDevice)
+{
+    if (pDevice) { *pDevice = host; }
+    return Status::OK();
+}
+
 void Buffer::UnregisterHostBuffer(void* host) {}
 
-} // namespace UC::Trans
+}  // namespace UC::Trans

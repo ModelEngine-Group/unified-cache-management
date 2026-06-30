@@ -69,16 +69,16 @@ graph TD
 
 ### 2️⃣ 负载参数配置 (`test_uc_performance.py`)
 
-定义**性能测试负载矩阵**，支持多组参数笛卡尔积组合：
+定义**性能测试负载矩阵**，测试用例为每组list相同对应位置：
 
 | 参数 | 类型 | 说明 | 示例 |
 |------|------|------|------|
 | `mean_input_tokens` | list[int] | 平均输入长度分布 | `[512, 2048, 4096]` |
-| `mean_output_tokens` | list[int] | 平均输出长度分布 | `[128, 512]` |
-| `concurrent_requests` | list[int] | 并发请求数梯度 | `[1, 4, 8, 16]` |
-| `max_num_completed_requests` | list[int] | 单轮最大完成数 | `[100, 50]` |
+| `mean_output_tokens` | list[int] | 平均输出长度分布 | `[128, 512, 1024]` |
+| `concurrent_requests` | list[int] | 并发请求数梯度 | `[1, 4, 8]` |
+| `max_num_completed_requests` | list[int] | 单轮最大完成数 | `[100, 50, 50]` |
 | `hit_rate` | list[int] | 缓存命中率(%) | `[0, 50, 90]` |
-| `random_seed` | list[int] | 随机种子 | `[42, 0]` |
+| `random_seed` | list[int] | 随机种子 | `[42, 0, 0]` |
 
 #### 🎲 Random Seed 策略
 

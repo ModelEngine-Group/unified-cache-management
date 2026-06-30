@@ -1,7 +1,9 @@
 import copy
 import math
 import os
+import time
 from dataclasses import dataclass, field
+from functools import wraps
 from typing import TYPE_CHECKING, Optional, Sequence, Tuple
 
 import numpy as np
@@ -17,6 +19,7 @@ from vllm.v1.core.sched.output import SchedulerOutput
 from ucm.integration.vllm.device import create_device
 from ucm.integration.vllm.ucm_connector import UCMDirectConnector
 from ucm.logger import init_logger
+from ucm.shared.metrics import ucmmetrics
 from ucm.sparse.utils import round_up
 from ucm.store.factory_v1 import UcmConnectorFactoryV1
 from ucm.store.ucmstore_v1 import Task, UcmKVStoreBaseV1
@@ -29,6 +32,29 @@ if TYPE_CHECKING:
     from vllm.v1.request import Request
 
 logger = init_logger(__name__)
+
+
+def fawa_latency_metric(metric_name: str, *, ms_threshold: int = 1):
+    def decorator(func):
+        @wraps(func)
+        def wrapper(self, *args, **kwargs):
+            if not getattr(self, "_fawa_stats_enabled", True):
+                return func(self, *args, **kwargs)
+            start = time.perf_counter()
+            try:
+                return func(self, *args, **kwargs)
+            finally:
+                duration_ms = (time.perf_counter() - start) * 1e3
+                if duration_ms >= ms_threshold:
+                    ucmmetrics.update_stats(
+                        {
+                            metric_name: duration_ms,
+                        }
+                    )
+
+        return wrapper
+
+    return decorator
 
 
 @dataclass(frozen=True)
@@ -308,7 +334,7 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
         # If the number of external hit blocks is small, it's possible that the load overhead is larger than the compute of a few blocks.
         # In that case, we can skip loading and directly compute the missed blocks, which can be faster.
         # This threshold can be tuned based on the performance characteristics of the system.
-        self.load_threshold_blocks = self.launch_config.get("load_threshold_blocks", 0)
+        self.load_tokens_threshold = self.launch_config.get("load_tokens_threshold", 0)
 
         if role == KVConnectorRole.SCHEDULER:
             self.store = self._create_fa_store(None)
@@ -549,6 +575,7 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
         )
         if config.get("posix_capacity_gb", None) is not None:
             config["posix_capacity_gb"] = int(config["posix_capacity_gb"]) // 2
+        self._apply_sdma_direct_launch_granularity(config)
         return name, module_path, config
 
     @staticmethod
@@ -683,6 +710,9 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
             raise RuntimeError(f"Worker FAWA {group_label} layout is empty.")
         return tensor_size_list
 
+    @fawa_latency_metric(
+        "fawa_scheduler_lookup_external_hit_blocks_ms",
+    )
     def _lookup_external_hit_blocks(self, external_keys: list[bytes]) -> int:
         """Find the longest reusable prefix present in both FA and WA stores."""
 
@@ -705,6 +735,9 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
                 return hit_blocks
         return 0
 
+    @fawa_latency_metric(
+        "fawa_scheduler_get_num_new_matched_tokens_ms",
+    )
     def get_num_new_matched_tokens(
         self,
         request: "Request",
@@ -713,12 +746,14 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
         wa_hbm_hit_block_num = num_computed_tokens // self.hash_block_size
         wa_computed_tokens = wa_hbm_hit_block_num * self.hash_block_size
 
+        if (
+            request.num_tokens <= self.persist_token_threshold
+            or request.num_tokens <= (wa_computed_tokens + self.load_tokens_threshold)
+        ):
+            return 0, False
         canonical_hashes = self.generate_hash(
             self.hash_block_size, request.all_token_ids, self._seed
         )
-
-        if self.persist_token_threshold > request.num_tokens:
-            return 0, False
 
         external_keys = canonical_hashes[wa_hbm_hit_block_num:]
         if not external_keys:
@@ -743,7 +778,7 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
         if num_total_hit_tokens == request.num_tokens:
             external_hit_tokens -= 1
 
-        if external_hit_blocks <= self.load_threshold_blocks:
+        if external_hit_blocks * self.hash_block_size <= self.load_tokens_threshold:
             external_hit_tokens = 0
             num_total_hit_tokens = num_computed_tokens
             # let wa_hbm_hit_block_num equal to total_hit_block_num,so no need to load external blocks
@@ -970,6 +1005,14 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
             key_count=len(keys),
         )
 
+    def _handle_load_err(self, request_id: str):
+        affected_block_ids = self._get_request_all_block_ids(request_id)
+        self._record_load_error(
+            "connector_load_wait_errors_total",
+            affected_block_ids,
+        )
+        self._connector_worker_meta.mark_failed(request_id)
+
     def _wait_load_task(
         self,
         load_task: FAWALoadTask,
@@ -983,12 +1026,7 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
                 f"request {load_task.request_id} wait FAWA load "
                 f"task label={load_task.label} error. {type(e).__name__}: {e}"
             )
-            affected_block_ids = self._get_request_all_block_ids(load_task.request_id)
-            self._record_load_error(
-                "connector_load_wait_errors_total",
-                affected_block_ids,
-            )
-            self._connector_worker_meta.mark_failed(load_task.request_id)
+            self._handle_load_err(load_task.request_id)
 
     def get_block_ids_with_load_errors(self) -> set[int]:
         res = self._invalid_block_ids
@@ -1091,6 +1129,9 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
         }
         return all_group_vllm_block_ids
 
+    @fawa_latency_metric(
+        "fawa_worker_start_load_kv_ms",
+    )
     def start_load_kv(self, forward_context: "ForwardContext", **kwargs) -> None:
         metadata = self._get_connector_metadata()
         if not isinstance(metadata, UCMFAWAConnectorMetadata):
@@ -1144,15 +1185,20 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
                     f"request {request_id} submit FAWA load task "
                     f"error. {type(e).__name__}: {e}"
                 )
-                affected_block_ids = self._get_request_all_block_ids(request_id)
-                self._record_load_error(
-                    "connector_load_submit_errors_total",
-                    affected_block_ids,
-                )
+                self._handle_load_err(request_id)
 
+        self._wait_all_load_task(tasks)
+
+    @fawa_latency_metric(
+        "fawa_worker_wait_wait_all_load_task_ms",
+    )
+    def _wait_all_load_task(self, tasks: list[FAWALoadTask]):
         for load_task in tasks:
             self._wait_load_task(load_task)
 
+    @fawa_latency_metric(
+        "fawa_worker_wait_for_save_ms",
+    )
     def wait_for_save(self) -> None:
         metadata = self._get_connector_metadata()
         if not isinstance(metadata, UCMFAWAConnectorMetadata):

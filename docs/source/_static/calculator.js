@@ -1,67 +1,338 @@
 /**
  * KV Cache Calculator - Core Calculation Logic & UI
- * 
+ *
  * This file contains:
  * 1. Global state management
- * 2. Model source & config loading
- * 3. KV cache calculation (performCalculation)
- * 4. Max tokens calculation
- * 5. Display functions
- * 6. Toast notification system
- * 7. Event listeners
+ * 2. Formula data for different architectures
+ * 3. Model source & config loading
+ * 4. KV cache calculation (Standard Models only)
+ * 5. Hybrid Models placeholder (calculation formula TBD)
+ * 6. Display functions
+ * 7. Toast notification system
+ * 8. Event listeners
  */
 
 // Global state
-let currentLanguage = 'en'; // Always English
+let currentLanguage = 'en';
 let modelConfigs = {};
 let currentModelSource = 'preset';
+let currentConfigTab = 'standard';
+
+// ============================================================
+// Formula Data for Standard Architectures (MHA, MQA, GQA, MLA, DSA)
+// ============================================================
+
+const formulaData = {
+    'MHA': {
+        title: 'MHA (Multi-Head Attention)',
+        icon: '🔹',
+        color: '#3b82f6',
+        formula: 'Single-GPU KV Cache = 2 × num_hidden_layers × num_tokens × batch_size × hidden_size / tensor_parallelism × dtype_bytes',
+        params: [
+            { name: '2', desc: 'Key and Value matrices' },
+            { name: 'num_hidden_layers', desc: 'Number of layers in the model' },
+            { name: 'num_tokens', desc: 'Number of tokens in sequence' },
+            { name: 'batch_size', desc: 'Batch size' },
+            { name: 'hidden_size', desc: 'Hidden layer dimension' },
+            { name: 'tensor_parallelism', desc: 'Tensor parallelism degree' },
+            { name: 'dtype_bytes', desc: 'Data type bytes (float16=2, float32=4)' }
+        ],
+        models: 'GPT-2, BERT',
+        note: 'Each attention head has independent Key and Value. kv_heads = attn_heads.',
+        why: 'Each head stores KV independently',
+        keyPoint: 'Factor 2: K and V stored separately'
+    },
+    'MQA': {
+        title: 'MQA (Multi-Query Attention)',
+        icon: '🔹',
+        color: '#10b981',
+        formula: 'Single-GPU KV Cache = 2 × num_hidden_layers × num_tokens × batch_size × head_dim / tensor_parallelism × dtype_bytes',
+        params: [
+            { name: '2', desc: 'Key and Value matrices' },
+            { name: 'num_hidden_layers', desc: 'Number of layers' },
+            { name: 'head_dim', desc: 'Head dimension (hidden_size / attn_heads)' },
+            { name: 'kv_heads', desc: 'KV head count = 1' }
+        ],
+        models: 'PaLM',
+        note: 'All Query heads share single KV head. kv_heads = 1.',
+        why: 'All heads share single KV, highest efficiency',
+        keyPoint: 'Minimum KV Cache, but may affect quality'
+    },
+    'GQA': {
+        title: 'GQA (Grouped-Query Attention)',
+        icon: '🔹',
+        color: '#8b5cf6',
+        formula: 'Single-GPU KV Cache = 2 × num_hidden_layers × num_tokens × batch_size × num_kv_heads × head_dim / tensor_parallelism × dtype_bytes',
+        params: [
+            { name: '2', desc: 'Key and Value matrices' },
+            { name: 'num_kv_heads', desc: 'KV head count (less than attn_heads)' },
+            { name: 'head_dim', desc: 'Dimension per head' }
+        ],
+        models: 'LLaMA-3.1-70B, Qwen3-32B, Mistral-7B, GLM-4.5',
+        note: 'Multiple Query heads share a group of KV heads. kv_heads < attn_heads.',
+        why: 'Grouped sharing, balances efficiency and quality',
+        keyPoint: 'Current mainstream architecture'
+    },
+    'MLA': {
+        title: 'MLA (Multi-head Latent Attention)',
+        icon: '🔸',
+        color: '#f59e0b',
+        formula: 'Single-GPU KV Cache = num_hidden_layers × num_tokens × batch_size × (kv_lora_rank + qk_rope_head_dim) / tensor_parallelism × dtype_bytes',
+        params: [
+            { name: 'No factor 2', desc: 'K and V compressed together' },
+            { name: 'kv_lora_rank', desc: 'KV compressed latent dimension (e.g., 512)' },
+            { name: 'qk_rope_head_dim', desc: 'RoPE positional encoding dimension (e.g., 64)' }
+        ],
+        models: 'DeepSeek V3, DeepSeek R1, Kimi K2, GLM-4.7-Flash',
+        note: 'KV compressed to low-rank latent space, no factor 2.',
+        why: 'KV compressed to latent space, saving memory',
+        keyPoint: 'No factor 2, latent compression'
+    },
+    'DSA': {
+        title: 'DSA (DeepSeek Sparse Attention)',
+        icon: '🔮',
+        color: '#9333ea',
+        formula: 'Single-GPU KV Cache = num_hidden_layers × num_tokens × batch_size × (kv_lora_rank + qk_rope_head_dim + index_head_dim) / tensor_parallelism × dtype_bytes',
+        params: [
+            { name: 'No factor 2', desc: 'K and V compressed together (MLA)' },
+            { name: 'kv_lora_rank', desc: 'KV compressed dimension (512)' },
+            { name: 'qk_rope_head_dim', desc: 'RoPE dimension (64)' },
+            { name: 'index_head_dim', desc: 'Lightning Indexer head dimension (128)' },
+            { name: 'tensor_parallelism', desc: 'Tensor parallelism degree' }
+        ],
+        models: 'DeepSeek V3.2, GLM-5, GLM-5.1',
+        note: 'MLA + Lightning Indexer, for sparse retrieval.',
+        why: 'MLA with sparse retrieval + independent indexer precision',
+        keyPoint: 'Additional index_head_dim'
+    },
+    'Standard': {
+        title: 'Standard Transformer (MHA/MQA/GQA)',
+        icon: '🔹',
+        color: '#3b82f6',
+        formula: 'Single-GPU KV Cache = 2 × num_hidden_layers × num_tokens × batch_size × hidden_size × (num_kv_heads / num_attn_heads) / tensor_parallelism × dtype_bytes',
+        params: [
+            { name: '2', desc: 'Key and Value matrices' },
+            { name: 'num_kv_heads', desc: 'KV head count' },
+            { name: 'num_attn_heads', desc: 'Attention head count' }
+        ],
+        models: 'Determined by kv_heads/attn_heads ratio',
+        note: 'Auto-detect: kv_heads = attn_heads → MHA, kv_heads = 1 → MQA, otherwise → GQA.',
+        why: 'Auto-detect architecture type',
+        keyPoint: 'Generic formula, auto-adapt'
+    }
+};
+
+// ============================================================
+// Formula Display Functions
+// ============================================================
+
+function getFormulaInfo(modelArch) {
+    let archKey = 'Standard';
+
+    if (modelArch.isDSA) {
+        archKey = 'DSA';
+    } else if (modelArch.isMLA) {
+        archKey = 'MLA';
+    } else if (modelArch.isGQA) {
+        archKey = 'GQA';
+    } else {
+        const kvHeads = modelArch.kv_heads || modelArch.num_key_value_heads;
+        const attnHeads = modelArch.num_attention_heads;
+        if (kvHeads === attnHeads) {
+            archKey = 'MHA';
+        } else if (kvHeads === 1) {
+            archKey = 'MQA';
+        } else {
+            archKey = 'GQA';
+        }
+    }
+
+    return formulaData[archKey] || formulaData['Standard'];
+}
+
+function generateFormulaCard(formulaInfo) {
+    return `
+        <div class="formula-card" style="border-left-color: ${formulaInfo.color}; margin-bottom: 1.5rem;">
+            <div class="formula-header">
+                <span>${formulaInfo.icon}</span>
+                <span>${formulaInfo.title}</span>
+            </div>
+            <div class="formula-content">
+                <div class="formula-main" style="font-size: 0.85rem; margin-bottom: 0.75rem;">
+                    ${formulaInfo.formula}
+                </div>
+                <div style="background: rgba(${hexToRgb(formulaInfo.color)}, 0.1); padding: 0.5rem; border-radius: 6px; margin-bottom: 0.75rem;">
+                    <strong style="color: ${formulaInfo.color};">Key Point:</strong>
+                    <span style="color: var(--text-primary); margin-left: 0.25rem;">${formulaInfo.keyPoint}</span>
+                </div>
+                <div style="font-size: 0.8rem; color: var(--text-secondary); margin-bottom: 0.75rem;">
+                    <strong>Why:</strong> ${formulaInfo.why}
+                </div>
+                <div class="formula-breakdown">
+                    ${formulaInfo.params.map(param => `
+                        <div class="formula-step">
+                            <span class="formula-step-label">${param.name}:</span>
+                            <span class="formula-step-value">${param.desc}</span>
+                        </div>
+                    `).join('')}
+                </div>
+                <div style="margin-top: 0.75rem; font-size: 0.8rem; color: var(--text-secondary); line-height: 1.4;">
+                    <strong>Note:</strong> ${formulaInfo.note}
+                </div>
+                <div style="margin-top: 0.75rem; font-size: 0.8rem; color: var(--text-secondary);">
+                    <strong>Models:</strong> ${formulaInfo.models}
+                </div>
+            </div>
+        </div>
+    `;
+}
+
+function hexToRgb(hex) {
+    const result = /^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i.exec(hex);
+    return result ? `${parseInt(result[1], 16)}, ${parseInt(result[2], 16)}, ${parseInt(result[3], 16)}` : '59, 130, 246';
+}
+
+function updateFormulaReference(config) {
+    const container = document.getElementById('dynamic-formula-container');
+    if (!container) return;
+
+    if (!config) {
+        container.innerHTML = `
+            <div class="text-center" style="padding: 2rem;">
+                <div style="font-size: 3rem; margin-bottom: 1rem;">📊</div>
+                <div class="subtitle" style="color: var(--text-secondary);">Select a model to see its KV Cache formula.</div>
+            </div>
+        `;
+        return;
+    }
+
+    const modelArch = detectArchitectureType(config);
+    modelArch.kv_heads = config.num_key_value_heads;
+    modelArch.num_attention_heads = config.num_attention_heads;
+
+    const formulaInfo = getFormulaInfo(modelArch);
+    container.innerHTML = generateFormulaCard(formulaInfo);
+}
+
+// ============================================================
+// Configuration Tab Switching
+// ============================================================
+
+function switchConfigTab(tab) {
+    currentConfigTab = tab;
+
+    // Update tab buttons
+    document.querySelectorAll('.model-type-option').forEach(item => {
+        item.classList.remove('active');
+    });
+    document.getElementById('config-tab-' + tab).classList.add('active');
+
+    // Update tab content
+    document.querySelectorAll('.config-tab-content').forEach(content => {
+        content.classList.remove('active');
+    });
+    document.getElementById('config-content-' + tab).classList.add('active');
+
+    clearResults();
+
+    if (tab === 'standard') {
+        const presetSelect = document.getElementById('preset-model-select');
+        if (presetSelect && presetSelect.value && modelConfigs[presetSelect.value]) {
+            updateFormulaReference(modelConfigs[presetSelect.value]);
+        } else {
+            updateFormulaReference(null);
+        }
+    } else if (tab === 'hybrid') {
+        const container = document.getElementById('dynamic-formula-container');
+        container.innerHTML = `
+            <div class="formula-card" style="margin-bottom: 1.5rem;">
+                <div class="formula-header">
+                    <span>🌟</span>
+                    <span>DeepSeek V4 Hybrid (Sparse Attention)</span>
+                </div>
+                <div class="formula-content">
+                    <div class="formula-main" style="font-size: 0.85rem; margin-bottom: 0.75rem;">
+                        KV Cache = Bytes-per-Token × Tokens × Batch ÷ TP
+                    </div>
+                    <div style="background: rgba(81, 145, 238, 0.1); padding: 0.5rem; border-radius: 6px; margin-bottom: 0.75rem;">
+                        <strong style="color: var(--accent-primary);">Key Point:</strong>
+                        <span style="color: var(--text-primary); margin-left: 0.25rem;">Block-based Cache (FA + WA), significant difference between vllm-ascend and vllm</span>
+                    </div>
+                    <div style="font-size: 0.75rem; margin-bottom: 0.5rem;">
+                        <strong>FA Cache (Fixed Attention) - Compressor:</strong>
+                        <ul style="margin-left: 1rem; margin-top: 0.25rem;">
+                            <li>C4A Compressor Cache: block-based compression</li>
+                            <li>C4A Indexer Cache: Lightning Indexer</li>
+                            <li>C128A Compressor Cache: high compression ratio layers</li>
+                        </ul>
+                    </div>
+                    <div style="font-size: 0.75rem; margin-bottom: 0.5rem;">
+                        <strong>WA Cache (Window Attention) - KV ×2:</strong>
+                        <ul style="margin-left: 1rem; margin-top: 0.25rem;">
+                            <li>SWA Cache: sliding window layers</li>
+                            <li>C4A/C128A KV Cache: compressed layer KV</li>
+                        </ul>
+                    </div>
+                    <div style="font-size: 0.75rem; margin-bottom: 0.5rem;">
+                        <strong>Deployment Differences:</strong>
+                        <ul style="margin-left: 1rem; margin-top: 0.25rem;">
+                            <li>vllm-ascend: 512 tokens/block</li>
+                            <li>vllm: 256 tokens/block, FP8/FP4 quantization (smaller KV cache)</li>
+                        </ul>
+                    </div>
+                    <div style="margin-top: 0.75rem; font-size: 0.8rem; color: var(--text-secondary);">
+                        <strong>Models:</strong> DeepSeek V4 Pro (30 C4A + 31 C128A), DeepSeek V4 Flash (21 C4A + 20 C128A)
+                    </div>
+                </div>
+            </div>
+        `;
+    }
+}
 
 // ============================================================
 // Helper Functions
 // ============================================================
 
-/**
- * Extract display name from model identifier or URL
- */
 function getModelDisplayName(modelName) {
-    // If it's a URL, extract the model identifier
     if (modelName.startsWith('http://') || modelName.startsWith('https://')) {
         try {
             const urlObj = new URL(modelName);
             const pathParts = urlObj.pathname.split('/').filter(part => part);
 
-            // Handle ModelScope URLs: /models/organization/model
             if (urlObj.hostname.includes('modelscope.cn') && pathParts[0] === 'models') {
-                if (pathParts.length >= 3) {
-                    return pathParts.slice(1, 3).join('/');
-                }
-            }
-            // Handle HuggingFace URLs: /organization/model
-            else if (urlObj.hostname.includes('huggingface.co')) {
-                // Filter out 'models' if present
+                if (pathParts.length >= 3) return pathParts.slice(1, 3).join('/');
+            } else if (urlObj.hostname.includes('huggingface.co')) {
                 const modelPathParts = pathParts.filter(part =>
                     !['tree', 'blob', 'raw', 'commit', 'discussions', 'issues', 'pull', 'models'].includes(part)
                 );
-                if (modelPathParts.length >= 2) {
-                    return modelPathParts.slice(0, 2).join('/');
-                }
+                if (modelPathParts.length >= 2) return modelPathParts.slice(0, 2).join('/');
             }
         } catch (e) {
             console.warn('Failed to parse model URL:', e);
         }
     }
 
-    // If it's already a simple identifier (org/model), return as-is
-    // Otherwise, just return the last part
     if (modelName.includes('/')) {
         const parts = modelName.split('/');
-        // If it looks like org/model format, return both parts
-        if (parts.length >= 2) {
-            return parts.slice(0, 2).join('/');
-        }
+        if (parts.length >= 2) return parts.slice(0, 2).join('/');
     }
-
     return modelName;
+}
+
+function clearResults() {
+    const resultsContainer = document.getElementById('results-container');
+    if (resultsContainer) {
+        resultsContainer.innerHTML = `
+            <div class="text-center" style="padding: 3rem 0;">
+                <div style="font-size: 4rem; margin-bottom: 1rem;">📊</div>
+                <div class="subtitle">Configure your model and click calculate to see results.</div>
+            </div>
+        `;
+    }
+    const detailsContainer = document.getElementById('calculation-details');
+    if (detailsContainer) detailsContainer.classList.add('hidden');
+    const stepsContainer = document.getElementById('calculation-steps');
+    if (stepsContainer) stepsContainer.innerHTML = '';
 }
 
 // ============================================================
@@ -79,29 +350,28 @@ window.onload = function() {
 
 function setModelSource(source) {
     currentModelSource = source;
-    console.log('Setting model source to:', source);
 
-    // Update selector state
     const presetOption = document.getElementById('preset-option');
     const customOption = document.getElementById('custom-option');
 
-    // Reset all options
     presetOption.classList.remove('active');
     customOption.classList.remove('active');
 
-    // Hide all sections
     document.getElementById('preset-model-section').classList.add('hidden');
     document.getElementById('custom-model-section').classList.add('hidden');
 
-    // Activate selected option and show corresponding section
     if (source === 'custom') {
         customOption.classList.add('active');
         document.getElementById('custom-model-section').classList.remove('hidden');
-    } else { // preset
+        updateFormulaReference(null);
+    } else {
         presetOption.classList.add('active');
         document.getElementById('preset-model-section').classList.remove('hidden');
-        // Repopulate with preset models
         populateModelDropdown();
+        const presetSelect = document.getElementById('preset-model-select');
+        if (presetSelect && presetSelect.value && modelConfigs[presetSelect.value]) {
+            updateFormulaReference(modelConfigs[presetSelect.value]);
+        }
     }
 }
 
@@ -110,7 +380,6 @@ function setModelSource(source) {
 // ============================================================
 
 function loadModelConfigs() {
-    // Use embedded model configurations (defined in model-configs.js)
     modelConfigs = getEmbeddedModelConfigs();
     console.log('Model configurations loaded:', Object.keys(modelConfigs).length, 'models');
     populateModelDropdown();
@@ -120,9 +389,12 @@ function populateModelDropdown() {
     const presetModelSelect = document.getElementById('preset-model-select');
     presetModelSelect.innerHTML = '';
 
-    const sortedModelNames = Object.keys(modelConfigs).sort((a, b) => a.localeCompare(b, undefined, { numeric: true, sensitivity: 'base' }));
+    // Filter out DeepSeek V4 models (they go in Hybrid tab)
+    const standardModels = Object.keys(modelConfigs).filter(name =>
+        !name.includes('DeepSeek-V4')
+    );
 
-    console.log('Populating preset model dropdown:', sortedModelNames);
+    const sortedModelNames = standardModels.sort((a, b) => a.localeCompare(b, undefined, { numeric: true, sensitivity: 'base' }));
 
     sortedModelNames.forEach(modelName => {
         const option = document.createElement('option');
@@ -131,436 +403,123 @@ function populateModelDropdown() {
         presetModelSelect.appendChild(option);
     });
 
-    // Select the first model by default
     if (sortedModelNames.length > 0) {
         presetModelSelect.value = sortedModelNames[0];
+        updateFormulaReference(modelConfigs[sortedModelNames[0]]);
     }
 }
 
-// ============================================================
-// Fetch Model Configuration from URL
-// ============================================================
-
-async function fetchModelConfigFromUrl(url) {
-    try {
-        // Normalize URL: remove trailing slash, 'files', 'tree/main', etc.
-        let normalizedUrl = url.trim();
-
-        // Remove trailing slashes
-        normalizedUrl = normalizedUrl.replace(/\/+$/, '');
-
-        // Remove common suffixes that aren't part of model name
-        normalizedUrl = normalizedUrl.replace(/\/(files|tree\/main|blob\/main|raw\/main|commits|issues|discussions).*$/, '');
-
-        // Parse URL to determine platform and extract model identifier
-        const urlObj = new URL(normalizedUrl);
-        let modelIdentifier;
-        let platform = '';
-
-        if (urlObj.hostname.includes('huggingface.co')) {
-            platform = 'huggingface';
-            // Extract model path from Hugging Face URL
-            // Expected format: https://huggingface.co/organization/model
-            const pathParts = urlObj.pathname.split('/').filter(part => part && part !== 'models');
-
-            // Filter out non-model paths
-            const modelPathParts = pathParts.filter(part =>
-                !['tree', 'blob', 'raw', 'commit', 'discussions', 'issues', 'pull', 'blob'].includes(part)
-            );
-
-            if (modelPathParts.length >= 2) {
-                modelIdentifier = modelPathParts.slice(0, 2).join('/');
-            }
-        } else if (urlObj.hostname.includes('modelscope.cn')) {
-            platform = 'modelscope';
-            // Extract model path from ModelScope URL
-            // Expected format: https://www.modelscope.cn/models/organization/model
-            const pathParts = urlObj.pathname.split('/').filter(part => part);
-
-            if (pathParts.length >= 3 && pathParts[0] === 'models') {
-                // Extract organization/model from /models/organization/model
-                modelIdentifier = pathParts.slice(1, 3).join('/');
-            }
-        }
-
-        if (!modelIdentifier) {
-            throw new Error('Could not extract model identifier from URL. Please check the URL format.');
-        }
-
-        console.log(`Fetching config for ${platform} model: ${modelIdentifier}`);
-
-        // Store modelIdentifier for later use
-        const fetchedModelIdentifier = modelIdentifier;
-
-        // Try to fetch from online APIs with CORS proxy fallbacks
-        let configData = null;
-
-        // Try direct fetch first (might work in some environments)
-        try {
-            if (platform === 'huggingface') {
-                const apiUrl = `https://huggingface.co/${modelIdentifier}/raw/main/config.json`;
-                console.log('Trying HuggingFace API:', apiUrl);
-                const response = await fetch(apiUrl);
-                if (response.ok) {
-                    configData = await response.json();
-                    console.log('Successfully fetched from HuggingFace');
-                }
-            } else if (platform === 'modelscope') {
-                // Try multiple ModelScope endpoints
-                const modelScopeEndpoints = [
-                    // Method 1: Direct raw file (most reliable)
-                    `https://modelscope.cn/api/v1/models/${modelIdentifier}/repo?Revision=master&FilePath=config.json`,
-                    // Method 2: Alternative raw endpoint
-                    `https://modelscope.cn/${modelIdentifier}/raw/master/config.json`,
-                    // Method 3: Using www subdomain
-                    `https://www.modelscope.cn/api/v1/models/${modelIdentifier}/repo?Revision=master&FilePath=config.json`
-                ];
-
-                for (const apiUrl of modelScopeEndpoints) {
-                    console.log('Trying ModelScope endpoint:', apiUrl);
-                    try {
-                        const response = await fetch(apiUrl);
-                        console.log('ModelScope response status:', response.status, 'type:', response.headers.get('content-type'));
-                        if (response.ok) {
-                            // Try to parse as JSON first
-                            const contentType = response.headers.get('content-type');
-                            let data;
-
-                            if (contentType && contentType.includes('application/json')) {
-                                data = await response.json();
-                                console.log('ModelScope API JSON response:', data);
-
-                                // ModelScope API returns data in different formats:
-                                // 1. API endpoint: { Data: { Content: "base64-encoded-json" } }
-                                // 2. Alternative: { data: { Content: "base64-encoded-json" } }
-                                // 3. Direct: { config fields directly }
-                                let rawContent = data.Data || data.data || data;
-
-                                // Check if Content field exists and is base64 encoded
-                                if (rawContent && rawContent.Content) {
-                                    try {
-                                        // Decode base64 and parse JSON
-                                        const decodedContent = atob(rawContent.Content);
-                                        configData = JSON.parse(decodedContent);
-                                        console.log('Successfully decoded base64 content from ModelScope');
-                                    } catch (decodeError) {
-                                        console.warn('Failed to decode base64 content:', decodeError.message);
-                                        // Try using Content directly as JSON
-                                        try {
-                                            configData = JSON.parse(rawContent.Content);
-                                        } catch (e) {
-                                            // Use as-is
-                                            configData = rawContent.Content;
-                                        }
-                                    }
-                                } else if (typeof rawContent === 'object') {
-                                    // Direct JSON config
-                                    configData = rawContent;
-                                }
-
-                                if (configData && (configData.hidden_size || configData.num_attention_heads)) {
-                                    console.log('Successfully fetched from ModelScope, config keys:', Object.keys(configData));
-                                    break;
-                                }
-                            } else {
-                                // Try to get text response
-                                const textData = await response.text();
-                                console.log('ModelScope text response (first 200 chars):', textData.substring(0, 200));
-                                try {
-                                    configData = JSON.parse(textData);
-                                    if (configData && (configData.hidden_size || configData.num_attention_heads)) {
-                                        console.log('Successfully parsed text response as JSON');
-                                        break;
-                                    }
-                                } catch (parseError) {
-                                    console.warn('Failed to parse text response as JSON:', parseError.message);
-                                }
-                            }
-                        }
-                    } catch (endpointError) {
-                        console.warn('Endpoint failed:', endpointError.message);
-                        continue;
-                    }
-                }
-            }
-        } catch (directError) {
-            console.warn('Direct fetch failed, trying fallback methods:', directError.message);
-        }
-
-        // If direct fetch failed, try multiple CORS proxies
-        if (!configData) {
-            // List of CORS proxies to try
-            const corsProxies = [
-                { name: 'corsproxy.io', url: 'https://corsproxy.io/?' },
-                { name: 'allorigins', url: 'https://api.allorigins.win/raw?url=' },
-                { name: 'cors-anywhere-temp', url: 'https://cors-anywhere.herokuapp.com/' },
-                { name: 'thingproxy', url: 'https://thingproxy.freeboard.io/fetch/' }
-            ];
-
-            for (const proxy of corsProxies) {
-                try {
-                    console.log(`Trying CORS proxy: ${proxy.name}`);
-                    let targetUrl;
-                    if (platform === 'huggingface') {
-                        targetUrl = `https://huggingface.co/${modelIdentifier}/raw/main/config.json`;
-                    } else if (platform === 'modelscope') {
-                        // Try with www subdomain
-                        targetUrl = `https://www.modelscope.cn/api/v1/models/${modelIdentifier}/repo?Revision=master&FilePath=config.json`;
-                    }
-
-                    if (targetUrl) {
-                        let proxyUrl;
-                        if (proxy.name === 'cors-anywhere-temp') {
-                            // cors-anywhere requires temporary access request
-                            proxyUrl = proxy.url + targetUrl;
-                        } else {
-                            proxyUrl = proxy.url + encodeURIComponent(targetUrl);
-                        }
-
-                        console.log(`Proxy URL: ${proxy.name}`, proxyUrl.substring(0, 100) + '...');
-                        const response = await fetch(proxyUrl);
-
-                        if (response.ok) {
-                            const data = await response.json();
-                            console.log(`CORS proxy ${proxy.name} response data:`, data);
-
-                            // Handle different response formats
-                            if (platform === 'modelscope') {
-                                let rawContent = data.Data || data.data || data;
-
-                                // Check if Content field exists and is base64 encoded
-                                if (rawContent && rawContent.Content) {
-                                    try {
-                                        // Decode base64 and parse JSON
-                                        const decodedContent = atob(rawContent.Content);
-                                        configData = JSON.parse(decodedContent);
-                                        console.log(`Successfully decoded base64 content via CORS proxy: ${proxy.name}`);
-                                    } catch (decodeError) {
-                                        console.warn(`Failed to decode base64 content via ${proxy.name}:`, decodeError.message);
-                                        // Try using Content directly as JSON
-                                        try {
-                                            configData = JSON.parse(rawContent.Content);
-                                        } catch (e) {
-                                            // Use as-is
-                                            configData = rawContent.Content;
-                                        }
-                                    }
-                                } else if (typeof rawContent === 'object') {
-                                    // Direct JSON config
-                                    configData = rawContent;
-                                }
-                            } else {
-                                // HuggingFace or other platforms
-                                configData = data;
-                            }
-
-                            // Validate config data
-                            if (configData && (configData.hidden_size || configData.num_attention_heads)) {
-                                console.log(`Successfully fetched via CORS proxy: ${proxy.name}, config keys:`, Object.keys(configData));
-                                break;
-                            } else {
-                                console.warn(`CORS proxy ${proxy.name} returned invalid config data`);
-                                configData = null;
-                            }
-                        } else {
-                            console.warn(`CORS proxy ${proxy.name} returned status:`, response.status);
-                        }
-                    }
-                } catch (proxyError) {
-                    console.warn(`CORS proxy ${proxy.name} failed:`, proxyError.message);
-                    continue;
-                }
-            }
-        }
-
-        // If all online methods fail, check if we have this model in our local configs
-        if (!configData && modelConfigs[modelIdentifier]) {
-            console.log('Using local configuration for model:', modelIdentifier);
-            const localConfig = modelConfigs[modelIdentifier];
-            // Add _modelName if not already present
-            if (!localConfig._modelName) {
-                localConfig._modelName = modelIdentifier;
-            }
-            return localConfig;
-        }
-
-        // If still no config, throw error with helpful message
-        if (!configData) {
-            if (platform === 'modelscope') {
-                throw new Error(`ModelScope API is blocked by CORS policy.\n\nAll public CORS proxies (corsproxy.io, allorigins, etc.) are blocked by ModelScope.\n\nTo use ModelScope models:\n1. Restart Chrome with: chrome.exe --disable-web-security --user-data-dir="C:/temp"\n2. Or use HuggingFace models (recommended)\n3. Or use preset models from the dropdown`);
-            } else {
-                throw new Error(`Unable to fetch configuration for model "${modelIdentifier}". Please:\n1. Check if the model exists on ${platform}\n2. Verify the URL is correct\n3. Try a different model or use manual configuration`);
-            }
-        }
-
-        // Transform to our format
-        // For multimodal models, check text_config first
-        const sourceConfig = configData.text_config || configData;
-
-        const transformedConfig = {
-            hidden_size: sourceConfig.hidden_size,
-            num_attention_heads: sourceConfig.num_attention_heads,
-            num_hidden_layers: sourceConfig.num_hidden_layers,
-            num_key_value_heads: sourceConfig.num_key_value_heads,
-            kv_lora_rank: sourceConfig.kv_lora_rank,
-            qk_rope_head_dim: sourceConfig.qk_rope_head_dim,
-            head_dim: sourceConfig.head_dim,
-            sliding_window: sourceConfig.sliding_window || sourceConfig.sliding_window_size,
-            attention_layer_count: sourceConfig.attention_layer_count,
-            layer_types: sourceConfig.layer_types,
-            hybrid_layer_pattern: sourceConfig.hybrid_layer_pattern,
-            _modelName: fetchedModelIdentifier  // Store model identifier
-        };
-
-        // Filter out undefined values (but keep _modelName)
-        Object.keys(transformedConfig).forEach(key => {
-            if (key !== '_modelName' && transformedConfig[key] === undefined) {
-                delete transformedConfig[key];
-            }
-        });
-
-        console.log('Transformed config:', transformedConfig);
-
-        return transformedConfig;
-
-    } catch (error) {
-        console.error('Error fetching model config:', error);
-        throw error;
+function onModelSelect() {
+    const modelName = document.getElementById('preset-model-select').value;
+    if (modelName && modelConfigs[modelName]) {
+        updateFormulaReference(modelConfigs[modelName]);
     }
 }
 
+function onHybridModelSelect() {
+    // Placeholder - can add specific logic later
+}
+
 // ============================================================
-// Detect Model Architecture Type
+// Detect Model Architecture Type (Standard Models Only)
 // ============================================================
 
-/**
- * Detect architecture type from model config.
- * Returns: { isMLAModel, isHybrid, isGQAWithHeadDim, hybridSubType, attentionLayerCount, sliding_window }
- */
 function detectArchitectureType(config) {
-    // MLA (Multi-head Latent Attention): has kv_lora_rank and qk_rope_head_dim
-    const isMLAModel = config.kv_lora_rank && config.qk_rope_head_dim;
+    // Check if it's a hybrid model (various indicators for mixed/hybrid/sparse attention)
+    // Support nested config (text_config) for multimodal models
 
-    const layerTypes = config.layer_types;
-    const hybridLayerPattern = config.hybrid_layer_pattern;
-    const hasSlidingWindow = config.sliding_window || config.sliding_window_size;
+    const textConfig = config.text_config || config;
 
-    // Check if layer_types contains multiple distinct attention types
-    let hasHybridLayerTypes = false;
-    let hybridSubType = '';
-    // BUG FIX: use config.num_hidden_layers instead of the yet-unassigned local variable
-    let attentionLayerCount = config.num_hidden_layers; // default: all layers
+    const hybridIndicators = [
+        // DeepSeek V4 style
+        config.compress_ratios,
+        // MiMo style: hybrid_layer_pattern or swa_* fields
+        config.hybrid_layer_pattern,
+        config.swa_num_key_value_heads,
+        config.swa_num_attention_heads,
+        config.swa_head_dim,
+        config.add_swa_attention_sink_bias,
+        // General sliding window indicators
+        config.sliding_window,
+        config.window_attention,
+        config.attention_window,
+        // Qwen/Gemma style: layer_types array in text_config
+        (textConfig.layer_types && Array.isArray(textConfig.layer_types) &&
+         textConfig.layer_types.some(t => t !== 'full_attention')),
+        // Linear attention indicators (Qwen3.6)
+        textConfig.linear_attention,
+        textConfig.linear_num_key_heads,
+        textConfig.linear_key_head_dim,
+        // Gemma-4 global attention
+        textConfig.global_head_dim,
+        textConfig.num_global_key_value_heads,
+        // Other indicators
+        config.mixed_attention,
+        config.sparse_attention,
+        (config.full_attention_layers && config.sliding_attention_layers),
+        (config.full_attention_layers && config.linear_attention_layers),
+        (config.attention_layers && typeof config.attention_layers === 'object'),
+        (Array.isArray(config.attention_type) || Array.isArray(config.layer_attention_type)),
+        (config.attention_mode && ['sliding', 'linear', 'mixed', 'sparse'].includes(config.attention_mode.toLowerCase()))
+    ];
 
-    if (layerTypes && Array.isArray(layerTypes) && layerTypes.length > 0) {
-        const uniqueTypes = [...new Set(layerTypes)];
-        if (uniqueTypes.length > 1) {
-            hasHybridLayerTypes = true;
-            // Determine sub-type
-            if (uniqueTypes.includes('linear_attention')) {
-                hybridSubType = 'Linear + Full Attention';
-                // Count full_attention layers for KV calculation
-                attentionLayerCount = layerTypes.filter(t => t === 'full_attention').length;
-            } else if (uniqueTypes.includes('sliding_attention')) {
-                hybridSubType = 'Sliding + Full Attention';
-                // All layers have KV cache, but sliding layers use window
-                attentionLayerCount = config.num_hidden_layers;
-            }
-        }
-    }
+    const isHybridModel = hybridIndicators.some(indicator => indicator);
 
-    // Check hybrid_layer_pattern (0=SSM/no-attn, 1=Attention)
-    let hasHybridPattern = false;
-    if (hybridLayerPattern && Array.isArray(hybridLayerPattern) && hybridLayerPattern.length > 0) {
-        const uniqueVals = [...new Set(hybridLayerPattern)];
-        if (uniqueVals.length > 1) {
-            hasHybridPattern = true;
-            if (!hybridSubType) hybridSubType = 'Attention + SSM';
-            attentionLayerCount = hybridLayerPattern.filter(v => v === 1).length;
-        }
-    }
+    // DSA: MLA + Lightning Indexer
+    const isDSA = config.kv_lora_rank && config.qk_rope_head_dim && config.index_head_dim && !config.compress_ratios;
 
-    // Combined hybrid flag
-    const isHybrid = hasHybridLayerTypes || hasHybridPattern || (config.is_hybrid || false);
+    // MLA: has kv_lora_rank and qk_rope_head_dim (no index_head_dim)
+    const isMLA = config.kv_lora_rank && config.qk_rope_head_dim && !config.index_head_dim && !config.compress_ratios;
 
-    // If is_hybrid flag but no detailed layer info, use all layers
-    if (config.is_hybrid && !hasHybridLayerTypes && !hasHybridPattern) {
-        hybridSubType = 'Linear + Full Attention';
-        attentionLayerCount = config.num_hidden_layers;
-    }
-
-    // GQA with explicit head_dim (but NOT MLA, NOT Hybrid)
-    const isGQAWithHeadDim = config.head_dim && !isMLAModel && !isHybrid;
+    // GQA with explicit head_dim
+    const isGQA = config.head_dim && !isMLA && !isDSA && !isHybridModel;
 
     return {
-        isMLAModel,
-        isHybrid,
-        isGQAWithHeadDim,
-        hybridSubType,
-        attentionLayerCount,
-        sliding_window: hasSlidingWindow || null
+        isDSA,
+        isMLA,
+        isGQA,
+        isHybridModel,
+        kv_heads: config.num_key_value_heads,
+        num_attention_heads: config.num_attention_heads
     };
 }
 
 // ============================================================
-// Calculate KV Cache Size
+// Calculate KV Cache Size (Standard Models)
 // ============================================================
 
 async function calculateKVCache() {
-    // Clear previous results before starting new calculation
-    const resultsContainer = document.getElementById('results-container');
-    const detailsContainer = document.getElementById('calculation-details');
-    const stepsContainer = document.getElementById('calculation-steps');
+    clearResults();
 
-    if (resultsContainer) resultsContainer.innerHTML = '';
-    if (detailsContainer) detailsContainer.innerHTML = '';
-    if (stepsContainer) stepsContainer.innerHTML = '';
-
-    // Get and validate token input
     const tokenInput = document.getElementById('token-input').value.trim();
     const tokens = parseInt(tokenInput);
     const dtype = document.getElementById('dtype-select').value;
 
-    // Validate input
-    if (!tokenInput) {
-        displayError('Invalid Input', 'Please enter the number of tokens.');
-        return;
-    }
-
-    if (isNaN(tokens) || tokens <= 0) {
+    if (!tokenInput || isNaN(tokens) || tokens <= 0) {
         displayError('Invalid Input', 'Please enter a valid positive number for tokens.');
         return;
-    }
-
-    if (tokens > 1000000) {
-        console.warn('Large token count detected, calculation may take some time');
     }
 
     let config;
     let modelName;
     let hasError = false;
 
-    // Show loading state
     const calculateBtn = document.querySelector('button[onclick="calculateKVCache()"]');
     const originalText = calculateBtn.innerHTML;
     calculateBtn.innerHTML = '<span>⏳</span> <span>Calculating...</span>';
     calculateBtn.disabled = true;
 
     try {
-        console.log('Current model source:', currentModelSource);
-
         if (currentModelSource === 'preset') {
             const presetSelect = document.getElementById('preset-model-select');
             modelName = presetSelect.value;
-            console.log('Selected preset model:', modelName);
             if (!modelName || !modelConfigs[modelName]) {
-                displayError('Model Not Found', 'The selected preset model configuration is not available. Please select another model.');
+                displayError('Model Not Found', 'The selected preset model configuration is not available.');
                 hasError = true;
                 throw new Error('Model not found');
             }
             config = modelConfigs[modelName];
-            console.log('Using preset config for:', modelName);
         } else {
-            // Custom model URL
             const modelUrlInput = document.getElementById('model-url');
             const modelUrl = modelUrlInput.value.trim();
             if (!modelUrl) {
@@ -570,11 +529,10 @@ async function calculateKVCache() {
                 throw new Error('Invalid model URL');
             }
 
-            // Basic URL validation
             try {
                 new URL(modelUrl);
             } catch (urlError) {
-                displayError('Invalid URL', 'The URL format is invalid. Please enter a valid URL (e.g., https://huggingface.co/org/model).');
+                displayError('Invalid URL', 'The URL format is invalid.');
                 modelUrlInput.focus();
                 hasError = true;
                 throw new Error('Invalid URL');
@@ -582,337 +540,111 @@ async function calculateKVCache() {
 
             try {
                 config = await fetchModelConfigFromUrl(modelUrl);
-                // Use the model name from config if available, otherwise use the identifier
                 modelName = config._modelName || modelUrl;
             } catch (fetchError) {
-                let errorMessage = 'Failed to fetch model configuration. ';
-                if (fetchError.message) {
-                    errorMessage += fetchError.message;
-                } else {
-                    errorMessage += 'Please check if the model exists and the URL is correct.';
-                }
-                displayError('Fetch Failed', errorMessage);
+                displayError('Fetch Failed', fetchError.message || 'Failed to fetch model configuration.');
                 hasError = true;
                 throw fetchError;
             }
         }
 
-        // Validate model config
         if (!config || !config.hidden_size || !config.num_attention_heads || !config.num_hidden_layers) {
-            displayError('Invalid Configuration', 'The model configuration is incomplete or invalid. Required fields: hidden_size, num_attention_heads, num_hidden_layers.');
+            displayError('Invalid Configuration', 'The model configuration is incomplete.');
             hasError = true;
             throw new Error('Incomplete model configuration');
         }
 
-        // Perform calculation
+        // Check if it's a hybrid model from Custom Model input
+        const modelArch = detectArchitectureType(config);
+        if (modelArch.isHybridModel && currentModelSource === 'custom') {
+            showToast('warning', 'Hybrid Model Warning',
+                'This appears to be a Hybrid model (e.g., DeepSeek V4, Qwen Hybrid). The calculation result may not be accurate. For Hybrid models, please use the Hybrid Models tab.');
+        }
+
         const result = performCalculation(config, tokens, dtype, modelName);
         displayResults(result);
 
-        console.log('Calculation completed successfully');
-
     } catch (error) {
-        if (!hasError) {
-            console.error('Calculation error:', error);
-        }
+        if (!hasError) console.error('Calculation error:', error);
     } finally {
-        // Always restore button state
         calculateBtn.innerHTML = originalText;
         calculateBtn.disabled = false;
-
-        // Update translations for the button text
-        const calcText = document.querySelector('button[onclick="calculateKVCache()"] span:last-child');
-        if (calcText) calcText.textContent = translations[currentLanguage]['calculate'] || 'Calculate KV Cache';
     }
 }
 
 // ============================================================
-// Calculate Maximum Tokens
+// Core Calculation: KV Cache Size (Standard Models)
 // ============================================================
 
-async function calculateMaxTokens() {
-    // Get and validate GPU memory input
-    const gpuMemoryInput = document.getElementById('gpu-memory-input').value.trim();
-    const gpuMemoryGB = parseFloat(gpuMemoryInput);
-    const dtype = document.getElementById('dtype-select').value;
-
-    // Validate input
-    if (!gpuMemoryInput) {
-        displayError('Invalid Input', 'Please enter the GPU memory size in GB.');
-        return;
-    }
-
-    if (isNaN(gpuMemoryGB) || gpuMemoryGB <= 0) {
-        displayError('Invalid Input', 'Please enter a valid positive number for GPU memory size (GB).');
-        return;
-    }
-
-    let config;
-    let modelName;
-
-    // Show loading state
-    const calculateBtn = document.querySelector('button[onclick="calculateMaxTokens()"]');
-    const originalText = calculateBtn.innerHTML;
-    calculateBtn.innerHTML = '<span>⏳</span> <span>Calculating...</span>';
-    calculateBtn.disabled = true;
-
-    try {
-        // Get model configuration (same logic as calculateKVCache)
-        if (currentModelSource === 'preset') {
-            const presetSelect = document.getElementById('preset-model-select');
-            modelName = presetSelect.value;
-            if (!modelName || !modelConfigs[modelName]) {
-                displayError('Model Not Found', 'The selected preset model configuration is not available. Please select another model.');
-                return;
-            }
-            config = modelConfigs[modelName];
-        } else {
-            const modelUrlInput = document.getElementById('model-url');
-            const modelUrl = modelUrlInput.value.trim();
-            if (!modelUrl) {
-                displayError('Invalid URL', 'Please enter a model URL.');
-                modelUrlInput.focus();
-                return;
-            }
-
-            // Basic URL validation
-            try {
-                new URL(modelUrl);
-            } catch (urlError) {
-                displayError('Invalid URL', 'The URL format is invalid. Please enter a valid URL (e.g., https://huggingface.co/org/model).');
-                modelUrlInput.focus();
-                return;
-            }
-
-            try {
-                config = await fetchModelConfigFromUrl(modelUrl);
-                // Use the model name from config if available, otherwise use the identifier
-                modelName = config._modelName || modelUrl;
-            } catch (fetchError) {
-                let errorMessage = 'Failed to fetch model configuration. ';
-                if (fetchError.message) {
-                    errorMessage += fetchError.message;
-                } else {
-                    errorMessage += 'Please check if the model exists and the URL is correct.';
-                }
-                displayError('Fetch Failed', errorMessage);
-                return;
-            }
-        }
-
-        // Validate model config
-        if (!config || !config.hidden_size || !config.num_attention_heads || !config.num_hidden_layers) {
-            displayError('Invalid Configuration', 'The model configuration is incomplete or invalid. Required fields: hidden_size, num_attention_heads, num_hidden_layers.');
-            return;
-        }
-
-        // Calculate maximum tokens
-        const result = calculateMaxTokensForMemory(config, gpuMemoryGB, dtype, modelName);
-        displayMaxTokensResults(result);
-
-        console.log('Maximum tokens calculated successfully');
-
-    } catch (error) {
-        console.error('Max tokens calculation error:', error);
-    } finally {
-        // Restore button state
-        calculateBtn.innerHTML = originalText;
-        calculateBtn.disabled = false;
-
-        // Update translations for the button text
-        const calcText = document.querySelector('button[onclick="calculateMaxTokens()"] span:last-child');
-        if (calcText) calcText.textContent = translations[currentLanguage]['calculate-max-tokens'] || 'Calculate Max Tokens';
-    }
-}
-
-// ============================================================
-// Core Calculation: KV Cache Size
-// ============================================================
-
-/**
- * Perform KV Cache calculation for given model config and parameters.
- * BUG FIX: Hybrid architecture detection now correctly uses config.num_hidden_layers
- *           instead of the unassigned local variable num_hidden_layers.
- */
 function performCalculation(config, tokens, dtype, modelName) {
-    let hidden_size, num_attention_heads, num_hidden_layers, num_key_value_heads;
-    let kv_lora_rank, qk_rope_head_dim; // for MLA models
-    let head_dim;
-    let sliding_window;
+    const { hidden_size, num_attention_heads, num_hidden_layers, num_key_value_heads,
+            kv_lora_rank, qk_rope_head_dim, index_head_dim, head_dim } = config;
 
-    // Detect model type based on configuration parameters
-    const {
-        isMLAModel,
-        isHybrid,
-        isGQAWithHeadDim,
-        hybridSubType,
-        attentionLayerCount,
-        sliding_window: detectedSlidingWindow
-    } = detectArchitectureType(config);
-
-    sliding_window = detectedSlidingWindow;
-
-    // Extract config fields based on architecture type
-    if (isMLAModel) {
-        ({ hidden_size, num_attention_heads, num_hidden_layers, num_key_value_heads, kv_lora_rank, qk_rope_head_dim } = config);
-        console.log('Detected MLA architecture for:', modelName);
-    } else if (isHybrid) {
-        ({ hidden_size, num_attention_heads, num_hidden_layers, num_key_value_heads, head_dim } = config);
-        console.log('Detected Hybrid architecture (' + hybridSubType + ') for:', modelName, 'attention layers:', attentionLayerCount);
-    } else if (isGQAWithHeadDim) {
-        ({ hidden_size, num_attention_heads, num_hidden_layers, num_key_value_heads, head_dim } = config);
-        console.log('Detected GQA (with head_dim) architecture for:', modelName);
-    } else {
-        ({ hidden_size, num_attention_heads, num_hidden_layers, num_key_value_heads } = config);
-        console.log('Detected Standard architecture for:', modelName);
-    }
-
-    // Validate required fields
-    const requiredFields = ['hidden_size', 'num_attention_heads', 'num_hidden_layers'];
-    for (const field of requiredFields) {
-        if (!config[field]) {
-            throw new Error(`Missing required field: ${field}`);
-        }
-    }
-
-    // Get additional parameters
     const batchSize = parseInt(document.getElementById('batch-size').value) || 1;
     const tp = parseInt(document.getElementById('tp').value) || 1;
-    const dp = parseInt(document.getElementById('dp').value) || 1;
 
-    // Data type sizes in bytes
-    const dtypeSizes = {
-        'float32': 4,
-        'float16': 2,
-        'bfloat16': 2,
-        'int8': 1
-    };
+    const dtypeSizes = { 'float32': 4, 'float16': 2, 'bfloat16': 2, 'int8': 1 };
+    const dtypeSize = dtypeSizes[dtype] || 2;
 
-    if (!dtypeSizes[dtype]) {
-        throw new Error(`Unsupported data type: ${dtype}`);
-    }
-
-    const dtypeSize = dtypeSizes[dtype];
-
-    // Calculate KV cache size (Single GPU)
-    let totalElements;
-    let formula;
-    let elementsPerToken;
-    let effectiveTokens = tokens;
-    let hasHybridWarning = false;
-
+    const modelArch = detectArchitectureType(config);
     const kvHeads = num_key_value_heads || num_attention_heads;
     const hdim = head_dim || (hidden_size / num_attention_heads);
 
-    if (isMLAModel) {
-        // MLA: layers × tokens × batch × (kv_lora_rank + qk_rope_head_dim) / tp × dtype
-        // No factor of 2 (K and V compressed together)
-        elementsPerToken = num_hidden_layers * (kv_lora_rank + qk_rope_head_dim) / tp;
-        totalElements = elementsPerToken * tokens * batchSize;
-        formula = `${num_hidden_layers} × ${tokens} × ${batchSize} × (${kv_lora_rank} + ${qk_rope_head_dim}) ÷ ${tp} × ${dtypeSize} bytes`;
-    } else if (isHybrid) {
-        // Hybrid architecture - unified handling
-        // All hybrid models get a warning
-        hasHybridWarning = true;
+    let totalElements;
+    let formula;
 
-        if (sliding_window) {
-            // Hybrid with sliding window (e.g., MiMo-V2-Flash, Gemma4, GPT-OSS)
-            // KV = 2 × attn_layers × min(tokens, window) × batch × kv_heads × head_dim / tp × dtype
-            effectiveTokens = Math.min(tokens, sliding_window);
-            elementsPerToken = 2 * attentionLayerCount * kvHeads * hdim / tp;
-            totalElements = elementsPerToken * effectiveTokens * batchSize;
-            formula = `2 × ${attentionLayerCount} × ${sliding_window} × ${batchSize} × ${kvHeads} × ${hdim} ÷ ${tp} × ${dtypeSize} bytes`;
-        } else {
-            // Hybrid without sliding window (e.g., Qwen3.5 with Linear+Full)
-            // KV = 2 × attn_layers × tokens × batch × kv_heads × head_dim / tp × dtype
-            elementsPerToken = 2 * attentionLayerCount * kvHeads * hdim / tp;
-            totalElements = elementsPerToken * tokens * batchSize;
-            formula = `2 × ${attentionLayerCount} × ${tokens} × ${batchSize} × ${kvHeads} × ${hdim} ÷ ${tp} × ${dtypeSize} bytes`;
-        }
-    } else if (isGQAWithHeadDim) {
+    if (modelArch.isDSA) {
+        // DSA: MLA + Lightning Indexer
+        const elementsPerToken = num_hidden_layers * (kv_lora_rank + qk_rope_head_dim + index_head_dim) / tp;
+        totalElements = elementsPerToken * tokens * batchSize;
+        formula = num_hidden_layers + ' × ' + tokens + ' × ' + batchSize + ' × (' + kv_lora_rank + ' + ' + qk_rope_head_dim + ' + ' + index_head_dim + ') ÷ ' + tp + ' × ' + dtypeSize + ' bytes';
+    } else if (modelArch.isMLA) {
+        // MLA: no factor 2
+        const elementsPerToken = num_hidden_layers * (kv_lora_rank + qk_rope_head_dim) / tp;
+        totalElements = elementsPerToken * tokens * batchSize;
+        formula = num_hidden_layers + ' × ' + tokens + ' × ' + batchSize + ' × (' + kv_lora_rank + ' + ' + qk_rope_head_dim + ') ÷ ' + tp + ' × ' + dtypeSize + ' bytes';
+    } else if (modelArch.isHybridModel) {
+        // Hybrid Model: use GQA-like calculation but show warning
+        // For hybrid models, use available head_dim or fallback to hidden_size calculation
+        const effectiveHdim = hdim || (hidden_size / num_attention_heads);
+        const elementsPerToken = 2 * num_hidden_layers * kvHeads * effectiveHdim / tp;
+        totalElements = elementsPerToken * tokens * batchSize;
+        formula = '2 × ' + num_hidden_layers + ' × ' + tokens + ' × ' + batchSize + ' × ' + kvHeads + ' × ' + effectiveHdim + ' ÷ ' + tp + ' × ' + dtypeSize + ' bytes (Hybrid - may not be accurate)';
+    } else if (modelArch.isGQA) {
         // GQA with explicit head_dim
-        elementsPerToken = 2 * num_hidden_layers * kvHeads * hdim / tp;
+        const elementsPerToken = 2 * num_hidden_layers * kvHeads * hdim / tp;
         totalElements = elementsPerToken * tokens * batchSize;
-        formula = `2 × ${num_hidden_layers} × ${tokens} × ${batchSize} × ${kvHeads} × ${hdim} ÷ ${tp} × ${dtypeSize} bytes`;
+        formula = '2 × ' + num_hidden_layers + ' × ' + tokens + ' × ' + batchSize + ' × ' + kvHeads + ' × ' + hdim + ' ÷ ' + tp + ' × ' + dtypeSize + ' bytes';
     } else {
-        // Standard Transformer with or without GQA
-        elementsPerToken = 2 * num_hidden_layers * hidden_size * (kvHeads / num_attention_heads) / tp;
+        // Standard: MHA/MQA/GQA auto-detect
+        const elementsPerToken = 2 * num_hidden_layers * hidden_size * (kvHeads / num_attention_heads) / tp;
         totalElements = elementsPerToken * tokens * batchSize;
-        formula = `2 × ${num_hidden_layers} × ${tokens} × ${batchSize} × ${hidden_size} × (${kvHeads}/${num_attention_heads}) ÷ ${tp} × ${dtypeSize} bytes`;
+        formula = '2 × ' + num_hidden_layers + ' × ' + tokens + ' × ' + batchSize + ' × ' + hidden_size + ' × (' + kvHeads + '/' + num_attention_heads + ') ÷ ' + tp + ' × ' + dtypeSize + ' bytes';
     }
 
     const totalBytes = totalElements * dtypeSize;
-    const kvCacheSizeGB = totalBytes / (1024 ** 3);
+    const kvCacheSizeGiB = totalBytes / Math.pow(1024, 3);
+    const kvCacheSizeGB = totalBytes / Math.pow(1000, 3);
 
-    // Calculate cluster-wide KV cache (all GPUs)
+    const dp = parseInt(document.getElementById('dp').value) || 1;
     const totalGPUs = tp * dp;
+    const clusterKVCacheSizeGiB = kvCacheSizeGiB * totalGPUs;
     const clusterKVCacheSizeGB = kvCacheSizeGB * totalGPUs;
 
-    // Calculate model parameters (approximate)
-    const modelParams = num_hidden_layers * hidden_size * hidden_size * 3;
-    const modelSizeGB = (modelParams * dtypeSize * 2 / tp) / (1024 ** 3); // 2 * n / tp
-
-    // Calculate FLOPs
-    const prefillFLOPs = 2 * modelParams * batchSize * tokens / tp;
-    const decodeFLOPs = 2 * modelParams * batchSize * 1 / tp;
-
-    // Create details object based on model type
-    const details = {
-        tokens,
-        batch_size: batchSize,
-        tp,
-        dp,
-        dtype,
-        dtype_size: dtypeSize,
-        model_params: modelParams,
-        model_size_gb: modelSizeGB,
-        prefill_flops: prefillFLOPs,
-        decode_flops: decodeFLOPs,
-        calculation_formula: formula,
-        elements_per_token: elementsPerToken
-    };
-
     // Determine architecture type for display
-    let architectureType = 'Standard Transformer';
-    let showHybridWarning = false;
-
-    if (isMLAModel) {
+    let architectureType;
+    if (modelArch.isDSA) {
+        architectureType = 'DSA (DeepSeek Sparse Attention)';
+    } else if (modelArch.isMLA) {
         architectureType = 'MLA (Multi-head Latent Attention)';
-        details.hidden_size = hidden_size;
-        details.num_attention_heads = num_attention_heads;
-        details.num_hidden_layers = num_hidden_layers;
-        details.num_key_value_heads = num_key_value_heads;
-        details.kv_lora_rank = kv_lora_rank;
-        details.qk_rope_head_dim = qk_rope_head_dim;
-    } else if (isHybrid) {
-        architectureType = 'Hybrid (' + hybridSubType + ')';
-        details.hidden_size = hidden_size;
-        details.num_attention_heads = num_attention_heads;
-        details.num_hidden_layers = num_hidden_layers;
-        details.num_key_value_heads = num_key_value_heads;
-        details.head_dim = hdim;
-        details.attention_layer_count = attentionLayerCount;
-        if (sliding_window) details.sliding_window = sliding_window;
-        showHybridWarning = true;
-    } else if (isGQAWithHeadDim) {
-        architectureType = 'GQA (Grouped-Query Attention)';
-        details.hidden_size = hidden_size;
-        details.num_attention_heads = num_attention_heads;
-        details.num_hidden_layers = num_hidden_layers;
-        details.num_key_value_heads = num_key_value_heads;
-        details.head_dim = head_dim;
+    } else if (modelArch.isHybridModel) {
+        architectureType = 'Hybrid Model (Warning: result may not be accurate)';
+    } else if (kvHeads === num_attention_heads) {
+        architectureType = 'MHA (Multi-Head Attention)';
+    } else if (kvHeads === 1) {
+        architectureType = 'MQA (Multi-Query Attention)';
     } else {
-        // Standard: determine MHA/MQA/GQA
-        if (kvHeads === num_attention_heads) {
-            architectureType = 'MHA (Multi-Head Attention)';
-        } else if (kvHeads === 1) {
-            architectureType = 'MQA (Multi-Query Attention)';
-        } else {
-            architectureType = 'GQA (Grouped-Query Attention)';
-        }
-        details.hidden_size = hidden_size;
-        details.num_attention_heads = num_attention_heads;
-        details.num_hidden_layers = num_hidden_layers;
-        details.num_key_value_heads = kvHeads;
+        architectureType = 'GQA (Grouped-Query Attention)';
     }
 
     return {
@@ -924,192 +656,687 @@ function performCalculation(config, tokens, dtype, modelName) {
         totalGPUs,
         dtype,
         dtypeSize,
+        kvCacheSizeGiB,
         kvCacheSizeGB,
+        clusterKVCacheSizeGiB,
         clusterKVCacheSizeGB,
-        modelSizeGB,
-        prefillFLOPs,
-        decodeFLOPs,
         totalElements,
         totalBytes,
         config,
         formula,
-        details,
-        architectureType,  // Add architecture type for display
-        showHybridWarning  // Add warning flag
+        architectureType,
+        showHybridWarning: modelArch.isHybridModel
     };
 }
 
 // ============================================================
-// Core Calculation: Max Tokens for Given Memory
+// Calculate Maximum Tokens (Standard Models)
 // ============================================================
 
-function calculateMaxTokensForMemory(config, gpuMemoryGB, dtype, modelName) {
-    let hidden_size, num_attention_heads, num_hidden_layers, num_key_value_heads;
-    let kv_lora_rank, qk_rope_head_dim; // for MLA models
-    let head_dim;
-    let sliding_window;
+async function calculateMaxTokens() {
+    clearResults();
 
-    // Detect model type - same logic as performCalculation
-    const {
-        isMLAModel,
-        isHybrid,
-        isGQAWithHeadDim,
-        hybridSubType,
-        attentionLayerCount,
-        sliding_window: detectedSlidingWindow
-    } = detectArchitectureType(config);
+    const gpuMemoryInput = document.getElementById('gpu-memory-input').value.trim();
+    const gpuMemoryGiB = parseFloat(gpuMemoryInput);
+    const dtype = document.getElementById('dtype-select').value;
 
-    sliding_window = detectedSlidingWindow;
-
-    // Extract config fields
-    if (isMLAModel) {
-        ({ hidden_size, num_attention_heads, num_hidden_layers, num_key_value_heads, kv_lora_rank, qk_rope_head_dim } = config);
-    } else if (isHybrid) {
-        ({ hidden_size, num_attention_heads, num_hidden_layers, num_key_value_heads, head_dim } = config);
-    } else if (isGQAWithHeadDim) {
-        ({ hidden_size, num_attention_heads, num_hidden_layers, num_key_value_heads, head_dim } = config);
-    } else {
-        ({ hidden_size, num_attention_heads, num_hidden_layers, num_key_value_heads } = config);
+    if (!gpuMemoryInput || isNaN(gpuMemoryGiB) || gpuMemoryGiB <= 0) {
+        displayError('Invalid Input', 'Please enter a valid GPU memory size.');
+        return;
     }
 
-    // Validate required fields
-    const requiredFields = ['hidden_size', 'num_attention_heads', 'num_hidden_layers'];
-    for (const field of requiredFields) {
-        if (!config[field]) {
-            throw new Error(`Missing required field: ${field}`);
+    let config;
+    let modelName;
+
+    const calculateBtn = document.querySelector('button[onclick="calculateMaxTokens()"]');
+    const originalText = calculateBtn.innerHTML;
+    calculateBtn.innerHTML = '<span>⏳</span> <span>Calculating...</span>';
+    calculateBtn.disabled = true;
+
+    try {
+        if (currentModelSource === 'preset') {
+            const presetSelect = document.getElementById('preset-model-select');
+            modelName = presetSelect.value;
+            config = modelConfigs[modelName];
+        } else {
+            const modelUrl = document.getElementById('model-url').value.trim();
+            config = await fetchModelConfigFromUrl(modelUrl);
+            modelName = config._modelName || modelUrl;
         }
-    }
 
-    // Get additional parameters
+        const result = calculateMaxTokensForMemory(config, gpuMemoryGiB, dtype, modelName);
+        displayMaxTokensResults(result);
+
+    } catch (error) {
+        console.error('Max tokens calculation error:', error);
+    } finally {
+        calculateBtn.innerHTML = originalText;
+        calculateBtn.disabled = false;
+    }
+}
+
+function calculateMaxTokensForMemory(config, gpuMemoryGiB, dtype, modelName) {
+    const { hidden_size, num_attention_heads, num_hidden_layers, num_key_value_heads,
+            kv_lora_rank, qk_rope_head_dim, index_head_dim, head_dim } = config;
+
     const batchSize = parseInt(document.getElementById('batch-size').value) || 1;
     const tp = parseInt(document.getElementById('tp').value) || 1;
-    const dp = parseInt(document.getElementById('dp').value) || 1;
 
-    // Data type sizes in bytes
-    const dtypeSizes = {
-        'float32': 4,
-        'float16': 2,
-        'bfloat16': 2,
-        'int8': 1
-    };
+    const dtypeSizes = { 'float32': 4, 'float16': 2, 'bfloat16': 2, 'int8': 1 };
+    const dtypeSize = dtypeSizes[dtype] || 2;
 
-    if (!dtypeSizes[dtype]) {
-        throw new Error(`Unsupported data type: ${dtype}`);
-    }
-
-    const dtypeSize = dtypeSizes[dtype];
-
-    // Calculate elements per token using model-specific formula
-    let elementsPerToken;
+    const modelArch = detectArchitectureType(config);
     const kvHeads = num_key_value_heads || num_attention_heads;
     const hdim = head_dim || (hidden_size / num_attention_heads);
 
-    if (isMLAModel) {
-        elementsPerToken = num_hidden_layers * batchSize * (kv_lora_rank + qk_rope_head_dim) / tp;
-    } else if (isHybrid) {
-        if (sliding_window) {
-            elementsPerToken = 2 * attentionLayerCount * batchSize * kvHeads * hdim / tp;
-        } else {
-            elementsPerToken = 2 * attentionLayerCount * batchSize * kvHeads * hdim / tp;
-        }
-    } else if (isGQAWithHeadDim) {
-        elementsPerToken = 2 * num_hidden_layers * batchSize * kvHeads * hdim / tp;
-    } else {
-        elementsPerToken = 2 * batchSize * hidden_size * (kvHeads / num_attention_heads) * num_hidden_layers / tp;
-    }
-
-    // Calculate model parameters (approximate)
-    const modelParams = num_hidden_layers * hidden_size * hidden_size * 3;
-    const modelSizeGB = (modelParams * dtypeSize * 2 / tp) / (1024 ** 3);
-
-    // Calculate maximum tokens per request
-    // maxTokens = single GPU memory / per-token memory on that GPU
-    const totalMemoryBytes = gpuMemoryGB * (1024 ** 3);
-    let maxTokens;
-
-    // For sliding window models, max tokens is limited by window size
-    if (isHybrid && sliding_window) {
-        maxTokens = sliding_window;
-    } else {
-        maxTokens = Math.floor(totalMemoryBytes / (elementsPerToken * dtypeSize));
-    }
-
-    // Create formula based on model type
+    let elementsPerToken;
     let formula;
-    if (isMLAModel) {
-        formula = `${num_hidden_layers} × ${batchSize} × (${kv_lora_rank} + ${qk_rope_head_dim}) ÷ ${tp} × ${dtypeSize} bytes`;
-    } else if (isHybrid) {
-        if (sliding_window) {
-            formula = `2 × ${attentionLayerCount} × ${sliding_window} × ${batchSize} × ${kvHeads} × ${hdim} ÷ ${tp} × ${dtypeSize} bytes`;
-        } else {
-            formula = `2 × ${attentionLayerCount} × ${batchSize} × ${kvHeads} × ${hdim} ÷ ${tp} × ${dtypeSize} bytes`;
-        }
-    } else if (isGQAWithHeadDim) {
-        formula = `2 × ${num_hidden_layers} × ${batchSize} × ${kvHeads} × ${hdim} ÷ ${tp} × ${dtypeSize} bytes`;
+
+    if (modelArch.isDSA) {
+        elementsPerToken = num_hidden_layers * (kv_lora_rank + qk_rope_head_dim + index_head_dim) / tp;
+        formula = num_hidden_layers + ' × (' + kv_lora_rank + ' + ' + qk_rope_head_dim + ' + ' + index_head_dim + ') ÷ ' + tp + ' × ' + dtypeSize + ' bytes';
+    } else if (modelArch.isMLA) {
+        elementsPerToken = num_hidden_layers * (kv_lora_rank + qk_rope_head_dim) / tp;
+        formula = num_hidden_layers + ' × (' + kv_lora_rank + ' + ' + qk_rope_head_dim + ') ÷ ' + tp + ' × ' + dtypeSize + ' bytes';
+    } else if (modelArch.isGQA) {
+        elementsPerToken = 2 * num_hidden_layers * kvHeads * hdim / tp;
+        formula = '2 × ' + num_hidden_layers + ' × ' + kvHeads + ' × ' + hdim + ' ÷ ' + tp + ' × ' + dtypeSize + ' bytes';
     } else {
-        formula = `2 × ${batchSize} × ${hidden_size} × (${kvHeads}/${num_attention_heads}) × ${num_hidden_layers} ÷ ${tp} × ${dtypeSize} bytes`;
+        elementsPerToken = 2 * hidden_size * (kvHeads / num_attention_heads) * num_hidden_layers / tp;
+        formula = '2 × ' + hidden_size + ' × (' + kvHeads + '/' + num_attention_heads + ') × ' + num_hidden_layers + ' ÷ ' + tp + ' × ' + dtypeSize + ' bytes';
     }
 
-    // Create config object for display
-    const displayConfig = {
-        num_hidden_layers: num_hidden_layers,
-        hidden_size: hidden_size,
-        num_attention_heads: num_attention_heads,
-        num_key_value_heads: isMLAModel ? num_key_value_heads : (num_key_value_heads || num_attention_heads)
-    };
+    const totalMemoryBytes = gpuMemoryGiB * Math.pow(1024, 3);
+    const maxTokens = Math.floor(totalMemoryBytes / (elementsPerToken * dtypeSize));
 
-    if (isMLAModel) {
-        displayConfig.kv_lora_rank = kv_lora_rank;
-        displayConfig.qk_rope_head_dim = qk_rope_head_dim;
-    } else if (isHybrid) {
-        if (head_dim) displayConfig.head_dim = head_dim;
-        if (sliding_window) displayConfig.sliding_window = sliding_window;
-        displayConfig.attention_layer_count = attentionLayerCount;
-    } else if (isGQAWithHeadDim) {
-        if (head_dim) displayConfig.head_dim = head_dim;
-    }
-
-    // Determine architecture type for display
-    let architectureType = 'Standard Transformer';
-    let showHybridWarning = false;
-
-    if (isMLAModel) {
-        architectureType = 'MLA (Multi-head Latent Attention)';
-    } else if (isHybrid) {
-        architectureType = 'Hybrid (' + hybridSubType + ')';
-        showHybridWarning = true;
-    } else if (isGQAWithHeadDim) {
-        architectureType = 'GQA (Grouped-Query Attention)';
-    } else {
-        if (kvHeads === num_attention_heads) {
-            architectureType = 'MHA (Multi-Head Attention)';
-        } else if (kvHeads === 1) {
-            architectureType = 'MQA (Multi-Query Attention)';
-        } else {
-            architectureType = 'GQA (Grouped-Query Attention)';
-        }
-    }
+    let architectureType;
+    if (modelArch.isDSA) architectureType = 'DSA';
+    else if (modelArch.isMLA) architectureType = 'MLA';
+    else if (modelArch.isHybridModel) architectureType = 'Hybrid Model';
+    else if (kvHeads === num_attention_heads) architectureType = 'MHA';
+    else if (kvHeads === 1) architectureType = 'MQA';
+    else architectureType = 'GQA';
 
     return {
         modelName,
         batchSize,
         tp,
-        dp,
-        totalGPUs: tp * dp,
-        gpuMemoryGB,
+        gpuMemoryGiB,
         dtype,
         dtypeSize,
         maxTokens,
         elementsPerToken,
-        totalMemoryBytes,
-        config: displayConfig,
         formula,
-        modelSizeGB,
-        modelParams,
-        perTokenMemoryMB: (elementsPerToken * dtypeSize) / (1024 ** 2),
         architectureType,
-        showHybridWarning
+        isHybridModel: modelArch.isHybridModel,
+        perTokenMemoryMiB: (elementsPerToken * dtypeSize) / Math.pow(1024, 2),
+        config
     };
+}
+
+// ============================================================
+// Hybrid Models Calculation (DeepSeek V4)
+// ============================================================
+
+// DeepSeek V4 预置参数 (基于用户验证的数据)
+const DEEPSEEK_V4_CONFIGS = {
+    'deepseek-ai/DeepSeek-V4-Pro': {
+        c4aLayers: 30,
+        c128aLayers: 31,
+        // vllm-ascend (512 tokens/block)
+        // Block size values derived from:
+        // - c4aCompressor: 512 tokens × 256 KV heads × 1 byte (FP8) = 131072 B
+        // - c4aIndexer: 512 tokens × 32 indexer heads × 4 bytes (FP32) × 1 layer = 16640 B (approx)
+        // - c128aCompressor: 512 tokens × 8 heads × 1 byte = 4096 B (approx)
+        // - swaCache: Same as c4aCompressor (sliding window attention uses same compression)
+        // - c4aKVCache: 512 tokens × 32 heads × 1 byte = 16384 B (approx)
+        // - c128aKVCache: 512 tokens × 8 heads × 1 byte = 4096 B (approx)
+        // Values validated by user testing on actual vLLM-Ascend deployment
+        vllmAscend: {
+            blockTokens: 512,
+            bytesPerToken: 27175,
+            c4aCompressor: 131072,    // 512 × 256 × 1 = 131072
+            c4aIndexer: 16640,        // Lightning indexer overhead
+            c128aCompressor: 4096,    // 512 × 8 × 1 = 4096
+            swaCache: 131072,         // Same compression as c4a, layers = 31, ×2
+            c4aKVCache: 16384,       // 512 × 32 × 1 = 16384
+            c128aKVCache: 4096,      // 512 × 8 × 1 = 4096
+            swaLayers: 31,
+            kvLayers: 30  // C4A和C128A用于KV cache的层数
+        },
+        // vllm (256 tokens/block, FP8/FP4量化)
+        // Block values derived similarly but with 256 tokens/block and quantization
+        vllm: {
+            blockTokens: 256,
+            bytesPerToken: 28415.4375,
+            c4aCompressor: 37376,    // 256 × 146 × 1 ≈ 37376 (quantized)
+            c4aIndexer: 8448,
+            c128aCompressor: 1168,
+            swaCache: 37376,         // layers = 62, ×2
+            c4aKVCache: 8192,
+            c128aKVCache: 32768,
+            swaLayers: 62,
+            kvLayers: 30
+        }
+    },
+    'deepseek-ai/DeepSeek-V4-Flash': {
+        c4aLayers: 21,
+        c128aLayers: 20,
+        // vllm-ascend (512 tokens/block)
+        // Same calculation method as V4-Pro, but with fewer layers
+        vllmAscend: {
+            blockTokens: 512,
+            bytesPerToken: 19162.5,
+            c4aCompressor: 131072,   // 512 × 256 × 1 = 131072
+            c4aIndexer: 16640,
+            c128aCompressor: 4096,
+            swaCache: 131072,        // layers = 22, ×2
+            c4aKVCache: 16384,
+            c128aKVCache: 4096,
+            swaLayers: 22,
+            kvLayers: 21
+        },
+        // vllm (256 tokens/block)
+        vllm: {
+            blockTokens: 256,
+            bytesPerToken: 20058.25,
+            c4aCompressor: 37376,
+            c4aIndexer: 8448,
+            c128aCompressor: 1168,
+            swaCache: 37376,         // layers = 44, ×2
+            c4aKVCache: 8192,
+            c128aKVCache: 32768,
+            swaLayers: 44,
+            kvLayers: 21
+        }
+    }
+};
+
+function calculateHybrid() {
+    clearResults();
+
+    const modelName = document.getElementById('hybrid-model-select').value;
+    const deployment = document.getElementById('hybrid-deployment').value;
+    const tokensInput = document.getElementById('hybrid-token-input').value.trim();
+    const tokens = parseInt(tokensInput) || 4096;
+    const batchSizeInput = document.getElementById('hybrid-batch-size').value.trim();
+    const batchSize = parseInt(batchSizeInput) || 1;
+    const tpInput = document.getElementById('hybrid-tp').value.trim();
+    const tp = parseInt(tpInput) || 1;
+    const dp = parseInt(document.getElementById('hybrid-dp').value) || 1;
+
+    // Input validation
+    if (!tokensInput || isNaN(tokens) || tokens <= 0) {
+        displayError('Invalid Input', 'Please enter a valid positive number for tokens.');
+        return;
+    }
+    if (!batchSizeInput || isNaN(batchSize) || batchSize <= 0) {
+        displayError('Invalid Input', 'Please enter a valid positive number for batch size.');
+        return;
+    }
+    if (!tpInput || isNaN(tp) || tp <= 0) {
+        displayError('Invalid Input', 'Tensor Parallelism must be at least 1.');
+        return;
+    }
+    if (dp <= 0) {
+        displayError('Invalid Input', 'Data Parallelism must be at least 1.');
+        return;
+    }
+
+    // 获取模型配置
+    const v4Config = DEEPSEEK_V4_CONFIGS[modelName];
+    if (!v4Config) {
+        displayError('Model Not Found', 'DeepSeek V4 configuration not found.');
+        return;
+    }
+
+    // 根据部署方式选择参数
+    const deployKey = deployment === 'vllm-ascend' ? 'vllmAscend' : 'vllm';
+    const deployConfig = v4Config[deployKey];
+
+    // 计算 KV Cache (使用用户验证的 bytesPerToken)
+    const totalBytes = deployConfig.bytesPerToken * tokens * batchSize / tp;
+    const kvCacheSizeGiB = totalBytes / Math.pow(1024, 3);
+    const kvCacheSizeMiB = totalBytes / Math.pow(1024, 2);
+    const kvCacheSizeMB = totalBytes / Math.pow(1000, 2);
+
+    // 计算集群总大小
+    const totalGPUs = tp * dp;
+    const clusterKVCacheGiB = kvCacheSizeGiB * totalGPUs;
+
+    // 计算block数量
+    const blockCount = Math.ceil(tokens / deployConfig.blockTokens);
+
+    // Block breakdown 计算 (按用户给的公式)
+    const c4aLayers = v4Config.c4aLayers;
+    const c128aLayers = v4Config.c128aLayers;
+    const cfg = deployConfig;
+
+    // FA Cache (Compressor)
+    const c4aCompressorTotal = cfg.c4aCompressor * c4aLayers;
+    const c4aIndexerTotal = cfg.c4aIndexer * c4aLayers;
+    const c128aCompressorTotal = cfg.c128aCompressor * c128aLayers;
+
+    // WA Cache (SWA ×2, KV)
+    const swaTotal = cfg.swaCache * cfg.swaLayers * 2;
+    const c4aKVTotal = cfg.c4aKVCache * cfg.kvLayers;
+    const c128aKVTotal = cfg.c128aKVCache * cfg.kvLayers;
+
+    // 每block总字节
+    const blockBytes = c4aCompressorTotal + c4aIndexerTotal + c128aCompressorTotal +
+                       swaTotal + c4aKVTotal + c128aKVTotal;
+
+    const resultsContainer = document.getElementById('results-container');
+    resultsContainer.innerHTML = `
+        <div class="result-display" style="text-align: center; margin-bottom: 1rem;">
+            <div class="result-value" style="font-size: 1.8rem; font-weight: 700; color: var(--accent-primary);">${kvCacheSizeGiB.toFixed(4)} GiB</div>
+            <div class="result-label" style="font-size: 0.75rem; color: var(--text-secondary);">= ${kvCacheSizeMiB.toFixed(2)} MiB (= ${kvCacheSizeMB.toFixed(2)} MB)</div>
+            <div class="result-label" style="font-size: 0.8rem; color: var(--text-secondary);">Single-GPU KV Cache Size</div>
+            ${totalGPUs > 1 ? `
+            <div class="result-value" style="font-size: 1.2rem; font-weight: 600; color: var(--accent-primary); margin-top: 0.5rem;">${clusterKVCacheGiB.toFixed(4)} GiB</div>
+            <div class="result-label" style="font-size: 0.75rem; color: var(--text-secondary);">Cluster-wide (TP=${tp} × DP=${dp} = ${totalGPUs} GPUs)</div>
+            ` : ''}
+        </div>
+
+        <div class="metrics-row" style="display: flex; flex-wrap: wrap; gap: 0.75rem; margin-bottom: 1rem;">
+            <div class="metric-item">
+                <span style="color: var(--text-secondary);">Model:</span>
+                <strong style="color: var(--text-primary); margin-left: 0.25rem;">${modelName.split('/')[1]}</strong>
+            </div>
+            <div class="metric-item">
+                <span style="color: var(--text-secondary);">Deployment:</span>
+                <strong style="color: var(--text-primary); margin-left: 0.25rem;">${deployment}</strong>
+            </div>
+            <div class="metric-item">
+                <span style="color: var(--text-secondary);">Tokens:</span>
+                <strong style="color: var(--text-primary); margin-left: 0.25rem;">${tokens.toLocaleString()}</strong>
+            </div>
+            <div class="metric-item">
+                <span style="color: var(--text-secondary);">Blocks:</span>
+                <strong style="color: var(--text-primary); margin-left: 0.25rem;">${blockCount}</strong>
+            </div>
+            <div class="metric-item">
+                <span style="color: var(--text-secondary);">Batch:</span>
+                <strong style="color: var(--text-primary); margin-left: 0.25rem;">${batchSize}</strong>
+            </div>
+            <div class="metric-item">
+                <span style="color: var(--text-secondary);">TP:</span>
+                <strong style="color: var(--text-primary); margin-left: 0.25rem;">${tp}</strong>
+            </div>
+            <div class="metric-item">
+                <span style="color: var(--text-secondary);">B/Token:</span>
+                <strong style="color: var(--text-primary); margin-left: 0.25rem;">${deployConfig.bytesPerToken.toLocaleString()}</strong>
+            </div>
+        </div>
+
+        <div class="formula-card" style="margin-bottom: 0.625rem;">
+            <div class="formula-header">
+                <span>📐</span>
+                <span>Calculation Formula</span>
+            </div>
+            <div class="formula-content">
+                <div class="formula-main" style="font-size: 0.75rem;">
+                    KV Cache = ${deployConfig.bytesPerToken.toLocaleString()} B/token × ${tokens.toLocaleString()} tokens × ${batchSize} batch ÷ ${tp} TP
+                </div>
+            </div>
+        </div>
+
+        <div class="formula-card" style="margin-bottom: 0.625rem;">
+            <div class="formula-header">
+                <span>📊</span>
+                <span>Block Breakdown (${deployConfig.blockTokens} tokens/block)</span>
+            </div>
+            <div class="formula-content" style="font-size: 0.7rem;">
+                <div style="margin-bottom: 0.5rem; font-weight: 600; color: var(--accent-primary);">FA Cache (Compressor):</div>
+                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 0.25rem; margin-left: 0.5rem;">
+                    <div style="color: var(--text-secondary);">C4A Compressor:</div>
+                    <div>${cfg.c4aCompressor.toLocaleString()} B × ${c4aLayers} = ${c4aCompressorTotal.toLocaleString()} B</div>
+                    <div style="color: var(--text-secondary);">C4A Indexer:</div>
+                    <div>${cfg.c4aIndexer.toLocaleString()} B × ${c4aLayers} = ${c4aIndexerTotal.toLocaleString()} B</div>
+                    <div style="color: var(--text-secondary);">C128A Compressor:</div>
+                    <div>${cfg.c128aCompressor.toLocaleString()} B × ${c128aLayers} = ${c128aCompressorTotal.toLocaleString()} B</div>
+                </div>
+
+                <div style="margin-top: 0.75rem; font-weight: 600; color: var(--accent-primary);">WA Cache:</div>
+                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 0.25rem; margin-left: 0.5rem;">
+                    <div style="color: var(--text-secondary);">SWA Cache (×2):</div>
+                    <div>${cfg.swaCache.toLocaleString()} B × ${cfg.swaLayers} × 2 = ${swaTotal.toLocaleString()} B</div>
+                    <div style="color: var(--text-secondary);">C4A KV Cache:</div>
+                    <div>${cfg.c4aKVCache.toLocaleString()} B × ${cfg.kvLayers} = ${c4aKVTotal.toLocaleString()} B</div>
+                    <div style="color: var(--text-secondary);">C128A KV Cache:</div>
+                    <div>${cfg.c128aKVCache.toLocaleString()} B × ${cfg.kvLayers} = ${c128aKVTotal.toLocaleString()} B</div>
+                </div>
+
+                <div style="margin-top: 0.75rem; padding-top: 0.5rem; border-top: 1px dashed var(--border-color);">
+                    <strong>Total per Block:</strong> ${blockBytes.toLocaleString()} B = ${(blockBytes / 1024).toFixed(2)} KiB = ${(blockBytes / 1024 / 1024).toFixed(4)} MiB
+                </div>
+            </div>
+        </div>
+
+        <div class="formula-card" style="margin-bottom: 0.625rem;">
+            <div class="formula-header">
+                <span>⚙️</span>
+                <span>Layer Configuration</span>
+            </div>
+            <div class="formula-content" style="font-size: 0.7rem;">
+                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 0.25rem;">
+                    <div style="color: var(--text-secondary);">C4A Layers:</div>
+                    <div style="color: var(--text-primary); font-weight: 500;">${c4aLayers}</div>
+                    <div style="color: var(--text-secondary);">C128A Layers:</div>
+                    <div style="color: var(--text-primary); font-weight: 500;">${c128aLayers}</div>
+                    <div style="color: var(--text-secondary);">Block Size:</div>
+                    <div style="color: var(--text-primary); font-weight: 500;">${deployConfig.blockTokens} tokens</div>
+                </div>
+            </div>
+        </div>
+    `;
+}
+
+function calculateHybridMaxTokens() {
+    clearResults();
+
+    const modelName = document.getElementById('hybrid-model-select').value;
+    const deployment = document.getElementById('hybrid-deployment').value;
+    const gpuMemoryInput = document.getElementById('hybrid-gpu-memory-input').value.trim();
+    const gpuMemoryGiB = parseFloat(gpuMemoryInput) || 42;
+    const batchSizeInput = document.getElementById('hybrid-batch-size').value.trim();
+    const batchSize = parseInt(batchSizeInput) || 1;
+    const tpInput = document.getElementById('hybrid-tp').value.trim();
+    const tp = parseInt(tpInput) || 1;
+
+    // Input validation
+    if (!gpuMemoryInput || isNaN(gpuMemoryGiB) || gpuMemoryGiB <= 0) {
+        displayError('Invalid Input', 'Please enter a valid positive number for GPU memory.');
+        return;
+    }
+    if (!batchSizeInput || isNaN(batchSize) || batchSize <= 0) {
+        displayError('Invalid Input', 'Please enter a valid positive number for batch size.');
+        return;
+    }
+    if (!tpInput || isNaN(tp) || tp <= 0) {
+        displayError('Invalid Input', 'Tensor Parallelism must be at least 1.');
+        return;
+    }
+
+    // 获取模型配置
+    const v4Config = DEEPSEEK_V4_CONFIGS[modelName];
+    if (!v4Config) {
+        displayError('Model Not Found', 'DeepSeek V4 configuration not found.');
+        return;
+    }
+
+    // 根据部署方式选择参数
+    const deployKey = deployment === 'vllm-ascend' ? 'vllmAscend' : 'vllm';
+    const deployConfig = v4Config[deployKey];
+
+    // 计算最大tokens
+    const totalMemoryBytes = gpuMemoryGiB * Math.pow(1024, 3);
+    const perTokenBytes = deployConfig.bytesPerToken * batchSize / tp;
+    const maxTokens = Math.floor(totalMemoryBytes / perTokenBytes);
+
+    // 计算需要的block数量
+    const blockCount = Math.ceil(maxTokens / deployConfig.blockTokens);
+
+    // Block breakdown 计算
+    const c4aLayers = v4Config.c4aLayers;
+    const c128aLayers = v4Config.c128aLayers;
+    const cfg = deployConfig;
+
+    // FA Cache (Compressor)
+    const c4aCompressorTotal = cfg.c4aCompressor * c4aLayers;
+    const c4aIndexerTotal = cfg.c4aIndexer * c4aLayers;
+    const c128aCompressorTotal = cfg.c128aCompressor * c128aLayers;
+
+    // WA Cache (SWA ×2, KV)
+    const swaTotal = cfg.swaCache * cfg.swaLayers * 2;
+    const c4aKVTotal = cfg.c4aKVCache * cfg.kvLayers;
+    const c128aKVTotal = cfg.c128aKVCache * cfg.kvLayers;
+
+    // 每block总字节
+    const blockBytes = c4aCompressorTotal + c4aIndexerTotal + c128aCompressorTotal +
+                       swaTotal + c4aKVTotal + c128aKVTotal;
+
+    // 计算各部分占总内存的比例
+    const totalBlockMemory = blockBytes * blockCount;
+
+    const resultsContainer = document.getElementById('results-container');
+    resultsContainer.innerHTML = `
+        <div class="result-display" style="text-align: center; margin-bottom: 1rem;">
+            <div class="result-value" style="font-size: 1.8rem; font-weight: 700; color: var(--accent-success);">${maxTokens.toLocaleString()}</div>
+            <div class="result-label" style="font-size: 0.8rem; color: var(--text-secondary);">Max Tokens ${tp > 1 ? '(TP=' + tp + ')' : ''}</div>
+        </div>
+
+        <div class="metrics-row" style="display: flex; flex-wrap: wrap; gap: 0.75rem; margin-bottom: 1rem;">
+            <div class="metric-item">
+                <span style="color: var(--text-secondary);">Model:</span>
+                <strong style="color: var(--text-primary); margin-left: 0.25rem;">${modelName.split('/')[1]}</strong>
+            </div>
+            <div class="metric-item">
+                <span style="color: var(--text-secondary);">Deployment:</span>
+                <strong style="color: var(--text-primary); margin-left: 0.25rem;">${deployment}</strong>
+            </div>
+            <div class="metric-item">
+                <span style="color: var(--text-secondary);">GPU Memory:</span>
+                <strong style="color: var(--text-primary); margin-left: 0.25rem;">${gpuMemoryGiB} GiB</strong>
+            </div>
+            <div class="metric-item">
+                <span style="color: var(--text-secondary);">Max Blocks:</span>
+                <strong style="color: var(--text-primary); margin-left: 0.25rem;">~${blockCount}</strong>
+            </div>
+            <div class="metric-item">
+                <span style="color: var(--text-secondary);">B/Token:</span>
+                <strong style="color: var(--text-primary); margin-left: 0.25rem;">${deployConfig.bytesPerToken.toLocaleString()}</strong>
+            </div>
+        </div>
+
+        <div class="formula-card" style="margin-bottom: 0.625rem;">
+            <div class="formula-header">
+                <span>📐</span>
+                <span>Calculation Formula</span>
+            </div>
+            <div class="formula-content">
+                <div class="formula-main" style="font-size: 0.75rem;">
+                    Max Tokens = GPU Memory ÷ Bytes-per-Token = ${(gpuMemoryGiB * 1024).toFixed(0)} MiB ÷ ${(perTokenBytes / 1024).toFixed(2)} KiB
+                </div>
+            </div>
+        </div>
+
+        <div class="formula-card" style="margin-bottom: 0.625rem;">
+            <div class="formula-header">
+                <span>📊</span>
+                <span>Block Breakdown (${deployConfig.blockTokens} tokens/block)</span>
+            </div>
+            <div class="formula-content" style="font-size: 0.7rem;">
+                <div style="margin-bottom: 0.5rem; font-weight: 600; color: var(--accent-primary);">FA Cache (Compressor):</div>
+                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 0.25rem; margin-left: 0.5rem;">
+                    <div style="color: var(--text-secondary);">C4A Compressor:</div>
+                    <div>${cfg.c4aCompressor.toLocaleString()} B × ${c4aLayers} = ${c4aCompressorTotal.toLocaleString()} B</div>
+                    <div style="color: var(--text-secondary);">C4A Indexer:</div>
+                    <div>${cfg.c4aIndexer.toLocaleString()} B × ${c4aLayers} = ${c4aIndexerTotal.toLocaleString()} B</div>
+                    <div style="color: var(--text-secondary);">C128A Compressor:</div>
+                    <div>${cfg.c128aCompressor.toLocaleString()} B × ${c128aLayers} = ${c128aCompressorTotal.toLocaleString()} B</div>
+                </div>
+
+                <div style="margin-top: 0.75rem; font-weight: 600; color: var(--accent-primary);">WA Cache:</div>
+                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 0.25rem; margin-left: 0.5rem;">
+                    <div style="color: var(--text-secondary);">SWA Cache (×2):</div>
+                    <div>${cfg.swaCache.toLocaleString()} B × ${cfg.swaLayers} × 2 = ${swaTotal.toLocaleString()} B</div>
+                    <div style="color: var(--text-secondary);">C4A KV Cache:</div>
+                    <div>${cfg.c4aKVCache.toLocaleString()} B × ${cfg.kvLayers} = ${c4aKVTotal.toLocaleString()} B</div>
+                    <div style="color: var(--text-secondary);">C128A KV Cache:</div>
+                    <div>${cfg.c128aKVCache.toLocaleString()} B × ${cfg.kvLayers} = ${c128aKVTotal.toLocaleString()} B</div>
+                </div>
+
+                <div style="margin-top: 0.75rem; padding-top: 0.5rem; border-top: 1px dashed var(--border-color);">
+                    <strong>Total per Block:</strong> ${blockBytes.toLocaleString()} B = ${(blockBytes / 1024).toFixed(2)} KiB = ${(blockBytes / 1024 / 1024).toFixed(4)} MiB
+                </div>
+                <div style="margin-top: 0.25rem;">
+                    <strong>Total Memory (${blockCount} blocks):</strong> ${(blockBytes * blockCount).toLocaleString()} B = ${((blockBytes * blockCount) / 1024 / 1024).toFixed(2)} MiB
+                </div>
+            </div>
+        </div>
+
+        <div class="formula-card" style="margin-bottom: 0.625rem;">
+            <div class="formula-header">
+                <span>⚙️</span>
+                <span>Layer Configuration</span>
+            </div>
+            <div class="formula-content" style="font-size: 0.7rem;">
+                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 0.25rem;">
+                    <div style="color: var(--text-secondary);">C4A Layers:</div>
+                    <div style="color: var(--text-primary); font-weight: 500;">${c4aLayers}</div>
+                    <div style="color: var(--text-secondary);">C128A Layers:</div>
+                    <div style="color: var(--text-primary); font-weight: 500;">${c128aLayers}</div>
+                    <div style="color: var(--text-secondary);">Block Size:</div>
+                    <div style="color: var(--text-primary); font-weight: 500;">${deployConfig.blockTokens} tokens</div>
+                </div>
+            </div>
+        </div>
+    `;
+}
+
+// ============================================================
+// Fetch Model Configuration from URL
+// ============================================================
+
+async function fetchModelConfigFromUrl(url) {
+    try {
+        let normalizedUrl = url.trim().replace(/\/+$/, '');
+        normalizedUrl = normalizedUrl.replace(/\/(files|tree\/main|blob\/main|raw\/main|commits|issues|discussions).*$/, '');
+
+        const urlObj = new URL(normalizedUrl);
+        let modelIdentifier;
+        let platform = '';
+
+        if (urlObj.hostname.includes('huggingface.co')) {
+            platform = 'huggingface';
+            const pathParts = urlObj.pathname.split('/').filter(part => part && part !== 'models');
+            const modelPathParts = pathParts.filter(part =>
+                !['tree', 'blob', 'raw', 'commit', 'discussions', 'issues', 'pull'].includes(part)
+            );
+            if (modelPathParts.length >= 2) {
+                modelIdentifier = modelPathParts.slice(0, 2).join('/');
+            }
+        } else if (urlObj.hostname.includes('modelscope.cn')) {
+            platform = 'modelscope';
+            const pathParts = urlObj.pathname.split('/').filter(part => part);
+            if (pathParts.length >= 3 && pathParts[0] === 'models') {
+                modelIdentifier = pathParts.slice(1, 3).join('/');
+            }
+        }
+
+        if (!modelIdentifier) {
+            throw new Error('Could not extract model identifier from URL.');
+        }
+
+        console.log('Fetching config for ' + platform + ' model: ' + modelIdentifier);
+
+        let configData = null;
+
+        // Try direct fetch
+        try {
+            if (platform === 'huggingface') {
+                const apiUrl = 'https://huggingface.co/' + modelIdentifier + '/raw/main/config.json';
+                const response = await fetch(apiUrl);
+                if (response.ok) {
+                    configData = await response.json();
+                }
+            } else if (platform === 'modelscope') {
+                const endpoints = [
+                    'https://modelscope.cn/api/v1/models/' + modelIdentifier + '/repo?Revision=master&FilePath=config.json',
+                    'https://modelscope.cn/' + modelIdentifier + '/raw/master/config.json'
+                ];
+                for (const apiUrl of endpoints) {
+                    try {
+                        const response = await fetch(apiUrl);
+                        if (response.ok) {
+                            const contentType = response.headers.get('content-type');
+                            if (contentType && contentType.includes('application/json')) {
+                                const data = await response.json();
+                                let rawContent = data.Data || data.data || data;
+                                if (rawContent && rawContent.Content) {
+                                    try {
+                                        const decodedContent = atob(rawContent.Content);
+                                        configData = JSON.parse(decodedContent);
+                                    } catch (e) {
+                                        configData = JSON.parse(rawContent.Content);
+                                    }
+                                } else if (typeof rawContent === 'object') {
+                                    configData = rawContent;
+                                }
+                            } else {
+                                const textData = await response.text();
+                                configData = JSON.parse(textData);
+                            }
+                            if (configData && configData.hidden_size) break;
+                        }
+                    } catch (e) {
+                        continue;
+                    }
+                }
+            }
+        } catch (e) {
+            console.log('Direct fetch failed:', e);
+        }
+
+        // Check local configs
+        if (!configData && modelConfigs[modelIdentifier]) {
+            return modelConfigs[modelIdentifier];
+        }
+
+        if (!configData) {
+            throw new Error('Unable to fetch model configuration. Please check the URL.');
+        }
+
+        const sourceConfig = configData.text_config || configData;
+
+        // Preserve all fields including hybrid model indicators
+        const transformedConfig = {
+            hidden_size: sourceConfig.hidden_size,
+            num_attention_heads: sourceConfig.num_attention_heads,
+            num_hidden_layers: sourceConfig.num_hidden_layers,
+            num_key_value_heads: sourceConfig.num_key_value_heads,
+            kv_lora_rank: sourceConfig.kv_lora_rank,
+            qk_rope_head_dim: sourceConfig.qk_rope_head_dim,
+            head_dim: sourceConfig.head_dim,
+            index_head_dim: sourceConfig.index_head_dim,
+            compress_ratios: sourceConfig.compress_ratios || configData.compress_ratios,
+            // Hybrid model indicators
+            hybrid_layer_pattern: sourceConfig.hybrid_layer_pattern || configData.hybrid_layer_pattern,
+            sliding_window: sourceConfig.sliding_window || configData.sliding_window,
+            sliding_window_size: sourceConfig.sliding_window_size || configData.sliding_window_size,
+            swa_num_key_value_heads: sourceConfig.swa_num_key_value_heads || configData.swa_num_key_value_heads,
+            swa_num_attention_heads: sourceConfig.swa_num_attention_heads || configData.swa_num_attention_heads,
+            swa_head_dim: sourceConfig.swa_head_dim || configData.swa_head_dim,
+            add_swa_attention_sink_bias: sourceConfig.add_swa_attention_sink_bias || configData.add_swa_attention_sink_bias,
+            layer_types: sourceConfig.layer_types,
+            linear_attention: sourceConfig.linear_attention,
+            linear_num_key_heads: sourceConfig.linear_num_key_heads,
+            linear_key_head_dim: sourceConfig.linear_key_head_dim,
+            global_head_dim: sourceConfig.global_head_dim,
+            num_global_key_value_heads: sourceConfig.num_global_key_value_heads,
+            window_attention: sourceConfig.window_attention || configData.window_attention,
+            attention_window: sourceConfig.attention_window || configData.attention_window,
+            mixed_attention: sourceConfig.mixed_attention || configData.mixed_attention,
+            sparse_attention: sourceConfig.sparse_attention || configData.sparse_attention,
+            full_attention_layers: sourceConfig.full_attention_layers || configData.full_attention_layers,
+            sliding_attention_layers: sourceConfig.sliding_attention_layers || configData.sliding_attention_layers,
+            linear_attention_layers: sourceConfig.linear_attention_layers || configData.linear_attention_layers,
+            _modelName: modelIdentifier
+        };
+
+        Object.keys(transformedConfig).forEach(key => {
+            if (key !== '_modelName' && transformedConfig[key] === undefined) {
+                delete transformedConfig[key];
+            }
+        });
+
+        return transformedConfig;
+
+    } catch (error) {
+        console.error('Error fetching model config:', error);
+        throw error;
+    }
 }
 
 // ============================================================
@@ -1118,23 +1345,11 @@ function calculateMaxTokensForMemory(config, gpuMemoryGB, dtype, modelName) {
 
 function displayError(title, message) {
     const resultsContainer = document.getElementById('results-container');
+    if (!resultsContainer) return;
+
     const detailsContainer = document.getElementById('calculation-details');
-    const stepsContainer = document.getElementById('calculation-steps');
+    if (detailsContainer) detailsContainer.classList.add('hidden');
 
-    if (!resultsContainer) {
-        console.error('Results container not found');
-        return;
-    }
-
-    // Hide details section
-    if (detailsContainer) {
-        detailsContainer.classList.add('hidden');
-    }
-    if (stepsContainer) {
-        stepsContainer.innerHTML = '';
-    }
-
-    // Display error in results panel
     resultsContainer.innerHTML = `
         <div style="text-align: center; padding: 2rem;">
             <div style="font-size: 3rem; margin-bottom: 1rem;">❌</div>
@@ -1146,29 +1361,19 @@ function displayError(title, message) {
 
 function displayResults(result) {
     const resultsContainer = document.getElementById('results-container');
-    const detailsContainer = document.getElementById('calculation-details');
-    const stepsContainer = document.getElementById('calculation-steps');
+    if (!resultsContainer) return;
 
-    // Check if required elements exist
-    if (!resultsContainer) {
-        console.error('Results container not found');
-        return;
-    }
-
-    // Main result display
     const config = result.config;
     const kvHeads = config.num_key_value_heads || config.num_attention_heads;
 
-    // Use the architecture type from performCalculation
-    const modelTypeText = result.architectureType || 'Standard Transformer';
-
     resultsContainer.innerHTML = `
         <div class="result-display" style="text-align: center; margin-bottom: 1rem;">
-            <div class="result-value" style="font-size: 1.8rem; font-weight: 700; color: var(--accent-primary);">${result.kvCacheSizeGB.toFixed(4)} GB</div>
+            <div class="result-value" style="font-size: 1.8rem; font-weight: 700; color: var(--accent-primary);">${result.kvCacheSizeGiB.toFixed(4)} GiB</div>
+            <div class="result-label" style="font-size: 0.75rem; color: var(--text-secondary);">= ${result.kvCacheSizeGB.toFixed(5)} GB</div>
             <div class="result-label" style="font-size: 0.8rem; color: var(--text-secondary);">Single-GPU KV Cache Size</div>
             ${result.totalGPUs > 1 ? `
-            <div class="result-value" style="font-size: 1.2rem; font-weight: 600; color: var(--accent-primary); margin-top: 0.5rem;">${result.clusterKVCacheSizeGB.toFixed(4)} GB</div>
-            <div class="result-label" style="font-size: 0.75rem; color: var(--text-secondary);">Cluster-wide KV Cache (TP=${result.tp} × DP=${result.dp} = ${result.totalGPUs} GPUs)</div>
+            <div class="result-value" style="font-size: 1.2rem; font-weight: 600; color: var(--accent-primary); margin-top: 0.5rem;">${result.clusterKVCacheSizeGiB.toFixed(4)} GiB</div>
+            <div class="result-label" style="font-size: 0.75rem; color: var(--text-secondary);">Cluster-wide (TP=${result.tp} × DP=${result.dp} = ${result.totalGPUs} GPUs)</div>
             ` : ''}
         </div>
 
@@ -1176,58 +1381,51 @@ function displayResults(result) {
         <div style="background: rgba(245, 158, 11, 0.1); border: 1px solid var(--accent-warning); border-radius: 8px; padding: 0.75rem; margin-bottom: 1rem;">
             <div style="display: flex; align-items: center; gap: 0.5rem; margin-bottom: 0.25rem;">
                 <span style="font-size: 1rem;">⚠️</span>
-                <strong style="color: var(--accent-warning); font-size: 0.85rem;">Hybrid Architecture Warning</strong>
+                <strong style="color: var(--accent-warning); font-size: 0.85rem;">Hybrid Model Warning</strong>
             </div>
             <div style="font-size: 0.75rem; color: var(--text-secondary); line-height: 1.4;">
-                This model contains special layers (e.g., Linear Attention, SSM). Calculation may not be accurate. Further adaptation needed.
+                This appears to be a Hybrid model. The calculation result may not be accurate. Please use the Hybrid Models tab for accurate results.
             </div>
         </div>
         ` : ''}
 
-        <!-- Single-line metrics for high density -->
         <div class="metrics-row" style="display: flex; flex-wrap: wrap; gap: 0.75rem; margin-bottom: 1rem;">
-            <div class="metric-item" style="background: var(--bg-secondary); padding: 0.4rem 0.6rem; border-radius: 4px; font-size: 0.75rem;">
+            <div class="metric-item">
                 <span style="color: var(--text-secondary);">Model:</span>
                 <strong style="color: var(--text-primary); margin-left: 0.25rem;">${getModelDisplayName(result.modelName)}</strong>
             </div>
-            <div class="metric-item" style="background: var(--bg-secondary); padding: 0.4rem 0.6rem; border-radius: 4px; font-size: 0.75rem;">
+            <div class="metric-item">
                 <span style="color: var(--text-secondary);">Type:</span>
-                <strong style="color: var(--text-primary); margin-left: 0.25rem;">${modelTypeText}</strong>
+                <strong style="color: var(--text-primary); margin-left: 0.25rem;">${result.architectureType}</strong>
             </div>
-            <div class="metric-item" style="background: var(--bg-secondary); padding: 0.4rem 0.6rem; border-radius: 4px; font-size: 0.75rem;">
+            <div class="metric-item">
                 <span style="color: var(--text-secondary);">Tokens:</span>
                 <strong style="color: var(--text-primary); margin-left: 0.25rem;">${result.tokens.toLocaleString()}</strong>
             </div>
-            <div class="metric-item" style="background: var(--bg-secondary); padding: 0.4rem 0.6rem; border-radius: 4px; font-size: 0.75rem;">
+            <div class="metric-item">
                 <span style="color: var(--text-secondary);">Batch:</span>
                 <strong style="color: var(--text-primary); margin-left: 0.25rem;">${result.batchSize}</strong>
             </div>
-            <div class="metric-item" style="background: var(--bg-secondary); padding: 0.4rem 0.6rem; border-radius: 4px; font-size: 0.75rem;">
+            <div class="metric-item">
                 <span style="color: var(--text-secondary);">DType:</span>
                 <strong style="color: var(--text-primary); margin-left: 0.25rem;">${result.dtype}</strong>
             </div>
-            <div class="metric-item" style="background: var(--bg-secondary); padding: 0.4rem 0.6rem; border-radius: 4px; font-size: 0.75rem;">
+            <div class="metric-item">
                 <span style="color: var(--text-secondary);">TP:</span>
                 <strong style="color: var(--text-primary); margin-left: 0.25rem;">${result.tp}</strong>
             </div>
-            <div class="metric-item" style="background: var(--bg-secondary); padding: 0.4rem 0.6rem; border-radius: 4px; font-size: 0.75rem;">
-                <span style="color: var(--text-secondary);">DP:</span>
-                <strong style="color: var(--text-primary); margin-left: 0.25rem;">${result.dp}</strong>
-            </div>
         </div>
 
-        <!-- Calculation Formula Card -->
         <div class="formula-card" style="margin-bottom: 0.625rem;">
             <div class="formula-header">
                 <span>📐</span>
-                <span>Single-GPU Formula</span>
+                <span>Calculation Formula</span>
             </div>
             <div class="formula-content">
                 <div class="formula-main" style="font-size: 0.75rem;">${result.formula}</div>
             </div>
         </div>
 
-        <!-- Model Configuration -->
         <div class="formula-card" style="margin-bottom: 0.625rem;">
             <div class="formula-header">
                 <span>⚙️</span>
@@ -1243,126 +1441,65 @@ function displayResults(result) {
                     <div style="color: var(--text-primary); font-weight: 500;">${config.num_attention_heads}</div>
                     <div style="color: var(--text-secondary);">KV Heads:</div>
                     <div style="color: var(--text-primary); font-weight: 500;">${kvHeads}</div>
-                    ${config.kv_lora_rank ? `<div style="color: var(--text-secondary);">KV LoRA Rank:</div><div style="color: var(--text-primary); font-weight: 500;">${config.kv_lora_rank}</div>` : ''}
-                    ${config.qk_rope_head_dim ? `<div style="color: var(--text-secondary);">QK RoPE Dim:</div><div style="color: var(--text-primary); font-weight: 500;">${config.qk_rope_head_dim}</div>` : ''}
-                    ${config.head_dim && !config.kv_lora_rank ? `<div style="color: var(--text-secondary);">Head Dim:</div><div style="color: var(--text-primary); font-weight: 500;">${config.head_dim}</div>` : ''}
+                    ${config.kv_lora_rank ? '<div style="color: var(--text-secondary);">KV LoRA Rank:</div><div style="color: var(--text-primary); font-weight: 500;">' + config.kv_lora_rank + '</div>' : ''}
+                    ${config.qk_rope_head_dim ? '<div style="color: var(--text-secondary);">QK RoPE Dim:</div><div style="color: var(--text-primary); font-weight: 500;">' + config.qk_rope_head_dim + '</div>' : ''}
+                    ${config.index_head_dim ? '<div style="color: var(--text-secondary);">Index Head Dim:</div><div style="color: var(--text-primary); font-weight: 500;">' + config.index_head_dim + '</div>' : ''}
                 </div>
             </div>
         </div>
     `;
-
-    // Hide the separate calculation details section since we now show everything in results
-    if (detailsContainer) {
-        detailsContainer.classList.add('hidden');
-    }
-    if (stepsContainer) {
-        stepsContainer.innerHTML = '';
-    }
 }
 
 function displayMaxTokensResults(result) {
     const resultsContainer = document.getElementById('results-container');
-    const detailsContainer = document.getElementById('calculation-details');
-    const stepsContainer = document.getElementById('calculation-steps');
+    if (!resultsContainer) return;
 
-    // Check if required elements exist
-    if (!resultsContainer) {
-        console.error('Results container not found');
-        return;
-    }
-
-    // Main result display
     const config = result.config;
     const kvHeads = config.num_key_value_heads || config.num_attention_heads;
 
-    // Use the architecture type from calculateMaxTokensForMemory
-    const modelTypeText = result.architectureType || 'Standard Transformer';
+    // Show toast warning for hybrid models (same as KV Cache calculation)
+    if (result.isHybridModel) {
+        showToast('warning', 'Hybrid Model Warning',
+            'This appears to be a Hybrid model. The max tokens calculation may not be accurate. For Hybrid models, please use the Hybrid Models tab.');
+    }
 
     resultsContainer.innerHTML = `
         <div class="result-display" style="text-align: center; margin-bottom: 1rem;">
             <div class="result-value" style="font-size: 1.8rem; font-weight: 700; color: var(--accent-success);">${result.maxTokens.toLocaleString()}</div>
-            <div class="result-label" style="font-size: 0.8rem; color: var(--text-secondary);">Max Tokens ${result.tp > 1 ? `(Per-Request, TP=${result.tp})` : '(Per Request)'}</div>
+            <div class="result-label" style="font-size: 0.8rem; color: var(--text-secondary);">Max Tokens ${result.tp > 1 ? '(TP=' + result.tp + ')' : ''}</div>
         </div>
 
-        ${result.showHybridWarning ? `
+        ${result.isHybridModel ? `
         <div style="background: rgba(245, 158, 11, 0.1); border: 1px solid var(--accent-warning); border-radius: 8px; padding: 0.75rem; margin-bottom: 1rem;">
             <div style="display: flex; align-items: center; gap: 0.5rem; margin-bottom: 0.25rem;">
                 <span style="font-size: 1rem;">⚠️</span>
-                <strong style="color: var(--accent-warning); font-size: 0.85rem;">Hybrid Architecture Warning</strong>
+                <strong style="color: var(--accent-warning); font-size: 0.85rem;">Hybrid Model Warning</strong>
             </div>
             <div style="font-size: 0.75rem; color: var(--text-secondary); line-height: 1.4;">
-                This model contains special layers (e.g., Linear Attention, SSM). Calculation may not be accurate. Further adaptation needed.
+                This appears to be a Hybrid model. The max tokens calculation may not be accurate. Please use the Hybrid Models tab for accurate results.
             </div>
         </div>
         ` : ''}
 
-        <!-- Single-line metrics for high density -->
         <div class="metrics-row" style="display: flex; flex-wrap: wrap; gap: 0.75rem; margin-bottom: 1rem;">
-            <div class="metric-item" style="background: var(--bg-secondary); padding: 0.4rem 0.6rem; border-radius: 4px; font-size: 0.75rem;">
+            <div class="metric-item">
                 <span style="color: var(--text-secondary);">Model:</span>
                 <strong style="color: var(--text-primary); margin-left: 0.25rem;">${getModelDisplayName(result.modelName)}</strong>
             </div>
-            <div class="metric-item" style="background: var(--bg-secondary); padding: 0.4rem 0.6rem; border-radius: 4px; font-size: 0.75rem;">
+            <div class="metric-item">
                 <span style="color: var(--text-secondary);">Type:</span>
-                <strong style="color: var(--text-primary); margin-left: 0.25rem;">${modelTypeText}</strong>
+                <strong style="color: var(--text-primary); margin-left: 0.25rem;">${result.isHybridModel ? 'Hybrid Model (Warning: result may not be accurate)' : result.architectureType}</strong>
             </div>
-            <div class="metric-item" style="background: var(--bg-secondary); padding: 0.4rem 0.6rem; border-radius: 4px; font-size: 0.75rem;">
-                <span style="color: var(--text-secondary);">Single-GPU:</span>
-                <strong style="color: var(--text-primary); margin-left: 0.25rem;">${result.gpuMemoryGB}GB</strong>
+            <div class="metric-item">
+                <span style="color: var(--text-secondary);">GPU Memory:</span>
+                <strong style="color: var(--text-primary); margin-left: 0.25rem;">${result.gpuMemoryGiB} GiB</strong>
             </div>
-            <div class="metric-item" style="background: var(--bg-secondary); padding: 0.4rem 0.6rem; border-radius: 4px; font-size: 0.75rem;">
-                <span style="color: var(--text-secondary);">Batch:</span>
-                <strong style="color: var(--text-primary); margin-left: 0.25rem;">${result.batchSize}</strong>
-            </div>
-            <div class="metric-item" style="background: var(--bg-secondary); padding: 0.4rem 0.6rem; border-radius: 4px; font-size: 0.75rem;">
+            <div class="metric-item">
                 <span style="color: var(--text-secondary);">DType:</span>
                 <strong style="color: var(--text-primary); margin-left: 0.25rem;">${result.dtype}</strong>
             </div>
-            <div class="metric-item" style="background: var(--bg-secondary); padding: 0.4rem 0.6rem; border-radius: 4px; font-size: 0.75rem;">
-                <span style="color: var(--text-secondary);">TP:</span>
-                <strong style="color: var(--text-primary); margin-left: 0.25rem;">${result.tp}</strong>
-            </div>
-            <div class="metric-item" style="background: var(--bg-secondary); padding: 0.4rem 0.6rem; border-radius: 4px; font-size: 0.75rem;">
-                <span style="color: var(--text-secondary);">DP:</span>
-                <strong style="color: var(--text-primary); margin-left: 0.25rem;">${result.dp}</strong>
-            </div>
         </div>
 
-        <!-- Calculation Details Card -->
-        <div class="formula-card" style="margin-bottom: 0.625rem;">
-            <div class="formula-header">
-                <span>📐</span>
-                <span>Calculation Details</span>
-            </div>
-            <div class="formula-content">
-                <!-- Per-Token Formula -->
-                <div style="margin-bottom: 0.75rem;">
-                    <div style="font-size: 0.7rem; color: var(--text-secondary); margin-bottom: 0.25rem;">Per-Token Formula (Single-GPU):</div>
-                    <div class="formula-main" style="font-size: 0.7rem;">${result.formula}</div>
-                </div>
-
-                <!-- Max Tokens Breakdown -->
-                <div style="padding-top: 0.75rem; border-top: 1px dashed var(--border-color);">
-                    <div style="font-size: 0.7rem; color: var(--text-secondary); margin-bottom: 0.375rem;">Max Tokens Calculation:</div>
-                    <div class="formula-breakdown">
-                        <div class="formula-step">
-                            <span class="formula-step-label">Memory for KV Cache:</span>
-                            <span class="formula-step-value">${(result.gpuMemoryGB * 1024).toFixed(0)} MB</span>
-                        </div>
-                        <div class="formula-step">
-                            <span class="formula-step-label">Per Token:</span>
-                            <span class="formula-step-value">${result.perTokenMemoryMB.toFixed(3)} MB</span>
-                        </div>
-                        <div class="formula-step" style="margin-top: 0.25rem;">
-                            <span class="formula-step-label">Per-Request Result:</span>
-                            <span class="formula-step-value" style="color: var(--accent-success); font-weight: 600;">${result.maxTokens.toLocaleString()} tokens</span>
-                        </div>
-                    </div>
-                </div>
-            </div>
-        </div>
-
-        <!-- Model Configuration -->
         <div class="formula-card" style="margin-bottom: 0.625rem;">
             <div class="formula-header">
                 <span>⚙️</span>
@@ -1378,59 +1515,46 @@ function displayMaxTokensResults(result) {
                     <div style="color: var(--text-primary); font-weight: 500;">${config.num_attention_heads}</div>
                     <div style="color: var(--text-secondary);">KV Heads:</div>
                     <div style="color: var(--text-primary); font-weight: 500;">${kvHeads}</div>
-                    ${config.kv_lora_rank ? `<div style="color: var(--text-secondary);">KV LoRA Rank:</div><div style="color: var(--text-primary); font-weight: 500;">${config.kv_lora_rank}</div>` : ''}
-                    ${config.qk_rope_head_dim ? `<div style="color: var(--text-secondary);">QK RoPE Dim:</div><div style="color: var(--text-primary); font-weight: 500;">${config.qk_rope_head_dim}</div>` : ''}
-                    ${config.head_dim && !config.kv_lora_rank ? `<div style="color: var(--text-secondary);">Head Dim:</div><div style="color: var(--text-primary); font-weight: 500;">${config.head_dim}</div>` : ''}
+                    ${config.kv_lora_rank ? '<div style="color: var(--text-secondary);">KV LoRA Rank:</div><div style="color: var(--text-primary); font-weight: 500;">' + config.kv_lora_rank + '</div>' : ''}
+                    ${config.qk_rope_head_dim ? '<div style="color: var(--text-secondary);">QK RoPE Dim:</div><div style="color: var(--text-primary); font-weight: 500;">' + config.qk_rope_head_dim + '</div>' : ''}
+                    ${config.index_head_dim ? '<div style="color: var(--text-secondary);">Index Head Dim:</div><div style="color: var(--text-primary); font-weight: 500;">' + config.index_head_dim + '</div>' : ''}
+                </div>
+            </div>
+        </div>
+
+        <div class="formula-card" style="margin-bottom: 0.625rem;">
+            <div class="formula-header">
+                <span>📐</span>
+                <span>Per-Token Formula</span>
+            </div>
+            <div class="formula-content">
+                <div class="formula-main" style="font-size: 0.7rem;">${result.formula}</div>
+            </div>
+        </div>
+
+        <div class="formula-card" style="margin-bottom: 0.625rem;">
+            <div class="formula-header">
+                <span>🔢</span>
+                <span>Max Tokens Calculation</span>
+            </div>
+            <div class="formula-content">
+                <div class="formula-breakdown">
+                    <div class="formula-step">
+                        <span class="formula-step-label">Memory:</span>
+                        <span class="formula-step-value">${(result.gpuMemoryGiB * 1024).toFixed(0)} MiB</span>
+                    </div>
+                    <div class="formula-step">
+                        <span class="formula-step-label">Per Token:</span>
+                        <span class="formula-step-value">${result.perTokenMemoryMiB.toFixed(3)} MiB</span>
+                    </div>
+                    <div class="formula-step">
+                        <span class="formula-step-label">Max Tokens:</span>
+                        <span class="formula-step-value" style="color: var(--accent-success); font-weight: 600;">${result.maxTokens.toLocaleString()}</span>
+                    </div>
                 </div>
             </div>
         </div>
     `;
-
-    // Calculation details (only if elements exist)
-    if (stepsContainer || detailsContainer) {
-        const config = result.config;
-        const kvHeads = config.num_key_value_heads || config.num_attention_heads;
-
-        const stepsHTML = `
-            <div class="formula-card">
-                <div class="formula-header">
-                    <span>📐</span>
-                    <span>Per-Token Formula</span>
-                </div>
-                <div class="formula-content">
-                    <div class="formula-main">${result.formula}</div>
-                </div>
-            </div>
-
-            <div class="formula-card">
-                <div class="formula-header">
-                    <span>🔢</span>
-                    <span>Max Tokens Calculation</span>
-                </div>
-                <div class="formula-content">
-                    <div class="formula-main">
-                        ${(result.gpuMemoryGB * 1024).toFixed(0)} MB ÷ ${(result.perTokenMemoryMB).toFixed(3)} MB = ${result.maxTokens.toLocaleString()} Tokens
-                    </div>
-                </div>
-            </div>
-        `;
-
-        // Hide the separate calculation details section since we now show everything in results
-        if (detailsContainer) {
-            detailsContainer.classList.add('hidden');
-        }
-        if (stepsContainer) {
-            stepsContainer.innerHTML = '';
-        }
-
-        // Apply translations to elements with data-i18n attributes
-        document.querySelectorAll('[data-i18n]').forEach(element => {
-            const key = element.getAttribute('data-i18n');
-            if (translations[currentLanguage][key]) {
-                element.textContent = translations[currentLanguage][key];
-            }
-        });
-    }
 }
 
 // ============================================================
@@ -1440,24 +1564,13 @@ function displayMaxTokensResults(result) {
 function showToast(type, title, message) {
     const container = document.getElementById('toast-container');
 
-    // Remove any existing toasts of the same type
-    const existingToasts = container.querySelectorAll(`.toast.${type}`);
-    existingToasts.forEach(toast => toast.remove());
+    const icons = { 'error': '❌', 'success': '✅', 'warning': '⚠️' };
 
-    // Create toast element
     const toast = document.createElement('div');
-    toast.className = `toast ${type}`;
-
-    // Set icon based on type
-    const icons = {
-        'error': '❌',
-        'success': '✅',
-        'warning': '⚠️'
-    };
-
+    toast.className = 'toast ' + type;
     toast.innerHTML = `
         <div class="toast-content">
-            <div class="toast-icon">${icons[type] || icons['error']}</div>
+            <div class="toast-icon">${icons[type] || '❌'}</div>
             <div class="toast-info">
                 <div class="toast-title">${title}</div>
                 <div class="toast-message">${message}</div>
@@ -1466,102 +1579,18 @@ function showToast(type, title, message) {
         <button class="toast-close" onclick="closeToast(this.parentElement)">×</button>
     `;
 
-    // Add to container
     container.appendChild(toast);
+    setTimeout(function() { toast.classList.add('show'); }, 10);
 
-    // Trigger animation
-    setTimeout(() => {
-        toast.classList.add('show');
-    }, 10);
-
-    // Auto remove after 5 seconds for success/warning, 8 seconds for error
     const timeout = type === 'error' ? 8000 : 5000;
-    setTimeout(() => {
-        closeToast(toast);
-    }, timeout);
+    setTimeout(function() { closeToast(toast); }, timeout);
 }
 
 function closeToast(toast) {
     if (toast) {
         toast.classList.remove('show');
         toast.classList.add('hide');
-        setTimeout(() => {
-            if (toast.parentElement) {
-                toast.remove();
-            }
-        }, 300);
-    }
-}
-
-// ============================================================
-// Get Current Model Configuration (utility)
-// ============================================================
-
-async function getCurrentModelConfig() {
-    let config;
-    let modelName;
-
-    try {
-        console.log('Current model source:', currentModelSource);
-
-        if (currentModelSource === 'preset') {
-            const presetSelect = document.getElementById('preset-model-select');
-            if (!presetSelect) {
-                console.log('Preset model select element not found');
-                return null;
-            }
-            modelName = presetSelect.value;
-            console.log('Selected preset model:', modelName);
-            if (!modelName || !modelConfigs[modelName]) {
-                console.log('Preset model not found:', modelName);
-                return null;
-            }
-            config = modelConfigs[modelName];
-            console.log('Using preset config for:', modelName);
-        } else {
-            // Custom model URL
-            const modelUrlElement = document.getElementById('model-url');
-            if (!modelUrlElement) {
-                console.log('Model URL element not found');
-                return null;
-            }
-            const modelUrl = modelUrlElement.value.trim();
-            if (!modelUrl) {
-                console.log('No model URL provided');
-                return null;
-            }
-
-            // Try to fetch config from URL (async)
-            try {
-                config = await fetchModelConfigFromUrl(modelUrl);
-            } catch (fetchError) {
-                console.log('Failed to fetch config from URL:', fetchError);
-                return null;
-            }
-
-            if (!config) {
-                console.log('Failed to fetch config from URL');
-                return null;
-            }
-            modelName = modelUrl;
-        }
-
-        // Validate required fields
-        const requiredFields = ['hidden_size', 'num_attention_heads', 'num_hidden_layers'];
-        for (const field of requiredFields) {
-            if (!config[field]) {
-                console.log(`Missing required field: ${field}`);
-                return null;
-            }
-        }
-
-        // Add model name to config for display
-        config._name = modelName;
-        return config;
-
-    } catch (error) {
-        console.error('Error getting model config:', error);
-        return null;
+        setTimeout(function() { toast.remove(); }, 300);
     }
 }
 
@@ -1570,19 +1599,38 @@ async function getCurrentModelConfig() {
 // ============================================================
 
 function initializeEventListeners() {
-    // Enter key support for token input
-    document.getElementById('token-input').addEventListener('keydown', function(event) {
-        if (event.key === 'Enter') {
-            calculateKVCache();
-        }
-    });
+    // Enter key support
+    const tokenInput = document.getElementById('token-input');
+    if (tokenInput) {
+        tokenInput.addEventListener('keydown', function(e) {
+            if (e.key === 'Enter') calculateKVCache();
+        });
+    }
 
-    // Enter key support for model URL
-    document.getElementById('model-url').addEventListener('keydown', function(event) {
-        if (event.key === 'Enter') {
-            calculateKVCache();
-        }
-    });
+    const modelUrlInput = document.getElementById('model-url');
+    if (modelUrlInput) {
+        modelUrlInput.addEventListener('keydown', function(e) {
+            if (e.key === 'Enter') calculateKVCache();
+        });
+    }
 
-    // Toast notifications don't need escape key handling
+    // Preset model selection change
+    const presetSelect = document.getElementById('preset-model-select');
+    if (presetSelect) {
+        presetSelect.addEventListener('change', function() {
+            const modelName = this.value;
+            if (modelName && modelConfigs[modelName]) {
+                updateFormulaReference(modelConfigs[modelName]);
+            } else {
+                updateFormulaReference(null);
+            }
+        });
+
+        // Initial formula display
+        setTimeout(function() {
+            if (presetSelect.value && modelConfigs[presetSelect.value]) {
+                updateFormulaReference(modelConfigs[presetSelect.value]);
+            }
+        }, 100);
+    }
 }

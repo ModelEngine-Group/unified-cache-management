@@ -29,9 +29,9 @@
   "links": [
     {
       "type": "dashboards",
-      "title": "Other UCM dashboards",
+      "title": "Other UCM vLLM metrics dashboards",
       "tags": [
-        "ucm"
+        "ucm-vllm-connector-metrics"
       ],
       "asDropdown": true,
       "includeVars": true,
@@ -886,6 +886,123 @@
         "type": "prometheus",
         "uid": "${DS_PROMETHEUS}"
       },
+      "description": "Breakdown of prefix-cache hit rate from vLLM local GPU prefix cache and external KV connector cache.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "barWidthFactor": 0.6,
+            "drawStyle": "line",
+            "fillOpacity": 0,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "auto",
+            "spanNulls": 60000,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 0.5
+              },
+              {
+                "color": "green",
+                "value": 0.8
+              }
+            ]
+          },
+          "unit": "percentunit",
+          "min": 0,
+          "max": 1
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 24,
+        "x": 0,
+        "y": 24
+      },
+      "id": 17,
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "maxHeight": "50%",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "none"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "sum(rate(vllm:prefix_cache_hits_total{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\"}[$__rate_interval]))\n/\nclamp_min(sum(rate(vllm:prefix_cache_queries_total{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\"}[$__rate_interval])), 1)",
+          "instant": false,
+          "legendFormat": "GPU Prefix Cache",
+          "range": true,
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "sum(rate(vllm:external_prefix_cache_hits_total{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\"}[$__rate_interval]))\n/\nclamp_min(sum(rate(vllm:external_prefix_cache_queries_total{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\"}[$__rate_interval])), 1)",
+          "instant": false,
+          "legendFormat": "Connector Prefix Cache",
+          "range": true,
+          "refId": "B"
+        }
+      ],
+      "title": "KV Cache Hit Rate Breakdown",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
       "description": "Heatmap of request prompt length",
       "fieldConfig": {
         "defaults": {
@@ -906,7 +1023,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 24
+        "y": 32
       },
       "id": 12,
       "options": {
@@ -929,7 +1046,7 @@
           "color": "rgba(255,0,255,0.7)"
         },
         "filterValues": {
-          "le": 1e-9
+          "le": 1e-09
         },
         "legend": {
           "show": true
@@ -998,7 +1115,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 24
+        "y": 32
       },
       "id": 13,
       "options": {
@@ -1021,7 +1138,7 @@
           "color": "rgba(255,0,255,0.7)"
         },
         "filterValues": {
-          "le": 1e-9
+          "le": 1e-09
         },
         "legend": {
           "show": true
@@ -1129,7 +1246,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 32
+        "y": 40
       },
       "id": 11,
       "options": {
@@ -1231,7 +1348,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 32
+        "y": 40
       },
       "id": 14,
       "options": {
@@ -1332,7 +1449,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 40
+        "y": 48
       },
       "id": 15,
       "options": {
@@ -1446,7 +1563,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 40
+        "y": 48
       },
       "id": 16,
       "options": {
@@ -1487,7 +1604,7 @@
   "refresh": "",
   "schemaVersion": 39,
   "tags": [
-    "ucm",
+    "ucm-vllm-connector-metrics",
     "vllm"
   ],
   "templating": {
@@ -1601,8 +1718,8 @@
   },
   "timepicker": {},
   "timezone": "",
-  "title": "vLLM",
-  "uid": "vllm-overview",
+  "title": "vLLM (UCM Metrics)",
+  "uid": "ucm-vllm-overview",
   "version": 1,
   "weekStart": ""
 }

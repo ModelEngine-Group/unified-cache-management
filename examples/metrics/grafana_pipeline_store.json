@@ -109,7 +109,6 @@
           "value": "model_name"
         },
         "hide": 0,
-        "includeAll": false,
         "label": "View",
         "multi": false,
         "name": "perWorker",
@@ -122,10 +121,10 @@
           {
             "selected": false,
             "text": "Per Worker",
-            "value": "model_name, worker_id"
+            "value": "model_name, engine, worker_rank"
           }
         ],
-        "query": "Aggregated : model_name,Per Worker : model_name\\, worker_id",
+        "query": "Aggregated : model_name,Per Worker : model_name\\, engine\\, worker_rank",
         "queryValue": "",
         "skipUrlSync": false,
         "type": "custom"
@@ -141,15 +140,43 @@
           "type": "prometheus",
           "uid": "${DS_PROMETHEUS}"
         },
-        "definition": "label_values({__name__=~\"ucm:.*\", job=~\"$job\", model_name=\"$model_name\"}, worker_id)",
+        "definition": "label_values({__name__=~\"ucm:.*\", job=~\"$job\", model_name=\"$model_name\"}, engine)",
         "hide": 0,
         "includeAll": true,
-        "label": "worker_id",
+        "label": "engine",
         "multi": false,
-        "name": "worker_id",
+        "name": "engine",
         "options": [],
         "query": {
-          "query": "label_values({__name__=~\"ucm:.*\", job=~\"$job\", model_name=\"$model_name\"}, worker_id)",
+          "query": "label_values({__name__=~\"ucm:.*\", job=~\"$job\", model_name=\"$model_name\"}, engine)",
+          "refId": "StandardVariableQuery"
+        },
+        "refresh": 1,
+        "regex": "",
+        "skipUrlSync": false,
+        "sort": 2,
+        "type": "query"
+      },
+      {
+        "allValue": ".*",
+        "current": {
+          "selected": true,
+          "text": "All",
+          "value": "$__all"
+        },
+        "datasource": {
+          "type": "prometheus",
+          "uid": "${DS_PROMETHEUS}"
+        },
+        "definition": "label_values({__name__=~\"ucm:.*\", job=~\"$job\", model_name=\"$model_name\", engine=~\"$engine\"}, worker_rank)",
+        "hide": 0,
+        "includeAll": true,
+        "label": "worker_rank",
+        "multi": false,
+        "name": "worker_rank",
+        "options": [],
+        "query": {
+          "query": "label_values({__name__=~\"ucm:.*\", job=~\"$job\", model_name=\"$model_name\", engine=~\"$engine\"}, worker_rank)",
           "refId": "StandardVariableQuery"
         },
         "refresh": 1,
@@ -168,21 +195,21 @@
   "timezone": "",
   "weekStart": "",
   "refresh": "",
-  "title": "vLLM - UCM Cache / Posix Store",
-  "uid": "ucm-pipeline-store",
+  "title": "vLLM - UCM Cache / Posix Store (vLLM Metrics)",
+  "uid": "ucm-vllm-pipeline-store",
   "version": 3,
   "id": null,
   "tags": [
-    "ucm",
+    "ucm-vllm-connector-metrics",
     "pipeline-store"
   ],
-  "description": "UCM observability dashboard - cache/posix store module. Part of a set; the other UCM dashboards (tag: ucm) are linked from the header.",
+  "description": "UCM observability dashboard - cache/posix store module. Part of a set; the other UCM dashboards (tag: ucm-vllm-connector-metrics) are linked from the header.",
   "links": [
     {
       "type": "dashboards",
-      "title": "Other UCM dashboards",
+      "title": "Other UCM vLLM metrics dashboards",
       "tags": [
-        "ucm"
+        "ucm-vllm-connector-metrics"
       ],
       "asDropdown": true,
       "includeVars": true,
@@ -298,10 +325,10 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "sum by (${perWorker:raw}) (rate(ucm:cache_load_backend_shards_total{model_name=\"$model_name\", job=~\"$job\", worker_id=~\"$worker_id\"}[$__rate_interval]))\n/ clamp_min(\n  sum by (${perWorker:raw}) (rate(ucm:cache_load_shards_total{model_name=\"$model_name\", job=~\"$job\", worker_id=~\"$worker_id\"}[$__rate_interval])), 1\n)",
+          "expr": "sum by (${perWorker:raw}) (rate(ucm:cache_load_backend_shards_total{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval]))\n/ clamp_min(\n  sum by (${perWorker:raw}) (rate(ucm:cache_load_shards_total{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval])), 1\n)",
           "hide": false,
           "instant": false,
-          "legendFormat": "{{worker_id}}",
+          "legendFormat": "{{engine}} {{worker_rank}}",
           "range": true,
           "refId": "A"
         }
@@ -314,7 +341,7 @@
         "type": "prometheus",
         "uid": "${DS_PROMETHEUS}"
       },
-      "description": "Cache load task rate derived from rate(cache_load_duration_ms_count). One count is one Cache load task. Series by selected view.",
+      "description": "Cache load task rate derived from rate(cache_load_duration_ms_count). One count is one Cache load task. Series split by engine and worker_rank.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -394,10 +421,10 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "sum by (${perWorker:raw}) (rate(ucm:cache_load_duration_ms_count{model_name=\"$model_name\", job=~\"$job\", worker_id=~\"$worker_id\"}[$__rate_interval]))",
+          "expr": "sum by (${perWorker:raw}) (rate(ucm:cache_load_duration_ms_count{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval]))",
           "hide": false,
           "instant": false,
-          "legendFormat": "load {{worker_id}}",
+          "legendFormat": "load {{engine}} {{worker_rank}}",
           "range": true,
           "refId": "A"
         }
@@ -410,7 +437,7 @@
         "type": "prometheus",
         "uid": "${DS_PROMETHEUS}"
       },
-      "description": "Cache dump task rate derived from rate(cache_dump_duration_ms_count). One count is one Cache dump task. Series by selected view.",
+      "description": "Cache dump task rate derived from rate(cache_dump_duration_ms_count). One count is one Cache dump task. Series split by engine and worker_rank.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -490,10 +517,10 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "sum by (${perWorker:raw}) (rate(ucm:cache_dump_duration_ms_count{model_name=\"$model_name\", job=~\"$job\", worker_id=~\"$worker_id\"}[$__rate_interval]))",
+          "expr": "sum by (${perWorker:raw}) (rate(ucm:cache_dump_duration_ms_count{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval]))",
           "hide": false,
           "instant": false,
-          "legendFormat": "dump {{worker_id}}",
+          "legendFormat": "dump {{engine}} {{worker_rank}}",
           "range": true,
           "refId": "A"
         }
@@ -666,8 +693,8 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "histogram_quantile(0.5, sum by (le, ${perWorker:raw}) (rate(ucm:cache_load_duration_ms_bucket{model_name=\"$model_name\", job=~\"$job\", worker_id=~\"$worker_id\"}[$__rate_interval])))",
-          "legendFormat": "p50 {{worker_id}}",
+          "expr": "histogram_quantile(0.5, sum by (le, ${perWorker:raw}) (rate(ucm:cache_load_duration_ms_bucket{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval])))",
+          "legendFormat": "p50 {{engine}} {{worker_rank}}",
           "range": true,
           "refId": "A"
         },
@@ -677,8 +704,8 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "histogram_quantile(0.9, sum by (le, ${perWorker:raw}) (rate(ucm:cache_load_duration_ms_bucket{model_name=\"$model_name\", job=~\"$job\", worker_id=~\"$worker_id\"}[$__rate_interval])))",
-          "legendFormat": "p90 {{worker_id}}",
+          "expr": "histogram_quantile(0.9, sum by (le, ${perWorker:raw}) (rate(ucm:cache_load_duration_ms_bucket{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval])))",
+          "legendFormat": "p90 {{engine}} {{worker_rank}}",
           "range": true,
           "refId": "B"
         },
@@ -688,8 +715,8 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "histogram_quantile(0.99, sum by (le, ${perWorker:raw}) (rate(ucm:cache_load_duration_ms_bucket{model_name=\"$model_name\", job=~\"$job\", worker_id=~\"$worker_id\"}[$__rate_interval])))",
-          "legendFormat": "p99 {{worker_id}}",
+          "expr": "histogram_quantile(0.99, sum by (le, ${perWorker:raw}) (rate(ucm:cache_load_duration_ms_bucket{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval])))",
+          "legendFormat": "p99 {{engine}} {{worker_rank}}",
           "range": true,
           "refId": "C"
         },
@@ -699,8 +726,8 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "sum by (${perWorker:raw}) (rate(ucm:cache_load_duration_ms_sum{model_name=\"$model_name\", job=~\"$job\", worker_id=~\"$worker_id\"}[$__rate_interval]))\n/\nsum by (${perWorker:raw}) (rate(ucm:cache_load_duration_ms_count{model_name=\"$model_name\", job=~\"$job\", worker_id=~\"$worker_id\"}[$__rate_interval]))",
-          "legendFormat": "avg {{worker_id}}",
+          "expr": "sum by (${perWorker:raw}) (rate(ucm:cache_load_duration_ms_sum{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval]))\n/\nsum by (${perWorker:raw}) (rate(ucm:cache_load_duration_ms_count{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval]))",
+          "legendFormat": "avg {{engine}} {{worker_rank}}",
           "range": true,
           "refId": "D"
         }
@@ -873,8 +900,8 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "histogram_quantile(0.5, sum by (le, ${perWorker:raw}) (rate(ucm:cache_dump_duration_ms_bucket{model_name=\"$model_name\", job=~\"$job\", worker_id=~\"$worker_id\"}[$__rate_interval])))",
-          "legendFormat": "p50 {{worker_id}}",
+          "expr": "histogram_quantile(0.5, sum by (le, ${perWorker:raw}) (rate(ucm:cache_dump_duration_ms_bucket{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval])))",
+          "legendFormat": "p50 {{engine}} {{worker_rank}}",
           "range": true,
           "refId": "A"
         },
@@ -884,8 +911,8 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "histogram_quantile(0.9, sum by (le, ${perWorker:raw}) (rate(ucm:cache_dump_duration_ms_bucket{model_name=\"$model_name\", job=~\"$job\", worker_id=~\"$worker_id\"}[$__rate_interval])))",
-          "legendFormat": "p90 {{worker_id}}",
+          "expr": "histogram_quantile(0.9, sum by (le, ${perWorker:raw}) (rate(ucm:cache_dump_duration_ms_bucket{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval])))",
+          "legendFormat": "p90 {{engine}} {{worker_rank}}",
           "range": true,
           "refId": "B"
         },
@@ -895,8 +922,8 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "histogram_quantile(0.99, sum by (le, ${perWorker:raw}) (rate(ucm:cache_dump_duration_ms_bucket{model_name=\"$model_name\", job=~\"$job\", worker_id=~\"$worker_id\"}[$__rate_interval])))",
-          "legendFormat": "p99 {{worker_id}}",
+          "expr": "histogram_quantile(0.99, sum by (le, ${perWorker:raw}) (rate(ucm:cache_dump_duration_ms_bucket{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval])))",
+          "legendFormat": "p99 {{engine}} {{worker_rank}}",
           "range": true,
           "refId": "C"
         },
@@ -906,8 +933,8 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "sum by (${perWorker:raw}) (rate(ucm:cache_dump_duration_ms_sum{model_name=\"$model_name\", job=~\"$job\", worker_id=~\"$worker_id\"}[$__rate_interval]))\n/\nsum by (${perWorker:raw}) (rate(ucm:cache_dump_duration_ms_count{model_name=\"$model_name\", job=~\"$job\", worker_id=~\"$worker_id\"}[$__rate_interval]))",
-          "legendFormat": "avg {{worker_id}}",
+          "expr": "sum by (${perWorker:raw}) (rate(ucm:cache_dump_duration_ms_sum{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval]))\n/\nsum by (${perWorker:raw}) (rate(ucm:cache_dump_duration_ms_count{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval]))",
+          "legendFormat": "avg {{engine}} {{worker_rank}}",
           "range": true,
           "refId": "D"
         }
@@ -920,7 +947,7 @@
         "type": "prometheus",
         "uid": "${DS_PROMETHEUS}"
       },
-      "description": "Stacked average Cache load task duration. Uses task-level queue wait and dispatch metrics; WaitBackendTask + H2D is calculated as cache_load_duration_ms avg minus queue wait avg minus dispatch avg. Per-shard detail metrics are shown in detail panels and are intentionally not stacked here. Uses a fixed 40s rate window for stability.",
+      "description": "Stacked average Cache load task duration. Queue wait, backend dispatch, and H2D sync are task-level phase metrics; backend wait & other is calculated as cache_load_duration_ms avg minus those phase averages. Per-shard backend wait and H2D submit cost are detail metrics and are intentionally not stacked here. Uses a fixed 40s rate window for stability.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -1003,8 +1030,8 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "sum by (${perWorker:raw}) (rate(ucm:cache_load_queue_wait_duration_ms_sum{model_name=\"$model_name\", job=~\"$job\", worker_id=~\"$worker_id\"}[40s]))\n/\nsum by (${perWorker:raw}) (rate(ucm:cache_load_queue_wait_duration_ms_count{model_name=\"$model_name\", job=~\"$job\", worker_id=~\"$worker_id\"}[40s]))",
-          "legendFormat": "queue wait {{worker_id}}",
+          "expr": "sum by (${perWorker:raw}) (rate(ucm:cache_load_queue_wait_duration_ms_sum{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[40s]))\n/\nsum by (${perWorker:raw}) (rate(ucm:cache_load_queue_wait_duration_ms_count{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[40s]))",
+          "legendFormat": "queue wait {{engine}} {{worker_rank}}",
           "range": true,
           "refId": "A"
         },
@@ -1014,8 +1041,8 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "sum by (${perWorker:raw}) (rate(ucm:cache_load_dispatch_duration_ms_sum{model_name=\"$model_name\", job=~\"$job\", worker_id=~\"$worker_id\"}[40s]))\n/\nsum by (${perWorker:raw}) (rate(ucm:cache_load_dispatch_duration_ms_count{model_name=\"$model_name\", job=~\"$job\", worker_id=~\"$worker_id\"}[40s]))",
-          "legendFormat": "dispatch {{worker_id}}",
+          "expr": "sum by (${perWorker:raw}) (rate(ucm:cache_load_backend_submit_duration_ms_sum{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[40s]))\n/\nsum by (${perWorker:raw}) (rate(ucm:cache_load_backend_submit_duration_ms_count{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[40s]))",
+          "legendFormat": "backend dispatch {{engine}} {{worker_rank}}",
           "range": true,
           "refId": "B"
         },
@@ -1025,10 +1052,21 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "clamp_min(\n  (\n    sum by (${perWorker:raw}) (rate(ucm:cache_load_duration_ms_sum{model_name=\"$model_name\", job=~\"$job\", worker_id=~\"$worker_id\"}[40s]))\n    /\n    sum by (${perWorker:raw}) (rate(ucm:cache_load_duration_ms_count{model_name=\"$model_name\", job=~\"$job\", worker_id=~\"$worker_id\"}[40s]))\n  )\n  -\n  (\n    sum by (${perWorker:raw}) (rate(ucm:cache_load_queue_wait_duration_ms_sum{model_name=\"$model_name\", job=~\"$job\", worker_id=~\"$worker_id\"}[40s]))\n    /\n    sum by (${perWorker:raw}) (rate(ucm:cache_load_queue_wait_duration_ms_count{model_name=\"$model_name\", job=~\"$job\", worker_id=~\"$worker_id\"}[40s]))\n  )\n  -\n  (\n    sum by (${perWorker:raw}) (rate(ucm:cache_load_dispatch_duration_ms_sum{model_name=\"$model_name\", job=~\"$job\", worker_id=~\"$worker_id\"}[40s]))\n    /\n    sum by (${perWorker:raw}) (rate(ucm:cache_load_dispatch_duration_ms_count{model_name=\"$model_name\", job=~\"$job\", worker_id=~\"$worker_id\"}[40s]))\n  ),\n  0\n)",
-          "legendFormat": "WaitBackendTask + H2D {{worker_id}}",
+          "expr": "clamp_min(\n  (\n    sum by (${perWorker:raw}) (rate(ucm:cache_load_duration_ms_sum{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[40s]))\n    /\n    sum by (${perWorker:raw}) (rate(ucm:cache_load_duration_ms_count{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[40s]))\n  )\n  -\n  (\n    sum by (${perWorker:raw}) (rate(ucm:cache_load_queue_wait_duration_ms_sum{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[40s]))\n    /\n    sum by (${perWorker:raw}) (rate(ucm:cache_load_queue_wait_duration_ms_count{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[40s]))\n  )\n  -\n  (\n    sum by (${perWorker:raw}) (rate(ucm:cache_load_backend_submit_duration_ms_sum{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[40s]))\n    /\n    sum by (${perWorker:raw}) (rate(ucm:cache_load_backend_submit_duration_ms_count{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[40s]))\n  )\n  -\n  (\n(\n      sum by (${perWorker:raw}) (rate(ucm:cache_h2d_sync_ms_sum{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[40s]))\n    /\n    sum by (${perWorker:raw}) (rate(ucm:cache_h2d_sync_ms_count{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[40s]))\n    )\n    or\n    (\n      0 * sum by (${perWorker:raw}) (rate(ucm:cache_load_duration_ms_count{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[40s]))\n    )\n  ),\n  0\n)",
+          "legendFormat": "backend wait & other {{engine}} {{worker_rank}}",
           "range": true,
           "refId": "C"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "(\n  sum by (${perWorker:raw}) (rate(ucm:cache_h2d_sync_ms_sum{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[40s]))\n/\nsum by (${perWorker:raw}) (rate(ucm:cache_h2d_sync_ms_count{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[40s]))\n)\nor\n(\n  0 * sum by (${perWorker:raw}) (rate(ucm:cache_load_duration_ms_count{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[40s]))\n)",
+          "legendFormat": "H2D sync {{engine}} {{worker_rank}}",
+          "range": true,
+          "refId": "D"
         }
       ],
       "title": "Cache Load Avg Breakdown",
@@ -1039,7 +1077,7 @@
         "type": "prometheus",
         "uid": "${DS_PROMETHEUS}"
       },
-      "description": "Stacked average Cache dump task duration. Queue wait, mkbuf, D2H, and backend submit are task-level phase metrics; Other / epilog is calculated as cache_dump_duration_ms avg minus those phase averages. Uses a fixed 40s rate window for stability.",
+      "description": "Stacked average Cache dump task duration. Queue wait, mkbuf, D2H sync including compute wait, and backend submit are task-level phase metrics; other is calculated as cache_dump_duration_ms avg minus those phase averages. Uses a fixed 40s rate window for stability.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -1122,8 +1160,8 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "sum by (${perWorker:raw}) (rate(ucm:cache_dump_queue_wait_duration_ms_sum{model_name=\"$model_name\", job=~\"$job\", worker_id=~\"$worker_id\"}[40s]))\n/\nsum by (${perWorker:raw}) (rate(ucm:cache_dump_queue_wait_duration_ms_count{model_name=\"$model_name\", job=~\"$job\", worker_id=~\"$worker_id\"}[40s]))",
-          "legendFormat": "queue wait {{worker_id}}",
+          "expr": "sum by (${perWorker:raw}) (rate(ucm:cache_dump_queue_wait_duration_ms_sum{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[40s]))\n/\nsum by (${perWorker:raw}) (rate(ucm:cache_dump_queue_wait_duration_ms_count{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[40s]))",
+          "legendFormat": "queue wait {{engine}} {{worker_rank}}",
           "range": true,
           "refId": "A"
         },
@@ -1133,8 +1171,8 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "sum by (${perWorker:raw}) (rate(ucm:cache_dump_mkbuf_duration_ms_sum{model_name=\"$model_name\", job=~\"$job\", worker_id=~\"$worker_id\"}[40s]))\n/\nsum by (${perWorker:raw}) (rate(ucm:cache_dump_mkbuf_duration_ms_count{model_name=\"$model_name\", job=~\"$job\", worker_id=~\"$worker_id\"}[40s]))",
-          "legendFormat": "mkbuf {{worker_id}}",
+          "expr": "sum by (${perWorker:raw}) (rate(ucm:cache_dump_mkbuf_duration_ms_sum{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[40s]))\n/\nsum by (${perWorker:raw}) (rate(ucm:cache_dump_mkbuf_duration_ms_count{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[40s]))",
+          "legendFormat": "mkbuf {{engine}} {{worker_rank}}",
           "range": true,
           "refId": "B"
         },
@@ -1144,19 +1182,8 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "sum by (${perWorker:raw}) (rate(ucm:cache_d2h_duration_ms_sum{model_name=\"$model_name\", job=~\"$job\", worker_id=~\"$worker_id\"}[40s]))\n/\nsum by (${perWorker:raw}) (rate(ucm:cache_d2h_duration_ms_count{model_name=\"$model_name\", job=~\"$job\", worker_id=~\"$worker_id\"}[40s]))",
-          "legendFormat": "D2H {{worker_id}}",
-          "range": true,
-          "refId": "C"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
-          },
-          "editorMode": "code",
-          "expr": "sum by (${perWorker:raw}) (rate(ucm:cache_dump_backend_submit_duration_ms_sum{model_name=\"$model_name\", job=~\"$job\", worker_id=~\"$worker_id\"}[40s]))\n/\nsum by (${perWorker:raw}) (rate(ucm:cache_dump_backend_submit_duration_ms_count{model_name=\"$model_name\", job=~\"$job\", worker_id=~\"$worker_id\"}[40s]))",
-          "legendFormat": "backend submit {{worker_id}}",
+          "expr": "sum by (${perWorker:raw}) (rate(ucm:cache_d2h_duration_ms_sum{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[40s]))\n/\nsum by (${perWorker:raw}) (rate(ucm:cache_d2h_duration_ms_count{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[40s]))",
+          "legendFormat": "D2H sync (include wait compute) {{engine}} {{worker_rank}}",
           "range": true,
           "refId": "D"
         },
@@ -1166,10 +1193,21 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "clamp_min(\n  (\n    sum by (${perWorker:raw}) (rate(ucm:cache_dump_duration_ms_sum{model_name=\"$model_name\", job=~\"$job\", worker_id=~\"$worker_id\"}[40s]))\n    /\n    sum by (${perWorker:raw}) (rate(ucm:cache_dump_duration_ms_count{model_name=\"$model_name\", job=~\"$job\", worker_id=~\"$worker_id\"}[40s]))\n  )\n  -\n  (\n    sum by (${perWorker:raw}) (rate(ucm:cache_dump_queue_wait_duration_ms_sum{model_name=\"$model_name\", job=~\"$job\", worker_id=~\"$worker_id\"}[40s]))\n    /\n    sum by (${perWorker:raw}) (rate(ucm:cache_dump_queue_wait_duration_ms_count{model_name=\"$model_name\", job=~\"$job\", worker_id=~\"$worker_id\"}[40s]))\n  )\n  -\n  (\n    sum by (${perWorker:raw}) (rate(ucm:cache_dump_mkbuf_duration_ms_sum{model_name=\"$model_name\", job=~\"$job\", worker_id=~\"$worker_id\"}[40s]))\n    /\n    sum by (${perWorker:raw}) (rate(ucm:cache_dump_mkbuf_duration_ms_count{model_name=\"$model_name\", job=~\"$job\", worker_id=~\"$worker_id\"}[40s]))\n  )\n  -\n  (\n    sum by (${perWorker:raw}) (rate(ucm:cache_d2h_duration_ms_sum{model_name=\"$model_name\", job=~\"$job\", worker_id=~\"$worker_id\"}[40s]))\n    /\n    sum by (${perWorker:raw}) (rate(ucm:cache_d2h_duration_ms_count{model_name=\"$model_name\", job=~\"$job\", worker_id=~\"$worker_id\"}[40s]))\n  )\n  -\n  (\n    sum by (${perWorker:raw}) (rate(ucm:cache_dump_backend_submit_duration_ms_sum{model_name=\"$model_name\", job=~\"$job\", worker_id=~\"$worker_id\"}[40s]))\n    /\n    sum by (${perWorker:raw}) (rate(ucm:cache_dump_backend_submit_duration_ms_count{model_name=\"$model_name\", job=~\"$job\", worker_id=~\"$worker_id\"}[40s]))\n  ),\n  0\n)",
-          "legendFormat": "Other / epilog {{worker_id}}",
+          "expr": "sum by (${perWorker:raw}) (rate(ucm:cache_dump_backend_submit_duration_ms_sum{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[40s]))\n/\nsum by (${perWorker:raw}) (rate(ucm:cache_dump_backend_submit_duration_ms_count{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[40s]))",
+          "legendFormat": "backend submit {{engine}} {{worker_rank}}",
           "range": true,
           "refId": "E"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "clamp_min(\n  (\n    sum by (${perWorker:raw}) (rate(ucm:cache_dump_duration_ms_sum{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[40s]))\n    /\n    sum by (${perWorker:raw}) (rate(ucm:cache_dump_duration_ms_count{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[40s]))\n  )\n  -\n  (\n    sum by (${perWorker:raw}) (rate(ucm:cache_dump_queue_wait_duration_ms_sum{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[40s]))\n    /\n    sum by (${perWorker:raw}) (rate(ucm:cache_dump_queue_wait_duration_ms_count{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[40s]))\n  )\n  -\n  (\n    sum by (${perWorker:raw}) (rate(ucm:cache_dump_mkbuf_duration_ms_sum{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[40s]))\n    /\n    sum by (${perWorker:raw}) (rate(ucm:cache_dump_mkbuf_duration_ms_count{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[40s]))\n  )\n  -\n  (\n    sum by (${perWorker:raw}) (rate(ucm:cache_d2h_duration_ms_sum{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[40s]))\n    /\n    sum by (${perWorker:raw}) (rate(ucm:cache_d2h_duration_ms_count{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[40s]))\n  )\n  -\n  (\n    sum by (${perWorker:raw}) (rate(ucm:cache_dump_backend_submit_duration_ms_sum{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[40s]))\n    /\n    sum by (${perWorker:raw}) (rate(ucm:cache_dump_backend_submit_duration_ms_count{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[40s]))\n  ),\n  0\n)",
+          "legendFormat": "other {{engine}} {{worker_rank}}",
+          "range": true,
+          "refId": "F"
         }
       ],
       "title": "Cache Dump Avg Breakdown",
@@ -1263,8 +1301,8 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "sum by (${perWorker:raw}) (rate(ucm:cache_load_bytes_total{model_name=\"$model_name\", job=~\"$job\", worker_id=~\"$worker_id\"}[$__rate_interval])) / 1e9",
-          "legendFormat": "{{worker_id}}",
+          "expr": "sum by (${perWorker:raw}) (rate(ucm:cache_load_bytes_total{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval])) / 1e9",
+          "legendFormat": "{{engine}} {{worker_rank}}",
           "range": true,
           "refId": "A"
         }
@@ -1360,8 +1398,8 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "sum by (${perWorker:raw}) (rate(ucm:cache_dump_bytes_total{model_name=\"$model_name\", job=~\"$job\", worker_id=~\"$worker_id\"}[$__rate_interval])) / 1e9",
-          "legendFormat": "{{worker_id}}",
+          "expr": "sum by (${perWorker:raw}) (rate(ucm:cache_dump_bytes_total{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval])) / 1e9",
+          "legendFormat": "{{engine}} {{worker_rank}}",
           "range": true,
           "refId": "A"
         }
@@ -1374,7 +1412,421 @@
         "type": "prometheus",
         "uid": "${DS_PROMETHEUS}"
       },
-      "description": "Time Cache load tasks spend queued before dispatch worker pickup. Series: p50 / p90 / p99 / avg by selected view.",
+      "description": "Pure Cache load H2D copy bandwidth in GB/s, calculated from copied bytes divided by cache_h2d_sync_ms. This excludes queue time and backend readiness wait. Series: p50 / p90 / p99 / avg by engine and worker_rank.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "barWidthFactor": 0.6,
+            "drawStyle": "line",
+            "fillOpacity": 0,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "auto",
+            "spanNulls": 60000,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "gbytes"
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": "^p50.*"
+            },
+            "properties": [
+              {
+                "id": "custom.lineStyle",
+                "value": {
+                  "fill": "solid"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": "^p90.*"
+            },
+            "properties": [
+              {
+                "id": "custom.lineStyle",
+                "value": {
+                  "fill": "dash",
+                  "dash": [
+                    10,
+                    6
+                  ]
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": "^p99.*"
+            },
+            "properties": [
+              {
+                "id": "custom.lineStyle",
+                "value": {
+                  "fill": "dash",
+                  "dash": [
+                    4,
+                    4
+                  ]
+                }
+              },
+              {
+                "id": "custom.lineWidth",
+                "value": 2
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": "^avg.*"
+            },
+            "properties": [
+              {
+                "id": "custom.lineStyle",
+                "value": {
+                  "fill": "solid"
+                }
+              },
+              {
+                "id": "custom.lineWidth",
+                "value": 1
+              },
+              {
+                "id": "custom.fillOpacity",
+                "value": 5
+              }
+            ]
+          }
+        ]
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 49
+      },
+      "id": 57,
+      "options": {
+        "legend": {
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ],
+          "displayMode": "table",
+          "maxHeight": "50%",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "histogram_quantile(0.5, sum by (le, ${perWorker:raw}) (rate(ucm:cache_h2d_bandwidth_gbps_bucket{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval])))",
+          "legendFormat": "p50 {{engine}} {{worker_rank}}",
+          "range": true,
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "histogram_quantile(0.9, sum by (le, ${perWorker:raw}) (rate(ucm:cache_h2d_bandwidth_gbps_bucket{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval])))",
+          "legendFormat": "p90 {{engine}} {{worker_rank}}",
+          "range": true,
+          "refId": "B"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "histogram_quantile(0.99, sum by (le, ${perWorker:raw}) (rate(ucm:cache_h2d_bandwidth_gbps_bucket{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval])))",
+          "legendFormat": "p99 {{engine}} {{worker_rank}}",
+          "range": true,
+          "refId": "C"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "sum by (${perWorker:raw}) (rate(ucm:cache_h2d_bandwidth_gbps_sum{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval]))\n/\nsum by (${perWorker:raw}) (rate(ucm:cache_h2d_bandwidth_gbps_count{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval]))",
+          "legendFormat": "avg {{engine}} {{worker_rank}}",
+          "range": true,
+          "refId": "D"
+        }
+      ],
+      "title": "Cache Load H2D Bandwidth (per task)",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "description": "Effective Cache dump D2H bandwidth in GB/s, calculated from copied bytes divided by cache_d2h_duration_ms. The duration includes stream synchronize wait, including prerequisite compute wait. Series: p50 / p90 / p99 / avg by engine and worker_rank.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "barWidthFactor": 0.6,
+            "drawStyle": "line",
+            "fillOpacity": 0,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "auto",
+            "spanNulls": 60000,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "gbytes"
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": "^p50.*"
+            },
+            "properties": [
+              {
+                "id": "custom.lineStyle",
+                "value": {
+                  "fill": "solid"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": "^p90.*"
+            },
+            "properties": [
+              {
+                "id": "custom.lineStyle",
+                "value": {
+                  "fill": "dash",
+                  "dash": [
+                    10,
+                    6
+                  ]
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": "^p99.*"
+            },
+            "properties": [
+              {
+                "id": "custom.lineStyle",
+                "value": {
+                  "fill": "dash",
+                  "dash": [
+                    4,
+                    4
+                  ]
+                }
+              },
+              {
+                "id": "custom.lineWidth",
+                "value": 2
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": "^avg.*"
+            },
+            "properties": [
+              {
+                "id": "custom.lineStyle",
+                "value": {
+                  "fill": "solid"
+                }
+              },
+              {
+                "id": "custom.lineWidth",
+                "value": 1
+              },
+              {
+                "id": "custom.fillOpacity",
+                "value": 5
+              }
+            ]
+          }
+        ]
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 49
+      },
+      "id": 55,
+      "options": {
+        "legend": {
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ],
+          "displayMode": "table",
+          "maxHeight": "50%",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "histogram_quantile(0.5, sum by (le, ${perWorker:raw}) (rate(ucm:cache_d2h_bandwidth_gbps_bucket{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval])))",
+          "legendFormat": "p50 {{engine}} {{worker_rank}}",
+          "range": true,
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "histogram_quantile(0.9, sum by (le, ${perWorker:raw}) (rate(ucm:cache_d2h_bandwidth_gbps_bucket{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval])))",
+          "legendFormat": "p90 {{engine}} {{worker_rank}}",
+          "range": true,
+          "refId": "B"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "histogram_quantile(0.99, sum by (le, ${perWorker:raw}) (rate(ucm:cache_d2h_bandwidth_gbps_bucket{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval])))",
+          "legendFormat": "p99 {{engine}} {{worker_rank}}",
+          "range": true,
+          "refId": "C"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "sum by (${perWorker:raw}) (rate(ucm:cache_d2h_bandwidth_gbps_sum{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval]))\n/\nsum by (${perWorker:raw}) (rate(ucm:cache_d2h_bandwidth_gbps_count{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval]))",
+          "legendFormat": "avg {{engine}} {{worker_rank}}",
+          "range": true,
+          "refId": "D"
+        }
+      ],
+      "title": "Cache Dump D2H Bandwidth (per task)",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "description": "Time Cache load tasks spend queued before dispatch worker pickup. Series: p50 / p90 / p99 / avg by engine and worker_rank.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -1508,7 +1960,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 41
+        "y": 57
       },
       "id": 35,
       "options": {
@@ -1534,8 +1986,8 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "histogram_quantile(0.5, sum by (le, ${perWorker:raw}) (rate(ucm:cache_load_queue_wait_duration_ms_bucket{model_name=\"$model_name\", job=~\"$job\", worker_id=~\"$worker_id\"}[$__rate_interval])))",
-          "legendFormat": "p50 {{worker_id}}",
+          "expr": "histogram_quantile(0.5, sum by (le, ${perWorker:raw}) (rate(ucm:cache_load_queue_wait_duration_ms_bucket{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval])))",
+          "legendFormat": "p50 {{engine}} {{worker_rank}}",
           "range": true,
           "refId": "A"
         },
@@ -1545,8 +1997,8 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "histogram_quantile(0.9, sum by (le, ${perWorker:raw}) (rate(ucm:cache_load_queue_wait_duration_ms_bucket{model_name=\"$model_name\", job=~\"$job\", worker_id=~\"$worker_id\"}[$__rate_interval])))",
-          "legendFormat": "p90 {{worker_id}}",
+          "expr": "histogram_quantile(0.9, sum by (le, ${perWorker:raw}) (rate(ucm:cache_load_queue_wait_duration_ms_bucket{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval])))",
+          "legendFormat": "p90 {{engine}} {{worker_rank}}",
           "range": true,
           "refId": "B"
         },
@@ -1556,8 +2008,8 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "histogram_quantile(0.99, sum by (le, ${perWorker:raw}) (rate(ucm:cache_load_queue_wait_duration_ms_bucket{model_name=\"$model_name\", job=~\"$job\", worker_id=~\"$worker_id\"}[$__rate_interval])))",
-          "legendFormat": "p99 {{worker_id}}",
+          "expr": "histogram_quantile(0.99, sum by (le, ${perWorker:raw}) (rate(ucm:cache_load_queue_wait_duration_ms_bucket{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval])))",
+          "legendFormat": "p99 {{engine}} {{worker_rank}}",
           "range": true,
           "refId": "C"
         },
@@ -1567,8 +2019,8 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "sum by (${perWorker:raw}) (rate(ucm:cache_load_queue_wait_duration_ms_sum{model_name=\"$model_name\", job=~\"$job\", worker_id=~\"$worker_id\"}[$__rate_interval]))\n/\nsum by (${perWorker:raw}) (rate(ucm:cache_load_queue_wait_duration_ms_count{model_name=\"$model_name\", job=~\"$job\", worker_id=~\"$worker_id\"}[$__rate_interval]))",
-          "legendFormat": "avg {{worker_id}}",
+          "expr": "sum by (${perWorker:raw}) (rate(ucm:cache_load_queue_wait_duration_ms_sum{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval]))\n/\nsum by (${perWorker:raw}) (rate(ucm:cache_load_queue_wait_duration_ms_count{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval]))",
+          "legendFormat": "avg {{engine}} {{worker_rank}}",
           "range": true,
           "refId": "D"
         }
@@ -1581,7 +2033,7 @@
         "type": "prometheus",
         "uid": "${DS_PROMETHEUS}"
       },
-      "description": "Time Cache dump tasks spend queued before dispatch worker pickup. This is the main signal for explaining gaps between cache_dump_duration_ms and the mkbuf/D2H/backend-submit phase metrics. Series: p50 / p90 / p99 / avg by selected view.",
+      "description": "Time Cache dump tasks spend queued before dispatch worker pickup. This is the main signal for explaining gaps between cache_dump_duration_ms and the mkbuf/D2H/backend-submit phase metrics. Series: p50 / p90 / p99 / avg by engine and worker_rank.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -1715,7 +2167,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 41
+        "y": 57
       },
       "id": 45,
       "options": {
@@ -1741,8 +2193,8 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "histogram_quantile(0.5, sum by (le, ${perWorker:raw}) (rate(ucm:cache_dump_queue_wait_duration_ms_bucket{model_name=\"$model_name\", job=~\"$job\", worker_id=~\"$worker_id\"}[$__rate_interval])))",
-          "legendFormat": "p50 {{worker_id}}",
+          "expr": "histogram_quantile(0.5, sum by (le, ${perWorker:raw}) (rate(ucm:cache_dump_queue_wait_duration_ms_bucket{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval])))",
+          "legendFormat": "p50 {{engine}} {{worker_rank}}",
           "range": true,
           "refId": "A"
         },
@@ -1752,8 +2204,8 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "histogram_quantile(0.9, sum by (le, ${perWorker:raw}) (rate(ucm:cache_dump_queue_wait_duration_ms_bucket{model_name=\"$model_name\", job=~\"$job\", worker_id=~\"$worker_id\"}[$__rate_interval])))",
-          "legendFormat": "p90 {{worker_id}}",
+          "expr": "histogram_quantile(0.9, sum by (le, ${perWorker:raw}) (rate(ucm:cache_dump_queue_wait_duration_ms_bucket{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval])))",
+          "legendFormat": "p90 {{engine}} {{worker_rank}}",
           "range": true,
           "refId": "B"
         },
@@ -1763,8 +2215,8 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "histogram_quantile(0.99, sum by (le, ${perWorker:raw}) (rate(ucm:cache_dump_queue_wait_duration_ms_bucket{model_name=\"$model_name\", job=~\"$job\", worker_id=~\"$worker_id\"}[$__rate_interval])))",
-          "legendFormat": "p99 {{worker_id}}",
+          "expr": "histogram_quantile(0.99, sum by (le, ${perWorker:raw}) (rate(ucm:cache_dump_queue_wait_duration_ms_bucket{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval])))",
+          "legendFormat": "p99 {{engine}} {{worker_rank}}",
           "range": true,
           "refId": "C"
         },
@@ -1774,8 +2226,8 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "sum by (${perWorker:raw}) (rate(ucm:cache_dump_queue_wait_duration_ms_sum{model_name=\"$model_name\", job=~\"$job\", worker_id=~\"$worker_id\"}[$__rate_interval]))\n/\nsum by (${perWorker:raw}) (rate(ucm:cache_dump_queue_wait_duration_ms_count{model_name=\"$model_name\", job=~\"$job\", worker_id=~\"$worker_id\"}[$__rate_interval]))",
-          "legendFormat": "avg {{worker_id}}",
+          "expr": "sum by (${perWorker:raw}) (rate(ucm:cache_dump_queue_wait_duration_ms_sum{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval]))\n/\nsum by (${perWorker:raw}) (rate(ucm:cache_dump_queue_wait_duration_ms_count{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval]))",
+          "legendFormat": "avg {{engine}} {{worker_rank}}",
           "range": true,
           "refId": "D"
         }
@@ -1788,7 +2240,214 @@
         "type": "prometheus",
         "uid": "${DS_PROMETHEUS}"
       },
-      "description": "Cache load dispatch cost after worker pickup: buffer allocation/reuse plus backend submission for cache misses. Series: p50 / p90 / p99 / avg by selected view.",
+      "description": "Cache dump time waiting for the prerequisite compute event to fire before D2H can start. Large values indicate dump is compute-gated rather than copy-gated. Series: p50 / p90 / p99 / avg by engine and worker_rank.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "barWidthFactor": 0.6,
+            "drawStyle": "line",
+            "fillOpacity": 0,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "auto",
+            "spanNulls": 60000,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "ms"
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": "^p50.*"
+            },
+            "properties": [
+              {
+                "id": "custom.lineStyle",
+                "value": {
+                  "fill": "solid"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": "^p90.*"
+            },
+            "properties": [
+              {
+                "id": "custom.lineStyle",
+                "value": {
+                  "fill": "dash",
+                  "dash": [
+                    10,
+                    6
+                  ]
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": "^p99.*"
+            },
+            "properties": [
+              {
+                "id": "custom.lineStyle",
+                "value": {
+                  "fill": "dash",
+                  "dash": [
+                    4,
+                    4
+                  ]
+                }
+              },
+              {
+                "id": "custom.lineWidth",
+                "value": 2
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": "^avg.*"
+            },
+            "properties": [
+              {
+                "id": "custom.lineStyle",
+                "value": {
+                  "fill": "solid"
+                }
+              },
+              {
+                "id": "custom.lineWidth",
+                "value": 1
+              },
+              {
+                "id": "custom.fillOpacity",
+                "value": 5
+              }
+            ]
+          }
+        ]
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 65
+      },
+      "id": 54,
+      "options": {
+        "legend": {
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ],
+          "displayMode": "table",
+          "maxHeight": "50%",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "histogram_quantile(0.5, sum by (le, ${perWorker:raw}) (rate(ucm:cache_dump_prereq_wait_ms_bucket{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval])))",
+          "legendFormat": "p50 {{engine}} {{worker_rank}}",
+          "range": true,
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "histogram_quantile(0.9, sum by (le, ${perWorker:raw}) (rate(ucm:cache_dump_prereq_wait_ms_bucket{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval])))",
+          "legendFormat": "p90 {{engine}} {{worker_rank}}",
+          "range": true,
+          "refId": "B"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "histogram_quantile(0.99, sum by (le, ${perWorker:raw}) (rate(ucm:cache_dump_prereq_wait_ms_bucket{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval])))",
+          "legendFormat": "p99 {{engine}} {{worker_rank}}",
+          "range": true,
+          "refId": "C"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "sum by (${perWorker:raw}) (rate(ucm:cache_dump_prereq_wait_ms_sum{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval]))\n/\nsum by (${perWorker:raw}) (rate(ucm:cache_dump_prereq_wait_ms_count{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval]))",
+          "legendFormat": "avg {{engine}} {{worker_rank}}",
+          "range": true,
+          "refId": "D"
+        }
+      ],
+      "title": "Cache Dump Wait Compute Duration",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "description": "Cache load residual H2D stream drain after the last shard submit. Large values indicate H2D copy is the bottleneck; near-zero values with large shard backend wait indicate storage/backend readiness is the bottleneck. Series: p50 / p90 / p99 / avg by engine and worker_rank.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -1922,7 +2581,421 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 57
+        "y": 73
+      },
+      "id": 53,
+      "options": {
+        "legend": {
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ],
+          "displayMode": "table",
+          "maxHeight": "50%",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "histogram_quantile(0.5, sum by (le, ${perWorker:raw}) (rate(ucm:cache_h2d_sync_ms_bucket{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval])))",
+          "legendFormat": "p50 {{engine}} {{worker_rank}}",
+          "range": true,
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "histogram_quantile(0.9, sum by (le, ${perWorker:raw}) (rate(ucm:cache_h2d_sync_ms_bucket{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval])))",
+          "legendFormat": "p90 {{engine}} {{worker_rank}}",
+          "range": true,
+          "refId": "B"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "histogram_quantile(0.99, sum by (le, ${perWorker:raw}) (rate(ucm:cache_h2d_sync_ms_bucket{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval])))",
+          "legendFormat": "p99 {{engine}} {{worker_rank}}",
+          "range": true,
+          "refId": "C"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "sum by (${perWorker:raw}) (rate(ucm:cache_h2d_sync_ms_sum{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval]))\n/\nsum by (${perWorker:raw}) (rate(ucm:cache_h2d_sync_ms_count{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval]))",
+          "legendFormat": "avg {{engine}} {{worker_rank}}",
+          "range": true,
+          "refId": "D"
+        }
+      ],
+      "title": "Cache Load H2D Duration",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "description": "Cache dump D2H stream synchronize duration, including prerequisite compute wait. Series: p50 / p90 / p99 / avg by engine and worker_rank.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "barWidthFactor": 0.6,
+            "drawStyle": "line",
+            "fillOpacity": 0,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "auto",
+            "spanNulls": 60000,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "ms"
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": "^p50.*"
+            },
+            "properties": [
+              {
+                "id": "custom.lineStyle",
+                "value": {
+                  "fill": "solid"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": "^p90.*"
+            },
+            "properties": [
+              {
+                "id": "custom.lineStyle",
+                "value": {
+                  "fill": "dash",
+                  "dash": [
+                    10,
+                    6
+                  ]
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": "^p99.*"
+            },
+            "properties": [
+              {
+                "id": "custom.lineStyle",
+                "value": {
+                  "fill": "dash",
+                  "dash": [
+                    4,
+                    4
+                  ]
+                }
+              },
+              {
+                "id": "custom.lineWidth",
+                "value": 2
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": "^avg.*"
+            },
+            "properties": [
+              {
+                "id": "custom.lineStyle",
+                "value": {
+                  "fill": "solid"
+                }
+              },
+              {
+                "id": "custom.lineWidth",
+                "value": 1
+              },
+              {
+                "id": "custom.fillOpacity",
+                "value": 5
+              }
+            ]
+          }
+        ]
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 73
+      },
+      "id": 58,
+      "options": {
+        "legend": {
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ],
+          "displayMode": "table",
+          "maxHeight": "50%",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "histogram_quantile(0.5, sum by (le, ${perWorker:raw}) (rate(ucm:cache_d2h_duration_ms_bucket{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval])))",
+          "legendFormat": "p50 {{engine}} {{worker_rank}}",
+          "range": true,
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "histogram_quantile(0.9, sum by (le, ${perWorker:raw}) (rate(ucm:cache_d2h_duration_ms_bucket{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval])))",
+          "legendFormat": "p90 {{engine}} {{worker_rank}}",
+          "range": true,
+          "refId": "B"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "histogram_quantile(0.99, sum by (le, ${perWorker:raw}) (rate(ucm:cache_d2h_duration_ms_bucket{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval])))",
+          "legendFormat": "p99 {{engine}} {{worker_rank}}",
+          "range": true,
+          "refId": "C"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "sum by (${perWorker:raw}) (rate(ucm:cache_d2h_duration_ms_sum{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval]))\n/\nsum by (${perWorker:raw}) (rate(ucm:cache_d2h_duration_ms_count{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval]))",
+          "legendFormat": "avg {{engine}} {{worker_rank}}",
+          "range": true,
+          "refId": "D"
+        }
+      ],
+      "title": "Cache Dump D2H Duration (include wait compute)",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "description": "Cache load backend submit duration: buffer allocation plus synchronous backend load submission. Series: p50 / p90 / p99 / avg by engine and worker_rank.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "barWidthFactor": 0.6,
+            "drawStyle": "line",
+            "fillOpacity": 0,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "auto",
+            "spanNulls": 60000,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "ms"
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": "^p50.*"
+            },
+            "properties": [
+              {
+                "id": "custom.lineStyle",
+                "value": {
+                  "fill": "solid"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": "^p90.*"
+            },
+            "properties": [
+              {
+                "id": "custom.lineStyle",
+                "value": {
+                  "fill": "dash",
+                  "dash": [
+                    10,
+                    6
+                  ]
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": "^p99.*"
+            },
+            "properties": [
+              {
+                "id": "custom.lineStyle",
+                "value": {
+                  "fill": "dash",
+                  "dash": [
+                    4,
+                    4
+                  ]
+                }
+              },
+              {
+                "id": "custom.lineWidth",
+                "value": 2
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": "^avg.*"
+            },
+            "properties": [
+              {
+                "id": "custom.lineStyle",
+                "value": {
+                  "fill": "solid"
+                }
+              },
+              {
+                "id": "custom.lineWidth",
+                "value": 1
+              },
+              {
+                "id": "custom.fillOpacity",
+                "value": 5
+              }
+            ]
+          }
+        ]
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 81
       },
       "id": 43,
       "options": {
@@ -1948,8 +3021,8 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "histogram_quantile(0.5, sum by (le, ${perWorker:raw}) (rate(ucm:cache_load_dispatch_duration_ms_bucket{model_name=\"$model_name\", job=~\"$job\", worker_id=~\"$worker_id\"}[$__rate_interval])))",
-          "legendFormat": "p50 {{worker_id}}",
+          "expr": "histogram_quantile(0.5, sum by (le, ${perWorker:raw}) (rate(ucm:cache_load_backend_submit_duration_ms_bucket{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval])))",
+          "legendFormat": "p50 {{engine}} {{worker_rank}}",
           "range": true,
           "refId": "A"
         },
@@ -1959,8 +3032,8 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "histogram_quantile(0.9, sum by (le, ${perWorker:raw}) (rate(ucm:cache_load_dispatch_duration_ms_bucket{model_name=\"$model_name\", job=~\"$job\", worker_id=~\"$worker_id\"}[$__rate_interval])))",
-          "legendFormat": "p90 {{worker_id}}",
+          "expr": "histogram_quantile(0.9, sum by (le, ${perWorker:raw}) (rate(ucm:cache_load_backend_submit_duration_ms_bucket{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval])))",
+          "legendFormat": "p90 {{engine}} {{worker_rank}}",
           "range": true,
           "refId": "B"
         },
@@ -1970,8 +3043,8 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "histogram_quantile(0.99, sum by (le, ${perWorker:raw}) (rate(ucm:cache_load_dispatch_duration_ms_bucket{model_name=\"$model_name\", job=~\"$job\", worker_id=~\"$worker_id\"}[$__rate_interval])))",
-          "legendFormat": "p99 {{worker_id}}",
+          "expr": "histogram_quantile(0.99, sum by (le, ${perWorker:raw}) (rate(ucm:cache_load_backend_submit_duration_ms_bucket{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval])))",
+          "legendFormat": "p99 {{engine}} {{worker_rank}}",
           "range": true,
           "refId": "C"
         },
@@ -1981,13 +3054,13 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "sum by (${perWorker:raw}) (rate(ucm:cache_load_dispatch_duration_ms_sum{model_name=\"$model_name\", job=~\"$job\", worker_id=~\"$worker_id\"}[$__rate_interval]))\n/\nsum by (${perWorker:raw}) (rate(ucm:cache_load_dispatch_duration_ms_count{model_name=\"$model_name\", job=~\"$job\", worker_id=~\"$worker_id\"}[$__rate_interval]))",
-          "legendFormat": "avg {{worker_id}}",
+          "expr": "sum by (${perWorker:raw}) (rate(ucm:cache_load_backend_submit_duration_ms_sum{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval]))\n/\nsum by (${perWorker:raw}) (rate(ucm:cache_load_backend_submit_duration_ms_count{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval]))",
+          "legendFormat": "avg {{engine}} {{worker_rank}}",
           "range": true,
           "refId": "D"
         }
       ],
-      "title": "Cache Load Dispatch Duration",
+      "title": "Cache Load Backend Submit Duration",
       "type": "timeseries"
     },
     {
@@ -1995,7 +3068,7 @@
         "type": "prometheus",
         "uid": "${DS_PROMETHEUS}"
       },
-      "description": "Cache dump mkbuf phase: prerequisite wait + buffer allocation/reuse + D2H async submit before stream sync. Series: p50 / p90 / p99 / avg by selected view.",
+      "description": "Cache dump mkbuf phase: buffer allocation/reuse plus D2H async submit before stream sync. Prerequisite compute-event wait is split into Cache Dump Wait Compute Duration. Series: p50 / p90 / p99 / avg by engine and worker_rank.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -2129,7 +3202,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 57
+        "y": 81
       },
       "id": 9,
       "options": {
@@ -2155,8 +3228,8 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "histogram_quantile(0.5, sum by (le, ${perWorker:raw}) (rate(ucm:cache_dump_mkbuf_duration_ms_bucket{model_name=\"$model_name\", job=~\"$job\", worker_id=~\"$worker_id\"}[$__rate_interval])))",
-          "legendFormat": "p50 {{worker_id}}",
+          "expr": "histogram_quantile(0.5, sum by (le, ${perWorker:raw}) (rate(ucm:cache_dump_mkbuf_duration_ms_bucket{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval])))",
+          "legendFormat": "p50 {{engine}} {{worker_rank}}",
           "range": true,
           "refId": "A"
         },
@@ -2166,8 +3239,8 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "histogram_quantile(0.9, sum by (le, ${perWorker:raw}) (rate(ucm:cache_dump_mkbuf_duration_ms_bucket{model_name=\"$model_name\", job=~\"$job\", worker_id=~\"$worker_id\"}[$__rate_interval])))",
-          "legendFormat": "p90 {{worker_id}}",
+          "expr": "histogram_quantile(0.9, sum by (le, ${perWorker:raw}) (rate(ucm:cache_dump_mkbuf_duration_ms_bucket{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval])))",
+          "legendFormat": "p90 {{engine}} {{worker_rank}}",
           "range": true,
           "refId": "B"
         },
@@ -2177,8 +3250,8 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "histogram_quantile(0.99, sum by (le, ${perWorker:raw}) (rate(ucm:cache_dump_mkbuf_duration_ms_bucket{model_name=\"$model_name\", job=~\"$job\", worker_id=~\"$worker_id\"}[$__rate_interval])))",
-          "legendFormat": "p99 {{worker_id}}",
+          "expr": "histogram_quantile(0.99, sum by (le, ${perWorker:raw}) (rate(ucm:cache_dump_mkbuf_duration_ms_bucket{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval])))",
+          "legendFormat": "p99 {{engine}} {{worker_rank}}",
           "range": true,
           "refId": "C"
         },
@@ -2188,8 +3261,8 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "sum by (${perWorker:raw}) (rate(ucm:cache_dump_mkbuf_duration_ms_sum{model_name=\"$model_name\", job=~\"$job\", worker_id=~\"$worker_id\"}[$__rate_interval]))\n/\nsum by (${perWorker:raw}) (rate(ucm:cache_dump_mkbuf_duration_ms_count{model_name=\"$model_name\", job=~\"$job\", worker_id=~\"$worker_id\"}[$__rate_interval]))",
-          "legendFormat": "avg {{worker_id}}",
+          "expr": "sum by (${perWorker:raw}) (rate(ucm:cache_dump_mkbuf_duration_ms_sum{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval]))\n/\nsum by (${perWorker:raw}) (rate(ucm:cache_dump_mkbuf_duration_ms_count{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval]))",
+          "legendFormat": "avg {{engine}} {{worker_rank}}",
           "range": true,
           "refId": "D"
         }
@@ -2202,7 +3275,7 @@
         "type": "prometheus",
         "uid": "${DS_PROMETHEUS}"
       },
-      "description": "Per-shard Cache load H2D async submit duration after WaitBackendTaskReady. This is recorded for each shard; it is not a task-level duration, does not include full task stream synchronization, and should not be stacked with total load, queue wait, or dispatch. Series: p50 / p90 / p99 / avg by selected view.",
+      "description": "Per-shard Cache load H2D async submit CPU cost after WaitBackendTaskReady. Submission only; this is not the actual H2D transfer/drain time. Series: p50 / p90 / p99 / avg by engine and worker_rank.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -2336,7 +3409,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 65
+        "y": 89
       },
       "id": 6,
       "options": {
@@ -2362,8 +3435,8 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "histogram_quantile(0.5, sum by (le, ${perWorker:raw}) (rate(ucm:cache_shard_h2d_ms_bucket{model_name=\"$model_name\", job=~\"$job\", worker_id=~\"$worker_id\"}[$__rate_interval])))",
-          "legendFormat": "p50 {{worker_id}}",
+          "expr": "histogram_quantile(0.5, sum by (le, ${perWorker:raw}) (rate(ucm:cache_h2d_submit_ms_bucket{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval])))",
+          "legendFormat": "p50 {{engine}} {{worker_rank}}",
           "range": true,
           "refId": "A"
         },
@@ -2373,8 +3446,8 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "histogram_quantile(0.9, sum by (le, ${perWorker:raw}) (rate(ucm:cache_shard_h2d_ms_bucket{model_name=\"$model_name\", job=~\"$job\", worker_id=~\"$worker_id\"}[$__rate_interval])))",
-          "legendFormat": "p90 {{worker_id}}",
+          "expr": "histogram_quantile(0.9, sum by (le, ${perWorker:raw}) (rate(ucm:cache_h2d_submit_ms_bucket{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval])))",
+          "legendFormat": "p90 {{engine}} {{worker_rank}}",
           "range": true,
           "refId": "B"
         },
@@ -2384,8 +3457,8 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "histogram_quantile(0.99, sum by (le, ${perWorker:raw}) (rate(ucm:cache_shard_h2d_ms_bucket{model_name=\"$model_name\", job=~\"$job\", worker_id=~\"$worker_id\"}[$__rate_interval])))",
-          "legendFormat": "p99 {{worker_id}}",
+          "expr": "histogram_quantile(0.99, sum by (le, ${perWorker:raw}) (rate(ucm:cache_h2d_submit_ms_bucket{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval])))",
+          "legendFormat": "p99 {{engine}} {{worker_rank}}",
           "range": true,
           "refId": "C"
         },
@@ -2395,13 +3468,13 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "sum by (${perWorker:raw}) (rate(ucm:cache_shard_h2d_ms_sum{model_name=\"$model_name\", job=~\"$job\", worker_id=~\"$worker_id\"}[$__rate_interval]))\n/\nsum by (${perWorker:raw}) (rate(ucm:cache_shard_h2d_ms_count{model_name=\"$model_name\", job=~\"$job\", worker_id=~\"$worker_id\"}[$__rate_interval]))",
-          "legendFormat": "avg {{worker_id}}",
+          "expr": "sum by (${perWorker:raw}) (rate(ucm:cache_h2d_submit_ms_sum{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval]))\n/\nsum by (${perWorker:raw}) (rate(ucm:cache_h2d_submit_ms_count{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval]))",
+          "legendFormat": "avg {{engine}} {{worker_rank}}",
           "range": true,
           "refId": "D"
         }
       ],
-      "title": "Cache Load Shard H2D Duration",
+      "title": "Cache Load H2D Submit Cost",
       "type": "timeseries"
     },
     {
@@ -2409,7 +3482,7 @@
         "type": "prometheus",
         "uid": "${DS_PROMETHEUS}"
       },
-      "description": "Cache dump D2H stream sync phase after mkbuf. Excludes buffer allocation and async submit. Series: p50 / p90 / p99 / avg by selected view.",
+      "description": "Synchronous Cache dump backend submit duration around backend_->Dump(...). This is a submit cost only and does not include lower-tier disk write completion. Series: p50 / p90 / p99 / avg by engine and worker_rank.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -2543,421 +3616,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 65
-      },
-      "id": 47,
-      "options": {
-        "legend": {
-          "calcs": [
-            "lastNotNull",
-            "max"
-          ],
-          "displayMode": "table",
-          "maxHeight": "50%",
-          "placement": "bottom",
-          "showLegend": true
-        },
-        "tooltip": {
-          "mode": "multi",
-          "sort": "desc"
-        }
-      },
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
-          },
-          "editorMode": "code",
-          "expr": "histogram_quantile(0.5, sum by (le, ${perWorker:raw}) (rate(ucm:cache_d2h_duration_ms_bucket{model_name=\"$model_name\", job=~\"$job\", worker_id=~\"$worker_id\"}[$__rate_interval])))",
-          "legendFormat": "p50 {{worker_id}}",
-          "range": true,
-          "refId": "A"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
-          },
-          "editorMode": "code",
-          "expr": "histogram_quantile(0.9, sum by (le, ${perWorker:raw}) (rate(ucm:cache_d2h_duration_ms_bucket{model_name=\"$model_name\", job=~\"$job\", worker_id=~\"$worker_id\"}[$__rate_interval])))",
-          "legendFormat": "p90 {{worker_id}}",
-          "range": true,
-          "refId": "B"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
-          },
-          "editorMode": "code",
-          "expr": "histogram_quantile(0.99, sum by (le, ${perWorker:raw}) (rate(ucm:cache_d2h_duration_ms_bucket{model_name=\"$model_name\", job=~\"$job\", worker_id=~\"$worker_id\"}[$__rate_interval])))",
-          "legendFormat": "p99 {{worker_id}}",
-          "range": true,
-          "refId": "C"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
-          },
-          "editorMode": "code",
-          "expr": "sum by (${perWorker:raw}) (rate(ucm:cache_d2h_duration_ms_sum{model_name=\"$model_name\", job=~\"$job\", worker_id=~\"$worker_id\"}[$__rate_interval]))\n/\nsum by (${perWorker:raw}) (rate(ucm:cache_d2h_duration_ms_count{model_name=\"$model_name\", job=~\"$job\", worker_id=~\"$worker_id\"}[$__rate_interval]))",
-          "legendFormat": "avg {{worker_id}}",
-          "range": true,
-          "refId": "D"
-        }
-      ],
-      "title": "Cache Dump D2H Duration",
-      "type": "timeseries"
-    },
-    {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "${DS_PROMETHEUS}"
-      },
-      "description": "Per-shard Cache load WaitBackendTaskReady duration. For a miss this includes waiting for the backend load task; for a hit or shared buffer it captures readiness wait for that shard. This is not a task-level duration and should not be stacked with total load, queue wait, or dispatch. Series: p50 / p90 / p99 / avg by selected view.",
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "palette-classic"
-          },
-          "custom": {
-            "axisBorderShow": false,
-            "axisCenteredZero": false,
-            "axisColorMode": "text",
-            "axisLabel": "",
-            "axisPlacement": "auto",
-            "barAlignment": 0,
-            "barWidthFactor": 0.6,
-            "drawStyle": "line",
-            "fillOpacity": 0,
-            "gradientMode": "none",
-            "hideFrom": {
-              "legend": false,
-              "tooltip": false,
-              "viz": false
-            },
-            "insertNulls": false,
-            "lineInterpolation": "linear",
-            "lineWidth": 1,
-            "pointSize": 5,
-            "scaleDistribution": {
-              "type": "linear"
-            },
-            "showPoints": "auto",
-            "spanNulls": 60000,
-            "stacking": {
-              "group": "A",
-              "mode": "none"
-            },
-            "thresholdsStyle": {
-              "mode": "off"
-            }
-          },
-          "mappings": [],
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green",
-                "value": null
-              }
-            ]
-          },
-          "unit": "ms"
-        },
-        "overrides": [
-          {
-            "matcher": {
-              "id": "byRegexp",
-              "options": "^p50.*"
-            },
-            "properties": [
-              {
-                "id": "custom.lineStyle",
-                "value": {
-                  "fill": "solid"
-                }
-              }
-            ]
-          },
-          {
-            "matcher": {
-              "id": "byRegexp",
-              "options": "^p90.*"
-            },
-            "properties": [
-              {
-                "id": "custom.lineStyle",
-                "value": {
-                  "fill": "dash",
-                  "dash": [
-                    10,
-                    6
-                  ]
-                }
-              }
-            ]
-          },
-          {
-            "matcher": {
-              "id": "byRegexp",
-              "options": "^p99.*"
-            },
-            "properties": [
-              {
-                "id": "custom.lineStyle",
-                "value": {
-                  "fill": "dash",
-                  "dash": [
-                    4,
-                    4
-                  ]
-                }
-              },
-              {
-                "id": "custom.lineWidth",
-                "value": 2
-              }
-            ]
-          },
-          {
-            "matcher": {
-              "id": "byRegexp",
-              "options": "^avg.*"
-            },
-            "properties": [
-              {
-                "id": "custom.lineStyle",
-                "value": {
-                  "fill": "solid"
-                }
-              },
-              {
-                "id": "custom.lineWidth",
-                "value": 1
-              },
-              {
-                "id": "custom.fillOpacity",
-                "value": 5
-              }
-            ]
-          }
-        ]
-      },
-      "gridPos": {
-        "h": 8,
-        "w": 12,
-        "x": 0,
-        "y": 81
-      },
-      "id": 48,
-      "options": {
-        "legend": {
-          "calcs": [
-            "lastNotNull",
-            "max"
-          ],
-          "displayMode": "table",
-          "maxHeight": "50%",
-          "placement": "bottom",
-          "showLegend": true
-        },
-        "tooltip": {
-          "mode": "multi",
-          "sort": "desc"
-        }
-      },
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
-          },
-          "editorMode": "code",
-          "expr": "histogram_quantile(0.5, sum by (le, ${perWorker:raw}) (rate(ucm:cache_shard_backend_wait_ms_bucket{model_name=\"$model_name\", job=~\"$job\", worker_id=~\"$worker_id\"}[$__rate_interval])))",
-          "legendFormat": "p50 {{worker_id}}",
-          "range": true,
-          "refId": "A"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
-          },
-          "editorMode": "code",
-          "expr": "histogram_quantile(0.9, sum by (le, ${perWorker:raw}) (rate(ucm:cache_shard_backend_wait_ms_bucket{model_name=\"$model_name\", job=~\"$job\", worker_id=~\"$worker_id\"}[$__rate_interval])))",
-          "legendFormat": "p90 {{worker_id}}",
-          "range": true,
-          "refId": "B"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
-          },
-          "editorMode": "code",
-          "expr": "histogram_quantile(0.99, sum by (le, ${perWorker:raw}) (rate(ucm:cache_shard_backend_wait_ms_bucket{model_name=\"$model_name\", job=~\"$job\", worker_id=~\"$worker_id\"}[$__rate_interval])))",
-          "legendFormat": "p99 {{worker_id}}",
-          "range": true,
-          "refId": "C"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
-          },
-          "editorMode": "code",
-          "expr": "sum by (${perWorker:raw}) (rate(ucm:cache_shard_backend_wait_ms_sum{model_name=\"$model_name\", job=~\"$job\", worker_id=~\"$worker_id\"}[$__rate_interval]))\n/\nsum by (${perWorker:raw}) (rate(ucm:cache_shard_backend_wait_ms_count{model_name=\"$model_name\", job=~\"$job\", worker_id=~\"$worker_id\"}[$__rate_interval]))",
-          "legendFormat": "avg {{worker_id}}",
-          "range": true,
-          "refId": "D"
-        }
-      ],
-      "title": "Cache Load Shard Backend Wait Duration",
-      "type": "timeseries"
-    },
-    {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "${DS_PROMETHEUS}"
-      },
-      "description": "Synchronous Cache dump backend submit duration around backend_->Dump(...). This is a submit cost only and does not include lower-tier disk write completion. Series: p50 / p90 / p99 / avg by selected view.",
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "palette-classic"
-          },
-          "custom": {
-            "axisBorderShow": false,
-            "axisCenteredZero": false,
-            "axisColorMode": "text",
-            "axisLabel": "",
-            "axisPlacement": "auto",
-            "barAlignment": 0,
-            "barWidthFactor": 0.6,
-            "drawStyle": "line",
-            "fillOpacity": 0,
-            "gradientMode": "none",
-            "hideFrom": {
-              "legend": false,
-              "tooltip": false,
-              "viz": false
-            },
-            "insertNulls": false,
-            "lineInterpolation": "linear",
-            "lineWidth": 1,
-            "pointSize": 5,
-            "scaleDistribution": {
-              "type": "linear"
-            },
-            "showPoints": "auto",
-            "spanNulls": 60000,
-            "stacking": {
-              "group": "A",
-              "mode": "none"
-            },
-            "thresholdsStyle": {
-              "mode": "off"
-            }
-          },
-          "mappings": [],
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green",
-                "value": null
-              }
-            ]
-          },
-          "unit": "ms"
-        },
-        "overrides": [
-          {
-            "matcher": {
-              "id": "byRegexp",
-              "options": "^p50.*"
-            },
-            "properties": [
-              {
-                "id": "custom.lineStyle",
-                "value": {
-                  "fill": "solid"
-                }
-              }
-            ]
-          },
-          {
-            "matcher": {
-              "id": "byRegexp",
-              "options": "^p90.*"
-            },
-            "properties": [
-              {
-                "id": "custom.lineStyle",
-                "value": {
-                  "fill": "dash",
-                  "dash": [
-                    10,
-                    6
-                  ]
-                }
-              }
-            ]
-          },
-          {
-            "matcher": {
-              "id": "byRegexp",
-              "options": "^p99.*"
-            },
-            "properties": [
-              {
-                "id": "custom.lineStyle",
-                "value": {
-                  "fill": "dash",
-                  "dash": [
-                    4,
-                    4
-                  ]
-                }
-              },
-              {
-                "id": "custom.lineWidth",
-                "value": 2
-              }
-            ]
-          },
-          {
-            "matcher": {
-              "id": "byRegexp",
-              "options": "^avg.*"
-            },
-            "properties": [
-              {
-                "id": "custom.lineStyle",
-                "value": {
-                  "fill": "solid"
-                }
-              },
-              {
-                "id": "custom.lineWidth",
-                "value": 1
-              },
-              {
-                "id": "custom.fillOpacity",
-                "value": 5
-              }
-            ]
-          }
-        ]
-      },
-      "gridPos": {
-        "h": 8,
-        "w": 12,
-        "x": 12,
-        "y": 81
+        "y": 89
       },
       "id": 44,
       "options": {
@@ -2983,8 +3642,8 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "histogram_quantile(0.5, sum by (le, ${perWorker:raw}) (rate(ucm:cache_dump_backend_submit_duration_ms_bucket{model_name=\"$model_name\", job=~\"$job\", worker_id=~\"$worker_id\"}[$__rate_interval])))",
-          "legendFormat": "p50 {{worker_id}}",
+          "expr": "histogram_quantile(0.5, sum by (le, ${perWorker:raw}) (rate(ucm:cache_dump_backend_submit_duration_ms_bucket{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval])))",
+          "legendFormat": "p50 {{engine}} {{worker_rank}}",
           "range": true,
           "refId": "A"
         },
@@ -2994,8 +3653,8 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "histogram_quantile(0.9, sum by (le, ${perWorker:raw}) (rate(ucm:cache_dump_backend_submit_duration_ms_bucket{model_name=\"$model_name\", job=~\"$job\", worker_id=~\"$worker_id\"}[$__rate_interval])))",
-          "legendFormat": "p90 {{worker_id}}",
+          "expr": "histogram_quantile(0.9, sum by (le, ${perWorker:raw}) (rate(ucm:cache_dump_backend_submit_duration_ms_bucket{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval])))",
+          "legendFormat": "p90 {{engine}} {{worker_rank}}",
           "range": true,
           "refId": "B"
         },
@@ -3005,8 +3664,8 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "histogram_quantile(0.99, sum by (le, ${perWorker:raw}) (rate(ucm:cache_dump_backend_submit_duration_ms_bucket{model_name=\"$model_name\", job=~\"$job\", worker_id=~\"$worker_id\"}[$__rate_interval])))",
-          "legendFormat": "p99 {{worker_id}}",
+          "expr": "histogram_quantile(0.99, sum by (le, ${perWorker:raw}) (rate(ucm:cache_dump_backend_submit_duration_ms_bucket{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval])))",
+          "legendFormat": "p99 {{engine}} {{worker_rank}}",
           "range": true,
           "refId": "C"
         },
@@ -3016,8 +3675,8 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "sum by (${perWorker:raw}) (rate(ucm:cache_dump_backend_submit_duration_ms_sum{model_name=\"$model_name\", job=~\"$job\", worker_id=~\"$worker_id\"}[$__rate_interval]))\n/\nsum by (${perWorker:raw}) (rate(ucm:cache_dump_backend_submit_duration_ms_count{model_name=\"$model_name\", job=~\"$job\", worker_id=~\"$worker_id\"}[$__rate_interval]))",
-          "legendFormat": "avg {{worker_id}}",
+          "expr": "sum by (${perWorker:raw}) (rate(ucm:cache_dump_backend_submit_duration_ms_sum{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval]))\n/\nsum by (${perWorker:raw}) (rate(ucm:cache_dump_backend_submit_duration_ms_count{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval]))",
+          "legendFormat": "avg {{engine}} {{worker_rank}}",
           "range": true,
           "refId": "D"
         }
@@ -3164,7 +3823,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 73
+        "y": 41
       },
       "id": 4,
       "options": {
@@ -3190,8 +3849,8 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "histogram_quantile(0.5, sum by (le, ${perWorker:raw}) (rate(ucm:cache_load_bandwidth_gbps_bucket{model_name=\"$model_name\", job=~\"$job\", worker_id=~\"$worker_id\"}[$__rate_interval])))",
-          "legendFormat": "p50 {{worker_id}}",
+          "expr": "histogram_quantile(0.5, sum by (le, ${perWorker:raw}) (rate(ucm:cache_load_bandwidth_gbps_bucket{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval])))",
+          "legendFormat": "p50 {{engine}} {{worker_rank}}",
           "range": true,
           "refId": "A"
         },
@@ -3201,8 +3860,8 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "histogram_quantile(0.9, sum by (le, ${perWorker:raw}) (rate(ucm:cache_load_bandwidth_gbps_bucket{model_name=\"$model_name\", job=~\"$job\", worker_id=~\"$worker_id\"}[$__rate_interval])))",
-          "legendFormat": "p90 {{worker_id}}",
+          "expr": "histogram_quantile(0.9, sum by (le, ${perWorker:raw}) (rate(ucm:cache_load_bandwidth_gbps_bucket{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval])))",
+          "legendFormat": "p90 {{engine}} {{worker_rank}}",
           "range": true,
           "refId": "B"
         },
@@ -3212,8 +3871,8 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "histogram_quantile(0.99, sum by (le, ${perWorker:raw}) (rate(ucm:cache_load_bandwidth_gbps_bucket{model_name=\"$model_name\", job=~\"$job\", worker_id=~\"$worker_id\"}[$__rate_interval])))",
-          "legendFormat": "p99 {{worker_id}}",
+          "expr": "histogram_quantile(0.99, sum by (le, ${perWorker:raw}) (rate(ucm:cache_load_bandwidth_gbps_bucket{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval])))",
+          "legendFormat": "p99 {{engine}} {{worker_rank}}",
           "range": true,
           "refId": "C"
         },
@@ -3223,8 +3882,8 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "sum by (${perWorker:raw}) (rate(ucm:cache_load_bandwidth_gbps_sum{model_name=\"$model_name\", job=~\"$job\", worker_id=~\"$worker_id\"}[$__rate_interval]))\n/\nsum by (${perWorker:raw}) (rate(ucm:cache_load_bandwidth_gbps_count{model_name=\"$model_name\", job=~\"$job\", worker_id=~\"$worker_id\"}[$__rate_interval]))",
-          "legendFormat": "avg {{worker_id}}",
+          "expr": "sum by (${perWorker:raw}) (rate(ucm:cache_load_bandwidth_gbps_sum{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval]))\n/\nsum by (${perWorker:raw}) (rate(ucm:cache_load_bandwidth_gbps_count{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval]))",
+          "legendFormat": "avg {{engine}} {{worker_rank}}",
           "range": true,
           "refId": "D"
         }
@@ -3371,7 +4030,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 73
+        "y": 41
       },
       "id": 8,
       "options": {
@@ -3397,8 +4056,8 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "histogram_quantile(0.5, sum by (le, ${perWorker:raw}) (rate(ucm:cache_dump_bandwidth_gbps_bucket{model_name=\"$model_name\", job=~\"$job\", worker_id=~\"$worker_id\"}[$__rate_interval])))",
-          "legendFormat": "p50 {{worker_id}}",
+          "expr": "histogram_quantile(0.5, sum by (le, ${perWorker:raw}) (rate(ucm:cache_dump_bandwidth_gbps_bucket{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval])))",
+          "legendFormat": "p50 {{engine}} {{worker_rank}}",
           "range": true,
           "refId": "A"
         },
@@ -3408,8 +4067,8 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "histogram_quantile(0.9, sum by (le, ${perWorker:raw}) (rate(ucm:cache_dump_bandwidth_gbps_bucket{model_name=\"$model_name\", job=~\"$job\", worker_id=~\"$worker_id\"}[$__rate_interval])))",
-          "legendFormat": "p90 {{worker_id}}",
+          "expr": "histogram_quantile(0.9, sum by (le, ${perWorker:raw}) (rate(ucm:cache_dump_bandwidth_gbps_bucket{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval])))",
+          "legendFormat": "p90 {{engine}} {{worker_rank}}",
           "range": true,
           "refId": "B"
         },
@@ -3419,8 +4078,8 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "histogram_quantile(0.99, sum by (le, ${perWorker:raw}) (rate(ucm:cache_dump_bandwidth_gbps_bucket{model_name=\"$model_name\", job=~\"$job\", worker_id=~\"$worker_id\"}[$__rate_interval])))",
-          "legendFormat": "p99 {{worker_id}}",
+          "expr": "histogram_quantile(0.99, sum by (le, ${perWorker:raw}) (rate(ucm:cache_dump_bandwidth_gbps_bucket{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval])))",
+          "legendFormat": "p99 {{engine}} {{worker_rank}}",
           "range": true,
           "refId": "C"
         },
@@ -3430,13 +4089,220 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "sum by (${perWorker:raw}) (rate(ucm:cache_dump_bandwidth_gbps_sum{model_name=\"$model_name\", job=~\"$job\", worker_id=~\"$worker_id\"}[$__rate_interval]))\n/\nsum by (${perWorker:raw}) (rate(ucm:cache_dump_bandwidth_gbps_count{model_name=\"$model_name\", job=~\"$job\", worker_id=~\"$worker_id\"}[$__rate_interval]))",
-          "legendFormat": "avg {{worker_id}}",
+          "expr": "sum by (${perWorker:raw}) (rate(ucm:cache_dump_bandwidth_gbps_sum{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval]))\n/\nsum by (${perWorker:raw}) (rate(ucm:cache_dump_bandwidth_gbps_count{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval]))",
+          "legendFormat": "avg {{engine}} {{worker_rank}}",
           "range": true,
           "refId": "D"
         }
       ],
       "title": "Cache Dump Bandwidth (per task)",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "description": "Per-shard Cache load WaitBackendTaskReady duration. For a miss this includes waiting for the backend load task; for a hit or shared buffer it captures readiness wait for that shard. This is not a task-level duration and should not be stacked with total load, queue wait, or dispatch. Series: p50 / p90 / p99 / avg by engine and worker_rank.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "barWidthFactor": 0.6,
+            "drawStyle": "line",
+            "fillOpacity": 0,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "auto",
+            "spanNulls": 60000,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "ms"
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": "^p50.*"
+            },
+            "properties": [
+              {
+                "id": "custom.lineStyle",
+                "value": {
+                  "fill": "solid"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": "^p90.*"
+            },
+            "properties": [
+              {
+                "id": "custom.lineStyle",
+                "value": {
+                  "fill": "dash",
+                  "dash": [
+                    10,
+                    6
+                  ]
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": "^p99.*"
+            },
+            "properties": [
+              {
+                "id": "custom.lineStyle",
+                "value": {
+                  "fill": "dash",
+                  "dash": [
+                    4,
+                    4
+                  ]
+                }
+              },
+              {
+                "id": "custom.lineWidth",
+                "value": 2
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": "^avg.*"
+            },
+            "properties": [
+              {
+                "id": "custom.lineStyle",
+                "value": {
+                  "fill": "solid"
+                }
+              },
+              {
+                "id": "custom.lineWidth",
+                "value": 1
+              },
+              {
+                "id": "custom.fillOpacity",
+                "value": 5
+              }
+            ]
+          }
+        ]
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 65
+      },
+      "id": 48,
+      "options": {
+        "legend": {
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ],
+          "displayMode": "table",
+          "maxHeight": "50%",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "histogram_quantile(0.5, sum by (le, ${perWorker:raw}) (rate(ucm:cache_shard_backend_wait_ms_bucket{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval])))",
+          "legendFormat": "p50 {{engine}} {{worker_rank}}",
+          "range": true,
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "histogram_quantile(0.9, sum by (le, ${perWorker:raw}) (rate(ucm:cache_shard_backend_wait_ms_bucket{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval])))",
+          "legendFormat": "p90 {{engine}} {{worker_rank}}",
+          "range": true,
+          "refId": "B"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "histogram_quantile(0.99, sum by (le, ${perWorker:raw}) (rate(ucm:cache_shard_backend_wait_ms_bucket{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval])))",
+          "legendFormat": "p99 {{engine}} {{worker_rank}}",
+          "range": true,
+          "refId": "C"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "sum by (${perWorker:raw}) (rate(ucm:cache_shard_backend_wait_ms_sum{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval]))\n/\nsum by (${perWorker:raw}) (rate(ucm:cache_shard_backend_wait_ms_count{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval]))",
+          "legendFormat": "avg {{engine}} {{worker_rank}}",
+          "range": true,
+          "refId": "D"
+        }
+      ],
+      "title": "Cache Load Backend Wait Duration",
       "type": "timeseries"
     },
     {
@@ -3578,7 +4444,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 89
+        "y": 105
       },
       "id": 29,
       "options": {
@@ -3604,8 +4470,8 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "histogram_quantile(0.5, sum by (le, ${perWorker:raw}) (rate(ucm:cache_lookup_duration_ms_bucket{model_name=\"$model_name\", job=~\"$job\", worker_id=~\"$worker_id\"}[$__rate_interval])))",
-          "legendFormat": "p50 {{worker_id}}",
+          "expr": "histogram_quantile(0.5, sum by (le, ${perWorker:raw}) (rate(ucm:cache_lookup_duration_ms_bucket{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval])))",
+          "legendFormat": "p50 {{engine}} {{worker_rank}}",
           "range": true,
           "refId": "A"
         },
@@ -3615,8 +4481,8 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "histogram_quantile(0.9, sum by (le, ${perWorker:raw}) (rate(ucm:cache_lookup_duration_ms_bucket{model_name=\"$model_name\", job=~\"$job\", worker_id=~\"$worker_id\"}[$__rate_interval])))",
-          "legendFormat": "p90 {{worker_id}}",
+          "expr": "histogram_quantile(0.9, sum by (le, ${perWorker:raw}) (rate(ucm:cache_lookup_duration_ms_bucket{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval])))",
+          "legendFormat": "p90 {{engine}} {{worker_rank}}",
           "range": true,
           "refId": "B"
         },
@@ -3626,8 +4492,8 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "histogram_quantile(0.99, sum by (le, ${perWorker:raw}) (rate(ucm:cache_lookup_duration_ms_bucket{model_name=\"$model_name\", job=~\"$job\", worker_id=~\"$worker_id\"}[$__rate_interval])))",
-          "legendFormat": "p99 {{worker_id}}",
+          "expr": "histogram_quantile(0.99, sum by (le, ${perWorker:raw}) (rate(ucm:cache_lookup_duration_ms_bucket{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval])))",
+          "legendFormat": "p99 {{engine}} {{worker_rank}}",
           "range": true,
           "refId": "C"
         },
@@ -3637,8 +4503,8 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "sum by (${perWorker:raw}) (rate(ucm:cache_lookup_duration_ms_sum{model_name=\"$model_name\", job=~\"$job\", worker_id=~\"$worker_id\"}[$__rate_interval]))\n/\nsum by (${perWorker:raw}) (rate(ucm:cache_lookup_duration_ms_count{model_name=\"$model_name\", job=~\"$job\", worker_id=~\"$worker_id\"}[$__rate_interval]))",
-          "legendFormat": "avg {{worker_id}}",
+          "expr": "sum by (${perWorker:raw}) (rate(ucm:cache_lookup_duration_ms_sum{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval]))\n/\nsum by (${perWorker:raw}) (rate(ucm:cache_lookup_duration_ms_count{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval]))",
+          "legendFormat": "avg {{engine}} {{worker_rank}}",
           "range": true,
           "refId": "D"
         }
@@ -3785,7 +4651,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 89
+        "y": 105
       },
       "id": 30,
       "options": {
@@ -3811,8 +4677,8 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "histogram_quantile(0.5, sum by (le, ${perWorker:raw}) (rate(ucm:cache_lookup_backend_duration_ms_bucket{model_name=\"$model_name\", job=~\"$job\", worker_id=~\"$worker_id\"}[$__rate_interval])))",
-          "legendFormat": "p50 {{worker_id}}",
+          "expr": "histogram_quantile(0.5, sum by (le, ${perWorker:raw}) (rate(ucm:cache_lookup_backend_duration_ms_bucket{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval])))",
+          "legendFormat": "p50 {{engine}} {{worker_rank}}",
           "range": true,
           "refId": "A"
         },
@@ -3822,8 +4688,8 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "histogram_quantile(0.9, sum by (le, ${perWorker:raw}) (rate(ucm:cache_lookup_backend_duration_ms_bucket{model_name=\"$model_name\", job=~\"$job\", worker_id=~\"$worker_id\"}[$__rate_interval])))",
-          "legendFormat": "p90 {{worker_id}}",
+          "expr": "histogram_quantile(0.9, sum by (le, ${perWorker:raw}) (rate(ucm:cache_lookup_backend_duration_ms_bucket{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval])))",
+          "legendFormat": "p90 {{engine}} {{worker_rank}}",
           "range": true,
           "refId": "B"
         },
@@ -3833,8 +4699,8 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "histogram_quantile(0.99, sum by (le, ${perWorker:raw}) (rate(ucm:cache_lookup_backend_duration_ms_bucket{model_name=\"$model_name\", job=~\"$job\", worker_id=~\"$worker_id\"}[$__rate_interval])))",
-          "legendFormat": "p99 {{worker_id}}",
+          "expr": "histogram_quantile(0.99, sum by (le, ${perWorker:raw}) (rate(ucm:cache_lookup_backend_duration_ms_bucket{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval])))",
+          "legendFormat": "p99 {{engine}} {{worker_rank}}",
           "range": true,
           "refId": "C"
         },
@@ -3844,13 +4710,220 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "sum by (${perWorker:raw}) (rate(ucm:cache_lookup_backend_duration_ms_sum{model_name=\"$model_name\", job=~\"$job\", worker_id=~\"$worker_id\"}[$__rate_interval]))\n/\nsum by (${perWorker:raw}) (rate(ucm:cache_lookup_backend_duration_ms_count{model_name=\"$model_name\", job=~\"$job\", worker_id=~\"$worker_id\"}[$__rate_interval]))",
-          "legendFormat": "avg {{worker_id}}",
+          "expr": "sum by (${perWorker:raw}) (rate(ucm:cache_lookup_backend_duration_ms_sum{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval]))\n/\nsum by (${perWorker:raw}) (rate(ucm:cache_lookup_backend_duration_ms_count{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval]))",
+          "legendFormat": "avg {{engine}} {{worker_rank}}",
           "range": true,
           "refId": "D"
         }
       ],
       "title": "Cache Lookup Backend Duration",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "description": "Time spent waiting for the lower tier to finish writing a dumped Cache task. Large values indicate the storage write path is the bottleneck after backend submit. Series: p50 / p90 / p99 / avg by engine and worker_rank.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "barWidthFactor": 0.6,
+            "drawStyle": "line",
+            "fillOpacity": 0,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "auto",
+            "spanNulls": 60000,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "ms"
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": "^p50.*"
+            },
+            "properties": [
+              {
+                "id": "custom.lineStyle",
+                "value": {
+                  "fill": "solid"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": "^p90.*"
+            },
+            "properties": [
+              {
+                "id": "custom.lineStyle",
+                "value": {
+                  "fill": "dash",
+                  "dash": [
+                    10,
+                    6
+                  ]
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": "^p99.*"
+            },
+            "properties": [
+              {
+                "id": "custom.lineStyle",
+                "value": {
+                  "fill": "dash",
+                  "dash": [
+                    4,
+                    4
+                  ]
+                }
+              },
+              {
+                "id": "custom.lineWidth",
+                "value": 2
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": "^avg.*"
+            },
+            "properties": [
+              {
+                "id": "custom.lineStyle",
+                "value": {
+                  "fill": "solid"
+                }
+              },
+              {
+                "id": "custom.lineWidth",
+                "value": 1
+              },
+              {
+                "id": "custom.fillOpacity",
+                "value": 5
+              }
+            ]
+          }
+        ]
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 113
+      },
+      "id": 56,
+      "options": {
+        "legend": {
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ],
+          "displayMode": "table",
+          "maxHeight": "50%",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "histogram_quantile(0.5, sum by (le, ${perWorker:raw}) (rate(ucm:cache_dump_backend_wait_duration_ms_bucket{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval])))",
+          "legendFormat": "p50 {{engine}} {{worker_rank}}",
+          "range": true,
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "histogram_quantile(0.9, sum by (le, ${perWorker:raw}) (rate(ucm:cache_dump_backend_wait_duration_ms_bucket{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval])))",
+          "legendFormat": "p90 {{engine}} {{worker_rank}}",
+          "range": true,
+          "refId": "B"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "histogram_quantile(0.99, sum by (le, ${perWorker:raw}) (rate(ucm:cache_dump_backend_wait_duration_ms_bucket{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval])))",
+          "legendFormat": "p99 {{engine}} {{worker_rank}}",
+          "range": true,
+          "refId": "C"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "sum by (${perWorker:raw}) (rate(ucm:cache_dump_backend_wait_duration_ms_sum{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval]))\n/\nsum by (${perWorker:raw}) (rate(ucm:cache_dump_backend_wait_duration_ms_count{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval]))",
+          "legendFormat": "avg {{engine}} {{worker_rank}}",
+          "range": true,
+          "refId": "D"
+        }
+      ],
+      "title": "Cache Dump Backend Wait Duration",
       "type": "timeseries"
     },
     {
@@ -3866,7 +4939,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 97
+        "y": 121
       },
       "panels": [
         {
@@ -3891,7 +4964,7 @@
                 "uid": "${DS_PROMETHEUS}"
               },
               "editorMode": "code",
-              "expr": "sum by (le) (rate(ucm:cache_load_duration_ms_bucket{model_name=\"$model_name\", job=~\"$job\", worker_id=~\"$worker_id\"}[$__rate_interval]))",
+              "expr": "sum by (le) (rate(ucm:cache_load_duration_ms_bucket{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval]))",
               "format": "heatmap",
               "legendFormat": "{{le}}",
               "range": true,
@@ -3923,7 +4996,7 @@
               "unit": "suffix: req/s"
             },
             "filterValues": {
-              "le": 1e-9
+              "le": 1e-09
             },
             "tooltip": {
               "show": true,
@@ -3976,7 +5049,7 @@
                 "uid": "${DS_PROMETHEUS}"
               },
               "editorMode": "code",
-              "expr": "sum by (le) (rate(ucm:cache_load_bandwidth_gbps_bucket{model_name=\"$model_name\", job=~\"$job\", worker_id=~\"$worker_id\"}[$__rate_interval]))",
+              "expr": "sum by (le) (rate(ucm:cache_load_bandwidth_gbps_bucket{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval]))",
               "format": "heatmap",
               "legendFormat": "{{le}}",
               "range": true,
@@ -4008,7 +5081,7 @@
               "unit": "suffix: req/s"
             },
             "filterValues": {
-              "le": 1e-9
+              "le": 1e-09
             },
             "tooltip": {
               "show": true,
@@ -4061,7 +5134,7 @@
                 "uid": "${DS_PROMETHEUS}"
               },
               "editorMode": "code",
-              "expr": "sum by (le) (rate(ucm:cache_dump_duration_ms_bucket{model_name=\"$model_name\", job=~\"$job\", worker_id=~\"$worker_id\"}[$__rate_interval]))",
+              "expr": "sum by (le) (rate(ucm:cache_dump_duration_ms_bucket{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval]))",
               "format": "heatmap",
               "legendFormat": "{{le}}",
               "range": true,
@@ -4093,7 +5166,7 @@
               "unit": "suffix: req/s"
             },
             "filterValues": {
-              "le": 1e-9
+              "le": 1e-09
             },
             "tooltip": {
               "show": true,
@@ -4146,7 +5219,7 @@
                 "uid": "${DS_PROMETHEUS}"
               },
               "editorMode": "code",
-              "expr": "sum by (le) (rate(ucm:cache_dump_bandwidth_gbps_bucket{model_name=\"$model_name\", job=~\"$job\", worker_id=~\"$worker_id\"}[$__rate_interval]))",
+              "expr": "sum by (le) (rate(ucm:cache_dump_bandwidth_gbps_bucket{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval]))",
               "format": "heatmap",
               "legendFormat": "{{le}}",
               "range": true,
@@ -4178,7 +5251,7 @@
               "unit": "suffix: req/s"
             },
             "filterValues": {
-              "le": 1e-9
+              "le": 1e-09
             },
             "tooltip": {
               "show": true,
@@ -4217,7 +5290,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 122
+        "y": 146
       },
       "id": 38,
       "panels": [],
@@ -4229,7 +5302,7 @@
         "type": "prometheus",
         "uid": "${DS_PROMETHEUS}"
       },
-      "description": "Posix load task rate derived from rate(posix_load_task_duration_ms_count). One count is one Posix load task. Series by selected view.",
+      "description": "Posix load task rate derived from rate(posix_load_task_duration_ms_count). One count is one Posix load task. Series split by engine and worker_rank.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -4286,7 +5359,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 123
+        "y": 147
       },
       "id": 51,
       "options": {
@@ -4309,10 +5382,10 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "sum by (${perWorker:raw}) (rate(ucm:posix_load_task_duration_ms_count{model_name=\"$model_name\", job=~\"$job\", worker_id=~\"$worker_id\"}[$__rate_interval]))",
+          "expr": "sum by (${perWorker:raw}) (rate(ucm:posix_load_task_duration_ms_count{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval]))",
           "hide": false,
           "instant": false,
-          "legendFormat": "load {{worker_id}}",
+          "legendFormat": "load {{engine}} {{worker_rank}}",
           "range": true,
           "refId": "A"
         }
@@ -4325,7 +5398,7 @@
         "type": "prometheus",
         "uid": "${DS_PROMETHEUS}"
       },
-      "description": "Posix dump task rate derived from rate(posix_dump_task_duration_ms_count). One count is one Posix dump task. Series by selected view.",
+      "description": "Posix dump task rate derived from rate(posix_dump_task_duration_ms_count). One count is one Posix dump task. Series split by engine and worker_rank.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -4382,7 +5455,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 123
+        "y": 147
       },
       "id": 52,
       "options": {
@@ -4405,10 +5478,10 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "sum by (${perWorker:raw}) (rate(ucm:posix_dump_task_duration_ms_count{model_name=\"$model_name\", job=~\"$job\", worker_id=~\"$worker_id\"}[$__rate_interval]))",
+          "expr": "sum by (${perWorker:raw}) (rate(ucm:posix_dump_task_duration_ms_count{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval]))",
           "hide": false,
           "instant": false,
-          "legendFormat": "dump {{worker_id}}",
+          "legendFormat": "dump {{engine}} {{worker_rank}}",
           "range": true,
           "refId": "A"
         }
@@ -4555,7 +5628,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 131
+        "y": 155
       },
       "id": 31,
       "options": {
@@ -4581,8 +5654,8 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "histogram_quantile(0.5, sum by (le, ${perWorker:raw}) (rate(ucm:posix_load_task_duration_ms_bucket{model_name=\"$model_name\", job=~\"$job\", worker_id=~\"$worker_id\"}[$__rate_interval])))",
-          "legendFormat": "p50 {{worker_id}}",
+          "expr": "histogram_quantile(0.5, sum by (le, ${perWorker:raw}) (rate(ucm:posix_load_task_duration_ms_bucket{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval])))",
+          "legendFormat": "p50 {{engine}} {{worker_rank}}",
           "range": true,
           "refId": "A"
         },
@@ -4592,8 +5665,8 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "histogram_quantile(0.9, sum by (le, ${perWorker:raw}) (rate(ucm:posix_load_task_duration_ms_bucket{model_name=\"$model_name\", job=~\"$job\", worker_id=~\"$worker_id\"}[$__rate_interval])))",
-          "legendFormat": "p90 {{worker_id}}",
+          "expr": "histogram_quantile(0.9, sum by (le, ${perWorker:raw}) (rate(ucm:posix_load_task_duration_ms_bucket{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval])))",
+          "legendFormat": "p90 {{engine}} {{worker_rank}}",
           "range": true,
           "refId": "B"
         },
@@ -4603,8 +5676,8 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "histogram_quantile(0.99, sum by (le, ${perWorker:raw}) (rate(ucm:posix_load_task_duration_ms_bucket{model_name=\"$model_name\", job=~\"$job\", worker_id=~\"$worker_id\"}[$__rate_interval])))",
-          "legendFormat": "p99 {{worker_id}}",
+          "expr": "histogram_quantile(0.99, sum by (le, ${perWorker:raw}) (rate(ucm:posix_load_task_duration_ms_bucket{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval])))",
+          "legendFormat": "p99 {{engine}} {{worker_rank}}",
           "range": true,
           "refId": "C"
         },
@@ -4614,8 +5687,8 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "sum by (${perWorker:raw}) (rate(ucm:posix_load_task_duration_ms_sum{model_name=\"$model_name\", job=~\"$job\", worker_id=~\"$worker_id\"}[$__rate_interval]))\n/\nsum by (${perWorker:raw}) (rate(ucm:posix_load_task_duration_ms_count{model_name=\"$model_name\", job=~\"$job\", worker_id=~\"$worker_id\"}[$__rate_interval]))",
-          "legendFormat": "avg {{worker_id}}",
+          "expr": "sum by (${perWorker:raw}) (rate(ucm:posix_load_task_duration_ms_sum{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval]))\n/\nsum by (${perWorker:raw}) (rate(ucm:posix_load_task_duration_ms_count{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval]))",
+          "legendFormat": "avg {{engine}} {{worker_rank}}",
           "range": true,
           "refId": "D"
         }
@@ -4762,7 +5835,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 131
+        "y": 155
       },
       "id": 32,
       "options": {
@@ -4788,8 +5861,8 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "histogram_quantile(0.5, sum by (le, ${perWorker:raw}) (rate(ucm:posix_dump_task_duration_ms_bucket{model_name=\"$model_name\", job=~\"$job\", worker_id=~\"$worker_id\"}[$__rate_interval])))",
-          "legendFormat": "p50 {{worker_id}}",
+          "expr": "histogram_quantile(0.5, sum by (le, ${perWorker:raw}) (rate(ucm:posix_dump_task_duration_ms_bucket{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval])))",
+          "legendFormat": "p50 {{engine}} {{worker_rank}}",
           "range": true,
           "refId": "A"
         },
@@ -4799,8 +5872,8 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "histogram_quantile(0.9, sum by (le, ${perWorker:raw}) (rate(ucm:posix_dump_task_duration_ms_bucket{model_name=\"$model_name\", job=~\"$job\", worker_id=~\"$worker_id\"}[$__rate_interval])))",
-          "legendFormat": "p90 {{worker_id}}",
+          "expr": "histogram_quantile(0.9, sum by (le, ${perWorker:raw}) (rate(ucm:posix_dump_task_duration_ms_bucket{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval])))",
+          "legendFormat": "p90 {{engine}} {{worker_rank}}",
           "range": true,
           "refId": "B"
         },
@@ -4810,8 +5883,8 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "histogram_quantile(0.99, sum by (le, ${perWorker:raw}) (rate(ucm:posix_dump_task_duration_ms_bucket{model_name=\"$model_name\", job=~\"$job\", worker_id=~\"$worker_id\"}[$__rate_interval])))",
-          "legendFormat": "p99 {{worker_id}}",
+          "expr": "histogram_quantile(0.99, sum by (le, ${perWorker:raw}) (rate(ucm:posix_dump_task_duration_ms_bucket{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval])))",
+          "legendFormat": "p99 {{engine}} {{worker_rank}}",
           "range": true,
           "refId": "C"
         },
@@ -4821,8 +5894,8 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "sum by (${perWorker:raw}) (rate(ucm:posix_dump_task_duration_ms_sum{model_name=\"$model_name\", job=~\"$job\", worker_id=~\"$worker_id\"}[$__rate_interval]))\n/\nsum by (${perWorker:raw}) (rate(ucm:posix_dump_task_duration_ms_count{model_name=\"$model_name\", job=~\"$job\", worker_id=~\"$worker_id\"}[$__rate_interval]))",
-          "legendFormat": "avg {{worker_id}}",
+          "expr": "sum by (${perWorker:raw}) (rate(ucm:posix_dump_task_duration_ms_sum{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval]))\n/\nsum by (${perWorker:raw}) (rate(ucm:posix_dump_task_duration_ms_count{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval]))",
+          "legendFormat": "avg {{engine}} {{worker_rank}}",
           "range": true,
           "refId": "D"
         }
@@ -4892,7 +5965,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 139
+        "y": 163
       },
       "id": 41,
       "options": {
@@ -4918,8 +5991,8 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "sum by (${perWorker:raw}) (rate(ucm:posix_load_queue_wait_duration_ms_sum{model_name=\"$model_name\", job=~\"$job\", worker_id=~\"$worker_id\"}[40s]))\n/\nsum by (${perWorker:raw}) (rate(ucm:posix_load_queue_wait_duration_ms_count{model_name=\"$model_name\", job=~\"$job\", worker_id=~\"$worker_id\"}[40s]))",
-          "legendFormat": "queue wait {{worker_id}}",
+          "expr": "sum by (${perWorker:raw}) (rate(ucm:posix_load_queue_wait_duration_ms_sum{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[40s]))\n/\nsum by (${perWorker:raw}) (rate(ucm:posix_load_queue_wait_duration_ms_count{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[40s]))",
+          "legendFormat": "queue wait {{engine}} {{worker_rank}}",
           "range": true,
           "refId": "A"
         },
@@ -4929,8 +6002,8 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "clamp_min(\n  (\n    sum by (${perWorker:raw}) (rate(ucm:posix_load_task_duration_ms_sum{model_name=\"$model_name\", job=~\"$job\", worker_id=~\"$worker_id\"}[40s]))\n    /\n    sum by (${perWorker:raw}) (rate(ucm:posix_load_task_duration_ms_count{model_name=\"$model_name\", job=~\"$job\", worker_id=~\"$worker_id\"}[40s]))\n  )\n  -\n  (\n    sum by (${perWorker:raw}) (rate(ucm:posix_load_queue_wait_duration_ms_sum{model_name=\"$model_name\", job=~\"$job\", worker_id=~\"$worker_id\"}[40s]))\n    /\n    sum by (${perWorker:raw}) (rate(ucm:posix_load_queue_wait_duration_ms_count{model_name=\"$model_name\", job=~\"$job\", worker_id=~\"$worker_id\"}[40s]))\n  ),\n  0\n)",
-          "legendFormat": "task after queue {{worker_id}}",
+          "expr": "clamp_min(\n  (\n    sum by (${perWorker:raw}) (rate(ucm:posix_load_task_duration_ms_sum{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[40s]))\n    /\n    sum by (${perWorker:raw}) (rate(ucm:posix_load_task_duration_ms_count{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[40s]))\n  )\n  -\n  (\n    sum by (${perWorker:raw}) (rate(ucm:posix_load_queue_wait_duration_ms_sum{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[40s]))\n    /\n    sum by (${perWorker:raw}) (rate(ucm:posix_load_queue_wait_duration_ms_count{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[40s]))\n  ),\n  0\n)",
+          "legendFormat": "task after queue {{engine}} {{worker_rank}}",
           "range": true,
           "refId": "B"
         }
@@ -5000,7 +6073,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 139
+        "y": 163
       },
       "id": 42,
       "options": {
@@ -5026,8 +6099,8 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "sum by (${perWorker:raw}) (rate(ucm:posix_dump_queue_wait_duration_ms_sum{model_name=\"$model_name\", job=~\"$job\", worker_id=~\"$worker_id\"}[40s]))\n/\nsum by (${perWorker:raw}) (rate(ucm:posix_dump_queue_wait_duration_ms_count{model_name=\"$model_name\", job=~\"$job\", worker_id=~\"$worker_id\"}[40s]))",
-          "legendFormat": "queue wait {{worker_id}}",
+          "expr": "sum by (${perWorker:raw}) (rate(ucm:posix_dump_queue_wait_duration_ms_sum{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[40s]))\n/\nsum by (${perWorker:raw}) (rate(ucm:posix_dump_queue_wait_duration_ms_count{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[40s]))",
+          "legendFormat": "queue wait {{engine}} {{worker_rank}}",
           "range": true,
           "refId": "A"
         },
@@ -5037,8 +6110,8 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "clamp_min(\n  (\n    sum by (${perWorker:raw}) (rate(ucm:posix_dump_task_duration_ms_sum{model_name=\"$model_name\", job=~\"$job\", worker_id=~\"$worker_id\"}[40s]))\n    /\n    sum by (${perWorker:raw}) (rate(ucm:posix_dump_task_duration_ms_count{model_name=\"$model_name\", job=~\"$job\", worker_id=~\"$worker_id\"}[40s]))\n  )\n  -\n  (\n    sum by (${perWorker:raw}) (rate(ucm:posix_dump_queue_wait_duration_ms_sum{model_name=\"$model_name\", job=~\"$job\", worker_id=~\"$worker_id\"}[40s]))\n    /\n    sum by (${perWorker:raw}) (rate(ucm:posix_dump_queue_wait_duration_ms_count{model_name=\"$model_name\", job=~\"$job\", worker_id=~\"$worker_id\"}[40s]))\n  ),\n  0\n)",
-          "legendFormat": "task after queue {{worker_id}}",
+          "expr": "clamp_min(\n  (\n    sum by (${perWorker:raw}) (rate(ucm:posix_dump_task_duration_ms_sum{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[40s]))\n    /\n    sum by (${perWorker:raw}) (rate(ucm:posix_dump_task_duration_ms_count{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[40s]))\n  )\n  -\n  (\n    sum by (${perWorker:raw}) (rate(ucm:posix_dump_queue_wait_duration_ms_sum{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[40s]))\n    /\n    sum by (${perWorker:raw}) (rate(ucm:posix_dump_queue_wait_duration_ms_count{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[40s]))\n  ),\n  0\n)",
+          "legendFormat": "task after queue {{engine}} {{worker_rank}}",
           "range": true,
           "refId": "B"
         }
@@ -5108,7 +6181,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 147
+        "y": 171
       },
       "id": 25,
       "options": {
@@ -5134,8 +6207,8 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "sum by (${perWorker:raw}) (rate(ucm:posix_s2h_bytes_total{model_name=\"$model_name\", job=~\"$job\", worker_id=~\"$worker_id\"}[$__rate_interval])) / 1e9",
-          "legendFormat": "{{worker_id}}",
+          "expr": "sum by (${perWorker:raw}) (rate(ucm:posix_s2h_bytes_total{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval])) / 1e9",
+          "legendFormat": "{{engine}} {{worker_rank}}",
           "range": true,
           "refId": "A"
         }
@@ -5205,7 +6278,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 147
+        "y": 171
       },
       "id": 26,
       "options": {
@@ -5231,8 +6304,8 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "sum by (${perWorker:raw}) (rate(ucm:posix_h2s_bytes_total{model_name=\"$model_name\", job=~\"$job\", worker_id=~\"$worker_id\"}[$__rate_interval])) / 1e9",
-          "legendFormat": "{{worker_id}}",
+          "expr": "sum by (${perWorker:raw}) (rate(ucm:posix_h2s_bytes_total{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval])) / 1e9",
+          "legendFormat": "{{engine}} {{worker_rank}}",
           "range": true,
           "refId": "A"
         }
@@ -5245,7 +6318,7 @@
         "type": "prometheus",
         "uid": "${DS_PROMETHEUS}"
       },
-      "description": "Time Posix load IO spends queued before worker pickup. Series: p50 / p90 / p99 / avg by selected view.",
+      "description": "Time Posix load IO spends queued before worker pickup. Series: p50 / p90 / p99 / avg by engine and worker_rank.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -5379,7 +6452,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 155
+        "y": 179
       },
       "id": 36,
       "options": {
@@ -5405,8 +6478,8 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "histogram_quantile(0.5, sum by (le, ${perWorker:raw}) (rate(ucm:posix_load_queue_wait_duration_ms_bucket{model_name=\"$model_name\", job=~\"$job\", worker_id=~\"$worker_id\"}[$__rate_interval])))",
-          "legendFormat": "p50 {{worker_id}}",
+          "expr": "histogram_quantile(0.5, sum by (le, ${perWorker:raw}) (rate(ucm:posix_load_queue_wait_duration_ms_bucket{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval])))",
+          "legendFormat": "p50 {{engine}} {{worker_rank}}",
           "range": true,
           "refId": "A"
         },
@@ -5416,8 +6489,8 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "histogram_quantile(0.9, sum by (le, ${perWorker:raw}) (rate(ucm:posix_load_queue_wait_duration_ms_bucket{model_name=\"$model_name\", job=~\"$job\", worker_id=~\"$worker_id\"}[$__rate_interval])))",
-          "legendFormat": "p90 {{worker_id}}",
+          "expr": "histogram_quantile(0.9, sum by (le, ${perWorker:raw}) (rate(ucm:posix_load_queue_wait_duration_ms_bucket{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval])))",
+          "legendFormat": "p90 {{engine}} {{worker_rank}}",
           "range": true,
           "refId": "B"
         },
@@ -5427,8 +6500,8 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "histogram_quantile(0.99, sum by (le, ${perWorker:raw}) (rate(ucm:posix_load_queue_wait_duration_ms_bucket{model_name=\"$model_name\", job=~\"$job\", worker_id=~\"$worker_id\"}[$__rate_interval])))",
-          "legendFormat": "p99 {{worker_id}}",
+          "expr": "histogram_quantile(0.99, sum by (le, ${perWorker:raw}) (rate(ucm:posix_load_queue_wait_duration_ms_bucket{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval])))",
+          "legendFormat": "p99 {{engine}} {{worker_rank}}",
           "range": true,
           "refId": "C"
         },
@@ -5438,8 +6511,8 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "sum by (${perWorker:raw}) (rate(ucm:posix_load_queue_wait_duration_ms_sum{model_name=\"$model_name\", job=~\"$job\", worker_id=~\"$worker_id\"}[$__rate_interval]))\n/\nsum by (${perWorker:raw}) (rate(ucm:posix_load_queue_wait_duration_ms_count{model_name=\"$model_name\", job=~\"$job\", worker_id=~\"$worker_id\"}[$__rate_interval]))",
-          "legendFormat": "avg {{worker_id}}",
+          "expr": "sum by (${perWorker:raw}) (rate(ucm:posix_load_queue_wait_duration_ms_sum{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval]))\n/\nsum by (${perWorker:raw}) (rate(ucm:posix_load_queue_wait_duration_ms_count{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval]))",
+          "legendFormat": "avg {{engine}} {{worker_rank}}",
           "range": true,
           "refId": "D"
         }
@@ -5452,7 +6525,7 @@
         "type": "prometheus",
         "uid": "${DS_PROMETHEUS}"
       },
-      "description": "Time Posix dump IO spends queued before worker pickup. Series: p50 / p90 / p99 / avg by selected view.",
+      "description": "Time Posix dump IO spends queued before worker pickup. Series: p50 / p90 / p99 / avg by engine and worker_rank.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -5586,7 +6659,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 155
+        "y": 179
       },
       "id": 46,
       "options": {
@@ -5612,8 +6685,8 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "histogram_quantile(0.5, sum by (le, ${perWorker:raw}) (rate(ucm:posix_dump_queue_wait_duration_ms_bucket{model_name=\"$model_name\", job=~\"$job\", worker_id=~\"$worker_id\"}[$__rate_interval])))",
-          "legendFormat": "p50 {{worker_id}}",
+          "expr": "histogram_quantile(0.5, sum by (le, ${perWorker:raw}) (rate(ucm:posix_dump_queue_wait_duration_ms_bucket{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval])))",
+          "legendFormat": "p50 {{engine}} {{worker_rank}}",
           "range": true,
           "refId": "A"
         },
@@ -5623,8 +6696,8 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "histogram_quantile(0.9, sum by (le, ${perWorker:raw}) (rate(ucm:posix_dump_queue_wait_duration_ms_bucket{model_name=\"$model_name\", job=~\"$job\", worker_id=~\"$worker_id\"}[$__rate_interval])))",
-          "legendFormat": "p90 {{worker_id}}",
+          "expr": "histogram_quantile(0.9, sum by (le, ${perWorker:raw}) (rate(ucm:posix_dump_queue_wait_duration_ms_bucket{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval])))",
+          "legendFormat": "p90 {{engine}} {{worker_rank}}",
           "range": true,
           "refId": "B"
         },
@@ -5634,8 +6707,8 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "histogram_quantile(0.99, sum by (le, ${perWorker:raw}) (rate(ucm:posix_dump_queue_wait_duration_ms_bucket{model_name=\"$model_name\", job=~\"$job\", worker_id=~\"$worker_id\"}[$__rate_interval])))",
-          "legendFormat": "p99 {{worker_id}}",
+          "expr": "histogram_quantile(0.99, sum by (le, ${perWorker:raw}) (rate(ucm:posix_dump_queue_wait_duration_ms_bucket{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval])))",
+          "legendFormat": "p99 {{engine}} {{worker_rank}}",
           "range": true,
           "refId": "C"
         },
@@ -5645,8 +6718,8 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "sum by (${perWorker:raw}) (rate(ucm:posix_dump_queue_wait_duration_ms_sum{model_name=\"$model_name\", job=~\"$job\", worker_id=~\"$worker_id\"}[$__rate_interval]))\n/\nsum by (${perWorker:raw}) (rate(ucm:posix_dump_queue_wait_duration_ms_count{model_name=\"$model_name\", job=~\"$job\", worker_id=~\"$worker_id\"}[$__rate_interval]))",
-          "legendFormat": "avg {{worker_id}}",
+          "expr": "sum by (${perWorker:raw}) (rate(ucm:posix_dump_queue_wait_duration_ms_sum{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval]))\n/\nsum by (${perWorker:raw}) (rate(ucm:posix_dump_queue_wait_duration_ms_count{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval]))",
+          "legendFormat": "avg {{engine}} {{worker_rank}}",
           "range": true,
           "refId": "D"
         }
@@ -5659,7 +6732,7 @@
         "type": "prometheus",
         "uid": "${DS_PROMETHEUS}"
       },
-      "description": "Posix-stage storage-to-host bandwidth (load direction). Series: p50 / p90 / p99 / avg by selected view. Task-level observed throughput: total task bytes divided by task wall-clock duration.",
+      "description": "Posix-stage storage-to-host bandwidth (load direction). Series: p50 / p90 / p99 / avg by engine and worker_rank. Task-level observed throughput: total task bytes divided by task wall-clock duration.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -5793,7 +6866,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 163
+        "y": 187
       },
       "id": 10,
       "options": {
@@ -5819,8 +6892,8 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "histogram_quantile(0.5, sum by (le, ${perWorker:raw}) (rate(ucm:posix_s2h_bandwidth_gbps_bucket{model_name=\"$model_name\", job=~\"$job\", worker_id=~\"$worker_id\"}[$__rate_interval])))",
-          "legendFormat": "p50 {{worker_id}}",
+          "expr": "histogram_quantile(0.5, sum by (le, ${perWorker:raw}) (rate(ucm:posix_s2h_bandwidth_gbps_bucket{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval])))",
+          "legendFormat": "p50 {{engine}} {{worker_rank}}",
           "range": true,
           "refId": "A"
         },
@@ -5830,8 +6903,8 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "histogram_quantile(0.9, sum by (le, ${perWorker:raw}) (rate(ucm:posix_s2h_bandwidth_gbps_bucket{model_name=\"$model_name\", job=~\"$job\", worker_id=~\"$worker_id\"}[$__rate_interval])))",
-          "legendFormat": "p90 {{worker_id}}",
+          "expr": "histogram_quantile(0.9, sum by (le, ${perWorker:raw}) (rate(ucm:posix_s2h_bandwidth_gbps_bucket{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval])))",
+          "legendFormat": "p90 {{engine}} {{worker_rank}}",
           "range": true,
           "refId": "B"
         },
@@ -5841,8 +6914,8 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "histogram_quantile(0.99, sum by (le, ${perWorker:raw}) (rate(ucm:posix_s2h_bandwidth_gbps_bucket{model_name=\"$model_name\", job=~\"$job\", worker_id=~\"$worker_id\"}[$__rate_interval])))",
-          "legendFormat": "p99 {{worker_id}}",
+          "expr": "histogram_quantile(0.99, sum by (le, ${perWorker:raw}) (rate(ucm:posix_s2h_bandwidth_gbps_bucket{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval])))",
+          "legendFormat": "p99 {{engine}} {{worker_rank}}",
           "range": true,
           "refId": "C"
         },
@@ -5852,8 +6925,8 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "sum by (${perWorker:raw}) (rate(ucm:posix_s2h_bandwidth_gbps_sum{model_name=\"$model_name\", job=~\"$job\", worker_id=~\"$worker_id\"}[$__rate_interval]))\n/\nsum by (${perWorker:raw}) (rate(ucm:posix_s2h_bandwidth_gbps_count{model_name=\"$model_name\", job=~\"$job\", worker_id=~\"$worker_id\"}[$__rate_interval]))",
-          "legendFormat": "avg {{worker_id}}",
+          "expr": "sum by (${perWorker:raw}) (rate(ucm:posix_s2h_bandwidth_gbps_sum{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval]))\n/\nsum by (${perWorker:raw}) (rate(ucm:posix_s2h_bandwidth_gbps_count{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval]))",
+          "legendFormat": "avg {{engine}} {{worker_rank}}",
           "range": true,
           "refId": "D"
         }
@@ -5866,7 +6939,7 @@
         "type": "prometheus",
         "uid": "${DS_PROMETHEUS}"
       },
-      "description": "Posix-stage host-to-storage bandwidth (dump direction). Series: p50 / p90 / p99 / avg by selected view. Task-level observed throughput: total task bytes divided by task wall-clock duration.",
+      "description": "Posix-stage host-to-storage bandwidth (dump direction). Series: p50 / p90 / p99 / avg by engine and worker_rank. Task-level observed throughput: total task bytes divided by task wall-clock duration.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -6000,7 +7073,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 163
+        "y": 187
       },
       "id": 11,
       "options": {
@@ -6026,8 +7099,8 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "histogram_quantile(0.5, sum by (le, ${perWorker:raw}) (rate(ucm:posix_h2s_bandwidth_gbps_bucket{model_name=\"$model_name\", job=~\"$job\", worker_id=~\"$worker_id\"}[$__rate_interval])))",
-          "legendFormat": "p50 {{worker_id}}",
+          "expr": "histogram_quantile(0.5, sum by (le, ${perWorker:raw}) (rate(ucm:posix_h2s_bandwidth_gbps_bucket{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval])))",
+          "legendFormat": "p50 {{engine}} {{worker_rank}}",
           "range": true,
           "refId": "A"
         },
@@ -6037,8 +7110,8 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "histogram_quantile(0.9, sum by (le, ${perWorker:raw}) (rate(ucm:posix_h2s_bandwidth_gbps_bucket{model_name=\"$model_name\", job=~\"$job\", worker_id=~\"$worker_id\"}[$__rate_interval])))",
-          "legendFormat": "p90 {{worker_id}}",
+          "expr": "histogram_quantile(0.9, sum by (le, ${perWorker:raw}) (rate(ucm:posix_h2s_bandwidth_gbps_bucket{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval])))",
+          "legendFormat": "p90 {{engine}} {{worker_rank}}",
           "range": true,
           "refId": "B"
         },
@@ -6048,8 +7121,8 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "histogram_quantile(0.99, sum by (le, ${perWorker:raw}) (rate(ucm:posix_h2s_bandwidth_gbps_bucket{model_name=\"$model_name\", job=~\"$job\", worker_id=~\"$worker_id\"}[$__rate_interval])))",
-          "legendFormat": "p99 {{worker_id}}",
+          "expr": "histogram_quantile(0.99, sum by (le, ${perWorker:raw}) (rate(ucm:posix_h2s_bandwidth_gbps_bucket{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval])))",
+          "legendFormat": "p99 {{engine}} {{worker_rank}}",
           "range": true,
           "refId": "C"
         },
@@ -6059,8 +7132,8 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "sum by (${perWorker:raw}) (rate(ucm:posix_h2s_bandwidth_gbps_sum{model_name=\"$model_name\", job=~\"$job\", worker_id=~\"$worker_id\"}[$__rate_interval]))\n/\nsum by (${perWorker:raw}) (rate(ucm:posix_h2s_bandwidth_gbps_count{model_name=\"$model_name\", job=~\"$job\", worker_id=~\"$worker_id\"}[$__rate_interval]))",
-          "legendFormat": "avg {{worker_id}}",
+          "expr": "sum by (${perWorker:raw}) (rate(ucm:posix_h2s_bandwidth_gbps_sum{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval]))\n/\nsum by (${perWorker:raw}) (rate(ucm:posix_h2s_bandwidth_gbps_count{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval]))",
+          "legendFormat": "avg {{engine}} {{worker_rank}}",
           "range": true,
           "refId": "D"
         }
@@ -6081,7 +7154,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 171
+        "y": 195
       },
       "panels": [
         {
@@ -6106,7 +7179,7 @@
                 "uid": "${DS_PROMETHEUS}"
               },
               "editorMode": "code",
-              "expr": "sum by (le) (rate(ucm:posix_load_task_duration_ms_bucket{model_name=\"$model_name\", job=~\"$job\", worker_id=~\"$worker_id\"}[$__rate_interval]))",
+              "expr": "sum by (le) (rate(ucm:posix_load_task_duration_ms_bucket{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval]))",
               "format": "heatmap",
               "legendFormat": "{{le}}",
               "range": true,
@@ -6138,7 +7211,7 @@
               "unit": "suffix: req/s"
             },
             "filterValues": {
-              "le": 1e-9
+              "le": 1e-09
             },
             "tooltip": {
               "show": true,
@@ -6191,7 +7264,7 @@
                 "uid": "${DS_PROMETHEUS}"
               },
               "editorMode": "code",
-              "expr": "sum by (le) (rate(ucm:posix_dump_task_duration_ms_bucket{model_name=\"$model_name\", job=~\"$job\", worker_id=~\"$worker_id\"}[$__rate_interval]))",
+              "expr": "sum by (le) (rate(ucm:posix_dump_task_duration_ms_bucket{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval]))",
               "format": "heatmap",
               "legendFormat": "{{le}}",
               "range": true,
@@ -6223,7 +7296,7 @@
               "unit": "suffix: req/s"
             },
             "filterValues": {
-              "le": 1e-9
+              "le": 1e-09
             },
             "tooltip": {
               "show": true,
@@ -6276,7 +7349,7 @@
                 "uid": "${DS_PROMETHEUS}"
               },
               "editorMode": "code",
-              "expr": "sum by (le) (rate(ucm:posix_s2h_bandwidth_gbps_bucket{model_name=\"$model_name\", job=~\"$job\", worker_id=~\"$worker_id\"}[$__rate_interval]))",
+              "expr": "sum by (le) (rate(ucm:posix_s2h_bandwidth_gbps_bucket{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval]))",
               "format": "heatmap",
               "legendFormat": "{{le}}",
               "range": true,
@@ -6308,7 +7381,7 @@
               "unit": "suffix: req/s"
             },
             "filterValues": {
-              "le": 1e-9
+              "le": 1e-09
             },
             "tooltip": {
               "show": true,
@@ -6361,7 +7434,7 @@
                 "uid": "${DS_PROMETHEUS}"
               },
               "editorMode": "code",
-              "expr": "sum by (le) (rate(ucm:posix_h2s_bandwidth_gbps_bucket{model_name=\"$model_name\", job=~\"$job\", worker_id=~\"$worker_id\"}[$__rate_interval]))",
+              "expr": "sum by (le) (rate(ucm:posix_h2s_bandwidth_gbps_bucket{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval]))",
               "format": "heatmap",
               "legendFormat": "{{le}}",
               "range": true,
@@ -6393,7 +7466,7 @@
               "unit": "suffix: req/s"
             },
             "filterValues": {
-              "le": 1e-9
+              "le": 1e-09
             },
             "tooltip": {
               "show": true,
