@@ -1,6 +1,6 @@
 # Set to other image if needed
-ARG IMAGE_SOURCE="quay.io/ascend"
-ARG IMAGE_NAME_VERSION="vllm-ascend:v0.17.0rc1"
+ARG IMAGE_SOURCE="vllm"
+ARG IMAGE_NAME_VERSION="vllm-openai:v0.21.0"
 
 FROM ${IMAGE_SOURCE}/${IMAGE_NAME_VERSION}
 
@@ -14,11 +14,16 @@ COPY . /workspace/unified-cache-management
 
 RUN pip config set global.index-url ${PIP_INDEX_URL}
 
+ENV UCM_ENGINE_TYPE=vllm-cuda
+
 # Build or link package
 RUN if [ "${INSTALL_MODE}" != "package" ]; then \
+        apt-get update && \
+        apt-get install -y --no-install-recommends git && \
+        rm -rf /var/lib/apt/lists/* && \
         pip install --no-cache-dir build cmake && \
         export WORKSPACE=/workspace SKIP_TAR=1 ENABLE_SPARSE=false && \
-        bash /workspace/unified-cache-management/scripts/build_ascend.sh; \
+        bash /workspace/unified-cache-management/scripts/build_cuda.sh; \
     else \
         ln -s /workspace/unified-cache-management /workspace/package; \
     fi
@@ -26,4 +31,9 @@ RUN if [ "${INSTALL_MODE}" != "package" ]; then \
 # Install UCM
 RUN pip install /workspace/package/uc_manager-*.whl
 
-CMD ["/bin/bash"]
+# Run optional post-install hook
+RUN if [ -f /workspace/package/install.sh ]; then \
+        bash /workspace/package/install.sh; \
+    fi
+
+ENTRYPOINT ["/bin/bash"]
