@@ -1,5 +1,5 @@
 # UCM patch for vllm-ascend 0.19.1:
-# Temporarily disable bind_memory to avoid migratepages failure
+# Temporarily disable bind_memory to avoid excessive MLA model initialization latency
 import psutil
 from vllm_ascend.cpu_binding import CpuAlloc, execute_command
 

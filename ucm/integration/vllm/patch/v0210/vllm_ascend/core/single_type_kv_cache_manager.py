@@ -54,7 +54,7 @@ class CompressAttentionManager:
                         "Skip negative Ascend compressed-attention KV allocation: "
                         "request_id=%s, num_new_blocks=%d, target_blocks=%d, "
                         "req_blocks=%d, compress_ratio=%d, block_size=%d, "
-                        "compressed_total_tokens%=d, num_skipped_blocks=%d, "
+                        "compressed_total_tokens=%d, num_skipped_blocks=%d, "
                         "kv_cache_group_id=%s, spec=%s",
                         request_id,
                         num_new_blocks,

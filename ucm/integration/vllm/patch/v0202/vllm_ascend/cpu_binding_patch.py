@@ -1,5 +1,5 @@
 # UCM patch for vllm-ascend 0.20.2:
-# Remove bind_memory call from bind_threads to avoid migratepages failure
+# Remove bind_memory call from bind_threads to avoid excessive MLA model initialization latency
 
 from ucm.integration.vllm.patch.utils import patch_or_inject, when_imported
 from ucm.logger import init_logger
