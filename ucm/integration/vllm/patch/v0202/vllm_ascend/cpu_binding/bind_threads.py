@@ -1,5 +1,5 @@
 # UCM patch for vllm-ascend 0.20.2:
-# Remove bind_memory call from bind_threads to avoid migratepages failure
+# Temporarily disable bind_memory to avoid migratepages failure
 import psutil
 from vllm_ascend.cpu_binding import CpuAlloc, execute_command
 
@@ -14,3 +14,4 @@ def bind_threads(self) -> None:
         self.bind(acl_thread, self.assign_acl[current_npu], False)
     for release_thread in threads_map.get(main_pid, {}).get("release_thread", []):
         self.bind(release_thread, self.assign_rel[current_npu], False)
+    # self.bind_memory(main_pid, current_npu)
