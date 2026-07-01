@@ -12,6 +12,7 @@
 #include <numeric>
 #include <sstream>
 #include <system_error>
+#include "kv_test/kv_test_config_helpers.h"
 #include "kv_test/payload_buffer_runtime.h"
 
 namespace UC::KVTest {
@@ -21,6 +22,19 @@ namespace {
 constexpr int kExitInvalidArgument = 1;
 constexpr std::size_t kDeviceBufferAlignment = UC::ASU::kAsuAlignmentBytes;
 constexpr std::size_t kDeviceMrRegisterAlignment = 2ULL * 1024ULL * 1024ULL;
+
+Status StringToCacheKey(const std::string& value, UC::ASU::CacheKey& key)
+{
+    if (value.size() > key.size()) {
+        return Status::Error(kExitInvalidArgument,
+                             "bench key length exceeds " + std::to_string(key.size()) +
+                                 " bytes: length=" + std::to_string(value.size()) +
+                                 ", key=" + value);
+    }
+    key = UC::ASU::CacheKey{};
+    if (!value.empty()) { std::memcpy(key.data(), value.data(), value.size()); }
+    return Status::Success();
+}
 
 struct BenchBufferSlot {
     BufferSet buffers;
@@ -382,10 +396,12 @@ Status RegisterBenchDeviceBuffers(AsuClientRunner& clientRunner, BenchBufferPool
 {
     for (std::size_t slotIndex = 0; slotIndex < pool.size(); ++slotIndex) {
         auto& slot = pool[slotIndex];
-        PrepareBenchBuffers(slot, slotIndex * entryCountPerOperation,
-                            static_cast<std::size_t>(entryCountPerOperation), keyPrefix,
-                            /*useDeviceBuffers=*/true, useAivRegistrationConstraints);
-        auto status = clientRunner.RegisterBuffers(slot.buffers);
+        auto status =
+            PrepareBenchBuffers(slot, slotIndex * entryCountPerOperation,
+                                static_cast<std::size_t>(entryCountPerOperation), keyPrefix,
+                                /*useDeviceBuffers=*/true, useAivRegistrationConstraints);
+        if (!status.Ok()) { return status; }
+        status = clientRunner.RegisterBuffers(slot.buffers);
         if (!status.Ok()) { return status; }
     }
     return Status::Success();
@@ -419,11 +435,6 @@ Status ExecuteBenchOperation(BenchOpType requestedOp, const KvTestConfig& config
                                       useAivRegistrationConstraints);
     if (!status.Ok()) { return status; }
     auto& buffers = slot.buffers;
-
-    if (useDeviceBuffers && !isRead) {
-        auto status = SyncBenchDeviceBuffers(config, slot, entryCount);
-        if (!status.Ok()) { return status; }
-    }
 
     if (useDeviceBuffers && !isRead) {
         auto status = SyncBenchDeviceBuffers(config, slot, entryCount);
