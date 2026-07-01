@@ -29,7 +29,7 @@ if(ASCEND_ACL_INCLUDE_DIR AND ASCEND_ACL_LIBRARY AND MOONCAKE_STORE_LIBRARY)
     )
 
     target_link_libraries(mooncakestore PUBLIC
-        storeintf infra_logger fmt trans ${MOONCAKE_STORE_LIBRARY}
+        storeintf infra_logger fmt trans metrics ${MOONCAKE_STORE_LIBRARY}
         ${ASCEND_ACL_LIBRARY}
     )
 

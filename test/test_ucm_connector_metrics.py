@@ -1825,6 +1825,22 @@ def test_h2d_d2h_bandwidth_metrics_are_not_configured_or_recorded():
         assert metric not in sources
 
 
+def test_mooncake_store_links_metrics_target_for_metrics_api_includes():
+    mooncake_sources = "\n".join(
+        path.read_text(encoding="utf-8")
+        for path in (REPO_ROOT / "ucm" / "store" / "mooncakestore" / "cc").glob("*.cc")
+    )
+    cmake_text = (
+        REPO_ROOT / "ucm" / "store" / "mooncakestore" / "CMakeLists.txt"
+    ).read_text(encoding="utf-8")
+
+    assert '#include "metrics_api.h"' in mooncake_sources
+    assert re.search(
+        r"target_link_libraries\(\s*mooncakestore\s+PUBLIC[\s\S]*?\bmetrics\b",
+        cmake_text,
+    )
+
+
 def test_pipeline_dashboard_orders_cache_bandwidth_rows():
     dashboard = json.loads(
         (REPO_ROOT / "examples" / "metrics" / "grafana_pipeline_store.json").read_text(
