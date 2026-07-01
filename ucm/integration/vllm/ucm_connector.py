@@ -3113,7 +3113,9 @@ class UCMConnector(KVConnectorBase_V1, SupportsHMA):
         self.engine_id = vllm_config.kv_transfer_config.engine_id
         self.launch_config = ucm_config.get_config()
         self._worker_rank = (
-            get_world_group().rank if role == KVConnectorRole.WORKER else None
+            get_world_group().rank
+            if role == KVConnectorRole.WORKER
+            else "scheduler" if role == KVConnectorRole.SCHEDULER else None
         )
         self._setup_ucm_metrics(vllm_config, role)
         logger.info(f"self.launch_config: {self.launch_config}")
@@ -3209,10 +3211,8 @@ class UCMConnector(KVConnectorBase_V1, SupportsHMA):
             logger.info(
                 f"metrics_config_path: {metrics_config_path}, set worker_id: {worker_id}"
             )
-        if (
-            role == KVConnectorRole.WORKER
-            and self.metrics_config
-            and consumer_enabled(self.metrics_config, VLLM_CONNECTOR_CONSUMER)
+        if self.metrics_config and consumer_enabled(
+            self.metrics_config, VLLM_CONNECTOR_CONSUMER
         ):
             self._vllm_metric_definitions = get_vllm_connector_metric_definitions(
                 self.metrics_config

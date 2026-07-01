@@ -287,6 +287,7 @@ def _install_stubs():
         Gauge=FakeGauge,
         Histogram=FakeHistogram,
     )
+    _install_module("wrapt", ObjectProxy=object)
     _install_module("vllm.config", VllmConfig=type("VllmConfig", (), {}))
     _install_module(
         "vllm.distributed.kv_transfer.kv_connector.v1.base",
@@ -644,6 +645,22 @@ def test_setup_ucm_metrics_logs_registered_metrics(monkeypatch):
     ]
 
 
+def test_scheduler_side_metrics_are_configured_for_vllm_connector():
+    config = load_launch_metrics_config({})
+    definitions = {
+        definition.name for definition in get_vllm_connector_metric_definitions(config)
+    }
+
+    assert {
+        "total_prefix_query_tokens_total",
+        "gpu_hbm_hit_tokens_total",
+        "ucm_hit_tokens_total",
+        "connector_lookup_errors_total",
+        "fawa_scheduler_lookup_external_hit_blocks_ms",
+        "fawa_scheduler_get_num_new_matched_tokens_ms",
+    } <= definitions
+
+
 def test_dispatcher_fans_out_single_core_drain_to_independent_consumers():
     _reset_fakes()
     config = _metrics_config()
@@ -985,6 +1002,39 @@ def test_ucm_connector_drains_dispatcher_vllm_connector_snapshot():
     assert connector.get_kv_connector_stats() is None
 
 
+def test_ucm_connector_drains_scheduler_vllm_connector_snapshot():
+    _reset_fakes()
+    connector = object.__new__(UCMConnector)
+    connector.launch_config = {}
+    connector.engine_id = "engine-0"
+    connector._worker_rank = "scheduler"
+
+    connector._setup_ucm_metrics(_vllm_config(), KVConnectorRole.SCHEDULER)
+    fake_ucmmetrics.snapshot = (
+        {
+            "total_prefix_query_tokens_total": 2048,
+            "gpu_hbm_hit_tokens_total": 512,
+            "ucm_hit_tokens_total": 384,
+        },
+        {},
+        {"fawa_scheduler_get_num_new_matched_tokens_ms": ([0, 1], 12.0)},
+    )
+
+    stats = connector.get_kv_connector_stats()
+
+    assert stats.data["counters_by_rank"]["scheduler"] == {
+        "total_prefix_query_tokens_total": 2048.0,
+        "gpu_hbm_hit_tokens_total": 512.0,
+        "ucm_hit_tokens_total": 384.0,
+    }
+    assert stats.data["histograms_by_rank"]["scheduler"][
+        "fawa_scheduler_get_num_new_matched_tokens_ms"
+    ] == {
+        "bucket_counts": [0, 1],
+        "sum": 12.0,
+    }
+
+
 def test_ucm_connector_records_prefix_cache_token_counters():
     _reset_fakes()
     connector = object.__new__(UCMConnector)
@@ -1002,6 +1052,68 @@ def test_ucm_connector_records_prefix_cache_token_counters():
             "ucm_hit_tokens_total": 384,
         }
     ]
+
+
+def test_vllm_ascend_scheduler_patch_collects_scheduler_only_stats():
+    from ucm.integration.vllm.patch import scheduler_metrics_patch
+
+    class Stats:
+        def __init__(self, name, empty=False):
+            self.name = name
+            self.empty = empty
+
+        def is_empty(self):
+            return self.empty
+
+    class Connector:
+        def __init__(self, stats):
+            self.stats = stats
+            self.calls = 0
+
+        def get_kv_connector_stats(self):
+            self.calls += 1
+            return self.stats
+
+    class Scheduler:
+        def __init__(self, connector):
+            self.connector = connector
+
+        def make_stats(
+            self,
+            spec_decoding_stats=None,
+            kv_connector_stats=None,
+            cudagraph_stats=None,
+            perf_stats=None,
+        ):
+            return kv_connector_stats
+
+    scheduler_metrics_patch.patch_recompute_scheduler_cls(Scheduler)
+
+    scheduler_stats = Stats("scheduler")
+    scheduler = Scheduler(Connector(scheduler_stats))
+    assert scheduler.make_stats(kv_connector_stats=None) is scheduler_stats
+    assert scheduler.connector.calls == 1
+
+    worker_stats = Stats("worker")
+    scheduler = Scheduler(Connector(scheduler_stats))
+    assert scheduler.make_stats(kv_connector_stats=worker_stats) is worker_stats
+    assert scheduler.connector.calls == 0
+
+
+def test_vllm_ascend_scheduler_patch_entrypoints_are_versioned():
+    root = REPO_ROOT / "ucm" / "integration" / "vllm" / "patch"
+    common_import = "ucm.integration.vllm.patch.scheduler_metrics_patch"
+
+    assert not (root / "vllm_ascend").exists()
+    assert common_import in (
+        root / "v0180" / "vllm_ascend" / "ucm_connector_patch.py"
+    ).read_text(encoding="utf-8")
+    assert common_import in (
+        root / "v0191" / "vllm_ascend" / "pc_ascend_patch.py"
+    ).read_text(encoding="utf-8")
+    assert common_import in (
+        root / "v0202" / "vllm_ascend" / "ascend_hybrid_cache_patch.py"
+    ).read_text(encoding="utf-8")
 
 
 def test_direct_connector_get_finished_records_async_durations():
