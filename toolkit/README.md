@@ -9,6 +9,7 @@
 | `dev-sandbox` | `dev_sandbox` | 可构建、可运行 | 构建并运行 C++17 性能测试项目，包含 `copy`、`trans`、`aio` 三个子功能。 |
 | `posix-aio` | `posix_aio` | 可运行 | 运行 `ucm/store/test/e2e/posixstore_aio_test.py`，测试 POSIX AIO store 的 dump/load 性能。 |
 | `nic-monitor` | `nic_monitor` | 可运行 | 监控物理网卡实时流量、后台采样落盘，并生成阶段统计。 |
+| `metrics-view` | `metrics_view`, `terminal-metrics`, `terminal_metrics` | 可运行 | 采集 Prometheus/OpenMetrics 样本到 SQLite，并在终端查询聚合指标。 |
 
 ## 安装
 
@@ -92,6 +93,81 @@ ucm-toolkit clean TOOL --dry-run
 ```
 
 目前 `clean dev-sandbox` 会删除配置的 build 目录；其他工具默认没有可清理产物。
+
+## metrics-view
+
+`metrics-view` 用于在没有 Prometheus/Grafana 的环境中，从 Prometheus/OpenMetrics
+`/metrics` 接口采集原始样本到 SQLite，并在终端查询聚合后的 UCM/vLLM 指标。
+
+默认数据库为 `/tmp/ucm_metrics.db`。采集端默认保存抓到的全部 metrics；查询端默认使用内置
+`metrics_lite` 配置，只展示常用的请求数、延迟、cache hit、layerwise wait
+blocking 时间和 cache/posix store load/dump 带宽等指标。当前内置 config 只保留
+`metrics_lite`。
+
+列出内置配置：
+
+```bash
+ucm-toolkit run metrics-view list-configs
+```
+
+前台采集一次：
+
+```bash
+ucm-toolkit run metrics-view collect \
+  --url http://127.0.0.1:8000/metrics \
+  --once
+```
+
+后台启动采集：
+
+```bash
+ucm-toolkit run metrics-view start \
+  --url http://127.0.0.1:8000/metrics \
+  --interval 5s
+```
+
+查看或停止后台采集：
+
+```bash
+ucm-toolkit run metrics-view status
+ucm-toolkit run metrics-view stop
+```
+
+按时间窗口查询。推荐使用 `--aggr-by`，例如 `--window 10m --aggr-by 1m`
+会展示这个 10 分钟窗口内每 1 分钟的聚合结果；histogram 指标会显示
+`p50`、`p90`、`p99` 和 `avg`。
+
+```bash
+ucm-toolkit run metrics-view query \
+  --window 10m \
+  --aggr-by 1m
+```
+
+查询固定历史窗口并按 Prometheus label 过滤：
+
+```bash
+ucm-toolkit run metrics-view query \
+  --start-time 2026-06-25T10:00:00 \
+  --window 10m \
+  --aggr-by 1m \
+  --tag model_name=qwen \
+  --tag worker_id=0
+```
+
+如果需要使用其它数据库文件，可以显式指定 `--db`：
+
+```bash
+ucm-toolkit run metrics-view query \
+  --db /tmp/another_ucm_metrics.db \
+  --window 10m \
+  --aggr-by 1m
+```
+
+清空 metrics 数据库使用 `metrics-view` 自己的 `clean` 子命令：
+
+```bash
+ucm-toolkit run metrics-view clean
+```
 
 ## dev-sandbox
 
