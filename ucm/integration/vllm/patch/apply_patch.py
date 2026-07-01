@@ -197,6 +197,7 @@ def apply_all_patches() -> None:
                 logger.info(
                     "UCM patching vllm-ascend 0.21.0 for hybrid cache recovery..."
                 )
+                import ucm.integration.vllm.patch.v0210.vllm_ascend.ascend_hybrid_cache_patch
                 import ucm.integration.vllm.patch.v0210.vllm_ascend.cpu_binding_patch
             case _:
                 pass
