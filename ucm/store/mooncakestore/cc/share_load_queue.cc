@@ -284,8 +284,7 @@ void ShareLoadQueue::HandleBackendComplete(BlockTask& task, Trans::Stream& strea
     auto tpReady = NowTime::Now();
     if (ws.Failure()) [[unlikely]] {
         UC_ERROR("Failed({}) to wait backend for key={}.", ws, task.shard.key);
-        UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("mooncake_backend_load_wait_errors_total"),
-                                 1.0);
+        UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("mooncake_backend_load_wait_errors_total"), 1.0);
         task.reader->MarkFailed();
         failureSet_->Insert(task.taskHandle);
         if (task.done) { task.done(false); }

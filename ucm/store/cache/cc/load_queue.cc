@@ -324,10 +324,7 @@ void LoadQueue::RecordH2dSyncMetrics(double h2dSyncMs) const
     UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("cache_h2d_sync_ms"), h2dSyncMs);
 }
 
-void LoadQueue::ClearSdmaDirectHolders() noexcept
-{
-    holder_.clear();
-}
+void LoadQueue::ClearSdmaDirectHolders() noexcept { holder_.clear(); }
 
 bool LoadQueue::UseSdmaDirectTaskLaunch() const noexcept
 {
