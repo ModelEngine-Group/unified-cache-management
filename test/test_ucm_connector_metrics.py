@@ -1217,8 +1217,16 @@ def test_connector_dashboard_direct_connector_layout_and_metrics():
         "Connector Load Speed (per task)",
         "Connector Dump Completion Wait Duration",
     ]
+    expected_fawa_titles = [
+        "FAWA Connector",
+        "FAWA Scheduler Lookup Duration",
+        "FAWA Scheduler Match Duration",
+        "FAWA Worker Load Duration",
+        "FAWA Worker Wait Load Tasks Duration",
+        "FAWA Worker Dump Duration",
+    ]
     direct_start = titles.index("Direct Connector")
-    assert titles[direct_start:] == expected_direct_titles
+    assert titles[direct_start:] == expected_direct_titles + expected_fawa_titles
 
     by_title = {panel["title"]: panel for panel in panels}
     assert by_title["Direct Connector"]["type"] == "row"
@@ -1228,6 +1236,29 @@ def test_connector_dashboard_direct_connector_layout_and_metrics():
         "x": 0,
         "y": 8,
     }
+    assert by_title["FAWA Connector"]["type"] == "row"
+    assert by_title["FAWA Connector"]["gridPos"] == {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 33,
+    }
+
+    expected_fawa_metrics = {
+        "FAWA Scheduler Lookup Duration": "fawa_scheduler_lookup_external_hit_blocks_ms",
+        "FAWA Scheduler Match Duration": "fawa_scheduler_get_num_new_matched_tokens_ms",
+        "FAWA Worker Load Duration": "fawa_worker_start_load_kv_ms",
+        "FAWA Worker Wait Load Tasks Duration": "fawa_worker_wait_wait_all_load_task_ms",
+        "FAWA Worker Dump Duration": "fawa_worker_wait_for_save_ms",
+    }
+    for title, metric in expected_fawa_metrics.items():
+        panel = by_title[title]
+        assert panel["fieldConfig"]["defaults"]["unit"] == "ms"
+        assert panel["type"] == "timeseries"
+        exprs = [target["expr"] for target in panel["targets"]]
+        assert all(f"ucm:{metric}" in expr for expr in exprs)
+        assert any("_bucket" in expr for expr in exprs)
+        assert any("_sum" in expr and "_count" in expr for expr in exprs)
 
     occupied = set()
     for panel in panels:
