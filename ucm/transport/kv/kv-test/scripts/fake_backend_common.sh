@@ -81,15 +81,14 @@ write_fake_backend_config() {
         echo "client_id=kv-test-fake-backend-script"
         echo "default_wait_timeout_ms=5000"
         echo
-        echo "asu.client.mode=fake_backend"
         echo "fake_backend.path=${store_path}"
         echo "fake_backend.latency_ms=1"
-        echo "local_store.path=${store_path}"
         echo
         echo "view.config_path=${view_path}"
         echo "hash_table.type=RING_HASH"
         echo "ring_hash.virtual_node_count=128"
         echo "transport.asuIds=${asu_ids}"
+        echo "transport.provider_type=FAKE"
         IFS=',' read -ra ids <<< "${asu_ids}"
         for id in "${ids[@]}"; do
             echo "asu_info.${id}=protocol=TCP,local.comm_id=127.0.0.1,port=$((19000 + id)),local.phy_device_id=0"

@@ -10,7 +10,6 @@ add_executable(kv-test
     src/kv_test_app.cpp
     src/kv_test_config_loader.cpp
     src/kv_test_config_helpers.cpp
-    src/local_asu_transport.cpp
     src/payload_buffer_runtime.cpp
     src/kv_test_main.cpp
     src/result_writer.cpp
@@ -29,3 +28,19 @@ target_link_libraries(kv-test
         ${CMAKE_DL_LIBS}
         asu_ascend_deps
 )
+
+if(BUILD_UNIT_TESTS)
+    include(GoogleTest)
+    add_executable(kv-test-config.test
+        src/kv_test_config_helpers.cpp
+        test/kv_test_config_helpers_test.cpp
+    )
+    target_include_directories(kv-test-config.test
+        PRIVATE
+            include
+            ../asu/client/include
+            ../asu/trans/include
+    )
+    target_link_libraries(kv-test-config.test PRIVATE gtest_main gtest)
+    gtest_discover_tests(kv-test-config.test)
+endif()

@@ -1,5 +1,6 @@
 #include "kv_test/payload_buffer_runtime.h"
 #include <acl/acl.h>
+#include <algorithm>
 #include <cstdlib>
 #include "kv_test/kv_test_config_helpers.h"
 
@@ -13,7 +14,16 @@ std::int32_t ResolveFakeBackendPayloadDeviceId(const KvTestConfig& config)
 {
     if (config.asuClientConfig.transportConfigs.empty()) { return kDefaultPayloadAclDeviceId; }
 
-    const auto& transportConfig = config.asuClientConfig.transportConfigs.front();
+    auto transportIter =
+        std::find_if(config.asuClientConfig.transportConfigs.begin(),
+                     config.asuClientConfig.transportConfigs.end(),
+                     [](const UC::ASU::TransportConfig& transportConfig) {
+                         return transportConfig.providerType == UC::ASU::TransProviderType::FAKE;
+                     });
+    if (transportIter == config.asuClientConfig.transportConfigs.end()) {
+        transportIter = config.asuClientConfig.transportConfigs.begin();
+    }
+    const auto& transportConfig = *transportIter;
     auto deviceIter = transportConfig.attrs.find("fake_backend.device_id");
     if (deviceIter != transportConfig.attrs.end() && !deviceIter->second.empty()) {
         return static_cast<std::int32_t>(std::stol(deviceIter->second));
@@ -24,7 +34,9 @@ std::int32_t ResolveFakeBackendPayloadDeviceId(const KvTestConfig& config)
 
 std::int32_t ResolvePayloadDeviceId(const KvTestConfig& config)
 {
-    if (IsFakeBackendMode(config)) { return ResolveFakeBackendPayloadDeviceId(config); }
+    if (HasFakeProvider(config) && !IsAivProviderMode(config)) {
+        return ResolveFakeBackendPayloadDeviceId(config);
+    }
 
     if (const char* deviceId = std::getenv("UMC_ASU_DEVICE_ID");
         deviceId != nullptr && *deviceId != '\0') {
@@ -93,7 +105,7 @@ void PayloadBufferAclRuntime::TearDown()
 
 bool UsesDevicePayloadBuffers(const KvTestConfig& config)
 {
-    return IsFakeBackendMode(config) || IsAivProviderMode(config);
+    return HasFakeProvider(config) || IsAivProviderMode(config);
 }
 
 Status MaybeSetUpPayloadAclThread(const KvTestConfig& config)

@@ -1,6 +1,5 @@
 ﻿#include "kv_test/kv_test_app.h"
 #include <algorithm>
-#include <cctype>
 #include <filesystem>
 #include <fstream>
 #include <iomanip>
@@ -9,7 +8,6 @@
 #include <unordered_map>
 #include "kv_test/asu_runtime_proxy.h"
 #include "kv_test/kv_test_config_helpers.h"
-#include "kv_test/local_asu_transport.h"
 #include "kv_test/payload_buffer_runtime.h"
 
 namespace UC::KVTest {
@@ -371,22 +369,8 @@ void PrintSuccess(const CommandOptions& options, const CommandResult& result)
     PrintBenchSummary(options, result);
 }
 
-std::string NormalizeAttrValue(std::string value)
+Status CreateClient(std::unique_ptr<UC::ASU::AsuClient>& client)
 {
-    std::transform(value.begin(), value.end(), value.begin(),
-                   [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
-    return value;
-}
-
-Status CreateClientForConfig(const KvTestConfig& config,
-                             std::unique_ptr<UC::ASU::AsuClient>& client)
-{
-    if (NormalizeAttrValue(config.asuClientMode) == "local") {
-        auto transportFactory = CreateLocalAsuTransportFactory(config.localStorePath);
-        Status status;
-        client = AsuRuntimeProxy::Instance().CreateAsuClient(&transportFactory, status);
-        return status;
-    }
     Status status;
     client = AsuRuntimeProxy::Instance().CreateAsuClient(nullptr, status);
     return status;
@@ -394,8 +378,9 @@ Status CreateClientForConfig(const KvTestConfig& config,
 
 PayloadBufferPlacement PayloadPlacementForConfig(const KvTestConfig& config)
 {
-    return UsesDevicePayloadBuffers(config) ? PayloadBufferPlacement::ASCEND_DEVICE
-                                            : PayloadBufferPlacement::HOST;
+    if (IsAivProviderMode(config)) { return PayloadBufferPlacement::AIV_ASCEND_DEVICE; }
+    if (HasFakeProvider(config)) { return PayloadBufferPlacement::ASCEND_DEVICE; }
+    return PayloadBufferPlacement::HOST;
 }
 
 }  // namespace
@@ -476,7 +461,7 @@ int KvTestApp::Run(int argc, char** argv)
 
     CommandResult result;
     std::unique_ptr<UC::ASU::AsuClient> client;
-    status = CreateClientForConfig(config, client);
+    status = CreateClient(client);
     if (!status.Ok()) {
         PrintFailure(status);
         return ToExitCode(status);

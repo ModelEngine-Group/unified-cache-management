@@ -55,6 +55,7 @@ enum class ValuePlacement {
 enum class PayloadBufferPlacement {
     HOST = 0,
     ASCEND_DEVICE,
+    AIV_ASCEND_DEVICE,
 };
 
 enum class DigestAlgorithm {
@@ -183,8 +184,6 @@ struct KvTestConfig {
     OutputConfig output;
     KvTestFakeBackendConfig fakeBackend;
     AsuRuntimeLibraryConfig asuRuntime;
-    std::string asuClientMode;
-    std::string localStorePath;
     std::string keyPrefix;
     std::uint64_t seed{0};
     std::uint64_t valueSize{0};

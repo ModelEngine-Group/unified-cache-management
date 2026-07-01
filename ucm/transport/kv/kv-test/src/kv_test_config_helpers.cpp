@@ -1,6 +1,5 @@
 #include "kv_test/kv_test_config_helpers.h"
 #include <algorithm>
-#include <cctype>
 #include <string>
 #include <utility>
 
@@ -8,13 +7,6 @@ namespace UC::KVTest {
 namespace {
 
 constexpr int kFakeBackendAclDeviceId = 0;
-
-std::string NormalizeMode(std::string value)
-{
-    std::transform(value.begin(), value.end(), value.begin(),
-                   [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
-    return value;
-}
 
 void PatchFakeBackendTransportConfig(UC::ASU::TransportConfig& config,
                                      const KvTestFakeBackendConfig& fakeConfig)
@@ -44,10 +36,13 @@ void PatchFakeBackendTransportConfig(UC::ASU::TransportConfig& config,
 
 }  // namespace
 
-bool IsFakeBackendMode(const KvTestConfig& config)
+bool HasFakeProvider(const KvTestConfig& config)
 {
-    const auto mode = NormalizeMode(config.asuClientMode);
-    return mode == "fake_backend" || mode == "fakebackend";
+    return std::any_of(config.asuClientConfig.transportConfigs.begin(),
+                       config.asuClientConfig.transportConfigs.end(),
+                       [](const UC::ASU::TransportConfig& transportConfig) {
+                           return transportConfig.providerType == UC::ASU::TransProviderType::FAKE;
+                       });
 }
 
 bool IsAivProviderMode(const KvTestConfig& config)
@@ -61,22 +56,18 @@ bool IsAivProviderMode(const KvTestConfig& config)
 
 void MaybePrepareFakeBackend(KvTestConfig& config)
 {
-    if (!IsFakeBackendMode(config)) { return; }
+    if (!HasFakeProvider(config)) { return; }
 
     if (config.fakeBackend.storePath.empty()) {
-        config.fakeBackend.storePath =
-            config.localStorePath.empty() ? "./kv-test-fake-backend-store" : config.localStorePath;
+        config.fakeBackend.storePath = "./kv-test-fake-backend-store";
     }
 
     config.asuClientConfig.attrs.try_emplace("hash_table.type", "RING_HASH");
     config.asuClientConfig.attrs.try_emplace("ring_hash.virtual_node_count", "128");
-    if (config.asuClientConfig.transportConfigs.empty()) {
-        UC::ASU::TransportConfig transportConfig;
-        transportConfig.asuId = 1;
-        config.asuClientConfig.transportConfigs.emplace_back(std::move(transportConfig));
-    }
     for (auto& transportConfig : config.asuClientConfig.transportConfigs) {
-        PatchFakeBackendTransportConfig(transportConfig, config.fakeBackend);
+        if (transportConfig.providerType == UC::ASU::TransProviderType::FAKE) {
+            PatchFakeBackendTransportConfig(transportConfig, config.fakeBackend);
+        }
     }
 }
 

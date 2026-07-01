@@ -78,7 +78,7 @@ Status CopyHostToDevice(const std::vector<std::uint8_t>& hostBuffer, void* devic
     return Status::Success();
 }
 
-Status BuildDeviceBuffers(BufferSet& buffers)
+Status BuildDeviceBuffers(BufferSet& buffers, bool useAivRegistrationConstraints)
 {
     std::size_t totalSize = 0;
     buffers.deviceBufferOffsets.clear();
@@ -95,26 +95,29 @@ Status BuildDeviceBuffers(BufferSet& buffers)
 
     if (totalSize == 0) { return Status::Success(); }
 
-    const auto registerSize = AlignUp(totalSize, kDeviceMrRegisterAlignment);
+    const auto registerAlignment =
+        useAivRegistrationConstraints ? kDeviceMrRegisterAlignment : kDeviceBufferAlignment;
+    const auto registerSize = AlignUp(totalSize, registerAlignment);
     if (registerSize < totalSize) {
         return Status::Error(kExitInvalidArgument, "device payload register size overflow");
     }
 
-    if (registerSize > std::numeric_limits<std::size_t>::max() - (kDeviceMrRegisterAlignment - 1)) {
+    if (registerSize > std::numeric_limits<std::size_t>::max() - (registerAlignment - 1)) {
         return Status::Error(kExitInvalidArgument, "device payload allocation size overflow");
     }
-    const auto allocationSize = registerSize + kDeviceMrRegisterAlignment - 1;
+    const auto allocationSize = registerSize + registerAlignment - 1;
 
     void* ptr = nullptr;
-    auto ret = aclrtMalloc(&ptr, allocationSize, ACL_MEM_MALLOC_HUGE_ONLY);
+    const auto ret = useAivRegistrationConstraints
+                         ? aclrtMalloc(&ptr, allocationSize, ACL_MEM_MALLOC_HUGE_ONLY)
+                         : aclrtMalloc(&ptr, allocationSize, ACL_MEM_TYPE_HIGH_BAND_WIDTH);
     if (ret != ACL_SUCCESS) {
         return Status::Error(kExitInvalidArgument, "device payload aclrtMalloc failed: size=" +
                                                        std::to_string(allocationSize) +
                                                        " ret=" + std::to_string(ret));
     }
 
-    const auto baseAddr =
-        AlignUpAddress(reinterpret_cast<std::uintptr_t>(ptr), kDeviceMrRegisterAlignment);
+    const auto baseAddr = AlignUpAddress(reinterpret_cast<std::uintptr_t>(ptr), registerAlignment);
     auto deviceBuffer = std::shared_ptr<void>(reinterpret_cast<void*>(baseAddr),
                                               [ptr](void*) { (void)aclrtFree(ptr); });
     for (std::size_t index = 0; index < buffers.ownedBuffers.size(); ++index) {
@@ -132,7 +135,7 @@ Status BuildDeviceBuffers(BufferSet& buffers)
 UC::ASU::MemoryRegion MakeRegion(BufferSet& buffers, std::size_t index,
                                  PayloadBufferPlacement placement)
 {
-    if (placement == PayloadBufferPlacement::ASCEND_DEVICE) {
+    if (placement != PayloadBufferPlacement::HOST) {
         const auto baseAddr =
             buffers.deviceBuffers.empty()
                 ? 0
@@ -158,16 +161,15 @@ Status BufferAllocator::BuildStoreBuffers(const GeneratedData& data,
     buffers.entries.reserve(data.values.size());
 
     for (const auto& value : data.values) { buffers.ownedBuffers.emplace_back(value); }
-    if (placement == PayloadBufferPlacement::ASCEND_DEVICE) {
-        status = BuildDeviceBuffers(buffers);
+    if (placement != PayloadBufferPlacement::HOST) {
+        status =
+            BuildDeviceBuffers(buffers, placement == PayloadBufferPlacement::AIV_ASCEND_DEVICE);
         if (!status.Ok()) { return status; }
     }
 
     for (std::size_t index = 0; index < data.keys.size(); ++index) {
         auto region = MakeRegion(buffers, index, placement);
-        if (placement != PayloadBufferPlacement::ASCEND_DEVICE) {
-            buffers.regions.emplace_back(region);
-        }
+        if (placement == PayloadBufferPlacement::HOST) { buffers.regions.emplace_back(region); }
         buffers.entries.emplace_back(MakeKvBuffer(data.keys[index], region));
     }
 
@@ -189,16 +191,15 @@ Status BufferAllocator::BuildRetrieveBuffers(const GeneratedData& data,
     for (const auto& value : data.values) {
         buffers.ownedBuffers.emplace_back(value.size(), kRetrieveBufferInitialValue);
     }
-    if (placement == PayloadBufferPlacement::ASCEND_DEVICE) {
-        status = BuildDeviceBuffers(buffers);
+    if (placement != PayloadBufferPlacement::HOST) {
+        status =
+            BuildDeviceBuffers(buffers, placement == PayloadBufferPlacement::AIV_ASCEND_DEVICE);
         if (!status.Ok()) { return status; }
     }
 
     for (std::size_t index = 0; index < data.keys.size(); ++index) {
         auto region = MakeRegion(buffers, index, placement);
-        if (placement != PayloadBufferPlacement::ASCEND_DEVICE) {
-            buffers.regions.emplace_back(region);
-        }
+        if (placement == PayloadBufferPlacement::HOST) { buffers.regions.emplace_back(region); }
         buffers.entries.emplace_back(MakeKvBuffer(data.keys[index], region));
     }
 

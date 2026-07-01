@@ -165,8 +165,6 @@ Status KvTestConfigLoader::Load(const std::string& configPath, KvTestConfig& con
     config.output = OutputConfig{};
     config.fakeBackend = KvTestFakeBackendConfig{};
     config.asuRuntime = AsuRuntimeLibraryConfig{};
-    config.asuClientMode.clear();
-    config.localStorePath.clear();
     config.keyPrefix.clear();
     config.seed = 0;
     config.valueSize = 0;
@@ -195,8 +193,6 @@ Status KvTestConfigLoader::Load(const std::string& configPath, KvTestConfig& con
         status = ToKvTestConfigStatus(asuStatus);
         if (!status.Ok()) { return status; }
 
-        GetStringAny(values, {"asu.client.mode"}, config.asuClientMode);
-        GetStringAny(values, {"local_store.path"}, config.localStorePath);
         GetStringAny(values, {"fake_backend.path", "fakebackend.path"},
                      config.fakeBackend.storePath);
         GetUint64Any(values,
