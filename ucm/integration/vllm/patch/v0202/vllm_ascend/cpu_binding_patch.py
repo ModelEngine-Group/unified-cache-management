@@ -16,9 +16,7 @@ def patch_cpu_binding(mod):
     )
 
     if not hasattr(mod.CpuAlloc, "bind_threads"):
-        logger.warning(
-            "Skip CPU binding patch: CpuAlloc.bind_threads is missing"
-        )
+        logger.warning("Skip CPU binding patch: CpuAlloc.bind_threads is missing")
         return
 
     patch_or_inject(

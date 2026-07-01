@@ -185,8 +185,8 @@ def apply_all_patches() -> None:
                 import ucm.integration.vllm.patch.v0180.vllm_ascend.ucm_connector_patch
             case "0.19.1":
                 logger.info(f"UCM patching vllm-ascend {ascend_version} for pc...")
-                import ucm.integration.vllm.patch.v0191.vllm_ascend.pc_ascend_patch
                 import ucm.integration.vllm.patch.v0191.vllm_ascend.cpu_binding_patch
+                import ucm.integration.vllm.patch.v0191.vllm_ascend.pc_ascend_patch
             case "0.20.2":
                 logger.info(
                     "UCM patching vllm-ascend 0.20.2 for hybrid cache recovery..."

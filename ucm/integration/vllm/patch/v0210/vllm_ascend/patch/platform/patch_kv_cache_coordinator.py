@@ -21,7 +21,10 @@ class AscendHybridKVCacheCoordinator:
 
         def _get_block_hashes(kv_cache_spec: KVCacheSpec):
             target_block_size = kv_cache_spec.block_size
-            if not isinstance(kv_cache_spec, MambaSpec) and self.dcp_world_size * self.pcp_world_size > 1:
+            if (
+                not isinstance(kv_cache_spec, MambaSpec)
+                and self.dcp_world_size * self.pcp_world_size > 1
+            ):
                 target_block_size *= self.dcp_world_size * self.pcp_world_size
             if target_block_size == self.hash_block_size:
                 return block_hashes
