@@ -436,8 +436,9 @@ Status FakeTransProvider::RegisterMemory(ConnectionHandle,
     memoryHandles.clear();
     memoryHandles.reserve(memoryDescs.size());
     for (std::size_t index = 0; index < memoryDescs.size(); ++index) {
-        memoryHandles.push_back(reinterpret_cast<MemHandle>(static_cast<std::uintptr_t>(index) +
-                                                            static_cast<std::uintptr_t>(1)));
+        auto handle = nextMemoryHandle_.fetch_add(1, std::memory_order_relaxed);
+        if (handle == 0) { handle = nextMemoryHandle_.fetch_add(1, std::memory_order_relaxed); }
+        memoryHandles.push_back(reinterpret_cast<MemHandle>(handle));
     }
     return Status::OK();
 }

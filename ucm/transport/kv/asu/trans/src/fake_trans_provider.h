@@ -23,6 +23,8 @@
  * */
 #pragma once
 
+#include <atomic>
+#include <cstdint>
 #include "asu_transport/asu_transport.h"
 #include "trans_provider.h"
 
@@ -61,6 +63,7 @@ private:
     Status SetUpAclRuntime();
 
     FakeTransProviderConfig config_;
+    std::atomic<std::uintptr_t> nextMemoryHandle_{1};
 };
 
 FakeTransProviderConfig MakeFakeTransProviderConfig(const TransportConfig& config);
