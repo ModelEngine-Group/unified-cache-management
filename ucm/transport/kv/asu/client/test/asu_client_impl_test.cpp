@@ -1093,6 +1093,40 @@ TEST(AsuClientImplTest, MemoryRegister_FirstRegisterFailureIncludesAsuContext)
     EXPECT_EQ(state->createdTransports, std::uint32_t{2});
 }
 
+TEST(AsuClientImplTest, MemoryRegister_SuccessWithMismatchedResultCountReturnsInternalError)
+{
+    class MismatchedRegisterTransport final : public FakeTransport {
+    public:
+        explicit MismatchedRegisterTransport(std::shared_ptr<TestState> state)
+            : FakeTransport(std::move(state))
+        {
+        }
+
+        Status RegisterRegions(const std::vector<MemoryRegion>&,
+                               std::vector<RegisterResult>& results) override
+        {
+            results.clear();
+            return Status::OK();
+        }
+    };
+
+    auto state = std::make_shared<TestState>();
+    auto client = CreateAsuClient([state] {
+        ++state->createdTransports;
+        return std::unique_ptr<AsuTransport>(new MismatchedRegisterTransport(state));
+    });
+    ASSERT_TRUE(client->Init(MakeConfig({10, 20})).ok());
+
+    std::vector<RegisterResult> results;
+    auto status = client->RegisterRegions({MemoryRegion{}}, results);
+
+    EXPECT_EQ(status.code, StatusCode::INTERNAL_ERROR);
+    EXPECT_NE(status.message.find("asuIndex=0"), std::string::npos);
+    EXPECT_NE(status.message.find("region_count=1"), std::string::npos);
+    EXPECT_NE(status.message.find("result_count=0"), std::string::npos);
+    EXPECT_TRUE(state->bindCalls.empty());
+}
+
 TEST(AsuClientImplTest, MemoryRegister_BindFailureIncludesAsuContext)
 {
     class FailingBindTransport final : public FakeTransport {
@@ -1126,6 +1160,42 @@ TEST(AsuClientImplTest, MemoryRegister_BindFailureIncludesAsuContext)
     EXPECT_NE(status.message.find("asuIndex=1"), std::string::npos);
     EXPECT_NE(status.message.find("asuId=20"), std::string::npos);
     EXPECT_NE(status.message.find("region_count=1"), std::string::npos);
+}
+
+TEST(AsuClientImplTest, MemoryRegister_SuccessfulBindWithMismatchedResultCountFails)
+{
+    class MismatchedBindTransport final : public FakeTransport {
+    public:
+        explicit MismatchedBindTransport(std::shared_ptr<TestState> state)
+            : FakeTransport(std::move(state))
+        {
+        }
+
+        Status BindRegisteredRegions(const std::vector<RegisteredMemory>&,
+                                     std::vector<RegisterResult>& results) override
+        {
+            results.clear();
+            return Status::OK();
+        }
+    };
+
+    auto state = std::make_shared<TestState>();
+    auto client = CreateAsuClient([state] {
+        ++state->createdTransports;
+        if (state->createdTransports == 2) {
+            return std::unique_ptr<AsuTransport>(new MismatchedBindTransport(state));
+        }
+        return std::unique_ptr<AsuTransport>(new FakeTransport(state));
+    });
+    ASSERT_TRUE(client->Init(MakeConfig({10, 20})).ok());
+
+    std::vector<RegisterResult> results;
+    auto status = client->RegisterRegions({MemoryRegion{}}, results);
+
+    EXPECT_EQ(status.code, StatusCode::PARTIAL_FAILED);
+    EXPECT_NE(status.message.find("asuIndex=1"), std::string::npos);
+    EXPECT_NE(status.message.find("region_count=1"), std::string::npos);
+    EXPECT_NE(status.message.find("result_count=0"), std::string::npos);
 }
 
 TEST(AsuClientImplTest, MemoryRegister_BindFailureDoesNotCacheResource)
