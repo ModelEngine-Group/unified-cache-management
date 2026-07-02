@@ -164,7 +164,7 @@ Status BuildBenchBufferPool(const KvTestConfig& config, bool useDeviceBuffers,
                             std::uint64_t entryCountPerOperation, BenchBufferPool& pool)
 {
     const auto& bench = config.bench;
-    const bool useAivRegistrationConstraints = IsAivProviderMode(config);
+    const auto allocationPolicy = AllocationPolicyForConfig(config);
     if (useDeviceBuffers) {
         auto status = MaybeSetUpPayloadAclThread(config);
         if (!status.Ok()) { return status; }
@@ -191,17 +191,14 @@ Status BuildBenchBufferPool(const KvTestConfig& config, bool useDeviceBuffers,
             }
         }
         if (useDeviceBuffers) {
-            const auto registerAlignment = useAivRegistrationConstraints
-                                               ? DeviceMrRegisterAlignment()
-                                               : DeviceBufferAlignment();
+            const auto registerAlignment = DeviceAllocationAlignment(allocationPolicy);
             const auto registerSize = AlignUp(deviceBufferSize, registerAlignment);
             if (registerSize < deviceBufferSize) {
                 return Status::Error(kExitInvalidArgument,
                                      "device payload bench register size overflow");
             }
             std::shared_ptr<void> deviceBuffer;
-            auto status =
-                AllocateDeviceBuffer(registerSize, useAivRegistrationConstraints, deviceBuffer);
+            auto status = AllocateDeviceBuffer(registerSize, allocationPolicy, deviceBuffer);
             if (!status.Ok()) { return status; }
             buffers.deviceBuffers.emplace_back(std::move(deviceBuffer));
         }
@@ -221,7 +218,7 @@ bool IsBenchReadOperation(BenchOpType op, std::uint64_t operationIndex, const Be
 
 Status PrepareBenchBuffers(BenchBufferSlot& slot, std::uint64_t begin, std::size_t entryCount,
                            const std::string& keyPrefix, bool useDeviceBuffers,
-                           bool useAivRegistrationConstraints)
+                           DeviceAllocationPolicy allocationPolicy, std::int32_t logicalDeviceId)
 {
     auto& buffers = slot.buffers;
     buffers.regions.clear();
@@ -236,10 +233,9 @@ Status PrepareBenchBuffers(BenchBufferSlot& slot, std::uint64_t begin, std::size
         const auto dataSize = buffers.ownedBuffers.empty() ? 0
                                                            : buffers.deviceBufferOffsets.back() +
                                                                  buffers.ownedBuffers.back().size();
-        const auto regionAlignment =
-            useAivRegistrationConstraints ? DeviceMrRegisterAlignment() : DeviceBufferAlignment();
+        const auto regionAlignment = DeviceAllocationAlignment(allocationPolicy);
         const auto regionSize = AlignUp(dataSize, regionAlignment);
-        buffers.regions.emplace_back(MakeDeviceRegion(baseAddr, regionSize));
+        buffers.regions.emplace_back(MakeDeviceRegion(baseAddr, regionSize, logicalDeviceId));
         buffers.entryRegionIndexes.assign(entryCount, 0);
     } else {
         buffers.regions.reserve(entryCount);
@@ -252,7 +248,7 @@ Status PrepareBenchBuffers(BenchBufferSlot& slot, std::uint64_t begin, std::size
                 ? MakeDeviceRegion(
                       reinterpret_cast<std::uintptr_t>(buffers.deviceBuffers.front().get()) +
                           buffers.deviceBufferOffsets[index],
-                      buffers.ownedBuffers[index].size())
+                      buffers.ownedBuffers[index].size(), logicalDeviceId)
                 : MakeHostRegion(buffers.ownedBuffers[index]);
         if (!useDeviceBuffers) { buffers.regions.emplace_back(region); }
         UC::ASU::CacheKey key{};
@@ -285,14 +281,16 @@ Status BindRegisteredBuffers(BufferSet& buffers)
 
 Status RegisterBenchDeviceBuffers(AsuClientRunner& clientRunner, BenchBufferPool& pool,
                                   std::uint64_t entryCountPerOperation,
-                                  const std::string& keyPrefix, bool useAivRegistrationConstraints)
+                                  const std::string& keyPrefix,
+                                  DeviceAllocationPolicy allocationPolicy,
+                                  std::int32_t logicalDeviceId)
 {
     for (std::size_t slotIndex = 0; slotIndex < pool.size(); ++slotIndex) {
         auto& slot = pool[slotIndex];
         auto status =
             PrepareBenchBuffers(slot, slotIndex * entryCountPerOperation,
                                 static_cast<std::size_t>(entryCountPerOperation), keyPrefix,
-                                /*useDeviceBuffers=*/true, useAivRegistrationConstraints);
+                                /*useDeviceBuffers=*/true, allocationPolicy, logicalDeviceId);
         if (!status.Ok()) { return status; }
         status = clientRunner.RegisterBuffers(slot.buffers);
         if (!status.Ok()) { return status; }
@@ -321,11 +319,12 @@ Status ExecuteBenchOperation(BenchOpType requestedOp, const KvTestConfig& config
 {
     const auto& bench = config.bench;
     const bool isRead = IsBenchReadOperation(requestedOp, operationIndex, bench);
-    const bool useAivRegistrationConstraints = IsAivProviderMode(config);
+    const auto allocationPolicy = AllocationPolicyForConfig(config);
+    const auto logicalDeviceId = ResolvePayloadDeviceId(config);
     const auto submitMode =
         entryCount > 1 ? SubmitMode::ALL_ENTRIES_IN_ONE_CALL : SubmitMode::SINGLE_ENTRY_PER_CALL;
     auto status = PrepareBenchBuffers(slot, begin, entryCount, keyPrefix, useDeviceBuffers,
-                                      useAivRegistrationConstraints);
+                                      allocationPolicy, logicalDeviceId);
     if (!status.Ok()) { return status; }
     auto& buffers = slot.buffers;
 
@@ -411,13 +410,14 @@ Status BenchRunner::Run(const CommandOptions& options, const KvTestConfig& confi
 
     const std::string keyPrefix = config.keyPrefix.empty() ? "b" : config.keyPrefix;
     const bool useDeviceBuffers = UsesDevicePayloadBuffers(config);
-    const bool useAivRegistrationConstraints = IsAivProviderMode(config);
+    const auto allocationPolicy = AllocationPolicyForConfig(config);
+    const auto logicalDeviceId = ResolvePayloadDeviceId(config);
     BenchBufferPool bufferPool;
     status = BuildBenchBufferPool(config, useDeviceBuffers, entryCountPerOperation, bufferPool);
     if (!status.Ok()) { return status; }
     if (useDeviceBuffers) {
         status = RegisterBenchDeviceBuffers(clientRunner, bufferPool, entryCountPerOperation,
-                                            keyPrefix, useAivRegistrationConstraints);
+                                            keyPrefix, allocationPolicy, logicalDeviceId);
         if (!status.Ok()) {
             (void)UnregisterBenchDeviceBuffers(clientRunner, bufferPool);
             return status;

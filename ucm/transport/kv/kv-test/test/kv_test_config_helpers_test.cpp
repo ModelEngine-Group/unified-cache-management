@@ -17,6 +17,7 @@ TEST(KvTestConfigHelpersTest, AivProviderDoesNotEnableFakeBackend)
     EXPECT_EQ(config.asuClientConfig.transportConfigs.front().providerType,
               UC::ASU::TransProviderType::AIV);
     EXPECT_TRUE(config.asuClientConfig.transportConfigs.front().attrs.empty());
+    EXPECT_EQ(AllocationPolicyForConfig(config), DeviceAllocationPolicy::AIV_REGISTERABLE);
 }
 
 TEST(KvTestConfigHelpersTest, FakeDefaultsDoNotModifyAivTransport)
@@ -44,6 +45,17 @@ TEST(KvTestConfigHelpersTest, FakeDefaultsDoNotModifyAivTransport)
     EXPECT_EQ(unchangedAiv.providerType, UC::ASU::TransProviderType::AIV);
     EXPECT_EQ(unchangedAiv.attrs.size(), 1);
     EXPECT_EQ(unchangedAiv.attrs.at("sentinel"), "unchanged");
+    EXPECT_EQ(AllocationPolicyForConfig(config), DeviceAllocationPolicy::AIV_REGISTERABLE);
+}
+
+TEST(KvTestConfigHelpersTest, FakeProviderUsesDefaultDeviceAllocation)
+{
+    KvTestConfig config;
+    UC::ASU::TransportConfig transportConfig;
+    transportConfig.providerType = UC::ASU::TransProviderType::FAKE;
+    config.asuClientConfig.transportConfigs.emplace_back(std::move(transportConfig));
+
+    EXPECT_EQ(AllocationPolicyForConfig(config), DeviceAllocationPolicy::DEFAULT);
 }
 
 }  // namespace

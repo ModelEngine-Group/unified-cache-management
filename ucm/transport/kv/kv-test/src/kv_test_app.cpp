@@ -338,9 +338,8 @@ Status CreateClient(std::unique_ptr<UC::ASU::AsuClient>& client)
 
 PayloadBufferPlacement PayloadPlacementForConfig(const KvTestConfig& config)
 {
-    if (IsAivProviderMode(config)) { return PayloadBufferPlacement::AIV_ASCEND_DEVICE; }
-    if (HasFakeProvider(config)) { return PayloadBufferPlacement::ASCEND_DEVICE; }
-    return PayloadBufferPlacement::HOST;
+    return UsesDevicePayloadBuffers(config) ? PayloadBufferPlacement::ASCEND_DEVICE
+                                            : PayloadBufferPlacement::HOST;
 }
 
 }  // namespace
@@ -480,8 +479,11 @@ Status KvTestApp::RunStoreLikeCommand(const CommandOptions& options, const KvTes
     if (!status.Ok()) { return status; }
 
     const auto payloadPlacement = PayloadPlacementForConfig(config);
+    const auto allocationPolicy = AllocationPolicyForConfig(config);
+    const auto logicalDeviceId = ResolvePayloadDeviceId(config);
     BufferSet buffers;
-    status = bufferAllocator_.BuildStoreBuffers(data, payloadPlacement, buffers);
+    status = bufferAllocator_.BuildStoreBuffers(data, payloadPlacement, allocationPolicy,
+                                                logicalDeviceId, buffers);
     if (!status.Ok()) { return status; }
 
     status = clientRunner.RegisterBuffers(buffers);
@@ -502,7 +504,8 @@ Status KvTestApp::RunStoreLikeCommand(const CommandOptions& options, const KvTes
     if (!status.Ok() || !options.check) { return status; }
 
     BufferSet retrievedBuffers;
-    status = bufferAllocator_.BuildRetrieveBuffers(data, payloadPlacement, retrievedBuffers);
+    status = bufferAllocator_.BuildRetrieveBuffers(data, payloadPlacement, allocationPolicy,
+                                                   logicalDeviceId, retrievedBuffers);
     if (!status.Ok()) { return status; }
 
     status = clientRunner.RegisterBuffers(retrievedBuffers);
@@ -537,8 +540,11 @@ Status KvTestApp::RunRetrieveLikeCommand(const CommandOptions& options, const Kv
     }
 
     const auto payloadPlacement = PayloadPlacementForConfig(config);
+    const auto allocationPolicy = AllocationPolicyForConfig(config);
+    const auto logicalDeviceId = ResolvePayloadDeviceId(config);
     BufferSet buffers;
-    status = bufferAllocator_.BuildRetrieveBuffers(data, payloadPlacement, buffers);
+    status = bufferAllocator_.BuildRetrieveBuffers(data, payloadPlacement, allocationPolicy,
+                                                   logicalDeviceId, buffers);
     if (!status.Ok()) { return status; }
 
     status = clientRunner.RegisterBuffers(buffers);

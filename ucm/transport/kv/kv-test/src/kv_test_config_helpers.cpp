@@ -55,6 +55,12 @@ bool IsAivProviderMode(const KvTestConfig& config)
     return HasProvider(config, UC::ASU::TransProviderType::AIV);
 }
 
+DeviceAllocationPolicy AllocationPolicyForConfig(const KvTestConfig& config)
+{
+    return IsAivProviderMode(config) ? DeviceAllocationPolicy::AIV_REGISTERABLE
+                                     : DeviceAllocationPolicy::DEFAULT;
+}
+
 void MaybePrepareFakeBackend(KvTestConfig& config)
 {
     if (!HasFakeProvider(config)) { return; }

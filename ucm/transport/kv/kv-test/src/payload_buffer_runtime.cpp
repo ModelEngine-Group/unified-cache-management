@@ -32,6 +32,8 @@ std::int32_t ResolveFakeBackendPayloadDeviceId(const KvTestConfig& config)
     return kDefaultPayloadAclDeviceId;
 }
 
+}  // namespace
+
 std::int32_t ResolvePayloadDeviceId(const KvTestConfig& config)
 {
     if (HasFakeProvider(config) && !IsAivProviderMode(config)) {
@@ -50,6 +52,8 @@ std::int32_t ResolvePayloadDeviceId(const KvTestConfig& config)
     }
     return kDefaultPayloadAclDeviceId;
 }
+
+namespace {
 
 Status SetUpAclThreadDevice(std::int32_t deviceId, bool* initialized)
 {

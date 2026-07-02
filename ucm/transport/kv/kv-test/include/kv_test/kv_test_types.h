@@ -55,7 +55,11 @@ enum class ValuePlacement {
 enum class PayloadBufferPlacement {
     HOST = 0,
     ASCEND_DEVICE,
-    AIV_ASCEND_DEVICE,
+};
+
+enum class DeviceAllocationPolicy {
+    DEFAULT = 0,
+    AIV_REGISTERABLE,
 };
 
 enum class DigestAlgorithm {
