@@ -10,10 +10,10 @@
 #include <unordered_map>
 #include <utility>
 #include <vector>
+#include "common/metadata_codec.h"
 #include "control/metadata_channel.h"
 #include "hixl/hixl_transport.h"
 #include "logger/logger.h"
-#include "transport_common.h"
 
 namespace transport {
 namespace {

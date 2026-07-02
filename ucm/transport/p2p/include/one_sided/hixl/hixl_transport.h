@@ -51,6 +51,8 @@ private:
 
     std::string local_engine_;
     std::map<std::string, std::string> options_;
+    aclrtContext context_ = nullptr;
+    int device_id_ = -1;
     int32_t connect_timeout_ms_ = 1000;
     int32_t transfer_timeout_ms_ = 1000;
     std::unordered_map<ManagerID, Peer> peers_;
