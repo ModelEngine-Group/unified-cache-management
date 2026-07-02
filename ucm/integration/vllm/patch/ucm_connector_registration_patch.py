@@ -7,9 +7,7 @@ from ucm.logger import init_logger
 
 logger = init_logger(__name__)
 
-UCM_CONNECTOR_MODULE = (
-    "vllm_ascend.distributed.kv_transfer.kv_pool.ucm_connector"
-)
+UCM_CONNECTOR_MODULE = "vllm_ascend.distributed.kv_transfer.kv_pool.ucm_connector"
 
 
 def _register_ucm_connector_class_alias(factory: type) -> None:
@@ -20,9 +18,7 @@ def _register_ucm_connector_class_alias(factory: type) -> None:
 
     # UCM PATCH: MultiConnector serializes stats with the concrete class name
     # UCMConnectorV1, while vllm-ascend registers only UCMConnector.
-    factory.register_connector(
-        "UCMConnectorV1", UCM_CONNECTOR_MODULE, "UCMConnectorV1"
-    )
+    factory.register_connector("UCMConnectorV1", UCM_CONNECTOR_MODULE, "UCMConnectorV1")
 
 
 def patch_ucm_connector_registration(mod: Any) -> None:
@@ -43,6 +39,4 @@ def patch_ucm_connector_registration(mod: Any) -> None:
     logger.debug("Patched vllm-ascend UCMConnectorV1 metrics alias registration")
 
 
-when_imported("vllm_ascend.distributed.kv_transfer")(
-    patch_ucm_connector_registration
-)
+when_imported("vllm_ascend.distributed.kv_transfer")(patch_ucm_connector_registration)

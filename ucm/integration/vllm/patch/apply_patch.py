@@ -149,9 +149,7 @@ def apply_all_patches() -> None:
         # UCM PATCH: vllm-ascend registers UCMConnector as an alias for the
         # concrete UCMConnectorV1 class used by MultiConnector metrics.
         if ascend_version in {"0.18.0", "0.19.1", "0.20.2", "0.22.1"}:
-            logger.info(
-                "UCM patching vllm-ascend UCM connector metrics alias..."
-            )
+            logger.info("UCM patching vllm-ascend UCM connector metrics alias...")
             import ucm.integration.vllm.patch.ucm_connector_registration_patch
 
         # Apply vllm/vllm-ascend version-specific patches
