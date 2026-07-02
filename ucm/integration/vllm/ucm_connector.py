@@ -472,6 +472,23 @@ class UCMDirectConnector(KVConnectorBase_V1):
         self.hash_block_size = self.block_size
         self.block_size *= self.cp_world_size
 
+    def _get_full_hit_recompute_tokens(self) -> int:
+        speculative_config = getattr(self._vllm_config, "speculative_config", None)
+        if speculative_config is None:
+            return 2
+
+        spec_token_num = getattr(speculative_config, "num_speculative_tokens", 0)
+        try:
+            spec_token_num = int(spec_token_num)
+        except (TypeError, ValueError):
+            logger.warning(
+                f"Invalid speculative token count: {spec_token_num}. "
+                "Fallback to recomputing two tokens on full UCM cache hit."
+            )
+            spec_token_num = 0
+
+        return max(spec_token_num, 0) + 2
+
     @staticmethod
     def _record_counter(name: str, value: float = 1.0) -> None:
         _record_counter(name, value)
@@ -693,12 +710,13 @@ class UCMDirectConnector(KVConnectorBase_V1):
 
         external_hit_tokens = external_hit_blocks * self.block_size
 
-        # When all the tokens are cached in ssd or hbm,
-        # we need to recompute the last token. This if condition will be removed
-        # once vLLM scheduler provides a better solution in the future.
+        # When all the tokens are cached in ssd or hbm, recompute enough tokens
+        # to keep layerwise loads on the prefill path when speculative decode is
+        # enabled. This branch will be removed once vLLM scheduler provides a
+        # better solution in the future.
         num_total_hit_tokens = total_hit_block_num * self.block_size
         if num_total_hit_tokens == request.num_tokens:
-            external_hit_tokens -= 1
+            external_hit_tokens -= self._get_full_hit_recompute_tokens()
 
         self.requests_meta[request.request_id] = RequestMeta(
             ucm_block_ids=ucm_block_ids,
