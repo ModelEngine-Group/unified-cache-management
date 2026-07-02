@@ -4,6 +4,10 @@
 
 namespace UC::KVTest {
 
+Status StringToCacheKey(const std::string& value, const std::string& source,
+                        UC::ASU::CacheKey& key);
+Status ValidateGeneratedData(const GeneratedData& data, const std::string& operation);
+
 class KeyValueGenerator {
 public:
     // Generates deterministic value bytes from key, seed, and value-size.

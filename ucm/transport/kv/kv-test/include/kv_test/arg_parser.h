@@ -4,6 +4,9 @@
 
 namespace UC::KVTest {
 
+std::string CommandTypeName(CommandType command);
+std::string BenchOpTypeName(BenchOpType op);
+
 class ArgParser {
 public:
     Status Parse(int argc, char** argv, CommandOptions& options) const;

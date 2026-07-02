@@ -139,39 +139,6 @@ Status ValidatePowerCycleMetadata(const CommandOptions& options, const KvTestCon
     return Status::Success();
 }
 
-std::string CommandTypeName(CommandType command)
-{
-    switch (command) {
-        case CommandType::CONNECT: return "connect";
-        case CommandType::CONFIG_CHECK: return "config check";
-        case CommandType::STORE: return "store";
-        case CommandType::RETRIEVE: return "retrieve";
-        case CommandType::DELETE: return "delete";
-        case CommandType::EXIST: return "exist";
-        case CommandType::BATCH_STORE: return "batch-store";
-        case CommandType::BATCH_RETRIEVE: return "batch-retrieve";
-        case CommandType::POWER_CYCLE_PREPARE: return "power-cycle prepare";
-        case CommandType::POWER_CYCLE_VERIFY: return "power-cycle verify";
-        case CommandType::BENCH: return "bench";
-        case CommandType::VERSION: return "version";
-        case CommandType::UNKNOWN:
-        default: return "unknown";
-    }
-}
-
-std::string BenchOpTypeName(BenchOpType op)
-{
-    switch (op) {
-        case BenchOpType::STORE: return "store";
-        case BenchOpType::RETRIEVE: return "retrieve";
-        case BenchOpType::BATCH_STORE: return "batch-store";
-        case BenchOpType::BATCH_RETRIEVE: return "batch-retrieve";
-        case BenchOpType::MIX: return "mix";
-        case BenchOpType::UNKNOWN:
-        default: return "unknown";
-    }
-}
-
 void PrintGeneralHelp()
 {
     std::cout
@@ -335,13 +302,6 @@ void PrintConsistencySummary(const CommandResult& result)
     std::cout << '\n';
 }
 
-std::string FormatBytesPerSec(double bytesPerSec)
-{
-    std::ostringstream stream;
-    stream << std::fixed << std::setprecision(2) << (bytesPerSec / (1024.0 * 1024.0));
-    return stream.str();
-}
-
 void PrintBenchSummary(const CommandOptions& options, const CommandResult& result)
 {
     if (options.command != CommandType::BENCH) { return; }
@@ -351,7 +311,7 @@ void PrintBenchSummary(const CommandOptions& options, const CommandResult& resul
               << std::setprecision(3) << metrics.elapsedSec
               << "\noperations=" << metrics.completedOperations
               << "\nentries=" << metrics.completedEntries << "\nbytes=" << metrics.completedBytes
-              << "\nbandwidth_mib_s=" << FormatBytesPerSec(metrics.avgBandwidthBytesPerSec)
+              << "\nbandwidth_mib_s=" << FormatMiBPerSec(metrics.avgBandwidthBytesPerSec)
               << "\niops=" << std::fixed << std::setprecision(2) << metrics.avgIops
               << "\nbatch_iops=" << metrics.avgBatchIops
               << "\nlatency_avg_us=" << metrics.latency.avgUs

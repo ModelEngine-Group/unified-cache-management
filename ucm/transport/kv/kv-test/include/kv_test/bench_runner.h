@@ -5,6 +5,8 @@
 
 namespace UC::KVTest {
 
+std::string FormatMiBPerSec(double bytesPerSec);
+
 class BenchRunner {
 public:
     Status Run(const CommandOptions& options, const KvTestConfig& config,

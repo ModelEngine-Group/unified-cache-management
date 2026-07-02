@@ -12,6 +12,32 @@ namespace {
 
 constexpr int kExitInvalidArgument = 1;
 
+}  // namespace
+
+Status StringToCacheKey(const std::string& value, const std::string& source, UC::ASU::CacheKey& key)
+{
+    if (value.size() > key.size()) {
+        return Status::Error(kExitInvalidArgument,
+                             source + " key length exceeds " + std::to_string(key.size()) +
+                                 " bytes: length=" + std::to_string(value.size()) +
+                                 ", key=" + value);
+    }
+    key = UC::ASU::CacheKey{};
+    if (!value.empty()) { std::memcpy(key.data(), value.data(), value.size()); }
+    return Status::Success();
+}
+
+Status ValidateGeneratedData(const GeneratedData& data, const std::string& operation)
+{
+    if (data.keys.size() != data.values.size()) {
+        return Status::Error(kExitInvalidArgument,
+                             operation + " generated key/value count mismatch");
+    }
+    return Status::Success();
+}
+
+namespace {
+
 constexpr std::uint64_t kFnvOffsetBasis64 = 14695981039346656037ULL;
 constexpr std::uint64_t kFnvPrime64 = 1099511628211ULL;
 constexpr std::uint64_t kSplitMixIncrement = 0x9E3779B97F4A7C15ULL;
@@ -36,19 +62,6 @@ std::uint64_t HashString(std::uint64_t hash, std::string_view value)
 {
     for (const char byte : value) { hash = HashByte(hash, static_cast<std::uint8_t>(byte)); }
     return hash;
-}
-
-Status StringToCacheKey(const std::string& value, const std::string& source, UC::ASU::CacheKey& key)
-{
-    if (value.size() > key.size()) {
-        return Status::Error(kExitInvalidArgument,
-                             source + " key length exceeds " + std::to_string(key.size()) +
-                                 " bytes: length=" + std::to_string(value.size()) +
-                                 ", key=" + value);
-    }
-    key = UC::ASU::CacheKey{};
-    if (!value.empty()) { std::memcpy(key.data(), value.data(), value.size()); }
-    return Status::Success();
 }
 
 std::uint64_t SplitMix64Next(std::uint64_t& state)

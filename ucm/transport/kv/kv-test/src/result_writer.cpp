@@ -5,6 +5,8 @@
 #include <fstream>
 #include <iomanip>
 #include <sstream>
+#include "kv_test/arg_parser.h"
+#include "kv_test/consistency_checker.h"
 
 namespace UC::KVTest {
 
@@ -86,62 +88,6 @@ std::string FormatLocalTimestamp(const char* format)
     std::ostringstream stream;
     stream << std::put_time(&localTime, format);
     return stream.str();
-}
-
-std::string CommandTypeName(CommandType command)
-{
-    switch (command) {
-        case CommandType::CONNECT: return "connect";
-        case CommandType::CONFIG_CHECK: return "config check";
-        case CommandType::STORE: return "store";
-        case CommandType::RETRIEVE: return "retrieve";
-        case CommandType::DELETE: return "delete";
-        case CommandType::EXIST: return "exist";
-        case CommandType::BATCH_STORE: return "batch-store";
-        case CommandType::BATCH_RETRIEVE: return "batch-retrieve";
-        case CommandType::POWER_CYCLE_PREPARE: return "power-cycle prepare";
-        case CommandType::POWER_CYCLE_VERIFY: return "power-cycle verify";
-        case CommandType::BENCH: return "bench";
-        case CommandType::VERSION: return "version";
-        case CommandType::UNKNOWN:
-        default: return "unknown";
-    }
-}
-
-std::string BenchOpTypeName(BenchOpType op)
-{
-    switch (op) {
-        case BenchOpType::STORE: return "store";
-        case BenchOpType::RETRIEVE: return "retrieve";
-        case BenchOpType::BATCH_STORE: return "batch-store";
-        case BenchOpType::BATCH_RETRIEVE: return "batch-retrieve";
-        case BenchOpType::MIX: return "mix";
-        case BenchOpType::UNKNOWN:
-        default: return "unknown";
-    }
-}
-
-std::string AsuStatusCodeName(UC::ASU::StatusCode code)
-{
-    switch (code) {
-        case UC::ASU::StatusCode::OK: return "OK";
-        case UC::ASU::StatusCode::INVALID_ARGUMENT: return "INVALID_ARGUMENT";
-        case UC::ASU::StatusCode::NOT_INITIALIZED: return "NOT_INITIALIZED";
-        case UC::ASU::StatusCode::TIMEOUT: return "TIMEOUT";
-        case UC::ASU::StatusCode::NOT_FOUND: return "NOT_FOUND";
-        case UC::ASU::StatusCode::PARTIAL_FAILED: return "PARTIAL_FAILED";
-        case UC::ASU::StatusCode::CONNECTION_ERROR: return "CONNECTION_ERROR";
-        case UC::ASU::StatusCode::IO_ERROR: return "IO_ERROR";
-        case UC::ASU::StatusCode::BUFFER_NOT_REGISTERED: return "BUFFER_NOT_REGISTERED";
-        case UC::ASU::StatusCode::BUFFER_NOT_SUPPORTED: return "BUFFER_NOT_SUPPORTED";
-        case UC::ASU::StatusCode::TASK_NOT_FOUND: return "TASK_NOT_FOUND";
-        case UC::ASU::StatusCode::RESOURCE_BUSY: return "RESOURCE_BUSY";
-        case UC::ASU::StatusCode::UNSUPPORTED: return "UNSUPPORTED";
-        case UC::ASU::StatusCode::IN_PROGRESS: return "IN_PROGRESS";
-        case UC::ASU::StatusCode::INTERNAL_ERROR: return "INTERNAL_ERROR";
-        case UC::ASU::StatusCode::CANCELED: return "CANCELED";
-        default: return "UNKNOWN";
-    }
 }
 
 std::string ResultStatusName(const CommandResult& result)

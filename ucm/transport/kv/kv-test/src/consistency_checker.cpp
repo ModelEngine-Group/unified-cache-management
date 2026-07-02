@@ -5,21 +5,8 @@
 namespace UC::KVTest {
 
 using UC::ASU::CacheKeyToHex;
-namespace {
 
-constexpr int kExitInvalidArgument = 1;
-constexpr int kExitConsistencyFailed = 4;
-
-Status ValidateGeneratedData(const GeneratedData& data, const std::string& operation)
-{
-    if (data.keys.size() != data.values.size()) {
-        return Status::Error(kExitInvalidArgument,
-                             operation + " generated key/value count mismatch");
-    }
-    return Status::Success();
-}
-
-std::string AsuStatusCodeToString(UC::ASU::StatusCode code)
+std::string AsuStatusCodeName(UC::ASU::StatusCode code)
 {
     switch (code) {
         case UC::ASU::StatusCode::OK: return "OK";
@@ -42,6 +29,11 @@ std::string AsuStatusCodeToString(UC::ASU::StatusCode code)
     }
 }
 
+namespace {
+
+constexpr int kExitInvalidArgument = 1;
+constexpr int kExitConsistencyFailed = 4;
+
 Status ConsistencyError(const std::string& operation, const UC::ASU::CacheKey& key,
                         const std::string& reason)
 {
@@ -57,7 +49,7 @@ Status ValidateTaskForConsistency(const CommandResult& result, const std::string
     if (!result.taskResult.status.ok()) {
         return Status::Error(kExitConsistencyFailed,
                              "consistency check failed: operation=" + operation + " task_status=" +
-                                 AsuStatusCodeToString(result.taskResult.status.code) +
+                                 AsuStatusCodeName(result.taskResult.status.code) +
                                  " message=" + result.taskResult.status.message);
     }
     if (!result.taskResult.entryStatus.empty() &&
@@ -74,7 +66,7 @@ Status ValidateTaskForConsistency(const CommandResult& result, const std::string
             return Status::Error(kExitConsistencyFailed,
                                  "consistency check failed: operation=" + operation +
                                      " entry_index=" + std::to_string(index) +
-                                     " entry_status=" + AsuStatusCodeToString(entryStatus.code) +
+                                     " entry_status=" + AsuStatusCodeName(entryStatus.code) +
                                      " message=" + entryStatus.message);
         }
     }

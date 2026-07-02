@@ -1,9 +1,7 @@
 #include "kv_test/bench_runner.h"
-#include <acl/acl.h>
 #include <algorithm>
 #include <chrono>
 #include <cmath>
-#include <cstring>
 #include <future>
 #include <iomanip>
 #include <iostream>
@@ -12,83 +10,27 @@
 #include <numeric>
 #include <sstream>
 #include <system_error>
+#include "kv_test/buffer_allocator.h"
+#include "kv_test/key_value_generator.h"
 #include "kv_test/kv_test_config_helpers.h"
 #include "kv_test/payload_buffer_runtime.h"
 
 namespace UC::KVTest {
 
+std::string FormatMiBPerSec(double bytesPerSec)
+{
+    std::ostringstream stream;
+    stream << std::fixed << std::setprecision(2) << (bytesPerSec / (1024.0 * 1024.0));
+    return stream.str();
+}
+
 namespace {
 
 constexpr int kExitInvalidArgument = 1;
-constexpr std::size_t kDeviceBufferAlignment = UC::ASU::kAsuAlignmentBytes;
-constexpr std::size_t kDeviceMrRegisterAlignment = 2ULL * 1024ULL * 1024ULL;
-
-Status StringToCacheKey(const std::string& value, UC::ASU::CacheKey& key)
-{
-    if (value.size() > key.size()) {
-        return Status::Error(kExitInvalidArgument,
-                             "bench key length exceeds " + std::to_string(key.size()) +
-                                 " bytes: length=" + std::to_string(value.size()) +
-                                 ", key=" + value);
-    }
-    key = UC::ASU::CacheKey{};
-    if (!value.empty()) { std::memcpy(key.data(), value.data(), value.size()); }
-    return Status::Success();
-}
 
 struct BenchBufferSlot {
     BufferSet buffers;
 };
-
-UC::ASU::MemoryRegion MakeHostRegion(std::vector<std::uint8_t>& buffer)
-{
-    UC::ASU::MemoryRegion region;
-    region.memoryType = UC::ASU::MemoryType::HOST;
-    region.addr = buffer.empty() ? 0 : reinterpret_cast<std::uint64_t>(buffer.data());
-    region.size = buffer.size();
-    region.deviceId = -1;
-    region.numaNode = -1;
-    return region;
-}
-
-std::size_t AlignUp(std::size_t value, std::size_t alignment)
-{
-    if (alignment == 0) { return value; }
-    const auto remainder = value % alignment;
-    if (remainder == 0) { return value; }
-    return value + alignment - remainder;
-}
-
-std::uintptr_t AlignUpAddress(std::uintptr_t value, std::size_t alignment)
-{
-    return static_cast<std::uintptr_t>(AlignUp(static_cast<std::size_t>(value), alignment));
-}
-
-UC::ASU::MemoryRegion MakeDeviceRegion(std::uint64_t addr, std::size_t size)
-{
-    UC::ASU::MemoryRegion region;
-    region.memoryType = UC::ASU::MemoryType::ASCEND_DEVICE;
-    region.addr = addr;
-    region.size = size;
-    region.deviceId = 0;
-    region.numaNode = -1;
-    return region;
-}
-
-UC::ASU::KVBuffer MakeKvBuffer(const UC::ASU::CacheKey& key, const UC::ASU::MemoryRegion& region)
-{
-    UC::ASU::Buffer buffer;
-    buffer.region = region;
-    buffer.handle = UC::ASU::kInvalidMRHandle;
-    return UC::ASU::KVBuffer{key, buffer};
-}
-
-UC::ASU::TaskResult BuildEmptyTaskResult()
-{
-    UC::ASU::TaskResult result;
-    result.status = UC::ASU::Status::OK();
-    return result;
-}
 
 struct OperationOutcome {
     Status status;
@@ -133,13 +75,6 @@ BenchLatencyStats BuildLatencyStats(const std::vector<double>& latenciesUs)
     stats.p99_99Us = PercentileUs(sortedLatenciesUs, 99.99);
     stats.p99_999Us = PercentileUs(sortedLatenciesUs, 99.999);
     return stats;
-}
-
-std::string FormatMiBPerSec(double bytesPerSec)
-{
-    std::ostringstream stream;
-    stream << std::fixed << std::setprecision(2) << (bytesPerSec / (1024.0 * 1024.0));
-    return stream.str();
 }
 
 std::string FormatUs(double latencyUs)
@@ -204,51 +139,6 @@ void FillStoreValue(std::vector<std::uint8_t>& value, std::uint64_t valueIndex, 
     }
 }
 
-Status CopyHostToDevice(const std::vector<std::uint8_t>& hostBuffer, std::uintptr_t deviceAddr,
-                        std::size_t index)
-{
-    if (hostBuffer.empty()) { return Status::Success(); }
-    auto ret = aclrtMemcpy(reinterpret_cast<void*>(deviceAddr), hostBuffer.size(),
-                           hostBuffer.data(), hostBuffer.size(), ACL_MEMCPY_HOST_TO_DEVICE);
-    if (ret != ACL_SUCCESS) {
-        return Status::Error(
-            kExitInvalidArgument,
-            "device payload bench host-to-device copy failed: index=" + std::to_string(index) +
-                " size=" + std::to_string(hostBuffer.size()) + " ret=" + std::to_string(ret));
-    }
-    return Status::Success();
-}
-
-Status MakeDeviceBuffer(std::size_t size, bool useAivRegistrationConstraints,
-                        std::shared_ptr<void>& deviceBuffer)
-{
-    if (size == 0) {
-        deviceBuffer.reset();
-        return Status::Success();
-    }
-
-    const auto alignment =
-        useAivRegistrationConstraints ? kDeviceMrRegisterAlignment : kDeviceBufferAlignment;
-    if (size > std::numeric_limits<std::size_t>::max() - (alignment - 1)) {
-        return Status::Error(kExitInvalidArgument, "device payload bench allocation size overflow");
-    }
-    const auto allocationSize = size + alignment - 1;
-
-    void* ptr = nullptr;
-    const auto ret = useAivRegistrationConstraints
-                         ? aclrtMalloc(&ptr, allocationSize, ACL_MEM_MALLOC_HUGE_ONLY)
-                         : aclrtMalloc(&ptr, allocationSize, ACL_MEM_TYPE_HIGH_BAND_WIDTH);
-    if (ret != ACL_SUCCESS) {
-        return Status::Error(kExitInvalidArgument,
-                             "device payload bench aclrtMalloc failed: size=" +
-                                 std::to_string(allocationSize) + " ret=" + std::to_string(ret));
-    }
-    const auto baseAddr = AlignUpAddress(reinterpret_cast<std::uintptr_t>(ptr), alignment);
-    deviceBuffer = std::shared_ptr<void>(reinterpret_cast<void*>(baseAddr),
-                                         [ptr](void*) { (void)aclrtFree(ptr); });
-    return Status::Success();
-}
-
 Status SyncBenchDeviceBuffers(const KvTestConfig& config, BenchBufferSlot& slot,
                               std::size_t entryCount)
 {
@@ -263,7 +153,8 @@ Status SyncBenchDeviceBuffers(const KvTestConfig& config, BenchBufferSlot& slot,
     const auto baseAddr = reinterpret_cast<std::uintptr_t>(buffers.deviceBuffers.front().get());
     for (std::size_t index = 0; index < entryCount; ++index) {
         status = CopyHostToDevice(buffers.ownedBuffers[index],
-                                  baseAddr + buffers.deviceBufferOffsets[index], index);
+                                  baseAddr + buffers.deviceBufferOffsets[index],
+                                  "bench index=" + std::to_string(index));
         if (!status.Ok()) { return status; }
     }
     return Status::Success();
@@ -289,7 +180,7 @@ Status BuildBenchBufferPool(const KvTestConfig& config, bool useDeviceBuffers,
             auto& value = buffers.ownedBuffers.emplace_back(static_cast<std::size_t>(bench.ioSize));
             FillStoreValue(value, slotIndex * entryCountPerOperation + index, config.seed);
             if (useDeviceBuffers) {
-                const auto offset = AlignUp(deviceBufferSize, kDeviceBufferAlignment);
+                const auto offset = AlignUp(deviceBufferSize, DeviceBufferAlignment());
                 if (offset < deviceBufferSize ||
                     value.size() > std::numeric_limits<std::size_t>::max() - offset) {
                     return Status::Error(kExitInvalidArgument,
@@ -300,8 +191,9 @@ Status BuildBenchBufferPool(const KvTestConfig& config, bool useDeviceBuffers,
             }
         }
         if (useDeviceBuffers) {
-            const auto registerAlignment =
-                useAivRegistrationConstraints ? kDeviceMrRegisterAlignment : kDeviceBufferAlignment;
+            const auto registerAlignment = useAivRegistrationConstraints
+                                               ? DeviceMrRegisterAlignment()
+                                               : DeviceBufferAlignment();
             const auto registerSize = AlignUp(deviceBufferSize, registerAlignment);
             if (registerSize < deviceBufferSize) {
                 return Status::Error(kExitInvalidArgument,
@@ -309,7 +201,7 @@ Status BuildBenchBufferPool(const KvTestConfig& config, bool useDeviceBuffers,
             }
             std::shared_ptr<void> deviceBuffer;
             auto status =
-                MakeDeviceBuffer(registerSize, useAivRegistrationConstraints, deviceBuffer);
+                AllocateDeviceBuffer(registerSize, useAivRegistrationConstraints, deviceBuffer);
             if (!status.Ok()) { return status; }
             buffers.deviceBuffers.emplace_back(std::move(deviceBuffer));
         }
@@ -345,7 +237,7 @@ Status PrepareBenchBuffers(BenchBufferSlot& slot, std::uint64_t begin, std::size
                                                            : buffers.deviceBufferOffsets.back() +
                                                                  buffers.ownedBuffers.back().size();
         const auto regionAlignment =
-            useAivRegistrationConstraints ? kDeviceMrRegisterAlignment : kDeviceBufferAlignment;
+            useAivRegistrationConstraints ? DeviceMrRegisterAlignment() : DeviceBufferAlignment();
         const auto regionSize = AlignUp(dataSize, regionAlignment);
         buffers.regions.emplace_back(MakeDeviceRegion(baseAddr, regionSize));
         buffers.entryRegionIndexes.assign(entryCount, 0);
@@ -364,7 +256,8 @@ Status PrepareBenchBuffers(BenchBufferSlot& slot, std::uint64_t begin, std::size
                 : MakeHostRegion(buffers.ownedBuffers[index]);
         if (!useDeviceBuffers) { buffers.regions.emplace_back(region); }
         UC::ASU::CacheKey key{};
-        auto status = StringToCacheKey(keyPrefix + std::to_string(keyIndex), key);
+        auto status =
+            StringToCacheKey(keyPrefix + std::to_string(keyIndex), "bench generated", key);
         if (!status.Ok()) { return status; }
         buffers.entries.emplace_back(MakeKvBuffer(key, region));
     }

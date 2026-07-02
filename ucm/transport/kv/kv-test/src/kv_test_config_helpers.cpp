@@ -8,6 +8,15 @@ namespace {
 
 constexpr int kFakeBackendAclDeviceId = 0;
 
+bool HasProvider(const KvTestConfig& config, UC::ASU::TransProviderType providerType)
+{
+    return std::any_of(config.asuClientConfig.transportConfigs.begin(),
+                       config.asuClientConfig.transportConfigs.end(),
+                       [providerType](const UC::ASU::TransportConfig& transportConfig) {
+                           return transportConfig.providerType == providerType;
+                       });
+}
+
 void PatchFakeBackendTransportConfig(UC::ASU::TransportConfig& config,
                                      const KvTestFakeBackendConfig& fakeConfig)
 {
@@ -38,20 +47,12 @@ void PatchFakeBackendTransportConfig(UC::ASU::TransportConfig& config,
 
 bool HasFakeProvider(const KvTestConfig& config)
 {
-    return std::any_of(config.asuClientConfig.transportConfigs.begin(),
-                       config.asuClientConfig.transportConfigs.end(),
-                       [](const UC::ASU::TransportConfig& transportConfig) {
-                           return transportConfig.providerType == UC::ASU::TransProviderType::FAKE;
-                       });
+    return HasProvider(config, UC::ASU::TransProviderType::FAKE);
 }
 
 bool IsAivProviderMode(const KvTestConfig& config)
 {
-    return std::any_of(config.asuClientConfig.transportConfigs.begin(),
-                       config.asuClientConfig.transportConfigs.end(),
-                       [](const UC::ASU::TransportConfig& transportConfig) {
-                           return transportConfig.providerType == UC::ASU::TransProviderType::AIV;
-                       });
+    return HasProvider(config, UC::ASU::TransProviderType::AIV);
 }
 
 void MaybePrepareFakeBackend(KvTestConfig& config)

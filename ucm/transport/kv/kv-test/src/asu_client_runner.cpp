@@ -5,6 +5,13 @@
 
 namespace UC::KVTest {
 
+UC::ASU::TaskResult BuildEmptyTaskResult()
+{
+    UC::ASU::TaskResult result;
+    result.status = UC::ASU::Status::OK();
+    return result;
+}
+
 namespace {
 
 constexpr int kExitInvalidArgument = 1;
@@ -15,13 +22,6 @@ Status ToKvTestStatus(const UC::ASU::Status& status, const std::string& operatio
     if (status.ok()) { return Status::Success(); }
     return Status::Error(kExitAsuStatusBase + static_cast<int>(status.code),
                          operation + " failed: " + status.message);
-}
-
-UC::ASU::TaskResult BuildEmptyTaskResult()
-{
-    UC::ASU::TaskResult result;
-    result.status = UC::ASU::Status::OK();
-    return result;
 }
 
 UC::ASU::TaskResult BuildFailedTaskResult(const UC::ASU::Status& status, std::size_t entryCount)

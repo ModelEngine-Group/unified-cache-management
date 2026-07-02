@@ -4,6 +4,8 @@
 
 namespace UC::KVTest {
 
+std::string AsuStatusCodeName(UC::ASU::StatusCode code);
+
 class ConsistencyChecker {
 public:
     Status CheckStoreResult(const GeneratedData& expected, const BufferSet& retrieved,

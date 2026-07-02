@@ -5,6 +5,8 @@
 
 namespace UC::KVTest {
 
+UC::ASU::TaskResult BuildEmptyTaskResult();
+
 class AsuClientRunner {
 public:
     explicit AsuClientRunner(std::unique_ptr<UC::ASU::AsuClient> client);
