@@ -40,7 +40,9 @@ inline __device__ void H2DUnit(uint8_t* __restrict__ dst, const volatile uint8_t
     // Plain 16-byte copy; see cuda_sm_kernel.cu for why dropping `volatile` is
     // correct on AMD (coherent host registration + the per-transfer stream sync
     // provide host visibility; AMD `volatile` is only an L1-bypass/glc hint at
-    // GPU-L2 scope, neither necessary nor sufficient here).
+    // GPU-L2 scope, neither necessary nor sufficient here). The uint4 access
+    // requires 16-byte-aligned pointers -- the same alignment the .v2.u64 vector
+    // PTX above requires; copies stride by CUDA_TRANS_UNIT_SIZE (16 bytes).
     *reinterpret_cast<uint4*>(dst) =
         *reinterpret_cast<const uint4*>(const_cast<const uint8_t*>(src));
 #endif

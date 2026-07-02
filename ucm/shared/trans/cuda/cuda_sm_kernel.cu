@@ -57,6 +57,9 @@ inline __device__ void CudaCopyUnit(const uint8_t* __restrict__ src,
     // bypass (glc, GPU-L2 scope), which is neither necessary nor sufficient for
     // host visibility; system-scope ordering, if ever needed, is
     // __threadfence_system.
+    // The uint4 access requires 16-byte-aligned src/dst -- the same alignment the
+    // CUDA .v4.b32 vector PTX above already requires; the copy is issued in
+    // CUDA_TRANS_UNIT_SIZE (32-byte) strides from block bases, so both are aligned.
     const uint4* src4 = reinterpret_cast<const uint4*>(src);
     uint4* dst4 = reinterpret_cast<uint4*>(const_cast<uint8_t*>(dst));
     dst4[0] = src4[0];

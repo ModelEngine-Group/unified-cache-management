@@ -2,9 +2,11 @@ message(STATUS "Building ham_dist (hamming HIP/ROCm extension)...")
 
 # The project-global release flags strip all symbols (-s), which would remove
 # the CPython module init entry point from this extension and make it
-# unloadable. Drop -s for this subtree so the .so keeps PyInit_hamming.
-string(REPLACE "-s " "" CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS}")
-string(REGEX REPLACE "(^| )-s$" "" CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS}")
+# unloadable. Drop the -s token for this subtree so the .so keeps PyInit_hamming.
+# Match -s only as a whole word (leading start-or-space, trailing space-or-end)
+# so flags like -std= or -shared are never touched; replace with a space to keep
+# adjacent flags separated.
+string(REGEX REPLACE "(^| )-s( |$)" " " CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS}")
 
 # enable_language(HIP) honors -DCMAKE_HIP_ARCHITECTURES, otherwise auto-detects the
 # host GPU(s) via rocm_agent_enumerator and errors if none is found (a no-GPU
