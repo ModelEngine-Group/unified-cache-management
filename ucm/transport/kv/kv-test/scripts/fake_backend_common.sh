@@ -73,7 +73,7 @@ write_fake_backend_config() {
         local id
         IFS=',' read -ra ids <<< "${asu_ids}"
         for id in "${ids[@]}"; do
-            echo "asu_info.${id}=protocol=TCP,local.comm_id=127.0.0.1,port=$((19000 + id)),local.phy_device_id=0"
+            echo "asu_info.${id}=protocol=TCP,local.comm_id=127.0.0.1,port=$((19000 + id)),local.logical_device_id=0"
         done
     } > "${view_path}"
 
@@ -91,7 +91,7 @@ write_fake_backend_config() {
         echo "transport.provider_type=FAKE"
         IFS=',' read -ra ids <<< "${asu_ids}"
         for id in "${ids[@]}"; do
-            echo "asu_info.${id}=protocol=TCP,local.comm_id=127.0.0.1,port=$((19000 + id)),local.phy_device_id=0"
+            echo "asu_info.${id}=protocol=TCP,local.comm_id=127.0.0.1,port=$((19000 + id)),local.logical_device_id=0"
         done
         echo
         echo "kv.key_prefix=k"
