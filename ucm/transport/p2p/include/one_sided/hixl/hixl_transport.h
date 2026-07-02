@@ -24,7 +24,7 @@ public:
     HixlTransport(const HixlTransport&) = delete;
     HixlTransport& operator=(const HixlTransport&) = delete;
 
-    const char* Name() const override;
+    TransportProtocol Protocol() const override;
     Status Init(const InitAttrs& options) override;
     Status Init(const HixlInitAttrs& options);
     Status Shutdown() override;
@@ -32,7 +32,11 @@ public:
     Status UnregisterMemory(MemoryHandle handle) override;
     Status ExportMetadata(const ManagerID& manager_id, Metadata& out) override;
     Status ImportMetadata(const ManagerID& manager_id, const Metadata& metadata) override;
-    Status Execute(const Operation& request) override;
+    Status Connect(const ManagerID& manager_id) override;
+    Status Disconnect(const ManagerID& manager_id) override;
+    Status ExecuteSync(const Operation& request) override;
+    Status ExecuteAsync(const Operation& request, TransferHandle& handle) override;
+    Status GetStatus(TransferHandle handle, TransferStatus& status) override;
 
 private:
     struct Peer {
@@ -47,7 +51,7 @@ private:
     };
 
     bool ValidateMemory(uint64_t address, uint64_t length) const;
-    Status ConnectPeer(const ManagerID& manager_id);
+    Status BuildTransfer(const Operation& batch, std::vector<hixl::TransferOpDesc>& descs);
 
     std::string local_engine_;
     std::map<std::string, std::string> options_;
@@ -58,6 +62,8 @@ private:
     std::unordered_map<ManagerID, Peer> peers_;
     hixl::Hixl hixl_;
     std::unordered_map<uint64_t, LocalMemoryRecord> memories_;
+    std::unordered_map<TransferHandle, hixl::TransferReq> pending_transfers_;
+    TransferHandle next_transfer_handle_ = 1;
     mutable std::recursive_mutex mutex_;
 };
 

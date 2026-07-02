@@ -1,13 +1,9 @@
 #include "core/transport_manager.h"
-#include <chrono>
 #include <cstddef>
 #include <cstdint>
-#include <functional>
 #include <limits>
 #include <stdexcept>
 #include <string>
-#include <thread>
-#include <unordered_map>
 #include <utility>
 #include <vector>
 #include "common/metadata_codec.h"
@@ -19,7 +15,7 @@ namespace transport {
 namespace {
 
 struct TransportMetadataRecord {
-    std::string protocol;
+    TransportProtocol protocol;
     Metadata metadata;
 };
 
@@ -40,7 +36,8 @@ Status EncodePeerAdvertisement(const PeerAdvertisement& advertisement, Metadata&
     }
 
     for (const auto& record : advertisement.records) {
-        if (!detail::AppendMetadataRecord(out, record.protocol, record.metadata)) {
+        if (!detail::AppendU32(out, static_cast<uint32_t>(record.protocol)) ||
+            !detail::AppendMetadata(out, record.metadata)) {
             return Status::InvalidArgument;
         }
     }
@@ -63,9 +60,13 @@ Status DecodePeerAdvertisement(const Metadata& in, PeerAdvertisement& advertisem
     advertisement.records.reserve(count);
     for (uint32_t i = 0; i < count; ++i) {
         TransportMetadataRecord record;
-        if (!detail::ReadMetadataRecord(in, offset, record.protocol, record.metadata)) {
+        uint32_t protocol = 0;
+        if (!detail::ReadU32(in, offset, protocol) ||
+            !detail::ReadMetadata(in, offset, record.metadata) ||
+            protocol != static_cast<uint32_t>(TransportProtocol::Hixl)) {
             return Status::InvalidArgument;
         }
+        record.protocol = static_cast<TransportProtocol>(protocol);
         advertisement.records.push_back(std::move(record));
     }
 
@@ -102,10 +103,11 @@ bool MemoryRegionOverlaps(const MemoryRegion& left, const MemoryRegion& right)
     return left_begin < right_end && right_begin < left_end;
 }
 
-const char* TransportForDirect(OperationDirect direct)
+bool TransportForDirect(OperationDirect direct, TransportProtocol& protocol)
 {
-    if (direct == OperationDirect::RemoteDeviceHost) { return "hixl"; }
-    return nullptr;
+    if (direct != OperationDirect::RemoteDeviceHost) { return false; }
+    protocol = TransportProtocol::Hixl;
+    return true;
 }
 
 }  // namespace
@@ -135,7 +137,7 @@ Status TransportManager::Init()
     return Status::Ok;
 }
 
-Status TransportManager::InstallTransport(const std::string& protocol, const InitAttrs& options)
+Status TransportManager::InstallTransport(TransportProtocol protocol, const InitAttrs& options)
 {
     if (protocol_map_.find(protocol) != protocol_map_.end()) { return Status::Ok; }
 
@@ -149,15 +151,10 @@ Status TransportManager::InstallTransport(const std::string& protocol, const Ini
     return Status::Ok;
 }
 
-TransportPtr TransportManager::CreateTransport(const std::string& protocol) const
+TransportPtr TransportManager::CreateTransport(TransportProtocol protocol) const
 {
-    using Factory = std::function<TransportPtr()>;
-    static const std::unordered_map<std::string, Factory> factories{
-        {"hixl", []() { return std::make_shared<HixlTransport>(); }},
-    };
-
-    const auto it = factories.find(protocol);
-    return it == factories.end() ? nullptr : it->second();
+    if (protocol == TransportProtocol::Hixl) { return std::make_shared<HixlTransport>(); }
+    return nullptr;
 }
 
 Status TransportManager::Shutdown()
@@ -171,6 +168,8 @@ Status TransportManager::Shutdown()
     }
     memories_.clear();
     next_memory_handle_ = 1;
+    transfers_.clear();
+    next_transfer_handle_ = 1;
     protocol_map_.clear();
     transports_.clear();
     return result;
@@ -275,7 +274,7 @@ Status TransportManager::RegisterMemory(const MemoryRegion& memory, MemoryHandle
             UC_ERROR(
                 "transport manager register memory failed protocol={} status={} handle={} "
                 "addr=0x{:x} length={}",
-                item.protocol, static_cast<int>(status), transport_handle,
+                static_cast<int>(item.protocol), static_cast<int>(status), transport_handle,
                 detail::PtrToU64(memory.addr), memory.length);
             continue;
         }
@@ -305,14 +304,14 @@ Status TransportManager::UnregisterMemory(MemoryHandle handle)
     for (const auto& item : it->second.transport_handles) {
         const auto transport_it = protocol_map_.find(item.first);
         if (transport_it == protocol_map_.end()) {
-            UC_ERROR("transport manager unregister memory failed protocol={} handle={}", item.first,
-                     item.second);
+            UC_ERROR("transport manager unregister memory failed protocol={} handle={}",
+                     static_cast<int>(item.first), item.second);
             return Status::Failed;
         }
         const auto status = transport_it->second->UnregisterMemory(item.second);
         if (status != Status::Ok) {
             UC_ERROR("transport manager unregister memory failed protocol={} status={} handle={}",
-                     item.first, static_cast<int>(status), item.second);
+                     static_cast<int>(item.first), static_cast<int>(status), item.second);
             return Status::Failed;
         }
     }
@@ -320,22 +319,80 @@ Status TransportManager::UnregisterMemory(MemoryHandle handle)
     return Status::Ok;
 }
 
-Status TransportManager::Execute(const Operation& batch)
+Status TransportManager::FindTransport(Operation& batch, Transport*& transport)
 {
     if (batch.target_manager.empty()) { return Status::InvalidArgument; }
     Endpoint endpoint;
     if (ParseManagerID(batch.target_manager, endpoint) != Status::Ok) {
         return Status::InvalidArgument;
     }
-    const auto manager_id = endpoint.ToString();
 
-    const auto* transport_name = TransportForDirect(batch.direct);
-    if (transport_name == nullptr) { return Status::Failed; }
-    const auto transport_it = protocol_map_.find(transport_name);
+    TransportProtocol protocol = TransportProtocol::Hixl;
+    if (!TransportForDirect(batch.direct, protocol)) { return Status::Failed; }
+    const auto transport_it = protocol_map_.find(protocol);
     if (transport_it == protocol_map_.end()) { return Status::Failed; }
-    Operation normalized = batch;
-    normalized.target_manager = manager_id;
-    return transport_it->second->Execute(normalized);
+    transport = transport_it->second;
+    return Status::Ok;
+}
+
+Status TransportManager::Connect(TransportProtocol protocol, const ManagerID& manager_id)
+{
+    Endpoint endpoint;
+    if (ParseManagerID(manager_id, endpoint) != Status::Ok) { return Status::InvalidArgument; }
+    const auto it = protocol_map_.find(protocol);
+    if (it == protocol_map_.end()) { return Status::InvalidArgument; }
+    return it->second->Connect(manager_id);
+}
+
+Status TransportManager::Disconnect(TransportProtocol protocol, const ManagerID& manager_id)
+{
+    Endpoint endpoint;
+    if (ParseManagerID(manager_id, endpoint) != Status::Ok) { return Status::InvalidArgument; }
+    const auto it = protocol_map_.find(protocol);
+    if (it == protocol_map_.end()) { return Status::InvalidArgument; }
+    return it->second->Disconnect(manager_id);
+}
+
+Status TransportManager::ExecuteSync(const Operation& batch)
+{
+    Transport* transport = nullptr;
+    auto request = batch;
+    auto status = FindTransport(request, transport);
+    if (status != Status::Ok) { return status; }
+    return transport->ExecuteSync(request);
+}
+
+Status TransportManager::ExecuteAsync(const Operation& batch, TransferHandle& handle)
+{
+    handle = kInvalidTransferHandle;
+    Transport* transport = nullptr;
+    auto request = batch;
+    auto status = FindTransport(request, transport);
+    if (status != Status::Ok) { return status; }
+
+    TransferHandle transport_handle = kInvalidTransferHandle;
+    status = transport->ExecuteAsync(request, transport_handle);
+    if (status != Status::Ok || transport_handle == kInvalidTransferHandle) {
+        return status == Status::Ok ? Status::Failed : status;
+    }
+
+    handle = next_transfer_handle_++;
+    if (handle == kInvalidTransferHandle) { handle = next_transfer_handle_++; }
+    transfers_.emplace(handle, TransferRecord{transport, transport_handle});
+    return Status::Ok;
+}
+
+Status TransportManager::GetStatus(TransferHandle handle, TransferStatus& transfer_status)
+{
+    if (handle == kInvalidTransferHandle) { return Status::InvalidArgument; }
+    const auto it = transfers_.find(handle);
+    if (it == transfers_.end() || it->second.transport == nullptr) { return Status::Failed; }
+    const auto status =
+        it->second.transport->GetStatus(it->second.transport_handle, transfer_status);
+    if (status != Status::Ok || transfer_status != TransferStatus::Waiting) {
+        transfers_.erase(it);
+    }
+    return status;
 }
 
 Endpoint TransportManager::LocalEndpoint() const { return local_endpoint_; }

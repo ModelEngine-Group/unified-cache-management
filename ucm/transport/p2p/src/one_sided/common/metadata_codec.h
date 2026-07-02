@@ -24,9 +24,6 @@ bool AppendMetadata(Metadata& out, const Metadata& value);
 bool ReadMetadata(const Metadata& input, size_t& offset, Metadata& value);
 bool AppendString(Metadata& out, const std::string& value);
 bool ReadString(const Metadata& input, size_t& offset, std::string& value);
-bool AppendMetadataRecord(Metadata& out, const std::string& name, const Metadata& metadata);
-bool ReadMetadataRecord(const Metadata& input, size_t& offset, std::string& name,
-                        Metadata& metadata);
 
 }  // namespace detail
 }  // namespace transport
