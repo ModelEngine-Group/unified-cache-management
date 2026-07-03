@@ -65,6 +65,9 @@ struct Config {
     size_t shareBufferNumber{0};
 
     StoreV1* storeBackend{nullptr};
+
+    std::vector<uintptr_t> gpuKvBufferAddrs{};
+    std::vector<size_t> gpuKvBufferSizes{};
 };
 
 }  // namespace UC::MooncakeStore

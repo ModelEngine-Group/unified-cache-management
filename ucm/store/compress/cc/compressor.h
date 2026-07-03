@@ -20,7 +20,6 @@ public:
     Expected<Detail::TaskHandle> Dump(Detail::TaskDesc task) override;
     Expected<bool> Check(Detail::TaskHandle taskId) override;
     Status Wait(Detail::TaskHandle taskId) override;
-    Status RegisterMemory(void* base_addr, size_t total_size) override;
 
 private:
     std::shared_ptr<CompressorImpl> impl_;

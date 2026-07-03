@@ -171,13 +171,6 @@ Status Ds3fsStore::Wait(Detail::TaskHandle taskId)
     return s;
 }
 
-Status Ds3fsStore::RegisterMemory(void* base_addr, size_t total_size)
-{
-    (void)base_addr;
-    (void)total_size;
-    return Status::OK();
-}
-
 }  // namespace UC::Ds3fsStore
 
 extern "C" UC::StoreV1* MakeDs3fsStore() { return new UC::Ds3fsStore::Ds3fsStore(); }

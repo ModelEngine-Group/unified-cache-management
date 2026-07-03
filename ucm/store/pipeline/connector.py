@@ -177,9 +177,6 @@ class UcmPipelineStore(UcmKVStoreBaseV1):
     def check(self, task: Task) -> bool:
         return self.store_.Check(task.task_id)
 
-    def register_memory(self, base_addr: int, total_size: int) -> None:
-        self.store_.RegisterMemory(base_addr, total_size)
-
 
 def _cache_ds3fs_pipeline_builder(
     config: Dict[str, object], pipeline: ucmpipelinestore.PipelineStore
