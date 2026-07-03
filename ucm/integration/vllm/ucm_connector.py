@@ -473,21 +473,7 @@ class UCMDirectConnector(KVConnectorBase_V1):
         self.block_size *= self.cp_world_size
 
     def _get_full_hit_recompute_tokens(self) -> int:
-        speculative_config = getattr(self._vllm_config, "speculative_config", None)
-        if speculative_config is None:
-            return 2
-
-        spec_token_num = getattr(speculative_config, "num_speculative_tokens", 0)
-        try:
-            spec_token_num = int(spec_token_num)
-        except (TypeError, ValueError):
-            logger.warning(
-                f"Invalid speculative token count: {spec_token_num}. "
-                "Fallback to recomputing two tokens on full UCM cache hit."
-            )
-            spec_token_num = 0
-
-        return max(spec_token_num, 0) + 2
+        return 1
 
     @staticmethod
     def _record_counter(name: str, value: float = 1.0) -> None:
@@ -716,7 +702,17 @@ class UCMDirectConnector(KVConnectorBase_V1):
         # better solution in the future.
         num_total_hit_tokens = total_hit_block_num * self.block_size
         if num_total_hit_tokens == request.num_tokens:
-            external_hit_tokens -= self._get_full_hit_recompute_tokens()
+            recompute_tokens = self._get_full_hit_recompute_tokens()
+            if external_hit_tokens < recompute_tokens:
+                logger.error(
+                    f"Full UCM cache hit fallback would make external hit tokens negative: "
+                    f"request_id: {request.request_id}, "
+                    f"external_hit_tokens: {external_hit_tokens}, "
+                    f"recompute_tokens: {recompute_tokens}, "
+                    f"num_total_hit_tokens: {num_total_hit_tokens}, "
+                    f"request_tokens: {request.num_tokens}"
+                )
+            external_hit_tokens = max(0, external_hit_tokens - recompute_tokens)
 
         self.requests_meta[request.request_id] = RequestMeta(
             ucm_block_ids=ucm_block_ids,
@@ -1281,6 +1277,23 @@ class UCMLayerWiseConnector(UCMDirectConnector):
         self._mtp_layer_end: Optional[int] = None
         self._init_mtp_layerwise_dump_state()
         logger.info("Init UCMLayerWiseConnector.")
+
+    def _get_full_hit_recompute_tokens(self) -> int:
+        speculative_config = getattr(self._vllm_config, "speculative_config", None)
+        if speculative_config is None:
+            return 2
+
+        spec_token_num = getattr(speculative_config, "num_speculative_tokens", 0)
+        try:
+            spec_token_num = int(spec_token_num)
+        except (TypeError, ValueError):
+            logger.warning(
+                f"Invalid speculative token count: {spec_token_num}. "
+                "Fallback to recomputing two tokens on full layerwise UCM cache hit."
+            )
+            spec_token_num = 0
+
+        return max(spec_token_num, 0) + 2
 
     def _layerwise_batch_stats(
         self, total_end: float, save_tail_ms: Optional[float] = None
