@@ -58,12 +58,36 @@ Status SpaceManager::Setup(const Config& config)
 
 Expected<std::vector<uint8_t>> SpaceManager::Lookup(const Detail::BlockId* blocks, size_t num)
 {
-    std::vector<uint8_t> results(num, false);
-    auto res = LookupOnPrefix(blocks, num);
-    if (!res) [[unlikely]] { return res.Error(); }
-    const auto index = res.Value();
-    for (ssize_t i = 0; i <= index; ++i) { results[i] = true; }
-    return results;
+    if (num == 0) { return std::vector<uint8_t>{}; }
+
+    std::shared_ptr<std::vector<uint8_t>> results;
+    std::shared_ptr<std::atomic<int32_t>> status;
+    std::shared_ptr<Latch> waiter;
+
+    const auto ok = Status::OK().Underlying();
+
+    try {
+        results = std::make_shared<std::vector<uint8_t>>(num, false);
+        status = std::make_shared<std::atomic<int32_t>>(ok);
+        waiter = std::make_shared<Latch>();
+    } catch (const std::exception& e) {
+        UC_ERROR("Failed({}) to allocate lookup context.", e.what());
+        return Status::OutOfMemory();
+    }
+
+    const size_t nWorker = prefixLookupSrv_.NWorker();
+    waiter->Set(nWorker);
+
+    for (size_t begin = 0; begin < nWorker; begin++) {
+        prefixLookupSrv_.Push({blocks, begin, num, nWorker, nullptr, status, waiter, results});
+    }
+
+    waiter->Wait();
+
+    auto s = status->load();
+    if (s != ok) [[unlikely]] { return Status{s, "failed to lookup some blocks"}; }
+
+    return std::move(*results);
 }
 
 Expected<ssize_t> SpaceManager::LookupOnPrefix(const Detail::BlockId* blocks, size_t num)
@@ -89,7 +113,7 @@ Expected<ssize_t> SpaceManager::LookupOnPrefix(const Detail::BlockId* blocks, si
     waiter->Set(nWorker);
 
     for (size_t begin = 0; begin < nWorker; begin++) {
-        prefixLookupSrv_.Push({blocks, begin, num, nWorker, firstFail, status, waiter});
+        prefixLookupSrv_.Push({blocks, begin, num, nWorker, firstFail, status, waiter, nullptr});
     }
 
     waiter->Wait();
@@ -114,8 +138,25 @@ uint8_t SpaceManager::Lookup(const Detail::BlockId* block)
     return true;
 }
 
+void SpaceManager::OnLookup(PrefixLookupContext& ctx)
+{
+    for (size_t i = ctx.begin; i < ctx.end; i += ctx.nWorker) {
+        if (ctx.status->load() != Status::OK().Underlying()) { break; }
+
+        auto found = Lookup(ctx.blocks + i);
+        (*ctx.results)[i] = found;
+        if (found && hotnessTrackerEnable_) { hotnessTracker_.Touch(*(ctx.blocks + i)); }
+    }
+    ctx.waiter->Done();
+}
+
 void SpaceManager::OnLookupPrefix(PrefixLookupContext& ctx)
 {
+    if (ctx.results != nullptr) {
+        OnLookup(ctx);
+        return;
+    }
+
     for (size_t i = ctx.begin; i < ctx.end; i += ctx.nWorker) {
         if (ctx.status->load() != Status::OK().Underlying()) { break; }
 

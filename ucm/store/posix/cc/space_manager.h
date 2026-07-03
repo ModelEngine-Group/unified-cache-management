@@ -42,6 +42,7 @@ class SpaceManager {
         std::shared_ptr<std::atomic<ssize_t>> firstFail;
         std::shared_ptr<std::atomic<int32_t>> status;
         std::shared_ptr<Latch> waiter;
+        std::shared_ptr<std::vector<uint8_t>> results;
     };
 
 private:
@@ -60,6 +61,7 @@ public:
 
 private:
     uint8_t Lookup(const Detail::BlockId* block);
+    void OnLookup(PrefixLookupContext& ctx);
     void OnLookupPrefix(PrefixLookupContext& ctx);
     void OnLookupPrefixTimeout(PrefixLookupContext& ctx);
 };

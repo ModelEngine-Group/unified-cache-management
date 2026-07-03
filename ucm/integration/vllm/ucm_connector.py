@@ -414,6 +414,9 @@ class UCMDirectConnector(KVConnectorBase_V1):
         defer_scheduler_store = getattr(self, "_defer_scheduler_store", False)
         if role == KVConnectorRole.SCHEDULER:
             self.request_hasher = RequestHasher(vllm_config, 0)
+            self._rank_hashers = [
+                RequestHasher(vllm_config, rank) for rank in range(1, self.tp_size)
+            ]
             self._seed = self.request_hasher("UCM_HASH_SEED")
             # init scheduler-size connector
             if not defer_scheduler_store:
@@ -514,6 +517,36 @@ class UCMDirectConnector(KVConnectorBase_V1):
             ret.append(hash_value)
 
         return ret
+
+    def _lookup_external_prefix_all_ranks(self, external_block_ids: list[bytes]) -> int:
+        rank0_hit_idx = self.store.lookup_on_prefix(external_block_ids)
+        if rank0_hit_idx < 0 or self.is_mla or not self._rank_hashers:
+            return rank0_hit_idx
+
+        candidate_block_ids = external_block_ids[: rank0_hit_idx + 1]
+        num_other_ranks = len(self._rank_hashers)
+        block_ids_other_ranks: list[bytes] = []
+        for block_id in candidate_block_ids:
+            for rank_hasher in self._rank_hashers:
+                block_ids_other_ranks.append(rank_hasher(block_id))
+
+        founds = self.store.lookup(block_ids_other_ranks)
+        expected_founds = len(candidate_block_ids) * num_other_ranks
+        if len(founds) != expected_founds:
+            logger.warning(
+                "Lookup all ranks returned unexpected result length: "
+                f"expected {expected_founds}, got {len(founds)}."
+            )
+            return -1
+
+        for block_idx in range(len(candidate_block_ids)):
+            begin = block_idx * num_other_ranks
+            end = begin + num_other_ranks
+            rank_founds = founds[begin:end]
+            if len(rank_founds) != num_other_ranks or not all(rank_founds):
+                return block_idx - 1
+
+        return len(candidate_block_ids) - 1
 
     def _create_store(
         self,
@@ -688,7 +721,7 @@ class UCMDirectConnector(KVConnectorBase_V1):
         if external_block_ids:
             try:
                 external_hit_blocks = (
-                    self.store.lookup_on_prefix(external_block_ids) + 1
+                    self._lookup_external_prefix_all_ranks(external_block_ids) + 1
                 )
                 external_hit_blocks //= self.cp_world_size
             except Exception as e:
@@ -1660,9 +1693,13 @@ class UCMCPConnector(UCMLayerWiseConnector):
             self.dcp_rank = get_dcp_group().rank_in_group
         except AssertionError:
             # DCP might not be initialized in testing
-            self.dcp_world_size = 1
+            self.dcp_world_size = (
+                self._vllm_config.parallel_config.decode_context_parallel_size
+            )
             self.dcp_rank = 0
-            self.pcp_world_size = 1
+            self.pcp_world_size = (
+                self._vllm_config.parallel_config.prefill_context_parallel_size
+            )
             self.pcp_rank = 0
         self.cp_world_size = (
             self._vllm_config.parallel_config.prefill_context_parallel_size
@@ -1681,6 +1718,18 @@ class UCMCPConnector(UCMLayerWiseConnector):
 
         if role == KVConnectorRole.SCHEDULER:
             self.request_hasher = RequestHasher(vllm_config, 0)
+            # DCP ranks that share the same effective TP rank use the same
+            # rank-specific cache key, so deduplicate while preserving order.
+            rank_ids = list(
+                dict.fromkeys(
+                    rank // self.dcp_world_size for rank in range(self.tp_size)
+                )
+            )
+            self._rank_hashers = [
+                RequestHasher(vllm_config, rank_id)
+                for rank_id in rank_ids
+                if rank_id != 0
+            ]
             self._seed = self.request_hasher("UCM_HASH_SEED")
             # init scheduler-size connector
             self.store = self._create_store(None)

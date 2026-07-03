@@ -149,7 +149,7 @@ TEST_F(UCPosixSpaceManagerTest, Lookup)
         ASSERT_EQ(foundIdx, 1);
         auto founds = spaceMgr.Lookup(blocks.data(), blocks.size()).Value();
         ASSERT_EQ(founds.size(), blocks.size());
-        std::vector<uint8_t> expected{true, true, false, false};
+        std::vector<uint8_t> expected{true, true, false, true};
         ASSERT_TRUE(founds == expected);
     }
 }
