@@ -1279,6 +1279,9 @@ class UCMLayerWiseConnector(UCMDirectConnector):
         logger.info("Init UCMLayerWiseConnector.")
 
     def _get_full_hit_recompute_tokens(self) -> int:
+        if not self.use_layerwise:
+            return super()._get_full_hit_recompute_tokens()
+
         speculative_config = getattr(self._vllm_config, "speculative_config", None)
         if speculative_config is None:
             return 2
