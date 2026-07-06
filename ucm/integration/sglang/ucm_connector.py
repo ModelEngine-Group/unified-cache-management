@@ -91,7 +91,8 @@ class UnifiedCacheStoreConfig:
             k_size = mem_pool_host.layer_num * mem_pool_host.kv_lora_rank * mem_pool_host.dtype.itemsize * page_size
             v_size = mem_pool_host.layer_num * mem_pool_host.qk_rope_head_dim * mem_pool_host.dtype.itemsize * page_size
             cfg["tensor_size_list"] = [k_size, v_size]
-            cfg["unique_id"] = f"sglang_{storage_config.model_name}_{storage_config.tp_size}"
+            safe_model_name = "-".join(storage_config.model_name.split("/")) if storage_config.model_name else ""
+            cfg["unique_id"] = f"sglang{safe_model_name}"
             cfg["cache_buffer_capacity_gb"] = 64
             cfg["io_direct"] = True
             cfg["cache_use_host_buffer"] = True
