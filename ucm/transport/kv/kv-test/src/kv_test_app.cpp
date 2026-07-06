@@ -1,15 +1,14 @@
 ﻿#include "kv_test/kv_test_app.h"
 #include <algorithm>
-#include <cctype>
 #include <filesystem>
 #include <fstream>
 #include <iomanip>
 #include <iostream>
 #include <sstream>
 #include <unordered_map>
-#include "asu_client/asu_client.h"
-#include "kv_test/fake_backend.h"
-#include "kv_test/local_asu_transport.h"
+#include "kv_test/asu_runtime_proxy.h"
+#include "kv_test/kv_test_config_helpers.h"
+#include "kv_test/payload_buffer_runtime.h"
 
 namespace UC::KVTest {
 
@@ -138,39 +137,6 @@ Status ValidatePowerCycleMetadata(const CommandOptions& options, const KvTestCon
         }
     }
     return Status::Success();
-}
-
-std::string CommandTypeName(CommandType command)
-{
-    switch (command) {
-        case CommandType::CONNECT: return "connect";
-        case CommandType::CONFIG_CHECK: return "config check";
-        case CommandType::STORE: return "store";
-        case CommandType::RETRIEVE: return "retrieve";
-        case CommandType::DELETE: return "delete";
-        case CommandType::EXIST: return "exist";
-        case CommandType::BATCH_STORE: return "batch-store";
-        case CommandType::BATCH_RETRIEVE: return "batch-retrieve";
-        case CommandType::POWER_CYCLE_PREPARE: return "power-cycle prepare";
-        case CommandType::POWER_CYCLE_VERIFY: return "power-cycle verify";
-        case CommandType::BENCH: return "bench";
-        case CommandType::VERSION: return "version";
-        case CommandType::UNKNOWN:
-        default: return "unknown";
-    }
-}
-
-std::string BenchOpTypeName(BenchOpType op)
-{
-    switch (op) {
-        case BenchOpType::STORE: return "store";
-        case BenchOpType::RETRIEVE: return "retrieve";
-        case BenchOpType::BATCH_STORE: return "batch-store";
-        case BenchOpType::BATCH_RETRIEVE: return "batch-retrieve";
-        case BenchOpType::MIX: return "mix";
-        case BenchOpType::UNKNOWN:
-        default: return "unknown";
-    }
 }
 
 void PrintGeneralHelp()
@@ -336,13 +302,6 @@ void PrintConsistencySummary(const CommandResult& result)
     std::cout << '\n';
 }
 
-std::string FormatBytesPerSec(double bytesPerSec)
-{
-    std::ostringstream stream;
-    stream << std::fixed << std::setprecision(2) << (bytesPerSec / (1024.0 * 1024.0));
-    return stream.str();
-}
-
 void PrintBenchSummary(const CommandOptions& options, const CommandResult& result)
 {
     if (options.command != CommandType::BENCH) { return; }
@@ -352,7 +311,7 @@ void PrintBenchSummary(const CommandOptions& options, const CommandResult& resul
               << std::setprecision(3) << metrics.elapsedSec
               << "\noperations=" << metrics.completedOperations
               << "\nentries=" << metrics.completedEntries << "\nbytes=" << metrics.completedBytes
-              << "\nbandwidth_mib_s=" << FormatBytesPerSec(metrics.avgBandwidthBytesPerSec)
+              << "\nbandwidth_mib_s=" << FormatMiBPerSec(metrics.avgBandwidthBytesPerSec)
               << "\niops=" << std::fixed << std::setprecision(2) << metrics.avgIops
               << "\nbatch_iops=" << metrics.avgBatchIops
               << "\nlatency_avg_us=" << metrics.latency.avgUs
@@ -370,19 +329,17 @@ void PrintSuccess(const CommandOptions& options, const CommandResult& result)
     PrintBenchSummary(options, result);
 }
 
-std::string NormalizeAttrValue(std::string value)
+Status CreateClient(std::unique_ptr<UC::ASU::AsuClient>& client)
 {
-    std::transform(value.begin(), value.end(), value.begin(),
-                   [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
-    return value;
+    Status status;
+    client = AsuRuntimeProxy::Instance().CreateAsuClient(nullptr, status);
+    return status;
 }
 
-std::unique_ptr<UC::ASU::AsuClient> CreateClientForConfig(const KvTestConfig& config)
+PayloadBufferPlacement PayloadPlacementForConfig(const KvTestConfig& config)
 {
-    if (NormalizeAttrValue(config.asuClientMode) == "local") {
-        return UC::ASU::CreateAsuClient(CreateLocalAsuTransportFactory(config.localStorePath));
-    }
-    return UC::ASU::CreateAsuClient();
+    return UsesDevicePayloadBuffers(config) ? PayloadBufferPlacement::ASCEND_DEVICE
+                                            : PayloadBufferPlacement::HOST;
 }
 
 }  // namespace
@@ -448,8 +405,8 @@ int KvTestApp::Run(int argc, char** argv)
         return kExitSuccess;
     }
 
-    FakeBackendAclRuntime fakeBackendAclRuntime;
-    status = fakeBackendAclRuntime.MaybeSetUp(config);
+    PayloadBufferAclRuntime payloadBufferAclRuntime;
+    status = payloadBufferAclRuntime.MaybeSetUp(config);
     if (!status.Ok()) {
         PrintFailure(status);
         return ToExitCode(status);
@@ -462,7 +419,13 @@ int KvTestApp::Run(int argc, char** argv)
     }
 
     CommandResult result;
-    AsuClientRunner clientRunner(CreateClientForConfig(config));
+    std::unique_ptr<UC::ASU::AsuClient> client;
+    status = CreateClient(client);
+    if (!status.Ok()) {
+        PrintFailure(status);
+        return ToExitCode(status);
+    }
+    AsuClientRunner clientRunner(std::move(client));
     status = clientRunner.Init(config);
     if (status.Ok()) { status = RunCommand(effectiveOptions, config, clientRunner, result); }
 
@@ -515,8 +478,12 @@ Status KvTestApp::RunStoreLikeCommand(const CommandOptions& options, const KvTes
     auto status = generator_.Generate(options, config, data);
     if (!status.Ok()) { return status; }
 
+    const auto payloadPlacement = PayloadPlacementForConfig(config);
+    const auto allocationPolicy = AllocationPolicyForConfig(config);
+    const auto logicalDeviceId = ResolvePayloadDeviceId(config);
     BufferSet buffers;
-    status = bufferAllocator_.BuildStoreBuffers(data, buffers);
+    status = bufferAllocator_.BuildStoreBuffers(data, payloadPlacement, allocationPolicy,
+                                                logicalDeviceId, buffers);
     if (!status.Ok()) { return status; }
 
     status = clientRunner.RegisterBuffers(buffers);
@@ -537,7 +504,8 @@ Status KvTestApp::RunStoreLikeCommand(const CommandOptions& options, const KvTes
     if (!status.Ok() || !options.check) { return status; }
 
     BufferSet retrievedBuffers;
-    status = bufferAllocator_.BuildRetrieveBuffers(data, retrievedBuffers);
+    status = bufferAllocator_.BuildRetrieveBuffers(data, payloadPlacement, allocationPolicy,
+                                                   logicalDeviceId, retrievedBuffers);
     if (!status.Ok()) { return status; }
 
     status = clientRunner.RegisterBuffers(retrievedBuffers);
@@ -549,6 +517,7 @@ Status KvTestApp::RunStoreLikeCommand(const CommandOptions& options, const KvTes
 
     CommandResult retrieveResult;
     status = clientRunner.Retrieve(retrievedBuffers, submitMode, options.timeoutMs, retrieveResult);
+    if (status.Ok()) { status = bufferAllocator_.CopyDeviceBuffersToHost(retrievedBuffers); }
     if (status.Ok()) {
         status = consistencyChecker_.CheckStoreResult(data, retrievedBuffers, retrieveResult,
                                                       result.consistency);
@@ -570,8 +539,12 @@ Status KvTestApp::RunRetrieveLikeCommand(const CommandOptions& options, const Kv
         if (!status.Ok()) { return status; }
     }
 
+    const auto payloadPlacement = PayloadPlacementForConfig(config);
+    const auto allocationPolicy = AllocationPolicyForConfig(config);
+    const auto logicalDeviceId = ResolvePayloadDeviceId(config);
     BufferSet buffers;
-    status = bufferAllocator_.BuildRetrieveBuffers(data, buffers);
+    status = bufferAllocator_.BuildRetrieveBuffers(data, payloadPlacement, allocationPolicy,
+                                                   logicalDeviceId, buffers);
     if (!status.Ok()) { return status; }
 
     status = clientRunner.RegisterBuffers(buffers);
@@ -584,6 +557,7 @@ Status KvTestApp::RunRetrieveLikeCommand(const CommandOptions& options, const Kv
     const SubmitMode submitMode = SubmitMode::ALL_ENTRIES_IN_ONE_CALL;
     status = clientRunner.Retrieve(buffers, submitMode, options.timeoutMs, result);
     const bool checkResult = options.check || options.command == CommandType::POWER_CYCLE_VERIFY;
+    if (status.Ok() && checkResult) { status = bufferAllocator_.CopyDeviceBuffersToHost(buffers); }
     if (status.Ok() && checkResult) {
         status = consistencyChecker_.CheckRetrieveResult(data, buffers, result, result.consistency);
     }

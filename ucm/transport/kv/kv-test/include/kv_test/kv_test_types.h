@@ -52,6 +52,16 @@ enum class ValuePlacement {
     ASU_MANAGED = 0,
 };
 
+enum class PayloadBufferPlacement {
+    HOST = 0,
+    ASCEND_DEVICE,
+};
+
+enum class DeviceAllocationPolicy {
+    DEFAULT = 0,
+    AIV_REGISTERABLE,
+};
+
 enum class DigestAlgorithm {
     CRC64 = 0,
 };
@@ -146,6 +156,11 @@ struct KvTestFakeBackendConfig {
     std::uint64_t latencyMs{1};
 };
 
+struct AsuRuntimeLibraryConfig {
+    std::string clientLibraryPath;
+    std::string transportLibraryPath;
+};
+
 struct ToolBehaviorConfig {
     ConfigFormat configFormat{ConfigFormat::ASU_CLIENT_KEY_VALUE};
     HcommApiBoundary hcommApiBoundary{HcommApiBoundary::C_API};
@@ -172,8 +187,7 @@ struct KvTestConfig {
     BenchConfig bench;
     OutputConfig output;
     KvTestFakeBackendConfig fakeBackend;
-    std::string asuClientMode;
-    std::string localStorePath;
+    AsuRuntimeLibraryConfig asuRuntime;
     std::string keyPrefix;
     std::uint64_t seed{0};
     std::uint64_t valueSize{0};
@@ -188,8 +202,11 @@ struct GeneratedData {
 
 struct BufferSet {
     std::vector<std::vector<std::uint8_t>> ownedBuffers;
+    std::vector<std::shared_ptr<void>> deviceBuffers;
+    std::vector<std::size_t> deviceBufferOffsets;
     std::vector<UC::ASU::MemoryRegion> regions;
     std::vector<UC::ASU::KVBuffer> entries;
+    std::vector<std::size_t> entryRegionIndexes;
     std::vector<UC::ASU::RegisterResult> registerResults;
 };
 

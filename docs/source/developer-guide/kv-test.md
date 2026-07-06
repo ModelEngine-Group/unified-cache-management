@@ -4,21 +4,37 @@
 current implementation supports local smoke testing, basic request validation,
 consistency checks, and simple benchmark metrics.
 
-The tool reads one key-value config file. It first loads the file through the
-ASU client config parser, then reads kv-test-specific options from the same
-file.
+The tool reads one key-value config file. It loads the ASU client runtime
+library through a small proxy, calls the ASU client config parser exported from
+that library, then reads kv-test-specific options from the same file.
 
 ## Build and environment
 
-`kv-test` is built from `ucm/transport/kv/kv-test/CMakeLists.txt` and links
-against `asu_client` and the ASU Ascend dependency interface used by the ASU
-module.
+`kv-test` is built from `ucm/transport/kv/kv-test/CMakeLists.txt`. The
+`asu_client` and `asu_transport` shared libraries are built as separate
+artifacts and loaded by `kv-test` at runtime with `dlopen`.
 
 `kv-test` is included only when ASU support is enabled:
 
 ```bash
-cmake -S . -B build-kv-test -DBUILD_UCM_ASU=ON -DBUILD_UCM_STORE=OFF -DBUILD_UNIT_TESTS=OFF -DRUNTIME_ENVIRONMENT=ascend
+cmake -S . -B build-kv-test -DBUILD_UCM_ASU=ON -DBUILD_UCM_STORE=OFF -DBUILD_UNIT_TESTS=OFF -DRUNTIME_ENVIRONMENT=ascend -DBUILD_UCM_ASU_PROVIDER_FAKE=ON
+cmake --build build-kv-test --target asu_transport asu_client
 cmake --build build-kv-test --target kv-test
+```
+
+Provider implementations are selected at build time:
+
+| CMake option | Default | Extra dependency |
+| --- | --- | --- |
+| `BUILD_UCM_ASU_PROVIDER_AICPU` | `OFF` | Reserved for the AICPU provider library. |
+| `BUILD_UCM_ASU_PROVIDER_FAKE` | `ON` | None. |
+| `BUILD_UCM_ASU_PROVIDER_AIV` | `OFF` | `libumc.a`, found through `ASU_AIV_PROVIDER_ROOT`. |
+
+The configured `transport.provider_type` must be built into `asu_transport`.
+For example, real AIV testing needs:
+
+```bash
+cmake -S . -B build-kv-test -DBUILD_UCM_ASU=ON -DBUILD_UCM_STORE=OFF -DBUILD_UNIT_TESTS=OFF -DRUNTIME_ENVIRONMENT=ascend -DBUILD_UCM_ASU_PROVIDER_FAKE=ON -DBUILD_UCM_ASU_PROVIDER_AIV=ON -DASU_AIV_PROVIDER_ROOT=/path/to/aiv/provider
 ```
 
 The same build can be started from any working directory with:
@@ -26,6 +42,11 @@ The same build can be started from any working directory with:
 ```bash
 bash ucm/transport/kv/kv-test/build.sh
 ```
+
+If the shared libraries are not discoverable from the dynamic linker search
+path or from the default build-tree sibling directory, set
+`asu.client_library_path` and `asu.transport_library_path` in the config file,
+or export `KV_TEST_ASU_CLIENT_LIB` and `KV_TEST_ASU_TRANSPORT_LIB`.
 
 The example environment script is:
 
@@ -50,7 +71,7 @@ ucm/transport/kv/kv-test/asu_view.conf
 ```
 
 The sample config uses relative paths such as `view.config_path`,
-`local_store.path`, and `output.path`. They are resolved against the process
+`fake_backend.path`, and `output.path`. They are resolved against the process
 working directory, not against the config file directory. The bundled examples
 assume commands are run from the repository root.
 
@@ -155,9 +176,10 @@ Example:
 ```ini
 client_id=kv-test-client-0
 default_wait_timeout_ms=5000
+# Optional when libasu_client.so/libasu_transport.so are not discoverable.
+# asu.client_library_path=/path/to/libasu_client.so
+# asu.transport_library_path=/path/to/libasu_transport.so
 
-asu.client.mode=fake_backend
-local_store.path=./kv-test-local-store
 fake_backend.path=./kv-test-fake-backend-store
 fake_backend.latency_ms=1
 
@@ -166,9 +188,10 @@ hash_table.type=RING_HASH
 ring_hash.virtual_node_count=128
 
 transport.asu_ids=1,2,3
-asu_info.1=protocol=TCP,local.comm_id=127.0.0.1,port=19001,local.phy_device_id=0
-asu_info.2=protocol=TCP,local.comm_id=127.0.0.1,port=19002,local.phy_device_id=0
-asu_info.3=protocol=TCP,local.comm_id=127.0.0.1,port=19003,local.phy_device_id=0
+transport.provider_type=FAKE
+asu_info.1=protocol=TCP,local.comm_id=127.0.0.1,port=19001,local.logical_device_id=0
+asu_info.2=protocol=TCP,local.comm_id=127.0.0.1,port=19002,local.logical_device_id=0
+asu_info.3=protocol=TCP,local.comm_id=127.0.0.1,port=19003,local.logical_device_id=0
 
 kv.key_prefix=kv-test-key-
 kv.seed=20260530
@@ -200,6 +223,7 @@ These fields are parsed by the ASU client config parser:
 | `view.config_path` | File used by the default `ConfigFileViewServer`. |
 | `default_wait_timeout_ms` | Default wait timeout in milliseconds. |
 | `transport.asu_ids` | ASU ids. |
+| `transport.provider_type` | Transport provider used by `AsuTransportImpl`. Supported values are `AICPU`, `FAKE`, and `AIV`. The selected provider must also be enabled in CMake. The aliases `transport.provider_backend`, `transport.trans_provider_type`, and `transport.trans_provider_backend` are also accepted. |
 | `asu_info.<id>` | Endpoint config for one ASU. |
 | `hash_table.type` | Router hash table type. |
 | `ring_hash.virtual_node_count` | Ring hash virtual node count. |
@@ -220,9 +244,9 @@ These fields are parsed by `kv-test` itself:
 
 | Field | Description |
 | --- | --- |
-| `asu.client.mode` | Set to `local` to use the file-backed local ASU transport. Set to `fake_backend` to use normal `AsuClient` and `AsuTransportImpl` paths with kv-test's mock backend. Any other value uses the default ASU client transport factory. |
-| `local_store.path` | Local transport storage root. Defaults to `./kv-test-local-store` if local mode is enabled and this field is empty. |
-| `fake_backend.path` | fake_backend storage root. If empty, fake_backend reuses `local_store.path`; if both are empty, it uses `./kv-test-fake-backend-store`. |
+| `asu.client_library_path` | Optional `libasu_client.so` path used by kv-test's runtime proxy. The environment variable `KV_TEST_ASU_CLIENT_LIB` is also accepted. |
+| `asu.transport_library_path` | Optional `libasu_transport.so` path used by kv-test's runtime proxy. The environment variable `KV_TEST_ASU_TRANSPORT_LIB` is also accepted. |
+| `fake_backend.path` | FAKE provider storage root. Defaults to `./kv-test-fake-backend-store`. |
 | `fake_backend.latency_ms` | Mock backend completion delay in milliseconds. Default is `1`. |
 | `kv.key_prefix` | Prefix for count-based key generation. |
 | `kv.seed` | Seed for deterministic value generation. |
@@ -244,51 +268,11 @@ Batch and sub-batch limits are left to Client and Transport. New kv-test configs
 should not include older `limits.batch_store_max`, `limits.batch_retrieve_max`,
 `limits.delete_max`, or `limits.exist_max` fields.
 
-## Local mode
+## FAKE provider
 
-`asu.client.mode=local` creates a file-backed local ASU transport. It is useful
-for early kv-test self-checks without connecting to a real ViewServer, Hcomm,
-network, or ASU hardware.
-
-Local mode still creates `AsuClient`, but injects kv-test's in-process
-`LocalAsuTransport` factory instead of using the developed `AsuTransportImpl`.
-It is intended for developing and debugging kv-test command parsing, config
-loading, data generation, buffer allocation, consistency checks, report output,
-and basic store/retrieve/delete/exist behavior with a local file-backed
-transport.
-
-Local mode still requires each ASU to have at least one endpoint in `asu_info`.
-The endpoint's `local.comm_id` and `port` are validated so local tests catch
-missing address config in the same place as real transport setup.
-
-In the bundled local config, `protocol=TCP` is a convenient placeholder for ASU
-config parsing and validation. It does not imply that local mode performs real
-TCP IO. For real ASU/Hcomm testing, switch away from local mode and replace
-`protocol`, `local.comm_id`, `port`, and `local.phy_device_id` with the target
-hardware setup.
-
-The local transport stores each key under:
-
-```text
-<local_store.path>/asu-<asuId>/<hex-encoded-key>.bin
-```
-
-The directory persists across separate `kv-test` commands. Delete removes the
-corresponding file when it exists. Deleting a missing key is treated as success,
-matching the current Delete result-buffer semantics. Exist checks whether the
-file exists.
-
-Because this mode replaces the ASU transport implementation, it can exercise
-`AsuClient` routing and aggregation at a high level, but it does not validate
-`AsuTransportImpl` request building, send-buffer submission, polling, or
-CQE/result-buffer parsing paths.
-
-## fake_backend mode
-
-`asu.client.mode=fake_backend` is for the current `AsuClient` +
-`AsuTransportImpl` software integration stage. kv-test creates the normal
-`AsuClient` path and uses the developed `AsuTransportImpl`, but replaces the
-missing backend send/completion side with a local mock backend.
+`transport.provider_type=FAKE` selects the local mock provider while preserving
+the normal `AsuClient` and `AsuTransportImpl` path. ASU transport sends are
+completed by `FakeTransProvider`.
 
 Use this mode to validate:
 
@@ -298,20 +282,24 @@ Use this mode to validate:
 - SQE packing into send buffers
 - flag buffer/CQE polling
 - CQE status handling and result-buffer parsing
-- current register/bind bookkeeping paths
+- current register/bind bookkeeping paths, including placeholder memory handles
+  and token ids returned through the provider interface
 
 Mocked or not covered in this mode:
 
 - real device or network `Send`
 - real ASU backend execution
 - real CQE writeback by device
-- real memory registration, `rkey`, and `lkey` semantics
+- real RDMA memory registration, `rkey`, and `lkey` semantics
 - real connection failure, drain, and recovery behavior
 
-The mock send path is installed through a temporary `AICPUTransProvider` send
-hook while fake_backend mode is enabled. `AICPUTransProvider::CreateConnection`
-also returns placeholder connection handles so `ConnectionManager` can create
-channels during this software-only integration phase.
+For every transport configured with the FAKE provider, kv-test fills required
+SQE/send attrs and passes `fake_backend.path`, `fake_backend.latency_ms`, and
+`fake_backend.device_id` through `TransportConfig.attrs`. Other provider entries
+are left unchanged.
+`FakeTransProvider::CreateConnection` returns placeholder connection handles so
+`ConnectionManager` can create channels during this software-only integration
+phase.
 
 The fake backend stores each key under:
 
@@ -319,8 +307,7 @@ The fake backend stores each key under:
 <fake_backend.path>/asu-<kv_ns_id>/<fnv64-key-hash>.bin
 ```
 
-If `fake_backend.path` is empty, fake backend reuses `local_store.path`. If both
-are empty, it uses:
+If `fake_backend.path` is empty, fake backend uses:
 
 ```text
 ./kv-test-fake-backend-store
@@ -339,18 +326,7 @@ result-buffer payload when only some keys exist. Delete treats missing keys as
 successful entries; a result-buffer byte value of `0` means success and `1`
 means delete failed.
 
-Mode differences:
-
-| Item | local | fake_backend |
-| --- | --- | --- |
-| Main development stage | kv-test self-check | `AsuClient` + `AsuTransportImpl` software integration |
-| Uses normal `AsuClient` routing | Yes | Yes |
-| Uses developed `AsuTransportImpl` submit/poll/CQE code | No | Yes |
-| Backend | kv-test `LocalAsuTransport` | kv-test `MockSend` + local CQE completion |
-| Filesystem store layout | `<root>/asu-<asuId>/<hex-key>.bin` | `<root>/asu-<kv_ns_id>/<fnv64-key-hash>.bin` |
-| Validates real device communication | No | No |
-
-fake_backend smoke scripts live under:
+FakeBackend smoke scripts live under:
 
 ```text
 ucm/transport/kv/kv-test/scripts/

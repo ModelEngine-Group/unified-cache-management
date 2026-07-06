@@ -1,15 +1,16 @@
 add_executable(kv-test
     src/arg_parser.cpp
     src/asu_client_runner.cpp
+    src/asu_runtime_proxy.cpp
     src/bench_runner.cpp
     src/buffer_allocator.cpp
     src/consistency_checker.cpp
-    src/fake_backend.cpp
     src/hcomm_config_adapter.cpp
     src/key_value_generator.cpp
     src/kv_test_app.cpp
     src/kv_test_config_loader.cpp
-    src/local_asu_transport.cpp
+    src/kv_test_config_helpers.cpp
+    src/payload_buffer_runtime.cpp
     src/kv_test_main.cpp
     src/result_writer.cpp
 )
@@ -19,12 +20,27 @@ target_include_directories(kv-test
         include
         ../asu/client/include
         ../asu/trans/include
-        ../asu/trans/src
         ${UCM_ROOT_DIR}/ucm/shared/infra
 )
 
 target_link_libraries(kv-test
     PRIVATE
-        asu_client
+        ${CMAKE_DL_LIBS}
         asu_ascend_deps
 )
+
+if(BUILD_UNIT_TESTS)
+    include(GoogleTest)
+    add_executable(kv-test-config.test
+        src/kv_test_config_helpers.cpp
+        test/kv_test_config_helpers_test.cpp
+    )
+    target_include_directories(kv-test-config.test
+        PRIVATE
+            include
+            ../asu/client/include
+            ../asu/trans/include
+    )
+    target_link_libraries(kv-test-config.test PRIVATE gtest_main gtest)
+    gtest_discover_tests(kv-test-config.test)
+endif()

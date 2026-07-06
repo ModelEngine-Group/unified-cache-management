@@ -7,6 +7,39 @@
 
 namespace UC::KVTest {
 
+std::string CommandTypeName(CommandType command)
+{
+    switch (command) {
+        case CommandType::CONNECT: return "connect";
+        case CommandType::CONFIG_CHECK: return "config check";
+        case CommandType::STORE: return "store";
+        case CommandType::RETRIEVE: return "retrieve";
+        case CommandType::DELETE: return "delete";
+        case CommandType::EXIST: return "exist";
+        case CommandType::BATCH_STORE: return "batch-store";
+        case CommandType::BATCH_RETRIEVE: return "batch-retrieve";
+        case CommandType::POWER_CYCLE_PREPARE: return "power-cycle prepare";
+        case CommandType::POWER_CYCLE_VERIFY: return "power-cycle verify";
+        case CommandType::BENCH: return "bench";
+        case CommandType::VERSION: return "version";
+        case CommandType::UNKNOWN:
+        default: return "unknown";
+    }
+}
+
+std::string BenchOpTypeName(BenchOpType op)
+{
+    switch (op) {
+        case BenchOpType::STORE: return "store";
+        case BenchOpType::RETRIEVE: return "retrieve";
+        case BenchOpType::BATCH_STORE: return "batch-store";
+        case BenchOpType::BATCH_RETRIEVE: return "batch-retrieve";
+        case BenchOpType::MIX: return "mix";
+        case BenchOpType::UNKNOWN:
+        default: return "unknown";
+    }
+}
+
 namespace {
 
 constexpr int kExitSuccess = 0;

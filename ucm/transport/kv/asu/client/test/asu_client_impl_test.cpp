@@ -503,7 +503,7 @@ TEST(AsuClientImplTest, Lifecycle_PublicInitLoadsClientConfigFile)
         configFile << "transport.delete_io_num=13\n";
         configFile << "transport.query_io_num=14\n";
         configFile << "asuInfo.20=protocol=roce,placement=device,port=6000,"
-                   << "local.comm_id=192.168.1.20,local.phy_device_id=0\n";
+                   << "local.comm_id=192.168.1.20,local.logical_device_id=6\n";
     }
 
     auto state = std::make_shared<TestState>();
@@ -516,6 +516,7 @@ TEST(AsuClientImplTest, Lifecycle_PublicInitLoadsClientConfigFile)
     ASSERT_EQ(state->initConfigs[20].endpoints.size(), std::size_t{1});
     EXPECT_EQ(state->initConfigs[20].endpoints[0].ip, "192.168.1.20");
     EXPECT_EQ(state->initConfigs[20].endpoints[0].protocol, Protocol::ROCE);
+    EXPECT_EQ(state->initConfigs[20].endpoints[0].deviceId, std::int32_t{6});
     for (auto asuId : {AsuId{10}, AsuId{20}}) {
         EXPECT_EQ(state->initConfigs[asuId].sendBufferSlotSize, std::size_t{8192});
         EXPECT_EQ(state->initConfigs[asuId].sendBufferSlotNum, std::size_t{2});

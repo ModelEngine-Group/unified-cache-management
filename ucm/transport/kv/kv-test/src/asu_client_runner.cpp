@@ -1,8 +1,16 @@
 ﻿#include "kv_test/asu_client_runner.h"
 #include <algorithm>
+#include <unordered_set>
 #include "asu_client/asu_client.h"
 
 namespace UC::KVTest {
+
+UC::ASU::TaskResult BuildEmptyTaskResult()
+{
+    UC::ASU::TaskResult result;
+    result.status = UC::ASU::Status::OK();
+    return result;
+}
 
 namespace {
 
@@ -14,13 +22,6 @@ Status ToKvTestStatus(const UC::ASU::Status& status, const std::string& operatio
     if (status.ok()) { return Status::Success(); }
     return Status::Error(kExitAsuStatusBase + static_cast<int>(status.code),
                          operation + " failed: " + status.message);
-}
-
-UC::ASU::TaskResult BuildEmptyTaskResult()
-{
-    UC::ASU::TaskResult result;
-    result.status = UC::ASU::Status::OK();
-    return result;
 }
 
 UC::ASU::TaskResult BuildFailedTaskResult(const UC::ASU::Status& status, std::size_t entryCount)
@@ -153,9 +154,19 @@ Status AsuClientRunner::Shutdown()
 Status AsuClientRunner::RegisterBuffers(BufferSet& buffers)
 {
     if (client_ == nullptr) { return Status::Error(kExitInvalidArgument, "asu client is null"); }
-    if (buffers.regions.size() != buffers.entries.size()) {
+    if (!buffers.entryRegionIndexes.empty() &&
+        buffers.entryRegionIndexes.size() != buffers.entries.size()) {
+        return Status::Error(kExitInvalidArgument,
+                             "buffer entry region index count does not match entry count");
+    }
+    if (buffers.entryRegionIndexes.empty() && buffers.regions.size() != buffers.entries.size()) {
         return Status::Error(kExitInvalidArgument,
                              "buffer region count does not match entry count");
+    }
+    for (const auto regionIndex : buffers.entryRegionIndexes) {
+        if (regionIndex >= buffers.regions.size()) {
+            return Status::Error(kExitInvalidArgument, "buffer entry region index out of range");
+        }
     }
 
     buffers.registerResults.clear();
@@ -169,7 +180,13 @@ Status AsuClientRunner::RegisterBuffers(BufferSet& buffers)
     for (std::size_t index = 0; index < buffers.registerResults.size(); ++index) {
         const auto& result = buffers.registerResults[index];
         if (!result.status.ok()) { return ToKvTestStatus(result.status, "register buffer entry"); }
-        buffers.entries[index].buffer.handle = result.handle;
+    }
+
+    for (std::size_t entryIndex = 0; entryIndex < buffers.entries.size(); ++entryIndex) {
+        const auto regionIndex = buffers.entryRegionIndexes.empty()
+                                     ? entryIndex
+                                     : buffers.entryRegionIndexes[entryIndex];
+        buffers.entries[entryIndex].buffer.handle = buffers.registerResults[regionIndex].handle;
     }
 
     return Status::Success();
@@ -181,8 +198,11 @@ Status AsuClientRunner::UnregisterBuffers(const BufferSet& buffers)
 
     std::vector<UC::ASU::MRHandle> handles;
     handles.reserve(buffers.registerResults.size());
+    std::unordered_set<UC::ASU::MRHandle> seen;
     for (const auto& result : buffers.registerResults) {
-        if (result.handle != UC::ASU::kInvalidMRHandle) { handles.push_back(result.handle); }
+        if (result.handle != UC::ASU::kInvalidMRHandle && seen.insert(result.handle).second) {
+            handles.push_back(result.handle);
+        }
     }
     if (handles.empty()) { return Status::Success(); }
 
