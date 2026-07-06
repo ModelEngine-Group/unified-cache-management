@@ -23,6 +23,7 @@
  * */
 #include <acl/acl.h>
 #include <cstdint>
+#include <functional>
 #include <gtest/gtest.h>
 #include <unordered_map>
 #include <vector>
@@ -45,6 +46,7 @@ public:
     std::uint32_t registerCount{0};
     std::uint32_t unregisterCount{0};
     std::uint32_t failRegisterAt{0};
+    std::function<void()> onUnregister;
 
     Status CreateConnection(const std::string&, const std::string&, uint32_t, uint32_t qpNum,
                             uint32_t, std::vector<ConnectionHandle>& handles) override
@@ -81,6 +83,7 @@ public:
 
     std::vector<Status> UnregisterMemory(const std::vector<UnregisterMemoryDesc>& descs) override
     {
+        if (onUnregister) { onUnregister(); }
         unregisterCount += static_cast<std::uint32_t>(descs.size());
         return std::vector<Status>(descs.size(), Status::OK());
     }
@@ -182,6 +185,7 @@ TEST(AsuTransportRegisterTest, RegisterRegionsReturnsPartialFailedAndRollsBackSu
     EXPECT_EQ(providerPtr->unregisterCount, std::uint32_t{1});
     EXPECT_TRUE(transport.registeredRegions_.empty());
     EXPECT_TRUE(transport.registeredRegionStates_.empty());
+    EXPECT_TRUE(transport.registeredRegionConnectionLeases_.empty());
 }
 
 TEST(AsuTransportRegisterTest, ShutdownUnregistersRegisteredRegions)
@@ -210,6 +214,33 @@ TEST(AsuTransportRegisterTest, ShutdownUnregistersRegisteredRegions)
     EXPECT_EQ(providerPtr->unregisterCount, std::uint32_t{2});
     EXPECT_TRUE(transport.registeredRegions_.empty());
     EXPECT_TRUE(transport.registeredRegionStates_.empty());
+    EXPECT_TRUE(transport.registeredRegionConnectionLeases_.empty());
+}
+
+TEST(AsuTransportRegisterTest, UnregisterRegionReleasesConnectionLeaseAfterProviderCall)
+{
+    auto provider = std::make_unique<StubTransProvider>();
+    auto* providerPtr = provider.get();
+
+    AsuTransportImpl transport;
+    transport.SetTransProvider(std::move(provider));
+
+    constexpr MRHandle handle{7};
+    auto connection = std::make_shared<ConnectionChannel>(
+        0, nullptr, reinterpret_cast<TransProvider::ConnectionHandle>(1), providerPtr);
+    std::weak_ptr<ConnectionChannel> weakConnection = connection;
+    transport.registeredRegionStates_[handle] = AsuTransportImpl::RegisteredRegionState{
+        connection->GetConnection(), reinterpret_cast<TransProvider::MemHandle>(handle)};
+    transport.registeredRegionConnectionLeases_[handle] = std::move(connection);
+    providerPtr->onUnregister = [&weakConnection]() { EXPECT_FALSE(weakConnection.expired()); };
+
+    const auto status = transport.UnregisterRegions({handle});
+
+    EXPECT_TRUE(status.ok()) << status.message;
+    EXPECT_EQ(providerPtr->unregisterCount, std::uint32_t{1});
+    EXPECT_TRUE(transport.registeredRegionStates_.empty());
+    EXPECT_TRUE(transport.registeredRegionConnectionLeases_.empty());
+    EXPECT_TRUE(weakConnection.expired());
 }
 
 TEST(AsuSubmitFlowTest, SendSubBatchBuffersReportsSendFailures)

@@ -215,6 +215,7 @@ Status AsuTransportImpl::Shutdown()
         }
         registeredRegions_.clear();
         registeredRegionStates_.clear();
+        registeredRegionConnectionLeases_.clear();
     }
     if (connManager_) {
         auto status = connManager_->Shutdown();
@@ -396,8 +397,10 @@ Status AsuTransportImpl::RegisterRegions(const std::vector<MemoryRegion>& region
         regMem.handle = handle;
         regMem.tokenId = tokenId;  // Only UB is supported for the current version.
         registeredRegions_[handle] = regMem;
-        registeredRegionStates_[handle] =
-            RegisteredRegionState{connectionHandle, memHandles[0], std::move(connectionChannel)};
+        registeredRegionStates_[handle] = RegisteredRegionState{connectionHandle, memHandles[0]};
+        if (connectionChannel != nullptr) {
+            registeredRegionConnectionLeases_[handle] = std::move(connectionChannel);
+        }
         registeredHandles.emplace_back(handle);
         registeredDescs.push_back(
             TransProvider::UnregisterMemoryDesc{connectionHandle, memHandles[0]});
@@ -408,6 +411,7 @@ Status AsuTransportImpl::RegisterRegions(const std::vector<MemoryRegion>& region
         for (auto handle : registeredHandles) {
             registeredRegions_.erase(handle);
             registeredRegionStates_.erase(handle);
+            registeredRegionConnectionLeases_.erase(handle);
         }
         return Status::Error(StatusCode::PARTIAL_FAILED,
                              "one or more memory regions failed to register");
@@ -452,6 +456,7 @@ Status AsuTransportImpl::UnregisterRegions(const std::vector<MRHandle>& handles)
 
     for (auto handle : handles) { registeredRegions_.erase(handle); }
     for (auto handle : handles) { registeredRegionStates_.erase(handle); }
+    for (auto handle : handles) { registeredRegionConnectionLeases_.erase(handle); }
     return Status::OK();
 }
 
