@@ -104,6 +104,8 @@ public:
         if (transEnable_) {
             s = transMgr_.Setup(config);
             if (s.Failure()) [[unlikely]] { return s; }
+            s = RegisterKvBuffers(config);
+            if (s.Failure()) [[unlikely]] { return s; }
         } else {
             s = SetupRpcClient(config);
             if (s.Failure()) [[unlikely]] { return s; }
@@ -190,29 +192,30 @@ public:
 
     Status Wait(Detail::TaskHandle taskId) override { return transMgr_.Wait(taskId); }
 
-    Status RegisterMemory(void* base_addr, size_t total_size) override
+private:
+    Status RegisterKvBuffers(const Config& config)
     {
-        if (!transEnable_) { return Status::OK(); }
         auto client = transMgr_.GetRealClient();
         if (!client) { return Status::OK(); }
+        if (config.gpuKvBufferAddrs.empty()) { return Status::OK(); }
 
         std::lock_guard<std::mutex> lk(registerMtx_);
-        if (registered_.count(base_addr)) {
-            UC_DEBUG("buffer already registered: addr={}", base_addr);
-            return Status::OK();
-        }
+        for (size_t i = 0; i < config.gpuKvBufferAddrs.size(); ++i) {
+            void* addr = reinterpret_cast<void*>(config.gpuKvBufferAddrs[i]);
+            size_t size = config.gpuKvBufferSizes[i];
+            if (registered_.count(addr)) { continue; }
 
-        int rc = client->register_buffer(base_addr, total_size);
-        if (rc != 0) {
-            UC_ERROR("register_buffer failed: addr={}, size={}, rc={}", base_addr, total_size, rc);
-            return Status::Error("register_buffer failed");
+            int rc = client->register_buffer(addr, size);
+            if (rc != 0) {
+                UC_ERROR("register_buffer failed: addr={}, size={}, rc={}", addr, size, rc);
+                return Status::Error("register_buffer failed");
+            }
+            registered_[addr] = size;
+            UC_DEBUG("Registered buffer addr={}, size={}", addr, size);
         }
-        registered_[base_addr] = total_size;
-        UC_DEBUG("Registered buffer addr={}, size={}", base_addr, total_size);
         return Status::OK();
     }
 
-private:
     Status SetupRpcClient(const Config& config)
     {
         auto dummyTE = std::make_shared<mooncake::TransferEngine>();
@@ -300,6 +303,8 @@ private:
         inConfig.GetNumber("local_rank_size", config.localRankSize);
         inConfig.Get("unique_id", config.uniqueId);
         inConfig.Get("store_backend", config.storeBackend);
+        inConfig.GetNumbers("gpu_kv_buffer_addrs", config.gpuKvBufferAddrs);
+        inConfig.GetNumbers("gpu_kv_buffer_sizes", config.gpuKvBufferSizes);
         DeriveShareBufferNumber(inConfig, config);
         DeriveHostBufPoolSize(inConfig, config);
         return config;

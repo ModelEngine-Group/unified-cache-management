@@ -20,6 +20,7 @@ ucm_connectors:
       replica_num: 1
       storage_backends: "/mnt/test"
       io_direct: true
+      posix_io_engine: "aio"
       share_buffer_capacity_gb: 64
 
 # prerequisiteHandle requires event sync to ensure NPU compute finishes

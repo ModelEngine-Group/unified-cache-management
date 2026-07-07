@@ -430,6 +430,9 @@ class UCMDirectConnector(KVConnectorBase_V1):
         self.hash_block_size = self.block_size
         self.block_size *= self.cp_world_size
 
+    def _get_full_hit_recompute_tokens(self) -> int:
+        return 1
+
     @staticmethod
     def _record_counter(name: str, value: float = 1.0) -> None:
         _record_counter(name, value)
@@ -571,7 +574,6 @@ class UCMDirectConnector(KVConnectorBase_V1):
         )
 
         self.store = self._create_store(self.kv_cache_layout, store_cores)
-        self._register_kv_cache_memory()
 
         if worker_cores:
             try:
@@ -582,31 +584,6 @@ class UCMDirectConnector(KVConnectorBase_V1):
 
         if self.device is None:
             raise RuntimeError(f"Unsupported device platform for UCMDirectConnector.")
-
-    def _register_kv_cache_memory(self):
-        for layer_name, kv_layer in self.kv_caches.items():
-            if isinstance(kv_layer, torch.Tensor):
-                if kv_layer.dim() == 5:
-                    num_blocks = kv_layer.shape[1]
-                    block_size = kv_layer[0].shape[1:].numel() * kv_layer.element_size()
-                    total_size = num_blocks * block_size
-                    self.store.register_memory(kv_layer[0].data_ptr(), total_size)
-                    self.store.register_memory(kv_layer[1].data_ptr(), total_size)
-                elif kv_layer.dim() == 3:
-                    num_blocks = kv_layer.shape[0]
-                    total_size = kv_layer.numel() * kv_layer.element_size()
-                    self.store.register_memory(kv_layer.data_ptr(), total_size)
-                else:
-                    raise ValueError(
-                        f"Unsupported kv cache tensor shape: {kv_layer.shape}"
-                    )
-            elif isinstance(kv_layer, Tuple):
-                for tensor in kv_layer:
-                    total_size = tensor.numel() * tensor.element_size()
-                    self.store.register_memory(tensor.data_ptr(), total_size)
-            else:
-                raise TypeError(f"Unsupported kv cache type: {type(kv_layer)}")
-        logger.info(f"Registered {len(self.kv_caches)} layers' kv cache memory")
 
     def get_num_new_matched_tokens(
         self,
@@ -677,12 +654,23 @@ class UCMDirectConnector(KVConnectorBase_V1):
 
         external_hit_tokens = external_hit_blocks * self.block_size
 
-        # When all the tokens are cached in ssd or hbm,
-        # we need to recompute the last token. This if condition will be removed
-        # once vLLM scheduler provides a better solution in the future.
+        # When all the tokens are cached in ssd or hbm, recompute enough tokens
+        # to keep layerwise loads on the prefill path when speculative decode is
+        # enabled. This branch will be removed once vLLM scheduler provides a
+        # better solution in the future.
         num_total_hit_tokens = total_hit_block_num * self.block_size
         if num_total_hit_tokens == request.num_tokens:
-            external_hit_tokens -= 1
+            recompute_tokens = self._get_full_hit_recompute_tokens()
+            if external_hit_tokens < recompute_tokens:
+                logger.error(
+                    f"Full UCM cache hit fallback would make external hit tokens negative: "
+                    f"request_id: {request.request_id}, "
+                    f"external_hit_tokens: {external_hit_tokens}, "
+                    f"recompute_tokens: {recompute_tokens}, "
+                    f"num_total_hit_tokens: {num_total_hit_tokens}, "
+                    f"request_tokens: {request.num_tokens}"
+                )
+            external_hit_tokens = max(0, external_hit_tokens - recompute_tokens)
 
         self.requests_meta[request.request_id] = RequestMeta(
             ucm_block_ids=ucm_block_ids,
@@ -1227,6 +1215,26 @@ class UCMLayerWiseConnector(UCMDirectConnector):
         self._mtp_layer_end: Optional[int] = None
         self._init_mtp_layerwise_dump_state()
         logger.info("Init UCMLayerWiseConnector.")
+
+    def _get_full_hit_recompute_tokens(self) -> int:
+        if not self.use_layerwise:
+            return super()._get_full_hit_recompute_tokens()
+
+        speculative_config = getattr(self._vllm_config, "speculative_config", None)
+        if speculative_config is None:
+            return 2
+
+        spec_token_num = getattr(speculative_config, "num_speculative_tokens", 0)
+        try:
+            spec_token_num = int(spec_token_num)
+        except (TypeError, ValueError):
+            logger.warning(
+                f"Invalid speculative token count: {spec_token_num}. "
+                "Fallback to recomputing two tokens on full layerwise UCM cache hit."
+            )
+            spec_token_num = 0
+
+        return max(spec_token_num, 0) + 2
 
     def _layerwise_batch_stats(
         self, total_end: float, save_tail_ms: Optional[float] = None

@@ -147,19 +147,6 @@ public:
      */
     virtual Status Wait(Detail::TaskHandle taskId) = 0;
 
-    /**
-     * @brief Register device memory range for transfer operations.
-     *
-     * This method should be called once during initialization to register
-     * the entire KV cache memory range. Subsequent Load/Dump operations
-     * will use addresses within this registered range.
-     *
-     * @param base_addr Base address of the memory region.
-     * @param total_size Total size of the memory region in bytes.
-     * @return Status::OK on success, error code on failure.
-     */
-    virtual Status RegisterMemory(void* base_addr, size_t total_size) = 0;
-
 protected:
     /**
      * @brief Protected default constructor.
