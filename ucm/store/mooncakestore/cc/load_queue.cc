@@ -23,7 +23,9 @@
  * */
 #include "load_queue.h"
 #include <chrono>
+#include <numeric>
 #include "logger/logger.h"
+#include "metrics_api.h"
 #include "share_load_queue.h"
 #include "thread/cpu_affinity.h"
 
@@ -77,6 +79,7 @@ void LoadQueue::Submit(TaskPtr task, WaiterPtr waiter)
     waiter->Up();
     if (waiting_.TryPush({task, waiter})) { return; }
     UC_ERROR("Waiting queue full, submit load task({}) failed.", task->id);
+    UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("mooncake_load_queue_full_total"), 1.0);
     failureSet_->Insert(task->id);
     waiter->Done();
 }
@@ -102,13 +105,27 @@ void LoadQueue::DispatchOneTask(TaskPair&& pair)
     auto tp = waiter->startTp;
     auto tpWait = NowTime::Now();
     const auto nShard = task->shards.size();
+    UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("mooncake_load_queue_wait_duration_ms"),
+                             (tpWait - tp) * 1e3);
 
     auto results = TryMooncakeLoad(task);
+    if (results.size() != nShard) [[unlikely]] {
+        UC_ERROR("Mooncake batch_get returned invalid result size, task={}, expect={}, actual={}.",
+                 task->id, nShard, results.size());
+        UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("mooncake_get_errors_total"), 1.0);
+        failureSet_->Insert(task->id);
+        waiter->Done();
+        return;
+    }
 
     size_t missCount = 0;
     for (size_t i = 0; i < nShard; i++) {
         if (results[i] < 0) { ++missCount; }
     }
+    UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("mooncake_load_hit_shards_total"),
+                             static_cast<double>(nShard - missCount));
+    UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("mooncake_load_miss_shards_total"),
+                             static_cast<double>(missCount));
 
     if (missCount == 0) {
         waiter->Done();
@@ -143,7 +160,11 @@ std::vector<int> LoadQueue::TryMooncakeLoad(TaskPtr task)
         allBuffers.push_back(s.addrs);
         allSizes.push_back(s.sizes);
     }
-    return realClient_->batch_get_into_multi_buffers(keys, allBuffers, allSizes, false);
+    auto tp = NowTime::Now();
+    auto results = realClient_->batch_get_into_multi_buffers(keys, allBuffers, allSizes, false);
+    UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("mooncake_get_duration_ms"),
+                             (NowTime::Now() - tp) * 1e3);
+    return results;
 }
 
 bool LoadQueue::SubmitMissShards(TaskPtr task, WaiterPtr waiter, const std::vector<int>& results,
@@ -163,6 +184,7 @@ bool LoadQueue::SubmitMissShards(TaskPtr task, WaiterPtr waiter, const std::vect
         return true;
     }
 
+    auto tpSubmit = NowTime::Now();
     size_t pushed = 0;
     for (size_t i = 0; i < task->shards.size(); i++) {
         if (results[i] >= 0) { continue; }
@@ -183,6 +205,8 @@ bool LoadQueue::SubmitMissShards(TaskPtr task, WaiterPtr waiter, const std::vect
         auto res = backend_->Load(std::move(backendTask));
         if (!res) [[unlikely]] {
             UC_ERROR("Failed({}) to submit load task({}) to backend.", res.Error(), task->id);
+            UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("mooncake_backend_load_submit_errors_total"),
+                                     1.0);
             failureSet_->Insert(task->id);
             waiter->Done();
             return false;
@@ -197,6 +221,10 @@ bool LoadQueue::SubmitMissShards(TaskPtr task, WaiterPtr waiter, const std::vect
         shardTask.waiter = (pushed == missCount) ? waiter : nullptr;
         running_.Push(std::move(shardTask));
     }
+    UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("mooncake_load_backend_submit_duration_ms"),
+                             (NowTime::Now() - tpSubmit) * 1e3);
+    UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("mooncake_load_backend_shards_total"),
+                             static_cast<double>(pushed));
     return true;
 }
 
@@ -222,17 +250,24 @@ void LoadQueue::TransferOneTask(CopyStream& stream, ShardTask&& task)
 
     auto s = Status::OK();
     do {
+        auto tpBackendWait = NowTime::Now();
         s = backend_->Wait(task.backendTaskHandle);
+        auto tpBackendReady = NowTime::Now();
         if (s.Failure()) [[unlikely]] {
             UC_ERROR("Failed({}) to wait backend({}) for task({}).", s, task.backendTaskHandle,
                      task.taskHandle);
+            UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("mooncake_backend_load_wait_errors_total"),
+                                     1.0);
             break;
         }
+        UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("mooncake_backend_load_wait_duration_ms"),
+                                 (tpBackendReady - tpBackendWait) * 1e3);
 
         s = HostToDeviceScatterAsync(stream.NextStream(), task.hostBuf.get(),
                                      task.shard.addrs.data());
         if (s.Failure()) [[unlikely]] {
             UC_ERROR("Failed({}) to do H2D batch async for task({}).", s, task.taskHandle);
+            UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("mooncake_h2d_errors_total"), 1.0);
             break;
         }
 
@@ -241,16 +276,23 @@ void LoadQueue::TransferOneTask(CopyStream& stream, ShardTask&& task)
             return;
         }
 
+        auto tpH2dSyncStart = NowTime::Now();
         s = stream.Synchronize();
+        auto h2dMs = (NowTime::Now() - tpH2dSyncStart) * 1e3;
+        RecordH2dMetrics(holder_.size() + 1, h2dMs);
         holder_.clear();
         if (s.Failure()) [[unlikely]] {
             UC_ERROR("Failed({}) to sync on stream for task({}).", s, task.taskHandle);
+            UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("mooncake_h2d_errors_total"), 1.0);
             break;
         }
     } while (0);
 
     if (s.Failure()) [[unlikely]] { failureSet_->Insert(task.taskHandle); }
-    if (task.waiter) { task.waiter->Done(); }
+    if (task.waiter) {
+        holder_.clear();
+        task.waiter->Done();
+    }
 }
 
 Status LoadQueue::HostToDeviceScatterAsync(std::shared_ptr<Trans::Stream> stream, void* host,
@@ -269,6 +311,18 @@ Status LoadQueue::HostToDeviceScatterAsync(std::shared_ptr<Trans::Stream> stream
         offset += size;
     }
     return Status::OK();
+}
+
+size_t LoadQueue::BlockBytes() const
+{
+    return std::accumulate(tensorSizes_.begin(), tensorSizes_.end(), size_t{0});
+}
+
+void LoadQueue::RecordH2dMetrics(size_t copiedShards, double h2dMs) const
+{
+    UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("mooncake_h2d_duration_ms"), h2dMs);
+    auto copiedBytes = static_cast<double>(copiedShards) * static_cast<double>(BlockBytes());
+    UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("mooncake_h2d_bytes_total"), copiedBytes);
 }
 
 }  // namespace UC::MooncakeStore

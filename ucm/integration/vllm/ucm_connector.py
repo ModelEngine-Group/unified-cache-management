@@ -353,12 +353,6 @@ class UCMDirectConnector(KVConnectorBase_V1):
         self.local_rank = (
             -1 if role == KVConnectorRole.SCHEDULER else get_world_group().local_rank
         )
-        self._worker_rank = (
-            get_world_group().rank if role == KVConnectorRole.WORKER else None
-        )
-        self._vllm_metrics_enabled = False
-        self._vllm_metric_definitions = []
-        self._metrics_dispatcher = None
         self.tp_rank = self._vllm_config.parallel_config.rank
         self.block_size = self._vllm_config.cache_config.block_size
         self.is_mla = self._vllm_config.model_config.is_deepseek_mla
@@ -424,42 +418,6 @@ class UCMDirectConnector(KVConnectorBase_V1):
             )
             self._connector_worker_meta = UCMWorkerMetadata()
 
-        metrics_config_path = self.launch_config.get("metrics_config_path", "")
-        self.metrics_config = load_launch_metrics_config(self.launch_config)
-        if self.metrics_config and (
-            consumer_enabled(self.metrics_config, MULTIPROC_CONSUMER)
-            or consumer_enabled(self.metrics_config, VLLM_CONNECTOR_CONSUMER)
-        ):
-            setup_ucm_metrics(self.metrics_config)
-            self._metrics_dispatcher = get_metrics_dispatcher(self.metrics_config)
-        if (
-            metrics_config_path
-            and self.metrics_config
-            and consumer_enabled(self.metrics_config, MULTIPROC_CONSUMER)
-        ):
-            worker_id = (
-                f"{self.engine_id}_{get_world_group().rank}"
-                if role == KVConnectorRole.WORKER
-                else self.engine_id
-            )
-            self.stats_logger = PrometheusStatsLogger(
-                vllm_config.model_config.served_model_name,
-                worker_id,
-                metrics_config_path,
-            )
-            logger.info(
-                f"metrics_config_path: {metrics_config_path}, set worker_id: {worker_id}"
-            )
-        if (
-            role == KVConnectorRole.WORKER
-            and self.metrics_config
-            and consumer_enabled(self.metrics_config, VLLM_CONNECTOR_CONSUMER)
-        ):
-            self._vllm_metric_definitions = get_vllm_connector_metric_definitions(
-                self.metrics_config
-            )
-            self._vllm_metrics_enabled = bool(self._vllm_metric_definitions)
-
         self.persist_token_threshold = self.launch_config.get(
             "persist_token_threshold", 0
         )
@@ -471,6 +429,9 @@ class UCMDirectConnector(KVConnectorBase_V1):
         self.cp_world_size = 1
         self.hash_block_size = self.block_size
         self.block_size *= self.cp_world_size
+
+    def _get_full_hit_recompute_tokens(self) -> int:
+        return 1
 
     @staticmethod
     def _record_counter(name: str, value: float = 1.0) -> None:
@@ -693,12 +654,23 @@ class UCMDirectConnector(KVConnectorBase_V1):
 
         external_hit_tokens = external_hit_blocks * self.block_size
 
-        # When all the tokens are cached in ssd or hbm,
-        # we need to recompute the last token. This if condition will be removed
-        # once vLLM scheduler provides a better solution in the future.
+        # When all the tokens are cached in ssd or hbm, recompute enough tokens
+        # to keep layerwise loads on the prefill path when speculative decode is
+        # enabled. This branch will be removed once vLLM scheduler provides a
+        # better solution in the future.
         num_total_hit_tokens = total_hit_block_num * self.block_size
         if num_total_hit_tokens == request.num_tokens:
-            external_hit_tokens -= 1
+            recompute_tokens = self._get_full_hit_recompute_tokens()
+            if external_hit_tokens < recompute_tokens:
+                logger.error(
+                    f"Full UCM cache hit fallback would make external hit tokens negative: "
+                    f"request_id: {request.request_id}, "
+                    f"external_hit_tokens: {external_hit_tokens}, "
+                    f"recompute_tokens: {recompute_tokens}, "
+                    f"num_total_hit_tokens: {num_total_hit_tokens}, "
+                    f"request_tokens: {request.num_tokens}"
+                )
+            external_hit_tokens = max(0, external_hit_tokens - recompute_tokens)
 
         self.requests_meta[request.request_id] = RequestMeta(
             ucm_block_ids=ucm_block_ids,
@@ -1113,26 +1085,6 @@ class UCMDirectConnector(KVConnectorBase_V1):
             return 0.0
         return max(value, 0.0)
 
-    def get_kv_connector_stats(self) -> Optional["KVConnectorStats"]:
-        if not self._vllm_metrics_enabled:
-            return None
-        if self._metrics_dispatcher is None:
-            return None
-        self._metrics_dispatcher.drain_to_consumers()
-        counter_stats, gauge_stats, histogram_stats = (
-            self._metrics_dispatcher.get_stats_and_clear(VLLM_CONNECTOR_CONSUMER)
-        )
-        stats = UCMConnectorStats.from_ucm_snapshot(
-            counter_stats=counter_stats,
-            gauge_stats=gauge_stats,
-            histogram_stats=histogram_stats,
-            worker_rank=self._worker_rank,
-            metric_definitions=self._vllm_metric_definitions,
-        )
-        if stats.is_empty():
-            return None
-        return stats
-
     def clear_connector_metadata(self) -> None:
         super().clear_connector_metadata()
 
@@ -1263,6 +1215,26 @@ class UCMLayerWiseConnector(UCMDirectConnector):
         self._mtp_layer_end: Optional[int] = None
         self._init_mtp_layerwise_dump_state()
         logger.info("Init UCMLayerWiseConnector.")
+
+    def _get_full_hit_recompute_tokens(self) -> int:
+        if not self.use_layerwise:
+            return super()._get_full_hit_recompute_tokens()
+
+        speculative_config = getattr(self._vllm_config, "speculative_config", None)
+        if speculative_config is None:
+            return 2
+
+        spec_token_num = getattr(speculative_config, "num_speculative_tokens", 0)
+        try:
+            spec_token_num = int(spec_token_num)
+        except (TypeError, ValueError):
+            logger.warning(
+                f"Invalid speculative token count: {spec_token_num}. "
+                "Fallback to recomputing two tokens on full layerwise UCM cache hit."
+            )
+            spec_token_num = 0
+
+        return max(spec_token_num, 0) + 2
 
     def _layerwise_batch_stats(
         self, total_end: float, save_tail_ms: Optional[float] = None
@@ -3146,7 +3118,14 @@ class UCMConnector(KVConnectorBase_V1, SupportsHMA):
         )
         self.connector: KVConnectorBase_V1
         ucm_config = Config(vllm_config.kv_transfer_config)
+        self.engine_id = vllm_config.kv_transfer_config.engine_id
         self.launch_config = ucm_config.get_config()
+        self._worker_rank = (
+            get_world_group().rank
+            if role == KVConnectorRole.WORKER
+            else "scheduler" if role == KVConnectorRole.SCHEDULER else None
+        )
+        self._setup_ucm_metrics(vllm_config, role)
         logger.info(f"self.launch_config: {self.launch_config}")
 
         use_layerwise = (
@@ -3209,6 +3188,93 @@ class UCMConnector(KVConnectorBase_V1, SupportsHMA):
         else:
             self.connector = UCMDirectConnector(vllm_config, role, kv_cache_config)
 
+    def _setup_ucm_metrics(self, vllm_config: "VllmConfig", role: KVConnectorRole):
+        self._vllm_metrics_enabled = False
+        self._vllm_metric_definitions = []
+        self._metrics_dispatcher = None
+
+        metrics_config_path = self.launch_config.get("metrics_config_path", "")
+        self.metrics_config = load_launch_metrics_config(self.launch_config)
+        if self.metrics_config and (
+            consumer_enabled(self.metrics_config, MULTIPROC_CONSUMER)
+            or consumer_enabled(self.metrics_config, VLLM_CONNECTOR_CONSUMER)
+        ):
+            setup_ucm_metrics(self.metrics_config)
+            self._metrics_dispatcher = get_metrics_dispatcher(self.metrics_config)
+        if (
+            metrics_config_path
+            and self.metrics_config
+            and consumer_enabled(self.metrics_config, MULTIPROC_CONSUMER)
+        ):
+            worker_id = (
+                f"{self.engine_id}_{get_world_group().rank}"
+                if role == KVConnectorRole.WORKER
+                else self.engine_id
+            )
+            self.stats_logger = PrometheusStatsLogger(
+                vllm_config.model_config.served_model_name,
+                worker_id,
+                metrics_config_path,
+            )
+            logger.info(
+                f"metrics_config_path: {metrics_config_path}, set worker_id: {worker_id}"
+            )
+        if self.metrics_config and consumer_enabled(
+            self.metrics_config, VLLM_CONNECTOR_CONSUMER
+        ):
+            self._vllm_metric_definitions = get_vllm_connector_metric_definitions(
+                self.metrics_config
+            )
+            self._vllm_metrics_enabled = bool(self._vllm_metric_definitions)
+
+    def get_kv_connector_stats(self) -> Optional["KVConnectorStats"]:
+        if not self._vllm_metrics_enabled:
+            return None
+        if self._metrics_dispatcher is None:
+            return None
+        self._metrics_dispatcher.drain_to_consumers()
+        counter_stats, gauge_stats, histogram_stats = (
+            self._metrics_dispatcher.get_stats_and_clear(VLLM_CONNECTOR_CONSUMER)
+        )
+        stats = UCMConnectorStats.from_ucm_snapshot(
+            counter_stats,
+            gauge_stats,
+            histogram_stats,
+            worker_rank=self._worker_rank,
+            metric_definitions=self._vllm_metric_definitions,
+        )
+        return None if stats.is_empty() else stats
+
+    @classmethod
+    def build_kv_connector_stats(
+        cls, data: dict[str, Any] | None = None
+    ) -> Optional["KVConnectorStats"]:
+        return UCMConnectorStats(data=data) if data is not None else UCMConnectorStats()
+
+    @classmethod
+    def build_prom_metrics(
+        cls,
+        vllm_config: "VllmConfig",
+        metric_types: dict[type["PromMetric"], type["PromMetricT"]],
+        labelnames: list[str],
+        per_engine_labelvalues: dict[int, list[object]],
+    ) -> Optional["KVConnectorPromMetrics"]:
+        if not UCM_HAS_PROM_METRICS:
+            return None
+        config = load_launch_metrics_config(
+            Config(vllm_config.kv_transfer_config).get_config()
+        )
+        if not config or not consumer_enabled(config, VLLM_CONNECTOR_CONSUMER):
+            return None
+        if not get_vllm_connector_metric_definitions(config):
+            return None
+        return UCMPromMetrics(
+            vllm_config,
+            metric_types,
+            labelnames,
+            per_engine_labelvalues,
+        )
+
     def get_num_new_matched_tokens(
         self,
         request: "Request",
@@ -3227,7 +3293,39 @@ class UCMConnector(KVConnectorBase_V1, SupportsHMA):
             the number of tokens that can be loaded from the
             external KV cache beyond what is already computed.
         """
-        return self.connector.get_num_new_matched_tokens(request, num_computed_tokens)
+        external_hit_tokens, need_load = self.connector.get_num_new_matched_tokens(
+            request, num_computed_tokens
+        )
+        self._record_prefix_cache_token_metrics(
+            request,
+            num_computed_tokens,
+            external_hit_tokens,
+        )
+        return external_hit_tokens, need_load
+
+    @staticmethod
+    def _record_prefix_cache_token_metrics(
+        request: "Request",
+        num_computed_tokens: int,
+        external_hit_tokens: int,
+    ) -> None:
+        total_tokens = getattr(request, "num_tokens", None)
+        if total_tokens is None:
+            total_tokens = len(getattr(request, "all_token_ids", ()))
+
+        total_tokens = max(int(total_tokens), 0)
+        gpu_hbm_hit_tokens = min(max(int(num_computed_tokens), 0), total_tokens)
+        ucm_hit_tokens = min(
+            max(int(external_hit_tokens), 0),
+            max(total_tokens - gpu_hbm_hit_tokens, 0),
+        )
+        ucmmetrics.update_stats(
+            {
+                "total_prefix_query_tokens_total": total_tokens,
+                "gpu_hbm_hit_tokens_total": gpu_hbm_hit_tokens,
+                "ucm_hit_tokens_total": ucm_hit_tokens,
+            }
+        )
 
     def update_state_after_alloc(
         self, request: "Request", blocks: "KVCacheBlocks", num_external_tokens: int
@@ -3344,39 +3442,6 @@ class UCMConnector(KVConnectorBase_V1, SupportsHMA):
         This prevents overwrites of paged KV buffer before saving done.
         """
         self.connector.wait_for_save()
-
-    def get_kv_connector_stats(self) -> Optional["KVConnectorStats"]:
-        return self.connector.get_kv_connector_stats()
-
-    @classmethod
-    def build_kv_connector_stats(
-        cls, data: dict[str, Any] | None = None
-    ) -> Optional["KVConnectorStats"]:
-        return UCMConnectorStats(data=data) if data is not None else UCMConnectorStats()
-
-    @classmethod
-    def build_prom_metrics(
-        cls,
-        vllm_config: "VllmConfig",
-        metric_types: dict[type["PromMetric"], type["PromMetricT"]],
-        labelnames: list[str],
-        per_engine_labelvalues: dict[int, list[object]],
-    ) -> Optional["KVConnectorPromMetrics"]:
-        if not UCM_HAS_PROM_METRICS:
-            return None
-        config = load_launch_metrics_config(
-            Config(vllm_config.kv_transfer_config).get_config()
-        )
-        if not config or not consumer_enabled(config, VLLM_CONNECTOR_CONSUMER):
-            return None
-        if not get_vllm_connector_metric_definitions(config):
-            return None
-        return UCMPromMetrics(
-            vllm_config,
-            metric_types,
-            labelnames,
-            per_engine_labelvalues,
-        )
 
     def request_finished_all_groups(
         self,
