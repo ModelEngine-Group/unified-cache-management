@@ -31,15 +31,19 @@
 #include <string>
 #include <thread>
 #include <utility>
+#ifdef UCM_ASU_ENABLE_AICPU_PROVIDER
 #include "aicpu_trans_provider.h"
-#ifdef UCM_ASU_ENABLE_AIV
+#endif
+#ifdef UCM_ASU_ENABLE_AIV_PROVIDER
 #include "aiv_trans_provider.h"
 #endif
 #include "asu_response_status.h"
 #include "asu_transport/asu_transport.h"
 #include "connection_internal.h"
 #include "connection_manager.h"
+#ifdef UCM_ASU_ENABLE_FAKE_PROVIDER
 #include "fake_trans_provider.h"
+#endif
 #include "logger.h"
 #include "transport_config_parser.h"
 
@@ -88,19 +92,34 @@ Status AsuTransportImpl::Init(const TransportConfig& config)
     if (!transProvider_) {
         switch (config_.providerType) {
             case TransProviderType::AICPU:
+#ifdef UCM_ASU_ENABLE_AICPU_PROVIDER
                 transProvider_ = std::make_unique<AICPUTransProvider>();
                 break;
+#else
+                return Status::Error(
+                    StatusCode::UNSUPPORTED,
+                    "AICPU trans provider is not built; enable BUILD_UCM_ASU_PROVIDER_AICPU");
+#endif
             case TransProviderType::FAKE:
+#ifdef UCM_ASU_ENABLE_FAKE_PROVIDER
                 transProvider_ =
                     std::make_unique<FakeTransProvider>(MakeFakeTransProviderConfig(config_));
                 break;
-            case TransProviderType::AIV:
-#ifdef UCM_ASU_ENABLE_AIV
-                transProvider_ = std::make_unique<AIVTransProvider>();
 #else
-                return Status::Error(StatusCode::UNSUPPORTED, "AIV backend not enabled");
+                return Status::Error(
+                    StatusCode::UNSUPPORTED,
+                    "FAKE trans provider is not built; enable BUILD_UCM_ASU_PROVIDER_FAKE");
 #endif
+            case TransProviderType::AIV:
+#ifdef UCM_ASU_ENABLE_AIV_PROVIDER
+                transProvider_ = std::make_unique<AIVTransProviderAdapter>();
                 break;
+#else
+                return Status::Error(
+                    StatusCode::UNSUPPORTED,
+                    "AIV trans provider is not built; enable BUILD_UCM_ASU_PROVIDER_AIV and set "
+                    "ASU_AIV_PROVIDER_ROOT");
+#endif
             case TransProviderType::UNSUPPORTED:
                 return Status::Error(StatusCode::UNSUPPORTED,
                                      "ASU trans provider backend is not supported");
@@ -159,6 +178,7 @@ Status AsuTransportImpl::Init(const TransportConfig& config)
 
 Status AsuTransportImpl::Shutdown()
 {
+    Status finalStatus = Status::OK();
     for (const auto& ctx : taskManager_.GetAll()) {
         if (ctx == nullptr) { continue; }
         std::lock_guard<std::mutex> lock(ctx->waitMu);
@@ -178,13 +198,33 @@ Status AsuTransportImpl::Shutdown()
     for (const auto& ctx : taskManager_.GetAll()) {
         if (ctx != nullptr) { (void)taskManager_.Remove(ctx->taskId); }
     }
+    {
+        std::lock_guard<std::mutex> lock(registeredRegionsMu_);
+        std::vector<TransProvider::UnregisterMemoryDesc> descs;
+        descs.reserve(registeredRegionStates_.size());
+        for (const auto& item : registeredRegionStates_) {
+            const auto& state = item.second;
+            descs.push_back(
+                TransProvider::UnregisterMemoryDesc{state.connectionHandle, state.memHandle});
+        }
+        if (!descs.empty() && transProvider_) {
+            const auto statuses = transProvider_->UnregisterMemory(descs);
+            for (const auto& status : statuses) {
+                if (!status.ok() && finalStatus.ok()) { finalStatus = status; }
+            }
+        }
+        registeredRegions_.clear();
+        registeredRegionStates_.clear();
+        registeredRegionConnectionLeases_.clear();
+    }
     if (connManager_) {
-        connManager_->Shutdown();
+        auto status = connManager_->Shutdown();
+        if (!status.ok() && finalStatus.ok()) { finalStatus = status; }
         connManager_.reset();
     }
 
     UC_DEBUG("AsuTransportImpl::Shutdown OK");
-    return Status::OK();
+    return finalStatus;
 }
 
 Status AsuTransportImpl::CheckHealth()
@@ -301,13 +341,80 @@ Status AsuTransportImpl::RegisterRegions(const std::vector<MemoryRegion>& region
     results.reserve(regions.size());
 
     std::lock_guard<std::mutex> lock(registeredRegionsMu_);
+    bool hasFailure = false;
+    std::vector<MRHandle> registeredHandles;
+    std::vector<TransProvider::UnregisterMemoryDesc> registeredDescs;
+    registeredHandles.reserve(regions.size());
+    registeredDescs.reserve(regions.size());
     for (const auto& region : regions) {
-        auto handle = nextMrHandle_.fetch_add(1, std::memory_order_relaxed);
-        if (handle == kInvalidMRHandle) {
-            handle = nextMrHandle_.fetch_add(1, std::memory_order_relaxed);
+        const auto memType = region.memoryType == MemoryType::ASCEND_DEVICE
+                                 ? TransProvider::MemType::MEM_DEVICE
+                                 : TransProvider::MemType::MEM_HOST;
+        std::vector<TransProvider::RegisterMemoryDesc> descs{
+            {memType, static_cast<std::uintptr_t>(region.addr),
+             static_cast<std::size_t>(region.size)}
+        };
+        std::vector<TransProvider::MemHandle> memHandles;
+        auto connectionChannel =
+            memType == TransProvider::MemType::MEM_DEVICE && connManager_ != nullptr
+                ? connManager_->GetActiveConnection()
+                : nullptr;
+        const auto connectionHandle =
+            connectionChannel == nullptr ? nullptr : connectionChannel->GetConnection();
+        if (memType == TransProvider::MemType::MEM_DEVICE && connectionHandle == nullptr) {
+            hasFailure = true;
+            results.emplace_back(RegisterResult{
+                Status::Error(StatusCode::CONNECTION_ERROR,
+                              "transport register device memory requires an active connection"),
+                kInvalidMRHandle});
+            continue;
         }
-        registeredRegions_[handle] = region;
-        results.emplace_back(RegisterResult{Status::OK(), handle});
+
+        auto status = transProvider_->RegisterMemory(connectionHandle, descs, memHandles);
+        if (!status.ok() || memHandles.empty()) {
+            hasFailure = true;
+            results.emplace_back(RegisterResult{
+                status.ok() ? Status::Error(StatusCode::INTERNAL_ERROR,
+                                            "transport register memory returned no handle")
+                            : status,
+                kInvalidMRHandle});
+            continue;
+        }
+
+        auto handle = static_cast<MRHandle>(reinterpret_cast<std::uintptr_t>(memHandles[0]));
+        uint32_t tokenId{0};
+        status = transProvider_->GetMemTokenId(memHandles[0], tokenId);
+        if (!status.ok()) {
+            (void)transProvider_->UnregisterMemory({
+                TransProvider::UnregisterMemoryDesc{connectionHandle, memHandles[0]}
+            });
+            results.emplace_back(RegisterResult{status, kInvalidMRHandle});
+            continue;
+        }
+
+        RegisteredMemory regMem;
+        regMem.region = region;
+        regMem.handle = handle;
+        regMem.tokenId = tokenId;  // Only UB is supported for the current version.
+        registeredRegions_[handle] = regMem;
+        registeredRegionStates_[handle] = RegisteredRegionState{connectionHandle, memHandles[0]};
+        if (connectionChannel != nullptr) {
+            registeredRegionConnectionLeases_[handle] = std::move(connectionChannel);
+        }
+        registeredHandles.emplace_back(handle);
+        registeredDescs.push_back(
+            TransProvider::UnregisterMemoryDesc{connectionHandle, memHandles[0]});
+        results.emplace_back(RegisterResult{Status::OK(), handle, 0, 0, tokenId});
+    }
+    if (hasFailure) {
+        if (!registeredDescs.empty()) { (void)transProvider_->UnregisterMemory(registeredDescs); }
+        for (auto handle : registeredHandles) {
+            registeredRegions_.erase(handle);
+            registeredRegionStates_.erase(handle);
+            registeredRegionConnectionLeases_.erase(handle);
+        }
+        return Status::Error(StatusCode::PARTIAL_FAILED,
+                             "one or more memory regions failed to register");
     }
     return Status::OK();
 }
@@ -320,8 +427,9 @@ Status AsuTransportImpl::BindRegisteredRegions(const std::vector<RegisteredMemor
 
     std::lock_guard<std::mutex> lock(registeredRegionsMu_);
     for (const auto& region : regions) {
-        registeredRegions_[region.handle] = region.region;
-        results.emplace_back(RegisterResult{Status::OK(), region.handle});
+        registeredRegions_[region.handle] = region;
+        results.emplace_back(
+            RegisterResult{Status::OK(), region.handle, region.lkey, region.rkey, region.tokenId});
     }
     return Status::OK();
 }
@@ -329,7 +437,26 @@ Status AsuTransportImpl::BindRegisteredRegions(const std::vector<RegisteredMemor
 Status AsuTransportImpl::UnregisterRegions(const std::vector<MRHandle>& handles)
 {
     std::lock_guard<std::mutex> lock(registeredRegionsMu_);
+    std::vector<TransProvider::UnregisterMemoryDesc> descs;
+    descs.reserve(handles.size());
+    for (auto handle : handles) {
+        if (handle == kInvalidMRHandle) { continue; }
+        auto stateIter = registeredRegionStates_.find(handle);
+        if (stateIter == registeredRegionStates_.end()) { continue; }
+        descs.push_back(TransProvider::UnregisterMemoryDesc{stateIter->second.connectionHandle,
+                                                            stateIter->second.memHandle});
+    }
+
+    if (!descs.empty()) {
+        const auto statuses = transProvider_->UnregisterMemory(descs);
+        for (const auto& status : statuses) {
+            if (!status.ok()) { return status; }
+        }
+    }
+
     for (auto handle : handles) { registeredRegions_.erase(handle); }
+    for (auto handle : handles) { registeredRegionStates_.erase(handle); }
+    for (auto handle : handles) { registeredRegionConnectionLeases_.erase(handle); }
     return Status::OK();
 }
 
@@ -567,5 +694,7 @@ void AsuTransportImpl::SetTransProvider(std::unique_ptr<TransProvider> provider)
 }
 
 std::unique_ptr<AsuTransport> CreateAsuTransport() { return std::make_unique<AsuTransportImpl>(); }
+
+extern "C" std::unique_ptr<AsuTransport> UcmAsuCreateAsuTransport() { return CreateAsuTransport(); }
 
 }  // namespace UC::ASU

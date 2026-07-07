@@ -399,6 +399,7 @@ public:
     bool failGetToken = false;
     MemType lastMemType = MemType::MEM_HOST;
     uintptr_t lastAddr = 0;
+    uintptr_t lastLocalAddr = 0;
     size_t lastSize = 0;
 
     Status CreateConnection(const std::string&, const std::string&, uint32_t, uint32_t, uint32_t,
@@ -421,6 +422,7 @@ public:
         if (!descs.empty()) {
             lastMemType = descs[0].memoryType;
             lastAddr = descs[0].addr;
+            lastLocalAddr = descs[0].localAddr;
             lastSize = descs[0].size;
         }
         if (failRegister) {
@@ -459,6 +461,7 @@ TEST_F(BufferManagerTest, InitWithProviderRegistersMemory)
     ASSERT_EQ(provider.registerCount, 1);
     ASSERT_EQ(provider.lastMemType, TransProvider::MemType::MEM_HOST);
     ASSERT_NE(provider.lastAddr, 0);
+    ASSERT_EQ(provider.lastLocalAddr, provider.lastAddr);
     ASSERT_EQ(provider.lastSize, 1024 * 10);
     ASSERT_EQ(mgr.GetTokenId(), 42);
 
@@ -484,6 +487,7 @@ TEST_F(BufferManagerTest, HostPinnedRegistersDeviceAddress)
     ASSERT_NE(sge.local_addr, sge.device_addr);
     ASSERT_EQ(sge.local_addr % 4096, 0);
     ASSERT_EQ(provider.lastAddr, sge.device_addr);
+    ASSERT_EQ(provider.lastLocalAddr, sge.local_addr);
 
     // The CPU writes through addr while HCOMM and remote RDMA use device_addr.
     std::memset(reinterpret_cast<void*>(sge.local_addr), 0x5A, sge.length);
