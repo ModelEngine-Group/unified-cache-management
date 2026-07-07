@@ -148,6 +148,15 @@ Status Buffer::RegisterHostBuffer(void* host, size_t size, void** pDevice)
     return Status::OK();
 }
 
+Status Buffer::GetHostDevicePointer(void* host, void** pDevice)
+{
+    void* device = nullptr;
+    auto ret = aclrtHostGetDevicePointer(host, &device, 0);
+    if (ret != ACL_SUCCESS) [[unlikely]] { return Status{ret, std::to_string(ret)}; }
+    if (pDevice) { *pDevice = device; }
+    return Status::OK();
+}
+
 void Buffer::UnregisterHostBuffer(void* host) { aclrtHostUnregister(host); }
 
 }  // namespace UC::Trans

@@ -1,7 +1,7 @@
 ﻿#include "tunstall_bf16.h"  // TunstallCompressDynamic
-#include <stddef.h>
-#include <stdint.h>
-#include <string.h>
+#include <cstddef>
+#include <cstdint>
+#include <cstring>
 
 #define ENABLE_NEON_DECOMPPRESSION 1
 #define ENABLE_EXTRA_DECOMPRESSION 1
@@ -14,11 +14,11 @@
 #endif
 
 #define RET_ERROR_IF(err_code, condition) \
-    {                                     \
+    do {                                  \
         int c = (condition);              \
         int e = (err_code);               \
         if (c) { return e; }              \
-    }
+    } while (0)
 
 #define BF16_EXP_MIN (128 - (1 << 4))
 #define BF16_EXP_MAX (128 + (1 << 4) - 1)
@@ -68,7 +68,7 @@ static void decompress_fp8_to_bf16(uint16_t* p_dst, const uint8_t* p_src, size_t
     }
 }
 
-static void decompress_fp8_to_bf16_inplace(uint8_t* p_data, size_t n_bf16)
+static int decompress_fp8_to_bf16_inplace(uint8_t* p_data, size_t n_bf16)
 {
 #if !defined(NEON_DECOMPRESSION)
     for (size_t i = n_bf16; i > 0; i--) {
@@ -80,6 +80,7 @@ static void decompress_fp8_to_bf16_inplace(uint8_t* p_data, size_t n_bf16)
         uint16_t bf16 = sign | exp8 | mant2 | 0x10;
         memcpy(p_data + ((i - 1) << 1), &bf16, sizeof(bf16));
     }
+    return R_TS_OK;
 #else
     uint16_t* dst = (uint16_t*)p_data;
     const uint8_t* src = (const uint8_t*)p_data;
@@ -147,6 +148,7 @@ static void decompress_fp8_to_bf16_inplace(uint8_t* p_data, size_t n_bf16)
         vst1q_u16(dst + i, res_low);
         vst1q_u16(dst + i + 8, res_high);
     }
+    return R_TS_OK;
 #endif
 }
 
@@ -349,7 +351,7 @@ static int decompress_tunstall_trunc(uint16_t* p_dst, const uint8_t* p_src, size
             p_extra += 4;
         }
 
-        memcpy(buf_exp, (buf_exp + BLOCK_SIZE), BLOCK_TAIL);
+        memcpy(buf_exp, buf_exp + BLOCK_SIZE, BLOCK_TAIL);
         p_exp_write -= BLOCK_SIZE;
     }
 
@@ -430,7 +432,7 @@ static int decompress_tunstall_trunc_inplace(uint8_t* p_data, size_t n_bf16)
     size_t sm_total = n_bf16 / 2;
     uint8_t* p_tunstall_src = p_data + sm_total;
 
-    ts_header_t hdr;
+    ts_header_t hdr = {};
     RET_ERROR_IF(R_ERR_SYNTAX, (n_bf16 / 2) < sizeof(hdr.dynamic));
     memcpy(&hdr.dynamic, p_tunstall_src, sizeof(hdr.dynamic));
 
@@ -618,7 +620,7 @@ static int decompress_tunstall_trunc_inplace(uint8_t* p_data, size_t n_bf16)
         }
 
         if (actual_block_size == BLOCK_SIZE) {
-            memcpy(buf_exp, (buf_exp + BLOCK_SIZE), BLOCK_TAIL);
+            memcpy(buf_exp, buf_exp + BLOCK_SIZE, BLOCK_TAIL);
             p_exp_write -= BLOCK_SIZE;
         }
     }
@@ -635,8 +637,7 @@ int TunstallDecompressBF16Inplace(
     RET_ERROR_IF(R_ERR_UNSUPPORT, n_bf16 == 0 || n_bf16 > 0xFFFFFFFFU);
 
     if ((n_bf16 % 32 != 0) || (p_data[n_bf16 / 2] != TS_MODE_DYNAMIC)) {
-        decompress_fp8_to_bf16_inplace(p_data, n_bf16);
-        return R_TS_OK;
+        return decompress_fp8_to_bf16_inplace(p_data, n_bf16);
     } else {
         return decompress_tunstall_trunc_inplace(p_data, n_bf16);
     }

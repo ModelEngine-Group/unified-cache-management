@@ -24,6 +24,8 @@
 #
 import array
 import copy
+import ctypes
+import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Dict, List
@@ -33,6 +35,24 @@ import torch
 
 from ucm.store.pipeline import ucmpipelinestore
 from ucm.store.ucmstore_v1 import Task, UcmKVStoreBaseV1
+
+_preloaded_libraries: Dict[Path, ctypes.CDLL] = {}
+
+
+def _preload_library(path: Path) -> None:
+    if os.name != "posix" or not path.exists():
+        return
+    resolved = path.resolve()
+    if resolved in _preloaded_libraries:
+        return
+    _preloaded_libraries[resolved] = ctypes.CDLL(
+        str(resolved),
+        mode=getattr(os, "RTLD_NOW", 0) | getattr(os, "RTLD_GLOBAL", 0),
+    )
+
+
+def _preload_metrics(store_dir: Path) -> None:
+    _preload_library(store_dir.parent / "shared/metrics/libmetrics.so")
 
 
 class UcmPipelineStoreBuilder:
@@ -166,6 +186,7 @@ def _cache_ds3fs_pipeline_builder(
     if config.get("device_id", -1) >= 0:
         ds3fs_config |= {"tensor_size": config["shard_size"]}
     pipeline.Stack("Ds3fs", str(store_dir / "ds3fs/libds3fsstore.so"), ds3fs_config)
+    _preload_metrics(store_dir)
     pipeline.Stack("Cache", str(store_dir / "cache/libcachestore.so"), config)
 
 
@@ -174,6 +195,7 @@ def _cache_empty_pipeline_builder(
 ):
     store_dir = Path(__file__).resolve().parent.parent
     pipeline.Stack("Empty", str(store_dir / "empty/libemptystore.so"), config)
+    _preload_metrics(store_dir)
     pipeline.Stack("Cache", str(store_dir / "cache/libcachestore.so"), config)
 
 
@@ -184,6 +206,7 @@ def _cache_posix_pipeline_builder(
     posix_config = copy.deepcopy(config)
     if config.get("device_id", -1) >= 0:
         posix_config |= {"tensor_size": config["shard_size"]}
+    _preload_metrics(store_dir)
     pipeline.Stack("Posix", str(store_dir / "posix/libposixstore.so"), posix_config)
     pipeline.Stack("Cache", str(store_dir / "cache/libcachestore.so"), config)
 
@@ -197,7 +220,8 @@ def _build_cache_compress_posix_pipeline(
     if config.get("device_id", -1) >= 0:
         if (posix_config["block_size"] % posix_config["shard_size"]) != 0:
             print(
-                f'_build_cache_compress_posix_pipeline: error paraments {posix_config["block_size"]} {posix_config["shard_size"]}'
+                "_build_cache_compress_posix_pipeline: error paraments "
+                f"{posix_config['block_size']} {posix_config['shard_size']}"
             )
             return
         layers = posix_config["block_size"] // posix_config["shard_size"]
@@ -209,6 +233,7 @@ def _build_cache_compress_posix_pipeline(
         posix_config["tensor_size"] = int(posix_config["shard_size"])
         posix_config["block_size"] = int(posix_config["shard_size"] * layers)
 
+    _preload_metrics(store_dir)
     pipeline.Stack("Posix", str(store_dir / "posix/libposixstore.so"), posix_config)
     pipeline.Stack("Compress", str(store_dir / "compress/libcompressor.so"), config)
     pipeline.Stack("Cache", str(store_dir / "cache/libcachestore.so"), config)
@@ -234,6 +259,7 @@ def _posix_pipeline_builder(
     config: Dict[str, object], pipeline: ucmpipelinestore.PipelineStore
 ):
     store_dir = Path(__file__).resolve().parent.parent
+    _preload_metrics(store_dir)
     pipeline.Stack("Posix", str(store_dir / "posix/libposixstore.so"), config)
 
 
@@ -244,7 +270,31 @@ def _cache_fake_pipeline_builder(
     fake_config = copy.deepcopy(config)
     fake_config["share_buffer_enable"] = True
     pipeline.Stack("Fake", str(store_dir / "fake/libfakestore.so"), fake_config)
+    _preload_metrics(store_dir)
     pipeline.Stack("Cache", str(store_dir / "cache/libcachestore.so"), config)
+
+
+def _mooncake_pipeline_builder(
+    config: Dict[str, object], pipeline: ucmpipelinestore.PipelineStore
+):
+    store_dir = Path(__file__).resolve().parent.parent
+    pipeline.Stack(
+        "Mooncake", str(store_dir / "mooncakestore/libmooncakestore.so"), config
+    )
+
+
+def _mooncake_posix_pipeline_builder(
+    config: Dict[str, object], pipeline: ucmpipelinestore.PipelineStore
+):
+    store_dir = Path(__file__).resolve().parent.parent
+    posix_config = copy.deepcopy(config)
+    if config.get("device_id", -1) >= 0:
+        posix_config |= {"tensor_size": config["shard_size"]}
+    _preload_metrics(store_dir)
+    pipeline.Stack("Posix", str(store_dir / "posix/libposixstore.so"), posix_config)
+    pipeline.Stack(
+        "Mooncake", str(store_dir / "mooncakestore/libmooncakestore.so"), config
+    )
 
 
 UcmPipelineStoreBuilder.register("Cache|Ds3fs", _cache_ds3fs_pipeline_builder)
@@ -257,3 +307,5 @@ UcmPipelineStoreBuilder.register(
     "Cache|Compress|Posix", _build_cache_compress_posix_pipeline
 )
 UcmPipelineStoreBuilder.register("Cache|Fake", _cache_fake_pipeline_builder)
+UcmPipelineStoreBuilder.register("Mooncake", _mooncake_pipeline_builder)
+UcmPipelineStoreBuilder.register("Mooncake|Posix", _mooncake_posix_pipeline_builder)

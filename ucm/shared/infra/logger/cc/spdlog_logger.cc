@@ -42,11 +42,30 @@ static spdlog::level::level_enum SpdLevels[] = {spdlog::level::debug, spdlog::le
                                                 spdlog::level::warn, spdlog::level::err,
                                                 spdlog::level::critical};
 
+/* The async logger formats messages on a background thread after the caller
+ * has returned, but spdlog::source_loc only stores raw char pointers; intern
+ * file/function names so those pointers stay valid for the process lifetime. */
+const char* InternSourceString(std::string&& s)
+{
+    static std::mutex mtx;
+    static std::unordered_set<std::string> pool;
+    std::lock_guard<std::mutex> lg(mtx);
+    return pool.insert(std::move(s)).first->c_str();
+}
+
 void Logger::Log(Level&& lv, SourceLocation&& loc, std::string&& msg)
 {
     auto level = SpdLevels[fmt::underlying(lv)];
-    this->logger_ = this->Make();
-    this->logger_->log(spdlog::source_loc{loc.file, loc.line, loc.func}, level, std::move(msg));
+    auto logger = this->Make();
+    logger->log(spdlog::source_loc{loc.file, loc.line, loc.func}, level, std::move(msg));
+}
+
+void Logger::LogFileOnly(Level&& lv, SourceLocation&& loc, std::string&& msg)
+{
+    auto level = SpdLevels[fmt::underlying(lv)];
+    auto logger = this->MakeCapture();
+    if (!logger) { return; }
+    logger->log(spdlog::source_loc{loc.file, loc.line, loc.func}, level, std::move(msg));
 }
 
 inline uint64_t GetCurrentTimeMs()
@@ -126,35 +145,81 @@ bool Logger::FilterCallSite(const char* file, int line)
     return false;
 }
 
+static bool EnvFlag(const char* name, bool defaultValue)
+{
+    auto value = spdlog::details::os::getenv(name);
+    if (value.empty()) { return defaultValue; }
+    std::transform(value.begin(), value.end(), value.begin(), ::tolower);
+    return value != "false" && value != "0" && value != "off";
+}
+
 std::shared_ptr<spdlog::logger> Logger::Make()
 {
     if (this->logger_) { return this->logger_; }
     std::lock_guard<std::mutex> lg(this->mutex_);
     if (this->logger_) { return this->logger_; }
     std::string pid = std::to_string(getpid());
-    std::string log_path = this->path_ + "/" + pid + "/ucm.log";
+    std::string log_path = this->path_ + "/ucm-" + pid + ".log";
     const std::string name = "UC";
-    const std::string envLevel = name + "_LOGGER_LEVEL";
     try {
+        if (!spdlog::thread_pool()) { spdlog::init_thread_pool(8192, 1); }
+        auto tp = spdlog::thread_pool();
+
         auto console_sink = std::make_shared<spdlog::sinks::stdout_color_sink_mt>();
-        auto file_sink = std::make_shared<spdlog::sinks::rotating_file_sink_mt>(
-            log_path, this->max_size_, this->max_files_);
         std::vector<spdlog::sink_ptr> sinks;
         sinks.push_back(console_sink);
-        sinks.push_back(file_sink);
-        this->logger_ = std::make_shared<spdlog::logger>(name, sinks.begin(), sinks.end());
-        this->logger_->set_pattern("[%Y-%m-%d %H:%M:%S.%f][%n][%^%L%$] %v [%P,%t][%s:%#,%!]");
-        auto level_str = spdlog::details::os::getenv(envLevel.c_str());
+
+        this->file_enabled_ = EnvFlag("UCM_LOG_TO_FILE", true);
+        if (this->file_enabled_) {
+            auto file_sink = std::make_shared<spdlog::sinks::rotating_file_sink_mt>(
+                log_path, this->max_size_, this->max_files_);
+            sinks.push_back(file_sink);
+        }
+
+        auto logger = std::make_shared<spdlog::async_logger>(
+            name, sinks.begin(), sinks.end(), tp, spdlog::async_overflow_policy::overrun_oldest);
+        logger->set_pattern("[%Y-%m-%d %H:%M:%S.%f][%n][%^%L%$] %v [%P,%t][%s:%#,%!]");
+
+        auto level_str = spdlog::details::os::getenv("UCM_LOG_LEVEL");
+        if (level_str.empty()) { level_str = spdlog::details::os::getenv("UC_LOGGER_LEVEL"); }
         if (!level_str.empty()) {
             auto level = spdlog::level::from_str(level_str);
-            if (level != spdlog::level::off || level_str == "off") {
-                this->logger_->set_level(level);
-            }
+            if (level != spdlog::level::off || level_str == "off") { logger->set_level(level); }
         }
-        spdlog::register_logger(this->logger_);
+        logger->flush_on(spdlog::level::warn);
+        spdlog::register_logger(logger);
+
+        spdlog::flush_every(std::chrono::seconds(1));
+        this->logger_ = logger;
         return this->logger_;
     } catch (...) {
         return spdlog::default_logger();
+    }
+}
+
+std::shared_ptr<spdlog::logger> Logger::MakeCapture()
+{
+    if (this->file_logger_) { return this->file_logger_; }
+    auto main_logger = this->Make();
+    if (!this->file_enabled_) { return nullptr; }
+    std::lock_guard<std::mutex> lg(this->mutex_);
+    if (this->file_logger_) { return this->file_logger_; }
+    std::string pid = std::to_string(getpid());
+    std::string log_path = this->path_ + "/vllm-" + pid + ".log";
+    try {
+        auto file_sink = std::make_shared<spdlog::sinks::rotating_file_sink_mt>(
+            log_path, this->max_size_, this->max_files_);
+        auto logger =
+            std::make_shared<spdlog::async_logger>("VLLM", file_sink, spdlog::thread_pool(),
+                                                   spdlog::async_overflow_policy::overrun_oldest);
+        logger->set_pattern("[%Y-%m-%d %H:%M:%S.%f][%n][%^%L%$] %v [%P,%t][%s:%#,%!]");
+        if (main_logger) { logger->set_level(main_logger->level()); }
+        logger->flush_on(spdlog::level::warn);
+        spdlog::register_logger(logger);
+        this->file_logger_ = logger;
+        return this->file_logger_;
+    } catch (...) {
+        return nullptr;
     }
 }
 
@@ -170,6 +235,7 @@ void Logger::Flush()
 {
     std::lock_guard<std::mutex> lg(this->mutex_);
     if (this->logger_) { this->logger_->flush(); }
+    if (this->file_logger_) { this->file_logger_->flush(); }
 }
 
 bool Logger::IsEnabledFor(Level lv)

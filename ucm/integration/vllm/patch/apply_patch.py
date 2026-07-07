@@ -114,7 +114,15 @@ def get_vllm_version() -> Optional[str]:
 
 def get_supported_versions() -> list[str]:
     """Get patch-required vLLM versions."""
-    return ["0.11.0", "0.17.0", "0.18.0", "0.19.0"]
+    return [
+        "0.11.0",
+        "0.17.0",
+        "0.18.0",
+        "0.19.1",
+        "0.20.2",
+        "0.21.0",
+        "0.22.1",
+    ]
 
 
 def apply_all_patches() -> None:
@@ -137,6 +145,13 @@ def apply_all_patches() -> None:
                 f"Versions applicable for UCM patches: {', '.join(supported_versions)}."
             )
 
+        ascend_version = get_vllm_ascend_version()
+        # UCM PATCH: vllm-ascend registers UCMConnector as an alias for the
+        # concrete UCMConnectorV1 class used by MultiConnector metrics.
+        if ascend_version in {"0.18.0", "0.19.1", "0.20.2", "0.22.1"}:
+            logger.info("UCM patching vllm-ascend UCM connector metrics alias...")
+            import ucm.integration.vllm.patch.ucm_connector_registration_patch
+
         # Apply vllm/vllm-ascend version-specific patches
         # vllm patches
         match version:
@@ -150,11 +165,24 @@ def apply_all_patches() -> None:
             case "0.18.0":
                 logger.info("UCM patching vllm for pc...")
                 import ucm.integration.vllm.patch.v0180.vllm.pc_patch
+            case "0.19.1":
+                logger.info("UCM patching vllm for pc...")
+                import ucm.integration.vllm.patch.v0191.vllm.pc_patch
+            case "0.20.2":
+                logger.info("UCM patching vllm 0.20.2 for load-failure recovery...")
+                import ucm.integration.vllm.patch.v0202.vllm.load_failure_patch
+            case "0.21.0":
+                logger.info("UCM patching vllm 0.21.0 for load-failure recovery...")
+                import ucm.integration.vllm.patch.v0202.vllm.load_failure_patch
             case _:
                 pass
 
+        major, minor, *_ = version.split(".")
+        if (int(major), int(minor)) >= (0, 21):
+            logger.info("UCM patching vllm for load-failure recovery...")
+            import ucm.integration.vllm.patch.load_failure_patch
+
         # vllm_ascend patches
-        ascend_version = get_vllm_ascend_version()
         match ascend_version:
             case "0.11.0":
                 logger.info("UCM patching vllm-ascend for pc...")
@@ -166,9 +194,25 @@ def apply_all_patches() -> None:
             case "0.18.0":
                 logger.info("UCM patching vllm-ascend for pc...")
                 import ucm.integration.vllm.patch.v0180.vllm_ascend.pc_ascend_patch
-            case "0.17.0" | "0.19.0":
+            case "0.17.0":
                 logger.info(f"UCM patching vllm-ascend {ascend_version} for pc...")
                 import ucm.integration.vllm.patch.v0180.vllm_ascend.ucm_connector_patch
+            case "0.19.1":
+                logger.info(f"UCM patching vllm-ascend {ascend_version} for pc...")
+                import ucm.integration.vllm.patch.v0191.vllm_ascend.cpu_binding_patch
+                import ucm.integration.vllm.patch.v0191.vllm_ascend.pc_ascend_patch
+            case "0.20.2":
+                logger.info(
+                    "UCM patching vllm-ascend 0.20.2 for hybrid cache recovery..."
+                )
+                import ucm.integration.vllm.patch.v0202.vllm_ascend.ascend_hybrid_cache_patch
+                import ucm.integration.vllm.patch.v0202.vllm_ascend.cpu_binding_patch
+            case "0.21.0":
+                logger.info(
+                    "UCM patching vllm-ascend 0.21.0 for hybrid cache recovery..."
+                )
+                import ucm.integration.vllm.patch.v0210.vllm_ascend.ascend_hybrid_cache_patch
+                import ucm.integration.vllm.patch.v0210.vllm_ascend.cpu_binding_patch
             case _:
                 pass
 

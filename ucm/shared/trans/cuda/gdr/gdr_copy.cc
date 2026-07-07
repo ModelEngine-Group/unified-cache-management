@@ -742,6 +742,8 @@ void GdrCopyLib::RegisterHostBuffer(void* host, size_t size)
         try {
             channel.RegisterHostBuffer(reinterpret_cast<uint64_t>(host), size);
         } catch (...) {
+            // Ignore registration failure on existing channels, as the new registration will be
+            // picked up later.
         }
     });
 }

@@ -14,6 +14,8 @@ COPY . /workspace/unified-cache-management
 
 RUN pip config set global.index-url ${PIP_INDEX_URL}
 
+ENV UCM_ENGINE_TYPE=vllm-ascend.a2
+
 # Build or link package
 RUN if [ "${INSTALL_MODE}" != "package" ]; then \
         pip install --no-cache-dir build cmake && \
@@ -25,5 +27,10 @@ RUN if [ "${INSTALL_MODE}" != "package" ]; then \
 
 # Install UCM
 RUN pip install /workspace/package/uc_manager-*.whl
+
+# Run optional post-install hook
+RUN if [ -f /workspace/package/install.sh ]; then \
+        bash /workspace/package/install.sh; \
+    fi
 
 CMD ["/bin/bash"]

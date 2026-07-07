@@ -43,6 +43,7 @@ public:
     virtual std::shared_ptr<void> GetHostBuffer(size_t size) = 0;
 
     static Status RegisterHostBuffer(void* host, size_t size, void** pDevice = nullptr);
+    static Status GetHostDevicePointer(void* host, void** pDevice);
     static void UnregisterHostBuffer(void* host);
 };
 

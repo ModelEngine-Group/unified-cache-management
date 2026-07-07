@@ -79,6 +79,11 @@ public:
             if (Valid()) { return buf_->DataAt(pos_); }
             return nullptr;
         }
+        void* DeviceData()
+        {
+            if (Valid()) { return buf_->DeviceDataAt(pos_); }
+            return nullptr;
+        }
         bool Ready() const { return buf_->Ready(pos_); };
         void MarkReady() { buf_->MarkReady(pos_); };
 
@@ -111,6 +116,7 @@ private:
     void MoveTo(size_t iBucket, size_t iNode);
     void Remove(size_t iBucket, size_t iNode);
     void* DataAt(Index pos);
+    void* DeviceDataAt(Index pos);
     void Acquire(Index pos);
     void Release(Index pos);
     bool Ready(Index pos);

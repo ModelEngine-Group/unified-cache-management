@@ -1,0 +1,38 @@
+# UCM + Mooncake Configuration Example
+#
+# Prerequisites:
+#   1. mooncake master_service running: mooncake_master --port 50088
+#   2. libmooncakestore.so built and installed
+#   3. NPU device available
+#
+# Usage:
+#   kv_connector_extra_config={"UCM_CONFIG_FILE": "/path/to/ucm_mooncake_config.yaml"}
+
+ucm_connectors:
+  - ucm_connector_name: "UcmPipelineStore"
+    ucm_connector_config:
+      store_pipeline: "Mooncake|Posix"
+      local_hostname: "127.0.0.1"
+      master_server_address: "127.0.0.1:50088"
+      metadata_server: "P2PHANDSHAKE"
+      protocol: "ascend"
+      global_segment_size_gb: 30
+      replica_num: 1
+      storage_backends: "/mnt/test"
+      io_direct: true
+      posix_io_engine: "aio"
+      share_buffer_capacity_gb: 64
+
+# prerequisiteHandle requires event sync to ensure NPU compute finishes
+# before Mooncake reads device memory for dump.
+enable_event_sync: true
+
+# Enable UCM metrics (optional)
+# metrics_config_path: "/workspace/unified-cache-management/examples/metrics/metrics_configs.yaml"
+
+# Sparse attention (optional)
+# ucm_sparse_config:
+#   GSAOnDevice: {}
+
+# Whether to use layerwise loading/saving (optional, default: True for UCMConnector)
+use_layerwise: false

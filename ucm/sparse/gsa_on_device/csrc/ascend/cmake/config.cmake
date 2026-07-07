@@ -134,15 +134,6 @@ if (BUILD_OPEN_PROJECT)
     endif ()
 
     # Build phase
-    #   Executable runtime library file search path RPATH
-    #       Do not skip RPATH in UTest and Example scenarios
-    if (TESTS_UT_OPS_TEST OR TESTS_EXAMPLE_OPS_TEST)
-        set(CMAKE_SKIP_RPATH FALSE)
-    else ()
-        set(CMAKE_SKIP_RPATH TRUE)
-    endif ()
-
-    # Build phase
     #   CCACHE configuration
     if (ENABLE_CCACHE)
         if (CUSTOM_CCACHE)

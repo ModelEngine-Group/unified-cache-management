@@ -1,8 +1,8 @@
 
-#include <limits.h>  // from limits.h import UINT32_MAX
-#include <math.h>    // from math.h import log
-#include <stdlib.h>  // from stdlib.h import qsort
-#include <string.h>  // from string.h import memset, memcpy
+#include <climits>  // from climits import UINT32_MAX
+#include <cmath>    // from cmath import log
+#include <cstdlib>  // from cstdlib import qsort
+#include <cstring>  // from cstring import memset, memcpy
 #if TS_DEBUG_PRINT
 #include <stdio.h>
 #endif
@@ -18,16 +18,16 @@
 #define TS_DEBUG_PRINT 0
 
 #define RET_ERROR_IF(err_code, condition) \
-    {                                     \
+    do {                                  \
         int c = (condition);              \
         int e = (err_code);               \
         if (c) { return e; }              \
-    }
+    } while (0)
 #define RET_WHEN_ERROR(err_code) \
-    {                            \
+    do {                         \
         int e = (err_code);      \
         if (e) { return e; }     \
-    }
+    } while (0)
 
 // 获取 header 占用的字节数
 static size_t ts_get_header_length(const ts_header_t* p_hdr)
@@ -64,15 +64,18 @@ static int ts_do_not_compress(uint8_t* p_dst, size_t* p_dst_len, const uint8_t* 
 
 // 建立 idx -> symb 的映射表 (idx2symb)
 // 建立 symb -> idx 的映射表 (symb2idx)
-static void ts_build_idx2symb_symb2idx(uint8_t* p_idx2symb, uint8_t* p_symb2idx,
-                                       const ts_hist_t* p_hist)
+static int ts_build_idx2symb_symb2idx(uint8_t* p_idx2symb, size_t idx2symb_len, uint8_t* p_symb2idx,
+                                      size_t symb2idx_len, const ts_hist_t* p_hist)
 {
+    RET_ERROR_IF(R_ERR_DST_OVERFLOW, idx2symb_len < (size_t)p_hist->n_symb);
+    RET_ERROR_IF(R_ERR_DST_OVERFLOW, symb2idx_len < TS_N_SYMB);
     for (int idx = 0; idx < p_hist->n_symb;
          idx++) {  // 这里 symb 循环变量类型要取 int 而不uint8_t ，避免死循环
         uint8_t symb = p_hist->hist[idx].symb;
         p_idx2symb[idx] = symb;
         p_symb2idx[symb] = idx;
     }
+    return R_TS_OK;
 }
 
 // 功能: 使用函数构建预设表的归一化概率分布表 (PDF) ，也即ts_predef_lut_t->probs
@@ -196,15 +199,15 @@ static uint32_t ts_search_largest_item(const ts_lut_item_t* p_lut, const double*
 }
 
 // 功能: 检查LUT
-static int ts_check_lut(const ts_lut_item_t* p_lut)
+static int ts_check_lut(const ts_lut_item_t* p_lut, size_t lut_size)
 {
     uint32_t mark = 0;
-    for (; mark < TS_LUT_SIZE; mark++) {
+    for (; mark < lut_size; mark++) {
         uint8_t cnt = p_lut[mark].c;
         RET_ERROR_IF(R_ERR_LUT_CHECK, cnt > TS_ITEM_SIZE);  // 无效项检
         if (cnt == 0) { break; }
     }
-    for (; mark < TS_LUT_SIZE; mark++) {
+    for (; mark < lut_size; mark++) {
         uint8_t cnt = p_lut[mark].c;
         RET_ERROR_IF(R_ERR_LUT_CHECK, cnt != 0);
     }
@@ -226,10 +229,11 @@ static uint16_t ts_goto_state_by_lut_item(const ts_enc_state_item_t* p_enc_table
 // 功能: tunstall LUT 展开算法
 //       每次LUT 中删除概率最大的 item, 并遍历所有非symb , 给这里item 末尾拼上这个 symb
 //       作为最新的一item 加入 LUT 顺便也会建立状态转移树p_enc_table , 用来压缩
-static int ts_build_lut(ts_lut_item_t* p_lut,
-                        ts_enc_state_item_t* p_enc_table,  // 建立状态转移树，用来进tunstall 压缩
-                        const ts_hist_t* p_hist)
+static int ts_build_lut(ts_lut_item_t* p_lut, size_t max_lut_size, ts_enc_state_item_t* p_enc_table,
+                        size_t enc_table_size, const ts_hist_t* p_hist)
 {
+    (void)max_lut_size;
+    (void)enc_table_size;
     int n_symb = p_hist->n_symb;
 
     double lut_prob[TS_LUT_SIZE] = {1.0};  // 数组：记录各 item 的条件概率。其init_mark 的概= 1.0
@@ -333,10 +337,11 @@ int TunstallInitAllPredefTables(TunstallPredefTables_t* p_predef_luts)
     for (int lambda = 0; lambda < TS_COUNT_PREDEF; lambda++) {
         RET_WHEN_ERROR(
             ts_init_predef_probs(&(p_predef_luts->hist[lambda]), TS_N_SYMB_PREDEF, lambda));
-        RET_WHEN_ERROR(ts_build_lut(p_predef_luts->lut[lambda], p_predef_luts->etree[lambda],
+        RET_WHEN_ERROR(ts_build_lut(p_predef_luts->lut[lambda], TS_LUT_SIZE,
+                                    p_predef_luts->etree[lambda], TS_ENC_STATE_TABLE_SIZE,
                                     &(p_predef_luts->hist[lambda])));
-        RET_WHEN_ERROR(
-            ts_check_lut(p_predef_luts->lut[lambda]));  // 检查刚建立LUT 表是否符合一些基本要
+        RET_WHEN_ERROR(ts_check_lut(p_predef_luts->lut[lambda],
+                                    TS_LUT_SIZE));  // 检查刚建立LUT 表是否符合一些基本要
     }
     p_predef_luts->initialized = 1;
     return R_TS_OK;
@@ -485,9 +490,9 @@ int TunstallCompressDynamic(uint8_t* p_dst, size_t* p_dst_len, const uint8_t* p_
 
     ts_enc_state_item_t
         etree[TS_ENC_STATE_TABLE_SIZE];  // TODO : TS_N_SYMB 太大小 etree 占空间太大，栈放不下
-    RET_WHEN_ERROR(
-        ts_build_lut(p_hdr->dynamic.lut, etree, &hist));  // 建立 LUT, 直接建立p_hdr->dynamic.lut
-    RET_WHEN_ERROR(ts_check_lut(p_hdr->dynamic.lut));     // 检LUT 表是否符合一些基本要
+    RET_WHEN_ERROR(ts_build_lut(p_hdr->dynamic.lut, TS_LUT_SIZE, etree, TS_ENC_STATE_TABLE_SIZE,
+                                &hist));  // 建立 LUT, 直接建立p_hdr->dynamic.lut
+    RET_WHEN_ERROR(ts_check_lut(p_hdr->dynamic.lut, TS_LUT_SIZE));  // 检LUT 表是否符合一些基本要
     p_hdr->mode = TS_MODE_DYNAMIC;
     p_hdr->dynamic.src_len =
         static_cast<uint32_t>(src_len);  // 标记为动态表模式，让解压器能识别模式
@@ -532,7 +537,8 @@ int TunstallCompressPredef(uint8_t* p_dst, size_t* p_dst_len, const uint8_t* p_s
     p_hdr->n_symb = hist.n_symb;
     p_hdr->src_len = static_cast<uint32_t>(src_len);
     uint8_t symb2idx[TS_N_SYMB];
-    ts_build_idx2symb_symb2idx(p_hdr->idx2symb, symb2idx, &hist);  // 建立 idx2symb/symb2idx 映射
+    RET_WHEN_ERROR(
+        ts_build_idx2symb_symb2idx(p_hdr->idx2symb, TS_N_SYMB_PREDEF, symb2idx, TS_N_SYMB, &hist));
 
 #if TS_DEBUG_PRINT         //
     ts_print_hist(&hist);  // 打印符号统计
@@ -601,7 +607,7 @@ int TunstallDecompress(uint8_t* p_dst, size_t* p_dst_len, const uint8_t* p_src,
 
         if (p_hdr->mode == TS_MODE_DYNAMIC) {
             p_lut = p_hdr->dynamic.lut;
-            RET_WHEN_ERROR(ts_check_lut(p_lut));
+            RET_WHEN_ERROR(ts_check_lut(p_lut, TS_LUT_SIZE));
             n_mark = p_hdr->dynamic.n_mark;
             src_len = p_hdr->dynamic.src_len;
         } else if (TS_MODE_PREDEF_START <= p_hdr->mode && p_hdr->mode < TS_MODE_PREDEF_END) {

@@ -1,6 +1,11 @@
+#ifndef MEMORY_POOL_H
+#define MEMORY_POOL_H
+
 #include <cstddef>
 #include <cstdlib>
+#include <memory>
 #include <mutex>
+#include <new>
 #include <vector>
 #include "logger/logger.h"
 
@@ -20,12 +25,16 @@ public:
         this->blockSize = (blockSize + 4095) & ~static_cast<size_t>(4095);
         size_t totalSize = this->blockSize * poolSize;
 
-        if (posix_memalign(&pool, 4096, totalSize) != 0) {}
+        void* rawPool = nullptr;
+        if (posix_memalign(&rawPool, 4096, totalSize) != 0) { throw std::bad_alloc(); }
+        std::unique_ptr<void, decltype(&free)> poolGuard(rawPool, &free);
 
         freeBlocks.reserve(poolSize);
         for (size_t i = 0; i < poolSize; ++i) {
-            freeBlocks.push_back(static_cast<char*>(pool) + i * this->blockSize);
+            freeBlocks.push_back(static_cast<char*>(rawPool) + i * this->blockSize);
         }
+
+        pool = poolGuard.release();
     }
 
     ~MemoryPool()
@@ -37,6 +46,7 @@ public:
     void* allocate()
     {
         std::lock_guard<std::mutex> lock(mutex_);
+        if (freeBlocks.empty()) { throw std::bad_alloc(); }
         void* block = freeBlocks.back();
         freeBlocks.pop_back();
         return block;
@@ -52,3 +62,5 @@ public:
 };
 
 }  // namespace UC::Compressor
+
+#endif  // MEMORY_POOL_H
