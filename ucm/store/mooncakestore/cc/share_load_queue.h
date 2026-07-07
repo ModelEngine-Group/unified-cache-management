@@ -70,6 +70,8 @@ private:
     void HandleReadyTask(Status s, BlockTask& task, Trans::Stream& stream);
     void HandleBackendComplete(BlockTask& task, Trans::Stream& stream);
     Status HostToDeviceScatterAsync(Trans::Stream& stream, void* host, void** device);
+    size_t BlockBytes() const;
+    void RecordH2dMetrics(double h2dMs) const;
 
 private:
     std::atomic_bool stop_{false};
