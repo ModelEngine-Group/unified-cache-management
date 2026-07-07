@@ -47,6 +47,437 @@
         "type": "prometheus",
         "uid": "${DS_PROMETHEUS}"
       },
+      "description": "Total over the selected dashboard time range.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "decimals": 2,
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 5,
+        "x": 0,
+        "y": 0
+      },
+      "id": 18,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "showPercentChange": false,
+        "textMode": "auto",
+        "wideLayout": true
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "sum(increase(vllm:prompt_tokens_total{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\"}[$__range]))",
+          "instant": true,
+          "legendFormat": "Total Input Tokens",
+          "range": false,
+          "refId": "A"
+        }
+      ],
+      "title": "Total Input Tokens",
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "description": "Total over the selected dashboard time range.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "decimals": 2,
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 5,
+        "x": 5,
+        "y": 0
+      },
+      "id": 19,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "showPercentChange": false,
+        "textMode": "auto",
+        "wideLayout": true
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "sum(increase(vllm:generation_tokens_total{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\"}[$__range]))",
+          "instant": true,
+          "legendFormat": "Total Output Tokens",
+          "range": false,
+          "refId": "A"
+        }
+      ],
+      "title": "Total Output Tokens",
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "description": "Total over the selected dashboard time range.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "decimals": 2,
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 5,
+        "x": 10,
+        "y": 0
+      },
+      "id": 20,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "showPercentChange": false,
+        "textMode": "auto",
+        "wideLayout": true
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "sum(increase(ucm:total_prefix_query_tokens_total{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\"}[$__range]))",
+          "instant": true,
+          "legendFormat": "Prefix Cache Query Tokens",
+          "range": false,
+          "refId": "A"
+        }
+      ],
+      "title": "Prefix Cache Query Tokens",
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "description": "Total over the selected dashboard time range.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "decimals": 2,
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 5,
+        "x": 15,
+        "y": 0
+      },
+      "id": 21,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "showPercentChange": false,
+        "textMode": "auto",
+        "wideLayout": true
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "sum(increase(ucm:gpu_hbm_hit_tokens_total{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\"}[$__range]))",
+          "instant": true,
+          "legendFormat": "GPU/HBM Prefix Hit Tokens",
+          "range": false,
+          "refId": "A"
+        }
+      ],
+      "title": "GPU/HBM Prefix Hit Tokens",
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "description": "Total over the selected dashboard time range.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "decimals": 2,
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 20,
+        "y": 0
+      },
+      "id": 22,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "showPercentChange": false,
+        "textMode": "auto",
+        "wideLayout": true
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "sum(increase(ucm:ucm_hit_tokens_total{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\"}[$__range]))",
+          "instant": true,
+          "legendFormat": "UCM Prefix Hit Tokens",
+          "range": false,
+          "refId": "A"
+        }
+      ],
+      "title": "UCM Prefix Hit Tokens",
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "description": "Selected time range breakdown of UCM-observed prefix cache query tokens: GPU/HBM hits, UCM hits, and misses.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 24,
+        "x": 0,
+        "y": 4
+      },
+      "id": 23,
+      "options": {
+        "displayLabels": [
+          "name",
+          "value",
+          "percent"
+        ],
+        "legend": {
+          "displayMode": "table",
+          "placement": "right",
+          "showLegend": true,
+          "values": [
+            "value",
+            "percent"
+          ]
+        },
+        "pieType": "pie",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "none"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "sum(increase(ucm:gpu_hbm_hit_tokens_total{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\"}[$__range]))",
+          "instant": true,
+          "legendFormat": "GPU/HBM Prefix Hit Tokens",
+          "range": false,
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "sum(increase(ucm:ucm_hit_tokens_total{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\"}[$__range]))",
+          "instant": true,
+          "legendFormat": "UCM Prefix Hit Tokens",
+          "range": false,
+          "refId": "B"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "clamp_min((sum(increase(ucm:total_prefix_query_tokens_total{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\"}[$__range]))) - (sum(increase(ucm:gpu_hbm_hit_tokens_total{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\"}[$__range]))) - (sum(increase(ucm:ucm_hit_tokens_total{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\"}[$__range]))), 0)",
+          "instant": true,
+          "legendFormat": "Misses",
+          "range": false,
+          "refId": "C"
+        }
+      ],
+      "title": "Prefix Cache Query Breakdown",
+      "type": "piechart"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
       "description": "End to end request latency measured in seconds.",
       "fieldConfig": {
         "defaults": {
@@ -108,7 +539,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 0
+        "y": 12
       },
       "id": 9,
       "options": {
@@ -132,7 +563,7 @@
           },
           "disableTextWrap": false,
           "editorMode": "builder",
-          "expr": "histogram_quantile(0.99, sum by(le) (rate(vllm:e2e_request_latency_seconds_bucket{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\"}[$__rate_interval])))",
+          "expr": "histogram_quantile(0.99, sum by(le) (rate(vllm:e2e_request_latency_seconds_bucket{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\"}[$__rate_interval])))",
           "fullMetaSearch": false,
           "includeNullMetadata": false,
           "instant": false,
@@ -148,7 +579,7 @@
           },
           "disableTextWrap": false,
           "editorMode": "builder",
-          "expr": "histogram_quantile(0.95, sum by(le) (rate(vllm:e2e_request_latency_seconds_bucket{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\"}[$__rate_interval])))",
+          "expr": "histogram_quantile(0.95, sum by(le) (rate(vllm:e2e_request_latency_seconds_bucket{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\"}[$__rate_interval])))",
           "fullMetaSearch": false,
           "hide": false,
           "includeNullMetadata": false,
@@ -165,7 +596,7 @@
           },
           "disableTextWrap": false,
           "editorMode": "builder",
-          "expr": "histogram_quantile(0.9, sum by(le) (rate(vllm:e2e_request_latency_seconds_bucket{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\"}[$__rate_interval])))",
+          "expr": "histogram_quantile(0.9, sum by(le) (rate(vllm:e2e_request_latency_seconds_bucket{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\"}[$__rate_interval])))",
           "fullMetaSearch": false,
           "hide": false,
           "includeNullMetadata": false,
@@ -182,7 +613,7 @@
           },
           "disableTextWrap": false,
           "editorMode": "builder",
-          "expr": "histogram_quantile(0.5, sum by(le) (rate(vllm:e2e_request_latency_seconds_bucket{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\"}[$__rate_interval])))",
+          "expr": "histogram_quantile(0.5, sum by(le) (rate(vllm:e2e_request_latency_seconds_bucket{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\"}[$__rate_interval])))",
           "fullMetaSearch": false,
           "hide": false,
           "includeNullMetadata": false,
@@ -198,7 +629,7 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "rate(vllm:e2e_request_latency_seconds_sum{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\"}[$__rate_interval])\n/\nrate(vllm:e2e_request_latency_seconds_count{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\"}[$__rate_interval])",
+          "expr": "sum(rate(vllm:e2e_request_latency_seconds_sum{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\"}[$__rate_interval]))\n/\nsum(rate(vllm:e2e_request_latency_seconds_count{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\"}[$__rate_interval]))",
           "hide": false,
           "instant": false,
           "legendFormat": "Average",
@@ -274,7 +705,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 0
+        "y": 12
       },
       "id": 8,
       "options": {
@@ -298,7 +729,7 @@
           },
           "disableTextWrap": false,
           "editorMode": "builder",
-          "expr": "rate(vllm:prompt_tokens_total{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\"}[$__rate_interval])",
+          "expr": "sum(rate(vllm:prompt_tokens_total{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\"}[$__rate_interval]))",
           "fullMetaSearch": false,
           "includeNullMetadata": false,
           "instant": false,
@@ -314,7 +745,7 @@
           },
           "disableTextWrap": false,
           "editorMode": "builder",
-          "expr": "rate(vllm:generation_tokens_total{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\"}[$__rate_interval])",
+          "expr": "sum(rate(vllm:generation_tokens_total{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\"}[$__rate_interval]))",
           "fullMetaSearch": false,
           "hide": false,
           "includeNullMetadata": false,
@@ -394,7 +825,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 8
+        "y": 20
       },
       "id": 10,
       "options": {
@@ -418,7 +849,7 @@
           },
           "disableTextWrap": false,
           "editorMode": "builder",
-          "expr": "histogram_quantile(0.99, sum by(le) (rate(vllm:inter_token_latency_seconds_bucket{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\"}[$__rate_interval])))",
+          "expr": "histogram_quantile(0.99, sum by(le) (rate(vllm:inter_token_latency_seconds_bucket{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\"}[$__rate_interval])))",
           "fullMetaSearch": false,
           "includeNullMetadata": false,
           "instant": false,
@@ -434,7 +865,7 @@
           },
           "disableTextWrap": false,
           "editorMode": "builder",
-          "expr": "histogram_quantile(0.95, sum by(le) (rate(vllm:inter_token_latency_seconds_bucket{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\"}[$__rate_interval])))",
+          "expr": "histogram_quantile(0.95, sum by(le) (rate(vllm:inter_token_latency_seconds_bucket{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\"}[$__rate_interval])))",
           "fullMetaSearch": false,
           "hide": false,
           "includeNullMetadata": false,
@@ -451,7 +882,7 @@
           },
           "disableTextWrap": false,
           "editorMode": "builder",
-          "expr": "histogram_quantile(0.9, sum by(le) (rate(vllm:inter_token_latency_seconds_bucket{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\"}[$__rate_interval])))",
+          "expr": "histogram_quantile(0.9, sum by(le) (rate(vllm:inter_token_latency_seconds_bucket{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\"}[$__rate_interval])))",
           "fullMetaSearch": false,
           "hide": false,
           "includeNullMetadata": false,
@@ -468,7 +899,7 @@
           },
           "disableTextWrap": false,
           "editorMode": "builder",
-          "expr": "histogram_quantile(0.5, sum by(le) (rate(vllm:inter_token_latency_seconds_bucket{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\"}[$__rate_interval])))",
+          "expr": "histogram_quantile(0.5, sum by(le) (rate(vllm:inter_token_latency_seconds_bucket{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\"}[$__rate_interval])))",
           "fullMetaSearch": false,
           "hide": false,
           "includeNullMetadata": false,
@@ -484,7 +915,7 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "rate(vllm:inter_token_latency_seconds_sum{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\"}[$__rate_interval])\n/\nrate(vllm:inter_token_latency_seconds_count{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\"}[$__rate_interval])",
+          "expr": "sum(rate(vllm:inter_token_latency_seconds_sum{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\"}[$__rate_interval]))\n/\nsum(rate(vllm:inter_token_latency_seconds_count{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\"}[$__rate_interval]))",
           "hide": false,
           "instant": false,
           "legendFormat": "Mean",
@@ -561,7 +992,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 8
+        "y": 20
       },
       "id": 3,
       "options": {
@@ -585,7 +1016,7 @@
           },
           "disableTextWrap": false,
           "editorMode": "builder",
-          "expr": "vllm:num_requests_running{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\"}",
+          "expr": "sum(vllm:num_requests_running{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\"})",
           "fullMetaSearch": false,
           "includeNullMetadata": true,
           "instant": false,
@@ -601,7 +1032,7 @@
           },
           "disableTextWrap": false,
           "editorMode": "builder",
-          "expr": "vllm:num_requests_waiting{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\"}",
+          "expr": "sum(vllm:num_requests_waiting{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\"})",
           "fullMetaSearch": false,
           "hide": false,
           "includeNullMetadata": true,
@@ -681,7 +1112,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 16
+        "y": 28
       },
       "id": 5,
       "options": {
@@ -705,7 +1136,7 @@
           },
           "disableTextWrap": false,
           "editorMode": "builder",
-          "expr": "histogram_quantile(0.99, sum by(le) (rate(vllm:time_to_first_token_seconds_bucket{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\"}[$__rate_interval])))",
+          "expr": "histogram_quantile(0.99, sum by(le) (rate(vllm:time_to_first_token_seconds_bucket{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\"}[$__rate_interval])))",
           "fullMetaSearch": false,
           "hide": false,
           "includeNullMetadata": false,
@@ -722,7 +1153,7 @@
           },
           "disableTextWrap": false,
           "editorMode": "builder",
-          "expr": "histogram_quantile(0.95, sum by(le) (rate(vllm:time_to_first_token_seconds_bucket{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\"}[$__rate_interval])))",
+          "expr": "histogram_quantile(0.95, sum by(le) (rate(vllm:time_to_first_token_seconds_bucket{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\"}[$__rate_interval])))",
           "fullMetaSearch": false,
           "includeNullMetadata": false,
           "instant": false,
@@ -738,7 +1169,7 @@
           },
           "disableTextWrap": false,
           "editorMode": "builder",
-          "expr": "histogram_quantile(0.9, sum by(le) (rate(vllm:time_to_first_token_seconds_bucket{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\"}[$__rate_interval])))",
+          "expr": "histogram_quantile(0.9, sum by(le) (rate(vllm:time_to_first_token_seconds_bucket{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\"}[$__rate_interval])))",
           "fullMetaSearch": false,
           "hide": false,
           "includeNullMetadata": false,
@@ -755,7 +1186,7 @@
           },
           "disableTextWrap": false,
           "editorMode": "builder",
-          "expr": "histogram_quantile(0.5, sum by(le) (rate(vllm:time_to_first_token_seconds_bucket{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\"}[$__rate_interval])))",
+          "expr": "histogram_quantile(0.5, sum by(le) (rate(vllm:time_to_first_token_seconds_bucket{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\"}[$__rate_interval])))",
           "fullMetaSearch": false,
           "hide": false,
           "includeNullMetadata": false,
@@ -771,7 +1202,7 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "rate(vllm:time_to_first_token_seconds_sum{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\"}[$__rate_interval])\n/\nrate(vllm:time_to_first_token_seconds_count{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\"}[$__rate_interval])",
+          "expr": "sum(rate(vllm:time_to_first_token_seconds_sum{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\"}[$__rate_interval]))\n/\nsum(rate(vllm:time_to_first_token_seconds_count{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\"}[$__rate_interval]))",
           "hide": false,
           "instant": false,
           "legendFormat": "Average",
@@ -848,7 +1279,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 16
+        "y": 28
       },
       "id": 4,
       "options": {
@@ -871,7 +1302,7 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "vllm:kv_cache_usage_perc{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\"}",
+          "expr": "avg(vllm:kv_cache_usage_perc{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\"})",
           "instant": false,
           "legendFormat": "GPU Cache Usage",
           "range": true,
@@ -886,7 +1317,7 @@
         "type": "prometheus",
         "uid": "${DS_PROMETHEUS}"
       },
-      "description": "Breakdown of prefix-cache hit rate from vLLM local GPU prefix cache and external KV connector cache.",
+      "description": "Prefix-cache token hit rates observed at the UCM connector boundary.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -953,7 +1384,7 @@
         "h": 8,
         "w": 24,
         "x": 0,
-        "y": 24
+        "y": 36
       },
       "id": 17,
       "options": {
@@ -976,7 +1407,7 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "sum(rate(vllm:prefix_cache_hits_total{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\"}[$__rate_interval]))\n/\nclamp_min(sum(rate(vllm:prefix_cache_queries_total{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\"}[$__rate_interval])), 1)",
+          "expr": "sum(rate(ucm:gpu_hbm_hit_tokens_total{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\"}[$__rate_interval]))\n/\nclamp_min(sum(rate(ucm:total_prefix_query_tokens_total{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\"}[$__rate_interval])), 1)",
           "instant": false,
           "legendFormat": "GPU Prefix Cache",
           "range": true,
@@ -988,7 +1419,7 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "sum(rate(vllm:external_prefix_cache_hits_total{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\"}[$__rate_interval]))\n/\nclamp_min(sum(rate(vllm:external_prefix_cache_queries_total{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\"}[$__rate_interval])), 1)",
+          "expr": "sum(rate(ucm:ucm_hit_tokens_total{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\"}[$__rate_interval]))\n/\nclamp_min(sum(rate(ucm:total_prefix_query_tokens_total{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\"}[$__rate_interval])), 1)",
           "instant": false,
           "legendFormat": "Connector Prefix Cache",
           "range": true,
@@ -1023,7 +1454,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 32
+        "y": 44
       },
       "id": 12,
       "options": {
@@ -1076,7 +1507,7 @@
           },
           "disableTextWrap": false,
           "editorMode": "builder",
-          "expr": "sum by(le) (increase(vllm:request_prompt_tokens_bucket{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\"}[$__rate_interval]))",
+          "expr": "sum by(le) (increase(vllm:request_prompt_tokens_bucket{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\"}[$__rate_interval]))",
           "format": "heatmap",
           "fullMetaSearch": false,
           "includeNullMetadata": true,
@@ -1115,7 +1546,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 32
+        "y": 44
       },
       "id": 13,
       "options": {
@@ -1168,7 +1599,7 @@
           },
           "disableTextWrap": false,
           "editorMode": "builder",
-          "expr": "sum by(le) (increase(vllm:request_generation_tokens_bucket{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\"}[$__rate_interval]))",
+          "expr": "sum by(le) (increase(vllm:request_generation_tokens_bucket{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\"}[$__rate_interval]))",
           "format": "heatmap",
           "fullMetaSearch": false,
           "includeNullMetadata": true,
@@ -1246,7 +1677,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 40
+        "y": 52
       },
       "id": 11,
       "options": {
@@ -1270,7 +1701,7 @@
           },
           "disableTextWrap": false,
           "editorMode": "builder",
-          "expr": "sum by(finished_reason) (increase(vllm:request_success_total{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\"}[$__rate_interval]))",
+          "expr": "sum by(finished_reason) (increase(vllm:request_success_total{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\"}[$__rate_interval]))",
           "fullMetaSearch": false,
           "includeNullMetadata": true,
           "instant": false,
@@ -1348,7 +1779,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 40
+        "y": 52
       },
       "id": 14,
       "options": {
@@ -1372,7 +1803,7 @@
           },
           "disableTextWrap": false,
           "editorMode": "code",
-          "expr": "rate(vllm:request_queue_time_seconds_sum{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\"}[$__rate_interval])",
+          "expr": "sum(rate(vllm:request_queue_time_seconds_sum{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\"}[$__rate_interval]))",
           "fullMetaSearch": false,
           "includeNullMetadata": true,
           "instant": false,
@@ -1449,7 +1880,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 48
+        "y": 60
       },
       "id": 15,
       "options": {
@@ -1473,7 +1904,7 @@
           },
           "disableTextWrap": false,
           "editorMode": "code",
-          "expr": "rate(vllm:request_prefill_time_seconds_sum{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\"}[$__rate_interval])",
+          "expr": "sum(rate(vllm:request_prefill_time_seconds_sum{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\"}[$__rate_interval]))",
           "fullMetaSearch": false,
           "includeNullMetadata": true,
           "instant": false,
@@ -1488,7 +1919,7 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "rate(vllm:request_decode_time_seconds_sum{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\"}[$__rate_interval])",
+          "expr": "sum(rate(vllm:request_decode_time_seconds_sum{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\"}[$__rate_interval]))",
           "hide": false,
           "instant": false,
           "legendFormat": "Decode",
@@ -1563,7 +1994,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 48
+        "y": 60
       },
       "id": 16,
       "options": {
@@ -1587,7 +2018,7 @@
           },
           "disableTextWrap": false,
           "editorMode": "code",
-          "expr": "rate(vllm:request_max_num_generation_tokens_sum{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\"}[$__rate_interval])",
+          "expr": "sum(rate(vllm:request_max_num_generation_tokens_sum{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\"}[$__rate_interval]))",
           "fullMetaSearch": false,
           "includeNullMetadata": true,
           "instant": false,
@@ -1685,6 +2116,34 @@
       },
       {
         "current": {
+          "selected": true,
+          "text": "All",
+          "value": "$__all"
+        },
+        "datasource": {
+          "type": "prometheus",
+          "uid": "${DS_PROMETHEUS}"
+        },
+        "definition": "label_values(vllm:num_requests_running{job=~\"$job\", model_name=\"$model_name\"}, engine)",
+        "hide": 0,
+        "includeAll": true,
+        "label": "engine",
+        "multi": false,
+        "name": "engine",
+        "options": [],
+        "query": {
+          "query": "label_values(vllm:num_requests_running{job=~\"$job\", model_name=\"$model_name\"}, engine)",
+          "refId": "StandardVariableQuery"
+        },
+        "refresh": 2,
+        "regex": "",
+        "skipUrlSync": false,
+        "sort": 2,
+        "type": "query",
+        "allValue": ".*"
+      },
+      {
+        "current": {
           "selected": false,
           "text": "",
           "value": ""
@@ -1693,7 +2152,7 @@
           "type": "prometheus",
           "uid": "${DS_PROMETHEUS}"
         },
-        "definition": "label_values(vllm:num_requests_running{job=~\"$job\", model_name=\"$model_name\"}, instance)",
+        "definition": "label_values(vllm:num_requests_running{job=~\"$job\", model_name=\"$model_name\", engine=~\"$engine\"}, instance)",
         "hide": 0,
         "includeAll": false,
         "label": "instance",
@@ -1701,7 +2160,7 @@
         "name": "instance",
         "options": [],
         "query": {
-          "query": "label_values(vllm:num_requests_running{job=~\"$job\", model_name=\"$model_name\"}, instance)",
+          "query": "label_values(vllm:num_requests_running{job=~\"$job\", model_name=\"$model_name\", engine=~\"$engine\"}, instance)",
           "refId": "StandardVariableQuery"
         },
         "refresh": 2,

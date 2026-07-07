@@ -25,6 +25,7 @@
 from dataclasses import dataclass
 from typing import Any
 
+from ucm.default_metrics_config import get_default_metrics_config
 from ucm.logger import init_logger
 from ucm.shared.metrics import ucmmetrics
 
@@ -34,6 +35,7 @@ METRIC_TYPES = ("counter", "gauge", "histogram")
 VLLM_EXCLUDED_METRICS = {"interval_lookup_hit_rates"}
 MULTIPROC_CONSUMER = "multiproc"
 VLLM_CONNECTOR_CONSUMER = "vllm_connector"
+ENABLE_METRICS_CONFIG_KEY = "enable_metrics"
 
 
 @dataclass(frozen=True)
@@ -74,12 +76,21 @@ def load_metrics_config(config_path: str) -> dict[str, Any]:
 
 
 def load_launch_metrics_config(launch_config: dict[str, Any] | None) -> dict[str, Any]:
-    if not launch_config:
+    if not metrics_enabled(launch_config):
         return {}
+    if not launch_config:
+        return get_default_metrics_config()
     inline_config = launch_config.get("metrics_config")
     if isinstance(inline_config, dict):
         return inline_config
-    return load_metrics_config(launch_config.get("metrics_config_path", ""))
+    config_path = launch_config.get("metrics_config_path", "")
+    if config_path:
+        return load_metrics_config(config_path)
+    return get_default_metrics_config()
+
+
+def metrics_enabled(launch_config: dict[str, Any] | None) -> bool:
+    return _as_bool((launch_config or {}).get(ENABLE_METRICS_CONFIG_KEY), True)
 
 
 def consumer_enabled(

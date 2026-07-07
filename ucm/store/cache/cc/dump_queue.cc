@@ -45,8 +45,6 @@ Status DumpQueue::Setup(const Config& config, TaskIdSet* failureSet, TransBuffer
     backend_ = config.storeBackend;
     deviceId_ = config.deviceId;
     tensorSizes_ = config.tensorSizes;
-    shardBytes_ = 0;
-    for (const auto size : tensorSizes_) { shardBytes_ += size; }
     streamNumber_ = config.streamNumber;
     useGdr_ = config.useGdr;
     cacheSdmaDirect_ = config.cacheSdmaDirect;
@@ -175,10 +173,7 @@ Status DumpQueue::DumpOneTask(CopyStream& stream, TaskPtr task)
         }
     }
     if (copiedShards > 0 && d2hMs > 0.0) {
-        auto copiedBytes = static_cast<double>(copiedShards) * static_cast<double>(shardBytes_);
         UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("cache_d2h_duration_ms"), d2hMs);
-        UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("cache_d2h_bandwidth_gbps"),
-                                 copiedBytes / (d2hMs * 1e-3) / 1e9);
     }
     UC_DEBUG("Cache task({}) mk_buf={:.3f}ms, prereq={:.3f}ms, d2h={:.3f}ms, back={:.3f}ms.",
              task->id, (tpMakeBuffer - dumpStartTp) * 1e3, prereqWaitMs, d2hMs,

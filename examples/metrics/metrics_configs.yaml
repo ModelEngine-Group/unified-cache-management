@@ -83,6 +83,52 @@ counter:
   - name: "posix_io_errors_total"
     documentation: "Number of Posix read, write, or AIO completion failures"
 
+  # -- Pipeline Mooncake stage ---------------------------------------------
+  - name: "mooncake_load_blocks_total"
+    documentation: "Total blocks loaded through the Mooncake stage"
+  - name: "mooncake_dump_blocks_total"
+    documentation: "Total blocks dumped through the Mooncake stage"
+  - name: "mooncake_load_bytes_total"
+    documentation: "Total bytes loaded through the Mooncake stage"
+  - name: "mooncake_dump_bytes_total"
+    documentation: "Total bytes dumped through the Mooncake stage"
+  - name: "mooncake_load_hit_shards_total"
+    documentation: "Mooncake load shards served directly from Mooncake"
+  - name: "mooncake_load_miss_shards_total"
+    documentation: "Mooncake load shards that missed and descended to backend or recompute"
+  - name: "mooncake_load_backend_shards_total"
+    documentation: "Mooncake load shards submitted to the backend after a Mooncake miss"
+  - name: "mooncake_dump_existing_shards_total"
+    documentation: "Mooncake dump shards already present in Mooncake"
+  - name: "mooncake_dump_missing_shards_total"
+    documentation: "Mooncake dump shards written to Mooncake because they were missing"
+  - name: "mooncake_dump_backend_shards_total"
+    documentation: "Mooncake dump shards archived to the backend"
+  - name: "mooncake_load_queue_full_total"
+    documentation: "Number of Mooncake load submissions rejected because the waiting queue was full"
+  - name: "mooncake_dump_queue_full_total"
+    documentation: "Number of Mooncake dump submissions rejected because the waiting queue was full"
+  - name: "mooncake_get_errors_total"
+    documentation: "Number of Mooncake batch get failures"
+  - name: "mooncake_put_errors_total"
+    documentation: "Number of Mooncake batch put failures"
+  - name: "mooncake_backend_load_submit_errors_total"
+    documentation: "Number of Mooncake backend load submit failures"
+  - name: "mooncake_backend_load_wait_errors_total"
+    documentation: "Number of Mooncake backend load wait failures"
+  - name: "mooncake_backend_dump_submit_errors_total"
+    documentation: "Number of Mooncake backend dump submit failures"
+  - name: "mooncake_backend_dump_wait_errors_total"
+    documentation: "Number of Mooncake backend dump wait failures"
+  - name: "mooncake_h2d_errors_total"
+    documentation: "Number of Mooncake H2D transfer or sync failures"
+  - name: "mooncake_d2h_errors_total"
+    documentation: "Number of Mooncake D2H transfer, event wait, or sync failures"
+  - name: "mooncake_h2d_bytes_total"
+    documentation: "Total Mooncake bytes copied from host to device"
+  - name: "mooncake_d2h_bytes_total"
+    documentation: "Total Mooncake bytes copied from device to host"
+
   # -- Connector layer: per-worker real throughput counters ----------------
   # The connector load_speed histogram samples per-call speed
   # (a statistical distribution), so an aggregated quantile across workers
@@ -92,6 +138,12 @@ counter:
     documentation: "Total bytes loaded through the UCM connector (summed across all start_load_kv calls)"
   - name: "save_bytes_total"
     documentation: "Total bytes saved through the UCM connector (summed across all wait_for_save calls)"
+  - name: "total_prefix_query_tokens_total"
+    documentation: "Total prefix cache query tokens observed by the UCM connector"
+  - name: "gpu_hbm_hit_tokens_total"
+    documentation: "Prefix cache tokens already hit in GPU or HBM before UCM lookup"
+  - name: "ucm_hit_tokens_total"
+    documentation: "Prefix cache tokens hit by the UCM connector"
   - name: "connector_lookup_errors_total"
     documentation: "Number of connector lookup errors treated as cache misses"
   - name: "connector_load_submit_errors_total"
@@ -186,9 +238,6 @@ histogram:
   - name: "cache_h2d_sync_ms"
     documentation: "Cache load residual H2D stream drain after the last shard submit (ms). Large => H2D copy is the bottleneck; ~0 with large cache_shard_backend_wait_ms => storage read is the bottleneck."
     buckets: [0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500]
-  - name: "cache_h2d_bandwidth_gbps"
-    documentation: "Cache load pure H2D copy bandwidth (GB/s): copied bytes / cache_h2d_sync_ms. Directly comparable to memcpy microbenchmarks; far below them => host memory/DMA path issue."
-    buckets: [0.5, 1, 2, 4, 8, 12, 16, 24, 32, 48, 64, 96, 128, 192, 256]
   - name: "cache_dump_mkbuf_duration_ms"
     documentation: "Cache dump mk_buf phase: buffer allocation/reuse + D2H async submit before stream sync (ms)"
     buckets: [0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500]
@@ -198,9 +247,6 @@ histogram:
   - name: "cache_d2h_duration_ms"
     documentation: "Cache dump stream synchronize duration including prerequisite compute wait and D2H copy (ms). Use cache_dump_prereq_wait_ms to estimate the compute-gated portion."
     buckets: [0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500]
-  - name: "cache_d2h_bandwidth_gbps"
-    documentation: "Cache dump effective D2H bandwidth (GB/s): copied bytes / cache_d2h_duration_ms. Duration includes prerequisite compute wait."
-    buckets: [0.5, 1, 2, 4, 8, 12, 16, 24, 32, 48, 64, 96, 128, 192, 256]
   - name: "cache_dump_backend_submit_duration_ms"
     documentation: "Cache dump backend submit duration: synchronous time to pass buffers to the lower tier (ms). Does NOT include the lower tier's actual write time."
     buckets: [0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 500]
@@ -237,6 +283,56 @@ histogram:
   - name: "posix_dump_queue_wait_duration_ms"
     documentation: "Time a Posix dump task spent queued before first worker pickup (ms)"
     buckets: [0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 500]
+
+  # -- Mooncake stage -------------------------------------------------------
+  - name: "mooncake_load_duration_ms"
+    documentation: "End-to-end Mooncake load task duration (ms)"
+    buckets: [0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000]
+  - name: "mooncake_dump_duration_ms"
+    documentation: "End-to-end Mooncake dump task duration (ms)"
+    buckets: [0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000]
+  - name: "mooncake_load_bandwidth_gbps"
+    documentation: "Mooncake stage effective load bandwidth (GB/s)"
+    buckets: [0.5, 1, 2, 4, 8, 12, 16, 24, 32, 48, 64, 96, 128, 192, 256]
+  - name: "mooncake_dump_bandwidth_gbps"
+    documentation: "Mooncake stage effective dump bandwidth (GB/s)"
+    buckets: [0.5, 1, 2, 4, 8, 12, 16, 24, 32, 48, 64, 96, 128, 192, 256]
+  - name: "mooncake_load_queue_wait_duration_ms"
+    documentation: "Time a Mooncake load task spent queued before dispatch worker pickup (ms)"
+    buckets: [0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 500]
+  - name: "mooncake_dump_queue_wait_duration_ms"
+    documentation: "Time a Mooncake dump task spent queued before dispatch worker pickup (ms)"
+    buckets: [0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 500]
+  - name: "mooncake_get_duration_ms"
+    documentation: "Mooncake batch get duration on the load path (ms)"
+    buckets: [0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500]
+  - name: "mooncake_exists_duration_ms"
+    documentation: "Mooncake batch exists check duration on the dump path (ms)"
+    buckets: [0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500]
+  - name: "mooncake_put_duration_ms"
+    documentation: "Mooncake batch put duration on the dump path (ms)"
+    buckets: [0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000]
+  - name: "mooncake_load_backend_submit_duration_ms"
+    documentation: "Mooncake load backend submit duration after Mooncake miss (ms)"
+    buckets: [0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 500]
+  - name: "mooncake_backend_load_wait_duration_ms"
+    documentation: "Mooncake load time waiting for the backend to finish a missed shard (ms)"
+    buckets: [0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500]
+  - name: "mooncake_h2d_duration_ms"
+    documentation: "Mooncake load H2D stream drain duration (ms)"
+    buckets: [0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500]
+  - name: "mooncake_dump_prereq_wait_ms"
+    documentation: "Mooncake dump time waiting for prerequisite compute event before put (ms)"
+    buckets: [0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500]
+  - name: "mooncake_d2h_duration_ms"
+    documentation: "Mooncake dump D2H stream drain duration for backend archive (ms)"
+    buckets: [0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500]
+  - name: "mooncake_dump_backend_submit_duration_ms"
+    documentation: "Mooncake dump backend submit duration after D2H archive copy (ms)"
+    buckets: [0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 500]
+  - name: "mooncake_dump_backend_wait_duration_ms"
+    documentation: "Mooncake dump time waiting for backend archive completion (ms)"
+    buckets: [0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000]
 
   # =========================================================================
   # Layerwise Connector — overlap / pipelining health
@@ -320,4 +416,3 @@ histogram:
   - name: "fawa_worker_wait_for_save_ms"
     documentation: "store dump task latency"
     buckets: [1, 5, 10, 20, 30, 40, 50, 60, 70, 80, 100, 150, 200, 250, 300, 350, 400, 450, 500]
-     
