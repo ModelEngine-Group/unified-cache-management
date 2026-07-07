@@ -45,6 +45,7 @@ python -m pip install -e toolkit
 | `posix-aio` | 当前 UCM Python 包及其 native 扩展可用，`numpy` 可导入。 |
 | `nic-monitor` | Linux、`bash`、`ethtool`，并且需要 root 或 sudo 权限读取网卡统计。 |
 | NIC CSV 离线绘图 | `pandas`、`matplotlib`。 |
+| `metrics-view` | 仅依赖 Python 标准库（`sqlite3` 内置）；采集需要可访问的 Prometheus/OpenMetrics `/metrics` HTTP 接口。 |
 
 `dev-sandbox` 后端探测优先级：
 
@@ -267,9 +268,9 @@ ucm-toolkit run dev-sandbox --help
 
 | 子功能 | 二进制 | 功能 |
 | --- | --- | --- |
-| `copy` | `module/copy/copy` | 设备/主机内存 copy 性能测试。 |
-| `trans` | `module/trans/trans` | host/device 传输矩阵性能测试。 |
-| `aio` | `module/aio/aio` | 异步 I/O 写读性能测试。 |
+| `copy` | `module/copy/copy` | 设备/主机内存 copy 性能测试。测量不同内存类型（普通主机、锁页、匿名、设备）之间、不同传输引擎（CE、SM、GDR）之下的带宽，适用于评估 H2D/D2H/D2D 各路径的吞吐。 |
+| `trans` | `module/trans/trans` | host/device 传输矩阵性能测试。以方向（H2D/D2H）× host buffer 类型 × 传输方法 构成组合矩阵，批量运行所有匹配 case，适用于快速扫描所有传输路径的带宽分布。 |
+| `aio` | `module/aio/aio` | 异步 I/O 磁盘写读性能测试。在指定 workspace 中创建块文件，通过 Linux AIO 对磁盘执行 dump（写）和 load（读），测量磁盘带宽，适用于评估 UCM POSIX store 的磁盘吞吐。 |
 
 ### copy
 
@@ -298,13 +299,29 @@ ucm-toolkit run dev-sandbox copy -t unknown
 
 常见 case：
 
-| 后端 | case |
-| --- | --- |
-| CUDA / Ascend | `host_to_device_ce`、`host_to_device_batch_ce`、`one_host_to_all_device_ce`、`all_host_to_all_device_ce`、`device_to_device_ce`、`one_device_to_all_device_ce`、`anonymous_to_device_ce` |
-| CUDA | `device_to_host_ce`、`device_to_host_batch_ce`、`host_to_device_sm`、`device_to_host_sm`、`one_host_to_all_device_sm`、`device_to_anonymous_ce`、`anonymous_to_device_sm`、`device_to_anonymous_sm` |
-| Ascend | `host_to_device_ce_multi_stream` |
-| CUDA + libibverbs | `host_to_device_gdr`、`one_host_to_all_device_gdr`、`all_host_to_all_device_gdr` |
-| Simulation | `host_to_anonymous_memcpy`、`shm_to_all_host_memcpy` |
+| 后端 | case | 说明 |
+| --- | --- | --- |
+| **CUDA / Ascend** | `host_to_device_ce` | 单流 CE DMA 从普通主机内存拷到设备内存。**场景**：评估单卡 H2D CE 基础带宽，适合作为 H2D 性能基线。 |
+| | `host_to_device_batch_ce` | 批量 CE DMA 从主机到设备。**场景**：评估批量提交 H2D 是否比逐个提交更高效，适合对比单流与 batch 启动开销。 |
+| | `one_host_to_all_device_ce` | 同一份主机数据通过 CE 广播到所有设备。**场景**：评估模型加载时同一参数分发到多卡的性能。 |
+| | `all_host_to_all_device_ce` | 多卡各自 host buffer 同时通过 CE 拷到各自设备。**场景**：评估多 worker 并发 H2D 的总吞吐，适合推测多卡并发加载的实际带宽。 |
+| | `device_to_device_ce` | 同卡内 D2D CE 拷贝（src 与 dst 在同一张卡上）。**场景**：评估单卡内部设备内存搬移带宽，适合评估 GPU/Ascend 设备端数据重排或内存池内部搬移性能。跨卡 D2D 请使用 `one_device_to_all_device_ce`。 |
+| | `one_device_to_all_device_ce` | 单卡数据通过 CE 广播到所有设备（含自身），跨卡 D2D。**场景**：评估跨卡 D2D 传输带宽，适合多卡 scatter 通信性能基线。 |
+| | `anonymous_to_device_ce` | 匿名锁页内存（mmap 分配但未显式注册）通过 CE 拷到设备。**场景**：对比匿名锁页内存与普通主机内存的 H2D 性能差异，适合选择 host buffer 分配策略。 |
+| **CUDA** | `device_to_host_ce` | 单流 CE DMA 从设备内存拷到普通主机内存。**场景**：评估单卡 D2H CE 基础带宽，适合作为 D2H 性能基线。 |
+| | `device_to_host_batch_ce` | 批量 CE DMA 从设备到主机。**场景**：评估批量 D2H 是否比逐个回读更高效，适合结果回传优化。 |
+| | `host_to_device_sm` | SM kernel 将主机数据拷到设备。**场景**：对比 SM kernel 传输与 CE DMA 的带宽差异，适合决定是否用 SM 替代 CE。 |
+| | `device_to_host_sm` | SM kernel 将设备数据拷到主机。**场景**：对比 SM kernel 回读与 CE 回读的带宽差异。 |
+| | `one_host_to_all_device_sm` | 同一份主机数据通过 SM 广播到所有设备。**场景**：对比 SM 广播与 CE 广播的多卡分发性能。 |
+| | `device_to_anonymous_ce` | CE DMA 从设备拷到匿名锁页内存。**场景**：评估 D2H 到匿名锁页内存的带宽，适合回读到 mmap buffer 的场景。 |
+| | `anonymous_to_device_sm` | SM kernel 将匿名锁页内存数据拷到设备。**场景**：评估匿名锁页 + SM 组合的 H2D 带宽，适合与 CE 版本对比。 |
+| | `device_to_anonymous_sm` | SM kernel 将设备数据拷到匿名锁页内存。**场景**：评估匿名锁页 + SM 组合的 D2H 带宽。 |
+| **Ascend** | `host_to_device_ce_multi_stream` | 48 流并发 CE DMA 从主机到设备。**场景**：评估 Ascend 多流并行传输是否能提升 H2D 吞吐，适合多流调度优化。 |
+| **CUDA + libibverbs** | `host_to_device_gdr` | GPUDirect RDMA 直传主机数据到单卡设备内存。**场景**：评估 RDMA 直传到 GPU 是否比传统 CE 更快，适合 RDMA 通信基线。 |
+| | `one_host_to_all_device_gdr` | 同一份主机数据通过 GDR 广播到所有设备。**场景**：评估多卡 RDMA 直传的分发性能，适合对比 GDR 广播与 CE 广播。 |
+| | `all_host_to_all_device_gdr` | 多卡各自 host buffer 同时通过 GDR 拷到各自设备。**场景**：评估多 worker 并发 GDR 的总吞吐，适合大规模 RDMA 并行传输基线。 |
+| **Simulation** | `host_to_anonymous_memcpy` | CPU memcpy 从主机拷到匿名内存。**场景**：在无 GPU 环境下模拟 H2D 传输，用于功能验证或 CPU memcpy 基准对照。 |
+| | `shm_to_all_host_memcpy` | CPU memcpy 从共享内存拷到所有 host buffer。**场景**：评估共享内存到各 host 的拷贝带宽，模拟跨进程数据分发。 |
 
 GDR case 使用 `GDR_NICS` 指定 device 与 RDMA 网卡映射，网卡数量需要与 `-d` 一致：
 
@@ -314,6 +331,26 @@ ucm-toolkit run dev-sandbox copy -t all_host_to_all_device_gdr -s 16K -n 512 -i 
 ```
 
 ### trans
+
+`trans` 以方向（H2D/D2H）× host buffer 类型 × device buffer 类型 × 传输方法构成组合矩阵，批量运行所有匹配的 case。与 `copy` 的区别在于：`copy` 侧重单一路径的详细性能，`trans` 侧重快速扫描所有组合的带宽分布。
+
+host buffer 类型含义：
+
+| 类型 | 说明 | 场景 |
+| --- | --- | --- |
+| `normal` | 普通可分页主机内存（malloc 分配）。DMA 传输时可能发生页缺失，带宽通常最低。 | 评估最常见的 malloc 场景，作为对比基线。 |
+| `anonymous` | 匿名锁页内存（mmap 分配，未显式注册）。页缺失减少，DMA 带宽高于 normal。 | 评估 mmap 锁页分配对传输的改善。 |
+| `registered` | 显式注册锁页内存（cudaHostRegister / Ascend memory register）。DMA 传输最高效，带宽最高。 | 评估注册锁页内存的传输上限，适合高性能场景选择 host buffer 分配策略。 |
+
+传输方法含义：
+
+| 方法 | 后端 | 说明 | 场景 |
+| --- | --- | --- | --- |
+| `ce` | CUDA / Ascend | Copy Engine DMA 硬件搬移，不占用 SM/计算资源。 | 评估 DMA 基础带宽，适合后台搬移数据。 |
+| `batch_ce` | CUDA / Ascend | 批量提交 Copy Engine，减少多次启动开销。 | 评估批量 DMA 是否比逐个 CE 更高效。 |
+| `sm` | CUDA | SM kernel 传输，占用 GPU 计算资源。 | 对比 SM kernel 与 CE DMA 的带宽差异，适合决定传输引擎选择。 |
+| `ms_48` | Ascend | 48 流并发 Copy Engine。 | 评估多流并行 DMA 是否能提升吞吐，适合多流调度优化。 |
+| `memcpy` | Simulation | CPU memcpy。 | 在无 GPU 环境下模拟传输，用于功能验证或基准对照。 |
 
 示例：
 
@@ -341,7 +378,14 @@ ucm-toolkit run dev-sandbox trans -M ce -M batch_ce
 
 ### aio
 
-`aio` 会在指定 workspace 中创建/打开块文件，先执行写任务，再执行读任务。
+`aio` 在指定 workspace 中创建/打开块文件，通过 Linux AIO 对磁盘执行异步写（dump）和异步读（load），测量磁盘 I/O 带宽。与 `copy`/`trans` 测量设备内存带宽不同，`aio` 测量的是磁盘吞吐。
+
+host buffer 分配策略含义：
+
+| 策略 | 说明 | 场景 |
+| --- | --- | --- |
+| `mmap` | 通过 `mmap` 分配主机内存，页对齐且可被 AIO 直接引用。适合大块 I/O，内存分配开销小。 | 评估 mmap 分配下的磁盘带宽，适合大块连续读写。 |
+| `alloc` | 通过设备特定锁页分配（CUDA: `cudaMallocHost`，Ascend: `aclrtMallocHost`）分配主机内存。内存是锁页的，DMA 传输更高效但分配开销更大。 | 评估锁页内存下的磁盘带宽，适合需要将磁盘数据直接 DMA 搬移到设备的场景。 |
 
 示例：
 
