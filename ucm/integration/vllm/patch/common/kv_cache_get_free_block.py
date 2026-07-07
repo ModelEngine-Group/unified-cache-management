@@ -117,10 +117,8 @@ def mamba_get_num_blocks_to_allocate(
     from vllm.v1.kv_cache_interface import MambaSpec
 
     assert isinstance(self.kv_cache_spec, MambaSpec)
-    if (
-        len(new_computed_blocks) > 0
-        and new_computed_blocks[-1].block_hash
-        in getattr(self, "cached_blocks_this_step", set())
+    if len(new_computed_blocks) > 0 and new_computed_blocks[-1].block_hash in getattr(
+        self, "cached_blocks_this_step", set()
     ):
         return self.block_pool.num_gpu_blocks + 1
 

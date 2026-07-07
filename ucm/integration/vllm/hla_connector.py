@@ -31,8 +31,8 @@ from ucm.integration.vllm.ucm_connector import (
     RequestDispatchMeta,
     RequestHasher,
     RequestMeta,
-    UCMDirectConnector,
     UCMConnectorMetadata,
+    UCMDirectConnector,
     UCMWorkerMetadata,
     _drop_null_vllm_blocks,
     _ensure_cache_store_buffer_capacity,
@@ -54,6 +54,7 @@ if TYPE_CHECKING:
     from vllm.v1.request import Request
 
 logger = init_logger(__name__)
+
 
 @dataclass
 class HLARequestMeta(RequestMeta):
@@ -82,6 +83,7 @@ class HLARequestMeta(RequestMeta):
     group_ucm_block_ids: list[list[bytes]] = field(default_factory=list)
     group_vllm_block_ids: list[list[int]] = field(default_factory=list)
 
+
 def layer_name_to_kv_cache_spec(
     kv_cache_config: "KVCacheConfig",
 ) -> dict[str, list[KVCacheSpec]]:
@@ -102,6 +104,7 @@ def layer_name_to_kv_cache_spec(
                 out[name].append(spec)
     return out
 
+
 def block_size_from_kv_cache_spec(spec: KVCacheSpec) -> int:
     """Token block size used for KV scheduling / hashing for one group spec."""
     block_size = 0
@@ -112,11 +115,13 @@ def block_size_from_kv_cache_spec(spec: KVCacheSpec) -> int:
 
     return block_size
 
+
 def is_mamba_align_kv_cache_spec(spec: KVCacheSpec) -> bool:
     if isinstance(spec, UniformTypeKVCacheSpecs):
         sample = next(iter(spec.kv_cache_specs.values()))
         return is_mamba_align_kv_cache_spec(sample)
     return isinstance(spec, MambaSpec) and spec.mamba_cache_mode == "align"
+
 
 @dataclass
 class GroupInfo:
@@ -435,12 +440,16 @@ class HybridLinearAttentionLayout(KVCacheLayout):
     def _attention_component_sizes(spec: KVCacheSpec) -> tuple[int, int]:
         assert isinstance(spec, FullAttentionSpec)
         k_size = (
-            spec.block_size * spec.num_kv_heads * spec.head_size
+            spec.block_size
+            * spec.num_kv_heads
+            * spec.head_size
             * HybridLinearAttentionLayout._dtype_size(spec.dtype)
         )
         head_size_v = getattr(spec, "head_size_v", spec.head_size)
         v_size = (
-            spec.block_size * spec.num_kv_heads * head_size_v
+            spec.block_size
+            * spec.num_kv_heads
+            * head_size_v
             * HybridLinearAttentionLayout._dtype_size(spec.dtype)
         )
         return k_size, v_size
@@ -483,6 +492,15 @@ class HybridLinearAttentionLayout(KVCacheLayout):
             [stride for row in block_stride_lists for stride in row], dtype=np.uint64
         )
 
+        all_block_ids = np.arange(self.num_blocks, dtype=np.uint64)
+        self.row_addr_lookup: dict[int, np.ndarray] = {}
+        for row_id, row_slice in enumerate(self.row_slices):
+            stride = np.ascontiguousarray(self.block_stride_lists[row_slice])
+            base = np.ascontiguousarray(self.base_ptrs[row_slice])
+            self.row_addr_lookup[row_id] = np.ascontiguousarray(
+                all_block_ids[:, None] * stride[None, :] + base[None, :]
+            )
+
     def extract_block_addrs(
         self, vllm_block_ids: List[int], layer_first: bool = False
     ) -> np.ndarray:
@@ -501,6 +519,9 @@ class HybridLinearAttentionLayout(KVCacheLayout):
             raise ValueError(
                 f"Invalid hybrid row_id={row_id}; row_count={len(self.row_slices)}"
             )
+        lookup = self.row_addr_lookup.get(row_id)
+        if lookup is not None:
+            return lookup[np.asarray(vllm_block_ids, dtype=np.uint64)]
         row_slice = self.row_slices[row_id]
         vllm_block_ids_np = np.asarray(vllm_block_ids, dtype=np.uint64)
         return (
@@ -691,7 +712,10 @@ class UCMHybridLinearAttentionConnector(UCMDirectConnector, SupportsHMA):
         if kv_cache_config is None:
             return False
 
-        if current_platform.device_type != "npu" and not current_platform.is_cuda_alike():
+        if (
+            current_platform.device_type != "npu"
+            and not current_platform.is_cuda_alike()
+        ):
             return False
 
         layer_to_specs = layer_name_to_kv_cache_spec(kv_cache_config)
@@ -701,7 +725,9 @@ class UCMHybridLinearAttentionConnector(UCMDirectConnector, SupportsHMA):
                 for layer_name in raw_tensor.shared_by
                 for spec in layer_to_specs.get(layer_name, [])
             ]
-            if any(isinstance(spec, FullAttentionSpec) for spec in shared_specs) and any(
+            if any(
+                isinstance(spec, FullAttentionSpec) for spec in shared_specs
+            ) and any(
                 isinstance(spec, MambaSpec) and spec.mamba_cache_mode == "align"
                 for spec in shared_specs
             ):
@@ -1289,24 +1315,20 @@ class UCMHybridLinearAttentionLayerWiseConnector(UCMHybridLinearAttentionConnect
         metadata: "UCMConnectorMetadata",
     ) -> None:
         total_ucm_block_ids: list[bytes] = []
-        row_ptrs_parts: list[np.ndarray] = []
+        all_vllm_block_ids: list[int] = []
         request_ids: list[str] = []
         for request_id, ucm_block_ids, vllm_block_ids in self.request_data:
             if request_id in self._failure_req_ids:
                 continue
             total_ucm_block_ids.extend(ucm_block_ids)
-            row_ptrs_parts.append(
-                self.kv_cache_layout.extract_block_addrs_for_row(vllm_block_ids, row_id)
-            )
+            all_vllm_block_ids.extend(vllm_block_ids)
             request_ids.append(request_id)
         if not total_ucm_block_ids:
             self._submitted_load_rows.add(row_id)
             return
         try:
-            row_ptrs = (
-                np.ascontiguousarray(row_ptrs_parts[0])
-                if len(row_ptrs_parts) == 1
-                else np.ascontiguousarray(np.concatenate(row_ptrs_parts, axis=0))
+            row_ptrs = self.kv_cache_layout.extract_block_addrs_for_row(
+                all_vllm_block_ids, row_id
             )
             shard_indexs = [row_id] * len(total_ucm_block_ids)
             task = self.store.load_data(total_ucm_block_ids, shard_indexs, row_ptrs)
@@ -1419,7 +1441,9 @@ class UCMHybridLinearAttentionLayerWiseConnector(UCMHybridLinearAttentionConnect
         assert isinstance(metadata, UCMConnectorMetadata)
         if self._dump_transfer_data is None:
             self._dump_transfer_data = self._build_dump_transfer_data(metadata, row_id)
-        total_ucm_block_ids, total_vllm_block_ids, dump_request_ids = self._dump_transfer_data
+        total_ucm_block_ids, total_vllm_block_ids, dump_request_ids = (
+            self._dump_transfer_data
+        )
 
         if not total_ucm_block_ids:
             return
@@ -1508,4 +1532,3 @@ class UCMHybridLinearAttentionLayerWiseConnector(UCMHybridLinearAttentionConnect
         self.is_save = False
         if self.enable_event_sync:
             self.device.destroy_event_handles()
-

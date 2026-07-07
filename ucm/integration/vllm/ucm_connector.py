@@ -109,7 +109,9 @@ def _cache_store_required_capacity_gb(
     return math.ceil(required_capacity_bytes / _GIB), required_buffer_number
 
 
-def _ensure_cache_store_buffer_capacity(config: dict[str, Any], shard_size: int) -> None:
+def _ensure_cache_store_buffer_capacity(
+    config: dict[str, Any], shard_size: int
+) -> None:
     if shard_size <= 0:
         return
 
@@ -535,6 +537,7 @@ class UCMDirectConnector(KVConnectorBase_V1):
                 "connector_load_invalid_blocks_total": float(len(new_invalid_blocks)),
             }
         )
+
     def _request_hash_namespace(self) -> str:
         return str(self.launch_config.get("request_hash_namespace", ""))
 
@@ -2034,14 +2037,14 @@ class UCMConnector(KVConnectorBase_V1, SupportsHMA):
             > 1
         )
 
-        from ucm.integration.vllm.hma_connector import UCMFAWAConnector
         from ucm.integration.vllm.hla_connector import (
             UCMHybridLinearAttentionConnector,
             UCMHybridLinearAttentionLayerWiseConnector,
         )
+        from ucm.integration.vllm.hma_connector import UCMFAWAConnector
 
-        use_hybrid_linear_attention = UCMHybridLinearAttentionConnector.supports_kv_cache_layout(
-            kv_cache_config
+        use_hybrid_linear_attention = (
+            UCMHybridLinearAttentionConnector.supports_kv_cache_layout(kv_cache_config)
         )
         use_hybrid_linear_attention_layerwise = (
             use_hybrid_linear_attention
