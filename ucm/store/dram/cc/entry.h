@@ -35,6 +35,12 @@ namespace UC::DramStore {
 using Spinlock = UC::SpinLock;
 using BlockId = UC::Detail::BlockId;
 
+enum class EntryStatus {
+    INITIALIZED = 0,
+    READY,
+    DELETING,
+};
+
 struct Entry {
     BlockId key;
     uint32_t refCnt{0};
@@ -43,6 +49,7 @@ struct Entry {
     void* addr{nullptr};
     std::size_t size{0};
     std::chrono::system_clock::time_point leaseTimeout{};
+    EntryStatus status{EntryStatus::INITIALIZED};
     Spinlock lock;
     std::chrono::system_clock::time_point lifeTimeout{};
     uint32_t position{0};

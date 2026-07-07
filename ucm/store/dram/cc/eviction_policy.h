@@ -30,13 +30,64 @@
 
 namespace UC::DramStore {
 
+/**
+ * @brief Abstract interface for cache eviction policies.
+ *
+ * An EvictionPolicy tracks which cached blocks are eligible for removal
+ * and produces a list of victim block identifiers when eviction is
+ * requested.
+ *
+ * Thread safety: The interface does not provide internal synchronization.
+ * Callers must ensure that concurrent access to the same instance is
+ * externally synchronized when required.
+ */
 class EvictionPolicy {
 public:
     virtual ~EvictionPolicy() = default;
 
+    /**
+     * @brief Registers a new entry under the given key.
+     *
+     * @param key Block identifier of the entry.
+     * @param entry Shared pointer to the entry to register.
+     * @return Status
+     *   - Status::OK() on success.
+     *   - Status::DuplicateKey() if the key is already registered.
+     *   - Status::InvalidParam() if entry is nullptr.
+     */
     virtual Status AddKey(const BlockId& key, EntryPtr entry) = 0;
+
+    /**
+     * @brief Remove the entry registered under the given key.
+     *
+     * @param key Block identifier to remove.
+     * @return Status
+     *   - Status::OK() on success.
+     *   - Status::NotFound() if the key is not registered.
+     */
     virtual Status DeleteKey(const BlockId& key) = 0;
+
+    /**
+     * @brief Notify the policy that the given key was accessed.
+     *
+     * Used by recency- or frequency-based policies (e.g. LRU, LFU) to
+     * update ordering. Policies that do not track access patterns may
+     * implement this as a no-op.
+     *
+     * @param key Block identifier that was accessed.
+     * @return Status indicating the result of the access notification.
+     */
     virtual Status AccessKey(const BlockId& key) = 0;
+
+    /**
+     * @brief Compute the list of blocks to evict.
+     *
+     * @param evict_ratio Hint ratio in [0.0, 1.0] indicating the fraction
+     *                     of entries to consider for eviction. Concrete
+     *                     policies may ignore this hint.
+     * @return Vector of block identifiers selected as eviction victims.
+     *         The ordering is policy-defined.
+     */
     virtual std::vector<BlockId> GetEvictionResults(double evict_ratio) = 0;
 };
 
