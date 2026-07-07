@@ -114,6 +114,13 @@ uint8_t SpaceManager::Lookup(const Detail::BlockId* block)
     return true;
 }
 
+void SpaceManager::Prefetch(const Detail::BlockId* blocks, size_t num)
+{
+    if (!hotnessTrackerEnable_) { return; }
+
+    for (size_t i = 0; i < num; i++) { hotnessTracker_.Touch(blocks[i]); }
+}
+
 void SpaceManager::OnLookupPrefix(PrefixLookupContext& ctx)
 {
     for (size_t i = ctx.begin; i < ctx.end; i += ctx.nWorker) {

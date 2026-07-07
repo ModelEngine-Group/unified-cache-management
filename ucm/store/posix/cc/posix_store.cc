@@ -66,7 +66,10 @@ public:
         if (!res) [[unlikely]] { UC_ERROR("Failed({}) to lookup blocks({}).", res.Error(), num); }
         return res;
     }
-    void Prefetch(const Detail::BlockId* blocks, size_t num) override {}
+    void Prefetch(const Detail::BlockId* blocks, size_t num) override
+    {
+        spaceMgr_.Prefetch(blocks, num);
+    }
     Expected<Detail::TaskHandle> Load(Detail::TaskDesc task) override
     {
         if (!transEnable_) { return Status::Error("transfer is not enable"); }

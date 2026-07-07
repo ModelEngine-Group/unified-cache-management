@@ -163,8 +163,7 @@ public:
 
     void Prefetch(const Detail::BlockId* blocks, size_t num) override
     {
-        (void)blocks;
-        (void)num;
+        if (config_.storeBackend) { config_.storeBackend->Prefetch(blocks, num); }
     }
 
     Expected<Detail::TaskHandle> Load(Detail::TaskDesc task) override
