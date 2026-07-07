@@ -20,6 +20,7 @@
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 # SOFTWARE.
 #
+import argparse
 import mmap
 import multiprocessing
 import secrets
@@ -36,6 +37,42 @@ block_number = 64
 dump_epoch_number = 32
 load_epoch_number = 32
 storage_backends = ["./build/data"]
+
+
+def parse_args(argv=None):
+    parser = argparse.ArgumentParser(description="Run POSIX AIO store benchmark")
+    parser.add_argument("--worker-number", type=int, default=worker_number)
+    parser.add_argument("--shard-size", type=int, default=shard_size)
+    parser.add_argument("--shard-number", type=int, default=shard_number)
+    parser.add_argument("--block-number", type=int, default=block_number)
+    parser.add_argument("--dump-epoch-number", type=int, default=dump_epoch_number)
+    parser.add_argument("--load-epoch-number", type=int, default=load_epoch_number)
+    parser.add_argument(
+        "--storage-backend",
+        action="append",
+        default=None,
+        help="Storage backend path; may be repeated",
+    )
+    return parser.parse_args(argv)
+
+
+def apply_args(args):
+    global worker_number
+    global shard_size
+    global shard_number
+    global block_number
+    global dump_epoch_number
+    global load_epoch_number
+    global storage_backends
+
+    worker_number = args.worker_number
+    shard_size = args.shard_size
+    shard_number = args.shard_number
+    block_number = args.block_number
+    dump_epoch_number = args.dump_epoch_number
+    load_epoch_number = args.load_epoch_number
+    if args.storage_backend is not None:
+        storage_backends = args.storage_backend
 
 
 def create_worker(device_id: int) -> UcmKVStoreBaseV1:
@@ -121,6 +158,7 @@ def worker_loop(device_id, barrier):
 
 
 if __name__ == "__main__":
+    apply_args(parse_args())
     barrier = multiprocessing.Barrier(worker_number)
     workers = []
     for i in range(worker_number):
