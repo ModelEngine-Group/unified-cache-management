@@ -120,6 +120,24 @@ std::vector<KVBuffer> MakeEntries(std::size_t count)
     return entries;
 }
 
+void BindEntries(AsuTransportImpl& transport, const std::vector<KVBuffer>& entries,
+                 std::uint32_t tokenBase)
+{
+    for (std::size_t index = 0; index < entries.size(); ++index) {
+        RegisteredMemory memory;
+        memory.region = entries[index].buffer.region;
+        memory.handle = entries[index].buffer.handle;
+        memory.tokenId = tokenBase + static_cast<std::uint32_t>(index);
+        transport.registeredRegions_[memory.handle] = memory;
+    }
+}
+
+std::uint32_t PackedBatchEntryMrKey(const std::uint32_t* sqe, std::size_t entryIndex)
+{
+    const auto base = kSqeDwordCount + entryIndex * kBatchEntryDwordCount;
+    return ((sqe[base + 7] >> 24) & 0xFF) | ((sqe[base + 8] & 0xFFFFFF) << 8);
+}
+
 }  // namespace
 
 class SqeRequestTest : public ::testing::Test {
@@ -189,6 +207,7 @@ TEST_F(SqeRequestTest, SubmitBatchStoreAllocatesFlagBufferAndBuildsRequest)
     };
     TransportSubBatchContext subBatchContext;
     transport_->nextRequestCid_.store(41, std::memory_order_relaxed);
+    BindEntries(*transport_, entries, 0xABCD0000);
 
     const auto status = transport_->SubmitEntrySubBatchRequest(TransportOpType::BATCH_STORE,
                                                                subBatch, subBatchContext);
@@ -214,6 +233,9 @@ TEST_F(SqeRequestTest, SubmitBatchStoreAllocatesFlagBufferAndBuildsRequest)
     EXPECT_EQ(sqe[kSqeDwordCount], entries[0].offset);
     EXPECT_EQ(sqe[kSqeDwordCount + kBatchEntryDwordCount], entries[1].offset);
     EXPECT_EQ(sqe[kSqeDwordCount + 2 * kBatchEntryDwordCount], entries[2].offset);
+    EXPECT_EQ(PackedBatchEntryMrKey(sqe, 0), std::uint32_t{0xABCD0000});
+    EXPECT_EQ(PackedBatchEntryMrKey(sqe, 1), std::uint32_t{0xABCD0001});
+    EXPECT_EQ(PackedBatchEntryMrKey(sqe, 2), std::uint32_t{0xABCD0002});
 }
 
 TEST_F(SqeRequestTest, SubmitBatchStorePacksSqeIntoDeviceSendBuffer)
@@ -234,6 +256,7 @@ TEST_F(SqeRequestTest, SubmitBatchStorePacksSqeIntoDeviceSendBuffer)
     deviceTransport.protocolManager_ = std::make_unique<ProtocolManager>();
 
     auto entries = MakeEntries(3);
+    BindEntries(deviceTransport, entries, 0x12340000);
     IoScheduler::ScheduledIoBatch subBatch{
         BatchView<KVBuffer>{entries.data(), entries.size()}
     };
@@ -264,6 +287,7 @@ TEST_F(SqeRequestTest, SubmitBatchRetrieveUsesRetrieveOpcodeAndRequest)
     };
     TransportSubBatchContext subBatchContext;
     transport_->nextRequestCid_.store(9, std::memory_order_relaxed);
+    BindEntries(*transport_, entries, 0x76540000);
 
     const auto status = transport_->SubmitEntrySubBatchRequest(TransportOpType::BATCH_LOAD,
                                                                subBatch, subBatchContext);
@@ -277,6 +301,25 @@ TEST_F(SqeRequestTest, SubmitBatchRetrieveUsesRetrieveOpcodeAndRequest)
     const auto* sqe = reinterpret_cast<const std::uint32_t*>(subBatchContext.sendSge.local_addr);
     EXPECT_EQ(sqe[kSqeDwordCount], entries[0].offset);
     EXPECT_EQ(sqe[kSqeDwordCount + kBatchEntryDwordCount], entries[1].offset);
+    EXPECT_EQ(PackedBatchEntryMrKey(sqe, 0), std::uint32_t{0x76540000});
+    EXPECT_EQ(PackedBatchEntryMrKey(sqe, 1), std::uint32_t{0x76540001});
+}
+
+TEST_F(SqeRequestTest, SubmitBatchStoreRejectsUnregisteredEntryBuffer)
+{
+    auto entries = MakeEntries(1);
+    IoScheduler::ScheduledIoBatch subBatch{
+        BatchView<KVBuffer>{entries.data(), entries.size()}
+    };
+    TransportSubBatchContext subBatchContext;
+
+    const auto status = transport_->SubmitEntrySubBatchRequest(TransportOpType::BATCH_STORE,
+                                                               subBatch, subBatchContext);
+
+    EXPECT_EQ(status.code, StatusCode::BUFFER_NOT_REGISTERED);
+    EXPECT_EQ(subBatchContext.state, TransportSubBatchState::COMPLETED);
+    ASSERT_EQ(subBatchContext.entryStatus.size(), entries.size());
+    EXPECT_EQ(subBatchContext.entryStatus[0].code, StatusCode::BUFFER_NOT_REGISTERED);
 }
 
 TEST_F(SqeRequestTest, SubmitDeleteCopiesKeysAndBuildsFlagBackedRequest)
@@ -363,6 +406,7 @@ TEST_F(SqeRequestTest, AllocationFailureMarksWholeSubBatchFailed)
                           kTestSendBufferSlotNum)
                     .ok());
     uninitializedFlagTransport.protocolManager_ = std::make_unique<ProtocolManager>();
+    BindEntries(uninitializedFlagTransport, entries, 0x45670000);
 
     const auto status = uninitializedFlagTransport.SubmitEntrySubBatchRequest(
         TransportOpType::BATCH_STORE, subBatch, subBatchContext);
