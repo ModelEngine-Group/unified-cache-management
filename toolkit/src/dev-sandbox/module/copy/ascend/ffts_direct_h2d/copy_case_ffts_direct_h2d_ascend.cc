@@ -114,14 +114,12 @@ size_t FftsDirectTotalFragments(const CopyCase::Context& ctx)
 
 DEFINE_COPY_CASE_NO_RUNTIME(
     AllHost2AllDeviceFftsDirectH2DCase, "all_host_to_all_device_ffts_direct_h2d",
-    "copy all aclrtMallocHost mapped host buffers to all device buffers with ffts direct h2d",
-    ctx)
+    "copy all aclrtMallocHost mapped host buffers to all device buffers with ffts direct h2d", ctx)
 {
     CopyResult result;
     const bool validationEnabled = FftsDirectValidationEnabled();
     result.Push(ascend_copy::RunForkedCopyBatch(
-        ctx, "acl::host_mapped::all", "acl::device::all", "ffts-direct-h2d",
-        [&](size_t device) {
+        ctx, "acl::host_mapped::all", "acl::device::all", "ffts-direct-h2d", [&](size_t device) {
             const auto fragments = FftsDirectTotalFragments(ctx);
             FftsMappedHostCopyBuffer srcBuffer{device, ctx.size, fragments};
             DeviceCopyBuffer dstBuffer{device, ctx.size, fragments};
@@ -138,8 +136,7 @@ DEFINE_COPY_CASE_NO_RUNTIME(
 }
 
 DEFINE_COPY_CASE_NO_RUNTIME(
-    AllODirectHost2AllDeviceFftsDirectH2DCase,
-    "all_odirect_host_to_all_device_ffts_direct_h2d",
+    AllODirectHost2AllDeviceFftsDirectH2DCase, "all_odirect_host_to_all_device_ffts_direct_h2d",
     "copy all UCM O_DIRECT style mmap mapped host buffers to all device buffers with "
     "ffts direct h2d",
     ctx)
@@ -147,8 +144,7 @@ DEFINE_COPY_CASE_NO_RUNTIME(
     CopyResult result;
     const bool validationEnabled = FftsDirectValidationEnabled();
     result.Push(ascend_copy::RunForkedCopyBatch(
-        ctx, "acl::odirect_mmap::all", "acl::device::all", "ffts-direct-h2d",
-        [&](size_t device) {
+        ctx, "acl::odirect_mmap::all", "acl::device::all", "ffts-direct-h2d", [&](size_t device) {
             const auto fragments = FftsDirectTotalFragments(ctx);
             FftsODirectMappedHostCopyBuffer srcBuffer{device, ctx.size, fragments};
             DeviceCopyBuffer dstBuffer{device, ctx.size, fragments};
@@ -164,10 +160,11 @@ DEFINE_COPY_CASE_NO_RUNTIME(
     result.Show("[[ " + Key() + " ]] " + Brief());
 }
 
-DEFINE_COPY_CASE_NO_RUNTIME(
-    OneShareHost2AllDeviceFftsDirectH2DCase, "one_share_host_to_all_device_ffts_direct_h2d",
-    "copy one shared mapped host buffer to all device buffers with ffts direct h2d using fork submit",
-    ctx)
+DEFINE_COPY_CASE_NO_RUNTIME(OneShareHost2AllDeviceFftsDirectH2DCase,
+                            "one_share_host_to_all_device_ffts_direct_h2d",
+                            "copy one shared mapped host buffer to all device buffers with ffts "
+                            "direct h2d using fork submit",
+                            ctx)
 {
     CopyResult result;
     const bool validationEnabled = FftsDirectValidationEnabled();
@@ -177,9 +174,8 @@ DEFINE_COPY_CASE_NO_RUNTIME(
     InitializeFftsDirectHostPatternedBuffer(srcRegion);
     result.Push(ascend_copy::RunForkedCopyBatch(
         ctx, srcRegion.Name(), "acl::device::all", "ffts-direct-h2d", [&](size_t device) {
-            FftsMappedSharedHostCopyBuffer srcBuffer{srcRegion.ShmName(),
-                                                    srcRegion.MappedBytes(), device, ctx.size,
-                                                    fragments};
+            FftsMappedSharedHostCopyBuffer srcBuffer{srcRegion.ShmName(), srcRegion.MappedBytes(),
+                                                     device, ctx.size, fragments};
             DeviceCopyBuffer dstBuffer{device, ctx.size, fragments};
             ResetFftsDirectDeviceBuffer(dstBuffer);
 

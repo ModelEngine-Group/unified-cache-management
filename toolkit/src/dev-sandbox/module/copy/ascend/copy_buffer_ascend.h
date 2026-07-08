@@ -178,10 +178,7 @@ public:
         }
     }
 
-    std::string Name() const override
-    {
-        return "acl::odirect_mmap::" + std::to_string(device_);
-    }
+    std::string Name() const override { return "acl::odirect_mmap::" + std::to_string(device_); }
 
 private:
     size_t mappedBytes_ = 0;

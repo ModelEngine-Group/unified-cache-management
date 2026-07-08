@@ -52,14 +52,14 @@ constexpr const char* kFftsMaxReadyLanesEnv = "FFTS_MAX_READY_LANES";
 static_assert(sizeof(rtFftsPlusComCtx_t) == 128, "rtFftsPlusComCtx_t must be 128 bytes");
 static_assert(sizeof(rtFftsPlusSdmaCtx_t) == 128, "rtFftsPlusSdmaCtx_t must be 128 bytes");
 
-#define ASCEND_RT_ASSERT(expr)                                                        \
-    do {                                                                              \
-        auto __rtErr = (expr);                                                        \
-        if ((__rtErr) != RT_ERROR_NONE) {                                             \
-            fprintf(stderr, "[RT Error %d] in expression %s at %s:%d\n",              \
-                    static_cast<int>(__rtErr), #expr, __FILE__, __LINE__);            \
-            exit(EXIT_FAILURE);                                                       \
-        }                                                                             \
+#define ASCEND_RT_ASSERT(expr)                                             \
+    do {                                                                   \
+        auto __rtErr = (expr);                                             \
+        if ((__rtErr) != RT_ERROR_NONE) {                                  \
+            fprintf(stderr, "[RT Error %d] in expression %s at %s:%d\n",   \
+                    static_cast<int>(__rtErr), #expr, __FILE__, __LINE__); \
+            exit(EXIT_FAILURE);                                            \
+        }                                                                  \
     } while (0)
 
 struct AscendFftsCopySpec {
@@ -103,8 +103,7 @@ public:
         ASSERT(predecessor.successorNum < RT_CTX_SUCCESSOR_NUM);
         ASSERT(successor.predCntInit < std::numeric_limits<uint8_t>::max());
 
-        predecessor.successorList[predecessor.successorNum] =
-            static_cast<uint16_t>(successorId);
+        predecessor.successorList[predecessor.successorNum] = static_cast<uint16_t>(successorId);
         predecessor.successorNum++;
         successor.predCntInit++;
         successor.predCnt++;
@@ -175,8 +174,7 @@ private:
             return kDefaultFftsMaxReadyLanes;
         }
 
-        const auto maxValue =
-            static_cast<unsigned long>(std::numeric_limits<uint16_t>::max());
+        const auto maxValue = static_cast<unsigned long>(std::numeric_limits<uint16_t>::max());
         if (parsed > maxValue) { return std::numeric_limits<uint16_t>::max(); }
         return static_cast<uint16_t>(parsed);
     }

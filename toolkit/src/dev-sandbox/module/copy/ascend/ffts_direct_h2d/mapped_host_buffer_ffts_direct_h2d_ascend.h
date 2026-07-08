@@ -154,10 +154,7 @@ public:
         return static_cast<void*>(static_cast<char*>(mappedAddr_) + i * size_);
     }
 
-    std::string Name() const override
-    {
-        return "acl::host_mapped::" + std::to_string(device_);
-    }
+    std::string Name() const override { return "acl::host_mapped::" + std::to_string(device_); }
 
 private:
     void* mappedAddr_ = nullptr;
@@ -202,10 +199,7 @@ public:
         return static_cast<void*>(static_cast<char*>(mappedAddr_) + i * size_);
     }
 
-    std::string Name() const override
-    {
-        return "acl::odirect_mmap::" + std::to_string(device_);
-    }
+    std::string Name() const override { return "acl::odirect_mmap::" + std::to_string(device_); }
 
 private:
     void* mappedAddr_ = nullptr;

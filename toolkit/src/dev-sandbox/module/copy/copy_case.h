@@ -90,14 +90,14 @@ public:
     static Registrar<ClassName> global_##ClassName##_registrar; \
     void ClassName::Run(const Context& Ctx) const
 
-#define DEFINE_COPY_CASE_NO_RUNTIME(ClassName, Key, Brief, Ctx) \
-    class ClassName : public CopyCase {                         \
-    public:                                                     \
-        ClassName() : CopyCase(Key, Brief) {}                   \
+#define DEFINE_COPY_CASE_NO_RUNTIME(ClassName, Key, Brief, Ctx)               \
+    class ClassName : public CopyCase {                                       \
+    public:                                                                   \
+        ClassName() : CopyCase(Key, Brief) {}                                 \
         bool RequiresRuntimeInitialization() const override { return false; } \
-        void Run(const Context&) const override;                \
-    };                                                          \
-    static Registrar<ClassName> global_##ClassName##_registrar; \
+        void Run(const Context&) const override;                              \
+    };                                                                        \
+    static Registrar<ClassName> global_##ClassName##_registrar;               \
     void ClassName::Run(const Context& Ctx) const
 
 #endif

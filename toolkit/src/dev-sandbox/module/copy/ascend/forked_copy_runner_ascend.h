@@ -196,9 +196,7 @@ inline std::vector<size_t> MergeMaxCosts(const std::vector<CopyResult::Result>& 
     for (const auto& result : results) {
         const auto& costs = submit ? result.submitCosts : result.copyCosts;
         ASSERT(costs.size() == merged.size());
-        for (size_t i = 0; i < costs.size(); ++i) {
-            merged[i] = std::max(merged[i], costs[i]);
-        }
+        for (size_t i = 0; i < costs.size(); ++i) { merged[i] = std::max(merged[i], costs[i]); }
     }
     return merged;
 }
@@ -214,12 +212,8 @@ inline CopyResult::Result MergeForkedResults(std::vector<CopyResult::Result>&& r
         totalCount += result.count;
     }
 
-    return {std::move(srcName),
-            std::move(dstName),
-            std::move(methodName),
-            results.front().size,
-            totalCount,
-            MergeMaxCosts(results, true),
+    return {std::move(srcName),           std::move(dstName), std::move(methodName),
+            results.front().size,         totalCount,         MergeMaxCosts(results, true),
             MergeMaxCosts(results, false)};
 }
 

@@ -135,9 +135,8 @@ protected:
 
         const auto submitStart = steady_clock::now();
         for (auto& ctx : contexts_) { SubmitContext(ctx); }
-        const auto submitCost =
-            static_cast<size_t>(duration_cast<microseconds>(steady_clock::now() - submitStart)
-                                    .count());
+        const auto submitCost = static_cast<size_t>(
+            duration_cast<microseconds>(steady_clock::now() - submitStart).count());
 
         ASCEND_ASSERT(aclrtSetDevice(contexts_[0].deviceId));
         for (size_t i = 1; i < contexts_.size(); ++i) {

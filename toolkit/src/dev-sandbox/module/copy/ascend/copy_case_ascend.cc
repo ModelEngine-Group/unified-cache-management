@@ -183,8 +183,7 @@ DEFINE_COPY_CASE_NO_RUNTIME(
 }
 
 DEFINE_COPY_CASE_NO_RUNTIME(
-    AllODirectHost2AllDeviceCEMultiStreamCase,
-    "all_odirect_host_to_all_device_ce_multi_stream",
+    AllODirectHost2AllDeviceCEMultiStreamCase, "all_odirect_host_to_all_device_ce_multi_stream",
     "memcpy from all UCM O_DIRECT style host to all device with ce using multi stream and fork "
     "submit",
     ctx)
@@ -192,8 +191,7 @@ DEFINE_COPY_CASE_NO_RUNTIME(
     constexpr auto streamCount = 4;
     CopyResult result;
     result.Push(ascend_copy::RunForkedCopyBatch(
-        ctx, "acl::odirect_mmap::all", "acl::device::all", "CE-MS-FORK",
-        [&](size_t device) {
+        ctx, "acl::odirect_mmap::all", "acl::device::all", "CE-MS-FORK", [&](size_t device) {
             ODirectHostCopyBuffer srcBuffer{device, ctx.size, ctx.num};
             DeviceCopyBuffer dstBuffer{device, ctx.size, ctx.num};
             H2DCEMultiStreamCopyInstance instance{ctx.iter, false, streamCount};
