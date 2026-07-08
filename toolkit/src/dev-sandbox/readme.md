@@ -69,30 +69,12 @@ case。
 | case | 传输方向 | 说明 |
 | --- | --- | --- |
 | `host_to_device_ce_multi_stream` | host -> device | 使用多 stream 提交 H2D 拷贝 |
-| `one_share_host_to_all_device_ce_multi_stream` | shared host -> all devices | 4-stream CE with fork fan-out from one POSIX shared memory source |
+| `one_share_host_to_all_device_ce_multi_stream` | shared host -> all devices | 4-stream CE; simulates MLA model workers reading the same shared host KV buffer into multiple devices |
 | `all_host_to_all_device_ce_multi_stream` | host[i] -> device[i] | 4-stream CE with one forked process per device |
-| `all_odirect_host_to_all_device_ce_multi_stream` | O_DIRECT-style host[i] -> device[i] | 4-stream CE from UCM O_DIRECT-style mmap host buffers |
+| `all_odirect_host_to_all_device_ce_multi_stream` | O_DIRECT-style host[i] -> device[i] | 4-stream CE; matches GQA model multi-card reads from per-device O_DIRECT-style local host buffers |
 | `all_host_to_all_device_ffts_direct_h2d` | mapped host[i] -> device[i] | FFTS Plus direct H2D SDMA from mapped `aclrtMallocHost` buffers |
-| `one_share_host_to_all_device_ffts_direct_h2d` | shared mapped host -> all devices | FFTS Plus direct H2D SDMA from one POSIX shared memory source |
-| `all_odirect_host_to_all_device_ffts_direct_h2d` | O_DIRECT-style mapped host[i] -> device[i] | FFTS Plus direct H2D SDMA from UCM O_DIRECT-style mmap host buffers |
-
-### Ascend FFTS direct H2D
-
-FFTS direct H2D cases are compiled only when Ascend FFTS headers and `libruntime` are detected.
-Use `COPY_FFTS_VALIDATE=1` to enable data validation, `FFTS_MAX_READY_LANES` to tune the dispatcher
-ready lane count, and `-frags` to control fragments per IO/task. When `-frags` is set, `-n` is the
-IO/task count and the total fragment count is `-n * -frags`.
-
-```bash
-COPY_FFTS_VALIDATE=1 \
-./build/module/copy/copy -t all_host_to_all_device_ffts_direct_h2d -s 4M -n 100 -frags 128 -i 10 -d 8
-
-COPY_FFTS_VALIDATE=1 \
-./build/module/copy/copy -t one_share_host_to_all_device_ffts_direct_h2d -s 32K -n 100 -frags 128 -i 10 -d 8
-
-COPY_FFTS_VALIDATE=1 \
-./build/module/copy/copy -t all_odirect_host_to_all_device_ffts_direct_h2d -s 32K -n 100 -frags 128 -i 10 -d 8
-```
+| `one_share_host_to_all_device_ffts_direct_h2d` | shared mapped host -> all devices | FFTS Plus direct H2D SDMA; simulates MLA model workers reading one shared host KV buffer into multiple devices |
+| `all_odirect_host_to_all_device_ffts_direct_h2d` | O_DIRECT-style mapped host[i] -> device[i] | FFTS Plus direct H2D SDMA; matches GQA model multi-card reads from per-device O_DIRECT-style local host buffers |
 
 ### GDR
 
