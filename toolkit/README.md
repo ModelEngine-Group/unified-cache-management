@@ -158,9 +158,10 @@ ucm-toolkit run metrics-view check \
 ```
 
 `check` 只拉取一次 metrics，不写入 SQLite。它会按 `metrics_lite` 或 `--config`
-指定的配置输出当前快照的总聚合值；对于 counter 类指标，这个值只能表示目标服务从启动到现在的累计值。
-`check` 无法获取某个时间段内的数据，也不能按时间窗口计算增量。需要查看时间范围内的数据时，
-必须使用 `start` / `stop` 方式将样本写入 SQLite，然后通过 `query` 查询 SQLite 中的样本。
+指定的配置输出当前快照的总聚合值；counter 和 histogram 的累计序列只能表示目标服务启动或指标 reset
+以来的累计值，gauge 则表示当前瞬时值。`check` 无法获取某个时间段内的数据，也不能按时间窗口计算增量。
+需要查看时间范围内的数据时，必须使用 `start` / `stop` 方式将样本写入 SQLite，
+然后通过 `query` 查询 SQLite 中的样本。
 
 如果需要使用其它数据库文件，可以显式指定 `--db`：
 
