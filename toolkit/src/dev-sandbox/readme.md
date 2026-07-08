@@ -23,6 +23,7 @@ cmake --build build -j
 -t <name>   case 名称，可重复指定多个 -t
 -s <size>   单个数据块大小，例如 16K、1M，默认 512M
 -n <count>  每个 buffer 内的数据块数量，默认 8
+-f/--frags/-frags <n>  FFTS direct H2D 每个 IO/task 的 fragment 数，默认 0
 -i <count>  迭代次数，默认 128
 -d <count>  设备数量，默认 8
 ```
@@ -68,6 +69,12 @@ case。
 | case | 传输方向 | 说明 |
 | --- | --- | --- |
 | `host_to_device_ce_multi_stream` | host -> device | 使用多 stream 提交 H2D 拷贝 |
+| `one_share_host_to_all_device_ce_multi_stream` | 共享 host -> 所有 device | 4-stream CE；模拟 MLA 模型中多卡同时读取同一份 shared host KV buffer 并写入各自 device |
+| `all_host_to_all_device_ce_multi_stream` | host[i] -> device[i] | 每张卡对应一个 fork 子进程，单卡内使用 4-stream CE |
+| `all_odirect_host_to_all_device_ce_multi_stream` | O_DIRECT 风格 host[i] -> device[i] | 4-stream CE；更贴近开启 O_DIRECT 后 GQA 模型中每张卡从本地 host buffer 同时读入 KV 数据的路径 |
+| `all_host_to_all_device_ffts_direct_h2d` | mapped host[i] -> device[i] | 从 mapped `aclrtMallocHost` buffer 发起 FFTS Plus direct H2D SDMA |
+| `one_share_host_to_all_device_ffts_direct_h2d` | 共享 mapped host -> 所有 device | FFTS Plus direct H2D SDMA；模拟 MLA 模型中多卡同时读取同一份 shared host KV buffer |
+| `all_odirect_host_to_all_device_ffts_direct_h2d` | O_DIRECT 风格 mapped host[i] -> device[i] | FFTS Plus direct H2D SDMA；更贴近开启 O_DIRECT 后 GQA 模型中每张卡从本地 host buffer 同时读入 KV 数据的 direct H2D 路径 |
 
 ### GDR
 

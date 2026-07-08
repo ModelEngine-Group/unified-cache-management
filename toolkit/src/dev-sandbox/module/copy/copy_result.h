@@ -39,13 +39,13 @@ public:
         size_t size;
         size_t count;
         struct {
-            size_t min;
-            size_t max;
-            size_t avg;
-            size_t p50;
-            size_t p90;
+            size_t min = 0;
+            size_t max = 0;
+            size_t avg = 0;
+            size_t p50 = 0;
+            size_t p90 = 0;
 
-            void Parse(std::vector<size_t>&& costs)
+            void Parse(const std::vector<size_t>& costs)
             {
                 if (costs.empty()) return;
                 size_t sum = 0;
@@ -56,25 +56,30 @@ public:
                     sum += cost;
                 }
                 avg = sum / costs.size();
-                std::sort(costs.begin(), costs.end());
-                p50 = costs[costs.size() / 2];
-                p90 = costs[costs.size() * 9 / 10];
+                auto sorted = costs;
+                std::sort(sorted.begin(), sorted.end());
+                p50 = sorted[sorted.size() / 2];
+                p90 = sorted[sorted.size() * 9 / 10];
             }
             std::string ToString() const
             {
                 return fmt::format("{} / {} / {} / {} / {}", min, max, avg, p50, p90);
             }
         } submit, copy;
+        std::vector<size_t> submitCosts;
+        std::vector<size_t> copyCosts;
         Result(std::string src, std::string dst, std::string method, size_t size, size_t count,
                std::vector<size_t>&& submitCosts, std::vector<size_t>&& copyCosts)
             : src(std::move(src)),
               dst(std::move(dst)),
               method(std::move(method)),
               size(size),
-              count(count)
+              count(count),
+              submitCosts(std::move(submitCosts)),
+              copyCosts(std::move(copyCosts))
         {
-            submit.Parse(std::move(submitCosts));
-            copy.Parse(std::move(copyCosts));
+            submit.Parse(this->submitCosts);
+            copy.Parse(this->copyCosts);
         }
     };
     void Push(Result&& result) { results_.push_back(std::move(result)); }
