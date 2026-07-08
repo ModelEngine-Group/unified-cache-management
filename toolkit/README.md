@@ -111,16 +111,6 @@ blocking 时间和 cache/posix store load/dump 带宽等指标。当前内置 co
 ucm-toolkit run metrics-view list-configs
 ```
 
-即时检查当前 `/metrics`：
-
-```bash
-ucm-toolkit run metrics-view check \
-  --url http://127.0.0.1:8000/metrics
-```
-
-`check` 只拉取一次 metrics，不写入 SQLite。它会按 `metrics_lite` 或 `--config` 指定的配置输出当前快照的总聚合值；
-配置里的 `rate()` / `increase()` 在单次检查中按当前 counter 值计算，适合快速确认 endpoint 和关键指标是否存在。
-
 后台启动采集：
 
 ```bash
@@ -135,6 +125,9 @@ ucm-toolkit run metrics-view start \
 ucm-toolkit run metrics-view status
 ucm-toolkit run metrics-view stop
 ```
+
+推荐使用 `start` / `stop` 方式采集 metrics。后台采集会把多次样本写入 SQLite，
+因此后续可以查询指定时间范围内的数据，并按 `--aggr-by` 做分段聚合。
 
 按时间窗口查询。推荐使用 `--aggr-by`，例如 `--window 10m --aggr-by 1m`
 会展示这个 10 分钟窗口内每 1 分钟的聚合结果；histogram 指标会显示
@@ -156,6 +149,18 @@ ucm-toolkit run metrics-view query \
   --tag model_name=qwen \
   --tag worker_id=0
 ```
+
+即时检查当前 `/metrics`：
+
+```bash
+ucm-toolkit run metrics-view check \
+  --url http://127.0.0.1:8000/metrics
+```
+
+`check` 只拉取一次 metrics，不写入 SQLite。它会按 `metrics_lite` 或 `--config`
+指定的配置输出当前快照的总聚合值；对于 counter 类指标，这个值只能表示目标服务从启动到现在的累计值。
+`check` 无法获取某个时间段内的数据，也不能按时间窗口计算增量。需要查看时间范围内的数据时，
+必须使用 `start` / `stop` 方式将样本写入 SQLite，然后通过 `query` 查询 SQLite 中的样本。
 
 如果需要使用其它数据库文件，可以显式指定 `--db`：
 
