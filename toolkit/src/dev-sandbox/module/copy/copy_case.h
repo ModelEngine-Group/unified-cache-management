@@ -37,12 +37,14 @@ public:
     struct Context {
         size_t size;
         size_t num;
+        size_t frags;
         size_t iter;
         size_t nDevice;
     };
     CopyCase(std::string key, std::string brief) : key_{std::move(key)}, brief_{std::move(brief)} {}
     virtual ~CopyCase() = default;
     virtual void Run(const Context& ctx) const = 0;
+    virtual bool RequiresRuntimeInitialization() const { return true; }
     const std::string& Key() const { return key_; }
     const std::string& Brief() const { return brief_; }
 };
@@ -83,6 +85,16 @@ public:
     class ClassName : public CopyCase {                         \
     public:                                                     \
         ClassName() : CopyCase(Key, Brief) {}                   \
+        void Run(const Context&) const override;                \
+    };                                                          \
+    static Registrar<ClassName> global_##ClassName##_registrar; \
+    void ClassName::Run(const Context& Ctx) const
+
+#define DEFINE_COPY_CASE_NO_RUNTIME(ClassName, Key, Brief, Ctx) \
+    class ClassName : public CopyCase {                         \
+    public:                                                     \
+        ClassName() : CopyCase(Key, Brief) {}                   \
+        bool RequiresRuntimeInitialization() const override { return false; } \
         void Run(const Context&) const override;                \
     };                                                          \
     static Registrar<ClassName> global_##ClassName##_registrar; \
