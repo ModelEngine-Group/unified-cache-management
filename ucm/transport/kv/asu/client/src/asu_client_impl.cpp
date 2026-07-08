@@ -336,13 +336,23 @@ Status AsuClientImpl::RegisterRegionsOnce(const std::vector<MemoryRegion>& regio
         return WithContext(status, "asuIndex=0 asuId=" + std::to_string(snapshot->asuIds.front()) +
                                        " region_count=" + std::to_string(regions.size()));
     }
+    if (results.size() != regions.size()) {
+        return WithContext(Status::Error(StatusCode::INTERNAL_ERROR,
+                                         "register result count does not match region count"),
+                           "asuIndex=0 asuId=" + std::to_string(snapshot->asuIds.front()) +
+                               " region_count=" + std::to_string(regions.size()) +
+                               " result_count=" + std::to_string(results.size()));
+    }
 
     std::vector<RegisteredMemory> registeredRegions;
     registeredRegions.reserve(regions.size());
     for (std::size_t index = 0; index < regions.size(); ++index) {
         RegisteredMemory registeredRegion;
         registeredRegion.region = regions[index];
-        if (index < results.size()) { registeredRegion.handle = results[index].handle; }
+        registeredRegion.handle = results[index].handle;
+        registeredRegion.lkey = results[index].lkey;
+        registeredRegion.rkey = results[index].rkey;
+        registeredRegion.tokenId = results[index].tokenId;
         registeredRegions.emplace_back(registeredRegion);
     }
 
@@ -367,12 +377,20 @@ Status AsuClientImpl::RegisterRegionsOnce(const std::vector<MemoryRegion>& regio
                             "asuIndex=" + std::to_string(asuIndex) +
                                 " asuId=" + std::to_string(snapshot->asuIds[asuIndex]) +
                                 " region_count=" + std::to_string(registeredRegions.size()));
+        } else if (status.ok() && childResults.size() != registeredRegions.size() &&
+                   finalStatus.ok()) {
+            finalStatus =
+                WithContext(PartialFailed("one or more asu region bindings failed"),
+                            "asuIndex=" + std::to_string(asuIndex) +
+                                " asuId=" + std::to_string(snapshot->asuIds[asuIndex]) +
+                                " region_count=" + std::to_string(registeredRegions.size()) +
+                                " result_count=" + std::to_string(childResults.size()));
         }
     }
 
     if (finalStatus.ok()) {
         std::lock_guard<std::mutex> lock{mutex_};
-        for (std::size_t index = 0; index < regions.size() && index < results.size(); ++index) {
+        for (std::size_t index = 0; index < regions.size(); ++index) {
             registeredResources_.emplace_back(RegisteredResource{regions[index], results[index]});
         }
     }
@@ -899,6 +917,9 @@ Status AsuClientImpl::BindRegisteredResources(AsuId asuId,
         RegisteredMemory registeredRegion;
         registeredRegion.region = resource.region;
         registeredRegion.handle = resource.result.handle;
+        registeredRegion.lkey = resource.result.lkey;
+        registeredRegion.rkey = resource.result.rkey;
+        registeredRegion.tokenId = resource.result.tokenId;
         registeredRegions.emplace_back(registeredRegion);
     }
 
@@ -1074,6 +1095,22 @@ Status AsuClientImpl::NotInitialized()
 std::unique_ptr<AsuClient> CreateAsuClient(TransportFactory transportFactory)
 {
     return std::make_unique<AsuClientImpl>(std::move(transportFactory), nullptr);
+}
+
+extern "C" std::unique_ptr<AsuClient> UcmAsuCreateAsuClient(
+    const TransportFactory* transportFactory)
+{
+    if (transportFactory == nullptr) { return CreateAsuClient(); }
+    return CreateAsuClient(*transportFactory);
+}
+
+extern "C" Status UcmAsuLoadAsuClientConfig(const char* configPath, AsuClientConfig* config)
+{
+    if (configPath == nullptr || config == nullptr) {
+        return Status::Error(StatusCode::INVALID_ARGUMENT,
+                             "UcmAsuLoadAsuClientConfig received null argument");
+    }
+    return LoadAsuClientConfig(configPath, *config);
 }
 
 }  // namespace UC::ASU

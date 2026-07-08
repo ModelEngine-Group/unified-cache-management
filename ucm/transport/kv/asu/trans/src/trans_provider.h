@@ -39,6 +39,7 @@ public:
         MemType memoryType;
         uintptr_t addr;
         size_t size;
+        uintptr_t localAddr{0};
     };
 
     virtual Status RegisterMemory(ConnectionHandle connectionHandle,

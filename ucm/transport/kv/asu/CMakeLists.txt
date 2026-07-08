@@ -41,6 +41,10 @@ endif()
 message(STATUS "ASU ASCEND include: ${ASU_ASCEND_INCLUDE_DIR}")
 message(STATUS "ASU ASCENDCL lib: ${ASU_ASCENDCL_LIB}")
 
+option(BUILD_UCM_ASU_PROVIDER_AICPU "Build ASU AICPU trans provider" OFF)
+option(BUILD_UCM_ASU_PROVIDER_FAKE "Build ASU fake trans provider" ON)
+option(BUILD_UCM_ASU_PROVIDER_AIV "Build ASU AIV trans provider (requires external libumc.a)" OFF)
+
 add_library(asu_ascend_deps INTERFACE)
 target_include_directories(asu_ascend_deps INTERFACE ${ASU_ASCEND_INCLUDE_DIR})
 target_link_libraries(asu_ascend_deps INTERFACE ${ASU_ASCENDCL_LIB})
@@ -75,9 +79,15 @@ target_link_libraries(asu_transport
         asu_ascend_deps
 )
 
-option(BUILD_UCM_ASU_AIV "Enable AIV transport backend (requires external libumc.a)" OFF)
+if(BUILD_UCM_ASU_PROVIDER_AICPU)
+    target_compile_definitions(asu_transport PRIVATE UCM_ASU_ENABLE_AICPU_PROVIDER=1)
+endif()
 
-if(BUILD_UCM_ASU_AIV)
+if(BUILD_UCM_ASU_PROVIDER_FAKE)
+    target_compile_definitions(asu_transport PRIVATE UCM_ASU_ENABLE_FAKE_PROVIDER=1)
+endif()
+
+if(BUILD_UCM_ASU_PROVIDER_AIV)
     if(NOT DEFINED ASU_AIV_PROVIDER_ROOT)
         if(DEFINED ENV{ASU_AIV_PROVIDER_ROOT})
             set(ASU_AIV_PROVIDER_ROOT "$ENV{ASU_AIV_PROVIDER_ROOT}" CACHE PATH "Install prefix of libumc.a")
@@ -98,8 +108,8 @@ if(BUILD_UCM_ASU_AIV)
     endif()
 
     message(STATUS "ASU AIV provider lib: ${ASU_AIV_PROVIDER_LIB}")
-    target_link_libraries(asu_transport PRIVATE ${ASU_AIV_PROVIDER_LIB} dl)
-    target_compile_definitions(asu_transport PRIVATE UCM_ASU_ENABLE_AIV)
+    target_link_libraries(asu_transport PRIVATE ${ASU_AIV_PROVIDER_LIB} ${CMAKE_DL_LIBS})
+    target_compile_definitions(asu_transport PRIVATE UCM_ASU_ENABLE_AIV_PROVIDER=1)
 endif()
 
 file(GLOB ASU_CLIENT_SOURCES CONFIGURE_DEPENDS client/src/*.cpp)
