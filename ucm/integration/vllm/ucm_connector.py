@@ -404,10 +404,12 @@ class UCMDirectConnector(KVConnectorBase_V1):
 
         self.chunk_size = self.block_size
         self.blocks_per_chunk = self.chunk_size // self.block_size
+        self._other_rank_hashers: list[RequestHasher] = []
 
         defer_scheduler_store = getattr(self, "_defer_scheduler_store", False)
         if role == KVConnectorRole.SCHEDULER:
             self.request_hasher = RequestHasher(vllm_config, 0)
+            self._other_rank_hashers = self._make_other_rank_hashers(vllm_config)
             self._seed = self.request_hasher("UCM_HASH_SEED")
             # init scheduler-size connector
             if not defer_scheduler_store:
@@ -436,6 +438,12 @@ class UCMDirectConnector(KVConnectorBase_V1):
     @staticmethod
     def _record_counter(name: str, value: float = 1.0) -> None:
         _record_counter(name, value)
+
+    def _make_other_rank_hashers(self, vllm_config) -> list[RequestHasher]:
+        if self.is_mla:
+            return []
+        tp_size = vllm_config.parallel_config.tensor_parallel_size
+        return [RequestHasher(vllm_config, rank_id) for rank_id in range(1, tp_size)]
 
     def _apply_sdma_direct_launch_granularity(self, config: dict[str, Any]) -> None:
         if "cache_sdma_direct_launch_granularity" in config:
@@ -585,6 +593,19 @@ class UCMDirectConnector(KVConnectorBase_V1):
         if self.device is None:
             raise RuntimeError(f"Unsupported device platform for UCMDirectConnector.")
 
+    def _prefetch_other_rank_hashes(self, rank0_block_ids: list[bytes]) -> None:
+        if not self._other_rank_hashers or not rank0_block_ids:
+            return
+
+        other_rank_block_ids = [
+            rank_hasher(block_id)
+            for rank_hasher in self._other_rank_hashers
+            for block_id in rank0_block_ids
+        ]
+
+        if other_rank_block_ids:
+            self.store.prefetch(other_rank_block_ids)
+
     def get_num_new_matched_tokens(
         self,
         request: "Request",
@@ -622,10 +643,13 @@ class UCMDirectConnector(KVConnectorBase_V1):
         external_hit_blocks = 0
         if external_block_ids:
             try:
-                external_hit_blocks = (
+                external_hit_hashes = (
                     self.store.lookup_on_prefix(external_block_ids) + 1
                 )
-                external_hit_blocks //= self.cp_world_size
+                self._prefetch_other_rank_hashes(
+                    external_block_ids[:external_hit_hashes]
+                )
+                external_hit_blocks = external_hit_hashes // self.cp_world_size
             except Exception as e:
                 logger.error(
                     f"request {request.request_id} look up error. {type(e).__name__}: {e}"
@@ -1627,6 +1651,7 @@ class UCMCPConnector(UCMLayerWiseConnector):
 
         if role == KVConnectorRole.SCHEDULER:
             self.request_hasher = RequestHasher(vllm_config, 0)
+            self._other_rank_hashers = self._make_other_rank_hashers(vllm_config)
             self._seed = self.request_hasher("UCM_HASH_SEED")
             # init scheduler-size connector
             self.store = self._create_store(None)

@@ -95,7 +95,10 @@ Expected<ssize_t> Compressor::LookupOnPrefix(const Detail::BlockId* blocks, size
     return res;
 }
 
-void Compressor::Prefetch(const Detail::BlockId*, size_t) {}
+void Compressor::Prefetch(const Detail::BlockId* blocks, size_t num)
+{
+    impl_->backend->Prefetch(blocks, num);
+}
 
 Expected<Detail::TaskHandle> Compressor::Load(Detail::TaskDesc task)
 {

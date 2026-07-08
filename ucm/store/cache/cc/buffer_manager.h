@@ -77,6 +77,10 @@ public:
         }
         return LookupOnPrefixFast(blocks, num);
     }
+    void Prefetch(const Detail::BlockId* blocks, size_t num)
+    {
+        if (backend_) { backend_->Prefetch(blocks, num); }
+    }
 
 private:
     void Lookup(const Detail::BlockId* blocks, size_t num, std::vector<uint8_t>& results,
