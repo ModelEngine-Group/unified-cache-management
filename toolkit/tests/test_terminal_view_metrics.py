@@ -5,8 +5,10 @@ import json
 import math
 import sys
 import tempfile
+import threading
 import unittest
 from contextlib import redirect_stdout
+from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 
 TOOLKIT_ROOT = Path(__file__).resolve().parents[1]
@@ -418,6 +420,121 @@ ucm:load_duration_bucket{worker_id="0",le="+Inf"} 100
             self.assertEqual(result, 0)
             self.assertIn("ucm:save_bytes_total", output.getvalue())
             self.assertIn("rate=10.000", output.getvalue())
+
+    def test_cli_check_scrapes_once_and_outputs_snapshot_aggregates(self):
+        text = """
+vllm:requests_total{engine="e0"} 12
+vllm:requests_total{engine="e1"} 18
+vllm:hits_total{engine="e0"} 6
+vllm:hits_total{engine="e1"} 9
+ucm:latency_bucket{engine="e0",le="0.1"} 2
+ucm:latency_bucket{engine="e0",le="0.5"} 8
+ucm:latency_bucket{engine="e0",le="1.0"} 10
+ucm:latency_bucket{engine="e0",le="+Inf"} 10
+ucm:latency_sum{engine="e0"} 4
+ucm:latency_count{engine="e0"} 10
+ucm:latency_bucket{engine="e1",le="0.1"} 1
+ucm:latency_bucket{engine="e1",le="0.5"} 5
+ucm:latency_bucket{engine="e1",le="1.0"} 10
+ucm:latency_bucket{engine="e1",le="+Inf"} 10
+ucm:latency_sum{engine="e1"} 6
+ucm:latency_count{engine="e1"} 10
+"""
+        server = _MetricsServer(text)
+        server.start()
+        try:
+            with tempfile.TemporaryDirectory() as tmp:
+                config_path = Path(tmp) / "metrics.json"
+                config_path.write_text(
+                    json.dumps(
+                        {
+                            "metrics": [
+                                {
+                                    "name": "requests",
+                                    "type": "promql",
+                                    "expr": (
+                                        "sum by () "
+                                        "(increase(vllm:requests_total[$__rate_interval]))"
+                                    ),
+                                    "value": "requests",
+                                    "aggregate": "sum",
+                                },
+                                {
+                                    "name": "hit_rate",
+                                    "type": "promql",
+                                    "expr": (
+                                        "sum by () "
+                                        "(rate(vllm:hits_total[$__rate_interval])) / "
+                                        "sum by () "
+                                        "(rate(vllm:requests_total[$__rate_interval]))"
+                                    ),
+                                    "value": "hit_rate",
+                                    "aggregate": "avg",
+                                },
+                                {
+                                    "name": "latency",
+                                    "source": "ucm:latency",
+                                    "type": "histogram",
+                                    "quantiles": [0.9],
+                                    "avg": True,
+                                    "aggregate": "avg",
+                                },
+                            ]
+                        }
+                    ),
+                    encoding="utf-8",
+                )
+
+                output = io.StringIO()
+                with redirect_stdout(output):
+                    result = main(
+                        [
+                            "check",
+                            "--url",
+                            server.url,
+                            "--config",
+                            str(config_path),
+                            "--format",
+                            "json",
+                        ]
+                    )
+
+                self.assertEqual(result, 0)
+                rows = {row["metric"]: row for row in json.loads(output.getvalue())}
+                self.assertEqual(rows["requests"]["values"]["requests"], 30.0)
+                self.assertAlmostEqual(rows["hit_rate"]["values"]["hit_rate"], 0.5)
+                self.assertEqual(
+                    list(rows["latency"]["values"]), ["p50", "p90", "p99", "avg"]
+                )
+                self.assertAlmostEqual(rows["latency"]["values"]["p50"], 0.38)
+                self.assertAlmostEqual(rows["latency"]["values"]["p90"], 0.8571428571)
+                self.assertAlmostEqual(rows["latency"]["values"]["p99"], 0.9857142857)
+                self.assertAlmostEqual(rows["latency"]["values"]["avg"], 0.5)
+
+                tagged_output = io.StringIO()
+                with redirect_stdout(tagged_output):
+                    result = main(
+                        [
+                            "check",
+                            "--url",
+                            server.url,
+                            "--config",
+                            str(config_path),
+                            "--format",
+                            "json",
+                            "--tag",
+                            "engine=e0",
+                        ]
+                    )
+
+                self.assertEqual(result, 0)
+                tagged_rows = {
+                    row["metric"]: row for row in json.loads(tagged_output.getvalue())
+                }
+                self.assertEqual(tagged_rows["requests"]["values"]["requests"], 12.0)
+                self.assertAlmostEqual(tagged_rows["latency"]["values"]["avg"], 0.4)
+        finally:
+            server.stop()
 
     def test_cli_query_defaults_to_metrics_lite_config(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -1154,6 +1271,43 @@ ucm:cache_load_shards_total 30
             self.assertIn("bucket", table)
             self.assertIn("rate=10.000", table)
             self.assertIn("rate=30.000", table)
+
+
+class _MetricsServer:
+    def __init__(self, text: str):
+        self.text = text.encode("utf-8")
+        outer = self
+
+        class Handler(BaseHTTPRequestHandler):
+            def do_GET(self):
+                if self.path != "/metrics":
+                    self.send_response(404)
+                    self.end_headers()
+                    return
+                self.send_response(200)
+                self.send_header("Content-Type", "text/plain")
+                self.send_header("Content-Length", str(len(outer.text)))
+                self.end_headers()
+                self.wfile.write(outer.text)
+
+            def log_message(self, _format, *_args):
+                return
+
+        self.server = HTTPServer(("127.0.0.1", 0), Handler)
+        self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
+
+    @property
+    def url(self) -> str:
+        host, port = self.server.server_address
+        return f"http://{host}:{port}/metrics"
+
+    def start(self) -> None:
+        self.thread.start()
+
+    def stop(self) -> None:
+        self.server.shutdown()
+        self.thread.join(timeout=5)
+        self.server.server_close()
 
 
 if __name__ == "__main__":

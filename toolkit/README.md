@@ -111,13 +111,15 @@ blocking 时间和 cache/posix store load/dump 带宽等指标。当前内置 co
 ucm-toolkit run metrics-view list-configs
 ```
 
-前台采集一次：
+即时检查当前 `/metrics`：
 
 ```bash
-ucm-toolkit run metrics-view collect \
-  --url http://127.0.0.1:8000/metrics \
-  --once
+ucm-toolkit run metrics-view check \
+  --url http://127.0.0.1:8000/metrics
 ```
+
+`check` 只拉取一次 metrics，不写入 SQLite。它会按 `metrics_lite` 或 `--config` 指定的配置输出当前快照的总聚合值；
+配置里的 `rate()` / `increase()` 在单次检查中按当前 counter 值计算，适合快速确认 endpoint 和关键指标是否存在。
 
 后台启动采集：
 

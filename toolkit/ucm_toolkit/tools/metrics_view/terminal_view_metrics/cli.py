@@ -11,7 +11,7 @@ from pathlib import Path
 if __package__ in {None, ""}:
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from terminal_view_metrics.collector import collect_loop
+from terminal_view_metrics.collector import collect_loop, scrape_url
 from terminal_view_metrics.config import (
     list_preset_configs,
     load_config,
@@ -19,8 +19,10 @@ from terminal_view_metrics.config import (
     parse_time_ms,
     resolve_config_path,
 )
+from terminal_view_metrics.parser import parse_prometheus_text
 from terminal_view_metrics.query import QueryEngine
 from terminal_view_metrics.render import render_json, render_table
+from terminal_view_metrics.snapshot import SnapshotQueryEngine
 from terminal_view_metrics.storage import MetricsStore
 
 DEFAULT_DB = "/tmp/ucm_metrics.db"
@@ -38,6 +40,10 @@ def _build_parser() -> argparse.ArgumentParser:
         description="Collect and query Prometheus metrics in SQLite"
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
+
+    check = subparsers.add_parser("check", help="Scrape once and show config values")
+    _add_check_args(check)
+    check.set_defaults(func=_cmd_check)
 
     collect = subparsers.add_parser("collect", help="Run foreground metrics collection")
     _add_collect_args(collect)
@@ -86,6 +92,21 @@ def _add_collect_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--timeout", default="5s")
 
 
+def _add_check_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--url", required=True, help="Prometheus /metrics URL")
+    parser.add_argument("--config", default="metrics_lite")
+    parser.add_argument("--timeout", default="5s")
+    parser.add_argument(
+        "--tag",
+        action="append",
+        default=[],
+        metavar="KEY=VALUE",
+        help="Only check series with this Prometheus label value; can be repeated",
+    )
+    parser.add_argument("--format", choices=["table", "json"], default="table")
+    parser.add_argument("--limit", type=int, default=None)
+
+
 def _add_query_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--db", default=DEFAULT_DB)
     parser.add_argument("--config", default="metrics_lite")
@@ -120,6 +141,20 @@ def _cmd_collect(args: argparse.Namespace) -> int:
         once=args.once,
         timeout_seconds=parse_duration_seconds(args.timeout),
     )
+    return 0
+
+
+def _cmd_check(args: argparse.Namespace) -> int:
+    config = load_config(resolve_config_path(args.config))
+    text = scrape_url(args.url, parse_duration_seconds(args.timeout))
+    rows = SnapshotQueryEngine(parse_prometheus_text(text)).query_config(
+        config,
+        tag_filters=_parse_tag_filters(args.tag),
+    )
+    if args.format == "json":
+        print(render_json(rows, args.limit))
+    else:
+        print(render_table(rows, args.limit))
     return 0
 
 
