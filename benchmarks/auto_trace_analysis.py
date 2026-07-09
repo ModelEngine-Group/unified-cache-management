@@ -15,9 +15,14 @@ from pathlib import Path
 from typing import Iterable
 
 GIB = 1024**3
-GPU_HIT_METRIC = "ucm:gpu_hbm_hit_tokens_total"
-UCM_HIT_METRIC = "ucm:ucm_hit_tokens_total"
-TOTAL_QUERY_METRIC = "ucm:total_prefix_query_tokens_total"
+PREFIX_CACHE_QUERIES_METRICS = (
+    "vllm:prefix_cache_queries_total",
+    "prefix_cache_queries_total",
+)
+PREFIX_CACHE_HITS_METRICS = (
+    "vllm:prefix_cache_hits_total",
+    "prefix_cache_hits_total",
+)
 
 TRACE_RE = re.compile(
     r"timestamp:\s*(?P<timestamp>\d+(?:\.\d+)?),\s*"
@@ -253,34 +258,28 @@ def metrics_url_from_service_url(service_url: str) -> str:
     return stripped + "/metrics"
 
 
+def first_metric_value(samples: dict[str, float], names: tuple[str, ...]) -> float:
+    for name in names:
+        if name in samples:
+            return samples[name]
+    raise ValueError("required metrics missing from /metrics: " + " or ".join(names))
+
+
 def fetch_service_hit_rate(service_url: str, timeout: float) -> dict:
     metrics_url = metrics_url_from_service_url(service_url)
     with urllib.request.urlopen(metrics_url, timeout=timeout) as response:
         text = response.read().decode("utf-8", errors="replace")
     samples = parse_prometheus_samples(text)
-    missing = [
-        name
-        for name in (GPU_HIT_METRIC, UCM_HIT_METRIC, TOTAL_QUERY_METRIC)
-        if name not in samples
-    ]
-    if missing:
-        raise ValueError(
-            "required metrics missing from /metrics: " + ", ".join(missing)
-        )
 
-    total = samples[TOTAL_QUERY_METRIC]
-    if total <= 0:
-        raise ValueError(f"{TOTAL_QUERY_METRIC} must be > 0")
-
-    gpu_hit = samples[GPU_HIT_METRIC]
-    ucm_hit = samples[UCM_HIT_METRIC]
+    queries = first_metric_value(samples, PREFIX_CACHE_QUERIES_METRICS)
+    hits = first_metric_value(samples, PREFIX_CACHE_HITS_METRICS)
+    hit_rate = hits / queries if queries > 0 else 0.0
     return {
         "service_url": service_url,
         "metrics_url": metrics_url,
-        "gpu_hbm_hit_tokens_total": gpu_hit,
-        "ucm_hit_tokens_total": ucm_hit,
-        "total_prefix_query_tokens_total": total,
-        "actual_kv_cache_hit_rate": (gpu_hit + ucm_hit) / total,
+        "prefix_cache_hits_total": hits,
+        "prefix_cache_queries_total": queries,
+        "actual_kv_cache_hit_rate": hit_rate,
     }
 
 
