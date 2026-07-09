@@ -498,7 +498,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--is-mla", choices=("true", "false"), required=True)
     parser.add_argument("--dram-pool-size-gb", type=float, required=True)
     parser.add_argument("--fs-pool-size-gb", type=float, required=True)
-    parser.add_argument("--service-url", required=True)
+    parser.add_argument("--service-url")
     parser.add_argument("--metrics-timeout", type=float, default=5.0)
     parser.add_argument("--num-nodes", type=int, default=1)
     parser.add_argument("--random-seed", type=int, default=0)
@@ -536,6 +536,14 @@ def build_analysis(args: argparse.Namespace) -> dict:
         num_nodes=args.num_nodes,
         random_seed=args.random_seed,
     )
+    hbm = simulate_cache_hit_rate(
+        records=facts.records,
+        gpu_capacity_blocks=gpu_capacity_blocks,
+        dram_capacity_blocks=0,
+        fs_capacity_blocks=0,
+        num_nodes=args.num_nodes,
+        random_seed=args.random_seed,
+    )
     hbm_dram = simulate_cache_hit_rate(
         records=facts.records,
         gpu_capacity_blocks=gpu_capacity_blocks,
@@ -552,7 +560,11 @@ def build_analysis(args: argparse.Namespace) -> dict:
         num_nodes=args.num_nodes,
         random_seed=args.random_seed,
     )
-    service_metrics = fetch_service_hit_rate(args.service_url, args.metrics_timeout)
+    service_metrics = (
+        fetch_service_hit_rate(args.service_url, args.metrics_timeout)
+        if args.service_url
+        else None
+    )
 
     request_count = len(facts.records)
     request_tokens = total_request_tokens(facts.records)
@@ -563,9 +575,7 @@ def build_analysis(args: argparse.Namespace) -> dict:
         "theoretical_max_kv_cache_hit_rate_percent": percent(
             theoretical_max["hit_rate"]
         ),
-        "service_actual_kv_cache_hit_rate_percent": percent(
-            service_metrics["actual_kv_cache_hit_rate"]
-        ),
+        "hbm_theoretical_hit_rate_percent": percent(hbm["hit_rate"]),
         "hbm_dram_pool_theoretical_hit_rate_percent": percent(hbm_dram["hit_rate"]),
         "hbm_dram_fs_pool_theoretical_hit_rate_percent": percent(
             hbm_dram_fs["hit_rate"]
@@ -579,6 +589,10 @@ def build_analysis(args: argparse.Namespace) -> dict:
         "p90_request_lifetime_seconds": theoretical_max["p90_request_lifetime_seconds"],
         "p95_request_lifetime_seconds": theoretical_max["p95_request_lifetime_seconds"],
     }
+    if service_metrics is not None:
+        analysis["service_actual_kv_cache_hit_rate_percent"] = percent(
+            service_metrics["actual_kv_cache_hit_rate"]
+        )
 
     return {
         "inputs": {
@@ -604,6 +618,7 @@ def build_analysis(args: argparse.Namespace) -> dict:
         "analysis": analysis,
         "simulation_details": {
             "theoretical_max": theoretical_max,
+            "hbm": hbm,
             "hbm_dram": hbm_dram,
             "hbm_dram_fs": hbm_dram_fs,
         },
@@ -630,9 +645,14 @@ def print_summary(result: dict) -> None:
         "  Theoretical max KV cache hit rate: "
         f"{analysis['theoretical_max_kv_cache_hit_rate_percent']:.6f}%"
     )
+    if "service_actual_kv_cache_hit_rate_percent" in analysis:
+        print(
+            "  Service actual KV cache hit rate: "
+            f"{analysis['service_actual_kv_cache_hit_rate_percent']:.6f}%"
+        )
     print(
-        "  Service actual KV cache hit rate: "
-        f"{analysis['service_actual_kv_cache_hit_rate_percent']:.6f}%"
+        "  HBM theoretical hit rate: "
+        f"{analysis['hbm_theoretical_hit_rate_percent']:.6f}%"
     )
     print(
         "  HBM + DRAM pool theoretical hit rate: "
