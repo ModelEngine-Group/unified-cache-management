@@ -32,6 +32,11 @@
 
 namespace UC::DramStore {
 
+enum class EvictionPolicyType {
+    TTL = 0,
+    POSITION,
+};
+
 /**
  * @brief Abstract interface for cache eviction policies.
  *
