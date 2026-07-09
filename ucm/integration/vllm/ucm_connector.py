@@ -3213,17 +3213,21 @@ class UCMConnector(KVConnectorBase_V1, SupportsHMA):
             else False
         )
 
-        pp_enabled = self._vllm_config.parallel_config.pipeline_parallel_size > 1
-        if pp_enabled and not use_layerwise:
-            raise RuntimeError(
-                "Pipeline parallelism is not supported in UCMDirectConnector, please set use_layerwise=True."
-            )
-
         use_lite = (
             self.launch_config.get("use_lite", False)
             if self.launch_config is not None
             else False
         )
+
+        if use_lite:
+            self.connector = UCMLiteConnector(vllm_config, role, kv_cache_config)
+            return
+
+        pp_enabled = self._vllm_config.parallel_config.pipeline_parallel_size > 1
+        if pp_enabled and not use_layerwise:
+            raise RuntimeError(
+                "Pipeline parallelism is not supported in UCMDirectConnector, please set use_layerwise=True."
+            )
 
         use_ratio_rate = (
             self.launch_config is not None and "hit_ratio" in self.launch_config
@@ -3252,8 +3256,6 @@ class UCMConnector(KVConnectorBase_V1, SupportsHMA):
 
         if UCMFAWAConnector.can_handle_kv_cache_config(kv_cache_config):
             self.connector = UCMFAWAConnector(vllm_config, role, kv_cache_config)
-        elif use_lite:
-            self.connector = UCMLiteConnector(vllm_config, role, kv_cache_config)
         elif use_ratio_rate:
             self.connector = UCMMockConnector(vllm_config, role, kv_cache_config)
         elif use_cp_parallel:

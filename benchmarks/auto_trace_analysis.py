@@ -475,6 +475,9 @@ def build_analysis(args: argparse.Namespace) -> dict:
 
 def print_summary(result: dict) -> None:
     analysis = result["analysis"]
+    derived = result["derived"]
+    inputs = result["inputs"]
+    hbm_bytes = derived["gpu_kv_cache_bytes"]
     print("Trace cache uplift analysis")
     print(f"  total request count: {analysis['total_request_count']}")
     print(f"  total request token count: {analysis['total_request_token_count']}")
@@ -482,6 +485,12 @@ def print_summary(result: dict) -> None:
         "  average tokens per request: "
         f"{analysis['average_request_token_count']:.2f}"
     )
+    print(
+        "  total hbm available kv cache size: "
+        f"{hbm_bytes} bytes ({hbm_bytes / 1024**3:.2f} GiB)"
+    )
+    print(f"  dram pool size: {inputs['dram_pool_size_gb']:.2f} GiB")
+    print(f"  fs pool size: {inputs['fs_pool_size_gb']:.2f} GiB")
     print(
         "  theoretical max kv cache hit rate: "
         f"{analysis['theoretical_max_kv_cache_hit_rate_percent']:.6f}%"

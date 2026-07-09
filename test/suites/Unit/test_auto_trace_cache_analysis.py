@@ -8,7 +8,7 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(REPO_ROOT))
 
-from benchmarks import auto_trace_cache_analysis as analyzer
+from benchmarks import auto_trace_analysis as analyzer
 
 
 def _write_log(path, text):
@@ -117,7 +117,7 @@ class AutoTraceCacheAnalysisTest(unittest.TestCase):
             completed = subprocess.run(
                 [
                     sys.executable,
-                    str(REPO_ROOT / "benchmarks" / "auto_trace_cache_analysis.py"),
+                    str(REPO_ROOT / "benchmarks" / "auto_trace_analysis.py"),
                     "--log-dir",
                     str(log_dir),
                     "--block-kv-cache-size",
@@ -145,6 +145,12 @@ class AutoTraceCacheAnalysisTest(unittest.TestCase):
 
         self.assertIn("total request count: 1", completed.stdout)
         self.assertIn("average tokens per request: 10.00", completed.stdout)
+        self.assertIn(
+            "total hbm available kv cache size: 1073741824 bytes (1.00 GiB)",
+            completed.stdout,
+        )
+        self.assertIn("dram pool size: 1.00 GiB", completed.stdout)
+        self.assertIn("fs pool size: 1.00 GiB", completed.stdout)
         self.assertEqual(data["analysis"]["total_request_count"], 1)
         self.assertEqual(
             data["analysis"]["service_actual_kv_cache_hit_rate_percent"],
@@ -170,7 +176,7 @@ class AutoTraceCacheAnalysisTest(unittest.TestCase):
             completed = subprocess.run(
                 [
                     sys.executable,
-                    str(REPO_ROOT / "benchmarks" / "auto_trace_cache_analysis.py"),
+                    str(REPO_ROOT / "benchmarks" / "auto_trace_analysis.py"),
                     "--log-dir",
                     str(log_dir),
                     "--block-kv-cache-size",

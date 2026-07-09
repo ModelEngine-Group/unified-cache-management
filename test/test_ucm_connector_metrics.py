@@ -513,8 +513,11 @@ def _vllm_config(config=None, launch_config=None):
     return SimpleNamespace(
         kv_transfer_config=SimpleNamespace(
             kv_connector="UCM",
+            engine_id="engine-0",
             launch_config=launch_config,
-        )
+        ),
+        parallel_config=SimpleNamespace(pipeline_parallel_size=1),
+        scheduler_config=SimpleNamespace(disable_hybrid_kv_cache_manager=True),
     )
 
 
@@ -968,6 +971,48 @@ def test_ucm_connector_metrics_registration_is_owned_by_outer_connector():
     assert isinstance(prom, UCMPromMetrics)
     assert isinstance(stats, UCMConnectorStats)
     assert stats.data["counters_by_rank"]["0"]["load_bytes_total"] == 1.0
+
+
+def test_ucm_connector_prefers_lite_when_lite_and_fawa_are_both_enabled(monkeypatch):
+    class FakeInnerConnector(KVConnectorBase_V1):
+        pass
+
+    class FakeFawaConnector(KVConnectorBase_V1):
+        @classmethod
+        def can_handle_kv_cache_config(cls, kv_cache_config):
+            return True
+
+    monkeypatch.setattr(UCMConnector, "_setup_ucm_metrics", lambda *args: None)
+    monkeypatch.setattr(
+        ucm_connector_module,
+        "use_hybrid_linear_attention_layout",
+        lambda kv_cache_config: False,
+    )
+    monkeypatch.setattr(ucm_connector_module, "UCMLiteConnector", FakeInnerConnector)
+    monkeypatch.setattr(ucm_connector_module, "UCMMockConnector", FakeInnerConnector)
+    monkeypatch.setattr(ucm_connector_module, "UCMCPConnector", FakeInnerConnector)
+    monkeypatch.setattr(
+        ucm_connector_module, "UCMLayerWiseConnector", FakeInnerConnector
+    )
+    monkeypatch.setattr(
+        ucm_connector_module,
+        "UCMHybridLinearAttentionConnector",
+        FakeInnerConnector,
+    )
+    monkeypatch.setattr(ucm_connector_module, "UCMDirectConnector", FakeInnerConnector)
+    monkeypatch.setitem(
+        sys.modules,
+        "ucm.integration.vllm.hma_connector",
+        SimpleNamespace(UCMFAWAConnector=FakeFawaConnector),
+    )
+
+    connector = UCMConnector(
+        _vllm_config(launch_config={"use_lite": True}),
+        KVConnectorRole.SCHEDULER,
+        kv_cache_config=object(),
+    )
+
+    assert type(connector.connector) is FakeInnerConnector
 
 
 def test_ucm_connector_drains_dispatcher_vllm_connector_snapshot():
