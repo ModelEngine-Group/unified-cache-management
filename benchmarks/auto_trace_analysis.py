@@ -4,6 +4,7 @@ import argparse
 import ast
 import gzip
 import json
+import math
 import random
 import re
 import sys
@@ -82,24 +83,87 @@ class LogFacts:
     tensor_parallel_sizes: list[int]
 
 
+@dataclass(frozen=True)
+class CacheEntry:
+    producer_index: int
+
+
+class RequestGroups:
+    def __init__(self) -> None:
+        self.parent: list[int] = []
+        self.first_timestamp: list[float] = []
+        self.last_hit_timestamp: list[float | None] = []
+
+    def add(self, timestamp: float) -> int:
+        index = len(self.parent)
+        self.parent.append(index)
+        self.first_timestamp.append(timestamp)
+        self.last_hit_timestamp.append(None)
+        return index
+
+    def find(self, index: int) -> int:
+        parent = self.parent[index]
+        if parent != index:
+            self.parent[index] = self.find(parent)
+        return self.parent[index]
+
+    def union_roots(self, roots: Iterable[int]) -> int:
+        root_set = {self.find(root) for root in roots}
+        if not root_set:
+            raise ValueError("cannot union empty request group")
+        root = min(root_set, key=lambda item: self.first_timestamp[item])
+        for item in root_set:
+            if item == root:
+                continue
+            self.parent[item] = root
+            item_last_hit = self.last_hit_timestamp[item]
+            if item_last_hit is not None:
+                root_last_hit = self.last_hit_timestamp[root]
+                self.last_hit_timestamp[root] = (
+                    item_last_hit
+                    if root_last_hit is None
+                    else max(root_last_hit, item_last_hit)
+                )
+        return root
+
+    def record_hit(self, root: int, timestamp: float) -> None:
+        root = self.find(root)
+        last_hit = self.last_hit_timestamp[root]
+        self.last_hit_timestamp[root] = (
+            timestamp if last_hit is None else max(last_hit, timestamp)
+        )
+
+    def lifetimes(self) -> list[float]:
+        values: list[float] = []
+        for index, last_hit in enumerate(self.last_hit_timestamp):
+            if self.find(index) != index or last_hit is None:
+                continue
+            values.append(last_hit - self.first_timestamp[index])
+        return values
+
+
 class LRUCache:
     def __init__(self, capacity: int):
         self.capacity = max(0, int(capacity))
-        self.items: OrderedDict[str, None] = OrderedDict()
+        self.items: OrderedDict[str, CacheEntry] = OrderedDict()
 
     def touch(self, key: str) -> bool:
-        if self.capacity <= 0 or key not in self.items:
-            return False
-        self.items.move_to_end(key)
-        return True
+        return self.get(key) is not None
 
-    def put(self, key: str) -> None:
+    def get(self, key: str) -> CacheEntry | None:
+        if self.capacity <= 0 or key not in self.items:
+            return None
+        self.items.move_to_end(key)
+        return self.items[key]
+
+    def put(self, key: str, entry: CacheEntry) -> None:
         if self.capacity <= 0:
             return
         if key in self.items:
+            self.items[key] = entry
             self.items.move_to_end(key)
         else:
-            self.items[key] = None
+            self.items[key] = entry
         while len(self.items) > self.capacity:
             self.items.popitem(last=False)
 
@@ -296,6 +360,25 @@ def _rate(numerator: int | float, denominator: int | float) -> float:
     return numerator / denominator if denominator else 0.0
 
 
+def nearest_percentile(values: list[float], percentile: int) -> float:
+    if not values:
+        return 0.0
+    sorted_values = sorted(values)
+    index = math.ceil(len(sorted_values) * percentile / 100) - 1
+    return sorted_values[max(0, min(index, len(sorted_values) - 1))]
+
+
+def request_lifetime_stats(values: list[float]) -> dict:
+    return {
+        "request_lifetime_sample_count": len(values),
+        "average_request_lifetime_seconds": (
+            sum(values) / len(values) if values else 0.0
+        ),
+        "p90_request_lifetime_seconds": nearest_percentile(values, 90),
+        "p95_request_lifetime_seconds": nearest_percentile(values, 95),
+    }
+
+
 def simulate_cache_hit_rate(
     records: Iterable[TraceRecord],
     gpu_capacity_blocks: int,
@@ -319,8 +402,10 @@ def simulate_cache_hit_rate(
     dram_hit_tokens = 0
     fs_hit_tokens = 0
     miss_tokens = 0
+    request_groups = RequestGroups()
 
     for record in records:
+        request_index = request_groups.add(record.timestamp)
         total_tokens += record.input_length
         if not record.hash_ids:
             miss_tokens += record.input_length
@@ -330,25 +415,41 @@ def simulate_cache_hit_rate(
         gpu_cache = gpu_caches[node_index]
         dram_cache = dram_caches[node_index]
         prefix_available = True
+        hit_roots: set[int] = set()
 
         for block_id, weight in zip(record.hash_ids, block_token_weights(record)):
-            if prefix_available and gpu_cache.touch(block_id):
+            gpu_entry = gpu_cache.get(block_id) if prefix_available else None
+            if gpu_entry is not None:
                 gpu_hit_tokens += weight
-            elif prefix_available and dram_cache.touch(block_id):
+                hit_roots.add(request_groups.find(gpu_entry.producer_index))
+                continue
+
+            dram_entry = dram_cache.get(block_id) if prefix_available else None
+            if dram_entry is not None:
                 dram_hit_tokens += weight
-                gpu_cache.put(block_id)
-            elif prefix_available and fs_cache.touch(block_id):
+                hit_roots.add(request_groups.find(dram_entry.producer_index))
+                gpu_cache.put(block_id, dram_entry)
+                continue
+
+            fs_entry = fs_cache.get(block_id) if prefix_available else None
+            if fs_entry is not None:
                 fs_hit_tokens += weight
-                dram_cache.put(block_id)
-                gpu_cache.put(block_id)
+                hit_roots.add(request_groups.find(fs_entry.producer_index))
+                dram_cache.put(block_id, fs_entry)
+                gpu_cache.put(block_id, fs_entry)
             else:
                 miss_tokens += weight
                 prefix_available = False
 
+        if hit_roots:
+            root = request_groups.union_roots([request_index, *hit_roots])
+            request_groups.record_hit(root, record.timestamp)
+
+        entry = CacheEntry(producer_index=request_index)
         for block_id in record.hash_ids:
-            fs_cache.put(block_id)
-            dram_cache.put(block_id)
-            gpu_cache.put(block_id)
+            fs_cache.put(block_id, entry)
+            dram_cache.put(block_id, entry)
+            gpu_cache.put(block_id, entry)
 
     total_hit_tokens = gpu_hit_tokens + dram_hit_tokens + fs_hit_tokens
     return {
@@ -359,6 +460,7 @@ def simulate_cache_hit_rate(
         "miss_tokens": miss_tokens,
         "total_hit_tokens": total_hit_tokens,
         "hit_rate": _rate(total_hit_tokens, total_tokens),
+        **request_lifetime_stats(request_groups.lifetimes()),
     }
 
 
@@ -468,6 +570,14 @@ def build_analysis(args: argparse.Namespace) -> dict:
         "hbm_dram_fs_pool_theoretical_hit_rate_percent": percent(
             hbm_dram_fs["hit_rate"]
         ),
+        "request_lifetime_sample_count": theoretical_max[
+            "request_lifetime_sample_count"
+        ],
+        "average_request_lifetime_seconds": theoretical_max[
+            "average_request_lifetime_seconds"
+        ],
+        "p90_request_lifetime_seconds": theoretical_max["p90_request_lifetime_seconds"],
+        "p95_request_lifetime_seconds": theoretical_max["p95_request_lifetime_seconds"],
     }
 
     return {
@@ -531,6 +641,20 @@ def print_summary(result: dict) -> None:
     print(
         "  HBM + DRAM pool + FS pool theoretical hit rate: "
         f"{analysis['hbm_dram_fs_pool_theoretical_hit_rate_percent']:.6f}%"
+    )
+    print(
+        "  Request lifetime sample count: "
+        f"{analysis['request_lifetime_sample_count']}"
+    )
+    print(
+        "  Average request lifetime: "
+        f"{analysis['average_request_lifetime_seconds']:.6f} s"
+    )
+    print(
+        "  P90 request lifetime: " f"{analysis['p90_request_lifetime_seconds']:.6f} s"
+    )
+    print(
+        "  P95 request lifetime: " f"{analysis['p95_request_lifetime_seconds']:.6f} s"
     )
 
 
