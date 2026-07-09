@@ -505,34 +505,31 @@ def print_summary(result: dict) -> None:
     derived = result["derived"]
     inputs = result["inputs"]
     hbm_bytes = derived["gpu_kv_cache_bytes"]
-    print("Trace cache uplift analysis")
-    print(f"  total request count: {analysis['total_request_count']}")
-    print(f"  total request token count: {analysis['total_request_token_count']}")
+    print("Trace cache hit rate analysis")
+    print(f"  Total request count: {analysis['total_request_count']}")
+    print(f"  Total request token count: {analysis['total_request_token_count']}")
     print(
-        "  average tokens per request: "
+        "  Average tokens per request: "
         f"{analysis['average_request_token_count']:.2f}"
     )
+    print("  Total HBM available KV cache size: " f"{hbm_bytes / 1024**3:.2f} GiB")
+    print(f"  TP size: {derived['tp_size']}")
+    print(f"  DRAM pool size: {inputs['dram_pool_size_gb']:.2f} GiB")
+    print(f"  FS pool size: {inputs['fs_pool_size_gb']:.2f} GiB")
     print(
-        "  total hbm available kv cache size: "
-        f"{hbm_bytes} bytes ({hbm_bytes / 1024**3:.2f} GiB)"
-    )
-    print(f"  tp size: {derived['tp_size']}")
-    print(f"  dram pool size: {inputs['dram_pool_size_gb']:.2f} GiB")
-    print(f"  fs pool size: {inputs['fs_pool_size_gb']:.2f} GiB")
-    print(
-        "  theoretical max kv cache hit rate: "
+        "  Theoretical max KV cache hit rate: "
         f"{analysis['theoretical_max_kv_cache_hit_rate_percent']:.6f}%"
     )
     print(
-        "  service actual kv cache hit rate: "
+        "  Service actual KV cache hit rate: "
         f"{analysis['service_actual_kv_cache_hit_rate_percent']:.6f}%"
     )
     print(
-        "  hbm + dram_pool theoretical hit rate: "
+        "  HBM + DRAM pool theoretical hit rate: "
         f"{analysis['hbm_dram_pool_theoretical_hit_rate_percent']:.6f}%"
     )
     print(
-        "  hbm + dram_pool + fs_pool theoretical hit rate: "
+        "  HBM + DRAM pool + FS pool theoretical hit rate: "
         f"{analysis['hbm_dram_fs_pool_theoretical_hit_rate_percent']:.6f}%"
     )
 
