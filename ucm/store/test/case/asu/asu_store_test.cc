@@ -29,9 +29,9 @@
 #include <fstream>
 #include <gtest/gtest.h>
 #include <memory>
+#include <set>
 #include <string>
 #include <unordered_map>
-#include <unordered_set>
 #include <utility>
 #include <vector>
 #include "detail/types_helper.h"
@@ -164,7 +164,7 @@ private:
     std::shared_ptr<FakeAsuBackendState> state_;
     bool initialized_{false};
     UC::ASU::TaskId nextTaskId_{1};
-    std::unordered_set<UC::ASU::CacheKey> storedKeys_;
+    std::set<UC::ASU::CacheKey> storedKeys_;
     std::unordered_map<UC::ASU::TaskId, UC::ASU::TaskResult> taskResults_;
 };
 
