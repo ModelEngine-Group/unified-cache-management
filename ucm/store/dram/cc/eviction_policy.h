@@ -1,7 +1,7 @@
 /**
  * MIT License
  *
- * Copyright (c) 2025 Huawei Technologies Co., Ltd. All rights reserved.
+ * Copyright (c) 2026 Huawei Technologies Co., Ltd. All rights reserved.
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -24,6 +24,8 @@
 #ifndef UNIFIEDCACHE_DRAM_STORE_CC_EVICTION_POLICY_H
 #define UNIFIEDCACHE_DRAM_STORE_CC_EVICTION_POLICY_H
 
+#include <set>
+#include <unordered_map>
 #include <vector>
 #include "entry.h"
 #include "status/status.h"
@@ -89,6 +91,47 @@ public:
      *         The ordering is policy-defined.
      */
     virtual std::vector<BlockId> GetEvictionResults(double evict_ratio) = 0;
+};
+
+/**
+ * @brief Common base for eviction policies backed by a std::multiset ordered
+ *        by a policy-specific comparator.
+ *
+ * Provides shared implementations of AddKey, DeleteKey, and AccessKey.
+ * Subclasses must supply their own comparator type as the template parameter
+ * and implement GetEvictionResults().
+ *
+ * @tparam Cmp Comparator type for ordering EntryPtr in the multiset.
+ */
+template <typename Cmp>
+class OrderedEvictionPolicy : public EvictionPolicy {
+public:
+    Status AddKey(const BlockId& key, EntryPtr entry) override
+    {
+        if (entry == nullptr) { return Status::InvalidParam(); }
+        if (index_.find(key) != index_.end()) { return Status::DuplicateKey(); }
+        auto it = entries_.insert(std::move(entry));
+        index_.emplace(key, it);
+        return Status::OK();
+    }
+
+    Status DeleteKey(const BlockId& key) override
+    {
+        auto mapIt = index_.find(key);
+        if (mapIt == index_.end()) { return Status::NotFound(); }
+        entries_.erase(mapIt->second);
+        index_.erase(mapIt);
+        return Status::OK();
+    }
+
+    Status AccessKey(const BlockId& /*key*/) override { return Status::OK(); }
+
+protected:
+    using EntrySet = std::multiset<EntryPtr, Cmp>;
+    using EntryIter = typename EntrySet::iterator;
+
+    EntrySet entries_;
+    std::unordered_map<BlockId, EntryIter, UC::Detail::BlockIdHasher> index_;
 };
 
 }  // namespace UC::DramStore
