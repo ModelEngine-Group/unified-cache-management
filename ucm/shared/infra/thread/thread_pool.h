@@ -36,6 +36,7 @@
 #include <unistd.h>
 #include <vector>
 #include "cpu_affinity.h"
+#include "logger/logger.h"
 
 namespace UC {
 
@@ -198,6 +199,10 @@ private:
     }
     void WorkerLoop(std::promise<bool>& prom, std::shared_ptr<Worker> worker)
     {
+        auto nameStatus = CpuAffinity::SetCurrentThreadName("ucm_pool_work");
+        if (nameStatus.Failure()) {
+            UC_WARN("Failed({}) to set UCM worker thread name.", nameStatus);
+        }
         worker->tid = syscall(SYS_gettid);
         WorkerArgs args = nullptr;
         auto success = true;
@@ -230,6 +235,10 @@ private:
 
     void MonitorLoop()
     {
+        auto nameStatus = CpuAffinity::SetCurrentThreadName("ucm_pool_mon");
+        if (nameStatus.Failure()) {
+            UC_WARN("Failed({}) to set UCM monitor thread name.", nameStatus);
+        }
         if (!cpuAffinityCores_.empty()) {
             CpuAffinity::SetCpuAffinity4CurrentThread(cpuAffinityCores_);
         }

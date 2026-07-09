@@ -113,6 +113,13 @@ def _record_counter(name: str, value: float = 1.0) -> None:
     ucmmetrics.update_stats({name: value})
 
 
+def _use_ucm_connector_cpu_affinity() -> bool:
+    return (
+        os.getenv("VLLM_CPU_AFFINITY") == "1"
+        and getattr(current_platform, "device_type", None) != "npu"
+    )
+
+
 @dataclass
 class RequestMeta:
     ucm_block_ids: list[bytes] = field(default_factory=list)
@@ -574,7 +581,7 @@ class UCMDirectConnector(KVConnectorBase_V1):
 
         self.device = create_device()
 
-        enable_affinity = os.getenv("VLLM_CPU_AFFINITY") == "1"
+        enable_affinity = _use_ucm_connector_cpu_affinity()
         worker_cores, store_cores = (
             self.device.split_cores(self.local_rank)
             if enable_affinity

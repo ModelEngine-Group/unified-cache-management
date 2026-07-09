@@ -213,6 +213,9 @@ def apply_all_patches() -> None:
                 )
                 import ucm.integration.vllm.patch.v0210.vllm_ascend.ascend_hybrid_cache_patch
                 import ucm.integration.vllm.patch.v0210.vllm_ascend.cpu_binding_patch
+            case "0.22.1":
+                logger.info("UCM patching vllm-ascend 0.22.1 for CPU affinity...")
+                import ucm.integration.vllm.patch.v0221.vllm_ascend.cpu_binding_patch
             case _:
                 pass
 

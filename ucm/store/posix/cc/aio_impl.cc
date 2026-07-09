@@ -32,6 +32,7 @@
 #include <sys/syscall.h>
 #include <unistd.h>
 #include "logger/logger.h"
+#include "thread/cpu_affinity.h"
 #include "time/now_time.h"
 
 namespace UC::PosixStore {
@@ -242,6 +243,10 @@ Status AioImpl::WriteAsync(Io&& io)
 
 void AioImpl::CompletionLoop()
 {
+    auto nameStatus = CpuAffinity::SetCurrentThreadName("ucm_posix_aio");
+    if (nameStatus.Failure()) {
+        UC_WARN("Failed({}) to set UCM posix AIO thread name.", nameStatus);
+    }
     std::vector<epoll_event> epollEvents(128);
     std::vector<io_event> aioEvents(batchCompleteSize);
     while (!stop_) {

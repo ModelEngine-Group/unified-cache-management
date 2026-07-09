@@ -25,6 +25,7 @@
 #define UNIFIEDCACHE_INFRA_CPU_AFFINITY_H
 
 #include <cerrno>
+#include <pthread.h>
 #include <sched.h>
 #include <thread>
 #include <vector>
@@ -34,6 +35,13 @@ namespace UC {
 
 class CpuAffinity {
 public:
+    static Status SetCurrentThreadName(const char* name)
+    {
+        auto ret = pthread_setname_np(pthread_self(), name);
+        if (ret != 0) { return Status::Error(std::to_string(ret)); }
+        return Status::OK();
+    }
+
     static Status SetCpuAffinity4CurrentThread(const cpu_set_t& mask)
     {
         if (CPU_COUNT(&mask) == 0) { return Status::InvalidParam(); }
