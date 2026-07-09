@@ -38,6 +38,7 @@ class AutoTraceCacheAnalysisTest(unittest.TestCase):
             _write_log(
                 log_dir / "worker0.log",
                 """
+                INFO tensor_parallel_size=1
                 [2026-05-27 08:30:14.964321][UC][I] available kv cache memory: 1073741824 bytes
                 [2026-05-27 08:30:14.964325][UC][I] timestamp: 1.0, request_id: req0, input_length: 10, output_length: 1, ucm_block_ids: ['a', 'b'] [2,2][ucm_connector.py:1,get_num_new_matched_tokens]
                 [2026-05-27 08:30:15.000000][UC][I] timestamp: 2.0, input_length: 10, output_length: 1, ucm_block_ids: ['a', 'c'] [1,1][ucm_connector.py:1,get_num_new_matched_tokens]
@@ -89,6 +90,59 @@ class AutoTraceCacheAnalysisTest(unittest.TestCase):
             50.0,
         )
 
+    def test_hbm_size_uses_min_available_memory_and_tp_size(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            log_dir = base / "logs"
+            log_dir.mkdir()
+            _write_log(
+                log_dir / "worker.log",
+                """
+                INFO tensor_parallel_size=4
+                [2026-05-27 08:30:14.964321][UC][I] Available KV cache memory: 3 GiB
+                [2026-05-27 08:30:15.964321][UC][I] Available KV cache memory: 2 GiB
+                [2026-05-27 08:30:14.964325][UC][I] timestamp: 1.0, input_length: 10, output_length: 1, ucm_block_ids: ['a', 'b'] [2,2][ucm_connector.py:1,get_num_new_matched_tokens]
+                """,
+            )
+            metrics = base / "metrics.txt"
+            metrics.write_text(
+                "\n".join(
+                    [
+                        "ucm:gpu_hbm_hit_tokens_total 1",
+                        "ucm:ucm_hit_tokens_total 1",
+                        "ucm:total_prefix_query_tokens_total 4",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+
+            base_args = [
+                "--log-dir",
+                str(log_dir),
+                "--block-kv-cache-size",
+                str(1024**3),
+                "--dram-pool-size-gb",
+                "1",
+                "--fs-pool-size-gb",
+                "1",
+                "--service-url",
+                metrics.as_uri(),
+            ]
+            non_mla_args = analyzer.build_arg_parser().parse_args(
+                base_args + ["--is-mla", "false"]
+            )
+            mla_args = analyzer.build_arg_parser().parse_args(
+                base_args + ["--is-mla", "true"]
+            )
+
+            non_mla_result = analyzer.build_analysis(non_mla_args)
+            mla_result = analyzer.build_analysis(mla_args)
+
+        self.assertEqual(non_mla_result["derived"]["tp_size"], 4)
+        self.assertEqual(non_mla_result["derived"]["gpu_kv_cache_bytes"], 8 * 1024**3)
+        self.assertEqual(mla_result["derived"]["tp_size"], 4)
+        self.assertEqual(mla_result["derived"]["gpu_kv_cache_bytes"], 2 * 1024**3)
+
     def test_cli_writes_required_output_json(self):
         with tempfile.TemporaryDirectory() as tmp:
             base = Path(tmp)
@@ -97,6 +151,7 @@ class AutoTraceCacheAnalysisTest(unittest.TestCase):
             _write_log(
                 log_dir / "worker.log",
                 """
+                INFO tensor_parallel_size=1
                 [2026-05-27 08:30:14.964321][UC][I] available kv cache memory: 1073741824 bytes
                 [2026-05-27 08:30:14.964325][UC][I] timestamp: 1.0, input_length: 10, output_length: 1, ucm_block_ids: ['a', 'b'] [2,2][ucm_connector.py:1,get_num_new_matched_tokens]
                 """,
@@ -149,6 +204,7 @@ class AutoTraceCacheAnalysisTest(unittest.TestCase):
             "total hbm available kv cache size: 1073741824 bytes (1.00 GiB)",
             completed.stdout,
         )
+        self.assertIn("tp size: 1", completed.stdout)
         self.assertIn("dram pool size: 1.00 GiB", completed.stdout)
         self.assertIn("fs pool size: 1.00 GiB", completed.stdout)
         self.assertEqual(data["analysis"]["total_request_count"], 1)

@@ -32,6 +32,12 @@ AVAILABLE_KV_RE = re.compile(
     r"[^0-9]*(?P<value>\d+(?:\.\d+)?)\s*(?P<unit>[kmgt]?i?b|bytes?)?",
     re.IGNORECASE,
 )
+TP_SIZE_RE = re.compile(
+    r"(?:['\"]?tensor[_-]parallel[_-]size['\"]?\s*[:=]\s*|"
+    r"--tensor[-_]parallel[-_]size\s+)"
+    r"(?P<value>\d+)",
+    re.IGNORECASE,
+)
 PROM_SAMPLE_RE = re.compile(
     r"^(?P<name>[a-zA-Z_:][a-zA-Z0-9_:]*)(?:\{[^}]*\})?\s+"
     r"(?P<value>[-+]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][-+]?\d+)?)"
@@ -68,6 +74,7 @@ class LogFacts:
     log_files: list[str]
     records: list[TraceRecord]
     available_kv_cache_memory_bytes: list[int]
+    tensor_parallel_sizes: list[int]
 
 
 class LRUCache:
@@ -168,6 +175,7 @@ def collect_log_facts(log_dir: Path) -> LogFacts:
 
     records: list[TraceRecord] = []
     available_memory: list[int] = []
+    tensor_parallel_sizes: list[int] = []
     for path in log_files:
         with open_log_file(path) as handle:
             for line in handle:
@@ -179,23 +187,41 @@ def collect_log_facts(log_dir: Path) -> LogFacts:
                     available_memory.append(
                         parse_bytes(match.group("value"), match.group("unit"))
                     )
+                for match in TP_SIZE_RE.finditer(line):
+                    tensor_parallel_sizes.append(int(match.group("value")))
 
     if not records:
         raise ValueError("no trace records found in log files")
     if not available_memory:
         raise ValueError("available kv cache memory was not found in log files")
+    if not tensor_parallel_sizes:
+        raise ValueError("tensor_parallel_size was not found in log files")
 
     records.sort(key=lambda item: item.timestamp)
     return LogFacts(
         log_files=[str(path) for path in log_files],
         records=records,
         available_kv_cache_memory_bytes=available_memory,
+        tensor_parallel_sizes=tensor_parallel_sizes,
     )
 
 
-def resolve_gpu_cache_bytes(facts: LogFacts, is_mla: bool) -> int:
-    values = facts.available_kv_cache_memory_bytes
-    return max(values) if is_mla else sum(values)
+def resolve_tp_size(facts: LogFacts) -> int:
+    values = set(facts.tensor_parallel_sizes)
+    if len(values) != 1:
+        raise ValueError(
+            "conflicting tensor_parallel_size values found in log files: "
+            + ", ".join(str(value) for value in sorted(values))
+        )
+    tp_size = next(iter(values))
+    if tp_size <= 0:
+        raise ValueError("tensor_parallel_size must be > 0")
+    return tp_size
+
+
+def resolve_gpu_cache_bytes(facts: LogFacts, is_mla: bool, tp_size: int) -> int:
+    min_available = min(facts.available_kv_cache_memory_bytes)
+    return min_available if is_mla else min_available * tp_size
 
 
 def parse_prometheus_samples(metrics_text: str) -> dict[str, float]:
@@ -393,7 +419,8 @@ def build_analysis(args: argparse.Namespace) -> dict:
     validate_args(args)
     is_mla = parse_is_mla(args.is_mla)
     facts = collect_log_facts(args.log_dir)
-    gpu_kv_cache_bytes = resolve_gpu_cache_bytes(facts, is_mla)
+    tp_size = resolve_tp_size(facts)
+    gpu_kv_cache_bytes = resolve_gpu_cache_bytes(facts, is_mla, tp_size)
     block_bytes = args.block_kv_cache_size
     gpu_capacity_blocks = gpu_kv_cache_bytes // block_bytes
     dram_capacity_blocks = int(args.dram_pool_size_gb * GIB) // block_bytes
@@ -456,6 +483,7 @@ def build_analysis(args: argparse.Namespace) -> dict:
         "derived": {
             "log_files": facts.log_files,
             "available_kv_cache_memory_bytes": facts.available_kv_cache_memory_bytes,
+            "tp_size": tp_size,
             "gpu_kv_cache_bytes": gpu_kv_cache_bytes,
             "gpu_capacity_blocks": gpu_capacity_blocks,
             "dram_capacity_blocks": dram_capacity_blocks,
@@ -489,6 +517,7 @@ def print_summary(result: dict) -> None:
         "  total hbm available kv cache size: "
         f"{hbm_bytes} bytes ({hbm_bytes / 1024**3:.2f} GiB)"
     )
+    print(f"  tp size: {derived['tp_size']}")
     print(f"  dram pool size: {inputs['dram_pool_size_gb']:.2f} GiB")
     print(f"  fs pool size: {inputs['fs_pool_size_gb']:.2f} GiB")
     print(
