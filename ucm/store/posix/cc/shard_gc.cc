@@ -23,6 +23,7 @@
  * */
 #include "shard_gc.h"
 #include "logger/logger.h"
+#include "thread/cpu_affinity.h"
 
 namespace UC::PosixStore {
 
@@ -83,6 +84,10 @@ void ShardGarbageCollector::StopBackgroundCheck()
 
 void ShardGarbageCollector::GCCheckLoop()
 {
+    auto nameStatus = CpuAffinity::SetCurrentThreadName("ucm_posix_gc");
+    if (nameStatus.Failure()) {
+        UC_WARN("Failed({}) to set UCM posix GC check worker name.", nameStatus);
+    }
     while (!stop_.load()) {
         auto [trigger, avgFilesPerShard, threshold] = ShouldTrigger();
         UC_INFO("GC sampling: avgFiles/shard={}, threshold={}, trigger={}", avgFilesPerShard,

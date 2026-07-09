@@ -17,7 +17,10 @@ from vllm.model_executor.models.utils import extract_layer_index
 from vllm.v1.core.sched.output import SchedulerOutput
 
 from ucm.integration.vllm.device import create_device
-from ucm.integration.vllm.ucm_connector import UCMDirectConnector
+from ucm.integration.vllm.ucm_connector import (
+    UCMDirectConnector,
+    _use_ucm_connector_cpu_affinity,
+)
 from ucm.logger import init_logger
 from ucm.shared.metrics import ucmmetrics
 from ucm.sparse.utils import round_up
@@ -648,7 +651,7 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
         self.kv_caches = kv_caches
         self.device = create_device()
 
-        enable_affinity = os.getenv("VLLM_CPU_AFFINITY") == "1"
+        enable_affinity = _use_ucm_connector_cpu_affinity()
         worker_cores, store_cores = (
             self.device.split_cores(self.local_rank)
             if enable_affinity
