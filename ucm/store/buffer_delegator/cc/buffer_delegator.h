@@ -8,7 +8,7 @@
 #include <vector>
 #include "status/status.h"
 
-namespace UC::AsuStore {
+namespace UC::BufferDelegator {
 
 class BufferPool;
 class Buffer;
@@ -108,4 +108,4 @@ private:
     friend class BufferPool;
 };
 
-}  // namespace UC::AsuStore
+}  // namespace UC::BufferDelegator
