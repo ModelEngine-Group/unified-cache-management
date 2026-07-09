@@ -1,86 +1,61 @@
-#include "buffer_delegator.h"
+#include "buffer_manager.h"
+#include <acl/acl.h>
 #include <cstddef>
 #include <cstdint>
-#include <cstdlib>
 #include <gtest/gtest.h>
-#include <unordered_map>
 
 namespace {
 
 constexpr std::size_t kAlignmentBytes = 16 * 1024;
 constexpr std::size_t kAlignedSize = 163840;
 
-class FakeDeviceAllocator {
-public:
-    UC::BufferDelegator::BufferMgr::Allocator MakeAllocator()
+class BufferMgrTest : public ::testing::Test {
+protected:
+    static void SetUpTestSuite()
     {
-        return UC::BufferDelegator::BufferMgr::Allocator{
-            [this](std::size_t size) { return Allocate(size); },
-            [this](void* ptr) { Free(ptr); },
-        };
+        const auto ret = aclInit(nullptr);
+        if (ret != ACL_SUCCESS && ret != ACL_ERROR_REPEAT_INITIALIZE) {
+            FAIL() << "aclInit failed: " << ret;
+        }
+        ASSERT_EQ(aclrtSetDevice(0), ACL_SUCCESS);
     }
 
-    std::size_t LiveAllocations() const { return allocations_.size(); }
-    void* LiveAllocation() const
+    static void TearDownTestSuite()
     {
-        if (allocations_.empty()) { return nullptr; }
-        return allocations_.begin()->first;
+        (void)aclrtResetDevice(0);
+        (void)aclFinalize();
     }
-
-private:
-    void* Allocate(std::size_t size)
-    {
-        void* base = std::malloc(size + 1);
-        if (base == nullptr) { return nullptr; }
-        auto* raw = static_cast<std::byte*>(base) + 1;
-        allocations_[raw] = base;
-        return raw;
-    }
-
-    void Free(void* ptr)
-    {
-        auto iter = allocations_.find(ptr);
-        if (iter == allocations_.end()) { return; }
-        std::free(iter->second);
-        allocations_.erase(iter);
-    }
-
-    std::unordered_map<void*, void*> allocations_;
 };
 
-UC::BufferDelegator::BufferMgr::Config MakeConfig(
-    FakeDeviceAllocator& allocator, std::size_t poolSizeBytes = 2 * kAlignedSize)
+UC::BufferDelegator::BufferMgr::Config MakeConfig(std::size_t poolSizeBytes = 2 * kAlignedSize)
 {
     UC::BufferDelegator::BufferMgr::Config config;
     config.alignmentBytes = kAlignmentBytes;
     config.alignedSize = kAlignedSize;
     config.poolSizeBytes = poolSizeBytes;
-    config.allocator = allocator.MakeAllocator();
+    config.allocator = UC::BufferDelegator::BufferMgr::MakeAscendDeviceAllocator();
     return config;
 }
 
 }  // namespace
 
-TEST(BufferMgrTest, InitCreatesOneFixedPool)
+TEST_F(BufferMgrTest, InitCreatesOneFixedPool)
 {
-    FakeDeviceAllocator allocator;
     {
         UC::BufferDelegator::BufferMgr mgr;
 
-        auto status = mgr.Init(MakeConfig(allocator, 2 * kAlignedSize + 1));
+        auto status = mgr.Init(MakeConfig(2 * kAlignedSize + 1));
         ASSERT_TRUE(status.Success()) << status.ToString();
         EXPECT_TRUE(mgr.IsInitialized());
         EXPECT_EQ(mgr.AlignmentBytes(), kAlignmentBytes);
         EXPECT_EQ(mgr.AlignedSize(), kAlignedSize);
         EXPECT_EQ(mgr.PoolSizeBytes(), 2 * kAlignedSize);
         EXPECT_EQ(mgr.AvailableSlots(), std::size_t{2});
-        EXPECT_EQ(allocator.LiveAllocations(), std::size_t{1});
 
         auto first = mgr.Acquire();
         ASSERT_TRUE(first.HasValue()) << first.Error().ToString();
         EXPECT_EQ(first.Value().Capacity(), kAlignedSize);
-        EXPECT_EQ(first.Value().DeviceAddr(),
-                  reinterpret_cast<std::uint64_t>(allocator.LiveAllocation()));
+        EXPECT_NE(first.Value().DeviceAddr(), std::uint64_t{0});
         EXPECT_EQ(mgr.AvailableSlots(), std::size_t{1});
 
         auto second = mgr.Acquire();
@@ -93,15 +68,12 @@ TEST(BufferMgrTest, InitCreatesOneFixedPool)
         ASSERT_FALSE(third.HasValue());
         EXPECT_EQ(third.Error(), UC::Status::Retry());
     }
-
-    EXPECT_EQ(allocator.LiveAllocations(), std::size_t{0});
 }
 
-TEST(BufferMgrTest, BufferReturnsSlotOnResetAndDestruction)
+TEST_F(BufferMgrTest, BufferReturnsSlotOnResetAndDestruction)
 {
-    FakeDeviceAllocator allocator;
     UC::BufferDelegator::BufferMgr mgr;
-    ASSERT_TRUE(mgr.Init(MakeConfig(allocator)).Success());
+    ASSERT_TRUE(mgr.Init(MakeConfig()).Success());
     EXPECT_EQ(mgr.AvailableSlots(), std::size_t{2});
 
     {
@@ -120,14 +92,12 @@ TEST(BufferMgrTest, BufferReturnsSlotOnResetAndDestruction)
         EXPECT_EQ(mgr.AvailableSlots(), std::size_t{1});
     }
     EXPECT_EQ(mgr.AvailableSlots(), std::size_t{2});
-    EXPECT_EQ(allocator.LiveAllocations(), std::size_t{1});
 }
 
-TEST(BufferMgrTest, MoveTransfersBufferOwnership)
+TEST_F(BufferMgrTest, MoveTransfersBufferOwnership)
 {
-    FakeDeviceAllocator allocator;
     UC::BufferDelegator::BufferMgr mgr;
-    ASSERT_TRUE(mgr.Init(MakeConfig(allocator)).Success());
+    ASSERT_TRUE(mgr.Init(MakeConfig()).Success());
 
     auto buffer = mgr.Acquire();
     ASSERT_TRUE(buffer.HasValue()) << buffer.Error().ToString();
@@ -140,43 +110,40 @@ TEST(BufferMgrTest, MoveTransfersBufferOwnership)
     EXPECT_EQ(mgr.AvailableSlots(), std::size_t{2});
 }
 
-TEST(BufferMgrTest, RejectsInvalidConfigAndAcquireBeforeInit)
+TEST_F(BufferMgrTest, RejectsInvalidConfigAndAcquireBeforeInit)
 {
-    FakeDeviceAllocator allocator;
     UC::BufferDelegator::BufferMgr mgr;
 
     auto beforeInit = mgr.Acquire();
     ASSERT_FALSE(beforeInit.HasValue());
     EXPECT_EQ(beforeInit.Error(), UC::Status::InvalidParam());
 
-    auto config = MakeConfig(allocator);
+    auto config = MakeConfig();
     config.alignmentBytes = 0;
     EXPECT_TRUE(mgr.Init(config).Failure());
 
-    config = MakeConfig(allocator);
+    config = MakeConfig();
     config.alignedSize = 0;
     EXPECT_TRUE(mgr.Init(config).Failure());
 
-    config = MakeConfig(allocator);
+    config = MakeConfig();
     config.alignedSize = 1;
     EXPECT_TRUE(mgr.Init(config).Failure());
 
-    config = MakeConfig(allocator);
+    config = MakeConfig();
     config.poolSizeBytes = 0;
     EXPECT_TRUE(mgr.Init(config).Failure());
 
-    config = MakeConfig(allocator, kAlignedSize - 1);
+    config = MakeConfig(kAlignedSize - 1);
     EXPECT_TRUE(mgr.Init(config).Failure());
 
-    config = MakeConfig(allocator);
+    config = MakeConfig();
     config.allocator.allocate = nullptr;
     EXPECT_TRUE(mgr.Init(config).Failure());
 
     {
         UC::BufferDelegator::BufferMgr validMgr;
-        ASSERT_TRUE(validMgr.Init(MakeConfig(allocator)).Success());
-        EXPECT_TRUE(validMgr.Init(MakeConfig(allocator)).Failure());
-        EXPECT_EQ(allocator.LiveAllocations(), std::size_t{1});
+        ASSERT_TRUE(validMgr.Init(MakeConfig()).Success());
+        EXPECT_TRUE(validMgr.Init(MakeConfig()).Failure());
     }
-    EXPECT_EQ(allocator.LiveAllocations(), std::size_t{0});
 }
