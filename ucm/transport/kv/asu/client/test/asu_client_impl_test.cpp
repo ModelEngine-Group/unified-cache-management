@@ -32,6 +32,8 @@ static CacheKey MakeCacheKey(std::string_view text)
     return key;
 }
 
+MRHandle MakeTestMrHandle(std::uintptr_t value) { return static_cast<MRHandle>(value); }
+
 struct TestState {
     std::uint32_t createdTransports{0};
     std::unordered_map<AsuId, TransportConfig> initConfigs;
@@ -218,7 +220,7 @@ public:
         state_->registerCalls.emplace_back(config_.asuId);
         results.clear();
         for (std::size_t index = 0; index < regions.size(); ++index) {
-            results.emplace_back(RegisterResult{Status::OK(), 500 + index, 0, 0,
+            results.emplace_back(RegisterResult{Status::OK(), MakeTestMrHandle(500 + index),
                                                 900 + static_cast<std::uint32_t>(index)});
         }
         return Status::OK();
@@ -231,8 +233,7 @@ public:
         state_->boundRegions[config_.asuId] = regions;
         results.clear();
         for (const auto& region : regions) {
-            results.emplace_back(RegisterResult{Status::OK(), region.handle, region.lkey,
-                                                region.rkey, region.tokenId});
+            results.emplace_back(RegisterResult{Status::OK(), region.handle, region.tokenId});
         }
         return Status::OK();
     }
@@ -983,14 +984,14 @@ TEST(AsuClientImplTest, MemoryRegister_RegisterRegionsRegistersFirstTransportAnd
     EXPECT_EQ(state->registerCalls, std::vector<AsuId>({10}));
     EXPECT_EQ(state->bindCalls, std::vector<AsuId>({20, 30}));
     ASSERT_EQ(results.size(), std::size_t{2});
-    EXPECT_EQ(results[0].handle, MRHandle{500});
-    EXPECT_EQ(results[1].handle, MRHandle{501});
+    EXPECT_EQ(results[0].handle, MakeTestMrHandle(500));
+    EXPECT_EQ(results[1].handle, MakeTestMrHandle(501));
     EXPECT_EQ(results[0].tokenId, std::uint32_t{900});
     EXPECT_EQ(results[1].tokenId, std::uint32_t{901});
     ASSERT_EQ(state->boundRegions[20].size(), std::size_t{2});
-    EXPECT_EQ(state->boundRegions[20][0].handle, MRHandle{500});
+    EXPECT_EQ(state->boundRegions[20][0].handle, MakeTestMrHandle(500));
     EXPECT_EQ(state->boundRegions[20][0].tokenId, std::uint32_t{900});
-    EXPECT_EQ(state->boundRegions[20][1].handle, MRHandle{501});
+    EXPECT_EQ(state->boundRegions[20][1].handle, MakeTestMrHandle(501));
     EXPECT_EQ(state->boundRegions[20][1].tokenId, std::uint32_t{901});
     ASSERT_EQ(state->boundRegions[30].size(), std::size_t{2});
     EXPECT_EQ(state->boundRegions[30][0].tokenId, std::uint32_t{900});
@@ -1012,7 +1013,7 @@ TEST(AsuClientImplTest, MemoryRegister_PartialRegisterFailureDoesNotBindFollower
             results.clear();
             results.reserve(regions.size());
             if (!regions.empty()) {
-                results.emplace_back(RegisterResult{Status::OK(), 500, 0, 0, 900});
+                results.emplace_back(RegisterResult{Status::OK(), MakeTestMrHandle(500), 900});
             }
             if (regions.size() > 1) {
                 results.emplace_back(RegisterResult{
@@ -1602,7 +1603,7 @@ TEST(AsuClientImplTest, SnapshotRefresh_ReusesExistingTransportAndBindsResources
     EXPECT_EQ(state->createdTransports, std::uint32_t{2});
     EXPECT_EQ(state->bindCalls, std::vector<AsuId>({20}));
     ASSERT_EQ(state->boundRegions[20].size(), std::size_t{1});
-    EXPECT_EQ(state->boundRegions[20][0].handle, MRHandle{500});
+    EXPECT_EQ(state->boundRegions[20][0].handle, MakeTestMrHandle(500));
     EXPECT_EQ(state->boundRegions[20][0].tokenId, std::uint32_t{900});
 }
 

@@ -45,6 +45,11 @@ struct CacheKeyHasher {
     }
 };
 
+UC::ASU::MRHandle MakeTestMrHandle(std::uintptr_t value)
+{
+    return reinterpret_cast<UC::ASU::MRHandle>(value);
+}
+
 struct FakeAsuBackendState {
     std::vector<UC::ASU::QueryMode> queryModes;
     std::vector<UC::AsuStore::Config> initConfigs;

@@ -32,6 +32,7 @@ namespace UC::ASU {
 class AIVTransProviderAdapter : public TransProvider {
 public:
     AIVTransProviderAdapter() : impl_(CreateAIVTransProvider()) {}
+    explicit AIVTransProviderAdapter(uint32_t deviceId) : impl_(CreateAIVTransProvider(deviceId)) {}
 
     Status CreateConnection(const std::string& localIp, const std::string& remoteIp, uint32_t port,
                             uint32_t qpNum, uint32_t timeout,
@@ -58,9 +59,8 @@ public:
         return FromImpl(impl_->Send(batches, kernelCount, quietCount));
     }
 
-    Status RegisterMemory(ConnectionHandle connectionHandle,
-                          const std::vector<RegisterMemoryDesc>& memoryDescs,
-                          std::vector<MemHandle>& memoryHandles) override
+    Status RegisterMemory(const std::vector<RegisterMemoryDesc>& memoryDescs,
+                          std::vector<MRHandle>& mrHandles) override
     {
         std::vector<AIVTransport::RegisterMemoryDesc> descs;
         descs.reserve(memoryDescs.size());
@@ -68,7 +68,7 @@ public:
             descs.push_back(
                 {static_cast<AIVTransport::MemType>(desc.memoryType), desc.addr, desc.size});
         }
-        return FromImpl(impl_->RegisterMemory(connectionHandle, descs, memoryHandles));
+        return FromImpl(impl_->RegisterMemory(descs, mrHandles));
     }
 
     std::vector<Status> UnregisterMemory(
@@ -76,9 +76,7 @@ public:
     {
         std::vector<AIVTransport::UnregisterMemoryDesc> descs;
         descs.reserve(memoryDescs.size());
-        for (const auto& desc : memoryDescs) {
-            descs.push_back({desc.connectionHandle, desc.memoryHandle});
-        }
+        for (const auto& desc : memoryDescs) { descs.push_back({desc.mrHandle}); }
         return FromImpl(impl_->UnregisterMemory(descs));
     }
 
@@ -92,9 +90,9 @@ public:
         return std::vector<Status>(threads.size(), Status::OK());
     }
 
-    Status GetMemTokenId(MemHandle memHandle, uint32_t& tokenId) override
+    Status GetMemTokenId(MRHandle mrHandle, uint32_t& tokenId) override
     {
-        return FromImpl(impl_->GetMemTokenId(memHandle, tokenId));
+        return FromImpl(impl_->GetMemTokenId(mrHandle, tokenId));
     }
 
 private:

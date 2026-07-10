@@ -150,7 +150,7 @@ Status AsuTransportImpl::Init(const TransportConfig& config)
         auto s = connManager_->AddGroup(ep, qp_num);
         if (!s.ok()) {
             UC_DEBUG("AsuTransportImpl::Init AddGroup FAILED: {}", s.message);
-            (void)connManager_->Shutdown();
+            (void)Shutdown();
             return s;
         }
     }
@@ -160,12 +160,18 @@ Status AsuTransportImpl::Init(const TransportConfig& config)
     auto status = sendBufferManager_.Init("asu send buffer", MemoryType::HOST_PINNED,
                                           config_.sendBufferSlotSize, config_.sendBufferSlotNum,
                                           transProvider_.get());
-    if (!status.ok()) { return status; }
+    if (!status.ok()) {
+        (void)Shutdown();
+        return status;
+    }
 
     status = flagBufferManager_.Init("asu flag buffer", MemoryType::HOST_PINNED,
                                      config_.flagBufferSlotSize, config_.flagBufferSlotNum,
                                      transProvider_.get());
-    if (!status.ok()) { return status; }
+    if (!status.ok()) {
+        (void)Shutdown();
+        return status;
+    }
     protocolManager_ = std::make_unique<ProtocolManager>();
 
     auto queueDepth = std::max<std::size_t>(2, static_cast<std::size_t>(config_.maxInflightTasks));
@@ -202,11 +208,9 @@ Status AsuTransportImpl::Shutdown()
     {
         std::lock_guard<std::mutex> lock(registeredRegionsMu_);
         std::vector<TransProvider::UnregisterMemoryDesc> descs;
-        descs.reserve(registeredRegionStates_.size());
-        for (const auto& item : registeredRegionStates_) {
-            const auto& state = item.second;
-            descs.push_back(
-                TransProvider::UnregisterMemoryDesc{state.connectionHandle, state.memHandle});
+        descs.reserve(ownedRegisteredRegionHandles_.size());
+        for (auto handle : ownedRegisteredRegionHandles_) {
+            descs.push_back(TransProvider::UnregisterMemoryDesc{handle});
         }
         if (!descs.empty() && transProvider_) {
             const auto statuses = transProvider_->UnregisterMemory(descs);
@@ -215,9 +219,11 @@ Status AsuTransportImpl::Shutdown()
             }
         }
         registeredRegions_.clear();
-        registeredRegionStates_.clear();
-        registeredRegionConnectionLeases_.clear();
+        ownedRegisteredRegionHandles_.clear();
     }
+    flagBufferManager_.Shutdown();
+    sendBufferManager_.Shutdown();
+
     if (connManager_) {
         auto status = connManager_->Shutdown();
         if (!status.ok() && finalStatus.ok()) { finalStatus = status; }
@@ -355,24 +361,9 @@ Status AsuTransportImpl::RegisterRegions(const std::vector<MemoryRegion>& region
             {memType, static_cast<std::uintptr_t>(region.addr),
              static_cast<std::size_t>(region.size)}
         };
-        std::vector<TransProvider::MemHandle> memHandles;
-        auto connectionChannel =
-            memType == TransProvider::MemType::MEM_DEVICE && connManager_ != nullptr
-                ? connManager_->GetActiveConnection()
-                : nullptr;
-        const auto connectionHandle =
-            connectionChannel == nullptr ? nullptr : connectionChannel->GetConnection();
-        if (memType == TransProvider::MemType::MEM_DEVICE && connectionHandle == nullptr) {
-            hasFailure = true;
-            results.emplace_back(RegisterResult{
-                Status::Error(StatusCode::CONNECTION_ERROR,
-                              "transport register device memory requires an active connection"),
-                kInvalidMRHandle});
-            break;
-        }
-
-        auto status = transProvider_->RegisterMemory(connectionHandle, descs, memHandles);
-        if (!status.ok() || memHandles.empty()) {
+        std::vector<MRHandle> mrHandles;
+        auto status = transProvider_->RegisterMemory(descs, mrHandles);
+        if (!status.ok() || mrHandles.empty()) {
             hasFailure = true;
             results.emplace_back(RegisterResult{
                 status.ok() ? Status::Error(StatusCode::INTERNAL_ERROR,
@@ -382,14 +373,13 @@ Status AsuTransportImpl::RegisterRegions(const std::vector<MemoryRegion>& region
             break;
         }
 
-        auto handle = static_cast<MRHandle>(reinterpret_cast<std::uintptr_t>(memHandles[0]));
+        auto handle = mrHandles[0];
         uint32_t tokenId{0};
-        status = transProvider_->GetMemTokenId(memHandles[0], tokenId);
+        status = transProvider_->GetMemTokenId(mrHandles[0], tokenId);
         if (!status.ok()) {
             hasFailure = true;
-            (void)transProvider_->UnregisterMemory({
-                TransProvider::UnregisterMemoryDesc{connectionHandle, memHandles[0]}
-            });
+            (void)transProvider_->UnregisterMemory(
+                {TransProvider::UnregisterMemoryDesc{mrHandles[0]}});
             results.emplace_back(RegisterResult{status, kInvalidMRHandle});
             break;
         }
@@ -399,21 +389,16 @@ Status AsuTransportImpl::RegisterRegions(const std::vector<MemoryRegion>& region
         regMem.handle = handle;
         regMem.tokenId = tokenId;  // Only UB is supported for the current version.
         registeredRegions_[handle] = regMem;
-        registeredRegionStates_[handle] = RegisteredRegionState{connectionHandle, memHandles[0]};
-        if (connectionChannel != nullptr) {
-            registeredRegionConnectionLeases_[handle] = std::move(connectionChannel);
-        }
+        ownedRegisteredRegionHandles_.insert(handle);
         registeredHandles.emplace_back(handle);
-        registeredDescs.push_back(
-            TransProvider::UnregisterMemoryDesc{connectionHandle, memHandles[0]});
-        results.emplace_back(RegisterResult{Status::OK(), handle, 0, 0, tokenId});
+        registeredDescs.push_back(TransProvider::UnregisterMemoryDesc{mrHandles[0]});
+        results.emplace_back(RegisterResult{Status::OK(), handle, tokenId});
     }
     if (hasFailure) {
         if (!registeredDescs.empty()) { (void)transProvider_->UnregisterMemory(registeredDescs); }
         for (auto handle : registeredHandles) {
             registeredRegions_.erase(handle);
-            registeredRegionStates_.erase(handle);
-            registeredRegionConnectionLeases_.erase(handle);
+            ownedRegisteredRegionHandles_.erase(handle);
         }
         return Status::Error(StatusCode::PARTIAL_FAILED,
                              "one or more memory regions failed to register");
@@ -430,8 +415,7 @@ Status AsuTransportImpl::BindRegisteredRegions(const std::vector<RegisteredMemor
     std::lock_guard<std::mutex> lock(registeredRegionsMu_);
     for (const auto& region : regions) {
         registeredRegions_[region.handle] = region;
-        results.emplace_back(
-            RegisterResult{Status::OK(), region.handle, region.lkey, region.rkey, region.tokenId});
+        results.emplace_back(RegisterResult{Status::OK(), region.handle, region.tokenId});
     }
     return Status::OK();
 }
@@ -443,10 +427,10 @@ Status AsuTransportImpl::UnregisterRegions(const std::vector<MRHandle>& handles)
     descs.reserve(handles.size());
     for (auto handle : handles) {
         if (handle == kInvalidMRHandle) { continue; }
-        auto stateIter = registeredRegionStates_.find(handle);
-        if (stateIter == registeredRegionStates_.end()) { continue; }
-        descs.push_back(TransProvider::UnregisterMemoryDesc{stateIter->second.connectionHandle,
-                                                            stateIter->second.memHandle});
+        if (ownedRegisteredRegionHandles_.find(handle) == ownedRegisteredRegionHandles_.end()) {
+            continue;
+        }
+        descs.push_back(TransProvider::UnregisterMemoryDesc{handle});
     }
 
     if (!descs.empty()) {
@@ -457,8 +441,7 @@ Status AsuTransportImpl::UnregisterRegions(const std::vector<MRHandle>& handles)
     }
 
     for (auto handle : handles) { registeredRegions_.erase(handle); }
-    for (auto handle : handles) { registeredRegionStates_.erase(handle); }
-    for (auto handle : handles) { registeredRegionConnectionLeases_.erase(handle); }
+    for (auto handle : handles) { ownedRegisteredRegionHandles_.erase(handle); }
     return Status::OK();
 }
 

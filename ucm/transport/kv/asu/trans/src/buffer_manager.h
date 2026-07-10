@@ -57,6 +57,7 @@ public:
 
     Status Init(std::string name, MemoryType type, std::size_t slot_capacity, std::size_t slot_num,
                 TransProvider* provider = nullptr);
+    void Shutdown();
 
     Status Allocate(std::size_t size, ScatterGatherEntry& sge);
     Status Free(std::uint32_t slot_index);
@@ -89,7 +90,7 @@ private:
     IndexPool index_pool_;
 
     TransProvider* provider_{nullptr};
-    TransProvider::MemHandle memHandle_{nullptr};
+    MRHandle mrHandle_{kInvalidMRHandle};
     std::uint32_t tokenId_{0};
 };
 

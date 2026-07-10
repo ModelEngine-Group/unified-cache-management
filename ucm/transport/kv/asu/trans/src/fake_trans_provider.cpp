@@ -503,22 +503,20 @@ std::vector<Status> FakeTransProvider::Send(const std::vector<SendIoBatch>& ioBa
     return statuses;
 }
 
-Status FakeTransProvider::RegisterMemory(ConnectionHandle,
-                                         const std::vector<RegisterMemoryDesc>& memoryDescs,
-                                         std::vector<MemHandle>& memoryHandles)
+Status FakeTransProvider::RegisterMemory(const std::vector<RegisterMemoryDesc>& memoryDescs,
+                                         std::vector<MRHandle>& mrHandles)
 {
-    memoryHandles.clear();
-    memoryHandles.reserve(memoryDescs.size());
+    mrHandles.clear();
+    mrHandles.reserve(memoryDescs.size());
     std::lock_guard<std::mutex> lock(registeredMemoryMu_);
     for (const auto& desc : memoryDescs) {
-        auto handle = nextMemoryHandle_.fetch_add(1, std::memory_order_relaxed);
-        if (handle == 0) { handle = nextMemoryHandle_.fetch_add(1, std::memory_order_relaxed); }
-        auto memoryHandle = reinterpret_cast<MemHandle>(handle);
+        auto handle = nextMrHandle_.fetch_add(1, std::memory_order_relaxed);
+        if (handle == 0) { handle = nextMrHandle_.fetch_add(1, std::memory_order_relaxed); }
+        auto mrHandle = reinterpret_cast<MRHandle>(handle);
         if (desc.localAddr != 0) {
-            registeredMemories_[memoryHandle] =
-                RegisteredMemory{desc.addr, desc.localAddr, desc.size};
+            registeredMemories_[mrHandle] = RegisteredMemory{desc.addr, desc.localAddr, desc.size};
         }
-        memoryHandles.push_back(memoryHandle);
+        mrHandles.push_back(mrHandle);
     }
     return Status::OK();
 }
@@ -527,7 +525,7 @@ std::vector<Status> FakeTransProvider::UnregisterMemory(
     const std::vector<UnregisterMemoryDesc>& handles)
 {
     std::lock_guard<std::mutex> lock(registeredMemoryMu_);
-    for (const auto& desc : handles) { registeredMemories_.erase(desc.memoryHandle); }
+    for (const auto& desc : handles) { registeredMemories_.erase(desc.mrHandle); }
     return std::vector<Status>(handles.size(), Status::OK());
 }
 
@@ -542,7 +540,7 @@ std::vector<Status> FakeTransProvider::FreeThread(const std::vector<ThreadHandle
     return std::vector<Status>(threads.size(), Status::OK());
 }
 
-Status FakeTransProvider::GetMemTokenId(MemHandle, uint32_t& tokenId)
+Status FakeTransProvider::GetMemTokenId(MRHandle, uint32_t& tokenId)
 {
     tokenId = 1;
     return Status::OK();

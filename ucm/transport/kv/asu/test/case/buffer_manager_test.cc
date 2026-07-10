@@ -415,8 +415,8 @@ public:
     {
         return {};
     }
-    Status RegisterMemory(ConnectionHandle, const std::vector<RegisterMemoryDesc>& descs,
-                          std::vector<MemHandle>& handles) override
+    Status RegisterMemory(const std::vector<RegisterMemoryDesc>& descs,
+                          std::vector<MRHandle>& handles) override
     {
         registerCount++;
         if (!descs.empty()) {
@@ -428,7 +428,7 @@ public:
         if (failRegister) {
             return Status::Error(StatusCode::INTERNAL_ERROR, "stub register failed");
         }
-        handles.push_back(reinterpret_cast<MemHandle>(static_cast<uintptr_t>(registerCount)));
+        handles.push_back(reinterpret_cast<MRHandle>(static_cast<uintptr_t>(registerCount)));
         return Status::OK();
     }
     std::vector<Status> UnregisterMemory(const std::vector<UnregisterMemoryDesc>& descs) override
@@ -441,7 +441,7 @@ public:
         return Status::OK();
     }
     std::vector<Status> FreeThread(const std::vector<ThreadHandle>&) override { return {}; }
-    Status GetMemTokenId(MemHandle, uint32_t& tokenId) override
+    Status GetMemTokenId(MRHandle, uint32_t& tokenId) override
     {
         if (failGetToken) {
             return Status::Error(StatusCode::INTERNAL_ERROR, "stub get token failed");

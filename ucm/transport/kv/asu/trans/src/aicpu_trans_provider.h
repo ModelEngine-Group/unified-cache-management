@@ -22,8 +22,7 @@ public:
         return std::vector<Status>(ioBatches.size(), Status::OK());
     }
 
-    Status RegisterMemory(ConnectionHandle, const std::vector<RegisterMemoryDesc>&,
-                          std::vector<MemHandle>&) override
+    Status RegisterMemory(const std::vector<RegisterMemoryDesc>&, std::vector<MRHandle>&) override
     {
         return Status::OK();
     }
@@ -43,7 +42,7 @@ public:
         return std::vector<Status>(threads.size(), Status::OK());
     }
 
-    Status GetMemTokenId(MemHandle, uint32_t& tokenId) override
+    Status GetMemTokenId(MRHandle, uint32_t& tokenId) override
     {
         tokenId = 0;
         return Status::OK();
