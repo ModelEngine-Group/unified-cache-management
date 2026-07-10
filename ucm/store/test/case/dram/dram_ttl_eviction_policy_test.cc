@@ -24,36 +24,16 @@
 #include <chrono>
 #include <gtest/gtest.h>
 #include <memory>
-#include "detail/types_helper.h"
 #include "dram/cc/entry.h"
 #include "dram/cc/ttl_eviction_policy.h"
+#include "dram_test_common.h"
 
-namespace {
-using Clock = std::chrono::system_clock;
-using TimePoint = Clock::time_point;
-using UC::DramStore::Entry;
-using UC::DramStore::EntryPtr;
-using UC::DramStore::EntryStatus;
 using UC::DramStore::TtlEvictionPolicy;
-
-EntryPtr MakeEntry(UC::Detail::BlockId key, TimePoint lifeTimeout,
-                   EntryStatus status = EntryStatus::READY, uint32_t refCnt = 0,
-                   TimePoint leaseTimeout = TimePoint{})
-{
-    auto e = std::make_shared<Entry>();
-    e->key = key;
-    e->lifeTimeout = lifeTimeout;
-    e->status = status;
-    e->refCnt = refCnt;
-    e->leaseTimeout = leaseTimeout;
-    return e;
-}
-
-UC::Detail::BlockId KeyFromHex(const char* hex)
-{
-    return UC::Test::Detail::TypesHelper::MakeBlockId(hex);
-}
-}  // namespace
+using UC::Test::Dram::Clock;
+using UC::Test::Dram::EntryStatus;
+using UC::Test::Dram::KeyFromHex;
+using UC::Test::Dram::MakeEntry;
+using UC::Test::Dram::TimePoint;
 
 class UCTtlEvictionPolicyTest : public testing::Test {
 protected:
@@ -65,14 +45,14 @@ protected:
 TEST_F(UCTtlEvictionPolicyTest, AddKeyReturnsOk)
 {
     auto key = KeyFromHex("a1");
-    ASSERT_TRUE(policy_.AddKey(key, MakeEntry(key, past_)).Success());
+    ASSERT_TRUE(policy_.AddKey(key, MakeEntry(key, 0, past_)).Success());
 }
 
 TEST_F(UCTtlEvictionPolicyTest, AddKeyDuplicateReturnsDuplicateKey)
 {
     auto key = KeyFromHex("a1");
-    ASSERT_TRUE(policy_.AddKey(key, MakeEntry(key, past_)).Success());
-    ASSERT_FALSE(policy_.AddKey(key, MakeEntry(key, past_)).Success());
+    ASSERT_TRUE(policy_.AddKey(key, MakeEntry(key, 0, past_)).Success());
+    ASSERT_FALSE(policy_.AddKey(key, MakeEntry(key, 0, past_)).Success());
 }
 
 TEST_F(UCTtlEvictionPolicyTest, AddKeyNullptrReturnsInvalidParam)
@@ -85,7 +65,7 @@ TEST_F(UCTtlEvictionPolicyTest, AddKeyNullptrReturnsInvalidParam)
 TEST_F(UCTtlEvictionPolicyTest, DeleteKeyReturnsOkAndSecondIsNotFound)
 {
     auto key = KeyFromHex("a1");
-    ASSERT_TRUE(policy_.AddKey(key, MakeEntry(key, past_)).Success());
+    ASSERT_TRUE(policy_.AddKey(key, MakeEntry(key, 0, past_)).Success());
     ASSERT_TRUE(policy_.DeleteKey(key).Success());
     ASSERT_FALSE(policy_.DeleteKey(key).Success());
 }
@@ -93,7 +73,7 @@ TEST_F(UCTtlEvictionPolicyTest, DeleteKeyReturnsOkAndSecondIsNotFound)
 TEST_F(UCTtlEvictionPolicyTest, AccessKeyReturnsOk)
 {
     auto key = KeyFromHex("a1");
-    ASSERT_TRUE(policy_.AddKey(key, MakeEntry(key, past_)).Success());
+    ASSERT_TRUE(policy_.AddKey(key, MakeEntry(key, 0, past_)).Success());
     ASSERT_TRUE(policy_.AccessKey(key).Success());
 }
 
@@ -106,15 +86,15 @@ TEST_F(UCTtlEvictionPolicyTest, GetEvictionResultsEmptyWhenAllFuture)
 {
     auto k1 = KeyFromHex("a1");
     auto k2 = KeyFromHex("a2");
-    ASSERT_TRUE(policy_.AddKey(k1, MakeEntry(k1, future_)).Success());
-    ASSERT_TRUE(policy_.AddKey(k2, MakeEntry(k2, future_)).Success());
+    ASSERT_TRUE(policy_.AddKey(k1, MakeEntry(k1, 0, future_)).Success());
+    ASSERT_TRUE(policy_.AddKey(k2, MakeEntry(k2, 0, future_)).Success());
     EXPECT_TRUE(policy_.GetEvictionResults(1.0).empty());
 }
 
 TEST_F(UCTtlEvictionPolicyTest, GetEvictionResultsEvictsExpiredReadyEntry)
 {
     auto k1 = KeyFromHex("a1");
-    ASSERT_TRUE(policy_.AddKey(k1, MakeEntry(k1, past_)).Success());
+    ASSERT_TRUE(policy_.AddKey(k1, MakeEntry(k1, 0, past_)).Success());
     auto victims = policy_.GetEvictionResults(1.0);
     ASSERT_EQ(victims.size(), 1UL);
     EXPECT_EQ(victims[0], k1);
@@ -126,12 +106,15 @@ TEST_F(UCTtlEvictionPolicyTest, GetEvictionResultsSkipsNonReadyAndContinues)
     auto kExpiredReady = KeyFromHex("a2");
     auto kFutureReady = KeyFromHex("a3");
     ASSERT_TRUE(
-        policy_.AddKey(kExpiredDeleting, MakeEntry(kExpiredDeleting, past_, EntryStatus::DELETING))
+        policy_
+            .AddKey(kExpiredDeleting, MakeEntry(kExpiredDeleting, 0, past_, EntryStatus::DELETING))
             .Success());
-    ASSERT_TRUE(policy_.AddKey(kExpiredReady, MakeEntry(kExpiredReady, past_, EntryStatus::READY))
-                    .Success());
-    ASSERT_TRUE(policy_.AddKey(kFutureReady, MakeEntry(kFutureReady, future_, EntryStatus::READY))
-                    .Success());
+    ASSERT_TRUE(
+        policy_.AddKey(kExpiredReady, MakeEntry(kExpiredReady, 0, past_, EntryStatus::READY))
+            .Success());
+    ASSERT_TRUE(
+        policy_.AddKey(kFutureReady, MakeEntry(kFutureReady, 0, future_, EntryStatus::READY))
+            .Success());
     auto victims = policy_.GetEvictionResults(1.0);
     ASSERT_EQ(victims.size(), 1UL);
     EXPECT_EQ(victims[0], kExpiredReady);
@@ -140,21 +123,23 @@ TEST_F(UCTtlEvictionPolicyTest, GetEvictionResultsSkipsNonReadyAndContinues)
 TEST_F(UCTtlEvictionPolicyTest, GetEvictionResultsSkipsNonZeroRefCnt)
 {
     auto k = KeyFromHex("a1");
-    ASSERT_TRUE(policy_.AddKey(k, MakeEntry(k, past_, EntryStatus::READY, /*refCnt=*/1)).Success());
+    ASSERT_TRUE(
+        policy_.AddKey(k, MakeEntry(k, 0, past_, EntryStatus::READY, /*refCnt=*/1)).Success());
     EXPECT_TRUE(policy_.GetEvictionResults(1.0).empty());
 }
 
 TEST_F(UCTtlEvictionPolicyTest, GetEvictionResultsSkipsLeasedEntry)
 {
     auto k = KeyFromHex("a1");
-    ASSERT_TRUE(policy_.AddKey(k, MakeEntry(k, past_, EntryStatus::READY, 0, future_)).Success());
+    ASSERT_TRUE(
+        policy_.AddKey(k, MakeEntry(k, 0, past_, EntryStatus::READY, 0, future_)).Success());
     EXPECT_TRUE(policy_.GetEvictionResults(1.0).empty());
 }
 
 TEST_F(UCTtlEvictionPolicyTest, GetEvictionResultsMarksVictimsAsDeleting)
 {
     auto k = KeyFromHex("a1");
-    auto entry = MakeEntry(k, past_);
+    auto entry = MakeEntry(k, 0, past_);
     ASSERT_TRUE(policy_.AddKey(k, entry).Success());
     auto victims = policy_.GetEvictionResults(1.0);
     ASSERT_EQ(victims.size(), 1UL);
