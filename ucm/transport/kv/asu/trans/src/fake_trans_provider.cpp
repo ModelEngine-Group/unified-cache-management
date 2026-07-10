@@ -98,7 +98,7 @@ std::filesystem::path KeyPath(const FakeTransProviderConfig& config, AsuId asuId
 }
 
 bool StoreBytes(const FakeTransProviderConfig& config, AsuId asuId, const CacheKey& key,
-                std::uint64_t addr, std::uint32_t length)
+                std::uint32_t offset, std::uint64_t addr, std::uint32_t length)
 {
     std::vector<char> buffer(length);
     auto ret = aclrtMemcpy(buffer.data(), buffer.size(), reinterpret_cast<const void*>(addr),
@@ -112,10 +112,22 @@ bool StoreBytes(const FakeTransProviderConfig& config, AsuId asuId, const CacheK
     }
 
     std::filesystem::create_directories(AsuRoot(config, asuId));
-    std::ofstream output(KeyPath(config, asuId, key), std::ios::binary | std::ios::trunc);
+    const auto path = KeyPath(config, asuId, key);
+    std::fstream output(path, std::ios::binary | std::ios::in | std::ios::out);
+    if (!output) {
+        std::ofstream create(path, std::ios::binary);
+        create.close();
+        output.open(path, std::ios::binary | std::ios::in | std::ios::out);
+    }
     if (!output) {
         UC_ERROR("ASU fake backend failed to open store file asuId={} key={} path={}.", asuId,
-                 CacheKeyToHex(key), KeyPath(config, asuId, key).string());
+                 CacheKeyToHex(key), path.string());
+        return false;
+    }
+    output.seekp(static_cast<std::streamoff>(offset), std::ios::beg);
+    if (!output) {
+        UC_ERROR("ASU fake backend failed to seek store file asuId={} key={} path={} offset={}.",
+                 asuId, CacheKeyToHex(key), path.string(), offset);
         return false;
     }
     output.write(buffer.data(), static_cast<std::streamsize>(buffer.size()));
@@ -123,19 +135,23 @@ bool StoreBytes(const FakeTransProviderConfig& config, AsuId asuId, const CacheK
 }
 
 bool LoadBytes(const FakeTransProviderConfig& config, AsuId asuId, const CacheKey& key,
-               std::uint64_t addr, std::uint32_t length)
+               std::uint32_t offset, std::uint64_t addr, std::uint32_t length)
 {
-    std::ifstream input(KeyPath(config, asuId, key), std::ios::binary);
+    const auto path = KeyPath(config, asuId, key);
+    std::ifstream input(path, std::ios::binary);
     if (!input) {
         UC_ERROR("ASU fake backend failed to open load file asuId={} key={} path={}.", asuId,
-                 CacheKeyToHex(key), KeyPath(config, asuId, key).string());
+                 CacheKeyToHex(key), path.string());
         return false;
     }
     std::vector<char> buffer(length, 0);
-    input.read(buffer.data(), static_cast<std::streamsize>(buffer.size()));
-    const auto readCount = input.gcount();
-    if (readCount < static_cast<std::streamsize>(length)) {
-        std::fill(buffer.begin() + readCount, buffer.end(), 0);
+    input.seekg(static_cast<std::streamoff>(offset), std::ios::beg);
+    if (input) {
+        input.read(buffer.data(), static_cast<std::streamsize>(buffer.size()));
+        const auto readCount = input.gcount();
+        if (readCount < static_cast<std::streamsize>(length)) {
+            std::fill(buffer.begin() + readCount, buffer.end(), 0);
+        }
     }
     auto ret = aclrtMemcpy(reinterpret_cast<void*>(addr), length, buffer.data(), buffer.size(),
                            ACL_MEMCPY_HOST_TO_DEVICE);
@@ -191,6 +207,7 @@ void PackResultBuffer1Bit(std::uint32_t* resultData, const std::vector<std::uint
 
 struct BatchEntry {
     CacheKey key{};
+    std::uint32_t offset{0};
     std::uint64_t bufferAddr{0};
     std::uint32_t length{0};
 };
@@ -202,6 +219,7 @@ std::vector<BatchEntry> ReadBatchEntries(const std::uint32_t* request, std::uint
     for (std::uint16_t index = 0; index < batchNumber; ++index) {
         const auto* entry = request + kSqeDwordCount + index * kBatchEntryDwordCount;
         BatchEntry parsed;
+        parsed.offset = entry[0];
         parsed.key = ReadKey(entry + 1);
         parsed.bufferAddr = ReadU64(entry[5], entry[6]);
         parsed.length = entry[7] & 0xFFFFFF;
@@ -231,7 +249,7 @@ Status CompleteBatchStore(const FakeTransProviderConfig& config, AsuId asuId,
     const auto entries = ReadBatchEntries(request, batchNumber);
     for (std::size_t index = 0; index < entries.size(); ++index) {
         const auto& entry = entries[index];
-        if (!StoreBytes(config, asuId, entry.key, entry.bufferAddr, entry.length)) {
+        if (!StoreBytes(config, asuId, entry.key, entry.offset, entry.bufferAddr, entry.length)) {
             results[index] = kBatchEntryKeyNotFound;
         }
     }
@@ -254,7 +272,7 @@ Status CompleteBatchRetrieve(const FakeTransProviderConfig& config, AsuId asuId,
     const auto entries = ReadBatchEntries(request, batchNumber);
     for (std::size_t index = 0; index < entries.size(); ++index) {
         const auto& entry = entries[index];
-        if (!LoadBytes(config, asuId, entry.key, entry.bufferAddr, entry.length)) {
+        if (!LoadBytes(config, asuId, entry.key, entry.offset, entry.bufferAddr, entry.length)) {
             results[index] = kBatchEntryKeyNotFound;
         }
     }

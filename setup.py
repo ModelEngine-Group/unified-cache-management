@@ -35,7 +35,7 @@ PLATFORM = os.getenv("PLATFORM")
 ENABLE_SPARSE = os.getenv("ENABLE_SPARSE")
 BUILD_UCM_ASU = os.getenv("BUILD_UCM_ASU", "0") not in ("", "0", "false", "False")
 ENABLE_MINDIE = os.getenv("UCM_ENABLE_MINDIE", "0") not in ("", "0", "false", "False")
-
+BUILD_UCM_ASU_PROVIDER_AIV = os.getenv("BUILD_UCM_ASU_PROVIDER_AIV", "0") not in ("", "0", "false", "False")
 
 def get_abi_flag_from_env() -> str:
     v = os.environ.get("UCM_CXX11_ABI")

@@ -18,6 +18,7 @@ struct Config {
     std::vector<std::string> viewServiceAddrs;
     std::vector<ssize_t> asuIds;
     std::vector<std::string> asuIps;
+    std::string asuLocalIp;
     std::string asuNamePrefix{"asu"};
     std::vector<std::uint32_t> kvNsIds;
     std::uint16_t asuPort{0};

@@ -188,6 +188,36 @@ TEST(AsuTransportRegisterTest, RegisterRegionsReturnsPartialFailedAndRollsBackSu
     EXPECT_TRUE(transport.registeredRegionConnectionLeases_.empty());
 }
 
+TEST(AsuTransportRegisterTest, RegisterRegionsStopsAtFirstFailure)
+{
+    auto provider = std::make_unique<StubTransProvider>();
+    auto* providerPtr = provider.get();
+    providerPtr->failRegisterAt = 2;
+
+    AsuTransportImpl transport;
+    transport.SetTransProvider(std::move(provider));
+
+    std::vector<MemoryRegion> regions(3);
+    regions[0].addr = 0x1000;
+    regions[0].size = 4096;
+    regions[1].addr = 0x2000;
+    regions[1].size = 4096;
+    regions[2].addr = 0x3000;
+    regions[2].size = 4096;
+
+    std::vector<RegisterResult> results;
+    auto status = transport.RegisterRegions(regions, results);
+
+    EXPECT_EQ(status.code, StatusCode::PARTIAL_FAILED);
+    ASSERT_EQ(results.size(), std::size_t{2});
+    EXPECT_TRUE(results[0].status.ok()) << results[0].status.message;
+    EXPECT_EQ(results[1].status.code, StatusCode::INTERNAL_ERROR);
+    EXPECT_EQ(providerPtr->registerCount, std::uint32_t{2});
+    EXPECT_EQ(providerPtr->unregisterCount, std::uint32_t{1});
+    EXPECT_TRUE(transport.registeredRegions_.empty());
+    EXPECT_TRUE(transport.registeredRegionStates_.empty());
+}
+
 TEST(AsuTransportRegisterTest, ShutdownUnregistersRegisteredRegions)
 {
     auto provider = std::make_unique<StubTransProvider>();
