@@ -610,10 +610,6 @@ private:
             return Status::InvalidParam("invalid layerwise gqa tensor size count({})",
                                         config.tensorSizes.size());
         }
-        if (shardsPerBlock > 1 && config.tensorLayout == "mla" && config.tensorSizes.size() != 1) {
-            return Status::InvalidParam("invalid layerwise mla tensor size count({})",
-                                        config.tensorSizes.size());
-        }
         return Status::OK();
     }
 
