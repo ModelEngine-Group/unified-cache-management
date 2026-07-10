@@ -24,7 +24,6 @@
 #
 import os
 import secrets
-import statistics
 import time
 
 import torch
@@ -36,8 +35,8 @@ device_type = "npu"
 device_id = 0
 tensor_size_list = [32768]
 block_number = 100
-warmup_epoch_number = 2
-test_epoch_number = 10
+dump_epoch_number = 32
+load_epoch_number = 32
 dtype = torch.bfloat16
 cache_buffer_capacity_gb = 8
 cache_stream_number = 4
@@ -55,6 +54,7 @@ io_direct = True
 posix_data_trans_concurrency = 32
 posix_lookup_concurrency = 32
 cache_load_backend_only = True
+shard_number = 1
 
 
 def setup_device():
@@ -117,6 +117,14 @@ def make_storage_dirs():
 
 
 def make_tensors(device: str):
+    return make_sized_tensors(device, torch.rand)
+
+
+def make_empty_tensors(device: str):
+    return make_sized_tensors(device, torch.empty)
+
+
+def make_sized_tensors(device: str, factory):
     element_size = torch.empty((), dtype=dtype).element_size()
     tensors = []
     for _ in range(block_number):
@@ -127,18 +135,10 @@ def make_tensors(device: str):
                     f"tensor size {tensor_size} is not divisible by {element_size}"
                 )
             row.append(
-                torch.rand(
-                    [tensor_size // element_size],
-                    dtype=dtype,
-                    device=device,
-                )
+                factory([tensor_size // element_size], dtype=dtype, device=device)
             )
         tensors.append(row)
     return tensors
-
-
-def make_empty_like(tensors):
-    return [[torch.empty_like(tensor) for tensor in row] for row in tensors]
 
 
 def check_tensors(src_tensors, dst_tensors):
@@ -148,27 +148,38 @@ def check_tensors(src_tensors, dst_tensors):
                 raise AssertionError(f"tensor mismatch at [{row_idx}][{col_idx}]")
 
 
-def build_result(direction: str, epoch: int, measured: bool, total_bytes: int, cost: float):
-    return {
-        "direction": direction,
-        "epoch": epoch,
-        "measured": measured,
-        "total_bytes": total_bytes,
-        "cost_s": cost,
-        "cost_ms": cost * 1e3,
-        "bw_gbs": total_bytes / cost / 1e9 if cost > 0 else 0.0,
-    }
+def dump(epoch: int, device: str, device_id: int, worker, block_ids):
+    src_tensors = make_tensors(device)
+    total_size = sum(tensor_size_list) * block_number * shard_number
+    costs = []
+    for shard_idx in range(shard_number):
+        shard_indexes = [shard_idx for _ in range(block_number)]
+        synchronize_device()
+        tp = time.perf_counter()
+        task = worker.dump(block_ids, shard_indexes, src_tensors)
+        worker.wait(task)
+        costs.append(time.perf_counter() - tp)
+    print_result("dump", epoch, device_id, costs, total_size)
+    if check_data:
+        return src_tensors
+    return None
 
 
-def dump_once(worker, epoch: int, measured: bool, block_ids, src_tensors):
-    total_bytes = sum(tensor_size_list) * block_number
-    shard_indexes = [0 for _ in range(block_number)]
+def load(epoch: int, device: str, device_id: int, worker, block_ids, src_tensors=None):
+    dst_tensors = make_empty_tensors(device)
+    total_size = sum(tensor_size_list) * block_number * shard_number
+    costs = []
+    for shard_idx in range(shard_number):
+        shard_indexes = [shard_idx for _ in range(block_number)]
+        synchronize_device()
+        tp = time.perf_counter()
+        task = worker.load(block_ids, shard_indexes, dst_tensors)
+        worker.wait(task)
+        costs.append(time.perf_counter() - tp)
     synchronize_device()
-    tp = time.perf_counter()
-    task = worker.dump(block_ids, shard_indexes, src_tensors)
-    worker.wait(task)
-    cost = time.perf_counter() - tp
-    return build_result("d2h+backend submit", epoch, measured, total_bytes, cost)
+    if check_data and src_tensors is not None:
+        check_tensors(src_tensors, dst_tensors)
+    print_result("load", epoch, device_id, costs, total_size)
 
 
 def wait_backend_ready(scheduler, block_ids):
@@ -186,39 +197,23 @@ def wait_backend_ready(scheduler, block_ids):
         time.sleep(backend_ready_poll_interval_s)
 
 
-def build_complete_dump_result(epoch: int, measured: bool, total_bytes: int, cost: float):
-    return build_result("d2h+backend complete", epoch, measured, total_bytes, cost)
+def percentile(values, percent):
+    ordered = sorted(values)
+    index = int((len(ordered) - 1) * percent / 100)
+    return ordered[index]
 
 
-def load_once(worker, epoch: int, measured: bool, block_ids, dst_tensors):
-    total_bytes = sum(tensor_size_list) * block_number
-    shard_indexes = [0 for _ in range(block_number)]
-    synchronize_device()
-    tp = time.perf_counter()
-    task = worker.load(block_ids, shard_indexes, dst_tensors)
-    worker.wait(task)
-    cost = time.perf_counter() - tp
-    return build_result("backend+h2d", epoch, measured, total_bytes, cost)
-
-
-def print_result(result):
-    phase = "measure" if result["measured"] else "warmup"
+def print_result(direction: str, epoch: int, device_id: int, costs, total_size: int):
+    total_cost = sum(costs)
+    avg_cost = total_cost / len(costs)
+    p99_cost = percentile(costs, 99)
     print(
-        f"{phase} epoch={result['epoch']:03} {result['direction']} "
-        f"bytes={result['total_bytes']} "
-        f"cost={result['cost_ms']:.3f}ms "
-        f"bw={result['bw_gbs']:.3f}GB/s"
-    )
-
-
-def print_summary(name: str, results):
-    total_bytes = sum(result["total_bytes"] for result in results)
-    total_cost_s = sum(result["cost_s"] for result in results)
-    avg_cost = statistics.fmean(result["cost_ms"] for result in results)
-    bw_gbs = total_bytes / total_cost_s / 1e9 if total_cost_s > 0 else 0.0
-    print(
-        f"summary {name}: epochs={len(results)} "
-        f"avg_cost={avg_cost:.3f}ms bw={bw_gbs:.3f}GB/s"
+        f"epoch={epoch:03}, worker={device_id:02}, "
+        f"{direction}=[{sum(tensor_size_list)} x {block_number} x {shard_number}], "
+        f"avg_cost={avg_cost * 1e3:.3f}ms, "
+        f"p99_cost={p99_cost * 1e3:.3f}ms, "
+        f"total_cost={total_cost * 1e3:.3f}ms, "
+        f"bw={total_size / total_cost / 1e9:.3f}GB/s."
     )
 
 
@@ -238,39 +233,18 @@ def main():
         f"cache_sdma_direct={cache_sdma_direct}"
     )
 
-    dump_submit_results = []
-    dump_complete_results = []
-    load_results = []
-    total_epochs = warmup_epoch_number + test_epoch_number
-    for epoch in range(total_epochs):
-        measured = epoch >= warmup_epoch_number
+    records = []
+    for epoch in range(dump_epoch_number):
         block_ids = [secrets.token_bytes(16) for _ in range(block_number)]
-        src_tensors = make_tensors(device)
-        dump_result = dump_once(dump_worker, epoch, measured, block_ids, src_tensors)
-        print_result(dump_result)
-        backend_wait_cost = wait_backend_ready(scheduler, block_ids)
-        dump_complete_result = build_complete_dump_result(
-            epoch,
-            measured,
-            dump_result["total_bytes"],
-            dump_result["cost_s"] + backend_wait_cost,
-        )
-        print_result(dump_complete_result)
+        src_tensors = dump(epoch, device, device_id, dump_worker, block_ids)
+        records.append((block_ids, src_tensors))
 
-        dst_tensors = make_empty_like(src_tensors)
-        load_result = load_once(load_worker, epoch, measured, block_ids, dst_tensors)
-        print_result(load_result)
-        if check_data:
-            synchronize_device()
-            check_tensors(src_tensors, dst_tensors)
-        if measured:
-            dump_submit_results.append(dump_result)
-            dump_complete_results.append(dump_complete_result)
-            load_results.append(load_result)
+    all_block_ids = [block_id for block_ids, _ in records for block_id in block_ids]
+    wait_backend_ready(scheduler, all_block_ids)
 
-    print_summary("d2h+backend submit", dump_submit_results)
-    print_summary("d2h+backend complete", dump_complete_results)
-    print_summary("backend+h2d", load_results)
+    for epoch in range(load_epoch_number):
+        block_ids, src_tensors = records[epoch % len(records)]
+        load(epoch, device, device_id, load_worker, block_ids, src_tensors)
 
 
 if __name__ == "__main__":
