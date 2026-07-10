@@ -45,6 +45,8 @@ waiting_queue_depth = 16
 running_queue_depth = 1024
 timeout_ms = 10000
 check_data = False
+cache_sdma_direct = False
+io_direct = True
 
 
 def setup_device():
@@ -73,8 +75,10 @@ def create_worker(unique_id: str) -> UcmPipelineStore:
     config["shard_size"] = shard_size
     config["block_size"] = shard_size
     config["share_buffer_enable"] = True
+    config["io_direct"] = io_direct
     config["cache_buffer_capacity_gb"] = cache_buffer_capacity_gb
     config["cache_stream_number"] = cache_stream_number
+    config["cache_sdma_direct"] = cache_sdma_direct
     config["waiting_queue_depth"] = waiting_queue_depth
     config["running_queue_depth"] = running_queue_depth
     config["timeout_ms"] = timeout_ms
@@ -174,7 +178,8 @@ def main():
     print(
         f"{store_pipeline} one-layer benchmark: device={device}, "
         f"block_number={block_number}, tensor_size_list={tensor_size_list}, "
-        f"shard_size={sum(tensor_size_list)}, dtype={dtype}"
+        f"shard_size={sum(tensor_size_list)}, dtype={dtype}, "
+        f"cache_sdma_direct={cache_sdma_direct}, io_direct={io_direct}"
     )
 
     dump_results = []
