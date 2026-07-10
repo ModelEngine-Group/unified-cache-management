@@ -29,9 +29,9 @@
 
 namespace UC::ASU {
 
-class AIVTransProvider : public TransProvider {
+class AIVTransProviderAdapter : public TransProvider {
 public:
-    AIVTransProvider() : impl_(CreateAIVTransProvider()) {}
+    AIVTransProviderAdapter() : impl_(CreateAIVTransProvider()) {}
 
     Status CreateConnection(const std::string& localIp, const std::string& remoteIp, uint32_t port,
                             uint32_t qpNum, uint32_t timeout,
@@ -98,16 +98,16 @@ public:
     }
 
 private:
-    static Status FromImpl(const Status& s)
+    static Status FromImpl(const Status& status)
     {
-        return s.ok() ? Status::OK() : Status::Error(s.code, s.message);
+        return status.ok() ? Status::OK() : Status::Error(status.code, status.message);
     }
 
-    static std::vector<Status> FromImpl(const std::vector<Status>& vec)
+    static std::vector<Status> FromImpl(const std::vector<Status>& statuses)
     {
         std::vector<Status> out;
-        out.reserve(vec.size());
-        for (const auto& s : vec) { out.push_back(FromImpl(s)); }
+        out.reserve(statuses.size());
+        for (const auto& status : statuses) { out.push_back(FromImpl(status)); }
         return out;
     }
 

@@ -169,7 +169,8 @@ Status BufferManager::RegisterMemory()
 {
     std::size_t total = slot_stride_ * slot_num_;
     std::vector<TransProvider::RegisterMemoryDesc> descs{
-        {region_.providerMemType, reinterpret_cast<uintptr_t>(region_.deviceAddr), total}
+        {region_.providerMemType, reinterpret_cast<uintptr_t>(region_.deviceAddr), total,
+         reinterpret_cast<uintptr_t>(region_.localAddr)}
     };
     std::vector<TransProvider::MemHandle> memHandles;
     auto regStatus = provider_->RegisterMemory(nullptr, descs, memHandles);

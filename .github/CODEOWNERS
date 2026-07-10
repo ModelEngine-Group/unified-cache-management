@@ -13,10 +13,12 @@
 
 /ucm/store @mag1c-h @ygwpz
 /ucm/store/asu @mag1c-h @nrj868 @Infinite666 @Wwwzff
+/ucm/store/dram @mag1c-h @nrj868 @Infinite666 @Wwwzff
 /ucm/store/dramstore @harrisonyhq @mag1c-h @ygwpz
 /ucm/store/localstore @mag1c-h @ygwpz
 /ucm/store/mooncakestore @chinesezyc @mag1c-h @ygwpz
 /ucm/store/nfsstore @mag1c-h @ygwpz
+/ucm/store/test @mag1c-h @ygwpz @nrj868 @Infinite666 @Wwwzff
 
 /ucm/transport @mag1c-h @nrj868 @Infinite666 @Wwwzff
 
@@ -25,6 +27,8 @@
 /ucm/pd @flesher0813 @ygwpz @mag1c-h
 
 /ucm/sandbox @Wwwzff @Infinite666 @ygwpz @mag1c-h @FangRun2 @Tarrei
+
+/ucm/shared @mag1c-h @ygwpz @nrj868 @Infinite666 @Wwwzff
 
 /benchmarks @flesher0813 @ygwpz @mag1c-h
 

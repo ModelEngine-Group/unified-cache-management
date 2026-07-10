@@ -112,6 +112,19 @@ std::shared_ptr<ConnectionChannel> ConnectionManager::SelectConnection()
     return channel;
 }
 
+std::shared_ptr<ConnectionChannel> ConnectionManager::GetActiveConnection()
+{
+    if (shuttingDown_.load(std::memory_order_acquire)) { return nullptr; }
+
+    std::lock_guard<std::mutex> cacheLock(channelCacheMu_);
+    if (cacheDirty_.load(std::memory_order_acquire)) { RebuildChannelCache(); }
+
+    for (const auto& channel : channelCache_) {
+        if (channel->GetState() == ChannelState::ACTIVE) { return channel; }
+    }
+    return nullptr;
+}
+
 void ConnectionManager::SetRoutingPolicy(RoutingPolicy policy) { routingPolicy_ = policy; }
 
 void ConnectionManager::ReportFailure(const std::shared_ptr<ConnectionChannel>& channel)
