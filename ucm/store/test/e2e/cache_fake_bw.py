@@ -33,7 +33,7 @@ from ucm.store.pipeline.connector import UcmPipelineStore
 store_pipeline = "Cache|Fake"
 device_type = "npu"
 device_id = 0
-tensor_size_list = [32768]
+tensor_size_list = [131072, 65536, 32768]
 block_number = 100
 dump_epoch_number = 32
 load_epoch_number = 32
@@ -46,6 +46,7 @@ timeout_ms = 10000
 check_data = False
 cache_sdma_direct = False
 io_direct = True
+share_buffer_enable = True
 shard_number = 1
 
 
@@ -74,7 +75,7 @@ def create_worker(unique_id: str) -> UcmPipelineStore:
     config["tensor_size_list"] = tensor_size_list
     config["shard_size"] = shard_size
     config["block_size"] = shard_size
-    config["share_buffer_enable"] = True
+    config["share_buffer_enable"] = share_buffer_enable
     config["io_direct"] = io_direct
     config["cache_buffer_capacity_gb"] = cache_buffer_capacity_gb
     config["cache_stream_number"] = cache_stream_number
@@ -181,7 +182,8 @@ def main():
         f"{store_pipeline} one-layer benchmark: device={device}, "
         f"block_number={block_number}, tensor_size_list={tensor_size_list}, "
         f"shard_size={sum(tensor_size_list)}, dtype={dtype}, "
-        f"cache_sdma_direct={cache_sdma_direct}, io_direct={io_direct}"
+        f"cache_sdma_direct={cache_sdma_direct}, io_direct={io_direct}, "
+        f"share_buffer_enable={share_buffer_enable}"
     )
 
     records = []

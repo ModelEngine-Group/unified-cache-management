@@ -33,7 +33,7 @@ from ucm.store.pipeline.connector import UcmPipelineStore
 store_pipeline = "Cache|Posix"
 device_type = "npu"
 device_id = 0
-tensor_size_list = [32768]
+tensor_size_list = [131072, 65536, 32768]
 block_number = 100
 dump_epoch_number = 32
 load_epoch_number = 32
