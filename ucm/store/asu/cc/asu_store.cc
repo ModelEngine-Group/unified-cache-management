@@ -172,6 +172,15 @@ void ReadClientAttr(const Detail::Dictionary& inConfig, const std::string& yamlK
 
 }  // namespace
 
+std::uint32_t ResolveKvNsId(const Config& config)
+{
+    if (config.fawaKvNsIds.empty()) {
+        return config.kvNsIds.empty() ? 0 : config.kvNsIds.front();
+    }
+    const auto index = config.uniqueId.find("_fawa_wa") == std::string::npos ? 0 : 1;
+    return config.fawaKvNsIds[index];
+}
+
 UC::ASU::TransportConfig BuildTransportConfig(const Config& config, std::size_t index)
 {
     UC::ASU::TransportConfig transportConfig;
@@ -183,7 +192,9 @@ UC::ASU::TransportConfig BuildTransportConfig(const Config& config, std::size_t 
     transportConfig.maxInflightTasks = static_cast<std::uint32_t>(config.maxInflightTasks);
     transportConfig.maxInflightBytes = config.maxInflightBytes;
     transportConfig.providerType = config.transProviderType;
-    transportConfig.attrs["kv_ns_id"] = std::to_string(config.kvNsId);
+
+    // Set for all backends including fake
+    transportConfig.attrs["kv_ns_id"] = std::to_string(ResolveKvNsId(config));
     if (!config.asuIps.empty()) {
         UC::ASU::AsuEndpoint endpoint;
         endpoint.ip = config.asuIps[index];
@@ -471,10 +482,13 @@ private:
         inConfig.Get("asu_mode", config.mode);
         inConfig.Get("asu_config_path", config.configPath);
         inConfig.Get("asu_client_id", config.clientId);
+        inConfig.Get("unique_id", config.uniqueId);
         inConfig.Get("asu_view_service_addrs", config.viewServiceAddrs);
         inConfig.GetNumbers("asu_ids", config.asuIds);
         inConfig.Get("asu_ips", config.asuIps);
         inConfig.Get("asu_name_prefix", config.asuNamePrefix);
+        inConfig.GetNumbers("kv_ns_id", config.kvNsIds);
+        inConfig.GetNumbers("fawa_kv_ns_id", config.fawaKvNsIds);
         ssize_t asuPort = 0;
         inConfig.GetNumber("asu_port", asuPort);
         config.asuPort = static_cast<std::uint16_t>(std::max<ssize_t>(0, asuPort));
@@ -757,7 +771,7 @@ private:
         UC_INFO("Set AsuStore::ClientId to {}.", config.clientId);
         UC_INFO("Set AsuStore::AsuIds to {}.", config.asuIds);
         UC_INFO("Set AsuStore::AsuIps to {}.", config.asuIps);
-        UC_INFO("Set AsuStore::KvNsId to {}.", config.kvNsId);
+        UC_INFO("Set AsuStore::KvNsId to {}.", ResolveKvNsId(config));
         UC_INFO("Set AsuStore::ShardSize to {}.", config.shardSize);
         UC_INFO("Set AsuStore::BlockSize to {}.", config.blockSize);
         UC_INFO("Set AsuStore::TensorSizes to {}.", config.tensorSizes);
