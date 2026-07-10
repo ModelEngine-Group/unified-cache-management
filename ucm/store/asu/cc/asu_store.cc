@@ -45,6 +45,15 @@ namespace {
 using AsuStatus = UC::ASU::Status;
 using AsuStatusCode = UC::ASU::StatusCode;
 
+enum class TensorLayout { MLA, GQA, HMA };
+
+TensorLayout ParseTensorLayout(const std::string& layout)
+{
+    if (layout == "gqa") { return TensorLayout::GQA; }
+    if (layout == "hma") { return TensorLayout::HMA; }
+    return TensorLayout::MLA;
+}
+
 std::size_t AlignUp(std::size_t value, std::size_t alignment)
 {
     return ((value + alignment - 1) / alignment) * alignment;
@@ -558,7 +567,7 @@ private:
                 "asu_trans_provider_backend=fake does not support asu_config_path");
         }
         if (!config.tensorLayout.empty() && config.tensorLayout != "mla" &&
-            config.tensorLayout != "gqa") {
+            config.tensorLayout != "gqa" && config.tensorLayout != "hma") {
             return Status::InvalidParam("invalid asu_tensor_layout({})", config.tensorLayout);
         }
         if (config.tensorSizes.empty()) { return Status::InvalidParam("invalid tensor size"); }
@@ -639,10 +648,26 @@ private:
         return offsets;
     }
 
+
+    std::vector<std::size_t> BuildHmaTensorOffsets(std::size_t shardIndex) const
+    {
+        std::vector<std::size_t> offsets(config_.tensorSizes.size());
+        auto offset = shardIndex * config_.shardSize;
+        for (std::size_t index = 0; index < config_.tensorSizes.size(); ++index) {
+            offsets[index] = offset;
+            offset += config_.tensorSizes[index];
+        }
+        return offsets;
+    }
+
     std::vector<std::size_t> BuildTensorOffsets(std::size_t shardIndex) const
     {
-        if (config_.tensorLayout == "gqa") { return BuildGqaTensorOffsets(shardIndex); }
-        return BuildMlaTensorOffsets(shardIndex);
+        switch (tensorLayout_) {
+            case TensorLayout::MLA: return BuildMlaTensorOffsets(shardIndex);
+            case TensorLayout::GQA: return BuildGqaTensorOffsets(shardIndex);
+            case TensorLayout::HMA: return BuildHmaTensorOffsets(shardIndex);
+        }
+        throw std::logic_error("unhandled ASU tensor layout");
     }
 
     Expected<std::vector<uint8_t>> QueryBlocks(const Detail::BlockId* blocks, std::size_t num,
@@ -744,6 +769,7 @@ private:
     }
 
     Config config_;
+    TensorLayout tensorLayout_{TensorLayout::MLA};
     std::unique_ptr<AsuBackend> backend_;
 #ifdef ASU_BUILD_TESTS
     BackendFactory backendFactory_;
