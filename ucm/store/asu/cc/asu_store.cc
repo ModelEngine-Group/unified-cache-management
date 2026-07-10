@@ -174,6 +174,7 @@ UC::ASU::TransportConfig BuildTransportConfig(const Config& config, std::size_t 
     transportConfig.maxInflightTasks = static_cast<std::uint32_t>(config.maxInflightTasks);
     transportConfig.maxInflightBytes = config.maxInflightBytes;
     transportConfig.providerType = config.transProviderType;
+    transportConfig.attrs["kv_ns_id"] = std::to_string(config.kvNsId);
     if (!config.asuIps.empty()) {
         UC::ASU::AsuEndpoint endpoint;
         endpoint.ip = config.asuIps[index];
@@ -185,7 +186,6 @@ UC::ASU::TransportConfig BuildTransportConfig(const Config& config, std::size_t 
         const auto fakeDeviceId = config.deviceId >= 0 ? config.deviceId : 0;
         transportConfig.attrs.try_emplace("kernel_count", "1");
         transportConfig.attrs.try_emplace("quiet_count", "1");
-        transportConfig.attrs["kv_ns_id"] = std::to_string(transportConfig.asuId);
         transportConfig.attrs.try_emplace("dtype", "0");
         transportConfig.attrs.try_emplace("dspec", "0");
         transportConfig.attrs.try_emplace("lr", "false");
@@ -732,6 +732,7 @@ private:
         UC_INFO("Set AsuStore::ClientId to {}.", config.clientId);
         UC_INFO("Set AsuStore::AsuIds to {}.", config.asuIds);
         UC_INFO("Set AsuStore::AsuIps to {}.", config.asuIps);
+        UC_INFO("Set AsuStore::KvNsId to {}.", config.kvNsId);
         UC_INFO("Set AsuStore::ShardSize to {}.", config.shardSize);
         UC_INFO("Set AsuStore::BlockSize to {}.", config.blockSize);
         UC_INFO("Set AsuStore::TensorSizes to {}.", config.tensorSizes);
