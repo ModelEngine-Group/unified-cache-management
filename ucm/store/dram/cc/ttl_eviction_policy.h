@@ -21,51 +21,48 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  * */
-#ifndef UNIFIEDCACHE_DRAM_STORE_CC_ENTRY_H
-#define UNIFIEDCACHE_DRAM_STORE_CC_ENTRY_H
+#ifndef UNIFIEDCACHE_DRAM_STORE_CC_TTL_EVICTION_POLICY_H
+#define UNIFIEDCACHE_DRAM_STORE_CC_TTL_EVICTION_POLICY_H
 
 #include <chrono>
-#include <cstdint>
-#include <memory>
-#include "thread/lock.h"
-#include "type/types.h"
+#include <vector>
+#include "entry.h"
+#include "eviction_policy.h"
+#include "logger/logger.h"
 
 namespace UC::DramStore {
 
-using Spinlock = UC::SpinLock;
-using BlockId = UC::Detail::BlockId;
-
-enum class EntryStatus {
-    INITIALIZED = 0,
-    READY,
-    DELETING,
-};
-
-struct Entry {
-    BlockId key;
-    uint32_t refCnt{0};
-    uint32_t shard{0};
-    uint32_t slot{0};
-    void* addr{nullptr};
-    std::size_t size{0};
-    std::chrono::system_clock::time_point leaseTimeout{};
-    EntryStatus status{EntryStatus::INITIALIZED};
-    Spinlock lock;
-    std::chrono::system_clock::time_point lifeTimeout{};
-    uint32_t position{0};
-
-    bool TryMarkEvicting(std::chrono::system_clock::time_point now)
+struct TtlEntryCmp {
+    bool operator()(const EntryPtr& a, const EntryPtr& b) const noexcept
     {
-        SpinLockGuard guard(lock);
-        if (status != EntryStatus::READY) { return false; }
-        if (refCnt != 0) { return false; }
-        if (leaseTimeout > now) { return false; }
-        status = EntryStatus::DELETING;
-        return true;
+        return a->lifeTimeout < b->lifeTimeout;
     }
 };
 
-using EntryPtr = std::shared_ptr<Entry>;
+/**
+ * @brief Eviction policy that removes all entries whose lifetime has expired.
+ *
+ * Entries are ordered by lifeTimeout ascending. GetEvictionResults iterates
+ * from the earliest-expiring entry and breaks at the first entry whose
+ * lifeTimeout is still in the future.
+ */
+class TtlEvictionPolicy : public OrderedEvictionPolicy<TtlEntryCmp> {
+public:
+    std::vector<BlockId> GetEvictionResults(double /*evict_ratio*/) override
+    {
+        std::vector<BlockId> victims;
+        const auto now = std::chrono::system_clock::now();
+        for (const auto& entry : entries_) {
+            if (entry->lifeTimeout > now) { break; }
+            if (!entry->TryMarkEvicting(now)) { continue; }
+            victims.push_back(entry->key);
+        }
+        if (!victims.empty()) {
+            UC_INFO("TtlEvictionPolicy evict {} of {} entries.", victims.size(), entries_.size());
+        }
+        return victims;
+    }
+};
 
 }  // namespace UC::DramStore
 
