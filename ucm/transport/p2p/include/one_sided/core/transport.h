@@ -9,9 +9,11 @@ namespace transport {
 
 using ManagerID = std::string;
 using MemoryHandle = uint64_t;
+using TransferHandle = uint64_t;
 using Metadata = std::vector<uint8_t>;
 
 constexpr MemoryHandle kInvalidMemoryHandle = 0;
+constexpr TransferHandle kInvalidTransferHandle = 0;
 
 struct Endpoint {
     std::string host = "127.0.0.1";
@@ -28,6 +30,16 @@ enum class Opcode {
 enum class Status {
     Ok,
     InvalidArgument,
+    Failed,
+};
+
+enum class TransportProtocol : uint32_t {
+    Hixl = 0,
+};
+
+enum class TransferStatus {
+    Waiting,
+    Completed,
     Failed,
 };
 
@@ -70,7 +82,7 @@ class Transport {
 public:
     virtual ~Transport() = default;
 
-    virtual const char* Name() const = 0;
+    virtual TransportProtocol Protocol() const = 0;
     virtual Status Init(const InitAttrs& options) = 0;
     virtual Status Shutdown() = 0;
 
@@ -78,7 +90,11 @@ public:
     virtual Status UnregisterMemory(MemoryHandle handle) = 0;
     virtual Status ExportMetadata(const ManagerID& manager_id, Metadata& out) = 0;
     virtual Status ImportMetadata(const ManagerID& manager_id, const Metadata& metadata) = 0;
-    virtual Status Execute(const Operation& request) = 0;
+    virtual Status Connect(const ManagerID& manager_id) = 0;
+    virtual Status Disconnect(const ManagerID& manager_id) = 0;
+    virtual Status ExecuteSync(const Operation& request) = 0;
+    virtual Status ExecuteAsync(const Operation& request, TransferHandle& handle) = 0;
+    virtual Status GetStatus(TransferHandle handle, TransferStatus& status) = 0;
 };
 
 using TransportPtr = std::shared_ptr<Transport>;

@@ -21,7 +21,7 @@ public:
     TransportManager& operator=(const TransportManager&) = delete;
 
     Status Init();
-    Status InstallTransport(const std::string& protocol, const InitAttrs& options);
+    Status InstallTransport(TransportProtocol protocol, const InitAttrs& options);
 
     Status ExchangeMetadata(const ManagerID& manager_id);
     Status Shutdown();
@@ -29,20 +29,30 @@ public:
     Status RegisterMemory(const MemoryRegion& memory, MemoryHandle& handle);
     Status UnregisterMemory(MemoryHandle handle);
 
-    Status Execute(const Operation& batch);
+    Status Connect(TransportProtocol protocol, const ManagerID& manager_id);
+    Status Disconnect(TransportProtocol protocol, const ManagerID& manager_id);
+    Status ExecuteSync(const Operation& batch);
+    Status ExecuteAsync(const Operation& batch, TransferHandle& handle);
+    Status GetStatus(TransferHandle handle, TransferStatus& status);
 
 private:
     struct InstalledTransport {
-        std::string protocol;
+        TransportProtocol protocol;
         TransportPtr transport;
     };
 
     struct MemoryRecord {
         MemoryRegion region;
-        std::unordered_map<std::string, MemoryHandle> transport_handles;
+        std::unordered_map<TransportProtocol, MemoryHandle> transport_handles;
     };
 
-    TransportPtr CreateTransport(const std::string& protocol) const;
+    struct TransferRecord {
+        Transport* transport = nullptr;
+        TransferHandle transport_handle = kInvalidTransferHandle;
+    };
+
+    TransportPtr CreateTransport(TransportProtocol protocol) const;
+    Status FindTransport(Operation& batch, Transport*& transport);
     Status ExportLocalMetadata(const ManagerID& manager_id, Metadata& out);
     Status ImportMetadata(const Metadata& metadata, const ManagerID& manager_id);
     Status HandleMetadataExchange(const ManagerID& manager_id, const Metadata& remote_metadata,
@@ -54,10 +64,12 @@ private:
     Endpoint local_endpoint_;
     std::shared_ptr<MetadataChannel> control_;
     mutable std::recursive_mutex peer_mutex_;
-    std::unordered_map<std::string, Transport*> protocol_map_;
+    std::unordered_map<TransportProtocol, Transport*> protocol_map_;
     std::vector<InstalledTransport> transports_;
     std::unordered_map<MemoryHandle, MemoryRecord> memories_;
     MemoryHandle next_memory_handle_ = 1;
+    std::unordered_map<TransferHandle, TransferRecord> transfers_;
+    TransferHandle next_transfer_handle_ = 1;
 };
 
 }  // namespace transport
