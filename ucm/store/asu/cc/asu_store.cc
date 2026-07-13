@@ -496,7 +496,7 @@ private:
         inConfig.GetNumber("block_size", config.blockSize);
         inConfig.GetNumber("device_id", config.deviceId);
         inConfig.Get("asu_memory_type", config.memoryType);
-        inConfig.Get("asu_tensor_layout", config.tensorLayout);
+        inConfig.Get("tensor_layout", config.tensorLayout);
         std::string providerBackend;
         if (TryGetStringLike(inConfig, "asu_trans_provider_backend", providerBackend)) {
             config.transProviderType = ParseTransProviderBackend(providerBackend);
@@ -579,7 +579,7 @@ private:
         }
         if (!config.tensorLayout.empty() && config.tensorLayout != "mla" &&
             config.tensorLayout != "gqa" && config.tensorLayout != "hma") {
-            return Status::InvalidParam("invalid asu_tensor_layout({})", config.tensorLayout);
+            return Status::InvalidParam("invalid tensor_layout({})", config.tensorLayout);
         }
 
         // Use tensorSizes size to determine whether SCHEDULER or WORKER

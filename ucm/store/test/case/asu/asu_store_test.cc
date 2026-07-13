@@ -423,7 +423,7 @@ TEST(UCAsuStoreTest, RejectsOddMultiTensorLayout)
     config.Set("asu_mode", std::string{"transport"});
     config.Set("asu_ips", std::vector<std::string>{"127.0.0.1"});
     config.Set("asu_ids", std::vector<ssize_t>{1001});
-    config.Set("asu_tensor_layout", std::string{"gqa"});
+    config.Set("tensor_layout", std::string{"gqa"});
     config.SetNumber("tensor_size", std::size_t{0});
     config.Set("tensor_size_list", std::vector<ssize_t>{16, 16, 16});
     config.SetNumber("shard_size", std::size_t{48});
@@ -441,7 +441,7 @@ TEST(UCAsuStoreTest, UsesNonLayerwiseMlaTensorOffsets)
     config.Set("asu_mode", std::string{"transport"});
     config.Set("asu_ips", std::vector<std::string>{"127.0.0.1"});
     config.Set("asu_ids", std::vector<ssize_t>{1001});
-    config.Set("asu_tensor_layout", std::string{"mla"});
+    config.Set("tensor_layout", std::string{"mla"});
     config.SetNumber("tensor_size", std::size_t{0});
     config.Set("tensor_size_list", std::vector<ssize_t>{100, 120, 140});
     config.SetNumber("shard_size", std::size_t{360});
@@ -484,7 +484,7 @@ TEST(UCAsuStoreTest, UsesHmaTensorOffsetsInConnectorOrder)
     config.Set("asu_mode", std::string{"transport"});
     config.Set("asu_ips", std::vector<std::string>{"127.0.0.1"});
     config.Set("asu_ids", std::vector<ssize_t>{1001});
-    config.Set("asu_tensor_layout", std::string{"hma"});
+    config.Set("tensor_layout", std::string{"hma"});
     config.SetNumber("tensor_size", std::size_t{0});
     config.Set("tensor_size_list", std::vector<ssize_t>{100, 200, 300});
     config.SetNumber("shard_size", std::size_t{600});
@@ -521,7 +521,7 @@ TEST(UCAsuStoreTest, UsesLayerwiseMlaTensorOffsets)
     config.Set("asu_mode", std::string{"transport"});
     config.Set("asu_ips", std::vector<std::string>{"127.0.0.1"});
     config.Set("asu_ids", std::vector<ssize_t>{1001});
-    config.Set("asu_tensor_layout", std::string{"mla"});
+    config.Set("tensor_layout", std::string{"mla"});
     config.SetNumber("tensor_size", std::size_t{0});
     config.Set("tensor_size_list", std::vector<ssize_t>{128});
     config.SetNumber("shard_size", std::size_t{128});
@@ -604,7 +604,7 @@ TEST(UCAsuStoreTest, UsesLayerwiseGqaKeyValueOffsets)
     config.Set("asu_mode", std::string{"transport"});
     config.Set("asu_ips", std::vector<std::string>{"127.0.0.1"});
     config.Set("asu_ids", std::vector<ssize_t>{1001});
-    config.Set("asu_tensor_layout", std::string{"gqa"});
+    config.Set("tensor_layout", std::string{"gqa"});
     config.SetNumber("tensor_size", std::size_t{0});
     config.Set("tensor_size_list", std::vector<ssize_t>{100, 200});
     config.SetNumber("shard_size", std::size_t{300});
@@ -643,7 +643,7 @@ TEST(UCAsuStoreTest, UsesNonLayerwiseGqaKeyValueOffsets)
     config.Set("asu_mode", std::string{"transport"});
     config.Set("asu_ips", std::vector<std::string>{"127.0.0.1"});
     config.Set("asu_ids", std::vector<ssize_t>{1001});
-    config.Set("asu_tensor_layout", std::string{"gqa"});
+    config.Set("tensor_layout", std::string{"gqa"});
     config.SetNumber("tensor_size", std::size_t{0});
     config.Set("tensor_size_list", std::vector<ssize_t>{100, 200, 100, 200, 100, 200});
     config.SetNumber("shard_size", std::size_t{900});
