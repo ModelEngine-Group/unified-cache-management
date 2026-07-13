@@ -39,6 +39,7 @@ device_type = "npu"
 block_number = 100
 dump_epoch_number = 16
 load_epoch_number = 16
+epoch_interval_ms = 15
 cache_sdma_direct = False
 
 # =========================== User configuration ===========================
@@ -279,6 +280,7 @@ def worker_loop(
         f"worker_number={worker_number}, "
         f"block_number={block_number}, tensor_size_list={tensor_size_list}, "
         f"shard_size={shard_size}, dtype={torch.bfloat16}, "
+        f"epoch_interval_ms={epoch_interval_ms}, "
         f"cache_sdma_direct={cache_sdma_direct}, "
         f"share_buffer_enable={share_buffer_enable}"
     )
@@ -288,6 +290,8 @@ def worker_loop(
         if worker_mode == "gqa" or device_id == 0:
             dump(epoch, device, device_id, worker, block_ids)
         barrier.wait()
+        if epoch + 1 < len(block_id_records):
+            time.sleep(epoch_interval_ms / 1000)
 
     for epoch in range(load_epoch_number):
         record_idx = epoch % len(block_id_records)
@@ -299,6 +303,8 @@ def worker_loop(
             block_id_records[record_idx],
         )
         barrier.wait()
+        if epoch + 1 < load_epoch_number:
+            time.sleep(epoch_interval_ms / 1000)
 
 
 def make_block_id_records():
