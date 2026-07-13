@@ -12,6 +12,10 @@ ucm_connectors:
       asu_ids: [1, 2]
       asu_trans_provider_backend: "fake"
 
+      # Non-FAWA models use one ASU namespace. For DeepSeek V4 / FAWA,
+      # replace this with: kv_ns_ids: [100, 101]  # [FA, WA]
+      kv_ns_ids: [100]
+
       # ASU client routing. Keep the default close to kv-test's fake_backend config.
       asu_router_type: "RING_HASH"
       asu_ring_hash_virtual_node_count: 128
