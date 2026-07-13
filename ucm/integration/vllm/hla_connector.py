@@ -316,8 +316,12 @@ class KVCacheGroupManager:
         external hit is consistent across all full-attn groups and aligns
         to the kv-cache page granularity expected by the scheduler.
 
-        Stage 2 — every mamba-align state group must have its state hash
-        present in the store; if any group fails, the whole external hit
+        Stage 2 — mamba-align state groups are checked via a backward
+        scan: starting from the Stage 1 candidate position, state hashes
+        are batch-looked-up at each LCM boundary going backwards toward
+        ``num_computed_tokens``. The external hit is set to the
+        furthest-forward position where ALL state groups have their state
+        present. If no position has all states present, the external hit
         is downgraded to zero.
 
         Returns:
@@ -366,35 +370,62 @@ class KVCacheGroupManager:
         if external_hit_tokens <= 0:
             return 0, 0
 
-        # Stage 2: every mamba-align state group must have its state hash
-        # present in the store.
+        # Stage 2: backward scan for mamba-align state.
+        # Full-attn found a candidate at total_hit_tokens; now check
+        # whether mamba-align state groups have their state hash present,
+        # scanning backwards from total_hit_tokens toward
+        # num_computed_tokens until a position is found where ALL state
+        # groups are present.  This handles the case where an intermediate
+        # LCM boundary's state was not dumped (e.g. the mamba rolling
+        # window had a null block at that position) but an earlier
+        # boundary's state was.
         total_hit_tokens = num_computed_tokens + external_hit_tokens
-        for sg in self.state_groups:
-            mamba_state_hash = self.compute_mamba_align_state_hash(
-                sg, total_hit_tokens, group_block_ids
+
+        if not self.state_groups:
+            return external_hit_tokens, external_hit_tokens // self.lcm_block_size
+
+        # Build candidate positions: total_hit_tokens, total-lcm, ...,
+        # down to the first external LCM boundary (num_computed_tokens +
+        # lcm_block_size).
+        candidate_positions = list(
+            range(
+                total_hit_tokens,
+                num_computed_tokens,
+                -self.lcm_block_size,
             )
-            if mamba_state_hash is None:
-                logger.info(
-                    f"mamba-align group {sg.group_id} state hash missing "
-                    f"at total_hit_tokens={total_hit_tokens}, "
-                    "downgrade external hit to 0."
+        )
+        if not candidate_positions:
+            return 0, 0
+
+        # Batch all state hashes into a single lookup for efficiency.
+        num_sg = len(self.state_groups)
+        all_hashes: list[bytes] = []
+        for pos in candidate_positions:
+            for sg in self.state_groups:
+                state_hash = self.compute_mamba_align_state_hash(
+                    sg, pos, group_block_ids
                 )
-                return 0, 0
-            try:
-                results = store.lookup([mamba_state_hash])
-            except Exception as e:
-                logger.error(
-                    f"mamba-align group {sg.group_id} lookup error. "
-                    f"{type(e).__name__}: {e}"
-                )
-                _record_counter("connector_lookup_errors_total")
-                return 0, 0
-            if not all(results):
-                logger.info(
-                    f"mamba-align group {sg.group_id} state miss: "
-                    f"hits={results}, downgrade external hit to 0."
-                )
-                return 0, 0
+                all_hashes.append(state_hash if state_hash is not None else b"")
+
+        try:
+            results = store.lookup(all_hashes)
+        except Exception as e:
+            logger.error(f"mamba-align state lookup error. {type(e).__name__}: {e}")
+            _record_counter("connector_lookup_errors_total")
+            return 0, 0
+
+        # Find the furthest-forward position where ALL state groups are
+        # present.
+        best_pos = num_computed_tokens
+        for i, pos in enumerate(candidate_positions):
+            group_results = results[i * num_sg : (i + 1) * num_sg]
+            if all(group_results):
+                best_pos = pos
+                break
+
+        external_hit_tokens = best_pos - num_computed_tokens
+        if external_hit_tokens <= 0:
+            return 0, 0
 
         return external_hit_tokens, external_hit_tokens // self.lcm_block_size
 
