@@ -58,7 +58,7 @@ struct MemoryRegion {
     void* addr = nullptr;
     uint64_t length = 0;
     MemoryType type = MemoryType::Host;
-    int device_id = -1;
+    int32_t device_id = -1;
 };
 
 struct InitAttrs {
