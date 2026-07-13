@@ -533,8 +533,8 @@ private:
 
     void NormalizeAsuShardConfig(Config& config)
     {
-        if (config.role == "scheduler" || config.tensorSizes.empty() ||
-            config.shardSize == 0 || config.blockSize == 0) {
+        if (config.role == "scheduler" || config.tensorSizes.empty() || config.shardSize == 0 ||
+            config.blockSize == 0) {
             return;
         }
         if (config.blockSize % config.shardSize != 0) { return; }
@@ -583,8 +583,7 @@ private:
             config.tensorLayout != "gqa" && config.tensorLayout != "hma") {
             return Status::InvalidParam("invalid tensor_layout({})", config.tensorLayout);
         }
-        if (!config.role.empty() && config.role != "scheduler" &&
-            config.role != "worker") {
+        if (!config.role.empty() && config.role != "scheduler" && config.role != "worker") {
             return Status::InvalidParam("invalid role({})", config.role);
         }
 

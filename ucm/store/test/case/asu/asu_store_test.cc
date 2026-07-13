@@ -336,8 +336,7 @@ TEST(UCAsuStoreTest, AllowsQueryOnlyConfigWithoutTensorSizes)
     auto status = store.Setup(config);
     ASSERT_TRUE(status.Success()) << status.ToString();
 
-    auto block =
-        UC::Test::Detail::TypesHelper::MakeBlockId("c1b2c3d4e5f6789012345678901234ab");
+    auto block = UC::Test::Detail::TypesHelper::MakeBlockId("c1b2c3d4e5f6789012345678901234ab");
     ExpectLookupMiss(store, block);
 }
 
