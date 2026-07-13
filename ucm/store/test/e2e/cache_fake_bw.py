@@ -35,6 +35,12 @@ from ucm.store.pipeline.connector import UcmPipelineStore
 store_pipeline = "Cache|Fake"
 device_type = "npu"
 
+# ======================== Benchmark configuration =========================
+block_number = 100
+dump_epoch_number = 16
+load_epoch_number = 16
+cache_sdma_direct = False
+
 # =========================== User configuration ===========================
 model_name = "glm-5.2"
 
@@ -58,7 +64,7 @@ MODEL_PROFILES = {
         "worker_mode": "mla",
         "worker_number": 8,
         "share_buffer_enable": True,
-        "tensor_size_list": [],
+        "tensor_size_list": [131072, 16384, 256] * 21 + [4096] * 20,
     },
 }
 
@@ -72,12 +78,7 @@ worker_mode = model_profile["worker_mode"]
 worker_number = model_profile["worker_number"]
 share_buffer_enable = model_profile["share_buffer_enable"]
 tensor_size_list = model_profile["tensor_size_list"]
-
-# ======================== Benchmark configuration =========================
-block_number = 100
-dump_epoch_number = 16
-load_epoch_number = 16
-cache_sdma_direct = False
+shard_size = (sum(tensor_size_list) + 4095) // 4096 * 4096
 
 
 def setup_device(device_id: int):
@@ -98,7 +99,6 @@ def synchronize_device():
 
 
 def create_worker(unique_id: str, device_id: int) -> UcmPipelineStore:
-    shard_size = sum(tensor_size_list)
     config = {}
     config["store_pipeline"] = store_pipeline
     config["unique_id"] = unique_id
@@ -192,7 +192,7 @@ def worker_loop(
         f"model={model_name}, worker_mode={worker_mode}, "
         f"worker_number={worker_number}, "
         f"block_number={block_number}, tensor_size_list={tensor_size_list}, "
-        f"shard_size={sum(tensor_size_list)}, dtype={torch.bfloat16}, "
+        f"shard_size={shard_size}, dtype={torch.bfloat16}, "
         f"cache_sdma_direct={cache_sdma_direct}, "
         f"share_buffer_enable={share_buffer_enable}"
     )
