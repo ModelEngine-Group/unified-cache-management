@@ -8,8 +8,8 @@
 #include <thread>
 #include <unistd.h>
 #include <utility>
+#include "common/metadata_codec.h"
 #include "logger/logger.h"
-#include "transport_common.h"
 
 namespace transport {
 namespace {

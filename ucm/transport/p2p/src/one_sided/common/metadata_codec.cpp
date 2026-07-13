@@ -1,4 +1,4 @@
-#include "transport_common.h"
+#include "common/metadata_codec.h"
 #include <climits>
 
 namespace transport::detail {
@@ -114,17 +114,6 @@ bool ReadString(const Metadata& input, size_t& offset, std::string& value)
                  input.begin() + static_cast<std::ptrdiff_t>(offset + size));
     offset += size;
     return true;
-}
-
-bool AppendMetadataRecord(Metadata& out, const std::string& name, const Metadata& metadata)
-{
-    return AppendString(out, name) && AppendMetadata(out, metadata);
-}
-
-bool ReadMetadataRecord(const Metadata& input, size_t& offset, std::string& name,
-                        Metadata& metadata)
-{
-    return ReadString(input, offset, name) && ReadMetadata(input, offset, metadata);
 }
 
 }  // namespace transport::detail
