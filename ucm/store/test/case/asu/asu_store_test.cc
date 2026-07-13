@@ -325,6 +325,22 @@ TEST(UCAsuStoreTest, ClientModeSmoke)
     ExpectLoadDumpSmoke(store, block);
 }
 
+TEST(UCAsuStoreTest, AllowsQueryOnlyConfigWithoutTensorSizes)
+{
+    UC::AsuStore::AsuStore store;
+    UseFakeBackend(store);
+    auto config = MakeBaseConfig();
+    config.SetNumber("tensor_size", std::size_t{0});
+    config.Set("asu_ids", std::vector<ssize_t>{1001});
+
+    auto status = store.Setup(config);
+    ASSERT_TRUE(status.Success()) << status.ToString();
+
+    auto block =
+        UC::Test::Detail::TypesHelper::MakeBlockId("c1b2c3d4e5f6789012345678901234ab");
+    ExpectLookupMiss(store, block);
+}
+
 TEST(UCAsuStoreTest, LookupOnPrefixUsesPrefixQueryMode)
 {
     UC::AsuStore::AsuStore store;

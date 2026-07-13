@@ -581,7 +581,10 @@ private:
             config.tensorLayout != "gqa" && config.tensorLayout != "hma") {
             return Status::InvalidParam("invalid asu_tensor_layout({})", config.tensorLayout);
         }
-        if (config.tensorSizes.empty()) { return Status::InvalidParam("invalid tensor size"); }
+
+        // Use tensorSizes size to determine whether SCHEDULER or WORKER
+        if (config.tensorSizes.empty()) { return Status::OK(); }
+
         if (config.tensorLayout == "gqa" &&
             (config.tensorSizes.size() < 2 || config.tensorSizes.size() % 2 != 0)) {
             return Status::InvalidParam("invalid tensor size count({})", config.tensorSizes.size());
