@@ -263,7 +263,9 @@ TEST(UCAsuStoreTest, ParsesKvNamespaces)
     }
 
     const std::vector<std::pair<std::string, std::uint32_t>> cases{
-        {"fa", 100U}, {"wa", 101U}};
+        {"fa", 100U},
+        {"wa", 101U}
+    };
     for (const auto& [suffix, expected] : cases) {
         UC::AsuStore::AsuStore store;
         auto state = UseFakeBackend(store);
@@ -273,8 +275,7 @@ TEST(UCAsuStoreTest, ParsesKvNamespaces)
         config.Set("kv_ns_ids", std::vector<ssize_t>{100, 101});
         ASSERT_TRUE(store.Setup(config).Success());
         ASSERT_FALSE(state->initConfigs.empty());
-        EXPECT_EQ(state->initConfigs.back().kvNsIds,
-                  (std::vector<std::uint32_t>{100U, 101U}));
+        EXPECT_EQ(state->initConfigs.back().kvNsIds, (std::vector<std::uint32_t>{100U, 101U}));
         auto transportConfig = UC::AsuStore::BuildTransportConfig(state->initConfigs.back(), 0);
         EXPECT_EQ(transportConfig.attrs.at("kv_ns_id"), std::to_string(expected));
     }

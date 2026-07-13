@@ -566,8 +566,7 @@ private:
         if (!config.asuIps.empty() && config.asuIps.size() != config.asuIds.size()) {
             return Status::InvalidParam("asu_ips size must match asu_ids size");
         }
-        if (config.uniqueId.find("_fawa_") != std::string::npos &&
-            config.kvNsIds.size() != 2) {
+        if (config.uniqueId.find("_fawa_") != std::string::npos && config.kvNsIds.size() != 2) {
             return Status::InvalidParam("FAWA requires exactly two kv_ns_ids");
         }
         if (config.transProviderType == UC::ASU::TransProviderType::UNSUPPORTED) {
@@ -659,7 +658,6 @@ private:
         }
         return offsets;
     }
-
 
     std::vector<std::size_t> BuildHmaTensorOffsets(std::size_t shardIndex) const
     {
