@@ -102,12 +102,23 @@ def create_cache_worker(unique_id: str, device_id: int) -> UcmPipelineStore:
     config = {}
     config["store_pipeline"] = store_pipeline
     config["storage_backends"] = storage_backends
+    config["posix_io_engine"] = "aio"
+    config["io_direct"] = True
+    config["posix_data_trans_concurrency"] = 32
+    config["posix_lookup_concurrency"] = 32
+    config["cache_load_backend_only"] = True
     config["unique_id"] = unique_id
     config["tensor_size_list"] = tensor_size_list
     config["shard_size"] = shard_size
     config["block_size"] = shard_size
     config["share_buffer_enable"] = share_buffer_enable
+    config["cache_buffer_capacity_gb"] = 8
+    config["cache_stream_number"] = 4
     config["cache_sdma_direct"] = cache_sdma_direct
+    config["cache_sdma_direct_launch_granularity"] = "task"
+    config["waiting_queue_depth"] = 16
+    config["running_queue_depth"] = 1024
+    config["timeout_ms"] = 10000
     config["device_id"] = device_id
     return UcmPipelineStore(config)
 
@@ -116,6 +127,10 @@ def create_posix_scheduler() -> UcmPipelineStore:
     config = {}
     config["store_pipeline"] = "Posix"
     config["storage_backends"] = storage_backends
+    config["posix_io_engine"] = "aio"
+    config["io_direct"] = True
+    config["posix_lookup_concurrency"] = 32
+    config["timeout_ms"] = 10000
     config["device_id"] = -1
     return UcmPipelineStore(config)
 

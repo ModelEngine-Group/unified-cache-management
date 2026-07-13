@@ -105,7 +105,14 @@ def create_worker(unique_id: str, device_id: int) -> UcmPipelineStore:
     config["shard_size"] = shard_size
     config["block_size"] = shard_size
     config["share_buffer_enable"] = share_buffer_enable
+    config["io_direct"] = True
+    config["cache_buffer_capacity_gb"] = 8
+    config["cache_stream_number"] = 4
     config["cache_sdma_direct"] = cache_sdma_direct
+    config["cache_sdma_direct_launch_granularity"] = "task"
+    config["waiting_queue_depth"] = 16
+    config["running_queue_depth"] = 1024
+    config["timeout_ms"] = 10000
     config["device_id"] = device_id
     return UcmPipelineStore(config)
 
