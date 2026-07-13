@@ -337,7 +337,10 @@ class UCMDirectConnector(KVConnectorBase_V1):
             backends = [path for path in config["storage_backends"].split(":")]
             config["storage_backends"] = backends
         config["unique_id"] = f"{self.engine_id}"
-        config["asu_tensor_layout"] = "mla" if self.is_mla else "gqa"
+        config["tensor_layout"] = "mla" if self.is_mla else "gqa"
+        config["role"] = (
+            "worker" if self._role == KVConnectorRole.WORKER else "scheduler"
+        )
         if self._role == KVConnectorRole.WORKER:
             config["device_id"] = self.local_rank
             config["tensor_size_list"] = (
@@ -356,9 +359,6 @@ class UCMDirectConnector(KVConnectorBase_V1):
                 * (1 if self.is_mla else self.num_head * 2)
                 * self.blocks_per_chunk
             )
-            if config.get("store_pipeline") == "ASU":
-                config["shard_size"] = config["block_size"]
-                config["tensor_size"] = config["block_size"]
         dp_rank = self._vllm_config.parallel_config.data_parallel_rank
         config["posix_gc_enable"] = (
             self._role != KVConnectorRole.WORKER and dp_rank == 0

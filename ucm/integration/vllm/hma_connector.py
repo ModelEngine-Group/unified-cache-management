@@ -841,6 +841,7 @@ class UCMFAWAConnector(UCMDirectConnector):
         module_path = self.connector_configs[0].get("ucm_connector_module_path", None)
         config = copy.deepcopy(self.connector_configs[0]["ucm_connector_config"])
         config.setdefault("store_pipeline", "Cache|Empty")
+        config["tensor_layout"] = "hma"
         # MLA ranks share one logical store buffer; non-MLA stores are per rank.
         config.setdefault("share_buffer_enable", self.is_mla)
         if isinstance(config.get("storage_backends"), str):
@@ -878,6 +879,9 @@ class UCMFAWAConnector(UCMDirectConnector):
         cpu_affinity_cores: Optional[list[int]] = None,
     ) -> UcmKVStoreBaseV1:
         name, module_path, config = self._base_store_config(store_suffix)
+        config["role"] = (
+            "worker" if self._role == KVConnectorRole.WORKER else "scheduler"
+        )
         if self._role == KVConnectorRole.WORKER:
             if tensor_size_list is None:
                 raise RuntimeError(f"Worker FAWA {label} store needs tensor sizes.")
