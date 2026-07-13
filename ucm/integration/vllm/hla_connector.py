@@ -1413,6 +1413,7 @@ class UCMHybridLinearAttentionLayerWiseConnector(UCMHybridLinearAttentionConnect
             if request_meta is not None:
                 self._invalid_block_ids.update(request_meta.load_block_ids[1])
             self._failure_req_ids.add(request_id)
+            self._connector_worker_meta.mark_failed(request_id)
 
     def _submit_request_load_tasks_for_row(
         self,
