@@ -19,7 +19,6 @@ struct Config {
     std::vector<std::string> asuIps;
     std::string asuNamePrefix{"asu"};
     std::vector<std::uint32_t> kvNsIds;
-    std::vector<std::uint32_t> fawaKvNsIds;  // [FA, WA]
     std::uint16_t asuPort{0};
     std::uint64_t defaultWaitTimeoutMs{100};
     std::uint64_t queryTimeoutMs{5};

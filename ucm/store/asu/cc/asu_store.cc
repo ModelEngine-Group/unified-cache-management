@@ -172,15 +172,6 @@ void ReadClientAttr(const Detail::Dictionary& inConfig, const std::string& yamlK
 
 }  // namespace
 
-std::uint32_t ResolveKvNsId(const Config& config)
-{
-    if (config.fawaKvNsIds.empty()) {
-        return config.kvNsIds.empty() ? 0 : config.kvNsIds.front();
-    }
-    const auto index = config.uniqueId.find("_fawa_wa") == std::string::npos ? 0 : 1;
-    return config.fawaKvNsIds[index];
-}
-
 UC::ASU::TransportConfig BuildTransportConfig(const Config& config, std::size_t index)
 {
     UC::ASU::TransportConfig transportConfig;
@@ -194,7 +185,9 @@ UC::ASU::TransportConfig BuildTransportConfig(const Config& config, std::size_t 
     transportConfig.providerType = config.transProviderType;
 
     // Set for all backends including fake
-    transportConfig.attrs["kv_ns_id"] = std::to_string(ResolveKvNsId(config));
+    auto index = config.uniqueId.find("_fawa_wa") == std::string::npos ? 0 : 1;
+    transportConfig.attrs["kv_ns_id"] = std::to_string(config.kvNsIds[index]);
+
     if (!config.asuIps.empty()) {
         UC::ASU::AsuEndpoint endpoint;
         endpoint.ip = config.asuIps[index];
@@ -487,8 +480,7 @@ private:
         inConfig.GetNumbers("asu_ids", config.asuIds);
         inConfig.Get("asu_ips", config.asuIps);
         inConfig.Get("asu_name_prefix", config.asuNamePrefix);
-        inConfig.GetNumbers("kv_ns_id", config.kvNsIds);
-        inConfig.GetNumbers("fawa_kv_ns_id", config.fawaKvNsIds);
+        inConfig.GetNumbers("kv_ns_ids", config.kvNsIds);
         ssize_t asuPort = 0;
         inConfig.GetNumber("asu_port", asuPort);
         config.asuPort = static_cast<std::uint16_t>(std::max<ssize_t>(0, asuPort));
@@ -571,6 +563,10 @@ private:
         }
         if (!config.asuIps.empty() && config.asuIps.size() != config.asuIds.size()) {
             return Status::InvalidParam("asu_ips size must match asu_ids size");
+        }
+        if (config.uniqueId.find("_fawa_") != std::string::npos &&
+            config.kvNsIds.size() != 2) {
+            return Status::InvalidParam("FAWA requires exactly two kv_ns_ids");
         }
         if (config.transProviderType == UC::ASU::TransProviderType::UNSUPPORTED) {
             return Status::Unsupported();
