@@ -25,6 +25,7 @@
 import multiprocessing
 import os
 import secrets
+import signal
 import time
 
 import torch
@@ -45,13 +46,13 @@ MODEL_PROFILES = {
         "worker_mode": "mla",
         "worker_number": 8,
         "share_buffer_enable": True,
-        "tensor_size_list": [],
+        "tensor_size_list": [131072, 65536, 32768],
     },
     "minimax-m2.7": {
         "worker_mode": "gqa",
         "worker_number": 8,
         "share_buffer_enable": False,
-        "tensor_size_list": [],
+        "tensor_size_list": [32768, 32768],
     },
     "dsv4": {
         "worker_mode": "mla",
@@ -181,6 +182,8 @@ def worker_loop(
     unique_id: str,
     block_id_records,
 ):
+    signal.signal(signal.SIGINT, signal.SIG_IGN)
+    signal.signal(signal.SIGTSTP, signal.SIG_IGN)
     os.environ["UC_LOGGER_LEVEL"] = "warning"
     device = setup_device(device_id)
     worker = create_worker(unique_id, device_id)
@@ -219,6 +222,33 @@ def make_block_id_records():
     ]
 
 
+def cleanup_workers(workers, unique_id: str):
+    for process in workers:
+        if process.is_alive():
+            process.terminate()
+    for process in workers:
+        process.join(timeout=10)
+    for process in workers:
+        if process.is_alive():
+            process.kill()
+            process.join()
+
+    for prefix in ("uc_shm_cache_", "uc_shm_fake_"):
+        path = f"/dev/shm/{prefix}{unique_id}"
+        try:
+            os.unlink(path)
+        except FileNotFoundError:
+            pass
+
+
+stop_requested = False
+
+
+def stop_on_suspend(_signum, _frame):
+    global stop_requested
+    stop_requested = True
+
+
 if __name__ == "__main__":
     if not tensor_size_list:
         raise ValueError(
@@ -229,17 +259,47 @@ if __name__ == "__main__":
     unique_id = secrets.token_hex(8)
     shared_block_id_records = make_block_id_records()
     workers = []
-    for device_id in range(worker_number):
-        block_id_records = (
-            shared_block_id_records
-            if worker_mode == "mla"
-            else make_block_id_records()
+    signal.signal(signal.SIGTSTP, stop_on_suspend)
+    try:
+        for device_id in range(worker_number):
+            block_id_records = (
+                shared_block_id_records
+                if worker_mode == "mla"
+                else make_block_id_records()
+            )
+            process = multiprocessing.Process(
+                target=worker_loop,
+                args=(device_id, barrier, unique_id, block_id_records),
+            )
+            workers.append(process)
+            process.start()
+            if stop_requested:
+                raise KeyboardInterrupt
+
+        while any(process.is_alive() for process in workers):
+            if stop_requested:
+                raise KeyboardInterrupt
+            failed = next(
+                (
+                    process
+                    for process in workers
+                    if process.exitcode not in (None, 0)
+                ),
+                None,
+            )
+            if failed is not None:
+                raise RuntimeError(
+                    f"worker pid={failed.pid} exited with code {failed.exitcode}"
+                )
+            time.sleep(0.1)
+        failed = next(
+            (process for process in workers if process.exitcode != 0), None
         )
-        process = multiprocessing.Process(
-            target=worker_loop,
-            args=(device_id, barrier, unique_id, block_id_records),
-        )
-        workers.append(process)
-        process.start()
-    for process in workers:
-        process.join()
+        if failed is not None:
+            raise RuntimeError(
+                f"worker pid={failed.pid} exited with code {failed.exitcode}"
+            )
+    except KeyboardInterrupt:
+        print("benchmark interrupted; cleaning up workers and shared memory")
+    finally:
+        cleanup_workers(workers, unique_id)
