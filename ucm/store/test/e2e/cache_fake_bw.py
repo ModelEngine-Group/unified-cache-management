@@ -64,7 +64,91 @@ MODEL_PROFILES = {
         "worker_mode": "mla",
         "worker_number": 8,
         "share_buffer_enable": True,
-        "tensor_size_list": [131072, 16384, 256, 131072, 16384, 256, 131072, 16384, 256, 131072, 16384, 256, 131072, 16384, 256, 131072, 16384, 256, 131072, 16384, 256, 131072, 16384, 256, 131072, 16384, 256, 131072, 16384, 256, 131072, 16384, 256, 131072, 16384, 256, 131072, 16384, 256, 131072, 16384, 256, 131072, 16384, 256, 131072, 16384, 256, 131072, 16384, 256, 131072, 16384, 256, 131072, 16384, 256, 131072, 16384, 256, 131072, 16384, 256, 4096, 4096, 4096, 4096, 4096, 4096, 4096, 4096, 4096, 4096, 4096, 4096, 4096, 4096, 4096, 4096, 4096, 4096, 4096, 4096],
+        "tensor_size_list": [
+            131072,
+            16384,
+            256,
+            131072,
+            16384,
+            256,
+            131072,
+            16384,
+            256,
+            131072,
+            16384,
+            256,
+            131072,
+            16384,
+            256,
+            131072,
+            16384,
+            256,
+            131072,
+            16384,
+            256,
+            131072,
+            16384,
+            256,
+            131072,
+            16384,
+            256,
+            131072,
+            16384,
+            256,
+            131072,
+            16384,
+            256,
+            131072,
+            16384,
+            256,
+            131072,
+            16384,
+            256,
+            131072,
+            16384,
+            256,
+            131072,
+            16384,
+            256,
+            131072,
+            16384,
+            256,
+            131072,
+            16384,
+            256,
+            131072,
+            16384,
+            256,
+            131072,
+            16384,
+            256,
+            131072,
+            16384,
+            256,
+            131072,
+            16384,
+            256,
+            4096,
+            4096,
+            4096,
+            4096,
+            4096,
+            4096,
+            4096,
+            4096,
+            4096,
+            4096,
+            4096,
+            4096,
+            4096,
+            4096,
+            4096,
+            4096,
+            4096,
+            4096,
+            4096,
+            4096,
+        ],
     },
 }
 
@@ -167,7 +251,9 @@ def load(epoch: int, device: str, device_id: int, worker, block_ids):
     print_result("load", epoch, device_id, time.perf_counter() - tp, total_size)
 
 
-def print_result(direction: str, epoch: int, device_id: int, cost: float, total_size: int):
+def print_result(
+    direction: str, epoch: int, device_id: int, cost: float, total_size: int
+):
     print(
         f"epoch={epoch:03}, worker={device_id:02}, "
         f"{direction}=[{sum(tensor_size_list)} x {block_number}], "
@@ -280,11 +366,7 @@ if __name__ == "__main__":
             if stop_requested:
                 raise KeyboardInterrupt
             failed = next(
-                (
-                    process
-                    for process in workers
-                    if process.exitcode not in (None, 0)
-                ),
+                (process for process in workers if process.exitcode not in (None, 0)),
                 None,
             )
             if failed is not None:
@@ -292,9 +374,7 @@ if __name__ == "__main__":
                     f"worker pid={failed.pid} exited with code {failed.exitcode}"
                 )
             time.sleep(0.1)
-        failed = next(
-            (process for process in workers if process.exitcode != 0), None
-        )
+        failed = next((process for process in workers if process.exitcode != 0), None)
         if failed is not None:
             raise RuntimeError(
                 f"worker pid={failed.pid} exited with code {failed.exitcode}"
