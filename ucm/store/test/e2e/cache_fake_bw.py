@@ -152,7 +152,9 @@ def dump(epoch: int, device: str, device_id: int, worker, block_ids):
     tp = time.perf_counter()
     task = worker.dump(block_ids, shard_indexes, src_tensors)
     worker.wait(task)
-    print_result("dump", epoch, device_id, time.perf_counter() - tp, total_size)
+    cost = time.perf_counter() - tp
+    print_result("dump", epoch, device_id, cost, total_size)
+    return total_size, cost
 
 
 def load(epoch: int, device: str, device_id: int, worker, block_ids):
@@ -164,7 +166,9 @@ def load(epoch: int, device: str, device_id: int, worker, block_ids):
     task = worker.load(block_ids, shard_indexes, dst_tensors)
     worker.wait(task)
     synchronize_device()
-    print_result("load", epoch, device_id, time.perf_counter() - tp, total_size)
+    cost = time.perf_counter() - tp
+    print_result("load", epoch, device_id, cost, total_size)
+    return total_size, cost
 
 
 def print_result(direction: str, epoch: int, device_id: int, cost: float, total_size: int):
@@ -176,9 +180,21 @@ def print_result(direction: str, epoch: int, device_id: int, cost: float, total_
     )
 
 
+def print_average_bandwidth(results):
+    dump_size = sum(result[0] for result in results)
+    dump_cost = sum(result[1] for result in results)
+    load_size = sum(result[2] for result in results)
+    load_cost = sum(result[3] for result in results)
+    if dump_cost > 0:
+        print(f"average dump bandwidth: {dump_size / dump_cost / 1e9:.3f}GB/s")
+    if load_cost > 0:
+        print(f"average load bandwidth: {load_size / load_cost / 1e9:.3f}GB/s")
+
+
 def worker_loop(
     device_id: int,
     barrier: multiprocessing.Barrier,
+    result_queue: multiprocessing.Queue,
     unique_id: str,
     block_id_records,
 ):
@@ -197,22 +213,31 @@ def worker_loop(
         f"share_buffer_enable={share_buffer_enable}"
     )
 
+    dump_size = 0
+    dump_cost = 0.0
+    load_size = 0
+    load_cost = 0.0
     barrier.wait()
     for epoch, block_ids in enumerate(block_id_records):
         if worker_mode == "gqa" or device_id == 0:
-            dump(epoch, device, device_id, worker, block_ids)
+            size, cost = dump(epoch, device, device_id, worker, block_ids)
+            dump_size += size
+            dump_cost += cost
         barrier.wait()
 
     for epoch in range(load_epoch_number):
         record_idx = epoch % len(block_id_records)
-        load(
+        size, cost = load(
             epoch,
             device,
             device_id,
             worker,
             block_id_records[record_idx],
         )
+        load_size += size
+        load_cost += cost
         barrier.wait()
+    result_queue.put((dump_size, dump_cost, load_size, load_cost))
 
 
 def make_block_id_records():
@@ -256,6 +281,7 @@ if __name__ == "__main__":
             "before running the benchmark"
         )
     barrier = multiprocessing.Barrier(worker_number)
+    result_queue = multiprocessing.Queue()
     unique_id = secrets.token_hex(8)
     shared_block_id_records = make_block_id_records()
     workers = []
@@ -269,7 +295,7 @@ if __name__ == "__main__":
             )
             process = multiprocessing.Process(
                 target=worker_loop,
-                args=(device_id, barrier, unique_id, block_id_records),
+                args=(device_id, barrier, result_queue, unique_id, block_id_records),
             )
             workers.append(process)
             process.start()
@@ -299,7 +325,10 @@ if __name__ == "__main__":
             raise RuntimeError(
                 f"worker pid={failed.pid} exited with code {failed.exitcode}"
             )
+        results = [result_queue.get() for _ in workers]
+        print_average_bandwidth(results)
     except KeyboardInterrupt:
         print("benchmark interrupted; cleaning up workers and shared memory")
     finally:
         cleanup_workers(workers, unique_id)
+        result_queue.close()
