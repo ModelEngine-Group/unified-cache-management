@@ -23,6 +23,7 @@
  * */
 #include <chrono>
 #include <gtest/gtest.h>
+#include <limits>
 #include <memory>
 #include "detail/types_helper.h"
 #include "dram/cc/entry.h"
@@ -105,6 +106,15 @@ TEST_F(UCLruEvictionPolicyTest, GetEvictionResultsEmptyWhenEvictRatioIsZero)
     EXPECT_TRUE(policy_.GetEvictionResults(0.0).empty());
 }
 
+TEST_F(UCLruEvictionPolicyTest, GetEvictionResultsEmptyWhenEvictRatioIsInvalid)
+{
+    auto key = KeyFromHex("a1");
+    ASSERT_TRUE(policy_.AddKey(key, MakeEntry(key)).Success());
+
+    EXPECT_TRUE(policy_.GetEvictionResults(-0.1).empty());
+    EXPECT_TRUE(policy_.GetEvictionResults(std::numeric_limits<double>::quiet_NaN()).empty());
+}
+
 TEST_F(UCLruEvictionPolicyTest, GetEvictionResultsEvictsOldestEntryFirst)
 {
     auto k1 = KeyFromHex("a1");
@@ -114,9 +124,39 @@ TEST_F(UCLruEvictionPolicyTest, GetEvictionResultsEvictsOldestEntryFirst)
     ASSERT_TRUE(policy_.AddKey(k2, MakeEntry(k2)).Success());
     ASSERT_TRUE(policy_.AddKey(k3, MakeEntry(k3)).Success());
 
-    auto victims = policy_.GetEvictionResults(0.1);
+    auto victims = policy_.GetEvictionResults(0.34);
     ASSERT_EQ(victims.size(), 1UL);
     EXPECT_EQ(victims[0], k1);
+}
+
+TEST_F(UCLruEvictionPolicyTest, GetEvictionResultsRespectsEvictRatio)
+{
+    auto k1 = KeyFromHex("a1");
+    auto k2 = KeyFromHex("a2");
+    auto k3 = KeyFromHex("a3");
+    auto k4 = KeyFromHex("a4");
+    ASSERT_TRUE(policy_.AddKey(k1, MakeEntry(k1)).Success());
+    ASSERT_TRUE(policy_.AddKey(k2, MakeEntry(k2)).Success());
+    ASSERT_TRUE(policy_.AddKey(k3, MakeEntry(k3)).Success());
+    ASSERT_TRUE(policy_.AddKey(k4, MakeEntry(k4)).Success());
+
+    auto victims = policy_.GetEvictionResults(0.5);
+    ASSERT_EQ(victims.size(), 2UL);
+    EXPECT_EQ(victims[0], k1);
+    EXPECT_EQ(victims[1], k2);
+}
+
+TEST_F(UCLruEvictionPolicyTest, GetEvictionResultsClampsRatioAboveOne)
+{
+    auto k1 = KeyFromHex("a1");
+    auto k2 = KeyFromHex("a2");
+    ASSERT_TRUE(policy_.AddKey(k1, MakeEntry(k1)).Success());
+    ASSERT_TRUE(policy_.AddKey(k2, MakeEntry(k2)).Success());
+
+    auto victims = policy_.GetEvictionResults(1.5);
+    ASSERT_EQ(victims.size(), 2UL);
+    EXPECT_EQ(victims[0], k1);
+    EXPECT_EQ(victims[1], k2);
 }
 
 TEST_F(UCLruEvictionPolicyTest, AccessKeyMovesEntryToRecent)
@@ -129,9 +169,36 @@ TEST_F(UCLruEvictionPolicyTest, AccessKeyMovesEntryToRecent)
     ASSERT_TRUE(policy_.AddKey(k3, MakeEntry(k3)).Success());
     ASSERT_TRUE(policy_.AccessKey(k1).Success());
 
-    auto victims = policy_.GetEvictionResults(0.1);
+    auto victims = policy_.GetEvictionResults(0.34);
     ASSERT_EQ(victims.size(), 1UL);
     EXPECT_EQ(victims[0], k2);
+}
+
+TEST_F(UCLruEvictionPolicyTest, DeleteKeyPreservesLruOrder)
+{
+    auto k1 = KeyFromHex("a1");
+    auto k2 = KeyFromHex("a2");
+    auto k3 = KeyFromHex("a3");
+    ASSERT_TRUE(policy_.AddKey(k1, MakeEntry(k1)).Success());
+    ASSERT_TRUE(policy_.AddKey(k2, MakeEntry(k2)).Success());
+    ASSERT_TRUE(policy_.AddKey(k3, MakeEntry(k3)).Success());
+    ASSERT_TRUE(policy_.DeleteKey(k2).Success());
+
+    auto victims = policy_.GetEvictionResults(0.5);
+    ASSERT_EQ(victims.size(), 1UL);
+    EXPECT_EQ(victims[0], k1);
+}
+
+TEST_F(UCLruEvictionPolicyTest, DeleteKeyAllowsReinsert)
+{
+    auto key = KeyFromHex("a1");
+    ASSERT_TRUE(policy_.AddKey(key, MakeEntry(key)).Success());
+    ASSERT_TRUE(policy_.DeleteKey(key).Success());
+    ASSERT_TRUE(policy_.AddKey(key, MakeEntry(key)).Success());
+
+    auto victims = policy_.GetEvictionResults(1.0);
+    ASSERT_EQ(victims.size(), 1UL);
+    EXPECT_EQ(victims[0], key);
 }
 
 TEST_F(UCLruEvictionPolicyTest, GetEvictionResultsSkipsNonReadyAndContinues)
@@ -150,8 +217,8 @@ TEST_F(UCLruEvictionPolicyTest, GetEvictionResultsSkipsNonZeroRefCnt)
 {
     auto kInUse = KeyFromHex("a1");
     auto kReady = KeyFromHex("a2");
-    ASSERT_TRUE(policy_.AddKey(kInUse, MakeEntry(kInUse, EntryStatus::READY, /*refCnt=*/1))
-                    .Success());
+    ASSERT_TRUE(
+        policy_.AddKey(kInUse, MakeEntry(kInUse, EntryStatus::READY, /*refCnt=*/1)).Success());
     ASSERT_TRUE(policy_.AddKey(kReady, MakeEntry(kReady)).Success());
 
     auto victims = policy_.GetEvictionResults(1.0);
@@ -163,13 +230,27 @@ TEST_F(UCLruEvictionPolicyTest, GetEvictionResultsSkipsLeasedEntry)
 {
     auto kLeased = KeyFromHex("a1");
     auto kReady = KeyFromHex("a2");
-    ASSERT_TRUE(policy_.AddKey(kLeased, MakeEntry(kLeased, EntryStatus::READY, 0, future_))
-                    .Success());
+    ASSERT_TRUE(
+        policy_.AddKey(kLeased, MakeEntry(kLeased, EntryStatus::READY, 0, future_)).Success());
     ASSERT_TRUE(policy_.AddKey(kReady, MakeEntry(kReady)).Success());
 
     auto victims = policy_.GetEvictionResults(1.0);
     ASSERT_EQ(victims.size(), 1UL);
     EXPECT_EQ(victims[0], kReady);
+}
+
+TEST_F(UCLruEvictionPolicyTest, GetEvictionResultsEmptyWhenAllEntriesIneligible)
+{
+    auto kDeleting = KeyFromHex("a1");
+    auto kInUse = KeyFromHex("a2");
+    auto kLeased = KeyFromHex("a3");
+    ASSERT_TRUE(policy_.AddKey(kDeleting, MakeEntry(kDeleting, EntryStatus::DELETING)).Success());
+    ASSERT_TRUE(
+        policy_.AddKey(kInUse, MakeEntry(kInUse, EntryStatus::READY, /*refCnt=*/1)).Success());
+    ASSERT_TRUE(
+        policy_.AddKey(kLeased, MakeEntry(kLeased, EntryStatus::READY, 0, future_)).Success());
+
+    EXPECT_TRUE(policy_.GetEvictionResults(1.0).empty());
 }
 
 TEST_F(UCLruEvictionPolicyTest, GetEvictionResultsMarksVictimsAsDeleting)

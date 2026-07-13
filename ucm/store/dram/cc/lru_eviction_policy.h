@@ -79,11 +79,11 @@ public:
     std::vector<BlockId> GetEvictionResults(double evictRatio) override
     {
         std::vector<BlockId> victims;
-        if (evictRatio <= 0.0 || index_.empty()) { return victims; }
+        if (!std::isfinite(evictRatio) || evictRatio <= 0.0 || index_.empty()) { return victims; }
 
-        evictRatio = std::min(evictRatio, 1.0);
-        const auto target = static_cast<std::size_t>(
-            std::ceil(static_cast<double>(index_.size()) * evictRatio));
+        const double boundedRatio = std::min(evictRatio, 1.0);
+        const auto target =
+            static_cast<std::size_t>(static_cast<double>(index_.size()) * boundedRatio);
         const auto now = std::chrono::system_clock::now();
 
         for (auto it = lruList_.rbegin(); it != lruList_.rend() && victims.size() < target; ++it) {
