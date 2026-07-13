@@ -38,8 +38,6 @@ struct Config {
     std::unordered_map<std::string, std::string> clientAttrs;
 };
 
-std::uint32_t ResolveKvNsId(const Config& config);
-
 class AsuBackend {
 public:
     virtual ~AsuBackend() = default;

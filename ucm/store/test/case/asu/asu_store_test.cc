@@ -38,6 +38,13 @@
 
 namespace {
 
+struct CacheKeyHasher {
+    std::size_t operator()(const UC::ASU::CacheKey& key) const
+    {
+        return std::hash<std::string_view>{}(UC::ASU::CacheKeyView(key));
+    }
+};
+
 struct FakeAsuBackendState {
     std::vector<UC::ASU::QueryMode> queryModes;
     std::vector<UC::AsuStore::Config> initConfigs;
@@ -164,7 +171,7 @@ private:
     std::shared_ptr<FakeAsuBackendState> state_;
     bool initialized_{false};
     UC::ASU::TaskId nextTaskId_{1};
-    std::unordered_set<UC::ASU::CacheKey> storedKeys_;
+    std::unordered_set<UC::ASU::CacheKey, CacheKeyHasher> storedKeys_;
     std::unordered_map<UC::ASU::TaskId, UC::ASU::TaskResult> taskResults_;
 };
 

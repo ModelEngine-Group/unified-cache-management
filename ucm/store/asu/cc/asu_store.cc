@@ -40,12 +40,13 @@
 #include "ucmstore_v1.h"
 
 namespace UC::AsuStore {
+
+enum class TensorLayout { MLA, GQA, HMA };
+
 namespace {
 
 using AsuStatus = UC::ASU::Status;
 using AsuStatusCode = UC::ASU::StatusCode;
-
-enum class TensorLayout { MLA, GQA, HMA };
 
 TensorLayout ParseTensorLayout(const std::string& layout)
 {
@@ -185,8 +186,8 @@ UC::ASU::TransportConfig BuildTransportConfig(const Config& config, std::size_t 
     transportConfig.providerType = config.transProviderType;
 
     // Set for all backends including fake
-    auto index = config.uniqueId.find("_fawa_wa") == std::string::npos ? 0 : 1;
-    transportConfig.attrs["kv_ns_id"] = std::to_string(config.kvNsIds[index]);
+    const auto kvNsIndex = config.uniqueId.find("_fawa_wa") == std::string::npos ? 0 : 1;
+    transportConfig.attrs["kv_ns_id"] = std::to_string(config.kvNsIds[kvNsIndex]);
 
     if (!config.asuIps.empty()) {
         UC::ASU::AsuEndpoint endpoint;
@@ -369,6 +370,7 @@ public:
         auto status = CheckConfig(config);
         if (status.Failure()) { return status; }
 
+        tensorLayout_ = ParseTensorLayout(config.tensorLayout);
         config_ = std::move(config);
         backend_ = CreateBackend(config_);
 
@@ -767,7 +769,7 @@ private:
         UC_INFO("Set AsuStore::ClientId to {}.", config.clientId);
         UC_INFO("Set AsuStore::AsuIds to {}.", config.asuIds);
         UC_INFO("Set AsuStore::AsuIps to {}.", config.asuIps);
-        UC_INFO("Set AsuStore::KvNsId to {}.", ResolveKvNsId(config));
+        UC_INFO("Set AsuStore::KvNsIds to {}.", config.kvNsIds);
         UC_INFO("Set AsuStore::ShardSize to {}.", config.shardSize);
         UC_INFO("Set AsuStore::BlockSize to {}.", config.blockSize);
         UC_INFO("Set AsuStore::TensorSizes to {}.", config.tensorSizes);
