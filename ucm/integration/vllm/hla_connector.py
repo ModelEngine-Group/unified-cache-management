@@ -1178,12 +1178,84 @@ class UCMHybridLinearAttentionConnector(UCMDirectConnector, SupportsHMA):
         for request_id in scheduler_output.finished_req_ids:
             self.requests_meta.pop(request_id, None)
 
-        self._track_async_dump_requests(requests_dispatch_meta)
-
         return UCMConnectorMetadata(
             requests_dispatch_meta,
             scheduler_output.preempted_req_ids or set(),
         )
+
+    def wait_for_save(self) -> None:
+        if self.is_mla and self.tp_rank % self.tp_size != 0:
+            return
+
+        metadata = self._get_connector_metadata()
+        assert isinstance(metadata, UCMConnectorMetadata)
+
+        total_ucm_block_ids: list[bytes] = []
+        total_vllm_block_ids: list[int] = []
+        num_saved_block = 0
+        num_saved_request = 0
+        for request_id, request in metadata.request_meta.items():
+            if len(request.dump_block_ids[0]) == 0:
+                continue
+
+            ucm_block_ids, vllm_block_ids = request.dump_block_ids
+            if self._skip_null_vllm_blocks:
+                ucm_block_ids, vllm_block_ids = _drop_null_vllm_blocks(
+                    ucm_block_ids,
+                    vllm_block_ids,
+                    f"UCM dump request {request_id}",
+                )
+                if len(ucm_block_ids) == 0:
+                    continue
+            num_saved_block += len(ucm_block_ids)
+            num_saved_request += 1
+            if self.tp_rank % self.tp_size != 0:
+                ucm_block_ids = [self.request_hasher(b) for b in ucm_block_ids]
+            total_ucm_block_ids.extend(ucm_block_ids)
+            total_vllm_block_ids.extend(vllm_block_ids)
+
+        if not total_ucm_block_ids:
+            return
+
+        event_handle = 0
+        try:
+            total_ptrs = self.kv_cache_layout.extract_block_addrs(total_vllm_block_ids)
+            total_ptrs = total_ptrs.reshape(total_ptrs.shape[0], -1)
+            shard_indexs = [0] * len(total_ucm_block_ids)
+            event_handle = self._get_dump_event_handle()
+            save_start_time = time.perf_counter() * 1000
+            task = self.store.dump_data(
+                total_ucm_block_ids, shard_indexs, total_ptrs, event_handle
+            )
+        except Exception as e:
+            logger.error(f"dump kv cache failed. {type(e).__name__}: {e}")
+            return
+
+        try:
+            self.store.wait(task)
+            save_end_time = time.perf_counter() * 1000
+        except Exception as e:
+            logger.error(f"wait for dump kv cache failed. {type(e).__name__}: {e}")
+            return
+
+        save_bytes = num_saved_block * self.block_data_size
+        save_speed = save_bytes / max(save_end_time - save_start_time, 1) / 1024 / 1024
+        ucmmetrics.update_stats(
+            {
+                "save_requests_num": num_saved_request,
+                "save_blocks_num": num_saved_block,
+                "save_duration": save_end_time - save_start_time,
+                "save_speed": save_speed,
+                "save_bytes_total": save_bytes,
+            }
+        )
+
+    def request_finished_all_groups(
+        self,
+        request: "Request",
+        block_ids: tuple[list[int], ...],
+    ) -> tuple[bool, dict[str, object] | None]:
+        return False, None
 
 
 class UCMHybridLinearAttentionLayerWiseConnector(UCMHybridLinearAttentionConnector):
@@ -1220,6 +1292,8 @@ class UCMHybridLinearAttentionLayerWiseConnector(UCMHybridLinearAttentionConnect
             self._load_prefetch_rows = 2
         self.is_save = False
         self.need_load = False
+        self._layerwise_batch_start: Optional[float] = None
+        self._layerwise_prev_wait_end: Optional[float] = None
         logger.info(
             "Init UCMHybridLinearAttentionLayerWiseConnector "
             f"with prefetch_rows={self._load_prefetch_rows}."
@@ -1360,6 +1434,8 @@ class UCMHybridLinearAttentionLayerWiseConnector(UCMHybridLinearAttentionConnect
             self._submit_request_load_tasks_for_row_once(self.row_ids[idx], metadata)
 
     def start_load_kv(self, forward_context: "ForwardContext", **kwargs) -> None:
+        self._layerwise_batch_start = time.perf_counter()
+        self._layerwise_prev_wait_end = None
         metadata = self._get_connector_metadata()
         assert isinstance(metadata, UCMConnectorMetadata)
         self.load_tasks.clear()
@@ -1399,7 +1475,11 @@ class UCMHybridLinearAttentionLayerWiseConnector(UCMHybridLinearAttentionConnect
             return
 
         self._submit_request_load_tasks_for_row_once(row_id, metadata)
+
+        wait_start = time.perf_counter()
+
         row_tasks = self.load_tasks.pop(row_id, [])
+        n_tasks = len(row_tasks)
         for task, request_ids in row_tasks:
             try:
                 self.store.wait(task)
@@ -1410,14 +1490,33 @@ class UCMHybridLinearAttentionLayerWiseConnector(UCMHybridLinearAttentionConnect
                 )
                 self._mark_load_failed(metadata, request_ids)
 
+        wait_end = time.perf_counter()
+
         try:
-            next_row_idx = self.row_ids.index(row_id) + self._load_prefetch_rows
-        except (ValueError, IndexError):
-            return
-        if next_row_idx < len(self.row_ids):
+            current_row_idx = self.row_ids.index(row_id)
+        except ValueError:
+            current_row_idx = -1
+        next_row_idx = current_row_idx + self._load_prefetch_rows
+        has_next = 0 <= next_row_idx < len(self.row_ids)
+        if has_next:
             self._submit_request_load_tasks_for_row_once(
                 self.row_ids[next_row_idx], metadata
             )
+
+        blocking_ms = (wait_end - wait_start) * 1000
+        stats: dict[str, float] = {
+            "layerwise_wait_blocking_ms": blocking_ms,
+            "layerwise_wait_tasks_count": float(n_tasks),
+        }
+        if self._layerwise_prev_wait_end is not None:
+            stats["layerwise_inter_wait_interval_ms"] = (
+                wait_start - self._layerwise_prev_wait_end
+            ) * 1000
+        if has_next:
+            submit_end = time.perf_counter()
+            stats["layerwise_next_layer_submit_ms"] = (submit_end - wait_end) * 1000
+        ucmmetrics.update_stats(stats)
+        self._layerwise_prev_wait_end = wait_end
 
     def save_kv_layer(
         self,
@@ -1499,33 +1598,32 @@ class UCMHybridLinearAttentionLayerWiseConnector(UCMHybridLinearAttentionConnect
             total_vllm_block_ids.extend(vllm_block_ids)
         return total_ucm_block_ids, total_vllm_block_ids, dump_request_ids
 
-    def _wait_dump_tasks_for_row(self, row_id: int) -> None:
-        row_tasks = self.dump_tasks.pop(row_id, [])
-        for pending_dump_task in row_tasks:
-            self._wait_pending_dump_task(pending_dump_task)
-
     def wait_for_save(self) -> None:
         if not self.is_save:
+            total_end = time.perf_counter()
+            if self._layerwise_batch_start is not None:
+                batch_total_ms = (total_end - self._layerwise_batch_start) * 1000
+                ucmmetrics.update_stats({"layerwise_batch_total_ms": batch_total_ms})
+                self._layerwise_batch_start = None
             return
 
-        wait_for_save_start_ms = time.perf_counter() * 1000
-        for pending_dump_task in self._pending_dump_tasks:
-            if pending_dump_task.wait_for_save_start_ms <= 0:
-                pending_dump_task.wait_for_save_start_ms = wait_for_save_start_ms
-        self._poll_pending_dump_tasks()
-
-        for row_id in self.row_ids:
-            for pending_dump_task in self.dump_tasks.pop(row_id, []):
-                self._pending_dump_tasks.append(pending_dump_task)
-
-        if self._connector_metadata:
-            metadata = self._get_connector_metadata()
-            assert isinstance(metadata, UCMConnectorMetadata)
-            self._async_dump_req_ids.update(
-                request_id
-                for request_id, request in metadata.request_meta.items()
-                if len(request.dump_block_ids[0]) > 0
-            )
+        total_start = time.perf_counter()
+        try:
+            for row_id in self.row_ids:
+                for pending_dump_task in self.dump_tasks.pop(row_id, []):
+                    self.store.wait(pending_dump_task.task)
+        except Exception as e:
+            logger.error(f"wait for dump kv cache failed. {type(e).__name__}: {e}")
+        total_end = time.perf_counter()
+        stats: dict[str, float] = {
+            "layerwise_save_tail_total_ms": (total_end - total_start) * 1000,
+        }
+        if self._layerwise_batch_start is not None:
+            stats["layerwise_batch_total_ms"] = (
+                total_end - self._layerwise_batch_start
+            ) * 1000
+            self._layerwise_batch_start = None
+        ucmmetrics.update_stats(stats)
 
         self.dump_tasks.clear()
         self._dump_transfer_data = None
