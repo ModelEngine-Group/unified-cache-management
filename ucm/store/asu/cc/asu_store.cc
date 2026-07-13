@@ -40,10 +40,20 @@
 #include "ucmstore_v1.h"
 
 namespace UC::AsuStore {
+
+enum class TensorLayout { MLA, GQA, HMA };
+
 namespace {
 
 using AsuStatus = UC::ASU::Status;
 using AsuStatusCode = UC::ASU::StatusCode;
+
+TensorLayout ParseTensorLayout(const std::string& layout)
+{
+    if (layout == "gqa") { return TensorLayout::GQA; }
+    if (layout == "hma") { return TensorLayout::HMA; }
+    return TensorLayout::MLA;
+}
 
 std::size_t AlignUp(std::size_t value, std::size_t alignment)
 {
@@ -174,6 +184,11 @@ UC::ASU::TransportConfig BuildTransportConfig(const Config& config, std::size_t 
     transportConfig.maxInflightTasks = static_cast<std::uint32_t>(config.maxInflightTasks);
     transportConfig.maxInflightBytes = config.maxInflightBytes;
     transportConfig.providerType = config.transProviderType;
+
+    // Set for all backends including fake
+    const auto kvNsIndex = config.uniqueId.find("_fawa_wa") == std::string::npos ? 0 : 1;
+    transportConfig.attrs["kv_ns_id"] = std::to_string(config.kvNsIds[kvNsIndex]);
+
     if (!config.asuIps.empty()) {
         UC::ASU::AsuEndpoint endpoint;
         endpoint.ip = config.asuIps[index];
@@ -185,7 +200,6 @@ UC::ASU::TransportConfig BuildTransportConfig(const Config& config, std::size_t 
         const auto fakeDeviceId = config.deviceId >= 0 ? config.deviceId : 0;
         transportConfig.attrs.try_emplace("kernel_count", "1");
         transportConfig.attrs.try_emplace("quiet_count", "1");
-        transportConfig.attrs["kv_ns_id"] = std::to_string(transportConfig.asuId);
         transportConfig.attrs.try_emplace("dtype", "0");
         transportConfig.attrs.try_emplace("dspec", "0");
         transportConfig.attrs.try_emplace("lr", "false");
@@ -356,6 +370,7 @@ public:
         auto status = CheckConfig(config);
         if (status.Failure()) { return status; }
 
+        tensorLayout_ = ParseTensorLayout(config.tensorLayout);
         config_ = std::move(config);
         backend_ = CreateBackend(config_);
 
@@ -462,10 +477,12 @@ private:
         inConfig.Get("asu_mode", config.mode);
         inConfig.Get("asu_config_path", config.configPath);
         inConfig.Get("asu_client_id", config.clientId);
+        inConfig.Get("unique_id", config.uniqueId);
         inConfig.Get("asu_view_service_addrs", config.viewServiceAddrs);
         inConfig.GetNumbers("asu_ids", config.asuIds);
         inConfig.Get("asu_ips", config.asuIps);
         inConfig.Get("asu_name_prefix", config.asuNamePrefix);
+        inConfig.GetNumbers("kv_ns_ids", config.kvNsIds);
         ssize_t asuPort = 0;
         inConfig.GetNumber("asu_port", asuPort);
         config.asuPort = static_cast<std::uint16_t>(std::max<ssize_t>(0, asuPort));
@@ -549,6 +566,9 @@ private:
         if (!config.asuIps.empty() && config.asuIps.size() != config.asuIds.size()) {
             return Status::InvalidParam("asu_ips size must match asu_ids size");
         }
+        if (config.uniqueId.find("_fawa_") != std::string::npos && config.kvNsIds.size() != 2) {
+            return Status::InvalidParam("FAWA requires exactly two kv_ns_ids");
+        }
         if (config.transProviderType == UC::ASU::TransProviderType::UNSUPPORTED) {
             return Status::Unsupported();
         }
@@ -558,7 +578,7 @@ private:
                 "asu_trans_provider_backend=fake does not support asu_config_path");
         }
         if (!config.tensorLayout.empty() && config.tensorLayout != "mla" &&
-            config.tensorLayout != "gqa") {
+            config.tensorLayout != "gqa" && config.tensorLayout != "hma") {
             return Status::InvalidParam("invalid asu_tensor_layout({})", config.tensorLayout);
         }
         if (config.tensorSizes.empty()) { return Status::InvalidParam("invalid tensor size"); }
@@ -639,10 +659,25 @@ private:
         return offsets;
     }
 
+    std::vector<std::size_t> BuildHmaTensorOffsets(std::size_t shardIndex) const
+    {
+        std::vector<std::size_t> offsets(config_.tensorSizes.size());
+        auto offset = shardIndex * config_.shardSize;
+        for (std::size_t index = 0; index < config_.tensorSizes.size(); ++index) {
+            offsets[index] = offset;
+            offset += config_.tensorSizes[index];
+        }
+        return offsets;
+    }
+
     std::vector<std::size_t> BuildTensorOffsets(std::size_t shardIndex) const
     {
-        if (config_.tensorLayout == "gqa") { return BuildGqaTensorOffsets(shardIndex); }
-        return BuildMlaTensorOffsets(shardIndex);
+        switch (tensorLayout_) {
+            case TensorLayout::MLA: return BuildMlaTensorOffsets(shardIndex);
+            case TensorLayout::GQA: return BuildGqaTensorOffsets(shardIndex);
+            case TensorLayout::HMA: return BuildHmaTensorOffsets(shardIndex);
+        }
+        throw std::logic_error("unhandled ASU tensor layout");
     }
 
     Expected<std::vector<uint8_t>> QueryBlocks(const Detail::BlockId* blocks, std::size_t num,
@@ -732,6 +767,7 @@ private:
         UC_INFO("Set AsuStore::ClientId to {}.", config.clientId);
         UC_INFO("Set AsuStore::AsuIds to {}.", config.asuIds);
         UC_INFO("Set AsuStore::AsuIps to {}.", config.asuIps);
+        UC_INFO("Set AsuStore::KvNsIds to {}.", config.kvNsIds);
         UC_INFO("Set AsuStore::ShardSize to {}.", config.shardSize);
         UC_INFO("Set AsuStore::BlockSize to {}.", config.blockSize);
         UC_INFO("Set AsuStore::TensorSizes to {}.", config.tensorSizes);
@@ -743,6 +779,7 @@ private:
     }
 
     Config config_;
+    TensorLayout tensorLayout_{TensorLayout::MLA};
     std::unique_ptr<AsuBackend> backend_;
 #ifdef ASU_BUILD_TESTS
     BackendFactory backendFactory_;

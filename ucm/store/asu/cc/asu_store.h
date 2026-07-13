@@ -13,10 +13,12 @@ struct Config {
     std::string mode{"client"};
     std::string configPath;
     std::string clientId{"ucm-asu-store"};
+    std::string uniqueId;
     std::vector<std::string> viewServiceAddrs;
     std::vector<ssize_t> asuIds;
     std::vector<std::string> asuIps;
     std::string asuNamePrefix{"asu"};
+    std::vector<std::uint32_t> kvNsIds;
     std::uint16_t asuPort{0};
     std::uint64_t defaultWaitTimeoutMs{100};
     std::uint64_t queryTimeoutMs{5};
