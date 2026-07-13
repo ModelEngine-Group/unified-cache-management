@@ -191,6 +191,7 @@ UC::Detail::Dictionary MakeBaseConfig()
     config.SetNumber("asu_load_timeout_ms", std::uint64_t{1000});
     config.SetNumber("asu_store_timeout_ms", std::uint64_t{1000});
     config.SetNumber("asu_max_inflight_tasks", std::uint64_t{16});
+    config.Set("kv_ns_ids", std::vector<ssize_t>{100});
     return config;
 }
 
@@ -238,6 +239,53 @@ TEST(UCAsuStoreTest, TransportModeRejectsMultipleAsus)
 
     auto status = store.Setup(config);
     ASSERT_TRUE(status.Failure());
+}
+
+TEST(UCAsuStoreTest, ParsesKvNamespaces)
+{
+    {
+        UC::AsuStore::AsuStore store;
+        auto state = UseFakeBackend(store);
+        auto config = MakeBaseConfig();
+        config.Set("asu_ids", std::vector<ssize_t>{1001});
+        ASSERT_TRUE(store.Setup(config).Success());
+        ASSERT_FALSE(state->initConfigs.empty());
+        EXPECT_EQ(state->initConfigs.back().kvNsIds, std::vector<std::uint32_t>{100U});
+        auto transportConfig = UC::AsuStore::BuildTransportConfig(state->initConfigs.back(), 0);
+        EXPECT_EQ(transportConfig.attrs.at("kv_ns_id"), "100");
+    }
+
+    const std::vector<std::pair<std::string, std::uint32_t>> cases{
+        {"fa", 100U}, {"wa", 101U}};
+    for (const auto& [suffix, expected] : cases) {
+        UC::AsuStore::AsuStore store;
+        auto state = UseFakeBackend(store);
+        auto config = MakeBaseConfig();
+        config.Set("asu_ids", std::vector<ssize_t>{1001});
+        config.Set("unique_id", std::string{"engine_fawa_"} + suffix);
+        config.Set("kv_ns_ids", std::vector<ssize_t>{100, 101});
+        ASSERT_TRUE(store.Setup(config).Success());
+        ASSERT_FALSE(state->initConfigs.empty());
+        EXPECT_EQ(state->initConfigs.back().kvNsIds,
+                  (std::vector<std::uint32_t>{100U, 101U}));
+        auto transportConfig = UC::AsuStore::BuildTransportConfig(state->initConfigs.back(), 0);
+        EXPECT_EQ(transportConfig.attrs.at("kv_ns_id"), std::to_string(expected));
+    }
+}
+
+TEST(UCAsuStoreTest, PropagatesKvNamespaceToEveryTransport)
+{
+    UC::AsuStore::Config config;
+    config.asuIds = {1001, 1002};
+    config.kvNsIds = {100};
+    config.transProviderType = UC::ASU::TransProviderType::FAKE;
+
+    for (std::size_t index = 0; index < config.asuIds.size(); ++index) {
+        auto transportConfig = UC::AsuStore::BuildTransportConfig(config, index);
+        auto iter = transportConfig.attrs.find("kv_ns_id");
+        ASSERT_NE(iter, transportConfig.attrs.end());
+        EXPECT_EQ(iter->second, "100");
+    }
 }
 
 TEST(UCAsuStoreTest, TransportModeSmoke)
@@ -402,6 +450,43 @@ TEST(UCAsuStoreTest, UsesNonLayerwiseMlaTensorOffsets)
     EXPECT_EQ(state->lastStoreEntries[1].offset, std::uint32_t{512});
     EXPECT_EQ(state->lastStoreEntries[2].buffer.region.size, std::size_t{512});
     EXPECT_EQ(state->lastStoreEntries[2].offset, std::uint32_t{1024});
+}
+
+TEST(UCAsuStoreTest, UsesHmaTensorOffsetsInConnectorOrder)
+{
+    UC::AsuStore::AsuStore store;
+    auto state = UseFakeBackend(store);
+    auto config = MakeBaseConfig();
+    config.Set("asu_mode", std::string{"transport"});
+    config.Set("asu_ips", std::vector<std::string>{"127.0.0.1"});
+    config.Set("asu_ids", std::vector<ssize_t>{1001});
+    config.Set("asu_tensor_layout", std::string{"hma"});
+    config.SetNumber("tensor_size", std::size_t{0});
+    config.Set("tensor_size_list", std::vector<ssize_t>{100, 200, 300});
+    config.SetNumber("shard_size", std::size_t{600});
+    config.SetNumber("block_size", std::size_t{600});
+
+    auto status = store.Setup(config);
+    ASSERT_TRUE(status.Success()) << status.ToString();
+
+    std::array<std::array<std::byte, 512>, 3> buffers{};
+    auto block = UC::Test::Detail::TypesHelper::MakeBlockId("f1b2c3d4e5f6789012345678901234ab");
+    UC::Detail::TaskDesc task;
+    task.brief = "asu-store-test";
+    task.push_back(UC::Detail::Shard{
+        block, 0, {buffers[0].data(), buffers[1].data(), buffers[2].data()}
+    });
+
+    auto dump = store.Dump(task);
+    ASSERT_TRUE(dump.HasValue()) << dump.Error().ToString();
+    ASSERT_EQ(state->lastStoreEntries.size(), 3);
+    const std::array<std::uint32_t, 3> expectedOffsets{0, 512, 1024};
+    for (std::size_t index = 0; index < expectedOffsets.size(); ++index) {
+        EXPECT_EQ(state->lastStoreEntries[index].buffer.region.addr,
+                  reinterpret_cast<std::uint64_t>(buffers[index].data()));
+        EXPECT_EQ(state->lastStoreEntries[index].buffer.region.size, std::size_t{512});
+        EXPECT_EQ(state->lastStoreEntries[index].offset, expectedOffsets[index]);
+    }
 }
 
 TEST(UCAsuStoreTest, UsesLayerwiseMlaTensorOffsets)
