@@ -11,6 +11,7 @@ namespace UC::AsuStore {
 
 struct Config {
     std::string mode{"client"};
+    std::string role;
     std::string configPath;
     std::string clientId{"ucm-asu-store"};
     std::string uniqueId;

@@ -879,6 +879,9 @@ class UCMFAWAConnector(UCMDirectConnector):
         cpu_affinity_cores: Optional[list[int]] = None,
     ) -> UcmKVStoreBaseV1:
         name, module_path, config = self._base_store_config(store_suffix)
+        config["role"] = (
+            "worker" if self._role == KVConnectorRole.WORKER else "scheduler"
+        )
         if self._role == KVConnectorRole.WORKER:
             if tensor_size_list is None:
                 raise RuntimeError(f"Worker FAWA {label} store needs tensor sizes.")

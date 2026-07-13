@@ -475,6 +475,7 @@ private:
     {
         Config config;
         inConfig.Get("asu_mode", config.mode);
+        inConfig.Get("role", config.role);
         inConfig.Get("asu_config_path", config.configPath);
         inConfig.Get("asu_client_id", config.clientId);
         inConfig.Get("unique_id", config.uniqueId);
@@ -532,7 +533,8 @@ private:
 
     void NormalizeAsuShardConfig(Config& config)
     {
-        if (config.tensorSizes.empty() || config.shardSize == 0 || config.blockSize == 0) {
+        if (config.role == "scheduler" || config.tensorSizes.empty() ||
+            config.shardSize == 0 || config.blockSize == 0) {
             return;
         }
         if (config.blockSize % config.shardSize != 0) { return; }
@@ -581,10 +583,15 @@ private:
             config.tensorLayout != "gqa" && config.tensorLayout != "hma") {
             return Status::InvalidParam("invalid tensor_layout({})", config.tensorLayout);
         }
+        if (!config.role.empty() && config.role != "scheduler" &&
+            config.role != "worker") {
+            return Status::InvalidParam("invalid role({})", config.role);
+        }
 
-        // Use tensorSizes size to determine whether SCHEDULER or WORKER
-        if (config.tensorSizes.empty()) { return Status::OK(); }
+        // Scheduler config check done
+        if (config.role == "scheduler") { return Status::OK(); }
 
+        if (config.tensorSizes.empty()) { return Status::InvalidParam("invalid tensor size"); }
         if (config.tensorLayout == "gqa" &&
             (config.tensorSizes.size() < 2 || config.tensorSizes.size() % 2 != 0)) {
             return Status::InvalidParam("invalid tensor size count({})", config.tensorSizes.size());
@@ -766,6 +773,7 @@ private:
     {
         UC_INFO("AsuStore.");
         UC_INFO("Set AsuStore::Mode to {}.", config.mode);
+        UC_INFO("Set AsuStore::Role to {}.", config.role);
         UC_INFO("Set AsuStore::ConfigPath to {}.", config.configPath);
         UC_INFO("Set AsuStore::ClientId to {}.", config.clientId);
         UC_INFO("Set AsuStore::AsuIds to {}.", config.asuIds);

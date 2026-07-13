@@ -338,6 +338,9 @@ class UCMDirectConnector(KVConnectorBase_V1):
             config["storage_backends"] = backends
         config["unique_id"] = f"{self.engine_id}"
         config["tensor_layout"] = "mla" if self.is_mla else "gqa"
+        config["role"] = (
+            "worker" if self._role == KVConnectorRole.WORKER else "scheduler"
+        )
         if self._role == KVConnectorRole.WORKER:
             config["device_id"] = self.local_rank
             config["tensor_size_list"] = (

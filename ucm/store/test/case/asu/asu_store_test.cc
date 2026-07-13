@@ -341,6 +341,37 @@ TEST(UCAsuStoreTest, AllowsQueryOnlyConfigWithoutTensorSizes)
     ExpectLookupMiss(store, block);
 }
 
+TEST(UCAsuStoreTest, SchedulerRoleSkipsTransferLayoutValidation)
+{
+    UC::AsuStore::AsuStore store;
+    auto state = UseFakeBackend(store);
+    auto config = MakeBaseConfig();
+    config.Set("role", std::string{"scheduler"});
+    config.Set("asu_ids", std::vector<ssize_t>{1001});
+    config.Set("tensor_layout", std::string{"gqa"});
+    config.SetNumber("tensor_size", std::size_t{0});
+    config.Set("tensor_size_list", std::vector<ssize_t>{16});
+
+    auto status = store.Setup(config);
+    ASSERT_TRUE(status.Success()) << status.ToString();
+    ASSERT_FALSE(state->initConfigs.empty());
+    EXPECT_EQ(state->initConfigs.back().role, "scheduler");
+    ASSERT_EQ(state->initConfigs.back().tensorSizes.size(), std::size_t{1});
+    EXPECT_EQ(state->initConfigs.back().tensorSizes[0], std::size_t{16});
+}
+
+TEST(UCAsuStoreTest, WorkerRoleRequiresTensorSizes)
+{
+    UC::AsuStore::AsuStore store;
+    auto config = MakeBaseConfig();
+    config.Set("role", std::string{"worker"});
+    config.Set("asu_ids", std::vector<ssize_t>{1001});
+    config.SetNumber("tensor_size", std::size_t{0});
+
+    auto status = store.Setup(config);
+    ASSERT_TRUE(status.Failure());
+}
+
 TEST(UCAsuStoreTest, LookupOnPrefixUsesPrefixQueryMode)
 {
     UC::AsuStore::AsuStore store;
