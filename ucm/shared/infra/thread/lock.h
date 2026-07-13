@@ -1,7 +1,7 @@
 /**
  * MIT License
  *
- * Copyright (c) 2025 Huawei Technologies Co., Ltd. All rights reserved.
+ * Copyright (c) 2026 Huawei Technologies Co., Ltd. All rights reserved.
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -25,6 +25,7 @@
 #define UNIFIEDCACHE_INFRA_LOCK_H
 
 #include <atomic>
+#include <shared_mutex>
 
 #if defined(__x86_64__)
 #include <immintrin.h>
@@ -65,6 +66,46 @@ public:
 
 private:
     SpinLock& lock_;
+};
+
+class RwLock {
+public:
+    RwLock() = default;
+    RwLock(const RwLock&) = delete;
+    RwLock& operator=(const RwLock&) = delete;
+
+    void LockReadOnly() noexcept { mtx_.lock_shared(); }
+    void UnlockReadOnly() noexcept { mtx_.unlock_shared(); }
+    bool TryLockReadOnly() noexcept { return mtx_.try_lock_shared(); }
+
+    void LockReadWrite() noexcept { mtx_.lock(); }
+    void UnlockReadWrite() noexcept { mtx_.unlock(); }
+    bool TryLockReadWrite() noexcept { return mtx_.try_lock(); }
+
+private:
+    std::shared_mutex mtx_;
+};
+
+class ReadOnlyGuard {
+public:
+    explicit ReadOnlyGuard(RwLock& lock) : lock_(lock) { lock_.LockReadOnly(); }
+    ~ReadOnlyGuard() { lock_.UnlockReadOnly(); }
+    ReadOnlyGuard(const ReadOnlyGuard&) = delete;
+    ReadOnlyGuard& operator=(const ReadOnlyGuard&) = delete;
+
+private:
+    RwLock& lock_;
+};
+
+class ReadWriteGuard {
+public:
+    explicit ReadWriteGuard(RwLock& lock) : lock_(lock) { lock_.LockReadWrite(); }
+    ~ReadWriteGuard() { lock_.UnlockReadWrite(); }
+    ReadWriteGuard(const ReadWriteGuard&) = delete;
+    ReadWriteGuard& operator=(const ReadWriteGuard&) = delete;
+
+private:
+    RwLock& lock_;
 };
 
 }  // namespace UC
