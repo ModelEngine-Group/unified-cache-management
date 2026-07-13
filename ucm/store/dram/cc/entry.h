@@ -33,6 +33,7 @@
 namespace UC::DramStore {
 
 using Spinlock = UC::SpinLock;
+using RwLock = UC::RwLock;
 using BlockId = UC::Detail::BlockId;
 
 enum class EntryStatus {
@@ -62,6 +63,30 @@ struct Entry {
         if (leaseTimeout > now) { return false; }
         status = EntryStatus::DELETING;
         return true;
+    }
+
+    void SetLeaseTimeout(std::chrono::system_clock::time_point timeout)
+    {
+        SpinLockGuard guard(lock);
+        leaseTimeout = timeout;
+    }
+
+    void IncRefCnt()
+    {
+        SpinLockGuard guard(lock);
+        ++refCnt;
+    }
+
+    void DecRefCnt()
+    {
+        SpinLockGuard guard(lock);
+        if (refCnt > 0) { --refCnt; }
+    }
+
+    void SetStatus(EntryStatus newStatus)
+    {
+        SpinLockGuard guard(lock);
+        status = newStatus;
     }
 };
 
