@@ -51,8 +51,8 @@ public:
         if (entry == nullptr) { return Status::InvalidParam(); }
         if (index_.find(key) != index_.end()) { return Status::DuplicateKey(); }
 
-        lruList_.push_front(key);
-        index_.emplace(key, LruNode{std::move(entry), lruList_.begin()});
+        lruList_.push_front(std::move(entry));
+        index_.emplace(key, lruList_.begin());
         return Status::OK();
     }
 
@@ -61,7 +61,7 @@ public:
         auto mapIt = index_.find(key);
         if (mapIt == index_.end()) { return Status::NotFound(); }
 
-        lruList_.erase(mapIt->second.iter);
+        lruList_.erase(mapIt->second);
         index_.erase(mapIt);
         return Status::OK();
     }
@@ -71,8 +71,7 @@ public:
         auto mapIt = index_.find(key);
         if (mapIt == index_.end()) { return Status::NotFound(); }
 
-        lruList_.splice(lruList_.begin(), lruList_, mapIt->second.iter);
-        mapIt->second.iter = lruList_.begin();
+        lruList_.splice(lruList_.begin(), lruList_, mapIt->second);
         return Status::OK();
     }
 
@@ -87,10 +86,9 @@ public:
         const auto now = std::chrono::system_clock::now();
 
         for (auto it = lruList_.rbegin(); it != lruList_.rend() && victims.size() < target; ++it) {
-            auto mapIt = index_.find(*it);
-            if (mapIt == index_.end()) { continue; }
-            if (!mapIt->second.entry->TryMarkEvicting(now)) { continue; }
-            victims.push_back(*it);
+            const auto& entry = *it;
+            if (!entry->TryMarkEvicting(now)) { continue; }
+            victims.push_back(entry->key);
         }
 
         if (!victims.empty()) {
@@ -100,15 +98,11 @@ public:
     }
 
 private:
-    using ListIter = std::list<BlockId>::iterator;
+    using LruList = std::list<EntryPtr>;
+    using ListIter = LruList::iterator;
 
-    struct LruNode {
-        EntryPtr entry;
-        ListIter iter;
-    };
-
-    std::list<BlockId> lruList_;
-    std::unordered_map<BlockId, LruNode, UC::Detail::BlockIdHasher> index_;
+    LruList lruList_;
+    std::unordered_map<BlockId, ListIter, UC::Detail::BlockIdHasher> index_;
 };
 
 }  // namespace UC::DramStore
