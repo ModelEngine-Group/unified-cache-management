@@ -24,10 +24,16 @@
 #ifndef UNIFIEDCACHE_DRAM_STORE_CC_METADATA_H
 #define UNIFIEDCACHE_DRAM_STORE_CC_METADATA_H
 
+#include <array>
+#include <atomic>
 #include <chrono>
+#include <condition_variable>
 #include <cstddef>
 #include <memory>
+#include <mutex>
+#include <thread>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 #include "entry.h"
 #include "eviction_policy.h"
@@ -40,6 +46,7 @@ struct MetadataConfig {
     EvictionPolicyType deepType;
     std::chrono::milliseconds leaseTime;
     double defaultEvictRatio;
+    std::chrono::milliseconds evictPeriod;
 };
 
 /**
@@ -129,6 +136,70 @@ private:
     std::unique_ptr<EvictionPolicy> periodicEvictor_;
     std::unique_ptr<EvictionPolicy> deepEvictor_;
     std::chrono::milliseconds leaseTime_;
+};
+
+/**
+ * @brief Metadata manager owns N ShardMetadata instances.
+ *
+ * Responsible for the system's metadata management, buffer allocation, and
+ * buffer release logic. Dispatches per-key operations to the selected shard.
+ */
+class MetadataManager {
+public:
+    explicit MetadataManager(const MetadataConfig& config)
+        : defaultEvictRatio_(config.defaultEvictRatio),
+          evictPeriod_(config.evictPeriod),
+          stop_(false)
+    {
+        for (auto& s : shards_) { s = std::make_unique<ShardMetadata>(config); }
+        evictThread_ = std::thread([this] { EvictLoop(); });
+    }
+
+    ~MetadataManager()
+    {
+        stop_.store(true);
+        cv_.notify_all();
+        if (evictThread_.joinable()) { evictThread_.join(); }
+    }
+
+    MetadataManager(const MetadataManager&) = delete;
+    MetadataManager& operator=(const MetadataManager&) = delete;
+
+    Status StoreBegin(const BlockId& key, EntryPtr entry);
+    Status StoreEnd(const BlockId& key) { return ShardOf(key).StoreEnd(key); }
+    Status LoadBegin(const BlockId& key) { return ShardOf(key).LoadBegin(key); }
+    Status LoadEnd(const BlockId& key) { return ShardOf(key).LoadEnd(key); }
+    bool Exist(const BlockId& key) { return ShardOf(key).Exist(key); }
+    bool Query(const BlockId& key) const { return ShardOf(key).Query(key); }
+    Status Delete(const BlockId& key) { return ShardOf(key).Delete(key); }
+
+    std::size_t GetKeyCnt() const noexcept
+    {
+        std::size_t total = 0;
+        for (const auto& s : shards_) { total += s->GetKeyCnt(); }
+        return total;
+    }
+
+private:
+    static std::size_t ShardIdx(const BlockId& key)
+    {
+        return UC::Detail::BlockIdHasher{}(key) % kShardCnt;
+    }
+    ShardMetadata& ShardOf(const BlockId& key) { return *shards_[ShardIdx(key)]; }
+    const ShardMetadata& ShardOf(const BlockId& key) const { return *shards_[ShardIdx(key)]; }
+    void EvictLoop();
+    void EvictOneShard(ShardMetadata& s, bool deep = false);
+
+    static constexpr std::size_t kShardCnt = 1024;
+    std::array<std::unique_ptr<ShardMetadata>, kShardCnt> shards_;
+
+    // For eviction logic
+    double defaultEvictRatio_;
+    std::chrono::milliseconds evictPeriod_;
+    std::atomic<bool> stop_;
+    std::mutex cvMtx_;
+    std::condition_variable cv_;
+    std::thread evictThread_;
 };
 
 }  // namespace UC::DramStore

@@ -24,14 +24,19 @@
 #include <chrono>
 #include <gtest/gtest.h>
 #include <memory>
+#include <set>
+#include <string>
+#include <vector>
 #include "dram/cc/entry.h"
 #include "dram/cc/metadata.h"
 #include "dram_test_common.h"
 
+using UC::Detail::BlockId;
 using UC::DramStore::EntryPtr;
 using UC::DramStore::EntryStatus;
 using UC::DramStore::EvictionPolicyType;
 using UC::DramStore::MetadataConfig;
+using UC::DramStore::MetadataManager;
 using UC::DramStore::ShardMetadata;
 using UC::Test::Dram::Clock;
 using UC::Test::Dram::KeyFromHex;
@@ -42,9 +47,10 @@ namespace {
 MetadataConfig MakeConfig(EvictionPolicyType periodic = EvictionPolicyType::TTL,
                           EvictionPolicyType deep = EvictionPolicyType::POSITION,
                           std::chrono::milliseconds leaseTime = std::chrono::milliseconds(100),
-                          double defaultEvictRatio = 1.0)
+                          double defaultEvictRatio = 1.0,
+                          std::chrono::milliseconds evictPeriod = std::chrono::seconds(60))
 {
-    return MetadataConfig{periodic, deep, leaseTime, defaultEvictRatio};
+    return MetadataConfig{periodic, deep, leaseTime, defaultEvictRatio, evictPeriod};
 }
 }  // namespace
 
@@ -257,4 +263,73 @@ TEST_F(UCShardMetadataTest, FullLifecycleStoreStoreEndLoadExist)
     EXPECT_GT(entry->leaseTimeout, Clock::now());
     EXPECT_TRUE(md.LoadEnd(k).Success());
     EXPECT_EQ(entry->refCnt, 0U);
+}
+
+class UCMetadataManagerTest : public testing::Test {
+protected:
+    const TimePoint past_ = Clock::now() - std::chrono::seconds(10);
+    const TimePoint future_ = Clock::now() + std::chrono::seconds(10);
+};
+
+TEST_F(UCMetadataManagerTest, SameKeyGoesToSameShard)
+{
+    MetadataManager mgr(MakeConfig());
+    auto k = KeyFromHex("a1");
+    auto e1 = MakeEntry(k, 0, future_, EntryStatus::INITIALIZED);
+    EXPECT_TRUE(mgr.StoreBegin(k, e1).Success());
+    EXPECT_TRUE(mgr.StoreEnd(k).Success());
+    auto e2 = MakeEntry(k, 0, future_, EntryStatus::INITIALIZED);
+    mgr.StoreBegin(k, e2);
+    EXPECT_TRUE(mgr.Query(k));
+    EXPECT_EQ(e1->shard, e2->shard);
+}
+
+TEST_F(UCMetadataManagerTest, DifferentKeysMayHitDifferentShards)
+{
+    MetadataManager mgr(MakeConfig());
+    std::set<uint32_t> shards;
+    for (int i = 0; i < 10; ++i) {
+        auto k = KeyFromHex(("a" + std::to_string(i)).c_str());
+        auto e = MakeEntry(k, 0, future_, EntryStatus::INITIALIZED);
+        mgr.StoreBegin(k, e);
+        shards.insert(e->shard);
+    }
+    EXPECT_GE(shards.size(), 2U);
+}
+
+TEST_F(UCMetadataManagerTest, PerKeyOpsDispatchAndRoundtrip)
+{
+    MetadataManager mgr(MakeConfig());
+    auto k = KeyFromHex("a1");
+    auto entry = MakeEntry(k, 0, future_, EntryStatus::INITIALIZED);
+    EXPECT_TRUE(mgr.StoreBegin(k, entry).Success());
+    EXPECT_EQ(entry->status, EntryStatus::INITIALIZED);
+    EXPECT_TRUE(mgr.StoreEnd(k).Success());
+    EXPECT_EQ(entry->status, EntryStatus::READY);
+    EXPECT_TRUE(mgr.Query(k));
+    EXPECT_FALSE(mgr.Query(KeyFromHex("a2")));
+    EXPECT_TRUE(mgr.Exist(k));
+    EXPECT_GT(entry->leaseTimeout, Clock::now());
+    EXPECT_TRUE(mgr.LoadBegin(k).Success());
+    EXPECT_EQ(entry->refCnt, 1U);
+    EXPECT_TRUE(mgr.LoadEnd(k).Success());
+    EXPECT_EQ(entry->refCnt, 0U);
+    EXPECT_TRUE(mgr.Delete(k).Success());
+    EXPECT_FALSE(mgr.Query(k));
+}
+
+TEST_F(UCMetadataManagerTest, GetKeyCntAggregatesAcrossShards)
+{
+    MetadataManager mgr(MakeConfig());
+    EXPECT_EQ(mgr.GetKeyCnt(), 0U);
+    std::vector<BlockId> keys;
+    for (int i = 0; i < 10; ++i) {
+        auto k = KeyFromHex(("a" + std::to_string(i)).c_str());
+        keys.push_back(k);
+        EXPECT_TRUE(
+            mgr.StoreBegin(k, MakeEntry(k, 0, future_, EntryStatus::INITIALIZED)).Success());
+    }
+    EXPECT_EQ(mgr.GetKeyCnt(), 10U);
+    for (int i = 0; i < 5; ++i) { EXPECT_TRUE(mgr.Delete(keys[i]).Success()); }
+    EXPECT_EQ(mgr.GetKeyCnt(), 5U);
 }
