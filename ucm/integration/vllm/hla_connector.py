@@ -304,7 +304,7 @@ class KVCacheGroupManager:
         num_computed_tokens: int,
         store: "UcmKVStoreBaseV1",
         group_block_ids: list[list[bytes]],
-    ) -> tuple[int, int]:
+    ) -> tuple[int, int, list[bytes]]:
         """Two-stage HLA lookup using precomputed per-group hashes.
 
         ``group_block_ids`` must have one entry per group, indexed by the
@@ -316,13 +316,12 @@ class KVCacheGroupManager:
         external hit is consistent across all full-attn groups and aligns
         to the kv-cache page granularity expected by the scheduler.
 
-        Stage 2 — mamba-align state groups are checked via a backward
-        scan: starting from the Stage 1 candidate position, state hashes
-        are batch-looked-up at each LCM boundary going backwards toward
-        ``num_computed_tokens``. The external hit is set to the
-        furthest-forward position where ALL state groups have their state
-        present. If no position has all states present, the external hit
-        is downgraded to zero.
+        Stage 2 — mamba-align state groups are checked via a sequential
+        backward scan: starting from the Stage 1 candidate position, each
+        LCM boundary is checked one at a time going backwards toward
+        ``num_computed_tokens``. The scan stops at the first position where
+        ALL state groups have their state present. If no position has all
+        states present, the external hit is downgraded to zero.
 
         Returns:
             Tuple of
@@ -330,6 +329,9 @@ class KVCacheGroupManager:
               aligned to ``lcm_block_size``. ``0`` if any check fails.
             - ``external_hit_lcm_blocks``: ``external_hit_tokens //
               lcm_block_size`` (also ``0`` on downgrade).
+            - ``mamba_prefetch_hashes``: rank-0 mamba state hashes from
+              ``num_computed_tokens + lcm_block_size`` to ``best_pos``,
+              for GC heat update (rank-0 un-checked positions + other ranks).
         """
         assert len(group_block_ids) == self.num_groups, (
             f"group_block_ids length {len(group_block_ids)} does not match "
@@ -368,66 +370,67 @@ class KVCacheGroupManager:
             min_external_hit_tokens // self.lcm_block_size
         ) * self.lcm_block_size
         if external_hit_tokens <= 0:
-            return 0, 0
+            return 0, 0, []
 
-        # Stage 2: backward scan for mamba-align state.
-        # Full-attn found a candidate at total_hit_tokens; now check
-        # whether mamba-align state groups have their state hash present,
-        # scanning backwards from total_hit_tokens toward
-        # num_computed_tokens until a position is found where ALL state
-        # groups are present.  This handles the case where an intermediate
-        # LCM boundary's state was not dumped (e.g. the mamba rolling
-        # window had a null block at that position) but an earlier
-        # boundary's state was.
+        # Stage 2: sequential backward scan for mamba-align state.
+        # Check one LCM boundary at a time from total_hit_tokens downwards.
+        # Stop at the first position where ALL state groups are present.
         total_hit_tokens = num_computed_tokens + external_hit_tokens
 
         if not self.state_groups:
-            return external_hit_tokens, external_hit_tokens // self.lcm_block_size
-
-        # Build candidate positions: total_hit_tokens, total-lcm, ...,
-        # down to the first external LCM boundary (num_computed_tokens +
-        # lcm_block_size).
-        candidate_positions = list(
-            range(
-                total_hit_tokens,
-                num_computed_tokens,
-                -self.lcm_block_size,
+            return (
+                external_hit_tokens,
+                external_hit_tokens // self.lcm_block_size,
+                [],
             )
-        )
-        if not candidate_positions:
-            return 0, 0
 
-        # Batch all state hashes into a single lookup for efficiency.
-        num_sg = len(self.state_groups)
-        all_hashes: list[bytes] = []
-        for pos in candidate_positions:
+        best_pos = num_computed_tokens
+        for pos in range(total_hit_tokens, num_computed_tokens, -self.lcm_block_size):
+            pos_hashes: list[bytes] = []
             for sg in self.state_groups:
                 state_hash = self.compute_mamba_align_state_hash(
                     sg, pos, group_block_ids
                 )
-                all_hashes.append(state_hash if state_hash is not None else b"")
-
-        try:
-            results = store.lookup(all_hashes)
-        except Exception as e:
-            logger.error(f"mamba-align state lookup error. {type(e).__name__}: {e}")
-            _record_counter("connector_lookup_errors_total")
-            return 0, 0
-
-        # Find the furthest-forward position where ALL state groups are
-        # present.
-        best_pos = num_computed_tokens
-        for i, pos in enumerate(candidate_positions):
-            group_results = results[i * num_sg : (i + 1) * num_sg]
-            if all(group_results):
+                pos_hashes.append(state_hash if state_hash is not None else b"")
+            try:
+                results = store.lookup(pos_hashes)
+            except Exception as e:
+                logger.error(
+                    f"mamba-align state lookup error at pos={pos}. "
+                    f"{type(e).__name__}: {e}"
+                )
+                _record_counter("connector_lookup_errors_total")
+                return 0, 0, []
+            if all(results):
                 best_pos = pos
                 break
 
         external_hit_tokens = best_pos - num_computed_tokens
         if external_hit_tokens <= 0:
-            return 0, 0
+            return 0, 0, []
 
-        return external_hit_tokens, external_hit_tokens // self.lcm_block_size
+        # Collect mamba state hashes for positions from
+        # num_computed_tokens + lcm to best_pos (inclusive) for GC heat
+        # update.  Positions below best_pos were not checked by the
+        # sequential scan; re-prefetching best_pos itself is harmless.
+        mamba_prefetch_hashes: list[bytes] = []
+        for pos in range(
+            num_computed_tokens + self.lcm_block_size,
+            best_pos + self.lcm_block_size,
+            self.lcm_block_size,
+        ):
+            for sg in self.state_groups:
+                state_hash = self.compute_mamba_align_state_hash(
+                    sg, pos, group_block_ids
+                )
+                if state_hash is not None:
+                    mamba_prefetch_hashes.append(state_hash)
+
+        return (
+            external_hit_tokens,
+            external_hit_tokens // self.lcm_block_size,
+            mamba_prefetch_hashes,
+        )
 
 
 class HybridLinearAttentionLayout(KVCacheLayout):
@@ -851,7 +854,7 @@ class UCMHybridLinearAttentionConnector(UCMDirectConnector, SupportsHMA):
         primary_full_attn = self.group_manager.full_attn_groups[0]
         primary_block_ids = group_ucm_block_ids[primary_full_attn.group_id]
 
-        external_hit_tokens, external_hit_lcm_blocks = (
+        external_hit_tokens, external_hit_lcm_blocks, mamba_prefetch_hashes = (
             self.group_manager.lookup_external_hit_tokens(
                 num_computed_tokens, self.store, group_ucm_block_ids
             )
@@ -871,6 +874,17 @@ class UCMHybridLinearAttentionConnector(UCMDirectConnector, SupportsHMA):
             )
 
         total_hit_block_num = hbm_hit_block_num + external_hit_lcm_blocks
+
+        # GC heat update: prefetch hit blocks to prevent eviction on other
+        # ranks and on rank-0 mamba positions not checked by the sequential
+        # backward scan.
+        if mamba_prefetch_hashes:
+            self.store.prefetch(mamba_prefetch_hashes)
+        total_hit_tokens = total_hit_block_num * lcm_block_size
+        hbm_hit_full_attn = num_computed_tokens // primary_full_attn.block_size
+        total_hit_full_attn = total_hit_tokens // primary_full_attn.block_size
+        hit_full_attn_blocks = primary_block_ids[hbm_hit_full_attn:total_hit_full_attn]
+        self._prefetch_other_rank_hashes(hit_full_attn_blocks + mamba_prefetch_hashes)
 
         logger.info_once(
             f"request_id: {request.request_id}, "
