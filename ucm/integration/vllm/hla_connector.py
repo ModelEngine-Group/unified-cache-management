@@ -4,7 +4,7 @@ import os
 import time
 from collections import defaultdict
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, List, Optional, Tuple
+from typing import TYPE_CHECKING, List, Optional
 
 import numpy as np
 import torch
@@ -14,7 +14,6 @@ from vllm.distributed.kv_transfer.kv_connector.v1.base import (
     KVConnectorRole,
     SupportsHMA,
 )
-from vllm.model_executor.models.utils import extract_layer_index
 from vllm.platforms import current_platform
 from vllm.v1.core.sched.output import SchedulerOutput
 from vllm.v1.kv_cache_interface import (
@@ -33,18 +32,14 @@ from ucm.integration.vllm.ucm_connector import (
     RequestMeta,
     UCMConnectorMetadata,
     UCMDirectConnector,
-    UCMWorkerMetadata,
     _drop_null_vllm_blocks,
-    _ensure_cache_store_buffer_capacity,
     _record_counter,
     _short_list,
 )
 from ucm.logger import init_logger
 from ucm.shared.metrics import ucmmetrics
 from ucm.sparse.state import has_ucm_sparse
-from ucm.store.factory_v1 import UcmConnectorFactoryV1
 from ucm.store.ucmstore_v1 import Task, UcmKVStoreBaseV1
-from ucm.utils import Config
 
 if TYPE_CHECKING:
     from vllm.attention.backends.abstract import AttentionMetadata
@@ -121,6 +116,22 @@ def is_mamba_align_kv_cache_spec(spec: KVCacheSpec) -> bool:
         sample = next(iter(spec.kv_cache_specs.values()))
         return is_mamba_align_kv_cache_spec(sample)
     return isinstance(spec, MambaSpec) and spec.mamba_cache_mode == "align"
+
+
+def extend_non_null(
+    dst_ucm_block_ids: list[bytes],
+    dst_vllm_block_ids: list[int],
+    src_ucm_block_ids: list[bytes],
+    src_vllm_block_ids: list[int],
+) -> None:
+    # Mamba align mode pads req block tables with vLLM's null block
+    # (block_id=0). These are metadata placeholders, not physical pages
+    # that should be loaded from or dumped to the store.
+    for ucm_block_id, vllm_block_id in zip(src_ucm_block_ids, src_vllm_block_ids):
+        if vllm_block_id == 0:
+            continue
+        dst_ucm_block_ids.append(ucm_block_id)
+        dst_vllm_block_ids.append(vllm_block_id)
 
 
 @dataclass
@@ -1005,23 +1016,6 @@ class UCMHybridLinearAttentionConnector(UCMDirectConnector, SupportsHMA):
         dump_ucm_block_ids: list[bytes] = []
         dump_vllm_block_ids: list[int] = []
 
-        def extend_non_null(
-            dst_ucm_block_ids: list[bytes],
-            dst_vllm_block_ids: list[int],
-            src_ucm_block_ids: list[bytes],
-            src_vllm_block_ids: list[int],
-        ) -> None:
-            # Mamba align mode pads req block tables with vLLM's null block
-            # (block_id=0). These are metadata placeholders, not physical pages
-            # that should be loaded from or dumped to the store.
-            for ucm_block_id, vllm_block_id in zip(
-                src_ucm_block_ids, src_vllm_block_ids
-            ):
-                if vllm_block_id == 0:
-                    continue
-                dst_ucm_block_ids.append(ucm_block_id)
-                dst_vllm_block_ids.append(vllm_block_id)
-
         def append_mamba_align_state_block(
             dst_ucm_block_ids: list[bytes],
             dst_vllm_block_ids: list[int],
@@ -1056,10 +1050,9 @@ class UCMHybridLinearAttentionConnector(UCMDirectConnector, SupportsHMA):
                 return
             if vllm_block_id == 0:
                 return
-            if group.is_mamba_align:
-                ucm_block_id = self.group_manager.compute_mamba_align_state_hash(
-                    group, seq_len, req_meta.group_ucm_block_ids
-                )
+            ucm_block_id = self.group_manager.compute_mamba_align_state_hash(
+                group, seq_len, req_meta.group_ucm_block_ids
+            )
             if ucm_block_id is None:
                 logger.error(
                     "HLA mamba-align state hash missing: "
@@ -1254,8 +1247,7 @@ class UCMHybridLinearAttentionConnector(UCMDirectConnector, SupportsHMA):
                     continue
             num_saved_block += len(ucm_block_ids)
             num_saved_request += 1
-            if self.tp_rank % self.tp_size != 0:
-                ucm_block_ids = [self.request_hasher(b) for b in ucm_block_ids]
+            ucm_block_ids = self._rank_scoped_ucm_block_ids(ucm_block_ids)
             total_ucm_block_ids.extend(ucm_block_ids)
             total_vllm_block_ids.extend(vllm_block_ids)
 
@@ -1301,6 +1293,11 @@ class UCMHybridLinearAttentionConnector(UCMDirectConnector, SupportsHMA):
         block_ids: tuple[list[int], ...],
     ) -> tuple[bool, dict[str, object] | None]:
         return False, None
+
+    def _rank_scoped_ucm_block_ids(self, ucm_block_ids: list[bytes]) -> list[bytes]:
+        if self.tp_rank % self.tp_size == 0 or self.is_mla:
+            return ucm_block_ids
+        return [self.request_hasher(b) for b in ucm_block_ids]
 
 
 class UCMHybridLinearAttentionLayerWiseConnector(UCMHybridLinearAttentionConnector):
@@ -1411,11 +1408,6 @@ class UCMHybridLinearAttentionLayerWiseConnector(UCMHybridLinearAttentionConnect
             f"row_tensor_size_list={row_tensor_size_list}, "
             f"row_save_layers={len(self.row_save_layer)}"
         )
-
-    def _rank_scoped_ucm_block_ids(self, ucm_block_ids: list[bytes]) -> list[bytes]:
-        if self.tp_rank % self.tp_size == 0 or self.is_mla:
-            return ucm_block_ids
-        return [self.request_hasher(ucm_block_id) for ucm_block_id in ucm_block_ids]
 
     def _mark_load_failed(
         self,
