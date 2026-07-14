@@ -1651,12 +1651,14 @@ class UCMHybridLinearAttentionLayerWiseConnector(UCMHybridLinearAttentionConnect
             return
 
         total_start = time.perf_counter()
-        try:
-            for row_id in self.row_ids:
-                for pending_dump_task in self.dump_tasks.pop(row_id, []):
+        for row_id in self.row_ids:
+            for pending_dump_task in self.dump_tasks.pop(row_id, []):
+                try:
                     self.store.wait(pending_dump_task.task)
-        except Exception as e:
-            logger.error(f"wait for dump kv cache failed. {type(e).__name__}: {e}")
+                except Exception as e:
+                    logger.error(
+                        f"wait for dump kv cache failed. " f"{type(e).__name__}: {e}"
+                    )
         total_end = time.perf_counter()
         stats: dict[str, float] = {
             "layerwise_save_tail_total_ms": (total_end - total_start) * 1000,
