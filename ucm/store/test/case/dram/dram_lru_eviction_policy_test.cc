@@ -24,35 +24,15 @@
 #include <chrono>
 #include <gtest/gtest.h>
 #include <limits>
-#include <memory>
-#include "detail/types_helper.h"
-#include "dram/cc/entry.h"
 #include "dram/cc/lru_eviction_policy.h"
+#include "dram_test_common.h"
 
-namespace {
-using Clock = std::chrono::system_clock;
-using TimePoint = Clock::time_point;
-using UC::DramStore::Entry;
-using UC::DramStore::EntryPtr;
-using UC::DramStore::EntryStatus;
 using UC::DramStore::LruEvictionPolicy;
-
-EntryPtr MakeEntry(UC::Detail::BlockId key, EntryStatus status = EntryStatus::READY,
-                   uint32_t refCnt = 0, TimePoint leaseTimeout = TimePoint{})
-{
-    auto e = std::make_shared<Entry>();
-    e->key = key;
-    e->status = status;
-    e->refCnt = refCnt;
-    e->leaseTimeout = leaseTimeout;
-    return e;
-}
-
-UC::Detail::BlockId KeyFromHex(const char* hex)
-{
-    return UC::Test::Detail::TypesHelper::MakeBlockId(hex);
-}
-}  // namespace
+using UC::Test::Dram::Clock;
+using UC::Test::Dram::EntryStatus;
+using UC::Test::Dram::KeyFromHex;
+using UC::Test::Dram::MakeEntry;
+using UC::Test::Dram::TimePoint;
 
 class UCLruEvictionPolicyTest : public testing::Test {
 protected:
@@ -205,7 +185,9 @@ TEST_F(UCLruEvictionPolicyTest, GetEvictionResultsSkipsNonReadyAndContinues)
 {
     auto kDeleting = KeyFromHex("a1");
     auto kReady = KeyFromHex("a2");
-    ASSERT_TRUE(policy_.AddKey(kDeleting, MakeEntry(kDeleting, EntryStatus::DELETING)).Success());
+    ASSERT_TRUE(
+        policy_.AddKey(kDeleting, MakeEntry(kDeleting, 0, TimePoint{}, EntryStatus::DELETING))
+            .Success());
     ASSERT_TRUE(policy_.AddKey(kReady, MakeEntry(kReady)).Success());
 
     auto victims = policy_.GetEvictionResults(1.0);
@@ -218,7 +200,8 @@ TEST_F(UCLruEvictionPolicyTest, GetEvictionResultsSkipsNonZeroRefCnt)
     auto kInUse = KeyFromHex("a1");
     auto kReady = KeyFromHex("a2");
     ASSERT_TRUE(
-        policy_.AddKey(kInUse, MakeEntry(kInUse, EntryStatus::READY, /*refCnt=*/1)).Success());
+        policy_.AddKey(kInUse, MakeEntry(kInUse, 0, TimePoint{}, EntryStatus::READY, /*refCnt=*/1))
+            .Success());
     ASSERT_TRUE(policy_.AddKey(kReady, MakeEntry(kReady)).Success());
 
     auto victims = policy_.GetEvictionResults(1.0);
@@ -231,7 +214,8 @@ TEST_F(UCLruEvictionPolicyTest, GetEvictionResultsSkipsLeasedEntry)
     auto kLeased = KeyFromHex("a1");
     auto kReady = KeyFromHex("a2");
     ASSERT_TRUE(
-        policy_.AddKey(kLeased, MakeEntry(kLeased, EntryStatus::READY, 0, future_)).Success());
+        policy_.AddKey(kLeased, MakeEntry(kLeased, 0, TimePoint{}, EntryStatus::READY, 0, future_))
+            .Success());
     ASSERT_TRUE(policy_.AddKey(kReady, MakeEntry(kReady)).Success());
 
     auto victims = policy_.GetEvictionResults(1.0);
@@ -244,11 +228,15 @@ TEST_F(UCLruEvictionPolicyTest, GetEvictionResultsEmptyWhenAllEntriesIneligible)
     auto kDeleting = KeyFromHex("a1");
     auto kInUse = KeyFromHex("a2");
     auto kLeased = KeyFromHex("a3");
-    ASSERT_TRUE(policy_.AddKey(kDeleting, MakeEntry(kDeleting, EntryStatus::DELETING)).Success());
     ASSERT_TRUE(
-        policy_.AddKey(kInUse, MakeEntry(kInUse, EntryStatus::READY, /*refCnt=*/1)).Success());
+        policy_.AddKey(kDeleting, MakeEntry(kDeleting, 0, TimePoint{}, EntryStatus::DELETING))
+            .Success());
     ASSERT_TRUE(
-        policy_.AddKey(kLeased, MakeEntry(kLeased, EntryStatus::READY, 0, future_)).Success());
+        policy_.AddKey(kInUse, MakeEntry(kInUse, 0, TimePoint{}, EntryStatus::READY, /*refCnt=*/1))
+            .Success());
+    ASSERT_TRUE(
+        policy_.AddKey(kLeased, MakeEntry(kLeased, 0, TimePoint{}, EntryStatus::READY, 0, future_))
+            .Success());
 
     EXPECT_TRUE(policy_.GetEvictionResults(1.0).empty());
 }
