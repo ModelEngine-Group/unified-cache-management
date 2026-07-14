@@ -1266,6 +1266,8 @@ class UCMHybridLinearAttentionConnector(UCMDirectConnector, SupportsHMA):
             )
         except Exception as e:
             logger.error(f"dump kv cache failed. {type(e).__name__}: {e}")
+            if self.enable_event_sync and event_handle and self.device is not None:
+                self.device.destroy_event_handle(event_handle)
             return
 
         try:
@@ -1274,6 +1276,9 @@ class UCMHybridLinearAttentionConnector(UCMDirectConnector, SupportsHMA):
         except Exception as e:
             logger.error(f"wait for dump kv cache failed. {type(e).__name__}: {e}")
             return
+        finally:
+            if self.enable_event_sync and event_handle and self.device is not None:
+                self.device.destroy_event_handle(event_handle)
 
         save_bytes = num_saved_block * self.block_data_size
         save_speed = save_bytes / max(save_end_time - save_start_time, 1) / 1024 / 1024
