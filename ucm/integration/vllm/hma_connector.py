@@ -1364,9 +1364,7 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
                     self.device.destroy_event_handle(wa_dump_task.event_handle)
             except Exception as e:
                 self.device.destroy_event_handle(event_handle)
-                logger.error(
-                    f"dump FAWA WA kv cache failed. {type(e).__name__}: {e}"
-                )
+                logger.error(f"dump FAWA WA kv cache failed. {type(e).__name__}: {e}")
                 self._record_counter("connector_dump_submit_errors_total")
 
     def _poll_completed_dump_tasks(self) -> None:
