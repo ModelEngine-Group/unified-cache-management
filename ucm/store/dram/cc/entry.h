@@ -33,6 +33,7 @@
 namespace UC::DramStore {
 
 using Spinlock = UC::SpinLock;
+using RwLock = UC::RwLock;
 using BlockId = UC::Detail::BlockId;
 
 enum class EntryStatus {
@@ -54,6 +55,12 @@ struct Entry {
     std::chrono::system_clock::time_point lifeTimeout{};
     uint32_t position{0};
 
+    bool IsInitial()
+    {
+        SpinLockGuard guard(lock);
+        return status == EntryStatus::INITIALIZED && refCnt == 0;
+    }
+
     bool TryMarkEvicting(std::chrono::system_clock::time_point now)
     {
         SpinLockGuard guard(lock);
@@ -61,6 +68,39 @@ struct Entry {
         if (refCnt != 0) { return false; }
         if (leaseTimeout > now) { return false; }
         status = EntryStatus::DELETING;
+        return true;
+    }
+
+    bool TryMarkReady()
+    {
+        SpinLockGuard guard(lock);
+        if (status != EntryStatus::INITIALIZED) { return false; }
+        status = EntryStatus::READY;
+        return true;
+    }
+
+    bool TryMarkHit(std::chrono::system_clock::time_point timeout)
+    {
+        SpinLockGuard guard(lock);
+        if (status != EntryStatus::READY) { return false; }
+        leaseTimeout = timeout;
+        return true;
+    }
+
+    bool TryIncRef()
+    {
+        SpinLockGuard guard(lock);
+        if (status != EntryStatus::READY) { return false; }
+        ++refCnt;
+        return true;
+    }
+
+    bool TryDecRef()
+    {
+        SpinLockGuard guard(lock);
+        if (status != EntryStatus::READY) { return false; }
+        if (refCnt == 0) { return false; }
+        --refCnt;
         return true;
     }
 };
