@@ -246,8 +246,8 @@ def create_cache_scheduler(pipeline_store_cls, unique_id: str, cpu_affinity_core
     config["posix_lookup_concurrency"] = 16
     config["cache_load_backend_only"] = True
     config["unique_id"] = unique_id
-    config["tensor_size_list"] = []
-    config["shard_size"] = 0
+    # Keep scheduler tensor sizes and shard size unset so the C++ defaults are
+    # used; an empty Python list is parsed as vector<any> and fails any_cast.
     config["block_size"] = shard_size
     config["share_buffer_enable"] = share_buffer_enable
     config["cache_buffer_capacity_gb"] = 8
