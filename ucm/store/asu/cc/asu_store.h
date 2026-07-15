@@ -21,7 +21,7 @@ struct Config {
     std::string asuLocalIp;
     std::string asuNamePrefix{"asu"};
     std::vector<std::uint32_t> kvNsIds;
-    std::uint16_t asuPort{0};
+    std::vector<std::uint16_t> asuPorts;
     std::uint64_t defaultWaitTimeoutMs{100};
     std::uint64_t queryTimeoutMs{5};
     std::uint64_t loadTimeoutMs{100};
