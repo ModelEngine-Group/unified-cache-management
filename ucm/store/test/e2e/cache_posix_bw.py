@@ -26,6 +26,7 @@ import multiprocessing
 import os
 import secrets
 import signal
+import sys
 import time
 
 import torch
@@ -347,6 +348,7 @@ def worker_loop(
     block_id_records,
     dump_cost_records,
     load_cost_records,
+    completed_worker_number,
 ):
     signal.signal(signal.SIGINT, signal.SIG_IGN)
     signal.signal(signal.SIGTSTP, signal.SIG_IGN)
@@ -395,6 +397,10 @@ def worker_loop(
         barrier.wait()
         if epoch + 1 < load_epoch_number:
             time.sleep(epoch_interval_ms / 1000)
+    sys.stdout.flush()
+    sys.stderr.flush()
+    with completed_worker_number.get_lock():
+        completed_worker_number.value += 1
 
 
 def make_block_id_records():
@@ -446,6 +452,7 @@ if __name__ == "__main__":
     load_cost_records = multiprocessing.Array(
         "d", worker_number * load_epoch_number, lock=False
     )
+    completed_worker_number = multiprocessing.Value("i", 0)
     workers = []
     signal.signal(signal.SIGTSTP, stop_on_suspend)
     try:
@@ -464,6 +471,7 @@ if __name__ == "__main__":
                     block_id_records,
                     dump_cost_records,
                     load_cost_records,
+                    completed_worker_number,
                 ),
             )
             workers.append(process)
@@ -472,6 +480,8 @@ if __name__ == "__main__":
                 raise KeyboardInterrupt
 
         while any(process.is_alive() for process in workers):
+            if completed_worker_number.value == worker_number:
+                break
             if stop_requested:
                 raise KeyboardInterrupt
             failed = next(
@@ -483,11 +493,20 @@ if __name__ == "__main__":
                     f"worker pid={failed.pid} exited with code {failed.exitcode}"
                 )
             time.sleep(0.1)
-        failed = next((process for process in workers if process.exitcode != 0), None)
-        if failed is not None:
-            raise RuntimeError(
-                f"worker pid={failed.pid} exited with code {failed.exitcode}"
+        if completed_worker_number.value != worker_number:
+            failed = next(
+                (
+                    process
+                    for process in workers
+                    if process.exitcode not in (None, 0)
+                ),
+                None,
             )
+            if failed is not None:
+                raise RuntimeError(
+                    f"worker pid={failed.pid} exited with code {failed.exitcode}"
+                )
+            raise RuntimeError("workers exited before completing the benchmark")
         print_benchmark_summary(dump_cost_records, load_cost_records)
     except KeyboardInterrupt:
         print("benchmark interrupted; cleaning up workers and shared memory")
