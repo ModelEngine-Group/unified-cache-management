@@ -227,8 +227,6 @@ def create_cache_worker(
     config["cache_stream_number"] = 4
     config["cache_sdma_direct"] = cache_sdma_direct
     config["cache_sdma_direct_launch_granularity"] = "shard"
-    config["waiting_queue_depth"] = 16
-    config["running_queue_depth"] = 1024
     config["timeout_ms"] = 30000
     config["device_id"] = device_id
     if cpu_affinity_cores:
