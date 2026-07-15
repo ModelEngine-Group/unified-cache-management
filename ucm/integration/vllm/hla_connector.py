@@ -420,13 +420,13 @@ class KVCacheGroupManager:
         if external_hit_tokens <= 0:
             return 0, 0, []
 
-        # Collect mamba state hashes for positions from
-        # num_computed_tokens + lcm to best_pos (inclusive) for GC heat
-        # update.  Positions below best_pos were not checked by the
-        # sequential scan; re-prefetching best_pos itself is harmless.
+        # Collect mamba state hashes for all LCM boundaries from the first
+        # boundary (lcm_block_size) to best_pos (inclusive) for GC heat
+        # update.  This covers both HBM positions (below num_computed_tokens,
+        # not checked by the sequential scan) and external positions.
         mamba_prefetch_hashes: list[bytes] = []
         for pos in range(
-            num_computed_tokens + self.lcm_block_size,
+            self.lcm_block_size,
             best_pos + self.lcm_block_size,
             self.lcm_block_size,
         ):
@@ -886,16 +886,23 @@ class UCMHybridLinearAttentionConnector(UCMDirectConnector, SupportsHMA):
 
         total_hit_block_num = hbm_hit_block_num + external_hit_lcm_blocks
 
-        # GC heat update: prefetch hit blocks to prevent eviction on other
-        # ranks and on rank-0 mamba positions not checked by the sequential
-        # backward scan.
-        if mamba_prefetch_hashes:
-            self.store.prefetch(mamba_prefetch_hashes)
+        # GC heat update: a request with any cache hit is a hot request —
+        # update heat for ALL hit blocks (including HBM-hit prefix) to
+        # prevent GC eviction on any rank.
         total_hit_tokens = total_hit_block_num * lcm_block_size
         hbm_hit_full_attn = num_computed_tokens // primary_full_attn.block_size
         total_hit_full_attn = total_hit_tokens // primary_full_attn.block_size
-        hit_full_attn_blocks = primary_block_ids[hbm_hit_full_attn:total_hit_full_attn]
-        self._prefetch_other_rank_hashes(hit_full_attn_blocks + mamba_prefetch_hashes)
+        all_hit_full_attn = primary_block_ids[0:total_hit_full_attn]
+        # Rank 0: HBM full-attn blocks were not checked by lookup_on_prefix;
+        # mamba positions below best_pos were not checked by the sequential
+        # scan.  Prefetch updates heat for existing entries (no-op if absent).
+        hbm_full_attn = primary_block_ids[0:hbm_hit_full_attn]
+        if hbm_full_attn:
+            self.store.prefetch(hbm_full_attn)
+        if mamba_prefetch_hashes:
+            self.store.prefetch(mamba_prefetch_hashes)
+        # Other ranks: all hit full-attn blocks + mamba hashes, re-hashed.
+        self._prefetch_other_rank_hashes(all_hit_full_attn + mamba_prefetch_hashes)
 
         logger.info_once(
             f"request_id: {request.request_id}, "
