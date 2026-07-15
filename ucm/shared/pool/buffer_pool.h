@@ -55,7 +55,7 @@ public:
 
     Status Init(std::string name, MemoryType type, std::size_t slot_capacity,
                 std::size_t slot_num, bool enable_zero = false);
-    Status Allocate(std::size_t size, Slot& slot);
+    Status Allocate(Slot& slot);
     Status Free(std::uint32_t slot_index);
     void Reset();
 

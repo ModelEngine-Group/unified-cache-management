@@ -128,13 +128,9 @@ Status BufferPool::Init(std::string name, MemoryType type, std::size_t slot_capa
     return Status::OK();
 }
 
-Status BufferPool::Allocate(std::size_t size, Slot& slot)
+Status BufferPool::Allocate(Slot& slot)
 {
     if (!region_) { return Status::Error("buffer pool not initialized"); }
-    if (size == 0) { return Status::InvalidParam(name_ + ": size must be non-zero"); }
-    if (size > slot_capacity_) {
-        return Status::InvalidParam(name_ + ": size exceeds slot_capacity");
-    }
 
     const auto idx = index_pool_.Acquire();
     if (idx == IndexPool::npos) {
@@ -144,7 +140,7 @@ Status BufferPool::Allocate(std::size_t size, Slot& slot)
     const auto offset = static_cast<std::size_t>(idx) * slot_stride_;
     slot.local_addr = static_cast<char*>(region_.local_addr) + offset;
     slot.device_addr = static_cast<char*>(region_.device_addr) + offset;
-    slot.length = size;
+    slot.length = slot_capacity_;
     slot.slot_index = idx;
     return Status::OK();
 }

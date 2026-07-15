@@ -57,7 +57,7 @@ TEST_F(BufferPoolTest, RejectsInvalidInitAndUseBeforeInit)
     BufferPool::Slot slot;
     EXPECT_FALSE(pool.IsInitialized());
 
-    auto status = pool.Allocate(1, slot);
+    auto status = pool.Allocate(slot);
     EXPECT_TRUE(status.Failure());
     EXPECT_EQ(status, Status::Error());
 
@@ -121,8 +121,8 @@ TEST_F(BufferPoolTest, HostPoolUsesAlignedSlotsAndReportsBusyWhenFull)
     BufferPool::Slot first;
     BufferPool::Slot second;
     BufferPool::Slot third;
-    ASSERT_TRUE(pool.Allocate(71, first).Success());
-    ASSERT_TRUE(pool.Allocate(71, second).Success());
+    ASSERT_TRUE(pool.Allocate(first).Success());
+    ASSERT_TRUE(pool.Allocate(second).Success());
     EXPECT_EQ(reinterpret_cast<std::uintptr_t>(second.local_addr) -
                   reinterpret_cast<std::uintptr_t>(first.local_addr),
               128);
@@ -135,7 +135,7 @@ TEST_F(BufferPoolTest, HostPoolUsesAlignedSlotsAndReportsBusyWhenFull)
     EXPECT_FALSE(
         pool.IsValidPointer(static_cast<char*>(pool.GetLocalAddr()) + pool.GetTotalSize()));
 
-    status = pool.Allocate(1, third);
+    status = pool.Allocate(third);
     EXPECT_TRUE(status.Failure());
     EXPECT_EQ(status, Status::Retry());
 }
@@ -155,8 +155,8 @@ TEST_F(BufferPoolTest, HostPinnedPoolKeepsLocalAndDeviceAddresses)
 
     BufferPool::Slot first;
     BufferPool::Slot second;
-    ASSERT_TRUE(pool.Allocate(64, first).Success());
-    ASSERT_TRUE(pool.Allocate(64, second).Success());
+    ASSERT_TRUE(pool.Allocate(first).Success());
+    ASSERT_TRUE(pool.Allocate(second).Success());
     EXPECT_EQ(first.local_addr, pool.GetLocalAddr());
     EXPECT_EQ(first.device_addr, pool.GetDeviceAddr());
     EXPECT_EQ(reinterpret_cast<std::uintptr_t>(second.local_addr) -
@@ -180,12 +180,12 @@ TEST_F(BufferPoolTest, DevicePoolZeroesReleasedSlot)
     EXPECT_EQ(pool.GetMemoryType(), MemoryType::ASCEND_DEVICE);
 
     BufferPool::Slot first;
-    ASSERT_TRUE(pool.Allocate(kSlotCapacity, first).Success());
+    ASSERT_TRUE(pool.Allocate(first).Success());
     ASSERT_EQ(aclrtMemset(first.local_addr, kSlotStride, 0xAB, kSlotStride), ACL_SUCCESS);
     ASSERT_TRUE(pool.Free(first.slot_index).Success());
 
     BufferPool::Slot second;
-    ASSERT_TRUE(pool.Allocate(kSlotCapacity, second).Success());
+    ASSERT_TRUE(pool.Allocate(second).Success());
     EXPECT_EQ(second.local_addr, first.local_addr);
     EXPECT_EQ(second.slot_index, first.slot_index);
 
@@ -205,12 +205,12 @@ TEST_F(BufferPoolTest, FreeZeroesAndReusesHostSlot)
     ASSERT_TRUE(status.Success()) << status.ToString();
 
     BufferPool::Slot first;
-    ASSERT_TRUE(pool.Allocate(71, first).Success());
+    ASSERT_TRUE(pool.Allocate(first).Success());
     std::memset(first.local_addr, 0xAB, kSlotStride);
     ASSERT_TRUE(pool.Free(first.slot_index).Success());
 
     BufferPool::Slot second;
-    ASSERT_TRUE(pool.Allocate(71, second).Success());
+    ASSERT_TRUE(pool.Allocate(second).Success());
     EXPECT_EQ(second.local_addr, first.local_addr);
     EXPECT_EQ(second.slot_index, first.slot_index);
 
@@ -227,12 +227,12 @@ TEST_F(BufferPoolTest, FreePreservesHostSlotWhenZeroingDisabled)
     ASSERT_TRUE(status.Success()) << status.ToString();
 
     BufferPool::Slot first;
-    ASSERT_TRUE(pool.Allocate(71, first).Success());
+    ASSERT_TRUE(pool.Allocate(first).Success());
     std::memset(first.local_addr, 0xAB, kSlotStride);
     ASSERT_TRUE(pool.Free(first.slot_index).Success());
 
     BufferPool::Slot second;
-    ASSERT_TRUE(pool.Allocate(71, second).Success());
+    ASSERT_TRUE(pool.Allocate(second).Success());
     EXPECT_EQ(second.local_addr, first.local_addr);
     EXPECT_EQ(second.slot_index, first.slot_index);
 
@@ -240,21 +240,12 @@ TEST_F(BufferPoolTest, FreePreservesHostSlotWhenZeroingDisabled)
     for (std::size_t i = 0; i < kSlotStride; ++i) { EXPECT_EQ(bytes[i], 0xAB); }
 }
 
-TEST_F(BufferPoolTest, RejectsInvalidAllocationAndFree)
+TEST_F(BufferPoolTest, RejectsInvalidFree)
 {
     BufferPool pool;
     ASSERT_TRUE(pool.Init("validation_pool", MemoryType::HOST, 64, 1).Success());
 
-    BufferPool::Slot slot;
-    auto status = pool.Allocate(0, slot);
-    EXPECT_TRUE(status.Failure());
-    EXPECT_EQ(status, Status::InvalidParam());
-
-    status = pool.Allocate(65, slot);
-    EXPECT_TRUE(status.Failure());
-    EXPECT_EQ(status, Status::InvalidParam());
-
-    status = pool.Free(1);
+    auto status = pool.Free(1);
     EXPECT_TRUE(status.Failure());
     EXPECT_EQ(status, Status::InvalidParam());
 }
@@ -284,7 +275,7 @@ TEST_F(BufferPoolTest, ConcurrentAllocateAndFree)
     auto worker = [&pool, &failed]() {
         for (int i = 0; i < kOpsPerThread; ++i) {
             BufferPool::Slot slot;
-            auto status = pool.Allocate(64, slot);
+            auto status = pool.Allocate(slot);
             if (status.Failure()) {
                 failed = true;
                 return;
