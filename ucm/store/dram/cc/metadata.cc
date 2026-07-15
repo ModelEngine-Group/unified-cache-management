@@ -22,6 +22,7 @@
  * SOFTWARE.
  * */
 #include "metadata.h"
+#include <cstdlib>
 #include "logger/logger.h"
 #include "pos_eviction_policy.h"
 #include "ttl_eviction_policy.h"
@@ -145,6 +146,37 @@ std::vector<BlockId> ShardMetadata::EvictDeep(double evict_ratio)
 {
     ReadOnlyGuard lock(mtx_);
     return deepEvictor_->GetEvictionResults(evict_ratio);
+}
+
+Status MetadataManager::StoreBegin(const BlockId& key, EntryPtr entry)
+{
+    auto idx = ShardIdx(key);
+    entry->shard = static_cast<uint32_t>(idx);
+    // TODO: integrate BufferManager allocation for entry.
+    Status st = Status::OK();
+    if (!st.Success()) {
+        EvictOneShard(*shards_[rand() % kShardCnt]);
+        // TODO: retry BufferManager allocation, update st.
+        if (!st.Success()) { EvictOneShard(*shards_[rand() % kShardCnt], true); }
+    }
+    return shards_[idx]->StoreBegin(key, std::move(entry));
+}
+
+void MetadataManager::EvictLoop()
+{
+    while (true) {
+        std::unique_lock<std::mutex> lock(cvMtx_);
+        cv_.wait_for(lock, evictPeriod_, [this] { return stop_.load(); });
+        if (stop_.load()) { return; }
+        for (auto& s : shards_) { EvictOneShard(*s); }
+    }
+}
+
+void MetadataManager::EvictOneShard(ShardMetadata& s, bool deep)
+{
+    auto victims = deep ? s.EvictDeep(defaultEvictRatio_) : s.EvictPeriodic(defaultEvictRatio_);
+    // TODO: integrate BufferManager release for victim entries.
+    for (const auto& k : victims) { s.Delete(k); }
 }
 
 }  // namespace UC::DramStore

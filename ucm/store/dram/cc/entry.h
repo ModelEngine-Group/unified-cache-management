@@ -42,16 +42,30 @@ enum class EntryStatus {
     DELETING,
 };
 
+/**
+ * @brief Per-key cache entry record.
+ *
+ * Concurrency contract:
+ *   - `refCnt`, `leaseTimeout`, `status` are mutable after construction; they
+ *     MUST be read or written while holding `lock` (the member Spinlock).
+ *   - All other fields are immutable after the entry is published.
+ */
 struct Entry {
     BlockId key;
-    uint32_t refCnt{0};
     uint32_t shard{0};
+
+    // Attributes for buffer
     uint32_t slot{0};
     void* addr{nullptr};
     std::size_t size{0};
+
+    // Mutable attributes guarded by Spinlock
+    Spinlock lock;
+    uint32_t refCnt{0};
     std::chrono::system_clock::time_point leaseTimeout{};
     EntryStatus status{EntryStatus::INITIALIZED};
-    Spinlock lock;
+
+    // Attributes for eviction
     std::chrono::system_clock::time_point lifeTimeout{};
     uint32_t position{0};
 
