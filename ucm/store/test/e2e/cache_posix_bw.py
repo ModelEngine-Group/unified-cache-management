@@ -45,6 +45,7 @@ epoch_interval_ms = 15
 cache_sdma_direct = True
 storage_backends = ["./build/data"]
 worker_cpu_affinity_enable = True
+ucm_log_level = "info"
 
 # =========================== User configuration ===========================
 model_name = "glm-5.2"
@@ -388,7 +389,8 @@ def worker_loop(
     signal.signal(signal.SIGTSTP, signal.SIG_IGN)
     if cpu_affinity_cores:
         os.sched_setaffinity(0, cpu_affinity_cores)
-    os.environ["UC_LOGGER_LEVEL"] = "warning"
+    os.environ["UCM_LOG_LEVEL"] = ucm_log_level
+    os.environ["UC_LOGGER_LEVEL"] = ucm_log_level
     make_storage_dirs()
     device = setup_device(device_id)
     worker = create_cache_worker(unique_id, device_id, cpu_affinity_cores)
@@ -404,7 +406,8 @@ def worker_loop(
         f"storage_backends={storage_backends}, "
         f"cache_sdma_direct={cache_sdma_direct}, "
         f"worker_cpu_affinity_enable={worker_cpu_affinity_enable}, "
-        f"cpu_affinity_cores={cpu_affinity_cores}"
+        f"cpu_affinity_cores={cpu_affinity_cores}, "
+        f"ucm_log_level={ucm_log_level}"
     )
 
     barrier.wait()
