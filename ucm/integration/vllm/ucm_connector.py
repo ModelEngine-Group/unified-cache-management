@@ -1,4 +1,4 @@
-import copy
+﻿import copy
 import hashlib
 import math
 import os
@@ -29,14 +29,6 @@ from vllm.distributed.parallel_state import get_world_group
 from vllm.model_executor.models.utils import extract_layer_index
 from vllm.platforms import current_platform
 from vllm.v1.core.sched.output import SchedulerOutput
-from vllm.v1.kv_cache_interface import (
-    FullAttentionSpec,
-    KVCacheConfig,
-    KVCacheSpec,
-    MambaSpec,
-    SlidingWindowSpec,
-    UniformTypeKVCacheSpecs,
-)
 from vllm.v1.outputs import KVConnectorOutput
 
 from ucm.integration.vllm.device import create_device
@@ -77,6 +69,95 @@ if TYPE_CHECKING:
 from ucm.sparse.state import has_ucm_sparse
 
 logger = init_logger(__name__)
+
+_GIB = 1 << 30
+_CACHE_BUFFER_CAPACITY_KEY = "cache_buffer_capacity_gb"
+_CACHE_STORE_DEFAULT_BUFFER_CAPACITY_GB = 256
+_CACHE_STORE_DEFAULT_UNSHARED_BUFFER_CAPACITY_GB = 32
+_CACHE_STORE_COMPACT_CAPACITY_THRESHOLD_GB = 32
+_CACHE_STORE_MIN_BUFFER_NUMBER = 1024
+_CACHE_STORE_DEFAULT_LOAD_EXCLUSIVE_BUFFER_NUMBER = 1024
+
+
+def _normalize_tensor_size_list(tensor_size_list: Any) -> list[int]:
+    if isinstance(tensor_size_list, np.ndarray):
+        return [int(v) for v in tensor_size_list.reshape(-1).tolist()]
+    if isinstance(tensor_size_list, (list, tuple)):
+        return [int(v) for v in tensor_size_list]
+    return [int(tensor_size_list)]
+
+
+def _cache_store_required_capacity_gb(
+    config: dict[str, Any],
+    shard_size: int,
+) -> tuple[int, int]:
+    try:
+        load_exclusive_buffer_number = int(
+            config.get(
+                "cache_load_exclusive_buffer_number",
+                _CACHE_STORE_DEFAULT_LOAD_EXCLUSIVE_BUFFER_NUMBER,
+            )
+        )
+    except (TypeError, ValueError):
+        load_exclusive_buffer_number = _CACHE_STORE_DEFAULT_LOAD_EXCLUSIVE_BUFFER_NUMBER
+
+    required_buffer_number = max(
+        _CACHE_STORE_MIN_BUFFER_NUMBER,
+        load_exclusive_buffer_number * 2,
+    )
+    required_capacity_bytes = int(shard_size) * required_buffer_number
+    return math.ceil(required_capacity_bytes / _GIB), required_buffer_number
+
+
+def _ensure_cache_store_buffer_capacity(
+    config: dict[str, Any], shard_size: int
+) -> None:
+    if shard_size <= 0:
+        return
+
+    required_capacity_gb, required_buffer_number = _cache_store_required_capacity_gb(
+        config, shard_size
+    )
+    required_capacity_bytes = required_capacity_gb * _GIB
+
+    configured_capacity = config.get(_CACHE_BUFFER_CAPACITY_KEY)
+    if configured_capacity is None:
+        share_buffer_enable = bool(config.get("share_buffer_enable", True))
+        current_capacity_gb = (
+            _CACHE_STORE_DEFAULT_BUFFER_CAPACITY_GB
+            if share_buffer_enable
+            else _CACHE_STORE_DEFAULT_UNSHARED_BUFFER_CAPACITY_GB
+        )
+        source = "default"
+    else:
+        try:
+            current_capacity_gb = int(configured_capacity)
+        except (TypeError, ValueError):
+            logger.warning(
+                f"Invalid {_CACHE_BUFFER_CAPACITY_KEY}={configured_capacity}; "
+                "skip automatic capacity adjustment."
+            )
+            return
+        source = "configured"
+
+    if current_capacity_gb * _GIB >= required_capacity_bytes:
+        return
+    if required_capacity_gb <= _CACHE_STORE_COMPACT_CAPACITY_THRESHOLD_GB:
+        logger.warning(
+            f"{_CACHE_BUFFER_CAPACITY_KEY}={source} {current_capacity_gb}GB "
+            f"is smaller than required {required_capacity_gb}GB for "
+            f"shard_size={shard_size}, required_buffer_number={required_buffer_number}; "
+            "keep it unchanged because the required capacity does not exceed "
+            f"{_CACHE_STORE_COMPACT_CAPACITY_THRESHOLD_GB}GB."
+        )
+        return
+
+    config[_CACHE_BUFFER_CAPACITY_KEY] = required_capacity_gb
+    logger.warning(
+        f"Increase {_CACHE_BUFFER_CAPACITY_KEY} from {source} "
+        f"{current_capacity_gb}GB to {required_capacity_gb}GB for "
+        f"shard_size={shard_size}, required_buffer_number={required_buffer_number}."
+    )
 
 
 def _short_list(values: list[int], limit: int = 12) -> list[int]:
@@ -132,34 +213,6 @@ class RequestMeta:
 
 
 @dataclass
-class HMARequestMeta(RequestMeta):
-    """RequestMeta extended with per-group block tracking for hybrid models.
-
-    The inherited fields (``ucm_block_ids``, ``hbm_hit_block_num``,
-    ``total_hit_block_num``, ``num_token_ids``, ``vllm_block_ids``,
-    ``token_processed``) keep their original semantics and mirror the
-    full-attention group exactly, so dispatch/load/save paths inherited from
-    :class:`UCMDirectConnector` keep working.
-
-    The two new fields are 2D lists indexed by the original
-    ``kv_cache_config.kv_cache_groups`` order (i.e. ``[group_id]``):
-    - ``group_ucm_block_ids[gid]``: full block hashes obtained by hashing
-      ``request.all_token_ids`` with group ``gid``'s own block size and
-      chain seed. ``group_ucm_block_ids[full_attn_group_id]`` equals the
-      inherited ``ucm_block_ids``.
-    - ``group_vllm_block_ids[gid]``: per-group VLLM physical block ids; this
-      is initialized as an empty list per group here, then filled from the
-      scheduler allocation snapshot by :meth:`UCMHMAConnector.update_state_after_alloc`
-      and maintained by :meth:`UCMHMAConnector._generate_hma_dispatch_meta`.
-      HMA dispatch later slices these per-group tables to build the flattened
-      load/dump pairs consumed by the inherited I/O path.
-    """
-
-    group_ucm_block_ids: list[list[bytes]] = field(default_factory=list)
-    group_vllm_block_ids: list[list[int]] = field(default_factory=list)
-
-
-@dataclass
 class RequestDispatchMeta:
     load_block_ids: tuple[
         list[bytes], list[int]
@@ -194,7 +247,6 @@ class KVCacheLayout:
         }
         self.first_layer_id = next(iter(self.layer_name_to_id.values()))
         self.num_blocks = self.kv_cache_config.num_blocks
-        self.layer_name_to_kv_cache_spec = layer_name_to_kv_cache_spec(kv_cache_config)
         self._build_layout(kvcaches)
 
     def _build_layout(self, kvcaches):
@@ -264,6 +316,15 @@ class KVCacheLayout:
             + self.base_ptrs[None, :, :]
         )  # (num_blocks, n_layers, n_ptrs)
 
+    def extract_block_addrs_for_row(
+        self, vllm_block_ids: List[int], row_id: int
+    ) -> np.ndarray:
+        vllm_block_ids_np = np.asarray(vllm_block_ids, dtype=np.uint64)
+        return (
+            vllm_block_ids_np[:, None] * self.block_stride_lists[row_id][None, :]
+            + self.base_ptrs[row_id][None, :]
+        )
+
     @property
     def tensor_size_list(self) -> list[int]:
         return (
@@ -304,8 +365,12 @@ class PendingDumpTask:
 class RequestHasher:
     """hash(md5) request to generate ucm block id"""
 
-    def __init__(self, vllm_config, rank_id):
-        meta = f"{vllm_config.model_config.model}:{vllm_config.parallel_config.tensor_parallel_size}:{vllm_config.model_config.dtype}:{rank_id}"
+    def __init__(self, vllm_config, rank_id, namespace: str = ""):
+        meta = (
+            f"{vllm_config.model_config.model}:"
+            f"{vllm_config.parallel_config.tensor_parallel_size}:"
+            f"{vllm_config.model_config.dtype}:{rank_id}:{namespace}"
+        )
         self.meta_bytes = meta.encode("utf-8")
 
     def __call__(self, input_data) -> bytes:
@@ -423,7 +488,9 @@ class UCMDirectConnector(KVConnectorBase_V1):
                 self.store = self._create_store(None)
         else:
             self.request_hasher = RequestHasher(
-                vllm_config, self.tp_rank % self.tp_size
+                vllm_config,
+                self.tp_rank % self.tp_size,
+                self._request_hash_namespace(),
             )
             self._connector_worker_meta = UCMWorkerMetadata()
 
@@ -471,6 +538,9 @@ class UCMDirectConnector(KVConnectorBase_V1):
             }
         )
 
+    def _request_hash_namespace(self) -> str:
+        return str(self.launch_config.get("request_hash_namespace", ""))
+
     def generate_hash(
         self, block_size: int, token_ids: List[int], parent_block_hash_value: bytes
     ) -> list[bytes]:
@@ -494,7 +564,11 @@ class UCMDirectConnector(KVConnectorBase_V1):
     def _create_store(
         self,
         kv_cache_layout: Optional[KVCacheLayout],
-        cpu_affinity_cores: Optional[list[int]] = None,
+        tensor_size_list_override: Optional[list[int]] = None,
+        shard_size_override: Optional[int] = None,
+        block_size_override: Optional[int] = None,
+        unique_id_suffix: str = "",
+        compact_cache_buffer_capacity: bool = False,
     ) -> UcmKVStoreBaseV1:
         if len(self.connector_configs) != 1:
             raise RuntimeError(
@@ -510,14 +584,63 @@ class UCMDirectConnector(KVConnectorBase_V1):
         if "storage_backends" in config:
             backends = [path for path in config["storage_backends"].split(":")]
             config["storage_backends"] = backends
-        config["unique_id"] = f"{self.engine_id}"
+        config["unique_id"] = f"{self.engine_id}{unique_id_suffix}"
         if self._role == KVConnectorRole.WORKER:
             config["device_id"] = self.local_rank
-            config["tensor_size_list"] = (
-                kv_cache_layout.tensor_size_list * self.blocks_per_chunk
+            tensor_size_list = _normalize_tensor_size_list(
+                tensor_size_list_override
+                if tensor_size_list_override is not None
+                else kv_cache_layout.tensor_size_list
             )
-            config["shard_size"] = kv_cache_layout.shard_size * self.blocks_per_chunk
-            config["block_size"] = kv_cache_layout.block_size * self.blocks_per_chunk
+            config["tensor_size_list"] = tensor_size_list * self.blocks_per_chunk
+            shard_size = (
+                shard_size_override
+                if shard_size_override is not None
+                else kv_cache_layout.shard_size
+            )
+            block_size = (
+                block_size_override
+                if block_size_override is not None
+                else kv_cache_layout.block_size
+            )
+            config["shard_size"] = shard_size * self.blocks_per_chunk
+            config["block_size"] = block_size * self.blocks_per_chunk
+            if compact_cache_buffer_capacity:
+                required_capacity_gb, required_buffer_number = (
+                    _cache_store_required_capacity_gb(config, config["shard_size"])
+                )
+                configured_capacity = config.get(_CACHE_BUFFER_CAPACITY_KEY)
+                if configured_capacity is None:
+                    config[_CACHE_BUFFER_CAPACITY_KEY] = (
+                        _CACHE_STORE_COMPACT_CAPACITY_THRESHOLD_GB
+                    )
+                    logger.info(
+                        f"Set {_CACHE_BUFFER_CAPACITY_KEY} to "
+                        f"{config[_CACHE_BUFFER_CAPACITY_KEY]}GB "
+                        f"for compact segmented shard_size={config['shard_size']}, "
+                        f"required_buffer_number={required_buffer_number}."
+                    )
+                else:
+                    try:
+                        configured_capacity_gb = int(configured_capacity)
+                    except (TypeError, ValueError):
+                        configured_capacity_gb = 0
+                    if (
+                        configured_capacity_gb
+                        > _CACHE_STORE_COMPACT_CAPACITY_THRESHOLD_GB
+                    ):
+                        config[_CACHE_BUFFER_CAPACITY_KEY] = max(
+                            _CACHE_STORE_COMPACT_CAPACITY_THRESHOLD_GB,
+                            required_capacity_gb,
+                        )
+                        logger.info(
+                            f"Adjust {_CACHE_BUFFER_CAPACITY_KEY} from "
+                            f"{configured_capacity_gb}GB to "
+                            f"{config[_CACHE_BUFFER_CAPACITY_KEY]}GB "
+                            f"for compact segmented shard_size={config['shard_size']}, "
+                            f"required_buffer_number={required_buffer_number}."
+                        )
+            _ensure_cache_store_buffer_capacity(config, config["shard_size"])
             config["local_rank_size"] = self.tp_size if self.is_mla else 1
             buffer_addrs = kv_cache_layout.base_ptrs.reshape(-1).tolist()
             buffer_sizes = kv_cache_layout.buffer_sizes.reshape(-1).tolist()
@@ -533,8 +656,6 @@ class UCMDirectConnector(KVConnectorBase_V1):
                 gpu_kv_buffer_sizes.append(key[1])
             config["gpu_kv_buffer_addrs"] = gpu_kv_buffer_addrs
             config["gpu_kv_buffer_sizes"] = gpu_kv_buffer_sizes
-            if cpu_affinity_cores:
-                config["cpu_affinity_cores"] = list(cpu_affinity_cores)
         else:
             config_base = self.block_size * self.element_size * self.head_size
             config["block_size"] = (
@@ -1860,1282 +1981,6 @@ class UCMLiteConnector(UCMDirectConnector):
         return 0, False
 
 
-def layer_name_to_kv_cache_spec(
-    kv_cache_config: KVCacheConfig,
-) -> dict[str, list[KVCacheSpec]]:
-    """Map each model layer name to its concrete KVCacheSpec.
-
-    Handles merged group specs and UniformTypeKVCacheSpecs (per-layer
-    ``kv_cache_specs`` entries).
-    """
-    out: dict[str, list[KVCacheSpec]] = defaultdict(list)
-    for group in kv_cache_config.kv_cache_groups:
-        spec = group.kv_cache_spec
-        if isinstance(spec, UniformTypeKVCacheSpecs):
-            by_name = spec.kv_cache_specs
-            for name in group.layer_names:
-                out[name].append(by_name[name])
-        else:
-            for name in group.layer_names:
-                out[name].append(spec)
-    return out
-
-
-def block_size_from_kv_cache_spec(spec: KVCacheSpec) -> int:
-    """Token block size used for KV scheduling / hashing for one group spec."""
-    block_size = 0
-    if isinstance(spec, UniformTypeKVCacheSpecs):
-        block_size = next(iter(spec.kv_cache_specs.values())).block_size
-    else:
-        block_size = spec.block_size
-
-    if current_platform.device_type == "npu" and hasattr(spec, "compress_ratio"):
-        block_size *= spec.compress_ratio
-
-    return block_size
-
-
-def is_mamba_align_kv_cache_spec(spec: KVCacheSpec) -> bool:
-    if isinstance(spec, UniformTypeKVCacheSpecs):
-        sample = next(iter(spec.kv_cache_specs.values()))
-        return is_mamba_align_kv_cache_spec(sample)
-    return isinstance(spec, MambaSpec) and spec.mamba_cache_mode == "align"
-
-
-def sliding_window_from_kv_cache_spec(spec: KVCacheSpec) -> Optional[int]:
-    """Return the sliding window size of a group spec, or None for full attention.
-
-    A group is treated as full attention iff its sample spec exposes no
-    ``sliding_window`` attribute or that attribute is ``None``.
-    """
-    if is_mamba_align_kv_cache_spec(spec):
-        return block_size_from_kv_cache_spec(spec)
-    if isinstance(spec, UniformTypeKVCacheSpecs):
-        sample = next(iter(spec.kv_cache_specs.values()))
-        return getattr(sample, "sliding_window", None)
-    return getattr(spec, "sliding_window", None)
-
-
-@dataclass
-class GroupInfo:
-    """Per-group metadata used by :class:`KVCacheGroupManager`."""
-
-    group_id: int
-    block_size: int
-    # None for full-attention groups, otherwise the window length in tokens.
-    sliding_window: Optional[int]
-    layer_names: tuple[str, ...]
-    # Independent hash chain seed per group (see ``KVCacheGroupManager``).
-    seed: bytes
-    is_mamba_align: bool = False
-
-    @property
-    def is_full_attention(self) -> bool:
-        return self.sliding_window is None
-
-
-class KVCacheGroupManager:
-    """Group-aware hashing and lookup for hybrid (HMA) connectors.
-
-    Splits ``kv_cache_config.kv_cache_groups`` into full-attention groups
-    (one or more) and sliding-window groups, derives a per-group hash chain
-    seed, and exposes a two-stage lookup that:
-
-    1. For every full-attention group, hashes ``request.all_token_ids`` with
-       that group's block size and runs ``store.lookup_on_prefix`` on the
-       blocks beyond its own ``hbm_hit_block_num``. The candidate hits (in
-       tokens) are min'd across full-attn groups and rounded down to
-       ``lcm_block_size``.
-    2. For each sliding-window group, re-hashes the same prefix with that
-       group's own block size and verifies the last
-       ``max(1, sliding_window // block_size)`` blocks all exist via
-       ``store.lookup`` (when ``block_size > sliding_window`` — e.g. on
-       Ascend — the last single block already covers the SW). If any
-       sliding-window group fails this check, the whole external hit is
-       downgraded to zero.
-    """
-
-    def __init__(
-        self,
-        kv_cache_config: "KVCacheConfig",
-        request_hasher: "RequestHasher",
-        base_seed: bytes,
-    ) -> None:
-        self.request_hasher = request_hasher
-        # Indexed by original group_id; positions match
-        # ``kv_cache_config.kv_cache_groups``.
-        self.groups_by_id: list[GroupInfo] = []
-        # All groups whose spec has no sliding_window. Order follows group_id.
-        self.full_attn_groups: list[GroupInfo] = []
-        self.sliding_window_groups: list[GroupInfo] = []
-
-        for group_id, group in enumerate(kv_cache_config.kv_cache_groups):
-            spec = group.kv_cache_spec
-            block_size = block_size_from_kv_cache_spec(spec)
-            sliding_window = sliding_window_from_kv_cache_spec(spec)
-            # Mix group_id into the hash chain seed so two groups with the
-            # same block_size do not collide in the underlying store.
-            seed = request_hasher((b"UCM_GROUP_SEED", base_seed, group_id))
-            info = GroupInfo(
-                group_id=group_id,
-                block_size=block_size,
-                sliding_window=sliding_window,
-                layer_names=tuple(group.layer_names),
-                seed=seed,
-                is_mamba_align=is_mamba_align_kv_cache_spec(spec),
-            )
-            self.groups_by_id.append(info)
-            if info.is_full_attention:
-                self.full_attn_groups.append(info)
-            else:
-                self.sliding_window_groups.append(info)
-
-        assert len(self.full_attn_groups) >= 1, (
-            "UCMHMAConnector expects at least one full-attention group in "
-            "kv_cache_config.kv_cache_groups."
-        )
-
-        # Resume points must be aligned to the LCM of every group's
-        # block_size so that per-group block accounting (including each
-        # full-attn group's lookup result and every SW group's tail slice)
-        # lands on a clean block boundary.
-        all_block_sizes = [g.block_size for g in self.groups_by_id]
-        self.lcm_block_size: int = math.lcm(*all_block_sizes)
-
-        for g in self.groups_by_id:
-            assert self.lcm_block_size % g.block_size == 0, (
-                f"group {g.group_id} block_size={g.block_size} does not "
-                f"divide LCM={self.lcm_block_size}"
-            )
-        for sw in self.sliding_window_groups:
-            # The dump path stores only ``[B - sliding_window, B)`` for each
-            # LCM boundary B. Requiring ``sliding_window <= lcm_block_size``
-            # guarantees consecutive boundaries' tails do not overlap, so the
-            # incremental dump can append each boundary's tail without
-            # cross-boundary deduplication.
-            assert sw.sliding_window <= self.lcm_block_size, (
-                f"sliding window group {sw.group_id} sliding_window="
-                f"{sw.sliding_window} > lcm_block_size="
-                f"{self.lcm_block_size}; not supported."
-            )
-            # On some backends (e.g. Ascend) ``block_size`` can exceed
-            # ``sliding_window``; in that case a single block already holds
-            # more than a window of tokens, so we will treat the last block
-            # as the SW tail and skip the divisibility check.
-            if sw.block_size >= sw.sliding_window:
-                continue
-            if sw.sliding_window % sw.block_size != 0:
-                raise ValueError(
-                    f"Sliding window group {sw.group_id} sliding_window="
-                    f"{sw.sliding_window} is not a multiple of block_size="
-                    f"{sw.block_size}."
-                )
-
-        logger.info(
-            "KVCacheGroupManager initialized: "
-            f"lcm_block_size={self.lcm_block_size}, "
-            f"full_attn_groups="
-            f"{[(g.group_id, g.block_size) for g in self.full_attn_groups]}, "
-            f"sliding_window_groups="
-            f"{[(g.group_id, g.block_size, g.sliding_window, g.is_mamba_align) for g in self.sliding_window_groups]}"
-        )
-
-    @property
-    def num_groups(self) -> int:
-        return len(self.groups_by_id)
-
-    def compute_block_hashes(
-        self, group: GroupInfo, token_ids: list[int]
-    ) -> list[bytes]:
-        """Hash ``token_ids`` into per-block ids using ``group``'s chain seed."""
-        if group.is_mamba_align:
-            # In mamba-align mode vLLM pads the per-request block table with
-            # block_id=0 and only keeps the current state block as a real
-            # physical page. Hashing every logical token block here would
-            # create keys for pages that can never be loaded or dumped.
-            return [b""] * (len(token_ids) // group.block_size)
-
-        ret: list[bytes] = []
-        parent = group.seed
-        block_size = group.block_size
-        for start in range(0, len(token_ids), block_size):
-            end = start + block_size
-            block_token_ids = token_ids[start:end]
-            if len(block_token_ids) < block_size:
-                break
-            hash_value = self.request_hasher((parent, tuple(block_token_ids)))
-            parent = hash_value
-            ret.append(hash_value)
-        return ret
-
-    def compute_all_group_block_ids(self, token_ids: list[int]) -> list[list[bytes]]:
-        """Compute full block hashes for every group, indexed by group_id.
-
-        ``ret[gid]`` covers all aligned blocks of ``token_ids`` using group
-        ``gid``'s ``block_size`` and chain seed. The trailing partial block
-        (if any) is dropped, matching :meth:`compute_block_hashes`.
-        """
-        return [self.compute_block_hashes(g, token_ids) for g in self.groups_by_id]
-
-    def compute_mamba_align_state_hash(
-        self,
-        group: GroupInfo,
-        seq_len: int,
-        group_block_ids: list[list[bytes]],
-    ) -> Optional[bytes]:
-        """Derive the hash for the real mamba-align state page at ``seq_len``.
-
-        The mamba state represents the whole prefix up to ``seq_len`` instead
-        of a normal KV block. We derive its key from the primary full-attention
-        prefix hash, so the state key still changes with every prefix token but
-        we do not need to materialize hashes for mamba's leading null blocks.
-        """
-        if seq_len <= 0 or seq_len % self.lcm_block_size != 0:
-            return None
-        primary = self.full_attn_groups[0]
-        prefix_idx = seq_len // primary.block_size - 1
-        if prefix_idx < 0:
-            return None
-        try:
-            prefix_hash = group_block_ids[primary.group_id][prefix_idx]
-        except IndexError:
-            logger.error(
-                "mamba-align state hash missing primary prefix hash: "
-                f"group_id={group.group_id}, seq_len={seq_len}, "
-                f"primary_group_id={primary.group_id}, "
-                f"prefix_idx={prefix_idx}, "
-                f"num_primary_hashes="
-                f"{len(group_block_ids[primary.group_id])}"
-            )
-            return None
-        if not prefix_hash:
-            return None
-        return self.request_hasher(
-            (group.seed, b"UCM_MAMBA_ALIGN_STATE", seq_len, prefix_hash)
-        )
-
-    def lookup_external_hit_tokens(
-        self,
-        num_computed_tokens: int,
-        store: "UcmKVStoreBaseV1",
-        group_block_ids: list[list[bytes]],
-    ) -> tuple[int, int]:
-        """Two-stage HMA lookup using precomputed per-group hashes.
-
-        ``group_block_ids`` must have one entry per group, indexed by the
-        original ``group_id`` (see :meth:`compute_all_group_block_ids`).
-
-        Stage 1 — every full-attention group runs ``lookup_on_prefix``
-        beyond its own ``hbm_hit_block_num``; the candidate hits are taken
-        as a min and rounded down to ``lcm_block_size`` so the final
-        external hit is consistent across all full-attn groups and aligns
-        to the kv-cache page granularity expected by the scheduler.
-
-        Stage 2 — every sliding-window group must have the last
-        ``sliding_window // block_size`` blocks before ``total_hit_tokens``
-        present in the store; if any group fails, the whole external hit
-        is downgraded to zero.
-
-        Returns:
-            Tuple of
-            - ``external_hit_tokens``: tokens hit beyond ``num_computed_tokens``,
-              aligned to ``lcm_block_size``. ``0`` if any check fails.
-            - ``external_hit_lcm_blocks``: ``external_hit_tokens //
-              lcm_block_size`` (also ``0`` on downgrade).
-        """
-        assert len(group_block_ids) == self.num_groups, (
-            f"group_block_ids length {len(group_block_ids)} does not match "
-            f"num_groups {self.num_groups}"
-        )
-        assert num_computed_tokens % self.lcm_block_size == 0, (
-            f"num_computed_tokens={num_computed_tokens} is not aligned to "
-            f"lcm_block_size={self.lcm_block_size}"
-        )
-
-        # Stage 1: each full-attn group contributes a candidate hit count.
-        candidates: list[int] = []
-        for fa in self.full_attn_groups:
-            fa_block_ids = group_block_ids[fa.group_id]
-            fa_hbm_blocks = num_computed_tokens // fa.block_size
-            fa_external = fa_block_ids[fa_hbm_blocks:]
-            if not fa_external:
-                candidates.append(0)
-                continue
-            try:
-                fa_hit_blocks = store.lookup_on_prefix(fa_external) + 1
-            except Exception as e:
-                logger.error(
-                    f"full-attn group {fa.group_id} lookup error. "
-                    f"{type(e).__name__}: {e}"
-                )
-                _record_counter("connector_lookup_errors_total")
-                candidates.append(0)
-                continue
-            candidates.append(max(fa_hit_blocks, 0) * fa.block_size)
-
-        # Resume boundary must be a multiple of lcm_block_size so every
-        # group's tail/dispatch slicing lands on a real block boundary.
-        min_external_hit_tokens = min(candidates)
-        external_hit_tokens = (
-            min_external_hit_tokens // self.lcm_block_size
-        ) * self.lcm_block_size
-        if external_hit_tokens <= 0:
-            return 0, 0
-
-        # Stage 2: every SW group's tail window must be in the store.
-        total_hit_tokens = num_computed_tokens + external_hit_tokens
-        for sw in self.sliding_window_groups:
-            if sw.is_mamba_align:
-                mamba_state_hash = self.compute_mamba_align_state_hash(
-                    sw, total_hit_tokens, group_block_ids
-                )
-                if mamba_state_hash is None:
-                    logger.info(
-                        f"mamba-align group {sw.group_id} state hash missing "
-                        f"at total_hit_tokens={total_hit_tokens}, "
-                        "downgrade external hit to 0."
-                    )
-                    return 0, 0
-                try:
-                    results = store.lookup([mamba_state_hash])
-                except Exception as e:
-                    logger.error(
-                        f"mamba-align group {sw.group_id} lookup error. "
-                        f"{type(e).__name__}: {e}"
-                    )
-                    _record_counter("connector_lookup_errors_total")
-                    return 0, 0
-                if not all(results):
-                    logger.info(
-                        f"mamba-align group {sw.group_id} state miss: "
-                        f"hits={results}, downgrade external hit to 0."
-                    )
-                    return 0, 0
-                continue
-
-            # When ``block_size > sliding_window`` (e.g. on Ascend) a single
-            # block already covers more than a window of tokens, so we use
-            # the last block as the SW tail (tail_count = 1). Otherwise
-            # ``sliding_window`` is a multiple of ``block_size`` (validated
-            # in __init__) and we take exactly ``sliding_window/block_size``
-            # blocks.
-            tail_count = max(1, sw.sliding_window // sw.block_size)
-            min_required_tokens = tail_count * sw.block_size
-            if total_hit_tokens < min_required_tokens:
-                logger.info(
-                    f"sliding window group {sw.group_id} tail check skipped: "
-                    f"total_hit_tokens={total_hit_tokens} < "
-                    f"min_required={min_required_tokens} "
-                    f"(sliding_window={sw.sliding_window}, "
-                    f"block_size={sw.block_size}), downgrade to 0."
-                )
-                return 0, 0
-
-            sw_block_ids = group_block_ids[sw.group_id]
-            # ``sw.block_size`` divides ``total_hit_tokens`` because
-            # ``total_hit_tokens`` is a multiple of ``lcm_block_size`` and
-            # ``lcm_block_size`` is divisible by every group's block_size
-            # (validated in __init__).
-            num_blocks_in_total_hit = total_hit_tokens // sw.block_size
-            tail_block_ids = sw_block_ids[
-                num_blocks_in_total_hit - tail_count : num_blocks_in_total_hit
-            ]
-            try:
-                results = store.lookup(tail_block_ids)
-            except Exception as e:
-                logger.error(
-                    f"sliding window group {sw.group_id} lookup error. "
-                    f"{type(e).__name__}: {e}"
-                )
-                _record_counter("connector_lookup_errors_total")
-                return 0, 0
-            if not all(results):
-                logger.info(
-                    f"sliding window group {sw.group_id} tail miss: "
-                    f"hits={results}, downgrade external hit to 0."
-                )
-                return 0, 0
-
-        return external_hit_tokens, external_hit_tokens // self.lcm_block_size
-
-
-class HMAKVCacheLayout(KVCacheLayout):
-    def __init__(
-        self,
-        kvcaches,
-        ucm_config: dict,
-        vllm_config: "VllmConfig",
-        kv_cache_config: "KVCacheConfig",
-    ):
-        super().__init__(kvcaches, ucm_config, vllm_config, kv_cache_config)
-
-    def _build_layout(self, kvcaches):
-        base_ptrs = []
-        buffer_size_rows = []
-        tensor_size_lists = []
-        block_stride_lists = []
-
-        for raw_tensor in self.kv_cache_config.kv_cache_tensors:
-            ptrs = []
-            buffer_sizes = []
-            tensor_sizes = []
-            block_strides = []
-
-            if raw_tensor.shared_by:
-                sample_layer_name = raw_tensor.shared_by[0]
-                kv_layer = kvcaches.get(sample_layer_name)
-                if kv_layer is None:
-                    logger.warning(
-                        f"kv_layer {sample_layer_name} not found in kvcaches"
-                    )
-                    continue
-                kv_cache_spec = self.layer_name_to_kv_cache_spec[sample_layer_name][0]
-                if isinstance(kv_layer, torch.Tensor):
-                    ptrs.append(kv_layer.data_ptr())
-                    buffer_sizes.append(raw_tensor.size)
-                    tensor_sizes.append(kv_cache_spec.page_size_bytes)
-                    block_strides.append(kv_cache_spec.page_size_bytes)
-                elif isinstance(kv_layer, (tuple, list)):
-                    ptrs.append(kv_layer[0].data_ptr())
-                    buffer_sizes.append(raw_tensor.size)
-                    tensor_sizes.append(kv_cache_spec.page_size_bytes)
-                    block_strides.append(kv_cache_spec.page_size_bytes)
-                else:
-                    logger.warning(f"unsupported kv_layer type: {type(kv_layer)}")
-
-            if not ptrs and not tensor_sizes:
-                continue
-
-            base_ptrs.append(ptrs)
-            buffer_size_rows.append(buffer_sizes)
-            tensor_size_lists.append(tensor_sizes)
-            block_stride_lists.append(block_strides)
-
-        self.base_ptrs = np.asarray(base_ptrs, dtype=np.uint64)
-        self.buffer_sizes = np.asarray(buffer_size_rows, dtype=np.uint64)
-        self.tensor_size_lists = np.asarray(tensor_size_lists, dtype=np.uint64)
-        self.block_stride_lists = np.asarray(block_stride_lists, dtype=np.uint64)
-
-        logger.info(
-            f"base_ptrs: {self.base_ptrs.shape}, tensor_size_lists: {self.tensor_size_lists.shape}"
-        )
-
-
-class AscendDSV4Layout(HMAKVCacheLayout):
-    def __init__(
-        self,
-        kvcaches,
-        ucm_config: dict,
-        vllm_config: "VllmConfig",
-        kv_cache_config: "KVCacheConfig",
-    ):
-        super().__init__(kvcaches, ucm_config, vllm_config, kv_cache_config)
-        self.indexer_scale_size_bytes = 0
-        for _, layer_specs in self.layer_name_to_kv_cache_spec.items():
-            for spec in layer_specs:
-                if hasattr(spec, "indexer_scale_size_bytes"):
-                    self.indexer_scale_size_bytes = spec.indexer_scale_size_bytes
-                    break
-
-    def _build_layout(self, kvcaches):
-        self.indexer_scale_size_bytes = 0
-        for _, layer_specs in self.layer_name_to_kv_cache_spec.items():
-            for spec in layer_specs:
-                if hasattr(spec, "indexer_scale_size_bytes"):
-                    self.indexer_scale_size_bytes = spec.indexer_scale_size_bytes
-                    break
-
-        base_ptrs = []
-        buffer_size_rows = []
-        tensor_size_lists = []
-        block_stride_lists = []
-
-        for raw_tensor in self.kv_cache_config.kv_cache_tensors:
-            ptrs = []
-            buffer_sizes = []
-            tensor_sizes = []
-            block_strides = []
-            kv_size = raw_tensor.size - self.indexer_scale_size_bytes * self.num_blocks
-
-            if raw_tensor.shared_by:
-                sample_layer_name = raw_tensor.shared_by[0]
-                kv_layer = kvcaches.get(sample_layer_name)
-                if kv_layer is None:
-                    logger.warning(
-                        f"kv_layer {sample_layer_name} not found in kvcaches"
-                    )
-                    continue
-                kv_cache_specs = self.layer_name_to_kv_cache_spec[sample_layer_name]
-                if isinstance(kv_layer, (tuple, list)):
-                    ptrs.append(kv_layer[0].data_ptr())
-                    buffer_sizes.append(kv_size)
-                    tensor_sizes.append(
-                        kv_cache_specs[0].page_size_bytes
-                        - self.indexer_scale_size_bytes
-                    )
-                    block_strides.append(
-                        kv_cache_specs[0].page_size_bytes
-                        - self.indexer_scale_size_bytes
-                    )
-                    ptrs.append(kv_layer[0].data_ptr() + kv_size)
-                    buffer_sizes.append(self.indexer_scale_size_bytes * self.num_blocks)
-                    tensor_sizes.append(self.indexer_scale_size_bytes)
-                    block_strides.append(self.indexer_scale_size_bytes)
-                else:
-                    logger.warning(f"unsupported kv_layer type: {type(kv_layer)}")
-
-            if not ptrs and not tensor_sizes:
-                continue
-
-            base_ptrs.append(ptrs)
-            buffer_size_rows.append(buffer_sizes)
-            tensor_size_lists.append(tensor_sizes)
-            block_stride_lists.append(block_strides)
-
-        self.base_ptrs = np.asarray(base_ptrs, dtype=np.uint64)
-        self.buffer_sizes = np.asarray(buffer_size_rows, dtype=np.uint64)
-        self.tensor_size_lists = np.asarray(tensor_size_lists, dtype=np.uint64)
-        self.block_stride_lists = np.asarray(block_stride_lists, dtype=np.uint64)
-
-        logger.info(
-            f"base_ptrs: {self.base_ptrs.shape}, tensor_size_lists: {self.tensor_size_lists.shape}"
-        )
-
-
-def _dtype_size(dtype: torch.dtype) -> int:
-    return torch.empty((), dtype=dtype).element_size()
-
-
-def _mamba_component_sizes(spec: MambaSpec) -> list[int]:
-    return [
-        math.prod(shape) * _dtype_size(dtype)
-        for shape, dtype in zip(spec.shapes, spec.dtypes)
-    ]
-
-
-def _attention_component_sizes(spec: KVCacheSpec) -> tuple[int, int]:
-    assert isinstance(spec, FullAttentionSpec)
-    k_size = (
-        spec.block_size * spec.num_kv_heads * spec.head_size * _dtype_size(spec.dtype)
-    )
-    head_size_v = getattr(spec, "head_size_v", spec.head_size)
-    v_size = spec.block_size * spec.num_kv_heads * head_size_v * _dtype_size(spec.dtype)
-    return k_size, v_size
-
-
-class HybridLinearAttentionLayout(HMAKVCacheLayout):
-    """Physical layout for hybrid full-attention + linear-attention pages.
-
-    vLLM may back full-attention and linear-attention layers with one shared
-    raw int8 tensor. The physical layout is backend dependent:
-
-    - Ascend stores the shared page in component-major order:
-        [conv_block_or_padding, k_or_ssm_block, v_block_or_padding]
-      across all physical blocks.
-    - CUDA stores one contiguous page per physical block. The same bytes are
-      viewed as either attention [K, V] or mamba [conv, ssm, padding].
-
-    The store receives one unified tensor_size_list, so we expose the three
-    physical slices for Ascend, while CUDA is exposed as one contiguous page
-    with a full-page stride.
-    """
-
-    def _collect_shared_tensor_info(
-        self,
-        raw_tensor,
-        kvcaches,
-    ) -> tuple[list[KVCacheSpec], list[int]]:
-        shared_specs: list[KVCacheSpec] = []
-        shared_ptrs: list[int] = []
-        for layer_name in raw_tensor.shared_by:
-            kv_layer = kvcaches.get(layer_name)
-            if kv_layer is None:
-                continue
-            shared_specs.extend(self.layer_name_to_kv_cache_spec[layer_name])
-            if isinstance(kv_layer, torch.Tensor):
-                shared_ptrs.append(kv_layer.data_ptr())
-            elif isinstance(kv_layer, (tuple, list)):
-                for tensor in kv_layer:
-                    if isinstance(tensor, torch.Tensor):
-                        shared_ptrs.append(tensor.data_ptr())
-            else:
-                logger.warning(f"unsupported kv_layer type: {type(kv_layer)}")
-        return shared_specs, shared_ptrs
-
-    def _append_contiguous_page_layout(
-        self,
-        raw_tensor,
-        shared_ptrs: list[int],
-        base_ptrs: list[list[int]],
-        buffer_size_rows: list[list[int]],
-        tensor_size_lists: list[list[int]],
-        block_stride_lists: list[list[int]],
-    ) -> None:
-        if raw_tensor.size % self.num_blocks != 0:
-            raise ValueError(
-                "Invalid hybrid linear-attention raw tensor size: "
-                f"raw_size={raw_tensor.size}, num_blocks={self.num_blocks}"
-            )
-        page_size = raw_tensor.size // self.num_blocks
-        base = min(shared_ptrs)
-        base_ptrs.append([base])
-        buffer_size_rows.append([raw_tensor.size])
-        tensor_size_lists.append([page_size])
-        block_stride_lists.append([page_size])
-
-    def _append_ascend_component_major_layout(
-        self,
-        raw_tensor,
-        shared_ptrs: list[int],
-        mamba_specs: list[MambaSpec],
-        attn_specs: list[FullAttentionSpec],
-        base_ptrs: list[list[int]],
-        buffer_size_rows: list[list[int]],
-        tensor_size_lists: list[list[int]],
-        block_stride_lists: list[list[int]],
-    ) -> None:
-        mamba_sizes = _mamba_component_sizes(mamba_specs[0])
-        if len(mamba_sizes) < 2:
-            logger.warning(
-                f"unexpected mamba component sizes {mamba_sizes}; "
-                "falling back to contiguous page layout"
-            )
-            self._append_contiguous_page_layout(
-                raw_tensor,
-                shared_ptrs,
-                base_ptrs,
-                buffer_size_rows,
-                tensor_size_lists,
-                block_stride_lists,
-            )
-            return
-
-        conv_size = mamba_sizes[0]
-        ssm_size = mamba_sizes[1]
-        k_size, v_size = _attention_component_sizes(attn_specs[0])
-        middle_size = max(k_size, ssm_size)
-        page_size = raw_tensor.size // self.num_blocks
-        tail_size = page_size - conv_size - middle_size
-        if tail_size <= 0:
-            raise ValueError(
-                "Invalid Ascend hybrid linear-attention page layout: "
-                f"page_size={page_size}, conv_size={conv_size}, "
-                f"middle_size={middle_size}, tail_size={tail_size}"
-            )
-        if tail_size < v_size:
-            raise ValueError(
-                "Ascend hybrid linear-attention tail cannot hold attention V: "
-                f"tail_size={tail_size}, v_size={v_size}"
-            )
-
-        base = min(shared_ptrs)
-        offsets = [
-            0,
-            conv_size * self.num_blocks,
-            (conv_size + middle_size) * self.num_blocks,
-        ]
-        sizes = [conv_size, middle_size, tail_size]
-        base_ptrs.append([base + offset for offset in offsets])
-        buffer_size_rows.append([size * self.num_blocks for size in sizes])
-        tensor_size_lists.append(sizes)
-        block_stride_lists.append(sizes)
-
-    def _build_layout(self, kvcaches):
-        base_ptrs = []
-        buffer_size_rows = []
-        tensor_size_lists = []
-        block_stride_lists = []
-
-        for raw_tensor in self.kv_cache_config.kv_cache_tensors:
-            if not raw_tensor.shared_by:
-                continue
-
-            shared_specs, shared_ptrs = self._collect_shared_tensor_info(
-                raw_tensor, kvcaches
-            )
-
-            if not shared_ptrs:
-                logger.warning(
-                    f"no kv cache tensor found for shared layers {raw_tensor.shared_by}"
-                )
-                continue
-
-            mamba_specs = [s for s in shared_specs if isinstance(s, MambaSpec)]
-            attn_specs = [s for s in shared_specs if isinstance(s, FullAttentionSpec)]
-            if not mamba_specs or not attn_specs:
-                self._append_contiguous_page_layout(
-                    raw_tensor,
-                    shared_ptrs,
-                    base_ptrs,
-                    buffer_size_rows,
-                    tensor_size_lists,
-                    block_stride_lists,
-                )
-                continue
-
-            if current_platform.device_type == "npu":
-                self._append_ascend_component_major_layout(
-                    raw_tensor,
-                    shared_ptrs,
-                    mamba_specs,
-                    attn_specs,
-                    base_ptrs,
-                    buffer_size_rows,
-                    tensor_size_lists,
-                    block_stride_lists,
-                )
-            else:
-                self._append_contiguous_page_layout(
-                    raw_tensor,
-                    shared_ptrs,
-                    base_ptrs,
-                    buffer_size_rows,
-                    tensor_size_lists,
-                    block_stride_lists,
-                )
-
-        self.base_ptrs = np.asarray(base_ptrs, dtype=np.uint64)
-        self.buffer_sizes = np.asarray(buffer_size_rows, dtype=np.uint64)
-        self.tensor_size_lists = np.asarray(tensor_size_lists, dtype=np.uint64)
-        self.block_stride_lists = np.asarray(block_stride_lists, dtype=np.uint64)
-
-
-class UCMHMAConnector(UCMDirectConnector, SupportsHMA):
-    def __init__(
-        self,
-        vllm_config: "VllmConfig",
-        role: KVConnectorRole,
-        kv_cache_config: "KVCacheConfig",
-    ):
-        super().__init__(
-            vllm_config=vllm_config, role=role, kv_cache_config=kv_cache_config
-        )
-        self._skip_null_vllm_blocks = True
-        # group manager only lives on the scheduler side, where ``self._seed``
-        # and ``self.request_hasher`` are populated by the parent ctor.
-        self.group_manager: Optional[KVCacheGroupManager] = None
-        if role == KVConnectorRole.SCHEDULER:
-            self.group_manager = KVCacheGroupManager(
-                kv_cache_config=kv_cache_config,
-                request_hasher=self.request_hasher,
-                base_seed=self._seed,
-            )
-            lcm_block_size = self.group_manager.lcm_block_size
-            # Override the inherited ``block_size`` (which comes from
-            # ``cache_config.block_size``) so prefix accounting in this class
-            # is consistent with every group's block boundaries — vLLM's
-            # hybrid scheduler aligns ``num_computed_tokens`` to the LCM of
-            # all groups' block_size, and so do we.
-            self.block_size = lcm_block_size
-            self.hash_block_size = lcm_block_size
-
-        logger.info(
-            f"UCMHMAConnector initialized with use_layerwise={self.use_layerwise}"
-        )
-
-    def _create_kv_cache_layout(
-        self, kv_caches: dict[str, torch.Tensor]
-    ) -> KVCacheLayout:
-        if current_platform.device_type == "npu" and self.use_compress:
-            return AscendDSV4Layout(
-                kv_caches,
-                self.launch_config,
-                self._vllm_config,
-                self._kv_cache_config,
-            )
-        return HMAKVCacheLayout(
-            kv_caches,
-            self.launch_config,
-            self._vllm_config,
-            self._kv_cache_config,
-        )
-
-    def register_kv_caches(self, kv_caches: dict[str, torch.Tensor]):
-        self.kv_caches = kv_caches
-        self.kv_cache_layout = self._create_kv_cache_layout(self.kv_caches)
-        self.store = self._create_store(self.kv_cache_layout)
-        self.block_data_size = self.kv_cache_layout.block_size
-        self.device = create_device()
-
-    def get_num_new_matched_tokens(
-        self, request: "Request", num_computed_tokens: int
-    ) -> tuple[int, bool]:
-        assert self.group_manager is not None, (
-            "get_num_new_matched_tokens must be called on the scheduler-side "
-            "connector, where the group manager is initialized."
-        )
-
-        lcm_block_size = self.group_manager.lcm_block_size
-        assert num_computed_tokens % lcm_block_size == 0, (
-            f"num_computed_tokens={num_computed_tokens} is not aligned to "
-            f"lcm_block_size={lcm_block_size}"
-        )
-        # ``hbm_hit_block_num`` and ``total_hit_block_num`` are tracked in
-        # LCM-block units in HMA mode; per-group block ids/counts are derived
-        # from these via each group's own block_size when needed.
-        hbm_hit_block_num = num_computed_tokens // lcm_block_size
-
-        # Skip persistence if token count is below the threshold.
-        if self.persist_token_threshold > request.num_tokens:
-            logger.info_once(
-                f"Skip persistence: req {request.request_id}, "
-                f"input tokens ({request.num_tokens}) < threshold "
-                f"({self.persist_token_threshold})."
-            )
-            return 0, False
-
-        # Hash once per group so dump path can later reuse the same block ids.
-        group_ucm_block_ids = self.group_manager.compute_all_group_block_ids(
-            request.all_token_ids
-        )
-        # Legacy ``ucm_block_ids`` mirrors the first full-attn group (by
-        # group_id order) for callers that still consume the flat list.
-        primary_full_attn = self.group_manager.full_attn_groups[0]
-        primary_block_ids = group_ucm_block_ids[primary_full_attn.group_id]
-
-        external_hit_tokens, external_hit_lcm_blocks = (
-            self.group_manager.lookup_external_hit_tokens(
-                num_computed_tokens, self.store, group_ucm_block_ids
-            )
-        )
-
-        if (
-            self.enable_record_traces
-            and request.request_id not in self.requests_meta
-            and len(primary_block_ids) > 0
-        ):
-            hex_block_ids = [b.hex() for b in primary_block_ids]
-            logger.info_once(
-                f"timestamp: {time.perf_counter()}, "
-                f"input_length: {request.num_tokens}, "
-                f"output_length: {request.max_tokens}, "
-                f"ucm_block_ids: {hex_block_ids}"
-            )
-
-        total_hit_block_num = hbm_hit_block_num + external_hit_lcm_blocks
-
-        logger.info_once(
-            f"request_id: {request.request_id}, "
-            f"total_lcm_blocks: {request.num_tokens // lcm_block_size}, "
-            f"hit hbm: {hbm_hit_block_num}, "
-            f"hit external: {external_hit_lcm_blocks}, "
-            f"total_tokens: {len(request.all_token_ids)}"
-        )
-        if len(primary_block_ids) > 0:
-            ucmmetrics.update_stats(
-                {
-                    "interval_lookup_hit_rates": external_hit_lcm_blocks
-                    * lcm_block_size
-                    / (len(primary_block_ids) * primary_full_attn.block_size)
-                },
-            )
-
-        # When all the tokens are cached in ssd or hbm, we need to recompute
-        # the last token. This branch will be removed once vLLM scheduler
-        # provides a better solution in the future.
-        num_total_hit_tokens = total_hit_block_num * lcm_block_size
-        if num_total_hit_tokens == request.num_tokens and external_hit_tokens > 0:
-            external_hit_tokens -= 1
-
-        self.requests_meta[request.request_id] = HMARequestMeta(
-            ucm_block_ids=primary_block_ids,
-            hbm_hit_block_num=hbm_hit_block_num,
-            total_hit_block_num=total_hit_block_num,
-            num_token_ids=len(request.all_token_ids),
-            token_processed=num_total_hit_tokens,
-            group_ucm_block_ids=group_ucm_block_ids,
-            group_vllm_block_ids=[[] for _ in range(self.group_manager.num_groups)],
-        )
-
-        return external_hit_tokens, False
-
-    def update_state_after_alloc(
-        self, request: "Request", blocks: "KVCacheBlocks", num_external_tokens: int
-    ):
-        req_meta = self.requests_meta.get(request.request_id)
-        if req_meta is None:
-            return
-        assert isinstance(req_meta, HMARequestMeta)
-        block_ids = blocks.get_block_ids()
-        if self.group_manager is not None:
-            assert len(block_ids) == self.group_manager.num_groups, (
-                f"allocated block group count {len(block_ids)} does not match "
-                f"HMA group count {self.group_manager.num_groups}"
-            )
-        req_meta.group_vllm_block_ids = [list(group) for group in block_ids]
-
-    def _generate_hma_dispatch_meta(
-        self,
-        req_meta: "HMARequestMeta",
-        new_tokens: int,
-        new_vllm_block_ids_per_group: tuple[list[int], ...],
-        need_load: bool = True,
-        request_id: str = "",
-        incoming_block_ids_are_full: bool = False,
-    ) -> RequestDispatchMeta:
-        """Build a flat (ucm, vllm) block id pair list across all groups.
-
-        The output ``RequestDispatchMeta`` keeps the same shape as the
-        non-HMA path (``tuple[list[bytes], list[int]]``) so that
-        ``start_load_kv`` / ``wait_for_save`` and the underlying store APIs
-        do not need to know about groups. Per-group slices are concatenated
-        in ascending ``group_id`` order, with ``ucm_block_ids[k]`` and
-        ``vllm_block_ids[k]`` always referring to the same block.
-
-        Layout per group within ``[token_processed, token_processed + new_tokens)``:
-        - **load** (only when ``external_hit_blocks > 0`` and ``need_load``):
-          - full-attn group: tokens ``[hbm_hit_tokens, total_hit_tokens)``
-          - sliding-window group: the blocks covering tokens
-            ``[total_hit_tokens - sliding_window, total_hit_tokens)``;
-            ``start_blk`` is floor-rounded so when ``block_size >
-            sliding_window`` (e.g. on Ascend) we naturally load the single
-            last block. The SW window is reloaded every resume because
-            older blocks are evicted by the SW manager.
-        - **dump** of ``[token_processed, token_processed + new_tokens)``:
-          - full-attn group: every newly-completed full block (the
-            ``lookup_on_prefix`` chain needs every prefix block to be
-            present).
-          - sliding-window group: only the last
-            ``max(1, sliding_window/block_size)`` blocks before each LCM
-            boundary reached in this range. Lookup always resumes at LCM
-            boundaries and stage-2 SW check only inspects those tails, so
-            blocks between tails would be dead weight in the store.
-        """
-        assert self.group_manager is not None
-        groups_by_id = self.group_manager.groups_by_id
-        num_groups = self.group_manager.num_groups
-        lcm_block_size = self.group_manager.lcm_block_size
-
-        assert len(new_vllm_block_ids_per_group) == num_groups, (
-            f"new_vllm_block_ids_per_group length "
-            f"{len(new_vllm_block_ids_per_group)} does not match "
-            f"num_groups {num_groups}"
-        )
-        for gid in range(num_groups):
-            incoming_vllm_block_ids = list(new_vllm_block_ids_per_group[gid])
-            existing_vllm_block_ids = req_meta.group_vllm_block_ids[gid]
-            if incoming_block_ids_are_full:
-                req_meta.group_vllm_block_ids[gid] = incoming_vllm_block_ids
-            elif not existing_vllm_block_ids:
-                req_meta.group_vllm_block_ids[gid] = incoming_vllm_block_ids
-            elif incoming_vllm_block_ids:
-                # update_state_after_alloc() usually gives us the full block
-                # table before build_connector_meta(). If that happened, the
-                # scheduler's "new" block ids are already the suffix of the
-                # full table and must not be appended again. If the connector is
-                # used with an older scheduler path that did not call
-                # update_state_after_alloc(), append as a fallback.
-                suffix_len = len(incoming_vllm_block_ids)
-                if existing_vllm_block_ids[-suffix_len:] != incoming_vllm_block_ids:
-                    existing_vllm_block_ids.extend(incoming_vllm_block_ids)
-
-        load_ucm_block_ids: list[bytes] = []
-        load_vllm_block_ids: list[int] = []
-        dump_ucm_block_ids: list[bytes] = []
-        dump_vllm_block_ids: list[int] = []
-
-        def extend_non_null(
-            dst_ucm_block_ids: list[bytes],
-            dst_vllm_block_ids: list[int],
-            src_ucm_block_ids: list[bytes],
-            src_vllm_block_ids: list[int],
-        ) -> None:
-            # Mamba align mode pads req block tables with vLLM's null block
-            # (block_id=0). These are metadata placeholders, not physical pages
-            # that should be loaded from or dumped to the store.
-            for ucm_block_id, vllm_block_id in zip(
-                src_ucm_block_ids, src_vllm_block_ids
-            ):
-                if vllm_block_id == 0:
-                    continue
-                dst_ucm_block_ids.append(ucm_block_id)
-                dst_vllm_block_ids.append(vllm_block_id)
-
-        def append_mamba_align_state_block(
-            dst_ucm_block_ids: list[bytes],
-            dst_vllm_block_ids: list[int],
-            gid: int,
-            seq_len: int,
-            reason: str,
-        ) -> None:
-            group = groups_by_id[gid]
-            state_idx = max((seq_len - 1) // group.block_size, 0)
-            vllm_state_idx = state_idx
-            if reason == "load":
-                # For resumed mamba-align requests, vLLM keeps the cached
-                # prefix state at ``state_idx`` and allocates a fresh running
-                # state block at the tail of the block table. UCM must read
-                # the prefix hash but write into that current running block.
-                block_ids = req_meta.group_vllm_block_ids[gid]
-                for i in range(len(block_ids) - 1, -1, -1):
-                    if block_ids[i] != 0:
-                        vllm_state_idx = i
-                        break
-
-            try:
-                vllm_block_id = req_meta.group_vllm_block_ids[gid][vllm_state_idx]
-            except IndexError:
-                logger.error(
-                    "HMA mamba-align state vLLM block missing: "
-                    f"request_id={request_id}, group_id={gid}, reason={reason}, "
-                    f"seq_len={seq_len}, state_idx={state_idx}, "
-                    f"vllm_state_idx={vllm_state_idx}, "
-                    f"num_vllm_blocks={len(req_meta.group_vllm_block_ids[gid])}"
-                )
-                return
-            if vllm_block_id == 0:
-                return
-            if group.is_mamba_align:
-                ucm_block_id = self.group_manager.compute_mamba_align_state_hash(
-                    group, seq_len, req_meta.group_ucm_block_ids
-                )
-            else:
-                try:
-                    ucm_block_id = req_meta.group_ucm_block_ids[gid][state_idx]
-                except IndexError:
-                    logger.error(
-                        "HMA state block UCM hash missing: "
-                        f"request_id={request_id}, group_id={gid}, "
-                        f"reason={reason}, seq_len={seq_len}, "
-                        f"state_idx={state_idx}, "
-                        f"num_ucm_blocks={len(req_meta.group_ucm_block_ids[gid])}"
-                    )
-                    return
-            if ucm_block_id is None:
-                logger.error(
-                    "HMA mamba-align state hash missing: "
-                    f"request_id={request_id}, group_id={gid}, reason={reason}, "
-                    f"seq_len={seq_len}, state_idx={state_idx}"
-                )
-                return
-            dst_ucm_block_ids.append(ucm_block_id)
-            dst_vllm_block_ids.append(vllm_block_id)
-
-        external_hit_lcm_blocks = (
-            req_meta.total_hit_block_num - req_meta.hbm_hit_block_num
-        )
-        hbm_hit_tokens = req_meta.hbm_hit_block_num * lcm_block_size
-        total_hit_tokens = req_meta.total_hit_block_num * lcm_block_size
-
-        if need_load and external_hit_lcm_blocks > 0:
-            for gid, group in enumerate(groups_by_id):
-                if group.is_mamba_align:
-                    append_mamba_align_state_block(
-                        load_ucm_block_ids,
-                        load_vllm_block_ids,
-                        gid,
-                        total_hit_tokens,
-                        "load",
-                    )
-                    continue
-                if group.is_full_attention:
-                    load_tok_start = hbm_hit_tokens
-                else:
-                    load_tok_start = total_hit_tokens - group.sliding_window
-                load_tok_end = total_hit_tokens
-                start_blk = load_tok_start // group.block_size
-                end_blk = load_tok_end // group.block_size
-                if start_blk >= end_blk:
-                    continue
-                extend_non_null(
-                    load_ucm_block_ids,
-                    load_vllm_block_ids,
-                    req_meta.group_ucm_block_ids[gid][start_blk:end_blk],
-                    req_meta.group_vllm_block_ids[gid][start_blk:end_blk],
-                )
-
-        if req_meta.token_processed < req_meta.num_token_ids:
-            dump_tok_start = req_meta.token_processed
-            dump_tok_end = min(
-                req_meta.token_processed + new_tokens, req_meta.num_token_ids
-            )
-            # LCM boundaries B with ``dump_tok_start < B <= dump_tok_end``.
-            # SW groups only need the tail at these boundaries because lookup
-            # always resumes at LCM boundaries (see
-            # ``lookup_external_hit_tokens`` stage 2).
-            first_lcm_b = (dump_tok_start // lcm_block_size + 1) * lcm_block_size
-            last_lcm_b = (dump_tok_end // lcm_block_size) * lcm_block_size
-
-            for gid, group in enumerate(groups_by_id):
-                if group.is_full_attention:
-                    # Dump every newly completed block: ``lookup_on_prefix``
-                    # walks the full prefix chain so any gap would truncate
-                    # future hits.
-                    start_blk = dump_tok_start // group.block_size
-                    end_blk = dump_tok_end // group.block_size
-                    if start_blk >= end_blk:
-                        continue
-                    extend_non_null(
-                        dump_ucm_block_ids,
-                        dump_vllm_block_ids,
-                        req_meta.group_ucm_block_ids[gid][start_blk:end_blk],
-                        req_meta.group_vllm_block_ids[gid][start_blk:end_blk],
-                    )
-                else:
-                    # Dump only the tail blocks at each LCM boundary reached
-                    # in this range. Since ``sliding_window <=
-                    # lcm_block_size`` (validated in ``KVCacheGroupManager``),
-                    # consecutive boundaries' tails do not overlap and we can
-                    # extend the lists without dedup.
-                    if first_lcm_b > last_lcm_b:
-                        continue
-                    if group.is_mamba_align:
-                        b = first_lcm_b
-                        while b <= last_lcm_b:
-                            append_mamba_align_state_block(
-                                dump_ucm_block_ids,
-                                dump_vllm_block_ids,
-                                gid,
-                                b,
-                                "dump",
-                            )
-                            b += lcm_block_size
-                        continue
-                    tail_count = max(1, group.sliding_window // group.block_size)
-                    b = first_lcm_b
-                    while b <= last_lcm_b:
-                        end_blk = b // group.block_size
-                        start_blk = max(0, end_blk - tail_count)
-                        if start_blk < end_blk:
-                            extend_non_null(
-                                dump_ucm_block_ids,
-                                dump_vllm_block_ids,
-                                req_meta.group_ucm_block_ids[gid][start_blk:end_blk],
-                                req_meta.group_vllm_block_ids[gid][start_blk:end_blk],
-                            )
-                        b += lcm_block_size
-            req_meta.token_processed += new_tokens
-
-        return RequestDispatchMeta(
-            (load_ucm_block_ids, load_vllm_block_ids),
-            (dump_ucm_block_ids, dump_vllm_block_ids),
-        )
-
-    def build_connector_meta(
-        self, scheduler_output: SchedulerOutput
-    ) -> KVConnectorMetadata:
-        assert self.group_manager is not None
-        num_groups = self.group_manager.num_groups
-        empty_per_group: tuple[list[int], ...] = tuple([] for _ in range(num_groups))
-
-        requests_dispatch_meta: dict[str, RequestDispatchMeta] = {}
-
-        for request in scheduler_output.scheduled_new_reqs:
-            request_id = request.req_id
-            req_meta = self.requests_meta.get(request_id)
-            if req_meta is None:
-                continue
-            assert isinstance(req_meta, HMARequestMeta)
-            requests_dispatch_meta[request_id] = self._generate_hma_dispatch_meta(
-                req_meta,
-                scheduler_output.num_scheduled_tokens[request_id],
-                request.block_ids,
-                request_id=request_id,
-                incoming_block_ids_are_full=True,
-            )
-
-        # Same three situations as the parent: chunked prefill (dump only),
-        # resumed (load + dump), decode (no-op).
-        scheduled_cached_reqs = scheduler_output.scheduled_cached_reqs
-        if not isinstance(scheduled_cached_reqs, list):
-            for i, request_id in enumerate(scheduled_cached_reqs.req_ids):
-                req_meta = self.requests_meta.get(request_id)
-                if req_meta is None:
-                    continue
-                assert isinstance(req_meta, HMARequestMeta)
-                raw_new_block_ids = scheduled_cached_reqs.new_block_ids[i]
-                new_block_ids = (
-                    empty_per_group if raw_new_block_ids is None else raw_new_block_ids
-                )
-                if hasattr(scheduled_cached_reqs, "resumed_from_preemption"):
-                    resumed_from_preemption = (
-                        scheduled_cached_reqs.resumed_from_preemption[i]
-                    )
-                else:
-                    resumed_from_preemption = (
-                        request_id in scheduled_cached_reqs.resumed_req_ids
-                    )
-                requests_dispatch_meta[request_id] = self._generate_hma_dispatch_meta(
-                    req_meta,
-                    scheduler_output.num_scheduled_tokens[request_id],
-                    new_block_ids,
-                    resumed_from_preemption,
-                    request_id=request_id,
-                    incoming_block_ids_are_full=resumed_from_preemption,
-                )
-        else:
-            for request in scheduled_cached_reqs:
-                request_id = request.req_id
-                req_meta = self.requests_meta.get(request_id)
-                if req_meta is None:
-                    continue
-                assert isinstance(req_meta, HMARequestMeta)
-                requests_dispatch_meta[request_id] = self._generate_hma_dispatch_meta(
-                    req_meta,
-                    scheduler_output.num_scheduled_tokens[request_id],
-                    request.new_block_ids,
-                    request.resumed_from_preemption,
-                    request_id=request_id,
-                    incoming_block_ids_are_full=request.resumed_from_preemption,
-                )
-
-        for request_id in scheduler_output.finished_req_ids:
-            self.requests_meta.pop(request_id, None)
-
-        self._track_async_dump_requests(requests_dispatch_meta)
-
-        return UCMConnectorMetadata(
-            requests_dispatch_meta,
-            scheduler_output.preempted_req_ids or set(),
-        )
-
-
-def use_hybrid_linear_attention_layout(
-    kv_cache_config: Optional["KVCacheConfig"],
-) -> bool:
-    # Scheduler-side connector construction may happen before vLLM has built
-    # the concrete KV cache config. In that phase there is no physical layout
-    # to inspect yet, so this connector specialization cannot be selected.
-    if kv_cache_config is None:
-        return False
-
-    if current_platform.device_type != "npu" and not current_platform.is_cuda_alike():
-        return False
-
-    layer_to_specs = layer_name_to_kv_cache_spec(kv_cache_config)
-    for raw_tensor in kv_cache_config.kv_cache_tensors:
-        shared_specs = [
-            spec
-            for layer_name in raw_tensor.shared_by
-            for spec in layer_to_specs.get(layer_name, [])
-        ]
-        tensor_has_full_attention = any(
-            isinstance(spec, FullAttentionSpec) for spec in shared_specs
-        )
-        tensor_has_mamba_align = any(
-            isinstance(spec, MambaSpec) and spec.mamba_cache_mode == "align"
-            for spec in shared_specs
-        )
-        if tensor_has_full_attention and tensor_has_mamba_align:
-            return True
-
-    return False
-
-
-class UCMHybridLinearAttentionConnector(UCMHMAConnector):
-    """Connector for full-attention + linear-attention hybrid layouts."""
-
-    def _create_kv_cache_layout(
-        self, kv_caches: dict[str, torch.Tensor]
-    ) -> KVCacheLayout:
-        return HybridLinearAttentionLayout(
-            kv_caches,
-            self.launch_config,
-            self._vllm_config,
-            self._kv_cache_config,
-        )
-
-
 class UCMConnector(KVConnectorBase_V1, SupportsHMA):
     def __init__(
         self,
@@ -3192,16 +2037,20 @@ class UCMConnector(KVConnectorBase_V1, SupportsHMA):
             > 1
         )
 
-        use_hma = (
-            self._vllm_config.scheduler_config.disable_hybrid_kv_cache_manager is False
-            or os.getenv("USE_MULTI_GROUPS_KV_CACHE") == "1"
+        from ucm.integration.vllm.hla_connector import (
+            UCMHybridLinearAttentionConnector,
+            UCMHybridLinearAttentionLayerWiseConnector,
         )
-
-        use_hybrid_linear_attention = use_hybrid_linear_attention_layout(
-            kv_cache_config
-        )
-
         from ucm.integration.vllm.hma_connector import UCMFAWAConnector
+
+        use_hybrid_linear_attention = (
+            UCMHybridLinearAttentionConnector.supports_kv_cache_layout(kv_cache_config)
+        )
+        use_hybrid_linear_attention_layerwise = (
+            use_hybrid_linear_attention
+            and use_layerwise
+            and self.launch_config.get("hybrid_linear_attention_layerwise", True)
+        )
 
         if UCMFAWAConnector.can_handle_kv_cache_config(kv_cache_config):
             self.connector = UCMFAWAConnector(vllm_config, role, kv_cache_config)
@@ -3211,12 +2060,16 @@ class UCMConnector(KVConnectorBase_V1, SupportsHMA):
             self.connector = UCMMockConnector(vllm_config, role, kv_cache_config)
         elif use_cp_parallel:
             self.connector = UCMCPConnector(vllm_config, role, kv_cache_config)
-        elif use_layerwise:
-            self.connector = UCMLayerWiseConnector(vllm_config, role, kv_cache_config)
+        elif use_hybrid_linear_attention_layerwise:
+            self.connector = UCMHybridLinearAttentionLayerWiseConnector(
+                vllm_config, role, kv_cache_config
+            )
         elif use_hybrid_linear_attention:
             self.connector = UCMHybridLinearAttentionConnector(
                 vllm_config, role, kv_cache_config
             )
+        elif use_layerwise:
+            self.connector = UCMLayerWiseConnector(vllm_config, role, kv_cache_config)
         else:
             self.connector = UCMDirectConnector(vllm_config, role, kv_cache_config)
 
