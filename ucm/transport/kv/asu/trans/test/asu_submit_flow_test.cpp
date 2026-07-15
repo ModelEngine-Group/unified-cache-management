@@ -44,8 +44,13 @@ std::vector<Status> g_sendStatuses;
 class StubTransProvider : public TransProvider {
 public:
     std::uint32_t registerCount{0};
+    std::uint32_t registerCallCount{0};
     std::uint32_t unregisterCount{0};
     std::uint32_t failRegisterAt{0};
+    std::uint32_t tokenLookupCount{0};
+    std::uint32_t failTokenLookupAt{0};
+    std::uint32_t failUnregisterAt{0};
+    bool failUnregister{false};
 
     Status CreateConnection(const std::string&, const std::string&, uint32_t, uint32_t qpNum,
                             uint32_t, std::vector<ConnectionHandle>& handles) override
@@ -69,21 +74,36 @@ public:
         return std::vector<Status>(ioBatches.size(), Status::OK());
     }
 
-    Status RegisterMemory(const std::vector<RegisterMemoryDesc>&,
+    Status RegisterMemory(const std::vector<RegisterMemoryDesc>& memoryDescs,
                           std::vector<MRHandle>& handles) override
     {
-        ++registerCount;
-        if (failRegisterAt != 0 && registerCount == failRegisterAt) {
-            return Status::Error(StatusCode::INTERNAL_ERROR, "stub register failed");
+        ++registerCallCount;
+        handles.clear();
+        handles.reserve(memoryDescs.size());
+        for (std::size_t index = 0; index < memoryDescs.size(); ++index) {
+            ++registerCount;
+            if (failRegisterAt != 0 && registerCount == failRegisterAt) {
+                return Status::Error(StatusCode::INTERNAL_ERROR, "stub register failed");
+            }
+            handles.push_back(reinterpret_cast<MRHandle>(static_cast<uintptr_t>(registerCount)));
         }
-        handles.push_back(reinterpret_cast<MRHandle>(static_cast<uintptr_t>(registerCount)));
         return Status::OK();
     }
 
     std::vector<Status> UnregisterMemory(const std::vector<UnregisterMemoryDesc>& descs) override
     {
-        unregisterCount += static_cast<std::uint32_t>(descs.size());
-        return std::vector<Status>(descs.size(), Status::OK());
+        std::vector<Status> statuses;
+        statuses.reserve(descs.size());
+        for (std::size_t index = 0; index < descs.size(); ++index) {
+            ++unregisterCount;
+            if (failUnregister || (failUnregisterAt != 0 && unregisterCount == failUnregisterAt)) {
+                statuses.emplace_back(
+                    Status::Error(StatusCode::INTERNAL_ERROR, "stub unregister failed"));
+            } else {
+                statuses.emplace_back(Status::OK());
+            }
+        }
+        return statuses;
     }
 
     Status AllocThread(uint32_t, const std::vector<uint32_t>&, std::vector<ThreadHandle>&) override
@@ -95,6 +115,10 @@ public:
 
     Status GetMemTokenId(MRHandle, uint32_t& tokenId) override
     {
+        ++tokenLookupCount;
+        if (failTokenLookupAt != 0 && tokenLookupCount == failTokenLookupAt) {
+            return Status::Error(StatusCode::INTERNAL_ERROR, "stub token lookup failed");
+        }
         tokenId = 1;
         return Status::OK();
     }
@@ -176,10 +200,11 @@ TEST(AsuTransportRegisterTest, RegisterRegionsReturnsPartialFailedAndRollsBackSu
 
     EXPECT_EQ(status.code, StatusCode::PARTIAL_FAILED);
     ASSERT_EQ(results.size(), std::size_t{2});
-    EXPECT_TRUE(results[0].status.ok()) << results[0].status.message;
-    EXPECT_EQ(results[0].handle, reinterpret_cast<MRHandle>(std::uintptr_t{1}));
+    EXPECT_EQ(results[0].status.code, StatusCode::PARTIAL_FAILED);
+    EXPECT_EQ(results[0].handle, kInvalidMRHandle);
     EXPECT_EQ(results[1].status.code, StatusCode::INTERNAL_ERROR);
     EXPECT_EQ(results[1].handle, kInvalidMRHandle);
+    EXPECT_EQ(providerPtr->registerCallCount, std::uint32_t{1});
     EXPECT_EQ(providerPtr->unregisterCount, std::uint32_t{1});
     EXPECT_TRUE(transport.registeredRegions_.empty());
     EXPECT_TRUE(transport.ownedRegisteredRegionHandles_.empty());
@@ -207,7 +232,7 @@ TEST(AsuTransportRegisterTest, RegisterDeviceRegionDoesNotRequireConnection)
     EXPECT_EQ(providerPtr->registerCount, std::uint32_t{1});
 }
 
-TEST(AsuTransportRegisterTest, RegisterRegionsStopsAtFirstFailure)
+TEST(AsuTransportRegisterTest, RegisterRegionsReturnsAllResultsAfterBatchFailure)
 {
     auto provider = std::make_unique<StubTransProvider>();
     auto* providerPtr = provider.get();
@@ -228,11 +253,114 @@ TEST(AsuTransportRegisterTest, RegisterRegionsStopsAtFirstFailure)
     auto status = transport.RegisterRegions(regions, results);
 
     EXPECT_EQ(status.code, StatusCode::PARTIAL_FAILED);
-    ASSERT_EQ(results.size(), std::size_t{2});
-    EXPECT_TRUE(results[0].status.ok()) << results[0].status.message;
+    ASSERT_EQ(results.size(), std::size_t{3});
+    EXPECT_EQ(results[0].status.code, StatusCode::PARTIAL_FAILED);
+    EXPECT_EQ(results[0].handle, kInvalidMRHandle);
     EXPECT_EQ(results[1].status.code, StatusCode::INTERNAL_ERROR);
+    EXPECT_EQ(results[2].status.code, StatusCode::INTERNAL_ERROR);
+    EXPECT_EQ(providerPtr->registerCallCount, std::uint32_t{1});
     EXPECT_EQ(providerPtr->registerCount, std::uint32_t{2});
     EXPECT_EQ(providerPtr->unregisterCount, std::uint32_t{1});
+    EXPECT_TRUE(transport.registeredRegions_.empty());
+    EXPECT_TRUE(transport.ownedRegisteredRegionHandles_.empty());
+}
+
+TEST(AsuTransportRegisterTest, RegisterRegionsClearsBatchWhenTokenLookupFails)
+{
+    auto provider = std::make_unique<StubTransProvider>();
+    auto* providerPtr = provider.get();
+    providerPtr->failTokenLookupAt = 2;
+
+    AsuTransportImpl transport;
+    transport.SetTransProvider(std::move(provider));
+
+    std::vector<MemoryRegion> regions(3);
+    regions[0].addr = 0x1000;
+    regions[0].size = 4096;
+    regions[1].addr = 0x2000;
+    regions[1].size = 4096;
+    regions[2].addr = 0x3000;
+    regions[2].size = 4096;
+
+    std::vector<RegisterResult> results;
+    const auto status = transport.RegisterRegions(regions, results);
+
+    EXPECT_EQ(status.code, StatusCode::PARTIAL_FAILED);
+    ASSERT_EQ(results.size(), regions.size());
+    EXPECT_EQ(results[0].status.code, StatusCode::PARTIAL_FAILED);
+    EXPECT_EQ(results[1].status.code, StatusCode::INTERNAL_ERROR);
+    EXPECT_EQ(results[2].status.code, StatusCode::PARTIAL_FAILED);
+    EXPECT_EQ(providerPtr->registerCallCount, std::uint32_t{1});
+    EXPECT_EQ(providerPtr->registerCount, std::uint32_t{3});
+    EXPECT_EQ(providerPtr->unregisterCount, std::uint32_t{3});
+    EXPECT_TRUE(transport.registeredRegions_.empty());
+    EXPECT_TRUE(transport.ownedRegisteredRegionHandles_.empty());
+}
+
+TEST(AsuTransportRegisterTest, RegisterRegionsRetainsHandlesWhenBatchCleanupFails)
+{
+    auto provider = std::make_unique<StubTransProvider>();
+    auto* providerPtr = provider.get();
+    providerPtr->failRegisterAt = 2;
+    providerPtr->failUnregister = true;
+
+    AsuTransportImpl transport;
+    transport.SetTransProvider(std::move(provider));
+
+    std::vector<MemoryRegion> regions(2);
+    regions[0].addr = 0x1000;
+    regions[0].size = 4096;
+    regions[1].addr = 0x2000;
+    regions[1].size = 4096;
+
+    std::vector<RegisterResult> results;
+    const auto status = transport.RegisterRegions(regions, results);
+
+    EXPECT_EQ(status.code, StatusCode::PARTIAL_FAILED);
+    EXPECT_NE(status.message.find("cleanup was incomplete"), std::string::npos);
+    ASSERT_EQ(results.size(), std::size_t{2});
+    EXPECT_EQ(results[0].status.code, StatusCode::PARTIAL_FAILED);
+    EXPECT_EQ(results[0].handle, kInvalidMRHandle);
+    EXPECT_TRUE(transport.registeredRegions_.empty());
+    EXPECT_EQ(transport.ownedRegisteredRegionHandles_.size(), std::size_t{1});
+    EXPECT_EQ(transport.ownedRegisteredRegionHandles_.count(
+                  reinterpret_cast<MRHandle>(std::uintptr_t{1})),
+              std::size_t{1});
+
+    providerPtr->failUnregister = false;
+    const auto cleanupStatus =
+        transport.UnregisterRegions({reinterpret_cast<MRHandle>(std::uintptr_t{1})});
+    EXPECT_TRUE(cleanupStatus.ok()) << cleanupStatus.message;
+    EXPECT_TRUE(transport.ownedRegisteredRegionHandles_.empty());
+}
+
+TEST(AsuTransportRegisterTest, UnregisterRegionsRetainsOnlyHandlesThatFailToUnregister)
+{
+    auto provider = std::make_unique<StubTransProvider>();
+    auto* providerPtr = provider.get();
+
+    AsuTransportImpl transport;
+    transport.SetTransProvider(std::move(provider));
+
+    std::vector<MemoryRegion> regions(2);
+    regions[0].addr = 0x1000;
+    regions[0].size = 4096;
+    regions[1].addr = 0x2000;
+    regions[1].size = 4096;
+
+    std::vector<RegisterResult> results;
+    ASSERT_TRUE(transport.RegisterRegions(regions, results).ok());
+    providerPtr->failUnregisterAt = 2;
+
+    const auto status = transport.UnregisterRegions({results[0].handle, results[1].handle});
+
+    EXPECT_EQ(status.code, StatusCode::INTERNAL_ERROR);
+    EXPECT_EQ(transport.registeredRegions_.size(), std::size_t{1});
+    EXPECT_EQ(transport.ownedRegisteredRegionHandles_.size(), std::size_t{1});
+    EXPECT_EQ(transport.registeredRegions_.count(results[0].handle), std::size_t{0});
+    EXPECT_EQ(transport.registeredRegions_.count(results[1].handle), std::size_t{1});
+
+    EXPECT_TRUE(transport.UnregisterRegions({results[1].handle}).ok());
     EXPECT_TRUE(transport.registeredRegions_.empty());
     EXPECT_TRUE(transport.ownedRegisteredRegionHandles_.empty());
 }
