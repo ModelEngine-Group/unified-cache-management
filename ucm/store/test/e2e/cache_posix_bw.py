@@ -43,6 +43,7 @@ load_epoch_number = 16
 epoch_interval_ms = 15
 cache_sdma_direct = True
 storage_backends = ["./build/data"]
+worker_cpu_affinity_enable = True
 
 # =========================== User configuration ===========================
 model_name = "glm-5.2"
@@ -168,6 +169,21 @@ tensor_size_list = model_profile["tensor_size_list"]
 shard_size = (sum(tensor_size_list) + 4095) // 4096 * 4096
 
 
+def make_worker_cpu_core_groups():
+    if not worker_cpu_affinity_enable:
+        return [[] for _ in range(worker_number)]
+    available_cpu_cores = sorted(os.sched_getaffinity(0))
+    if len(available_cpu_cores) < worker_number:
+        raise RuntimeError(
+            f"worker_number={worker_number} exceeds available CPU core number "
+            f"{len(available_cpu_cores)}"
+        )
+    return [
+        available_cpu_cores[worker_id::worker_number]
+        for worker_id in range(worker_number)
+    ]
+
+
 def setup_device(device_id: int):
     if device_type == "cuda":
         torch.cuda.set_device(device_id)
@@ -185,7 +201,9 @@ def synchronize_device():
         torch.npu.synchronize()
 
 
-def create_cache_worker(unique_id: str, device_id: int) -> UcmPipelineStore:
+def create_cache_worker(
+    unique_id: str, device_id: int, cpu_affinity_cores
+) -> UcmPipelineStore:
     config = {}
     config["store_pipeline"] = store_pipeline
     config["storage_backends"] = storage_backends
@@ -207,10 +225,12 @@ def create_cache_worker(unique_id: str, device_id: int) -> UcmPipelineStore:
     config["running_queue_depth"] = 1024
     config["timeout_ms"] = 10000
     config["device_id"] = device_id
+    if cpu_affinity_cores:
+        config["cpu_affinity_cores"] = cpu_affinity_cores
     return UcmPipelineStore(config)
 
 
-def create_posix_scheduler() -> UcmPipelineStore:
+def create_posix_scheduler(cpu_affinity_cores) -> UcmPipelineStore:
     config = {}
     config["store_pipeline"] = "Posix"
     config["storage_backends"] = storage_backends
@@ -219,6 +239,8 @@ def create_posix_scheduler() -> UcmPipelineStore:
     config["posix_lookup_concurrency"] = 32
     config["timeout_ms"] = 10000
     config["device_id"] = -1
+    if cpu_affinity_cores:
+        config["cpu_affinity_cores"] = cpu_affinity_cores
     return UcmPipelineStore(config)
 
 
@@ -345,6 +367,7 @@ def worker_loop(
     device_id: int,
     barrier: multiprocessing.Barrier,
     unique_id: str,
+    cpu_affinity_cores,
     block_id_records,
     dump_cost_records,
     load_cost_records,
@@ -352,11 +375,13 @@ def worker_loop(
 ):
     signal.signal(signal.SIGINT, signal.SIG_IGN)
     signal.signal(signal.SIGTSTP, signal.SIG_IGN)
+    if cpu_affinity_cores:
+        os.sched_setaffinity(0, cpu_affinity_cores)
     os.environ["UC_LOGGER_LEVEL"] = "warning"
     make_storage_dirs()
     device = setup_device(device_id)
-    worker = create_cache_worker(unique_id, device_id)
-    scheduler = create_posix_scheduler()
+    worker = create_cache_worker(unique_id, device_id, cpu_affinity_cores)
+    scheduler = create_posix_scheduler(cpu_affinity_cores)
     print(
         f"{store_pipeline} one-layer benchmark: device={device}, "
         f"model={model_name}, worker_mode={worker_mode}, "
@@ -365,7 +390,9 @@ def worker_loop(
         f"shard_size={shard_size}, dtype={torch.bfloat16}, "
         f"epoch_interval_ms={epoch_interval_ms}, "
         f"storage_backends={storage_backends}, "
-        f"cache_sdma_direct={cache_sdma_direct}"
+        f"cache_sdma_direct={cache_sdma_direct}, "
+        f"worker_cpu_affinity_enable={worker_cpu_affinity_enable}, "
+        f"cpu_affinity_cores={cpu_affinity_cores}"
     )
 
     barrier.wait()
@@ -446,6 +473,7 @@ if __name__ == "__main__":
     barrier = multiprocessing.Barrier(worker_number)
     unique_id = secrets.token_hex(8)
     shared_block_id_records = make_block_id_records()
+    worker_cpu_core_groups = make_worker_cpu_core_groups()
     dump_cost_records = multiprocessing.Array(
         "d", worker_number * dump_epoch_number, lock=False
     )
@@ -468,6 +496,7 @@ if __name__ == "__main__":
                     device_id,
                     barrier,
                     unique_id,
+                    worker_cpu_core_groups[device_id],
                     block_id_records,
                     dump_cost_records,
                     load_cost_records,
