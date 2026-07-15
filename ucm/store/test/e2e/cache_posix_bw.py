@@ -384,6 +384,7 @@ def worker_loop(
     unique_id: str,
     cpu_affinity_cores,
     block_id_records,
+    backend_block_ids,
     dump_cost_records,
     load_cost_records,
     completed_worker_number,
@@ -412,7 +413,11 @@ def worker_loop(
     worker = create_cache_worker(
         UcmPipelineStore, unique_id, device_id, cpu_affinity_cores
     )
-    scheduler = create_posix_scheduler(UcmPipelineStore, cpu_affinity_cores)
+    scheduler = (
+        create_posix_scheduler(UcmPipelineStore, cpu_affinity_cores)
+        if device_id == 0
+        else None
+    )
     print(
         f"{store_pipeline} one-layer benchmark: device={device}, "
         f"model={model_name}, worker_mode={worker_mode}, "
@@ -441,11 +446,8 @@ def worker_loop(
         if record_idx + 1 < len(block_id_records):
             time.sleep(epoch_interval_ms / 1000)
 
-    if worker_mode == "gqa" or device_id == 0:
-        all_block_ids = [
-            block_id for block_ids in block_id_records for block_id in block_ids
-        ]
-        wait_backend_ready(scheduler, all_block_ids)
+    if device_id == 0:
+        wait_backend_ready(scheduler, backend_block_ids)
     barrier.wait()
 
     total_load_epoch_number = warmup_epoch_number + load_epoch_number
@@ -517,6 +519,25 @@ if __name__ == "__main__":
     barrier = process_context.Barrier(worker_number)
     unique_id = secrets.token_hex(8)
     shared_block_id_records = make_block_id_records()
+    worker_block_id_records = (
+        [shared_block_id_records] * worker_number
+        if worker_mode == "mla"
+        else [make_block_id_records() for _ in range(worker_number)]
+    )
+    backend_block_id_records = (
+        shared_block_id_records
+        if worker_mode == "mla"
+        else [
+            block_ids
+            for block_id_records in worker_block_id_records
+            for block_ids in block_id_records
+        ]
+    )
+    backend_block_ids = [
+        block_id
+        for block_ids in backend_block_id_records
+        for block_id in block_ids
+    ]
     worker_cpu_core_groups = make_worker_cpu_core_groups()
     dump_cost_records = process_context.Array(
         "d", worker_number * dump_epoch_number, lock=False
@@ -529,11 +550,6 @@ if __name__ == "__main__":
     signal.signal(signal.SIGTSTP, stop_on_suspend)
     try:
         for device_id in range(worker_number):
-            block_id_records = (
-                shared_block_id_records
-                if worker_mode == "mla"
-                else make_block_id_records()
-            )
             process = process_context.Process(
                 target=worker_loop,
                 args=(
@@ -541,7 +557,8 @@ if __name__ == "__main__":
                     barrier,
                     unique_id,
                     worker_cpu_core_groups[device_id],
-                    block_id_records,
+                    worker_block_id_records[device_id],
+                    backend_block_ids if device_id == 0 else None,
                     dump_cost_records,
                     load_cost_records,
                     completed_worker_number,
