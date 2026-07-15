@@ -27,17 +27,18 @@
 #include <set>
 #include <string>
 #include <vector>
-#include "dram/cc/entry.h"
-#include "dram/cc/metadata.h"
-#include "dram_test_common.h"
+#include "dram/cc/drampool/entry.h"
+#include "dram/cc/drampool/metadata.h"
+#include "dram/dram_test_common.h"
 
+using UC::Status;
 using UC::Detail::BlockId;
-using UC::DramStore::EntryPtr;
-using UC::DramStore::EntryStatus;
-using UC::DramStore::EvictionPolicyType;
-using UC::DramStore::MetadataConfig;
-using UC::DramStore::MetadataManager;
-using UC::DramStore::ShardMetadata;
+using UC::DramPool::EntryPtr;
+using UC::DramPool::EntryStatus;
+using UC::DramPool::EvictionPolicyType;
+using UC::DramPool::MetadataConfig;
+using UC::DramPool::MetadataManager;
+using UC::DramPool::ShardMetadata;
 using UC::Test::Dram::Clock;
 using UC::Test::Dram::KeyFromHex;
 using UC::Test::Dram::MakeEntry;
@@ -67,12 +68,13 @@ TEST_F(UCShardMetadataTest, StoreBeginReturnsOk)
     EXPECT_TRUE(md.StoreBegin(k, MakeEntry(k, 0, past_, EntryStatus::INITIALIZED)).Success());
 }
 
-TEST_F(UCShardMetadataTest, StoreBeginDuplicateReturnsOkAndKeepsSingleEntry)
+TEST_F(UCShardMetadataTest, StoreBeginDuplicateReturnsDuplicateKeyAndKeepsSingleEntry)
 {
     ShardMetadata md(MakeConfig());
     auto k = KeyFromHex("a1");
     EXPECT_TRUE(md.StoreBegin(k, MakeEntry(k, 0, past_, EntryStatus::INITIALIZED)).Success());
-    EXPECT_TRUE(md.StoreBegin(k, MakeEntry(k, 0, past_, EntryStatus::INITIALIZED)).Success());
+    EXPECT_EQ(md.StoreBegin(k, MakeEntry(k, 0, past_, EntryStatus::INITIALIZED)),
+              Status::DuplicateKey());
     EXPECT_EQ(md.GetKeyCnt(), 1UL);
 }
 
@@ -80,22 +82,22 @@ TEST_F(UCShardMetadataTest, StoreBeginNullptrReturnsInvalidParam)
 {
     ShardMetadata md(MakeConfig());
     auto k = KeyFromHex("a1");
-    EXPECT_FALSE(md.StoreBegin(k, nullptr).Success());
+    EXPECT_EQ(md.StoreBegin(k, nullptr), Status::InvalidParam());
 }
 
 TEST_F(UCShardMetadataTest, StoreBeginRejectsReadyEntry)
 {
     ShardMetadata md(MakeConfig());
     auto k = KeyFromHex("a1");
-    EXPECT_FALSE(md.StoreBegin(k, MakeEntry(k, 0, past_, EntryStatus::READY)).Success());
+    EXPECT_EQ(md.StoreBegin(k, MakeEntry(k, 0, past_, EntryStatus::READY)), Status::InvalidParam());
 }
 
 TEST_F(UCShardMetadataTest, StoreBeginRejectsNonZeroRefCnt)
 {
     ShardMetadata md(MakeConfig());
     auto k = KeyFromHex("a1");
-    EXPECT_FALSE(
-        md.StoreBegin(k, MakeEntry(k, 0, past_, EntryStatus::INITIALIZED, /*refCnt=*/1)).Success());
+    EXPECT_EQ(md.StoreBegin(k, MakeEntry(k, 0, past_, EntryStatus::INITIALIZED, /*refCnt=*/1)),
+              Status::InvalidParam());
 }
 
 TEST_F(UCShardMetadataTest, StoreEndMarksInitializedAsReady)
@@ -116,19 +118,20 @@ TEST_F(UCShardMetadataTest, StoreEndReturnsErrorWhenNotInitialized)
     auto entry = MakeEntry(k, 0, past_, EntryStatus::INITIALIZED);
     md.StoreBegin(k, entry);
     ASSERT_TRUE(md.StoreEnd(k).Success());
-    EXPECT_FALSE(md.StoreEnd(k).Success());
+    EXPECT_EQ(md.StoreEnd(k), Status::Error());
 }
 
 TEST_F(UCShardMetadataTest, StoreEndReturnsNotFoundWhenMissing)
 {
     ShardMetadata md(MakeConfig());
-    EXPECT_FALSE(md.StoreEnd(KeyFromHex("a1")).Success());
+    EXPECT_EQ(md.StoreEnd(KeyFromHex("a1")), Status::NotFound());
 }
 
 TEST_F(UCShardMetadataTest, LoadBeginReturnsNotFoundWhenMissing)
 {
     ShardMetadata md(MakeConfig());
-    EXPECT_FALSE(md.LoadBegin(KeyFromHex("a1")).Success());
+    EntryPtr out;
+    EXPECT_EQ(md.LoadBegin(KeyFromHex("a1"), out), Status::NotFound());
 }
 
 TEST_F(UCShardMetadataTest, LoadBeginIncrementsRefCnt)
@@ -140,8 +143,10 @@ TEST_F(UCShardMetadataTest, LoadBeginIncrementsRefCnt)
     md.StoreBegin(k, entry);
     md.StoreEnd(k);
     EXPECT_EQ(entry->refCnt, 0U);
-    EXPECT_TRUE(md.LoadBegin(k).Success());
+    EntryPtr out;
+    EXPECT_TRUE(md.LoadBegin(k, out).Success());
     EXPECT_EQ(entry->refCnt, 1U);
+    EXPECT_EQ(out.get(), entry.get());
 }
 
 TEST_F(UCShardMetadataTest, LoadBeginReturnsErrorWhenNotReady)
@@ -150,14 +155,15 @@ TEST_F(UCShardMetadataTest, LoadBeginReturnsErrorWhenNotReady)
     auto k = KeyFromHex("a1");
     auto entry = MakeEntry(k, 0, past_, EntryStatus::INITIALIZED);
     md.StoreBegin(k, entry);
-    EXPECT_FALSE(md.LoadBegin(k).Success());
+    EntryPtr out;
+    EXPECT_EQ(md.LoadBegin(k, out), Status::Error());
     EXPECT_EQ(entry->refCnt, 0U);
 }
 
 TEST_F(UCShardMetadataTest, LoadEndReturnsNotFoundWhenMissing)
 {
     ShardMetadata md(MakeConfig());
-    EXPECT_FALSE(md.LoadEnd(KeyFromHex("a1")).Success());
+    EXPECT_EQ(md.LoadEnd(KeyFromHex("a1")), Status::NotFound());
 }
 
 TEST_F(UCShardMetadataTest, LoadEndDecrementsRefCnt)
@@ -167,7 +173,8 @@ TEST_F(UCShardMetadataTest, LoadEndDecrementsRefCnt)
     auto entry = MakeEntry(k, 0, past_, EntryStatus::INITIALIZED);
     md.StoreBegin(k, entry);
     md.StoreEnd(k);
-    md.LoadBegin(k);
+    EntryPtr out;
+    md.LoadBegin(k, out);
     ASSERT_EQ(entry->refCnt, 1U);
     EXPECT_TRUE(md.LoadEnd(k).Success());
     EXPECT_EQ(entry->refCnt, 0U);
@@ -179,7 +186,7 @@ TEST_F(UCShardMetadataTest, LoadEndReturnsErrorWhenRefCntIsZero)
     auto k = KeyFromHex("a1");
     md.StoreBegin(k, MakeEntry(k, 0, past_, EntryStatus::INITIALIZED));
     md.StoreEnd(k);
-    EXPECT_FALSE(md.LoadEnd(k).Success());
+    EXPECT_EQ(md.LoadEnd(k), Status::Error());
 }
 
 TEST_F(UCShardMetadataTest, ExistReturnsTrueAndRefreshesLeaseWhenReady)
@@ -230,7 +237,7 @@ TEST_F(UCShardMetadataTest, DeleteReturnsOkAndSecondIsNotFound)
     auto k = KeyFromHex("a1");
     EXPECT_TRUE(md.StoreBegin(k, MakeEntry(k, 0, past_, EntryStatus::INITIALIZED)).Success());
     EXPECT_TRUE(md.Delete(k).Success());
-    EXPECT_FALSE(md.Delete(k).Success());
+    EXPECT_EQ(md.Delete(k), Status::NotFound());
 }
 
 TEST_F(UCShardMetadataTest, GetKeyCntReflectsAddsAndDeletes)
@@ -254,10 +261,17 @@ TEST_F(UCShardMetadataTest, FullLifecycleStoreStoreEndLoadExist)
     auto entry = MakeEntry(k, 0, past_, EntryStatus::INITIALIZED);
     EXPECT_TRUE(md.StoreBegin(k, entry).Success());
     EXPECT_EQ(entry->status, EntryStatus::INITIALIZED);
-    EXPECT_FALSE(md.LoadBegin(k).Success());
+    {
+        EntryPtr out;
+        EXPECT_EQ(md.LoadBegin(k, out), Status::Error());
+    }
     EXPECT_TRUE(md.StoreEnd(k).Success());
     EXPECT_EQ(entry->status, EntryStatus::READY);
-    EXPECT_TRUE(md.LoadBegin(k).Success());
+    {
+        EntryPtr out;
+        EXPECT_TRUE(md.LoadBegin(k, out).Success());
+        EXPECT_EQ(out.get(), entry.get());
+    }
     EXPECT_EQ(entry->refCnt, 1U);
     EXPECT_TRUE(md.Exist(k));
     EXPECT_GT(entry->leaseTimeout, Clock::now());
@@ -310,7 +324,11 @@ TEST_F(UCMetadataManagerTest, PerKeyOpsDispatchAndRoundtrip)
     EXPECT_FALSE(mgr.Query(KeyFromHex("a2")));
     EXPECT_TRUE(mgr.Exist(k));
     EXPECT_GT(entry->leaseTimeout, Clock::now());
-    EXPECT_TRUE(mgr.LoadBegin(k).Success());
+    {
+        EntryPtr out;
+        EXPECT_TRUE(mgr.LoadBegin(k, out).Success());
+        EXPECT_EQ(out.get(), entry.get());
+    }
     EXPECT_EQ(entry->refCnt, 1U);
     EXPECT_TRUE(mgr.LoadEnd(k).Success());
     EXPECT_EQ(entry->refCnt, 0U);

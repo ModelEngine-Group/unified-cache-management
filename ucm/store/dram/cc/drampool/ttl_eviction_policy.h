@@ -21,8 +21,8 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  * */
-#ifndef UNIFIEDCACHE_DRAM_STORE_CC_POS_EVICTION_POLICY_H
-#define UNIFIEDCACHE_DRAM_STORE_CC_POS_EVICTION_POLICY_H
+#ifndef UNIFIEDCACHE_DRAM_STORE_CC_TTL_EVICTION_POLICY_H
+#define UNIFIEDCACHE_DRAM_STORE_CC_TTL_EVICTION_POLICY_H
 
 #include <chrono>
 #include <vector>
@@ -30,46 +30,40 @@
 #include "eviction_policy.h"
 #include "logger/logger.h"
 
-namespace UC::DramStore {
+namespace UC::DramPool {
 
-struct PosEntryCmp {
+struct TtlEntryCmp {
     bool operator()(const EntryPtr& a, const EntryPtr& b) const noexcept
     {
-        if (a->position != b->position) { return a->position > b->position; }
         return a->lifeTimeout < b->lifeTimeout;
     }
 };
 
 /**
- * @brief Eviction policy that removes a fraction of entries selected by
- *        position priority.
+ * @brief Eviction policy that removes all entries whose lifetime has expired.
  *
- * Position represents the absolute position of the current metadata's KV
- * cache within the inference request. Entries are ordered by position
- * descending, tiebroken by lifeTimeout ascending. GetEvictionResults evicts
- * up to evict_ratio * size() entries from the front of the ordering.
+ * Entries are ordered by lifeTimeout ascending. GetEvictionResults iterates
+ * from the earliest-expiring entry and breaks at the first entry whose
+ * lifeTimeout is still in the future.
  */
-class PosEvictionPolicy : public OrderedEvictionPolicy<PosEntryCmp> {
+class TtlEvictionPolicy : public OrderedEvictionPolicy<TtlEntryCmp> {
 public:
-    std::vector<BlockId> GetEvictionResults(double evict_ratio) override
+    std::vector<BlockId> GetEvictionResults(double /*evict_ratio*/) override
     {
         std::vector<BlockId> victims;
         const auto now = std::chrono::system_clock::now();
-        std::size_t target =
-            static_cast<std::size_t>(static_cast<double>(entries_.size()) * evict_ratio);
-        if (target > entries_.size()) { target = entries_.size(); }
         for (const auto& entry : entries_) {
-            if (victims.size() >= target) { break; }
+            if (entry->lifeTimeout > now) { break; }
             if (!entry->TryMarkEvicting(now)) { continue; }
             victims.push_back(entry->key);
         }
         if (!victims.empty()) {
-            UC_INFO("PosEvictionPolicy evict {} of {} entries.", victims.size(), entries_.size());
+            UC_INFO("TtlEvictionPolicy evict {} of {} entries.", victims.size(), entries_.size());
         }
         return victims;
     }
 };
 
-}  // namespace UC::DramStore
+}  // namespace UC::DramPool
 
 #endif

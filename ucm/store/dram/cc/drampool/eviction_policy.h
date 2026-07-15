@@ -30,7 +30,7 @@
 #include "entry.h"
 #include "status/status.h"
 
-namespace UC::DramStore {
+namespace UC::DramPool {
 
 enum class EvictionPolicyType {
     TTL = 0,
@@ -139,6 +139,6 @@ protected:
     std::unordered_map<BlockId, EntryIter, UC::Detail::BlockIdHasher> index_;
 };
 
-}  // namespace UC::DramStore
+}  // namespace UC::DramPool
 
 #endif
