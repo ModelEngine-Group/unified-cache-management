@@ -53,7 +53,7 @@ MODEL_PROFILES = {
         "worker_mode": "mla",
         "worker_number": 8,
         "share_buffer_enable": True,
-        "tensor_size_list": [131072, 65536, 32768],
+        "tensor_size_list": [131072, 32768, 16384],
     },
     "minimax-m2.7": {
         "worker_mode": "gqa",
@@ -229,7 +229,7 @@ def make_sized_tensors(device: str, factory):
     return tensors
 
 
-def dump(epoch: int, device: str, device_id: int, worker, block_ids):
+def dump(epoch: int, device: str, device_id: int, worker, block_ids) -> float:
     src_tensors = make_tensors(device)
     total_size = sum(tensor_size_list) * block_number
     shard_indexes = [0 for _ in range(block_number)]
@@ -237,10 +237,12 @@ def dump(epoch: int, device: str, device_id: int, worker, block_ids):
     tp = time.perf_counter()
     task = worker.dump(block_ids, shard_indexes, src_tensors)
     worker.wait(task)
-    print_result("dump", epoch, device_id, time.perf_counter() - tp, total_size)
+    cost = time.perf_counter() - tp
+    print_result("dump", epoch, device_id, cost, total_size)
+    return cost
 
 
-def load(epoch: int, device: str, device_id: int, worker, block_ids):
+def load(epoch: int, device: str, device_id: int, worker, block_ids) -> float:
     dst_tensors = make_empty_tensors(device)
     total_size = sum(tensor_size_list) * block_number
     shard_indexes = [0 for _ in range(block_number)]
@@ -249,7 +251,9 @@ def load(epoch: int, device: str, device_id: int, worker, block_ids):
     task = worker.load(block_ids, shard_indexes, dst_tensors)
     worker.wait(task)
     synchronize_device()
-    print_result("load", epoch, device_id, time.perf_counter() - tp, total_size)
+    cost = time.perf_counter() - tp
+    print_result("load", epoch, device_id, cost, total_size)
+    return cost
 
 
 def print_result(
@@ -263,11 +267,49 @@ def print_result(
     )
 
 
+def percentile(sorted_values, percent):
+    position = (len(sorted_values) - 1) * percent / 100
+    lower = int(position)
+    upper = min(lower + 1, len(sorted_values) - 1)
+    weight = position - lower
+    return sorted_values[lower] * (1 - weight) + sorted_values[upper] * weight
+
+
+def format_statistics(values):
+    sorted_values = sorted(values)
+    statistics = (
+        ("avg", sum(sorted_values) / len(sorted_values)),
+        ("min", sorted_values[0]),
+        ("p50", percentile(sorted_values, 50)),
+        ("p90", percentile(sorted_values, 90)),
+        ("p99", percentile(sorted_values, 99)),
+        ("max", sorted_values[-1]),
+    )
+    return ", ".join(f"{name}={value:.3f}" for name, value in statistics)
+
+
+def print_benchmark_summary(dump_cost_records, load_cost_records):
+    total_size = sum(tensor_size_list) * block_number
+    print("\n================ Benchmark summary ================")
+    for direction, records in (
+        ("dump", dump_cost_records),
+        ("load", load_cost_records),
+    ):
+        costs = [cost for cost in records if cost > 0]
+        latencies_ms = [cost * 1e3 for cost in costs]
+        bandwidths_gbps = [total_size / cost / 1e9 for cost in costs]
+        print(f"{direction}: samples={len(costs)}")
+        print(f"  latency(ms): {format_statistics(latencies_ms)}")
+        print(f"  bandwidth(GB/s): {format_statistics(bandwidths_gbps)}")
+
+
 def worker_loop(
     device_id: int,
     barrier: multiprocessing.Barrier,
     unique_id: str,
     block_id_records,
+    dump_cost_records,
+    load_cost_records,
 ):
     signal.signal(signal.SIGINT, signal.SIG_IGN)
     signal.signal(signal.SIGTSTP, signal.SIG_IGN)
@@ -288,20 +330,22 @@ def worker_loop(
     barrier.wait()
     for epoch, block_ids in enumerate(block_id_records):
         if worker_mode == "gqa" or device_id == 0:
-            dump(epoch, device, device_id, worker, block_ids)
+            cost = dump(epoch, device, device_id, worker, block_ids)
+            dump_cost_records[device_id * dump_epoch_number + epoch] = cost
         barrier.wait()
         if epoch + 1 < len(block_id_records):
             time.sleep(epoch_interval_ms / 1000)
 
     for epoch in range(load_epoch_number):
         record_idx = epoch % len(block_id_records)
-        load(
+        cost = load(
             epoch,
             device,
             device_id,
             worker,
             block_id_records[record_idx],
         )
+        load_cost_records[device_id * load_epoch_number + epoch] = cost
         barrier.wait()
         if epoch + 1 < load_epoch_number:
             time.sleep(epoch_interval_ms / 1000)
@@ -350,6 +394,12 @@ if __name__ == "__main__":
     barrier = multiprocessing.Barrier(worker_number)
     unique_id = secrets.token_hex(8)
     shared_block_id_records = make_block_id_records()
+    dump_cost_records = multiprocessing.Array(
+        "d", worker_number * dump_epoch_number, lock=False
+    )
+    load_cost_records = multiprocessing.Array(
+        "d", worker_number * load_epoch_number, lock=False
+    )
     workers = []
     signal.signal(signal.SIGTSTP, stop_on_suspend)
     try:
@@ -361,7 +411,14 @@ if __name__ == "__main__":
             )
             process = multiprocessing.Process(
                 target=worker_loop,
-                args=(device_id, barrier, unique_id, block_id_records),
+                args=(
+                    device_id,
+                    barrier,
+                    unique_id,
+                    block_id_records,
+                    dump_cost_records,
+                    load_cost_records,
+                ),
             )
             workers.append(process)
             process.start()
@@ -385,6 +442,7 @@ if __name__ == "__main__":
             raise RuntimeError(
                 f"worker pid={failed.pid} exited with code {failed.exitcode}"
             )
+        print_benchmark_summary(dump_cost_records, load_cost_records)
     except KeyboardInterrupt:
         print("benchmark interrupted; cleaning up workers and shared memory")
     finally:
