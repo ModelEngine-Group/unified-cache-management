@@ -201,6 +201,11 @@ def synchronize_device():
         torch.npu.synchronize()
 
 
+def configure_ucm_logging():
+    os.environ["UCM_LOG_LEVEL"] = ucm_log_level
+    os.environ["UC_LOGGER_LEVEL"] = ucm_log_level
+
+
 def create_cache_worker(
     pipeline_store_cls, unique_id: str, device_id: int, cpu_affinity_cores
 ):
@@ -387,11 +392,10 @@ def worker_loop(
     signal.signal(signal.SIGTSTP, signal.SIG_IGN)
     if cpu_affinity_cores:
         os.sched_setaffinity(0, cpu_affinity_cores)
-    os.environ["UCM_LOG_LEVEL"] = ucm_log_level
-    os.environ["UC_LOGGER_LEVEL"] = ucm_log_level
+    configure_ucm_logging()
 
-    # Import UCM after fork so each worker initializes its own async logger
-    # and owns a live logging thread.
+    # Import UCM inside the spawned worker so its async logger owns a live
+    # logging thread in this process.
     from ucm.logger import init_logger  # pylint: disable=import-outside-toplevel
     from ucm.store.pipeline.connector import (  # pylint: disable=import-outside-toplevel
         UcmPipelineStore,
@@ -421,7 +425,8 @@ def worker_loop(
         f"cache_sdma_direct={cache_sdma_direct}, "
         f"worker_cpu_affinity_enable={worker_cpu_affinity_enable}, "
         f"cpu_affinity_cores={cpu_affinity_cores}, "
-        f"ucm_log_level={ucm_log_level}"
+        f"ucm_log_level={ucm_log_level}, "
+        f"multiprocessing_start_method={multiprocessing.get_start_method()}"
     )
 
     barrier.wait()
@@ -507,17 +512,19 @@ if __name__ == "__main__":
             f"{model_name} tensor_size_list is empty; fill it in MODEL_PROFILES "
             "before running the benchmark"
         )
-    barrier = multiprocessing.Barrier(worker_number)
+    configure_ucm_logging()
+    process_context = multiprocessing.get_context("spawn")
+    barrier = process_context.Barrier(worker_number)
     unique_id = secrets.token_hex(8)
     shared_block_id_records = make_block_id_records()
     worker_cpu_core_groups = make_worker_cpu_core_groups()
-    dump_cost_records = multiprocessing.Array(
+    dump_cost_records = process_context.Array(
         "d", worker_number * dump_epoch_number, lock=False
     )
-    load_cost_records = multiprocessing.Array(
+    load_cost_records = process_context.Array(
         "d", worker_number * load_epoch_number, lock=False
     )
-    completed_worker_number = multiprocessing.Value("i", 0)
+    completed_worker_number = process_context.Value("i", 0)
     workers = []
     signal.signal(signal.SIGTSTP, stop_on_suspend)
     try:
@@ -527,7 +534,7 @@ if __name__ == "__main__":
                 if worker_mode == "mla"
                 else make_block_id_records()
             )
-            process = multiprocessing.Process(
+            process = process_context.Process(
                 target=worker_loop,
                 args=(
                     device_id,
