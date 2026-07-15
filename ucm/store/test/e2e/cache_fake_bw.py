@@ -40,6 +40,7 @@ device_type = "npu"
 block_number = 100
 dump_epoch_number = 16
 load_epoch_number = 16
+warmup_epoch_number = 5
 epoch_interval_ms = 15
 cache_sdma_direct = False
 worker_cpu_affinity_enable = True
@@ -250,7 +251,9 @@ def make_sized_tensors(device: str, factory):
     return tensors
 
 
-def dump(epoch: int, device: str, device_id: int, worker, block_ids) -> float:
+def dump(
+    epoch: int, device: str, device_id: int, worker, block_ids, warmup: bool
+) -> float:
     src_tensors = make_tensors(device)
     total_size = sum(tensor_size_list) * block_number
     shard_indexes = [0 for _ in range(block_number)]
@@ -259,11 +262,13 @@ def dump(epoch: int, device: str, device_id: int, worker, block_ids) -> float:
     task = worker.dump(block_ids, shard_indexes, src_tensors)
     worker.wait(task)
     cost = time.perf_counter() - tp
-    print_result("dump", epoch, device_id, cost, total_size)
+    print_result("dump", epoch, device_id, cost, total_size, warmup)
     return cost
 
 
-def load(epoch: int, device: str, device_id: int, worker, block_ids) -> float:
+def load(
+    epoch: int, device: str, device_id: int, worker, block_ids, warmup: bool
+) -> float:
     dst_tensors = make_empty_tensors(device)
     total_size = sum(tensor_size_list) * block_number
     shard_indexes = [0 for _ in range(block_number)]
@@ -273,15 +278,21 @@ def load(epoch: int, device: str, device_id: int, worker, block_ids) -> float:
     worker.wait(task)
     synchronize_device()
     cost = time.perf_counter() - tp
-    print_result("load", epoch, device_id, cost, total_size)
+    print_result("load", epoch, device_id, cost, total_size, warmup)
     return cost
 
 
 def print_result(
-    direction: str, epoch: int, device_id: int, cost: float, total_size: int
+    direction: str,
+    epoch: int,
+    device_id: int,
+    cost: float,
+    total_size: int,
+    warmup: bool,
 ):
+    phase = "warmup" if warmup else "benchmark"
     print(
-        f"epoch={epoch:03}, worker={device_id:02}, "
+        f"phase={phase}, epoch={epoch:03}, worker={device_id:02}, "
         f"{direction}=[{sum(tensor_size_list)} x {block_number}], "
         f"cost={cost * 1e3:.3f}ms, "
         f"bw={total_size / cost / 1e9:.3f}GB/s."
@@ -347,6 +358,7 @@ def worker_loop(
         f"worker_number={worker_number}, "
         f"block_number={block_number}, tensor_size_list={tensor_size_list}, "
         f"shard_size={shard_size}, dtype={torch.bfloat16}, "
+        f"warmup_epoch_number={warmup_epoch_number}, "
         f"epoch_interval_ms={epoch_interval_ms}, "
         f"cache_sdma_direct={cache_sdma_direct}, "
         f"share_buffer_enable={share_buffer_enable}, "
@@ -355,26 +367,34 @@ def worker_loop(
     )
 
     barrier.wait()
-    for epoch, block_ids in enumerate(block_id_records):
+    for record_idx, block_ids in enumerate(block_id_records):
+        warmup = record_idx < warmup_epoch_number
+        epoch = record_idx if warmup else record_idx - warmup_epoch_number
         if worker_mode == "gqa" or device_id == 0:
-            cost = dump(epoch, device, device_id, worker, block_ids)
-            dump_cost_records[device_id * dump_epoch_number + epoch] = cost
+            cost = dump(epoch, device, device_id, worker, block_ids, warmup)
+            if not warmup:
+                dump_cost_records[device_id * dump_epoch_number + epoch] = cost
         barrier.wait()
-        if epoch + 1 < len(block_id_records):
+        if record_idx + 1 < len(block_id_records):
             time.sleep(epoch_interval_ms / 1000)
 
-    for epoch in range(load_epoch_number):
-        record_idx = epoch % len(block_id_records)
+    total_load_epoch_number = warmup_epoch_number + load_epoch_number
+    for load_idx in range(total_load_epoch_number):
+        warmup = load_idx < warmup_epoch_number
+        epoch = load_idx if warmup else load_idx - warmup_epoch_number
+        record_idx = load_idx % len(block_id_records)
         cost = load(
             epoch,
             device,
             device_id,
             worker,
             block_id_records[record_idx],
+            warmup,
         )
-        load_cost_records[device_id * load_epoch_number + epoch] = cost
+        if not warmup:
+            load_cost_records[device_id * load_epoch_number + epoch] = cost
         barrier.wait()
-        if epoch + 1 < load_epoch_number:
+        if load_idx + 1 < total_load_epoch_number:
             time.sleep(epoch_interval_ms / 1000)
     sys.stdout.flush()
     sys.stderr.flush()
@@ -385,7 +405,7 @@ def worker_loop(
 def make_block_id_records():
     return [
         [secrets.token_bytes(16) for _ in range(block_number)]
-        for _ in range(dump_epoch_number)
+        for _ in range(warmup_epoch_number + dump_epoch_number)
     ]
 
 
