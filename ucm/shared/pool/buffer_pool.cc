@@ -89,7 +89,7 @@ void BufferPool::BufferRegion::Reset()
 }
 
 Status BufferPool::Init(std::string name, MemoryType type, std::size_t slot_capacity,
-                        std::size_t slot_num)
+                        std::size_t slot_num, bool enable_zero)
 {
     if (region_) { return Status::InvalidParam(name + " already initialized"); }
     if (slot_capacity == 0 || slot_num == 0) {
@@ -113,12 +113,15 @@ Status BufferPool::Init(std::string name, MemoryType type, std::size_t slot_capa
     slot_stride_ = slotStride;
     slot_num_ = slot_num;
     memory_type_ = type;
+    enable_zero_ = enable_zero;
     region_ = std::move(region);
 
-    status = ZeroMemory(region_.local_addr, total);
-    if (status.Failure()) {
-        Reset();
-        return status;
+    if (enable_zero_) {
+        status = ZeroMemory(region_.local_addr, total);
+        if (status.Failure()) {
+            Reset();
+            return status;
+        }
     }
 
     index_pool_.Setup(static_cast<IndexPool::Index>(slot_num_));
@@ -153,9 +156,11 @@ Status BufferPool::Free(std::uint32_t slot_index)
         return Status::InvalidParam(name_ + ": slot_index out of range");
     }
 
-    auto* slot = static_cast<char*>(region_.local_addr) + slot_index * slot_stride_;
-    auto status = ZeroMemory(slot, slot_stride_);
-    if (status.Failure()) { return status; }
+    if (enable_zero_) {
+        auto* slot = static_cast<char*>(region_.local_addr) + slot_index * slot_stride_;
+        auto status = ZeroMemory(slot, slot_stride_);
+        if (status.Failure()) { return status; }
+    }
 
     index_pool_.Release(static_cast<IndexPool::Index>(slot_index));
     return Status::OK();
@@ -169,6 +174,7 @@ void BufferPool::Reset()
     slot_stride_ = 0;
     slot_num_ = 0;
     memory_type_ = MemoryType::HOST;
+    enable_zero_ = false;
 }
 
 bool BufferPool::IsValidPointer(const void* ptr) const

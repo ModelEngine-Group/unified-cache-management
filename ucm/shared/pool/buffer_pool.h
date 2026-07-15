@@ -54,7 +54,7 @@ public:
     BufferPool& operator=(const BufferPool&) = delete;
 
     Status Init(std::string name, MemoryType type, std::size_t slot_capacity,
-                std::size_t slot_num);
+                std::size_t slot_num, bool enable_zero = false);
     Status Allocate(std::size_t size, Slot& slot);
     Status Free(std::uint32_t slot_index);
     void Reset();
@@ -88,6 +88,7 @@ private:
     std::size_t slot_stride_{0};
     std::size_t slot_num_{0};
     MemoryType memory_type_{MemoryType::HOST};
+    bool enable_zero_{false};
 
     BufferRegion region_;
     IndexPool index_pool_;

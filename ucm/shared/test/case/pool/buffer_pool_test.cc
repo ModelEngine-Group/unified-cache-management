@@ -106,7 +106,7 @@ TEST_F(BufferPoolTest, RejectsSlotLayoutOverflow)
 TEST_F(BufferPoolTest, HostPoolUsesAlignedSlotsAndReportsBusyWhenFull)
 {
     BufferPool pool;
-    auto status = pool.Init("host_pool", MemoryType::HOST, 71, 2);
+    auto status = pool.Init("host_pool", MemoryType::HOST, 71, 2, true);
     ASSERT_TRUE(status.Success()) << status.ToString();
     EXPECT_TRUE(pool.IsInitialized());
 
@@ -173,7 +173,7 @@ TEST_F(BufferPoolTest, DevicePoolZeroesReleasedSlot)
     constexpr std::size_t kSlotStride = 128;
 
     BufferPool pool;
-    auto status = pool.Init("device_pool", MemoryType::ASCEND_DEVICE, kSlotCapacity, 1);
+    auto status = pool.Init("device_pool", MemoryType::ASCEND_DEVICE, kSlotCapacity, 1, true);
     ASSERT_TRUE(status.Success()) << status.ToString();
     EXPECT_EQ(pool.GetLocalAddr(), pool.GetDeviceAddr());
     EXPECT_EQ(pool.GetTotalSize(), kSlotStride);
@@ -201,7 +201,7 @@ TEST_F(BufferPoolTest, FreeZeroesAndReusesHostSlot)
     constexpr std::size_t kSlotStride = 128;
 
     BufferPool pool;
-    auto status = pool.Init("reuse_pool", MemoryType::HOST, 71, 1);
+    auto status = pool.Init("reuse_pool", MemoryType::HOST, 71, 1, true);
     ASSERT_TRUE(status.Success()) << status.ToString();
 
     BufferPool::Slot first;
@@ -216,6 +216,28 @@ TEST_F(BufferPoolTest, FreeZeroesAndReusesHostSlot)
 
     const auto* bytes = static_cast<const std::uint8_t*>(second.local_addr);
     for (std::size_t i = 0; i < kSlotStride; ++i) { EXPECT_EQ(bytes[i], 0); }
+}
+
+TEST_F(BufferPoolTest, FreePreservesHostSlotWhenZeroingDisabled)
+{
+    constexpr std::size_t kSlotStride = 128;
+
+    BufferPool pool;
+    auto status = pool.Init("reuse_without_zero", MemoryType::HOST, 71, 1);
+    ASSERT_TRUE(status.Success()) << status.ToString();
+
+    BufferPool::Slot first;
+    ASSERT_TRUE(pool.Allocate(71, first).Success());
+    std::memset(first.local_addr, 0xAB, kSlotStride);
+    ASSERT_TRUE(pool.Free(first.slot_index).Success());
+
+    BufferPool::Slot second;
+    ASSERT_TRUE(pool.Allocate(71, second).Success());
+    EXPECT_EQ(second.local_addr, first.local_addr);
+    EXPECT_EQ(second.slot_index, first.slot_index);
+
+    const auto* bytes = static_cast<const std::uint8_t*>(second.local_addr);
+    for (std::size_t i = 0; i < kSlotStride; ++i) { EXPECT_EQ(bytes[i], 0xAB); }
 }
 
 TEST_F(BufferPoolTest, RejectsInvalidAllocationAndFree)
