@@ -31,8 +31,6 @@ import time
 
 import torch
 
-from ucm.store.pipeline.connector import UcmPipelineStore
-
 store_pipeline = "Cache|Posix"
 device_type = "npu"
 
@@ -204,8 +202,8 @@ def synchronize_device():
 
 
 def create_cache_worker(
-    unique_id: str, device_id: int, cpu_affinity_cores
-) -> UcmPipelineStore:
+    pipeline_store_cls, unique_id: str, device_id: int, cpu_affinity_cores
+):
     config = {}
     config["store_pipeline"] = store_pipeline
     config["storage_backends"] = storage_backends
@@ -229,10 +227,10 @@ def create_cache_worker(
     config["device_id"] = device_id
     if cpu_affinity_cores:
         config["cpu_affinity_cores"] = cpu_affinity_cores
-    return UcmPipelineStore(config)
+    return pipeline_store_cls(config)
 
 
-def create_posix_scheduler(cpu_affinity_cores) -> UcmPipelineStore:
+def create_posix_scheduler(pipeline_store_cls, cpu_affinity_cores):
     config = {}
     config["store_pipeline"] = "Posix"
     config["storage_backends"] = storage_backends
@@ -243,7 +241,7 @@ def create_posix_scheduler(cpu_affinity_cores) -> UcmPipelineStore:
     config["device_id"] = -1
     if cpu_affinity_cores:
         config["cpu_affinity_cores"] = cpu_affinity_cores
-    return UcmPipelineStore(config)
+    return pipeline_store_cls(config)
 
 
 def make_storage_dirs():
@@ -391,10 +389,26 @@ def worker_loop(
         os.sched_setaffinity(0, cpu_affinity_cores)
     os.environ["UCM_LOG_LEVEL"] = ucm_log_level
     os.environ["UC_LOGGER_LEVEL"] = ucm_log_level
+
+    # Import UCM after fork so each worker initializes its own async logger
+    # and owns a live logging thread.
+    from ucm.logger import init_logger  # pylint: disable=import-outside-toplevel
+    from ucm.store.pipeline.connector import (  # pylint: disable=import-outside-toplevel
+        UcmPipelineStore,
+    )
+
+    logger = init_logger(__name__)
+    logger.info(
+        "Cache Posix benchmark worker %d initialized UC logging at level %s.",
+        device_id,
+        ucm_log_level,
+    )
     make_storage_dirs()
     device = setup_device(device_id)
-    worker = create_cache_worker(unique_id, device_id, cpu_affinity_cores)
-    scheduler = create_posix_scheduler(cpu_affinity_cores)
+    worker = create_cache_worker(
+        UcmPipelineStore, unique_id, device_id, cpu_affinity_cores
+    )
+    scheduler = create_posix_scheduler(UcmPipelineStore, cpu_affinity_cores)
     print(
         f"{store_pipeline} one-layer benchmark: device={device}, "
         f"model={model_name}, worker_mode={worker_mode}, "
