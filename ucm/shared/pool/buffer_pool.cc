@@ -40,13 +40,11 @@ bool BufferPool::ComputeSlotStride(std::size_t capacity, std::size_t& stride)
     constexpr auto kMaxSize = std::numeric_limits<std::size_t>::max();
     if (capacity == 0 || capacity > kMaxSize - (kSlotAddressAlignment - 1)) { return false; }
 
-    stride = (capacity + kSlotAddressAlignment - 1) / kSlotAddressAlignment *
-             kSlotAddressAlignment;
+    stride = (capacity + kSlotAddressAlignment - 1) / kSlotAddressAlignment * kSlotAddressAlignment;
     return true;
 }
 
-Status BufferPool::BufferRegion::Create(MemoryType type, std::size_t size,
-                                        BufferRegion& region)
+Status BufferPool::BufferRegion::Create(MemoryType type, std::size_t size, BufferRegion& region)
 {
     Trans::AscendBuffer ascendBuffer;
     switch (type) {

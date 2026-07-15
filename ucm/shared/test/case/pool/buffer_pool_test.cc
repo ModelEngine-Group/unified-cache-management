@@ -191,7 +191,7 @@ TEST_F(BufferPoolTest, DevicePoolZeroesReleasedSlot)
 
     std::array<std::uint8_t, kSlotStride> host{};
     ASSERT_EQ(aclrtMemcpy(host.data(), host.size(), second.local_addr, kSlotStride,
-                         ACL_MEMCPY_DEVICE_TO_HOST),
+                          ACL_MEMCPY_DEVICE_TO_HOST),
               ACL_SUCCESS);
     for (const auto value : host) { EXPECT_EQ(value, 0); }
 }
