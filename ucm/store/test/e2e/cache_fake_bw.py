@@ -42,7 +42,7 @@ dump_epoch_number = 16
 load_epoch_number = 16
 warmup_epoch_number = 5
 epoch_interval_ms = 15
-cache_sdma_direct = False
+cache_sdma_direct = True
 worker_cpu_affinity_enable = True
 
 # =========================== User configuration ===========================
@@ -54,7 +54,7 @@ model_name = "glm-5.2"
 MODEL_PROFILES = {
     "glm-5.2": {
         "worker_mode": "mla",
-        "worker_number": 8,
+        "worker_number": 16,
         "share_buffer_enable": True,
         "tensor_size_list": [131072, 32768, 16384],
     },
@@ -212,13 +212,12 @@ def create_worker(
     config["block_size"] = shard_size
     config["share_buffer_enable"] = share_buffer_enable
     config["io_direct"] = True
+    config["cache_load_backend_only"] = True
     config["cache_buffer_capacity_gb"] = 8
     config["cache_stream_number"] = 4
     config["cache_sdma_direct"] = cache_sdma_direct
     config["cache_sdma_direct_launch_granularity"] = "shard"
-    config["waiting_queue_depth"] = 16
-    config["running_queue_depth"] = 1024
-    config["timeout_ms"] = 10000
+    config["timeout_ms"] = 30000
     config["device_id"] = device_id
     if cpu_affinity_cores:
         config["cpu_affinity_cores"] = cpu_affinity_cores

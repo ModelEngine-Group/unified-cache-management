@@ -43,6 +43,7 @@ epoch_interval_ms = 15
 cache_sdma_direct = True
 storage_backends = ["./build/data"]
 posix_io_engine = "psync"
+posix_data_trans_concurrency = 128
 worker_cpu_affinity_enable = True
 ucm_log_level = "info"
 
@@ -215,7 +216,7 @@ def create_cache_worker(
     config["storage_backends"] = storage_backends
     config["posix_io_engine"] = posix_io_engine
     config["io_direct"] = True
-    config["posix_data_trans_concurrency"] = 128
+    config["posix_data_trans_concurrency"] = posix_data_trans_concurrency
     config["posix_lookup_concurrency"] = 16
     config["cache_load_backend_only"] = True
     config["unique_id"] = unique_id
@@ -240,7 +241,7 @@ def create_cache_scheduler(pipeline_store_cls, unique_id: str, cpu_affinity_core
     config["storage_backends"] = storage_backends
     config["posix_io_engine"] = posix_io_engine
     config["io_direct"] = True
-    config["posix_data_trans_concurrency"] = 128
+    config["posix_data_trans_concurrency"] = posix_data_trans_concurrency
     config["posix_lookup_concurrency"] = 16
     config["cache_load_backend_only"] = True
     config["unique_id"] = unique_id
@@ -437,6 +438,7 @@ def worker_loop(
         f"epoch_interval_ms={epoch_interval_ms}, "
         f"storage_backends={storage_backends}, "
         f"posix_io_engine={posix_io_engine}, "
+        f"posix_data_trans_concurrency={posix_data_trans_concurrency}, "
         f"cache_sdma_direct={cache_sdma_direct}, "
         f"worker_cpu_affinity_enable={worker_cpu_affinity_enable}, "
         f"cpu_affinity_cores={cpu_affinity_cores}, "
