@@ -42,6 +42,7 @@ warmup_epoch_number = 5
 epoch_interval_ms = 15
 cache_sdma_direct = True
 storage_backends = ["./build/data"]
+posix_io_engine = "psync"
 worker_cpu_affinity_enable = True
 ucm_log_level = "info"
 
@@ -54,7 +55,7 @@ model_name = "glm-5.2"
 MODEL_PROFILES = {
     "glm-5.2": {
         "worker_mode": "mla",
-        "worker_number": 8,
+        "worker_number": 16,
         "share_buffer_enable": True,
         "tensor_size_list": [131072, 32768, 16384],
     },
@@ -212,10 +213,10 @@ def create_cache_worker(
     config = {}
     config["store_pipeline"] = store_pipeline
     config["storage_backends"] = storage_backends
-    config["posix_io_engine"] = "aio"
+    config["posix_io_engine"] = posix_io_engine
     config["io_direct"] = True
-    config["posix_data_trans_concurrency"] = 32
-    config["posix_lookup_concurrency"] = 32
+    config["posix_data_trans_concurrency"] = 128
+    config["posix_lookup_concurrency"] = 16
     config["cache_load_backend_only"] = True
     config["unique_id"] = unique_id
     config["tensor_size_list"] = tensor_size_list
@@ -228,21 +229,31 @@ def create_cache_worker(
     config["cache_sdma_direct_launch_granularity"] = "shard"
     config["waiting_queue_depth"] = 16
     config["running_queue_depth"] = 1024
-    config["timeout_ms"] = 10000
+    config["timeout_ms"] = 30000
     config["device_id"] = device_id
     if cpu_affinity_cores:
         config["cpu_affinity_cores"] = cpu_affinity_cores
     return pipeline_store_cls(config)
 
 
-def create_posix_scheduler(pipeline_store_cls, cpu_affinity_cores):
+def create_cache_scheduler(pipeline_store_cls, unique_id: str, cpu_affinity_cores):
     config = {}
-    config["store_pipeline"] = "Posix"
+    config["store_pipeline"] = store_pipeline
     config["storage_backends"] = storage_backends
-    config["posix_io_engine"] = "aio"
+    config["posix_io_engine"] = posix_io_engine
     config["io_direct"] = True
-    config["posix_lookup_concurrency"] = 32
-    config["timeout_ms"] = 10000
+    config["posix_data_trans_concurrency"] = 128
+    config["posix_lookup_concurrency"] = 16
+    config["cache_load_backend_only"] = True
+    config["unique_id"] = unique_id
+    config["tensor_size_list"] = []
+    config["shard_size"] = 0
+    config["block_size"] = shard_size
+    config["share_buffer_enable"] = share_buffer_enable
+    config["cache_buffer_capacity_gb"] = 8
+    config["cache_sdma_direct"] = cache_sdma_direct
+    config["cache_sdma_direct_launch_granularity"] = "shard"
+    config["timeout_ms"] = 30000
     config["device_id"] = -1
     if cpu_affinity_cores:
         config["cpu_affinity_cores"] = cpu_affinity_cores
@@ -414,7 +425,7 @@ def worker_loop(
         UcmPipelineStore, unique_id, device_id, cpu_affinity_cores
     )
     scheduler = (
-        create_posix_scheduler(UcmPipelineStore, cpu_affinity_cores)
+        create_cache_scheduler(UcmPipelineStore, unique_id, cpu_affinity_cores)
         if device_id == 0
         else None
     )
@@ -427,6 +438,7 @@ def worker_loop(
         f"warmup_epoch_number={warmup_epoch_number}, "
         f"epoch_interval_ms={epoch_interval_ms}, "
         f"storage_backends={storage_backends}, "
+        f"posix_io_engine={posix_io_engine}, "
         f"cache_sdma_direct={cache_sdma_direct}, "
         f"worker_cpu_affinity_enable={worker_cpu_affinity_enable}, "
         f"cpu_affinity_cores={cpu_affinity_cores}, "
