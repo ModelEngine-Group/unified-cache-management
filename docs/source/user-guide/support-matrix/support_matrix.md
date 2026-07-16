@@ -23,14 +23,21 @@ This information serves as a reference for evaluating framework compatibility in
 | DeepSeek V3.2 | ✅ | ✅ | ✅ |
 | DeepSeek R1 | ✅ | ✅ | ✅ |
 | DeepSeek V3/3.1 | ✅ | ✅ | ✅ |
-| Qwen3.5 | ❌ | ❌ | ❌ |
+| DeepSeek V4 Pro | ✅ | ✅ | ❌ |
+| DeepSeek V4 Flash | ✅ | ✅ | ❌ |
+| Qwen3.6 | ✅ | ✅ | ❌ |
+| Qwen3.5 | ✅ | ✅ | ❌ |
 | Qwen3 | ✅ | ✅ | ✅ |
 | Qwen3-Moe | ✅ | ✅ | ✅ |
-| Qwen3-Next | ❌ | ❌ | ❌ |
+| Qwen3-Next | ✅ | ✅ | ❌ |
 | Qwen2.5 | ✅ | ✅ | ✅ |
+| GLM-5.2 | ✅ | ✅ | ❌ |
+| GLM-5.1 | ✅ | ✅ | ❌ |
 | GLM-5 | ✅ | ✅ | ❌ |
 | GLM-4.x | ✅ | ✅ | ✅ |
 | MiniMax-M2.5 | ✅ | ✅ | ✅ |
+| MiniMax-M2.7 | ✅ | ✅ | ✅ |
+| MiniMax-M3 | ❌ | ❌ | ❌ |
 | Kimi-K2.5 | ❌ | ❌ | ❌ |
 
 > **Note**: The table lists a selected set of representative models.

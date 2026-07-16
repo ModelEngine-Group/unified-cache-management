@@ -70,6 +70,10 @@ void LoadQueue::Submit(TaskPtr task, WaiterPtr waiter)
 
 void LoadQueue::DispatchStage()
 {
+    auto nameStatus = CpuAffinity::SetCurrentThreadName("ucm_load_disp");
+    if (nameStatus.Failure()) {
+        UC_WARN("Failed({}) to set UCM load dispatcher name.", nameStatus);
+    }
     if (!cpuAffinityCores_.empty()) {
         auto s = CpuAffinity::SetCpuAffinity4CurrentThread(cpuAffinityCores_);
         if (s.Failure()) { UC_WARN("Failed({}) to set affinity.", s); }
@@ -158,6 +162,8 @@ void LoadQueue::DispatchOneTask(TaskPair&& pair)
 
 void LoadQueue::TransferStage(std::promise<Status>& started)
 {
+    auto nameStatus = CpuAffinity::SetCurrentThreadName("ucm_load_xfer");
+    if (nameStatus.Failure()) { UC_WARN("Failed({}) to set UCM load transfer name.", nameStatus); }
     CopyStream stream;
     auto s = cacheSdmaDirect_ ? stream.SetupSdmaDirect(deviceId_, useGdr_)
                               : stream.Setup(deviceId_, streamNumber_, useGdr_);

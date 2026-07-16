@@ -37,6 +37,7 @@
 #include <thread>
 #include "logger/logger.h"
 #include "space_layout.h"
+#include "thread/cpu_affinity.h"
 #include "type/types.h"
 
 namespace UC::PosixStore {
@@ -155,6 +156,10 @@ public:
 private:
     void OpenWorkerLoop()
     {
+        auto nameStatus = CpuAffinity::SetCurrentThreadName("ucm_posix_open");
+        if (nameStatus.Failure()) {
+            UC_WARN("Failed({}) to set UCM posix open worker name.", nameStatus);
+        }
         constexpr const auto mode = S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH;
         for (;;) {
             OpenTask task;
@@ -179,6 +184,10 @@ private:
     }
     void CommitWorkerLoop()
     {
+        auto nameStatus = CpuAffinity::SetCurrentThreadName("ucm_posix_cmit");
+        if (nameStatus.Failure()) {
+            UC_WARN("Failed({}) to set UCM posix commit worker name.", nameStatus);
+        }
         for (;;) {
             CommitTask task;
             {
