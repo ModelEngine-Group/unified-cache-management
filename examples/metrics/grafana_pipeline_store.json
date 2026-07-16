@@ -237,7 +237,7 @@
         "type": "prometheus",
         "uid": "${DS_PROMETHEUS}"
       },
-      "description": "Fraction of load shards that missed the Cache buffer and had to descend to the backend (shard-level miss rate at load time). Equals rate(cache_load_backend_shards_total) / rate(cache_load_shards_total).",
+      "description": "Fraction of returned hit blocks served by the Posix backend. Equals Posix hits divided by Cache-buffer hits plus Posix hits; the Cache-buffer hit share is the complement.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -325,7 +325,7 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "sum by (${perWorker:raw}) (rate(ucm:cache_load_backend_shards_total{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval]))\n/ clamp_min(\n  sum by (${perWorker:raw}) (rate(ucm:cache_load_shards_total{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval])), 1\n)",
+          "expr": "sum by (${perWorker:raw}) (rate(ucm:posix_lookup_hit_blocks_total{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval]))\n/ clamp_min(\n  sum by (${perWorker:raw}) (rate(ucm:cache_lookup_hit_blocks_total{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval]))\n  +\n  sum by (${perWorker:raw}) (rate(ucm:posix_lookup_hit_blocks_total{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval])),\n  1e-9\n)",
           "hide": false,
           "instant": false,
           "legendFormat": "{{engine}} {{worker_rank}}",

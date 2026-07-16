@@ -115,9 +115,14 @@ ucm-toolkit run metrics-view list-configs
 
 ```bash
 ucm-toolkit run metrics-view start \
-  --url http://127.0.0.1:8000/metrics \
+  --url http://prefill:8000/metrics \
+  --url http://decode:8000/metrics \
   --interval 5s
 ```
+
+`--url` 可以重复传入。每个样本都会增加 `url=<完整 metrics URL>` label，
+用于区分 PD 分离部署中的不同实例。某个 URL 临时抓取失败时，后台进程会记录错误，
+其他 URL 仍会正常采集。
 
 查看或停止后台采集：
 
@@ -125,6 +130,11 @@ ucm-toolkit run metrics-view start \
 ucm-toolkit run metrics-view status
 ucm-toolkit run metrics-view stop
 ```
+
+默认数据库、PID 和日志分别为 `/tmp/ucm_metrics.db`、`/tmp/ucm_metrics.pid`
+和 `/tmp/terminal_metrics.log`，因此切换工作目录后仍可以执行 `status` 和 `stop`。
+如需同时运行多个采集进程，必须分别指定不同的 `--db`、`--pid-file` 和
+`--log-file`。
 
 推荐使用 `start` / `stop` 方式采集 metrics。后台采集会把多次样本写入 SQLite，
 因此后续可以查询指定时间范围内的数据，并按 `--aggr-by` 做分段聚合。
@@ -146,6 +156,7 @@ ucm-toolkit run metrics-view query \
   --start-time 2026-06-25T10:00:00 \
   --window 10m \
   --aggr-by 1m \
+  --tag url=http://prefill:8000/metrics \
   --tag model_name=qwen \
   --tag worker_id=0
 ```
@@ -154,8 +165,11 @@ ucm-toolkit run metrics-view query \
 
 ```bash
 ucm-toolkit run metrics-view check \
-  --url http://127.0.0.1:8000/metrics
+  --url http://prefill:8000/metrics \
+  --url http://decode:8000/metrics
 ```
+
+`check` 会尝试所有 URL；任一 URL 失败时命令返回失败，并且不输出不完整的聚合结果。
 
 `check` 只拉取一次 metrics，不写入 SQLite。它会按 `metrics_lite` 或 `--config`
 指定的配置输出当前快照的总聚合值；counter 和 histogram 的累计序列只能表示目标服务启动或指标 reset

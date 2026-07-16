@@ -11,7 +11,7 @@ from pathlib import Path
 if __package__ in {None, ""}:
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from terminal_view_metrics.collector import collect_loop, scrape_url
+from terminal_view_metrics.collector import collect_loop, scrape_urls
 from terminal_view_metrics.config import (
     list_preset_configs,
     load_config,
@@ -19,17 +19,22 @@ from terminal_view_metrics.config import (
     parse_time_ms,
     resolve_config_path,
 )
-from terminal_view_metrics.parser import parse_prometheus_text
 from terminal_view_metrics.query import QueryEngine
 from terminal_view_metrics.render import render_json, render_table
 from terminal_view_metrics.snapshot import SnapshotQueryEngine
 from terminal_view_metrics.storage import MetricsStore
 
 DEFAULT_DB = "/tmp/ucm_metrics.db"
-DEFAULT_PID_FILE = "terminal_metrics.pid"
+DEFAULT_PID_FILE = "/tmp/ucm_metrics.pid"
+DEFAULT_LOG_FILE = "/tmp/terminal_metrics.log"
+PRIVATE_WORKER_COMMAND = "__collect_worker"
 
 
 def main(argv: list[str] | None = None) -> int:
+    argv = list(sys.argv[1:] if argv is None else argv)
+    if argv and argv[0] == PRIVATE_WORKER_COMMAND:
+        args = _build_worker_parser().parse_args(argv[1:])
+        return int(_cmd_collect_worker(args))
     parser = _build_parser()
     args = parser.parse_args(argv)
     return int(args.func(args))
@@ -45,15 +50,10 @@ def _build_parser() -> argparse.ArgumentParser:
     _add_check_args(check)
     check.set_defaults(func=_cmd_check)
 
-    collect = subparsers.add_parser("collect", help="Run foreground metrics collection")
-    _add_collect_args(collect)
-    collect.add_argument("--once", action="store_true", help="Scrape once and exit")
-    collect.set_defaults(func=_cmd_collect)
-
     start = subparsers.add_parser("start", help="Start background metrics collection")
     _add_collect_args(start)
     start.add_argument("--pid-file", default=DEFAULT_PID_FILE)
-    start.add_argument("--log-file", default="terminal_metrics.log")
+    start.add_argument("--log-file", default=DEFAULT_LOG_FILE)
     start.set_defaults(func=_cmd_start)
 
     stop = subparsers.add_parser("stop", help="Stop background metrics collection")
@@ -80,7 +80,12 @@ def _build_parser() -> argparse.ArgumentParser:
 
 
 def _add_collect_args(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument("--url", required=True, help="Prometheus /metrics URL")
+    parser.add_argument(
+        "--url",
+        action="append",
+        required=True,
+        help="Prometheus /metrics URL; can be repeated",
+    )
     parser.add_argument("--db", default=DEFAULT_DB)
     parser.add_argument("--interval", default="5s")
     parser.add_argument(
@@ -93,7 +98,12 @@ def _add_collect_args(parser: argparse.ArgumentParser) -> None:
 
 
 def _add_check_args(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument("--url", required=True, help="Prometheus /metrics URL")
+    parser.add_argument(
+        "--url",
+        action="append",
+        required=True,
+        help="Prometheus /metrics URL; can be repeated",
+    )
     parser.add_argument("--config", default="metrics_lite")
     parser.add_argument("--timeout", default="5s")
     parser.add_argument(
@@ -131,14 +141,19 @@ def _add_query_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--limit", type=int, default=None)
 
 
-def _cmd_collect(args: argparse.Namespace) -> int:
+def _build_worker_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(add_help=False)
+    _add_collect_args(parser)
+    return parser
+
+
+def _cmd_collect_worker(args: argparse.Namespace) -> int:
     collect_loop(
-        url=args.url,
+        urls=args.url,
         db_path=args.db,
         interval_seconds=parse_duration_seconds(args.interval),
         config_path=resolve_config_path(args.config) if args.config else None,
         retention_seconds=parse_duration_seconds(args.retention),
-        once=args.once,
         timeout_seconds=parse_duration_seconds(args.timeout),
     )
     return 0
@@ -146,8 +161,12 @@ def _cmd_collect(args: argparse.Namespace) -> int:
 
 def _cmd_check(args: argparse.Namespace) -> int:
     config = load_config(resolve_config_path(args.config))
-    text = scrape_url(args.url, parse_duration_seconds(args.timeout))
-    rows = SnapshotQueryEngine(parse_prometheus_text(text)).query_config(
+    samples, failures = scrape_urls(args.url, parse_duration_seconds(args.timeout))
+    if failures:
+        for url, exc in failures:
+            print(f"scrape failed for {url}: {exc}", file=sys.stderr)
+        return 1
+    rows = SnapshotQueryEngine(samples).query_config(
         config,
         tag_filters=_parse_tag_filters(args.tag),
     )
@@ -168,9 +187,7 @@ def _cmd_start(args: argparse.Namespace) -> int:
     command = [
         sys.executable,
         str(Path(__file__).resolve()),
-        "collect",
-        "--url",
-        args.url,
+        PRIVATE_WORKER_COMMAND,
         "--db",
         args.db,
         "--interval",
@@ -180,6 +197,8 @@ def _cmd_start(args: argparse.Namespace) -> int:
         "--timeout",
         args.timeout,
     ]
+    for url in args.url:
+        command.extend(["--url", url])
     if args.config:
         command.extend(["--config", str(resolve_config_path(args.config))])
     log_path = Path(args.log_file)

@@ -581,6 +581,17 @@ def test_default_metrics_config_matches_example_yaml():
     assert DEFAULT_METRICS_CONFIG == _load_example_metrics_config_without_yaml()
 
 
+def test_posix_lookup_metrics_record_queries_and_returned_hits():
+    source = (
+        REPO_ROOT / "ucm" / "store" / "posix" / "cc" / "posix_store.cc"
+    ).read_text(encoding="utf-8")
+
+    assert 'NAME_TO_METRIC_ID("posix_lookup_query_blocks_total")' in source
+    assert 'NAME_TO_METRIC_ID("posix_lookup_hit_blocks_total")' in source
+    assert source.count("RecordLookupQueries(") == 3
+    assert source.count("RecordLookupHits(") == 3
+
+
 def test_launch_metrics_config_defaults_to_builtin_metrics_when_path_is_missing():
     _reset_fakes()
 
@@ -2042,3 +2053,23 @@ def test_pipeline_dashboard_orders_cache_bandwidth_rows():
     assert panels["Cache Load H2D Duration"]["gridPos"]["y"] == 73
     assert "Cache Dump D2H Duration (include wait compute)" in panels
     assert "Cache Dump D2H Duration" not in panels
+
+
+def test_pipeline_dashboard_cache_backend_load_ratio_uses_hit_source_share():
+    dashboard = json.loads(
+        (REPO_ROOT / "examples" / "metrics" / "grafana_pipeline_store.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    panel = next(
+        panel
+        for panel in dashboard["panels"]
+        if panel["title"] == "Cache Backend Load Ratio"
+    )
+    expression = panel["targets"][0]["expr"]
+
+    assert expression.count("ucm:posix_lookup_hit_blocks_total") == 2
+    assert expression.count("ucm:cache_lookup_hit_blocks_total") == 1
+    assert "cache_load_backend_shards_total" not in expression
+    assert "cache_load_shards_total" not in expression
+    assert "returned hit blocks" in panel["description"]
