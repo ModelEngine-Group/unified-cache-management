@@ -41,7 +41,7 @@ store_pipeline = "Cache|Posix"
 device_type = "npu"
 
 # =========================== User configuration ===========================
-# Model profile: glm-5.2, minimax-m2.7, or dsv4.
+# Model profile: glm-5.2, minimax-m2.7 tp8, or dsv4.
 model_name = "glm-5.2"
 # True uses layerwise transfer; False uses non-layerwise. DSV4 ignores it.
 use_layerwise = True
@@ -82,7 +82,7 @@ MODEL_PROFILES = {
         "layer_tensor_size_list": [131072, 16384, 32768],
     },
     # MiniMax tensor sizes below are for TP=8; adjust them for other TP sizes.
-    "minimax-m2.7": {
+    "minimax-m2.7 tp8": {
         "worker_mode": "gqa",
         "share_buffer_enable": False,
         "layer_tensor_size_list": [32768, 32768],
