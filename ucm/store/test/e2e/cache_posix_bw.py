@@ -81,6 +81,7 @@ MODEL_PROFILES = {
         "share_buffer_enable": True,
         "layer_tensor_size_list": [131072, 16384, 32768],
     },
+    # MiniMax tensor sizes below are for TP=8; adjust them for other TP sizes.
     "minimax-m2.7": {
         "worker_mode": "gqa",
         "share_buffer_enable": False,
